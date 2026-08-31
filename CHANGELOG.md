@@ -5,6 +5,16 @@ Fork: [Entrpi/ds4](https://github.com/Entrpi/ds4) of
 [antirez/ds4](https://github.com/antirez/ds4); upstream fork point `e16ead1`
 (2026-05-29). Upstream's own changes are not repeated here.
 
+## v0.1.0-rc.2 — 2026-08-31
+
+- Makes the continuation C oracle deterministic across C function-argument
+  evaluation orders. This fixes the hosted x86 parity workflow while retaining
+  the RC.1 engine and serving behavior.
+- Latches one-shot stop signals in reconnect integration tests so teardown
+  cannot spuriously reconnect a worker.
+- Advances the independent package and server version to RC.2. No model,
+  kernel, API, or release-gate scope changed.
+
 ## v0.1.0-rc.1 — 2026-08-31
 
 - Starts the independent `ds4-dfm-rs` version line from the verified

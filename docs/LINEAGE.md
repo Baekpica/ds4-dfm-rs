@@ -55,6 +55,10 @@ continuous DwarfStar ancestry above.
 The annotated `v0.1.0-rc.1` tag names the first independent Rust-host release
 candidate containing this document.
 
+`v0.1.0-rc.2` retains the same runtime behavior and sequences two mutating C
+oracle calls explicitly so host parity is deterministic across x86 and ARM C
+compilers.
+
 ## Versioning after the split
 
 `v0.6.5-dfm` remains the behavioral baseline, not the new repository's version.

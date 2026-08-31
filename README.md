@@ -78,7 +78,7 @@ optimized C/CUDA/Metal backend, Git ancestry and authorship, and the full
 
 ## Status
 
-`v0.1.0-rc.1` is a repository-split and Rust-host parity release. It starts a
+`v0.1.0-rc.2` is a repository-split and Rust-host parity release. It starts a
 new version namespace; it is not a new model or kernel feature release.
 
 | Item | RC scope |
@@ -169,7 +169,7 @@ See [`ARCHITECTURE.md`](docs/rust-migration/ARCHITECTURE.md) and
 
 ## Supported hardware and backends
 
-| Backend | Status in `v0.1.0-rc.1` |
+| Backend | Status in `v0.1.0-rc.2` |
 |---|---|
 | NVIDIA DGX Spark / GB10 | Release target. Full build, host parity, family matrix, long-context, Qwen image/MTP, ABBA, and soak gates ran here. |
 | Other NVIDIA CUDA systems | Source path retained through `make cuda-generic` or an explicit `CUDA_ARCH`; not covered by the RC's full live matrix. |
@@ -334,10 +334,10 @@ DS4_CUDA_WEIGHT_IPC_SCOPE=base \
   --host 127.0.0.1 --port 8000 --no-update-check
 ```
 
-Use only one production GGUF at a time. On DGX Spark, monitor compute and
-process memory with `nvtop` and `htop`. Stop the worker first, then the owner;
-confirm both PIDs and GPU compute entries are gone before running
-`/usr/local/bin/clear_cache`. Page-cache reclaim cannot free live allocations.
+Large GGUFs can exhaust unified or system memory. During validation, load one
+production model at a time, observe accelerator activity and per-process memory
+with tools available on your platform, and confirm serving processes have
+exited before reclaiming host resources.
 
 ## HTTP compatibility
 
