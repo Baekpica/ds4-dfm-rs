@@ -809,6 +809,7 @@ fn reconnect_local_keeps_coordinator_open_while_hop_work_completes() {
     let worker_thread = thread::spawn(move || {
         let mut worker = Worker::new(exec);
         let (hello, name) = worker.hello(u32::from(data_port), 128, "mock");
+        let mut stopped = false;
         reconnect_local(
             &mut worker,
             LocalReconnect {
@@ -820,7 +821,10 @@ fn reconnect_local_keeps_coordinator_open_while_hop_work_completes() {
                 hello: &hello,
                 model_name: &name,
                 sleep: || {},
-                should_stop: || stop_rx.try_recv().is_ok(),
+                should_stop: || {
+                    stopped |= stop_rx.try_recv().is_ok();
+                    stopped
+                },
                 listener: Some(&data_listener),
             },
         )
@@ -939,6 +943,7 @@ fn spawn_reconnect_worker(
     thread::spawn(move || {
         let mut worker = Worker::new(exec);
         let (hello, name) = worker.hello(u32::from(data_port), 128, "mock");
+        let mut stopped = false;
         reconnect_local(
             &mut worker,
             LocalReconnect {
@@ -950,7 +955,10 @@ fn spawn_reconnect_worker(
                 hello: &hello,
                 model_name: &name,
                 sleep: || {},
-                should_stop: || stop_rx.try_recv().is_ok(),
+                should_stop: || {
+                    stopped |= stop_rx.try_recv().is_ok();
+                    stopped
+                },
                 listener: Some(&data_listener),
             },
         )
