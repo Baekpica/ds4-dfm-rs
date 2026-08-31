@@ -308,17 +308,21 @@ static void script_hold(void)
 {
     reg r;
     char *id[1];
-    int retry = 0;
+    int h, retry = 0;
     r_init(&r);
     char hold_id[] = "toolu_hold";
     id[0] = hold_id;
     publish(&r, API_ANTHROPIC, id, 1, OWNER_SERIAL, 0, 4, 70, 1000);
-    hold_print(hold(&r, API_OPENAI, NULL, 0, 1001, &retry), retry);
-    hold_print(hold(&r, API_ANTHROPIC, id, 1, 1001, &retry), retry);
-    hold_print(hold(&r, API_OPENAI, NULL, 0, 1011, &retry), retry);
+    h = hold(&r, API_OPENAI, NULL, 0, 1001, &retry);
+    hold_print(h, retry);
+    h = hold(&r, API_ANTHROPIC, id, 1, 1001, &retry);
+    hold_print(h, retry);
+    h = hold(&r, API_OPENAI, NULL, 0, 1011, &retry);
+    hold_print(h, retry);
     printf("still_live=%d\n",
            r.serial_live >= 0 && r.v[r.serial_live].state == LIVE);
-    hold_print(hold(&r, API_OPENAI, NULL, 0, 1131, &retry), retry);
+    h = hold(&r, API_OPENAI, NULL, 0, 1131, &retry);
+    hold_print(h, retry);
     {
         expire(&r, 1131);
         int i = find(&r, API_ANTHROPIC, "toolu_hold");
@@ -327,9 +331,11 @@ static void script_hold(void)
             r.v[i].pin_expiry = 1131 + r.pin_dead;
         }
     }
-    hold_print(hold(&r, API_OPENAI, NULL, 0, 1131, &retry), retry);
+    h = hold(&r, API_OPENAI, NULL, 0, 1131, &retry);
+    hold_print(h, retry);
     if (r.serial_live >= 0) r.v[r.serial_live].pin_expiry = 1130;
-    hold_print(hold(&r, API_OPENAI, NULL, 0, 1131, &retry), retry);
+    h = hold(&r, API_OPENAI, NULL, 0, 1131, &retry);
+    hold_print(h, retry);
     if (r.serial_live >= 0 && r.v[r.serial_live].hard_refs > 0)
         r.v[r.serial_live].hard_refs--;
     printf("hard_refs=%d\n",
@@ -392,9 +398,11 @@ static void script_bank(void)
     printf("known_dead=%d\n", known(&r, "toolu_bk_dead"));
     for (int i = 0; i < r.n; i++)
         if (r.v[i].state == LIVE) r.v[i].publish -= 301;
+    int ttl_live = live_has(&r, API_ANTHROPIC, "toolu_bk2", now);
+    int live = n_live(&r);
+    int known_bk2 = known(&r, "toolu_bk2");
     printf("ttl_live=%d n_live=%d known_bk2=%d\n",
-           live_has(&r, API_ANTHROPIC, "toolu_bk2", now),
-           n_live(&r), known(&r, "toolu_bk2"));
+           ttl_live, live, known_bk2);
 }
 
 static void script_bank_protection(void)
