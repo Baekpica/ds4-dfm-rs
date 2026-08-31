@@ -5,6 +5,26 @@ Fork: [Entrpi/ds4](https://github.com/Entrpi/ds4) of
 [antirez/ds4](https://github.com/antirez/ds4); upstream fork point `e16ead1`
 (2026-05-29). Upstream's own changes are not repeated here.
 
+## v0.1.0-rc.1 — 2026-08-31
+
+- Starts the independent `ds4-dfm-rs` version line from the verified
+  `v0.6.5-dfm` ancestry. The Rust host now owns serving, scheduling, lifecycle,
+  KV policy, memory policy, and distributed orchestration over the retained
+  native C/CUDA/Metal engine. The Rust server reports this version through
+  `--version`.
+- Preserves the visible `antirez/ds4 → Entrpi/ds4 → Baekpica/ds4` lineage,
+  authorship, MIT notices, and exact split refs. This is not a clean-room
+  rewrite or a new kernel release.
+- Promotes Rust default binaries after 60 logical parity cells completed with
+  57 PASS and three matching C-control PASS* results, with no Rust-only
+  failure.
+- Carries the six explicit family paths from the DFM line. Qwen release scope
+  is the Q5 main GGUF with four SSD-PLE sidecars, embedded MTP, still-image
+  input, long-context gates, and a two-hour Qwen-only soak; safetensors, BF16
+  GGUF, and Q6 are outside this RC claim.
+- Fixes a distributed shutdown race so a closing next hop reports the stable
+  closed-hop error instead of an unrelated queue-capacity error.
+
 ## v0.6.5-dfm — 2026-08-28
 
 - Absorbs Entrpi `v0.6.5`, including reasoning-effort compatibility,

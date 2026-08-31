@@ -105,6 +105,10 @@ fn main() {
                     .and_then(|v| v.parse().ok())
                     .unwrap_or_else(|| usage()),
             )),
+            "--version" => {
+                println!("ds4-server v{}", env!("CARGO_PKG_VERSION"));
+                return;
+            }
             "--no-update-check" => {}
             "-c" | "--ctx" => {
                 cfg.ctx = args
@@ -269,7 +273,7 @@ fn cli_error(message: &str) -> ! {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: ds4-server-rs [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
+        "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
 Disk KV: [--kv-disk-dir DIR] [--kv-disk-space-mb N] [--kv-cache-min-tokens N]\n\
          [--kv-cache-cold-max-tokens N] [--kv-cache-continued-interval-tokens N]\n\
          [--kv-cache-boundary-trim-tokens N]\n\

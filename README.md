@@ -1,1948 +1,524 @@
-# Entrpi/DwarfStar
-
-**Entrpi/DwarfStar** (`ds4`) is a small native inference engine for **DeepSeek
-V4 Flash**, with support for **DeepSeek V4 PRO** on very high-memory
-machines. It is intentionally narrow: not a generic GGUF runner, not a
-wrapper around another runtime, completely self-contained. It provides
-DS4-specific loading, prompt rendering, tool calling, KV state handling
-(RAM and on-disk), an HTTP server API, and an integrated coding agent,
-plus tools for GGUF and imatrix generation and for quality and speed
-testing.
-
-This repository, [Entrpi/ds4](https://github.com/Entrpi/ds4), is a fork
-of [antirez/ds4](https://github.com/antirez/ds4) (the original
-DwarfStar) that has diverged nearly since the project's inception: it
-builds the CUDA/Linux side into a **batched multi-request serving
-engine**. The
-reference machines are the DGX Spark (GB10, `sm_121`) and the RTX PRO
-6000 Blackwell (`sm_120`). Upstream's heart is a single-user CLI/agent
-engine, Metal first; the fork keeps all of that working. The fork story
-and its measured results are in [About this fork](#about-this-fork)
-near the end of this README. On a DGX Spark, the fastest path is the
-packaged installer at
-[Entrpi/ds4-on-spark](https://github.com/Entrpi/ds4-on-spark).
-
-Backends:
-* **NVIDIA CUDA** is the fork's optimization target, with special care for the DGX Spark.
-* **Metal** (starting from MacBooks with 96 GB of RAM) is upstream's primary target. It is kept building and passing its vectors here; correctness on the fork's serving paths is community-maintained.
-* **AMD ROCm** is only supported in the [rocm](https://github.com/antirez/ds4/tree/rocm) branch, rebased by the community as needed.
-
-This project would not exist without **llama.cpp and GGML**, make sure
-to read the acknowledgements section, a big thank you to Georgi Gerganov
-and all the other contributors.
-
-## ds4-dfm
-
-This Baekpica release line extends the CUDA serving work in
-[Entrpi/ds4](https://github.com/Entrpi/ds4) with first-class model families for
-Korean **DFM (독자 파운데이션 모델, 독파모)** deployments. It is developed for
-serving very large GGUF models on one NVIDIA DGX Spark with 128 GB of unified
-memory. The implementation remains a narrow C/CUDA engine: every accepted
-architecture has an explicit metadata validator, tensor binder, prompt
-protocol, state lifecycle, and device kernel path.
-
-`v0.6.3-dfm` is based on Entrpi `v0.6.3`. The current `dfm` branch accepts
-only the explicitly validated model families below:
-
-| Model family | GGUF architecture | Serving and state support |
-|---|---|---|
-| DeepSeek V4 Flash / PRO | `deepseek4` | Serial or continuous; disk KV and live partial-prefix forks; optional external MTP/DSpark |
-| Solar Open2 250B | `solar-open2` | Recurrent/GQA persistent banks; disk KV and live partial-prefix forks; plain decode |
-| K-EXAONE 236B A23B | `exaone-moe` | LLLG persistent banks with shared prefill scratch; disk KV and exact-frontier reuse; plain decode |
-| Motif-3 | `motif3` | Latent-KV persistent banks; disk KV and live partial-prefix forks; plain decode |
-| dots3-note Preview | `dots3-note` | Dual-geometry latent serial sessions and disk KV; embedded MTP is validation-only |
-| Qwen3.8-Flash-Next SSD-PLE | `qwen4exp` | CUDA serial or opt-in two-bank serving; bounded SSD-PLE, recurrent disk KV, live partial-prefix forks, target-verified embedded MTP, and base64 PNG/JPEG image input with decoded-pixel cache identity |
-
-The serving command and HTTP contract do not change with the family; only the
-GGUF path and the matching weight-owner manifest change:
-
-```sh
-DS4_CUDA_WEIGHT_IPC_MANIFEST=/path/to/weights.manifest \
-DS4_CUDA_WEIGHT_IPC_SCOPE=base \
-./ds4-server -m /path/to/model-or-first-shard.gguf \
-  --cuda -c 131072 --host 0.0.0.0 --port 8001 \
-  --kv-disk-dir /path/to/ssd/ds4-kv --kv-disk-space-mb 32768
-```
-
-The server exposes OpenAI Chat Completions, OpenAI Completions, OpenAI
-Responses, and Anthropic Messages at `/v1/chat/completions`,
-`/v1/completions`, `/v1/responses`, and `/v1/messages`. Model-specific
-tokenization, chat rendering, tool syntax, stop tokens, and recurrent/KV state
-stay behind this common surface. A model-family integration is not complete
-until Chat Completions, Responses, and Anthropic Messages pass their native
-response-shape and tool-continuation gates; loading the GGUF alone is not that
-acceptance. External MTP and DSpark support GGUFs remain
-DeepSeek-only and are rejected for every other family. Qwen instead uses the
-MTP block embedded in its main GGUF when `--mtp-draft 2` is selected; that
-target-verified path applies to greedy scalar/session decode and the opt-in
-two-bank lane. Serial checkpoints, and idle
-continuous banks for families that have them, can be saved to the same disk-KV
-service and restored after an inference-worker restart. Disk persistence avoids
-repeated prefill; it does not reduce the resident memory required by each active
-bank.
-
-Qwen image input is normalized across Chat Completions `image_url`, Responses
-`input_image`, and Anthropic base64 image blocks. It accepts at most four PNG
-or JPEG data URIs (10 MiB of base64-decoded payload each, 20 MiB per request),
-applies the pinned
-`Qwen3VLProcessor`/`Qwen2VLImageProcessorFast` geometry, runs the GGUF's embedded
-27-layer vision tower, and carries exact three-axis M-RoPE through decode.
-Image serving requires the persistent bank path (`DS4_QWEN_BATCH=1`).
-Network/file URLs and video are rejected. Image V2 hashes decoded RGB pixels
-and source geometry into an internal-only replay key, so identical images can
-reuse exact live frontiers, recurrent partial checkpoints, and disk-KV records.
-The marker is never tokenized or exposed through an API. Different pixels are
-isolated even when geometry and image-pad token IDs are identical, and a byte
-prefix that ends inside the marker is clamped before that image.
-
-All six family ports above have production-artifact server evidence in this
-repository's history on the reference DGX Spark; adding the Qwen features did
-not require rerunning the other five models. Qwen's `MQ-Q5-SSD-PLE-BF16`
-artifact most recently passed a real-weight recurrent-state/disk-KV round trip,
-exact and divergent partial forks between two banks, image-aware live/disk
-reuse, and target-stream-identical embedded-MTP checks. A guarded
-196,608-context API run completed 7/7 requests
-with no failures, including a three-request continuous epoch with
-`served=3 fallback=0`; this was a configured-context serving check, not a
-196,608-token prompt run. Qwen batching remains opt-in with
-`DS4_QWEN_BATCH=1` and is capped at two banks.
-
-The Q5 artifact was subsequently served at a 262,144-token context with two
-banks, 8,192-token prefill chunks, partial-prefix reuse, and a 32 GiB disk-KV
-budget. Concurrent Chat Completions and Anthropic Messages requests returned
-their native HTTP 200 shapes. A later guarded `--no-serial` check streamed a
-low-reasoning Responses function call on a Qwen bank, then replayed that
-`function_call` without its hidden reasoning and appended only the new
-`function_call_output`. The directed continuation completed on the same bank
-with 395 cached tokens plus a 27-token suffix. `/v1/stats` reported two
-continuous Responses requests, zero serial requests, one continuous bank
-continuation, and zero request, batch, or governor failures. This proves the
-live bank-owned reasoning/tool continuation path; buffered first tool-generation
-requests still need the serial lane for their model-visible corrective retry.
-A three-bank 262K trial was not retained on the 128 GiB reference host because
-the earlier serial continuation reduced `MemAvailable` to 1.12 GiB; two banks
-are the guarded production setting.
-
-The two-bank MTP path was checked on the same Q5 artifact with four fixed cold
-API prompts. Plain decode averaged 23.65 tok/s; `--mtp-draft 2` averaged
-28.65 tok/s (**+21.1%**) with an 84.98% draft acceptance rate. Mean TTFT was
-260.7 versus 261.1 ms and prefill was 225.38 versus 223.35 tok/s. Device-live
-memory increased by about 0.98 GiB. A synchronized two-request run and Chat,
-Responses, and Anthropic Messages smokes completed with zero request or
-governor failures. This establishes target-verified two-bank operation, not
-true row-batched kernel throughput; acceptance and speed remain content
-dependent.
-
-The later Qwen decode path performs one actual two-row token-embedding and
-Hyper-Connection operation whenever both banks are ready. Stateful PLE, Gated
-DeltaNet, QSA, routed MoE, and output projection work initially remained per
-bank. The real-Q5 regression covered a two-row-to-one-row transition and
-retained exact MTP target verification; a same-process 3-by-3
-short-generation A/B measured
-22.67 tok/s with the row path versus 20.86 tok/s with scalar bank calls
-(+8.65%). `DS4_QWEN_NO_ROW_BATCH=1` restores the scalar path. This is bounded,
-state-safe row batching, not a claim that the complete Qwen graph is batched.
-
-Nine later increments pair the independent Gated DeltaNet recurrent updates
-in one two-dimensional CUDA grid, run the final Q8 output projection through
-the existing two-row dense path, and gather both banks' SSD-PLE rows in one
-descriptor batch before bit-exact BF16 promotion. The fourth pairs only the
-assignment-major Q5_0 expert-down tail. The fifth batches only the QSA Q/gate
-Q8 projection; index/KV history, RoPE, attention, and output stay bank-owned.
-The sixth keeps router, top-k, gate/up, and weighted-SwiGLU arithmetic per bank,
-then combines the two packed Q5_K expert-down main worklists; shared-expert
-arithmetic remains independent. The seventh keeps both F32 router projections
-independent, then runs the existing router top-k kernel across the two logits
-rows before returning each bank's selected IDs and normalized weights.
-The eighth runs the four Gated DeltaNet Q8 input projections (`qkv`, `z`,
-`in_b`, and `in_a`) over the shared two-row HC input, then returns bank 1's
-rows to its state-owned convolution and control path.
-The ninth runs the F32 router projection once over that same two-row HC input
-with row-stable reduction order, then reuses the already-combined top-k path.
-The same-process 3-by-3
-real-Q5 checks measured 23.24 versus 22.80 tok/s for the recurrent update (+1.96%), then
-23.70 versus 23.15 tok/s for the output projection (+2.35%), and 23.98 versus
-23.82 tok/s for the PLE gather (+0.64%). The tail check measured 24.62 versus
-24.20 tok/s (+1.74%), and the QSA projection check measured 25.15 versus
-24.65 tok/s (+2.01%). The routed-main check measured 25.40 versus 24.91 tok/s
-(+1.95%), and the router top-k check measured 25.74 versus 25.37 tok/s
-(+1.48%). The Gated DeltaNet projection check measured 27.45 versus 25.65
-tok/s (+7.03%); all three paired rounds were faster.
-The F32 router-projection check measured 27.68 versus 27.57 tok/s (+0.40%);
-all three paired rounds were faster. The raw Q8 path
-matched two one-row calls bit-for-bit at the production 2,560 input width, and
-the QSA Q/gate path matched 98,304 output bytes bit-for-bit. The real-weight
-routed-main check matched both 10-by-2,560 output tables bit-for-bit. Four
-distinct 512-expert router rows also matched their one-row top-k calls
-bit-for-bit, including the F32 router logits and normalized weights. The
-real-weight Gated DeltaNet check matched both 2,560-value
-output rows bit-for-bit. In all cases,
-the full two-bank MTP/disk-KV/partial-fork regression retained
-its exact target token streams. PLE projection/convolution, the remaining QSA
-work, shared MoE work, and the remaining GDN state/finish stages are still
-bank-owned.
-`DS4_QWEN_NO_GDN_PROJ_BANK2=1` restores four independent Gated DeltaNet input
-projections while retaining the paired recurrent update.
-`DS4_QWEN_NO_PLE_GATHER_BANK2=1` restores two independent gathers for
-diagnostic A/B runs.
-`DS4_QWEN_NO_QSA_QPROJ_BANK2=1` restores two independent QSA Q/gate
-projections for diagnostic A/B runs.
-`DS4_QWEN_NO_Q5_TAIL_BANK2=1` restores two independent MoE paths for the
-tail-specific A/B.
-`DS4_QWEN_NO_MOE_MAIN_BANK2=1` restores two independent Q5_K routed-main
-worklists while retaining the paired Q5_0 tail.
-`DS4_QWEN_NO_MOE_TOPK_BANK2=1` restores two independent router top-k launches
-while retaining the other accepted two-bank paths.
-`DS4_QWEN_NO_MOE_ROUTER_BANK2=1` restores two independent F32 router
-projections while retaining the combined top-k path.
-
-The same Q5 artifact then passed guarded still-image serving at a configured
-262,144-token context with 8,192-token prefill chunks. Chat Completions,
-Responses, and Anthropic Messages all exercised the real vision tower; a
-synchronized Responses/Anthropic pair completed as `served=2 fallback=0`.
-An 8,243-token request placed the 64 projected image rows across the chunk
-boundary and completed at 489.4 prefill tok/s, 17.232 s TTFT, and 22.5 decode
-tok/s. These content-specific numbers are integration evidence, not a vision
-throughput benchmark. The post-gate worker reported zero request, census, or
-governor failures under the external 115 GiB guard.
-
-Image V2 was subsequently checked with decoded-pixel identity enabled. A
-same-image continuation reused 90 of 110 prompt tokens while a same-geometry
-different-pixel request stayed cold. After a worker restart, an image-bearing
-1,890-token bank was restored from disk and a 1,909-token follow-up reused all
-1,890 stored tokens. A separate same-image divergent 20,087-token request
-restored the 16,384-token recurrent checkpoint and computed only 3,703 prompt
-tokens. All requests returned the requested deterministic answer; the final
-server counters showed zero request, continuous-batch, census, and governor
-failures. These checks establish cache identity and state reuse, not image
-quality or large-image vision throughput.
-
-The vision attention path was then changed from one warp rereading K/V for
-every query to an 8-query by 32-key shared-memory tile while retaining the
-same online-softmax order and avoiding an N-by-N score allocation. A 67-row,
-two-segment check at the model's actual 16 heads and 72-value head width was
-bit-exact against the previous kernel. NCU measured 24.67 us for the tiled
-kernel versus 31.81 us for the previous path on that check (-22.4%). A
-same-binary 3-by-3 API A/B used a 4,408-patch document image, 1,159 prompt
-tokens, 64 output tokens, and disabled live/disk prefix reuse:
-
-| Vision attention | Prefill | TTFT | Decode |
-|---|---:|---:|---:|
-| 8-query / 32-key tiled | 494.47 tok/s | 10.262 s | 13.77 tok/s |
-| Previous per-query path | 494.50 tok/s | 14.143 s | 14.70 tok/s |
-
-The controlled result is a 27.45% TTFT reduction for this image size. Decode
-is reported for completeness but is not attributed to the vision kernel; the
-64-token MTP tails were thermally variable. The tiled path still performs
-exact full attention with O(P^2) arithmetic and is not presented as a
-tensor-core FlashAttention implementation.
-
-The bounded SSD-PLE cache was then tuned with identical fixed 8,192-token
-direct runs (`--gen-tokens=0`, three runs per setting). With 16 page-read
-workers, 512, 1,024, and 2,048 MiB caches averaged 252.17, 397.72, and 450.26
-prefill tok/s. At 2,048 MiB, 16, 32, and 64 workers averaged 450.19, 464.67,
-and 466.88 tok/s; 32 workers retained nearly all of the 64-worker result with
-less host submission overhead and is now the default. A cold 9,854-prompt /
-64-output API check with the new defaults measured 467.2 prefill tok/s,
-21.111 s TTFT, and 25.4 decode tok/s. A synchronized two-request check
-completed as `served=2 fallback=0`; all four API requests completed with zero
-request, census, or governor failures under the external 115 GiB guard. The
-minimum observed system-available memory was 8.07 GiB. Direct runs do not
-measure TTFT or decode throughput.
-
-A separate teacher-forced full-model comparison scored 2,048 tokens from each
-of two fixed text fixtures on the higher-precision MQ-Q6 artifact and the
-target MQ-Q5 artifact:
-
-| Fixed slice | MQ-Q6 avg NLL / PPL | MQ-Q5 avg NLL / PPL | Q5-Q6 avg NLL |
-|---|---:|---:|---:|
-| Long-form essay | 2.184138 / 8.882991 | 2.140368 / 8.502567 | -0.043770 (-2.00%) |
-| Repetitive structured security fixture | 0.068999 / 1.071435 | 0.081061 / 1.084437 | +0.012062 (+17.48%) |
-| Equal-token aggregate (4,096 tokens) | 1.126569 / 3.085053 | 1.110714 / 3.036527 | -0.015854 (-1.41%) |
-
-The two slices show no Q5 quality collapse in this narrow regression, but they
-are not a representative evaluation suite and do not establish general Q5
-superiority. The structured fixture is highly repetitive, so its low absolute
-perplexity is useful only for the paired comparison.
-
-The same Q5 artifact then completed an exact 262,144-token direct prefill with
-`--gen-tokens=0`, an 8,192-token Qwen chunk, the 2,048 MiB bounded PLE cache,
-and 32 PLE workers. It sustained 277.06 prefill tok/s. The dumped final output
-contained all 248,320 finite logits; the recorded and independently recomputed
-argmax were both token 264. The run completed under the external 115 GiB memory
-guard with `DS4_MEMGOV=observe`; the lowest sampled system-available memory was
-7.8 GiB. This establishes full-window prefill and final-logit production, not
-full-window API generation or decode throughput.
-
-A follow-up incremental full-window sweep enabled
-`DS4_PLE_LATENCY_STATS=1` with the same Q5 artifact, prompt, chunk, cache,
-worker count, and 115 GiB guard. Each row adds exactly 32,768 prompt tokens to
-the retained session:
-
-| Context frontier | Added tokens | Segment prefill |
-|---:|---:|---:|
-| 32,768 | 32,768 | 427.31 tok/s |
-| 65,536 | 32,768 | 361.80 tok/s |
-| 98,304 | 32,768 | 334.40 tok/s |
-| 131,072 | 32,768 | 294.62 tok/s |
-| 163,840 | 32,768 | 271.04 tok/s |
-| 196,608 | 32,768 | 247.79 tok/s |
-| 229,376 | 32,768 | 218.73 tok/s |
-| 262,144 | 32,768 | 198.27 tok/s |
-
-The token-weighted rate was 277.49 tok/s, within 0.2% of the preceding
-uninstrumented 277.06 tok/s run. The SSD counters include the engine's
-512-token/two-gather boot prewarm, so 34 gather samples cover 262,656 tokens.
-They recorded 706,922 successful aligned 4 KiB reads (2.6967 GiB physical),
-with 220.801 us mean latency, p50 <= 262.144 us, p95 <= 524.288 us,
-p99 <= 1,048.576 us, and a 37.413 ms maximum. Among classified page accesses,
-90.15% were ready hits, 1.96% inflight hits, and 7.89% misses; there were
-390,767 evictions. The gather-level host wait for all PLE row leases averaged
-2.144 s per 8,192-token chunk, with p50 <= 2.147 s, p95 <= 4.295 s,
-p99 <= 8.590 s, and a 4.770 s observed maximum. Percentiles are conservative
-power-of-two histogram upper bounds; gather wait excludes the CUDA projection
-that follows acquisition. This direct run has no API TTFT or decode result.
-
-Motif-3 also completed a strict OpenAI Chat gate at the 262,144-token context
-limit: 262,080 prompt tokens at 175.61 tok/s followed by 43 decoded tokens at
-2.52 tok/s, with all three retrieval sentinels exact. Solar Open2 serves 8K
-prompts at 1,050.7 tok/s prefill with 19.05 tok/s decode on the same host. See
-[the DFM model-family guide](docs/ds4-dfm-model-families.md) for the pinned
-pre-Qwen family evidence, measurement conditions, Nsight evidence, weight-owner
-lifecycle, integration matrix, and current limits; the Qwen artifact card holds
-its SSD-PLE-specific verification and performance record.
-
-## Quick start
-
-Download a model, build, serve. (Full detail in the sections below; on
-a DGX Spark, [ds4-on-spark](https://github.com/Entrpi/ds4-on-spark)
-does all of this, plus the DSpark drafter setup, with one command.)
-
-```sh
-./download_model.sh q2-imatrix    # 96/128 GB machines; see Model Weights
-make cuda-spark                   # DGX Spark / GB10; plain make = macOS Metal
-./ds4-server --host 0.0.0.0       # CUDA defaults: ctx 262144, banks sized from free memory
-```
-
-On a standard install that is the whole launch: the base model resolves
-automatically, a speculative drafter sitting beside it is attached and
-armed, and every automatic decision is stated on one boot line, never
-silently. Since v0.6 unused context is demand-mapped, so a deep `-c`
-costs almost nothing until a request actually uses it; the CUDA default
-of 262144 exists so that a long agentic session fits a defaults boot,
-and `-c` raises it (524288 is the installer default; the model's full
-1M window at `-c 1048576` is proven with a 975k-token conversation;
-see [Memory and capacity](#memory-and-capacity)).
-
-Then talk to it with any OpenAI or Anthropic client:
-
-```sh
-curl http://127.0.0.1:8000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Hello!"}]}'
-```
-
-Agent clients (Codex, Claude Code, opencode, Pi) are covered in
-[Agent Client Usage](#agent-client-usage). The interactive CLI is
-`./ds4` (see [CLI](#cli)), and `./ds4 --help` / `./ds4-server --help`
-list every flag.
-
-## Model Weights
-
-This implementation only works with the DeepSeek V4 Flash and PRO GGUFs published for
-this project. It is not a general GGUF loader, and arbitrary DeepSeek/GGUF files
-will not have the tensor layout, quantization mix, metadata, or optional MTP
-state expected by the engine. The 2 bit quantizations provided here are not
-a joke: they behave well, work under coding agents, call tools in a reliable way.
-The 2 bit quants use a very asymmetrical quantization: only the routed MoE
-experts are quantized, up/gate at `IQ2_XXS`, down at `Q2_K`. They are the
-majority of all the model space: the other components (shared experts,
-projections, routing) are left untouched to guarantee quality.
-
-Download one main model. **Prefer the imatrix versions.**
-
-```sh
-./download_model.sh q2-imatrix   # 96/128 GB RAM machines, imatrix-tuned q2
-./download_model.sh q2-q4-imatrix  # 96/128 GB RAM machines, q2 with last 6 layers q4
-./download_model.sh q4-imatrix   # >= 256 GB RAM machines, imatrix-tuned q4
-./download_model.sh pro-imatrix  # 512 GB RAM machines, PRO imatrix quant
-```
-
-Legacy GGUF files are still available if you specifically need the older
-non-imatrix quants:
-
-```sh
-./download_model.sh q2           # 96/128 GB RAM machines, legacy non-imatrix
-./download_model.sh q4           # >= 256 GB RAM machines, legacy non-imatrix
-./download_model.sh pro          # 512 GB RAM machines, legacy non-imatrix PRO
-```
-
-The script downloads from `https://huggingface.co/antirez/deepseek-v4-gguf`,
-stores files under `./gguf/`, resumes partial downloads with `curl -C -`, and
-updates `./ds4flash.gguf` to point at the selected main model. The plain q2 XXS
-weights are produced with the weights importance vector only, without an
-imatrix. The imatrix variants are preferred.
-Authentication is optional for public downloads, but `--token TOKEN`,
-`HF_TOKEN`, or the local Hugging Face token cache are used when present.
-
-If you want to regenerate GGUF files or collect a new imatrix, see
-[gguf-tools/README.md](gguf-tools/README.md). Those tools are meant for offline
-model-building work and can take a long time on the full DeepSeek V4 Flash
-weights. Flash GGUF generation is supported by the local tools. PRO GGUF
-production currently still depends on the external `llama.cpp`-based workflow;
-native tooling can be added later.
-
-`./download_model.sh mtp` fetches the optional speculative decoding support
-GGUF for Flash. It can be used with q2-imatrix, q4-imatrix, q2, and q4, but must be
-enabled explicitly with `--mtp`. The current MTP/speculative decoding path is
-still experimental: it is correctness-gated and currently provides at most a
-slight speedup, not a meaningful generation-speed win.
-
-Then build:
-
-```sh
-make                  # macOS Metal
-make cuda-spark       # Linux CUDA, DGX Spark / GB10
-make cuda-generic     # Linux CUDA, other local CUDA GPUs
-make cpu              # CPU-only diagnostics build
-```
-
-`./ds4flash.gguf` is the default model path used by both binaries. Pass `-m` to
-select another supported GGUF from `./gguf/`. Run `./ds4 --help` and
-`./ds4-server --help` for the full flag list.
-
-Building in a container? Use [docker/Dockerfile](docker/Dockerfile) as the
-reference: it builds with `make cuda-spark` (on a GB10 a generic
-`make cuda CUDA_ARCH=...` build serves at a fraction of the speed) and its
-header documents the run flags — in particular, never give the container a
-memory limit, because the mmap'd weights live in the host page cache.
-
-## Motif-3 mixed-quant runtime
-
-Motif-3 is an explicit native CUDA model family for the official final
-`Motif-Technologies/Motif-3` topology. The loader and fixture gates cover all
-53 layers, 384 routed experts with sigmoid top-8 routing, the shared expert,
-Expert-Specific PolyNorm, modified mHC, interleaved full/SWA GDLA with YaRN,
-latent KV plus decoupled RoPE state, and the official tokenizer/chat protocol.
-A Motif container is never routed through the DeepSeek graph.
-
-The public full-topology MQ87-88 artifact is
-[`Baekpica/Motif-3-Mixed-Quant-GGUF`](https://huggingface.co/Baekpica/Motif-3-Mixed-Quant-GGUF).
-The current loader consumes one GGUF, so first verify all public shard hashes
-and merge them once with `llama-gguf-split --merge`. The merge is artifact
-assembly, not runtime streaming.
-
-Build DGX Spark/GB10 with `make cuda-spark`; that target emits
-`compute_121a`/`sm_121a`. The resident lifecycle is the same as the other
-supported families: keep one VMM weight owner alive and restart only the
-inference worker. Run the owner's `--dry-run` preflight first, then remove
-`--dry-run` and wait for its ready manifest before launching the worker:
-
-```sh
-./ds4_weight_server --base /path/to/Motif-3-MQ87-88-FIT.gguf \
-  --manifest /path/to/run/weights.manifest --backend vmm --scope base \
-  --reserve-gb 24 --no-repack-q8-aligned --dry-run
-
-DS4_CUDA_WEIGHT_IPC_MANIFEST=/path/to/run/weights.manifest \
-DS4_CUDA_WEIGHT_IPC_SCOPE=base \
-DS4_SERVER_COALESCE_MAX=2 \
-DS4_SERVER_COALESCE_MAX_TOKENS=4096 \
-DS4_MOTIF3_PREFILL_CHUNK=4096 \
-  ./ds4-server -m /path/to/Motif-3-MQ87-88-FIT.gguf -c 196608 \
-  --host 0.0.0.0 --port 8002 --no-spec \
-  --kv-disk-dir /path/to/ssd/motif-3-kv --kv-disk-space-mb 32768
-```
-
-The shared server surface includes OpenAI chat/completions, Responses, and
-Anthropic Messages, with streaming and non-streaming modes. On the reference
-GB10, the verified Motif path reaches 457.28 tok/s at 8K prefill, 396.47 tok/s
-at a strict 32K OpenAI gate, and 175.61 tok/s prefill plus 2.52 tok/s decode at
-the strict 256K gate. The non-speculative persistent runtime also completed
-three simultaneous 192-token Chat generations at `-c 196608` in 25.03 s
-(23.01 aggregate output tok/s, zero serial fallbacks), and an 8,214-token
-cold request exercised the 8,192-token prefill chunk at 266.3 tok/s. See
-[`docs/ds4-dfm-model-families.md`](docs/ds4-dfm-model-families.md) for exact
-conditions and correctness evidence. Motif serving uses plain decode; MTP and
-DSpark support models remain DeepSeek-only.
-
-## Server
-
-Start a local OpenAI/Anthropic-compatible server:
-
-```sh
-./ds4-server --ctx 524288 --kv-disk-dir /tmp/ds4-kv --kv-disk-space-mb 8192
-```
-
-Use `--chdir /path/to/ds4` when launching `ds4-server` from another directory,
-so relative runtime files such as `metal/*.metal` resolve from the project tree.
-
-The server keeps one mutable backend/KV checkpoint in memory,
-so stateless clients that resend a longer version of the same prompt can reuse
-the shared prefix instead of pre-filling from token zero.
-
-Request parsing and sockets run in client threads. Since the fork's
-v0.1.0 line, inference runs **continuous batching by default**:
-concurrent requests are admitted mid-flight into per-request KV banks
-and decoded together, with chunked prefill interleaved into live decode
-(see [Memory and capacity](#memory-and-capacity) for how admissions are
-funded). `DS4_SERVER_CONTINUOUS=0` restores the upstream serialized
-behavior, where concurrent requests wait their turn on one live
-graph/session.
-
-Supported endpoints:
-
-- `GET /v1/models` (lists the loaded model)
-- `GET /v1/models/deepseek-v4-flash`
-- `GET /v1/models/deepseek-v4-pro`
-- `GET /v1/models/motif-3` (when a Motif-3 GGUF is loaded)
-- `POST /v1/chat/completions`
-- `POST /v1/responses`
-- `POST /v1/completions`
-- `POST /v1/messages`
-- `GET /metrics` (Prometheus text: request outcomes, token totals, rolling
-  decode tok/s, live banks, admission classes, speculation counters; since
-  v0.6.0 also the memory families — allocation census by class and domain,
-  the availability observation with both raw estimates behind it, governor
-  decisions per consumer, reclaim outcomes, and typed request rejections
-  labelled by lane and reason)
-- `GET /v1/stats` (human-readable status board; JSON with
-  `Accept: application/json` — `watch -n2 curl -s :8000/v1/stats` works)
-
-The Flash and PRO model endpoints are compatibility aliases. They both report
-the model currently loaded from the GGUF passed with `-m`; the endpoint name does
-not select a different model.
-
-Every response also carries a `timings` block next to `usage` (TTFT, prefill
-tokens with the cached split, prefill and decode tok/s, and speculative
-acceptance when DSpark is active); streaming responses include it on the
-final event when `stream_options.include_usage` is set.
-
-`/v1/chat/completions` accepts the usual OpenAI-style `messages`,
-`max_tokens`/`max_completion_tokens`, `temperature`, `top_p`, `top_k`, `min_p`,
-`seed`, `stream`, `stream_options.include_usage`, `tools`, and `tool_choice`.
-Tool schemas are rendered into DeepSeek's DSML tool format, and generated DSML
-tool calls are mapped back to OpenAI tool calls.
-
-`/v1/responses` accepts OpenAI Responses-style `input`, `instructions`,
-`tools`, `tool_choice`, `max_output_tokens`, `temperature`, `top_p`, `stream`,
-and `reasoning`. It is the preferred endpoint for Codex CLI. The server keeps
-Responses continuations bound to live state when possible, and can fall back to
-the same DSML rendering and KV prefix reuse used by chat completions.
-
-`/v1/messages` is the Anthropic-compatible endpoint used by Claude Code style
-clients. It accepts `system`, `messages`, `tools`, `tool_choice`, `max_tokens`,
-`temperature`, `top_p`, `top_k`, `stream`, `stop_sequences`, and thinking
-controls. Tool uses are returned as Anthropic `tool_use` blocks.
-
-Default sampled API generation uses `temperature=1`, `top_p=1`, and
-`min_p=0.05`, so the default filter is relative probability rather than
-nucleus mass. In thinking mode DS4 uses those fixed sampling defaults and
-ignores client sampling knobs, matching DeepSeek's fixed-thinking API behavior.
-
-The chat, Responses, and Anthropic endpoints support SSE streaming. In thinking
-mode, reasoning is streamed in the native API shape instead of being mixed into
-final text. OpenAI chat streaming
-also streams tool calls as soon as the DSML invocation is recognized: the tool
-header is sent first, then parameter bytes are forwarded as
-`tool_calls[].function.arguments` deltas while generation continues. The
-Anthropic endpoint streams thinking and text live, then emits structured
-`tool_use` blocks when the generated tool block is complete.
-The Responses endpoint streams the Responses event lifecycle expected by Codex,
-including `response.output_text.delta`, function-call argument events, and
-terminal `response.completed` / `response.incomplete` / `response.failed`
-events.
-
-Chat-completion SSE accepts a `return_token_ids: true` request field that
-adds per-token IDs to each streamed delta, placed at the choice level to
-match the wire shape vLLM and llama-benchy-style benchmark harnesses expect.
-The emission limit is snapped to token boundaries so partial UTF-8 never
-desynchronises the IDs from the text. Helpful when an external evaluation
-loop needs raw token IDs alongside the rendered text.
-
-For browser JavaScript clients served from another origin, start the server with
-`--cors` to emit `Access-Control-Allow-*` headers. This only changes HTTP
-headers; it does not expose the server on the LAN. Use `--host 0.0.0.0`
-explicitly when remote machines should be able to connect.
-
-### Tool call handling and canonicalization
-
-DeepSeek V4 emits tool calls as [DSML text](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/encoding/README.md). Agent clients do not send that
-same text back on the next request: they send normalized OpenAI/Anthropic JSON
-tool-call objects. **If the server re-rendered those objects slightly
-differently, the rendered byte prefix would no longer match the live KV
-checkpoint** and the next turn would have to be rebuilt.
-
-The first line of defense is exact replay. Every tool call gets an unguessable
-API tool ID, and the server remembers `tool id -> exact sampled DSML block` in
-a bounded in-memory map backed by radix trees. When the client later sends that
-tool ID back, the prompt renderer uses the exact DSML bytes the model sampled,
-not a freshly formatted approximation. This map can also be saved inside KV
-cache files, so exact replay survives server restarts for cached histories.
-
-**Canonicalization is only the backup path**. If the exact DSML block is missing,
-or exact replay is disabled with `--disable-exact-dsml-tool-replay`, the server
-renders a deterministic DSML form from the JSON tool object. After a tool-call
-turn, it compares the live sampled token stream with the prompt that the next
-client request will render. If needed, it rewrites the live checkpoint, or
-falls back to an older disk KV snapshot and replays only the suffix. This keeps
-the model continuation aligned with the stateless API transcript.
-
-During generation, the server also treats DSML syntax differently from payload.
-When the model is emitting stable protocol structure such as DSML tags,
-parameter headers, JSON punctuation, or closing markers, sampling is forced to
-`temperature=0` so the tool call stays parseable. This greedy mode does **not**
-apply to argument payloads: `string=true` parameter bodies and JSON string
-values, including file contents and edit text, use the request's normal sampling
-settings. That separation is important: deterministic decoding is helpful for
-syntax, but can create repeated text when applied to long code or file bodies.
-
-### Replayed reasoning and agent-loop robustness
-
-Three knobs target long agent loops (measured on SWE-rebench-class
-workloads; see the changelog for the receipts):
-
-**`--tool-call-reminder on|off`, default on** (v0.6.5; env
-`DS4_TOOL_CALL_REMINDER=0` disables). At depth, low-bit quants answer
-some tools-armed turns with a prose completion report instead of a tool
-call — measured at 50% of turns in the 70-80K band, always right after a
-successful tool result, and agent harnesses abandon tasks over it. Past
-~96KB of rendered conversation (~30K+ tokens), every tool result now
-carries a short protocol reminder. At the exact captured slip states the
-reminder measured 0/72 sampled slips vs 6/72 without, and it fixed the
-failing agent task end to end (submitted and harness-resolved, zero
-slips) with reasoning traces kept and no format deviation — the
-reference-faithful fix. Shallow conversations are never touched, so
-chat-with-tools flows that legitimately answer in prose after a tool
-result are unaffected. The injection is byte-stable across turns, so
-warm prefix reuse is unchanged.
-
-**`--reasoning-replay keep|drop`** (env `DS4_REASONING_REPLAY=drop`).
-Most OpenAI-style agent scaffolds echo each assistant message back
-verbatim, including `reasoning_content`. That is what DeepSeek specifies
-for this model family: the V4 reference encoding keeps reasoning for
-every turn whenever tools are present, and DeepSeek's API requires the
-echo in tool loops (it returns 400 when `reasoning_content` is not
-passed back). Under the default `keep`, the tool-context render honors
-that format and re-emits the reasoning inside `<think>` blocks, which
-also keeps the rendered prefix byte-aligned with the live KV (warm
-in-place reuse, no re-prefill). The cost is depth: llama-server's
-template default drops replayed reasoning, a deviation from the
-reference format, and on the identical conversation that deviation runs
-16-28% shallower per turn. Depth is where low-bit quants start missing
-the tool-call protocol, so on this ship quant the deviation pays.
-`drop` reproduces it opt-in, rendering history assistant turns in the
-lean `</think>` replay form; the bank's partial-prefix admission absorbs
-the divergence at the cost of a one-turn-tail re-prefill (~270 tokens
-measured). An assistant turn being continued (after the last user-like
-message) always keeps its reasoning. For long agent loops on low-bit
-quants, `drop` is the recommended setting; the default stays `keep`,
-the reference-faithful behavior.
-
-**`--tool-slip-resample`** (env `DS4_TOOL_SLIP_RESAMPLE=1`, off by
-default). At depth a quantized model occasionally answers a tools-armed
-turn with a prose completion report instead of a tool call; agent
-harnesses reject the turn, and their retry rules can convert a few such
-slips into a dead task. With this knob, a continuously-batched
-non-streaming chat turn that settles at `finish=stop` with no tool calls
-is requeued once for a fresh draw before anything reaches the client; the
-just-retired bank warm-admits the full prompt, so the retry costs one
-generation. `length`/`error` finishes, streaming turns, and the serial
-lane are never resampled. Note the obvious disclosure: this retries the
-server's own sampler before the harness sees the turn, so benchmark
-results should say whether it was on.
-
-### Continuation registry and trust domain
-
-For the Anthropic and Responses endpoints — whose protocols let a client send
-an output-only follow-up (just the `tool_result` / `function_call_output`)
-instead of replaying the whole conversation — the server keeps a continuation
-registry: one record per tool-call turn, binding the turn's tool-call IDs to
-the engine state that produced them (an engine-authoritative content
-generation plus committed token frontier). A follow-up that references those
-IDs is revalidated by pure equality at admission; if the state has moved on,
-the server answers a native `409` asking for a full-history replay rather than
-silently continuing from the wrong frontier. Records that lose their live
-state remain replayable (exact sampled DSML is retained under a bounded LRU),
-and short grace/TTL windows (`DS4_CONT_GRACE_S`, `DS4_CONT_TTL_S`,
-`DS4_CONT_PIN_DEADLINE_S`) protect a just-published turn from being evicted
-before its follow-up arrives.
-
-**Streaming tool turns ride the batched lane.** Anthropic and Responses
-streaming tool requests are served on the continuous-batching lane: the tool
-turn's registry record is owned by its KV bank, and an output-only follow-up
-continues that bank in place after the same generation/frontier equality
-check, including a Responses replay that omits the bank's hidden reasoning.
-Buffered first tool-generation requests deliberately stay on the serial lane —
-its model-visible corrective retry (feeding a malformed tool call back to the
-model as a tool error) has no per-row equivalent in the batched loop, and a
-parse-time boolean cannot predict a semantic failure discovered after
-generation. An output-only follow-up may itself be streaming or buffered; a
-buffered follow-up that redeclares tools requests the same corrective contract
-and therefore stays serial. Per-surface kill switches
-`DS4_SERVER_CONT_TOOLS_ANTHROPIC=0` / `DS4_SERVER_CONT_TOOLS_RESPONSES=0`
-restore the previous all-serial tool behavior (kept for one release, like the
-Inc 3 stateless switches they compose with).
-
-**The whole server is one trust domain.** There is no tenant or auth
-namespace: tool memory and the continuation registry are global, and any
-client that knows (or guesses) a tool-call ID may continue that conversation
-or shed other clients' work through the grace window. Tool-call IDs are minted
-unguessable, but they travel in responses — do not expose one `ds4-server` to
-mutually untrusted clients expecting isolation. Put an authenticating proxy in
-front, or run one server per tenant, until an authenticated namespace exists.
-
-Minimal OpenAI example:
-
-```sh
-curl http://127.0.0.1:8000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model":"deepseek-v4-flash",
-    "messages":[{"role":"user","content":"List three Redis design principles."}],
-    "stream":true
-  }'
-```
-
-### Agent Client Usage
-
-`ds4-server` can be used by local coding agents that speak OpenAI-compatible
-chat completions. Start the server first, and set the client context limit no
-higher than the `--ctx` value you started the server with:
-
-```sh
-./ds4-server --ctx 524288 --kv-disk-dir /tmp/ds4-kv --kv-disk-space-mb 8192
-```
-
-For long agent loops on quantized weights: since v0.6.5 the deep
-tool-protocol reminder is on by default (the measured fix for agent
-tasks dying to prose slips at depth), and two optional levers remain,
-`--reasoning-replay drop` (keep scaffold-echoed reasoning out of the
-prompt; conversations run 16-28% shallower at the cost of llama.cpp-style
-format deviation) and `--tool-slip-resample` (one retry when a
-tools-armed turn still settles as prose). See
-[Replayed reasoning and agent-loop robustness](#replayed-reasoning-and-agent-loop-robustness)
-for the mechanics and measurements.
-
-You can use larger context and larger cache if you wish. Full context of
-1M tokens is going to use more or less 26GB of memory (compressed indexer
-alone will be like 22GB), so configure a context which makes sense in
-your system. With 128GB of RAM you would run the 2-bit quants, which are
-already 81GB, 26GB are going to be likely too much, so a context window
-of 100~300k tokens is wiser. However users reported being able to run 2bit
-quants with 250k ctx window in a Macs with just 96GB of system memory: make sure
-to kill processes that use too much memory, if you plan doing so ;)
-
-On this fork's CUDA server, v0.6 made the memory side of that choice
-easy: unused context is demand-mapped and each admission is charged
-only what it will actually use, so a deep `--ctx` no longer pre-pays
-anything. See [Memory and capacity](#memory-and-capacity) for the
-knobs and the proven numbers.
-
-The `384000` output limit below avoids token caps since the model is able
-to generate very long replies otherwise (up to 384k tokens). The server
-still stops when the configured context window is full.
-
-For **opencode**, add a provider and agent entry to
-`~/.config/opencode/opencode.json`:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "ds4": {
-      "name": "ds4.c (local)",
-      "npm": "@ai-sdk/openai-compatible",
-      "options": {
-        "baseURL": "http://127.0.0.1:8000/v1",
-        "apiKey": "dsv4-local"
-      },
-      "models": {
-        "deepseek-v4-flash": {
-          "name": "DeepSeek V4 Flash (ds4.c local)",
-          "limit": {
-            "context": 524288,
-            "output": 384000
-          }
-        }
-      }
-    }
-  },
-  "agent": {
-    "ds4": {
-      "description": "DeepSeek V4 Flash served by local ds4-server",
-      "model": "ds4/deepseek-v4-flash",
-      "temperature": 0
-    }
-  }
-}
-```
-
-For **Pi**, add a provider to `~/.pi/agent/models.json`:
-
-```json
-{
-  "providers": {
-    "ds4": {
-      "name": "ds4.c local",
-      "baseUrl": "http://127.0.0.1:8000/v1",
-      "api": "openai-completions",
-      "apiKey": "dsv4-local",
-      "compat": {
-        "supportsStore": false,
-        "supportsDeveloperRole": false,
-        "supportsReasoningEffort": true,
-        "supportsUsageInStreaming": true,
-        "maxTokensField": "max_tokens",
-        "supportsStrictMode": false,
-        "thinkingFormat": "deepseek",
-        "requiresReasoningContentOnAssistantMessages": true
-      },
-      "models": [
-        {
-          "id": "deepseek-v4-flash",
-          "name": "DeepSeek V4 Flash (ds4.c local)",
-          "reasoning": true,
-          "thinkingLevelMap": {
-            "off": null,
-            "minimal": "low",
-            "low": "low",
-            "medium": "medium",
-            "high": "high",
-            "xhigh": "xhigh"
-          },
-          "input": ["text"],
-          "contextWindow": 524288,
-          "maxTokens": 384000,
-          "cost": {
-            "input": 0,
-            "output": 0,
-            "cacheRead": 0,
-            "cacheWrite": 0
-          }
-        }
-      ]
-    }
-  }
-}
-```
-
-Optionally make it the default Pi model in `~/.pi/agent/settings.json`:
-
-```json
-{
-  "defaultProvider": "ds4",
-  "defaultModel": "deepseek-v4-flash"
-}
-```
-
-For **Codex CLI**, use the Responses wire API:
-
-```toml
-[model_providers.ds4]
-name = "DS4"
-base_url = "http://127.0.0.1:8000/v1"
-wire_api = "responses"
-stream_idle_timeout_ms = 1000000
-```
-
-Then run:
-
-```sh
-codex --model deepseek-v4-flash -c model_provider=ds4
-```
-
-For **Claude Code**, use the Anthropic-compatible endpoint. A wrapper like this
-matches the local `~/bin/claude-ds4` setup:
-
-```sh
-#!/bin/sh
-unset ANTHROPIC_API_KEY
-
-export ANTHROPIC_BASE_URL="${DS4_ANTHROPIC_BASE_URL:-http://127.0.0.1:8000}"
-export ANTHROPIC_AUTH_TOKEN="${DS4_API_KEY:-dsv4-local}"
-export ANTHROPIC_MODEL="deepseek-v4-flash"
-
-export ANTHROPIC_CUSTOM_MODEL_OPTION="deepseek-v4-flash"
-export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="DeepSeek V4 Flash local ds4"
-export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="ds4.c local GGUF"
-
-export ANTHROPIC_DEFAULT_SONNET_MODEL="deepseek-v4-flash"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="deepseek-v4-flash"
-export ANTHROPIC_DEFAULT_OPUS_MODEL="deepseek-v4-flash"
-export CLAUDE_CODE_SUBAGENT_MODEL="deepseek-v4-flash"
-
-export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
-export CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1
-export CLAUDE_STREAM_IDLE_TIMEOUT_MS=600000
-
-exec "$HOME/.local/bin/claude" "$@"
-```
-
-Claude Code may send a large initial prompt, often around 25k tokens, before it
-starts doing useful work. Keep `--kv-disk-dir` enabled: after the first expensive
-prefill, the disk KV cache lets later continuations or restarted sessions reuse
-the saved prefix instead of processing the whole prompt again.
-
-## Memory and capacity
-
-Since v0.6.0 one memory governor decides every allocation that can
-grow. Engine boot, prewarm, the bank plan, the serial session, and the
-per-call batch graph all ask the same evaluator, which weighs each ask
-against one availability observation and one ledger of what every other
-lane holds. Nothing is reserved up front: context lives in virtual
-banks whose pages materialize only as requests fill them, each
-admission is charged what it will actually use, and idle banks return
-their pages to the pool after a couple of minutes of quiet. When an ask
-truly does not fit, the refusal is typed with a reason that says
-whether a retry can succeed, and counted per lane in `/metrics`. Before
-refusing for lack of memory the engine first collects what it can
-return: idle banks' pages via trim, then its own unused CUDA graph-pool
-reserve (`DS4_MEM_OWN_TRIM=0` opts out).
-
-Since v0.6.2 the account also proves itself. Every floor and margin in
-the plan is derived from a measurement rather than a constant: the
-bank count is priced from the live budget at boot, the anti-thrash
-floor prices working sets at what they actually commit (not their
-virtual extents, which overclaimed 4x at deep context), and the
-planning headroom derives from the operator's memory floor. The boot
-ledger prints the arithmetic behind each of these decisions, and while
-serving, an idle-tick reconciliation line checks the box's raw memory
-drop since boot against what the engine's own ledger explains, logging
-the signed residual (also on `/v1/stats` and `/metrics`) — an
-unexplained phantom or leak surfaces as a named number, not a field
-report.
-
-The proving runs for v0.6.1: a zero-config boot at `-c 786432` admitted
-three ingestions of about 755 thousand tokens each, back to back, and
-held **2.26 million tokens of context resident and warm at once** on
-one 128 GB Spark, with zero refusals and the 4 GiB floor intact. A
-fourth deep ingestion was funded by reclaiming an idle bank (the
-cheapest to restore), not refused. Decode measured at parity with an empty box at
-450k-token depth and within 15 percent at 755k. The observed all-in
-cost was about 4.3 KiB per token of resident context at the deep shape
-(4.8 at 450k banks; deeper banks amortize the page floors).
-
-The measured ceiling sits higher. With the admission floor lowered to
-1 GiB on a dedicated box, the same governor held **3,019,176 tokens of
-active context** — four ingestions of about 755 thousand tokens each,
-a needle retrieved exactly from every one, and honest, instant
-refusals for every further ask with the floor intact. The disclosed
-cost: at that full squeeze decode runs 2.6x slower than on an empty
-box (the OS starts reclaiming file-backed weight pages), where the
-2.26M shipped-floor stamp is 1.14x. The step-by-step recipe is in the
-[ds4-on-spark README](https://github.com/Entrpi/ds4-on-spark#reaching-3m-tokens-of-active-context).
-
-The window itself is now qualified to its edge: at `-c 1048576` (the
-checkpoint's exact YaRN window, 65536 x 16) a single prompt of
-**1,029,340 tokens** was ingested with a needle at 99.9% depth and
-retrieved exactly — on the default decode path and again with the
-accelerated attention path disabled, the fallback that previously
-truncated the deepest rows silently past 1,015,936 resident tokens.
-A 975,246-token conversation was separately admitted and continued
-warm in place, with a 2.0 s time to first token and 453 tokens
-decoded at 88 ms per token at that depth, speculative decoding still
-accepting 63 percent of its drafts. A bank persisted at exactly its
-token bound now restores cleanly across a restart.
-
-Two decisions cover most operator needs: the context limit `-c` (the
-per-request ceiling; prompt plus decode budget must fit under it) and
-the bank count (how many requests hold warm context at once; an
-admission beyond it evicts the least-recently-used idle bank rather
-than refusing). The knobs:
-
-| Knob | Default | What it does and when to change it |
-|---|---|---|
-| `-c` / `--ctx` | `262144` on CUDA, `32768` on Metal/CPU (ds4-on-spark's `ds4-serve` passes `524288`) | The per-request context ceiling. Each request must fit its prompt plus its decode budget under this, or it gets a typed 400. Raise it for deeper documents (a 1,029,340-token prompt at `-c 1048576`, the model's full window, is the deepest proven); unused context is demand-mapped, so a deep ceiling costs almost nothing until a request fills it. |
-| `DS4_SERVER_COALESCE_MAX` | unset: sized from the live memory budget at boot — 32 through 16k context (the measured regime); above that, as many full-depth-fundable banks as the budget covers (floor 4, cap 32), priced at the same per-token rate admissions are charged. The boot ledger prints the arithmetic (`kv plan` line). Where no memory answer exists (Metal/CPU), a static halving ladder rules instead. | How many requests can hold warm context at once (the bank count). Set it (1..64) to override — an explicit value also disarms the budget sizing, so your number rules (e.g. more, shallower banks for high-concurrency batch work). Boot may still reduce the count to fit memory, never raise it, and it is fixed until restart. A request beyond the bank count evicts the least-recently-used idle bank. |
-| `--mem-floor-gb` (env `DS4_MEM_FLOOR_GB`) | `4` | The engine never admits work that would leave the system under this many GiB of free memory: it reclaims idle cache first and refuses with a typed error if that is not enough. Lower it (down to 1) on a dedicated serving box to fund more context; raise it on a machine you also work on. The boot planning headroom now derives from this floor plus a boot-burst margin (`DS4_BATCH_FIT_BURST_MB`, default 2048; boot line `batch fit headroom:`), so lowering the floor also returns planning margin to the fundable pool — `DS4_BATCH_FIT_HEADROOM_MB` pins the headroom outright, `DS4_BATCH_FIT_HEADROOM_DERIVED=0` restores the old static 6144. |
-| `max_tokens` (request field, not a flag) | `32768` assumed when the client omits it | The decode budget a request is charged at admission, on top of its prompt. Agents that omit it are charged the full 32768, so set it explicitly when a deep prompt must fit: prompt + `max_tokens` must stay under `-c`. An oversized value is clamped and reported as `length`, never an error. |
-| `DS4_CONT_ADMIT_BAND_X1024` | `1045` | Admission charges each request its measured memory need times a small safety margin, expressed in 1024ths: 1045/1024 means about 2% above the measurement, absorbing allocation transients. Set `1024` to charge exactly the measured need; raise it if admitted work ever brushes the floor. |
-| `DS4_MEMGOV` | unset (the governor's verdicts are binding) | Set to `observe` to fall back to the pre-v0.6 memory formulas: the governor keeps evaluating and reporting on `/metrics`, but stops deciding. The one-word escape hatch if a memory decision ever looks wrong. |
-| `DS4_MEM_RECONCILE_TOL_MB` | `256` | When idle, the server reconciles the box's available-memory drop since boot against what its own allocation ledger explains and logs the residual (`mem reconcile:` line, also on `/v1/stats` and `/metrics`); a residual beyond this many MiB is marked `FLAGGED`. `DS4_MEM_RECONCILE_STRICT=1` adds a distinct `mem reconcile STRICT` line for gate scripts to assert on; `DS4_MEM_RECONCILE_WARMUP_MB` pins the named one-time warmup charge instead of letting the first idle pass self-calibrate it. Pure reporting — no admission decision reads it. |
-| `DS4_CONT_PREFILL_CHUNK` / `DS4_CONT_PREFILL_CHUNK_LIVE` | `4096` / `512` | Long prompts are ingested this many tokens at a time so a big admission never blocks the server. The `_LIVE` value applies while other requests are actively decoding: smaller keeps live decode smoother, larger ingests faster. |
-| `DS4_SERVER_FORK_PARTIAL` | `1` | Reuse the longest safe prefix when a prompt diverges inside a retained conversation. Set to `0` for a true cold-control path: Solar then reserves no KDA checkpoints, Motif-3 no SWA-window checkpoints, and Qwen no recurrent-state checkpoints. `DS4_SERVER_FORK_PARTIAL_MIN` (default 192 tokens, floor 136) skips tiny partial matches. |
-| `DS4_QWEN_BATCH` | unset (off) | Set to `1` to enable Qwen's persistent two-bank lane. It supports exact-frontier and partial-prefix forks, bank disk-KV persistence, target-verified embedded MTP with `--mtp-draft 2`, image requests with decoded-pixel cache identity, bounded two-row token-embedding/Hyper-Connection/Q8-output decode, GDN Q8 input projections and paired recurrent, QSA Q/gate projection, F32 router projection/top-k, Q5_K routed-main, and Q5_0 tail launches, plus a combined SSD-PLE gather. PLE compute, remaining QSA work, shared MoE work, and the remaining GDN state/finish stages stay bank-owned. |
-| `DS4_QWEN_PREFILL_CHUNK` | `256` (range 1..16384) | Qwen serial and bank prefill width. `8192` is the production serving setting used for the published Spark results; larger values need enough graph memory. |
-| `DS4_QWEN_PLE_CACHE_MB` | `2048` (allowed: 512, 1024, 2048) | Bound for Qwen's pinned SSD-PLE page cache. The full 95.37 GiB sidecar remains outside the unified-memory resident set. |
-| `DS4_QWEN_PLE_WORKERS` | `32` (range 1..64) | Asynchronous SSD-PLE page-read workers. On the reference DGX Spark, 32 retained nearly all of 64 workers' 8K prefill gain with less host submission overhead. |
-| `DS4_PLE_LATENCY_STATS` | unset (off) | Set to `1` for per-read SSD timing and shutdown-time read/layer-wait mean, p50, p95, p99, and maximum logs. Quantiles are power-of-two upper bounds. Leave it unset for normal serving so page workers avoid the two clock reads per I/O. |
-| `DS4_CUDA_NO_QWEN_VISION_TILE` | unset (tiled) | Set to `1` only to restore the previous per-query vision-attention kernel for controlled A/B diagnosis. |
-| `DS4_SERVER_CONTINUOUS` | `1` (continuous batching on) | Set to `0` to serve one request at a time on the old serial path. Only worth considering for single-user, latency-critical setups. |
-| `DS4_BATCH_VMM_BUDGET_MB` | unset: sized automatically (the bank plan's allowance, capped to measured capacity at boot, floored at two full-depth **packed** working sets — what two full banks actually commit at the admission-charged rate, not their virtual extents; `DS4_BATCH_VMM_FLOOR_PACKED=0` restores the old virtual-extent floor) | Hard cap on the KV pool, in MiB. Set it to pin the pool to a known size; either way the boot ledger prints `budget=[chosen] [plan X, capacity Y]` plus the work floor that applied, and a separate line whenever the floor is what ruled. |
-| `DS4_BATCH_VMM_TRIM` | `1` (reclaim allowed) | When an admission does not fit, the engine may release idle banks' memory to fund it; the reclaimed conversation then needs a disk restore or re-prefill when it returns. Set to `0` to forbid that: resident context is never sacrificed, and the admission is refused instead. Victims are chosen like warm-record eviction — invalid content first, then the longest-idle bank (shortest history breaks ties) — and the log names each victim with its bytes, history length, and recency; `DS4_BATCH_TRIM_VICTIM=hist` restores the old shortest-history-only order. When one victim's release would cover the whole remaining deficit, the engine now picks the smallest such victim in the same validity class instead of the first in recency order — so a deep trunk no longer dies for a deficit a small idle bank could fund (the `best-fit victim` log line discloses the substitution, and the trim summary reports released vs wanted); `DS4_BATCH_TRIM_BESTFIT=0` restores the pure recency order. |
-| `DS4_SERIAL_RESERVE_CTX` | unset (no reserve) | Set to a token count to reserve memory at boot for the single-request serial lane, for deployments where that lane matters more than batch depth. The boot line reports the carve-out. |
-| `DS4_WEIGHT_FP_CHECK` | `1` (verify) | Weight-server imports verify the manifest's content fingerprint against the local model file and refuse a mismatch (a stale weight server serving different bytes). Set to `0` to skip the check. |
-
-Observability: `/metrics` carries the memory families, an allocation
-census by class and domain, the availability observation with both raw
-estimates behind it (`ds4_memory_observation_bytes{kind=...}`),
-governor decisions per consumer, reclaim outcomes, and typed request
-rejections labelled by lane and reason. One reading note for long-lived
-servers: the kernel's available-memory estimate drifts downward as the
-mapped model's page-cache residency grows, even though allocations
-still succeed and nothing is leaking. A restart resets the reading, and
-the two raw estimates on `/metrics` make the artifact identifiable.
-
-If you are coming from vLLM or SGLang, the assumption contrast and a
-flag-by-flag comparison table are in the
-[ds4-on-spark README](https://github.com/Entrpi/ds4-on-spark#if-you-come-from-vllm-or-sglang),
-along with the max-capacity recipe for
-[reaching 3M+ tokens of active context](https://github.com/Entrpi/ds4-on-spark#reaching-3m-tokens-of-active-context)
-on a stripped headless Spark.
-
-## Thinking Modes
-
-DeepSeek V4 Flash has distinct non-thinking, thinking, and Think Max modes.
-The server defaults to thinking mode. The checkpoint's high and max tiers
-are not just decode budgets: they inject DeepSeek's effort preamble
-(verbatim reference-encoder text) at position 0, ahead of the system
-prompt.
-
-Since v0.6.3.1, a client-sent `reasoning_effort` field cannot reach those
-prefixed tiers by default: client `high`/`xhigh`/`max` compat-map to the
-prefix-free level. Agent frameworks send the field meaning the OpenAI
-"think more" knob, and a controlled needle matrix showed the injected
-preamble measurably degrades deep-context tool calling (6/50
-completion-protocol failures at 96K+ tokens with the prefix vs 0/100
-without — the field issue #18 regression). llama.cpp and pre-v0.5.3
-engines silently ignore the field for this GGUF, which is the behavior the
-default restores. Operators opt back into the native tiers with
-`--reasoning-effort-native` (env `DS4_REASONING_EFFORT_NATIVE=1`), and the
-operator's own `--reasoning-effort low|high|max|off` server default is
-always honored as written: setting it is the opt-in for that level.
-Disabling thinking stays client-reachable either way.
-
-For direct replies, use `thinking: {"type":"disabled"}`, `think:false`,
-`reasoning_effort:"off"`, or a non-thinking model alias such as
-`deepseek-chat`.
-
-## Disk KV Cache
-
-Chat/completion APIs are stateless: agent clients usually resend the whole
-conversation every request. `ds4-server` first tries the cheap exact token-prefix
-check, then falls back to comparing rendered prompt bytes with decoded
-checkpoint bytes. The live in-memory checkpoint covers the current session; the
-disk KV cache makes useful prefixes survive session switches and server
-restarts.
-
-The serial lane has one live checkpoint, while the continuous lane has the
-number of resident banks selected at startup. When another session replaces a
-serial checkpoint or an idle bank is evicted, that prefix can only resume
-without re-processing if it was written to the disk KV cache. In other words,
-memory cache handles active sessions; disk cache is the resume mechanism for
-evicted sessions and worker restarts. This applies to DeepSeek/GLM, Solar,
-EXAONE, and Motif model-family payloads in `ds4-dfm`.
-
-The Solar and Motif-3 continuous lanes keep more reuse depth than the bank
-count alone: a 32-slot, demand-mapped pool shares immutable checkpoints across
-exact forks — Solar snapshots its 157.5 MiB KDA recurrent state, Motif-3 only
-each SWA layer's 128-row window (5.48 MiB). Request boundaries are
-checkpoints, and long prefills add roughly 24 evenly spaced checkpoints across
-`-c`. A partial match restores the nearest checkpoint below the cut, copies
-the rewindable positional rows (Solar GQA, Motif-3 full-attention latent)
-straight from the source bank, and replays only the gap. The pool is bounded
-and best-effort under the memory floor; its positional rows and token lookup
-remain tied to a retained bank, so this is not an unbounded radix-tree cache.
-
-Enable it with:
-
-```sh
-./ds4-server --kv-disk-dir /tmp/ds4-kv --kv-disk-space-mb 8192
-```
-
-> **Long-running serving note.** How the per-bank KV pool grows, what
-> funds each admission, the memory floor, and every related knob are in
-> [Memory and capacity](#memory-and-capacity). The short version: pages
-> map on demand, eviction releases them back, each admission is charged
-> its measured need against live free memory, and a typed refusal
-> arrives before the box is ever squeezed.
-
-The cache key is the SHA1 of the rendered byte prefix, and files are named
-`<sha1>.kv`. The DS4 payload still stores the exact token IDs and graph state
-for that prefix. This matters for continued chats: the model may have generated
-one token whose decoded text is later sent back by a client as two canonical
-prompt tokens. A rendered byte-prefix hit can still reuse the checkpoint and
-tokenize only the new suffix.
-The file is intentionally written with ordinary `read`/`write` I/O, not
-`mmap`, so restoring cache entries does not add more VM mappings to a process
-that already maps the model.
-
-Tool calls also keep a bounded exact-DSML replay map keyed by unguessable tool
-IDs, so client JSON history can be rendered back to the exact sampled text. The
-RAM map keeps up to 100000 IDs by default; tune it with `--tool-memory-max-ids`.
-Use `--disable-exact-dsml-tool-replay` to disable this and fall back to
-canonical JSON-to-DSML rendering.
-
-On disk, a cache file is:
-
-```text
-KVC fixed header, 48 bytes
-u32 rendered_text_bytes
-rendered_text_bytes of UTF-8-ish token text
-DS4 session payload, payload_bytes from the KVC header
-optional tool-id map section
-```
-
-The fixed header is little-endian:
-
-```text
-0   u8[3]  magic = "KVC"
-3   u8     version = 1
-4   u8     routed expert quant bits, currently 2 or 4
-5   u8     save reason: 0 unknown, 1 cold, 2 continued, 3 evict, 4 shutdown
-6   u8     extension flags, bit 0 = appended tool-id map
-7   u8     reserved
-8   u32    cached token count
-12  u32    hit count
-16  u32    context size the snapshot was written for
-20  u8[4]  reserved
-24  u64    creation Unix time
-32  u64    last-used Unix time
-40  u64    DS4 session payload byte count
-```
-
-The rendered text is the tokenizer-decoded text for the cached token prefix.
-It is both the human-inspectable prefix and the lookup identity: its SHA1 is
-the filename, and a file is reusable only when those bytes are a prefix of the
-incoming rendered prompt. After load, the exact checkpoint tokens from the DS4
-payload remain authoritative, and only the incoming text suffix after the cached
-bytes is tokenized.
-
-The optional tool-id map is present only when header extension bit 0 is set.
-Appended sections use fixed bit order, so future extension bits can add fields
-without ambiguity. The map stores unguessable API tool call IDs back to the
-exact DSML block the model sampled. Only mappings whose DSML block is present
-in the rendered cached text are stored. This lets restarted servers render
-later client history byte-for-byte like the original model output, even if the
-client reorders JSON arguments.
-
-The current tool-id map section is:
-
-```text
-0   u8[3]  magic = "KTM"
-3   u8     version = 1
-4   u32    entry count
-
-For each entry:
-0   u32    tool id byte length
-4   u32    sampled DSML byte length
-8   bytes  tool id
-... bytes  exact sampled DSML block
-```
-
-The section is auxiliary replay memory, not model state. A cache hit restores
-the session payload first, then loads the map if present. Before rendering a
-request, the server can also scan cache files for the tool IDs present in the
-client history and load just those mappings, so an exact DSML replay can survive
-server restarts even when the matching KV snapshot is not the one ultimately
-used for the rendered-prefix hit.
-
-The DS4 session payload starts with thirteen little-endian `u32` fields:
-
-```text
-0   magic = "DSV4"
-1   payload version = 2
-2   saved context size
-3   prefill chunk size
-4   raw KV ring capacity
-5   raw sliding-window length
-6   compressed KV capacity
-7   checkpoint token count
-8   layer count
-9   raw/head KV dimension
-10  indexer head dimension
-11  vocabulary size
-12  live raw rows serialized below
-```
-
-Then it stores:
-
-- `u32[token_count]` checkpoint token IDs.
-- `float32[vocab_size]` logits for the next token after that checkpoint.
-- `u32[layer_count]` compressed attention row counts.
-- `u32[layer_count]` ratio-4 indexer row counts.
-- For every layer: the live raw sliding-window KV rows, written in logical
-  position order rather than physical ring order.
-- For compressed layers: live compressed KV rows and compressor frontier
-  tensors.
-- For ratio-4 compressed layers: live indexer compressed rows and indexer
-  frontier tensors.
-
-The logits are raw IEEE-754 `float32` values from the host `ds4_session`
-buffer. They are saved immediately after the checkpoint tokens so a loaded
-snapshot can sample or continue from the exact next-token distribution without
-running one extra decode step. MTP draft logits/state are not persisted; after
-loading a disk checkpoint the draft state is invalidated and rebuilt by normal
-generation.
-
-Distributed coordinator sessions use the same `DSV4` payload. Worker-owned
-layer tensors are pulled during save and merged into the normal layer-ordered
-tensor stream; during load the coordinator splits that stream into the current
-route and pushes the relevant layer tensors back to the workers. The saved file
-does not retain the distributed topology.
-
-The tensor payload is DS4-specific KV/session state, not a generic inference
-graph dump. It is expected to be portable only across compatible `ds4.c`
-builds for this model layout.
-
-The cache stores checkpoints at four moments:
-
-- `cold`: after a long first prompt reaches a stable prefix, before generation.
-- `continued`: when prefill or generation reaches the next absolute aligned frontier.
-- `evict`: before an unrelated request replaces the live in-memory session.
-- `shutdown`: when the server exits cleanly.
-
-Cold saves intentionally trim a small token suffix and align down to a prefill
-chunk boundary. This avoids common BPE boundary retokenization misses when a
-future request appends text to the same prompt. The defaults are conservative:
-store prefixes of at least 512 tokens, cold-save prompts up to 30000 tokens,
-trim 32 tail tokens, and align to 2048-token chunks. The important knobs are:
-
-Continued saves use the same alignment and are written only when the live graph
-naturally reaches an absolute frontier. With the defaults this means roughly
-every 10k tokens, independent of where the first cold checkpoint landed, so long
-generations leave restart points behind without persisting the fragile final few
-tokens.
-
-- `--kv-cache-min-tokens`
-- `--kv-cache-cold-max-tokens`
-- `--kv-cache-continued-interval-tokens`
-- `--kv-cache-boundary-trim-tokens`
-- `--kv-cache-boundary-align-tokens`
-- `--tool-memory-max-ids`
-- `--disable-exact-dsml-tool-replay`
-
-By default, checkpoints may be reused across the 2-bit and 4-bit routed-expert
-variants if the rendered prefix matches. Use `--kv-cache-reject-different-quant`
-when you want strict same-quant reuse only.
-
-The cache directory is disposable. If behavior looks suspicious, stop the
-server and remove it. You can investigate what is cached with hexdump as
-the kv cache files include the verbatim prompt cached.
-
-## CLI
-
-One-shot prompt:
-
-```sh
-./ds4 -p "Explain Redis streams in one paragraph."
-```
-
-No `-p` starts the interactive prompt:
-
-```sh
-./ds4
-ds4>
-```
-
-The interactive CLI is a real multi-turn DS4 chat. It keeps the rendered chat
-transcript and the live graph KV checkpoint, so each turn extends the previous
-conversation. Useful commands are `/help`, `/think`, `/think-max`, `/nothink`,
-`/ctx N`, `/read FILE`, and `/quit`. Ctrl+C interrupts the current generation
-and returns to `ds4>`.
-
-The CLI defaults to thinking mode. Use `/nothink` or `--nothink` for direct
-answers. `--mtp MTP.gguf --mtp-draft 2` enables the optional MTP speculative
-path; it is useful only for greedy decoding, currently uses a confidence gate
-(`--mtp-margin`) to avoid slow partial accepts, and should be treated as an
-experimental slight-speedup path.
-
-## Native agent
-
-DwarfStar features a native coding agent that works in a different way
-than most other systems: the inference is controlled from within the agent
-itself, without socket/API boundaries, so the session is represented
-by the on-disk KV cache itself. Moreover the tools and the system prompt
-are all designed vertically for DeepSeek v4 Flash and PRO. This provides a
-few advantages:
-
-* Low latency experience, bounded mainly by the prefill speed limits. Displaying of generated text, tool calling, start of a new session are always instantaneous.
-* Live progress bar during prefill time.
-* No DSML tool calling conversion, the tools are handled natively in the LLM format.
-* KV cache mismatch are impossible by construction, the current state is always the truth.
-* Everything is tuned for this model.
-* Ability to switch saved sessions with `/list` and `/switch`; full KV sessions resume without a prefill stage.
-
-Agent sessions are stored in `~/.ds4/kvcache`. Use `/save` to persist the
-current session, `/list` to show saved sessions sorted by recent update time,
-and `/switch <sha>` to resume one of them. The session ID is stable across
-future saves and is derived from the first user prompt and creation time.
-`/del <sha>` removes a saved session. `/strip <sha>` keeps the rendered
-conversation text and title but removes the heavy KV payload; switching to a
-stripped session rebuilds the KV cache by prefilling the saved text.
-
-Use `--chdir /path/to/ds4` when launching `ds4-agent` from another directory,
-so relative runtime files such as `metal/*.metal` resolve from the project tree.
-
-However while the system already works, there is a lot of work to do
-in order to make it ready for prime time. When finally the agent will reach
-the wanted shape, we will *likely* split the server and the client creating a stateful
-session-based protocol that can recreate all that in a client-server way.
-
-## Benchmarking
-
-`ds4-bench` measures instantaneous prefill and generation throughput at context
-frontiers instead of reporting one whole-run average. It loads the model once,
-walks a fixed token sequence to frontiers such as 2048, 4096, 6144, and uses
-incremental prefill so each row measures only the newly-added token interval.
-After each frontier it saves the live KV state to memory, generates a fixed
-greedy non-EOS probe, restores the memory snapshot, and continues prefill.
-
-```sh
-./ds4-bench \
-  -m ds4flash.gguf \
-  --prompt-file speed-bench/promessi_sposi.txt \
-  --ctx-start 2048 \
-  --ctx-max 65536 \
-  --step-incr 2048 \
-  --gen-tokens 128
-```
-
-The example file is a cleaned public-domain Project Gutenberg text of
-Alessandro Manzoni's *I Promessi Sposi* (ebook #45334), with the Gutenberg
-header and footer removed: <https://www.gutenberg.org/ebooks/45334>.
-
-Use `--step-incr N` for different linear spacing, or `--step-mul F` for
-exponential sweeps. Output is CSV with one row per frontier: latest prefill
-interval tokens/sec, generation tokens/sec at that frontier, the
-steady-state generation throughput (`gen_tps_ss`, which excludes the
-first-token amortisation cost so the column compares apples-to-apples
-across short and long generations), the first-token latency, and
-`kvcache_bytes`. Committed sweeps live under `speed-bench/`; the included
-[pro6000_blackwell_ts.svg](speed-bench/pro6000_blackwell_ts.svg) and
-[gb10_spark_ts.svg](speed-bench/gb10_spark_ts.svg) are generated from
-those CSVs via `python3 speed-bench/plot_speed.py`.
-
-Sessions prefill long prompts in 4096-token chunks by default. Set
-`DS4_METAL_PREFILL_CHUNK=N` to compare another chunk size, for example `2048`
-to match the strict official-vector checkpoint path, or
-`DS4_METAL_PREFILL_CHUNK=0` to prefill a prompt as one whole batch when memory
-allows. Changing the chunk changes the KV checkpoint/logit path, so compare it
-as an explicit run configuration. Single forwards wider than 8,192 rows are
-fenced: that territory is unqualified (fixed grid and integer ceilings in the
-one-shot kernels, with crash-or-silently-wrong failure modes), so the server
-refuses such a request with a typed error naming the lever, and the boot log
-discloses the mode whenever it is active. Set `DS4_PREFILL_NOFENCE=1` to lift
-the fence for a deliberate probe run.
-Chunked Metal prefill reuses the same range-capable layer-major graph for each
-chunk, preserving absolute compressor/indexer boundaries while avoiding the old
-per-layer chunk dispatch path.
-
-## Capability Evaluation
-
-`ds4-eval` is a small real-model integration benchmark. It is not a leaderboard
-runner and should not be reported as an official GPQA, SuperGPQA, AIME, or
-security benchmark score: the questions are an embedded 92-item subset chosen
-to make local regression testing useful and visually inspectable. The program
-loads the real GGUF,
-renders DS4 chat prompts, streams sampled tokens in a split-screen TUI, grades
-the final answer, and prints a per-question report with prompt tokens,
-generated tokens, pass/fail state, the model answer, and the correct answer.
-
-```sh
-./ds4-eval -m ds4flash.gguf --trace /tmp/ds4-eval.txt
-```
-
-The default run uses `--tokens 16000`, thinking mode enabled, and a soft/hard
-`</think>` budget cutoff so the model has room to produce a visible answer.
-`ds4-eval` sizes the context internally from the largest selected prompt plus
-the generation budget, and refuses runs that would need more than 1M context
-tokens. Press `p` to pause, `q` to exit and print the report, Up/Down to
-inspect or select another question, and Enter to run the selected question next.
-`--plain` disables the TUI.
-
-Use `--regrade-trace /path/to/trace.txt` to replay the current answer
-extractor and scorer against a prior `--trace` file without loading the model
-or regenerating tokens. This is useful when auditing evaluator changes: it
-shows which cases changed, the old picked answer, the new picked answer, and a
-pass/fail summary.
-
-For inference changes that can affect generation drift, keep this deterministic
-q1..q4 token-count gate in the test plan:
-
-```sh
-./ds4-eval \
-  -m ds4flash.gguf \
-  --plain \
-  --questions 4 \
-  --tokens 2048 \
-  --temp 0 \
-  --seed 1
-```
-
-The generated-token counts must stay aligned with the baseline:
-
-| Question | Expected state | Expected generated tokens | Expected given/correct |
-|---:|---|---:|---|
-| 1 | `PASSED` | 2048 | `B` / `B` |
-| 2 | `PASSED` | 438 | `C` / `C` |
-| 3 | `PASSED` | 666 | `70` / `70` |
-| 4 | `FAILED` | 2048 | `A` / `C` |
-
-The first 75 embedded questions are interleaved as 25 GPQA Diamond, 25 audited
-SuperGPQA, and 25 AIME 2025 problems. The final 17 are an audited COMPSEC
-subset of reduced single-function C/C++ vulnerability-localization questions.
-The model is asked for the single best source line, or the smallest exact line
-set only when the bug cannot be localized to one line; the scorer accepts small
-audited ranges only when adjacent lines are equivalent locations for the same
-bug. The order is
-intentionally progressive: early questions are useful smoke tests, while later
-questions are hard enough that a strong reasoning model should still miss some
-of them. The SuperGPQA slice is curated rather than blind: upstream rows with
-wrong keys, missing figures, or underspecified prompts are replaced with cleaner
-rows.
-
-The set should be treated as a hard capability regression suite rather than
-a pass/fail unit test.
-
-- **GPQA Diamond** contributes graduate-level science questions with
-  multiple-choice answers. DeepSeek's model card reports strong results
-  on full GPQA Diamond in thinking mode, but individual items still require
-  careful physics, chemistry, or biology reasoning and are easy to lose with a
-  small prompt/rendering or sampling regression.
-- **SuperGPQA** contributes broad specialist knowledge and domain-transfer
-  questions. The model-card SuperGPQA number is much lower than GPQA Diamond,
-  so these items are expected to be uneven: some look mundane, others require
-  niche professional knowledge or exact interpretation of a translated-style
-  exam question.
-- **AIME 2025** contributes exact-answer contest math. These are often the most
-  unforgiving items in the set: no multiple-choice prior, no partial credit, and
-  a single arithmetic or algebraic slip changes the grade.
-- **COMPSEC** contributes single-function C/C++ security reasoning items
-  reduced from public CVE writeups. These are not exploit prompts: the task is
-  to identify the best source line where the defensive code flaw is introduced,
-  or return `0` for a safe function.
-
-In practice this means `ds4-eval` should not be expected to produce a perfect
-92/92 run. It is meant to answer a more useful engineering question: after a
-kernel, quantization, prompt-rendering, KV-cache, or tool-streaming change, does
-DeepSeek V4 Flash still solve a representative mix of hard science, broad
-knowledge, exact math, and security-code problems while using the same inference
-path users run?
-
-## Distributed Inference
-
-Distributed inference lets DS4 **run a model that is too large for one machine** by
-splitting transformer layers across multiple machines. The main example is the
-full 4-bit Flash quant across two 128 GB MacBooks: each process maps only its
-own layer slice, activations are sent over TCP, and the coordinator keeps normal
-CLI/API behavior.
-
-Distributed inference also allows to **speed up prefill** by
-using multiple GPUs at the same time to process different micro-batches at
-different layers, like in an assembly line. Only prefill can be accelerated this
-way. Generation is purely autoregressive: each token must finish across the
-route before the next token can start. The model work is the same as a single
-process, plus coordination latency, so distributed generation is slower.
-
-To build an initial mental model, here are the high level concepts:
-
-1. You put the GGUF on every machine, but each one loads just a subset. `--layers` controls which tensors are mapped, so a worker with `--layers 20:output` does not load the earlier layers.
-2. Layer ranges are inclusive: `10:20` means layers 10, 11, ..., 20. `N:output` means layer `N` through the final layer plus the output head.
-3. You assign one of the machines the role of `coordinator`, the others the roles of `workers`. Workers will connect to the coordinator and will tell they are there and which layers they are able to process.
-4. Each worker keeps its slice of the KV cache.
-5. Communication is worker-to-worker, there is no need to use the coordinator as relay, so if your coordinator is `A`, and you make a request, activations will flow in `A -> B -> C -> back to A`.
-
-### How it works and how to configure it
-
-The prefill path is pipelined (this is why it can go faster than in a single machine).
-For large prompts the coordinator can run its
-slice on chunk N+1 while the worker is running its slice on chunk N. The
-distributed rows below were measured with two M5 Max 128 GB MacBooks connected
-by Thunderbolt 5, using the Q4 Flash GGUF and the default 4096-token
-distributed prefill chunk. The single-process column is a reference run with
-the Q2 GGUF on a single machine, so it actually is a bit faster since
-the routed MoEs are smaller.
-
-| Prompt | Single-process reference | Two MacBooks | Speedup |
-| ---: | ---: | ---: | ---: |
-| 9421 tokens | 421.70 t/s | 582.22 t/s | 1.38x |
-| 28684 tokens | 405.30 t/s | 674.16 t/s | 1.66x |
-| 63819 tokens | 353.62 t/s | 654.79 t/s | 1.85x |
-
-Generation is different. **It is strictly autoregressive**: token N+1 cannot start
-until token N has produced logits and sampling has selected the next token. That
-means distributed generation cannot use the long prefill pipeline. It pays at
-least one cross-machine activation hop per generated token, so generation is
-slower than a single local process. On the same two-Mac Thunderbolt setup, a
-12k-context control run with the 91 GB Flash quant went from 30.59 t/s
-single-process to 24.67 t/s distributed, a 19.4% loss. Distributed inference is
-therefore mainly for fitting larger models and speeding up long prefills, not
-for making decode faster.
-
-The measurements above use a Thunderbolt 5 cable. The implementation is plain
-TCP and also works over slower links, including WiFi, but fast Ethernet or
-Thunderbolt networking is strongly recommended. Slow links mostly hurt
-generation latency and short prefills; large prefills can still benefit when
-the layer split is balanced. In the normal performance path, the last worker
-owns the output head and returns logits directly.
-
-Minimal two-host configuration:
-
-```sh
-# Machine A: coordinator, owns tokenization, sampling, the prompt, and layers 0..19.
-./ds4 \
-  -m gguf/DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2.gguf \
-  --role coordinator \
-  --layers 0:19 \
-  --listen 169.254.43.68 1234
-
-# Machine B: worker, connects to A and owns layers 20..output.
-./ds4 \
-  -m gguf/DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2.gguf \
-  --role worker \
-  --layers 20:output \
-  --coordinator 169.254.43.68 1234
-```
-
-Normally the final worker should own the output head too, for example
-`--layers 20:output`. This avoids returning a full final hidden-state batch
-after prefill and lets the final worker produce the logits directly. On very
-slow or metered links, `--layers 20:42` is also supported: the coordinator will
-load the output head and compute logits locally, trading extra coordinator work
-for smaller per-token replies.
-
-### Network Link Comparison
-
-The table below shows the same two M5 Max hosts, the same 91 GB Flash quant,
-coordinator `--layers 0:19`, worker `--layers 20:output`, an 8192-token prompt
-from `speed-bench/promessi_sposi.txt`, and 128 generated tokens. WiFi and
-Internet numbers vary with local conditions, but the shape is the important
-part: high latency hurts generation directly, while lower bandwidth also pulls
-down long-prefill speed.
-
-| Link | Addresses | Ping avg | Prefill | Generation |
-| --- | --- | ---: | ---: | ---: |
-| Thunderbolt 5 | `169.254.43.68` -> `169.254.12.245` | 0.45 ms | 582.99 t/s | 25.09 t/s |
-| WiFi | `192.168.1.57` -> `192.168.1.95` | 77.20 ms | 250.70 t/s | 10.70 t/s |
-| Internet / VPN | `10.77.0.4` -> `10.77.0.3` | 152.10 ms | 114.88 t/s | 3.63 t/s |
-
-The Internet/VPN case is not meant to be a good interactive experience. It is
-still useful for collective testing: multiple people can temporarily combine
-machines to run a larger model that would not fit on any single host, accepting
-slow decode in exchange for being able to inspect the model at all.
-
-Use the coordinator exactly like normal `./ds4`: interactive chat, `/read`,
-and ordinary generation go through the same high-level session API. The same
-distributed options are also wired into `ds4-agent`, `ds4-eval`, and
-`ds4-bench`. For benchmarks, workers should already be running; `ds4-bench`
-waits until a complete route is available.
-
-Useful tuning and diagnostics:
-
-```sh
-./ds4-bench \
-  -m gguf/DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2.gguf \
-  --prompt-file speed-bench/promessi_sposi.txt \
-  --ctx-start 32768 \
-  --ctx-max 65536 \
-  --step-incr 32768 \
-  --gen-tokens 0 \
-  --role coordinator \
-  --layers 0:19 \
-  --listen 169.254.43.68 1234 \
-  --debug
-```
-
-`--debug` on the coordinator prints route formation and per-hop telemetry:
-layer range, token span, local evaluation time, downstream wait time, socket
-send time, and input/output byte counts. This is the current profiling tool for
-deciding whether a split is balanced. `--dist-prefill-window N` controls how
-many prefill chunks may be in flight end-to-end; the default is conservative
-and bounded. `--dist-prefill-chunk N` exists for experiments, but the default
-4096-token chunk is the canonical setting and should be used unless you are
-explicitly validating a different chunk size.
-
-By default DS4 sends hidden-state activations as 32-bit floats. To reduce
-traffic, pass `--dist-activation-bits 16` or `--dist-activation-bits 8` on the
-coordinator. This changes only the transport format between machines, not the
-model weights or KV cache. 16-bit transport halves activation traffic and is the
-first option to try on Ethernet or WiFi. 8-bit transport is more aggressive and
-should be treated as an approximate/experimental mode unless you have validated
-the output for your use case. However experimentally reduction activation
-size didn't provide a significant improvement, so this option may be removed
-in the future.
-
-**If a worker disconnects, the coordinator removes that worker from the active
-route**. The request already in flight can fail, and later calls report an
-incomplete route until a compatible worker reconnects and sends a new
-registration. For live sessions, the coordinator keeps the token history and can
-rebuild worker KV state by replaying the prefix when the route is available
-again. Workers also validate a rolling 64-bit token-prefix hash on every work
-item, so a restarted worker at position 0 cannot silently accept work for
-position N; it reports the mismatch and the coordinator replays the current
-transcript. Ctrl+C in the CLI and agent is cooperative: DS4 waits for the
-current distributed token or prefill chunk to drain before returning control,
-which avoids coordinator-caused KV splits. Saved agent/server sessions use the
-same KV file format as single-machine sessions: during save the coordinator
-fetches worker-owned layer tensors and serializes one normal payload; during
-load it splits that payload over the currently registered route.
-
-### Distributed protocol overview
-
-At the protocol level there are two kinds of connections. Workers keep a
-control TCP connection open to the coordinator and send a `HELLO` with their
-model ID, model family, quant profile, layer slice, context capacity, and data
-port. The coordinator uses these registrations to build a route that covers all
-layers. Work then moves over low-latency TCP data connections: the coordinator
-computes the first slice, sends a `WORK` frame with session ID, token positions,
-rolling token-prefix hashes before and after the span, route information, and
-hidden-state payload, and each worker computes its slice. Middle workers can
-forward directly to the next worker. The final worker returns logits to the
-coordinator, or ACKs for non-final prefill chunks so the prefill pipeline can
-stay full. `RESULT` frames echo the request ID and the post-span hash. A worker
-status error is handled differently from a socket failure: KV/hash mismatch can
-be recovered by replaying the token history on the same route, while transport
-failure drops the route and waits for a replacement worker. For persistent KV,
-the coordinator opens worker data connections and sends snapshot save/load
-messages for each worker-owned layer range; the disk payload remains a single
-agent/server cache file. The protocol has no
-encryption or authentication, and is not release-stable yet; coordinator and
-workers should be built from the same commit and used on trusted machines and
-trusted networks.
-
-## Reducing heat, power usage and fan noise
-
-Long local inference runs can keep the GPU busy for extended periods. If you
-care more about heat, fan noise, battery life on MacBooks, or reducing thermal
-stress on the hardware than about maximum throughput, use `--power N`.
-
-`--power 100` is the default and means full speed. Lower values ask DS4 to target
-that percentage of GPU usage: `--power 70` targets about 70%, `--power 50`
-targets about half usage, and so forth. DS4 does this by measuring GPU work time
-and inserting small sleeps between work units: during prefill it sleeps between
-layers, and during generation it sleeps between decoded tokens. This reduces
-sustained load without changing model output.
-
-The option is available on the CLI, server, agent, eval, and benchmark tools,
-for example:
-
-```sh
-./ds4 --power 50
-./ds4-agent --power 70
-./ds4-server --power 40 --ctx 100000
-```
-
-## Backends
-
-The default graph backend is Metal on macOS and CUDA in CUDA builds:
-
-```sh
-./ds4 -p "Hello" --metal
-./ds4 -p "Hello" --cuda
-```
-
-On Linux, plain `make` prints the available build targets instead of selecting a
-CUDA target implicitly. Use `make cuda-spark` for DGX Spark / GB10; it builds
-with `nvcc -arch=sm_121`, the GB10's native architecture — an empty
-`-arch` measured ~25% slower prefill on GB10. Use `make cuda-generic` for a
-normal local CUDA build, or set `CUDA_ARCH` explicitly when cross-building or
-when you need a known target:
-
-```sh
-make cuda CUDA_ARCH=sm_120
-make cuda CUDA_ARCH=native
-```
-
-There is also a CPU reference/debug path:
-
-```sh
-./ds4 -p "Hello" --cpu
-make cpu
-./ds4
-./ds4 -p "Hello"
-```
-
-Do not treat the CPU path as the production target. The CLI and `ds4-server`
-support the CPU backend for reference/debug use and share the same KV session
-and snapshot format as Metal and CUDA, but normal inference should use Metal or
-CUDA.
-
-## Steering
-
-This project supports steering with single-vector activation directions; see the
-`dir-steering` directory for more information. This follows the core idea of the
-[Refusal in Language Models Is Mediated by a Single Direction](https://arxiv.org/abs/2406.11717)
-paper. You can use it to make the model more or less verbose, less likely to
-answer programming questions if it is a chatbot for your car rental web site,
-and so forth, much faster than fine-tuning.
-This is also useful for cybersecurity researchers who want to reduce a model's
-willingness to provide dual-use or offensive security guidance.
-
-## Test Vectors
-
-`tests/test-vectors` contains short and long-context continuation vectors
-captured from the official DeepSeek V4 Flash API. The requests use
-`deepseek-v4-flash`, greedy decoding, thinking disabled, and the maximum
-`top_logprobs` slice exposed by the API. Local vectors are generated with
-`./ds4 --dump-logprobs` and compared by token bytes, so tokenizer/template or
-attention regressions show up before they become long generation failures. The
-C runner pins `DS4_METAL_PREFILL_CHUNK=2048` for this strict API-vector
-comparison.
-
-All project tests are driven by the C runner, with a small `ds4-eval`
-extractor self-test run first:
-
-```sh
-make test                  # ./ds4-eval --self-test-extractors && ./ds4_test --all
-./ds4_test --logprob-vectors
-./ds4_test --server
-```
-
-## Debugging Notes
-
-When a generation looks wrong, three small tools are usually enough to get a
-first answer:
-
-```sh
-./ds4 --dump-tokens -p "..."
-./ds4 --dump-logprobs /tmp/out.json --logprobs-top-k 20 --temp 0 -p "..."
-./ds4 --dump-logits /tmp/logits.json --metal --nothink --prompt-file prompt.txt
-./ds4-server --trace /tmp/ds4-trace.txt ...
-./ds4-server --tool-slip-dump /tmp/ds4-slips ...
-```
-
-- `--dump-tokens` tokenizes the `-p` or `--prompt-file` string exactly as
-  written, recognizes DS4 protocol specials, and then exits before inference
-  starts. For example, the DSML tool close marker starts as two tokens: `</`
-  and `｜DSML｜`.
-- `--dump-logprobs` stores a greedy continuation with the top local
-  alternatives at each step, which helps separate sampling choices from
-  logit/model issues.
-- `ds4-server --trace` writes the rendered prompts, cache decisions, generated
-  text, and tool-parser events for a whole agent session. Serial lane only:
-  continuously-batched rows (the default serving lane) do not trace yet.
-- `ds4-server --tool-slip-dump DIR` covers the batched lane's blind spot for
-  tool-protocol failures: every tools-armed chat completion that settles
-  without tool calls dumps one JSON file with the raw request body, the full
-  generated text, and the parse verdict. Agent harnesses discard rejected
-  responses, so this is usually the only byte-exact record of what the model
-  actually said; each dump replays directly against a server as a regression
-  fixture.
-
-## About this fork
-
-This fork asks the question upstream deliberately leaves open: what
-does DwarfStar look like as a multi-request serving engine on NVIDIA
-hardware? Everything fork-side is default-on, each landing gated by
-value-parity checks, same-boot A/B timing, and the full eval suite, and
-each reversible with an env kill switch. The per-landing numbers and
-the full story are in [CHANGELOG.md](CHANGELOG.md); the headline
-results, each receipted there:
-
-- **Continuous batched serving.** Mid-flight admission and eviction
-  over per-request KV banks, chunked cold admission, pending prefills
-  interleaved with live decode, warm start from cached prefixes (~7x
-  TTFT), fork-by-copy fan-out (~49x TTFT on a 4-way branch), and
-  durable banks that survive eviction and restarts. Stops, tool calls,
-  thinking, and speculation all ride the batched path, on the OpenAI
-  and Anthropic API surfaces alike. Aggregate decode 59 tok/s at 12
-  concurrent requests (v0.5.0 stamp).
-- **A rebuilt CUDA prefill engine.** D2R (dequant-to-registers)
-  tensor-core MoE GEMMs reading aligned SoA artifacts in place,
-  token-tile HMMA attention, an L2-reuse-aware expert-major CTA
-  schedule, and a flat activation pool: ~1,010 tok/s cold prefill at
-  12k on a GB10 (v0.5.0 stamp), 2.43x upstream at 2k and 3.30x at 64k
-  on the same box, gguf, and harness, and a 515K-token admit sustained
-  at 776 tok/s.
-- **Decode rebuilt the same way.** Per-layer CUDA-graph capture at
-  every depth, head-group flash-decode for dense and indexed attention,
-  a tensor-core indexer scorer, and DSpark lossless speculative decode
-  governed by a terminal yield-quench controller: 1.33-1.47x upstream
-  across the 2k-128k frontier (v0.4.1 stamp), deep decode 45.7 ms/tok
-  at 240K (v0.5.0 stamp).
-- **Memory truth (v0.6).** One governor account for every allocation,
-  every floor and margin measured, and a continuous self-audit of the
-  ledger since v0.6.2: measured to 3M tokens of active context on one
-  128 GB Spark (2.26M at zero config), typed refusals, a 4 GiB floor,
-  idle trim. See [Memory and capacity](#memory-and-capacity).
-- **Ops.** A resident weight server imports the 81 GiB model into
-  engine processes in seconds (VMM-backed IPC, manifest with a
-  content-identity check), and standalone boots build the same aligned
-  fast-path artifacts in-process at load, so both setups serve from the
-  fast tier and say so on one boot line.
-
-Every performance claim comes from same-boot A/B runs with SM-clock
-logging; every default flip passed bit- or value-parity plus eval
-slices with proven engagement of the changed path; the full quality
-suite (GSM8K, MMLU, HumanEval, MBPP, IFEval, needle) is re-stamped at
-each release commit. The release gates are standing scripts in
-`speed-bench/`.
-
-The v0.5 context-frontier sweep compares the ship defaults against the
-v0.4.1 line on the GB10; below it, the v0.1.0 chart against upstream
-main on both reference machines (kept for history):
-
-![v0.5 context-frontier sweep](speed-bench/v050_sweep_overlay.svg)
-
-![v0.1.0 context-frontier sweep](speed-bench/v010_sweep_overlay.svg)
-
-What is *not* an optimization target: the Metal/macOS path, the CLI,
-the agent, and the GGUF tooling are inherited from upstream and kept
-building and passing their vectors (disk KV persistence is inherited
-too, though the fork extends it with packed-native payloads and the
-durable bank tier, while older checkpoints stay readable). Metal
-correctness on the fork's serving paths is **community-maintained**:
-contributions are welcome (see `METAL_DSPARK.md` for the
-community-contributed DSpark drafter port), gated here by compile plus
-the isolated Metal kernel regressions; end-to-end Metal measurements
-are the contributors' own, as no high-memory Metal machine is on the
-fork's test bench. Upstream credit for the engine this fork stands on
-is gladly given: the inherited sections of this README (CLI, native
-agent, distributed inference, disk KV cache, and more) describe that
-shared foundation.
-
-## Speed
-
-These are single-run CLI numbers with `--ctx 32768`, `--nothink`, greedy
-decoding, and `-n 256`. The short prompt is a normal small Italian story
-prompt. The long prompts exercise chunked prefill plus long-context decode.
-Mac entries use Metal; NVIDIA entries use CUDA. Q4 requires the
-larger-memory machine class, so M3 Max Q4 numbers are `N/A`.
-
-| Machine | Quant | Prompt | Prefill | Generation |
-| --- | ---: | ---: | ---: | ---: |
-| MacBook Pro M3 Max, 128 GB | q2 | short | 58.52 t/s | 26.68 t/s |
-| MacBook Pro M3 Max, 128 GB | q2 | 11709 tokens | 250.11 t/s | 21.47 t/s |
-| MacBook Pro M3 Max, 128 GB | q4 | short | N/A | N/A |
-| MacBook Pro M3 Max, 128 GB | q4 | long | N/A | N/A |
-| MacBook Pro M5 Max, 128 GB | q2 | short | 87.25 t/s | 34.27 t/s |
-| MacBook Pro M5 Max, 128 GB | q2 | 11707 tokens | 463.44 t/s | 25.90 t/s |
-| Mac Studio M3 Ultra, 512 GB | q2 | short | 84.43 t/s | 36.86 t/s |
-| Mac Studio M3 Ultra, 512 GB | q2 | 11709 tokens | 468.03 t/s | 27.39 t/s |
-| Mac Studio M3 Ultra, 512 GB | q4 | short | 78.95 t/s | 35.50 t/s |
-| Mac Studio M3 Ultra, 512 GB | q4 | 12018 tokens | 448.82 t/s | 26.62 t/s |
-| Mac Studio M3 Ultra, 512 GB | PRO q2 | 32768 tokens | 138.82 t/s | 9.56 t/s |
-| RTX PRO 6000 Blackwell, 96 GB | q2 | short | 85.21 t/s | 53.28 t/s |
-| RTX PRO 6000 Blackwell, 96 GB | q2 | 12461 tokens | 1920.66 t/s | 41.10 t/s |
-| DGX Spark GB10, 128 GB | q2 | 2048 tokens | 989.95 t/s | 22.66 t/s |
-| DGX Spark GB10, 128 GB | q2 | 14336 tokens | 1008.01 t/s | 19.69 t/s |
-
-![M3 Max t/s](speed-bench/m3_max_ts.svg)
-![PRO model M3 Ultra t/s](speed-bench/pro_model_m3_ultra_ts.svg)
+# DwarfStar / ds4-dfm-rs
+
+**DwarfStar** (`ds4`) is a small native inference engine specialized for a
+deliberately limited set of large open-weight models. It is self-contained and
+deliberately narrow, not a general GGUF runner and not a wrapper around another
+runtime. Model loading, prompt rendering, tool calls, model state, KV reuse,
+the HTTP server, and the coding agent are built and tested together.
+
+`ds4-dfm-rs` is the independent Rust-host continuation of the DFM line from
+[`Baekpica/ds4`](https://github.com/Baekpica/ds4). Its NVIDIA reference machine
+is the 128 GB DGX Spark / GB10. It retains the native Metal and CUDA heritage,
+but this release's complete live gate ran on CUDA.
+
+As in the original [`antirez/ds4`](https://github.com/antirez/ds4), model
+support is intentionally opportunistic. The project follows useful open
+weights that fit real personal and workstation-class machines. A family is
+supported explicitly, against a known artifact and execution path; it may be
+retired when a better model makes it irrelevant.
+
+## So, what can I do with this software?
+
+- Run one of the six validated model families on a DGX Spark without pulling
+  in a general inference framework.
+- Serve OpenAI-compatible Chat, Completions, and Responses APIs, Anthropic
+  Messages, or use the native coding agent against the same model lifecycle.
+- Use long contexts, persistent KV state, distributed execution, and the
+  family-specific acceleration path that was actually validated for the model.
+- Serve Qwen3.8 Flash Next Q5 with SSD-PLE sidecars, embedded MTP, and still
+  image input.
+- Treat the existing family implementations as rails for a new model or a
+  specific machine, while keeping the resulting path small enough to inspect.
 
 ## Motivations
 
-Now, back at this project. Why do we believe DeepSeek V4 Flash deserves a
-standalone engine? Because after comparing it with powerful smaller dense
-models, we can report that:
+- Capable open-weight models now fit on high-end personal machines.
+- Routed-expert quantization, compressed or recurrent state, and fast local
+  SSDs make very large models and long contexts practical on those machines.
+- An inference system specialized for a few models can remain understandable,
+  measurable, and aggressively optimized.
+- DFM (독자 파운데이션 모델, 독파모) and adjacent families are increasing,
+  but their tensor layouts, state machines, prompt protocols, and kernels are
+  meaningfully different.
+- A Rust host can make those families safer to operate and easier to extend
+  without hiding the differences behind a large abstraction layer.
 
-1. DeepSeek V4 Flash is the practical target of the project: it can run on
-   96/128GB machines while still feeling much larger than local dense models.
-2. DeepSeek V4 PRO is supported too, as a side path for 512GB Mac Studio class
-   machines. It is heavier, but it shares the same engine ideas and can be
-   useful when the hardware is available.
-3. In thinking mode, if you avoid *max thinking*, Flash produces a thinking
-   section that is a lot shorter than other models, even 1/5 of other models in
-   many cases, and crucially, the thinking section length is **proportional to
-   the problem complexity**. This makes DeepSeek V4 Flash usable with thinking
-   enabled when other models are practically impossible to use in the same
-   conditions.
-4. The models feature a context window of **1 million tokens**.
-5. Being so large, Flash knows more things if you go sampling at the edge of
-   knowledge. For instance asking about Italian show or political questions soon
-   uncovers that 284B parameters are a lot more than 27B or 35B parameters. PRO
-   pushes further when you can run it.
-6. Flash writes much better English and Italian. It *feels* a quasi-frontier
-   model. PRO is stronger still, especially for tasks such as translation.
-7. The KV cache is incredibly compressed, allowing long context inference on
-   local computers and **on disk KV cache persistence**. The compression isn't
-   only about fitting in RAM: in our testing the model's speed survives deep
-   contexts (>100k tokens) far better than similarly-sized recent peers like
-   MiMo-V2.5, so long-context inference stays fast as the window fills.
-8. Both DeepSeek V4 variants work well with 2-bit quantization, if quantized in
-   a special way (read later). This allows Flash to run on MacBooks with 128GB
-   of RAM (and many people reported it working with 96GB as well, even at 250k
-   context window!), and PRO on 512GB machines.
-9. We expect DeepSeek to release **updated versions of V4 Flash and PRO** in the
-   future, even better than the current ones.
+## How to use this project
 
-That said, a few important things about this project:
+The original DwarfStar is also a statement about how software can be shipped
+in the age of coding agents: a repository can be a working implementation for
+the most useful cases and a rail for adapting a new model or hardware setup,
+instead of pretending to cover every possible combination.
 
-* The local inference landscape contains many excellent projects, but new models are released continuously, and the attention immediately gets captured by the next model to implement. This project takes a deliberately narrow bet: one model at a time, official-vector validation (logits obtained with the official implementation), long-context tests, and enough agent integration to know if it really works. The exact model may change as the landscape evolves, but the constraint remains: local inference credible on high end personal machines or Mac Studios, starting from 96/128GB of memory.
-* This software is developed with **strong assistance from GPT 5.5** and with humans leading the ideas, testing, and debugging. We say this openly because it shaped how the project was built. If you are not happy with AI-developed code, this software is not for you. The acknowledgement below is equally important: this would not exist without `llama.cpp` and GGML, largely written by hand.
-* This implementation is based on the idea that compressed KV caches like the one of DeepSeek v4 and the fast SSD disks of modern MacBooks should change our idea that KV cache belongs to RAM. **The KV cache is actually a first-class disk citizen**.
-* Our vision is that local inference should be a set of three things working well together, out of the box: A) inference engine with HTTP API + B) GGUF specially crafted to run well under a given engine and given assumptions + C) testing and validation with coding agents implementations. This inference engine only runs with the GGUF files provided. It gets tested against officially obtained logits at different context sizes. This project exists because we wanted to make one local model feel finished end to end, not just runnable. However this is beta quality code, so probably we are not still there.
-* The optimized graph path targets **Metal on macOS** and **CUDA on Linux**. The CPU path is only for correctness checks and model/tokenizer diagnostics. For CPU-only Linux builds, use `make cpu`; it builds the normal `./ds4` and `./ds4-server` binaries without CUDA or Metal. On macOS, **warning: current macOS versions have a bug in the virtual memory implementation that will crash the kernel** if you try to run the CPU code. Remember? Software sucks. It was not possible to fix the CPU inference to avoid crashing, since each time you have to restart the computer, which is not funny. Help us, if you have the guts.
-* The project supports both Flash and PRO variants, but Flash remains the main
-  focus because it is the model that makes sense on 96/128GB personal machines.
-  **PRO support is experimental**: it is useful and welcome, but today it is
-  naturally limited to people with 512GB Mac Studio class hardware.
+That remains the intended use here. Start from a validated family, make the
+smallest explicit change for the new tensor, state, protocol, or kernel
+contract, and rerun the same correctness and performance gates. Coding agents
+can make a specialized port much cheaper; they do not replace real artifacts,
+hardware measurements, or human ownership of the result.
 
-## Acknowledgements to llama.cpp and GGML
+## AI full disclosure
 
-`ds4.c` does not link against GGML, but it **exists thanks to the path opened by the
-llama.cpp project and the kernels, quantization formats, GGUF ecosystem, and hard-won
-engineering knowledge developed there**.
-We are thankful and indebted to [`llama.cpp`](https://github.com/ggml-org/llama.cpp)
-and its contributors. Their implementation, kernels, tests, and design choices were
-an essential reference while building this DeepSeek V4 specific inference path.
-Some source-level pieces are retained or adapted here under the MIT license: GGUF
-quant layouts and tables, CPU quant/dot logic, and certain kernels. For this
-reason, and because we are genuinely grateful, we keep the GGML authors copyright
-notice in our `LICENSE` file.
+This line is developed with strong coding-agent assistance, with humans leading
+the ideas, scope, testing, and debugging. We say this openly because it shaped
+both the Rust migration and the model-family work. It is equally important to
+say that DwarfStar would not exist without the largely hand-built work in
+[`llama.cpp`](https://github.com/ggml-org/llama.cpp) and GGML, or without the
+original DwarfStar and Entrpi CUDA-serving work preserved in this history.
 
-## License and attribution
+## Why this repository exists
 
-This fork keeps upstream ds4's MIT license. The batched-serving fork
-modifications are Copyright (c) 2026 Entrpi <entrpi@proton.me>, MIT. Lineage
-of the code in this tree, so reusers know who built what:
+The split is not meant to turn ds4 into a generic framework. It makes a growing
+set of DFM and adjacent model families more efficient to extend while keeping
+the minimum abstraction that proven families actually share. Rust owns host
+lifecycle and serving policy; the native engine stays close to the hardware.
 
-- The engine, CLI/agent, Metal path, and session serving are
-  [antirez/ds4](https://github.com/antirez/ds4) (upstream).
-- The quantized-matmul kernel family under `cuda/mmq/` is vendored from
-  llama.cpp (MIT); the exact upstream pin and per-file inventory are in
-  `cuda/mmq/VENDOR.md`.
-- The batched server, continuous-batching engine, KV banks, D2R/MMQ prefill
-  tiers, token-tile HMMA attention, indexer/scorer work, and DSpark
-  integration on the CUDA path are this fork's additions.
-- [xangel82/DS4-GB10-GX10-DSpark-CUDA](https://github.com/xangel82/DS4-GB10-GX10-DSpark-CUDA)
-  (Marco Palaferri, MIT) is a sibling fork built on both upstream ds4 and
-  this fork's kernel work, and we re-integrate select portions of his work
-  in return. Where a change follows his design it is credited in the commit
-  message, and where his code is adapted directly it also carries his
-  copyright notice in the source headers -- for example, the fused gate/up
-  prefill pipeline in `cuda/mmq/ds4_mmq_d2r.cu` and `cuda/mmq/ds4_mmq.cu`
-  (his `910501e`, our `da027a1`).
-
-If you reuse this fork's modifications, keep this notice together with the
-MIT license text, per upstream's terms.
+This is therefore **not a rewrite of ds4 in Rust**. The project preserves the
+optimized C/CUDA/Metal backend, Git ancestry and authorship, and the full
+`antirez → Entrpi → Baekpica` lineage.
 
 ## Status
 
-The code and GGUF files are to be considered of **beta quality** because
-inference and model serving is a complicated matter and all this exists
-only for a few days. It will take months to reach a more stable form.
-However, we try to keep the project in a usable state, and we are making
-progress. If you have issues, make sure to use `--trace` to log the
-sessions, and open issues including the full trace.
+`v0.1.0-rc.1` is a repository-split and Rust-host parity release. It starts a
+new version namespace; it is not a new model or kernel feature release.
 
-The `ds4-agent` is alpha quality, the project was later added.
+| Item | RC scope |
+|---|---|
+| Release baseline | `v0.6.5-dfm` (`d02e2a4`) |
+| Frozen Qwen C behavior | post-tag cut `4d40d97` |
+| Split genesis | annotated tag `ds4-dfm-rs-genesis` (`fe7733f`) |
+| Release-tested hardware | NVIDIA DGX Spark / GB10, CUDA |
+| Host migration | Rust default binaries; C binaries retained as oracles |
+| Native backend | C/CUDA/MMQ/VMM/vision kernels retained |
+| License | MIT, inherited notices preserved |
 
-## More Documentation
+The pre-split campaign finished with 60 logical cells: 57 PASS and three
+PASS* cells reproduced on the matching C control, with no Rust-only failure.
+The detailed evidence is in
+[`SPLIT_READINESS.md`](docs/rust-migration/SPLIT_READINESS.md).
 
-If you are looking for very specific things, we have other
-sub-README files:
+This remains release-candidate software. It accepts only explicit, validated
+GGUF layouts; it is not a general GGUF runner.
 
-- [CONTRIBUTING.md](CONTRIBUTING.md): correctness and speed regression testing
-  guide for contributors. **Read this before sending a pull request**.
-- [gguf-tools/README.md](gguf-tools/README.md): offline GGUF generation,
-  imatrix collection, quantization tooling, and quality checks.
-- [gguf-tools/imatrix/README.md](gguf-tools/imatrix/README.md): how the
-  routed-MoE imatrix is collected and used.
-- [gguf-tools/imatrix/dataset/README.md](gguf-tools/imatrix/dataset/README.md):
-  how the calibration prompt corpus is generated.
-- [gguf-tools/quality-testing/README.md](gguf-tools/quality-testing/README.md):
-  how local GGUFs are scored against official DeepSeek V4 Flash/PRO continuations.
-- [dir-steering/README.md](dir-steering/README.md): directional steering data,
-  vector generation, and usage.
-- [misc/cuda-env-vars.md](misc/cuda-env-vars.md): CUDA backend env-var
-  reference and Q8_0 dispatcher behavior.
-- [misc/cuda-mtp/README.md](misc/cuda-mtp/README.md): CUDA MTP enablement,
-  DGX Spark / GB10 notes, optimization flags, and benchmark method.
-- [misc/proof-harness/README.md](misc/proof-harness/README.md): generalized
-  engine proof harness and weight-server lifecycle.
-- [speed-bench/README.md](speed-bench/README.md): benchmark commands, charts,
-  and CSV generation.
-- [tests/test-vectors/README.md](tests/test-vectors/README.md): official
-  continuation vectors used for regression checks.
+## Design philosophy
+
+- Keep model mechanics visible. Shapes, tensor names, state layouts, prompt
+  protocols, and stop rules are family contracts, not plugin metadata.
+- Add only the abstraction shared by proven families. Prefer an enum, a table,
+  or a narrow function over a runtime plugin system.
+- Keep the hot path direct. Family dispatch must not force dynamic dispatch or
+  erase kernel-specific information.
+- Use Rust where ownership matters: HTTP, admission, scheduling, model/session
+  lifetime, KV policy, memory policy, and distributed orchestration.
+- Keep CUDA, MMQ, VMM, fused attention, MoE, SSD-PLE, and vision execution
+  native. A host-language change is not permission to rewrite kernels.
+- Promote behavior only after C/Rust parity, real-model checks, and measured
+  performance. Goldens are not refreshed to hide drift.
+
+The practical family-extension contract is intentionally small:
+
+1. identify and validate the GGUF shape;
+2. resolve the tensor inventory and bind plan;
+3. define tokenizer, prompt, tool, and stop behavior;
+4. connect the native state and kernel path through the opaque bridge;
+5. define session/KV ownership and serving-lane eligibility;
+6. land a focused regression, then loader, forward, API, live, and performance
+   evidence.
+
+## Architecture
+
+```text
+OpenAI / Anthropic clients, CLI, agent
+                    │
+                    ▼
+┌──────────────────────────────────────────────┐
+│ Rust host                                    │
+│ HTTP · rendering · admission · scheduler     │
+│ model/session lifecycle · KV · memory policy │
+│ distributed orchestration                    │
+└──────────────────────┬───────────────────────┘
+                       │ narrow opaque ABI
+                       ▼
+┌──────────────────────────────────────────────┐
+│ Native backend                               │
+│ GGUF mmap · VMM · CUDA Graph · MMQ           │
+│ fused attention · MoE · SSD-PLE · vision     │
+│ CUDA / Metal / CPU reference                 │
+└──────────────────────────────────────────────┘
+```
+
+The boundary is [`native/bridge/ds4_bridge.h`](native/bridge/ds4_bridge.h),
+not a generated binding of the engine internals. Safe Rust never receives
+CUDA streams, device pointers, graph handles, VMM allocation handles, or raw
+native structs.
+
+| Area | Owner |
+|---|---|
+| API parsing, rendering, streaming, routing | Rust (`ds4-server`) |
+| GGUF identification, validation, inventory, bind plan | Rust (`ds4-core`) |
+| Model/session handles and lifetime policy | safe Rust over opaque native handles |
+| KVC metadata, persistence policy, cross-host codecs | Rust (`ds4-kv`) |
+| Distributed protocol and orchestration | Rust (`ds4-dist`) |
+| CUDA/VMM/MMQ/graphs/attention/MoE/vision | native C/CUDA |
+| Metal and CPU reference paths | inherited native backend |
+| C parity executables and `ds4-eval` | retained release oracles |
+
+The host uses blocking sockets, threads, channels, mutexes, and condition
+variables. There is no async framework added merely because the host is Rust.
+See [`ARCHITECTURE.md`](docs/rust-migration/ARCHITECTURE.md) and
+[`FFI_CONTRACT.md`](docs/rust-migration/FFI_CONTRACT.md) for the full boundary.
+
+## Supported hardware and backends
+
+| Backend | Status in `v0.1.0-rc.1` |
+|---|---|
+| NVIDIA DGX Spark / GB10 | Release target. Full build, host parity, family matrix, long-context, Qwen image/MTP, ABBA, and soak gates ran here. |
+| Other NVIDIA CUDA systems | Source path retained through `make cuda-generic` or an explicit `CUDA_ARCH`; not covered by the RC's full live matrix. |
+| macOS Metal | Inherited source/build path retained; not part of the DFM RC live gate. |
+| CPU | Reference and diagnostics only, not a production performance backend. |
+
+The recorded RC host used CUDA 13.3.73, driver 610.43.02, Linux
+6.17.0-1031-nvidia, and Rust 1.98.0. Do not generalize its measurements to a
+different GPU or quant without rerunning the same gate.
+
+## Supported model families
+
+Every family below has an explicit architecture selector, validator, binder,
+tokenizer/chat contract, state lifecycle, and native execution path.
+
+| Family | GGUF architecture | RC note |
+|---|---|---|
+| DeepSeek V4 Flash / PRO | `deepseek4` | Flash is the main live oracle; external MTP/DSpark support is DeepSeek-only. |
+| Solar Open2 250B | `solar-open2` | Recurrent KDA state, compressed GQA KV, persistent banks. |
+| K-EXAONE 236B A23B | `exaone-moe` | LLLG full/sliding GQA KV and persistent banks. |
+| Motif-3 | `motif3` | Latent KV, rotated `k_pe`, SWA rings, persistent banks. |
+| dots3-note Preview | `dots3-note` | Dual-geometry latent state; current live serving path is serial. |
+| Qwen3.8 Flash Next SSD-PLE | `qwen4exp` | Q5 main GGUF + four shared SSD-PLE sidecars, embedded MTP, two-bank serving, and still-image input. |
+
+The current family contract and measured model-specific limits are documented
+in [`ds4-dfm-model-families.md`](docs/ds4-dfm-model-families.md). Arbitrary
+GGUFs, alternate tensor layouts, and unlisted architectures are rejected.
+
+### Qwen release scope
+
+The Qwen RC claim is deliberately narrow:
+
+- [`MQ-Q5-SSD-PLE-BF16`](https://huggingface.co/Baekpica/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF), three main GGUF shards;
+- four shared BF16 SSD-PLE sidecars referenced by that Q5 layout;
+- embedded MTP with `--mtp-draft 2`;
+- text and base64 PNG/JPEG input on the three message APIs;
+- 196,608 production serving and exact/configured 262,144-token gates.
+
+Q6, original safetensors, and a resident BF16 GGUF were not release gates and
+are not implied by this claim.
+
+Rust normalizes ordered image parts, bounds and owns payload bytes, places
+image tokens, and owns decoded-pixel cache identity. Decoding reuses the pinned
+[`vendor/stb_image.h`](vendor/stb_image.h) through a narrow native image ABI;
+vision and CUDA execution stay native. No general multimedia layer or Rust
+image dependency was added.
+
+Image limits match the frozen C behavior:
+
+- user messages only;
+- PNG or JPEG data URIs only;
+- at most four images;
+- at most 10 MiB decoded per image and 20 MiB per request;
+- remote URLs, files, SVG, GIF, WebP, malformed base64, and invalid image
+  content are rejected.
+
+See [`QWEN_V065_RESTAMP_2026-08-31.md`](docs/rust-migration/QWEN_V065_RESTAMP_2026-08-31.md)
+and [`qwen38-image-input-spec.md`](docs/qwen38-image-input-spec.md).
+
+## Build
+
+The repository pins Rust 1.98.0 with `rustfmt` and `clippy` in
+[`rust-toolchain.toml`](rust-toolchain.toml). CUDA builds also require a local
+CUDA toolkit and C/C++ build tools.
+
+```sh
+git clone https://github.com/Baekpica/ds4-dfm-rs.git
+cd ds4-dfm-rs
+make cuda-spark
+```
+
+Important build targets:
+
+| Command | Result |
+|---|---|
+| `make cuda-spark` | DGX Spark / GB10 CUDA build with the `sm_121a` code path |
+| `make cuda-generic` | CUDA build for the detected local GPU |
+| `make cuda CUDA_ARCH=sm_N` | CUDA build with an explicit architecture |
+| `make` on macOS | Metal build |
+| `make cpu` | CPU reference/diagnostic build |
+
+The production names remain `ds4`, `ds4-server`, `ds4-bench`, and
+`ds4-agent` for this parity RC. They are Rust-host binaries. Their
+`ds4-c`, `ds4-server-c`, `ds4-bench-c`, and `ds4-agent-c` counterparts are C
+oracles. `ds4-eval` is still the C extractor oracle. The old `*-rs` names are
+deprecated build aliases, not a second runtime.
+
+`./ds4-server --version` reports the independent repository version from the
+Rust package; `make print-version` reports the Git-derived native build stamp.
+
+## Quick start
+
+Models are not bundled. Pass the first shard of a supported split GGUF with
+`-m`.
+
+```sh
+MODEL=/path/to/supported-model-00001-of-000NN.gguf
+
+./ds4-server \
+  --cuda \
+  -m "$MODEL" \
+  -c 131072 \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --model-id local-model \
+  --no-update-check
+```
+
+Then verify discovery, state, and a real generation:
+
+```sh
+curl -s http://127.0.0.1:8000/v1/models
+curl -s http://127.0.0.1:8000/v1/stats
+curl -s http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"local-model","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+`./ds4 --help`, `./ds4-server --help`, `./ds4-bench --help`, and
+`./ds4-agent --help` are the authoritative flag references.
+
+### Weight owner and worker
+
+On unified-memory systems, a weight owner keeps one VMM allocation alive while
+inference workers restart. Keep the manifest path short because its Unix
+socket is `<manifest>.sock`.
+
+```sh
+MODEL=/path/to/supported-model.gguf
+MANIFEST=/tmp/ds4-weights.manifest
+
+./ds4_weight_server \
+  --base "$MODEL" \
+  --manifest "$MANIFEST" \
+  --backend vmm \
+  --scope base \
+  --reserve-gb 32
+```
+
+Wait for both `broker listening` and `ready manifest=...`, then start the
+worker in another durable session:
+
+```sh
+DS4_CUDA_WEIGHT_IPC_MANIFEST="$MANIFEST" \
+DS4_CUDA_WEIGHT_IPC_SCOPE=base \
+./ds4-server --cuda -m "$MODEL" -c 196608 \
+  --host 127.0.0.1 --port 8000 --no-update-check
+```
+
+Qwen Q5 release runs additionally set a bounded SSD-PLE cache and enable its
+persistent two-bank path:
+
+```sh
+DS4_QWEN_BATCH=1 \
+DS4_QWEN_PLE_CACHE_MB=512 \
+DS4_QWEN_PLE_WORKERS=16 \
+DS4_QWEN_PREFILL_CHUNK=8192 \
+DS4_SERVER_COALESCE_MAX=2 \
+DS4_CUDA_WEIGHT_IPC_MANIFEST="$MANIFEST" \
+DS4_CUDA_WEIGHT_IPC_SCOPE=base \
+./ds4-server --cuda -m "$MODEL" -c 196608 --mtp-draft 2 \
+  --host 127.0.0.1 --port 8000 --no-update-check
+```
+
+Use only one production GGUF at a time. On DGX Spark, monitor compute and
+process memory with `nvtop` and `htop`. Stop the worker first, then the owner;
+confirm both PIDs and GPU compute entries are gone before running
+`/usr/local/bin/clear_cache`. Page-cache reclaim cannot free live allocations.
+
+## HTTP compatibility
+
+| Surface | Endpoint |
+|---|---|
+| OpenAI Chat Completions | `POST /v1/chat/completions` |
+| OpenAI Completions | `POST /v1/completions` |
+| OpenAI Responses | `POST /v1/responses` |
+| Anthropic Messages | `POST /v1/messages` |
+| Model discovery | `GET /v1/models` |
+| Runtime state | `GET /v1/stats` and `GET /metrics` |
+
+Buffered and SSE streaming forms preserve their surface-native response
+objects, tool calls, reasoning fields, finish semantics, and error envelopes.
+The server has serial, continuous, and static lanes; set
+`DS4_SERVER_CONTINUOUS=0` to force the static/serial route used by the C
+compatibility gate.
+
+Qwen image content is accepted in the existing API-native shapes:
+
+```text
+Chat:      {"type":"image_url","image_url":{"url":"data:image/jpeg;base64,..."}}
+Responses: {"type":"input_image","image_url":"data:image/jpeg;base64,..."}
+Anthropic: {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"..."}}
+```
+
+The exact route table, supported fields, and explicit refusals are in
+[`ds4-api-surface-matrix.md`](docs/ds4-api-surface-matrix.md).
+
+### Compatibility boundary
+
+The project attempts to preserve these public contracts through `v0.x`:
+
+- core `ds4-*` CLI flags and `DS4_*` environment variables;
+- HTTP request/response behavior and observable sampling semantics;
+- KVC files, EXT_TOOL_MAP, KTM trailers, recurrent payloads, and image replay
+  keys across C-save/Rust-load and Rust-save/C-load;
+- explicit distributed byte codecs.
+
+The following are internal and may change during `v0.x`: crate APIs, Rust
+types, file layout, scheduler internals, and the native bridge ABI. Native and
+Rust objects must be built from the same commit. Distributed transport has no
+wire version, encryption, or authentication; use matching binaries on a
+trusted network.
+
+The HTTP server is one trust domain and does not provide tenant isolation or
+authentication. Put it behind an authenticating proxy or run one server per
+trust domain when clients are not mutually trusted.
+
+## Performance and release evidence
+
+The first RC claims parity class, not a universal speedup.
+
+| Gate | Recorded result on DGX Spark / GB10 |
+|---|---|
+| Full host/family matrix | 57 PASS + 3 C-reproduced PASS*, 0 FAIL, 0 BLOCKED |
+| Qwen exact 262K | 248,320 finite logits, same argmax, zero packed-f32 mismatches; Rust prefill 99.64% of C |
+| Qwen text ABBA | Rust/C mean: 99.97% prefill, 100.00% decode, +0.95% TTFT, +4.40% host HWM |
+| Qwen image ABBA | Rust/C mean: 100.20% prefill, +0.32% TTFT |
+| Qwen soak | 7,202.3 s, 3,610/3,610 requests, 158 width-2 barriers, 79 image requests, zero request/census/governor failures |
+
+The Qwen measurements used only the Q5+Sidecar artifact, fresh sequential C
+and Rust processes, and the conditions recorded in the evidence documents.
+The three PASS* cells are engine gaps E-2, E-3, and E-6 reproduced on C; they
+are not hidden Rust failures. See
+[`PARITY_MATRIX.md`](docs/rust-migration/PARITY_MATRIX.md),
+[`ENGINE_GAPS.md`](docs/rust-migration/ENGINE_GAPS.md), and
+[`SPLIT_READINESS.md`](docs/rust-migration/SPLIT_READINESS.md).
+
+## Testing
+
+Host checks are model-free after their C parity oracles are built:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked
+
+make -j1 test-kv-parity
+make -j1 test-web-parity
+make -j1 test-dist-parity
+make -j1 test-server-parity
+make -j1 test-catalog-parity
+make -j1 test-tokenizer-parity
+make -j1 test-session-parity
+make -j1 test-agent-parity
+
+cargo test --workspace --no-default-features --locked -- --test-threads=1
+cargo check --workspace --all-targets --locked
+```
+
+The order matters on a clean checkout: the parity targets create the C oracle
+executables consumed by the workspace tests. GitHub Actions runs this host-only
+set. It does not pretend that a hosted CPU runner proves CUDA behavior.
+
+Shared CUDA checks include:
+
+```sh
+make -j1 test-model-family-kernels
+make -j1 test-mmq-parity
+./ds4-eval --self-test-extractors
+```
+
+Family loaders, real-model forwards, long-context runs, OPP-C, ABBA, and soak
+gates need the matching models and release hardware. Their fixed order and
+evidence are under [`docs/rust-migration/`](docs/rust-migration/README.md).
+
+## Repository layout
+
+| Path | Purpose |
+|---|---|
+| `crates/ds4-core` | safe model/session host, GGUF catalog, tokenizer, bind and validation |
+| `crates/ds4-server` | HTTP surfaces, routing, scheduling, streaming, tools |
+| `crates/ds4-kv` | KVC format and persistence policy |
+| `crates/ds4-dist` | distributed codecs and runtime |
+| `crates/ds4-cli` | CLI, bench, and agent hosts |
+| `crates/ds4-web` | blocking agent web helpers |
+| `crates/ds4-sys` | narrow unsafe FFI and OS adapters |
+| `native/bridge` | opaque Rust/native boundary |
+| `ds4.c`, `ds4_cuda.cu`, `cuda/`, `metal/` | native engine and kernels |
+| `tests/parity` | C behavior oracles consumed by Rust tests |
+| `docs/rust-migration` | campaign contract, decisions, matrices, and evidence |
+
+## Lineage
+
+The repository is independent on GitHub, but its code history is continuous:
+
+```text
+antirez/ds4
+    ↓
+Entrpi/ds4
+    ↓
+Baekpica/ds4 (DFM edition)
+    ↓
+Baekpica/ds4-dfm-rs
+```
+
+The split preserved Git ancestry, authors, the MIT license, vendor provenance,
+and the `v0.6.5-dfm` baseline tag. It did not filter, squash, or relabel the
+project as a clean-room implementation. The replaced target scaffold remains
+recoverable at `pre-genesis-scaffold-b01d1fa`.
+
+See [`docs/LINEAGE.md`](docs/LINEAGE.md) for the exact refs and ongoing
+upstream-port policy.
+
+## Contributing
+
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before sending a change.
+
+- Keep changes focused and leave a regression that fails without them.
+- A model-family addition must prove loader, tokenizer, tensor binding,
+  forward behavior, API rendering, state/KV lifecycle, and its real native
+  path.
+- CUDA changes need correctness and speed evidence on the affected path.
+- Do not introduce a generic plugin layer, a second CUDA stack, C++ host code,
+  or a large async runtime without a measured problem and a separate decision.
+- Record model revision, quant, commit, hardware, CUDA, context, width, KV mode,
+  and thermal conditions with performance results.
+
+## Documentation
+
+- [`CHANGELOG.md`](CHANGELOG.md) — inherited and fork-side release history
+- [`docs/LINEAGE.md`](docs/LINEAGE.md) — repository provenance and split refs
+- [`docs/rust-migration/SPLIT_READINESS.md`](docs/rust-migration/SPLIT_READINESS.md) — genesis decision and immutable evidence
+- [`docs/rust-migration/ARCHITECTURE.md`](docs/rust-migration/ARCHITECTURE.md) — host/native ownership
+- [`docs/rust-migration/FFI_CONTRACT.md`](docs/rust-migration/FFI_CONTRACT.md) — opaque ABI rules
+- [`docs/ds4-dfm-model-families.md`](docs/ds4-dfm-model-families.md) — model-family runtime details
+- [`docs/ds4-api-surface-matrix.md`](docs/ds4-api-surface-matrix.md) — API and serving-lane contract
+- [`cuda/mmq/VENDOR.md`](cuda/mmq/VENDOR.md) — llama.cpp/GGML kernel provenance
+- [`misc/proof-harness/README.md`](misc/proof-harness/README.md) — native proof harness
+
+## License and acknowledgements
+
+`ds4-dfm-rs` remains MIT licensed; see [`LICENSE`](LICENSE). Existing
+copyright notices are preserved.
+
+The project stands on the original work in
+[`antirez/ds4`](https://github.com/antirez/ds4), the CUDA and batched-serving
+work in [`Entrpi/ds4`](https://github.com/Entrpi/ds4), and the DFM family and
+Rust-host work developed in [`Baekpica/ds4`](https://github.com/Baekpica/ds4).
+
+It also depends on the GGUF ecosystem, quantization formats, engineering
+knowledge, and selected MIT-licensed kernel code from
+[`llama.cpp`](https://github.com/ggml-org/llama.cpp) and GGML. Their notices
+and the exact vendored kernel pin remain in this tree.

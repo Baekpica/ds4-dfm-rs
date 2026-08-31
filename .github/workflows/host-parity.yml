@@ -1,0 +1,40 @@
+name: Host parity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: host-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-parity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked
+      - name: C and Rust host parity
+        run: |
+          make test-kv-parity
+          make test-web-parity
+          make test-dist-parity
+          make test-server-parity
+          make test-catalog-parity
+          make test-tokenizer-parity
+          make test-session-parity
+          make test-agent-parity
+      - name: Serialized workspace tests
+        run: cargo test --workspace --locked -- --test-threads=1
+      - name: All host targets
+        run: cargo check --workspace --all-targets --locked
