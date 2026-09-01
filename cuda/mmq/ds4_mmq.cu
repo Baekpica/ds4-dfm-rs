@@ -2538,8 +2538,7 @@ __global__ static void ds4_q5_0_f32_expert_major_accum_kernel(
     const int row_base = (int)blockIdx.x * k_rows_per_block + warp;
     const int blocks_per_expert = M * k_blocks;
 
-    float scales[k_rows_per_warp][k_blocks];
-    int quants[k_rows_per_warp][k_blocks];
+    float dequants[k_rows_per_warp][k_blocks];
 #pragma unroll
     for (int row_i = 0; row_i < k_rows_per_warp; ++row_i) {
         const int row = row_base + row_i * k_warps;
@@ -2559,8 +2558,7 @@ __global__ static void ds4_q5_0_f32_expert_major_accum_kernel(
                 quant = (low | (int)(((qh >> lane) & 1u) << 4)) - 16;
                 scale = __half2float(block->d);
             }
-            scales[row_i][block_i] = scale;
-            quants[row_i][block_i] = quant;
+            dequants[row_i][block_i] = scale * quant;
         }
     }
 
@@ -2584,7 +2582,7 @@ __global__ static void ds4_q5_0_f32_expert_major_accum_kernel(
 #pragma unroll
             for (int block_i = 0; block_i < k_blocks; ++block_i)
                 sum += input[block_i * QK5_0 + lane] *
-                       scales[row_i][block_i] * quants[row_i][block_i];
+                       dequants[row_i][block_i];
 #pragma unroll
             for (int offset = 16; offset > 0; offset >>= 1)
                 sum += __shfl_down_sync(0xffffffffu, sum, offset);
