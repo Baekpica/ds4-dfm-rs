@@ -2573,6 +2573,10 @@ __global__ static void ds4_q5_0_f32_expert_major_accum_kernel(
             input[threadIdx.x] = X[(int64_t)src * x_stride + x_offset +
                                    threadIdx.x];
         __syncthreads();
+        float inputs[k_blocks];
+#pragma unroll
+        for (int block_i = 0; block_i < k_blocks; ++block_i)
+            inputs[block_i] = input[block_i * QK5_0 + lane];
 
 #pragma unroll
         for (int row_i = 0; row_i < k_rows_per_warp; ++row_i) {
@@ -2581,8 +2585,7 @@ __global__ static void ds4_q5_0_f32_expert_major_accum_kernel(
             float sum = 0.0f;
 #pragma unroll
             for (int block_i = 0; block_i < k_blocks; ++block_i)
-                sum += input[block_i * QK5_0 + lane] *
-                       dequants[row_i][block_i];
+                sum += inputs[block_i] * dequants[row_i][block_i];
 #pragma unroll
             for (int offset = 16; offset > 0; offset >>= 1)
                 sum += __shfl_down_sync(0xffffffffu, sum, offset);
