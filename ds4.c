@@ -1133,6 +1133,22 @@ static bool ds4_qwen4exp_layer_is_full_attention(uint32_t il) {
     return DS4_N_SWA_PERIOD != 0 && (il % DS4_N_SWA_PERIOD) == 3u;
 }
 
+#define QWEN4EXP_YARN_MAX_FACTOR 4u
+
+static uint32_t qwen4exp_yarn_context_limit(void) {
+    return (uint32_t)DS4_ROPE_ORIG_CTX * QWEN4EXP_YARN_MAX_FACTOR;
+}
+
+static float qwen4exp_yarn_factor_for_context(uint32_t context_cap) {
+    const uint32_t orig = (uint32_t)DS4_ROPE_ORIG_CTX;
+    if (context_cap <= orig) return 1.0f;
+    uint32_t factor = (uint32_t)(((uint64_t)context_cap + orig - 1u) / orig);
+    if (factor > QWEN4EXP_YARN_MAX_FACTOR) {
+        factor = QWEN4EXP_YARN_MAX_FACTOR;
+    }
+    return (float)factor;
+}
+
 /* Exact allocation plan for the correctness-first Qwen serial graph.  Keep
  * this pure so loader tests and the pre-allocation Spark fit gate share one
  * answer even in CPU-only inspection builds. */
@@ -21051,6 +21067,8 @@ static bool qwen4exp_qsa_forward_impl(
     const uint32_t index_qk_dim = index_q_dim + index_head_dim;
     const uint32_t q_dim = heads * head_dim;
     const uint32_t kv_dim = kv_heads * head_dim;
+    const float yarn_factor =
+        qwen4exp_yarn_factor_for_context(state->context_cap);
     if (state->context_cap / state->ratio != ws->block_cap ||
         state->block_cap != ws->block_cap || state->ratio != ws->ratio ||
         state->index_head_dim != index_head_dim ||
@@ -21089,11 +21107,11 @@ static bool qwen4exp_qsa_forward_impl(
               ? ds4_gpu_qwen4exp_mrope_tensor(
                     ws->index_query, mrope_positions, n_tokens,
                     index_heads, index_head_dim, ws->rotary_dim,
-                    pos0, DS4_ROPE_FREQ_BASE, 1.0f,
+                    pos0, DS4_ROPE_FREQ_BASE, yarn_factor,
                     (uint32_t)DS4_ROPE_ORIG_CTX)
               : ds4_gpu_qwen4exp_rope_tensor(
                     ws->index_query, n_tokens, index_heads, index_head_dim,
-                    ws->rotary_dim, pos0, DS4_ROPE_FREQ_BASE, 1.0f,
+                    ws->rotary_dim, pos0, DS4_ROPE_FREQ_BASE, yarn_factor,
                     (uint32_t)DS4_ROPE_ORIG_CTX))) {
         return false;
     }
@@ -21107,7 +21125,7 @@ static bool qwen4exp_qsa_forward_impl(
                 weights->index_k_norm->abs_offset,
                 old_blocks, max_blocks - old_blocks, state->block_cap,
                 ws->ratio, index_head_dim, ws->rotary_dim,
-                DS4_ROPE_FREQ_BASE, 1.0f,
+                DS4_ROPE_FREQ_BASE, yarn_factor,
                 (uint32_t)DS4_ROPE_ORIG_CTX, DS4_RMS_EPS)) {
         return false;
     }
@@ -21168,20 +21186,20 @@ static bool qwen4exp_qsa_forward_impl(
         !(mrope_positions
               ? ds4_gpu_qwen4exp_mrope_tensor(
                     ws->query, mrope_positions, n_tokens, heads, head_dim,
-                    ws->rotary_dim, pos0, DS4_ROPE_FREQ_BASE, 1.0f,
+                    ws->rotary_dim, pos0, DS4_ROPE_FREQ_BASE, yarn_factor,
                     (uint32_t)DS4_ROPE_ORIG_CTX)
               : ds4_gpu_qwen4exp_rope_tensor(
                     ws->query, n_tokens, heads, head_dim, ws->rotary_dim,
-                    pos0, DS4_ROPE_FREQ_BASE, 1.0f,
+                    pos0, DS4_ROPE_FREQ_BASE, yarn_factor,
                     (uint32_t)DS4_ROPE_ORIG_CTX)) ||
         !(mrope_positions
               ? ds4_gpu_qwen4exp_mrope_tensor(
                     ws->key, mrope_positions, n_tokens, kv_heads, head_dim,
-                    ws->rotary_dim, pos0, DS4_ROPE_FREQ_BASE, 1.0f,
+                    ws->rotary_dim, pos0, DS4_ROPE_FREQ_BASE, yarn_factor,
                     (uint32_t)DS4_ROPE_ORIG_CTX)
               : ds4_gpu_qwen4exp_rope_tensor(
                     ws->key, n_tokens, kv_heads, head_dim, ws->rotary_dim,
-                    pos0, DS4_ROPE_FREQ_BASE, 1.0f,
+                    pos0, DS4_ROPE_FREQ_BASE, yarn_factor,
                     (uint32_t)DS4_ROPE_ORIG_CTX)) ||
         !ds4_gpu_qwen4exp_qsa_store_kv_tensor(
                 state->k_cache, state->v_cache, ws->key, ws->value,
@@ -62657,7 +62675,8 @@ static bool qwen4exp_graph_session_fit_check(ds4_backend backend,
         if (q) { q->fits = 1; q->fail_open = 1; }
         return true;
     }
-    if (backend != DS4_BACKEND_CUDA || ctx_size > DS4_ROPE_ORIG_CTX) return false;
+    if (backend != DS4_BACKEND_CUDA ||
+        ctx_size > qwen4exp_yarn_context_limit()) return false;
     const uint64_t plan =
         qwen4exp_graph_bytes_estimate(ctx_size, prefill_cap);
     if (plan == 0u) return false;
@@ -63010,13 +63029,14 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
         fprintf(stderr, "ds4: Qwen4Exp sessions require the CUDA backend\n");
         return 1;
 #else
-        if ((uint64_t)ctx_size > DS4_ROPE_ORIG_CTX ||
+        if ((uint64_t)ctx_size > qwen4exp_yarn_context_limit() ||
             e->backend != DS4_BACKEND_CUDA || !e->metal_ready ||
             !e->qwen_ple_store || !e->qwen_ple_cuda ||
             e->distributed.role != DS4_DISTRIBUTED_NONE) {
             fprintf(stderr,
                     "ds4: Qwen4Exp sessions require one full CUDA model "
-                    "with a ready SSD-PLE store\n");
+                    "with a ready SSD-PLE store and ctx <= %u\n",
+                    qwen4exp_yarn_context_limit());
             return 1;
         }
         ds4_session *s = xcalloc(1, sizeof(*s));
