@@ -25,10 +25,17 @@ enum {
     KV_HEADS = 2,
     HEAD_DIM = 256,
     ROTARY_DIM = 64,
+    YARN_ORIG_CTX = 262144,
+    YARN_POS0 = 1000000 - ROWS,
     Q_DIM = HEADS * HEAD_DIM,
     Q_PROJ_DIM = Q_DIM * 2,
     KV_DIM = KV_HEADS * HEAD_DIM,
 };
+
+#define QWEN_ROPE_BASE 10000000.0f
+#define QWEN_YARN_FACTOR 4.0f
+#define QWEN_YARN_BETA_FAST 32.0f
+#define QWEN_YARN_BETA_SLOW 1.0f
 
 #define REQUIRE(condition, message) do {                                      \
     if (!(condition)) {                                                       \
@@ -112,19 +119,44 @@ static void zero_rms_norm(float *x, const float *weight, uint32_t rows,
     }
 }
 
-static void rope_first(float *x, uint32_t rows, uint32_t heads,
-                       uint32_t head_dim, uint32_t pos0) {
+static void rope_freqs(float *inv_freq, float *attn_factor, float factor) {
     const uint32_t half = ROTARY_DIM / 2u;
-    float inv_freq[ROTARY_DIM / 2u];
-    for (uint32_t d = 0; d < half; d++)
-        inv_freq[d] = 1.0f / powf(10000000.0f,
+    const float low = floorf((float)ROTARY_DIM *
+        logf((float)YARN_ORIG_CTX /
+             (QWEN_YARN_BETA_FAST * 2.0f * (float)M_PI)) /
+        (2.0f * logf(QWEN_ROPE_BASE)));
+    const float high = ceilf((float)ROTARY_DIM *
+        logf((float)YARN_ORIG_CTX /
+             (QWEN_YARN_BETA_SLOW * 2.0f * (float)M_PI)) /
+        (2.0f * logf(QWEN_ROPE_BASE)));
+    *attn_factor = factor > 1.0f ? 0.1f * logf(factor) + 1.0f : 1.0f;
+    for (uint32_t d = 0; d < half; d++) {
+        const float base = 1.0f / powf(QWEN_ROPE_BASE,
             (2.0f * (float)d) / (float)ROTARY_DIM);
+        if (factor <= 1.0f) {
+            inv_freq[d] = base;
+            continue;
+        }
+        const float ramp = fminf(1.0f, fmaxf(0.0f,
+            ((float)d - fmaxf(low, 0.0f)) /
+            fmaxf(0.001f, fminf(high, ROTARY_DIM - 1.0f) -
+                             fmaxf(low, 0.0f))));
+        inv_freq[d] = base * (1.0f - ramp) + base / factor * ramp;
+    }
+}
+
+static void rope_first(float *x, uint32_t rows, uint32_t heads,
+                       uint32_t head_dim, uint32_t pos0, float factor) {
+    const uint32_t half = ROTARY_DIM / 2u;
+    float inv_freq[ROTARY_DIM / 2u], attn_factor;
+    rope_freqs(inv_freq, &attn_factor, factor);
     for (uint32_t row = 0; row < rows; row++) {
         for (uint32_t head = 0; head < heads; head++) {
             float *v = x + ((uint64_t)row * heads + head) * head_dim;
             for (uint32_t d = 0; d < half; d++) {
                 const float theta = (float)(pos0 + row) * inv_freq[d];
-                const float c = cosf(theta), s = sinf(theta);
+                const float c = cosf(theta) * attn_factor;
+                const float s = sinf(theta) * attn_factor;
                 const float x0 = v[d], x1 = v[d + half];
                 v[d] = x0 * c - x1 * s;
                 v[d + half] = x1 * c + x0 * s;
@@ -135,12 +167,10 @@ static void rope_first(float *x, uint32_t rows, uint32_t heads,
 
 static void mrope_first(float *x, uint32_t rows, uint32_t heads,
                         uint32_t head_dim, const int32_t *positions,
-                        uint32_t pos0) {
+                        uint32_t pos0, float factor) {
     const uint32_t half = ROTARY_DIM / 2u;
-    float inv_freq[ROTARY_DIM / 2u];
-    for (uint32_t d = 0; d < half; d++)
-        inv_freq[d] = 1.0f / powf(10000000.0f,
-            (2.0f * (float)d) / (float)ROTARY_DIM);
+    float inv_freq[ROTARY_DIM / 2u], attn_factor;
+    rope_freqs(inv_freq, &attn_factor, factor);
     for (uint32_t row = 0; row < rows; row++) {
         for (uint32_t head = 0; head < heads; head++) {
             float *v = x + ((uint64_t)row * heads + head) * head_dim;
@@ -148,7 +178,8 @@ static void mrope_first(float *x, uint32_t rows, uint32_t heads,
                 const float theta =
                     (float)positions[((uint64_t)pos0 + row) * 3u + d % 3u] *
                     inv_freq[d];
-                const float c = cosf(theta), s = sinf(theta);
+                const float c = cosf(theta) * attn_factor;
+                const float s = sinf(theta) * attn_factor;
                 const float x0 = v[d], x1 = v[d + half];
                 v[d] = x0 * c - x1 * s;
                 v[d + half] = x1 * c + x0 * s;
@@ -158,7 +189,8 @@ static void mrope_first(float *x, uint32_t rows, uint32_t heads,
 }
 
 static void pool_blocks(float *pooled, const float *raw,
-                        const float *weight, const int32_t *positions) {
+                        const float *weight, const int32_t *positions,
+                        float factor) {
     for (uint32_t block = 0; block < BLOCK_CAP; block++) {
         float *out = pooled + (uint64_t)block * INDEX_DIM;
         for (uint32_t d = 0; d < INDEX_DIM; d++) {
@@ -170,10 +202,30 @@ static void pool_blocks(float *pooled, const float *raw,
         zero_rms_norm(out, weight, 1u, INDEX_DIM, INDEX_DIM);
         if (positions)
             mrope_first(out, 1u, 1u, INDEX_DIM,
-                        positions, block * RATIO);
+                        positions, block * RATIO, factor);
         else
-            rope_first(out, 1u, 1u, INDEX_DIM, block * RATIO);
+            rope_first(out, 1u, 1u, INDEX_DIM, block * RATIO, factor);
     }
+}
+
+static void check_yarn_rope(void) {
+    float input[HEAD_DIM], want[HEAD_DIM], got[HEAD_DIM];
+    for (uint32_t d = 0; d < HEAD_DIM; d++)
+        input[d] = 0.31f * sinf((float)(d + 7u) * 0.037f);
+    memcpy(want, input, sizeof(want));
+    rope_first(want, 1u, 1u, HEAD_DIM, YARN_POS0, QWEN_YARN_FACTOR);
+
+    ds4_gpu_tensor *device = ds4_gpu_tensor_alloc(sizeof(input));
+    REQUIRE(device, "YaRN tensor allocation");
+    upload_f32(device, input, HEAD_DIM, "YaRN input upload");
+    REQUIRE(ds4_gpu_qwen4exp_rope_tensor(
+                device, 1u, 1u, HEAD_DIM, ROTARY_DIM, YARN_POS0,
+                QWEN_ROPE_BASE, QWEN_YARN_FACTOR, YARN_ORIG_CTX),
+            "QSA 1M YaRN RoPE");
+    read_f32(device, got, HEAD_DIM, "YaRN output download");
+    compare_f32("QSA factor-4 YaRN at position 1M", got, want,
+                HEAD_DIM, 5.0e-6f, 5.0e-6);
+    ds4_gpu_tensor_free(device);
 }
 
 static void block_scores(float *scores, const float *query,
@@ -546,8 +598,8 @@ int main(void) {
     }
     zero_rms_norm(index_query_want, index_q_weight,
                   ROWS, INDEX_Q_DIM, INDEX_DIM);
-    rope_first(index_query_want, ROWS, INDEX_HEADS, INDEX_DIM, POS0);
-    pool_blocks(pooled_want, raw_want, index_k_weight, NULL);
+    rope_first(index_query_want, ROWS, INDEX_HEADS, INDEX_DIM, POS0, 1.0f);
+    pool_blocks(pooled_want, raw_want, index_k_weight, NULL, 1.0f);
     block_scores(scores_want, index_query_want, pooled_want);
     select_tokens(tokens_want, counts_want, scores_want);
 
@@ -575,8 +627,8 @@ int main(void) {
     memcpy(key_want, key, kv_rows_count * sizeof(float));
     zero_rms_norm(query_want, q_weight, ROWS, Q_DIM, HEAD_DIM);
     zero_rms_norm(key_want, k_weight, ROWS, KV_DIM, HEAD_DIM);
-    rope_first(query_want, ROWS, HEADS, HEAD_DIM, POS0);
-    rope_first(key_want, ROWS, KV_HEADS, HEAD_DIM, POS0);
+    rope_first(query_want, ROWS, HEADS, HEAD_DIM, POS0, 1.0f);
+    rope_first(key_want, ROWS, KV_HEADS, HEAD_DIM, POS0, 1.0f);
     for (uint64_t i = 0; i < kv_cache_count; i++) {
         k_cache[i] = 0.18f * sinf((float)(i + 3u) * 0.0019f);
         v_cache[i] = 0.22f * cosf((float)(i + 19u) * 0.0023f);
@@ -596,6 +648,7 @@ int main(void) {
                         tokens_want, counts_want);
 
     REQUIRE(ds4_gpu_init(), "CUDA init");
+    check_yarn_rope();
     check_vision_attention();
     REQUIRE(unsetenv("DS4_CUDA_COPY_MODEL") == 0,
             "disable QSA fixture whole copy");
@@ -639,12 +692,12 @@ int main(void) {
             "QSA index query norm");
     REQUIRE(ds4_gpu_qwen4exp_rope_tensor(
                 dindex_q, ROWS, INDEX_HEADS, INDEX_DIM,
-                ROTARY_DIM, POS0, 10000000.0f),
+                ROTARY_DIM, POS0, QWEN_ROPE_BASE, 1.0f, YARN_ORIG_CTX),
             "QSA index query RoPE");
     REQUIRE(ds4_gpu_qwen4exp_qsa_pool_blocks_tensor(
                 dpool, draw, NULL, model_map, model_size, index_k_norm_offset,
                 0u, BLOCK_CAP, BLOCK_CAP, RATIO, INDEX_DIM,
-                ROTARY_DIM, 10000000.0f, 1.0e-6f),
+                ROTARY_DIM, QWEN_ROPE_BASE, 1.0f, YARN_ORIG_CTX, 1.0e-6f),
             "QSA pooled index blocks");
     REQUIRE(ds4_gpu_qwen4exp_qsa_block_scores_tensor(
                 dscores, dindex_q, dpool, ROWS, POS0, BLOCK_CAP,
@@ -667,11 +720,13 @@ int main(void) {
     compare_f32("QSA four-token pooled key cache", pooled_got, pooled_want,
                 pooled_count, 4.0e-6f, 4.0e-6);
 
-    pool_blocks(pooled_want, raw_want, index_k_weight, mrope_positions);
+    pool_blocks(pooled_want, raw_want, index_k_weight, mrope_positions,
+                QWEN_YARN_FACTOR);
     REQUIRE(ds4_gpu_qwen4exp_qsa_pool_blocks_tensor(
                 dpool, draw, dmrope, model_map, model_size,
                 index_k_norm_offset, 0u, BLOCK_CAP, BLOCK_CAP, RATIO,
-                INDEX_DIM, ROTARY_DIM, 10000000.0f, 1.0e-6f),
+                INDEX_DIM, ROTARY_DIM, QWEN_ROPE_BASE, QWEN_YARN_FACTOR,
+                YARN_ORIG_CTX, 1.0e-6f),
             "QSA M-RoPE pooled index blocks");
     read_f32(dpool, pooled_got, pooled_count, "QSA M-RoPE pool download");
     compare_f32("QSA M-RoPE pooled key cache", pooled_got, pooled_want,
@@ -688,12 +743,13 @@ int main(void) {
     zero_rms_norm(index_query_got, index_q_weight,
                   ROWS, INDEX_Q_DIM, INDEX_DIM);
     mrope_first(index_query_want, ROWS, INDEX_HEADS, INDEX_DIM,
-                mrope_positions, POS0);
+                mrope_positions, POS0, QWEN_YARN_FACTOR);
     upload_f32(dindex_q, index_query_got, index_q_count,
                "QSA M-RoPE input upload");
     REQUIRE(ds4_gpu_qwen4exp_mrope_tensor(
                 dindex_q, dmrope, ROWS, INDEX_HEADS, INDEX_DIM,
-                ROTARY_DIM, POS0, 10000000.0f),
+                ROTARY_DIM, POS0, QWEN_ROPE_BASE, QWEN_YARN_FACTOR,
+                YARN_ORIG_CTX),
             "QSA interleaved M-RoPE");
     read_f32(dindex_q, index_query_got, index_q_count,
              "QSA M-RoPE query download");
@@ -743,11 +799,11 @@ int main(void) {
             "QSA main key norm");
     REQUIRE(ds4_gpu_qwen4exp_rope_tensor(
                 dquery, ROWS, HEADS, HEAD_DIM, ROTARY_DIM,
-                POS0, 10000000.0f),
+                POS0, QWEN_ROPE_BASE, 1.0f, YARN_ORIG_CTX),
             "QSA main query RoPE");
     REQUIRE(ds4_gpu_qwen4exp_rope_tensor(
                 dkey, ROWS, KV_HEADS, HEAD_DIM, ROTARY_DIM,
-                POS0, 10000000.0f),
+                POS0, QWEN_ROPE_BASE, 1.0f, YARN_ORIG_CTX),
             "QSA main key RoPE");
     REQUIRE(ds4_gpu_qwen4exp_qsa_store_kv_tensor(
                 dkcache, dvcache, dkey, dvalue, ROWS, POS0, CACHE_CAP,

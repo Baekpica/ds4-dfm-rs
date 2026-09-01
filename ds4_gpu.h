@@ -1311,7 +1311,9 @@ int ds4_gpu_qwen4exp_rope_tensor(
         uint32_t          head_dim,
         uint32_t          rotary_dim,
         uint32_t          pos0,
-        float             freq_base);
+        float             freq_base,
+        float             scale_factor,
+        uint32_t          n_ctx_orig);
 
 int ds4_gpu_qwen4exp_mrope_tensor(
         ds4_gpu_tensor       *x,
@@ -1321,7 +1323,9 @@ int ds4_gpu_qwen4exp_mrope_tensor(
         uint32_t              head_dim,
         uint32_t              rotary_dim,
         uint32_t              pos0,
-        float                 freq_base);
+        float                 freq_base,
+        float                 scale_factor,
+        uint32_t              n_ctx_orig);
 
 int ds4_gpu_qwen4exp_qsa_pool_blocks_tensor(
         ds4_gpu_tensor       *pooled_cache,
@@ -1337,6 +1341,8 @@ int ds4_gpu_qwen4exp_qsa_pool_blocks_tensor(
         uint32_t                head_dim,
         uint32_t                rotary_dim,
         float                   freq_base,
+        float                   scale_factor,
+        uint32_t                n_ctx_orig,
         float                   eps);
 
 int ds4_gpu_qwen4exp_qsa_block_scores_tensor(

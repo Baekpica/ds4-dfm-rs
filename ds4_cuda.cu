@@ -9079,24 +9079,52 @@ __device__ __forceinline__ static void qwen4exp_reduced_sincos(
 }
 
 #define QWEN4EXP_QSA_MAX_ROTARY_DIM 256u
+#define QWEN4EXP_YARN_BETA_FAST 32.0f
+#define QWEN4EXP_YARN_BETA_SLOW 1.0f
 typedef struct {
     float inv_freq[QWEN4EXP_QSA_MAX_ROTARY_DIM / 2u];
+    float attn_factor;
 } qwen4exp_rope_freqs;
 
 /* The reference constructs inv_freq in F32 on the host and only then moves
- * it to the accelerator. Passing the small table by value both preserves
- * those semantics and avoids hundreds of device powf calls per token. */
+ * it to the accelerator. Qwen's factor-4 recipe uses Transformers' default
+ * YaRN beta=32/1 and magnitude scale:
+ * https://huggingface.co/Qwen/Qwen3.8-Flash-Next-FP8#processing-ultra-long-texts
+ * https://github.com/huggingface/transformers/blob/main/src/transformers/modeling_rope_utils.py
+ * Passing the table by value also avoids device powf calls per token. */
 static bool qwen4exp_rope_freqs_init(qwen4exp_rope_freqs *out,
-        uint32_t rotary_dim, float freq_base) {
+        uint32_t rotary_dim, float freq_base, float scale_factor,
+        uint32_t n_ctx_orig) {
     if (!out || rotary_dim == 0u ||
         rotary_dim > QWEN4EXP_QSA_MAX_ROTARY_DIM || (rotary_dim & 1u) ||
-        !isfinite(freq_base) || freq_base <= 0.0f) {
+        !isfinite(freq_base) || freq_base <= 0.0f ||
+        !isfinite(scale_factor) || scale_factor < 1.0f || n_ctx_orig == 0u) {
         return false;
     }
     memset(out, 0, sizeof(*out));
-    for (uint32_t d = 0; d < rotary_dim / 2u; d++)
-        out->inv_freq[d] =
+    out->attn_factor = scale_factor > 1.0f
+        ? 0.1f * logf(scale_factor) + 1.0f : 1.0f;
+    const float low = fmaxf(0.0f, floorf((float)rotary_dim *
+        logf((float)n_ctx_orig /
+             (QWEN4EXP_YARN_BETA_FAST * 2.0f * (float)M_PI)) /
+        (2.0f * logf(freq_base))));
+    const float high = fminf((float)rotary_dim - 1.0f,
+        ceilf((float)rotary_dim *
+            logf((float)n_ctx_orig /
+                 (QWEN4EXP_YARN_BETA_SLOW * 2.0f * (float)M_PI)) /
+            (2.0f * logf(freq_base))));
+    for (uint32_t d = 0; d < rotary_dim / 2u; d++) {
+        const float base =
             1.0f / powf(freq_base, (2.0f * (float)d) / (float)rotary_dim);
+        if (scale_factor <= 1.0f) {
+            out->inv_freq[d] = base;
+            continue;
+        }
+        const float ramp = fminf(1.0f, fmaxf(0.0f,
+            ((float)d - low) / fmaxf(0.001f, high - low)));
+        out->inv_freq[d] =
+            base * (1.0f - ramp) + base / scale_factor * ramp;
+    }
     return true;
 }
 
@@ -9117,6 +9145,8 @@ __global__ static void qwen4exp_rope_first_kernel(
     const float theta = (float)(pos0 + row) * freqs.inv_freq[pair];
     float c, s;
     qwen4exp_reduced_sincos(theta, &s, &c);
+    c *= freqs.attn_factor;
+    s *= freqs.attn_factor;
     const float x0 = x[base + pair];
     const float x1 = x[base + pair + half];
     x[base + pair] = x0 * c - x1 * s;
@@ -9142,6 +9172,8 @@ __global__ static void qwen4exp_mrope_first_kernel(
     const float theta = (float)position * freqs.inv_freq[pair];
     float c, s;
     qwen4exp_reduced_sincos(theta, &s, &c);
+    c *= freqs.attn_factor;
+    s *= freqs.attn_factor;
     const float x0 = x[base + pair];
     const float x1 = x[base + pair + half];
     x[base + pair] = x0 * c - x1 * s;
@@ -9189,6 +9221,8 @@ __global__ static void qwen4exp_qsa_pool_blocks_kernel(
         const float theta = pos * freqs.inv_freq[d];
         float c, s;
         qwen4exp_reduced_sincos(theta, &s, &c);
+        c *= freqs.attn_factor;
+        s *= freqs.attn_factor;
         const float x0 = value[d];
         const float x1 = value[d + half];
         pooled_cache[out_base + d] = x0 * c - x1 * s;
@@ -25767,11 +25801,12 @@ extern "C" int ds4_gpu_qwen4exp_qsa_split_q_gate_tensor(
 extern "C" int ds4_gpu_qwen4exp_rope_tensor(
         ds4_gpu_tensor *x, uint32_t rows, uint32_t heads,
         uint32_t head_dim, uint32_t rotary_dim, uint32_t pos0,
-        float freq_base) {
+        float freq_base, float scale_factor, uint32_t n_ctx_orig) {
     if (!x || rows == 0u || heads == 0u || head_dim == 0u ||
         rotary_dim == 0u || rotary_dim > head_dim ||
         rotary_dim > QWEN4EXP_QSA_MAX_ROTARY_DIM || (rotary_dim & 1u) ||
         !isfinite(freq_base) || freq_base <= 0.0f ||
+        !isfinite(scale_factor) || scale_factor < 1.0f || n_ctx_orig == 0u ||
         (uint64_t)rows > UINT64_MAX / heads / head_dim) {
         return 0;
     }
@@ -25783,7 +25818,8 @@ extern "C" int ds4_gpu_qwen4exp_rope_tensor(
         return 0;
     }
     qwen4exp_rope_freqs freqs;
-    if (!qwen4exp_rope_freqs_init(&freqs, rotary_dim, freq_base)) return 0;
+    if (!qwen4exp_rope_freqs_init(
+            &freqs, rotary_dim, freq_base, scale_factor, n_ctx_orig)) return 0;
     qwen4exp_rope_first_kernel<<<
         (pairs + 255u) / 256u, 256u, 0, ds4_current_stream()>>>(
         (float *)x->ptr, rows, heads, head_dim, rotary_dim,
@@ -25794,11 +25830,13 @@ extern "C" int ds4_gpu_qwen4exp_rope_tensor(
 extern "C" int ds4_gpu_qwen4exp_mrope_tensor(
         ds4_gpu_tensor *x, const ds4_gpu_tensor *positions,
         uint32_t rows, uint32_t heads, uint32_t head_dim,
-        uint32_t rotary_dim, uint32_t pos0, float freq_base) {
+        uint32_t rotary_dim, uint32_t pos0, float freq_base,
+        float scale_factor, uint32_t n_ctx_orig) {
     if (!x || !positions || rows == 0u || heads == 0u || head_dim == 0u ||
         rotary_dim == 0u || rotary_dim > head_dim ||
         rotary_dim > QWEN4EXP_QSA_MAX_ROTARY_DIM || (rotary_dim & 1u) ||
         !isfinite(freq_base) || freq_base <= 0.0f ||
+        !isfinite(scale_factor) || scale_factor < 1.0f || n_ctx_orig == 0u ||
         (uint64_t)rows > UINT64_MAX / heads / head_dim) return 0;
     const uint64_t values = (uint64_t)rows * heads * head_dim;
     const uint64_t pairs = (uint64_t)rows * heads * (rotary_dim / 2u);
@@ -25809,7 +25847,8 @@ extern "C" int ds4_gpu_qwen4exp_mrope_tensor(
         x->bytes < values * sizeof(float) ||
         positions->bytes < position_rows * 3u * sizeof(int32_t)) return 0;
     qwen4exp_rope_freqs freqs;
-    if (!qwen4exp_rope_freqs_init(&freqs, rotary_dim, freq_base)) return 0;
+    if (!qwen4exp_rope_freqs_init(
+            &freqs, rotary_dim, freq_base, scale_factor, n_ctx_orig)) return 0;
     qwen4exp_mrope_first_kernel<<<
         (pairs + 255u) / 256u, 256u, 0, ds4_current_stream()>>>(
         (float *)x->ptr, (const int32_t *)positions->ptr,
@@ -25824,7 +25863,8 @@ extern "C" int ds4_gpu_qwen4exp_qsa_pool_blocks_tensor(
         const void *model_map, uint64_t model_size,
         uint64_t norm_weight_offset, uint32_t first_block,
         uint32_t n_blocks, uint32_t block_cap, uint32_t ratio,
-        uint32_t head_dim, uint32_t rotary_dim, float freq_base, float eps) {
+        uint32_t head_dim, uint32_t rotary_dim, float freq_base,
+        float scale_factor, uint32_t n_ctx_orig, float eps) {
     if (!pooled_cache || !raw_key_cache || !model_map || n_blocks == 0u ||
         ratio == 0u || head_dim == 0u || head_dim > 1024u ||
         (head_dim & (head_dim - 1u)) != 0u || rotary_dim == 0u ||
@@ -25832,6 +25872,7 @@ extern "C" int ds4_gpu_qwen4exp_qsa_pool_blocks_tensor(
         rotary_dim > QWEN4EXP_QSA_MAX_ROTARY_DIM || (rotary_dim & 1u) ||
         first_block > block_cap || n_blocks > block_cap - first_block ||
         !isfinite(freq_base) || freq_base <= 0.0f ||
+        !isfinite(scale_factor) || scale_factor < 1.0f || n_ctx_orig == 0u ||
         !isfinite(eps) || eps <= 0.0f || norm_weight_offset > model_size) {
         return 0;
     }
@@ -25852,7 +25893,8 @@ extern "C" int ds4_gpu_qwen4exp_qsa_pool_blocks_tensor(
         "Qwen4Exp QSA pooled-key norm");
     if (!weight) return 0;
     qwen4exp_rope_freqs freqs;
-    if (!qwen4exp_rope_freqs_init(&freqs, rotary_dim, freq_base)) return 0;
+    if (!qwen4exp_rope_freqs_init(
+            &freqs, rotary_dim, freq_base, scale_factor, n_ctx_orig)) return 0;
     qwen4exp_qsa_pool_blocks_kernel<<<
         n_blocks, head_dim, 2u * head_dim * sizeof(float),
         ds4_current_stream()>>>(

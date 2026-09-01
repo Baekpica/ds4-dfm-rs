@@ -21089,10 +21089,12 @@ static bool qwen4exp_qsa_forward_impl(
               ? ds4_gpu_qwen4exp_mrope_tensor(
                     ws->index_query, mrope_positions, n_tokens,
                     index_heads, index_head_dim, ws->rotary_dim,
-                    pos0, DS4_ROPE_FREQ_BASE)
+                    pos0, DS4_ROPE_FREQ_BASE, 1.0f,
+                    (uint32_t)DS4_ROPE_ORIG_CTX)
               : ds4_gpu_qwen4exp_rope_tensor(
                     ws->index_query, n_tokens, index_heads, index_head_dim,
-                    ws->rotary_dim, pos0, DS4_ROPE_FREQ_BASE))) {
+                    ws->rotary_dim, pos0, DS4_ROPE_FREQ_BASE, 1.0f,
+                    (uint32_t)DS4_ROPE_ORIG_CTX))) {
         return false;
     }
 
@@ -21105,7 +21107,8 @@ static bool qwen4exp_qsa_forward_impl(
                 weights->index_k_norm->abs_offset,
                 old_blocks, max_blocks - old_blocks, state->block_cap,
                 ws->ratio, index_head_dim, ws->rotary_dim,
-                DS4_ROPE_FREQ_BASE, DS4_RMS_EPS)) {
+                DS4_ROPE_FREQ_BASE, 1.0f,
+                (uint32_t)DS4_ROPE_ORIG_CTX, DS4_RMS_EPS)) {
         return false;
     }
 
@@ -21165,17 +21168,21 @@ static bool qwen4exp_qsa_forward_impl(
         !(mrope_positions
               ? ds4_gpu_qwen4exp_mrope_tensor(
                     ws->query, mrope_positions, n_tokens, heads, head_dim,
-                    ws->rotary_dim, pos0, DS4_ROPE_FREQ_BASE)
+                    ws->rotary_dim, pos0, DS4_ROPE_FREQ_BASE, 1.0f,
+                    (uint32_t)DS4_ROPE_ORIG_CTX)
               : ds4_gpu_qwen4exp_rope_tensor(
                     ws->query, n_tokens, heads, head_dim, ws->rotary_dim,
-                    pos0, DS4_ROPE_FREQ_BASE)) ||
+                    pos0, DS4_ROPE_FREQ_BASE, 1.0f,
+                    (uint32_t)DS4_ROPE_ORIG_CTX)) ||
         !(mrope_positions
               ? ds4_gpu_qwen4exp_mrope_tensor(
                     ws->key, mrope_positions, n_tokens, kv_heads, head_dim,
-                    ws->rotary_dim, pos0, DS4_ROPE_FREQ_BASE)
+                    ws->rotary_dim, pos0, DS4_ROPE_FREQ_BASE, 1.0f,
+                    (uint32_t)DS4_ROPE_ORIG_CTX)
               : ds4_gpu_qwen4exp_rope_tensor(
                     ws->key, n_tokens, kv_heads, head_dim, ws->rotary_dim,
-                    pos0, DS4_ROPE_FREQ_BASE)) ||
+                    pos0, DS4_ROPE_FREQ_BASE, 1.0f,
+                    (uint32_t)DS4_ROPE_ORIG_CTX)) ||
         !ds4_gpu_qwen4exp_qsa_store_kv_tensor(
                 state->k_cache, state->v_cache, ws->key, ws->value,
                 n_tokens, pos0, state->context_cap, kv_heads, head_dim) ||
