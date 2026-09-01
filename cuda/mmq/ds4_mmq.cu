@@ -2528,7 +2528,7 @@ __global__ static void ds4_q5_0_f32_expert_major_accum_kernel(
         int x_offset) {
     constexpr int k_tail = 128;
     constexpr int k_blocks = k_tail / QK5_0;
-    constexpr int k_rows_per_warp = 4;
+    constexpr int k_rows_per_warp = 5;
     constexpr int k_warps = 8;
     constexpr int k_rows_per_block = k_rows_per_warp * k_warps;
 
@@ -2757,7 +2757,7 @@ extern "C" int ds4_mmq_q5_0_f32_moe_accum(
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) return -2;
 
-    const dim3 grid((unsigned)(M + 31) / 32u, (unsigned)n_experts);
+    const dim3 grid((unsigned)(M + 39) / 40u, (unsigned)n_experts);
     ds4_q5_0_f32_expert_major_accum_kernel<<<grid, 256, 0, stream>>>(
         (const block_q5_0 *)W, X, ids_src1.get(), ids_dst.get(),
         expert_bounds.get(), out, M, x_stride, x_offset);
