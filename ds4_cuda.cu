@@ -8784,10 +8784,10 @@ __global__ static void qwen4exp_gdn_controls_kernel(
     g[i] = -expf(a_log[head]) * qwen4exp_softplus(av);
 }
 
-/* Correctness-first recurrent Gated Delta rule. One CUDA block owns one value
- * head, and one thread owns a complete state column. That makes arbitrary
- * chunk boundaries bit-stable: a token is fully committed before the block
- * advances to the next token. Q/K heads are repeated contiguously over value
+/* Correctness-first recurrent Gated Delta rule. Production splits each value
+ * head into two column tiles, and one thread owns a complete state column.
+ * That makes arbitrary chunk boundaries bit-stable: a token is fully
+ * committed before the block advances. Q/K heads repeat contiguously over value
  * heads (48 / 16 == 3 in the production checkpoint). */
 __global__ static void qwen4exp_gdn_recurrent_kernel(
         float *out0, float *state0, const float *mixed_qkv0,
@@ -8796,7 +8796,9 @@ __global__ static void qwen4exp_gdn_recurrent_kernel(
         const float *beta1, const float *g1, uint32_t rows,
         uint32_t key_heads, uint32_t value_heads, uint32_t head_dim,
         uint32_t key_dim, uint32_t value_dim, uint32_t repeat) {
-    const uint32_t value_head = blockIdx.x;
+    const uint32_t value_tile = head_dim == 128u ? blockIdx.x & 1u : 0u;
+    const uint32_t value_head =
+        head_dim == 128u ? blockIdx.x >> 1u : blockIdx.x;
     const uint32_t tid = threadIdx.x;
     if (value_head >= value_heads) return;
     float *out = blockIdx.y == 0u ? out0 : out1;
@@ -8813,12 +8815,14 @@ __global__ static void qwen4exp_gdn_recurrent_kernel(
     const uint64_t state_head_base =
         (uint64_t)value_head * head_dim * head_dim;
 
-    if (head_dim == 128u && blockDim.x == 512u) {
+    if (head_dim == 128u && blockDim.x == 256u) {
         constexpr uint32_t groups = 4u;
-        const uint32_t group = tid / head_dim;
-        const uint32_t v = tid % head_dim;
+        constexpr uint32_t columns = 64u;
+        const uint32_t group = tid / columns;
+        const uint32_t column = tid % columns;
+        const uint32_t v = value_tile * columns + column;
         float *partial = k_raw + head_dim;
-        float *delta_shared = partial + groups * head_dim;
+        float *delta_shared = partial + groups * columns;
 
         for (uint32_t token = 0; token < rows; token++) {
             const uint64_t row_base =
@@ -8869,21 +8873,21 @@ __global__ static void qwen4exp_gdn_recurrent_kernel(
                 const uint64_t at = state_col + (uint64_t)k * head_dim;
                 kv_mem += state[at] * decay * (k_raw[k] * k_inv);
             }
-            partial[(uint64_t)group * head_dim + v] = kv_mem;
+            partial[(uint64_t)group * columns + column] = kv_mem;
             __syncthreads();
             if (group == 0u) {
-                kv_mem = partial[v] + partial[head_dim + v] +
-                         partial[2u * head_dim + v] +
-                         partial[3u * head_dim + v];
+                kv_mem = partial[column] + partial[columns + column] +
+                         partial[2u * columns + column] +
+                         partial[3u * columns + column];
                 const float value = mixed_qkv[
                     row_base + 2u * key_dim +
                     (uint64_t)value_head * head_dim + v];
-                delta_shared[v] =
+                delta_shared[column] =
                     (value - kv_mem) * beta[control_at];
             }
             __syncthreads();
 
-            const float delta = delta_shared[v];
+            const float delta = delta_shared[column];
             float result = 0.0f;
             for (uint32_t k = group; k < head_dim; k += groups) {
                 const uint64_t at = state_col + (uint64_t)k * head_dim;
@@ -8892,14 +8896,14 @@ __global__ static void qwen4exp_gdn_recurrent_kernel(
                 state[at] = sv;
                 result += sv * (q_raw[k] * q_inv);
             }
-            partial[(uint64_t)group * head_dim + v] = result;
+            partial[(uint64_t)group * columns + column] = result;
             __syncthreads();
             if (group == 0u) {
                 out[((uint64_t)token * value_heads + value_head) *
                     head_dim + v] =
-                    partial[v] + partial[head_dim + v] +
-                    partial[2u * head_dim + v] +
-                    partial[3u * head_dim + v];
+                    partial[column] + partial[columns + column] +
+                    partial[2u * columns + column] +
+                    partial[3u * columns + column];
             }
         }
         return;
@@ -25606,12 +25610,13 @@ static int qwen4exp_gdn_recurrent_launch(
           out0->ptr == state1->ptr || out1->ptr == state0->ptr))) {
         return 0;
     }
-    const uint32_t threads = head_dim == 128u ? 512u : head_dim;
+    const uint32_t threads = head_dim == 128u ? 256u : head_dim;
     const uint32_t shared_values = head_dim == 128u
-        ? 7u * head_dim : 4u * head_dim;
+        ? 2u * head_dim + 5u * (head_dim / 2u) : 4u * head_dim;
     const uint32_t shared_bytes = shared_values * (uint32_t)sizeof(float);
     qwen4exp_gdn_recurrent_kernel<<<
-            dim3(value_heads, banks), threads, shared_bytes,
+            dim3(value_heads * (head_dim == 128u ? 2u : 1u), banks),
+            threads, shared_bytes,
             ds4_current_stream()>>>(
             (float *)out0->ptr, (float *)state0->ptr,
             (const float *)mixed_qkv0->ptr, (const float *)beta0->ptr,

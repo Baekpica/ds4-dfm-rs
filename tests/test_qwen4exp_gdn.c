@@ -237,7 +237,52 @@ static void run_recurrent_chunks(ds4_gpu_tensor *out, ds4_gpu_tensor *state,
     REQUIRE(row == ROWS, "GDN recurrent chunks cover sequence");
 }
 
+static void profile_gdn_recurrent(void) {
+    enum { profile_rows = 8025 };
+    const uint64_t mixed_count = (uint64_t)profile_rows * CONV_DIM;
+    const uint64_t control_count = (uint64_t)profile_rows * VALUE_HEADS;
+    const uint64_t state_count =
+        (uint64_t)VALUE_HEADS * HEAD_DIM * HEAD_DIM;
+    const uint64_t out_count = (uint64_t)profile_rows * VALUE_DIM;
+    ds4_gpu_tensor *mixed = ds4_gpu_tensor_alloc(mixed_count * sizeof(float));
+    ds4_gpu_tensor *beta = ds4_gpu_tensor_alloc(control_count * sizeof(float));
+    ds4_gpu_tensor *g = ds4_gpu_tensor_alloc(control_count * sizeof(float));
+    ds4_gpu_tensor *state = ds4_gpu_tensor_alloc(state_count * sizeof(float));
+    ds4_gpu_tensor *out = ds4_gpu_tensor_alloc(out_count * sizeof(float));
+    REQUIRE(mixed && beta && g && state && out,
+            "GDN profile GPU allocation");
+    REQUIRE(ds4_gpu_tensor_fill_f32(mixed, 0.03125f, mixed_count) &&
+                ds4_gpu_tensor_fill_f32(beta, 0.25f, control_count) &&
+                ds4_gpu_tensor_fill_f32(g, -0.01f, control_count) &&
+                ds4_gpu_tensor_fill_f32(state, 0.001f, state_count),
+            "GDN profile input initialization");
+    REQUIRE(ds4_gpu_qwen4exp_gdn_recurrent_tensor(
+                out, state, mixed, beta, g, profile_rows, KEY_HEADS,
+                VALUE_HEADS, HEAD_DIM),
+            "GDN production profile launch");
+    REQUIRE(ds4_gpu_synchronize(), "GDN production profile sync");
+    float edge[2] = {0.0f, 0.0f};
+    REQUIRE(ds4_gpu_tensor_read(out, 0, &edge[0], sizeof(float)) &&
+                ds4_gpu_tensor_read(out, (out_count - 1u) * sizeof(float),
+                                    &edge[1], sizeof(float)) &&
+                isfinite(edge[0]) && isfinite(edge[1]),
+            "GDN production profile output");
+    printf("NCU Qwen GDN: rows=%u edge=%.6g/%.6g\n",
+           profile_rows, edge[0], edge[1]);
+    ds4_gpu_tensor_free(out);
+    ds4_gpu_tensor_free(state);
+    ds4_gpu_tensor_free(g);
+    ds4_gpu_tensor_free(beta);
+    ds4_gpu_tensor_free(mixed);
+}
+
 int main(void) {
+    if (getenv("DS4_QWEN_PROFILE_GDN_RECURRENT")) {
+        REQUIRE(ds4_gpu_init(), "CUDA init");
+        profile_gdn_recurrent();
+        ds4_gpu_cleanup();
+        return 0;
+    }
     const uint64_t conv_count = (uint64_t)ROWS * CONV_DIM;
     const uint64_t conv_weight_count = (uint64_t)CONV_DIM * CONV_KERNEL;
     const uint64_t conv_state_count = conv_weight_count;
