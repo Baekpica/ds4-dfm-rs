@@ -334,6 +334,51 @@ DS4_CUDA_WEIGHT_IPC_SCOPE=base \
   --host 127.0.0.1 --port 8000 --no-update-check
 ```
 
+### Qwen YaRN long contexts
+
+Qwen contexts through 262,144 tokens retain the native factor-1 rotary path.
+Larger server contexts select a static YaRN factor from the requested context:
+factor 2 through 524,288, factor 3 through 786,432, and factor 4 through
+1,048,576. This follows the
+[`Qwen3.8-Flash-Next` 1M recipe](https://huggingface.co/Qwen/Qwen3.8-Flash-Next-FP8#processing-ultra-long-texts)
+and the
+[`transformers` YaRN equations](https://github.com/huggingface/transformers/blob/main/src/transformers/modeling_rope_utils.py);
+the underlying method is described in the
+[`YaRN` paper](https://arxiv.org/abs/2309.00071).
+
+The 1M configuration uses one bank and a smaller prefill chunk:
+
+```sh
+DS4_SESSION_GRAPH_FIT=0 \
+DS4_QWEN_BATCH=1 \
+DS4_QWEN_PLE_CACHE_MB=512 \
+DS4_QWEN_PLE_WORKERS=16 \
+DS4_QWEN_PREFILL_CHUNK=256 \
+DS4_SERVER_COALESCE_MAX=1 \
+DS4_SERVER_FORK=0 \
+DS4_SERVER_FORK_PARTIAL=0 \
+DS4_CUDA_WEIGHT_IPC_MANIFEST="$MANIFEST" \
+DS4_CUDA_WEIGHT_IPC_SCOPE=base \
+./ds4-server --cuda -m "$MODEL" -c 1000000 -n 256 --cont-width 1 \
+  --host 127.0.0.1 --port 8000 --no-update-check
+```
+
+`DS4_SESSION_GRAPH_FIT=0` is an explicit fit-check override, not a claim that
+the requested context fits the machine. On a 128 GB DGX Spark, the Q5+Sidecar
+run recorded the following staged boundary on 2026-09-01:
+
+| Configured context | YaRN factor | Largest prompt run | Result |
+|---:|---:|---:|---|
+| 196,608 | 1 | text and JPEG smoke | PASS, native-context regression |
+| 524,288 | 2 | 524,240 tokens | HTTP 200, 215.4 prefill tok/s, zero census faults |
+| 1,000,000 | 4 | 300,040 tokens | HTTP 200, 261.4 prefill tok/s, text/JPEG smoke, zero census faults |
+
+The 524K run peaked at about 30.6 GiB in the worker and finished 47 tokens
+below its context cap. A complete 1M-token prompt is **not** claimed: its
+53.56 GiB graph plan plus the roughly 80.65 GiB weight owner exceeds the
+machine's 121.63 GiB usable unified-memory budget. Use the native context for
+ordinary short requests because static YaRN can reduce short-context quality.
+
 Large GGUFs can exhaust unified or system memory. During validation, load one
 production model at a time, observe accelerator activity and per-process memory
 with tools available on your platform, and confirm serving processes have
