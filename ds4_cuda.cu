@@ -9350,7 +9350,7 @@ __global__ static void qwen4exp_qsa_attention_scores_kernel(
 }
 
 /* Qwen's 24-query/2-KV GQA shape shares one key across twelve query heads.
- * Four warps each score three heads without a block barrier or shared-memory
+ * Two warps each score six heads without a block barrier or shared-memory
  * reduction. */
 __global__ static void qwen4exp_qsa_attention_scores_gqa12_kernel(
         float *scores, const float *query, const float *k_cache,
@@ -9361,11 +9361,11 @@ __global__ static void qwen4exp_qsa_attention_scores_gqa12_kernel(
     const uint32_t row = blockIdx.z;
     const uint32_t warp = threadIdx.x >> 5u;
     const uint32_t lane = threadIdx.x & 31u;
-    if (row >= rows || kv_head >= 2u || slot >= selected_cap || warp >= 4u)
+    if (row >= rows || kv_head >= 2u || slot >= selected_cap || warp >= 2u)
         return;
     if (slot >= counts[row]) {
         if (lane == 0u) {
-            for (uint32_t h = warp; h < 12u; h += 4u)
+            for (uint32_t h = warp; h < 12u; h += 2u)
                 scores[((uint64_t)row * 24u + kv_head * 12u + h) *
                        selected_cap + slot] = -INFINITY;
         }
@@ -9374,7 +9374,7 @@ __global__ static void qwen4exp_qsa_attention_scores_gqa12_kernel(
     const int32_t token = selected[(uint64_t)row * selected_cap + slot];
     if (token < 0 || (uint32_t)token >= cache_cap) {
         if (lane == 0u) {
-            for (uint32_t h = warp; h < 12u; h += 4u)
+            for (uint32_t h = warp; h < 12u; h += 2u)
                 scores[((uint64_t)row * 24u + kv_head * 12u + h) *
                        selected_cap + slot] = -INFINITY;
         }
@@ -9382,13 +9382,17 @@ __global__ static void qwen4exp_qsa_attention_scores_gqa12_kernel(
     }
     const float *key = k_cache +
         (uint64_t)(uint32_t)token * 512u + (uint64_t)kv_head * 256u;
-    for (uint32_t h = warp; h < 12u; h += 4u) {
+    float key_values[8];
+#pragma unroll
+    for (uint32_t i = 0; i < 8u; i++)
+        key_values[i] = key[lane + 32u * i];
+    for (uint32_t h = warp; h < 12u; h += 2u) {
         const uint32_t head = kv_head * 12u + h;
         const float *q = query + ((uint64_t)row * 24u + head) * 256u;
         float sum = 0.0f;
 #pragma unroll
-        for (uint32_t d = lane; d < 256u; d += 32u)
-            sum += q[d] * key[d];
+        for (uint32_t i = 0; i < 8u; i++)
+            sum += q[lane + 32u * i] * key_values[i];
 #pragma unroll
         for (uint32_t stride = 16u; stride > 0u; stride >>= 1u)
             sum += __shfl_down_sync(0xffffffffu, sum, stride);
@@ -25970,7 +25974,7 @@ extern "C" int ds4_gpu_qwen4exp_qsa_attention_tensor(
     if (heads == 24u && kv_heads == 2u && head_dim == 256u) {
         dim3 score_grid(selected_cap, kv_heads, rows);
         qwen4exp_qsa_attention_scores_gqa12_kernel<<<
-            score_grid, 128u, 0, ds4_current_stream()>>>(
+            score_grid, 64u, 0, ds4_current_stream()>>>(
             (float *)score_scratch->ptr, (const float *)query->ptr,
             (const float *)k_cache->ptr, (const int32_t *)selected->ptr,
             (const uint32_t *)counts->ptr, rows, selected_cap, cache_cap);
