@@ -1173,7 +1173,7 @@ mod tests {
         }
 
         let relative = PathBuf::from(format!(
-            "ds4_agent_read_link_{}_{}",
+            "src/ds4_agent_read_link_{}_{}",
             std::process::id(),
             TEMP_ID.fetch_add(1, Ordering::Relaxed)
         ));
@@ -1358,7 +1358,7 @@ mod tests {
     fn more_cursor_survives_rounds_preserves_path_and_invalidates_on_error() {
         let target = write_temp("one\ntwo\nthree").expect("fixture");
         let relative = PathBuf::from(format!(
-            "ds4_agent_more_link_{}_{}",
+            "src/ds4_agent_more_link_{}_{}",
             std::process::id(),
             TEMP_ID.fetch_add(1, Ordering::Relaxed)
         ));
