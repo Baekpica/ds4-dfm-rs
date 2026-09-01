@@ -700,12 +700,83 @@ static void test_q5_tail_bank2(void *model_map, uint64_t model_size,
     free(mid0);
 }
 
+static void profile_q5_tail(void) {
+    enum {
+        tokens = 8025,
+        experts = 512,
+        used = 10,
+        assignments = tokens * used,
+    };
+    const uint64_t weight_offset = 4096u;
+    const uint64_t weight_blocks =
+        (uint64_t)experts * HIDDEN * (DOWN_TAIL / QK_5_0);
+    const uint64_t weight_bytes = weight_blocks * sizeof(test_block_q5_0);
+    const uint64_t model_size =
+        (weight_offset + weight_bytes + 4095u) & ~4095ull;
+    void *model_map = NULL;
+    REQUIRE(posix_memalign(&model_map, 4096u, (size_t)model_size) == 0,
+            "Q5 tail profile model allocation");
+    memset(model_map, 0, (size_t)model_size);
+    fill_q5_0((test_block_q5_0 *)((unsigned char *)model_map + weight_offset),
+              weight_blocks);
+    REQUIRE(ds4_gpu_set_model_map(model_map, model_size),
+            "Q5 tail profile model registration");
+
+    const uint64_t mid_count = (uint64_t)assignments * DOWN_MID;
+    const uint64_t down_count = (uint64_t)assignments * HIDDEN;
+    int32_t *ids = (int32_t *)malloc((size_t)assignments * sizeof(*ids));
+    REQUIRE(ids, "Q5 tail profile ids allocation");
+    for (uint32_t i = 0; i < assignments; i++)
+        ids[i] = (int32_t)((i * 37u + i / used) % experts);
+
+    ds4_gpu_tensor *d_mid = ds4_gpu_tensor_alloc(mid_count * sizeof(float));
+    ds4_gpu_tensor *d_ids = ds4_gpu_tensor_alloc(
+        (uint64_t)assignments * sizeof(int32_t));
+    ds4_gpu_tensor *d_down = ds4_gpu_tensor_alloc(down_count * sizeof(float));
+    REQUIRE(d_mid && d_ids && d_down, "Q5 tail profile GPU allocation");
+    REQUIRE(ds4_gpu_tensor_fill_f32(d_mid, 0.25f, mid_count) &&
+            ds4_gpu_tensor_write(
+                d_ids, 0, ids, (uint64_t)assignments * sizeof(int32_t)) &&
+            ds4_gpu_tensor_fill_f32(d_down, 0.0f, down_count),
+            "Q5 tail profile input initialization");
+    REQUIRE(setenv("DS4_QWEN_Q5_TAIL_EXPERT_MAJOR", "1", 1) == 0,
+            "Q5 tail profile dispatch selection");
+    REQUIRE(ds4_gpu_qwen4exp_q5_0_tail_accum_tensor(
+                d_down, d_mid, d_ids, model_map, model_size,
+                weight_offset, weight_bytes, assignments, DOWN_MID,
+                DOWN_MAIN, DOWN_TAIL, HIDDEN, experts),
+            "Q5 tail production profile launch");
+    REQUIRE(ds4_gpu_synchronize(), "Q5 tail production profile sync");
+    float edge[2] = {0.0f, 0.0f};
+    REQUIRE(ds4_gpu_tensor_read(d_down, 0, &edge[0], sizeof(float)) &&
+            ds4_gpu_tensor_read(
+                d_down, (down_count - 1u) * sizeof(float),
+                &edge[1], sizeof(float)) &&
+            isfinite(edge[0]) && isfinite(edge[1]),
+            "Q5 tail production profile output");
+    printf("NCU Qwen Q5 tail: tokens=%u assignments=%u experts=%u "
+           "edge=%.6g/%.6g\n",
+           tokens, assignments, experts, edge[0], edge[1]);
+
+    ds4_gpu_tensor_free(d_down);
+    ds4_gpu_tensor_free(d_ids);
+    ds4_gpu_tensor_free(d_mid);
+    free(ids);
+    ds4_gpu_unregister_model_map(model_map);
+    free(model_map);
+}
+
 int main(void) {
     REQUIRE(ds4_gpu_init(), "CUDA init");
     REQUIRE(unsetenv("DS4_CUDA_COPY_MODEL") == 0,
             "disable whole-map test copy");
     REQUIRE(setenv("DS4_QWEN_Q5_TAIL_EXPERT_MAJOR", "1", 1) == 0,
             "force expert-major Q5_0 tail test path");
+    if (getenv("DS4_QWEN_PROFILE_Q5_TAIL")) {
+        profile_q5_tail();
+        ds4_gpu_cleanup();
+        return 0;
+    }
 
     const uint64_t main_offset = 4096u;
     const uint64_t main_blocks =

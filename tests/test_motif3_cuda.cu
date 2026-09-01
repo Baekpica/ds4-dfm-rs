@@ -1108,6 +1108,13 @@ static void test_q8_pair_profile(const char *mode) {
         out1_dim = 2560u;
         name0 = "blk.1.ple.key.weight";
         name1 = "blk.1.ple.value.weight";
+    } else if (!std::strcmp(mode, "qwen-shared")) {
+        in_dim = 2560u;
+        n_tok = 8192u;
+        out0_dim = 640u;
+        out1_dim = 640u;
+        name0 = "blk.1.ffn_gate_shexp.weight";
+        name1 = "blk.1.ffn_up_shexp.weight";
     } else {
         fprintf(stderr, "invalid DS4_MOTIF3_PROFILE_PAIR=%s\n", mode);
         std::exit(2);
@@ -1156,7 +1163,8 @@ static void test_q8_pair_profile(const char *mode) {
         fprintf(stderr, "could not build Motif Q8 pair artifacts\n");
         std::exit(1);
     }
-    if (!std::strncmp(mode, "dots-", 5u) || qwen_ple_mode)
+    if (!std::strncmp(mode, "dots-", 5u) || qwen_ple_mode ||
+        !std::strcmp(mode, "qwen-shared"))
         setenv("DS4_CUDA_NO_DERIVED_WEIGHTS", "1", 1);
     setenv("DS4_CUDA_COPY_MODEL", "1", 1);
     if (!ds4_gpu_set_model_map(model.data(), model.size())) {
