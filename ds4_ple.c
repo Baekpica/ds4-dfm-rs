@@ -653,6 +653,17 @@ static bool manifest_expect_string(ds4_ple_json *json, const char *expected) {
     return true;
 }
 
+static bool manifest_expect_qwen_variant(ds4_ple_json *json) {
+    char value[128];
+    if (!json_copy_string(json, value, sizeof(value))) return false;
+    if (strcmp(value, "MQ-Q5-SSD-PLE-BF16") != 0 &&
+        strcmp(value, "MQ-Q6-SSD-PLE-BF16") != 0) {
+        json_fail(json, "PLE manifest has an unsupported artifact variant");
+        return false;
+    }
+    return true;
+}
+
 static bool manifest_expect_u64(ds4_ple_json *json, uint64_t expected) {
     uint64_t value = 0;
     if (!json_u64(json, &value)) return false;
@@ -692,7 +703,7 @@ static bool manifest_parse(ds4_ple_store *store, const char *data, size_t size,
             store->layout.format_version = 1u;
         } else if (json_key_eq(key, key_len, "artifact_variant")) {
             bit = TOP_VARIANT;
-            ok = manifest_expect_string(&json, "MQ-Q6-SSD-PLE-BF16");
+            ok = manifest_expect_qwen_variant(&json);
         } else if (json_key_eq(key, key_len, "byte_order")) {
             bit = TOP_BYTE_ORDER;
             ok = manifest_expect_string(&json, "little");

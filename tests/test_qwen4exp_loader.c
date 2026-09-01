@@ -29,9 +29,29 @@ static int check_ssd_precision_maps(void) {
                unknown, &edge, &interior, &down, &tail) ? 1 : 0;
 }
 
+static int check_source_revisions(void) {
+    const ds4_str upstream = {
+        "f5d08274bafd880402bd16f5e3e6c514136ec06c",
+        sizeof("f5d08274bafd880402bd16f5e3e6c514136ec06c") - 1u
+    };
+    const ds4_str uncensored = {
+        "8336e613ea508b13c2159bd0f68965d97a606b95",
+        sizeof("8336e613ea508b13c2159bd0f68965d97a606b95") - 1u
+    };
+    const ds4_str unknown = {"unknown", sizeof("unknown") - 1u};
+
+    return !qwen4exp_source_revision_supported(upstream) ||
+           !qwen4exp_source_revision_supported(uncensored) ||
+           qwen4exp_source_revision_supported(unknown);
+}
+
 int main(int argc, char **argv) {
     if (check_ssd_precision_maps() != 0) {
         fprintf(stderr, "Qwen4Exp SSD-PLE precision-map recognition failed\n");
+        return 1;
+    }
+    if (check_source_revisions() != 0) {
+        fprintf(stderr, "Qwen4Exp source-revision allowlist failed\n");
         return 1;
     }
     if (argc != 2) {

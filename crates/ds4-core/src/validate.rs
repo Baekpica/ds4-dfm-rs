@@ -23,7 +23,10 @@ use crate::tensors::TensorInventory;
 
 const MOTIF_SHA: &[u8] = b"30f14b635d3258a18c3ff7e69829f8fbfa775e87477ffabb59a79115bba820a5";
 const DOTS3_SHA: &[u8] = b"99b7de680dd456111c36efb8749f8ae7177328e97b65a3e39a6700cbc1173833";
-const QWEN_REVISION: &[u8] = b"f5d08274bafd880402bd16f5e3e6c514136ec06c";
+const QWEN_REVISIONS: [&[u8]; 2] = [
+    b"f5d08274bafd880402bd16f5e3e6c514136ec06c",
+    b"8336e613ea508b13c2159bd0f68965d97a606b95",
+];
 const QWEN_CONFIG_SHA: &[u8] = b"889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b";
 const QWEN_LICENSE_SHA: &[u8] = b"a0dc422560841fd68e06d974907f8b4c709bca44a67daad2b528437bdf676c08";
 
@@ -1106,6 +1109,13 @@ fn qwen_ssd_precision(quant: Option<&[u8]>) -> Option<(u32, u32, u32, u32)> {
     }
 }
 
+fn qwen_source_revision_supported(revision: Option<&[u8]>) -> bool {
+    match revision {
+        Some(got) => QWEN_REVISIONS.contains(&got),
+        None => false,
+    }
+}
+
 fn validate_qwen_external_ple(g: &GgufFile) -> Result<(), ValidateError> {
     let external = qwen_ssd_precision(g.get_string("general.quantization")).is_some();
     if external != has_key(g, "qwen4exp.ple.weight_storage") {
@@ -1343,9 +1353,18 @@ fn validate_qwen4exp(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
         req_f32(g, "qwen4exp.rope.freq_base")?,
         shape.rope_freq_base,
     )?;
+    expect_string(
+        g,
+        "qwen4exp.attention.output_gate_type",
+        b"sigmoid".as_slice(),
+    )?;
+    if !qwen_source_revision_supported(g.get_string("general.source.revision")) {
+        return Err(ValidateError::TokenKey(
+            "mismatch-string",
+            "general.source.revision".into(),
+        ));
+    }
     for (key, want) in [
-        ("qwen4exp.attention.output_gate_type", b"sigmoid".as_slice()),
-        ("general.source.revision", QWEN_REVISION),
         ("qwen4exp.source.config_sha256", QWEN_CONFIG_SHA),
         ("qwen4exp.source.license_sha256", QWEN_LICENSE_SHA),
         ("general.license", b"other".as_slice()),
@@ -1500,5 +1519,22 @@ pub fn dump_validate(path: &std::path::Path) -> String {
             }
         }
         Err(e) => format!("{}\n", e.token()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::qwen_source_revision_supported;
+
+    #[test]
+    fn qwen_source_revision_allowlist_is_exact() {
+        assert!(qwen_source_revision_supported(Some(
+            b"f5d08274bafd880402bd16f5e3e6c514136ec06c"
+        )));
+        assert!(qwen_source_revision_supported(Some(
+            b"8336e613ea508b13c2159bd0f68965d97a606b95"
+        )));
+        assert!(!qwen_source_revision_supported(Some(b"unknown")));
+        assert!(!qwen_source_revision_supported(None));
     }
 }

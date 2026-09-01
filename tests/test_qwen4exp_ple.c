@@ -130,7 +130,7 @@ static void check_hash_chunking(const ds4_ple_hash_config *config) {
 
 int main(int argc, char **argv) {
     if (argc != 2) {
-        fprintf(stderr, "usage: %s <MQ-Q6-SSD-PLE-BF16 artifact root>\n",
+        fprintf(stderr, "usage: %s <Qwen SSD-PLE artifact root>\n",
                 argv[0]);
         return 2;
     }

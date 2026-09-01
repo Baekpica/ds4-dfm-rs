@@ -5540,6 +5540,13 @@ static bool qwen4exp_ssd_precision_types(
     return true;
 }
 
+static bool qwen4exp_source_revision_supported(ds4_str revision) {
+    return ds4_streq(revision,
+                     "f5d08274bafd880402bd16f5e3e6c514136ec06c") ||
+           ds4_streq(revision,
+                     "8336e613ea508b13c2159bd0f68965d97a606b95");
+}
+
 static bool tensor_type_is_qwen4exp_plain(uint32_t type) {
     return type == DS4_TENSOR_F32 || type == DS4_TENSOR_BF16;
 }
@@ -6740,7 +6747,7 @@ static bool config_validate_qwen4exp_external_ple(const ds4_model *m) {
     return true;
 }
 
-/* Strict metadata gate for the one Qwen4Exp checkpoint this implementation
+/* Strict metadata gate for the Qwen4Exp checkpoints this implementation
  * supports.  Hybrid-attention schedules, PLE hashing geometry, multimodal
  * topology, and source/license pins are semantic inputs, not advisory labels. */
 static void config_validate_qwen4exp_model(const ds4_model *m) {
@@ -6862,7 +6869,7 @@ static void config_validate_qwen4exp_model(const ds4_model *m) {
         !ds4_streq(value, "sigmoid"))
         ds4_die("Qwen4Exp requires sigmoid attention output gating");
     if (!model_get_string(m, "general.source.revision", &value) ||
-        !ds4_streq(value, "f5d08274bafd880402bd16f5e3e6c514136ec06c"))
+        !qwen4exp_source_revision_supported(value))
         ds4_die("Qwen4Exp GGUF does not match the pinned source revision");
     if (!model_get_string(m, "qwen4exp.source.config_sha256", &value) ||
         !ds4_streq(value, "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b"))
