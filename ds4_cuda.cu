@@ -8217,6 +8217,7 @@ __global__ static void matmul_q8_0_hc_expand_preq_n2_warp8_kernel(
     }
 }
 
+template <uint32_t group_width>
 __global__ static void matmul_q8_0_preq_batch_warp8_kernel(
         float *out,
         const unsigned char *w,
@@ -8228,25 +8229,36 @@ __global__ static void matmul_q8_0_preq_batch_warp8_kernel(
         uint64_t n_tok,
         uint64_t blocks,
         int use_dp4a) {
-    const uint64_t row = (uint64_t)blockIdx.x * 8u + (threadIdx.x >> 5u);
+    const uint64_t row = (uint64_t)blockIdx.x * (256u / group_width) +
+                         threadIdx.x / group_width;
     const uint64_t tok = (uint64_t)blockIdx.y;
-    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t lane = threadIdx.x & (group_width - 1u);
     if (row >= out_dim || tok >= n_tok) return;
 
     const unsigned char *wr = w + row * blocks * 34;
     const int8_t *xqr = xq + tok * blocks * 32;
     const float *xsr = xscale + tok * blocks;
     float acc = 0.0f;
-    for (uint64_t b = lane; b < blocks; b += 32u) {
+    float acc_hi = 0.0f;
+    for (uint64_t b = lane; b < blocks; b += group_width) {
         const uint64_t i0 = b * 32;
         const uint64_t bn = in_dim - i0 < 32 ? in_dim - i0 : 32;
         const __half *scale_h = (const __half *)(wr + b * 34);
         const int8_t *qs = (const int8_t *)(wr + b * 34 + 2);
         const int8_t *xqb = xqr + b * 32;
         int dot = dot_i8_block(qs, xqb, bn, use_dp4a);
-        acc += __half2float(*scale_h) * xsr[b] * (float)dot;
+        if constexpr (group_width == 16u) {
+            if (b < group_width)
+                acc += __half2float(*scale_h) * xsr[b] * (float)dot;
+            else
+                acc_hi += __half2float(*scale_h) * xsr[b] * (float)dot;
+        } else {
+            acc += __half2float(*scale_h) * xsr[b] * (float)dot;
+        }
     }
-    acc = warp_sum_f32(acc);
+    if constexpr (group_width == 16u) acc += acc_hi;
+    for (uint32_t offset = group_width / 2u; offset > 0u; offset >>= 1u)
+        acc += __shfl_down_sync(0xffffffffu, acc, offset, group_width);
     if (lane == 0) out[tok * out_stride + row] = acc;
 }
 
@@ -23730,8 +23742,8 @@ static int cuda_matmul_q8_0_tensor_labeled_impl(ds4_gpu_tensor *out, const void 
         return cuda_ok(cudaGetLastError(), "matmul_q8_0 n2 warp launch");
     }
     if (getenv("DS4_CUDA_NO_Q8_BATCH_WARP") == NULL && blocks <= 32u) {
-        dim3 bgrid(((unsigned)out_dim + 7u) / 8u, (unsigned)n_tok, 1);
-        matmul_q8_0_preq_batch_warp8_kernel<<<bgrid, 256, 0, ds4_current_stream()>>>(
+        dim3 bgrid(((unsigned)out_dim + 15u) / 16u, (unsigned)n_tok, 1);
+        matmul_q8_0_preq_batch_warp8_kernel<16u><<<bgrid, 256, 0, ds4_current_stream()>>>(
                 (float *)out->ptr,
                 reinterpret_cast<const unsigned char *>(wptr),
                 xq,
@@ -24350,7 +24362,7 @@ extern "C" int ds4_gpu_matmul_q8_0_pair_tensor(
                 const uint64_t tail_dim = out0_dim - out1_dim;
                 dim3 tail_grid(((unsigned)tail_dim + 7u) / 8u,
                                (unsigned)n_tok, 1);
-                matmul_q8_0_preq_batch_warp8_kernel<<<
+                matmul_q8_0_preq_batch_warp8_kernel<32u><<<
                     tail_grid, 256, 0, ds4_current_stream()>>>(
                         (float *)out0->ptr + out1_dim,
                         reinterpret_cast<const unsigned char *>(w0) +

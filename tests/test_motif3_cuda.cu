@@ -1115,6 +1115,13 @@ static void test_q8_pair_profile(const char *mode) {
         out1_dim = 640u;
         name0 = "blk.1.ffn_gate_shexp.weight";
         name1 = "blk.1.ffn_up_shexp.weight";
+    } else if (!std::strcmp(mode, "qwen-shared-down")) {
+        in_dim = 640u;
+        n_tok = 8025u;
+        out0_dim = 2560u;
+        out1_dim = 2560u;
+        name0 = "blk.1.ffn_down_shexp.weight";
+        name1 = "blk.2.ffn_down_shexp.weight";
     } else {
         fprintf(stderr, "invalid DS4_MOTIF3_PROFILE_PAIR=%s\n", mode);
         std::exit(2);
@@ -1158,13 +1165,16 @@ static void test_q8_pair_profile(const char *mode) {
     records[1].offset = bytes0;
     records[1].bytes = bytes1;
     const bool qwen_ple_mode = !std::strcmp(mode, "qwen-ple");
-    if (!qwen_ple_mode && ds4_gpu_build_derived_artifacts_from_records(
+    const bool qwen_shared_down_mode =
+        !std::strcmp(mode, "qwen-shared-down");
+    if (!qwen_ple_mode && !qwen_shared_down_mode &&
+        ds4_gpu_build_derived_artifacts_from_records(
             model.data(), model.size(), records, 2u) != 2) {
         fprintf(stderr, "could not build Motif Q8 pair artifacts\n");
         std::exit(1);
     }
     if (!std::strncmp(mode, "dots-", 5u) || qwen_ple_mode ||
-        !std::strcmp(mode, "qwen-shared"))
+        !std::strcmp(mode, "qwen-shared") || qwen_shared_down_mode)
         setenv("DS4_CUDA_NO_DERIVED_WEIGHTS", "1", 1);
     setenv("DS4_CUDA_COPY_MODEL", "1", 1);
     if (!ds4_gpu_set_model_map(model.data(), model.size())) {
@@ -1208,10 +1218,14 @@ static void test_q8_pair_profile(const char *mode) {
         !std::strcmp(mode, "dots-dense");
     if (split_profile)
         setenv("DS4_CUDA_FORCE_Q8_PAIR_COALESCED", "1", 1);
-    if (
-        !ds4_gpu_matmul_q8_0_pair_tensor(
-            out0.p, out1.p, model.data(), model.size(), 0u, bytes0,
-            in_dim, out0_dim, out1_dim, x.p, n_tok)) {
+    const bool launched = qwen_shared_down_mode
+        ? ds4_gpu_matmul_q8_0_tensor(
+              out0.p, model.data(), model.size(), 0u,
+              in_dim, out0_dim, x.p, n_tok)
+        : ds4_gpu_matmul_q8_0_pair_tensor(
+              out0.p, out1.p, model.data(), model.size(), 0u, bytes0,
+              in_dim, out0_dim, out1_dim, x.p, n_tok);
+    if (!launched) {
         fprintf(stderr, "Motif Q8 pair profile launch failed\n");
         std::exit(1);
     }
@@ -1267,7 +1281,7 @@ static void test_q8_pair_profile(const char *mode) {
         printf("Q8 dense MMQ split: cosine=%.9f nrmse=%.6g\n",
                cosine, nrmse);
     }
-    printf("NCU Q8 pair profile: mode=%s, n_tok=%llu, K=%llu, "
+    printf("NCU Q8 profile: mode=%s, n_tok=%llu, K=%llu, "
            "M=%llu/%llu, bit-identical output %.6g/%.6g\n",
            mode, (unsigned long long)n_tok, (unsigned long long)in_dim,
            (unsigned long long)out0_dim, (unsigned long long)out1_dim,
