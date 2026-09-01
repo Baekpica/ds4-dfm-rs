@@ -9523,16 +9523,33 @@ __global__ static void qwen4exp_qsa_attention_reduce_gqa12_kernel(
         inv_sum[h] = count > 0u ? 1.0f / partial[h * blockDim.x] : 0.0f;
 
     float value[12] = {0.0f};
-    for (uint32_t slot = 0; slot < count; slot++) {
-        const uint32_t token = (uint32_t)selected[selected_base + slot];
-        const float v = v_cache[
-            ((uint64_t)token * 2u + kv_head) * 256u + d];
-#pragma unroll
-        for (uint32_t h = 0; h < 12u; h++) {
-            const uint64_t score_at =
-                (first_head + h) * selected_cap + slot;
-            value[h] += scores[score_at] * inv_sum[h] * v;
+    constexpr uint32_t k_value_tile = 32u;
+    float *weight_tile = partial;
+    uint32_t *token_tile = (uint32_t *)(partial + 12u * k_value_tile);
+    for (uint32_t base = 0; base < count; base += k_value_tile) {
+        const uint32_t tile_count = count - base < k_value_tile
+            ? count - base : k_value_tile;
+        for (uint32_t i = d; i < 12u * k_value_tile; i += blockDim.x) {
+            const uint32_t h = i / k_value_tile;
+            const uint32_t slot = i % k_value_tile;
+            weight_tile[i] = slot < tile_count
+                ? scores[(first_head + h) * selected_cap + base + slot] *
+                      inv_sum[h]
+                : 0.0f;
         }
+        if (d < tile_count)
+            token_tile[d] =
+                (uint32_t)selected[selected_base + base + d];
+        __syncthreads();
+        for (uint32_t slot = 0; slot < tile_count; slot++) {
+            const uint32_t token = token_tile[slot];
+            const float v = v_cache[
+                ((uint64_t)token * 2u + kv_head) * 256u + d];
+#pragma unroll
+            for (uint32_t h = 0; h < 12u; h++)
+                value[h] += weight_tile[h * k_value_tile + slot] * v;
+        }
+        __syncthreads();
     }
 #pragma unroll
     for (uint32_t h = 0; h < 12u; h++) {

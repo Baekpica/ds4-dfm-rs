@@ -358,7 +358,89 @@ static void check_vision_attention(void) {
     ds4_gpu_tensor_free(dqkv);
 }
 
+static void profile_qsa_attention(void) {
+    enum {
+        profile_rows = 8025,
+        profile_selected = 2051,
+        profile_cache = 8192,
+    };
+    const uint64_t q_count =
+        (uint64_t)profile_rows * HEADS * HEAD_DIM;
+    const uint64_t score_count =
+        (uint64_t)profile_rows * HEADS * profile_selected;
+    const uint64_t selected_count =
+        (uint64_t)profile_rows * profile_selected;
+    const uint64_t cache_count =
+        (uint64_t)profile_cache * KV_HEADS * HEAD_DIM;
+    int32_t *selected = malloc(selected_count * sizeof(*selected));
+    uint32_t *counts = malloc(profile_rows * sizeof(*counts));
+    REQUIRE(selected && counts, "QSA profile host allocation");
+    for (uint32_t row = 0; row < profile_rows; row++) {
+        counts[row] = profile_selected;
+        for (uint32_t slot = 0; slot < profile_selected; slot++)
+            selected[(uint64_t)row * profile_selected + slot] =
+                (int32_t)slot;
+    }
+
+    ds4_gpu_tensor *out = ds4_gpu_tensor_alloc(q_count * sizeof(float));
+    ds4_gpu_tensor *scores =
+        ds4_gpu_tensor_alloc(score_count * sizeof(float));
+    ds4_gpu_tensor *query = ds4_gpu_tensor_alloc(q_count * sizeof(float));
+    ds4_gpu_tensor *gate = ds4_gpu_tensor_alloc(q_count * sizeof(float));
+    ds4_gpu_tensor *k_cache =
+        ds4_gpu_tensor_alloc(cache_count * sizeof(float));
+    ds4_gpu_tensor *v_cache =
+        ds4_gpu_tensor_alloc(cache_count * sizeof(float));
+    ds4_gpu_tensor *tokens =
+        ds4_gpu_tensor_alloc(selected_count * sizeof(int32_t));
+    ds4_gpu_tensor *dcounts =
+        ds4_gpu_tensor_alloc(profile_rows * sizeof(uint32_t));
+    REQUIRE(out && scores && query && gate && k_cache && v_cache && tokens &&
+                dcounts,
+            "QSA profile GPU allocation");
+    REQUIRE(ds4_gpu_tensor_fill_f32(query, 0.03125f, q_count) &&
+                ds4_gpu_tensor_fill_f32(gate, -0.25f, q_count) &&
+                ds4_gpu_tensor_fill_f32(k_cache, 0.0625f, cache_count) &&
+                ds4_gpu_tensor_fill_f32(v_cache, 0.125f, cache_count) &&
+                ds4_gpu_tensor_write(tokens, 0, selected,
+                                     selected_count * sizeof(*selected)) &&
+                ds4_gpu_tensor_write(dcounts, 0, counts,
+                                     profile_rows * sizeof(*counts)),
+            "QSA profile input initialization");
+    REQUIRE(ds4_gpu_qwen4exp_qsa_attention_tensor(
+                out, scores, query, gate, k_cache, v_cache, tokens, dcounts,
+                profile_rows, HEADS, KV_HEADS, HEAD_DIM, profile_selected,
+                profile_cache),
+            "QSA production profile launch");
+    REQUIRE(ds4_gpu_synchronize(), "QSA production profile sync");
+    float edge[2] = {0.0f, 0.0f};
+    REQUIRE(ds4_gpu_tensor_read(out, 0, &edge[0], sizeof(float)) &&
+                ds4_gpu_tensor_read(out, (q_count - 1u) * sizeof(float),
+                                    &edge[1], sizeof(float)) &&
+                isfinite(edge[0]) && isfinite(edge[1]),
+            "QSA production profile output");
+    printf("NCU Qwen QSA: rows=%u selected=%u edge=%.6g/%.6g\n",
+           profile_rows, profile_selected, edge[0], edge[1]);
+
+    ds4_gpu_tensor_free(dcounts);
+    ds4_gpu_tensor_free(tokens);
+    ds4_gpu_tensor_free(v_cache);
+    ds4_gpu_tensor_free(k_cache);
+    ds4_gpu_tensor_free(gate);
+    ds4_gpu_tensor_free(query);
+    ds4_gpu_tensor_free(scores);
+    ds4_gpu_tensor_free(out);
+    free(counts);
+    free(selected);
+}
+
 int main(void) {
+    if (getenv("DS4_QWEN_PROFILE_QSA")) {
+        REQUIRE(ds4_gpu_init(), "CUDA init");
+        profile_qsa_attention();
+        ds4_gpu_cleanup();
+        return 0;
+    }
     const uint64_t raw_count = (uint64_t)CACHE_CAP * INDEX_DIM;
     const uint64_t pooled_count = (uint64_t)BLOCK_CAP * INDEX_DIM;
     const uint64_t index_qk_count = (uint64_t)ROWS * INDEX_QK_DIM;
