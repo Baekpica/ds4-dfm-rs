@@ -9699,6 +9699,176 @@ __global__ static void qwen4exp_qsa_attention_reduce_gqa12_kernel(
     }
 }
 
+/* Decode-width QSA reduce.  The gqa12 kernel above walks every selected
+ * slot of a row inside one block; at decode (one to three rows) that
+ * leaves two 256-thread blocks streaming up to 2,048 value rows serially,
+ * ~520 us per QSA layer and ~14 ms of a 93 ms MTP step on a GPU that is
+ * otherwise idle.  For small row counts the slots are cut into 128-slot
+ * chunks: each block forms chunk-local softmax statistics and an
+ * unnormalized value sum for its twelve heads, and a combine pass merges
+ * the chunks with the usual max rescaling.  The chunking depends on
+ * selected_cap only, never on the row count, so a row's result does not
+ * change with the number of rows sharing the launch. */
+#define QSA_SPLIT_CHUNK 128u
+#define QSA_SPLIT_MAX_ROWS 8u
+
+static void *g_qsa_split_scratch = NULL;
+static uint64_t g_qsa_split_scratch_bytes = 0;
+
+static void *qsa_split_scratch_ensure(uint64_t bytes) {
+    static int oom_printed = 0;
+    if (bytes == 0) return NULL;
+    if (g_qsa_split_scratch_bytes >= bytes) return g_qsa_split_scratch;
+    /* Never allocate while a graph is being captured: the failed
+     * cudaMalloc would invalidate the capture.  The serial kernel serves
+     * that call instead. */
+    cudaStreamCaptureStatus capture = cudaStreamCaptureStatusNone;
+    if (cudaStreamIsCapturing(ds4_current_stream(), &capture) != cudaSuccess) {
+        (void)cudaGetLastError();
+        return NULL;
+    }
+    if (capture != cudaStreamCaptureStatusNone) return NULL;
+    (void)cudaDeviceSynchronize();
+    if (g_qsa_split_scratch) {
+        (void)cudaFree(g_qsa_split_scratch);
+        cuda_mem_note_free(DS4_MEMC_SCRATCH_STICKY, DS4_MEMD_UNIFIED_DEVICE,
+                           g_qsa_split_scratch_bytes, g_qsa_split_scratch_bytes);
+        g_qsa_split_scratch = NULL;
+        g_qsa_split_scratch_bytes = 0;
+    }
+    void *ptr = NULL;
+    cudaError_t err = cudaMalloc(&ptr, (size_t)bytes);
+    if (err != cudaSuccess) {
+        if (!oom_printed) {
+            oom_printed = 1;
+            fprintf(stderr, "ds4: CUDA QSA split-reduce scratch alloc failed (%.2f MiB): %s; falling back\n",
+                    (double)bytes / 1048576.0, cudaGetErrorString(err));
+        }
+        (void)cudaGetLastError();
+        return NULL;
+    }
+    (void)cudaMemset(ptr, 0, (size_t)bytes);
+    cuda_mem_note_alloc(DS4_MEMC_SCRATCH_STICKY, DS4_MEMD_UNIFIED_DEVICE,
+                        bytes, bytes);
+    g_qsa_split_scratch = ptr;
+    g_qsa_split_scratch_bytes = bytes;
+    return g_qsa_split_scratch;
+}
+
+/* Diagnostic kill switch, read per call so a fixture can compare both
+ * reduces in one process. */
+static int qsa_split_reduce_disabled(void) {
+    return getenv("DS4_QWEN_QSA_NO_SPLIT_REDUCE") != NULL;
+}
+
+__global__ static void qwen4exp_qsa_attention_reduce_split_kernel(
+        float *acc, float *stat, const float *scores, const float *v_cache,
+        const int32_t *selected, const uint32_t *counts,
+        uint32_t selected_cap, uint32_t n_chunks) {
+    const uint32_t chunk = blockIdx.x;
+    const uint32_t kv_head = blockIdx.y;
+    const uint32_t row = blockIdx.z;
+    const uint32_t d = threadIdx.x;
+    const uint32_t warp = d >> 5u;
+    const uint32_t lane = d & 31u;
+    const uint32_t count = counts[row];
+    const uint32_t base = chunk * QSA_SPLIT_CHUNK;
+    const uint32_t tile_count = base < count
+        ? (count - base < QSA_SPLIT_CHUNK ? count - base : QSA_SPLIT_CHUNK)
+        : 0u;
+    const uint64_t first_head = (uint64_t)row * 24u + kv_head * 12u;
+    const uint64_t part = ((uint64_t)row * 2u + kv_head) * n_chunks + chunk;
+    __shared__ float weight[12u * QSA_SPLIT_CHUNK];
+    __shared__ uint32_t token[QSA_SPLIT_CHUNK];
+    __shared__ float stat_max[12];
+    __shared__ float stat_sum[12];
+    /* Chunk-local softmax statistics: warp w owns heads w and w + 8. */
+    for (uint32_t h = warp; h < 12u; h += 8u) {
+        const float *s = scores + (first_head + h) * selected_cap + base;
+        float v[4];
+        float m = -INFINITY;
+#pragma unroll
+        for (uint32_t i = 0; i < 4u; i++) {
+            const uint32_t slot = lane + 32u * i;
+            v[i] = slot < tile_count ? s[slot] : -INFINITY;
+            m = fmaxf(m, v[i]);
+        }
+#pragma unroll
+        for (uint32_t off = 16u; off > 0u; off >>= 1u)
+            m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, off));
+        float sum = 0.0f;
+#pragma unroll
+        for (uint32_t i = 0; i < 4u; i++) {
+            const uint32_t slot = lane + 32u * i;
+            /* An all-masked chunk keeps m = -inf; its weights must be
+             * zero rather than exp(-inf - -inf). */
+            const float w = (slot < tile_count && v[i] > -INFINITY)
+                ? expf(v[i] - m) : 0.0f;
+            weight[h * QSA_SPLIT_CHUNK + slot] = w;
+            sum += w;
+        }
+#pragma unroll
+        for (uint32_t off = 16u; off > 0u; off >>= 1u)
+            sum += __shfl_xor_sync(0xffffffffu, sum, off);
+        if (lane == 0u) {
+            stat_max[h] = m;
+            stat_sum[h] = sum;
+        }
+    }
+    if (d < tile_count)
+        token[d] = (uint32_t)selected[(uint64_t)row * selected_cap + base + d];
+    __syncthreads();
+    float value[12];
+#pragma unroll
+    for (uint32_t h = 0; h < 12u; h++) value[h] = 0.0f;
+    for (uint32_t slot = 0; slot < tile_count; slot++) {
+        const float v = v_cache[((uint64_t)token[slot] * 2u + kv_head) * 256u + d];
+#pragma unroll
+        for (uint32_t h = 0; h < 12u; h++)
+            value[h] += weight[h * QSA_SPLIT_CHUNK + slot] * v;
+    }
+#pragma unroll
+    for (uint32_t h = 0; h < 12u; h++)
+        acc[(part * 12u + h) * 256u + d] = value[h];
+    if (d < 12u) {
+        stat[(part * 12u + d) * 2u] = stat_max[d];
+        stat[(part * 12u + d) * 2u + 1u] = stat_sum[d];
+    }
+}
+
+__global__ static void qwen4exp_qsa_attention_combine_split_kernel(
+        float *out, const float *acc, const float *stat, const float *gate,
+        uint32_t n_chunks) {
+    const uint32_t head = blockIdx.x;
+    const uint32_t row = blockIdx.y;
+    const uint32_t d = threadIdx.x;
+    const uint32_t kv_head = head / 12u;
+    const uint32_t h = head % 12u;
+    const uint64_t part0 = ((uint64_t)row * 2u + kv_head) * n_chunks;
+    float m_all = -INFINITY;
+    for (uint32_t c = 0; c < n_chunks; c++)
+        m_all = fmaxf(m_all, stat[((part0 + c) * 12u + h) * 2u]);
+    float l = 0.0f;
+    float v = 0.0f;
+    if (m_all > -INFINITY) {
+        for (uint32_t c = 0; c < n_chunks; c++) {
+            const float m = stat[((part0 + c) * 12u + h) * 2u];
+            if (m > -INFINITY) {
+                const float scale = expf(m - m_all);
+                l += stat[((part0 + c) * 12u + h) * 2u + 1u] * scale;
+                v += acc[((part0 + c) * 12u + h) * 256u + d] * scale;
+            }
+        }
+    }
+    const float inv = l > 0.0f ? 1.0f / l : 0.0f;
+    const uint64_t at = ((uint64_t)row * 24u + head) * 256u + d;
+    const float gate_value = gate[at];
+    const float gate_scale = gate_value >= 0.0f
+        ? 1.0f / (1.0f + expf(-gate_value))
+        : expf(gate_value) / (1.0f + expf(gate_value));
+    out[at] = v * inv * gate_scale;
+}
+
 /* v0.5 inc-12c: dual-emit twin of rms_norm_weight_kernel -- the f32 body is
  * copied VERBATIM (the reference kernel above stays byte-untouched for every
  * other caller) and each output value is additionally stored as
@@ -26312,14 +26482,43 @@ extern "C" int ds4_gpu_qwen4exp_qsa_attention_tensor(
     if (!cuda_ok(cudaGetLastError(), "Qwen4Exp QSA attention scores launch"))
         return 0;
     if (heads == 24u && kv_heads == 2u && head_dim == 256u) {
-        dim3 reduce_grid(kv_heads, rows);
-        qwen4exp_qsa_attention_reduce_gqa12_kernel<<<
-            reduce_grid, head_dim, 12u * head_dim * sizeof(float),
-            ds4_current_stream()>>>(
-            (float *)out->ptr, (float *)score_scratch->ptr,
-            (const float *)gate->ptr, (const float *)v_cache->ptr,
-            (const int32_t *)selected->ptr,
-            (const uint32_t *)counts->ptr, selected_cap);
+        const uint32_t n_chunks =
+            (selected_cap + QSA_SPLIT_CHUNK - 1u) / QSA_SPLIT_CHUNK;
+        /* Sized for the row cap once, so the sticky buffer is never grown
+         * (never allocated) by a later, possibly captured, launch. */
+        const uint64_t acc_floats =
+            (uint64_t)QSA_SPLIT_MAX_ROWS * 2u * n_chunks * 12u * 256u;
+        const uint64_t stat_floats =
+            (uint64_t)QSA_SPLIT_MAX_ROWS * 2u * n_chunks * 12u * 2u;
+        float *split = NULL;
+        if (rows <= QSA_SPLIT_MAX_ROWS && !qsa_split_reduce_disabled())
+            split = (float *)qsa_split_scratch_ensure(
+                (acc_floats + stat_floats) * sizeof(float));
+        if (split) {
+            dim3 split_grid(n_chunks, kv_heads, rows);
+            qwen4exp_qsa_attention_reduce_split_kernel<<<
+                split_grid, head_dim, 0, ds4_current_stream()>>>(
+                split, split + acc_floats, (const float *)score_scratch->ptr,
+                (const float *)v_cache->ptr, (const int32_t *)selected->ptr,
+                (const uint32_t *)counts->ptr, selected_cap, n_chunks);
+            if (!cuda_ok(cudaGetLastError(),
+                         "Qwen4Exp QSA attention split reduce launch"))
+                return 0;
+            dim3 combine_grid(heads, rows);
+            qwen4exp_qsa_attention_combine_split_kernel<<<
+                combine_grid, head_dim, 0, ds4_current_stream()>>>(
+                (float *)out->ptr, split, split + acc_floats,
+                (const float *)gate->ptr, n_chunks);
+        } else {
+            dim3 reduce_grid(kv_heads, rows);
+            qwen4exp_qsa_attention_reduce_gqa12_kernel<<<
+                reduce_grid, head_dim, 12u * head_dim * sizeof(float),
+                ds4_current_stream()>>>(
+                (float *)out->ptr, (float *)score_scratch->ptr,
+                (const float *)gate->ptr, (const float *)v_cache->ptr,
+                (const int32_t *)selected->ptr,
+                (const uint32_t *)counts->ptr, selected_cap);
+        }
     } else {
         qwen4exp_qsa_attention_reduce_kernel<<<
             rows * heads, head_dim, head_dim * sizeof(float),

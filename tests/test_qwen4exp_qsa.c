@@ -823,6 +823,25 @@ int main(void) {
     read_f32(dout, attn_got, q_count, "QSA attention download");
     compare_f32("QSA selected GQA softmax + sigmoid gate",
                 attn_got, attn_want, q_count, 2.0e-5f, 2.0e-5);
+    /* Seven rows take the decode-width split reduce (17 chunks of the
+     * 2,051-slot cap); the serial gqa12 kernel behind the kill switch must
+     * agree to fp32 reordering noise. */
+    {
+        float *serial_got = malloc(q_count * sizeof(*serial_got));
+        REQUIRE(serial_got, "QSA serial reduce allocation");
+        REQUIRE(setenv("DS4_QWEN_QSA_NO_SPLIT_REDUCE", "1", 1) == 0,
+                "QSA split reduce kill switch");
+        REQUIRE(ds4_gpu_qwen4exp_qsa_attention_tensor(
+                    dout, dattn_scores, dquery, dgate, dkcache, dvcache,
+                    dtokens, dcounts, ROWS, HEADS, KV_HEADS, HEAD_DIM,
+                    SELECTED_CAP, CACHE_CAP),
+                "QSA selected attention (serial reduce)");
+        unsetenv("DS4_QWEN_QSA_NO_SPLIT_REDUCE");
+        read_f32(dout, serial_got, q_count, "QSA serial attention download");
+        compare_f32("QSA split reduce vs serial gqa12 reduce",
+                    attn_got, serial_got, q_count, 4.0e-6f, 2.0e-6);
+        free(serial_got);
+    }
 
     REQUIRE(!ds4_gpu_qwen4exp_qsa_split_q_gate_tensor(
                 dquery, dquery, dqproj, ROWS, HEADS, HEAD_DIM),
