@@ -1109,6 +1109,133 @@ static void test_routed_pair(void *model_map, uint64_t model_size,
     free(x);
 }
 
+enum {
+    DECODE_EXPERTS = 16,
+    DECODE_USED = 10,
+};
+
+/* Decode-width routed projections (one token, top-10) through the public
+ * entries: gate/up over Q8_0 experts and the Q6_K[512] + Q5_0[128] down,
+ * against F32 references.  With 10 assignments both now ride the vector
+ * tier (the MMQ tiles served every shape above eight before). */
+static void test_decode_vec(void *model_map, uint64_t model_size,
+                            uint64_t gate_offset, uint64_t up_offset,
+                            uint64_t gu_bytes, uint64_t main_offset,
+                            uint64_t main_bytes, uint64_t tail_offset,
+                            uint64_t tail_bytes) {
+    const uint64_t gu_count = (uint64_t)DECODE_USED * PAIR_FF;
+    const uint64_t mid_count = (uint64_t)DECODE_USED * DOWN_MID;
+    const uint64_t main_count = (uint64_t)DECODE_USED * DOWN_MAIN;
+    const uint64_t down_count = (uint64_t)DECODE_USED * HIDDEN;
+    float *x = (float *)malloc(HIDDEN * sizeof(*x));
+    float *gate_want = (float *)malloc(gu_count * sizeof(*gate_want));
+    float *up_want = (float *)malloc(gu_count * sizeof(*up_want));
+    float *gate_got = (float *)malloc(gu_count * sizeof(*gate_got));
+    float *up_got = (float *)malloc(gu_count * sizeof(*up_got));
+    float *mid = (float *)malloc(mid_count * sizeof(*mid));
+    float *down_want = (float *)malloc(down_count * sizeof(*down_want));
+    float *down_got = (float *)malloc(down_count * sizeof(*down_got));
+    /* Scratch row: a dequantized gate/up row (HIDDEN) or down row (DOWN_MID). */
+    float *row = (float *)malloc((HIDDEN > DOWN_MID ? HIDDEN : DOWN_MID) * sizeof(*row));
+    int32_t ids[DECODE_USED];
+    REQUIRE(x && gate_want && up_want && gate_got && up_got && mid &&
+            down_want && down_got && row, "decode vec host allocation");
+    for (uint32_t i = 0; i < HIDDEN; i++)
+        x[i] = 0.27f * sinf((float)(i + 5u) * 0.011f) +
+               0.04f * cosf((float)(i + 9u) * 0.023f);
+    for (uint32_t k = 0; k < DECODE_USED; k++)
+        ids[k] = (int32_t)((k * 3u + 1u) % DECODE_EXPERTS);
+    for (uint64_t i = 0; i < mid_count; i++)
+        mid[i] = 0.31f * sinf((float)(i + 2u) * 0.017f) -
+                 0.05f * cosf((float)(i + 7u) * 0.009f);
+
+    const unsigned char *base = (const unsigned char *)model_map;
+    for (uint32_t k = 0; k < DECODE_USED; k++) {
+        const uint64_t expert = (uint64_t)ids[k];
+        for (uint32_t o = 0; o < PAIR_FF; o++) {
+            const uint64_t wrow = (expert * PAIR_FF + o) * SHEXP_K_BLOCKS;
+            float g = 0.0f, u = 0.0f;
+            dequant_q8_0_blocks((const test_block_q8_0 *)(base + gate_offset) + wrow,
+                                SHEXP_K_BLOCKS, row);
+            for (uint32_t i = 0; i < HIDDEN; i++) g += x[i] * row[i];
+            dequant_q8_0_blocks((const test_block_q8_0 *)(base + up_offset) + wrow,
+                                SHEXP_K_BLOCKS, row);
+            for (uint32_t i = 0; i < HIDDEN; i++) u += x[i] * row[i];
+            gate_want[(uint64_t)k * PAIR_FF + o] = g;
+            up_want[(uint64_t)k * PAIR_FF + o] = u;
+        }
+        const float *xr = mid + (uint64_t)k * DOWN_MID;
+        for (uint32_t o = 0; o < HIDDEN; o++) {
+            dequant_q6((const test_block_q6_k *)(base + main_offset) +
+                           (expert * HIDDEN + o) * (DOWN_MAIN / QK_K), row);
+            dequant_q5_0((const test_block_q5_0 *)(base + tail_offset) +
+                             (expert * HIDDEN + o) * (DOWN_TAIL / QK_5_0),
+                         row + DOWN_MAIN);
+            float sum = 0.0f;
+            for (uint32_t i = 0; i < DOWN_MID; i++) sum += xr[i] * row[i];
+            down_want[(uint64_t)k * HIDDEN + o] = sum;
+        }
+    }
+
+    ds4_gpu_tensor *d_x = ds4_gpu_tensor_alloc(HIDDEN * sizeof(float));
+    ds4_gpu_tensor *d_ids = ds4_gpu_tensor_alloc(sizeof(ids));
+    ds4_gpu_tensor *d_gate = ds4_gpu_tensor_alloc(gu_count * sizeof(float));
+    ds4_gpu_tensor *d_up = ds4_gpu_tensor_alloc(gu_count * sizeof(float));
+    ds4_gpu_tensor *d_mid = ds4_gpu_tensor_alloc(mid_count * sizeof(float));
+    ds4_gpu_tensor *d_packed = ds4_gpu_tensor_alloc(main_count * sizeof(float));
+    ds4_gpu_tensor *d_down = ds4_gpu_tensor_alloc(down_count * sizeof(float));
+    REQUIRE(d_x && d_ids && d_gate && d_up && d_mid && d_packed && d_down,
+            "decode vec GPU allocation");
+    REQUIRE(ds4_gpu_tensor_write(d_x, 0, x, HIDDEN * sizeof(float)) &&
+            ds4_gpu_tensor_write(d_ids, 0, ids, sizeof(ids)) &&
+            ds4_gpu_tensor_write(d_mid, 0, mid, mid_count * sizeof(float)),
+            "decode vec input upload");
+    REQUIRE(ds4_gpu_routed_gate_up_tensor(
+                d_gate, d_up, d_x, d_ids, model_map, model_size,
+                gate_offset, gu_bytes, up_offset, gu_bytes, 8u, HIDDEN,
+                PAIR_FF, DECODE_EXPERTS, 1u, DECODE_USED),
+            "decode gate/up launch");
+    REQUIRE(ds4_gpu_tensor_read(d_gate, 0, gate_got, gu_count * sizeof(float)) &&
+            ds4_gpu_tensor_read(d_up, 0, up_got, gu_count * sizeof(float)),
+            "decode gate/up download");
+    compare_mmq("Qwen decode top-10 Q8_0 gate (vec tier)", gate_got, gate_want, gu_count);
+    compare_mmq("Qwen decode top-10 Q8_0 up (vec tier)", up_got, up_want, gu_count);
+
+    REQUIRE(ds4_gpu_qwen4exp_pack_expert_down_main_tensor(
+                d_packed, d_mid, DECODE_USED, DOWN_MID, DOWN_MAIN),
+            "decode down pack launch");
+    REQUIRE(ds4_gpu_routed_matmul_bounded_tensor(
+                d_down, d_packed, d_ids, model_map, model_size,
+                main_offset, main_bytes, 14u, DOWN_MAIN, HIDDEN,
+                DECODE_EXPERTS, DECODE_USED, 1u, 1u),
+            "decode down main launch");
+    REQUIRE(ds4_gpu_qwen4exp_q5_0_tail_accum_tensor(
+                d_down, d_mid, d_ids, model_map, model_size,
+                tail_offset, tail_bytes, DECODE_USED, DOWN_MID,
+                DOWN_MAIN, DOWN_TAIL, HIDDEN, DECODE_EXPERTS),
+            "decode down tail launch");
+    REQUIRE(ds4_gpu_tensor_read(d_down, 0, down_got, down_count * sizeof(float)),
+            "decode down download");
+    compare_mmq("Qwen decode top-10 Q6_K[512]+Q5_0[128] down", down_got, down_want, down_count);
+
+    ds4_gpu_tensor_free(d_down);
+    ds4_gpu_tensor_free(d_packed);
+    ds4_gpu_tensor_free(d_mid);
+    ds4_gpu_tensor_free(d_up);
+    ds4_gpu_tensor_free(d_gate);
+    ds4_gpu_tensor_free(d_ids);
+    ds4_gpu_tensor_free(d_x);
+    free(row);
+    free(down_got);
+    free(down_want);
+    free(mid);
+    free(up_got);
+    free(gate_got);
+    free(up_want);
+    free(gate_want);
+    free(x);
+}
+
 static void profile_fused_down(void) {
     enum {
         tokens = 8025,
@@ -1311,8 +1438,26 @@ int main(void) {
         (q5k_up_offset + q5k_pair_bytes + 4095u) & ~4095ull;
     const uint64_t q8_up_offset =
         (q8_gate_offset + q8_pair_bytes + 4095u) & ~4095ull;
-    const uint64_t model_size =
+    /* Decode fixture: 16 experts so a top-10 routing exists. */
+    const uint64_t dec_gu_blocks =
+        (uint64_t)DECODE_EXPERTS * PAIR_FF * SHEXP_K_BLOCKS;
+    const uint64_t dec_gu_bytes = dec_gu_blocks * sizeof(test_block_q8_0);
+    const uint64_t dec_gate_offset =
         (q8_up_offset + q8_pair_bytes + 4095u) & ~4095ull;
+    const uint64_t dec_up_offset =
+        (dec_gate_offset + dec_gu_bytes + 4095u) & ~4095ull;
+    const uint64_t dec_main_blocks =
+        (uint64_t)DECODE_EXPERTS * HIDDEN * (DOWN_MAIN / QK_K);
+    const uint64_t dec_main_bytes = dec_main_blocks * sizeof(test_block_q6_k);
+    const uint64_t dec_main_offset =
+        (dec_up_offset + dec_gu_bytes + 4095u) & ~4095ull;
+    const uint64_t dec_tail_blocks =
+        (uint64_t)DECODE_EXPERTS * HIDDEN * (DOWN_TAIL / QK_5_0);
+    const uint64_t dec_tail_bytes = dec_tail_blocks * sizeof(test_block_q5_0);
+    const uint64_t dec_tail_offset =
+        (dec_main_offset + dec_main_bytes + 4095u) & ~4095ull;
+    const uint64_t model_size =
+        (dec_tail_offset + dec_tail_bytes + 4095u) & ~4095ull;
     void *model_map = NULL;
     REQUIRE(posix_memalign(&model_map, 4096u, (size_t)model_size) == 0,
             "aligned split-down model map");
@@ -1347,6 +1492,16 @@ int main(void) {
     fill_q8_0((test_block_q8_0 *)(
                   (unsigned char *)model_map + q8_up_offset),
               q8_pair_blocks);
+    fill_q8_0((test_block_q8_0 *)(
+                  (unsigned char *)model_map + dec_gate_offset),
+              dec_gu_blocks);
+    fill_q8_0((test_block_q8_0 *)(
+                  (unsigned char *)model_map + dec_up_offset),
+              dec_gu_blocks);
+    fill_q6((test_block_q6_k *)((unsigned char *)model_map + dec_main_offset),
+            dec_main_blocks);
+    fill_q5_0((test_block_q5_0 *)((unsigned char *)model_map + dec_tail_offset),
+              dec_tail_blocks);
     REQUIRE(ds4_gpu_set_model_map(model_map, model_size),
             "register split-down model map");
 
@@ -1372,6 +1527,9 @@ int main(void) {
     test_routed_pair(model_map, model_size, 8u, q8_gate_offset,
                      q8_up_offset, q8_pair_bytes,
                      "Qwen MTP Q8_0 gate/up worklist pair");
+    test_decode_vec(model_map, model_size, dec_gate_offset, dec_up_offset,
+                    dec_gu_bytes, dec_main_offset, dec_main_bytes,
+                    dec_tail_offset, dec_tail_bytes);
 
     REQUIRE(ds4_gpu_synchronize(), "final CUDA synchronization");
     ds4_gpu_unregister_model_map(model_map);

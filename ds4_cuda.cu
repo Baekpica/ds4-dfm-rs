@@ -30924,6 +30924,8 @@ extern "C" int ds4_gpu_swiglu_weighted_tensor(
     return cuda_ok(cudaGetLastError(), "weighted SwiGLU launch");
 }
 
+enum { DS4_ROUTED_VEC_MAX_ROWS = 16u };
+
 static int routed_matmul_tensor_impl(
         ds4_gpu_tensor       *out,
         const ds4_gpu_tensor *x,
@@ -31005,7 +31007,11 @@ static int routed_matmul_tensor_impl(
     const int NT = (int)n_tokens;
     const int NE = (int)n_expert;
     const int NU = (int)n_expert_used;
-    const bool use_vec = assignments <= 8u;
+    /* One mmvq launch serves eight columns; the vec impl splits wider
+     * batches into several launches, so decode-width top-10 routing
+     * (ten single-row experts) stays on the warp-per-row tier instead
+     * of ten mostly empty 128-wide MMQ tiles. */
+    const bool use_vec = assignments <= DS4_ROUTED_VEC_MAX_ROWS;
     const char *bound_global = getenv("DS4_MMQ_EXPERT_BOUND");
     const char *bound_type = weight_type == 11u
         ? getenv("DS4_MMQ_Q3_BOUND")
