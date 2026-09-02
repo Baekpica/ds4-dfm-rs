@@ -6881,6 +6881,44 @@ __global__ static void matmul_bf16_rows_warp_kernel(
     if (lane == 0) out[(uint64_t)tok * out_dim + row] = sum;
 }
 
+__global__ static void matmul_bf16_rows_warp_pair_kernel(
+        float *out0,
+        float *out1,
+        const __nv_bfloat16 *w0,
+        const __nv_bfloat16 *w1,
+        const __nv_bfloat16 *x,
+        uint32_t in_dim,
+        uint32_t out0_dim,
+        uint32_t out1_dim,
+        uint32_t n_tok) {
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t pair_dim = out0_dim + out1_dim;
+    const uint64_t warp =
+        ((uint64_t)blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    if (warp >= (uint64_t)pair_dim * n_tok) return;
+    const uint32_t pair_row = (uint32_t)(warp % pair_dim);
+    const uint32_t tok = (uint32_t)(warp / pair_dim);
+    const bool second = pair_row >= out0_dim;
+    const uint32_t row = second ? pair_row - out0_dim : pair_row;
+    const __nv_bfloat16 *w = second ? w1 : w0;
+    const uint4 *wr = reinterpret_cast<const uint4 *>(
+        w + (uint64_t)row * in_dim);
+    const uint4 *xr = reinterpret_cast<const uint4 *>(
+        x + (uint64_t)tok * in_dim);
+    const uint32_t vecs = in_dim >> 3;
+    float sum = 0.0f;
+    for (uint32_t i = lane; i < vecs; i += 32u)
+        sum += bf16x8_dot(wr[i], xr[i]);
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        sum += __shfl_xor_sync(0xffffffffu, sum, off);
+    if (lane == 0) {
+        float *out = second ? out1 : out0;
+        const uint32_t out_dim = second ? out1_dim : out0_dim;
+        out[(uint64_t)tok * out_dim + row] = sum;
+    }
+}
+
 __global__ static void matmul_bf16_kernel(
         float *out,
         const __nv_bfloat16 *w,
@@ -25293,6 +25331,68 @@ extern "C" int ds4_gpu_matmul_bf16_stable_rows_tensor(
     return cuda_matmul_bf16_tensor_impl(
         out, model_map, model_size, weight_offset,
         in_dim, out_dim, x, n_tok, true);
+}
+
+extern "C" int ds4_gpu_matmul_bf16_stable_rows_pair_tensor(
+        ds4_gpu_tensor *out0,
+        ds4_gpu_tensor *out1,
+        const void *model_map,
+        uint64_t model_size,
+        uint64_t weight0_offset,
+        uint64_t weight1_offset,
+        uint64_t in_dim,
+        uint64_t out0_dim,
+        uint64_t out1_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t n_tok) {
+    if (getenv("DS4_CUDA_NO_BF16_ROWS_PAIR") || !out0 || !out1 || !x ||
+        !model_map || !in_dim || !out0_dim || !out1_dim || !n_tok ||
+        (in_dim & 7u) || in_dim > UINT32_MAX ||
+        out0_dim > UINT32_MAX || out1_dim > UINT32_MAX ||
+        out0_dim + out1_dim > UINT32_MAX || n_tok > UINT32_MAX ||
+        weight0_offset > model_size || weight1_offset > model_size ||
+        out0_dim > UINT64_MAX / in_dim || out1_dim > UINT64_MAX / in_dim) {
+        return 0;
+    }
+    const uint64_t weight0_bytes = out0_dim * in_dim * sizeof(uint16_t);
+    const uint64_t weight1_bytes = out1_dim * in_dim * sizeof(uint16_t);
+    if (weight0_bytes > model_size - weight0_offset ||
+        weight1_bytes > model_size - weight1_offset ||
+        n_tok > UINT64_MAX / in_dim ||
+        x->bytes < n_tok * in_dim * sizeof(float) ||
+        n_tok > UINT64_MAX / out0_dim || n_tok > UINT64_MAX / out1_dim ||
+        out0->bytes < n_tok * out0_dim * sizeof(float) ||
+        out1->bytes < n_tok * out1_dim * sizeof(float) ||
+        ds4_tensor_device_idx(out0) != ds4_tensor_device_idx(out1)) {
+        return 0;
+    }
+    const int tier = ds4_tensor_device_idx(out0);
+    const __nv_bfloat16 *w0 = (const __nv_bfloat16 *)cuda_resolve_weight_ptr(
+        model_map, weight0_offset, weight0_bytes, tier, "bf16_pair0");
+    const __nv_bfloat16 *w1 = (const __nv_bfloat16 *)cuda_resolve_weight_ptr(
+        model_map, weight1_offset, weight1_bytes, tier, "bf16_pair1");
+    __nv_bfloat16 *xb = (__nv_bfloat16 *)cuda_tmp_alloc_on(
+        tier, n_tok * in_dim * sizeof(__nv_bfloat16), "bf16 pair activations");
+    if (!w0 || !w1 || !xb || ((uintptr_t)w0 & 15u) ||
+        ((uintptr_t)w1 & 15u) || ((uintptr_t)xb & 15u)) {
+        return 0;
+    }
+    f32_to_bf16_kernel<<<(n_tok * in_dim + 255u) / 256u, 256, 0,
+                           cuda_decode_stream()>>>(
+        xb, (const float *)x->ptr, n_tok * in_dim);
+    if (!cuda_ok(cudaGetLastError(), "bf16 pair activation convert launch"))
+        return 0;
+    const uint64_t outputs = n_tok * (out0_dim + out1_dim);
+    const uint64_t blocks =
+        (outputs + MATMUL_BF16_ROWS_WARPS - 1u) / MATMUL_BF16_ROWS_WARPS;
+    if (blocks > (uint64_t)INT_MAX) return 0;
+    matmul_bf16_rows_warp_pair_kernel<<<
+        (unsigned)blocks, 32u * MATMUL_BF16_ROWS_WARPS, 0,
+        cuda_decode_stream()>>>(
+            (float *)out0->ptr, (float *)out1->ptr, w0, w1, xb,
+            (uint32_t)in_dim, (uint32_t)out0_dim, (uint32_t)out1_dim,
+            (uint32_t)n_tok);
+    return cuda_ok(cudaGetLastError(), "matmul_bf16 rows-warp pair launch");
 }
 
 /* P3-Inc1: batched f16 matmul with the input rms_norm folded into the

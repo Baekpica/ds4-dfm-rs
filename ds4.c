@@ -20423,7 +20423,7 @@ static bool qwen4exp_hc_begin(ds4_qwen_hc_ws *ws,
      * rows to both wide GEMMs; the stable-rows decode path keeps the
      * per-call conversion inside its row-stable GEMM. */
     const bool bf16_rows = !stable_rows;
-    return (bf16_rows
+    const bool norm_ok = (bf16_rows
                ? ds4_gpu_qwen4exp_group_rms_norm_rows_bf16_tensor(
                      ws->normed, ws->normed_bf16, hyper_input,
                      model->map, model->size,
@@ -20432,22 +20432,28 @@ static bool qwen4exp_hc_begin(ds4_qwen_hc_ws *ws,
                : ds4_gpu_qwen4exp_group_rms_norm_rows_tensor(
                      ws->normed, hyper_input, model->map, model->size,
                      weights->norm->abs_offset, (uint32_t)width,
-                     ws->hidden_size, rows, DS4_RMS_EPS)) != 0 &&
-           (bf16_rows
+                     ws->hidden_size, rows, DS4_RMS_EPS)) != 0;
+    if (!norm_ok) return false;
+    const bool stable_pair = stable_rows && weights->inject &&
+        ds4_gpu_matmul_bf16_stable_rows_pair_tensor(
+            ws->low, ws->inject_logits, model->map, model->size,
+            weights->mix_down->abs_offset, weights->inject->abs_offset,
+            width, ws->lowrank, ws->hc_count, ws->normed, rows) != 0;
+    return (stable_pair || (bf16_rows
                ? ds4_gpu_matmul_bf16_input_tensor(
                      ws->low, model->map, model->size,
                      weights->mix_down->abs_offset, width, ws->lowrank,
                      ws->normed_bf16, rows) != 0
                : qwen4exp_hc_matmul(
                      ws->low, model, weights->mix_down, width, ws->lowrank,
-                     ws->normed, rows, stable_rows)) &&
+                     ws->normed, rows, stable_rows))) &&
            ds4_gpu_qwen4exp_hc_down_silu_tensor(
                ws->low, ws->low, (uint64_t)rows * ws->lowrank,
                ws->hc_count) != 0 &&
            qwen4exp_hc_matmul(
                ws->mix_logits, model, weights->mix_up, ws->lowrank,
                width, ws->low, rows, stable_rows) &&
-           (!weights->inject ||
+           (!weights->inject || stable_pair ||
             (bf16_rows
                 ? ds4_gpu_matmul_bf16_input_tensor(
                       ws->inject_logits, model->map, model->size,

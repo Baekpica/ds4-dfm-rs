@@ -1015,6 +1015,19 @@ int ds4_gpu_matmul_bf16_stable_rows_tensor(
         const ds4_gpu_tensor *x,
         uint64_t                n_tok);
 
+int ds4_gpu_matmul_bf16_stable_rows_pair_tensor(
+        ds4_gpu_tensor       *out_a,
+        ds4_gpu_tensor       *out_b,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_a_offset,
+        uint64_t                weight_b_offset,
+        uint64_t                in_dim,
+        uint64_t                out_a_dim,
+        uint64_t                out_b_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t                n_tok);
+
 /* P3-Inc1: f16 matmul with the input rms_norm folded into the activation
  * convert (f16 activations bit-identical to the unfused rms_norm_plain +
  * f32_to_f16 chain).  Returns 0 with `out` untouched on any precondition
