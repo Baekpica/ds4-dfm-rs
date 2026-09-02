@@ -20311,6 +20311,9 @@ typedef struct {
     uint32_t lowrank;
     bool has_injection;
     ds4_gpu_tensor *normed;
+    /* BF16 twin of normed, written by the norm kernel and read by the
+     * mix_down / inject GEMMs, so neither GEMM converts the rows again. */
+    ds4_gpu_tensor *normed_bf16;
     ds4_gpu_tensor *low;
     ds4_gpu_tensor *mix_logits;
     ds4_gpu_tensor *inject_logits;
@@ -20322,8 +20325,8 @@ typedef struct {
 static void qwen4exp_hc_ws_free(ds4_qwen_hc_ws *ws) {
     if (!ws) return;
     ds4_gpu_tensor **all[] = {
-        &ws->normed, &ws->low, &ws->mix_logits, &ws->inject_logits,
-        &ws->mixed, &ws->injection,
+        &ws->normed, &ws->normed_bf16, &ws->low, &ws->mix_logits,
+        &ws->inject_logits, &ws->mixed, &ws->injection,
     };
     for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
         ds4_gpu_tensor_free(*all[i]);
@@ -20361,6 +20364,16 @@ static bool qwen4exp_hc_ws_alloc(ds4_qwen_hc_ws *ws,
         ws->bytes += qwen_bytes_;                                              \
     } while (0)
     QWEN_HC_ALLOC(normed,       (uint64_t)capacity * width);
+    {
+        const uint64_t bf16_bytes =
+            (uint64_t)capacity * width * sizeof(uint16_t);
+        ws->normed_bf16 = ds4_gpu_tensor_alloc(bf16_bytes);
+        if (!ws->normed_bf16) {
+            qwen4exp_hc_ws_free(ws);
+            return false;
+        }
+        ws->bytes += bf16_bytes;
+    }
     QWEN_HC_ALLOC(low,          (uint64_t)capacity * lowrank);
     QWEN_HC_ALLOC(mix_logits,   (uint64_t)capacity * width);
     QWEN_HC_ALLOC(inject_logits,(uint64_t)capacity * hc_count);
@@ -20406,22 +20419,43 @@ static bool qwen4exp_hc_begin(ds4_qwen_hc_ws *ws,
           weights->inject->dim[1] != ws->hc_count))) return false;
 
     ws->has_injection = weights->inject != NULL;
-    return ds4_gpu_qwen4exp_group_rms_norm_rows_tensor(
-               ws->normed, hyper_input, model->map, model->size,
-               weights->norm->abs_offset, (uint32_t)width,
-               ws->hidden_size, rows, DS4_RMS_EPS) != 0 &&
-           qwen4exp_hc_matmul(
-               ws->low, model, weights->mix_down, width, ws->lowrank,
-               ws->normed, rows, stable_rows) &&
+    /* The batched path norms once into F32 + BF16 and feeds the BF16
+     * rows to both wide GEMMs; the stable-rows decode path keeps the
+     * per-call conversion inside its row-stable GEMM. */
+    const bool bf16_rows = !stable_rows;
+    return (bf16_rows
+               ? ds4_gpu_qwen4exp_group_rms_norm_rows_bf16_tensor(
+                     ws->normed, ws->normed_bf16, hyper_input,
+                     model->map, model->size,
+                     weights->norm->abs_offset, (uint32_t)width,
+                     ws->hidden_size, rows, DS4_RMS_EPS)
+               : ds4_gpu_qwen4exp_group_rms_norm_rows_tensor(
+                     ws->normed, hyper_input, model->map, model->size,
+                     weights->norm->abs_offset, (uint32_t)width,
+                     ws->hidden_size, rows, DS4_RMS_EPS)) != 0 &&
+           (bf16_rows
+               ? ds4_gpu_matmul_bf16_input_tensor(
+                     ws->low, model->map, model->size,
+                     weights->mix_down->abs_offset, width, ws->lowrank,
+                     ws->normed_bf16, rows) != 0
+               : qwen4exp_hc_matmul(
+                     ws->low, model, weights->mix_down, width, ws->lowrank,
+                     ws->normed, rows, stable_rows)) &&
            ds4_gpu_qwen4exp_hc_down_silu_tensor(
                ws->low, ws->low, (uint64_t)rows * ws->lowrank,
                ws->hc_count) != 0 &&
            qwen4exp_hc_matmul(
                ws->mix_logits, model, weights->mix_up, ws->lowrank,
                width, ws->low, rows, stable_rows) &&
-           (!weights->inject || qwen4exp_hc_matmul(
-               ws->inject_logits, model, weights->inject, width,
-               ws->hc_count, ws->normed, rows, stable_rows)) &&
+           (!weights->inject ||
+            (bf16_rows
+                ? ds4_gpu_matmul_bf16_input_tensor(
+                      ws->inject_logits, model->map, model->size,
+                      weights->inject->abs_offset, width, ws->hc_count,
+                      ws->normed_bf16, rows) != 0
+                : qwen4exp_hc_matmul(
+                      ws->inject_logits, model, weights->inject, width,
+                      ws->hc_count, ws->normed, rows, stable_rows))) &&
            ds4_gpu_qwen4exp_hc_mix_inject_tensor(
                ws->mixed, weights->inject ? ws->injection : NULL,
                ws->normed, ws->mix_logits,

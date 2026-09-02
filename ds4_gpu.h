@@ -994,6 +994,17 @@ int ds4_gpu_matmul_bf16_tensor(
 
 /* Native reduction used when recurrent decode must keep N=1 and N=2
  * arithmetic identical. */
+/* BF16 GEMM over an activation already stored as BF16 (no conversion). */
+int ds4_gpu_matmul_bf16_input_tensor(
+        ds4_gpu_tensor       *out,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint64_t                in_dim,
+        uint64_t                out_dim,
+        const ds4_gpu_tensor *x_bf16,
+        uint64_t                n_tok);
+
 int ds4_gpu_matmul_bf16_stable_rows_tensor(
         ds4_gpu_tensor       *out,
         const void             *model_map,
@@ -1142,6 +1153,19 @@ int ds4_gpu_qwen4exp_group_rms_norm_rows_tensor(
 /* QSA head norms share one group_size-wide learned vector across every
  * query/key head, unlike hyper-connection norms whose learned vector spans
  * the full width. */
+/* Grouped RMSNorm that also stores the BF16 copy its GEMM consumers read. */
+int ds4_gpu_qwen4exp_group_rms_norm_rows_bf16_tensor(
+        ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *out_bf16,
+        const ds4_gpu_tensor *x,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint32_t                width,
+        uint32_t                group_size,
+        uint32_t                rows,
+        float                   eps);
+
 int ds4_gpu_qwen4exp_shared_group_rms_norm_rows_tensor(
         ds4_gpu_tensor       *out,
         const ds4_gpu_tensor *x,
