@@ -1020,6 +1020,95 @@ static void test_shexp_pair(void *model_map, uint64_t model_size,
     free(x);
 }
 
+enum {
+    PAIR_TOKENS = 300,
+    PAIR_USED = 4,
+    PAIR_FF = 640,
+    PAIR_EXPERTS = DOWN_EXPERTS,
+};
+
+/* Routed gate/up pair through the compact worklist (Q5_K edge layers, Q8_0
+ * MTP block) against the generic per-tensor routed matmul over the same
+ * weights and routing: both are MMQ over identical Q8_1 activations, so they
+ * must agree to accumulation order. */
+static void test_routed_pair(void *model_map, uint64_t model_size,
+                             uint32_t weight_type, uint64_t gate_offset,
+                             uint64_t up_offset, uint64_t weight_bytes,
+                             const char *name) {
+    const uint64_t x_count = (uint64_t)PAIR_TOKENS * HIDDEN;
+    const uint64_t assignments = (uint64_t)PAIR_TOKENS * PAIR_USED;
+    const uint64_t out_count = assignments * PAIR_FF;
+    float *x = (float *)malloc(x_count * sizeof(*x));
+    int32_t *ids = (int32_t *)malloc(assignments * sizeof(*ids));
+    float *pair_gate = (float *)malloc(out_count * sizeof(*pair_gate));
+    float *pair_up = (float *)malloc(out_count * sizeof(*pair_up));
+    float *ref_gate = (float *)malloc(out_count * sizeof(*ref_gate));
+    float *ref_up = (float *)malloc(out_count * sizeof(*ref_up));
+    REQUIRE(x && ids && pair_gate && pair_up && ref_gate && ref_up,
+            "routed pair host allocation");
+    for (uint64_t i = 0; i < x_count; i++)
+        x[i] = 0.24f * sinf((float)(i + 13u) * 0.012f) +
+               0.05f * cosf((float)(i + 3u) * 0.027f);
+    for (uint32_t t = 0; t < PAIR_TOKENS; t++)
+        for (uint32_t k = 0; k < PAIR_USED; k++)
+            ids[(uint64_t)t * PAIR_USED + k] =
+                (int32_t)((t * 3u + k * 5u + t / 7u) % PAIR_EXPERTS);
+    /* Router top-k is without replacement: keep the slots distinct. */
+    for (uint32_t t = 0; t < PAIR_TOKENS; t++)
+        for (uint32_t k = 1; k < PAIR_USED; k++)
+            for (uint32_t j = 0; j < k; j++)
+                if (ids[(uint64_t)t * PAIR_USED + k] ==
+                    ids[(uint64_t)t * PAIR_USED + j])
+                    ids[(uint64_t)t * PAIR_USED + k] =
+                        (ids[(uint64_t)t * PAIR_USED + k] + 1) % PAIR_EXPERTS;
+
+    ds4_gpu_tensor *d_x = ds4_gpu_tensor_alloc(x_count * sizeof(float));
+    ds4_gpu_tensor *d_ids = ds4_gpu_tensor_alloc(assignments * sizeof(int32_t));
+    ds4_gpu_tensor *d_gate = ds4_gpu_tensor_alloc(out_count * sizeof(float));
+    ds4_gpu_tensor *d_up = ds4_gpu_tensor_alloc(out_count * sizeof(float));
+    REQUIRE(d_x && d_ids && d_gate && d_up, "routed pair GPU allocation");
+    REQUIRE(ds4_gpu_tensor_write(d_x, 0, x, x_count * sizeof(float)) &&
+            ds4_gpu_tensor_write(d_ids, 0, ids, assignments * sizeof(int32_t)),
+            "routed pair input upload");
+    REQUIRE(ds4_gpu_routed_gate_up_tensor(
+                d_gate, d_up, d_x, d_ids, model_map, model_size,
+                gate_offset, weight_bytes, up_offset, weight_bytes,
+                weight_type, HIDDEN, PAIR_FF, PAIR_EXPERTS, PAIR_TOKENS,
+                PAIR_USED),
+            "routed pair launch");
+    REQUIRE(ds4_gpu_tensor_read(d_gate, 0, pair_gate, out_count * sizeof(float)) &&
+            ds4_gpu_tensor_read(d_up, 0, pair_up, out_count * sizeof(float)),
+            "routed pair download");
+    REQUIRE(ds4_gpu_routed_matmul_tensor(
+                d_gate, d_x, d_ids, model_map, model_size, gate_offset,
+                weight_bytes, weight_type, HIDDEN, PAIR_FF, PAIR_EXPERTS,
+                PAIR_TOKENS, PAIR_USED) &&
+            ds4_gpu_routed_matmul_tensor(
+                d_up, d_x, d_ids, model_map, model_size, up_offset,
+                weight_bytes, weight_type, HIDDEN, PAIR_FF, PAIR_EXPERTS,
+                PAIR_TOKENS, PAIR_USED),
+            "routed reference launch");
+    REQUIRE(ds4_gpu_tensor_read(d_gate, 0, ref_gate, out_count * sizeof(float)) &&
+            ds4_gpu_tensor_read(d_up, 0, ref_up, out_count * sizeof(float)),
+            "routed reference download");
+    char label[96];
+    snprintf(label, sizeof(label), "%s gate", name);
+    compare_mmq(label, pair_gate, ref_gate, out_count);
+    snprintf(label, sizeof(label), "%s up", name);
+    compare_mmq(label, pair_up, ref_up, out_count);
+
+    ds4_gpu_tensor_free(d_up);
+    ds4_gpu_tensor_free(d_gate);
+    ds4_gpu_tensor_free(d_ids);
+    ds4_gpu_tensor_free(d_x);
+    free(ref_up);
+    free(ref_gate);
+    free(pair_up);
+    free(pair_gate);
+    free(ids);
+    free(x);
+}
+
 static void profile_fused_down(void) {
     enum {
         tokens = 8025,
@@ -1208,8 +1297,22 @@ int main(void) {
     const uint64_t shexp_bytes = shexp_blocks * sizeof(test_block_q8_0);
     const uint64_t shexp_up_offset =
         (shexp_gate_offset + shexp_bytes + 4095u) & ~4095ull;
-    const uint64_t model_size =
+    const uint64_t q5k_pair_blocks =
+        (uint64_t)PAIR_EXPERTS * PAIR_FF * (HIDDEN / QK_K);
+    const uint64_t q5k_pair_bytes = q5k_pair_blocks * sizeof(test_block_q5_k);
+    const uint64_t q5k_gate_offset =
         (shexp_up_offset + shexp_bytes + 4095u) & ~4095ull;
+    const uint64_t q5k_up_offset =
+        (q5k_gate_offset + q5k_pair_bytes + 4095u) & ~4095ull;
+    const uint64_t q8_pair_blocks =
+        (uint64_t)PAIR_EXPERTS * PAIR_FF * SHEXP_K_BLOCKS;
+    const uint64_t q8_pair_bytes = q8_pair_blocks * sizeof(test_block_q8_0);
+    const uint64_t q8_gate_offset =
+        (q5k_up_offset + q5k_pair_bytes + 4095u) & ~4095ull;
+    const uint64_t q8_up_offset =
+        (q8_gate_offset + q8_pair_bytes + 4095u) & ~4095ull;
+    const uint64_t model_size =
+        (q8_up_offset + q8_pair_bytes + 4095u) & ~4095ull;
     void *model_map = NULL;
     REQUIRE(posix_memalign(&model_map, 4096u, (size_t)model_size) == 0,
             "aligned split-down model map");
@@ -1232,6 +1335,18 @@ int main(void) {
     fill_q8_0((test_block_q8_0 *)(
                   (unsigned char *)model_map + shexp_up_offset),
               shexp_blocks);
+    fill_q5_k((test_block_q5_k *)(
+                  (unsigned char *)model_map + q5k_gate_offset),
+              q5k_pair_blocks);
+    fill_q5_k((test_block_q5_k *)(
+                  (unsigned char *)model_map + q5k_up_offset),
+              q5k_pair_blocks);
+    fill_q8_0((test_block_q8_0 *)(
+                  (unsigned char *)model_map + q8_gate_offset),
+              q8_pair_blocks);
+    fill_q8_0((test_block_q8_0 *)(
+                  (unsigned char *)model_map + q8_up_offset),
+              q8_pair_blocks);
     REQUIRE(ds4_gpu_set_model_map(model_map, model_size),
             "register split-down model map");
 
@@ -1251,6 +1366,12 @@ int main(void) {
                     dense_tail_bytes);
     test_shexp_pair(model_map, model_size, shexp_gate_offset,
                     shexp_up_offset);
+    test_routed_pair(model_map, model_size, 13u, q5k_gate_offset,
+                     q5k_up_offset, q5k_pair_bytes,
+                     "Qwen edge-layer Q5_K gate/up worklist pair");
+    test_routed_pair(model_map, model_size, 8u, q8_gate_offset,
+                     q8_up_offset, q8_pair_bytes,
+                     "Qwen MTP Q8_0 gate/up worklist pair");
 
     REQUIRE(ds4_gpu_synchronize(), "final CUDA synchronization");
     ds4_gpu_unregister_model_map(model_map);

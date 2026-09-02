@@ -660,6 +660,37 @@ int ds4_mmq_q4_K_moe_pair(
 // Paired Q4_K entry with a caller-proven expert-bucket bound.  The two
 // weights share one expert map and Q8_1 activation, then run through the
 // compact routed worklist.  Router ids remain authoritative.
+// Q5_K / Q8_0 twins of the bounded Q4_K pair (Qwen edge layers, MTP block).
+int ds4_mmq_q5_K_moe_pair_bounded(
+    const void    * W_a,
+    const void    * W_b,
+    const float   * X_f32,
+    const int32_t * ids,
+    float         * out_a,
+    float         * out_b,
+    int             M,
+    int             K,
+    int             n_tokens,
+    int             n_experts,
+    int             n_expert_used,
+    int             max_rows_per_expert,
+    cudaStream_t    stream);
+
+int ds4_mmq_q8_0_moe_pair_bounded(
+    const void    * W_a,
+    const void    * W_b,
+    const float   * X_f32,
+    const int32_t * ids,
+    float         * out_a,
+    float         * out_b,
+    int             M,
+    int             K,
+    int             n_tokens,
+    int             n_experts,
+    int             n_expert_used,
+    int             max_rows_per_expert,
+    cudaStream_t    stream);
+
 int ds4_mmq_q4_K_moe_pair_bounded(
     const void    * W_a,
     const void    * W_b,

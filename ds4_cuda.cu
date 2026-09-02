@@ -24198,9 +24198,17 @@ extern "C" int ds4_gpu_matmul_q8_0_pair_tensor(
      * tokens; two common MMQ launches take ~2 ms. */
     const bool qwen_shexp_pair = in_dim == 2560u &&
         out0_dim == 640u && out1_dim == 640u;
+    /* Same treatment for Qwen's PLE key/value (10240/2560) and QSA k/v
+     * (512/512) pairs: 382 ms and 13 x 31 ms per 8K prefill on the
+     * warp-per-row kernels. */
+    const bool qwen_ple_pair = in_dim == 2560u &&
+        out0_dim == 10240u && out1_dim == 2560u;
+    const bool qwen_qsa_kv_pair = in_dim == 2560u &&
+        out0_dim == 512u && out1_dim == 512u;
     const bool dots3_pair = in_dim == 5120u && out0_dim == out1_dim &&
         (out0_dim == 1536u || out0_dim == 13824u);
-    if ((motif_dense || dots3_pair || qwen_shexp_pair) && n_tok >= 64u &&
+    if ((motif_dense || dots3_pair || qwen_shexp_pair || qwen_ple_pair ||
+         qwen_qsa_kv_pair) && n_tok >= 64u &&
         getenv("DS4_CUDA_NO_Q8_PAIR_MMQ_SPLIT") == NULL) {
         if (ds4_gpu_matmul_q8_0_tensor(
                     out0, model_map, model_size, weight0_offset,
@@ -30961,15 +30969,23 @@ extern "C" int ds4_gpu_routed_gate_up_tensor(
         return 0;
     }
 
-    /* Q4_K appears in Solar's shallow and tail routed layers. Pairing here
-     * lets gate/up share the expert map and activation quantize; prefill then
-     * uses the common compact worklist with the top-k bucket bound. */
+    /* Q4_K appears in Solar's shallow and tail routed layers, Q5_K in Qwen's
+     * edge layers and Q8_0 in its MTP block. Pairing here lets gate/up share
+     * the expert map and activation quantize; prefill then uses the common
+     * compact worklist with the top-k bucket bound. Decode keeps the raw
+     * vector pair for Q4_K and the generic path for the other two. */
     const char *q4_pair_env = getenv("DS4_MMQ_Q4_PAIR");
     const bool q4_pair_enabled =
         !(q4_pair_env && q4_pair_env[0] == '0');
-    if (weight_type == 12u && in_dim % 256u == 0u &&
-        gate_bytes == up_bytes && ds4_cuda_use_mmq() && q4_pair_enabled) {
-        const uint64_t blocks_per_row = in_dim / 256u;
+    const bool pair_type = weight_type == 12u || weight_type == 13u ||
+                           weight_type == 8u;
+    if (pair_type && in_dim % 256u == 0u &&
+        gate_bytes == up_bytes && ds4_cuda_use_mmq() && q4_pair_enabled &&
+        (weight_type == 12u || n_tokens > 1u)) {
+        const uint64_t block_width = weight_type == 8u ? 32u : 256u;
+        const uint64_t block_bytes =
+            weight_type == 8u ? 34u : weight_type == 12u ? 144u : 176u;
+        const uint64_t blocks_per_row = in_dim / block_width;
         bool q4_shape_ok = (uint64_t)n_expert <= UINT64_MAX / out_dim;
         uint64_t required_bytes = 0u;
         if (q4_shape_ok) {
@@ -30977,8 +30993,8 @@ extern "C" int ds4_gpu_routed_gate_up_tensor(
             q4_shape_ok = expert_rows <= UINT64_MAX / blocks_per_row;
             if (q4_shape_ok) {
                 const uint64_t blocks = expert_rows * blocks_per_row;
-                q4_shape_ok = blocks <= UINT64_MAX / 144u;
-                if (q4_shape_ok) required_bytes = blocks * 144u;
+                q4_shape_ok = blocks <= UINT64_MAX / block_bytes;
+                if (q4_shape_ok) required_bytes = blocks * block_bytes;
             }
         }
         if (q4_shape_ok && gate_bytes >= required_bytes) {
@@ -30990,30 +31006,53 @@ extern "C" int ds4_gpu_routed_gate_up_tensor(
                 "routed_up_q4_pair_weights");
             if (gate_raw && up_raw) {
                 const cudaStream_t stream = ds4_mmq_stream_for_call();
-                const int rc = n_tokens == 1u
-                    ? ds4_mmq_q4_K_moe_pair_raw_vec(
+                int rc = -1;
+                if (n_tokens == 1u) {
+                    rc = ds4_mmq_q4_K_moe_pair_raw_vec(
                           gate_raw, up_raw,
                           (const float *)x->ptr, (const int32_t *)ids->ptr,
                           (float *)gate->ptr, (float *)up->ptr,
                           (int)out_dim, (int)in_dim, (int)n_tokens,
-                          (int)n_expert, (int)n_expert_used, stream)
-                    : ds4_mmq_q4_K_moe_pair_bounded(
+                          (int)n_expert, (int)n_expert_used, stream);
+                } else if (weight_type == 12u) {
+                    rc = ds4_mmq_q4_K_moe_pair_bounded(
                           gate_raw, up_raw,
                           (const float *)x->ptr, (const int32_t *)ids->ptr,
                           (float *)gate->ptr, (float *)up->ptr,
                           (int)out_dim, (int)in_dim, (int)n_tokens,
                           (int)n_expert, (int)n_expert_used,
                           (int)n_tokens, stream);
+                } else if (weight_type == 13u) {
+                    rc = ds4_mmq_q5_K_moe_pair_bounded(
+                          gate_raw, up_raw,
+                          (const float *)x->ptr, (const int32_t *)ids->ptr,
+                          (float *)gate->ptr, (float *)up->ptr,
+                          (int)out_dim, (int)in_dim, (int)n_tokens,
+                          (int)n_expert, (int)n_expert_used,
+                          (int)n_tokens, stream);
+                } else {
+                    rc = ds4_mmq_q8_0_moe_pair_bounded(
+                          gate_raw, up_raw,
+                          (const float *)x->ptr, (const int32_t *)ids->ptr,
+                          (float *)gate->ptr, (float *)up->ptr,
+                          (int)out_dim, (int)in_dim, (int)n_tokens,
+                          (int)n_expert, (int)n_expert_used,
+                          (int)n_tokens, stream);
+                }
                 if (rc == 0) {
-                    static bool logged_q4_pair = false;
-                    if (!logged_q4_pair) {
-                        logged_q4_pair = true;
+                    static bool logged_pair[3] = {false, false, false};
+                    const int slot = weight_type == 12u ? 0
+                                   : weight_type == 13u ? 1 : 2;
+                    if (!logged_pair[slot]) {
+                        logged_pair[slot] = true;
                         fprintf(stderr,
-                                "ds4: routed gate/up using Q4_K pair (%s)\n",
+                                "ds4: routed gate/up using %s pair (%s)\n",
+                                weight_type == 12u ? "Q4_K"
+                                : weight_type == 13u ? "Q5_K" : "Q8_0",
                                 n_tokens == 1u ? "decode" : "bounded prefill");
                     }
                     return cuda_ok(cudaGetLastError(),
-                                   "routed Q4_K gate/up pair launch");
+                                   "routed gate/up pair launch");
                 }
             }
         }

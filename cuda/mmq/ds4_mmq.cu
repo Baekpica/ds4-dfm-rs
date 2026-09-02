@@ -2806,7 +2806,8 @@ int ds4_mmq_moe_pair_impl(
         xb_soa == nullptr && moe_worklist_enabled(type)) {
         int pair_a_rc = -1;
         int pair_b_rc = -1;
-        if constexpr (type == GGML_TYPE_Q3_K || type == GGML_TYPE_Q4_K) {
+        if constexpr (type == GGML_TYPE_Q3_K || type == GGML_TYPE_Q4_K ||
+                      type == GGML_TYPE_Q5_K || type == GGML_TYPE_Q8_0) {
             pair_a_rc = ds4_mmq_moe_worklist_launch<type>(
                 tag, *ctx, W_a, (const int *)src1_q8_1,
                 ids_dst, expert_bounds, out_a,
@@ -3688,6 +3689,50 @@ extern "C" int ds4_mmq_q4_K_moe_pair_bounded(
      * both [rows x M] outputs (~1.6 ms per 8K Qwen layer) adds nothing. */
     return ds4_mmq_moe_pair_impl<GGML_TYPE_Q4_K>(
         "ds4_mmq_q4_K_moe_pair_bounded",
+        W_a, W_b, X, ids, out_a, out_b,
+        M, K, n_tokens, n_experts, n_expert_used, stream,
+        /*xa_soa=*/NULL, /*xb_soa=*/NULL, /*soa_blocks=*/0,
+        /*sanitize_out=*/false, /*fused_down=*/nullptr,
+        /*ncols_max_hint=*/max_rows_per_expert);
+}
+
+/* Qwen3.8's edge layers carry Q5_K gate/up and its MTP block Q8_0 gate/up;
+ * both fell to the rectangular stream-K MoE launch (~34 ms per projection at
+ * 8K tokens against ~5 ms on the compact worklist).  Same contract as the
+ * Q4_K pair; the weighted SwiGLU consumer zeroes non-finite values. */
+extern "C" int ds4_mmq_q5_K_moe_pair_bounded(
+        const void * W_a, const void * W_b,
+        const float * X, const int32_t * ids, float * out_a, float * out_b,
+        int M, int K, int n_tokens, int n_experts, int n_expert_used,
+        int max_rows_per_expert, cudaStream_t stream) {
+    if (max_rows_per_expert <= 0) {
+        fprintf(stderr,
+                "ds4_mmq_q5_K_moe_pair_bounded: invalid bound %d\n",
+                max_rows_per_expert);
+        return -1;
+    }
+    return ds4_mmq_moe_pair_impl<GGML_TYPE_Q5_K>(
+        "ds4_mmq_q5_K_moe_pair_bounded",
+        W_a, W_b, X, ids, out_a, out_b,
+        M, K, n_tokens, n_experts, n_expert_used, stream,
+        /*xa_soa=*/NULL, /*xb_soa=*/NULL, /*soa_blocks=*/0,
+        /*sanitize_out=*/false, /*fused_down=*/nullptr,
+        /*ncols_max_hint=*/max_rows_per_expert);
+}
+
+extern "C" int ds4_mmq_q8_0_moe_pair_bounded(
+        const void * W_a, const void * W_b,
+        const float * X, const int32_t * ids, float * out_a, float * out_b,
+        int M, int K, int n_tokens, int n_experts, int n_expert_used,
+        int max_rows_per_expert, cudaStream_t stream) {
+    if (max_rows_per_expert <= 0) {
+        fprintf(stderr,
+                "ds4_mmq_q8_0_moe_pair_bounded: invalid bound %d\n",
+                max_rows_per_expert);
+        return -1;
+    }
+    return ds4_mmq_moe_pair_impl<GGML_TYPE_Q8_0>(
+        "ds4_mmq_q8_0_moe_pair_bounded",
         W_a, W_b, X, ids, out_a, out_b,
         M, K, n_tokens, n_experts, n_expert_used, stream,
         /*xa_soa=*/NULL, /*xb_soa=*/NULL, /*soa_blocks=*/0,
