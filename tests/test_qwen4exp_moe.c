@@ -878,6 +878,148 @@ static void test_fused_down(void *model_map, uint64_t model_size,
 
 /* Production-shape launch for NCU: Q5_K[512] main + Q5_0[128] tail over
  * 8,025 tokens x top-10 through 512 experts, nothing else resident. */
+enum {
+    DENSE_TAIL_K = 640,
+    DENSE_TAIL_ROWS = 300,
+    DENSE_TAIL_SMALL_ROWS = 40,
+    DENSE_TAIL_BLOCKS_PER_ROW = DENSE_TAIL_K / QK_5_0,
+    SHEXP_PAIR_ROWS = 100,
+    SHEXP_PAIR_SMALL_ROWS = 32,
+    SHEXP_FF = 640,
+    SHEXP_K_BLOCKS = HIDDEN / QK_5_0,
+};
+
+/* Dense Q8_0 [K=640 x M=2560] against an F32 reference: prefill width takes
+ * the fused MMQ tail path, the narrow width stays on the legacy batch kernel,
+ * and the two must agree on the rows they share. */
+static void test_dense_tail(void *model_map, uint64_t model_size,
+                            uint64_t weight_offset, uint64_t weight_bytes) {
+    const uint64_t x_count = (uint64_t)DENSE_TAIL_ROWS * DENSE_TAIL_K;
+    const uint64_t out_count = (uint64_t)DENSE_TAIL_ROWS * HIDDEN;
+    const uint64_t small_count = (uint64_t)DENSE_TAIL_SMALL_ROWS * HIDDEN;
+    float *x = (float *)malloc(x_count * sizeof(*x));
+    float *want = (float *)malloc(out_count * sizeof(*want));
+    float *got = (float *)malloc(out_count * sizeof(*got));
+    float *small = (float *)malloc(small_count * sizeof(*small));
+    float *row = (float *)malloc(DENSE_TAIL_K * sizeof(*row));
+    REQUIRE(x && want && got && small && row, "dense tail host allocation");
+    for (uint64_t i = 0; i < x_count; i++)
+        x[i] = 0.33f * sinf((float)(i + 3u) * 0.013f) -
+               0.05f * cosf((float)(i + 19u) * 0.021f);
+    const test_block_q8_0 *w = (const test_block_q8_0 *)(
+        (const unsigned char *)model_map + weight_offset);
+    for (uint32_t out = 0; out < HIDDEN; out++) {
+        dequant_q8_0_blocks(w + (uint64_t)out * DENSE_TAIL_BLOCKS_PER_ROW,
+                            DENSE_TAIL_BLOCKS_PER_ROW, row);
+        for (uint32_t r = 0; r < DENSE_TAIL_ROWS; r++) {
+            const float *xr = x + (uint64_t)r * DENSE_TAIL_K;
+            float sum = 0.0f;
+            for (uint32_t k = 0; k < DENSE_TAIL_K; k++) sum += xr[k] * row[k];
+            want[(uint64_t)r * HIDDEN + out] = sum;
+        }
+    }
+
+    ds4_gpu_tensor *d_x = ds4_gpu_tensor_alloc(x_count * sizeof(float));
+    ds4_gpu_tensor *d_out = ds4_gpu_tensor_alloc(out_count * sizeof(float));
+    REQUIRE(d_x && d_out, "dense tail GPU allocation");
+    REQUIRE(ds4_gpu_tensor_write(d_x, 0, x, x_count * sizeof(float)),
+            "dense tail input upload");
+    REQUIRE(ds4_gpu_matmul_q8_0_tensor(
+                d_out, model_map, model_size, weight_offset, DENSE_TAIL_K,
+                HIDDEN, d_x, DENSE_TAIL_ROWS),
+            "dense tail prefill-width launch");
+    REQUIRE(ds4_gpu_tensor_read(d_out, 0, got, out_count * sizeof(float)),
+            "dense tail prefill-width download");
+    compare_mmq("Qwen dense Q8_0 K=640 fused MMQ tail", got, want, out_count);
+    REQUIRE(ds4_gpu_matmul_q8_0_tensor(
+                d_out, model_map, model_size, weight_offset, DENSE_TAIL_K,
+                HIDDEN, d_x, DENSE_TAIL_SMALL_ROWS),
+            "dense tail narrow-width launch");
+    REQUIRE(ds4_gpu_tensor_read(d_out, 0, small, small_count * sizeof(float)),
+            "dense tail narrow-width download");
+    compare_mmq("  narrow width legacy kernel", small, want, small_count);
+    compare_mmq("  fused against legacy shared rows", got, small, small_count);
+
+    ds4_gpu_tensor_free(d_out);
+    ds4_gpu_tensor_free(d_x);
+    free(row);
+    free(small);
+    free(got);
+    free(want);
+    free(x);
+}
+
+/* Shared-expert gate/up pair (2560 -> 640/640): prefill width splits across
+ * the common MMQ kernels, the narrow width keeps the pair kernel. */
+static void test_shexp_pair(void *model_map, uint64_t model_size,
+                            uint64_t gate_offset, uint64_t up_offset) {
+    const uint64_t x_count = (uint64_t)SHEXP_PAIR_ROWS * HIDDEN;
+    const uint64_t out_count = (uint64_t)SHEXP_PAIR_ROWS * SHEXP_FF;
+    const uint64_t small_count = (uint64_t)SHEXP_PAIR_SMALL_ROWS * SHEXP_FF;
+    float *x = (float *)malloc(x_count * sizeof(*x));
+    float *want_gate = (float *)malloc(out_count * sizeof(*want_gate));
+    float *want_up = (float *)malloc(out_count * sizeof(*want_up));
+    float *gate = (float *)malloc(out_count * sizeof(*gate));
+    float *up = (float *)malloc(out_count * sizeof(*up));
+    float *row = (float *)malloc(HIDDEN * sizeof(*row));
+    REQUIRE(x && want_gate && want_up && gate && up && row,
+            "shared pair host allocation");
+    for (uint64_t i = 0; i < x_count; i++)
+        x[i] = 0.21f * sinf((float)(i + 7u) * 0.009f) +
+               0.04f * cosf((float)(i + 2u) * 0.031f);
+    const uint64_t offsets[2] = {gate_offset, up_offset};
+    float *wants[2] = {want_gate, want_up};
+    for (uint32_t which = 0; which < 2u; which++) {
+        const test_block_q8_0 *w = (const test_block_q8_0 *)(
+            (const unsigned char *)model_map + offsets[which]);
+        for (uint32_t out = 0; out < SHEXP_FF; out++) {
+            dequant_q8_0_blocks(w + (uint64_t)out * SHEXP_K_BLOCKS,
+                                SHEXP_K_BLOCKS, row);
+            for (uint32_t r = 0; r < SHEXP_PAIR_ROWS; r++) {
+                const float *xr = x + (uint64_t)r * HIDDEN;
+                float sum = 0.0f;
+                for (uint32_t k = 0; k < HIDDEN; k++) sum += xr[k] * row[k];
+                wants[which][(uint64_t)r * SHEXP_FF + out] = sum;
+            }
+        }
+    }
+
+    ds4_gpu_tensor *d_x = ds4_gpu_tensor_alloc(x_count * sizeof(float));
+    ds4_gpu_tensor *d_gate = ds4_gpu_tensor_alloc(out_count * sizeof(float));
+    ds4_gpu_tensor *d_up = ds4_gpu_tensor_alloc(out_count * sizeof(float));
+    REQUIRE(d_x && d_gate && d_up, "shared pair GPU allocation");
+    REQUIRE(ds4_gpu_tensor_write(d_x, 0, x, x_count * sizeof(float)),
+            "shared pair input upload");
+    REQUIRE(ds4_gpu_matmul_q8_0_pair_tensor(
+                d_gate, d_up, model_map, model_size, gate_offset, up_offset,
+                HIDDEN, SHEXP_FF, SHEXP_FF, d_x, SHEXP_PAIR_ROWS),
+            "shared pair prefill-width launch");
+    REQUIRE(ds4_gpu_tensor_read(d_gate, 0, gate, out_count * sizeof(float)) &&
+            ds4_gpu_tensor_read(d_up, 0, up, out_count * sizeof(float)),
+            "shared pair prefill-width download");
+    compare_mmq("Qwen shared gate via MMQ split", gate, want_gate, out_count);
+    compare_mmq("Qwen shared up via MMQ split", up, want_up, out_count);
+    REQUIRE(ds4_gpu_matmul_q8_0_pair_tensor(
+                d_gate, d_up, model_map, model_size, gate_offset, up_offset,
+                HIDDEN, SHEXP_FF, SHEXP_FF, d_x, SHEXP_PAIR_SMALL_ROWS),
+            "shared pair narrow-width launch");
+    REQUIRE(ds4_gpu_tensor_read(d_gate, 0, gate, small_count * sizeof(float)) &&
+            ds4_gpu_tensor_read(d_up, 0, up, small_count * sizeof(float)),
+            "shared pair narrow-width download");
+    compare_mmq("  narrow width pair kernel gate", gate, want_gate, small_count);
+    compare_mmq("  narrow width pair kernel up", up, want_up, small_count);
+
+    ds4_gpu_tensor_free(d_up);
+    ds4_gpu_tensor_free(d_gate);
+    ds4_gpu_tensor_free(d_x);
+    free(row);
+    free(up);
+    free(gate);
+    free(want_up);
+    free(want_gate);
+    free(x);
+}
+
 static void profile_fused_down(void) {
     enum {
         tokens = 8025,
@@ -1054,8 +1196,20 @@ int main(void) {
     const uint64_t q8_main_blocks =
         (uint64_t)DOWN_EXPERTS * HIDDEN * Q8_MAIN_BLOCKS_PER_ROW;
     const uint64_t q8_main_bytes = q8_main_blocks * sizeof(test_block_q8_0);
-    const uint64_t model_size =
+    const uint64_t dense_tail_offset =
         (q8_main_offset + q8_main_bytes + 4095u) & ~4095ull;
+    const uint64_t dense_tail_blocks =
+        (uint64_t)HIDDEN * DENSE_TAIL_BLOCKS_PER_ROW;
+    const uint64_t dense_tail_bytes =
+        dense_tail_blocks * sizeof(test_block_q8_0);
+    const uint64_t shexp_gate_offset =
+        (dense_tail_offset + dense_tail_bytes + 4095u) & ~4095ull;
+    const uint64_t shexp_blocks = (uint64_t)SHEXP_FF * SHEXP_K_BLOCKS;
+    const uint64_t shexp_bytes = shexp_blocks * sizeof(test_block_q8_0);
+    const uint64_t shexp_up_offset =
+        (shexp_gate_offset + shexp_bytes + 4095u) & ~4095ull;
+    const uint64_t model_size =
+        (shexp_up_offset + shexp_bytes + 4095u) & ~4095ull;
     void *model_map = NULL;
     REQUIRE(posix_memalign(&model_map, 4096u, (size_t)model_size) == 0,
             "aligned split-down model map");
@@ -1069,6 +1223,15 @@ int main(void) {
     fill_q8_0((test_block_q8_0 *)(
                   (unsigned char *)model_map + q8_main_offset),
               q8_main_blocks);
+    fill_q8_0((test_block_q8_0 *)(
+                  (unsigned char *)model_map + dense_tail_offset),
+              dense_tail_blocks);
+    fill_q8_0((test_block_q8_0 *)(
+                  (unsigned char *)model_map + shexp_gate_offset),
+              shexp_blocks);
+    fill_q8_0((test_block_q8_0 *)(
+                  (unsigned char *)model_map + shexp_up_offset),
+              shexp_blocks);
     REQUIRE(ds4_gpu_set_model_map(model_map, model_size),
             "register split-down model map");
 
@@ -1084,6 +1247,10 @@ int main(void) {
     test_fused_down(model_map, model_size, q8_main_offset, q8_main_bytes,
                     8u, q8_tail_offset, q8_tail_bytes, 8u,
                     "Qwen MTP fused Q8_0[512] + Q8_0[128] MMQ");
+    test_dense_tail(model_map, model_size, dense_tail_offset,
+                    dense_tail_bytes);
+    test_shexp_pair(model_map, model_size, shexp_gate_offset,
+                    shexp_up_offset);
 
     REQUIRE(ds4_gpu_synchronize(), "final CUDA synchronization");
     ds4_gpu_unregister_model_map(model_map);

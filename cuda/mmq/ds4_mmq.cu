@@ -1627,17 +1627,21 @@ int ds4_mmq_moe_worklist_tail_launch(
     return 0;
 }
 
-/* Routed MoE matmul over a [main | tail] activation row: main is the packed
- * K-quant input (K columns per row), the tail is read in place through
- * x_tail_stride from the wider mid buffer.  One expert map, one worklist,
- * one output store.  Returns -1 without launching when the compact worklist
- * cannot take the shape, so the caller keeps its separate main + tail path. */
+/* Routed MoE matmul over a [main | tail] activation row: main is the
+ * K-column input read with x_stride floats between rows, the tail is read
+ * in place through x_tail_stride.  w_row_blocks / w_tail_row_blocks give
+ * the weight row strides in blocks (0 = contiguous rows of K / 128
+ * columns), so one tensor can serve as both main and tail when the tail is
+ * simply its last four blocks.  One expert map, one worklist, one output
+ * store.  Returns -1 without launching when the compact worklist cannot
+ * take the shape, so the caller keeps its separate main + tail path. */
 template <ggml_type type, ggml_type tail_type>
 int ds4_mmq_moe_tail_impl(
         const char    * tag,
         const void    * W,
         const void    * W_tail,
         const float   * X_f32,
+        int             x_stride,
         const float   * X_tail_f32,
         int             x_tail_stride,
         const int32_t * ids,
@@ -1648,19 +1652,29 @@ int ds4_mmq_moe_tail_impl(
         int             n_experts,
         int             n_expert_used,
         int             max_rows_per_expert,
+        int             w_row_blocks,
+        int             w_tail_row_blocks,
         cudaStream_t    stream) {
     if (!W || !W_tail || !X_f32 || !X_tail_f32 || !ids || !out_f32) {
         fprintf(stderr, "%s: null pointer\n", tag);
         return -1;
     }
+    constexpr int tail_blocks = DS4_MMQ_TAIL_K / QK8_0;
     if (M <= 0 || K <= 0 || K % 256 != 0 || n_tokens <= 0 ||
         n_experts <= 0 || n_expert_used <= 0 || n_expert_used > n_experts ||
+        x_stride < K || x_stride % 4 != 0 ||
+        ((uintptr_t)X_f32 & 15u) != 0u ||
         x_tail_stride < DS4_MMQ_TAIL_K || x_tail_stride % 4 != 0 ||
-        ((uintptr_t)X_tail_f32 & 15u) != 0u || max_rows_per_expert <= 0) {
+        ((uintptr_t)X_tail_f32 & 15u) != 0u || max_rows_per_expert <= 0 ||
+        w_row_blocks < 0 ||
+        (w_row_blocks > 0 && w_row_blocks < K / ggml_blck_size(type)) ||
+        w_tail_row_blocks < 0 ||
+        (w_tail_row_blocks > 0 && w_tail_row_blocks < tail_blocks)) {
         fprintf(stderr, "%s: bad shape M=%d K=%d ntok=%d nexp=%d nused=%d "
-                "tail_stride=%d bound=%d\n",
+                "x_stride=%d tail_stride=%d bound=%d rows=%d/%d\n",
                 tag, M, K, n_tokens, n_experts, n_expert_used,
-                x_tail_stride, max_rows_per_expert);
+                x_stride, x_tail_stride, max_rows_per_expert,
+                w_row_blocks, w_tail_row_blocks);
         return -1;
     }
     if (!moe_worklist_enabled(type)) return -1;
@@ -1682,9 +1696,11 @@ int ds4_mmq_moe_tail_impl(
     }
     const int64_t ne10_padded = GGML_PAD((int64_t)K, MATRIX_ROW_PADDING);
     const int64_t blck        = ggml_blck_size(type);
-    const int64_t s01         = (int64_t)K / blck;
+    const int64_t s01         = w_row_blocks > 0
+        ? (int64_t)w_row_blocks : (int64_t)K / blck;
     const int64_t s02         = (int64_t)M * s01;
-    const int64_t s01_tail    = DS4_MMQ_TAIL_K / QK8_0;
+    const int64_t s01_tail    = w_tail_row_blocks > 0
+        ? (int64_t)w_tail_row_blocks : (int64_t)tail_blocks;
     const int64_t s02_tail    = (int64_t)M * s01_tail;
 
     // 1. Expert-major work map (zeroed first: see ds4_mmq_moe_impl).
@@ -1719,8 +1735,8 @@ int ds4_mmq_moe_tail_impl(
     ybuf_memset(src1_q8_1.get(), nbytes_main, stream);
     quantize_mmq_q8_1_cuda(
         X_f32, ids_src1.get(), (void *)src1_q8_1.get(),
-        type, /*ne00=*/K, /*s01=*/(int64_t)K, /*s02=*/(int64_t)K,
-        /*s03=*/(int64_t)K * n_tokens,
+        type, /*ne00=*/K, /*s01=*/(int64_t)x_stride,
+        /*s02=*/(int64_t)x_stride, /*s03=*/(int64_t)x_stride * n_tokens,
         /*ne0=*/ne10_padded, /*ne1=*/ne_get_rows, /*ne2=*/1, /*ne3=*/1,
         stream);
     err = cudaGetLastError();
@@ -3293,9 +3309,10 @@ extern "C" int ds4_mmq_q5_K_moe_bounded_q5_0_tail(
         int M, int K, int n_tokens, int n_experts, int n_expert_used,
         int max_rows_per_expert, cudaStream_t stream) {
     return ds4_mmq_moe_tail_impl<GGML_TYPE_Q5_K, GGML_TYPE_Q5_0>(
-        "ds4_mmq_q5_K_moe_bounded_q5_0_tail", W, W_tail, X_f32, X_tail_f32,
-        x_tail_stride, ids, out_f32, M, K, n_tokens, n_experts,
-        n_expert_used, max_rows_per_expert, stream);
+        "ds4_mmq_q5_K_moe_bounded_q5_0_tail", W, W_tail, X_f32, /*x_stride=*/K,
+        X_tail_f32, x_tail_stride, ids, out_f32, M, K, n_tokens,
+        n_experts, n_expert_used, max_rows_per_expert,
+        /*w_row_blocks=*/0, /*w_tail_row_blocks=*/0, stream);
 }
 
 extern "C" int ds4_mmq_q6_K_moe_bounded_q5_0_tail(
@@ -3305,9 +3322,10 @@ extern "C" int ds4_mmq_q6_K_moe_bounded_q5_0_tail(
         int M, int K, int n_tokens, int n_experts, int n_expert_used,
         int max_rows_per_expert, cudaStream_t stream) {
     return ds4_mmq_moe_tail_impl<GGML_TYPE_Q6_K, GGML_TYPE_Q5_0>(
-        "ds4_mmq_q6_K_moe_bounded_q5_0_tail", W, W_tail, X_f32, X_tail_f32,
-        x_tail_stride, ids, out_f32, M, K, n_tokens, n_experts,
-        n_expert_used, max_rows_per_expert, stream);
+        "ds4_mmq_q6_K_moe_bounded_q5_0_tail", W, W_tail, X_f32, /*x_stride=*/K,
+        X_tail_f32, x_tail_stride, ids, out_f32, M, K, n_tokens,
+        n_experts, n_expert_used, max_rows_per_expert,
+        /*w_row_blocks=*/0, /*w_tail_row_blocks=*/0, stream);
 }
 
 extern "C" int ds4_mmq_q8_0_moe_bounded_q8_0_tail(
@@ -3317,9 +3335,47 @@ extern "C" int ds4_mmq_q8_0_moe_bounded_q8_0_tail(
         int M, int K, int n_tokens, int n_experts, int n_expert_used,
         int max_rows_per_expert, cudaStream_t stream) {
     return ds4_mmq_moe_tail_impl<GGML_TYPE_Q8_0, GGML_TYPE_Q8_0>(
-        "ds4_mmq_q8_0_moe_bounded_q8_0_tail", W, W_tail, X_f32, X_tail_f32,
-        x_tail_stride, ids, out_f32, M, K, n_tokens, n_experts,
-        n_expert_used, max_rows_per_expert, stream);
+        "ds4_mmq_q8_0_moe_bounded_q8_0_tail", W, W_tail, X_f32, /*x_stride=*/K,
+        X_tail_f32, x_tail_stride, ids, out_f32, M, K, n_tokens,
+        n_experts, n_expert_used, max_rows_per_expert,
+        /*w_row_blocks=*/0, /*w_tail_row_blocks=*/0, stream);
+}
+
+/* Dense Q8_0 GEMM with K = 256n + 128 (the Qwen shared-expert down,
+ * K = 640).  Generic MMQ needs K % 256 == 0 and the warp-per-row batch
+ * kernel is ~15x slower at prefill width, so the tensor serves as its own
+ * main (first K - 128 columns) and tail (last four blocks), walked by the
+ * fused worklist kernel as a single expert with an identity row map. */
+extern "C" int ds4_mmq_q8_0_dense_tail(
+        const void * W, const float * X, float * out,
+        int M, int N, int K, cudaStream_t stream) {
+    const char *tag = "ds4_mmq_q8_0_dense_tail";
+    if (!W || !X || !out) {
+        fprintf(stderr, "%s: null pointer\n", tag);
+        return -1;
+    }
+    if (M <= 0 || N <= 0 || K < 256 + DS4_MMQ_TAIL_K ||
+        K % 256 != DS4_MMQ_TAIL_K) {
+        fprintf(stderr, "%s: bad shape M=%d N=%d K=%d\n", tag, M, N, K);
+        return -1;
+    }
+    const int dev = ggml_cuda_get_device();
+    ggml_backend_cuda_context * ctx = get_ctx_for_device(dev);
+    if (!ctx) {
+        fprintf(stderr, "%s: failed to get cuda context for device %d\n", tag, dev);
+        return -1;
+    }
+    ds4_pool_set_stream(stream);
+    const int k_main = K - DS4_MMQ_TAIL_K;
+    const int row_blocks = K / QK8_0;
+    ggml_cuda_pool_alloc<int32_t> ids(ctx->pool(), N);
+    cudaMemsetAsync(ids.get(), 0, (size_t)N * sizeof(int32_t), stream);
+    return ds4_mmq_moe_tail_impl<GGML_TYPE_Q8_0, GGML_TYPE_Q8_0>(
+        tag, W, (const block_q8_0 *)W + k_main / QK8_0,
+        X, /*x_stride=*/K, X + k_main, /*x_tail_stride=*/K,
+        ids.get(), out, M, k_main, /*n_tokens=*/N, /*n_experts=*/1,
+        /*n_expert_used=*/1, /*max_rows_per_expert=*/N,
+        row_blocks, row_blocks, stream);
 }
 
 extern "C" int ds4_mmq_q4_K_moe_bounded(

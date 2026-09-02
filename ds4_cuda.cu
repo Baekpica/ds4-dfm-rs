@@ -23316,6 +23316,10 @@ static void cuda_norm_q8_verify(const ds4_gpu_tensor *out, uint32_t rows,
 
 static int cuda_matmul_q8_0_tensor_labeled_impl(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size, uint64_t weight_offset, uint64_t in_dim, uint64_t out_dim, const ds4_gpu_tensor *x, uint64_t n_tok, const char *label);
 
+/* Below this width the warp-per-row batch kernels keep dense Q8 GEMMs whose
+ * K is not a multiple of 256; from it on the fused MMQ tail path wins. */
+enum { DS4_Q8_DENSE_TAIL_MIN_TOKENS = 64 };
+
 static int cuda_matmul_q8_0_tensor_labeled(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size, uint64_t weight_offset, uint64_t in_dim, uint64_t out_dim, const ds4_gpu_tensor *x, uint64_t n_tok, const char *label) {
     uint32_t slot = UINT32_MAX;
     cudaStream_t s = (cudaStream_t)0;
@@ -23666,6 +23670,29 @@ static int cuda_matmul_q8_0_tensor_labeled_impl(ds4_gpu_tensor *out, const void 
             if (rc == 0) return 1;
             /* On failure, fall through to the legacy paths below. */
             fprintf(stderr, "ds4: ds4_mmq_q8_0_dense returned %d (label='%s' in=%llu out=%llu n_tok=%llu); falling back\n",
+                    rc, label ? label : "", (unsigned long long)in_dim,
+                    (unsigned long long)out_dim,
+                    (unsigned long long)n_tok);
+        } else if ((in_dim % 256u) == 128u && in_dim >= 384u &&
+                   n_tok >= DS4_Q8_DENSE_TAIL_MIN_TOKENS) {
+            /* K = 256n + 128 (Qwen's shared-expert down, K=640) rides the
+             * fused main+tail worklist as a single expert.  The warp-per-row
+             * batch kernel below took ~22 ms per layer at 8K tokens. */
+            int rc = ds4_mmq_q8_0_dense_tail(
+                    wptr, (const float *)x->ptr, (float *)out->ptr,
+                    (int)out_dim, (int)n_tok, (int)in_dim,
+                    ds4_mmq_stream_for_call());
+            if (rc == 0) {
+                static int logged_dense_tail = 0;
+                if (!logged_dense_tail) {
+                    logged_dense_tail = 1;
+                    fprintf(stderr, "ds4: dense q8 K=%llu batched on the fused MMQ tail path (first label='%s' n_tok=%u)\n",
+                            (unsigned long long)in_dim, label ? label : "?",
+                            (unsigned)n_tok);
+                }
+                return 1;
+            }
+            fprintf(stderr, "ds4: ds4_mmq_q8_0_dense_tail returned %d (label='%s' in=%llu out=%llu n_tok=%llu); falling back\n",
                     rc, label ? label : "", (unsigned long long)in_dim,
                     (unsigned long long)out_dim,
                     (unsigned long long)n_tok);
@@ -24166,9 +24193,14 @@ extern "C" int ds4_gpu_matmul_q8_0_pair_tensor(
      * same split also covers dots3-note's exact dense/shared pair shapes. */
     const bool motif_dense = in_dim == 4096u &&
         out0_dim == 12288u && out1_dim == 12288u;
+    /* Qwen3.8's shared-expert gate/up pair (2560 -> 640/640) hit the
+     * aligned warp-per-row batch kernel at ~18 ms per layer for 8K
+     * tokens; two common MMQ launches take ~2 ms. */
+    const bool qwen_shexp_pair = in_dim == 2560u &&
+        out0_dim == 640u && out1_dim == 640u;
     const bool dots3_pair = in_dim == 5120u && out0_dim == out1_dim &&
         (out0_dim == 1536u || out0_dim == 13824u);
-    if ((motif_dense || dots3_pair) && n_tok >= 64u &&
+    if ((motif_dense || dots3_pair || qwen_shexp_pair) && n_tok >= 64u &&
         getenv("DS4_CUDA_NO_Q8_PAIR_MMQ_SPLIT") == NULL) {
         if (ds4_gpu_matmul_q8_0_tensor(
                     out0, model_map, model_size, weight0_offset,

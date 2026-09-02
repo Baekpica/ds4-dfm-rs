@@ -145,6 +145,19 @@ static inline int ds4_mmq_q8_0_dense_d2r_min_cols(
     return K == 128u ? k128_min_cols : general_min_cols;
 }
 
+// Dense Q8_0 with K = 256n + 128 (K >= 384): the tensor's last four blocks
+// run as the fused tail half-iteration, everything else as generic MMQ.
+// Same in/out contract as ds4_mmq_q8_0_dense; -1 without launching when
+// the shape is not covered.
+int ds4_mmq_q8_0_dense_tail(
+    const void  * W,
+    const float * X_f32,
+    float       * out_f32,
+    int           M,
+    int           N,
+    int           K,
+    cudaStream_t  stream);
+
 int ds4_mmq_q8_0_dense_d2r(
     const void  * W_aligned,
     const float * X_f32,
