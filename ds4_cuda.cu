@@ -6832,6 +6832,55 @@ __global__ static void f32_to_bf16_kernel(
     if (i < n) out[i] = __float2bfloat16_rn(in[i]);
 }
 
+/* Row-stable BF16 GEMM for the decode and bank paths.  cuBLAS may choose a
+ * different algorithm (and split-K order) for every N, so the continuation
+ * lane and its serial oracle use these kernels: every output element is
+ * reduced by one warp in one fixed order that does not depend on how many
+ * rows share the launch.  The block-per-output kernel below it did scalar
+ * bf16 loads and an eight-step shared-memory tree per element: 46-56 us for
+ * each Qwen hyper-connection projection at decode, three per HC block,
+ * about 23 ms of a 114 ms MTP step. */
+static __device__ __forceinline__ float bf16x8_dot(const uint4 wv, const uint4 xv) {
+    const __nv_bfloat162 *w2 = reinterpret_cast<const __nv_bfloat162 *>(&wv);
+    const __nv_bfloat162 *x2 = reinterpret_cast<const __nv_bfloat162 *>(&xv);
+    float s = 0.0f;
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+        const float2 a = __bfloat1622float2(w2[i]);
+        const float2 b = __bfloat1622float2(x2[i]);
+        s = fmaf(a.x, b.x, s);
+        s = fmaf(a.y, b.y, s);
+    }
+    return s;
+}
+
+#define MATMUL_BF16_ROWS_WARPS 8u
+
+__global__ static void matmul_bf16_rows_warp_kernel(
+        float *out,
+        const __nv_bfloat16 *w,
+        const __nv_bfloat16 *x,
+        uint32_t in_dim,
+        uint32_t out_dim,
+        uint32_t n_tok) {
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint64_t warp =
+        ((uint64_t)blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    const uint64_t total = (uint64_t)out_dim * n_tok;
+    if (warp >= total) return;
+    const uint32_t row = (uint32_t)(warp % out_dim);
+    const uint32_t tok = (uint32_t)(warp / out_dim);
+    const uint4 *wr = reinterpret_cast<const uint4 *>(w + (uint64_t)row * in_dim);
+    const uint4 *xr = reinterpret_cast<const uint4 *>(x + (uint64_t)tok * in_dim);
+    const uint32_t vecs = in_dim >> 3;
+    float sum = 0.0f;
+    for (uint32_t i = lane; i < vecs; i += 32u) sum += bf16x8_dot(wr[i], xr[i]);
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        sum += __shfl_xor_sync(0xffffffffu, sum, off);
+    if (lane == 0) out[(uint64_t)tok * out_dim + row] = sum;
+}
+
 __global__ static void matmul_bf16_kernel(
         float *out,
         const __nv_bfloat16 *w,
@@ -24959,6 +25008,23 @@ static int cuda_matmul_bf16_tensor_impl(
         return cublas_ok(st, "bf16 matmul");
     }
 
+    static int rows_warp = -1;
+    if (rows_warp < 0) rows_warp = getenv("DS4_CUDA_NO_BF16_ROWS_WARP") == NULL;
+    if (rows_warp && (in_dim & 7u) == 0 && ((uintptr_t)w & 15u) == 0 &&
+        ((uintptr_t)xb & 15u) == 0 && in_dim <= UINT32_MAX &&
+        out_dim <= UINT32_MAX && n_tok <= UINT32_MAX) {
+        const uint64_t outputs = out_dim * n_tok;
+        const uint64_t blocks = (outputs + MATMUL_BF16_ROWS_WARPS - 1u) /
+                                MATMUL_BF16_ROWS_WARPS;
+        if (blocks <= (uint64_t)INT_MAX) {
+            matmul_bf16_rows_warp_kernel<<<
+                (unsigned)blocks, 32u * MATMUL_BF16_ROWS_WARPS, 0,
+                cuda_decode_stream()>>>(
+                    (float *)out->ptr, w, xb, (uint32_t)in_dim,
+                    (uint32_t)out_dim, (uint32_t)n_tok);
+            return cuda_ok(cudaGetLastError(), "matmul_bf16 rows-warp launch");
+        }
+    }
     const dim3 grid((unsigned)out_dim, (unsigned)n_tok, 1);
     matmul_bf16_kernel<<<grid, 256, 0, cuda_decode_stream()>>>(
             (float *)out->ptr, w, xb, in_dim, out_dim, n_tok);
