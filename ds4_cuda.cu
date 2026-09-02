@@ -7042,6 +7042,47 @@ __global__ static void matmul_f16_pair_ordered_chunks_kernel(
     }
 }
 
+/* Row-stable small-batch F32 GEMV: one block per output row streams the
+ * weight row once and accumulates every column with the thread partition
+ * and reduction tree of matmul_f32_kernel, so each column is bit-identical
+ * to a one-column launch (the two-row MTP verify pass and the two-bank
+ * decode rely on that for the Qwen router). */
+template <int NC>
+__global__ static void matmul_f32_rows_kernel(
+        float *out,
+        const float *w,
+        const float *x,
+        uint64_t in_dim,
+        uint64_t out_dim) {
+    const uint64_t row = (uint64_t)blockIdx.x;
+    if (row >= out_dim) return;
+    float sum[NC];
+#pragma unroll
+    for (int c = 0; c < NC; c++) sum[c] = 0.0f;
+    const float *wr = w + row * in_dim;
+    for (uint64_t i = threadIdx.x; i < in_dim; i += blockDim.x) {
+        const float wv = wr[i];
+#pragma unroll
+        for (int c = 0; c < NC; c++) sum[c] += wv * x[(uint64_t)c * in_dim + i];
+    }
+    __shared__ float partial[NC][256];
+#pragma unroll
+    for (int c = 0; c < NC; c++) partial[c][threadIdx.x] = sum[c];
+    __syncthreads();
+    for (uint32_t stride = blockDim.x >> 1; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) {
+#pragma unroll
+            for (int c = 0; c < NC; c++)
+                partial[c][threadIdx.x] += partial[c][threadIdx.x + stride];
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+#pragma unroll
+        for (int c = 0; c < NC; c++) out[(uint64_t)c * out_dim + row] = partial[c][0];
+    }
+}
+
 __global__ static void matmul_f32_kernel(
         float *out,
         const float *w,
@@ -8848,9 +8889,13 @@ __global__ static void qwen4exp_ple_conv_kernel(
 /* A single thread owns each channel so the short-chunk shift cannot race
  * another state-slot update. Qwen's production state_len is nine; the host
  * entry caps the generic form at sixteen. */
+/* The optional checkpoint receives the state this same update would have
+ * left after only the first checkpoint_rows input rows.  The two-row MTP
+ * verify pass keeps that row-0 frontier so a rejected draft rolls back by
+ * swapping buffers instead of replaying the committed token. */
 __global__ static void qwen4exp_ple_conv_state_update_kernel(
-        float *state, const float *input, uint32_t rows, uint32_t width,
-        uint32_t state_len) {
+        float *state, float *checkpoint, const float *input, uint32_t rows,
+        uint32_t checkpoint_rows, uint32_t width, uint32_t state_len) {
     const uint32_t channel = blockIdx.x * blockDim.x + threadIdx.x;
     if (channel >= width) return;
     float prior[16];
@@ -8863,6 +8908,13 @@ __global__ static void qwen4exp_ple_conv_state_update_kernel(
         state[(uint64_t)channel * state_len + slot] = combined >= 0
             ? input[(uint64_t)combined * width + channel]
             : prior[(uint32_t)((int64_t)state_len + combined)];
+        if (checkpoint) {
+            const int64_t partial =
+                (int64_t)checkpoint_rows + slot - state_len;
+            checkpoint[(uint64_t)channel * state_len + slot] = partial >= 0
+                ? input[(uint64_t)partial * width + channel]
+                : prior[(uint32_t)((int64_t)state_len + partial)];
+        }
     }
 }
 
@@ -8922,13 +8974,20 @@ __global__ static void qwen4exp_gdn_controls_kernel(
  * That makes arbitrary chunk boundaries bit-stable: a token is fully
  * committed before the block advances. Q/K heads repeat contiguously over value
  * heads (48 / 16 == 3 in the production checkpoint). */
+/* With CHECKPOINT, checkpoint0/1 receive the recurrent state as it stands
+ * after row checkpoint_row, written from the same registers that update the
+ * live state, so the copy is exact; the two-row MTP verify pass uses it as
+ * the row-0 frontier a rejected draft rolls back to.  The plain
+ * instantiation is the unchanged prefill/decode kernel. */
+template <bool CHECKPOINT>
 __global__ static void qwen4exp_gdn_recurrent_kernel(
         float *out0, float *state0, const float *mixed_qkv0,
         const float *beta0, const float *g0,
         float *out1, float *state1, const float *mixed_qkv1,
         const float *beta1, const float *g1, uint32_t rows,
         uint32_t key_heads, uint32_t value_heads, uint32_t head_dim,
-        uint32_t key_dim, uint32_t value_dim, uint32_t repeat) {
+        uint32_t key_dim, uint32_t value_dim, uint32_t repeat,
+        float *checkpoint0, float *checkpoint1, uint32_t checkpoint_row) {
     const uint32_t value_tile = head_dim == 128u ? blockIdx.x & 3u : 0u;
     const uint32_t value_head =
         head_dim == 128u ? blockIdx.x >> 2u : blockIdx.x;
@@ -8939,6 +8998,7 @@ __global__ static void qwen4exp_gdn_recurrent_kernel(
     const float *mixed_qkv = blockIdx.y == 0u ? mixed_qkv0 : mixed_qkv1;
     const float *beta = blockIdx.y == 0u ? beta0 : beta1;
     const float *g = blockIdx.y == 0u ? g0 : g1;
+    float *checkpoint = blockIdx.y == 0u ? checkpoint0 : checkpoint1;
 
     extern __shared__ float shared[];
     float *q_raw = shared;
@@ -9027,6 +9087,9 @@ __global__ static void qwen4exp_gdn_recurrent_kernel(
                 const float sv = state[at] * decay +
                                  (k_raw[k] * k_inv) * delta;
                 state[at] = sv;
+                if constexpr (CHECKPOINT) {
+                    if (token == checkpoint_row) checkpoint[at] = sv;
+                }
                 result += sv * (q_raw[k] * q_inv);
             }
             partial[(uint64_t)group * columns + column] = result;
@@ -9121,6 +9184,9 @@ __global__ static void qwen4exp_gdn_recurrent_kernel(
             const float sv = state[at] * decay +
                              (k_raw[k] * k_inv) * delta;
             state[at] = sv;
+            if constexpr (CHECKPOINT) {
+                if (token == checkpoint_row) checkpoint[at] = sv;
+            }
             result += sv * (q_raw[k] * q_inv);
         }
         out[((uint64_t)token * value_heads + value_head) * head_dim + v] =
@@ -23829,12 +23895,13 @@ static int cuda_matmul_q8_0_tensor_labeled_impl(ds4_gpu_tensor *out, const void 
         if (q8_aligned_nc_en < 0)
             q8_aligned_nc_en = getenv("DS4_CUDA_NO_Q8_ALIGNED_NC") == NULL;
         int rc = -1;
-        /* Qwen recurrent-state replay requires the N=2..8 continuation to
-         * use the same raw MMVQ arithmetic as its cold serial oracle. */
-        const bool qwen_replay_nc =
-            n_tok > 1u && in_dim == 6144u && out_dim == 2560u;
-        if ((n_tok == 1u ||
-             (n_tok <= 8u && q8_aligned_nc_en && !qwen_replay_nc)) &&
+        /* Widths 2..8 take the same tier as N=1 whenever the aligned
+         * artifact exists: the NC kernel accumulates every column exactly
+         * like the N=1 kernel, so a two-row Qwen MTP verify pass (and a
+         * recurrent-state replay) reproduces the one-row decode arithmetic
+         * on the same artifacts.  Without the artifact both widths fall to
+         * the raw mmvq tier together. */
+        if ((n_tok == 1u || (n_tok <= 8u && q8_aligned_nc_en)) &&
             in_dim % 1024u == 0 && cuda_q8_aligned_enabled()) {
             const uint64_t q8_al_bytes = ds4_mmq_q8_0_aligned_bytes((int)out_dim, (int)in_dim);
             const char *w_aligned = q8_al_bytes != 0
@@ -25742,6 +25809,22 @@ static int cuda_matmul_f32_tensor_impl(
                                         (int)out_dim);
         return cublas_ok(st, "f32 matmul");
     }
+    if (stable_rows && n_tok >= 2 && n_tok <= 8 && out_dim <= UINT32_MAX) {
+        float *o = (float *)out->ptr;
+        const float *xp = (const float *)x->ptr;
+        const unsigned g = (unsigned)out_dim;
+        cudaStream_t s = ds4_current_stream();
+        switch (n_tok) {
+        case 2: matmul_f32_rows_kernel<2><<<g, 256, 0, s>>>(o, w, xp, in_dim, out_dim); break;
+        case 3: matmul_f32_rows_kernel<3><<<g, 256, 0, s>>>(o, w, xp, in_dim, out_dim); break;
+        case 4: matmul_f32_rows_kernel<4><<<g, 256, 0, s>>>(o, w, xp, in_dim, out_dim); break;
+        case 5: matmul_f32_rows_kernel<5><<<g, 256, 0, s>>>(o, w, xp, in_dim, out_dim); break;
+        case 6: matmul_f32_rows_kernel<6><<<g, 256, 0, s>>>(o, w, xp, in_dim, out_dim); break;
+        case 7: matmul_f32_rows_kernel<7><<<g, 256, 0, s>>>(o, w, xp, in_dim, out_dim); break;
+        default: matmul_f32_rows_kernel<8><<<g, 256, 0, s>>>(o, w, xp, in_dim, out_dim); break;
+        }
+        return cuda_ok(cudaGetLastError(), "matmul_f32 rows launch");
+    }
     dim3 grid((unsigned)out_dim, (unsigned)n_tok, 1);
     matmul_f32_kernel<<<grid, 256, 0, ds4_current_stream()>>>((float *)out->ptr, w, (const float *)x->ptr, in_dim, out_dim, n_tok);
     return cuda_ok(cudaGetLastError(), "matmul_f32 launch");
@@ -26075,8 +26158,9 @@ extern "C" int ds4_gpu_qwen4exp_ple_gate_tensor(
     return cuda_ok(cudaGetLastError(), "Qwen4Exp PLE gate launch");
 }
 
-extern "C" int ds4_gpu_qwen4exp_ple_conv_tensor(
+static int qwen4exp_ple_conv_launch(
         ds4_gpu_tensor *out, ds4_gpu_tensor *state,
+        ds4_gpu_tensor *checkpoint, uint32_t checkpoint_rows,
         const ds4_gpu_tensor *input, const void *model_map,
         uint64_t model_size, uint64_t weight_offset, uint32_t rows,
         uint32_t width, uint32_t kernel_size, uint32_t dilation) {
@@ -26105,6 +26189,13 @@ extern "C" int ds4_gpu_qwen4exp_ple_conv_tensor(
         state->bytes < state_values * sizeof(float)) {
         return 0;
     }
+    if (checkpoint &&
+        (checkpoint_rows == 0u || checkpoint_rows > rows ||
+         checkpoint->bytes < state_values * sizeof(float) ||
+         checkpoint->ptr == state->ptr || checkpoint->ptr == out->ptr ||
+         checkpoint->ptr == input->ptr)) {
+        return 0;
+    }
     const char *wptr = cuda_model_range_ptr(
             model_map, weight_offset, weight_bytes,
             "Qwen4Exp PLE dilated depthwise convolution");
@@ -26120,13 +26211,38 @@ extern "C" int ds4_gpu_qwen4exp_ple_conv_tensor(
         return 0;
     qwen4exp_ple_conv_state_update_kernel<<<(width + 255u) / 256u, 256, 0,
             ds4_current_stream()>>>(
-            (float *)state->ptr, (const float *)input->ptr,
-            rows, width, state_len);
+            (float *)state->ptr,
+            checkpoint ? (float *)checkpoint->ptr : nullptr,
+            (const float *)input->ptr, rows, checkpoint_rows, width,
+            state_len);
     return cuda_ok(cudaGetLastError(), "Qwen4Exp PLE convolution state update launch");
 }
 
-extern "C" int ds4_gpu_qwen4exp_gdn_conv_tensor(
+extern "C" int ds4_gpu_qwen4exp_ple_conv_tensor(
         ds4_gpu_tensor *out, ds4_gpu_tensor *state,
+        const ds4_gpu_tensor *input, const void *model_map,
+        uint64_t model_size, uint64_t weight_offset, uint32_t rows,
+        uint32_t width, uint32_t kernel_size, uint32_t dilation) {
+    return qwen4exp_ple_conv_launch(
+        out, state, nullptr, 0u, input, model_map, model_size,
+        weight_offset, rows, width, kernel_size, dilation);
+}
+
+extern "C" int ds4_gpu_qwen4exp_ple_conv_checkpoint_tensor(
+        ds4_gpu_tensor *out, ds4_gpu_tensor *state,
+        ds4_gpu_tensor *checkpoint, uint32_t checkpoint_rows,
+        const ds4_gpu_tensor *input, const void *model_map,
+        uint64_t model_size, uint64_t weight_offset, uint32_t rows,
+        uint32_t width, uint32_t kernel_size, uint32_t dilation) {
+    if (!checkpoint) return 0;
+    return qwen4exp_ple_conv_launch(
+        out, state, checkpoint, checkpoint_rows, input, model_map,
+        model_size, weight_offset, rows, width, kernel_size, dilation);
+}
+
+static int qwen4exp_gdn_conv_launch(
+        ds4_gpu_tensor *out, ds4_gpu_tensor *state,
+        ds4_gpu_tensor *checkpoint, uint32_t checkpoint_rows,
         const ds4_gpu_tensor *input, const void *model_map,
         uint64_t model_size, uint64_t weight_offset, uint32_t rows,
         uint32_t width, uint32_t kernel_size) {
@@ -26154,6 +26270,13 @@ extern "C" int ds4_gpu_qwen4exp_gdn_conv_tensor(
         state->bytes < state_values * sizeof(float)) {
         return 0;
     }
+    if (checkpoint &&
+        (checkpoint_rows == 0u || checkpoint_rows > rows ||
+         checkpoint->bytes < state_values * sizeof(float) ||
+         checkpoint->ptr == state->ptr || checkpoint->ptr == out->ptr ||
+         checkpoint->ptr == input->ptr)) {
+        return 0;
+    }
     const char *wptr = cuda_model_range_ptr(
             model_map, weight_offset, weight_bytes,
             "Qwen4Exp Gated DeltaNet depthwise convolution");
@@ -26169,10 +26292,34 @@ extern "C" int ds4_gpu_qwen4exp_gdn_conv_tensor(
     }
     qwen4exp_ple_conv_state_update_kernel<<<
             (width + 255u) / 256u, 256u, 0, ds4_current_stream()>>>(
-            (float *)state->ptr, (const float *)input->ptr,
-            rows, width, kernel_size);
+            (float *)state->ptr,
+            checkpoint ? (float *)checkpoint->ptr : nullptr,
+            (const float *)input->ptr, rows, checkpoint_rows, width,
+            kernel_size);
     return cuda_ok(cudaGetLastError(),
                    "Qwen4Exp Gated DeltaNet convolution state update launch");
+}
+
+extern "C" int ds4_gpu_qwen4exp_gdn_conv_tensor(
+        ds4_gpu_tensor *out, ds4_gpu_tensor *state,
+        const ds4_gpu_tensor *input, const void *model_map,
+        uint64_t model_size, uint64_t weight_offset, uint32_t rows,
+        uint32_t width, uint32_t kernel_size) {
+    return qwen4exp_gdn_conv_launch(
+        out, state, nullptr, 0u, input, model_map, model_size,
+        weight_offset, rows, width, kernel_size);
+}
+
+extern "C" int ds4_gpu_qwen4exp_gdn_conv_checkpoint_tensor(
+        ds4_gpu_tensor *out, ds4_gpu_tensor *state,
+        ds4_gpu_tensor *checkpoint, uint32_t checkpoint_rows,
+        const ds4_gpu_tensor *input, const void *model_map,
+        uint64_t model_size, uint64_t weight_offset, uint32_t rows,
+        uint32_t width, uint32_t kernel_size) {
+    if (!checkpoint) return 0;
+    return qwen4exp_gdn_conv_launch(
+        out, state, checkpoint, checkpoint_rows, input, model_map,
+        model_size, weight_offset, rows, width, kernel_size);
 }
 
 extern "C" int ds4_gpu_qwen4exp_gdn_controls_tensor(
@@ -26240,7 +26387,8 @@ static int qwen4exp_gdn_recurrent_launch(
         const ds4_gpu_tensor *mixed_qkv1,
         const ds4_gpu_tensor *beta1, const ds4_gpu_tensor *g1,
         uint32_t banks, uint32_t rows, uint32_t key_heads,
-        uint32_t value_heads, uint32_t head_dim) {
+        uint32_t value_heads, uint32_t head_dim,
+        ds4_gpu_tensor *checkpoint0, uint32_t checkpoint_row) {
     if ((banks != 1u && banks != 2u) || rows == 0u || key_heads == 0u ||
         value_heads == 0u || head_dim == 0u || head_dim > 1024u ||
         (head_dim & (head_dim - 1u)) != 0u ||
@@ -26273,25 +26421,46 @@ static int qwen4exp_gdn_recurrent_launch(
           out0->ptr == state1->ptr || out1->ptr == state0->ptr))) {
         return 0;
     }
+    if (checkpoint0 &&
+        (banks != 1u || checkpoint_row >= rows ||
+         checkpoint0->bytes < state_values * sizeof(float) ||
+         checkpoint0->ptr == state0->ptr || checkpoint0->ptr == out0->ptr ||
+         checkpoint0->ptr == mixed_qkv0->ptr)) {
+        return 0;
+    }
     const uint32_t threads = head_dim == 128u ? 128u : head_dim;
     const uint32_t shared_values = head_dim == 128u
         ? 2u * head_dim + 5u * (head_dim / 4u) : 4u * head_dim;
     const uint32_t shared_bytes = shared_values * (uint32_t)sizeof(float);
-    qwen4exp_gdn_recurrent_kernel<<<
-            dim3(value_heads * (head_dim == 128u ? 4u : 1u), banks),
-            threads, shared_bytes,
-            ds4_current_stream()>>>(
-            (float *)out0->ptr, (float *)state0->ptr,
-            (const float *)mixed_qkv0->ptr, (const float *)beta0->ptr,
-            (const float *)g0->ptr,
-            banks == 2u ? (float *)out1->ptr : nullptr,
-            banks == 2u ? (float *)state1->ptr : nullptr,
-            banks == 2u ? (const float *)mixed_qkv1->ptr : nullptr,
-            banks == 2u ? (const float *)beta1->ptr : nullptr,
-            banks == 2u ? (const float *)g1->ptr : nullptr,
-            rows, key_heads, value_heads, head_dim,
-            (uint32_t)key_dim64, (uint32_t)value_dim64,
-            value_heads / key_heads);
+    const dim3 grid(value_heads * (head_dim == 128u ? 4u : 1u), banks);
+    float *out1_ptr = banks == 2u ? (float *)out1->ptr : nullptr;
+    float *state1_ptr = banks == 2u ? (float *)state1->ptr : nullptr;
+    const float *qkv1_ptr =
+        banks == 2u ? (const float *)mixed_qkv1->ptr : nullptr;
+    const float *beta1_ptr = banks == 2u ? (const float *)beta1->ptr : nullptr;
+    const float *g1_ptr = banks == 2u ? (const float *)g1->ptr : nullptr;
+    if (checkpoint0) {
+        qwen4exp_gdn_recurrent_kernel<true><<<
+                grid, threads, shared_bytes, ds4_current_stream()>>>(
+                (float *)out0->ptr, (float *)state0->ptr,
+                (const float *)mixed_qkv0->ptr, (const float *)beta0->ptr,
+                (const float *)g0->ptr,
+                out1_ptr, state1_ptr, qkv1_ptr, beta1_ptr, g1_ptr,
+                rows, key_heads, value_heads, head_dim,
+                (uint32_t)key_dim64, (uint32_t)value_dim64,
+                value_heads / key_heads,
+                (float *)checkpoint0->ptr, nullptr, checkpoint_row);
+    } else {
+        qwen4exp_gdn_recurrent_kernel<false><<<
+                grid, threads, shared_bytes, ds4_current_stream()>>>(
+                (float *)out0->ptr, (float *)state0->ptr,
+                (const float *)mixed_qkv0->ptr, (const float *)beta0->ptr,
+                (const float *)g0->ptr,
+                out1_ptr, state1_ptr, qkv1_ptr, beta1_ptr, g1_ptr,
+                rows, key_heads, value_heads, head_dim,
+                (uint32_t)key_dim64, (uint32_t)value_dim64,
+                value_heads / key_heads, nullptr, nullptr, 0u);
+    }
     return cuda_ok(cudaGetLastError(),
                    "Qwen4Exp recurrent Gated Delta rule launch");
 }
@@ -26304,7 +26473,21 @@ extern "C" int ds4_gpu_qwen4exp_gdn_recurrent_tensor(
         uint32_t head_dim) {
     return qwen4exp_gdn_recurrent_launch(
         out, state, mixed_qkv, beta, g, nullptr, nullptr, nullptr, nullptr,
-        nullptr, 1u, rows, key_heads, value_heads, head_dim);
+        nullptr, 1u, rows, key_heads, value_heads, head_dim, nullptr, 0u);
+}
+
+extern "C" int ds4_gpu_qwen4exp_gdn_recurrent_checkpoint_tensor(
+        ds4_gpu_tensor *out, ds4_gpu_tensor *state,
+        ds4_gpu_tensor *checkpoint, uint32_t checkpoint_row,
+        const ds4_gpu_tensor *mixed_qkv,
+        const ds4_gpu_tensor *beta, const ds4_gpu_tensor *g,
+        uint32_t rows, uint32_t key_heads, uint32_t value_heads,
+        uint32_t head_dim) {
+    if (!checkpoint) return 0;
+    return qwen4exp_gdn_recurrent_launch(
+        out, state, mixed_qkv, beta, g, nullptr, nullptr, nullptr, nullptr,
+        nullptr, 1u, rows, key_heads, value_heads, head_dim,
+        checkpoint, checkpoint_row);
 }
 
 extern "C" int ds4_gpu_qwen4exp_gdn_recurrent_bank2_tensor(
@@ -26319,7 +26502,7 @@ extern "C" int ds4_gpu_qwen4exp_gdn_recurrent_bank2_tensor(
     return qwen4exp_gdn_recurrent_launch(
         out0, state0, mixed_qkv0, beta0, g0,
         out1, state1, mixed_qkv1, beta1, g1,
-        2u, rows, key_heads, value_heads, head_dim);
+        2u, rows, key_heads, value_heads, head_dim, nullptr, 0u);
 }
 
 extern "C" int ds4_gpu_qwen4exp_gdn_gated_rms_norm_tensor(
@@ -31321,7 +31504,7 @@ extern "C" int ds4_gpu_swiglu_weighted_tensor(
     return cuda_ok(cudaGetLastError(), "weighted SwiGLU launch");
 }
 
-enum { DS4_ROUTED_VEC_MAX_ROWS = 16u };
+enum { DS4_ROUTED_VEC_MAX_ROWS = 20u };
 
 static int routed_matmul_tensor_impl(
         ds4_gpu_tensor       *out,
@@ -31407,7 +31590,9 @@ static int routed_matmul_tensor_impl(
     /* One mmvq launch serves eight columns; the vec impl splits wider
      * batches into several launches, so decode-width top-10 routing
      * (ten single-row experts) stays on the warp-per-row tier instead
-     * of ten mostly empty 128-wide MMQ tiles. */
+     * of ten mostly empty 128-wide MMQ tiles.  The bound covers the
+     * two-row MTP verify pass (2 x top-10) so its rows keep the exact
+     * per-assignment arithmetic of one-row decode. */
     const bool use_vec = assignments <= DS4_ROUTED_VEC_MAX_ROWS;
     const char *bound_global = getenv("DS4_MMQ_EXPERT_BOUND");
     const char *bound_type = weight_type == 11u
@@ -31419,26 +31604,41 @@ static int routed_matmul_tensor_impl(
         !(bound_global && bound_global[0] == '0') &&
         !(bound_type && bound_type[0] == '0');
     const cudaStream_t stream = ds4_current_stream();
+    /* The vec tier launches one token at a time: mmvq partitions the
+     * reduction by column count, and the two-row MTP verify pass needs
+     * every row to reproduce one-row decode bit for bit. */
+    auto vec_rows = [&](int (*vec)(const void *, const float *,
+                                   const int32_t *, float *, int, int, int,
+                                   int, int, cudaStream_t)) -> int {
+        for (int t = 0; t < NT; t++) {
+            const int vrc = vec(weights, xp + (size_t)t * K,
+                                idp + (size_t)t * NU,
+                                op + (size_t)t * NU * M,
+                                M, K, 1, NE, NU, stream);
+            if (vrc != 0) return vrc;
+        }
+        return 0;
+    };
     int rc = -1;
     switch (weight_type) {
     case 6u:
         rc = use_vec
-            ? ds4_mmq_q5_0_moe_vec(weights, xp, idp, op, M, K, NT, NE, NU, stream)
+            ? vec_rows(ds4_mmq_q5_0_moe_vec)
             : ds4_mmq_q5_0_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
         break;
     case 8u:
         rc = use_vec
-            ? ds4_mmq_q8_0_moe_vec(weights, xp, idp, op, M, K, NT, NE, NU, stream)
+            ? vec_rows(ds4_mmq_q8_0_moe_vec)
             : ds4_mmq_q8_0_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
         break;
     case 10u:
         rc = use_vec
-            ? ds4_mmq_q2_K_moe_vec(weights, xp, idp, op, M, K, NT, NE, NU, stream)
+            ? vec_rows(ds4_mmq_q2_K_moe_vec)
             : ds4_mmq_q2_K_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
         break;
     case 11u:
         rc = use_vec
-            ? ds4_mmq_q3_K_moe_vec(weights, xp, idp, op, M, K, NT, NE, NU, stream)
+            ? vec_rows(ds4_mmq_q3_K_moe_vec)
             : use_bucket_bound
                 ? ds4_mmq_q3_K_moe_bounded(
                       weights, xp, idp, op, M, K, NT, NE, NU,
@@ -31459,7 +31659,7 @@ static int routed_matmul_tensor_impl(
         break;
     case 12u:
         rc = use_vec
-            ? ds4_mmq_q4_K_moe_vec(weights, xp, idp, op, M, K, NT, NE, NU, stream)
+            ? vec_rows(ds4_mmq_q4_K_moe_vec)
             : use_bucket_bound
                 ? ds4_mmq_q4_K_moe_bounded(
                       weights, xp, idp, op, M, K, NT, NE, NU,
@@ -31480,7 +31680,7 @@ static int routed_matmul_tensor_impl(
         break;
     case 13u:
         rc = use_vec
-            ? ds4_mmq_q5_K_moe_vec(weights, xp, idp, op, M, K, NT, NE, NU, stream)
+            ? vec_rows(ds4_mmq_q5_K_moe_vec)
             : use_bucket_bound
                 ? ds4_mmq_q5_K_moe_bounded(
                       weights, xp, idp, op, M, K, NT, NE, NU,
@@ -31501,12 +31701,12 @@ static int routed_matmul_tensor_impl(
         break;
     case 14u:
         rc = use_vec
-            ? ds4_mmq_q6_K_moe_vec(weights, xp, idp, op, M, K, NT, NE, NU, stream)
+            ? vec_rows(ds4_mmq_q6_K_moe_vec)
             : ds4_mmq_q6_K_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
         break;
     case 16u:
         rc = use_vec
-            ? ds4_mmq_iq2_xxs_moe_vec(weights, xp, idp, op, M, K, NT, NE, NU, stream)
+            ? vec_rows(ds4_mmq_iq2_xxs_moe_vec)
             : ds4_mmq_iq2_xxs_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
         break;
     }
@@ -31597,16 +31797,19 @@ extern "C" int ds4_gpu_routed_gate_up_tensor(
     /* Q4_K appears in Solar's shallow and tail routed layers, Q5_K in Qwen's
      * edge layers and Q8_0 in its MTP block. Pairing here lets gate/up share
      * the expert map and activation quantize; prefill then uses the common
-     * compact worklist with the top-k bucket bound. Decode keeps the raw
-     * vector pair for Q4_K and the generic path for the other two. */
+     * compact worklist with the top-k bucket bound. Decode widths (at most
+     * DS4_ROUTED_VEC_MAX_ROWS assignments, which covers the two-row MTP
+     * verify pass) keep the raw vector pair for Q4_K and the generic vec
+     * path for the other two, so every row sees one-row decode arithmetic. */
     const char *q4_pair_env = getenv("DS4_MMQ_Q4_PAIR");
     const bool q4_pair_enabled =
         !(q4_pair_env && q4_pair_env[0] == '0');
     const bool pair_type = weight_type == 12u || weight_type == 13u ||
                            weight_type == 8u;
+    const bool vec_width = assignments <= DS4_ROUTED_VEC_MAX_ROWS;
     if (pair_type && in_dim % 256u == 0u &&
         gate_bytes == up_bytes && ds4_cuda_use_mmq() && q4_pair_enabled &&
-        (weight_type == 12u || n_tokens > 1u)) {
+        (weight_type == 12u || !vec_width)) {
         const uint64_t block_width = weight_type == 8u ? 32u : 256u;
         const uint64_t block_bytes =
             weight_type == 8u ? 34u : weight_type == 12u ? 144u : 176u;
@@ -31632,13 +31835,23 @@ extern "C" int ds4_gpu_routed_gate_up_tensor(
             if (gate_raw && up_raw) {
                 const cudaStream_t stream = ds4_mmq_stream_for_call();
                 int rc = -1;
-                if (n_tokens == 1u) {
-                    rc = ds4_mmq_q4_K_moe_pair_raw_vec(
-                          gate_raw, up_raw,
-                          (const float *)x->ptr, (const int32_t *)ids->ptr,
-                          (float *)gate->ptr, (float *)up->ptr,
-                          (int)out_dim, (int)in_dim, (int)n_tokens,
-                          (int)n_expert, (int)n_expert_used, stream);
+                if (vec_width) {
+                    /* One token per launch keeps every row on the exact
+                     * one-row mmvq partition (two-row MTP verify). */
+                    rc = 0;
+                    for (uint32_t t = 0; t < n_tokens && rc == 0; t++) {
+                        rc = ds4_mmq_q4_K_moe_pair_raw_vec(
+                              gate_raw, up_raw,
+                              (const float *)x->ptr + (size_t)t * in_dim,
+                              (const int32_t *)ids->ptr +
+                                  (size_t)t * n_expert_used,
+                              (float *)gate->ptr +
+                                  (size_t)t * n_expert_used * out_dim,
+                              (float *)up->ptr +
+                                  (size_t)t * n_expert_used * out_dim,
+                              (int)out_dim, (int)in_dim, 1,
+                              (int)n_expert, (int)n_expert_used, stream);
+                    }
                 } else if (weight_type == 12u) {
                     rc = ds4_mmq_q4_K_moe_pair_bounded(
                           gate_raw, up_raw,
@@ -31674,7 +31887,7 @@ extern "C" int ds4_gpu_routed_gate_up_tensor(
                                 "ds4: routed gate/up using %s pair (%s)\n",
                                 weight_type == 12u ? "Q4_K"
                                 : weight_type == 13u ? "Q5_K" : "Q8_0",
-                                n_tokens == 1u ? "decode" : "bounded prefill");
+                                vec_width ? "decode" : "bounded prefill");
                     }
                     return cuda_ok(cudaGetLastError(),
                                    "routed gate/up pair launch");

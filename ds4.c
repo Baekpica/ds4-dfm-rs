@@ -20491,6 +20491,10 @@ typedef struct {
     uint32_t head_dim;
     ds4_gpu_tensor *conv;
     ds4_gpu_tensor *recurrent;
+    /* Row-0 frontier of the last two-row MTP verify pass (allocated on
+     * first use).  A rejected draft swaps these in as the live state. */
+    ds4_gpu_tensor *conv_checkpoint;
+    ds4_gpu_tensor *recurrent_checkpoint;
     uint64_t bytes;
 } ds4_qwen_gdn_state;
 
@@ -20519,7 +20523,29 @@ static void qwen4exp_gdn_state_free(ds4_qwen_gdn_state *state) {
     if (!state) return;
     ds4_gpu_tensor_free(state->recurrent);
     ds4_gpu_tensor_free(state->conv);
+    ds4_gpu_tensor_free(state->recurrent_checkpoint);
+    ds4_gpu_tensor_free(state->conv_checkpoint);
     memset(state, 0, sizeof(*state));
+}
+
+static bool qwen4exp_gdn_state_checkpoint_ensure(ds4_qwen_gdn_state *state) {
+    if (!state || !state->conv || !state->recurrent) return false;
+    if (state->conv_checkpoint && state->recurrent_checkpoint) return true;
+    const uint64_t conv_bytes = ds4_gpu_tensor_bytes(state->conv);
+    const uint64_t recurrent_bytes = ds4_gpu_tensor_bytes(state->recurrent);
+    if (!state->conv_checkpoint)
+        state->conv_checkpoint = ds4_gpu_tensor_alloc(conv_bytes);
+    if (!state->recurrent_checkpoint)
+        state->recurrent_checkpoint = ds4_gpu_tensor_alloc(recurrent_bytes);
+    if (!state->conv_checkpoint || !state->recurrent_checkpoint) {
+        ds4_gpu_tensor_free(state->conv_checkpoint);
+        ds4_gpu_tensor_free(state->recurrent_checkpoint);
+        state->conv_checkpoint = NULL;
+        state->recurrent_checkpoint = NULL;
+        return false;
+    }
+    state->bytes += conv_bytes + recurrent_bytes;
+    return true;
 }
 
 static bool qwen4exp_gdn_state_reset(ds4_qwen_gdn_state *state) {
@@ -20648,7 +20674,8 @@ static bool qwen4exp_gdn_prepare(
         const ds4_qwen_linear_attention_weights *weights,
         const ds4_gpu_tensor               *input,
         uint32_t                            n_tokens,
-        bool                                projected) {
+        bool                                projected,
+        uint32_t                            checkpoint_rows) {
     if (!ws || !state || !model || !weights || !input || n_tokens == 0u ||
         n_tokens > ws->capacity ||
         !weights->a_log || !weights->conv || !weights->dt_bias ||
@@ -20687,10 +20714,16 @@ static bool qwen4exp_gdn_prepare(
     return (projected || plain_graph_matmul_tensor(
                ws->qkv_raw, model, weights->qkv,
                hidden, conv_dim, input, n_tokens)) &&
-           ds4_gpu_qwen4exp_gdn_conv_tensor(
-               ws->qkv, state->conv, ws->qkv_raw,
-               model->map, model->size, weights->conv->abs_offset,
-               n_tokens, conv_dim, DS4_N_SSM_CONV) != 0 &&
+           (checkpoint_rows == 0u
+                ? ds4_gpu_qwen4exp_gdn_conv_tensor(
+                      ws->qkv, state->conv, ws->qkv_raw,
+                      model->map, model->size, weights->conv->abs_offset,
+                      n_tokens, conv_dim, DS4_N_SSM_CONV)
+                : ds4_gpu_qwen4exp_gdn_conv_checkpoint_tensor(
+                      ws->qkv, state->conv, state->conv_checkpoint,
+                      checkpoint_rows, ws->qkv_raw,
+                      model->map, model->size, weights->conv->abs_offset,
+                      n_tokens, conv_dim, DS4_N_SSM_CONV)) != 0 &&
            (projected || plain_graph_matmul_tensor(
                ws->z, model, weights->z,
                hidden, value_dim, input, n_tokens)) &&
@@ -20722,6 +20755,34 @@ static bool qwen4exp_gdn_finish(
                ws->value_dim, ws->hidden_size, ws->gated, n_tokens);
 }
 
+/* checkpoint_rows > 0 keeps the state after that many rows in the
+ * checkpoint buffers (two-row MTP verify; see qwen4exp_graph_verify_pair). */
+static bool qwen4exp_gdn_forward_checkpoint(
+        ds4_qwen_gdn_ws                    *ws,
+        ds4_qwen_gdn_state                 *state,
+        const ds4_model                    *model,
+        const ds4_qwen_linear_attention_weights *weights,
+        const ds4_gpu_tensor               *input,
+        ds4_gpu_tensor                     *output,
+        uint32_t                            n_tokens,
+        uint32_t                            checkpoint_rows) {
+    return output && input &&
+           ds4_gpu_tensor_ptr(input) != ds4_gpu_tensor_ptr(output) &&
+           qwen4exp_gdn_prepare(
+               ws, state, model, weights, input, n_tokens, false,
+               checkpoint_rows) &&
+           (checkpoint_rows == 0u
+                ? ds4_gpu_qwen4exp_gdn_recurrent_tensor(
+                      ws->core, state->recurrent, ws->qkv, ws->beta, ws->g,
+                      n_tokens, ws->key_heads, ws->value_heads, ws->head_dim)
+                : ds4_gpu_qwen4exp_gdn_recurrent_checkpoint_tensor(
+                      ws->core, state->recurrent, state->recurrent_checkpoint,
+                      checkpoint_rows - 1u, ws->qkv, ws->beta, ws->g,
+                      n_tokens, ws->key_heads, ws->value_heads,
+                      ws->head_dim)) != 0 &&
+           qwen4exp_gdn_finish(ws, model, weights, output, n_tokens);
+}
+
 static bool qwen4exp_gdn_forward(
         ds4_qwen_gdn_ws                    *ws,
         ds4_qwen_gdn_state                 *state,
@@ -20730,14 +20791,8 @@ static bool qwen4exp_gdn_forward(
         const ds4_gpu_tensor               *input,
         ds4_gpu_tensor                     *output,
         uint32_t                            n_tokens) {
-    return output && input &&
-           ds4_gpu_tensor_ptr(input) != ds4_gpu_tensor_ptr(output) &&
-           qwen4exp_gdn_prepare(
-               ws, state, model, weights, input, n_tokens, false) &&
-           ds4_gpu_qwen4exp_gdn_recurrent_tensor(
-               ws->core, state->recurrent, ws->qkv, ws->beta, ws->g,
-               n_tokens, ws->key_heads, ws->value_heads, ws->head_dim) != 0 &&
-           qwen4exp_gdn_finish(ws, model, weights, output, n_tokens);
+    return qwen4exp_gdn_forward_checkpoint(
+        ws, state, model, weights, input, output, n_tokens, 0u);
 }
 
 static bool qwen4exp_gdn_project_bank2(
@@ -20819,10 +20874,10 @@ static bool qwen4exp_gdn_forward_bank2(
             qwen4exp_gdn_project_bank2(ws, model, weights, row_input)) &&
            qwen4exp_gdn_prepare(
                ws[0], state[0], model, weights, input[0], n_tokens,
-               project_bank2) &&
+               project_bank2, 0u) &&
            qwen4exp_gdn_prepare(
                ws[1], state[1], model, weights, input[1], n_tokens,
-               project_bank2) &&
+               project_bank2, 0u) &&
            ds4_gpu_qwen4exp_gdn_recurrent_bank2_tensor(
                ws[0]->core, state[0]->recurrent,
                ws[0]->qkv, ws[0]->beta, ws[0]->g,
@@ -21480,6 +21535,27 @@ static bool qwen4exp_moe_down_main(
                n_expert, (uint32_t)assignments, 1u, n_tokens) != 0;
 }
 
+/* Qwen's F32 router and shared-expert gate at decode widths (2..8 rows:
+ * the two-bank lane and the two-row MTP verify pass) must give every row
+ * the one-row arithmetic; the row-stable entry keeps them off cuBLAS. */
+static bool qwen4exp_row_stable_matmul_tensor(
+        ds4_gpu_tensor       *out,
+        const ds4_model      *model,
+        const ds4_tensor     *weight,
+        uint64_t              in_dim,
+        uint64_t              out_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t              n_tokens) {
+    if (weight && weight->type == DS4_TENSOR_F32 && n_tokens >= 2u &&
+        n_tokens <= 8u) {
+        return ds4_gpu_matmul_f32_stable_rows_tensor(
+                   out, model->map, model->size, weight->abs_offset,
+                   in_dim, out_dim, x, n_tokens) != 0;
+    }
+    return plain_graph_matmul_tensor(
+        out, model, weight, in_dim, out_dim, x, n_tokens);
+}
+
 static bool qwen4exp_moe_prepare(
         ds4_qwen_moe_ws       *ws,
         const ds4_model       *model,
@@ -21541,7 +21617,7 @@ static bool qwen4exp_moe_prepare(
         return false;
     }
 
-    if ((!route_ready && (!plain_graph_matmul_tensor(
+    if ((!route_ready && (!qwen4exp_row_stable_matmul_tensor(
                 ws->router_logits, model, layer->ffn_gate_inp,
                 hidden, n_expert, input, n_tokens) ||
         !ds4_gpu_qwen4exp_softmax_topk_router_tensor(
@@ -21677,7 +21753,7 @@ static bool qwen4exp_moe_finish(
                 shared_ff, hidden, ws->shared_mid, n_tokens) ||
         /* Router logits are dead after the routed branch. Reuse their first
          * scalar per row for the always-active shared-expert gate. */
-        !plain_graph_matmul_tensor(
+        !qwen4exp_row_stable_matmul_tensor(
                 ws->router_logits, model, layer->ffn_shexp_gate_inp,
                 hidden, 1u, input, n_tokens) ||
         !ds4_gpu_qwen4exp_shared_expert_gate_tensor(
@@ -21839,6 +21915,11 @@ typedef struct {
     ds4_gpu_tensor *conv_normed;
     ds4_gpu_tensor *conv;
     ds4_gpu_tensor *conv_state;
+    /* Two-row MTP verify frontier: the convolution state after row 0 and
+     * the n-gram hash state before the pass (re-hashed on rollback). */
+    ds4_gpu_tensor *conv_state_checkpoint;
+    ds4_ple_hash_state hash_before;
+    uint32_t hashed_rows;
     uint64_t bytes;
 } ds4_qwen_ple_ws;
 
@@ -21848,6 +21929,7 @@ static void qwen4exp_ple_ws_free(ds4_qwen_ple_ws *ws) {
         &ws->embedding_bf16, &ws->embedding, &ws->key, &ws->value,
         &ws->key_normed, &ws->query_normed, &ws->gated,
         &ws->conv_normed, &ws->conv, &ws->conv_state,
+        &ws->conv_state_checkpoint,
     };
     for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
         ds4_gpu_tensor_free(*all[i]);
@@ -21922,8 +22004,42 @@ static bool qwen4exp_ple_prepare(ds4_qwen_ple_ws *ws,
         !ds4_ple_store_prefetch_rows(
             store, ws->row_ids, (size_t)rows * DS4_PLE_N_HEADS,
             error, error_size)) return false;
+    ws->hash_before = ws->hash_state;
+    ws->hashed_rows = rows;
     ws->hash_state = next;
     ws->prepared_rows = rows;
+    return true;
+}
+
+static bool qwen4exp_ple_ws_checkpoint_ensure(ds4_qwen_ple_ws *ws) {
+    if (!ws || !ws->conv_state) return false;
+    if (ws->conv_state_checkpoint) return true;
+    const uint64_t bytes = ds4_gpu_tensor_bytes(ws->conv_state);
+    ws->conv_state_checkpoint = ds4_gpu_tensor_alloc(bytes);
+    if (!ws->conv_state_checkpoint) return false;
+    ws->bytes += bytes;
+    return true;
+}
+
+/* Roll the PLE state back to the frontier after the first `rows` rows of
+ * the last prepared chunk: the convolution checkpoint becomes live and the
+ * n-gram hash is recomputed from the pre-chunk state over those rows. */
+static bool qwen4exp_ple_ws_rollback(ds4_qwen_ple_ws *ws,
+                                     ds4_ple_store *store,
+                                     uint32_t rows) {
+    if (!ws || !store || !ws->conv_state_checkpoint || rows == 0u ||
+        rows >= ws->hashed_rows) return false;
+    const ds4_ple_hash_config *config = ds4_ple_store_hash_config(store);
+    ds4_ple_hash_state next = ws->hash_before;
+    char error[128] = {0};
+    if (!config || !ds4_ple_hash_rows(
+            config, &next, ws->input_ids, rows, ws->row_ids,
+            error, sizeof(error))) return false;
+    ws->hash_state = next;
+    ws->hashed_rows = rows;
+    ds4_gpu_tensor *swap = ws->conv_state;
+    ws->conv_state = ws->conv_state_checkpoint;
+    ws->conv_state_checkpoint = swap;
     return true;
 }
 
@@ -21931,7 +22047,8 @@ static bool qwen4exp_ple_compute(ds4_qwen_ple_ws *ws,
                                  const ds4_model *model,
                                  const ds4_qwen_ple_weights *weights,
                                  ds4_gpu_tensor *hidden,
-                                 uint32_t rows) {
+                                 uint32_t rows,
+                                 uint32_t checkpoint_rows) {
     if (!ws || !model || !weights || !hidden || rows == 0u ||
         rows > ws->capacity || !weights->key || !weights->value ||
         !weights->key_norm || !weights->query_norm || !weights->conv_norm ||
@@ -21969,10 +22086,16 @@ static bool qwen4exp_ple_compute(ds4_qwen_ple_ws *ws,
                ws->conv_normed, ws->gated, model->map, model->size,
                weights->conv_norm->abs_offset, width, hidden_size,
                rows, DS4_RMS_EPS) != 0 &&
-           ds4_gpu_qwen4exp_ple_conv_tensor(
-               ws->conv, ws->conv_state, ws->conv_normed,
-               model->map, model->size, weights->conv->abs_offset,
-               rows, width, 4u, DS4_PLE_NGRAM_SIZE) != 0 &&
+           (checkpoint_rows == 0u
+                ? ds4_gpu_qwen4exp_ple_conv_tensor(
+                      ws->conv, ws->conv_state, ws->conv_normed,
+                      model->map, model->size, weights->conv->abs_offset,
+                      rows, width, 4u, DS4_PLE_NGRAM_SIZE)
+                : ds4_gpu_qwen4exp_ple_conv_checkpoint_tensor(
+                      ws->conv, ws->conv_state, ws->conv_state_checkpoint,
+                      checkpoint_rows, ws->conv_normed,
+                      model->map, model->size, weights->conv->abs_offset,
+                      rows, width, 4u, DS4_PLE_NGRAM_SIZE)) != 0 &&
            plain_graph_add_inplace(hidden, ws->gated, hc_values) &&
            plain_graph_add_inplace(hidden, ws->conv, hc_values);
 }
@@ -21983,6 +22106,7 @@ static bool qwen4exp_ple_forward(ds4_qwen_ple_ws *ws,
                                  const ds4_qwen_ple_weights *weights,
                                  ds4_gpu_tensor *hidden,
                                  uint32_t rows,
+                                 uint32_t checkpoint_rows,
                                  char *error,
                                  size_t error_size) {
     if (!ws || !ple_cuda || !model || !weights || !hidden || rows == 0u ||
@@ -21996,7 +22120,8 @@ static bool qwen4exp_ple_forward(ds4_qwen_ple_ws *ws,
                error, error_size) &&
            ds4_gpu_qwen4exp_bf16_to_f32_tensor(
                ws->embedding, ws->embedding_bf16, embed_values) &&
-           qwen4exp_ple_compute(ws, model, weights, hidden, rows);
+           qwen4exp_ple_compute(
+               ws, model, weights, hidden, rows, checkpoint_rows);
 }
 
 static bool qwen4exp_ple_forward_bank2(
@@ -22015,10 +22140,10 @@ static bool qwen4exp_ple_forward_bank2(
     if (disabled && disabled[0] &&
         !(disabled[0] == '0' && disabled[1] == '\0')) {
         return qwen4exp_ple_forward(
-                   ws[0], ple_cuda, model, weights, hidden[0], 1u,
+                   ws[0], ple_cuda, model, weights, hidden[0], 1u, 0u,
                    error, error_size) &&
                qwen4exp_ple_forward(
-                   ws[1], ple_cuda, model, weights, hidden[1], 1u,
+                   ws[1], ple_cuda, model, weights, hidden[1], 1u, 0u,
                    error, error_size);
     }
     memcpy(ws[0]->row_ids + DS4_PLE_N_HEADS, ws[1]->row_ids,
@@ -22037,9 +22162,9 @@ static bool qwen4exp_ple_forward_bank2(
                ws[1]->embedding, 0u, ws[0]->embedding,
                row_bytes, row_bytes) &&
            qwen4exp_ple_compute(
-               ws[0], model, weights, hidden[0], 1u) &&
+               ws[0], model, weights, hidden[0], 1u, 0u) &&
            qwen4exp_ple_compute(
-               ws[1], model, weights, hidden[1], 1u);
+               ws[1], model, weights, hidden[1], 1u, 0u);
 }
 
 typedef struct {
@@ -22374,6 +22499,10 @@ typedef struct {
     bool mtp_enabled;
     bool mtp_pending_valid;
     bool mtp_suspended;
+    /* True right after a two-row verify pass: the row-0 frontier is held
+     * in the state checkpoints and qwen4exp_graph_verify_rollback may
+     * restore it. */
+    bool verify_frontier_valid;
 } ds4_qwen_gpu_graph;
 
 static uint64_t qwen4exp_recurrent_checkpoint_bytes(
@@ -23100,7 +23229,9 @@ static bool qwen4exp_graph_ensure_mrope(
     return written;
 }
 
-static bool qwen4exp_graph_forward_chunk(
+/* checkpoint_rows > 0 records the state frontier after that many rows in
+ * the GDN/PLE checkpoint buffers (two-row MTP verify). */
+static bool qwen4exp_graph_forward_chunk_impl(
         ds4_qwen_gpu_graph *graph,
         const ds4_model *model,
         const ds4_weights *weights,
@@ -23111,13 +23242,16 @@ static bool qwen4exp_graph_forward_chunk(
         uint32_t pos0,
         uint32_t logits_rows,
         bool stable_hc,
-        float *logits) {
+        float *logits,
+        uint32_t checkpoint_rows) {
     if (!graph || !model || !weights || !ple_store || !ple_cuda || !tokens ||
         rows == 0u || rows > graph->capacity || pos0 != graph->length ||
         pos0 > graph->context_cap || rows > graph->context_cap - pos0 ||
         logits_rows > rows || logits_rows > 2u ||
-        ((logits_rows != 0u) != (logits != NULL)))
+        ((logits_rows != 0u) != (logits != NULL)) ||
+        checkpoint_rows >= rows)
         return false;
+    graph->verify_frontier_valid = false;
     if (!qwen4exp_graph_ensure_mrope(graph, pos0, rows)) return false;
     char ple_error[256] = {0};
     /* Submit SSD reads before token embedding and decoder layer 0; the PLE
@@ -23164,7 +23298,8 @@ static bool qwen4exp_graph_forward_chunk(
         const ds4_layer_weights *layer = &weights->layer[il];
         if (il == 1u && !qwen4exp_ple_forward(
                 &graph->ple, ple_cuda, model, &layer->qwen_ple,
-                current, rows, ple_error, sizeof(ple_error))) {
+                current, rows, checkpoint_rows,
+                ple_error, sizeof(ple_error))) {
             fprintf(stderr, "ds4: Qwen PLE forward failed: %s\n",
                     ple_error[0] ? ple_error : "compute failure");
             return false;
@@ -23179,10 +23314,10 @@ static bool qwen4exp_graph_forward_chunk(
                 &layer->qwen_qsa, graph->hc.mixed, graph->block,
                 rows, pos0,
                 graph->mrope_active ? graph->mrope_positions : NULL)
-            : qwen4exp_gdn_forward(
+            : qwen4exp_gdn_forward_checkpoint(
                 &graph->gdn_ws, &graph->gdn_state[il], model,
                 &layer->qwen_linear_attn, graph->hc.mixed,
-                graph->block, rows);
+                graph->block, rows, checkpoint_rows);
         if (!attention_ok || !qwen4exp_hc_finish(
                 &graph->hc, current, graph->block, next, rows)) return false;
         ds4_gpu_tensor *swap = current;
@@ -23223,6 +23358,111 @@ static bool qwen4exp_graph_forward_chunk(
             return false;
     }
     graph->length = pos0 + rows;
+    graph->verify_frontier_valid = checkpoint_rows != 0u;
+    return true;
+}
+
+static bool qwen4exp_graph_forward_chunk(
+        ds4_qwen_gpu_graph *graph,
+        const ds4_model *model,
+        const ds4_weights *weights,
+        ds4_ple_store *ple_store,
+        ds4_qwen38_ple_cuda *ple_cuda,
+        const int *tokens,
+        uint32_t rows,
+        uint32_t pos0,
+        uint32_t logits_rows,
+        bool stable_hc,
+        float *logits) {
+    return qwen4exp_graph_forward_chunk_impl(
+        graph, model, weights, ple_store, ple_cuda, tokens, rows, pos0,
+        logits_rows, stable_hc, logits, 0u);
+}
+
+/* Two-row MTP verification.  Row 0 is the committed token and row 1 the
+ * drafter's proposal; one target pass returns both rows' logits while the
+ * dense, routed and attention kernels keep the one-row decode arithmetic
+ * (aligned Q8 widths 2..8, the routed vec tier up to 2 x top-10, per-row
+ * sparse-attention selection).  The states a pass advances by two tokens
+ * keep their row-0 frontier in checkpoint buffers - Gated DeltaNet
+ * recurrent and convolution states, the PLE convolution state and n-gram
+ * hash - so a rejected draft rolls back without replaying the token.
+ * Sparse-attention caches are position-indexed: a rollback resets their
+ * lengths and the genuine successor overwrites the row-1 entries, and a
+ * block pooled over the rejected row is pooled again once that block is
+ * genuinely complete.  DS4_QWEN_MTP_SEQUENTIAL_VERIFY=1 restores the
+ * one-row-per-token verifier. */
+static bool qwen4exp_mtp_pair_verify_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *v = getenv("DS4_QWEN_MTP_SEQUENTIAL_VERIFY");
+        enabled = !(v && v[0] && !(v[0] == '0' && v[1] == '\0'));
+    }
+    return enabled != 0;
+}
+
+static bool qwen4exp_graph_verify_ready(
+        const ds4_qwen_gpu_graph *graph, uint32_t pos) {
+    return graph && graph->capacity >= 2u && !graph->image_features &&
+           !graph->mrope_active && pos == graph->length &&
+           pos <= graph->context_cap && graph->context_cap - pos >= 2u;
+}
+
+static bool qwen4exp_graph_verify_ensure(ds4_qwen_gpu_graph *graph) {
+    if (!graph) return false;
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (ds4_qwen4exp_layer_is_full_attention(il)) continue;
+        if (!qwen4exp_gdn_state_checkpoint_ensure(&graph->gdn_state[il]))
+            return false;
+    }
+    return qwen4exp_ple_ws_checkpoint_ensure(&graph->ple);
+}
+
+static bool qwen4exp_graph_verify_pair(
+        ds4_qwen_gpu_graph *graph,
+        const ds4_model *model,
+        const ds4_weights *weights,
+        ds4_ple_store *ple_store,
+        ds4_qwen38_ple_cuda *ple_cuda,
+        int token,
+        int draft,
+        uint32_t pos,
+        float *logits) {
+    const int tokens[2] = {token, draft};
+    return qwen4exp_graph_verify_ready(graph, pos) &&
+           qwen4exp_graph_forward_chunk_impl(
+               graph, model, weights, ple_store, ple_cuda, tokens, 2u, pos,
+               2u, true, logits, 1u);
+}
+
+static bool qwen4exp_graph_verify_rollback(
+        ds4_qwen_gpu_graph *graph, ds4_ple_store *ple_store, uint32_t pos) {
+    if (!graph || !graph->verify_frontier_valid ||
+        graph->length != pos + 2u) return false;
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (ds4_qwen4exp_layer_is_full_attention(il)) {
+            if (graph->qsa_state[il].length != pos + 2u) return false;
+            continue;
+        }
+        const ds4_qwen_gdn_state *gdn = &graph->gdn_state[il];
+        if (!gdn->recurrent_checkpoint || !gdn->conv_checkpoint) return false;
+    }
+    if (!qwen4exp_ple_ws_rollback(&graph->ple, ple_store, 1u)) return false;
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (ds4_qwen4exp_layer_is_full_attention(il)) {
+            graph->qsa_state[il].length = pos + 1u;
+            continue;
+        }
+        ds4_qwen_gdn_state *gdn = &graph->gdn_state[il];
+        ds4_gpu_tensor *swap = gdn->recurrent;
+        gdn->recurrent = gdn->recurrent_checkpoint;
+        gdn->recurrent_checkpoint = swap;
+        swap = gdn->conv;
+        gdn->conv = gdn->conv_checkpoint;
+        gdn->conv_checkpoint = swap;
+    }
+    graph->length = pos + 1u;
+    graph->verify_frontier_valid = false;
     return true;
 }
 
@@ -41266,7 +41506,18 @@ static bool qwen_batch_runtime_decode_next(
     }
     const int draft = sample_argmax(rt->mtp_logits, DS4_N_VOCAB);
     *drafted = true;
-    if (!qwen4exp_graph_forward_chunk(
+    /* One two-row pass verifies the draft next to the committed token; the
+     * one-row-per-token verifier remains for images/mrope graphs and as the
+     * DS4_QWEN_MTP_SEQUENTIAL_VERIFY fallback. */
+    const bool paired = qwen4exp_mtp_pair_verify_enabled() &&
+        qwen4exp_graph_verify_ready(g, pos) &&
+        qwen4exp_graph_verify_ensure(g);
+    if (paired) {
+        if (!qwen4exp_graph_verify_pair(
+                g, &e->model, &e->weights,
+                e->qwen_ple_store, e->qwen_ple_cuda,
+                token, draft, pos, rt->mtp_logits)) return false;
+    } else if (!qwen4exp_graph_forward_chunk(
             g, &e->model, &e->weights,
             e->qwen_ple_store, e->qwen_ple_cuda,
             &token, 1u, pos, 1u, true, rt->mtp_logits)) return false;
@@ -41285,7 +41536,7 @@ static bool qwen_batch_runtime_decode_next(
         if (!caught_up)
             qwen4exp_graph_mtp_disable(
                 g, "bank accepted-prefix catch-up failed");
-        if (!qwen4exp_graph_forward_chunk(
+        if (!paired && !qwen4exp_graph_forward_chunk(
                 g, &e->model, &e->weights,
                 e->qwen_ple_store, e->qwen_ple_cuda,
                 &draft, 1u, pos + 1u, 1u,
@@ -41295,10 +41546,14 @@ static bool qwen_batch_runtime_decode_next(
                (size_t)DS4_N_VOCAB * sizeof(*logits));
         *committed = 2u;
         *hit = true;
-        if (g->mtp_enabled && !qwen4exp_graph_mtp_save_pending(g, 0u))
+        if (g->mtp_enabled &&
+            !qwen4exp_graph_mtp_save_pending(g, paired ? 1u : 0u))
             qwen4exp_graph_mtp_disable(
                 g, "bank accepted-prefix save failed");
     } else {
+        if (paired &&
+            !qwen4exp_graph_verify_rollback(g, e->qwen_ple_store, pos))
+            return false;
         memcpy(logits, rt->mtp_logits,
                (size_t)DS4_N_VOCAB * sizeof(*logits));
         if (!qwen4exp_graph_mtp_save_pending(g, 0u))
@@ -65010,10 +65265,19 @@ static int ds4_session_eval_qwen_mtp(
     }
     const int draft = sample_argmax(s->mtp_logits, DS4_N_VOCAB);
     ds4_metric_add(&ds4_metrics_get()->spec_drafts, 1);
-    if (!qwen4exp_graph_forward_chunk(
-            g, &e->model, &e->weights,
-            e->qwen_ple_store, e->qwen_ple_cuda,
-            &first_token, 1u, pos, 1u, true, s->mtp_logits)) {
+    const bool paired = qwen4exp_mtp_pair_verify_enabled() &&
+        qwen4exp_graph_verify_ready(g, pos) &&
+        qwen4exp_graph_verify_ensure(g);
+    const bool verified = paired
+        ? qwen4exp_graph_verify_pair(
+              g, &e->model, &e->weights,
+              e->qwen_ple_store, e->qwen_ple_cuda,
+              first_token, draft, pos, s->mtp_logits)
+        : qwen4exp_graph_forward_chunk(
+              g, &e->model, &e->weights,
+              e->qwen_ple_store, e->qwen_ple_cuda,
+              &first_token, 1u, pos, 1u, true, s->mtp_logits);
+    if (!verified) {
         if (errlen) snprintf(err, errlen,
                              "Qwen MTP target verify failed at %u", pos);
         s->checkpoint_valid = false;
@@ -65032,7 +65296,7 @@ static int ds4_session_eval_qwen_mtp(
         ds4_gpu_tensor_free(target_first);
         if (!mtp_ok)
             qwen4exp_graph_mtp_disable(g, "accepted-prefix catch-up failed");
-        if (!qwen4exp_graph_forward_chunk(
+        if (!paired && !qwen4exp_graph_forward_chunk(
                 g, &e->model, &e->weights,
                 e->qwen_ple_store, e->qwen_ple_cuda,
                 &draft, 1u, pos + 1u, 1u,
@@ -65052,9 +65316,18 @@ static int ds4_session_eval_qwen_mtp(
         accepted[0] = first_token;
         accepted[1] = draft;
         n_accepted = 2;
-        if (g->mtp_enabled && !qwen4exp_graph_mtp_save_pending(g, 0u))
+        if (g->mtp_enabled &&
+            !qwen4exp_graph_mtp_save_pending(g, paired ? 1u : 0u))
             qwen4exp_graph_mtp_disable(g, "accepted-prefix save failed");
     } else {
+        if (paired &&
+            !qwen4exp_graph_verify_rollback(g, e->qwen_ple_store, pos)) {
+            if (errlen) snprintf(err, errlen,
+                                 "Qwen MTP rejected-draft rollback failed at %u",
+                                 pos);
+            s->checkpoint_valid = false;
+            return -1;
+        }
         memcpy(s->logits, s->mtp_logits,
                (size_t)DS4_N_VOCAB * sizeof(*s->logits));
         token_vec_push(&s->checkpoint, first_token);

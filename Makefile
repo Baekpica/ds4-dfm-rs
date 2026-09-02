@@ -92,6 +92,7 @@ endif
         test-qwen4exp-moe test-qwen4exp-moe-forward test-qwen4exp-gdn \
         test-qwen4exp-gdn-forward test-qwen4exp-qsa \
         test-qwen4exp-qsa-forward test-qwen4exp-batch \
+        test-qwen4exp-verify \
         test-mmid-fast \
         test-mmq-parity test-model-family-kernels \
         test-solar-loader test-solar-kda test-solar-kda-prefill \
@@ -773,6 +774,15 @@ test-qwen4exp-moe: tests/test_qwen4exp_moe
 
 tests/test_qwen4exp_moe_forward: tests/test_qwen4exp_moe_forward.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_qwen4exp_verify.o: tests/test_qwen4exp_verify.c ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include -c -o $@ $<
+
+tests/test_qwen4exp_verify: tests/test_qwen4exp_verify.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+test-qwen4exp-verify: tests/test_qwen4exp_verify
+	./tests/test_qwen4exp_verify "$(DS4_QWEN4EXP_MODEL)"
 
 test-qwen4exp-moe-forward: tests/test_qwen4exp_moe_forward
 	@test -n "$(DS4_QWEN4EXP_MODEL)" || \

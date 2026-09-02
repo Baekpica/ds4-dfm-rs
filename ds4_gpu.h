@@ -1290,6 +1290,49 @@ int ds4_gpu_qwen4exp_gdn_recurrent_tensor(
         uint32_t                value_heads,
         uint32_t                head_dim);
 
+/* Two-row MTP verify support: the checkpoint variants also write the state
+ * as it stands after checkpoint_row (recurrent) / checkpoint_rows rows
+ * (convolutions) into a second buffer of the same shape. */
+int ds4_gpu_qwen4exp_gdn_recurrent_checkpoint_tensor(
+        ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *state,
+        ds4_gpu_tensor       *checkpoint,
+        uint32_t                checkpoint_row,
+        const ds4_gpu_tensor *mixed_qkv,
+        const ds4_gpu_tensor *beta,
+        const ds4_gpu_tensor *g,
+        uint32_t                rows,
+        uint32_t                key_heads,
+        uint32_t                value_heads,
+        uint32_t                head_dim);
+
+int ds4_gpu_qwen4exp_gdn_conv_checkpoint_tensor(
+        ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *state,
+        ds4_gpu_tensor       *checkpoint,
+        uint32_t                checkpoint_rows,
+        const ds4_gpu_tensor *input,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint32_t                rows,
+        uint32_t                width,
+        uint32_t                kernel_size);
+
+int ds4_gpu_qwen4exp_ple_conv_checkpoint_tensor(
+        ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *state,
+        ds4_gpu_tensor       *checkpoint,
+        uint32_t                checkpoint_rows,
+        const ds4_gpu_tensor *input,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint32_t                rows,
+        uint32_t                width,
+        uint32_t                kernel_size,
+        uint32_t                dilation);
+
 int ds4_gpu_qwen4exp_gdn_recurrent_bank2_tensor(
         ds4_gpu_tensor       *out0,
         ds4_gpu_tensor       *state0,
