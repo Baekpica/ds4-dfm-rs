@@ -31604,12 +31604,19 @@ static int routed_matmul_tensor_impl(
         !(bound_global && bound_global[0] == '0') &&
         !(bound_type && bound_type[0] == '0');
     const cudaStream_t stream = ds4_current_stream();
-    /* The vec tier launches one token at a time: mmvq partitions the
-     * reduction by column count, and the two-row MTP verify pass needs
-     * every row to reproduce one-row decode bit for bit. */
+    /* Multi-expert rows (gate/up: n_expert_used columns per token) launch
+     * one token at a time, because mmvq partitions that reduction by the
+     * column count and the two-row MTP verify pass needs every row to
+     * reproduce one-row decode bit for bit.  Assignment-major calls
+     * (expert down: one expert per "token") keep their single launch; the
+     * moe kernel gives each column its own warp there, so widths 10 and 20
+     * are bit-identical (R14 probe) and splitting them only multiplied
+     * launches. */
     auto vec_rows = [&](int (*vec)(const void *, const float *,
                                    const int32_t *, float *, int, int, int,
                                    int, int, cudaStream_t)) -> int {
+        if (NU == 1 || NT == 1)
+            return vec(weights, xp, idp, op, M, K, NT, NE, NU, stream);
         for (int t = 0; t < NT; t++) {
             const int vrc = vec(weights, xp + (size_t)t * K,
                                 idp + (size_t)t * NU,
