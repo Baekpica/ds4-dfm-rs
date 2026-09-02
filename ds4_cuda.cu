@@ -17399,6 +17399,91 @@ __global__ static void qwen4exp_softmax_topk_router_kernel(
     }
 }
 
+/* Qwen3.8's fixed 512-way/top-10 router.  The generic kernel above loads
+ * cooperatively but leaves all 5,120 top-k comparisons to thread 0.  Here
+ * each lane owns 16 experts and the warp selects the same strict-order
+ * maxima.  Lane 0 retains the original exp/sum order, so ids and weights
+ * are bit-identical, including lower-index tie breaking. */
+__global__ static void qwen4exp_softmax_topk_router_warp_kernel(
+        int32_t *selected,
+        float *weights,
+        const float *logits,
+        uint32_t n_tokens) {
+    const uint32_t lane = threadIdx.x;
+    const uint32_t token = blockIdx.x * blockDim.y + threadIdx.y;
+    if (token >= n_tokens) return;
+    const float *row = logits + (uint64_t)token * 512u;
+    float score[16];
+#pragma unroll
+    for (uint32_t j = 0; j < 16u; j++) {
+        const float value = row[lane + 32u * j];
+        score[j] = isfinite(value) ? value : -3.402823466e+38F;
+    }
+    uint32_t out_idx[10];
+    float out_score[10];
+#pragma unroll
+    for (uint32_t slot = 0; slot < 10u; slot++) {
+        float best_score = -INFINITY;
+        uint32_t best_idx = UINT32_MAX;
+#pragma unroll
+        for (uint32_t j = 0; j < 16u; j++) {
+            const uint32_t expert = lane + 32u * j;
+            if (router_score_better(
+                    score[j], expert, best_score, best_idx)) {
+                best_score = score[j];
+                best_idx = expert;
+            }
+        }
+#pragma unroll
+        for (uint32_t mask = 16u; mask > 0u; mask >>= 1u) {
+            const float other_score =
+                __shfl_xor_sync(0xffffffffu, best_score, mask);
+            const uint32_t other_idx =
+                __shfl_xor_sync(0xffffffffu, best_idx, mask);
+            if (router_score_better(
+                    other_score, other_idx, best_score, best_idx)) {
+                best_score = other_score;
+                best_idx = other_idx;
+            }
+        }
+#pragma unroll
+        for (uint32_t j = 0; j < 16u; j++) {
+            if (lane + 32u * j == best_idx) score[j] = -INFINITY;
+        }
+        if (lane == 0u) {
+            out_idx[slot] = best_idx;
+            out_score[slot] = best_score;
+        }
+    }
+    if (lane != 0u) return;
+    int32_t *ids = selected + (uint64_t)token * 10u;
+    float *out_weights = weights + (uint64_t)token * 10u;
+    float max_selected = -INFINITY;
+#pragma unroll
+    for (uint32_t slot = 0; slot < 10u; slot++) {
+        ids[slot] = (int32_t)out_idx[slot];
+        out_weights[slot] = out_score[slot];
+        max_selected = fmaxf(max_selected, out_score[slot]);
+    }
+    float sum = 0.0f;
+#pragma unroll
+    for (uint32_t slot = 0; slot < 10u; slot++) {
+        const float value = __expf(out_weights[slot] - max_selected);
+        out_weights[slot] = value;
+        sum += value;
+    }
+    if (!(sum > 0.0f) || !isfinite(sum)) {
+#pragma unroll
+        for (uint32_t slot = 0; slot < 10u; slot++)
+            out_weights[slot] = 0.1f;
+    } else {
+        const float inv_sum = 1.0f / sum;
+#pragma unroll
+        for (uint32_t slot = 0; slot < 10u; slot++)
+            out_weights[slot] *= inv_sum;
+    }
+}
+
 __global__ static void qwen4exp_shared_expert_gate_kernel(
         float *out,
         const float *shared,
@@ -30774,6 +30859,19 @@ extern "C" int ds4_gpu_qwen4exp_softmax_topk_router_tensor(
         weights->bytes < (uint64_t)n_tokens * n_used * sizeof(float) ||
         logits->bytes < (uint64_t)n_tokens * n_expert * sizeof(float)) {
         return 0;
+    }
+    static int warp_topk = -1;
+    if (warp_topk < 0)
+        warp_topk = getenv("DS4_QWEN_NO_WARP_ROUTER") == NULL;
+    if (warp_topk && n_expert == 512u && n_used == 10u) {
+        const uint32_t rows_per_block = n_tokens < 4u ? n_tokens : 4u;
+        qwen4exp_softmax_topk_router_warp_kernel<<<
+            (n_tokens + rows_per_block - 1u) / rows_per_block,
+            dim3(32u, rows_per_block), 0, ds4_current_stream()>>>(
+                (int32_t *)selected->ptr, (float *)weights->ptr,
+                (const float *)logits->ptr, n_tokens);
+        return cuda_ok(cudaGetLastError(),
+                       "Qwen4Exp warp softmax top-k router launch");
     }
     const uint32_t shared_bytes = n_expert * (uint32_t)sizeof(float);
     qwen4exp_softmax_topk_router_kernel<<<
