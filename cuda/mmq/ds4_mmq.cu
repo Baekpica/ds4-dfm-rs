@@ -712,6 +712,38 @@ extern "C" int ds4_mmq_q8_0_dense_preq(
     return 0;
 }
 
+extern "C" int ds4_mmq_q8_0_dense_pair(
+        const void * W0, const void * W1, const float * X,
+        float * out0, float * out1, int M0, int M1, int N, int K,
+        cudaStream_t stream) {
+    if (!W0 || !W1 || !X || !out0 || !out1 ||
+        M0 <= 0 || M1 <= 0 || N <= 0 || K <= 0 || K % 256 != 0) {
+        return -1;
+    }
+    const int dev = ggml_cuda_get_device();
+    const int cc = ggml_cuda_info().devices[dev].cc;
+    ggml_backend_cuda_context *ctx = get_ctx_for_device(dev);
+    if (!ctx) return -1;
+    ds4_pool_set_stream(stream);
+
+    const int64_t padded_k = GGML_PAD((int64_t)K, MATRIX_ROW_PADDING);
+    const size_t q8_bytes =
+        (size_t)N * (size_t)padded_k * sizeof(block_q8_1) / QK8_1 +
+        (size_t)get_mmq_x_max_host(cc) * sizeof(block_q8_1_mmq);
+    ggml_cuda_pool_alloc<char> q8(ctx->pool(), q8_bytes);
+    ybuf_memset(q8.get(), q8_bytes, stream);
+    quantize_mmq_q8_1_cuda(
+        X, /*ids=*/nullptr, q8.get(), GGML_TYPE_Q8_0,
+        /*ne00=*/K, /*s11=*/(int64_t)K, /*s12=*/0, /*s13=*/0,
+        /*ne0=*/padded_k, /*ne1=*/(int64_t)N, /*ne2=*/1, /*ne3=*/1,
+        stream);
+    if (cudaGetLastError() != cudaSuccess) return -2;
+    const int rc = ds4_mmq_q8_0_dense_preq(
+        W0, q8.get(), q8_bytes, out0, M0, N, K, stream);
+    return rc != 0 ? rc : ds4_mmq_q8_0_dense_preq(
+        W1, q8.get(), q8_bytes, out1, M1, N, K, stream);
+}
+
 // Dense Q8_0 D2R entry: same activation quantize + scratch treatment as
 // ds4_mmq_dense_impl (incl. the S1.1a zero for the never-written tail), then
 // the D2R kernel on the kind-5 aligned artifact instead of mul_mat_q_case.

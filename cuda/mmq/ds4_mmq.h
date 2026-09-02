@@ -102,6 +102,20 @@ int ds4_mmq_q8_0_dense(
     int           K,
     cudaStream_t  stream);
 
+// Two dense Q8_0 projections over the same activation. Quantizes X once;
+// each output otherwise follows ds4_mmq_q8_0_dense exactly.
+int ds4_mmq_q8_0_dense_pair(
+    const void  * W0_q8_0,
+    const void  * W1_q8_0,
+    const float * X_f32,
+    float       * out0_f32,
+    float       * out1_f32,
+    int           M0,
+    int           M1,
+    int           N,
+    int           K,
+    cudaStream_t  stream);
+
 // v0.5 flat-pool p5a: same contract as ds4_mmq_q8_0_dense but the
 // activation arrives PRE-QUANTIZED in the block_q8_1_mmq D4 layout
 // (producer-emitted, op-for-op equal to quantize_mmq_q8_1<D4>; the fused

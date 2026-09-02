@@ -24217,6 +24217,11 @@ extern "C" int ds4_gpu_matmul_q8_0_pair_tensor(
         out1->bytes < n_tok * out1_dim * sizeof(float)) {
         return 0;
     }
+    const char *w0 = cuda_model_range_ptr(
+        model_map, weight0_offset, weight0_bytes, "q8_0_pair0");
+    const char *w1 = cuda_model_range_ptr(
+        model_map, weight1_offset, weight1_bytes, "q8_0_pair1");
+    if (!w0 || !w1) return 0;
 
     /* Motif-3's two leading dense FFNs are M=12288/12288, N=256, K=4096.
      * NCU shows the warp-per-row pair kernel spending >96% of issue slots on
@@ -24244,6 +24249,26 @@ extern "C" int ds4_gpu_matmul_q8_0_pair_tensor(
     if ((motif_dense || dots3_pair || qwen_shexp_pair || qwen_ple_pair ||
          qwen_qsa_kv_pair) && n_tok >= 64u &&
         getenv("DS4_CUDA_NO_Q8_PAIR_MMQ_SPLIT") == NULL) {
+        size_t producer_q8_bytes = 0;
+        const bool qwen_shared_quant =
+            qwen_shexp_pair || qwen_qsa_kv_pair;
+        if (qwen_shared_quant &&
+            getenv("DS4_CUDA_NO_Q8_PAIR_SHARED_QUANT") == NULL &&
+            cuda_norm_q8_lookup(
+                x->ptr, n_tok, in_dim, &producer_q8_bytes) == NULL &&
+            ds4_mmq_q8_0_dense_pair(
+                w0, w1, (const float *)x->ptr,
+                (float *)out0->ptr, (float *)out1->ptr,
+                (int)out0_dim, (int)out1_dim, (int)n_tok, (int)in_dim,
+                ds4_mmq_stream_for_call()) == 0) {
+            static int logged_pair_shared_quant = 0;
+            if (!logged_pair_shared_quant) {
+                logged_pair_shared_quant = 1;
+                fprintf(stderr,
+                        "ds4: dense Q8 pair shares one MMQ activation quantize\n");
+            }
+            return 1;
+        }
         if (ds4_gpu_matmul_q8_0_tensor(
                     out0, model_map, model_size, weight0_offset,
                     in_dim, out0_dim, x, n_tok) &&
@@ -24261,9 +24286,6 @@ extern "C" int ds4_gpu_matmul_q8_0_pair_tensor(
         fprintf(stderr,
                 "ds4: Motif-3 dense Q8 MMQ split declined; using pair fallback\n");
     }
-    const char *w0 = cuda_model_range_ptr(model_map, weight0_offset, weight0_bytes, "q8_0_pair0");
-    const char *w1 = cuda_model_range_ptr(model_map, weight1_offset, weight1_bytes, "q8_0_pair1");
-    if (!w0 || !w1) return 0;
 
     /* M2-Inc1b: the fused HC stage may have already emitted this activation's
      * q8_0 codes (bit-exact vs the prelude below) — take them and skip the
