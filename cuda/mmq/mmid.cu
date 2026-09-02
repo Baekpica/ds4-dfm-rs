@@ -293,6 +293,234 @@ static bool ds4_mmid_case1_enabled() {
     return cached != 0;
 }
 
+// ----------------------------------------------------------------------------
+// ds4 local: chunked counting-sort id map for large n.
+//
+// The per-expert warp scans above cost O(n_experts * n_tokens) warp
+// iterations: ~7.7 ms for Qwen's 8,025-token x top-10 gate/up map and
+// ~2.3 ms for each 80,250-row down map, three launches per layer at an 8K
+// prefill.  This builds the same map as a chunked stable counting sort:
+//
+//   count   : per (token chunk, expert) match counts plus the chunk's
+//             negative-id count                          [grid = chunks]
+//   scan    : column scan over chunks, exclusive scan over experts,
+//             writes expert_bounds                       [grid = 1]
+//   scatter : each block re-reads its chunk; thread e walks the chunk in
+//             (token, slot) order and writes expert e's matches at
+//             offset[chunk][e] + rank                    [grid = chunks]
+//
+// Bit-identical to mm_ids_helper by construction: expert e's bucket starts
+// at #{ids < e} (negative ids sit below expert 0 and stay unwritten, ids
+// >= n_experts are dropped), entries inside a bucket follow token then
+// slot order, and the output expressions are the same.  Undefined for a
+// token that lists one expert twice, like the scans above.
+static constexpr int DS4_MMID_CHUNK_TOKENS = 128;
+static constexpr int DS4_MMID_MAX_EXPERTS = 4096;
+// Below this the per-expert scatter walk has too few threads to pay off
+// (every routed family here has 256 or more experts).
+static constexpr int DS4_MMID_MIN_EXPERTS = 128;
+static constexpr int DS4_MMID_MAX_USED = 32;
+static constexpr int DS4_MMID_THREADS = 256;
+static constexpr int DS4_MMID_SCAN_THREADS = 1024;
+// Below this many (token, slot) rows the warp scans are already cheap and
+// decode-width captured graphs must not see the scratch allocation.
+static constexpr int DS4_MMID_FAST_MIN_ROWS = 4096;
+
+static __global__ void ds4_mmid_count_kernel(
+        const int32_t * __restrict__ ids, int32_t * __restrict__ counts,
+        int32_t * __restrict__ negatives,
+        const int n_tokens, const int n_expert_used, const int n_experts, const int si1) {
+    extern __shared__ int32_t mmid_hist[];   // n_experts + 1 (negatives last)
+    const int chunk = blockIdx.x;
+    const int t0 = chunk * DS4_MMID_CHUNK_TOKENS;
+    const int t1 = min(t0 + DS4_MMID_CHUNK_TOKENS, n_tokens);
+    for (int e = threadIdx.x; e <= n_experts; e += blockDim.x) {
+        mmid_hist[e] = 0;
+    }
+    __syncthreads();
+    const int n_ids = (t1 - t0) * n_expert_used;
+    for (int i = threadIdx.x; i < n_ids; i += blockDim.x) {
+        const int it = t0 + i / n_expert_used;
+        const int iex = i - (it - t0) * n_expert_used;
+        const int e = ids[it*si1 + iex];
+        if (e < 0) {
+            atomicAdd(&mmid_hist[n_experts], 1);
+        } else if (e < n_experts) {
+            atomicAdd(&mmid_hist[e], 1);
+        }
+    }
+    __syncthreads();
+    for (int e = threadIdx.x; e < n_experts; e += blockDim.x) {
+        counts[(size_t)chunk*n_experts + e] = mmid_hist[e];
+    }
+    if (threadIdx.x == 0) {
+        negatives[chunk] = mmid_hist[n_experts];
+    }
+}
+
+// counts[chunk][e] in, offsets[chunk][e] out (start of that chunk's slice of
+// expert e's bucket); expert_bounds gets the bucket starts and the total.
+static __global__ void ds4_mmid_scan_kernel(
+        int32_t * __restrict__ counts, const int32_t * __restrict__ negatives,
+        int32_t * __restrict__ expert_bounds,
+        const int n_chunks, const int n_experts) {
+    extern __shared__ int32_t mmid_sizes[];   // n_experts
+    __shared__ int32_t mmid_negative_total;
+    if (threadIdx.x == 0) {
+        int total = 0;
+        for (int c = 0; c < n_chunks; ++c) {
+            total += negatives[c];
+        }
+        mmid_negative_total = total;
+    }
+    for (int e = threadIdx.x; e < n_experts; e += blockDim.x) {
+        int run = 0;
+        for (int c = 0; c < n_chunks; ++c) {
+            const size_t k = (size_t)c*n_experts + e;
+            const int v = counts[k];
+            counts[k] = run;
+            run += v;
+        }
+        mmid_sizes[e] = run;
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        int run = mmid_negative_total;
+        for (int e = 0; e < n_experts; ++e) {
+            const int v = mmid_sizes[e];
+            mmid_sizes[e] = run;
+            expert_bounds[e] = run;
+            run += v;
+        }
+        expert_bounds[n_experts] = run;
+    }
+    __syncthreads();
+    for (int e = threadIdx.x; e < n_experts; e += blockDim.x) {
+        const int base = mmid_sizes[e];
+        for (int c = 0; c < n_chunks; ++c) {
+            counts[(size_t)c*n_experts + e] += base;
+        }
+    }
+}
+
+static __global__ void ds4_mmid_scatter_kernel(
+        const int32_t * __restrict__ ids, const int32_t * __restrict__ offsets,
+        int32_t * __restrict__ ids_src1, int32_t * __restrict__ ids_dst,
+        const int n_tokens, const int n_expert_used, const int n_experts,
+        const int nchannels_y, const int si1, const int sis1) {
+    extern __shared__ int32_t mmid_chunk[];   // DS4_MMID_CHUNK_TOKENS * n_expert_used
+    const int chunk = blockIdx.x;
+    const int t0 = chunk * DS4_MMID_CHUNK_TOKENS;
+    const int t1 = min(t0 + DS4_MMID_CHUNK_TOKENS, n_tokens);
+    const int n_ids = (t1 - t0) * n_expert_used;
+    for (int i = threadIdx.x; i < n_ids; i += blockDim.x) {
+        const int it = t0 + i / n_expert_used;
+        const int iex = i - (it - t0) * n_expert_used;
+        mmid_chunk[i] = ids[it*si1 + iex];
+    }
+    __syncthreads();
+    for (int e = threadIdx.x; e < n_experts; e += blockDim.x) {
+        int pos = offsets[(size_t)chunk*n_experts + e];
+        for (int i = 0; i < n_ids; ++i) {
+            if (mmid_chunk[i] != e) {
+                continue;
+            }
+            const int it = t0 + i / n_expert_used;
+            const int iex = i - (it - t0) * n_expert_used;
+            ids_src1[pos] = it*sis1          + iex % nchannels_y;
+            ids_dst [pos] = it*n_expert_used + iex;
+            pos++;
+        }
+    }
+}
+
+// ds4 local: kill switch for the counting-sort map (DS4_MMID_FAST=0) and a
+// programmatic override for the parity harness.
+static int g_ds4_mmid_fast_override = -1;
+
+void ds4_mmid_fast_set_enabled(int enabled) {
+    g_ds4_mmid_fast_override = enabled ? 1 : 0;
+}
+
+static bool ds4_mmid_fast_enabled(void) {
+    if (g_ds4_mmid_fast_override >= 0) {
+        return g_ds4_mmid_fast_override != 0;
+    }
+    static int cached = -1;
+    if (cached < 0) {
+        const char * env = getenv("DS4_MMID_FAST");
+        cached = !(env && env[0] == '0');
+    }
+    return cached != 0;
+}
+
+static bool ds4_mmid_fast_shape_ok(const int n_experts, const int n_tokens, const int n_expert_used) {
+    return n_experts >= DS4_MMID_MIN_EXPERTS && n_experts <= DS4_MMID_MAX_EXPERTS &&
+           n_expert_used > 0 && n_expert_used <= DS4_MMID_MAX_USED &&
+           n_tokens > 0 &&
+           (int64_t)n_tokens * n_expert_used >= DS4_MMID_FAST_MIN_ROWS &&
+           (int64_t)n_tokens * n_expert_used <= INT_MAX;
+}
+
+// Scratch the counting sort needs for a shape, 0 when the shape stays on the
+// warp scans (or the sort is disabled).  Callers take it from their stream-
+// ordered pool: a per-call cudaMallocAsync/cudaFreeAsync pair cost ~1.6 ms
+// here because the default mempool hands the pages back every time.
+size_t ds4_mmid_fast_scratch_bytes(const int n_experts, const int n_tokens, const int n_expert_used) {
+    if (!ds4_mmid_fast_enabled() || !ds4_mmid_fast_shape_ok(n_experts, n_tokens, n_expert_used)) {
+        return 0;
+    }
+    const int n_chunks = (n_tokens + DS4_MMID_CHUNK_TOKENS - 1) / DS4_MMID_CHUNK_TOKENS;
+    return (size_t)n_chunks * (size_t)n_experts * sizeof(int32_t) + (size_t)n_chunks * sizeof(int32_t);
+}
+
+static bool ds4_mmid_fast_launch(
+        const int32_t * __restrict__ ids, int32_t * __restrict__ ids_src1, int32_t * __restrict__ ids_dst, int32_t * __restrict__ expert_bounds,
+        const int n_experts, const int n_tokens, const int n_expert_used, const int nchannels_y, const int si1, const int sis1,
+        void * scratch_mem, const size_t scratch_bytes, cudaStream_t stream) {
+    if (!scratch_mem || nchannels_y <= 0 ||
+        !ds4_mmid_fast_shape_ok(n_experts, n_tokens, n_expert_used) ||
+        scratch_bytes < ds4_mmid_fast_scratch_bytes(n_experts, n_tokens, n_expert_used)) {
+        return false;
+    }
+    const int n_chunks = (n_tokens + DS4_MMID_CHUNK_TOKENS - 1) / DS4_MMID_CHUNK_TOKENS;
+    int32_t * scratch = (int32_t *)scratch_mem;
+    int32_t * counts = scratch;
+    int32_t * negatives = scratch + (size_t)n_chunks * n_experts;
+    const size_t hist_bytes = ((size_t)n_experts + 1u) * sizeof(int32_t);
+    const size_t chunk_bytes = (size_t)DS4_MMID_CHUNK_TOKENS * n_expert_used * sizeof(int32_t);
+    ds4_mmid_count_kernel<<<n_chunks, DS4_MMID_THREADS, hist_bytes, stream>>>(
+        ids, counts, negatives, n_tokens, n_expert_used, n_experts, si1);
+    ds4_mmid_scan_kernel<<<1, DS4_MMID_SCAN_THREADS, (size_t)n_experts * sizeof(int32_t), stream>>>(
+        counts, negatives, expert_bounds, n_chunks, n_experts);
+    ds4_mmid_scatter_kernel<<<n_chunks, DS4_MMID_THREADS, chunk_bytes, stream>>>(
+        ids, counts, ids_src1, ids_dst, n_tokens, n_expert_used, n_experts, nchannels_y, si1, sis1);
+    const cudaError_t launch = cudaGetLastError();
+    if (launch != cudaSuccess) {
+        fprintf(stderr, "ds4: counting-sort mm_ids map failed: %s\n", cudaGetErrorString(launch));
+        return false;
+    }
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        fprintf(stderr, "ds4: counting-sort mm_ids map engaged (n_tokens=%d used=%d experts=%d)\n",
+                n_tokens, n_expert_used, n_experts);
+    }
+    return true;
+}
+
+void ggml_cuda_launch_mm_ids_helper_scratch(
+        const int32_t * __restrict__ ids, int32_t * __restrict__ ids_src1, int32_t * __restrict__ ids_dst, int32_t * __restrict__ expert_bounds,
+        const int n_experts, const int n_tokens, const int n_expert_used, const int nchannels_y, const int si1, const int sis1,
+        void * scratch, const size_t scratch_bytes, cudaStream_t stream) {
+    if (ds4_mmid_fast_enabled() &&
+        ds4_mmid_fast_launch(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1,
+                             scratch, scratch_bytes, stream)) {
+        return;
+    }
+    ggml_cuda_launch_mm_ids_helper(ids, ids_src1, ids_dst, expert_bounds, n_experts, n_tokens, n_expert_used, nchannels_y, si1, sis1, stream);
+}
+
 void ggml_cuda_launch_mm_ids_helper(
         const int32_t * __restrict__ ids, int32_t * __restrict__ ids_src1, int32_t * __restrict__ ids_dst, int32_t * __restrict__ expert_bounds,
         const int n_experts, const int n_tokens, const int n_expert_used, const int nchannels_y, const int si1, const int sis1, cudaStream_t stream) {

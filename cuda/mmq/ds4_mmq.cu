@@ -1654,6 +1654,9 @@ int ds4_mmq_moe_tail_impl(
         int             max_rows_per_expert,
         int             w_row_blocks,
         int             w_tail_row_blocks,
+        /* false skips the whole-buffer non-finite pass; only valid when
+         * every consumer zeroes non-finite values at read. */
+        bool            sanitize_out,
         cudaStream_t    stream) {
     if (!W || !W_tail || !X_f32 || !X_tail_f32 || !ids || !out_f32) {
         fprintf(stderr, "%s: null pointer\n", tag);
@@ -1715,10 +1718,14 @@ int ds4_mmq_moe_tail_impl(
                 tag, n_tokens);
         return -1;
     }
-    ggml_cuda_launch_mm_ids_helper(
+    const size_t mmid_bytes =
+        ds4_mmid_fast_scratch_bytes(n_experts, n_tokens, n_expert_used);
+    ggml_cuda_pool_alloc<char> mmid_scratch(ctx->pool(), mmid_bytes ? mmid_bytes : 1u);
+    ggml_cuda_launch_mm_ids_helper_scratch(
         ids, ids_src1.get(), ids_dst.get(), expert_bounds.get(),
         n_experts, n_tokens, n_expert_used, /*nchannels_y=*/1,
-        /*si1=*/n_expert_used, /*sis1=*/1, stream);
+        /*si1=*/n_expert_used, /*sis1=*/1,
+        mmid_scratch.get(), mmid_bytes, stream);
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         fprintf(stderr, "%s: mm_ids_helper failed: %s\n", tag, cudaGetErrorString(err));
@@ -1777,7 +1784,9 @@ int ds4_mmq_moe_tail_impl(
                 "(type=%d tail=%d rows=%lld experts=%d)\n",
                 (int)type, (int)tail_type, (long long)ne_get_rows, n_experts);
     }
-    ds4_mmq_sanitize_f32(out_f32, (uint64_t)M * (uint64_t)ne_get_rows, stream);
+    if (sanitize_out) {
+        ds4_mmq_sanitize_f32(out_f32, (uint64_t)M * (uint64_t)ne_get_rows, stream);
+    }
     return 0;
 }
 
@@ -1901,9 +1910,13 @@ int ds4_mmq_moe_impl(
         return -1;
     }
 
-    ggml_cuda_launch_mm_ids_helper(
+    const size_t mmid_bytes =
+        ds4_mmid_fast_scratch_bytes(n_experts, n_tokens, n_expert_used);
+    ggml_cuda_pool_alloc<char> mmid_scratch(ctx->pool(), mmid_bytes ? mmid_bytes : 1u);
+    ggml_cuda_launch_mm_ids_helper_scratch(
         ids, ids_src1.get(), ids_dst.get(), expert_bounds.get(),
-        n_experts, n_tokens, n_expert_used, /*nchannels_y=*/(int)ne11, si1, sis1, stream);
+        n_experts, n_tokens, n_expert_used, /*nchannels_y=*/(int)ne11, si1, sis1,
+        mmid_scratch.get(), mmid_bytes, stream);
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -2551,10 +2564,13 @@ int ds4_mmq_moe_pair_impl(
         // so entries dropped by mm_ids_helper never expose stale pool memory.
         cudaMemsetAsync(ids_src1, 0, ne_get_rows * sizeof(int32_t), stream);
         cudaMemsetAsync(ids_dst,  0, ne_get_rows * sizeof(int32_t), stream);
-        ggml_cuda_launch_mm_ids_helper(
+        const size_t mmid_bytes =
+            ds4_mmid_fast_scratch_bytes(n_experts, n_tokens, n_expert_used);
+        ggml_cuda_pool_alloc<char> mmid_scratch(ctx->pool(), mmid_bytes ? mmid_bytes : 1u);
+        ggml_cuda_launch_mm_ids_helper_scratch(
             ids, ids_src1, ids_dst, expert_bounds,
             n_experts, n_tokens, n_expert_used, /*nchannels_y=*/(int)ne11,
-            si1, sis1, stream);
+            si1, sis1, mmid_scratch.get(), mmid_bytes, stream);
 
         err = cudaGetLastError();
         if (err != cudaSuccess) {
@@ -3289,9 +3305,13 @@ extern "C" int ds4_mmq_q5_0_f32_moe_accum(
     ggml_cuda_pool_alloc<int32_t> expert_bounds(ctx->pool(), n_experts + 1);
     cudaMemsetAsync(ids_src1.get(), 0, assignments * sizeof(int32_t), stream);
     cudaMemsetAsync(ids_dst.get(), 0, assignments * sizeof(int32_t), stream);
-    ggml_cuda_launch_mm_ids_helper(
+    const size_t mmid_bytes =
+        ds4_mmid_fast_scratch_bytes(n_experts, n_tokens, n_expert_used);
+    ggml_cuda_pool_alloc<char> mmid_scratch(ctx->pool(), mmid_bytes ? mmid_bytes : 1u);
+    ggml_cuda_launch_mm_ids_helper_scratch(
         ids, ids_src1.get(), ids_dst.get(), expert_bounds.get(),
-        n_experts, n_tokens, n_expert_used, 1, n_expert_used, 1, stream);
+        n_experts, n_tokens, n_expert_used, 1, n_expert_used, 1,
+        mmid_scratch.get(), mmid_bytes, stream);
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) return -2;
 
@@ -3312,7 +3332,9 @@ extern "C" int ds4_mmq_q5_K_moe_bounded_q5_0_tail(
         "ds4_mmq_q5_K_moe_bounded_q5_0_tail", W, W_tail, X_f32, /*x_stride=*/K,
         X_tail_f32, x_tail_stride, ids, out_f32, M, K, n_tokens,
         n_experts, n_expert_used, max_rows_per_expert,
-        /*w_row_blocks=*/0, /*w_tail_row_blocks=*/0, stream);
+        /*w_row_blocks=*/0, /*w_tail_row_blocks=*/0,
+        /* moe_sum reads with guard_nonfinite: no standalone pass. */
+        /*sanitize_out=*/false, stream);
 }
 
 extern "C" int ds4_mmq_q6_K_moe_bounded_q5_0_tail(
@@ -3325,7 +3347,9 @@ extern "C" int ds4_mmq_q6_K_moe_bounded_q5_0_tail(
         "ds4_mmq_q6_K_moe_bounded_q5_0_tail", W, W_tail, X_f32, /*x_stride=*/K,
         X_tail_f32, x_tail_stride, ids, out_f32, M, K, n_tokens,
         n_experts, n_expert_used, max_rows_per_expert,
-        /*w_row_blocks=*/0, /*w_tail_row_blocks=*/0, stream);
+        /*w_row_blocks=*/0, /*w_tail_row_blocks=*/0,
+        /* moe_sum reads with guard_nonfinite: no standalone pass. */
+        /*sanitize_out=*/false, stream);
 }
 
 extern "C" int ds4_mmq_q8_0_moe_bounded_q8_0_tail(
@@ -3338,7 +3362,9 @@ extern "C" int ds4_mmq_q8_0_moe_bounded_q8_0_tail(
         "ds4_mmq_q8_0_moe_bounded_q8_0_tail", W, W_tail, X_f32, /*x_stride=*/K,
         X_tail_f32, x_tail_stride, ids, out_f32, M, K, n_tokens,
         n_experts, n_expert_used, max_rows_per_expert,
-        /*w_row_blocks=*/0, /*w_tail_row_blocks=*/0, stream);
+        /*w_row_blocks=*/0, /*w_tail_row_blocks=*/0,
+        /* moe_sum reads with guard_nonfinite: no standalone pass. */
+        /*sanitize_out=*/false, stream);
 }
 
 /* Dense Q8_0 GEMM with K = 256n + 128 (the Qwen shared-expert down,
@@ -3375,7 +3401,7 @@ extern "C" int ds4_mmq_q8_0_dense_tail(
         X, /*x_stride=*/K, X + k_main, /*x_tail_stride=*/K,
         ids.get(), out, M, k_main, /*n_tokens=*/N, /*n_experts=*/1,
         /*n_expert_used=*/1, /*max_rows_per_expert=*/N,
-        row_blocks, row_blocks, stream);
+        row_blocks, row_blocks, /*sanitize_out=*/true, stream);
 }
 
 extern "C" int ds4_mmq_q4_K_moe_bounded(
@@ -3657,12 +3683,15 @@ extern "C" int ds4_mmq_q4_K_moe_pair_bounded(
                 max_rows_per_expert);
         return -1;
     }
+    /* Every consumer of the bounded gate/up pair is the weighted SwiGLU,
+     * which zeroes non-finite inputs at read: the standalone pass over
+     * both [rows x M] outputs (~1.6 ms per 8K Qwen layer) adds nothing. */
     return ds4_mmq_moe_pair_impl<GGML_TYPE_Q4_K>(
         "ds4_mmq_q4_K_moe_pair_bounded",
         W_a, W_b, X, ids, out_a, out_b,
         M, K, n_tokens, n_experts, n_expert_used, stream,
         /*xa_soa=*/NULL, /*xb_soa=*/NULL, /*soa_blocks=*/0,
-        /*sanitize_out=*/true, /*fused_down=*/nullptr,
+        /*sanitize_out=*/false, /*fused_down=*/nullptr,
         /*ncols_max_hint=*/max_rows_per_expert);
 }
 
