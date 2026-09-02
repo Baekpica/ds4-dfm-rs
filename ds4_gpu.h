@@ -2399,6 +2399,31 @@ int ds4_gpu_qwen4exp_q5_0_tail_accum_tensor(
         uint32_t                out_dim,
         uint32_t                n_expert);
 
+/* Fused expert-down: main (K-quant or Q8_0, main_dim columns of the packed
+ * input) plus the 128-column tail read in place from mid, one MMQ launch and
+ * one output store.  Returns 0 without launching when the shape or tier is
+ * not covered, so callers keep the separate main + tail path. */
+int ds4_gpu_qwen4exp_routed_down_fused_tensor(
+        ds4_gpu_tensor       *down,
+        const ds4_gpu_tensor *packed_main,
+        const ds4_gpu_tensor *mid,
+        const ds4_gpu_tensor *ids,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                main_offset,
+        uint64_t                main_bytes,
+        uint32_t                main_type,
+        uint64_t                tail_offset,
+        uint64_t                tail_bytes,
+        uint32_t                tail_type,
+        uint64_t                assignments,
+        uint32_t                mid_width,
+        uint32_t                main_dim,
+        uint32_t                tail_dim,
+        uint32_t                out_dim,
+        uint32_t                n_expert,
+        uint32_t                max_rows_per_expert);
+
 int ds4_gpu_qwen4exp_q5_0_tail_accum_bank2_tensor(
         ds4_gpu_tensor       *down0,
         const ds4_gpu_tensor *mid0,

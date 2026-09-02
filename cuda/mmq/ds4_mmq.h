@@ -416,6 +416,61 @@ int ds4_mmq_q5_0_f32_moe_accum(
     int             n_expert_used,
     cudaStream_t    stream);
 
+// Fused expert-down for the Qwen3.8 [main | tail] split: W is the K-wide
+// K-quant (or Q8_0) main tensor read from the packed main activation X_f32,
+// W_tail the 128-wide Q5_0 (or Q8_0) tail tensor read in place from
+// X_tail_f32 with x_tail_stride floats between rows (16-byte aligned).  The
+// tail runs as one extra MMQ half-iteration inside the compact worklist
+// kernel, so out_f32 receives main + tail in a single store.  Returns -1
+// without launching when the worklist cannot take the shape.
+int ds4_mmq_q5_K_moe_bounded_q5_0_tail(
+    const void    * W,
+    const void    * W_tail,
+    const float   * X_f32,
+    const float   * X_tail_f32,
+    int             x_tail_stride,
+    const int32_t * ids,
+    float         * out_f32,
+    int             M,
+    int             K,
+    int             n_tokens,
+    int             n_experts,
+    int             n_expert_used,
+    int             max_rows_per_expert,
+    cudaStream_t    stream);
+
+int ds4_mmq_q6_K_moe_bounded_q5_0_tail(
+    const void    * W,
+    const void    * W_tail,
+    const float   * X_f32,
+    const float   * X_tail_f32,
+    int             x_tail_stride,
+    const int32_t * ids,
+    float         * out_f32,
+    int             M,
+    int             K,
+    int             n_tokens,
+    int             n_experts,
+    int             n_expert_used,
+    int             max_rows_per_expert,
+    cudaStream_t    stream);
+
+int ds4_mmq_q8_0_moe_bounded_q8_0_tail(
+    const void    * W,
+    const void    * W_tail,
+    const float   * X_f32,
+    const float   * X_tail_f32,
+    int             x_tail_stride,
+    const int32_t * ids,
+    float         * out_f32,
+    int             M,
+    int             K,
+    int             n_tokens,
+    int             n_experts,
+    int             n_expert_used,
+    int             max_rows_per_expert,
+    cudaStream_t    stream);
+
 int ds4_mmq_q4_K_moe_bounded(
     const void    * W,
     const float   * X_f32,

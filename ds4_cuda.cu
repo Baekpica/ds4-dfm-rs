@@ -30394,6 +30394,131 @@ extern "C" int ds4_gpu_qwen4exp_q5_0_tail_accum_tensor(
         main_dim, tail_dim, out_dim, n_expert, use_expert_major);
 }
 
+/* Qwen3.8 expert-down as one MMQ launch: the 512-column K-quant main
+ * projection and the 128-column tail (Q5_0 in the transformer layers, Q8_0
+ * in the MTP block) share the expert map, the compact worklist and the MMA
+ * accumulators, so the [assignments x hidden] output is stored once instead
+ * of being written by the main GEMM and then re-walked by a tail accumulate.
+ * Returns 0 with nothing launched when the fused MMQ entry declines the
+ * shape or DS4_QWEN_NO_FUSED_DOWN_TAIL is set; the caller then keeps the
+ * separate main + F32 tail path. */
+extern "C" int ds4_gpu_qwen4exp_routed_down_fused_tensor(
+        ds4_gpu_tensor       *down,
+        const ds4_gpu_tensor *packed_main,
+        const ds4_gpu_tensor *mid,
+        const ds4_gpu_tensor *ids,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                main_offset,
+        uint64_t                main_bytes,
+        uint32_t                main_type,
+        uint64_t                tail_offset,
+        uint64_t                tail_bytes,
+        uint32_t                tail_type,
+        uint64_t                assignments,
+        uint32_t                mid_width,
+        uint32_t                main_dim,
+        uint32_t                tail_dim,
+        uint32_t                out_dim,
+        uint32_t                n_expert,
+        uint32_t                max_rows_per_expert) {
+    static int disabled = -1;
+    if (disabled < 0) disabled = getenv("DS4_QWEN_NO_FUSED_DOWN_TAIL") != NULL;
+    if (disabled || !down || !packed_main || !mid || !ids || !model_map ||
+        !ds4_cuda_use_mmq() || down->ptr == mid->ptr ||
+        down->ptr == packed_main->ptr || assignments == 0u ||
+        assignments > (uint64_t)INT_MAX || max_rows_per_expert == 0u ||
+        max_rows_per_expert > assignments || mid_width == 0u ||
+        mid_width > (uint32_t)INT_MAX || main_dim == 0u ||
+        main_dim > (uint32_t)INT_MAX || main_dim % 256u != 0u ||
+        tail_dim != 128u || main_dim > mid_width ||
+        tail_dim > mid_width - main_dim || out_dim == 0u ||
+        out_dim > (uint32_t)INT_MAX || n_expert == 0u ||
+        n_expert > (uint32_t)INT_MAX) {
+        return 0;
+    }
+    uint64_t main_block_bytes = 0u;
+    uint64_t main_block_width = 256u;
+    switch (main_type) {
+    case 8u:  main_block_bytes = 34u; main_block_width = 32u; break; /* Q8_0 */
+    case 13u: main_block_bytes = 176u; break;                       /* Q5_K */
+    case 14u: main_block_bytes = 210u; break;                       /* Q6_K */
+    default: return 0;
+    }
+    uint64_t tail_block_bytes = 0u;
+    switch (tail_type) {
+    case 6u: tail_block_bytes = 22u; break;                          /* Q5_0 */
+    case 8u: tail_block_bytes = 34u; break;                          /* Q8_0 */
+    default: return 0;
+    }
+    /* Supported pairs: K-quant main + Q5_0 tail, Q8_0 main + Q8_0 tail. */
+    if ((main_type == 8u) != (tail_type == 8u)) return 0;
+
+    const uint64_t rows = (uint64_t)n_expert * out_dim;
+    const uint64_t main_blocks_per_row = main_dim / main_block_width;
+    const uint64_t tail_blocks_per_row = tail_dim / 32u;
+    if ((uint64_t)n_expert > UINT64_MAX / out_dim ||
+        rows > UINT64_MAX / (main_blocks_per_row * main_block_bytes) ||
+        rows > UINT64_MAX / (tail_blocks_per_row * tail_block_bytes) ||
+        assignments > UINT64_MAX / (mid_width * sizeof(float)) ||
+        assignments > UINT64_MAX / (out_dim * sizeof(float)) ||
+        main_offset > model_size || main_bytes > model_size - main_offset ||
+        main_bytes < rows * main_blocks_per_row * main_block_bytes ||
+        tail_offset > model_size || tail_bytes > model_size - tail_offset ||
+        tail_bytes < rows * tail_blocks_per_row * tail_block_bytes ||
+        packed_main->bytes < assignments * main_dim * sizeof(float) ||
+        mid->bytes < assignments * mid_width * sizeof(float) ||
+        ids->bytes < assignments * sizeof(int32_t) ||
+        down->bytes < assignments * out_dim * sizeof(float)) {
+        return 0;
+    }
+    const char *main_weights = cuda_model_range_ptr(
+        model_map, main_offset, main_bytes, "routed_expert_weights");
+    const char *tail_weights = cuda_model_range_ptr(
+        model_map, tail_offset, tail_bytes, "qwen4exp_expert_down_tail");
+    if (!main_weights || !tail_weights) return 0;
+
+    const float *x_tail = (const float *)mid->ptr + main_dim;
+    const cudaStream_t stream = ds4_current_stream();
+    int rc = -1;
+    switch (main_type) {
+    case 13u:
+        rc = ds4_mmq_q5_K_moe_bounded_q5_0_tail(
+            main_weights, tail_weights, (const float *)packed_main->ptr,
+            x_tail, (int)mid_width, (const int32_t *)ids->ptr,
+            (float *)down->ptr, (int)out_dim, (int)main_dim,
+            (int)assignments, (int)n_expert, 1, (int)max_rows_per_expert,
+            stream);
+        break;
+    case 14u:
+        rc = ds4_mmq_q6_K_moe_bounded_q5_0_tail(
+            main_weights, tail_weights, (const float *)packed_main->ptr,
+            x_tail, (int)mid_width, (const int32_t *)ids->ptr,
+            (float *)down->ptr, (int)out_dim, (int)main_dim,
+            (int)assignments, (int)n_expert, 1, (int)max_rows_per_expert,
+            stream);
+        break;
+    default:
+        rc = ds4_mmq_q8_0_moe_bounded_q8_0_tail(
+            main_weights, tail_weights, (const float *)packed_main->ptr,
+            x_tail, (int)mid_width, (const int32_t *)ids->ptr,
+            (float *)down->ptr, (int)out_dim, (int)main_dim,
+            (int)assignments, (int)n_expert, 1, (int)max_rows_per_expert,
+            stream);
+        break;
+    }
+    if (rc != 0) return 0;
+    static bool logged_fused_down = false;
+    if (!logged_fused_down) {
+        logged_fused_down = true;
+        fprintf(stderr,
+                "ds4: Qwen expert-down main+tail fused MMQ active "
+                "(main=%u tail=%u rows=%llu)\n",
+                main_type, tail_type, (unsigned long long)assignments);
+    }
+    return cuda_ok(cudaGetLastError(), "Qwen4Exp fused expert-down launch");
+}
+
 extern "C" int ds4_gpu_qwen4exp_q5_0_tail_accum_bank2_tensor(
         ds4_gpu_tensor       *down0,
         const ds4_gpu_tensor *mid0,

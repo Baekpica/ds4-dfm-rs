@@ -21314,6 +21314,9 @@ typedef struct {
     ds4_gpu_tensor *shared_up;
     ds4_gpu_tensor *shared_mid;
     ds4_gpu_tensor *shared_out;
+    /* Set by qwen4exp_moe_down_main when the fused MMQ entry already
+     * folded the 128-column tail into routed_down. */
+    bool tail_fused;
     uint64_t bytes;
 } ds4_qwen_moe_ws;
 
@@ -21394,6 +21397,49 @@ static bool qwen4exp_moe_ws_alloc(
 /* Prepare the routed MoE branch through its 512-column expert-down main.
  * Router weights are folded into routed_mid before both down segments,
  * matching the reference's post-expert multiplication by linearity. */
+/* The 640-wide expert-down input is a 512-column K-quant main projection
+ * plus a 128-column tail tensor.  From prefill width on, the fused MMQ entry
+ * folds the tail into the main tile loop and stores routed_down once;
+ * decode widths and the paired-bank path keep the separate tail accumulate,
+ * which qwen4exp_moe_tail then runs. */
+enum { QWEN4EXP_FUSED_DOWN_MIN_TOKENS = 16 };
+
+static bool qwen4exp_moe_down_main(
+        ds4_qwen_moe_ws       *ws,
+        const ds4_model       *model,
+        const ds4_layer_weights *layer,
+        uint32_t               n_tokens,
+        bool                   fuse_tail) {
+    const uint32_t hidden = (uint32_t)layer->ffn_gate_inp->dim[0];
+    const uint32_t n_expert = (uint32_t)layer->ffn_gate_inp->dim[1];
+    const uint32_t expert_ff = (uint32_t)layer->ffn_gate_exps->dim[1];
+    const uint32_t main_dim = (uint32_t)layer->ffn_down_exps->dim[0];
+    const uint32_t tail_dim = (uint32_t)layer->ffn_down_exps_tail->dim[0];
+    const uint64_t assignments = (uint64_t)n_tokens * ws->n_used;
+    if (fuse_tail && n_tokens >= QWEN4EXP_FUSED_DOWN_MIN_TOKENS &&
+        ds4_gpu_qwen4exp_routed_down_fused_tensor(
+            ws->routed_down, ws->routed_gate, ws->routed_mid, ws->selected,
+            model->map, model->size,
+            layer->ffn_down_exps->abs_offset,
+            layer->ffn_down_exps->bytes,
+            layer->ffn_down_exps->type,
+            layer->ffn_down_exps_tail->abs_offset,
+            layer->ffn_down_exps_tail->bytes,
+            layer->ffn_down_exps_tail->type,
+            assignments, expert_ff, main_dim, tail_dim, hidden, n_expert,
+            n_tokens)) {
+        ws->tail_fused = true;
+        return true;
+    }
+    return ds4_gpu_routed_matmul_bounded_tensor(
+               ws->routed_down, ws->routed_gate, ws->selected,
+               model->map, model->size,
+               layer->ffn_down_exps->abs_offset,
+               layer->ffn_down_exps->bytes,
+               layer->ffn_down_exps->type, main_dim, hidden,
+               n_expert, (uint32_t)assignments, 1u, n_tokens) != 0;
+}
+
 static bool qwen4exp_moe_prepare(
         ds4_qwen_moe_ws       *ws,
         const ds4_model       *model,
@@ -21402,7 +21448,8 @@ static bool qwen4exp_moe_prepare(
         ds4_gpu_tensor        *output,
         uint32_t               n_tokens,
         bool                   route_ready,
-        bool                   defer_main) {
+        bool                   defer_main,
+        bool                   fuse_tail) {
     if (!ws || !model || !layer || !input || !output || n_tokens == 0u ||
         n_tokens > ws->capacity ||
         ds4_gpu_tensor_ptr(input) == ds4_gpu_tensor_ptr(output) ||
@@ -21422,6 +21469,7 @@ static bool qwen4exp_moe_prepare(
     const uint32_t n_used = ws->n_used;
     const uint64_t assignments = (uint64_t)n_tokens * n_used;
     const uint64_t routed_count = assignments * expert_ff;
+    ws->tail_fused = false;
     const uint64_t shared_count = (uint64_t)n_tokens * shared_ff;
     const uint64_t output_count = (uint64_t)n_tokens * hidden;
     const bool q5_tail =
@@ -21474,13 +21522,8 @@ static bool qwen4exp_moe_prepare(
         !ds4_gpu_qwen4exp_pack_expert_down_main_tensor(
                 ws->routed_gate, ws->routed_mid, assignments,
                 expert_ff, main_dim) ||
-        (!defer_main && !ds4_gpu_routed_matmul_bounded_tensor(
-                ws->routed_down, ws->routed_gate, ws->selected,
-                model->map, model->size,
-                layer->ffn_down_exps->abs_offset,
-                layer->ffn_down_exps->bytes,
-                layer->ffn_down_exps->type, main_dim, hidden,
-                n_expert, (uint32_t)assignments, 1u, n_tokens))) {
+        (!defer_main && !qwen4exp_moe_down_main(
+                ws, model, layer, n_tokens, fuse_tail))) {
         return false;
     }
     return true;
@@ -21525,6 +21568,7 @@ static bool qwen4exp_moe_tail(
         const ds4_model       *model,
         const ds4_layer_weights *layer,
         uint32_t               n_tokens) {
+    if (ws->tail_fused) return true;
     const uint32_t hidden = (uint32_t)layer->ffn_gate_inp->dim[0];
     const uint32_t n_expert = (uint32_t)layer->ffn_gate_inp->dim[1];
     const uint32_t expert_ff = (uint32_t)layer->ffn_gate_exps->dim[1];
@@ -21613,7 +21657,8 @@ static bool qwen4exp_moe_forward(
         ds4_gpu_tensor        *output,
         uint32_t               n_tokens) {
     return qwen4exp_moe_prepare(
-               ws, model, layer, input, output, n_tokens, false, false) &&
+               ws, model, layer, input, output, n_tokens, false, false,
+               /*fuse_tail=*/true) &&
            qwen4exp_moe_tail(ws, model, layer, n_tokens) &&
            qwen4exp_moe_finish(
                ws, model, layer, input, output, n_tokens);
@@ -21718,10 +21763,10 @@ static bool qwen4exp_moe_forward_bank2(
         return false;
     return qwen4exp_moe_prepare(
                ws[0], model, layer, input[0], output[0], n_tokens,
-               topk_bank2, main_bank2) &&
+               topk_bank2, main_bank2, /*fuse_tail=*/false) &&
            qwen4exp_moe_prepare(
                ws[1], model, layer, input[1], output[1], n_tokens,
-               topk_bank2, main_bank2) &&
+               topk_bank2, main_bank2, /*fuse_tail=*/false) &&
            (!main_bank2 ||
             qwen4exp_moe_main_bank2(ws, model, layer, n_tokens)) &&
            ds4_gpu_qwen4exp_q5_0_tail_accum_bank2_tensor(

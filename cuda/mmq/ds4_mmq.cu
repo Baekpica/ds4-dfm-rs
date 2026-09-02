@@ -1017,6 +1017,281 @@ __global__ static void ds4_moe_worklist_mmq_kernel(
     }
 }
 
+// ----------------------------------------------------------------------------
+// Fused K-quant main + 128-wide tail expert-down (Qwen3.8-Flash-Next).
+//
+// The expert-down projection has K = 640, which is not a multiple of the
+// 256-value K-quant super-block, so the recipe stores a 512-wide K-quant
+// main tensor plus a 128-wide Q5_0 tail tensor (Q8_0 + Q8_0 in the MTP
+// block).  MMQ walks K in 256-wide iterations, and every iteration is two
+// 128-wide halves that the MMA dot addresses at k00 = 0 and
+// k00 = MMQ_TILE_NE_K.  The tail is exactly one such half:
+//
+//   main K loop : blocks_per_ne00 K-quant blocks, two vec_dot halves each
+//   tail step   : x tile <- four tail blocks per row in the Q8_0 MMA layout
+//                 (upper half zeroed); y tile <- one block_q8_1_mmq per
+//                 column from a separately quantized tail activation;
+//                 vec_dot_q8_0_q8_1_mma(k00 = 0) into the same sum[]
+//   write_back  : once, main + tail
+//
+// Every MMA dot indexes sum[] identically (tile<16,8> C fragments, ntx
+// minitiles per warp), which is what makes the shared accumulator legal.
+// This replaces a separate F32 tail pass over the [assignments x M] output
+// (35 ms/layer at 8K prefill against ~7 ms for the whole main GEMM).
+static constexpr int DS4_MMQ_TAIL_K = 4 * QK8_1;   // one MMQ half-iteration
+
+template <ggml_type tail_type, int mmq_y, bool need_check>
+static __device__ __forceinline__ void ds4_load_tiles_tail_half(
+        const char * __restrict__ x, int * __restrict__ x_tile,
+        const int kbx0, const int i_max, const int stride) {
+    static_assert(tail_type == GGML_TYPE_Q5_0 || tail_type == GGML_TYPE_Q8_0,
+                  "tail loader supports Q5_0 and Q8_0");
+    constexpr int nwarps = mmq_get_nwarps_device();
+    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+    static_assert(warp_size == 32, "tail loader assumes one tile row per warp pass");
+    constexpr int half_blocks = DS4_MMQ_TAIL_K / QK8_0;   // four 32-value blocks
+
+    int   * x_qs = (int   *)  x_tile;
+    float * x_df = (float *) (x_qs + 2*MMQ_TILE_NE_K);
+
+    // Quants: the tail fills the lower half of each 256-wide tile row; the
+    // upper half is zeroed so the tile stays deterministic even though the
+    // k00 = 0 dot never reads it.
+    const int txi = threadIdx.x;
+#pragma unroll
+    for (int i0 = 0; i0 < mmq_y; i0 += nwarps) {
+        int i = i0 + threadIdx.y;
+        if (need_check) {
+            i = min(i, i_max);
+        }
+        int * row = x_qs + i*MMQ_MMA_TILE_X_K_Q8_0;
+        if constexpr (tail_type == GGML_TYPE_Q8_0) {
+            const int kbx  = txi / QI8_0;
+            const int kqsx = txi % QI8_0;
+            const block_q8_0 * bxi = (const block_q8_0 *) x + kbx0 + i*stride + kbx;
+            row[txi]                 = get_int_b2(bxi->qs, kqsx);
+            row[MMQ_TILE_NE_K + txi] = 0;
+        } else {
+            const int kbx  = txi / QI5_0;
+            const int kqsx = txi % QI5_0;
+            int qs0 = 0;
+            int qs1 = 0;
+            if (kbx < half_blocks) {
+                const block_q5_0 * bxi = (const block_q5_0 *) x + kbx0 + i*stride + kbx;
+                const int ql = get_int_b2(bxi->qs, kqsx);
+                const int qh = get_int_b2(bxi->qh, 0) >> (4 * kqsx);
+                qs0  = (ql >>  0)   & 0x0F0F0F0F;
+                qs0 |= (qh <<  4)   & 0x00000010;  // 0 ->  4
+                qs0 |= (qh << 11)   & 0x00001000;  // 1 -> 12
+                qs0 |= (qh << 18)   & 0x00100000;  // 2 -> 20
+                qs0 |= (qh << 25)   & 0x10000000;  // 3 -> 28
+                qs0  = __vsubss4(qs0, 0x10101010); // subtract 16
+                qs1  = (ql >>  4)   & 0x0F0F0F0F;
+                qs1 |= (qh >> 12)   & 0x00000010;  // 16 ->  4
+                qs1 |= (qh >>  5)   & 0x00001000;  // 17 -> 12
+                qs1 |= (qh <<  2)   & 0x00100000;  // 18 -> 20
+                qs1 |= (qh <<  9)   & 0x10000000;  // 19 -> 28
+                qs1  = __vsubss4(qs1, 0x10101010); // subtract 16
+            }
+            row[kbx*(2*QI5_0) + kqsx + 0]     = qs0;
+            row[kbx*(2*QI5_0) + kqsx + QI5_0] = qs1;
+        }
+    }
+
+    // Per-block scales: eight slots per tile row, the first four carry the
+    // tail, the rest are zero.
+    constexpr int blocks_per_tile_x_row = 2*MMQ_TILE_NE_K / QI8_0;
+    constexpr int rows_per_warp = warp_size / blocks_per_tile_x_row;
+    const int kbxd = threadIdx.x % blocks_per_tile_x_row;
+#pragma unroll
+    for (int i0 = 0; i0 < mmq_y; i0 += nwarps * rows_per_warp) {
+        int i = i0 + threadIdx.y * rows_per_warp + threadIdx.x / blocks_per_tile_x_row;
+        if (need_check) {
+            i = min(i, i_max);
+        }
+        float d = 0.0f;
+        if (kbxd < half_blocks) {
+            if constexpr (tail_type == GGML_TYPE_Q8_0) {
+                d = __half2float(((const block_q8_0 *) x + kbx0 + i*stride + kbxd)->d);
+            } else {
+                d = __half2float(((const block_q5_0 *) x + kbx0 + i*stride + kbxd)->d);
+            }
+        }
+        x_df[i*MMQ_MMA_TILE_X_K_Q8_0 + kbxd] = d;
+    }
+}
+
+// mul_mat_q_process_tile with the tail half-iteration folded in before the
+// single write-back.  y / y_tail already carry the column offset of the tile.
+template <ggml_type type, ggml_type tail_type, int mmq_x, bool need_check>
+static __device__ __forceinline__ void ds4_mmq_process_tile_tail(
+        const char * __restrict__ x, const int offset_x, const int * __restrict__ y,
+        const char * __restrict__ x_tail, const int offset_x_tail,
+        const int * __restrict__ y_tail,
+        const int * __restrict__ ids_dst, float * __restrict__ dst,
+        const int stride_row_x, const int stride_row_x_tail,
+        const int ncols_y, const int stride_col_dst,
+        const int tile_x_max_i, const int tile_y_max_j, const int kb0_stop) {
+#if defined(TURING_MMA_AVAILABLE)
+    constexpr int              warp_size  = ggml_cuda_get_physical_warp_size();
+    constexpr int              nwarps     = mmq_get_nwarps_device();
+    constexpr int              qk         = ggml_cuda_type_traits<type>::qk;
+    constexpr int              mmq_y      = get_mmq_y_device();
+    constexpr load_tiles_mmq_t load_tiles = mmq_type_traits<mmq_x, mmq_y, need_check, type>::load_tiles;
+    constexpr vec_dot_mmq_t    vec_dot    = mmq_type_traits<mmq_x, mmq_y, need_check, type>::vec_dot_mma;
+    constexpr mmq_write_back_t write_back = mmq_write_back_mma<type, mmq_x, mmq_y, need_check>;
+    static_assert(mmq_get_mma_tile_x_k(type) >= MMQ_MMA_TILE_X_K_Q8_0,
+                  "tail x tile must fit inside the main type's x tile");
+    constexpr int ne_block        = 4 * QK8_1;
+    constexpr int blocks_per_iter = MMQ_ITER_K / qk;
+    constexpr int sz              = sizeof(block_q8_1_mmq) / sizeof(int);
+
+    extern __shared__ int data_mul_mat_q[];
+    int * tile_y = data_mul_mat_q + mmq_x;
+    int * tile_x = tile_y + GGML_PAD(mmq_x*MMQ_TILE_Y_K, nwarps*warp_size);
+
+    float sum[mmq_x*mmq_y / (nwarps*warp_size)] = {0.0f};
+
+    for (int kb0 = 0; kb0 < kb0_stop; kb0 += blocks_per_iter) {
+        load_tiles(x, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x);
+        {
+            const int * by0 = y + ncols_y * (kb0 * qk / ne_block) * sz;
+#pragma unroll
+            for (int l0 = 0; l0 < mmq_x * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
+                const int l = l0 + threadIdx.y*warp_size + threadIdx.x;
+                tile_y[l] = by0[l];
+            }
+        }
+        __syncthreads();
+        vec_dot(tile_x, tile_y, sum, 0);
+        __syncthreads();
+        {
+            const int * by0 = y + ncols_y * ((kb0 * qk / ne_block) * sz + sz);
+#pragma unroll
+            for (int l0 = 0; l0 < mmq_x * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
+                const int l = l0 + threadIdx.y*warp_size + threadIdx.x;
+                tile_y[l] = by0[l];
+            }
+        }
+        __syncthreads();
+        vec_dot(tile_x, tile_y, sum, MMQ_TILE_NE_K);
+        __syncthreads();
+    }
+
+    ds4_load_tiles_tail_half<tail_type, mmq_y, need_check>(
+        x_tail, tile_x, offset_x_tail, tile_x_max_i, stride_row_x_tail);
+#pragma unroll
+    for (int l0 = 0; l0 < mmq_x * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
+        const int l = l0 + threadIdx.y*warp_size + threadIdx.x;
+        tile_y[l] = y_tail[l];
+    }
+    __syncthreads();
+    vec_dot_q8_0_q8_1_mma<mmq_x, mmq_y, MMQ_Q8_1_DS_LAYOUT_D4>(tile_x, tile_y, sum, 0);
+    __syncthreads();
+
+    write_back(sum, ids_dst, dst, stride_col_dst, tile_x_max_i, tile_y_max_j);
+#else
+    GGML_UNUSED_VARS(x, offset_x, y, x_tail, offset_x_tail, y_tail, ids_dst, dst);
+    GGML_UNUSED_VARS(stride_row_x, stride_row_x_tail, ncols_y, stride_col_dst,
+                     tile_x_max_i, tile_y_max_j, kb0_stop);
+    NO_DEVICE_CODE;
+#endif // defined(TURING_MMA_AVAILABLE)
+}
+
+// Same persistent worklist walk as ds4_moe_worklist_mmq_kernel; the tail
+// tensor is addressed with its own row/expert block strides.
+template <ggml_type type, ggml_type tail_type, bool need_check>
+__launch_bounds__(ggml_cuda_get_physical_warp_size()*mmq_get_nwarps_device(), 1)
+__global__ static void ds4_moe_worklist_mmq_tail_kernel(
+        const char     * __restrict__ x,
+        const int      * __restrict__ y,
+        const char     * __restrict__ x_tail,
+        const int      * __restrict__ y_tail,
+        const int32_t  * __restrict__ ids_dst,
+        const int32_t  * __restrict__ expert_bounds,
+        float          * __restrict__ dst,
+        const uint3    * __restrict__ worklist,
+        const uint32_t * __restrict__ work_count,
+        int nrows_x,
+        int ncols_y,
+        int stride_row_x,
+        int stride_channel_x,
+        int stride_row_x_tail,
+        int stride_channel_x_tail,
+        int stride_col_dst,
+        int blocks_per_ne00) {
+    constexpr int mmq_x = DS4_MOE_WORKLIST_MMQ_X;
+    constexpr int mmq_y = get_mmq_y_device();
+    constexpr int nwarps = mmq_get_nwarps_device();
+    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+    constexpr int sz = sizeof(block_q8_1_mmq) / sizeof(int);
+    const int tid = (int)threadIdx.y * warp_size + (int)threadIdx.x;
+
+    extern __shared__ int data_mul_mat_q[];
+    int *ids_dst_shared = data_mul_mat_q;
+    __shared__ uint32_t nwork;
+    if (tid == 0) nwork = *work_count;
+    __syncthreads();
+
+    for (uint32_t iw = (uint32_t)blockIdx.x; iw < nwork;
+         iw += (uint32_t)gridDim.x) {
+        const uint3 item = worklist[iw];
+        const int expert = (int)item.x;
+        const uint32_t width_code =
+            item.y >> DS4_MOE_WORKLIST_WIDTH_SHIFT;
+        const int col_offset =
+            (int)(item.y & DS4_MOE_WORKLIST_COL_MASK);
+        const int it = (int)item.z;
+        const int col_low = expert_bounds[expert + 0];
+        const int col_high = expert_bounds[expert + 1];
+        const int col_diff = col_high - col_low;
+
+        const int tile_cols = width_code == DS4_MOE_WORKLIST_WIDTH_8
+            ? 8
+            : width_code == DS4_MOE_WORKLIST_WIDTH_16
+                ? 16
+                : width_code == DS4_MOE_WORKLIST_WIDTH_32
+                    ? 32
+                    : width_code == DS4_MOE_WORKLIST_WIDTH_64
+                        ? 64
+                        : mmq_x;
+        for (int j = tid; j < tile_cols; j += nwarps * warp_size) {
+            const int j_col = col_offset + j;
+            ids_dst_shared[j] = j_col < col_diff
+                ? ids_dst[col_low + j_col] : 0;
+        }
+        __syncthreads();
+
+        const int offset_x = expert * stride_channel_x +
+                             it * mmq_y * stride_row_x;
+        const int offset_x_tail = expert * stride_channel_x_tail +
+                                  it * mmq_y * stride_row_x_tail;
+        const int offset_y = (col_low + col_offset) * sz;
+        const int tile_x_max_i = nrows_x - it * mmq_y - 1;
+        const int tile_y_max_j = col_diff - col_offset - 1;
+
+#define DS4_MMQ_TAIL_TILE(width)                                          \
+        ds4_mmq_process_tile_tail<type, tail_type, width, need_check>(    \
+            x, offset_x, y + offset_y, x_tail, offset_x_tail,             \
+            y_tail + offset_y, ids_dst_shared, dst + it * mmq_y,          \
+            stride_row_x, stride_row_x_tail, ncols_y, stride_col_dst,     \
+            tile_x_max_i, tile_y_max_j, blocks_per_ne00)
+        if (width_code == DS4_MOE_WORKLIST_WIDTH_8) {
+            DS4_MMQ_TAIL_TILE(8);
+        } else if (width_code == DS4_MOE_WORKLIST_WIDTH_16) {
+            DS4_MMQ_TAIL_TILE(16);
+        } else if (width_code == DS4_MOE_WORKLIST_WIDTH_32) {
+            DS4_MMQ_TAIL_TILE(32);
+        } else if (width_code == DS4_MOE_WORKLIST_WIDTH_64) {
+            DS4_MMQ_TAIL_TILE(DS4_MOE_WORKLIST_TAIL_X);
+        } else {
+            DS4_MMQ_TAIL_TILE(mmq_x);
+        }
+#undef DS4_MMQ_TAIL_TILE
+        __syncthreads();
+    }
+}
+
 template <ggml_type type>
 struct ds4_mmq_moe_worklist_plan {
     int mmq_y;
@@ -1241,6 +1516,252 @@ int ds4_mmq_moe_worklist_launch(
                 tag, cudaGetErrorString(err));
         return -3;
     }
+    return 0;
+}
+
+template <ggml_type type, ggml_type tail_type>
+int ds4_mmq_moe_worklist_tail_launch(
+        const char *tag,
+        ggml_backend_cuda_context &ctx,
+        const void *W,
+        const int *Y_q8,
+        const void *W_tail,
+        const int *Y_tail_q8,
+        const int32_t *ids_dst,
+        const int32_t *expert_bounds,
+        float *out,
+        int M,
+        int K,
+        int64_t ne_get_rows,
+        int n_experts,
+        int64_t stride_row_x,
+        int64_t stride_channel_x,
+        int64_t stride_row_x_tail,
+        int64_t stride_channel_x_tail,
+        cudaStream_t stream) {
+    constexpr int mmq_x = DS4_MOE_WORKLIST_MMQ_X;
+    const int dev = ggml_cuda_get_device();
+    const int cc = ggml_cuda_info().devices[dev].cc;
+    const int nsm = ggml_cuda_info().devices[dev].nsm;
+    const int warp_size = ggml_cuda_info().devices[dev].warp_size;
+    const int nwarps = mmq_get_nwarps_host(cc, warp_size);
+    ds4_mmq_moe_worklist_plan<type> plan = {};
+    if (!turing_mma_available(cc) || warp_size != 32 ||
+        !ds4_mmq_moe_worklist_preflight<type>(
+            cc, nsm, M, K, ne_get_rows, n_experts,
+            stride_row_x, stride_channel_x, &plan)) {
+        return -1;
+    }
+
+    /* The tail spans are proven like the main spans in the preflight: the
+     * kernel addresses both tensors with signed-int block offsets. */
+    constexpr uint64_t tail_blocks_per_row = DS4_MMQ_TAIL_K / QK8_0;
+    uint64_t tail_expert = 0;
+    uint64_t tail_row = 0;
+    uint64_t tail_last = 0;
+    if (stride_row_x_tail <= 0 || stride_row_x_tail > INT_MAX ||
+        stride_channel_x_tail <= 0 || stride_channel_x_tail > INT_MAX ||
+        !ds4_mmq_u64_mul((uint64_t)(n_experts - 1),
+                         (uint64_t)stride_channel_x_tail, &tail_expert) ||
+        !ds4_mmq_u64_mul((uint64_t)(M - 1),
+                         (uint64_t)stride_row_x_tail, &tail_row) ||
+        !ds4_mmq_u64_add(tail_expert, tail_row, &tail_last) ||
+        !ds4_mmq_u64_add(tail_last, tail_blocks_per_row - 1u, &tail_last) ||
+        tail_last > (uint64_t)INT_MAX) {
+        return -1;
+    }
+    const int mmq_y = plan.mmq_y;
+    const int nty = plan.nty;
+
+    ggml_cuda_pool_alloc<uint3> worklist(ctx.pool(), plan.work_capacity);
+    ggml_cuda_pool_alloc<uint32_t> work_count(ctx.pool(), 1);
+    cudaError_t err = cudaMemsetAsync(
+        work_count.get(), 0, sizeof(uint32_t), stream);
+    if (err != cudaSuccess) return -2;
+    ds4_moe_build_tile_worklist<<<n_experts, 128, 0, stream>>>(
+        expert_bounds, worklist.get(), work_count.get(), n_experts, nty,
+        moe_worklist_tail64_enabled() ? 1 : 0);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "%s: worklist builder failed: %s\n",
+                tag, cudaGetErrorString(err));
+        return -2;
+    }
+
+    const int nbytes_shared =
+        (int)mmq_get_nbytes_shared<type>(
+            mmq_x, mmq_y, cc, warp_size, nwarps);
+    CUDA_SET_SHARED_MEMORY_LIMIT(
+        (ds4_moe_worklist_mmq_tail_kernel<type, tail_type, false>),
+        nbytes_shared);
+    CUDA_SET_SHARED_MEMORY_LIMIT(
+        (ds4_moe_worklist_mmq_tail_kernel<type, tail_type, true>),
+        nbytes_shared);
+    const dim3 block_dims((unsigned)warp_size, (unsigned)nwarps, 1u);
+    const int blocks_per_ne00 = K / ggml_blck_size(type);
+    if (M % mmq_y == 0) {
+        ds4_moe_worklist_mmq_tail_kernel<type, tail_type, false>
+            <<<nsm, block_dims, nbytes_shared, stream>>>(
+                (const char *)W, Y_q8, (const char *)W_tail, Y_tail_q8,
+                ids_dst, expert_bounds, out,
+                worklist.get(), work_count.get(), M, (int)ne_get_rows,
+                (int)stride_row_x, (int)stride_channel_x,
+                (int)stride_row_x_tail, (int)stride_channel_x_tail, M,
+                blocks_per_ne00);
+    } else {
+        ds4_moe_worklist_mmq_tail_kernel<type, tail_type, true>
+            <<<nsm, block_dims, nbytes_shared, stream>>>(
+                (const char *)W, Y_q8, (const char *)W_tail, Y_tail_q8,
+                ids_dst, expert_bounds, out,
+                worklist.get(), work_count.get(), M, (int)ne_get_rows,
+                (int)stride_row_x, (int)stride_channel_x,
+                (int)stride_row_x_tail, (int)stride_channel_x_tail, M,
+                blocks_per_ne00);
+    }
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "%s: fused main+tail worklist MMQ failed: %s\n",
+                tag, cudaGetErrorString(err));
+        return -3;
+    }
+    return 0;
+}
+
+/* Routed MoE matmul over a [main | tail] activation row: main is the packed
+ * K-quant input (K columns per row), the tail is read in place through
+ * x_tail_stride from the wider mid buffer.  One expert map, one worklist,
+ * one output store.  Returns -1 without launching when the compact worklist
+ * cannot take the shape, so the caller keeps its separate main + tail path. */
+template <ggml_type type, ggml_type tail_type>
+int ds4_mmq_moe_tail_impl(
+        const char    * tag,
+        const void    * W,
+        const void    * W_tail,
+        const float   * X_f32,
+        const float   * X_tail_f32,
+        int             x_tail_stride,
+        const int32_t * ids,
+        float         * out_f32,
+        int             M,
+        int             K,
+        int             n_tokens,
+        int             n_experts,
+        int             n_expert_used,
+        int             max_rows_per_expert,
+        cudaStream_t    stream) {
+    if (!W || !W_tail || !X_f32 || !X_tail_f32 || !ids || !out_f32) {
+        fprintf(stderr, "%s: null pointer\n", tag);
+        return -1;
+    }
+    if (M <= 0 || K <= 0 || K % 256 != 0 || n_tokens <= 0 ||
+        n_experts <= 0 || n_expert_used <= 0 || n_expert_used > n_experts ||
+        x_tail_stride < DS4_MMQ_TAIL_K || x_tail_stride % 4 != 0 ||
+        ((uintptr_t)X_tail_f32 & 15u) != 0u || max_rows_per_expert <= 0) {
+        fprintf(stderr, "%s: bad shape M=%d K=%d ntok=%d nexp=%d nused=%d "
+                "tail_stride=%d bound=%d\n",
+                tag, M, K, n_tokens, n_experts, n_expert_used,
+                x_tail_stride, max_rows_per_expert);
+        return -1;
+    }
+    if (!moe_worklist_enabled(type)) return -1;
+
+    const int dev = ggml_cuda_get_device();
+    const int cc  = ggml_cuda_info().devices[dev].cc;
+    ggml_backend_cuda_context * ctx = get_ctx_for_device(dev);
+    if (!ctx) {
+        fprintf(stderr, "%s: failed to get cuda context for device %d\n", tag, dev);
+        return -1;
+    }
+    ds4_pool_set_stream(stream);
+
+    const int64_t ne_get_rows = (int64_t)n_tokens * n_expert_used;
+    if (max_rows_per_expert > ne_get_rows) {
+        fprintf(stderr, "%s: invalid expert bucket bound %d for %lld rows\n",
+                tag, max_rows_per_expert, (long long)ne_get_rows);
+        return -1;
+    }
+    const int64_t ne10_padded = GGML_PAD((int64_t)K, MATRIX_ROW_PADDING);
+    const int64_t blck        = ggml_blck_size(type);
+    const int64_t s01         = (int64_t)K / blck;
+    const int64_t s02         = (int64_t)M * s01;
+    const int64_t s01_tail    = DS4_MMQ_TAIL_K / QK8_0;
+    const int64_t s02_tail    = (int64_t)M * s01_tail;
+
+    // 1. Expert-major work map (zeroed first: see ds4_mmq_moe_impl).
+    ggml_cuda_pool_alloc<int32_t> ids_src1(ctx->pool(), ne_get_rows);
+    ggml_cuda_pool_alloc<int32_t> ids_dst(ctx->pool(), ne_get_rows);
+    ggml_cuda_pool_alloc<int32_t> expert_bounds(ctx->pool(), n_experts + 1);
+    cudaMemsetAsync(ids_src1.get(), 0, ne_get_rows * sizeof(int32_t), stream);
+    cudaMemsetAsync(ids_dst.get(),  0, ne_get_rows * sizeof(int32_t), stream);
+    if ((size_t)n_tokens * 4u > ggml_cuda_info().devices[dev].smpbo &&
+        !ds4_mmid_large_enabled()) {
+        fprintf(stderr, "%s: n_tokens=%d exceeds mm_ids_helper shared-mem cap; falling back\n",
+                tag, n_tokens);
+        return -1;
+    }
+    ggml_cuda_launch_mm_ids_helper(
+        ids, ids_src1.get(), ids_dst.get(), expert_bounds.get(),
+        n_experts, n_tokens, n_expert_used, /*nchannels_y=*/1,
+        /*si1=*/n_expert_used, /*sis1=*/1, stream);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "%s: mm_ids_helper failed: %s\n", tag, cudaGetErrorString(err));
+        return -2;
+    }
+
+    // 2. Main activation -> Q8_1 in the main type's scale layout.
+    const size_t slack_bytes =
+        (size_t)get_mmq_x_max_host(cc) * sizeof(block_q8_1_mmq);
+    const size_t nbytes_main =
+        (size_t)ne_get_rows * ne10_padded * sizeof(block_q8_1) / QK8_1 +
+        slack_bytes;
+    ggml_cuda_pool_alloc<char> src1_q8_1(ctx->pool(), nbytes_main);
+    ybuf_memset(src1_q8_1.get(), nbytes_main, stream);
+    quantize_mmq_q8_1_cuda(
+        X_f32, ids_src1.get(), (void *)src1_q8_1.get(),
+        type, /*ne00=*/K, /*s01=*/(int64_t)K, /*s02=*/(int64_t)K,
+        /*s03=*/(int64_t)K * n_tokens,
+        /*ne0=*/ne10_padded, /*ne1=*/ne_get_rows, /*ne2=*/1, /*ne3=*/1,
+        stream);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "%s: main quantize failed: %s\n", tag, cudaGetErrorString(err));
+        return -3;
+    }
+
+    // 3. Tail activation -> one D4 block per row, gathered through the same
+    //    map straight out of the wide mid buffer.
+    const size_t nbytes_tail =
+        (size_t)ne_get_rows * sizeof(block_q8_1_mmq) + slack_bytes;
+    ggml_cuda_pool_alloc<char> tail_q8_1(ctx->pool(), nbytes_tail);
+    ybuf_memset(tail_q8_1.get(), nbytes_tail, stream);
+    quantize_mmq_q8_1_cuda(
+        X_tail_f32, ids_src1.get(), (void *)tail_q8_1.get(),
+        tail_type, /*ne00=*/DS4_MMQ_TAIL_K, /*s01=*/(int64_t)x_tail_stride,
+        /*s02=*/0, /*s03=*/0,
+        /*ne0=*/DS4_MMQ_TAIL_K, /*ne1=*/ne_get_rows, /*ne2=*/1, /*ne3=*/1,
+        stream);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "%s: tail quantize failed: %s\n", tag, cudaGetErrorString(err));
+        return -3;
+    }
+
+    const int rc = ds4_mmq_moe_worklist_tail_launch<type, tail_type>(
+        tag, *ctx, W, (const int *)src1_q8_1.get(),
+        W_tail, (const int *)tail_q8_1.get(),
+        ids_dst.get(), expert_bounds.get(), out_f32,
+        M, K, ne_get_rows, n_experts, s01, s02, s01_tail, s02_tail, stream);
+    if (rc != 0) return rc;
+    static bool logged_tail_worklist = false;
+    if (!logged_tail_worklist) {
+        logged_tail_worklist = true;
+        fprintf(stderr,
+                "ds4: fused routed MMQ main+tail worklist active "
+                "(type=%d tail=%d rows=%lld experts=%d)\n",
+                (int)type, (int)tail_type, (long long)ne_get_rows, n_experts);
+    }
+    ds4_mmq_sanitize_f32(out_f32, (uint64_t)M * (uint64_t)ne_get_rows, stream);
     return 0;
 }
 
@@ -2763,6 +3284,42 @@ extern "C" int ds4_mmq_q5_0_f32_moe_accum(
         (const block_q5_0 *)W, X, ids_src1.get(), ids_dst.get(),
         expert_bounds.get(), out, M, x_stride, x_offset);
     return cudaGetLastError() == cudaSuccess ? 0 : -3;
+}
+
+extern "C" int ds4_mmq_q5_K_moe_bounded_q5_0_tail(
+        const void * W, const void * W_tail,
+        const float * X_f32, const float * X_tail_f32, int x_tail_stride,
+        const int32_t * ids, float * out_f32,
+        int M, int K, int n_tokens, int n_experts, int n_expert_used,
+        int max_rows_per_expert, cudaStream_t stream) {
+    return ds4_mmq_moe_tail_impl<GGML_TYPE_Q5_K, GGML_TYPE_Q5_0>(
+        "ds4_mmq_q5_K_moe_bounded_q5_0_tail", W, W_tail, X_f32, X_tail_f32,
+        x_tail_stride, ids, out_f32, M, K, n_tokens, n_experts,
+        n_expert_used, max_rows_per_expert, stream);
+}
+
+extern "C" int ds4_mmq_q6_K_moe_bounded_q5_0_tail(
+        const void * W, const void * W_tail,
+        const float * X_f32, const float * X_tail_f32, int x_tail_stride,
+        const int32_t * ids, float * out_f32,
+        int M, int K, int n_tokens, int n_experts, int n_expert_used,
+        int max_rows_per_expert, cudaStream_t stream) {
+    return ds4_mmq_moe_tail_impl<GGML_TYPE_Q6_K, GGML_TYPE_Q5_0>(
+        "ds4_mmq_q6_K_moe_bounded_q5_0_tail", W, W_tail, X_f32, X_tail_f32,
+        x_tail_stride, ids, out_f32, M, K, n_tokens, n_experts,
+        n_expert_used, max_rows_per_expert, stream);
+}
+
+extern "C" int ds4_mmq_q8_0_moe_bounded_q8_0_tail(
+        const void * W, const void * W_tail,
+        const float * X_f32, const float * X_tail_f32, int x_tail_stride,
+        const int32_t * ids, float * out_f32,
+        int M, int K, int n_tokens, int n_experts, int n_expert_used,
+        int max_rows_per_expert, cudaStream_t stream) {
+    return ds4_mmq_moe_tail_impl<GGML_TYPE_Q8_0, GGML_TYPE_Q8_0>(
+        "ds4_mmq_q8_0_moe_bounded_q8_0_tail", W, W_tail, X_f32, X_tail_f32,
+        x_tail_stride, ids, out_f32, M, K, n_tokens, n_experts,
+        n_expert_used, max_rows_per_expert, stream);
 }
 
 extern "C" int ds4_mmq_q4_K_moe_bounded(

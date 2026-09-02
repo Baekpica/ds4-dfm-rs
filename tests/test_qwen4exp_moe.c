@@ -700,6 +700,261 @@ static void test_q5_tail_bank2(void *model_map, uint64_t model_size,
     free(mid0);
 }
 
+enum {
+    FUSED_ASSIGNMENTS = 1000,
+    Q8_MAIN_BLOCKS_PER_ROW = DOWN_MAIN / QK_5_0,
+};
+
+typedef struct {
+    uint16_t d;
+    uint16_t dmin;
+    uint8_t scales[12];
+    uint8_t qh[QK_K / 8];
+    uint8_t qs[QK_K / 2];
+} test_block_q5_k;
+
+_Static_assert(sizeof(test_block_q5_k) == 176, "Q5_K block layout");
+
+static void fill_q5_k(test_block_q5_k *blocks, uint64_t count) {
+    uint32_t state = 0x5e1c93a7u;
+    for (uint64_t block = 0; block < count; block++) {
+        blocks[block].d = 0x2000u;    /* exactly 0.0078125 */
+        blocks[block].dmin = 0x1c00u; /* exactly 0.00390625 */
+        for (uint32_t i = 0; i < 12u; i++)
+            blocks[block].scales[i] = (uint8_t)(next_u32(&state) >> 24u);
+        for (uint32_t i = 0; i < QK_K / 8; i++)
+            blocks[block].qh[i] = (uint8_t)(next_u32(&state) >> 24u);
+        for (uint32_t i = 0; i < QK_K / 2; i++)
+            blocks[block].qs[i] = (uint8_t)(next_u32(&state) >> 24u);
+    }
+}
+
+static void dequant_q8_0_blocks(const test_block_q8_0 *blocks,
+                                uint32_t n_blocks, float *out) {
+    for (uint32_t block_i = 0; block_i < n_blocks; block_i++) {
+        const test_block_q8_0 *block = blocks + block_i;
+        const float d = f16_to_f32(block->d);
+        for (uint32_t lane = 0; lane < QK_5_0; lane++)
+            out[block_i * QK_5_0 + lane] = d * (float)block->qs[lane];
+    }
+}
+
+/* Dequantize every expert-down row once: [DOWN_EXPERTS][HIDDEN][DOWN_MID],
+ * main columns first, then the 128-column tail. */
+static float *fused_reference_rows(const void *model_map,
+                                   uint64_t main_offset, uint32_t main_type,
+                                   uint64_t tail_offset, uint32_t tail_type) {
+    const uint64_t rows = (uint64_t)DOWN_EXPERTS * HIDDEN;
+    float *w = (float *)malloc(rows * DOWN_MID * sizeof(*w));
+    REQUIRE(w, "fused reference row allocation");
+    const unsigned char *base = (const unsigned char *)model_map;
+    for (uint64_t row = 0; row < rows; row++) {
+        float *dst = w + row * DOWN_MID;
+        if (main_type == 14u) {
+            dequant_q6((const test_block_q6_k *)(base + main_offset) +
+                           row * (DOWN_MAIN / QK_K), dst);
+        } else {
+            dequant_q8_0_blocks((const test_block_q8_0 *)(base + main_offset) +
+                                    row * Q8_MAIN_BLOCKS_PER_ROW,
+                                Q8_MAIN_BLOCKS_PER_ROW, dst);
+        }
+        if (tail_type == 6u) {
+            dequant_q5_0((const test_block_q5_0 *)(base + tail_offset) +
+                             row * (DOWN_TAIL / QK_5_0), dst + DOWN_MAIN);
+        } else {
+            dequant_q8_0((const test_block_q8_0 *)(base + tail_offset) +
+                             row * (DOWN_TAIL / QK_5_0), dst + DOWN_MAIN);
+        }
+    }
+    return w;
+}
+
+/* The fused main+tail MMQ entry against an F32 reference and against the
+ * separate main GEMM + tail accumulate it replaces.  1000 assignments over
+ * eight experts give ~125-row buckets, so both the 128-wide worklist tiles
+ * and the narrow ragged tails run. */
+static void test_fused_down(void *model_map, uint64_t model_size,
+                            uint64_t main_offset, uint64_t main_bytes,
+                            uint32_t main_type, uint64_t tail_offset,
+                            uint64_t tail_bytes, uint32_t tail_type,
+                            const char *name) {
+    const uint64_t mid_count = (uint64_t)FUSED_ASSIGNMENTS * DOWN_MID;
+    const uint64_t main_count = (uint64_t)FUSED_ASSIGNMENTS * DOWN_MAIN;
+    const uint64_t down_count = (uint64_t)FUSED_ASSIGNMENTS * HIDDEN;
+    float *mid = (float *)malloc(mid_count * sizeof(*mid));
+    float *want = (float *)malloc(down_count * sizeof(*want));
+    float *fused = (float *)malloc(down_count * sizeof(*fused));
+    float *separate = (float *)malloc(down_count * sizeof(*separate));
+    int32_t *ids = (int32_t *)malloc(FUSED_ASSIGNMENTS * sizeof(*ids));
+    REQUIRE(mid && want && fused && separate && ids,
+            "fused down host allocation");
+    for (uint64_t i = 0; i < mid_count; i++)
+        mid[i] = 0.29f * sinf((float)(i + 11u) * 0.017f) +
+                 0.06f * cosf((float)(i + 5u) * 0.011f);
+    for (uint32_t a = 0; a < FUSED_ASSIGNMENTS; a++)
+        ids[a] = (int32_t)((a * 7u + a / 5u) % DOWN_EXPERTS);
+
+    float *w = fused_reference_rows(model_map, main_offset, main_type,
+                                    tail_offset, tail_type);
+    for (uint32_t a = 0; a < FUSED_ASSIGNMENTS; a++) {
+        const float *x = mid + (uint64_t)a * DOWN_MID;
+        const float *rows = w + (uint64_t)ids[a] * HIDDEN * DOWN_MID;
+        for (uint32_t out = 0; out < HIDDEN; out++) {
+            const float *row = rows + (uint64_t)out * DOWN_MID;
+            float sum = 0.0f;
+            for (uint32_t k = 0; k < DOWN_MID; k++) sum += x[k] * row[k];
+            want[(uint64_t)a * HIDDEN + out] = sum;
+        }
+    }
+    free(w);
+
+    ds4_gpu_tensor *d_mid = ds4_gpu_tensor_alloc(mid_count * sizeof(float));
+    ds4_gpu_tensor *d_packed = ds4_gpu_tensor_alloc(main_count * sizeof(float));
+    ds4_gpu_tensor *d_ids = ds4_gpu_tensor_alloc(
+        FUSED_ASSIGNMENTS * sizeof(int32_t));
+    ds4_gpu_tensor *d_down = ds4_gpu_tensor_alloc(down_count * sizeof(float));
+    REQUIRE(d_mid && d_packed && d_ids && d_down, "fused down GPU allocation");
+    REQUIRE(ds4_gpu_tensor_write(d_mid, 0, mid, mid_count * sizeof(float)) &&
+            ds4_gpu_tensor_write(d_ids, 0, ids,
+                                 FUSED_ASSIGNMENTS * sizeof(int32_t)),
+            "fused down input upload");
+    REQUIRE(ds4_gpu_qwen4exp_pack_expert_down_main_tensor(
+                d_packed, d_mid, FUSED_ASSIGNMENTS, DOWN_MID, DOWN_MAIN),
+            "fused down main pack launch");
+    REQUIRE(ds4_gpu_qwen4exp_routed_down_fused_tensor(
+                d_down, d_packed, d_mid, d_ids, model_map, model_size,
+                main_offset, main_bytes, main_type, tail_offset, tail_bytes,
+                tail_type, FUSED_ASSIGNMENTS, DOWN_MID, DOWN_MAIN, DOWN_TAIL,
+                HIDDEN, DOWN_EXPERTS, FUSED_ASSIGNMENTS),
+            "fused expert-down launch");
+    REQUIRE(ds4_gpu_tensor_read(d_down, 0, fused, down_count * sizeof(float)),
+            "fused expert-down download");
+    compare_mmq(name, fused, want, down_count);
+
+    REQUIRE(ds4_gpu_routed_matmul_tensor(
+                d_down, d_packed, d_ids, model_map, model_size,
+                main_offset, main_bytes, main_type, DOWN_MAIN, HIDDEN,
+                DOWN_EXPERTS, FUSED_ASSIGNMENTS, 1u),
+            "separate expert-down main launch");
+    REQUIRE(tail_type == 6u
+                ? ds4_gpu_qwen4exp_q5_0_tail_accum_tensor(
+                      d_down, d_mid, d_ids, model_map, model_size,
+                      tail_offset, tail_bytes, FUSED_ASSIGNMENTS, DOWN_MID,
+                      DOWN_MAIN, DOWN_TAIL, HIDDEN, DOWN_EXPERTS)
+                : ds4_gpu_qwen4exp_q8_0_tail_accum_tensor(
+                      d_down, d_mid, d_ids, model_map, model_size,
+                      tail_offset, tail_bytes, FUSED_ASSIGNMENTS, DOWN_MID,
+                      DOWN_MAIN, DOWN_TAIL, HIDDEN, DOWN_EXPERTS),
+            "separate expert-down tail launch");
+    REQUIRE(ds4_gpu_tensor_read(d_down, 0, separate,
+                                down_count * sizeof(float)),
+            "separate expert-down download");
+    compare_mmq("  fused against separate main + tail", fused, separate,
+                down_count);
+
+    REQUIRE(!ds4_gpu_qwen4exp_routed_down_fused_tensor(
+                d_down, d_packed, d_mid, d_ids, model_map, model_size,
+                main_offset, main_bytes, main_type, tail_offset, tail_bytes,
+                tail_type, FUSED_ASSIGNMENTS, DOWN_MID, DOWN_MAIN,
+                DOWN_TAIL - QK_5_0, HIDDEN, DOWN_EXPERTS, FUSED_ASSIGNMENTS),
+            "fused entry rejects a non-128 tail");
+    REQUIRE(!ds4_gpu_qwen4exp_routed_down_fused_tensor(
+                d_down, d_packed, d_mid, d_ids, model_map, model_size,
+                main_offset, main_bytes, main_type, tail_offset, tail_bytes,
+                tail_type, FUSED_ASSIGNMENTS, DOWN_MID, DOWN_MAIN, DOWN_TAIL,
+                HIDDEN, DOWN_EXPERTS, 0u),
+            "fused entry rejects an empty bucket bound");
+
+    ds4_gpu_tensor_free(d_down);
+    ds4_gpu_tensor_free(d_ids);
+    ds4_gpu_tensor_free(d_packed);
+    ds4_gpu_tensor_free(d_mid);
+    free(ids);
+    free(separate);
+    free(fused);
+    free(want);
+    free(mid);
+}
+
+/* Production-shape launch for NCU: Q5_K[512] main + Q5_0[128] tail over
+ * 8,025 tokens x top-10 through 512 experts, nothing else resident. */
+static void profile_fused_down(void) {
+    enum {
+        tokens = 8025,
+        experts = 512,
+        used = 10,
+        assignments = tokens * used,
+    };
+    const uint64_t main_offset = 4096u;
+    const uint64_t main_blocks =
+        (uint64_t)experts * HIDDEN * (DOWN_MAIN / QK_K);
+    const uint64_t main_bytes = main_blocks * sizeof(test_block_q5_k);
+    const uint64_t tail_offset = (main_offset + main_bytes + 4095u) & ~4095ull;
+    const uint64_t tail_blocks =
+        (uint64_t)experts * HIDDEN * (DOWN_TAIL / QK_5_0);
+    const uint64_t tail_bytes = tail_blocks * sizeof(test_block_q5_0);
+    const uint64_t model_size = (tail_offset + tail_bytes + 4095u) & ~4095ull;
+    void *model_map = NULL;
+    REQUIRE(posix_memalign(&model_map, 4096u, (size_t)model_size) == 0,
+            "fused down profile model allocation");
+    memset(model_map, 0, (size_t)model_size);
+    fill_q5_k((test_block_q5_k *)((unsigned char *)model_map + main_offset),
+              main_blocks);
+    fill_q5_0((test_block_q5_0 *)((unsigned char *)model_map + tail_offset),
+              tail_blocks);
+    REQUIRE(ds4_gpu_set_model_map(model_map, model_size),
+            "fused down profile model registration");
+
+    const uint64_t mid_count = (uint64_t)assignments * DOWN_MID;
+    const uint64_t main_count = (uint64_t)assignments * DOWN_MAIN;
+    const uint64_t down_count = (uint64_t)assignments * HIDDEN;
+    int32_t *ids = (int32_t *)malloc((size_t)assignments * sizeof(*ids));
+    REQUIRE(ids, "fused down profile ids allocation");
+    for (uint32_t i = 0; i < assignments; i++)
+        ids[i] = (int32_t)((i * 37u + i / used) % experts);
+
+    ds4_gpu_tensor *d_mid = ds4_gpu_tensor_alloc(mid_count * sizeof(float));
+    ds4_gpu_tensor *d_packed = ds4_gpu_tensor_alloc(main_count * sizeof(float));
+    ds4_gpu_tensor *d_ids = ds4_gpu_tensor_alloc(
+        (uint64_t)assignments * sizeof(int32_t));
+    ds4_gpu_tensor *d_down = ds4_gpu_tensor_alloc(down_count * sizeof(float));
+    REQUIRE(d_mid && d_packed && d_ids && d_down,
+            "fused down profile GPU allocation");
+    REQUIRE(ds4_gpu_tensor_fill_f32(d_mid, 0.25f, mid_count) &&
+            ds4_gpu_tensor_write(
+                d_ids, 0, ids, (uint64_t)assignments * sizeof(int32_t)) &&
+            ds4_gpu_tensor_fill_f32(d_down, 0.0f, down_count),
+            "fused down profile input initialization");
+    REQUIRE(ds4_gpu_qwen4exp_pack_expert_down_main_tensor(
+                d_packed, d_mid, assignments, DOWN_MID, DOWN_MAIN),
+            "fused down profile pack launch");
+    REQUIRE(ds4_gpu_qwen4exp_routed_down_fused_tensor(
+                d_down, d_packed, d_mid, d_ids, model_map, model_size,
+                main_offset, main_bytes, 13u, tail_offset, tail_bytes, 6u,
+                assignments, DOWN_MID, DOWN_MAIN, DOWN_TAIL, HIDDEN, experts,
+                tokens),
+            "fused down production profile launch");
+    REQUIRE(ds4_gpu_synchronize(), "fused down production profile sync");
+    float edge[2] = {0.0f, 0.0f};
+    REQUIRE(ds4_gpu_tensor_read(d_down, 0, &edge[0], sizeof(float)) &&
+            ds4_gpu_tensor_read(
+                d_down, (down_count - 1u) * sizeof(float),
+                &edge[1], sizeof(float)) &&
+            isfinite(edge[0]) && isfinite(edge[1]),
+            "fused down production profile output");
+    printf("NCU Qwen fused expert-down: tokens=%u assignments=%u experts=%u "
+           "edge=%.6g/%.6g\n",
+           tokens, assignments, experts, edge[0], edge[1]);
+
+    ds4_gpu_tensor_free(d_down);
+    ds4_gpu_tensor_free(d_ids);
+    ds4_gpu_tensor_free(d_packed);
+    ds4_gpu_tensor_free(d_mid);
+    free(ids);
+    ds4_gpu_unregister_model_map(model_map);
+    free(model_map);
+}
+
 static void profile_q5_tail(void) {
     enum {
         tokens = 8025,
@@ -777,6 +1032,11 @@ int main(void) {
         ds4_gpu_cleanup();
         return 0;
     }
+    if (getenv("DS4_QWEN_PROFILE_FUSED_DOWN")) {
+        profile_fused_down();
+        ds4_gpu_cleanup();
+        return 0;
+    }
 
     const uint64_t main_offset = 4096u;
     const uint64_t main_blocks =
@@ -789,8 +1049,13 @@ int main(void) {
     const uint64_t q8_tail_offset =
         (tail_offset + tail_bytes + 4095u) & ~4095ull;
     const uint64_t q8_tail_bytes = tail_blocks * sizeof(test_block_q8_0);
-    const uint64_t model_size =
+    const uint64_t q8_main_offset =
         (q8_tail_offset + q8_tail_bytes + 4095u) & ~4095ull;
+    const uint64_t q8_main_blocks =
+        (uint64_t)DOWN_EXPERTS * HIDDEN * Q8_MAIN_BLOCKS_PER_ROW;
+    const uint64_t q8_main_bytes = q8_main_blocks * sizeof(test_block_q8_0);
+    const uint64_t model_size =
+        (q8_main_offset + q8_main_bytes + 4095u) & ~4095ull;
     void *model_map = NULL;
     REQUIRE(posix_memalign(&model_map, 4096u, (size_t)model_size) == 0,
             "aligned split-down model map");
@@ -801,6 +1066,9 @@ int main(void) {
               tail_blocks);
     fill_q8_0((test_block_q8_0 *)(
                   (unsigned char *)model_map + q8_tail_offset), tail_blocks);
+    fill_q8_0((test_block_q8_0 *)(
+                  (unsigned char *)model_map + q8_main_offset),
+              q8_main_blocks);
     REQUIRE(ds4_gpu_set_model_map(model_map, model_size),
             "register split-down model map");
 
@@ -810,6 +1078,12 @@ int main(void) {
     test_split_down(model_map, model_size, main_offset, main_bytes,
                     tail_offset, tail_bytes, q8_tail_offset, q8_tail_bytes);
     test_q5_tail_bank2(model_map, model_size, tail_offset, tail_bytes);
+    test_fused_down(model_map, model_size, main_offset, main_bytes, 14u,
+                    tail_offset, tail_bytes, 6u,
+                    "Qwen fused Q6_K[512] + Q5_0[128] MMQ");
+    test_fused_down(model_map, model_size, q8_main_offset, q8_main_bytes,
+                    8u, q8_tail_offset, q8_tail_bytes, 8u,
+                    "Qwen MTP fused Q8_0[512] + Q8_0[128] MMQ");
 
     REQUIRE(ds4_gpu_synchronize(), "final CUDA synchronization");
     ds4_gpu_unregister_model_map(model_map);
