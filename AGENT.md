@@ -1,3 +1,47 @@
+# Inference Performance Optimization Guidelines
+
+When optimizing inference performance, prioritize end-to-end execution-path efficiency over isolated kernel micro-optimizations.
+
+Start from measured prefill and decode wall time. Decompose the execution into kernels, dispatch paths, memory transformations, routing/indexing operations, synchronization, and fallback implementations.
+
+The primary optimization objective is **fast-path coverage**: maximize the fraction of the inference graph executed by the runtime's best hardware-appropriate primitives.
+
+Before optimizing an already-fast kernel, search for:
+
+- operations unexpectedly falling back to slower kernels;
+- irregular tensor shapes that can be decomposed into native fast-path tile or iteration sizes;
+- repeated quantization, format conversion, normalization, permutation, or activation materialization;
+- redundant intermediate writes and subsequent accumulation passes;
+- routing, sorting, indexing, or expert-map construction whose complexity grows with tokens or experts;
+- separate kernels that can legally share an accumulator, worklist, quantized activation, routing map, or intermediate representation;
+- dense operations that can reuse an optimized routed primitive through an identity or single-expert mapping;
+- prefill operations incorrectly using decode-oriented kernels, or vice versa.
+
+Prefer eliminating a slow execution path over making an already-fast path incrementally faster.
+
+Treat prefill and decode as distinct workloads. Use explicit width- or shape-dependent dispatch where their optimal execution strategies differ.
+
+Model-specific specialization is acceptable and encouraged when it produces measurable gains, but isolate specialization behind explicit capability predicates based on tensor shape, quantization format, topology, and workload width. Generalize the dispatch policy rather than forcing specialized kernels into a generic implementation.
+
+For every optimization:
+
+1. Record the specific bottleneck and its measured contribution to end-to-end latency.
+2. State why the existing path is inefficient.
+3. Preserve or explicitly define the numerical contract.
+4. Add focused parity or regression tests.
+5. Keep a fallback or kill switch for new execution paths where practical.
+6. Benchmark with fresh processes and comparable workloads.
+7. Report both kernel-level improvement and end-to-end prefill/decode impact.
+8. Verify that improving prefill does not regress decode, and vice versa.
+
+When reviewing the profiler, optimize in roughly this order:
+
+unexpected fallback paths → repeated transformations → redundant memory traffic → routing/indexing overhead → launch fragmentation → fast-path utilization → individual optimized-kernel tuning.
+
+The guiding principle is:
+
+**Optimize execution-path topology before optimizing individual kernels.**
+
 # Agent Notes
 
 `ds4.c` is a DeepSeek V4 Flash specific inference engine. It is not a generic
