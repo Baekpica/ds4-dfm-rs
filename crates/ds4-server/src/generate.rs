@@ -10,6 +10,7 @@
 use std::io::Write;
 #[cfg(any(feature = "native", test))]
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 #[cfg(any(feature = "native", test))]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -88,6 +89,17 @@ pub struct NativeGraphFit {
     pub fail_open: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VisionProbe {
+    pub token_count: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct VisionPromptInput {
+    pub data: Arc<[u8]>,
+    pub token_offset: u32,
+}
+
 /// C `serial_session_ensure_fit` view of the serial session lane.
 /// `None` from [`DecodeIo::serial_session_probe`] means the engine has no
 /// native serial session (stub/test engines): the host must pass native and
@@ -116,6 +128,16 @@ pub trait DecodeIo {
     }
     fn token_text(&self, token: i32) -> Result<Vec<u8>, GenerateError>;
     fn token_is_stop(&self, token: i32) -> bool;
+    fn vision_probe(&self, _data: &[u8]) -> Result<VisionProbe, GenerateError> {
+        Err(GenerateError::Unsupported("vision encoder is not loaded"))
+    }
+    fn sync_vision_prompt(
+        &mut self,
+        _tokens: &[i32],
+        _images: &[VisionPromptInput],
+    ) -> Result<(), GenerateError> {
+        Err(GenerateError::Unsupported("vision encoder is not loaded"))
+    }
     fn sync(&mut self, tokens: &[i32]) -> Result<(), GenerateError>;
     fn sync_prompt(
         &mut self,
@@ -787,10 +809,12 @@ pub struct GenerateOutcome {
 pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'static str> {
     if parsed.images.is_empty() {
         None
-    } else if model_id != ModelSyntax::Qwen4Exp as i32 {
-        Some("image input is supported only by Qwen4Exp")
     } else {
-        Some("image input requires continuous runtime")
+        match syntax_for_model_id(model_id) {
+            ModelSyntax::Glm53 => None,
+            ModelSyntax::Qwen4Exp => Some("image input requires continuous runtime"),
+            _ => Some("image input is supported only by Qwen4Exp or GLM-5.3"),
+        }
     }
 }
 
@@ -1259,6 +1283,64 @@ pub(crate) struct PreparedSerialPrompt {
     pub(crate) tool_replay: bool,
     pub(crate) prompt: Vec<u8>,
     pub(crate) tokens: Vec<i32>,
+    pub(crate) vision: Vec<VisionPromptInput>,
+}
+
+fn prepare_glm_vision(
+    engine: &dyn DecodeIo,
+    parsed: &ParsedRequest,
+    tokens: Vec<i32>,
+) -> Result<(Vec<i32>, Vec<VisionPromptInput>), GenerateError> {
+    const IMAGE_TOKEN: i32 = 154854;
+    if parsed.images.is_empty() {
+        return Ok((tokens, Vec::new()));
+    }
+    if engine.model_id() != ModelSyntax::Glm53 as i32 || parsed.images.len() > 4 {
+        return Err(GenerateError::Unsupported("GLM-5.3 supports 1 to 4 images"));
+    }
+    let mut probes = Vec::with_capacity(parsed.images.len());
+    let mut expanded_len = tokens.len();
+    for image in &parsed.images {
+        let probe = engine.vision_probe(&image.data)?;
+        if probe.token_count == 0 {
+            return Err(GenerateError::Engine(
+                "GLM-5.3 image probe returned zero tokens".into(),
+            ));
+        }
+        expanded_len = expanded_len
+            .checked_add(probe.token_count as usize - 1)
+            .ok_or_else(|| GenerateError::Engine("expanded image prompt is too large".into()))?;
+        probes.push(probe);
+    }
+    let mut expanded = Vec::with_capacity(expanded_len);
+    let mut images = Vec::with_capacity(parsed.images.len());
+    let mut image_index = 0usize;
+    for token in tokens {
+        if token != IMAGE_TOKEN {
+            expanded.push(token);
+            continue;
+        }
+        let Some((image, probe)) = parsed.images.get(image_index).zip(probes.get(image_index))
+        else {
+            return Err(GenerateError::Engine(
+                "ambiguous literal <|image|> in prompt".into(),
+            ));
+        };
+        let token_offset = u32::try_from(expanded.len())
+            .map_err(|_| GenerateError::Engine("expanded image prompt is too large".into()))?;
+        expanded.extend(std::iter::repeat_n(IMAGE_TOKEN, probe.token_count as usize));
+        images.push(VisionPromptInput {
+            data: image.data.clone(),
+            token_offset,
+        });
+        image_index += 1;
+    }
+    if image_index != parsed.images.len() || expanded.len() != expanded_len {
+        return Err(GenerateError::Engine(
+            "GLM-5.3 image placeholder count does not match payloads".into(),
+        ));
+    }
+    Ok((expanded, images))
 }
 
 pub(crate) fn prepare_serial_prompt(
@@ -1271,7 +1353,7 @@ pub(crate) fn prepare_serial_prompt(
 
     let mut parsed = parsed.clone();
     let syntax = syntax_for_model_id(engine.model_id());
-    let tool_replay = tool_replay_disk_cache_eligible(&parsed, syntax);
+    let tool_replay = parsed.images.is_empty() && tool_replay_disk_cache_eligible(&parsed, syntax);
     if tool_replay {
         engine.restore_tool_replay(&mut parsed.messages);
     }
@@ -1289,11 +1371,13 @@ pub(crate) fn prepare_serial_prompt(
         }
         ReqKind::Chat => engine.tokenize_rendered_chat(&prompt)?,
     };
+    let (tokens, vision) = prepare_glm_vision(engine, &parsed, tokens)?;
     Ok(PreparedSerialPrompt {
         parsed,
         tool_replay,
         prompt,
         tokens,
+        vision,
     })
 }
 
@@ -1340,6 +1424,7 @@ pub(crate) fn generate_terminal_prepared(
         tool_replay,
         prompt,
         tokens,
+        vision,
     } = prep;
     let syntax = syntax_for_model_id(engine.model_id());
     let mut req = stream_req_from_parsed(&parsed, engine.model_id());
@@ -1349,7 +1434,9 @@ pub(crate) fn generate_terminal_prepared(
         flush(&mut w, out)?;
     }
     let t_prefill = Instant::now();
-    let sync_result = if tool_replay {
+    let sync_result = if !vision.is_empty() {
+        engine.sync_vision_prompt(&tokens, &vision).map(|()| 0)
+    } else if tool_replay {
         engine.sync_tool_replay_prompt(&prompt, &tokens)
     } else {
         engine.sync_prompt(
@@ -1829,6 +1916,22 @@ impl DecodeIo for ScriptedDecode {
         self.steps.iter().any(|s| s.token == token && s.stop)
     }
 
+    fn vision_probe(&self, _data: &[u8]) -> Result<VisionProbe, GenerateError> {
+        if self.model_id == ModelSyntax::Glm53 as i32 {
+            Ok(VisionProbe { token_count: 16 })
+        } else {
+            Err(GenerateError::Unsupported("vision encoder is not loaded"))
+        }
+    }
+
+    fn sync_vision_prompt(
+        &mut self,
+        tokens: &[i32],
+        _images: &[VisionPromptInput],
+    ) -> Result<(), GenerateError> {
+        self.sync(tokens)
+    }
+
     fn sync(&mut self, tokens: &[i32]) -> Result<(), GenerateError> {
         self.live = tokens.to_vec();
         self.pos = tokens.len() as i32;
@@ -2190,6 +2293,42 @@ impl DecodeIo for NativeDecode<'_> {
             return v.is_stop(token);
         }
         self.model.token_is_stop(token)
+    }
+
+    fn vision_probe(&self, data: &[u8]) -> Result<VisionProbe, GenerateError> {
+        self.model
+            .vision_probe(data)
+            .map(|info| VisionProbe {
+                token_count: info.token_count,
+            })
+            .map_err(|error| GenerateError::Engine(error.to_string()))
+    }
+
+    fn sync_vision_prompt(
+        &mut self,
+        tokens: &[i32],
+        images: &[VisionPromptInput],
+    ) -> Result<(), GenerateError> {
+        self.prompt_sync_elapsed = None;
+        self.session_disk_storable = false;
+        self.thinking_visible = None;
+        let tokens = ds4_core::TokenBuffer::from_tokens(tokens.to_vec());
+        let images = images
+            .iter()
+            .map(|image| ds4_core::VisionInput {
+                data: &image.data,
+                token_offset: image.token_offset,
+            })
+            .collect::<Vec<_>>();
+        let started = Instant::now();
+        let result = self
+            .session()?
+            .sync_vision(&tokens, &images)
+            .map_err(|error| GenerateError::Engine(error.to_string()));
+        if result.is_ok() {
+            self.prompt_sync_elapsed = Some(started.elapsed());
+        }
+        result
     }
 
     fn native_graph_fit(&self, ctx: i32) -> Option<NativeGraphFit> {

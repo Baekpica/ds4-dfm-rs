@@ -1,6 +1,6 @@
 //! Scripted decode + HTTP generate path. No GGUF.
 
-use ds4_server::parse::{parse_request, ChatMsg, ToolCall};
+use ds4_server::parse::{parse_request, ChatMsg, ChatPart, ImageMime, RequestImage, ToolCall};
 use ds4_server::route::WireSurface;
 use ds4_server::{
     generate_and_write, generation_blocked, handle_client_inner, render_prompt,
@@ -11,7 +11,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -243,6 +243,36 @@ fn family_generate_allows_tools() {
     let mut tools = parsed.clone();
     tools.has_tools = true;
     assert_eq!(generation_blocked(&tools, 0), None);
+}
+
+#[test]
+fn glm_serial_image_expands_placeholder_before_sync() {
+    let mut parsed = user_req();
+    parsed.messages[0].parts = vec![ChatPart::Image(0)];
+    parsed.images.push(RequestImage {
+        mime: ImageMime::Png,
+        data: Arc::from([1u8]),
+    });
+    let mut engine = ScriptedDecode::from_pieces(&[]);
+    engine.model_id = 7;
+    engine.prompt_tokens = vec![154830, 154854, 154831];
+    let mut out = Vec::new();
+
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "chatcmpl-vision",
+        CREATED_TEST,
+        false,
+        1,
+        &mut out,
+    )
+    .unwrap();
+
+    assert_eq!(engine.live.len(), 18);
+    assert_eq!(engine.live[0], 154830);
+    assert!(engine.live[1..17].iter().all(|&token| token == 154854));
+    assert_eq!(engine.live[17], 154831);
 }
 
 #[test]

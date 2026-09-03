@@ -92,6 +92,7 @@ typedef struct {
 
 typedef struct {
     const char *model_path;
+    const char *vision_path;  /* optional GLM-5.3 vision encoder; borrowed */
     int backend;              /* DS4_BRIDGE_BACKEND_* */
     int n_threads;
     int defer_boot_prewarm;   /* nonzero => skip boot prewarm inside open */
@@ -117,6 +118,24 @@ typedef struct {
     float directional_steering_attn;
     float directional_steering_ffn;
 } ds4_bridge_model_open_options;
+
+typedef struct {
+    const uint8_t *data;      /* encoded PNG/JPEG; borrowed for the call */
+    size_t data_len;
+    uint32_t token_offset;
+} ds4_bridge_vision_input;
+
+typedef struct {
+    uint32_t source_width;
+    uint32_t source_height;
+    uint32_t content_width;
+    uint32_t content_height;
+    uint32_t padded_width;
+    uint32_t padded_height;
+    uint32_t grid_height;
+    uint32_t grid_width;
+    uint32_t token_count;
+} ds4_bridge_vision_info;
 
 /* All functions: 0 on success, nonzero on failure.  err is optional; when
  * provided it is NUL-terminated on failure.  Token pointers are borrowed
@@ -154,6 +173,15 @@ void ds4_bridge_session_free(ds4_bridge_session *s);
 int ds4_bridge_session_sync(ds4_bridge_session *s,
                             const int32_t *tokens, int n_tokens,
                             char *err, size_t errlen);
+int ds4_bridge_model_vision_probe(ds4_bridge_model *m,
+                                  const uint8_t *data, size_t data_len,
+                                  ds4_bridge_vision_info *info,
+                                  char *err, size_t errlen);
+int ds4_bridge_session_sync_vision(ds4_bridge_session *s,
+                                   const int32_t *tokens, int n_tokens,
+                                   const ds4_bridge_vision_input *images,
+                                   uint32_t image_count,
+                                   char *err, size_t errlen);
 int ds4_bridge_session_sync_cb(ds4_bridge_session *s,
                                const int32_t *tokens, int n_tokens,
                                ds4_bridge_prefill_fn progress, void *ud,

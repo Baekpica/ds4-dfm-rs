@@ -221,6 +221,7 @@ static int model_open_impl(ds4_bridge_model **out,
 
     memset(&eopt, 0, sizeof(eopt));
     eopt.model_path = opt->model_path;
+    eopt.vision_path = opt->vision_path;
     eopt.n_threads = opt->n_threads;
     eopt.defer_boot_prewarm = opt->defer_boot_prewarm != 0;
     eopt.power_percent = opt->power_percent;
@@ -446,6 +447,66 @@ int ds4_bridge_session_sync(ds4_bridge_session *s,
                             char *err, size_t errlen)
 {
     return session_sync(s, tokens, n_tokens, NULL, NULL, err, errlen);
+}
+
+int ds4_bridge_model_vision_probe(ds4_bridge_model *m,
+                                  const uint8_t *data, size_t data_len,
+                                  ds4_bridge_vision_info *info,
+                                  char *err, size_t errlen)
+{
+    ds4_vision_image_info native;
+
+    if (!m || !m->engine || !info) {
+        set_err(err, errlen, "model or image info is NULL");
+        return 1;
+    }
+    if (!ds4_engine_vision_probe(m->engine, data, data_len,
+                                 &native, err, errlen)) return 1;
+    info->source_width = native.source_width;
+    info->source_height = native.source_height;
+    info->content_width = native.content_width;
+    info->content_height = native.content_height;
+    info->padded_width = native.padded_width;
+    info->padded_height = native.padded_height;
+    info->grid_height = native.grid_height;
+    info->grid_width = native.grid_width;
+    info->token_count = native.token_count;
+    return 0;
+}
+
+int ds4_bridge_session_sync_vision(ds4_bridge_session *s,
+                                   const int32_t *tokens, int n_tokens,
+                                   const ds4_bridge_vision_input *images,
+                                   uint32_t image_count,
+                                   char *err, size_t errlen)
+{
+    ds4_tokens prompt;
+    ds4_vision_span spans[4] = {0};
+    int rc = 1;
+
+    if (!s || !s->session || !s->model || !s->model->engine ||
+        !tokens || n_tokens <= 0 || !images || image_count == 0u ||
+        image_count > 4u) {
+        set_err(err, errlen, "invalid vision sync input");
+        return 1;
+    }
+    prompt.v = (int *)(void *)tokens;
+    prompt.len = n_tokens;
+    prompt.cap = n_tokens;
+    for (uint32_t i = 0; i < image_count; i++) {
+        if (!images[i].data || images[i].data_len == 0u ||
+            !ds4_engine_vision_encode_memory(
+                s->model->engine, images[i].data, images[i].data_len,
+                &spans[i].embedding, err, errlen)) goto cleanup;
+        spans[i].token_start = images[i].token_offset;
+    }
+    rc = ds4_session_sync_multimodal(
+        s->session, &prompt, spans, image_count, err, errlen);
+
+cleanup:
+    for (uint32_t i = 0; i < image_count; i++)
+        ds4_vision_embedding_free(&spans[i].embedding);
+    return rc;
 }
 
 int ds4_bridge_session_sync_cb(ds4_bridge_session *s,

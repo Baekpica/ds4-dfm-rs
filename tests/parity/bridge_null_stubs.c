@@ -115,6 +115,32 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
     }
     return bridge_sync_rc;
 }
+int ds4_engine_vision_probe(ds4_engine *e,
+                            const uint8_t *encoded, size_t encoded_len,
+                            ds4_vision_image_info *out,
+                            char *err, size_t errlen) {
+    (void)e; (void)encoded; (void)encoded_len; (void)out; (void)err; (void)errlen;
+    STUB("ds4_engine_vision_probe");
+}
+int ds4_engine_vision_encode_memory(ds4_engine *e,
+                                    const uint8_t *encoded, size_t encoded_len,
+                                    ds4_vision_embedding *out,
+                                    char *err, size_t errlen) {
+    (void)e; (void)encoded; (void)encoded_len; (void)out; (void)err; (void)errlen;
+    STUB("ds4_engine_vision_encode_memory");
+}
+void ds4_vision_embedding_free(ds4_vision_embedding *embedding) {
+    (void)embedding;
+    STUB("ds4_vision_embedding_free");
+}
+int ds4_session_sync_multimodal(ds4_session *s,
+                                const ds4_tokens *prompt,
+                                const ds4_vision_span *spans,
+                                uint32_t span_count,
+                                char *err, size_t errlen) {
+    (void)s; (void)prompt; (void)spans; (void)span_count; (void)err; (void)errlen;
+    STUB("ds4_session_sync_multimodal");
+}
 void ds4_session_set_progress(ds4_session *s, ds4_session_progress_fn fn, void *ud) {
     (void)s;
     bridge_progress = fn;

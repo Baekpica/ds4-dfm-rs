@@ -214,6 +214,28 @@ pub struct ds4_bridge_qwen_image_info {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ds4_bridge_vision_input {
+    pub data: *const u8,
+    pub data_len: usize,
+    pub token_offset: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ds4_bridge_vision_info {
+    pub source_width: u32,
+    pub source_height: u32,
+    pub content_width: u32,
+    pub content_height: u32,
+    pub padded_width: u32,
+    pub padded_height: u32,
+    pub grid_height: u32,
+    pub grid_width: u32,
+    pub token_count: u32,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ds4_bridge_graph_fit_quote {
     pub fits: i32,
@@ -263,6 +285,7 @@ pub struct ds4_bridge_bind_plan {
 #[derive(Clone, Copy)]
 pub struct ds4_bridge_model_open_options {
     pub model_path: *const c_char,
+    pub vision_path: *const c_char,
     pub backend: c_int,
     pub n_threads: c_int,
     pub defer_boot_prewarm: c_int,
@@ -440,6 +463,25 @@ extern "C" {
         s: *mut ds4_bridge_session,
         tokens: *const i32,
         n_tokens: c_int,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_model_vision_probe(
+        m: *mut ds4_bridge_model,
+        data: *const u8,
+        data_len: usize,
+        info: *mut ds4_bridge_vision_info,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_session_sync_vision(
+        s: *mut ds4_bridge_session,
+        tokens: *const i32,
+        n_tokens: c_int,
+        images: *const ds4_bridge_vision_input,
+        image_count: u32,
         err: *mut c_char,
         errlen: usize,
     ) -> c_int;

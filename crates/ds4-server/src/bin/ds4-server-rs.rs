@@ -77,6 +77,9 @@ fn main() {
                 }
                 model_path = Some(path);
             }
+            "--vision" => model_options.push(ModelOpenOption::Vision(
+                args.next().unwrap_or_else(|| usage()),
+            )),
             "--backend" => {
                 backend = match args.next().unwrap_or_else(|| usage()).as_str() {
                     "cuda" => Backend::Cuda,
@@ -273,7 +276,7 @@ fn cli_error(message: &str) -> ! {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
+        "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--vision GGUF] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
 Disk KV: [--kv-disk-dir DIR] [--kv-disk-space-mb N] [--kv-cache-min-tokens N]\n\
          [--kv-cache-cold-max-tokens N] [--kv-cache-continued-interval-tokens N]\n\
          [--kv-cache-boundary-trim-tokens N]\n\

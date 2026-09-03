@@ -409,12 +409,13 @@ fn qwen_image_inputs_normalize_across_all_three_surfaces() {
         assert_ne!(request.needs & NEED_IMAGE, 0);
         assert_eq!(
             generation_blocked(request, 0),
-            Some("image input is supported only by Qwen4Exp")
+            Some("image input is supported only by Qwen4Exp or GLM-5.3")
         );
         assert_eq!(
             generation_blocked(request, 6),
             Some("image input requires continuous runtime")
         );
+        assert_eq!(generation_blocked(request, 7), None);
     }
     assert_eq!(parsed[0].images[0].data, parsed[1].images[0].data);
     assert_eq!(parsed[0].images[0].data, parsed[2].images[0].data);

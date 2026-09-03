@@ -99,9 +99,9 @@ use ds4_sys::{
     ds4_bridge_eval_speculative_argmax, ds4_bridge_graph_fit_quote, ds4_bridge_model,
     ds4_bridge_model_boot_prewarm, ds4_bridge_model_free, ds4_bridge_model_open,
     ds4_bridge_model_open_distributed, ds4_bridge_model_open_options,
-    ds4_bridge_model_run_distributed_worker, ds4_bridge_session, ds4_bridge_session_argmax,
-    ds4_bridge_session_argmax_excluding, ds4_bridge_session_copy_logits, ds4_bridge_session_create,
-    ds4_bridge_session_ctx, ds4_bridge_session_distributed_route_ready,
+    ds4_bridge_model_run_distributed_worker, ds4_bridge_model_vision_probe, ds4_bridge_session,
+    ds4_bridge_session_argmax, ds4_bridge_session_argmax_excluding, ds4_bridge_session_copy_logits,
+    ds4_bridge_session_create, ds4_bridge_session_ctx, ds4_bridge_session_distributed_route_ready,
     ds4_bridge_session_eval_layer_slice, ds4_bridge_session_free, ds4_bridge_session_generation,
     ds4_bridge_session_graph_fit_quote, ds4_bridge_session_graph_pending,
     ds4_bridge_session_invalidate, ds4_bridge_session_layer_slice_reset,
@@ -110,11 +110,12 @@ use ds4_sys::{
     ds4_bridge_session_output_head_bench, ds4_bridge_session_power, ds4_bridge_session_prefill_cap,
     ds4_bridge_session_rewind, ds4_bridge_session_sample, ds4_bridge_session_save_layer_payload,
     ds4_bridge_session_save_payload, ds4_bridge_session_save_snapshot,
-    ds4_bridge_session_set_power, ds4_bridge_session_sync, ds4_bridge_session_top_logprobs,
-    ds4_bridge_shard, ds4_bridge_snapshot, ds4_bridge_snapshot_create, ds4_bridge_snapshot_free,
-    ds4_bridge_snapshot_len, ds4_bridge_token_score, ds4_host_bind_look, ds4_host_bind_map,
-    ds4_host_shape, ds4_host_str, ds4_host_tensor, ds4_host_tensor_dir, ds4_host_vocab,
-    DS4_BRIDGE_BACKEND_CPU, DS4_BRIDGE_BACKEND_CUDA, DS4_BRIDGE_BACKEND_METAL,
+    ds4_bridge_session_set_power, ds4_bridge_session_sync, ds4_bridge_session_sync_vision,
+    ds4_bridge_session_top_logprobs, ds4_bridge_shard, ds4_bridge_snapshot,
+    ds4_bridge_snapshot_create, ds4_bridge_snapshot_free, ds4_bridge_snapshot_len,
+    ds4_bridge_token_score, ds4_bridge_vision_info, ds4_bridge_vision_input, ds4_host_bind_look,
+    ds4_host_bind_map, ds4_host_shape, ds4_host_str, ds4_host_tensor, ds4_host_tensor_dir,
+    ds4_host_vocab, DS4_BRIDGE_BACKEND_CPU, DS4_BRIDGE_BACKEND_CUDA, DS4_BRIDGE_BACKEND_METAL,
     DS4_BRIDGE_DISTRIBUTED_COORDINATOR, DS4_BRIDGE_DISTRIBUTED_NONE, DS4_BRIDGE_DISTRIBUTED_WORKER,
     DS4_BRIDGE_MAX_DIMS,
 };
@@ -136,6 +137,26 @@ pub enum ModelOpenOption {
     SteeringFile(String),
     SteeringAttn(f32),
     SteeringFfn(f32),
+    Vision(String),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VisionImageInfo {
+    pub source_width: u32,
+    pub source_height: u32,
+    pub content_width: u32,
+    pub content_height: u32,
+    pub padded_width: u32,
+    pub padded_height: u32,
+    pub grid_height: u32,
+    pub grid_width: u32,
+    pub token_count: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct VisionInput<'a> {
+    pub data: &'a [u8],
+    pub token_offset: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -148,6 +169,7 @@ struct OpenTuning {
     steering_file: Option<String>,
     steering_attn: f32,
     steering_ffn: f32,
+    vision_path: Option<String>,
 }
 
 impl Default for OpenTuning {
@@ -161,6 +183,7 @@ impl Default for OpenTuning {
             steering_file: None,
             steering_attn: 0.0,
             steering_ffn: 0.0,
+            vision_path: None,
         }
     }
 }
@@ -222,6 +245,15 @@ fn open_tuning(options: &[ModelOpenOption]) -> Result<OpenTuning> {
                 return Err(Error {
                     code: 1,
                     message: "dir-steering-ffn must be between -100 and 100".into(),
+                });
+            }
+            ModelOpenOption::Vision(path) if !path.is_empty() => {
+                tuning.vision_path = Some(path.clone());
+            }
+            ModelOpenOption::Vision(_) => {
+                return Err(Error {
+                    code: 1,
+                    message: "vision path must not be empty".into(),
                 });
             }
         }
@@ -1082,6 +1114,11 @@ impl Model {
             return Err(fail(check, &err));
         }
         let c_path = cstring_path(path)?;
+        let vision_path = tuning
+            .vision_path
+            .as_deref()
+            .map(cstring_path)
+            .transpose()?;
         let steering_file = tuning
             .steering_file
             .as_deref()
@@ -1097,6 +1134,10 @@ impl Model {
         };
         let opt = ds4_bridge_model_open_options {
             model_path: c_path.as_ptr(),
+            vision_path: vision_path
+                .as_ref()
+                .map(|path| path.as_ptr())
+                .unwrap_or(ptr::null()),
             backend: backend.to_c(),
             n_threads,
             defer_boot_prewarm: i32::from(defer_boot_prewarm),
@@ -1191,6 +1232,35 @@ impl Model {
 
     pub fn backend(&self) -> Backend {
         self.backend
+    }
+
+    pub fn vision_probe(&self, data: &[u8]) -> Result<VisionImageInfo> {
+        let mut info = ds4_bridge_vision_info::default();
+        let mut err = [0u8; 512];
+        let rc = unsafe {
+            ds4_bridge_model_vision_probe(
+                self.raw.as_ptr(),
+                data.as_ptr(),
+                data.len(),
+                &mut info,
+                err.as_mut_ptr() as *mut c_char,
+                err.len(),
+            )
+        };
+        if rc != 0 {
+            return Err(fail(rc, &err));
+        }
+        Ok(VisionImageInfo {
+            source_width: info.source_width,
+            source_height: info.source_height,
+            content_width: info.content_width,
+            content_height: info.content_height,
+            padded_width: info.padded_width,
+            padded_height: info.padded_height,
+            grid_height: info.grid_height,
+            grid_width: info.grid_width,
+            token_count: info.token_count,
+        })
     }
 
     pub fn session(&self, ctx_size: i32) -> Result<Session<'_>> {
@@ -1431,6 +1501,42 @@ impl Session<'_> {
             return Err(fail(rc, &err));
         }
         self.host.commit_sync(tokens.as_slice(), &plan);
+        Ok(())
+    }
+
+    pub fn sync_vision(&mut self, tokens: &TokenBuffer, images: &[VisionInput<'_>]) -> Result<()> {
+        self.check_sync(tokens)?;
+        if images.is_empty() || images.len() > 4 {
+            return Err(Error {
+                code: 1,
+                message: "vision sync requires 1 to 4 images".into(),
+            });
+        }
+        let images = images
+            .iter()
+            .map(|image| ds4_bridge_vision_input {
+                data: image.data.as_ptr(),
+                data_len: image.data.len(),
+                token_offset: image.token_offset,
+            })
+            .collect::<Vec<_>>();
+        let mut err = [0u8; 512];
+        let rc = unsafe {
+            ds4_bridge_session_sync_vision(
+                self.raw.as_ptr(),
+                tokens.as_slice().as_ptr(),
+                tokens.len() as i32,
+                images.as_ptr(),
+                images.len() as u32,
+                err.as_mut_ptr() as *mut c_char,
+                err.len(),
+            )
+        };
+        self.host.invalidate();
+        if rc != 0 {
+            return Err(fail(rc, &err));
+        }
+        self.host.replace_checkpoint(tokens.as_slice());
         Ok(())
     }
 
@@ -2041,13 +2147,16 @@ mod tests {
             ModelOpenOption::Quality,
             ModelOpenOption::WarmWeights,
             ModelOpenOption::PowerPercent(37),
+            ModelOpenOption::Vision("vision.gguf".into()),
         ])
         .unwrap();
         assert!(configured.quality);
         assert!(configured.warm_weights);
         assert_eq!(configured.power_percent, 37);
+        assert_eq!(configured.vision_path.as_deref(), Some("vision.gguf"));
         assert!(open_tuning(&[ModelOpenOption::PowerPercent(0)]).is_err());
         assert!(open_tuning(&[ModelOpenOption::PowerPercent(101)]).is_err());
+        assert!(open_tuning(&[ModelOpenOption::Vision(String::new())]).is_err());
     }
 
     #[test]
