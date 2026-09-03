@@ -44155,6 +44155,75 @@ extern "C" int ds4_gpu_glm53_kda_prefill_tensor(
         "GLM 5.3 KDA chunked prefill");
 }
 
+/* Ported from antirez/ds4@110afdd for GLM-5.3's transposed per-head K-b
+ * layout. The scoped Q2 artifact stores this tensor as Q8_0. */
+__global__ static void glm53_k_b_project_q8_0_kernel(
+        float *out, const char *weight, const float *kv_norm,
+        uint32_t n_tokens, uint32_t kv_lora_dim, uint32_t head_dim,
+        uint32_t n_head, uint64_t row_bytes) {
+    const uint32_t warp = threadIdx.x >> 5u;
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t head = blockIdx.x;
+    const uint32_t token = blockIdx.y;
+    const uint32_t d = blockIdx.z * 8u + warp;
+    float sum = 0.0f;
+    if (head < n_head && token < n_tokens && d < head_dim) {
+        const float *kv = kv_norm + (uint64_t)token * kv_lora_dim;
+        const uint32_t block = d >> 5u;
+        const uint32_t slot = d & 31u;
+        for (uint32_t j = lane; j < kv_lora_dim; j += 32u) {
+            const char *row = weight +
+                ((uint64_t)head * kv_lora_dim + j) * row_bytes;
+            const char *q8 = row + (uint64_t)block * 34u;
+            const float scale = __half2float(*(const __half *)q8);
+            const int8_t quant = ((const int8_t *)(q8 + 2))[slot];
+            sum = fmaf(scale * (float)quant, kv[j], sum);
+        }
+    }
+    sum = warp_sum_f32(sum);
+    if (lane == 0u && head < n_head && token < n_tokens && d < head_dim) {
+        out[((uint64_t)token * n_head + head) * head_dim + d] = sum;
+    }
+}
+
+extern "C" int ds4_gpu_glm53_k_b_project_tensor(
+        ds4_gpu_tensor       *out,
+        const ds4_gpu_tensor *kv_norm,
+        const void           *model_map,
+        uint64_t              model_size,
+        uint64_t              weight_offset,
+        uint32_t              n_tokens,
+        uint32_t              kv_lora_dim,
+        uint32_t              head_dim,
+        uint32_t              n_head) {
+    if (!out || !kv_norm || !model_map || n_tokens == 0u ||
+        kv_lora_dim == 0u || head_dim == 0u || n_head == 0u ||
+        (head_dim & 31u) != 0u ||
+        kv_norm->bytes < (uint64_t)n_tokens * kv_lora_dim * sizeof(float) ||
+        out->bytes <
+            (uint64_t)n_tokens * n_head * head_dim * sizeof(float)) {
+        return 0;
+    }
+    const uint64_t row_bytes = ((uint64_t)head_dim / 32u) * 34u;
+    const uint64_t rows = (uint64_t)n_head * kv_lora_dim;
+    if (rows > UINT64_MAX / row_bytes) return 0;
+    const uint64_t weight_bytes = rows * row_bytes;
+    if (weight_offset > model_size ||
+        weight_bytes > model_size - weight_offset) {
+        return 0;
+    }
+    const int tier = ds4_tensor_device_idx(out);
+    const char *weight = cuda_resolve_weight_ptr(
+        model_map, weight_offset, weight_bytes, tier, "GLM53 k_b Q8_0");
+    if (!weight) return 0;
+    const dim3 grid(n_head, n_tokens, (head_dim + 7u) / 8u);
+    glm53_k_b_project_q8_0_kernel<<<grid, 256u, 0,
+        cuda_decode_stream()>>>(
+            (float *)out->ptr, weight, (const float *)kv_norm->ptr,
+            n_tokens, kv_lora_dim, head_dim, n_head, row_bytes);
+    return cuda_ok(cudaGetLastError(), "GLM53 k_b Q8_0 projection launch");
+}
+
 /* Solar output gates. Keeping these separate from the KDA recurrence makes
  * the recurrence fixture useful on its own and gives the GQA branch the same
  * elementwise sigmoid implementation. */

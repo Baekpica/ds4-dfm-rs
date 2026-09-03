@@ -3818,6 +3818,19 @@ int ds4_gpu_glm53_kda_prefill_tensor(
         uint32_t                conv_kernel,
         float                   gate_lower_bound);
 
+/* GLM 5.3 DSA stores K-b as [head, lora, output] Q8_0 rather than the
+ * ordinary dense-matrix layout. */
+int ds4_gpu_glm53_k_b_project_tensor(
+        ds4_gpu_tensor       *out,
+        const ds4_gpu_tensor *kv_norm,
+        const void           *model_map,
+        uint64_t              model_size,
+        uint64_t              weight_offset,
+        uint32_t              n_tokens,
+        uint32_t              kv_lora_dim,
+        uint32_t              head_dim,
+        uint32_t              n_head);
+
 int ds4_gpu_solar_sigmoid_gate_tensor(
         ds4_gpu_tensor       *out,
         const ds4_gpu_tensor *x,
