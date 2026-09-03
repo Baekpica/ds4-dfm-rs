@@ -2010,6 +2010,8 @@ fn drain_job_with_interval(stream: &mut TcpStream, drain: &JobDrain, interval: D
             }
         } else if finished {
             break;
+        } else if drain.state.observe_disconnect() {
+            break;
         } else if heartbeat && send_all_nonblocking(stream, b": keep-alive\n\n").is_err() {
             drain.state.cancel(false);
             break;
@@ -3832,6 +3834,35 @@ mod owner_tests {
         assert_eq!(g.runtime.requests_canceled, 1);
         assert_eq!(g.runtime.requests_inflight, 0);
         assert_eq!(g.metrics.shed[SHED_SLOW_READER as usize], 0);
+    }
+
+    #[test]
+    fn queued_drain_observes_disconnect_before_output_starts() {
+        let cfg = test_cfg();
+        let inner = Arc::new(Mutex::new(ServerInner::from_cfg(&cfg)));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let probe = server.try_clone().unwrap();
+        let (sink, state) = job_sink_with_probe(inner, Some(probe));
+        let (_done_tx, done_rx) = mpsc::channel();
+        let drain = JobDrain {
+            done: done_rx,
+            state: Arc::clone(&state),
+            streaming: false,
+        };
+        client.shutdown(std::net::Shutdown::Both).unwrap();
+        drop(client);
+        let thread = thread::spawn(move || {
+            drain_job_with_interval(&mut server, &drain, Duration::from_millis(10));
+        });
+
+        thread::sleep(Duration::from_millis(30));
+        let observed_before_close = state.gone();
+        drop(sink);
+        thread.join().unwrap();
+
+        assert!(observed_before_close);
     }
 
     #[test]
