@@ -25,7 +25,10 @@ use ds4_kv::{
 use crate::dsml::{SampleOverride, SamplePolicy};
 use crate::parse::{ChatMsg, ParsedRequest, ToolCall, ToolChoice};
 use crate::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
-use crate::render::{render_chat_choice, syntax_for_model_id, ModelSyntax, RenderError};
+use crate::render::{
+    render_chat_choice, syntax_for_model_id, ModelSyntax, RenderError, DSML_EOS, QWEN_IM_END,
+    SOLAR_IM_END,
+};
 use crate::retry::{
     build_invalid_tool_error_suffix, parse_failure_should_retry, terminal_finish,
     truncation_outcome, TruncationOutcome,
@@ -868,6 +871,58 @@ fn thinking_visible_cache_eligible(parsed: &ParsedRequest) -> bool {
     parsed.kind == ReqKind::Chat && parsed.api != Api::Responses
 }
 
+pub(crate) fn thinking_visible_key(
+    prompt: &[u8],
+    content: &[u8],
+    syntax: ModelSyntax,
+    format: ChatFormat,
+    terminal: bool,
+) -> Option<Vec<u8>> {
+    let mut visible = if format == ChatFormat::Qwen4Exp || syntax == ModelSyntax::Exaone {
+        if !prompt.ends_with(b"<think>\n") {
+            return None;
+        }
+        let content = content.trim_ascii();
+        let mut visible = Vec::with_capacity(prompt.len() + 12 + content.len());
+        visible.extend_from_slice(prompt);
+        visible.extend_from_slice(b"\n</think>\n\n");
+        visible.extend_from_slice(content);
+        visible
+    } else {
+        let start = think_start(format).as_bytes();
+        if !prompt.ends_with(start) {
+            return None;
+        }
+        let prefix = if format == ChatFormat::SolarOpen2 {
+            prompt
+        } else {
+            &prompt[..prompt.len() - start.len()]
+        };
+        let mut visible =
+            Vec::with_capacity(prefix.len() + think_end(format).len() + content.len());
+        visible.extend_from_slice(prefix);
+        visible.extend_from_slice(think_end(format).as_bytes());
+        visible.extend_from_slice(content);
+        visible
+    };
+    if terminal {
+        match syntax {
+            ModelSyntax::Qwen4Exp => visible.extend_from_slice(QWEN_IM_END.as_bytes()),
+            ModelSyntax::Exaone => visible.extend_from_slice(b"<|endofturn|>"),
+            ModelSyntax::Motif3 => visible.extend_from_slice(b"<|endofturn|>"),
+            ModelSyntax::SolarOpen2 => visible.extend_from_slice(SOLAR_IM_END.as_bytes()),
+            _ => visible.extend_from_slice(DSML_EOS.as_bytes()),
+        }
+        if matches!(
+            syntax,
+            ModelSyntax::Qwen4Exp | ModelSyntax::Exaone | ModelSyntax::SolarOpen2
+        ) {
+            visible.push(b'\n');
+        }
+    }
+    Some(visible)
+}
+
 fn motif3_no_think_visible_checkpoint(
     parsed: &ParsedRequest,
     syntax: ModelSyntax,
@@ -1534,9 +1589,20 @@ pub(crate) fn generate_terminal_prepared(
         }
         finish = "tool_calls";
     }
-    if let Some(visible) =
-        motif3_no_think_visible_checkpoint(&parsed, syntax, &prompt, &parsed_gen.content, finish)
+    let visible = if parsed_gen.calls.is_empty()
+        && parsed.kind == ReqKind::Chat
+        && think_mode_enabled(parsed.think_mode)
+        && !matches!(finish, "error" | "length")
+        && !acc.thinking_inside()
     {
+        thinking_visible_key(&prompt, &parsed_gen.content, syntax, req.chat_format, true)
+    } else {
+        None
+    }
+    .or_else(|| {
+        motif3_no_think_visible_checkpoint(&parsed, syntax, &prompt, &parsed_gen.content, finish)
+    });
+    if let Some(visible) = visible {
         engine.remember_thinking_visible_checkpoint(visible);
     }
     let matched_stop = acc.matched_stop.clone();

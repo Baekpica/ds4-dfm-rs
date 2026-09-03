@@ -18,6 +18,8 @@ use ds4_kv::{bank_checkpoint_due_from_host, HostKvView};
 use ds4_kv::{bank_persist_ext_flags, Reason as KvReason, EXT_IMAGE_PIXELS_V2};
 
 use crate::dsml::{SampleOverride, SamplePolicy};
+#[cfg(any(feature = "native", test))]
+use crate::generate::thinking_visible_key;
 use crate::generate::{
     render_prompt, responses_ids, stream_req_from_parsed, GenerateError, GenerateOutcome,
 };
@@ -43,7 +45,7 @@ use crate::stream::{
     Writer,
 };
 #[cfg(any(feature = "native", test))]
-use crate::stream::{think_end, think_start, ChatFormat};
+use crate::stream::{think_end, ChatFormat};
 use crate::tools::{assign_tool_ids, parse_generated_for_response, SemAccum};
 
 #[cfg(any(feature = "native", test))]
@@ -692,41 +694,6 @@ fn prompt_preserves_reasoning(parsed: &ParsedRequest) -> bool {
 }
 
 #[cfg(any(feature = "native", test))]
-fn thinking_visible_key(
-    prompt: &[u8],
-    content: &[u8],
-    syntax: ModelSyntax,
-    format: ChatFormat,
-) -> Option<Vec<u8>> {
-    if format == ChatFormat::Qwen4Exp || syntax == ModelSyntax::Exaone {
-        if !prompt.ends_with(b"<think>\n") {
-            return None;
-        }
-        let content = content.trim_ascii();
-        let mut visible = Vec::with_capacity(prompt.len() + 12 + content.len());
-        visible.extend_from_slice(prompt);
-        visible.extend_from_slice(b"\n</think>\n\n");
-        visible.extend_from_slice(content);
-        return Some(visible);
-    }
-
-    let start = think_start(format).as_bytes();
-    if !prompt.ends_with(start) {
-        return None;
-    }
-    let prefix = if format == ChatFormat::SolarOpen2 {
-        prompt
-    } else {
-        &prompt[..prompt.len() - start.len()]
-    };
-    let mut visible = Vec::with_capacity(prefix.len() + think_end(format).len() + content.len());
-    visible.extend_from_slice(prefix);
-    visible.extend_from_slice(think_end(format).as_bytes());
-    visible.extend_from_slice(content);
-    Some(visible)
-}
-
-#[cfg(any(feature = "native", test))]
 #[derive(Debug, Default)]
 pub(crate) struct WarmBank {
     pub(crate) record: Option<WarmRecord>,
@@ -1079,9 +1046,13 @@ fn thinking_bank_retire_key(
     if prompt_preserves_reasoning {
         if engine_finished && has_tools && !saw_tool_start {
             if let Some(at) = close_at {
-                if let Some(visible) =
-                    thinking_visible_key(prompt, &generation[at + close.len()..], syntax, format)
-                {
+                if let Some(visible) = thinking_visible_key(
+                    prompt,
+                    &generation[at + close.len()..],
+                    syntax,
+                    format,
+                    false,
+                ) {
                     return Some(BankRetireKey {
                         text: visible,
                         exact_text: Some(exact),
@@ -1102,7 +1073,13 @@ fn thinking_bank_retire_key(
     if engine_finished {
         let at = close_at?;
         return Some(BankRetireKey {
-            text: thinking_visible_key(prompt, &generation[at + close.len()..], syntax, format)?,
+            text: thinking_visible_key(
+                prompt,
+                &generation[at + close.len()..],
+                syntax,
+                format,
+                false,
+            )?,
             exact_text: None,
             partial_only: false,
             retained_existing: false,
@@ -1119,6 +1096,7 @@ fn thinking_bank_retire_key(
                     &generation[at + close.len()..],
                     syntax,
                     format,
+                    false,
                 )?,
                 exact_text: None,
                 partial_only: false,
@@ -3559,6 +3537,7 @@ mod bank_tests {
             b"  visible answer  ",
             ModelSyntax::Qwen4Exp,
             ChatFormat::Qwen4Exp,
+            false,
         )
         .unwrap();
         let next = crate::render::render_chat(

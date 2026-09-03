@@ -538,6 +538,59 @@ fn motif3_no_think_remembers_canonical_visible_checkpoint() {
 }
 
 #[test]
+fn serial_thinking_answer_remembers_visible_history_for_all_keyable_formats() {
+    for (model_id, close) in [
+        (0, b"</think>".as_slice()),
+        (2, b"<|think:end|>".as_slice()),
+        (4, b"</think>".as_slice()),
+        (6, b"</think>".as_slice()),
+    ] {
+        let mut parsed = user_req();
+        parsed.think_mode = ThinkMode::Low;
+        let pieces = [b"private plan".as_slice(), close, b"answer".as_slice()];
+        let inner = ScriptedDecode {
+            model_id,
+            ..ScriptedDecode::from_pieces(&pieces)
+        };
+        let mut engine = PromptSyncDecode::new(inner, 0, 1);
+        let mut out = Vec::new();
+
+        generate_and_write(
+            &mut engine,
+            &parsed,
+            "chatcmpl-thinking-visible",
+            CREATED_TEST,
+            false,
+            16,
+            &mut out,
+        )
+        .unwrap();
+
+        let checkpoint = &engine
+            .remembered
+            .first()
+            .unwrap_or_else(|| panic!("model {model_id} did not remember visible history"))
+            .0;
+        let mut future = parsed.clone();
+        future.messages.push(ChatMsg {
+            role: "assistant".into(),
+            content: "answer".into(),
+            ..ChatMsg::default()
+        });
+        future.messages.push(ChatMsg {
+            role: "user".into(),
+            content: "next".into(),
+            ..ChatMsg::default()
+        });
+        let future_prompt = render_prompt(&future, model_id).unwrap();
+        assert!(
+            future_prompt.starts_with(checkpoint),
+            "model {model_id} visible checkpoint is not a future-prompt prefix"
+        );
+    }
+}
+
+#[test]
 fn motif3_no_think_invalidates_user_stop_and_tool_syntax_cut() {
     let cases = [
         (vec!["STOP".into()], b"Clear STOP tail".as_slice()),
