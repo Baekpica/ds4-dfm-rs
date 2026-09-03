@@ -2143,6 +2143,9 @@ static void model_apply_host_shape(void) {
     case DS4_VARIANT_QWEN38_FLASH_NEXT:
         g_ds4_shape = DS4_SHAPE_QWEN38_FLASH_NEXT;
         break;
+    case DS4_VARIANT_GLM53_FLASH:
+        g_ds4_shape = DS4_SHAPE_GLM53_FLASH;
+        break;
     default:
         ds4_die("unsupported");
     }

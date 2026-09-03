@@ -55,6 +55,19 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    const ds4_host_shape rust_shape = {
+        .variant = DS4_VARIANT_GLM53_FLASH,
+        .n_compress = 0,
+    };
+    ds4_host_shape_install(&rust_shape);
+    model_apply_host_shape();
+    ds4_host_shape_clear();
+    if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53) {
+        fprintf(stderr, "Rust-host GLM 5.3 shape handoff failed\n");
+        model_close(&model);
+        return 1;
+    }
+
     printf("GLM 5.3 metadata and bindings: valid (%u shards, 34 KDA, 12 DSA)\n",
            model.split_count);
     model_close(&model);
