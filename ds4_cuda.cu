@@ -35175,7 +35175,7 @@ static int routed_moe_launch(
     const uint32_t mmvq_token_ceiling = small16_vec_active ? small16_max_tokens : mmvq_decode_max_tokens;
     if (ds4_cuda_use_mmq() && n_tokens > 0u && n_tokens <= mmvq_token_ceiling) {
         const uint32_t n_expert_used   = n_expert;
-        const uint32_t n_experts_total = 256u;
+        const uint32_t n_experts_total = n_total_expert;
         const uint64_t n_assignments   = (uint64_t)n_tokens * n_expert_used;
         /* gate ncols_dst = n_tokens (<= 8 by the outer gate); down's wider
          * column dim is chunk-split inside the vec impl.  FD Inc2a: the
@@ -35816,7 +35816,7 @@ static int routed_moe_launch(
 mmq_moe_path:
     if (ds4_cuda_use_mmq() && n_tokens >= mmq_moe_min_tokens) {
         const uint32_t n_expert_used = n_expert;   /* parameter name is a misnomer; this is top_k */
-        const uint32_t n_experts_total = 256u;     /* matches the hardcoded constant at line 11437 */
+        const uint32_t n_experts_total = n_total_expert;
         const uint64_t n_assignments = (uint64_t)n_tokens * n_expert_used;
 
         /* Reuse the caller-allocated buffers - all of gate/up/mid/down are
@@ -36093,6 +36093,9 @@ mmq_moe_path:
         return 1;
     }
 mmq_moe_fallback:
+    /* The legacy kernels below encode DeepSeek's 256-expert bound.  Newer
+     * families must stay on the runtime-sized MMVQ/MMQ paths above. */
+    if (n_total_expert != 256u) return 0;
     /* Requant tiers: the legacy fallback's kernels are IQ2-LUT / all-Q4_K
      * specific.  The new pairs (Q2_K gate/up; Q4_K gate + Q2_K down) are
      * served by the vec/mmq paths above -- if those declined (MMQ disabled,
@@ -42304,7 +42307,8 @@ static __device__ __forceinline__ float kda_delta_beta(
 
 static __device__ __forceinline__ float kda_log_decay(
         float raw, float scale, float lower_bound, bool glm53) {
-    if (glm53) return lower_bound / (1.0f + expf(scale * raw));
+    if (glm53)
+        return lower_bound / (1.0f + expf(-expf(scale) * raw));
     const float gate = scale * solar_kda_softplus(raw);
     return gate < lower_bound ? lower_bound : gate;
 }

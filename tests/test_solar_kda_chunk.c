@@ -110,7 +110,7 @@ static void host_step(float *out, host_state *s,
             for (uint32_t kd = 0; kd < T_DIM; kd++) {
                 const float raw = g_raw[base + kd] + dt[base + kd];
                 float gate = glm53
-                    ? -5.0f / (1.0f + expf(decay[h] * raw))
+                    ? -5.0f / (1.0f + expf(-expf(decay[h]) * raw))
                     : decay[h] * softplus_ref(raw);
                 if (!glm53 && gate < -5.0f) gate = -5.0f;
                 const size_t ix = sb + (size_t)kd * T_DIM + vd;

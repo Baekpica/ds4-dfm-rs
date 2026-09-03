@@ -20103,6 +20103,61 @@ typedef struct {
     uint64_t scratch_bytes;
 } ds4_solar_gpu_graph;
 
+/* GLM-5.3's scoped resident graph.  The downloaded Q2 artifact uses eleven
+ * DSA layers; keeping their expanded F16 K/V is the smallest exact path for
+ * short serving contexts and avoids importing the upstream compact indexer. */
+typedef struct {
+    bool ready;
+    uint32_t ctx_cap;
+    uint32_t cache_len;
+    uint64_t workspace_bytes;
+    uint64_t state_bytes;
+    uint64_t control_bytes;
+    uint64_t kv_bytes;
+
+    ds4_gpu_tensor *token;
+    ds4_gpu_tensor *cur;
+    ds4_gpu_tensor *norm;
+    ds4_gpu_tensor *hc_cur;
+    ds4_gpu_tensor *hc_next;
+    ds4_gpu_tensor *hc_flat;
+    ds4_gpu_tensor *hc_mix;
+    ds4_gpu_tensor *hc_split;
+    ds4_gpu_tensor *hc_after_attn;
+    ds4_gpu_tensor *hc_mean;
+    ds4_gpu_tensor *q_rank;
+    ds4_gpu_tensor *q_rank_norm;
+    ds4_gpu_tensor *kv_rank;
+    ds4_gpu_tensor *kv_rank_norm;
+    ds4_gpu_tensor *q;
+    ds4_gpu_tensor *k;
+    ds4_gpu_tensor *v;
+    ds4_gpu_tensor *heads;
+    ds4_gpu_tensor *attn_out;
+    ds4_gpu_tensor *ffn_gate;
+    ds4_gpu_tensor *ffn_up;
+    ds4_gpu_tensor *ffn_mid;
+    ds4_gpu_tensor *ffn_out;
+    ds4_gpu_tensor *routed_down;
+    ds4_gpu_tensor *selected;
+    ds4_gpu_tensor *route_weights;
+    ds4_gpu_tensor *logits;
+
+    ds4_gpu_tensor *state_pool;
+    ds4_gpu_tensor *control_pool;
+    ds4_gpu_tensor *recurrent[DS4_MAX_LAYER];
+    ds4_gpu_tensor *q_conv_state[DS4_MAX_LAYER];
+    ds4_gpu_tensor *k_conv_state[DS4_MAX_LAYER];
+    ds4_gpu_tensor *v_conv_state[DS4_MAX_LAYER];
+    ds4_gpu_tensor *q_conv_weight[DS4_MAX_LAYER];
+    ds4_gpu_tensor *k_conv_weight[DS4_MAX_LAYER];
+    ds4_gpu_tensor *v_conv_weight[DS4_MAX_LAYER];
+    ds4_gpu_tensor *decay_scale[DS4_MAX_LAYER];
+    ds4_gpu_tensor *dt_bias[DS4_MAX_LAYER];
+    ds4_gpu_tensor *o_norm[DS4_MAX_LAYER];
+    ds4_gpu_tensor *layer_kv[DS4_MAX_LAYER];
+} ds4_glm53_gpu_graph;
+
 enum {
     DS4_PLAIN_SPLITKV_CHUNK_BASELINE = 2048,
     DS4_PLAIN_SPLITKV_CHUNK_GROUPED = 64,
@@ -20150,6 +20205,11 @@ static bool plain_graph_matmul_tensor(
     if (!out || !model || !weight || !x || n_tokens == 0u) return false;
     if (weight->type == DS4_TENSOR_Q8_0) {
         return ds4_gpu_matmul_q8_0_tensor(
+                out, model->map, model->size, weight->abs_offset,
+                in_dim, out_dim, x, n_tokens) != 0;
+    }
+    if (weight->type == DS4_TENSOR_Q4_K) {
+        return ds4_gpu_matmul_q4_K_tensor(
                 out, model->map, model->size, weight->abs_offset,
                 in_dim, out_dim, x, n_tokens) != 0;
     }
@@ -42325,6 +42385,505 @@ static bool exaone_batch_runtime_decode(
     }
     return true;
 }
+
+/* ponytail: full DSA is exact while every visible token fits the model's
+ * top-k.  Add the compact indexer/cache path before raising this ceiling. */
+enum { DS4_GLM53_RESIDENT_CTX_MAX = 2048u };
+
+static uint64_t glm53_graph_bytes_estimate(uint32_t ctx_cap) {
+    if (ctx_cap == 0u || ctx_cap > DS4_GLM53_RESIDENT_CTX_MAX) return 0u;
+    const uint64_t embd = DS4_N_EMBD;
+    const uint64_t hc = (uint64_t)DS4_N_HC * embd;
+    const uint64_t qdim = (uint64_t)DS4_N_HEAD * DS4_N_KEY_MLA;
+    const uint64_t kda_dim =
+        (uint64_t)DS4_N_HEAD * DS4_N_KDA_HEAD_DIM;
+    const uint64_t ffn_scratch =
+        DS4_N_FF_DENSE > DS4_N_EXPERT_USED * DS4_N_FF_EXP
+            ? DS4_N_FF_DENSE
+            : (uint64_t)DS4_N_EXPERT_USED * DS4_N_FF_EXP;
+    uint64_t floats =
+        2u * embd + 4u * hc + 48u + 4u + 2u * DS4_N_LORA_Q +
+        2u * DS4_N_KV_LORA + 4u * qdim + embd +
+        3u * ffn_scratch + embd +
+        (uint64_t)DS4_N_EXPERT_USED * embd +
+        DS4_N_EXPERT_USED + DS4_N_VOCAB;
+    uint64_t bytes = sizeof(int32_t) +
+        floats * sizeof(float) +
+        (uint64_t)DS4_N_EXPERT_USED * sizeof(int32_t);
+    const uint64_t recurrent = kda_dim * DS4_N_KDA_HEAD_DIM * sizeof(float);
+    const uint64_t conv = kda_dim * DS4_N_SSM_CONV * sizeof(float);
+    const uint64_t controls = 3u * conv +
+        (uint64_t)DS4_N_HEAD * sizeof(float) +
+        kda_dim * sizeof(float) +
+        DS4_N_KDA_HEAD_DIM * sizeof(float);
+    const uint64_t state = recurrent + 3u * conv;
+    uint32_t kda_layers = 0u;
+    uint32_t dsa_layers = 0u;
+    const uint32_t n_exec = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
+    for (uint32_t il = 0; il < n_exec; il++) {
+        if (ds4_glm53_layer_is_kda(il)) kda_layers++;
+        else dsa_layers++;
+    }
+    bytes += (uint64_t)kda_layers * (state + controls);
+    bytes += (uint64_t)dsa_layers * ctx_cap * qdim *
+        2u * sizeof(uint16_t);
+    return bytes;
+}
+
+static void glm53_graph_free(ds4_glm53_gpu_graph *g) {
+    if (!g) return;
+    for (uint32_t il = 0; il < DS4_MAX_LAYER; il++) {
+        ds4_gpu_tensor **views[] = {
+            &g->recurrent[il], &g->q_conv_state[il],
+            &g->k_conv_state[il], &g->v_conv_state[il],
+            &g->q_conv_weight[il], &g->k_conv_weight[il],
+            &g->v_conv_weight[il], &g->decay_scale[il],
+            &g->dt_bias[il], &g->o_norm[il],
+        };
+        for (size_t i = 0; i < sizeof(views) / sizeof(views[0]); i++)
+            ds4_gpu_tensor_free(*views[i]);
+        ds4_gpu_tensor_free(g->layer_kv[il]);
+    }
+    ds4_gpu_tensor **owned[] = {
+        &g->token, &g->cur, &g->norm, &g->hc_cur, &g->hc_next,
+        &g->hc_flat, &g->hc_mix, &g->hc_split, &g->hc_after_attn,
+        &g->hc_mean, &g->q_rank, &g->q_rank_norm,
+        &g->kv_rank, &g->kv_rank_norm, &g->q, &g->k, &g->v,
+        &g->heads, &g->attn_out, &g->ffn_gate, &g->ffn_up,
+        &g->ffn_mid, &g->ffn_out, &g->routed_down, &g->selected,
+        &g->route_weights, &g->logits, &g->state_pool, &g->control_pool,
+    };
+    for (size_t i = 0; i < sizeof(owned) / sizeof(owned[0]); i++)
+        ds4_gpu_tensor_free(*owned[i]);
+    memset(g, 0, sizeof(*g));
+}
+
+static bool glm53_graph_reset(ds4_glm53_gpu_graph *g) {
+    if (!g || !g->ready || !g->state_pool || g->state_bytes == 0u ||
+        (g->state_bytes % sizeof(float)) != 0u) return false;
+    if (!ds4_gpu_tensor_fill_f32(
+            g->state_pool, 0.0f, g->state_bytes / sizeof(float))) return false;
+    g->cache_len = 0u;
+    return true;
+}
+
+static bool glm53_graph_alloc(ds4_glm53_gpu_graph *g,
+                              const ds4_model *model,
+                              const ds4_weights *weights,
+                              uint32_t ctx_cap) {
+    if (!g || !model || !weights ||
+        DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 ||
+        ctx_cap == 0u || ctx_cap > DS4_GLM53_RESIDENT_CTX_MAX) return false;
+    memset(g, 0, sizeof(*g));
+    g->ctx_cap = ctx_cap;
+    const uint64_t embd = DS4_N_EMBD;
+    const uint64_t hc = (uint64_t)DS4_N_HC * embd;
+    const uint64_t mix = DS4_N_HC * (DS4_N_HC + 2u);
+    const uint64_t qdim = (uint64_t)DS4_N_HEAD * DS4_N_KEY_MLA;
+    const uint64_t kda_dim =
+        (uint64_t)DS4_N_HEAD * DS4_N_KDA_HEAD_DIM;
+    const uint64_t ffn_scratch =
+        DS4_N_FF_DENSE > DS4_N_EXPERT_USED * DS4_N_FF_EXP
+            ? DS4_N_FF_DENSE
+            : (uint64_t)DS4_N_EXPERT_USED * DS4_N_FF_EXP;
+    uint64_t workspace = 0u;
+#define GLM53_ALLOC(field, count, type) do {                                  \
+        const uint64_t glm53_bytes_ = (uint64_t)(count) * sizeof(type);       \
+        g->field = ds4_gpu_tensor_alloc(glm53_bytes_);                         \
+        if (!g->field) {                                                       \
+            fprintf(stderr, "ds4: GLM-5.3 graph allocation failed: %s\n",  \
+                    #field);                                                   \
+            glm53_graph_free(g);                                               \
+            return false;                                                      \
+        }                                                                      \
+        workspace += glm53_bytes_;                                             \
+    } while (0)
+    GLM53_ALLOC(token, 1u, int32_t);
+    GLM53_ALLOC(cur, embd, float);
+    GLM53_ALLOC(norm, embd, float);
+    GLM53_ALLOC(hc_cur, hc, float);
+    GLM53_ALLOC(hc_next, hc, float);
+    GLM53_ALLOC(hc_flat, hc, float);
+    GLM53_ALLOC(hc_mix, mix, float);
+    GLM53_ALLOC(hc_split, mix, float);
+    GLM53_ALLOC(hc_after_attn, hc, float);
+    GLM53_ALLOC(hc_mean, DS4_N_HC, float);
+    GLM53_ALLOC(q_rank, DS4_N_LORA_Q, float);
+    GLM53_ALLOC(q_rank_norm, DS4_N_LORA_Q, float);
+    GLM53_ALLOC(kv_rank, DS4_N_KV_LORA, float);
+    GLM53_ALLOC(kv_rank_norm, DS4_N_KV_LORA, float);
+    GLM53_ALLOC(q, qdim, float);
+    GLM53_ALLOC(k, qdim, float);
+    GLM53_ALLOC(v, qdim, float);
+    GLM53_ALLOC(heads, qdim, float);
+    GLM53_ALLOC(attn_out, embd, float);
+    GLM53_ALLOC(ffn_gate, ffn_scratch, float);
+    GLM53_ALLOC(ffn_up, ffn_scratch, float);
+    GLM53_ALLOC(ffn_mid, ffn_scratch, float);
+    GLM53_ALLOC(ffn_out, embd, float);
+    GLM53_ALLOC(routed_down,
+                (uint64_t)DS4_N_EXPERT_USED * embd, float);
+    GLM53_ALLOC(selected, DS4_N_EXPERT_USED, int32_t);
+    GLM53_ALLOC(route_weights, DS4_N_EXPERT_USED, float);
+    GLM53_ALLOC(logits, DS4_N_VOCAB, float);
+#undef GLM53_ALLOC
+    g->workspace_bytes = workspace;
+
+    const uint64_t recurrent_bytes =
+        kda_dim * DS4_N_KDA_HEAD_DIM * sizeof(float);
+    const uint64_t conv_bytes =
+        kda_dim * DS4_N_SSM_CONV * sizeof(float);
+    const uint64_t decay_bytes =
+        (uint64_t)DS4_N_HEAD * sizeof(float);
+    const uint64_t dt_bytes = kda_dim * sizeof(float);
+    const uint64_t norm_bytes =
+        (uint64_t)DS4_N_KDA_HEAD_DIM * sizeof(float);
+    const uint64_t state_per = recurrent_bytes + 3u * conv_bytes;
+    const uint64_t control_per =
+        3u * conv_bytes + decay_bytes + dt_bytes + norm_bytes;
+    uint32_t n_kda = 0u;
+    const uint32_t n_exec = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
+    for (uint32_t il = 0; il < n_exec; il++)
+        if (ds4_glm53_layer_is_kda(il)) n_kda++;
+    g->state_bytes = state_per * n_kda;
+    g->control_bytes = control_per * n_kda;
+    g->state_pool = ds4_gpu_tensor_alloc(g->state_bytes);
+    g->control_pool = ds4_gpu_tensor_alloc(g->control_bytes);
+    if (!g->state_pool || !g->control_pool) {
+        fprintf(stderr, "ds4: GLM-5.3 KDA pool allocation failed\n");
+        glm53_graph_free(g);
+        return false;
+    }
+    uint64_t state_cursor = 0u;
+    uint64_t control_cursor = 0u;
+    for (uint32_t il = 0; il < n_exec; il++) {
+        if (!ds4_glm53_layer_is_kda(il)) continue;
+        const ds4_layer_weights *l = &weights->layer[il];
+        const bool ok =
+            solar_pool_take(&g->recurrent[il], g->state_pool,
+                            &state_cursor, recurrent_bytes) &&
+            solar_pool_take(&g->q_conv_state[il], g->state_pool,
+                            &state_cursor, conv_bytes) &&
+            solar_pool_take(&g->k_conv_state[il], g->state_pool,
+                            &state_cursor, conv_bytes) &&
+            solar_pool_take(&g->v_conv_state[il], g->state_pool,
+                            &state_cursor, conv_bytes) &&
+            solar_pool_take(&g->q_conv_weight[il], g->control_pool,
+                            &control_cursor, conv_bytes) &&
+            solar_pool_take(&g->k_conv_weight[il], g->control_pool,
+                            &control_cursor, conv_bytes) &&
+            solar_pool_take(&g->v_conv_weight[il], g->control_pool,
+                            &control_cursor, conv_bytes) &&
+            solar_pool_take(&g->decay_scale[il], g->control_pool,
+                            &control_cursor, decay_bytes) &&
+            solar_pool_take(&g->dt_bias[il], g->control_pool,
+                            &control_cursor, dt_bytes) &&
+            solar_pool_take(&g->o_norm[il], g->control_pool,
+                            &control_cursor, norm_bytes) &&
+            solar_copy_control(g->q_conv_weight[il], model,
+                               l->kda_q_conv, conv_bytes) &&
+            solar_copy_control(g->k_conv_weight[il], model,
+                               l->kda_k_conv, conv_bytes) &&
+            solar_copy_control(g->v_conv_weight[il], model,
+                               l->kda_v_conv, conv_bytes) &&
+            solar_copy_control(g->decay_scale[il], model,
+                               l->kda_a_log, decay_bytes) &&
+            solar_copy_control(g->dt_bias[il], model,
+                               l->kda_dt_bias, dt_bytes) &&
+            solar_copy_control(g->o_norm[il], model,
+                               l->kda_o_norm, norm_bytes);
+        if (!ok) {
+            fprintf(stderr,
+                    "ds4: GLM-5.3 KDA control bind failed at layer %u\n",
+                    il);
+            glm53_graph_free(g);
+            return false;
+        }
+    }
+    if (state_cursor != g->state_bytes ||
+        control_cursor != g->control_bytes) {
+        glm53_graph_free(g);
+        return false;
+    }
+
+    for (uint32_t il = 0; il < n_exec; il++) {
+        if (ds4_glm53_layer_is_kda(il)) continue;
+        const uint64_t bytes = (uint64_t)ctx_cap * qdim *
+            2u * sizeof(uint16_t);
+        g->layer_kv[il] = ds4_gpu_tensor_alloc(bytes);
+        if (!g->layer_kv[il]) {
+            fprintf(stderr,
+                    "ds4: GLM-5.3 DSA KV allocation failed at layer %u\n",
+                    il);
+            glm53_graph_free(g);
+            return false;
+        }
+        g->kv_bytes += bytes;
+    }
+    g->ready = true;
+    if (!ds4_gpu_tensor_fill_f32(g->hc_mean, 0.25f, DS4_N_HC) ||
+        !glm53_graph_reset(g)) {
+        glm53_graph_free(g);
+        return false;
+    }
+    ds4_log(stderr, DS4_LOG_TIMING,
+            "ds4: GLM-5.3 resident graph: ctx %u, KV %.2f GiB, "
+            "KDA state %.2f MiB, workspace %.2f MiB\n",
+            ctx_cap, (double)g->kv_bytes / 1073741824.0,
+            (double)g->state_bytes / 1048576.0,
+            (double)g->workspace_bytes / 1048576.0);
+    return true;
+}
+
+static bool glm53_graph_hc_pre(ds4_glm53_gpu_graph *g,
+                               const ds4_model *model,
+                               const ds4_tensor *fn,
+                               const ds4_tensor *scale,
+                               const ds4_tensor *base,
+                               const ds4_tensor *norm_weight,
+                               const ds4_gpu_tensor *residual_hc) {
+    const uint32_t hc_dim = DS4_N_HC * DS4_N_EMBD;
+    const uint32_t mix_dim = DS4_N_HC * (DS4_N_HC + 2u);
+    return g && model && fn && scale && base && norm_weight && residual_hc &&
+        ds4_gpu_rms_norm_plain_tensor(
+            g->hc_flat, residual_hc, hc_dim, DS4_RMS_EPS) &&
+        plain_graph_matmul_tensor(
+            g->hc_mix, model, fn, hc_dim, mix_dim, g->hc_flat, 1u) &&
+        ds4_gpu_hc_split_weighted_sum_tensor(
+            g->cur, g->hc_split, g->hc_mix, residual_hc,
+            model->map, model->size, scale->abs_offset, base->abs_offset,
+            DS4_N_EMBD, DS4_N_HC, DS4_N_HC_SINKHORN_ITER, DS4_HC_EPS) &&
+        ds4_gpu_rms_norm_weight_tensor(
+            g->norm, g->cur, model->map, model->size,
+            norm_weight->abs_offset, DS4_N_EMBD, DS4_RMS_EPS);
+}
+
+static bool glm53_graph_kda(ds4_glm53_gpu_graph *g,
+                            const ds4_model *model,
+                            const ds4_layer_weights *l,
+                            uint32_t il) {
+    const uint32_t projection = DS4_N_HEAD * DS4_N_KDA_HEAD_DIM;
+    return plain_graph_matmul_tensor(
+               g->q, model, l->kda_q, DS4_N_EMBD, projection,
+               g->norm, 1u) &&
+           plain_graph_matmul_tensor(
+               g->k, model, l->kda_k, DS4_N_EMBD, projection,
+               g->norm, 1u) &&
+           plain_graph_matmul_tensor(
+               g->v, model, l->kda_v, DS4_N_EMBD, projection,
+               g->norm, 1u) &&
+           plain_graph_matmul_tensor(
+               g->q_rank, model, l->kda_f_a, DS4_N_EMBD,
+               DS4_N_KDA_HEAD_DIM, g->norm, 1u) &&
+           plain_graph_matmul_tensor(
+               g->heads, model, l->kda_f_b, DS4_N_KDA_HEAD_DIM,
+               projection, g->q_rank, 1u) &&
+           plain_graph_matmul_tensor(
+               g->kv_rank, model, l->kda_beta, DS4_N_EMBD,
+               DS4_N_HEAD, g->norm, 1u) &&
+           plain_graph_matmul_tensor(
+               g->q_rank, model, l->kda_g_a, DS4_N_EMBD,
+               DS4_N_KDA_HEAD_DIM, g->norm, 1u) &&
+           plain_graph_matmul_tensor(
+               g->ffn_gate, model, l->kda_g_b, DS4_N_KDA_HEAD_DIM,
+               projection, g->q_rank, 1u) &&
+           ds4_gpu_glm53_kda_decode_tensor(
+               g->ffn_up, g->recurrent[il], g->q_conv_state[il],
+               g->k_conv_state[il], g->v_conv_state[il],
+               g->q, g->k, g->v, g->heads, g->kv_rank,
+               g->q_conv_weight[il], g->k_conv_weight[il],
+               g->v_conv_weight[il], g->decay_scale[il],
+               g->dt_bias[il], DS4_N_HEAD, DS4_N_KDA_HEAD_DIM,
+               DS4_N_SSM_CONV, DS4_KDA_GATE_CLAMP_MIN) &&
+           ds4_gpu_solar_head_rms_sigmoid_gate_tensor(
+               g->heads, g->ffn_up, g->ffn_gate, g->o_norm[il],
+               1u, DS4_N_HEAD, DS4_N_KDA_HEAD_DIM, DS4_RMS_EPS) &&
+           plain_graph_matmul_tensor(
+               g->attn_out, model, l->kda_output, projection,
+               DS4_N_EMBD, g->heads, 1u);
+}
+
+static bool glm53_graph_dsa(ds4_glm53_gpu_graph *g,
+                            const ds4_model *model,
+                            const ds4_layer_weights *l,
+                            uint32_t il,
+                            uint32_t pos) {
+    const uint32_t qdim = DS4_N_HEAD * DS4_N_KEY_MLA;
+    return plain_graph_matmul_tensor(
+               g->q_rank, model, l->attn_q_a, DS4_N_EMBD,
+               DS4_N_LORA_Q, g->norm, 1u) &&
+           ds4_gpu_rms_norm_weight_tensor(
+               g->q_rank_norm, g->q_rank, model->map, model->size,
+               l->attn_q_a_norm->abs_offset, DS4_N_LORA_Q,
+               DS4_RMS_EPS) &&
+           plain_graph_matmul_tensor(
+               g->q, model, l->attn_q_b, DS4_N_LORA_Q,
+               qdim, g->q_rank_norm, 1u) &&
+           plain_graph_matmul_tensor(
+               g->kv_rank, model, l->attn_kv_a_mqa, DS4_N_EMBD,
+               DS4_N_KV_LORA, g->norm, 1u) &&
+           ds4_gpu_rms_norm_weight_tensor(
+               g->kv_rank_norm, g->kv_rank, model->map, model->size,
+               l->attn_kv_a_norm->abs_offset, DS4_N_KV_LORA,
+               DS4_RMS_EPS) &&
+           ds4_gpu_glm53_k_b_project_tensor(
+               g->k, g->kv_rank_norm, model->map, model->size,
+               l->attn_k_b->abs_offset, 1u, DS4_N_KV_LORA,
+               DS4_N_KEY_MLA, DS4_N_HEAD) &&
+           plain_graph_matmul_tensor(
+               g->v, model, l->attn_v_b, DS4_N_KV_LORA,
+               qdim, g->kv_rank_norm, 1u) &&
+           ds4_gpu_exaone_kv_store_tensor(
+               g->layer_kv[il], g->k, g->v, qdim,
+               1u, pos, g->ctx_cap) &&
+           ds4_gpu_exaone_attention_decode_tensor(
+               g->heads, g->q, g->layer_kv[il], DS4_N_HEAD,
+               DS4_N_HEAD, DS4_N_KEY_MLA, g->ctx_cap, pos, 0u) &&
+           plain_graph_matmul_tensor(
+               g->attn_out, model, l->attn_output, qdim,
+               DS4_N_EMBD, g->heads, 1u);
+}
+
+static bool glm53_graph_ffn(ds4_glm53_gpu_graph *g,
+                            const ds4_model *model,
+                            const ds4_layer_weights *l,
+                            uint32_t il) {
+    if (il < DS4_N_LEADING_DENSE) {
+        const uint32_t hidden = (uint32_t)l->ffn_gate->dim[1];
+        return plain_graph_matmul_tensor(
+                   g->ffn_gate, model, l->ffn_gate, DS4_N_EMBD,
+                   hidden, g->norm, 1u) &&
+               plain_graph_matmul_tensor(
+                   g->ffn_up, model, l->ffn_up, DS4_N_EMBD,
+                   hidden, g->norm, 1u) &&
+               ds4_gpu_swiglu_tensor(
+                   g->ffn_mid, g->ffn_gate, g->ffn_up, hidden,
+                   DS4_SWIGLU_CLAMP_EXP, 1.0f) &&
+               plain_graph_matmul_tensor(
+                   g->ffn_out, model, l->ffn_down, hidden,
+                   DS4_N_EMBD, g->ffn_mid, 1u);
+    }
+
+    if (!plain_graph_matmul_tensor(
+            g->kv_rank, model, l->ffn_gate_inp, DS4_N_EMBD,
+            DS4_N_EXPERT, g->norm, 1u) ||
+        !ds4_gpu_sigmoid_topk_router_tensor(
+            g->selected, g->route_weights, g->kv_rank,
+            model->map, model->size, l->ffn_exp_probs_b->abs_offset, 1,
+            DS4_N_EXPERT, DS4_N_EXPERT_USED, 1u,
+            DS4_EXPERT_WEIGHT_SCALE)) return false;
+
+    uint64_t gate_in = 0u, gate_out = 0u, gate_row = 0u;
+    uint64_t down_in = 0u, down_out = 0u, down_row = 0u;
+    (void)tensor_expert_bytes(
+        model, l->ffn_gate_exps, 0u, &gate_in, &gate_out, &gate_row);
+    (void)tensor_expert_bytes(
+        model, l->ffn_down_exps, 0u, &down_in, &down_out, &down_row);
+    const uint64_t gate_expert_bytes = gate_out * gate_row;
+    const uint64_t down_expert_bytes = down_out * down_row;
+    if (gate_in != DS4_N_EMBD || gate_out != DS4_N_FF_EXP ||
+        down_in != DS4_N_FF_EXP || down_out != DS4_N_EMBD ||
+        !ds4_gpu_routed_moe_one_tensor(
+            g->ffn_out, g->ffn_gate, g->ffn_up, g->ffn_mid,
+            g->routed_down, model->map, model->size,
+            l->ffn_gate_exps->abs_offset, l->ffn_up_exps->abs_offset,
+            l->ffn_down_exps->abs_offset, l->ffn_gate_exps->type,
+            l->ffn_down_exps->type, gate_expert_bytes, gate_row,
+            down_expert_bytes, down_row, DS4_N_EMBD, DS4_N_FF_EXP,
+            DS4_N_EMBD, g->selected, g->route_weights, DS4_N_EXPERT,
+            DS4_N_EXPERT_USED, DS4_SWIGLU_CLAMP_EXP, g->norm)) {
+        return false;
+    }
+
+    return plain_graph_matmul_tensor(
+               g->ffn_gate, model, l->ffn_gate_shexp, DS4_N_EMBD,
+               DS4_N_FF_EXP, g->norm, 1u) &&
+           plain_graph_matmul_tensor(
+               g->ffn_up, model, l->ffn_up_shexp, DS4_N_EMBD,
+               DS4_N_FF_EXP, g->norm, 1u) &&
+           ds4_gpu_swiglu_tensor(
+               g->ffn_mid, g->ffn_gate, g->ffn_up, DS4_N_FF_EXP,
+               DS4_SWIGLU_CLAMP_EXP, 1.0f) &&
+           plain_graph_matmul_tensor(
+               g->attn_out, model, l->ffn_down_shexp, DS4_N_FF_EXP,
+               DS4_N_EMBD, g->ffn_mid, 1u) &&
+           ds4_gpu_add_tensor(
+               g->ffn_out, g->ffn_out, g->attn_out, DS4_N_EMBD);
+}
+
+static bool glm53_graph_forward_token(ds4_glm53_gpu_graph *g,
+                                      const ds4_model *model,
+                                      const ds4_weights *weights,
+                                      int token,
+                                      uint32_t pos,
+                                      float *host_logits) {
+    if (!g || !g->ready || !model || !weights || token < 0 ||
+        (uint32_t)token >= DS4_N_VOCAB || pos >= g->ctx_cap ||
+        pos != g->cache_len) return false;
+    int32_t token_id = token;
+    if (!ds4_gpu_tensor_write(g->token, 0u, &token_id, sizeof(token_id)) ||
+        !ds4_gpu_embed_tokens_quant_tensor(
+            g->cur, g->token, model->map, model->size,
+            weights->token_embd->abs_offset, weights->token_embd->type,
+            (uint32_t)weights->token_embd->dim[1], 1u, DS4_N_EMBD) ||
+        !ds4_gpu_repeat_hc_tensor(
+            g->hc_cur, g->cur, DS4_N_EMBD, DS4_N_HC)) return false;
+
+    const uint32_t n_exec = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
+    for (uint32_t il = 0; il < n_exec; il++) {
+        const ds4_layer_weights *l = &weights->layer[il];
+        if (!glm53_graph_hc_pre(
+                g, model, l->hc_attn_fn, l->hc_attn_scale,
+                l->hc_attn_base, l->attn_norm, g->hc_cur)) {
+            fprintf(stderr, "ds4: GLM-5.3 layer %u attention mHC failed\n", il);
+            return false;
+        }
+        const bool attention_ok = ds4_glm53_layer_is_kda(il)
+            ? glm53_graph_kda(g, model, l, il)
+            : glm53_graph_dsa(g, model, l, il, pos);
+        if (!attention_ok) {
+            fprintf(stderr, "ds4: GLM-5.3 layer %u attention failed\n", il);
+            return false;
+        }
+        if (!ds4_gpu_hc_expand_split_tensor(
+                g->hc_after_attn, g->attn_out, g->hc_cur,
+                g->hc_split, DS4_N_EMBD, DS4_N_HC) ||
+            !glm53_graph_hc_pre(
+                g, model, l->hc_ffn_fn, l->hc_ffn_scale,
+                l->hc_ffn_base, l->ffn_norm, g->hc_after_attn)) {
+            fprintf(stderr, "ds4: GLM-5.3 layer %u FFN mHC failed\n", il);
+            return false;
+        }
+        if (!glm53_graph_ffn(g, model, l, il)) {
+            fprintf(stderr, "ds4: GLM-5.3 layer %u FFN failed\n", il);
+            return false;
+        }
+        if (!ds4_gpu_hc_expand_split_tensor(
+                g->hc_next, g->ffn_out, g->hc_after_attn,
+                g->hc_split, DS4_N_EMBD, DS4_N_HC)) {
+            fprintf(stderr, "ds4: GLM-5.3 layer %u FFN expand failed\n", il);
+            return false;
+        }
+        ds4_gpu_tensor *swap = g->hc_cur;
+        g->hc_cur = g->hc_next;
+        g->hc_next = swap;
+    }
+
+    if (host_logits &&
+        (!ds4_gpu_hc_weighted_sum_tensor(
+             g->cur, g->hc_cur, g->hc_mean, DS4_N_EMBD, DS4_N_HC) ||
+         !ds4_gpu_rms_norm_weight_tensor(
+             g->norm, g->cur, model->map, model->size,
+             weights->output_norm->abs_offset, DS4_N_EMBD, DS4_RMS_EPS) ||
+         !plain_graph_matmul_tensor(
+             g->logits, model, weights->output, DS4_N_EMBD,
+             DS4_N_VOCAB, g->norm, 1u) ||
+         !ds4_gpu_tensor_read(
+             g->logits, 0u, host_logits,
+             (uint64_t)DS4_N_VOCAB * sizeof(float)))) return false;
+    g->cache_len = pos + 1u;
+    return true;
+}
 #endif /* DS4_NO_GPU */
 
 struct ds4_session {
@@ -42343,6 +42902,8 @@ struct ds4_session {
     bool exaone_graph_ready;
     ds4_qwen_gpu_graph qwen_graph;
     bool qwen_graph_ready;
+    ds4_glm53_gpu_graph glm53_graph;
+    bool glm53_graph_ready;
 #endif
     ds4_kv_cache cpu_cache;
     ds4_cpu_decode_scratch cpu_scratch;
@@ -47122,6 +47683,10 @@ static DS4_MAYBE_UNUSED bool ds4_session_is_dots3(const ds4_session *s) {
 static DS4_MAYBE_UNUSED bool ds4_session_is_qwen4exp(const ds4_session *s) {
     return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP;
 }
+
+static DS4_MAYBE_UNUSED bool ds4_session_is_glm53(const ds4_session *s) {
+    return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53;
+}
 static uint32_t session_cpu_raw_live_rows(const ds4_session *s) {
     if (!s || !s->checkpoint_valid) return 0;
     uint32_t rows = ds4_default_raw_cap((uint32_t)s->ctx_size);
@@ -47177,7 +47742,8 @@ uint64_t ds4_session_layer_payload_bytes(ds4_session *s,
     if (!s || !s->checkpoint_valid ||
         !ds4_layer_payload_range_valid(layer_start, layer_end))
         return 0;
-    if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s)) return 0;
+    if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
+        ds4_session_is_glm53(s)) return 0;
     if (ds4_session_is_cpu(s)) return 0;
     /* EXAONE's dedicated K/V layout is not part of the DeepSeek disk
      * payload ABI. */
@@ -47643,7 +48209,8 @@ int ds4_session_save_layer_payload(ds4_session *s, FILE *fp,
         payload_set_err(err, errlen, "invalid session layer payload save");
         return 1;
     }
-    if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s)) {
+    if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
+        ds4_session_is_glm53(s)) {
         payload_set_err(err, errlen,
                         "this model family does not support distributed layer payloads");
         return 1;
@@ -47845,7 +48412,8 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
         payload_set_err(err, errlen, "invalid session layer payload load");
         return 1;
     }
-    if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s)) {
+    if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
+        ds4_session_is_glm53(s)) {
         payload_set_err(err, errlen,
                         "this model family does not support distributed layer payloads");
         return 1;
@@ -49391,6 +49959,7 @@ uint64_t ds4_session_payload_bytes(ds4_session *s) {
     if (!s || !s->checkpoint_valid) return 0;
     if (s->distributed) return 0;
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_glm53(s)) return 0;
     if (ds4_session_is_qwen4exp(s)) {
         if (!s->qwen_graph_ready ||
             s->qwen_graph.length != (uint32_t)s->checkpoint.len) return 0u;
@@ -49572,6 +50141,11 @@ int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen)
         return ds4_dist_session_save_payload(s->distributed, s, fp, err, errlen);
     }
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_glm53(s)) {
+        payload_set_err(err, errlen,
+                        "GLM-5.3 session snapshots are not supported");
+        return 1;
+    }
     if (ds4_session_is_qwen4exp(s)) {
         if (!s->qwen_graph_ready ||
             s->qwen_graph.length != (uint32_t)s->checkpoint.len) {
@@ -50025,6 +50599,16 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
     s->generation++;   /* Inc 5a: content replaced from disk (even on failure
                         * the old checkpoint is no longer trustworthy) */
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_glm53(s)) {
+        s->checkpoint_valid = false;
+        s->checkpoint.len = 0;
+        s->mtp_draft_valid = false;
+        if (s->glm53_graph_ready)
+            (void)glm53_graph_reset(&s->glm53_graph);
+        payload_set_err(err, errlen,
+                        "GLM-5.3 session snapshots are not supported");
+        return 1;
+    }
     if (ds4_session_is_qwen4exp(s)) {
         s->checkpoint_valid = false;
         s->checkpoint.len = 0;
@@ -63319,6 +63903,8 @@ ds4_chat_format ds4_engine_chat_format(ds4_engine *e) {
 
 int ds4_engine_layer_count(ds4_engine *e) {
     (void)e;
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53)
+        return (int)(DS4_N_LAYER - DS4_N_NEXTN_PREDICT);
     return (int)DS4_N_LAYER;
 }
 
@@ -63354,6 +63940,7 @@ bool ds4_engine_supports_batching(ds4_engine *e) {
      * multi-bank runtime is future work, and refusing here routes the
      * server onto the serial lane instead of the DeepSeek bank body. */
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE) return false;
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) return false;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
         const char *enabled = getenv("DS4_QWEN_BATCH");
         return enabled && enabled[0] == '1' && enabled[1] == '\0';
@@ -63541,6 +64128,47 @@ static uint32_t qwen4exp_graph_prefill_cap_for_context(uint32_t ctx_size) {
     return capacity;
 }
 
+static bool glm53_graph_session_fit_check(
+        ds4_backend backend, uint32_t ctx_size, bool loud,
+        ds4_session_graph_fit_quote *q) {
+    if (q) memset(q, 0, sizeof(*q));
+    const uint64_t plan = glm53_graph_bytes_estimate(ctx_size);
+    if (backend != DS4_BACKEND_CUDA || plan == 0u) return false;
+    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
+    if (fit && fit[0] == '0' && fit[1] == '\0') {
+        if (q) { q->fits = 1; q->fail_open = 1; }
+        return true;
+    }
+    uint64_t free_bytes = 0u, total_bytes = 0u;
+    if (ds4_gpu_mem_info(&free_bytes, &total_bytes) != 0) {
+        if (q) { q->fits = 1; q->fail_open = 1; }
+        return true;
+    }
+    const uint64_t substrate = ds4_gpu_substrate_outstanding();
+    free_bytes = free_bytes > substrate ? free_bytes - substrate : 0u;
+    const uint64_t headroom = ds4_session_graph_headroom_bytes();
+    const uint64_t ask = plan <= UINT64_MAX - headroom
+        ? plan + headroom : UINT64_MAX;
+    const bool fits = free_bytes >= ask;
+    if (q) {
+        q->fits = fits ? 1 : 0;
+        q->need_bytes = plan;
+        q->headroom_bytes = headroom;
+        q->avail_bytes = free_bytes;
+        q->deficit_bytes = fits ? 0u : ask - free_bytes;
+    }
+    if (!fits && loud) {
+        ds4_metric_add(&ds4_metrics_get()->graph_fit_refusals, 1);
+        fprintf(stderr,
+                "ds4: GLM-5.3 session graph fit check FAILED: need %.1f MiB "
+                "+ %.0f MiB headroom, free %.2f GiB (ctx=%u)\n",
+                (double)plan / 1048576.0,
+                (double)headroom / 1048576.0,
+                (double)free_bytes / 1073741824.0, ctx_size);
+    }
+    return fits;
+}
+
 static bool qwen4exp_graph_session_fit_check(ds4_backend backend,
                                               uint32_t ctx_size,
                                               uint32_t prefill_cap,
@@ -63622,6 +64250,32 @@ static uint64_t session_tensors_census_live(void) {
 
 static int ds4_session_alloc_graph(ds4_session *s) {
     ds4_engine *e = s->engine;
+    if (ds4_session_is_glm53(s)) {
+        const uint64_t est = glm53_graph_bytes_estimate((uint32_t)s->ctx_size);
+        ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, est, 0);
+        s->graph_alloc_bytes = 0u;
+        const uint64_t census_before = session_tensors_census_live();
+        ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
+        const bool ok = glm53_graph_session_fit_check(
+                e->backend, (uint32_t)s->ctx_size, true, NULL) &&
+            glm53_graph_alloc(&s->glm53_graph, &e->model, &e->weights,
+                              (uint32_t)s->ctx_size);
+        ds4_gpu_mem_scope_end();
+        if (!ok) {
+            glm53_graph_free(&s->glm53_graph);
+            s->glm53_graph_ready = false;
+            ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
+            return 1;
+        }
+        s->glm53_graph_ready = true;
+        const uint64_t census_after = session_tensors_census_live();
+        const uint64_t measured = census_after > census_before
+            ? census_after - census_before : 0u;
+        s->graph_alloc_bytes = measured ? measured : est;
+        ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION,
+                            s->graph_alloc_bytes, s->graph_alloc_bytes);
+        return 0;
+    }
     if (ds4_session_is_qwen4exp(s)) {
         const uint64_t est = qwen4exp_graph_bytes_estimate(
             (uint32_t)s->ctx_size, s->prefill_cap);
@@ -63860,6 +64514,11 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
         q->fits = (e->backend == DS4_BACKEND_CUDA && ctx_size <= 524288) ? 1 : 0;
         return q->fits;
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
+        q->fits = glm53_graph_session_fit_check(
+            e->backend, (uint32_t)ctx_size, false, q) ? 1 : 0;
+        return q->fits;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
         const uint32_t prefill_cap =
             qwen4exp_graph_prefill_cap_for_context((uint32_t)ctx_size);
@@ -63901,6 +64560,38 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
 
 int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
     if (!out || !e || ctx_size <= 0) return 1;
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
+#ifdef DS4_NO_GPU
+        fprintf(stderr, "ds4: GLM-5.3 sessions require the CUDA backend\n");
+        return 1;
+#else
+        if ((uint32_t)ctx_size > DS4_GLM53_RESIDENT_CTX_MAX ||
+            e->backend != DS4_BACKEND_CUDA || !e->metal_ready ||
+            e->distributed.role != DS4_DISTRIBUTED_NONE ||
+            e->mtp_ready || e->dspark_ready) {
+            fprintf(stderr,
+                    "ds4: GLM-5.3 sessions require one resident CUDA model, "
+                    "no DeepSeek sidecars, and ctx <= %u\n",
+                    DS4_GLM53_RESIDENT_CTX_MAX);
+            return 1;
+        }
+        ds4_session *s = xcalloc(1, sizeof(*s));
+        s->engine = e;
+        s->ctx_size = ctx_size;
+        s->generation = 1u;
+        s->prefill_cap = 1u;
+        s->logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(s->logits[0]));
+        if (ds4_session_lazy_graph_enabled()) {
+            s->graph_pending = true;
+        } else if (ds4_session_alloc_graph(s) != 0) {
+            free(s->logits);
+            free(s);
+            return 1;
+        }
+        *out = s;
+        return 0;
+#endif
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
 #ifdef DS4_NO_GPU
         fprintf(stderr, "ds4: Qwen4Exp sessions require the CUDA backend\n");
@@ -64110,7 +64801,11 @@ void ds4_session_free(ds4_session *s) {
     }
 #ifndef DS4_NO_GPU
     else {
-        if (ds4_session_is_qwen4exp(s)) {
+        if (ds4_session_is_glm53(s)) {
+            glm53_graph_free(&s->glm53_graph);
+            s->glm53_graph_ready = false;
+            ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
+        } else if (ds4_session_is_qwen4exp(s)) {
             qwen4exp_graph_free(&s->qwen_graph);
             s->qwen_graph_ready = false;
             ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
@@ -64176,7 +64871,7 @@ int ds4_session_set_power(ds4_session *s, int power_percent) {
 #ifndef DS4_NO_GPU
     if (!ds4_session_is_cpu(s) && !ds4_session_is_motif3(s) &&
         !ds4_session_is_exaone(s) && !ds4_session_is_dots3(s) &&
-        !ds4_session_is_qwen4exp(s))
+        !ds4_session_is_qwen4exp(s) && !ds4_session_is_glm53(s))
         s->graph.power_percent = (uint32_t)power_percent;
 #endif
     return 0;
@@ -64206,7 +64901,7 @@ int ds4_session_layer_slice_reset(ds4_session *s, char *err, size_t errlen) {
     }
     if (ds4_session_is_solar(s) || ds4_session_is_exaone(s) ||
         ds4_session_is_motif3(s) || ds4_session_is_dots3(s) ||
-        ds4_session_is_qwen4exp(s)) {
+        ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s)) {
         if (errlen) snprintf(err, errlen,
                              "layer-slice sessions do not support this model family");
         return 1;
@@ -64241,9 +64936,9 @@ int ds4_session_eval_output_head_from_hc(ds4_session *s,
         if (errlen) snprintf(err, errlen, "invalid output-head hidden-state input");
         return 1;
     }
-    if (ds4_session_is_qwen4exp(s)) {
+    if (ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s)) {
         if (errlen) snprintf(err, errlen,
-                             "Qwen4Exp does not expose the DeepSeek HC output-head ABI");
+                             "this model family does not expose the DeepSeek HC output-head ABI");
         return 1;
     }
 
@@ -64343,9 +65038,9 @@ int ds4_session_eval_layer_slice(ds4_session *s,
         if (errlen) snprintf(err, errlen, "missing layer-slice session");
         return 1;
     }
-    if (ds4_session_is_qwen4exp(s)) {
+    if (ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s)) {
         if (errlen) snprintf(err, errlen,
-                             "Qwen4Exp layer-slice execution is not supported");
+                             "this model family does not support layer-slice execution");
         return 1;
     }
     if (layer_start > layer_end || layer_end >= (uint32_t)DS4_N_LAYER) {
@@ -64806,6 +65501,49 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
     if (ds4_session_ensure_graph(s, err, errlen) != 0) return 1;   /* S6 lazy graph */
     ds4_engine *e = s->engine;
     const char *backend_name = ds4_backend_name(e->backend);
+    if (ds4_session_is_glm53(s)) {
+        ds4_glm53_gpu_graph *g = &s->glm53_graph;
+        if (!s->glm53_graph_ready) {
+            snprintf(err, errlen, "GLM-5.3 session graph is not initialized");
+            return 1;
+        }
+        int start = 0;
+        if (s->checkpoint_valid &&
+            g->cache_len == (uint32_t)s->checkpoint.len &&
+            prompt->len >= s->checkpoint.len &&
+            ds4_tokens_starts_with(prompt, &s->checkpoint)) {
+            start = s->checkpoint.len;
+            if (start == prompt->len) return 0;
+        } else {
+            s->generation++;
+            s->checkpoint_valid = false;
+            s->checkpoint.len = 0;
+            if (!glm53_graph_reset(g)) {
+                snprintf(err, errlen, "GLM-5.3 state reset failed");
+                return 1;
+            }
+        }
+        for (int i = start; i < prompt->len; i++) {
+            const bool last = i + 1 == prompt->len;
+            if (!glm53_graph_forward_token(
+                    g, &e->model, &e->weights, prompt->v[i],
+                    (uint32_t)i, last ? s->logits : NULL)) {
+                snprintf(err, errlen,
+                         "GLM-5.3 prefill failed at position %d", i);
+                s->checkpoint_valid = false;
+                s->checkpoint.len = 0;
+                (void)glm53_graph_reset(g);
+                return 1;
+            }
+            if (s->progress)
+                s->progress(s->progress_ud, "prefill_chunk", i + 1,
+                            prompt->len);
+        }
+        ds4_tokens_copy(&s->checkpoint, prompt);
+        s->checkpoint_valid = true;
+        s->mtp_draft_valid = false;
+        return 0;
+    }
     if (ds4_session_is_qwen4exp(s)) {
         ds4_qwen_gpu_graph *g = &s->qwen_graph;
         if (!s->qwen_graph_ready || g->capacity != s->prefill_cap) {
@@ -65349,6 +66087,31 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
 #else
     if (ds4_session_ensure_graph(s, err, errlen) != 0) return 1;   /* S6 lazy graph */
     ds4_engine *e = s->engine;
+    if (ds4_session_is_glm53(s)) {
+        ds4_glm53_gpu_graph *g = &s->glm53_graph;
+        (void)probe_mtp;
+        if (!s->glm53_graph_ready || !s->checkpoint_valid ||
+            g->cache_len != (uint32_t)s->checkpoint.len) {
+            if (errlen) snprintf(err, errlen,
+                                 "GLM-5.3 decode requires a valid checkpoint");
+            return 1;
+        }
+        if (!glm53_graph_forward_token(
+                g, &e->model, &e->weights, token,
+                (uint32_t)s->checkpoint.len, s->logits)) {
+            if (errlen) snprintf(err, errlen,
+                                 "GLM-5.3 decode failed at position %d",
+                                 s->checkpoint.len);
+            s->checkpoint_valid = false;
+            s->checkpoint.len = 0;
+            (void)glm53_graph_reset(g);
+            return 1;
+        }
+        token_vec_push(&s->checkpoint, token);
+        s->checkpoint_valid = true;
+        s->mtp_draft_valid = false;
+        return 0;
+    }
     if (ds4_session_is_qwen4exp(s)) {
         ds4_qwen_gpu_graph *g = &s->qwen_graph;
         (void)probe_mtp;
@@ -67188,7 +67951,9 @@ void ds4_session_invalidate(ds4_session *s) {
     s->checkpoint.len = 0;
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_solar(s)) {
+    if (ds4_session_is_glm53(s) && s->glm53_graph_ready) {
+        (void)glm53_graph_reset(&s->glm53_graph);
+    } else if (ds4_session_is_solar(s)) {
         s->solar_state_valid = false;
         if (s->solar_graph_ready &&
             solar_graph_reset_state(&s->solar_graph)) {
@@ -67215,7 +67980,11 @@ void ds4_session_rewind(ds4_session *s, int pos) {
     s->checkpoint.len = pos;
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_solar(s) && pos != old_pos) {
+    if (ds4_session_is_glm53(s) && pos != old_pos) {
+        s->checkpoint_valid = false;
+        if (s->glm53_graph_ready)
+            (void)glm53_graph_reset(&s->glm53_graph);
+    } else if (ds4_session_is_solar(s) && pos != old_pos) {
         /* KDA recurrence is not invertible.  Keep the caller-visible token
          * prefix, but force a replay before the next decode. */
         s->checkpoint_valid = false;

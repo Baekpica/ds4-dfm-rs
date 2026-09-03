@@ -6617,6 +6617,17 @@ int ds4_gpu_matmul_q4_K_tensor(
     return 0;
 }
 
+int ds4_gpu_glm53_k_b_project_tensor(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *kv_norm,
+        const void *model_map, uint64_t model_size, uint64_t weight_offset,
+        uint32_t n_tokens, uint32_t kv_lora_dim, uint32_t head_dim,
+        uint32_t n_head) {
+    (void)out; (void)kv_norm; (void)model_map; (void)model_size;
+    (void)weight_offset; (void)n_tokens; (void)kv_lora_dim;
+    (void)head_dim; (void)n_head;
+    return 0;
+}
+
 int ds4_gpu_q8_0_row_group_norms_tensor(
         ds4_gpu_tensor       *row_group_norms,
         const void             *model_map,

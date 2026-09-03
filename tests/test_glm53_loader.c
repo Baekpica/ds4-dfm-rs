@@ -49,7 +49,10 @@ int main(int argc, char **argv) {
         !weights.layer[0].kda_q || !weights.layer[3].attn_k_b ||
         !weights.layer[3].indexer_compressor_gate ||
         !weights.layer[44].ffn_down_exps ||
-        !weights.layer[45].nextn_eh_proj) {
+        !weights.layer[45].nextn_eh_proj ||
+        weights.token_embd->type != DS4_TENSOR_Q8_0 ||
+        weights.token_embd->dim[0] != DS4_N_EMBD ||
+        weights.token_embd->dim[1] != DS4_N_VOCAB) {
         fprintf(stderr, "GLM 5.3 native tensor binding is incomplete\n");
         model_close(&model);
         return 1;

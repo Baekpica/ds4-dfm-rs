@@ -152,7 +152,7 @@ static void cpu_step(float *out, cpu_kda_state *cache,
                 const float raw =
                     g_raw[base + key_dim] + dt_bias[base + key_dim];
                 float gate = glm53
-                    ? -5.0f / (1.0f + expf(decay_scale[head] * raw))
+                    ? -5.0f / (1.0f + expf(-expf(decay_scale[head]) * raw))
                     : decay_scale[head] * softplus_ref(raw);
                 if (!glm53 && gate < -5.0f) gate = -5.0f;
                 const size_t index = state_base + (size_t)key_dim * T_DIM + value_dim;
