@@ -200,6 +200,22 @@ The current family contract and measured model-specific limits are documented
 in [`ds4-dfm-model-families.md`](docs/ds4-dfm-model-families.md). Arbitrary
 GGUFs, alternate tensor layouts, and unlisted architectures are rejected.
 
+### Model Zoo
+
+The five Baekpica artifacts are grouped in the
+[`DS4-Mixed-Quant-for-Spark`](https://huggingface.co/collections/Baekpica/ds4-mixed-quant-for-spark)
+collection. Support remains limited to the validated layouts described above.
+
+| Model | GGUF artifact | Artifact by |
+|---|---|---|
+| DeepSeek V4 Flash / PRO | [`antirez/deepseek-v4-gguf`](https://huggingface.co/antirez/deepseek-v4-gguf/tree/main) | [`antirez`](https://huggingface.co/antirez) |
+| Solar Open2 250B | [`Baekpica/Solar-Open2-250B-Mixed-Quant-GGUF`](https://huggingface.co/Baekpica/Solar-Open2-250B-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
+| K-EXAONE 236B A23B | [`Baekpica/K-EXAONE-236B-A23B-Mixed-Quant-GGUF`](https://huggingface.co/Baekpica/K-EXAONE-236B-A23B-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
+| Motif-3 | [`Baekpica/Motif-3-Mixed-Quant-GGUF`](https://huggingface.co/Baekpica/Motif-3-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
+| dots3-note Preview | [`Baekpica/dots3-note-prev-Mixed-Quant-GGUF`](https://huggingface.co/Baekpica/dots3-note-prev-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
+| Qwen3.8 Flash Next SSD-PLE | [`Baekpica/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF`](https://huggingface.co/Baekpica/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
+| GLM 5.3 Flash | [`GLM-5.3-Flash-Q2.gguf`](https://huggingface.co/antirez/glm-5.3-flash-gguf/blob/main/GLM-5.3-Flash-Q2.gguf) + [`vision encoder`](https://huggingface.co/antirez/glm-5.3-flash-gguf/blob/main/GLM-5.3-Flash-Vision-Encoder.gguf) | [`antirez`](https://huggingface.co/antirez) |
+
 ### Qwen release scope
 
 The Qwen RC claim is deliberately narrow:
