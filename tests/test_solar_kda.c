@@ -123,7 +123,7 @@ static void cpu_step(float *out, cpu_kda_state *cache,
                      const float *g_raw, const float *beta_logits,
                      const float *q_weight, const float *k_weight,
                      const float *v_weight, const float *decay_scale,
-                     const float *dt_bias) {
+                     const float *dt_bias, int glm53) {
     float q[T_VECTOR], k[T_VECTOR], v[T_VECTOR];
     conv_one(q, cache->q_conv, q_raw, q_weight);
     conv_one(k, cache->k_conv, k_raw, k_weight);
@@ -143,14 +143,18 @@ static void cpu_step(float *out, cpu_kda_state *cache,
             k[base + d] *= k_scale;
         }
 
-        const float beta = 2.0f / (1.0f + expf(-beta_logits[head]));
+        const float beta = (glm53 ? 1.0f : 2.0f) /
+            (1.0f + expf(-beta_logits[head]));
         const size_t state_base = (size_t)head * T_DIM * T_DIM;
         for (uint32_t value_dim = 0; value_dim < T_DIM; value_dim++) {
             float memory = 0.0f;
             for (uint32_t key_dim = 0; key_dim < T_DIM; key_dim++) {
-                float gate = decay_scale[head] *
-                    softplus_ref(g_raw[base + key_dim] + dt_bias[base + key_dim]);
-                if (gate < -5.0f) gate = -5.0f;
+                const float raw =
+                    g_raw[base + key_dim] + dt_bias[base + key_dim];
+                float gate = glm53
+                    ? -5.0f / (1.0f + expf(decay_scale[head] * raw))
+                    : decay_scale[head] * softplus_ref(raw);
+                if (!glm53 && gate < -5.0f) gate = -5.0f;
                 const size_t index = state_base + (size_t)key_dim * T_DIM + value_dim;
                 cache->state[index] *= expf(gate);
                 memory += cache->state[index] * k[base + key_dim];
@@ -252,7 +256,16 @@ static int gpu_write_token(const gpu_kda_inputs *inputs, const float *q,
     return 1;
 }
 
-static int gpu_step(gpu_kda_state *state, const gpu_kda_inputs *inputs) {
+static int gpu_step(gpu_kda_state *state, const gpu_kda_inputs *inputs,
+                    int glm53) {
+    if (glm53) {
+        return ds4_gpu_glm53_kda_decode_tensor(
+            state->out, state->state, state->q_conv, state->k_conv,
+            state->v_conv, inputs->q, inputs->k, inputs->v, inputs->g,
+            inputs->beta, inputs->q_weight, inputs->k_weight,
+            inputs->v_weight, inputs->decay, inputs->dt,
+            T_HEAD, T_DIM, T_CONV, -5.0f);
+    }
     return ds4_gpu_solar_kda_decode_tensor(
         state->out, state->state, state->q_conv, state->k_conv, state->v_conv,
         inputs->q, inputs->k, inputs->v, inputs->g, inputs->beta,
@@ -324,7 +337,7 @@ static void test_banked_decode(
                  v + (size_t)row * T_VECTOR,
                  g + (size_t)row * T_VECTOR,
                  beta + (size_t)row * T_HEAD,
-                 q_weight, k_weight, v_weight, decay, dt);
+                 q_weight, k_weight, v_weight, decay, dt, 0);
     }
 
     ds4_gpu_tensor *state_slab = ds4_gpu_tensor_alloc(
@@ -447,10 +460,10 @@ int main(void) {
     for (uint32_t token = 0; token < T_TOKENS; token++) {
         make_token(token, q, k, v, g, beta);
         REQUIRE(gpu_write_token(&inputs, q, k, v, g, beta), "write token");
-        REQUIRE(gpu_step(&primary, &inputs), "KDA kernel launch");
+        REQUIRE(gpu_step(&primary, &inputs, 0), "KDA kernel launch");
         REQUIRE(ds4_gpu_tensor_read(primary.out, 0, gpu_out, sizeof(gpu_out)), "read output");
         cpu_step(cpu_out, &cpu_cache, q, k, v, g, beta,
-                 q_weight, k_weight, v_weight, decay, dt);
+                 q_weight, k_weight, v_weight, decay, dt, 0);
         char label[64];
         snprintf(label, sizeof(label), "continuation token %u", token);
         compare(label, gpu_out, cpu_out, T_VECTOR, 3.0e-5, 3.0e-4);
@@ -470,15 +483,15 @@ int main(void) {
     REQUIRE(gpu_reset_state(&primary), "state reset");
     make_token(0, q, k, v, g, beta);
     REQUIRE(gpu_write_token(&inputs, q, k, v, g, beta), "write reset token");
-    REQUIRE(gpu_step(&primary, &inputs), "reset decode");
+    REQUIRE(gpu_step(&primary, &inputs, 0), "reset decode");
     REQUIRE(ds4_gpu_tensor_read(primary.out, 0, gpu_out, sizeof(gpu_out)), "read reset output");
     compare("reset identity", gpu_out, first_out, T_VECTOR, 1.0e-7, 1.0e-6);
 
     REQUIRE(gpu_copy_state(&forked, &primary), "fork state copy");
     make_token(1, q, k, v, g, beta);
     REQUIRE(gpu_write_token(&inputs, q, k, v, g, beta), "write fork token");
-    REQUIRE(gpu_step(&primary, &inputs), "primary fork decode");
-    REQUIRE(gpu_step(&forked, &inputs), "copied fork decode");
+    REQUIRE(gpu_step(&primary, &inputs, 0), "primary fork decode");
+    REQUIRE(gpu_step(&forked, &inputs, 0), "copied fork decode");
     REQUIRE(ds4_gpu_tensor_read(primary.out, 0, gpu_out, sizeof(gpu_out)), "read primary fork");
     REQUIRE(ds4_gpu_tensor_read(forked.out, 0, cpu_out, sizeof(cpu_out)), "read copied fork");
     compare("fork output identity", gpu_out, cpu_out, T_VECTOR, 1.0e-7, 1.0e-6);
@@ -491,11 +504,33 @@ int main(void) {
     puts("== Solar Open 2 banked CUDA KDA decode ==");
     test_banked_decode(&inputs, q_weight, k_weight, v_weight, decay, dt);
 
+    puts("== GLM 5.3 CUDA KDA decode ==");
+    REQUIRE(gpu_reset_state(&primary), "GLM 5.3 state reset");
+    memset(&cpu_cache, 0, sizeof(cpu_cache));
+    for (uint32_t token = 0; token < T_TOKENS; token++) {
+        make_token(token, q, k, v, g, beta);
+        REQUIRE(gpu_write_token(&inputs, q, k, v, g, beta),
+                "write GLM 5.3 token");
+        REQUIRE(gpu_step(&primary, &inputs, 1), "GLM 5.3 KDA kernel launch");
+        REQUIRE(ds4_gpu_tensor_read(primary.out, 0, gpu_out, sizeof(gpu_out)),
+                "read GLM 5.3 output");
+        cpu_step(cpu_out, &cpu_cache, q, k, v, g, beta,
+                 q_weight, k_weight, v_weight, decay, dt, 1);
+        char label[64];
+        snprintf(label, sizeof(label), "GLM 5.3 token %u", token);
+        compare(label, gpu_out, cpu_out, T_VECTOR, 3.0e-5, 3.0e-4);
+    }
+    REQUIRE(ds4_gpu_tensor_read(primary.state, 0, gpu_recurrent,
+                                sizeof(gpu_recurrent)),
+            "read GLM 5.3 recurrent state");
+    compare("GLM 5.3 recurrent state", gpu_recurrent, cpu_cache.state,
+            T_STATE, 5.0e-5, 5.0e-4);
+
     gpu_state_free(&forked);
     gpu_state_free(&primary);
     gpu_inputs_free(&inputs);
     ds4_gpu_cleanup();
 
-    printf("%s\n", failures ? "Solar KDA checks FAILED" : "all Solar KDA checks passed");
+    printf("%s\n", failures ? "KDA checks FAILED" : "all Solar/GLM KDA checks passed");
     return failures ? 1 : 0;
 }

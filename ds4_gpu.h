@@ -3660,6 +3660,29 @@ int ds4_gpu_solar_kda_decode_tensor(
         uint32_t                conv_kernel,
         float                   gate_lower_bound);
 
+/* GLM 5.3 shares Solar's KDA state layout but uses sigmoid beta and
+ * sigmoid-bounded log decay. */
+int ds4_gpu_glm53_kda_decode_tensor(
+        ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *recurrent_state,
+        ds4_gpu_tensor       *q_conv_state,
+        ds4_gpu_tensor       *k_conv_state,
+        ds4_gpu_tensor       *v_conv_state,
+        const ds4_gpu_tensor *q_raw,
+        const ds4_gpu_tensor *k_raw,
+        const ds4_gpu_tensor *v_raw,
+        const ds4_gpu_tensor *g_raw,
+        const ds4_gpu_tensor *beta_logits,
+        const ds4_gpu_tensor *q_conv_weight,
+        const ds4_gpu_tensor *k_conv_weight,
+        const ds4_gpu_tensor *v_conv_weight,
+        const ds4_gpu_tensor *decay_scale,
+        const ds4_gpu_tensor *dt_bias,
+        uint32_t                n_head,
+        uint32_t                head_dim,
+        uint32_t                conv_kernel,
+        float                   gate_lower_bound);
+
 /* Independent single-token rows backed by a bank-major Solar state slab.
  * Offsets are byte offsets inside one bank; bank_ids selects the bank owned
  * by each token row.  This is the continuous-batching decode primitive: unlike
