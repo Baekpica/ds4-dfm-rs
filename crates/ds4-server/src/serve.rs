@@ -1248,6 +1248,7 @@ fn run_engine<W: TerminalSink>(
 ) -> (u8, Settlement) {
     if dec.lane == LANE_CONTINUOUS {
         if let Some(exec) = cont.as_mut() {
+            exec.set_stop_requested(cfg.stop_requested);
             if let Some(settlement) = refuse_bank_continuation(cfg, inner, job, *exec, out) {
                 return (LANE_CONTINUOUS, settlement);
             }
@@ -1534,6 +1535,7 @@ fn run_serial<W: TerminalSink>(
         cfg.cors,
         cfg.default_tokens,
         arrived_at,
+        cfg.stop_requested,
         out,
     );
     let (generated, terminal) = match result {
@@ -1555,7 +1557,11 @@ fn run_serial<W: TerminalSink>(
     }
     lock_inner(inner).creg.demote_serial();
     if out.write_all(&terminal).is_ok() {
-        Settlement::COMPLETED
+        if generated.finish == "error" {
+            Settlement::FAILED
+        } else {
+            Settlement::COMPLETED
+        }
     } else {
         Settlement::CANCELED
     }
@@ -1807,6 +1813,7 @@ fn settle_generation_result<W: TerminalSink>(
     out: &mut W,
 ) -> Settlement {
     match result {
+        Ok(outcome) if outcome.finish == "error" => Settlement::FAILED,
         Ok(_) => Settlement::COMPLETED,
         Err(GenerateError::Io) => Settlement::CANCELED,
         Err(GenerateError::Streamed(_)) => Settlement::FAILED,
@@ -2104,6 +2111,9 @@ fn owner_loop(
     mut cont: Option<&mut dyn ContExec>,
 ) {
     let inner = Arc::new(Mutex::new(ServerInner::from_cfg(&cfg)));
+    if let Some(exec) = cont.as_deref_mut() {
+        exec.set_stop_requested(cfg.stop_requested);
+    }
     let polling_stop = cfg.stop_requested.is_some();
     if polling_stop {
         if let Err(error) = listener.set_nonblocking(true) {
@@ -2228,10 +2238,15 @@ mod owner_tests {
 
     static TEST_STOP: AtomicBool = AtomicBool::new(false);
     static TEST_STOP_POLLS: AtomicUsize = AtomicUsize::new(0);
+    static DECODE_STOP: AtomicBool = AtomicBool::new(false);
 
     fn test_stop_requested() -> bool {
         TEST_STOP_POLLS.fetch_add(1, Ordering::Relaxed);
         TEST_STOP.load(Ordering::Relaxed)
+    }
+
+    fn decode_stop_requested() -> bool {
+        DECODE_STOP.load(Ordering::Relaxed)
     }
 
     enum TestCont {
@@ -3458,6 +3473,34 @@ mod owner_tests {
         let response = String::from_utf8(settle_drain(drain)).unwrap();
         let ttft_ms = response_number(&response, "\"ttft_ms\":");
         assert!(ttft_ms >= 80.0, "ttft={ttft_ms} response={response}");
+    }
+
+    #[test]
+    fn active_serial_decode_finishes_as_failed_when_shutdown_is_requested() {
+        let mut cfg = test_cfg();
+        cfg.stop_requested = Some(decode_stop_requested);
+        let inner = Arc::new(Mutex::new(ServerInner::from_cfg(&cfg)));
+        let mut prepared = queued_completion("shutdown", 15);
+        prepared.parsed.stream = true;
+        prepared.parsed.max_tokens = 8;
+        prepared.parsed.max_tokens_set = true;
+        let lease = admit_test_job(&inner, &mut prepared);
+        let (job, drain) = owner_job(prepared, lease);
+        let mut engine = ScriptedDecode::from_pieces(&[b"must-not-run"]);
+        DECODE_STOP.store(true, Ordering::Relaxed);
+
+        run_owner_job(&cfg, &inner, &mut engine, None, job);
+        DECODE_STOP.store(false, Ordering::Relaxed);
+        let response = String::from_utf8(settle_drain(drain)).unwrap();
+
+        assert_eq!(engine.idx, 0, "decode sampled after shutdown: {response}");
+        assert!(
+            response.contains("\"finish_reason\":\"error\""),
+            "{response}"
+        );
+        let g = lock_inner(&inner);
+        assert_eq!(g.runtime.requests_failed, 1);
+        assert_eq!(g.runtime.requests_completed, 0);
     }
 
     #[test]

@@ -1373,6 +1373,7 @@ pub trait ContSource {
 pub trait ContExec {
     fn model_id(&self) -> i32;
     fn seq_cap(&self) -> i32;
+    fn set_stop_requested(&mut self, _stop_requested: Option<fn() -> bool>) {}
     /// Number of persistent continuous banks available to this executor.
     fn max_seq(&self) -> i32 {
         1
@@ -1517,6 +1518,7 @@ mod native {
         warm_checkpoint: bool,
         tool_memory: ToolMemory,
         memgov: Box<dyn crate::serve_cont_roll::ContMemGov>,
+        stop_requested: Option<fn() -> bool>,
     }
 
     struct WarmAdmitPlan {
@@ -1532,6 +1534,7 @@ mod native {
         stepper: ContStepper,
         capture_done: bool,
         t_arrive: Instant,
+        stop_requested: Option<fn() -> bool>,
     }
 
     struct PreparedImages {
@@ -1662,6 +1665,7 @@ mod native {
                 host_abort: false,
                 engine_eos: false,
                 capture_done: self.capture_done,
+                stop_requested: self.stop_requested,
                 done_tokens: Vec::new(),
                 n_cached: 0,
                 n_computed: 0,
@@ -1690,6 +1694,7 @@ mod native {
         host_abort: bool,
         engine_eos: bool,
         capture_done: bool,
+        stop_requested: Option<fn() -> bool>,
         done_tokens: Vec<i32>,
         n_cached: i32,
         n_computed: i32,
@@ -1704,6 +1709,10 @@ mod native {
 
     impl JobSlot<'_> {
         fn transport_alive(&mut self) -> bool {
+            if self.stepper.stop_for_shutdown(self.stop_requested) {
+                self.host_abort = true;
+                return false;
+            }
             if self.admitted {
                 let heartbeat = self.stepper.heartbeat(Instant::now());
                 self.push(&heartbeat);
@@ -1762,7 +1771,7 @@ mod native {
             if let Some(head) = self.head.take() {
                 self.push(&head);
             }
-            !self.io_failed
+            self.transport_alive()
         }
 
         fn done(
@@ -2115,6 +2124,7 @@ mod native {
                     warm_checkpoint,
                     tool_memory: ToolMemory::default(),
                     memgov: Box::new(crate::serve_cont_roll::AdmitAlways),
+                    stop_requested: None,
                 },
             }
         }
@@ -2822,6 +2832,7 @@ mod native {
                 stepper,
                 capture_done,
                 t_arrive: work.t_arrive,
+                stop_requested: self.stop_requested,
             })
         }
 
@@ -2977,6 +2988,10 @@ mod native {
     impl ContExec for ContLane<'_> {
         fn model_id(&self) -> i32 {
             self.host.model_id
+        }
+
+        fn set_stop_requested(&mut self, stop_requested: Option<fn() -> bool>) {
+            self.host.stop_requested = stop_requested;
         }
 
         fn as_static(&mut self) -> Option<&mut dyn StaticExec> {
@@ -3182,6 +3197,15 @@ impl ContStepper {
     pub fn mark_stop(&mut self) {
         self.finish = "stop";
     }
+
+    #[cfg(any(feature = "native", test))]
+    fn stop_for_shutdown(&mut self, stop_requested: Option<fn() -> bool>) -> bool {
+        if !stop_requested.is_some_and(|stop| stop()) {
+            return false;
+        }
+        self.finish = "error";
+        true
+    }
 }
 
 #[cfg(test)]
@@ -3191,6 +3215,10 @@ mod bank_tests {
     use crate::route::{Api, ReqKind, ThinkMode};
     use ds4_kv::{Options, Reason, Store, EXT_BANK_REPLAY_V1, EXT_TOOL_MAP};
     use std::fs;
+
+    fn shutdown_requested() -> bool {
+        true
+    }
 
     #[test]
     fn shallow_agent_sessions_persist_without_becoming_resident_pinned() {
@@ -3227,6 +3255,27 @@ mod bank_tests {
         let heartbeat = String::from_utf8(heartbeat).unwrap();
         assert!(heartbeat.contains("\"type\":\"response.in_progress\""));
         assert!(heartbeat.contains("\"sequence_number\":1"));
+    }
+
+    #[test]
+    fn continuous_shutdown_marks_a_protocol_failure_before_row_abort() {
+        let parsed =
+            parse_responses_request(&ParseEnv::default(), r#"{"input":"hello","stream":true}"#)
+                .unwrap();
+        let (mut stepper, _) = ContStepper::new(
+            &parsed,
+            0,
+            "shutdown",
+            7,
+            false,
+            16,
+            b"prompt".to_vec(),
+            1,
+            32,
+        );
+
+        assert!(stepper.stop_for_shutdown(Some(shutdown_requested)));
+        assert_eq!(stepper.finish, "error");
     }
 
     #[test]

@@ -45,6 +45,9 @@ pub(super) fn run_owner_maybe_roll(
     let mut jobs = vec![job];
     let mut lookahead = None;
     while jobs.len() < cap {
+        if stop_requested(cfg) {
+            break;
+        }
         let next = match jobs_rx.try_recv() {
             Ok(job) => job,
             Err(TryRecvError::Disconnected) => break,
@@ -116,6 +119,9 @@ impl ContSource for OwnerRollSource<'_> {
         }
         loop {
             let primed = self.primed.is_some();
+            if !primed && stop_requested(self.cfg) {
+                return None;
+            }
             let mut job = match self.primed.take() {
                 Some(job) => job,
                 None => match self.jobs_rx.try_recv() {

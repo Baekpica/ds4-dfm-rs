@@ -1040,9 +1040,14 @@ fn decode_pass(
     mut resp: Option<&mut ResponsesStream>,
     first_tok: &mut Option<Instant>,
     decode_steps: &mut i32,
+    stop_requested: Option<fn() -> bool>,
 ) -> Result<(), GenerateError> {
     let mut last_heartbeat = Instant::now();
     while acc.completion < max_tokens && engine.pos() < engine.ctx() {
+        if stop_requested.is_some_and(|stop| stop()) {
+            *finish = "error";
+            break;
+        }
         out.flush().map_err(|_| GenerateError::Io)?;
         if continued_decode_allowed(acc) {
             store_continued_best_effort(engine);
@@ -1254,6 +1259,7 @@ pub(crate) fn generate_terminal_at(
         cors,
         default_tokens,
         t_arrive,
+        None,
         out,
     )
 }
@@ -1267,6 +1273,7 @@ pub(crate) fn generate_terminal_prepared(
     cors: bool,
     default_tokens: i32,
     t_arrive: Instant,
+    stop_requested: Option<fn() -> bool>,
     out: &mut impl Write,
 ) -> Result<(GenerateOutcome, Vec<u8>), GenerateError> {
     let PreparedSerialPrompt {
@@ -1382,6 +1389,7 @@ pub(crate) fn generate_terminal_prepared(
             resp.as_mut(),
             &mut first_tok,
             &mut decode_steps,
+            stop_requested,
         );
         if let Err(error) = decoded {
             if !req.stream || matches!(&error, GenerateError::Io) {
