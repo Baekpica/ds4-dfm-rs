@@ -378,8 +378,9 @@ impl ToolMemory {
         model_id: u8,
         messages: &[ChatMsg],
     ) -> usize {
-        let wanted = Self::wanted_ids(messages);
-        if wanted.is_empty() {
+        let mut missing = Self::wanted_ids(messages);
+        missing.retain(|id| !self.by_id.contains_key(id));
+        if missing.is_empty() {
             return 0;
         }
         let paths: Vec<_> = store
@@ -396,7 +397,11 @@ impl ToolMemory {
                 continue;
             };
             if header.model_id == model_id && header.ext_flags & EXT_TOOL_MAP != 0 {
-                loaded += self.load_trailer(&trailer, &wanted);
+                loaded += self.load_trailer(&trailer, &missing);
+                missing.retain(|id| !self.by_id.contains_key(id));
+                if missing.is_empty() {
+                    break;
+                }
             }
         }
         loaded
@@ -958,6 +963,16 @@ mod tests {
         assert!(!memory.contains_id("call_skip"));
         assert_eq!(memory.attach(&mut messages), 1);
         assert_eq!(messages[0].raw_dsml, raw);
+
+        let fresh = dsml("fresh");
+        memory.put("call_want", &fresh, Source::Ram);
+        assert_eq!(memory.restore_store(&store, 2, &messages), 0);
+        let mut replay = vec![ChatMsg {
+            calls: calls(&["call_want"]),
+            ..Default::default()
+        }];
+        assert_eq!(memory.attach(&mut replay), 1);
+        assert_eq!(replay[0].raw_dsml, fresh);
         let _ = fs::remove_dir_all(dir);
     }
 }
