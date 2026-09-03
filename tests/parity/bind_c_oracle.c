@@ -13,7 +13,8 @@ typedef enum {
     DS4_MODEL_FAMILY_MOTIF3 = 2,
     DS4_MODEL_FAMILY_EXAONE_MOE = 3,
     DS4_MODEL_FAMILY_DOTS3_NOTE = 4,
-    DS4_MODEL_FAMILY_QWEN4EXP = 5
+    DS4_MODEL_FAMILY_QWEN4EXP = 5,
+    DS4_MODEL_FAMILY_GLM53 = 6
 } ds4_model_family;
 
 typedef enum {
@@ -23,7 +24,8 @@ typedef enum {
     DS4_VARIANT_MOTIF3 = 3,
     DS4_VARIANT_KEXAONE_236B = 4,
     DS4_VARIANT_DOTS3_NOTE_PREV = 5,
-    DS4_VARIANT_QWEN38_FLASH_NEXT = 6
+    DS4_VARIANT_QWEN38_FLASH_NEXT = 6,
+    DS4_VARIANT_GLM53_FLASH = 7
 } ds4_variant;
 
 typedef struct {
@@ -66,6 +68,10 @@ static const bind_shape SHAPE_QWEN = {
     "Qwen3.8-Flash-Next", DS4_MODEL_FAMILY_QWEN4EXP, DS4_VARIANT_QWEN38_FLASH_NEXT,
     48, 0, 4, 1, 0, true
 };
+static const bind_shape SHAPE_GLM53 = {
+    "GLM 5.3 Flash", DS4_MODEL_FAMILY_GLM53, DS4_VARIANT_GLM53_FLASH,
+    46, 0, 0, 1, 3, false
+};
 
 static uint32_t g_n, g_req, g_opt;
 
@@ -97,8 +103,79 @@ static bool qwen4exp_layer_is_full_attention(const bind_shape *s, uint32_t il) {
            s->n_swa_period != 0 && (il % s->n_swa_period) == 3u;
 }
 
+static void emit(const char *name, int required);
+static void emitf(const char *fmt, uint32_t il, int required);
+
 static bool is_nextn(const bind_shape *s, uint32_t il) {
     return s->n_nextn_predict != 0 && il + s->n_nextn_predict >= s->n_layer;
+}
+
+static bool glm53_layer_is_kda(const bind_shape *s, uint32_t il) {
+    return s->family == DS4_MODEL_FAMILY_GLM53 && il < s->n_layer &&
+           !is_nextn(s, il) && (il % 4u) != 3u;
+}
+
+static void bind_glm53_layer(const bind_shape *s, uint32_t il) {
+    static const char *const hc[] = {
+        "hc_attn_fn.weight", "hc_attn_scale.weight", "hc_attn_base.weight",
+        "hc_ffn_fn.weight", "hc_ffn_scale.weight", "hc_ffn_base.weight"
+    };
+    static const char *const kda[] = {
+        "kda_q.weight", "kda_k.weight", "kda_v.weight",
+        "kda_q_conv.weight", "kda_k_conv.weight", "kda_v_conv.weight",
+        "kda_f_a.weight", "kda_f_b.weight", "kda_dt_bias.weight",
+        "kda_a_log.weight", "kda_beta.weight", "kda_g_a.weight",
+        "kda_g_b.weight", "kda_o_norm.weight", "kda_output.weight"
+    };
+    static const char *const dsa[] = {
+        "attn_q_a.weight", "attn_q_a_norm.weight", "attn_q_b.weight",
+        "attn_kv_a_mqa.weight", "attn_kv_a_norm.weight", "attn_k_b.weight",
+        "attn_v_b.weight", "attn_output.weight", "indexer.attn_q_b.weight",
+        "indexer.attn_k.weight", "indexer.k_norm.weight", "indexer.k_norm.bias",
+        "indexer.proj.weight", "indexer.pool_ape.weight", "indexer.pool_gate.weight"
+    };
+    static const char *const dense[] = {
+        "ffn_gate.weight", "ffn_up.weight", "ffn_down.weight"
+    };
+    static const char *const moe[] = {
+        "ffn_gate_inp.weight", "exp_probs_b.bias", "ffn_gate_exps.weight",
+        "ffn_up_exps.weight", "ffn_down_exps.weight", "ffn_gate_shexp.weight",
+        "ffn_up_shexp.weight", "ffn_down_shexp.weight"
+    };
+    static const char *const nextn[] = {
+        "nextn.eh_proj.weight", "nextn.enorm.weight", "nextn.hnorm.weight",
+        "nextn.shared_head_norm.weight"
+    };
+    char name[128];
+    size_t i;
+
+    emitf("blk.%u.attn_norm.weight", il, 1);
+    emitf("blk.%u.ffn_norm.weight", il, 1);
+    if (!is_nextn(s, il)) {
+        for (i = 0; i < sizeof(hc) / sizeof(hc[0]); i++) {
+            snprintf(name, sizeof(name), "blk.%u.%s", il, hc[i]);
+            emit(name, 1);
+        }
+    }
+    const char *const *attn = glm53_layer_is_kda(s, il) ? kda : dsa;
+    for (i = 0; i < sizeof(kda) / sizeof(kda[0]); i++) {
+        snprintf(name, sizeof(name), "blk.%u.%s", il, attn[i]);
+        emit(name, 1);
+    }
+    const char *const *ffn = il < s->n_leading_dense ? dense : moe;
+    const size_t ffn_count = il < s->n_leading_dense
+        ? sizeof(dense) / sizeof(dense[0])
+        : sizeof(moe) / sizeof(moe[0]);
+    for (i = 0; i < ffn_count; i++) {
+        snprintf(name, sizeof(name), "blk.%u.%s", il, ffn[i]);
+        emit(name, 1);
+    }
+    if (is_nextn(s, il)) {
+        for (i = 0; i < sizeof(nextn) / sizeof(nextn[0]); i++) {
+            snprintf(name, sizeof(name), "blk.%u.%s", il, nextn[i]);
+            emit(name, 1);
+        }
+    }
 }
 
 static void emit(const char *name, int required) {
@@ -436,7 +513,12 @@ static void dump_shape(const bind_shape *s) {
     g_n = g_req = g_opt = 0;
     printf("BIND name=%s family=%u variant=%u n_layer=%u\n",
            s->name, (unsigned)s->family, (unsigned)s->variant, s->n_layer);
-    if (s->family == DS4_MODEL_FAMILY_QWEN4EXP) {
+    if (s->family == DS4_MODEL_FAMILY_GLM53) {
+        emit("token_embd.weight", 1);
+        emit("output_norm.weight", 1);
+        emit("output.weight", 1);
+        for (il = 0; il < s->n_layer; il++) bind_glm53_layer(s, il);
+    } else if (s->family == DS4_MODEL_FAMILY_QWEN4EXP) {
         emit("token_embd.weight", 1);
         emit("output.weight", 1);
         emit("hc_input.norm.weight", 1);
@@ -833,6 +915,7 @@ int main(int argc, char **argv) {
         dump_shape(&SHAPE_KEXAONE);
         dump_shape(&SHAPE_DOTS3);
         dump_shape(&SHAPE_QWEN);
+        dump_shape(&SHAPE_GLM53);
         return 0;
     }
     if (strcmp(cmd, "support") == 0) {
