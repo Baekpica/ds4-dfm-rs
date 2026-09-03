@@ -97,6 +97,7 @@ endif
         test-mmq-parity test-model-family-kernels \
         test-solar-loader test-solar-kda test-solar-kda-prefill \
         test-solar-kda-chunk \
+        test-glm53-loader \
         test-solar-gates test-solar-kv test-solar-tokenizer \
         test-solar-forward test-solar-session \
         test-exaone-ref test-exaone-kernels test-exaone-batch \
@@ -917,6 +918,15 @@ test-solar-loader: tests/test_solar_loader
 	@test -n "$(DS4_SOLAR_MODEL)" || \
 		{ echo "set DS4_SOLAR_MODEL to the first Solar GGUF shard" >&2; exit 2; }
 	./tests/test_solar_loader "$(DS4_SOLAR_MODEL)"
+
+tests/test_glm53_loader: tests/test_glm53_loader.c ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+test-glm53-loader: tests/test_glm53_loader
+	@test -n "$(DS4_GLM53_MODEL)" || \
+		{ echo "set DS4_GLM53_MODEL to GLM-5.3-Flash-Q2.gguf" >&2; exit 2; }
+	./tests/test_glm53_loader "$(DS4_GLM53_MODEL)"
 
 tests/test_solar_tokenizer: tests/test_solar_tokenizer.c ds4.c ds4.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \

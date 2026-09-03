@@ -40,6 +40,7 @@
 /ds4_weight_server
 /tests/test_split_gguf
 /tests/test_solar_loader
+/tests/test_glm53_loader
 /tests/test_solar_kda
 /tests/test_solar_kda_prefill
 /tests/test_solar_kda_chunk

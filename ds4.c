@@ -280,6 +280,7 @@ typedef enum {
     DS4_MODEL_FAMILY_EXAONE_MOE  = 3,
     DS4_MODEL_FAMILY_DOTS3_NOTE  = 4,
     DS4_MODEL_FAMILY_QWEN4EXP    = 5,
+    DS4_MODEL_FAMILY_GLM53       = 6,
 } ds4_model_family;
 
 typedef enum {
@@ -290,6 +291,7 @@ typedef enum {
     DS4_VARIANT_KEXAONE_236B    = 4,
     DS4_VARIANT_DOTS3_NOTE_PREV = 5,
     DS4_VARIANT_QWEN38_FLASH_NEXT = 6,
+    DS4_VARIANT_GLM53_FLASH     = 7,
 } ds4_variant;
 
 typedef struct {
@@ -511,6 +513,50 @@ static const ds4_shape DS4_SHAPE_SOLAR_OPEN2_250B = {
     .kda_gate_clamp_min = -5.0f,
     .expert_weight_scale = 1.0f,
     .rope_freq_base = DS4_DEFAULT_ROPE_FREQ_BASE,
+    .rope_scale_factor = 1.0f,
+    .rope_orig_ctx = UINT64_C(1048576),
+};
+
+/* zai-org/GLM-5.3-Flash, as converted by upstream antirez/ds4 at
+ * 110afdd8886586f18fc9b28bc5533152dd10e728. The text graph has 45 trunk
+ * blocks plus one MTP block and alternates KDA,KDA,KDA,DSA. */
+static const ds4_shape DS4_SHAPE_GLM53_FLASH = {
+    .name = "GLM 5.3 Flash",
+    .family = DS4_MODEL_FAMILY_GLM53,
+    .variant = DS4_VARIANT_GLM53_FLASH,
+    .n_layer = 46,
+    .n_embd = 4096,
+    .n_vocab = 154880,
+    .n_head = 64,
+    .n_head_kv = 1,
+    .n_head_dim = 512,
+    .n_value_dim = 256,
+    .n_rot = 0,
+    .n_lora_q = 1536,
+    .n_expert = 288,
+    .n_expert_used = 8,
+    .n_expert_shared = 1,
+    .n_ff_exp = 2048,
+    .n_ff_dense = 12288,
+    .n_indexer_head = 32,
+    .n_indexer_head_dim = 128,
+    .n_indexer_top_k = 2048,
+    .n_hc = 4,
+    .n_hc_sinkhorn_iter = 20,
+    .n_nextn_predict = 1,
+    .n_leading_dense = 3,
+    .n_kv_lora = 512,
+    .n_key_mla = 256,
+    .n_value_mla = 256,
+    .n_kda_head_dim = 128,
+    .n_ssm_conv = 4,
+    .use_rope = false,
+    .rms_eps = 1.0e-5f,
+    .kda_l2_eps = 1.0e-6f,
+    .kda_gate_clamp_min = -5.0f,
+    .hc_eps = 1.0e-6f,
+    .expert_weight_scale = 2.5f,
+    .swiglu_clamp_exp = 10.0f,
     .rope_scale_factor = 1.0f,
     .rope_orig_ctx = UINT64_C(1048576),
 };
@@ -1112,6 +1158,13 @@ static bool ds4_solar_layer_is_gqa(uint32_t il) {
     if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_SOLAR_OPEN2) return false;
     if (il >= DS4_N_LAYER) ds4_die("Solar layer index is outside the loaded model layout");
     return (il % 4u) == 0u;
+}
+
+static bool ds4_glm53_layer_is_kda(uint32_t il) {
+    if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53) return false;
+    if (il >= DS4_N_LAYER)
+        ds4_die("GLM 5.3 layer index is outside the loaded model layout");
+    return il + DS4_N_NEXTN_PREDICT < DS4_N_LAYER && (il % 4u) != 3u;
 }
 
 /* dots3-note interleaves full attention as {0, 1, 5, 9, ..., 45}: layer 0 plus
@@ -6612,6 +6665,151 @@ static void config_validate_solar_open2_model(const ds4_model *m) {
                       DS4_KDA_GATE_CLAMP_MIN, -5.0f);
 }
 
+static void config_validate_glm53_layer_types(const ds4_model *m) {
+    const char *key = "glm5-next.layer_types";
+    ds4_array_ref arr;
+    if (!model_get_array(m, key, &arr) ||
+        (arr.type != GGUF_VALUE_UINT32 && arr.type != GGUF_VALUE_INT32) ||
+        arr.len != DS4_N_LAYER) {
+        ds4_die("glm5-next.layer_types must be an int32/uint32 array with one entry per layer");
+    }
+    ds4_cursor c = cursor_at(m, arr.data_pos);
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        uint32_t got = 0;
+        if (arr.type == GGUF_VALUE_UINT32) {
+            if (!cursor_u32(&c, &got)) ds4_die(c.error);
+        } else {
+            int32_t value = 0;
+            if (!cursor_read(&c, &value, sizeof(value))) ds4_die(c.error);
+            if (value < 0)
+                ds4_die("glm5-next.layer_types contains a negative value");
+            got = (uint32_t)value;
+        }
+        const uint32_t expected = ds4_glm53_layer_is_kda(il) ? 0u : 1u;
+        if (got != expected) {
+            fprintf(stderr,
+                    "ds4: unexpected GLM 5.3 attention type at layer %u: "
+                    "got %u, expected %u\n",
+                    il, got, expected);
+            exit(1);
+        }
+    }
+}
+
+static void config_validate_glm53_model(const ds4_model *m) {
+    g_ds4_shape = DS4_SHAPE_GLM53_FLASH;
+    memset(g_ds4_compress_ratios, 0, sizeof(g_ds4_compress_ratios));
+
+    config_expect_u32("block_count",
+                      required_u32(m, "glm5-next.block_count"), DS4_N_LAYER);
+    config_expect_u32("trunk_block_count",
+                      required_u32(m, "glm5-next.trunk_block_count"),
+                      DS4_N_LAYER - DS4_N_NEXTN_PREDICT);
+    config_expect_u32("nextn_predict_layers",
+                      required_u32(m, "glm5-next.nextn_predict_layers"),
+                      DS4_N_NEXTN_PREDICT);
+    config_expect_u64("context_length",
+                      required_u64_compat(m, "glm5-next.context_length"),
+                      DS4_ROPE_ORIG_CTX);
+    config_expect_u32("embedding_length",
+                      required_u32(m, "glm5-next.embedding_length"), DS4_N_EMBD);
+    config_expect_u32("vocab_size",
+                      required_u32(m, "glm5-next.vocab_size"), DS4_N_VOCAB);
+    config_expect_u32("feed_forward_length",
+                      required_u32(m, "glm5-next.feed_forward_length"),
+                      DS4_N_FF_DENSE);
+    config_expect_u32("expert_feed_forward_length",
+                      required_u32(m, "glm5-next.expert_feed_forward_length"),
+                      DS4_N_FF_EXP);
+    config_expect_u32("expert_count",
+                      required_u32(m, "glm5-next.expert_count"), DS4_N_EXPERT);
+    config_expect_u32("expert_used_count",
+                      required_u32(m, "glm5-next.expert_used_count"),
+                      DS4_N_EXPERT_USED);
+    config_expect_u32("expert_shared_count",
+                      required_u32(m, "glm5-next.expert_shared_count"),
+                      DS4_N_EXPERT_SHARED);
+    config_expect_u32("leading_dense_block_count",
+                      required_u32(m, "glm5-next.leading_dense_block_count"),
+                      DS4_N_LEADING_DENSE);
+    config_expect_f32("expert_weights_scale",
+                      required_f32(m, "glm5-next.expert_weights_scale"),
+                      DS4_EXPERT_WEIGHT_SCALE);
+    config_expect_bool("expert_weights_norm",
+                       required_bool(m, "glm5-next.expert_weights_norm"), true);
+    config_expect_f32("swiglu_limit",
+                      required_f32(m, "glm5-next.swiglu_limit"),
+                      DS4_SWIGLU_CLAMP_EXP);
+
+    config_expect_f32("attention.layer_norm_rms_epsilon",
+                      required_f32(m,
+                                   "glm5-next.attention.layer_norm_rms_epsilon"),
+                      DS4_RMS_EPS);
+    config_expect_u32("attention.head_count",
+                      required_u32(m, "glm5-next.attention.head_count"),
+                      DS4_N_HEAD);
+    config_expect_u32("attention.key_length",
+                      required_u32(m, "glm5-next.attention.key_length"),
+                      DS4_N_KEY_MLA);
+    config_expect_u32("attention.value_length",
+                      required_u32(m, "glm5-next.attention.value_length"),
+                      DS4_N_VALUE_MLA);
+    config_expect_u32("attention.q_lora_rank",
+                      required_u32(m, "glm5-next.attention.q_lora_rank"),
+                      DS4_N_LORA_Q);
+    config_expect_u32("attention.kv_lora_rank",
+                      required_u32(m, "glm5-next.attention.kv_lora_rank"),
+                      DS4_N_KV_LORA);
+    config_expect_u32("attention.rope_dimension_count",
+                      required_u32(m,
+                                   "glm5-next.attention.rope_dimension_count"),
+                      DS4_N_ROT);
+    config_expect_u32("attention.indexer.head_count",
+                      required_u32(m,
+                                   "glm5-next.attention.indexer.head_count"),
+                      DS4_N_INDEXER_HEAD);
+    config_expect_u32("attention.indexer.key_length",
+                      required_u32(m,
+                                   "glm5-next.attention.indexer.key_length"),
+                      DS4_N_INDEXER_HEAD_DIM);
+    config_expect_u32("attention.indexer.top_k",
+                      required_u32(m, "glm5-next.attention.indexer.top_k"),
+                      DS4_N_INDEXER_TOP_K);
+    config_expect_u32("attention.indexer.pool_size",
+                      required_u32(m, "glm5-next.attention.indexer.pool_size"),
+                      4u);
+
+    config_expect_u32("linear_attention.head_count",
+                      required_u32(m,
+                                   "glm5-next.linear_attention.head_count"),
+                      DS4_N_HEAD);
+    config_expect_u32("linear_attention.head_dimension",
+                      required_u32(m,
+                                   "glm5-next.linear_attention.head_dimension"),
+                      DS4_N_KDA_HEAD_DIM);
+    config_expect_u32("linear_attention.conv_kernel",
+                      required_u32(m,
+                                   "glm5-next.linear_attention.conv_kernel"),
+                      DS4_N_SSM_CONV);
+    config_expect_f32("linear_attention.gate_lower_bound",
+                      required_f32(m,
+                                   "glm5-next.linear_attention.gate_lower_bound"),
+                      DS4_KDA_GATE_CLAMP_MIN);
+    config_expect_u32("hyper_connection.count",
+                      required_u32(m, "glm5-next.hyper_connection.count"),
+                      DS4_N_HC);
+    config_expect_u32("hyper_connection.sinkhorn_iterations",
+                      required_u32(
+                          m, "glm5-next.hyper_connection.sinkhorn_iterations"),
+                      DS4_N_HC_SINKHORN_ITER);
+    config_expect_f32("hyper_connection.epsilon",
+                      required_f32(m, "glm5-next.hyper_connection.epsilon"),
+                      DS4_HC_EPS);
+    config_expect_f32("internal KDA q/k l2 epsilon", DS4_KDA_L2_EPS,
+                      1.0e-6f);
+    config_validate_glm53_layer_types(m);
+}
+
 /* K-EXAONE carries no MLA, indexer or hyper-connection metadata, so this reads
  * a strictly smaller key set than the DeepSeek4/GLM validators. The keys it
  * does read are the standard llama.cpp ones under the exaone-moe. prefix.
@@ -6982,6 +7180,10 @@ static void config_validate_model(const ds4_model *m) {
     }
     if (ds4_streq(arch, "qwen4exp")) {
         config_validate_qwen4exp_model(m);
+        return;
+    }
+    if (ds4_streq(arch, "glm5-next")) {
+        config_validate_glm53_model(m);
         return;
     }
     fprintf(stderr, "ds4: unsupported GGUF architecture: %.*s\n",
