@@ -22820,6 +22820,188 @@ static uint8_t *qwen4exp_resize_rgb_pillow(
 }
 
 typedef struct {
+    ds4_vision_image_info info;
+    float *patches;
+} ds4_glm53_vision_host;
+
+static bool glm53_vision_smart_resize(
+        uint32_t height, uint32_t width,
+        uint32_t *target_height, uint32_t *target_width) {
+    const uint32_t factor = 28u;
+    const uint64_t min_pixels = UINT64_C(16) * 2u * factor * factor;
+    const uint64_t max_pixels = UINT64_C(8000) * 2u * factor * factor;
+    uint32_t h = (height + factor - 1u) / factor * factor;
+    uint32_t w = (width + factor - 1u) / factor * factor;
+    uint64_t budget = 2u * (uint64_t)h * w;
+    if (budget < min_pixels) {
+        const double scale = sqrt((double)min_pixels /
+                                  (2.0 * height * width));
+        h = (uint32_t)ceil(height * scale);
+        w = (uint32_t)ceil(width * scale);
+        h = (h + factor - 1u) / factor * factor;
+        w = (w + factor - 1u) / factor * factor;
+        budget = 2u * (uint64_t)h * w;
+    }
+    if (budget > max_pixels) {
+        uint32_t low = 1u, high = height;
+        h = w = factor;
+        while (low <= high) {
+            const uint32_t ch = low + (high - low) / 2u;
+            uint32_t cw = (uint32_t)floor((double)width * ch / height);
+            if (cw == 0u) cw = 1u;
+            const uint32_t candidate_h =
+                (ch + factor - 1u) / factor * factor;
+            const uint32_t candidate_w =
+                (cw + factor - 1u) / factor * factor;
+            if (2u * (uint64_t)candidate_h * candidate_w <= max_pixels) {
+                h = candidate_h;
+                w = candidate_w;
+                low = ch + 1u;
+            } else {
+                high = ch - 1u;
+            }
+        }
+    }
+    *target_height = h;
+    *target_width = w;
+    return h != 0u && w != 0u;
+}
+
+static bool glm53_vision_probe(
+        const uint8_t *encoded, size_t encoded_len,
+        ds4_vision_image_info *out, char *error, size_t error_cap) {
+    if (!encoded || encoded_len == 0u || encoded_len > 64u * 1024u * 1024u ||
+        encoded_len > INT_MAX || !out) {
+        if (error && error_cap) snprintf(error, error_cap, "invalid image payload");
+        return false;
+    }
+    int width = 0, height = 0, channels = 0;
+    if (!stbi_info_from_memory(encoded, (int)encoded_len,
+                               &width, &height, &channels) ||
+        width <= 0 || height <= 0 || width > 16384 || height > 16384 ||
+        (uint64_t)(uint32_t)width * (uint32_t)height > UINT64_C(16777216)) {
+        if (error && error_cap)
+            snprintf(error, error_cap, "invalid or oversized PNG/JPEG image");
+        return false;
+    }
+
+    uint32_t padded_h = 0u, padded_w = 0u;
+    if (!glm53_vision_smart_resize((uint32_t)height, (uint32_t)width,
+                                   &padded_h, &padded_w)) return false;
+    double scale = fmin((double)padded_h / (uint32_t)height,
+                        (double)padded_w / (uint32_t)width);
+    if (2u * (uint64_t)(uint32_t)height * (uint32_t)width >=
+            UINT64_C(16) * 2u * 28u * 28u && scale > 1.0)
+        scale = 1.0;
+    uint32_t content_h = (uint32_t)floor(height * scale);
+    uint32_t content_w = (uint32_t)floor(width * scale);
+    if (content_h == 0u) content_h = 1u;
+    if (content_w == 0u) content_w = 1u;
+    if (content_h > padded_h) content_h = padded_h;
+    if (content_w > padded_w) content_w = padded_w;
+    const uint32_t grid_h = padded_h / 14u;
+    const uint32_t grid_w = padded_w / 14u;
+    const uint64_t token_count = (uint64_t)grid_h * grid_w / 4u;
+    if ((grid_h & 1u) || (grid_w & 1u) || token_count == 0u ||
+        token_count > 8000u) {
+        if (error && error_cap) snprintf(error, error_cap, "invalid GLM image grid");
+        return false;
+    }
+    *out = (ds4_vision_image_info) {
+        .source_width = (uint32_t)width,
+        .source_height = (uint32_t)height,
+        .content_width = content_w,
+        .content_height = content_h,
+        .padded_width = padded_w,
+        .padded_height = padded_h,
+        .grid_width = grid_w,
+        .grid_height = grid_h,
+        .token_count = (uint32_t)token_count,
+    };
+    return true;
+}
+
+static void glm53_vision_host_free(ds4_glm53_vision_host *host) {
+    if (!host) return;
+    free(host->patches);
+    memset(host, 0, sizeof(*host));
+}
+
+static bool glm53_vision_host_prepare(
+        const uint8_t *encoded, size_t encoded_len,
+        ds4_glm53_vision_host *host, char *error, size_t error_cap) {
+    static const float mean[3] = {0.48145466f, 0.4578275f, 0.40821073f};
+    static const float stddev[3] = {0.26862954f, 0.26130258f, 0.27577711f};
+    if (!host || !glm53_vision_probe(
+            encoded, encoded_len, &host->info, error, error_cap)) return false;
+
+    int width = 0, height = 0, channels = 0;
+    uint8_t *decoded = stbi_load_from_memory(
+            encoded, (int)encoded_len, &width, &height, &channels, 3);
+    if (!decoded || width != (int)host->info.source_width ||
+        height != (int)host->info.source_height) {
+        stbi_image_free(decoded);
+        if (error && error_cap) snprintf(error, error_cap, "PNG/JPEG decode failed");
+        return false;
+    }
+    uint8_t *resized = qwen4exp_resize_rgb_pillow(
+            decoded, host->info.source_width, host->info.source_height,
+            host->info.content_width, host->info.content_height);
+    stbi_image_free(decoded);
+    if (!resized) {
+        if (error && error_cap) snprintf(error, error_cap, "image resize failed");
+        return false;
+    }
+
+    const uint32_t grid_h = host->info.grid_height;
+    const uint32_t grid_w = host->info.grid_width;
+    const uint64_t patch_count = (uint64_t)grid_h * grid_w;
+    if (patch_count > SIZE_MAX / 1176u / sizeof(float)) {
+        free(resized);
+        if (error && error_cap) snprintf(error, error_cap, "image patch buffer is too large");
+        return false;
+    }
+    host->patches = xmalloc((size_t)patch_count * 1176u * sizeof(float));
+    size_t index = 0u;
+    for (uint32_t block_y = 0; block_y < grid_h / 2u; block_y++) {
+        for (uint32_t block_x = 0; block_x < grid_w / 2u; block_x++) {
+            for (uint32_t merge_y = 0; merge_y < 2u; merge_y++) {
+                for (uint32_t merge_x = 0; merge_x < 2u; merge_x++) {
+                    const uint32_t patch_y = block_y * 2u + merge_y;
+                    const uint32_t patch_x = block_x * 2u + merge_x;
+                    for (uint32_t channel = 0; channel < 3u; channel++) {
+                        for (uint32_t temporal = 0; temporal < 2u; temporal++) {
+                            (void)temporal;
+                            for (uint32_t y = 0; y < 14u; y++) {
+                                const uint32_t py = patch_y * 14u + y;
+                                for (uint32_t x = 0; x < 14u; x++) {
+                                    const uint32_t px = patch_x * 14u + x;
+                                    const float value =
+                                        px < host->info.content_width &&
+                                        py < host->info.content_height
+                                            ? resized[((size_t)py * host->info.content_width + px) * 3u + channel]
+                                            : 0.0f;
+                                    host->patches[index++] =
+                                        (value / 255.0f - mean[channel]) /
+                                        stddev[channel];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    free(resized);
+    if (index != (size_t)patch_count * 1176u) {
+        glm53_vision_host_free(host);
+        if (error && error_cap) snprintf(error, error_cap, "vision patch layout mismatch");
+        return false;
+    }
+    return true;
+}
+
+typedef struct {
     uint32_t patch_rows;
     uint32_t feature_rows;
     float *patches;
@@ -64075,6 +64257,71 @@ int ds4_engine_set_power(ds4_engine *e, int power_percent) {
     if (!e || power_percent < 1 || power_percent > 100) return 1;
     e->power_percent = power_percent;
     return 0;
+}
+
+bool ds4_engine_has_vision(ds4_engine *e) {
+    return e && e->vision_ready;
+}
+
+int ds4_engine_vision_probe(ds4_engine *e,
+                            const uint8_t *encoded, size_t encoded_len,
+                            ds4_vision_image_info *out,
+                            char *error, size_t error_cap) {
+#ifdef DS4_NO_GPU
+    (void)e; (void)encoded; (void)encoded_len; (void)out;
+    if (error && error_cap) snprintf(error, error_cap, "CUDA vision is unavailable");
+    return 0;
+#else
+    if (!e || !e->vision_ready) {
+        if (error && error_cap) snprintf(error, error_cap, "vision encoder is not loaded");
+        return 0;
+    }
+    return glm53_vision_probe(encoded, encoded_len, out, error, error_cap);
+#endif
+}
+
+void ds4_vision_embedding_free(ds4_vision_embedding *embedding) {
+    if (!embedding) return;
+    free(embedding->data);
+    memset(embedding, 0, sizeof(*embedding));
+}
+
+int ds4_engine_vision_encode_memory(ds4_engine *e,
+                                    const uint8_t *encoded, size_t encoded_len,
+                                    ds4_vision_embedding *out,
+                                    char *error, size_t error_cap) {
+    if (!out) return 0;
+    memset(out, 0, sizeof(*out));
+#ifdef DS4_NO_GPU
+    (void)e; (void)encoded; (void)encoded_len;
+    if (error && error_cap) snprintf(error, error_cap, "CUDA vision is unavailable");
+    return 0;
+#else
+    if (!e || !e->vision_ready || !e->vision_map_ready) {
+        if (error && error_cap) snprintf(error, error_cap, "vision encoder is not ready");
+        return 0;
+    }
+    ds4_glm53_vision_host host = {0};
+    if (!glm53_vision_host_prepare(
+            encoded, encoded_len, &host, error, error_cap)) return 0;
+    float *embedding = xmalloc((size_t)host.info.token_count * 4096u * sizeof(float));
+    const ds4_vision_image_info info = host.info;
+    const int ok = ds4_gpu_glm53_vision_encode(
+            embedding, host.patches, host.info.grid_height,
+            host.info.grid_width, e->vision_model.map, e->vision_model.size,
+            &e->vision_weights);
+    glm53_vision_host_free(&host);
+    if (!ok) {
+        free(embedding);
+        if (error && error_cap) snprintf(error, error_cap, "GLM-5.3 vision encoding failed");
+        return 0;
+    }
+    out->data = embedding;
+    out->token_count = info.token_count;
+    out->grid_width = info.grid_width;
+    out->grid_height = info.grid_height;
+    return 1;
+#endif
 }
 
 const char *ds4_engine_model_name(ds4_engine *e) {

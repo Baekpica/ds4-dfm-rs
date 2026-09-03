@@ -96,6 +96,25 @@ typedef struct {
 } ds4_qwen_image_info;
 
 typedef struct {
+    uint32_t source_width;
+    uint32_t source_height;
+    uint32_t content_width;
+    uint32_t content_height;
+    uint32_t padded_width;
+    uint32_t padded_height;
+    uint32_t grid_width;
+    uint32_t grid_height;
+    uint32_t token_count;
+} ds4_vision_image_info;
+
+typedef struct {
+    float *data;
+    uint32_t token_count;
+    uint32_t grid_width;
+    uint32_t grid_height;
+} ds4_vision_embedding;
+
+typedef struct {
     int id;
     float logit;
     float logprob;
@@ -204,6 +223,16 @@ void ds4_engine_summary(ds4_engine *e);
 int ds4_engine_vocab_size(ds4_engine *e);
 int ds4_engine_power(ds4_engine *e);
 int ds4_engine_set_power(ds4_engine *e, int power_percent);
+bool ds4_engine_has_vision(ds4_engine *e);
+int ds4_engine_vision_probe(ds4_engine *e,
+                            const uint8_t *encoded, size_t encoded_len,
+                            ds4_vision_image_info *out,
+                            char *error, size_t error_cap);
+int ds4_engine_vision_encode_memory(ds4_engine *e,
+                                    const uint8_t *encoded, size_t encoded_len,
+                                    ds4_vision_embedding *out,
+                                    char *error, size_t error_cap);
+void ds4_vision_embedding_free(ds4_vision_embedding *embedding);
 const char *ds4_engine_model_name(ds4_engine *e);
 ds4_chat_format ds4_engine_chat_format(ds4_engine *e);
 int ds4_engine_layer_count(ds4_engine *e);

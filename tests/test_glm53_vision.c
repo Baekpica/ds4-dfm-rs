@@ -1,6 +1,15 @@
 /* Exact-sidecar CUDA smoke for the GLM-5.3 vision encoder. */
 #include "../ds4.c"
 
+static const uint8_t png_1x1[] = {
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x08, 0x04, 0x00, 0x00, 0x00, 0xb5, 0x1c, 0x0c, 0x02, 0x00, 0x00, 0x00,
+    0x0b, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x64, 0xf8, 0x0f, 0x00,
+    0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xe3, 0x66, 0x00, 0x00, 0x00, 0x00,
+    0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+};
+
 int main(int argc, char **argv) {
     if (argc != 2) {
         fprintf(stderr, "usage: %s <GLM-5.3-Flash-Vision-Encoder.gguf>\n",
@@ -20,25 +29,34 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    float *patches = xmalloc(4u * 1176u * sizeof(*patches));
-    float *out = xmalloc(4096u * sizeof(*out));
-    for (uint32_t i = 0; i < 4u * 1176u; i++)
-        patches[i] = (float)((int)(i % 31u) - 15) / 31.0f;
+    char error[160] = {0};
+    ds4_glm53_vision_host host = {0};
+    if (!glm53_vision_host_prepare(png_1x1, sizeof(png_1x1),
+                                   &host, error, sizeof(error))) {
+        fprintf(stderr, "GLM-5.3 image preprocessing failed: %s\n", error);
+        ds4_gpu_cleanup();
+        model_close(&model);
+        return 1;
+    }
+    const uint64_t output_values = (uint64_t)host.info.token_count * 4096u;
+    float *out = xmalloc((size_t)output_values * sizeof(*out));
 
     int ok = ds4_gpu_glm53_vision_encode(
-            out, patches, 2u, 2u, model.map, model.size, &weights);
+            out, host.patches, host.info.grid_height, host.info.grid_width,
+            model.map, model.size, &weights);
     double energy = 0.0;
-    for (uint32_t i = 0; ok && i < 4096u; i++) {
+    for (uint64_t i = 0; ok && i < output_values; i++) {
         if (!isfinite(out[i])) ok = 0;
         energy += fabs((double)out[i]);
     }
     if (!ok || !(energy > 0.0))
         fprintf(stderr, "GLM-5.3 vision CUDA output is invalid\n");
     else
-        printf("GLM-5.3 vision CUDA: finite embedding (energy %.6f)\n", energy);
+        printf("GLM-5.3 vision CUDA: %u finite image embeddings (energy %.6f)\n",
+               host.info.token_count, energy);
 
     free(out);
-    free(patches);
+    glm53_vision_host_free(&host);
     ds4_gpu_cleanup();
     model_close(&model);
     return ok ? 0 : 1;

@@ -938,6 +938,13 @@ test-glm53-vision-loader: tests/test_glm53_vision_loader
 		{ echo "set DS4_GLM53_VISION_MODEL to GLM-5.3-Flash-Vision-Encoder.gguf" >&2; exit 2; }
 	./tests/test_glm53_vision_loader "$(DS4_GLM53_VISION_MODEL)"
 
+tests/test_glm53_image: tests/test_glm53_image.c ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+test-glm53-image: tests/test_glm53_image
+	./tests/test_glm53_image
+
 tests/test_glm53_vision.o: tests/test_glm53_vision.c ds4.c ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -Wno-unused-function -I. -I$(CUDA_HOME)/include -c -o $@ $<
 
