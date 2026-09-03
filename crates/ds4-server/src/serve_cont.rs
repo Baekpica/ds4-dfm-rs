@@ -1287,6 +1287,10 @@ pub struct ContPair<'a> {
 pub trait ContExec {
     fn model_id(&self) -> i32;
     fn seq_cap(&self) -> i32;
+    /// Number of persistent continuous banks available to this executor.
+    fn max_seq(&self) -> i32 {
+        1
+    }
     /// One C trim (`ds4_batch_ctx_trim_free`). Host does not implement trim.
     fn trim_idle_banks(&mut self, _want_bytes: u64) -> u64 {
         0
@@ -2579,6 +2583,10 @@ mod native {
 
         fn seq_cap(&self) -> i32 {
             self.batch.seq_cap()
+        }
+
+        fn max_seq(&self) -> i32 {
+            self.batch.max_seq()
         }
 
         fn trim_idle_banks(&mut self, want_bytes: u64) -> u64 {

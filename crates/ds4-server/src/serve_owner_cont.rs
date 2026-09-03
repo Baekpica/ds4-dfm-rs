@@ -23,6 +23,12 @@ pub(super) fn run_owner_maybe_roll(
         run_owner_job(cfg, inner, engine, Some(exec), job);
         return None;
     }
+    // A one-bank executor cannot overlap a sibling. Leave the FIFO untouched
+    // so the owner runs the next request after this generation completes.
+    if exec.max_seq() < 2 {
+        run_owner_job(cfg, inner, engine, Some(exec), job);
+        return None;
+    }
     let second = match jobs_rx.try_recv() {
         Ok(next) => Some(next),
         Err(TryRecvError::Disconnected) => None,

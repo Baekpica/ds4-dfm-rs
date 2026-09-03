@@ -14,9 +14,18 @@ use crate::serve_cont_prefill::{owner_tick_call_count, reset_owner_tick_call_cou
 use crate::stream::{ReqTimings, TAPE_PLAIN};
 use ds4_kv::Store as KvStore;
 
-#[derive(Default)]
 struct RollSpy {
     generate_calls: usize,
+    max_seq: i32,
+}
+
+impl Default for RollSpy {
+    fn default() -> Self {
+        Self {
+            generate_calls: 0,
+            max_seq: 2,
+        }
+    }
 }
 
 impl ContExec for RollSpy {
@@ -25,6 +34,9 @@ impl ContExec for RollSpy {
     }
     fn seq_cap(&self) -> i32 {
         8192
+    }
+    fn max_seq(&self) -> i32 {
+        self.max_seq
     }
     fn encode_chat(&self, _rendered: &[u8]) -> Vec<i32> {
         vec![1, 2, 3]
@@ -54,6 +66,37 @@ impl ContExec for RollSpy {
             ..GenerateOutcome::default()
         })
     }
+}
+
+#[test]
+fn one_bank_leaves_the_second_request_queued_for_serial_execution() {
+    let cfg = ServerConfig {
+        have_engine: true,
+        default_tokens: 8,
+        ..ServerConfig::default()
+    };
+    let inner = Arc::new(Mutex::new(ServerInner::from_cfg(&cfg)));
+    let (job_a, drain_a) = cont_chat_job(&inner, "a");
+    let (job_b, drain_b) = cont_chat_job(&inner, "b");
+    let (tx, rx) = mpsc::channel();
+    tx.send(job_b).unwrap();
+    let mut spy = RollSpy {
+        max_seq: 1,
+        ..RollSpy::default()
+    };
+    let mut engine = ScriptedDecode::from_pieces(&[b"serial-fallback"]);
+
+    let leftover = run_owner_maybe_roll(&cfg, &inner, &mut engine, &mut spy, job_a, &rx);
+
+    assert!(leftover.is_none());
+    assert_eq!(spy.generate_calls, 1);
+    let job_b = rx.try_recv().expect("second request must remain queued");
+    let leftover = run_owner_maybe_roll(&cfg, &inner, &mut engine, &mut spy, job_b, &rx);
+    assert!(leftover.is_none());
+    assert_eq!(spy.generate_calls, 2);
+    drop(tx);
+    let _ = drain_a.done.recv();
+    let _ = drain_b.done.recv();
 }
 
 fn cont_chat_job(inner: &Arc<Mutex<ServerInner>>, tag: &str) -> (OwnerJob, JobDrain) {
