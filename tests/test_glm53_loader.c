@@ -43,7 +43,19 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    printf("GLM 5.3 metadata: valid (%u shards, 34 KDA, 12 DSA)\n",
+    ds4_weights weights;
+    weights_bind_glm53(&weights, &model);
+    if (!weights.token_embd || !weights.output_norm || !weights.output ||
+        !weights.layer[0].kda_q || !weights.layer[3].attn_k_b ||
+        !weights.layer[3].indexer_compressor_gate ||
+        !weights.layer[44].ffn_down_exps ||
+        !weights.layer[45].nextn_eh_proj) {
+        fprintf(stderr, "GLM 5.3 native tensor binding is incomplete\n");
+        model_close(&model);
+        return 1;
+    }
+
+    printf("GLM 5.3 metadata and bindings: valid (%u shards, 34 KDA, 12 DSA)\n",
            model.split_count);
     model_close(&model);
     return 0;

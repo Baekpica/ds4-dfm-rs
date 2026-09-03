@@ -4420,11 +4420,32 @@ typedef struct {
     ds4_tensor *attn_output;
     ds4_tensor *attn_output_a;
     ds4_tensor *attn_output_b;
+    /* GLM 5.3 hybrid KDA/DSA projections. */
+    ds4_tensor *kda_q;
+    ds4_tensor *kda_k;
+    ds4_tensor *kda_v;
+    ds4_tensor *kda_q_conv;
+    ds4_tensor *kda_k_conv;
+    ds4_tensor *kda_v_conv;
+    ds4_tensor *kda_f_a;
+    ds4_tensor *kda_f_b;
+    ds4_tensor *kda_dt_bias;
+    ds4_tensor *kda_a_log;
+    ds4_tensor *kda_beta;
+    ds4_tensor *kda_g_a;
+    ds4_tensor *kda_g_b;
+    ds4_tensor *kda_o_norm;
+    ds4_tensor *kda_output;
+    ds4_tensor *attn_k_b;
+    ds4_tensor *attn_v_b;
     ds4_tensor *attn_compressor_ape;
     ds4_tensor *attn_compressor_kv;
     ds4_tensor *attn_compressor_gate;
     ds4_tensor *attn_compressor_norm;
     ds4_tensor *indexer_attn_q_b;
+    ds4_tensor *indexer_attn_k;
+    ds4_tensor *indexer_k_norm;
+    ds4_tensor *indexer_k_norm_b;
     ds4_tensor *indexer_proj;
     ds4_tensor *indexer_compressor_ape;
     ds4_tensor *indexer_compressor_kv;
@@ -7586,6 +7607,91 @@ static void weights_bind_qwen4exp_vision(
     v->merger_down_bias = required_tensor(m, "vision.merger.ffn_down.bias");
 }
 
+static void weights_bind_glm53_layer(
+        ds4_layer_weights *l,
+        const ds4_model   *m,
+        uint32_t           il) {
+    l->attn_norm = required_tensorf(m, "blk.%u.attn_norm.weight", il);
+    l->ffn_norm = required_tensorf(m, "blk.%u.ffn_norm.weight", il);
+
+    if (il + DS4_N_NEXTN_PREDICT < DS4_N_LAYER) {
+        l->hc_attn_fn = required_tensorf(m, "blk.%u.hc_attn_fn.weight", il);
+        l->hc_attn_scale = required_tensorf(m, "blk.%u.hc_attn_scale.weight", il);
+        l->hc_attn_base = required_tensorf(m, "blk.%u.hc_attn_base.weight", il);
+        l->hc_ffn_fn = required_tensorf(m, "blk.%u.hc_ffn_fn.weight", il);
+        l->hc_ffn_scale = required_tensorf(m, "blk.%u.hc_ffn_scale.weight", il);
+        l->hc_ffn_base = required_tensorf(m, "blk.%u.hc_ffn_base.weight", il);
+    }
+
+    if (ds4_glm53_layer_is_kda(il)) {
+        l->kda_q = required_tensorf(m, "blk.%u.kda_q.weight", il);
+        l->kda_k = required_tensorf(m, "blk.%u.kda_k.weight", il);
+        l->kda_v = required_tensorf(m, "blk.%u.kda_v.weight", il);
+        l->kda_q_conv = required_tensorf(m, "blk.%u.kda_q_conv.weight", il);
+        l->kda_k_conv = required_tensorf(m, "blk.%u.kda_k_conv.weight", il);
+        l->kda_v_conv = required_tensorf(m, "blk.%u.kda_v_conv.weight", il);
+        l->kda_f_a = required_tensorf(m, "blk.%u.kda_f_a.weight", il);
+        l->kda_f_b = required_tensorf(m, "blk.%u.kda_f_b.weight", il);
+        l->kda_dt_bias = required_tensorf(m, "blk.%u.kda_dt_bias.weight", il);
+        l->kda_a_log = required_tensorf(m, "blk.%u.kda_a_log.weight", il);
+        l->kda_beta = required_tensorf(m, "blk.%u.kda_beta.weight", il);
+        l->kda_g_a = required_tensorf(m, "blk.%u.kda_g_a.weight", il);
+        l->kda_g_b = required_tensorf(m, "blk.%u.kda_g_b.weight", il);
+        l->kda_o_norm = required_tensorf(m, "blk.%u.kda_o_norm.weight", il);
+        l->kda_output = required_tensorf(m, "blk.%u.kda_output.weight", il);
+    } else {
+        l->attn_q_a = required_tensorf(m, "blk.%u.attn_q_a.weight", il);
+        l->attn_q_a_norm = required_tensorf(m, "blk.%u.attn_q_a_norm.weight", il);
+        l->attn_q_b = required_tensorf(m, "blk.%u.attn_q_b.weight", il);
+        l->attn_kv_a_mqa = required_tensorf(m, "blk.%u.attn_kv_a_mqa.weight", il);
+        l->attn_kv_a_norm = required_tensorf(m, "blk.%u.attn_kv_a_norm.weight", il);
+        l->attn_k_b = required_tensorf(m, "blk.%u.attn_k_b.weight", il);
+        l->attn_v_b = required_tensorf(m, "blk.%u.attn_v_b.weight", il);
+        l->attn_output = required_tensorf(m, "blk.%u.attn_output.weight", il);
+        l->indexer_attn_q_b = required_tensorf(m, "blk.%u.indexer.attn_q_b.weight", il);
+        l->indexer_attn_k = required_tensorf(m, "blk.%u.indexer.attn_k.weight", il);
+        l->indexer_k_norm = required_tensorf(m, "blk.%u.indexer.k_norm.weight", il);
+        l->indexer_k_norm_b = required_tensorf(m, "blk.%u.indexer.k_norm.bias", il);
+        l->indexer_proj = required_tensorf(m, "blk.%u.indexer.proj.weight", il);
+        l->indexer_compressor_ape =
+            required_tensorf(m, "blk.%u.indexer.pool_ape.weight", il);
+        l->indexer_compressor_gate =
+            required_tensorf(m, "blk.%u.indexer.pool_gate.weight", il);
+    }
+
+    if (il < DS4_N_LEADING_DENSE) {
+        l->ffn_gate = required_tensorf(m, "blk.%u.ffn_gate.weight", il);
+        l->ffn_up = required_tensorf(m, "blk.%u.ffn_up.weight", il);
+        l->ffn_down = required_tensorf(m, "blk.%u.ffn_down.weight", il);
+    } else {
+        l->ffn_gate_inp = required_tensorf(m, "blk.%u.ffn_gate_inp.weight", il);
+        l->ffn_exp_probs_b = required_tensorf(m, "blk.%u.exp_probs_b.bias", il);
+        l->ffn_gate_exps = required_tensorf(m, "blk.%u.ffn_gate_exps.weight", il);
+        l->ffn_up_exps = required_tensorf(m, "blk.%u.ffn_up_exps.weight", il);
+        l->ffn_down_exps = required_tensorf(m, "blk.%u.ffn_down_exps.weight", il);
+        l->ffn_gate_shexp = required_tensorf(m, "blk.%u.ffn_gate_shexp.weight", il);
+        l->ffn_up_shexp = required_tensorf(m, "blk.%u.ffn_up_shexp.weight", il);
+        l->ffn_down_shexp = required_tensorf(m, "blk.%u.ffn_down_shexp.weight", il);
+    }
+
+    if (il + DS4_N_NEXTN_PREDICT >= DS4_N_LAYER) {
+        l->nextn_eh_proj = required_tensorf(m, "blk.%u.nextn.eh_proj.weight", il);
+        l->nextn_enorm = required_tensorf(m, "blk.%u.nextn.enorm.weight", il);
+        l->nextn_hnorm = required_tensorf(m, "blk.%u.nextn.hnorm.weight", il);
+        l->nextn_shared_head_norm =
+            required_tensorf(m, "blk.%u.nextn.shared_head_norm.weight", il);
+    }
+}
+
+static void weights_bind_glm53(ds4_weights *w, const ds4_model *m) {
+    memset(w, 0, sizeof(*w));
+    w->token_embd = required_tensor(m, "token_embd.weight");
+    w->output_norm = required_tensor(m, "output_norm.weight");
+    w->output = required_tensor(m, "output.weight");
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++)
+        weights_bind_glm53_layer(&w->layer[il], m, il);
+}
+
 static void weights_bind(
         ds4_weights     *w,
         const ds4_model *m,
@@ -7603,6 +7709,11 @@ static void weights_bind(
     (void)require_output;
     (void)optional_output;
     memset(w, 0, sizeof(*w));
+
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
+        weights_bind_glm53(w, m);
+        return;
+    }
 
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
         w->token_embd = required_tensor(m, "token_embd.weight");
