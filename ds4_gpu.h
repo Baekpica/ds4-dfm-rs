@@ -3769,6 +3769,29 @@ int ds4_gpu_solar_kda_prefill_tensor(
         uint32_t                conv_kernel,
         float                   gate_lower_bound);
 
+int ds4_gpu_glm53_kda_prefill_tensor(
+        ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *scratch,
+        ds4_gpu_tensor       *recurrent_state,
+        ds4_gpu_tensor       *q_conv_state,
+        ds4_gpu_tensor       *k_conv_state,
+        ds4_gpu_tensor       *v_conv_state,
+        const ds4_gpu_tensor *q_raw,
+        const ds4_gpu_tensor *k_raw,
+        const ds4_gpu_tensor *v_raw,
+        const ds4_gpu_tensor *g_raw,
+        const ds4_gpu_tensor *beta_logits,
+        const ds4_gpu_tensor *q_conv_weight,
+        const ds4_gpu_tensor *k_conv_weight,
+        const ds4_gpu_tensor *v_conv_weight,
+        const ds4_gpu_tensor *decay_scale,
+        const ds4_gpu_tensor *dt_bias,
+        uint32_t                n_tokens,
+        uint32_t                n_head,
+        uint32_t                head_dim,
+        uint32_t                conv_kernel,
+        float                   gate_lower_bound);
+
 int ds4_gpu_solar_sigmoid_gate_tensor(
         ds4_gpu_tensor       *out,
         const ds4_gpu_tensor *x,

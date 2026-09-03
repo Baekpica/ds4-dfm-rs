@@ -44054,6 +44054,37 @@ extern "C" int ds4_gpu_solar_kda_prefill_tensor(
         "solar-open2 KDA chunked prefill");
 }
 
+extern "C" int ds4_gpu_glm53_kda_prefill_tensor(
+        ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *scratch,
+        ds4_gpu_tensor       *recurrent_state,
+        ds4_gpu_tensor       *q_conv_state,
+        ds4_gpu_tensor       *k_conv_state,
+        ds4_gpu_tensor       *v_conv_state,
+        const ds4_gpu_tensor *q_raw,
+        const ds4_gpu_tensor *k_raw,
+        const ds4_gpu_tensor *v_raw,
+        const ds4_gpu_tensor *g_raw,
+        const ds4_gpu_tensor *beta_logits,
+        const ds4_gpu_tensor *q_conv_weight,
+        const ds4_gpu_tensor *k_conv_weight,
+        const ds4_gpu_tensor *v_conv_weight,
+        const ds4_gpu_tensor *decay_scale,
+        const ds4_gpu_tensor *dt_bias,
+        uint32_t                n_tokens,
+        uint32_t                n_head,
+        uint32_t                head_dim,
+        uint32_t                conv_kernel,
+        float                   gate_lower_bound) {
+    return solar_kda_sequence_tensor(
+        out, scratch, recurrent_state, q_conv_state, k_conv_state,
+        v_conv_state,
+        q_raw, k_raw, v_raw, g_raw, beta_logits,
+        q_conv_weight, k_conv_weight, v_conv_weight, decay_scale, dt_bias,
+        n_tokens, n_head, head_dim, conv_kernel, gate_lower_bound, true,
+        "GLM 5.3 KDA chunked prefill");
+}
+
 /* Solar output gates. Keeping these separate from the KDA recurrence makes
  * the recurrence fixture useful on its own and gives the GQA branch the same
  * elementwise sigmoid implementation. */

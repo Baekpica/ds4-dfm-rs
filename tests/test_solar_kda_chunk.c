@@ -87,7 +87,7 @@ static void host_step(float *out, host_state *s,
                       const float *q_raw, const float *k_raw, const float *v_raw,
                       const float *g_raw, const float *beta_logits,
                       const float *qw, const float *kw, const float *vw,
-                      const float *decay, const float *dt) {
+                      const float *decay, const float *dt, int glm53) {
     float q[T_VECTOR], k[T_VECTOR], v[T_VECTOR];
     conv(q, s->q_conv, q_raw, qw);
     conv(k, s->k_conv, k_raw, kw);
@@ -102,13 +102,17 @@ static void host_step(float *out, host_state *s,
         const float qs = 1.0f / sqrtf(q2) / sqrtf((float)T_DIM);
         const float ks = 1.0f / sqrtf(k2);
         for (uint32_t d = 0; d < T_DIM; d++) { q[base + d] *= qs; k[base + d] *= ks; }
-        const float beta = 2.0f / (1.0f + expf(-beta_logits[h]));
+        const float beta = (glm53 ? 1.0f : 2.0f) /
+            (1.0f + expf(-beta_logits[h]));
         const size_t sb = (size_t)h * T_DIM * T_DIM;
         for (uint32_t vd = 0; vd < T_DIM; vd++) {
             float memory = 0.0f;
             for (uint32_t kd = 0; kd < T_DIM; kd++) {
-                float gate = decay[h] * softplus_ref(g_raw[base + kd] + dt[base + kd]);
-                if (gate < -5.0f) gate = -5.0f;
+                const float raw = g_raw[base + kd] + dt[base + kd];
+                float gate = glm53
+                    ? -5.0f / (1.0f + expf(decay[h] * raw))
+                    : decay[h] * softplus_ref(raw);
+                if (!glm53 && gate < -5.0f) gate = -5.0f;
                 const size_t ix = sb + (size_t)kd * T_DIM + vd;
                 s->state[ix] *= expf(gate);
                 memory += s->state[ix] * k[base + kd];
@@ -150,6 +154,7 @@ typedef struct {
 static void run_case(device_set *d, const float *q, const float *k,
                      const float *v, const float *g, const float *beta,
                      uint32_t total, const uint32_t *splits, uint32_t n_splits,
+                     int glm53,
                      float *got, float *got_state,
                      float *got_qc, float *got_kc, float *got_vc) {
     CHECK(ds4_gpu_tensor_fill_f32(d->state, 0.0f, T_STATE), "state reset");
@@ -166,10 +171,11 @@ static void run_case(device_set *d, const float *q, const float *k,
         CHECK(ds4_gpu_tensor_write(d->v, 0, v + (size_t)done * T_VECTOR, vb), "write v");
         CHECK(ds4_gpu_tensor_write(d->g, 0, g + (size_t)done * T_VECTOR, vb), "write g");
         CHECK(ds4_gpu_tensor_write(d->beta, 0, beta + (size_t)done * T_HEAD, bb), "write beta");
-        CHECK(ds4_gpu_solar_kda_prefill_tensor(
-                  d->out, d->scratch, d->state, d->qc, d->kc, d->vc,
-                  d->q, d->k, d->v, d->g, d->beta, d->qw, d->kw, d->vw,
-                  d->decay, d->dt, n, T_HEAD, T_DIM, T_CONV, -5.0f),
+        CHECK((glm53 ? ds4_gpu_glm53_kda_prefill_tensor
+                     : ds4_gpu_solar_kda_prefill_tensor)(
+                    d->out, d->scratch, d->state, d->qc, d->kc, d->vc,
+                    d->q, d->k, d->v, d->g, d->beta, d->qw, d->kw, d->vw,
+                    d->decay, d->dt, n, T_HEAD, T_DIM, T_CONV, -5.0f),
               "prefill launch");
         CHECK(ds4_gpu_tensor_read(d->out, 0, got + (size_t)done * T_VECTOR, vb), "read out");
         done += n;
@@ -249,7 +255,7 @@ int main(void) {
         host_step(want + (size_t)t * T_VECTOR, &hs,
                   q + (size_t)t * T_VECTOR, k + (size_t)t * T_VECTOR,
                   v + (size_t)t * T_VECTOR, g + (size_t)t * T_VECTOR,
-                  beta + (size_t)t * T_HEAD, qw, kw, vw, decay, dt);
+                  beta + (size_t)t * T_HEAD, qw, kw, vw, decay, dt, 0);
     }
 
     puts("== Solar Open 2 CUDA chunked KDA prefill (head_dim 128) ==");
@@ -260,7 +266,7 @@ int main(void) {
     char label[80];
     for (size_t i = 0; i < sizeof(singles) / sizeof(singles[0]); i++) {
         const uint32_t total = singles[i];
-        run_case(&d, q, k, v, g, beta, total, NULL, 0, got, got_state,
+        run_case(&d, q, k, v, g, beta, total, NULL, 0, 0, got, got_state,
                  got_conv, got_conv + T_CONV_STATE,
                  got_conv + 2u * T_CONV_STATE);
         snprintf(label, sizeof(label), "single %u output", total);
@@ -268,7 +274,7 @@ int main(void) {
     }
 
     /* Full-length single call: output, recurrent state, conv states. */
-    run_case(&d, q, k, v, g, beta, T_MAX_TOKENS, NULL, 0, got, got_state,
+    run_case(&d, q, k, v, g, beta, T_MAX_TOKENS, NULL, 0, 0, got, got_state,
              got_conv, got_conv + T_CONV_STATE, got_conv + 2u * T_CONV_STATE);
     compare("single 512 output", got, want, (size_t)T_MAX_TOKENS * T_VECTOR,
             1.0e-4, 1.0e-3);
@@ -292,7 +298,7 @@ int main(void) {
     };
     for (size_t i = 0; i < sizeof(splits) / sizeof(splits[0]); i++) {
         run_case(&d, q, k, v, g, beta, T_MAX_TOKENS, splits[i].s, splits[i].n,
-                 got, got_state, got_conv, got_conv + T_CONV_STATE,
+                 0, got, got_state, got_conv, got_conv + T_CONV_STATE,
                  got_conv + 2u * T_CONV_STATE);
         snprintf(label, sizeof(label), "split %s output", splits[i].name);
         compare(label, got, want, (size_t)T_MAX_TOKENS * T_VECTOR,
@@ -310,16 +316,50 @@ int main(void) {
     float *generic_out = calloc((size_t)T_MAX_TOKENS * T_VECTOR, sizeof(float));
     float *generic_state = calloc(T_STATE, sizeof(float));
     CHECK(generic_out && generic_state, "generic scratch");
-    run_case(&d, q, k, v, g, beta, T_MAX_TOKENS, NULL, 0, generic_out,
+    run_case(&d, q, k, v, g, beta, T_MAX_TOKENS, NULL, 0, 0, generic_out,
              generic_state, got_conv, got_conv + T_CONV_STATE,
              got_conv + 2u * T_CONV_STATE);
     unsetenv("DS4_SOLAR_KDA_STATE_PARTS");
-    run_case(&d, q, k, v, g, beta, T_MAX_TOKENS, NULL, 0, got, got_state,
+    run_case(&d, q, k, v, g, beta, T_MAX_TOKENS, NULL, 0, 0, got, got_state,
              got_conv, got_conv + T_CONV_STATE, got_conv + 2u * T_CONV_STATE);
     compare("chunked vs generic output", got, generic_out,
             (size_t)T_MAX_TOKENS * T_VECTOR, 1.0e-4, 1.0e-3);
     compare("chunked vs generic state", got_state, generic_state, T_STATE,
             2.0e-4, 2.0e-3);
+
+    puts("== GLM 5.3 CUDA chunked KDA prefill (head_dim 128) ==");
+    memset(&hs, 0, sizeof(hs));
+    for (uint32_t t = 0; t < T_MAX_TOKENS; t++) {
+        host_step(want + (size_t)t * T_VECTOR, &hs,
+                  q + (size_t)t * T_VECTOR, k + (size_t)t * T_VECTOR,
+                  v + (size_t)t * T_VECTOR, g + (size_t)t * T_VECTOR,
+                  beta + (size_t)t * T_HEAD, qw, kw, vw, decay, dt, 1);
+    }
+    run_case(&d, q, k, v, g, beta, T_MAX_TOKENS, NULL, 0, 1,
+             got, got_state, got_conv, got_conv + T_CONV_STATE,
+             got_conv + 2u * T_CONV_STATE);
+    compare("GLM single 512 output", got, want,
+            (size_t)T_MAX_TOKENS * T_VECTOR, 1.0e-4, 1.0e-3);
+    compare("GLM single 512 state", got_state, hs.state, T_STATE,
+            2.0e-4, 2.0e-3);
+    run_case(&d, q, k, v, g, beta, T_MAX_TOKENS,
+             split_b, sizeof(split_b) / sizeof(split_b[0]), 1,
+             got, got_state, got_conv, got_conv + T_CONV_STATE,
+             got_conv + 2u * T_CONV_STATE);
+    compare("GLM split output", got, want,
+            (size_t)T_MAX_TOKENS * T_VECTOR, 1.0e-4, 1.0e-3);
+    compare("GLM split state", got_state, hs.state, T_STATE,
+            2.0e-4, 2.0e-3);
+    CHECK(setenv("DS4_SOLAR_KDA_STATE_PARTS", "1", 1) == 0,
+          "select GLM generic");
+    run_case(&d, q, k, v, g, beta, T_MAX_TOKENS, NULL, 0, 1,
+             generic_out, generic_state, got_conv,
+             got_conv + T_CONV_STATE, got_conv + 2u * T_CONV_STATE);
+    unsetenv("DS4_SOLAR_KDA_STATE_PARTS");
+    compare("GLM chunked vs generic output", got, generic_out,
+            (size_t)T_MAX_TOKENS * T_VECTOR, 1.0e-4, 1.0e-3);
+    compare("GLM chunked vs generic state", got_state, generic_state,
+            T_STATE, 2.0e-4, 2.0e-3);
     free(generic_out);
     free(generic_state);
 
@@ -332,7 +372,7 @@ int main(void) {
     free(q); free(k); free(v); free(g); free(beta); free(want); free(got);
     free(got_state); free(got_conv);
     ds4_gpu_cleanup();
-    puts(failures ? "Solar chunked KDA checks FAILED"
-                  : "all Solar chunked KDA checks passed");
+    puts(failures ? "Solar/GLM chunked KDA checks FAILED"
+                  : "all Solar/GLM chunked KDA checks passed");
     return failures ? 1 : 0;
 }
