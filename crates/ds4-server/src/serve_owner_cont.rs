@@ -1,9 +1,10 @@
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use super::*;
 use crate::route::{route_decide, RouteEnv, LANE_CONTINUOUS};
-use crate::serve_cont::{cont_prompt_tokens, ContExec, ContPair, ContWork};
+use crate::serve_cont::{cont_prompt_tokens, ContExec, ContWork};
 use crate::serve_cont_prefill::{owner_tick_pair, PrefillChunkPolicy};
 
 pub(super) fn run_owner_maybe_roll(
@@ -28,59 +29,68 @@ pub(super) fn run_owner_maybe_roll(
         run_owner_job(cfg, inner, engine, Some(exec), job);
         return None;
     }
-    // A one-bank executor cannot overlap a sibling. Leave the FIFO untouched
-    // so the owner runs the next request after this generation completes.
-    if exec.max_seq() < 2 {
+    let cap = usize::try_from(exec.max_seq().max(1)).unwrap_or(1);
+    if cap == 1 {
         run_owner_job(cfg, inner, engine, Some(exec), job);
         return None;
     }
-    let second = match jobs_rx.try_recv() {
-        Ok(next) => Some(next),
-        Err(TryRecvError::Disconnected) => None,
-        Err(TryRecvError::Empty) => {
-            let wait = super::owner_static::coalesce_wait_from_env();
-            (!wait.is_zero())
-                .then(|| jobs_rx.recv_timeout(wait).ok())
-                .flatten()
+    let wait = super::owner_static::coalesce_wait_from_env();
+    let deadline = (!wait.is_zero()).then(|| Instant::now() + wait);
+    let mut jobs = vec![job];
+    let mut lookahead = None;
+    while jobs.len() < cap {
+        let next = match jobs_rx.try_recv() {
+            Ok(job) => job,
+            Err(TryRecvError::Disconnected) => break,
+            Err(TryRecvError::Empty) => {
+                let Some(deadline) = deadline else {
+                    break;
+                };
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                match jobs_rx.recv_timeout(deadline.saturating_duration_since(now)) {
+                    Ok(job) => job,
+                    Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
+                }
+            }
+        };
+        let mut next = next;
+        if cfg.max_queue_age_s > 0.0
+            && next.prepared.arrived_at.elapsed().as_secs_f64() > cfg.max_queue_age_s
+        {
+            lookahead = Some(next);
+            break;
         }
-    };
-    let Some(mut second) = second else {
-        run_owner_job(cfg, inner, engine, Some(exec), job);
-        return None;
-    };
-    if cfg.max_queue_age_s > 0.0
-        && second.prepared.arrived_at.elapsed().as_secs_f64() > cfg.max_queue_age_s
-    {
-        run_owner_job(cfg, inner, engine, Some(exec), job);
-        return Some(second);
+        if next.sink.state.gone() || next.sink.state.observe_disconnect() {
+            finish_canceled_roll(next);
+            continue;
+        }
+        let prompt_len = cont_prompt_tokens(exec, &next.prepared.parsed)
+            .map(|(_, toks)| toks.len() as i32)
+            .unwrap_or(0);
+        let env = roll_route_env(cfg, exec, prompt_len);
+        let dec = route_decide(next.prepared.parsed.needs, next.prepared.surface, &env);
+        if dec.lane != LANE_CONTINUOUS
+            || !resolve_bank_continuation(inner, &mut next.prepared, exec)
+            || next.prepared.parsed.directed_bank.is_some_and(|bank| {
+                jobs.iter()
+                    .any(|job| job.prepared.parsed.directed_bank == Some(bank))
+            })
+        {
+            lookahead = Some(next);
+            break;
+        }
+        jobs.push(next);
     }
-    if second.sink.state.gone() || second.sink.state.observe_disconnect() {
-        finish_canceled_roll(second);
+    if jobs.len() == 1 {
+        let job = jobs.pop().unwrap();
         run_owner_job(cfg, inner, engine, Some(exec), job);
-        return None;
+    } else {
+        serve_batch(cfg, inner, engine, exec, jobs);
     }
-    let second_len = cont_prompt_tokens(exec, &second.prepared.parsed)
-        .map(|(_, toks)| toks.len() as i32)
-        .unwrap_or(0);
-    let second_env = roll_route_env(cfg, exec, second_len);
-    let second_dec = route_decide(
-        second.prepared.parsed.needs,
-        second.prepared.surface,
-        &second_env,
-    );
-    if second_dec.lane != LANE_CONTINUOUS {
-        run_owner_job(cfg, inner, engine, Some(exec), job);
-        return Some(second);
-    }
-    if !resolve_bank_continuation(inner, &mut second.prepared, exec)
-        || (job.prepared.parsed.directed_bank.is_some()
-            && job.prepared.parsed.directed_bank == second.prepared.parsed.directed_bank)
-    {
-        run_owner_job(cfg, inner, engine, Some(exec), job);
-        return Some(second);
-    }
-    serve_pair(cfg, inner, engine, exec, job, second);
-    None
+    lookahead
 }
 
 fn roll_route_env(cfg: &ServerConfig, exec: &dyn ContExec, prompt_len: i32) -> RouteEnv {
@@ -113,67 +123,71 @@ fn finish_canceled_roll(job: OwnerJob) {
     }
 }
 
-fn serve_pair(
+fn serve_batch(
     cfg: &ServerConfig,
     inner: &Arc<Mutex<ServerInner>>,
     engine: &mut dyn DecodeIo,
     exec: &mut dyn ContExec,
-    mut first: OwnerJob,
-    mut second: OwnerJob,
+    mut jobs: Vec<OwnerJob>,
 ) {
-    first.lease.start();
-    second.lease.start();
-    let id_a = next_job_id(&mut lock_inner(inner).admit, first.prepared.parsed.kind);
-    let id_b = next_job_id(&mut lock_inner(inner).admit, second.prepared.parsed.kind);
+    for job in &mut jobs {
+        job.lease.start();
+    }
+    let ids: Vec<_> = {
+        let mut inner = lock_inner(inner);
+        jobs.iter()
+            .map(|job| next_job_id(&mut inner.admit, job.prepared.parsed.kind))
+            .collect()
+    };
     let mut bank_hold_retry = |bank, live| {
         lock_inner(inner)
             .creg
             .bank_hold_retry(bank, live, monotonic_now())
     };
-    let store = engine.kv_store_mut();
-    let arrived_a = first.prepared.arrived_at;
-    let arrived_b = second.prepared.arrived_at;
-    let decode_remaining = u32::try_from(first.prepared.parsed.max_tokens.max(1)).unwrap_or(1);
-    let prefill_remaining = cont_prompt_tokens(exec, &second.prepared.parsed)
-        .ok()
-        .and_then(|(_, toks)| u32::try_from(toks.len()).ok())
-        .unwrap_or(1)
-        .max(1);
-    let _ops = owner_tick_pair(
-        PrefillChunkPolicy::from_env(),
-        decode_remaining,
-        prefill_remaining,
-    );
-    let [result_a, result_b] = exec.generate_pair(
-        ContPair {
-            first: ContWork {
-                parsed: &first.prepared.parsed,
-                job_id: &id_a,
-                created: unix_now(),
-                cors: cfg.cors,
-                default_tokens: cfg.default_tokens,
-                t_arrive: arrived_a,
-                out: &mut first.sink,
-            },
-            second: ContWork {
-                parsed: &second.prepared.parsed,
-                job_id: &id_b,
-                created: unix_now(),
-                cors: cfg.cors,
-                default_tokens: cfg.default_tokens,
-                t_arrive: arrived_b,
-                out: &mut second.sink,
-            },
-        },
-        &mut bank_hold_retry,
-        store,
-    );
-    let served = result_a.is_ok() as usize + result_b.is_ok() as usize;
-    let fallback = matches!(&result_a, Err(GenerateError::Unsupported(_))) as usize
-        + matches!(&result_b, Err(GenerateError::Unsupported(_))) as usize;
+    if let Some(second) = jobs.get(1) {
+        let decode_remaining =
+            u32::try_from(jobs[0].prepared.parsed.max_tokens.max(1)).unwrap_or(1);
+        let prefill_remaining = cont_prompt_tokens(exec, &second.prepared.parsed)
+            .ok()
+            .and_then(|(_, toks)| u32::try_from(toks.len()).ok())
+            .unwrap_or(1)
+            .max(1);
+        let _ = owner_tick_pair(
+            PrefillChunkPolicy::from_env(),
+            decode_remaining,
+            prefill_remaining,
+        );
+    }
+    let created = unix_now();
+    let works = jobs
+        .iter_mut()
+        .zip(&ids)
+        .map(|(job, id)| ContWork {
+            parsed: &job.prepared.parsed,
+            job_id: id,
+            created,
+            cors: cfg.cors,
+            default_tokens: cfg.default_tokens,
+            t_arrive: job.prepared.arrived_at,
+            out: &mut job.sink,
+        })
+        .collect();
+    let results = exec.generate_batch(works, &mut bank_hold_retry, engine.kv_store_mut());
+    let served = results.iter().filter(|result| result.is_ok()).count();
+    let fallback = results
+        .iter()
+        .filter(|result| matches!(result, Err(GenerateError::Unsupported(_))))
+        .count();
     eprintln!("ds4-server-rs: continuous batch path=cont served={served} fallback={fallback}");
-    settle_roll_job(cfg, inner, engine, first, &id_a, result_a);
-    settle_roll_job(cfg, inner, engine, second, &id_b, result_b);
+    let mut results = results.into_iter();
+    for (job, id) in jobs.into_iter().zip(ids) {
+        let result = results.next().unwrap_or_else(|| {
+            Err(GenerateError::Engine(
+                "continuous batch returned too few results".into(),
+            ))
+        });
+        settle_roll_job(cfg, inner, engine, job, &id, result);
+    }
 }
 
 fn settle_roll_job(

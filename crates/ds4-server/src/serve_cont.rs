@@ -1293,12 +1293,6 @@ pub struct ContWork<'a> {
     pub out: &'a mut dyn Write,
 }
 
-/// Two continuous jobs driven in one rolling `admit` loop.
-pub struct ContPair<'a> {
-    pub first: ContWork<'a>,
-    pub second: ContWork<'a>,
-}
-
 /// Trait seam so `handle_client_inner` can drive a continuous lane without
 /// the native feature (tests supply a scripted implementation).
 pub trait ContExec {
@@ -1343,39 +1337,29 @@ pub trait ContExec {
         out: &mut dyn Write,
     ) -> Result<GenerateOutcome, GenerateError>;
 
-    /// Drive two continuous jobs in one rolling admit loop. Default runs
-    /// them sequentially (one-at-a-time fallback). Native `ContLane`
-    /// admits the second while the first is generating.
-    fn generate_pair(
+    /// Drive up to `max_seq()` jobs in one rolling admit loop. The default
+    /// keeps non-native implementations correct by running them sequentially.
+    fn generate_batch(
         &mut self,
-        pair: ContPair<'_>,
+        jobs: Vec<ContWork<'_>>,
         bank_hold_retry: &mut dyn FnMut(i32, Option<(u64, i32)>) -> Option<i32>,
         mut store: Option<&mut KvStore>,
-    ) -> [Result<GenerateOutcome, GenerateError>; 2] {
-        let ContPair { first, second } = pair;
-        let a = self.generate(
-            first.parsed,
-            first.job_id,
-            first.created,
-            first.cors,
-            first.default_tokens,
-            first.t_arrive,
-            bank_hold_retry,
-            store.as_deref_mut(),
-            first.out,
-        );
-        let b = self.generate(
-            second.parsed,
-            second.job_id,
-            second.created,
-            second.cors,
-            second.default_tokens,
-            second.t_arrive,
-            bank_hold_retry,
-            store.as_deref_mut(),
-            second.out,
-        );
-        [a, b]
+    ) -> Vec<Result<GenerateOutcome, GenerateError>> {
+        jobs.into_iter()
+            .map(|job| {
+                self.generate(
+                    job.parsed,
+                    job.job_id,
+                    job.created,
+                    job.cors,
+                    job.default_tokens,
+                    job.t_arrive,
+                    bank_hold_retry,
+                    store.as_deref_mut(),
+                    job.out,
+                )
+            })
+            .collect()
     }
 
     fn shutdown(&mut self, _store: Option<&mut KvStore>) {}
@@ -1662,7 +1646,7 @@ mod native {
             }
         }
 
-        fn push(&mut self, mut slot: JobSlot<'a>) {
+        fn push(&mut self, mut slot: JobSlot<'a>) -> usize {
             let user = self.next_user;
             self.next_user += 1;
             if let Some(admit) = slot.admit.as_mut() {
@@ -1670,6 +1654,7 @@ mod native {
             }
             self.roll.enqueue(user);
             self.slots.insert(user, slot);
+            user
         }
     }
 
@@ -2693,113 +2678,81 @@ mod native {
                 store.as_deref_mut(),
                 &crate::serve_cont_roll::RollReserve::new(),
             )?;
-            let mut adapter = WriteAdapter(work.out);
             let mut driver = RollDriver::new(self.vocab);
-            driver.push(prepared.into_slot(&mut adapter));
+            let user = driver.push(prepared.into_slot(work.out));
             let native_err = self
                 .batch
                 .continuous_generate(&mut driver)
                 .err()
                 .map(|error| error.to_string());
-            let job = driver.slots.remove(&1).ok_or_else(|| {
+            let job = driver.slots.remove(&user).ok_or_else(|| {
                 GenerateError::Engine("continuous driver lost the admitted job".into())
             })?;
             self.finish_driven(job, native_err, store, cors)
         }
 
-        fn generate_pair(
+        fn generate_batch(
             &mut self,
-            pair: ContPair<'_>,
+            jobs: Vec<ContWork<'_>>,
             bank_hold_retry: &mut dyn FnMut(i32, Option<(u64, i32)>) -> Option<i32>,
             mut store: Option<&mut KvStore>,
-        ) -> [Result<GenerateOutcome, GenerateError>; 2] {
-            let ContPair { first, second } = pair;
-            let cors_a = first.cors;
-            let cors_b = second.cors;
+        ) -> Vec<Result<GenerateOutcome, GenerateError>> {
+            let count = jobs.len();
+            let mut results: Vec<Option<Result<GenerateOutcome, GenerateError>>> =
+                (0..count).map(|_| None).collect();
             let mut reserve = crate::serve_cont_roll::RollReserve::new();
-            let prepared_a =
-                match self.prepare_slot(&first, bank_hold_retry, store.as_deref_mut(), &reserve) {
-                    Ok(prepared) => prepared,
-                    Err(error) => {
-                        let b = self.generate(
-                            second.parsed,
-                            second.job_id,
-                            second.created,
-                            second.cors,
-                            second.default_tokens,
-                            second.t_arrive,
-                            bank_hold_retry,
-                            store,
-                            second.out,
-                        );
-                        return [Err(error), b];
+            let mut prepared = Vec::with_capacity(count);
+            for (index, work) in jobs.into_iter().enumerate() {
+                let cors = work.cors;
+                match self.prepare_slot(&work, bank_hold_retry, store.as_deref_mut(), &reserve) {
+                    Ok(slot) => {
+                        reserve.note_place(slot.admit.place_bank);
+                        prepared.push((index, cors, slot, work.out));
                     }
-                };
-            reserve.note_place(prepared_a.admit.place_bank);
-            let prepared_b =
-                match self.prepare_slot(&second, bank_hold_retry, store.as_deref_mut(), &reserve) {
-                    Ok(prepared) => prepared,
-                    Err(error) => {
-                        let mut adapter = WriteAdapter(first.out);
-                        let mut driver = RollDriver::new(self.vocab);
-                        driver.push(prepared_a.into_slot(&mut adapter));
-                        let native_err = self
-                            .batch
-                            .continuous_generate(&mut driver)
-                            .err()
-                            .map(|e| e.to_string());
-                        let job = driver.slots.remove(&1).ok_or_else(|| {
-                            GenerateError::Engine("continuous driver lost the admitted job".into())
-                        });
-                        let a = match job {
-                            Ok(job) => self.finish_driven(job, native_err, store, cors_a),
-                            Err(error) => Err(error),
-                        };
-                        return [a, Err(error)];
-                    }
-                };
-            let mut adapter_a = WriteAdapter(first.out);
-            let mut adapter_b = WriteAdapter(second.out);
-            let mut driver = RollDriver::new(self.vocab);
-            driver.push(prepared_a.into_slot(&mut adapter_a));
-            driver.push(prepared_b.into_slot(&mut adapter_b));
-            let native_err = self
-                .batch
-                .continuous_generate(&mut driver)
-                .err()
-                .map(|error| error.to_string());
-            let a = match driver.slots.remove(&1) {
-                Some(job) => {
-                    self.finish_driven(job, native_err.clone(), store.as_deref_mut(), cors_a)
+                    Err(error) => results[index] = Some(Err(error)),
                 }
-                None => Err(GenerateError::Engine(
-                    "continuous driver lost the first job".into(),
-                )),
-            };
-            let b = match driver.slots.remove(&2) {
-                Some(job) => self.finish_driven(job, native_err, store, cors_b),
-                None => Err(GenerateError::Engine(
-                    "continuous driver lost the second job".into(),
-                )),
-            };
-            [a, b]
+            }
+            let mut driver = RollDriver::new(self.vocab);
+            let order: Vec<_> = prepared
+                .into_iter()
+                .map(|(index, cors, slot, out)| {
+                    let user = driver.push(slot.into_slot(out));
+                    (index, user, cors)
+                })
+                .collect();
+            let native_err = (!order.is_empty()).then(|| {
+                self.batch
+                    .continuous_generate(&mut driver)
+                    .err()
+                    .map(|error| error.to_string())
+            });
+            let native_err = native_err.flatten();
+            for (index, user, cors) in order {
+                results[index] = Some(match driver.slots.remove(&user) {
+                    Some(job) => {
+                        self.finish_driven(job, native_err.clone(), store.as_deref_mut(), cors)
+                    }
+                    None => Err(GenerateError::Engine(
+                        "continuous driver lost an admitted job".into(),
+                    )),
+                });
+            }
+            results
+                .into_iter()
+                .map(|result| {
+                    result.unwrap_or_else(|| {
+                        Err(GenerateError::Engine(
+                            "continuous batch lost a job result".into(),
+                        ))
+                    })
+                })
+                .collect()
         }
 
         fn shutdown(&mut self, store: Option<&mut KvStore>) {
             if let Some(store) = store {
                 self.shutdown_banks(store);
             }
-        }
-    }
-
-    struct WriteAdapter<'a>(&'a mut dyn Write);
-
-    impl Write for WriteAdapter<'_> {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.write(buf)
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            self.0.flush()
         }
     }
 }

@@ -156,6 +156,40 @@ fn owner_roll_pair_invokes_tick_roll_prefill() {
 }
 
 #[test]
+fn owner_roll_uses_every_configured_bank_without_a_two_job_ceiling() {
+    let cfg = ServerConfig {
+        have_engine: true,
+        default_tokens: 8,
+        ..ServerConfig::default()
+    };
+    let inner = Arc::new(Mutex::new(ServerInner::from_cfg(&cfg)));
+    let (job_a, drain_a) = cont_chat_job(&inner, "a");
+    let (job_b, drain_b) = cont_chat_job(&inner, "b");
+    let (job_c, drain_c) = cont_chat_job(&inner, "c");
+    let (job_d, drain_d) = cont_chat_job(&inner, "d");
+    let (tx, rx) = mpsc::channel();
+    tx.send(job_b).unwrap();
+    tx.send(job_c).unwrap();
+    tx.send(job_d).unwrap();
+    drop(tx);
+    let mut spy = RollSpy {
+        max_seq: 4,
+        ..RollSpy::default()
+    };
+    let mut engine = ScriptedDecode::from_pieces(&[b"unused"]);
+
+    assert!(run_owner_maybe_roll(&cfg, &inner, &mut engine, &mut spy, job_a, &rx).is_none());
+    assert_eq!(spy.generate_calls, 4);
+    assert!(rx.try_recv().is_err());
+    for drain in [drain_a, drain_b, drain_c, drain_d] {
+        drain
+            .done
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("batched job settled");
+    }
+}
+
+#[test]
 fn late_roll_sibling_joins_when_coalesce_wait_is_set() {
     let cfg = ServerConfig {
         have_engine: true,
