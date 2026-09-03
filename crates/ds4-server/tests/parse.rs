@@ -101,11 +101,19 @@ fn both(surface: &str, body: &str) -> (Result<ParsedRequest, String>, String) {
     (rust_parse(surface, body), c_str(&[surface, body]))
 }
 
+fn normalize_c_schema_refusal(error: &str) -> String {
+    error.replacen(
+        "is not implemented: structured output is unsupported",
+        "is not supported: structured output is unsupported",
+        1,
+    )
+}
+
 fn assert_err_eq(surface: &str, body: &str, expect: &str) {
     let (rust, c) = both(surface, body);
     let rust_e = rust.unwrap_err();
     assert!(c.starts_with("ERROR\n"), "{surface} {body}: {c}");
-    let c_e = c.strip_prefix("ERROR\n").unwrap().trim_end_matches('\n');
+    let c_e = normalize_c_schema_refusal(c.strip_prefix("ERROR\n").unwrap().trim_end_matches('\n'));
     assert_eq!(rust_e, c_e, "{surface} {body}");
     assert!(
         rust_e.contains(expect) || rust_e == expect,
@@ -155,12 +163,12 @@ fn c_unit_error_cases_match() {
     assert_err_eq(
         "chat",
         r#"{"response_format":{"type":"json_object"}}"#,
-        "response_format type 'json_object' is not implemented",
+        "response_format type 'json_object' is not supported",
     );
     assert_err_eq(
         "chat",
         r#"{"response_format":{"json_schema":{"schema":{"type":"object"}},"type":"json_schema"}}"#,
-        "'json_schema' is not implemented",
+        "'json_schema' is not supported",
     );
     assert_err_eq(
         "chat",
@@ -170,7 +178,7 @@ fn c_unit_error_cases_match() {
     assert_err_eq(
         "chat",
         r#"{"response_format":"json_object"}"#,
-        "'json_object' is not implemented",
+        "'json_object' is not supported",
     );
     assert_err_eq(
         "completion",
@@ -180,7 +188,7 @@ fn c_unit_error_cases_match() {
     assert_err_eq(
         "completion",
         r#"{"response_format":{"type":"json_object"}}"#,
-        "response_format type 'json_object' is not implemented",
+        "response_format type 'json_object' is not supported",
     );
     assert_err_eq(
         "responses",
@@ -190,18 +198,18 @@ fn c_unit_error_cases_match() {
     assert_err_eq(
         "responses",
         r#"{"text":{"format":{"type":"json_schema","name":"x"}}}"#,
-        "text.format type 'json_schema' is not implemented",
+        "text.format type 'json_schema' is not supported",
     );
     assert_err_eq("anthropic", r#"{"output_format":null}"#, "missing messages");
     assert_err_eq(
         "anthropic",
         r#"{"output_format":{"type":"json_schema","schema":{}}}"#,
-        "output_format type 'json_schema' is not implemented",
+        "output_format type 'json_schema' is not supported",
     );
     assert_err_eq(
         "anthropic",
         r#"{"output_config":{"effort":"high","format":{"type":"json_object"}}}"#,
-        "output_config.format type 'json_object' is not implemented",
+        "output_config.format type 'json_object' is not supported",
     );
 
     assert_err_eq(

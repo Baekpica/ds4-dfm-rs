@@ -9,7 +9,7 @@ pub fn output_format_type_supported(field: &str, typ: &str) -> Result<(), String
     }
     if typ == "json_object" || typ == "json_schema" {
         return Err(format!(
-            "{field} type '{typ}' is not implemented: structured output is \
+            "{field} type '{typ}' is not supported: structured output is \
              unsupported; omit {field} or use type \"text\""
         ));
     }

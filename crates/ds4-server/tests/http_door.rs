@@ -144,16 +144,24 @@ fn fmt_rust(field: &str, json: &str) -> Result<(), String> {
     parse_output_format_value(&mut p, field)
 }
 
+fn normalize_c_schema_refusal(error: &str) -> String {
+    error.replacen(
+        "is not implemented: structured output is unsupported",
+        "is not supported: structured output is unsupported",
+        1,
+    )
+}
+
 fn fmt_c(field: &str, json: &str) -> Result<(), String> {
     let s = c_str(&["format-value", field, json]);
     if s.starts_with("OK\n") {
         Ok(())
     } else {
-        Err(s
-            .strip_prefix("ERROR\n")
-            .unwrap_or(&s)
-            .trim_end_matches('\n')
-            .to_string())
+        Err(normalize_c_schema_refusal(
+            s.strip_prefix("ERROR\n")
+                .unwrap_or(&s)
+                .trim_end_matches('\n'),
+        ))
     }
 }
 
@@ -165,7 +173,7 @@ fn schema_format_refusal_matches_c() {
 
     let refuse = output_format_type_supported(field, "json_object").unwrap_err();
     assert_eq!(refuse, fmt_c(field, "\"json_object\"").unwrap_err());
-    assert!(refuse.contains("is not implemented"));
+    assert!(refuse.contains("is not supported"));
     assert_eq!(
         output_format_type_supported(field, "xml").unwrap_err(),
         c_str(&["format-type", field, "xml"])
@@ -201,29 +209,27 @@ fn schema_format_refusal_matches_c() {
 
     let mut p =
         Json::new("{\"format\":{\"type\":\"json_schema\",\"name\":\"x\"},\"verbosity\":\"low\"}");
-    let rust = parse_responses_text_value(&mut p);
+    let rust = parse_responses_text_value(&mut p).unwrap_err();
     let c = c_str(&[
         "text-value",
         "{\"format\":{\"type\":\"json_schema\",\"name\":\"x\"},\"verbosity\":\"low\"}",
     ]);
-    assert!(rust.is_err());
     assert!(c.starts_with("ERROR"));
     assert_eq!(
-        rust.unwrap_err(),
-        c.strip_prefix("ERROR\n").unwrap().trim_end_matches('\n')
+        rust,
+        normalize_c_schema_refusal(c.strip_prefix("ERROR\n").unwrap().trim_end_matches('\n'))
     );
-    assert!(c.contains("text.format type 'json_schema' is not implemented"));
+    assert!(rust.contains("text.format type 'json_schema' is not supported"));
 
     let mut p = Json::new("{\"effort\":\"high\",\"format\":{\"type\":\"json_object\"}}");
-    let rust = parse_output_config_effort(&mut p);
+    let rust = parse_output_config_effort(&mut p).unwrap_err();
     let c = c_str(&[
         "output-config",
         "{\"effort\":\"high\",\"format\":{\"type\":\"json_object\"}}",
     ]);
-    assert!(rust.is_err());
     assert_eq!(
-        rust.unwrap_err(),
-        c.strip_prefix("ERROR\n").unwrap().trim_end_matches('\n')
+        rust,
+        normalize_c_schema_refusal(c.strip_prefix("ERROR\n").unwrap().trim_end_matches('\n'))
     );
 
     let mut p = Json::new("{\"effort\":\"banana\",\"format\":{\"type\":\"text\"}}");
