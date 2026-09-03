@@ -299,7 +299,8 @@ static void test_banked_decode(
         const float *k_weight,
         const float *v_weight,
         const float *decay,
-        const float *dt) {
+        const float *dt,
+        int glm53) {
     enum { T_BANKS = 2 };
     const uint64_t recurrent_bytes = (uint64_t)T_STATE * sizeof(float);
     const uint64_t conv_bytes = (uint64_t)T_CONV_STATE * sizeof(float);
@@ -337,7 +338,7 @@ static void test_banked_decode(
                  v + (size_t)row * T_VECTOR,
                  g + (size_t)row * T_VECTOR,
                  beta + (size_t)row * T_HEAD,
-                 q_weight, k_weight, v_weight, decay, dt, 0);
+                 q_weight, k_weight, v_weight, decay, dt, glm53);
     }
 
     ds4_gpu_tensor *state_slab = ds4_gpu_tensor_alloc(
@@ -374,13 +375,14 @@ static void test_banked_decode(
             "banked write beta");
     REQUIRE(ds4_gpu_tensor_write(dbanks, 0, bank_ids, sizeof(bank_ids)),
             "banked write ids");
-    REQUIRE(ds4_gpu_solar_kda_decode_banks_tensor(
-                out, state_slab, bank_stride, 0u, q_offset, k_offset,
-                v_offset, dbanks, T_BANKS, T_BANKS,
-                dq, dk, dv, dg, dbeta,
-                fixed->q_weight, fixed->k_weight, fixed->v_weight,
-                fixed->decay, fixed->dt,
-                T_HEAD, T_DIM, T_CONV, -5.0f),
+    REQUIRE((glm53 ? ds4_gpu_glm53_kda_decode_banks_tensor
+                   : ds4_gpu_solar_kda_decode_banks_tensor)(
+                    out, state_slab, bank_stride, 0u, q_offset, k_offset,
+                    v_offset, dbanks, T_BANKS, T_BANKS,
+                    dq, dk, dv, dg, dbeta,
+                    fixed->q_weight, fixed->k_weight, fixed->v_weight,
+                    fixed->decay, fixed->dt,
+                    T_HEAD, T_DIM, T_CONV, -5.0f),
             "banked KDA kernel launch");
     REQUIRE(ds4_gpu_tensor_read(
                 out, 0, gpu_out,
@@ -397,7 +399,8 @@ static void test_banked_decode(
                     bank_data, bank_stride),
                 "read banked KDA state");
         char label[64];
-        snprintf(label, sizeof(label), "bank %u recurrent state", bank);
+        snprintf(label, sizeof(label), "%s bank %u recurrent state",
+                 glm53 ? "GLM" : "Solar", bank);
         compare(label, bank_data, cpu[bank].state,
                 T_STATE, 5.0e-5, 5.0e-4);
         snprintf(label, sizeof(label), "bank %u q conv state", bank);
@@ -502,7 +505,10 @@ int main(void) {
     compare("fork state identity", gpu_recurrent, cpu_cache.state, T_STATE, 1.0e-7, 1.0e-6);
 
     puts("== Solar Open 2 banked CUDA KDA decode ==");
-    test_banked_decode(&inputs, q_weight, k_weight, v_weight, decay, dt);
+    test_banked_decode(&inputs, q_weight, k_weight, v_weight, decay, dt, 0);
+
+    puts("== GLM 5.3 banked CUDA KDA decode ==");
+    test_banked_decode(&inputs, q_weight, k_weight, v_weight, decay, dt, 1);
 
     puts("== GLM 5.3 CUDA KDA decode ==");
     REQUIRE(gpu_reset_state(&primary), "GLM 5.3 state reset");

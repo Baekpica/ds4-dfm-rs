@@ -3713,6 +3713,32 @@ int ds4_gpu_solar_kda_decode_banks_tensor(
         uint32_t                conv_kernel,
         float                   gate_lower_bound);
 
+int ds4_gpu_glm53_kda_decode_banks_tensor(
+        ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *state_slab,
+        uint64_t                state_bank_stride,
+        uint64_t                recurrent_offset,
+        uint64_t                q_conv_offset,
+        uint64_t                k_conv_offset,
+        uint64_t                v_conv_offset,
+        const ds4_gpu_tensor *bank_ids,
+        uint32_t                n_tokens,
+        uint32_t                max_banks,
+        const ds4_gpu_tensor *q_raw,
+        const ds4_gpu_tensor *k_raw,
+        const ds4_gpu_tensor *v_raw,
+        const ds4_gpu_tensor *g_raw,
+        const ds4_gpu_tensor *beta_logits,
+        const ds4_gpu_tensor *q_conv_weight,
+        const ds4_gpu_tensor *k_conv_weight,
+        const ds4_gpu_tensor *v_conv_weight,
+        const ds4_gpu_tensor *decay_scale,
+        const ds4_gpu_tensor *dt_bias,
+        uint32_t                n_head,
+        uint32_t                head_dim,
+        uint32_t                conv_kernel,
+        float                   gate_lower_bound);
+
 /* Bytes needed by the production-width chunked prefill path.  Zero means the
  * shape or a sub-64-token short append uses the generic sequence path.  The
  * caller owns this workspace, so independent graphs/sessions never share
