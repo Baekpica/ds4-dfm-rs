@@ -799,7 +799,9 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         ModelSyntax::SolarOpen2 => ChatFormat::SolarOpen2,
         ModelSyntax::Exaone => ChatFormat::Exaone,
         ModelSyntax::Qwen4Exp => ChatFormat::Qwen4Exp,
-        ModelSyntax::DeepSeek | ModelSyntax::Motif3 | ModelSyntax::Dots3 => ChatFormat::DeepSeek,
+        ModelSyntax::DeepSeek | ModelSyntax::Motif3 | ModelSyntax::Dots3 | ModelSyntax::Glm53 => {
+            ChatFormat::DeepSeek
+        }
     }
 }
 
@@ -911,6 +913,7 @@ pub(crate) fn thinking_visible_key(
             ModelSyntax::Exaone => visible.extend_from_slice(b"<|endofturn|>"),
             ModelSyntax::Motif3 => visible.extend_from_slice(b"<|endofturn|>"),
             ModelSyntax::SolarOpen2 => visible.extend_from_slice(SOLAR_IM_END.as_bytes()),
+            ModelSyntax::Glm53 => {}
             _ => visible.extend_from_slice(DSML_EOS.as_bytes()),
         }
         if matches!(

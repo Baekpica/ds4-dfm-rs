@@ -53,6 +53,12 @@ pub const QWEN_TOOL_RESPONSE_END: &str = "</tool_response>";
 pub const QWEN_VISION_START: &str = "<|vision_start|>";
 pub const QWEN_IMAGE_PAD: &str = "<|image_pad|>";
 pub const QWEN_VISION_END: &str = "<|vision_end|>";
+pub const GLM_BOS: &str = "[gMASK]<sop>";
+pub const GLM_TOOL_CALL_START: &str = "<tool_call>";
+pub const GLM_TOOL_CALL_END: &str = "</tool_call>";
+pub const GLM_VISION_START: &str = "<|begin_of_image|>";
+pub const GLM_IMAGE: &str = "<|image|>";
+pub const GLM_VISION_END: &str = "<|end_of_image|>";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelSyntax {
@@ -62,6 +68,7 @@ pub enum ModelSyntax {
     Exaone = 4,
     Dots3 = 5,
     Qwen4Exp = 6,
+    Glm53 = 7,
 }
 
 /// C `server_model_syntax_for_engine`.
@@ -72,6 +79,7 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
         4 => ModelSyntax::Exaone,
         5 => ModelSyntax::Dots3,
         6 => ModelSyntax::Qwen4Exp,
+        7 => ModelSyntax::Glm53,
         _ => ModelSyntax::DeepSeek,
     }
 }
@@ -82,6 +90,7 @@ pub fn tool_start_marker(syntax: ModelSyntax) -> &'static str {
         ModelSyntax::Motif3 | ModelSyntax::Exaone => MOTIF_TOOL_CALLS,
         ModelSyntax::Dots3 => DOTS3_TOOL_CALLS,
         ModelSyntax::Qwen4Exp => QWEN_TOOL_CALL_START,
+        ModelSyntax::Glm53 => GLM_TOOL_CALL_START,
         ModelSyntax::DeepSeek => DSML_TOOL_CALLS,
     }
 }
@@ -476,6 +485,256 @@ fn append_qwen_tool_calls_text(out: &mut Vec<u8>, m: &ChatMsg, orders: &[ToolSch
         put(out, "</function>\n");
         put(out, QWEN_TOOL_CALL_END);
     }
+}
+
+fn append_glm_tag_body(out: &mut Vec<u8>, text: &[u8], end: &str) {
+    append_sentinel_escape(out, text, end.as_bytes(), b"&lt;");
+}
+
+fn append_glm_arg(out: &mut Vec<u8>, arg: &crate::json::JsonArg) {
+    put(out, "<arg_key>");
+    append_glm_tag_body(out, arg.key.as_bytes(), "</arg_key>");
+    put(out, "</arg_key><arg_value>");
+    append_glm_tag_body(out, arg.value.as_bytes(), "</arg_value>");
+    put(out, "</arg_value>");
+}
+
+fn append_glm_arguments_from_json(
+    out: &mut Vec<u8>,
+    json: &str,
+    order: Option<&ToolSchemaOrder>,
+) -> bool {
+    let Some(mut args) = json_args_parse(json) else {
+        return false;
+    };
+    if let Some(order) = order {
+        for prop in &order.prop {
+            if let Some(idx) = json_args_find_unused(&args, prop) {
+                append_glm_arg(out, &args[idx]);
+                args[idx].used = true;
+            }
+        }
+    }
+    for arg in &args {
+        if !arg.used {
+            append_glm_arg(out, arg);
+        }
+    }
+    true
+}
+
+fn append_glm_tool_calls_text(out: &mut Vec<u8>, m: &ChatMsg, orders: &[ToolSchemaOrder]) {
+    if m.calls.is_empty() {
+        return;
+    }
+    if !m.raw_dsml.is_empty() {
+        put(out, &m.raw_dsml);
+        return;
+    }
+    out.push(b'\n');
+    for tc in &m.calls {
+        put(out, GLM_TOOL_CALL_START);
+        put(out, &tc.name);
+        let order = tool_schema_orders_find(orders, &tc.name);
+        if !append_glm_arguments_from_json(out, &tc.arguments, order) {
+            put(out, "<arg_key>arguments</arg_key><arg_value>");
+            append_glm_tag_body(out, tc.arguments.as_bytes(), "</arg_value>");
+            put(out, "</arg_value>");
+        }
+        put(out, GLM_TOOL_CALL_END);
+    }
+    out.push(b'\n');
+}
+
+fn append_glm_tool_schema_json(out: &mut Vec<u8>, schema: &str) -> Option<bool> {
+    let args = json_args_parse(schema)?;
+    if args
+        .iter()
+        .any(|arg| arg.key == "defer_loading" && !arg.is_string && arg.value == "true")
+    {
+        return Some(false);
+    }
+    out.push(b'{');
+    let mut wrote = false;
+    for arg in args
+        .iter()
+        .filter(|arg| arg.key != "defer_loading" && arg.key != "strict")
+    {
+        if wrote {
+            put(out, ", ");
+        }
+        out.extend(json_escape_bytes(arg.key.as_bytes()));
+        put(out, ": ");
+        if arg.is_string {
+            out.extend(json_escape_bytes(arg.value.as_bytes()));
+        } else {
+            put(out, &arg.value);
+        }
+        wrote = true;
+    }
+    out.push(b'}');
+    Some(true)
+}
+
+fn append_glm_tools_prompt_text(out: &mut Vec<u8>, tool_schemas: &str) {
+    if tool_schemas.is_empty() {
+        return;
+    }
+    put(
+        out,
+        "\n# Tools\n\n\
+You may call one or more functions to assist with the user query.\n\n\
+You are provided with function signatures within <tools></tools> XML tags:\n\
+<tools>\n\n",
+    );
+    let mut p = Json::new(tool_schemas);
+    let mut any = false;
+    loop {
+        p.ws();
+        if p.peek().is_none() {
+            break;
+        }
+        let Some(schema) = json_raw_value(&mut p) else {
+            break;
+        };
+        match append_glm_tool_schema_json(out, &schema) {
+            Some(true) => {
+                put(out, "\n\n\n");
+                any = true;
+            }
+            Some(false) => {}
+            None => {
+                put(out, &schema);
+                put(out, "\n\n\n");
+                any = true;
+            }
+        }
+    }
+    if !any {
+        out.push(b'\n');
+    }
+    put(
+        out,
+        "</tools>\n\n\
+For each function call, output the function name and arguments within the following XML format:\n\
+<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key>\
+<arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key>\
+<arg_value>{arg-value-2}</arg_value>...</tool_call>",
+    );
+}
+
+fn append_glm_message_content(out: &mut Vec<u8>, m: &ChatMsg) {
+    if m.parts.is_empty() {
+        put(out, &m.content);
+        return;
+    }
+    for part in &m.parts {
+        match part {
+            ChatPart::Text(text) => put(out, text),
+            ChatPart::Image(_) => {
+                put(out, GLM_VISION_START);
+                put(out, GLM_IMAGE);
+                put(out, GLM_VISION_END);
+            }
+        }
+    }
+}
+
+fn append_glm_tool_result_message(out: &mut Vec<u8>, m: &ChatMsg) {
+    let mut views = Vec::new();
+    collect_tool_result_message(m, &mut views);
+    for view in views {
+        put(out, "<tool_response>");
+        append_glm_tag_body(out, view.text, "</tool_response>");
+        put(out, "</tool_response>");
+    }
+}
+
+fn append_glm_assistant_prefix(out: &mut Vec<u8>, m: &ChatMsg, preserve_reasoning: bool) {
+    if m.content.starts_with("<think>") || m.content.starts_with("</think>") {
+        return;
+    }
+    put(out, "<think>");
+    if preserve_reasoning {
+        put(out, &m.reasoning);
+    }
+    put(out, "</think>");
+}
+
+pub fn render_glm_chat_ex(
+    msgs: &[ChatMsg],
+    tool_schemas: &str,
+    tool_orders: &[ToolSchemaOrder],
+    think_mode: ThinkMode,
+) -> Result<Vec<u8>, RenderError> {
+    let think = think_mode_enabled(think_mode);
+    let tool_context = chat_history_uses_tool_context(msgs, tool_schemas);
+    let last_user_idx = msgs
+        .iter()
+        .rposition(|m| role_is_user_like(&m.role))
+        .map(|i| i as i32)
+        .unwrap_or(-1);
+    let mut out = GLM_BOS.as_bytes().to_vec();
+    if think {
+        put(&mut out, "<|system|>");
+        put(
+            &mut out,
+            match think_mode {
+                ThinkMode::High => "Reasoning Effort: High",
+                ThinkMode::Max => "Reasoning Effort: Max",
+                ThinkMode::Low => "Reasoning Effort: Max",
+                ThinkMode::None => "",
+            },
+        );
+    }
+    if !tool_schemas.is_empty() {
+        let mut tools = Vec::new();
+        append_glm_tools_prompt_text(&mut tools, tool_schemas);
+        if !tools.is_empty() {
+            put(&mut out, "<|system|>");
+            out.extend(tools);
+        }
+    }
+    for m in msgs.iter().filter(|m| role_is_system(&m.role)) {
+        put(&mut out, "<|system|>");
+        put(&mut out, &m.content);
+    }
+
+    let mut pending_assistant = false;
+    let mut observation_open = false;
+    for (i, m) in msgs.iter().enumerate() {
+        if role_is_system(&m.role) {
+            observation_open = false;
+        } else if chat_msg_is_model_tool_result(m) {
+            if !observation_open {
+                put(&mut out, "<|observation|>");
+            }
+            append_glm_tool_result_message(&mut out, m);
+            observation_open = true;
+            pending_assistant = true;
+        } else if m.role == "user" {
+            observation_open = false;
+            put(&mut out, "<|user|>");
+            append_glm_message_content(&mut out, m);
+            pending_assistant = true;
+        } else if m.role == "assistant" {
+            observation_open = false;
+            put(&mut out, "<|assistant|>");
+            append_glm_assistant_prefix(
+                &mut out,
+                m,
+                think && (tool_context || i as i32 > last_user_idx),
+            );
+            put_trimmed(&mut out, &m.content);
+            append_glm_tool_calls_text(&mut out, m, tool_orders);
+            pending_assistant = false;
+        }
+    }
+    if pending_assistant {
+        put(&mut out, "<|assistant|>");
+        put(&mut out, if think { "<think>" } else { "<think></think>" });
+    }
+    Ok(out)
 }
 
 fn append_motif3_tool_calls_text(out: &mut Vec<u8>, m: &ChatMsg, include_ids: bool) {
@@ -1554,6 +1813,7 @@ pub fn render_chat_choice(
             render_solar_chat_ex(msgs, tool_schemas, tool_orders, think_mode)
         }
         ModelSyntax::Qwen4Exp => render_qwen_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
+        ModelSyntax::Glm53 => render_glm_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
         ModelSyntax::DeepSeek => {
             render_dsml_chat_choice(msgs, tool_schemas, think_mode, tool_choice)
         }
@@ -1601,6 +1861,39 @@ pub fn render_live_tool_tail(
     let tail = &msgs[start..];
     let mut out = Vec::new();
     match syntax {
+        ModelSyntax::Glm53 => {
+            let think = think_mode_enabled(think_mode);
+            let mut pending_assistant = false;
+            let mut observation_open = false;
+            for m in tail {
+                if role_is_system(&m.role) {
+                    observation_open = false;
+                } else if chat_msg_is_model_tool_result(m) {
+                    if !observation_open {
+                        put(&mut out, "<|observation|>");
+                    }
+                    append_glm_tool_result_message(&mut out, m);
+                    observation_open = true;
+                    pending_assistant = true;
+                } else if m.role == "user" {
+                    observation_open = false;
+                    put(&mut out, "<|user|>");
+                    append_glm_message_content(&mut out, m);
+                    pending_assistant = true;
+                } else if m.role == "assistant" {
+                    observation_open = false;
+                    put(&mut out, "<|assistant|>");
+                    append_glm_assistant_prefix(&mut out, m, think);
+                    put_trimmed(&mut out, &m.content);
+                    append_glm_tool_calls_text(&mut out, m, &[]);
+                    pending_assistant = false;
+                }
+            }
+            if pending_assistant {
+                put(&mut out, "<|assistant|>");
+                put(&mut out, if think { "<think>" } else { "<think></think>" });
+            }
+        }
         ModelSyntax::DeepSeek => {
             put(&mut out, DSML_EOS);
             let tail: Vec<_> = tail

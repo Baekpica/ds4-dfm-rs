@@ -6,9 +6,9 @@ use crate::dsml::{DsmlDecodeState, DsmlDecodeTracker, SampleOverride, SamplePoli
 use crate::json::{json_escape_bytes, json_minify_raw_value, json_raw_value, json_string, Json};
 use crate::parse::{ToolCall, ToolSchemaOrder};
 use crate::render::{
-    syntax_for_model_id, ModelSyntax, QWEN_TOOL_CALL_END, QWEN_TOOL_CALL_START, SOLAR_THINK_END,
-    SOLAR_THINK_START, SOLAR_TOOL_ARG_END, SOLAR_TOOL_ARG_START, SOLAR_TOOL_ARG_VALUE,
-    SOLAR_TOOL_CALLS, SOLAR_TOOL_CALL_END,
+    syntax_for_model_id, ModelSyntax, GLM_TOOL_CALL_END, GLM_TOOL_CALL_START, QWEN_TOOL_CALL_END,
+    QWEN_TOOL_CALL_START, SOLAR_THINK_END, SOLAR_THINK_START, SOLAR_TOOL_ARG_END,
+    SOLAR_TOOL_ARG_START, SOLAR_TOOL_ARG_VALUE, SOLAR_TOOL_CALLS, SOLAR_TOOL_CALL_END,
 };
 use crate::stream::{think_end, think_start, ChatFormat};
 use std::collections::{HashMap, HashSet};
@@ -1005,6 +1005,144 @@ fn parse_qwen_generated(
     })
 }
 
+fn parse_glm_generated(text: &[u8], require_thinking_closed: bool) -> Option<ParsedGenerated> {
+    const ARG_KEY_START: &[u8] = b"<arg_key>";
+    const ARG_KEY_END: &[u8] = b"</arg_key>";
+    const ARG_VALUE_START: &[u8] = b"<arg_value>";
+    const ARG_VALUE_END: &[u8] = b"</arg_value>";
+    let tool_start = GLM_TOOL_CALL_START.as_bytes();
+    let tool_end = GLM_TOOL_CALL_END.as_bytes();
+
+    let mut tool_search = 0usize;
+    let mut recovered_unclosed_tool = false;
+    if require_thinking_closed {
+        if let Some(end) = find_last_substr(text, b"</think>") {
+            tool_search = end + "</think>".len();
+        } else if let Some(candidate) = find_substr(text, tool_start) {
+            if find_substr(&text[candidate..], tool_end).is_none() {
+                let (content, reasoning) = unterminated_reasoning(text);
+                return Some(ParsedGenerated {
+                    content,
+                    reasoning,
+                    ok: true,
+                    ..Default::default()
+                });
+            }
+            tool_search = candidate;
+            recovered_unclosed_tool = true;
+        } else {
+            let (content, reasoning) = unterminated_reasoning(text);
+            return Some(ParsedGenerated {
+                content,
+                reasoning,
+                ok: true,
+                ..Default::default()
+            });
+        }
+    }
+
+    let Some(rel) = find_substr(&text[tool_search..], tool_start) else {
+        let (content, reasoning) = split_reasoning_content(text, text.len(), ChatFormat::DeepSeek);
+        return Some(ParsedGenerated {
+            content,
+            reasoning,
+            ok: true,
+            ..Default::default()
+        });
+    };
+    let start = tool_search + rel;
+    let raw_start = if start >= 2 && &text[start - 2..start] == b"\n\n" {
+        start - 2
+    } else {
+        start
+    };
+    let content_len = trim_tool_separator_ws(text, 0, raw_start);
+    let mut p = start;
+    let mut calls = Vec::new();
+
+    loop {
+        p = skip_ws(text, p);
+        if !text[p..].starts_with(tool_start) {
+            break;
+        }
+        p += tool_start.len();
+        let close = p + find_substr(&text[p..], tool_end)?;
+        let arg = find_substr(&text[p..close], ARG_KEY_START).map(|at| p + at);
+        let name_end = arg.unwrap_or(close);
+        let name = trim_ascii_span(&text[p..name_end]);
+        if name.is_empty() {
+            return None;
+        }
+        let name = String::from_utf8_lossy(name).into_owned();
+        p = name_end;
+        let mut args = Vec::new();
+
+        loop {
+            p = skip_ws(text, p);
+            if text[p..].starts_with(tool_end) {
+                p += tool_end.len();
+                break;
+            }
+            if !text[p..].starts_with(ARG_KEY_START) {
+                return None;
+            }
+            p += ARG_KEY_START.len();
+            let key_end = p + find_substr(&text[p..], ARG_KEY_END)?;
+            if key_end > close {
+                return None;
+            }
+            let key = dsml_unescape_text(trim_ascii_span(&text[p..key_end]));
+            if key.is_empty() {
+                return None;
+            }
+            p = skip_ws(text, key_end + ARG_KEY_END.len());
+            if !text[p..].starts_with(ARG_VALUE_START) {
+                return None;
+            }
+            p += ARG_VALUE_START.len();
+            let value_end = p + find_substr(&text[p..], ARG_VALUE_END)?;
+            if value_end > close {
+                return None;
+            }
+            let value = dsml_unescape_text(&text[p..value_end]);
+            tool_call_json_args_add(&mut args, &key, &value, true);
+            p = value_end + ARG_VALUE_END.len();
+        }
+
+        let mut arguments = vec![b'{'];
+        arguments.extend(args);
+        arguments.push(b'}');
+        calls.push(ToolCall {
+            name,
+            arguments: String::from_utf8_lossy(&arguments).into_owned(),
+            ..Default::default()
+        });
+        let next = skip_ws(text, p);
+        if !text[next..].starts_with(tool_start) {
+            p = next;
+            break;
+        }
+        p = next;
+    }
+    if calls.is_empty() {
+        return None;
+    }
+    let (content, reasoning) = if recovered_unclosed_tool {
+        unterminated_reasoning_before_tool(text, content_len)
+    } else {
+        split_reasoning_content(text, content_len, ChatFormat::DeepSeek)
+    };
+    Some(ParsedGenerated {
+        content,
+        reasoning,
+        calls,
+        raw_dsml: String::from_utf8_lossy(&text[raw_start..p]).into_owned(),
+        ok: true,
+        recovered: recovered_unclosed_tool,
+        ..Default::default()
+    })
+}
+
 pub fn parse_generated_message(
     syntax: ModelSyntax,
     text: &[u8],
@@ -1019,6 +1157,7 @@ pub fn parse_generated_message(
         ModelSyntax::Dots3 => parse_dots3_generated(text, require_thinking_closed),
         ModelSyntax::SolarOpen2 => parse_solar_generated(text, require_thinking_closed, orders),
         ModelSyntax::Qwen4Exp => parse_qwen_generated(text, require_thinking_closed, orders),
+        ModelSyntax::Glm53 => parse_glm_generated(text, require_thinking_closed),
         ModelSyntax::DeepSeek => {
             if format == ChatFormat::SolarOpen2 {
                 parse_solar_generated(text, require_thinking_closed, orders)

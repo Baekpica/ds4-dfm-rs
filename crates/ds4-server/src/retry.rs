@@ -62,7 +62,7 @@ fn count_marker(s: &[u8], marker: &[u8]) -> usize {
 pub fn syntax_skips_recovery(syntax: ModelSyntax) -> bool {
     matches!(
         syntax,
-        ModelSyntax::Motif3 | ModelSyntax::Exaone | ModelSyntax::Dots3
+        ModelSyntax::Motif3 | ModelSyntax::Exaone | ModelSyntax::Dots3 | ModelSyntax::Glm53
     )
 }
 

@@ -421,6 +421,65 @@ fn syntax_for_model_id_matches_c() {
     assert_eq!(ds4_server::syntax_for_model_id(4), ModelSyntax::Exaone);
     assert_eq!(ds4_server::syntax_for_model_id(5), ModelSyntax::Dots3);
     assert_eq!(ds4_server::syntax_for_model_id(6), ModelSyntax::Qwen4Exp);
+    assert_eq!(ds4_server::syntax_for_model_id(7), ModelSyntax::Glm53);
+}
+
+#[test]
+fn glm53_chat_and_image_protocol_match_official_template() {
+    let mut user = msg("user", "beforeafter");
+    user.parts = vec![
+        ChatPart::Text("before".into()),
+        ChatPart::Image(0),
+        ChatPart::Text("after".into()),
+    ];
+    assert_eq!(
+        render_chat(
+            ModelSyntax::Glm53,
+            &[msg("system", "Be precise."), user],
+            "",
+            ThinkMode::High,
+        )
+        .unwrap(),
+        b"[gMASK]<sop><|system|>Reasoning Effort: High<|system|>Be precise.<|user|>before<|begin_of_image|><|image|><|end_of_image|>after<|assistant|><think>"
+    );
+}
+
+#[test]
+fn glm53_tools_filter_deferred_schema_and_preserve_argument_order() {
+    let schemas = concat!(
+        r#"{"name":"hidden","defer_loading":true,"parameters":{}}"#,
+        "\n",
+        r#"{"name":"bash","parameters":{"type":"object"},"strict":true}"#,
+    );
+    let mut assistant = call("bash", r#"{"timeout":10,"command":"pwd"}"#);
+    assistant.reasoning = "need shell".into();
+    let mut result = msg("tool", "ok</tool_response>done");
+    result.tool_call_id = "call_1".into();
+    let orders = [ToolSchemaOrder {
+        name: "bash".into(),
+        prop: vec!["command".into(), "timeout".into()],
+        ..Default::default()
+    }];
+    let prompt = render_chat_choice(
+        ModelSyntax::Glm53,
+        &[msg("user", "run"), assistant, result],
+        schemas,
+        &orders,
+        ThinkMode::High,
+        ToolChoice::Auto,
+    )
+    .unwrap();
+    let prompt = String::from_utf8(prompt).unwrap();
+    assert!(!prompt.contains("hidden"));
+    assert!(!prompt.contains("strict"));
+    assert!(prompt.contains(r#"{"name": "bash", "parameters": {"type":"object"}}"#));
+    assert!(prompt.contains(concat!(
+        "<|assistant|><think>need shell</think>\n",
+        "<tool_call>bash<arg_key>command</arg_key><arg_value>pwd</arg_value>",
+        "<arg_key>timeout</arg_key><arg_value>10</arg_value></tool_call>\n",
+        "<|observation|><tool_response>ok&lt;/tool_response>done</tool_response>",
+        "<|assistant|><think>"
+    )));
 }
 
 #[test]

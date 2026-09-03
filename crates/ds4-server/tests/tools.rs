@@ -167,6 +167,32 @@ fn parse_qwen_native_tool_call() {
 }
 
 #[test]
+fn parse_glm53_native_tool_call() {
+    let generated = b"<think>need bash</think>OK\n\n\
+        <tool_call>bash\
+        <arg_key>command</arg_key><arg_value>echo hi</arg_value>\
+        <arg_key>timeout</arg_key><arg_value>10</arg_value>\
+        </tool_call>";
+    let p = parse_generated_message(
+        ModelSyntax::Glm53,
+        generated,
+        true,
+        ChatFormat::DeepSeek,
+        &[],
+    );
+    assert!(p.ok);
+    assert_eq!(p.reasoning, b"need bash");
+    assert_eq!(p.content, b"OK");
+    assert_eq!(p.calls.len(), 1);
+    assert_eq!(p.calls[0].name, "bash");
+    assert_eq!(
+        p.calls[0].arguments,
+        r#"{"command": "echo hi", "timeout": "10"}"#
+    );
+    assert!(p.raw_dsml.starts_with("\n\n<tool_call>bash"));
+}
+
+#[test]
 fn qwen_stream_observes_native_tool_markers_without_dsml_verdict() {
     let mut acc = SemAccum::init(true, true, false, ChatFormat::Qwen4Exp, b"");
     let first = acc.feed(b"<tool_call>\n<function=weather>\n", &[]);
