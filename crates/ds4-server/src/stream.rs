@@ -4,7 +4,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::error::{cors_headers, http_response_bytes};
+use crate::error::{cors_headers, http_response_bytes, wire_stream_error_bytes};
 use crate::json::{json_args_parse, json_escape_bytes};
 use crate::parse::{ToolCall, ToolSchemaOrder};
 use crate::route::{think_mode_enabled, Api, ReqKind, ThinkMode};
@@ -1330,6 +1330,30 @@ pub fn responses_sse_created(
     st.created_at = created_at;
 }
 
+pub fn stream_error(
+    w: &mut Writer,
+    r: &StreamReq,
+    responses: Option<&mut ResponsesStream>,
+    msg: &str,
+) {
+    let sequence = if r.api == Api::Responses {
+        responses.map_or(0, |st| {
+            let sequence = st.sequence;
+            st.sequence += 1;
+            sequence
+        })
+    } else {
+        0
+    };
+    let surface = match r.api {
+        Api::Anthropic => crate::route::WireSurface::Anthropic,
+        Api::Responses => crate::route::WireSurface::Responses,
+        Api::Openai if r.kind == ReqKind::Completion => crate::route::WireSurface::OpenaiCompletion,
+        Api::Openai => crate::route::WireSurface::OpenaiChat,
+    };
+    w.put(&wire_stream_error_bytes(surface, msg, sequence));
+}
+
 fn responses_sse_reasoning_added(w: &mut Writer, st: &mut ResponsesStream) {
     let b = format!(
         "{{\"type\":\"response.output_item.added\",\"output_index\":{},\"item\":{{\"id\":\"{}\",\"type\":\"reasoning\",\"status\":\"in_progress\",\"summary\":[]}}}}",
@@ -2105,4 +2129,30 @@ pub fn project_responses_thinking(created: i64) -> Vec<u8> {
     }
     responses_sse_finish_live(&mut w, &r, &mut st, &raw, "stop", 7, 4, 1, created, &[]);
     w.out
+}
+
+#[cfg(test)]
+mod stream_failure_tests {
+    use super::*;
+
+    #[test]
+    fn responses_stream_error_continues_the_live_sequence() {
+        let mut req = StreamReq {
+            api: Api::Responses,
+            ..StreamReq::default()
+        };
+        req.stream = true;
+        let mut state = responses_stream_init(&req, "resp_test", "rs_test", "msg_test");
+        let mut writer = Writer::new(7);
+        responses_sse_created(&mut writer, &req, &mut state, 7);
+        writer.out.clear();
+
+        stream_error(&mut writer, &req, Some(&mut state), "boom");
+
+        assert_eq!(
+            writer.out,
+            b"data: {\"type\":\"error\",\"sequence_number\":1,\"code\":\"server_error\",\"message\":\"boom\",\"param\":null}\n\n"
+        );
+        assert_eq!(state.sequence, 2);
+    }
 }

@@ -50,6 +50,7 @@ struct PromptSyncDecode {
     invalidations: usize,
     continued_positions: Vec<i32>,
     fail_continued: bool,
+    fail_prompt_sync: bool,
     events: Vec<&'static str>,
     replay_raw: Option<String>,
     replay_prompts: Vec<Vec<u8>>,
@@ -71,6 +72,7 @@ impl PromptSyncDecode {
             invalidations: 0,
             continued_positions: Vec::new(),
             fail_continued: false,
+            fail_prompt_sync: false,
             events: Vec::new(),
             replay_raw: None,
             replay_prompts: Vec::new(),
@@ -121,6 +123,9 @@ impl DecodeIo for PromptSyncDecode {
         self.disk_eligible.push(disk_eligible);
         self.thinking_visible_eligible
             .push(thinking_visible_eligible);
+        if self.fail_prompt_sync {
+            return Err(GenerateError::Engine("injected prompt sync failure".into()));
+        }
         self.inner.live = tokens.to_vec();
         self.inner.pos = self.effective_prompt_pos;
         Ok(self.cached_tokens)
@@ -149,6 +154,9 @@ impl DecodeIo for PromptSyncDecode {
     ) -> Result<i32, GenerateError> {
         self.events.push("tool-sync");
         self.replay_prompts.push(prompt.to_vec());
+        if self.fail_prompt_sync {
+            return Err(GenerateError::Engine("injected prompt sync failure".into()));
+        }
         self.inner.live = tokens.to_vec();
         self.inner.pos = self.effective_prompt_pos;
         Ok(self.cached_tokens)
@@ -410,6 +418,34 @@ fn prompt_sync_reports_streaming_cache_usage_from_effective_pos() {
     assert_eq!(engine.sync_calls, 0);
     assert_eq!(engine.disk_eligible, [true]);
     assert_eq!(engine.thinking_visible_eligible, [true]);
+}
+
+#[test]
+fn streaming_prompt_failure_is_an_sse_error_not_a_second_http_response() {
+    let mut parsed = user_req();
+    parsed.stream = true;
+    let inner = ScriptedDecode::from_pieces(&[b"unused"]);
+    let mut engine = PromptSyncDecode::new(inner, 0, 1);
+    engine.fail_prompt_sync = true;
+    let mut out = Vec::new();
+
+    let error = generate_and_write(
+        &mut engine,
+        &parsed,
+        "chatcmpl-sync-fail",
+        CREATED_TEST,
+        false,
+        16,
+        &mut out,
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, GenerateError::Streamed(_)));
+    let wire = String::from_utf8(out).unwrap();
+    assert!(wire.starts_with("HTTP/1.1 200 OK\r\n"), "{wire}");
+    assert_eq!(wire.matches("HTTP/1.1").count(), 1, "{wire}");
+    assert!(wire.contains("event: error\ndata:"), "{wire}");
+    assert!(wire.contains("injected prompt sync failure"), "{wire}");
 }
 
 #[test]

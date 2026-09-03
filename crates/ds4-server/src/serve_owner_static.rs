@@ -216,6 +216,7 @@ fn settle_member(
         Ok(rows) => Ok(rows.get(index).cloned().into_iter().collect()),
         Err(GenerateError::Engine(msg)) => Err(GenerateError::Engine(msg.clone())),
         Err(GenerateError::Unsupported(msg)) => Err(GenerateError::Unsupported(*msg)),
+        Err(GenerateError::Streamed(msg)) => Err(GenerateError::Streamed(msg.clone())),
         Err(GenerateError::Io) => Err(GenerateError::Io),
         Err(GenerateError::ContinuationHold { retry_after }) => {
             Err(GenerateError::ContinuationHold {

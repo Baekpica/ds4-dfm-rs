@@ -18,7 +18,7 @@ use crate::admit::{
     AdmitState, EnqVerdict, SERVER_SHUTTING_DOWN, SHED_CONT_HOLD, SHED_QUEUE_AGE, SHED_SLOW_READER,
 };
 use crate::cont::{monotonic_now, place_bank_continuation, ContOwner, ContPin, ContRegistry};
-use crate::error::{http_response_bytes, wire_http_error_bytes};
+use crate::error::{http_response_bytes, wire_http_error_bytes, wire_stream_error_bytes};
 use crate::generate::{
     generate_terminal_prepared, prepare_serial_prompt, DecodeIo, GenerateError, GenerateOutcome,
 };
@@ -298,6 +298,7 @@ struct SinkBuffer {
     gone: bool,
     slow: bool,
     closed: bool,
+    started: bool,
 }
 
 struct SinkState {
@@ -388,6 +389,7 @@ impl Write for JobSink {
         if bytes.is_empty() {
             return Ok(0);
         }
+        buffer.started = true;
         let mut g = lock_inner(&self.state.inner);
         let job_next = buffer.bytes.len().saturating_add(bytes.len()) as u64;
         let aggregate_next = g
@@ -439,6 +441,8 @@ enum TerminalCommit {
 }
 
 trait TerminalSink: Write {
+    fn response_started(&self) -> bool;
+
     fn commit_tool_terminal(
         &mut self,
         inner: &Mutex<ServerInner>,
@@ -480,16 +484,22 @@ enum DirectTerminalIo<'a> {
     Send(&'a [u8]),
 }
 
-struct DirectSink<'a>(&'a mut TcpStream);
+struct DirectSink<'a> {
+    stream: &'a mut TcpStream,
+    started: bool,
+}
 
 impl Write for DirectSink<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        send_all_nonblocking(self.0, bytes)?;
+        if !bytes.is_empty() {
+            self.started = true;
+        }
+        send_all_nonblocking(self.stream, bytes)?;
         Ok(bytes.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.0.flush()
+        self.stream.flush()
     }
 }
 
@@ -520,6 +530,10 @@ fn direct_terminal_commit(
 }
 
 impl TerminalSink for DirectSink<'_> {
+    fn response_started(&self) -> bool {
+        self.started
+    }
+
     fn commit_tool_terminal(
         &mut self,
         inner: &Mutex<ServerInner>,
@@ -528,13 +542,20 @@ impl TerminalSink for DirectSink<'_> {
         terminal: Vec<u8>,
     ) -> TerminalCommit {
         direct_terminal_commit(inner, api, generated, &terminal, |action| match action {
-            DirectTerminalIo::Disconnected => Ok(client_disconnected(self.0)),
-            DirectTerminalIo::Send(bytes) => send_all_nonblocking(self.0, bytes).map(|_| false),
+            DirectTerminalIo::Disconnected => Ok(client_disconnected(self.stream)),
+            DirectTerminalIo::Send(bytes) => {
+                self.started = true;
+                send_all_nonblocking(self.stream, bytes).map(|_| false)
+            }
         })
     }
 }
 
 impl TerminalSink for JobSink {
+    fn response_started(&self) -> bool {
+        self.state.lock().started
+    }
+
     fn commit_tool_terminal(
         &mut self,
         inner: &Mutex<ServerInner>,
@@ -587,6 +608,7 @@ impl TerminalSink for JobSink {
             self.state.ready.notify_all();
             return TerminalCommit::GoneBeforeStart;
         }
+        buffer.started = true;
         buffer.bytes.extend_from_slice(&terminal);
         drop(g);
         drop(buffer);
@@ -732,7 +754,7 @@ fn publish_continuous_tool_turn(inner: &Mutex<ServerInner>, api: Api, generated:
     );
 }
 
-fn settle_bank_continuation<W: Write>(
+fn settle_bank_continuation<W: TerminalSink>(
     cfg: &ServerConfig,
     job: &PreparedJob,
     result: Result<GenerateOutcome, GenerateError>,
@@ -965,7 +987,10 @@ pub fn handle_client_inner(
         return;
     };
     let _ = stream.set_nonblocking(true);
-    let mut out = DirectSink(stream);
+    let mut out = DirectSink {
+        stream,
+        started: false,
+    };
     let body_bytes = job.body_bytes;
     let have_engine = engine.is_some();
     let (verdict, pin) = {
@@ -1314,7 +1339,7 @@ fn run_engine<W: TerminalSink>(
     )
 }
 
-fn settle_static_lane<W: Write>(
+fn settle_static_lane<W: TerminalSink>(
     cfg: &ServerConfig,
     job: &PreparedJob,
     id: &str,
@@ -1578,7 +1603,7 @@ fn ensure_serial_session_fit<W: Write>(
     if !cfg.serial_rightsize {
         return None;
     }
-    let mut exec = cont?;
+    let exec = cont?;
     let current_fits = if probe.graph_pending && cur_ctx <= bounds.request_cap {
         match engine.native_graph_fit(probe.cur_ctx) {
             Some(quote) => quote.fits,
@@ -1756,7 +1781,23 @@ fn refuse_serial_live_preserve<W: Write>(
     }
 }
 
-fn settle_generation_result<W: Write>(
+fn write_generation_error<W: TerminalSink>(
+    cfg: &ServerConfig,
+    job: &PreparedJob,
+    out: &mut W,
+    code: i32,
+    msg: &str,
+    retry_after: Option<i32>,
+) {
+    let bytes = if job.parsed.stream && out.response_started() {
+        wire_stream_error_bytes(job.surface, msg, 0)
+    } else {
+        wire_http_error_bytes(job.surface, code, msg, cfg.cors, retry_after)
+    };
+    let _ = out.write_all(&bytes);
+}
+
+fn settle_generation_result<W: TerminalSink>(
     cfg: &ServerConfig,
     job: &PreparedJob,
     result: Result<GenerateOutcome, GenerateError>,
@@ -1765,34 +1806,24 @@ fn settle_generation_result<W: Write>(
     match result {
         Ok(_) => Settlement::COMPLETED,
         Err(GenerateError::Io) => Settlement::CANCELED,
+        Err(GenerateError::Streamed(_)) => Settlement::FAILED,
         Err(GenerateError::Unsupported(msg)) => {
-            let _ = out.write_all(&wire_http_error_bytes(
-                job.surface,
-                503,
-                msg,
-                cfg.cors,
-                None,
-            ));
+            write_generation_error(cfg, job, out, 503, msg, None);
             Settlement::FAILED
         }
         Err(GenerateError::ContinuationHold { retry_after }) => {
-            let _ = out.write_all(&wire_http_error_bytes(
-                job.surface,
+            write_generation_error(
+                cfg,
+                job,
+                out,
                 503,
                 "batch capacity is reserved for live tool continuations; retry shortly",
-                cfg.cors,
                 Some(retry_after.max(1)),
-            ));
+            );
             Settlement::shed(SHED_CONT_HOLD)
         }
         Err(GenerateError::Engine(msg)) => {
-            let _ = out.write_all(&wire_http_error_bytes(
-                job.surface,
-                500,
-                &msg,
-                cfg.cors,
-                None,
-            ));
+            write_generation_error(cfg, job, out, 500, &msg, None);
             Settlement::FAILED
         }
     }
@@ -3144,6 +3175,29 @@ mod owner_tests {
         }
     }
 
+    #[test]
+    fn started_stream_failure_never_appends_a_second_http_response() {
+        let cfg = test_cfg();
+        let inner = Arc::new(Mutex::new(ServerInner::from_cfg(&cfg)));
+        let (mut sink, state) = job_sink(Arc::clone(&inner));
+        let mut job = queued_completion("hello", 1);
+        job.parsed.stream = true;
+        sink.write_all(&crate::stream::sse_headers(false)).unwrap();
+
+        let settlement = settle_generation_result(
+            &cfg,
+            &job,
+            Err(GenerateError::Engine("boom".into())),
+            &mut sink,
+        );
+
+        assert_eq!(settlement.outcome, Settle::Failed);
+        let wire = String::from_utf8(state.take()).unwrap();
+        assert_eq!(wire.matches("HTTP/1.1").count(), 1, "{wire}");
+        assert!(wire.contains("event: error\ndata:"), "{wire}");
+        assert!(!wire.contains("HTTP/1.1 500"), "{wire}");
+    }
+
     fn response_number(response: &str, key: &str) -> f64 {
         let start = response.find(key).unwrap() + key.len();
         let end = response[start..]
@@ -3531,7 +3585,12 @@ mod owner_tests {
             received.len()
         });
 
-        DirectSink(&mut server).write_all(&payload).unwrap();
+        DirectSink {
+            stream: &mut server,
+            started: false,
+        }
+        .write_all(&payload)
+        .unwrap();
         server.shutdown(std::net::Shutdown::Write).unwrap();
 
         assert_eq!(reader.join().unwrap(), expected);

@@ -79,7 +79,8 @@ fn generate_mid_stream_io(
     let parsed = streamed(surface, body);
     let mut engine = tape_engine();
     let mut out = FailOnWrite {
-        fail_at: 2,
+        // Headers are sent before prefill; protocol start is the second write.
+        fail_at: 3,
         writes: 0,
         kind,
         captured: Vec::new(),

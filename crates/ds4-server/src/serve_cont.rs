@@ -30,6 +30,8 @@ use crate::render::syntax_for_model_id;
 use crate::render::ModelSyntax;
 use crate::retry::{terminal_finish, truncation_outcome, TruncationOutcome};
 use crate::route::{decode_budget, think_mode_enabled, Api, ReqKind};
+#[cfg(feature = "native")]
+use crate::stream::stream_error;
 use crate::stream::{
     anthropic_final_response, anthropic_sse_finish_live, anthropic_sse_start_live,
     anthropic_sse_stream_update, final_response, openai_sse_finish_live, openai_sse_stream_update,
@@ -263,6 +265,14 @@ impl ContStepper {
             bytes: std::mem::take(&mut self.w.out),
             done,
         }
+    }
+
+    #[cfg(feature = "native")]
+    fn fail(&mut self, message: &str) -> Vec<u8> {
+        if self.req.stream {
+            stream_error(&mut self.w, &self.req, self.resp.as_mut(), message);
+        }
+        std::mem::take(&mut self.w.out)
     }
 
     /// Engine finished (EOS = 1, budget/abort = 0). Runs the serial tail:
@@ -2862,6 +2872,15 @@ mod native {
                 }
             }
             if let Some(error) = native_err {
+                if admitted && io_ok && job.stepper.req.stream {
+                    let failure = job.stepper.fail(&error);
+                    job.push(&failure);
+                    return if job.io_failed {
+                        Err(GenerateError::Io)
+                    } else {
+                        Err(GenerateError::Streamed(error))
+                    };
+                }
                 return Err(GenerateError::Engine(error));
             }
             if !admitted {

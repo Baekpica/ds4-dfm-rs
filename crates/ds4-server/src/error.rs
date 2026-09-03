@@ -132,3 +132,53 @@ pub fn wire_http_error_bytes(
         &body,
     )
 }
+
+pub(crate) fn wire_stream_error_bytes(
+    surface: WireSurface,
+    msg: &str,
+    responses_sequence: i32,
+) -> Vec<u8> {
+    let message = if msg.is_empty() {
+        "internal server error"
+    } else {
+        msg
+    };
+    match surface {
+        WireSurface::Anthropic => format!(
+            "event: error\ndata: {{\"type\":\"error\",\"error\":{{\"type\":\"api_error\",\"message\":{}}}}}\n\n",
+            json_escape(message)
+        )
+        .into_bytes(),
+        WireSurface::Responses => format!(
+            "data: {{\"type\":\"error\",\"sequence_number\":{responses_sequence},\"code\":\"server_error\",\"message\":{},\"param\":null}}\n\n",
+            json_escape(message)
+        )
+        .into_bytes(),
+        WireSurface::OpenaiChat | WireSurface::OpenaiCompletion => format!(
+            "event: error\ndata: {{\"error\":{{\"message\":{},\"type\":\"server_error\"}}}}\n\n",
+            json_escape(message)
+        )
+        .into_bytes(),
+    }
+}
+
+#[cfg(test)]
+mod stream_error_tests {
+    use super::*;
+
+    #[test]
+    fn stream_errors_keep_each_surface_wire_shape() {
+        assert_eq!(
+            wire_stream_error_bytes(WireSurface::OpenaiChat, "boom", 0),
+            b"event: error\ndata: {\"error\":{\"message\":\"boom\",\"type\":\"server_error\"}}\n\n"
+        );
+        assert_eq!(
+            wire_stream_error_bytes(WireSurface::Anthropic, "boom", 0),
+            b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"boom\"}}\n\n"
+        );
+        assert_eq!(
+            wire_stream_error_bytes(WireSurface::Responses, "boom", 7),
+            b"data: {\"type\":\"error\",\"sequence_number\":7,\"code\":\"server_error\",\"message\":\"boom\",\"param\":null}\n\n"
+        );
+    }
+}

@@ -36,8 +36,8 @@ use crate::stream::{
     anthropic_sse_stream_update, final_response, openai_sse_finish_live, openai_sse_stream_update,
     openai_stream_start, responses_final_response, responses_sse_created,
     responses_sse_finish_live, responses_sse_stream_update, responses_stream_init, sse_chunk,
-    sse_done, sse_headers, think_end, think_start, AnthropicStream, ChatFormat, OpenaiStream,
-    ReqTimings, ResponsesStream, StreamReq, Writer,
+    sse_done, sse_headers, stream_error, think_end, think_start, AnthropicStream, ChatFormat,
+    OpenaiStream, ReqTimings, ResponsesStream, StreamReq, Writer,
 };
 #[cfg(feature = "native")]
 use crate::tool_memory::ToolMemory;
@@ -48,6 +48,7 @@ pub enum GenerateError {
     Unsupported(&'static str),
     ContinuationHold { retry_after: i32 },
     Engine(String),
+    Streamed(String),
     Io,
 }
 
@@ -59,6 +60,7 @@ impl std::fmt::Display for GenerateError {
                 f.write_str("batch capacity is reserved for live tool continuations")
             }
             GenerateError::Engine(s) => write!(f, "{s}"),
+            GenerateError::Streamed(s) => write!(f, "{s}"),
             GenerateError::Io => f.write_str("client stream write failed"),
         }
     }
@@ -1265,16 +1267,32 @@ pub(crate) fn generate_terminal_prepared(
         tokens,
     } = prep;
     let syntax = syntax_for_model_id(engine.model_id());
+    let mut req = stream_req_from_parsed(&parsed, engine.model_id());
+    let mut w = Writer::new(created);
+    if req.stream {
+        w.out.extend_from_slice(&sse_headers(cors));
+        flush(&mut w, out)?;
+    }
     let t_prefill = Instant::now();
-    let cached = if tool_replay {
-        engine.sync_tool_replay_prompt(&prompt, &tokens)?
+    let sync_result = if tool_replay {
+        engine.sync_tool_replay_prompt(&prompt, &tokens)
     } else {
         engine.sync_prompt(
             &prompt,
             &tokens,
             ordinary_disk_cache_eligible(&parsed),
             thinking_visible_cache_eligible(&parsed),
-        )?
+        )
+    };
+    let cached = match sync_result {
+        Ok(cached) => cached,
+        Err(error) if req.stream => {
+            let message = error.to_string();
+            stream_error(&mut w, &req, None, &message);
+            flush(&mut w, out)?;
+            return Err(GenerateError::Streamed(message));
+        }
+        Err(error) => return Err(error),
     };
     store_continued_best_effort(engine);
     let decode_t0 = Instant::now();
@@ -1286,14 +1304,12 @@ pub(crate) fn generate_terminal_prepared(
 
     let prompt_n = engine.pos();
     let mut rng = parsed.seed;
-    let mut req = stream_req_from_parsed(&parsed, engine.model_id());
     req.cache_read_tokens = cached.clamp(0, prompt_n);
     req.cache_write_tokens = prompt_n - req.cache_read_tokens;
     let mut acc;
     let mut finish;
     let mut recovery_attempted = false;
 
-    let mut w = Writer::new(created);
     let mut oa = if req.stream && req.api == Api::Openai && req.kind == ReqKind::Chat {
         let mut stream = openai_stream_start(&req);
         stream.tool.use_random_ids();
@@ -1318,15 +1334,8 @@ pub(crate) fn generate_terminal_prepared(
     };
 
     if req.stream {
-        if req.api == Api::Openai {
-            w.out.extend_from_slice(&sse_headers(cors));
-            if req.kind == ReqKind::Chat {
-                sse_chunk(&mut w, &req, job_id, None, None);
-            }
-        } else {
-            let mut hdr = sse_headers(cors);
-            hdr.extend_from_slice(&w.out);
-            w.out = hdr;
+        if req.api == Api::Openai && req.kind == ReqKind::Chat {
+            sse_chunk(&mut w, &req, job_id, None, None);
         }
         flush(&mut w, out)?;
     }
@@ -1348,7 +1357,7 @@ pub(crate) fn generate_terminal_prepared(
         );
         finish = "length";
 
-        decode_pass(
+        let decoded = decode_pass(
             engine,
             &parsed,
             &req,
@@ -1364,7 +1373,16 @@ pub(crate) fn generate_terminal_prepared(
             resp.as_mut(),
             &mut first_tok,
             &mut decode_steps,
-        )?;
+        );
+        if let Err(error) = decoded {
+            if !req.stream || matches!(&error, GenerateError::Io) {
+                return Err(error);
+            }
+            let message = error.to_string();
+            stream_error(&mut w, &req, resp.as_mut(), &message);
+            flush(&mut w, out)?;
+            return Err(GenerateError::Streamed(message));
+        }
 
         finish = terminal_finish(acc.thinking_inside(), finish);
         match truncation_outcome(

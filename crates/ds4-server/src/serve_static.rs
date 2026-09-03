@@ -103,6 +103,7 @@ pub fn static_fallback_error(err: GenerateError) -> GenerateError {
         GenerateError::Engine(msg) if !msg.is_empty() => GenerateError::Engine(msg),
         GenerateError::Engine(_)
         | GenerateError::Unsupported(_)
+        | GenerateError::Streamed(_)
         | GenerateError::Io
         | GenerateError::ContinuationHold { .. } => {
             GenerateError::Engine(STATIC_FALLBACK_ERR.to_string())
