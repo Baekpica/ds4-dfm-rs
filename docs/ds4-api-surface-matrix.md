@@ -1,16 +1,13 @@
 # DS4 API surface matrix
 
-Status: v0.5.6 Inc 0a baseline, re-verified at v0.6.0 — the
-memory-governance arc changed no routing and no wire contract (its
-typed rejection reasons are a /metrics family; the error envelopes are
-unchanged). This document records what each HTTP
-generation surface supports TODAY, which serving lane executes it, and the
-known gaps. It is the frozen oracle for the API-promotion arc: later
-increments change routing and must update this file in the same commit.
+Status: Rust host `v0.1.0-rc.3`. The original route oracle came from the
+v0.5.6/v0.6.0 API-promotion arc; this document records what each HTTP
+generation surface supports today, which serving lane executes it, and the
+known gaps.
 
-The wire contracts below are model-family neutral in `ds4-dfm`. DeepSeek uses
-the Entrpi continuous graph, while Solar Open2, K-EXAONE, and Motif-3 provide
-family-native persistent banks.
+The wire contracts below are model-family neutral in `ds4-dfm-rs`. DeepSeek
+uses the Entrpi continuous graph, while Solar Open2, K-EXAONE, Motif-3, and
+Qwen provide family-native persistent state where supported.
 Tokenizer, prompt/tool syntax, and stop-token handling are dispatched by the
 loaded model family without changing the endpoint schemas.
 
@@ -34,7 +31,9 @@ Three lanes serve generation requests:
   Full feature set, including live tool continuation and corrective tool
   recovery.
 - **continuous** (`generate_continuous_jobs`): the batched engine with
-  per-row sampling, streaming, stops, and tools.
+  per-row sampling, streaming, stops, and tools. The Rust scheduler operates
+  over the configured/native-fitted N-bank width, including width one, and
+  refills idle rows from the live queue during an epoch.
 - **static** (`generate_batch_jobs`): coalesced buffered greedy batches.
 
 Routing since Inc 2 is the single pure decision function `route_decide`
@@ -102,9 +101,8 @@ grace/pin windows can shed other clients' serial work or hold batch victim
 placement (bounded at the grace/pin deadline). IDs are
 minted unguessable but travel in responses. Deployments serving mutually
 untrusted tenants need an authenticating proxy or one server per tenant until
-an authenticated namespace lands (documented restriction; also at the
-`cont_registry` typedef block in `ds4_server.c` and in README "Continuation
-registry and trust domain").
+an authenticated namespace lands (documented restriction; also in
+`crates/ds4-server/src/cont.rs` and the README compatibility boundary).
 
 ## Explicitly unsupported
 
@@ -140,8 +138,11 @@ registry and trust domain").
    (`test_cont_completion_stream_matches_serial_oracle`) and
    `speed-bench/completion_stream_gate.sh` holds the live schema +
    cont-engagement line.
-2. **Engine-failure stranding finalizes live streams as `length`**
-   (continuous lane), conflating a failure with a budget stop.
+2. **FIXED (Rust host RC.3): engine failures after SSE starts now terminate
+   with the surface-native error event.** Responses preserve their live
+   `sequence_number`, Anthropic emits `event: error` with its error envelope,
+   and OpenAI streams emit an error object instead of a misleading `length`
+   finish.
 3. **FIXED (Inc 2b): error envelopes are endpoint-native.** Anthropic
    buffered errors carry the documented `{"type":"error","error":{...}}`
    envelope with a status-mapped type (400/409 `invalid_request_error`,

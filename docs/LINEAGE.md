@@ -59,6 +59,12 @@ candidate containing this document.
 oracle calls explicitly so host parity is deterministic across x86 and ARM C
 compilers.
 
+`v0.1.0-rc.3` continues the same native backend and model-family lineage while
+hardening the shared Rust serving plane for agent concurrency, streaming,
+continuations, admission, cache accounting, and shutdown. Its Qwen Q5+Sidecar
+one- and two-bank runs validate those host changes; they do not redefine the
+`v0.6.5-dfm` golden or claim a new model/kernel release.
+
 ## Versioning after the split
 
 `v0.6.5-dfm` remains the behavioral baseline, not the new repository's version.

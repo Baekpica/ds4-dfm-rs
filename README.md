@@ -78,8 +78,10 @@ optimized C/CUDA/Metal backend, Git ancestry and authorship, and the full
 
 ## Status
 
-`v0.1.0-rc.2` is a repository-split and Rust-host parity release. It starts a
-new version namespace; it is not a new model or kernel feature release.
+`v0.1.0-rc.3` hardens the Rust host for agent-serving workloads after the
+repository split and parity release. The scheduler, admission, streaming,
+continuation, cache-accounting, and shutdown changes are shared serving
+behavior; this is not a new model, weight, or kernel release.
 
 | Item | RC scope |
 |---|---|
@@ -169,9 +171,9 @@ See [`ARCHITECTURE.md`](docs/rust-migration/ARCHITECTURE.md) and
 
 ## Supported hardware and backends
 
-| Backend | Status in `v0.1.0-rc.2` |
+| Backend | Status in `v0.1.0-rc.3` |
 |---|---|
-| NVIDIA DGX Spark / GB10 | Release target. Full build, host parity, family matrix, long-context, Qwen image/MTP, ABBA, and soak gates ran here. |
+| NVIDIA DGX Spark / GB10 | Release target. The split-era full matrix, long-context, Qwen image/MTP, ABBA, and soak gates ran here; RC.3's targeted agent-serving matrix also ran here. |
 | Other NVIDIA CUDA systems | Source path retained through `make cuda-generic` or an explicit `CUDA_ARCH`; not covered by the RC's full live matrix. |
 | macOS Metal | Inherited source/build path retained; not part of the DFM RC live gate. |
 | CPU | Reference and diagnostics only, not a production performance backend. |
@@ -192,7 +194,7 @@ tokenizer/chat contract, state lifecycle, and native execution path.
 | K-EXAONE 236B A23B | `exaone-moe` | LLLG full/sliding GQA KV and persistent banks. |
 | Motif-3 | `motif3` | Latent KV, rotated `k_pe`, SWA rings, persistent banks. |
 | dots3-note Preview | `dots3-note` | Dual-geometry latent state; current live serving path is serial. |
-| Qwen3.8 Flash Next SSD-PLE | `qwen4exp` | Q5 main GGUF + four shared SSD-PLE sidecars, embedded MTP, two-bank serving, and still-image input. |
+| Qwen3.8 Flash Next SSD-PLE | `qwen4exp` | Q5 main GGUF + four shared SSD-PLE sidecars, embedded MTP, N-bank Rust scheduling, still-image input; one- and two-bank live gates. |
 
 The current family contract and measured model-specific limits are documented
 in [`ds4-dfm-model-families.md`](docs/ds4-dfm-model-families.md). Arbitrary
@@ -206,7 +208,8 @@ The Qwen RC claim is deliberately narrow:
 - four shared BF16 SSD-PLE sidecars referenced by that Q5 layout;
 - embedded MTP with `--mtp-draft 2`;
 - text and base64 PNG/JPEG input on the three message APIs;
-- 196,608 production serving and exact/configured 262,144-token gates.
+- 196,608 two-bank serving and 262,144 one-bank serving, in addition to the
+  earlier exact/configured 262,144-token gates.
 
 Q6, original safetensors, and a resident BF16 GGUF were not release gates and
 are not implied by this claim.
@@ -319,8 +322,8 @@ DS4_CUDA_WEIGHT_IPC_SCOPE=base \
   --host 127.0.0.1 --port 8000 --no-update-check
 ```
 
-Qwen Q5 release runs additionally set a bounded SSD-PLE cache and enable its
-persistent two-bank path:
+Qwen Q5 release runs additionally set a bounded SSD-PLE cache. This reference
+shape asks the shared Rust scheduler for two persistent banks:
 
 ```sh
 DS4_QWEN_BATCH=1 \
@@ -331,7 +334,7 @@ DS4_SERVER_COALESCE_MAX=2 \
 DS4_CUDA_WEIGHT_IPC_MANIFEST="$MANIFEST" \
 DS4_CUDA_WEIGHT_IPC_SCOPE=base \
 ./ds4-server --cuda -m "$MODEL" -c 196608 --mtp-draft 2 \
-  --host 127.0.0.1 --port 8000 --no-update-check
+  --cont-width 2 --host 127.0.0.1 --port 8000 --no-update-check
 ```
 
 ### Qwen YaRN long contexts
@@ -401,6 +404,19 @@ The server has serial, continuous, and static lanes; set
 `DS4_SERVER_CONTINUOUS=0` to force the static/serial route used by the C
 compatibility gate.
 
+The continuous lane is width-generic: the Rust host schedules up to the
+configured and native-fitted bank count, serializes work when only one bank is
+available, and refills free banks from the live queue without waiting for the
+longest row. Admission limits, disconnect cancellation, stream heartbeats and
+typed failures, shutdown propagation, and cumulative usage accounting live in
+the shared Rust serving path. Each model family still supplies its explicit
+state and KV contract; a configured width is not a claim that every model and
+context fits that width on a given machine.
+
+`DS4_SERVER_MAX_CLIENTS` (default 256) reserves client capacity before request
+bodies are read, so slow or oversized ingress cannot consume an unbounded
+number of reader threads.
+
 Resident-bank protection and SSD checkpoint eligibility are independent:
 `DS4_SERVER_PIN_MIN_TOKENS` defaults to 65,536, while
 `DS4_SERVER_PERSIST_MIN_TOKENS` defaults to 8,192. Lowering the persistence
@@ -439,7 +455,7 @@ trust domain when clients are not mutually trusted.
 
 ## Performance and release evidence
 
-The first RC claims parity class, not a universal speedup.
+The original split gate claims parity class, not a universal speedup.
 
 | Gate | Recorded result on DGX Spark / GB10 |
 |---|---|
@@ -456,6 +472,21 @@ are not hidden Rust failures. See
 [`PARITY_MATRIX.md`](docs/rust-migration/PARITY_MATRIX.md),
 [`ENGINE_GAPS.md`](docs/rust-migration/ENGINE_GAPS.md), and
 [`SPLIT_READINESS.md`](docs/rust-migration/SPLIT_READINESS.md).
+
+RC.3 then revalidated the changed agent-serving paths on that same Qwen
+Q5+Sidecar artifact. At 262,144 context with one bank, a replayed 140-token
+turn reported 116 cached and 24 computed tokens, and six barrier-released
+requests completed successfully in FIFO order. At 196,608 context with two
+banks, rolling refill let a later short request finish in 4.90 seconds while
+the earlier long request finished in 14.53 seconds; the final live counters
+reported 19 completed, zero failed, zero canceled, and zero continuous or
+memory-census faults. OpenAI Responses and Anthropic streaming tool-output
+continuations both resumed their owning bank with cache hits. The two-bank
+run retained about 13.0 GiB available host memory.
+
+This was a targeted RC.3 regression matrix, not a second long soak. The
+7,202.3-second Qwen-only soak in the table predates these host changes and was
+not rerun for RC.3.
 
 ## Testing
 

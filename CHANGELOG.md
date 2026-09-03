@@ -5,6 +5,34 @@ Fork: [Entrpi/ds4](https://github.com/Entrpi/ds4) of
 [antirez/ds4](https://github.com/antirez/ds4); upstream fork point `e16ead1`
 (2026-05-29). Upstream's own changes are not repeated here.
 
+## v0.1.0-rc.3 — 2026-09-03
+
+- Hardens agent serving in the shared Rust host. Continuous scheduling now
+  follows the configured/native-fitted N-bank width, serializes correctly at
+  width one, and refills idle banks from the live queue while other rows keep
+  decoding. No serving behavior is hard-coded to one or two banks.
+- Keeps Responses and Anthropic tool-output continuations on their owning
+  banks, preserves thinking/reasoning replay keys, separates checkpoint
+  persistence from resident pinning, reuses prepared prompts, and avoids
+  repeated tool-trailer scans after the prompt is resident.
+- Bounds client admission before request-body reads and chunked trailers,
+  cancels disconnected queued work, emits protocol-native errors and
+  heartbeats after SSE starts, and propagates shutdown into active generation.
+- Enforces supported tool-selection controls and explicitly rejects schema
+  output modes with a compatibility-friendly unsupported message. Responses
+  usage now includes reasoning and admitted-cache tokens; shared host metrics
+  record cumulative generation totals.
+- Revalidated Qwen Q5+Sidecar on DGX Spark at 262,144 context/one bank and
+  196,608 context/two banks, including rolling refill, concurrent sessions,
+  cached thinking replay, and streaming Responses/Anthropic tool
+  continuations. The final two-bank sample completed 19/19 requests with zero
+  request, continuous-batch, or memory-census failures and about 13.0 GiB
+  available host memory.
+- Leaves model-family state and native kernels explicit. Serving-wide fixes
+  are implemented once in Rust; the Qwen-specific change is limited to its
+  thinking/reasoning replay contract. The earlier two-hour Qwen soak was not
+  rerun for this targeted host-hardening release.
+
 ## v0.1.0-rc.2 — 2026-08-31
 
 - Makes the continuation C oracle deterministic across C function-argument
