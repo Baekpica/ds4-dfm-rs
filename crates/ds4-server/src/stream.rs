@@ -187,6 +187,12 @@ fn responses_tool_call_is_tool_search(tc: &ToolCall, order: Option<&ToolSchemaOr
     tc.name == "tool_search" && order.map(|o| o.responses_tool_search).unwrap_or(true)
 }
 
+fn responses_tool_wire_name<'a>(tc: &'a ToolCall, order: Option<&'a ToolSchemaOrder>) -> &'a str {
+    order
+        .and_then(|o| (!o.wire_name.is_empty()).then_some(o.wire_name.as_str()))
+        .unwrap_or(tc.name.as_str())
+}
+
 pub fn append_anthropic_tool_use(out: &mut Vec<u8>, tc: &ToolCall, id_prefix: &str, i: usize) {
     let fallback = format!("toolu_{id_prefix}_{i}");
     let id = if tc.id.is_empty() {
@@ -225,15 +231,7 @@ fn append_responses_function_call_item(
         out.push(b'}');
         return;
     }
-    let name = order
-        .and_then(|o| {
-            if o.wire_name.is_empty() {
-                None
-            } else {
-                Some(o.wire_name.as_str())
-            }
-        })
-        .unwrap_or(tc.name.as_str());
+    let name = responses_tool_wire_name(tc, order);
     out.extend_from_slice(
         format!(
             "{{\"id\":\"{fc_id}\",\"type\":\"function_call\",\"status\":\"{item_status}\",\"name\":"
@@ -1577,6 +1575,78 @@ fn responses_sse_message_done(
     true
 }
 
+fn responses_sse_function_calls(
+    w: &mut Writer,
+    r: &StreamReq,
+    st: &mut ResponsesStream,
+    calls: &[ToolCall],
+    item_status: &str,
+) {
+    for (i, tc) in calls.iter().enumerate() {
+        let output_index = st.next_output_index;
+        st.next_output_index += 1;
+        let item_id = format!("fc_{}_{i}", st.response_id);
+        let call_id = if tc.id.is_empty() {
+            format!("{}_tool_{i}", st.response_id)
+        } else {
+            tc.id.clone()
+        };
+        let order = tool_schema_orders_find(&r.tool_orders, &tc.name);
+
+        let mut added = format!(
+            "{{\"type\":\"response.output_item.added\",\"output_index\":{output_index},\"item\":"
+        )
+        .into_bytes();
+        append_responses_function_call_item(
+            &mut added,
+            tc,
+            &item_id,
+            &call_id,
+            "in_progress",
+            &r.tool_orders,
+        );
+        added.push(b'}');
+        responses_sse_emit_event(w, st, &added);
+
+        if !responses_tool_call_is_tool_search(tc, order) {
+            let mut delta = format!(
+                "{{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"{item_id}\",\"output_index\":{output_index},\"delta\":"
+            )
+            .into_bytes();
+            append_json_object_string(&mut delta, &tc.arguments);
+            delta.push(b'}');
+            responses_sse_emit_event(w, st, &delta);
+
+            let mut done = format!(
+                "{{\"type\":\"response.function_call_arguments.done\",\"item_id\":\"{item_id}\",\"output_index\":{output_index},\"name\":"
+            )
+            .into_bytes();
+            done.extend(json_escape_bytes(
+                responses_tool_wire_name(tc, order).as_bytes(),
+            ));
+            done.extend_from_slice(b",\"arguments\":");
+            append_json_object_string(&mut done, &tc.arguments);
+            done.push(b'}');
+            responses_sse_emit_event(w, st, &done);
+        }
+
+        let mut done = format!(
+            "{{\"type\":\"response.output_item.done\",\"output_index\":{output_index},\"item\":"
+        )
+        .into_bytes();
+        append_responses_function_call_item(
+            &mut done,
+            tc,
+            &item_id,
+            &call_id,
+            item_status,
+            &r.tool_orders,
+        );
+        done.push(b'}');
+        responses_sse_emit_event(w, st, &done);
+    }
+}
+
 fn responses_sse_completed(
     w: &mut Writer,
     r: &StreamReq,
@@ -1824,6 +1894,7 @@ pub fn responses_sse_finish_live(
         }
         st.message_item_closed = true;
     }
+    responses_sse_function_calls(w, r, st, calls, responses_item_status_for_finish(finish));
     responses_sse_completed(
         w,
         r,
@@ -2258,5 +2329,52 @@ mod stream_failure_tests {
             b"data: {\"type\":\"response.in_progress\",\"sequence_number\":1,\"response\":{\"id\":\"resp_test\",\"object\":\"response\",\"created_at\":7,\"status\":\"in_progress\",\"model\":\"model\",\"output\":[]}}\n\n"
         );
         assert_eq!(state.sequence, 2);
+    }
+
+    #[test]
+    fn responses_function_calls_emit_item_and_argument_lifecycle() {
+        let req = StreamReq {
+            api: Api::Responses,
+            stream: true,
+            model: "model".into(),
+            ..StreamReq::default()
+        };
+        let mut state = responses_stream_init(&req, "resp_test", "rs_test", "msg_test");
+        let mut writer = Writer::new(7);
+        responses_sse_created(&mut writer, &req, &mut state, 7);
+        let calls = [ToolCall {
+            id: "call_test".into(),
+            name: "bash".into(),
+            arguments: r#"{"command":"true"}"#.into(),
+        }];
+
+        responses_sse_finish_live(
+            &mut writer,
+            &req,
+            &mut state,
+            b"",
+            "tool_calls",
+            3,
+            1,
+            0,
+            7,
+            &calls,
+        );
+
+        let wire = String::from_utf8(writer.out).unwrap();
+        let added = wire
+            .find("\"type\":\"response.output_item.added\"")
+            .unwrap();
+        let delta = wire
+            .find("\"type\":\"response.function_call_arguments.delta\"")
+            .unwrap();
+        let done = wire
+            .find("\"type\":\"response.function_call_arguments.done\"")
+            .unwrap();
+        let item_done = wire.find("\"type\":\"response.output_item.done\"").unwrap();
+        let completed = wire.find("\"type\":\"response.completed\"").unwrap();
+        assert!(added < delta && delta < done && done < item_done && item_done < completed);
+        assert!(wire.contains("\"item_id\":\"fc_resp_test_0\""), "{wire}");
+        assert!(wire.contains("\"call_id\":\"call_test\""), "{wire}");
     }
 }
