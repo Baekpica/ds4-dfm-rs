@@ -24,6 +24,7 @@ pub enum ModelFamily {
     ExaoneMoe = 3,
     Dots3Note = 4,
     Qwen4Exp = 5,
+    Glm53 = 6,
 }
 
 impl ModelFamily {
@@ -35,6 +36,7 @@ impl ModelFamily {
             "exaone-moe" => Some(Self::ExaoneMoe),
             "dots3-note" => Some(Self::Dots3Note),
             "qwen4exp" => Some(Self::Qwen4Exp),
+            "glm5-next" => Some(Self::Glm53),
             _ => None,
         }
     }
@@ -47,6 +49,7 @@ impl ModelFamily {
             Self::ExaoneMoe => "exaone-moe",
             Self::Dots3Note => "dots3-note",
             Self::Qwen4Exp => "qwen4exp",
+            Self::Glm53 => "glm5-next",
         }
     }
 }
@@ -61,6 +64,7 @@ pub enum Variant {
     Kexaone236B = 4,
     Dots3NotePrev = 5,
     Qwen38FlashNext = 6,
+    Glm53Flash = 7,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -301,6 +305,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"motif3") => ArchRoute::Fixed(Variant::Motif3),
         Some(b"dots3-note") => ArchRoute::Fixed(Variant::Dots3NotePrev),
         Some(b"qwen4exp") => ArchRoute::Fixed(Variant::Qwen38FlashNext),
+        Some(b"glm5-next") => ArchRoute::Fixed(Variant::Glm53Flash),
         Some(_) => ArchRoute::Unsupported,
     }
 }
@@ -314,6 +319,7 @@ pub fn shape_for_variant(v: Variant) -> Shape {
         Variant::Kexaone236B => SHAPE_KEXAONE_236B,
         Variant::Dots3NotePrev => SHAPE_DOTS3_NOTE_PREV,
         Variant::Qwen38FlashNext => SHAPE_QWEN38_FLASH_NEXT,
+        Variant::Glm53Flash => SHAPE_GLM53_FLASH,
     }
 }
 
@@ -327,8 +333,8 @@ fn arch_dump_name(route: ArchRoute) -> &'static str {
 
 pub fn dump_oracle() -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "FAMILY\t0\t1\t2\t3\t4\t5");
-    let _ = writeln!(out, "VARIANT\t0\t1\t2\t3\t4\t5\t6");
+    let _ = writeln!(out, "FAMILY\t0\t1\t2\t3\t4\t5\t6");
+    let _ = writeln!(out, "VARIANT\t0\t1\t2\t3\t4\t5\t6\t7");
     let _ = writeln!(out, "{}", SHAPE_FLASH.dump_line("DEFAULT"));
     let _ = writeln!(out, "{}", SHAPE_FLASH.dump_line("FLASH"));
     let _ = writeln!(out, "{}", SHAPE_PRO.dump_line("PRO"));
@@ -337,6 +343,7 @@ pub fn dump_oracle() -> String {
     let _ = writeln!(out, "{}", SHAPE_KEXAONE_236B.dump_line("KEXAONE"));
     let _ = writeln!(out, "{}", SHAPE_DOTS3_NOTE_PREV.dump_line("DOTS3"));
     let _ = writeln!(out, "{}", SHAPE_QWEN38_FLASH_NEXT.dump_line("QWEN38"));
+    let _ = writeln!(out, "{}", SHAPE_GLM53_FLASH.dump_line("GLM53"));
 
     let flash = DeepSeekDims::from_shape(&SHAPE_FLASH);
     let pro = DeepSeekDims::from_shape(&SHAPE_PRO);
@@ -372,6 +379,7 @@ pub fn dump_oracle() -> String {
         ("motif3", Some(&b"motif3"[..])),
         ("dots3-note", Some(&b"dots3-note"[..])),
         ("qwen4exp", Some(&b"qwen4exp"[..])),
+        ("glm5-next", Some(&b"glm5-next"[..])),
         ("glm-dsa", Some(&b"glm-dsa"[..])),
     ] {
         let _ = writeln!(
@@ -787,4 +795,62 @@ pub const SHAPE_QWEN38_FLASH_NEXT: Shape = Shape {
     rope_yarn_beta_slow: 0.0,
     compress_rope_freq_base: 0.0,
     rope_orig_ctx: 262144,
+};
+
+pub const SHAPE_GLM53_FLASH: Shape = Shape {
+    name: "GLM 5.3 Flash",
+    family: ModelFamily::Glm53,
+    variant: Variant::Glm53Flash,
+    n_layer: 46,
+    n_embd: 4096,
+    n_vocab: 154880,
+    n_head: 64,
+    n_head_kv: 1,
+    n_noise_head: 0,
+    n_head_dim: 512,
+    n_value_dim: 256,
+    n_rot: 0,
+    n_out_group: 0,
+    n_lora_q: 1536,
+    n_lora_o: 0,
+    n_expert: 288,
+    n_expert_used: 8,
+    n_expert_shared: 1,
+    n_ff_exp: 2048,
+    n_ff_dense: 12288,
+    n_ff_shexp: 0,
+    n_hash_layer: 0,
+    n_swa: 0,
+    n_swa_period: 0,
+    n_indexer_head: 32,
+    n_indexer_head_dim: 128,
+    n_indexer_top_k: 2048,
+    n_hc: 4,
+    n_hc_sinkhorn_iter: 20,
+    n_nextn_predict: 1,
+    n_leading_dense: 3,
+    n_kv_lora: 512,
+    n_key_mla: 256,
+    n_value_mla: 256,
+    n_swa_head: 0,
+    n_swa_kv_lora: 0,
+    n_swa_key_mla: 0,
+    n_full_attn_count: 0,
+    n_kda_head_dim: 128,
+    n_ssm_conv: 4,
+    use_rope: false,
+    use_qk_norm: false,
+    rms_eps: 1.0e-5,
+    kda_l2_eps: 1.0e-6,
+    kda_gate_clamp_min: -5.0,
+    hc_eps: 1.0e-6,
+    expert_weight_scale: 2.5,
+    swiglu_clamp_exp: 10.0,
+    rope_freq_base: 0.0,
+    rope_freq_base_swa: 0.0,
+    rope_scale_factor: 1.0,
+    rope_yarn_beta_fast: 0.0,
+    rope_yarn_beta_slow: 0.0,
+    compress_rope_freq_base: 0.0,
+    rope_orig_ctx: 1_048_576,
 };

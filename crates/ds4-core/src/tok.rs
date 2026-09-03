@@ -277,6 +277,30 @@ impl Vocab {
 
     fn load_specials(&mut self, g: &GgufFile) -> Result<(), TokError> {
         match self.family {
+            ModelFamily::Glm53 => {
+                self.bos_id = g
+                    .get_token_id("tokenizer.ggml.bos_token_id")
+                    .unwrap_or_else(|| self.lookup_opt("<sop>"));
+                self.eos_id = g
+                    .get_token_id("tokenizer.ggml.eos_token_id")
+                    .unwrap_or_else(|| self.lookup_opt("<|endoftext|>"));
+                self.system_id = self.lookup_opt("<|system|>");
+                self.user_id = self.lookup_opt("<|user|>");
+                self.assistant_id = self.lookup_opt("<|assistant|>");
+                self.observation_id = self.lookup_opt("<|observation|>");
+                self.sop_id = self.lookup_opt("<sop>");
+                self.think_start_id = self.lookup_opt("<think>");
+                self.think_end_id = self.lookup_opt("</think>");
+                self.tool_call_start_id = self.lookup_opt("<tool_call>");
+                self.tool_call_end_id = self.lookup_opt("</tool_call>");
+                self.tool_response_start_id = self.lookup_opt("<tool_response>");
+                self.tool_response_end_id = self.lookup_opt("</tool_response>");
+                self.arg_key_start_id = self.lookup_opt("<arg_key>");
+                self.arg_key_end_id = self.lookup_opt("</arg_key>");
+                self.arg_value_start_id = self.lookup_opt("<arg_value>");
+                self.arg_value_end_id = self.lookup_opt("</arg_value>");
+                self.dsml_id = -1;
+            }
             ModelFamily::Motif3 => {
                 self.bos_id = g
                     .get_token_id("tokenizer.ggml.bos_token_id")
@@ -490,17 +514,32 @@ impl Vocab {
     pub fn chat_begin(&self, tokens: &mut TokenBuffer) -> Result<(), TokError> {
         if self.family == ModelFamily::ExaoneMoe {
             self.require_chat_ids(&[(self.bos_id, "[BOS]")])?;
+        } else if self.family == ModelFamily::Glm53 {
+            self.require_chat_ids(&[(self.bos_id, "[gMASK]"), (self.sop_id, "<sop>")])?;
         }
         if !matches!(
             self.family,
             ModelFamily::SolarOpen2 | ModelFamily::Dots3Note | ModelFamily::Qwen4Exp
         ) {
             tokens.push(self.bos_id);
+            if self.family == ModelFamily::Glm53 && self.sop_id >= 0 {
+                tokens.push(self.sop_id);
+            }
         }
         Ok(())
     }
 
     pub fn chat_append_effort_prefix(&self, tokens: &mut TokenBuffer, mode: ChatThinkMode) {
+        if self.family == ModelFamily::Glm53 {
+            let effort = match mode {
+                ChatThinkMode::High => "Reasoning Effort: High",
+                ChatThinkMode::Max => "Reasoning Effort: Max",
+                ChatThinkMode::None | ChatThinkMode::Low => return,
+            };
+            tokens.push(self.system_id);
+            bpe_tokenize_text(self, effort.as_bytes(), &mut tokens.tokens);
+            return;
+        }
         if matches!(
             self.family,
             ModelFamily::Motif3
@@ -529,6 +568,39 @@ impl Vocab {
         }
 
         match self.family {
+            ModelFamily::Glm53 => {
+                if role == "system" || role == "developer" {
+                    self.require_chat_ids(&[(self.system_id, "<|system|>")])?;
+                    tokens.push(self.system_id);
+                    tokenize_rendered_chat(self, content, &mut tokens.tokens);
+                } else if role == "assistant" {
+                    self.require_chat_ids(&[
+                        (self.assistant_id, "<|assistant|>"),
+                        (self.think_start_id, "<think>"),
+                        (self.think_end_id, "</think>"),
+                    ])?;
+                    tokens.push(self.assistant_id);
+                    if !content.starts_with(b"<think>") && !content.starts_with(b"</think>") {
+                        tokens.push(self.think_start_id);
+                        tokens.push(self.think_end_id);
+                    }
+                    tokenize_rendered_chat(self, content, &mut tokens.tokens);
+                } else if role == "tool" || role == "function" {
+                    self.require_chat_ids(&[
+                        (self.observation_id, "<|observation|>"),
+                        (self.tool_response_start_id, "<tool_response>"),
+                        (self.tool_response_end_id, "</tool_response>"),
+                    ])?;
+                    tokens.push(self.observation_id);
+                    tokens.push(self.tool_response_start_id);
+                    self.chat_append_wrapped_payload(tokens, content, b"</tool_response>");
+                    tokens.push(self.tool_response_end_id);
+                } else {
+                    self.require_chat_ids(&[(self.user_id, "<|user|>")])?;
+                    tokens.push(self.user_id);
+                    bpe_tokenize_text(self, content, &mut tokens.tokens);
+                }
+            }
             ModelFamily::Motif3 => {
                 tokens.push(self.start_of_turn_id);
                 if role == "system" || role == "developer" {
@@ -671,6 +743,18 @@ impl Vocab {
     ) -> Result<(), TokError> {
         let thinking = mode.enabled();
         match self.family {
+            ModelFamily::Glm53 => {
+                self.require_chat_ids(&[
+                    (self.assistant_id, "<|assistant|>"),
+                    (self.think_start_id, "<think>"),
+                    (self.think_end_id, "</think>"),
+                ])?;
+                tokens.push(self.assistant_id);
+                tokens.push(self.think_start_id);
+                if !thinking {
+                    tokens.push(self.think_end_id);
+                }
+            }
             ModelFamily::Dots3Note => {
                 tokens.push(self.assistant_id);
                 if !thinking {
@@ -1508,7 +1592,13 @@ fn bpe_tokenize_text_motif3(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
     }
 }
 
-fn bpe_tokenize_text_solar(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
+fn bpe_tokenize_text_llama3(
+    vocab: &Vocab,
+    s: &[u8],
+    out: &mut Vec<i32>,
+    max_digits: usize,
+    user_defined: bool,
+) {
     let mut pos = 0usize;
     while pos < s.len() {
         let start = pos;
@@ -1517,10 +1607,12 @@ fn bpe_tokenize_text_solar(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
             pos = next_utf8_char(s, pos);
             continue;
         }
-        if let Some((id, n)) = user_defined_at(vocab, s, pos) {
-            out.push(id);
-            pos += n;
-            continue;
+        if user_defined {
+            if let Some((id, n)) = user_defined_at(vocab, s, pos) {
+                out.push(id);
+                pos += n;
+                continue;
+            }
         }
         if let Some(n) = contraction_len(s, pos) {
             pos += n;
@@ -1545,7 +1637,15 @@ fn bpe_tokenize_text_solar(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
             }
         }
         if cur.is_number {
-            pos = cur.next;
+            let mut digits = 0usize;
+            while pos < s.len() && digits < max_digits {
+                let scan = char_at(s, pos);
+                if !scan.valid || !scan.is_number {
+                    break;
+                }
+                pos = scan.next;
+                digits += 1;
+            }
             bpe_emit_piece(vocab, &s[start..pos], out);
             continue;
         }
@@ -1605,6 +1705,14 @@ fn bpe_tokenize_text_solar(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
         pos = cur.next;
         bpe_emit_piece(vocab, &s[start..pos], out);
     }
+}
+
+fn bpe_tokenize_text_solar(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
+    bpe_tokenize_text_llama3(vocab, s, out, 1, true);
+}
+
+fn bpe_tokenize_text_glm4(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
+    bpe_tokenize_text_llama3(vocab, s, out, 3, false);
 }
 
 fn bpe_tokenize_text_exaone(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
@@ -1819,6 +1927,7 @@ fn bpe_tokenize_text_joyai(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
 
 fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
     match vocab.family {
+        ModelFamily::Glm53 => bpe_tokenize_text_glm4(vocab, text, out),
         ModelFamily::Motif3 => bpe_tokenize_text_motif3(vocab, text, out),
         ModelFamily::SolarOpen2 => bpe_tokenize_text_solar(vocab, text, out),
         ModelFamily::Dots3Note => bpe_tokenize_text_dots3(vocab, text, out),
@@ -1830,6 +1939,54 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
 
 fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
     let specials: &[(&[u8], i32)] = &[
+        (
+            b"[gMASK]",
+            if vocab.family == ModelFamily::Glm53 {
+                vocab.bos_id
+            } else {
+                -1
+            },
+        ),
+        (
+            b"<sop>",
+            if vocab.family == ModelFamily::Glm53 {
+                vocab.sop_id
+            } else {
+                -1
+            },
+        ),
+        (
+            b"<|system|>",
+            if vocab.family == ModelFamily::Glm53 {
+                vocab.system_id
+            } else {
+                -1
+            },
+        ),
+        (
+            b"<|user|>",
+            if vocab.family == ModelFamily::Glm53 {
+                vocab.user_id
+            } else {
+                -1
+            },
+        ),
+        (
+            b"<|assistant|>",
+            if vocab.family == ModelFamily::Glm53 {
+                vocab.assistant_id
+            } else {
+                -1
+            },
+        ),
+        (
+            b"<|observation|>",
+            if vocab.family == ModelFamily::Glm53 {
+                vocab.observation_id
+            } else {
+                -1
+            },
+        ),
         (b"<|endoftext|>", vocab.dots3_endoftext_id),
         (b"<|endofsystem|>", vocab.dots3_endofsystem_id),
         (b"<|endofuser|>", vocab.dots3_endofuser_id),

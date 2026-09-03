@@ -8,8 +8,9 @@
 //! and sibling validate stay C until a separate sibling bind map exists.
 
 use crate::bind::{
-    dots3_layer_is_full_attention, expected_compress_ratio, qwen4exp_layer_is_full_attention,
-    solar_layer_is_gqa, BindPlan, DSPARK_MARKOV_RANK, DSPARK_N_LAYER,
+    dots3_layer_is_full_attention, expected_compress_ratio, glm53_layer_is_kda,
+    qwen4exp_layer_is_full_attention, solar_layer_is_gqa, BindPlan, DSPARK_MARKOV_RANK,
+    DSPARK_N_LAYER,
 };
 use crate::shape::{shape_for_variant, ModelFamily, Shape, Variant};
 use crate::tensors::{tensor_type_name, TensorInfo};
@@ -44,6 +45,7 @@ pub enum TypeClass {
     QwenMatrix,
     QwenPlain,
     QwenMtpRouted,
+    GlmDense,
 }
 
 impl TypeClass {
@@ -62,6 +64,7 @@ impl TypeClass {
             TypeClass::QwenMatrix => "qwen-matrix".into(),
             TypeClass::QwenPlain => "qwen-plain".into(),
             TypeClass::QwenMtpRouted => "qwen-mtp-routed".into(),
+            TypeClass::GlmDense => "glm-dense".into(),
         }
     }
 
@@ -185,6 +188,7 @@ fn type_ok(class: TypeClass, typ: u32) -> bool {
         ),
         TypeClass::QwenPlain => typ == T_F32 || typ == T_BF16,
         TypeClass::QwenMtpRouted => typ == T_Q8_0 || typ == T_BF16,
+        TypeClass::GlmDense => typ == T_BF16 || typ == T_Q8_0 || typ == T_Q4_K || typ == T_Q4_0,
     }
 }
 
@@ -1878,6 +1882,310 @@ fn expected_qwen4exp(shape: &Shape) -> Vec<LayoutSpec> {
     out
 }
 
+fn expected_glm53(shape: &Shape) -> Vec<LayoutSpec> {
+    let mut out = Vec::new();
+    let e = shape.n_embd as u64;
+    let hc = shape.n_hc as u64;
+    let hc_dim = e * hc;
+    let hc_mix = 2 * hc + hc * hc;
+    let kda = shape.n_head as u64 * shape.n_kda_head_dim as u64;
+    let q_dim = shape.n_head as u64 * shape.n_key_mla as u64;
+    let index_q = shape.n_indexer_head as u64 * shape.n_indexer_head_dim as u64;
+
+    for (name, class, ndim, dims) in [
+        (
+            "token_embd.weight",
+            TypeClass::GlmDense,
+            2,
+            [e, shape.n_vocab as u64, 0, 0],
+        ),
+        (
+            "output_norm.weight",
+            TypeClass::Exact(T_F32),
+            1,
+            [e, 0, 0, 0],
+        ),
+        (
+            "output.weight",
+            TypeClass::GlmDense,
+            2,
+            [e, shape.n_vocab as u64, 0, 0],
+        ),
+    ] {
+        spec(&mut out, name, class, ndim, dims);
+    }
+
+    for il in 0..shape.n_layer {
+        let p = format!("blk.{il}.");
+        spec(
+            &mut out,
+            format!("{p}attn_norm.weight"),
+            TypeClass::Exact(T_F32),
+            1,
+            [e, 0, 0, 0],
+        );
+        spec(
+            &mut out,
+            format!("{p}ffn_norm.weight"),
+            TypeClass::Exact(T_F32),
+            1,
+            [e, 0, 0, 0],
+        );
+        if !is_nextn(shape, il) {
+            for stem in ["hc_attn", "hc_ffn"] {
+                spec(
+                    &mut out,
+                    format!("{p}{stem}_fn.weight"),
+                    TypeClass::Exact(T_BF16),
+                    2,
+                    [hc_dim, hc_mix, 0, 0],
+                );
+                spec(
+                    &mut out,
+                    format!("{p}{stem}_scale.weight"),
+                    TypeClass::Exact(T_F32),
+                    1,
+                    [3, 0, 0, 0],
+                );
+                spec(
+                    &mut out,
+                    format!("{p}{stem}_base.weight"),
+                    TypeClass::Exact(T_F32),
+                    1,
+                    [hc_mix, 0, 0, 0],
+                );
+            }
+        }
+
+        if glm53_layer_is_kda(shape, il) {
+            for (suffix, dims) in [
+                ("kda_q.weight", [e, kda, 0, 0]),
+                ("kda_k.weight", [e, kda, 0, 0]),
+                ("kda_v.weight", [e, kda, 0, 0]),
+                ("kda_f_a.weight", [e, shape.n_kda_head_dim as u64, 0, 0]),
+                ("kda_f_b.weight", [shape.n_kda_head_dim as u64, kda, 0, 0]),
+                ("kda_beta.weight", [e, shape.n_head as u64, 0, 0]),
+                ("kda_g_a.weight", [e, shape.n_kda_head_dim as u64, 0, 0]),
+                ("kda_g_b.weight", [shape.n_kda_head_dim as u64, kda, 0, 0]),
+                ("kda_output.weight", [kda, e, 0, 0]),
+            ] {
+                spec(
+                    &mut out,
+                    format!("{p}{suffix}"),
+                    TypeClass::GlmDense,
+                    2,
+                    dims,
+                );
+            }
+            for suffix in [
+                "kda_q_conv.weight",
+                "kda_k_conv.weight",
+                "kda_v_conv.weight",
+            ] {
+                spec(
+                    &mut out,
+                    format!("{p}{suffix}"),
+                    TypeClass::Exact(T_F32),
+                    3,
+                    [shape.n_ssm_conv as u64, 1, kda, 0],
+                );
+            }
+            for (suffix, dim) in [
+                ("kda_dt_bias.weight", kda),
+                ("kda_a_log.weight", shape.n_head as u64),
+                ("kda_o_norm.weight", shape.n_kda_head_dim as u64),
+            ] {
+                spec(
+                    &mut out,
+                    format!("{p}{suffix}"),
+                    TypeClass::Exact(T_F32),
+                    1,
+                    [dim, 0, 0, 0],
+                );
+            }
+        } else {
+            for (suffix, ndim, dims) in [
+                ("attn_q_a.weight", 2, [e, shape.n_lora_q as u64, 0, 0]),
+                ("attn_q_b.weight", 2, [shape.n_lora_q as u64, q_dim, 0, 0]),
+                (
+                    "attn_kv_a_mqa.weight",
+                    2,
+                    [e, (shape.n_kv_lora + shape.n_rot) as u64, 0, 0],
+                ),
+                (
+                    "attn_k_b.weight",
+                    3,
+                    [
+                        (shape.n_key_mla - shape.n_rot) as u64,
+                        shape.n_kv_lora as u64,
+                        shape.n_head as u64,
+                        0,
+                    ],
+                ),
+                (
+                    "attn_v_b.weight",
+                    3,
+                    [
+                        shape.n_kv_lora as u64,
+                        shape.n_value_mla as u64,
+                        shape.n_head as u64,
+                        0,
+                    ],
+                ),
+                (
+                    "attn_output.weight",
+                    2,
+                    [shape.n_head as u64 * shape.n_value_mla as u64, e, 0, 0],
+                ),
+                (
+                    "indexer.attn_q_b.weight",
+                    2,
+                    [shape.n_lora_q as u64, index_q, 0, 0],
+                ),
+                (
+                    "indexer.attn_k.weight",
+                    2,
+                    [e, shape.n_indexer_head_dim as u64, 0, 0],
+                ),
+                (
+                    "indexer.proj.weight",
+                    2,
+                    [e, shape.n_indexer_head as u64, 0, 0],
+                ),
+            ] {
+                spec(
+                    &mut out,
+                    format!("{p}{suffix}"),
+                    TypeClass::GlmDense,
+                    ndim,
+                    dims,
+                );
+            }
+            for suffix in ["indexer.k_norm.weight", "indexer.k_norm.bias"] {
+                spec(
+                    &mut out,
+                    format!("{p}{suffix}"),
+                    TypeClass::Exact(T_F32),
+                    1,
+                    [shape.n_indexer_head_dim as u64, 0, 0, 0],
+                );
+            }
+            spec(
+                &mut out,
+                format!("{p}indexer.pool_ape.weight"),
+                TypeClass::Exact(T_BF16),
+                2,
+                [shape.n_indexer_head_dim as u64, 4, 0, 0],
+            );
+            spec(
+                &mut out,
+                format!("{p}indexer.pool_gate.weight"),
+                TypeClass::Exact(T_BF16),
+                2,
+                [e, shape.n_indexer_head_dim as u64, 0, 0],
+            );
+            spec(
+                &mut out,
+                format!("{p}attn_q_a_norm.weight"),
+                TypeClass::Exact(T_F32),
+                1,
+                [shape.n_lora_q as u64, 0, 0, 0],
+            );
+            spec(
+                &mut out,
+                format!("{p}attn_kv_a_norm.weight"),
+                TypeClass::Exact(T_F32),
+                1,
+                [shape.n_kv_lora as u64, 0, 0, 0],
+            );
+        }
+
+        if il < shape.n_leading_dense {
+            for (suffix, dims) in [
+                ("ffn_gate.weight", [e, shape.n_ff_dense as u64, 0, 0]),
+                ("ffn_up.weight", [e, shape.n_ff_dense as u64, 0, 0]),
+                ("ffn_down.weight", [shape.n_ff_dense as u64, e, 0, 0]),
+            ] {
+                spec(
+                    &mut out,
+                    format!("{p}{suffix}"),
+                    TypeClass::GlmDense,
+                    2,
+                    dims,
+                );
+            }
+        } else {
+            spec(
+                &mut out,
+                format!("{p}ffn_gate_inp.weight"),
+                TypeClass::Exact(T_F32),
+                2,
+                [e, shape.n_expert as u64, 0, 0],
+            );
+            spec(
+                &mut out,
+                format!("{p}exp_probs_b.bias"),
+                TypeClass::Exact(T_F32),
+                1,
+                [shape.n_expert as u64, 0, 0, 0],
+            );
+            for (suffix, dims) in [
+                (
+                    "ffn_gate_exps.weight",
+                    [e, shape.n_ff_exp as u64, shape.n_expert as u64, 0],
+                ),
+                (
+                    "ffn_up_exps.weight",
+                    [e, shape.n_ff_exp as u64, shape.n_expert as u64, 0],
+                ),
+                (
+                    "ffn_down_exps.weight",
+                    [shape.n_ff_exp as u64, e, shape.n_expert as u64, 0],
+                ),
+            ] {
+                spec(&mut out, format!("{p}{suffix}"), TypeClass::Routed, 3, dims);
+            }
+            for (suffix, dims) in [
+                ("ffn_gate_shexp.weight", [e, shape.n_ff_exp as u64, 0, 0]),
+                ("ffn_up_shexp.weight", [e, shape.n_ff_exp as u64, 0, 0]),
+                ("ffn_down_shexp.weight", [shape.n_ff_exp as u64, e, 0, 0]),
+            ] {
+                spec(
+                    &mut out,
+                    format!("{p}{suffix}"),
+                    TypeClass::GlmDense,
+                    2,
+                    dims,
+                );
+            }
+        }
+
+        if is_nextn(shape, il) {
+            spec(
+                &mut out,
+                format!("{p}nextn.eh_proj.weight"),
+                TypeClass::GlmDense,
+                2,
+                [2 * e, e, 0, 0],
+            );
+            for suffix in [
+                "nextn.enorm.weight",
+                "nextn.hnorm.weight",
+                "nextn.shared_head_norm.weight",
+            ] {
+                spec(
+                    &mut out,
+                    format!("{p}{suffix}"),
+                    TypeClass::Exact(T_F32),
+                    1,
+                    [e, 0, 0, 0],
+                );
+            }
+        }
+    }
+    out
+}
+
 fn expected_deepseek(shape: &Shape) -> Vec<LayoutSpec> {
     let mut out = Vec::new();
     let e = shape.n_embd as u64;
@@ -2553,6 +2861,7 @@ pub fn expected_dspark_layouts(shape: &Shape, markov_rank: u32) -> Vec<LayoutSpe
 
 pub fn expected_layouts(shape: &Shape) -> Vec<LayoutSpec> {
     match shape.family {
+        ModelFamily::Glm53 => expected_glm53(shape),
         ModelFamily::Qwen4Exp => expected_qwen4exp(shape),
         ModelFamily::Motif3 => expected_motif3(shape),
         ModelFamily::Dots3Note => expected_dots3(shape),
@@ -2654,6 +2963,7 @@ pub fn dump_expected_layouts() -> String {
         Variant::Kexaone236B,
         Variant::Dots3NotePrev,
         Variant::Qwen38FlashNext,
+        Variant::Glm53Flash,
     ] {
         out.push_str(&dump_expected_layouts_shape(&shape_for_variant(v)));
     }
@@ -2696,7 +3006,10 @@ pub fn validate_layouts(plan: &BindPlan) -> Result<(), LayoutError> {
     expect_specs(&expected_layouts(&plan.shape), &by_name)?;
     if matches!(
         plan.shape.family,
-        ModelFamily::DeepSeek4 | ModelFamily::SolarOpen2 | ModelFamily::Qwen4Exp
+        ModelFamily::DeepSeek4
+            | ModelFamily::SolarOpen2
+            | ModelFamily::Qwen4Exp
+            | ModelFamily::Glm53
     ) {
         for il in 0..plan.shape.n_layer {
             expect_gate_up(

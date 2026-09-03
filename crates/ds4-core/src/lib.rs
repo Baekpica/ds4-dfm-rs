@@ -35,9 +35,9 @@ pub use bind::{
     dots3_layer_is_full_attention, dump_bind_check_oracle, dump_bind_dspark_shape,
     dump_bind_lookup_tapes, dump_bind_match_oracle, dump_bind_mtp_shape, dump_bind_names,
     dump_bind_names_shape, dump_bind_names_variant, dump_bind_support, expected_compress_ratio,
-    host_bind_lookup, match_plans, solar_layer_is_gqa, variant_from_bind_name, BindError, BindName,
-    BindNeed, BindPlan, BindSlot, HostBindLook, SupportCatalog, DSPARK_MARKOV_RANK, DSPARK_N_LAYER,
-    HOST_BIND_MISS,
+    glm53_layer_is_kda, host_bind_lookup, match_plans, solar_layer_is_gqa, variant_from_bind_name,
+    BindError, BindName, BindNeed, BindPlan, BindSlot, HostBindLook, SupportCatalog,
+    DSPARK_MARKOV_RANK, DSPARK_N_LAYER, HOST_BIND_MISS,
 };
 pub use gguf::{GgufError, GgufFile};
 pub use identify::{dump_parse, identify_file, identify_gguf, Identified, IdentifyError};
@@ -70,7 +70,8 @@ pub use session::{
 pub use shape::{
     dump_oracle, route_architecture, select_shape_from_metadata, shape_for_variant, ArchRoute,
     DeepSeekDims, ModelFamily, Shape, Variant, SHAPE_DOTS3_NOTE_PREV, SHAPE_FLASH,
-    SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_PRO, SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B,
+    SHAPE_GLM53_FLASH, SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_PRO, SHAPE_QWEN38_FLASH_NEXT,
+    SHAPE_SOLAR_OPEN2_250B,
 };
 pub use sibling::SiblingAttach;
 pub use tensors::{

@@ -7,8 +7,8 @@
 //! C `config_validate_model`.
 
 use crate::bind::{
-    dots3_layer_is_full_attention, expected_compress_ratio, qwen4exp_layer_is_full_attention,
-    solar_layer_is_gqa,
+    dots3_layer_is_full_attention, expected_compress_ratio, glm53_layer_is_kda,
+    qwen4exp_layer_is_full_attention, solar_layer_is_gqa,
 };
 use crate::gguf::{
     GgufError, GgufFile, GGUF_VALUE_BOOL, GGUF_VALUE_FLOAT32, GGUF_VALUE_FLOAT64, GGUF_VALUE_INT32,
@@ -17,7 +17,8 @@ use crate::gguf::{
 use crate::identify::{identify_file, IdentifyError};
 use crate::shape::{
     route_architecture, ArchRoute, ModelFamily, Shape, Variant, SHAPE_DOTS3_NOTE_PREV, SHAPE_FLASH,
-    SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_PRO, SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B,
+    SHAPE_GLM53_FLASH, SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_PRO, SHAPE_QWEN38_FLASH_NEXT,
+    SHAPE_SOLAR_OPEN2_250B,
 };
 use crate::tensors::TensorInventory;
 
@@ -1116,6 +1117,181 @@ fn qwen_source_revision_supported(revision: Option<&[u8]>) -> bool {
     }
 }
 
+fn validate_glm53(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
+    for (name, key, want) in [
+        ("block_count", "glm5-next.block_count", shape.n_layer),
+        (
+            "trunk_block_count",
+            "glm5-next.trunk_block_count",
+            shape.n_layer - shape.n_nextn_predict,
+        ),
+        (
+            "nextn_predict_layers",
+            "glm5-next.nextn_predict_layers",
+            shape.n_nextn_predict,
+        ),
+        (
+            "embedding_length",
+            "glm5-next.embedding_length",
+            shape.n_embd,
+        ),
+        ("vocab_size", "glm5-next.vocab_size", shape.n_vocab),
+        (
+            "feed_forward_length",
+            "glm5-next.feed_forward_length",
+            shape.n_ff_dense,
+        ),
+        (
+            "expert_feed_forward_length",
+            "glm5-next.expert_feed_forward_length",
+            shape.n_ff_exp,
+        ),
+        ("expert_count", "glm5-next.expert_count", shape.n_expert),
+        (
+            "expert_used_count",
+            "glm5-next.expert_used_count",
+            shape.n_expert_used,
+        ),
+        (
+            "expert_shared_count",
+            "glm5-next.expert_shared_count",
+            shape.n_expert_shared,
+        ),
+        (
+            "leading_dense_block_count",
+            "glm5-next.leading_dense_block_count",
+            shape.n_leading_dense,
+        ),
+        (
+            "attention.head_count",
+            "glm5-next.attention.head_count",
+            shape.n_head,
+        ),
+        (
+            "attention.key_length",
+            "glm5-next.attention.key_length",
+            shape.n_key_mla,
+        ),
+        (
+            "attention.value_length",
+            "glm5-next.attention.value_length",
+            shape.n_value_mla,
+        ),
+        (
+            "attention.q_lora_rank",
+            "glm5-next.attention.q_lora_rank",
+            shape.n_lora_q,
+        ),
+        (
+            "attention.kv_lora_rank",
+            "glm5-next.attention.kv_lora_rank",
+            shape.n_kv_lora,
+        ),
+        (
+            "attention.rope_dimension_count",
+            "glm5-next.attention.rope_dimension_count",
+            shape.n_rot,
+        ),
+        (
+            "attention.indexer.head_count",
+            "glm5-next.attention.indexer.head_count",
+            shape.n_indexer_head,
+        ),
+        (
+            "attention.indexer.key_length",
+            "glm5-next.attention.indexer.key_length",
+            shape.n_indexer_head_dim,
+        ),
+        (
+            "attention.indexer.top_k",
+            "glm5-next.attention.indexer.top_k",
+            shape.n_indexer_top_k,
+        ),
+        (
+            "attention.indexer.pool_size",
+            "glm5-next.attention.indexer.pool_size",
+            4,
+        ),
+        (
+            "linear_attention.head_count",
+            "glm5-next.linear_attention.head_count",
+            shape.n_head,
+        ),
+        (
+            "linear_attention.head_dimension",
+            "glm5-next.linear_attention.head_dimension",
+            shape.n_kda_head_dim,
+        ),
+        (
+            "linear_attention.conv_kernel",
+            "glm5-next.linear_attention.conv_kernel",
+            shape.n_ssm_conv,
+        ),
+        (
+            "hyper_connection.count",
+            "glm5-next.hyper_connection.count",
+            shape.n_hc,
+        ),
+        (
+            "hyper_connection.sinkhorn_iterations",
+            "glm5-next.hyper_connection.sinkhorn_iterations",
+            shape.n_hc_sinkhorn_iter,
+        ),
+    ] {
+        expect_u32(name, req_u32(g, key)?, want)?;
+    }
+    expect_u64(
+        "context_length",
+        req_u64c(g, "glm5-next.context_length")?,
+        shape.rope_orig_ctx,
+    )?;
+    for (name, key, want) in [
+        (
+            "expert_weights_scale",
+            "glm5-next.expert_weights_scale",
+            shape.expert_weight_scale,
+        ),
+        (
+            "swiglu_limit",
+            "glm5-next.swiglu_limit",
+            shape.swiglu_clamp_exp,
+        ),
+        (
+            "attention.layer_norm_rms_epsilon",
+            "glm5-next.attention.layer_norm_rms_epsilon",
+            shape.rms_eps,
+        ),
+        (
+            "linear_attention.gate_lower_bound",
+            "glm5-next.linear_attention.gate_lower_bound",
+            shape.kda_gate_clamp_min,
+        ),
+        (
+            "hyper_connection.epsilon",
+            "glm5-next.hyper_connection.epsilon",
+            shape.hc_eps,
+        ),
+    ] {
+        expect_f32(name, req_f32(g, key)?, want)?;
+    }
+    expect_bool(
+        "expert_weights_norm",
+        req_bool(g, "glm5-next.expert_weights_norm")?,
+        true,
+    )?;
+
+    for (il, got) in array_nonnegative_u32s(g, "glm5-next.layer_types", u64::from(shape.n_layer))?
+        .into_iter()
+        .enumerate()
+    {
+        let want = u32::from(!glm53_layer_is_kda(shape, il as u32));
+        if got != want {
+            return Err(ValidateError::TokenLayer("layer-type", il as u32));
+        }
+    }
+    Ok(())
+}
+
 fn validate_qwen_external_ple(g: &GgufFile) -> Result<(), ValidateError> {
     let external = qwen_ssd_precision(g.get_string("general.quantization")).is_some();
     if external != has_key(g, "qwen4exp.ple.weight_storage") {
@@ -1458,6 +1634,7 @@ pub fn validate_qwen_inventory(
 /// Full C `config_validate_model` against an already-identified shape.
 pub fn validate_file(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
     match shape.family {
+        ModelFamily::Glm53 => validate_glm53(g, shape),
         ModelFamily::Qwen4Exp => validate_qwen4exp(g, shape),
         ModelFamily::DeepSeek4 => validate_deepseek(g, shape),
         ModelFamily::Motif3 => validate_motif3(g, shape),
@@ -1508,6 +1685,7 @@ pub fn dump_validate(path: &std::path::Path) -> String {
                         Variant::Kexaone236B => SHAPE_KEXAONE_236B,
                         Variant::Dots3NotePrev => SHAPE_DOTS3_NOTE_PREV,
                         Variant::Qwen38FlashNext => SHAPE_QWEN38_FLASH_NEXT,
+                        Variant::Glm53Flash => SHAPE_GLM53_FLASH,
                         Variant::Flash => SHAPE_FLASH,
                         Variant::Pro => SHAPE_PRO,
                     };

@@ -182,8 +182,102 @@ pub fn qwen4exp_layer_is_full_attention(shape: &Shape, il: u32) -> bool {
         && (il % shape.n_swa_period) == 3
 }
 
+/// GLM 5.3 uses KDA,KDA,KDA,DSA in each trunk group; the final block is MTP/DSA.
+pub fn glm53_layer_is_kda(shape: &Shape, il: u32) -> bool {
+    shape.family == ModelFamily::Glm53
+        && il < shape.n_layer
+        && !is_nextn(shape, il)
+        && (il % 4) != 3
+}
+
 fn is_nextn(shape: &Shape, il: u32) -> bool {
     shape.n_nextn_predict != 0 && il + shape.n_nextn_predict >= shape.n_layer
+}
+
+fn bind_glm53_layer(out: &mut Vec<BindName>, shape: &Shape, il: u32) {
+    reqf(out, "blk.%u.attn_norm.weight", il);
+    reqf(out, "blk.%u.ffn_norm.weight", il);
+    if !is_nextn(shape, il) {
+        for suffix in [
+            "hc_attn_fn.weight",
+            "hc_attn_scale.weight",
+            "hc_attn_base.weight",
+            "hc_ffn_fn.weight",
+            "hc_ffn_scale.weight",
+            "hc_ffn_base.weight",
+        ] {
+            reqf(out, &format!("blk.%u.{suffix}"), il);
+        }
+    }
+    if glm53_layer_is_kda(shape, il) {
+        for suffix in [
+            "kda_q.weight",
+            "kda_k.weight",
+            "kda_v.weight",
+            "kda_q_conv.weight",
+            "kda_k_conv.weight",
+            "kda_v_conv.weight",
+            "kda_f_a.weight",
+            "kda_f_b.weight",
+            "kda_dt_bias.weight",
+            "kda_a_log.weight",
+            "kda_beta.weight",
+            "kda_g_a.weight",
+            "kda_g_b.weight",
+            "kda_o_norm.weight",
+            "kda_output.weight",
+        ] {
+            reqf(out, &format!("blk.%u.{suffix}"), il);
+        }
+    } else {
+        for suffix in [
+            "attn_q_a.weight",
+            "attn_q_a_norm.weight",
+            "attn_q_b.weight",
+            "attn_kv_a_mqa.weight",
+            "attn_kv_a_norm.weight",
+            "attn_k_b.weight",
+            "attn_v_b.weight",
+            "attn_output.weight",
+            "indexer.attn_q_b.weight",
+            "indexer.attn_k.weight",
+            "indexer.k_norm.weight",
+            "indexer.k_norm.bias",
+            "indexer.proj.weight",
+            "indexer.pool_ape.weight",
+            "indexer.pool_gate.weight",
+        ] {
+            reqf(out, &format!("blk.%u.{suffix}"), il);
+        }
+    }
+    if il < shape.n_leading_dense {
+        for suffix in ["ffn_gate.weight", "ffn_up.weight", "ffn_down.weight"] {
+            reqf(out, &format!("blk.%u.{suffix}"), il);
+        }
+    } else {
+        for suffix in [
+            "ffn_gate_inp.weight",
+            "exp_probs_b.bias",
+            "ffn_gate_exps.weight",
+            "ffn_up_exps.weight",
+            "ffn_down_exps.weight",
+            "ffn_gate_shexp.weight",
+            "ffn_up_shexp.weight",
+            "ffn_down_shexp.weight",
+        ] {
+            reqf(out, &format!("blk.%u.{suffix}"), il);
+        }
+    }
+    if is_nextn(shape, il) {
+        for suffix in [
+            "nextn.eh_proj.weight",
+            "nextn.enorm.weight",
+            "nextn.hnorm.weight",
+            "nextn.shared_head_norm.weight",
+        ] {
+            reqf(out, &format!("blk.%u.{suffix}"), il);
+        }
+    }
 }
 
 fn bind_motif3_layer(out: &mut Vec<BindName>, shape: &Shape, il: u32) {
@@ -666,6 +760,14 @@ fn dump_name_table(header: String, names: &[BindName]) -> String {
 pub fn bind_names(shape: &Shape) -> Vec<BindName> {
     let mut out = Vec::new();
     match shape.family {
+        ModelFamily::Glm53 => {
+            req(&mut out, "token_embd.weight");
+            req(&mut out, "output_norm.weight");
+            req(&mut out, "output.weight");
+            for il in 0..shape.n_layer {
+                bind_glm53_layer(&mut out, shape, il);
+            }
+        }
         ModelFamily::Qwen4Exp => {
             req(&mut out, "token_embd.weight");
             req(&mut out, "output.weight");
@@ -777,6 +879,7 @@ pub fn dump_bind_names() -> String {
         Variant::Kexaone236B,
         Variant::Dots3NotePrev,
         Variant::Qwen38FlashNext,
+        Variant::Glm53Flash,
     ] {
         out.push_str(&dump_bind_names_shape(&shape_for_variant(v)));
     }
@@ -1115,6 +1218,7 @@ pub fn variant_from_bind_name(s: &str) -> Option<Variant> {
         "exaone-moe" => Some(Variant::Kexaone236B),
         "dots3-note" => Some(Variant::Dots3NotePrev),
         "qwen4exp" => Some(Variant::Qwen38FlashNext),
+        "glm5-next" => Some(Variant::Glm53Flash),
         _ => None,
     }
 }

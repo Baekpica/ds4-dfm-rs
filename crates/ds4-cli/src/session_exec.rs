@@ -11,9 +11,10 @@ pub fn hidden_values(shape: &Shape) -> u64 {
         ModelFamily::SolarOpen2 | ModelFamily::ExaoneMoe | ModelFamily::Qwen4Exp => {
             u64::from(shape.n_embd)
         }
-        ModelFamily::DeepSeek4 | ModelFamily::Motif3 | ModelFamily::Dots3Note => {
-            u64::from(shape.n_hc) * u64::from(shape.n_embd)
-        }
+        ModelFamily::DeepSeek4
+        | ModelFamily::Motif3
+        | ModelFamily::Dots3Note
+        | ModelFamily::Glm53 => u64::from(shape.n_hc) * u64::from(shape.n_embd),
     }
 }
 

@@ -11,7 +11,7 @@ static void die_usage(void)
 {
     fprintf(stderr,
             "usage: tokenizer_c_oracle FAMILY GGUF CMD [ARG]\n"
-            "  FAMILY: deepseek4|motif3|solar-open2|exaone-moe|dots3-note|qwen4exp\n"
+            "  FAMILY: deepseek4|motif3|solar-open2|exaone-moe|dots3-note|qwen4exp|glm5-next\n"
             "  CMD: specials | encode HEX | render HEX | decode ID | stop ID | chat MODE\n");
     exit(2);
 }
@@ -24,6 +24,7 @@ static void set_family(const char *fam)
     else if (strcmp(fam, "exaone-moe") == 0) g_ds4_shape = DS4_SHAPE_KEXAONE_236B;
     else if (strcmp(fam, "dots3-note") == 0) g_ds4_shape = DS4_SHAPE_DOTS3_NOTE_PREV;
     else if (strcmp(fam, "qwen4exp") == 0) g_ds4_shape = DS4_SHAPE_QWEN38_FLASH_NEXT;
+    else if (strcmp(fam, "glm5-next") == 0) g_ds4_shape = DS4_SHAPE_GLM53_FLASH;
     else {
         fprintf(stderr, "unknown family: %s\n", fam);
         exit(2);

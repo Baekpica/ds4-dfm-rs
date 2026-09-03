@@ -269,6 +269,20 @@ fn identify_gguf_motif_no_slurp() {
 }
 
 #[test]
+fn identify_glm53_flash() {
+    let path = tmp("glm53.gguf");
+    write_gguf(&path, &[("general.architecture", Val::Str("glm5-next"))]);
+    assert_same(&path);
+    let id = ds4_core::identify_gguf(&path).unwrap();
+    assert_eq!(id.shape.name, "GLM 5.3 Flash");
+    assert_eq!(id.shape.family as u32, 6);
+    assert_eq!(id.shape.variant as u32, 7);
+    assert_eq!(id.shape.n_layer, 46);
+    assert_eq!(id.shape.n_embd, 4096);
+    assert_eq!(id.shape.n_vocab, 154880);
+}
+
+#[test]
 fn get_u32_rejects_int32() {
     let path = tmp("u32-only.gguf");
     write_gguf(&path, &[("k", Val::I32(7))]);

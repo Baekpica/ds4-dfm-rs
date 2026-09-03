@@ -387,6 +387,10 @@ static void identify(const ds4_model *m)
         printf("IDENTIFY Qwen3.8-Flash-Next family=5 variant=6\n");
         return;
     }
+    if (ds4_streq(arch, "glm5-next")) {
+        printf("IDENTIFY GLM 5.3 Flash family=6 variant=7\n");
+        return;
+    }
     printf("ERROR unsupported-arch %.*s\n", (int)arch.len, arch.ptr);
 }
 

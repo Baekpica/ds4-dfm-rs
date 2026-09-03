@@ -31,7 +31,8 @@ enum {
     FAM_MOTIF3 = 2,
     FAM_EXAONE = 3,
     FAM_DOTS3 = 4,
-    FAM_QWEN = 5
+    FAM_QWEN = 5,
+    FAM_GLM53 = 6
 };
 
 enum {
@@ -41,7 +42,8 @@ enum {
     VAR_MOTIF3 = 3,
     VAR_KEXAONE = 4,
     VAR_DOTS3 = 5,
-    VAR_QWEN = 6
+    VAR_QWEN = 6,
+    VAR_GLM53 = 7
 };
 
 typedef enum {
@@ -57,7 +59,8 @@ typedef enum {
     CLS_SOLAR_DECAY,
     CLS_QWEN_MATRIX,
     CLS_QWEN_PLAIN,
-    CLS_QWEN_MTP_ROUTED
+    CLS_QWEN_MTP_ROUTED,
+    CLS_GLM_DENSE
 } type_class;
 
 typedef struct {
@@ -154,6 +157,33 @@ static const layout_shape SHAPE_QWEN = {
     .n_ssm_conv = 4,
     .use_qk_norm = true
 };
+static const layout_shape SHAPE_GLM53 = {
+    .name = "GLM 5.3 Flash",
+    .family = FAM_GLM53,
+    .variant = VAR_GLM53,
+    .n_layer = 46,
+    .n_embd = 4096,
+    .n_vocab = 154880,
+    .n_head = 64,
+    .n_head_kv = 1,
+    .n_head_dim = 512,
+    .n_value_dim = 256,
+    .n_lora_q = 1536,
+    .n_expert = 288,
+    .n_expert_used = 8,
+    .n_ff_exp = 2048,
+    .n_ff_dense = 12288,
+    .n_indexer_head = 32,
+    .n_indexer_head_dim = 128,
+    .n_hc = 4,
+    .n_nextn_predict = 1,
+    .n_leading_dense = 3,
+    .n_kv_lora = 512,
+    .n_key_mla = 256,
+    .n_value_mla = 256,
+    .n_kda_head_dim = 128,
+    .n_ssm_conv = 4
+};
 
 static uint32_t g_n;
 
@@ -218,6 +248,9 @@ static void spec(const char *name, type_class cls, uint32_t typ, uint32_t ndim,
         break;
     case CLS_QWEN_MTP_ROUTED:
         ct = "qwen-mtp-routed";
+        break;
+    case CLS_GLM_DENSE:
+        ct = "glm-dense";
         break;
     default:
         ct = "unknown";
@@ -728,6 +761,94 @@ static void expected_qwen(const layout_shape *s)
     qwen_hc("mtp.blk.0.hc_ffn", s, true);
 }
 
+static bool glm53_layer_is_kda(const layout_shape *s, uint32_t il)
+{
+    return !is_nextn(s, il) && (il % 4u) != 3u;
+}
+
+static void expected_glm53(const layout_shape *s)
+{
+    const uint64_t e = s->n_embd;
+    const uint64_t hc_dim = (uint64_t)s->n_hc * e;
+    const uint64_t hc_mix = 2u * s->n_hc + (uint64_t)s->n_hc * s->n_hc;
+    const uint64_t kda = (uint64_t)s->n_head * s->n_kda_head_dim;
+    const uint64_t q_dim = (uint64_t)s->n_head * s->n_key_mla;
+    const uint64_t index_q = (uint64_t)s->n_indexer_head * s->n_indexer_head_dim;
+    uint32_t il;
+
+    spec("token_embd.weight", CLS_GLM_DENSE, 0, 2, e, s->n_vocab, 0, 0);
+    spec("output_norm.weight", CLS_EXACT, T_F32, 1, e, 0, 0, 0);
+    spec("output.weight", CLS_GLM_DENSE, 0, 2, e, s->n_vocab, 0, 0);
+
+    for (il = 0; il < s->n_layer; il++) {
+        specf("blk.%u.attn_norm.weight", il, CLS_EXACT, T_F32, 1, e, 0, 0, 0);
+        specf("blk.%u.ffn_norm.weight", il, CLS_EXACT, T_F32, 1, e, 0, 0, 0);
+        if (!is_nextn(s, il)) {
+            specf("blk.%u.hc_attn_fn.weight", il, CLS_EXACT, T_BF16, 2, hc_dim, hc_mix, 0, 0);
+            specf("blk.%u.hc_attn_scale.weight", il, CLS_EXACT, T_F32, 1, 3, 0, 0, 0);
+            specf("blk.%u.hc_attn_base.weight", il, CLS_EXACT, T_F32, 1, hc_mix, 0, 0, 0);
+            specf("blk.%u.hc_ffn_fn.weight", il, CLS_EXACT, T_BF16, 2, hc_dim, hc_mix, 0, 0);
+            specf("blk.%u.hc_ffn_scale.weight", il, CLS_EXACT, T_F32, 1, 3, 0, 0, 0);
+            specf("blk.%u.hc_ffn_base.weight", il, CLS_EXACT, T_F32, 1, hc_mix, 0, 0, 0);
+        }
+
+        if (glm53_layer_is_kda(s, il)) {
+            specf("blk.%u.kda_q.weight", il, CLS_GLM_DENSE, 0, 2, e, kda, 0, 0);
+            specf("blk.%u.kda_k.weight", il, CLS_GLM_DENSE, 0, 2, e, kda, 0, 0);
+            specf("blk.%u.kda_v.weight", il, CLS_GLM_DENSE, 0, 2, e, kda, 0, 0);
+            specf("blk.%u.kda_f_a.weight", il, CLS_GLM_DENSE, 0, 2, e, s->n_kda_head_dim, 0, 0);
+            specf("blk.%u.kda_f_b.weight", il, CLS_GLM_DENSE, 0, 2, s->n_kda_head_dim, kda, 0, 0);
+            specf("blk.%u.kda_beta.weight", il, CLS_GLM_DENSE, 0, 2, e, s->n_head, 0, 0);
+            specf("blk.%u.kda_g_a.weight", il, CLS_GLM_DENSE, 0, 2, e, s->n_kda_head_dim, 0, 0);
+            specf("blk.%u.kda_g_b.weight", il, CLS_GLM_DENSE, 0, 2, s->n_kda_head_dim, kda, 0, 0);
+            specf("blk.%u.kda_output.weight", il, CLS_GLM_DENSE, 0, 2, kda, e, 0, 0);
+            specf("blk.%u.kda_q_conv.weight", il, CLS_EXACT, T_F32, 3, s->n_ssm_conv, 1, kda, 0);
+            specf("blk.%u.kda_k_conv.weight", il, CLS_EXACT, T_F32, 3, s->n_ssm_conv, 1, kda, 0);
+            specf("blk.%u.kda_v_conv.weight", il, CLS_EXACT, T_F32, 3, s->n_ssm_conv, 1, kda, 0);
+            specf("blk.%u.kda_dt_bias.weight", il, CLS_EXACT, T_F32, 1, kda, 0, 0, 0);
+            specf("blk.%u.kda_a_log.weight", il, CLS_EXACT, T_F32, 1, s->n_head, 0, 0, 0);
+            specf("blk.%u.kda_o_norm.weight", il, CLS_EXACT, T_F32, 1, s->n_kda_head_dim, 0, 0, 0);
+        } else {
+            specf("blk.%u.attn_q_a.weight", il, CLS_GLM_DENSE, 0, 2, e, s->n_lora_q, 0, 0);
+            specf("blk.%u.attn_q_b.weight", il, CLS_GLM_DENSE, 0, 2, s->n_lora_q, q_dim, 0, 0);
+            specf("blk.%u.attn_kv_a_mqa.weight", il, CLS_GLM_DENSE, 0, 2, e, s->n_kv_lora, 0, 0);
+            specf("blk.%u.attn_k_b.weight", il, CLS_GLM_DENSE, 0, 3, s->n_key_mla, s->n_kv_lora, s->n_head, 0);
+            specf("blk.%u.attn_v_b.weight", il, CLS_GLM_DENSE, 0, 3, s->n_kv_lora, s->n_value_mla, s->n_head, 0);
+            specf("blk.%u.attn_output.weight", il, CLS_GLM_DENSE, 0, 2, (uint64_t)s->n_head * s->n_value_mla, e, 0, 0);
+            specf("blk.%u.indexer.attn_q_b.weight", il, CLS_GLM_DENSE, 0, 2, s->n_lora_q, index_q, 0, 0);
+            specf("blk.%u.indexer.attn_k.weight", il, CLS_GLM_DENSE, 0, 2, e, s->n_indexer_head_dim, 0, 0);
+            specf("blk.%u.indexer.proj.weight", il, CLS_GLM_DENSE, 0, 2, e, s->n_indexer_head, 0, 0);
+            specf("blk.%u.indexer.k_norm.weight", il, CLS_EXACT, T_F32, 1, s->n_indexer_head_dim, 0, 0, 0);
+            specf("blk.%u.indexer.k_norm.bias", il, CLS_EXACT, T_F32, 1, s->n_indexer_head_dim, 0, 0, 0);
+            specf("blk.%u.indexer.pool_ape.weight", il, CLS_EXACT, T_BF16, 2, s->n_indexer_head_dim, 4, 0, 0);
+            specf("blk.%u.indexer.pool_gate.weight", il, CLS_EXACT, T_BF16, 2, e, s->n_indexer_head_dim, 0, 0);
+            specf("blk.%u.attn_q_a_norm.weight", il, CLS_EXACT, T_F32, 1, s->n_lora_q, 0, 0, 0);
+            specf("blk.%u.attn_kv_a_norm.weight", il, CLS_EXACT, T_F32, 1, s->n_kv_lora, 0, 0, 0);
+        }
+
+        if (il < s->n_leading_dense) {
+            specf("blk.%u.ffn_gate.weight", il, CLS_GLM_DENSE, 0, 2, e, s->n_ff_dense, 0, 0);
+            specf("blk.%u.ffn_up.weight", il, CLS_GLM_DENSE, 0, 2, e, s->n_ff_dense, 0, 0);
+            specf("blk.%u.ffn_down.weight", il, CLS_GLM_DENSE, 0, 2, s->n_ff_dense, e, 0, 0);
+        } else {
+            specf("blk.%u.ffn_gate_inp.weight", il, CLS_EXACT, T_F32, 2, e, s->n_expert, 0, 0);
+            specf("blk.%u.exp_probs_b.bias", il, CLS_EXACT, T_F32, 1, s->n_expert, 0, 0, 0);
+            specf("blk.%u.ffn_gate_exps.weight", il, CLS_ROUTED, 0, 3, e, s->n_ff_exp, s->n_expert, 0);
+            specf("blk.%u.ffn_up_exps.weight", il, CLS_ROUTED, 0, 3, e, s->n_ff_exp, s->n_expert, 0);
+            specf("blk.%u.ffn_down_exps.weight", il, CLS_ROUTED, 0, 3, s->n_ff_exp, e, s->n_expert, 0);
+            specf("blk.%u.ffn_gate_shexp.weight", il, CLS_GLM_DENSE, 0, 2, e, s->n_ff_exp, 0, 0);
+            specf("blk.%u.ffn_up_shexp.weight", il, CLS_GLM_DENSE, 0, 2, e, s->n_ff_exp, 0, 0);
+            specf("blk.%u.ffn_down_shexp.weight", il, CLS_GLM_DENSE, 0, 2, s->n_ff_exp, e, 0, 0);
+        }
+        if (is_nextn(s, il)) {
+            specf("blk.%u.nextn.eh_proj.weight", il, CLS_GLM_DENSE, 0, 2, 2u * e, e, 0, 0);
+            specf("blk.%u.nextn.enorm.weight", il, CLS_EXACT, T_F32, 1, e, 0, 0, 0);
+            specf("blk.%u.nextn.hnorm.weight", il, CLS_EXACT, T_F32, 1, e, 0, 0, 0);
+            specf("blk.%u.nextn.shared_head_norm.weight", il, CLS_EXACT, T_F32, 1, e, 0, 0, 0);
+        }
+    }
+}
+
 static void expected_deepseek(const layout_shape *s)
 {
     uint64_t e = s->n_embd;
@@ -800,6 +921,9 @@ static void dump_shape(const layout_shape *s)
     printf("LAYOUT name=%s family=%u variant=%u n_layer=%u\n",
            s->name, s->family, s->variant, s->n_layer);
     switch (s->family) {
+    case FAM_GLM53:
+        expected_glm53(s);
+        break;
     case FAM_QWEN:
         expected_qwen(s);
         break;
@@ -869,6 +993,8 @@ static bool type_ok2(const expect_spec *sp, uint32_t typ)
         return typ == T_F32 || typ == T_BF16;
     case CLS_QWEN_MTP_ROUTED:
         return typ == T_Q8_0 || typ == T_BF16;
+    case CLS_GLM_DENSE:
+        return typ == T_BF16 || typ == T_Q8_0 || typ == T_Q4_K || typ == T_Q4_0;
     }
     return false;
 }
@@ -1071,5 +1197,6 @@ int main(int argc, char **argv)
     dump_shape(&SHAPE_KEXAONE);
     dump_shape(&SHAPE_DOTS3);
     dump_shape(&SHAPE_QWEN);
+    dump_shape(&SHAPE_GLM53);
     return 0;
 }

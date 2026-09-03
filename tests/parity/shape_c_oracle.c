@@ -24,6 +24,7 @@ typedef enum {
     DS4_MODEL_FAMILY_EXAONE_MOE = 3,
     DS4_MODEL_FAMILY_DOTS3_NOTE = 4,
     DS4_MODEL_FAMILY_QWEN4EXP = 5,
+    DS4_MODEL_FAMILY_GLM53 = 6,
 } ds4_model_family;
 
 typedef enum {
@@ -34,6 +35,7 @@ typedef enum {
     DS4_VARIANT_KEXAONE_236B = 4,
     DS4_VARIANT_DOTS3_NOTE_PREV = 5,
     DS4_VARIANT_QWEN38_FLASH_NEXT = 6,
+    DS4_VARIANT_GLM53_FLASH = 7,
 } ds4_variant;
 
 typedef struct {
@@ -382,6 +384,47 @@ static const ds4_shape DS4_SHAPE_QWEN38_FLASH_NEXT = {
     .rope_orig_ctx = UINT64_C(262144),
 };
 
+static const ds4_shape DS4_SHAPE_GLM53_FLASH = {
+    .name = "GLM 5.3 Flash",
+    .family = DS4_MODEL_FAMILY_GLM53,
+    .variant = DS4_VARIANT_GLM53_FLASH,
+    .n_layer = 46,
+    .n_embd = 4096,
+    .n_vocab = 154880,
+    .n_head = 64,
+    .n_head_kv = 1,
+    .n_head_dim = 512,
+    .n_value_dim = 256,
+    .n_rot = 0,
+    .n_lora_q = 1536,
+    .n_expert = 288,
+    .n_expert_used = 8,
+    .n_expert_shared = 1,
+    .n_ff_exp = 2048,
+    .n_ff_dense = 12288,
+    .n_indexer_head = 32,
+    .n_indexer_head_dim = 128,
+    .n_indexer_top_k = 2048,
+    .n_hc = 4,
+    .n_hc_sinkhorn_iter = 20,
+    .n_nextn_predict = 1,
+    .n_leading_dense = 3,
+    .n_kv_lora = 512,
+    .n_key_mla = 256,
+    .n_value_mla = 256,
+    .n_kda_head_dim = 128,
+    .n_ssm_conv = 4,
+    .use_rope = false,
+    .rms_eps = 1.0e-5f,
+    .kda_l2_eps = 1.0e-6f,
+    .kda_gate_clamp_min = -5.0f,
+    .hc_eps = 1.0e-6f,
+    .expert_weight_scale = 2.5f,
+    .swiglu_clamp_exp = 10.0f,
+    .rope_scale_factor = 1.0f,
+    .rope_orig_ctx = UINT64_C(1048576),
+};
+
 static void dump_shape(const char *tag, const ds4_shape *s)
 {
     uint32_t bits;
@@ -483,14 +526,15 @@ static const char *arch_route(const char *arch)
     if (strcmp(arch, "motif3") == 0) return DS4_SHAPE_MOTIF3.name;
     if (strcmp(arch, "dots3-note") == 0) return DS4_SHAPE_DOTS3_NOTE_PREV.name;
     if (strcmp(arch, "qwen4exp") == 0) return DS4_SHAPE_QWEN38_FLASH_NEXT.name;
+    if (strcmp(arch, "glm5-next") == 0) return DS4_SHAPE_GLM53_FLASH.name;
     return "unsupported";
 }
 
 int main(void)
 {
     ds4_shape miss;
-    printf("FAMILY\t0\t1\t2\t3\t4\t5\n");
-    printf("VARIANT\t0\t1\t2\t3\t4\t5\t6\n");
+    printf("FAMILY\t0\t1\t2\t3\t4\t5\t6\n");
+    printf("VARIANT\t0\t1\t2\t3\t4\t5\t6\t7\n");
     dump_shape("DEFAULT", &DS4_SHAPE_FLASH);
     dump_shape("FLASH", &DS4_SHAPE_FLASH);
     dump_shape("PRO", &DS4_SHAPE_PRO);
@@ -499,6 +543,7 @@ int main(void)
     dump_shape("KEXAONE", &DS4_SHAPE_KEXAONE_236B);
     dump_shape("DOTS3", &DS4_SHAPE_DOTS3_NOTE_PREV);
     dump_shape("QWEN38", &DS4_SHAPE_QWEN38_FLASH_NEXT);
+    dump_shape("GLM53", &DS4_SHAPE_GLM53_FLASH);
     printf("SELECT\tflash\t%s\n", select_name(&DS4_SHAPE_FLASH));
     printf("SELECT\tpro\t%s\n", select_name(&DS4_SHAPE_PRO));
     miss = DS4_SHAPE_FLASH;
@@ -511,6 +556,7 @@ int main(void)
     printf("ARCH\tmotif3\t%s\n", arch_route("motif3"));
     printf("ARCH\tdots3-note\t%s\n", arch_route("dots3-note"));
     printf("ARCH\tqwen4exp\t%s\n", arch_route("qwen4exp"));
+    printf("ARCH\tglm5-next\t%s\n", arch_route("glm5-next"));
     printf("ARCH\tglm-dsa\t%s\n", arch_route("glm-dsa"));
     return 0;
 }

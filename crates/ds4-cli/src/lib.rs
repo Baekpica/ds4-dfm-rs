@@ -998,12 +998,12 @@ the Rust-owned CLI/model lifecycle in this first production integration slice:
 With --bind-names VARIANT, --bind-plan uses that catalog (including
 mtp-flash / dspark-pro) instead of identifying the GGUF family.
 --validate runs host-owned config_validate (no CUDA, no engine open).
-VARIANT is flash|pro|solar-open2|motif3|exaone-moe|dots3-note|qwen4exp
+VARIANT is flash|pro|solar-open2|motif3|exaone-moe|dots3-note|qwen4exp|glm5-next
 or DeepSeek sibling mtp-flash|mtp-pro|dspark-flash|dspark-pro.
 --tokenize loads the host-owned GPT-2/BPE vocab (no engine open).
 --session-plan dumps the host session ledger (no engine open).
 --session-payload dumps the host DSV4 prefix codec (no engine open).
-FAMILY is deepseek4|motif3|solar-open2|exaone-moe|dots3-note|qwen4exp.
+FAMILY is deepseek4|motif3|solar-open2|exaone-moe|dots3-note|qwen4exp|glm5-next.
 CMD is specials | encode HEX | render HEX | decode ID | stop ID.
 ",
         dist_usage = ds4_dist::USAGE,

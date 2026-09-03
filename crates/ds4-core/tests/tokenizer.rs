@@ -91,13 +91,14 @@ fn write_tok_gguf(
     merges: &[Vec<u8>],
     types: &[u32],
     type_tag: u32,
+    special_ids: Option<(u32, u32)>,
 ) {
     assert_eq!(tokens.len(), types.len());
     let mut buf = Vec::new();
     put_u32(&mut buf, 0x4655_4747);
     put_u32(&mut buf, 3);
     put_u64(&mut buf, 0);
-    put_u64(&mut buf, 4);
+    put_u64(&mut buf, 4 + u64::from(special_ids.is_some()) * 2);
     put_bytes(&mut buf, b"general.architecture");
     put_u32(&mut buf, 8);
     put_bytes(&mut buf, arch.as_bytes());
@@ -121,6 +122,16 @@ fn write_tok_gguf(
     put_u64(&mut buf, types.len() as u64);
     for t in types {
         buf.extend_from_slice(&t.to_le_bytes());
+    }
+    if let Some((bos, eos)) = special_ids {
+        for (key, id) in [
+            (b"tokenizer.ggml.bos_token_id".as_slice(), bos),
+            (b"tokenizer.ggml.eos_token_id".as_slice(), eos),
+        ] {
+            put_bytes(&mut buf, key);
+            put_u32(&mut buf, 4);
+            put_u32(&mut buf, id);
+        }
     }
     fs::write(path, buf).unwrap();
 }
@@ -299,7 +310,19 @@ impl Builder {
     }
 
     fn write(&self, path: &Path, arch: &str) {
-        write_tok_gguf(path, arch, &self.tokens, &self.merges, &self.types, 4);
+        write_tok_gguf(path, arch, &self.tokens, &self.merges, &self.types, 4, None);
+    }
+
+    fn write_specials(&self, path: &Path, arch: &str, bos: i32, eos: i32) {
+        write_tok_gguf(
+            path,
+            arch,
+            &self.tokens,
+            &self.merges,
+            &self.types,
+            4,
+            Some((bos as u32, eos as u32)),
+        );
     }
 
     fn write_types(&self, path: &Path, arch: &str, type_tag: u32) {
@@ -310,6 +333,7 @@ impl Builder {
             &self.merges,
             &self.types,
             type_tag,
+            None,
         );
     }
 }
@@ -326,6 +350,27 @@ impl Builder {
 fn write_family(family: ModelFamily) -> PathBuf {
     let path = tmp(&format!("{}.gguf", family.oracle_name()));
     match family {
+        ModelFamily::Glm53 => {
+            let mut b = Builder::with_bytes().with_he();
+            let bos = b.push_str("[gMASK]", 3);
+            let eos = b.push_str("<|endoftext|>", 3);
+            b.push_str("<|system|>", 3);
+            b.push_str("<|user|>", 3);
+            b.push_str("<|assistant|>", 3);
+            b.push_str("<|observation|>", 3);
+            b.push_str("<sop>", 3);
+            b.push_str("<think>", 3);
+            b.push_str("</think>", 3);
+            b.push_str("<tool_call>", 3);
+            b.push_str("</tool_call>", 3);
+            b.push_str("<tool_response>", 3);
+            b.push_str("</tool_response>", 3);
+            b.push_str("<arg_key>", 3);
+            b.push_str("</arg_key>", 3);
+            b.push_str("<arg_value>", 3);
+            b.push_str("</arg_value>", 3);
+            b.write_specials(&path, "glm5-next", bos, eos);
+        }
         ModelFamily::DeepSeek4 => {
             let mut b = Builder::with_bytes().with_he();
             b.push_str("<｜begin▁of▁sentence｜>", 3);
@@ -432,6 +477,14 @@ fn family_cases(family: ModelFamily) {
     ];
     let mut renders: Vec<String> = Vec::new();
     match family {
+        ModelFamily::Glm53 => {
+            encodes.extend(["12345", "HelloWorld", "안녕하세요"]);
+            renders.push("[gMASK]<sop><|user|>hello<|assistant|>".into());
+            renders.push("<think>plan</think>".into());
+            renders.push(
+                "<tool_call>run<arg_key>x</arg_key><arg_value>1</arg_value></tool_call>".into(),
+            );
+        }
         ModelFamily::DeepSeek4 => {
             encodes.push("你好");
             renders.push("<｜User｜>hello".into());
@@ -561,7 +614,10 @@ fn family_cases(family: ModelFamily) {
                 .unwrap_err();
             assert!(matches!(err, TokError::EmbeddedNul));
         }
-        ModelFamily::Motif3 | ModelFamily::Dots3Note | ModelFamily::Qwen4Exp => {}
+        ModelFamily::Glm53
+        | ModelFamily::Motif3
+        | ModelFamily::Dots3Note
+        | ModelFamily::Qwen4Exp => {}
     }
     assert_eq!(tokens.as_slice(), &[7]);
 }
@@ -587,6 +643,7 @@ fn host_vocab_apply_matches_c() {
 #[test]
 fn tokenizer_families_match_c_oracle() {
     for family in [
+        ModelFamily::Glm53,
         ModelFamily::DeepSeek4,
         ModelFamily::Motif3,
         ModelFamily::SolarOpen2,

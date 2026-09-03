@@ -3,9 +3,10 @@
 use ds4_core::{
     bind_dspark_names, bind_mtp_names, bind_names, dump_expected_layouts, dump_expected_support,
     dump_layout_check_tapes, expected_dspark_layouts, expected_layouts, expected_mtp_layouts,
-    shape_for_variant, validate_dspark_layouts, validate_mtp_layouts, validate_support_layouts,
-    BindNeed, BindPlan, BindSlot, LayoutSpec, SupportCatalog, TensorInfo, TypeClass, Variant,
-    DSPARK_MARKOV_RANK, SHAPE_FLASH,
+    identify_gguf, shape_for_variant, validate_dspark_layouts, validate_layouts,
+    validate_mtp_layouts, validate_support_layouts, BindNeed, BindPlan, BindSlot, LayoutSpec,
+    SupportCatalog, TensorInfo, TensorInventory, TypeClass, Variant, DSPARK_MARKOV_RANK,
+    SHAPE_FLASH,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -163,6 +164,7 @@ fn layout_covers_bind_catalog() {
         Variant::Kexaone236B,
         Variant::Dots3NotePrev,
         Variant::Qwen38FlashNext,
+        Variant::Glm53Flash,
     ] {
         let shape = shape_for_variant(v);
         let bind: HashSet<String> = bind_names(&shape).into_iter().map(|n| n.name).collect();
@@ -181,4 +183,18 @@ fn layout_covers_bind_catalog() {
             "{v:?} layout names without bind: {extra:?}"
         );
     }
+}
+
+#[test]
+fn validate_glm53_artifact_when_configured() {
+    let Ok(path) = std::env::var("DS4_GLM53_MODEL") else {
+        return;
+    };
+    let path = std::path::Path::new(&path);
+    let shape = identify_gguf(path).expect("identify GLM artifact").shape;
+    assert_eq!(shape.variant, Variant::Glm53Flash);
+    let inventory = TensorInventory::open(path).expect("inventory GLM artifact");
+    let plan = BindPlan::resolve(shape, &inventory);
+    plan.check().expect("complete GLM bind plan");
+    validate_layouts(&plan).expect("valid GLM tensor layouts");
 }
