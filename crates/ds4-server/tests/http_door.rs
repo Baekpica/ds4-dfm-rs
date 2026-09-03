@@ -359,6 +359,19 @@ fn read_http_content_length_and_chunked() {
     assert!(read_http_request(&mut &raw[..], true).is_none());
 }
 
+#[test]
+fn chunked_trailers_share_the_header_size_limit() {
+    let mut raw = b"POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n".to_vec();
+    for _ in 0..9 {
+        raw.extend_from_slice(b"x:");
+        raw.extend(std::iter::repeat_n(b'a', 8_180));
+        raw.extend_from_slice(b"\r\n");
+    }
+    raw.extend_from_slice(b"\r\n");
+
+    assert!(read_http_request(&mut &raw[..], true).is_none());
+}
+
 fn one_shot(cfg: &ServerConfig, req: &[u8]) -> Vec<u8> {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();

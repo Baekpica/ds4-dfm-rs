@@ -211,8 +211,12 @@ fn read_chunked_body<R: Read>(
         }
         pos = crlf;
     }
+    let trailer_start = pos;
     loop {
         let le = chunk_line_end(r, buf, pos, 8192)?;
+        if le - trailer_start > MAX_HEADER {
+            return None;
+        }
         let linelen = le - pos;
         let blank = linelen == 1 || (linelen == 2 && buf[pos] == b'\r');
         pos = le;
