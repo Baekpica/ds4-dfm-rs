@@ -20,6 +20,7 @@ DS4_DOTS3_MODEL ?=
 DS4_QWEN4EXP_MODEL ?=
 DS4_QWEN4EXP_ROOT ?=
 DS4_QWEN4EXP_SOURCE ?=
+DS4_GLM53_MODEL ?=
 DS4_GLM53_VISION_MODEL ?=
 CUDA_EXTRA_BINS :=
 
@@ -98,7 +99,9 @@ endif
         test-mmq-parity test-model-family-kernels \
         test-solar-loader test-solar-kda test-solar-kda-prefill \
         test-solar-kda-chunk \
-        test-glm53-loader test-glm53-dsa test-glm53-session \
+        test-glm53-loader test-glm53-vision-loader test-glm53-image \
+        test-glm53-vision test-glm53-dsa test-glm53-session \
+        test-glm53-multimodal-session \
         test-solar-gates test-solar-kv test-solar-tokenizer \
         test-solar-forward test-solar-session \
         test-exaone-ref test-exaone-kernels test-exaone-batch \
@@ -639,7 +642,7 @@ ds4_agent_cpu.o: ds4_agent.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_
 ds4_metal.o: ds4_metal.m ds4_gpu.h $(METAL_SRCS)
 	$(CC) $(OBJCFLAGS) -c -o $@ ds4_metal.m
 
-ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
+ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_glm53_vision_gpu.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
 	$(NVCC) $(NVCCFLAGS) -c -o $@ ds4_cuda.cu
 
 # Vendored mmq pieces. ds4_mmq.cu transitively pulls in mmq.cuh which has
@@ -976,6 +979,13 @@ test-glm53-session: tests/test_glm53_session
 		{ echo "set DS4_GLM53_MODEL to GLM-5.3-Flash-Q2.gguf" >&2; exit 2; }
 	./tests/test_glm53_session "$(DS4_GLM53_MODEL)"
 
+test-glm53-multimodal-session: tests/test_glm53_session
+	@test -n "$(DS4_GLM53_MODEL)" || \
+		{ echo "set DS4_GLM53_MODEL to GLM-5.3-Flash-Q2.gguf" >&2; exit 2; }
+	@test -n "$(DS4_GLM53_VISION_MODEL)" || \
+		{ echo "set DS4_GLM53_VISION_MODEL to GLM-5.3-Flash-Vision-Encoder.gguf" >&2; exit 2; }
+	./tests/test_glm53_session "$(DS4_GLM53_MODEL)" "$(DS4_GLM53_VISION_MODEL)"
+
 tests/test_solar_tokenizer: tests/test_solar_tokenizer.c ds4.c ds4.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
@@ -1141,6 +1151,6 @@ endif
 
 clean:
 	rm -f ds4-agent-rs tests/parity/agent_c_oracle tests/parity/agent_c_oracle.o
-	rm -f tests/test_glm53_session tests/test_glm53_session.o
+	rm -f tests/test_glm53_loader tests/test_glm53_vision_loader tests/test_glm53_image tests/test_glm53_vision tests/test_glm53_vision.o tests/test_glm53_dsa tests/test_glm53_dsa.o tests/test_glm53_session tests/test_glm53_session.o
 	rm -f ds4 ds4-server ds4-bench ds4-eval ds4-agent ds4-c ds4-server-c ds4-bench-c ds4-agent-c ds4-rs ds4-bench-rs ds4-server-rs ds4-agent-rs ds4_weight_server tests/parity/shape_c_oracle tests/parity/shape_c_oracle.o tests/parity/catalog_c_oracle tests/parity/catalog_c_oracle.o tests/parity/tensor_c_oracle tests/parity/tensor_c_oracle.o tests/parity/bind_c_oracle tests/parity/bind_c_oracle.o tests/parity/bind_lookup_c_oracle tests/parity/bind_lookup_c_oracle.o tests/parity/load_c_oracle tests/parity/load_c_oracle.o tests/parity/validate_c_oracle tests/parity/validate_c_oracle.o tests/parity/layout_c_oracle tests/parity/layout_c_oracle.o tests/parity/vocab_c_oracle tests/parity/vocab_c_oracle.o tests/parity/tokenizer_c_oracle tests/parity/tokenizer_c_oracle.o tests/parity/session_c_oracle tests/parity/session_c_oracle.o tests/parity/payload_c_oracle tests/parity/payload_c_oracle.o tests/parity/kv_c_oracle tests/parity/kv_c_oracle.o tests/parity/kv_c_stubs.o tests/parity/web_c_oracle tests/parity/web_c_oracle.o tests/parity/dist_c_oracle tests/parity/dist_c_oracle.o tests/parity/route_c_oracle tests/parity/route_c_oracle.o tests/parity/server_c_oracle tests/parity/server_c_oracle.o tests/parity/parse_c_oracle tests/parity/parse_c_oracle.o tests/parity/stream_c_oracle tests/parity/stream_c_oracle.o tests/parity/tool_stream_c_oracle tests/parity/tool_stream_c_oracle.o tests/parity/dsml_c_oracle tests/parity/dsml_c_oracle.o tests/parity/retry_c_oracle tests/parity/retry_c_oracle.o tests/parity/admit_c_oracle tests/parity/admit_c_oracle.o tests/parity/render_c_oracle tests/parity/render_c_oracle.o tests/parity/bridge_null_oracle tests/parity/bridge_null_oracle.o tests/parity/bridge_null_stubs.o tests/parity/cont_c_oracle tests/parity/cont_c_oracle.o tests/parity/memgov_c_oracle tests/parity/memgov_c_oracle.o ds4_cpu ds4_native ds4_server_test ds4_test tests/test_motif3_loader tests/test_motif3_reference tests/test_motif3_tokenizer tests/test_motif3_cuda tests/test_motif3_resident tests/test_motif3_batch tests/test_motif3_long tests/test_motif3_resident.o tests/test_motif3_batch.o tests/test_motif3_long.o tests/test_exaone_ref tests/test_exaone_kernels tests/test_exaone_batch tests/test_exaone_ref.o tests/test_exaone_kernels.o tests/test_exaone_batch.o *.o cuda/mmq/test/test_mmq_parity.o tests/cuda_long_context_smoke tests/cuda_long_context_smoke.o tests/test_split_gguf tests/test_solar_loader tests/test_solar_tokenizer tests/test_repack_premapped tests/test_mmq_parity tests/test_mmid_fast tests/test_mmid_fast.o tests/test_model_family_kernels tests/test_model_family_kernels.o tests/test_solar_forward tests/test_solar_forward.o tests/test_solar_session tests/test_solar_session.o tests/test_solar_kda tests/test_solar_kda_prefill tests/test_solar_kda_chunk tests/test_glm53_dsa tests/test_glm53_dsa.o tests/test_solar_gates tests/test_solar_kv tests/test_solar_kda.o tests/test_solar_kda_prefill.o tests/test_solar_kda_chunk.o tests/test_solar_gates.o tests/test_solar_kv.o native/bridge/ds4_bridge.o
 	rm -f tests/test_qwen4exp_loader tests/test_qwen4exp_tokenizer tests/test_qwen4exp_ple tests/test_qwen4exp_ple_cuda tests/test_qwen4exp_ple_cuda.o tests/test_qwen4exp_primitives tests/test_qwen4exp_primitives.o tests/test_qwen4exp_hc_forward tests/test_qwen4exp_hc_forward.o tests/test_qwen4exp_ple_compute tests/test_qwen4exp_ple_compute.o tests/test_qwen4exp_ple_forward tests/test_qwen4exp_ple_forward.o tests/test_qwen4exp_moe tests/test_qwen4exp_moe_forward tests/test_qwen4exp_gdn tests/test_qwen4exp_gdn_forward tests/test_qwen4exp_qsa tests/test_qwen4exp_qsa_forward tests/test_qwen4exp_batch tests/test_qwen4exp_batch.o tests/libds4ple_test.so cuda/qwen38_ple.o

@@ -41,6 +41,11 @@
 /tests/test_split_gguf
 /tests/test_solar_loader
 /tests/test_glm53_loader
+/tests/test_glm53_vision_loader
+/tests/test_glm53_image
+/tests/test_glm53_vision
+/tests/test_glm53_dsa
+/tests/test_glm53_session
 /tests/test_solar_kda
 /tests/test_solar_kda_prefill
 /tests/test_solar_kda_chunk

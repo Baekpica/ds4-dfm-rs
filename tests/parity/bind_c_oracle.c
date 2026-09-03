@@ -1,5 +1,5 @@
-/* weights_bind name catalog + bind-plan check/match oracle from ds4.c at
- * v0.6.5-dfm. Standalone: do not include ds4.c. */
+/* weights_bind name catalog + bind-plan check/match oracle from ds4.c.
+ * Standalone: do not include ds4.c. */
 
 #include <stdbool.h>
 #include <stdint.h>
