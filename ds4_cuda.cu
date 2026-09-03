@@ -5114,22 +5114,55 @@ extern "C" int ds4_gpu_set_aux_model_map_range(
         map_offset > model_size || map_size > model_size - map_offset) return 0;
 
     int device = 0, integrated = 0, pageable = 0;
-    if (cudaGetDevice(&device) != cudaSuccess ||
-        cudaDeviceGetAttribute(&integrated, cudaDevAttrIntegrated, device) != cudaSuccess ||
-        cudaDeviceGetAttribute(&pageable, cudaDevAttrPageableMemoryAccess, device) != cudaSuccess ||
-        !integrated || !pageable) {
-        fprintf(stderr, "ds4: auxiliary GGUF requires integrated pageable CUDA memory\n");
-        return 0;
+    if (cudaGetDevice(&device) == cudaSuccess &&
+        cudaDeviceGetAttribute(&integrated, cudaDevAttrIntegrated, device) == cudaSuccess &&
+        cudaDeviceGetAttribute(&pageable, cudaDevAttrPageableMemoryAccess, device) == cudaSuccess &&
+        integrated && pageable) {
+        cuda_model_range range = {};
+        range.host_base = model_map;
+        range.offset = map_offset;
+        range.bytes = map_size;
+        range.device_ptr = (char *)model_map + map_offset;
+        range.host_registered = 1;
+        if (!cuda_model_range_publish(range)) return 0;
+        fprintf(stderr, "ds4: CUDA directly mapped %.2f GiB auxiliary model\n",
+                (double)map_size / 1073741824.0);
+        return 1;
     }
 
+    void *device_ptr = NULL;
+    cudaError_t err = cudaMalloc(&device_ptr, (size_t)map_size);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "ds4: CUDA auxiliary model allocation failed: %s\n",
+                cudaGetErrorString(err));
+        (void)cudaGetLastError();
+        return 0;
+    }
+    const uint64_t chunk = 64ull * 1024ull * 1024ull;
+    const char *source = (const char *)model_map + map_offset;
+    for (uint64_t copied = 0; copied < map_size; copied += chunk) {
+        const uint64_t bytes = map_size - copied < chunk ? map_size - copied : chunk;
+        err = cudaMemcpy((char *)device_ptr + copied, source + copied,
+                         (size_t)bytes, cudaMemcpyHostToDevice);
+        if (err != cudaSuccess) {
+            fprintf(stderr, "ds4: CUDA auxiliary model copy failed: %s\n",
+                    cudaGetErrorString(err));
+            (void)cudaFree(device_ptr);
+            (void)cudaGetLastError();
+            return 0;
+        }
+    }
     cuda_model_range range = {};
     range.host_base = model_map;
     range.offset = map_offset;
     range.bytes = map_size;
-    range.device_ptr = (char *)model_map + map_offset;
-    range.host_registered = 1;
-    if (!cuda_model_range_publish(range)) return 0;
-    fprintf(stderr, "ds4: CUDA directly mapped %.2f GiB auxiliary model\n",
+    range.device_ptr = (char *)device_ptr;
+    if (!cuda_model_range_publish(range)) {
+        (void)cudaFree(device_ptr);
+        return 0;
+    }
+    g_model_range_bytes += map_size;
+    fprintf(stderr, "ds4: CUDA copied %.2f GiB auxiliary model\n",
             (double)map_size / 1073741824.0);
     return 1;
 }
@@ -45295,3 +45328,20 @@ extern "C" int ds4_gpu_exaone_moe_matmul_tensor(
     }
     return cuda_ok(cudaGetLastError(), "exaone moe matmul");
 }
+
+static int ds4_gpu_glm53_matmul_bf16(
+        ds4_gpu_tensor       *out,
+        const void           *model_map,
+        uint64_t              model_size,
+        uint64_t              weight_offset,
+        uint32_t              in_dim,
+        uint32_t              out_dim,
+        const ds4_gpu_tensor *x,
+        uint32_t              n_rows) {
+    return ds4_gpu_matmul_bf16_tensor(out, model_map, model_size,
+                                      weight_offset, in_dim, out_dim,
+                                      x, n_rows);
+}
+
+#define DS4_GLM53_VISION_STREAM cuda_decode_stream()
+#include "ds4_glm53_vision_gpu.cuh"

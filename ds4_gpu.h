@@ -3677,6 +3677,8 @@ int ds4_gpu_solar_kda_decode_tensor(
 
 /* GLM 5.3 shares Solar's KDA state layout but uses sigmoid beta and
  * sigmoid-bounded log decay. */
+#ifndef DS4_GLM53_VISION_TYPES_DEFINED
+#define DS4_GLM53_VISION_TYPES_DEFINED
 #define DS4_GLM53_VISION_LAYERS 24u
 typedef struct {
     uint64_t norm1;
@@ -3709,6 +3711,26 @@ typedef struct {
     uint64_t merger_down;
     ds4_glm53_vision_layer_weights layer[DS4_GLM53_VISION_LAYERS];
 } ds4_glm53_vision_weights;
+#endif
+
+int ds4_gpu_glm53_vision_encode(
+        float                          *out,
+        const float                    *patches,
+        uint32_t                        grid_h,
+        uint32_t                        grid_w,
+        const void                     *model_map,
+        uint64_t                        model_size,
+        const ds4_glm53_vision_weights *weights);
+
+int ds4_gpu_glm53_scatter_image_hc(
+        ds4_gpu_tensor       *hc,
+        const ds4_gpu_tensor *image,
+        uint32_t              dst_row,
+        uint32_t              image_row,
+        uint32_t              rows,
+        uint32_t              total_rows,
+        uint32_t              n_embd,
+        uint32_t              n_hc);
 
 int ds4_gpu_glm53_kda_decode_tensor(
         ds4_gpu_tensor       *out,
