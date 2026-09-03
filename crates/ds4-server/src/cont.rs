@@ -104,7 +104,11 @@ impl ContRegistry {
     fn key(proto: u8, id: &str) -> String {
         let mut id = id;
         if id.len() > 94 {
-            id = &id[..94];
+            let mut end = 94;
+            while !id.is_char_boundary(end) {
+                end -= 1;
+            }
+            id = &id[..end];
         }
         let mut s = String::with_capacity(2 + id.len());
         s.push(char::from(b'0' + proto));
@@ -909,6 +913,17 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Instant;
+
+    #[test]
+    fn multibyte_call_id_is_bounded_on_a_utf8_boundary() {
+        let id = format!("{}한-tail", "a".repeat(93));
+        let key = ContRegistry::key(Api::Responses as u8, &id);
+        assert_eq!(&key[2..], "a".repeat(93));
+
+        let mut registry = ContRegistry::default();
+        registry.publish_bank(Api::Responses, &[id.clone()], 0, 1, 8, 1.0);
+        assert!(registry.live_has_id(Api::Responses, &id, 1.0));
+    }
 
     #[test]
     fn bank_protection_requires_a_current_reference_or_a_live_pin() {
