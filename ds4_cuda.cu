@@ -711,6 +711,7 @@ struct cuda_model_range {
     CUmemGenericAllocationHandle vmm_handle;
     CUdeviceptr vmm_va;
     uint64_t vmm_alloc_bytes;
+    int borrowed;
     /* memgov D1a-4 publication stamps (funnel-owned; sites never set them).
      * src = ledger row; unit_lo/unit_hi = inclusive canonical-unit span
      * intersecting the range, -1/-1 before the source's table binds (the
@@ -1022,7 +1023,8 @@ static int cuda_model_range_publish(const cuda_model_range &nr) {
      * refusal: the range is real and the census must stay physical
      * truth -- the fault says the INTENT ledger was bypassed. */
     if (g_model_plan_frozen && !g_in_governed_materialize &&
-        !nr.host_registered && !nr.imported_ipc && !nr.imported_vmm) {
+        !nr.host_registered && !nr.imported_ipc && !nr.imported_vmm &&
+        !nr.borrowed) {
         static int warned = 0;
         if (!warned) {
             warned = 1;
@@ -1055,6 +1057,7 @@ static int cuda_model_range_publish(const cuda_model_range &nr) {
      * last-resort cold copy (registration failure) -- both worth a
      * fault.  Imports keep their own authority (rider #48). */
     if (!pr.host_registered && !pr.imported_ipc && !pr.imported_vmm &&
+        !pr.borrowed &&
         pr.src >= 0 && pr.src < DS4_MSRC_MAX && pr.unit_lo >= 0) {
         const ds4_phys_unit *units = g_model_units_v[pr.src];
         for (int ui = pr.unit_lo; units && ui <= pr.unit_hi; ui++) {
@@ -3863,7 +3866,7 @@ static void cuda_model_range_release_all(void) {
             (void)cudaIpcCloseMemHandle(r.device_ptr);
             cuda_mem_note_free_src(DS4_MEMC_WEIGHT_IMPORT, DS4_MEMD_UNIFIED_DEVICE,
                                    r.bytes, r.bytes, r.host_base);
-        } else if (r.device_ptr && !r.arena_allocated) {
+        } else if (r.device_ptr && !r.arena_allocated && !r.borrowed) {
             (void)cudaFree(r.device_ptr);
             cuda_mem_note_free_src(DS4_MEMC_WEIGHT_SPAN, DS4_MEMD_UNIFIED_DEVICE,
                                    r.bytes, r.bytes, r.host_base);
@@ -5123,7 +5126,7 @@ extern "C" int ds4_gpu_set_aux_model_map_range(
         range.offset = map_offset;
         range.bytes = map_size;
         range.device_ptr = (char *)model_map + map_offset;
-        range.host_registered = 1;
+        range.borrowed = 1;
         if (!cuda_model_range_publish(range)) return 0;
         fprintf(stderr, "ds4: CUDA directly mapped %.2f GiB auxiliary model\n",
                 (double)map_size / 1073741824.0);
