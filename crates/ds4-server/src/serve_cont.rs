@@ -29,7 +29,7 @@ use crate::render::syntax_for_model_id;
 #[cfg(any(feature = "native", test))]
 use crate::render::ModelSyntax;
 use crate::retry::{terminal_finish, truncation_outcome, TruncationOutcome};
-use crate::route::{decode_budget, think_mode_enabled, Api, ReqKind};
+use crate::route::{decode_budget, think_mode_enabled, Api, ReqKind, NEED_BANK_FRONTIER};
 #[cfg(feature = "native")]
 use crate::stream::stream_error;
 #[cfg(any(feature = "native", test))]
@@ -79,6 +79,9 @@ pub struct ContStepper {
     think_mode: crate::route::ThinkMode,
     tool_choice: ToolChoice,
     has_tool_results: bool,
+    effective_usage_frame: bool,
+    #[cfg(any(feature = "native", test))]
+    cors: bool,
     #[cfg(feature = "native")]
     prompt_preserves_reasoning: bool,
     parsed_max_tokens: i32,
@@ -174,6 +177,9 @@ impl ContStepper {
                 think_mode: parsed.think_mode,
                 tool_choice: parsed.tool_choice,
                 has_tool_results: parsed.has_tool_results,
+                effective_usage_frame: parsed.needs & NEED_BANK_FRONTIER != 0,
+                #[cfg(any(feature = "native", test))]
+                cors,
                 #[cfg(feature = "native")]
                 prompt_preserves_reasoning: prompt_preserves_reasoning(parsed),
                 parsed_max_tokens: parsed.max_tokens,
@@ -186,6 +192,35 @@ impl ContStepper {
             },
             head,
         )
+    }
+
+    fn apply_engine_usage(&mut self, n_cached: i32, n_computed: i32) {
+        let cached = n_cached.max(0);
+        let computed = n_computed.max(0);
+        if self.effective_usage_frame {
+            self.prompt_n = cached.saturating_add(computed);
+            self.req.cache_read_tokens = cached;
+            self.req.cache_write_tokens = computed;
+            return;
+        }
+        let prompt = self.prompt_n.max(0);
+        let write = computed.min(prompt);
+        self.req.cache_write_tokens = write;
+        self.req.cache_read_tokens = prompt - write;
+    }
+
+    #[cfg(any(feature = "native", test))]
+    fn admitted_head(&mut self, head: Vec<u8>, n_cached: i32, n_computed: i32) -> Vec<u8> {
+        self.apply_engine_usage(n_cached, n_computed);
+        if !self.req.stream || self.req.api != Api::Anthropic {
+            return head;
+        }
+        let mut w = Writer::new(self.w.created);
+        w.out.extend_from_slice(&sse_headers(self.cors));
+        let mut stream = anthropic_sse_start_live(&mut w, &self.req, &self.job_id, self.prompt_n);
+        stream.tool.use_random_ids();
+        self.anth = Some(stream);
+        w.out
     }
 
     /// Per-token sampling override, same policy the serial `decode_pass`
@@ -373,14 +408,7 @@ impl ContStepper {
             }
             self.finish = "tool_calls";
         }
-        /* cont_usage_apply_engine_split, ordinary-request frame: whatever
-         * the engine computed fresh is uncached client work (capped by the
-         * prompt), the rest of the prompt was served from cache. */
-        let p = self.prompt_n;
-        let write = n_computed.clamp(0, p.max(0));
-        self.req.cache_write_tokens = write;
-        self.req.cache_read_tokens = (p - write).max(0);
-        let _ = n_cached;
+        self.apply_engine_usage(n_cached, n_computed);
         self.req.timings = timings;
         if self.req.stream {
             match (self.req.api, self.req.kind) {
@@ -1808,9 +1836,12 @@ mod native {
             self.bank = Some(bank);
             self.t_admit = Some(Instant::now());
             self.admitted = true;
-            if let Some(head) = self.head.take() {
-                self.push(&head);
-            }
+            let head = self.stepper.admitted_head(
+                self.head.take().unwrap_or_default(),
+                n_cached,
+                n_computed,
+            );
+            self.push(&head);
             self.transport_alive()
         }
 
@@ -3291,7 +3322,9 @@ impl ContStepper {
 #[cfg(test)]
 mod bank_tests {
     use super::*;
-    use crate::parse::{parse_chat_request, parse_responses_request, ChatMsg, ParseEnv};
+    use crate::parse::{
+        parse_anthropic_request, parse_chat_request, parse_responses_request, ChatMsg, ParseEnv,
+    };
     use crate::route::{Api, ReqKind, ThinkMode};
     use ds4_kv::{Options, Reason, Store, EXT_BANK_REPLAY_V1, EXT_TOOL_MAP};
     use std::fs;
@@ -3316,6 +3349,59 @@ mod bank_tests {
         ));
         assert!(session_tokens < 65_536);
         assert!(!bank_persist_eligible(session_tokens, 65_536));
+    }
+
+    #[test]
+    fn anthropic_stream_starts_with_the_admitted_cache_split() {
+        let parsed = parse_anthropic_request(
+            &ParseEnv::default(),
+            r#"{"messages":[{"role":"user","content":"hello"}],"max_tokens":8,"stream":true}"#,
+        )
+        .unwrap();
+        let (mut stepper, head) = ContStepper::new(
+            &parsed,
+            0,
+            "msg-cache-usage",
+            7,
+            false,
+            16,
+            b"prompt".to_vec(),
+            278,
+            512,
+        );
+
+        let head = String::from_utf8(stepper.admitted_head(head, 260, 18)).unwrap();
+        assert!(head.contains("\"input_tokens\":0"), "{head}");
+        assert!(head.contains("\"cache_read_input_tokens\":260"), "{head}");
+        assert!(
+            head.contains("\"cache_creation_input_tokens\":18"),
+            "{head}"
+        );
+    }
+
+    #[test]
+    fn output_only_usage_reports_the_full_effective_input() {
+        let mut parsed =
+            parse_responses_request(&ParseEnv::default(), r#"{"input":"result"}"#).unwrap();
+        parsed.needs |= NEED_BANK_FRONTIER;
+        let (mut stepper, _) = ContStepper::new(
+            &parsed,
+            0,
+            "resp-cache-usage",
+            7,
+            false,
+            16,
+            b"suffix".to_vec(),
+            16,
+            512,
+        );
+
+        stepper.feed(b"answer");
+        let (body, _) = stepper.finalize(true, 260, 18, ReqTimings::default(), false);
+        let body = String::from_utf8(body).unwrap();
+        assert!(body.contains("\"input_tokens\":278"), "{body}");
+        assert!(body.contains("\"cached_tokens\":260"), "{body}");
+        assert!(body.contains("\"cache_write_tokens\":18"), "{body}");
     }
 
     #[test]
