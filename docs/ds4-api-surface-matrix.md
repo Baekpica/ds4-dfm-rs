@@ -1,13 +1,13 @@
 # DS4 API surface matrix
 
-Status: Rust host `v0.1.0-rc.3`. The original route oracle came from the
+Status: Rust host `v0.1.0-rc.4`. The original route oracle came from the
 v0.5.6/v0.6.0 API-promotion arc; this document records what each HTTP
 generation surface supports today, which serving lane executes it, and the
 known gaps.
 
 The wire contracts below are model-family neutral in `ds4-dfm-rs`. DeepSeek
-uses the Entrpi continuous graph, while Solar Open2, K-EXAONE, Motif-3, and
-Qwen provide family-native persistent state where supported.
+uses the Entrpi continuous graph, while Solar Open2, K-EXAONE, Motif-3, Qwen,
+and GLM 5.3 provide family-native state where supported.
 Tokenizer, prompt/tool syntax, and stop-token handling are dispatched by the
 loaded model family without changing the endpoint schemas.
 
@@ -62,6 +62,10 @@ while the surface's stateless switch is on).
 Within OpenAI, still serial: non-streaming `return_token_ids` chat,
 completion-kind requests with `return_token_ids`, and completion-kind
 requests carrying tools.
+
+GLM 5.3 text and image requests use the serial lane in RC.4. Inline PNG/JPEG
+inputs share the four API parsers, but only the exact Q2 main GGUF plus vision
+sidecar is in the release support claim.
 
 ## Output-budget (`max_tokens`) semantics today
 

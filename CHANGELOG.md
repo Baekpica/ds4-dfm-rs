@@ -5,6 +5,23 @@ Fork: [Entrpi/ds4](https://github.com/Entrpi/ds4) of
 [antirez/ds4](https://github.com/antirez/ds4); upstream fork point `e16ead1`
 (2026-05-29). Upstream's own changes are not repeated here.
 
+## v0.1.0-rc.4 — 2026-09-03
+
+- Adds an explicit GLM 5.3 Flash path as a selective semantic port from
+  [`antirez/ds4@110afdd`](https://github.com/antirez/ds4/commit/110afdd8886586f18fc9b28bc5533152dd10e728),
+  while keeping model execution and the vision tower in the native CUDA
+  backend behind the Rust host boundary.
+- Limits the release claim to `GLM-5.3-Flash-Q2.gguf` (96,505,816,384 bytes)
+  and `GLM-5.3-Flash-Vision-Encoder.gguf` (1,127,280,960 bytes). The exact pair
+  passed native text/image finite-logit gates and Rust-host text/PNG Chat
+  serving on one DGX Spark.
+- Adds GLM chat, reasoning, tool-call, and inline PNG/JPEG handling to the
+  shared Rust API surfaces. GLM serving remains serial with a 2,048-token
+  context cap; other GLM quantizations, batching, distributed execution,
+  Metal, ROCm, SSD streaming, and speculative MTP are outside RC.4.
+- Makes the exact multimodal gate a first-class Make target and preserves
+  borrowed auxiliary mappings during CUDA teardown.
+
 ## v0.1.0-rc.3 — 2026-09-03
 
 - Hardens agent serving in the shared Rust host. Continuous scheduling now

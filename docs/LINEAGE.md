@@ -65,6 +65,13 @@ continuations, admission, cache accounting, and shutdown. Its Qwen Q5+Sidecar
 one- and two-bank runs validate those host changes; they do not redefine the
 `v0.6.5-dfm` golden or claim a new model/kernel release.
 
+`v0.1.0-rc.4` selectively ports the GLM 5.3 Flash graph and vision tower from
+official `antirez/ds4` commit
+`110afdd8886586f18fc9b28bc5533152dd10e728` into the existing Rust/native
+boundary. Its support claim is limited to the exact Q2 main GGUF and vision
+sidecar validated on DGX Spark; it does not import a second host stack or claim
+the wider upstream GLM backend matrix.
+
 ## Versioning after the split
 
 `v0.6.5-dfm` remains the behavioral baseline, not the new repository's version.
