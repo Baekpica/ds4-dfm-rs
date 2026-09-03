@@ -1080,7 +1080,7 @@ fn thinking_bank_retire_key(
                 format,
                 false,
             )?,
-            exact_text: None,
+            exact_text: Some(exact),
             partial_only: false,
             retained_existing: false,
         });
@@ -3594,6 +3594,38 @@ mod bank_tests {
             Some(b"<|im_start|>assistant\n<think>\nhidden</think>\n\nanswer".as_slice())
         );
         assert!(!retired.partial_only);
+    }
+
+    #[test]
+    fn qwen_thinking_retire_keeps_reasoning_alias_without_tools() {
+        let prompt = b"<|im_start|>assistant\n<think>\n";
+        let pieces = [
+            b"hidden".as_slice(),
+            b"</think>".as_slice(),
+            b"\n\nanswer".as_slice(),
+            b"<|im_end|>".as_slice(),
+        ];
+        let retired = thinking_bank_retire_key(
+            prompt,
+            &[0, 1, 2, 3],
+            true,
+            false,
+            false,
+            false,
+            false,
+            ModelSyntax::Qwen4Exp,
+            ChatFormat::Qwen4Exp,
+            |token| pieces[token as usize].to_vec(),
+        )
+        .unwrap();
+        assert_eq!(
+            retired.text,
+            b"<|im_start|>assistant\n<think>\n\n</think>\n\nanswer"
+        );
+        assert_eq!(
+            retired.exact_text.as_deref(),
+            Some(b"<|im_start|>assistant\n<think>\nhidden</think>\n\nanswer".as_slice())
+        );
     }
 
     #[test]
