@@ -15,7 +15,8 @@ use ds4_sys::{libc_atof, libc_atoi, libc_strtoull10};
 
 use crate::admit::{
     enqueue, enqueue_release, enqueue_shed_error, next_job_id, preparse_shed, queue_unlink_head,
-    AdmitState, EnqVerdict, SERVER_SHUTTING_DOWN, SHED_CONT_HOLD, SHED_QUEUE_AGE, SHED_SLOW_READER,
+    AdmitState, EnqVerdict, SERVER_SHUTTING_DOWN, SHED_CLIENTS, SHED_CONT_HOLD, SHED_QUEUE_AGE,
+    SHED_SLOW_READER,
 };
 use crate::cont::{monotonic_now, place_bank_continuation, ContOwner, ContPin, ContRegistry};
 use crate::error::{http_response_bytes, wire_http_error_bytes, wire_stream_error_bytes};
@@ -910,9 +911,15 @@ struct ClientLease {
 }
 
 impl ClientLease {
-    fn new(inner: Arc<Mutex<ServerInner>>) -> Self {
-        lock_inner(&inner).admit.clients += 1;
-        Self { inner }
+    fn try_new(inner: Arc<Mutex<ServerInner>>) -> Option<Self> {
+        let mut g = lock_inner(&inner);
+        if g.admit.max_clients > 0 && g.admit.clients >= g.admit.max_clients {
+            g.metrics.record_shed(SHED_CLIENTS);
+            return None;
+        }
+        g.admit.clients += 1;
+        drop(g);
+        Some(Self { inner })
     }
 }
 
@@ -1857,6 +1864,20 @@ fn stop_requested(cfg: &ServerConfig) -> bool {
     cfg.stop_requested.is_some_and(|stop| stop())
 }
 
+fn refuse_client_capacity(stream: &mut TcpStream, cfg: &ServerConfig) {
+    configure_client_socket(stream, cfg.client_sndbuf);
+    write_all(
+        stream,
+        &wire_http_error_bytes(
+            WireSurface::OpenaiChat,
+            503,
+            "server connection capacity reached; retry later",
+            cfg.cors,
+            Some(10),
+        ),
+    );
+}
+
 pub fn accept_loop(listener: TcpListener, cfg: ServerConfig) {
     let inner = Arc::new(Mutex::new(ServerInner::from_cfg(&cfg)));
     let polling_stop = cfg.stop_requested.is_some();
@@ -1884,9 +1905,14 @@ pub fn accept_loop(listener: TcpListener, cfg: ServerConfig) {
             }
             Err(_) => break,
         };
+        let Some(client) = ClientLease::try_new(Arc::clone(&inner)) else {
+            refuse_client_capacity(&mut stream, &cfg);
+            continue;
+        };
         let cfg = cfg.clone();
         let inner = Arc::clone(&inner);
         let _ = thread::Builder::new().spawn(move || {
+            let _client = client;
             let _ = stream.set_nodelay(true);
             configure_client_socket(&stream, cfg.client_sndbuf);
             handle_client_inner(&cfg, &inner, &mut stream, None, None);
@@ -2130,7 +2156,7 @@ fn owner_loop(
             if stop_requested(&accept_cfg) {
                 break;
             }
-            let stream = match listener.accept() {
+            let mut stream = match listener.accept() {
                 Ok((stream, _)) => {
                     if stop_requested(&accept_cfg) {
                         break;
@@ -2143,10 +2169,13 @@ fn owner_loop(
                 }
                 Err(_) => break,
             };
+            let Some(client) = ClientLease::try_new(Arc::clone(&accept_inner)) else {
+                refuse_client_capacity(&mut stream, &accept_cfg);
+                continue;
+            };
             let cfg = accept_cfg.clone();
             let inner = Arc::clone(&accept_inner);
             let jobs = jobs_tx.clone();
-            let client = ClientLease::new(Arc::clone(&inner));
             let _ = thread::Builder::new()
                 .spawn(move || queue_client(cfg, inner, jobs, stream, client));
         }
@@ -2487,6 +2516,20 @@ mod owner_tests {
     }
 
     #[test]
+    fn client_capacity_is_reserved_before_request_body_read() {
+        let mut cfg = test_cfg();
+        cfg.max_clients = 1;
+        let inner = Arc::new(Mutex::new(ServerInner::from_cfg(&cfg)));
+
+        let first = ClientLease::try_new(Arc::clone(&inner)).expect("first client");
+        assert!(ClientLease::try_new(Arc::clone(&inner)).is_none());
+        assert_eq!(lock_inner(&inner).admit.clients, 1);
+
+        drop(first);
+        assert_eq!(lock_inner(&inner).admit.clients, 0);
+    }
+
+    #[test]
     fn c_admission_environment_overrides_parse_without_unsafe_env_mutation() {
         let os = OsStr::new;
         assert_eq!(parse_i32_bound(Some(os("7")), 256), 7);
@@ -2563,7 +2606,7 @@ mod owner_tests {
             let client_cfg = cfg.clone();
             let client_inner = Arc::clone(&inner);
             let client_jobs = jobs_tx.clone();
-            let lease = ClientLease::new(Arc::clone(&inner));
+            let lease = ClientLease::try_new(Arc::clone(&inner)).unwrap();
             threads.push(thread::spawn(move || {
                 queue_client(client_cfg, client_inner, client_jobs, server, lease)
             }));
@@ -2586,7 +2629,7 @@ mod owner_tests {
         let refuse_cfg = cfg.clone();
         let refuse_inner = Arc::clone(&inner);
         let refuse_jobs = jobs_tx.clone();
-        let refuse_lease = ClientLease::new(Arc::clone(&inner));
+        let refuse_lease = ClientLease::try_new(Arc::clone(&inner)).unwrap();
         let refuse_thread = thread::spawn(move || {
             queue_client(refuse_cfg, refuse_inner, refuse_jobs, server, refuse_lease)
         });
@@ -3535,7 +3578,7 @@ mod owner_tests {
         let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (server, _) = listener.accept().unwrap();
         let (jobs_tx, jobs_rx) = mpsc::channel();
-        let client_lease = ClientLease::new(Arc::clone(&inner));
+        let client_lease = ClientLease::try_new(Arc::clone(&inner)).unwrap();
         let client_cfg = cfg.clone();
         let client_inner = Arc::clone(&inner);
         let h = thread::spawn(move || {
@@ -3665,7 +3708,7 @@ mod owner_tests {
         let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (server, _) = listener.accept().unwrap();
         let (jobs_tx, jobs_rx) = mpsc::channel();
-        let client_lease = ClientLease::new(Arc::clone(&inner));
+        let client_lease = ClientLease::try_new(Arc::clone(&inner)).unwrap();
         let client_cfg = cfg.clone();
         let client_inner = Arc::clone(&inner);
         let h = thread::spawn(move || {
