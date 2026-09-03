@@ -1054,6 +1054,7 @@ mod tests {
             .map_err(|_| GenerateError::Io)?;
             Ok(GenerateOutcome {
                 tool_ids: self.tool_ids.clone(),
+                bank: Some(self.bank),
                 generation: self.generation,
                 frontier: self.frontier,
                 finish: if self.tool_ids.is_empty() {
@@ -1069,9 +1070,6 @@ mod tests {
             } else {
                 None
             }
-        }
-        fn placed_bank(&self) -> Option<i32> {
-            Some(self.bank)
         }
     }
 

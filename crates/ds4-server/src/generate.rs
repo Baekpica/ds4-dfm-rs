@@ -772,6 +772,7 @@ fn disk_sync_prompt_impl(
 #[derive(Debug, Clone, Default)]
 pub struct GenerateOutcome {
     pub tool_ids: Vec<String>,
+    pub bank: Option<i32>,
     pub generation: u64,
     pub frontier: i32,
     pub finish: String,
@@ -1611,6 +1612,7 @@ pub(crate) fn generate_terminal_prepared(
             .map(|c| c.id.clone())
             .filter(|id| !id.is_empty())
             .collect(),
+        bank: None,
         generation: engine.generation(),
         frontier: engine.pos(),
         finish: finish.to_string(),

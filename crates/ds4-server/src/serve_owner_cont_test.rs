@@ -234,6 +234,118 @@ impl ContExec for StepperCont {
     }
 }
 
+#[derive(Default)]
+struct PublishingSpy {
+    calls: usize,
+}
+
+impl ContExec for PublishingSpy {
+    fn model_id(&self) -> i32 {
+        0
+    }
+    fn seq_cap(&self) -> i32 {
+        8192
+    }
+    fn max_seq(&self) -> i32 {
+        4
+    }
+    fn encode_chat(&self, _rendered: &[u8]) -> Vec<i32> {
+        vec![1]
+    }
+    fn encode_text(&self, _text: &str) -> Vec<i32> {
+        vec![1]
+    }
+    fn generate(
+        &mut self,
+        _parsed: &crate::parse::ParsedRequest,
+        _job_id: &str,
+        _created: i64,
+        cors: bool,
+        _default_tokens: i32,
+        _t_arrive: Instant,
+        _bank_hold_retry: &mut dyn FnMut(i32, Option<(u64, i32)>) -> Option<i32>,
+        _store: Option<&mut KvStore>,
+        out: &mut dyn Write,
+    ) -> Result<GenerateOutcome, GenerateError> {
+        self.calls += 1;
+        out.write_all(&http_response_bytes(
+            200,
+            Some("application/json"),
+            None,
+            cors,
+            "{}",
+        ))
+        .map_err(|_| GenerateError::Io)?;
+        Ok(GenerateOutcome {
+            tool_ids: vec![format!("toolu_pair{}", self.calls)],
+            bank: Some((self.calls - 1) as i32),
+            generation: 10 + self.calls as u64,
+            frontier: 100 + self.calls as i32,
+            finish: "tool_calls".into(),
+        })
+    }
+}
+
+fn anthropic_tool_job(inner: &Arc<Mutex<ServerInner>>, tag: &str) -> (OwnerJob, JobDrain) {
+    let env = parse_env();
+    let body = format!(
+        r#"{{"messages":[{{"role":"user","content":"{tag}"}}],"max_tokens":8,"stream":true,"thinking":{{"type":"disabled"}},"tools":[{{"name":"bash","input_schema":{{"type":"object"}}}}]}}"#
+    );
+    let parsed = parse_request(WireSurface::Anthropic, &env, &body).unwrap();
+    let prepared = PreparedJob {
+        parsed,
+        surface: WireSurface::Anthropic,
+        body_bytes: body.len() as u64,
+        arrived_at: Instant::now(),
+    };
+    let mut g = lock_inner(inner);
+    assert_eq!(enqueue(&mut g.admit, prepared.body_bytes), EnqVerdict::Ok);
+    g.runtime.requests_started += 1;
+    g.runtime.requests_inflight += 1;
+    drop(g);
+    let lease = JobLease::new(Arc::clone(inner), prepared.body_bytes, None);
+    owner_job(prepared, lease)
+}
+
+#[test]
+fn paired_tool_turns_publish_each_actual_bank() {
+    let cfg = ServerConfig {
+        have_engine: true,
+        default_tokens: 8,
+        ..ServerConfig::default()
+    };
+    let inner = Arc::new(Mutex::new(ServerInner::from_cfg(&cfg)));
+    let (job_a, drain_a) = anthropic_tool_job(&inner, "a");
+    let (job_b, drain_b) = anthropic_tool_job(&inner, "b");
+    let (tx, rx) = mpsc::channel();
+    tx.send(job_b).unwrap();
+    drop(tx);
+    let mut spy = PublishingSpy::default();
+    let mut engine = ScriptedDecode::from_pieces(&[b"unused"]);
+
+    assert!(run_owner_maybe_roll(&cfg, &inner, &mut engine, &mut spy, job_a, &rx).is_none());
+    drain_a
+        .done
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("first pair job settled");
+    drain_b
+        .done
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("second pair job settled");
+
+    let mut g = lock_inner(&inner);
+    assert_eq!(
+        g.creg
+            .bank_claim(Api::Anthropic, &["toolu_pair1".into()], monotonic_now()),
+        Some((0, 11, 101))
+    );
+    assert_eq!(
+        g.creg
+            .bank_claim(Api::Anthropic, &["toolu_pair2".into()], monotonic_now()),
+        Some((1, 12, 102))
+    );
+}
+
 fn parse_env() -> ParseEnv {
     ParseEnv {
         default_model: "ds4".into(),

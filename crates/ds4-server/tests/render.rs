@@ -2,8 +2,8 @@
 
 use ds4_server::{
     render_chat, render_chat_choice, render_dsml_chat, render_dsml_chat_choice,
-    render_motif3_chat_ex, ChatMsg, ChatPart, ModelSyntax, ThinkMode, ToolCall, ToolChoice,
-    ToolSchemaOrder, THINK_HIGH_PREFIX, THINK_MAX_PREFIX,
+    render_live_tool_tail, render_motif3_chat_ex, Api, ChatMsg, ChatPart, ModelSyntax, ThinkMode,
+    ToolCall, ToolChoice, ToolSchemaOrder, THINK_HIGH_PREFIX, THINK_MAX_PREFIX,
 };
 
 use std::path::PathBuf;
@@ -65,6 +65,34 @@ fn rust_user(think: ThinkMode, content: &str) -> Vec<u8> {
 fn prefixes_match_c_literals() {
     assert!(THINK_HIGH_PREFIX.starts_with("Reasoning Effort: Absolute maximum"));
     assert!(THINK_MAX_PREFIX.starts_with("Reasoning Effort: Beyond maximum"));
+}
+
+#[test]
+fn qwen_live_tool_tail_appends_only_eos_result_and_next_assistant() {
+    let mut result = msg("tool", "/tmp");
+    result.tool_call_id = "call_1".into();
+    assert_eq!(
+        render_live_tool_tail(ModelSyntax::Qwen4Exp, Api::Responses, &[result], ThinkMode::None)
+            .unwrap(),
+        b"<|im_end|>\n<|im_start|>user\n<tool_response>\n/tmp\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    );
+}
+
+#[test]
+fn dsml_anthropic_live_tool_tail_does_not_replay_the_assistant_call() {
+    let mut result = msg("user", "<tool_result>ok</tool_result>");
+    result.tool_call_id = "toolu_1".into();
+    assert_eq!(
+        render_live_tool_tail(
+            ModelSyntax::DeepSeek,
+            Api::Anthropic,
+            &[result],
+            ThinkMode::None
+        )
+        .unwrap(),
+        "<｜end▁of▁sentence｜><｜User｜><tool_result>ok</tool_result><｜Assistant｜></think>"
+            .as_bytes()
+    );
 }
 
 #[test]

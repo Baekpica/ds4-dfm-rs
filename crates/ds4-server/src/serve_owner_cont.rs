@@ -23,6 +23,11 @@ pub(super) fn run_owner_maybe_roll(
         run_owner_job(cfg, inner, engine, Some(exec), job);
         return None;
     }
+    let mut job = job;
+    if !resolve_bank_continuation(inner, &mut job.prepared, exec) {
+        run_owner_job(cfg, inner, engine, Some(exec), job);
+        return None;
+    }
     // A one-bank executor cannot overlap a sibling. Leave the FIFO untouched
     // so the owner runs the next request after this generation completes.
     if exec.max_seq() < 2 {
@@ -39,7 +44,7 @@ pub(super) fn run_owner_maybe_roll(
                 .flatten()
         }
     };
-    let Some(second) = second else {
+    let Some(mut second) = second else {
         run_owner_job(cfg, inner, engine, Some(exec), job);
         return None;
     };
@@ -64,6 +69,13 @@ pub(super) fn run_owner_maybe_roll(
         &second_env,
     );
     if second_dec.lane != LANE_CONTINUOUS {
+        run_owner_job(cfg, inner, engine, Some(exec), job);
+        return Some(second);
+    }
+    if !resolve_bank_continuation(inner, &mut second.prepared, exec)
+        || (job.prepared.parsed.directed_bank.is_some()
+            && job.prepared.parsed.directed_bank == second.prepared.parsed.directed_bank)
+    {
         run_owner_job(cfg, inner, engine, Some(exec), job);
         return Some(second);
     }
@@ -173,8 +185,13 @@ fn settle_roll_job(
     result: Result<GenerateOutcome, GenerateError>,
 ) {
     let arrived_at = job.prepared.arrived_at;
+    if let Ok(outcome) = &result {
+        publish_continuous_tool_turn(inner, job.prepared.parsed.api, outcome);
+    }
     let mut settlement = if job.sink.state.gone() {
         Settlement::CANCELED
+    } else if job.prepared.parsed.needs & NEED_BANK_FRONTIER != 0 {
+        settle_bank_continuation(cfg, &job.prepared, result, &mut job.sink)
     } else if matches!(result, Err(GenerateError::Unsupported(_))) {
         run_serial(
             cfg,

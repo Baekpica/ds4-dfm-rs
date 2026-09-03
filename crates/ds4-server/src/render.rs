@@ -6,7 +6,7 @@ use crate::json::{
     json_args_parse, json_escape_bytes, json_minify_raw_value, json_raw_value, Json,
 };
 use crate::parse::{ChatMsg, ChatPart, ToolCall, ToolChoice, ToolSchemaOrder};
-use crate::route::{think_mode_enabled, ThinkMode};
+use crate::route::{think_mode_enabled, Api, ThinkMode};
 
 /// Copied from `ds4.c` `DS4_REASONING_EFFORT_HIGH_PREFIX`.
 pub const THINK_HIGH_PREFIX: &str = concat!(
@@ -1558,4 +1558,96 @@ pub fn render_chat_choice(
             render_dsml_chat_choice(msgs, tool_schemas, think_mode, tool_choice)
         }
     }
+}
+
+/// Render the suffix appended to an exact live bank frontier for an
+/// Anthropic/Responses tool-result-only continuation.
+pub fn render_live_tool_tail(
+    syntax: ModelSyntax,
+    api: Api,
+    msgs: &[ChatMsg],
+    think_mode: ThinkMode,
+) -> Result<Vec<u8>, RenderError> {
+    let start = match api {
+        Api::Responses => {
+            let mut start = msgs.len();
+            while start > 0 && matches!(msgs[start - 1].role.as_str(), "tool" | "function") {
+                start -= 1;
+            }
+            (start < msgs.len()).then_some(start)
+        }
+        Api::Anthropic => {
+            let mut end = msgs.len();
+            while end > 0 && role_is_system(&msgs[end - 1].role) {
+                end -= 1;
+            }
+            let mut start = end;
+            while start > 0 {
+                let msg = &msgs[start - 1];
+                if msg.role != "user"
+                    || (msg.tool_call_id.is_empty() && msg.tool_call_ids.is_empty())
+                {
+                    break;
+                }
+                start -= 1;
+            }
+            (start < end).then_some(start)
+        }
+        Api::Openai => None,
+    };
+    let Some(start) = start else {
+        return Err(RenderError("live tool-result suffix is unavailable"));
+    };
+    let tail = &msgs[start..];
+    let mut out = Vec::new();
+    match syntax {
+        ModelSyntax::DeepSeek => {
+            put(&mut out, DSML_EOS);
+            let tail: Vec<_> = tail
+                .iter()
+                .filter(|msg| !role_is_system(&msg.role))
+                .cloned()
+                .collect();
+            let rendered = render_dsml_chat_choice(&tail, "", think_mode, ToolChoice::Auto)?;
+            out.extend_from_slice(
+                rendered
+                    .strip_prefix(DSML_BOS.as_bytes())
+                    .unwrap_or(&rendered),
+            );
+        }
+        ModelSyntax::SolarOpen2 => {
+            put(&mut out, SOLAR_IM_END);
+            out.push(b'\n');
+            out.extend(render_solar_chat_ex(tail, "", &[], think_mode)?);
+        }
+        ModelSyntax::Motif3 => {
+            put(&mut out, "<|endofturn|>");
+            let rendered = render_motif3_chat_ex(tail, "", &[], think_mode)?;
+            out.extend_from_slice(
+                rendered
+                    .strip_prefix(b"<|beginoftext|>")
+                    .unwrap_or(&rendered),
+            );
+        }
+        ModelSyntax::Exaone => {
+            put(&mut out, "<|endofturn|>\n");
+            out.extend(render_exaone_chat(tail, "", think_mode)?);
+        }
+        ModelSyntax::Dots3 => {
+            put(&mut out, "<|endofassistant|>");
+            let mut rendered = render_dots3_chat(tail, "", think_mode)?;
+            let body = rendered
+                .windows(b"<|endofsystem|>".len())
+                .position(|w| w == b"<|endofsystem|>")
+                .map(|at| rendered.split_off(at + b"<|endofsystem|>".len()))
+                .unwrap_or_default();
+            out.extend(body);
+        }
+        ModelSyntax::Qwen4Exp => {
+            put(&mut out, QWEN_IM_END);
+            out.push(b'\n');
+            out.extend(render_qwen_chat_ex(tail, "", &[], think_mode)?);
+        }
+    }
+    Ok(out)
 }

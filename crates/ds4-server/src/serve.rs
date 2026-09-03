@@ -641,8 +641,19 @@ fn refuse_bank_continuation<W: Write>(
     exec: &dyn ContExec,
     out: &mut W,
 ) -> Option<Settlement> {
-    if job.parsed.needs & NEED_BANK_FRONTIER == 0 {
+    if resolve_bank_continuation(inner, job, exec) {
         return None;
+    }
+    Some(write_continuation_conflict(cfg, job, out))
+}
+
+fn resolve_bank_continuation(
+    inner: &Mutex<ServerInner>,
+    job: &mut PreparedJob,
+    exec: &dyn ContExec,
+) -> bool {
+    if job.parsed.needs & NEED_BANK_FRONTIER == 0 {
+        return true;
     }
     let now = monotonic_now();
     let claim = lock_inner(inner)
@@ -652,9 +663,9 @@ fn refuse_bank_continuation<W: Write>(
     match place_bank_continuation(claim, live) {
         Ok(bank) => {
             job.parsed.directed_bank = Some(bank);
-            None
+            true
         }
-        Err(_) => Some(write_continuation_conflict(cfg, job, out)),
+        Err(_) => false,
     }
 }
 
@@ -679,12 +690,7 @@ fn write_continuation_conflict<W: Write>(
     }
 }
 
-fn publish_continuous_tool_turn(
-    inner: &Mutex<ServerInner>,
-    api: Api,
-    bank: Option<i32>,
-    generated: &GenerateOutcome,
-) {
+fn publish_continuous_tool_turn(inner: &Mutex<ServerInner>, api: Api, generated: &GenerateOutcome) {
     if !matches!(api, Api::Anthropic | Api::Responses) {
         return;
     }
@@ -692,7 +698,7 @@ fn publish_continuous_tool_turn(
     {
         return;
     }
-    let Some(bank) = bank.filter(|bank| *bank >= 0) else {
+    let Some(bank) = generated.bank.filter(|bank| *bank >= 0) else {
         return;
     };
     lock_inner(inner).creg.publish_bank(
@@ -1214,7 +1220,7 @@ fn run_engine<W: TerminalSink>(
                 out,
             );
             if let Ok(outcome) = &result {
-                publish_continuous_tool_turn(inner, job.parsed.api, exec.placed_bank(), outcome);
+                publish_continuous_tool_turn(inner, job.parsed.api, outcome);
             }
             let bank_follow = job.parsed.needs & NEED_BANK_FRONTIER != 0;
             if bank_follow || !matches!(result, Err(GenerateError::Unsupported(_))) {
@@ -2784,6 +2790,7 @@ mod owner_tests {
     fn tool_outcome(id: &str, generation: u64, frontier: i32) -> GenerateOutcome {
         GenerateOutcome {
             tool_ids: vec![id.into()],
+            bank: None,
             generation,
             frontier,
             finish: "tool_calls".into(),

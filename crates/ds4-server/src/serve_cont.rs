@@ -23,6 +23,8 @@ use crate::generate::{
 };
 use crate::parse::{ParsedRequest, ToolCall, ToolChoice};
 use crate::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
+#[cfg(feature = "native")]
+use crate::render::render_live_tool_tail;
 use crate::render::syntax_for_model_id;
 #[cfg(any(feature = "native", test))]
 use crate::render::ModelSyntax;
@@ -463,6 +465,7 @@ impl ContStepper {
                 .map(|c| c.id.clone())
                 .filter(|id| !id.is_empty())
                 .collect(),
+            bank: None,
             generation: 0,
             frontier: self.prompt_n + completion,
             finish: self.finish.to_string(),
@@ -1144,6 +1147,20 @@ fn warm_admit_tokens(
 }
 
 #[cfg(any(feature = "native", test))]
+fn live_continuation_tokens(
+    exact_prefix: &[i32],
+    suffix: &[u8],
+    seq_cap: i32,
+    tokenize_suffix: impl FnOnce(&[u8]) -> Vec<i32>,
+) -> Option<(Vec<i32>, i32)> {
+    let cached = i32::try_from(exact_prefix.len()).ok().filter(|n| *n > 0)?;
+    let mut tokens = exact_prefix.to_vec();
+    tokens.extend(tokenize_suffix(suffix));
+    (tokens.len() > exact_prefix.len() && i32::try_from(tokens.len()).is_ok_and(|n| n <= seq_cap))
+        .then_some((tokens, cached))
+}
+
+#[cfg(any(feature = "native", test))]
 fn warm_partial_admit_tokens(
     warm: &WarmBank,
     prompt_tokens: &[i32],
@@ -1367,10 +1384,6 @@ pub trait ContExec {
         None
     }
 
-    fn placed_bank(&self) -> Option<i32> {
-        None
-    }
-
     /// Static owner when this lane also holds a `BatchCtx`.
     fn as_static(&mut self) -> Option<&mut dyn crate::serve_static::StaticExec> {
         None
@@ -1427,7 +1440,6 @@ mod native {
         warm_partial_min: i32,
         warm_pin_min: i32,
         warm_checkpoint: bool,
-        last_bank: Option<i32>,
         tool_memory: ToolMemory,
         memgov: Box<dyn crate::serve_cont_roll::ContMemGov>,
     }
@@ -1794,7 +1806,6 @@ mod native {
                 warm_partial_min,
                 warm_pin_min,
                 warm_checkpoint,
-                last_bank: None,
                 tool_memory: ToolMemory::default(),
                 memgov: Box::new(crate::serve_cont_roll::AdmitAlways),
             }
@@ -2338,12 +2349,44 @@ mod native {
                     .encode_text(std::str::from_utf8(&prompt).unwrap_or("")),
                 ReqKind::Chat => self.vocab.encode_rendered_bytes(&prompt),
             };
-            let prepared_images =
-                prepare_qwen_images(self.model_id, parsed, Some(&prompt), tokens)?;
-            let tokens = prepared_images.tokens;
-            let images = prepared_images.images;
-            let cache_prompt = prepared_images.cache_prompt;
-            let cache_spans = prepared_images.cache_spans;
+            let directed = parsed.directed_bank.filter(|bank| *bank >= 0);
+            let (tokens, images, cache_prompt, cache_spans, directed_cached) = if let Some(bank) =
+                directed
+            {
+                if reserve.contains(bank) {
+                    return Err(GenerateError::Unsupported(
+                        "continuation bank is already in flight",
+                    ));
+                }
+                let suffix = render_live_tool_tail(
+                    syntax_for_model_id(self.model_id),
+                    parsed.api,
+                    &parsed.messages,
+                    parsed.think_mode,
+                )?;
+                let snapshot = self.batch.bank_snapshot(bank).map_err(|_| {
+                    GenerateError::Unsupported("continuation bank is no longer live")
+                })?;
+                let (tokens, cached) = live_continuation_tokens(
+                    &snapshot.tokens,
+                    &suffix,
+                    self.batch.seq_cap(),
+                    |suffix| self.vocab.encode_rendered_bytes(suffix),
+                )
+                .ok_or(GenerateError::Unsupported(
+                    "continuation suffix is empty or exceeds the sequence capacity",
+                ))?;
+                (tokens, Vec::new(), None, Vec::new(), Some(cached))
+            } else {
+                let prepared = prepare_qwen_images(self.model_id, parsed, Some(&prompt), tokens)?;
+                (
+                    prepared.tokens,
+                    prepared.images,
+                    prepared.cache_prompt,
+                    prepared.cache_spans,
+                    None,
+                )
+            };
             let prompt_n = tokens.len() as i32;
             let (mut stepper, head) = ContStepper::new(
                 parsed,
@@ -2366,12 +2409,10 @@ mod native {
                 stepper.max_tokens,
             )
             .map_err(|_| GenerateError::Unsupported(crate::serve_cont_roll::CONT_ADMIT_REFUSED))?;
-            let mut admit = if let Some(bank) = parsed.directed_bank.filter(|bank| *bank >= 0) {
+            let mut admit = if let Some(bank) = directed {
                 let mut admit = ContAdmit::cold(1, tokens, stepper.max_tokens.max(1));
                 admit.place_bank = bank.saturating_add(1);
-                if let Some(live) = self.bank_live(bank) {
-                    admit.n_cached = live.1;
-                }
+                admit.n_cached = directed_cached.unwrap_or(0);
                 admit
             } else {
                 let (hold, hold_retry) = self.protected_banks(bank_hold_retry);
@@ -2480,7 +2521,6 @@ mod native {
             let done_tokens = std::mem::take(&mut job.done_tokens);
             let admitted = job.admitted;
             let actual_bank = job.bank;
-            self.last_bank = actual_bank;
             let capture_done = job.capture_done;
             let allow_generated_snapshot =
                 native_err.is_none() && io_ok && job.stepper.has_complete_tool_turn();
@@ -2523,9 +2563,16 @@ mod native {
             if !io_ok {
                 return Err(GenerateError::Io);
             }
-            let (tail, outcome) = job
+            let (tail, mut outcome) = job
                 .stepper
                 .finalize(engine_eos, n_cached, n_computed, timings, cors);
+            if let Some(bank) = actual_bank {
+                if let Ok(snapshot) = self.batch.bank_snapshot(bank) {
+                    outcome.bank = Some(bank);
+                    outcome.generation = snapshot.generation;
+                    outcome.frontier = i32::try_from(snapshot.tokens.len()).unwrap_or(0);
+                }
+            }
             let mut tool_remembered = false;
             if let Some((calls, exact)) = job.stepper.take_tool_replay() {
                 tool_remembered = self.tool_memory.remember(&calls, &exact) > 0;
@@ -2617,10 +2664,6 @@ mod native {
                 return None;
             }
             Some((snapshot.generation, frontier))
-        }
-
-        fn placed_bank(&self) -> Option<i32> {
-            self.last_bank
         }
 
         fn generate(
@@ -2781,6 +2824,18 @@ mod bank_tests {
     use crate::route::{Api, ReqKind, ThinkMode};
     use ds4_kv::{Options, Reason, Store, EXT_BANK_REPLAY_V1, EXT_TOOL_MAP};
     use std::fs;
+
+    #[test]
+    fn bank_continuation_keeps_exact_prefix_and_tokenizes_only_the_suffix() {
+        let (tokens, cached) = live_continuation_tokens(&[10, 11], b" suffix", 4, |suffix| {
+            assert_eq!(suffix, b" suffix");
+            vec![20, 21]
+        })
+        .unwrap();
+        assert_eq!(tokens, [10, 11, 20, 21]);
+        assert_eq!(cached, 2);
+        assert!(live_continuation_tokens(&[10, 11], b" suffix", 3, |_| vec![20, 21]).is_none());
+    }
 
     fn temp_store(tag: &str) -> (std::path::PathBuf, Store) {
         let dir =

@@ -137,6 +137,12 @@ impl RollReserve {
         }
     }
 
+    pub(crate) fn contains(&self, bank: i32) -> bool {
+        usize::try_from(bank)
+            .ok()
+            .is_some_and(|bank| self.banks.contains(&bank))
+    }
+
     pub(crate) fn protect(&self, hold: &[bool]) -> Vec<bool> {
         let mut protected = hold.to_vec();
         for &bank in &self.banks {
