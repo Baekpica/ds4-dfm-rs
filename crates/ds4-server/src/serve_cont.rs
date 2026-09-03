@@ -441,7 +441,7 @@ impl ContStepper {
                             self.finish,
                             self.prompt_n,
                             completion,
-                            0,
+                            self.acc.reasoning_tokens,
                             created,
                             &parsed_gen.calls,
                         );
@@ -471,7 +471,7 @@ impl ContStepper {
                         self.finish,
                         self.prompt_n,
                         completion,
-                        0,
+                        self.acc.reasoning_tokens,
                         self.w.created,
                         cors,
                         &response_id,

@@ -834,6 +834,50 @@ fn cont_stepper_buffers_responses_object() {
 }
 
 #[test]
+fn responses_counts_tokens_generated_inside_reasoning_on_both_lanes() {
+    let parsed = parse_request(
+        WireSurface::Responses,
+        &env(),
+        r#"{"input":"hi","max_output_tokens":8,"reasoning":{"effort":"high","summary":"auto"}}"#,
+    )
+    .unwrap();
+    let (mut stepper, _) = ContStepper::new(
+        &parsed,
+        0,
+        "resp-cont-reasoning-usage",
+        CREATED_TEST,
+        false,
+        16,
+        b"<think>".to_vec(),
+        1,
+        8192,
+    );
+
+    stepper.feed(b"hidden");
+    stepper.feed(b"</think>");
+    stepper.feed(b"answer");
+    let (body, _) = stepper.finalize(true, 0, 1, ReqTimings::default(), false);
+    let body = String::from_utf8(body).unwrap();
+
+    assert!(body.contains("\"reasoning_tokens\":2"), "{body}");
+
+    let mut engine = ScriptedDecode::from_pieces(&[b"hidden", b"</think>", b"answer"]);
+    let mut body = Vec::new();
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "resp-serial-reasoning-usage",
+        CREATED_TEST,
+        false,
+        16,
+        &mut body,
+    )
+    .unwrap();
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("\"reasoning_tokens\":2"), "{body}");
+}
+
+#[test]
 fn cont_stepper_stream_tool_id_matches_outcome() {
     let mut parsed = tools_req();
     parsed.stream = true;

@@ -1396,6 +1396,7 @@ pub struct SemAccum {
     pub verdict: Option<&'static str>,
     pub matched_stop: Option<String>,
     pub completion: i32,
+    pub reasoning_tokens: i32,
     pub dsml: DsmlDecodeTracker,
     required_tool_prefix_pos: i32,
     required_think_end_prefix_pos: i32,
@@ -1434,6 +1435,7 @@ impl SemAccum {
             verdict: None,
             matched_stop: None,
             completion: 0,
+            reasoning_tokens: 0,
             dsml: DsmlDecodeTracker::default(),
             required_tool_prefix_pos: 0,
             required_think_end_prefix_pos: 0,
@@ -1467,6 +1469,9 @@ impl SemAccum {
 
     pub fn feed(&mut self, piece: &[u8], stops: &[String]) -> SemFeed {
         let mut f = SemFeed::default();
+        if self.think_gates && self.thinking_inside {
+            self.reasoning_tokens += 1;
+        }
         self.feed_thinking(piece);
         self.text.extend_from_slice(piece);
         self.completion += 1;

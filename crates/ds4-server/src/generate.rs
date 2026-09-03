@@ -1583,7 +1583,7 @@ pub(crate) fn generate_terminal_prepared(
                         finish,
                         prompt_n,
                         completion,
-                        0,
+                        acc.reasoning_tokens,
                         created,
                         &parsed_gen.calls,
                     ) {
@@ -1616,7 +1616,7 @@ pub(crate) fn generate_terminal_prepared(
                     finish,
                     prompt_n,
                     completion,
-                    0,
+                    acc.reasoning_tokens,
                     created,
                     cors,
                     &rid,
