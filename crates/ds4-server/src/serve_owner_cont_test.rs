@@ -9,7 +9,7 @@ use super::run_owner_maybe_roll;
 use crate::generate::{GenerateError, GenerateOutcome, ScriptedDecode};
 use crate::parse::{parse_request, ParseEnv};
 use crate::route::{ThinkMode, WireSurface, LANE_CONTINUOUS};
-use crate::serve_cont::{ContExec, ContStepper};
+use crate::serve_cont::{ContExec, ContOwnedResult, ContProbe, ContSource, ContStepper};
 use crate::serve_cont_prefill::{owner_tick_call_count, reset_owner_tick_call_count};
 use crate::stream::{ReqTimings, TAPE_PLAIN};
 use ds4_kv::Store as KvStore;
@@ -17,6 +17,106 @@ use ds4_kv::Store as KvStore;
 struct RollSpy {
     generate_calls: usize,
     max_seq: i32,
+}
+
+struct RollingProbe;
+
+impl ContProbe for RollingProbe {
+    fn prompt_tokens(
+        &self,
+        _parsed: &crate::parse::ParsedRequest,
+    ) -> Result<(Vec<u8>, Vec<i32>), GenerateError> {
+        Ok((b"prompt".to_vec(), vec![1, 2, 3]))
+    }
+
+    fn seq_cap(&self) -> i32 {
+        8192
+    }
+
+    fn bank_live(&self, _bank: i32) -> Option<(u64, i32)> {
+        None
+    }
+}
+
+#[derive(Default)]
+struct RefillSpy {
+    calls: usize,
+}
+
+impl ContExec for RefillSpy {
+    fn model_id(&self) -> i32 {
+        0
+    }
+
+    fn seq_cap(&self) -> i32 {
+        8192
+    }
+
+    fn max_seq(&self) -> i32 {
+        2
+    }
+
+    fn encode_chat(&self, _rendered: &[u8]) -> Vec<i32> {
+        vec![1, 2, 3]
+    }
+
+    fn encode_text(&self, _text: &str) -> Vec<i32> {
+        vec![1, 2, 3]
+    }
+
+    fn generate(
+        &mut self,
+        _parsed: &crate::parse::ParsedRequest,
+        _job_id: &str,
+        _created: i64,
+        _cors: bool,
+        _default_tokens: i32,
+        _t_arrive: Instant,
+        _bank_hold_retry: &mut dyn FnMut(i32, Option<(u64, i32)>) -> Option<i32>,
+        _store: Option<&mut KvStore>,
+        _out: &mut dyn Write,
+    ) -> Result<GenerateOutcome, GenerateError> {
+        panic!("rolling path must not fall back to generate")
+    }
+
+    fn generate_rolling(
+        &mut self,
+        source: &mut dyn ContSource,
+        _bank_hold_retry: &mut dyn FnMut(i32, Option<(u64, i32)>) -> Option<i32>,
+        _store: Option<&mut KvStore>,
+    ) -> Option<Vec<ContOwnedResult>> {
+        let probe = RollingProbe;
+        let mut results = Vec::new();
+        let first = source.next(&probe).expect("primed job");
+        results.push(complete_owned(source, first));
+        assert!(source.next(&probe).is_none(), "late job is not queued yet");
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        while let Some(work) = source.next(&probe) {
+            results.push(complete_owned(source, work));
+        }
+        self.calls = results.len();
+        Some(results)
+    }
+}
+
+fn complete_owned(
+    source: &mut dyn ContSource,
+    mut work: crate::serve_cont::ContOwnedWork,
+) -> ContOwnedResult {
+    work.out
+        .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}")
+        .unwrap();
+    let outcome = GenerateOutcome {
+        finish: "stop".into(),
+        ..GenerateOutcome::default()
+    };
+    source.publish(work.key, &outcome);
+    let result = Ok(outcome);
+    source.settled(work.key, &result);
+    ContOwnedResult {
+        key: work.key,
+        result,
+    }
 }
 
 impl Default for RollSpy {
@@ -214,6 +314,35 @@ fn late_roll_sibling_joins_when_coalesce_wait_is_set() {
     assert_eq!(spy.generate_calls, 2);
     let _ = drain_a.done.recv();
     let _ = drain_b.done.recv();
+}
+
+#[test]
+fn rolling_epoch_refills_from_a_request_that_arrives_after_start() {
+    let cfg = ServerConfig {
+        have_engine: true,
+        default_tokens: 8,
+        ..ServerConfig::default()
+    };
+    let inner = Arc::new(Mutex::new(ServerInner::from_cfg(&cfg)));
+    let (job_a, drain_a) = cont_chat_job(&inner, "a");
+    let (job_b, drain_b) = cont_chat_job(&inner, "b");
+    let (tx, rx) = mpsc::channel();
+    let sender = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        tx.send(job_b).unwrap();
+    });
+    let mut spy = RefillSpy::default();
+    let mut engine = ScriptedDecode::from_pieces(&[b"unused"]);
+
+    assert!(run_owner_maybe_roll(&cfg, &inner, &mut engine, &mut spy, job_a, &rx).is_none());
+    sender.join().unwrap();
+    assert_eq!(spy.calls, 2);
+    for drain in [drain_a, drain_b] {
+        drain
+            .done
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("rolling job settled");
+    }
 }
 
 struct StepperCont;

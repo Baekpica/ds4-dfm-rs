@@ -564,7 +564,7 @@ impl BatchCtx<'_> {
         })
     }
 
-    pub fn save_bank_payload(&mut self, bank: i32, path: impl AsRef<Path>) -> Result<()> {
+    pub fn save_bank_payload(&self, bank: i32, path: impl AsRef<Path>) -> Result<()> {
         let c_path = cstring_payload_path(path.as_ref())?;
         let mut err = [0u8; 512];
         let rc = unsafe {
@@ -583,7 +583,7 @@ impl BatchCtx<'_> {
     }
 
     pub fn load_bank_payload_range(
-        &mut self,
+        &self,
         bank: i32,
         path: impl AsRef<Path>,
         offset: u64,
@@ -610,7 +610,7 @@ impl BatchCtx<'_> {
 
     /// Runs the engine's rolling loop until the active set is empty and
     /// `driver.admit()` returns `None`.
-    pub fn continuous_generate(&mut self, driver: &mut dyn ContDriver) -> Result<()> {
+    pub fn continuous_generate(&self, driver: &mut dyn ContDriver) -> Result<()> {
         let mut t = TrampCtx {
             driver,
             live: HashMap::new(),
@@ -746,26 +746,33 @@ mod tests {
         _err: *mut c_char,
         _errlen: usize,
     ) -> c_int {
-        let mut req: ds4_bridge_cont_request = std::mem::zeroed();
-        if admit.is_none_or(|admit| admit(ud, &mut req) == 0) {
-            return 0;
-        }
-        let tokens = std::slice::from_raw_parts(req.tokens, req.n as usize).to_vec();
-        let image = &req.images[0];
-        let data = std::slice::from_raw_parts(image.data, image.data_len).to_vec();
-        CONT_INPUT.with(|input| {
-            *input.borrow_mut() =
-                Some((tokens, data, image.token_offset, image.grid_h, image.grid_w));
-        });
-        if let Some(on_done) = on_done {
-            on_done(
-                ud,
-                req.user,
-                std::ptr::null(),
-                0,
-                1,
-                &ds4_bridge_cont_stats::default(),
-            );
+        loop {
+            let mut req: ds4_bridge_cont_request = std::mem::zeroed();
+            if admit.is_none_or(|admit| admit(ud, &mut req) == 0) {
+                break;
+            }
+            let tokens = std::slice::from_raw_parts(req.tokens, req.n as usize).to_vec();
+            if req.image_count > 0 {
+                let image = &req.images[0];
+                let data = std::slice::from_raw_parts(image.data, image.data_len).to_vec();
+                CONT_INPUT.with(|input| {
+                    *input.borrow_mut() =
+                        Some((tokens, data, image.token_offset, image.grid_h, image.grid_w));
+                });
+            }
+            if let Some(on_admitted) = req.on_admitted {
+                on_admitted(ud, req.user, req.n_cached, req.n - req.n_cached, 0);
+            }
+            if let Some(on_done) = on_done {
+                on_done(
+                    ud,
+                    req.user,
+                    std::ptr::null(),
+                    0,
+                    1,
+                    &ds4_bridge_cont_stats::default(),
+                );
+            }
         }
         0
     }
@@ -946,6 +953,61 @@ mod tests {
     }
 
     #[test]
+    fn continuous_driver_is_repolled_after_each_completed_slot() {
+        struct Driver {
+            next: usize,
+            admitted: Vec<usize>,
+            done: Vec<usize>,
+        }
+        impl ContDriver for Driver {
+            fn admit(&mut self) -> Option<ContAdmit> {
+                if self.next == 3 {
+                    return None;
+                }
+                self.next += 1;
+                Some(ContAdmit::cold(self.next, vec![10], 1))
+            }
+
+            fn on_token(&mut self, _user: usize, _token: i32) -> bool {
+                true
+            }
+
+            fn on_done(
+                &mut self,
+                user: usize,
+                _tokens: &[i32],
+                _finish: i32,
+                _decode_ms: f64,
+                _decode_tokens: i32,
+                _decode_steps: i32,
+            ) {
+                self.done.push(user);
+            }
+
+            fn on_admitted(
+                &mut self,
+                user: usize,
+                _n_cached: i32,
+                _n_computed: i32,
+                bank: i32,
+            ) -> bool {
+                assert_eq!(bank, 0);
+                self.admitted.push(user);
+                true
+            }
+        }
+
+        let mut driver = Driver {
+            next: 0,
+            admitted: Vec::new(),
+            done: Vec::new(),
+        };
+        fake_batch().continuous_generate(&mut driver).unwrap();
+        assert_eq!(driver.admitted, [1, 2, 3]);
+        assert_eq!(driver.done, [1, 2, 3]);
+    }
+
+    #[test]
     fn partial_reuse_capability_is_read_from_the_native_batch() {
         assert!(fake_batch().supports_partial_reuse());
     }
@@ -960,7 +1022,7 @@ mod tests {
     #[test]
     fn bank_payload_paths_stay_opaque() {
         TOKENS.with(|tokens| *tokens.borrow_mut() = vec![10, 20, 30]);
-        let mut batch = fake_batch();
+        let batch = fake_batch();
         let path =
             std::env::temp_dir().join(format!("ds4-core-bank-payload-{}", std::process::id()));
         let _ = std::fs::remove_file(&path);

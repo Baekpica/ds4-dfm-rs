@@ -367,6 +367,16 @@ impl SinkState {
 
 struct JobSink {
     state: Arc<SinkState>,
+    close_on_drop: bool,
+}
+
+impl Clone for JobSink {
+    fn clone(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+            close_on_drop: false,
+        }
+    }
 }
 
 impl Write for JobSink {
@@ -587,8 +597,10 @@ impl TerminalSink for JobSink {
 
 impl Drop for JobSink {
     fn drop(&mut self) {
-        self.state.lock().closed = true;
-        self.state.ready.notify_all();
+        if self.close_on_drop {
+            self.state.lock().closed = true;
+            self.state.ready.notify_all();
+        }
     }
 }
 
@@ -610,6 +622,7 @@ fn job_sink_with_probe(
     (
         JobSink {
             state: Arc::clone(&state),
+            close_on_drop: true,
         },
         state,
     )
@@ -652,6 +665,14 @@ fn resolve_bank_continuation(
     job: &mut PreparedJob,
     exec: &dyn ContExec,
 ) -> bool {
+    resolve_bank_continuation_with(inner, job, |bank| exec.bank_live(bank))
+}
+
+fn resolve_bank_continuation_with(
+    inner: &Mutex<ServerInner>,
+    job: &mut PreparedJob,
+    bank_live: impl FnOnce(i32) -> Option<(u64, i32)>,
+) -> bool {
     if job.parsed.needs & NEED_BANK_FRONTIER == 0 {
         return true;
     }
@@ -659,7 +680,7 @@ fn resolve_bank_continuation(
     let claim = lock_inner(inner)
         .creg
         .bank_claim(job.parsed.api, &job.parsed.live_call_ids, now);
-    let live = claim.and_then(|(bank, _, _)| exec.bank_live(bank));
+    let live = claim.and_then(|(bank, _, _)| bank_live(bank));
     match place_bank_continuation(claim, live) {
         Ok(bank) => {
             job.parsed.directed_bank = Some(bank);
@@ -2785,6 +2806,21 @@ mod owner_tests {
         assert_eq!(state.take(), expected);
         assert_eq!(state.backlog_bytes(), 0);
         assert_eq!(lock_inner(&inner).runtime.out_backlog_bytes, 0);
+    }
+
+    #[test]
+    fn rolling_sink_clone_does_not_close_the_owner_sink() {
+        let inner = Arc::new(Mutex::new(ServerInner::from_cfg(&ServerConfig::default())));
+        let (mut owner, state) = job_sink(inner);
+        let mut rolling = owner.clone();
+        rolling.write_all(b"head").unwrap();
+        drop(rolling);
+
+        assert!(!state.lock().closed);
+        owner.write_all(b"tail").unwrap();
+        drop(owner);
+        assert!(state.lock().closed);
+        assert_eq!(state.take(), b"headtail");
     }
 
     fn tool_outcome(id: &str, generation: u64, frontier: i32) -> GenerateOutcome {

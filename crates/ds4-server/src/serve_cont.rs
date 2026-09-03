@@ -1293,6 +1293,44 @@ pub struct ContWork<'a> {
     pub out: &'a mut dyn Write,
 }
 
+/// Owned request handed to the native rolling loop. The owner keeps the
+/// original job for settlement; `out` is a clone of its shared sink.
+pub struct ContOwnedWork {
+    pub key: usize,
+    pub parsed: ParsedRequest,
+    pub job_id: String,
+    pub created: i64,
+    pub cors: bool,
+    pub default_tokens: i32,
+    pub t_arrive: Instant,
+    pub out: Box<dyn Write>,
+}
+
+pub struct ContOwnedResult {
+    pub key: usize,
+    pub result: Result<GenerateOutcome, GenerateError>,
+}
+
+/// Read-only engine view used by the owner while native generation is active.
+pub trait ContProbe {
+    fn prompt_tokens(&self, parsed: &ParsedRequest) -> Result<(Vec<u8>, Vec<i32>), GenerateError>;
+    fn seq_cap(&self) -> i32;
+    fn bank_live(&self, bank: i32) -> Option<(u64, i32)>;
+}
+
+/// FIFO source polled again whenever the native scheduler exposes a free bank.
+pub trait ContSource {
+    fn next(&mut self, probe: &dyn ContProbe) -> Option<ContOwnedWork>;
+
+    /// Called after the bank record is retired and before terminal bytes are
+    /// appended to the shared client sink.
+    fn publish(&mut self, _key: usize, _outcome: &GenerateOutcome) {}
+
+    /// Called after terminal bytes have been appended. The owner can release
+    /// completed clients without waiting for the whole rolling epoch to drain.
+    fn settled(&mut self, _key: usize, _result: &Result<GenerateOutcome, GenerateError>) {}
+}
+
 /// Trait seam so `handle_client_inner` can drive a continuous lane without
 /// the native feature (tests supply a scripted implementation).
 pub trait ContExec {
@@ -1362,6 +1400,17 @@ pub trait ContExec {
             .collect()
     }
 
+    /// Native implementations return `Some` and keep polling `source` while
+    /// any bank remains active. Other executors retain the bounded batch path.
+    fn generate_rolling(
+        &mut self,
+        _source: &mut dyn ContSource,
+        _bank_hold_retry: &mut dyn FnMut(i32, Option<(u64, i32)>) -> Option<i32>,
+        _store: Option<&mut KvStore>,
+    ) -> Option<Vec<ContOwnedResult>> {
+        None
+    }
+
     fn shutdown(&mut self, _store: Option<&mut KvStore>) {}
 
     fn bank_live(&self, _bank: i32) -> Option<(u64, i32)> {
@@ -1409,6 +1458,10 @@ mod native {
     /// exposed by the persistent native batch context.
     pub struct ContLane<'m> {
         batch: BatchCtx<'m>,
+        host: ContHost<'m>,
+    }
+
+    struct ContHost<'m> {
         vocab: &'m Vocab,
         model_id: i32,
         quant_bits: i32,
@@ -1555,7 +1608,7 @@ mod native {
     }
 
     impl PreparedSlot {
-        fn into_slot(self, out: &mut dyn Write) -> JobSlot<'_> {
+        fn into_slot<'a>(self, out: Box<dyn Write + 'a>) -> JobSlot<'a> {
             JobSlot {
                 admit: Some(self.admit),
                 head: if self.head.is_empty() {
@@ -1592,7 +1645,7 @@ mod native {
          * can fall back to the serial lane transport-clean. */
         head: Option<Vec<u8>>,
         stepper: ContStepper,
-        out: &'a mut dyn Write,
+        out: Box<dyn Write + 'a>,
         admitted: bool,
         bank: Option<i32>,
         io_failed: bool,
@@ -1626,6 +1679,66 @@ mod native {
             if self.out.write_all(bytes).is_err() || self.out.flush().is_err() {
                 self.io_failed = true;
             }
+        }
+
+        fn on_token(&mut self, vocab: &Vocab, token: i32) -> bool {
+            if !self.transport_alive() {
+                self.host_abort = true;
+                return false;
+            }
+            if self.t_first.is_none() {
+                self.t_first = Some(Instant::now());
+            }
+            if vocab.is_stop(token) {
+                self.stepper.mark_stop();
+                self.host_abort = true;
+                return false;
+            }
+            let step = self.stepper.feed(&vocab.token_text(token));
+            self.push(&step.bytes);
+            if self.io_failed || step.done {
+                self.host_abort = true;
+                return false;
+            }
+            true
+        }
+
+        fn sample_override(&mut self) -> i32 {
+            match self.stepper.sample_override() {
+                SampleOverride::None => CONT_SAMPLE_NONE,
+                SampleOverride::Greedy => CONT_SAMPLE_GREEDY,
+                SampleOverride::Token(token) => ds4_core::cont_sample_token(token),
+            }
+        }
+
+        fn admitted(&mut self, n_cached: i32, n_computed: i32, bank: i32) -> bool {
+            self.n_cached = n_cached;
+            self.n_computed = n_computed;
+            self.bank = Some(bank);
+            self.t_admit = Some(Instant::now());
+            self.admitted = true;
+            if let Some(head) = self.head.take() {
+                self.push(&head);
+            }
+            !self.io_failed
+        }
+
+        fn done(
+            &mut self,
+            tokens: &[i32],
+            finish: i32,
+            decode_ms: f64,
+            decode_tokens: i32,
+            decode_steps: i32,
+        ) {
+            self.engine_eos = finish == 1;
+            if self.capture_done {
+                self.done_tokens.extend_from_slice(tokens);
+            }
+            self.decode_ms = decode_ms;
+            self.decode_tokens = decode_tokens;
+            self.decode_steps = decode_steps;
+            self.t_done = Some(Instant::now());
         }
     }
 
@@ -1668,32 +1781,7 @@ mod native {
             let Some(slot) = self.slots.get_mut(&user) else {
                 return false;
             };
-            if !slot.transport_alive() {
-                slot.host_abort = true;
-                return false;
-            }
-            if slot.t_first.is_none() {
-                slot.t_first = Some(Instant::now());
-            }
-            /* Serial parity: the host stop set (family EOT / eos / role
-             * starts) is checked before the token text is ever fed. */
-            if self.vocab.is_stop(token) {
-                slot.stepper.mark_stop();
-                slot.host_abort = true;
-                return false;
-            }
-            let piece = self.vocab.token_text(token);
-            let step = slot.stepper.feed(&piece);
-            slot.push(&step.bytes);
-            if slot.io_failed {
-                slot.host_abort = true;
-                return false;
-            }
-            if step.done {
-                slot.host_abort = true;
-                return false;
-            }
-            true
+            slot.on_token(self.vocab, token)
         }
 
         fn on_done(
@@ -1708,14 +1796,7 @@ mod native {
             let Some(slot) = self.slots.get_mut(&user) else {
                 return;
             };
-            slot.engine_eos = finish == 1;
-            if slot.capture_done {
-                slot.done_tokens.extend_from_slice(tokens);
-            }
-            slot.decode_ms = decode_ms;
-            slot.decode_tokens = decode_tokens;
-            slot.decode_steps = decode_steps;
-            slot.t_done = Some(Instant::now());
+            slot.done(tokens, finish, decode_ms, decode_tokens, decode_steps);
             self.roll.complete(user);
         }
 
@@ -1723,11 +1804,7 @@ mod native {
             let Some(slot) = self.slots.get_mut(&user) else {
                 return CONT_SAMPLE_NONE;
             };
-            match slot.stepper.sample_override() {
-                SampleOverride::None => CONT_SAMPLE_NONE,
-                SampleOverride::Greedy => CONT_SAMPLE_GREEDY,
-                SampleOverride::Token(t) => ds4_core::cont_sample_token(t),
-            }
+            slot.sample_override()
         }
 
         fn alive(&mut self, user: usize) -> bool {
@@ -1740,15 +1817,212 @@ mod native {
             let Some(slot) = self.slots.get_mut(&user) else {
                 return false;
             };
-            slot.n_cached = n_cached;
-            slot.n_computed = n_computed;
-            slot.bank = Some(bank);
-            slot.t_admit = Some(Instant::now());
-            slot.admitted = true;
-            if let Some(head) = slot.head.take() {
-                slot.push(&head);
+            slot.admitted(n_cached, n_computed, bank)
+        }
+    }
+
+    struct LaneProbe<'a, 'm> {
+        batch: &'a BatchCtx<'m>,
+        host: &'a ContHost<'m>,
+    }
+
+    impl ContProbe for LaneProbe<'_, '_> {
+        fn prompt_tokens(
+            &self,
+            parsed: &ParsedRequest,
+        ) -> Result<(Vec<u8>, Vec<i32>), GenerateError> {
+            let prompt = render_prompt(parsed, self.host.model_id)?;
+            let tokens = match parsed.kind {
+                ReqKind::Completion => self
+                    .host
+                    .vocab
+                    .encode_text(std::str::from_utf8(&prompt).unwrap_or("")),
+                ReqKind::Chat => self.host.vocab.encode_rendered_bytes(&prompt),
+            };
+            let tokens = prepare_qwen_images(self.host.model_id, parsed, None, tokens)?.tokens;
+            Ok((prompt, tokens))
+        }
+
+        fn seq_cap(&self) -> i32 {
+            self.batch.seq_cap()
+        }
+
+        fn bank_live(&self, bank: i32) -> Option<(u64, i32)> {
+            let snapshot = self.batch.bank_snapshot(bank).ok()?;
+            let frontier = i32::try_from(snapshot.tokens.len()).ok()?;
+            (frontier > 0).then_some((snapshot.generation, frontier))
+        }
+    }
+
+    struct RollingSlot {
+        key: usize,
+        cors: bool,
+        job: JobSlot<'static>,
+    }
+
+    struct RollingDriver<'a, 'm> {
+        host: &'a mut ContHost<'m>,
+        batch: &'a BatchCtx<'m>,
+        source: &'a mut dyn ContSource,
+        bank_hold_retry: &'a mut dyn FnMut(i32, Option<(u64, i32)>) -> Option<i32>,
+        store: Option<&'a mut KvStore>,
+        slots: std::collections::HashMap<usize, RollingSlot>,
+        pending: Option<ContOwnedWork>,
+        results: Vec<ContOwnedResult>,
+        next_user: usize,
+    }
+
+    impl RollingDriver<'_, '_> {
+        fn reserve(&self) -> crate::serve_cont_roll::RollReserve {
+            let mut reserve = crate::serve_cont_roll::RollReserve::new();
+            for slot in self.slots.values() {
+                if let Some(bank) = slot.job.bank {
+                    reserve.note_place(bank.saturating_add(1));
+                }
             }
-            !slot.io_failed
+            reserve
+        }
+
+        fn finish_stranded(&mut self, error: String) {
+            if let Some(work) = self.pending.take() {
+                self.results.push(ContOwnedResult {
+                    key: work.key,
+                    result: Err(GenerateError::Engine(error.clone())),
+                });
+            }
+            for (_, slot) in std::mem::take(&mut self.slots) {
+                let result = self.host.finish_driven(
+                    self.batch,
+                    slot.job,
+                    Some(error.clone()),
+                    self.store.as_deref_mut(),
+                    slot.cors,
+                    None,
+                );
+                self.results.push(ContOwnedResult {
+                    key: slot.key,
+                    result,
+                });
+            }
+        }
+    }
+
+    impl ContDriver for RollingDriver<'_, '_> {
+        fn admit(&mut self) -> Option<ContAdmit> {
+            loop {
+                let work = match self.pending.take() {
+                    Some(work) => work,
+                    None => {
+                        let probe = LaneProbe {
+                            batch: self.batch,
+                            host: self.host,
+                        };
+                        self.source.next(&probe)?
+                    }
+                };
+                let reserve = self.reserve();
+                if work
+                    .parsed
+                    .directed_bank
+                    .is_some_and(|bank| reserve.contains(bank))
+                {
+                    self.pending = Some(work);
+                    return None;
+                }
+                let key = work.key;
+                let cors = work.cors;
+                let mut work = work;
+                let prepared = {
+                    let borrowed = ContWork {
+                        parsed: &work.parsed,
+                        job_id: &work.job_id,
+                        created: work.created,
+                        cors: work.cors,
+                        default_tokens: work.default_tokens,
+                        t_arrive: work.t_arrive,
+                        out: &mut *work.out,
+                    };
+                    self.host.prepare_slot(
+                        self.batch,
+                        &borrowed,
+                        self.bank_hold_retry,
+                        self.store.as_deref_mut(),
+                        &reserve,
+                    )
+                };
+                let slot = match prepared {
+                    Ok(slot) => slot,
+                    Err(error) => {
+                        self.results.push(ContOwnedResult {
+                            key,
+                            result: Err(error),
+                        });
+                        continue;
+                    }
+                };
+                let user = self.next_user;
+                self.next_user += 1;
+                let mut job = slot.into_slot(work.out);
+                let admit = job.admit.as_mut()?;
+                admit.user = user;
+                let result = job.admit.take();
+                self.slots.insert(user, RollingSlot { key, cors, job });
+                return result;
+            }
+        }
+
+        fn on_token(&mut self, user: usize, token: i32) -> bool {
+            self.slots
+                .get_mut(&user)
+                .is_some_and(|slot| slot.job.on_token(self.host.vocab, token))
+        }
+
+        fn on_done(
+            &mut self,
+            user: usize,
+            tokens: &[i32],
+            finish: i32,
+            decode_ms: f64,
+            decode_tokens: i32,
+            decode_steps: i32,
+        ) {
+            let Some(mut slot) = self.slots.remove(&user) else {
+                return;
+            };
+            slot.job
+                .done(tokens, finish, decode_ms, decode_tokens, decode_steps);
+            let key = slot.key;
+            let source = &mut self.source;
+            let mut publish = |outcome: &GenerateOutcome| source.publish(key, outcome);
+            let result = self.host.finish_driven(
+                self.batch,
+                slot.job,
+                None,
+                self.store.as_deref_mut(),
+                slot.cors,
+                Some(&mut publish),
+            );
+            drop(publish);
+            self.source.settled(key, &result);
+            self.results.push(ContOwnedResult { key, result });
+        }
+
+        fn sample_override(&mut self, user: usize) -> i32 {
+            self.slots
+                .get_mut(&user)
+                .map_or(CONT_SAMPLE_NONE, |slot| slot.job.sample_override())
+        }
+
+        fn alive(&mut self, user: usize) -> bool {
+            self.slots
+                .get_mut(&user)
+                .is_none_or(|slot| slot.job.transport_alive())
+        }
+
+        fn on_admitted(&mut self, user: usize, n_cached: i32, n_computed: i32, bank: i32) -> bool {
+            self.slots
+                .get_mut(&user)
+                .is_some_and(|slot| slot.job.admitted(n_cached, n_computed, bank))
         }
     }
 
@@ -1778,24 +2052,28 @@ mod native {
             }
             Self {
                 batch,
-                vocab,
-                model_id,
-                quant_bits,
-                ctx,
-                eos,
-                warm: (0..max_seq).map(|_| WarmBank::default()).collect(),
-                warm_clock: 0,
-                warm_fork,
-                warm_fork_partial,
-                warm_disk_partial,
-                warm_partial_min,
-                warm_pin_min,
-                warm_checkpoint,
-                tool_memory: ToolMemory::default(),
-                memgov: Box::new(crate::serve_cont_roll::AdmitAlways),
+                host: ContHost {
+                    vocab,
+                    model_id,
+                    quant_bits,
+                    ctx,
+                    eos,
+                    warm: (0..max_seq).map(|_| WarmBank::default()).collect(),
+                    warm_clock: 0,
+                    warm_fork,
+                    warm_fork_partial,
+                    warm_disk_partial,
+                    warm_partial_min,
+                    warm_pin_min,
+                    warm_checkpoint,
+                    tool_memory: ToolMemory::default(),
+                    memgov: Box::new(crate::serve_cont_roll::AdmitAlways),
+                },
             }
         }
+    }
 
+    impl ContHost<'_> {
         fn identity(&self) -> Option<(u8, u8, u32)> {
             crate::generate::kv_identity(self.model_id, self.quant_bits, self.ctx)
         }
@@ -1809,19 +2087,20 @@ mod native {
 
         fn warm_full_plan(
             &mut self,
+            batch: &BatchCtx<'_>,
             prompt: &[u8],
             cache_prompt: Option<&[u8]>,
         ) -> Option<WarmAdmitPlan> {
             let matched = warm_match_pick(&self.warm, prompt, cache_prompt)?;
             let source = matched.bank;
-            let snapshot = self.batch.bank_snapshot(i32::try_from(source).ok()?).ok()?;
+            let snapshot = batch.bank_snapshot(i32::try_from(source).ok()?).ok()?;
             let (tokens, cached) = warm_admit_tokens(
                 self.warm.get(source)?,
                 prompt,
                 cache_prompt,
                 &snapshot.tokens,
                 snapshot.generation,
-                self.batch.seq_cap(),
+                batch.seq_cap(),
                 matched.exact,
                 |suffix| self.vocab.encode_rendered_bytes(suffix),
             )?;
@@ -1836,6 +2115,7 @@ mod native {
 
         fn warm_partial_plan(
             &mut self,
+            batch: &BatchCtx<'_>,
             prompt: &[u8],
             cache_prompt: Option<&[u8]>,
             cache_spans: &[ImageCacheSpan],
@@ -1847,14 +2127,14 @@ mod native {
             let min_prefix = usize::try_from(self.warm_partial_min).ok()?;
             let (source, cache_lcp) =
                 warm_partial_match_pick(&self.warm, prompt, cache_prompt, min_prefix)?;
-            let snapshot = self.batch.bank_snapshot(i32::try_from(source).ok()?).ok()?;
+            let snapshot = batch.bank_snapshot(i32::try_from(source).ok()?).ok()?;
             let (tokens, cached) = warm_partial_admit_tokens(
                 self.warm.get(source)?,
                 prompt_tokens,
                 &snapshot.tokens,
                 snapshot.generation,
                 self.warm_partial_min,
-                self.batch.seq_cap(),
+                batch.seq_cap(),
                 qwen_image_cache_token_cap(cache_spans, cache_lcp),
             )?;
             self.warm[source].committed_tokens = i32::try_from(snapshot.tokens.len()).ok()?;
@@ -1868,13 +2148,15 @@ mod native {
 
         fn warm_plan(
             &mut self,
+            batch: &BatchCtx<'_>,
             prompt: &[u8],
             cache_prompt: Option<&[u8]>,
             cache_spans: &[ImageCacheSpan],
             prompt_tokens: &[i32],
         ) -> Option<WarmAdmitPlan> {
-            let full = self.warm_full_plan(prompt, cache_prompt);
-            let partial = self.warm_partial_plan(prompt, cache_prompt, cache_spans, prompt_tokens);
+            let full = self.warm_full_plan(batch, prompt, cache_prompt);
+            let partial =
+                self.warm_partial_plan(batch, prompt, cache_prompt, cache_spans, prompt_tokens);
             match (full, partial) {
                 (Some(full), Some(partial)) if partial.cached > full.cached => Some(partial),
                 (Some(full), _) => Some(full),
@@ -1917,6 +2199,7 @@ mod native {
 
         fn disk_plan(
             &mut self,
+            batch: &BatchCtx<'_>,
             store: &mut KvStore,
             prompt: &[u8],
             cache_prompt: Option<&[u8]>,
@@ -1947,7 +2230,7 @@ mod native {
                 return None;
             }
             let mut record = restored_record(envelope.text, 0, envelope.header.ext_flags)?;
-            let snapshot = match self.batch.load_bank_payload_range(
+            let snapshot = match batch.load_bank_payload_range(
                 i32::try_from(target).ok()?,
                 &path,
                 envelope.payload_offset,
@@ -1976,7 +2259,7 @@ mod native {
                 cache_prompt,
                 &snapshot.tokens,
                 snapshot.generation,
-                self.batch.seq_cap(),
+                batch.seq_cap(),
                 false,
                 |suffix| self.vocab.encode_rendered_bytes(suffix),
             )?;
@@ -1990,6 +2273,7 @@ mod native {
 
         fn disk_partial_plan(
             &mut self,
+            batch: &BatchCtx<'_>,
             store: &mut KvStore,
             prompt: &[u8],
             cache_prompt: Option<&[u8]>,
@@ -2027,7 +2311,7 @@ mod native {
                 return None;
             }
             let mut record = restored_record(envelope.text, 0, envelope.header.ext_flags)?;
-            let snapshot = match self.batch.load_bank_payload_range(
+            let snapshot = match batch.load_bank_payload_range(
                 i32::try_from(target).ok()?,
                 &path,
                 envelope.payload_offset,
@@ -2056,7 +2340,7 @@ mod native {
                 &snapshot.tokens,
                 snapshot.generation,
                 self.warm_partial_min,
-                self.batch.seq_cap(),
+                batch.seq_cap(),
                 qwen_image_cache_token_cap(cache_spans, cache_lcp),
             )?;
             Some(WarmAdmitPlan {
@@ -2069,6 +2353,7 @@ mod native {
 
         fn retire(
             &mut self,
+            batch: &BatchCtx<'_>,
             bank: i32,
             stepper: &ContStepper,
             done_tokens: &[i32],
@@ -2082,7 +2367,7 @@ mod native {
             if bank >= self.warm.len() {
                 return;
             }
-            let Ok(snapshot) = self.batch.bank_snapshot(bank as i32) else {
+            let Ok(snapshot) = batch.bank_snapshot(bank as i32) else {
                 self.warm[bank].record = None;
                 return;
             };
@@ -2164,12 +2449,25 @@ mod native {
 
         /// Live evict: same `save_bank_record` path as `persist_bank`,
         /// then drop the warm record. Pinned banks are left untouched.
-        fn evict_bank(&mut self, store: Option<&mut KvStore>, bank: usize, pinned: bool) -> bool {
+        fn evict_bank(
+            &mut self,
+            batch: &BatchCtx<'_>,
+            store: Option<&mut KvStore>,
+            bank: usize,
+            pinned: bool,
+        ) -> bool {
             if pinned {
                 return false;
             }
             if let Some(store) = store {
-                self.persist_bank(store, bank, KvReason::BankEvict, self.warm_pin_min, false);
+                self.persist_bank(
+                    batch,
+                    store,
+                    bank,
+                    KvReason::BankEvict,
+                    self.warm_pin_min,
+                    false,
+                );
             }
             if let Some(warm) = self.warm.get_mut(bank) {
                 warm.record = None;
@@ -2179,6 +2477,7 @@ mod native {
 
         fn persist_bank(
             &mut self,
+            batch: &BatchCtx<'_>,
             store: &mut KvStore,
             bank: usize,
             reason: KvReason,
@@ -2197,7 +2496,7 @@ mod native {
             let Ok(bank_i32) = i32::try_from(bank) else {
                 return;
             };
-            let Ok(snapshot) = self.batch.bank_snapshot(bank_i32) else {
+            let Ok(snapshot) = batch.bank_snapshot(bank_i32) else {
                 return;
             };
             let Ok(committed) = i32::try_from(snapshot.tokens.len()) else {
@@ -2230,8 +2529,7 @@ mod native {
             if let Some(record) = self.warm[bank].record.as_mut() {
                 record.trailer = trailer;
             }
-            let (batch, states) = (&mut self.batch, &mut self.warm);
-            let state = &mut states[bank];
+            let state = &mut self.warm[bank];
             if let Err(error) = save_bank_record(
                 store,
                 state,
@@ -2253,6 +2551,7 @@ mod native {
 
         fn place_warm(
             &mut self,
+            batch: &BatchCtx<'_>,
             plan: &WarmAdmitPlan,
             protected: &[bool],
             mut store: Option<&mut KvStore>,
@@ -2270,7 +2569,7 @@ mod native {
             }
             self.note_use(placement.source);
             if placement.fork {
-                let _ = self.evict_bank(store.as_deref_mut(), placement.target, false);
+                let _ = self.evict_bank(batch, store.as_deref_mut(), placement.target, false);
                 let stored = if plan.partial {
                     self.warm[placement.source].stored_tokens.min(plan.cached)
                 } else {
@@ -2279,7 +2578,7 @@ mod native {
                 self.warm[placement.target].stored_tokens = stored;
             } else {
                 if plan.partial {
-                    let _ = self.evict_bank(store.as_deref_mut(), placement.source, false);
+                    let _ = self.evict_bank(batch, store.as_deref_mut(), placement.source, false);
                     self.warm[placement.source].stored_tokens =
                         self.warm[placement.source].stored_tokens.min(plan.cached);
                 } else {
@@ -2289,9 +2588,15 @@ mod native {
             Some(placement)
         }
 
-        fn place_cold(&mut self, protected: &[bool], store: Option<&mut KvStore>) -> Option<usize> {
+        fn place_cold(
+            &mut self,
+            batch: &BatchCtx<'_>,
+            protected: &[bool],
+            store: Option<&mut KvStore>,
+        ) -> Option<usize> {
             let target = warm_victim_pick(&self.warm, protected, None, self.warm_pin_min, true)?;
             if !self.evict_bank(
+                batch,
                 store,
                 target,
                 protected.get(target).copied().unwrap_or(false),
@@ -2303,14 +2608,15 @@ mod native {
             Some(target)
         }
 
-        fn shutdown_banks(&mut self, store: &mut KvStore) {
+        fn shutdown_banks(&mut self, batch: &BatchCtx<'_>, store: &mut KvStore) {
             for bank in 0..self.warm.len() {
-                self.persist_bank(store, bank, KvReason::BankShutdown, 1, false);
+                self.persist_bank(batch, store, bank, KvReason::BankShutdown, 1, false);
             }
         }
 
         fn prepare_slot(
             &mut self,
+            batch: &BatchCtx<'_>,
             work: &ContWork<'_>,
             bank_hold_retry: &mut dyn FnMut(i32, Option<(u64, i32)>) -> Option<i32>,
             mut store: Option<&mut KvStore>,
@@ -2349,13 +2655,13 @@ mod native {
                     &parsed.messages,
                     parsed.think_mode,
                 )?;
-                let snapshot = self.batch.bank_snapshot(bank).map_err(|_| {
+                let snapshot = batch.bank_snapshot(bank).map_err(|_| {
                     GenerateError::Unsupported("continuation bank is no longer live")
                 })?;
                 let (tokens, cached) = live_continuation_tokens(
                     &snapshot.tokens,
                     &suffix,
-                    self.batch.seq_cap(),
+                    batch.seq_cap(),
                     |suffix| self.vocab.encode_rendered_bytes(suffix),
                 )
                 .ok_or(GenerateError::Unsupported(
@@ -2382,7 +2688,7 @@ mod native {
                 work.default_tokens,
                 prompt,
                 prompt_n,
-                self.batch.seq_cap(),
+                batch.seq_cap(),
             );
             stepper.cache_prompt = cache_prompt;
             stepper.image_cache_spans = cache_spans;
@@ -2404,6 +2710,7 @@ mod native {
                 let protected = reserve.protect(&hold);
                 let warm = if capture_done {
                     self.warm_plan(
+                        batch,
                         &stepper.prompt,
                         stepper.cache_prompt.as_deref(),
                         &stepper.image_cache_spans,
@@ -2412,6 +2719,7 @@ mod native {
                     .or_else(|| {
                         store.as_deref_mut().and_then(|store| {
                             self.disk_plan(
+                                batch,
                                 store,
                                 &stepper.prompt,
                                 stepper.cache_prompt.as_deref(),
@@ -2422,6 +2730,7 @@ mod native {
                     .or_else(|| {
                         store.as_deref_mut().and_then(|store| {
                             self.disk_partial_plan(
+                                batch,
                                 store,
                                 &stepper.prompt,
                                 stepper.cache_prompt.as_deref(),
@@ -2434,9 +2743,9 @@ mod native {
                 } else {
                     None
                 };
-                let placement = warm
-                    .as_ref()
-                    .and_then(|plan| self.place_warm(plan, &protected, store.as_deref_mut()));
+                let placement = warm.as_ref().and_then(|plan| {
+                    self.place_warm(batch, plan, &protected, store.as_deref_mut())
+                });
                 if let (Some(plan), Some(placement)) = (warm, placement) {
                     let mut admit = ContAdmit::cold(1, plan.tokens, stepper.max_tokens.max(1));
                     admit.place_bank = i32::try_from(placement.target + 1).unwrap_or(0);
@@ -2446,11 +2755,11 @@ mod native {
                     }
                     admit
                 } else {
-                    let target = self.place_cold(&protected, store.as_deref_mut()).ok_or(
-                        GenerateError::ContinuationHold {
+                    let target = self
+                        .place_cold(batch, &protected, store.as_deref_mut())
+                        .ok_or(GenerateError::ContinuationHold {
                             retry_after: hold_retry.unwrap_or(1),
-                        },
-                    )?;
+                        })?;
                     let mut admit = ContAdmit::cold(1, tokens, stepper.max_tokens.max(1));
                     admit.place_bank = i32::try_from(target + 1).unwrap_or(0);
                     admit
@@ -2474,10 +2783,12 @@ mod native {
 
         fn finish_driven(
             &mut self,
+            batch: &BatchCtx<'_>,
             mut job: JobSlot<'_>,
             native_err: Option<String>,
             mut store: Option<&mut KvStore>,
             cors: bool,
+            publish: Option<&mut dyn FnMut(&GenerateOutcome)>,
         ) -> Result<GenerateOutcome, GenerateError> {
             let timings = {
                 let completion = job.stepper.completion();
@@ -2514,10 +2825,11 @@ mod native {
                 admitted,
                 done_called,
                 actual_bank,
-                self.batch.max_seq(),
+                batch.max_seq(),
             );
             if let Some(bank) = retired {
                 self.retire(
+                    batch,
                     bank,
                     &job.stepper,
                     &done_tokens,
@@ -2528,6 +2840,7 @@ mod native {
                 if self.warm_checkpoint {
                     if let Some(store) = store.as_deref_mut() {
                         self.persist_bank(
+                            batch,
                             store,
                             bank as usize,
                             KvReason::BankCheckpoint,
@@ -2552,7 +2865,7 @@ mod native {
                 .stepper
                 .finalize(engine_eos, n_cached, n_computed, timings, cors);
             if let Some(bank) = actual_bank {
-                if let Ok(snapshot) = self.batch.bank_snapshot(bank) {
+                if let Ok(snapshot) = batch.bank_snapshot(bank) {
                     outcome.bank = Some(bank);
                     outcome.generation = snapshot.generation;
                     outcome.frontier = i32::try_from(snapshot.tokens.len()).unwrap_or(0);
@@ -2568,6 +2881,7 @@ mod native {
                     retired.and_then(|bank| usize::try_from(bank).ok()),
                 ) {
                     self.persist_bank(
+                        batch,
                         store,
                         bank,
                         KvReason::BankCheckpoint,
@@ -2575,6 +2889,9 @@ mod native {
                         false,
                     );
                 }
+            }
+            if let Some(publish) = publish {
+                publish(&outcome);
             }
             if !tail.is_empty() {
                 job.out.write_all(&tail).map_err(|_| GenerateError::Io)?;
@@ -2606,7 +2923,7 @@ mod native {
 
     impl ContExec for ContLane<'_> {
         fn model_id(&self) -> i32 {
-            self.model_id
+            self.host.model_id
         }
 
         fn as_static(&mut self) -> Option<&mut dyn StaticExec> {
@@ -2626,11 +2943,11 @@ mod native {
         }
 
         fn encode_chat(&self, rendered: &[u8]) -> Vec<i32> {
-            self.vocab.encode_rendered_bytes(rendered)
+            self.host.vocab.encode_rendered_bytes(rendered)
         }
 
         fn encode_text(&self, text: &str) -> Vec<i32> {
-            self.vocab.encode_text(text)
+            self.host.vocab.encode_text(text)
         }
 
         fn prepare_tokens(
@@ -2639,7 +2956,8 @@ mod native {
             _prompt: &[u8],
             tokens: Vec<i32>,
         ) -> Result<Vec<i32>, GenerateError> {
-            prepare_qwen_images(self.model_id, parsed, None, tokens).map(|prepared| prepared.tokens)
+            prepare_qwen_images(self.host.model_id, parsed, None, tokens)
+                .map(|prepared| prepared.tokens)
         }
 
         fn bank_live(&self, bank: i32) -> Option<(u64, i32)> {
@@ -2672,14 +2990,15 @@ mod native {
                 t_arrive,
                 out,
             };
-            let prepared = self.prepare_slot(
+            let prepared = self.host.prepare_slot(
+                &self.batch,
                 &work,
                 bank_hold_retry,
                 store.as_deref_mut(),
                 &crate::serve_cont_roll::RollReserve::new(),
             )?;
-            let mut driver = RollDriver::new(self.vocab);
-            let user = driver.push(prepared.into_slot(work.out));
+            let mut driver = RollDriver::new(self.host.vocab);
+            let user = driver.push(prepared.into_slot(Box::new(work.out)));
             let native_err = self
                 .batch
                 .continuous_generate(&mut driver)
@@ -2688,7 +3007,8 @@ mod native {
             let job = driver.slots.remove(&user).ok_or_else(|| {
                 GenerateError::Engine("continuous driver lost the admitted job".into())
             })?;
-            self.finish_driven(job, native_err, store, cors)
+            self.host
+                .finish_driven(&self.batch, job, native_err, store, cors, None)
         }
 
         fn generate_batch(
@@ -2704,7 +3024,13 @@ mod native {
             let mut prepared = Vec::with_capacity(count);
             for (index, work) in jobs.into_iter().enumerate() {
                 let cors = work.cors;
-                match self.prepare_slot(&work, bank_hold_retry, store.as_deref_mut(), &reserve) {
+                match self.host.prepare_slot(
+                    &self.batch,
+                    &work,
+                    bank_hold_retry,
+                    store.as_deref_mut(),
+                    &reserve,
+                ) {
                     Ok(slot) => {
                         reserve.note_place(slot.admit.place_bank);
                         prepared.push((index, cors, slot, work.out));
@@ -2712,11 +3038,11 @@ mod native {
                     Err(error) => results[index] = Some(Err(error)),
                 }
             }
-            let mut driver = RollDriver::new(self.vocab);
+            let mut driver = RollDriver::new(self.host.vocab);
             let order: Vec<_> = prepared
                 .into_iter()
                 .map(|(index, cors, slot, out)| {
-                    let user = driver.push(slot.into_slot(out));
+                    let user = driver.push(slot.into_slot(Box::new(out)));
                     (index, user, cors)
                 })
                 .collect();
@@ -2729,9 +3055,14 @@ mod native {
             let native_err = native_err.flatten();
             for (index, user, cors) in order {
                 results[index] = Some(match driver.slots.remove(&user) {
-                    Some(job) => {
-                        self.finish_driven(job, native_err.clone(), store.as_deref_mut(), cors)
-                    }
+                    Some(job) => self.host.finish_driven(
+                        &self.batch,
+                        job,
+                        native_err.clone(),
+                        store.as_deref_mut(),
+                        cors,
+                        None,
+                    ),
                     None => Err(GenerateError::Engine(
                         "continuous driver lost an admitted job".into(),
                     )),
@@ -2749,9 +3080,39 @@ mod native {
                 .collect()
         }
 
+        fn generate_rolling(
+            &mut self,
+            source: &mut dyn ContSource,
+            bank_hold_retry: &mut dyn FnMut(i32, Option<(u64, i32)>) -> Option<i32>,
+            store: Option<&mut KvStore>,
+        ) -> Option<Vec<ContOwnedResult>> {
+            let mut driver = RollingDriver {
+                host: &mut self.host,
+                batch: &self.batch,
+                source,
+                bank_hold_retry,
+                store,
+                slots: std::collections::HashMap::new(),
+                pending: None,
+                results: Vec::new(),
+                next_user: 1,
+            };
+            loop {
+                match self.batch.continuous_generate(&mut driver) {
+                    Ok(()) if driver.pending.is_some() => continue,
+                    Ok(()) => break,
+                    Err(error) => {
+                        driver.finish_stranded(error.to_string());
+                        break;
+                    }
+                }
+            }
+            Some(driver.results)
+        }
+
         fn shutdown(&mut self, store: Option<&mut KvStore>) {
             if let Some(store) = store {
-                self.shutdown_banks(store);
+                self.host.shutdown_banks(&self.batch, store);
             }
         }
     }
