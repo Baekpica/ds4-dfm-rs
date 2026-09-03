@@ -1077,6 +1077,7 @@ mod tests {
                 } else {
                     "tool_calls".into()
                 },
+                ..GenerateOutcome::default()
             })
         }
         fn bank_live(&self, bank: i32) -> Option<(u64, i32)> {

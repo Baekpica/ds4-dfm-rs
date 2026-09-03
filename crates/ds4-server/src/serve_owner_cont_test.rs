@@ -446,6 +446,7 @@ impl ContExec for PublishingSpy {
             generation: 10 + self.calls as u64,
             frontier: 100 + self.calls as i32,
             finish: "tool_calls".into(),
+            ..GenerateOutcome::default()
         })
     }
 }

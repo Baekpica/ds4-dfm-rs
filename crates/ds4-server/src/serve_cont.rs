@@ -534,6 +534,7 @@ impl ContStepper {
             generation: 0,
             frontier: self.prompt_n + completion,
             finish: self.finish.to_string(),
+            timings: self.req.timings,
         };
         (std::mem::take(&mut self.w.out), outcome)
     }
@@ -2930,8 +2931,15 @@ mod native {
         ) -> Result<GenerateOutcome, GenerateError> {
             let timings = {
                 let completion = job.stepper.completion();
-                match job.t_first {
-                    Some(first) if completion > 0 => ReqTimings {
+                let mut timings = ReqTimings {
+                    prefill_tokens: job.n_computed,
+                    prefill_cached: job.n_cached,
+                    decode_tokens: job.decode_tokens,
+                    decode_steps: job.decode_steps,
+                    ..ReqTimings::default()
+                };
+                if let Some(first) = job.t_first.filter(|_| completion > 0) {
+                    timings = ReqTimings {
                         valid: true,
                         ttft_ms: first.duration_since(job.t_arrive).as_secs_f64() * 1e3,
                         prefill_ms: first
@@ -2943,9 +2951,9 @@ mod native {
                         prefill_cached: job.n_cached,
                         decode_tokens: job.decode_tokens,
                         decode_steps: job.decode_steps,
-                    },
-                    _ => ReqTimings::default(),
+                    };
                 }
+                timings
             };
             let engine_eos = job.engine_eos && !job.host_abort;
             let n_cached = job.n_cached;

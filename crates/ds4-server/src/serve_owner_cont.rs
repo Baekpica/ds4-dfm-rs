@@ -200,6 +200,9 @@ impl ContSource for OwnerRollSource<'_> {
         let Some((_, job)) = self.jobs.get_mut(key).and_then(Option::take) else {
             return;
         };
+        if let Ok(outcome) = result {
+            lock_inner(self.inner).record_generation(outcome);
+        }
         let settlement = if job.sink.state.gone() || matches!(result, Err(GenerateError::Io)) {
             Settlement::CANCELED
         } else {
@@ -379,6 +382,9 @@ fn settle_roll_job(
     publish_outcome: bool,
 ) {
     let arrived_at = job.prepared.arrived_at;
+    if let Ok(outcome) = &result {
+        lock_inner(inner).record_generation(outcome);
+    }
     if publish_outcome {
         if let Ok(outcome) = &result {
             publish_continuous_tool_turn(inner, job.prepared.parsed.api, outcome);

@@ -252,6 +252,35 @@ impl ServerInner {
         }
         rt
     }
+
+    fn record_generation(&mut self, outcome: &GenerateOutcome) {
+        let t = outcome.timings;
+        self.record_tokens(
+            t.prefill_tokens,
+            t.prefill_cached,
+            t.decode_tokens,
+            t.decode_steps,
+        );
+    }
+
+    fn record_tokens(&mut self, computed: i32, cached: i32, decoded: i32, steps: i32) {
+        self.runtime.tokens_prefilled_computed = self
+            .runtime
+            .tokens_prefilled_computed
+            .saturating_add(u64::try_from(computed).unwrap_or(0));
+        self.runtime.tokens_prefilled_cached = self
+            .runtime
+            .tokens_prefilled_cached
+            .saturating_add(u64::try_from(cached).unwrap_or(0));
+        self.runtime.tokens_decoded = self
+            .runtime
+            .tokens_decoded
+            .saturating_add(u64::try_from(decoded).unwrap_or(0));
+        self.runtime.decode_steps = self
+            .runtime
+            .decode_steps
+            .saturating_add(u64::try_from(steps).unwrap_or(0));
+    }
 }
 
 #[cfg(feature = "native")]
@@ -1290,6 +1319,7 @@ fn run_engine<W: TerminalSink>(
                 out,
             );
             if let Ok(outcome) = &result {
+                lock_inner(inner).record_generation(outcome);
                 publish_continuous_tool_turn(inner, job.parsed.api, outcome);
             }
             let bank_follow = job.parsed.needs & NEED_BANK_FRONTIER != 0;
@@ -1348,6 +1378,7 @@ fn run_engine<W: TerminalSink>(
             LANE_STATIC,
             settle_static_lane(
                 cfg,
+                inner,
                 job,
                 id,
                 engine,
@@ -1365,6 +1396,7 @@ fn run_engine<W: TerminalSink>(
 
 fn settle_static_lane<W: TerminalSink>(
     cfg: &ServerConfig,
+    inner: &Mutex<ServerInner>,
     job: &PreparedJob,
     id: &str,
     engine: &dyn DecodeIo,
@@ -1379,6 +1411,12 @@ fn settle_static_lane<W: TerminalSink>(
                 finish: StaticFinish::Length,
             };
             let row = rows.last().unwrap_or(&empty);
+            lock_inner(inner).record_tokens(
+                prompt_n,
+                0,
+                i32::try_from(row.tokens.len()).unwrap_or(i32::MAX),
+                0,
+            );
             let bytes = write_static_completion(
                 StaticSettle {
                     parsed: &job.parsed,
@@ -1562,6 +1600,7 @@ fn run_serial<W: TerminalSink>(
         Ok(result) => result,
         Err(error) => return settle_generation_result(cfg, job, Err(error), out),
     };
+    lock_inner(inner).record_generation(&generated);
     let publish = matches!(parsed.api, Api::Anthropic | Api::Responses)
         && !generated.tool_ids.is_empty()
         && generated.finish != "error"
@@ -2531,6 +2570,26 @@ mod owner_tests {
     }
 
     #[test]
+    fn generation_outcome_updates_common_token_counters() {
+        let mut inner = ServerInner::default();
+        inner.record_generation(&GenerateOutcome {
+            timings: crate::stream::ReqTimings {
+                prefill_tokens: 18,
+                prefill_cached: 260,
+                decode_tokens: 7,
+                decode_steps: 4,
+                ..crate::stream::ReqTimings::default()
+            },
+            ..GenerateOutcome::default()
+        });
+
+        assert_eq!(inner.runtime.tokens_prefilled_computed, 18);
+        assert_eq!(inner.runtime.tokens_prefilled_cached, 260);
+        assert_eq!(inner.runtime.tokens_decoded, 7);
+        assert_eq!(inner.runtime.decode_steps, 4);
+    }
+
+    #[test]
     fn client_capacity_is_reserved_before_request_body_read() {
         let mut cfg = test_cfg();
         cfg.max_clients = 1;
@@ -2952,6 +3011,7 @@ mod owner_tests {
             generation,
             frontier,
             finish: "tool_calls".into(),
+            ..GenerateOutcome::default()
         }
     }
 

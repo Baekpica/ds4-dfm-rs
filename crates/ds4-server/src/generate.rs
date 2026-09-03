@@ -778,6 +778,7 @@ pub struct GenerateOutcome {
     pub generation: u64,
     pub frontier: i32,
     pub finish: String,
+    pub timings: ReqTimings,
 }
 
 pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'static str> {
@@ -1495,6 +1496,10 @@ pub(crate) fn generate_terminal_prepared(
     }
 
     let completion = acc.completion;
+    req.timings.prefill_tokens = prompt_n - req.cache_read_tokens;
+    req.timings.prefill_cached = req.cache_read_tokens;
+    req.timings.decode_tokens = completion;
+    req.timings.decode_steps = decode_steps;
     if completion > 0 {
         if let Some(t_first) = first_tok {
             req.timings = ReqTimings {
@@ -1651,6 +1656,7 @@ pub(crate) fn generate_terminal_prepared(
         generation: engine.generation(),
         frontier: engine.pos(),
         finish: finish.to_string(),
+        timings: req.timings,
     };
     Ok((outcome, terminal))
 }

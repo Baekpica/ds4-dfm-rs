@@ -226,6 +226,7 @@ fn settle_member(
     };
     let mut settlement = settle_static_lane(
         cfg,
+        inner.as_ref(),
         &prepared,
         &id,
         engine,
