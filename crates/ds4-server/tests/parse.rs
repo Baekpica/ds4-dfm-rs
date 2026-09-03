@@ -268,6 +268,43 @@ fn tool_choice_errors_match_c() {
 }
 
 #[test]
+fn tool_controls_are_not_silently_ignored() {
+    let requests = [
+        (
+            "chat",
+            r#"{"messages":[],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],"tool_choice":"none"}"#,
+        ),
+        (
+            "anthropic",
+            r#"{"messages":[],"tools":[{"name":"lookup","input_schema":{"type":"object"}}],"tool_choice":{"type":"none"}}"#,
+        ),
+        (
+            "responses",
+            r#"{"input":[],"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],"tool_choice":"none"}"#,
+        ),
+    ];
+    for (surface, body) in requests {
+        let request = rust_parse(surface, body).unwrap();
+        assert!(!request.has_tools, "{surface}");
+        assert!(request.tool_schemas.is_empty(), "{surface}");
+        assert!(request.tool_orders.is_empty(), "{surface}");
+    }
+
+    for surface in ["chat", "responses"] {
+        let input = if surface == "chat" {
+            r#"{"messages":[],"parallel_tool_calls":false}"#
+        } else {
+            r#"{"input":[],"parallel_tool_calls":false}"#
+        };
+        assert_eq!(
+            rust_parse(surface, input).unwrap_err(),
+            "parallel_tool_calls=false is not supported"
+        );
+    }
+    assert!(rust_parse("chat", r#"{"messages":[],"parallel_tool_calls":true}"#).is_ok());
+}
+
+#[test]
 fn simple_success_dumps_match_c() {
     let r = assert_ok_eq("chat", r#"{"messages":[{"role":"user","content":"hi"}]}"#);
     assert_eq!(r.think_mode as i32, 1);

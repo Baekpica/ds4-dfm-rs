@@ -442,6 +442,17 @@ fn parse_stream_options(p: &mut Json<'_>) -> Option<bool> {
     Some(include)
 }
 
+fn parse_parallel_tool_calls(p: &mut Json<'_>, err: &mut String) -> bool {
+    match json_bool(p) {
+        Some(true) => true,
+        Some(false) => {
+            *err = "parallel_tool_calls=false is not supported".into();
+            false
+        }
+        None => false,
+    }
+}
+
 pub fn parse_thinking_control_value(p: &mut Json<'_>) -> Option<Option<bool>> {
     p.ws();
     if p.lit("null") {
@@ -1698,9 +1709,18 @@ fn collect_tool_call_ids(m: &ChatMsg) -> Vec<String> {
     ids
 }
 
-fn prepare_tool_choice(r: &mut ParsedRequest, have_schemas: bool, err: &mut String) -> bool {
-    r.has_tools = have_schemas && r.tool_choice != ToolChoice::None;
-    if r.tool_choice == ToolChoice::Required && !have_schemas {
+fn prepare_tool_choice(
+    r: &mut ParsedRequest,
+    schemas: &mut String,
+    orders: &mut Vec<ToolSchemaOrder>,
+    err: &mut String,
+) -> bool {
+    if r.tool_choice == ToolChoice::None {
+        schemas.clear();
+        orders.clear();
+    }
+    r.has_tools = !schemas.is_empty();
+    if r.tool_choice == ToolChoice::Required && !r.has_tools {
         *err = "tool_choice=required requires at least one tool".into();
         return false;
     }
@@ -2298,6 +2318,8 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
                 }
                 None => false,
             }
+        } else if key == "parallel_tool_calls" {
+            parse_parallel_tool_calls(&mut p, &mut err)
         } else if key == "model" {
             match json_string(&mut p) {
                 Some(m) => {
@@ -2392,7 +2414,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
     }
     validate_image_references(&msgs, &images)?;
     r.has_tool_results = chat_history_has_pending_tool_results(&msgs);
-    if !prepare_tool_choice(&mut r, !tool_schemas.is_empty(), &mut err) {
+    if !prepare_tool_choice(&mut r, &mut tool_schemas, &mut orders, &mut err) {
         return Err(err);
     }
     apply_think(&mut r, got_thinking, thinking_enabled, reasoning_effort);
@@ -2689,7 +2711,7 @@ pub fn parse_anthropic_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
     }
     validate_image_references(&msgs, &images)?;
     r.has_tool_results = chat_history_has_pending_tool_results(&msgs);
-    if !prepare_tool_choice(&mut r, !tool_schemas.is_empty(), &mut err) {
+    if !prepare_tool_choice(&mut r, &mut tool_schemas, &mut orders, &mut err) {
         return Err(err);
     }
     apply_think(&mut r, got_thinking, thinking_enabled, reasoning_effort);
@@ -2792,6 +2814,8 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
                 }
                 None => false,
             }
+        } else if key == "parallel_tool_calls" {
+            parse_parallel_tool_calls(&mut p, &mut err)
         } else if key == "model" {
             match json_string(&mut p) {
                 Some(m) => {
@@ -2880,7 +2904,7 @@ pub fn parse_responses_request(env: &ParseEnv, body: &str) -> Result<ParsedReque
         combined.push_str(&loaded);
     }
     r.has_tool_results = chat_history_has_pending_tool_results(&msgs);
-    if !prepare_tool_choice(&mut r, !combined.is_empty(), &mut err) {
+    if !prepare_tool_choice(&mut r, &mut combined, &mut orders, &mut err) {
         return Err(err);
     }
     apply_think(&mut r, got_thinking, thinking_enabled, reasoning_effort);
