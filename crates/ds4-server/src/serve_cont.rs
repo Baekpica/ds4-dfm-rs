@@ -32,6 +32,8 @@ use crate::retry::{terminal_finish, truncation_outcome, TruncationOutcome};
 use crate::route::{decode_budget, think_mode_enabled, Api, ReqKind};
 #[cfg(feature = "native")]
 use crate::stream::stream_error;
+#[cfg(any(feature = "native", test))]
+use crate::stream::stream_heartbeat_if_due;
 use crate::stream::{
     anthropic_final_response, anthropic_sse_finish_live, anthropic_sse_start_live,
     anthropic_sse_stream_update, final_response, openai_sse_finish_live, openai_sse_stream_update,
@@ -84,6 +86,8 @@ pub struct ContStepper {
     required_think_end_prefix: Vec<i32>,
     tool_replay: Option<(Vec<ToolCall>, String)>,
     started: bool,
+    #[cfg(any(feature = "native", test))]
+    last_heartbeat: Instant,
 }
 
 pub struct ContStep {
@@ -177,6 +181,8 @@ impl ContStepper {
                 required_think_end_prefix: parsed.required_think_end_prefix.clone(),
                 tool_replay: None,
                 started: true,
+                #[cfg(any(feature = "native", test))]
+                last_heartbeat: Instant::now(),
             },
             head,
         )
@@ -265,6 +271,19 @@ impl ContStepper {
             bytes: std::mem::take(&mut self.w.out),
             done,
         }
+    }
+
+    #[cfg(any(feature = "native", test))]
+    fn heartbeat(&mut self, now: Instant) -> Vec<u8> {
+        stream_heartbeat_if_due(
+            &mut self.w,
+            &self.req,
+            self.resp.as_mut(),
+            &mut self.last_heartbeat,
+            now,
+            ": keep-alive\n\n",
+        );
+        std::mem::take(&mut self.w.out)
     }
 
     #[cfg(feature = "native")]
@@ -1685,6 +1704,10 @@ mod native {
 
     impl JobSlot<'_> {
         fn transport_alive(&mut self) -> bool {
+            if self.admitted {
+                let heartbeat = self.stepper.heartbeat(Instant::now());
+                self.push(&heartbeat);
+            }
             if !self.io_failed && self.out.flush().is_err() {
                 self.io_failed = true;
             }
@@ -3164,7 +3187,7 @@ impl ContStepper {
 #[cfg(test)]
 mod bank_tests {
     use super::*;
-    use crate::parse::{parse_chat_request, ChatMsg, ParseEnv};
+    use crate::parse::{parse_chat_request, parse_responses_request, ChatMsg, ParseEnv};
     use crate::route::{Api, ReqKind, ThinkMode};
     use ds4_kv::{Options, Reason, Store, EXT_BANK_REPLAY_V1, EXT_TOOL_MAP};
     use std::fs;
@@ -3178,6 +3201,32 @@ mod bank_tests {
         ));
         assert!(session_tokens < 65_536);
         assert!(!bank_persist_eligible(session_tokens, 65_536));
+    }
+
+    #[test]
+    fn continuous_responses_heartbeat_advances_the_live_sequence() {
+        let parsed =
+            parse_responses_request(&ParseEnv::default(), r#"{"input":"hello","stream":true}"#)
+                .unwrap();
+        let (mut stepper, head) = ContStepper::new(
+            &parsed,
+            0,
+            "heartbeat",
+            7,
+            false,
+            16,
+            b"prompt".to_vec(),
+            1,
+            32,
+        );
+        assert!(String::from_utf8_lossy(&head).contains("\"sequence_number\":0"));
+
+        let due = stepper.last_heartbeat + crate::stream::STREAM_HEARTBEAT_INTERVAL;
+        let heartbeat = stepper.heartbeat(due);
+
+        let heartbeat = String::from_utf8(heartbeat).unwrap();
+        assert!(heartbeat.contains("\"type\":\"response.in_progress\""));
+        assert!(heartbeat.contains("\"sequence_number\":1"));
     }
 
     #[test]

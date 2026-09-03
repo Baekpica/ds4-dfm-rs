@@ -2,7 +2,7 @@
 //! at v0.6.5-dfm. Incremental tool projection is host-owned
 //! (`tool_stream`); GPU decode still native.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::error::{cors_headers, http_response_bytes, wire_stream_error_bytes};
 use crate::json::{json_args_parse, json_escape_bytes};
@@ -1290,6 +1290,46 @@ fn responses_sse_emit_event(w: &mut Writer, st: &mut ResponsesStream, body: &[u8
     w.put_str("\n\n");
 }
 
+pub(crate) const STREAM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+
+fn responses_sse_in_progress(w: &mut Writer, r: &StreamReq, st: &mut ResponsesStream) {
+    let mut b = format!(
+        "{{\"type\":\"response.in_progress\",\"response\":{{\"id\":\"{}\",\"object\":\"response\",\"created_at\":{},\"status\":\"in_progress\",\"model\":",
+        st.response_id, st.created_at
+    )
+    .into_bytes();
+    b.extend(json_escape_bytes(r.model.as_bytes()));
+    b.extend_from_slice(b",\"output\":[]}}");
+    responses_sse_emit_event(w, st, &b);
+}
+
+pub(crate) fn stream_heartbeat_if_due(
+    w: &mut Writer,
+    r: &StreamReq,
+    responses: Option<&mut ResponsesStream>,
+    last: &mut Instant,
+    now: Instant,
+    comment: &str,
+) -> bool {
+    if !r.stream
+        || now
+            .checked_duration_since(*last)
+            .is_none_or(|elapsed| elapsed < STREAM_HEARTBEAT_INTERVAL)
+    {
+        return false;
+    }
+    match r.api {
+        Api::Anthropic => w.put_str("event: ping\ndata: {\"type\": \"ping\"}\n\n"),
+        Api::Responses => match responses {
+            Some(st) if st.created_at != 0 => responses_sse_in_progress(w, r, st),
+            _ => w.put_str(comment),
+        },
+        Api::Openai => w.put_str(comment),
+    }
+    *last = now;
+    true
+}
+
 fn find_type_close(body: &[u8]) -> Option<usize> {
     if body.first() != Some(&b'{') {
         return None;
@@ -2134,6 +2174,7 @@ pub fn project_responses_thinking(created: i64) -> Vec<u8> {
 #[cfg(test)]
 mod stream_failure_tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn responses_stream_error_continues_the_live_sequence() {
@@ -2152,6 +2193,69 @@ mod stream_failure_tests {
         assert_eq!(
             writer.out,
             b"data: {\"type\":\"error\",\"sequence_number\":1,\"code\":\"server_error\",\"message\":\"boom\",\"param\":null}\n\n"
+        );
+        assert_eq!(state.sequence, 2);
+    }
+
+    #[test]
+    fn heartbeat_uses_native_surface_and_preserves_responses_sequence() {
+        let now = Instant::now();
+        let mut last = now;
+        let mut writer = Writer::new(7);
+        let mut req = StreamReq {
+            stream: true,
+            model: "model".into(),
+            ..StreamReq::default()
+        };
+
+        assert!(!stream_heartbeat_if_due(
+            &mut writer,
+            &req,
+            None,
+            &mut last,
+            now + Duration::from_secs(4),
+            ": decode\n\n",
+        ));
+        assert!(writer.out.is_empty());
+
+        assert!(stream_heartbeat_if_due(
+            &mut writer,
+            &req,
+            None,
+            &mut last,
+            now + Duration::from_secs(5),
+            ": decode\n\n",
+        ));
+        assert_eq!(writer.out, b": decode\n\n");
+
+        writer.out.clear();
+        req.api = Api::Anthropic;
+        assert!(stream_heartbeat_if_due(
+            &mut writer,
+            &req,
+            None,
+            &mut last,
+            now + Duration::from_secs(10),
+            ": decode\n\n",
+        ));
+        assert_eq!(writer.out, b"event: ping\ndata: {\"type\": \"ping\"}\n\n");
+
+        writer.out.clear();
+        req.api = Api::Responses;
+        let mut state = responses_stream_init(&req, "resp_test", "rs_test", "msg_test");
+        responses_sse_created(&mut writer, &req, &mut state, 7);
+        writer.out.clear();
+        assert!(stream_heartbeat_if_due(
+            &mut writer,
+            &req,
+            Some(&mut state),
+            &mut last,
+            now + Duration::from_secs(15),
+            ": decode\n\n",
+        ));
+        assert_eq!(
+            writer.out,
+            b"data: {\"type\":\"response.in_progress\",\"sequence_number\":1,\"response\":{\"id\":\"resp_test\",\"object\":\"response\",\"created_at\":7,\"status\":\"in_progress\",\"model\":\"model\",\"output\":[]}}\n\n"
         );
         assert_eq!(state.sequence, 2);
     }

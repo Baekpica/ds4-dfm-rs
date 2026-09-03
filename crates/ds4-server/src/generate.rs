@@ -36,8 +36,8 @@ use crate::stream::{
     anthropic_sse_stream_update, final_response, openai_sse_finish_live, openai_sse_stream_update,
     openai_stream_start, responses_final_response, responses_sse_created,
     responses_sse_finish_live, responses_sse_stream_update, responses_stream_init, sse_chunk,
-    sse_done, sse_headers, stream_error, think_end, think_start, AnthropicStream, ChatFormat,
-    OpenaiStream, ReqTimings, ResponsesStream, StreamReq, Writer,
+    sse_done, sse_headers, stream_error, stream_heartbeat_if_due, think_end, think_start,
+    AnthropicStream, ChatFormat, OpenaiStream, ReqTimings, ResponsesStream, StreamReq, Writer,
 };
 #[cfg(feature = "native")]
 use crate::tool_memory::ToolMemory;
@@ -1041,6 +1041,7 @@ fn decode_pass(
     first_tok: &mut Option<Instant>,
     decode_steps: &mut i32,
 ) -> Result<(), GenerateError> {
+    let mut last_heartbeat = Instant::now();
     while acc.completion < max_tokens && engine.pos() < engine.ctx() {
         out.flush().map_err(|_| GenerateError::Io)?;
         if continued_decode_allowed(acc) {
@@ -1113,6 +1114,14 @@ fn decode_pass(
                     }
                 }
             }
+            stream_heartbeat_if_due(
+                w,
+                req,
+                resp.as_deref_mut(),
+                &mut last_heartbeat,
+                Instant::now(),
+                ": decode\n\n",
+            );
             flush(w, out)?;
         }
 

@@ -55,7 +55,7 @@ use crate::serve_static::{
 mod owner_cont;
 #[path = "serve_owner_static.rs"]
 mod owner_static;
-use crate::stream::unix_now;
+use crate::stream::{unix_now, STREAM_HEARTBEAT_INTERVAL};
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -933,6 +933,7 @@ struct OwnerJob {
 struct JobDrain {
     done: Receiver<JobLease>,
     state: Arc<SinkState>,
+    streaming: bool,
 }
 
 impl Drop for JobDrain {
@@ -951,6 +952,7 @@ fn owner_job_with_probe(
     lease: JobLease,
     probe: Option<TcpStream>,
 ) -> (OwnerJob, JobDrain) {
+    let streaming = prepared.parsed.stream;
     let (sink, state) = job_sink_with_probe(Arc::clone(&lease.inner), probe);
     let (done_tx, done_rx) = mpsc::channel();
     (
@@ -963,6 +965,7 @@ fn owner_job_with_probe(
         JobDrain {
             done: done_rx,
             state,
+            streaming,
         },
     )
 }
@@ -1936,33 +1939,48 @@ fn client_disconnected(stream: &TcpStream) -> bool {
 }
 
 fn drain_job(mut stream: TcpStream, drain: JobDrain) {
-    configure_client_socket(&stream, 0);
-    loop {
-        let mut buffer = drain.state.lock();
-        if buffer.bytes.is_empty() && !buffer.closed && !buffer.gone {
-            buffer = drain
-                .state
-                .ready
-                .wait(buffer)
-                .unwrap_or_else(|e| e.into_inner());
-        }
-        let have_bytes = !buffer.bytes.is_empty();
-        let finished = buffer.closed || buffer.gone;
-        drop(buffer);
-        if have_bytes {
-            if send_all_nonblocking(&mut stream, &drain.state.take()).is_err() {
-                drain.state.cancel(false);
-                break;
-            }
-        } else if finished {
-            break;
-        }
-    }
+    drain_job_with_interval(&mut stream, &drain, STREAM_HEARTBEAT_INTERVAL);
     let Ok(mut lease) = drain.done.recv() else {
         return;
     };
     if drain.state.gone() {
         lease.settlement = lease.settlement.transport_gone();
+    }
+}
+
+fn drain_job_with_interval(stream: &mut TcpStream, drain: &JobDrain, interval: Duration) {
+    configure_client_socket(stream, 0);
+    loop {
+        let mut buffer = drain.state.lock();
+        let mut heartbeat = false;
+        if buffer.bytes.is_empty() && !buffer.closed && !buffer.gone {
+            let waited = drain
+                .state
+                .ready
+                .wait_timeout(buffer, interval)
+                .unwrap_or_else(|e| e.into_inner());
+            buffer = waited.0;
+            heartbeat = waited.1.timed_out()
+                && drain.streaming
+                && buffer.started
+                && buffer.bytes.is_empty()
+                && !buffer.closed
+                && !buffer.gone;
+        }
+        let have_bytes = !buffer.bytes.is_empty();
+        let finished = buffer.closed || buffer.gone;
+        drop(buffer);
+        if have_bytes {
+            if send_all_nonblocking(stream, &drain.state.take()).is_err() {
+                drain.state.cancel(false);
+                break;
+            }
+        } else if finished {
+            break;
+        } else if heartbeat && send_all_nonblocking(stream, b": keep-alive\n\n").is_err() {
+            drain.state.cancel(false);
+            break;
+        }
     }
 }
 
@@ -3633,6 +3651,42 @@ mod owner_tests {
         assert_eq!(g.admit.queued, 0);
         assert_eq!(g.admit.inflight_body_bytes, 0);
         assert_eq!(g.runtime.requests_completed, 1);
+    }
+
+    #[test]
+    fn owner_drain_keeps_a_started_stream_alive_while_engine_is_silent() {
+        let cfg = test_cfg();
+        let inner = Arc::new(Mutex::new(ServerInner::from_cfg(&cfg)));
+        let (mut sink, state) = job_sink(inner);
+        let (_done_tx, done_rx) = mpsc::channel();
+        let drain = JobDrain {
+            done: done_rx,
+            state,
+            streaming: true,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        sink.write_all(&crate::stream::sse_headers(false)).unwrap();
+        let drain_thread = thread::spawn(move || {
+            drain_job_with_interval(&mut server, &drain, Duration::from_millis(20));
+        });
+
+        let mut wire = Vec::new();
+        let mut chunk = [0; 512];
+        while !wire.ends_with(b": keep-alive\n\n") {
+            let n = client.read(&mut chunk).unwrap();
+            wire.extend_from_slice(&chunk[..n]);
+        }
+
+        drop(sink);
+        drain_thread.join().unwrap();
+        let wire = String::from_utf8(wire).unwrap();
+        assert_eq!(wire.matches("HTTP/1.1").count(), 1, "{wire}");
+        assert!(wire.ends_with(": keep-alive\n\n"), "{wire}");
     }
 
     #[test]
