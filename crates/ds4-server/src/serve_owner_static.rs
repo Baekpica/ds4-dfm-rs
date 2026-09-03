@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use super::*;
 use crate::generate::GenerateError;
 use crate::route::{route_decide, RouteEnv, LANE_STATIC};
-use crate::serve_cont::{cont_prompt_tokens, ContExec};
+use crate::serve_cont::ContExec;
 use crate::serve_static::{
     coalesce_take, job_tok_footprint, run_static, static_peer_ok, CoalesceLimits, CoalescePeer,
     StaticJob, StaticPeerSpec, StaticRow,
@@ -21,15 +21,15 @@ pub(super) fn run_owner_maybe_coalesce(
     inner: &Arc<Mutex<ServerInner>>,
     engine: &mut dyn DecodeIo,
     exec: &mut dyn ContExec,
-    job: OwnerJob,
+    mut job: OwnerJob,
     jobs_rx: &Receiver<OwnerJob>,
 ) -> Option<OwnerJob> {
     if exec.as_static().is_none() {
         run_owner_job(cfg, inner, engine, Some(exec), job);
         return None;
     }
-    let tokens = cont_prompt_tokens(exec, &job.prepared.parsed)
-        .map(|(_, toks)| toks)
+    let tokens = prepare_cont_prompt(&mut job.prepared, exec)
+        .map(|prepared| prepared.tokens.clone())
         .unwrap_or_default();
     let env = static_route_env(cfg, exec, tokens.len() as i32);
     let dec = route_decide(job.prepared.parsed.needs, job.prepared.surface, &env);
@@ -99,7 +99,7 @@ fn gather_peers(
         if batch.len() >= limits.clamp().cap {
             return None;
         }
-        let next = match jobs_rx.try_recv() {
+        let mut next = match jobs_rx.try_recv() {
             Ok(job) => job,
             Err(TryRecvError::Disconnected) => return None,
             Err(TryRecvError::Empty) => {
@@ -125,8 +125,8 @@ fn gather_peers(
             finish_canceled(next);
             continue;
         }
-        let tokens = cont_prompt_tokens(exec, &next.prepared.parsed)
-            .map(|(_, toks)| toks)
+        let tokens = prepare_cont_prompt(&mut next.prepared, exec)
+            .map(|prepared| prepared.tokens.clone())
             .unwrap_or_default();
         let peer_ok = static_peer_ok(StaticPeerSpec {
             needs: next.prepared.parsed.needs,

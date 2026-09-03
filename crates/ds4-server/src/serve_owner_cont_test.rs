@@ -213,6 +213,7 @@ fn cont_chat_job(inner: &Arc<Mutex<ServerInner>>, tag: &str) -> (OwnerJob, JobDr
     let parsed = crate::parse::parse_request(WireSurface::OpenaiChat, &env, &body).unwrap();
     let prepared = PreparedJob {
         parsed,
+        cont_prompt: None,
         surface: WireSurface::OpenaiChat,
         body_bytes: body.len() as u64,
         arrived_at: Instant::now(),
@@ -457,6 +458,7 @@ fn anthropic_tool_job(inner: &Arc<Mutex<ServerInner>>, tag: &str) -> (OwnerJob, 
     let parsed = parse_request(WireSurface::Anthropic, &env, &body).unwrap();
     let prepared = PreparedJob {
         parsed,
+        cont_prompt: None,
         surface: WireSurface::Anthropic,
         body_bytes: body.len() as u64,
         arrived_at: Instant::now(),

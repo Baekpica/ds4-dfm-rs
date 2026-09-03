@@ -5,7 +5,7 @@ use std::time::Instant;
 use super::*;
 use crate::route::{route_decide, RouteEnv, LANE_CONTINUOUS};
 use crate::serve_cont::{
-    cont_prompt_tokens, ContExec, ContOwnedResult, ContOwnedWork, ContProbe, ContSource, ContWork,
+    ContExec, ContOwnedResult, ContOwnedWork, ContProbe, ContSource, ContWork,
 };
 use crate::serve_cont_prefill::{owner_tick_pair, PrefillChunkPolicy};
 
@@ -14,11 +14,11 @@ pub(super) fn run_owner_maybe_roll(
     inner: &Arc<Mutex<ServerInner>>,
     engine: &mut dyn DecodeIo,
     exec: &mut dyn ContExec,
-    job: OwnerJob,
+    mut job: OwnerJob,
     jobs_rx: &Receiver<OwnerJob>,
 ) -> Option<OwnerJob> {
-    let prompt_len = cont_prompt_tokens(exec, &job.prepared.parsed)
-        .map(|(_, toks)| toks.len() as i32)
+    let prompt_len = prepare_cont_prompt(&mut job.prepared, exec)
+        .map(|prepared| prepared.tokens.len() as i32)
         .unwrap_or(0);
     let env = roll_route_env(cfg, exec.seq_cap(), prompt_len);
     let dec = route_decide(job.prepared.parsed.needs, job.prepared.surface, &env);
@@ -26,7 +26,6 @@ pub(super) fn run_owner_maybe_roll(
         run_owner_job(cfg, inner, engine, Some(exec), job);
         return None;
     }
-    let mut job = job;
     if !resolve_bank_continuation(inner, &mut job.prepared, exec) {
         run_owner_job(cfg, inner, engine, Some(exec), job);
         return None;
@@ -76,8 +75,8 @@ pub(super) fn run_owner_maybe_roll(
             finish_canceled_roll(next);
             continue;
         }
-        let prompt_len = cont_prompt_tokens(exec, &next.prepared.parsed)
-            .map(|(_, toks)| toks.len() as i32)
+        let prompt_len = prepare_cont_prompt(&mut next.prepared, exec)
+            .map(|prepared| prepared.tokens.len() as i32)
             .unwrap_or(0);
         let env = roll_route_env(cfg, exec.seq_cap(), prompt_len);
         let dec = route_decide(next.prepared.parsed.needs, next.prepared.surface, &env);
@@ -141,9 +140,21 @@ impl ContSource for OwnerRollSource<'_> {
                 continue;
             }
             if !primed {
-                let prompt_len = probe
-                    .prompt_tokens(&job.prepared.parsed)
-                    .map(|(_, tokens)| tokens.len() as i32)
+                if job.prepared.cont_prompt.is_none() {
+                    job.prepared.cont_prompt =
+                        probe
+                            .prompt_tokens(&job.prepared.parsed)
+                            .ok()
+                            .map(|(prompt, tokens)| crate::serve_cont::ContPreparedPrompt {
+                                prompt,
+                                tokens,
+                            });
+                }
+                let prompt_len = job
+                    .prepared
+                    .cont_prompt
+                    .as_ref()
+                    .map(|prepared| prepared.tokens.len() as i32)
                     .unwrap_or(0);
                 let env = roll_route_env(self.cfg, probe.seq_cap(), prompt_len);
                 let decision = route_decide(job.prepared.parsed.needs, job.prepared.surface, &env);
@@ -159,9 +170,11 @@ impl ContSource for OwnerRollSource<'_> {
             job.lease.start();
             let id = next_job_id(&mut lock_inner(self.inner).admit, job.prepared.parsed.kind);
             let key = self.jobs.len();
+            let prepared = job.prepared.cont_prompt.take();
             let work = ContOwnedWork {
                 key,
                 parsed: job.prepared.parsed.clone(),
+                prepared,
                 job_id: id.clone(),
                 created: self.created,
                 cors: self.cfg.cors,
@@ -310,9 +323,11 @@ fn serve_batch(
     if let Some(second) = jobs.get(1) {
         let decode_remaining =
             u32::try_from(jobs[0].prepared.parsed.max_tokens.max(1)).unwrap_or(1);
-        let prefill_remaining = cont_prompt_tokens(exec, &second.prepared.parsed)
-            .ok()
-            .and_then(|(_, toks)| u32::try_from(toks.len()).ok())
+        let prefill_remaining = second
+            .prepared
+            .cont_prompt
+            .as_ref()
+            .and_then(|prepared| u32::try_from(prepared.tokens.len()).ok())
             .unwrap_or(1)
             .max(1);
         let _ = owner_tick_pair(
@@ -327,6 +342,7 @@ fn serve_batch(
         .zip(&ids)
         .map(|(job, id)| ContWork {
             parsed: &job.prepared.parsed,
+            prepared: job.prepared.cont_prompt.as_ref(),
             job_id: id,
             created,
             cors: cfg.cors,

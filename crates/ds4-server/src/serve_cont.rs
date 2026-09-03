@@ -1320,8 +1320,15 @@ pub(crate) fn save_bank_record(
 }
 
 /// One continuous work item for a rolling admit.
+#[derive(Clone, Debug)]
+pub struct ContPreparedPrompt {
+    pub prompt: Vec<u8>,
+    pub tokens: Vec<i32>,
+}
+
 pub struct ContWork<'a> {
     pub parsed: &'a ParsedRequest,
+    pub prepared: Option<&'a ContPreparedPrompt>,
     pub job_id: &'a str,
     pub created: i64,
     pub cors: bool,
@@ -1335,6 +1342,7 @@ pub struct ContWork<'a> {
 pub struct ContOwnedWork {
     pub key: usize,
     pub parsed: ParsedRequest,
+    pub prepared: Option<ContPreparedPrompt>,
     pub job_id: String,
     pub created: i64,
     pub cors: bool,
@@ -1413,6 +1421,32 @@ pub trait ContExec {
         out: &mut dyn Write,
     ) -> Result<GenerateOutcome, GenerateError>;
 
+    fn generate_prepared(
+        &mut self,
+        parsed: &ParsedRequest,
+        _prepared: Option<&ContPreparedPrompt>,
+        job_id: &str,
+        created: i64,
+        cors: bool,
+        default_tokens: i32,
+        t_arrive: Instant,
+        bank_hold_retry: &mut dyn FnMut(i32, Option<(u64, i32)>) -> Option<i32>,
+        store: Option<&mut KvStore>,
+        out: &mut dyn Write,
+    ) -> Result<GenerateOutcome, GenerateError> {
+        self.generate(
+            parsed,
+            job_id,
+            created,
+            cors,
+            default_tokens,
+            t_arrive,
+            bank_hold_retry,
+            store,
+            out,
+        )
+    }
+
     /// Drive up to `max_seq()` jobs in one rolling admit loop. The default
     /// keeps non-native implementations correct by running them sequentially.
     fn generate_batch(
@@ -1423,8 +1457,9 @@ pub trait ContExec {
     ) -> Vec<Result<GenerateOutcome, GenerateError>> {
         jobs.into_iter()
             .map(|job| {
-                self.generate(
+                self.generate_prepared(
                     job.parsed,
+                    job.prepared,
                     job.job_id,
                     job.created,
                     job.cors,
@@ -1475,6 +1510,11 @@ pub fn cont_prompt_tokens(
     };
     let tokens = exec.prepare_tokens(parsed, &prompt, tokens)?;
     Ok((prompt, tokens))
+}
+
+#[cfg(any(feature = "native", test))]
+fn can_reuse_cont_prompt(attached_tool_blocks: usize, has_images: bool) -> bool {
+    attached_tool_blocks == 0 && !has_images
 }
 
 #[cfg(feature = "native")]
@@ -1986,6 +2026,7 @@ mod native {
                 let prepared = {
                     let borrowed = ContWork {
                         parsed: &work.parsed,
+                        prepared: work.prepared.as_ref(),
                         job_id: &work.job_id,
                         created: work.created,
                         cors: work.cors,
@@ -2677,22 +2718,33 @@ mod native {
             reserve: &crate::serve_cont_roll::RollReserve,
         ) -> Result<PreparedSlot, GenerateError> {
             let mut parsed = work.parsed.clone();
-            if parsed.kind == ReqKind::Chat {
+            let attached_tool_blocks = if parsed.kind == ReqKind::Chat {
                 if let Ok(model_id) = u8::try_from(self.model_id) {
                     if let Some(store) = store.as_deref() {
                         self.tool_memory
                             .restore_store(store, model_id, &parsed.messages);
                     }
                 }
-                self.tool_memory.attach(&mut parsed.messages);
-            }
+                self.tool_memory.attach(&mut parsed.messages)
+            } else {
+                0
+            };
             let parsed = &parsed;
-            let prompt = render_prompt(parsed, self.model_id)?;
-            let tokens = match parsed.kind {
-                ReqKind::Completion => self
-                    .vocab
-                    .encode_text(std::str::from_utf8(&prompt).unwrap_or("")),
-                ReqKind::Chat => self.vocab.encode_rendered_bytes(&prompt),
+            let prepared = work
+                .prepared
+                .filter(|_| can_reuse_cont_prompt(attached_tool_blocks, !parsed.images.is_empty()));
+            let (prompt, tokens) = match prepared {
+                Some(prepared) => (prepared.prompt.clone(), prepared.tokens.clone()),
+                None => {
+                    let prompt = render_prompt(parsed, self.model_id)?;
+                    let tokens = match parsed.kind {
+                        ReqKind::Completion => self
+                            .vocab
+                            .encode_text(std::str::from_utf8(&prompt).unwrap_or("")),
+                        ReqKind::Chat => self.vocab.encode_rendered_bytes(&prompt),
+                    };
+                    (prompt, tokens)
+                }
             };
             let directed = parsed.directed_bank.filter(|bank| *bank >= 0);
             let (tokens, images, cache_prompt, cache_spans, directed_cached) = if let Some(bank) =
@@ -3046,11 +3098,39 @@ mod native {
             default_tokens: i32,
             t_arrive: Instant,
             bank_hold_retry: &mut dyn FnMut(i32, Option<(u64, i32)>) -> Option<i32>,
+            store: Option<&mut KvStore>,
+            out: &mut dyn Write,
+        ) -> Result<GenerateOutcome, GenerateError> {
+            self.generate_prepared(
+                parsed,
+                None,
+                job_id,
+                created,
+                cors,
+                default_tokens,
+                t_arrive,
+                bank_hold_retry,
+                store,
+                out,
+            )
+        }
+
+        fn generate_prepared(
+            &mut self,
+            parsed: &ParsedRequest,
+            prepared: Option<&ContPreparedPrompt>,
+            job_id: &str,
+            created: i64,
+            cors: bool,
+            default_tokens: i32,
+            t_arrive: Instant,
+            bank_hold_retry: &mut dyn FnMut(i32, Option<(u64, i32)>) -> Option<i32>,
             mut store: Option<&mut KvStore>,
             out: &mut dyn Write,
         ) -> Result<GenerateOutcome, GenerateError> {
             let work = ContWork {
                 parsed,
+                prepared,
                 job_id,
                 created,
                 cors,
@@ -3218,6 +3298,13 @@ mod bank_tests {
 
     fn shutdown_requested() -> bool {
         true
+    }
+
+    #[test]
+    fn prepared_prompt_is_reused_only_when_native_inputs_are_unchanged() {
+        assert!(can_reuse_cont_prompt(0, false));
+        assert!(!can_reuse_cont_prompt(1, false));
+        assert!(!can_reuse_cont_prompt(0, true));
     }
 
     #[test]

@@ -100,6 +100,7 @@ fn generate_mid_stream_io(
 fn streamed_job(surface: WireSurface, body: &str, body_bytes: u64) -> PreparedJob {
     PreparedJob {
         parsed: streamed(surface, body),
+        cont_prompt: None,
         surface,
         body_bytes,
         arrived_at: Instant::now(),

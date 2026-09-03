@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::io::Write;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -18,6 +19,9 @@ struct OwnerSpy {
     calls: usize,
     ns: Vec<usize>,
     seq_cap: i32,
+    encode_calls: Cell<usize>,
+    allow_cont: bool,
+    cont_calls: usize,
 }
 
 impl StaticExec for OwnerSpy {
@@ -46,9 +50,11 @@ impl ContExec for OwnerSpy {
         self.seq_cap
     }
     fn encode_chat(&self, _rendered: &[u8]) -> Vec<i32> {
+        self.encode_calls.set(self.encode_calls.get() + 1);
         vec![77]
     }
     fn encode_text(&self, _text: &str) -> Vec<i32> {
+        self.encode_calls.set(self.encode_calls.get() + 1);
         vec![77]
     }
     fn generate(
@@ -61,13 +67,45 @@ impl ContExec for OwnerSpy {
         _t_arrive: Instant,
         _bank_hold_retry: &mut dyn FnMut(i32, Option<(u64, i32)>) -> Option<i32>,
         _store: Option<&mut ds4_kv::Store>,
-        _out: &mut dyn Write,
+        out: &mut dyn Write,
     ) -> Result<GenerateOutcome, GenerateError> {
-        panic!("continuous generate must not run on a static-routed request");
+        assert!(self.allow_cont, "continuous generate on a static request");
+        self.cont_calls += 1;
+        out.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}")
+            .map_err(|_| GenerateError::Io)?;
+        Ok(GenerateOutcome {
+            finish: "stop".into(),
+            ..GenerateOutcome::default()
+        })
     }
     fn as_static(&mut self) -> Option<&mut dyn StaticExec> {
         Some(self)
     }
+}
+
+#[test]
+fn continuous_owner_tokenizes_a_long_request_once_before_generation() {
+    let cfg = ServerConfig {
+        continuous: true,
+        have_engine: true,
+        default_tokens: 8,
+        ..ServerConfig::default()
+    };
+    let inner = Arc::new(Mutex::new(ServerInner::from_cfg(&cfg)));
+    let (job, drain) = static_chat_job(&inner, "long-session");
+    let (_tx, rx) = mpsc::channel();
+    let mut spy = OwnerSpy {
+        seq_cap: 8192,
+        allow_cont: true,
+        ..OwnerSpy::default()
+    };
+    let mut engine = ScriptedDecode::from_pieces(&[]);
+
+    assert!(run_owner_maybe_coalesce(&cfg, &inner, &mut engine, &mut spy, job, &rx).is_none());
+
+    assert_eq!(spy.cont_calls, 1);
+    assert_eq!(spy.encode_calls.get(), 1);
+    let _ = drain.done.recv();
 }
 
 fn static_chat_job(inner: &Arc<Mutex<ServerInner>>, tag: &str) -> (OwnerJob, JobDrain) {
@@ -84,6 +122,7 @@ fn static_chat_job(inner: &Arc<Mutex<ServerInner>>, tag: &str) -> (OwnerJob, Job
     let parsed = crate::parse::parse_request(WireSurface::OpenaiChat, &env, &body).unwrap();
     let prepared = PreparedJob {
         parsed,
+        cont_prompt: None,
         surface: WireSurface::OpenaiChat,
         body_bytes: body.len() as u64,
         arrived_at: Instant::now(),

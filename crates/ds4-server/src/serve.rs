@@ -37,7 +37,7 @@ use crate::route::{
     decode_budget, route_decide, Api, RouteEnv, ThinkMode, WireSurface, LANE_CONTINUOUS,
     LANE_STATIC, NEED_BANK_FRONTIER,
 };
-use crate::serve_cont::{cont_prompt_tokens, ContExec};
+use crate::serve_cont::{cont_prompt_tokens, ContExec, ContPreparedPrompt};
 use crate::serve_cont_roll::RejectReason;
 use crate::serve_serial_fit::{
     serial_fit_bounds, serial_live_preserve_msg, serial_session_fit_plan, SerialFitPlan,
@@ -769,9 +769,21 @@ fn settle_bank_continuation<W: TerminalSink>(
 
 struct PreparedJob {
     parsed: crate::parse::ParsedRequest,
+    cont_prompt: Option<ContPreparedPrompt>,
     surface: WireSurface,
     body_bytes: u64,
     arrived_at: Instant,
+}
+
+fn prepare_cont_prompt<'a>(
+    job: &'a mut PreparedJob,
+    exec: &dyn ContExec,
+) -> Option<&'a ContPreparedPrompt> {
+    if job.cont_prompt.is_none() {
+        let (prompt, tokens) = cont_prompt_tokens(exec, &job.parsed).ok()?;
+        job.cont_prompt = Some(ContPreparedPrompt { prompt, tokens });
+    }
+    job.cont_prompt.as_ref()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1161,6 +1173,7 @@ fn prepare_client(
                     let body_bytes = req.body.len() as u64;
                     return Some(PreparedJob {
                         parsed,
+                        cont_prompt: None,
                         surface: surf,
                         body_bytes,
                         arrived_at,
@@ -1192,9 +1205,8 @@ fn run_prepared<W: TerminalSink>(
     arrived_at: Option<Instant>,
 ) -> Settlement {
     let cont_gate = match (cont.as_deref(), engine.is_some()) {
-        (Some(exec), true) => cont_prompt_tokens(exec, &job.parsed)
-            .ok()
-            .map(|(_, toks)| (toks.len() as i32, exec.seq_cap())),
+        (Some(exec), true) => prepare_cont_prompt(job, exec)
+            .map(|prepared| (prepared.tokens.len() as i32, exec.seq_cap())),
         _ => None,
     };
     let (cont_tools_anthropic, cont_tools_responses) = process_cont_tools();
@@ -1265,8 +1277,9 @@ fn run_engine<W: TerminalSink>(
                     .creg
                     .bank_hold_retry(bank, live, monotonic_now())
             };
-            let result = exec.generate(
+            let result = exec.generate_prepared(
                 &job.parsed,
+                job.cont_prompt.as_ref(),
                 id,
                 unix_now(),
                 cfg.cors,
@@ -1301,8 +1314,8 @@ fn run_engine<W: TerminalSink>(
     }
     if dec.lane == LANE_STATIC {
         let tokens = match cont.as_deref() {
-            Some(exec) => cont_prompt_tokens(exec, &job.parsed)
-                .map(|(_, toks)| toks)
+            Some(exec) => prepare_cont_prompt(job, exec)
+                .map(|prepared| prepared.tokens.clone())
                 .unwrap_or_default(),
             None => Vec::new(),
         };
@@ -3198,6 +3211,7 @@ mod owner_tests {
         .unwrap();
         let mut prepared = PreparedJob {
             parsed,
+            cont_prompt: None,
             surface: WireSurface::Anthropic,
             body_bytes: 11,
             arrived_at: Instant::now(),
@@ -3247,6 +3261,7 @@ mod owner_tests {
         let parsed = parse_request(WireSurface::OpenaiCompletion, &env, &body).unwrap();
         PreparedJob {
             parsed,
+            cont_prompt: None,
             surface: WireSurface::OpenaiCompletion,
             body_bytes,
             arrived_at: Instant::now(),
