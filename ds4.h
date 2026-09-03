@@ -139,6 +139,7 @@ typedef struct {
 
 typedef struct {
     const char *model_path;
+    const char *vision_path;   /* GLM-5.3 vision encoder GGUF (optional) */
     const char *mtp_path;
     const char *dspark_path;   /* DSpark/dflash block-drafter GGUF (optional) */
     ds4_backend backend;

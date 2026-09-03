@@ -533,6 +533,11 @@ void     ds4_cuda_probe_layer_rows_at_slot(uint32_t il,
 int ds4_gpu_set_model_map(const void *model_map, uint64_t model_size);
 int ds4_gpu_set_model_fd(int fd);
 int ds4_gpu_set_model_map_range(const void *model_map, uint64_t model_size, uint64_t map_offset, uint64_t map_size, uint64_t max_tensor_bytes);
+/* Add a secondary GGUF mapping without replacing the primary model mapping. */
+int ds4_gpu_set_aux_model_map_range(const void *model_map,
+                                    uint64_t model_size,
+                                    uint64_t map_offset,
+                                    uint64_t map_size);
 int ds4_gpu_import_model_ipc_manifest(const void *model_map, uint64_t model_size, const char *manifest_path, const char *model_id);
 /* Engine-owned GGUF catalog entry.  Split models use offsets in the merged
  * mapping, which no individual shard catalog can represent. */
@@ -3672,6 +3677,39 @@ int ds4_gpu_solar_kda_decode_tensor(
 
 /* GLM 5.3 shares Solar's KDA state layout but uses sigmoid beta and
  * sigmoid-bounded log decay. */
+#define DS4_GLM53_VISION_LAYERS 24u
+typedef struct {
+    uint64_t norm1;
+    uint64_t qkv_weight;
+    uint64_t qkv_bias;
+    uint64_t q_norm;
+    uint64_t k_norm;
+    uint64_t attn_proj_weight;
+    uint64_t attn_proj_bias;
+    uint64_t norm2;
+    uint64_t gate_weight;
+    uint64_t gate_bias;
+    uint64_t up_weight;
+    uint64_t up_bias;
+    uint64_t down_weight;
+    uint64_t down_bias;
+} ds4_glm53_vision_layer_weights;
+
+typedef struct {
+    uint64_t patch_weight;
+    uint64_t patch_bias;
+    uint64_t post_norm;
+    uint64_t downsample_weight;
+    uint64_t downsample_bias;
+    uint64_t merger_proj;
+    uint64_t merger_norm;
+    uint64_t merger_norm_bias;
+    uint64_t merger_gate;
+    uint64_t merger_up;
+    uint64_t merger_down;
+    ds4_glm53_vision_layer_weights layer[DS4_GLM53_VISION_LAYERS];
+} ds4_glm53_vision_weights;
+
 int ds4_gpu_glm53_kda_decode_tensor(
         ds4_gpu_tensor       *out,
         ds4_gpu_tensor       *recurrent_state,

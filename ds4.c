@@ -7215,6 +7215,137 @@ static void config_validate_model(const ds4_model *m) {
     exit(1);
 }
 
+#ifndef DS4_NO_GPU
+static ds4_tensor *glm53_vision_required_tensor(
+        const ds4_model *m,
+        const char      *name,
+        uint32_t         ndim,
+        const uint64_t  *dims) {
+    ds4_tensor *t = required_tensor(m, name);
+    if (t->type != DS4_TENSOR_BF16 || t->ndim != ndim) {
+        fprintf(stderr,
+                "ds4: vision tensor %s has type %s/rank %u, expected BF16/rank %u\n",
+                name, tensor_type_name(t->type), t->ndim, ndim);
+        exit(1);
+    }
+    for (uint32_t d = 0; d < ndim; d++) {
+        if (t->dim[d] == dims[d]) continue;
+        fprintf(stderr,
+                "ds4: vision tensor %s has dim[%u]=%" PRIu64
+                ", expected %" PRIu64 "\n",
+                name, d, t->dim[d], dims[d]);
+        exit(1);
+    }
+    return t;
+}
+
+static uint64_t glm53_vision_required_offset(
+        const ds4_model *m,
+        const char      *name,
+        uint32_t         ndim,
+        const uint64_t  *dims) {
+    return glm53_vision_required_tensor(m, name, ndim, dims)->abs_offset;
+}
+
+static void glm53_vision_weights_bind(
+        ds4_glm53_vision_weights *w,
+        const ds4_model          *m) {
+    ds4_str arch = {0};
+    if (!model_get_string(m, "general.architecture", &arch) ||
+        !ds4_streq(arch, "glm5-next-vision"))
+        ds4_die("--vision file is not a GLM-5.3 vision encoder GGUF");
+    if (m->n_tensors != 347u) {
+        fprintf(stderr, "ds4: vision GGUF has %" PRIu64
+                        " tensors, expected 347\n", m->n_tensors);
+        exit(1);
+    }
+    config_expect_u32("vision block_count",
+                      required_u32(m, "glm5-next-vision.block_count"), 24u);
+    config_expect_u32("vision embedding_length",
+                      required_u32(m, "glm5-next-vision.embedding_length"), 1024u);
+    config_expect_u32("vision feed_forward_length",
+                      required_u32(m, "glm5-next-vision.feed_forward_length"), 4096u);
+    config_expect_u32("vision head_count",
+                      required_u32(m, "glm5-next-vision.attention.head_count"), 16u);
+    config_expect_u32("vision projection_length",
+                      required_u32(m, "glm5-next-vision.projection_length"), 4096u);
+    config_expect_u32("vision projection feed_forward_length",
+                      required_u32(m,
+                          "glm5-next-vision.projection.feed_forward_length"), 10240u);
+    config_expect_u32("vision patch_size",
+                      required_u32(m, "glm5-next-vision.patch_size"), 14u);
+    config_expect_u32("vision temporal_patch_size",
+                      required_u32(m, "glm5-next-vision.temporal_patch_size"), 2u);
+    config_expect_u32("vision spatial_merge_size",
+                      required_u32(m, "glm5-next-vision.spatial_merge_size"), 2u);
+
+    static const uint64_t d1024[] = {1024u};
+    static const uint64_t d4096[] = {4096u};
+    static const uint64_t d64[] = {64u};
+    static const uint64_t d3072[] = {3072u};
+    static const uint64_t d1024_1024[] = {1024u, 1024u};
+    static const uint64_t d1024_3072[] = {1024u, 3072u};
+    static const uint64_t d1024_4096[] = {1024u, 4096u};
+    static const uint64_t d4096_1024[] = {4096u, 1024u};
+    static const uint64_t d4096_4096[] = {4096u, 4096u};
+    static const uint64_t d4096_10240[] = {4096u, 10240u};
+    static const uint64_t d10240_4096[] = {10240u, 4096u};
+    static const uint64_t patch_dims[] = {14u, 14u, 2u, 3u, 1024u};
+    static const uint64_t downsample_dims[] = {2u, 2u, 1024u, 4096u};
+
+    memset(w, 0, sizeof(*w));
+    w->patch_weight = glm53_vision_required_offset(
+            m, "model.visual.patch_embed.proj.weight", 5, patch_dims);
+    w->patch_bias = glm53_vision_required_offset(
+            m, "model.visual.patch_embed.proj.bias", 1, d1024);
+    w->post_norm = glm53_vision_required_offset(
+            m, "model.visual.post_layernorm.weight", 1, d1024);
+    w->downsample_weight = glm53_vision_required_offset(
+            m, "model.visual.downsample.weight", 4, downsample_dims);
+    w->downsample_bias = glm53_vision_required_offset(
+            m, "model.visual.downsample.bias", 1, d4096);
+    w->merger_proj = glm53_vision_required_offset(
+            m, "model.visual.merger.proj.weight", 2, d4096_4096);
+    w->merger_norm = glm53_vision_required_offset(
+            m, "model.visual.merger.post_projection_norm.weight", 1, d4096);
+    w->merger_norm_bias = glm53_vision_required_offset(
+            m, "model.visual.merger.post_projection_norm.bias", 1, d4096);
+    w->merger_gate = glm53_vision_required_offset(
+            m, "model.visual.merger.gate_proj.weight", 2, d4096_10240);
+    w->merger_up = glm53_vision_required_offset(
+            m, "model.visual.merger.up_proj.weight", 2, d4096_10240);
+    w->merger_down = glm53_vision_required_offset(
+            m, "model.visual.merger.down_proj.weight", 2, d10240_4096);
+
+    for (uint32_t il = 0; il < DS4_GLM53_VISION_LAYERS; il++) {
+        char name[160];
+#define VISION_LAYER_OFFSET(field_, suffix_, rank_, dims_) do { \
+            int n = snprintf(name, sizeof(name), \
+                    "model.visual.blocks.%u.%s", il, suffix_); \
+            if (n < 0 || (size_t)n >= sizeof(name)) \
+                ds4_die("vision tensor name overflow"); \
+            w->layer[il].field_ = glm53_vision_required_offset( \
+                    m, name, rank_, dims_); \
+        } while (0)
+        VISION_LAYER_OFFSET(norm1, "norm1.weight", 1, d1024);
+        VISION_LAYER_OFFSET(qkv_weight, "attn.qkv.weight", 2, d1024_3072);
+        VISION_LAYER_OFFSET(qkv_bias, "attn.qkv.bias", 1, d3072);
+        VISION_LAYER_OFFSET(q_norm, "attn.q_norm.weight", 1, d64);
+        VISION_LAYER_OFFSET(k_norm, "attn.k_norm.weight", 1, d64);
+        VISION_LAYER_OFFSET(attn_proj_weight, "attn.proj.weight", 2, d1024_1024);
+        VISION_LAYER_OFFSET(attn_proj_bias, "attn.proj.bias", 1, d1024);
+        VISION_LAYER_OFFSET(norm2, "norm2.weight", 1, d1024);
+        VISION_LAYER_OFFSET(gate_weight, "mlp.gate_proj.weight", 2, d1024_4096);
+        VISION_LAYER_OFFSET(gate_bias, "mlp.gate_proj.bias", 1, d4096);
+        VISION_LAYER_OFFSET(up_weight, "mlp.up_proj.weight", 2, d1024_4096);
+        VISION_LAYER_OFFSET(up_bias, "mlp.up_proj.bias", 1, d4096);
+        VISION_LAYER_OFFSET(down_weight, "mlp.down_proj.weight", 2, d4096_1024);
+        VISION_LAYER_OFFSET(down_bias, "mlp.down_proj.bias", 1, d1024);
+#undef VISION_LAYER_OFFSET
+    }
+}
+#endif
+
 static void weights_bind_motif3_layer(
         ds4_layer_weights *l,
         const ds4_model   *m,
@@ -32988,6 +33119,10 @@ struct ds4_engine {
     ds4_model model;
     ds4_model mtp_model;
     ds4_model dspark_model;
+#ifndef DS4_NO_GPU
+    ds4_model vision_model;
+    ds4_glm53_vision_weights vision_weights;
+#endif
     ds4_vocab vocab;
     ds4_weights weights;
     ds4_mtp_weights mtp_weights;
@@ -33007,6 +33142,11 @@ struct ds4_engine {
     bool metal_ready;
     bool mtp_ready;
     bool dspark_ready;
+    bool vision_ready;
+    bool vision_map_ready;
+    int vision_image_token;
+    int vision_start_token;
+    int vision_end_token;
     bool boot_prewarm_done;   /* inc-14b: prewarm ran (or was attempted) */
     /* v0.5.1 inc4: MTP accept guard -- a process-wide mismatch detector for
      * the MTP draft arms (DSpark has its own calibrated yield quench; these
@@ -63208,6 +63348,9 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     ds4_engine *e = xcalloc(1, sizeof(*e));
     e->model.fd = -1;
     e->mtp_model.fd = -1;
+#ifndef DS4_NO_GPU
+    e->vision_model.fd = -1;
+#endif
     e->backend = opt->backend;
     e->quality = opt->quality;
     e->distributed = opt->distributed;
@@ -63277,6 +63420,41 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         *out = e;
         return 0;
     }
+#ifndef DS4_NO_GPU
+    if (opt->vision_path && opt->vision_path[0]) {
+        if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 ||
+            e->backend != DS4_BACKEND_CUDA ||
+            opt->distributed.role != DS4_DISTRIBUTED_NONE || load_slice) {
+            fprintf(stderr,
+                    "ds4: --vision currently requires one full GLM-5.3 CUDA model\n");
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
+        model_open(&e->vision_model, opt->vision_path, true, false);
+        glm53_vision_weights_bind(&e->vision_weights, &e->vision_model);
+        e->vision_image_token = (int)required_u32(
+                &e->vision_model, "glm5-next-vision.image_token_id");
+        e->vision_start_token = (int)required_u32(
+                &e->vision_model, "glm5-next-vision.image_start_token_id");
+        e->vision_end_token = (int)required_u32(
+                &e->vision_model, "glm5-next-vision.image_end_token_id");
+        if (e->vision_image_token != 154854 ||
+            e->vision_start_token != 154830 ||
+            e->vision_end_token != 154831)
+            ds4_die("unexpected GLM-5.3 vision token IDs");
+        e->vision_ready = true;
+        fprintf(stderr, "ds4: GLM-5.3 vision encoder loaded: %s\n",
+                opt->vision_path);
+    }
+#else
+    if (opt->vision_path && opt->vision_path[0]) {
+        fprintf(stderr, "ds4: this build does not include CUDA vision support\n");
+        ds4_engine_close(e);
+        *out = NULL;
+        return 1;
+    }
+#endif
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP &&
         (e->backend != DS4_BACKEND_CUDA ||
          opt->distributed.role != DS4_DISTRIBUTED_NONE || load_slice ||
@@ -63589,6 +63767,20 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             ds4_engine_close(e);
             *out = NULL;
             return 1;
+        }
+        if (e->vision_ready) {
+            e->vision_map_ready = ds4_gpu_set_aux_model_map_range(
+                    e->vision_model.map,
+                    e->vision_model.size,
+                    e->vision_model.tensor_data_pos,
+                    e->vision_model.size - e->vision_model.tensor_data_pos) != 0;
+            if (!e->vision_map_ready) {
+                fprintf(stderr,
+                        "ds4: CUDA failed to map the GLM-5.3 vision encoder\n");
+                ds4_engine_close(e);
+                *out = NULL;
+                return 1;
+            }
         }
         if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP &&
             !qwen4exp_engine_open_ple(e, opt->model_path)) {
@@ -63971,6 +64163,9 @@ void ds4_engine_close(ds4_engine *e) {
     ds4_threads_shutdown();
     if (e->mtp_ready) model_close(&e->mtp_model);
     if (e->dspark_ready) model_close(&e->dspark_model);
+#ifndef DS4_NO_GPU
+    if (e->vision_model.map) model_close(&e->vision_model);
+#endif
     model_close(&e->model);
 #ifndef DS4_NO_GPU
     ds4_gpu_cleanup();

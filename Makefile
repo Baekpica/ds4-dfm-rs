@@ -20,6 +20,7 @@ DS4_DOTS3_MODEL ?=
 DS4_QWEN4EXP_MODEL ?=
 DS4_QWEN4EXP_ROOT ?=
 DS4_QWEN4EXP_SOURCE ?=
+DS4_GLM53_VISION_MODEL ?=
 CUDA_EXTRA_BINS :=
 
 ifeq ($(UNAME_S),Darwin)
@@ -927,6 +928,15 @@ test-glm53-loader: tests/test_glm53_loader
 	@test -n "$(DS4_GLM53_MODEL)" || \
 		{ echo "set DS4_GLM53_MODEL to GLM-5.3-Flash-Q2.gguf" >&2; exit 2; }
 	./tests/test_glm53_loader "$(DS4_GLM53_MODEL)"
+
+tests/test_glm53_vision_loader: tests/test_glm53_vision_loader.c ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+test-glm53-vision-loader: tests/test_glm53_vision_loader
+	@test -n "$(DS4_GLM53_VISION_MODEL)" || \
+		{ echo "set DS4_GLM53_VISION_MODEL to GLM-5.3-Flash-Vision-Encoder.gguf" >&2; exit 2; }
+	./tests/test_glm53_vision_loader "$(DS4_GLM53_VISION_MODEL)"
 
 tests/test_glm53_dsa.o: tests/test_glm53_dsa.c ds4_gpu.h
 	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<

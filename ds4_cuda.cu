@@ -5105,6 +5105,35 @@ extern "C" int ds4_gpu_set_model_map_range(const void *model_map, uint64_t model
     return 1;
 }
 
+extern "C" int ds4_gpu_set_aux_model_map_range(
+        const void *model_map,
+        uint64_t model_size,
+        uint64_t map_offset,
+        uint64_t map_size) {
+    if (!model_map || model_size == 0 || map_size == 0 ||
+        map_offset > model_size || map_size > model_size - map_offset) return 0;
+
+    int device = 0, integrated = 0, pageable = 0;
+    if (cudaGetDevice(&device) != cudaSuccess ||
+        cudaDeviceGetAttribute(&integrated, cudaDevAttrIntegrated, device) != cudaSuccess ||
+        cudaDeviceGetAttribute(&pageable, cudaDevAttrPageableMemoryAccess, device) != cudaSuccess ||
+        !integrated || !pageable) {
+        fprintf(stderr, "ds4: auxiliary GGUF requires integrated pageable CUDA memory\n");
+        return 0;
+    }
+
+    cuda_model_range range = {};
+    range.host_base = model_map;
+    range.offset = map_offset;
+    range.bytes = map_size;
+    range.device_ptr = (char *)model_map + map_offset;
+    range.host_registered = 1;
+    if (!cuda_model_range_publish(range)) return 0;
+    fprintf(stderr, "ds4: CUDA directly mapped %.2f GiB auxiliary model\n",
+            (double)map_size / 1073741824.0);
+    return 1;
+}
+
 extern "C" int ds4_gpu_set_model_map_spans(
         const void *model_map,
         uint64_t model_size,
