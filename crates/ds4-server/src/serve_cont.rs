@@ -42,6 +42,14 @@ use crate::stream::{
 use crate::stream::{think_end, think_start, ChatFormat};
 use crate::tools::{assign_tool_ids, parse_generated_for_response, SemAccum};
 
+#[cfg(any(feature = "native", test))]
+const DEFAULT_BANK_PERSIST_MIN_TOKENS: i32 = 8_192;
+
+#[cfg(any(feature = "native", test))]
+fn bank_persist_eligible(committed: i32, persist_min: i32) -> bool {
+    persist_min > 0 && committed >= persist_min
+}
+
 /// Pure continuous-request stepper. The caller feeds decoded pieces and
 /// receives wire bytes; the engine (or a tape) owns token production.
 /// The four frozen wire surfaces share this stepper; route eligibility still
@@ -1476,6 +1484,7 @@ mod native {
         warm_disk_partial: bool,
         warm_partial_min: i32,
         warm_pin_min: i32,
+        warm_persist_min: i32,
         warm_checkpoint: bool,
         tool_memory: ToolMemory,
         memgov: Box<dyn crate::serve_cont_roll::ContMemGov>,
@@ -2037,6 +2046,10 @@ mod native {
         ) -> Self {
             let max_seq = usize::try_from(batch.max_seq().max(0)).unwrap_or(0);
             let warm_pin_min = crate::serve::env_i32_bound("DS4_SERVER_PIN_MIN_TOKENS", 65536);
+            let warm_persist_min = crate::serve::env_i32_bound(
+                "DS4_SERVER_PERSIST_MIN_TOKENS",
+                DEFAULT_BANK_PERSIST_MIN_TOKENS,
+            );
             let warm_fork = std::env::var_os("DS4_SERVER_FORK").is_none_or(|value| value != "0");
             let partial_requested =
                 std::env::var_os("DS4_SERVER_FORK_PARTIAL").is_none_or(|value| value != "0");
@@ -2065,6 +2078,7 @@ mod native {
                     warm_disk_partial,
                     warm_partial_min,
                     warm_pin_min,
+                    warm_persist_min,
                     warm_checkpoint,
                     tool_memory: ToolMemory::default(),
                     memgov: Box::new(crate::serve_cont_roll::AdmitAlways),
@@ -2465,7 +2479,7 @@ mod native {
                     store,
                     bank,
                     KvReason::BankEvict,
-                    self.warm_pin_min,
+                    self.warm_persist_min,
                     false,
                 );
             }
@@ -2484,9 +2498,6 @@ mod native {
             min_committed: i32,
             due_only: bool,
         ) {
-            if min_committed <= 0 {
-                return;
-            }
             if bank >= self.warm.len() {
                 return;
             }
@@ -2504,7 +2515,7 @@ mod native {
             };
             if self.warm[bank].record.as_ref().is_none_or(|record| {
                 record.generation != snapshot.generation || record.partial_only
-            }) || committed < min_committed
+            }) || !bank_persist_eligible(committed, min_committed)
                 || (due_only
                     && !bank_checkpoint_due_from_host(
                         &store.opt,
@@ -2844,7 +2855,7 @@ mod native {
                             store,
                             bank as usize,
                             KvReason::BankCheckpoint,
-                            self.warm_pin_min,
+                            self.warm_persist_min,
                             true,
                         );
                     }
@@ -2885,7 +2896,7 @@ mod native {
                         store,
                         bank,
                         KvReason::BankCheckpoint,
-                        self.warm_pin_min,
+                        self.warm_persist_min,
                         false,
                     );
                 }
@@ -3138,6 +3149,17 @@ mod bank_tests {
     use crate::route::{Api, ReqKind, ThinkMode};
     use ds4_kv::{Options, Reason, Store, EXT_BANK_REPLAY_V1, EXT_TOOL_MAP};
     use std::fs;
+
+    #[test]
+    fn shallow_agent_sessions_persist_without_becoming_resident_pinned() {
+        let session_tokens = 58_000;
+        assert!(bank_persist_eligible(
+            session_tokens,
+            DEFAULT_BANK_PERSIST_MIN_TOKENS
+        ));
+        assert!(session_tokens < 65_536);
+        assert!(!bank_persist_eligible(session_tokens, 65_536));
+    }
 
     #[test]
     fn bank_continuation_keeps_exact_prefix_and_tokenizes_only_the_suffix() {

@@ -401,6 +401,11 @@ The server has serial, continuous, and static lanes; set
 `DS4_SERVER_CONTINUOUS=0` to force the static/serial route used by the C
 compatibility gate.
 
+Resident-bank protection and SSD checkpoint eligibility are independent:
+`DS4_SERVER_PIN_MIN_TOKENS` defaults to 65,536, while
+`DS4_SERVER_PERSIST_MIN_TOKENS` defaults to 8,192. Lowering the persistence
+threshold does not pin shallow sessions in memory.
+
 Qwen image content is accepted in the existing API-native shapes:
 
 ```text
