@@ -19,7 +19,7 @@ retired when a better model makes it irrelevant.
 
 ## So, what can I do with this software?
 
-- Run one of the six validated model families on a DGX Spark without pulling
+- Run one of the seven validated model families on a DGX Spark without pulling
   in a general inference framework.
 - Serve OpenAI-compatible Chat, Completions, and Responses APIs, Anthropic
   Messages, or use the native coding agent against the same model lifecycle.
@@ -78,10 +78,9 @@ optimized C/CUDA/Metal backend, Git ancestry and authorship, and the full
 
 ## Status
 
-`v0.1.0-rc.3` hardens the Rust host for agent-serving workloads after the
-repository split and parity release. The scheduler, admission, streaming,
-continuation, cache-accounting, and shutdown changes are shared serving
-behavior; this is not a new model, weight, or kernel release.
+`v0.1.0-rc.4` adds the explicit GLM 5.3 Flash Q2 text and still-image path to
+the Rust host. Its release claim is limited to the two artifacts and the DGX
+Spark CUDA execution path documented below.
 
 | Item | RC scope |
 |---|---|
@@ -171,9 +170,9 @@ See [`ARCHITECTURE.md`](docs/rust-migration/ARCHITECTURE.md) and
 
 ## Supported hardware and backends
 
-| Backend | Status in `v0.1.0-rc.3` |
+| Backend | Status in `v0.1.0-rc.4` |
 |---|---|
-| NVIDIA DGX Spark / GB10 | Release target. The split-era full matrix, long-context, Qwen image/MTP, ABBA, and soak gates ran here; RC.3's targeted agent-serving matrix also ran here. |
+| NVIDIA DGX Spark / GB10 | Release target. The split-era full matrix, long-context, Qwen image/MTP, ABBA, and soak gates ran here; RC.3's agent-serving matrix and RC.4's GLM Q2 text/vision gates also ran here. |
 | Other NVIDIA CUDA systems | Source path retained through `make cuda-generic` or an explicit `CUDA_ARCH`; not covered by the RC's full live matrix. |
 | macOS Metal | Inherited source/build path retained; not part of the DFM RC live gate. |
 | CPU | Reference and diagnostics only, not a production performance backend. |
@@ -195,6 +194,7 @@ tokenizer/chat contract, state lifecycle, and native execution path.
 | Motif-3 | `motif3` | Latent KV, rotated `k_pe`, SWA rings, persistent banks. |
 | dots3-note Preview | `dots3-note` | Dual-geometry latent state; current live serving path is serial. |
 | Qwen3.8 Flash Next SSD-PLE | `qwen4exp` | Q5 main GGUF + four shared SSD-PLE sidecars, embedded MTP, N-bank Rust scheduling, still-image input; one- and two-bank live gates. |
+| GLM 5.3 Flash | `glm5-next` | Q2 single-file GGUF plus the explicit vision sidecar; CUDA serial serving on one DGX Spark. |
 
 The current family contract and measured model-specific limits are documented
 in [`ds4-dfm-model-families.md`](docs/ds4-dfm-model-families.md). Arbitrary
@@ -231,6 +231,43 @@ Image limits match the frozen C behavior:
 
 See [`QWEN_V065_RESTAMP_2026-08-31.md`](docs/rust-migration/QWEN_V065_RESTAMP_2026-08-31.md)
 and [`qwen38-image-input-spec.md`](docs/qwen38-image-input-spec.md).
+
+### GLM 5.3 Flash release scope
+
+RC.4 follows the explicit GLM 5.3 Flash graph and vision implementation in
+the official [`antirez/ds4`](https://github.com/antirez/ds4) upstream, pinned
+for this port at
+[`110afdd`](https://github.com/antirez/ds4/commit/110afdd8886586f18fc9b28bc5533152dd10e728).
+The Rust host keeps the KDA, DSA, hyper-connection mixing, MoE, and
+[`vision encoder`](https://github.com/antirez/ds4/blob/110afdd8886586f18fc9b28bc5533152dd10e728/ds4_glm53_vision_gpu.cuh)
+execution native.
+
+The verified artifact set is exactly:
+
+- `GLM-5.3-Flash-Q2.gguf` — 96,505,816,384 bytes;
+- `GLM-5.3-Flash-Vision-Encoder.gguf` — 1,127,280,960 bytes, SHA-256
+  `ae23e14c6979e889051b2e4a39351abcdafb161e18e606fae4d8c40095a4bf3a`.
+
+The following command reproduces the RC.4 live smoke shape:
+
+```sh
+MODEL_DIR=/path/to/GLM-5.3-Flash-Mixed-Quant-GGUF
+
+./ds4-server --cuda \
+  -m "$MODEL_DIR/GLM-5.3-Flash-Q2.gguf" \
+  --vision "$MODEL_DIR/GLM-5.3-Flash-Vision-Encoder.gguf" \
+  --model-id GLM-5.3-Flash-Q2 \
+  -c 256 -n 8 \
+  --host 127.0.0.1 --port 8000
+```
+
+The current GLM graph is serial and has an explicit 2,048-token context cap.
+OpenAI Chat text and inline PNG image requests were served live on one DGX
+Spark; model-free parsing gates also cover the equivalent Responses and
+Anthropic inline-image forms. PNG and JPEG are accepted, with at most four
+images per request. Q4, FP8, full GLM 5.3, Metal, ROCm, distributed serving,
+SSD streaming, continuous batching, and speculative MTP were not RC.4 gates
+and are not implied by this support entry.
 
 ## Build
 
@@ -422,7 +459,7 @@ Resident-bank protection and SSD checkpoint eligibility are independent:
 `DS4_SERVER_PERSIST_MIN_TOKENS` defaults to 8,192. Lowering the persistence
 threshold does not pin shallow sessions in memory.
 
-Qwen image content is accepted in the existing API-native shapes:
+Qwen and GLM image content is accepted in the existing API-native shapes:
 
 ```text
 Chat:      {"type":"image_url","image_url":{"url":"data:image/jpeg;base64,..."}}
@@ -464,6 +501,7 @@ The original split gate claims parity class, not a universal speedup.
 | Qwen text ABBA | Rust/C mean: 99.97% prefill, 100.00% decode, +0.95% TTFT, +4.40% host HWM |
 | Qwen image ABBA | Rust/C mean: 100.20% prefill, +0.32% TTFT |
 | Qwen soak | 7,202.3 s, 3,610/3,610 requests, 158 width-2 barriers, 79 image requests, zero request/census/governor failures |
+| GLM 5.3 Q2 + vision smoke | Exact Q2 and vision sidecar: native 16-image-token prefill with finite logits; Rust text and PNG Chat requests returned HTTP 200 at context 256. |
 
 The Qwen measurements used only the Q5+Sidecar artifact, fresh sequential C
 and Rust processes, and the conditions recorded in the evidence documents.
@@ -487,6 +525,9 @@ run retained about 13.0 GiB available host memory.
 This was a targeted RC.3 regression matrix, not a second long soak. The
 7,202.3-second Qwen-only soak in the table predates these host changes and was
 not rerun for RC.3.
+
+The GLM row is an RC.4 correctness and serving smoke, not a throughput or
+long-context claim.
 
 ## Testing
 
