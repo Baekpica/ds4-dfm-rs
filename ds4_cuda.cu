@@ -24289,6 +24289,46 @@ extern "C" int ds4_gpu_matmul_q8_0_tensor(ds4_gpu_tensor *out, const void *model
                                            in_dim, out_dim, x, n_tok, "q8_0");
 }
 
+extern "C" int ds4_gpu_matmul_q4_K_tensor(
+        ds4_gpu_tensor       *out,
+        const void           *model_map,
+        uint64_t              model_size,
+        uint64_t              weight_offset,
+        uint64_t              in_dim,
+        uint64_t              out_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t              n_tok) {
+    if (!out || !x || !model_map || in_dim == 0u || out_dim == 0u ||
+        n_tok == 0u || in_dim % 256u != 0u || in_dim > INT_MAX ||
+        out_dim > INT_MAX || n_tok > INT_MAX || !ds4_cuda_use_mmq()) {
+        return 0;
+    }
+    const uint64_t row_bytes = (in_dim / 256u) * 144u;
+    if (out_dim > UINT64_MAX / row_bytes ||
+        in_dim > UINT64_MAX / n_tok || out_dim > UINT64_MAX / n_tok) {
+        return 0;
+    }
+    const uint64_t weight_bytes = out_dim * row_bytes;
+    if (weight_offset > model_size ||
+        weight_bytes > model_size - weight_offset ||
+        x->bytes < in_dim * n_tok * sizeof(float) ||
+        out->bytes < out_dim * n_tok * sizeof(float)) {
+        return 0;
+    }
+    const int tier = ds4_tensor_device_idx(out);
+    const void *weight = cuda_resolve_weight_ptr(
+        model_map, weight_offset, weight_bytes, tier, "Q4_K dense");
+    if (!weight) return 0;
+    const int rc = ds4_mmq_q4_K_dense(
+        weight, (const float *)x->ptr, (float *)out->ptr,
+        (int)out_dim, (int)n_tok, (int)in_dim, cuda_decode_stream());
+    if (rc != 0) {
+        fprintf(stderr, "ds4: CUDA dense Q4_K MMQ failed (%d)\n", rc);
+        return 0;
+    }
+    return 1;
+}
+
 extern "C" int ds4_gpu_matmul_q8_0_top2_tensor(ds4_gpu_tensor *top2, const void *model_map, uint64_t model_size, uint64_t weight_offset, uint64_t in_dim, uint64_t out_dim, const ds4_gpu_tensor *x) {
     if (!top2 || !x || !model_map || in_dim == 0 || out_dim == 0) return 0;
     if (top2->bytes < sizeof(ds4_gpu_top2_result) ||

@@ -21,7 +21,7 @@ enum {
 int main(void) {
     const uint64_t weight_bytes =
         (uint64_t)N_HEAD * LORA_DIM * Q8_ROW_BYTES;
-    const uint64_t map_size = 4096u;
+    const uint64_t map_size = 8192u;
     unsigned char *map = NULL;
     CHECK(posix_memalign((void **)&map, 4096u, map_size) == 0, "model map");
     memset(map, 0, map_size);
@@ -77,6 +77,26 @@ int main(void) {
     CHECK(max_err < 2.0e-5f, "CPU parity");
     printf("GLM 5.3 DSA K-b projection: valid (max_err %.3g)\n", max_err);
 
+    enum { Q4_IN = 256, Q4_OUT = 8 };
+    float q4_input[Q4_IN];
+    float q4_got[Q4_OUT];
+    for (uint32_t i = 0; i < Q4_IN; i++) q4_input[i] = (float)i / 256.0f;
+    ds4_gpu_tensor *q4_x = ds4_gpu_tensor_alloc(sizeof(q4_input));
+    ds4_gpu_tensor *q4_out = ds4_gpu_tensor_alloc(sizeof(q4_got));
+    CHECK(q4_x && q4_out, "Q4_K tensors");
+    CHECK(ds4_gpu_tensor_write(q4_x, 0, q4_input, sizeof(q4_input)),
+          "write Q4_K input");
+    CHECK(ds4_gpu_matmul_q4_K_tensor(
+              q4_out, map, map_size, 4096u, Q4_IN, Q4_OUT, q4_x, 1u),
+          "Q4_K dense projection");
+    CHECK(ds4_gpu_tensor_read(q4_out, 0, q4_got, sizeof(q4_got)),
+          "read Q4_K output");
+    for (uint32_t i = 0; i < Q4_OUT; i++)
+        CHECK(q4_got[i] == 0.0f, "zero Q4_K output");
+    puts("GLM 5.3 Q4_K dense projection: valid");
+
+    ds4_gpu_tensor_free(q4_out);
+    ds4_gpu_tensor_free(q4_x);
     ds4_gpu_tensor_free(out);
     ds4_gpu_tensor_free(x);
     ds4_gpu_unregister_model_map(map);

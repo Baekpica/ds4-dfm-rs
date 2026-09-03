@@ -6608,6 +6608,15 @@ int ds4_gpu_matmul_q8_0_tensor(
     return ok;
 }
 
+int ds4_gpu_matmul_q4_K_tensor(
+        ds4_gpu_tensor *out, const void *model_map, uint64_t model_size,
+        uint64_t weight_offset, uint64_t in_dim, uint64_t out_dim,
+        const ds4_gpu_tensor *x, uint64_t n_tok) {
+    (void)out; (void)model_map; (void)model_size; (void)weight_offset;
+    (void)in_dim; (void)out_dim; (void)x; (void)n_tok;
+    return 0;
+}
+
 int ds4_gpu_q8_0_row_group_norms_tensor(
         ds4_gpu_tensor       *row_group_norms,
         const void             *model_map,

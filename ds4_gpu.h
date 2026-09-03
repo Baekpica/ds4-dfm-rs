@@ -885,6 +885,16 @@ int ds4_gpu_matmul_q8_0_tensor(
         const ds4_gpu_tensor *x,
         uint64_t                n_tok);
 
+int ds4_gpu_matmul_q4_K_tensor(
+        ds4_gpu_tensor       *out,
+        const void           *model_map,
+        uint64_t              model_size,
+        uint64_t              weight_offset,
+        uint64_t              in_dim,
+        uint64_t              out_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t              n_tok);
+
 int ds4_gpu_matmul_q8_0_top2_tensor(
         ds4_gpu_tensor       *top2,
         const void             *model_map,
