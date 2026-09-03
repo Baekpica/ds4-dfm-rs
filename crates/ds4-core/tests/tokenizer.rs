@@ -484,6 +484,7 @@ fn family_cases(family: ModelFamily) {
             renders.push(
                 "<tool_call>run<arg_key>x</arg_key><arg_value>1</arg_value></tool_call>".into(),
             );
+            renders.push("<|begin_of_image|><|image|><|end_of_image|>".into());
         }
         ModelFamily::DeepSeek4 => {
             encodes.push("你好");

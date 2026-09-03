@@ -115,6 +115,11 @@ typedef struct {
 } ds4_vision_embedding;
 
 typedef struct {
+    uint32_t token_start;
+    ds4_vision_embedding embedding;
+} ds4_vision_span;
+
+typedef struct {
     int id;
     float logit;
     float logprob;
@@ -1273,6 +1278,11 @@ typedef enum {
  * checkpoint is a prefix, only the suffix is evaluated; otherwise the backend
  * state is refilled from scratch. */
 int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen);
+int ds4_session_sync_multimodal(ds4_session *s,
+                                const ds4_tokens *prompt,
+                                const ds4_vision_span *spans,
+                                uint32_t span_count,
+                                char *err, size_t errlen);
 bool ds4_session_rewrite_requires_rebuild(int live_len, int canonical_len, int common);
 ds4_session_rewrite_result ds4_session_rewrite_from_common(
         ds4_session *s, const ds4_tokens *prompt, int common,

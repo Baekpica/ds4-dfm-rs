@@ -1987,6 +1987,30 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
                 -1
             },
         ),
+        (
+            b"<|begin_of_image|>",
+            if vocab.family == ModelFamily::Glm53 {
+                154830
+            } else {
+                -1
+            },
+        ),
+        (
+            b"<|image|>",
+            if vocab.family == ModelFamily::Glm53 {
+                154854
+            } else {
+                -1
+            },
+        ),
+        (
+            b"<|end_of_image|>",
+            if vocab.family == ModelFamily::Glm53 {
+                154831
+            } else {
+                -1
+            },
+        ),
         (b"<|endoftext|>", vocab.dots3_endoftext_id),
         (b"<|endofsystem|>", vocab.dots3_endofsystem_id),
         (b"<|endofuser|>", vocab.dots3_endofuser_id),

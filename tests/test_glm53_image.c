@@ -40,6 +40,31 @@ int main(void) {
         fprintf(stderr, "GLM-5.3 image patch layout validation failed\n");
         return 1;
     }
+
+    int token_data[20] = {0};
+    for (uint32_t i = 2u; i < 18u; i++) token_data[i] = 154854;
+    ds4_tokens tokens = {.v = token_data, .len = 20, .cap = 20};
+    float dummy = 0.0f;
+    ds4_vision_span span = {
+        .token_start = 2u,
+        .embedding = {
+            .data = &dummy,
+            .token_count = 16u,
+            .grid_width = 8u,
+            .grid_height = 8u,
+        },
+    };
+    if (!glm53_vision_spans_validate(
+            &tokens, &span, 1u, 154854, error, sizeof(error))) {
+        fprintf(stderr, "GLM-5.3 vision span validation failed: %s\n", error);
+        return 1;
+    }
+    token_data[17] = 1;
+    if (glm53_vision_spans_validate(
+            &tokens, &span, 1u, 154854, error, sizeof(error))) {
+        fprintf(stderr, "GLM-5.3 vision span accepted a non-image token\n");
+        return 1;
+    }
     puts("GLM-5.3 image preprocessing: valid (16 tokens)");
     return 0;
 }

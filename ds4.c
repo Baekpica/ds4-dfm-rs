@@ -35668,6 +35668,12 @@ static bool special_token_at(const ds4_vocab *vocab, const char *p, int *token, 
                                       ? vocab->assistant_id : -1},
         {"<|observation|>",        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53
                                       ? vocab->observation_id : -1},
+        {"<|begin_of_image|>",     DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53
+                                      ? 154830 : -1},
+        {"<|image|>",              DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53
+                                      ? 154854 : -1},
+        {"<|end_of_image|>",       DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53
+                                      ? 154831 : -1},
         /* dots3-note first: its role markers are CONTROL tokens the qwen2
          * splitter cannot reach from text, and its "<|endoftext|>" must not
          * resolve to the (different) EOS entry below.  The ids are -1 for
@@ -43138,17 +43144,21 @@ static bool glm53_graph_forward_token(ds4_glm53_gpu_graph *g,
                                       const ds4_weights *weights,
                                       int token,
                                       uint32_t pos,
+                                      const float *host_embedding,
                                       float *host_logits) {
     if (!g || !g->ready || !model || !weights || token < 0 ||
         (uint32_t)token >= DS4_N_VOCAB || pos >= g->ctx_cap ||
         pos != g->cache_len) return false;
     int32_t token_id = token;
-    if (!ds4_gpu_tensor_write(g->token, 0u, &token_id, sizeof(token_id)) ||
-        !ds4_gpu_embed_tokens_quant_tensor(
-            g->cur, g->token, model->map, model->size,
-            weights->token_embd->abs_offset, weights->token_embd->type,
-            (uint32_t)weights->token_embd->dim[1], 1u, DS4_N_EMBD) ||
-        !ds4_gpu_repeat_hc_tensor(
+    const bool embedded = host_embedding
+        ? ds4_gpu_tensor_write(g->cur, 0u, host_embedding,
+                               (uint64_t)DS4_N_EMBD * sizeof(float)) != 0
+        : ds4_gpu_tensor_write(g->token, 0u, &token_id, sizeof(token_id)) &&
+          ds4_gpu_embed_tokens_quant_tensor(
+              g->cur, g->token, model->map, model->size,
+              weights->token_embd->abs_offset, weights->token_embd->type,
+              (uint32_t)weights->token_embd->dim[1], 1u, DS4_N_EMBD);
+    if (!embedded || !ds4_gpu_repeat_hc_tensor(
             g->hc_cur, g->cur, DS4_N_EMBD, DS4_N_HC)) return false;
 
     const uint32_t n_exec = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
@@ -65758,6 +65768,124 @@ static void ds4_session_note_prefill_progress(void *ud, const char *event, int c
 }
 #endif
 
+static bool glm53_vision_spans_validate(
+        const ds4_tokens *prompt,
+        const ds4_vision_span *spans,
+        uint32_t span_count,
+        int image_token,
+        char *err,
+        size_t errlen) {
+    if (!prompt || (span_count != 0u && !spans) || span_count > 4u) {
+        if (err && errlen) snprintf(err, errlen, "invalid vision spans");
+        return false;
+    }
+    uint32_t previous_end = 0u;
+    for (uint32_t i = 0; i < span_count; i++) {
+        const ds4_vision_span *span = &spans[i];
+        const uint32_t start = span->token_start;
+        const uint32_t count = span->embedding.token_count;
+        const uint32_t gh = span->embedding.grid_height;
+        const uint32_t gw = span->embedding.grid_width;
+        if (!span->embedding.data || count == 0u || count > 8000u ||
+            start < previous_end || start >= (uint32_t)prompt->len ||
+            count > (uint32_t)prompt->len - start ||
+            gh == 0u || gw == 0u || (gh & 1u) || (gw & 1u) ||
+            (uint64_t)gh * gw / 4u != count) {
+            if (err && errlen) snprintf(err, errlen, "invalid vision span %u", i);
+            return false;
+        }
+        for (uint32_t pos = start; pos < start + count; pos++) {
+            if (prompt->v[pos] != image_token) {
+                if (err && errlen)
+                    snprintf(err, errlen,
+                             "vision span %u does not cover image tokens", i);
+                return false;
+            }
+        }
+        previous_end = start + count;
+    }
+    return true;
+}
+
+#ifndef DS4_NO_GPU
+static int ds4_session_sync_glm53(
+        ds4_session *s,
+        const ds4_tokens *prompt,
+        const ds4_vision_span *spans,
+        uint32_t span_count,
+        char *err,
+        size_t errlen) {
+    ds4_engine *e = s->engine;
+    ds4_glm53_gpu_graph *g = &s->glm53_graph;
+    if (!s->glm53_graph_ready) {
+        snprintf(err, errlen, "GLM-5.3 session graph is not initialized");
+        return 1;
+    }
+    if (span_count != 0u && !e->vision_ready) {
+        snprintf(err, errlen, "vision encoder is not loaded");
+        return 1;
+    }
+    const int image_token = e->vision_ready ? e->vision_image_token : 154854;
+    if (!glm53_vision_spans_validate(
+            prompt, spans, span_count, image_token, err, errlen)) return 1;
+    if (span_count == 0u) {
+        for (int i = 0; i < prompt->len; i++) {
+            if (prompt->v[i] == image_token) {
+                snprintf(err, errlen, "image tokens require multimodal sync");
+                return 1;
+            }
+        }
+    }
+
+    int start = 0;
+    if (span_count == 0u && s->checkpoint_valid &&
+        g->cache_len == (uint32_t)s->checkpoint.len &&
+        prompt->len >= s->checkpoint.len &&
+        ds4_tokens_starts_with(prompt, &s->checkpoint)) {
+        start = s->checkpoint.len;
+        if (start == prompt->len) return 0;
+    } else {
+        s->generation++;
+        s->checkpoint_valid = false;
+        s->checkpoint.len = 0;
+        if (!glm53_graph_reset(g)) {
+            snprintf(err, errlen, "GLM-5.3 state reset failed");
+            return 1;
+        }
+    }
+
+    uint32_t span_index = 0u;
+    for (int i = start; i < prompt->len; i++) {
+        const float *embedding = NULL;
+        if (span_index < span_count) {
+            const ds4_vision_span *span = &spans[span_index];
+            const uint32_t end = span->token_start + span->embedding.token_count;
+            if ((uint32_t)i >= span->token_start && (uint32_t)i < end) {
+                embedding = span->embedding.data +
+                    (uint64_t)((uint32_t)i - span->token_start) * DS4_N_EMBD;
+            }
+            if ((uint32_t)i + 1u == end) span_index++;
+        }
+        const bool last = i + 1 == prompt->len;
+        if (!glm53_graph_forward_token(
+                g, &e->model, &e->weights, prompt->v[i],
+                (uint32_t)i, embedding, last ? s->logits : NULL)) {
+            snprintf(err, errlen, "GLM-5.3 prefill failed at position %d", i);
+            s->checkpoint_valid = false;
+            s->checkpoint.len = 0;
+            (void)glm53_graph_reset(g);
+            return 1;
+        }
+        if (s->progress)
+            s->progress(s->progress_ud, "prefill_chunk", i + 1, prompt->len);
+    }
+    ds4_tokens_copy(&s->checkpoint, prompt);
+    s->checkpoint_valid = true;
+    s->mtp_draft_valid = false;
+    return 0;
+}
+#endif
+
 /* Bring the live backend state to exactly the supplied token prefix.
  *
  * ds4-server and the REPL are stateless at the text/API layer but stateful here:
@@ -65944,47 +66072,7 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
     ds4_engine *e = s->engine;
     const char *backend_name = ds4_backend_name(e->backend);
     if (ds4_session_is_glm53(s)) {
-        ds4_glm53_gpu_graph *g = &s->glm53_graph;
-        if (!s->glm53_graph_ready) {
-            snprintf(err, errlen, "GLM-5.3 session graph is not initialized");
-            return 1;
-        }
-        int start = 0;
-        if (s->checkpoint_valid &&
-            g->cache_len == (uint32_t)s->checkpoint.len &&
-            prompt->len >= s->checkpoint.len &&
-            ds4_tokens_starts_with(prompt, &s->checkpoint)) {
-            start = s->checkpoint.len;
-            if (start == prompt->len) return 0;
-        } else {
-            s->generation++;
-            s->checkpoint_valid = false;
-            s->checkpoint.len = 0;
-            if (!glm53_graph_reset(g)) {
-                snprintf(err, errlen, "GLM-5.3 state reset failed");
-                return 1;
-            }
-        }
-        for (int i = start; i < prompt->len; i++) {
-            const bool last = i + 1 == prompt->len;
-            if (!glm53_graph_forward_token(
-                    g, &e->model, &e->weights, prompt->v[i],
-                    (uint32_t)i, last ? s->logits : NULL)) {
-                snprintf(err, errlen,
-                         "GLM-5.3 prefill failed at position %d", i);
-                s->checkpoint_valid = false;
-                s->checkpoint.len = 0;
-                (void)glm53_graph_reset(g);
-                return 1;
-            }
-            if (s->progress)
-                s->progress(s->progress_ud, "prefill_chunk", i + 1,
-                            prompt->len);
-        }
-        ds4_tokens_copy(&s->checkpoint, prompt);
-        s->checkpoint_valid = true;
-        s->mtp_draft_valid = false;
-        return 0;
+        return ds4_session_sync_glm53(s, prompt, NULL, 0u, err, errlen);
     }
     if (ds4_session_is_qwen4exp(s)) {
         ds4_qwen_gpu_graph *g = &s->qwen_graph;
@@ -66288,6 +66376,31 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
     return 0;
 #endif
 }
+
+int ds4_session_sync_multimodal(ds4_session *s,
+                                const ds4_tokens *prompt,
+                                const ds4_vision_span *spans,
+                                uint32_t span_count,
+                                char *err, size_t errlen) {
+    if (!s || !prompt || prompt->len <= 0 || prompt->len > s->ctx_size ||
+        !spans || span_count == 0u) {
+        if (err && errlen) snprintf(err, errlen, "invalid multimodal prompt");
+        return 1;
+    }
+#ifdef DS4_NO_GPU
+    if (err && errlen) snprintf(err, errlen, "CUDA vision is unavailable");
+    return 1;
+#else
+    if (!ds4_session_is_glm53(s)) {
+        if (err && errlen) snprintf(err, errlen, "multimodal sync requires GLM-5.3");
+        return 1;
+    }
+    if (ds4_session_ensure_graph(s, err, errlen) != 0) return 1;
+    return ds4_session_sync_glm53(
+        s, prompt, spans, span_count, err, errlen);
+#endif
+}
+
 /* Return true when canonicalization would replace already-sampled tokens.
  *
  * A DS4 session checkpoint is more than a token vector: the backend state also
@@ -66540,7 +66653,7 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
         }
         if (!glm53_graph_forward_token(
                 g, &e->model, &e->weights, token,
-                (uint32_t)s->checkpoint.len, s->logits)) {
+                (uint32_t)s->checkpoint.len, NULL, s->logits)) {
             if (errlen) snprintf(err, errlen,
                                  "GLM-5.3 decode failed at position %d",
                                  s->checkpoint.len);
