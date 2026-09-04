@@ -8,7 +8,8 @@ is deliberately small: an Entrpi release such as `v0.6.0` becomes
 `v0.6.0-dfm` after the additional model families pass this repository's
 integration gates. The previous integrated cut was `v0.5.6.3-dfm`.
 The branch also carries selected non-DFM family ports, currently dots3-note
-Preview; that inclusion does not classify the source model as a Korean DFM.
+Preview, Qwen3.8, GLM 5.3 Flash, and K2-Horizon-375B; that inclusion does not
+classify the source model as a Korean DFM.
 
 The reference target is one NVIDIA DGX Spark with a GB10 GPU and 128 GB of
 unified memory. Other operating systems and accelerators are not release
@@ -43,6 +44,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | K-EXAONE 236B A23B | `general.architecture=exaone-moe` | LLLG full/sliding GQA KV | persistent multi-bank |
 | Motif-3 | `general.architecture=motif3` | normalized latent KV, rotated `k_pe`, and SWA rings | persistent multi-bank |
 | dots3-note Preview | `general.architecture=dots3-note` | dual-geometry latent KV, DSA keys, and SWA rings | serial |
+| K2-Horizon 375B A23B | `general.architecture=k2-horizon` | full-attention GQA KV, partial NeoX RoPE, shared-expert MoE | persistent one-bank (32K gated) |
 
 The scheduler implementation may differ because the model states differ, but
 the operator and client contract is the same. Changing `-m` to a GGUF from a
