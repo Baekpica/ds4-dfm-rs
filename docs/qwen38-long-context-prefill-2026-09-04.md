@@ -125,6 +125,30 @@ QSA scores + reduce 1.19 + 0.41 / 1.37 + 0.65 s -> fused 0.75 / 1.06 s, GDN
 busy) is the block scorer (0.07 -> 0.74 s, linear in visible blocks) and the
 fused attention's K/V gather (0.75 -> 1.06 s).
 
+## Round 3 (same day): QSA block scorer
+
+The scorer was the one remaining term linear in context depth (0.07 s per
+8,192-token chunk at 8K -> 0.74 s at 64K, ~2.2 s extrapolated at 196K):
+the 16-row x 64-block tiled kernel reduced every lane's 4-dim partials with
+five shuffles per head, 20 shuffles per 16 FMAs, and ran at ~12 % of the
+FP32 FMA peak.  Now eight lanes share one block, each lane holds a 16-dim
+slice of the four query heads in registers (64 registers), the four head
+sums come out of a transpose tree (six shuffles per block instead of
+twelve for a plain xor tree), and the 132-float tile stride keeps every
+LDS.128 phase conflict-free.  Scores change by fp32 reordering only; the
+fixture's exact top-512 selection is unchanged, and the scalar scorer
+behind `DS4_CUDA_QSA_SCORE_LEGACY=1` still covers decode and other shapes.
+
+| measurement | before (`f04bd09`) | after |
+|---|---|---|
+| model-free probe, 2,048 rows x 16,384 blocks | 11.98 ms | 4.43 ms (12-shuffle) / 4.24 ms (committed) |
+| cold 65,536-token prefill, two runs each | 1163.3 / 1172.7 tok/s | 1206.7 / 1208.7 tok/s (12-shuffle build) |
+| cold 196,608-token prefill | 1052.1 tok/s | 1139.6 tok/s (12-shuffle build), 1150.1 tok/s (committed) |
+
+Decode 24.0 -> 24.0 tok/s at 64K, 22.9 -> 22.3 at 196K (single runs).
+Per 8K chunk at 64K the scorer drops from 0.74 s to ~0.2 s; the remaining
+depth slope is the fused attention's K/V gather.
+
 ## Open boundaries
 
 - The first chunk of a prompt still waits for its own pages (~1.5 s per
@@ -133,6 +157,9 @@ fused attention's K/V gather (0.75 -> 1.06 s).
 - The lookahead holds two chunks' pages in cache; with 1024 MiB the
   previous chunk's cross-chunk n-gram hits are evicted earlier (+16 % reads
   at 64K).  Two alternating banks need 2048 MiB.
+- The block scorer is now ~40 % of the FMA peak; four lanes per block
+  (32-dim slices, 128 query registers) would halve the shuffles again at
+  the cost of occupancy, untested.
 - The fused QSA kernel is still ~3x above its FMA bound on the model-free
   probe; the value gather (one row per thread iteration) and the K tile
   gather are the remaining costs, and at 64K the K/V traffic itself
