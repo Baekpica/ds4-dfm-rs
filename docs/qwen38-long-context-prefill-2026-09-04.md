@@ -177,6 +177,65 @@ Decode 24.0 -> 24.0 tok/s at 64K, 22.5 -> 22.7 at 196K.
 `test_qwen4exp_verify` (48 two-row steps, 0 logit / 0 state mismatches) and
 `test_qwen4exp_batch` pass with the new kernel.
 
+## Round 5 (same day): hyper-connection traffic
+
+With the depth-dependent kernels reduced, the round-2 trace (ABC2 binary,
+cold 64K) ranked the hyper-connection (HC) chain as the largest remaining
+fixed cost: per sub-layer at 8,192 rows the grouped norm (3.8 ms, F32 +
+BF16 rows out), the cuBLAS mix_up GEMM (2.0 ms, [rows x 10240] F32 logits
+out), the mix kernel (3.1 ms, F32 normalised rows + logits in) and the
+residual (3.1 ms) moved ~3.0 GB through LPDDR5X, ~14 ms x 96 sub-layers =
+1.3 s of a ~6.4 s chunk at any depth, all at the ~240 GB/s bandwidth.
+Three changes cut that traffic; none of them changes the arithmetic:
+
+- The norm stores only the BF16 rows the mix_down / inject GEMMs read
+  plus one scale per [row, lane] (`qwen4exp_group_rms_norm_bf16_kernel
+  <false>`); the F32 normalised rows never reach memory.
+- `qwen4exp_hc_mix_fused_kernel` forms the mix_up logits of a 64-row x
+  (4 lanes x 32 columns) tile on the tensor cores (BF16 wmma, FP32
+  accumulate, from the BF16 low-rank rows the SiLU now also emits and the
+  BF16 mix_up weight) and applies the sigmoid mix in the epilogue on the
+  normalised value recomputed from the hyper input with the norm kernel's
+  expression.  The hyper-input tile is loaded into registers before the
+  tensor-core phase so its DRAM traffic overlaps it.  The fixture shows the
+  result bit-identical to the cuBLAS + mix pair on both an identity-like and
+  a dense random mix_up (the two accumulate the 320-term dot products in the
+  same order on this shape); the design tolerance is a few ulp.
+- `qwen4exp_hc_residual_norm_bf16_kernel` fuses each sub-layer's residual
+  with the next sub-layer's norm (`qwen4exp_hc_finish_begin`): the new
+  hyper state is written once and normalised from registers, bit-identical
+  to residual-then-norm.  Applied at every sub-layer boundary except across
+  the layer-1 PLE forward and after the last layer.
+
+The decode (stable-rows) path keeps its row-stable GEMMs and separate
+kernels, so `test_qwen4exp_verify` parity is untouched by construction.
+Kill switch `DS4_QWEN_HC_NO_FUSED_MIX=1` (restores the cuBLAS + mix pair
+and the separate residual).  Traffic per sub-layer at 8,192 rows: ~3.0 GB
+-> ~1.7 GB.
+
+Probe caveat: the model-free fixture registers its weights as host memory,
+and a host-mapped mix_up costs the fused kernel 2.5x (5.2 vs 2.0 ms in the
+standalone benchmark, because the 6.5 MB weight is re-read once per row
+tile and only L2-caches when device-resident).  The fixture's profile mode
+(`DS4_QWEN_PROFILE_HC=1`) therefore caches the four HC weights with
+`ds4_gpu_cache_model_range` first; the served model imports its weights
+from the VMM owner and is device-resident anyway.
+
+| measurement | before (`813cc2e`) | after |
+|---|---|---|
+| HC probe, 8,192 rows, device-cached weights: begin / finish+begin | 10.59 / 13.62 ms | 6.15 / 8.57 ms |
+| cold 65,536-token prefill, three interleaved runs each | 1279.0 / 1279.6 / 1271.8 tok/s | 1370.9 / 1378.3 / 1359.4 tok/s |
+| cold 196,608-token prefill | 1197.0 tok/s | 1288.1 tok/s |
+
+Steady-state decode after the 64K prefill 24.01 / 24.08 / 23.77 -> 23.81 /
+23.90 / 23.82 tok/s (single-row decode never enters the fused path).  These
+runs used the resident production weight owner started without
+`--repack-q8-aligned` (raw-layout dispatch tier), so the absolute numbers
+are not the same tier as rounds 2-4; both variants shared that owner.
+`test_qwen4exp_batch` (two-bank parity, disk KV, partial fork) and
+`test_qwen4exp_verify` (48 two-row steps, 0 logit / 0 state mismatches)
+pass on the fused build against that owner.
+
 ## Open boundaries
 
 - The first chunk of a prompt still waits for its own pages (~1.5 s per
@@ -188,6 +247,12 @@ Decode 24.0 -> 24.0 tok/s at 64K, 22.5 -> 22.7 at 196K.
 - The GDN token loop is now ~0.9 us per token (issue-bound: ~230
   instructions per lane per token); two columns per lane would share the
   normalised key/query loads across columns, untested.
+- After the HC round the remaining fixed per-chunk memory traffic is the
+  residual itself (one 4-lane state read + write per sub-layer, ~0.7 GB),
+  the mix_down and inject GEMMs reading the same BF16 rows twice (a
+  concatenated [10240 x 324] derived weight would read them once), and the
+  MoE glue (moe_sum, activation quantize, sanitize, swiglu, expert-down
+  pack), each individually at bandwidth.
 - The block scorer is now ~40 % of the FMA peak; four lanes per block
   (32-dim slices, 128 query registers) would halve the shuffles again at
   the cost of occupancy, untested.
