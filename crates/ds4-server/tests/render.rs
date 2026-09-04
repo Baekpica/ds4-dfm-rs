@@ -451,7 +451,7 @@ fn k2_horizon_chat_uses_ifm_not_exaone() {
 }
 
 #[test]
-fn k2_horizon_json_tools_and_replay_use_official_ifm_blocks() {
+fn k2_horizon_json_tools_and_xml_replay_use_official_ifm_blocks() {
     let mut assistant = call("get_weather", r#"{"city":"Seoul"}"#);
     assistant.reasoning = "check weather".into();
     let prompt = render_chat_choice(
@@ -471,7 +471,15 @@ fn k2_horizon_json_tools_and_replay_use_official_ifm_blocks() {
     let s = String::from_utf8(prompt).unwrap();
     assert!(s.starts_with("<|ifm|begin_of_text|><|ifm|im_start|>system\n# Tools"));
     assert!(s.contains("<ifm|tools>\n{\"name\":\"get_weather\""));
-    assert!(s.contains("<ifm|tool_calls>\n<ifm|tool_call>{\"name\": \"get_weather\", \"arguments\": {\"city\":\"Seoul\"}}</ifm|tool_call>\n</ifm|tool_calls>"));
+    assert!(s.contains("followed by paired <ifm|arg_key> and <ifm|arg_value> tags"));
+    assert!(s.contains(concat!(
+        "<ifm|tool_calls>\n",
+        "<ifm|tool_call>get_weather\n",
+        "<ifm|arg_key>city</ifm|arg_key>\n",
+        "<ifm|arg_value>Seoul</ifm|arg_value>\n",
+        "</ifm|tool_call>\n",
+        "</ifm|tool_calls>",
+    )));
     assert!(s.contains("<|ifm|im_start|>tool\nsunny<|ifm|im_end|>"));
     assert!(s.ends_with("<|ifm|im_start|>assistant\n<ifm|think>\n"));
 }

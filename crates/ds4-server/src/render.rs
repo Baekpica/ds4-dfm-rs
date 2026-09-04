@@ -68,6 +68,10 @@ pub const K2_TOOL_CALLS_START: &str = "<ifm|tool_calls>";
 pub const K2_TOOL_CALLS_END: &str = "</ifm|tool_calls>";
 pub const K2_TOOL_CALL_START: &str = "<ifm|tool_call>";
 pub const K2_TOOL_CALL_END: &str = "</ifm|tool_call>";
+pub const K2_ARG_KEY_START: &str = "<ifm|arg_key>";
+pub const K2_ARG_KEY_END: &str = "</ifm|arg_key>";
+pub const K2_ARG_VALUE_START: &str = "<ifm|arg_value>";
+pub const K2_ARG_VALUE_END: &str = "</ifm|arg_value>";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelSyntax {
@@ -1971,12 +1975,33 @@ fn append_k2_tools_system(out: &mut Vec<u8>, tool_schemas: &str, system: &str) {
     put(out, K2_IM_START);
     put(out, "system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n");
     put(out, tool_schemas);
-    put(out, "\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, emit one JSON object with the function name and arguments on the same line inside <ifm|tool_call></ifm|tool_call> tags:\n\n<ifm|tool_calls>\n<ifm|tool_call>{\"name\": <function-name>, \"arguments\": <args-json-object>}</ifm|tool_call>\n</ifm|tool_calls>");
+    put(out, "\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.");
     if !system.is_empty() {
         put(out, "\n\n");
         put(out, system);
     }
     put(out, K2_IM_END);
+}
+
+fn append_k2_arg(out: &mut Vec<u8>, arg: &crate::json::JsonArg) {
+    put(out, K2_ARG_KEY_START);
+    put(out, &arg.key);
+    put(out, K2_ARG_KEY_END);
+    out.push(b'\n');
+    put(out, K2_ARG_VALUE_START);
+    put(out, &arg.value);
+    put(out, K2_ARG_VALUE_END);
+    out.push(b'\n');
+}
+
+fn append_k2_arguments_from_json(out: &mut Vec<u8>, json: &str) -> bool {
+    let Some(args) = json_args_parse(json) else {
+        return false;
+    };
+    for arg in &args {
+        append_k2_arg(out, arg);
+    }
+    true
 }
 
 fn append_k2_tool_calls(out: &mut Vec<u8>, m: &ChatMsg) {
@@ -1991,25 +2016,32 @@ fn append_k2_tool_calls(out: &mut Vec<u8>, m: &ChatMsg) {
     for tc in &m.calls {
         put(out, "\n");
         put(out, K2_TOOL_CALL_START);
-        put(out, "{\"name\": ");
-        out.extend(json_escape_bytes(tc.name.as_bytes()));
-        put(out, ", \"arguments\": ");
-        put(
-            out,
-            &json_minify_raw_value(if tc.arguments.is_empty() {
-                "null"
-            } else {
-                &tc.arguments
-            }),
-        );
-        put(out, "}");
+        put(out, &tc.name);
+        out.push(b'\n');
+        if !append_k2_arguments_from_json(out, &tc.arguments) {
+            put(out, K2_ARG_KEY_START);
+            put(out, "arguments");
+            put(out, K2_ARG_KEY_END);
+            out.push(b'\n');
+            put(out, K2_ARG_VALUE_START);
+            put(
+                out,
+                if tc.arguments.is_empty() {
+                    "{}"
+                } else {
+                    &tc.arguments
+                },
+            );
+            put(out, K2_ARG_VALUE_END);
+            out.push(b'\n');
+        }
         put(out, K2_TOOL_CALL_END);
     }
     put(out, "\n");
     put(out, K2_TOOL_CALLS_END);
 }
 
-/// Official IFM chat protocol using its supported JSON tool dialect.
+/// Official IFM chat protocol using JSON tool presentation and default XML calls.
 pub fn render_k2_chat(
     msgs: &[ChatMsg],
     tool_schemas: &str,

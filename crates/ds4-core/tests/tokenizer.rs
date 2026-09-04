@@ -490,6 +490,12 @@ fn k2_horizon_tokenizer_matches_reference_vectors() {
         vocab.encode_rendered_chat(rendered),
         vec![0, 250018, 2672, 200, 76943, 47589, 245, 250019, 250018, 142036, 200, 250029, 200,]
     );
+    assert_eq!(
+        vocab.encode_rendered_chat(
+            "Use <ifm|tool_calls></ifm|tool_calls> and <ifm|arg_key>city</ifm|arg_key>."
+        ),
+        vec![16705, 222, 250054, 250055, 330, 222, 250056, 13612, 250057, 15]
+    );
     assert!(vocab.is_stop(vocab.eos_id));
     assert!(vocab.is_stop(vocab.im_end_id));
 }

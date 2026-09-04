@@ -1816,7 +1816,23 @@ fn llama3_letter(c: CharInfo, joiners_as_letters: bool) -> bool {
 }
 
 fn bpe_tokenize_text_k2(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
-    bpe_tokenize_text_llama3(vocab, s, out, 3, true, true);
+    let mut span = 0usize;
+    let mut pos = 0usize;
+    while pos < s.len() {
+        if let Some((id, n)) = user_defined_at(vocab, s, pos) {
+            if pos > span {
+                bpe_tokenize_text_llama3(vocab, &s[span..pos], out, 3, false, true);
+            }
+            out.push(id);
+            pos += n;
+            span = pos;
+        } else {
+            pos += 1;
+        }
+    }
+    if span < s.len() {
+        bpe_tokenize_text_llama3(vocab, &s[span..], out, 3, false, true);
+    }
 }
 
 fn bpe_tokenize_text_exaone(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {

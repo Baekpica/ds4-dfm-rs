@@ -75,22 +75,34 @@ fn parse_exaone_two_hermes_calls() {
 fn parse_k2_horizon_ifm_think_not_exaone() {
     let text = b"<ifm|think>\nplan\n</ifm|think>hello\
         <ifm|tool_calls>\n\
-        <ifm|tool_call>{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Seoul\"}}</ifm|tool_call>\n\
-        <ifm|tool_call>{\"name\":\"get_time\",\"arguments\":{}}</ifm|tool_call>\n\
+        <ifm|tool_call>get_weather\n\
+        <ifm|arg_key>city</ifm|arg_key>\n\
+        <ifm|arg_value>Seoul</ifm|arg_value>\n\
+        <ifm|arg_key>days</ifm|arg_key>\n\
+        <ifm|arg_value>2</ifm|arg_value>\n\
+        </ifm|tool_call>\n\
+        <ifm|tool_call>get_time\n\
+        </ifm|tool_call>\n\
         </ifm|tool_calls>";
+    let orders = [ToolSchemaOrder {
+        name: "get_weather".into(),
+        prop: vec!["city".into(), "days".into()],
+        prop_type: vec!["string".into(), "integer".into()],
+        ..Default::default()
+    }];
     let p = parse_generated_message(
         ModelSyntax::K2Horizon,
         text,
         true,
         ChatFormat::K2Horizon,
-        &[],
+        &orders,
     );
     assert!(p.ok);
     assert_eq!(p.reasoning, b"\nplan\n");
     assert_eq!(p.content, b"hello");
     assert_eq!(p.calls.len(), 2);
     assert_eq!(p.calls[0].name, "get_weather");
-    assert_eq!(p.calls[0].arguments, r#"{"city":"Seoul"}"#);
+    assert_eq!(p.calls[0].arguments, r#"{"city": "Seoul", "days": 2}"#);
     assert_eq!(p.calls[1].name, "get_time");
     assert!(p.raw_dsml.starts_with("<ifm|tool_calls>"));
     assert!(!String::from_utf8_lossy(&p.content).contains("<|user|>"));
