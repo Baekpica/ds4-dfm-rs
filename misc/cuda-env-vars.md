@@ -29,8 +29,9 @@ The bandwidth figure is informational; we don't tier on it.
 
 ## Env-var inventory
 
-- `DS4_MMQ_IQ2XXS_WORKLIST=0` disables compact expert worklists for raw
-  IQ2_XXS MoE prefill. Enabled by default at 256 or more routed rows and
+- `DS4_MMQ_IQ2XXS_WORKLIST=0` or `DS4_MMQ_IQ1S_WORKLIST=0` disables compact
+  expert worklists for the respective raw IQ MoE prefill type.
+  Enabled by default at 256 or more routed rows and
   32 or more experts; MMVQ decode and aligned-SoA pairs are unchanged.
   `DS4_MMQ_WORKLIST=0` also restores the rectangular schedule.
 
