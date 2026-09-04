@@ -21,7 +21,8 @@ use crate::dsml::{SampleOverride, SamplePolicy};
 #[cfg(any(feature = "native", test))]
 use crate::generate::thinking_visible_key;
 use crate::generate::{
-    render_prompt, responses_ids, stream_req_from_parsed, GenerateError, GenerateOutcome,
+    chat_format_for_syntax, prepare_required_prefixes, render_prompt, responses_ids,
+    stream_req_from_parsed, GenerateError, GenerateOutcome,
 };
 use crate::parse::{ParsedRequest, ToolCall, ToolChoice};
 use crate::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
@@ -1365,7 +1366,10 @@ pub struct ContOwnedResult {
 
 /// Read-only engine view used by the owner while native generation is active.
 pub trait ContProbe {
-    fn prompt_tokens(&self, parsed: &ParsedRequest) -> Result<(Vec<u8>, Vec<i32>), GenerateError>;
+    fn prompt_tokens(
+        &self,
+        parsed: &mut ParsedRequest,
+    ) -> Result<(Vec<u8>, Vec<i32>), GenerateError>;
     fn seq_cap(&self) -> i32;
     fn bank_live(&self, bank: i32) -> Option<(u64, i32)>;
 }
@@ -1508,8 +1512,13 @@ pub trait ContExec {
 /// job-prep order.
 pub fn cont_prompt_tokens(
     exec: &dyn ContExec,
-    parsed: &ParsedRequest,
+    parsed: &mut ParsedRequest,
 ) -> Result<(Vec<u8>, Vec<i32>), GenerateError> {
+    prepare_required_prefixes(
+        parsed,
+        chat_format_for_syntax(syntax_for_model_id(exec.model_id())),
+        |literal| Ok(exec.encode_chat(literal)),
+    )?;
     let prompt = render_prompt(parsed, exec.model_id())?;
     let tokens = match parsed.kind {
         ReqKind::Completion => exec.encode_text(std::str::from_utf8(&prompt).unwrap_or("")),
@@ -1930,8 +1939,13 @@ mod native {
     impl ContProbe for LaneProbe<'_, '_> {
         fn prompt_tokens(
             &self,
-            parsed: &ParsedRequest,
+            parsed: &mut ParsedRequest,
         ) -> Result<(Vec<u8>, Vec<i32>), GenerateError> {
+            prepare_required_prefixes(
+                parsed,
+                chat_format_for_syntax(syntax_for_model_id(self.host.model_id)),
+                |literal| Ok(self.host.vocab.encode_rendered_bytes(literal)),
+            )?;
             let prompt = render_prompt(parsed, self.host.model_id)?;
             let tokens = match parsed.kind {
                 ReqKind::Completion => self
@@ -3317,6 +3331,61 @@ mod bank_tests {
 
     fn shutdown_requested() -> bool {
         true
+    }
+
+    struct RequiredPrefixExec;
+
+    impl ContExec for RequiredPrefixExec {
+        fn model_id(&self) -> i32 {
+            ModelSyntax::K2Horizon as i32
+        }
+
+        fn seq_cap(&self) -> i32 {
+            8192
+        }
+
+        fn encode_chat(&self, rendered: &[u8]) -> Vec<i32> {
+            if rendered == crate::render::K2_TOOL_CALLS_START.as_bytes() {
+                vec![101]
+            } else if rendered == crate::render::K2_THINK_END.as_bytes() {
+                vec![202]
+            } else {
+                vec![1]
+            }
+        }
+
+        fn encode_text(&self, _text: &str) -> Vec<i32> {
+            vec![1]
+        }
+
+        fn generate(
+            &mut self,
+            _parsed: &ParsedRequest,
+            _job_id: &str,
+            _created: i64,
+            _cors: bool,
+            _default_tokens: i32,
+            _t_arrive: Instant,
+            _bank_hold_retry: &mut dyn FnMut(i32, Option<(u64, i32)>) -> Option<i32>,
+            _store: Option<&mut KvStore>,
+            _out: &mut dyn Write,
+        ) -> Result<GenerateOutcome, GenerateError> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn continuous_k2_required_tool_choice_prepares_sampling_prefixes() {
+        let mut parsed = parse_chat_request(
+            &ParseEnv::default(),
+            r#"{"messages":[{"role":"user","content":"weather"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"tool_choice":"required"}"#,
+        )
+        .unwrap();
+
+        cont_prompt_tokens(&RequiredPrefixExec, &mut parsed).unwrap();
+
+        assert_eq!(parsed.required_tool_prefix, [101]);
+        assert_eq!(parsed.required_think_end_prefix, [202]);
     }
 
     #[test]

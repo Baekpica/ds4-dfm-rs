@@ -987,19 +987,16 @@ fn motif3_no_think_visible_checkpoint(
     Some(visible)
 }
 
-fn prepare_required_prefixes(
-    engine: &dyn DecodeIo,
+pub(crate) fn prepare_required_prefixes(
     parsed: &mut ParsedRequest,
     format: ChatFormat,
+    tokenize: impl Fn(&[u8]) -> Result<Vec<i32>, GenerateError>,
 ) -> Result<(), GenerateError> {
-    if !engine.tokenizes_control_literals() {
-        return Ok(());
-    }
     if parsed.tool_choice != ToolChoice::Required && !parsed.has_tool_results {
         return Ok(());
     }
     if parsed.required_think_end_prefix.is_empty() {
-        let toks = engine.tokenize_rendered_chat(think_end(format).as_bytes())?;
+        let toks = tokenize(think_end(format).as_bytes())?;
         if toks.is_empty() {
             return Err(GenerateError::Engine(
                 "failed to tokenize thinking control prefix".into(),
@@ -1015,7 +1012,7 @@ fn prepare_required_prefixes(
             ChatFormat::K2Horizon => crate::render::K2_TOOL_CALLS_START,
             ChatFormat::DeepSeek => crate::tools::DSML_TOOL_CALLS_START,
         };
-        let toks = engine.tokenize_rendered_chat(marker.as_bytes())?;
+        let toks = tokenize(marker.as_bytes())?;
         if toks.is_empty() {
             return Err(GenerateError::Engine(
                 "failed to tokenize required tool control prefix".into(),
@@ -1372,11 +1369,13 @@ pub(crate) fn prepare_serial_prompt(
     if tool_replay {
         engine.restore_tool_replay(&mut parsed.messages);
     }
-    prepare_required_prefixes(
-        engine,
-        &mut parsed,
-        chat_format_for_syntax(syntax_for_model_id(engine.model_id())),
-    )?;
+    if engine.tokenizes_control_literals() {
+        prepare_required_prefixes(
+            &mut parsed,
+            chat_format_for_syntax(syntax_for_model_id(engine.model_id())),
+            |literal| engine.tokenize_rendered_chat(literal),
+        )?;
+    }
 
     let prompt = render_prompt(&parsed, engine.model_id())?;
     let tokens = match parsed.kind {

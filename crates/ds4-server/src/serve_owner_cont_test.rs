@@ -24,7 +24,7 @@ struct RollingProbe;
 impl ContProbe for RollingProbe {
     fn prompt_tokens(
         &self,
-        _parsed: &crate::parse::ParsedRequest,
+        _parsed: &mut crate::parse::ParsedRequest,
     ) -> Result<(Vec<u8>, Vec<i32>), GenerateError> {
         Ok((b"prompt".to_vec(), vec![1, 2, 3]))
     }
