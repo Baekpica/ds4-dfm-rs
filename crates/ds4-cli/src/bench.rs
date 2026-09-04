@@ -1,4 +1,6 @@
-use ds4_core::{Backend, Model, ModelOpenOption, Session, SessionSnapshot, TokenBuffer};
+use ds4_core::{
+    Backend, Model, ModelFamily, ModelOpenOption, Session, SessionSnapshot, TokenBuffer,
+};
 use std::io::{BufWriter, Write};
 use std::time::Instant;
 
@@ -204,8 +206,10 @@ fn uses_distributed_replay(args: &BenchArgs) -> bool {
     args.dist.role == ds4_dist::Role::Coordinator
 }
 
-fn use_mtp_spec(mtp: Option<&str>, draft: i32) -> bool {
-    mtp.is_some() && draft > 1 && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
+fn use_mtp_spec(family: ModelFamily, mtp: Option<&str>, draft: i32) -> bool {
+    draft > 1
+        && (mtp.is_some() || family == ModelFamily::Qwen4Exp)
+        && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
 }
 
 fn backend_name(backend: Backend) -> &'static str {
@@ -370,10 +374,8 @@ pub fn run(args: BenchArgs) -> Result<i32, String> {
         open_options.push(ModelOpenOption::WarmWeights);
     }
     open_options.push(ModelOpenOption::PowerPercent(args.power_percent as u8));
-    if args.mtp.is_some() {
-        open_options.push(ModelOpenOption::MtpDraftTokens(args.mtp_draft));
-        open_options.push(ModelOpenOption::MtpMargin(args.mtp_margin));
-    }
+    open_options.push(ModelOpenOption::MtpDraftTokens(args.mtp_draft));
+    open_options.push(ModelOpenOption::MtpMargin(args.mtp_margin));
     let model = if let Some(config) = native_dist.as_ref() {
         Model::open_distributed_options(
             &args.model,
@@ -485,7 +487,7 @@ fn run_sweep<W: Write>(
     out.flush().map_err(|e| e.to_string())?;
 
     let eos = model.token_eos();
-    let use_mtp = use_mtp_spec(args.mtp.as_deref(), args.mtp_draft);
+    let use_mtp = use_mtp_spec(model.family(), args.mtp.as_deref(), args.mtp_draft);
     let distributed = uses_distributed_replay(args);
     let mut previous = 0;
     let mut frontier = args.ctx_start;
@@ -1048,9 +1050,10 @@ mod tests {
 
     #[test]
     fn mtp_spec_follows_c_gates() {
-        assert!(!use_mtp_spec(None, 2));
-        assert!(!use_mtp_spec(Some("draft.gguf"), 1));
-        assert!(use_mtp_spec(Some("draft.gguf"), 2));
+        assert!(!use_mtp_spec(ModelFamily::DeepSeek4, None, 2));
+        assert!(use_mtp_spec(ModelFamily::Qwen4Exp, None, 2));
+        assert!(!use_mtp_spec(ModelFamily::DeepSeek4, Some("draft.gguf"), 1));
+        assert!(use_mtp_spec(ModelFamily::DeepSeek4, Some("draft.gguf"), 2));
     }
 
     #[test]
