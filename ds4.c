@@ -14021,7 +14021,9 @@ static void exaone_rmsnorm(float *out, const float *x, const ds4_model *m,
 }
 
 /* NeoX rotary: the head is split in half and element i is rotated against
- * i + half, unlike the "normal" variant that pairs adjacent elements.
+ * i + head_dim/2, unlike the "normal" variant that pairs adjacent elements.
+ * n_rot controls how many values participate; it does not move the second
+ * half inward.  That distinction matters for K2's 64-of-128 partial RoPE.
  *
  * The frequency is computed in double and rounded once. It looks like an
  * overreaction for a table of 64 constants, but the position multiplies it:
@@ -14033,6 +14035,7 @@ static void exaone_rmsnorm(float *out, const float *x, const ds4_model *m,
 static void exaone_rope_neox(float *v, uint32_t n_heads, uint32_t head_dim,
                              uint32_t n_rot, uint32_t pos, float freq_base) {
     const uint32_t half = n_rot / 2;
+    const uint32_t pair_stride = head_dim / 2;
     for (uint32_t h = 0; h < n_heads; h++) {
         float *p = v + (size_t)h * head_dim;
         for (uint32_t i = 0; i < half; i++) {
@@ -14041,9 +14044,9 @@ static void exaone_rope_neox(float *v, uint32_t n_heads, uint32_t head_dim,
             const float theta = (float)pos * freq;
             const double tr = fmod((double)theta, 2.0 * M_PI);
             const float c = (float)cos(tr), s = (float)sin(tr);
-            const float a = p[i], b = p[i + half];
+            const float a = p[i], b = p[i + pair_stride];
             p[i]        = a * c - b * s;
-            p[i + half] = a * s + b * c;
+            p[i + pair_stride] = a * s + b * c;
         }
     }
 }

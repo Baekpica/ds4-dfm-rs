@@ -196,6 +196,22 @@ static float frand(uint64_t *s) {
 
 /* ---- CPU mirrors of the kernels ---------------------------------------- */
 
+static void test_k2_partial_rope_layout(void) {
+    float v[128] = {0};
+    v[0] = 1.0f;
+    v[32] = 3.0f;
+    v[64] = 2.0f;
+    v[96] = 4.0f;
+    exaone_rope_neox(v, 1u, 128u, 64u, 1u, 10000000.0f);
+    const float c = cosf(1.0f), s = sinf(1.0f);
+    const int ok = fabsf(v[0] - (c - 2.0f * s)) < 1e-6f &&
+                   fabsf(v[64] - (s + 2.0f * c)) < 1e-6f &&
+                   v[32] == 3.0f && v[96] == 4.0f;
+    if (!ok) g_fail++;
+    printf("%-38s pair=0/64 nope=32/96  %s\n",
+           "K2 partial RoPE layout", ok ? "ok" : "FAIL");
+}
+
 static void cpu_qk_norm_rope(float *v, const float *w, uint32_t n_heads,
                              uint32_t head_dim, uint32_t n_rot, uint32_t pos,
                              float freq_base, int do_rope) {
@@ -204,6 +220,7 @@ static void cpu_qk_norm_rope(float *v, const float *w, uint32_t n_heads,
         rms_norm_weight(p, p, w, head_dim, DS4_DEFAULT_RMS_EPS);
         if (!do_rope) continue;
         const uint32_t half = n_rot / 2;
+        const uint32_t pair_stride = head_dim / 2;
         for (uint32_t i = 0; i < half; i++) {
             /* Same double-precision frequency and reduction as the kernel and
              * the reference; see exaone_rope_neox in ds4.c for why. */
@@ -212,9 +229,9 @@ static void cpu_qk_norm_rope(float *v, const float *w, uint32_t n_heads,
             const float theta = (float)pos * freq;
             const double tr = fmod((double)theta, 2.0 * M_PI);
             const float c = (float)cos(tr), s = (float)sin(tr);
-            const float a = p[i], b = p[i + half];
+            const float a = p[i], b = p[i + pair_stride];
             p[i]        = a * c - b * s;
-            p[i + half] = a * s + b * c;
+            p[i + pair_stride] = a * s + b * c;
         }
     }
 }
@@ -867,6 +884,7 @@ static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
 }
 
 int main(int argc, char **argv) {
+    test_k2_partial_rope_layout();
     test_context_memory_plan();
     test_k2_full_attention_memory_plan();
     test_batch_memory_plan();

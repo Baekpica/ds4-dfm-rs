@@ -45566,6 +45566,7 @@ __global__ static void exaone_qk_norm_rope_kernel(
 
     if (!do_rope) return;
     const uint32_t half = n_rot / 2u;
+    const uint32_t pair_stride = head_dim / 2u;
     for (uint32_t i = tid; i < half; i += nth) {
         /* Both trig steps go through double on purpose.
          *
@@ -45587,9 +45588,9 @@ __global__ static void exaone_qk_norm_rope_kernel(
         const float theta = (float)pos * freq;
         const double tr = fmod((double)theta, 2.0 * 3.14159265358979323846);
         const float c = (float)cos(tr), s = (float)sin(tr);
-        const float a = p[i], b = p[i + half];
+        const float a = p[i], b = p[i + pair_stride];
         p[i]        = a * c - b * s;
-        p[i + half] = a * s + b * c;
+        p[i + pair_stride] = a * s + b * c;
     }
 }
 
