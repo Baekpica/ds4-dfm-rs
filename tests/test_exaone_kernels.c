@@ -831,6 +831,66 @@ static void test_swiglu_and_combine(void) {
 
 /* ---- tier 2: real expert blocks from the artifact ---------------------- */
 
+static void test_moe_worklist(const ds4_model *m, const ds4_tensor *w,
+                              uint32_t used) {
+    const uint32_t k = (uint32_t)w->dim[0];
+    const uint32_t widths[] = {17u, 257u, used == 1u ? 4096u : 512u, 257u};
+    for (size_t wi = 0; wi < sizeof(widths) / sizeof(widths[0]); wi++) {
+        const uint32_t nt = widths[wi];
+        /* Reinterpret the leading real blocks as a ragged 129-row stack
+         * to exercise the checked tile; both schedules see the same bytes. */
+        const uint32_t rows = wi == 3u ? 129u : (uint32_t)w->dim[1];
+        const size_t nx = (size_t)nt * k, ny = (size_t)nt * used * rows;
+        float *x = xmalloc(nx * sizeof(float));
+        float *ref = xmalloc(ny * sizeof(float));
+        float *got = xmalloc(ny * sizeof(float));
+        int32_t *ids = xmalloc((size_t)nt * used * sizeof(int32_t));
+        uint64_t seed = 1729u;
+        for (size_t i = 0; i < nx; i++) { x[i] = frand(&seed) * 0.5f; }
+        for (uint32_t t = 0; t < nt; t++) {
+            for (uint32_t s = 0; s < used; s++) {
+                ids[(size_t)t * used + s] =
+                    ((t % 5u == 0u ? 7u : t * 13u) + s * 7u) % DS4_N_EXPERT;
+            }
+        }
+        ids[used] = -1; /* Both schedules must preserve the invalid-slot zero. */
+        ds4_gpu_tensor *gx = ds4_gpu_tensor_alloc(nx * sizeof(float));
+        ds4_gpu_tensor *gi = ds4_gpu_tensor_alloc((size_t)nt * used * sizeof(int32_t));
+        ds4_gpu_tensor *go = ds4_gpu_tensor_alloc(ny * sizeof(float));
+        int ok = gx && gi && go &&
+            ds4_gpu_tensor_write(gx, 0, x, nx * sizeof(float)) &&
+            ds4_gpu_tensor_write(gi, 0, ids, (size_t)nt * used * sizeof(int32_t));
+        double ms[2] = {0.0, 0.0};
+        for (int fast = 0; ok && fast < 2; fast++) {
+            (void)setenv("DS4_MMQ_WORKLIST", fast ? "1" : "0", 1);
+            ok = ds4_gpu_tensor_fill_f32(go, 0.0f, ny) &&
+                ds4_gpu_routed_matmul_tensor(go, gx, gi, m->map, m->size,
+                    w->abs_offset, w->bytes, w->type, k, rows, DS4_N_EXPERT, nt, used) &&
+                ds4_gpu_synchronize();
+            const double start = now_sec();
+            for (int i = 0; ok && i < 4; i++) {
+                ok = ds4_gpu_routed_matmul_tensor(go, gx, gi, m->map, m->size,
+                    w->abs_offset, w->bytes, w->type, k, rows, DS4_N_EXPERT, nt, used);
+            }
+            ok = ok && ds4_gpu_synchronize();
+            ms[fast] = (now_sec() - start) * 250.0;
+            ok = ok && ds4_gpu_tensor_read(go, 0, fast ? got : ref, ny * sizeof(float));
+        }
+        (void)unsetenv("DS4_MMQ_WORKLIST");
+        if (ok) {
+            char label[80];
+            snprintf(label, sizeof(label), "%s worklist nt=%u used=%u rows=%u",
+                     tensor_type_name(w->type), nt, used, rows);
+            diff_quant_gemm(label, got, ref, ny, 1e-5);
+            printf("%s old=%.3f ms compact=%.3f ms\n", label, ms[0], ms[1]);
+        } else {
+            printf("worklist type=%u nt=%u launch failed\n", w->type, nt); g_fail++;
+        }
+        ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gi); ds4_gpu_tensor_free(gx);
+        free(ids); free(got); free(ref); free(x);
+    }
+}
+
 static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
     /* One layer of each quant type present. The recipe puts Q4_K on the edge
      * layers and IQ2_XXS/Q3_K (or Q2_K in the pilot) on the interior ones, so
@@ -846,6 +906,8 @@ static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
             const uint32_t ty = types[which];
             if (ty >= 64 || seen[ty]) continue;
             seen[ty] = 1;
+
+            if (ty == DS4_TENSOR_IQ2_XXS && which) { test_moe_worklist(m, w, 1u); }
 
             printf("testing routed tensor %.*s type=%s(%u) layer=%u\n",
                    (int)w->name.len, w->name.ptr, tensor_type_name(ty), ty, il);

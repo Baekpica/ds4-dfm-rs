@@ -29,6 +29,11 @@ The bandwidth figure is informational; we don't tier on it.
 
 ## Env-var inventory
 
+- `DS4_MMQ_IQ2XXS_WORKLIST=0` disables compact expert worklists for raw
+  IQ2_XXS MoE prefill. Enabled by default at 256 or more routed rows and
+  32 or more experts; MMVQ decode and aligned-SoA pairs are unchanged.
+  `DS4_MMQ_WORKLIST=0` also restores the rectangular schedule.
+
 - `DS4_MODEL_ANON_HUGE=N` (Linux, default off; lives in ds4.c model_open, not
   the CUDA backend). Copy GPU-backend model files out of the file-backed mmap
   into anonymous `MADV_HUGEPAGE` memory at load. `N<=1` copies every GPU
