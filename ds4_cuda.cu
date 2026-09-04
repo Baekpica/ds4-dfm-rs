@@ -46068,6 +46068,31 @@ extern "C" int ds4_gpu_exaone_attention_prefill_tensor(
     }
     const uint32_t shmem = (head_dim / 32u) * head_dim * (uint32_t)sizeof(float);
     const float scale = rsqrtf((float)head_dim);
+
+    /* EXAONE/K2 KV is the same [K|V] f16 row as Solar BF16. Full-attention
+     * prefill of 64+ tokens can reuse the HMMA tile kernel; nsys 8K put the
+     * generic warp walk at 41% of K2 prefill GPU time. Sliding windows stay
+     * on the warp path (ring+window contract). DS4_EXAONE_PREFILL_HMMA=0
+     * restores the warp path. */
+    const char *hmma_env = getenv("DS4_EXAONE_PREFILL_HMMA");
+    const int hmma_enabled = !(hmma_env && hmma_env[0] == '0');
+    if (hmma_enabled && head_dim == 128u && n_tokens >= 64u && window == 0u) {
+        const int rc = ds4_mmq_exaone_prefill_attn_hmma(
+            (float *)heads->ptr, (const float *)q->ptr, kv->ptr,
+            (int)n_tokens, (int)pos0, (int)n_head, (int)n_head_kv,
+            (int)head_dim, (int)kv_cap, (int)window, scale,
+            cuda_decode_stream());
+        if (rc == 0) {
+            static int logged = 0;
+            if (!logged) {
+                fprintf(stderr,
+                        "ds4: EXAONE/K2 prefill attention using HMMA tiles\n");
+                logged = 1;
+            }
+            return 1;
+        }
+    }
+
     dim3 grid(n_tokens, n_head, 1u);
     DS4_EXAONE_ATTN_DISPATCH(exaone_attn_prefill_kernel, grid, shmem,
                              (float *)heads->ptr, (const float *)q->ptr,

@@ -533,6 +533,9 @@ static void test_attention_prefill(int sliding) {
     ds4_gpu_tensor *gq = ds4_gpu_tensor_alloc(qn * sizeof(float));
     ds4_gpu_tensor *go = ds4_gpu_tensor_alloc(qn * sizeof(float));
     ds4_gpu_tensor_write(gq, 0, q, qn * sizeof(float));
+    /* CPU oracle is the f32 warp kernel. HMMA is fp16 MMA; compare it to
+     * that warp output separately, not to the CPU reference. */
+    (void)setenv("DS4_EXAONE_PREFILL_HMMA", "0", 1);
     if (!ds4_gpu_exaone_attention_prefill_tensor(go, gq, gkv, n_tok, 0, T_HEAD,
                                                  T_HEAD_KV, T_HEAD_DIM,
                                                  kv_cap, window)) {
@@ -556,6 +559,26 @@ static void test_attention_prefill(int sliding) {
              got + (size_t)t0 * T_HEAD * T_HEAD_DIM,
              want + (size_t)t0 * T_HEAD * T_HEAD_DIM,
              (size_t)(n_tok - t0) * T_HEAD * T_HEAD_DIM, 2e-5, 2e-5);
+
+    if (!sliding) {
+        (void)unsetenv("DS4_EXAONE_PREFILL_HMMA");
+        if (!ds4_gpu_exaone_attention_prefill_tensor(
+                go, gq, gkv, n_tok, 0, T_HEAD, T_HEAD_KV, T_HEAD_DIM,
+                kv_cap, window)) {
+            printf("attention prefill HMMA launch failed\n");
+            g_fail++;
+        } else {
+            float *hmma = xmalloc(qn * sizeof(float));
+            ds4_gpu_tensor_read(go, 0, hmma, qn * sizeof(float));
+            /* fp16 MMA vs f32 warp: bound is RMS, not per-element rel.
+             * A layout/mask bug is rel_rms ~ 1, not 1e-3. */
+            diff_quant_gemm("attention prefill HMMA vs warp",
+                            hmma, got, qn, 1e-3);
+            free(hmma);
+        }
+    } else {
+        (void)unsetenv("DS4_EXAONE_PREFILL_HMMA");
+    }
 
     free(want); free(got);
     ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gq);
