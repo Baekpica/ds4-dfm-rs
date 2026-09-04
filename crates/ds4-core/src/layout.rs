@@ -26,6 +26,9 @@ const T_Q4_K: u32 = 12;
 const T_Q5_K: u32 = 13;
 const T_Q6_K: u32 = 14;
 const T_IQ2_XXS: u32 = 16;
+const T_IQ2_XS: u32 = 17;
+const T_IQ1_S: u32 = 19;
+const T_IQ1_M: u32 = 29;
 const T_I32: u32 = 26;
 const T_I64: u32 = 27;
 const T_BF16: u32 = 30;
@@ -167,6 +170,9 @@ fn type_ok(class: TypeClass, typ: u32) -> bool {
                 || typ == T_Q3_K
                 || typ == T_Q2_K
                 || typ == T_IQ2_XXS
+                || typ == T_IQ2_XS
+                || typ == T_IQ1_S
+                || typ == T_IQ1_M
                 || typ == T_F16
                 || typ == T_F32
         }
