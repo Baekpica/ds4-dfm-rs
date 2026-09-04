@@ -508,6 +508,15 @@ trust domain when clients are not mutually trusted.
 
 ## Performance and release evidence
 
+![Qwen3.8 Flash Next long-context throughput on DGX Spark](docs/qwen38-long-context-throughput.png)
+
+*Qwen3.8 Flash Next MQ-Q5 + SSD-PLE BF16 on one DGX Spark / GB10 at
+[`f61387f`](https://github.com/Baekpica/ds4-dfm-rs/commit/f61387f907ec3fc6c6f7d1fb95e829bb032ec263),
+measured by `ds4-bench` as 2,048-token incremental prefills on one warm
+session from 2K through 64K, followed by 128 greedy tokens at each frontier.
+Mean prefill was **1,092.7 tok/s** and mean generation was **24.5 tok/s**;
+MTP was disabled for this sweep.*
+
 The original split gate claims parity class, not a universal speedup.
 
 | Gate | Recorded result on DGX Spark / GB10 |
