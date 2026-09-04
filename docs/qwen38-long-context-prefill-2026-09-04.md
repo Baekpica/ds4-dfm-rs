@@ -149,6 +149,34 @@ Decode 24.0 -> 24.0 tok/s at 64K, 22.9 -> 22.3 at 196K (single runs).
 Per 8K chunk at 64K the scorer drops from 0.74 s to ~0.2 s; the remaining
 depth slope is the fused attention's K/V gather.
 
+## Round 4 (same day): GDN recurrent token loop
+
+After the scorer, the largest fixed per-token cost was the Gated DeltaNet
+recurrence: 36 layers x 17.5 ms per 8,192-token chunk (0.63 s, ~9 % of a
+chunk at any depth).  The 128-wide path spread the four key groups of a
+32-column tile over four warps, so every token paid four `__syncthreads`
+(two for the Q/K norms, one for the key-state product, one for the
+output) plus an unhidden global load of its Q/K/V row, ~2.1 us per token.
+Now a warp owns eight columns and its four eight-lane groups split the key
+rows into contiguous quarters (lane = key group x 8 + column): the two
+cross-group sums are xor-shuffles, the Q/K rows live in a warp-private
+shared copy, and the next token's operands, norms and decay are prepared
+one iteration ahead, so the loop has no block barrier.  State stays in
+registers (32 rows per lane) with the same per-element arithmetic, but the
+summation orders differ, so outputs move by fp32 reordering (fixture max
+1.5e-8 vs the CPU reference; chunk-boundary and decode self-parity still
+bit-exact; digest `d611f3e8b774df15 / f7a2928d83f3eced`).
+
+| measurement | before (`f547df4`) | after |
+|---|---|---|
+| model-free probe, 8,025 rows | 16.55 ms | 7.12 ms (7.21 ms before the norm pipelining) |
+| cold 65,536-token prefill, two runs each | 1204.8 / 1207.0 tok/s | 1269.6 / 1274.4 tok/s (1275.7 / 1268.4 before the norm pipelining) |
+| cold 196,608-token prefill | 1146.6 tok/s | 1203.8 tok/s (1205.5 before the norm pipelining) |
+
+Decode 24.0 -> 24.0 tok/s at 64K, 22.5 -> 22.7 at 196K.
+`test_qwen4exp_verify` (48 two-row steps, 0 logit / 0 state mismatches) and
+`test_qwen4exp_batch` pass with the new kernel.
+
 ## Open boundaries
 
 - The first chunk of a prompt still waits for its own pages (~1.5 s per
@@ -157,6 +185,9 @@ depth slope is the fused attention's K/V gather.
 - The lookahead holds two chunks' pages in cache; with 1024 MiB the
   previous chunk's cross-chunk n-gram hits are evicted earlier (+16 % reads
   at 64K).  Two alternating banks need 2048 MiB.
+- The GDN token loop is now ~0.9 us per token (issue-bound: ~230
+  instructions per lane per token); two columns per lane would share the
+  normalised key/query loads across columns, untested.
 - The block scorer is now ~40 % of the FMA peak; four lanes per block
   (32-dim slices, 128 query registers) would halve the shuffles again at
   the cost of occupancy, untested.
