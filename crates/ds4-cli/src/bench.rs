@@ -513,6 +513,7 @@ fn run_sweep<W: Write>(
         let mut generated = 0;
         let mut after_first = None;
         let mut first_call_tokens = 0;
+        let mut decoded = args.dump_frontier_logits_dir.as_ref().map(|_| Vec::new());
         while generated < args.gen_tokens {
             if session.pos().saturating_add(1) >= session.ctx() {
                 return Err(format!(
@@ -533,6 +534,9 @@ fn run_sweep<W: Write>(
                     })?;
                 for t in accepted {
                     if t != eos && generated < args.gen_tokens {
+                        if let Some(ids) = decoded.as_mut() {
+                            ids.push(t);
+                        }
                         generated += 1;
                     }
                 }
@@ -540,6 +544,9 @@ fn run_sweep<W: Write>(
                 session
                     .eval(token)
                     .map_err(|e| format!("decode at frontier {frontier} failed: {e}"))?;
+                if let Some(ids) = decoded.as_mut() {
+                    ids.push(token);
+                }
                 generated += 1;
             }
             if after_first.is_none() {
@@ -548,6 +555,12 @@ fn run_sweep<W: Write>(
             }
         }
         let gen_t1 = Instant::now();
+        if let (Some(dir), Some(ids)) = (&args.dump_frontier_logits_dir, decoded) {
+            // Keep greedy-token evidence with the logits, outside timed I/O.
+            let path = std::path::Path::new(dir).join(format!("tokens-{frontier}.json"));
+            std::fs::write(&path, format!("{ids:?}\n"))
+                .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+        }
 
         if args.gen_tokens > 0 && frontier < args.ctx_max {
             if distributed {
@@ -717,7 +730,7 @@ fn help_text() -> &'static str {
      --csv FILE             Write CSV instead of stdout\n\
      --output-head-bench N  CUDA output-head verifier at --ctx-start, then exit\n\
      --dump-frontier-logits-dir DIR\n\
-                             Write one full-logit JSON file per measured frontier\n\
+                             Write full logits and greedy token IDs per frontier\n\
      -h, --help             Show this help\n"
 }
 
