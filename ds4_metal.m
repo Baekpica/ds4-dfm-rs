@@ -4508,6 +4508,10 @@ int ds4_gpu_model_map_replaces_complete(const void *model_map) {
     (void)model_map;
     return 0;
 }
+int ds4_gpu_model_map_needs_device_copy(const void *model_map) {
+    (void)model_map;
+    return 0;
+}
 /* D0b-2: no registry, no writers -- a permanently even, never-changing
  * epoch, so any reader copy trivially verifies. */
 uint64_t ds4_gpu_mem_census_epoch_begin(void) { return 0; }

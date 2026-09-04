@@ -36535,6 +36535,20 @@ static void test_unit_compiler_properties(void) {
         TEST_ASSERT(ds4_units_verify(ts, 2, &pr, u, nu) == 0);
     }
 
+    /* A model map that CUDA cannot register must promote raw experts. */
+    {
+        ds4_unit_compile_params pf = p;
+        pf.promote_experts = 1;
+        const ds4_unit_tensor_in ts[] = {
+            {0, 100, DS4_TCAT_ROUTED_EXPERT, 1},
+        };
+        ds4_phys_unit u[1];
+        TEST_ASSERT(ds4_units_compile(ts, 1, &pf, u) == 1);
+        TEST_ASSERT(u[0].policy == DS4_UPOL_DEVICE_PROMOTE &&
+                    u[0].allocator == DS4_UALLOC_VMM_ARENA);
+        TEST_ASSERT(ds4_units_verify(ts, 1, &pf, u, 1) == 0);
+    }
+
     /* mapped residency: hot tensors plan HOST_MAPPED with no allocator. */
     {
         ds4_unit_compile_params ph = p;

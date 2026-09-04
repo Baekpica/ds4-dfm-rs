@@ -64528,13 +64528,17 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                 up.merge_gap = 65536;
                 up.max_unit_bytes = accelerator_cuda_preload_span_bytes();
                 up.vmm_granularity = 256;   /* the weight-arena bump align */
+                const int needs_device_copy =
+                    ds4_gpu_model_map_needs_device_copy(mm->map) != 0;
                 /* memgov D3-2: the stamp input is the RESOLVED per-source
                  * policy (uts[] order == res_pol[] order); the env was
                  * read exactly once, at the resolver above. */
                 up.device_promote =
+                    needs_device_copy ||
                     res_pol[si] != DS4_RESIDENCY_HOST_MAPPED;
                 up.replaces_complete =
                     ds4_gpu_model_map_replaces_complete(mm->map) != 0;
+                up.promote_experts = needs_device_copy;
                 const int nu = ds4_units_compile(tin, n, &up, units);
                 uint32_t viol = nu < 0 ? 1
                     : ds4_units_verify(tin, n, &up, units, nu);

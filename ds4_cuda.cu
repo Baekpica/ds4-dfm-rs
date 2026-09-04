@@ -271,12 +271,23 @@ static void cuda_mem_note_free(int cls, int dom, uint64_t requested,
  * traffic outside every bound map (kernel unit tests that map-swap
  * without an engine); serving boots reconcile it at zero. */
 static ds4_model_source_table g_model_srcs;
+static uint8_t g_model_needs_device_copy[DS4_MSRC_MAX];
 static ds4_mem_cell
     g_mem_src_census[DS4_MSRC_MAX + 1][DS4_MEMC__COUNT][DS4_MEMD__COUNT];
 
 static int cuda_mem_src_index(const void *p) {
     const int i = ds4_model_source_find(&g_model_srcs, p);
     return i >= 0 ? i : DS4_MSRC_MAX;
+}
+
+static int cuda_model_map_needs_device_copy(const void *model_map) {
+    const int src = cuda_mem_src_index(model_map);
+    return src >= 0 && src < DS4_MSRC_MAX &&
+           g_model_needs_device_copy[src] != 0;
+}
+
+extern "C" int ds4_gpu_model_map_needs_device_copy(const void *model_map) {
+    return cuda_model_map_needs_device_copy(model_map);
 }
 
 static void cuda_mem_note_alloc_srcidx(int cls, int dom, uint64_t requested,
@@ -3342,7 +3353,8 @@ static char *cuda_model_arena_alloc(const void *model_map, uint64_t bytes,
         }
     }
 
-    const uint64_t limit = cuda_model_cache_limit_bytes();
+    const uint64_t limit = cuda_model_map_needs_device_copy(model_map)
+        ? UINT64_MAX : cuda_model_cache_limit_bytes();
     if (g_model_range_bytes > limit || aligned > limit - g_model_range_bytes) return NULL;
 
     const uint64_t chunk = cuda_model_arena_chunk_bytes(aligned);
@@ -3415,6 +3427,9 @@ static int cuda_stage_copy_to_dev(const void *model_map, uint64_t offset,
                                   int direct_discard, const char *what) {
     const int fd_source = g_model_fd >= 0 && g_model_fd_host_base &&
                           model_map == g_model_fd_host_base;
+    const int src = cuda_mem_src_index(model_map);
+    const uint64_t model_size = src >= 0 && src < DS4_MSRC_MAX
+        ? g_model_srcs.v[src].map_len : g_model_registered_size;
     cudaError_t err = cudaSuccess;
     const uint64_t chunk = cuda_model_copy_chunk_bytes();
     const uint64_t stage_bytes = chunk + (g_model_direct_align > 1 ? g_model_direct_align : 1);
@@ -3468,9 +3483,10 @@ static int cuda_stage_copy_to_dev(const void *model_map, uint64_t offset,
             (void)cudaGetLastError();
             return 0;
         }
-        if (direct_discard && fd_source) {
-            cuda_model_drop_file_pages(offset + copied, n);
-            cuda_model_discard_source_pages(model_map, g_model_registered_size, offset + copied, n);
+        if (direct_discard) {
+            if (fd_source) cuda_model_drop_file_pages(offset + copied, n);
+            cuda_model_discard_source_pages(model_map, model_size,
+                                            offset + copied, n);
         }
         copied += n;
         cuda_model_load_progress_note(g_model_range_bytes + copied);
@@ -3618,7 +3634,8 @@ static const char *cuda_model_range_ptr_from_fd(
     int lo = -1, hi = -1;
     ds4_units_span_of(units, nu, offset, bytes, &lo, &hi);
     if (lo < 0) return NULL;
-    const uint64_t limit = cuda_model_map_replaces_complete(model_map)
+    const uint64_t limit = (cuda_model_map_replaces_complete(model_map) ||
+                            cuda_model_map_needs_device_copy(model_map))
         ? UINT64_MAX
         : cuda_model_cache_limit_bytes();
     for (int ui = lo; ui <= hi; ui++) {
@@ -4340,6 +4357,7 @@ extern "C" void ds4_gpu_cleanup(void) {
     g_model_range_mapping_supported = 1;
     g_model_hmm_direct = 0;
     g_model_coherent_direct_map = NULL;
+    memset(g_model_needs_device_copy, 0, sizeof g_model_needs_device_copy);
     g_model_fd = -1;
     if (g_model_direct_fd >= 0) {
         (void)close(g_model_direct_fd);
@@ -4942,6 +4960,9 @@ extern "C" int ds4_gpu_set_model_map(const void *model_map, uint64_t model_size)
     if (model_map == g_model_coherent_direct_map)
         g_model_coherent_direct_map = NULL;
     g_model_cache_full = 0;
+    const int model_src = cuda_mem_src_index(model_map);
+    if (model_src >= 0 && model_src < DS4_MSRC_MAX)
+        g_model_needs_device_copy[model_src] = 0;
     // Bind g_model_fd to this model on first registration. set_model_fd is
     // called once for the main model before the first set_model_map call;
     // subsequent set_model_map calls (e.g. for an auxiliary model like an MTP
@@ -5058,6 +5079,17 @@ extern "C" int ds4_gpu_set_model_map(const void *model_map, uint64_t model_size)
     } else {
         fprintf(stderr, "ds4: CUDA host registration skipped: %s\n", cudaGetErrorString(err));
         (void)cudaGetLastError();
+        int integrated = 0;
+        int reg_dev = 0;
+        if (cudaGetDevice(&reg_dev) == cudaSuccess)
+            (void)cudaDeviceGetAttribute(&integrated, cudaDevAttrIntegrated,
+                                         reg_dev);
+        if (integrated && model_src >= 0 && model_src < DS4_MSRC_MAX) {
+            g_model_needs_device_copy[model_src] = 1;
+            fprintf(stderr,
+                    "ds4: CUDA integrated: promoting unregistered model map "
+                    "through the device VMM arena\n");
+        }
     }
     return 1;
 }
@@ -5072,6 +5104,8 @@ extern "C" void ds4_gpu_unregister_model_map(const void *base) {
      * host-registration state: device artifacts and imported ranges of other
      * maps are left alone. */
     if (!base) return;
+    const int src = cuda_mem_src_index(base);
+    if (src >= 0 && src < DS4_MSRC_MAX) g_model_needs_device_copy[src] = 0;
     if (g_model_coherent_direct_map == base) g_model_coherent_direct_map = NULL;
     if (g_model_registered && g_model_host_base == base) {
         (void)cudaHostUnregister((void *)base);
@@ -6565,13 +6599,15 @@ extern "C" int ds4_gpu_materialize_model_plan(const void *model_map,
     const int lazy_schedule =
         src >= 0 && src < DS4_MSRC_MAX &&
         g_model_srcs.v[src].residency == DS4_RESIDENCY_LAZY_COPY_DEVICE;
-    const uint64_t limit = cuda_model_map_replaces_complete(model_map)
+    const uint64_t limit = (cuda_model_map_replaces_complete(model_map) ||
+                            cuda_model_map_needs_device_copy(model_map))
         ? UINT64_MAX
         : cuda_model_cache_limit_bytes();
     /* Coupled source mode (see cuda_stage_copy_to_dev): default buffered
      * + no discard = the pre-D1b boot's page-cache shape; the env flips
      * eager to O_DIRECT + discard (the F4 measured mode). */
     const int direct_discard =
+        cuda_model_map_needs_device_copy(model_map) ||
         getenv("DS4_CUDA_EAGER_SOURCE_DISCARD") != NULL;
     uint64_t counts[DS4_RESUNIT__COUNT] = {0};
     uint32_t promote = 0, funded = 0, unfunded = 0;
@@ -6703,7 +6739,8 @@ extern "C" int ds4_gpu_cache_model_range(const void *model_map, uint64_t model_s
         g_substrate_promotable_total += bytes;
     if (getenv("DS4_CUDA_NO_HBM_CACHE") != NULL) return 2;
     if (g_model_device_owned) { cuda_substrate_cover(model_map, bytes); return 2; }
-    const uint64_t limit = cuda_model_map_replaces_complete(model_map)
+    const uint64_t limit = (cuda_model_map_replaces_complete(model_map) ||
+                            cuda_model_map_needs_device_copy(model_map))
         ? UINT64_MAX
         : cuda_model_cache_limit_bytes();
     if (g_model_range_bytes >= limit || bytes > limit - g_model_range_bytes) {
