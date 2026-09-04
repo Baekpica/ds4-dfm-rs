@@ -9552,9 +9552,21 @@ __global__ static void qwen4exp_qsa_block_scores_kernel(
     }
 }
 
-/* Qwen3.8 production geometry: one warp keeps one four-head query row in
- * registers while 16 rows share each 64-block K tile.  The scalar fallback
- * above remains cheaper for decode and covers every other valid shape. */
+/* Qwen3.8 production geometry (four 128-dim index heads, four-token
+ * blocks).  Eight lanes share one block and each lane keeps a 16-dim slice
+ * of the four query heads in registers, so a block's 512 FMAs end in three
+ * xor-shuffle levels per head instead of the five per lane partial of the
+ * previous layout (20 shuffles per 16 FMAs, shuffle-bound at ~12 % of the
+ * FMA peak).  Lanes are ordered block-fastest so the eight lanes of one
+ * LDS.128 phase touch eight distinct bank groups with the 132-float tile
+ * stride (528 B = 16 B mod 512 B).  Sixteen rows share each 64-block key
+ * tile.  The scalar kernel above remains cheaper for decode and covers
+ * every other valid shape. */
+#define QSA_SCORE_BLOCKS_PER_STEP 4u
+#define QSA_SCORE_LANES_PER_BLOCK (32u / QSA_SCORE_BLOCKS_PER_STEP)
+#define QSA_SCORE_VEC_PER_LANE (128u / QSA_SCORE_LANES_PER_BLOCK / 4u)
+#define QSA_SCORE_KEY_STRIDE 132u
+
 template <uint32_t TILE_ROWS, uint32_t TILE_BLOCKS>
 __global__ __launch_bounds__(TILE_ROWS * 32u)
 static void qwen4exp_qsa_block_scores_tiled_kernel(
@@ -9562,60 +9574,91 @@ static void qwen4exp_qsa_block_scores_tiled_kernel(
         uint32_t rows, uint32_t pos0, uint32_t max_blocks,
         uint32_t ratio) {
     static_assert(TILE_ROWS * 32u <= 1024u, "QSA tile exceeds CUDA block");
-    static_assert(128u % 4u == 0u, "QSA vector width must divide head dim");
-    __shared__ __align__(16) float key_tile[TILE_BLOCKS * 128u];
+    static_assert(TILE_BLOCKS % QSA_SCORE_BLOCKS_PER_STEP == 0u,
+                  "QSA tile must hold whole block steps");
+    __shared__ __align__(16) float key_tile[TILE_BLOCKS * QSA_SCORE_KEY_STRIDE];
     __shared__ float score_tile[TILE_ROWS * TILE_BLOCKS];
 
     const uint32_t tid = threadIdx.x;
     const uint32_t warp = tid >> 5u;
     const uint32_t lane = tid & 31u;
+    const uint32_t slot = lane & (QSA_SCORE_BLOCKS_PER_STEP - 1u);
+    const uint32_t slice = lane / QSA_SCORE_BLOCKS_PER_STEP;
     const uint32_t row = blockIdx.y * TILE_ROWS + warp;
     const uint32_t first_block = blockIdx.x * TILE_BLOCKS;
     const uint32_t tile_blocks =
         min(TILE_BLOCKS, max_blocks - first_block);
 
-    const uint32_t key_vecs = tile_blocks * (128u / 4u);
-    float4 *key4 = reinterpret_cast<float4 *>(key_tile);
     const float4 *pooled4 = reinterpret_cast<const float4 *>(
         pooled_cache + (uint64_t)first_block * 128u);
-    for (uint32_t i = tid; i < key_vecs; i += blockDim.x)
-        key4[i] = pooled4[i];
-
-    float4 q0 = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
-    float4 q1 = q0;
-    float4 q2 = q0;
-    float4 q3 = q0;
+    for (uint32_t i = tid; i < tile_blocks * 32u; i += blockDim.x) {
+        const uint32_t b = i >> 5u;
+        const uint32_t c = i & 31u;
+        *reinterpret_cast<float4 *>(
+            key_tile + b * QSA_SCORE_KEY_STRIDE + c * 4u) = pooled4[i];
+    }
+    float4 q[4][QSA_SCORE_VEC_PER_LANE];
+#pragma unroll
+    for (uint32_t h = 0; h < 4u; h++)
+#pragma unroll
+        for (uint32_t j = 0; j < QSA_SCORE_VEC_PER_LANE; j++)
+            q[h][j] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
     if (row < rows) {
-        const float4 *q4 = reinterpret_cast<const float4 *>(
-            query + (uint64_t)row * 4u * 128u);
-        q0 = q4[lane];
-        q1 = q4[32u + lane];
-        q2 = q4[64u + lane];
-        q3 = q4[96u + lane];
+        const float *q_row = query + (uint64_t)row * 4u * 128u +
+            slice * QSA_SCORE_VEC_PER_LANE * 4u;
+#pragma unroll
+        for (uint32_t h = 0; h < 4u; h++)
+#pragma unroll
+            for (uint32_t j = 0; j < QSA_SCORE_VEC_PER_LANE; j++)
+                q[h][j] = reinterpret_cast<const float4 *>(
+                    q_row + h * 128u)[j];
     }
     __syncthreads();
 
     if (row < rows) {
         const uint32_t visible_blocks = (pos0 + row + 1u) / ratio;
-        for (uint32_t b = 0; b < tile_blocks; b++) {
-            const float4 k = key4[b * 32u + lane];
-            float s0 = dot4_f32(q0, k);
-            float s1 = dot4_f32(q1, k);
-            float s2 = dot4_f32(q2, k);
-            float s3 = dot4_f32(q3, k);
+        for (uint32_t step = 0; step < TILE_BLOCKS;
+             step += QSA_SCORE_BLOCKS_PER_STEP) {
+            const uint32_t b = step + slot;
+            float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
+            if (b < tile_blocks) {
+                const float4 *k4 = reinterpret_cast<const float4 *>(
+                    key_tile + b * QSA_SCORE_KEY_STRIDE +
+                    slice * QSA_SCORE_VEC_PER_LANE * 4u);
 #pragma unroll
-            for (uint32_t offset = 16u; offset > 0u; offset >>= 1u) {
-                s0 += __shfl_down_sync(0xffffffffu, s0, offset);
-                s1 += __shfl_down_sync(0xffffffffu, s1, offset);
-                s2 += __shfl_down_sync(0xffffffffu, s2, offset);
-                s3 += __shfl_down_sync(0xffffffffu, s3, offset);
+                for (uint32_t j = 0; j < QSA_SCORE_VEC_PER_LANE; j++) {
+                    const float4 k = k4[j];
+                    s0 += dot4_f32(q[0][j], k);
+                    s1 += dot4_f32(q[1][j], k);
+                    s2 += dot4_f32(q[2][j], k);
+                    s3 += dot4_f32(q[3][j], k);
+                }
             }
-            if (lane == 0u) {
-                const uint32_t block = first_block + b;
-                score_tile[warp * TILE_BLOCKS + b] = block < visible_blocks
-                    ? (fmaxf(s0, 0.0f) + fmaxf(s1, 0.0f) +
-                       fmaxf(s2, 0.0f) + fmaxf(s3, 0.0f)) *
-                          0.08838834764831845f
+            /* Reduce over the eight lanes (lane bits 2..4) sharing block b
+             * with a transpose tree: each level halves the heads a lane
+             * carries while summing them, so the four head sums cost four
+             * shuffles instead of twelve; lane bits 2,3 then select the
+             * head, and two more shuffles add the four ReLU'd heads.  The
+             * whole warp shuffles so masked lanes contribute zeros. */
+            const bool upper_pair = (lane & 4u) != 0u;
+            const float pair_r0 = __shfl_xor_sync(
+                0xffffffffu, upper_pair ? s0 : s2, 4u);
+            const float pair_r1 = __shfl_xor_sync(
+                0xffffffffu, upper_pair ? s1 : s3, 4u);
+            const float even_head = upper_pair ? s2 + pair_r0 : s0 + pair_r0;
+            const float odd_head = upper_pair ? s3 + pair_r1 : s1 + pair_r1;
+            const bool upper_quad = (lane & 8u) != 0u;
+            const float quad_r = __shfl_xor_sync(
+                0xffffffffu, upper_quad ? even_head : odd_head, 8u);
+            float head_sum = upper_quad ? odd_head + quad_r : even_head + quad_r;
+            head_sum += __shfl_xor_sync(0xffffffffu, head_sum, 16u);
+            float score = fmaxf(head_sum, 0.0f);
+            score += __shfl_xor_sync(0xffffffffu, score, 4u);
+            score += __shfl_xor_sync(0xffffffffu, score, 8u);
+            if (slice == 0u && b < tile_blocks) {
+                score_tile[warp * TILE_BLOCKS + b] =
+                    first_block + b < visible_blocks
+                    ? score * 0.08838834764831845f
                     : -INFINITY;
             }
         }
