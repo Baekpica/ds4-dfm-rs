@@ -10,7 +10,7 @@
 #include <string.h>
 
 enum {
-    ROWS = 7,
+    ROWS = 17,
     POS0 = 2065,
     CACHE_CAP = POS0 + ROWS,
     RATIO = 4,
@@ -486,7 +486,53 @@ static void profile_qsa_attention(void) {
     free(selected);
 }
 
+static void profile_qsa_block_scores(void) {
+    enum {
+        profile_rows = 2048,
+        profile_blocks = 16384,
+        profile_pos0 = profile_blocks * RATIO - profile_rows,
+    };
+    const uint64_t query_count =
+        (uint64_t)profile_rows * INDEX_HEADS * INDEX_DIM;
+    const uint64_t pool_count = (uint64_t)profile_blocks * INDEX_DIM;
+    const uint64_t score_count = (uint64_t)profile_rows * profile_blocks;
+    ds4_gpu_tensor *query = ds4_gpu_tensor_alloc(query_count * sizeof(float));
+    ds4_gpu_tensor *pool = ds4_gpu_tensor_alloc(pool_count * sizeof(float));
+    ds4_gpu_tensor *scores = ds4_gpu_tensor_alloc(score_count * sizeof(float));
+    REQUIRE(query && pool && scores, "QSA scorer profile GPU allocation");
+    REQUIRE(ds4_gpu_tensor_fill_f32(query, 0.03125f, query_count) &&
+                ds4_gpu_tensor_fill_f32(pool, 0.0625f, pool_count),
+            "QSA scorer profile input initialization");
+    REQUIRE(ds4_gpu_qwen4exp_qsa_block_scores_tensor(
+                scores, query, pool, profile_rows, profile_pos0,
+                profile_blocks, INDEX_HEADS, INDEX_DIM, RATIO),
+            "QSA scorer production profile launch");
+    REQUIRE(ds4_gpu_synchronize(), "QSA scorer production profile sync");
+    float first = 0.0f, future = 0.0f, last = 0.0f;
+    REQUIRE(ds4_gpu_tensor_read(scores, 0, &first, sizeof(first)) &&
+                ds4_gpu_tensor_read(
+                    scores, (profile_blocks - 1u) * sizeof(float),
+                    &future, sizeof(future)) &&
+                ds4_gpu_tensor_read(
+                    scores, (score_count - 1u) * sizeof(float),
+                    &last, sizeof(last)) &&
+                isfinite(first) && isinf(future) && future < 0.0f &&
+                isfinite(last),
+            "QSA scorer production profile output");
+    printf("NCU Qwen QSA scorer: rows=%u blocks=%u edge=%.6g/%.6g\n",
+           profile_rows, profile_blocks, first, last);
+    ds4_gpu_tensor_free(scores);
+    ds4_gpu_tensor_free(pool);
+    ds4_gpu_tensor_free(query);
+}
+
 int main(void) {
+    if (getenv("DS4_QWEN_PROFILE_QSA_SCORE")) {
+        REQUIRE(ds4_gpu_init(), "CUDA init");
+        profile_qsa_block_scores();
+        ds4_gpu_cleanup();
+        return 0;
+    }
     if (getenv("DS4_QWEN_PROFILE_QSA")) {
         REQUIRE(ds4_gpu_init(), "CUDA init");
         profile_qsa_attention();
@@ -777,8 +823,8 @@ int main(void) {
                        SELECTED_CAP * sizeof(int32_t)) == 0,
                 "QSA selected token ids exact");
     }
-    printf("%-48s pass (7 rows, counts %u..%u)\n",
-           "QSA top-512 blocks -> chronological tokens",
+    printf("%-48s pass (%u rows, counts %u..%u)\n",
+           "QSA top-512 blocks -> chronological tokens", ROWS,
            counts_got[0], counts_got[ROWS - 1u]);
 
     upload_f32(dqproj, q_projected, qproj_count, "QSA q projection upload");
@@ -823,7 +869,7 @@ int main(void) {
     read_f32(dout, attn_got, q_count, "QSA attention download");
     compare_f32("QSA selected GQA softmax + sigmoid gate",
                 attn_got, attn_want, q_count, 2.0e-5f, 2.0e-5);
-    /* Seven rows take the decode-width split reduce (17 chunks of the
+    /* These compact rows take the decode-width split reduce (17 chunks of the
      * 2,051-slot cap); the serial gqa12 kernel behind the kill switch must
      * agree to fp32 reordering noise. */
     {
