@@ -72,6 +72,22 @@ fn parse_exaone_two_hermes_calls() {
 }
 
 #[test]
+fn parse_k2_horizon_ifm_think_not_exaone() {
+    let text = b"<ifm|think>\nplan\n</ifm|think>hello";
+    let p = parse_generated_message(
+        ModelSyntax::K2Horizon,
+        text,
+        true,
+        ChatFormat::K2Horizon,
+        &[],
+    );
+    assert!(p.ok);
+    assert_eq!(p.reasoning, b"\nplan\n");
+    assert_eq!(p.content, b"hello");
+    assert!(!String::from_utf8_lossy(&p.content).contains("<|user|>"));
+}
+
+#[test]
 fn parse_dsml_nested_parameters() {
     let generated = format!(
         "review done\n\n{DSML_START}\n{DSML_INVOKE} name=\"edit\">\n\

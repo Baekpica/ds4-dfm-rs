@@ -875,6 +875,17 @@ fn parse_solar_generated(
     })
 }
 
+fn parse_k2_generated(text: &[u8], require_thinking_closed: bool) -> Option<ParsedGenerated> {
+    let (content, reasoning) =
+        split_reasoning_response(text, ChatFormat::K2Horizon, require_thinking_closed);
+    Some(ParsedGenerated {
+        content,
+        reasoning,
+        ok: true,
+        ..Default::default()
+    })
+}
+
 fn parse_qwen_generated(
     text: &[u8],
     require_thinking_closed: bool,
@@ -1157,12 +1168,15 @@ pub fn parse_generated_message(
         ModelSyntax::Dots3 => parse_dots3_generated(text, require_thinking_closed),
         ModelSyntax::SolarOpen2 => parse_solar_generated(text, require_thinking_closed, orders),
         ModelSyntax::Qwen4Exp => parse_qwen_generated(text, require_thinking_closed, orders),
+        ModelSyntax::K2Horizon => parse_k2_generated(text, require_thinking_closed),
         ModelSyntax::Glm53 => parse_glm_generated(text, require_thinking_closed),
         ModelSyntax::DeepSeek => {
             if format == ChatFormat::SolarOpen2 {
                 parse_solar_generated(text, require_thinking_closed, orders)
             } else if format == ChatFormat::Qwen4Exp {
                 parse_qwen_generated(text, require_thinking_closed, orders)
+            } else if format == ChatFormat::K2Horizon {
+                parse_k2_generated(text, require_thinking_closed)
             } else {
                 parse_dsml_generated(text, require_thinking_closed)
             }
@@ -1186,6 +1200,7 @@ pub fn parse_generated_for_model_id(
         ModelSyntax::SolarOpen2 => ChatFormat::SolarOpen2,
         ModelSyntax::Exaone => ChatFormat::Exaone,
         ModelSyntax::Qwen4Exp => ChatFormat::Qwen4Exp,
+        ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
         _ => ChatFormat::DeepSeek,
     };
     parse_generated_message(syntax, text, require_thinking_closed, format, orders)
@@ -1273,6 +1288,7 @@ pub fn find_tool_start(s: &[u8], format: ChatFormat) -> Option<usize> {
         ChatFormat::SolarOpen2 => find_substr(s, SOLAR_TOOL_CALLS.as_bytes()),
         ChatFormat::Exaone => find_substr(s, b"<tool_call>"),
         ChatFormat::Qwen4Exp => find_substr(s, QWEN_TOOL_CALL_START.as_bytes()),
+        ChatFormat::K2Horizon => find_substr(s, crate::render::K2_TOOL_CALLS_START.as_bytes()),
         ChatFormat::DeepSeek => {
             let cands = [
                 DSML_TOOL_CALLS_START.as_bytes(),
@@ -1291,6 +1307,7 @@ pub fn find_tool_end(s: &[u8], format: ChatFormat) -> Option<usize> {
         ChatFormat::SolarOpen2 => find_substr(s, SOLAR_TOOL_CALL_END.as_bytes()),
         ChatFormat::Exaone => find_substr(s, b"</tool_call>"),
         ChatFormat::Qwen4Exp => find_substr(s, QWEN_TOOL_CALL_END.as_bytes()),
+        ChatFormat::K2Horizon => find_substr(s, crate::render::K2_TOOL_CALLS_END.as_bytes()),
         ChatFormat::DeepSeek => {
             let cands = [
                 DSML_TOOL_CALLS_END.as_bytes(),
@@ -1488,6 +1505,7 @@ fn tool_marker_stream_safe_len(text: &[u8], format: ChatFormat) -> usize {
         ChatFormat::SolarOpen2 => &[SOLAR_TOOL_CALLS.as_bytes()],
         ChatFormat::Exaone => &[b"<tool_call>"],
         ChatFormat::Qwen4Exp => &[QWEN_TOOL_CALL_START.as_bytes()],
+        ChatFormat::K2Horizon => &[crate::render::K2_TOOL_CALLS_START.as_bytes()],
         ChatFormat::DeepSeek => &[
             DSML_TOOL_CALLS_START.as_bytes(),
             DSML_TOOL_CALLS_START_SHORT.as_bytes(),

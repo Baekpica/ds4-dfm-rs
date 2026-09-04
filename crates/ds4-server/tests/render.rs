@@ -422,6 +422,25 @@ fn syntax_for_model_id_matches_c() {
     assert_eq!(ds4_server::syntax_for_model_id(5), ModelSyntax::Dots3);
     assert_eq!(ds4_server::syntax_for_model_id(6), ModelSyntax::Qwen4Exp);
     assert_eq!(ds4_server::syntax_for_model_id(7), ModelSyntax::Glm53);
+    assert_eq!(ds4_server::syntax_for_model_id(8), ModelSyntax::K2Horizon);
+}
+
+#[test]
+fn k2_horizon_chat_uses_ifm_not_exaone() {
+    let prompt = render_chat(
+        ModelSyntax::K2Horizon,
+        &[msg("user", "hello")],
+        "",
+        ThinkMode::None,
+    )
+    .unwrap();
+    let s = String::from_utf8(prompt).unwrap();
+    assert!(s.contains("<|ifm|im_start|>user\nhello<|ifm|im_end|>"));
+    assert!(s.contains("<|ifm|im_start|>assistant\n<ifm|think>\n</ifm|think>\n"));
+    assert!(!s.contains("<|user|>"));
+    assert!(!s.contains("<|assistant|>"));
+    assert!(!s.contains("<｜User｜>"));
+    assert!(!s.contains("<think>"));
 }
 
 #[test]

@@ -823,6 +823,7 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         ModelSyntax::SolarOpen2 => ChatFormat::SolarOpen2,
         ModelSyntax::Exaone => ChatFormat::Exaone,
         ModelSyntax::Qwen4Exp => ChatFormat::Qwen4Exp,
+        ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
         ModelSyntax::DeepSeek | ModelSyntax::Motif3 | ModelSyntax::Dots3 | ModelSyntax::Glm53 => {
             ChatFormat::DeepSeek
         }
@@ -904,7 +905,17 @@ pub(crate) fn thinking_visible_key(
     format: ChatFormat,
     terminal: bool,
 ) -> Option<Vec<u8>> {
-    let mut visible = if format == ChatFormat::Qwen4Exp || syntax == ModelSyntax::Exaone {
+    let mut visible = if format == ChatFormat::K2Horizon {
+        if !prompt.ends_with(b"<ifm|think>\n") {
+            return None;
+        }
+        let content = content.trim_ascii();
+        let mut visible = Vec::with_capacity(prompt.len() + 16 + content.len());
+        visible.extend_from_slice(prompt);
+        visible.extend_from_slice(b"</ifm|think>");
+        visible.extend_from_slice(content);
+        visible
+    } else if format == ChatFormat::Qwen4Exp || syntax == ModelSyntax::Exaone {
         if !prompt.ends_with(b"<think>\n") {
             return None;
         }
@@ -934,6 +945,7 @@ pub(crate) fn thinking_visible_key(
     if terminal {
         match syntax {
             ModelSyntax::Qwen4Exp => visible.extend_from_slice(QWEN_IM_END.as_bytes()),
+            ModelSyntax::K2Horizon => visible.extend_from_slice(crate::render::K2_IM_END.as_bytes()),
             ModelSyntax::Exaone => visible.extend_from_slice(b"<|endofturn|>"),
             ModelSyntax::Motif3 => visible.extend_from_slice(b"<|endofturn|>"),
             ModelSyntax::SolarOpen2 => visible.extend_from_slice(SOLAR_IM_END.as_bytes()),
@@ -942,7 +954,10 @@ pub(crate) fn thinking_visible_key(
         }
         if matches!(
             syntax,
-            ModelSyntax::Qwen4Exp | ModelSyntax::Exaone | ModelSyntax::SolarOpen2
+            ModelSyntax::Qwen4Exp
+                | ModelSyntax::K2Horizon
+                | ModelSyntax::Exaone
+                | ModelSyntax::SolarOpen2
         ) {
             visible.push(b'\n');
         }
@@ -998,6 +1013,7 @@ fn prepare_required_prefixes(
             ChatFormat::SolarOpen2 => crate::render::SOLAR_TOOL_CALLS,
             ChatFormat::Exaone => "<tool_call>",
             ChatFormat::Qwen4Exp => crate::render::QWEN_TOOL_CALL_START,
+            ChatFormat::K2Horizon => crate::render::K2_TOOL_CALLS_START,
             ChatFormat::DeepSeek => crate::tools::DSML_TOOL_CALLS_START,
         };
         let toks = engine.tokenize_rendered_chat(marker.as_bytes())?;

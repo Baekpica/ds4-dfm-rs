@@ -70,6 +70,7 @@ impl From<GgufError> for TokError {
 #[derive(Debug, Clone)]
 pub struct Vocab {
     pub family: ModelFamily,
+    is_k2_horizon: bool,
     tokens: Vec<Vec<u8>>,
     token_to_id: HashMap<Vec<u8>, i32>,
     merges: Vec<Vec<u8>>,
@@ -167,6 +168,9 @@ impl Vocab {
     }
 
     pub fn load(g: &GgufFile, family: ModelFamily) -> Result<Self, TokError> {
+        let is_k2_horizon = family == ModelFamily::ExaoneMoe
+            && (g.get_string("general.architecture") == Some(b"k2-horizon")
+                || g.get_string("tokenizer.ggml.pre") == Some(b"k2-horizon"));
         let tokens_arr = g
             .get_array("tokenizer.ggml.tokens")
             .filter(|a| a.typ == GGUF_VALUE_STRING && a.len <= i32::MAX as u64)
@@ -224,6 +228,7 @@ impl Vocab {
 
         let mut v = Self {
             family,
+            is_k2_horizon,
             tokens,
             token_to_id,
             merges,
@@ -432,10 +437,39 @@ impl Vocab {
             ModelFamily::ExaoneMoe => {
                 self.bos_id = g
                     .get_token_id("tokenizer.ggml.bos_token_id")
-                    .unwrap_or_else(|| self.lookup_opt("[BOS]"));
+                    .unwrap_or_else(|| {
+                        self.lookup_opt(if self.is_k2_horizon {
+                            "<|ifm|begin_of_text|>"
+                        } else {
+                            "[BOS]"
+                        })
+                    });
                 self.eos_id = g
                     .get_token_id("tokenizer.ggml.eos_token_id")
-                    .unwrap_or_else(|| self.lookup_opt("<|endofturn|>"));
+                    .unwrap_or_else(|| {
+                        self.lookup_opt(if self.is_k2_horizon {
+                            "<|ifm|endoftext|>"
+                        } else {
+                            "<|endofturn|>"
+                        })
+                    });
+                if self.is_k2_horizon {
+                    self.im_start_id = self.lookup_opt("<|ifm|im_start|>");
+                    self.im_end_id = self.lookup_opt("<|ifm|im_end|>");
+                    self.think_start_id = self.lookup_opt("<ifm|think>");
+                    self.think_end_id = self.lookup_opt("</ifm|think>");
+                    self.tool_call_start_id = self.lookup_opt("<ifm|tool_calls>");
+                    self.tool_call_end_id = self.lookup_opt("</ifm|tool_calls>");
+                    self.tool_response_start_id = self.lookup_opt("<ifm|tool_call>");
+                    self.tool_response_end_id = self.lookup_opt("</ifm|tool_call>");
+                    self.system_id = -1;
+                    self.user_id = -1;
+                    self.assistant_id = -1;
+                    self.observation_id = -1;
+                    self.sop_id = -1;
+                    self.dsml_id = -1;
+                    return Ok(());
+                }
                 self.system_id = self.lookup_opt("<|system|>");
                 self.user_id = self.lookup_opt("<|user|>");
                 self.assistant_id = self.lookup_opt("<|assistant|>");
@@ -530,6 +564,9 @@ impl Vocab {
     }
 
     pub fn chat_append_effort_prefix(&self, tokens: &mut TokenBuffer, mode: ChatThinkMode) {
+        if self.is_k2_horizon {
+            return;
+        }
         if self.family == ModelFamily::Glm53 {
             let effort = match mode {
                 ChatThinkMode::High => "Reasoning Effort: High",
@@ -565,6 +602,38 @@ impl Vocab {
     ) -> Result<(), TokError> {
         if role.as_bytes().contains(&0) || content.contains(&0) {
             return Err(TokError::EmbeddedNul);
+        }
+        if self.is_k2_horizon {
+            self.require_chat_ids(&[
+                (self.im_start_id, "<|ifm|im_start|>"),
+                (self.im_end_id, "<|ifm|im_end|>"),
+            ])?;
+            tokens.push(self.im_start_id);
+            let rendered_role = match role {
+                "system" | "developer" => b"system".as_slice(),
+                "assistant" => b"assistant".as_slice(),
+                "tool" | "function" => b"tool".as_slice(),
+                _ => b"user".as_slice(),
+            };
+            bpe_tokenize_text(self, rendered_role, &mut tokens.tokens);
+            bpe_tokenize_text(self, b"\n", &mut tokens.tokens);
+            if role == "assistant"
+                && !content.starts_with(b"<ifm|think>")
+                && !content.starts_with(b"<ifm|think_fast>")
+                && !content.starts_with(b"<ifm|think_faster>")
+            {
+                self.require_chat_ids(&[
+                    (self.think_start_id, "<ifm|think>"),
+                    (self.think_end_id, "</ifm|think>"),
+                ])?;
+                tokens.push(self.think_start_id);
+                bpe_tokenize_text(self, b"\n", &mut tokens.tokens);
+                tokens.push(self.think_end_id);
+                bpe_tokenize_text(self, b"\n", &mut tokens.tokens);
+            }
+            tokenize_rendered_chat(self, content, &mut tokens.tokens);
+            tokens.push(self.im_end_id);
+            return Ok(());
         }
 
         match self.family {
@@ -742,6 +811,22 @@ impl Vocab {
         mode: ChatThinkMode,
     ) -> Result<(), TokError> {
         let thinking = mode.enabled();
+        if self.is_k2_horizon {
+            self.require_chat_ids(&[
+                (self.im_start_id, "<|ifm|im_start|>"),
+                (self.think_start_id, "<ifm|think>"),
+                (self.think_end_id, "</ifm|think>"),
+            ])?;
+            tokens.push(self.im_start_id);
+            bpe_tokenize_text(self, b"assistant\n", &mut tokens.tokens);
+            tokens.push(self.think_start_id);
+            bpe_tokenize_text(self, b"\n", &mut tokens.tokens);
+            if !thinking {
+                tokens.push(self.think_end_id);
+                bpe_tokenize_text(self, b"\n", &mut tokens.tokens);
+            }
+            return Ok(());
+        }
         match self.family {
             ModelFamily::Glm53 => {
                 self.require_chat_ids(&[
@@ -1598,6 +1683,7 @@ fn bpe_tokenize_text_llama3(
     out: &mut Vec<i32>,
     max_digits: usize,
     user_defined: bool,
+    joiners_as_letters: bool,
 ) {
     let mut pos = 0usize;
     while pos < s.len() {
@@ -1621,13 +1707,16 @@ fn bpe_tokenize_text_llama3(
         }
         {
             let mut p = pos;
-            if !(cur.cp == b'\r' as u32 || cur.cp == b'\n' as u32 || cur.is_letter || cur.is_number)
+            if !(cur.cp == b'\r' as u32
+                || cur.cp == b'\n' as u32
+                || llama3_letter(cur, joiners_as_letters)
+                || cur.is_number)
             {
                 p = cur.next;
             }
             let mut first = char_at(s, p);
-            if first.valid && first.is_letter {
-                while first.valid && first.is_letter {
+            if first.valid && llama3_letter(first, joiners_as_letters) {
+                while first.valid && llama3_letter(first, joiners_as_letters) {
                     p = first.next;
                     first = char_at(s, p);
                 }
@@ -1657,7 +1746,11 @@ fn bpe_tokenize_text_llama3(
             let mut run = p;
             loop {
                 let c = char_at(s, run);
-                if !c.valid || c.is_whitespace || c.is_letter || c.is_number {
+                if !c.valid
+                    || c.is_whitespace
+                    || llama3_letter(c, joiners_as_letters)
+                    || c.is_number
+                {
                     break;
                 }
                 run = c.next;
@@ -1708,11 +1801,19 @@ fn bpe_tokenize_text_llama3(
 }
 
 fn bpe_tokenize_text_solar(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
-    bpe_tokenize_text_llama3(vocab, s, out, 1, true);
+    bpe_tokenize_text_llama3(vocab, s, out, 1, true, false);
 }
 
 fn bpe_tokenize_text_glm4(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
-    bpe_tokenize_text_llama3(vocab, s, out, 3, false);
+    bpe_tokenize_text_llama3(vocab, s, out, 3, false, false);
+}
+
+fn llama3_letter(c: CharInfo, joiners_as_letters: bool) -> bool {
+    c.is_letter || (joiners_as_letters && matches!(c.cp, 0x200c | 0x200d))
+}
+
+fn bpe_tokenize_text_k2(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
+    bpe_tokenize_text_llama3(vocab, s, out, 3, true, true);
 }
 
 fn bpe_tokenize_text_exaone(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
@@ -1932,6 +2033,7 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
         ModelFamily::SolarOpen2 => bpe_tokenize_text_solar(vocab, text, out),
         ModelFamily::Dots3Note => bpe_tokenize_text_dots3(vocab, text, out),
         ModelFamily::Qwen4Exp => bpe_tokenize_text_dots3(vocab, text, out),
+        ModelFamily::ExaoneMoe if vocab.is_k2_horizon => bpe_tokenize_text_k2(vocab, text, out),
         ModelFamily::ExaoneMoe => bpe_tokenize_text_exaone(vocab, text, out),
         ModelFamily::DeepSeek4 => bpe_tokenize_text_joyai(vocab, text, out),
     }
@@ -1939,6 +2041,54 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
 
 fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
     let specials: &[(&[u8], i32)] = &[
+        (
+            b"<|ifm|begin_of_text|>",
+            if vocab.is_k2_horizon {
+                vocab.bos_id
+            } else {
+                -1
+            },
+        ),
+        (
+            b"<|ifm|endoftext|>",
+            if vocab.is_k2_horizon {
+                vocab.eos_id
+            } else {
+                -1
+            },
+        ),
+        (
+            b"<|ifm|im_start|>",
+            if vocab.is_k2_horizon {
+                vocab.im_start_id
+            } else {
+                -1
+            },
+        ),
+        (
+            b"<|ifm|im_end|>",
+            if vocab.is_k2_horizon {
+                vocab.im_end_id
+            } else {
+                -1
+            },
+        ),
+        (
+            b"<ifm|think>",
+            if vocab.is_k2_horizon {
+                vocab.think_start_id
+            } else {
+                -1
+            },
+        ),
+        (
+            b"</ifm|think>",
+            if vocab.is_k2_horizon {
+                vocab.think_end_id
+            } else {
+                -1
+            },
+        ),
         (
             b"[gMASK]",
             if vocab.family == ModelFamily::Glm53 {

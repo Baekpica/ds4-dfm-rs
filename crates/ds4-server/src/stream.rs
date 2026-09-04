@@ -28,21 +28,22 @@ pub enum ChatFormat {
     SolarOpen2,
     Exaone,
     Qwen4Exp,
+    K2Horizon,
 }
 
 pub fn think_start(fmt: ChatFormat) -> &'static str {
-    if fmt == ChatFormat::SolarOpen2 {
-        "<|think:start|>"
-    } else {
-        "<think>"
+    match fmt {
+        ChatFormat::SolarOpen2 => "<|think:start|>",
+        ChatFormat::K2Horizon => crate::render::K2_THINK_START,
+        _ => "<think>",
     }
 }
 
 pub fn think_end(fmt: ChatFormat) -> &'static str {
-    if fmt == ChatFormat::SolarOpen2 {
-        "<|think:end|>"
-    } else {
-        "</think>"
+    match fmt {
+        ChatFormat::SolarOpen2 => "<|think:end|>",
+        ChatFormat::K2Horizon => crate::render::K2_THINK_END,
+        _ => "</think>",
     }
 }
 
