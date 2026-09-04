@@ -284,6 +284,10 @@ fn identify_glm53_flash() {
 
 #[test]
 fn identify_k2_horizon_375b() {
+    assert_eq!(
+        ds4_core::ModelFamily::from_oracle_name("k2-horizon"),
+        Some(ds4_core::ModelFamily::ExaoneMoe)
+    );
     let path = tmp("k2-horizon-375b.gguf");
     write_gguf(&path, &[("general.architecture", Val::Str("k2-horizon"))]);
     assert_same(&path);

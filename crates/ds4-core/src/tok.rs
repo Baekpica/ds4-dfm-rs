@@ -970,6 +970,9 @@ impl Vocab {
         if token == self.eos_id {
             return true;
         }
+        if self.is_k2_horizon && self.im_end_id >= 0 && token == self.im_end_id {
+            return true;
+        }
         match self.family {
             ModelFamily::SolarOpen2 | ModelFamily::Qwen4Exp => {
                 self.eot_id >= 0 && token == self.eot_id

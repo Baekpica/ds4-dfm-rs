@@ -490,6 +490,8 @@ fn k2_horizon_tokenizer_matches_reference_vectors() {
         vocab.encode_rendered_chat(rendered),
         vec![0, 250018, 2672, 200, 76943, 47589, 245, 250019, 250018, 142036, 200, 250029, 200,]
     );
+    assert!(vocab.is_stop(vocab.eos_id));
+    assert!(vocab.is_stop(vocab.im_end_id));
 }
 
 fn family_cases(family: ModelFamily) {

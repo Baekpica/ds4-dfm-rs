@@ -73,7 +73,11 @@ fn parse_exaone_two_hermes_calls() {
 
 #[test]
 fn parse_k2_horizon_ifm_think_not_exaone() {
-    let text = b"<ifm|think>\nplan\n</ifm|think>hello";
+    let text = b"<ifm|think>\nplan\n</ifm|think>hello\
+        <ifm|tool_calls>\n\
+        <ifm|tool_call>{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Seoul\"}}</ifm|tool_call>\n\
+        <ifm|tool_call>{\"name\":\"get_time\",\"arguments\":{}}</ifm|tool_call>\n\
+        </ifm|tool_calls>";
     let p = parse_generated_message(
         ModelSyntax::K2Horizon,
         text,
@@ -84,6 +88,11 @@ fn parse_k2_horizon_ifm_think_not_exaone() {
     assert!(p.ok);
     assert_eq!(p.reasoning, b"\nplan\n");
     assert_eq!(p.content, b"hello");
+    assert_eq!(p.calls.len(), 2);
+    assert_eq!(p.calls[0].name, "get_weather");
+    assert_eq!(p.calls[0].arguments, r#"{"city":"Seoul"}"#);
+    assert_eq!(p.calls[1].name, "get_time");
+    assert!(p.raw_dsml.starts_with("<ifm|tool_calls>"));
     assert!(!String::from_utf8_lossy(&p.content).contains("<|user|>"));
 }
 
@@ -216,6 +225,21 @@ fn qwen_stream_observes_native_tool_markers_without_dsml_verdict() {
     let last = acc.feed(b"</function>\n</tool_call>", &[]);
     assert!(last.tool_block_closed && acc.saw_tool_end);
     assert_eq!(acc.verdict, None);
+}
+
+#[test]
+fn k2_stream_leaves_thinking_before_observing_tool_block() {
+    let prompt = b"<|ifm|im_start|>assistant\n<ifm|think>\n";
+    let mut acc = SemAccum::init(true, true, true, ChatFormat::K2Horizon, prompt);
+    assert!(acc.thinking_inside());
+    acc.feed(b"plan</ifm|thi", &[]);
+    let closed = acc.feed(b"nk>", &[]);
+    assert!(!closed.entered_tool_block);
+    assert!(!acc.thinking_inside());
+    let first = acc.feed(b"<ifm|tool_calls>\n<ifm|tool_call>{}</ifm|tool_call>", &[]);
+    assert!(first.entered_tool_block && acc.saw_tool_start);
+    let last = acc.feed(b"</ifm|tool_calls>", &[]);
+    assert!(last.tool_block_closed && acc.saw_tool_end);
 }
 
 #[test]

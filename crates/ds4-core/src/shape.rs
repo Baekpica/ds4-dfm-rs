@@ -33,7 +33,7 @@ impl ModelFamily {
             "deepseek4" => Some(Self::DeepSeek4),
             "solar-open2" => Some(Self::SolarOpen2),
             "motif3" => Some(Self::Motif3),
-            "exaone-moe" => Some(Self::ExaoneMoe),
+            "exaone-moe" | "k2-horizon" => Some(Self::ExaoneMoe),
             "dots3-note" => Some(Self::Dots3Note),
             "qwen4exp" => Some(Self::Qwen4Exp),
             "glm5-next" => Some(Self::Glm53),

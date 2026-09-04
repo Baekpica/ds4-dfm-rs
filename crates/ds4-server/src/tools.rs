@@ -876,11 +876,66 @@ fn parse_solar_generated(
 }
 
 fn parse_k2_generated(text: &[u8], require_thinking_closed: bool) -> Option<ParsedGenerated> {
-    let (content, reasoning) =
-        split_reasoning_response(text, ChatFormat::K2Horizon, require_thinking_closed);
+    let think_end = crate::render::K2_THINK_END.as_bytes();
+    let tool_block_start = crate::render::K2_TOOL_CALLS_START.as_bytes();
+    let tool_block_end = crate::render::K2_TOOL_CALLS_END.as_bytes();
+    let tool_start = crate::render::K2_TOOL_CALL_START.as_bytes();
+    let tool_end = crate::render::K2_TOOL_CALL_END.as_bytes();
+    let tool_search = if require_thinking_closed {
+        match find_last_substr(text, think_end) {
+            Some(i) => i + think_end.len(),
+            None => {
+                let (content, reasoning) =
+                    split_reasoning_response(text, ChatFormat::K2Horizon, true);
+                return Some(ParsedGenerated {
+                    content,
+                    reasoning,
+                    ok: true,
+                    ..Default::default()
+                });
+            }
+        }
+    } else {
+        0
+    };
+    let Some(rel) = find_substr(&text[tool_search..], tool_block_start) else {
+        let (content, reasoning) =
+            split_reasoning_response(text, ChatFormat::K2Horizon, require_thinking_closed);
+        return Some(ParsedGenerated {
+            content,
+            reasoning,
+            ok: true,
+            ..Default::default()
+        });
+    };
+    let block_start = tool_search + rel;
+    let content_len = trim_tool_separator_ws(text, 0, block_start);
+    let mut p = block_start + tool_block_start.len();
+    let mut calls = Vec::new();
+    loop {
+        p = skip_ws(text, p);
+        if text[p..].starts_with(tool_block_end) {
+            p += tool_block_end.len();
+            break;
+        }
+        if !text[p..].starts_with(tool_start) {
+            return None;
+        }
+        p += tool_start.len();
+        let rel = find_substr(&text[p..], tool_end)?;
+        let raw = String::from_utf8_lossy(&text[p..p + rel]);
+        calls.push(parse_hermes_tool_call_json(&raw)?);
+        p += rel + tool_end.len();
+    }
+    if calls.is_empty() {
+        return None;
+    }
+    let (content, reasoning) = split_reasoning_content(text, content_len, ChatFormat::K2Horizon);
     Some(ParsedGenerated {
         content,
         reasoning,
+        calls,
+        raw_dsml: String::from_utf8_lossy(&text[block_start..p]).into_owned(),
         ok: true,
         ..Default::default()
     })
@@ -1614,10 +1669,12 @@ impl SemAccum {
             self.think_tail.push(c);
             if tail_ends_with(&self.think_tail, b"<think>")
                 || tail_ends_with(&self.think_tail, SOLAR_THINK_START.as_bytes())
+                || tail_ends_with(&self.think_tail, crate::render::K2_THINK_START.as_bytes())
             {
                 self.thinking_inside = true;
             } else if tail_ends_with(&self.think_tail, b"</think>")
                 || tail_ends_with(&self.think_tail, SOLAR_THINK_END.as_bytes())
+                || tail_ends_with(&self.think_tail, crate::render::K2_THINK_END.as_bytes())
             {
                 self.thinking_inside = false;
             }

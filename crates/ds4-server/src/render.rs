@@ -59,12 +59,15 @@ pub const GLM_TOOL_CALL_END: &str = "</tool_call>";
 pub const GLM_VISION_START: &str = "<|begin_of_image|>";
 pub const GLM_IMAGE: &str = "<|image|>";
 pub const GLM_VISION_END: &str = "<|end_of_image|>";
+pub const K2_BOS: &str = "<|ifm|begin_of_text|>";
 pub const K2_IM_START: &str = "<|ifm|im_start|>";
 pub const K2_IM_END: &str = "<|ifm|im_end|>";
 pub const K2_THINK_START: &str = "<ifm|think>";
 pub const K2_THINK_END: &str = "</ifm|think>";
 pub const K2_TOOL_CALLS_START: &str = "<ifm|tool_calls>";
 pub const K2_TOOL_CALLS_END: &str = "</ifm|tool_calls>";
+pub const K2_TOOL_CALL_START: &str = "<ifm|tool_call>";
+pub const K2_TOOL_CALL_END: &str = "</ifm|tool_call>";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelSyntax {
@@ -1823,7 +1826,7 @@ pub fn render_chat_choice(
         }
         ModelSyntax::Qwen4Exp => render_qwen_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
         ModelSyntax::Glm53 => render_glm_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
-        ModelSyntax::K2Horizon => render_k2_chat(msgs, think_mode),
+        ModelSyntax::K2Horizon => render_k2_chat(msgs, tool_schemas, think_mode),
         ModelSyntax::DeepSeek => {
             render_dsml_chat_choice(msgs, tool_schemas, think_mode, tool_choice)
         }
@@ -1953,35 +1956,97 @@ pub fn render_live_tool_tail(
         }
         ModelSyntax::K2Horizon => {
             put(&mut out, K2_IM_END);
-            out.extend(render_k2_chat(tail, think_mode)?);
+            let rendered = render_k2_chat(tail, "", think_mode)?;
+            out.extend_from_slice(
+                rendered
+                    .strip_prefix(K2_BOS.as_bytes())
+                    .unwrap_or(&rendered),
+            );
         }
     }
     Ok(out)
 }
 
-/// IFM chat template for K2-Horizon: `<|ifm|im_start|>role\\n...` not EXAONE
-/// `<|user|>` or DeepSeek DSML. Native vocab always opens `<ifm|think>`.
-pub fn render_k2_chat(msgs: &[ChatMsg], think_mode: ThinkMode) -> Result<Vec<u8>, RenderError> {
+fn append_k2_tools_system(out: &mut Vec<u8>, tool_schemas: &str, system: &str) {
+    put(out, K2_IM_START);
+    put(out, "system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n");
+    put(out, tool_schemas);
+    put(out, "\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, emit one JSON object with the function name and arguments on the same line inside <ifm|tool_call></ifm|tool_call> tags:\n\n<ifm|tool_calls>\n<ifm|tool_call>{\"name\": <function-name>, \"arguments\": <args-json-object>}</ifm|tool_call>\n</ifm|tool_calls>");
+    if !system.is_empty() {
+        put(out, "\n\n");
+        put(out, system);
+    }
+    put(out, K2_IM_END);
+}
+
+fn append_k2_tool_calls(out: &mut Vec<u8>, m: &ChatMsg) {
+    if m.calls.is_empty() {
+        return;
+    }
+    if !m.raw_dsml.is_empty() {
+        put(out, &m.raw_dsml);
+        return;
+    }
+    put(out, K2_TOOL_CALLS_START);
+    for tc in &m.calls {
+        put(out, "\n");
+        put(out, K2_TOOL_CALL_START);
+        put(out, "{\"name\": ");
+        out.extend(json_escape_bytes(tc.name.as_bytes()));
+        put(out, ", \"arguments\": ");
+        put(
+            out,
+            &json_minify_raw_value(if tc.arguments.is_empty() {
+                "null"
+            } else {
+                &tc.arguments
+            }),
+        );
+        put(out, "}");
+        put(out, K2_TOOL_CALL_END);
+    }
+    put(out, "\n");
+    put(out, K2_TOOL_CALLS_END);
+}
+
+/// Official IFM chat protocol using its supported JSON tool dialect.
+pub fn render_k2_chat(
+    msgs: &[ChatMsg],
+    tool_schemas: &str,
+    think_mode: ThinkMode,
+) -> Result<Vec<u8>, RenderError> {
     let mut out = Vec::new();
-    for m in msgs {
+    put(&mut out, K2_BOS);
+    let first_system = msgs.first().filter(|m| role_is_system(&m.role));
+    if !tool_schemas.is_empty() {
+        append_k2_tools_system(
+            &mut out,
+            tool_schemas,
+            first_system.map(|m| m.content.as_str()).unwrap_or(""),
+        );
+    }
+    for (i, m) in msgs.iter().enumerate() {
         if role_is_system(&m.role) {
+            if i == 0 && !tool_schemas.is_empty() {
+                continue;
+            }
             put(&mut out, K2_IM_START);
             put(&mut out, "system\n");
-            put_trimmed(&mut out, &m.content);
+            put(&mut out, &m.content);
             put(&mut out, K2_IM_END);
             continue;
         }
         if m.role == "user" && !chat_msg_is_model_tool_result(m) {
             put(&mut out, K2_IM_START);
             put(&mut out, "user\n");
-            put_trimmed(&mut out, &m.content);
+            put(&mut out, &m.content);
             put(&mut out, K2_IM_END);
             continue;
         }
         if chat_msg_is_model_tool_result(m) {
             put(&mut out, K2_IM_START);
             put(&mut out, "tool\n");
-            put_trimmed(&mut out, &m.content);
+            put(&mut out, &m.content);
             put(&mut out, K2_IM_END);
             continue;
         }
@@ -1990,9 +2055,10 @@ pub fn render_k2_chat(msgs: &[ChatMsg], think_mode: ThinkMode) -> Result<Vec<u8>
             put(&mut out, "assistant\n");
             put(&mut out, K2_THINK_START);
             put(&mut out, "\n");
-            put_trimmed(&mut out, &m.reasoning);
+            put(&mut out, &m.reasoning);
             put(&mut out, K2_THINK_END);
-            put_trimmed(&mut out, &m.content);
+            put(&mut out, &m.content);
+            append_k2_tool_calls(&mut out, m);
             put(&mut out, K2_IM_END);
         }
     }

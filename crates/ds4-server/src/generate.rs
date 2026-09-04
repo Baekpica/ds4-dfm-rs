@@ -945,7 +945,9 @@ pub(crate) fn thinking_visible_key(
     if terminal {
         match syntax {
             ModelSyntax::Qwen4Exp => visible.extend_from_slice(QWEN_IM_END.as_bytes()),
-            ModelSyntax::K2Horizon => visible.extend_from_slice(crate::render::K2_IM_END.as_bytes()),
+            ModelSyntax::K2Horizon => {
+                visible.extend_from_slice(crate::render::K2_IM_END.as_bytes())
+            }
             ModelSyntax::Exaone => visible.extend_from_slice(b"<|endofturn|>"),
             ModelSyntax::Motif3 => visible.extend_from_slice(b"<|endofturn|>"),
             ModelSyntax::SolarOpen2 => visible.extend_from_slice(SOLAR_IM_END.as_bytes()),
@@ -954,10 +956,7 @@ pub(crate) fn thinking_visible_key(
         }
         if matches!(
             syntax,
-            ModelSyntax::Qwen4Exp
-                | ModelSyntax::K2Horizon
-                | ModelSyntax::Exaone
-                | ModelSyntax::SolarOpen2
+            ModelSyntax::Qwen4Exp | ModelSyntax::Exaone | ModelSyntax::SolarOpen2
         ) {
             visible.push(b'\n');
         }
@@ -2568,7 +2567,7 @@ mod disk_sync_tests {
     use super::{
         continued_decode_allowed, discard_loaded, disk_sync_prompt, disk_sync_tool_replay,
         intermediate_prefill_eligible, ordinary_disk_cache_eligible,
-        settle_thinking_visible_checkpoint, thinking_visible_cache_eligible,
+        settle_thinking_visible_checkpoint, thinking_visible_cache_eligible, thinking_visible_key,
         tool_replay_disk_cache_eligible, tool_replay_producer_eligible, try_store_continued,
         try_store_live, DiskSyncPolicy, GenerateError, SerialKvIo, ThinkingVisibleCheckpoint,
     };
@@ -3836,6 +3835,22 @@ mod disk_sync_tests {
 
         settle_thinking_visible_checkpoint(&mut checkpoint, true);
         assert!(checkpoint.is_none());
+    }
+
+    #[test]
+    fn k2_thinking_visible_key_matches_adjacent_ifm_turns() {
+        let prompt = b"<|ifm|begin_of_text|><|ifm|im_start|>assistant\n<ifm|think>\n";
+        assert_eq!(
+            thinking_visible_key(
+                prompt,
+                b"answer",
+                ModelSyntax::K2Horizon,
+                ChatFormat::K2Horizon,
+                true,
+            )
+            .unwrap(),
+            b"<|ifm|begin_of_text|><|ifm|im_start|>assistant\n<ifm|think>\n</ifm|think>answer<|ifm|im_end|>"
+        );
     }
 
     #[test]
