@@ -22427,6 +22427,11 @@ typedef struct {
     ds4_gpu_tensor *conv_state_checkpoint;
     ds4_ple_hash_state hash_before;
     uint32_t hashed_rows;
+    /* Next-chunk lookahead: the caller's following tokens are hashed from
+     * the post-chunk state and their SSD pages queued once this chunk's rows
+     * are gathered, so the reads overlap the remaining decoder layers. */
+    int64_t *lookahead_ids;
+    uint64_t *lookahead_row_ids;
     uint64_t bytes;
 } ds4_qwen_ple_ws;
 
@@ -22442,6 +22447,8 @@ static void qwen4exp_ple_ws_free(ds4_qwen_ple_ws *ws) {
         ds4_gpu_tensor_free(*all[i]);
         *all[i] = NULL;
     }
+    free(ws->lookahead_row_ids);
+    free(ws->lookahead_ids);
     free(ws->row_ids);
     free(ws->input_ids);
     memset(ws, 0, sizeof(*ws));
@@ -22456,6 +22463,10 @@ static bool qwen4exp_ple_ws_alloc(ds4_qwen_ple_ws *ws, uint32_t capacity) {
     ws->input_ids = xmalloc((size_t)capacity * sizeof(ws->input_ids[0]));
     ws->row_ids = xmalloc((size_t)capacity * DS4_PLE_N_HEADS *
                           sizeof(ws->row_ids[0]));
+    ws->lookahead_ids =
+        xmalloc((size_t)capacity * sizeof(ws->lookahead_ids[0]));
+    ws->lookahead_row_ids = xmalloc((size_t)capacity * DS4_PLE_N_HEADS *
+                                    sizeof(ws->lookahead_row_ids[0]));
 #define QWEN_PLE_ALLOC(field, count, type)                                    \
     do {                                                                       \
         const uint64_t qwen_count_ = (uint64_t)(count);                       \
@@ -22516,6 +22527,65 @@ static bool qwen4exp_ple_prepare(ds4_qwen_ple_ws *ws,
     ws->hash_state = next;
     ws->prepared_rows = rows;
     return true;
+}
+
+/* Diagnostic kill switch for the next-chunk PLE prefetch. */
+static bool qwen4exp_ple_lookahead_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *v = getenv("DS4_QWEN_PLE_NO_LOOKAHEAD");
+        enabled = !(v && v[0] && !(v[0] == '0' && v[1] == '\0'));
+    }
+    return enabled != 0;
+}
+
+/* Queue the SSD pages of the chunk that follows while this chunk's decoder
+ * layers run.  Layer 0 alone (~0.2 s of an 8K chunk) never hid the 16 rows
+ * per token: a cold 8K chunk waited 3-10 s at layer 1 on 4 KiB preads.
+ * Called right after this chunk's rows are gathered, so the following
+ * chunk's pages replace consumed ones under LRU; the cache must hold one
+ * chunk's working set (~553 MiB for 8,192 tokens, two chunks when two banks
+ * prefill alternately).  Speculative: a failure is reported once, not
+ * fatal, and the next chunk's blocking prepare re-requests every page. */
+static void qwen4exp_ple_lookahead(ds4_qwen_ple_ws *ws,
+                                   ds4_ple_store *store,
+                                   const int *tokens,
+                                   uint32_t rows) {
+    static int reported = 0;
+    if (!ws || !store || !tokens || rows == 0u ||
+        !qwen4exp_ple_lookahead_enabled()) return;
+    if (rows > ws->capacity) rows = ws->capacity;
+    const ds4_ple_hash_config *config = ds4_ple_store_hash_config(store);
+    const ds4_ple_layout *layout = ds4_ple_store_layout(store);
+    ds4_ple_hash_state next = ws->hash_state;
+    char error[128] = {0};
+    for (uint32_t i = 0; i < rows; i++) ws->lookahead_ids[i] = tokens[i];
+    const bool ok = config && layout &&
+        ds4_ple_hash_rows(config, &next, ws->lookahead_ids, rows,
+                          ws->lookahead_row_ids, error, sizeof(error)) &&
+        ds4_ple_store_prefetch_rows(
+            store, ws->lookahead_row_ids, (size_t)rows * DS4_PLE_N_HEADS,
+            error, sizeof(error));
+    if (reported) return;
+    reported = 1;
+    if (!ok) {
+        fprintf(stderr, "ds4: Qwen PLE lookahead prefetch failed: %s\n",
+                error[0] ? error : "store layout missing");
+        return;
+    }
+    /* Rows are 320 B at random offsets: ~1.08 pages each. */
+    const uint64_t chunk_pages = (uint64_t)ws->capacity * DS4_PLE_N_HEADS *
+        (DS4_PLE_PAGE_BYTES + DS4_PLE_ROW_BYTES) / DS4_PLE_PAGE_BYTES;
+    const double chunk_mib =
+        (double)chunk_pages * DS4_PLE_PAGE_BYTES / (1024.0 * 1024.0);
+    fprintf(stderr,
+            "ds4: Qwen PLE lookahead active: %u-token chunk ~%.0f MiB of "
+            "pages, cache %.0f MiB (%.2f chunks)\n",
+            ws->capacity, chunk_mib,
+            (double)layout->cache_bytes / (1024.0 * 1024.0),
+            chunk_mib > 0.0
+                ? (double)layout->cache_bytes / (1024.0 * 1024.0) / chunk_mib
+                : 0.0);
 }
 
 static bool qwen4exp_ple_ws_checkpoint_ensure(ds4_qwen_ple_ws *ws) {
@@ -23932,7 +24002,9 @@ static bool qwen4exp_graph_forward_chunk_impl(
         uint32_t logits_rows,
         bool stable_hc,
         float *logits,
-        uint32_t checkpoint_rows) {
+        uint32_t checkpoint_rows,
+        const int *next_tokens,
+        uint32_t next_rows) {
     if (!graph || !model || !weights || !ple_store || !ple_cuda || !tokens ||
         rows == 0u || rows > graph->capacity || pos0 != graph->length ||
         pos0 > graph->context_cap || rows > graph->context_cap - pos0 ||
@@ -23985,13 +24057,17 @@ static bool qwen4exp_graph_forward_chunk_impl(
     ds4_gpu_tensor *next = graph->hidden[1];
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
         const ds4_layer_weights *layer = &weights->layer[il];
-        if (il == 1u && !qwen4exp_ple_forward(
-                &graph->ple, ple_cuda, model, &layer->qwen_ple,
-                current, rows, checkpoint_rows,
-                ple_error, sizeof(ple_error))) {
-            fprintf(stderr, "ds4: Qwen PLE forward failed: %s\n",
-                    ple_error[0] ? ple_error : "compute failure");
-            return false;
+        if (il == 1u) {
+            if (!qwen4exp_ple_forward(
+                    &graph->ple, ple_cuda, model, &layer->qwen_ple,
+                    current, rows, checkpoint_rows,
+                    ple_error, sizeof(ple_error))) {
+                fprintf(stderr, "ds4: Qwen PLE forward failed: %s\n",
+                        ple_error[0] ? ple_error : "compute failure");
+                return false;
+            }
+            qwen4exp_ple_lookahead(
+                &graph->ple, ple_store, next_tokens, next_rows);
         }
         if (!qwen4exp_hc_begin(
                 &graph->hc, model, &layer->qwen_attn_hc,
@@ -24062,10 +24138,12 @@ static bool qwen4exp_graph_forward_chunk(
         uint32_t pos0,
         uint32_t logits_rows,
         bool stable_hc,
-        float *logits) {
+        float *logits,
+        const int *next_tokens,
+        uint32_t next_rows) {
     return qwen4exp_graph_forward_chunk_impl(
         graph, model, weights, ple_store, ple_cuda, tokens, rows, pos0,
-        logits_rows, stable_hc, logits, 0u);
+        logits_rows, stable_hc, logits, 0u, next_tokens, next_rows);
 }
 
 /* Two-row MTP verification.  Row 0 is the committed token and row 1 the
@@ -24121,7 +24199,7 @@ static bool qwen4exp_graph_verify_pair(
     return qwen4exp_graph_verify_ready(graph, pos) &&
            qwen4exp_graph_forward_chunk_impl(
                graph, model, weights, ple_store, ple_cuda, tokens, 2u, pos,
-               2u, true, logits, 1u);
+               2u, true, logits, 1u, NULL, 0u);
 }
 
 static bool qwen4exp_graph_verify_rollback(
@@ -33509,6 +33587,20 @@ static void qwen4exp_report_ple_stats(ds4_engine *engine) {
                 cuda.acquire_latency_histogram,
                 cuda.gather_calls, 99u) / 1.0e6,
             (double)cuda.acquire_nanoseconds_max / 1.0e6);
+    fprintf(stderr,
+            "ds4: Qwen PLE gather split: total=%.3f s row_acquire=%.3f s"
+            " (rows=%" PRIu64 " blocked=%" PRIu64 " blocked_wait=%.3f s)"
+            " enqueue=%.3f s\n",
+            (double)cuda.acquire_nanoseconds_total / 1.0e9,
+            (double)store.wait_nanoseconds_total / 1.0e9,
+            store.wait_samples, store.wait_blocked,
+            (double)store.wait_blocked_nanoseconds / 1.0e9,
+            (double)cuda.enqueue_nanoseconds_total / 1.0e9);
+    fprintf(stderr, "ds4: Qwen PLE reads per second:");
+    for (uint32_t i = 0; i < 256u; i++)
+        if (store.timeline_reads[i])
+            fprintf(stderr, " %u:%" PRIu64, i, store.timeline_reads[i]);
+    fprintf(stderr, "\n");
 }
 #endif
 #endif
@@ -42277,7 +42369,8 @@ static bool qwen_batch_runtime_copy_bank(
 
 static bool qwen_batch_runtime_prefill(
         ds4_qwen_batch_runtime *rt, ds4_engine *e, uint32_t bank,
-        const int *tokens, uint32_t rows, uint32_t pos, bool final) {
+        const int *tokens, uint32_t rows, uint32_t pos, bool final,
+        const int *next_tokens, uint32_t next_rows) {
     if (!rt || !e || bank >= rt->max_seq) return false;
     rt->bank_logits_valid[bank] = 0u;
     const uint64_t before = qwen_batch_census_live();
@@ -42287,7 +42380,8 @@ static bool qwen_batch_runtime_prefill(
         tokens, rows, pos,
         final ? 1u : 0u,
         false,
-        final ? rt->bank_logits + (size_t)bank * DS4_N_VOCAB : NULL);
+        final ? rt->bank_logits + (size_t)bank * DS4_N_VOCAB : NULL,
+        next_tokens, next_rows);
     if (ok && rt->graph[bank].mtp_enabled) {
         ds4_qwen_gpu_graph *g = &rt->graph[bank];
         if (g->mtp_suspended && final) {
@@ -42373,7 +42467,7 @@ static bool qwen_batch_runtime_decode(
                 e->qwen_ple_store, e->qwen_ple_cuda,
                 &tokens[i], 1u, positions[i],
                 1u, true,
-                rt->bank_logits + (size_t)bank * DS4_N_VOCAB);
+                rt->bank_logits + (size_t)bank * DS4_N_VOCAB, NULL, 0u);
         if (ok && rt->graph[bank].mtp_enabled &&
             !qwen4exp_graph_mtp_feed_chunk(
                 &rt->graph[bank], &e->model, &e->weights,
@@ -42445,7 +42539,7 @@ static bool qwen_batch_runtime_decode_next(
     } else if (!qwen4exp_graph_forward_chunk(
             g, &e->model, &e->weights,
             e->qwen_ple_store, e->qwen_ple_cuda,
-            &token, 1u, pos, 1u, true, rt->mtp_logits)) return false;
+            &token, 1u, pos, 1u, true, rt->mtp_logits, NULL, 0u)) return false;
 
     *next_token = sample_top_p_min_p_override(
         rt->mtp_logits, DS4_N_VOCAB,
@@ -42466,7 +42560,7 @@ static bool qwen_batch_runtime_decode_next(
                 e->qwen_ple_store, e->qwen_ple_cuda,
                 &draft, 1u, pos + 1u, 1u,
                 true,
-                rt->mtp_logits + DS4_N_VOCAB)) return false;
+                rt->mtp_logits + DS4_N_VOCAB, NULL, 0u)) return false;
         memcpy(logits, rt->mtp_logits + DS4_N_VOCAB,
                (size_t)DS4_N_VOCAB * sizeof(*logits));
         *committed = 2u;
@@ -58304,12 +58398,16 @@ static bool family_banked_copy(
         : exaone_batch_runtime_copy_bank(ctx->exaone, src, dst, tokens);
 }
 
+/* next_tokens/next_rows describe the chunk the caller will prefill after
+ * this one on the same bank; Qwen queues their PLE pages behind this chunk. */
 static bool family_banked_prefill(
         ds4_batch_ctx *ctx, uint32_t bank, const int *tokens,
-        uint32_t rows, uint32_t pos, bool final) {
+        uint32_t rows, uint32_t pos, bool final,
+        const int *next_tokens, uint32_t next_rows) {
     if (ctx->qwen) {
         return qwen_batch_runtime_prefill(
-            ctx->qwen, ctx->e, bank, tokens, rows, pos, final);
+            ctx->qwen, ctx->e, bank, tokens, rows, pos, final,
+            next_tokens, next_rows);
     }
     if (ctx->motif3) {
         return motif3_batch_runtime_prefill(
@@ -58663,9 +58761,14 @@ static int family_banked_engine_continuous_generate(
                     if (n > cap) n = cap;
                     const uint32_t pos = cb->prefill_base + cb->prefill_off;
                     const bool final = n == remain;
+                    uint32_t next_n = remain - n;
+                    if (next_n > cap) next_n = cap;
                     if (!family_banked_prefill(
                             ctx, pb, cb->prefill + cb->prefill_off,
-                            n, pos, final)) {
+                            n, pos, final,
+                            next_n ? cb->prefill + cb->prefill_off + n
+                                   : NULL,
+                            next_n)) {
                         ctx->bank_gen[pb]++;
                         ctx->bank_hist_valid[pb] = 0u;
                         FCG_ERR("continuous_generate: family bank prefill failed "
@@ -66103,13 +66206,17 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             uint32_t rows = (uint32_t)(prompt->len - start);
             if (rows > s->prefill_cap) rows = s->prefill_cap;
             const bool last = start + (int)rows == prompt->len;
+            uint32_t next_rows = (uint32_t)(prompt->len - start) - rows;
+            if (next_rows > s->prefill_cap) next_rows = s->prefill_cap;
             if (!qwen4exp_graph_forward_chunk(
                     g, &e->model, &e->weights,
                     e->qwen_ple_store, e->qwen_ple_cuda,
                     prompt->v + start, rows, (uint32_t)start,
                     last ? 1u : 0u,
                     false,
-                    last ? s->logits : NULL)) {
+                    last ? s->logits : NULL,
+                    next_rows ? prompt->v + start + (int)rows : NULL,
+                    next_rows)) {
                 snprintf(err, errlen,
                          "Qwen4Exp prefill failed at token range %d:%d",
                          start, start + (int)rows);
@@ -66685,7 +66792,7 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
                 g, &e->model, &e->weights,
                 e->qwen_ple_store, e->qwen_ple_cuda,
                 &token, 1u, (uint32_t)s->checkpoint.len,
-                1u, true, s->logits)) {
+                1u, true, s->logits, NULL, 0u)) {
             if (errlen) snprintf(err, errlen,
                                  "Qwen4Exp decode failed at position %d",
                                  s->checkpoint.len);
@@ -67131,7 +67238,7 @@ static int ds4_session_eval_qwen_mtp(
         : qwen4exp_graph_forward_chunk(
               g, &e->model, &e->weights,
               e->qwen_ple_store, e->qwen_ple_cuda,
-              &first_token, 1u, pos, 1u, true, s->mtp_logits);
+              &first_token, 1u, pos, 1u, true, s->mtp_logits, NULL, 0u);
     if (!verified) {
         if (errlen) snprintf(err, errlen,
                              "Qwen MTP target verify failed at %u", pos);
@@ -67156,7 +67263,7 @@ static int ds4_session_eval_qwen_mtp(
                 e->qwen_ple_store, e->qwen_ple_cuda,
                 &draft, 1u, pos + 1u, 1u,
                 true,
-                s->mtp_logits + DS4_N_VOCAB)) {
+                s->mtp_logits + DS4_N_VOCAB, NULL, 0u)) {
             if (errlen) snprintf(err, errlen,
                                  "Qwen MTP accepted draft failed at %u",
                                  pos + 1u);
