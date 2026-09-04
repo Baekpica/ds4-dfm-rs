@@ -9035,10 +9035,11 @@ __global__ static void qwen4exp_gdn_controls_kernel(
 }
 
 /* Correctness-first recurrent Gated Delta rule. Production splits each value
- * head into four column tiles, and one thread owns a complete state column.
- * That makes arbitrary chunk boundaries bit-stable: a token is fully
- * committed before the block advances. Q/K heads repeat contiguously over value
- * heads (48 / 16 == 3 in the production checkpoint). */
+ * head into four 32-column tiles; inside a tile each warp owns eight state
+ * columns and each lane 32 rows of one column, and a token is fully
+ * committed before the loop advances, so arbitrary chunk boundaries are
+ * bit-stable. Q/K heads repeat contiguously over value heads (48 / 16 == 3
+ * in the production checkpoint). */
 /* With CHECKPOINT, checkpoint0/1 receive the recurrent state as it stands
  * after row checkpoint_row, written from the same registers that update the
  * live state, so the copy is exact; the two-row MTP verify pass uses it as
@@ -9074,99 +9075,146 @@ __global__ static void qwen4exp_gdn_recurrent_kernel(
         (uint64_t)value_head * head_dim * head_dim;
 
     if (head_dim == 128u && blockDim.x == 128u) {
-        constexpr uint32_t groups = 4u;
-        constexpr uint32_t columns = 32u;
-        const uint32_t group = tid / columns;
-        const uint32_t column = tid % columns;
-        const uint32_t v = value_tile * columns + column;
-        float *partial = k_raw + head_dim;
-        float *delta_shared = partial + groups * columns;
+        /* Warp-independent layout: a warp owns eight state columns and its
+         * four eight-lane groups split the 128 key rows into contiguous
+         * quarters (lane = key group * 8 + column), each lane holding its
+         * 32 state rows in registers for the whole chunk.  The two
+         * cross-group sums a token needs (key-state product, output) are
+         * two xor-shuffles each and the Q/K rows sit in a warp-private
+         * shared copy, so the token loop has no block barrier; the next
+         * token's operands are loaded one iteration ahead.  The previous
+         * layout spread the four key groups over four warps and paid four
+         * __syncthreads plus an unhidden global load per token (~2.1 us
+         * per token, 17.5 ms per 8K-token layer).  Summation orders differ
+         * from it, so outputs move by fp32 reordering; chunk-boundary and
+         * decode self-parity are unchanged. */
+        constexpr uint32_t key_groups = 4u;
+        constexpr uint32_t warp_columns = 32u / key_groups;
+        constexpr uint32_t keys_per_lane = 128u / key_groups;
+        constexpr uint32_t vec_per_lane = keys_per_lane / 4u;
+        const uint32_t warp = tid >> 5u;
+        const uint32_t lane = tid & 31u;
+        const uint32_t k_group = lane / warp_columns;
+        const uint32_t column = lane % warp_columns;
+        const uint32_t v = value_tile * 32u + warp * warp_columns + column;
+        const uint32_t k_first = k_group * keys_per_lane;
+        float *q_warp = shared + (uint64_t)warp * 2u * 128u;
+        float *k_warp = q_warp + 128u;
+        const uint64_t state_col = state_head_base + v;
+        const uint64_t token_stride = 2u * key_dim + value_dim;
+        const float *q_src = mixed_qkv + (uint64_t)key_head * head_dim;
+        const float *k_src = q_src + key_dim;
+        const float *v_src = mixed_qkv + 2u * key_dim +
+            (uint64_t)value_head * head_dim + v;
+
+        float s[keys_per_lane];
+#pragma unroll
+        for (uint32_t j = 0; j < keys_per_lane; j++)
+            s[j] = state[state_col + (uint64_t)(k_first + j) * head_dim];
+
+        /* The next token's operands, norms and decay are prepared one
+         * iteration ahead so their load latency and the ten-level norm
+         * shuffle stay off the state update's critical path. */
+        float4 q_next = reinterpret_cast<const float4 *>(q_src)[lane];
+        float4 k_next = reinterpret_cast<const float4 *>(k_src)[lane];
+        float value_next = v_src[0];
+        float beta_next = beta[value_head];
+        float decay_next = expf(g[value_head]);
+        float q2_next = q_next.x * q_next.x + q_next.y * q_next.y +
+                        q_next.z * q_next.z + q_next.w * q_next.w;
+        float k2_next = k_next.x * k_next.x + k_next.y * k_next.y +
+                        k_next.z * k_next.z + k_next.w * k_next.w;
+#pragma unroll
+        for (uint32_t offset = 16u; offset > 0u; offset >>= 1u) {
+            q2_next += __shfl_xor_sync(0xffffffffu, q2_next, offset);
+            k2_next += __shfl_xor_sync(0xffffffffu, k2_next, offset);
+        }
 
         for (uint32_t token = 0; token < rows; token++) {
-            const uint64_t row_base =
-                (uint64_t)token * (2u * key_dim + value_dim);
-            if (tid < head_dim) {
-                const float qv = mixed_qkv[
-                    row_base + (uint64_t)key_head * head_dim + tid];
-                const float kv = mixed_qkv[
-                    row_base + key_dim +
-                    (uint64_t)key_head * head_dim + tid];
-                q_raw[tid] = qv;
-                k_raw[tid] = kv;
-                float q2 = qv * qv;
-                float k2 = kv * kv;
+            const float value = value_next;
+            const float beta_value = beta_next;
+            const float decay = decay_next;
+            const float q_inv = rsqrtf(q2_next + 1.0e-6f) * inv_sqrt_dim;
+            const float k_inv = rsqrtf(k2_next + 1.0e-6f);
+            reinterpret_cast<float4 *>(q_warp)[lane] = q_next;
+            reinterpret_cast<float4 *>(k_warp)[lane] = k_next;
+            if (token + 1u < rows) {
+                const uint64_t next_base = (uint64_t)(token + 1u) * token_stride;
+                const uint64_t next_control =
+                    (uint64_t)(token + 1u) * value_heads + value_head;
+                q_next = reinterpret_cast<const float4 *>(q_src + next_base)[lane];
+                k_next = reinterpret_cast<const float4 *>(k_src + next_base)[lane];
+                value_next = v_src[next_base];
+                beta_next = beta[next_control];
+                decay_next = expf(g[next_control]);
+                q2_next = q_next.x * q_next.x + q_next.y * q_next.y +
+                          q_next.z * q_next.z + q_next.w * q_next.w;
+                k2_next = k_next.x * k_next.x + k_next.y * k_next.y +
+                          k_next.z * k_next.z + k_next.w * k_next.w;
+#pragma unroll
                 for (uint32_t offset = 16u; offset > 0u; offset >>= 1u) {
-                    q2 += __shfl_down_sync(0xffffffffu, q2, offset);
-                    k2 += __shfl_down_sync(0xffffffffu, k2, offset);
-                }
-                if ((tid & 31u) == 0u) {
-                    partial[tid >> 5u] = q2;
-                    delta_shared[tid >> 5u] = k2;
+                    q2_next += __shfl_xor_sync(0xffffffffu, q2_next, offset);
+                    k2_next += __shfl_xor_sync(0xffffffffu, k2_next, offset);
                 }
             }
-            __syncthreads();
-            if (tid < 32u) {
-                float q2 = tid < 4u ? partial[tid] : 0.0f;
-                float k2 = tid < 4u ? delta_shared[tid] : 0.0f;
-                for (uint32_t offset = 16u; offset > 0u; offset >>= 1u) {
-                    q2 += __shfl_down_sync(0xffffffffu, q2, offset);
-                    k2 += __shfl_down_sync(0xffffffffu, k2, offset);
-                }
-                if (tid == 0u) {
-                    partial[0] = q2;
-                    delta_shared[0] = k2;
-                }
-            }
-            __syncthreads();
+            __syncwarp();
 
-            const float q_inv =
-                rsqrtf(partial[0] + 1.0e-6f) * inv_sqrt_dim;
-            const float k_inv = rsqrtf(delta_shared[0] + 1.0e-6f);
-            const uint64_t control_at =
-                (uint64_t)token * value_heads + value_head;
-            const float decay = expf(g[control_at]);
-            const uint64_t state_col = state_head_base + v;
+            const float4 *kq4 =
+                reinterpret_cast<const float4 *>(k_warp + k_first);
+            const float4 *qq4 =
+                reinterpret_cast<const float4 *>(q_warp + k_first);
             float kv_mem = 0.0f;
-            for (uint32_t k = group; k < head_dim; k += groups) {
-                const uint64_t at = state_col + (uint64_t)k * head_dim;
-                kv_mem += state[at] * decay * (k_raw[k] * k_inv);
+#pragma unroll
+            for (uint32_t i = 0; i < vec_per_lane; i++) {
+                const float4 k = kq4[i];
+                kv_mem = fmaf(s[4u * i] * decay, k.x * k_inv, kv_mem);
+                kv_mem = fmaf(s[4u * i + 1u] * decay, k.y * k_inv, kv_mem);
+                kv_mem = fmaf(s[4u * i + 2u] * decay, k.z * k_inv, kv_mem);
+                kv_mem = fmaf(s[4u * i + 3u] * decay, k.w * k_inv, kv_mem);
             }
-            partial[(uint64_t)group * columns + column] = kv_mem;
-            __syncthreads();
-            if (group == 0u) {
-                kv_mem = partial[column] + partial[columns + column] +
-                         partial[2u * columns + column] +
-                         partial[3u * columns + column];
-                const float value = mixed_qkv[
-                    row_base + 2u * key_dim +
-                    (uint64_t)value_head * head_dim + v];
-                delta_shared[column] =
-                    (value - kv_mem) * beta[control_at];
-            }
-            __syncthreads();
+            kv_mem += __shfl_xor_sync(0xffffffffu, kv_mem, warp_columns);
+            kv_mem += __shfl_xor_sync(0xffffffffu, kv_mem, 2u * warp_columns);
+            const float delta = (value - kv_mem) * beta_value;
 
-            const float delta = delta_shared[column];
             float result = 0.0f;
-            for (uint32_t k = group; k < head_dim; k += groups) {
-                const uint64_t at = state_col + (uint64_t)k * head_dim;
-                const float sv = state[at] * decay +
-                                 (k_raw[k] * k_inv) * delta;
-                state[at] = sv;
-                if constexpr (CHECKPOINT) {
-                    if (token == checkpoint_row) checkpoint[at] = sv;
+#pragma unroll
+            for (uint32_t i = 0; i < vec_per_lane; i++) {
+                const float4 k = kq4[i];
+                const float4 q = qq4[i];
+                float sv = fmaf(s[4u * i], decay, (k.x * k_inv) * delta);
+                s[4u * i] = sv;
+                result = fmaf(sv, q.x * q_inv, result);
+                sv = fmaf(s[4u * i + 1u], decay, (k.y * k_inv) * delta);
+                s[4u * i + 1u] = sv;
+                result = fmaf(sv, q.y * q_inv, result);
+                sv = fmaf(s[4u * i + 2u], decay, (k.z * k_inv) * delta);
+                s[4u * i + 2u] = sv;
+                result = fmaf(sv, q.z * q_inv, result);
+                sv = fmaf(s[4u * i + 3u], decay, (k.w * k_inv) * delta);
+                s[4u * i + 3u] = sv;
+                result = fmaf(sv, q.w * q_inv, result);
+            }
+            if constexpr (CHECKPOINT) {
+                if (token == checkpoint_row) {
+#pragma unroll
+                    for (uint32_t j = 0; j < keys_per_lane; j++)
+                        checkpoint[state_col +
+                                   (uint64_t)(k_first + j) * head_dim] = s[j];
                 }
-                result += sv * (q_raw[k] * q_inv);
             }
-            partial[(uint64_t)group * columns + column] = result;
-            __syncthreads();
-            if (group == 0u) {
-                out[((uint64_t)token * value_heads + value_head) *
-                    head_dim + v] =
-                    partial[column] + partial[columns + column] +
-                    partial[2u * columns + column] +
-                    partial[3u * columns + column];
+            result += __shfl_xor_sync(0xffffffffu, result, warp_columns);
+            result += __shfl_xor_sync(0xffffffffu, result, 2u * warp_columns);
+            if (k_group == 0u) {
+                out[((uint64_t)token * value_heads + value_head) * head_dim + v] =
+                    result;
             }
+            /* Every lane has consumed the shared Q/K rows (the shuffles
+             * above ordered that) before the next token overwrites them. */
+            __syncwarp();
         }
+#pragma unroll
+        for (uint32_t j = 0; j < keys_per_lane; j++)
+            state[state_col + (uint64_t)(k_first + j) * head_dim] = s[j];
         return;
     }
 
@@ -9522,6 +9570,130 @@ __global__ static void qwen4exp_qsa_block_scores_kernel(
             score += fmaxf(partial[(uint64_t)h * head_dim], 0.0f);
         scores[(uint64_t)row * max_blocks + block] =
             score * rsqrtf((float)head_dim);
+    }
+}
+
+/* Qwen3.8 production geometry (four 128-dim index heads, four-token
+ * blocks).  Eight lanes share one block and each lane keeps a 16-dim slice
+ * of the four query heads in registers, so a block's 512 FMAs end in three
+ * xor-shuffle levels per head instead of the five per lane partial of the
+ * previous layout (20 shuffles per 16 FMAs, shuffle-bound at ~12 % of the
+ * FMA peak).  Lanes are ordered block-fastest so the eight lanes of one
+ * LDS.128 phase touch eight distinct bank groups with the 132-float tile
+ * stride (528 B = 16 B mod 512 B).  Sixteen rows share each 64-block key
+ * tile.  The scalar kernel above remains cheaper for decode and covers
+ * every other valid shape. */
+#define QSA_SCORE_BLOCKS_PER_STEP 4u
+#define QSA_SCORE_LANES_PER_BLOCK (32u / QSA_SCORE_BLOCKS_PER_STEP)
+#define QSA_SCORE_VEC_PER_LANE (128u / QSA_SCORE_LANES_PER_BLOCK / 4u)
+#define QSA_SCORE_KEY_STRIDE 132u
+
+template <uint32_t TILE_ROWS, uint32_t TILE_BLOCKS>
+__global__ __launch_bounds__(TILE_ROWS * 32u)
+static void qwen4exp_qsa_block_scores_tiled_kernel(
+        float *scores, const float *query, const float *pooled_cache,
+        uint32_t rows, uint32_t pos0, uint32_t max_blocks,
+        uint32_t ratio) {
+    static_assert(TILE_ROWS * 32u <= 1024u, "QSA tile exceeds CUDA block");
+    static_assert(TILE_BLOCKS % QSA_SCORE_BLOCKS_PER_STEP == 0u,
+                  "QSA tile must hold whole block steps");
+    __shared__ __align__(16) float key_tile[TILE_BLOCKS * QSA_SCORE_KEY_STRIDE];
+    __shared__ float score_tile[TILE_ROWS * TILE_BLOCKS];
+
+    const uint32_t tid = threadIdx.x;
+    const uint32_t warp = tid >> 5u;
+    const uint32_t lane = tid & 31u;
+    const uint32_t slot = lane & (QSA_SCORE_BLOCKS_PER_STEP - 1u);
+    const uint32_t slice = lane / QSA_SCORE_BLOCKS_PER_STEP;
+    const uint32_t row = blockIdx.y * TILE_ROWS + warp;
+    const uint32_t first_block = blockIdx.x * TILE_BLOCKS;
+    const uint32_t tile_blocks =
+        min(TILE_BLOCKS, max_blocks - first_block);
+
+    const float4 *pooled4 = reinterpret_cast<const float4 *>(
+        pooled_cache + (uint64_t)first_block * 128u);
+    for (uint32_t i = tid; i < tile_blocks * 32u; i += blockDim.x) {
+        const uint32_t b = i >> 5u;
+        const uint32_t c = i & 31u;
+        *reinterpret_cast<float4 *>(
+            key_tile + b * QSA_SCORE_KEY_STRIDE + c * 4u) = pooled4[i];
+    }
+    float4 q[4][QSA_SCORE_VEC_PER_LANE];
+#pragma unroll
+    for (uint32_t h = 0; h < 4u; h++)
+#pragma unroll
+        for (uint32_t j = 0; j < QSA_SCORE_VEC_PER_LANE; j++)
+            q[h][j] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    if (row < rows) {
+        const float *q_row = query + (uint64_t)row * 4u * 128u +
+            slice * QSA_SCORE_VEC_PER_LANE * 4u;
+#pragma unroll
+        for (uint32_t h = 0; h < 4u; h++)
+#pragma unroll
+            for (uint32_t j = 0; j < QSA_SCORE_VEC_PER_LANE; j++)
+                q[h][j] = reinterpret_cast<const float4 *>(
+                    q_row + h * 128u)[j];
+    }
+    __syncthreads();
+
+    if (row < rows) {
+        const uint32_t visible_blocks = (pos0 + row + 1u) / ratio;
+        for (uint32_t step = 0; step < TILE_BLOCKS;
+             step += QSA_SCORE_BLOCKS_PER_STEP) {
+            const uint32_t b = step + slot;
+            float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
+            if (b < tile_blocks) {
+                const float4 *k4 = reinterpret_cast<const float4 *>(
+                    key_tile + b * QSA_SCORE_KEY_STRIDE +
+                    slice * QSA_SCORE_VEC_PER_LANE * 4u);
+#pragma unroll
+                for (uint32_t j = 0; j < QSA_SCORE_VEC_PER_LANE; j++) {
+                    const float4 k = k4[j];
+                    s0 += dot4_f32(q[0][j], k);
+                    s1 += dot4_f32(q[1][j], k);
+                    s2 += dot4_f32(q[2][j], k);
+                    s3 += dot4_f32(q[3][j], k);
+                }
+            }
+            /* Reduce over the eight lanes (lane bits 2..4) sharing block b
+             * with a transpose tree: each level halves the heads a lane
+             * carries while summing them, so the four head sums cost four
+             * shuffles instead of twelve; lane bits 2,3 then select the
+             * head, and two more shuffles add the four ReLU'd heads.  The
+             * whole warp shuffles so masked lanes contribute zeros. */
+            const bool upper_pair = (lane & 4u) != 0u;
+            const float pair_r0 = __shfl_xor_sync(
+                0xffffffffu, upper_pair ? s0 : s2, 4u);
+            const float pair_r1 = __shfl_xor_sync(
+                0xffffffffu, upper_pair ? s1 : s3, 4u);
+            const float even_head = upper_pair ? s2 + pair_r0 : s0 + pair_r0;
+            const float odd_head = upper_pair ? s3 + pair_r1 : s1 + pair_r1;
+            const bool upper_quad = (lane & 8u) != 0u;
+            const float quad_r = __shfl_xor_sync(
+                0xffffffffu, upper_quad ? even_head : odd_head, 8u);
+            float head_sum = upper_quad ? odd_head + quad_r : even_head + quad_r;
+            head_sum += __shfl_xor_sync(0xffffffffu, head_sum, 16u);
+            float score = fmaxf(head_sum, 0.0f);
+            score += __shfl_xor_sync(0xffffffffu, score, 4u);
+            score += __shfl_xor_sync(0xffffffffu, score, 8u);
+            if (slice == 0u && b < tile_blocks) {
+                score_tile[warp * TILE_BLOCKS + b] =
+                    first_block + b < visible_blocks
+                    ? score * 0.08838834764831845f
+                    : -INFINITY;
+            }
+        }
+    }
+    __syncthreads();
+
+    for (uint32_t i = tid; i < TILE_ROWS * TILE_BLOCKS; i += blockDim.x) {
+        const uint32_t tile_row = i / TILE_BLOCKS;
+        const uint32_t b = i % TILE_BLOCKS;
+        const uint32_t out_row = blockIdx.y * TILE_ROWS + tile_row;
+        if (out_row < rows && b < tile_blocks) {
+            scores[(uint64_t)out_row * max_blocks + first_block + b] =
+                score_tile[i];
+        }
     }
 }
 
@@ -26534,8 +26706,10 @@ static int qwen4exp_gdn_recurrent_launch(
         return 0;
     }
     const uint32_t threads = head_dim == 128u ? 128u : head_dim;
+    /* 128-wide: a private Q row and K row per warp. */
     const uint32_t shared_values = head_dim == 128u
-        ? 2u * head_dim + 5u * (head_dim / 4u) : 4u * head_dim;
+        ? 2u * head_dim * (threads / 32u)
+        : 4u * head_dim;
     const uint32_t shared_bytes = shared_values * (uint32_t)sizeof(float);
     const dim3 grid(value_heads * (head_dim == 128u ? 4u : 1u), banks);
     float *out1_ptr = banks == 2u ? (float *)out1->ptr : nullptr;
@@ -26832,13 +27006,26 @@ extern "C" int ds4_gpu_qwen4exp_qsa_block_scores_tensor(
         pooled_cache->bytes < pooled_count * sizeof(float)) {
         return 0;
     }
-    dim3 grid(max_blocks, rows, 1u);
-    qwen4exp_qsa_block_scores_kernel<<<
-        grid, head_dim, q_heads * head_dim * sizeof(float),
-        ds4_current_stream()>>>(
-        (float *)scores->ptr, (const float *)query->ptr,
-        (const float *)pooled_cache->ptr, rows, pos0, max_blocks,
-        q_heads, head_dim, ratio);
+    if (rows >= 16u && q_heads == 4u && head_dim == 128u &&
+        getenv("DS4_CUDA_QSA_SCORE_LEGACY") == NULL) {
+        constexpr uint32_t tile_rows = 16u;
+        constexpr uint32_t tile_blocks = 64u;
+        dim3 grid((max_blocks + tile_blocks - 1u) / tile_blocks,
+                  (rows + tile_rows - 1u) / tile_rows, 1u);
+        qwen4exp_qsa_block_scores_tiled_kernel<tile_rows, tile_blocks><<<
+            grid, tile_rows * 32u, 0, ds4_current_stream()>>>(
+            (float *)scores->ptr, (const float *)query->ptr,
+            (const float *)pooled_cache->ptr, rows, pos0, max_blocks,
+            ratio);
+    } else {
+        dim3 grid(max_blocks, rows, 1u);
+        qwen4exp_qsa_block_scores_kernel<<<
+            grid, head_dim, q_heads * head_dim * sizeof(float),
+            ds4_current_stream()>>>(
+            (float *)scores->ptr, (const float *)query->ptr,
+            (const float *)pooled_cache->ptr, rows, pos0, max_blocks,
+            q_heads, head_dim, ratio);
+    }
     return cuda_ok(cudaGetLastError(), "Qwen4Exp QSA block scores launch");
 }
 
@@ -26902,6 +27089,224 @@ extern "C" int ds4_gpu_qwen4exp_qsa_store_kv_tensor(
     return cuda_ok(cudaGetLastError(), "Qwen4Exp QSA KV store launch");
 }
 
+/* Fused prefill QSA attention for Qwen's 24-query/2-KV/256-dim shape.  One
+ * 256-thread block owns one (row, KV head): it walks the row's selected
+ * slots in 32-token tiles, gathers each tile's keys into shared memory once,
+ * forms the twelve heads' scores against them, folds the tile into an online
+ * softmax and accumulates the values.  The per-slot scorer read every query
+ * head from L1 for every selected key (13 KiB per key) and the serial reduce
+ * then read the rows x heads x slots score scratch three times (1.6 GB per
+ * 8K-row layer); here a gathered key row feeds twelve dot products from
+ * shared memory and the scratch is never touched.  Each dot product is
+ * summed over eight 32-dim warp slices, so scores differ from the per-slot
+ * kernel by fp32 reordering only.  Decode widths keep the split reduce
+ * (row-invariant two-row MTP verify). */
+#define QSA_FUSED_TILE 32u
+#define QSA_FUSED_THREADS 256u
+#define QSA_FUSED_WARPS (QSA_FUSED_THREADS / 32u)
+/* 256 + 4 floats: successive tile rows start 16 B apart modulo the 128 B
+ * bank window, so the eight slot rows one LDS.128 touches never collide. */
+#define QSA_FUSED_KEY_STRIDE 260u
+
+/* Read once: the score scratch is sized at allocation from the same
+ * answer the dispatcher uses later. */
+static int qsa_fused_disabled(void) {
+    static int disabled = -1;
+    if (disabled < 0) disabled = getenv("DS4_QWEN_QSA_NO_FUSED") != NULL;
+    return disabled;
+}
+
+static int qsa_fused_shape(uint32_t heads, uint32_t kv_heads,
+                           uint32_t head_dim) {
+    return heads == 24u && kv_heads == 2u && head_dim == 256u;
+}
+
+static int qsa_fused_applies(uint32_t rows, uint32_t heads,
+                             uint32_t kv_heads, uint32_t head_dim) {
+    return qsa_fused_shape(heads, kv_heads, head_dim) &&
+           rows > QSA_SPLIT_MAX_ROWS && !qsa_fused_disabled();
+}
+
+
+__global__ static void __launch_bounds__(QSA_FUSED_THREADS)
+qwen4exp_qsa_attention_fused_gqa12_kernel(
+        float *out, const float *query, const float *gate,
+        const float *k_cache, const float *v_cache,
+        const int32_t *selected, const uint32_t *counts,
+        uint32_t selected_cap, uint32_t cache_cap) {
+    const uint32_t kv_head = blockIdx.x;
+    const uint32_t row = blockIdx.y;
+    const uint32_t tid = threadIdx.x;
+    const uint32_t warp = tid >> 5u;
+    const uint32_t lane = tid & 31u;
+    const uint32_t count = min(counts[row], selected_cap);
+    const uint64_t first_head = (uint64_t)row * 24u + kv_head * 12u;
+    const float *q_row = query + first_head * 256u;
+    const int32_t *sel = selected + (uint64_t)row * selected_cap;
+
+    __shared__ __align__(16) float key_tile[QSA_FUSED_TILE * QSA_FUSED_KEY_STRIDE];
+    /* part holds the eight warp slices of the tile's 12 x 32 scores; the
+     * summed scores alias slice 0 and the probabilities slice 1, each
+     * written only by the thread that already consumed that element. */
+    __shared__ __align__(16) float part[QSA_FUSED_WARPS * 12u * QSA_FUSED_TILE];
+    __shared__ float scale_s[12u];
+    __shared__ float inv_sum_s[12u];
+    __shared__ uint32_t token_tile[QSA_FUSED_TILE];
+    float *score_tile = part;
+    float *prob = part + 12u * QSA_FUSED_TILE;
+
+    /* Phase-2 lane mapping: three heads x four slots per lane. */
+    const uint32_t hg = lane >> 3u;
+    const uint32_t sg = lane & 7u;
+    /* Phase-3 head ownership: warp w folds head w and, for w < 4, head w + 8;
+     * the statistics are warp-uniform after the shuffles. */
+    float run_max[2] = {-INFINITY, -INFINITY};
+    float run_sum[2] = {0.0f, 0.0f};
+    float acc[12];
+#pragma unroll
+    for (uint32_t h = 0; h < 12u; h++) acc[h] = 0.0f;
+
+    for (uint32_t base = 0; base < count; base += QSA_FUSED_TILE) {
+        const uint32_t tile_count = min(count - base, QSA_FUSED_TILE);
+        if (tid < QSA_FUSED_TILE) {
+            int32_t token = tid < tile_count ? sel[base + tid] : -1;
+            if (token < 0 || (uint32_t)token >= cache_cap) token = -1;
+            token_tile[tid] = (uint32_t)token;
+        }
+        __syncthreads();
+        for (uint32_t i = tid; i < QSA_FUSED_TILE * 64u;
+             i += QSA_FUSED_THREADS) {
+            const uint32_t slot = i >> 6u;
+            const uint32_t c = i & 63u;
+            const uint32_t token = token_tile[slot];
+            float4 k = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+            if (token != UINT32_MAX)
+                k = *(const float4 *)(k_cache +
+                    ((uint64_t)token * 2u + kv_head) * 256u + c * 4u);
+            *(float4 *)(key_tile + slot * QSA_FUSED_KEY_STRIDE + c * 4u) = k;
+        }
+        __syncthreads();
+
+        {
+            float s[3][4];
+#pragma unroll
+            for (uint32_t a = 0; a < 3u; a++)
+#pragma unroll
+                for (uint32_t j = 0; j < 4u; j++) s[a][j] = 0.0f;
+            const float4 *q4 = (const float4 *)(q_row + warp * 32u);
+            const float *k_base = key_tile + warp * 32u;
+#pragma unroll
+            for (uint32_t i = 0; i < 8u; i++) {
+                float4 q[3];
+#pragma unroll
+                for (uint32_t a = 0; a < 3u; a++)
+                    q[a] = __ldg(&q4[(3u * hg + a) * 64u + i]);
+#pragma unroll
+                for (uint32_t j = 0; j < 4u; j++) {
+                    const float4 k = *(const float4 *)(
+                        k_base + (sg + 8u * j) * QSA_FUSED_KEY_STRIDE + i * 4u);
+#pragma unroll
+                    for (uint32_t a = 0; a < 3u; a++) {
+                        s[a][j] = fmaf(q[a].x, k.x, s[a][j]);
+                        s[a][j] = fmaf(q[a].y, k.y, s[a][j]);
+                        s[a][j] = fmaf(q[a].z, k.z, s[a][j]);
+                        s[a][j] = fmaf(q[a].w, k.w, s[a][j]);
+                    }
+                }
+            }
+#pragma unroll
+            for (uint32_t a = 0; a < 3u; a++)
+#pragma unroll
+                for (uint32_t j = 0; j < 4u; j++)
+                    part[(warp * 12u + 3u * hg + a) * QSA_FUSED_TILE +
+                         sg + 8u * j] = s[a][j];
+        }
+        __syncthreads();
+        for (uint32_t o = tid; o < 12u * QSA_FUSED_TILE;
+             o += QSA_FUSED_THREADS) {
+            float v = 0.0f;
+#pragma unroll
+            for (uint32_t w = 0; w < QSA_FUSED_WARPS; w++)
+                v += part[w * 12u * QSA_FUSED_TILE + o];
+            score_tile[o] = v * 0.0625f;
+        }
+        __syncthreads();
+
+#pragma unroll
+        for (uint32_t pass = 0; pass < 2u; pass++) {
+            const uint32_t h = warp + 8u * pass;
+            if (h < 12u) {
+                const bool valid = lane < tile_count &&
+                    token_tile[lane] != UINT32_MAX;
+                const float sc = valid
+                    ? score_tile[h * QSA_FUSED_TILE + lane] : -INFINITY;
+                float m = sc;
+#pragma unroll
+                for (uint32_t off = 16u; off > 0u; off >>= 1u)
+                    m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, off));
+                const float new_max = fmaxf(run_max[pass], m);
+                /* An all-masked tile leaves new_max = -inf: keep the
+                 * statistics and never form exp(-inf - -inf). */
+                const float scale = new_max > -INFINITY
+                    ? expf(run_max[pass] - new_max) : 1.0f;
+                const float p = valid ? expf(sc - new_max) : 0.0f;
+                float sum = p;
+#pragma unroll
+                for (uint32_t off = 16u; off > 0u; off >>= 1u)
+                    sum += __shfl_xor_sync(0xffffffffu, sum, off);
+                run_sum[pass] = run_sum[pass] * scale + sum;
+                run_max[pass] = new_max;
+                prob[lane * 12u + h] = p;
+                if (lane == 0u) scale_s[h] = scale;
+            }
+        }
+        __syncthreads();
+
+#pragma unroll
+        for (uint32_t h = 0; h < 12u; h++) acc[h] *= scale_s[h];
+#pragma unroll 4
+        for (uint32_t t = 0; t < tile_count; t++) {
+            const uint32_t token = token_tile[t];
+            const uint32_t src = token == UINT32_MAX ? 0u : token;
+            const float v = v_cache[((uint64_t)src * 2u + kv_head) * 256u + tid];
+            const float4 *p4 = (const float4 *)(prob + t * 12u);
+            const float4 p0 = p4[0];
+            const float4 p1 = p4[1];
+            const float4 p2 = p4[2];
+            acc[0] = fmaf(p0.x, v, acc[0]);
+            acc[1] = fmaf(p0.y, v, acc[1]);
+            acc[2] = fmaf(p0.z, v, acc[2]);
+            acc[3] = fmaf(p0.w, v, acc[3]);
+            acc[4] = fmaf(p1.x, v, acc[4]);
+            acc[5] = fmaf(p1.y, v, acc[5]);
+            acc[6] = fmaf(p1.z, v, acc[6]);
+            acc[7] = fmaf(p1.w, v, acc[7]);
+            acc[8] = fmaf(p2.x, v, acc[8]);
+            acc[9] = fmaf(p2.y, v, acc[9]);
+            acc[10] = fmaf(p2.z, v, acc[10]);
+            acc[11] = fmaf(p2.w, v, acc[11]);
+        }
+        __syncthreads();
+    }
+
+    if (lane == 0u) {
+        inv_sum_s[warp] = run_sum[0] > 0.0f ? 1.0f / run_sum[0] : 0.0f;
+        if (warp < 4u)
+            inv_sum_s[warp + 8u] =
+                run_sum[1] > 0.0f ? 1.0f / run_sum[1] : 0.0f;
+    }
+    __syncthreads();
+#pragma unroll
+    for (uint32_t h = 0; h < 12u; h++) {
+        const uint64_t at = (first_head + h) * 256u + tid;
+        const float gate_value = gate[at];
+        const float gate_scale = gate_value >= 0.0f
+            ? 1.0f / (1.0f + expf(-gate_value))
+            : expf(gate_value) / (1.0f + expf(gate_value));
+        out[at] = acc[h] * inv_sum_s[h] * gate_scale;
+    }
+}
+
 extern "C" int ds4_gpu_qwen4exp_qsa_attention_tensor(
         ds4_gpu_tensor *out, ds4_gpu_tensor *score_scratch,
         const ds4_gpu_tensor *query, const ds4_gpu_tensor *gate,
@@ -26916,6 +27321,7 @@ extern "C" int ds4_gpu_qwen4exp_qsa_attention_tensor(
         cache_cap == 0u) {
         return 0;
     }
+    const bool fused = qsa_fused_applies(rows, heads, kv_heads, head_dim);
     const uint64_t values = (uint64_t)rows * heads * head_dim;
     const uint64_t score_count = (uint64_t)rows * heads * selected_cap;
     const uint64_t selected_count = (uint64_t)rows * selected_cap;
@@ -26928,12 +27334,23 @@ extern "C" int ds4_gpu_qwen4exp_qsa_attention_tensor(
         out->bytes < values * sizeof(float) ||
         query->bytes < values * sizeof(float) ||
         gate->bytes < values * sizeof(float) ||
-        score_scratch->bytes < score_count * sizeof(float) ||
+        (!fused && score_scratch->bytes < score_count * sizeof(float)) ||
         selected->bytes < selected_count * sizeof(int32_t) ||
         counts->bytes < (uint64_t)rows * sizeof(uint32_t) ||
         k_cache->bytes < cache_values * sizeof(float) ||
         v_cache->bytes < cache_values * sizeof(float)) {
         return 0;
+    }
+    if (fused) {
+        dim3 fused_grid(kv_heads, rows);
+        qwen4exp_qsa_attention_fused_gqa12_kernel<<<
+            fused_grid, QSA_FUSED_THREADS, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)query->ptr,
+            (const float *)gate->ptr, (const float *)k_cache->ptr,
+            (const float *)v_cache->ptr, (const int32_t *)selected->ptr,
+            (const uint32_t *)counts->ptr, selected_cap, cache_cap);
+        return cuda_ok(cudaGetLastError(),
+                       "Qwen4Exp QSA fused attention launch");
     }
     if (heads == 24u && kv_heads == 2u && head_dim == 256u) {
         dim3 score_grid(selected_cap, kv_heads, rows);

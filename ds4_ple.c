@@ -17,7 +17,11 @@
 #define O_CLOEXEC 0
 #endif
 
-#define DS4_PLE_CACHE_WAYS 4u
+/* A prefill chunk's rows land on pages spread uniformly over the sets, and
+ * every page a set cannot hold becomes a blocking read when the row is
+ * gathered.  Four ways overflowed ~7 % of the sets for an 8,192-token chunk
+ * in a 1 GiB cache (~6K stalls per chunk); sixteen ways overflow <1 %. */
+#define DS4_PLE_CACHE_WAYS 16u
 #define DS4_PLE_JSON_MAX_DEPTH 64u
 #define DS4_PLE_PATH_CAP 256u
 
@@ -55,6 +59,8 @@ typedef struct {
     uint32_t refcount;
     int error_number;
     ds4_ple_page_state state;
+    /* A reader sleeps on state_cond until this page leaves LOADING. */
+    bool awaited;
     uint8_t *data;
 } ds4_ple_cache_slot;
 
@@ -81,6 +87,8 @@ struct ds4_ple_store {
 
     pthread_t *workers;
     uint32_t workers_started;
+    /* Threads sleeping on state_cond for any slot of a set to free up. */
+    uint32_t set_waiters;
     pthread_mutex_t mutex;
     pthread_cond_t work_cond;
     pthread_cond_t state_cond;
@@ -89,6 +97,7 @@ struct ds4_ple_store {
     bool state_cond_ready;
     bool stopping;
     bool latency_stats;
+    uint64_t opened_ns;
     ds4_ple_stats stats;
 };
 
@@ -1071,10 +1080,14 @@ static bool cache_request_page(
             if (slot->state == DS4_PLE_PAGE_EMPTY) {
                 victim = (int32_t)index;
                 oldest = 0;
-            } else if (victim < 0 &&
-                       slot->state != DS4_PLE_PAGE_LOADING &&
+            } else if (slot->state != DS4_PLE_PAGE_LOADING &&
                        slot->refcount == 0 &&
                        slot->last_access < oldest) {
+                /* Least recently touched among the evictable ways.  The
+                 * earlier first-fit choice (stop at the first evictable
+                 * way) evicted pages a prefetch had just brought in for
+                 * the same set, so a chunk re-read up to a third of its
+                 * pages at gather time. */
                 victim = (int32_t)index;
                 oldest = slot->last_access;
             }
@@ -1108,7 +1121,9 @@ static bool cache_request_page(
             *slot_out = UINT32_MAX;
             return true;
         }
+        store->set_waiters++;
         pthread_cond_wait(&store->state_cond, &store->mutex);
+        store->set_waiters--;
         if (store->stopping) {
             pthread_mutex_unlock(&store->mutex);
             return ple_error(error, error_size, "PLE store is stopping");
@@ -1121,12 +1136,23 @@ static bool cache_wait_ready(ds4_ple_store *store, uint32_t slot_index,
                              size_t error_size) {
     pthread_mutex_lock(&store->mutex);
     ds4_ple_cache_slot *slot = &store->slots[slot_index];
-    while (slot->state == DS4_PLE_PAGE_LOADING && !store->stopping)
-        pthread_cond_wait(&store->state_cond, &store->mutex);
+    if (slot->state == DS4_PLE_PAGE_LOADING) {
+        /* Workers wake this sleeper only for the awaited page.  Waking it
+         * on every completed read (the previous behaviour) made the reader
+         * and the sixteen workers convoy on the store mutex, cutting the
+         * effective read rate to a small fraction of the device's. */
+        const uint64_t blocked_at = ple_now_ns();
+        store->stats.wait_blocked++;
+        slot->awaited = true;
+        while (slot->state == DS4_PLE_PAGE_LOADING && !store->stopping)
+            pthread_cond_wait(&store->state_cond, &store->mutex);
+        slot->awaited = false;
+        store->stats.wait_blocked_nanoseconds += ple_now_ns() - blocked_at;
+    }
     if (slot->state != DS4_PLE_PAGE_READY) {
         const int saved = slot->error_number;
         if (slot->refcount) slot->refcount--;
-        pthread_cond_broadcast(&store->state_cond);
+        if (store->set_waiters) pthread_cond_broadcast(&store->state_cond);
         pthread_mutex_unlock(&store->mutex);
         return ple_error(error, error_size,
                          "PLE sidecar page read failed: %s",
@@ -1141,7 +1167,7 @@ static void cache_release(ds4_ple_store *store, uint32_t slot_index) {
     pthread_mutex_lock(&store->mutex);
     ds4_ple_cache_slot *slot = &store->slots[slot_index];
     if (slot->refcount) slot->refcount--;
-    pthread_cond_broadcast(&store->state_cond);
+    if (store->set_waiters) pthread_cond_broadcast(&store->state_cond);
     pthread_mutex_unlock(&store->mutex);
 }
 
@@ -1196,6 +1222,10 @@ static void *cache_worker(void *opaque) {
             slot->state == DS4_PLE_PAGE_LOADING) {
             store->stats.read_operations++;
             if (store->latency_stats) {
+                uint64_t second =
+                    (read_finished - store->opened_ns) / UINT64_C(1000000000);
+                if (second > 255u) second = 255u;
+                store->stats.timeline_reads[second]++;
                 store->stats.read_latency_samples++;
                 store->stats.read_nanoseconds_total += read_elapsed;
                 if (read_elapsed > store->stats.read_nanoseconds_max)
@@ -1212,7 +1242,8 @@ static void *cache_worker(void *opaque) {
                 store->stats.read_errors++;
             }
         }
-        pthread_cond_broadcast(&store->state_cond);
+        if (slot->awaited || store->set_waiters)
+            pthread_cond_broadcast(&store->state_cond);
         pthread_mutex_unlock(&store->mutex);
     }
 }
@@ -1338,6 +1369,7 @@ ds4_ple_store *ds4_ple_store_open(
     const char *latency_stats = getenv("DS4_PLE_LATENCY_STATS");
     store->latency_stats =
         latency_stats && strcmp(latency_stats, "0") != 0;
+    store->opened_ns = ple_now_ns();
     for (uint32_t i = 0; i < DS4_PLE_N_PHYSICAL_FILES; i++)
         store->physical[i].fd = -1;
 

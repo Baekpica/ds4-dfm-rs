@@ -94,6 +94,13 @@ typedef struct {
     uint64_t wait_samples;
     uint64_t wait_nanoseconds_total;
     uint64_t wait_nanoseconds_max;
+    /* Row acquisitions that found their page still loading, and the time
+     * they spent waiting for it. */
+    uint64_t wait_blocked;
+    uint64_t wait_blocked_nanoseconds;
+    /* Completed page reads per second since the store opened (latency
+     * statistics only; the last bucket absorbs the remainder). */
+    uint64_t timeline_reads[256];
 } ds4_ple_stats;
 
 typedef struct ds4_ple_store ds4_ple_store;
@@ -128,7 +135,7 @@ bool ds4_ple_hash_rows(
 
 /* artifact_root is the directory containing the main GGUF shards. The
  * manifest path is relative to that root (normally ple/ple-manifest.json).
- * cache_bytes is rounded down to a four-way set-associative number of 4 KiB
+ * cache_bytes is rounded down to a sixteen-way set-associative number of 4 KiB
  * pages and is the only sidecar payload allocation made by this subsystem. */
 ds4_ple_store *ds4_ple_store_open(
     const char *artifact_root,

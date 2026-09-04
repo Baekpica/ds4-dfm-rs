@@ -317,6 +317,7 @@ bool ds4_qwen38_ple_cuda_gather(
 
     const uint64_t acquire_started =
         ple_cuda_now_ns();
+    uint64_t enqueue_elapsed = 0;
     size_t emitted = 0;
     while (emitted < row_count) {
         const size_t remaining = row_count - emitted;
@@ -378,6 +379,7 @@ bool ds4_qwen38_ple_cuda_gather(
         /* Page workers completed their CPU writes before leases were
          * returned. Publish those writes before a mapped-host read. */
         __sync_synchronize();
+        const uint64_t enqueue_started = ple_cuda_now_ns();
         status = cudaMemcpyAsync(
             device_descriptors, descriptors,
             tile_rows * sizeof(*descriptors),
@@ -400,6 +402,7 @@ bool ds4_qwen38_ple_cuda_gather(
                 error, error_size, status,
                 "enqueue PLE CUDA gather tile");
         }
+        enqueue_elapsed += ple_cuda_now_ns() - enqueue_started;
         emitted += tile_rows;
     }
     const uint64_t acquire_finished =
@@ -431,6 +434,9 @@ bool ds4_qwen38_ple_cuda_gather(
         &context->stats.acquire_nanoseconds_total,
         acquire_elapsed, __ATOMIC_RELAXED);
     __atomic_fetch_add(
+        &context->stats.enqueue_nanoseconds_total,
+        enqueue_elapsed, __ATOMIC_RELAXED);
+    __atomic_fetch_add(
         &context->stats.acquire_latency_histogram[
             ds4_ple_latency_bucket(acquire_elapsed)],
         UINT64_C(1), __ATOMIC_RELAXED);
@@ -461,6 +467,9 @@ void ds4_qwen38_ple_cuda_get_stats(
         __ATOMIC_RELAXED);
     stats->acquire_nanoseconds_max = __atomic_load_n(
         &context->stats.acquire_nanoseconds_max,
+        __ATOMIC_RELAXED);
+    stats->enqueue_nanoseconds_total = __atomic_load_n(
+        &context->stats.enqueue_nanoseconds_total,
         __ATOMIC_RELAXED);
     for (uint32_t i = 0; i < DS4_PLE_LATENCY_BUCKETS; i++)
         stats->acquire_latency_histogram[i] = __atomic_load_n(

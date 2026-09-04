@@ -42,6 +42,19 @@ static float bf16_bits_to_f32(uint16_t value) {
     return out;
 }
 
+static uint64_t fnv1a_bits(const float *values, uint64_t count) {
+    uint64_t hash = UINT64_C(0xcbf29ce484222325);
+    for (uint64_t i = 0; i < count; i++) {
+        uint32_t bits;
+        memcpy(&bits, &values[i], sizeof(bits));
+        for (uint32_t b = 0; b < 4u; b++) {
+            hash ^= (bits >> (8u * b)) & 0xffu;
+            hash *= UINT64_C(0x100000001b3);
+        }
+    }
+    return hash;
+}
+
 static float sigmoid_ref(float x) {
     return x >= 0.0f ? 1.0f / (1.0f + expf(-x))
                      : expf(x) / (1.0f + expf(x));
@@ -512,6 +525,12 @@ int main(void) {
                 core_count, 5.0e-5f, 2.0e-4);
     compare_f32("GDN recurrent full final state", state_got, state_want,
                 recurrent_count, 5.0e-5f, 2.0e-4);
+    /* Cross-build digest: a kernel rewrite that keeps the arithmetic order
+     * reproduces these bits exactly; compare against a previous binary. */
+    printf("%-48s output %016llx state %016llx\n",
+           "GDN recurrent bit digest",
+           (unsigned long long)fnv1a_bits(core_got, core_count),
+           (unsigned long long)fnv1a_bits(state_got, recurrent_count));
 
     upload_f32(dstate1, state1_initial, recurrent_count,
                "GDN bank1 scalar state upload");

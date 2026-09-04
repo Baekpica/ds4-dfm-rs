@@ -375,12 +375,20 @@ DS4_CUDA_WEIGHT_IPC_SCOPE=base \
   --host 127.0.0.1 --port 8000 --no-update-check
 ```
 
-Qwen Q5 release runs additionally set a bounded SSD-PLE cache. This reference
-shape asks the shared Rust scheduler for two persistent banks:
+Qwen Q5 release runs additionally set a bounded SSD-PLE cache. Size it from
+the prefill chunk: a chunk's sixteen 320-byte PLE rows per token land on
+about 1.08 4 KiB pages each, so an 8,192-token chunk needs ~553 MiB of pages,
+and the engine prefetches the *next* chunk's pages while the current chunk's
+decoder layers run (`DS4_QWEN_PLE_NO_LOOKAHEAD=1` disables that). One prefill
+stream therefore wants at least one chunk in cache (1024 MiB with slack); two
+banks that alternate chunks want two (2048 MiB, the maximum). Sixteen page
+workers already saturate the sidecar reads at ~90K IOPS in bursts that overlap
+compute, so more workers do not help. This reference shape asks the shared
+Rust scheduler for two persistent banks:
 
 ```sh
 DS4_QWEN_BATCH=1 \
-DS4_QWEN_PLE_CACHE_MB=512 \
+DS4_QWEN_PLE_CACHE_MB=2048 \
 DS4_QWEN_PLE_WORKERS=16 \
 DS4_QWEN_PREFILL_CHUNK=8192 \
 DS4_SERVER_COALESCE_MAX=2 \
