@@ -391,6 +391,10 @@ static void identify(const ds4_model *m)
         printf("IDENTIFY GLM 5.3 Flash family=6 variant=7\n");
         return;
     }
+    if (ds4_streq(arch, "k2-horizon")) {
+        printf("IDENTIFY K2-Horizon 375B A23B family=3 variant=8\n");
+        return;
+    }
     printf("ERROR unsupported-arch %.*s\n", (int)arch.len, arch.ptr);
 }
 

@@ -283,6 +283,30 @@ fn identify_glm53_flash() {
 }
 
 #[test]
+fn identify_k2_horizon_375b() {
+    let path = tmp("k2-horizon-375b.gguf");
+    write_gguf(&path, &[("general.architecture", Val::Str("k2-horizon"))]);
+    assert_same(&path);
+    let id = ds4_core::identify_gguf(&path).expect("identify K2 Horizon 375B");
+    assert_eq!(id.shape.name, "K2-Horizon 375B A23B");
+    assert_eq!(id.shape.family, ds4_core::ModelFamily::ExaoneMoe);
+    assert_eq!(id.shape.variant, ds4_core::Variant::K2Horizon375B);
+    assert_eq!(id.shape.n_layer, 61);
+    assert_eq!(id.shape.n_embd, 6144);
+    assert_eq!(id.shape.n_vocab, 250624);
+    assert_eq!(id.shape.n_head, 48);
+    assert_eq!(id.shape.n_head_kv, 8);
+    assert_eq!(id.shape.n_rot, 64);
+    assert_eq!(id.shape.n_expert, 192);
+    assert_eq!(id.shape.n_expert_used, 8);
+    assert_eq!(id.shape.n_leading_dense, 3);
+    assert_eq!(id.shape.n_nextn_predict, 0);
+    assert_eq!(id.shape.n_swa, 0);
+    assert!(id.shape.use_rope);
+    assert!(!id.shape.use_qk_norm);
+}
+
+#[test]
 fn get_u32_rejects_int32() {
     let path = tmp("u32-only.gguf");
     write_gguf(&path, &[("k", Val::I32(7))]);

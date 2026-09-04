@@ -292,6 +292,7 @@ typedef enum {
     DS4_VARIANT_DOTS3_NOTE_PREV = 5,
     DS4_VARIANT_QWEN38_FLASH_NEXT = 6,
     DS4_VARIANT_GLM53_FLASH     = 7,
+    DS4_VARIANT_K2_HORIZON_375B = 8,
 } ds4_variant;
 
 typedef struct {
@@ -615,6 +616,40 @@ static const ds4_shape DS4_SHAPE_KEXAONE_236B = {
     .rope_yarn_beta_slow = 0.0f,
     .compress_rope_freq_base = 0.0f,
     .rope_orig_ctx = 262144,
+};
+
+/* IFM K2-Horizon-375B-A23B. Same GQA+MoE execution family as K-EXAONE, but
+ * every block is full attention, RoPE is partial NeoX (64 of 128 dims,
+ * base 1e7), three leading dense MLPs, no Q/K norm, no MTP. A separate
+ * variant keeps the K-EXAONE LLLG/QK-norm/MTP contract strict. */
+static const ds4_shape DS4_SHAPE_K2_HORIZON_375B = {
+    .name = "K2-Horizon 375B A23B",
+    .family = DS4_MODEL_FAMILY_EXAONE_MOE,
+    .variant = DS4_VARIANT_K2_HORIZON_375B,
+    .n_layer = 61,
+    .n_embd = 6144,
+    .n_vocab = 250624,
+    .n_head = 48,
+    .n_head_kv = 8,
+    .n_head_dim = 128,
+    .n_value_dim = 128,
+    .n_rot = 64,
+    .n_expert = 192,
+    .n_expert_used = 8,
+    .n_expert_shared = 1,
+    .n_ff_exp = 1792,
+    .n_ff_shexp = 1792,
+    .n_ff_dense = 16384,
+    .n_full_attn_count = 61,
+    .n_nextn_predict = 0,
+    .n_leading_dense = 3,
+    .use_rope = true,
+    .use_qk_norm = false,
+    .rms_eps = 1.0e-6f,
+    .expert_weight_scale = 2.5f,
+    .rope_freq_base = 10000000.0f,
+    .rope_scale_factor = 1.0f,
+    .rope_orig_ctx = 524288,
 };
 
 /* dots-studio/dots3-note-prev, language+MTP conversion.  Pinned to source
@@ -2158,6 +2193,9 @@ static void model_apply_host_shape(void) {
         break;
     case DS4_VARIANT_GLM53_FLASH:
         g_ds4_shape = DS4_SHAPE_GLM53_FLASH;
+        break;
+    case DS4_VARIANT_K2_HORIZON_375B:
+        g_ds4_shape = DS4_SHAPE_K2_HORIZON_375B;
         break;
     default:
         ds4_die("unsupported");
@@ -6938,6 +6976,81 @@ static void config_validate_exaone_moe_model(const ds4_model *m) {
     }
 }
 
+static void config_validate_k2_horizon_model(const ds4_model *m) {
+    g_ds4_shape = DS4_SHAPE_K2_HORIZON_375B;
+    memset(g_ds4_compress_ratios, 0, sizeof(g_ds4_compress_ratios));
+
+    config_expect_u32("block_count",
+                      required_u32(m, "k2-horizon.block_count"), DS4_N_LAYER);
+    config_expect_u64("context_length",
+                      required_u64_compat(m, "k2-horizon.context_length"),
+                      DS4_ROPE_ORIG_CTX);
+    config_expect_u32("embedding_length",
+                      required_u32(m, "k2-horizon.embedding_length"),
+                      DS4_N_EMBD);
+    config_expect_u32("feed_forward_length",
+                      required_u32(m, "k2-horizon.feed_forward_length"),
+                      DS4_N_FF_DENSE);
+    config_expect_u32("attention.head_count",
+                      required_u32(m, "k2-horizon.attention.head_count"),
+                      DS4_N_HEAD);
+    config_expect_u32("attention.head_count_kv",
+                      required_u32(m, "k2-horizon.attention.head_count_kv"),
+                      DS4_N_HEAD_KV);
+    config_expect_u32("attention.key_length",
+                      required_u32(m, "k2-horizon.attention.key_length"),
+                      DS4_N_HEAD_DIM);
+    config_expect_u32("attention.value_length",
+                      required_u32(m, "k2-horizon.attention.value_length"),
+                      DS4_N_VALUE_DIM);
+    config_expect_u32("attention.group_norm_groups",
+                      required_u32(m,
+                                   "k2-horizon.attention.group_norm_groups"),
+                      1u);
+    config_expect_u32("rope.dimension_count",
+                      required_u32(m, "k2-horizon.rope.dimension_count"),
+                      DS4_N_ROT);
+    config_expect_u32("expert_count",
+                      required_u32(m, "k2-horizon.expert_count"),
+                      DS4_N_EXPERT);
+    config_expect_u32("expert_used_count",
+                      required_u32(m, "k2-horizon.expert_used_count"),
+                      DS4_N_EXPERT_USED);
+    config_expect_u32("expert_feed_forward_length",
+                      required_u32(m,
+                                   "k2-horizon.expert_feed_forward_length"),
+                      DS4_N_FF_EXP);
+    config_expect_u32("leading_dense_block_count",
+                      required_u32(m,
+                                   "k2-horizon.leading_dense_block_count"),
+                      DS4_N_LEADING_DENSE);
+    config_expect_u32("moe_every_n_layers",
+                      required_u32(m, "k2-horizon.moe_every_n_layers"), 1u);
+    config_expect_u32("expert_shared_count",
+                      required_u32(m, "k2-horizon.expert_shared_count"),
+                      DS4_N_EXPERT_SHARED);
+    config_expect_u32(
+        "expert_shared_feed_forward_length",
+        required_u32(m, "k2-horizon.expert_shared_feed_forward_length"),
+        DS4_N_FF_SHEXP);
+    config_expect_u32("expert_gating_func",
+                      required_u32(m, "k2-horizon.expert_gating_func"), 2u);
+    config_expect_f32("rope.freq_base",
+                      required_f32(m, "k2-horizon.rope.freq_base"),
+                      DS4_ROPE_FREQ_BASE);
+    config_expect_f32(
+        "attention.layer_norm_rms_epsilon",
+        required_f32(m,
+                     "k2-horizon.attention.layer_norm_rms_epsilon"),
+        DS4_RMS_EPS);
+    config_expect_f32("expert_weights_scale",
+                      required_f32(m, "k2-horizon.expert_weights_scale"),
+                      DS4_EXPERT_WEIGHT_SCALE);
+    config_expect_bool("expert_weights_norm",
+                       required_bool(m, "k2-horizon.expert_weights_norm"),
+                       true);
+}
+
 /* The first SSD-PLE artifact deliberately removes all 128 BF16 embedding
  * tables from the GGUF resident-weight set. Treat that as a strict storage
  * contract, not an optional hint: a runtime that ignores these fields must
@@ -7201,6 +7314,10 @@ static void config_validate_model(const ds4_model *m) {
     }
     if (ds4_streq(arch, "exaone-moe")) {
         config_validate_exaone_moe_model(m);
+        return;
+    }
+    if (ds4_streq(arch, "k2-horizon")) {
+        config_validate_k2_horizon_model(m);
         return;
     }
     if (ds4_streq(arch, "solar-open2")) {
