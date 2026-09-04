@@ -1928,7 +1928,7 @@ static const gguf_type_info gguf_types[] = {
     [16] = {"iq2_xxs",256,  66},
     [17] = {"iq2_xs", 256,  74},
     [18] = {"iq3_xxs",256,  98},
-    [19] = {"iq1_s",  256, 110},
+    [19] = {"iq1_s",  256,  50},
     [20] = {"iq4_nl", 256,  50},
     [21] = {"iq3_s",  256, 110},
     [22] = {"iq2_s",  256,  82},
@@ -1955,8 +1955,11 @@ enum {
     DS4_TENSOR_Q5_K     = 13,
     DS4_TENSOR_Q6_K     = 14,
     DS4_TENSOR_IQ2_XXS  = 16,
+    DS4_TENSOR_IQ2_XS   = 17,
+    DS4_TENSOR_IQ1_S    = 19,
     DS4_TENSOR_I32      = 26,
     DS4_TENSOR_I64      = 27,
+    DS4_TENSOR_IQ1_M    = 29,
     DS4_TENSOR_BF16     = 30,
     DS4_TENSOR_MXFP4    = 39,
 };
@@ -5551,6 +5554,9 @@ static bool tensor_type_is_exaone_quant(uint32_t type) {
            type == DS4_TENSOR_Q3_K ||
            type == DS4_TENSOR_Q2_K ||
            type == DS4_TENSOR_IQ2_XXS ||
+           type == DS4_TENSOR_IQ2_XS ||
+           type == DS4_TENSOR_IQ1_S ||
+           type == DS4_TENSOR_IQ1_M ||
            type == DS4_TENSOR_F16 ||
            type == DS4_TENSOR_F32;
 }
@@ -5566,7 +5572,7 @@ static void tensor_expect_exaone_quant_layout(
         fprintf(stderr,
                 "ds4: tensor %.*s has type %s, which the exaone-moe recipe does "
                 "not emit (expected one of q8_0, q6_K, q5_K, q4_K, q3_K, q2_K, "
-                "iq2_xxs, f16, f32)\n",
+                "iq2_xxs, iq2_xs, iq1_s, iq1_m, f16, f32)\n",
                 (int)t->name.len, t->name.ptr, tensor_type_name(t->type));
         exit(1);
     }
