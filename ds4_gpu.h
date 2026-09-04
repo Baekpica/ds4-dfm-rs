@@ -1234,6 +1234,76 @@ int ds4_gpu_qwen4exp_hc_residual_tensor(
         uint32_t                hidden_size,
         uint32_t                hc_count);
 
+/* Fused batched hyper-connection mix (prefill rows).  The norm stores the
+ * BF16 rows plus one scale per [row, lane]; the SiLU stores a BF16 twin of
+ * the low-rank rows; the mix kernel forms the mix_up logits on the tensor
+ * cores and applies the sigmoid mix on the normalised value recomputed from
+ * the hyper input, so neither the F32 normalised rows nor the F32 logits
+ * round-trip memory.  Kill switch: DS4_QWEN_HC_NO_FUSED_MIX. */
+int ds4_gpu_qwen4exp_group_rms_norm_rows_bf16_scale_tensor(
+        ds4_gpu_tensor       *out_bf16,
+        ds4_gpu_tensor       *scales,
+        const ds4_gpu_tensor *x,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint32_t                width,
+        uint32_t                group_size,
+        uint32_t                rows,
+        float                   eps);
+
+/* Residual of one sub-layer fused with the next sub-layer's norm: writes
+ * the new hyper state once and derives the BF16 rows + scales from the
+ * values still in registers (bit-identical to residual then norm). */
+int ds4_gpu_qwen4exp_hc_residual_norm_bf16_scale_tensor(
+        ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *out_bf16,
+        ds4_gpu_tensor       *scales,
+        const ds4_gpu_tensor *hyper_input,
+        const ds4_gpu_tensor *block_output,
+        const ds4_gpu_tensor *injection,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint32_t                width,
+        uint32_t                group_size,
+        uint32_t                rows,
+        float                   eps);
+
+int ds4_gpu_qwen4exp_hc_down_silu_bf16_tensor(
+        ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *out_bf16,
+        const ds4_gpu_tensor *projected,
+        uint64_t                count,
+        uint32_t                hc_count);
+
+int ds4_gpu_qwen4exp_hc_injection_tensor(
+        ds4_gpu_tensor       *injection,
+        const ds4_gpu_tensor *inject_logits,
+        uint32_t                rows,
+        uint32_t                hc_count);
+
+void ds4_gpu_qwen4exp_hc_mix_fused_override(int mode);
+
+int ds4_gpu_qwen4exp_hc_mix_fused_applies(
+        uint32_t                hidden_size,
+        uint32_t                hc_count,
+        uint32_t                lowrank);
+
+int ds4_gpu_qwen4exp_hc_mix_fused_tensor(
+        ds4_gpu_tensor       *mixed,
+        const ds4_gpu_tensor *hyper_input,
+        const ds4_gpu_tensor *scales,
+        const ds4_gpu_tensor *low_bf16,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                norm_offset,
+        uint64_t                up_offset,
+        uint32_t                rows,
+        uint32_t                hidden_size,
+        uint32_t                hc_count,
+        uint32_t                lowrank);
+
 /* SSD PLE compute stages. The gather subsystem writes raw BF16 rows into a
  * device tensor; the first entry promotes that bounded output to DS4's F32
  * activation representation. The gate implements Qwen's dot/sqrt/sigmoid

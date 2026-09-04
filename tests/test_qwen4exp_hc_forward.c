@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 enum {
     ROWS = 2,
@@ -48,6 +49,58 @@ static float sigmoidf_ref(float value) {
     return 1.0f / (1.0f + expf(-value));
 }
 
+static float bf16_to_float(uint16_t bits) {
+    const uint32_t wide = (uint32_t)bits << 16u;
+    float value;
+    memcpy(&value, &wide, sizeof(value));
+    return value;
+}
+
+static float bf16_round(float value) {
+    return bf16_to_float(bf16(value));
+}
+
+static double now_seconds(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+
+/* Batched-path oracle for one row: identity-like mix_down (low = BF16 of
+ * the first LOW normalised values, over hc_count), SiLU, BF16 rounding of
+ * the low-rank rows (what the mix_up GEMM consumes), a double-precision
+ * mix_up dot against an arbitrary BF16 weight, then the sigmoid mix on the
+ * F32 normalised rows. */
+static void batched_reference_row(
+        const float *input_row, const uint16_t *up_data, float *mixed_out) {
+    float normed[WIDTH];
+    for (uint32_t lane = 0; lane < HC; lane++) {
+        const uint64_t base = (uint64_t)lane * HIDDEN;
+        double sum = 0.0;
+        for (uint32_t d = 0; d < HIDDEN; d++)
+            sum += (double)input_row[base + d] * input_row[base + d];
+        const float scale = 1.0f / sqrtf((float)(sum / HIDDEN) + DS4_RMS_EPS);
+        for (uint32_t d = 0; d < HIDDEN; d++)
+            normed[base + d] = input_row[base + d] * scale;
+    }
+    float low_b[LOW];
+    for (uint32_t i = 0; i < LOW; i++) {
+        const float projected = bf16_round(normed[i]) / HC;
+        low_b[i] = bf16_round(projected * sigmoidf_ref(projected));
+    }
+    for (uint32_t d = 0; d < HIDDEN; d++) {
+        double mixed = 0.0;
+        for (uint32_t source = 0; source < HC; source++) {
+            const uint32_t at = source * HIDDEN + d;
+            double logit = 0.0;
+            for (uint32_t k = 0; k < LOW; k++)
+                logit += (double)low_b[k] * bf16_to_float(up_data[(uint64_t)at * LOW + k]);
+            mixed += (1.0 / (1.0 + exp(-logit))) * (double)normed[at];
+        }
+        mixed_out[d] = (float)(mixed / HC);
+    }
+}
+
 int main(void) {
     g_ds4_shape = DS4_SHAPE_QWEN38_FLASH_NEXT;
     uint64_t cursor = 4096u;
@@ -56,6 +109,7 @@ int main(void) {
     ds4_tensor up = make_weight(&cursor, LOW, WIDTH);
     ds4_tensor inject = make_weight(&cursor, WIDTH, HC);
     ds4_tensor dense = make_weight(&cursor, WIDTH, LOW);
+    ds4_tensor up_dense = make_weight(&cursor, LOW, WIDTH);
     const uint64_t model_size = align4k(cursor);
     unsigned char *map = NULL;
     REQUIRE(posix_memalign((void **)&map, 4096u, (size_t)model_size) == 0,
@@ -74,6 +128,14 @@ int main(void) {
         inject_data[(uint64_t)lane * WIDTH + (uint64_t)lane * HIDDEN] = bf16(1.0f);
     for (uint64_t i = 0u; i < dense.elements; i++)
         dense_data[i] = bf16((float)((int)(i % 29u) - 14) * 0.001f);
+    uint16_t *up_dense_data = (uint16_t *)(map + up_dense.abs_offset);
+    {
+        uint32_t state = 0x9e3779b9u;
+        for (uint64_t i = 0u; i < up_dense.elements; i++) {
+            state = state * 1664525u + 1013904223u;
+            up_dense_data[i] = bf16(((float)(state >> 8) / 16777216.0f - 0.5f) * 0.1f);
+        }
+    }
 
     ds4_model model;
     memset(&model, 0, sizeof(model));
@@ -84,6 +146,12 @@ int main(void) {
         .norm = &norm,
         .mix_down = &down,
         .mix_up = &up,
+        .inject = &inject,
+    };
+    ds4_qwen_hc_weights dense_weights = {
+        .norm = &norm,
+        .mix_down = &down,
+        .mix_up = &up_dense,
         .inject = &inject,
     };
 
@@ -239,6 +307,211 @@ int main(void) {
     REQUIRE(memcmp(dense_batch_host, dense_scalar_host,
                    sizeof(dense_batch_host)) == 0,
             "dense two-row BF16 projection differs from scalar rows");
+
+    /* Batched (BF16-rows) path: the fused mix against the cuBLAS + mix
+     * pair.  On the identity-like fixture every logit is a single product,
+     * so the two paths must agree bit for bit; on the dense mix_up the
+     * accumulation order differs by a few ulp and both are checked against
+     * the double-precision oracle.  200 rows exercise the 64-row tile
+     * guard. */
+    enum { BROWS = 200 };
+    const uint64_t b_hc_values = (uint64_t)BROWS * WIDTH;
+    const uint64_t b_block_values = (uint64_t)BROWS * HIDDEN;
+    const uint64_t b_inject_values = (uint64_t)BROWS * HC;
+    float *binput = malloc(b_hc_values * sizeof(*binput));
+    float *b_old = malloc(b_block_values * sizeof(*b_old));
+    float *b_new = malloc(b_block_values * sizeof(*b_new));
+    float *b_ref = malloc(b_block_values * sizeof(*b_ref));
+    float *b_inj_old = malloc(b_inject_values * sizeof(*b_inj_old));
+    float *b_inj_new = malloc(b_inject_values * sizeof(*b_inj_new));
+    REQUIRE(binput && b_old && b_new && b_ref && b_inj_old && b_inj_new,
+            "batched host buffers");
+    for (uint64_t i = 0; i < b_hc_values; i++)
+        binput[i] = 0.7f * sinf((float)(i % 7919u) * 0.011f +
+                                (float)(i / WIDTH) * 0.37f) + 0.1f;
+    ds4_gpu_tensor *dbinput = ds4_gpu_tensor_alloc(b_hc_values * sizeof(float));
+    ds4_qwen_hc_ws bws;
+    REQUIRE(dbinput && qwen4exp_hc_ws_alloc(&bws, BROWS, HIDDEN, HC, LOW),
+            "batched HC workspace");
+    REQUIRE(ds4_gpu_tensor_write(dbinput, 0, binput, b_hc_values * sizeof(float)),
+            "batched input upload");
+    REQUIRE(ds4_gpu_qwen4exp_hc_mix_fused_applies(HIDDEN, HC, LOW),
+            "fused mix applies to the Qwen shape");
+    for (int dense_up = 0; dense_up < 2; dense_up++) {
+        const ds4_qwen_hc_weights *w = dense_up ? &dense_weights : &weights;
+        ds4_gpu_qwen4exp_hc_mix_fused_override(0);
+        REQUIRE(qwen4exp_hc_begin(&bws, &model, w, dbinput, BROWS, false),
+                "batched HC begin (cuBLAS mix)");
+        REQUIRE(ds4_gpu_tensor_read(bws.mixed, 0, b_old,
+                                    b_block_values * sizeof(float)) &&
+                ds4_gpu_tensor_read(bws.injection, 0, b_inj_old,
+                                    b_inject_values * sizeof(float)),
+                "batched readback (cuBLAS mix)");
+        ds4_gpu_qwen4exp_hc_mix_fused_override(1);
+        REQUIRE(qwen4exp_hc_begin(&bws, &model, w, dbinput, BROWS, false),
+                "batched HC begin (fused mix)");
+        REQUIRE(ds4_gpu_tensor_read(bws.mixed, 0, b_new,
+                                    b_block_values * sizeof(float)) &&
+                ds4_gpu_tensor_read(bws.injection, 0, b_inj_new,
+                                    b_inject_values * sizeof(float)),
+                "batched readback (fused mix)");
+        REQUIRE(memcmp(b_inj_old, b_inj_new,
+                       b_inject_values * sizeof(float)) == 0,
+                "fused path changed the injection gate");
+        float pair_worst = 0.0f, old_ref_worst = 0.0f, new_ref_worst = 0.0f;
+        for (uint32_t row = 0; row < BROWS; row++) {
+            batched_reference_row(
+                binput + (uint64_t)row * WIDTH,
+                (const uint16_t *)(map + w->mix_up->abs_offset),
+                b_ref + (uint64_t)row * HIDDEN);
+        }
+        for (uint64_t i = 0; i < b_block_values; i++) {
+            const float pair = fabsf(b_old[i] - b_new[i]);
+            const float old_ref = fabsf(b_old[i] - b_ref[i]);
+            const float new_ref = fabsf(b_new[i] - b_ref[i]);
+            if (pair > pair_worst) pair_worst = pair;
+            if (old_ref > old_ref_worst) old_ref_worst = old_ref;
+            if (new_ref > new_ref_worst) new_ref_worst = new_ref;
+        }
+        printf("Qwen HC batched mix (%s mix_up): fused vs cuBLAS %.3g, "
+               "cuBLAS vs oracle %.3g, fused vs oracle %.3g\n",
+               dense_up ? "dense" : "identity", pair_worst,
+               old_ref_worst, new_ref_worst);
+        if (!dense_up) {
+            REQUIRE(pair_worst == 0.0f,
+                    "fused mix differs from the cuBLAS + mix pair on "
+                    "single-term logits");
+        } else {
+            REQUIRE(pair_worst < 5.0e-5f,
+                    "fused mix differs from the cuBLAS + mix pair beyond "
+                    "accumulation-order noise");
+        }
+        REQUIRE(old_ref_worst < 2.0e-4f, "cuBLAS mix vs batched oracle");
+        REQUIRE(new_ref_worst < 2.0e-4f, "fused mix vs batched oracle");
+    }
+    /* Residual fused with the next norm (finish_begin) against finish then
+     * begin, both on the fused chain and against the separate kernels:
+     * the new state must match bit for bit and so must the mixed rows. */
+    {
+        ds4_gpu_tensor *dbblock = ds4_gpu_tensor_alloc(b_block_values * sizeof(float));
+        ds4_gpu_tensor *dbout_a = ds4_gpu_tensor_alloc(b_hc_values * sizeof(float));
+        ds4_gpu_tensor *dbout_b = ds4_gpu_tensor_alloc(b_hc_values * sizeof(float));
+        float *bblock = malloc(b_block_values * sizeof(*bblock));
+        float *out_a = malloc(b_hc_values * sizeof(*out_a));
+        float *out_b = malloc(b_hc_values * sizeof(*out_b));
+        REQUIRE(dbblock && dbout_a && dbout_b && bblock && out_a && out_b,
+                "finish_begin buffers");
+        for (uint64_t i = 0; i < b_block_values; i++)
+            bblock[i] = 0.3f * cosf((float)(i % 6007u) * 0.019f);
+        REQUIRE(ds4_gpu_tensor_write(dbblock, 0, bblock,
+                                     b_block_values * sizeof(float)),
+                "finish_begin block upload");
+        for (int mode = 0; mode < 2; mode++) {
+            /* Reference: separate finish + begin under this mode. */
+            ds4_gpu_qwen4exp_hc_mix_fused_override(mode);
+            REQUIRE(qwen4exp_hc_begin(&bws, &model, &weights, dbinput, BROWS, false) &&
+                    qwen4exp_hc_finish(&bws, dbinput, dbblock, dbout_a, BROWS) &&
+                    qwen4exp_hc_begin(&bws, &model, &dense_weights, dbout_a, BROWS, false),
+                    "finish + begin");
+            REQUIRE(ds4_gpu_tensor_read(dbout_a, 0, out_a, b_hc_values * sizeof(float)) &&
+                    ds4_gpu_tensor_read(bws.mixed, 0, b_old, b_block_values * sizeof(float)),
+                    "finish + begin readback");
+            /* Candidate: the fused finish_begin (mode 1) or its fallback (mode 0). */
+            REQUIRE(qwen4exp_hc_begin(&bws, &model, &weights, dbinput, BROWS, false) &&
+                    qwen4exp_hc_finish_begin(&bws, &model, &dense_weights, dbinput,
+                                             dbblock, dbout_b, BROWS, false),
+                    "finish_begin");
+            REQUIRE(ds4_gpu_tensor_read(dbout_b, 0, out_b, b_hc_values * sizeof(float)) &&
+                    ds4_gpu_tensor_read(bws.mixed, 0, b_new, b_block_values * sizeof(float)),
+                    "finish_begin readback");
+            REQUIRE(memcmp(out_a, out_b, b_hc_values * sizeof(float)) == 0,
+                    "finish_begin residual differs from finish");
+            REQUIRE(memcmp(b_old, b_new, b_block_values * sizeof(float)) == 0,
+                    "finish_begin mixed rows differ from finish + begin");
+            printf("Qwen HC finish_begin (%s): residual and mixed rows bit-identical\n",
+                   mode ? "fused" : "separate kernels");
+        }
+        free(out_b); free(out_a); free(bblock);
+        ds4_gpu_tensor_free(dbout_b); ds4_gpu_tensor_free(dbout_a);
+        ds4_gpu_tensor_free(dbblock);
+    }
+    ds4_gpu_qwen4exp_hc_mix_fused_override(-1);
+
+    if (getenv("DS4_QWEN_PROFILE_HC")) {
+        /* Production-shape probe: one 8,192-row hc_begin per path. */
+        enum { PROWS = 8192 };
+        const uint64_t p_hc_values = (uint64_t)PROWS * WIDTH;
+        float *pinput = malloc(p_hc_values * sizeof(*pinput));
+        REQUIRE(pinput, "probe host buffer");
+        for (uint64_t i = 0; i < p_hc_values; i++)
+            pinput[i] = 0.7f * sinf((float)(i % 7919u) * 0.011f) + 0.1f;
+        ds4_gpu_tensor *dpinput = ds4_gpu_tensor_alloc(p_hc_values * sizeof(float));
+        ds4_qwen_hc_ws pws;
+        REQUIRE(dpinput && qwen4exp_hc_ws_alloc(&pws, PROWS, HIDDEN, HC, LOW),
+                "probe workspace");
+        REQUIRE(ds4_gpu_tensor_write(dpinput, 0, pinput, p_hc_values * sizeof(float)),
+                "probe upload");
+        /* The fixture map is host-registered; the served model's weights
+         * are device-resident and L2-cached.  Cache the four HC weights so
+         * the probe sees production-like weight reads (a host-mapped mix_up
+         * costs the fused kernel 2.5x). */
+        REQUIRE(ds4_gpu_cache_model_range(map, model_size, norm.abs_offset, norm.bytes, "hc norm") &&
+                ds4_gpu_cache_model_range(map, model_size, down.abs_offset, down.bytes, "hc down") &&
+                ds4_gpu_cache_model_range(map, model_size, up_dense.abs_offset, up_dense.bytes, "hc up") &&
+                ds4_gpu_cache_model_range(map, model_size, inject.abs_offset, inject.bytes, "hc inject"),
+                "probe weight caching");
+        ds4_gpu_tensor *dpblock = ds4_gpu_tensor_alloc((uint64_t)PROWS * HIDDEN * sizeof(float));
+        ds4_gpu_tensor *dpout = ds4_gpu_tensor_alloc(p_hc_values * sizeof(float));
+        REQUIRE(dpblock && dpout && ds4_gpu_tensor_fill_f32(dpblock, 0.25f, (uint64_t)PROWS * HIDDEN),
+                "probe block buffer");
+        for (int fused = 0; fused < 2; fused++) {
+            ds4_gpu_qwen4exp_hc_mix_fused_override(fused);
+            const int iters = 10;
+            for (int warm = 0; warm < 2; warm++) {
+                REQUIRE(qwen4exp_hc_begin(&pws, &model, &dense_weights,
+                                          dpinput, PROWS, false) &&
+                        qwen4exp_hc_finish_begin(
+                            &pws, &model, &dense_weights, dpinput,
+                            dpblock, dpout, PROWS, false),
+                        "probe warm-up");
+            }
+            /* Timed passes. */
+            double ms_begin = 0.0, ms_finish_begin = 0.0;
+            {
+                REQUIRE(ds4_gpu_synchronize(), "probe sync");
+                const double t0 = now_seconds();
+                for (int it = 0; it < iters; it++)
+                    REQUIRE(qwen4exp_hc_begin(&pws, &model, &dense_weights,
+                                              dpinput, PROWS, false),
+                            "probe HC begin");
+                REQUIRE(ds4_gpu_synchronize(), "probe sync");
+                ms_begin = (now_seconds() - t0) * 1e3 / iters;
+                const double t1 = now_seconds();
+                for (int it = 0; it < iters; it++)
+                    REQUIRE(qwen4exp_hc_finish_begin(
+                                &pws, &model, &dense_weights, dpinput,
+                                dpblock, dpout, PROWS, false),
+                            "probe HC finish_begin");
+                REQUIRE(ds4_gpu_synchronize(), "probe sync");
+                ms_finish_begin = (now_seconds() - t1) * 1e3 / iters;
+            }
+            printf("Qwen HC probe (%d rows, %s): begin %.3f ms, "
+                   "finish+begin %.3f ms per call\n",
+                   PROWS, fused ? "fused" : "separate kernels",
+                   ms_begin, ms_finish_begin);
+        }
+        ds4_gpu_tensor_free(dpout);
+        ds4_gpu_tensor_free(dpblock);
+        ds4_gpu_qwen4exp_hc_mix_fused_override(-1);
+        qwen4exp_hc_ws_free(&pws);
+        ds4_gpu_tensor_free(dpinput);
+        free(pinput);
+    }
+
+    qwen4exp_hc_ws_free(&bws);
+    ds4_gpu_tensor_free(dbinput);
+    free(b_inj_new); free(b_inj_old); free(b_ref); free(b_new); free(b_old);
+    free(binput);
 
     qwen4exp_hc_ws_free(&scalar_ws);
     qwen4exp_hc_ws_free(&ws);

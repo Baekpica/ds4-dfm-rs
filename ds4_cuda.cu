@@ -8803,9 +8803,15 @@ __global__ static void qwen4exp_group_rms_norm_kernel(
 
 /* Same reduction as qwen4exp_group_rms_norm_kernel, also storing the BF16
  * copy the hyper-connection GEMMs consume, so the [rows x width] F32
- * activation is not re-read and re-rounded once per GEMM. */
+ * activation is not re-read and re-rounded once per GEMM.  With STORE_F32
+ * off the kernel stores the per-[row, group] scale instead of the F32 rows:
+ * the fused mix kernel below recomputes the normalised value from the
+ * hyper input and that scale with this same expression, so the F32 rows
+ * never have to round-trip memory. */
+template <bool STORE_F32>
 __global__ static void qwen4exp_group_rms_norm_bf16_kernel(
-        float *out, __nv_bfloat16 *out_bf16, const float *x, const float *w,
+        float *out, __nv_bfloat16 *out_bf16, float *scales,
+        const float *x, const float *w,
         uint32_t width, uint32_t group_size,
         uint32_t groups_per_row, float eps) {
     const uint64_t group_id = (uint64_t)blockIdx.x;
@@ -8827,10 +8833,60 @@ __global__ static void qwen4exp_group_rms_norm_bf16_kernel(
         __syncthreads();
     }
     const float scale = rsqrtf(partial[0] / (float)group_size + eps);
+    if (!STORE_F32 && threadIdx.x == 0u) scales[group_id] = scale;
     const uint32_t weight_base = group * group_size;
     for (uint32_t i = threadIdx.x; i < group_size; i += blockDim.x) {
         const float v = x[base + i] * scale * (1.0f + w[weight_base + i]);
+        if (STORE_F32) out[base + i] = v;
+        out_bf16[base + i] = __float2bfloat16(v);
+    }
+}
+
+/* Hyper-connection residual of one sub-layer fused with the grouped norm of
+ * the next one.  One block owns one [row, lane] slice: it forms the residual
+ * (the hc_residual kernel's expression) into registers, stores it as the
+ * next hyper state, and reduces the same rounded values for the norm, so
+ * the [rows x width] F32 state is written once and not re-read.  Stores the
+ * BF16 rows and the per-slice scale like the STORE_F32 == false norm above,
+ * and is bit-identical to running the two kernels back to back. */
+#define QWEN_HC_RESNORM_MAX_PER_THREAD 16u
+
+__global__ static void qwen4exp_hc_residual_norm_bf16_kernel(
+        float *out, __nv_bfloat16 *out_bf16, float *scales,
+        const float *hyper_input, const float *block_output,
+        const float *injection, const float *w,
+        uint32_t width, uint32_t group_size,
+        uint32_t groups_per_row, float eps) {
+    const uint64_t group_id = (uint64_t)blockIdx.x;
+    const uint32_t group = (uint32_t)(group_id % groups_per_row);
+    const uint32_t row = (uint32_t)(group_id / groups_per_row);
+    const uint64_t base = (uint64_t)row * width +
+                          (uint64_t)group * group_size;
+    const float inject = injection[group_id];
+    const float *y = block_output + (uint64_t)row * group_size;
+    float vals[QWEN_HC_RESNORM_MAX_PER_THREAD];
+    float sum = 0.0f;
+    uint32_t j = 0;
+    for (uint32_t i = threadIdx.x; i < group_size; i += blockDim.x, j++) {
+        const float v = hyper_input[base + i] + y[i] * inject;
         out[base + i] = v;
+        vals[j] = v;
+        sum += v * v;
+    }
+    __shared__ float partial[256];
+    partial[threadIdx.x] = sum;
+    __syncthreads();
+    for (uint32_t stride = blockDim.x >> 1; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride)
+            partial[threadIdx.x] += partial[threadIdx.x + stride];
+        __syncthreads();
+    }
+    const float scale = rsqrtf(partial[0] / (float)group_size + eps);
+    if (threadIdx.x == 0u) scales[group_id] = scale;
+    const uint32_t weight_base = group * group_size;
+    j = 0;
+    for (uint32_t i = threadIdx.x; i < group_size; i += blockDim.x, j++) {
+        const float v = vals[j] * scale * (1.0f + w[weight_base + i]);
         out_bf16[base + i] = __float2bfloat16(v);
     }
 }
@@ -8842,6 +8898,19 @@ __global__ static void qwen4exp_hc_down_silu_kernel(
     if (i >= count) return;
     const float v = projected[i] * inv_hc_count;
     out[i] = v / (1.0f + expf(-v));
+}
+
+/* Same transform, also emitting the BF16 rows the fused mix kernel feeds to
+ * the tensor cores (the rounding the old F32 -> BF16 GEMM prologue used). */
+__global__ static void qwen4exp_hc_down_silu_bf16_kernel(
+        float *out, __nv_bfloat16 *out_bf16, const float *projected,
+        uint64_t count, float inv_hc_count) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    const float v = projected[i] * inv_hc_count;
+    const float s = v / (1.0f + expf(-v));
+    out[i] = s;
+    out_bf16[i] = __float2bfloat16_rn(s);
 }
 
 __global__ static void qwen4exp_hc_mix_kernel(
@@ -8883,6 +8952,177 @@ __global__ static void qwen4exp_hc_residual_kernel(
     out[i] = hyper_input[i] +
              block_output[(uint64_t)row * hidden_size + d] *
              injection[(uint64_t)row * hc_count + hc];
+}
+
+/* Hyper-connection mix with the mix_up product fused in.
+ *
+ * The batched path used to run the mix_up GEMM through cuBLAS into a
+ * [rows x width] F32 logits buffer and read it back, together with the F32
+ * normalised rows, in the mix kernel: with 8,192 rows that is ~1.3 GB of
+ * traffic per sub-layer beyond the norm itself, and the whole HC chain was
+ * ~14 ms of the ~65 ms sub-layer.  This kernel forms the logits of one
+ * 64-row x (4 lanes x 32 columns) tile on the tensor cores from the BF16
+ * low-rank rows and the BF16 mix_up weight (FP32 accumulation, the same
+ * operands cuBLAS consumed) and applies the sigmoid mix in the epilogue.
+ * The normalised value is recomputed from the hyper input and the per-[row,
+ * lane] scale the norm kernel stored, with the norm kernel's expression, so
+ * the only numerical difference from the cuBLAS + mix pair is the
+ * accumulation order of the lowrank-term logit dot products.  The hyper
+ * input tile is loaded into registers before the tensor-core phase so its
+ * DRAM traffic overlaps that phase; the weight and low-rank tiles are
+ * L2-resident (6.5 MB and 5 MB at 8,192 rows).
+ *
+ * Block: 256 threads.  Warp w owns rows (w / 4) * 32 .. +32 and lane w % 4
+ * of the tile for the tensor-core phase; for the epilogue thread t owns
+ * column t % 32 of rows (t / 32) * 8 .. +8, all four lanes.  Shape is fixed
+ * to hc_count == 4 (launcher-checked); hidden_size % 32 == 0 and
+ * lowrank % 64 == 0 are required. */
+#define QWEN_HC_MIX_ROWS 64u
+#define QWEN_HC_MIX_COLS 32u
+#define QWEN_HC_MIX_LANES 4u
+#define QWEN_HC_MIX_KC 64u
+#define QWEN_HC_MIX_LDS (QWEN_HC_MIX_KC + 8u)
+#define QWEN_HC_MIX_LOGIT_LD (QWEN_HC_MIX_LANES * QWEN_HC_MIX_COLS + 4u)
+#define QWEN_HC_MIX_A_ELEMS (QWEN_HC_MIX_ROWS * QWEN_HC_MIX_LDS)
+#define QWEN_HC_MIX_B_ELEMS (QWEN_HC_MIX_LANES * QWEN_HC_MIX_COLS * QWEN_HC_MIX_LDS)
+#define QWEN_HC_MIX_LOGIT_BYTES (QWEN_HC_MIX_ROWS * QWEN_HC_MIX_LOGIT_LD * 4u)
+#define QWEN_HC_MIX_TILE_BYTES ((QWEN_HC_MIX_A_ELEMS + QWEN_HC_MIX_B_ELEMS) * 2u)
+#define QWEN_HC_MIX_SMEM_BYTES (QWEN_HC_MIX_LOGIT_BYTES > QWEN_HC_MIX_TILE_BYTES \
+                                ? QWEN_HC_MIX_LOGIT_BYTES : QWEN_HC_MIX_TILE_BYTES)
+
+__global__ static void __launch_bounds__(256, 2)
+qwen4exp_hc_mix_fused_kernel(
+        float *mixed, const float *x, const float *scales,
+        const float *norm_w, const __nv_bfloat16 *low,
+        const __nv_bfloat16 *up, uint32_t rows, uint32_t hidden_size,
+        uint32_t lowrank) {
+    namespace wmma = nvcuda::wmma;
+    constexpr uint32_t HC = QWEN_HC_MIX_LANES;
+    constexpr uint32_t BM = QWEN_HC_MIX_ROWS;
+    constexpr uint32_t BN = HC * QWEN_HC_MIX_COLS;
+    constexpr uint32_t KC = QWEN_HC_MIX_KC;
+    constexpr uint32_t LDS = QWEN_HC_MIX_LDS;
+    constexpr uint32_t LOGIT_LD = QWEN_HC_MIX_LOGIT_LD;
+    constexpr uint32_t ROWS_PER_THREAD = BM / 8u;
+    __shared__ __align__(128) unsigned char smem_raw[QWEN_HC_MIX_SMEM_BYTES];
+    __shared__ float smem_scales[BM * HC];
+    __nv_bfloat16 *a_tile = (__nv_bfloat16 *)smem_raw;
+    __nv_bfloat16 *b_tile = a_tile + QWEN_HC_MIX_A_ELEMS;
+    float *logit_tile = (float *)smem_raw;
+
+    const uint32_t tid = threadIdx.x;
+    const uint32_t warp = tid >> 5;
+    const uint32_t lane = tid & 31u;
+    const uint32_t row0 = blockIdx.y * BM;
+    const uint32_t d0 = blockIdx.x * QWEN_HC_MIX_COLS;
+    const uint32_t width = hidden_size * HC;
+
+    /* Hyper-input tile into registers: the DRAM phase of this block. */
+    float xv[ROWS_PER_THREAD][HC];
+    const uint32_t xrow_base = warp * ROWS_PER_THREAD;
+#pragma unroll
+    for (uint32_t r = 0; r < ROWS_PER_THREAD; r++) {
+        const uint32_t row = row0 + xrow_base + r;
+        const float *xrow = x + (uint64_t)row * width + d0 + lane;
+#pragma unroll
+        for (uint32_t hc = 0; hc < HC; hc++)
+            xv[r][hc] = row < rows ? xrow[hc * hidden_size] : 0.0f;
+    }
+    float wn[HC];
+#pragma unroll
+    for (uint32_t hc = 0; hc < HC; hc++)
+        wn[hc] = 1.0f + norm_w[hc * hidden_size + d0 + lane];
+    {
+        const uint32_t row = row0 + tid / HC;
+        smem_scales[tid] = row < rows
+            ? scales[(uint64_t)row * HC + (tid % HC)] : 0.0f;
+    }
+
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc[2][2];
+#pragma unroll
+    for (int i = 0; i < 2; i++)
+#pragma unroll
+        for (int j = 0; j < 2; j++)
+            wmma::fill_fragment(acc[i][j], 0.0f);
+    const uint32_t wr0 = (warp >> 2) * 32u;
+    const uint32_t wc0 = (warp & 3u) * QWEN_HC_MIX_COLS;
+
+    for (uint32_t k0 = 0; k0 < lowrank; k0 += KC) {
+        /* A: 64 rows x KC of the BF16 low-rank rows (16-byte chunks). */
+#pragma unroll
+        for (uint32_t s = 0; s < 2u; s++) {
+            const uint32_t c = tid + s * 256u;
+            const uint32_t r = c >> 3;
+            const uint32_t kk = (c & 7u) * 8u;
+            const uint32_t row = row0 + r;
+            int4 v = make_int4(0, 0, 0, 0);
+            if (row < rows)
+                v = *(const int4 *)(low + (uint64_t)row * lowrank + k0 + kk);
+            *(int4 *)(a_tile + r * LDS + kk) = v;
+        }
+        /* B: the tile's 128 mix_up columns, lane-major (column c of the
+         * width axis is c / hidden_size -> lane, c % hidden_size -> d). */
+#pragma unroll
+        for (uint32_t s = 0; s < 4u; s++) {
+            const uint32_t c = tid + s * 256u;
+            const uint32_t n = c >> 3;
+            const uint32_t kk = (c & 7u) * 8u;
+            const uint32_t col = (n / QWEN_HC_MIX_COLS) * hidden_size + d0 +
+                                 (n % QWEN_HC_MIX_COLS);
+            const int4 v = *(const int4 *)(up + (uint64_t)col * lowrank + k0 + kk);
+            *(int4 *)(b_tile + n * LDS + kk) = v;
+        }
+        __syncthreads();
+#pragma unroll
+        for (uint32_t kk = 0; kk < KC; kk += 16u) {
+            wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16,
+                           wmma::row_major> fa[2];
+            wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16,
+                           wmma::col_major> fb[2];
+#pragma unroll
+            for (int i = 0; i < 2; i++)
+                wmma::load_matrix_sync(
+                    fa[i], a_tile + (wr0 + i * 16u) * LDS + kk, LDS);
+#pragma unroll
+            for (int j = 0; j < 2; j++)
+                wmma::load_matrix_sync(
+                    fb[j], b_tile + (wc0 + j * 16u) * LDS + kk, LDS);
+#pragma unroll
+            for (int i = 0; i < 2; i++)
+#pragma unroll
+                for (int j = 0; j < 2; j++)
+                    wmma::mma_sync(acc[i][j], fa[i], fb[j], acc[i][j]);
+        }
+        __syncthreads();
+    }
+
+#pragma unroll
+    for (int i = 0; i < 2; i++)
+#pragma unroll
+        for (int j = 0; j < 2; j++)
+            wmma::store_matrix_sync(
+                logit_tile + (wr0 + i * 16u) * LOGIT_LD + wc0 + j * 16u,
+                acc[i][j], LOGIT_LD, wmma::mem_row_major);
+    __syncthreads();
+
+    /* Epilogue: the mix kernel's arithmetic, lane by lane, on the
+     * recomputed normalised value. */
+#pragma unroll
+    for (uint32_t r = 0; r < ROWS_PER_THREAD; r++) {
+        const uint32_t lr = xrow_base + r;
+        const uint32_t row = row0 + lr;
+        if (row >= rows) continue;
+        float sum = 0.0f;
+#pragma unroll
+        for (uint32_t hc = 0; hc < HC; hc++) {
+            const float logit =
+                logit_tile[lr * LOGIT_LD + hc * QWEN_HC_MIX_COLS + lane];
+            const float weight = 1.0f / (1.0f + expf(-logit));
+            const float v = xv[r][hc] * smem_scales[lr * HC + hc] * wn[hc];
+            sum += weight * v;
+        }
+        mixed[(uint64_t)row * hidden_size + d0 + lane] = sum / (float)HC;
+    }
 }
 
 __global__ static void qwen4exp_bf16_to_f32_kernel(
@@ -26243,12 +26483,91 @@ extern "C" int ds4_gpu_qwen4exp_group_rms_norm_rows_bf16_tensor(
             "Qwen4Exp zero-centered RMSNorm");
     if (!wptr) return 0;
     cuda_norm_q8_invalidate(out->ptr);
-    qwen4exp_group_rms_norm_bf16_kernel<<<(unsigned)blocks, 256, 0,
+    qwen4exp_group_rms_norm_bf16_kernel<true><<<(unsigned)blocks, 256, 0,
             ds4_current_stream()>>>(
-            (float *)out->ptr, (__nv_bfloat16 *)out_bf16->ptr,
+            (float *)out->ptr, (__nv_bfloat16 *)out_bf16->ptr, NULL,
             (const float *)x->ptr, (const float *)wptr, width, group_size,
             groups_per_row, eps);
     return cuda_ok(cudaGetLastError(), "Qwen4Exp grouped RMSNorm bf16 launch");
+}
+
+extern "C" int ds4_gpu_qwen4exp_group_rms_norm_rows_bf16_scale_tensor(
+        ds4_gpu_tensor *out_bf16, ds4_gpu_tensor *scales,
+        const ds4_gpu_tensor *x,
+        const void *model_map, uint64_t model_size,
+        uint64_t weight_offset, uint32_t width, uint32_t group_size,
+        uint32_t rows, float eps) {
+    if (!out_bf16 || !scales || !x || !model_map || width == 0 ||
+        group_size == 0 || rows == 0 || width % group_size != 0 ||
+        !isfinite(eps) || eps < 0.0f || weight_offset > model_size ||
+        (uint64_t)width * sizeof(float) > model_size - weight_offset) {
+        return 0;
+    }
+    const uint64_t values = (uint64_t)rows * width;
+    const uint32_t groups_per_row = width / group_size;
+    const uint64_t blocks = (uint64_t)rows * groups_per_row;
+    if (values > UINT64_MAX / sizeof(float) ||
+        out_bf16->bytes < values * sizeof(__nv_bfloat16) ||
+        x->bytes < values * sizeof(float) ||
+        scales->bytes < blocks * sizeof(float)) {
+        return 0;
+    }
+    if (blocks == 0 || blocks > (uint64_t)INT_MAX) return 0;
+    const char *wptr = cuda_model_range_ptr(
+            model_map, weight_offset, (uint64_t)width * sizeof(float),
+            "Qwen4Exp zero-centered RMSNorm");
+    if (!wptr) return 0;
+    qwen4exp_group_rms_norm_bf16_kernel<false><<<(unsigned)blocks, 256, 0,
+            ds4_current_stream()>>>(
+            NULL, (__nv_bfloat16 *)out_bf16->ptr, (float *)scales->ptr,
+            (const float *)x->ptr, (const float *)wptr, width, group_size,
+            groups_per_row, eps);
+    return cuda_ok(cudaGetLastError(),
+                   "Qwen4Exp grouped RMSNorm bf16+scale launch");
+}
+
+extern "C" int ds4_gpu_qwen4exp_hc_residual_norm_bf16_scale_tensor(
+        ds4_gpu_tensor *out, ds4_gpu_tensor *out_bf16, ds4_gpu_tensor *scales,
+        const ds4_gpu_tensor *hyper_input, const ds4_gpu_tensor *block_output,
+        const ds4_gpu_tensor *injection,
+        const void *model_map, uint64_t model_size,
+        uint64_t weight_offset, uint32_t width, uint32_t group_size,
+        uint32_t rows, float eps) {
+    if (!out || !out_bf16 || !scales || !hyper_input || !block_output ||
+        !injection || !model_map || width == 0 || group_size == 0 ||
+        rows == 0 || width % group_size != 0 ||
+        group_size > 256u * QWEN_HC_RESNORM_MAX_PER_THREAD ||
+        out->ptr == hyper_input->ptr ||
+        !isfinite(eps) || eps < 0.0f || weight_offset > model_size ||
+        (uint64_t)width * sizeof(float) > model_size - weight_offset) {
+        return 0;
+    }
+    const uint64_t values = (uint64_t)rows * width;
+    const uint32_t groups_per_row = width / group_size;
+    const uint64_t blocks = (uint64_t)rows * groups_per_row;
+    if (values > UINT64_MAX / sizeof(float) ||
+        out->bytes < values * sizeof(float) ||
+        out_bf16->bytes < values * sizeof(__nv_bfloat16) ||
+        hyper_input->bytes < values * sizeof(float) ||
+        block_output->bytes < (uint64_t)rows * group_size * sizeof(float) ||
+        injection->bytes < blocks * sizeof(float) ||
+        scales->bytes < blocks * sizeof(float)) {
+        return 0;
+    }
+    if (blocks == 0 || blocks > (uint64_t)INT_MAX) return 0;
+    const char *wptr = cuda_model_range_ptr(
+            model_map, weight_offset, (uint64_t)width * sizeof(float),
+            "Qwen4Exp zero-centered RMSNorm");
+    if (!wptr) return 0;
+    cuda_norm_q8_invalidate(out->ptr);
+    qwen4exp_hc_residual_norm_bf16_kernel<<<(unsigned)blocks, 256, 0,
+            ds4_current_stream()>>>(
+            (float *)out->ptr, (__nv_bfloat16 *)out_bf16->ptr,
+            (float *)scales->ptr, (const float *)hyper_input->ptr,
+            (const float *)block_output->ptr, (const float *)injection->ptr,
+            (const float *)wptr, width, group_size, groups_per_row, eps);
+    return cuda_ok(cudaGetLastError(),
+                   "Qwen4Exp HC residual+RMSNorm bf16+scale launch");
 }
 
 extern "C" int ds4_gpu_qwen4exp_shared_group_rms_norm_rows_tensor(
@@ -26378,6 +26697,115 @@ extern "C" int ds4_gpu_qwen4exp_hc_residual_tensor(
             (const float *)block_output->ptr,
             (const float *)injection->ptr, hidden_size, hc_count, hc_values);
     return cuda_ok(cudaGetLastError(), "Qwen4Exp HC residual launch");
+}
+
+extern "C" int ds4_gpu_qwen4exp_hc_down_silu_bf16_tensor(
+        ds4_gpu_tensor *out, ds4_gpu_tensor *out_bf16,
+        const ds4_gpu_tensor *projected, uint64_t count, uint32_t hc_count) {
+    if (!out || !out_bf16 || !projected || count == 0 || hc_count == 0 ||
+        count > UINT64_MAX / sizeof(float) ||
+        (count + 255u) / 256u > (uint64_t)INT_MAX ||
+        out->bytes < count * sizeof(float) ||
+        out_bf16->bytes < count * sizeof(__nv_bfloat16) ||
+        projected->bytes < count * sizeof(float)) {
+        return 0;
+    }
+    qwen4exp_hc_down_silu_bf16_kernel<<<(count + 255u) / 256u, 256, 0,
+            ds4_current_stream()>>>(
+            (float *)out->ptr, (__nv_bfloat16 *)out_bf16->ptr,
+            (const float *)projected->ptr, count, 1.0f / (float)hc_count);
+    return cuda_ok(cudaGetLastError(), "Qwen4Exp HC down SiLU bf16 launch");
+}
+
+extern "C" int ds4_gpu_qwen4exp_hc_injection_tensor(
+        ds4_gpu_tensor *injection, const ds4_gpu_tensor *inject_logits,
+        uint32_t rows, uint32_t hc_count) {
+    if (!injection || !inject_logits || rows == 0 || hc_count == 0) return 0;
+    const uint64_t inject_values = (uint64_t)rows * hc_count;
+    if (inject_values > UINT64_MAX / sizeof(float) ||
+        (inject_values + 255u) / 256u > (uint64_t)INT_MAX ||
+        injection->bytes < inject_values * sizeof(float) ||
+        inject_logits->bytes < inject_values * sizeof(float)) {
+        return 0;
+    }
+    qwen4exp_hc_injection_kernel<<<(inject_values + 255u) / 256u, 256,
+            0, ds4_current_stream()>>>(
+            (float *)injection->ptr, (const float *)inject_logits->ptr,
+            inject_values, 1.0f / (float)hc_count);
+    return cuda_ok(cudaGetLastError(), "Qwen4Exp HC injection launch");
+}
+
+/* -1: follow DS4_QWEN_HC_NO_FUSED_MIX (diagnostic kill switch); 0/1: forced
+ * by a test that compares both paths in one process. */
+static int g_qwen_hc_mix_fused_override = -1;
+
+extern "C" void ds4_gpu_qwen4exp_hc_mix_fused_override(int mode) {
+    g_qwen_hc_mix_fused_override = mode;
+}
+
+extern "C" int ds4_gpu_qwen4exp_hc_mix_fused_applies(
+        uint32_t hidden_size, uint32_t hc_count, uint32_t lowrank) {
+    if (hc_count != QWEN_HC_MIX_LANES || hidden_size == 0 ||
+        hidden_size % QWEN_HC_MIX_COLS != 0 || lowrank == 0 ||
+        lowrank % QWEN_HC_MIX_KC != 0) {
+        return 0;
+    }
+    if (g_qwen_hc_mix_fused_override >= 0)
+        return g_qwen_hc_mix_fused_override;
+    static int disabled = -1;
+    if (disabled < 0) disabled = getenv("DS4_QWEN_HC_NO_FUSED_MIX") != NULL;
+    return !disabled;
+}
+
+extern "C" int ds4_gpu_qwen4exp_hc_mix_fused_tensor(
+        ds4_gpu_tensor *mixed, const ds4_gpu_tensor *hyper_input,
+        const ds4_gpu_tensor *scales, const ds4_gpu_tensor *low_bf16,
+        const void *model_map, uint64_t model_size,
+        uint64_t norm_offset, uint64_t up_offset,
+        uint32_t rows, uint32_t hidden_size, uint32_t hc_count,
+        uint32_t lowrank) {
+    if (!mixed || !hyper_input || !scales || !low_bf16 || !model_map ||
+        rows == 0 || hc_count != QWEN_HC_MIX_LANES || hidden_size == 0 ||
+        hidden_size % QWEN_HC_MIX_COLS != 0 || lowrank == 0 ||
+        lowrank % QWEN_HC_MIX_KC != 0) {
+        return 0;
+    }
+    const uint64_t width = (uint64_t)hidden_size * hc_count;
+    const uint64_t hc_values = (uint64_t)rows * width;
+    const uint64_t mixed_values = (uint64_t)rows * hidden_size;
+    const uint64_t low_values = (uint64_t)rows * lowrank;
+    const uint64_t up_bytes = width * lowrank * sizeof(__nv_bfloat16);
+    const uint64_t norm_bytes = width * sizeof(float);
+    if (hc_values > UINT64_MAX / sizeof(float) ||
+        mixed->bytes < mixed_values * sizeof(float) ||
+        hyper_input->bytes < hc_values * sizeof(float) ||
+        scales->bytes < (uint64_t)rows * hc_count * sizeof(float) ||
+        low_bf16->bytes < low_values * sizeof(__nv_bfloat16) ||
+        norm_offset > model_size || norm_bytes > model_size - norm_offset ||
+        up_offset > model_size || up_bytes > model_size - up_offset ||
+        (rows + QWEN_HC_MIX_ROWS - 1u) / QWEN_HC_MIX_ROWS > 65535u) {
+        return 0;
+    }
+    const char *wptr = cuda_model_range_ptr(
+            model_map, norm_offset, norm_bytes,
+            "Qwen4Exp zero-centered RMSNorm");
+    if (!wptr) return 0;
+    const char *uptr = cuda_resolve_weight_ptr(
+            model_map, up_offset, up_bytes, ds4_tensor_device_idx(mixed),
+            "bf16");
+    if (!uptr) return 0;
+    if (((uintptr_t)uptr & 15u) != 0u || ((uintptr_t)low_bf16->ptr & 15u) != 0u) {
+        fprintf(stderr, "ds4: Qwen HC fused mix needs 16-byte aligned operands\n");
+        return 0;
+    }
+    const dim3 grid(hidden_size / QWEN_HC_MIX_COLS,
+                    (rows + QWEN_HC_MIX_ROWS - 1u) / QWEN_HC_MIX_ROWS, 1u);
+    qwen4exp_hc_mix_fused_kernel<<<grid, 256, 0, ds4_current_stream()>>>(
+            (float *)mixed->ptr, (const float *)hyper_input->ptr,
+            (const float *)scales->ptr, (const float *)wptr,
+            (const __nv_bfloat16 *)low_bf16->ptr,
+            (const __nv_bfloat16 *)uptr, rows, hidden_size, lowrank);
+    return cuda_ok(cudaGetLastError(), "Qwen4Exp HC fused mix launch");
 }
 
 extern "C" int ds4_gpu_qwen4exp_bf16_to_f32_tensor(

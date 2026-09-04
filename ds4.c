@@ -20834,6 +20834,10 @@ typedef struct {
     /* BF16 twin of normed, written by the norm kernel and read by the
      * mix_down / inject GEMMs, so neither GEMM converts the rows again. */
     ds4_gpu_tensor *normed_bf16;
+    /* Fused batched mix operands: one norm scale per [row, lane] and the
+     * BF16 twin of the SiLU'd low-rank rows (see qwen4exp_hc_begin). */
+    ds4_gpu_tensor *scales;
+    ds4_gpu_tensor *low_bf16;
     ds4_gpu_tensor *low;
     ds4_gpu_tensor *mix_logits;
     ds4_gpu_tensor *inject_logits;
@@ -20845,8 +20849,9 @@ typedef struct {
 static void qwen4exp_hc_ws_free(ds4_qwen_hc_ws *ws) {
     if (!ws) return;
     ds4_gpu_tensor **all[] = {
-        &ws->normed, &ws->normed_bf16, &ws->low, &ws->mix_logits,
-        &ws->inject_logits, &ws->mixed, &ws->injection,
+        &ws->normed, &ws->normed_bf16, &ws->scales, &ws->low_bf16,
+        &ws->low, &ws->mix_logits, &ws->inject_logits, &ws->mixed,
+        &ws->injection,
     };
     for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
         ds4_gpu_tensor_free(*all[i]);
@@ -20893,7 +20898,16 @@ static bool qwen4exp_hc_ws_alloc(ds4_qwen_hc_ws *ws,
             return false;
         }
         ws->bytes += bf16_bytes;
+        const uint64_t low_bf16_bytes =
+            (uint64_t)capacity * lowrank * sizeof(uint16_t);
+        ws->low_bf16 = ds4_gpu_tensor_alloc(low_bf16_bytes);
+        if (!ws->low_bf16) {
+            qwen4exp_hc_ws_free(ws);
+            return false;
+        }
+        ws->bytes += low_bf16_bytes;
     }
+    QWEN_HC_ALLOC(scales,       (uint64_t)capacity * hc_count);
     QWEN_HC_ALLOC(low,          (uint64_t)capacity * lowrank);
     QWEN_HC_ALLOC(mix_logits,   (uint64_t)capacity * width);
     QWEN_HC_ALLOC(inject_logits,(uint64_t)capacity * hc_count);
@@ -20915,30 +20929,91 @@ static bool qwen4exp_hc_matmul(
               out, model, weight, in_dim, out_dim, x, rows);
 }
 
+static bool qwen4exp_hc_weights_ok(const ds4_qwen_hc_ws *ws,
+                                   const ds4_qwen_hc_weights *weights,
+                                   uint32_t rows) {
+    if (!ws || !weights || rows == 0u || rows > ws->capacity ||
+        !weights->norm || !weights->mix_down || !weights->mix_up)
+        return false;
+    const uint64_t width = (uint64_t)ws->hidden_size * ws->hc_count;
+    return width <= UINT32_MAX && weights->norm->type == DS4_TENSOR_F32 &&
+           weights->mix_down->type == DS4_TENSOR_BF16 &&
+           weights->mix_up->type == DS4_TENSOR_BF16 &&
+           weights->norm->dim[0] == width &&
+           weights->mix_down->dim[0] == width &&
+           weights->mix_down->dim[1] == ws->lowrank &&
+           weights->mix_up->dim[0] == ws->lowrank &&
+           weights->mix_up->dim[1] == width &&
+           (!weights->inject ||
+            (weights->inject->type == DS4_TENSOR_BF16 &&
+             weights->inject->dim[0] == width &&
+             weights->inject->dim[1] == ws->hc_count));
+}
+
+/* The batched (prefill) path runs the fused mix chain: the norm keeps only
+ * the BF16 rows and one scale per [row, lane]; mix_down and inject read the
+ * BF16 rows; the SiLU also emits BF16 low-rank rows; the fused mix forms
+ * the mix_up logits on the tensor cores and applies the sigmoid mix on the
+ * normalised value recomputed from the hyper input.  Neither the F32
+ * normalised rows nor the F32 logits touch memory (~1.3 GB per sub-layer
+ * at 8,192 rows).  The stable-rows decode path keeps the row-stable GEMMs
+ * and the separate kernels. */
+static bool qwen4exp_hc_fused_mix(const ds4_qwen_hc_ws *ws,
+                                  bool stable_rows) {
+    return !stable_rows && ws->scales && ws->low_bf16 &&
+           ds4_gpu_qwen4exp_hc_mix_fused_applies(
+               ws->hidden_size, ws->hc_count, ws->lowrank) != 0;
+}
+
+/* Everything after the norm on the fused chain; `hyper_input` is the state
+ * the norm (or the fused residual+norm) just read. */
+static bool qwen4exp_hc_begin_fused_chain(ds4_qwen_hc_ws *ws,
+                                          const ds4_model *model,
+                                          const ds4_qwen_hc_weights *weights,
+                                          const ds4_gpu_tensor *hyper_input,
+                                          uint32_t rows) {
+    const uint64_t width = (uint64_t)ws->hidden_size * ws->hc_count;
+    return ds4_gpu_matmul_bf16_input_tensor(
+               ws->low, model->map, model->size,
+               weights->mix_down->abs_offset, width, ws->lowrank,
+               ws->normed_bf16, rows) != 0 &&
+           ds4_gpu_qwen4exp_hc_down_silu_bf16_tensor(
+               ws->low, ws->low_bf16, ws->low,
+               (uint64_t)rows * ws->lowrank, ws->hc_count) != 0 &&
+           (!weights->inject ||
+            (ds4_gpu_matmul_bf16_input_tensor(
+                 ws->inject_logits, model->map, model->size,
+                 weights->inject->abs_offset, width, ws->hc_count,
+                 ws->normed_bf16, rows) != 0 &&
+             ds4_gpu_qwen4exp_hc_injection_tensor(
+                 ws->injection, ws->inject_logits, rows,
+                 ws->hc_count) != 0)) &&
+           ds4_gpu_qwen4exp_hc_mix_fused_tensor(
+               ws->mixed, hyper_input, ws->scales, ws->low_bf16,
+               model->map, model->size, weights->norm->abs_offset,
+               weights->mix_up->abs_offset, rows, ws->hidden_size,
+               ws->hc_count, ws->lowrank) != 0;
+}
+
 static bool qwen4exp_hc_begin(ds4_qwen_hc_ws *ws,
                               const ds4_model *model,
                               const ds4_qwen_hc_weights *weights,
                               const ds4_gpu_tensor *hyper_input,
                               uint32_t rows,
                               bool stable_rows) {
-    if (!ws || !model || !weights || !hyper_input || rows == 0u ||
-        rows > ws->capacity || !weights->norm || !weights->mix_down ||
-        !weights->mix_up) return false;
+    if (!model || !hyper_input || !qwen4exp_hc_weights_ok(ws, weights, rows))
+        return false;
     const uint64_t width = (uint64_t)ws->hidden_size * ws->hc_count;
-    if (width > UINT32_MAX || weights->norm->type != DS4_TENSOR_F32 ||
-        weights->mix_down->type != DS4_TENSOR_BF16 ||
-        weights->mix_up->type != DS4_TENSOR_BF16 ||
-        weights->norm->dim[0] != width ||
-        weights->mix_down->dim[0] != width ||
-        weights->mix_down->dim[1] != ws->lowrank ||
-        weights->mix_up->dim[0] != ws->lowrank ||
-        weights->mix_up->dim[1] != width ||
-        (weights->inject &&
-         (weights->inject->type != DS4_TENSOR_BF16 ||
-          weights->inject->dim[0] != width ||
-          weights->inject->dim[1] != ws->hc_count))) return false;
-
     ws->has_injection = weights->inject != NULL;
+    if (qwen4exp_hc_fused_mix(ws, stable_rows)) {
+        return ds4_gpu_qwen4exp_group_rms_norm_rows_bf16_scale_tensor(
+                   ws->normed_bf16, ws->scales, hyper_input,
+                   model->map, model->size, weights->norm->abs_offset,
+                   (uint32_t)width, ws->hidden_size, rows,
+                   DS4_RMS_EPS) != 0 &&
+               qwen4exp_hc_begin_fused_chain(
+                   ws, model, weights, hyper_input, rows);
+    }
     /* The batched path norms once into F32 + BF16 and feeds the BF16
      * rows to both wide GEMMs; the stable-rows decode path keeps the
      * per-call conversion inside its row-stable GEMM. */
@@ -20999,6 +21074,38 @@ static bool qwen4exp_hc_finish(ds4_qwen_hc_ws *ws,
            ds4_gpu_qwen4exp_hc_residual_tensor(
                output, hyper_input, block_output, ws->injection,
                rows, ws->hidden_size, ws->hc_count) != 0;
+}
+
+/* Residual of the finished sub-layer followed by the begin of the next
+ * one.  On the fused batched chain the residual and the next norm share
+ * one kernel (the new state is written once and normalised from
+ * registers); otherwise this is finish then begin. */
+static bool qwen4exp_hc_finish_begin(ds4_qwen_hc_ws *ws,
+                                     const ds4_model *model,
+                                     const ds4_qwen_hc_weights *next_weights,
+                                     const ds4_gpu_tensor *hyper_input,
+                                     const ds4_gpu_tensor *block_output,
+                                     ds4_gpu_tensor *output,
+                                     uint32_t rows,
+                                     bool stable_rows) {
+    if (!ws || !model || !hyper_input || !block_output || !output ||
+        !ws->has_injection ||
+        !qwen4exp_hc_weights_ok(ws, next_weights, rows)) return false;
+    if (!qwen4exp_hc_fused_mix(ws, stable_rows)) {
+        return qwen4exp_hc_finish(ws, hyper_input, block_output, output,
+                                  rows) &&
+               qwen4exp_hc_begin(ws, model, next_weights, output, rows,
+                                 stable_rows);
+    }
+    const uint64_t width = (uint64_t)ws->hidden_size * ws->hc_count;
+    if (!ds4_gpu_qwen4exp_hc_residual_norm_bf16_scale_tensor(
+            output, ws->normed_bf16, ws->scales, hyper_input,
+            block_output, ws->injection, model->map, model->size,
+            next_weights->norm->abs_offset, (uint32_t)width,
+            ws->hidden_size, rows, DS4_RMS_EPS)) return false;
+    ws->has_injection = next_weights->inject != NULL;
+    return qwen4exp_hc_begin_fused_chain(
+        ws, model, next_weights, output, rows);
 }
 
 /* Qwen4Exp Gated DeltaNet scratch and persistent state are deliberately
@@ -24069,6 +24176,10 @@ static bool qwen4exp_graph_forward_chunk_impl(
 
     ds4_gpu_tensor *current = graph->hidden[0];
     ds4_gpu_tensor *next = graph->hidden[1];
+    /* Each sub-layer's residual is fused with the next sub-layer's norm
+     * (qwen4exp_hc_finish_begin) except across the layer-1 PLE forward,
+     * which rewrites the state in between, and after the last layer. */
+    bool hc_begun = false;
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
         const ds4_layer_weights *layer = &weights->layer[il];
         if (il == 1u) {
@@ -24083,7 +24194,7 @@ static bool qwen4exp_graph_forward_chunk_impl(
             qwen4exp_ple_lookahead(
                 &graph->ple, ple_store, next_tokens, next_rows);
         }
-        if (!qwen4exp_hc_begin(
+        if (!hc_begun && !qwen4exp_hc_begin(
                 &graph->hc, model, &layer->qwen_attn_hc,
                 current, rows, stable_hc))
             return false;
@@ -24097,20 +24208,26 @@ static bool qwen4exp_graph_forward_chunk_impl(
                 &graph->gdn_ws, &graph->gdn_state[il], model,
                 &layer->qwen_linear_attn, graph->hc.mixed,
                 graph->block, rows, checkpoint_rows);
-        if (!attention_ok || !qwen4exp_hc_finish(
-                &graph->hc, current, graph->block, next, rows)) return false;
+        if (!attention_ok || !qwen4exp_hc_finish_begin(
+                &graph->hc, model, &layer->qwen_ffn_hc, current,
+                graph->block, next, rows, stable_hc)) return false;
         ds4_gpu_tensor *swap = current;
         current = next;
         next = swap;
 
-        if (!qwen4exp_hc_begin(
-                &graph->hc, model, &layer->qwen_ffn_hc,
-                current, rows, stable_hc) ||
-            !qwen4exp_moe_forward(
+        if (!qwen4exp_moe_forward(
                 &graph->moe_ws, model, layer, graph->hc.mixed,
-                graph->block, rows) ||
-            !qwen4exp_hc_finish(
-                &graph->hc, current, graph->block, next, rows)) return false;
+                graph->block, rows)) return false;
+        const bool fuse_next = il + 1u < DS4_N_LAYER && il + 1u != 1u;
+        if (fuse_next
+                ? !qwen4exp_hc_finish_begin(
+                      &graph->hc, model,
+                      &weights->layer[il + 1u].qwen_attn_hc, current,
+                      graph->block, next, rows, stable_hc)
+                : !qwen4exp_hc_finish(
+                      &graph->hc, current, graph->block, next, rows))
+            return false;
+        hc_begun = fuse_next;
         swap = current;
         current = next;
         next = swap;
