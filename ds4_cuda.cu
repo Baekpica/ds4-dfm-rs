@@ -9076,11 +9076,29 @@ __global__ static void qwen4exp_gdn_recurrent_kernel(
     if (head_dim == 128u && blockDim.x == 128u) {
         constexpr uint32_t groups = 4u;
         constexpr uint32_t columns = 32u;
+        constexpr uint32_t keys_per_thread = 128u / groups;
         const uint32_t group = tid / columns;
         const uint32_t column = tid % columns;
         const uint32_t v = value_tile * columns + column;
         float *partial = k_raw + head_dim;
         float *delta_shared = partial + groups * columns;
+        /* Per-warp Q/K norm partials get their own words: writing them into
+         * partial[] raced the previous token's output read of partial[] by
+         * group 0 (no barrier separates the two), which only stayed benign
+         * while the global state traffic delayed the writers. */
+        float *norm_q = delta_shared + columns;
+        float *norm_k = norm_q + groups;
+        const uint64_t state_col = state_head_base + v;
+        /* This thread owns state rows k = group + 4j of column v for the
+         * whole chunk.  Holding them in registers removes the two loads and
+         * one store per element per token (48 KiB of L1 traffic per token
+         * and block) that made the kernel L1-bound at 34.6 ms per 8K-token
+         * layer; the arithmetic and its order are unchanged, so the result
+         * and the stored state are bit-identical. */
+        float s[keys_per_thread];
+#pragma unroll
+        for (uint32_t j = 0; j < keys_per_thread; j++)
+            s[j] = state[state_col + (uint64_t)(group + groups * j) * head_dim];
 
         for (uint32_t token = 0; token < rows; token++) {
             const uint64_t row_base =
@@ -9100,36 +9118,40 @@ __global__ static void qwen4exp_gdn_recurrent_kernel(
                     k2 += __shfl_down_sync(0xffffffffu, k2, offset);
                 }
                 if ((tid & 31u) == 0u) {
-                    partial[tid >> 5u] = q2;
-                    delta_shared[tid >> 5u] = k2;
+                    norm_q[tid >> 5u] = q2;
+                    norm_k[tid >> 5u] = k2;
                 }
             }
             __syncthreads();
             if (tid < 32u) {
-                float q2 = tid < 4u ? partial[tid] : 0.0f;
-                float k2 = tid < 4u ? delta_shared[tid] : 0.0f;
+                float q2 = tid < groups ? norm_q[tid] : 0.0f;
+                float k2 = tid < groups ? norm_k[tid] : 0.0f;
                 for (uint32_t offset = 16u; offset > 0u; offset >>= 1u) {
                     q2 += __shfl_down_sync(0xffffffffu, q2, offset);
                     k2 += __shfl_down_sync(0xffffffffu, k2, offset);
                 }
                 if (tid == 0u) {
-                    partial[0] = q2;
-                    delta_shared[0] = k2;
+                    norm_q[0] = q2;
+                    norm_k[0] = k2;
                 }
             }
             __syncthreads();
 
             const float q_inv =
-                rsqrtf(partial[0] + 1.0e-6f) * inv_sqrt_dim;
-            const float k_inv = rsqrtf(delta_shared[0] + 1.0e-6f);
+                rsqrtf(norm_q[0] + 1.0e-6f) * inv_sqrt_dim;
+            const float k_inv = rsqrtf(norm_k[0] + 1.0e-6f);
             const uint64_t control_at =
                 (uint64_t)token * value_heads + value_head;
             const float decay = expf(g[control_at]);
-            const uint64_t state_col = state_head_base + v;
+            /* Explicit fmaf keeps the contraction the compiler chose for
+             * the global-state form of this loop (a * b single-use into the
+             * add); with s[j] * decay shared between both loops it would
+             * otherwise pick a different rounding. */
             float kv_mem = 0.0f;
-            for (uint32_t k = group; k < head_dim; k += groups) {
-                const uint64_t at = state_col + (uint64_t)k * head_dim;
-                kv_mem += state[at] * decay * (k_raw[k] * k_inv);
+#pragma unroll
+            for (uint32_t j = 0; j < keys_per_thread; j++) {
+                const uint32_t k = group + groups * j;
+                kv_mem = fmaf(s[j] * decay, k_raw[k] * k_inv, kv_mem);
             }
             partial[(uint64_t)group * columns + column] = kv_mem;
             __syncthreads();
@@ -9147,15 +9169,17 @@ __global__ static void qwen4exp_gdn_recurrent_kernel(
 
             const float delta = delta_shared[column];
             float result = 0.0f;
-            for (uint32_t k = group; k < head_dim; k += groups) {
-                const uint64_t at = state_col + (uint64_t)k * head_dim;
-                const float sv = state[at] * decay +
-                                 (k_raw[k] * k_inv) * delta;
-                state[at] = sv;
+#pragma unroll
+            for (uint32_t j = 0; j < keys_per_thread; j++) {
+                const uint32_t k = group + groups * j;
+                const float sv =
+                    fmaf(s[j], decay, (k_raw[k] * k_inv) * delta);
+                s[j] = sv;
                 if constexpr (CHECKPOINT) {
-                    if (token == checkpoint_row) checkpoint[at] = sv;
+                    if (token == checkpoint_row)
+                        checkpoint[state_col + (uint64_t)k * head_dim] = sv;
                 }
-                result += sv * (q_raw[k] * q_inv);
+                result = fmaf(sv, q_raw[k] * q_inv, result);
             }
             partial[(uint64_t)group * columns + column] = result;
             __syncthreads();
@@ -9167,6 +9191,9 @@ __global__ static void qwen4exp_gdn_recurrent_kernel(
                     partial[3u * columns + column];
             }
         }
+#pragma unroll
+        for (uint32_t j = 0; j < keys_per_thread; j++)
+            state[state_col + (uint64_t)(group + groups * j) * head_dim] = s[j];
         return;
     }
 
@@ -26615,8 +26642,10 @@ static int qwen4exp_gdn_recurrent_launch(
         return 0;
     }
     const uint32_t threads = head_dim == 128u ? 128u : head_dim;
+    /* 128-wide: Q row, K row, 4x32 partials, 32 deltas, 2x4 norm partials. */
     const uint32_t shared_values = head_dim == 128u
-        ? 2u * head_dim + 5u * (head_dim / 4u) : 4u * head_dim;
+        ? 2u * head_dim + 5u * (head_dim / 4u) + 2u * (head_dim / 32u)
+        : 4u * head_dim;
     const uint32_t shared_bytes = shared_values * (uint32_t)sizeof(float);
     const dim3 grid(value_heads * (head_dim == 128u ? 4u : 1u), banks);
     float *out1_ptr = banks == 2u ? (float *)out1->ptr : nullptr;
