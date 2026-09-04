@@ -9035,10 +9035,11 @@ __global__ static void qwen4exp_gdn_controls_kernel(
 }
 
 /* Correctness-first recurrent Gated Delta rule. Production splits each value
- * head into four column tiles, and one thread owns a complete state column.
- * That makes arbitrary chunk boundaries bit-stable: a token is fully
- * committed before the block advances. Q/K heads repeat contiguously over value
- * heads (48 / 16 == 3 in the production checkpoint). */
+ * head into four 32-column tiles; inside a tile each warp owns eight state
+ * columns and each lane 32 rows of one column, and a token is fully
+ * committed before the loop advances, so arbitrary chunk boundaries are
+ * bit-stable. Q/K heads repeat contiguously over value heads (48 / 16 == 3
+ * in the production checkpoint). */
 /* With CHECKPOINT, checkpoint0/1 receive the recurrent state as it stands
  * after row checkpoint_row, written from the same registers that update the
  * live state, so the copy is exact; the two-row MTP verify pass uses it as
@@ -9074,126 +9075,146 @@ __global__ static void qwen4exp_gdn_recurrent_kernel(
         (uint64_t)value_head * head_dim * head_dim;
 
     if (head_dim == 128u && blockDim.x == 128u) {
-        constexpr uint32_t groups = 4u;
-        constexpr uint32_t columns = 32u;
-        constexpr uint32_t keys_per_thread = 128u / groups;
-        const uint32_t group = tid / columns;
-        const uint32_t column = tid % columns;
-        const uint32_t v = value_tile * columns + column;
-        float *partial = k_raw + head_dim;
-        float *delta_shared = partial + groups * columns;
-        /* Per-warp Q/K norm partials get their own words: writing them into
-         * partial[] raced the previous token's output read of partial[] by
-         * group 0 (no barrier separates the two), which only stayed benign
-         * while the global state traffic delayed the writers. */
-        float *norm_q = delta_shared + columns;
-        float *norm_k = norm_q + groups;
+        /* Warp-independent layout: a warp owns eight state columns and its
+         * four eight-lane groups split the 128 key rows into contiguous
+         * quarters (lane = key group * 8 + column), each lane holding its
+         * 32 state rows in registers for the whole chunk.  The two
+         * cross-group sums a token needs (key-state product, output) are
+         * two xor-shuffles each and the Q/K rows sit in a warp-private
+         * shared copy, so the token loop has no block barrier; the next
+         * token's operands are loaded one iteration ahead.  The previous
+         * layout spread the four key groups over four warps and paid four
+         * __syncthreads plus an unhidden global load per token (~2.1 us
+         * per token, 17.5 ms per 8K-token layer).  Summation orders differ
+         * from it, so outputs move by fp32 reordering; chunk-boundary and
+         * decode self-parity are unchanged. */
+        constexpr uint32_t key_groups = 4u;
+        constexpr uint32_t warp_columns = 32u / key_groups;
+        constexpr uint32_t keys_per_lane = 128u / key_groups;
+        constexpr uint32_t vec_per_lane = keys_per_lane / 4u;
+        const uint32_t warp = tid >> 5u;
+        const uint32_t lane = tid & 31u;
+        const uint32_t k_group = lane / warp_columns;
+        const uint32_t column = lane % warp_columns;
+        const uint32_t v = value_tile * 32u + warp * warp_columns + column;
+        const uint32_t k_first = k_group * keys_per_lane;
+        float *q_warp = shared + (uint64_t)warp * 2u * 128u;
+        float *k_warp = q_warp + 128u;
         const uint64_t state_col = state_head_base + v;
-        /* This thread owns state rows k = group + 4j of column v for the
-         * whole chunk.  Holding them in registers removes the two loads and
-         * one store per element per token (48 KiB of L1 traffic per token
-         * and block) that made the kernel L1-bound at 34.6 ms per 8K-token
-         * layer; the arithmetic and its order are unchanged, so the result
-         * and the stored state are bit-identical. */
-        float s[keys_per_thread];
+        const uint64_t token_stride = 2u * key_dim + value_dim;
+        const float *q_src = mixed_qkv + (uint64_t)key_head * head_dim;
+        const float *k_src = q_src + key_dim;
+        const float *v_src = mixed_qkv + 2u * key_dim +
+            (uint64_t)value_head * head_dim + v;
+
+        float s[keys_per_lane];
 #pragma unroll
-        for (uint32_t j = 0; j < keys_per_thread; j++)
-            s[j] = state[state_col + (uint64_t)(group + groups * j) * head_dim];
+        for (uint32_t j = 0; j < keys_per_lane; j++)
+            s[j] = state[state_col + (uint64_t)(k_first + j) * head_dim];
+
+        /* The next token's operands, norms and decay are prepared one
+         * iteration ahead so their load latency and the ten-level norm
+         * shuffle stay off the state update's critical path. */
+        float4 q_next = reinterpret_cast<const float4 *>(q_src)[lane];
+        float4 k_next = reinterpret_cast<const float4 *>(k_src)[lane];
+        float value_next = v_src[0];
+        float beta_next = beta[value_head];
+        float decay_next = expf(g[value_head]);
+        float q2_next = q_next.x * q_next.x + q_next.y * q_next.y +
+                        q_next.z * q_next.z + q_next.w * q_next.w;
+        float k2_next = k_next.x * k_next.x + k_next.y * k_next.y +
+                        k_next.z * k_next.z + k_next.w * k_next.w;
+#pragma unroll
+        for (uint32_t offset = 16u; offset > 0u; offset >>= 1u) {
+            q2_next += __shfl_xor_sync(0xffffffffu, q2_next, offset);
+            k2_next += __shfl_xor_sync(0xffffffffu, k2_next, offset);
+        }
 
         for (uint32_t token = 0; token < rows; token++) {
-            const uint64_t row_base =
-                (uint64_t)token * (2u * key_dim + value_dim);
-            if (tid < head_dim) {
-                const float qv = mixed_qkv[
-                    row_base + (uint64_t)key_head * head_dim + tid];
-                const float kv = mixed_qkv[
-                    row_base + key_dim +
-                    (uint64_t)key_head * head_dim + tid];
-                q_raw[tid] = qv;
-                k_raw[tid] = kv;
-                float q2 = qv * qv;
-                float k2 = kv * kv;
+            const float value = value_next;
+            const float beta_value = beta_next;
+            const float decay = decay_next;
+            const float q_inv = rsqrtf(q2_next + 1.0e-6f) * inv_sqrt_dim;
+            const float k_inv = rsqrtf(k2_next + 1.0e-6f);
+            reinterpret_cast<float4 *>(q_warp)[lane] = q_next;
+            reinterpret_cast<float4 *>(k_warp)[lane] = k_next;
+            if (token + 1u < rows) {
+                const uint64_t next_base = (uint64_t)(token + 1u) * token_stride;
+                const uint64_t next_control =
+                    (uint64_t)(token + 1u) * value_heads + value_head;
+                q_next = reinterpret_cast<const float4 *>(q_src + next_base)[lane];
+                k_next = reinterpret_cast<const float4 *>(k_src + next_base)[lane];
+                value_next = v_src[next_base];
+                beta_next = beta[next_control];
+                decay_next = expf(g[next_control]);
+                q2_next = q_next.x * q_next.x + q_next.y * q_next.y +
+                          q_next.z * q_next.z + q_next.w * q_next.w;
+                k2_next = k_next.x * k_next.x + k_next.y * k_next.y +
+                          k_next.z * k_next.z + k_next.w * k_next.w;
+#pragma unroll
                 for (uint32_t offset = 16u; offset > 0u; offset >>= 1u) {
-                    q2 += __shfl_down_sync(0xffffffffu, q2, offset);
-                    k2 += __shfl_down_sync(0xffffffffu, k2, offset);
-                }
-                if ((tid & 31u) == 0u) {
-                    norm_q[tid >> 5u] = q2;
-                    norm_k[tid >> 5u] = k2;
+                    q2_next += __shfl_xor_sync(0xffffffffu, q2_next, offset);
+                    k2_next += __shfl_xor_sync(0xffffffffu, k2_next, offset);
                 }
             }
-            __syncthreads();
-            if (tid < 32u) {
-                float q2 = tid < groups ? norm_q[tid] : 0.0f;
-                float k2 = tid < groups ? norm_k[tid] : 0.0f;
-                for (uint32_t offset = 16u; offset > 0u; offset >>= 1u) {
-                    q2 += __shfl_down_sync(0xffffffffu, q2, offset);
-                    k2 += __shfl_down_sync(0xffffffffu, k2, offset);
-                }
-                if (tid == 0u) {
-                    norm_q[0] = q2;
-                    norm_k[0] = k2;
-                }
-            }
-            __syncthreads();
+            __syncwarp();
 
-            const float q_inv =
-                rsqrtf(norm_q[0] + 1.0e-6f) * inv_sqrt_dim;
-            const float k_inv = rsqrtf(norm_k[0] + 1.0e-6f);
-            const uint64_t control_at =
-                (uint64_t)token * value_heads + value_head;
-            const float decay = expf(g[control_at]);
-            /* Explicit fmaf keeps the contraction the compiler chose for
-             * the global-state form of this loop (a * b single-use into the
-             * add); with s[j] * decay shared between both loops it would
-             * otherwise pick a different rounding. */
+            const float4 *kq4 =
+                reinterpret_cast<const float4 *>(k_warp + k_first);
+            const float4 *qq4 =
+                reinterpret_cast<const float4 *>(q_warp + k_first);
             float kv_mem = 0.0f;
 #pragma unroll
-            for (uint32_t j = 0; j < keys_per_thread; j++) {
-                const uint32_t k = group + groups * j;
-                kv_mem = fmaf(s[j] * decay, k_raw[k] * k_inv, kv_mem);
+            for (uint32_t i = 0; i < vec_per_lane; i++) {
+                const float4 k = kq4[i];
+                kv_mem = fmaf(s[4u * i] * decay, k.x * k_inv, kv_mem);
+                kv_mem = fmaf(s[4u * i + 1u] * decay, k.y * k_inv, kv_mem);
+                kv_mem = fmaf(s[4u * i + 2u] * decay, k.z * k_inv, kv_mem);
+                kv_mem = fmaf(s[4u * i + 3u] * decay, k.w * k_inv, kv_mem);
             }
-            partial[(uint64_t)group * columns + column] = kv_mem;
-            __syncthreads();
-            if (group == 0u) {
-                kv_mem = partial[column] + partial[columns + column] +
-                         partial[2u * columns + column] +
-                         partial[3u * columns + column];
-                const float value = mixed_qkv[
-                    row_base + 2u * key_dim +
-                    (uint64_t)value_head * head_dim + v];
-                delta_shared[column] =
-                    (value - kv_mem) * beta[control_at];
-            }
-            __syncthreads();
+            kv_mem += __shfl_xor_sync(0xffffffffu, kv_mem, warp_columns);
+            kv_mem += __shfl_xor_sync(0xffffffffu, kv_mem, 2u * warp_columns);
+            const float delta = (value - kv_mem) * beta_value;
 
-            const float delta = delta_shared[column];
             float result = 0.0f;
 #pragma unroll
-            for (uint32_t j = 0; j < keys_per_thread; j++) {
-                const uint32_t k = group + groups * j;
-                const float sv =
-                    fmaf(s[j], decay, (k_raw[k] * k_inv) * delta);
-                s[j] = sv;
-                if constexpr (CHECKPOINT) {
-                    if (token == checkpoint_row)
-                        checkpoint[state_col + (uint64_t)k * head_dim] = sv;
+            for (uint32_t i = 0; i < vec_per_lane; i++) {
+                const float4 k = kq4[i];
+                const float4 q = qq4[i];
+                float sv = fmaf(s[4u * i], decay, (k.x * k_inv) * delta);
+                s[4u * i] = sv;
+                result = fmaf(sv, q.x * q_inv, result);
+                sv = fmaf(s[4u * i + 1u], decay, (k.y * k_inv) * delta);
+                s[4u * i + 1u] = sv;
+                result = fmaf(sv, q.y * q_inv, result);
+                sv = fmaf(s[4u * i + 2u], decay, (k.z * k_inv) * delta);
+                s[4u * i + 2u] = sv;
+                result = fmaf(sv, q.z * q_inv, result);
+                sv = fmaf(s[4u * i + 3u], decay, (k.w * k_inv) * delta);
+                s[4u * i + 3u] = sv;
+                result = fmaf(sv, q.w * q_inv, result);
+            }
+            if constexpr (CHECKPOINT) {
+                if (token == checkpoint_row) {
+#pragma unroll
+                    for (uint32_t j = 0; j < keys_per_lane; j++)
+                        checkpoint[state_col +
+                                   (uint64_t)(k_first + j) * head_dim] = s[j];
                 }
-                result = fmaf(sv, q_raw[k] * q_inv, result);
             }
-            partial[(uint64_t)group * columns + column] = result;
-            __syncthreads();
-            if (group == 0u) {
-                out[((uint64_t)token * value_heads + value_head) *
-                    head_dim + v] =
-                    partial[column] + partial[columns + column] +
-                    partial[2u * columns + column] +
-                    partial[3u * columns + column];
+            result += __shfl_xor_sync(0xffffffffu, result, warp_columns);
+            result += __shfl_xor_sync(0xffffffffu, result, 2u * warp_columns);
+            if (k_group == 0u) {
+                out[((uint64_t)token * value_heads + value_head) * head_dim + v] =
+                    result;
             }
+            /* Every lane has consumed the shared Q/K rows (the shuffles
+             * above ordered that) before the next token overwrites them. */
+            __syncwarp();
         }
 #pragma unroll
-        for (uint32_t j = 0; j < keys_per_thread; j++)
-            state[state_col + (uint64_t)(group + groups * j) * head_dim] = s[j];
+        for (uint32_t j = 0; j < keys_per_lane; j++)
+            state[state_col + (uint64_t)(k_first + j) * head_dim] = s[j];
         return;
     }
 
@@ -26685,9 +26706,9 @@ static int qwen4exp_gdn_recurrent_launch(
         return 0;
     }
     const uint32_t threads = head_dim == 128u ? 128u : head_dim;
-    /* 128-wide: Q row, K row, 4x32 partials, 32 deltas, 2x4 norm partials. */
+    /* 128-wide: a private Q row and K row per warp. */
     const uint32_t shared_values = head_dim == 128u
-        ? 2u * head_dim + 5u * (head_dim / 4u) + 2u * (head_dim / 32u)
+        ? 2u * head_dim * (threads / 32u)
         : 4u * head_dim;
     const uint32_t shared_bytes = shared_values * (uint32_t)sizeof(float);
     const dim3 grid(value_heads * (head_dim == 128u ? 4u : 1u), banks);
