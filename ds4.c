@@ -1202,6 +1202,18 @@ static float qwen4exp_yarn_factor_for_context(uint32_t context_cap) {
     return (float)factor;
 }
 
+/* Rows the per-slot QSA score scratch covers.  The fused prefill kernel
+ * (ds4_cuda.cu, QSA_SPLIT_MAX_ROWS) needs none; only decode widths of at
+ * most eight rows still score through the scratch, unless the kernel is
+ * disabled.  The CUDA attention entry point rejects a scratch too small for
+ * the path it takes, so a mismatch fails loudly. */
+#define QWEN4EXP_QSA_SCORE_ROWS 8u
+static uint32_t qwen4exp_qsa_score_rows(uint32_t capacity) {
+    if (getenv("DS4_QWEN_QSA_NO_FUSED")) return capacity;
+    return capacity < QWEN4EXP_QSA_SCORE_ROWS
+        ? capacity : QWEN4EXP_QSA_SCORE_ROWS;
+}
+
 /* Exact allocation plan for the correctness-first Qwen serial graph.  Keep
  * this pure so loader tests and the pre-allocation Spark fit gate share one
  * answer even in CPU-only inspection builds. */
@@ -1255,7 +1267,8 @@ static uint64_t qwen4exp_graph_bytes_estimate(uint32_t context_cap,
     bytes += p * selected_blocks * sizeof(uint32_t);
     bytes += p * selected_tokens * sizeof(int32_t);
     bytes += p * sizeof(uint32_t);
-    bytes += p * DS4_N_HEAD * selected_tokens * sizeof(float);
+    bytes += (uint64_t)qwen4exp_qsa_score_rows(capacity) * DS4_N_HEAD *
+             selected_tokens * sizeof(float);
     bytes += qsa_layers *
              (ctx * DS4_N_INDEXER_HEAD_DIM +
               blocks * DS4_N_INDEXER_HEAD_DIM + 2u * ctx * kv) *
@@ -21633,7 +21646,8 @@ static bool qwen4exp_qsa_ws_alloc(
     QWEN_QSA_ALLOC(key, (uint64_t)capacity * kv_dim, float);
     QWEN_QSA_ALLOC(value, (uint64_t)capacity * kv_dim, float);
     QWEN_QSA_ALLOC(attention_scores,
-                   (uint64_t)capacity * heads * ws->selected_cap, float);
+                   (uint64_t)qwen4exp_qsa_score_rows(capacity) * heads *
+                       ws->selected_cap, float);
     QWEN_QSA_ALLOC(attention, (uint64_t)capacity * q_dim, float);
 #undef QWEN_QSA_ALLOC
     return true;

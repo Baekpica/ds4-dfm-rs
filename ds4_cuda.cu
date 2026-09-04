@@ -27025,6 +27025,224 @@ extern "C" int ds4_gpu_qwen4exp_qsa_store_kv_tensor(
     return cuda_ok(cudaGetLastError(), "Qwen4Exp QSA KV store launch");
 }
 
+/* Fused prefill QSA attention for Qwen's 24-query/2-KV/256-dim shape.  One
+ * 256-thread block owns one (row, KV head): it walks the row's selected
+ * slots in 32-token tiles, gathers each tile's keys into shared memory once,
+ * forms the twelve heads' scores against them, folds the tile into an online
+ * softmax and accumulates the values.  The per-slot scorer read every query
+ * head from L1 for every selected key (13 KiB per key) and the serial reduce
+ * then read the rows x heads x slots score scratch three times (1.6 GB per
+ * 8K-row layer); here a gathered key row feeds twelve dot products from
+ * shared memory and the scratch is never touched.  Each dot product is
+ * summed over eight 32-dim warp slices, so scores differ from the per-slot
+ * kernel by fp32 reordering only.  Decode widths keep the split reduce
+ * (row-invariant two-row MTP verify). */
+#define QSA_FUSED_TILE 32u
+#define QSA_FUSED_THREADS 256u
+#define QSA_FUSED_WARPS (QSA_FUSED_THREADS / 32u)
+/* 256 + 4 floats: successive tile rows start 16 B apart modulo the 128 B
+ * bank window, so the eight slot rows one LDS.128 touches never collide. */
+#define QSA_FUSED_KEY_STRIDE 260u
+
+/* Read once: the score scratch is sized at allocation from the same
+ * answer the dispatcher uses later. */
+static int qsa_fused_disabled(void) {
+    static int disabled = -1;
+    if (disabled < 0) disabled = getenv("DS4_QWEN_QSA_NO_FUSED") != NULL;
+    return disabled;
+}
+
+static int qsa_fused_shape(uint32_t heads, uint32_t kv_heads,
+                           uint32_t head_dim) {
+    return heads == 24u && kv_heads == 2u && head_dim == 256u;
+}
+
+static int qsa_fused_applies(uint32_t rows, uint32_t heads,
+                             uint32_t kv_heads, uint32_t head_dim) {
+    return qsa_fused_shape(heads, kv_heads, head_dim) &&
+           rows > QSA_SPLIT_MAX_ROWS && !qsa_fused_disabled();
+}
+
+
+__global__ static void __launch_bounds__(QSA_FUSED_THREADS)
+qwen4exp_qsa_attention_fused_gqa12_kernel(
+        float *out, const float *query, const float *gate,
+        const float *k_cache, const float *v_cache,
+        const int32_t *selected, const uint32_t *counts,
+        uint32_t selected_cap, uint32_t cache_cap) {
+    const uint32_t kv_head = blockIdx.x;
+    const uint32_t row = blockIdx.y;
+    const uint32_t tid = threadIdx.x;
+    const uint32_t warp = tid >> 5u;
+    const uint32_t lane = tid & 31u;
+    const uint32_t count = min(counts[row], selected_cap);
+    const uint64_t first_head = (uint64_t)row * 24u + kv_head * 12u;
+    const float *q_row = query + first_head * 256u;
+    const int32_t *sel = selected + (uint64_t)row * selected_cap;
+
+    __shared__ __align__(16) float key_tile[QSA_FUSED_TILE * QSA_FUSED_KEY_STRIDE];
+    /* part holds the eight warp slices of the tile's 12 x 32 scores; the
+     * summed scores alias slice 0 and the probabilities slice 1, each
+     * written only by the thread that already consumed that element. */
+    __shared__ __align__(16) float part[QSA_FUSED_WARPS * 12u * QSA_FUSED_TILE];
+    __shared__ float scale_s[12u];
+    __shared__ float inv_sum_s[12u];
+    __shared__ uint32_t token_tile[QSA_FUSED_TILE];
+    float *score_tile = part;
+    float *prob = part + 12u * QSA_FUSED_TILE;
+
+    /* Phase-2 lane mapping: three heads x four slots per lane. */
+    const uint32_t hg = lane >> 3u;
+    const uint32_t sg = lane & 7u;
+    /* Phase-3 head ownership: warp w folds head w and, for w < 4, head w + 8;
+     * the statistics are warp-uniform after the shuffles. */
+    float run_max[2] = {-INFINITY, -INFINITY};
+    float run_sum[2] = {0.0f, 0.0f};
+    float acc[12];
+#pragma unroll
+    for (uint32_t h = 0; h < 12u; h++) acc[h] = 0.0f;
+
+    for (uint32_t base = 0; base < count; base += QSA_FUSED_TILE) {
+        const uint32_t tile_count = min(count - base, QSA_FUSED_TILE);
+        if (tid < QSA_FUSED_TILE) {
+            int32_t token = tid < tile_count ? sel[base + tid] : -1;
+            if (token < 0 || (uint32_t)token >= cache_cap) token = -1;
+            token_tile[tid] = (uint32_t)token;
+        }
+        __syncthreads();
+        for (uint32_t i = tid; i < QSA_FUSED_TILE * 64u;
+             i += QSA_FUSED_THREADS) {
+            const uint32_t slot = i >> 6u;
+            const uint32_t c = i & 63u;
+            const uint32_t token = token_tile[slot];
+            float4 k = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+            if (token != UINT32_MAX)
+                k = *(const float4 *)(k_cache +
+                    ((uint64_t)token * 2u + kv_head) * 256u + c * 4u);
+            *(float4 *)(key_tile + slot * QSA_FUSED_KEY_STRIDE + c * 4u) = k;
+        }
+        __syncthreads();
+
+        {
+            float s[3][4];
+#pragma unroll
+            for (uint32_t a = 0; a < 3u; a++)
+#pragma unroll
+                for (uint32_t j = 0; j < 4u; j++) s[a][j] = 0.0f;
+            const float4 *q4 = (const float4 *)(q_row + warp * 32u);
+            const float *k_base = key_tile + warp * 32u;
+#pragma unroll
+            for (uint32_t i = 0; i < 8u; i++) {
+                float4 q[3];
+#pragma unroll
+                for (uint32_t a = 0; a < 3u; a++)
+                    q[a] = __ldg(&q4[(3u * hg + a) * 64u + i]);
+#pragma unroll
+                for (uint32_t j = 0; j < 4u; j++) {
+                    const float4 k = *(const float4 *)(
+                        k_base + (sg + 8u * j) * QSA_FUSED_KEY_STRIDE + i * 4u);
+#pragma unroll
+                    for (uint32_t a = 0; a < 3u; a++) {
+                        s[a][j] = fmaf(q[a].x, k.x, s[a][j]);
+                        s[a][j] = fmaf(q[a].y, k.y, s[a][j]);
+                        s[a][j] = fmaf(q[a].z, k.z, s[a][j]);
+                        s[a][j] = fmaf(q[a].w, k.w, s[a][j]);
+                    }
+                }
+            }
+#pragma unroll
+            for (uint32_t a = 0; a < 3u; a++)
+#pragma unroll
+                for (uint32_t j = 0; j < 4u; j++)
+                    part[(warp * 12u + 3u * hg + a) * QSA_FUSED_TILE +
+                         sg + 8u * j] = s[a][j];
+        }
+        __syncthreads();
+        for (uint32_t o = tid; o < 12u * QSA_FUSED_TILE;
+             o += QSA_FUSED_THREADS) {
+            float v = 0.0f;
+#pragma unroll
+            for (uint32_t w = 0; w < QSA_FUSED_WARPS; w++)
+                v += part[w * 12u * QSA_FUSED_TILE + o];
+            score_tile[o] = v * 0.0625f;
+        }
+        __syncthreads();
+
+#pragma unroll
+        for (uint32_t pass = 0; pass < 2u; pass++) {
+            const uint32_t h = warp + 8u * pass;
+            if (h < 12u) {
+                const bool valid = lane < tile_count &&
+                    token_tile[lane] != UINT32_MAX;
+                const float sc = valid
+                    ? score_tile[h * QSA_FUSED_TILE + lane] : -INFINITY;
+                float m = sc;
+#pragma unroll
+                for (uint32_t off = 16u; off > 0u; off >>= 1u)
+                    m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, off));
+                const float new_max = fmaxf(run_max[pass], m);
+                /* An all-masked tile leaves new_max = -inf: keep the
+                 * statistics and never form exp(-inf - -inf). */
+                const float scale = new_max > -INFINITY
+                    ? expf(run_max[pass] - new_max) : 1.0f;
+                const float p = valid ? expf(sc - new_max) : 0.0f;
+                float sum = p;
+#pragma unroll
+                for (uint32_t off = 16u; off > 0u; off >>= 1u)
+                    sum += __shfl_xor_sync(0xffffffffu, sum, off);
+                run_sum[pass] = run_sum[pass] * scale + sum;
+                run_max[pass] = new_max;
+                prob[lane * 12u + h] = p;
+                if (lane == 0u) scale_s[h] = scale;
+            }
+        }
+        __syncthreads();
+
+#pragma unroll
+        for (uint32_t h = 0; h < 12u; h++) acc[h] *= scale_s[h];
+#pragma unroll 4
+        for (uint32_t t = 0; t < tile_count; t++) {
+            const uint32_t token = token_tile[t];
+            const uint32_t src = token == UINT32_MAX ? 0u : token;
+            const float v = v_cache[((uint64_t)src * 2u + kv_head) * 256u + tid];
+            const float4 *p4 = (const float4 *)(prob + t * 12u);
+            const float4 p0 = p4[0];
+            const float4 p1 = p4[1];
+            const float4 p2 = p4[2];
+            acc[0] = fmaf(p0.x, v, acc[0]);
+            acc[1] = fmaf(p0.y, v, acc[1]);
+            acc[2] = fmaf(p0.z, v, acc[2]);
+            acc[3] = fmaf(p0.w, v, acc[3]);
+            acc[4] = fmaf(p1.x, v, acc[4]);
+            acc[5] = fmaf(p1.y, v, acc[5]);
+            acc[6] = fmaf(p1.z, v, acc[6]);
+            acc[7] = fmaf(p1.w, v, acc[7]);
+            acc[8] = fmaf(p2.x, v, acc[8]);
+            acc[9] = fmaf(p2.y, v, acc[9]);
+            acc[10] = fmaf(p2.z, v, acc[10]);
+            acc[11] = fmaf(p2.w, v, acc[11]);
+        }
+        __syncthreads();
+    }
+
+    if (lane == 0u) {
+        inv_sum_s[warp] = run_sum[0] > 0.0f ? 1.0f / run_sum[0] : 0.0f;
+        if (warp < 4u)
+            inv_sum_s[warp + 8u] =
+                run_sum[1] > 0.0f ? 1.0f / run_sum[1] : 0.0f;
+    }
+    __syncthreads();
+#pragma unroll
+    for (uint32_t h = 0; h < 12u; h++) {
+        const uint64_t at = (first_head + h) * 256u + tid;
+        const float gate_value = gate[at];
+        const float gate_scale = gate_value >= 0.0f
+            ? 1.0f / (1.0f + expf(-gate_value))
+            : expf(gate_value) / (1.0f + expf(gate_value));
+        out[at] = acc[h] * inv_sum_s[h] * gate_scale;
+    }
+}
+
 extern "C" int ds4_gpu_qwen4exp_qsa_attention_tensor(
         ds4_gpu_tensor *out, ds4_gpu_tensor *score_scratch,
         const ds4_gpu_tensor *query, const ds4_gpu_tensor *gate,
@@ -27039,6 +27257,7 @@ extern "C" int ds4_gpu_qwen4exp_qsa_attention_tensor(
         cache_cap == 0u) {
         return 0;
     }
+    const bool fused = qsa_fused_applies(rows, heads, kv_heads, head_dim);
     const uint64_t values = (uint64_t)rows * heads * head_dim;
     const uint64_t score_count = (uint64_t)rows * heads * selected_cap;
     const uint64_t selected_count = (uint64_t)rows * selected_cap;
@@ -27051,12 +27270,23 @@ extern "C" int ds4_gpu_qwen4exp_qsa_attention_tensor(
         out->bytes < values * sizeof(float) ||
         query->bytes < values * sizeof(float) ||
         gate->bytes < values * sizeof(float) ||
-        score_scratch->bytes < score_count * sizeof(float) ||
+        (!fused && score_scratch->bytes < score_count * sizeof(float)) ||
         selected->bytes < selected_count * sizeof(int32_t) ||
         counts->bytes < (uint64_t)rows * sizeof(uint32_t) ||
         k_cache->bytes < cache_values * sizeof(float) ||
         v_cache->bytes < cache_values * sizeof(float)) {
         return 0;
+    }
+    if (fused) {
+        dim3 fused_grid(kv_heads, rows);
+        qwen4exp_qsa_attention_fused_gqa12_kernel<<<
+            fused_grid, QSA_FUSED_THREADS, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)query->ptr,
+            (const float *)gate->ptr, (const float *)k_cache->ptr,
+            (const float *)v_cache->ptr, (const int32_t *)selected->ptr,
+            (const uint32_t *)counts->ptr, selected_cap, cache_cap);
+        return cuda_ok(cudaGetLastError(),
+                       "Qwen4Exp QSA fused attention launch");
     }
     if (heads == 24u && kv_heads == 2u && head_dim == 256u) {
         dim3 score_grid(selected_cap, kv_heads, rows);
