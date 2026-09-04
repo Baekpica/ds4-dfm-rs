@@ -251,7 +251,7 @@ enum {
      * lossless in-forward-emit+rollback path needs 4 checkpoint depths. */
     DS4_MTP_RB_DEPTH         = 4,
     DS4_MAX_EMBD             = 7168,
-    DS4_MAX_VOCAB            = 248320,
+    DS4_MAX_VOCAB            = 250624,
     DS4_MAX_HEAD             = 128,
     DS4_MAX_HEAD_KV          = 16,
     DS4_MAX_HEAD_DIM         = 512,
@@ -14093,6 +14093,9 @@ static void exaone_kv_cache_free(exaone_kv_cache *c) {
 
 static bool exaone_layer_is_sliding(uint32_t il) {
     /* LLLG: full attention on every n_swa_period-th layer. */
+    if (DS4_N_SWA == 0u || DS4_N_SWA_PERIOD == 0u) {
+        return false;
+    }
     return (il % DS4_N_SWA_PERIOD) != DS4_N_SWA_PERIOD - 1u;
 }
 
@@ -14119,7 +14122,7 @@ static void exaone_attn_one(float *out, const ds4_model *m,
     }
 
     const bool sliding = exaone_layer_is_sliding(il);
-    if (sliding) {
+    if (sliding || DS4_USE_ROPE) {
         exaone_rope_neox(q, n_h,    hd, DS4_N_ROT, pos, DS4_ROPE_FREQ_BASE);
         exaone_rope_neox(k, n_kv_h, hd, DS4_N_ROT, pos, DS4_ROPE_FREQ_BASE);
     }
@@ -33099,7 +33102,7 @@ static ds4_context_memory exaone_graph_context_memory_estimate(
         uint32_t ctx, uint32_t requested_prefill) {
     ds4_context_memory m = {0};
     if (ctx == 0u || DS4_N_LAYER <= DS4_N_NEXTN_PREDICT ||
-        DS4_N_SWA == 0u || DS4_N_SWA_PERIOD == 0u) {
+        ((DS4_N_SWA == 0u) != (DS4_N_SWA_PERIOD == 0u))) {
         return m;
     }
     const uint32_t P =
@@ -41865,12 +41868,17 @@ static bool exaone_graph_alloc_with_ws(ds4_exaone_gpu_graph *g,
     }
     g->kv_bytes = kv_bytes;
 
+    uint32_t n_sliding = 0u;
+    for (uint32_t il = 0; il < n_exec; il++) {
+        if (exaone_graph_layer_is_sliding(il)) {
+            n_sliding++;
+        }
+    }
     ds4_log(stderr, DS4_LOG_TIMING,
             "ds4: exaone graph: ctx %u, prefill chunk %u, "
             "KV %.2f GiB (%u full + %u sliding layers), workspace %.2f GiB\n",
             ctx_size, g->prefill_cap, (double)kv_bytes / 1073741824.0,
-            n_exec / DS4_N_SWA_PERIOD,
-            n_exec - n_exec / DS4_N_SWA_PERIOD,
+            n_exec - n_sliding, n_sliding,
             (double)ws / 1073741824.0);
     return true;
 }
@@ -41923,6 +41931,14 @@ static bool exaone_graph_decode_attention_rows(
                      kr, m->map, m->size, l->attn_k_norm->abs_offset,
                      DS4_N_HEAD_KV, DS4_N_HEAD_DIM, DS4_N_ROT, rows[t].pos,
                      1u, DS4_ROPE_FREQ_BASE, DS4_RMS_EPS, sliding);
+        }
+        if (ok && DS4_USE_ROPE && !DS4_USE_QK_NORM) {
+            ok = ds4_gpu_exaone_rope_tensor(
+                     qr, DS4_N_HEAD, DS4_N_HEAD_DIM, DS4_N_ROT,
+                     rows[t].pos, 1u, DS4_ROPE_FREQ_BASE) &&
+                 ds4_gpu_exaone_rope_tensor(
+                     kr, DS4_N_HEAD_KV, DS4_N_HEAD_DIM, DS4_N_ROT,
+                     rows[t].pos, 1u, DS4_ROPE_FREQ_BASE);
         }
         if (ok) {
             ok = ds4_gpu_exaone_kv_store_tensor(
@@ -41991,6 +42007,16 @@ static bool exaone_graph_layer(ds4_exaone_gpu_graph *g,
                                                 DS4_ROPE_FREQ_BASE, DS4_RMS_EPS,
                                                 sliding))
             return false;
+    }
+    if (!rows && DS4_USE_ROPE && !DS4_USE_QK_NORM) {
+        if (!ds4_gpu_exaone_rope_tensor(q, DS4_N_HEAD, DS4_N_HEAD_DIM,
+                                        DS4_N_ROT, pos0, n_tok,
+                                        DS4_ROPE_FREQ_BASE) ||
+            !ds4_gpu_exaone_rope_tensor(k, DS4_N_HEAD_KV, DS4_N_HEAD_DIM,
+                                        DS4_N_ROT, pos0, n_tok,
+                                        DS4_ROPE_FREQ_BASE)) {
+            return false;
+        }
     }
 
     if (rows) {
