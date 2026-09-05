@@ -58,6 +58,16 @@ static void test_k2_full_attention_memory_plan(void) {
         /* K2 defaults to 1024-token chunks; K-EXAONE keeps 512. */
         exaone_graph_prefill_cap_for_context(32768u, 0u) == 1024u &&
         exaone_graph_prefill_cap_for_context(700u, 0u) == 700u &&
+        /* The env override needs a full parse inside uint32 range. */
+        (setenv("DS4_EXAONE_PREFILL_CHUNK", "4294967296", 1) == 0 &&
+         exaone_graph_prefill_cap_for_context(32768u, 0u) == 1024u) &&
+        (setenv("DS4_EXAONE_PREFILL_CHUNK", "1024abc", 1) == 0 &&
+         exaone_graph_prefill_cap_for_context(32768u, 0u) == 1024u) &&
+        (setenv("DS4_EXAONE_PREFILL_CHUNK", "-512", 1) == 0 &&
+         exaone_graph_prefill_cap_for_context(32768u, 0u) == 1024u) &&
+        (setenv("DS4_EXAONE_PREFILL_CHUNK", "768", 1) == 0 &&
+         exaone_graph_prefill_cap_for_context(32768u, 0u) == 768u) &&
+        unsetenv("DS4_EXAONE_PREFILL_CHUNK") == 0 &&
         m.raw_cap == 32768u &&
         m.raw_bytes == UINT64_C(8187281408) &&
         !exaone_layer_is_sliding(0u) &&

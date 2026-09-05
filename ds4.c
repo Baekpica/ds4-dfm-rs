@@ -41684,9 +41684,14 @@ static uint32_t exaone_graph_prefill_cap_for_context(uint32_t ctx_size,
     if (!requested) {
         const char *env = getenv("DS4_EXAONE_PREFILL_CHUNK");
         if (env && env[0]) {
+            /* Full parse and uint32 range only: a truncated value would
+             * become a zero cap and fail the workspace allocation. */
             char *endp = NULL;
             const long v = strtol(env, &endp, 10);
-            if (endp != env && v > 0) cap = (uint32_t)v;
+            if (endp != env && endp[0] == '\0' && v > 0 &&
+                v <= (long)UINT32_MAX) {
+                cap = (uint32_t)v;
+            }
         }
     }
     if (cap > ctx_size) cap = ctx_size;
