@@ -1034,6 +1034,83 @@ static void test_moe_worklist(const ds4_model *m, const ds4_tensor *w,
     }
 }
 
+/* Software-pipelined worklist K loop (ds4_mmq_pipe.cuh) vs the upstream
+ * loop behind DS4_MMQ_PIPE=0: the pipeline only moves when bytes arrive
+ * (register prefetch of the next block, cp.async activation stages), so
+ * the outputs must be byte-identical.  Widths cover the 8/16/32/64 tile
+ * tails and the 129-row ragged (checked) tile; 17 rows stays on the
+ * rectangular schedule and is a no-op sanity cell. */
+static void test_moe_pipe(const ds4_model *m, const ds4_tensor *w,
+                          uint32_t used) {
+    const uint32_t k = (uint32_t)w->dim[0];
+    const uint32_t widths[] = {17u, 257u, used == 1u ? 8192u : 1024u, 257u};
+    for (size_t wi = 0; wi < sizeof(widths) / sizeof(widths[0]); wi++) {
+        const uint32_t nt = widths[wi];
+        const uint32_t rows = wi == 3u ? 129u : (uint32_t)w->dim[1];
+        const size_t nx = (size_t)nt * k, ny = (size_t)nt * used * rows;
+        float *x = xmalloc(nx * sizeof(float));
+        float *ref = xmalloc(ny * sizeof(float));
+        float *got = xmalloc(ny * sizeof(float));
+        int32_t *ids = xmalloc((size_t)nt * used * sizeof(int32_t));
+        uint64_t seed = 2026u + nt;
+        for (size_t i = 0; i < nx; i++) { x[i] = frand(&seed) * 0.5f; }
+        for (uint32_t t = 0; t < nt; t++) {
+            for (uint32_t s = 0; s < used; s++) {
+                ids[(size_t)t * used + s] =
+                    ((t % 5u == 0u ? 7u : t * 13u) + s * 7u) % DS4_N_EXPERT;
+            }
+        }
+        ids[used] = -1;
+        ds4_gpu_tensor *gx = ds4_gpu_tensor_alloc(nx * sizeof(float));
+        ds4_gpu_tensor *gi = ds4_gpu_tensor_alloc((size_t)nt * used * sizeof(int32_t));
+        ds4_gpu_tensor *go = ds4_gpu_tensor_alloc(ny * sizeof(float));
+        int ok = gx && gi && go &&
+            ds4_gpu_tensor_write(gx, 0, x, nx * sizeof(float)) &&
+            ds4_gpu_tensor_write(gi, 0, ids, (size_t)nt * used * sizeof(int32_t));
+        double ms[2] = {0.0, 0.0};
+        (void)setenv("DS4_MMQ_WORKLIST", "1", 1);
+        (void)setenv("DS4_MMQ_IQ1M_WORKLIST", "1", 1);
+        for (int pipe = 0; ok && pipe < 2; pipe++) {
+            (void)setenv("DS4_MMQ_PIPE", pipe ? "1" : "0", 1);
+            ok = ds4_gpu_tensor_fill_f32(go, 0.0f, ny) &&
+                ds4_gpu_routed_matmul_tensor(go, gx, gi, m->map, m->size,
+                    w->abs_offset, w->bytes, w->type, k, rows, DS4_N_EXPERT, nt, used) &&
+                ds4_gpu_synchronize();
+            const double start = now_sec();
+            for (int i = 0; ok && i < 4; i++) {
+                ok = ds4_gpu_routed_matmul_tensor(go, gx, gi, m->map, m->size,
+                    w->abs_offset, w->bytes, w->type, k, rows, DS4_N_EXPERT, nt, used);
+            }
+            ok = ok && ds4_gpu_synchronize();
+            ms[pipe] = (now_sec() - start) * 250.0;
+            ok = ok && ds4_gpu_tensor_read(go, 0, pipe ? got : ref, ny * sizeof(float));
+        }
+        (void)unsetenv("DS4_MMQ_PIPE");
+        (void)unsetenv("DS4_MMQ_IQ1M_WORKLIST");
+        (void)unsetenv("DS4_MMQ_WORKLIST");
+        if (ok) {
+            const int same = memcmp(got, ref, ny * sizeof(float)) == 0;
+            double max_abs = 0.0;
+            size_t ndiff = 0;
+            for (size_t i = 0; i < ny; i++) {
+                const double d = fabs((double)got[i] - (double)ref[i]);
+                if (d > max_abs) max_abs = d;
+                if (got[i] != ref[i]) ndiff++;
+            }
+            if (!same) g_fail++;
+            printf("%s pipe nt=%u used=%u rows=%u %s (ndiff=%zu max_abs=%.2e) "
+                   "upstream=%.3f ms pipe=%.3f ms\n",
+                   tensor_type_name(w->type), nt, used, rows,
+                   same ? "BIT-IDENTICAL" : "DIFFERENT", ndiff, max_abs,
+                   ms[0], ms[1]);
+        } else {
+            printf("pipe type=%u nt=%u launch failed\n", w->type, nt); g_fail++;
+        }
+        ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gi); ds4_gpu_tensor_free(gx);
+        free(ids); free(got); free(ref); free(x);
+    }
+}
+
 /* Assign-major IQ1_M prefill vs the per-token MMVQ kill switch. */
 static int run_iq1m_prefill_pair(const void *map, uint64_t map_size,
                                  uint64_t w_off, uint64_t w_bytes,
@@ -1445,6 +1522,12 @@ static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
 
             if (ty == DS4_TENSOR_IQ2_XXS && which) { test_moe_worklist(m, w, 1u); }
             if (ty == DS4_TENSOR_IQ2_XS && which) { test_moe_worklist(m, w, 1u); }
+            if ((ty == DS4_TENSOR_IQ2_XXS || ty == DS4_TENSOR_IQ2_XS) && which) {
+                test_moe_pipe(m, w, 1u);
+            }
+            if ((ty == DS4_TENSOR_IQ1_S || ty == DS4_TENSOR_IQ1_M) && !which) {
+                test_moe_pipe(m, w, 8u);
+            }
             if ((ty == DS4_TENSOR_IQ2_XXS || ty == DS4_TENSOR_IQ2_XS) && which) {
                 test_moe_down_guarded(m, w);
             }

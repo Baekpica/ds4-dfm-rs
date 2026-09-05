@@ -36,6 +36,15 @@ The bandwidth figure is informational; we don't tier on it.
   32 or more experts; MMVQ decode and aligned-SoA pairs are unchanged.
   `DS4_MMQ_WORKLIST=0` also restores the rectangular schedule.
 
+- `DS4_MMQ_PIPE=0` restores the upstream K loop in the compact worklist
+  MMQ kernel. The default runs the IQ1_S/IQ1_M/IQ2_XXS/IQ2_XS tiles up to
+  64 columns wide on the software-pipelined loop of
+  `cuda/mmq/ds4_mmq_pipe.cuh` (next block's raw bytes prefetched into
+  registers behind the MMA phase, both activation halves staged with
+  cp.async one iteration ahead, two barriers per K iteration instead of
+  four). Same dequantization and dots, so the outputs are byte-identical;
+  128-wide tiles and every other type keep the upstream loop.
+
 - `DS4_MMQ_IQ1M_PREFILL=0` restores the per-token IQ1_M MMVQ loop (one
   launch per token, same as HEAD). The default prefill path launches one
   assign-major grid with the same ncols=1 4-warp `vec_dot_iq1_m_q8_1`
