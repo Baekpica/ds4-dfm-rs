@@ -74,7 +74,7 @@ const GGUF_TYPES: [Option<(&'static str, u32, u32)>; 31] = [
     Some(("iq2_xxs", 256, 66)),
     Some(("iq2_xs", 256, 74)),
     Some(("iq3_xxs", 256, 98)),
-    Some(("iq1_s", 256, 50)),
+    Some(("iq1_s", 256, 110)),
     Some(("iq4_nl", 256, 50)),
     Some(("iq3_s", 256, 110)),
     Some(("iq2_s", 256, 82)),

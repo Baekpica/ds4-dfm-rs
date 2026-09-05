@@ -108,14 +108,6 @@ fn nbytes_table_matches_c() {
 }
 
 #[test]
-fn mq87_iq_superblock_sizes_match_ggml() {
-    assert_eq!(ds4_core::tensor_nbytes(19, 256), Some(50));
-    assert_eq!(ds4_core::tensor_nbytes(29, 256), Some(56));
-    assert_eq!(ds4_core::tensor_nbytes(16, 256), Some(66));
-    assert_eq!(ds4_core::tensor_nbytes(17, 256), Some(74));
-}
-
-#[test]
 fn sibling_paths_match_c() {
     let cases = [
         ("/models/foo-00001-of-00003.gguf", 0u32, 3u32),

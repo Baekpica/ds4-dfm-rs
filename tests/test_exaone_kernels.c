@@ -46,30 +46,6 @@ static void test_context_memory_plan(void) {
            ok ? "ok" : "FAIL");
 }
 
-static void test_k2_full_attention_memory_plan(void) {
-    const ds4_shape saved = g_ds4_shape;
-    g_ds4_shape = DS4_SHAPE_K2_HORIZON_375B;
-    const ds4_context_memory m =
-        exaone_graph_context_memory_estimate(32768u, 512u);
-    const int ok =
-        m.total_bytes != 0u &&
-        m.prefill_cap == 512u &&
-        m.raw_cap == 32768u &&
-        m.raw_bytes == UINT64_C(8187281408) &&
-        !exaone_layer_is_sliding(0u) &&
-        !exaone_layer_is_sliding(60u) &&
-        exaone_graph_layer_kv_cap(0u, 32768u, m.prefill_cap) == 32768u &&
-        exaone_graph_layer_kv_cap(60u, 32768u, m.prefill_cap) == 32768u;
-    if (!ok) g_fail++;
-    printf("%-38s KV=%.2f GiB scratch=%.2f GiB total=%.2f GiB  %s\n",
-           "K2 full-attention memory plan",
-           (double)m.raw_bytes / 1073741824.0,
-           (double)m.scratch_bytes / 1073741824.0,
-           (double)m.total_bytes / 1073741824.0,
-           ok ? "ok" : "FAIL");
-    g_ds4_shape = saved;
-}
-
 static void test_batch_memory_plan(void) {
     uint64_t shared = 0u, per_bank = 0u, total1 = 0u, total2 = 0u;
     const ds4_context_memory one =
@@ -389,39 +365,6 @@ static void test_qk_norm_rope(void *map, uint64_t map_size, uint64_t w_off,
         ds4_gpu_tensor_free(t);
     }
     free(want); free(host);
-}
-
-static void test_neox_rope_only(uint32_t pos0) {
-    const uint32_t n_tok = 3u;
-    const uint32_t n_rot = T_HEAD_DIM / 2u;
-    const size_t n = (size_t)T_HEAD * T_HEAD_DIM * n_tok;
-    float *host = xmalloc(n * sizeof(float));
-    float *want = xmalloc(n * sizeof(float));
-    uint64_t s = 98765u;
-    for (size_t i = 0; i < n; i++) host[i] = frand(&s);
-    memcpy(want, host, n * sizeof(float));
-    for (uint32_t t = 0; t < n_tok; t++) {
-        exaone_rope_neox(want + (size_t)t * T_HEAD * T_HEAD_DIM,
-                         T_HEAD, T_HEAD_DIM, n_rot, pos0 + t, 10000000.0f);
-    }
-
-    ds4_gpu_tensor *v = ds4_gpu_tensor_alloc(n * sizeof(float));
-    ds4_gpu_tensor_write(v, 0, host, n * sizeof(float));
-    if (!ds4_gpu_exaone_rope_tensor(v, T_HEAD, T_HEAD_DIM, n_rot,
-                                    pos0, n_tok, 10000000.0f)) {
-        printf("neox-only rope launch failed\n");
-        g_fail++;
-    } else {
-        float *got = xmalloc(n * sizeof(float));
-        ds4_gpu_tensor_read(v, 0, got, n * sizeof(float));
-        char label[64];
-        snprintf(label, sizeof(label), "neox-only partial rope @pos %u", pos0);
-        diff_f32(label, got, want, n, 3e-5, 3e-5);
-        free(got);
-    }
-    ds4_gpu_tensor_free(v);
-    free(want);
-    free(host);
 }
 
 static void test_attention(int sliding) {
@@ -807,9 +750,6 @@ static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
             if (ty >= 64 || seen[ty]) continue;
             seen[ty] = 1;
 
-            printf("testing routed tensor %.*s type=%s(%u) layer=%u\n",
-                   (int)w->name.len, w->name.ptr, tensor_type_name(ty), ty, il);
-
             const uint32_t in_dim  = (uint32_t)w->dim[0];
             const uint32_t out_dim = (uint32_t)w->dim[1];
             const uint32_t expert  = 7;   /* arbitrary, not slot 0 */
@@ -832,33 +772,17 @@ static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
                 g_fail++;
             } else {
                 float *got  = xmalloc((size_t)out_dim * sizeof(float));
+                float *want = xmalloc((size_t)out_dim * sizeof(float));
                 ds4_gpu_tensor_read(go, 0, got, (size_t)out_dim * sizeof(float));
+                exaone_linear_expert(want, m, w, expert, x);
                 char label[96];
                 snprintf(label, sizeof(label), "moe matmul %s [%u x %u] L%u",
                          tensor_type_name(ty), in_dim, out_dim, il);
-                if (ty == DS4_TENSOR_IQ2_XS || ty == DS4_TENSOR_IQ1_S ||
-                    ty == DS4_TENSOR_IQ1_M) {
-                    size_t finite = 0u;
-                    double energy = 0.0;
-                    for (uint32_t i = 0; i < out_dim; i++) {
-                        if (isfinite(got[i])) finite++;
-                        energy += (double)got[i] * got[i];
-                    }
-                    const int ok = finite == out_dim && energy > 0.0;
-                    if (!ok) g_fail++;
-                    printf("%-38s finite=%zu/%u energy=%.3e  %s\n",
-                           label, finite, out_dim, energy,
-                           ok ? "ok" : "FAIL");
-                } else {
-                    float *want = xmalloc((size_t)out_dim * sizeof(float));
-                    exaone_linear_expert(want, m, w, expert, x);
-                    /* MMQ quantizes the activation to Q8_1 while the CPU oracle
-                     * keeps f32. 2e-2 bounds that vector-level noise; a wrong
-                     * expert index or transposed layout lands near one. */
-                    diff_quant_gemm(label, got, want, out_dim, 2e-2);
-                    free(want);
-                }
-                free(got);
+                /* MMQ quantizes the activation to Q8_1 while the CPU oracle
+                 * keeps f32. 2e-2 bounds that vector-level noise; a wrong
+                 * expert index or transposed layout lands near one. */
+                diff_quant_gemm(label, got, want, out_dim, 2e-2);
+                free(want); free(got);
             }
             ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gid); ds4_gpu_tensor_free(gx);
             free(x);
@@ -868,7 +792,6 @@ static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
 
 int main(int argc, char **argv) {
     test_context_memory_plan();
-    test_k2_full_attention_memory_plan();
     test_batch_memory_plan();
     test_family_session_graph_memory_plan();
     test_exaone_rewind_span();
@@ -901,8 +824,6 @@ int main(int argc, char **argv) {
      * the position itself, which is where a fast-math trig intrinsic stops
      * meaning anything. */
     test_qk_norm_rope(map, map_size, w_off, 262143);
-    test_neox_rope_only(40u);
-    test_neox_rope_only(524287u);
     test_attention(1);
     test_attention(0);
     test_attention_prefill(1);

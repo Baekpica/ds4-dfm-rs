@@ -32506,9 +32506,6 @@ static int routed_matmul_tensor_impl(
     case 13u: block_size = 176u; break;                    /* Q5_K */
     case 14u: block_size = 210u; break;                    /* Q6_K */
     case 16u: block_size = 66u; break;                     /* IQ2_XXS */
-    case 17u: block_size = 74u; break;                     /* IQ2_XS */
-    case 19u: block_size = 50u; break;                     /* IQ1_S */
-    case 29u: block_size = 56u; break;                     /* IQ1_M */
     default:
         fprintf(stderr, "ds4: routed matmul unsupported weight type %u\n",
                 weight_type);
@@ -32668,21 +32665,6 @@ static int routed_matmul_tensor_impl(
         rc = use_vec
             ? vec_rows(ds4_mmq_iq2_xxs_moe_vec)
             : ds4_mmq_iq2_xxs_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
-        break;
-    case 17u:
-        rc = use_vec
-            ? vec_rows(ds4_mmq_iq2_xs_moe_vec)
-            : ds4_mmq_iq2_xs_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
-        break;
-    case 19u:
-        rc = use_vec
-            ? vec_rows(ds4_mmq_iq1_s_moe_vec)
-            : ds4_mmq_iq1_s_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
-        break;
-    case 29u:
-        /* The vendored MMQ tile family has no IQ1_M specialization. MMVQ
-         * supports it and internally chunks wide token batches safely. */
-        rc = vec_rows(ds4_mmq_iq1_m_moe_vec);
         break;
     }
     if (rc != 0) {
@@ -45510,22 +45492,20 @@ __global__ static void exaone_qk_norm_rope_kernel(
     const uint32_t nth = blockDim.x;
     __shared__ float sh[32];
 
-    if (norm_w) {
-        float sumsq = 0.0f;
-        for (uint32_t i = tid; i < head_dim; i += nth) sumsq += p[i] * p[i];
+    float sumsq = 0.0f;
+    for (uint32_t i = tid; i < head_dim; i += nth) sumsq += p[i] * p[i];
+    for (int off = 16; off > 0; off >>= 1) sumsq += __shfl_xor_sync(0xffffffffu, sumsq, off);
+    if ((tid & 31u) == 0u) sh[tid >> 5] = sumsq;
+    __syncthreads();
+    if (tid < 32u) {
+        sumsq = (tid < (nth + 31u) / 32u) ? sh[tid] : 0.0f;
         for (int off = 16; off > 0; off >>= 1) sumsq += __shfl_xor_sync(0xffffffffu, sumsq, off);
-        if ((tid & 31u) == 0u) sh[tid >> 5] = sumsq;
-        __syncthreads();
-        if (tid < 32u) {
-            sumsq = (tid < (nth + 31u) / 32u) ? sh[tid] : 0.0f;
-            for (int off = 16; off > 0; off >>= 1) sumsq += __shfl_xor_sync(0xffffffffu, sumsq, off);
-            if (tid == 0u) sh[0] = sumsq;
-        }
-        __syncthreads();
-        const float scale = rsqrtf(sh[0] / (float)head_dim + eps);
-        for (uint32_t i = tid; i < head_dim; i += nth) p[i] = (p[i] * scale) * norm_w[i];
-        __syncthreads();
+        if (tid == 0u) sh[0] = sumsq;
     }
+    __syncthreads();
+    const float scale = rsqrtf(sh[0] / (float)head_dim + eps);
+    for (uint32_t i = tid; i < head_dim; i += nth) p[i] = (p[i] * scale) * norm_w[i];
+    __syncthreads();
 
     if (!do_rope) return;
     const uint32_t half = n_rot / 2u;
@@ -45924,26 +45904,6 @@ extern "C" int ds4_gpu_exaone_qk_norm_rope_tensor(
     return cuda_ok(cudaGetLastError(), "exaone qk norm rope");
 }
 
-extern "C" int ds4_gpu_exaone_rope_tensor(
-        ds4_gpu_tensor *v,
-        uint32_t        n_heads,
-        uint32_t        head_dim,
-        uint32_t        n_rot,
-        uint32_t        pos0,
-        uint32_t        n_tokens,
-        float           freq_base) {
-    if (!v || n_heads == 0u || head_dim == 0u || n_tokens == 0u ||
-        n_rot == 0u || n_rot > head_dim || (n_rot & 1u) != 0u ||
-        v->bytes < (uint64_t)n_heads * head_dim * n_tokens * sizeof(float)) {
-        return 0;
-    }
-    dim3 grid(n_heads, n_tokens, 1u);
-    exaone_qk_norm_rope_kernel<<<grid, 128, 0, cuda_decode_stream()>>>(
-            (float *)v->ptr, NULL, n_heads, head_dim, n_rot, pos0,
-            freq_base, 0.0f, 1);
-    return cuda_ok(cudaGetLastError(), "exaone neox rope");
-}
-
 extern "C" int ds4_gpu_exaone_kv_store_tensor(
         ds4_gpu_tensor       *kv,
         const ds4_gpu_tensor *k,
@@ -46186,17 +46146,6 @@ extern "C" int ds4_gpu_exaone_moe_matmul_tensor(
     case 16u: /* IQ2_XXS */
         rc = vec ? ds4_mmq_iq2_xxs_moe_vec(w, xp, idp, op, M, K, NT, NE, NU, st)
                  : ds4_mmq_iq2_xxs_moe(w, xp, idp, op, M, K, NT, NE, NU, st);
-        break;
-    case 17u: /* IQ2_XS */
-        rc = vec ? ds4_mmq_iq2_xs_moe_vec(w, xp, idp, op, M, K, NT, NE, NU, st)
-                 : ds4_mmq_iq2_xs_moe(w, xp, idp, op, M, K, NT, NE, NU, st);
-        break;
-    case 19u: /* IQ1_S */
-        rc = vec ? ds4_mmq_iq1_s_moe_vec(w, xp, idp, op, M, K, NT, NE, NU, st)
-                 : ds4_mmq_iq1_s_moe(w, xp, idp, op, M, K, NT, NE, NU, st);
-        break;
-    case 29u: /* IQ1_M: mmvq only */
-        rc = ds4_mmq_iq1_m_moe_vec(w, xp, idp, op, M, K, NT, NE, NU, st);
         break;
     case 11u: /* Q3_K */
         rc = vec ? ds4_mmq_q3_K_moe_vec(w, xp, idp, op, M, K, NT, NE, NU, st)

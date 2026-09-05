@@ -70,8 +70,8 @@ pub use session::{
 pub use shape::{
     dump_oracle, route_architecture, select_shape_from_metadata, shape_for_variant, ArchRoute,
     DeepSeekDims, ModelFamily, Shape, Variant, SHAPE_DOTS3_NOTE_PREV, SHAPE_FLASH,
-    SHAPE_GLM53_FLASH, SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_PRO,
-    SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B,
+    SHAPE_GLM53_FLASH, SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_PRO, SHAPE_QWEN38_FLASH_NEXT,
+    SHAPE_SOLAR_OPEN2_250B,
 };
 pub use sibling::SiblingAttach;
 pub use tensors::{

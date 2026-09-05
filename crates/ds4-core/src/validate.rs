@@ -17,8 +17,8 @@ use crate::gguf::{
 use crate::identify::{identify_file, IdentifyError};
 use crate::shape::{
     route_architecture, ArchRoute, ModelFamily, Shape, Variant, SHAPE_DOTS3_NOTE_PREV, SHAPE_FLASH,
-    SHAPE_GLM53_FLASH, SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_PRO,
-    SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B,
+    SHAPE_GLM53_FLASH, SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_PRO, SHAPE_QWEN38_FLASH_NEXT,
+    SHAPE_SOLAR_OPEN2_250B,
 };
 use crate::tensors::TensorInventory;
 
@@ -1102,109 +1102,6 @@ fn validate_exaone(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
     Ok(())
 }
 
-fn validate_k2_horizon(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
-    let u32s = [
-        ("block_count", "k2-horizon.block_count", shape.n_layer),
-        (
-            "embedding_length",
-            "k2-horizon.embedding_length",
-            shape.n_embd,
-        ),
-        (
-            "feed_forward_length",
-            "k2-horizon.feed_forward_length",
-            shape.n_ff_dense,
-        ),
-        (
-            "attention.head_count",
-            "k2-horizon.attention.head_count",
-            shape.n_head,
-        ),
-        (
-            "attention.head_count_kv",
-            "k2-horizon.attention.head_count_kv",
-            shape.n_head_kv,
-        ),
-        (
-            "attention.key_length",
-            "k2-horizon.attention.key_length",
-            shape.n_head_dim,
-        ),
-        (
-            "attention.value_length",
-            "k2-horizon.attention.value_length",
-            shape.n_value_dim,
-        ),
-        (
-            "attention.group_norm_groups",
-            "k2-horizon.attention.group_norm_groups",
-            1,
-        ),
-        (
-            "rope.dimension_count",
-            "k2-horizon.rope.dimension_count",
-            shape.n_rot,
-        ),
-        ("expert_count", "k2-horizon.expert_count", shape.n_expert),
-        (
-            "expert_used_count",
-            "k2-horizon.expert_used_count",
-            shape.n_expert_used,
-        ),
-        (
-            "expert_feed_forward_length",
-            "k2-horizon.expert_feed_forward_length",
-            shape.n_ff_exp,
-        ),
-        (
-            "leading_dense_block_count",
-            "k2-horizon.leading_dense_block_count",
-            shape.n_leading_dense,
-        ),
-        ("moe_every_n_layers", "k2-horizon.moe_every_n_layers", 1),
-        (
-            "expert_shared_count",
-            "k2-horizon.expert_shared_count",
-            shape.n_expert_shared,
-        ),
-        (
-            "expert_shared_feed_forward_length",
-            "k2-horizon.expert_shared_feed_forward_length",
-            shape.n_ff_shexp,
-        ),
-        ("expert_gating_func", "k2-horizon.expert_gating_func", 2),
-    ];
-    for (name, key, want) in u32s {
-        expect_u32(name, req_u32(g, key)?, want)?;
-    }
-    expect_u64(
-        "context_length",
-        req_u64c(g, "k2-horizon.context_length")?,
-        shape.rope_orig_ctx,
-    )?;
-    expect_f32(
-        "rope.freq_base",
-        req_f32(g, "k2-horizon.rope.freq_base")?,
-        shape.rope_freq_base,
-    )?;
-    expect_f32(
-        "attention.layer_norm_rms_epsilon",
-        req_f32(g, "k2-horizon.attention.layer_norm_rms_epsilon")?,
-        shape.rms_eps,
-    )?;
-    expect_f32(
-        "expert_weights_scale",
-        req_f32(g, "k2-horizon.expert_weights_scale")?,
-        shape.expert_weight_scale,
-    )?;
-    expect_bool(
-        "expert_weights_norm",
-        req_bool(g, "k2-horizon.expert_weights_norm")?,
-        true,
-    )?;
-    Ok(())
-}
-
 fn qwen_ssd_precision(quant: Option<&[u8]>) -> Option<(u32, u32, u32, u32)> {
     match quant {
         Some(b"MQ-Q6-SSD-PLE-BF16") => Some((14, 13, 14, 6)),
@@ -1743,9 +1640,6 @@ pub fn validate_file(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
         ModelFamily::Motif3 => validate_motif3(g, shape),
         ModelFamily::Dots3Note => validate_dots3(g, shape),
         ModelFamily::SolarOpen2 => validate_solar(g, shape),
-        ModelFamily::ExaoneMoe if shape.variant == Variant::K2Horizon375B => {
-            validate_k2_horizon(g, shape)
-        }
         ModelFamily::ExaoneMoe => validate_exaone(g, shape),
     }
 }
@@ -1792,7 +1686,6 @@ pub fn dump_validate(path: &std::path::Path) -> String {
                         Variant::Dots3NotePrev => SHAPE_DOTS3_NOTE_PREV,
                         Variant::Qwen38FlashNext => SHAPE_QWEN38_FLASH_NEXT,
                         Variant::Glm53Flash => SHAPE_GLM53_FLASH,
-                        Variant::K2Horizon375B => SHAPE_K2_HORIZON_375B,
                         Variant::Flash => SHAPE_FLASH,
                         Variant::Pro => SHAPE_PRO,
                     };

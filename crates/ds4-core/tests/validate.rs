@@ -408,62 +408,6 @@ fn exaone_ok(pattern: &[bool]) -> Vec<(&str, Val<'_>)> {
     ]
 }
 
-fn k2_horizon_ok() -> Vec<(&'static str, Val<'static>)> {
-    vec![
-        ("general.architecture", Val::Str("k2-horizon")),
-        ("k2-horizon.block_count", Val::U32(61)),
-        ("k2-horizon.context_length", Val::U32(524288)),
-        ("k2-horizon.embedding_length", Val::U32(6144)),
-        ("k2-horizon.feed_forward_length", Val::U32(16384)),
-        ("k2-horizon.attention.head_count", Val::U32(48)),
-        ("k2-horizon.attention.head_count_kv", Val::U32(8)),
-        ("k2-horizon.attention.key_length", Val::U32(128)),
-        ("k2-horizon.attention.value_length", Val::U32(128)),
-        ("k2-horizon.attention.group_norm_groups", Val::U32(1)),
-        ("k2-horizon.rope.dimension_count", Val::U32(64)),
-        ("k2-horizon.rope.freq_base", Val::F32(10_000_000.0)),
-        (
-            "k2-horizon.attention.layer_norm_rms_epsilon",
-            Val::F32(1.0e-6),
-        ),
-        ("k2-horizon.expert_count", Val::U32(192)),
-        ("k2-horizon.expert_used_count", Val::U32(8)),
-        ("k2-horizon.expert_feed_forward_length", Val::U32(1792)),
-        ("k2-horizon.leading_dense_block_count", Val::U32(3)),
-        ("k2-horizon.moe_every_n_layers", Val::U32(1)),
-        ("k2-horizon.expert_shared_count", Val::U32(1)),
-        (
-            "k2-horizon.expert_shared_feed_forward_length",
-            Val::U32(1792),
-        ),
-        ("k2-horizon.expert_weights_norm", Val::Bool(true)),
-        ("k2-horizon.expert_weights_scale", Val::F32(2.5)),
-        ("k2-horizon.expert_gating_func", Val::U32(2)),
-    ]
-}
-
-#[test]
-fn k2_horizon_metadata_contract() {
-    let path = tmp("k2-horizon-ok.gguf");
-    write_gguf(&path, &k2_horizon_ok());
-    let shape = ds4_core::validate_gguf(&path).expect("valid K2 metadata");
-    assert_eq!(shape.variant, ds4_core::Variant::K2Horizon375B);
-
-    let mut bad = k2_horizon_ok();
-    if let Some((_, Val::U32(v))) = bad
-        .iter_mut()
-        .find(|(key, _)| *key == "k2-horizon.expert_count")
-    {
-        *v = 191;
-    }
-    let bad_path = tmp("k2-horizon-bad-experts.gguf");
-    write_gguf(&bad_path, &bad);
-    assert_eq!(
-        ds4_core::validate_gguf(&bad_path).unwrap_err().token(),
-        "mismatch expert_count"
-    );
-}
-
 fn solar_sched() -> Vec<u32> {
     (0..48).map(|il| if il % 4 == 0 { 8 } else { 0 }).collect()
 }
