@@ -32493,6 +32493,13 @@ extern "C" int ds4_gpu_swiglu_weighted_tensor(
 
 enum { DS4_ROUTED_VEC_MAX_ROWS = 20u };
 
+/* Whether the routed output gets the standalone non-finite sanitize pass
+ * or the caller's consumer guards at read (K2 routed down -> moe_sum). */
+enum ds4_routed_out {
+    DS4_ROUTED_OUT_SANITIZE = 0,
+    DS4_ROUTED_OUT_GUARDED = 1,
+};
+
 static int routed_matmul_tensor_impl(
         ds4_gpu_tensor       *out,
         const ds4_gpu_tensor *x,
@@ -32507,7 +32514,8 @@ static int routed_matmul_tensor_impl(
         uint32_t                n_expert,
         uint32_t                n_tokens,
         uint32_t                n_expert_used,
-        uint32_t                max_rows_per_expert) {
+        uint32_t                max_rows_per_expert,
+        enum ds4_routed_out     out_policy) {
     if (!out || !x || !ids || !model_map || in_dim == 0u ||
         out_dim == 0u || n_expert == 0u ||
         n_tokens == 0u || n_expert_used == 0u ||
@@ -32704,12 +32712,16 @@ static int routed_matmul_tensor_impl(
     case 16u:
         rc = use_vec
             ? vec_rows(ds4_mmq_iq2_xxs_moe_vec)
-            : ds4_mmq_iq2_xxs_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
+            : out_policy == DS4_ROUTED_OUT_GUARDED
+                ? ds4_mmq_iq2_xxs_moe_guarded(weights, xp, idp, op, M, K, NT, NE, NU, stream)
+                : ds4_mmq_iq2_xxs_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
         break;
     case 17u:
         rc = use_vec
             ? vec_rows(ds4_mmq_iq2_xs_moe_vec)
-            : ds4_mmq_iq2_xs_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
+            : out_policy == DS4_ROUTED_OUT_GUARDED
+                ? ds4_mmq_iq2_xs_moe_guarded(weights, xp, idp, op, M, K, NT, NE, NU, stream)
+                : ds4_mmq_iq2_xs_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
         break;
     case 19u:
         rc = use_vec
@@ -32752,7 +32764,7 @@ extern "C" int ds4_gpu_routed_matmul_tensor(
     return routed_matmul_tensor_impl(
         out, x, ids, model_map, model_size, weight_offset, weight_bytes,
         weight_type, in_dim, out_dim, n_expert, n_tokens, n_expert_used,
-        /*max_rows_per_expert=*/0u);
+        /*max_rows_per_expert=*/0u, DS4_ROUTED_OUT_SANITIZE);
 }
 
 extern "C" int ds4_gpu_routed_matmul_bounded_tensor(
@@ -32774,7 +32786,36 @@ extern "C" int ds4_gpu_routed_matmul_bounded_tensor(
     return routed_matmul_tensor_impl(
         out, x, ids, model_map, model_size, weight_offset, weight_bytes,
         weight_type, in_dim, out_dim, n_expert, n_tokens, n_expert_used,
-        max_rows_per_expert);
+        max_rows_per_expert, DS4_ROUTED_OUT_SANITIZE);
+}
+
+/* Bounded routed matmul whose consumer skips non-finite values at read
+ * (K2 routed down -> moe_sum with guard_nonfinite), so the IQ2_XXS /
+ * IQ2_XS prefill schedule drops its standalone sanitize pass.
+ * DS4_EXAONE_DOWN_SANITIZE=1 keeps the pass. */
+extern "C" int ds4_gpu_routed_matmul_guarded_tensor(
+        ds4_gpu_tensor       *out,
+        const ds4_gpu_tensor *x,
+        const ds4_gpu_tensor *ids,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint64_t                weight_bytes,
+        uint32_t                weight_type,
+        uint32_t                in_dim,
+        uint32_t                out_dim,
+        uint32_t                n_expert,
+        uint32_t                n_tokens,
+        uint32_t                n_expert_used,
+        uint32_t                max_rows_per_expert) {
+    if (max_rows_per_expert == 0u) return 0;
+    const char *env = getenv("DS4_EXAONE_DOWN_SANITIZE");
+    const enum ds4_routed_out policy = (env && env[0] == '1')
+        ? DS4_ROUTED_OUT_SANITIZE : DS4_ROUTED_OUT_GUARDED;
+    return routed_matmul_tensor_impl(
+        out, x, ids, model_map, model_size, weight_offset, weight_bytes,
+        weight_type, in_dim, out_dim, n_expert, n_tokens, n_expert_used,
+        max_rows_per_expert, policy);
 }
 
 extern "C" int ds4_gpu_routed_gate_up_tensor(
@@ -32820,15 +32861,22 @@ extern "C" int ds4_gpu_routed_gate_up_tensor(
     const char *q4_pair_env = getenv("DS4_MMQ_Q4_PAIR");
     const bool q4_pair_enabled =
         !(q4_pair_env && q4_pair_env[0] == '0');
+    /* K2 MQ87 IQ1_S / IQ1_M gate/up ran as two single routed calls, each
+     * with its own expert map, activation quantize and sanitize pass.
+     * DS4_MMQ_IQ1_PAIR=0 restores that. */
+    const char *iq1_pair_env = getenv("DS4_MMQ_IQ1_PAIR");
+    const bool iq1_pair = !(iq1_pair_env && iq1_pair_env[0] == '0') &&
+                          (weight_type == 19u || weight_type == 29u);
     const bool pair_type = weight_type == 12u || weight_type == 13u ||
-                           weight_type == 8u;
+                           weight_type == 8u || iq1_pair;
     const bool vec_width = assignments <= DS4_ROUTED_VEC_MAX_ROWS;
     if (pair_type && in_dim % 256u == 0u &&
         gate_bytes == up_bytes && ds4_cuda_use_mmq() && q4_pair_enabled &&
         (weight_type == 12u || !vec_width)) {
         const uint64_t block_width = weight_type == 8u ? 32u : 256u;
         const uint64_t block_bytes =
-            weight_type == 8u ? 34u : weight_type == 12u ? 144u : 176u;
+            weight_type == 8u ? 34u : weight_type == 12u ? 144u
+            : weight_type == 13u ? 176u : weight_type == 19u ? 50u : 56u;
         const uint64_t blocks_per_row = in_dim / block_width;
         bool q4_shape_ok = (uint64_t)n_expert <= UINT64_MAX / out_dim;
         uint64_t required_bytes = 0u;
@@ -32884,6 +32932,22 @@ extern "C" int ds4_gpu_routed_gate_up_tensor(
                           (int)out_dim, (int)in_dim, (int)n_tokens,
                           (int)n_expert, (int)n_expert_used,
                           (int)n_tokens, stream);
+                } else if (weight_type == 19u) {
+                    rc = ds4_mmq_iq1_s_moe_pair_bounded(
+                          gate_raw, up_raw,
+                          (const float *)x->ptr, (const int32_t *)ids->ptr,
+                          (float *)gate->ptr, (float *)up->ptr,
+                          (int)out_dim, (int)in_dim, (int)n_tokens,
+                          (int)n_expert, (int)n_expert_used,
+                          (int)n_tokens, stream);
+                } else if (weight_type == 29u) {
+                    rc = ds4_mmq_iq1_m_moe_pair_bounded(
+                          gate_raw, up_raw,
+                          (const float *)x->ptr, (const int32_t *)ids->ptr,
+                          (float *)gate->ptr, (float *)up->ptr,
+                          (int)out_dim, (int)in_dim, (int)n_tokens,
+                          (int)n_expert, (int)n_expert_used,
+                          (int)n_tokens, stream);
                 } else {
                     rc = ds4_mmq_q8_0_moe_pair_bounded(
                           gate_raw, up_raw,
@@ -32894,15 +32958,19 @@ extern "C" int ds4_gpu_routed_gate_up_tensor(
                           (int)n_tokens, stream);
                 }
                 if (rc == 0) {
-                    static bool logged_pair[3] = {false, false, false};
+                    static bool logged_pair[5] = {false, false, false, false, false};
                     const int slot = weight_type == 12u ? 0
-                                   : weight_type == 13u ? 1 : 2;
+                                   : weight_type == 13u ? 1
+                                   : weight_type == 8u ? 2
+                                   : weight_type == 19u ? 3 : 4;
                     if (!logged_pair[slot]) {
                         logged_pair[slot] = true;
                         fprintf(stderr,
                                 "ds4: routed gate/up using %s pair (%s)\n",
                                 weight_type == 12u ? "Q4_K"
-                                : weight_type == 13u ? "Q5_K" : "Q8_0",
+                                : weight_type == 13u ? "Q5_K"
+                                : weight_type == 8u ? "Q8_0"
+                                : weight_type == 19u ? "IQ1_S" : "IQ1_M",
                                 vec_width ? "decode" : "bounded prefill");
                     }
                     return cuda_ok(cudaGetLastError(),
@@ -45525,15 +45593,62 @@ extern "C" int ds4_gpu_tp_batch_gate_encode(uint32_t layer, uint32_t rows) {
 
 #define DS4_EXAONE_ROUTER_WEIGHT_FLOOR 6.103515625e-5f
 
+/* NeoX rotary angle for pair i at absolute position pos.
+ *
+ * Both trig steps go through double on purpose.
+ *
+ * The file is compiled with --use_fast_math, which redirects powf to
+ * __powf (8 ulp) and sinf/cosf to the SFU intrinsics. The SFU is
+ * specified only for |x| < 8192*pi ~= 25736; this model's positions
+ * reach 262143, and at i == 0 the angle IS the position, so the
+ * intrinsic would return essentially noise on a long context. The
+ * double-precision reduction below keeps the rotation identical to the
+ * CPU reference at every position the 262144-token window allows.
+ *
+ * The frequency is computed in double and rounded to float, then
+ * multiplied by the position in float, because that is what the CPU
+ * reference's powf-then-multiply produces -- matching it matters more
+ * than being marginally more precise than it. */
+__device__ __forceinline__ void exaone_rope_cs(
+        uint32_t i, uint32_t n_rot, uint32_t pos, float freq_base,
+        float *c, float *s) {
+    const float freq  = (float)pow((double)freq_base,
+                                   -2.0 * (double)i / (double)n_rot);
+    const float theta = (float)pos * freq;
+    const double tr = fmod((double)theta, 2.0 * 3.14159265358979323846);
+    *c = (float)cos(tr);
+    *s = (float)sin(tr);
+}
+
+/* One (cos, sin) per (token, pair) for positions pos0 .. pos0+n_tokens-1.
+ * The angle depends only on the position, so one table serves every
+ * layer's q and k call of a prefill chunk or decode token; the per-head
+ * double trig used to be 40 ms of a 512-token chunk. */
+__global__ static void exaone_rope_table_kernel(
+        float2 *table,
+        uint32_t n_rot,
+        uint32_t pos0,
+        float freq_base) {
+    const uint32_t half = n_rot / 2u;
+    const uint32_t t = blockIdx.x;
+    for (uint32_t i = threadIdx.x; i < half; i += blockDim.x) {
+        float c, s;
+        exaone_rope_cs(i, n_rot, pos0 + t, freq_base, &c, &s);
+        table[(size_t)t * half + i] = make_float2(c, s);
+    }
+}
+
 /* Per-head RMSNorm over head_dim followed by NeoX rotary, in place.
  * One block per head; blockDim.x must be >= head_dim.
  *
  * The two steps are fused because they read and write the same head-sized
  * slice and RoPE must see the normalized value -- separating them would
- * double the traffic for no gain and invites getting the order wrong. */
+ * double the traffic for no gain and invites getting the order wrong.
+ * rope is the (cos, sin) table above; NULL computes the angles inline. */
 __global__ static void exaone_qk_norm_rope_kernel(
         float *v,
         const float *norm_w,
+        const float2 *rope,
         uint32_t n_heads,
         uint32_t head_dim,
         uint32_t n_rot,
@@ -45572,30 +45687,68 @@ __global__ static void exaone_qk_norm_rope_kernel(
     const uint32_t half = n_rot / 2u;
     const uint32_t pair_stride = head_dim / 2u;
     for (uint32_t i = tid; i < half; i += nth) {
-        /* Both trig steps go through double on purpose.
-         *
-         * The file is compiled with --use_fast_math, which redirects powf to
-         * __powf (8 ulp) and sinf/cosf to the SFU intrinsics. The SFU is
-         * specified only for |x| < 8192*pi ~= 25736; this model's positions
-         * reach 262143, and at i == 0 the angle IS the position, so the
-         * intrinsic would return essentially noise on a long context. The
-         * double-precision reduction below costs nothing at 64 heads x 64
-         * pairs per token and keeps the rotation identical to the CPU
-         * reference at every position the 262144-token window allows.
-         *
-         * The frequency is computed in double and rounded to float, then
-         * multiplied by the position in float, because that is what the CPU
-         * reference's powf-then-multiply produces -- matching it matters more
-         * than being marginally more precise than it. */
-        const float freq  = (float)pow((double)freq_base,
-                                       -2.0 * (double)i / (double)n_rot);
-        const float theta = (float)pos * freq;
-        const double tr = fmod((double)theta, 2.0 * 3.14159265358979323846);
-        const float c = (float)cos(tr), s = (float)sin(tr);
+        float c, s;
+        if (rope) {
+            const float2 cs = rope[(size_t)t * half + i];
+            c = cs.x;
+            s = cs.y;
+        } else {
+            exaone_rope_cs(i, n_rot, pos, freq_base, &c, &s);
+        }
         const float a = p[i], b = p[i + pair_stride];
-        p[i]        = a * c - b * s;
-        p[i + pair_stride] = a * s + b * c;
+        /* Written as the contraction nvcc chose for the original kernel
+         * (c products fused, s products rounded first): with c and s now
+         * arriving from a table or a branch the compiler fused the other
+         * pair and moved every rotation by one ulp. */
+        const float sb = s * b, sa = s * a;
+        p[i]               = fmaf(c, a, -sb);
+        p[i + pair_stride] = fmaf(c, b, sa);
     }
+}
+
+/* RoPE table cache: rebuilt when (pos0, n_tokens, n_rot, freq_base)
+ * changes, i.e. once per prefill chunk or decode token, then shared by the
+ * q and k calls of all layers. DS4_EXAONE_ROPE_TABLE=0 returns NULL so the
+ * kernel computes the angles inline as before. */
+static ds4_gpu_tensor *g_exaone_rope_table = NULL;
+static uint32_t g_exaone_rope_pos0 = 0u, g_exaone_rope_n = 0u, g_exaone_rope_nrot = 0u;
+static float g_exaone_rope_base = 0.0f;
+static int g_exaone_rope_valid = 0;
+
+static const float2 *exaone_rope_table(
+        uint32_t pos0, uint32_t n_tokens, uint32_t n_rot, float freq_base) {
+    const char *env = getenv("DS4_EXAONE_ROPE_TABLE");
+    if (env && env[0] == '0') return NULL;
+    const uint32_t half = n_rot / 2u;
+    if (half == 0u || half > 1024u) return NULL;
+    const uint64_t bytes = (uint64_t)n_tokens * half * sizeof(float2);
+    if (!g_exaone_rope_table || g_exaone_rope_table->bytes < bytes) {
+        /* Earlier layers' rope launches may still read the old table. */
+        if (!cuda_ok(cudaStreamSynchronize(cuda_decode_stream()),
+                     "exaone rope table sync")) {
+            return NULL;
+        }
+        if (g_exaone_rope_table) ds4_gpu_tensor_free(g_exaone_rope_table);
+        g_exaone_rope_table = ds4_gpu_tensor_alloc(bytes);
+        g_exaone_rope_valid = 0;
+        if (!g_exaone_rope_table) return NULL;
+    }
+    if (!g_exaone_rope_valid || g_exaone_rope_pos0 != pos0 ||
+        g_exaone_rope_n != n_tokens || g_exaone_rope_nrot != n_rot ||
+        g_exaone_rope_base != freq_base) {
+        exaone_rope_table_kernel<<<n_tokens, half, 0, cuda_decode_stream()>>>(
+            (float2 *)g_exaone_rope_table->ptr, n_rot, pos0, freq_base);
+        if (!cuda_ok(cudaGetLastError(), "exaone rope table")) {
+            g_exaone_rope_valid = 0;
+            return NULL;
+        }
+        g_exaone_rope_pos0 = pos0;
+        g_exaone_rope_n = n_tokens;
+        g_exaone_rope_nrot = n_rot;
+        g_exaone_rope_base = freq_base;
+        g_exaone_rope_valid = 1;
+    }
+    return (const float2 *)g_exaone_rope_table->ptr;
 }
 
 /* Append n_tokens rows of K and V to the layer ring as f16, starting at
@@ -46125,9 +46278,11 @@ extern "C" int ds4_gpu_exaone_qk_norm_rope_tensor(
             ds4_tensor_device_idx(v), "exaone_qk_norm");
     if (!w) return 0;
     /* One block per (token, head); each token carries its own RoPE position. */
+    const float2 *rope = do_rope
+        ? exaone_rope_table(pos, n_tokens, n_rot, freq_base) : NULL;
     dim3 grid(n_heads, n_tokens, 1u);
     exaone_qk_norm_rope_kernel<<<grid, 128, 0, cuda_decode_stream()>>>(
-            (float *)v->ptr, w, n_heads, head_dim, n_rot, pos,
+            (float *)v->ptr, w, rope, n_heads, head_dim, n_rot, pos,
             freq_base, eps, do_rope);
     return cuda_ok(cudaGetLastError(), "exaone qk norm rope");
 }
@@ -46145,9 +46300,10 @@ extern "C" int ds4_gpu_exaone_rope_tensor(
         v->bytes < (uint64_t)n_heads * head_dim * n_tokens * sizeof(float)) {
         return 0;
     }
+    const float2 *rope = exaone_rope_table(pos0, n_tokens, n_rot, freq_base);
     dim3 grid(n_heads, n_tokens, 1u);
     exaone_qk_norm_rope_kernel<<<grid, 128, 0, cuda_decode_stream()>>>(
-            (float *)v->ptr, NULL, n_heads, head_dim, n_rot, pos0,
+            (float *)v->ptr, NULL, rope, n_heads, head_dim, n_rot, pos0,
             freq_base, 0.0f, 1);
     return cuda_ok(cudaGetLastError(), "exaone neox rope");
 }

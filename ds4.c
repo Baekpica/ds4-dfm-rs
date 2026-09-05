@@ -41665,9 +41665,35 @@ static uint32_t exaone_graph_layer_kv_cap(uint32_t il, uint32_t ctx_size,
     return (uint32_t)cap;
 }
 
+/* K2 prefills in 1024-token chunks: the compact routed worklists see ~42
+ * rows per expert instead of ~21 and every per-chunk launch runs half as
+ * often (K2 8K prefill +13% in the 2026-09-05 campaign).  The batch
+ * workspace grows with the cap (0.37 -> 0.73 GiB at K2's widths) and a
+ * sliding ring holds prefill_cap extra rows, so K-EXAONE keeps 512 until
+ * it is measured.  Numerics move at the fp level only (router GEMM
+ * tiling, attention accumulation order).  DS4_EXAONE_PREFILL_CHUNK=512
+ * restores the previous chunk. */
+#define DS4_K2_PREFILL_CHUNK_DEFAULT 1024u
+#define DS4_EXAONE_PREFILL_CHUNK_DEFAULT 512u
+
 static uint32_t exaone_graph_prefill_cap_for_context(uint32_t ctx_size,
                                                       uint32_t requested) {
-    uint32_t cap = requested ? requested : 512u;
+    uint32_t cap = requested ? requested
+        : DS4_MODEL_VARIANT == DS4_VARIANT_K2_HORIZON_375B
+            ? DS4_K2_PREFILL_CHUNK_DEFAULT : DS4_EXAONE_PREFILL_CHUNK_DEFAULT;
+    if (!requested) {
+        const char *env = getenv("DS4_EXAONE_PREFILL_CHUNK");
+        if (env && env[0]) {
+            /* Full parse and uint32 range only: a truncated value would
+             * become a zero cap and fail the workspace allocation. */
+            char *endp = NULL;
+            const long v = strtol(env, &endp, 10);
+            if (endp != env && endp[0] == '\0' && v > 0 &&
+                v <= (long)UINT32_MAX) {
+                cap = (uint32_t)v;
+            }
+        }
+    }
     if (cap > ctx_size) cap = ctx_size;
     return cap;
 }
@@ -42118,8 +42144,10 @@ static bool exaone_graph_layer(ds4_exaone_gpu_graph *g,
              rm, rg, ru, rw, (uint32_t)n_ff_exp,
              (uint64_t)n_tok * n_used * n_ff_exp) ||
          /* selected is top-k without replacement for each token.  Once the
-          * assignments are flattened, one expert owns at most n_tok rows. */
-         !ds4_gpu_routed_matmul_bounded_tensor(
+          * assignments are flattened, one expert owns at most n_tok rows.
+          * moe_sum below skips non-finite rows, so the down output needs
+          * no standalone sanitize pass. */
+         !ds4_gpu_routed_matmul_guarded_tensor(
              rd, rm, sel, m->map, m->size,
              l->ffn_down_exps->abs_offset, l->ffn_down_exps->bytes,
              l->ffn_down_exps->type,

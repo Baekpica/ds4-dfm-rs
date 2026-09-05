@@ -30,6 +30,7 @@ static void test_context_memory_plan(void) {
         ds4_engine_hidden_f32_values(&engine) == 6144u &&
         ds4_engine_n_hc(&engine) == 1 &&
         m.prefill_cap == 512u &&
+        exaone_graph_prefill_cap_for_context(262144u, 0u) == 512u &&
         m.raw_cap == 262144u &&
         exaone_graph_layer_kv_cap(0u, 262144u, m.prefill_cap) == 640u &&
         exaone_graph_layer_kv_cap(3u, 262144u, m.prefill_cap) == 262144u &&
@@ -54,6 +55,19 @@ static void test_k2_full_attention_memory_plan(void) {
     const int ok =
         m.total_bytes != 0u &&
         m.prefill_cap == 512u &&
+        /* K2 defaults to 1024-token chunks; K-EXAONE keeps 512. */
+        exaone_graph_prefill_cap_for_context(32768u, 0u) == 1024u &&
+        exaone_graph_prefill_cap_for_context(700u, 0u) == 700u &&
+        /* The env override needs a full parse inside uint32 range. */
+        (setenv("DS4_EXAONE_PREFILL_CHUNK", "4294967296", 1) == 0 &&
+         exaone_graph_prefill_cap_for_context(32768u, 0u) == 1024u) &&
+        (setenv("DS4_EXAONE_PREFILL_CHUNK", "1024abc", 1) == 0 &&
+         exaone_graph_prefill_cap_for_context(32768u, 0u) == 1024u) &&
+        (setenv("DS4_EXAONE_PREFILL_CHUNK", "-512", 1) == 0 &&
+         exaone_graph_prefill_cap_for_context(32768u, 0u) == 1024u) &&
+        (setenv("DS4_EXAONE_PREFILL_CHUNK", "768", 1) == 0 &&
+         exaone_graph_prefill_cap_for_context(32768u, 0u) == 768u) &&
+        unsetenv("DS4_EXAONE_PREFILL_CHUNK") == 0 &&
         m.raw_cap == 32768u &&
         m.raw_bytes == UINT64_C(8187281408) &&
         !exaone_layer_is_sliding(0u) &&
@@ -402,6 +416,23 @@ static void test_qk_norm_rope(void *map, uint64_t map_size, uint64_t w_off,
         snprintf(label, sizeof(label), rope ? "qk_norm + neox rope @pos %u"
                                             : "qk_norm only @pos %u", pos0);
         diff_f32(label, got, want, n, 3e-5, 3e-5);
+        /* The cached (cos, sin) table must reproduce the inline double
+         * trig bit for bit. */
+        if (rope) {
+            float *inl = xmalloc(n * sizeof(float));
+            (void)setenv("DS4_EXAONE_ROPE_TABLE", "0", 1);
+            ds4_gpu_tensor_write(t, 0, host, n * sizeof(float));
+            const int ok = ds4_gpu_exaone_qk_norm_rope_tensor(
+                t, map, map_size, w_off, T_HEAD, T_HEAD_DIM, T_HEAD_DIM, pos0,
+                n_tok, 1000000.0f, DS4_DEFAULT_RMS_EPS, 1);
+            (void)unsetenv("DS4_EXAONE_ROPE_TABLE");
+            if (!ok) { printf("qk_norm_rope inline launch failed\n"); g_fail++; }
+            ds4_gpu_tensor_read(t, 0, inl, n * sizeof(float));
+            const int same = memcmp(got, inl, n * sizeof(float)) == 0;
+            if (!same) g_fail++;
+            printf("%-38s %s\n", "rope table vs inline trig", same ? "bit-identical" : "DIFFER");
+            free(inl);
+        }
         free(got);
         ds4_gpu_tensor_free(t);
     }
@@ -592,10 +623,9 @@ static void test_decode_split(void) {
     free(kv); free(want); free(got); free(ref); free(q);
 }
 
-static void test_attention_prefill(int sliding) {
-    const uint32_t n_tok  = 200;
+static void test_attention_prefill(int sliding, uint32_t n_tok) {
     const uint32_t window = sliding ? 128u : 0u;
-    const uint32_t kv_cap = sliding ? 128u : 256u;
+    const uint32_t kv_cap = sliding ? 128u : n_tok + 56u;
     const uint32_t kv_dim = T_HEAD_KV * T_HEAD_DIM;
 
     uint64_t s = 4242;
@@ -947,7 +977,7 @@ static void test_swiglu_and_combine(void) {
 static void test_moe_worklist(const ds4_model *m, const ds4_tensor *w,
                               uint32_t used) {
     const uint32_t k = (uint32_t)w->dim[0];
-    const uint32_t widths[] = {17u, 257u, used == 1u ? 4096u : 512u, 257u};
+    const uint32_t widths[] = {17u, 257u, used == 1u ? 8192u : 1024u, 257u};
     for (size_t wi = 0; wi < sizeof(widths) / sizeof(widths[0]); wi++) {
         const uint32_t nt = widths[wi];
         /* Reinterpret the leading real blocks as a ragged 129-row stack
@@ -1283,6 +1313,120 @@ static void test_iq1m_prefill(const ds4_model *m, const ds4_tensor *w,
     }
 }
 
+/* Prefill 8: the IQ1_S / IQ1_M gate/up pair (one expert map and Q8_1
+ * activation, both worklists) vs two single routed calls. Same kernels, so
+ * both outputs must be bit-identical; the standalone sanitize the pair
+ * drops only touches non-finite values. */
+static void test_moe_pair(const ds4_model *m, const ds4_tensor *gate,
+                          const ds4_tensor *up, uint32_t used) {
+    const uint32_t k = (uint32_t)gate->dim[0], rows = (uint32_t)gate->dim[1];
+    /* 1024 is the K2 prefill chunk since round 5 (8192 routed rows). */
+    const uint32_t widths[] = {257u, 512u, 1024u};
+    for (size_t wi = 0; wi < sizeof(widths) / sizeof(widths[0]); wi++) {
+        const uint32_t nt = widths[wi];
+        const size_t nx = (size_t)nt * k, ny = (size_t)nt * used * rows;
+        float *x = xmalloc(nx * sizeof(float));
+        float *ref_g = xmalloc(ny * sizeof(float)), *ref_u = xmalloc(ny * sizeof(float));
+        float *got_g = xmalloc(ny * sizeof(float)), *got_u = xmalloc(ny * sizeof(float));
+        int32_t *ids = xmalloc((size_t)nt * used * sizeof(int32_t));
+        uint64_t seed = 4242u + nt;
+        for (size_t i = 0; i < nx; i++) { x[i] = frand(&seed) * 0.5f; }
+        for (uint32_t t = 0; t < nt; t++) {
+            for (uint32_t s = 0; s < used; s++) {
+                ids[(size_t)t * used + s] =
+                    ((t % 5u == 0u ? 7u : t * 13u) + s * 7u) % DS4_N_EXPERT;
+            }
+        }
+        ids[used] = -1;
+        ds4_gpu_tensor *gx = ds4_gpu_tensor_alloc(nx * sizeof(float));
+        ds4_gpu_tensor *gi = ds4_gpu_tensor_alloc((size_t)nt * used * sizeof(int32_t));
+        ds4_gpu_tensor *gg = ds4_gpu_tensor_alloc(ny * sizeof(float));
+        ds4_gpu_tensor *gu = ds4_gpu_tensor_alloc(ny * sizeof(float));
+        int ok = gx && gi && gg && gu &&
+            ds4_gpu_tensor_write(gx, 0, x, nx * sizeof(float)) &&
+            ds4_gpu_tensor_write(gi, 0, ids, (size_t)nt * used * sizeof(int32_t));
+        double ms[2] = {0.0, 0.0};
+        for (int pair = 0; ok && pair < 2; pair++) {
+            (void)setenv("DS4_MMQ_IQ1_PAIR", pair ? "1" : "0", 1);
+            ok = ds4_gpu_tensor_fill_f32(gg, 0.0f, ny) && ds4_gpu_tensor_fill_f32(gu, 0.0f, ny) &&
+                ds4_gpu_routed_gate_up_tensor(gg, gu, gx, gi, m->map, m->size,
+                    gate->abs_offset, gate->bytes, up->abs_offset, up->bytes,
+                    gate->type, k, rows, DS4_N_EXPERT, nt, used) &&
+                ds4_gpu_synchronize();
+            const double start = now_sec();
+            for (int i = 0; ok && i < 2; i++) {
+                ok = ds4_gpu_routed_gate_up_tensor(gg, gu, gx, gi, m->map, m->size,
+                    gate->abs_offset, gate->bytes, up->abs_offset, up->bytes,
+                    gate->type, k, rows, DS4_N_EXPERT, nt, used);
+            }
+            ok = ok && ds4_gpu_synchronize();
+            ms[pair] = (now_sec() - start) * 500.0;
+            ok = ok && ds4_gpu_tensor_read(gg, 0, pair ? got_g : ref_g, ny * sizeof(float)) &&
+                ds4_gpu_tensor_read(gu, 0, pair ? got_u : ref_u, ny * sizeof(float));
+        }
+        (void)unsetenv("DS4_MMQ_IQ1_PAIR");
+        if (ok) {
+            const int same = memcmp(got_g, ref_g, ny * sizeof(float)) == 0 &&
+                             memcmp(got_u, ref_u, ny * sizeof(float)) == 0;
+            if (!same) g_fail++;
+            printf("%s gate/up pair nt=%u used=%u rows=%u  %s  singles=%.3f ms pair=%.3f ms\n",
+                   tensor_type_name(gate->type), nt, used, rows,
+                   same ? "bit-identical" : "DIFFER", ms[0], ms[1]);
+        } else {
+            printf("%s gate/up pair nt=%u launch failed\n", tensor_type_name(gate->type), nt); g_fail++;
+        }
+        ds4_gpu_tensor_free(gu); ds4_gpu_tensor_free(gg); ds4_gpu_tensor_free(gi); ds4_gpu_tensor_free(gx);
+        free(ids); free(got_u); free(got_g); free(ref_u); free(ref_g); free(x);
+    }
+}
+
+/* Prefill 9: the guarded routed-down entry (no standalone sanitize; moe_sum
+ * skips non-finite values) vs the sanitizing one. Same schedule, so the
+ * outputs must be bit-identical on real (finite) weights. */
+static void test_moe_down_guarded(const ds4_model *m, const ds4_tensor *w) {
+    const uint32_t k = (uint32_t)w->dim[0], rows = (uint32_t)w->dim[1];
+    const uint32_t nt = 4096u, used = 1u;
+    const size_t nx = (size_t)nt * k, ny = (size_t)nt * rows;
+    float *x = xmalloc(nx * sizeof(float));
+    float *ref = xmalloc(ny * sizeof(float)), *got = xmalloc(ny * sizeof(float));
+    int32_t *ids = xmalloc((size_t)nt * sizeof(int32_t));
+    uint64_t seed = 9090u;
+    for (size_t i = 0; i < nx; i++) { x[i] = frand(&seed) * 0.5f; }
+    for (uint32_t t = 0; t < nt; t++) { ids[t] = (t * 13u + 7u) % DS4_N_EXPERT; }
+    ids[1] = -1;
+    ds4_gpu_tensor *gx = ds4_gpu_tensor_alloc(nx * sizeof(float));
+    ds4_gpu_tensor *gi = ds4_gpu_tensor_alloc((size_t)nt * sizeof(int32_t));
+    ds4_gpu_tensor *go = ds4_gpu_tensor_alloc(ny * sizeof(float));
+    int ok = gx && gi && go &&
+        ds4_gpu_tensor_write(gx, 0, x, nx * sizeof(float)) &&
+        ds4_gpu_tensor_write(gi, 0, ids, (size_t)nt * sizeof(int32_t));
+    double ms[2] = {0.0, 0.0};
+    for (int guarded = 0; ok && guarded < 2; guarded++) {
+        ok = ds4_gpu_tensor_fill_f32(go, 0.0f, ny);
+        for (int i = 0; ok && i < 3; i++) {
+            const double start = now_sec();
+            ok = guarded
+                ? ds4_gpu_routed_matmul_guarded_tensor(go, gx, gi, m->map, m->size,
+                      w->abs_offset, w->bytes, w->type, k, rows, DS4_N_EXPERT, nt, used, nt / 8u)
+                : ds4_gpu_routed_matmul_bounded_tensor(go, gx, gi, m->map, m->size,
+                      w->abs_offset, w->bytes, w->type, k, rows, DS4_N_EXPERT, nt, used, nt / 8u);
+            ok = ok && ds4_gpu_synchronize();
+            if (i) ms[guarded] += (now_sec() - start) * 500.0;
+        }
+        ok = ok && ds4_gpu_tensor_read(go, 0, guarded ? got : ref, ny * sizeof(float));
+    }
+    if (ok) {
+        const int same = memcmp(got, ref, ny * sizeof(float)) == 0;
+        if (!same) g_fail++;
+        printf("%s down guarded nt=%u rows=%u  %s  sanitized=%.3f ms guarded=%.3f ms\n",
+               tensor_type_name(w->type), nt, rows, same ? "bit-identical" : "DIFFER", ms[0], ms[1]);
+    } else {
+        printf("%s down guarded launch failed\n", tensor_type_name(w->type)); g_fail++;
+    }
+    ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gi); ds4_gpu_tensor_free(gx);
+    free(ids); free(got); free(ref); free(x);
+}
+
 static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
     /* One layer of each quant type present. The recipe puts Q4_K on the edge
      * layers and IQ2_XXS/Q3_K (or Q2_K in the pilot) on the interior ones, so
@@ -1301,8 +1445,14 @@ static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
 
             if (ty == DS4_TENSOR_IQ2_XXS && which) { test_moe_worklist(m, w, 1u); }
             if (ty == DS4_TENSOR_IQ2_XS && which) { test_moe_worklist(m, w, 1u); }
+            if ((ty == DS4_TENSOR_IQ2_XXS || ty == DS4_TENSOR_IQ2_XS) && which) {
+                test_moe_down_guarded(m, w);
+            }
             if (ty == DS4_TENSOR_IQ1_S && !which) { test_moe_worklist(m, w, 8u); }
             if (ty == DS4_TENSOR_IQ1_M && !which) { test_iq1m_prefill(m, w, 8u); }
+            if ((ty == DS4_TENSOR_IQ1_S || ty == DS4_TENSOR_IQ1_M) && !which) {
+                test_moe_pair(m, l->ffn_gate_exps, l->ffn_up_exps, 8u);
+            }
 
             printf("testing routed tensor %.*s type=%s(%u) layer=%u\n",
                    (int)w->name.len, w->name.ptr, tensor_type_name(ty), ty, il);
@@ -1404,8 +1554,10 @@ int main(int argc, char **argv) {
     test_attention(1);
     test_attention(0);
     test_decode_split();
-    test_attention_prefill(1);
-    test_attention_prefill(0);
+    test_attention_prefill(1, 200u);
+    test_attention_prefill(0, 200u);
+    /* One 1024-token prefill chunk (the K2 default since round 5). */
+    test_attention_prefill(0, 1024u);
     test_prefill_chunk_residency();
     test_router(map, map_size, bias_off);
     test_swiglu_and_combine();

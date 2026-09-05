@@ -311,6 +311,32 @@ int ds4_mmq_iq2_xs_moe(
     int             n_expert_used,
     cudaStream_t    stream);
 
+// Routed down entries for a consumer that skips non-finite values at read
+// (K2 moe_sum): same schedule, no standalone sanitize pass.
+int ds4_mmq_iq2_xxs_moe_guarded(
+    const void    * W,
+    const float   * X_f32,
+    const int32_t * ids,
+    float         * out_f32,
+    int             M,
+    int             K,
+    int             n_tokens,
+    int             n_experts,
+    int             n_expert_used,
+    cudaStream_t    stream);
+
+int ds4_mmq_iq2_xs_moe_guarded(
+    const void    * W,
+    const float   * X_f32,
+    const int32_t * ids,
+    float         * out_f32,
+    int             M,
+    int             K,
+    int             n_tokens,
+    int             n_experts,
+    int             n_expert_used,
+    cudaStream_t    stream);
+
 int ds4_mmq_iq1_s_moe(
     const void    * W,
     const float   * X_f32,
@@ -727,6 +753,38 @@ int ds4_mmq_q5_K_moe_pair_bounded(
     cudaStream_t    stream);
 
 int ds4_mmq_q8_0_moe_pair_bounded(
+    const void    * W_a,
+    const void    * W_b,
+    const float   * X_f32,
+    const int32_t * ids,
+    float         * out_a,
+    float         * out_b,
+    int             M,
+    int             K,
+    int             n_tokens,
+    int             n_experts,
+    int             n_expert_used,
+    int             max_rows_per_expert,
+    cudaStream_t    stream);
+
+// K2 IQ1_S / IQ1_M gate/up pairs: one expert map and Q8_1 activation for
+// both weights, compact worklist, consumers sanitize at read.
+int ds4_mmq_iq1_s_moe_pair_bounded(
+    const void    * W_a,
+    const void    * W_b,
+    const float   * X_f32,
+    const int32_t * ids,
+    float         * out_a,
+    float         * out_b,
+    int             M,
+    int             K,
+    int             n_tokens,
+    int             n_experts,
+    int             n_expert_used,
+    int             max_rows_per_expert,
+    cudaStream_t    stream);
+
+int ds4_mmq_iq1_m_moe_pair_bounded(
     const void    * W_a,
     const void    * W_b,
     const float   * X_f32,
