@@ -33,7 +33,7 @@ impl ModelFamily {
             "deepseek4" => Some(Self::DeepSeek4),
             "solar-open2" => Some(Self::SolarOpen2),
             "motif3" => Some(Self::Motif3),
-            "exaone-moe" => Some(Self::ExaoneMoe),
+            "exaone-moe" | "k2-horizon" => Some(Self::ExaoneMoe),
             "dots3-note" => Some(Self::Dots3Note),
             "qwen4exp" => Some(Self::Qwen4Exp),
             "glm5-next" => Some(Self::Glm53),
@@ -65,6 +65,7 @@ pub enum Variant {
     Dots3NotePrev = 5,
     Qwen38FlashNext = 6,
     Glm53Flash = 7,
+    K2Horizon375B = 8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -306,6 +307,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"dots3-note") => ArchRoute::Fixed(Variant::Dots3NotePrev),
         Some(b"qwen4exp") => ArchRoute::Fixed(Variant::Qwen38FlashNext),
         Some(b"glm5-next") => ArchRoute::Fixed(Variant::Glm53Flash),
+        Some(b"k2-horizon") => ArchRoute::Fixed(Variant::K2Horizon375B),
         Some(_) => ArchRoute::Unsupported,
     }
 }
@@ -320,6 +322,7 @@ pub fn shape_for_variant(v: Variant) -> Shape {
         Variant::Dots3NotePrev => SHAPE_DOTS3_NOTE_PREV,
         Variant::Qwen38FlashNext => SHAPE_QWEN38_FLASH_NEXT,
         Variant::Glm53Flash => SHAPE_GLM53_FLASH,
+        Variant::K2Horizon375B => SHAPE_K2_HORIZON_375B,
     }
 }
 
@@ -334,7 +337,7 @@ fn arch_dump_name(route: ArchRoute) -> &'static str {
 pub fn dump_oracle() -> String {
     let mut out = String::new();
     let _ = writeln!(out, "FAMILY\t0\t1\t2\t3\t4\t5\t6");
-    let _ = writeln!(out, "VARIANT\t0\t1\t2\t3\t4\t5\t6\t7");
+    let _ = writeln!(out, "VARIANT\t0\t1\t2\t3\t4\t5\t6\t7\t8");
     let _ = writeln!(out, "{}", SHAPE_FLASH.dump_line("DEFAULT"));
     let _ = writeln!(out, "{}", SHAPE_FLASH.dump_line("FLASH"));
     let _ = writeln!(out, "{}", SHAPE_PRO.dump_line("PRO"));
@@ -344,6 +347,7 @@ pub fn dump_oracle() -> String {
     let _ = writeln!(out, "{}", SHAPE_DOTS3_NOTE_PREV.dump_line("DOTS3"));
     let _ = writeln!(out, "{}", SHAPE_QWEN38_FLASH_NEXT.dump_line("QWEN38"));
     let _ = writeln!(out, "{}", SHAPE_GLM53_FLASH.dump_line("GLM53"));
+    let _ = writeln!(out, "{}", SHAPE_K2_HORIZON_375B.dump_line("K2HORIZON"));
 
     let flash = DeepSeekDims::from_shape(&SHAPE_FLASH);
     let pro = DeepSeekDims::from_shape(&SHAPE_PRO);
@@ -380,6 +384,7 @@ pub fn dump_oracle() -> String {
         ("dots3-note", Some(&b"dots3-note"[..])),
         ("qwen4exp", Some(&b"qwen4exp"[..])),
         ("glm5-next", Some(&b"glm5-next"[..])),
+        ("k2-horizon", Some(&b"k2-horizon"[..])),
         ("glm-dsa", Some(&b"glm-dsa"[..])),
     ] {
         let _ = writeln!(
@@ -679,6 +684,70 @@ pub const SHAPE_KEXAONE_236B: Shape = Shape {
     rope_yarn_beta_slow: 0.0,
     compress_rope_freq_base: 0.0,
     rope_orig_ctx: 262144,
+};
+
+/// Exact llama.cpp GGUF contract for IFM K2-Horizon-375B-A23B.
+///
+/// Execution family is the plain-GQA sparse-MoE path used by K-EXAONE, but
+/// K2 has full attention in every block, partial NeoX RoPE (64 dims), three
+/// leading dense blocks, no Q/K norm, and no MTP. A separate variant keeps
+/// the K-EXAONE LLLG / QK-norm / MTP contract strict.
+pub const SHAPE_K2_HORIZON_375B: Shape = Shape {
+    name: "K2-Horizon 375B A23B",
+    family: ModelFamily::ExaoneMoe,
+    variant: Variant::K2Horizon375B,
+    n_layer: 61,
+    n_embd: 6144,
+    n_vocab: 250624,
+    n_head: 48,
+    n_head_kv: 8,
+    n_noise_head: 0,
+    n_head_dim: 128,
+    n_value_dim: 128,
+    n_rot: 64,
+    n_out_group: 0,
+    n_lora_q: 0,
+    n_lora_o: 0,
+    n_expert: 192,
+    n_expert_used: 8,
+    n_expert_shared: 1,
+    n_ff_exp: 1792,
+    n_ff_dense: 16384,
+    n_ff_shexp: 1792,
+    n_hash_layer: 0,
+    n_swa: 0,
+    n_swa_period: 0,
+    n_indexer_head: 0,
+    n_indexer_head_dim: 0,
+    n_indexer_top_k: 0,
+    n_hc: 0,
+    n_hc_sinkhorn_iter: 0,
+    n_nextn_predict: 0,
+    n_leading_dense: 3,
+    n_kv_lora: 0,
+    n_key_mla: 0,
+    n_value_mla: 0,
+    n_swa_head: 0,
+    n_swa_kv_lora: 0,
+    n_swa_key_mla: 0,
+    n_full_attn_count: 61,
+    n_kda_head_dim: 0,
+    n_ssm_conv: 0,
+    use_rope: true,
+    use_qk_norm: false,
+    rms_eps: 1.0e-6,
+    kda_l2_eps: 0.0,
+    kda_gate_clamp_min: 0.0,
+    hc_eps: 0.0,
+    expert_weight_scale: 2.5,
+    swiglu_clamp_exp: 0.0,
+    rope_freq_base: 10_000_000.0,
+    rope_freq_base_swa: 0.0,
+    rope_scale_factor: 1.0,
+    rope_yarn_beta_fast: 0.0,
+    rope_yarn_beta_slow: 0.0,
+    compress_rope_freq_base: 0.0,
+    rope_orig_ctx: 524288,
 };
 
 pub const SHAPE_DOTS3_NOTE_PREV: Shape = Shape {

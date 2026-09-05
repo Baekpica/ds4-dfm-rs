@@ -566,6 +566,7 @@ int ds4_gpu_build_derived_artifacts_from_records(
 int ds4_gpu_model_map_replacements_complete(const void *model_map);
 int ds4_gpu_model_range_replaced(const void *model_map, uint64_t offset,
                                  uint64_t bytes);
+int ds4_gpu_model_map_needs_device_copy(const void *model_map);
 /* Aligned-artifact tier for observability: source 0=none 1=imported 2=built.
  * Any out pointer may be NULL. */
 void ds4_gpu_derived_artifact_stats(int *source, uint64_t *count, uint64_t *bytes, double *build_secs);
@@ -4132,6 +4133,17 @@ int ds4_gpu_exaone_qk_norm_rope_tensor(
         float                   freq_base,
         float                   eps,
         int                     do_rope);
+
+/* NeoX rotary without Q/K RMSNorm. K2-Horizon applies partial rotary on
+ * every full-attention layer and has no q_norm/k_norm tensors. */
+int ds4_gpu_exaone_rope_tensor(
+        ds4_gpu_tensor *v,
+        uint32_t        n_heads,
+        uint32_t        head_dim,
+        uint32_t        n_rot,
+        uint32_t        pos0,
+        uint32_t        n_tokens,
+        float           freq_base);
 
 /* Append n_tokens rows of K and V to the layer cache as f16. Slot is
  * position % kv_cap: a ring on sliding layers, the identity on full ones. */

@@ -141,14 +141,13 @@ impl ContSource for OwnerRollSource<'_> {
             }
             if !primed {
                 if job.prepared.cont_prompt.is_none() {
-                    job.prepared.cont_prompt =
-                        probe
-                            .prompt_tokens(&job.prepared.parsed)
-                            .ok()
-                            .map(|(prompt, tokens)| crate::serve_cont::ContPreparedPrompt {
-                                prompt,
-                                tokens,
-                            });
+                    job.prepared.cont_prompt = probe
+                        .prompt_tokens(&mut job.prepared.parsed)
+                        .ok()
+                        .map(|(prompt, tokens)| crate::serve_cont::ContPreparedPrompt {
+                            prompt,
+                            tokens,
+                        });
                 }
                 let prompt_len = job
                     .prepared

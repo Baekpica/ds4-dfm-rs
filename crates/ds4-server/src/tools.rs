@@ -875,6 +875,133 @@ fn parse_solar_generated(
     })
 }
 
+fn parse_k2_generated(
+    text: &[u8],
+    require_thinking_closed: bool,
+    orders: &[ToolSchemaOrder],
+) -> Option<ParsedGenerated> {
+    let think_end = crate::render::K2_THINK_END.as_bytes();
+    let tool_block_start = crate::render::K2_TOOL_CALLS_START.as_bytes();
+    let tool_block_end = crate::render::K2_TOOL_CALLS_END.as_bytes();
+    let tool_start = crate::render::K2_TOOL_CALL_START.as_bytes();
+    let tool_end = crate::render::K2_TOOL_CALL_END.as_bytes();
+    let tool_search = if require_thinking_closed {
+        match find_last_substr(text, think_end) {
+            Some(i) => i + think_end.len(),
+            None => {
+                let (content, reasoning) =
+                    split_reasoning_response(text, ChatFormat::K2Horizon, true);
+                return Some(ParsedGenerated {
+                    content,
+                    reasoning,
+                    ok: true,
+                    ..Default::default()
+                });
+            }
+        }
+    } else {
+        0
+    };
+    let Some(rel) = find_substr(&text[tool_search..], tool_block_start) else {
+        let (content, reasoning) =
+            split_reasoning_response(text, ChatFormat::K2Horizon, require_thinking_closed);
+        return Some(ParsedGenerated {
+            content,
+            reasoning,
+            ok: true,
+            ..Default::default()
+        });
+    };
+    let block_start = tool_search + rel;
+    let content_len = trim_tool_separator_ws(text, 0, block_start);
+    let mut p = block_start + tool_block_start.len();
+    let mut calls = Vec::new();
+    loop {
+        p = skip_ws(text, p);
+        if text[p..].starts_with(tool_block_end) {
+            p += tool_block_end.len();
+            break;
+        }
+        if !text[p..].starts_with(tool_start) {
+            return None;
+        }
+        p += tool_start.len();
+        let rel = find_substr(&text[p..], tool_end)?;
+        let body = &text[p..p + rel];
+        let trimmed = trim_ascii_span(body);
+        if trimmed.starts_with(b"{") {
+            calls.push(parse_hermes_tool_call_json(&String::from_utf8_lossy(
+                trimmed,
+            ))?);
+        } else {
+            let key_start = crate::render::K2_ARG_KEY_START.as_bytes();
+            let key_end = crate::render::K2_ARG_KEY_END.as_bytes();
+            let value_start = crate::render::K2_ARG_VALUE_START.as_bytes();
+            let value_end = crate::render::K2_ARG_VALUE_END.as_bytes();
+            let first_key = find_substr(body, key_start).unwrap_or(body.len());
+            let name = dsml_unescape_text(trim_ascii_span(&body[..first_key]));
+            if name.is_empty() {
+                return None;
+            }
+            let name = String::from_utf8_lossy(&name).into_owned();
+            let order = tool_schema_orders_find(orders, &name);
+            let mut q = first_key;
+            let mut args = Vec::new();
+            while q < body.len() {
+                q = skip_ws(body, q);
+                if q == body.len() {
+                    break;
+                }
+                if !body[q..].starts_with(key_start) {
+                    return None;
+                }
+                q += key_start.len();
+                let ke = q + find_substr(&body[q..], key_end)?;
+                let key = dsml_unescape_text(trim_ascii_span(&body[q..ke]));
+                if key.is_empty() {
+                    return None;
+                }
+                q = skip_ws(body, ke + key_end.len());
+                if !body[q..].starts_with(value_start) {
+                    return None;
+                }
+                q += value_start.len();
+                let ve = q + find_substr(&body[q..], value_end)?;
+                let value = dsml_unescape_text(&body[q..ve]);
+                let key_name = String::from_utf8_lossy(&key);
+                solar_tool_arg_json_add(
+                    &mut args,
+                    &key,
+                    &value,
+                    tool_schema_order_prop_type(order, &key_name),
+                );
+                q = ve + value_end.len();
+            }
+            let mut arguments = vec![b'{'];
+            arguments.extend(args);
+            arguments.push(b'}');
+            calls.push(ToolCall {
+                name,
+                arguments: String::from_utf8_lossy(&arguments).into_owned(),
+                ..Default::default()
+            });
+        }
+        p += rel + tool_end.len();
+    }
+    if calls.is_empty() {
+        return None;
+    }
+    let (content, reasoning) = split_reasoning_content(text, content_len, ChatFormat::K2Horizon);
+    Some(ParsedGenerated {
+        content,
+        reasoning,
+        calls,
+        raw_dsml: String::from_utf8_lossy(&text[block_start..p]).into_owned(),
+        ok: true,
+        ..Default::default()
+    })
+}
+
 fn parse_qwen_generated(
     text: &[u8],
     require_thinking_closed: bool,
@@ -1157,12 +1284,15 @@ pub fn parse_generated_message(
         ModelSyntax::Dots3 => parse_dots3_generated(text, require_thinking_closed),
         ModelSyntax::SolarOpen2 => parse_solar_generated(text, require_thinking_closed, orders),
         ModelSyntax::Qwen4Exp => parse_qwen_generated(text, require_thinking_closed, orders),
+        ModelSyntax::K2Horizon => parse_k2_generated(text, require_thinking_closed, orders),
         ModelSyntax::Glm53 => parse_glm_generated(text, require_thinking_closed),
         ModelSyntax::DeepSeek => {
             if format == ChatFormat::SolarOpen2 {
                 parse_solar_generated(text, require_thinking_closed, orders)
             } else if format == ChatFormat::Qwen4Exp {
                 parse_qwen_generated(text, require_thinking_closed, orders)
+            } else if format == ChatFormat::K2Horizon {
+                parse_k2_generated(text, require_thinking_closed, orders)
             } else {
                 parse_dsml_generated(text, require_thinking_closed)
             }
@@ -1186,6 +1316,7 @@ pub fn parse_generated_for_model_id(
         ModelSyntax::SolarOpen2 => ChatFormat::SolarOpen2,
         ModelSyntax::Exaone => ChatFormat::Exaone,
         ModelSyntax::Qwen4Exp => ChatFormat::Qwen4Exp,
+        ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
         _ => ChatFormat::DeepSeek,
     };
     parse_generated_message(syntax, text, require_thinking_closed, format, orders)
@@ -1273,6 +1404,7 @@ pub fn find_tool_start(s: &[u8], format: ChatFormat) -> Option<usize> {
         ChatFormat::SolarOpen2 => find_substr(s, SOLAR_TOOL_CALLS.as_bytes()),
         ChatFormat::Exaone => find_substr(s, b"<tool_call>"),
         ChatFormat::Qwen4Exp => find_substr(s, QWEN_TOOL_CALL_START.as_bytes()),
+        ChatFormat::K2Horizon => find_substr(s, crate::render::K2_TOOL_CALLS_START.as_bytes()),
         ChatFormat::DeepSeek => {
             let cands = [
                 DSML_TOOL_CALLS_START.as_bytes(),
@@ -1291,6 +1423,7 @@ pub fn find_tool_end(s: &[u8], format: ChatFormat) -> Option<usize> {
         ChatFormat::SolarOpen2 => find_substr(s, SOLAR_TOOL_CALL_END.as_bytes()),
         ChatFormat::Exaone => find_substr(s, b"</tool_call>"),
         ChatFormat::Qwen4Exp => find_substr(s, QWEN_TOOL_CALL_END.as_bytes()),
+        ChatFormat::K2Horizon => find_substr(s, crate::render::K2_TOOL_CALLS_END.as_bytes()),
         ChatFormat::DeepSeek => {
             let cands = [
                 DSML_TOOL_CALLS_END.as_bytes(),
@@ -1488,6 +1621,7 @@ fn tool_marker_stream_safe_len(text: &[u8], format: ChatFormat) -> usize {
         ChatFormat::SolarOpen2 => &[SOLAR_TOOL_CALLS.as_bytes()],
         ChatFormat::Exaone => &[b"<tool_call>"],
         ChatFormat::Qwen4Exp => &[QWEN_TOOL_CALL_START.as_bytes()],
+        ChatFormat::K2Horizon => &[crate::render::K2_TOOL_CALLS_START.as_bytes()],
         ChatFormat::DeepSeek => &[
             DSML_TOOL_CALLS_START.as_bytes(),
             DSML_TOOL_CALLS_START_SHORT.as_bytes(),
@@ -1596,10 +1730,12 @@ impl SemAccum {
             self.think_tail.push(c);
             if tail_ends_with(&self.think_tail, b"<think>")
                 || tail_ends_with(&self.think_tail, SOLAR_THINK_START.as_bytes())
+                || tail_ends_with(&self.think_tail, crate::render::K2_THINK_START.as_bytes())
             {
                 self.thinking_inside = true;
             } else if tail_ends_with(&self.think_tail, b"</think>")
                 || tail_ends_with(&self.think_tail, SOLAR_THINK_END.as_bytes())
+                || tail_ends_with(&self.think_tail, crate::render::K2_THINK_END.as_bytes())
             {
                 self.thinking_inside = false;
             }

@@ -823,6 +823,7 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         ModelSyntax::SolarOpen2 => ChatFormat::SolarOpen2,
         ModelSyntax::Exaone => ChatFormat::Exaone,
         ModelSyntax::Qwen4Exp => ChatFormat::Qwen4Exp,
+        ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
         ModelSyntax::DeepSeek | ModelSyntax::Motif3 | ModelSyntax::Dots3 | ModelSyntax::Glm53 => {
             ChatFormat::DeepSeek
         }
@@ -904,7 +905,17 @@ pub(crate) fn thinking_visible_key(
     format: ChatFormat,
     terminal: bool,
 ) -> Option<Vec<u8>> {
-    let mut visible = if format == ChatFormat::Qwen4Exp || syntax == ModelSyntax::Exaone {
+    let mut visible = if format == ChatFormat::K2Horizon {
+        if !prompt.ends_with(b"<ifm|think>\n") {
+            return None;
+        }
+        let content = content.trim_ascii();
+        let mut visible = Vec::with_capacity(prompt.len() + 16 + content.len());
+        visible.extend_from_slice(prompt);
+        visible.extend_from_slice(b"</ifm|think>");
+        visible.extend_from_slice(content);
+        visible
+    } else if format == ChatFormat::Qwen4Exp || syntax == ModelSyntax::Exaone {
         if !prompt.ends_with(b"<think>\n") {
             return None;
         }
@@ -934,6 +945,9 @@ pub(crate) fn thinking_visible_key(
     if terminal {
         match syntax {
             ModelSyntax::Qwen4Exp => visible.extend_from_slice(QWEN_IM_END.as_bytes()),
+            ModelSyntax::K2Horizon => {
+                visible.extend_from_slice(crate::render::K2_IM_END.as_bytes())
+            }
             ModelSyntax::Exaone => visible.extend_from_slice(b"<|endofturn|>"),
             ModelSyntax::Motif3 => visible.extend_from_slice(b"<|endofturn|>"),
             ModelSyntax::SolarOpen2 => visible.extend_from_slice(SOLAR_IM_END.as_bytes()),
@@ -973,19 +987,16 @@ fn motif3_no_think_visible_checkpoint(
     Some(visible)
 }
 
-fn prepare_required_prefixes(
-    engine: &dyn DecodeIo,
+pub(crate) fn prepare_required_prefixes(
     parsed: &mut ParsedRequest,
     format: ChatFormat,
+    tokenize: impl Fn(&[u8]) -> Result<Vec<i32>, GenerateError>,
 ) -> Result<(), GenerateError> {
-    if !engine.tokenizes_control_literals() {
-        return Ok(());
-    }
     if parsed.tool_choice != ToolChoice::Required && !parsed.has_tool_results {
         return Ok(());
     }
     if parsed.required_think_end_prefix.is_empty() {
-        let toks = engine.tokenize_rendered_chat(think_end(format).as_bytes())?;
+        let toks = tokenize(think_end(format).as_bytes())?;
         if toks.is_empty() {
             return Err(GenerateError::Engine(
                 "failed to tokenize thinking control prefix".into(),
@@ -998,9 +1009,10 @@ fn prepare_required_prefixes(
             ChatFormat::SolarOpen2 => crate::render::SOLAR_TOOL_CALLS,
             ChatFormat::Exaone => "<tool_call>",
             ChatFormat::Qwen4Exp => crate::render::QWEN_TOOL_CALL_START,
+            ChatFormat::K2Horizon => crate::render::K2_TOOL_CALLS_START,
             ChatFormat::DeepSeek => crate::tools::DSML_TOOL_CALLS_START,
         };
-        let toks = engine.tokenize_rendered_chat(marker.as_bytes())?;
+        let toks = tokenize(marker.as_bytes())?;
         if toks.is_empty() {
             return Err(GenerateError::Engine(
                 "failed to tokenize required tool control prefix".into(),
@@ -1357,11 +1369,13 @@ pub(crate) fn prepare_serial_prompt(
     if tool_replay {
         engine.restore_tool_replay(&mut parsed.messages);
     }
-    prepare_required_prefixes(
-        engine,
-        &mut parsed,
-        chat_format_for_syntax(syntax_for_model_id(engine.model_id())),
-    )?;
+    if engine.tokenizes_control_literals() {
+        prepare_required_prefixes(
+            &mut parsed,
+            chat_format_for_syntax(syntax_for_model_id(engine.model_id())),
+            |literal| engine.tokenize_rendered_chat(literal),
+        )?;
+    }
 
     let prompt = render_prompt(&parsed, engine.model_id())?;
     let tokens = match parsed.kind {
@@ -2552,7 +2566,7 @@ mod disk_sync_tests {
     use super::{
         continued_decode_allowed, discard_loaded, disk_sync_prompt, disk_sync_tool_replay,
         intermediate_prefill_eligible, ordinary_disk_cache_eligible,
-        settle_thinking_visible_checkpoint, thinking_visible_cache_eligible,
+        settle_thinking_visible_checkpoint, thinking_visible_cache_eligible, thinking_visible_key,
         tool_replay_disk_cache_eligible, tool_replay_producer_eligible, try_store_continued,
         try_store_live, DiskSyncPolicy, GenerateError, SerialKvIo, ThinkingVisibleCheckpoint,
     };
@@ -3820,6 +3834,22 @@ mod disk_sync_tests {
 
         settle_thinking_visible_checkpoint(&mut checkpoint, true);
         assert!(checkpoint.is_none());
+    }
+
+    #[test]
+    fn k2_thinking_visible_key_matches_adjacent_ifm_turns() {
+        let prompt = b"<|ifm|begin_of_text|><|ifm|im_start|>assistant\n<ifm|think>\n";
+        assert_eq!(
+            thinking_visible_key(
+                prompt,
+                b"answer",
+                ModelSyntax::K2Horizon,
+                ChatFormat::K2Horizon,
+                true,
+            )
+            .unwrap(),
+            b"<|ifm|begin_of_text|><|ifm|im_start|>assistant\n<ifm|think>\n</ifm|think>answer<|ifm|im_end|>"
+        );
     }
 
     #[test]

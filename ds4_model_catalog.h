@@ -198,14 +198,16 @@ typedef struct {
                                         residency != HOST_MAPPED)        */
     uint8_t  replaces_complete;      /* every replace-candidate has an
                                         artifact (self-load / manifest)  */
+    uint8_t  promote_experts;        /* raw experts need device residency */
 } ds4_unit_compile_params;
 
 static inline uint8_t ds4_unit_policy_of(uint32_t traits,
                                          const ds4_unit_compile_params *p) {
     if (traits & DS4_TCAT_ROUTED_EXPERT) {
-        return (p->replaces_complete && (traits & DS4_TCAT_ARTIFACT_REPLACED))
-            ? DS4_UPOL_ARTIFACT_REPLACED
-            : DS4_UPOL_EXPERT_COLD;
+        if (p->replaces_complete && (traits & DS4_TCAT_ARTIFACT_REPLACED))
+            return DS4_UPOL_ARTIFACT_REPLACED;
+        return p->promote_experts ? DS4_UPOL_DEVICE_PROMOTE
+                                  : DS4_UPOL_EXPERT_COLD;
     }
     return p->device_promote ? DS4_UPOL_DEVICE_PROMOTE : DS4_UPOL_HOST_MAPPED;
 }

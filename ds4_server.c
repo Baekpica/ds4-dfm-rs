@@ -509,6 +509,7 @@ typedef enum {
     SERVER_MODEL_SYNTAX_MOTIF3,
     SERVER_MODEL_SYNTAX_EXAONE,
     SERVER_MODEL_SYNTAX_DOTS3,
+    SERVER_MODEL_SYNTAX_K2_HORIZON,
 } server_model_syntax;
 
 typedef enum {
@@ -1721,6 +1722,7 @@ static server_model_syntax server_model_syntax_for_engine(ds4_engine *engine) {
     if (ds4_engine_model_id(engine) == 3) return SERVER_MODEL_SYNTAX_MOTIF3;
     if (ds4_engine_model_id(engine) == 4) return SERVER_MODEL_SYNTAX_EXAONE;
     if (ds4_engine_model_id(engine) == 5) return SERVER_MODEL_SYNTAX_DOTS3;
+    if (ds4_engine_model_id(engine) == 8) return SERVER_MODEL_SYNTAX_K2_HORIZON;
     return SERVER_MODEL_SYNTAX_DEEPSEEK;
 }
 
@@ -4883,6 +4885,56 @@ static char *render_dots3_live_tool_tail(
     return buf_take(&out);
 }
 
+#define DS4_K2_IM_START     "<|ifm|im_start|>"
+#define DS4_K2_IM_END       "<|ifm|im_end|>"
+#define DS4_K2_THINK_START  "<ifm|think>"
+#define DS4_K2_THINK_END    "</ifm|think>"
+
+static char *render_k2_chat_prompt_text(
+        const chat_msgs *msgs, ds4_think_mode think_mode) {
+    buf out = {0};
+    int i;
+
+    for (i = 0; msgs && i < msgs->len; i++) {
+        const chat_msg *m = &msgs->v[i];
+        if (role_is_system(m->role)) {
+            buf_puts(&out, DS4_K2_IM_START);
+            buf_puts(&out, "system\n");
+            if (m->content) buf_puts(&out, m->content);
+            buf_puts(&out, DS4_K2_IM_END);
+        } else if (!strcmp(m->role, "user") &&
+                   !chat_msg_is_model_tool_result(m)) {
+            buf_puts(&out, DS4_K2_IM_START);
+            buf_puts(&out, "user\n");
+            if (m->content) buf_puts(&out, m->content);
+            buf_puts(&out, DS4_K2_IM_END);
+        } else if (chat_msg_is_model_tool_result(m)) {
+            buf_puts(&out, DS4_K2_IM_START);
+            buf_puts(&out, "tool\n");
+            if (m->content) buf_puts(&out, m->content);
+            buf_puts(&out, DS4_K2_IM_END);
+        } else if (!strcmp(m->role, "assistant")) {
+            buf_puts(&out, DS4_K2_IM_START);
+            buf_puts(&out, "assistant\n");
+            buf_puts(&out, DS4_K2_THINK_START);
+            buf_puts(&out, "\n");
+            if (m->reasoning) buf_puts(&out, m->reasoning);
+            buf_puts(&out, DS4_K2_THINK_END);
+            if (m->content) buf_puts(&out, m->content);
+            buf_puts(&out, DS4_K2_IM_END);
+        }
+    }
+    buf_puts(&out, DS4_K2_IM_START);
+    buf_puts(&out, "assistant\n");
+    buf_puts(&out, DS4_K2_THINK_START);
+    buf_puts(&out, "\n");
+    if (!ds4_think_mode_enabled(think_mode)) {
+        buf_puts(&out, DS4_K2_THINK_END);
+        buf_puts(&out, "\n");
+    }
+    return buf_take(&out);
+}
+
 static char *render_chat_prompt_text_for_model(
         server_model_syntax syntax, const chat_msgs *msgs,
         const char *tool_schemas, const tool_schema_orders *tool_orders,
@@ -4896,6 +4948,8 @@ static char *render_chat_prompt_text_for_model(
         return render_exaone_chat_prompt_text(msgs, tool_schemas, think_mode);
     if (syntax == SERVER_MODEL_SYNTAX_DOTS3)
         return render_dots3_chat_prompt_text(msgs, tool_schemas, think_mode);
+    if (syntax == SERVER_MODEL_SYNTAX_K2_HORIZON)
+        return render_k2_chat_prompt_text(msgs, think_mode);
     return render_chat_prompt_text_choice_format(
         msgs, tool_schemas, tool_orders, think_mode, tool_choice, format);
 }
@@ -8171,6 +8225,30 @@ static bool parse_generated_message_ex_for_model(
     if (syntax == SERVER_MODEL_SYNTAX_DOTS3) {
         return parse_dots3_generated_message_ex(
             text, require_thinking_closed, content_out, reasoning_out, calls);
+    }
+    if (syntax == SERVER_MODEL_SYNTAX_K2_HORIZON) {
+        const char *t = text ? text : "";
+        const char *end = strstr(t, DS4_K2_THINK_END);
+        if (require_thinking_closed && !end) {
+            const char *body =
+                !strncmp(t, DS4_K2_THINK_START, strlen(DS4_K2_THINK_START))
+                    ? t + strlen(DS4_K2_THINK_START) : t;
+            *reasoning_out = xstrdup(body);
+            *content_out = xstrdup("");
+            return true;
+        }
+        if (end) {
+            const char *body =
+                !strncmp(t, DS4_K2_THINK_START, strlen(DS4_K2_THINK_START))
+                    ? t + strlen(DS4_K2_THINK_START) : t;
+            *reasoning_out = xstrndup(body, (size_t)(end - body));
+            *content_out = xstrdup(end + strlen(DS4_K2_THINK_END));
+        } else {
+            *reasoning_out = NULL;
+            *content_out = xstrdup(t);
+        }
+        (void)calls;
+        return true;
     }
     return parse_generated_message_ex_format(
         text, require_thinking_closed, format, orders,
@@ -36455,6 +36533,20 @@ static void test_unit_compiler_properties(void) {
         TEST_ASSERT(u[0].policy == DS4_UPOL_ARTIFACT_REPLACED);
         TEST_ASSERT(u[1].policy == DS4_UPOL_EXPERT_COLD);
         TEST_ASSERT(ds4_units_verify(ts, 2, &pr, u, nu) == 0);
+    }
+
+    /* A model map that CUDA cannot register must promote raw experts. */
+    {
+        ds4_unit_compile_params pf = p;
+        pf.promote_experts = 1;
+        const ds4_unit_tensor_in ts[] = {
+            {0, 100, DS4_TCAT_ROUTED_EXPERT, 1},
+        };
+        ds4_phys_unit u[1];
+        TEST_ASSERT(ds4_units_compile(ts, 1, &pf, u) == 1);
+        TEST_ASSERT(u[0].policy == DS4_UPOL_DEVICE_PROMOTE &&
+                    u[0].allocator == DS4_UALLOC_VMM_ARENA);
+        TEST_ASSERT(ds4_units_verify(ts, 1, &pf, u, 1) == 0);
     }
 
     /* mapped residency: hot tensors plan HOST_MAPPED with no allocator. */

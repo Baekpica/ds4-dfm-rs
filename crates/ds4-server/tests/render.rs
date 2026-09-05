@@ -422,6 +422,88 @@ fn syntax_for_model_id_matches_c() {
     assert_eq!(ds4_server::syntax_for_model_id(5), ModelSyntax::Dots3);
     assert_eq!(ds4_server::syntax_for_model_id(6), ModelSyntax::Qwen4Exp);
     assert_eq!(ds4_server::syntax_for_model_id(7), ModelSyntax::Glm53);
+    assert_eq!(ds4_server::syntax_for_model_id(8), ModelSyntax::K2Horizon);
+}
+
+#[test]
+fn k2_horizon_chat_uses_ifm_not_exaone() {
+    let prompt = render_chat(
+        ModelSyntax::K2Horizon,
+        &[msg("user", "hello")],
+        "",
+        ThinkMode::None,
+    )
+    .unwrap();
+    assert_eq!(
+        prompt,
+        concat!(
+            "<|ifm|begin_of_text|>",
+            "<|ifm|im_start|>user\nhello<|ifm|im_end|>",
+            "<|ifm|im_start|>assistant\n<ifm|think>\n</ifm|think>\n",
+        )
+        .as_bytes()
+    );
+    let s = String::from_utf8(prompt).unwrap();
+    assert!(!s.contains("<|user|>"));
+    assert!(!s.contains("<|assistant|>"));
+    assert!(!s.contains("<｜User｜>"));
+    assert!(!s.contains("<think>"));
+}
+
+#[test]
+fn k2_horizon_json_tools_and_xml_replay_use_official_ifm_blocks() {
+    let mut assistant = call("get_weather", r#"{"city":"Seoul"}"#);
+    assistant.reasoning = "check weather".into();
+    let prompt = render_chat_choice(
+        ModelSyntax::K2Horizon,
+        &[
+            msg("system", "Be precise."),
+            msg("user", "Weather?"),
+            assistant,
+            msg("tool", "sunny"),
+        ],
+        weather_schema(),
+        &[],
+        ThinkMode::High,
+        ToolChoice::Auto,
+    )
+    .unwrap();
+    let s = String::from_utf8(prompt).unwrap();
+    assert!(s.starts_with("<|ifm|begin_of_text|><|ifm|im_start|>system\n# Tools"));
+    assert!(s.contains("<ifm|tools>\n{\"name\":\"get_weather\""));
+    assert!(s.contains("followed by paired <ifm|arg_key> and <ifm|arg_value> tags"));
+    assert!(s.contains(concat!(
+        "<ifm|tool_calls>\n",
+        "<ifm|tool_call>get_weather\n",
+        "<ifm|arg_key>city</ifm|arg_key>\n",
+        "<ifm|arg_value>Seoul</ifm|arg_value>\n",
+        "</ifm|tool_call>\n",
+        "</ifm|tool_calls>",
+    )));
+    assert!(s.contains("<|ifm|im_start|>tool\nsunny<|ifm|im_end|>"));
+    assert!(s.ends_with("<|ifm|im_start|>assistant\n<ifm|think>\n"));
+}
+
+#[test]
+fn k2_horizon_live_tool_tail_does_not_repeat_bos() {
+    let mut result = msg("tool", "sunny");
+    result.tool_call_id = "call_1".into();
+    let tail = render_live_tool_tail(
+        ModelSyntax::K2Horizon,
+        Api::Responses,
+        &[result],
+        ThinkMode::None,
+    )
+    .unwrap();
+    assert_eq!(
+        tail,
+        concat!(
+            "<|ifm|im_end|>",
+            "<|ifm|im_start|>tool\nsunny<|ifm|im_end|>",
+            "<|ifm|im_start|>assistant\n<ifm|think>\n</ifm|think>\n",
+        )
+        .as_bytes()
+    );
 }
 
 #[test]

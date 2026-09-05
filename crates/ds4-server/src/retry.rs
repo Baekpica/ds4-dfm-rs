@@ -260,7 +260,7 @@ pub fn try_repair_solar(s: &[u8]) -> Option<Vec<u8>> {
 pub fn try_repair_tool_call_format(format: ChatFormat, s: &[u8]) -> Option<Vec<u8>> {
     match format {
         ChatFormat::SolarOpen2 => try_repair_solar(s),
-        ChatFormat::Exaone | ChatFormat::Qwen4Exp => None,
+        ChatFormat::Exaone | ChatFormat::Qwen4Exp | ChatFormat::K2Horizon => None,
         ChatFormat::DeepSeek => try_repair_dsml(s),
     }
 }

@@ -36,6 +36,7 @@ typedef enum {
     DS4_VARIANT_DOTS3_NOTE_PREV = 5,
     DS4_VARIANT_QWEN38_FLASH_NEXT = 6,
     DS4_VARIANT_GLM53_FLASH = 7,
+    DS4_VARIANT_K2_HORIZON_375B = 8,
 } ds4_variant;
 
 typedef struct {
@@ -425,6 +426,36 @@ static const ds4_shape DS4_SHAPE_GLM53_FLASH = {
     .rope_orig_ctx = UINT64_C(1048576),
 };
 
+static const ds4_shape DS4_SHAPE_K2_HORIZON_375B = {
+    .name = "K2-Horizon 375B A23B",
+    .family = DS4_MODEL_FAMILY_EXAONE_MOE,
+    .variant = DS4_VARIANT_K2_HORIZON_375B,
+    .n_layer = 61,
+    .n_embd = 6144,
+    .n_vocab = 250624,
+    .n_head = 48,
+    .n_head_kv = 8,
+    .n_head_dim = 128,
+    .n_value_dim = 128,
+    .n_rot = 64,
+    .n_expert = 192,
+    .n_expert_used = 8,
+    .n_expert_shared = 1,
+    .n_ff_exp = 1792,
+    .n_ff_dense = 16384,
+    .n_ff_shexp = 1792,
+    .n_full_attn_count = 61,
+    .n_nextn_predict = 0,
+    .n_leading_dense = 3,
+    .use_rope = true,
+    .use_qk_norm = false,
+    .rms_eps = 1.0e-6f,
+    .expert_weight_scale = 2.5f,
+    .rope_freq_base = 10000000.0f,
+    .rope_scale_factor = 1.0f,
+    .rope_orig_ctx = 524288,
+};
+
 static void dump_shape(const char *tag, const ds4_shape *s)
 {
     uint32_t bits;
@@ -527,6 +558,7 @@ static const char *arch_route(const char *arch)
     if (strcmp(arch, "dots3-note") == 0) return DS4_SHAPE_DOTS3_NOTE_PREV.name;
     if (strcmp(arch, "qwen4exp") == 0) return DS4_SHAPE_QWEN38_FLASH_NEXT.name;
     if (strcmp(arch, "glm5-next") == 0) return DS4_SHAPE_GLM53_FLASH.name;
+    if (strcmp(arch, "k2-horizon") == 0) return DS4_SHAPE_K2_HORIZON_375B.name;
     return "unsupported";
 }
 
@@ -534,7 +566,7 @@ int main(void)
 {
     ds4_shape miss;
     printf("FAMILY\t0\t1\t2\t3\t4\t5\t6\n");
-    printf("VARIANT\t0\t1\t2\t3\t4\t5\t6\t7\n");
+    printf("VARIANT\t0\t1\t2\t3\t4\t5\t6\t7\t8\n");
     dump_shape("DEFAULT", &DS4_SHAPE_FLASH);
     dump_shape("FLASH", &DS4_SHAPE_FLASH);
     dump_shape("PRO", &DS4_SHAPE_PRO);
@@ -544,6 +576,7 @@ int main(void)
     dump_shape("DOTS3", &DS4_SHAPE_DOTS3_NOTE_PREV);
     dump_shape("QWEN38", &DS4_SHAPE_QWEN38_FLASH_NEXT);
     dump_shape("GLM53", &DS4_SHAPE_GLM53_FLASH);
+    dump_shape("K2HORIZON", &DS4_SHAPE_K2_HORIZON_375B);
     printf("SELECT\tflash\t%s\n", select_name(&DS4_SHAPE_FLASH));
     printf("SELECT\tpro\t%s\n", select_name(&DS4_SHAPE_PRO));
     miss = DS4_SHAPE_FLASH;
@@ -557,6 +590,7 @@ int main(void)
     printf("ARCH\tdots3-note\t%s\n", arch_route("dots3-note"));
     printf("ARCH\tqwen4exp\t%s\n", arch_route("qwen4exp"));
     printf("ARCH\tglm5-next\t%s\n", arch_route("glm5-next"));
+    printf("ARCH\tk2-horizon\t%s\n", arch_route("k2-horizon"));
     printf("ARCH\tglm-dsa\t%s\n", arch_route("glm-dsa"));
     return 0;
 }

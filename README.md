@@ -19,7 +19,7 @@ retired when a better model makes it irrelevant.
 
 ## So, what can I do with this software?
 
-- Run one of the seven validated model families on a DGX Spark without pulling
+- Run one of the eight validated model families on a DGX Spark without pulling
   in a general inference framework.
 - Serve OpenAI-compatible Chat, Completions, and Responses APIs, Anthropic
   Messages, or use the native coding agent against the same model lifecycle.
@@ -27,6 +27,7 @@ retired when a better model makes it irrelevant.
   family-specific acceleration path that was actually validated for the model.
 - Serve Qwen3.8 Flash Next Q5 with SSD-PLE sidecars, embedded MTP, and still
   image input.
+- Serve K2-Horizon-375B MQ87 with IFM chat/tool syntax on the continuous lane.
 - Treat the existing family implementations as rails for a new model or a
   specific machine, while keeping the resulting path small enough to inspect.
 
@@ -79,8 +80,9 @@ optimized C/CUDA/Metal backend, Git ancestry and authorship, and the full
 ## Status
 
 `v0.1.0-rc.4` adds the explicit GLM 5.3 Flash Q2 text and still-image path to
-the Rust host. Its release claim is limited to the two artifacts and the DGX
-Spark CUDA execution path documented below.
+the Rust host. Its tagged release claim is limited to the two GLM artifacts
+and the DGX Spark CUDA execution path documented below. This branch also adds
+the K2-Horizon-375B MQ87 family; that path is not a new RC tag.
 
 | Item | RC scope |
 |---|---|
@@ -172,7 +174,7 @@ See [`ARCHITECTURE.md`](docs/rust-migration/ARCHITECTURE.md) and
 
 | Backend | Status in `v0.1.0-rc.4` |
 |---|---|
-| NVIDIA DGX Spark / GB10 | Release target. The split-era full matrix, long-context, Qwen image/MTP, ABBA, and soak gates ran here; RC.3's agent-serving matrix and RC.4's GLM Q2 text/vision gates also ran here. |
+| NVIDIA DGX Spark / GB10 | Release target. The split-era full matrix, long-context, Qwen image/MTP, ABBA, and soak gates ran here; RC.3's agent-serving matrix, RC.4's GLM Q2 text/vision gates, and the K2-Horizon-375B MQ87 32K CLI/HTTP gates also ran here. |
 | Other NVIDIA CUDA systems | Source path retained through `make cuda-generic` or an explicit `CUDA_ARCH`; not covered by the RC's full live matrix. |
 | macOS Metal | Inherited source/build path retained; not part of the DFM RC live gate. |
 | CPU | Reference and diagnostics only, not a production performance backend. |
@@ -195,6 +197,7 @@ tokenizer/chat contract, state lifecycle, and native execution path.
 | dots3-note Preview | `dots3-note` | Dual-geometry latent state; current live serving path is serial. |
 | Qwen3.8 Flash Next SSD-PLE | `qwen4exp` | Q5 main GGUF + four shared SSD-PLE sidecars, embedded MTP, N-bank Rust scheduling, still-image input; one- and two-bank live gates. |
 | GLM 5.3 Flash | `glm5-next` | Q2 single-file GGUF plus the explicit vision sidecar; CUDA serial serving on one DGX Spark. |
+| K2-Horizon 375B A23B | `k2-horizon` | Four-shard MQ87 GGUF; IFM BPE/XML tools; continuous 32K one-bank serving on one DGX Spark. |
 
 The current family contract and measured model-specific limits are documented
 in [`ds4-dfm-model-families.md`](docs/ds4-dfm-model-families.md). Arbitrary
@@ -202,7 +205,7 @@ GGUFs, alternate tensor layouts, and unlisted architectures are rejected.
 
 ### Model Zoo
 
-The five Baekpica artifacts are grouped in the
+The six Baekpica artifacts are grouped in the
 [`DS4-Mixed-Quant-for-Spark`](https://huggingface.co/collections/Baekpica/ds4-mixed-quant-for-spark)
 collection. Support remains limited to the validated layouts described above.
 
@@ -215,6 +218,7 @@ collection. Support remains limited to the validated layouts described above.
 | dots3-note Preview | [`Baekpica/dots3-note-prev-Mixed-Quant-GGUF`](https://huggingface.co/Baekpica/dots3-note-prev-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
 | Qwen3.8 Flash Next SSD-PLE | [`Baekpica/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF`](https://huggingface.co/Baekpica/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
 | GLM 5.3 Flash | [`GLM-5.3-Flash-Q2.gguf`](https://huggingface.co/antirez/glm-5.3-flash-gguf/blob/main/GLM-5.3-Flash-Q2.gguf) + [`vision encoder`](https://huggingface.co/antirez/glm-5.3-flash-gguf/blob/main/GLM-5.3-Flash-Vision-Encoder.gguf) | [`antirez`](https://huggingface.co/antirez) |
+| K2-Horizon 375B A23B | [`Baekpica/K2-Horizon-375B-A23B-Mixed-Quant-GGUF`](https://huggingface.co/Baekpica/K2-Horizon-375B-A23B-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
 
 ### Qwen release scope
 
@@ -284,6 +288,51 @@ Anthropic inline-image forms. PNG and JPEG are accepted, with at most four
 images per request. Q4, FP8, full GLM 5.3, Metal, ROCm, distributed serving,
 SSD streaming, continuous batching, and speculative MTP were not RC.4 gates
 and are not implied by this support entry.
+
+### K2-Horizon-375B release scope
+
+This branch follows the IFM
+[`K2-Horizon-375B-A23B`](https://huggingface.co/IFM/K2-Horizon-375B-A23B)
+graph: 61 full-attention GQA layers, partial NeoX RoPE on 64 of 128 dims,
+three leading dense MLPs, sigmoid top-8 routing with one shared expert, and
+no MTP. Execution stays native. The GGUF architecture is `k2-horizon`; it
+does not widen the K-EXAONE LLLG/QK-norm contract.
+
+The verified artifact set is exactly the public MQ87 split, 93,091,935,552
+bytes (86.698621 GiB) across four shards:
+
+- `K2-Horizon-375B-A23B-MQ87-00001-of-00004.gguf`
+- `K2-Horizon-375B-A23B-MQ87-00002-of-00004.gguf`
+- `K2-Horizon-375B-A23B-MQ87-00003-of-00004.gguf`
+- `K2-Horizon-375B-A23B-MQ87-00004-of-00004.gguf`
+
+Expected inventory: 842 tensors (`Q8_0=429`, `F32=239`, `IQ1_S=100`,
+`IQ2_XXS=50`, `IQ1_M=16`, `IQ2_XS=8`). Official FP8 checkpoints are not a
+runtime input.
+
+On GB10, whole-map `cudaHostRegister` of the 86.70 GiB mmap fails. The
+existing VMM materializer then promotes every unit (95/95, 0 cold) so CUDA
+graphs never capture the unregistered mmap. Default `DS4_MEMGOV=enforce`
+accepted the 32K first boot on this host.
+
+The following command reproduces the live serving shape:
+
+```sh
+MODEL=/path/to/K2-Horizon-375B-A23B-Mixed-Quant-GGUF/K2-Horizon-375B-A23B-MQ87-00001-of-00004.gguf
+
+./ds4-server --cuda \
+  -m "$MODEL" \
+  --model-id K2-Horizon-375B-A23B-MQ87 \
+  -c 32768 --cont-width 1 \
+  --host 127.0.0.1 --port 8000
+```
+
+CLI 32K raw-token smoke returned token `33785` with default memgov. HTTP
+Chat, XML tool call/result continuation, streaming, and concurrent requests
+passed on the same one-bank 32K setup. Official IFM `high` thinking is the
+gated path. The 524,288-token metadata context, `low`/`medium` think
+variants, other quants, Metal, ROCm, and distributed serving were not
+gates and are not implied by this support entry.
 
 ## Build
 
@@ -536,6 +585,7 @@ The original split gate claims parity class, not a universal speedup.
 | Qwen image ABBA | Rust/C mean: 100.20% prefill, +0.32% TTFT |
 | Qwen soak | 7,202.3 s, 3,610/3,610 requests, 158 width-2 barriers, 79 image requests, zero request/census/governor failures |
 | GLM 5.3 Q2 + vision smoke | Exact Q2 and vision sidecar: native 16-image-token prefill with finite logits; Rust text and PNG Chat requests returned HTTP 200 at context 256. |
+| K2-Horizon-375B MQ87 | Four-shard 86.70 GiB MQ87: CLI 32K raw-token `33785`; default memgov 95/95 VMM promote; HTTP Chat/tool/stream/concurrent on one 32K bank. |
 
 The Qwen measurements used only the Q5+Sidecar artifact, fresh sequential C
 and Rust processes, and the conditions recorded in the evidence documents.
@@ -561,7 +611,8 @@ This was a targeted RC.3 regression matrix, not a second long soak. The
 not rerun for RC.3.
 
 The GLM row is an RC.4 correctness and serving smoke, not a throughput or
-long-context claim.
+long-context claim. The K2 row is a Spark correctness and 32K serving smoke
+on this branch, not a tagged RC or a 524K live claim.
 
 ## Testing
 

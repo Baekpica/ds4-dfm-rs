@@ -5,6 +5,23 @@ Fork: [Entrpi/ds4](https://github.com/Entrpi/ds4) of
 [antirez/ds4](https://github.com/antirez/ds4); upstream fork point `e16ead1`
 (2026-05-29). Upstream's own changes are not repeated here.
 
+## Unreleased
+
+- Adds an explicit K2-Horizon-375B path for the public four-shard MQ87
+  artifact (`general.architecture=k2-horizon`, 93,091,935,552 bytes,
+  842 tensors). The shape, tokenizer, IFM chat/XML tool protocol, IQ expert
+  kernels, and partial NeoX RoPE stay native behind the Rust host.
+- On DGX Spark / GB10, whole-map `cudaHostRegister` of the 86.70 GiB mmap
+  fails; unregistered units are promoted through the existing VMM arena
+  (95/95, 0 cold) so CUDA graphs do not capture the mmap. Default
+  `DS4_MEMGOV=enforce` accepted the 32K first boot.
+- Live gates on one Spark: CLI 32K raw-token `33785`; HTTP Chat, XML tool
+  call/result continuation, streaming, and concurrent requests at
+  `-c 32768 --cont-width 1`. Official IFM `high` thinking is the gated
+  path. 524K live serving, `low`/`medium` think variants, other quants,
+  Metal, and distributed execution are outside this entry.
+- Does not bump the tagged RC.4 version.
+
 ## v0.1.0-rc.4 — 2026-09-03
 
 - Adds an explicit GLM 5.3 Flash path as a selective semantic port from

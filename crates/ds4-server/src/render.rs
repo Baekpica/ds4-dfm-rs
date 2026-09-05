@@ -59,6 +59,19 @@ pub const GLM_TOOL_CALL_END: &str = "</tool_call>";
 pub const GLM_VISION_START: &str = "<|begin_of_image|>";
 pub const GLM_IMAGE: &str = "<|image|>";
 pub const GLM_VISION_END: &str = "<|end_of_image|>";
+pub const K2_BOS: &str = "<|ifm|begin_of_text|>";
+pub const K2_IM_START: &str = "<|ifm|im_start|>";
+pub const K2_IM_END: &str = "<|ifm|im_end|>";
+pub const K2_THINK_START: &str = "<ifm|think>";
+pub const K2_THINK_END: &str = "</ifm|think>";
+pub const K2_TOOL_CALLS_START: &str = "<ifm|tool_calls>";
+pub const K2_TOOL_CALLS_END: &str = "</ifm|tool_calls>";
+pub const K2_TOOL_CALL_START: &str = "<ifm|tool_call>";
+pub const K2_TOOL_CALL_END: &str = "</ifm|tool_call>";
+pub const K2_ARG_KEY_START: &str = "<ifm|arg_key>";
+pub const K2_ARG_KEY_END: &str = "</ifm|arg_key>";
+pub const K2_ARG_VALUE_START: &str = "<ifm|arg_value>";
+pub const K2_ARG_VALUE_END: &str = "</ifm|arg_value>";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelSyntax {
@@ -69,6 +82,7 @@ pub enum ModelSyntax {
     Dots3 = 5,
     Qwen4Exp = 6,
     Glm53 = 7,
+    K2Horizon = 8,
 }
 
 /// C `server_model_syntax_for_engine`.
@@ -80,6 +94,7 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
         5 => ModelSyntax::Dots3,
         6 => ModelSyntax::Qwen4Exp,
         7 => ModelSyntax::Glm53,
+        8 => ModelSyntax::K2Horizon,
         _ => ModelSyntax::DeepSeek,
     }
 }
@@ -91,6 +106,7 @@ pub fn tool_start_marker(syntax: ModelSyntax) -> &'static str {
         ModelSyntax::Dots3 => DOTS3_TOOL_CALLS,
         ModelSyntax::Qwen4Exp => QWEN_TOOL_CALL_START,
         ModelSyntax::Glm53 => GLM_TOOL_CALL_START,
+        ModelSyntax::K2Horizon => K2_TOOL_CALLS_START,
         ModelSyntax::DeepSeek => DSML_TOOL_CALLS,
     }
 }
@@ -1814,6 +1830,7 @@ pub fn render_chat_choice(
         }
         ModelSyntax::Qwen4Exp => render_qwen_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
         ModelSyntax::Glm53 => render_glm_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
+        ModelSyntax::K2Horizon => render_k2_chat(msgs, tool_schemas, think_mode),
         ModelSyntax::DeepSeek => {
             render_dsml_chat_choice(msgs, tool_schemas, think_mode, tool_choice)
         }
@@ -1941,6 +1958,149 @@ pub fn render_live_tool_tail(
             out.push(b'\n');
             out.extend(render_qwen_chat_ex(tail, "", &[], think_mode)?);
         }
+        ModelSyntax::K2Horizon => {
+            put(&mut out, K2_IM_END);
+            let rendered = render_k2_chat(tail, "", think_mode)?;
+            out.extend_from_slice(
+                rendered
+                    .strip_prefix(K2_BOS.as_bytes())
+                    .unwrap_or(&rendered),
+            );
+        }
+    }
+    Ok(out)
+}
+
+fn append_k2_tools_system(out: &mut Vec<u8>, tool_schemas: &str, system: &str) {
+    put(out, K2_IM_START);
+    put(out, "system\n# Tools\nYou may call one or more tools to assist with the user query.\n\nAvailable tools are:\n\n<ifm|tools>\n");
+    put(out, tool_schemas);
+    put(out, "\n</ifm|tools>\n\nWhen calling tools, you MUST follow the tool-call format below:\n\nWrap all tool calls in a single <ifm|tool_calls></ifm|tool_calls> block. For each call, write the function name at the start of <ifm|tool_call>, followed by paired <ifm|arg_key> and <ifm|arg_value> tags for each argument:\n\n<ifm|tool_calls>\n<ifm|tool_call>$FUNCTION_NAME\n<ifm|arg_key>$PARAMETER_NAME</ifm|arg_key>\n<ifm|arg_value>$PARAMETER_VALUE</ifm|arg_value>\n...\n</ifm|tool_call>\n</ifm|tool_calls>\n\nString and scalar parameters should be written as plain text. Array and object parameters should be written as JSON literals.");
+    if !system.is_empty() {
+        put(out, "\n\n");
+        put(out, system);
+    }
+    put(out, K2_IM_END);
+}
+
+fn append_k2_arg(out: &mut Vec<u8>, arg: &crate::json::JsonArg) {
+    put(out, K2_ARG_KEY_START);
+    put(out, &arg.key);
+    put(out, K2_ARG_KEY_END);
+    out.push(b'\n');
+    put(out, K2_ARG_VALUE_START);
+    put(out, &arg.value);
+    put(out, K2_ARG_VALUE_END);
+    out.push(b'\n');
+}
+
+fn append_k2_arguments_from_json(out: &mut Vec<u8>, json: &str) -> bool {
+    let Some(args) = json_args_parse(json) else {
+        return false;
+    };
+    for arg in &args {
+        append_k2_arg(out, arg);
+    }
+    true
+}
+
+fn append_k2_tool_calls(out: &mut Vec<u8>, m: &ChatMsg) {
+    if m.calls.is_empty() {
+        return;
+    }
+    if !m.raw_dsml.is_empty() {
+        put(out, &m.raw_dsml);
+        return;
+    }
+    put(out, K2_TOOL_CALLS_START);
+    for tc in &m.calls {
+        put(out, "\n");
+        put(out, K2_TOOL_CALL_START);
+        put(out, &tc.name);
+        out.push(b'\n');
+        if !append_k2_arguments_from_json(out, &tc.arguments) {
+            put(out, K2_ARG_KEY_START);
+            put(out, "arguments");
+            put(out, K2_ARG_KEY_END);
+            out.push(b'\n');
+            put(out, K2_ARG_VALUE_START);
+            put(
+                out,
+                if tc.arguments.is_empty() {
+                    "{}"
+                } else {
+                    &tc.arguments
+                },
+            );
+            put(out, K2_ARG_VALUE_END);
+            out.push(b'\n');
+        }
+        put(out, K2_TOOL_CALL_END);
+    }
+    put(out, "\n");
+    put(out, K2_TOOL_CALLS_END);
+}
+
+/// Official IFM chat protocol using JSON tool presentation and default XML calls.
+pub fn render_k2_chat(
+    msgs: &[ChatMsg],
+    tool_schemas: &str,
+    think_mode: ThinkMode,
+) -> Result<Vec<u8>, RenderError> {
+    let mut out = Vec::new();
+    put(&mut out, K2_BOS);
+    let first_system = msgs.first().filter(|m| role_is_system(&m.role));
+    if !tool_schemas.is_empty() {
+        append_k2_tools_system(
+            &mut out,
+            tool_schemas,
+            first_system.map(|m| m.content.as_str()).unwrap_or(""),
+        );
+    }
+    for (i, m) in msgs.iter().enumerate() {
+        if role_is_system(&m.role) {
+            if i == 0 && !tool_schemas.is_empty() {
+                continue;
+            }
+            put(&mut out, K2_IM_START);
+            put(&mut out, "system\n");
+            put(&mut out, &m.content);
+            put(&mut out, K2_IM_END);
+            continue;
+        }
+        if m.role == "user" && !chat_msg_is_model_tool_result(m) {
+            put(&mut out, K2_IM_START);
+            put(&mut out, "user\n");
+            put(&mut out, &m.content);
+            put(&mut out, K2_IM_END);
+            continue;
+        }
+        if chat_msg_is_model_tool_result(m) {
+            put(&mut out, K2_IM_START);
+            put(&mut out, "tool\n");
+            put(&mut out, &m.content);
+            put(&mut out, K2_IM_END);
+            continue;
+        }
+        if m.role == "assistant" {
+            put(&mut out, K2_IM_START);
+            put(&mut out, "assistant\n");
+            put(&mut out, K2_THINK_START);
+            put(&mut out, "\n");
+            put(&mut out, &m.reasoning);
+            put(&mut out, K2_THINK_END);
+            put(&mut out, &m.content);
+            append_k2_tool_calls(&mut out, m);
+            put(&mut out, K2_IM_END);
+        }
+    }
+    put(&mut out, K2_IM_START);
+    put(&mut out, "assistant\n");
+    put(&mut out, K2_THINK_START);
+    put(&mut out, "\n");
+    if !think_mode_enabled(think_mode) {
+        put(&mut out, K2_THINK_END);
+        put(&mut out, "\n");
     }
     Ok(out)
 }

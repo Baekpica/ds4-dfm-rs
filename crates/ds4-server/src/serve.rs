@@ -809,7 +809,7 @@ fn prepare_cont_prompt<'a>(
     exec: &dyn ContExec,
 ) -> Option<&'a ContPreparedPrompt> {
     if job.cont_prompt.is_none() {
-        let (prompt, tokens) = cont_prompt_tokens(exec, &job.parsed).ok()?;
+        let (prompt, tokens) = cont_prompt_tokens(exec, &mut job.parsed).ok()?;
         job.cont_prompt = Some(ContPreparedPrompt { prompt, tokens });
     }
     job.cont_prompt.as_ref()

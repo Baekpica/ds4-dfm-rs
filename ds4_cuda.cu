@@ -271,12 +271,23 @@ static void cuda_mem_note_free(int cls, int dom, uint64_t requested,
  * traffic outside every bound map (kernel unit tests that map-swap
  * without an engine); serving boots reconcile it at zero. */
 static ds4_model_source_table g_model_srcs;
+static uint8_t g_model_needs_device_copy[DS4_MSRC_MAX];
 static ds4_mem_cell
     g_mem_src_census[DS4_MSRC_MAX + 1][DS4_MEMC__COUNT][DS4_MEMD__COUNT];
 
 static int cuda_mem_src_index(const void *p) {
     const int i = ds4_model_source_find(&g_model_srcs, p);
     return i >= 0 ? i : DS4_MSRC_MAX;
+}
+
+static int cuda_model_map_needs_device_copy(const void *model_map) {
+    const int src = cuda_mem_src_index(model_map);
+    return src >= 0 && src < DS4_MSRC_MAX &&
+           g_model_needs_device_copy[src] != 0;
+}
+
+extern "C" int ds4_gpu_model_map_needs_device_copy(const void *model_map) {
+    return cuda_model_map_needs_device_copy(model_map);
 }
 
 static void cuda_mem_note_alloc_srcidx(int cls, int dom, uint64_t requested,
@@ -3342,7 +3353,8 @@ static char *cuda_model_arena_alloc(const void *model_map, uint64_t bytes,
         }
     }
 
-    const uint64_t limit = cuda_model_cache_limit_bytes();
+    const uint64_t limit = cuda_model_map_needs_device_copy(model_map)
+        ? UINT64_MAX : cuda_model_cache_limit_bytes();
     if (g_model_range_bytes > limit || aligned > limit - g_model_range_bytes) return NULL;
 
     const uint64_t chunk = cuda_model_arena_chunk_bytes(aligned);
@@ -3415,6 +3427,9 @@ static int cuda_stage_copy_to_dev(const void *model_map, uint64_t offset,
                                   int direct_discard, const char *what) {
     const int fd_source = g_model_fd >= 0 && g_model_fd_host_base &&
                           model_map == g_model_fd_host_base;
+    const int src = cuda_mem_src_index(model_map);
+    const uint64_t model_size = src >= 0 && src < DS4_MSRC_MAX
+        ? g_model_srcs.v[src].map_len : g_model_registered_size;
     cudaError_t err = cudaSuccess;
     const uint64_t chunk = cuda_model_copy_chunk_bytes();
     const uint64_t stage_bytes = chunk + (g_model_direct_align > 1 ? g_model_direct_align : 1);
@@ -3468,9 +3483,10 @@ static int cuda_stage_copy_to_dev(const void *model_map, uint64_t offset,
             (void)cudaGetLastError();
             return 0;
         }
-        if (direct_discard && fd_source) {
-            cuda_model_drop_file_pages(offset + copied, n);
-            cuda_model_discard_source_pages(model_map, g_model_registered_size, offset + copied, n);
+        if (direct_discard) {
+            if (fd_source) cuda_model_drop_file_pages(offset + copied, n);
+            cuda_model_discard_source_pages(model_map, model_size,
+                                            offset + copied, n);
         }
         copied += n;
         cuda_model_load_progress_note(g_model_range_bytes + copied);
@@ -3618,7 +3634,8 @@ static const char *cuda_model_range_ptr_from_fd(
     int lo = -1, hi = -1;
     ds4_units_span_of(units, nu, offset, bytes, &lo, &hi);
     if (lo < 0) return NULL;
-    const uint64_t limit = cuda_model_map_replaces_complete(model_map)
+    const uint64_t limit = (cuda_model_map_replaces_complete(model_map) ||
+                            cuda_model_map_needs_device_copy(model_map))
         ? UINT64_MAX
         : cuda_model_cache_limit_bytes();
     for (int ui = lo; ui <= hi; ui++) {
@@ -4340,6 +4357,7 @@ extern "C" void ds4_gpu_cleanup(void) {
     g_model_range_mapping_supported = 1;
     g_model_hmm_direct = 0;
     g_model_coherent_direct_map = NULL;
+    memset(g_model_needs_device_copy, 0, sizeof g_model_needs_device_copy);
     g_model_fd = -1;
     if (g_model_direct_fd >= 0) {
         (void)close(g_model_direct_fd);
@@ -4942,6 +4960,9 @@ extern "C" int ds4_gpu_set_model_map(const void *model_map, uint64_t model_size)
     if (model_map == g_model_coherent_direct_map)
         g_model_coherent_direct_map = NULL;
     g_model_cache_full = 0;
+    const int model_src = cuda_mem_src_index(model_map);
+    if (model_src >= 0 && model_src < DS4_MSRC_MAX)
+        g_model_needs_device_copy[model_src] = 0;
     // Bind g_model_fd to this model on first registration. set_model_fd is
     // called once for the main model before the first set_model_map call;
     // subsequent set_model_map calls (e.g. for an auxiliary model like an MTP
@@ -5058,6 +5079,17 @@ extern "C" int ds4_gpu_set_model_map(const void *model_map, uint64_t model_size)
     } else {
         fprintf(stderr, "ds4: CUDA host registration skipped: %s\n", cudaGetErrorString(err));
         (void)cudaGetLastError();
+        int integrated = 0;
+        int reg_dev = 0;
+        if (cudaGetDevice(&reg_dev) == cudaSuccess)
+            (void)cudaDeviceGetAttribute(&integrated, cudaDevAttrIntegrated,
+                                         reg_dev);
+        if (integrated && model_src >= 0 && model_src < DS4_MSRC_MAX) {
+            g_model_needs_device_copy[model_src] = 1;
+            fprintf(stderr,
+                    "ds4: CUDA integrated: promoting unregistered model map "
+                    "through the device VMM arena\n");
+        }
     }
     return 1;
 }
@@ -5072,6 +5104,8 @@ extern "C" void ds4_gpu_unregister_model_map(const void *base) {
      * host-registration state: device artifacts and imported ranges of other
      * maps are left alone. */
     if (!base) return;
+    const int src = cuda_mem_src_index(base);
+    if (src >= 0 && src < DS4_MSRC_MAX) g_model_needs_device_copy[src] = 0;
     if (g_model_coherent_direct_map == base) g_model_coherent_direct_map = NULL;
     if (g_model_registered && g_model_host_base == base) {
         (void)cudaHostUnregister((void *)base);
@@ -6565,13 +6599,15 @@ extern "C" int ds4_gpu_materialize_model_plan(const void *model_map,
     const int lazy_schedule =
         src >= 0 && src < DS4_MSRC_MAX &&
         g_model_srcs.v[src].residency == DS4_RESIDENCY_LAZY_COPY_DEVICE;
-    const uint64_t limit = cuda_model_map_replaces_complete(model_map)
+    const uint64_t limit = (cuda_model_map_replaces_complete(model_map) ||
+                            cuda_model_map_needs_device_copy(model_map))
         ? UINT64_MAX
         : cuda_model_cache_limit_bytes();
     /* Coupled source mode (see cuda_stage_copy_to_dev): default buffered
      * + no discard = the pre-D1b boot's page-cache shape; the env flips
      * eager to O_DIRECT + discard (the F4 measured mode). */
     const int direct_discard =
+        cuda_model_map_needs_device_copy(model_map) ||
         getenv("DS4_CUDA_EAGER_SOURCE_DISCARD") != NULL;
     uint64_t counts[DS4_RESUNIT__COUNT] = {0};
     uint32_t promote = 0, funded = 0, unfunded = 0;
@@ -6703,7 +6739,8 @@ extern "C" int ds4_gpu_cache_model_range(const void *model_map, uint64_t model_s
         g_substrate_promotable_total += bytes;
     if (getenv("DS4_CUDA_NO_HBM_CACHE") != NULL) return 2;
     if (g_model_device_owned) { cuda_substrate_cover(model_map, bytes); return 2; }
-    const uint64_t limit = cuda_model_map_replaces_complete(model_map)
+    const uint64_t limit = (cuda_model_map_replaces_complete(model_map) ||
+                            cuda_model_map_needs_device_copy(model_map))
         ? UINT64_MAX
         : cuda_model_cache_limit_bytes();
     if (g_model_range_bytes >= limit || bytes > limit - g_model_range_bytes) {
@@ -32506,6 +32543,9 @@ static int routed_matmul_tensor_impl(
     case 13u: block_size = 176u; break;                    /* Q5_K */
     case 14u: block_size = 210u; break;                    /* Q6_K */
     case 16u: block_size = 66u; break;                     /* IQ2_XXS */
+    case 17u: block_size = 74u; break;                     /* IQ2_XS */
+    case 19u: block_size = 50u; break;                     /* IQ1_S */
+    case 29u: block_size = 56u; break;                     /* IQ1_M */
     default:
         fprintf(stderr, "ds4: routed matmul unsupported weight type %u\n",
                 weight_type);
@@ -32665,6 +32705,21 @@ static int routed_matmul_tensor_impl(
         rc = use_vec
             ? vec_rows(ds4_mmq_iq2_xxs_moe_vec)
             : ds4_mmq_iq2_xxs_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
+        break;
+    case 17u:
+        rc = use_vec
+            ? vec_rows(ds4_mmq_iq2_xs_moe_vec)
+            : ds4_mmq_iq2_xs_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
+        break;
+    case 19u:
+        rc = use_vec
+            ? vec_rows(ds4_mmq_iq1_s_moe_vec)
+            : ds4_mmq_iq1_s_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
+        break;
+    case 29u:
+        /* The vendored MMQ tile family has no IQ1_M specialization. MMVQ
+         * supports it and internally chunks wide token batches safely. */
+        rc = vec_rows(ds4_mmq_iq1_m_moe_vec);
         break;
     }
     if (rc != 0) {
@@ -45492,23 +45547,26 @@ __global__ static void exaone_qk_norm_rope_kernel(
     const uint32_t nth = blockDim.x;
     __shared__ float sh[32];
 
-    float sumsq = 0.0f;
-    for (uint32_t i = tid; i < head_dim; i += nth) sumsq += p[i] * p[i];
-    for (int off = 16; off > 0; off >>= 1) sumsq += __shfl_xor_sync(0xffffffffu, sumsq, off);
-    if ((tid & 31u) == 0u) sh[tid >> 5] = sumsq;
-    __syncthreads();
-    if (tid < 32u) {
-        sumsq = (tid < (nth + 31u) / 32u) ? sh[tid] : 0.0f;
+    if (norm_w) {
+        float sumsq = 0.0f;
+        for (uint32_t i = tid; i < head_dim; i += nth) sumsq += p[i] * p[i];
         for (int off = 16; off > 0; off >>= 1) sumsq += __shfl_xor_sync(0xffffffffu, sumsq, off);
-        if (tid == 0u) sh[0] = sumsq;
+        if ((tid & 31u) == 0u) sh[tid >> 5] = sumsq;
+        __syncthreads();
+        if (tid < 32u) {
+            sumsq = (tid < (nth + 31u) / 32u) ? sh[tid] : 0.0f;
+            for (int off = 16; off > 0; off >>= 1) sumsq += __shfl_xor_sync(0xffffffffu, sumsq, off);
+            if (tid == 0u) sh[0] = sumsq;
+        }
+        __syncthreads();
+        const float scale = rsqrtf(sh[0] / (float)head_dim + eps);
+        for (uint32_t i = tid; i < head_dim; i += nth) p[i] = (p[i] * scale) * norm_w[i];
+        __syncthreads();
     }
-    __syncthreads();
-    const float scale = rsqrtf(sh[0] / (float)head_dim + eps);
-    for (uint32_t i = tid; i < head_dim; i += nth) p[i] = (p[i] * scale) * norm_w[i];
-    __syncthreads();
 
     if (!do_rope) return;
     const uint32_t half = n_rot / 2u;
+    const uint32_t pair_stride = head_dim / 2u;
     for (uint32_t i = tid; i < half; i += nth) {
         /* Both trig steps go through double on purpose.
          *
@@ -45530,9 +45588,9 @@ __global__ static void exaone_qk_norm_rope_kernel(
         const float theta = (float)pos * freq;
         const double tr = fmod((double)theta, 2.0 * 3.14159265358979323846);
         const float c = (float)cos(tr), s = (float)sin(tr);
-        const float a = p[i], b = p[i + half];
+        const float a = p[i], b = p[i + pair_stride];
         p[i]        = a * c - b * s;
-        p[i + half] = a * s + b * c;
+        p[i + pair_stride] = a * s + b * c;
     }
 }
 
@@ -45904,6 +45962,26 @@ extern "C" int ds4_gpu_exaone_qk_norm_rope_tensor(
     return cuda_ok(cudaGetLastError(), "exaone qk norm rope");
 }
 
+extern "C" int ds4_gpu_exaone_rope_tensor(
+        ds4_gpu_tensor *v,
+        uint32_t        n_heads,
+        uint32_t        head_dim,
+        uint32_t        n_rot,
+        uint32_t        pos0,
+        uint32_t        n_tokens,
+        float           freq_base) {
+    if (!v || n_heads == 0u || head_dim == 0u || n_tokens == 0u ||
+        n_rot == 0u || n_rot > head_dim || (n_rot & 1u) != 0u ||
+        v->bytes < (uint64_t)n_heads * head_dim * n_tokens * sizeof(float)) {
+        return 0;
+    }
+    dim3 grid(n_heads, n_tokens, 1u);
+    exaone_qk_norm_rope_kernel<<<grid, 128, 0, cuda_decode_stream()>>>(
+            (float *)v->ptr, NULL, n_heads, head_dim, n_rot, pos0,
+            freq_base, 0.0f, 1);
+    return cuda_ok(cudaGetLastError(), "exaone neox rope");
+}
+
 extern "C" int ds4_gpu_exaone_kv_store_tensor(
         ds4_gpu_tensor       *kv,
         const ds4_gpu_tensor *k,
@@ -45990,6 +46068,31 @@ extern "C" int ds4_gpu_exaone_attention_prefill_tensor(
     }
     const uint32_t shmem = (head_dim / 32u) * head_dim * (uint32_t)sizeof(float);
     const float scale = rsqrtf((float)head_dim);
+
+    /* EXAONE/K2 KV is the same [K|V] f16 row as Solar BF16. Full-attention
+     * prefill of 64+ tokens can reuse the HMMA tile kernel; nsys 8K put the
+     * generic warp walk at 41% of K2 prefill GPU time. Sliding windows stay
+     * on the warp path (ring+window contract). DS4_EXAONE_PREFILL_HMMA=0
+     * restores the warp path. */
+    const char *hmma_env = getenv("DS4_EXAONE_PREFILL_HMMA");
+    const int hmma_enabled = !(hmma_env && hmma_env[0] == '0');
+    if (hmma_enabled && head_dim == 128u && n_tokens >= 64u && window == 0u) {
+        const int rc = ds4_mmq_exaone_prefill_attn_hmma(
+            (float *)heads->ptr, (const float *)q->ptr, kv->ptr,
+            (int)n_tokens, (int)pos0, (int)n_head, (int)n_head_kv,
+            (int)head_dim, (int)kv_cap, (int)window, scale,
+            cuda_decode_stream());
+        if (rc == 0) {
+            static int logged = 0;
+            if (!logged) {
+                fprintf(stderr,
+                        "ds4: EXAONE/K2 prefill attention using HMMA tiles\n");
+                logged = 1;
+            }
+            return 1;
+        }
+    }
+
     dim3 grid(n_tokens, n_head, 1u);
     DS4_EXAONE_ATTN_DISPATCH(exaone_attn_prefill_kernel, grid, shmem,
                              (float *)heads->ptr, (const float *)q->ptr,
@@ -46146,6 +46249,17 @@ extern "C" int ds4_gpu_exaone_moe_matmul_tensor(
     case 16u: /* IQ2_XXS */
         rc = vec ? ds4_mmq_iq2_xxs_moe_vec(w, xp, idp, op, M, K, NT, NE, NU, st)
                  : ds4_mmq_iq2_xxs_moe(w, xp, idp, op, M, K, NT, NE, NU, st);
+        break;
+    case 17u: /* IQ2_XS */
+        rc = vec ? ds4_mmq_iq2_xs_moe_vec(w, xp, idp, op, M, K, NT, NE, NU, st)
+                 : ds4_mmq_iq2_xs_moe(w, xp, idp, op, M, K, NT, NE, NU, st);
+        break;
+    case 19u: /* IQ1_S */
+        rc = vec ? ds4_mmq_iq1_s_moe_vec(w, xp, idp, op, M, K, NT, NE, NU, st)
+                 : ds4_mmq_iq1_s_moe(w, xp, idp, op, M, K, NT, NE, NU, st);
+        break;
+    case 29u: /* IQ1_M: mmvq only */
+        rc = ds4_mmq_iq1_m_moe_vec(w, xp, idp, op, M, K, NT, NE, NU, st);
         break;
     case 11u: /* Q3_K */
         rc = vec ? ds4_mmq_q3_K_moe_vec(w, xp, idp, op, M, K, NT, NE, NU, st)

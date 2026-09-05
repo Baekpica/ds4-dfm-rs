@@ -251,7 +251,7 @@ enum {
      * lossless in-forward-emit+rollback path needs 4 checkpoint depths. */
     DS4_MTP_RB_DEPTH         = 4,
     DS4_MAX_EMBD             = 7168,
-    DS4_MAX_VOCAB            = 248320,
+    DS4_MAX_VOCAB            = 250624,
     DS4_MAX_HEAD             = 128,
     DS4_MAX_HEAD_KV          = 16,
     DS4_MAX_HEAD_DIM         = 512,
@@ -292,6 +292,7 @@ typedef enum {
     DS4_VARIANT_DOTS3_NOTE_PREV = 5,
     DS4_VARIANT_QWEN38_FLASH_NEXT = 6,
     DS4_VARIANT_GLM53_FLASH     = 7,
+    DS4_VARIANT_K2_HORIZON_375B = 8,
 } ds4_variant;
 
 typedef struct {
@@ -615,6 +616,40 @@ static const ds4_shape DS4_SHAPE_KEXAONE_236B = {
     .rope_yarn_beta_slow = 0.0f,
     .compress_rope_freq_base = 0.0f,
     .rope_orig_ctx = 262144,
+};
+
+/* IFM K2-Horizon-375B-A23B. Same GQA+MoE execution family as K-EXAONE, but
+ * every block is full attention, RoPE is partial NeoX (64 of 128 dims,
+ * base 1e7), three leading dense MLPs, no Q/K norm, no MTP. A separate
+ * variant keeps the K-EXAONE LLLG/QK-norm/MTP contract strict. */
+static const ds4_shape DS4_SHAPE_K2_HORIZON_375B = {
+    .name = "K2-Horizon 375B A23B",
+    .family = DS4_MODEL_FAMILY_EXAONE_MOE,
+    .variant = DS4_VARIANT_K2_HORIZON_375B,
+    .n_layer = 61,
+    .n_embd = 6144,
+    .n_vocab = 250624,
+    .n_head = 48,
+    .n_head_kv = 8,
+    .n_head_dim = 128,
+    .n_value_dim = 128,
+    .n_rot = 64,
+    .n_expert = 192,
+    .n_expert_used = 8,
+    .n_expert_shared = 1,
+    .n_ff_exp = 1792,
+    .n_ff_shexp = 1792,
+    .n_ff_dense = 16384,
+    .n_full_attn_count = 61,
+    .n_nextn_predict = 0,
+    .n_leading_dense = 3,
+    .use_rope = true,
+    .use_qk_norm = false,
+    .rms_eps = 1.0e-6f,
+    .expert_weight_scale = 2.5f,
+    .rope_freq_base = 10000000.0f,
+    .rope_scale_factor = 1.0f,
+    .rope_orig_ctx = 524288,
 };
 
 /* dots-studio/dots3-note-prev, language+MTP conversion.  Pinned to source
@@ -1893,7 +1928,7 @@ static const gguf_type_info gguf_types[] = {
     [16] = {"iq2_xxs",256,  66},
     [17] = {"iq2_xs", 256,  74},
     [18] = {"iq3_xxs",256,  98},
-    [19] = {"iq1_s",  256, 110},
+    [19] = {"iq1_s",  256,  50},
     [20] = {"iq4_nl", 256,  50},
     [21] = {"iq3_s",  256, 110},
     [22] = {"iq2_s",  256,  82},
@@ -1920,8 +1955,11 @@ enum {
     DS4_TENSOR_Q5_K     = 13,
     DS4_TENSOR_Q6_K     = 14,
     DS4_TENSOR_IQ2_XXS  = 16,
+    DS4_TENSOR_IQ2_XS   = 17,
+    DS4_TENSOR_IQ1_S    = 19,
     DS4_TENSOR_I32      = 26,
     DS4_TENSOR_I64      = 27,
+    DS4_TENSOR_IQ1_M    = 29,
     DS4_TENSOR_BF16     = 30,
     DS4_TENSOR_MXFP4    = 39,
 };
@@ -2158,6 +2196,9 @@ static void model_apply_host_shape(void) {
         break;
     case DS4_VARIANT_GLM53_FLASH:
         g_ds4_shape = DS4_SHAPE_GLM53_FLASH;
+        break;
+    case DS4_VARIANT_K2_HORIZON_375B:
+        g_ds4_shape = DS4_SHAPE_K2_HORIZON_375B;
         break;
     default:
         ds4_die("unsupported");
@@ -5513,6 +5554,9 @@ static bool tensor_type_is_exaone_quant(uint32_t type) {
            type == DS4_TENSOR_Q3_K ||
            type == DS4_TENSOR_Q2_K ||
            type == DS4_TENSOR_IQ2_XXS ||
+           type == DS4_TENSOR_IQ2_XS ||
+           type == DS4_TENSOR_IQ1_S ||
+           type == DS4_TENSOR_IQ1_M ||
            type == DS4_TENSOR_F16 ||
            type == DS4_TENSOR_F32;
 }
@@ -5528,7 +5572,7 @@ static void tensor_expect_exaone_quant_layout(
         fprintf(stderr,
                 "ds4: tensor %.*s has type %s, which the exaone-moe recipe does "
                 "not emit (expected one of q8_0, q6_K, q5_K, q4_K, q3_K, q2_K, "
-                "iq2_xxs, f16, f32)\n",
+                "iq2_xxs, iq2_xs, iq1_s, iq1_m, f16, f32)\n",
                 (int)t->name.len, t->name.ptr, tensor_type_name(t->type));
         exit(1);
     }
@@ -6938,6 +6982,81 @@ static void config_validate_exaone_moe_model(const ds4_model *m) {
     }
 }
 
+static void config_validate_k2_horizon_model(const ds4_model *m) {
+    g_ds4_shape = DS4_SHAPE_K2_HORIZON_375B;
+    memset(g_ds4_compress_ratios, 0, sizeof(g_ds4_compress_ratios));
+
+    config_expect_u32("block_count",
+                      required_u32(m, "k2-horizon.block_count"), DS4_N_LAYER);
+    config_expect_u64("context_length",
+                      required_u64_compat(m, "k2-horizon.context_length"),
+                      DS4_ROPE_ORIG_CTX);
+    config_expect_u32("embedding_length",
+                      required_u32(m, "k2-horizon.embedding_length"),
+                      DS4_N_EMBD);
+    config_expect_u32("feed_forward_length",
+                      required_u32(m, "k2-horizon.feed_forward_length"),
+                      DS4_N_FF_DENSE);
+    config_expect_u32("attention.head_count",
+                      required_u32(m, "k2-horizon.attention.head_count"),
+                      DS4_N_HEAD);
+    config_expect_u32("attention.head_count_kv",
+                      required_u32(m, "k2-horizon.attention.head_count_kv"),
+                      DS4_N_HEAD_KV);
+    config_expect_u32("attention.key_length",
+                      required_u32(m, "k2-horizon.attention.key_length"),
+                      DS4_N_HEAD_DIM);
+    config_expect_u32("attention.value_length",
+                      required_u32(m, "k2-horizon.attention.value_length"),
+                      DS4_N_VALUE_DIM);
+    config_expect_u32("attention.group_norm_groups",
+                      required_u32(m,
+                                   "k2-horizon.attention.group_norm_groups"),
+                      1u);
+    config_expect_u32("rope.dimension_count",
+                      required_u32(m, "k2-horizon.rope.dimension_count"),
+                      DS4_N_ROT);
+    config_expect_u32("expert_count",
+                      required_u32(m, "k2-horizon.expert_count"),
+                      DS4_N_EXPERT);
+    config_expect_u32("expert_used_count",
+                      required_u32(m, "k2-horizon.expert_used_count"),
+                      DS4_N_EXPERT_USED);
+    config_expect_u32("expert_feed_forward_length",
+                      required_u32(m,
+                                   "k2-horizon.expert_feed_forward_length"),
+                      DS4_N_FF_EXP);
+    config_expect_u32("leading_dense_block_count",
+                      required_u32(m,
+                                   "k2-horizon.leading_dense_block_count"),
+                      DS4_N_LEADING_DENSE);
+    config_expect_u32("moe_every_n_layers",
+                      required_u32(m, "k2-horizon.moe_every_n_layers"), 1u);
+    config_expect_u32("expert_shared_count",
+                      required_u32(m, "k2-horizon.expert_shared_count"),
+                      DS4_N_EXPERT_SHARED);
+    config_expect_u32(
+        "expert_shared_feed_forward_length",
+        required_u32(m, "k2-horizon.expert_shared_feed_forward_length"),
+        DS4_N_FF_SHEXP);
+    config_expect_u32("expert_gating_func",
+                      required_u32(m, "k2-horizon.expert_gating_func"), 2u);
+    config_expect_f32("rope.freq_base",
+                      required_f32(m, "k2-horizon.rope.freq_base"),
+                      DS4_ROPE_FREQ_BASE);
+    config_expect_f32(
+        "attention.layer_norm_rms_epsilon",
+        required_f32(m,
+                     "k2-horizon.attention.layer_norm_rms_epsilon"),
+        DS4_RMS_EPS);
+    config_expect_f32("expert_weights_scale",
+                      required_f32(m, "k2-horizon.expert_weights_scale"),
+                      DS4_EXPERT_WEIGHT_SCALE);
+    config_expect_bool("expert_weights_norm",
+                       required_bool(m, "k2-horizon.expert_weights_norm"),
+                       true);
+}
+
 /* The first SSD-PLE artifact deliberately removes all 128 BF16 embedding
  * tables from the GGUF resident-weight set. Treat that as a strict storage
  * contract, not an optional hint: a runtime that ignores these fields must
@@ -7201,6 +7320,10 @@ static void config_validate_model(const ds4_model *m) {
     }
     if (ds4_streq(arch, "exaone-moe")) {
         config_validate_exaone_moe_model(m);
+        return;
+    }
+    if (ds4_streq(arch, "k2-horizon")) {
+        config_validate_k2_horizon_model(m);
         return;
     }
     if (ds4_streq(arch, "solar-open2")) {
@@ -13898,7 +14021,9 @@ static void exaone_rmsnorm(float *out, const float *x, const ds4_model *m,
 }
 
 /* NeoX rotary: the head is split in half and element i is rotated against
- * i + half, unlike the "normal" variant that pairs adjacent elements.
+ * i + head_dim/2, unlike the "normal" variant that pairs adjacent elements.
+ * n_rot controls how many values participate; it does not move the second
+ * half inward.  That distinction matters for K2's 64-of-128 partial RoPE.
  *
  * The frequency is computed in double and rounded once. It looks like an
  * overreaction for a table of 64 constants, but the position multiplies it:
@@ -13910,6 +14035,7 @@ static void exaone_rmsnorm(float *out, const float *x, const ds4_model *m,
 static void exaone_rope_neox(float *v, uint32_t n_heads, uint32_t head_dim,
                              uint32_t n_rot, uint32_t pos, float freq_base) {
     const uint32_t half = n_rot / 2;
+    const uint32_t pair_stride = head_dim / 2;
     for (uint32_t h = 0; h < n_heads; h++) {
         float *p = v + (size_t)h * head_dim;
         for (uint32_t i = 0; i < half; i++) {
@@ -13918,9 +14044,9 @@ static void exaone_rope_neox(float *v, uint32_t n_heads, uint32_t head_dim,
             const float theta = (float)pos * freq;
             const double tr = fmod((double)theta, 2.0 * M_PI);
             const float c = (float)cos(tr), s = (float)sin(tr);
-            const float a = p[i], b = p[i + half];
+            const float a = p[i], b = p[i + pair_stride];
             p[i]        = a * c - b * s;
-            p[i + half] = a * s + b * c;
+            p[i + pair_stride] = a * s + b * c;
         }
     }
 }
@@ -13970,6 +14096,9 @@ static void exaone_kv_cache_free(exaone_kv_cache *c) {
 
 static bool exaone_layer_is_sliding(uint32_t il) {
     /* LLLG: full attention on every n_swa_period-th layer. */
+    if (DS4_N_SWA == 0u || DS4_N_SWA_PERIOD == 0u) {
+        return false;
+    }
     return (il % DS4_N_SWA_PERIOD) != DS4_N_SWA_PERIOD - 1u;
 }
 
@@ -13996,7 +14125,7 @@ static void exaone_attn_one(float *out, const ds4_model *m,
     }
 
     const bool sliding = exaone_layer_is_sliding(il);
-    if (sliding) {
+    if (sliding || DS4_USE_ROPE) {
         exaone_rope_neox(q, n_h,    hd, DS4_N_ROT, pos, DS4_ROPE_FREQ_BASE);
         exaone_rope_neox(k, n_kv_h, hd, DS4_N_ROT, pos, DS4_ROPE_FREQ_BASE);
     }
@@ -32976,7 +33105,7 @@ static ds4_context_memory exaone_graph_context_memory_estimate(
         uint32_t ctx, uint32_t requested_prefill) {
     ds4_context_memory m = {0};
     if (ctx == 0u || DS4_N_LAYER <= DS4_N_NEXTN_PREDICT ||
-        DS4_N_SWA == 0u || DS4_N_SWA_PERIOD == 0u) {
+        ((DS4_N_SWA == 0u) != (DS4_N_SWA_PERIOD == 0u))) {
         return m;
     }
     const uint32_t P =
@@ -41742,12 +41871,17 @@ static bool exaone_graph_alloc_with_ws(ds4_exaone_gpu_graph *g,
     }
     g->kv_bytes = kv_bytes;
 
+    uint32_t n_sliding = 0u;
+    for (uint32_t il = 0; il < n_exec; il++) {
+        if (exaone_graph_layer_is_sliding(il)) {
+            n_sliding++;
+        }
+    }
     ds4_log(stderr, DS4_LOG_TIMING,
             "ds4: exaone graph: ctx %u, prefill chunk %u, "
             "KV %.2f GiB (%u full + %u sliding layers), workspace %.2f GiB\n",
             ctx_size, g->prefill_cap, (double)kv_bytes / 1073741824.0,
-            n_exec / DS4_N_SWA_PERIOD,
-            n_exec - n_exec / DS4_N_SWA_PERIOD,
+            n_exec - n_sliding, n_sliding,
             (double)ws / 1073741824.0);
     return true;
 }
@@ -41800,6 +41934,14 @@ static bool exaone_graph_decode_attention_rows(
                      kr, m->map, m->size, l->attn_k_norm->abs_offset,
                      DS4_N_HEAD_KV, DS4_N_HEAD_DIM, DS4_N_ROT, rows[t].pos,
                      1u, DS4_ROPE_FREQ_BASE, DS4_RMS_EPS, sliding);
+        }
+        if (ok && DS4_USE_ROPE && !DS4_USE_QK_NORM) {
+            ok = ds4_gpu_exaone_rope_tensor(
+                     qr, DS4_N_HEAD, DS4_N_HEAD_DIM, DS4_N_ROT,
+                     rows[t].pos, 1u, DS4_ROPE_FREQ_BASE) &&
+                 ds4_gpu_exaone_rope_tensor(
+                     kr, DS4_N_HEAD_KV, DS4_N_HEAD_DIM, DS4_N_ROT,
+                     rows[t].pos, 1u, DS4_ROPE_FREQ_BASE);
         }
         if (ok) {
             ok = ds4_gpu_exaone_kv_store_tensor(
@@ -41868,6 +42010,16 @@ static bool exaone_graph_layer(ds4_exaone_gpu_graph *g,
                                                 DS4_ROPE_FREQ_BASE, DS4_RMS_EPS,
                                                 sliding))
             return false;
+    }
+    if (!rows && DS4_USE_ROPE && !DS4_USE_QK_NORM) {
+        if (!ds4_gpu_exaone_rope_tensor(q, DS4_N_HEAD, DS4_N_HEAD_DIM,
+                                        DS4_N_ROT, pos0, n_tok,
+                                        DS4_ROPE_FREQ_BASE) ||
+            !ds4_gpu_exaone_rope_tensor(k, DS4_N_HEAD_KV, DS4_N_HEAD_DIM,
+                                        DS4_N_ROT, pos0, n_tok,
+                                        DS4_ROPE_FREQ_BASE)) {
+            return false;
+        }
     }
 
     if (rows) {
@@ -64379,13 +64531,17 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                 up.merge_gap = 65536;
                 up.max_unit_bytes = accelerator_cuda_preload_span_bytes();
                 up.vmm_granularity = 256;   /* the weight-arena bump align */
+                const int needs_device_copy =
+                    ds4_gpu_model_map_needs_device_copy(mm->map) != 0;
                 /* memgov D3-2: the stamp input is the RESOLVED per-source
                  * policy (uts[] order == res_pol[] order); the env was
                  * read exactly once, at the resolver above. */
                 up.device_promote =
+                    needs_device_copy ||
                     res_pol[si] != DS4_RESIDENCY_HOST_MAPPED;
                 up.replaces_complete =
                     ds4_gpu_model_map_replaces_complete(mm->map) != 0;
+                up.promote_experts = needs_device_copy;
                 const int nu = ds4_units_compile(tin, n, &up, units);
                 uint32_t viol = nu < 0 ? 1
                     : ds4_units_verify(tin, n, &up, units, nu);

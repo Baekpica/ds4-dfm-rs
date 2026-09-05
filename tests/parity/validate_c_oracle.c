@@ -730,6 +730,58 @@ static int validate_exaone(const ds4_model *m)
     return 0;
 }
 
+static int validate_k2(const ds4_model *m)
+{
+    uint32_t u = 0;
+    uint64_t u64 = 0;
+    float f = 0;
+    bool b = false;
+
+    if (req_u32(m, "k2-horizon.block_count", &u) || exp_u32("block_count", u, 61)) return 1;
+    if (req_u64c(m, "k2-horizon.context_length", &u64) ||
+        exp_u64("context_length", u64, 524288)) return 1;
+    if (req_u32(m, "k2-horizon.embedding_length", &u) ||
+        exp_u32("embedding_length", u, 6144)) return 1;
+    if (req_u32(m, "k2-horizon.feed_forward_length", &u) ||
+        exp_u32("feed_forward_length", u, 16384)) return 1;
+    if (req_u32(m, "k2-horizon.attention.head_count", &u) ||
+        exp_u32("attention.head_count", u, 48)) return 1;
+    if (req_u32(m, "k2-horizon.attention.head_count_kv", &u) ||
+        exp_u32("attention.head_count_kv", u, 8)) return 1;
+    if (req_u32(m, "k2-horizon.attention.key_length", &u) ||
+        exp_u32("attention.key_length", u, 128)) return 1;
+    if (req_u32(m, "k2-horizon.attention.value_length", &u) ||
+        exp_u32("attention.value_length", u, 128)) return 1;
+    if (req_u32(m, "k2-horizon.attention.group_norm_groups", &u) ||
+        exp_u32("attention.group_norm_groups", u, 1)) return 1;
+    if (req_u32(m, "k2-horizon.rope.dimension_count", &u) ||
+        exp_u32("rope.dimension_count", u, 64)) return 1;
+    if (req_u32(m, "k2-horizon.expert_count", &u) || exp_u32("expert_count", u, 192)) return 1;
+    if (req_u32(m, "k2-horizon.expert_used_count", &u) ||
+        exp_u32("expert_used_count", u, 8)) return 1;
+    if (req_u32(m, "k2-horizon.expert_feed_forward_length", &u) ||
+        exp_u32("expert_feed_forward_length", u, 1792)) return 1;
+    if (req_u32(m, "k2-horizon.leading_dense_block_count", &u) ||
+        exp_u32("leading_dense_block_count", u, 3)) return 1;
+    if (req_u32(m, "k2-horizon.moe_every_n_layers", &u) ||
+        exp_u32("moe_every_n_layers", u, 1)) return 1;
+    if (req_u32(m, "k2-horizon.expert_shared_count", &u) ||
+        exp_u32("expert_shared_count", u, 1)) return 1;
+    if (req_u32(m, "k2-horizon.expert_shared_feed_forward_length", &u) ||
+        exp_u32("expert_shared_feed_forward_length", u, 1792)) return 1;
+    if (req_u32(m, "k2-horizon.expert_gating_func", &u) ||
+        exp_u32("expert_gating_func", u, 2)) return 1;
+    if (req_f32(m, "k2-horizon.rope.freq_base", &f) ||
+        exp_f32("rope.freq_base", f, 10000000.0f)) return 1;
+    if (req_f32(m, "k2-horizon.attention.layer_norm_rms_epsilon", &f) ||
+        exp_f32("attention.layer_norm_rms_epsilon", f, 1.0e-6f)) return 1;
+    if (req_f32(m, "k2-horizon.expert_weights_scale", &f) ||
+        exp_f32("expert_weights_scale", f, 2.5f)) return 1;
+    if (req_bool(m, "k2-horizon.expert_weights_norm", &b) ||
+        exp_bool("expert_weights_norm", b, true)) return 1;
+    return 0;
+}
+
 static void dump_validate(const ds4_model *m)
 {
     ds4_str arch = {0};
@@ -758,6 +810,11 @@ static void dump_validate(const ds4_model *m)
     }
     if (ds4_streq(arch, "dots3-note")) {
         if (validate_dots3(m)) { printf("%s\n", g_tok); return; }
+        printf("ok\n");
+        return;
+    }
+    if (ds4_streq(arch, "k2-horizon")) {
+        if (validate_k2(m)) { printf("%s\n", g_tok); return; }
         printf("ok\n");
         return;
     }

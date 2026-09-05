@@ -461,6 +461,45 @@ fn load(family: ModelFamily, path: &Path) -> Vocab {
     Vocab::load_path(path, family).expect("rust vocab_load")
 }
 
+#[test]
+fn k2_horizon_tokenizer_matches_reference_vectors() {
+    let Ok(path) = std::env::var("DS4_K2_MODEL") else {
+        return;
+    };
+    let vocab =
+        Vocab::load_path(Path::new(&path), ModelFamily::ExaoneMoe).expect("load K2 tokenizer");
+    let cases: &[(&str, &[i32])] = &[
+        ("hello", &[33785]),
+        ("12345", &[4018, 927]),
+        ("안녕하세요", &[76943, 47589, 245, 187709]),
+        ("a\u{200c}b", &[66, 37387, 67]),
+        ("a\u{200d}b", &[66, 16727, 67]),
+        /* GGUF/llama.cpp intentionally does not apply tokenizer.json's NFC
+         * normalizer here; pin the deployed GGUF behavior, not HF Python. */
+        ("Cafe\u{301} noir", &[164494, 53986, 70603]),
+    ];
+    for (text, expected) in cases {
+        assert_eq!(vocab.encode_text(text), *expected, "{text:?}");
+    }
+    let rendered = concat!(
+        "<|ifm|begin_of_text|><|ifm|im_start|>user\n",
+        "안녕<|ifm|im_end|><|ifm|im_start|>assistant\n",
+        "<ifm|think>\n"
+    );
+    assert_eq!(
+        vocab.encode_rendered_chat(rendered),
+        vec![0, 250018, 2672, 200, 76943, 47589, 245, 250019, 250018, 142036, 200, 250029, 200,]
+    );
+    assert_eq!(
+        vocab.encode_rendered_chat(
+            "Use <ifm|tool_calls></ifm|tool_calls> and <ifm|arg_key>city</ifm|arg_key>."
+        ),
+        vec![16705, 222, 250054, 250055, 330, 222, 250056, 13612, 250057, 15]
+    );
+    assert!(vocab.is_stop(vocab.eos_id));
+    assert!(vocab.is_stop(vocab.im_end_id));
+}
+
 fn family_cases(family: ModelFamily) {
     let path = write_family(family);
     let vocab = load(family, &path);
