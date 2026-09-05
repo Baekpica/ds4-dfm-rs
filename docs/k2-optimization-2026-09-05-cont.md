@@ -57,6 +57,9 @@ baseline (and against the last accepted round of that workload).
 | Prefill 6 IQ1_M MMQ tile `7d756a9` | **444.50 / 444.65** | **+55.1%** | 7.14 | +29.3% | retained (numeric contract below) |
 | Decode 2 kill switch | 445.20 / 444.34 | +55.4% | 7.11 / 7.11 | +28.8% | same path as P6 |
 | Decode 2 split-K attention `e055726` | 446.40 / 444.19 | +55.8% | **9.80 / 9.80** | **+77.5%** | retained (revised gate) |
+| Round 3 binary, all defaults | 466.32 / 466.06 | **+62.7%** | **13.19 / 13.27** | **+139%** | P7 + D3 |
+| Prefill 7 kill switch (`DS4_MMQ_IQ2XS_WORKLIST=0`) | 446.93 | — | 13.26 | — | rectangular IQ2_XS |
+| Decode 3 kill switch (`DS4_EXAONE_ATTN_SPLIT_NATIVE=0`) | 465.77 | — | 9.81 | — | Solar grouped split (D2) |
 
 Prefill 1 vs last accepted (the locked baseline): **+8.49 tok/s**.
 Prefill 3 vs last accepted (`096fc9c` 295.04): **+7.90 tok/s**.
@@ -69,6 +72,8 @@ Decode 2 vs last accepted decode (`c9ebd10` 6.91): **+2.89 tok/s (+41.8%)**;
 same-binary on/off 7.11 → 9.80: **+37.8%**. Prefill is unchanged
 (446.40 / 444.19 vs 445.20 / 444.34) and the frontier logits are
 byte-identical to the kill switch and to Prefill 6.
+Prefill 7 (`3afea1b`) same-binary vs its kill switch: 446.93 → 466.32 / 466.06 prefill (**+4.3%**), decode 13.26 vs 13.19 / 13.27 (unchanged).
+Decode 3 (`125528a`) same-binary vs its kill switch: 9.81 → 13.19 / 13.27 decode (**+34.4% / +35.3%**), prefill 465.77 vs 466.32 / 466.06 (unchanged).
 Decode IDs and all 250624 frontier logits are bit-identical across
 the kill-switch, Prefill 1, Prefill 3, and Decode 1 cells.
 
@@ -82,6 +87,8 @@ the kill-switch, Prefill 1, Prefill 3, and Decode 1 cells.
 | Prefill 4 | Tile 4 IQ1_M output rows per block (`DS4_MMQ_IQ1M_ROW_TILE`). | Synth bit-identical; same-binary tile1 295.28 / tile4 290.18, both below last accepted 302.94. Same-TU kernel body change, same class as P2. Reverted. | Rejected |
 | Prefill 5 | 1024-token EXAONE prefill chunks vs default 512. | 271.5 → 307.65 on this binary, but rel RMS 0.0636 and 56/64 greedy IDs differ. Reverted. | Rejected |
 | Decode 1 | Share each KV row across GQA query heads. Same per-head softmax order as `exaone_attn_head`. `DS4_EXAONE_ATTN_GQA=0` is one block per head. | Tile-6: bit-identical, 5.51 → 4.13 (spill). Tile-2: bit-identical, 5.51 → 6.91. | Retained (tile-2) |
+| Prefill 7 | IQ2_XS down (8 edge layers) was the last raw IQ type on the rectangular `[expert, max-bucket]` MMQ schedule: 144 launches × 11.8 ms (5.9% of the post-P6 trace), most tiles empty at ~21 rows per expert. It joins the compact worklist from 256 routed rows. Scheduling only. `DS4_MMQ_IQ2XS_WORKLIST=0` restores the rectangular schedule. | Real layer-3 down: nt=4096 15.42 → 7.85 ms, nt=257 6.90 → 4.21 ms, ragged 129-row 0.656 → 0.493 ms, all bit-identical. 8K A/B same binary: 446.93 → 466.32 / 466.06 prefill, decode 13.26 vs 13.19 / 13.27. Logits and 64 IDs byte-identical to the kill switch (scheduling only). | Retained |
+| Decode 3 | The D2 Solar grouped kernel decodes every key into shared memory through the per-element format helper (0.584 ms at 8K, ~57 GB/s). The K2 pair kernel reads f16 K\|V rows directly, so it now runs per chunk (grid chunks × head pairs) and, with `PARTIAL=true`, writes the block's unnormalised partial for the existing combine kernel; the whole-context path is the same kernel with one chunk. `DS4_EXAONE_ATTN_SPLIT_NATIVE=0` keeps the Solar kernel. | Synthetic K2 shape @4095 / 8191 / 32767: Solar 0.167 / 0.587 / 2.250 ms → native 0.045 / 0.159 / 0.629 ms (pair 0.382 / 1.327 / 5.267), rel RMS ≤ 4.4e-7 vs Solar, ≤ 1.8e-6 vs pair, @8191 within 2e-5 of CPU, fallbacks bit-identical. 8K A/B same binary: decode 9.81 → 13.19 / 13.27, prefill 465.77 vs 466.32 / 466.06. Frontier byte-identical to the kill switch and to Decode 2; greedy IDs diverge at token 7 (55/64) from the Solar path, which reproduces the Decode 2 continuation exactly; both continuations coherent; the two all-default runs byte-identical. | Retained (revised gate) |
 | Decode 2 | Split-K decode attention. The pair kernel walks the whole context with n_head/2 blocks of 4 warps (24 blocks on 48 SMs), 16.7% of the post-P6 trace, 1.23 ms per layer at 8K (~27 GB/s of KV). The Solar grouped split kernel shares the f16 K\|V row layout, so from 2048 keys the context is cut into 256-key chunks, one block per (chunk, KV head), plus the combine kernel. `DS4_EXAONE_ATTN_SPLIT=0` restores the pair kernel; sliding windows, wrapped rings and capture keep it. | Synthetic K2 shape: @4095 0.319 → 0.173 ms, @8191 1.214 → 0.584 ms, @32767 4.835 → 2.224 ms, rel RMS ≤ 1.8e-6 vs the pair kernel, @8191 vs CPU within 2e-5, floor/window/kill-switch cases bit-identical. 8K A/B same binary: decode 7.11 / 7.11 → 9.80 / 9.80, prefill 445.20 / 444.34 → 446.40 / 444.19. Frontier logits byte-identical; greedy IDs diverge at token 8 (56/64), both continuations coherent; two split runs byte-identical. | Retained (revised gate) |
 | Prefill 6 | IQ1_M MMQ tile: upstream has no `load_tiles_iq1_m`, so the 8 edge-layer gate/up tensors ran the decode MMVQ per assignment (`ds4_iq1_m_moe_assign_kernel`, 28.4% of the post-D1 8K+64 trace, 41 ms per launch vs 3.8 ms for the IQ1_S worklist MMQ). New tile on the per-16 Q3_K/IQ2_XS layout (int8 = 8·(grid+delta) ∈ {±1,±7,±9}, `x_df` = d·(2s+1)/8, exact) on the compact worklist from 256 routed rows. `DS4_MMQ_IQ1M_WORKLIST=0` restores the assign-major MMVQ. | Real layer-3 gate (K 6144, M 1792, 192 experts): nt=512 52.98 → 5.68 ms, nt=257 26.96 → 4.65 ms, rel RMS 1.9e-4 vs the MMVQ tier (Q8_1 activation rounding bound, see below). 8K A/B same binary 305.11 / 305.04 → 444.50 / 444.65 prefill, decode 7.14 both. Frontier rel RMS 0.0624 vs D1, argmax same, 54/64 greedy IDs differ from token 6. | Retained under the numeric contract below |
 
@@ -154,6 +161,25 @@ shares the first 8 greedy tokens with the kill switch before a near-tie
 flip (the same behaviour the first campaign's rejected split-K showed at
 token 17). Contract: full-attention decode from 2048 keys merges 256-key
 online-softmax partials; the per-key math is the pair kernel's.
+
+## Decode 3 numeric contract
+
+Same class as Decode 2: per-key math of the pair kernel, 256-key
+partials merged by the combine kernel; only the in-chunk warp order
+differs from the Solar kernel (rel RMS ≤ 4.4e-7 at 4095 / 8191 / 32767
+keys) and the whole-context pair path is bit-identical to before (one
+chunk of the same kernel). Evidence: the kernel rows above, frontier logits byte-identical to the kill switch, kill-switch greedy IDs equal to the Decode 2 cell, all-default repeat byte-identical, coherent continuation.
+
+Post-round-3 nsys (8K+64, 463.94 / 13.15 under the profiler): total
+kernel time 28.72 s → 23.67 s. IQ2_XS is the worklist kernel at
+144 × 5.42 ms (3.3%) instead of the rectangular 11.8 ms; decode
+attention is `exaone_attn_decode_gqa_kernel<4, true>` at 3904 × 0.155 ms
+(2.6%) instead of 1.23 ms (D1) / 0.584 ms (D2). Ranking: IQ1_S worklist
+24.1% (3.16 ms avg), IQ2_XXS worklist 18.3% (4.82 ms), q8 aligned dense
+vec 10.9%, Q8_0 MMQ 8.7%, HMMA prefill attention 5.1%, IQ1_M worklist
+4.3%, IQ2_XS worklist 3.3%, `exaone_qk_norm_rope_kernel` 3.3%,
+`ds4_mmq_sanitize_f32_kernel` 3.0% (25666 launches), decode attention
+2.6%. Evidence: `scratch/k2-opt-20260905-cont/{r3-all,r3-p7off,r3-d3off,r3-all2,r3-nsys,r3}/`.
 
 Review fix in the same round (PR #4, Codex): the GQA pair kernel paired
 heads 2 and 3 across KV heads 0 and 1 whenever the query group was odd
