@@ -323,6 +323,18 @@ int ds4_mmq_iq1_s_moe(
     int             n_expert_used,
     cudaStream_t    stream);
 
+int ds4_mmq_iq1_m_moe(
+    const void    * W,
+    const float   * X_f32,
+    const int32_t * ids,
+    float         * out_f32,
+    int             M,
+    int             K,
+    int             n_tokens,
+    int             n_experts,
+    int             n_expert_used,
+    cudaStream_t    stream);
+
 int ds4_mmq_q3_K_moe(
     const void    * W,
     const float   * X_f32,

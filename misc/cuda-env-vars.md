@@ -35,6 +35,12 @@ The bandwidth figure is informational; we don't tier on it.
   32 or more experts; MMVQ decode and aligned-SoA pairs are unchanged.
   `DS4_MMQ_WORKLIST=0` also restores the rectangular schedule.
 
+- `DS4_MMQ_IQ1M_PREFILL=0` restores the per-token IQ1_M MMVQ loop (one
+  launch per token, same as HEAD). The default prefill path launches one
+  assign-major 3-D grid with the same ncols=1 4-warp `vec_dot_iq1_m_q8_1`
+  walk. It does not use `mul_mat_vec_q_moe` (ncols>1 drifted). Decode
+  stays on the vec loop.
+
 - `DS4_MODEL_ANON_HUGE=N` (Linux, default off; lives in ds4.c model_open, not
   the CUDA backend). Copy GPU-backend model files out of the file-backed mmap
   into anonymous `MADV_HUGEPAGE` memory at load. `N<=1` copies every GPU

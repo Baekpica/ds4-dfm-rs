@@ -891,6 +891,101 @@ static void test_moe_worklist(const ds4_model *m, const ds4_tensor *w,
     }
 }
 
+/* Assign-major IQ1_M prefill vs the per-token MMVQ kill switch. */
+static int run_iq1m_prefill_pair(const void *map, uint64_t map_size,
+                                 uint64_t w_off, uint64_t w_bytes,
+                                 uint32_t k, uint32_t rows, uint32_t nexp,
+                                 uint32_t nt, uint32_t used) {
+    const size_t nx = (size_t)nt * k, ny = (size_t)nt * used * rows;
+    float *x = xmalloc(nx * sizeof(float));
+    float *ref = xmalloc(ny * sizeof(float));
+    float *got = xmalloc(ny * sizeof(float));
+    int32_t *ids = xmalloc((size_t)nt * used * sizeof(int32_t));
+    uint64_t seed = 20260905ull + nt;
+    for (size_t i = 0; i < nx; i++) { x[i] = frand(&seed) * 0.5f; }
+    for (uint32_t t = 0; t < nt; t++) {
+        for (uint32_t s = 0; s < used; s++) {
+            ids[(size_t)t * used + s] =
+                ((t % 5u == 0u ? 7u : t * 13u) + s * 7u) % nexp;
+        }
+    }
+    ids[used] = -1;
+    ds4_gpu_tensor *gx = ds4_gpu_tensor_alloc(nx * sizeof(float));
+    ds4_gpu_tensor *gi = ds4_gpu_tensor_alloc((size_t)nt * used * sizeof(int32_t));
+    ds4_gpu_tensor *go = ds4_gpu_tensor_alloc(ny * sizeof(float));
+    int ok = gx && gi && go &&
+        ds4_gpu_tensor_write(gx, 0, x, nx * sizeof(float)) &&
+        ds4_gpu_tensor_write(gi, 0, ids, (size_t)nt * used * sizeof(int32_t));
+    double ms[2] = {0.0, 0.0};
+    for (int fast = 0; ok && fast < 2; fast++) {
+        (void)setenv("DS4_MMQ_IQ1M_PREFILL", fast ? "1" : "0", 1);
+        ok = ds4_gpu_tensor_fill_f32(go, 0.0f, ny) &&
+            ds4_gpu_routed_matmul_tensor(go, gx, gi, map, map_size,
+                w_off, w_bytes, DS4_TENSOR_IQ1_M, k, rows, nexp, nt, used) &&
+            ds4_gpu_synchronize();
+        const double start = now_sec();
+        for (int i = 0; ok && i < 2; i++) {
+            ok = ds4_gpu_routed_matmul_tensor(go, gx, gi, map, map_size,
+                w_off, w_bytes, DS4_TENSOR_IQ1_M, k, rows, nexp, nt, used);
+        }
+        ok = ok && ds4_gpu_synchronize();
+        ms[fast] = (now_sec() - start) * 500.0;
+        ok = ok && ds4_gpu_tensor_read(go, 0, fast ? got : ref, ny * sizeof(float));
+    }
+    (void)unsetenv("DS4_MMQ_IQ1M_PREFILL");
+    if (ok) {
+        char label[80];
+        snprintf(label, sizeof(label), "IQ1_M assign nt=%u used=%u rows=%u",
+                 nt, used, rows);
+        diff_quant_gemm(label, got, ref, ny, 1e-5);
+        printf("%s token-loop=%.3f ms assign=%.3f ms\n", label, ms[0], ms[1]);
+    } else {
+        printf("IQ1_M assign nt=%u launch failed\n", nt); g_fail++;
+    }
+    ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gi); ds4_gpu_tensor_free(gx);
+    free(ids); free(got); free(ref); free(x);
+    return ok;
+}
+
+static void test_iq1m_prefill_synth(void) {
+    const uint32_t k = 256u, rows = 32u, nexp = 16u, used = 8u;
+    const uint64_t w_bytes = (uint64_t)nexp * rows * (k / 256u) * 56u;
+    const uint64_t w_off = 256;
+    const uint64_t map_size = w_off + w_bytes + 256;
+    void *map = NULL;
+    if (posix_memalign(&map, 4096, (size_t)map_size) != 0) {
+        printf("IQ1_M synth map alloc failed\n"); g_fail++; return;
+    }
+    memset(map, 0, (size_t)map_size);
+    uint64_t seed = 20260905ull;
+    unsigned char *w = (unsigned char *)map + w_off;
+    for (uint64_t i = 0; i < w_bytes; i++) {
+        seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+        w[i] = (unsigned char)(seed >> 33);
+    }
+    if (!ds4_gpu_set_model_map(map, map_size)) {
+        printf("IQ1_M synth map failed\n"); g_fail++; free(map); return;
+    }
+    /* 8192×8 is the production assignment count (65536 > 65535). */
+    const uint32_t widths[] = {17u, 257u, 8192u};
+    for (size_t i = 0; i < sizeof(widths) / sizeof(widths[0]); i++) {
+        (void)run_iq1m_prefill_pair(map, map_size, w_off, w_bytes,
+                                    k, rows, nexp, widths[i], used);
+    }
+    free(map);
+}
+
+static void test_iq1m_prefill(const ds4_model *m, const ds4_tensor *w,
+                              uint32_t used) {
+    const uint32_t k = (uint32_t)w->dim[0];
+    const uint32_t widths[] = {17u, 257u, 512u};
+    for (size_t wi = 0; wi < sizeof(widths) / sizeof(widths[0]); wi++) {
+        (void)run_iq1m_prefill_pair(m->map, m->size, w->abs_offset, w->bytes,
+                                    k, (uint32_t)w->dim[1], DS4_N_EXPERT,
+                                    widths[wi], used);
+    }
+}
+
 static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
     /* One layer of each quant type present. The recipe puts Q4_K on the edge
      * layers and IQ2_XXS/Q3_K (or Q2_K in the pilot) on the interior ones, so
@@ -909,6 +1004,7 @@ static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
 
             if (ty == DS4_TENSOR_IQ2_XXS && which) { test_moe_worklist(m, w, 1u); }
             if (ty == DS4_TENSOR_IQ1_S && !which) { test_moe_worklist(m, w, 8u); }
+            if (ty == DS4_TENSOR_IQ1_M && !which) { test_iq1m_prefill(m, w, 8u); }
 
             printf("testing routed tensor %.*s type=%s(%u) layer=%u\n",
                    (int)w->name.len, w->name.ptr, tensor_type_name(ty), ty, il);
@@ -1014,6 +1110,8 @@ int main(int argc, char **argv) {
     test_prefill_chunk_residency();
     test_router(map, map_size, bias_off);
     test_swiglu_and_combine();
+    printf("\n== IQ1_M assign-major vs per-token MMVQ ==\n");
+    test_iq1m_prefill_synth();
 
     if (argc > 1) {
         ds4_model model;
