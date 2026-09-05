@@ -66,6 +66,10 @@ baseline (and against the last accepted round of that workload).
 | Round 5 binary, all defaults | **622.48 / 622.48** | **+117.2%** | 13.42 / 13.35 | +143.1% | P9 + P10 |
 | Prefill 9 kill switch (`DS4_EXAONE_DOWN_SANITIZE=1`) | 606.33 | — | 13.40 | — | standalone down sanitize |
 | Prefill 10 kill switch (`DS4_EXAONE_PREFILL_CHUNK=512`) | 506.08 | — | 13.28 | — | 512-token chunks |
+| Round 6 binary, all defaults | **644.78 / 641.94** | **+125.0%** | 13.34 / 13.07 | +141.7% | P11 + P12 |
+| Prefill 11 kill switch (`DS4_MMQ_PIPE=0`, Prefill 11 binary) | 595.79 / 597.52 | — | 13.32 / 13.32 | — | upstream worklist K loop |
+| Prefill 11 pipelined worklist `8e886f1` (Prefill 11 binary) | 627.73 / 629.17 | +119.1% | 13.34 / 13.32 | — | retained (bit-identical) |
+| Prefill 12 kill switch (`DS4_FATTN_HMMA_LDSM=0`, round-6 binary) | 629.08 / 628.29 | — | 13.35 / 13.33 | — | scalar fragment loads |
 
 Prefill 1 vs last accepted (the locked baseline): **+8.49 tok/s**.
 Prefill 3 vs last accepted (`096fc9c` 295.04): **+7.90 tok/s**.
@@ -84,6 +88,9 @@ Prefill 8 (`b5ca173`) same-binary vs its kill switch: 484.67 → 494.85 / 497.37
 Decode 4 (`dfaa5a8`) same-binary vs its kill switch: 476.94 → 494.85 / 497.37 prefill (**+3.8%**), decode 13.27 vs 13.34 / 13.26 (unchanged).
 Prefill 9 (`6ff7561`) same-binary vs its kill switch: 606.33 → 622.48 / 622.48 prefill (**+2.7%**), decode 13.40 vs 13.42 / 13.35 (unchanged); at 512-token chunks 494.85 (round 4) → 506.08 (**+2.3%**).
 Prefill 10 (`fea285f`) same-binary vs its kill switch: 506.08 → 622.48 / 622.48 prefill (**+23.0%**), decode 13.28 vs 13.42 / 13.35 (unchanged).
+Prefill 11 (`8e886f1`) same-binary vs its kill switch: 595.79 / 597.52 → 627.73 / 629.17 prefill (**+5.3%**), decode 13.32 / 13.32 vs 13.34 / 13.32 (unchanged). The kill-switch cells run the round-5 code path yet measure below the round-5 cells (622.48): prefill drifts between sessions on one binary (Prefill 2 and 4 saw the same), so only the same-binary pair is claimed.
+Prefill 12 (`12a2e14`) same-binary vs its kill switch: 629.08 / 628.29 → 644.78 / 641.94 prefill (**+2.4%**), decode 13.35 / 13.33 vs 13.34 / 13.07 (the kernel does not run in decode; the 13.07 cell is single-cell noise). The kill-switch cells reproduce the Prefill 11 cells (629.08 / 628.29 vs 627.73 / 629.17), so the two items add: 595.79 / 597.52 → 644.78 / 641.94 within this session (**+8.0%**).
+Round 6 logits and 64 greedy IDs are byte-identical across every cell (both kill switches, both repeats, the Prefill 11 binary) and to the round-5 binary.
 Decode IDs and all 250624 frontier logits are bit-identical across
 the kill-switch, Prefill 1, Prefill 3, and Decode 1 cells.
 
@@ -97,6 +104,8 @@ the kill-switch, Prefill 1, Prefill 3, and Decode 1 cells.
 | Prefill 4 | Tile 4 IQ1_M output rows per block (`DS4_MMQ_IQ1M_ROW_TILE`). | Synth bit-identical; same-binary tile1 295.28 / tile4 290.18, both below last accepted 302.94. Same-TU kernel body change, same class as P2. Reverted. | Rejected |
 | Prefill 5 | 1024-token EXAONE prefill chunks vs default 512. | 271.5 → 307.65 on this binary, but rel RMS 0.0636 and 56/64 greedy IDs differ. Reverted. | Rejected |
 | Decode 1 | Share each KV row across GQA query heads. Same per-head softmax order as `exaone_attn_head`. `DS4_EXAONE_ATTN_GQA=0` is one block per head. | Tile-6: bit-identical, 5.51 → 4.13 (spill). Tile-2: bit-identical, 5.51 → 6.91. | Retained (tile-2) |
+| Prefill 12 | ncu on the GQA-pair HMMA prefill attention kernel (`ds4_fattn_hmma_gqa2_kernel`, 6.1% of the post-round-5 trace at 610 × 1.90 ms): 164 registers (one block per SM), issue slots 31%, LSU pipe 54% of peak with 13.4 M shared-load wavefronts against 1.1 M stores, stalls long scoreboard 1.20 / wait 0.99 / mio throttle 0.76 / lg throttle 0.70: the scalar consume builds every mma B fragment by hand (32 half2 loads for K, 64 half loads plus 32 packs for V per 16-key step and lane) and the 64-key K/V tile is single-buffered (fill → barrier → consume → barrier). The K and V fragments now come from `ldmatrix` / `ldmatrix.trans` (8 + 8 shared loads per step) and, for BF16 K/V, the next tile is fetched into 16 float2 registers per thread while the current one is consumed. Same tile bytes, same mma order, same masked online softmax, so bit-identical. `DS4_FATTN_HMMA_LDSM=0` restores the scalar kernel. | Synthetic (64 heads / 8 KV heads / hd 128, through the production wrapper) memcmp old vs new: 0 differing floats at 200 / 1024 / 2048 tokens, full and window-128; full 2048 1.594 → 1.259 ms (ldmatrix alone −13%, prefetch the rest), full 1024 0.531 → 0.488 ms; registers 164 → 168, no spills. 8K A/B same binary: 629.08 / 628.29 → 644.78 / 641.94 prefill (+2.4%), decode 13.35 / 13.33 vs 13.34 / 13.07. Logits and 64 IDs byte-identical to the kill switch, the repeat, the Prefill 11 binary and the round-5 binary. | Retained |
+| Prefill 11 | ncu on the round-5 8K prefill: the IQ1_S gate/up and IQ2_XXS down worklist kernels run one 256-thread block per SM (255 registers, 58 KB shared on a 100 KB SM), 61-74% of the issue slots idle, long scoreboard the top stall, memory 31-37% and the tensor pipe near 35%: the upstream `mul_mat_q_process_tile` serialises weights → dequant → each activation half → MMA behind four barriers per K iteration. New loop (`cuda/mmq/ds4_mmq_pipe.cuh`) for the IQ1_S / IQ1_M / IQ2_XXS / IQ2_XS tiles up to 64 wide: next block's raw bytes prefetched into registers behind the MMA phase, both activation halves staged with cp.async one iteration ahead, two barriers per iteration. Same dequant and dots, so bit-identical. `DS4_MMQ_PIPE=0` restores the upstream loop. | Real-weight `test_moe_pipe` (layer-7 IQ1_S / IQ2_XXS, layer-3 IQ1_M / IQ2_XS, 16 cells incl. the 129-row checked tile) byte-identical; kernel IQ1_S nt=1024 7.29 → 6.74 ms, IQ2_XXS nt=8192 9.58 → 7.08 ms, IQ2_XS 11.43 → 8.23 ms, IQ1_M 8.28 → 7.87 ms. 8K A/B same binary: 595.79 / 597.52 → 627.73 / 629.17 prefill (+5.3%), decode 13.32 vs 13.34 / 13.32. Logits and 64 IDs byte-identical to the kill switch, the repeat and the round-5 binary. | Retained |
 | Prefill 9 | The routed down output only feeds `moe_sum` (skips non-finite values at read), yet every IQ2_XXS / IQ2_XS down call ended with a standalone sanitize pass over the [rows × 6144] output: 58 launches, 23 ms per 512-token chunk (2.2%). The EXAONE layer now calls a guarded routed-matmul entry whose IQ2 prefill schedule omits the pass; same schedule, bit-identical. `DS4_EXAONE_DOWN_SANITIZE=1` keeps the pass. | Real layer-7 IQ2_XXS and layer-3 IQ2_XS down nt=4096: IQ2_XXS 7.93 → 7.54 ms, IQ2_XS 8.80 → 8.47 ms, both bit-identical. 8K A/B same binary: 606.33 → 622.48 / 622.48 prefill at 1024-token chunks, decode 13.40 vs 13.42 / 13.35. Logits and 64 IDs byte-identical to the kill switch; the 512-chunk cell is byte-identical to round 4. | Retained |
 | Prefill 10 | 512 → 1024-token prefill chunks. At 512 the worklists see ~21 rows per expert and every per-chunk launch runs 16× over 8K; 1024 doubles the rows per expert and halves the launches (workspace 0.37 → 0.73 GiB). The rejected Prefill 5 measured exactly this change (+13% on its binary, rel RMS 0.0636, same argmax, top-10 10/10) and is the revised gate's comparator. `DS4_EXAONE_PREFILL_CHUNK=512` restores. | 8K A/B same binary: 506.08 → 622.48 / 622.48 prefill, decode 13.28 vs 13.42 / 13.35. Frontier vs the 512 cell: rel RMS 0.0542, KL 6.3e-2, the near-tied top-2 tokens swap (" autori" 13.18 / " ese" 12.75 → " ese" 13.70 / " autori" 13.39), top-10 9/10, top-50 46/50, max \|Δlogit\| 1.03 (P6 0.99, P5 0.84); both continuations coherent; repeat byte-identical. | Retained with a documented gate exception (see the round-5 note); `DS4_EXAONE_PREFILL_CHUNK=512` restores the previous default without a rebuild |
 | Prefill 8 | The 58 IQ1_S / IQ1_M gate/up projections ran as two single routed calls per layer, each with its own expert map, Q8_1 activation and standalone sanitize pass: 600 quantize + 600 sanitize launches per 512-token chunk (44 + 38 ms of a 1058 ms chunk). They now take the K-quant pair path (one map and activation, both compact worklists, consumers sanitize at read). Same kernels, so bit-identical. `DS4_MMQ_IQ1_PAIR=0` restores the single calls. | Real layer-7 IQ1_S and layer-3 IQ1_M gate/up nt=257/512: IQ1_S nt=257 8.22 → 7.98 ms, nt=512 9.78 → 9.33 ms; IQ1_M nt=257 8.82 → 8.53 ms, nt=512 10.78 → 10.12 ms; gate and up bit-identical. 8K A/B same binary: 484.67 → 494.85 / 497.37 prefill, decode 13.32 vs 13.34 / 13.26. Logits and 64 IDs byte-identical to the kill switch and to round 3 (`194e4aa`). | Retained |
@@ -175,6 +184,115 @@ shares the first 8 greedy tokens with the kill switch before a near-tie
 flip (the same behaviour the first campaign's rejected split-K showed at
 token 17). Contract: full-attention decode from 2048 keys merges 256-key
 online-softmax partials; the per-key math is the pair kernel's.
+
+## Round 6 note
+
+Two prefill items, worked in parallel on the two largest kernel
+groups of the post-round-5 trace (worklist MMQ 45%, HMMA prefill
+attention 6.1%); no decode round (the memory wall from the round-4
+note stands). Both are scheduling-only: same dequantization, same
+dots, same operand order, only the moment the bytes arrive changes,
+so the strict gate applies and every cell is byte-identical to its
+kill switch, to the repeat and to the round-5 binary.
+
+Prefill 11 ncu evidence (round-5 binary, real layer-7 tensors through
+`tests/test_exaone_kernels`, owner down; reports under
+`scratch/k2-opt-20260905-cont/r6/ncu/`). IQ1_S worklist at 1024
+tokens / 8192 routed rows: 5.72 ms under the profiler, 255 registers,
+57.9 KB dynamic shared, one block per SM (occupancy 16.7%; the SM has
+100 KB of shared memory and 64K registers, so a second block cannot
+fit), issue slots busy 38%, no eligible warp 61% of the cycles, memory
+throughput 37%, L2 19%; stalls per issued instruction: long scoreboard
+1.50, wait 0.55, not selected 0.47, math-pipe throttle 0.42, barrier
+0.36; shared-store bank conflicts on 19.4 M of 49.2 M wavefronts (the
+upstream x-tile layout; untouched). IQ2_XXS worklist at 8192 rows:
+7.91 ms, issue 26%, no eligible 74%, memory 31%, long scoreboard 3.90
+(the loader's grid lookup depends on the qs load, two DRAM/L2 round
+trips per row). Both kernels spend their time waiting for global loads
+that the upstream K loop issues and consumes in the same phase, four
+barriers per iteration, with the tensor pipe near 35%. The pipelined
+loop (`ds4_mmq_pipe.cuh`) overlaps the next block's weight fetch with
+the MMA phase (registers: 12-24 per thread depending on the type) and
+the activation halves with cp.async into a two-stage buffer (shared
+memory 57.9 → 76.0 KB for the IQ1_S / IQ2_XXS layouts, 80.1 KB for
+the per-16 layouts; still one block per SM). 128-wide tiles keep the
+upstream loop: their two-stage buffer would need 112 KB. Register
+count stays 255 (stack frames 56-184 bytes, no local-memory traffic
+of note).
+
+Prefill 11 result: real-weight kernel rows IQ1_S nt=1024 7.29 →
+6.74 ms, IQ2_XXS nt=8192 9.58 → 7.08 ms, IQ2_XS nt=8192 11.43 →
+8.23 ms, IQ1_M nt=1024 8.28 → 7.87 ms (the test's skewed router sends
+20% of the rows to one expert, so 128-wide tiles on the upstream loop
+bound the IQ1_S / IQ1_M numbers); 8K A/B same binary 595.79 / 597.52
+→ 627.73 / 629.17 prefill (+5.3%), decode unchanged. Evidence:
+`scratch/k2-opt-20260905-cont/{r6a-pipeoff,r6a-all,r6a-pipeoff2,r6a-all2,r6}/`.
+
+Prefill 12 ncu evidence (`ds4_fattn_hmma_gqa2_kernel`, synthetic
+1024-token prefill, 64 heads / 8 KV heads / head_dim 128; report under
+`r6/ncu/`): 164 registers, one 256-thread block per SM (register
+limited), issue slots active 31%, LSU pipe 54% of peak, 13.4 M
+shared-load wavefronts against 1.1 M shared stores, no bank conflicts,
+no spills; stalls per issued instruction long scoreboard 1.20, wait
+0.99, mio throttle 0.76, lg throttle 0.70, math-pipe throttle 0.45.
+The scalar consume step reads its mma B fragments element by element
+(32 half2 loads for the 16 K fragments, 64 half loads plus 32 packs
+for the 16 V fragments per 16-key step and lane) and the 64-key K/V
+tile is single-buffered, so the block idles on L2 between tiles. The
+new consume (`solar_fattn_consume_16_ldsm`) takes the K fragments
+with `ldmatrix.x4` and the V fragments with `ldmatrix.x4.trans` (8 + 8
+shared loads per step; the fragment each lane receives is the half2
+the scalar loop assembled, low column in the low half), and for BF16
+K/V the next tile's 8 K + 8 V float2 per thread are fetched into
+registers right after the barrier that publishes the current tile
+(`solar_fattn_bf16_tile_fetch/store`); the compressed Solar formats
+keep the direct fill and take only the ldmatrix consume. Registers
+164 → 168, still one block per SM, no local memory. Synthetic memcmp
+old vs new: 0 differing floats in all six cells (200 / 1024 / 2048
+tokens × full / window 128); full 2048 1.594 → 1.259 ms, of which
+ldmatrix alone gives −13% and the prefetch the rest; the direct-entry
+window-128 cells at 1024 / 2048 run 5-8% slower under LDSM, a path
+production never takes (the wrapper keeps windows on the warp kernel
+and K2 is full attention). Item worked by a forked agent in a
+throwaway worktree from the same ncu data; its report and the
+split-experiment logs are under `r6/fattn/`.
+
+Prefill 12 result: 8K A/B on the round-6 binary 629.08 / 628.29 →
+644.78 / 641.94 prefill (+2.4%), decode 13.35 / 13.33 vs 13.34 /
+13.07 (the kernel does not run in decode). Every round-6 cell is
+byte-identical in logits and greedy IDs to every other and to
+`r5-all`. Evidence:
+`scratch/k2-opt-20260905-cont/{r6b-ldsmoff,r6b-all,r6b-ldsmoff2,r6b-all2}/`.
+
+Post-round-6 nsys, same session and binary, both switches off vs all
+defaults (8K+64, 593.61 / 13.10 → 640.13 / 13.14 under the profiler):
+total kernel time 19.79 s → 18.62 s (−5.9%). Per launch: IQ1_S
+worklist 1000 × 4.544 → 4.328 ms (−4.8%), IQ2_XXS worklist 500 ×
+6.652 → 5.509 ms (−17.2%), IQ2_XS worklist 80 × 7.800 → 6.665 ms
+(−14.5%), IQ1_M worklist 160 × 5.149 → 5.058 ms (−1.8%), HMMA prefill
+attention 610 × 1.905 → 1.417 ms (−25.6%); every other kernel within
+±1% (swiglu +4% on 0.08 ms launches). The down projections (K = 1792,
+seven K iterations per tile) gain three to four times more than the
+gate/up projections (K = 6144, 24 iterations): the pipelined loop
+hides the load latency, and what remains in the IQ1 kernels is the
+expand phase itself (the per-16 grid lookups and the 2-way
+bank-conflicted x-tile stores) plus the MMA, so the next step for
+them is the expand, not more prefetch. The round-5 session's
+per-kernel numbers (IQ1_S 4.16 ms, IQ2_XXS 6.20 ms) are not
+comparable to this session's (its whole round-5 code path measured
+4% slower here), which is why the kill-switch profile was rerun.
+Ranking after round 6: IQ1_S worklist 23.2%, IQ2_XXS worklist 14.8%,
+q8 aligned dense vec 13.8%, Q8_0 MMQ 10.4%, HMMA prefill attention
+4.6%, IQ1_M worklist 4.3%, quantize_mmq 3.3%, decode attention 3.3%,
+IQ2_XS worklist 2.9%, IQ1_S decode vec 2.6%, moe_sum 2.4%,
+`exaone_add_kernel` 2.4% (13320 launches). Evidence:
+`scratch/k2-opt-20260905-cont/{r6-nsys,r6-nsys-off,r6/kernsum_compare.py}/`.
+Next prefill candidates: extend the pipelined loop to the 128-wide
+tile with a single-stage activation buffer (76 KB fits), then the
+IQ1_S expand phase (the x-tile store pattern conflicts 2-way on the
+upstream Q8_1 layout; a swizzled layout would need matching ldmatrix
+addressing in `vec_dot_q8_1_q8_1_mma`), then the 23,683 dense-vector
+launches of the decode window.
 
 ## Round 5 note
 

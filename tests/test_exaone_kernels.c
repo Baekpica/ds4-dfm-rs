@@ -18,6 +18,7 @@
  * expected, bounded, and the reason the number is 2e-2 relative and not 1e-5.
  */
 #include "../ds4.c"
+#include "../cuda/mmq/ds4_mmq.h"
 
 static int g_fail = 0;
 
@@ -729,6 +730,104 @@ static void test_attention_prefill(int sliding, uint32_t n_tok) {
     free(v); free(k); free(q); free(kv);
 }
 
+/* GQA-pair HMMA prefill attention with ldmatrix fragment loads and the
+ * register-staged tile prefetch (DS4_FATTN_HMMA_LDSM=1, the default)
+ * against the scalar-load kernel (=0).  Same tile bytes, same mma order,
+ * so the outputs must match to the byte: a difference is a fragment
+ * layout mistake, not rounding.  Full attention goes through the
+ * production wrapper.  The sliding cell calls the HMMA entry directly with
+ * a window, which the wrapper never does (windows stay on the warp path),
+ * so the mask arithmetic of the new consume step is under test too. */
+static void test_attention_ldsm(int sliding, uint32_t n_tok) {
+    const uint32_t window = sliding ? 128u : 0u;
+    const uint32_t kv_cap = n_tok + 56u;
+    const uint32_t kv_dim = T_HEAD_KV * T_HEAD_DIM;
+    const float scale = 1.0f / sqrtf((float)T_HEAD_DIM);
+
+    uint64_t s = 7373u + n_tok;
+    const size_t qn = (size_t)n_tok * T_HEAD * T_HEAD_DIM;
+    const size_t kvn = (size_t)n_tok * kv_dim;
+    float *q = xmalloc(qn * sizeof(float));
+    float *k = xmalloc(kvn * sizeof(float));
+    float *v = xmalloc(kvn * sizeof(float));
+    for (size_t i = 0; i < qn; i++) q[i] = frand(&s);
+    for (size_t i = 0; i < kvn; i++) { k[i] = frand(&s) * 0.5f; v[i] = frand(&s) * 0.5f; }
+
+    ds4_gpu_tensor *gk  = ds4_gpu_tensor_alloc(kvn * sizeof(float));
+    ds4_gpu_tensor *gv  = ds4_gpu_tensor_alloc(kvn * sizeof(float));
+    ds4_gpu_tensor *gkv = ds4_gpu_tensor_alloc((size_t)kv_cap * kv_dim * 2u * sizeof(uint16_t));
+    ds4_gpu_tensor *gq  = ds4_gpu_tensor_alloc(qn * sizeof(float));
+    ds4_gpu_tensor *go  = ds4_gpu_tensor_alloc(qn * sizeof(float));
+    float *out[2] = { xmalloc(qn * sizeof(float)), xmalloc(qn * sizeof(float)) };
+    double ms[2] = {0.0, 0.0};
+    int ok = gk && gv && gkv && gq && go &&
+        ds4_gpu_tensor_write(gk, 0, k, kvn * sizeof(float)) &&
+        ds4_gpu_tensor_write(gv, 0, v, kvn * sizeof(float)) &&
+        ds4_gpu_tensor_write(gq, 0, q, qn * sizeof(float)) &&
+        ds4_gpu_tensor_fill_f32(gkv, 0.0f, (size_t)kv_cap * kv_dim) &&
+        ds4_gpu_exaone_kv_store_tensor(gkv, gk, gv, kv_dim, n_tok, 0, kv_cap) &&
+        ds4_gpu_synchronize();
+
+    /* Device pointers for the direct entry, fetched once: the contents
+     * accessor synchronizes the device, which must stay out of the timed
+     * loop. */
+    float *out_dev = ok ? (float *)ds4_gpu_tensor_contents(go) : NULL;
+    const float *q_dev = ok ? (const float *)ds4_gpu_tensor_ptr(gq) : NULL;
+    const void *kv_dev = ok ? ds4_gpu_tensor_ptr(gkv) : NULL;
+
+    (void)unsetenv("DS4_EXAONE_PREFILL_HMMA");
+    for (int ldsm = 0; ok && ldsm < 2; ldsm++) {
+        (void)setenv("DS4_FATTN_HMMA_LDSM", ldsm ? "1" : "0", 1);
+        ok = ds4_gpu_tensor_fill_f32(go, 0.0f, qn) && ds4_gpu_synchronize();
+        double start = 0.0;
+        /* One warm-up launch, then four timed ones. */
+        for (int i = 0; ok && i < 5; i++) {
+            if (i == 1) start = now_sec();
+            if (sliding) {
+                ok = ds4_mmq_exaone_prefill_attn_hmma(
+                         out_dev, q_dev, kv_dev, (int)n_tok, 0, T_HEAD,
+                         T_HEAD_KV, T_HEAD_DIM, (int)kv_cap, (int)window,
+                         scale, 0) == 0;
+            } else {
+                ok = ds4_gpu_exaone_attention_prefill_tensor(
+                    go, gq, gkv, n_tok, 0, T_HEAD, T_HEAD_KV, T_HEAD_DIM,
+                    kv_cap, window);
+            }
+            if (i == 0) ok = ok && ds4_gpu_synchronize();
+        }
+        ok = ok && ds4_gpu_synchronize();
+        ms[ldsm] = (now_sec() - start) * 250.0;
+        ok = ok && ds4_gpu_tensor_read(go, 0, out[ldsm], qn * sizeof(float));
+    }
+    (void)unsetenv("DS4_FATTN_HMMA_LDSM");
+
+    char label[80];
+    snprintf(label, sizeof(label), "attention HMMA ldsm vs scalar (%s, %u)",
+             sliding ? "window 128" : "full", n_tok);
+    if (ok) {
+        size_t bad = 0;
+        float max_abs = 0.0f;
+        for (size_t i = 0; i < qn; i++) {
+            if (memcmp(&out[0][i], &out[1][i], sizeof(float)) != 0) {
+                bad++;
+                const float d = fabsf(out[1][i] - out[0][i]);
+                if (d > max_abs) max_abs = d;
+            }
+        }
+        if (bad) g_fail++;
+        printf("%-52s differing floats=%zu max_abs=%.3e  %s\n", label, bad,
+               max_abs, bad ? "FAIL" : "ok (bit-identical)");
+        printf("%-52s scalar=%.3f ms ldsm=%.3f ms\n", label, ms[0], ms[1]);
+    } else {
+        printf("%s launch failed\n", label); g_fail++;
+    }
+
+    free(out[1]); free(out[0]);
+    ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gq);
+    ds4_gpu_tensor_free(gkv); ds4_gpu_tensor_free(gv); ds4_gpu_tensor_free(gk);
+    free(v); free(k); free(q);
+}
+
 /* A chunk stores all of its K/V rows before attention consumes any row.  A
  * sliding ring must therefore hold the logical window plus the whole chunk.
  * Compare that path with the one-token-at-a-time oracle, which never loses a
@@ -1028,6 +1127,83 @@ static void test_moe_worklist(const ds4_model *m, const ds4_tensor *w,
             printf("%s old=%.3f ms compact=%.3f ms\n", label, ms[0], ms[1]);
         } else {
             printf("worklist type=%u nt=%u launch failed\n", w->type, nt); g_fail++;
+        }
+        ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gi); ds4_gpu_tensor_free(gx);
+        free(ids); free(got); free(ref); free(x);
+    }
+}
+
+/* Software-pipelined worklist K loop (ds4_mmq_pipe.cuh) vs the upstream
+ * loop behind DS4_MMQ_PIPE=0: the pipeline only moves when bytes arrive
+ * (register prefetch of the next block, cp.async activation stages), so
+ * the outputs must be byte-identical.  Widths cover the 8/16/32/64 tile
+ * tails and the 129-row ragged (checked) tile; 17 rows stays on the
+ * rectangular schedule and is a no-op sanity cell. */
+static void test_moe_pipe(const ds4_model *m, const ds4_tensor *w,
+                          uint32_t used) {
+    const uint32_t k = (uint32_t)w->dim[0];
+    const uint32_t widths[] = {17u, 257u, used == 1u ? 8192u : 1024u, 257u};
+    for (size_t wi = 0; wi < sizeof(widths) / sizeof(widths[0]); wi++) {
+        const uint32_t nt = widths[wi];
+        const uint32_t rows = wi == 3u ? 129u : (uint32_t)w->dim[1];
+        const size_t nx = (size_t)nt * k, ny = (size_t)nt * used * rows;
+        float *x = xmalloc(nx * sizeof(float));
+        float *ref = xmalloc(ny * sizeof(float));
+        float *got = xmalloc(ny * sizeof(float));
+        int32_t *ids = xmalloc((size_t)nt * used * sizeof(int32_t));
+        uint64_t seed = 2026u + nt;
+        for (size_t i = 0; i < nx; i++) { x[i] = frand(&seed) * 0.5f; }
+        for (uint32_t t = 0; t < nt; t++) {
+            for (uint32_t s = 0; s < used; s++) {
+                ids[(size_t)t * used + s] =
+                    ((t % 5u == 0u ? 7u : t * 13u) + s * 7u) % DS4_N_EXPERT;
+            }
+        }
+        ids[used] = -1;
+        ds4_gpu_tensor *gx = ds4_gpu_tensor_alloc(nx * sizeof(float));
+        ds4_gpu_tensor *gi = ds4_gpu_tensor_alloc((size_t)nt * used * sizeof(int32_t));
+        ds4_gpu_tensor *go = ds4_gpu_tensor_alloc(ny * sizeof(float));
+        int ok = gx && gi && go &&
+            ds4_gpu_tensor_write(gx, 0, x, nx * sizeof(float)) &&
+            ds4_gpu_tensor_write(gi, 0, ids, (size_t)nt * used * sizeof(int32_t));
+        double ms[2] = {0.0, 0.0};
+        (void)setenv("DS4_MMQ_WORKLIST", "1", 1);
+        (void)setenv("DS4_MMQ_IQ1M_WORKLIST", "1", 1);
+        for (int pipe = 0; ok && pipe < 2; pipe++) {
+            (void)setenv("DS4_MMQ_PIPE", pipe ? "1" : "0", 1);
+            ok = ds4_gpu_tensor_fill_f32(go, 0.0f, ny) &&
+                ds4_gpu_routed_matmul_tensor(go, gx, gi, m->map, m->size,
+                    w->abs_offset, w->bytes, w->type, k, rows, DS4_N_EXPERT, nt, used) &&
+                ds4_gpu_synchronize();
+            const double start = now_sec();
+            for (int i = 0; ok && i < 4; i++) {
+                ok = ds4_gpu_routed_matmul_tensor(go, gx, gi, m->map, m->size,
+                    w->abs_offset, w->bytes, w->type, k, rows, DS4_N_EXPERT, nt, used);
+            }
+            ok = ok && ds4_gpu_synchronize();
+            ms[pipe] = (now_sec() - start) * 250.0;
+            ok = ok && ds4_gpu_tensor_read(go, 0, pipe ? got : ref, ny * sizeof(float));
+        }
+        (void)unsetenv("DS4_MMQ_PIPE");
+        (void)unsetenv("DS4_MMQ_IQ1M_WORKLIST");
+        (void)unsetenv("DS4_MMQ_WORKLIST");
+        if (ok) {
+            const int same = memcmp(got, ref, ny * sizeof(float)) == 0;
+            double max_abs = 0.0;
+            size_t ndiff = 0;
+            for (size_t i = 0; i < ny; i++) {
+                const double d = fabs((double)got[i] - (double)ref[i]);
+                if (d > max_abs) max_abs = d;
+                if (got[i] != ref[i]) ndiff++;
+            }
+            if (!same) g_fail++;
+            printf("%s pipe nt=%u used=%u rows=%u %s (ndiff=%zu max_abs=%.2e) "
+                   "upstream=%.3f ms pipe=%.3f ms\n",
+                   tensor_type_name(w->type), nt, used, rows,
+                   same ? "BIT-IDENTICAL" : "DIFFERENT", ndiff, max_abs,
+                   ms[0], ms[1]);
+        } else {
+            printf("pipe type=%u nt=%u launch failed\n", w->type, nt); g_fail++;
         }
         ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gi); ds4_gpu_tensor_free(gx);
         free(ids); free(got); free(ref); free(x);
@@ -1446,6 +1622,12 @@ static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
             if (ty == DS4_TENSOR_IQ2_XXS && which) { test_moe_worklist(m, w, 1u); }
             if (ty == DS4_TENSOR_IQ2_XS && which) { test_moe_worklist(m, w, 1u); }
             if ((ty == DS4_TENSOR_IQ2_XXS || ty == DS4_TENSOR_IQ2_XS) && which) {
+                test_moe_pipe(m, w, 1u);
+            }
+            if ((ty == DS4_TENSOR_IQ1_S || ty == DS4_TENSOR_IQ1_M) && !which) {
+                test_moe_pipe(m, w, 8u);
+            }
+            if ((ty == DS4_TENSOR_IQ2_XXS || ty == DS4_TENSOR_IQ2_XS) && which) {
                 test_moe_down_guarded(m, w);
             }
             if (ty == DS4_TENSOR_IQ1_S && !which) { test_moe_worklist(m, w, 8u); }
@@ -1558,6 +1740,14 @@ int main(int argc, char **argv) {
     test_attention_prefill(0, 200u);
     /* One 1024-token prefill chunk (the K2 default since round 5). */
     test_attention_prefill(0, 1024u);
+    /* ldmatrix + prefetch GQA-pair kernel must be byte-equal to the
+     * scalar-load kernel (round 6). */
+    test_attention_ldsm(0, 200u);
+    test_attention_ldsm(1, 200u);
+    test_attention_ldsm(0, 1024u);
+    test_attention_ldsm(1, 1024u);
+    test_attention_ldsm(0, 2048u);
+    test_attention_ldsm(1, 2048u);
     test_prefill_chunk_residency();
     test_router(map, map_size, bias_off);
     test_swiglu_and_combine();
