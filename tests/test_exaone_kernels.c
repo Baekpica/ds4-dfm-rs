@@ -402,6 +402,23 @@ static void test_qk_norm_rope(void *map, uint64_t map_size, uint64_t w_off,
         snprintf(label, sizeof(label), rope ? "qk_norm + neox rope @pos %u"
                                             : "qk_norm only @pos %u", pos0);
         diff_f32(label, got, want, n, 3e-5, 3e-5);
+        /* The cached (cos, sin) table must reproduce the inline double
+         * trig bit for bit. */
+        if (rope) {
+            float *inl = xmalloc(n * sizeof(float));
+            (void)setenv("DS4_EXAONE_ROPE_TABLE", "0", 1);
+            ds4_gpu_tensor_write(t, 0, host, n * sizeof(float));
+            const int ok = ds4_gpu_exaone_qk_norm_rope_tensor(
+                t, map, map_size, w_off, T_HEAD, T_HEAD_DIM, T_HEAD_DIM, pos0,
+                n_tok, 1000000.0f, DS4_DEFAULT_RMS_EPS, 1);
+            (void)unsetenv("DS4_EXAONE_ROPE_TABLE");
+            if (!ok) { printf("qk_norm_rope inline launch failed\n"); g_fail++; }
+            ds4_gpu_tensor_read(t, 0, inl, n * sizeof(float));
+            const int same = memcmp(got, inl, n * sizeof(float)) == 0;
+            if (!same) g_fail++;
+            printf("%-38s %s\n", "rope table vs inline trig", same ? "bit-identical" : "DIFFER");
+            free(inl);
+        }
         free(got);
         ds4_gpu_tensor_free(t);
     }
