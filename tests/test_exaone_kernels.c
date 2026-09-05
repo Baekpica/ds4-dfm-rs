@@ -402,6 +402,23 @@ static void test_qk_norm_rope(void *map, uint64_t map_size, uint64_t w_off,
         snprintf(label, sizeof(label), rope ? "qk_norm + neox rope @pos %u"
                                             : "qk_norm only @pos %u", pos0);
         diff_f32(label, got, want, n, 3e-5, 3e-5);
+        /* The cached (cos, sin) table must reproduce the inline double
+         * trig bit for bit. */
+        if (rope) {
+            float *inl = xmalloc(n * sizeof(float));
+            (void)setenv("DS4_EXAONE_ROPE_TABLE", "0", 1);
+            ds4_gpu_tensor_write(t, 0, host, n * sizeof(float));
+            const int ok = ds4_gpu_exaone_qk_norm_rope_tensor(
+                t, map, map_size, w_off, T_HEAD, T_HEAD_DIM, T_HEAD_DIM, pos0,
+                n_tok, 1000000.0f, DS4_DEFAULT_RMS_EPS, 1);
+            (void)unsetenv("DS4_EXAONE_ROPE_TABLE");
+            if (!ok) { printf("qk_norm_rope inline launch failed\n"); g_fail++; }
+            ds4_gpu_tensor_read(t, 0, inl, n * sizeof(float));
+            const int same = memcmp(got, inl, n * sizeof(float)) == 0;
+            if (!same) g_fail++;
+            printf("%-38s %s\n", "rope table vs inline trig", same ? "bit-identical" : "DIFFER");
+            free(inl);
+        }
         free(got);
         ds4_gpu_tensor_free(t);
     }
@@ -1283,6 +1300,72 @@ static void test_iq1m_prefill(const ds4_model *m, const ds4_tensor *w,
     }
 }
 
+/* Prefill 8: the IQ1_S / IQ1_M gate/up pair (one expert map and Q8_1
+ * activation, both worklists) vs two single routed calls. Same kernels, so
+ * both outputs must be bit-identical; the standalone sanitize the pair
+ * drops only touches non-finite values. */
+static void test_moe_pair(const ds4_model *m, const ds4_tensor *gate,
+                          const ds4_tensor *up, uint32_t used) {
+    const uint32_t k = (uint32_t)gate->dim[0], rows = (uint32_t)gate->dim[1];
+    const uint32_t widths[] = {257u, 512u};
+    for (size_t wi = 0; wi < sizeof(widths) / sizeof(widths[0]); wi++) {
+        const uint32_t nt = widths[wi];
+        const size_t nx = (size_t)nt * k, ny = (size_t)nt * used * rows;
+        float *x = xmalloc(nx * sizeof(float));
+        float *ref_g = xmalloc(ny * sizeof(float)), *ref_u = xmalloc(ny * sizeof(float));
+        float *got_g = xmalloc(ny * sizeof(float)), *got_u = xmalloc(ny * sizeof(float));
+        int32_t *ids = xmalloc((size_t)nt * used * sizeof(int32_t));
+        uint64_t seed = 4242u + nt;
+        for (size_t i = 0; i < nx; i++) { x[i] = frand(&seed) * 0.5f; }
+        for (uint32_t t = 0; t < nt; t++) {
+            for (uint32_t s = 0; s < used; s++) {
+                ids[(size_t)t * used + s] =
+                    ((t % 5u == 0u ? 7u : t * 13u) + s * 7u) % DS4_N_EXPERT;
+            }
+        }
+        ids[used] = -1;
+        ds4_gpu_tensor *gx = ds4_gpu_tensor_alloc(nx * sizeof(float));
+        ds4_gpu_tensor *gi = ds4_gpu_tensor_alloc((size_t)nt * used * sizeof(int32_t));
+        ds4_gpu_tensor *gg = ds4_gpu_tensor_alloc(ny * sizeof(float));
+        ds4_gpu_tensor *gu = ds4_gpu_tensor_alloc(ny * sizeof(float));
+        int ok = gx && gi && gg && gu &&
+            ds4_gpu_tensor_write(gx, 0, x, nx * sizeof(float)) &&
+            ds4_gpu_tensor_write(gi, 0, ids, (size_t)nt * used * sizeof(int32_t));
+        double ms[2] = {0.0, 0.0};
+        for (int pair = 0; ok && pair < 2; pair++) {
+            (void)setenv("DS4_MMQ_IQ1_PAIR", pair ? "1" : "0", 1);
+            ok = ds4_gpu_tensor_fill_f32(gg, 0.0f, ny) && ds4_gpu_tensor_fill_f32(gu, 0.0f, ny) &&
+                ds4_gpu_routed_gate_up_tensor(gg, gu, gx, gi, m->map, m->size,
+                    gate->abs_offset, gate->bytes, up->abs_offset, up->bytes,
+                    gate->type, k, rows, DS4_N_EXPERT, nt, used) &&
+                ds4_gpu_synchronize();
+            const double start = now_sec();
+            for (int i = 0; ok && i < 2; i++) {
+                ok = ds4_gpu_routed_gate_up_tensor(gg, gu, gx, gi, m->map, m->size,
+                    gate->abs_offset, gate->bytes, up->abs_offset, up->bytes,
+                    gate->type, k, rows, DS4_N_EXPERT, nt, used);
+            }
+            ok = ok && ds4_gpu_synchronize();
+            ms[pair] = (now_sec() - start) * 500.0;
+            ok = ok && ds4_gpu_tensor_read(gg, 0, pair ? got_g : ref_g, ny * sizeof(float)) &&
+                ds4_gpu_tensor_read(gu, 0, pair ? got_u : ref_u, ny * sizeof(float));
+        }
+        (void)unsetenv("DS4_MMQ_IQ1_PAIR");
+        if (ok) {
+            const int same = memcmp(got_g, ref_g, ny * sizeof(float)) == 0 &&
+                             memcmp(got_u, ref_u, ny * sizeof(float)) == 0;
+            if (!same) g_fail++;
+            printf("%s gate/up pair nt=%u used=%u rows=%u  %s  singles=%.3f ms pair=%.3f ms\n",
+                   tensor_type_name(gate->type), nt, used, rows,
+                   same ? "bit-identical" : "DIFFER", ms[0], ms[1]);
+        } else {
+            printf("%s gate/up pair nt=%u launch failed\n", tensor_type_name(gate->type), nt); g_fail++;
+        }
+        ds4_gpu_tensor_free(gu); ds4_gpu_tensor_free(gg); ds4_gpu_tensor_free(gi); ds4_gpu_tensor_free(gx);
+        free(ids); free(got_u); free(got_g); free(ref_u); free(ref_g); free(x);
+    }
+}
+
 static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
     /* One layer of each quant type present. The recipe puts Q4_K on the edge
      * layers and IQ2_XXS/Q3_K (or Q2_K in the pilot) on the interior ones, so
@@ -1303,6 +1386,9 @@ static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
             if (ty == DS4_TENSOR_IQ2_XS && which) { test_moe_worklist(m, w, 1u); }
             if (ty == DS4_TENSOR_IQ1_S && !which) { test_moe_worklist(m, w, 8u); }
             if (ty == DS4_TENSOR_IQ1_M && !which) { test_iq1m_prefill(m, w, 8u); }
+            if ((ty == DS4_TENSOR_IQ1_S || ty == DS4_TENSOR_IQ1_M) && !which) {
+                test_moe_pair(m, l->ffn_gate_exps, l->ffn_up_exps, 8u);
+            }
 
             printf("testing routed tensor %.*s type=%s(%u) layer=%u\n",
                    (int)w->name.len, w->name.ptr, tensor_type_name(ty), ty, il);

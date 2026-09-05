@@ -2868,7 +2868,8 @@ int ds4_mmq_moe_pair_impl(
         int pair_a_rc = -1;
         int pair_b_rc = -1;
         if constexpr (type == GGML_TYPE_Q3_K || type == GGML_TYPE_Q4_K ||
-                      type == GGML_TYPE_Q5_K || type == GGML_TYPE_Q8_0) {
+                      type == GGML_TYPE_Q5_K || type == GGML_TYPE_Q8_0 ||
+                      type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M) {
             pair_a_rc = ds4_mmq_moe_worklist_launch<type>(
                 tag, *ctx, W_a, (const int *)src1_q8_1,
                 ids_dst, expert_bounds, out_a,
@@ -2899,6 +2900,11 @@ int ds4_mmq_moe_pair_impl(
     }
 
     if (!gate_up_done) {
+    /* IQ1_M has the ds4 worklist tile only (see ds4_mmq_moe_impl); a refused
+     * shape goes back to the caller's two single calls. */
+    if constexpr (type == GGML_TYPE_IQ1_M) {
+        return -1;
+    }
     mmq_args args = {
         /*x=*/(const char *)W_a,
         /*type_x=*/type,
@@ -2933,7 +2939,9 @@ int ds4_mmq_moe_pair_impl(
                 "ds4/prefill/moe/iq2_gate",
                 ds4_mmq_nvtx_payload((uint32_t)ne_get_rows, (uint32_t)M),
                 nvtx_prefill);
-        mul_mat_q_case<type>(*ctx, args, stream);
+        if constexpr (type != GGML_TYPE_IQ1_M) {
+            mul_mat_q_case<type>(*ctx, args, stream);
+        }
         err = cudaGetLastError();
         if (err != cudaSuccess) {
             fprintf(stderr, "%s: mul_mat_q_case (pair a) launch failed: %s\n", tag, cudaGetErrorString(err));
@@ -2950,7 +2958,9 @@ int ds4_mmq_moe_pair_impl(
                 "ds4/prefill/moe/iq2_up",
                 ds4_mmq_nvtx_payload((uint32_t)ne_get_rows, (uint32_t)M),
                 nvtx_prefill);
-        mul_mat_q_case<type>(*ctx, args, stream);
+        if constexpr (type != GGML_TYPE_IQ1_M) {
+            mul_mat_q_case<type>(*ctx, args, stream);
+        }
         err = cudaGetLastError();
         if (err != cudaSuccess) {
             fprintf(stderr, "%s: mul_mat_q_case (pair b) launch failed: %s\n", tag, cudaGetErrorString(err));
@@ -3794,6 +3804,50 @@ extern "C" int ds4_mmq_q8_0_moe_pair_bounded(
     }
     return ds4_mmq_moe_pair_impl<GGML_TYPE_Q8_0>(
         "ds4_mmq_q8_0_moe_pair_bounded",
+        W_a, W_b, X, ids, out_a, out_b,
+        M, K, n_tokens, n_experts, n_expert_used, stream,
+        /*xa_soa=*/NULL, /*xb_soa=*/NULL, /*soa_blocks=*/0,
+        /*sanitize_out=*/false, /*fused_down=*/nullptr,
+        /*ncols_max_hint=*/max_rows_per_expert);
+}
+
+/* K2 MQ87 IQ1_S (layers 7-56) and IQ1_M (edge layers) gate/up ran as two
+ * single routed calls, each building its own expert map, Q8_1 activation
+ * and standalone sanitize pass.  Same contract as the K-quant pairs: the
+ * weighted SwiGLU consumer zeroes non-finite values at read. */
+extern "C" int ds4_mmq_iq1_s_moe_pair_bounded(
+        const void * W_a, const void * W_b,
+        const float * X, const int32_t * ids, float * out_a, float * out_b,
+        int M, int K, int n_tokens, int n_experts, int n_expert_used,
+        int max_rows_per_expert, cudaStream_t stream) {
+    if (max_rows_per_expert <= 0) {
+        fprintf(stderr,
+                "ds4_mmq_iq1_s_moe_pair_bounded: invalid bound %d\n",
+                max_rows_per_expert);
+        return -1;
+    }
+    return ds4_mmq_moe_pair_impl<GGML_TYPE_IQ1_S>(
+        "ds4_mmq_iq1_s_moe_pair_bounded",
+        W_a, W_b, X, ids, out_a, out_b,
+        M, K, n_tokens, n_experts, n_expert_used, stream,
+        /*xa_soa=*/NULL, /*xb_soa=*/NULL, /*soa_blocks=*/0,
+        /*sanitize_out=*/false, /*fused_down=*/nullptr,
+        /*ncols_max_hint=*/max_rows_per_expert);
+}
+
+extern "C" int ds4_mmq_iq1_m_moe_pair_bounded(
+        const void * W_a, const void * W_b,
+        const float * X, const int32_t * ids, float * out_a, float * out_b,
+        int M, int K, int n_tokens, int n_experts, int n_expert_used,
+        int max_rows_per_expert, cudaStream_t stream) {
+    if (max_rows_per_expert <= 0) {
+        fprintf(stderr,
+                "ds4_mmq_iq1_m_moe_pair_bounded: invalid bound %d\n",
+                max_rows_per_expert);
+        return -1;
+    }
+    return ds4_mmq_moe_pair_impl<GGML_TYPE_IQ1_M>(
+        "ds4_mmq_iq1_m_moe_pair_bounded",
         W_a, W_b, X, ids, out_a, out_b,
         M, K, n_tokens, n_experts, n_expert_used, stream,
         /*xa_soa=*/NULL, /*xb_soa=*/NULL, /*soa_blocks=*/0,
