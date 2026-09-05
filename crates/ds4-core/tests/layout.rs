@@ -165,6 +165,7 @@ fn layout_covers_bind_catalog() {
         Variant::Dots3NotePrev,
         Variant::Qwen38FlashNext,
         Variant::Glm53Flash,
+        Variant::K2Horizon375B,
     ] {
         let shape = shape_for_variant(v);
         let bind: HashSet<String> = bind_names(&shape).into_iter().map(|n| n.name).collect();
@@ -186,6 +187,38 @@ fn layout_covers_bind_catalog() {
 }
 
 #[test]
+fn k2_horizon_layout_is_exactly_842_tensors() {
+    let shape = shape_for_variant(Variant::K2Horizon375B);
+    let specs = expected_layouts(&shape);
+    let names: HashSet<_> = specs.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(specs.len(), 842);
+    assert!(names.contains("blk.2.ffn_down.weight"));
+    assert!(names.contains("blk.3.ffn_gate_exps.weight"));
+    assert!(names.contains("blk.60.ffn_down_shexp.weight"));
+    assert!(!names.contains("blk.3.attn_q_norm.weight"));
+    assert!(!names.contains("blk.60.nextn.eh_proj.weight"));
+}
+
+#[test]
+fn k2_horizon_layout_accepts_mq87_iq_types() {
+    let shape = shape_for_variant(Variant::K2Horizon375B);
+    for typ in [17u32, 19u32, 29u32] {
+        let specs = expected_layouts(&shape);
+        let mut plan = plan_from_specs(&specs, typ);
+        plan.shape = shape;
+        for slot in &mut plan.slots {
+            if slot.name.contains("ffn_gate_exps") || slot.name.contains("ffn_up_exps") {
+                slot.tensor.as_mut().unwrap().typ = typ;
+            }
+            if slot.name.contains("ffn_down_exps") {
+                slot.tensor.as_mut().unwrap().typ = if typ == 19 { 16 } else { 17 };
+            }
+        }
+        validate_layouts(&plan).expect("MQ87 routed IQ type accepted");
+    }
+}
+
+#[test]
 fn validate_glm53_artifact_when_configured() {
     let Ok(path) = std::env::var("DS4_GLM53_MODEL") else {
         return;
@@ -197,4 +230,19 @@ fn validate_glm53_artifact_when_configured() {
     let plan = BindPlan::resolve(shape, &inventory);
     plan.check().expect("complete GLM bind plan");
     validate_layouts(&plan).expect("valid GLM tensor layouts");
+}
+
+#[test]
+fn validate_k2_horizon_artifact_when_configured() {
+    let Ok(path) = std::env::var("DS4_K2_MODEL") else {
+        return;
+    };
+    let path = std::path::Path::new(&path);
+    let shape = identify_gguf(path).expect("identify K2 artifact").shape;
+    assert_eq!(shape.variant, Variant::K2Horizon375B);
+    let inventory = TensorInventory::open(path).expect("inventory K2 artifact");
+    assert_eq!(inventory.tensors.len(), 842);
+    let plan = BindPlan::resolve(shape, &inventory);
+    plan.check().expect("complete K2 bind plan");
+    validate_layouts(&plan).expect("valid K2 MQ87 tensor layouts");
 }
