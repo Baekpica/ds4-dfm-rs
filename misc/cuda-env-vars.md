@@ -35,6 +35,33 @@ The bandwidth figure is informational; we don't tier on it.
   32 or more experts; MMVQ decode and aligned-SoA pairs are unchanged.
   `DS4_MMQ_WORKLIST=0` also restores the rectangular schedule.
 
+- `DS4_MMQ_IQ1M_PREFILL=0` restores the per-token IQ1_M MMVQ loop (one
+  launch per token, same as HEAD). The default prefill path launches one
+  assign-major grid with the same ncols=1 4-warp `vec_dot_iq1_m_q8_1`
+  walk. It does not use `mul_mat_vec_q_moe` (ncols>1 drifted). Decode
+  stays on the vec loop.
+
+- `DS4_MMQ_IQ1M_SLOT_LOOP=0` restores the 3-D `(M, tokens, used)` IQ1_M
+  grid. The default walks all top-k slots in one `(M, tokens)` block so
+  the Q8_1 activation row is reused.
+
+- `DS4_MMQ_IQ1M_WORKLIST=0` restores the assign-major IQ1_M MMVQ for
+  prefill. The default runs IQ1_M gate/up on the compact MMQ worklist
+  (ds4 `load_tiles_iq1_m`, per-16 Q3_K/IQ2_XS tile layout) at 256 or
+  more routed rows and 32 or more experts; narrower shapes, the
+  assign-major fallback and decode are unchanged. `DS4_MMQ_WORKLIST=0`
+  also disables it.
+
+- `DS4_EXAONE_ATTN_GQA=0` restores one decode-attention block per query
+  head. The default shares each KV row across two query heads.
+
+- `DS4_EXAONE_ATTN_SPLIT=0` restores the whole-context decode-attention
+  block. The default cuts a full-attention context of 2048 or more keys
+  into 256-key chunks (one block per chunk and KV head, the Solar grouped
+  split kernel) and merges the online-softmax partials with a combine
+  kernel. Sliding-window layers, wrapped rings and graph capture keep
+  the pair kernel.
+
 - `DS4_MODEL_ANON_HUGE=N` (Linux, default off; lives in ds4.c model_open, not
   the CUDA backend). Copy GPU-backend model files out of the file-backed mmap
   into anonymous `MADV_HUGEPAGE` memory at load. `N<=1` copies every GPU

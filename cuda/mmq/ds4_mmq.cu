@@ -182,10 +182,17 @@ static bool moe_worklist_enabled(ggml_type type) {
         : type == GGML_TYPE_Q4_K ? getenv("DS4_MMQ_Q4_WORKLIST")
         : type == GGML_TYPE_Q5_K ? getenv("DS4_MMQ_Q5_WORKLIST")
         : type == GGML_TYPE_IQ2_XXS ? getenv("DS4_MMQ_IQ2XXS_WORKLIST")
-        : type == GGML_TYPE_IQ1_S ? getenv("DS4_MMQ_IQ1S_WORKLIST") : NULL;
+        : type == GGML_TYPE_IQ1_S ? getenv("DS4_MMQ_IQ1S_WORKLIST")
+        : type == GGML_TYPE_IQ1_M ? getenv("DS4_MMQ_IQ1M_WORKLIST") : NULL;
     return !(global && global[0] == '0') &&
            !(specific && specific[0] == '0');
 }
+
+// Raw IQ routing joins the compact worklist without a host bucket bound
+// from this width; below it the rectangular schedule (or, for IQ1_M, the
+// assign-major MMVQ) stays.
+static constexpr int64_t DS4_MMQ_WIDE_IQ_MIN_ROWS = 256;
+static constexpr int DS4_MMQ_WIDE_IQ_MIN_EXPERTS = 32;
 
 // A ragged final 128-column tile can use the smallest native 8/16/32/64
 // MMQ tile that contains it.  Keep the original TAIL64 switch name as the
@@ -376,6 +383,7 @@ static bool ds4_should_use_mmq_impl(enum ggml_type type, int cc, int64_t ne11, i
         case GGML_TYPE_IQ3_XXS:
         case GGML_TYPE_IQ3_S:
         case GGML_TYPE_IQ1_S:
+        case GGML_TYPE_IQ1_M:
         case GGML_TYPE_IQ4_XS:
         case GGML_TYPE_IQ4_NL:
             mmq_supported = true;
@@ -1993,14 +2001,16 @@ int ds4_mmq_moe_impl(
 
     /* Wide raw IQ routing can use the same worklist without a host bucket
      * bound: the device expert_bounds still defines every non-empty tile. */
-    const bool wide_iq = (type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ1_S) &&
-                         ne_get_rows >= 256 && n_experts >= 32;
+    const bool wide_iq = (type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ1_S ||
+                          type == GGML_TYPE_IQ1_M) &&
+                         ne_get_rows >= DS4_MMQ_WIDE_IQ_MIN_ROWS &&
+                         n_experts >= DS4_MMQ_WIDE_IQ_MIN_EXPERTS;
     if ((ncols_max_hint > 0 || wide_iq) &&
         x_soa == NULL && moe_worklist_enabled(type)) {
         int worklist_rc = -1;
         if constexpr (type == GGML_TYPE_Q3_K || type == GGML_TYPE_Q4_K ||
                       type == GGML_TYPE_Q5_K || type == GGML_TYPE_IQ2_XXS ||
-                      type == GGML_TYPE_IQ1_S) {
+                      type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M) {
             worklist_rc = ds4_mmq_moe_worklist_launch<type>(
                 tag, *ctx, W, (const int *)src1_q8_1.get(),
                 ids_dst.get(), expert_bounds.get(), out_f32,
@@ -2022,6 +2032,13 @@ int ds4_mmq_moe_impl(
             return 0;
         }
         if (worklist_rc != -1) return worklist_rc;
+    }
+
+    /* IQ1_M only has the ds4 worklist tile (mmq.cuh load_tiles_iq1_m), no
+     * rectangular mul_mat_q instantiation. -1 returns the caller to the
+     * assign-major MMVQ. */
+    if constexpr (type == GGML_TYPE_IQ1_M) {
+        return -1;
     }
 
     // 3. Build mmq_args for the MoE path.
@@ -2103,7 +2120,9 @@ int ds4_mmq_moe_impl(
         /*soa_blocks=*/soa_blocks,
     };
 
-    mul_mat_q_case<type>(*ctx, args, stream);
+    if constexpr (type != GGML_TYPE_IQ1_M) {
+        mul_mat_q_case<type>(*ctx, args, stream);
+    }
 
     err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -5298,6 +5317,220 @@ int ds4_mmq_moe_gate_up_mid_vec_impl(
     return 0;
 }
 
+/* IQ1_M below the worklist floor (or DS4_MMQ_IQ1M_WORKLIST=0): prefill was
+ * 140k one-token MMVQ launches.
+ * One grid walks every token with the proven ncols=1 4-warp K split and
+ * vec_dot_iq1_m_q8_1. Default grid is (M, n_tokens): each block reuses one
+ * Q8_1 row across the top-k slots. DS4_MMQ_IQ1M_SLOT_LOOP=0 restores the
+ * 3-D (M, tokens, used) grid. DS4_MMQ_IQ1M_PREFILL=0 restores the per-token
+ * loop, not the drifting ncols>1 MMVQ. */
+template <int nwarps>
+__global__ static void ds4_iq1_m_moe_assign_kernel(
+        const void       * __restrict__ W,
+        const block_q8_1 * __restrict__ Y,
+        const int32_t    * __restrict__ ids,
+        float            * __restrict__ out,
+        int M, int K, int n_experts, int n_used,
+        int stride_row_x, int stride_channel_x, int stride_token_y) {
+    constexpr int qk = QK_K;
+    constexpr int qi = QI1_M;
+    constexpr int vdr = VDR_IQ1_M_Q8_1_MMVQ;
+    constexpr int warp_size = 32;
+    constexpr int blocks_per_iter = vdr * nwarps * warp_size / qi;
+    const int tid = warp_size * (int)threadIdx.y + (int)threadIdx.x;
+    const int row = (int)blockIdx.x;
+    const int token = (int)blockIdx.y;
+    if (row >= M) {
+        return;
+    }
+
+    const block_q8_1 *y = Y + token * stride_token_y;
+    const int blocks_per_row = K / qk;
+    const int nslot = (int)gridDim.z > 1 ? 1 : n_used;
+    const int slot0 = (int)gridDim.z > 1 ? (int)blockIdx.z : 0;
+    __shared__ float partial[nwarps > 1 ? nwarps - 1 : 1][warp_size];
+
+    for (int s = 0; s < nslot; s++) {
+        const int slot = slot0 + s;
+        const int assignment = token * n_used + slot;
+        const int32_t expert = ids[assignment];
+        const bool invalid = expert < 0 || expert >= n_experts;
+        const int kbx_offset = invalid ? 0 : expert * stride_channel_x + row * stride_row_x;
+        float tmp = 0.0f;
+        for (int kbx = tid / (qi / vdr); !invalid && kbx < blocks_per_row;
+             kbx += blocks_per_iter) {
+            const int kby = kbx * (qk / QK8_1);
+            const int kqs = vdr * (tid % (qi / vdr));
+            tmp += vec_dot_iq1_m_q8_1(W, y + kby, kbx_offset + kbx, kqs);
+        }
+
+        if (threadIdx.y > 0) {
+            partial[threadIdx.y - 1][threadIdx.x] = tmp;
+        }
+        __syncthreads();
+        if (threadIdx.y == 0) {
+            for (int w = 0; w < nwarps - 1; w++) {
+                tmp += partial[w][threadIdx.x];
+            }
+            tmp = warp_reduce_sum<warp_size>(tmp);
+            if (threadIdx.x == 0) {
+                out[(size_t)assignment * (size_t)M + (size_t)row] =
+                    invalid ? 0.0f : tmp;
+            }
+        }
+        __syncthreads();
+    }
+}
+
+static bool iq1_m_prefill_enabled() {
+    const char *env = getenv("DS4_MMQ_IQ1M_PREFILL");
+    return !(env && env[0] == '0');
+}
+
+static bool iq1_m_slot_loop_enabled() {
+    const char *env = getenv("DS4_MMQ_IQ1M_SLOT_LOOP");
+    return !(env && env[0] == '0');
+}
+
+static int ds4_mmq_iq1_m_vec_rows(
+        const void    * W,
+        const float   * X_f32,
+        const int32_t * ids,
+        float         * out_f32,
+        int             M,
+        int             K,
+        int             n_tokens,
+        int             n_experts,
+        int             n_expert_used,
+        cudaStream_t    stream) {
+    for (int t = 0; t < n_tokens; t++) {
+        const int rc = ds4_mmq_moe_vec_impl<GGML_TYPE_IQ1_M>(
+            "ds4_mmq_iq1_m_moe_vec", W, X_f32 + (size_t)t * (size_t)K,
+            ids + (size_t)t * (size_t)n_expert_used,
+            out_f32 + (size_t)t * (size_t)n_expert_used * (size_t)M,
+            M, K, 1, n_experts, n_expert_used, stream);
+        if (rc != 0) {
+            return rc;
+        }
+    }
+    return 0;
+}
+
+static int ds4_mmq_iq1_m_moe_impl(
+        const void    * W,
+        const float   * X_f32,
+        const int32_t * ids,
+        float         * out_f32,
+        int             M,
+        int             K,
+        int             n_tokens,
+        int             n_experts,
+        int             n_expert_used,
+        cudaStream_t    stream) {
+    /* Kill switch and decode-width stay on the proven one-token MMVQ.
+     * A single multi-token mul_mat_vec_q_moe launch is the rejected P1. */
+    if (!iq1_m_prefill_enabled() || n_tokens <= 1 ||
+        n_tokens > 65535 || n_expert_used > 65535) {
+        return ds4_mmq_iq1_m_vec_rows(
+            W, X_f32, ids, out_f32, M, K,
+            n_tokens, n_experts, n_expert_used, stream);
+    }
+
+    /* Tile tier: the compact MMQ worklist with the ds4 IQ1_M tile at the
+     * wide raw-IQ floor (8K prefill x top-8 = 65536 rows). -1 means the
+     * worklist refused the shape; the assign-major MMVQ below takes it. */
+    if (moe_worklist_enabled(GGML_TYPE_IQ1_M) &&
+        (int64_t)n_tokens * n_expert_used >= DS4_MMQ_WIDE_IQ_MIN_ROWS &&
+        n_experts >= DS4_MMQ_WIDE_IQ_MIN_EXPERTS) {
+        const int rc = ds4_mmq_moe_impl<GGML_TYPE_IQ1_M>(
+            "ds4_mmq_iq1_m_moe", W, X_f32, ids, out_f32, M, K,
+            n_tokens, n_experts, n_expert_used, stream);
+        if (rc != -1) {
+            static bool logged_tile = false;
+            if (rc == 0 && !logged_tile) {
+                logged_tile = true;
+                fprintf(stderr,
+                        "ds4: IQ1_M prefill using MMQ worklist tile "
+                        "(rows=%d tokens=%d used=%d)\n",
+                        M, n_tokens, n_expert_used);
+            }
+            return rc;
+        }
+    }
+    if (!W || !X_f32 || !ids || !out_f32 || M <= 0 || K <= 0 ||
+        n_tokens <= 0 || n_experts <= 0 || n_expert_used <= 0 ||
+        K % 256 != 0 || n_expert_used > n_experts) {
+        fprintf(stderr, "ds4_mmq_iq1_m_moe: bad args M=%d K=%d nt=%d ne=%d nu=%d\n",
+                M, K, n_tokens, n_experts, n_expert_used);
+        return -1;
+    }
+
+    const int dev = ggml_cuda_get_device();
+    ggml_backend_cuda_context *ctx = get_ctx_for_device(dev);
+    if (!ctx) {
+        fprintf(stderr, "ds4_mmq_iq1_m_moe: no cuda context\n");
+        return -1;
+    }
+    ds4_pool_set_stream(stream);
+
+    const int64_t ne10_padded = GGML_PAD((int64_t)K, MATRIX_ROW_PADDING);
+    const size_t nbytes_q8_1 = (size_t)n_tokens * (size_t)ne10_padded *
+                               sizeof(block_q8_1) / QK8_1;
+    ggml_cuda_pool_alloc<char> src1_q8_1_pool;
+    char *src1_q8_1_ptr = nullptr;
+    if (g_q81_scratch_enabled && g_q81_scratch_ptr &&
+        g_q81_scratch_bytes >= nbytes_q8_1) {
+        src1_q8_1_ptr = (char *)g_q81_scratch_ptr;
+    } else {
+        src1_q8_1_pool.alloc(ctx->pool(), nbytes_q8_1);
+        src1_q8_1_ptr = src1_q8_1_pool.get();
+    }
+
+    quantize_row_q8_1_cuda(
+        X_f32, nullptr, (void *)src1_q8_1_ptr,
+        GGML_TYPE_IQ1_M, K,
+        (int64_t)K, (int64_t)K, (int64_t)K * n_tokens,
+        ne10_padded, 1, n_tokens, 1, stream);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "ds4_mmq_iq1_m_moe: quantize failed: %s\n",
+                cudaGetErrorString(err));
+        return -2;
+    }
+
+    const int stride_row_x = K / 256;
+    const int stride_channel_x = M * stride_row_x;
+    const int stride_token_y = (int)(ne10_padded / QK8_1);
+    constexpr int nwarps = 4;
+    dim3 block(32, nwarps);
+    dim3 grid = iq1_m_slot_loop_enabled()
+        ? dim3(M, n_tokens)
+        : dim3(M, n_tokens, n_expert_used);
+    ds4_iq1_m_moe_assign_kernel<nwarps><<<grid, block, 0, stream>>>(
+        W, (const block_q8_1 *)src1_q8_1_ptr, ids, out_f32,
+        M, K, n_experts, n_expert_used,
+        stride_row_x, stride_channel_x, stride_token_y);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "ds4_mmq_iq1_m_moe: launch failed: %s\n",
+                cudaGetErrorString(err));
+        return -3;
+    }
+    ds4_mmq_sanitize_f32(
+        out_f32, (uint64_t)M * (uint64_t)n_tokens * (uint64_t)n_expert_used,
+        stream);
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        fprintf(stderr,
+                "ds4: IQ1_M prefill using assign-major MMVQ "
+                "(rows=%d tokens=%d used=%d slot_loop=%d)\n",
+                M, n_tokens, n_expert_used,
+                iq1_m_slot_loop_enabled() ? 1 : 0);
+    }
+    return 0;
+}
+
 } // anonymous namespace
 
 extern "C" int ds4_mmq_q8_0_moe_vec(
@@ -5325,6 +5558,14 @@ extern "C" int ds4_mmq_iq1_s_moe(
     return ds4_mmq_moe_impl<GGML_TYPE_IQ1_S>(
         "ds4_mmq_iq1_s_moe", W, X, ids, out, M, K,
         n_tokens, n_experts, n_expert_used, stream);
+}
+
+extern "C" int ds4_mmq_iq1_m_moe(
+        const void * W, const float * X, const int32_t * ids, float * out,
+        int M, int K, int n_tokens, int n_experts, int n_expert_used,
+        cudaStream_t stream) {
+    return ds4_mmq_iq1_m_moe_impl(
+        W, X, ids, out, M, K, n_tokens, n_experts, n_expert_used, stream);
 }
 
 extern "C" int ds4_mmq_q2_K_moe_vec(

@@ -474,9 +474,94 @@ static void test_attention(int sliding) {
                      : "attention decode (full, NoPE)",
              got, want, (size_t)T_HEAD * T_HEAD_DIM, 2e-5, 2e-5);
 
+    (void)setenv("DS4_EXAONE_ATTN_GQA", "0", 1);
+    if (!ds4_gpu_exaone_attention_decode_tensor(go, gq, gkv, T_HEAD, T_HEAD_KV,
+                                                T_HEAD_DIM, kv_cap, pos, window)) {
+        printf("attention decode serial launch failed\n"); g_fail++;
+    } else {
+        ds4_gpu_tensor_read(go, 0, want, (size_t)T_HEAD * T_HEAD_DIM * sizeof(float));
+        (void)setenv("DS4_EXAONE_ATTN_GQA", "1", 1);
+        if (!ds4_gpu_exaone_attention_decode_tensor(go, gq, gkv, T_HEAD, T_HEAD_KV,
+                                                    T_HEAD_DIM, kv_cap, pos, window)) {
+            printf("attention decode GQA launch failed\n"); g_fail++;
+        } else {
+            ds4_gpu_tensor_read(go, 0, got, (size_t)T_HEAD * T_HEAD_DIM * sizeof(float));
+            diff_f32(sliding ? "attention GQA vs serial (window 128)"
+                             : "attention GQA vs serial (full, NoPE)",
+                     got, want, (size_t)T_HEAD * T_HEAD_DIM, 1e-6, 1e-6);
+        }
+    }
+    (void)unsetenv("DS4_EXAONE_ATTN_GQA");
+
     free(want); free(got);
     ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gkv); ds4_gpu_tensor_free(gq);
     free(kv); free(q);
+}
+
+/* Decode 2: split-K decode attention vs the pair kernel on the K2 shape
+ * (48 heads over 8 KV heads, head_dim 128). Same per-key math, different
+ * fp32 merge order, so a tolerance; below the split floor, with a sliding
+ * window and under the kill switch the pair kernel must run bit-identically. */
+static void test_decode_split(void) {
+    const uint32_t nh = 48u, nkv = 8u, hd = 128u, cap = 32768u;
+    static const struct { uint32_t pos, window; const char *env; int exact; } cases[] = {
+        {1023u, 0u, "1", 1},    /* below the split floor */
+        {4095u, 0u, "1", 0},
+        {8191u, 0u, "1", 0},
+        {32767u, 0u, "1", 0},
+        {8191u, 128u, "1", 1},  /* sliding window */
+        {8191u, 0u, "0", 1},    /* kill switch */
+    };
+    const size_t n = (size_t)nh * hd, kvn = (size_t)cap * nkv * hd * 2u;
+    float *q = xmalloc(n * sizeof(float));
+    float *ref = xmalloc(n * sizeof(float));
+    float *got = xmalloc(n * sizeof(float));
+    float *want = xmalloc(n * sizeof(float));
+    uint16_t *kv = xmalloc(kvn * sizeof(uint16_t));
+    uint64_t seed = 1717u;
+    for (size_t i = 0; i < n; i++) { q[i] = frand(&seed); }
+    for (size_t i = 0; i < kvn; i++) { kv[i] = f32_to_f16(frand(&seed) * 0.5f); }
+    ds4_gpu_tensor *gq = ds4_gpu_tensor_alloc(n * sizeof(float));
+    ds4_gpu_tensor *go = ds4_gpu_tensor_alloc(n * sizeof(float));
+    ds4_gpu_tensor *gkv = ds4_gpu_tensor_alloc(kvn * sizeof(uint16_t));
+    int ok = gq && go && gkv &&
+        ds4_gpu_tensor_write(gq, 0, q, n * sizeof(float)) &&
+        ds4_gpu_tensor_write(gkv, 0, kv, kvn * sizeof(uint16_t));
+    for (size_t c = 0; ok && c < sizeof(cases) / sizeof(cases[0]); c++) {
+        const uint32_t pos = cases[c].pos, window = cases[c].window;
+        double ms[2] = {0.0, 0.0};
+        for (int split = 0; ok && split < 2; split++) {
+            (void)setenv("DS4_EXAONE_ATTN_SPLIT", split ? cases[c].env : "0", 1);
+            ok = ds4_gpu_exaone_attention_decode_tensor(
+                     go, gq, gkv, nh, nkv, hd, cap, pos, window) &&
+                 ds4_gpu_synchronize();
+            const double start = now_sec();
+            for (int i = 0; ok && i < 20; i++) {
+                ok = ds4_gpu_exaone_attention_decode_tensor(
+                         go, gq, gkv, nh, nkv, hd, cap, pos, window);
+            }
+            ok = ok && ds4_gpu_synchronize();
+            ms[split] = (now_sec() - start) * 50.0;
+            ok = ok && ds4_gpu_tensor_read(go, 0, split ? got : ref, n * sizeof(float));
+        }
+        (void)unsetenv("DS4_EXAONE_ATTN_SPLIT");
+        if (!ok) break;
+        char label[80];
+        snprintf(label, sizeof(label), "K2 split attention @%u window=%u env=%s",
+                 pos, window, cases[c].env);
+        diff_quant_gemm(label, got, ref, n, 1e-5);
+        if (cases[c].exact && memcmp(got, ref, n * sizeof(float)) != 0) {
+            printf("%s: pair-kernel fallback is not bit-identical\n", label); g_fail++;
+        }
+        printf("%s pair=%.3f ms split=%.3f ms\n", label, ms[0], ms[1]);
+        if (pos == 8191u && window == 0u && cases[c].env[0] == '1') {
+            cpu_attn(want, q, kv, nh, nkv, hd, cap, 0u, pos);
+            diff_f32("K2 split attention @8191 vs CPU", got, want, n, 2e-5, 2e-5);
+        }
+    }
+    if (!ok) { printf("K2 split attention launch failed\n"); g_fail++; }
+    ds4_gpu_tensor_free(gkv); ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gq);
+    free(kv); free(want); free(got); free(ref); free(q);
 }
 
 static void test_attention_prefill(int sliding) {
@@ -891,6 +976,285 @@ static void test_moe_worklist(const ds4_model *m, const ds4_tensor *w,
     }
 }
 
+/* Assign-major IQ1_M prefill vs the per-token MMVQ kill switch. */
+static int run_iq1m_prefill_pair(const void *map, uint64_t map_size,
+                                 uint64_t w_off, uint64_t w_bytes,
+                                 uint32_t k, uint32_t rows, uint32_t nexp,
+                                 uint32_t nt, uint32_t used) {
+    const size_t nx = (size_t)nt * k, ny = (size_t)nt * used * rows;
+    float *x = xmalloc(nx * sizeof(float));
+    float *ref = xmalloc(ny * sizeof(float));
+    float *got = xmalloc(ny * sizeof(float));
+    int32_t *ids = xmalloc((size_t)nt * used * sizeof(int32_t));
+    uint64_t seed = 20260905ull + nt;
+    for (size_t i = 0; i < nx; i++) { x[i] = frand(&seed) * 0.5f; }
+    for (uint32_t t = 0; t < nt; t++) {
+        for (uint32_t s = 0; s < used; s++) {
+            ids[(size_t)t * used + s] =
+                ((t % 5u == 0u ? 7u : t * 13u) + s * 7u) % nexp;
+        }
+    }
+    ids[used] = -1;
+    ds4_gpu_tensor *gx = ds4_gpu_tensor_alloc(nx * sizeof(float));
+    ds4_gpu_tensor *gi = ds4_gpu_tensor_alloc((size_t)nt * used * sizeof(int32_t));
+    ds4_gpu_tensor *go = ds4_gpu_tensor_alloc(ny * sizeof(float));
+    int ok = gx && gi && go &&
+        ds4_gpu_tensor_write(gx, 0, x, nx * sizeof(float)) &&
+        ds4_gpu_tensor_write(gi, 0, ids, (size_t)nt * used * sizeof(int32_t));
+    double ms[2] = {0.0, 0.0};
+    /* Pin the assign-major tier: from 256 routed rows the default would
+     * take the MMQ worklist tile, which run_iq1m_tile_pair covers. */
+    (void)setenv("DS4_MMQ_IQ1M_WORKLIST", "0", 1);
+    for (int fast = 0; ok && fast < 2; fast++) {
+        (void)setenv("DS4_MMQ_IQ1M_PREFILL", fast ? "1" : "0", 1);
+        ok = ds4_gpu_tensor_fill_f32(go, 0.0f, ny) &&
+            ds4_gpu_routed_matmul_tensor(go, gx, gi, map, map_size,
+                w_off, w_bytes, DS4_TENSOR_IQ1_M, k, rows, nexp, nt, used) &&
+            ds4_gpu_synchronize();
+        const double start = now_sec();
+        for (int i = 0; ok && i < 2; i++) {
+            ok = ds4_gpu_routed_matmul_tensor(go, gx, gi, map, map_size,
+                w_off, w_bytes, DS4_TENSOR_IQ1_M, k, rows, nexp, nt, used);
+        }
+        ok = ok && ds4_gpu_synchronize();
+        ms[fast] = (now_sec() - start) * 500.0;
+        ok = ok && ds4_gpu_tensor_read(go, 0, fast ? got : ref, ny * sizeof(float));
+    }
+    (void)unsetenv("DS4_MMQ_IQ1M_PREFILL");
+    if (ok) {
+        char label[80];
+        snprintf(label, sizeof(label), "IQ1_M assign nt=%u used=%u rows=%u",
+                 nt, used, rows);
+        diff_quant_gemm(label, got, ref, ny, 1e-5);
+        printf("%s token-loop=%.3f ms assign=%.3f ms\n", label, ms[0], ms[1]);
+        (void)setenv("DS4_MMQ_IQ1M_PREFILL", "1", 1);
+        double slot_ms[2] = {0.0, 0.0};
+        for (int loop = 0; ok && loop < 2; loop++) {
+            (void)setenv("DS4_MMQ_IQ1M_SLOT_LOOP", loop ? "1" : "0", 1);
+            ok = ds4_gpu_tensor_fill_f32(go, 0.0f, ny) &&
+                ds4_gpu_routed_matmul_tensor(go, gx, gi, map, map_size,
+                    w_off, w_bytes, DS4_TENSOR_IQ1_M, k, rows, nexp, nt, used) &&
+                ds4_gpu_synchronize();
+            const double start = now_sec();
+            for (int i = 0; ok && i < 2; i++) {
+                ok = ds4_gpu_routed_matmul_tensor(go, gx, gi, map, map_size,
+                    w_off, w_bytes, DS4_TENSOR_IQ1_M, k, rows, nexp, nt, used);
+            }
+            ok = ok && ds4_gpu_synchronize();
+            slot_ms[loop] = (now_sec() - start) * 500.0;
+            ok = ok && ds4_gpu_tensor_read(go, 0, loop ? got : ref, ny * sizeof(float));
+        }
+        (void)unsetenv("DS4_MMQ_IQ1M_SLOT_LOOP");
+        (void)unsetenv("DS4_MMQ_IQ1M_PREFILL");
+        (void)unsetenv("DS4_MMQ_IQ1M_WORKLIST");
+        if (ok) {
+            snprintf(label, sizeof(label), "IQ1_M slot-loop nt=%u used=%u rows=%u",
+                     nt, used, rows);
+            diff_quant_gemm(label, got, ref, ny, 1e-5);
+            printf("%s grid3d=%.3f ms slot-loop=%.3f ms\n",
+                   label, slot_ms[0], slot_ms[1]);
+        } else {
+            printf("IQ1_M slot-loop nt=%u launch failed\n", nt); g_fail++;
+        }
+    } else {
+        (void)unsetenv("DS4_MMQ_IQ1M_WORKLIST");
+        printf("IQ1_M assign nt=%u launch failed\n", nt); g_fail++;
+    }
+    ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gi); ds4_gpu_tensor_free(gx);
+    free(ids); free(got); free(ref); free(x);
+    return ok;
+}
+
+static void test_iq1m_prefill_synth(void) {
+    const uint32_t k = 256u, rows = 32u, nexp = 16u, used = 8u;
+    const uint64_t w_bytes = (uint64_t)nexp * rows * (k / 256u) * 56u;
+    const uint64_t w_off = 256;
+    const uint64_t map_size = w_off + w_bytes + 256;
+    void *map = NULL;
+    if (posix_memalign(&map, 4096, (size_t)map_size) != 0) {
+        printf("IQ1_M synth map alloc failed\n"); g_fail++; return;
+    }
+    memset(map, 0, (size_t)map_size);
+    uint64_t seed = 20260905ull;
+    unsigned char *w = (unsigned char *)map + w_off;
+    for (uint64_t i = 0; i < w_bytes; i++) {
+        seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+        w[i] = (unsigned char)(seed >> 33);
+    }
+    if (!ds4_gpu_set_model_map(map, map_size)) {
+        printf("IQ1_M synth map failed\n"); g_fail++; free(map); return;
+    }
+    /* 8192×8 is the production assignment count (65536 > 65535). */
+    const uint32_t widths[] = {17u, 257u, 8192u};
+    for (size_t i = 0; i < sizeof(widths) / sizeof(widths[0]); i++) {
+        (void)run_iq1m_prefill_pair(map, map_size, w_off, w_bytes,
+                                    k, rows, nexp, widths[i], used);
+    }
+    /* The map is host-registered (pinned) with CUDA; freeing it would let
+     * a later malloc straddle the pinned range and fail cudaMemcpy with
+     * "invalid argument". Keep it until exit. */
+}
+
+/* IQ1_M compact-worklist tile vs the assign-major MMVQ kill switch. Both
+ * quantize the activation to Q8_1 blocks of 32, but the MMQ producer rounds
+ * x*(127/amax) where MMVQ rounds x/(amax/127), so random rows agree to a
+ * tolerance, not bit identity. Rows whose 32-value blocks sit on exact
+ * Q8_1 points (m*amax/127 with one |m| = 127 per block, amax/127 = 2^-8)
+ * make both producers emit the same q and scale, leaving only fp32
+ * accumulation order; that
+ * mode separates producer rounding from a tile fault (a wrong grid, delta
+ * or scale lands near 1e-1). */
+enum iq1m_tile_x { IQ1M_TILE_X_RANDOM, IQ1M_TILE_X_Q8_EXACT };
+static const double IQ1M_TILE_REL_TOL = 1e-3;
+static const double IQ1M_TILE_EXACT_REL_TOL = 1e-5;
+
+static int run_iq1m_tile_pair(const void *map, uint64_t map_size,
+                              uint64_t w_off, uint64_t w_bytes,
+                              uint32_t k, uint32_t rows, uint32_t nexp,
+                              uint32_t nt, uint32_t used,
+                              enum iq1m_tile_x xmode) {
+    const size_t nx = (size_t)nt * k, ny = (size_t)nt * used * rows;
+    float *x = xmalloc(nx * sizeof(float));
+    float *ref = xmalloc(ny * sizeof(float));
+    float *got = xmalloc(ny * sizeof(float));
+    int32_t *ids = xmalloc((size_t)nt * used * sizeof(int32_t));
+    uint64_t seed = 20260906ull + nt;
+    /* Power-of-two step: the MMVQ tier keeps the Q8_1 scale as fp16 in
+     * block_q8_1.ds, the MMQ tier as fp32, so only an exact scale makes
+     * the two tiers' scaled activations identical. */
+    const float q8_step = 1.0f / 256.0f;
+    for (size_t i = 0; i < nx; i++) {
+        if (xmode == IQ1M_TILE_X_RANDOM) { x[i] = frand(&seed) * 0.5f; continue; }
+        const int m = i % 32u == 0u ? 127 : (int)(frand(&seed) * 127.0f);
+        x[i] = (float)m * q8_step;
+    }
+    for (uint32_t t = 0; t < nt; t++) {
+        for (uint32_t s = 0; s < used; s++) {
+            ids[(size_t)t * used + s] =
+                ((t % 5u == 0u ? 7u : t * 13u) + s * 7u) % nexp;
+        }
+    }
+    ids[used] = -1; /* Both tiers must preserve the invalid-slot zero. */
+    ds4_gpu_tensor *gx = ds4_gpu_tensor_alloc(nx * sizeof(float));
+    ds4_gpu_tensor *gi = ds4_gpu_tensor_alloc((size_t)nt * used * sizeof(int32_t));
+    ds4_gpu_tensor *go = ds4_gpu_tensor_alloc(ny * sizeof(float));
+    int ok = gx && gi && go &&
+        ds4_gpu_tensor_write(gx, 0, x, nx * sizeof(float)) &&
+        ds4_gpu_tensor_write(gi, 0, ids, (size_t)nt * used * sizeof(int32_t));
+    double ms[2] = {0.0, 0.0};
+    for (int tile = 0; ok && tile < 2; tile++) {
+        (void)setenv("DS4_MMQ_IQ1M_WORKLIST", tile ? "1" : "0", 1);
+        ok = ds4_gpu_tensor_fill_f32(go, 0.0f, ny) &&
+            ds4_gpu_routed_matmul_tensor(go, gx, gi, map, map_size,
+                w_off, w_bytes, DS4_TENSOR_IQ1_M, k, rows, nexp, nt, used) &&
+            ds4_gpu_synchronize();
+        const double start = now_sec();
+        for (int i = 0; ok && i < 2; i++) {
+            ok = ds4_gpu_routed_matmul_tensor(go, gx, gi, map, map_size,
+                w_off, w_bytes, DS4_TENSOR_IQ1_M, k, rows, nexp, nt, used);
+        }
+        ok = ok && ds4_gpu_synchronize();
+        ms[tile] = (now_sec() - start) * 500.0;
+        ok = ok && ds4_gpu_tensor_read(go, 0, tile ? got : ref, ny * sizeof(float));
+    }
+    (void)unsetenv("DS4_MMQ_IQ1M_WORKLIST");
+    if (ok) {
+        char label[80];
+        snprintf(label, sizeof(label), "IQ1_M tile%s nt=%u used=%u rows=%u k=%u",
+                 xmode == IQ1M_TILE_X_Q8_EXACT ? " q8-exact" : "",
+                 nt, used, rows, k);
+        diff_quant_gemm(label, got, ref, ny,
+                        xmode == IQ1M_TILE_X_Q8_EXACT ? IQ1M_TILE_EXACT_REL_TOL
+                                                      : IQ1M_TILE_REL_TOL);
+        printf("%s assign=%.3f ms tile=%.3f ms\n", label, ms[0], ms[1]);
+    } else {
+        printf("IQ1_M tile nt=%u launch failed\n", nt); g_fail++;
+    }
+    ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gi); ds4_gpu_tensor_free(gx);
+    free(ids); free(got); free(ref); free(x);
+    return ok;
+}
+
+/* Valid 56-byte IQ1_M blocks: random grids, deltas and 3-bit sub-scales,
+ * and an fp16 block scale in [2^-7, 2^-4) spread over the scale-word top
+ * nibbles. Random scale bytes would give NaN or huge d, which the two
+ * tiers overflow and sanitize differently. */
+static void synth_iq1m_blocks(unsigned char *w, uint64_t nblocks, uint64_t *seed) {
+    for (uint64_t b = 0; b < nblocks; b++) {
+        unsigned char *blk = w + b * 56u;
+        for (int i = 0; i < 48; i++) {
+            *seed = *seed * 6364136223846793005ULL + 1442695040888963407ULL;
+            blk[i] = (unsigned char)(*seed >> 33);
+        }
+        *seed = *seed * 6364136223846793005ULL + 1442695040888963407ULL;
+        const uint16_t d = (uint16_t)(0x2000u + ((*seed >> 33) & 0x0FFFu));
+        for (int j = 0; j < 4; j++) {
+            *seed = *seed * 6364136223846793005ULL + 1442695040888963407ULL;
+            const uint16_t word = (uint16_t)((((d >> (4 * j)) & 0xFu) << 12) |
+                                             ((*seed >> 33) & 0x0FFFu));
+            blk[48 + 2 * j] = (unsigned char)(word & 0xFFu);
+            blk[49 + 2 * j] = (unsigned char)(word >> 8);
+        }
+    }
+}
+
+static void test_iq1m_tile_synth(void) {
+    /* 32 experts is the worklist floor; rows 128 = one unchecked MMQ tile,
+     * rows 96 = the checked tile; k 512 = two K iterations. All three
+     * tensors share one map: the CUDA backend host-registers a map once
+     * and refuses a re-registration that overlaps the previous range. */
+    static const struct { uint32_t k, rows, nt; } cases[] = {
+        {256u, 128u, 32u}, {512u, 96u, 257u}, {512u, 128u, 512u},
+    };
+    const size_t ncase = sizeof(cases) / sizeof(cases[0]);
+    const uint32_t nexp = 32u, used = 8u;
+    uint64_t w_off[3], w_bytes[3], map_size = 256;
+    for (size_t c = 0; c < ncase; c++) {
+        w_off[c] = map_size;
+        w_bytes[c] = (uint64_t)nexp * cases[c].rows * (cases[c].k / 256u) * 56u;
+        map_size += (w_bytes[c] + 255u) & ~(uint64_t)255u;
+    }
+    map_size += 256;
+    void *map = NULL;
+    if (posix_memalign(&map, 4096, (size_t)map_size) != 0) {
+        printf("IQ1_M tile synth map alloc failed\n"); g_fail++; return;
+    }
+    memset(map, 0, (size_t)map_size);
+    uint64_t seed = 20260906ull;
+    for (size_t c = 0; c < ncase; c++) {
+        synth_iq1m_blocks((unsigned char *)map + w_off[c], w_bytes[c] / 56u, &seed);
+    }
+    if (!ds4_gpu_set_model_map(map, map_size)) {
+        printf("IQ1_M tile synth map failed\n"); g_fail++; free(map); return;
+    }
+    for (size_t c = 0; c < ncase; c++) {
+        (void)run_iq1m_tile_pair(map, map_size, w_off[c], w_bytes[c],
+                                 cases[c].k, cases[c].rows, nexp,
+                                 cases[c].nt, used, IQ1M_TILE_X_RANDOM);
+        (void)run_iq1m_tile_pair(map, map_size, w_off[c], w_bytes[c],
+                                 cases[c].k, cases[c].rows, nexp,
+                                 cases[c].nt, used, IQ1M_TILE_X_Q8_EXACT);
+    }
+    /* Registered map: kept until exit (see test_iq1m_prefill_synth). */
+}
+
+static void test_iq1m_prefill(const ds4_model *m, const ds4_tensor *w,
+                              uint32_t used) {
+    const uint32_t k = (uint32_t)w->dim[0];
+    const uint32_t widths[] = {17u, 257u, 512u};
+    for (size_t wi = 0; wi < sizeof(widths) / sizeof(widths[0]); wi++) {
+        (void)run_iq1m_prefill_pair(m->map, m->size, w->abs_offset, w->bytes,
+                                    k, (uint32_t)w->dim[1], DS4_N_EXPERT,
+                                    widths[wi], used);
+        (void)run_iq1m_tile_pair(m->map, m->size, w->abs_offset, w->bytes,
+                                 k, (uint32_t)w->dim[1], DS4_N_EXPERT,
+                                 widths[wi], used, IQ1M_TILE_X_RANDOM);
+        (void)run_iq1m_tile_pair(m->map, m->size, w->abs_offset, w->bytes,
+                                 k, (uint32_t)w->dim[1], DS4_N_EXPERT,
+                                 widths[wi], used, IQ1M_TILE_X_Q8_EXACT);
+    }
+}
+
 static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
     /* One layer of each quant type present. The recipe puts Q4_K on the edge
      * layers and IQ2_XXS/Q3_K (or Q2_K in the pilot) on the interior ones, so
@@ -909,6 +1273,7 @@ static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
 
             if (ty == DS4_TENSOR_IQ2_XXS && which) { test_moe_worklist(m, w, 1u); }
             if (ty == DS4_TENSOR_IQ1_S && !which) { test_moe_worklist(m, w, 8u); }
+            if (ty == DS4_TENSOR_IQ1_M && !which) { test_iq1m_prefill(m, w, 8u); }
 
             printf("testing routed tensor %.*s type=%s(%u) layer=%u\n",
                    (int)w->name.len, w->name.ptr, tensor_type_name(ty), ty, il);
@@ -1009,11 +1374,16 @@ int main(int argc, char **argv) {
     test_neox_rope_only(524287u);
     test_attention(1);
     test_attention(0);
+    test_decode_split();
     test_attention_prefill(1);
     test_attention_prefill(0);
     test_prefill_chunk_residency();
     test_router(map, map_size, bias_off);
     test_swiglu_and_combine();
+    printf("\n== IQ1_M assign-major vs per-token MMVQ ==\n");
+    test_iq1m_prefill_synth();
+    printf("\n== IQ1_M worklist tile vs assign-major MMVQ ==\n");
+    test_iq1m_tile_synth();
 
     if (argc > 1) {
         ds4_model model;
