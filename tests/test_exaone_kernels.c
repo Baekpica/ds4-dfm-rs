@@ -1366,6 +1366,53 @@ static void test_moe_pair(const ds4_model *m, const ds4_tensor *gate,
     }
 }
 
+/* Prefill 9: the guarded routed-down entry (no standalone sanitize; moe_sum
+ * skips non-finite values) vs the sanitizing one. Same schedule, so the
+ * outputs must be bit-identical on real (finite) weights. */
+static void test_moe_down_guarded(const ds4_model *m, const ds4_tensor *w) {
+    const uint32_t k = (uint32_t)w->dim[0], rows = (uint32_t)w->dim[1];
+    const uint32_t nt = 4096u, used = 1u;
+    const size_t nx = (size_t)nt * k, ny = (size_t)nt * rows;
+    float *x = xmalloc(nx * sizeof(float));
+    float *ref = xmalloc(ny * sizeof(float)), *got = xmalloc(ny * sizeof(float));
+    int32_t *ids = xmalloc((size_t)nt * sizeof(int32_t));
+    uint64_t seed = 9090u;
+    for (size_t i = 0; i < nx; i++) { x[i] = frand(&seed) * 0.5f; }
+    for (uint32_t t = 0; t < nt; t++) { ids[t] = (t * 13u + 7u) % DS4_N_EXPERT; }
+    ids[1] = -1;
+    ds4_gpu_tensor *gx = ds4_gpu_tensor_alloc(nx * sizeof(float));
+    ds4_gpu_tensor *gi = ds4_gpu_tensor_alloc((size_t)nt * sizeof(int32_t));
+    ds4_gpu_tensor *go = ds4_gpu_tensor_alloc(ny * sizeof(float));
+    int ok = gx && gi && go &&
+        ds4_gpu_tensor_write(gx, 0, x, nx * sizeof(float)) &&
+        ds4_gpu_tensor_write(gi, 0, ids, (size_t)nt * sizeof(int32_t));
+    double ms[2] = {0.0, 0.0};
+    for (int guarded = 0; ok && guarded < 2; guarded++) {
+        ok = ds4_gpu_tensor_fill_f32(go, 0.0f, ny);
+        for (int i = 0; ok && i < 3; i++) {
+            const double start = now_sec();
+            ok = guarded
+                ? ds4_gpu_routed_matmul_guarded_tensor(go, gx, gi, m->map, m->size,
+                      w->abs_offset, w->bytes, w->type, k, rows, DS4_N_EXPERT, nt, used, nt / 8u)
+                : ds4_gpu_routed_matmul_bounded_tensor(go, gx, gi, m->map, m->size,
+                      w->abs_offset, w->bytes, w->type, k, rows, DS4_N_EXPERT, nt, used, nt / 8u);
+            ok = ok && ds4_gpu_synchronize();
+            if (i) ms[guarded] += (now_sec() - start) * 500.0;
+        }
+        ok = ok && ds4_gpu_tensor_read(go, 0, guarded ? got : ref, ny * sizeof(float));
+    }
+    if (ok) {
+        const int same = memcmp(got, ref, ny * sizeof(float)) == 0;
+        if (!same) g_fail++;
+        printf("%s down guarded nt=%u rows=%u  %s  sanitized=%.3f ms guarded=%.3f ms\n",
+               tensor_type_name(w->type), nt, rows, same ? "bit-identical" : "DIFFER", ms[0], ms[1]);
+    } else {
+        printf("%s down guarded launch failed\n", tensor_type_name(w->type)); g_fail++;
+    }
+    ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gi); ds4_gpu_tensor_free(gx);
+    free(ids); free(got); free(ref); free(x);
+}
+
 static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
     /* One layer of each quant type present. The recipe puts Q4_K on the edge
      * layers and IQ2_XXS/Q3_K (or Q2_K in the pilot) on the interior ones, so
@@ -1384,6 +1431,9 @@ static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
 
             if (ty == DS4_TENSOR_IQ2_XXS && which) { test_moe_worklist(m, w, 1u); }
             if (ty == DS4_TENSOR_IQ2_XS && which) { test_moe_worklist(m, w, 1u); }
+            if ((ty == DS4_TENSOR_IQ2_XXS || ty == DS4_TENSOR_IQ2_XS) && which) {
+                test_moe_down_guarded(m, w);
+            }
             if (ty == DS4_TENSOR_IQ1_S && !which) { test_moe_worklist(m, w, 8u); }
             if (ty == DS4_TENSOR_IQ1_M && !which) { test_iq1m_prefill(m, w, 8u); }
             if ((ty == DS4_TENSOR_IQ1_S || ty == DS4_TENSOR_IQ1_M) && !which) {

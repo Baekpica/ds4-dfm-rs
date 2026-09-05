@@ -2672,6 +2672,25 @@ int ds4_gpu_routed_matmul_bounded_tensor(
         uint32_t                n_expert_used,
         uint32_t                max_rows_per_expert);
 
+/* Same as the bounded entry for a caller whose consumer skips non-finite
+ * values at read (moe_sum with guard_nonfinite): the routed IQ2 prefill
+ * schedule then omits its standalone sanitize pass. */
+int ds4_gpu_routed_matmul_guarded_tensor(
+        ds4_gpu_tensor       *out,
+        const ds4_gpu_tensor *x,
+        const ds4_gpu_tensor *ids,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint64_t                weight_bytes,
+        uint32_t                weight_type,
+        uint32_t                in_dim,
+        uint32_t                out_dim,
+        uint32_t                n_expert,
+        uint32_t                n_tokens,
+        uint32_t                n_expert_used,
+        uint32_t                max_rows_per_expert);
+
 /* Paired routed gate/up projection.  The aligned IQ2 artifact tier shares
  * one activation quantization and one assignment schedule; other types use
  * the established single-projection fallback. */

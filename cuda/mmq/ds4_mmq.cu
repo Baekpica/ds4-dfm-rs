@@ -5607,6 +5607,29 @@ extern "C" int ds4_mmq_iq2_xs_moe(
         n_tokens, n_experts, n_expert_used, stream);
 }
 
+/* K2 MQ87 routed down (IQ2_XXS / IQ2_XS) feeds moe_sum, which skips
+ * non-finite values at read, so the standalone sanitize pass over the
+ * [rows x 6144] output (23 ms per 512-token chunk) adds nothing. */
+extern "C" int ds4_mmq_iq2_xxs_moe_guarded(
+        const void * W, const float * X, const int32_t * ids, float * out,
+        int M, int K, int n_tokens, int n_experts, int n_expert_used,
+        cudaStream_t stream) {
+    return ds4_mmq_moe_impl<GGML_TYPE_IQ2_XXS>(
+        "ds4_mmq_iq2_xxs_moe_guarded", W, X, ids, out, M, K,
+        n_tokens, n_experts, n_expert_used, stream,
+        /*x_soa=*/NULL, /*soa_blocks=*/0, /*sanitize_out=*/false);
+}
+
+extern "C" int ds4_mmq_iq2_xs_moe_guarded(
+        const void * W, const float * X, const int32_t * ids, float * out,
+        int M, int K, int n_tokens, int n_experts, int n_expert_used,
+        cudaStream_t stream) {
+    return ds4_mmq_moe_impl<GGML_TYPE_IQ2_XS>(
+        "ds4_mmq_iq2_xs_moe_guarded", W, X, ids, out, M, K,
+        n_tokens, n_experts, n_expert_used, stream,
+        /*x_soa=*/NULL, /*soa_blocks=*/0, /*sanitize_out=*/false);
+}
+
 extern "C" int ds4_mmq_iq1_s_moe(
         const void * W, const float * X, const int32_t * ids, float * out,
         int M, int K, int n_tokens, int n_experts, int n_expert_used,

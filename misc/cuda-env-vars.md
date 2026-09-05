@@ -56,6 +56,10 @@ The bandwidth figure is informational; we don't tier on it.
 - `DS4_EXAONE_ATTN_GQA=0` restores one decode-attention block per query
   head. The default shares each KV row across two query heads.
 
+- `DS4_EXAONE_DOWN_SANITIZE=1` restores the standalone non-finite sanitize
+  pass over the K2 routed-down output. The default skips it: the down
+  output only feeds `moe_sum`, which skips non-finite values at read.
+
 - `DS4_MMQ_IQ1_PAIR=0` runs K2 IQ1_S / IQ1_M routed gate/up as two single
   routed calls again (each with its own expert map, activation quantize
   and sanitize pass). The default pairs them like the K-quant gate/up:

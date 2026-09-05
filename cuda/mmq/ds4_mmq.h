@@ -311,6 +311,32 @@ int ds4_mmq_iq2_xs_moe(
     int             n_expert_used,
     cudaStream_t    stream);
 
+// Routed down entries for a consumer that skips non-finite values at read
+// (K2 moe_sum): same schedule, no standalone sanitize pass.
+int ds4_mmq_iq2_xxs_moe_guarded(
+    const void    * W,
+    const float   * X_f32,
+    const int32_t * ids,
+    float         * out_f32,
+    int             M,
+    int             K,
+    int             n_tokens,
+    int             n_experts,
+    int             n_expert_used,
+    cudaStream_t    stream);
+
+int ds4_mmq_iq2_xs_moe_guarded(
+    const void    * W,
+    const float   * X_f32,
+    const int32_t * ids,
+    float         * out_f32,
+    int             M,
+    int             K,
+    int             n_tokens,
+    int             n_experts,
+    int             n_expert_used,
+    cudaStream_t    stream);
+
 int ds4_mmq_iq1_s_moe(
     const void    * W,
     const float   * X_f32,

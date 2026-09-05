@@ -42118,8 +42118,10 @@ static bool exaone_graph_layer(ds4_exaone_gpu_graph *g,
              rm, rg, ru, rw, (uint32_t)n_ff_exp,
              (uint64_t)n_tok * n_used * n_ff_exp) ||
          /* selected is top-k without replacement for each token.  Once the
-          * assignments are flattened, one expert owns at most n_tok rows. */
-         !ds4_gpu_routed_matmul_bounded_tensor(
+          * assignments are flattened, one expert owns at most n_tok rows.
+          * moe_sum below skips non-finite rows, so the down output needs
+          * no standalone sanitize pass. */
+         !ds4_gpu_routed_matmul_guarded_tensor(
              rd, rm, sel, m->map, m->size,
              l->ffn_down_exps->abs_offset, l->ffn_down_exps->bytes,
              l->ffn_down_exps->type,

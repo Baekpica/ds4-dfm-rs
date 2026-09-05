@@ -32493,6 +32493,13 @@ extern "C" int ds4_gpu_swiglu_weighted_tensor(
 
 enum { DS4_ROUTED_VEC_MAX_ROWS = 20u };
 
+/* Whether the routed output gets the standalone non-finite sanitize pass
+ * or the caller's consumer guards at read (K2 routed down -> moe_sum). */
+enum ds4_routed_out {
+    DS4_ROUTED_OUT_SANITIZE = 0,
+    DS4_ROUTED_OUT_GUARDED = 1,
+};
+
 static int routed_matmul_tensor_impl(
         ds4_gpu_tensor       *out,
         const ds4_gpu_tensor *x,
@@ -32507,7 +32514,8 @@ static int routed_matmul_tensor_impl(
         uint32_t                n_expert,
         uint32_t                n_tokens,
         uint32_t                n_expert_used,
-        uint32_t                max_rows_per_expert) {
+        uint32_t                max_rows_per_expert,
+        enum ds4_routed_out     out_policy) {
     if (!out || !x || !ids || !model_map || in_dim == 0u ||
         out_dim == 0u || n_expert == 0u ||
         n_tokens == 0u || n_expert_used == 0u ||
@@ -32704,12 +32712,16 @@ static int routed_matmul_tensor_impl(
     case 16u:
         rc = use_vec
             ? vec_rows(ds4_mmq_iq2_xxs_moe_vec)
-            : ds4_mmq_iq2_xxs_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
+            : out_policy == DS4_ROUTED_OUT_GUARDED
+                ? ds4_mmq_iq2_xxs_moe_guarded(weights, xp, idp, op, M, K, NT, NE, NU, stream)
+                : ds4_mmq_iq2_xxs_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
         break;
     case 17u:
         rc = use_vec
             ? vec_rows(ds4_mmq_iq2_xs_moe_vec)
-            : ds4_mmq_iq2_xs_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
+            : out_policy == DS4_ROUTED_OUT_GUARDED
+                ? ds4_mmq_iq2_xs_moe_guarded(weights, xp, idp, op, M, K, NT, NE, NU, stream)
+                : ds4_mmq_iq2_xs_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
         break;
     case 19u:
         rc = use_vec
@@ -32752,7 +32764,7 @@ extern "C" int ds4_gpu_routed_matmul_tensor(
     return routed_matmul_tensor_impl(
         out, x, ids, model_map, model_size, weight_offset, weight_bytes,
         weight_type, in_dim, out_dim, n_expert, n_tokens, n_expert_used,
-        /*max_rows_per_expert=*/0u);
+        /*max_rows_per_expert=*/0u, DS4_ROUTED_OUT_SANITIZE);
 }
 
 extern "C" int ds4_gpu_routed_matmul_bounded_tensor(
@@ -32774,7 +32786,36 @@ extern "C" int ds4_gpu_routed_matmul_bounded_tensor(
     return routed_matmul_tensor_impl(
         out, x, ids, model_map, model_size, weight_offset, weight_bytes,
         weight_type, in_dim, out_dim, n_expert, n_tokens, n_expert_used,
-        max_rows_per_expert);
+        max_rows_per_expert, DS4_ROUTED_OUT_SANITIZE);
+}
+
+/* Bounded routed matmul whose consumer skips non-finite values at read
+ * (K2 routed down -> moe_sum with guard_nonfinite), so the IQ2_XXS /
+ * IQ2_XS prefill schedule drops its standalone sanitize pass.
+ * DS4_EXAONE_DOWN_SANITIZE=1 keeps the pass. */
+extern "C" int ds4_gpu_routed_matmul_guarded_tensor(
+        ds4_gpu_tensor       *out,
+        const ds4_gpu_tensor *x,
+        const ds4_gpu_tensor *ids,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint64_t                weight_bytes,
+        uint32_t                weight_type,
+        uint32_t                in_dim,
+        uint32_t                out_dim,
+        uint32_t                n_expert,
+        uint32_t                n_tokens,
+        uint32_t                n_expert_used,
+        uint32_t                max_rows_per_expert) {
+    if (max_rows_per_expert == 0u) return 0;
+    const char *env = getenv("DS4_EXAONE_DOWN_SANITIZE");
+    const enum ds4_routed_out policy = (env && env[0] == '1')
+        ? DS4_ROUTED_OUT_SANITIZE : DS4_ROUTED_OUT_GUARDED;
+    return routed_matmul_tensor_impl(
+        out, x, ids, model_map, model_size, weight_offset, weight_bytes,
+        weight_type, in_dim, out_dim, n_expert, n_tokens, n_expert_used,
+        max_rows_per_expert, policy);
 }
 
 extern "C" int ds4_gpu_routed_gate_up_tensor(
