@@ -498,6 +498,72 @@ static void test_attention(int sliding) {
     free(kv); free(q);
 }
 
+/* Decode 2: split-K decode attention vs the pair kernel on the K2 shape
+ * (48 heads over 8 KV heads, head_dim 128). Same per-key math, different
+ * fp32 merge order, so a tolerance; below the split floor, with a sliding
+ * window and under the kill switch the pair kernel must run bit-identically. */
+static void test_decode_split(void) {
+    const uint32_t nh = 48u, nkv = 8u, hd = 128u, cap = 32768u;
+    static const struct { uint32_t pos, window; const char *env; int exact; } cases[] = {
+        {1023u, 0u, "1", 1},    /* below the split floor */
+        {4095u, 0u, "1", 0},
+        {8191u, 0u, "1", 0},
+        {32767u, 0u, "1", 0},
+        {8191u, 128u, "1", 1},  /* sliding window */
+        {8191u, 0u, "0", 1},    /* kill switch */
+    };
+    const size_t n = (size_t)nh * hd, kvn = (size_t)cap * nkv * hd * 2u;
+    float *q = xmalloc(n * sizeof(float));
+    float *ref = xmalloc(n * sizeof(float));
+    float *got = xmalloc(n * sizeof(float));
+    float *want = xmalloc(n * sizeof(float));
+    uint16_t *kv = xmalloc(kvn * sizeof(uint16_t));
+    uint64_t seed = 1717u;
+    for (size_t i = 0; i < n; i++) { q[i] = frand(&seed); }
+    for (size_t i = 0; i < kvn; i++) { kv[i] = f32_to_f16(frand(&seed) * 0.5f); }
+    ds4_gpu_tensor *gq = ds4_gpu_tensor_alloc(n * sizeof(float));
+    ds4_gpu_tensor *go = ds4_gpu_tensor_alloc(n * sizeof(float));
+    ds4_gpu_tensor *gkv = ds4_gpu_tensor_alloc(kvn * sizeof(uint16_t));
+    int ok = gq && go && gkv &&
+        ds4_gpu_tensor_write(gq, 0, q, n * sizeof(float)) &&
+        ds4_gpu_tensor_write(gkv, 0, kv, kvn * sizeof(uint16_t));
+    for (size_t c = 0; ok && c < sizeof(cases) / sizeof(cases[0]); c++) {
+        const uint32_t pos = cases[c].pos, window = cases[c].window;
+        double ms[2] = {0.0, 0.0};
+        for (int split = 0; ok && split < 2; split++) {
+            (void)setenv("DS4_EXAONE_ATTN_SPLIT", split ? cases[c].env : "0", 1);
+            ok = ds4_gpu_exaone_attention_decode_tensor(
+                     go, gq, gkv, nh, nkv, hd, cap, pos, window) &&
+                 ds4_gpu_synchronize();
+            const double start = now_sec();
+            for (int i = 0; ok && i < 20; i++) {
+                ok = ds4_gpu_exaone_attention_decode_tensor(
+                         go, gq, gkv, nh, nkv, hd, cap, pos, window);
+            }
+            ok = ok && ds4_gpu_synchronize();
+            ms[split] = (now_sec() - start) * 50.0;
+            ok = ok && ds4_gpu_tensor_read(go, 0, split ? got : ref, n * sizeof(float));
+        }
+        (void)unsetenv("DS4_EXAONE_ATTN_SPLIT");
+        if (!ok) break;
+        char label[80];
+        snprintf(label, sizeof(label), "K2 split attention @%u window=%u env=%s",
+                 pos, window, cases[c].env);
+        diff_quant_gemm(label, got, ref, n, 1e-5);
+        if (cases[c].exact && memcmp(got, ref, n * sizeof(float)) != 0) {
+            printf("%s: pair-kernel fallback is not bit-identical\n", label); g_fail++;
+        }
+        printf("%s pair=%.3f ms split=%.3f ms\n", label, ms[0], ms[1]);
+        if (pos == 8191u && window == 0u && cases[c].env[0] == '1') {
+            cpu_attn(want, q, kv, nh, nkv, hd, cap, 0u, pos);
+            diff_f32("K2 split attention @8191 vs CPU", got, want, n, 2e-5, 2e-5);
+        }
+    }
+    if (!ok) { printf("K2 split attention launch failed\n"); g_fail++; }
+    ds4_gpu_tensor_free(gkv); ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gq);
+    free(kv); free(want); free(got); free(ref); free(q);
+}
+
 static void test_attention_prefill(int sliding) {
     const uint32_t n_tok  = 200;
     const uint32_t window = sliding ? 128u : 0u;
@@ -1308,6 +1374,7 @@ int main(int argc, char **argv) {
     test_neox_rope_only(524287u);
     test_attention(1);
     test_attention(0);
+    test_decode_split();
     test_attention_prefill(1);
     test_attention_prefill(0);
     test_prefill_chunk_residency();

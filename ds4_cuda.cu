@@ -46142,6 +46142,76 @@ extern "C" int ds4_gpu_exaone_kv_store_tensor(
         }                                                                      \
     } while (0)
 
+/* Decode 2: split-K decode attention.  The pair kernel above walks the
+ * whole context with n_head/2 blocks of 4 warps (24 blocks on 48 SMs for
+ * K2) and reads the 8K KV at ~27 GB/s.  The Solar grouped split kernel
+ * shares this f16 K|V row layout, so from DS4_EXAONE_ATTN_SPLIT_MIN keys
+ * the context is cut into 256-key chunks, one block per (chunk, KV head),
+ * and the combine kernel merges the per-chunk online-softmax partials.
+ * Same per-key math as the pair kernel, different fp32 merge order (the
+ * Prefill 6 numeric contract).  DS4_EXAONE_ATTN_SPLIT=0 restores the pair
+ * kernel; sliding windows, wrapped rings and capture keep it too. */
+enum { DS4_EXAONE_ATTN_SPLIT_CHUNK = 256, DS4_EXAONE_ATTN_SPLIT_MIN = 2048 };
+enum { DS4_EXAONE_ATTN_SPLIT_ALLOC = 64 };   /* partial slots per growth */
+static ds4_gpu_tensor *g_exaone_attn_partials = NULL;
+
+/* Read per call, like DS4_EXAONE_ATTN_GQA, so the kernel test can toggle
+ * it between launches. */
+static int exaone_attn_split_enabled(void) {
+    const char *env = getenv("DS4_EXAONE_ATTN_SPLIT");
+    return !(env && env[0] == '0');
+}
+
+static int exaone_attn_decode_split(
+        ds4_gpu_tensor       *heads,
+        const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *kv,
+        uint32_t                n_head,
+        uint32_t                n_head_kv,
+        uint32_t                head_dim,
+        uint32_t                kv_cap,
+        uint32_t                pos,
+        float                   scale) {
+    const uint32_t chunk = (uint32_t)DS4_EXAONE_ATTN_SPLIT_CHUNK;
+    const uint32_t split_count = (pos + chunk) / chunk;   /* keys 0..pos */
+    const uint64_t slot_bytes = (uint64_t)(head_dim + 2u) * sizeof(float);
+    const uint64_t bytes = (uint64_t)n_head * split_count * slot_bytes;
+    if (!g_exaone_attn_partials || g_exaone_attn_partials->bytes < bytes) {
+        /* The previous layer's combine may still read the old buffer. */
+        if (!cuda_ok(cudaStreamSynchronize(cuda_decode_stream()),
+                     "exaone attention split sync")) {
+            return 0;
+        }
+        if (g_exaone_attn_partials) ds4_gpu_tensor_free(g_exaone_attn_partials);
+        const uint32_t alloc_splits = (split_count + DS4_EXAONE_ATTN_SPLIT_ALLOC - 1u) /
+                                      DS4_EXAONE_ATTN_SPLIT_ALLOC * DS4_EXAONE_ATTN_SPLIT_ALLOC;
+        g_exaone_attn_partials =
+            ds4_gpu_tensor_alloc((uint64_t)n_head * alloc_splits * slot_bytes);
+        if (!g_exaone_attn_partials) return 0;
+    }
+    const uint64_t row_bytes =
+        solar_kv_row_bytes_impl((uint32_t)DS4_SOLAR_KV_BF16, n_head_kv, head_dim);
+    dim3 grid(split_count, n_head_kv, 1u);
+    solar_attention_gqa_grouped_split_kernel<32><<<
+        grid, 128u, 0, cuda_decode_stream()>>>(
+        (float *)g_exaone_attn_partials->ptr, (const float *)q->ptr,
+        (const uint8_t *)kv->ptr, (uint32_t)DS4_SOLAR_KV_BF16, row_bytes,
+        n_head, n_head_kv, kv_cap, /*first=*/0u, pos, chunk, split_count, scale);
+    solar_attention_split_combine_kernel<<<
+        n_head, head_dim, 0, cuda_decode_stream()>>>(
+        (float *)heads->ptr, (const float *)g_exaone_attn_partials->ptr,
+        head_dim, split_count);
+    static int logged = 0;
+    if (!logged) {
+        logged = 1;
+        fprintf(stderr,
+                "ds4: EXAONE/K2 decode attention split-K "
+                "(chunk %u keys, from %u keys)\n",
+                chunk, (uint32_t)DS4_EXAONE_ATTN_SPLIT_MIN);
+    }
+    return cuda_ok(cudaGetLastError(), "exaone attention decode split");
+}
+
 extern "C" int ds4_gpu_exaone_attention_decode_tensor(
         ds4_gpu_tensor       *heads,
         const ds4_gpu_tensor *q,
@@ -46163,10 +46233,19 @@ extern "C" int ds4_gpu_exaone_attention_decode_tensor(
     const uint32_t shmem = (head_dim / 32u) * head_dim * (uint32_t)sizeof(float);
     const float scale = rsqrtf((float)head_dim);
     const uint32_t group = n_head / n_head_kv;
+    if (exaone_attn_split_enabled() && window == 0u && pos < kv_cap &&
+        head_dim == 128u && group >= 2u && group <= 8u &&
+        pos + 1u >= (uint32_t)DS4_EXAONE_ATTN_SPLIT_MIN &&
+        !ds4_capture_active()) {
+        return exaone_attn_decode_split(heads, q, kv, n_head, n_head_kv,
+                                        head_dim, kv_cap, pos, scale);
+    }
+    /* A head pair must share one KV head: the group itself has to be a
+     * multiple of the tile, not just n_head (group 3 would pair heads 2
+     * and 3 across KV heads 0 and 1). */
     const char *gqa_env = getenv("DS4_EXAONE_ATTN_GQA");
     const int use_gqa = !(gqa_env && gqa_env[0] == '0') &&
-        group >= (uint32_t)DS4_EXAONE_GQA_TILE &&
-        (n_head % (uint32_t)DS4_EXAONE_GQA_TILE) == 0u;
+        (group % (uint32_t)DS4_EXAONE_GQA_TILE) == 0u;
     if (use_gqa) {
         static int logged = 0;
         if (!logged) {

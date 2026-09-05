@@ -55,6 +55,13 @@ The bandwidth figure is informational; we don't tier on it.
 - `DS4_EXAONE_ATTN_GQA=0` restores one decode-attention block per query
   head. The default shares each KV row across two query heads.
 
+- `DS4_EXAONE_ATTN_SPLIT=0` restores the whole-context decode-attention
+  block. The default cuts a full-attention context of 2048 or more keys
+  into 256-key chunks (one block per chunk and KV head, the Solar grouped
+  split kernel) and merges the online-softmax partials with a combine
+  kernel. Sliding-window layers, wrapped rings and graph capture keep
+  the pair kernel.
+
 - `DS4_MODEL_ANON_HUGE=N` (Linux, default off; lives in ds4.c model_open, not
   the CUDA backend). Copy GPU-backend model files out of the file-backed mmap
   into anonymous `MADV_HUGEPAGE` memory at load. `N<=1` copies every GPU
