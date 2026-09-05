@@ -559,6 +559,34 @@ static void test_decode_split(void) {
             diff_f32("K2 split attention @8191 vs CPU", got, want, n, 2e-5, 2e-5);
         }
     }
+    /* Decode 3: the native pair-per-chunk kernel vs the Solar grouped
+     * split kernel it replaces (both merge 256-key partials; the in-chunk
+     * warp order differs, so a tolerance). */
+    static const uint32_t native_pos[] = {4095u, 8191u, 32767u};
+    for (size_t c = 0; ok && c < sizeof(native_pos) / sizeof(native_pos[0]); c++) {
+        const uint32_t pos = native_pos[c];
+        double ms[2] = {0.0, 0.0};
+        for (int native = 0; ok && native < 2; native++) {
+            (void)setenv("DS4_EXAONE_ATTN_SPLIT_NATIVE", native ? "1" : "0", 1);
+            ok = ds4_gpu_exaone_attention_decode_tensor(
+                     go, gq, gkv, nh, nkv, hd, cap, pos, 0u) &&
+                 ds4_gpu_synchronize();
+            const double start = now_sec();
+            for (int i = 0; ok && i < 20; i++) {
+                ok = ds4_gpu_exaone_attention_decode_tensor(
+                         go, gq, gkv, nh, nkv, hd, cap, pos, 0u);
+            }
+            ok = ok && ds4_gpu_synchronize();
+            ms[native] = (now_sec() - start) * 50.0;
+            ok = ok && ds4_gpu_tensor_read(go, 0, native ? got : ref, n * sizeof(float));
+        }
+        (void)unsetenv("DS4_EXAONE_ATTN_SPLIT_NATIVE");
+        if (!ok) break;
+        char label[80];
+        snprintf(label, sizeof(label), "K2 native split vs Solar split @%u", pos);
+        diff_quant_gemm(label, got, ref, n, 1e-5);
+        printf("%s solar=%.3f ms native=%.3f ms\n", label, ms[0], ms[1]);
+    }
     if (!ok) { printf("K2 split attention launch failed\n"); g_fail++; }
     ds4_gpu_tensor_free(gkv); ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gq);
     free(kv); free(want); free(got); free(ref); free(q);
