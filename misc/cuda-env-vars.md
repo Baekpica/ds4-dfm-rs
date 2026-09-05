@@ -60,6 +60,13 @@ The bandwidth figure is informational; we don't tier on it.
   pass over the K2 routed-down output. The default skips it: the down
   output only feeds `moe_sum`, which skips non-finite values at read.
 
+- `DS4_EXAONE_PREFILL_CHUNK=N` sets the EXAONE-family prefill chunk. K2
+  defaults to 1024 since the 2026-09-05 campaign (512 before); K-EXAONE
+  keeps 512 until measured. Larger chunks fill the compact routed
+  worklists better and halve the per-chunk launches; the batch workspace
+  and sliding rings grow with the chunk. Numerics move at the fp level
+  (router GEMM tiling, attention accumulation order).
+
 - `DS4_MMQ_IQ1_PAIR=0` runs K2 IQ1_S / IQ1_M routed gate/up as two single
   routed calls again (each with its own expert map, activation quantize
   and sanitize pass). The default pairs them like the K-quant gate/up:

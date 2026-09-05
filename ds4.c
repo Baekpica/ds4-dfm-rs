@@ -41665,9 +41665,30 @@ static uint32_t exaone_graph_layer_kv_cap(uint32_t il, uint32_t ctx_size,
     return (uint32_t)cap;
 }
 
+/* K2 prefills in 1024-token chunks: the compact routed worklists see ~42
+ * rows per expert instead of ~21 and every per-chunk launch runs half as
+ * often (K2 8K prefill +13% in the 2026-09-05 campaign).  The batch
+ * workspace grows with the cap (0.37 -> 0.73 GiB at K2's widths) and a
+ * sliding ring holds prefill_cap extra rows, so K-EXAONE keeps 512 until
+ * it is measured.  Numerics move at the fp level only (router GEMM
+ * tiling, attention accumulation order).  DS4_EXAONE_PREFILL_CHUNK=512
+ * restores the previous chunk. */
+#define DS4_K2_PREFILL_CHUNK_DEFAULT 1024u
+#define DS4_EXAONE_PREFILL_CHUNK_DEFAULT 512u
+
 static uint32_t exaone_graph_prefill_cap_for_context(uint32_t ctx_size,
                                                       uint32_t requested) {
-    uint32_t cap = requested ? requested : 512u;
+    uint32_t cap = requested ? requested
+        : DS4_MODEL_VARIANT == DS4_VARIANT_K2_HORIZON_375B
+            ? DS4_K2_PREFILL_CHUNK_DEFAULT : DS4_EXAONE_PREFILL_CHUNK_DEFAULT;
+    if (!requested) {
+        const char *env = getenv("DS4_EXAONE_PREFILL_CHUNK");
+        if (env && env[0]) {
+            char *endp = NULL;
+            const long v = strtol(env, &endp, 10);
+            if (endp != env && v > 0) cap = (uint32_t)v;
+        }
+    }
     if (cap > ctx_size) cap = ctx_size;
     return cap;
 }

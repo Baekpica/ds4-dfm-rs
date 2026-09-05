@@ -30,6 +30,7 @@ static void test_context_memory_plan(void) {
         ds4_engine_hidden_f32_values(&engine) == 6144u &&
         ds4_engine_n_hc(&engine) == 1 &&
         m.prefill_cap == 512u &&
+        exaone_graph_prefill_cap_for_context(262144u, 0u) == 512u &&
         m.raw_cap == 262144u &&
         exaone_graph_layer_kv_cap(0u, 262144u, m.prefill_cap) == 640u &&
         exaone_graph_layer_kv_cap(3u, 262144u, m.prefill_cap) == 262144u &&
@@ -54,6 +55,9 @@ static void test_k2_full_attention_memory_plan(void) {
     const int ok =
         m.total_bytes != 0u &&
         m.prefill_cap == 512u &&
+        /* K2 defaults to 1024-token chunks; K-EXAONE keeps 512. */
+        exaone_graph_prefill_cap_for_context(32768u, 0u) == 1024u &&
+        exaone_graph_prefill_cap_for_context(700u, 0u) == 700u &&
         m.raw_cap == 32768u &&
         m.raw_bytes == UINT64_C(8187281408) &&
         !exaone_layer_is_sliding(0u) &&
@@ -609,10 +613,9 @@ static void test_decode_split(void) {
     free(kv); free(want); free(got); free(ref); free(q);
 }
 
-static void test_attention_prefill(int sliding) {
-    const uint32_t n_tok  = 200;
+static void test_attention_prefill(int sliding, uint32_t n_tok) {
     const uint32_t window = sliding ? 128u : 0u;
-    const uint32_t kv_cap = sliding ? 128u : 256u;
+    const uint32_t kv_cap = sliding ? 128u : n_tok + 56u;
     const uint32_t kv_dim = T_HEAD_KV * T_HEAD_DIM;
 
     uint64_t s = 4242;
@@ -964,7 +967,7 @@ static void test_swiglu_and_combine(void) {
 static void test_moe_worklist(const ds4_model *m, const ds4_tensor *w,
                               uint32_t used) {
     const uint32_t k = (uint32_t)w->dim[0];
-    const uint32_t widths[] = {17u, 257u, used == 1u ? 4096u : 512u, 257u};
+    const uint32_t widths[] = {17u, 257u, used == 1u ? 8192u : 1024u, 257u};
     for (size_t wi = 0; wi < sizeof(widths) / sizeof(widths[0]); wi++) {
         const uint32_t nt = widths[wi];
         /* Reinterpret the leading real blocks as a ragged 129-row stack
@@ -1307,7 +1310,8 @@ static void test_iq1m_prefill(const ds4_model *m, const ds4_tensor *w,
 static void test_moe_pair(const ds4_model *m, const ds4_tensor *gate,
                           const ds4_tensor *up, uint32_t used) {
     const uint32_t k = (uint32_t)gate->dim[0], rows = (uint32_t)gate->dim[1];
-    const uint32_t widths[] = {257u, 512u};
+    /* 1024 is the K2 prefill chunk since round 5 (8192 routed rows). */
+    const uint32_t widths[] = {257u, 512u, 1024u};
     for (size_t wi = 0; wi < sizeof(widths) / sizeof(widths[0]); wi++) {
         const uint32_t nt = widths[wi];
         const size_t nx = (size_t)nt * k, ny = (size_t)nt * used * rows;
@@ -1540,8 +1544,10 @@ int main(int argc, char **argv) {
     test_attention(1);
     test_attention(0);
     test_decode_split();
-    test_attention_prefill(1);
-    test_attention_prefill(0);
+    test_attention_prefill(1, 200u);
+    test_attention_prefill(0, 200u);
+    /* One 1024-token prefill chunk (the K2 default since round 5). */
+    test_attention_prefill(0, 1024u);
     test_prefill_chunk_residency();
     test_router(map, map_size, bias_off);
     test_swiglu_and_combine();
