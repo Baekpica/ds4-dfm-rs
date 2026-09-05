@@ -183,7 +183,8 @@ static bool moe_worklist_enabled(ggml_type type) {
         : type == GGML_TYPE_Q5_K ? getenv("DS4_MMQ_Q5_WORKLIST")
         : type == GGML_TYPE_IQ2_XXS ? getenv("DS4_MMQ_IQ2XXS_WORKLIST")
         : type == GGML_TYPE_IQ1_S ? getenv("DS4_MMQ_IQ1S_WORKLIST")
-        : type == GGML_TYPE_IQ1_M ? getenv("DS4_MMQ_IQ1M_WORKLIST") : NULL;
+        : type == GGML_TYPE_IQ1_M ? getenv("DS4_MMQ_IQ1M_WORKLIST")
+        : type == GGML_TYPE_IQ2_XS ? getenv("DS4_MMQ_IQ2XS_WORKLIST") : NULL;
     return !(global && global[0] == '0') &&
            !(specific && specific[0] == '0');
 }
@@ -2002,7 +2003,7 @@ int ds4_mmq_moe_impl(
     /* Wide raw IQ routing can use the same worklist without a host bucket
      * bound: the device expert_bounds still defines every non-empty tile. */
     const bool wide_iq = (type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ1_S ||
-                          type == GGML_TYPE_IQ1_M) &&
+                          type == GGML_TYPE_IQ1_M || type == GGML_TYPE_IQ2_XS) &&
                          ne_get_rows >= DS4_MMQ_WIDE_IQ_MIN_ROWS &&
                          n_experts >= DS4_MMQ_WIDE_IQ_MIN_EXPERTS;
     if ((ncols_max_hint > 0 || wide_iq) &&
@@ -2010,7 +2011,8 @@ int ds4_mmq_moe_impl(
         int worklist_rc = -1;
         if constexpr (type == GGML_TYPE_Q3_K || type == GGML_TYPE_Q4_K ||
                       type == GGML_TYPE_Q5_K || type == GGML_TYPE_IQ2_XXS ||
-                      type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M) {
+                      type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M ||
+                      type == GGML_TYPE_IQ2_XS) {
             worklist_rc = ds4_mmq_moe_worklist_launch<type>(
                 tag, *ctx, W, (const int *)src1_q8_1.get(),
                 ids_dst.get(), expert_bounds.get(), out_f32,

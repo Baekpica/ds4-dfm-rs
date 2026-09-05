@@ -45742,15 +45742,19 @@ __global__ static void exaone_attn_decode_kernel(
                           kv_cap, first, last, scale);
 }
 
-/* One block per pair of query heads that share a KV head. Full-group
- * (tile=6) spilled and lost decode tok/s; tile=2 keeps the same
- * per-head softmax order. DS4_EXAONE_ATTN_GQA=0 restores one block
- * per query head. */
+/* One block per pair of query heads that share a KV head, over the keys
+ * [chunk_first, chunk_last] of one chunk.  Full-group (tile=6) spilled and
+ * lost decode tok/s; tile=2 keeps the same per-head softmax order.
+ * PARTIAL=false runs one chunk over the whole range and writes the
+ * normalised head output; PARTIAL=true (Decode 3) writes the block's
+ * unnormalised online-softmax partial (m, l, acc) for the combine kernel,
+ * so only the cross-chunk merge order differs from the pair kernel.
+ * DS4_EXAONE_ATTN_GQA=0 restores one block per query head. */
 enum { DS4_EXAONE_GQA_TILE = 2 };
 
-template <int DPL>
+template <int DPL, bool PARTIAL>
 __global__ static void exaone_attn_decode_gqa_kernel(
-        float *heads,
+        float *out,
         const float *q,
         const __half *kv,
         uint32_t n_head,
@@ -45759,10 +45763,18 @@ __global__ static void exaone_attn_decode_gqa_kernel(
         uint32_t kv_cap,
         uint32_t first,
         uint32_t last,
+        uint32_t chunk,
+        uint32_t split_count,
         float scale) {
-    const uint32_t h0 = blockIdx.x * (uint32_t)DS4_EXAONE_GQA_TILE;
-    if (h0 >= n_head) {
+    const uint32_t split = blockIdx.x;
+    const uint32_t h0 = blockIdx.y * (uint32_t)DS4_EXAONE_GQA_TILE;
+    if (split >= split_count || h0 >= n_head) {
         return;
+    }
+    const uint32_t chunk_first = first + split * chunk;
+    uint32_t chunk_last = chunk_first + chunk - 1u;
+    if (chunk_last > last) {
+        chunk_last = last;
     }
     const uint32_t group = n_head / n_head_kv;
     const uint32_t kvh = h0 / group;
@@ -45787,7 +45799,7 @@ __global__ static void exaone_attn_decode_gqa_kernel(
         }
     }
 
-    for (uint32_t t = first + warp; t <= last; t += nwarps) {
+    for (uint32_t t = chunk_first + warp; t <= chunk_last; t += nwarps) {
         const __half *krow = kv + (size_t)(t % kv_cap) * (size_t)kv_dim * 2u
                                 + (size_t)kvh * head_dim;
         float kdim[DPL];
@@ -45840,8 +45852,19 @@ __global__ static void exaone_attn_decode_gqa_kernel(
             for (uint32_t w = 0; w < nwarps; w++) {
                 gl += (s_m[w] == -INFINITY) ? 0.0f : s_l[w] * __expf(s_m[w] - gm);
             }
-            const float inv = gl > 0.0f ? 1.0f / gl : 0.0f;
-            float *out = heads + (size_t)(h0 + g) * head_dim;
+            float *dst;
+            float inv = 1.0f;
+            if constexpr (PARTIAL) {
+                dst = out + ((size_t)(h0 + g) * split_count + split) * (head_dim + 2u);
+                if (lane == 0u) {
+                    dst[0] = gm;
+                    dst[1] = gl;
+                }
+                dst += 2u;
+            } else {
+                dst = out + (size_t)(h0 + g) * head_dim;
+                inv = gl > 0.0f ? 1.0f / gl : 0.0f;
+            }
 #pragma unroll
             for (int d = 0; d < DPL; d++) {
                 const uint32_t i = lane + (uint32_t)d * 32u;
@@ -45852,11 +45875,37 @@ __global__ static void exaone_attn_decode_gqa_kernel(
                     }
                     v += s_acc[w * head_dim + i] * __expf(s_m[w] - gm);
                 }
-                out[i] = v * inv;
+                dst[i] = PARTIAL ? v : v * inv;
             }
         }
         __syncthreads();
     }
+}
+
+/* head_dim/32 dispatch for the pair kernel; grid.x = chunks, grid.y = pairs. */
+template <bool PARTIAL>
+static int exaone_attn_launch_gqa(
+        dim3 grid, uint32_t shmem, float *out, const float *q,
+        const __half *kv, uint32_t n_head, uint32_t n_head_kv,
+        uint32_t head_dim, uint32_t kv_cap, uint32_t first, uint32_t last,
+        uint32_t chunk, uint32_t split_count, float scale) {
+#define DS4_EXAONE_GQA_CASE(DPL)                                             \
+    case DPL:                                                                \
+        exaone_attn_decode_gqa_kernel<DPL, PARTIAL><<<                       \
+            grid, head_dim, shmem, cuda_decode_stream()>>>(                  \
+            out, q, kv, n_head, n_head_kv, head_dim, kv_cap, first, last,    \
+            chunk, split_count, scale);                                      \
+        return 1
+    switch (head_dim / 32u) {
+    DS4_EXAONE_GQA_CASE(2);
+    DS4_EXAONE_GQA_CASE(4);
+    DS4_EXAONE_GQA_CASE(8);
+    default:
+        fprintf(stderr, "ds4: exaone attention: unsupported head_dim %u\n",
+                head_dim);
+        return 0;
+    }
+#undef DS4_EXAONE_GQA_CASE
 }
 
 /* Prefill: one block per (token, head).  Queries carry absolute positions
@@ -46189,14 +46238,32 @@ static int exaone_attn_decode_split(
             ds4_gpu_tensor_alloc((uint64_t)n_head * alloc_splits * slot_bytes);
         if (!g_exaone_attn_partials) return 0;
     }
-    const uint64_t row_bytes =
-        solar_kv_row_bytes_impl((uint32_t)DS4_SOLAR_KV_BF16, n_head_kv, head_dim);
-    dim3 grid(split_count, n_head_kv, 1u);
-    solar_attention_gqa_grouped_split_kernel<32><<<
-        grid, 128u, 0, cuda_decode_stream()>>>(
-        (float *)g_exaone_attn_partials->ptr, (const float *)q->ptr,
-        (const uint8_t *)kv->ptr, (uint32_t)DS4_SOLAR_KV_BF16, row_bytes,
-        n_head, n_head_kv, kv_cap, /*first=*/0u, pos, chunk, split_count, scale);
+    /* Decode 3: the f16 pair kernel per chunk (grid chunks x pairs) reads
+     * K|V rows straight from the ring; the Solar grouped kernel decoded
+     * every key into shared memory first (57 GB/s at 8K).
+     * DS4_EXAONE_ATTN_SPLIT_NATIVE=0 keeps the Solar kernel. */
+    const char *native_env = getenv("DS4_EXAONE_ATTN_SPLIT_NATIVE");
+    const int native = !(native_env && native_env[0] == '0');
+    if (native) {
+        const uint32_t shmem = (head_dim / 32u) * head_dim * (uint32_t)sizeof(float);
+        if (!exaone_attn_launch_gqa<true>(
+                dim3(split_count, n_head / (uint32_t)DS4_EXAONE_GQA_TILE, 1u),
+                shmem, (float *)g_exaone_attn_partials->ptr,
+                (const float *)q->ptr, (const __half *)kv->ptr, n_head,
+                n_head_kv, head_dim, kv_cap, /*first=*/0u, pos, chunk,
+                split_count, scale)) {
+            return 0;
+        }
+    } else {
+        const uint64_t row_bytes =
+            solar_kv_row_bytes_impl((uint32_t)DS4_SOLAR_KV_BF16, n_head_kv, head_dim);
+        dim3 grid(split_count, n_head_kv, 1u);
+        solar_attention_gqa_grouped_split_kernel<32><<<
+            grid, 128u, 0, cuda_decode_stream()>>>(
+            (float *)g_exaone_attn_partials->ptr, (const float *)q->ptr,
+            (const uint8_t *)kv->ptr, (uint32_t)DS4_SOLAR_KV_BF16, row_bytes,
+            n_head, n_head_kv, kv_cap, /*first=*/0u, pos, chunk, split_count, scale);
+    }
     solar_attention_split_combine_kernel<<<
         n_head, head_dim, 0, cuda_decode_stream()>>>(
         (float *)heads->ptr, (const float *)g_exaone_attn_partials->ptr,
@@ -46206,7 +46273,8 @@ static int exaone_attn_decode_split(
         logged = 1;
         fprintf(stderr,
                 "ds4: EXAONE/K2 decode attention split-K "
-                "(chunk %u keys, from %u keys)\n",
+                "(%s kernel, chunk %u keys, from %u keys)\n",
+                native ? "native pair" : "Solar grouped",
                 chunk, (uint32_t)DS4_EXAONE_ATTN_SPLIT_MIN);
     }
     return cuda_ok(cudaGetLastError(), "exaone attention decode split");
@@ -46254,11 +46322,14 @@ extern "C" int ds4_gpu_exaone_attention_decode_tensor(
                     "ds4: EXAONE/K2 decode attention sharing KV across "
                     "%d query heads\n", DS4_EXAONE_GQA_TILE);
         }
-        DS4_EXAONE_ATTN_DISPATCH(exaone_attn_decode_gqa_kernel,
-                                 n_head / (uint32_t)DS4_EXAONE_GQA_TILE, shmem,
-                                 (float *)heads->ptr, (const float *)q->ptr,
-                                 (const __half *)kv->ptr, n_head, n_head_kv,
-                                 head_dim, kv_cap, first, pos, scale);
+        if (!exaone_attn_launch_gqa<false>(
+                dim3(1u, n_head / (uint32_t)DS4_EXAONE_GQA_TILE, 1u), shmem,
+                (float *)heads->ptr, (const float *)q->ptr,
+                (const __half *)kv->ptr, n_head, n_head_kv, head_dim, kv_cap,
+                first, pos, /*chunk=*/pos - first + 1u, /*split_count=*/1u,
+                scale)) {
+            return 0;
+        }
     } else {
         DS4_EXAONE_ATTN_DISPATCH(exaone_attn_decode_kernel, n_head, shmem,
                                  (float *)heads->ptr, (const float *)q->ptr,

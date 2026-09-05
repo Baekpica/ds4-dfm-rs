@@ -29,8 +29,9 @@ The bandwidth figure is informational; we don't tier on it.
 
 ## Env-var inventory
 
-- `DS4_MMQ_IQ2XXS_WORKLIST=0` or `DS4_MMQ_IQ1S_WORKLIST=0` disables compact
-  expert worklists for the respective raw IQ MoE prefill type.
+- `DS4_MMQ_IQ2XXS_WORKLIST=0`, `DS4_MMQ_IQ1S_WORKLIST=0` or
+  `DS4_MMQ_IQ2XS_WORKLIST=0` disables compact expert worklists for the
+  respective raw IQ MoE prefill type.
   Enabled by default at 256 or more routed rows and
   32 or more experts; MMVQ decode and aligned-SoA pairs are unchanged.
   `DS4_MMQ_WORKLIST=0` also restores the rectangular schedule.
@@ -57,10 +58,12 @@ The bandwidth figure is informational; we don't tier on it.
 
 - `DS4_EXAONE_ATTN_SPLIT=0` restores the whole-context decode-attention
   block. The default cuts a full-attention context of 2048 or more keys
-  into 256-key chunks (one block per chunk and KV head, the Solar grouped
-  split kernel) and merges the online-softmax partials with a combine
-  kernel. Sliding-window layers, wrapped rings and graph capture keep
-  the pair kernel.
+  into 256-key chunks, runs the f16 pair kernel per chunk (one block per
+  chunk and head pair) and merges the online-softmax partials with a
+  combine kernel. `DS4_EXAONE_ATTN_SPLIT_NATIVE=0` runs the Solar grouped
+  split kernel (one block per chunk and KV head, keys decoded into shared
+  memory) instead. Sliding-window layers, wrapped rings and graph capture
+  keep the pair kernel.
 
 - `DS4_MODEL_ANON_HUGE=N` (Linux, default off; lives in ds4.c model_open, not
   the CUDA backend). Copy GPU-backend model files out of the file-backed mmap
