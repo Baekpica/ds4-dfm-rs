@@ -939,6 +939,34 @@ static int run_iq1m_prefill_pair(const void *map, uint64_t map_size,
                  nt, used, rows);
         diff_quant_gemm(label, got, ref, ny, 1e-5);
         printf("%s token-loop=%.3f ms assign=%.3f ms\n", label, ms[0], ms[1]);
+        (void)setenv("DS4_MMQ_IQ1M_PREFILL", "1", 1);
+        double slot_ms[2] = {0.0, 0.0};
+        for (int loop = 0; ok && loop < 2; loop++) {
+            (void)setenv("DS4_MMQ_IQ1M_SLOT_LOOP", loop ? "1" : "0", 1);
+            ok = ds4_gpu_tensor_fill_f32(go, 0.0f, ny) &&
+                ds4_gpu_routed_matmul_tensor(go, gx, gi, map, map_size,
+                    w_off, w_bytes, DS4_TENSOR_IQ1_M, k, rows, nexp, nt, used) &&
+                ds4_gpu_synchronize();
+            const double start = now_sec();
+            for (int i = 0; ok && i < 2; i++) {
+                ok = ds4_gpu_routed_matmul_tensor(go, gx, gi, map, map_size,
+                    w_off, w_bytes, DS4_TENSOR_IQ1_M, k, rows, nexp, nt, used);
+            }
+            ok = ok && ds4_gpu_synchronize();
+            slot_ms[loop] = (now_sec() - start) * 500.0;
+            ok = ok && ds4_gpu_tensor_read(go, 0, loop ? got : ref, ny * sizeof(float));
+        }
+        (void)unsetenv("DS4_MMQ_IQ1M_SLOT_LOOP");
+        (void)unsetenv("DS4_MMQ_IQ1M_PREFILL");
+        if (ok) {
+            snprintf(label, sizeof(label), "IQ1_M slot-loop nt=%u used=%u rows=%u",
+                     nt, used, rows);
+            diff_quant_gemm(label, got, ref, ny, 1e-5);
+            printf("%s grid3d=%.3f ms slot-loop=%.3f ms\n",
+                   label, slot_ms[0], slot_ms[1]);
+        } else {
+            printf("IQ1_M slot-loop nt=%u launch failed\n", nt); g_fail++;
+        }
     } else {
         printf("IQ1_M assign nt=%u launch failed\n", nt); g_fail++;
     }

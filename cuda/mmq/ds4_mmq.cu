@@ -5299,10 +5299,11 @@ int ds4_mmq_moe_gate_up_mid_vec_impl(
 }
 
 /* IQ1_M has no vendored MMQ tile. Prefill was 140k one-token MMVQ launches.
- * One grid walks every token×slot with the proven ncols=1 4-warp K split and
- * vec_dot_iq1_m_q8_1. Grid is (M, n_tokens, n_used) so 8K×top-8 (65536
- * assignments) stays under the 65535 2-D y-limit. DS4_MMQ_IQ1M_PREFILL=0
- * restores the per-token loop, not the drifting ncols>1 MMVQ. */
+ * One grid walks every token with the proven ncols=1 4-warp K split and
+ * vec_dot_iq1_m_q8_1. Default grid is (M, n_tokens): each block reuses one
+ * Q8_1 row across the top-k slots. DS4_MMQ_IQ1M_SLOT_LOOP=0 restores the
+ * 3-D (M, tokens, used) grid. DS4_MMQ_IQ1M_PREFILL=0 restores the per-token
+ * loop, not the drifting ncols>1 MMVQ. */
 template <int nwarps>
 __global__ static void ds4_iq1_m_moe_assign_kernel(
         const void       * __restrict__ W,
@@ -5319,44 +5320,55 @@ __global__ static void ds4_iq1_m_moe_assign_kernel(
     const int tid = warp_size * (int)threadIdx.y + (int)threadIdx.x;
     const int row = (int)blockIdx.x;
     const int token = (int)blockIdx.y;
-    const int slot = (int)blockIdx.z;
     if (row >= M) {
         return;
     }
 
-    const int assignment = token * n_used + slot;
-    const int32_t expert = ids[assignment];
-    const bool invalid = expert < 0 || expert >= n_experts;
-    const int blocks_per_row = K / qk;
-    const int kbx_offset = invalid ? 0 : expert * stride_channel_x + row * stride_row_x;
     const block_q8_1 *y = Y + token * stride_token_y;
-    float tmp = 0.0f;
-    for (int kbx = tid / (qi / vdr); !invalid && kbx < blocks_per_row;
-         kbx += blocks_per_iter) {
-        const int kby = kbx * (qk / QK8_1);
-        const int kqs = vdr * (tid % (qi / vdr));
-        tmp += vec_dot_iq1_m_q8_1(W, y + kby, kbx_offset + kbx, kqs);
-    }
-
+    const int blocks_per_row = K / qk;
+    const int nslot = (int)gridDim.z > 1 ? 1 : n_used;
+    const int slot0 = (int)gridDim.z > 1 ? (int)blockIdx.z : 0;
     __shared__ float partial[nwarps > 1 ? nwarps - 1 : 1][warp_size];
-    if (threadIdx.y > 0) {
-        partial[threadIdx.y - 1][threadIdx.x] = tmp;
-    }
-    __syncthreads();
-    if (threadIdx.y > 0) {
-        return;
-    }
-    for (int w = 0; w < nwarps - 1; w++) {
-        tmp += partial[w][threadIdx.x];
-    }
-    tmp = warp_reduce_sum<warp_size>(tmp);
-    if (threadIdx.x == 0) {
-        out[(size_t)assignment * (size_t)M + (size_t)row] = invalid ? 0.0f : tmp;
+
+    for (int s = 0; s < nslot; s++) {
+        const int slot = slot0 + s;
+        const int assignment = token * n_used + slot;
+        const int32_t expert = ids[assignment];
+        const bool invalid = expert < 0 || expert >= n_experts;
+        const int kbx_offset = invalid ? 0 : expert * stride_channel_x + row * stride_row_x;
+        float tmp = 0.0f;
+        for (int kbx = tid / (qi / vdr); !invalid && kbx < blocks_per_row;
+             kbx += blocks_per_iter) {
+            const int kby = kbx * (qk / QK8_1);
+            const int kqs = vdr * (tid % (qi / vdr));
+            tmp += vec_dot_iq1_m_q8_1(W, y + kby, kbx_offset + kbx, kqs);
+        }
+
+        if (threadIdx.y > 0) {
+            partial[threadIdx.y - 1][threadIdx.x] = tmp;
+        }
+        __syncthreads();
+        if (threadIdx.y == 0) {
+            for (int w = 0; w < nwarps - 1; w++) {
+                tmp += partial[w][threadIdx.x];
+            }
+            tmp = warp_reduce_sum<warp_size>(tmp);
+            if (threadIdx.x == 0) {
+                out[(size_t)assignment * (size_t)M + (size_t)row] =
+                    invalid ? 0.0f : tmp;
+            }
+        }
+        __syncthreads();
     }
 }
 
 static bool iq1_m_prefill_enabled() {
     const char *env = getenv("DS4_MMQ_IQ1M_PREFILL");
+    return !(env && env[0] == '0');
+}
+
+static bool iq1_m_slot_loop_enabled() {
+    const char *env = getenv("DS4_MMQ_IQ1M_SLOT_LOOP");
     return !(env && env[0] == '0');
 }
 
@@ -5449,7 +5461,9 @@ static int ds4_mmq_iq1_m_moe_impl(
     const int stride_token_y = (int)(ne10_padded / QK8_1);
     constexpr int nwarps = 4;
     dim3 block(32, nwarps);
-    dim3 grid(M, n_tokens, n_expert_used);
+    dim3 grid = iq1_m_slot_loop_enabled()
+        ? dim3(M, n_tokens)
+        : dim3(M, n_tokens, n_expert_used);
     ds4_iq1_m_moe_assign_kernel<nwarps><<<grid, block, 0, stream>>>(
         W, (const block_q8_1 *)src1_q8_1_ptr, ids, out_f32,
         M, K, n_experts, n_expert_used,
@@ -5468,8 +5482,9 @@ static int ds4_mmq_iq1_m_moe_impl(
         logged = true;
         fprintf(stderr,
                 "ds4: IQ1_M prefill using assign-major MMVQ "
-                "(rows=%d tokens=%d used=%d)\n",
-                M, n_tokens, n_expert_used);
+                "(rows=%d tokens=%d used=%d slot_loop=%d)\n",
+                M, n_tokens, n_expert_used,
+                iq1_m_slot_loop_enabled() ? 1 : 0);
     }
     return 0;
 }
