@@ -1272,6 +1272,7 @@ static void test_moe_matmul(const ds4_model *m, const ds4_weights *wts) {
             seen[ty] = 1;
 
             if (ty == DS4_TENSOR_IQ2_XXS && which) { test_moe_worklist(m, w, 1u); }
+            if (ty == DS4_TENSOR_IQ2_XS && which) { test_moe_worklist(m, w, 1u); }
             if (ty == DS4_TENSOR_IQ1_S && !which) { test_moe_worklist(m, w, 8u); }
             if (ty == DS4_TENSOR_IQ1_M && !which) { test_iq1m_prefill(m, w, 8u); }
 
