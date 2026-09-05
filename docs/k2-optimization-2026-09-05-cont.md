@@ -60,6 +60,9 @@ baseline (and against the last accepted round of that workload).
 | Round 3 binary, all defaults | 466.32 / 466.06 | **+62.7%** | **13.19 / 13.27** | **+139%** | P7 + D3 |
 | Prefill 7 kill switch (`DS4_MMQ_IQ2XS_WORKLIST=0`) | 446.93 | — | 13.26 | — | rectangular IQ2_XS |
 | Decode 3 kill switch (`DS4_EXAONE_ATTN_SPLIT_NATIVE=0`) | 465.77 | — | 9.81 | — | Solar grouped split (D2) |
+| Round 4 binary, all defaults | **494.85 / 497.37** | **+72.7%** | 13.34 / 13.26 | +141.7% | P8 + D4 |
+| Prefill 8 kill switch (`DS4_MMQ_IQ1_PAIR=0`) | 484.67 | — | 13.32 | — | two single IQ1 calls |
+| Decode 4 kill switch (`DS4_EXAONE_ROPE_TABLE=0`) | 476.94 | — | 13.27 | — | inline double trig |
 
 Prefill 1 vs last accepted (the locked baseline): **+8.49 tok/s**.
 Prefill 3 vs last accepted (`096fc9c` 295.04): **+7.90 tok/s**.
@@ -74,6 +77,8 @@ same-binary on/off 7.11 → 9.80: **+37.8%**. Prefill is unchanged
 byte-identical to the kill switch and to Prefill 6.
 Prefill 7 (`3afea1b`) same-binary vs its kill switch: 446.93 → 466.32 / 466.06 prefill (**+4.3%**), decode 13.26 vs 13.19 / 13.27 (unchanged).
 Decode 3 (`125528a`) same-binary vs its kill switch: 9.81 → 13.19 / 13.27 decode (**+34.4% / +35.3%**), prefill 465.77 vs 466.32 / 466.06 (unchanged).
+Prefill 8 (`b5ca173`) same-binary vs its kill switch: 484.67 → 494.85 / 497.37 prefill (**+2.1%**), decode 13.32 vs 13.34 / 13.26 (unchanged).
+Decode 4 (`dfaa5a8`) same-binary vs its kill switch: 476.94 → 494.85 / 497.37 prefill (**+3.8%**), decode 13.27 vs 13.34 / 13.26 (unchanged).
 Decode IDs and all 250624 frontier logits are bit-identical across
 the kill-switch, Prefill 1, Prefill 3, and Decode 1 cells.
 
@@ -87,6 +92,8 @@ the kill-switch, Prefill 1, Prefill 3, and Decode 1 cells.
 | Prefill 4 | Tile 4 IQ1_M output rows per block (`DS4_MMQ_IQ1M_ROW_TILE`). | Synth bit-identical; same-binary tile1 295.28 / tile4 290.18, both below last accepted 302.94. Same-TU kernel body change, same class as P2. Reverted. | Rejected |
 | Prefill 5 | 1024-token EXAONE prefill chunks vs default 512. | 271.5 → 307.65 on this binary, but rel RMS 0.0636 and 56/64 greedy IDs differ. Reverted. | Rejected |
 | Decode 1 | Share each KV row across GQA query heads. Same per-head softmax order as `exaone_attn_head`. `DS4_EXAONE_ATTN_GQA=0` is one block per head. | Tile-6: bit-identical, 5.51 → 4.13 (spill). Tile-2: bit-identical, 5.51 → 6.91. | Retained (tile-2) |
+| Prefill 8 | The 58 IQ1_S / IQ1_M gate/up projections ran as two single routed calls per layer, each with its own expert map, Q8_1 activation and standalone sanitize pass: 600 quantize + 600 sanitize launches per 512-token chunk (44 + 38 ms of a 1058 ms chunk). They now take the K-quant pair path (one map and activation, both compact worklists, consumers sanitize at read). Same kernels, so bit-identical. `DS4_MMQ_IQ1_PAIR=0` restores the single calls. | Real layer-7 IQ1_S and layer-3 IQ1_M gate/up nt=257/512: IQ1_S nt=257 8.22 → 7.98 ms, nt=512 9.78 → 9.33 ms; IQ1_M nt=257 8.82 → 8.53 ms, nt=512 10.78 → 10.12 ms; gate and up bit-identical. 8K A/B same binary: 484.67 → 494.85 / 497.37 prefill, decode 13.32 vs 13.34 / 13.26. Logits and 64 IDs byte-identical to the kill switch and to round 3 (`194e4aa`). | Retained |
+| Decode 4 | The QK-norm/RoPE kernel computed pow/fmod/cos/sin in double per (head, pair) for every layer's q and k call: 40 ms per 512-token chunk, 12 µs per decode launch on GB10's 1/64-rate FP64. One (cos, sin) table per (pos0, n_tokens) is built once and shared by all layers; same doubles, same rounding, so bit-identical. `DS4_EXAONE_ROPE_TABLE=0` computes inline. | Synthetic: table vs inline bit-identical at pos 40 and 262143. 8K A/B same binary: 476.94 → 494.85 / 497.37 prefill, decode 13.27 vs 13.34 / 13.26. Logits and 64 IDs byte-identical to the kill switch and to round 3 once the rotation contraction was pinned (see the round-4 note). | Retained |
 | Prefill 7 | IQ2_XS down (8 edge layers) was the last raw IQ type on the rectangular `[expert, max-bucket]` MMQ schedule: 144 launches × 11.8 ms (5.9% of the post-P6 trace), most tiles empty at ~21 rows per expert. It joins the compact worklist from 256 routed rows. Scheduling only. `DS4_MMQ_IQ2XS_WORKLIST=0` restores the rectangular schedule. | Real layer-3 down: nt=4096 15.42 → 7.85 ms, nt=257 6.90 → 4.21 ms, ragged 129-row 0.656 → 0.493 ms, all bit-identical. 8K A/B same binary: 446.93 → 466.32 / 466.06 prefill, decode 13.26 vs 13.19 / 13.27. Logits and 64 IDs byte-identical to the kill switch (scheduling only). | Retained |
 | Decode 3 | The D2 Solar grouped kernel decodes every key into shared memory through the per-element format helper (0.584 ms at 8K, ~57 GB/s). The K2 pair kernel reads f16 K\|V rows directly, so it now runs per chunk (grid chunks × head pairs) and, with `PARTIAL=true`, writes the block's unnormalised partial for the existing combine kernel; the whole-context path is the same kernel with one chunk. `DS4_EXAONE_ATTN_SPLIT_NATIVE=0` keeps the Solar kernel. | Synthetic K2 shape @4095 / 8191 / 32767: Solar 0.167 / 0.587 / 2.250 ms → native 0.045 / 0.159 / 0.629 ms (pair 0.382 / 1.327 / 5.267), rel RMS ≤ 4.4e-7 vs Solar, ≤ 1.8e-6 vs pair, @8191 within 2e-5 of CPU, fallbacks bit-identical. 8K A/B same binary: decode 9.81 → 13.19 / 13.27, prefill 465.77 vs 466.32 / 466.06. Frontier byte-identical to the kill switch and to Decode 2; greedy IDs diverge at token 7 (55/64) from the Solar path, which reproduces the Decode 2 continuation exactly; both continuations coherent; the two all-default runs byte-identical. | Retained (revised gate) |
 | Decode 2 | Split-K decode attention. The pair kernel walks the whole context with n_head/2 blocks of 4 warps (24 blocks on 48 SMs), 16.7% of the post-P6 trace, 1.23 ms per layer at 8K (~27 GB/s of KV). The Solar grouped split kernel shares the f16 K\|V row layout, so from 2048 keys the context is cut into 256-key chunks, one block per (chunk, KV head), plus the combine kernel. `DS4_EXAONE_ATTN_SPLIT=0` restores the pair kernel; sliding windows, wrapped rings and capture keep it. | Synthetic K2 shape: @4095 0.319 → 0.173 ms, @8191 1.214 → 0.584 ms, @32767 4.835 → 2.224 ms, rel RMS ≤ 1.8e-6 vs the pair kernel, @8191 vs CPU within 2e-5, floor/window/kill-switch cases bit-identical. 8K A/B same binary: decode 7.11 / 7.11 → 9.80 / 9.80, prefill 445.20 / 444.34 → 446.40 / 444.19. Frontier logits byte-identical; greedy IDs diverge at token 8 (56/64), both continuations coherent; two split runs byte-identical. | Retained (revised gate) |
@@ -161,6 +168,42 @@ shares the first 8 greedy tokens with the kill switch before a near-tie
 flip (the same behaviour the first campaign's rejected split-K showed at
 token 17). Contract: full-attention decode from 2048 keys merges 256-key
 online-softmax partials; the per-key math is the pair kernel's.
+
+## Round 4 note
+
+Decode is at the memory wall: per token the round-3 trace has 72.4 ms
+of kernels (dense Q8_0 GEMVs 40.0 ms at ~240 GB/s, routed expert
+vectors 17.9 ms, split attention 9.5 ms, all within ~10% of the
+bandwidth floor of ~62 ms) against a 76 ms wall, launch gaps average
+0.36 µs, and the only >1 ms gap per token is the bench's frontier-logits
+dump. The remaining decode fat is the ~2.4 ms of small kernels per
+token; Decode 4 removes the largest non-bandwidth one (the double-
+precision RoPE, 0.73 ms per token) and, because the same kernel runs in
+prefill, also 40 ms per prefill chunk. Further decode gains need a
+structural change (graph-captured decode step) or a precision change
+(FP8 KV), both outside this campaign's contract.
+
+Round-4 incident: the first round-4 build moved every frontier logit
+(rel RMS 0.063 against round 3) with both kill switches off. A
+standalone old-vs-new kernel run isolated it to the RoPE rotation:
+norm and (cos, sin) were bit-identical, but once c and s arrived from a
+table or a branch nvcc fused the other product pair of `a·c − b·s` /
+`a·s + b·c` (same opcode histogram, one ulp per rotated value), and on
+this model one ulp anywhere flips the frontier. The rotation is now
+written as the original contraction (c products fused, s products
+rounded first); the r4b cells above are byte-identical to round 3.
+
+Post-round-4 nsys (8K+64, 491.90 / 13.04 under the profiler): total
+kernel time 23.67 s → 22.50 s. `exaone_qk_norm_rope_kernel` is 10004 ×
+6.6 µs (0.3%) instead of 77 µs avg (3.3%), the table kernel runs 82
+times (18 chunks + 64 tokens); the gate/up sanitize passes are gone
+(sanitize launches 25666 → 23578). Ranking: IQ1_S worklist 25.2%
+(3.15 ms avg), IQ2_XXS worklist 19.3% (4.83 ms), q8 aligned dense vec
+11.4%, Q8_0 MMQ 9.1%, HMMA prefill attention 5.4%, IQ1_M worklist 4.5%,
+IQ2_XS worklist 3.5%, decode attention 2.6%, quantize_mmq 2.2%,
+sanitize 2.2%, IQ1_S decode vec 2.1%, moe_sum 2.1%, swiglu_weighted
+1.6%. Evidence: `scratch/k2-opt-20260905-cont/{r4b-all,r4b-p8off,r4b-d4off,r4b-all2,r4b-nsys,r4,r4-*}/`
+(the `r4-*` cells are the un-pinned first build).
 
 ## Decode 3 numeric contract
 
