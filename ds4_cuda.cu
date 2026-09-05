@@ -45741,6 +45741,123 @@ __global__ static void exaone_attn_decode_kernel(
                           kv_cap, first, last, scale);
 }
 
+/* One block per pair of query heads that share a KV head. Full-group
+ * (tile=6) spilled and lost decode tok/s; tile=2 keeps the same
+ * per-head softmax order. DS4_EXAONE_ATTN_GQA=0 restores one block
+ * per query head. */
+enum { DS4_EXAONE_GQA_TILE = 2 };
+
+template <int DPL>
+__global__ static void exaone_attn_decode_gqa_kernel(
+        float *heads,
+        const float *q,
+        const __half *kv,
+        uint32_t n_head,
+        uint32_t n_head_kv,
+        uint32_t head_dim,
+        uint32_t kv_cap,
+        uint32_t first,
+        uint32_t last,
+        float scale) {
+    const uint32_t h0 = blockIdx.x * (uint32_t)DS4_EXAONE_GQA_TILE;
+    if (h0 >= n_head) {
+        return;
+    }
+    const uint32_t group = n_head / n_head_kv;
+    const uint32_t kvh = h0 / group;
+    const uint32_t tile = (uint32_t)DS4_EXAONE_GQA_TILE;
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t warp = threadIdx.x >> 5;
+    const uint32_t nwarps = blockDim.x >> 5;
+    const uint32_t kv_dim = n_head_kv * head_dim;
+
+    float qv[DS4_EXAONE_GQA_TILE][DPL];
+    float acc[DS4_EXAONE_GQA_TILE][DPL];
+    float m[DS4_EXAONE_GQA_TILE];
+    float l[DS4_EXAONE_GQA_TILE];
+    for (uint32_t g = 0; g < tile; g++) {
+        const float *qg = q + (size_t)(h0 + g) * head_dim;
+        m[g] = -INFINITY;
+        l[g] = 0.0f;
+#pragma unroll
+        for (int d = 0; d < DPL; d++) {
+            qv[g][d] = qg[lane + (uint32_t)d * 32u];
+            acc[g][d] = 0.0f;
+        }
+    }
+
+    for (uint32_t t = first + warp; t <= last; t += nwarps) {
+        const __half *krow = kv + (size_t)(t % kv_cap) * (size_t)kv_dim * 2u
+                                + (size_t)kvh * head_dim;
+        float kdim[DPL];
+        float vdim[DPL];
+#pragma unroll
+        for (int d = 0; d < DPL; d++) {
+            kdim[d] = __half2float(krow[lane + d * 32]);
+            vdim[d] = __half2float(krow[kv_dim + lane + d * 32]);
+        }
+        for (uint32_t g = 0; g < tile; g++) {
+            float dot = 0.0f;
+#pragma unroll
+            for (int d = 0; d < DPL; d++) {
+                dot += qv[g][d] * kdim[d];
+            }
+            for (int off = 16; off > 0; off >>= 1) {
+                dot += __shfl_xor_sync(0xffffffffu, dot, off);
+            }
+            const float s = dot * scale;
+            const float mn = fmaxf(m[g], s);
+            const float re = (m[g] == -INFINITY) ? 0.0f : __expf(m[g] - mn);
+            const float w = __expf(s - mn);
+#pragma unroll
+            for (int d = 0; d < DPL; d++) {
+                acc[g][d] = acc[g][d] * re + w * vdim[d];
+            }
+            l[g] = l[g] * re + w;
+            m[g] = mn;
+        }
+    }
+
+    __shared__ float s_m[8], s_l[8];
+    extern __shared__ float s_acc[];
+    for (uint32_t g = 0; g < tile; g++) {
+        if (lane == 0u) {
+            s_m[warp] = m[g];
+            s_l[warp] = l[g];
+        }
+#pragma unroll
+        for (int d = 0; d < DPL; d++) {
+            s_acc[warp * head_dim + lane + d * 32] = acc[g][d];
+        }
+        __syncthreads();
+        if (warp == 0u) {
+            float gm = -INFINITY;
+            for (uint32_t w = 0; w < nwarps; w++) {
+                gm = fmaxf(gm, s_m[w]);
+            }
+            float gl = 0.0f;
+            for (uint32_t w = 0; w < nwarps; w++) {
+                gl += (s_m[w] == -INFINITY) ? 0.0f : s_l[w] * __expf(s_m[w] - gm);
+            }
+            const float inv = gl > 0.0f ? 1.0f / gl : 0.0f;
+            float *out = heads + (size_t)(h0 + g) * head_dim;
+#pragma unroll
+            for (int d = 0; d < DPL; d++) {
+                const uint32_t i = lane + (uint32_t)d * 32u;
+                float v = 0.0f;
+                for (uint32_t w = 0; w < nwarps; w++) {
+                    if (s_m[w] == -INFINITY) {
+                        continue;
+                    }
+                    v += s_acc[w * head_dim + i] * __expf(s_m[w] - gm);
+                }
+                out[i] = v * inv;
+            }
+        }
+        __syncthreads();
+    }
+}
+
 /* Prefill: one block per (token, head).  Queries carry absolute positions
  * pos0 + t, so the causal bound and the window bound are the decode ones
  * evaluated per row.  window == 0 means full attention. */
@@ -46044,10 +46161,30 @@ extern "C" int ds4_gpu_exaone_attention_decode_tensor(
     const uint32_t first = (window && pos + 1u > window) ? pos + 1u - window : 0u;
     const uint32_t shmem = (head_dim / 32u) * head_dim * (uint32_t)sizeof(float);
     const float scale = rsqrtf((float)head_dim);
-    DS4_EXAONE_ATTN_DISPATCH(exaone_attn_decode_kernel, n_head, shmem,
-                             (float *)heads->ptr, (const float *)q->ptr,
-                             (const __half *)kv->ptr, n_head, n_head_kv,
-                             head_dim, kv_cap, first, pos, scale);
+    const uint32_t group = n_head / n_head_kv;
+    const char *gqa_env = getenv("DS4_EXAONE_ATTN_GQA");
+    const int use_gqa = !(gqa_env && gqa_env[0] == '0') &&
+        group >= (uint32_t)DS4_EXAONE_GQA_TILE &&
+        (n_head % (uint32_t)DS4_EXAONE_GQA_TILE) == 0u;
+    if (use_gqa) {
+        static int logged = 0;
+        if (!logged) {
+            logged = 1;
+            fprintf(stderr,
+                    "ds4: EXAONE/K2 decode attention sharing KV across "
+                    "%d query heads\n", DS4_EXAONE_GQA_TILE);
+        }
+        DS4_EXAONE_ATTN_DISPATCH(exaone_attn_decode_gqa_kernel,
+                                 n_head / (uint32_t)DS4_EXAONE_GQA_TILE, shmem,
+                                 (float *)heads->ptr, (const float *)q->ptr,
+                                 (const __half *)kv->ptr, n_head, n_head_kv,
+                                 head_dim, kv_cap, first, pos, scale);
+    } else {
+        DS4_EXAONE_ATTN_DISPATCH(exaone_attn_decode_kernel, n_head, shmem,
+                                 (float *)heads->ptr, (const float *)q->ptr,
+                                 (const __half *)kv->ptr, n_head, n_head_kv,
+                                 head_dim, kv_cap, first, pos, scale);
+    }
     return cuda_ok(cudaGetLastError(), "exaone attention decode");
 }
 

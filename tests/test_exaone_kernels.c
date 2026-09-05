@@ -474,6 +474,25 @@ static void test_attention(int sliding) {
                      : "attention decode (full, NoPE)",
              got, want, (size_t)T_HEAD * T_HEAD_DIM, 2e-5, 2e-5);
 
+    (void)setenv("DS4_EXAONE_ATTN_GQA", "0", 1);
+    if (!ds4_gpu_exaone_attention_decode_tensor(go, gq, gkv, T_HEAD, T_HEAD_KV,
+                                                T_HEAD_DIM, kv_cap, pos, window)) {
+        printf("attention decode serial launch failed\n"); g_fail++;
+    } else {
+        ds4_gpu_tensor_read(go, 0, want, (size_t)T_HEAD * T_HEAD_DIM * sizeof(float));
+        (void)setenv("DS4_EXAONE_ATTN_GQA", "1", 1);
+        if (!ds4_gpu_exaone_attention_decode_tensor(go, gq, gkv, T_HEAD, T_HEAD_KV,
+                                                    T_HEAD_DIM, kv_cap, pos, window)) {
+            printf("attention decode GQA launch failed\n"); g_fail++;
+        } else {
+            ds4_gpu_tensor_read(go, 0, got, (size_t)T_HEAD * T_HEAD_DIM * sizeof(float));
+            diff_f32(sliding ? "attention GQA vs serial (window 128)"
+                             : "attention GQA vs serial (full, NoPE)",
+                     got, want, (size_t)T_HEAD * T_HEAD_DIM, 1e-6, 1e-6);
+        }
+    }
+    (void)unsetenv("DS4_EXAONE_ATTN_GQA");
+
     free(want); free(got);
     ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gkv); ds4_gpu_tensor_free(gq);
     free(kv); free(q);

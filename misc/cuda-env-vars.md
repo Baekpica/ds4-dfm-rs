@@ -45,6 +45,9 @@ The bandwidth figure is informational; we don't tier on it.
   grid. The default walks all top-k slots in one `(M, tokens)` block so
   the Q8_1 activation row is reused.
 
+- `DS4_EXAONE_ATTN_GQA=0` restores one decode-attention block per query
+  head. The default shares each KV row across two query heads.
+
 - `DS4_MODEL_ANON_HUGE=N` (Linux, default off; lives in ds4.c model_open, not
   the CUDA backend). Copy GPU-backend model files out of the file-backed mmap
   into anonymous `MADV_HUGEPAGE` memory at load. `N<=1` copies every GPU
