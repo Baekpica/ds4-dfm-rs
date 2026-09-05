@@ -936,6 +936,9 @@ static int run_iq1m_prefill_pair(const void *map, uint64_t map_size,
         ds4_gpu_tensor_write(gx, 0, x, nx * sizeof(float)) &&
         ds4_gpu_tensor_write(gi, 0, ids, (size_t)nt * used * sizeof(int32_t));
     double ms[2] = {0.0, 0.0};
+    /* Pin the assign-major tier: from 256 routed rows the default would
+     * take the MMQ worklist tile, which run_iq1m_tile_pair covers. */
+    (void)setenv("DS4_MMQ_IQ1M_WORKLIST", "0", 1);
     for (int fast = 0; ok && fast < 2; fast++) {
         (void)setenv("DS4_MMQ_IQ1M_PREFILL", fast ? "1" : "0", 1);
         ok = ds4_gpu_tensor_fill_f32(go, 0.0f, ny) &&
@@ -977,6 +980,7 @@ static int run_iq1m_prefill_pair(const void *map, uint64_t map_size,
         }
         (void)unsetenv("DS4_MMQ_IQ1M_SLOT_LOOP");
         (void)unsetenv("DS4_MMQ_IQ1M_PREFILL");
+        (void)unsetenv("DS4_MMQ_IQ1M_WORKLIST");
         if (ok) {
             snprintf(label, sizeof(label), "IQ1_M slot-loop nt=%u used=%u rows=%u",
                      nt, used, rows);
@@ -987,6 +991,7 @@ static int run_iq1m_prefill_pair(const void *map, uint64_t map_size,
             printf("IQ1_M slot-loop nt=%u launch failed\n", nt); g_fail++;
         }
     } else {
+        (void)unsetenv("DS4_MMQ_IQ1M_WORKLIST");
         printf("IQ1_M assign nt=%u launch failed\n", nt); g_fail++;
     }
     ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gi); ds4_gpu_tensor_free(gx);
@@ -1019,7 +1024,152 @@ static void test_iq1m_prefill_synth(void) {
         (void)run_iq1m_prefill_pair(map, map_size, w_off, w_bytes,
                                     k, rows, nexp, widths[i], used);
     }
-    free(map);
+    /* The map is host-registered (pinned) with CUDA; freeing it would let
+     * a later malloc straddle the pinned range and fail cudaMemcpy with
+     * "invalid argument". Keep it until exit. */
+}
+
+/* IQ1_M compact-worklist tile vs the assign-major MMVQ kill switch. Both
+ * quantize the activation to Q8_1 blocks of 32, but the MMQ producer rounds
+ * x*(127/amax) where MMVQ rounds x/(amax/127), so random rows agree to a
+ * tolerance, not bit identity. Rows whose 32-value blocks sit on exact
+ * Q8_1 points (m*amax/127 with one |m| = 127 per block, amax/127 = 2^-8)
+ * make both producers emit the same q and scale, leaving only fp32
+ * accumulation order; that
+ * mode separates producer rounding from a tile fault (a wrong grid, delta
+ * or scale lands near 1e-1). */
+enum iq1m_tile_x { IQ1M_TILE_X_RANDOM, IQ1M_TILE_X_Q8_EXACT };
+static const double IQ1M_TILE_REL_TOL = 1e-3;
+static const double IQ1M_TILE_EXACT_REL_TOL = 1e-5;
+
+static int run_iq1m_tile_pair(const void *map, uint64_t map_size,
+                              uint64_t w_off, uint64_t w_bytes,
+                              uint32_t k, uint32_t rows, uint32_t nexp,
+                              uint32_t nt, uint32_t used,
+                              enum iq1m_tile_x xmode) {
+    const size_t nx = (size_t)nt * k, ny = (size_t)nt * used * rows;
+    float *x = xmalloc(nx * sizeof(float));
+    float *ref = xmalloc(ny * sizeof(float));
+    float *got = xmalloc(ny * sizeof(float));
+    int32_t *ids = xmalloc((size_t)nt * used * sizeof(int32_t));
+    uint64_t seed = 20260906ull + nt;
+    /* Power-of-two step: the MMVQ tier keeps the Q8_1 scale as fp16 in
+     * block_q8_1.ds, the MMQ tier as fp32, so only an exact scale makes
+     * the two tiers' scaled activations identical. */
+    const float q8_step = 1.0f / 256.0f;
+    for (size_t i = 0; i < nx; i++) {
+        if (xmode == IQ1M_TILE_X_RANDOM) { x[i] = frand(&seed) * 0.5f; continue; }
+        const int m = i % 32u == 0u ? 127 : (int)(frand(&seed) * 127.0f);
+        x[i] = (float)m * q8_step;
+    }
+    for (uint32_t t = 0; t < nt; t++) {
+        for (uint32_t s = 0; s < used; s++) {
+            ids[(size_t)t * used + s] =
+                ((t % 5u == 0u ? 7u : t * 13u) + s * 7u) % nexp;
+        }
+    }
+    ids[used] = -1; /* Both tiers must preserve the invalid-slot zero. */
+    ds4_gpu_tensor *gx = ds4_gpu_tensor_alloc(nx * sizeof(float));
+    ds4_gpu_tensor *gi = ds4_gpu_tensor_alloc((size_t)nt * used * sizeof(int32_t));
+    ds4_gpu_tensor *go = ds4_gpu_tensor_alloc(ny * sizeof(float));
+    int ok = gx && gi && go &&
+        ds4_gpu_tensor_write(gx, 0, x, nx * sizeof(float)) &&
+        ds4_gpu_tensor_write(gi, 0, ids, (size_t)nt * used * sizeof(int32_t));
+    double ms[2] = {0.0, 0.0};
+    for (int tile = 0; ok && tile < 2; tile++) {
+        (void)setenv("DS4_MMQ_IQ1M_WORKLIST", tile ? "1" : "0", 1);
+        ok = ds4_gpu_tensor_fill_f32(go, 0.0f, ny) &&
+            ds4_gpu_routed_matmul_tensor(go, gx, gi, map, map_size,
+                w_off, w_bytes, DS4_TENSOR_IQ1_M, k, rows, nexp, nt, used) &&
+            ds4_gpu_synchronize();
+        const double start = now_sec();
+        for (int i = 0; ok && i < 2; i++) {
+            ok = ds4_gpu_routed_matmul_tensor(go, gx, gi, map, map_size,
+                w_off, w_bytes, DS4_TENSOR_IQ1_M, k, rows, nexp, nt, used);
+        }
+        ok = ok && ds4_gpu_synchronize();
+        ms[tile] = (now_sec() - start) * 500.0;
+        ok = ok && ds4_gpu_tensor_read(go, 0, tile ? got : ref, ny * sizeof(float));
+    }
+    (void)unsetenv("DS4_MMQ_IQ1M_WORKLIST");
+    if (ok) {
+        char label[80];
+        snprintf(label, sizeof(label), "IQ1_M tile%s nt=%u used=%u rows=%u k=%u",
+                 xmode == IQ1M_TILE_X_Q8_EXACT ? " q8-exact" : "",
+                 nt, used, rows, k);
+        diff_quant_gemm(label, got, ref, ny,
+                        xmode == IQ1M_TILE_X_Q8_EXACT ? IQ1M_TILE_EXACT_REL_TOL
+                                                      : IQ1M_TILE_REL_TOL);
+        printf("%s assign=%.3f ms tile=%.3f ms\n", label, ms[0], ms[1]);
+    } else {
+        printf("IQ1_M tile nt=%u launch failed\n", nt); g_fail++;
+    }
+    ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gi); ds4_gpu_tensor_free(gx);
+    free(ids); free(got); free(ref); free(x);
+    return ok;
+}
+
+/* Valid 56-byte IQ1_M blocks: random grids, deltas and 3-bit sub-scales,
+ * and an fp16 block scale in [2^-7, 2^-4) spread over the scale-word top
+ * nibbles. Random scale bytes would give NaN or huge d, which the two
+ * tiers overflow and sanitize differently. */
+static void synth_iq1m_blocks(unsigned char *w, uint64_t nblocks, uint64_t *seed) {
+    for (uint64_t b = 0; b < nblocks; b++) {
+        unsigned char *blk = w + b * 56u;
+        for (int i = 0; i < 48; i++) {
+            *seed = *seed * 6364136223846793005ULL + 1442695040888963407ULL;
+            blk[i] = (unsigned char)(*seed >> 33);
+        }
+        *seed = *seed * 6364136223846793005ULL + 1442695040888963407ULL;
+        const uint16_t d = (uint16_t)(0x2000u + ((*seed >> 33) & 0x0FFFu));
+        for (int j = 0; j < 4; j++) {
+            *seed = *seed * 6364136223846793005ULL + 1442695040888963407ULL;
+            const uint16_t word = (uint16_t)((((d >> (4 * j)) & 0xFu) << 12) |
+                                             ((*seed >> 33) & 0x0FFFu));
+            blk[48 + 2 * j] = (unsigned char)(word & 0xFFu);
+            blk[49 + 2 * j] = (unsigned char)(word >> 8);
+        }
+    }
+}
+
+static void test_iq1m_tile_synth(void) {
+    /* 32 experts is the worklist floor; rows 128 = one unchecked MMQ tile,
+     * rows 96 = the checked tile; k 512 = two K iterations. All three
+     * tensors share one map: the CUDA backend host-registers a map once
+     * and refuses a re-registration that overlaps the previous range. */
+    static const struct { uint32_t k, rows, nt; } cases[] = {
+        {256u, 128u, 32u}, {512u, 96u, 257u}, {512u, 128u, 512u},
+    };
+    const size_t ncase = sizeof(cases) / sizeof(cases[0]);
+    const uint32_t nexp = 32u, used = 8u;
+    uint64_t w_off[3], w_bytes[3], map_size = 256;
+    for (size_t c = 0; c < ncase; c++) {
+        w_off[c] = map_size;
+        w_bytes[c] = (uint64_t)nexp * cases[c].rows * (cases[c].k / 256u) * 56u;
+        map_size += (w_bytes[c] + 255u) & ~(uint64_t)255u;
+    }
+    map_size += 256;
+    void *map = NULL;
+    if (posix_memalign(&map, 4096, (size_t)map_size) != 0) {
+        printf("IQ1_M tile synth map alloc failed\n"); g_fail++; return;
+    }
+    memset(map, 0, (size_t)map_size);
+    uint64_t seed = 20260906ull;
+    for (size_t c = 0; c < ncase; c++) {
+        synth_iq1m_blocks((unsigned char *)map + w_off[c], w_bytes[c] / 56u, &seed);
+    }
+    if (!ds4_gpu_set_model_map(map, map_size)) {
+        printf("IQ1_M tile synth map failed\n"); g_fail++; free(map); return;
+    }
+    for (size_t c = 0; c < ncase; c++) {
+        (void)run_iq1m_tile_pair(map, map_size, w_off[c], w_bytes[c],
+                                 cases[c].k, cases[c].rows, nexp,
+                                 cases[c].nt, used, IQ1M_TILE_X_RANDOM);
+        (void)run_iq1m_tile_pair(map, map_size, w_off[c], w_bytes[c],
+                                 cases[c].k, cases[c].rows, nexp,
+                                 cases[c].nt, used, IQ1M_TILE_X_Q8_EXACT);
+    }
+    /* Registered map: kept until exit (see test_iq1m_prefill_synth). */
 }
 
 static void test_iq1m_prefill(const ds4_model *m, const ds4_tensor *w,
@@ -1030,6 +1180,12 @@ static void test_iq1m_prefill(const ds4_model *m, const ds4_tensor *w,
         (void)run_iq1m_prefill_pair(m->map, m->size, w->abs_offset, w->bytes,
                                     k, (uint32_t)w->dim[1], DS4_N_EXPERT,
                                     widths[wi], used);
+        (void)run_iq1m_tile_pair(m->map, m->size, w->abs_offset, w->bytes,
+                                 k, (uint32_t)w->dim[1], DS4_N_EXPERT,
+                                 widths[wi], used, IQ1M_TILE_X_RANDOM);
+        (void)run_iq1m_tile_pair(m->map, m->size, w->abs_offset, w->bytes,
+                                 k, (uint32_t)w->dim[1], DS4_N_EXPERT,
+                                 widths[wi], used, IQ1M_TILE_X_Q8_EXACT);
     }
 }
 
@@ -1159,6 +1315,8 @@ int main(int argc, char **argv) {
     test_swiglu_and_combine();
     printf("\n== IQ1_M assign-major vs per-token MMVQ ==\n");
     test_iq1m_prefill_synth();
+    printf("\n== IQ1_M worklist tile vs assign-major MMVQ ==\n");
+    test_iq1m_tile_synth();
 
     if (argc > 1) {
         ds4_model model;

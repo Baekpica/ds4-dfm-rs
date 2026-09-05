@@ -45,6 +45,13 @@ The bandwidth figure is informational; we don't tier on it.
   grid. The default walks all top-k slots in one `(M, tokens)` block so
   the Q8_1 activation row is reused.
 
+- `DS4_MMQ_IQ1M_WORKLIST=0` restores the assign-major IQ1_M MMVQ for
+  prefill. The default runs IQ1_M gate/up on the compact MMQ worklist
+  (ds4 `load_tiles_iq1_m`, per-16 Q3_K/IQ2_XS tile layout) at 256 or
+  more routed rows and 32 or more experts; narrower shapes, the
+  assign-major fallback and decode are unchanged. `DS4_MMQ_WORKLIST=0`
+  also disables it.
+
 - `DS4_EXAONE_ATTN_GQA=0` restores one decode-attention block per query
   head. The default shares each KV row across two query heads.
 

@@ -32717,9 +32717,10 @@ static int routed_matmul_tensor_impl(
             : ds4_mmq_iq1_s_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
         break;
     case 29u:
-        /* IQ1_M has no MMQ tile. Prefill uses one assign-major MMVQ grid;
-         * decode stays on the one-token vec walk. DS4_MMQ_IQ1M_PREFILL=0
-         * restores the per-token loop. */
+        /* IQ1_M prefill: the ds4 MMQ worklist tile from 256 routed rows,
+         * else one assign-major MMVQ grid; decode stays on the one-token
+         * vec walk. DS4_MMQ_IQ1M_WORKLIST=0 and DS4_MMQ_IQ1M_PREFILL=0
+         * roll back one tier each. */
         rc = use_vec
             ? vec_rows(ds4_mmq_iq1_m_moe_vec)
             : ds4_mmq_iq1_m_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
@@ -46398,7 +46399,7 @@ extern "C" int ds4_gpu_exaone_moe_matmul_tensor(
         rc = vec ? ds4_mmq_iq1_s_moe_vec(w, xp, idp, op, M, K, NT, NE, NU, st)
                  : ds4_mmq_iq1_s_moe(w, xp, idp, op, M, K, NT, NE, NU, st);
         break;
-    case 29u: /* IQ1_M: assign-major prefill, vec decode */
+    case 29u: /* IQ1_M: worklist tile or assign-major prefill, vec decode */
         rc = vec ? ds4_mmq_iq1_m_moe_vec(w, xp, idp, op, M, K, NT, NE, NU, st)
                  : ds4_mmq_iq1_m_moe(w, xp, idp, op, M, K, NT, NE, NU, st);
         break;

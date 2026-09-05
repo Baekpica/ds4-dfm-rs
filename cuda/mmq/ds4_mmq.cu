@@ -182,10 +182,17 @@ static bool moe_worklist_enabled(ggml_type type) {
         : type == GGML_TYPE_Q4_K ? getenv("DS4_MMQ_Q4_WORKLIST")
         : type == GGML_TYPE_Q5_K ? getenv("DS4_MMQ_Q5_WORKLIST")
         : type == GGML_TYPE_IQ2_XXS ? getenv("DS4_MMQ_IQ2XXS_WORKLIST")
-        : type == GGML_TYPE_IQ1_S ? getenv("DS4_MMQ_IQ1S_WORKLIST") : NULL;
+        : type == GGML_TYPE_IQ1_S ? getenv("DS4_MMQ_IQ1S_WORKLIST")
+        : type == GGML_TYPE_IQ1_M ? getenv("DS4_MMQ_IQ1M_WORKLIST") : NULL;
     return !(global && global[0] == '0') &&
            !(specific && specific[0] == '0');
 }
+
+// Raw IQ routing joins the compact worklist without a host bucket bound
+// from this width; below it the rectangular schedule (or, for IQ1_M, the
+// assign-major MMVQ) stays.
+static constexpr int64_t DS4_MMQ_WIDE_IQ_MIN_ROWS = 256;
+static constexpr int DS4_MMQ_WIDE_IQ_MIN_EXPERTS = 32;
 
 // A ragged final 128-column tile can use the smallest native 8/16/32/64
 // MMQ tile that contains it.  Keep the original TAIL64 switch name as the
@@ -376,6 +383,7 @@ static bool ds4_should_use_mmq_impl(enum ggml_type type, int cc, int64_t ne11, i
         case GGML_TYPE_IQ3_XXS:
         case GGML_TYPE_IQ3_S:
         case GGML_TYPE_IQ1_S:
+        case GGML_TYPE_IQ1_M:
         case GGML_TYPE_IQ4_XS:
         case GGML_TYPE_IQ4_NL:
             mmq_supported = true;
@@ -1993,14 +2001,16 @@ int ds4_mmq_moe_impl(
 
     /* Wide raw IQ routing can use the same worklist without a host bucket
      * bound: the device expert_bounds still defines every non-empty tile. */
-    const bool wide_iq = (type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ1_S) &&
-                         ne_get_rows >= 256 && n_experts >= 32;
+    const bool wide_iq = (type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ1_S ||
+                          type == GGML_TYPE_IQ1_M) &&
+                         ne_get_rows >= DS4_MMQ_WIDE_IQ_MIN_ROWS &&
+                         n_experts >= DS4_MMQ_WIDE_IQ_MIN_EXPERTS;
     if ((ncols_max_hint > 0 || wide_iq) &&
         x_soa == NULL && moe_worklist_enabled(type)) {
         int worklist_rc = -1;
         if constexpr (type == GGML_TYPE_Q3_K || type == GGML_TYPE_Q4_K ||
                       type == GGML_TYPE_Q5_K || type == GGML_TYPE_IQ2_XXS ||
-                      type == GGML_TYPE_IQ1_S) {
+                      type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M) {
             worklist_rc = ds4_mmq_moe_worklist_launch<type>(
                 tag, *ctx, W, (const int *)src1_q8_1.get(),
                 ids_dst.get(), expert_bounds.get(), out_f32,
@@ -2022,6 +2032,13 @@ int ds4_mmq_moe_impl(
             return 0;
         }
         if (worklist_rc != -1) return worklist_rc;
+    }
+
+    /* IQ1_M only has the ds4 worklist tile (mmq.cuh load_tiles_iq1_m), no
+     * rectangular mul_mat_q instantiation. -1 returns the caller to the
+     * assign-major MMVQ. */
+    if constexpr (type == GGML_TYPE_IQ1_M) {
+        return -1;
     }
 
     // 3. Build mmq_args for the MoE path.
@@ -2103,7 +2120,9 @@ int ds4_mmq_moe_impl(
         /*soa_blocks=*/soa_blocks,
     };
 
-    mul_mat_q_case<type>(*ctx, args, stream);
+    if constexpr (type != GGML_TYPE_IQ1_M) {
+        mul_mat_q_case<type>(*ctx, args, stream);
+    }
 
     err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -5298,7 +5317,8 @@ int ds4_mmq_moe_gate_up_mid_vec_impl(
     return 0;
 }
 
-/* IQ1_M has no vendored MMQ tile. Prefill was 140k one-token MMVQ launches.
+/* IQ1_M below the worklist floor (or DS4_MMQ_IQ1M_WORKLIST=0): prefill was
+ * 140k one-token MMVQ launches.
  * One grid walks every token with the proven ncols=1 4-warp K split and
  * vec_dot_iq1_m_q8_1. Default grid is (M, n_tokens): each block reuses one
  * Q8_1 row across the top-k slots. DS4_MMQ_IQ1M_SLOT_LOOP=0 restores the
@@ -5414,6 +5434,28 @@ static int ds4_mmq_iq1_m_moe_impl(
         return ds4_mmq_iq1_m_vec_rows(
             W, X_f32, ids, out_f32, M, K,
             n_tokens, n_experts, n_expert_used, stream);
+    }
+
+    /* Tile tier: the compact MMQ worklist with the ds4 IQ1_M tile at the
+     * wide raw-IQ floor (8K prefill x top-8 = 65536 rows). -1 means the
+     * worklist refused the shape; the assign-major MMVQ below takes it. */
+    if (moe_worklist_enabled(GGML_TYPE_IQ1_M) &&
+        (int64_t)n_tokens * n_expert_used >= DS4_MMQ_WIDE_IQ_MIN_ROWS &&
+        n_experts >= DS4_MMQ_WIDE_IQ_MIN_EXPERTS) {
+        const int rc = ds4_mmq_moe_impl<GGML_TYPE_IQ1_M>(
+            "ds4_mmq_iq1_m_moe", W, X_f32, ids, out_f32, M, K,
+            n_tokens, n_experts, n_expert_used, stream);
+        if (rc != -1) {
+            static bool logged_tile = false;
+            if (rc == 0 && !logged_tile) {
+                logged_tile = true;
+                fprintf(stderr,
+                        "ds4: IQ1_M prefill using MMQ worklist tile "
+                        "(rows=%d tokens=%d used=%d)\n",
+                        M, n_tokens, n_expert_used);
+            }
+            return rc;
+        }
     }
     if (!W || !X_f32 || !ids || !out_f32 || M <= 0 || K <= 0 ||
         n_tokens <= 0 || n_experts <= 0 || n_expert_used <= 0 ||
