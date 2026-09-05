@@ -96,6 +96,14 @@ The bandwidth figure is informational; we don't tier on it.
   memory) instead. Sliding-window layers, wrapped rings and graph capture
   keep the pair kernel.
 
+- `DS4_FATTN_HMMA_LDSM=0` restores the scalar shared-memory fragment loads
+  and the direct K/V tile fill in the GQA-pair HMMA prefill attention
+  kernel (`cuda/mmq/ds4_fattn.cu`). The default reads the K and V
+  fragments with `ldmatrix` / `ldmatrix.trans` (8 + 8 shared loads per
+  16-key step and lane instead of 96) and, for BF16 K/V, stages the next
+  64-key tile in registers while the current one is consumed. Both paths
+  write identical bytes; the switch is a diagnostic rollback.
+
 - `DS4_MODEL_ANON_HUGE=N` (Linux, default off; lives in ds4.c model_open, not
   the CUDA backend). Copy GPU-backend model files out of the file-backed mmap
   into anonymous `MADV_HUGEPAGE` memory at load. `N<=1` copies every GPU

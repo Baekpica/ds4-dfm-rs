@@ -18,6 +18,7 @@
  * expected, bounded, and the reason the number is 2e-2 relative and not 1e-5.
  */
 #include "../ds4.c"
+#include "../cuda/mmq/ds4_mmq.h"
 
 static int g_fail = 0;
 
@@ -727,6 +728,104 @@ static void test_attention_prefill(int sliding, uint32_t n_tok) {
     ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gq);
     ds4_gpu_tensor_free(gkv); ds4_gpu_tensor_free(gv); ds4_gpu_tensor_free(gk);
     free(v); free(k); free(q); free(kv);
+}
+
+/* GQA-pair HMMA prefill attention with ldmatrix fragment loads and the
+ * register-staged tile prefetch (DS4_FATTN_HMMA_LDSM=1, the default)
+ * against the scalar-load kernel (=0).  Same tile bytes, same mma order,
+ * so the outputs must match to the byte: a difference is a fragment
+ * layout mistake, not rounding.  Full attention goes through the
+ * production wrapper.  The sliding cell calls the HMMA entry directly with
+ * a window, which the wrapper never does (windows stay on the warp path),
+ * so the mask arithmetic of the new consume step is under test too. */
+static void test_attention_ldsm(int sliding, uint32_t n_tok) {
+    const uint32_t window = sliding ? 128u : 0u;
+    const uint32_t kv_cap = n_tok + 56u;
+    const uint32_t kv_dim = T_HEAD_KV * T_HEAD_DIM;
+    const float scale = 1.0f / sqrtf((float)T_HEAD_DIM);
+
+    uint64_t s = 7373u + n_tok;
+    const size_t qn = (size_t)n_tok * T_HEAD * T_HEAD_DIM;
+    const size_t kvn = (size_t)n_tok * kv_dim;
+    float *q = xmalloc(qn * sizeof(float));
+    float *k = xmalloc(kvn * sizeof(float));
+    float *v = xmalloc(kvn * sizeof(float));
+    for (size_t i = 0; i < qn; i++) q[i] = frand(&s);
+    for (size_t i = 0; i < kvn; i++) { k[i] = frand(&s) * 0.5f; v[i] = frand(&s) * 0.5f; }
+
+    ds4_gpu_tensor *gk  = ds4_gpu_tensor_alloc(kvn * sizeof(float));
+    ds4_gpu_tensor *gv  = ds4_gpu_tensor_alloc(kvn * sizeof(float));
+    ds4_gpu_tensor *gkv = ds4_gpu_tensor_alloc((size_t)kv_cap * kv_dim * 2u * sizeof(uint16_t));
+    ds4_gpu_tensor *gq  = ds4_gpu_tensor_alloc(qn * sizeof(float));
+    ds4_gpu_tensor *go  = ds4_gpu_tensor_alloc(qn * sizeof(float));
+    float *out[2] = { xmalloc(qn * sizeof(float)), xmalloc(qn * sizeof(float)) };
+    double ms[2] = {0.0, 0.0};
+    int ok = gk && gv && gkv && gq && go &&
+        ds4_gpu_tensor_write(gk, 0, k, kvn * sizeof(float)) &&
+        ds4_gpu_tensor_write(gv, 0, v, kvn * sizeof(float)) &&
+        ds4_gpu_tensor_write(gq, 0, q, qn * sizeof(float)) &&
+        ds4_gpu_tensor_fill_f32(gkv, 0.0f, (size_t)kv_cap * kv_dim) &&
+        ds4_gpu_exaone_kv_store_tensor(gkv, gk, gv, kv_dim, n_tok, 0, kv_cap) &&
+        ds4_gpu_synchronize();
+
+    /* Device pointers for the direct entry, fetched once: the contents
+     * accessor synchronizes the device, which must stay out of the timed
+     * loop. */
+    float *out_dev = ok ? (float *)ds4_gpu_tensor_contents(go) : NULL;
+    const float *q_dev = ok ? (const float *)ds4_gpu_tensor_ptr(gq) : NULL;
+    const void *kv_dev = ok ? ds4_gpu_tensor_ptr(gkv) : NULL;
+
+    (void)unsetenv("DS4_EXAONE_PREFILL_HMMA");
+    for (int ldsm = 0; ok && ldsm < 2; ldsm++) {
+        (void)setenv("DS4_FATTN_HMMA_LDSM", ldsm ? "1" : "0", 1);
+        ok = ds4_gpu_tensor_fill_f32(go, 0.0f, qn) && ds4_gpu_synchronize();
+        double start = 0.0;
+        /* One warm-up launch, then four timed ones. */
+        for (int i = 0; ok && i < 5; i++) {
+            if (i == 1) start = now_sec();
+            if (sliding) {
+                ok = ds4_mmq_exaone_prefill_attn_hmma(
+                         out_dev, q_dev, kv_dev, (int)n_tok, 0, T_HEAD,
+                         T_HEAD_KV, T_HEAD_DIM, (int)kv_cap, (int)window,
+                         scale, 0) == 0;
+            } else {
+                ok = ds4_gpu_exaone_attention_prefill_tensor(
+                    go, gq, gkv, n_tok, 0, T_HEAD, T_HEAD_KV, T_HEAD_DIM,
+                    kv_cap, window);
+            }
+            if (i == 0) ok = ok && ds4_gpu_synchronize();
+        }
+        ok = ok && ds4_gpu_synchronize();
+        ms[ldsm] = (now_sec() - start) * 250.0;
+        ok = ok && ds4_gpu_tensor_read(go, 0, out[ldsm], qn * sizeof(float));
+    }
+    (void)unsetenv("DS4_FATTN_HMMA_LDSM");
+
+    char label[80];
+    snprintf(label, sizeof(label), "attention HMMA ldsm vs scalar (%s, %u)",
+             sliding ? "window 128" : "full", n_tok);
+    if (ok) {
+        size_t bad = 0;
+        float max_abs = 0.0f;
+        for (size_t i = 0; i < qn; i++) {
+            if (memcmp(&out[0][i], &out[1][i], sizeof(float)) != 0) {
+                bad++;
+                const float d = fabsf(out[1][i] - out[0][i]);
+                if (d > max_abs) max_abs = d;
+            }
+        }
+        if (bad) g_fail++;
+        printf("%-52s differing floats=%zu max_abs=%.3e  %s\n", label, bad,
+               max_abs, bad ? "FAIL" : "ok (bit-identical)");
+        printf("%-52s scalar=%.3f ms ldsm=%.3f ms\n", label, ms[0], ms[1]);
+    } else {
+        printf("%s launch failed\n", label); g_fail++;
+    }
+
+    free(out[1]); free(out[0]);
+    ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gq);
+    ds4_gpu_tensor_free(gkv); ds4_gpu_tensor_free(gv); ds4_gpu_tensor_free(gk);
+    free(v); free(k); free(q);
 }
 
 /* A chunk stores all of its K/V rows before attention consumes any row.  A
@@ -1641,6 +1740,14 @@ int main(int argc, char **argv) {
     test_attention_prefill(0, 200u);
     /* One 1024-token prefill chunk (the K2 default since round 5). */
     test_attention_prefill(0, 1024u);
+    /* ldmatrix + prefetch GQA-pair kernel must be byte-equal to the
+     * scalar-load kernel (round 6). */
+    test_attention_ldsm(0, 200u);
+    test_attention_ldsm(1, 200u);
+    test_attention_ldsm(0, 1024u);
+    test_attention_ldsm(1, 1024u);
+    test_attention_ldsm(0, 2048u);
+    test_attention_ldsm(1, 2048u);
     test_prefill_chunk_residency();
     test_router(map, map_size, bias_off);
     test_swiglu_and_combine();
