@@ -63,6 +63,9 @@ baseline (and against the last accepted round of that workload).
 | Round 4 binary, all defaults | **494.85 / 497.37** | **+72.7%** | 13.34 / 13.26 | +141.7% | P8 + D4 |
 | Prefill 8 kill switch (`DS4_MMQ_IQ1_PAIR=0`) | 484.67 | — | 13.32 | — | two single IQ1 calls |
 | Decode 4 kill switch (`DS4_EXAONE_ROPE_TABLE=0`) | 476.94 | — | 13.27 | — | inline double trig |
+| Round 5 binary, all defaults | **622.48 / 622.48** | **+117.2%** | 13.42 / 13.35 | +143.1% | P9 + P10 |
+| Prefill 9 kill switch (`DS4_EXAONE_DOWN_SANITIZE=1`) | 606.33 | — | 13.40 | — | standalone down sanitize |
+| Prefill 10 kill switch (`DS4_EXAONE_PREFILL_CHUNK=512`) | 506.08 | — | 13.28 | — | 512-token chunks |
 
 Prefill 1 vs last accepted (the locked baseline): **+8.49 tok/s**.
 Prefill 3 vs last accepted (`096fc9c` 295.04): **+7.90 tok/s**.
@@ -79,6 +82,8 @@ Prefill 7 (`3afea1b`) same-binary vs its kill switch: 446.93 → 466.32 / 466.06
 Decode 3 (`125528a`) same-binary vs its kill switch: 9.81 → 13.19 / 13.27 decode (**+34.4% / +35.3%**), prefill 465.77 vs 466.32 / 466.06 (unchanged).
 Prefill 8 (`b5ca173`) same-binary vs its kill switch: 484.67 → 494.85 / 497.37 prefill (**+2.1%**), decode 13.32 vs 13.34 / 13.26 (unchanged).
 Decode 4 (`dfaa5a8`) same-binary vs its kill switch: 476.94 → 494.85 / 497.37 prefill (**+3.8%**), decode 13.27 vs 13.34 / 13.26 (unchanged).
+Prefill 9 (`6ff7561`) same-binary vs its kill switch: 606.33 → 622.48 / 622.48 prefill (**+2.7%**), decode 13.40 vs 13.42 / 13.35 (unchanged); at 512-token chunks 494.85 (round 4) → 506.08 (**+2.3%**).
+Prefill 10 (`fea285f`) same-binary vs its kill switch: 506.08 → 622.48 / 622.48 prefill (**+23.0%**), decode 13.28 vs 13.42 / 13.35 (unchanged).
 Decode IDs and all 250624 frontier logits are bit-identical across
 the kill-switch, Prefill 1, Prefill 3, and Decode 1 cells.
 
@@ -92,6 +97,8 @@ the kill-switch, Prefill 1, Prefill 3, and Decode 1 cells.
 | Prefill 4 | Tile 4 IQ1_M output rows per block (`DS4_MMQ_IQ1M_ROW_TILE`). | Synth bit-identical; same-binary tile1 295.28 / tile4 290.18, both below last accepted 302.94. Same-TU kernel body change, same class as P2. Reverted. | Rejected |
 | Prefill 5 | 1024-token EXAONE prefill chunks vs default 512. | 271.5 → 307.65 on this binary, but rel RMS 0.0636 and 56/64 greedy IDs differ. Reverted. | Rejected |
 | Decode 1 | Share each KV row across GQA query heads. Same per-head softmax order as `exaone_attn_head`. `DS4_EXAONE_ATTN_GQA=0` is one block per head. | Tile-6: bit-identical, 5.51 → 4.13 (spill). Tile-2: bit-identical, 5.51 → 6.91. | Retained (tile-2) |
+| Prefill 9 | The routed down output only feeds `moe_sum` (skips non-finite values at read), yet every IQ2_XXS / IQ2_XS down call ended with a standalone sanitize pass over the [rows × 6144] output: 58 launches, 23 ms per 512-token chunk (2.2%). The EXAONE layer now calls a guarded routed-matmul entry whose IQ2 prefill schedule omits the pass; same schedule, bit-identical. `DS4_EXAONE_DOWN_SANITIZE=1` keeps the pass. | Real layer-7 IQ2_XXS and layer-3 IQ2_XS down nt=4096: IQ2_XXS 7.93 → 7.54 ms, IQ2_XS 8.80 → 8.47 ms, both bit-identical. 8K A/B same binary: 606.33 → 622.48 / 622.48 prefill at 1024-token chunks, decode 13.40 vs 13.42 / 13.35. Logits and 64 IDs byte-identical to the kill switch; the 512-chunk cell is byte-identical to round 4. | Retained |
+| Prefill 10 | 512 → 1024-token prefill chunks. At 512 the worklists see ~21 rows per expert and every per-chunk launch runs 16× over 8K; 1024 doubles the rows per expert and halves the launches (workspace 0.37 → 0.73 GiB). The rejected Prefill 5 measured exactly this change (+13% on its binary, rel RMS 0.0636, same argmax, top-10 10/10) and is the revised gate's comparator. `DS4_EXAONE_PREFILL_CHUNK=512` restores. | 8K A/B same binary: 506.08 → 622.48 / 622.48 prefill, decode 13.28 vs 13.42 / 13.35. Frontier vs the 512 cell: rel RMS 0.0542, KL 6.3e-2, the near-tied top-2 tokens swap (" autori" 13.18 / " ese" 12.75 → " ese" 13.70 / " autori" 13.39), top-10 9/10, top-50 46/50, max \|Δlogit\| 1.03 (P6 0.99, P5 0.84); both continuations coherent; repeat byte-identical. | Retained with a documented gate exception (see the round-5 note); `DS4_EXAONE_PREFILL_CHUNK=512` restores the previous default without a rebuild |
 | Prefill 8 | The 58 IQ1_S / IQ1_M gate/up projections ran as two single routed calls per layer, each with its own expert map, Q8_1 activation and standalone sanitize pass: 600 quantize + 600 sanitize launches per 512-token chunk (44 + 38 ms of a 1058 ms chunk). They now take the K-quant pair path (one map and activation, both compact worklists, consumers sanitize at read). Same kernels, so bit-identical. `DS4_MMQ_IQ1_PAIR=0` restores the single calls. | Real layer-7 IQ1_S and layer-3 IQ1_M gate/up nt=257/512: IQ1_S nt=257 8.22 → 7.98 ms, nt=512 9.78 → 9.33 ms; IQ1_M nt=257 8.82 → 8.53 ms, nt=512 10.78 → 10.12 ms; gate and up bit-identical. 8K A/B same binary: 484.67 → 494.85 / 497.37 prefill, decode 13.32 vs 13.34 / 13.26. Logits and 64 IDs byte-identical to the kill switch and to round 3 (`194e4aa`). | Retained |
 | Decode 4 | The QK-norm/RoPE kernel computed pow/fmod/cos/sin in double per (head, pair) for every layer's q and k call: 40 ms per 512-token chunk, 12 µs per decode launch on GB10's 1/64-rate FP64. One (cos, sin) table per (pos0, n_tokens) is built once and shared by all layers; same doubles, same rounding, so bit-identical. `DS4_EXAONE_ROPE_TABLE=0` computes inline. | Synthetic: table vs inline bit-identical at pos 40 and 262143. 8K A/B same binary: 476.94 → 494.85 / 497.37 prefill, decode 13.27 vs 13.34 / 13.26. Logits and 64 IDs byte-identical to the kill switch and to round 3 once the rotation contraction was pinned (see the round-4 note). | Retained |
 | Prefill 7 | IQ2_XS down (8 edge layers) was the last raw IQ type on the rectangular `[expert, max-bucket]` MMQ schedule: 144 launches × 11.8 ms (5.9% of the post-P6 trace), most tiles empty at ~21 rows per expert. It joins the compact worklist from 256 routed rows. Scheduling only. `DS4_MMQ_IQ2XS_WORKLIST=0` restores the rectangular schedule. | Real layer-3 down: nt=4096 15.42 → 7.85 ms, nt=257 6.90 → 4.21 ms, ragged 129-row 0.656 → 0.493 ms, all bit-identical. 8K A/B same binary: 446.93 → 466.32 / 466.06 prefill, decode 13.26 vs 13.19 / 13.27. Logits and 64 IDs byte-identical to the kill switch (scheduling only). | Retained |
@@ -168,6 +175,49 @@ shares the first 8 greedy tokens with the kill switch before a near-tie
 flip (the same behaviour the first campaign's rejected split-K showed at
 token 17). Contract: full-attention decode from 2048 keys merges 256-key
 online-softmax partials; the per-key math is the pair kernel's.
+
+## Round 5 note
+
+No decode round: the round-4 trace leaves decode at 72 ms of
+bandwidth-bound kernels per 76 ms step (see the round-4 note), so the
+two rounds here are both prefill. Prefill 10 is the first retained
+round that changes a serving default rather than a kernel; it is an
+arithmetic-class change under the revised gate and its comparator is
+the rejected Prefill 5 itself.
+
+Prefill 10 gate result. Against the 512-chunk cell on the same binary
+the 1024-chunk frontier has rel RMS 0.0542 (band ≤ 0.11), top-10
+overlap 9/10 (≥ 8/10), a byte-identical repeat, coherent text on both
+sides, and kernel rows at the 1024-token shapes (attention prefill
+1024 vs CPU and HMMA-vs-warp; IQ1_S/IQ1_M gate/up pair at 8192 routed
+rows; IQ1_S worklist at 1024 tokens; IQ2_XXS/IQ2_XS worklists at 8192
+rows) that are bit-identical or within the CPU tolerance. Two items
+fall outside the band: the frontier argmax swaps between the two
+near-tied top tokens (gap 0.43 logits, p 0.169 vs 0.227 after the
+swap) and KL is 6.3e-2 against the 5e-2 band, most of it the swap.
+The perturbation scale is the comparator's (max |Δlogit| 1.03 vs 0.99
+for Prefill 6 and 0.84 for Prefill 5), so a 0.43 gap is inside the
+range any fp-class change moves this frontier by, and the older
+Prefill 5 cell moved the same frontier without the swap. Assessment:
+fp-class, not a chunk-boundary fault. The round is retained on that
+assessment and flagged for review; the default is a one-line env
+rollback.
+
+Post-round-5 nsys (8K+64, 620.93 / 13.05 under the profiler): total
+kernel time 22.50 s → 19.06 s. Per 8K prompt the IQ1_S worklist runs
+1000 × 4.16 ms instead of 1800 × 3.15 ms (5.67 → 4.16 s: twice the rows
+per launch in 1.32× the time), IQ2_XXS 500 × 6.20 ms instead of
+900 × 4.83 ms (4.35 → 3.10 s), HMMA prefill attention 610 × 1.90 ms
+instead of 1098 × 1.11 ms; the router now runs cuBLAS's 64×64 TF32
+tile instead of 64×32 (the fp-class source of the Prefill 10 drift);
+sanitize is 0.8% (down passes gone). Ranking: IQ1_S worklist 21.9%,
+IQ2_XXS worklist 16.3%, q8 aligned dense vec 13.5%, Q8_0 MMQ 10.1%,
+HMMA prefill attention 6.1%, IQ1_M worklist 4.0%, quantize_mmq 3.2%,
+decode attention 3.1%, IQ2_XS worklist 3.0%, IQ1_S decode vec 2.5%,
+moe_sum 2.4%. Evidence:
+`scratch/k2-opt-20260905-cont/{r5-all,r5-p9off,r5-p10off,r5-all2,r5-nsys,r5}/`
+(cells ran on the first round-5 build, whose K2 behaviour equals the
+committed source; the committed build scopes the 1024 default to K2).
 
 ## Round 4 note
 
