@@ -282,6 +282,47 @@ static void test_shared_expert_gate(void) {
     compare_f32("Qwen shared expert gate in-place", got, want, count,
                 2.0e-6f, 2.0e-6f);
 
+    /* Routed sum + gated shared expert in one pass against the three
+     * separate kernels (moe_sum, gate, add), byte for byte; one routed
+     * value is non-finite and must be dropped by both. */
+    enum { SUM_USED = 3 };
+    const uint64_t down_count = count * SUM_USED;
+    float *down = (float *)malloc(down_count * sizeof(*down));
+    float *fused = (float *)malloc(count * sizeof(*fused));
+    REQUIRE(down && fused, "moe sum host allocation");
+    for (uint64_t i = 0; i < down_count; i++)
+        down[i] = 0.5f * sinf((float)(i + 7u) * 0.011f) -
+                  0.2f * cosf((float)(i + 2u) * 0.031f);
+    down[HIDDEN + 5u] = INFINITY;
+    ds4_gpu_tensor *d_down = ds4_gpu_tensor_alloc(down_count * sizeof(float));
+    ds4_gpu_tensor *d_sum = ds4_gpu_tensor_alloc(count * sizeof(float));
+    ds4_gpu_tensor *d_fused = ds4_gpu_tensor_alloc(count * sizeof(float));
+    REQUIRE(d_down && d_sum && d_fused, "moe sum GPU allocation");
+    REQUIRE(ds4_gpu_tensor_write(d_down, 0, down, down_count * sizeof(float)) &&
+            ds4_gpu_tensor_write(d_shared, 0, shared, count * sizeof(float)),
+            "moe sum upload");
+    REQUIRE(ds4_gpu_moe_sum_tensor(d_sum, d_down, HIDDEN, SUM_USED, SHARED_ROWS) &&
+            ds4_gpu_qwen4exp_shared_expert_gate_tensor(
+                d_out, d_shared, d_gate, SHARED_ROWS, HIDDEN) &&
+            ds4_gpu_add_tensor(d_sum, d_sum, d_out, (uint32_t)count),
+            "moe sum reference launches");
+    REQUIRE(ds4_gpu_tensor_read(d_sum, 0, want, count * sizeof(float)),
+            "moe sum reference download");
+    REQUIRE(ds4_gpu_qwen4exp_moe_sum_shared_tensor(
+                d_fused, d_down, d_shared, d_gate, HIDDEN, SUM_USED,
+                SHARED_ROWS),
+            "moe sum + shared launch");
+    REQUIRE(ds4_gpu_tensor_read(d_fused, 0, fused, count * sizeof(float)),
+            "moe sum + shared download");
+    REQUIRE(memcmp(fused, want, count * sizeof(float)) == 0,
+            "moe sum + shared bit-identical to moe_sum + gate + add");
+    printf("Qwen MoE sum + gated shared expert (one pass) pass (bit-identical)\n");
+    ds4_gpu_tensor_free(d_fused);
+    ds4_gpu_tensor_free(d_sum);
+    ds4_gpu_tensor_free(d_down);
+    free(fused);
+    free(down);
+
     ds4_gpu_tensor_free(d_gate);
     ds4_gpu_tensor_free(d_out);
     ds4_gpu_tensor_free(d_shared);

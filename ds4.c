@@ -22489,11 +22489,6 @@ static bool qwen4exp_moe_finish(
     const uint32_t shared_ff = (uint32_t)layer->ffn_gate_shexp->dim[1];
     const uint32_t n_used = ws->n_used;
     const uint64_t shared_count = (uint64_t)n_tokens * shared_ff;
-    const uint64_t output_count = (uint64_t)n_tokens * hidden;
-    if (!ds4_gpu_moe_sum_tensor(
-            output, ws->routed_down, hidden, n_used, n_tokens)) {
-        return false;
-    }
 
     const bool paired_shared =
         layer->ffn_gate_shexp->type == DS4_TENSOR_Q8_0 &&
@@ -22515,21 +22510,22 @@ static bool qwen4exp_moe_finish(
                        hidden, shared_ff, input, n_tokens)) {
         return false;
     }
+    /* Router logits are dead after the routed branch. Reuse their first
+     * scalar per row for the always-active shared-expert gate; the routed
+     * sum and the gated shared output then form the block output in one
+     * pass. */
     if (!ds4_gpu_swiglu_tensor(
                 ws->shared_mid, ws->shared_gate, ws->shared_up,
                 (uint32_t)shared_count, 0.0f, 1.0f) ||
         !plain_graph_matmul_tensor(
                 ws->shared_out, model, layer->ffn_down_shexp,
                 shared_ff, hidden, ws->shared_mid, n_tokens) ||
-        /* Router logits are dead after the routed branch. Reuse their first
-         * scalar per row for the always-active shared-expert gate. */
         !qwen4exp_row_stable_matmul_tensor(
                 ws->router_logits, model, layer->ffn_shexp_gate_inp,
                 hidden, 1u, input, n_tokens) ||
-        !ds4_gpu_qwen4exp_shared_expert_gate_tensor(
-                ws->shared_out, ws->shared_out, ws->router_logits,
-                n_tokens, hidden) ||
-        !plain_graph_add_inplace(output, ws->shared_out, output_count)) {
+        !ds4_gpu_qwen4exp_moe_sum_shared_tensor(
+                output, ws->routed_down, ws->shared_out, ws->router_logits,
+                hidden, n_used, n_tokens)) {
         return false;
     }
     return true;
