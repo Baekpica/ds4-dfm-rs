@@ -830,7 +830,7 @@ extern "C" int ds4_mmq_q8_0_dense_d2r_preq(
     if (!W_aligned || !Y_q8_mmq || !out_f32) {
         return -1;
     }
-    if (M <= 0 || (M % 128) != 0 || N <= 0 || K <= 0 || (K % 1024) != 0) {
+    if (M <= 0 || (M % 128) != 0 || N <= 0 || K <= 0 || (K % 128) != 0) {
         return -1;
     }
     const int dev = ggml_cuda_get_device();

@@ -153,6 +153,43 @@ static int test_q8_candidate_shapes() {
         return fail("Qwen shared-expert Q8 pair was not an aligned candidate");
     }
 
+    ds4_repack_tensor qwen_qkv = kda;
+    qwen_qkv.name = "blk.0.linear_attn.qkv.weight";
+    qwen_qkv.dims[0] = 2560u;
+    qwen_qkv.dims[1] = 10240u;
+    qwen_qkv.elements = qwen_qkv.dims[0] * qwen_qkv.dims[1];
+    qwen_qkv.bytes = (qwen_qkv.dims[0] / 32u) * qwen_qkv.dims[1] * 34u;
+    if (!ds4_repack_q8_candidate(qwen_qkv)) {
+        return fail("Qwen GDN qkv was not an aligned candidate");
+    }
+
+    ds4_repack_tensor qwen_z = qwen_qkv;
+    qwen_z.name = "blk.0.linear_attn.z.weight";
+    qwen_z.dims[1] = 6144u;
+    qwen_z.elements = qwen_z.dims[0] * qwen_z.dims[1];
+    qwen_z.bytes = (qwen_z.dims[0] / 32u) * qwen_z.dims[1] * 34u;
+    if (!ds4_repack_q8_candidate(qwen_z)) {
+        return fail("Qwen GDN z was not an aligned candidate");
+    }
+
+    ds4_repack_tensor qwen_q = qwen_qkv;
+    qwen_q.name = "blk.3.attn_q.weight";
+    qwen_q.dims[1] = 12288u;
+    qwen_q.elements = qwen_q.dims[0] * qwen_q.dims[1];
+    qwen_q.bytes = (qwen_q.dims[0] / 32u) * qwen_q.dims[1] * 34u;
+    if (!ds4_repack_q8_candidate(qwen_q)) {
+        return fail("Qwen QSA q was not an aligned candidate");
+    }
+
+    ds4_repack_tensor qwen_in_a = qwen_qkv;
+    qwen_in_a.name = "blk.0.linear_attn.in_a.weight";
+    qwen_in_a.dims[1] = 48u;
+    qwen_in_a.elements = qwen_in_a.dims[0] * qwen_in_a.dims[1];
+    qwen_in_a.bytes = (qwen_in_a.dims[0] / 32u) * qwen_in_a.dims[1] * 34u;
+    if (ds4_repack_q8_candidate(qwen_in_a)) {
+        return fail("Qwen GDN in_a should not allocate an artifact");
+    }
+
     ds4_repack_tensor kv_b;
     kv_b.name = "blk.1.attn_kv_b.weight";
     kv_b.type = 8u;

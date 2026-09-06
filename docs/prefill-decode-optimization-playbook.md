@@ -18,6 +18,7 @@ Campaigns this distills (all in `docs/` and `scratch/`):
 | 2026-09-04 long context (5 rounds) | same | cold 64K 530 -> 1371 tok/s, cold 196K 1052 -> 1288 |
 | 2026-09-05 K2-Horizon-375B MQ87 (12 prefill + 4 decode rounds) | K2 IQ1/IQ2 experts | 8K prefill 287 -> 645 tok/s (+125 %), decode 5.5 -> 13.3 tok/s |
 | 2026-09-06 prefill (3 rounds) | Qwen | cold 8K 1215 -> 1362 tok/s (+12 %), 64K +4 % |
+| 2026-09-06-r4 (D2R K=2560 + HC q8 + o_proj K=6144) | Qwen | cold 8K 1353 -> 1432 tok/s, 64K 1431 -> 1555 |
 
 The one-line version: **almost every large win came from removing work the
 graph did not need (idle time, fallbacks, repeated transformations, redundant
@@ -166,10 +167,13 @@ predicates before touching any kernel.
   of 64), which is why it was rejected once and adopted only with the
   revised gate (section 5.3).
 - **Tiers that exist but are never entered.**  Qwen's dense Q8 projections
-  never reach the aligned D2R tier because the weight owner's repack rule
-  admits only `dims[0] % 1024 == 0`; nobody had looked.  The "engaged path"
-  log line for a tier is worth checking against the tensor list once per
-  family.
+  missed the aligned D2R tier because the weight owner's repack rule
+  admitted only `dims[0] % 1024 == 0` (K=2560 qkv/z/q).  Admitting the
+  D2R prefill contract moved them: cold 8K +2.8 %, 64K +5.1 %.  o_proj
+  (K=6144) already had the artifact via `%1024` and still missed the
+  dispatch cap of 4096 (kept for DeepSeek K=8192, 0.81x vs mmq); raising
+  the cap to 6144 only: +1.3 % / +2.5 %.  The "engaged path" log line
+  for a tier is worth checking against the tensor list once per family.
 
 ### 2.3 Repeated transformations
 
@@ -186,6 +190,11 @@ waste and usually bit-identical to remove.
 - Hyper-connection rows converted to BF16 once by the norm instead of per
   consuming GEMM (+3.3 %), later the norm storing only BF16 rows plus one
   scale per lane, with F32 recomputed from the hyper input where needed.
+- The Qwen HC mix is one F32 tensor consumed by qkv+z or q+index; emitting
+  its Q8 once through the existing norm-q8 registry retired the per-GEMM
+  quantize (bit-identical, +0.8 % / +0.9 %).  The D2R preq entry had to
+  accept the same K % 128 as the launch; a leftover %1024 gate kept the
+  published buffer unused.
 - Counting-sort expert id maps instead of the warp-scan builder
   (bit-identical, +7 % with the sanitize drop).
 - Trigonometry tables: K2's QK-norm/RoPE kernel computed `pow/fmod/cos/sin`
@@ -203,8 +212,8 @@ bytes / 240 GB/s within 10 %.
 - **Sanitize passes.**  A standalone non-finite pass over every MMQ output
   is a full read + write; when every consumer already zeroes non-finite
   values at read (`moe_sum`, the weighted SwiGLU), the pass is redundant.
-  K2 Prefill 9 removed 58 launches per chunk; Qwen still carries 387 dense
-  ones per 8K chunk (2.5 %), listed as open.
+  K2 Prefill 9 removed 58 launches per chunk; after D2R retired its own
+  outputs Qwen still carries 303 dense ones on a 6,144-row chunk (0.8 %).
 - **Pack copies.**  The expert-down read its 512-column input from a packed
   copy of the 640-wide SwiGLU rows although the same entry already read the
   128-column tail in place with a row stride.  Reading both halves in place
