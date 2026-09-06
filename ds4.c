@@ -33712,6 +33712,31 @@ static uint32_t qwen4exp_env_u32(const char *name, uint32_t fallback,
     return (uint32_t)parsed;
 }
 
+/* Rows of a prompt's opening prefill chunk.  Nothing is queued for it, so
+ * its PLE pages come from the SSD while only the token embedding and
+ * decoder layer 0 run: ~1.4 s exposed for a cold 8,192-row chunk at ~90K
+ * IOPS, most of the exposed I/O of an 8K prefill.  A short opening chunk
+ * exposes only its own pages; the full-size chunk behind it is queued
+ * after layer 1 (qwen4exp_ple_lookahead) and read while the opening
+ * chunk's remaining layers run.  Later chunks keep the cap.
+ * DS4_QWEN_PREFILL_OPENING overrides the opening rows (0 = cap). */
+enum { QWEN4EXP_PREFILL_OPENING_ROWS = 2048u };
+
+static uint32_t qwen4exp_prefill_rows(uint32_t remain, uint32_t cap,
+                                      bool opening) {
+    static uint32_t opening_rows = UINT32_MAX;
+    if (opening_rows == UINT32_MAX) {
+        opening_rows = qwen4exp_env_u32(
+            "DS4_QWEN_PREFILL_OPENING", QWEN4EXP_PREFILL_OPENING_ROWS,
+            0u, 16384u);
+    }
+    uint32_t rows = remain < cap ? remain : cap;
+    if (opening && opening_rows != 0u && rows > opening_rows) {
+        rows = opening_rows;
+    }
+    return rows;
+}
+
 static bool qwen4exp_engine_open_ple(ds4_engine *engine,
                                      const char *model_path) {
 #ifdef __APPLE__
@@ -59070,6 +59095,10 @@ static int family_banked_engine_continuous_generate(
                     uint32_t n = remain;
                     const uint32_t cap = family_banked_prefill_cap(ctx);
                     if (n > cap) n = cap;
+                    if (ctx->qwen) {
+                        n = qwen4exp_prefill_rows(
+                            remain, cap, cb->prefill_off == 0u);
+                    }
                     const uint32_t pos = cb->prefill_base + cb->prefill_off;
                     const bool final = n == remain;
                     uint32_t next_n = remain - n;
@@ -66517,11 +66546,13 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
         }
         s->mtp_draft_valid = false;
 
+        const int first_start = start;
         while (start < prompt->len) {
-            uint32_t rows = (uint32_t)(prompt->len - start);
-            if (rows > s->prefill_cap) rows = s->prefill_cap;
-            const bool last = start + (int)rows == prompt->len;
-            uint32_t next_rows = (uint32_t)(prompt->len - start) - rows;
+            const uint32_t remain = (uint32_t)(prompt->len - start);
+            const uint32_t rows = qwen4exp_prefill_rows(
+                remain, s->prefill_cap, start == first_start);
+            const bool last = rows == remain;
+            uint32_t next_rows = remain - rows;
             if (next_rows > s->prefill_cap) next_rows = s->prefill_cap;
             if (!qwen4exp_graph_forward_chunk(
                     g, &e->model, &e->weights,
