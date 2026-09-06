@@ -33727,7 +33727,11 @@ static uint32_t qwen4exp_env_u32(const char *name, uint32_t fallback,
  * IOPS, most of the exposed I/O of an 8K prefill.  A short opening chunk
  * exposes only its own pages; the full-size chunk behind it is queued
  * after layer 1 (qwen4exp_ple_lookahead) and read while the opening
- * chunk's remaining layers run.  Later chunks keep the cap.
+ * chunk's remaining layers run.  Later chunks keep the cap.  The split
+ * only pays when the chunk behind the opening one is at least as long:
+ * a short trailing chunk runs its layers at low occupancy and hides few
+ * reads (2,304 rows as 2,048 + 256 measured 7 % slower than one chunk,
+ * halves 4 % slower), so shorter prompts stay one chunk.
  * DS4_QWEN_PREFILL_OPENING overrides the opening rows (0 = cap). */
 enum { QWEN4EXP_PREFILL_OPENING_ROWS = 2048u };
 
@@ -33739,11 +33743,11 @@ static uint32_t qwen4exp_prefill_rows(uint32_t remain, uint32_t cap,
             "DS4_QWEN_PREFILL_OPENING", QWEN4EXP_PREFILL_OPENING_ROWS,
             0u, 16384u);
     }
-    uint32_t rows = remain < cap ? remain : cap;
-    if (opening && opening_rows != 0u && rows > opening_rows) {
-        rows = opening_rows;
+    const uint32_t rows = remain < cap ? remain : cap;
+    if (!opening || opening_rows == 0u || rows < 2u * opening_rows) {
+        return rows;
     }
-    return rows;
+    return opening_rows;
 }
 
 static bool qwen4exp_engine_open_ple(ds4_engine *engine,
