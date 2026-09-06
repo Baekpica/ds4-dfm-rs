@@ -379,7 +379,7 @@ static void identify(const ds4_model *m)
         printf("IDENTIFY Motif-3 family=2 variant=3\n");
         return;
     }
-    if (ds4_streq(arch, "dots3-note")) {
+    if (ds4_streq(arch, "dots3note") || ds4_streq(arch, "dots3-note")) {
         printf("IDENTIFY dots3-note-prev family=4 variant=5\n");
         return;
     }

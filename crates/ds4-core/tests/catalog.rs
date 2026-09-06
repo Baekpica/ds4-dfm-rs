@@ -201,8 +201,15 @@ fn identify_families_and_errors_match_c() {
     assert_same(&exa);
 
     let dots = tmp("dots3.gguf");
-    write_gguf(&dots, &[("general.architecture", Val::Str("dots3-note"))]);
+    write_gguf(&dots, &[("general.architecture", Val::Str("dots3note"))]);
     assert_same(&dots);
+
+    let dots_legacy = tmp("dots3-legacy.gguf");
+    write_gguf(
+        &dots_legacy,
+        &[("general.architecture", Val::Str("dots3-note"))],
+    );
+    assert_same(&dots_legacy);
 
     let qwen = tmp("qwen.gguf");
     write_gguf(&qwen, &[("general.architecture", Val::Str("qwen4exp"))]);

@@ -165,6 +165,14 @@ static ds4_kv *model_find_kv(const ds4_model *m, const char *key)
     return NULL;
 }
 
+static const char *dots3_key(const ds4_model *m, const char *suffix, char *buf, size_t n)
+{
+    snprintf(buf, n, "dots3note.%s", suffix);
+    if (model_find_kv(m, buf)) return buf;
+    snprintf(buf, n, "dots3-note.%s", suffix);
+    return buf;
+}
+
 static bool model_get_string(const ds4_model *m, const char *key, ds4_str *out)
 {
     ds4_kv *kv = model_find_kv(m, key);
@@ -588,35 +596,36 @@ static int validate_motif3(const ds4_model *m)
 static int validate_dots3(const ds4_model *m)
 {
     uint32_t u; uint64_t u64; float f; bool b; ds4_str s;
-    if (req_u32(m, "dots3-note.block_count", &u) || exp_u32("block_count", u, 47)) return 1;
-    if (req_u64c(m, "dots3-note.context_length", &u64) || exp_u64("context_length", u64, 524288)) return 1;
-    if (req_u32(m, "dots3-note.embedding_length", &u) || exp_u32("embedding_length", u, 5120)) return 1;
-    if (req_u32(m, "dots3-note.vocab_size", &u) || exp_u32("vocab_size", u, 152064)) return 1;
-    if (req_u32(m, "dots3-note.feed_forward_length", &u) || exp_u32("feed_forward_length", u, 13824)) return 1;
-    if (req_u32(m, "dots3-note.leading_dense_block_count", &u) || exp_u32("leading_dense_block_count", u, 1)) return 1;
-    if (req_u32(m, "dots3-note.expert_count", &u) || exp_u32("expert_count", u, 256)) return 1;
-    if (req_u32(m, "dots3-note.expert_used_count", &u) || exp_u32("expert_used_count", u, 8)) return 1;
-    if (req_u32(m, "dots3-note.expert_feed_forward_length", &u) || exp_u32("expert_feed_forward_length", u, 1536)) return 1;
-    if (req_u32(m, "dots3-note.expert_shared_count", &u) || exp_u32("expert_shared_count", u, 1)) return 1;
-    if (req_u32(m, "dots3-note.attention.head_count", &u) || exp_u32("attention.head_count", u, 128)) return 1;
-    if (req_u32(m, "dots3-note.attention.head_count_kv", &u) || exp_u32("attention.head_count_kv", u, 128)) return 1;
-    if (req_u32(m, "dots3-note.attention.key_length", &u) || exp_u32("attention.key_length", u, 192)) return 1;
-    if (req_u32(m, "dots3-note.attention.value_length", &u) || exp_u32("attention.value_length", u, 128)) return 1;
-    if (req_u32(m, "dots3-note.sliding_window", &u) || exp_u32("sliding_window", u, 513)) return 1;
-    if (req_u32(m, "dots3-note.index_topk", &u) || exp_u32("index_topk", u, 2048)) return 1;
-    if (req_u32(m, "dots3-note.q_lora_rank", &u) || exp_u32("q_lora_rank", u, 1024)) return 1;
-    if (req_u32(m, "dots3-note.kv_lora_rank", &u) || exp_u32("kv_lora_rank", u, 512)) return 1;
-    if (req_u32(m, "dots3-note.swa_kv_lora_rank", &u) || exp_u32("swa_kv_lora_rank", u, 1024)) return 1;
-    if (req_u32(m, "dots3-note.full_attention_count", &u) || exp_u32("full_attention_count", u, 13)) return 1;
-    if (req_bool(m, "dots3-note.language_only", &b) || exp_bool("language_only", b, true)) return 1;
-    if (req_bool(m, "dots3-note.mtp.present", &b) || exp_bool("mtp.present", b, true)) return 1;
-    if (req_f32(m, "dots3-note.rope.freq_base", &f) || exp_f32("rope.freq_base", f, 80000000.0f)) return 1;
-    if (req_f32(m, "dots3-note.rope.freq_base_swa", &f) || exp_f32("rope.freq_base_swa", f, 50000.0f)) return 1;
-    if (req_f32(m, "dots3-note.attention.layer_norm_rms_epsilon", &f) ||
+    char k[96];
+    if (req_u32(m, dots3_key(m, "block_count", k, sizeof k), &u) || exp_u32("block_count", u, 47)) return 1;
+    if (req_u64c(m, dots3_key(m, "context_length", k, sizeof k), &u64) || exp_u64("context_length", u64, 524288)) return 1;
+    if (req_u32(m, dots3_key(m, "embedding_length", k, sizeof k), &u) || exp_u32("embedding_length", u, 5120)) return 1;
+    if (req_u32(m, dots3_key(m, "vocab_size", k, sizeof k), &u) || exp_u32("vocab_size", u, 152064)) return 1;
+    if (req_u32(m, dots3_key(m, "feed_forward_length", k, sizeof k), &u) || exp_u32("feed_forward_length", u, 13824)) return 1;
+    if (req_u32(m, dots3_key(m, "leading_dense_block_count", k, sizeof k), &u) || exp_u32("leading_dense_block_count", u, 1)) return 1;
+    if (req_u32(m, dots3_key(m, "expert_count", k, sizeof k), &u) || exp_u32("expert_count", u, 256)) return 1;
+    if (req_u32(m, dots3_key(m, "expert_used_count", k, sizeof k), &u) || exp_u32("expert_used_count", u, 8)) return 1;
+    if (req_u32(m, dots3_key(m, "expert_feed_forward_length", k, sizeof k), &u) || exp_u32("expert_feed_forward_length", u, 1536)) return 1;
+    if (req_u32(m, dots3_key(m, "expert_shared_count", k, sizeof k), &u) || exp_u32("expert_shared_count", u, 1)) return 1;
+    if (req_u32(m, dots3_key(m, "attention.head_count", k, sizeof k), &u) || exp_u32("attention.head_count", u, 128)) return 1;
+    if (req_u32(m, dots3_key(m, "attention.head_count_kv", k, sizeof k), &u) || exp_u32("attention.head_count_kv", u, 128)) return 1;
+    if (req_u32(m, dots3_key(m, "attention.key_length", k, sizeof k), &u) || exp_u32("attention.key_length", u, 192)) return 1;
+    if (req_u32(m, dots3_key(m, "attention.value_length", k, sizeof k), &u) || exp_u32("attention.value_length", u, 128)) return 1;
+    if (req_u32(m, dots3_key(m, "sliding_window", k, sizeof k), &u) || exp_u32("sliding_window", u, 513)) return 1;
+    if (req_u32(m, dots3_key(m, "index_topk", k, sizeof k), &u) || exp_u32("index_topk", u, 2048)) return 1;
+    if (req_u32(m, dots3_key(m, "q_lora_rank", k, sizeof k), &u) || exp_u32("q_lora_rank", u, 1024)) return 1;
+    if (req_u32(m, dots3_key(m, "kv_lora_rank", k, sizeof k), &u) || exp_u32("kv_lora_rank", u, 512)) return 1;
+    if (req_u32(m, dots3_key(m, "swa_kv_lora_rank", k, sizeof k), &u) || exp_u32("swa_kv_lora_rank", u, 1024)) return 1;
+    if (req_u32(m, dots3_key(m, "full_attention_count", k, sizeof k), &u) || exp_u32("full_attention_count", u, 13)) return 1;
+    if (req_bool(m, dots3_key(m, "language_only", k, sizeof k), &b) || exp_bool("language_only", b, true)) return 1;
+    if (req_bool(m, dots3_key(m, "mtp.present", k, sizeof k), &b) || exp_bool("mtp.present", b, true)) return 1;
+    if (req_f32(m, dots3_key(m, "rope.freq_base", k, sizeof k), &f) || exp_f32("rope.freq_base", f, 80000000.0f)) return 1;
+    if (req_f32(m, dots3_key(m, "rope.freq_base_swa", k, sizeof k), &f) || exp_f32("rope.freq_base_swa", f, 50000.0f)) return 1;
+    if (req_f32(m, dots3_key(m, "attention.layer_norm_rms_epsilon", k, sizeof k), &f) ||
         exp_f32("attention.layer_norm_rms_epsilon", f, 1.0e-5f)) return 1;
-    if (!model_get_string(m, "dots3-note.source.config_sha256", &s) ||
+    if (!model_get_string(m, dots3_key(m, "source.config_sha256", k, sizeof k), &s) ||
         !streq_str(s, "99b7de680dd456111c36efb8749f8ae7177328e97b65a3e39a6700cbc1173833"))
-        return failk("mismatch-string", "dots3-note.source.config_sha256");
+        return failk("mismatch-string", "dots3note.source.config_sha256");
     {
         uint32_t full = 0, il;
         for (il = 0; il < 47; il++) {
@@ -808,7 +817,7 @@ static void dump_validate(const ds4_model *m)
         printf("ok\n");
         return;
     }
-    if (ds4_streq(arch, "dots3-note")) {
+    if (ds4_streq(arch, "dots3note") || ds4_streq(arch, "dots3-note")) {
         if (validate_dots3(m)) { printf("%s\n", g_tok); return; }
         printf("ok\n");
         return;

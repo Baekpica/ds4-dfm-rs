@@ -2385,6 +2385,32 @@ static ds4_kv *model_find_kv(const ds4_model *m, const char *key) {
     return NULL;
 }
 
+/* llama.cpp registers this architecture as "dots3note".  Early ds4
+ * conversions used the hyphenated "dots3-note" prefix. */
+#define DS4_GGUF_ARCH_DOTS3NOTE        "dots3note"
+#define DS4_GGUF_ARCH_DOTS3NOTE_LEGACY "dots3-note"
+
+static int ds4_arch_is_dots3note(ds4_str arch) {
+    return ds4_streq(arch, DS4_GGUF_ARCH_DOTS3NOTE) ||
+           ds4_streq(arch, DS4_GGUF_ARCH_DOTS3NOTE_LEGACY);
+}
+
+static const char *dots3_kv_key(const ds4_model *m, const char *suffix,
+                                char *buf, size_t n) {
+    int wr = snprintf(buf, n, DS4_GGUF_ARCH_DOTS3NOTE ".%s", suffix);
+    if (wr < 0 || (size_t)wr >= n) {
+        ds4_die("dots3note metadata key overflow");
+    }
+    if (model_find_kv(m, buf)) {
+        return buf;
+    }
+    wr = snprintf(buf, n, DS4_GGUF_ARCH_DOTS3NOTE_LEGACY ".%s", suffix);
+    if (wr < 0 || (size_t)wr >= n) {
+        ds4_die("dots3note metadata key overflow");
+    }
+    return buf;
+}
+
 static bool model_get_string(const ds4_model *m, const char *key, ds4_str *out) {
     ds4_kv *kv = model_find_kv(m, key);
     if (!kv || kv->type != GGUF_VALUE_STRING) return false;
@@ -2504,6 +2530,25 @@ static bool model_get_bool(const ds4_model *m, const char *key, bool *out) {
     if (!cursor_read(&c, &v, sizeof(v))) return false;
     *out = v != 0;
     return true;
+}
+
+static bool model_get_dots3_u32(const ds4_model *m, const char *suffix,
+                                uint32_t *out) {
+    char key[96];
+    return model_get_u32(m, dots3_kv_key(m, suffix, key, sizeof(key)), out);
+}
+
+static bool model_get_dots3_u64(const ds4_model *m, const char *suffix,
+                                uint64_t *out) {
+    char key[96];
+    return model_get_u64_compat(m, dots3_kv_key(m, suffix, key, sizeof(key)),
+                                out);
+}
+
+static bool model_get_dots3_string(const ds4_model *m, const char *suffix,
+                                   ds4_str *out) {
+    char key[96];
+    return model_get_string(m, dots3_kv_key(m, suffix, key, sizeof(key)), out);
 }
 
 typedef struct {
@@ -3113,28 +3158,28 @@ static void model_summary(const ds4_model *m) {
     model_get_string(m, "general.architecture", &arch);
     if (!model_get_u32(m, "deepseek4.block_count", &layers) &&
         !model_get_u32(m, "motif3.block_count", &layers))
-        model_get_u32(m, "dots3-note.block_count", &layers);
+        model_get_dots3_u32(m, "block_count", &layers);
     if (!layers) model_get_u32(m, "qwen4exp.block_count", &layers);
     if (!model_get_u64_compat(m, "deepseek4.context_length", &ctx_train) &&
         !model_get_u64_compat(m, "motif3.context_length", &ctx_train))
-        model_get_u64_compat(m, "dots3-note.context_length", &ctx_train);
+        model_get_dots3_u64(m, "context_length", &ctx_train);
     if (!ctx_train) model_get_u64_compat(m, "qwen4exp.context_length", &ctx_train);
     if (!model_get_u32(m, "deepseek4.attention.head_count", &n_head) &&
         !model_get_u32(m, "motif3.attention.head_count", &n_head))
-        model_get_u32(m, "dots3-note.attention.head_count", &n_head);
+        model_get_dots3_u32(m, "attention.head_count", &n_head);
     if (!n_head) model_get_u32(m, "qwen4exp.attention.head_count", &n_head);
     if (!model_get_u32(m, "deepseek4.attention.head_count_kv", &n_head_kv) &&
         !model_get_u32(m, "motif3.attention.head_count_kv", &n_head_kv))
-        model_get_u32(m, "dots3-note.attention.head_count_kv", &n_head_kv);
+        model_get_dots3_u32(m, "attention.head_count_kv", &n_head_kv);
     if (!n_head_kv)
         model_get_u32(m, "qwen4exp.attention.head_count_kv", &n_head_kv);
     if (!model_get_u32(m, "deepseek4.attention.key_length", &head_dim) &&
         !model_get_u32(m, "motif3.attention.key_length", &head_dim))
-        model_get_u32(m, "dots3-note.attention.key_length", &head_dim);
+        model_get_dots3_u32(m, "attention.key_length", &head_dim);
     if (!head_dim) model_get_u32(m, "qwen4exp.attention.key_length", &head_dim);
     if (!model_get_u32(m, "deepseek4.attention.sliding_window", &n_swa) &&
         !model_get_u32(m, "motif3.attention.sliding_window", &n_swa))
-        model_get_u32(m, "dots3-note.sliding_window", &n_swa);
+        model_get_dots3_u32(m, "sliding_window", &n_swa);
     model_get_u32(m, "deepseek4.attention.indexer.head_count", &indexer_heads);
     model_get_u32(m, "deepseek4.attention.indexer.key_length", &indexer_head_dim);
     if (!indexer_heads)
@@ -3142,16 +3187,16 @@ static void model_summary(const ds4_model *m) {
     if (!indexer_head_dim)
         model_get_u32(m, "qwen4exp.attention.indexer.key_length", &indexer_head_dim);
     if (!model_get_u32(m, "deepseek4.attention.indexer.top_k", &indexer_top_k))
-        model_get_u32(m, "dots3-note.index_topk", &indexer_top_k);
+        model_get_dots3_u32(m, "index_topk", &indexer_top_k);
     if (!indexer_top_k)
         model_get_u32(m, "qwen4exp.attention.indexer.top_k", &indexer_top_k);
     if (!model_get_u32(m, "deepseek4.expert_count", &n_expert) &&
         !model_get_u32(m, "motif3.expert_count", &n_expert))
-        model_get_u32(m, "dots3-note.expert_count", &n_expert);
+        model_get_dots3_u32(m, "expert_count", &n_expert);
     if (!n_expert) model_get_u32(m, "qwen4exp.expert_count", &n_expert);
     if (!model_get_u32(m, "deepseek4.expert_used_count", &n_expert_used) &&
         !model_get_u32(m, "motif3.expert_used_count", &n_expert_used))
-        model_get_u32(m, "dots3-note.expert_used_count", &n_expert_used);
+        model_get_dots3_u32(m, "expert_used_count", &n_expert_used);
     if (!n_expert_used)
         model_get_u32(m, "qwen4exp.expert_used_count", &n_expert_used);
     model_get_u32(m, "deepseek4.expert_group_count", &n_expert_groups);
@@ -4681,6 +4726,26 @@ static bool required_bool(const ds4_model *m, const char *key) {
         exit(1);
     }
     return v;
+}
+
+static uint32_t required_dots3_u32(const ds4_model *m, const char *suffix) {
+    char key[96];
+    return required_u32(m, dots3_kv_key(m, suffix, key, sizeof(key)));
+}
+
+static uint64_t required_dots3_u64(const ds4_model *m, const char *suffix) {
+    char key[96];
+    return required_u64_compat(m, dots3_kv_key(m, suffix, key, sizeof(key)));
+}
+
+static float required_dots3_f32(const ds4_model *m, const char *suffix) {
+    char key[96];
+    return required_f32(m, dots3_kv_key(m, suffix, key, sizeof(key)));
+}
+
+static bool required_dots3_bool(const ds4_model *m, const char *suffix) {
+    char key[96];
+    return required_bool(m, dots3_kv_key(m, suffix, key, sizeof(key)));
 }
 
 static ds4_tensor *required_tensor(const ds4_model *m, const char *name) {
@@ -6569,26 +6634,26 @@ static void config_validate_dots3_note_model(const ds4_model *m) {
     g_ds4_shape = DS4_SHAPE_DOTS3_NOTE_PREV;
     memset(g_ds4_compress_ratios, 0, sizeof(g_ds4_compress_ratios));
 
-    const uint32_t n_layer = required_u32(m, "dots3-note.block_count");
-    const uint64_t n_ctx = required_u64_compat(m, "dots3-note.context_length");
-    const uint32_t n_embd = required_u32(m, "dots3-note.embedding_length");
-    const uint32_t n_vocab = required_u32(m, "dots3-note.vocab_size");
-    const uint32_t n_ff_dense = required_u32(m, "dots3-note.feed_forward_length");
-    const uint32_t n_leading_dense = required_u32(m, "dots3-note.leading_dense_block_count");
-    const uint32_t n_expert = required_u32(m, "dots3-note.expert_count");
-    const uint32_t n_expert_used = required_u32(m, "dots3-note.expert_used_count");
-    const uint32_t n_ff_exp = required_u32(m, "dots3-note.expert_feed_forward_length");
-    const uint32_t n_expert_shared = required_u32(m, "dots3-note.expert_shared_count");
-    const uint32_t n_head = required_u32(m, "dots3-note.attention.head_count");
-    const uint32_t n_head_kv = required_u32(m, "dots3-note.attention.head_count_kv");
-    const uint32_t n_head_dim = required_u32(m, "dots3-note.attention.key_length");
-    const uint32_t n_value_dim = required_u32(m, "dots3-note.attention.value_length");
-    const uint32_t n_swa = required_u32(m, "dots3-note.sliding_window");
-    const uint32_t n_index_topk = required_u32(m, "dots3-note.index_topk");
-    const uint32_t n_lora_q = required_u32(m, "dots3-note.q_lora_rank");
-    const uint32_t n_kv_lora = required_u32(m, "dots3-note.kv_lora_rank");
-    const uint32_t n_swa_kv_lora = required_u32(m, "dots3-note.swa_kv_lora_rank");
-    const uint32_t n_full = required_u32(m, "dots3-note.full_attention_count");
+    const uint32_t n_layer = required_dots3_u32(m, "block_count");
+    const uint64_t n_ctx = required_dots3_u64(m, "context_length");
+    const uint32_t n_embd = required_dots3_u32(m, "embedding_length");
+    const uint32_t n_vocab = required_dots3_u32(m, "vocab_size");
+    const uint32_t n_ff_dense = required_dots3_u32(m, "feed_forward_length");
+    const uint32_t n_leading_dense = required_dots3_u32(m, "leading_dense_block_count");
+    const uint32_t n_expert = required_dots3_u32(m, "expert_count");
+    const uint32_t n_expert_used = required_dots3_u32(m, "expert_used_count");
+    const uint32_t n_ff_exp = required_dots3_u32(m, "expert_feed_forward_length");
+    const uint32_t n_expert_shared = required_dots3_u32(m, "expert_shared_count");
+    const uint32_t n_head = required_dots3_u32(m, "attention.head_count");
+    const uint32_t n_head_kv = required_dots3_u32(m, "attention.head_count_kv");
+    const uint32_t n_head_dim = required_dots3_u32(m, "attention.key_length");
+    const uint32_t n_value_dim = required_dots3_u32(m, "attention.value_length");
+    const uint32_t n_swa = required_dots3_u32(m, "sliding_window");
+    const uint32_t n_index_topk = required_dots3_u32(m, "index_topk");
+    const uint32_t n_lora_q = required_dots3_u32(m, "q_lora_rank");
+    const uint32_t n_kv_lora = required_dots3_u32(m, "kv_lora_rank");
+    const uint32_t n_swa_kv_lora = required_dots3_u32(m, "swa_kv_lora_rank");
+    const uint32_t n_full = required_dots3_u32(m, "full_attention_count");
 
     config_expect_u32("block_count", n_layer, DS4_N_LAYER);
     config_expect_u64("context_length", n_ctx, UINT64_C(524288));
@@ -6612,20 +6677,20 @@ static void config_validate_dots3_note_model(const ds4_model *m) {
     config_expect_u32("full_attention_count", n_full, DS4_N_FULL_ATTN_COUNT);
 
     config_expect_bool("language_only",
-                       required_bool(m, "dots3-note.language_only"), true);
+                       required_dots3_bool(m, "language_only"), true);
     config_expect_bool("mtp.present",
-                       required_bool(m, "dots3-note.mtp.present"), true);
+                       required_dots3_bool(m, "mtp.present"), true);
 
     config_expect_f32("rope.freq_base",
-                      required_f32(m, "dots3-note.rope.freq_base"), DS4_ROPE_FREQ_BASE);
+                      required_dots3_f32(m, "rope.freq_base"), DS4_ROPE_FREQ_BASE);
     config_expect_f32("rope.freq_base_swa",
-                      required_f32(m, "dots3-note.rope.freq_base_swa"), DS4_ROPE_FREQ_BASE_SWA);
+                      required_dots3_f32(m, "rope.freq_base_swa"), DS4_ROPE_FREQ_BASE_SWA);
     config_expect_f32("attention.layer_norm_rms_epsilon",
-                      required_f32(m, "dots3-note.attention.layer_norm_rms_epsilon"),
+                      required_dots3_f32(m, "attention.layer_norm_rms_epsilon"),
                       DS4_RMS_EPS);
 
     ds4_str config_sha = {0};
-    if (!model_get_string(m, "dots3-note.source.config_sha256", &config_sha) ||
+    if (!model_get_dots3_string(m, "source.config_sha256", &config_sha) ||
         !ds4_streq(config_sha,
                    "99b7de680dd456111c36efb8749f8ae7177328e97b65a3e39a6700cbc1173833")) {
         ds4_die("dots3-note GGUF does not match the pinned official preview config");
@@ -7334,7 +7399,7 @@ static void config_validate_model(const ds4_model *m) {
         config_validate_motif3_model(m);
         return;
     }
-    if (ds4_streq(arch, "dots3-note")) {
+    if (ds4_arch_is_dots3note(arch)) {
         config_validate_dots3_note_model(m);
         return;
     }

@@ -117,6 +117,55 @@ fn req_bool(g: &GgufFile, key: &'static str) -> Result<bool, ValidateError> {
     g.get_bool(key).ok_or_else(|| missing(key))
 }
 
+fn missing_owned(key: String) -> ValidateError {
+    ValidateError::TokenKey("missing-key", key)
+}
+
+fn dots3_u32(g: &GgufFile, suffix: &str) -> Result<u32, ValidateError> {
+    let neu = format!("dots3note.{suffix}");
+    if let Some(v) = g.get_u32(&neu) {
+        return Ok(v);
+    }
+    let old = format!("dots3-note.{suffix}");
+    g.get_u32(&old).ok_or_else(|| missing_owned(old))
+}
+
+fn dots3_u64c(g: &GgufFile, suffix: &str) -> Result<u64, ValidateError> {
+    let neu = format!("dots3note.{suffix}");
+    if let Some(v) = g.get_u64_compat(&neu) {
+        return Ok(v);
+    }
+    let old = format!("dots3-note.{suffix}");
+    g.get_u64_compat(&old).ok_or_else(|| missing_owned(old))
+}
+
+fn dots3_f32(g: &GgufFile, suffix: &str) -> Result<f32, ValidateError> {
+    let neu = format!("dots3note.{suffix}");
+    if let Some(v) = g.get_f32_compat(&neu) {
+        return Ok(v);
+    }
+    let old = format!("dots3-note.{suffix}");
+    g.get_f32_compat(&old).ok_or_else(|| missing_owned(old))
+}
+
+fn dots3_bool(g: &GgufFile, suffix: &str) -> Result<bool, ValidateError> {
+    let neu = format!("dots3note.{suffix}");
+    if let Some(v) = g.get_bool(&neu) {
+        return Ok(v);
+    }
+    let old = format!("dots3-note.{suffix}");
+    g.get_bool(&old).ok_or_else(|| missing_owned(old))
+}
+
+fn dots3_string<'a>(g: &'a GgufFile, suffix: &str) -> Result<&'a [u8], ValidateError> {
+    let neu = format!("dots3note.{suffix}");
+    if let Some(v) = g.get_string(&neu) {
+        return Ok(v);
+    }
+    let old = format!("dots3-note.{suffix}");
+    g.get_string(&old).ok_or_else(|| missing_owned(old))
+}
+
 fn expect_u32(name: &'static str, got: u32, want: u32) -> Result<(), ValidateError> {
     if got == want {
         Ok(())
@@ -673,137 +722,114 @@ fn validate_motif3(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
 }
 
 fn validate_dots3(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
-    expect_u32(
-        "block_count",
-        req_u32(g, "dots3-note.block_count")?,
-        shape.n_layer,
-    )?;
-    expect_u64(
-        "context_length",
-        req_u64c(g, "dots3-note.context_length")?,
-        524288,
-    )?;
+    expect_u32("block_count", dots3_u32(g, "block_count")?, shape.n_layer)?;
+    expect_u64("context_length", dots3_u64c(g, "context_length")?, 524288)?;
     expect_u32(
         "embedding_length",
-        req_u32(g, "dots3-note.embedding_length")?,
+        dots3_u32(g, "embedding_length")?,
         shape.n_embd,
     )?;
-    expect_u32(
-        "vocab_size",
-        req_u32(g, "dots3-note.vocab_size")?,
-        shape.n_vocab,
-    )?;
+    expect_u32("vocab_size", dots3_u32(g, "vocab_size")?, shape.n_vocab)?;
     expect_u32(
         "feed_forward_length",
-        req_u32(g, "dots3-note.feed_forward_length")?,
+        dots3_u32(g, "feed_forward_length")?,
         shape.n_ff_dense,
     )?;
     expect_u32(
         "leading_dense_block_count",
-        req_u32(g, "dots3-note.leading_dense_block_count")?,
+        dots3_u32(g, "leading_dense_block_count")?,
         shape.n_leading_dense,
     )?;
     expect_u32(
         "expert_count",
-        req_u32(g, "dots3-note.expert_count")?,
+        dots3_u32(g, "expert_count")?,
         shape.n_expert,
     )?;
     expect_u32(
         "expert_used_count",
-        req_u32(g, "dots3-note.expert_used_count")?,
+        dots3_u32(g, "expert_used_count")?,
         shape.n_expert_used,
     )?;
     expect_u32(
         "expert_feed_forward_length",
-        req_u32(g, "dots3-note.expert_feed_forward_length")?,
+        dots3_u32(g, "expert_feed_forward_length")?,
         shape.n_ff_exp,
     )?;
     expect_u32(
         "expert_shared_count",
-        req_u32(g, "dots3-note.expert_shared_count")?,
+        dots3_u32(g, "expert_shared_count")?,
         shape.n_expert_shared,
     )?;
     expect_u32(
         "attention.head_count",
-        req_u32(g, "dots3-note.attention.head_count")?,
+        dots3_u32(g, "attention.head_count")?,
         shape.n_head,
     )?;
     expect_u32(
         "attention.head_count_kv",
-        req_u32(g, "dots3-note.attention.head_count_kv")?,
+        dots3_u32(g, "attention.head_count_kv")?,
         shape.n_head_kv,
     )?;
     expect_u32(
         "attention.key_length",
-        req_u32(g, "dots3-note.attention.key_length")?,
+        dots3_u32(g, "attention.key_length")?,
         shape.n_key_mla,
     )?;
     expect_u32(
         "attention.value_length",
-        req_u32(g, "dots3-note.attention.value_length")?,
+        dots3_u32(g, "attention.value_length")?,
         shape.n_value_mla,
     )?;
     expect_u32(
         "sliding_window",
-        req_u32(g, "dots3-note.sliding_window")?,
+        dots3_u32(g, "sliding_window")?,
         shape.n_swa,
     )?;
     expect_u32(
         "index_topk",
-        req_u32(g, "dots3-note.index_topk")?,
+        dots3_u32(g, "index_topk")?,
         shape.n_indexer_top_k,
     )?;
-    expect_u32(
-        "q_lora_rank",
-        req_u32(g, "dots3-note.q_lora_rank")?,
-        shape.n_lora_q,
-    )?;
+    expect_u32("q_lora_rank", dots3_u32(g, "q_lora_rank")?, shape.n_lora_q)?;
     expect_u32(
         "kv_lora_rank",
-        req_u32(g, "dots3-note.kv_lora_rank")?,
+        dots3_u32(g, "kv_lora_rank")?,
         shape.n_kv_lora,
     )?;
     expect_u32(
         "swa_kv_lora_rank",
-        req_u32(g, "dots3-note.swa_kv_lora_rank")?,
+        dots3_u32(g, "swa_kv_lora_rank")?,
         shape.n_swa_kv_lora,
     )?;
     expect_u32(
         "full_attention_count",
-        req_u32(g, "dots3-note.full_attention_count")?,
+        dots3_u32(g, "full_attention_count")?,
         shape.n_full_attn_count,
     )?;
-    expect_bool(
-        "language_only",
-        req_bool(g, "dots3-note.language_only")?,
-        true,
-    )?;
-    expect_bool("mtp.present", req_bool(g, "dots3-note.mtp.present")?, true)?;
+    expect_bool("language_only", dots3_bool(g, "language_only")?, true)?;
+    expect_bool("mtp.present", dots3_bool(g, "mtp.present")?, true)?;
     expect_f32(
         "rope.freq_base",
-        req_f32(g, "dots3-note.rope.freq_base")?,
+        dots3_f32(g, "rope.freq_base")?,
         shape.rope_freq_base,
     )?;
     expect_f32(
         "rope.freq_base_swa",
-        req_f32(g, "dots3-note.rope.freq_base_swa")?,
+        dots3_f32(g, "rope.freq_base_swa")?,
         shape.rope_freq_base_swa,
     )?;
     expect_f32(
         "attention.layer_norm_rms_epsilon",
-        req_f32(g, "dots3-note.attention.layer_norm_rms_epsilon")?,
+        dots3_f32(g, "attention.layer_norm_rms_epsilon")?,
         shape.rms_eps,
     )?;
-    let sha = g
-        .get_string("dots3-note.source.config_sha256")
-        .ok_or(ValidateError::TokenKey(
-            "mismatch-string",
-            "dots3-note.source.config_sha256".into(),
-        ))?;
+    let sha = dots3_string(g, "source.config_sha256").map_err(|_| {
+        ValidateError::TokenKey("mismatch-string", "dots3note.source.config_sha256".into())
+    })?;
     if sha != DOTS3_SHA {
         return Err(ValidateError::TokenKey(
             "mismatch-string",
-            "dots3-note.source.config_sha256".into(),
+            "dots3note.source.config_sha256".into(),
         ));
     }
     let mut full = 0u32;

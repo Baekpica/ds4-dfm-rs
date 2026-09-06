@@ -555,7 +555,8 @@ static const char *arch_route(const char *arch)
     if (strcmp(arch, "exaone-moe") == 0) return DS4_SHAPE_KEXAONE_236B.name;
     if (strcmp(arch, "solar-open2") == 0) return DS4_SHAPE_SOLAR_OPEN2_250B.name;
     if (strcmp(arch, "motif3") == 0) return DS4_SHAPE_MOTIF3.name;
-    if (strcmp(arch, "dots3-note") == 0) return DS4_SHAPE_DOTS3_NOTE_PREV.name;
+    if (strcmp(arch, "dots3note") == 0 || strcmp(arch, "dots3-note") == 0)
+        return DS4_SHAPE_DOTS3_NOTE_PREV.name;
     if (strcmp(arch, "qwen4exp") == 0) return DS4_SHAPE_QWEN38_FLASH_NEXT.name;
     if (strcmp(arch, "glm5-next") == 0) return DS4_SHAPE_GLM53_FLASH.name;
     if (strcmp(arch, "k2-horizon") == 0) return DS4_SHAPE_K2_HORIZON_375B.name;
@@ -587,6 +588,7 @@ int main(void)
     printf("ARCH\texaone-moe\t%s\n", arch_route("exaone-moe"));
     printf("ARCH\tsolar-open2\t%s\n", arch_route("solar-open2"));
     printf("ARCH\tmotif3\t%s\n", arch_route("motif3"));
+    printf("ARCH\tdots3note\t%s\n", arch_route("dots3note"));
     printf("ARCH\tdots3-note\t%s\n", arch_route("dots3-note"));
     printf("ARCH\tqwen4exp\t%s\n", arch_route("qwen4exp"));
     printf("ARCH\tglm5-next\t%s\n", arch_route("glm5-next"));
