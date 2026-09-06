@@ -2571,7 +2571,6 @@ int ds4_gpu_qwen4exp_q5_0_tail_accum_tensor(
  * not covered, so callers keep the separate main + tail path. */
 int ds4_gpu_qwen4exp_routed_down_fused_tensor(
         ds4_gpu_tensor       *down,
-        const ds4_gpu_tensor *packed_main,
         const ds4_gpu_tensor *mid,
         const ds4_gpu_tensor *ids,
         const void             *model_map,

@@ -22251,10 +22251,23 @@ static bool qwen4exp_moe_ws_alloc(
  * matching the reference's post-expert multiplication by linearity. */
 /* The 640-wide expert-down input is a 512-column K-quant main projection
  * plus a 128-column tail tensor.  From prefill width on, the fused MMQ entry
- * folds the tail into the main tile loop and stores routed_down once;
- * decode widths and the paired-bank path keep the separate tail accumulate,
- * which qwen4exp_moe_tail then runs. */
+ * reads both halves in place from the SwiGLU rows, folds the tail into the
+ * main tile loop and stores routed_down once; decode widths and the
+ * paired-bank path pack the main columns (routed_gate) for the separate
+ * main GEMM and the tail accumulate, which qwen4exp_moe_tail then runs. */
 enum { QWEN4EXP_FUSED_DOWN_MIN_TOKENS = 16 };
+
+static bool qwen4exp_moe_pack_main(
+        ds4_qwen_moe_ws       *ws,
+        const ds4_layer_weights *layer,
+        uint32_t               n_tokens) {
+    const uint32_t expert_ff = (uint32_t)layer->ffn_gate_exps->dim[1];
+    const uint32_t main_dim = (uint32_t)layer->ffn_down_exps->dim[0];
+    const uint64_t assignments = (uint64_t)n_tokens * ws->n_used;
+    return ds4_gpu_qwen4exp_pack_expert_down_main_tensor(
+               ws->routed_gate, ws->routed_mid, assignments,
+               expert_ff, main_dim) != 0;
+}
 
 static bool qwen4exp_moe_down_main(
         ds4_qwen_moe_ws       *ws,
@@ -22270,7 +22283,7 @@ static bool qwen4exp_moe_down_main(
     const uint64_t assignments = (uint64_t)n_tokens * ws->n_used;
     if (fuse_tail && n_tokens >= QWEN4EXP_FUSED_DOWN_MIN_TOKENS &&
         ds4_gpu_qwen4exp_routed_down_fused_tensor(
-            ws->routed_down, ws->routed_gate, ws->routed_mid, ws->selected,
+            ws->routed_down, ws->routed_mid, ws->selected,
             model->map, model->size,
             layer->ffn_down_exps->abs_offset,
             layer->ffn_down_exps->bytes,
@@ -22283,7 +22296,8 @@ static bool qwen4exp_moe_down_main(
         ws->tail_fused = true;
         return true;
     }
-    return ds4_gpu_routed_matmul_bounded_tensor(
+    return qwen4exp_moe_pack_main(ws, layer, n_tokens) &&
+           ds4_gpu_routed_matmul_bounded_tensor(
                ws->routed_down, ws->routed_gate, ws->selected,
                model->map, model->size,
                layer->ffn_down_exps->abs_offset,
@@ -22392,11 +22406,10 @@ static bool qwen4exp_moe_prepare(
         !ds4_gpu_swiglu_weighted_tensor(
                 ws->routed_mid, ws->routed_gate, ws->routed_up,
                 ws->router_weights, expert_ff, routed_count) ||
-        !ds4_gpu_qwen4exp_pack_expert_down_main_tensor(
-                ws->routed_gate, ws->routed_mid, assignments,
-                expert_ff, main_dim) ||
-        (!defer_main && !qwen4exp_moe_down_main(
-                ws, model, layer, n_tokens, fuse_tail))) {
+        (defer_main
+             ? !qwen4exp_moe_pack_main(ws, layer, n_tokens)
+             : !qwen4exp_moe_down_main(
+                   ws, model, layer, n_tokens, fuse_tail))) {
         return false;
     }
     return true;
