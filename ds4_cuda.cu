@@ -24263,6 +24263,35 @@ static void cuda_norm_q8_publish(const void *src, uint32_t rows, uint32_t n) {
     g_norm_q8_reg.n     = n;
 }
 
+/* Qwen qkv/z (and QSA q / index) all read the same HC mix.  Quantize it
+ * once so the dense D2R/mmq preq consumers skip their per-GEMM quantize.
+ * DS4_CUDA_NO_NORM_Q8EMIT keeps the old per-consumer path. */
+static void cuda_hc_mixed_emit_q8(const ds4_gpu_tensor *mixed,
+                                  uint32_t rows, uint32_t hidden) {
+    if (!mixed || rows < 64u || (hidden & 127u) != 0u) {
+        return;
+    }
+    cuda_norm_q8_invalidate(mixed->ptr);
+    size_t payload = 0;
+    char *q8 = cuda_norm_q8_prepare(rows, hidden, &payload);
+    if (!q8) {
+        return;
+    }
+    if (ds4_mmq_q8_0_quantize_ref((const float *)mixed->ptr, q8,
+                                  g_norm_q8_cap, (int)rows, (int)hidden,
+                                  ds4_current_stream()) != 0) {
+        return;
+    }
+    cuda_norm_q8_publish(mixed->ptr, rows, hidden);
+    static int logged = 0;
+    if (!logged) {
+        logged = 1;
+        fprintf(stderr,
+                "ds4: HC mix emits producer q8 (first rows=%u n=%u)\n",
+                rows, hidden);
+    }
+}
+
 static void cuda_norm_q8_verify(const ds4_gpu_tensor *out, uint32_t rows,
                                 uint32_t n, size_t payload) {
     if (getenv("DS4_CUDA_NORM_Q8EMIT_VERIFY") == NULL) return;
@@ -26731,6 +26760,7 @@ extern "C" int ds4_gpu_qwen4exp_hc_mix_inject_tensor(
         if (!cuda_ok(cudaGetLastError(), "Qwen4Exp HC injection launch"))
             return 0;
     }
+    cuda_hc_mixed_emit_q8(mixed, rows, hidden_size);
     return 1;
 }
 
@@ -26871,7 +26901,11 @@ extern "C" int ds4_gpu_qwen4exp_hc_mix_fused_tensor(
             (const float *)scales->ptr, (const float *)wptr,
             (const __nv_bfloat16 *)low_bf16->ptr,
             (const __nv_bfloat16 *)uptr, rows, hidden_size, lowrank);
-    return cuda_ok(cudaGetLastError(), "Qwen4Exp HC fused mix launch");
+    if (!cuda_ok(cudaGetLastError(), "Qwen4Exp HC fused mix launch")) {
+        return 0;
+    }
+    cuda_hc_mixed_emit_q8(mixed, rows, hidden_size);
+    return 1;
 }
 
 extern "C" int ds4_gpu_qwen4exp_bf16_to_f32_tensor(

@@ -662,6 +662,69 @@ bool run_q8_0_dense_d2r(int M, int N, int K, uint32_t seed) {
     return ok;
 }
 
+bool run_q8_0_dense_d2r_preq(int M, int N, int K, uint32_t seed) {
+    fprintf(stderr, "=== Q8_0/DENSE_D2R_PREQ M=%d N=%d K=%d seed=%u ===\n",
+            M, N, K, seed);
+    std::mt19937 rng(seed);
+    std::normal_distribution<float> nd(0.0f, 1.0f);
+    const int blocks_per_row = K / QK8_0;
+    const size_t nblocks = (size_t)M * blocks_per_row;
+    std::vector<float> W_src((size_t)M * K);
+    std::vector<cpu_block_q8_0> W_blk(nblocks);
+    for (auto &v : W_src) v = nd(rng);
+    for (int row = 0; row < M; row++) {
+        quantize_row_q8_0_cpu(&W_src[(size_t)row * K],
+                              &W_blk[(size_t)row * blocks_per_row], K);
+    }
+    const size_t dq_bytes = (nblocks * sizeof(uint16_t) + 63u) & ~63u;
+    std::vector<uint8_t> W_aligned(dq_bytes + nblocks * QK8_0, 0u);
+    for (size_t b = 0; b < nblocks; b++) {
+        std::memcpy(W_aligned.data() + b * sizeof(uint16_t),
+                    &W_blk[b].d, sizeof(uint16_t));
+        std::memcpy(W_aligned.data() + dq_bytes + b * QK8_0,
+                    W_blk[b].qs, QK8_0);
+    }
+    std::vector<float> X((size_t)N * K);
+    for (auto &v : X) v = nd(rng);
+
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+    void *dW = nullptr;
+    float *dX = nullptr, *dYq = nullptr, *dYp = nullptr;
+    cudaMalloc(&dW, W_aligned.size());
+    cudaMalloc(&dX, X.size() * sizeof(float));
+    cudaMalloc(&dYq, (size_t)M * N * sizeof(float));
+    cudaMalloc(&dYp, (size_t)M * N * sizeof(float));
+    const size_t y_bytes = (size_t)N * (size_t)K * 144u / 128u + 128u * 144u;
+    void *dY8 = nullptr;
+    cudaMalloc(&dY8, y_bytes);
+    cudaMemcpyAsync(dW, W_aligned.data(), W_aligned.size(),
+                    cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(dX, X.data(), X.size() * sizeof(float),
+                    cudaMemcpyHostToDevice, stream);
+    if (ds4_mmq_q8_0_quantize_ref(dX, dY8, y_bytes, N, K, stream) != 0) {
+        fprintf(stderr, "quantize_ref failed\n");
+        cudaFree(dW); cudaFree(dX); cudaFree(dYq); cudaFree(dYp); cudaFree(dY8);
+        cudaStreamDestroy(stream);
+        return false;
+    }
+    const int qrc = ds4_mmq_q8_0_dense_d2r(dW, dX, dYq, M, N, K, stream);
+    const int prc = ds4_mmq_q8_0_dense_d2r_preq(
+        dW, dY8, y_bytes, dYp, M, N, K, stream);
+    std::vector<float> got_q((size_t)M * N), got_p((size_t)M * N);
+    cudaMemcpyAsync(got_q.data(), dYq, got_q.size() * sizeof(float),
+                    cudaMemcpyDeviceToHost, stream);
+    cudaMemcpyAsync(got_p.data(), dYp, got_p.size() * sizeof(float),
+                    cudaMemcpyDeviceToHost, stream);
+    cudaStreamSynchronize(stream);
+    cudaFree(dW); cudaFree(dX); cudaFree(dYq); cudaFree(dYp); cudaFree(dY8);
+    cudaStreamDestroy(stream);
+    const bool ok = qrc == 0 && prc == 0 &&
+                    check_close(got_p, got_q, 0.0f, 0.0f);
+    fprintf(stderr, "preq vs quantizing D2R: %s\n\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+
 bool run_q8_0_dense_vec_row2(int M, int K, uint32_t seed) {
     fprintf(stderr, "=== Q8_0/DENSE_VEC_ROW2 M=%d K=%d seed=%u ===\n",
             M, K, seed);
@@ -1719,6 +1782,8 @@ int main(int argc, char ** argv) {
     /* Qwen GDN qkv / z / QSA q: K=2560 misses the decode %1024 gate. */
     all_ok &= run_q8_0_dense_d2r(
         /*M=*/2048, /*N=*/512, /*K=*/2560, 0xD2A02560);
+    all_ok &= run_q8_0_dense_d2r_preq(
+        /*M=*/2048, /*N=*/512, /*K=*/2560, 0xD2A02561);
     all_ok &= run_q8_0_dense_vec_row2(
         /*M=*/257, /*K=*/2560, 0xA11E0002);
 

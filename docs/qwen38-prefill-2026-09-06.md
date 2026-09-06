@@ -154,6 +154,26 @@ isfinite epilogue.
 
 Decode after the prefill unchanged (24.5 / 23.9 tok/s).
 
+## Round 5: HC mix q8 emit (`feature/qwen-prefill-opt-20260906-r4`)
+
+GDN qkv+z and QSA q+index all read the same F32 HC mix, and each dense
+entry quantized it again.  After a successful mix the existing
+`cuda_norm_q8` registry now publishes one `quantize_ref` of `mixed`;
+D2R `preq` (K gate widened from %1024 to %128 so K=2560 matches the
+launch) and mmq `preq` consume it.  Kill switch
+`DS4_CUDA_NO_NORM_Q8EMIT=1`.  Bit-identical to the per-GEMM quantize
+(same kernel, same buffer).  Decode width never emits (`rows < 64`).
+
+| shape | round 4 same-hour off | round 5 |
+|---|---:|---:|
+| cold 8,192 tokens | 1394.4 (1388.1 / 1394.4 / 1407.7) | **1406.0** (1401.9 / 1406.0 / 1408.3), +0.8 % |
+| cold 65,536 tokens | 1504.1 (1503.1 / 1504.1 / 1507.1) | **1518.4** (1518.1 / 1518.4 / 1521.4), +0.9 % |
+
+Decode after the prefill unchanged at 8K (24.6 tok/s); 64K 23.9 vs 23.2
+is run noise (emit is off at decode width).  First engaged logs:
+`HC mix emits producer q8` then `dense q8 D2R consuming producer q8`
+at the 2,048-row opening chunk.
+
 ## Cumulative and the production shape
 
 Cold single-shot `ds4-bench` prefill, `main` `0510117` -> `974d706`: 8,192
@@ -196,10 +216,6 @@ sibling artifact (owner swapped to it, same protocol): repeated prompt
   was 387 / 2.5 % before D2R retired its own outputs).  Every remaining
   Qwen consumer could still guard at read as the routed path does
   (`DS4_ROUTED_OUT_GUARDED`).
-- The dense GEMMs that read one hyper-connection output (qkv + z, index +
-  q, the shared pair) each quantize it again (~0.5 ms each at 8K rows); one
-  producer emit per sub-layer through the existing `cuda_norm_q8` registry
-  would retire them (~1 %).
 - A per-column token map inside the worklist tile (reading the token-compact
   activation directly) is slower than the scatter (+22 % on the gate/up
   kernel): the contiguous 18 KB tile loads matter more than the extra 0.2 GB
