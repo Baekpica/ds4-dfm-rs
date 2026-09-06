@@ -1185,6 +1185,772 @@ void motif3_fattn_hmma_kernel(
     }
 }
 
+
+/* dots3-note tensor-core operands are FP16, not BF16: the latent cache is
+ * BF16 (every bf16 value inside the fp16 range converts exactly), and fp16
+ * keeps three more mantissa bits for the rounded Q, P, activation and
+ * dequantized-weight operands (2^-11 instead of 2^-8).  Normed latents and
+ * absorbed queries stay far below the fp16 range; the conversions saturate
+ * instead of producing inf so an outlier can never poison an MMA. */
+__device__ __forceinline__ half2 dots3_f2_to_h2(float a, float b) {
+    const float lim = 65504.0f;
+    return __floats2half2_rn(fminf(fmaxf(a, -lim), lim), fminf(fmaxf(b, -lim), lim));
+}
+
+__device__ __forceinline__ uint32_t dots3_bf162_to_h2(uint32_t packed) {
+    __nv_bfloat162 b;
+    memcpy(&b, &packed, sizeof(b));
+    const float2 f = __bfloat1622float2(b);
+    const half2 h = dots3_f2_to_h2(f.x, f.y);
+    uint32_t out;
+    memcpy(&out, &h, sizeof(out));
+    return out;
+}
+
+__device__ __forceinline__ uint4 dots3_bf16x8_to_h8(uint4 v) {
+    return make_uint4(dots3_bf162_to_h2(v.x), dots3_bf162_to_h2(v.y),
+                      dots3_bf162_to_h2(v.z), dots3_bf162_to_h2(v.w));
+}
+
+/* dots3-note latent attention on tensor cores (prefill widths).
+ *
+ * The absorbed MLA form keeps one BF16 latent row per key that every query
+ * head shares, so for one token the 128 (full) or 64 (SWA) heads form a
+ * proper GEMM against that token's key set: S = Q_abs . [latent | k_pe]^T
+ * over 576 / 1088 dims, then O = P . latent over 512 / 1024 dims.  The
+ * per-token key set is either the DSA top-k list (gathered rows, full
+ * layers) or the causal / sliding window (contiguous, SWA layers), which is
+ * why the block owns one token: grid (heads / (16 * MT), tokens).
+ *
+ * Block = 8 warps.  Each key tile of TK rows is staged once in shared
+ * memory (latent + k_pe side by side, BF16, padded rows) and read twice:
+ * as the B operand of S (keys on n) and as the B operand of O (keys on k,
+ * latent columns on n).  Q for the block's MT*16 heads is staged once as
+ * BF16.  Shared memory (GB10: 100 KiB / SM) picks the tile shape:
+ *   full  latent 512:  MT=2 (32 heads), TK=32, ~78 KiB, one CTA;
+ *   SWA   latent 1024: MT=1 (16 heads), TK=16, ~75 KiB, one CTA.
+ * QK work is split across warps by (m-tile, n-tile, k-slice); k-slices are
+ * summed through shared memory.  PV splits the latent columns across the
+ * warps of each m-tile so every warp keeps 16 n8 accumulators (64 regs).
+ * The next tile's rows are fetched into registers while the current tile
+ * is consumed (the fill latency was the whole per-tile budget when it sat
+ * behind the barrier), and every fragment comes from ldmatrix.
+ *
+ * Numerics: Q and P are rounded to FP16 (the BF16 cache rows convert
+ * exactly), the dot products accumulate in FP32 on the MMA, softmax runs in
+ * FP32 with __expf; the scalar kernel keeps Q and P in FP32.  Same masking as the
+ * scalar kernel: DSA filler ids (< 0 or > qpos) and slots beyond the cache
+ * are dropped. */
+enum {
+    D3_FA_WARPS   = 8,
+    D3_FA_THREADS = D3_FA_WARPS * 32,
+    D3_FA_ROPE    = 64,
+    D3_FA_PAD     = 8,
+};
+
+/* Two 8x8 b16 matrices (lanes 0-15 supply the row addresses). */
+__device__ __forceinline__ void dots3_ldsm_x2(
+        uint32_t &r0, uint32_t &r1, const __half *row_ptr) {
+#ifdef TURING_MMA_AVAILABLE
+    const uint32_t addr = (uint32_t)__cvta_generic_to_shared(row_ptr);
+    asm volatile("ldmatrix.sync.aligned.m8n8.x2.b16 {%0, %1}, [%2];"
+                 : "=r"(r0), "=r"(r1)
+                 : "r"(addr));
+#else
+    GGML_UNUSED_VARS(r0, r1, row_ptr);
+    NO_DEVICE_CODE;
+#endif
+}
+
+template <uint32_t LATENT, uint32_t MT, uint32_t TK>
+struct dots3_fattn_shape {
+    static constexpr uint32_t heads     = MT * 16u;
+    static constexpr uint32_t dim       = LATENT + D3_FA_ROPE;
+    static constexpr uint32_t row       = dim + D3_FA_PAD;        /* fp16 */
+    static constexpr uint32_t ksteps    = dim / 16u;
+    static constexpr uint32_t nt        = TK / 8u;                 /* n8 tiles per key tile */
+    static constexpr uint32_t ksplit    = D3_FA_WARPS / (MT * nt);
+    static constexpr uint32_t kper      = ksteps / ksplit;
+    static constexpr uint32_t pvw       = D3_FA_WARPS / MT;       /* PV warps per m-tile */
+    static constexpr uint32_t cols      = LATENT / pvw;            /* latent cols per PV warp */
+    static constexpr uint32_t cb        = cols / 8u;               /* n8 tiles per PV warp */
+    static constexpr uint32_t prow      = TK + D3_FA_PAD;          /* P tile row, fp16 */
+    static constexpr uint32_t chunks    = dim / 8u;                /* uint4 per key row */
+    static constexpr uint32_t pf        = (TK * chunks + D3_FA_THREADS - 1u) / D3_FA_THREADS;
+    static constexpr size_t q_bytes     = (size_t)heads * row * 2u;
+    static constexpr size_t k_bytes     = (size_t)TK * row * 2u;
+    static constexpr size_t p_bytes     = (size_t)MT * 16u * prow * 2u;
+    static constexpr size_t part_bytes  = ksplit > 1u ? (size_t)ksplit * MT * nt * 128u * 4u : 0u;
+    static constexpr size_t stat_bytes  = (size_t)MT * nt * 16u * 4u;
+    static constexpr size_t valid_bytes = (size_t)TK * 4u;
+    static constexpr size_t smem        = q_bytes + k_bytes + p_bytes + part_bytes + 2u * stat_bytes + valid_bytes;
+    static_assert(MT * nt * ksplit == D3_FA_WARPS, "warp split must cover the block");
+    static_assert(ksteps % ksplit == 0u, "k slices must be whole MMA steps");
+    static_assert(cols % 16u == 0u, "PV column span must be n8 tile pairs");
+    static_assert(TK % 16u == 0u, "P tile must be whole MMA k steps");
+    static_assert((row * 2u) % 16u == 0u && (prow * 2u) % 16u == 0u, "ldmatrix rows must stay 16-byte aligned");
+    static_assert(pf <= 32u, "row validity travels in one 32-bit mask");
+    static_assert(smem <= 100u * 1024u, "dots3 FATTN tile no longer fits one GB10 CTA");
+};
+
+/* Fetch one key tile into registers: latent row then k_pe row per key,
+ * zeros for masked (DSA filler, out of range) or absent keys.  Bit r of
+ * *vmask says whether this thread's r-th chunk belongs to a valid key. */
+template <uint32_t LATENT, uint32_t MT, uint32_t TK, bool SEL, bool WINDOW>
+__device__ __forceinline__ void dots3_fattn_tile_fetch(
+        uint4 regs[dots3_fattn_shape<LATENT, MT, TK>::pf], uint32_t *vmask,
+        const __nv_bfloat16 *latent_cache, const __nv_bfloat16 *k_pe_cache,
+        const int32_t *selected, uint32_t sel_stride, uint32_t token,
+        uint32_t qpos, uint32_t first, uint32_t cache_cap,
+        uint32_t kt0, uint32_t tile_len) {
+    typedef dots3_fattn_shape<LATENT, MT, TK> S;
+    uint32_t mask = 0u;
+#pragma unroll
+    for (uint32_t p = 0; p < S::pf; p++) {
+        const uint32_t idx = threadIdx.x + p * D3_FA_THREADS;
+        const uint32_t r = idx / S::chunks;
+        const uint32_t c = idx - r * S::chunks;
+        bool valid = idx < TK * S::chunks && r < tile_len;
+        uint32_t slot = 0u;
+        if (valid) {
+            uint32_t logical;
+            if constexpr (SEL) {
+                const int32_t id = selected[(size_t)token * sel_stride + kt0 + r];
+                valid = id >= 0 && (uint32_t)id <= qpos;
+                logical = valid ? (uint32_t)id : 0u;
+            } else {
+                logical = first + kt0 + r;
+            }
+            slot = WINDOW ? logical % cache_cap : logical;
+            valid = valid && slot < cache_cap;
+        }
+        uint4 v = make_uint4(0u, 0u, 0u, 0u);
+        if (valid) {
+            const __nv_bfloat16 *src = c < LATENT / 8u
+                ? latent_cache + (size_t)slot * LATENT + c * 8u
+                : k_pe_cache + (size_t)slot * D3_FA_ROPE + (c - LATENT / 8u) * 8u;
+            v = *reinterpret_cast<const uint4 *>(src);
+            mask |= 1u << p;
+        }
+        regs[p] = v;
+    }
+    *vmask = mask;
+}
+
+template <uint32_t LATENT, uint32_t MT, uint32_t TK>
+__device__ __forceinline__ void dots3_fattn_tile_store(
+        const uint4 regs[dots3_fattn_shape<LATENT, MT, TK>::pf], uint32_t vmask,
+        __half *s_k, uint32_t *s_valid) {
+    typedef dots3_fattn_shape<LATENT, MT, TK> S;
+#pragma unroll
+    for (uint32_t p = 0; p < S::pf; p++) {
+        const uint32_t idx = threadIdx.x + p * D3_FA_THREADS;
+        if (idx >= TK * S::chunks) break;
+        const uint32_t r = idx / S::chunks;
+        const uint32_t c = idx - r * S::chunks;
+        *reinterpret_cast<uint4 *>(s_k + (size_t)r * S::row + c * 8u) = dots3_bf16x8_to_h8(regs[p]);
+        if (c == 0u) s_valid[r] = (vmask >> p) & 1u;
+    }
+}
+
+template <uint32_t LATENT, uint32_t MT, uint32_t TK, bool SEL, bool WINDOW>
+__global__ __launch_bounds__(D3_FA_THREADS, 1)
+void dots3_fattn_hmma_kernel(
+        float * __restrict__ out,
+        const float * __restrict__ q,
+        const float * __restrict__ q_absorbed,
+        const __nv_bfloat16 * __restrict__ latent_cache,
+        const __nv_bfloat16 * __restrict__ k_pe_cache,
+        const int32_t * __restrict__ selected,
+        const uint32_t sel_stride,
+        const uint32_t pos0,
+        const uint32_t cache_cap,
+        const uint32_t window,
+        const uint32_t q_heads,
+        const uint32_t qk_nope,
+        const float scale) {
+    typedef dots3_fattn_shape<LATENT, MT, TK> S;
+    extern __shared__ __align__(16) unsigned char d3_smem[];
+    __half *s_q = (__half *)d3_smem;
+    __half *s_k = (__half *)(d3_smem + S::q_bytes);
+    __half *s_p = (__half *)(d3_smem + S::q_bytes + S::k_bytes);
+    float *s_part = (float *)(d3_smem + S::q_bytes + S::k_bytes + S::p_bytes);
+    float *s_max = (float *)((unsigned char *)s_part + S::part_bytes);
+    float *s_sum = s_max + MT * S::nt * 16u;
+    uint32_t *s_valid = (uint32_t *)(s_sum + MT * S::nt * 16u);
+
+    const uint32_t token = blockIdx.y;
+    const uint32_t head0 = blockIdx.x * S::heads;
+    const uint32_t tid = threadIdx.x;
+    const uint32_t warp = tid >> 5u;
+    const uint32_t lane = tid & 31u;
+    if (head0 + S::heads > q_heads) return;
+
+    /* Warp roles.  QK: (m-tile, n-tile, k-slice).  PV: (m-tile, column
+     * span).  Both roles of one warp sit on the same m-tile, so the warp's
+     * softmax statistics serve both. */
+    const uint32_t mt = warp / (S::nt * S::ksplit);
+    const uint32_t qk_rem = warp - mt * (S::nt * S::ksplit);
+    const uint32_t nt = qk_rem % S::nt;
+    const uint32_t ks = qk_rem / S::nt;
+    const uint32_t pv_col0 = (warp - mt * S::pvw) * S::cols;
+    const uint32_t key_dim = qk_nope + D3_FA_ROPE;
+    const uint32_t qpos = pos0 + token;
+    const uint32_t end = qpos + 1u;
+    const uint32_t visible = WINDOW ? min(end, window) : end;
+    const uint32_t first = end - visible;
+    const uint32_t count = SEL ? sel_stride : visible;
+    /* ldmatrix lane addressing: A/P fragments (x4: rows 0-7, 8-15 x k
+     * 0-7, 8-15), K fragments (x2: keys 0-7 x k 0-7, 8-15), V fragments
+     * (x4.trans: keys 0-7, 8-15 x two 8-column blocks). */
+    const uint32_t a_row = ((lane >> 3) & 1u) * 8u + (lane & 7u);
+    const uint32_t a_col = (lane >> 4) * 8u;
+    const uint32_t b_row = lane & 7u;
+    const uint32_t b_col = ((lane >> 3) & 1u) * 8u;
+
+    /* Stage Q: absorbed latent part then the rotated rope tail, BF16. */
+    for (uint32_t idx = tid; idx < S::heads * (LATENT / 4u); idx += D3_FA_THREADS) {
+        const uint32_t h = idx / (LATENT / 4u);
+        const uint32_t c = (idx - h * (LATENT / 4u)) * 4u;
+        const float4 x = *reinterpret_cast<const float4 *>(
+            q_absorbed + ((size_t)token * q_heads + head0 + h) * LATENT + c);
+        half2 *dst = reinterpret_cast<half2 *>(s_q + (size_t)h * S::row + c);
+        dst[0] = dots3_f2_to_h2(x.x, x.y);
+        dst[1] = dots3_f2_to_h2(x.z, x.w);
+    }
+    for (uint32_t idx = tid; idx < S::heads * (D3_FA_ROPE / 4u); idx += D3_FA_THREADS) {
+        const uint32_t h = idx / (D3_FA_ROPE / 4u);
+        const uint32_t c = (idx - h * (D3_FA_ROPE / 4u)) * 4u;
+        const float4 x = *reinterpret_cast<const float4 *>(
+            q + ((size_t)token * q_heads + head0 + h) * key_dim + qk_nope + c);
+        half2 *dst = reinterpret_cast<half2 *>(s_q + (size_t)h * S::row + LATENT + c);
+        dst[0] = dots3_f2_to_h2(x.x, x.y);
+        dst[1] = dots3_f2_to_h2(x.z, x.w);
+    }
+
+    float row_m[2] = {-INFINITY, -INFINITY};
+    float row_l[2] = {0.0f, 0.0f};
+    tile_c output[S::cb];
+    uint4 regs[S::pf];
+    uint32_t vmask = 0u;
+    if (count > 0u) {
+        dots3_fattn_tile_fetch<LATENT, MT, TK, SEL, WINDOW>(
+            regs, &vmask, latent_cache, k_pe_cache, selected, sel_stride,
+            token, qpos, first, cache_cap, 0u, min((uint32_t)TK, count));
+    }
+    __syncthreads();
+
+    for (uint32_t kt0 = 0; kt0 < count; kt0 += TK) {
+        /* The previous iteration's trailing barrier released s_k. */
+        dots3_fattn_tile_store<LATENT, MT, TK>(regs, vmask, s_k, s_valid);
+        __syncthreads();
+        const uint32_t kt1 = kt0 + TK;
+        if (kt1 < count) {
+            dots3_fattn_tile_fetch<LATENT, MT, TK, SEL, WINDOW>(
+                regs, &vmask, latent_cache, k_pe_cache, selected, sel_stride,
+                token, qpos, first, cache_cap, kt1, min((uint32_t)TK, count - kt1));
+        }
+
+        /* S partial for this warp's (m-tile, n-tile) over its k-slice. */
+        tile_c acc;
+#pragma unroll 4
+        for (uint32_t kc = ks * S::kper; kc < (ks + 1u) * S::kper; kc++) {
+            tile_a qa;
+            tile_b kb;
+            uint32_t *qa_x = reinterpret_cast<uint32_t *>(qa.x);
+            uint32_t *kb_x = reinterpret_cast<uint32_t *>(kb.x);
+            solar_fattn_ldsm_x4(
+                qa_x[0], qa_x[1], qa_x[2], qa_x[3],
+                s_q + (size_t)(mt * 16u + a_row) * S::row + kc * 16u + a_col);
+            dots3_ldsm_x2(
+                kb_x[0], kb_x[1],
+                s_k + (size_t)(nt * 8u + b_row) * S::row + kc * 16u + b_col);
+            mma(acc, qa, kb);
+        }
+        if constexpr (S::ksplit > 1u) {
+            float4 *part = reinterpret_cast<float4 *>(s_part) +
+                ((size_t)(ks * MT + mt) * S::nt + nt) * 32u + lane;
+            *part = make_float4(acc.x[0], acc.x[1], acc.x[2], acc.x[3]);
+            __syncthreads();
+            if (ks == 0u) {
+#pragma unroll
+                for (uint32_t s = 1; s < S::ksplit; s++) {
+                    const float4 p = reinterpret_cast<const float4 *>(s_part)[
+                        ((size_t)(s * MT + mt) * S::nt + nt) * 32u + lane];
+                    acc.x[0] += p.x; acc.x[1] += p.y; acc.x[2] += p.z; acc.x[3] += p.w;
+                }
+            }
+        }
+
+        /* Scale, mask, tile max (the k-slice 0 warps own the scores). */
+        float tile_max[2] = {-INFINITY, -INFINITY};
+        if (ks == 0u) {
+#pragma unroll
+            for (int l = 0; l < tile_c::ne; l++) {
+                const uint32_t kk = nt * 8u + (lane % 4u) * 2u + (uint32_t)(l % 2);
+                const float score = s_valid[kk] ? acc.x[l] * scale : -INFINITY;
+                acc.x[l] = score;
+                tile_max[l / 2] = fmaxf(tile_max[l / 2], score);
+            }
+#pragma unroll
+            for (int r = 0; r < 2; r++) {
+                tile_max[r] = fmaxf(tile_max[r], __shfl_xor_sync(0xffffffffu, tile_max[r], 1));
+                tile_max[r] = fmaxf(tile_max[r], __shfl_xor_sync(0xffffffffu, tile_max[r], 2));
+            }
+            if ((lane & 3u) == 0u) {
+                s_max[(mt * S::nt + nt) * 16u + lane / 4u] = tile_max[0];
+                s_max[(mt * S::nt + nt) * 16u + lane / 4u + 8u] = tile_max[1];
+            }
+        }
+        __syncthreads();
+
+        /* Every warp of the m-tile folds the tile max into its running
+         * statistics; the score owners then emit P (BF16) and row sums. */
+        float rescale[2];
+#pragma unroll
+        for (int r = 0; r < 2; r++) {
+            float m = -INFINITY;
+#pragma unroll
+            for (uint32_t n = 0; n < S::nt; n++)
+                m = fmaxf(m, s_max[(mt * S::nt + n) * 16u + lane / 4u + 8u * (uint32_t)r]);
+            const float next_max = fmaxf(row_m[r], m);
+            rescale[r] = row_m[r] == -INFINITY ? 0.0f : __expf(row_m[r] - next_max);
+            row_m[r] = next_max;
+        }
+        if (ks == 0u) {
+            float tile_sum[2] = {0.0f, 0.0f};
+#pragma unroll
+            for (int l = 0; l < tile_c::ne; l++) {
+                const int r = l / 2;
+                const float w = acc.x[l] == -INFINITY || row_m[r] == -INFINITY
+                    ? 0.0f : __expf(acc.x[l] - row_m[r]);
+                acc.x[l] = w;
+                tile_sum[r] += w;
+            }
+#pragma unroll
+            for (int r = 0; r < 2; r++) {
+                tile_sum[r] += __shfl_xor_sync(0xffffffffu, tile_sum[r], 1);
+                tile_sum[r] += __shfl_xor_sync(0xffffffffu, tile_sum[r], 2);
+            }
+            if ((lane & 3u) == 0u) {
+                s_sum[(mt * S::nt + nt) * 16u + lane / 4u] = tile_sum[0];
+                s_sum[(mt * S::nt + nt) * 16u + lane / 4u + 8u] = tile_sum[1];
+            }
+#pragma unroll
+            for (int r = 0; r < 2; r++) {
+                const uint32_t prow = mt * 16u + lane / 4u + 8u * (uint32_t)r;
+                const uint32_t pcol = nt * 8u + (lane % 4u) * 2u;
+                *reinterpret_cast<half2 *>(s_p + (size_t)prow * S::prow + pcol) =
+                    __floats2half2_rn(acc.x[r * 2], acc.x[r * 2 + 1]);
+            }
+        }
+        __syncthreads();
+
+        /* O = O * rescale + P . latent over this warp's column span. */
+#pragma unroll
+        for (int r = 0; r < 2; r++) {
+            float s = 0.0f;
+#pragma unroll
+            for (uint32_t n = 0; n < S::nt; n++)
+                s += s_sum[(mt * S::nt + n) * 16u + lane / 4u + 8u * (uint32_t)r];
+            row_l[r] = row_l[r] * rescale[r] + s;
+        }
+#pragma unroll
+        for (uint32_t c = 0; c < S::cb; c++) {
+#pragma unroll
+            for (int l = 0; l < tile_c::ne; l++) output[c].x[l] *= rescale[l / 2];
+        }
+#pragma unroll
+        for (uint32_t step = 0; step < TK / 16u; step++) {
+            tile_a pa;
+            uint32_t *pa_x = reinterpret_cast<uint32_t *>(pa.x);
+            solar_fattn_ldsm_x4(
+                pa_x[0], pa_x[1], pa_x[2], pa_x[3],
+                s_p + (size_t)(mt * 16u + a_row) * S::prow + step * 16u + a_col);
+            const __half *v_base = s_k + (size_t)(step * 16u + a_row) * S::row + pv_col0 + a_col;
+#pragma unroll
+            for (uint32_t c = 0; c < S::cb; c += 2u) {
+                tile_b v0, v1;
+                uint32_t *v0_x = reinterpret_cast<uint32_t *>(v0.x);
+                uint32_t *v1_x = reinterpret_cast<uint32_t *>(v1.x);
+                solar_fattn_ldsm_x4_trans(
+                    v0_x[0], v0_x[1], v1_x[0], v1_x[1],
+                    v_base + c * 8u);
+                mma(output[c], pa, v0);
+                mma(output[c + 1u], pa, v1);
+            }
+        }
+        __syncthreads();
+    }
+
+#pragma unroll
+    for (int r = 0; r < 2; r++) {
+        const float inv = row_l[r] > 0.0f ? 1.0f / row_l[r] : 0.0f;
+        const uint32_t head = head0 + mt * 16u + lane / 4u + 8u * (uint32_t)r;
+        float *dst = out + ((size_t)token * q_heads + head) * LATENT + pv_col0 + (lane % 4u) * 2u;
+#pragma unroll
+        for (uint32_t c = 0; c < S::cb; c++) {
+            *reinterpret_cast<float2 *>(dst + c * 8u) =
+                make_float2(output[c].x[r * 2] * inv, output[c].x[r * 2 + 1] * inv);
+        }
+    }
+}
+
+template <uint32_t LATENT, uint32_t MT, uint32_t TK, bool SEL, bool WINDOW>
+static int dots3_fattn_launch(
+        float *out, const float *q, const float *q_absorbed,
+        const __nv_bfloat16 *latent, const __nv_bfloat16 *k_pe,
+        const int32_t *selected, uint32_t sel_stride, uint32_t rows,
+        uint32_t pos0, uint32_t cache_cap, uint32_t window,
+        uint32_t q_heads, uint32_t qk_nope, float scale,
+        cudaStream_t stream) {
+    typedef dots3_fattn_shape<LATENT, MT, TK> S;
+    auto kernel = dots3_fattn_hmma_kernel<LATENT, MT, TK, SEL, WINDOW>;
+    if (cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                             (int)S::smem) != cudaSuccess) {
+        return -2;
+    }
+    const dim3 grid(q_heads / S::heads, rows, 1);
+    kernel<<<grid, D3_FA_THREADS, S::smem, stream>>>(
+        out, q, q_absorbed, latent, k_pe, selected, sel_stride, pos0,
+        cache_cap, window, q_heads, qk_nope, scale);
+    return cudaGetLastError() == cudaSuccess ? 0 : -2;
+}
+
+template <uint32_t LATENT, uint32_t MT, uint32_t TK>
+static int dots3_fattn_dispatch(
+        float *out, const float *q, const float *q_absorbed,
+        const __nv_bfloat16 *latent, const __nv_bfloat16 *k_pe,
+        const int32_t *selected, uint32_t sel_stride, uint32_t rows,
+        uint32_t pos0, uint32_t cache_cap, uint32_t window,
+        uint32_t q_heads, uint32_t qk_nope, float scale,
+        cudaStream_t stream) {
+#define D3_FA_CALL(sel_, win_)                                               \
+    dots3_fattn_launch<LATENT, MT, TK, sel_, win_>(                          \
+        out, q, q_absorbed, latent, k_pe, selected, sel_stride, rows, pos0,  \
+        cache_cap, window, q_heads, qk_nope, scale, stream)
+    if (selected && window) return D3_FA_CALL(true, true);
+    if (selected) return D3_FA_CALL(true, false);
+    if (window) return D3_FA_CALL(false, true);
+    return D3_FA_CALL(false, false);
+#undef D3_FA_CALL
+}
+
+/* dots3-note latent value projection on tensor cores (prefill widths).
+ *
+ * attention[t, h, v] = sum_j latent_out[t, h, j] * W_UV[h][v][j] is one
+ * [tokens x latent] . [latent x 128] GEMM per head.  The owner's transposed
+ * Q8_0 artifact (ds4_repack_build_motif3_kv_b_value) stores, per head and
+ * per 32-wide j block, the 128 value columns contiguously: a k-major
+ * [j][v] layout that feeds the MMA B operand straight through
+ * ldmatrix.trans.  Block = (head, 64 tokens), four warps of 16 tokens,
+ * walking one 32-j block per step with the activations and the int8 codes
+ * double-buffered in shared memory.  The int8 codes are exact in BF16, so
+ * each block's product is accumulated separately and folded into the
+ * output with its FP32 per-column scale; only the activations are rounded
+ * (to FP16), which is the same contract as the attention kernel's Q. */
+enum {
+    D3_VP_TOKENS  = 64,
+    D3_VP_WARPS   = 4,
+    D3_VP_THREADS = D3_VP_WARPS * 32,
+    D3_VP_KB      = 32,                      /* j per step (one Q8_0 block) */
+    D3_VP_VALUES  = 128,
+    D3_VP_A_ROW   = D3_VP_KB + D3_FA_PAD,    /* fp16 */
+    D3_VP_B_ROW   = D3_VP_VALUES + D3_FA_PAD,
+    D3_VP_CB      = D3_VP_VALUES / 8,        /* n8 tiles per warp */
+};
+
+struct dots3_vp_stage {
+    float4 a[4];        /* 16 activations: token = tid / 2, j half = tid % 2 */
+    uint4 b[2];         /* 32 codes: j = tid / 4, v quarter = tid % 4 */
+    __half scale;       /* column tid */
+};
+
+__device__ __forceinline__ void dots3_vp_fetch(
+        dots3_vp_stage &st, const float *latent, const __half *scale,
+        const int8_t *code, uint32_t token0, uint32_t rows, uint32_t q_heads,
+        uint32_t head, uint32_t latent_dim, uint32_t k_blocks, uint32_t b) {
+    const uint32_t tid = threadIdx.x;
+    const uint32_t t = token0 + tid / 2u;
+    const uint32_t src_t = t < rows ? t : rows - 1u;
+    const float *a_src = latent + ((size_t)src_t * q_heads + head) * latent_dim +
+                         b * D3_VP_KB + (tid & 1u) * 16u;
+#pragma unroll
+    for (uint32_t i = 0; i < 4u; i++)
+        st.a[i] = *reinterpret_cast<const float4 *>(a_src + i * 4u);
+    const size_t hb = (size_t)head * k_blocks + b;
+    const int8_t *b_src = code + (hb * D3_VP_KB + tid / 4u) * D3_VP_VALUES + (tid & 3u) * 32u;
+    st.b[0] = *reinterpret_cast<const uint4 *>(b_src);
+    st.b[1] = *reinterpret_cast<const uint4 *>(b_src + 16u);
+    st.scale = scale[hb * D3_VP_VALUES + tid];
+}
+
+__device__ __forceinline__ void dots3_vp_store(
+        const dots3_vp_stage &st, __half *s_a, __half *s_b,
+        float *s_scale) {
+    const uint32_t tid = threadIdx.x;
+    half2 *a_dst = reinterpret_cast<half2 *>(
+        s_a + (size_t)(tid / 2u) * D3_VP_A_ROW + (tid & 1u) * 16u);
+#pragma unroll
+    for (uint32_t i = 0; i < 4u; i++) {
+        a_dst[2u * i] = dots3_f2_to_h2(st.a[i].x, st.a[i].y);
+        a_dst[2u * i + 1u] = dots3_f2_to_h2(st.a[i].z, st.a[i].w);
+    }
+    half2 *b_dst = reinterpret_cast<half2 *>(
+        s_b + (size_t)(tid / 4u) * D3_VP_B_ROW + (tid & 3u) * 32u);
+#pragma unroll
+    for (uint32_t i = 0; i < 2u; i++) {
+        const uint32_t w[4] = {st.b[i].x, st.b[i].y, st.b[i].z, st.b[i].w};
+#pragma unroll
+        for (uint32_t k = 0; k < 4u; k++) {
+            const int8_t *c = reinterpret_cast<const int8_t *>(&w[k]);
+            b_dst[i * 8u + k * 2u] = __floats2half2_rn((float)c[0], (float)c[1]);
+            b_dst[i * 8u + k * 2u + 1u] = __floats2half2_rn((float)c[2], (float)c[3]);
+        }
+    }
+    s_scale[tid] = __half2float(st.scale);
+}
+
+__global__ __launch_bounds__(D3_VP_THREADS, 2)
+void dots3_value_project_hmma_kernel(
+        float * __restrict__ heads,
+        const float * __restrict__ latent,
+        const __half * __restrict__ scale,
+        const int8_t * __restrict__ code,
+        const float * __restrict__ gate_logits,
+        const uint32_t rows,
+        const uint32_t q_heads,
+        const uint32_t latent_dim) {
+    __shared__ __align__(16) __half s_a[2][D3_VP_TOKENS * D3_VP_A_ROW];
+    __shared__ __align__(16) __half s_b[2][D3_VP_KB * D3_VP_B_ROW];
+    __shared__ float s_scale[2][D3_VP_VALUES];
+    const uint32_t head = blockIdx.x;
+    const uint32_t token0 = blockIdx.y * D3_VP_TOKENS;
+    const uint32_t warp = threadIdx.x >> 5u;
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t k_blocks = latent_dim / D3_VP_KB;
+    if (head >= q_heads || token0 >= rows) return;
+    const uint32_t a_row = ((lane >> 3) & 1u) * 8u + (lane & 7u);
+    const uint32_t a_col = (lane >> 4) * 8u;
+
+    tile_c output[D3_VP_CB];
+    dots3_vp_stage st;
+    dots3_vp_fetch(st, latent, scale, code, token0, rows, q_heads, head,
+                   latent_dim, k_blocks, 0u);
+    for (uint32_t b = 0; b < k_blocks; b++) {
+        const uint32_t buf = b & 1u;
+        dots3_vp_store(st, s_a[buf], s_b[buf], s_scale[buf]);
+        __syncthreads();
+        if (b + 1u < k_blocks) {
+            dots3_vp_fetch(st, latent, scale, code, token0, rows, q_heads,
+                           head, latent_dim, k_blocks, b + 1u);
+        }
+        tile_c acc[D3_VP_CB];
+#pragma unroll
+        for (uint32_t kk = 0; kk < D3_VP_KB / 16u; kk++) {
+            tile_a a;
+            uint32_t *a_x = reinterpret_cast<uint32_t *>(a.x);
+            solar_fattn_ldsm_x4(
+                a_x[0], a_x[1], a_x[2], a_x[3],
+                s_a[buf] + (size_t)(warp * 16u + a_row) * D3_VP_A_ROW + kk * 16u + a_col);
+            const __half *b_base =
+                s_b[buf] + (size_t)(kk * 16u + a_row) * D3_VP_B_ROW + a_col;
+#pragma unroll
+            for (uint32_t c = 0; c < D3_VP_CB; c += 2u) {
+                tile_b b0, b1;
+                uint32_t *b0_x = reinterpret_cast<uint32_t *>(b0.x);
+                uint32_t *b1_x = reinterpret_cast<uint32_t *>(b1.x);
+                solar_fattn_ldsm_x4_trans(
+                    b0_x[0], b0_x[1], b1_x[0], b1_x[1],
+                    b_base + c * 8u);
+                mma(acc[c], a, b0);
+                mma(acc[c + 1u], a, b1);
+            }
+        }
+        /* Fold this block's exact int8 product in with its column scales. */
+#pragma unroll
+        for (uint32_t c = 0; c < D3_VP_CB; c++) {
+            const float2 sc = *reinterpret_cast<const float2 *>(
+                s_scale[buf] + c * 8u + (lane & 3u) * 2u);
+            output[c].x[0] += acc[c].x[0] * sc.x;
+            output[c].x[1] += acc[c].x[1] * sc.y;
+            output[c].x[2] += acc[c].x[2] * sc.x;
+            output[c].x[3] += acc[c].x[3] * sc.y;
+        }
+    }
+
+    /* Headwise sigmoid gate folded in (the separate gate pass multiplied the
+     * finished sums by the same factor). */
+#pragma unroll
+    for (int r = 0; r < 2; r++) {
+        const uint32_t token = token0 + warp * 16u + lane / 4u + 8u * (uint32_t)r;
+        if (token >= rows) continue;
+        float g = 1.0f;
+        if (gate_logits) {
+            const float x = gate_logits[(size_t)token * q_heads + head];
+            g = x >= 0.0f ? 1.0f / (1.0f + __expf(-x))
+                          : __expf(x) / (1.0f + __expf(x));
+        }
+        float *dst = heads + ((size_t)token * q_heads + head) * D3_VP_VALUES + (lane & 3u) * 2u;
+#pragma unroll
+        for (uint32_t c = 0; c < D3_VP_CB; c++) {
+            *reinterpret_cast<float2 *>(dst + c * 8u) =
+                make_float2(output[c].x[r * 2] * g, output[c].x[r * 2 + 1] * g);
+        }
+    }
+}
+
+/* dots3-note Q/K absorption on tensor cores (prefill widths).
+ *
+ * q_absorbed[t, h, j] = sum_d q_nope[t, h, d] * W_UK[h][d][j] is one
+ * [tokens x nope] . [nope x latent] GEMM per head over the raw Q8_0
+ * attn_kv_b rows (row h*(nope+128)+d holds latent_dim columns in 34-byte
+ * blocks).  Block = (head, 64 tokens), four warps of 16 tokens; the whole
+ * nope-wide A operand lives in registers (8 or 12 k-steps) and the kernel
+ * walks the latent columns one 32-wide Q8_0 block at a time, dequantizing
+ * that [nope x 32] slab to FP16 in a double-buffered shared tile.  The
+ * scale varies along the reduction here (per (d, block)), so the weights
+ * are rounded to FP16 as well as the activations. */
+enum {
+    D3_AB_TOKENS  = 64,
+    D3_AB_WARPS   = 4,
+    D3_AB_THREADS = D3_AB_WARPS * 32,
+    D3_AB_NB      = 32,                    /* latent columns per step */
+    D3_AB_B_ROW   = D3_AB_NB + D3_FA_PAD,  /* fp16 */
+    D3_AB_MAX_K   = 192,
+    D3_AB_ROWS_PT = (D3_AB_MAX_K + D3_AB_THREADS - 1) / D3_AB_THREADS,
+    D3_AB_WORDS   = 9,                     /* 4-byte words covering one 34-byte block */
+};
+
+/* Raw Q8_0 block (scale + 32 codes) for row d, column block b, fetched as
+ * nine aligned words.  The block starts at byte 34*b of the row: even b
+ * starts on a word, odd b two bytes into one, so `shift` says where the
+ * scale sits inside the first word. */
+struct dots3_ab_stage {
+    uint32_t w[D3_AB_ROWS_PT][D3_AB_WORDS];
+};
+
+__device__ __forceinline__ void dots3_ab_fetch(
+        dots3_ab_stage &st, const unsigned char *weight, uint64_t row_bytes,
+        uint32_t row0, uint32_t nope, uint32_t b) {
+#pragma unroll
+    for (uint32_t p = 0; p < D3_AB_ROWS_PT; p++) {
+        const uint32_t d = threadIdx.x + p * D3_AB_THREADS;
+        if (d >= nope) break;
+        const unsigned char *blk = weight + (size_t)(row0 + d) * row_bytes + (size_t)b * 34u;
+        const unsigned char *span = reinterpret_cast<const unsigned char *>(
+            reinterpret_cast<uintptr_t>(blk) & ~(uintptr_t)3u);
+        const uint32_t *words = reinterpret_cast<const uint32_t *>(span);
+#pragma unroll
+        for (uint32_t i = 0; i + 1u < D3_AB_WORDS; i++) st.w[p][i] = words[i];
+        /* Bytes 32..35 of the span: an odd block (span starts two bytes
+         * early) owns all four, an even block ends at byte 33 -- never read
+         * the neighbour's bytes past the tensor's last row. */
+        const uint16_t *tail = reinterpret_cast<const uint16_t *>(span + 32);
+        st.w[p][D3_AB_WORDS - 1u] =
+            (uint32_t)tail[0] | ((b & 1u) ? (uint32_t)tail[1] << 16 : 0u);
+    }
+}
+
+__device__ __forceinline__ void dots3_ab_store(
+        const dots3_ab_stage &st, __half *s_b, uint32_t nope, uint32_t b) {
+    const uint32_t shift = (b & 1u) ? 2u : 0u;   /* bytes before the scale */
+#pragma unroll
+    for (uint32_t p = 0; p < D3_AB_ROWS_PT; p++) {
+        const uint32_t d = threadIdx.x + p * D3_AB_THREADS;
+        if (d >= nope) break;
+        const unsigned char *bytes = reinterpret_cast<const unsigned char *>(st.w[p]);
+        uint16_t sh;
+        memcpy(&sh, bytes + shift, 2u);
+        const float scale = __half2float(__ushort_as_half(sh));
+        const int8_t *codes = reinterpret_cast<const int8_t *>(bytes + shift + 2u);
+        half2 *dst = reinterpret_cast<half2 *>(s_b + (size_t)d * D3_AB_B_ROW);
+#pragma unroll
+        for (uint32_t k = 0; k < D3_AB_NB / 2u; k++) {
+            dst[k] = dots3_f2_to_h2(scale * (float)codes[2u * k],
+                                    scale * (float)codes[2u * k + 1u]);
+        }
+    }
+}
+
+template <uint32_t NOPE>
+__global__ __launch_bounds__(D3_AB_THREADS, 2)
+void dots3_absorb_hmma_kernel(
+        float * __restrict__ out,
+        const float * __restrict__ q,
+        const unsigned char * __restrict__ weight,
+        const uint32_t rows,
+        const uint32_t q_heads,
+        const uint32_t latent_dim,
+        const uint32_t key_dim,
+        const uint32_t value_dim,
+        const uint64_t row_bytes) {
+    __shared__ __align__(16) __half s_b[2][NOPE * D3_AB_B_ROW];
+    const uint32_t head = blockIdx.x;
+    const uint32_t token0 = blockIdx.y * D3_AB_TOKENS;
+    const uint32_t warp = threadIdx.x >> 5u;
+    const uint32_t lane = threadIdx.x & 31u;
+    if (head >= q_heads || token0 >= rows) return;
+    const uint32_t row0 = head * (NOPE + value_dim);
+    const uint32_t n_blocks = latent_dim / D3_AB_NB;
+    const uint32_t a_row = ((lane >> 3) & 1u) * 8u + (lane & 7u);
+    const uint32_t a_col = (lane >> 4) * 8u;
+
+    /* A: this warp's 16 tokens x NOPE, straight from the F32 rows. */
+    tile_a qa[NOPE / 16u];
+#pragma unroll
+    for (uint32_t kc = 0; kc < NOPE / 16u; kc++) {
+#pragma unroll
+        for (int l = 0; l < tile_a::ne; l++) {
+            const uint32_t i = (uint32_t)((l % 2) * 8) + lane / 4u;
+            const uint32_t j = (uint32_t)((l / 2) * 4) + (lane % 4u);
+            uint32_t t = token0 + warp * 16u + i;
+            if (t >= rows) t = rows - 1u;
+            const float2 xy = *reinterpret_cast<const float2 *>(
+                q + ((size_t)t * q_heads + head) * key_dim + kc * 16u + 2u * j);
+            qa[kc].x[l] = dots3_f2_to_h2(xy.x, xy.y);
+        }
+    }
+
+    dots3_ab_stage st;
+    dots3_ab_fetch(st, weight, row_bytes, row0, NOPE, 0u);
+    for (uint32_t b = 0; b < n_blocks; b++) {
+        const uint32_t buf = b & 1u;
+        dots3_ab_store(st, s_b[buf], NOPE, b);
+        __syncthreads();
+        if (b + 1u < n_blocks) dots3_ab_fetch(st, weight, row_bytes, row0, NOPE, b + 1u);
+        tile_c acc[D3_AB_NB / 8u];
+#pragma unroll
+        for (uint32_t kc = 0; kc < NOPE / 16u; kc++) {
+            const __half *b_base =
+                s_b[buf] + (size_t)(kc * 16u + a_row) * D3_AB_B_ROW + a_col;
+#pragma unroll
+            for (uint32_t c = 0; c < D3_AB_NB / 8u; c += 2u) {
+                tile_b b0, b1;
+                uint32_t *b0_x = reinterpret_cast<uint32_t *>(b0.x);
+                uint32_t *b1_x = reinterpret_cast<uint32_t *>(b1.x);
+                solar_fattn_ldsm_x4_trans(
+                    b0_x[0], b0_x[1], b1_x[0], b1_x[1],
+                    b_base + c * 8u);
+                mma(acc[c], qa[kc], b0);
+                mma(acc[c + 1u], qa[kc], b1);
+            }
+        }
+#pragma unroll
+        for (int r = 0; r < 2; r++) {
+            const uint32_t token = token0 + warp * 16u + lane / 4u + 8u * (uint32_t)r;
+            if (token >= rows) continue;
+            float *dst = out + ((size_t)token * q_heads + head) * latent_dim +
+                         b * D3_AB_NB + (lane & 3u) * 2u;
+#pragma unroll
+            for (uint32_t c = 0; c < D3_AB_NB / 8u; c++) {
+                *reinterpret_cast<float2 *>(dst + c * 8u) =
+                    make_float2(acc[c].x[r * 2], acc[c].x[r * 2 + 1]);
+            }
+        }
+    }
+}
+
 }  // namespace
 
 static int solar_fattn_gqa_pair(int n_head, int n_head_kv) {
@@ -1310,5 +2076,86 @@ extern "C" int ds4_mmq_motif3_prefill_attn_hmma(
         (uint32_t)n_query, (uint32_t)query_pos0,
         (uint32_t)n_kv, (uint32_t)kv_pos0,
         (uint32_t)n_head, (uint32_t)n_head_kv, scale, (uint32_t)window);
+    return cudaGetLastError() == cudaSuccess ? 0 : -2;
+}
+
+extern "C" int ds4_mmq_dots3_prefill_attn_hmma(
+        float *out, const float *q, const float *q_absorbed,
+        const void *latent_cache, const void *k_pe_cache,
+        const int32_t *selected, int sel_stride,
+        int rows, int pos0, int cache_cap, int window,
+        int q_heads, int latent_dim, int qk_nope, int qk_rope,
+        float scale, cudaStream_t stream) {
+    if (!out || !q || !q_absorbed || !latent_cache || !k_pe_cache ||
+        rows <= 0 || pos0 < 0 || cache_cap <= 0 || window < 0 ||
+        q_heads <= 0 || qk_nope <= 0 || qk_rope != D3_FA_ROPE ||
+        (selected && sel_stride <= 0)) {
+        return -1;
+    }
+    const int device = ggml_cuda_get_device();
+    if (ggml_cuda_info().devices[device].cc < GGML_CUDA_CC_AMPERE) return -1;
+    const __nv_bfloat16 *latent = (const __nv_bfloat16 *)latent_cache;
+    const __nv_bfloat16 *k_pe = (const __nv_bfloat16 *)k_pe_cache;
+    if (latent_dim == 512 && q_heads % 32 == 0) {
+        return dots3_fattn_dispatch<512u, 2u, 32u>(
+            out, q, q_absorbed, latent, k_pe, selected, (uint32_t)sel_stride,
+            (uint32_t)rows, (uint32_t)pos0, (uint32_t)cache_cap,
+            (uint32_t)window, (uint32_t)q_heads, (uint32_t)qk_nope, scale,
+            stream);
+    }
+    if (latent_dim == 1024 && q_heads % 16 == 0) {
+        return dots3_fattn_dispatch<1024u, 1u, 16u>(
+            out, q, q_absorbed, latent, k_pe, selected, (uint32_t)sel_stride,
+            (uint32_t)rows, (uint32_t)pos0, (uint32_t)cache_cap,
+            (uint32_t)window, (uint32_t)q_heads, (uint32_t)qk_nope, scale,
+            stream);
+    }
+    return -1;
+}
+
+extern "C" int ds4_mmq_dots3_value_project_hmma(
+        float *heads, const float *latent, const void *scale,
+        const void *code, const float *gate_logits, int rows, int q_heads,
+        int latent_dim, cudaStream_t stream) {
+    if (!heads || !latent || !scale || !code || rows <= 0 || q_heads <= 0 ||
+        latent_dim <= 0 || latent_dim % D3_VP_KB != 0) {
+        return -1;
+    }
+    const int device = ggml_cuda_get_device();
+    if (ggml_cuda_info().devices[device].cc < GGML_CUDA_CC_AMPERE) return -1;
+    const dim3 grid((unsigned)q_heads,
+                    (unsigned)((rows + D3_VP_TOKENS - 1) / D3_VP_TOKENS), 1);
+    dots3_value_project_hmma_kernel<<<grid, D3_VP_THREADS, 0, stream>>>(
+        heads, latent, (const __half *)scale, (const int8_t *)code,
+        gate_logits, (uint32_t)rows, (uint32_t)q_heads, (uint32_t)latent_dim);
+    return cudaGetLastError() == cudaSuccess ? 0 : -2;
+}
+
+extern "C" int ds4_mmq_dots3_absorb_hmma(
+        float *out, const float *q, const void *weight,
+        int rows, int q_heads, int latent_dim, int qk_nope, int key_dim,
+        int value_dim, size_t row_bytes, cudaStream_t stream) {
+    if (!out || !q || !weight || rows <= 0 || q_heads <= 0 ||
+        latent_dim <= 0 || latent_dim % D3_AB_NB != 0 ||
+        (qk_nope != 128 && qk_nope != 192) || key_dim < qk_nope ||
+        value_dim <= 0 || row_bytes == 0u ||
+        row_bytes != (size_t)(latent_dim / 32) * 34u) {
+        return -1;
+    }
+    const int device = ggml_cuda_get_device();
+    if (ggml_cuda_info().devices[device].cc < GGML_CUDA_CC_AMPERE) return -1;
+    const dim3 grid((unsigned)q_heads,
+                    (unsigned)((rows + D3_AB_TOKENS - 1) / D3_AB_TOKENS), 1);
+    if (qk_nope == 128) {
+        dots3_absorb_hmma_kernel<128u><<<grid, D3_AB_THREADS, 0, stream>>>(
+            out, q, (const unsigned char *)weight, (uint32_t)rows,
+            (uint32_t)q_heads, (uint32_t)latent_dim, (uint32_t)key_dim,
+            (uint32_t)value_dim, (uint64_t)row_bytes);
+    } else {
+        dots3_absorb_hmma_kernel<192u><<<grid, D3_AB_THREADS, 0, stream>>>(
+            out, q, (const unsigned char *)weight, (uint32_t)rows,
+            (uint32_t)q_heads, (uint32_t)latent_dim, (uint32_t)key_dim,
+            (uint32_t)value_dim, (uint64_t)row_bytes);
+    }
     return cudaGetLastError() == cudaSuccess ? 0 : -2;
 }

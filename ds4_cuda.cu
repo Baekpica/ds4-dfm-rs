@@ -39328,6 +39328,21 @@ __global__ static void motif3_qk_absorb_q8_0_group5_kernel(
     }
 }
 
+/* dots3 Q/K absorption: widths from this many rows run the tensor-core
+ * kernel.  DS4_DOTS3_ABSORB_NO_HMMA=1 keeps the scalar kernel at every
+ * width (diagnostic, read per call).  Decode widths keep the wide kernel
+ * below on purpose: three rewrites of its raw-row walk (one lane per
+ * column, one lane per 32-column block, 16-byte lanes over the contiguous
+ * row with shuffled scales) each measured 2-8 % slower on the decode step
+ * although every one moved fewer bytes -- the wide kernel's two-byte loads
+ * issue fewer L1 wavefronts per row than any narrower lane mapping. */
+enum { DOTS3_ABSORB_HMMA_MIN_ROWS = 16 };
+
+static int dots3_absorb_hmma_disabled(void) {
+    const char *value = getenv("DS4_DOTS3_ABSORB_NO_HMMA");
+    return value && value[0] == '1';
+}
+
 extern "C" int ds4_gpu_motif3_qk_absorb_q8_0_tensor(
         ds4_gpu_tensor *q_absorbed, const ds4_gpu_tensor *q_full,
         const void *model_map, uint64_t model_size, uint64_t kv_b_offset,
@@ -39362,6 +39377,20 @@ extern "C" int ds4_gpu_motif3_qk_absorb_q8_0_tensor(
     const bool dots_swa_shape = group_size == 1u && q_heads == 64u &&
         kv_heads == 64u && kv_latent_dim == 1024u && qk_nope == 192u &&
         key_dim == 256u && value_dim == 128u;
+    /* dots3 prefill widths: tensor-core GEMM per head over the raw Q8_0
+     * rows (cuda/mmq/ds4_fattn.cu); decode widths keep the scalar kernel. */
+    if ((dots_full_shape || dots_swa_shape) &&
+        rows >= DOTS3_ABSORB_HMMA_MIN_ROWS && !dots3_absorb_hmma_disabled()) {
+        const int rc = ds4_mmq_dots3_absorb_hmma(
+                (float *)q_absorbed->ptr, (const float *)q_full->ptr, weight,
+                (int)rows, (int)q_heads, (int)kv_latent_dim, (int)qk_nope,
+                (int)key_dim, (int)value_dim, (size_t)row_bytes,
+                ds4_current_stream());
+        if (rc == 0) return 1;
+        if (rc != -1) {
+            return cuda_ok(cudaGetLastError(), "dots3 absorb hmma launch");
+        }
+    }
     if (dots_full_shape || dots_swa_shape) {
         dim3 grid(q_heads, rows, 1);
         const uint32_t threads = dots_full_shape ? 64u : 128u;
@@ -40124,6 +40153,160 @@ __global__ static void motif3_value_project_q8_0_transposed_kernel(
     }
 }
 
+/* dots3 value projection: widths from this many rows run the tensor-core
+ * kernel on the transposed artifact planes.  DS4_DOTS3_VALUE_NO_HMMA=1 keeps
+ * the warp kernel at every width (diagnostic, read per call). */
+enum { DOTS3_VALUE_HMMA_MIN_ROWS = 16 };
+
+static int dots3_value_hmma_disabled(void) {
+    const char *value = getenv("DS4_DOTS3_VALUE_NO_HMMA");
+    return value && value[0] == '1';
+}
+
+/* Headwise output gate factor, sigmoid(gate_logit), as the standalone gate
+ * kernel computes it; folded into the value projection epilogues. */
+__device__ __forceinline__ static float dots3_head_gate(float x) {
+    return x >= 0.0f ? 1.0f / (1.0f + __expf(-x))
+                     : __expf(x) / (1.0f + __expf(x));
+}
+
+/* Headwise sigmoid output gate: attn[t,h,:] *= sigmoid(gate_logit[t,h]),
+ * computed from the same normed hidden state that fed the projections. */
+__global__ static void dots3_gate_mul_kernel(
+        float *attn, const float *gate_logits,
+        uint32_t rows, uint32_t heads, uint32_t value_dim) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    const uint64_t n = (uint64_t)rows * heads * value_dim;
+    if (i >= n) return;
+    const uint64_t rh = i / value_dim;
+    const float x = gate_logits[rh];
+    const float g = x >= 0.0f ? 1.0f / (1.0f + __expf(-x))
+                              : __expf(x) / (1.0f + __expf(x));
+    attn[i] *= g;
+}
+
+extern "C" int ds4_gpu_dots3_gate_mul_tensor(
+        ds4_gpu_tensor *attn, const ds4_gpu_tensor *gate_logits,
+        uint32_t rows, uint32_t heads, uint32_t value_dim) {
+    const uint64_t n = (uint64_t)rows * heads * value_dim;
+    if (!attn || !gate_logits || rows == 0 || heads == 0 || value_dim == 0 ||
+        attn->bytes < n * sizeof(float) ||
+        gate_logits->bytes < (uint64_t)rows * heads * sizeof(float)) return 0;
+    dots3_gate_mul_kernel<<<(n + 255u) / 256u, 256>>>(
+            (float *)attn->ptr, (const float *)gate_logits->ptr,
+            rows, heads, value_dim);
+    return cuda_ok(cudaGetLastError(), "dots3 headwise gate launch");
+}
+
+/* dots3 decode-width value projection on the transposed planes.  The
+ * transposed kernel above runs one 128-thread block per (head, token),
+ * thread = value column, walking all latent/32 blocks: 512 warps for a
+ * full layer at ~115 GB/s.  Here four thread groups of 128 columns split
+ * the blocks (group g takes b = g, g + 4, ...) and sum through shared
+ * memory: 2,048 warps per full layer.  Per-block dots keep the transposed
+ * kernel's order; only the block sum is re-associated (fp32 reorder). */
+enum { DOTS3_VALUE_DECODE_GROUPS = 4 };
+
+__global__ static void dots3_value_project_q8_0_decode_kernel(
+        float *heads, const float *latent, const __half *scale,
+        const int8_t *code, const float *gate_logits, uint32_t rows,
+        uint32_t q_heads, uint32_t latent_dim, uint32_t value_dim) {
+    const uint32_t head = blockIdx.x;
+    const uint32_t token = blockIdx.y;
+    const uint32_t group = threadIdx.x / value_dim;
+    const uint32_t d = threadIdx.x - group * value_dim;
+    if (head >= q_heads || token >= rows) return;
+    extern __shared__ float xsh[];
+    float *partial = xsh + latent_dim;
+    const float *src = latent + ((uint64_t)token * q_heads + head) * latent_dim;
+    for (uint32_t j = threadIdx.x; j < latent_dim; j += blockDim.x)
+        xsh[j] = src[j];
+    __syncthreads();
+
+    const uint32_t k_blocks = latent_dim >> 5;
+    float acc = 0.0f;
+    for (uint32_t b = group; b < k_blocks; b += DOTS3_VALUE_DECODE_GROUPS) {
+        const uint64_t hb = (uint64_t)head * k_blocks + b;
+        const float dq = __half2float(scale[hb * value_dim + d]);
+        float s = 0.0f;
+#pragma unroll 8
+        for (uint32_t k = 0; k < 32u; k++) {
+            s += (float)code[(hb * 32u + k) * value_dim + d] * xsh[b * 32u + k];
+        }
+        acc += dq * s;
+    }
+    partial[group * value_dim + d] = acc;
+    __syncthreads();
+    if (group != 0u) return;
+    float total = 0.0f;
+    for (uint32_t g = 0; g < DOTS3_VALUE_DECODE_GROUPS; g++)
+        total += partial[g * value_dim + d];
+    if (gate_logits) {
+        total *= dots3_head_gate(gate_logits[(uint64_t)token * q_heads + head]);
+    }
+    heads[((uint64_t)token * q_heads + head) * value_dim + d] = total;
+}
+
+/* DS4_DOTS3_VALUE_NO_DECODE=1 restores the one-group transposed kernel at
+ * decode widths (diagnostic, read per call). */
+static int dots3_value_decode_disabled(void) {
+    const char *value = getenv("DS4_DOTS3_VALUE_NO_DECODE");
+    return value && value[0] == '1';
+}
+
+/* dots3 value projection straight from the transposed artifact planes:
+ * prefill widths on the tensor-core GEMM, decode widths on the grouped
+ * walk.  The production entry below resolves the planes from the derived
+ * registry; fixtures hand them in directly. */
+extern "C" int ds4_gpu_dots3_value_project_planes_tensor(
+        ds4_gpu_tensor *heads, const ds4_gpu_tensor *latent,
+        const void *scale, const void *code, const ds4_gpu_tensor *gate_logits,
+        uint32_t rows, uint32_t q_heads, uint32_t latent_dim) {
+    const uint32_t value_dim = 128u;
+    if (!heads || !latent || !scale || !code || rows == 0 || q_heads == 0 ||
+        latent_dim == 0 || (latent_dim & 31u) ||
+        latent->bytes < (uint64_t)rows * q_heads * latent_dim * sizeof(float) ||
+        heads->bytes < (uint64_t)rows * q_heads * value_dim * sizeof(float) ||
+        (gate_logits &&
+         gate_logits->bytes < (uint64_t)rows * q_heads * sizeof(float))) return 0;
+    const float *gate = gate_logits ? (const float *)gate_logits->ptr : NULL;
+    if (rows >= DOTS3_VALUE_HMMA_MIN_ROWS && !dots3_value_hmma_disabled()) {
+        const int rc = ds4_mmq_dots3_value_project_hmma(
+                (float *)heads->ptr, (const float *)latent->ptr, scale, code,
+                gate, (int)rows, (int)q_heads, (int)latent_dim,
+                ds4_current_stream());
+        if (rc == 0) return 1;
+        if (rc != -1) {
+            return cuda_ok(cudaGetLastError(),
+                           "dots3 value projection hmma launch");
+        }
+    }
+    dim3 grid(q_heads, rows, 1);
+    if (!dots3_value_decode_disabled()) {
+        const size_t shared = ((size_t)latent_dim +
+            (size_t)DOTS3_VALUE_DECODE_GROUPS * value_dim) * sizeof(float);
+        dots3_value_project_q8_0_decode_kernel
+            <<<grid, DOTS3_VALUE_DECODE_GROUPS * value_dim, shared>>>(
+                (float *)heads->ptr, (const float *)latent->ptr,
+                (const __half *)scale, (const int8_t *)code, gate,
+                rows, q_heads, latent_dim, value_dim);
+        return cuda_ok(cudaGetLastError(),
+                       "dots3 decode value projection launch");
+    }
+    motif3_value_project_q8_0_transposed_kernel<false>
+        <<<grid, 128, (size_t)latent_dim * sizeof(float)>>>(
+            (float *)heads->ptr, (const float *)latent->ptr,
+            (const __half *)scale, (const int8_t *)code,
+            rows, q_heads, 1u, latent_dim, value_dim);
+    if (!cuda_ok(cudaGetLastError(),
+                 "Motif-3 transposed latent V projection launch")) return 0;
+    if (!gate) return 1;
+    const uint64_t n = (uint64_t)rows * q_heads * value_dim;
+    dots3_gate_mul_kernel<<<(uint32_t)((n + 255u) / 256u), 256>>>(
+            (float *)heads->ptr, gate, rows, q_heads, value_dim);
+    return cuda_ok(cudaGetLastError(), "dots3 headwise gate launch");
+}
+
 extern "C" int ds4_gpu_motif3_value_project_q8_0_tensor(
         ds4_gpu_tensor *heads, const ds4_gpu_tensor *latent,
         const void *model_map, uint64_t model_size, uint64_t kv_b_offset,
@@ -40164,6 +40347,13 @@ extern "C" int ds4_gpu_motif3_value_project_q8_0_tensor(
               scale_bytes + code_bytes,
               "MLA latent V transposed Q8_0")
         : NULL;
+    /* dots3 on the transposed planes: tensor cores at prefill widths, the
+     * grouped walk at decode widths.  Motif shapes keep the kernel below. */
+    if (transposed && dots_shape && !round_bf16) {
+        return ds4_gpu_dots3_value_project_planes_tensor(
+                heads, latent, transposed, transposed + scale_bytes, NULL,
+                rows, q_heads, kv_latent_dim);
+    }
     dim3 grid(q_heads, rows, 1);
     if (transposed) {
         if (round_bf16)
@@ -40202,6 +40392,49 @@ extern "C" int ds4_gpu_motif3_value_project_q8_0_tensor(
     }
 #undef M3_VALUE_LAUNCH
     return cuda_ok(cudaGetLastError(), "Motif-3 latent V projection launch");
+}
+
+/* dots3 value projection with the headwise gate folded in: resolves the
+ * transposed planes like the entry above and hands the gate logits to the
+ * planes entry; without the artifact, the raw kernel plus the separate gate
+ * pass.  The gate logits are [rows][heads]. */
+extern "C" int ds4_gpu_dots3_value_project_gated_tensor(
+        ds4_gpu_tensor *heads, const ds4_gpu_tensor *latent,
+        const void *model_map, uint64_t model_size, uint64_t kv_b_offset,
+        const ds4_gpu_tensor *gate_logits, uint32_t rows, uint32_t q_heads,
+        uint32_t kv_latent_dim, uint32_t qk_nope, uint32_t value_dim) {
+    if (!heads || !latent || !model_map || !gate_logits || rows == 0 ||
+        q_heads == 0 || kv_latent_dim == 0 || (kv_latent_dim & 31u) ||
+        qk_nope == 0 || value_dim != 128u ||
+        gate_logits->bytes < (uint64_t)rows * q_heads * sizeof(float)) return 0;
+    const uint64_t row_bytes = ((uint64_t)kv_latent_dim / 32u) * 34u;
+    const uint64_t weight_rows = (uint64_t)q_heads * (qk_nope + value_dim);
+    const uint64_t weight_bytes = weight_rows * row_bytes;
+    const uint64_t k_blocks = kv_latent_dim / 32u;
+    const uint64_t scale_bytes = (uint64_t)q_heads * k_blocks * value_dim * 2u;
+    const uint64_t code_bytes = (uint64_t)q_heads * k_blocks * 32u * value_dim;
+    const bool dots_shape =
+        (q_heads == 128u && kv_latent_dim == 512u && qk_nope == 128u) ||
+        (q_heads == 64u && kv_latent_dim == 1024u && qk_nope == 192u);
+    if (kv_b_offset > model_size || weight_bytes > model_size - kv_b_offset ||
+        !dots_shape) return 0;
+    char *transposed = cuda_derived_weight_ptr(
+            model_map, kv_b_offset, weight_bytes,
+            CUDA_DERIVED_MOTIF3_KV_B_VALUE_Q8_0,
+            kv_latent_dim, weight_rows, 1u, scale_bytes + code_bytes,
+            "MLA latent V transposed Q8_0");
+    if (transposed) {
+        return ds4_gpu_dots3_value_project_planes_tensor(
+                heads, latent, transposed, transposed + scale_bytes,
+                gate_logits, rows, q_heads, kv_latent_dim);
+    }
+    if (!ds4_gpu_motif3_value_project_q8_0_tensor(
+                heads, latent, model_map, model_size, kv_b_offset, rows,
+                q_heads, q_heads, 1u, kv_latent_dim, qk_nope, value_dim, 0)) {
+        return 0;
+    }
+    return ds4_gpu_dots3_gate_mul_tensor(heads, gate_logits, rows, q_heads,
+                                         value_dim);
 }
 
 __global__ static void motif3_expanded_attention_kernel(
@@ -40587,6 +40820,99 @@ extern "C" int ds4_gpu_dots3_rope_interleaved_tensor(
     return cuda_ok(cudaGetLastError(), "dots3 interleaved rope launch");
 }
 
+/* dots3 compressed-KV finish: RMSNorm the latent part and the rope tail of
+ * the fused kv_a_mqa row, rotate the tail (GPT-J interleaved), and store both
+ * as BF16 cache rows -- one launch instead of norm, norm, rope, store with
+ * two F32 round trips between them.  Every arithmetic step is the one the
+ * separate kernels do, in the same order (the 256-lane reduction tree
+ * included), so the cache bytes are identical. */
+__global__ static void dots3_kv_finish_kernel(
+        __nv_bfloat16 *latent_cache, __nv_bfloat16 *k_pe_cache,
+        const float *kv_raw, const float *w_latent, const float *w_rope,
+        const int32_t *positions, const float *inv_freq,
+        uint32_t rows, uint32_t kv_lora, uint32_t rope_dim,
+        uint32_t cache_cap, uint32_t ring, float eps) {
+    const uint32_t row = blockIdx.x;
+    if (row >= rows) return;
+    const uint32_t absolute = (uint32_t)positions[row];
+    if (!ring && absolute >= cache_cap) return;
+    const uint32_t slot = ring ? absolute % cache_cap : absolute;
+    const float *src = kv_raw + (uint64_t)row * (kv_lora + rope_dim);
+    __shared__ float red[256];
+    float acc = 0.0f;
+    for (uint32_t d = threadIdx.x; d < kv_lora; d += blockDim.x) {
+        const float v = src[d];
+        acc += v * v;
+    }
+    red[threadIdx.x] = acc;
+    __syncthreads();
+    for (uint32_t off = blockDim.x >> 1u; off; off >>= 1u) {
+        if (threadIdx.x < off) red[threadIdx.x] += red[threadIdx.x + off];
+        __syncthreads();
+    }
+    const float inv_latent = rsqrtf(red[0] / (float)kv_lora + eps);
+    __syncthreads();
+    acc = 0.0f;
+    for (uint32_t d = threadIdx.x; d < rope_dim; d += blockDim.x) {
+        const float v = src[kv_lora + d];
+        acc += v * v;
+    }
+    red[threadIdx.x] = acc;
+    __syncthreads();
+    for (uint32_t off = blockDim.x >> 1u; off; off >>= 1u) {
+        if (threadIdx.x < off) red[threadIdx.x] += red[threadIdx.x + off];
+        __syncthreads();
+    }
+    const float inv_rope = rsqrtf(red[0] / (float)rope_dim + eps);
+
+    __nv_bfloat16 *latent_row = latent_cache + (uint64_t)slot * kv_lora;
+    for (uint32_t d = threadIdx.x; d < kv_lora; d += blockDim.x) {
+        latent_row[d] = __float2bfloat16_rn(src[d] * inv_latent * w_latent[d]);
+    }
+    const uint32_t half = rope_dim / 2u;
+    if (threadIdx.x < half) {
+        const uint32_t f = threadIdx.x;
+        const float even = src[kv_lora + 2u * f] * inv_rope * w_rope[2u * f];
+        const float odd = src[kv_lora + 2u * f + 1u] * inv_rope * w_rope[2u * f + 1u];
+        const float angle = (float)absolute * inv_freq[f];
+        double sine_d, cosine_d;
+        sincos((double)angle, &sine_d, &cosine_d);
+        __nv_bfloat16 *k_pe_row = k_pe_cache + (uint64_t)slot * rope_dim;
+        k_pe_row[2u * f] = __float2bfloat16_rn(
+                even * (float)cosine_d - odd * (float)sine_d);
+        k_pe_row[2u * f + 1u] = __float2bfloat16_rn(
+                odd * (float)cosine_d + even * (float)sine_d);
+    }
+}
+
+extern "C" int ds4_gpu_dots3_kv_finish_tensor(
+        ds4_gpu_tensor *latent_cache, ds4_gpu_tensor *k_pe_cache,
+        const ds4_gpu_tensor *kv_raw, const ds4_gpu_tensor *w_latent,
+        const ds4_gpu_tensor *w_rope, const ds4_gpu_tensor *positions,
+        const ds4_gpu_tensor *inv_freq, uint32_t rows, uint32_t kv_lora,
+        uint32_t rope_dim, uint32_t cache_cap, bool ring, float eps) {
+    if (!latent_cache || !k_pe_cache || !kv_raw || !w_latent || !w_rope ||
+        !positions || !inv_freq || rows == 0 || kv_lora == 0 ||
+        rope_dim == 0 || (rope_dim & 1u) || rope_dim / 2u > 256u ||
+        cache_cap == 0 ||
+        latent_cache->bytes <
+            (uint64_t)cache_cap * kv_lora * sizeof(__nv_bfloat16) ||
+        k_pe_cache->bytes <
+            (uint64_t)cache_cap * rope_dim * sizeof(__nv_bfloat16) ||
+        kv_raw->bytes < (uint64_t)rows * (kv_lora + rope_dim) * sizeof(float) ||
+        w_latent->bytes < (uint64_t)kv_lora * sizeof(float) ||
+        w_rope->bytes < (uint64_t)rope_dim * sizeof(float) ||
+        positions->bytes < (uint64_t)rows * sizeof(int32_t) ||
+        inv_freq->bytes < (uint64_t)(rope_dim / 2u) * sizeof(float)) return 0;
+    dots3_kv_finish_kernel<<<rows, 256>>>(
+            (__nv_bfloat16 *)latent_cache->ptr, (__nv_bfloat16 *)k_pe_cache->ptr,
+            (const float *)kv_raw->ptr, (const float *)w_latent->ptr,
+            (const float *)w_rope->ptr, (const int32_t *)positions->ptr,
+            (const float *)inv_freq->ptr, rows, kv_lora, rope_dim, cache_cap,
+            ring ? 1u : 0u, eps);
+    return cuda_ok(cudaGetLastError(), "dots3 kv finish launch");
+}
+
 /* Store finalized latent + rotated k_pe rows into the BF16 caches.  Unlike
  * the Motif store this one takes both inputs already normalized and rotated;
  * SWA layers use a ring. */
@@ -40739,6 +41065,18 @@ __global__ static void dots3_latent_attention_kernel(
     }
 }
 
+/* Widths from this many rows use the tensor-core latent attention; below
+ * it (decode, tiny tails) the scalar kernel's 16 blocks per token cover
+ * more SMs than one block per token would.  DS4_DOTS3_ATTN_NO_HMMA=1 keeps
+ * the scalar kernel at every width (diagnostic, read per call so fixtures
+ * can compare both paths in one process). */
+enum { DOTS3_ATTN_HMMA_MIN_ROWS = 8 };
+
+static int dots3_attn_hmma_disabled(void) {
+    const char *value = getenv("DS4_DOTS3_ATTN_NO_HMMA");
+    return value && value[0] == '1';
+}
+
 extern "C" int ds4_gpu_dots3_latent_attention_tensor(
         ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
         const ds4_gpu_tensor *q_absorbed,
@@ -40762,6 +41100,25 @@ extern "C" int ds4_gpu_dots3_latent_attention_tensor(
             (uint64_t)cache_cap * latent_dim * sizeof(__nv_bfloat16) ||
         k_pe_cache->bytes <
             (uint64_t)cache_cap * qk_rope * sizeof(__nv_bfloat16)) return 0;
+    /* Prefill widths run the tensor-core kernel (cuda/mmq/ds4_fattn.cu):
+     * one token's heads form a GEMM against that token's key set.  Decode
+     * widths keep the warp-per-(token, head) walk below.  -1 means the shape
+     * is not covered and the scalar kernel serves it. */
+    if (rows >= DOTS3_ATTN_HMMA_MIN_ROWS && !dots3_attn_hmma_disabled()) {
+        const int rc = ds4_mmq_dots3_prefill_attn_hmma(
+                (float *)out->ptr, (const float *)q->ptr,
+                (const float *)q_absorbed->ptr, latent_cache->ptr,
+                k_pe_cache->ptr,
+                selected ? (const int32_t *)selected->ptr : NULL,
+                (int)sel_stride, (int)rows, (int)pos0, (int)cache_cap,
+                (int)window, (int)q_heads, (int)latent_dim, (int)qk_nope,
+                (int)qk_rope, scale, ds4_current_stream());
+        if (rc == 0) return 1;
+        if (rc != -1) {
+            return cuda_ok(cudaGetLastError(),
+                           "dots3 latent attention hmma launch");
+        }
+    }
     dim3 grid((q_heads + 7u) / 8u, rows, 1);
 #define D3_LAUNCH(groups_, selection_, window_)                              \
     dots3_latent_attention_kernel<groups_, selection_, window_>              \
@@ -40787,33 +41144,258 @@ extern "C" int ds4_gpu_dots3_latent_attention_tensor(
     return cuda_ok(cudaGetLastError(), "dots3 latent attention launch");
 }
 
-/* Headwise sigmoid output gate: attn[t,h,:] *= sigmoid(gate_logit[t,h]),
- * computed from the same normed hidden state that fed the projections. */
-__global__ static void dots3_gate_mul_kernel(
-        float *attn, const float *gate_logits,
-        uint32_t rows, uint32_t heads, uint32_t value_dim) {
-    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-    const uint64_t n = (uint64_t)rows * heads * value_dim;
-    if (i >= n) return;
-    const uint64_t rh = i / value_dim;
-    const float x = gate_logits[rh];
-    const float g = x >= 0.0f ? 1.0f / (1.0f + __expf(-x))
-                              : __expf(x) / (1.0f + __expf(x));
-    attn[i] *= g;
+/* Decode-width latent attention split across the key range.
+ *
+ * At one row the warp-per-(token, head) walk above runs 16 (full) or 8
+ * (SWA) blocks on 48 SMs and every warp serializes 2048 / 513 key steps
+ * (~0.7 us each), so a full layer cost 1.4 ms and attention was 37 % of
+ * the decode step.  Here grid.z splits the key list into DOTS3_ATTN_SPLITS
+ * ranges: each warp walks one range with the same per-key arithmetic and
+ * publishes (unnormalized O, running max, running sum); the combine kernel
+ * merges the ranges per (token, head).  Same math as the serial walk, fp32
+ * reordering only.  Partial layout per (token, head, split): latent_dim
+ * floats of O, then M and S, on a 16-byte aligned stride. */
+enum {
+    DOTS3_ATTN_SPLITS = 16,
+    DOTS3_ATTN_SPLIT_MIN_KEYS = 64,     /* below this the serial walk wins */
+    DOTS3_ATTN_SPLIT_MAX_ROWS = 2,
+    DOTS3_ATTN_PARTIAL_EXTRA = 4,       /* M, S, pad to a float4 stride */
+};
+
+static int dots3_attn_split_disabled(void) {
+    const char *value = getenv("DS4_DOTS3_ATTN_NO_SPLIT");
+    return value && value[0] == '1';
 }
 
-extern "C" int ds4_gpu_dots3_gate_mul_tensor(
-        ds4_gpu_tensor *attn, const ds4_gpu_tensor *gate_logits,
-        uint32_t rows, uint32_t heads, uint32_t value_dim) {
-    const uint64_t n = (uint64_t)rows * heads * value_dim;
-    if (!attn || !gate_logits || rows == 0 || heads == 0 || value_dim == 0 ||
-        attn->bytes < n * sizeof(float) ||
-        gate_logits->bytes < (uint64_t)rows * heads * sizeof(float)) return 0;
-    dots3_gate_mul_kernel<<<(n + 255u) / 256u, 256>>>(
-            (float *)attn->ptr, (const float *)gate_logits->ptr,
-            rows, heads, value_dim);
-    return cuda_ok(cudaGetLastError(), "dots3 headwise gate launch");
+template <uint32_t kGroups, bool kUseSelection, bool kUseWindow>
+__global__ static void dots3_latent_attention_split_kernel(
+        float *partial, const float *q, const float *q_absorbed,
+        const __nv_bfloat16 *latent_cache, const __nv_bfloat16 *k_pe_cache,
+        const int32_t *selected, uint32_t sel_stride,
+        uint32_t rows, uint32_t pos0, uint32_t cache_cap, uint32_t window,
+        uint32_t q_heads, uint32_t latent_dim, uint32_t qk_nope,
+        uint32_t qk_rope, float scale, uint32_t split_keys) {
+    const uint32_t token = blockIdx.y;
+    const uint32_t split = blockIdx.z;
+    const uint32_t warp = threadIdx.x >> 5u;
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t head = blockIdx.x * 8u + warp;
+    constexpr uint32_t storage_groups = kGroups ? kGroups : 8u;
+    const uint32_t groups = kGroups ? kGroups : latent_dim / 128u;
+    if (token >= rows || head >= q_heads || groups > 8u ||
+        (latent_dim & 127u) || qk_rope != 64u) return;
+
+    const uint32_t qpos = pos0 + token;
+    const uint32_t end = qpos + 1u;
+    const uint32_t visible = kUseWindow ? min(end, window) : end;
+    const uint32_t first = end - visible;
+    const uint32_t key_dim = qk_nope + qk_rope;
+    const float *qh = q + ((uint64_t)token * q_heads + head) * key_dim;
+    const float4 *low4 = (const float4 *)(q_absorbed +
+        ((uint64_t)token * q_heads + head) * latent_dim);
+    float4 low[storage_groups];
+#pragma unroll
+    for (uint32_t g = 0; g < groups; g++) low[g] = low4[lane + 32u * g];
+    float qrope[4] = {0.f, 0.f, 0.f, 0.f};
+    if (lane < 16u) {
+        qrope[0] = qh[qk_nope + lane * 4u + 0u];
+        qrope[1] = qh[qk_nope + lane * 4u + 1u];
+        qrope[2] = qh[qk_nope + lane * 4u + 2u];
+        qrope[3] = qh[qk_nope + lane * 4u + 3u];
+    }
+
+    float M = -FLT_MAX / 2.0f;
+    float S = 0.0f;
+    float4 o[storage_groups];
+#pragma unroll
+    for (uint32_t g = 0; g < groups; g++) o[g] = make_float4(0.f, 0.f, 0.f, 0.f);
+    const uint32_t count = kUseSelection ? sel_stride : visible;
+    const uint32_t j0 = split * split_keys;
+    const uint32_t j1 = min(count, j0 + split_keys);
+    for (uint32_t j = j0; j < j1; j++) {
+        uint32_t logical;
+        if constexpr (kUseSelection) {
+            const int32_t id = selected[(uint64_t)token * sel_stride + j];
+            if (id < 0 || (uint32_t)id > qpos) continue;
+            logical = (uint32_t)id;
+        } else {
+            logical = first + j;
+        }
+        const uint32_t slot = kUseWindow ? logical % cache_cap : logical;
+        if (slot >= cache_cap) continue;
+        const __nv_bfloat16 *kvrow = latent_cache + (uint64_t)slot * latent_dim;
+        float partial_dot = 0.0f;
+        float4 k[storage_groups];
+#pragma unroll
+        for (uint32_t g = 0; g < groups; g++) {
+            k[g] = motif3_load_bf16x4(kvrow + (lane + 32u * g) * 4u);
+            partial_dot += low[g].x * k[g].x + low[g].y * k[g].y +
+                           low[g].z * k[g].z + low[g].w * k[g].w;
+        }
+        if (lane < 16u) {
+            const float4 kp = motif3_load_bf16x4(
+                    k_pe_cache + (uint64_t)slot * qk_rope + lane * 4u);
+            partial_dot += qrope[0] * kp.x + qrope[1] * kp.y +
+                           qrope[2] * kp.z + qrope[3] * kp.w;
+        }
+        for (uint32_t off = 16u; off > 0u; off >>= 1u)
+            partial_dot += __shfl_xor_sync(0xffffffffu, partial_dot, off);
+        const float score = partial_dot * scale;
+        const float new_m = fmaxf(M, score);
+        const float old_scale = expf(M - new_m);
+        const float row_scale = expf(score - new_m);
+#pragma unroll
+        for (uint32_t g = 0; g < groups; g++) {
+            o[g].x = o[g].x * old_scale + k[g].x * row_scale;
+            o[g].y = o[g].y * old_scale + k[g].y * row_scale;
+            o[g].z = o[g].z * old_scale + k[g].z * row_scale;
+            o[g].w = o[g].w * old_scale + k[g].w * row_scale;
+        }
+        S = S * old_scale + row_scale;
+        M = new_m;
+    }
+    const uint32_t stride = latent_dim + DOTS3_ATTN_PARTIAL_EXTRA;
+    float *dst = partial +
+        (((uint64_t)token * q_heads + head) * gridDim.z + split) * stride;
+    float4 *dst4 = (float4 *)dst;
+#pragma unroll
+    for (uint32_t g = 0; g < groups; g++) dst4[lane + 32u * g] = o[g];
+    if (lane == 0u) {
+        dst[latent_dim] = M;
+        dst[latent_dim + 1u] = S;
+    }
 }
+
+/* Merge the split partials: out = sum_s e^(M_s - M) O_s / sum_s e^(M_s - M) S_s. */
+__global__ static void dots3_latent_attention_combine_kernel(
+        float *out, const float *partial, uint32_t rows, uint32_t q_heads,
+        uint32_t latent_dim, uint32_t splits) {
+    const uint32_t head = blockIdx.x;
+    const uint32_t token = blockIdx.y;
+    if (token >= rows || head >= q_heads) return;
+    const uint32_t stride = latent_dim + DOTS3_ATTN_PARTIAL_EXTRA;
+    const float *base = partial +
+        ((uint64_t)token * q_heads + head) * splits * stride;
+    __shared__ float weight[DOTS3_ATTN_SPLITS];
+    __shared__ float inv_sum;
+    if (threadIdx.x == 0u) {
+        float m = -FLT_MAX / 2.0f;
+        for (uint32_t s = 0; s < splits; s++)
+            m = fmaxf(m, base[(uint64_t)s * stride + latent_dim]);
+        float sum = 0.0f;
+        for (uint32_t s = 0; s < splits; s++) {
+            const float w = expf(base[(uint64_t)s * stride + latent_dim] - m);
+            weight[s] = w;
+            sum += w * base[(uint64_t)s * stride + latent_dim + 1u];
+        }
+        inv_sum = sum > 0.0f ? 1.0f / sum : 0.0f;
+    }
+    __syncthreads();
+    float *dst = out + ((uint64_t)token * q_heads + head) * latent_dim;
+    for (uint32_t d = threadIdx.x; d < latent_dim; d += blockDim.x) {
+        float acc = 0.0f;
+        for (uint32_t s = 0; s < splits; s++)
+            acc += weight[s] * base[(uint64_t)s * stride + d];
+        dst[d] = acc * inv_sum;
+    }
+}
+
+extern "C" int ds4_gpu_dots3_latent_attention_split_tensor(
+        ds4_gpu_tensor *out, ds4_gpu_tensor *partial, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *q_absorbed,
+        const ds4_gpu_tensor *latent_cache, const ds4_gpu_tensor *k_pe_cache,
+        const ds4_gpu_tensor *selected, uint32_t sel_stride,
+        uint32_t rows, uint32_t pos0, uint32_t cache_cap, uint32_t window,
+        uint32_t q_heads, uint32_t latent_dim, uint32_t qk_nope,
+        uint32_t qk_rope, float scale) {
+    /* Longest key list among the rows decides the split; the serial walk
+     * keeps every case the split does not cover. */
+    const uint32_t end_max = pos0 + rows;
+    const uint32_t visible_max = window ? (end_max < window ? end_max : window)
+                                        : end_max;
+    const uint32_t count = selected ? sel_stride : visible_max;
+    const uint32_t stride = latent_dim + DOTS3_ATTN_PARTIAL_EXTRA;
+    const bool split_ok = partial && rows <= DOTS3_ATTN_SPLIT_MAX_ROWS &&
+        count >= DOTS3_ATTN_SPLIT_MIN_KEYS && !dots3_attn_split_disabled() &&
+        (latent_dim == 512u || latent_dim == 1024u) && qk_rope == 64u &&
+        partial->bytes >= (uint64_t)rows * q_heads * DOTS3_ATTN_SPLITS *
+                              stride * sizeof(float);
+    if (!split_ok) {
+        return ds4_gpu_dots3_latent_attention_tensor(
+                out, q, q_absorbed, latent_cache, k_pe_cache, selected,
+                sel_stride, rows, pos0, cache_cap, window, q_heads,
+                latent_dim, qk_nope, qk_rope, scale);
+    }
+    const uint32_t key_dim = qk_nope + qk_rope;
+    if (!out || !q || !q_absorbed || !latent_cache || !k_pe_cache ||
+        rows == 0 || cache_cap == 0 || q_heads == 0 ||
+        (selected && (sel_stride == 0 ||
+                      selected->bytes <
+                          (uint64_t)rows * sel_stride * sizeof(int32_t))) ||
+        out->bytes < (uint64_t)rows * q_heads * latent_dim * sizeof(float) ||
+        q->bytes < (uint64_t)rows * q_heads * key_dim * sizeof(float) ||
+        q_absorbed->bytes <
+            (uint64_t)rows * q_heads * latent_dim * sizeof(float) ||
+        latent_cache->bytes <
+            (uint64_t)cache_cap * latent_dim * sizeof(__nv_bfloat16) ||
+        k_pe_cache->bytes <
+            (uint64_t)cache_cap * qk_rope * sizeof(__nv_bfloat16)) return 0;
+    const uint32_t splits = DOTS3_ATTN_SPLITS;
+    const uint32_t split_keys = (count + splits - 1u) / splits;
+    dim3 grid((q_heads + 7u) / 8u, rows, splits);
+#define D3_SPLIT_LAUNCH(groups_, selection_, window_)                        \
+    dots3_latent_attention_split_kernel<groups_, selection_, window_>        \
+        <<<grid, 256>>>(                                                      \
+            (float *)partial->ptr, (const float *)q->ptr,                    \
+            (const float *)q_absorbed->ptr,                                  \
+            (const __nv_bfloat16 *)latent_cache->ptr,                        \
+            (const __nv_bfloat16 *)k_pe_cache->ptr,                          \
+            selected ? (const int32_t *)selected->ptr : NULL, sel_stride,    \
+            rows, pos0, cache_cap, window, q_heads, latent_dim,              \
+            qk_nope, qk_rope, scale, split_keys)
+#define D3_SPLIT_GEOMETRY(selection_, window_) do {                          \
+        if (latent_dim == 512u) D3_SPLIT_LAUNCH(4u, selection_, window_);    \
+        else D3_SPLIT_LAUNCH(8u, selection_, window_);                       \
+    } while (0)
+    if (selected && window) D3_SPLIT_GEOMETRY(true, true);
+    else if (selected) D3_SPLIT_GEOMETRY(true, false);
+    else if (window) D3_SPLIT_GEOMETRY(false, true);
+    else D3_SPLIT_GEOMETRY(false, false);
+#undef D3_SPLIT_GEOMETRY
+#undef D3_SPLIT_LAUNCH
+    if (!cuda_ok(cudaGetLastError(), "dots3 split latent attention launch"))
+        return 0;
+    dim3 combine_grid(q_heads, rows, 1);
+    dots3_latent_attention_combine_kernel<<<combine_grid, 256>>>(
+            (float *)out->ptr, (const float *)partial->ptr, rows, q_heads,
+            latent_dim, splits);
+    return cuda_ok(cudaGetLastError(), "dots3 latent attention combine launch");
+}
+
+/* FFN block output in one pass: x += routed + shared (the routed/shared add
+ * and the residual add used to be two launches and one extra F32 round
+ * trip).  Same association as before: the pair sum first, then the
+ * residual. */
+__global__ static void dots3_ffn_residual_kernel(
+        float *x, const float *routed, const float *shared, uint64_t n) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float ffn = routed[i] + shared[i];
+    x[i] = x[i] + ffn;
+}
+
+extern "C" int ds4_gpu_dots3_ffn_residual_tensor(
+        ds4_gpu_tensor *x, const ds4_gpu_tensor *routed,
+        const ds4_gpu_tensor *shared, uint64_t n) {
+    if (!x || !routed || !shared || n == 0 ||
+        x->bytes < n * sizeof(float) || routed->bytes < n * sizeof(float) ||
+        shared->bytes < n * sizeof(float)) return 0;
+    dots3_ffn_residual_kernel<<<(uint32_t)((n + 255u) / 256u), 256>>>(
+            (float *)x->ptr, (const float *)routed->ptr,
+            (const float *)shared->ptr, n);
+    return cuda_ok(cudaGetLastError(), "dots3 FFN residual launch");
+}
+
 
 /* Official noaux_tc router: sigmoid probabilities, top-k by prob+bias,
  * weights are the unbiased probs normalized by (sum + 1e-20).  This differs
@@ -40941,6 +41523,144 @@ extern "C" int ds4_gpu_dots3_idx_store_tensor(
     return cuda_ok(cudaGetLastError(), "dots3 indexer key store launch");
 }
 
+/* DSA indexer key finish: LayerNorm(w, b) -> front-64 interleaved rope ->
+ * BF16 boundary -> FP8-E4M3 round trip -> scatter to the key cache, in one
+ * launch (was five).  Each step is the separate kernel's arithmetic in the
+ * same order; the two LayerNorm reductions keep the 256-lane tree. */
+__global__ static void dots3_idx_k_finish_kernel(
+        float *cache, const float *x, const float *weight, const float *bias,
+        const int32_t *positions, const float *inv_freq,
+        uint32_t rows, uint32_t cache_cap, float eps) {
+    const uint32_t row = blockIdx.x;
+    if (row >= rows) return;
+    constexpr uint32_t dim = 128u;
+    const float *src = x + (uint64_t)row * dim;
+    __shared__ float red[256];
+    __shared__ float v[dim];
+    float acc = 0.0f;
+    for (uint32_t d = threadIdx.x; d < dim; d += blockDim.x) acc += src[d];
+    red[threadIdx.x] = acc;
+    __syncthreads();
+    for (uint32_t off = blockDim.x >> 1u; off; off >>= 1u) {
+        if (threadIdx.x < off) red[threadIdx.x] += red[threadIdx.x + off];
+        __syncthreads();
+    }
+    const float mean = red[0] / (float)dim;
+    __syncthreads();
+    acc = 0.0f;
+    for (uint32_t d = threadIdx.x; d < dim; d += blockDim.x) {
+        const float cdiff = src[d] - mean;
+        acc += cdiff * cdiff;
+    }
+    red[threadIdx.x] = acc;
+    __syncthreads();
+    for (uint32_t off = blockDim.x >> 1u; off; off >>= 1u) {
+        if (threadIdx.x < off) red[threadIdx.x] += red[threadIdx.x + off];
+        __syncthreads();
+    }
+    const float inv = rsqrtf(red[0] / (float)dim + eps);
+    for (uint32_t d = threadIdx.x; d < dim; d += blockDim.x) {
+        v[d] = (src[d] - mean) * inv * weight[d] + bias[d];
+    }
+    __syncthreads();
+    if (threadIdx.x < 32u) {
+        const uint32_t f = threadIdx.x;
+        const float angle = (float)positions[row] * inv_freq[f];
+        double sine_d, cosine_d;
+        sincos((double)angle, &sine_d, &cosine_d);
+        const float even = v[2u * f];
+        const float odd = v[2u * f + 1u];
+        v[2u * f] = even * (float)cosine_d - odd * (float)sine_d;
+        v[2u * f + 1u] = odd * (float)cosine_d + even * (float)sine_d;
+    }
+    __syncthreads();
+    if (threadIdx.x < dim) v[threadIdx.x] = motif3_bf16_boundary(v[threadIdx.x]);
+    __syncthreads();
+    /* FP8 round trip: blockwise absmax over the 128 dims (max is exact in
+     * any order), then the same clamp / encode / decode as the standalone
+     * kernel. */
+    if (threadIdx.x < dim) red[threadIdx.x] = fabsf(v[threadIdx.x]);
+    __syncthreads();
+    for (uint32_t off = 64u; off; off >>= 1u) {
+        if (threadIdx.x < off) red[threadIdx.x] = fmaxf(red[threadIdx.x], red[threadIdx.x + off]);
+        __syncthreads();
+    }
+    const uint32_t slot = (uint32_t)positions[row];
+    if (threadIdx.x < dim && slot < cache_cap) {
+        const float scale = fmaxf(red[0], 1.0e-4f) / 448.0f;
+        const float q = fminf(fmaxf(v[threadIdx.x] / scale, -448.0f), 448.0f);
+        const __nv_fp8_e4m3 enc(q);
+        cache[(uint64_t)slot * dim + threadIdx.x] = (float)enc * scale;
+    }
+}
+
+extern "C" int ds4_gpu_dots3_idx_k_finish_tensor(
+        ds4_gpu_tensor *cache, const ds4_gpu_tensor *x,
+        const ds4_gpu_tensor *weight, const ds4_gpu_tensor *bias,
+        const ds4_gpu_tensor *positions, const ds4_gpu_tensor *inv_freq,
+        uint32_t rows, uint32_t cache_cap, float eps) {
+    if (!cache || !x || !weight || !bias || !positions || !inv_freq ||
+        rows == 0 || cache_cap == 0 ||
+        cache->bytes < (uint64_t)cache_cap * 128u * sizeof(float) ||
+        x->bytes < (uint64_t)rows * 128u * sizeof(float) ||
+        weight->bytes < 128u * sizeof(float) ||
+        bias->bytes < 128u * sizeof(float) ||
+        positions->bytes < (uint64_t)rows * sizeof(int32_t) ||
+        inv_freq->bytes < 32u * sizeof(float)) return 0;
+    dots3_idx_k_finish_kernel<<<rows, 256>>>(
+            (float *)cache->ptr, (const float *)x->ptr,
+            (const float *)weight->ptr, (const float *)bias->ptr,
+            (const int32_t *)positions->ptr, (const float *)inv_freq->ptr,
+            rows, cache_cap, eps);
+    return cuda_ok(cudaGetLastError(), "dots3 indexer key finish launch");
+}
+
+/* DSA indexer query finish: front-64 interleaved rope then the FP8-E4M3
+ * round trip per (row, head) block of 128, in place, one launch (was two). */
+__global__ static void dots3_idx_q_finish_kernel(
+        float *x, const int32_t *positions, const float *inv_freq,
+        uint32_t rows, uint32_t heads) {
+    const uint32_t block = blockIdx.x;
+    if (block >= rows * heads) return;
+    const uint32_t row = block / heads;
+    float *v = x + (uint64_t)block * 128u;
+    __shared__ float red[128];
+    const uint32_t tid = threadIdx.x;
+    if (tid < 32u) {
+        const float angle = (float)positions[row] * inv_freq[tid];
+        double sine_d, cosine_d;
+        sincos((double)angle, &sine_d, &cosine_d);
+        const float even = v[2u * tid];
+        const float odd = v[2u * tid + 1u];
+        v[2u * tid] = even * (float)cosine_d - odd * (float)sine_d;
+        v[2u * tid + 1u] = odd * (float)cosine_d + even * (float)sine_d;
+    }
+    __syncthreads();
+    red[tid] = fabsf(v[tid]);
+    __syncthreads();
+    for (uint32_t off = 64u; off; off >>= 1u) {
+        if (tid < off) red[tid] = fmaxf(red[tid], red[tid + off]);
+        __syncthreads();
+    }
+    const float scale = fmaxf(red[0], 1.0e-4f) / 448.0f;
+    const float q = fminf(fmaxf(v[tid] / scale, -448.0f), 448.0f);
+    const __nv_fp8_e4m3 enc(q);
+    v[tid] = (float)enc * scale;
+}
+
+extern "C" int ds4_gpu_dots3_idx_q_finish_tensor(
+        ds4_gpu_tensor *x, const ds4_gpu_tensor *positions,
+        const ds4_gpu_tensor *inv_freq, uint32_t rows, uint32_t heads) {
+    if (!x || !positions || !inv_freq || rows == 0 || heads == 0 ||
+        x->bytes < (uint64_t)rows * heads * 128u * sizeof(float) ||
+        positions->bytes < (uint64_t)rows * sizeof(int32_t) ||
+        inv_freq->bytes < 32u * sizeof(float)) return 0;
+    dots3_idx_q_finish_kernel<<<rows * heads, 128>>>(
+            (float *)x->ptr, (const int32_t *)positions->ptr,
+            (const float *)inv_freq->ptr, rows, heads);
+    return cuda_ok(cudaGetLastError(), "dots3 indexer query finish launch");
+}
+
 /* Lightning-indexer scores for one query sub-chunk against the whole causal
  * key prefix: score[q][s] = sum_h w[q][h] * relu(q_idx[q][h] . k_idx[s]),
  * with w already carrying head_dim^-0.5 * n_heads^-0.5.  Future keys get
@@ -40950,15 +41670,17 @@ extern "C" int ds4_gpu_dots3_idx_store_tensor(
 __global__ static void dots3_idx_score_kernel(
         float *scores, const float *q_idx, const float *weights,
         const float *key_cache, const int32_t *q_positions,
-        uint32_t n_queries, uint32_t n_keys) {
+        uint32_t n_queries, uint32_t n_keys, float w_scale) {
     const uint32_t query = blockIdx.y;
     if (query >= n_queries) return;
     __shared__ float sq[64 * 128];
     __shared__ float sw[64];
     for (uint32_t i = threadIdx.x; i < 64u * 128u; i += blockDim.x)
         sq[i] = q_idx[(uint64_t)query * 64u * 128u + i];
+    /* w_scale is the head_dim^-0.5 * n_heads^-0.5 factor the separate
+     * scale pass used to apply to the projected weights. */
     for (uint32_t i = threadIdx.x; i < 64u; i += blockDim.x)
-        sw[i] = weights[(uint64_t)query * 64u + i];
+        sw[i] = weights[(uint64_t)query * 64u + i] * w_scale;
     __syncthreads();
     const uint32_t qpos = (uint32_t)q_positions[query];
     float *out = scores + (uint64_t)query * n_keys;
@@ -40987,7 +41709,8 @@ extern "C" int ds4_gpu_dots3_idx_score_tensor(
         ds4_gpu_tensor *scores, const ds4_gpu_tensor *q_idx,
         const ds4_gpu_tensor *weights, const ds4_gpu_tensor *key_cache,
         const ds4_gpu_tensor *q_positions,
-        uint32_t n_queries, uint32_t n_keys, uint32_t key_cache_cap) {
+        uint32_t n_queries, uint32_t n_keys, uint32_t key_cache_cap,
+        float w_scale) {
     if (!scores || !q_idx || !weights || !key_cache || !q_positions ||
         n_queries == 0 || n_keys == 0 || n_keys > key_cache_cap ||
         scores->bytes < (uint64_t)n_queries * n_keys * sizeof(float) ||
@@ -41001,7 +41724,7 @@ extern "C" int ds4_gpu_dots3_idx_score_tensor(
     dots3_idx_score_kernel<<<grid, 256>>>(
             (float *)scores->ptr, (const float *)q_idx->ptr,
             (const float *)weights->ptr, (const float *)key_cache->ptr,
-            (const int32_t *)q_positions->ptr, n_queries, n_keys);
+            (const int32_t *)q_positions->ptr, n_queries, n_keys, w_scale);
     return cuda_ok(cudaGetLastError(), "dots3 indexer score launch");
 }
 

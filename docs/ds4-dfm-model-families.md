@@ -443,6 +443,11 @@ published metric. 1,048,576-token serving is not claimed.
 - dots3-note is text-only and serial. The source 524,288-token metadata is
   preserved, but the release evidence currently covers a 262,144-context
   allocation and a short 4K server request, not a 524,288-token prefill.
+- dots3-note Spark throughput (2026-09-06, `docs/dots3-optimization-2026-09-06.md`):
+  8,192-token cold prefill 278.3 → 604.3 tok/s and greedy decode 11.66 →
+  16.78 tok/s on the serial lane after six rounds (tensor-core latent
+  attention / value / absorb, split-K decode attention, grouped decode
+  value projection, fused attention-side launches). Short-context only.
 - dots3-note DSA above top-2048 has a deterministic 2,600-token smoke; exact
   CPU/GPU parity is gated in the dense-equivalent range at or below 2,048.
 - Motif-3 has three verified persistent banks at `-c 196608` on the reference

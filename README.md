@@ -194,7 +194,7 @@ tokenizer/chat contract, state lifecycle, and native execution path.
 | Solar Open2 250B | `solar-open2` | Recurrent KDA state, compressed GQA KV, persistent banks. |
 | K-EXAONE 236B A23B | `exaone-moe` | LLLG full/sliding GQA KV and persistent banks. |
 | Motif-3 | `motif3` | Latent KV, rotated `k_pe`, SWA rings, persistent banks. |
-| dots3-note Preview | `dots3-note` | Dual-geometry latent state; current live serving path is serial. |
+| dots3-note Preview | `dots3note` (`dots3-note` accepted) | Dual-geometry latent state; current live serving path is serial. Tensor-core prefill attention / MLA GEMMs and split-K decode attention since 2026-09-06. |
 | Qwen3.8 Flash Next SSD-PLE | `qwen4exp` | Q5 main GGUF + four shared SSD-PLE sidecars, embedded MTP, N-bank Rust scheduling, still-image input; one- and two-bank live gates. |
 | GLM 5.3 Flash | `glm5-next` | Q2 single-file GGUF plus the explicit vision sidecar; CUDA serial serving on one DGX Spark. |
 | K2-Horizon 375B A23B | `k2-horizon` | Four-shard MQ87 GGUF; IFM BPE/XML tools; continuous 32K one-bank serving on one DGX Spark. |
@@ -606,6 +606,7 @@ The original split gate claims parity class, not a universal speedup.
 | Qwen soak | 7,202.3 s, 3,610/3,610 requests, 158 width-2 barriers, 79 image requests, zero request/census/governor failures |
 | GLM 5.3 Q2 + vision smoke | Exact Q2 and vision sidecar: native 16-image-token prefill with finite logits; Rust text and PNG Chat requests returned HTTP 200 at context 256. |
 | K2-Horizon-375B MQ87 | Four-shard 86.70 GiB MQ87: CLI 32K raw-token `33785`; default memgov 95/95 VMM promote; HTTP Chat/tool/stream/concurrent on one 32K bank. |
+| dots3-note MQ87 (2026-09-06 rounds) | 8,192-token cold prefill 278.3 → 604.3 tok/s (+117 %), greedy decode 11.66 → 16.78 tok/s (+44 %) on one DGX Spark, serial lane, same-binary kill-switch A/B; frontier logits same argmax / top-10 10/10, 64 greedy IDs identical; resident CPU-reference gate passed (`docs/dots3-optimization-2026-09-06.md`). |
 
 The Qwen measurements used only the Q5+Sidecar artifact, fresh sequential C
 and Rust processes, and the conditions recorded in the evidence documents.
