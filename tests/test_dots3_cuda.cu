@@ -11,8 +11,10 @@
  * chunk shapes instead (NCU / nsys probe, no model needed).
  */
 #include "ds4_gpu.h"
+#include "cuda/mmq/ds4_mmq.h"
 
 #include <cuda_bf16.h>
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <cmath>
@@ -180,6 +182,101 @@ attn_result run_case(const attn_case &c, bool profile, int reps) {
     return {den > 0.0 ? std::sqrt(num / den) : std::sqrt(num), max_abs, finite};
 }
 
+/* Latent value projection: synthetic Q8_0 W_UV rows laid out as the owner's
+ * transposed artifact planes, HMMA against an FP32 host reference on the
+ * dequantized weights. */
+struct vp_case { const char *name; uint32_t heads, latent, rows; };
+
+struct vp_result { double rel_rms, max_abs; bool finite; float ms; };
+
+vp_result run_vp_case(const vp_case &c, bool profile, int reps) {
+    rng r(c.rows * 7u + c.latent);
+    const uint32_t k_blocks = c.latent / 32u;
+    const size_t lat_n = (size_t)c.rows * c.heads * c.latent;
+    const size_t out_n = (size_t)c.rows * c.heads * 128u;
+    std::vector<float> latent(lat_n);
+    for (auto &x : latent) x = r.normal();
+    /* Planes: scale[(head*k_blocks+b)*128+v], code[((head*k_blocks+b)*32+k)*128+v]. */
+    std::vector<uint16_t> scale((size_t)c.heads * k_blocks * 128u);
+    std::vector<int8_t> code((size_t)c.heads * k_blocks * 32u * 128u);
+    std::vector<float> scale_f(scale.size());
+    for (size_t i = 0; i < scale.size(); i++) {
+        const float s = 0.01f + 0.02f * r.uniform();
+        const __half h = __float2half(s);
+        memcpy(&scale[i], &h, 2);
+        scale_f[i] = __half2float(h);
+    }
+    for (auto &x : code) x = (int8_t)((int)(r.next() % 255u) - 127);
+    std::vector<float> ref(out_n);
+    if (!profile) {
+        for (uint32_t t = 0; t < c.rows; t++) {
+            for (uint32_t h = 0; h < c.heads; h++) {
+                const float *x = latent.data() + ((size_t)t * c.heads + h) * c.latent;
+                for (uint32_t v = 0; v < 128u; v++) {
+                    double acc = 0.0;
+                    for (uint32_t b = 0; b < k_blocks; b++) {
+                        const size_t hb = (size_t)h * k_blocks + b;
+                        double dot = 0.0;
+                        for (uint32_t k = 0; k < 32u; k++)
+                            dot += (double)code[(hb * 32u + k) * 128u + v] * x[b * 32u + k];
+                        acc += (double)scale_f[hb * 128u + v] * dot;
+                    }
+                    ref[((size_t)t * c.heads + h) * 128u + v] = (float)acc;
+                }
+            }
+        }
+    }
+    ds4_gpu_tensor *t_lat = upload(latent.data(), lat_n * 4u, "latent");
+    ds4_gpu_tensor *t_scale = upload(scale.data(), scale.size() * 2u, "scale");
+    ds4_gpu_tensor *t_code = upload(code.data(), code.size(), "code");
+    ds4_gpu_tensor *t_out = ds4_gpu_tensor_alloc(out_n * 4u);
+    if (!t_out) { fprintf(stderr, "vp out alloc failed\n"); std::exit(1); }
+    auto launch = [&]() {
+        if (!ds4_gpu_dots3_value_project_planes_tensor(
+                t_out, t_lat, ds4_gpu_tensor_ptr(t_scale), ds4_gpu_tensor_ptr(t_code),
+                c.rows, c.heads, c.latent)) {
+            fprintf(stderr, "%s: value projection launch failed\n", c.name);
+            std::exit(1);
+        }
+    };
+    launch();
+    check(cudaDeviceSynchronize(), "vp sync");
+    float ms = 0.0f;
+    if (profile) {
+        cudaEvent_t e0, e1;
+        check(cudaEventCreate(&e0), "event0");
+        check(cudaEventCreate(&e1), "event1");
+        check(cudaEventRecord(e0), "t0");
+        for (int i = 0; i < reps; i++) launch();
+        check(cudaEventRecord(e1), "t1");
+        check(cudaEventSynchronize(e1), "timed sync");
+        check(cudaEventElapsedTime(&ms, e0, e1), "elapsed");
+        ms /= (float)reps;
+        cudaEventDestroy(e0);
+        cudaEventDestroy(e1);
+    }
+    std::vector<float> out(out_n);
+    if (!ds4_gpu_tensor_read(t_out, 0, out.data(), out_n * 4u)) {
+        fprintf(stderr, "vp readback failed\n");
+        std::exit(1);
+    }
+    double num = 0.0, den = 0.0, max_abs = 0.0;
+    bool finite = true;
+    for (size_t i = 0; i < out_n; i++) {
+        if (!std::isfinite(out[i])) finite = false;
+        if (profile) continue;
+        const double d = (double)out[i] - ref[i];
+        num += d * d;
+        den += (double)ref[i] * ref[i];
+        if (std::fabs(d) > max_abs) max_abs = std::fabs(d);
+    }
+    ds4_gpu_tensor_free(t_out);
+    ds4_gpu_tensor_free(t_code);
+    ds4_gpu_tensor_free(t_scale);
+    ds4_gpu_tensor_free(t_lat);
+    return {den > 0.0 ? std::sqrt(num / den) : 0.0, max_abs, finite, ms};
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -207,6 +304,24 @@ int main(int argc, char **argv) {
         const bool ok = r.finite && r.rel_rms <= 1.0e-2;
         printf("dots3 attention %-14s rows=%u heads=%u latent=%u: rel_rms=%.3e max_abs=%.3e %s\n",
                c.name, c.rows, c.heads, c.latent, r.rel_rms, r.max_abs, ok ? "OK" : "FAIL");
+        if (!ok) failures++;
+    }
+    std::vector<vp_case> vp_cases;
+    if (profile) {
+        vp_cases = {{"full-4k", 128u, 512u, 4096u}, {"swa-4k", 64u, 1024u, 4096u}};
+    } else {
+        vp_cases = {{"full", 4u, 512u, 100u}, {"swa", 4u, 1024u, 67u}, {"full-16", 2u, 512u, 16u}};
+    }
+    for (const auto &c : vp_cases) {
+        const vp_result r = run_vp_case(c, profile, 8);
+        const bool ok = r.finite && r.rel_rms <= 1.0e-2;
+        if (profile) {
+            printf("dots3 value profile %-10s rows=%u heads=%u latent=%u: hmma %.3f ms %s\n",
+                   c.name, c.rows, c.heads, c.latent, r.ms, r.finite ? "finite" : "NAN");
+        } else {
+            printf("dots3 value %-10s rows=%u heads=%u latent=%u: rel_rms=%.3e max_abs=%.3e %s\n",
+                   c.name, c.rows, c.heads, c.latent, r.rel_rms, r.max_abs, ok ? "OK" : "FAIL");
+        }
         if (!ok) failures++;
     }
     ds4_gpu_cleanup();

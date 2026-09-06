@@ -40124,6 +40124,49 @@ __global__ static void motif3_value_project_q8_0_transposed_kernel(
     }
 }
 
+/* dots3 value projection: widths from this many rows run the tensor-core
+ * kernel on the transposed artifact planes.  DS4_DOTS3_VALUE_NO_HMMA=1 keeps
+ * the warp kernel at every width (diagnostic, read per call). */
+enum { DOTS3_VALUE_HMMA_MIN_ROWS = 16 };
+
+static int dots3_value_hmma_disabled(void) {
+    const char *value = getenv("DS4_DOTS3_VALUE_NO_HMMA");
+    return value && value[0] == '1';
+}
+
+/* dots3 value projection straight from the transposed artifact planes:
+ * prefill widths on the tensor-core GEMM, decode widths on the grouped
+ * walk.  The production entry below resolves the planes from the derived
+ * registry; fixtures hand them in directly. */
+extern "C" int ds4_gpu_dots3_value_project_planes_tensor(
+        ds4_gpu_tensor *heads, const ds4_gpu_tensor *latent,
+        const void *scale, const void *code,
+        uint32_t rows, uint32_t q_heads, uint32_t latent_dim) {
+    const uint32_t value_dim = 128u;
+    if (!heads || !latent || !scale || !code || rows == 0 || q_heads == 0 ||
+        latent_dim == 0 || (latent_dim & 31u) ||
+        latent->bytes < (uint64_t)rows * q_heads * latent_dim * sizeof(float) ||
+        heads->bytes < (uint64_t)rows * q_heads * value_dim * sizeof(float)) return 0;
+    if (rows >= DOTS3_VALUE_HMMA_MIN_ROWS && !dots3_value_hmma_disabled()) {
+        const int rc = ds4_mmq_dots3_value_project_hmma(
+                (float *)heads->ptr, (const float *)latent->ptr, scale, code,
+                (int)rows, (int)q_heads, (int)latent_dim, ds4_current_stream());
+        if (rc == 0) return 1;
+        if (rc != -1) {
+            return cuda_ok(cudaGetLastError(),
+                           "dots3 value projection hmma launch");
+        }
+    }
+    dim3 grid(q_heads, rows, 1);
+    motif3_value_project_q8_0_transposed_kernel<false>
+        <<<grid, 128, (size_t)latent_dim * sizeof(float)>>>(
+            (float *)heads->ptr, (const float *)latent->ptr,
+            (const __half *)scale, (const int8_t *)code,
+            rows, q_heads, 1u, latent_dim, value_dim);
+    return cuda_ok(cudaGetLastError(),
+                   "Motif-3 transposed latent V projection launch");
+}
+
 extern "C" int ds4_gpu_motif3_value_project_q8_0_tensor(
         ds4_gpu_tensor *heads, const ds4_gpu_tensor *latent,
         const void *model_map, uint64_t model_size, uint64_t kv_b_offset,
@@ -40164,6 +40207,13 @@ extern "C" int ds4_gpu_motif3_value_project_q8_0_tensor(
               scale_bytes + code_bytes,
               "MLA latent V transposed Q8_0")
         : NULL;
+    /* dots3 on the transposed planes: tensor cores at prefill widths, the
+     * grouped walk at decode widths.  Motif shapes keep the kernel below. */
+    if (transposed && dots_shape && !round_bf16) {
+        return ds4_gpu_dots3_value_project_planes_tensor(
+                heads, latent, transposed, transposed + scale_bytes,
+                rows, q_heads, kv_latent_dim);
+    }
     dim3 grid(q_heads, rows, 1);
     if (transposed) {
         if (round_bf16)

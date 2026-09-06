@@ -90,6 +90,16 @@ int ds4_mmq_dots3_prefill_attn_hmma(
         int q_heads, int latent_dim, int qk_nope, int qk_rope,
         float scale, cudaStream_t stream);
 
+// dots3-note latent value projection (W_UV per head) for prefill widths on
+// the owner's transposed Q8_0 artifact planes (scale: [head][j/32][128]
+// half, code: [head][j][128] int8).  Activations rounded to BF16, int8
+// codes exact, FP32 scales applied per 32-j block.  Returns 0, -1 when the
+// shape is unsupported (caller keeps its fallback), -2 on launch failure.
+int ds4_mmq_dots3_value_project_hmma(
+        float *heads, const float *latent, const void *scale,
+        const void *code, int rows, int q_heads, int latent_dim,
+        cudaStream_t stream);
+
 // Dense matmul entry points. Per-type wrappers that all share the same
 // underlying mul_mat_q template, parameterised by the weight quant type.
 //

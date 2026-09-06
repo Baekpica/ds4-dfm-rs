@@ -3189,6 +3189,16 @@ int ds4_gpu_motif3_value_project_q8_0_tensor(
         uint32_t              qk_nope,
         uint32_t              value_dim,
         int                   round_bf16);
+/* dots3 value projection from the transposed Q8_0 artifact planes (scale:
+ * [head][latent/32][128] half, code: [head][latent][128] int8). */
+int ds4_gpu_dots3_value_project_planes_tensor(
+        ds4_gpu_tensor       *heads,
+        const ds4_gpu_tensor *latent,
+        const void           *scale,
+        const void           *code,
+        uint32_t                rows,
+        uint32_t                q_heads,
+        uint32_t                latent_dim);
 
 int ds4_gpu_motif3_rope_tensor(
         ds4_gpu_tensor       *out,
