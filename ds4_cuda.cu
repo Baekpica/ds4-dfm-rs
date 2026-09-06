@@ -40739,6 +40739,18 @@ __global__ static void dots3_latent_attention_kernel(
     }
 }
 
+/* Widths from this many rows use the tensor-core latent attention; below
+ * it (decode, tiny tails) the scalar kernel's 16 blocks per token cover
+ * more SMs than one block per token would.  DS4_DOTS3_ATTN_NO_HMMA=1 keeps
+ * the scalar kernel at every width (diagnostic, read per call so fixtures
+ * can compare both paths in one process). */
+enum { DOTS3_ATTN_HMMA_MIN_ROWS = 8 };
+
+static int dots3_attn_hmma_disabled(void) {
+    const char *value = getenv("DS4_DOTS3_ATTN_NO_HMMA");
+    return value && value[0] == '1';
+}
+
 extern "C" int ds4_gpu_dots3_latent_attention_tensor(
         ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
         const ds4_gpu_tensor *q_absorbed,
@@ -40762,6 +40774,25 @@ extern "C" int ds4_gpu_dots3_latent_attention_tensor(
             (uint64_t)cache_cap * latent_dim * sizeof(__nv_bfloat16) ||
         k_pe_cache->bytes <
             (uint64_t)cache_cap * qk_rope * sizeof(__nv_bfloat16)) return 0;
+    /* Prefill widths run the tensor-core kernel (cuda/mmq/ds4_fattn.cu):
+     * one token's heads form a GEMM against that token's key set.  Decode
+     * widths keep the warp-per-(token, head) walk below.  -1 means the shape
+     * is not covered and the scalar kernel serves it. */
+    if (rows >= DOTS3_ATTN_HMMA_MIN_ROWS && !dots3_attn_hmma_disabled()) {
+        const int rc = ds4_mmq_dots3_prefill_attn_hmma(
+                (float *)out->ptr, (const float *)q->ptr,
+                (const float *)q_absorbed->ptr, latent_cache->ptr,
+                k_pe_cache->ptr,
+                selected ? (const int32_t *)selected->ptr : NULL,
+                (int)sel_stride, (int)rows, (int)pos0, (int)cache_cap,
+                (int)window, (int)q_heads, (int)latent_dim, (int)qk_nope,
+                (int)qk_rope, scale, ds4_current_stream());
+        if (rc == 0) return 1;
+        if (rc != -1) {
+            return cuda_ok(cudaGetLastError(),
+                           "dots3 latent attention hmma launch");
+        }
+    }
     dim3 grid((q_heads + 7u) / 8u, rows, 1);
 #define D3_LAUNCH(groups_, selection_, window_)                              \
     dots3_latent_attention_kernel<groups_, selection_, window_>              \

@@ -1111,6 +1111,12 @@ tests/test_motif3_cuda: tests/test_motif3_cuda.cu $(DS4_CUDA_CORE_OBJS)
 test-motif3-cuda: tests/test_motif3_cuda
 	./tests/test_motif3_cuda "$(DS4_MOTIF3_FIXTURES)"
 
+tests/test_dots3_cuda: tests/test_dots3_cuda.cu $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $< $(DS4_CUDA_CORE_OBJS) $(CUDA_LDLIBS)
+
+test-dots3-cuda: tests/test_dots3_cuda
+	./tests/test_dots3_cuda
+
 tests/test_dots3_resident.o: tests/test_dots3_resident.c ds4.h
 	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
 

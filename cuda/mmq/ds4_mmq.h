@@ -75,6 +75,21 @@ int ds4_mmq_motif3_prefill_attn_hmma(
         int n_head, int n_head_kv, int qk_dim, int v_dim,
         float scale, int window, cudaStream_t stream);
 
+// dots3-note latent (absorbed-MLA) attention for prefill widths: one token's
+// heads against that token's DSA top-k list (selected != NULL, gathered) or
+// its causal / sliding-window range, both geometries (latent 512 / 1024,
+// rope 64) over the BF16 latent + k_pe caches.  Q and P are rounded to
+// BF16 for the MMA; the scalar kernel stays the decode path and the
+// reference.  Returns 0, -1 when the shape is unsupported (caller keeps its
+// fallback), -2 on a launch failure.
+int ds4_mmq_dots3_prefill_attn_hmma(
+        float *out, const float *q, const float *q_absorbed,
+        const void *latent_cache, const void *k_pe_cache,
+        const int32_t *selected, int sel_stride,
+        int rows, int pos0, int cache_cap, int window,
+        int q_heads, int latent_dim, int qk_nope, int qk_rope,
+        float scale, cudaStream_t stream);
+
 // Dense matmul entry points. Per-type wrappers that all share the same
 // underlying mul_mat_q template, parameterised by the weight quant type.
 //
