@@ -45209,6 +45209,14 @@ static bool dots3_graph_alloc_cache(
     return true;
 }
 
+/* DS4_DOTS3_NO_FUSED=1 restores the separate norm / rope / store / gate /
+ * indexer-finish / residual launches (bit-identical, more launches). */
+static bool dots3_fused_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) cached = getenv("DS4_DOTS3_NO_FUSED") == NULL;
+    return cached != 0;
+}
+
 static bool dots3_graph_attention(
         ds4_dots3_gpu_graph *g, const ds4_model *model,
         const ds4_layer_weights *l, uint32_t rows,
@@ -45244,19 +45252,27 @@ static bool dots3_graph_attention(
     D3_ATTN(ds4_gpu_matmul_q8_0_tensor(
             g->kv_raw, model->map, model->size, l->attn_kv_a_mqa->abs_offset,
             DS4_N_EMBD, kv_raw_dim, g->norm, rows), "kv_a");
-    D3_ATTN(ds4_gpu_dots3_rms_norm_dev_tensor(
-            g->kv_norm, g->kv_raw, g->w_kv_a_norm[il], kv_lora,
-            kv_raw_dim, 0u, rows, DS4_RMS_EPS), "kv norm");
-    D3_ATTN(ds4_gpu_dots3_rms_norm_dev_tensor(
-            g->k_pe, g->kv_raw, g->w_k_rope_norm[il], DS4_N_ROT,
-            kv_raw_dim, kv_lora, rows, DS4_RMS_EPS), "k_pe norm");
-    D3_ATTN(ds4_gpu_dots3_rope_interleaved_tensor(
-            g->k_pe, g->positions, inv, rows, 1u, DS4_N_ROT,
-            DS4_N_ROT, 0u), "k_pe rope");
-    D3_ATTN(ds4_gpu_dots3_store_latent_kpe_tensor(
-            g->layer_kv_latent[il], g->layer_k_pe[il], g->kv_norm, g->k_pe,
-            g->positions, rows, cache_cap, kv_lora, DS4_N_ROT, !full),
-            "latent store");
+    if (dots3_fused_enabled()) {
+        D3_ATTN(ds4_gpu_dots3_kv_finish_tensor(
+                g->layer_kv_latent[il], g->layer_k_pe[il], g->kv_raw,
+                g->w_kv_a_norm[il], g->w_k_rope_norm[il], g->positions, inv,
+                rows, kv_lora, DS4_N_ROT, cache_cap, !full, DS4_RMS_EPS),
+                "kv finish");
+    } else {
+        D3_ATTN(ds4_gpu_dots3_rms_norm_dev_tensor(
+                g->kv_norm, g->kv_raw, g->w_kv_a_norm[il], kv_lora,
+                kv_raw_dim, 0u, rows, DS4_RMS_EPS), "kv norm");
+        D3_ATTN(ds4_gpu_dots3_rms_norm_dev_tensor(
+                g->k_pe, g->kv_raw, g->w_k_rope_norm[il], DS4_N_ROT,
+                kv_raw_dim, kv_lora, rows, DS4_RMS_EPS), "k_pe norm");
+        D3_ATTN(ds4_gpu_dots3_rope_interleaved_tensor(
+                g->k_pe, g->positions, inv, rows, 1u, DS4_N_ROT,
+                DS4_N_ROT, 0u), "k_pe rope");
+        D3_ATTN(ds4_gpu_dots3_store_latent_kpe_tensor(
+                g->layer_kv_latent[il], g->layer_k_pe[il], g->kv_norm, g->k_pe,
+                g->positions, rows, cache_cap, kv_lora, DS4_N_ROT, !full),
+                "latent store");
+    }
 
     /* DSA lightning indexer on full layers: keys always (the cache must be
      * complete before any later query needs it), selection only once the
@@ -45266,19 +45282,27 @@ static bool dots3_graph_attention(
         D3_ATTN(ds4_gpu_matmul_q8_0_tensor(
                 g->idx_k, model->map, model->size, l->attn_idx_k->abs_offset,
                 DS4_N_EMBD, DS4_N_INDEXER_HEAD_DIM, g->norm, rows), "idx k");
-        D3_ATTN(ds4_gpu_dots3_layernorm_dev_tensor(
-                g->idx_k, g->w_idx_k_norm[il], g->w_idx_k_norm_bias[il],
-                DS4_N_INDEXER_HEAD_DIM, rows, 1.0e-6f), "idx k norm");
-        D3_ATTN(ds4_gpu_dots3_rope_interleaved_tensor(
-                g->idx_k, g->positions, g->inv_full, rows, 1u,
-                DS4_N_INDEXER_HEAD_DIM, DS4_N_ROT, 0u), "idx k rope");
-        D3_ATTN(ds4_gpu_motif3_round_bf16_tensor(
-                g->idx_k, g->idx_k,
-                (uint64_t)rows * DS4_N_INDEXER_HEAD_DIM), "idx k bf16");
-        D3_ATTN(ds4_gpu_dots3_fp8_roundtrip_tensor(g->idx_k, rows), "idx k fp8");
-        D3_ATTN(ds4_gpu_dots3_idx_store_tensor(
-                g->layer_idx_k[il], g->idx_k, g->positions, rows, cache_cap),
-                "idx k store");
+        if (dots3_fused_enabled()) {
+            D3_ATTN(ds4_gpu_dots3_idx_k_finish_tensor(
+                    g->layer_idx_k[il], g->idx_k, g->w_idx_k_norm[il],
+                    g->w_idx_k_norm_bias[il], g->positions, g->inv_full,
+                    rows, cache_cap, 1.0e-6f), "idx k finish");
+        } else {
+            D3_ATTN(ds4_gpu_dots3_layernorm_dev_tensor(
+                    g->idx_k, g->w_idx_k_norm[il], g->w_idx_k_norm_bias[il],
+                    DS4_N_INDEXER_HEAD_DIM, rows, 1.0e-6f), "idx k norm");
+            D3_ATTN(ds4_gpu_dots3_rope_interleaved_tensor(
+                    g->idx_k, g->positions, g->inv_full, rows, 1u,
+                    DS4_N_INDEXER_HEAD_DIM, DS4_N_ROT, 0u), "idx k rope");
+            D3_ATTN(ds4_gpu_motif3_round_bf16_tensor(
+                    g->idx_k, g->idx_k,
+                    (uint64_t)rows * DS4_N_INDEXER_HEAD_DIM), "idx k bf16");
+            D3_ATTN(ds4_gpu_dots3_fp8_roundtrip_tensor(g->idx_k, rows),
+                    "idx k fp8");
+            D3_ATTN(ds4_gpu_dots3_idx_store_tensor(
+                    g->layer_idx_k[il], g->idx_k, g->positions, rows,
+                    cache_cap), "idx k store");
+        }
 
         const uint32_t end = pos0 + rows;
         if (end > DS4_N_INDEXER_TOP_K) {
@@ -45287,21 +45311,32 @@ static bool dots3_graph_attention(
                     l->attn_idx_q_b->abs_offset, DS4_N_LORA_Q,
                     (uint64_t)DS4_N_INDEXER_HEAD * DS4_N_INDEXER_HEAD_DIM,
                     g->q_lora, rows), "idx q");
-            D3_ATTN(ds4_gpu_dots3_rope_interleaved_tensor(
-                    g->idx_q, g->positions, g->inv_full, rows,
-                    DS4_N_INDEXER_HEAD, DS4_N_INDEXER_HEAD_DIM,
-                    DS4_N_ROT, 0u), "idx q rope");
-            D3_ATTN(ds4_gpu_dots3_fp8_roundtrip_tensor(
-                    g->idx_q, rows * DS4_N_INDEXER_HEAD), "idx q fp8");
+            if (dots3_fused_enabled()) {
+                D3_ATTN(ds4_gpu_dots3_idx_q_finish_tensor(
+                        g->idx_q, g->positions, g->inv_full, rows,
+                        DS4_N_INDEXER_HEAD), "idx q finish");
+            } else {
+                D3_ATTN(ds4_gpu_dots3_rope_interleaved_tensor(
+                        g->idx_q, g->positions, g->inv_full, rows,
+                        DS4_N_INDEXER_HEAD, DS4_N_INDEXER_HEAD_DIM,
+                        DS4_N_ROT, 0u), "idx q rope");
+                D3_ATTN(ds4_gpu_dots3_fp8_roundtrip_tensor(
+                        g->idx_q, rows * DS4_N_INDEXER_HEAD), "idx q fp8");
+            }
             D3_ATTN(ds4_gpu_matmul_q8_0_tensor(
                     g->idx_w, model->map, model->size,
                     l->attn_idx_w->abs_offset, DS4_N_EMBD,
                     DS4_N_INDEXER_HEAD, g->norm, rows), "idx w");
-            D3_ATTN(ds4_gpu_dots3_scale_tensor(
-                    g->idx_w,
-                    1.0f / sqrtf((float)DS4_N_INDEXER_HEAD_DIM *
-                                 (float)DS4_N_INDEXER_HEAD),
-                    (uint64_t)rows * DS4_N_INDEXER_HEAD), "idx w scale");
+            /* The head-weight scale rides into the score kernel when fused;
+             * the separate pass keeps it applied in place. */
+            const float idx_w_scale =
+                1.0f / sqrtf((float)DS4_N_INDEXER_HEAD_DIM *
+                             (float)DS4_N_INDEXER_HEAD);
+            if (!dots3_fused_enabled()) {
+                D3_ATTN(ds4_gpu_dots3_scale_tensor(
+                        g->idx_w, idx_w_scale,
+                        (uint64_t)rows * DS4_N_INDEXER_HEAD), "idx w scale");
+            }
             for (uint32_t sub = 0; sub < rows; sub += g->idx_sub) {
                 const uint32_t sub_rows =
                     rows - sub < g->idx_sub ? rows - sub : g->idx_sub;
@@ -45326,7 +45361,8 @@ static bool dots3_graph_attention(
                 const bool sub_ok = q_view && w_view && p_view && s_view &&
                     ds4_gpu_dots3_idx_score_tensor(
                         g->idx_scores, q_view, w_view, g->layer_idx_k[il],
-                        p_view, sub_rows, end, cache_cap) &&
+                        p_view, sub_rows, end, cache_cap,
+                        dots3_fused_enabled() ? idx_w_scale : 1.0f) &&
                     ds4_gpu_indexer_topk_tensor(
                         s_view, g->idx_scores, end, sub_rows,
                         DS4_N_INDEXER_TOP_K, 0u, UINT32_MAX);
@@ -45351,16 +45387,26 @@ static bool dots3_graph_attention(
             selection, selection ? DS4_N_INDEXER_TOP_K : 0u,
             rows, pos0, cache_cap, full ? 0u : DS4_N_SWA,
             heads, kv_lora, nope, DS4_N_ROT, scale), "latent attention");
-    D3_ATTN(ds4_gpu_motif3_value_project_q8_0_tensor(
-            g->attention, g->latent_out, model->map, model->size,
-            l->attn_kv_b->abs_offset, rows, heads, heads, 1u,
-            kv_lora, nope, DS4_N_VALUE_MLA, 0), "value projection");
+    /* The headwise gate logits come first so the value projection can apply
+     * the sigmoid gate in its epilogue (same product, one pass fewer over
+     * [rows x heads x 128]). */
     D3_ATTN(ds4_gpu_matmul_q8_0_tensor(
             g->gate_logits, model->map, model->size, l->attn_gate->abs_offset,
             DS4_N_EMBD, heads, g->norm, rows), "gate projection");
-    D3_ATTN(ds4_gpu_dots3_gate_mul_tensor(
-            g->attention, g->gate_logits, rows, heads, DS4_N_VALUE_MLA),
-            "headwise gate");
+    if (dots3_fused_enabled()) {
+        D3_ATTN(ds4_gpu_dots3_value_project_gated_tensor(
+                g->attention, g->latent_out, model->map, model->size,
+                l->attn_kv_b->abs_offset, g->gate_logits, rows, heads,
+                kv_lora, nope, DS4_N_VALUE_MLA), "gated value projection");
+    } else {
+        D3_ATTN(ds4_gpu_motif3_value_project_q8_0_tensor(
+                g->attention, g->latent_out, model->map, model->size,
+                l->attn_kv_b->abs_offset, rows, heads, heads, 1u,
+                kv_lora, nope, DS4_N_VALUE_MLA, 0), "value projection");
+        D3_ATTN(ds4_gpu_dots3_gate_mul_tensor(
+                g->attention, g->gate_logits, rows, heads, DS4_N_VALUE_MLA),
+                "headwise gate");
+    }
     D3_ATTN(ds4_gpu_matmul_q8_0_tensor(
             g->block_out, model->map, model->size, l->attn_output->abs_offset,
             (uint64_t)heads * DS4_N_VALUE_MLA, DS4_N_EMBD,
@@ -45438,6 +45484,14 @@ static bool dots3_graph_ffn(
             g->shared_out, model->map, model->size,
             l->ffn_down_shexp->abs_offset, DS4_N_FF_EXP, DS4_N_EMBD,
             g->shared_mid, rows), "shared down");
+    if (dots3_fused_enabled()) {
+        /* The residual is applied here in one pass; the caller skips its
+         * separate add. */
+        D3_FFN(ds4_gpu_dots3_ffn_residual_tensor(
+                g->x, g->routed_out, g->shared_out,
+                (uint64_t)rows * DS4_N_EMBD), "routed/shared residual");
+        return true;
+    }
     D3_FFN(ds4_gpu_add_tensor(
             g->ffn_out, g->routed_out, g->shared_out,
             (uint32_t)(rows * DS4_N_EMBD)), "routed/shared sum");
@@ -45499,9 +45553,13 @@ static bool dots3_graph_forward_chunk(
                 l->ffn_norm->abs_offset, (uint32_t)DS4_N_EMBD, rows,
                 DS4_RMS_EPS), "FFN norm");
         D3_FORWARD(dots3_graph_ffn(g, model, l, rows, il), "FFN");
-        D3_FORWARD(ds4_gpu_exaone_add_tensor(
-                g->x, g->ffn_out, (uint64_t)rows * DS4_N_EMBD),
-                "FFN residual");
+        /* Dense layer 0 keeps the separate residual; routed layers fold it
+         * into the routed/shared sum when fused. */
+        if (!l->ffn_gate_exps || !dots3_fused_enabled()) {
+            D3_FORWARD(ds4_gpu_exaone_add_tensor(
+                    g->x, g->ffn_out, (uint64_t)rows * DS4_N_EMBD),
+                    "FFN residual");
+        }
         if (trace) {
             fprintf(stderr, "ds4: dots3 forward layer %u/%u\n",
                     il + 1u, n_exec);

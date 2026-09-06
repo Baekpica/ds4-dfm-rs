@@ -252,7 +252,7 @@ vp_result run_vp_case(const vp_case &c, bool profile, int reps) {
     auto launch = [&]() {
         if (!ds4_gpu_dots3_value_project_planes_tensor(
                 t_out, t_lat, ds4_gpu_tensor_ptr(t_scale), ds4_gpu_tensor_ptr(t_code),
-                c.rows, c.heads, c.latent)) {
+                nullptr, c.rows, c.heads, c.latent)) {
             fprintf(stderr, "%s: value projection launch failed\n", c.name);
             std::exit(1);
         }
@@ -418,6 +418,200 @@ vp_result run_ab_case(const ab_case &c, bool profile, int reps) {
     return {den > 0.0 ? std::sqrt(num / den) : 0.0, max_abs, finite, ms};
 }
 
+/* D3 fusions: every fused launch must reproduce the separate kernels it
+ * replaces byte for byte (same arithmetic, same order). */
+struct fused_result { const char *name; bool same; };
+
+std::vector<uint8_t> read_bytes(const ds4_gpu_tensor *t, size_t bytes) {
+    std::vector<uint8_t> out(bytes);
+    if (!ds4_gpu_tensor_read(t, 0, out.data(), bytes)) {
+        fprintf(stderr, "readback failed\n");
+        std::exit(1);
+    }
+    return out;
+}
+
+std::vector<fused_result> run_fused_cases() {
+    std::vector<fused_result> results;
+    rng r(4242u);
+    const float eps = 1e-6f;
+    std::vector<int32_t> positions;
+    std::vector<float> inv_full(32), inv_swa(32);
+    for (uint32_t i = 0; i < 32u; i++) {
+        const float expo = (2.0f * (float)i) / 64.0f;
+        inv_full[i] = 1.0f / powf(8.0e7f, expo);
+        inv_swa[i] = 1.0f / powf(5.0e4f, expo);
+    }
+    ds4_gpu_tensor *t_inv_full = upload(inv_full.data(), 32u * 4u, "inv full");
+    ds4_gpu_tensor *t_inv_swa = upload(inv_swa.data(), 32u * 4u, "inv swa");
+
+    /* (b) kv finish, both geometries, ring and linear. */
+    for (int geo = 0; geo < 2; geo++) {
+        const uint32_t kv_lora = geo == 0 ? 512u : 1024u;
+        const uint32_t rows = 37u, cache_cap = geo == 0 ? 4096u : 513u + 4096u;
+        const uint32_t pos0 = geo == 0 ? 1000u : 4590u;
+        const bool ring = geo == 1;
+        const uint32_t raw_dim = kv_lora + 64u;
+        std::vector<float> kv_raw((size_t)rows * raw_dim), w_l(kv_lora), w_r(64u);
+        for (auto &x : kv_raw) x = r.normal() * 3.0f;
+        for (auto &x : w_l) x = 0.5f + r.uniform();
+        for (auto &x : w_r) x = 0.5f + r.uniform();
+        positions.resize(rows);
+        for (uint32_t i = 0; i < rows; i++) positions[i] = (int32_t)(pos0 + i);
+        ds4_gpu_tensor *t_raw = upload(kv_raw.data(), kv_raw.size() * 4u, "kv raw");
+        ds4_gpu_tensor *t_wl = upload(w_l.data(), w_l.size() * 4u, "w latent");
+        ds4_gpu_tensor *t_wr = upload(w_r.data(), w_r.size() * 4u, "w rope");
+        ds4_gpu_tensor *t_pos = upload(positions.data(), rows * 4u, "positions");
+        const size_t lat_bytes = (size_t)cache_cap * kv_lora * 2u;
+        const size_t kpe_bytes = (size_t)cache_cap * 64u * 2u;
+        ds4_gpu_tensor *t_lat_a = ds4_gpu_tensor_alloc(lat_bytes);
+        ds4_gpu_tensor *t_kpe_a = ds4_gpu_tensor_alloc(kpe_bytes);
+        ds4_gpu_tensor *t_lat_b = ds4_gpu_tensor_alloc(lat_bytes);
+        ds4_gpu_tensor *t_kpe_b = ds4_gpu_tensor_alloc(kpe_bytes);
+        ds4_gpu_tensor *t_norm = ds4_gpu_tensor_alloc((size_t)rows * kv_lora * 4u);
+        ds4_gpu_tensor *t_kpe = ds4_gpu_tensor_alloc((size_t)rows * 64u * 4u);
+        const ds4_gpu_tensor *inv = geo == 0 ? t_inv_full : t_inv_swa;
+        std::vector<uint8_t> zero_l(lat_bytes, 0), zero_k(kpe_bytes, 0);
+        ds4_gpu_tensor_write(t_lat_a, 0, zero_l.data(), lat_bytes);
+        ds4_gpu_tensor_write(t_lat_b, 0, zero_l.data(), lat_bytes);
+        ds4_gpu_tensor_write(t_kpe_a, 0, zero_k.data(), kpe_bytes);
+        ds4_gpu_tensor_write(t_kpe_b, 0, zero_k.data(), kpe_bytes);
+        const bool ok_a =
+            ds4_gpu_dots3_rms_norm_dev_tensor(t_norm, t_raw, t_wl, kv_lora, raw_dim, 0u, rows, eps) &&
+            ds4_gpu_dots3_rms_norm_dev_tensor(t_kpe, t_raw, t_wr, 64u, raw_dim, kv_lora, rows, eps) &&
+            ds4_gpu_dots3_rope_interleaved_tensor(t_kpe, t_pos, inv, rows, 1u, 64u, 64u, 0u) &&
+            ds4_gpu_dots3_store_latent_kpe_tensor(t_lat_a, t_kpe_a, t_norm, t_kpe, t_pos, rows, cache_cap, kv_lora, 64u, ring);
+        const bool ok_b = ds4_gpu_dots3_kv_finish_tensor(
+            t_lat_b, t_kpe_b, t_raw, t_wl, t_wr, t_pos, inv, rows, kv_lora, 64u, cache_cap, ring, eps);
+        check(cudaDeviceSynchronize(), "kv finish sync");
+        bool same = ok_a && ok_b &&
+            read_bytes(t_lat_a, lat_bytes) == read_bytes(t_lat_b, lat_bytes) &&
+            read_bytes(t_kpe_a, kpe_bytes) == read_bytes(t_kpe_b, kpe_bytes);
+        results.push_back({geo == 0 ? "kv-finish-full" : "kv-finish-swa", same});
+        for (ds4_gpu_tensor *x : {t_raw, t_wl, t_wr, t_pos, t_lat_a, t_kpe_a, t_lat_b, t_kpe_b, t_norm, t_kpe})
+            ds4_gpu_tensor_free(x);
+    }
+
+    /* (d) indexer key finish, query finish, and the weight scale fold. */
+    {
+        const uint32_t rows = 29u, cache_cap = 4096u, pos0 = 700u;
+        std::vector<float> xk((size_t)rows * 128u), w(128u), b(128u);
+        for (auto &x : xk) x = r.normal() * 2.0f;
+        for (auto &x : w) x = 0.5f + r.uniform();
+        for (auto &x : b) x = r.normal() * 0.1f;
+        positions.resize(rows);
+        for (uint32_t i = 0; i < rows; i++) positions[i] = (int32_t)(pos0 + i);
+        ds4_gpu_tensor *t_pos = upload(positions.data(), rows * 4u, "positions");
+        ds4_gpu_tensor *t_xa = upload(xk.data(), xk.size() * 4u, "idx k a");
+        ds4_gpu_tensor *t_xb = upload(xk.data(), xk.size() * 4u, "idx k b");
+        ds4_gpu_tensor *t_w = upload(w.data(), 128u * 4u, "ln w");
+        ds4_gpu_tensor *t_b = upload(b.data(), 128u * 4u, "ln b");
+        const size_t cache_bytes = (size_t)cache_cap * 128u * 4u;
+        ds4_gpu_tensor *t_ca = ds4_gpu_tensor_alloc(cache_bytes);
+        ds4_gpu_tensor *t_cb = ds4_gpu_tensor_alloc(cache_bytes);
+        std::vector<uint8_t> zero(cache_bytes, 0);
+        ds4_gpu_tensor_write(t_ca, 0, zero.data(), cache_bytes);
+        ds4_gpu_tensor_write(t_cb, 0, zero.data(), cache_bytes);
+        const bool ok_a =
+            ds4_gpu_dots3_layernorm_dev_tensor(t_xa, t_w, t_b, 128u, rows, eps) &&
+            ds4_gpu_dots3_rope_interleaved_tensor(t_xa, t_pos, t_inv_full, rows, 1u, 128u, 64u, 0u) &&
+            ds4_gpu_motif3_round_bf16_tensor(t_xa, t_xa, (uint64_t)rows * 128u) &&
+            ds4_gpu_dots3_fp8_roundtrip_tensor(t_xa, rows) &&
+            ds4_gpu_dots3_idx_store_tensor(t_ca, t_xa, t_pos, rows, cache_cap);
+        const bool ok_b = ds4_gpu_dots3_idx_k_finish_tensor(
+            t_cb, t_xb, t_w, t_b, t_pos, t_inv_full, rows, cache_cap, eps);
+        check(cudaDeviceSynchronize(), "idx k finish sync");
+        results.push_back({"idx-k-finish", ok_a && ok_b &&
+            read_bytes(t_ca, cache_bytes) == read_bytes(t_cb, cache_bytes)});
+
+        const uint32_t heads = 64u;
+        std::vector<float> xq((size_t)rows * heads * 128u);
+        for (auto &x : xq) x = r.normal() * 2.0f;
+        ds4_gpu_tensor *t_qa = upload(xq.data(), xq.size() * 4u, "idx q a");
+        ds4_gpu_tensor *t_qb = upload(xq.data(), xq.size() * 4u, "idx q b");
+        const bool ok_qa =
+            ds4_gpu_dots3_rope_interleaved_tensor(t_qa, t_pos, t_inv_full, rows, heads, 128u, 64u, 0u) &&
+            ds4_gpu_dots3_fp8_roundtrip_tensor(t_qa, rows * heads);
+        const bool ok_qb = ds4_gpu_dots3_idx_q_finish_tensor(t_qb, t_pos, t_inv_full, rows, heads);
+        check(cudaDeviceSynchronize(), "idx q finish sync");
+        results.push_back({"idx-q-finish", ok_qa && ok_qb &&
+            read_bytes(t_qa, xq.size() * 4u) == read_bytes(t_qb, xq.size() * 4u)});
+
+        /* Score with the scale folded vs the separate scale pass. */
+        const uint32_t n_keys = pos0 + rows;
+        std::vector<float> wq((size_t)rows * heads);
+        for (auto &x : wq) x = r.normal();
+        ds4_gpu_tensor *t_wa = upload(wq.data(), wq.size() * 4u, "idx w a");
+        ds4_gpu_tensor *t_wb = upload(wq.data(), wq.size() * 4u, "idx w b");
+        ds4_gpu_tensor *t_sa = ds4_gpu_tensor_alloc((size_t)rows * n_keys * 4u);
+        ds4_gpu_tensor *t_sb = ds4_gpu_tensor_alloc((size_t)rows * n_keys * 4u);
+        const float w_scale = 1.0f / sqrtf(128.0f * 64.0f);
+        const bool ok_sa =
+            ds4_gpu_dots3_scale_tensor(t_wa, w_scale, (uint64_t)rows * heads) &&
+            ds4_gpu_dots3_idx_score_tensor(t_sa, t_qb, t_wa, t_cb, t_pos, rows, n_keys, cache_cap, 1.0f);
+        const bool ok_sb =
+            ds4_gpu_dots3_idx_score_tensor(t_sb, t_qb, t_wb, t_cb, t_pos, rows, n_keys, cache_cap, w_scale);
+        check(cudaDeviceSynchronize(), "idx score sync");
+        results.push_back({"idx-score-scale", ok_sa && ok_sb &&
+            read_bytes(t_sa, (size_t)rows * n_keys * 4u) == read_bytes(t_sb, (size_t)rows * n_keys * 4u)});
+        for (ds4_gpu_tensor *x : {t_pos, t_xa, t_xb, t_w, t_b, t_ca, t_cb, t_qa, t_qb, t_wa, t_wb, t_sa, t_sb})
+            ds4_gpu_tensor_free(x);
+    }
+
+    /* (c) gated value projection (planes entry) vs value + separate gate. */
+    for (int width = 0; width < 2; width++) {
+        const uint32_t heads = 8u, latent = 512u, rows = width == 0 ? 3u : 40u;
+        const uint32_t k_blocks = latent / 32u;
+        std::vector<float> lat((size_t)rows * heads * latent), gate((size_t)rows * heads);
+        for (auto &x : lat) x = r.normal();
+        for (auto &x : gate) x = r.normal() * 2.0f;
+        std::vector<uint16_t> scale((size_t)heads * k_blocks * 128u);
+        std::vector<int8_t> code((size_t)heads * k_blocks * 32u * 128u);
+        for (auto &s : scale) { const __half h = __float2half(0.01f + 0.02f * r.uniform()); memcpy(&s, &h, 2); }
+        for (auto &x : code) x = (int8_t)((int)(r.next() % 255u) - 127);
+        ds4_gpu_tensor *t_lat = upload(lat.data(), lat.size() * 4u, "latent");
+        ds4_gpu_tensor *t_gate = upload(gate.data(), gate.size() * 4u, "gate");
+        ds4_gpu_tensor *t_scale = upload(scale.data(), scale.size() * 2u, "scale");
+        ds4_gpu_tensor *t_code = upload(code.data(), code.size(), "code");
+        const size_t out_bytes = (size_t)rows * heads * 128u * 4u;
+        ds4_gpu_tensor *t_oa = ds4_gpu_tensor_alloc(out_bytes);
+        ds4_gpu_tensor *t_ob = ds4_gpu_tensor_alloc(out_bytes);
+        const bool ok_a =
+            ds4_gpu_dots3_value_project_planes_tensor(t_oa, t_lat, ds4_gpu_tensor_ptr(t_scale), ds4_gpu_tensor_ptr(t_code), nullptr, rows, heads, latent) &&
+            ds4_gpu_dots3_gate_mul_tensor(t_oa, t_gate, rows, heads, 128u);
+        const bool ok_b =
+            ds4_gpu_dots3_value_project_planes_tensor(t_ob, t_lat, ds4_gpu_tensor_ptr(t_scale), ds4_gpu_tensor_ptr(t_code), t_gate, rows, heads, latent);
+        check(cudaDeviceSynchronize(), "gated value sync");
+        results.push_back({width == 0 ? "value-gate-decode" : "value-gate-hmma",
+            ok_a && ok_b && read_bytes(t_oa, out_bytes) == read_bytes(t_ob, out_bytes)});
+        for (ds4_gpu_tensor *x : {t_lat, t_gate, t_scale, t_code, t_oa, t_ob}) ds4_gpu_tensor_free(x);
+    }
+
+    /* (e) FFN residual in one pass vs add + residual add. */
+    {
+        const uint64_t n = 7u * 5120u;
+        std::vector<float> x(n), a(n), b(n);
+        for (auto &v : x) v = r.normal();
+        for (auto &v : a) v = r.normal();
+        for (auto &v : b) v = r.normal();
+        ds4_gpu_tensor *t_xa = upload(x.data(), n * 4u, "x a");
+        ds4_gpu_tensor *t_xb = upload(x.data(), n * 4u, "x b");
+        ds4_gpu_tensor *t_a = upload(a.data(), n * 4u, "routed");
+        ds4_gpu_tensor *t_b = upload(b.data(), n * 4u, "shared");
+        ds4_gpu_tensor *t_sum = ds4_gpu_tensor_alloc(n * 4u);
+        const bool ok_a = ds4_gpu_add_tensor(t_sum, t_a, t_b, (uint32_t)n) &&
+                          ds4_gpu_exaone_add_tensor(t_xa, t_sum, n);
+        const bool ok_b = ds4_gpu_dots3_ffn_residual_tensor(t_xb, t_a, t_b, n);
+        check(cudaDeviceSynchronize(), "ffn residual sync");
+        results.push_back({"ffn-residual", ok_a && ok_b &&
+            read_bytes(t_xa, n * 4u) == read_bytes(t_xb, n * 4u)});
+        for (ds4_gpu_tensor *t2 : {t_xa, t_xb, t_a, t_b, t_sum}) ds4_gpu_tensor_free(t2);
+    }
+    ds4_gpu_tensor_free(t_inv_swa);
+    ds4_gpu_tensor_free(t_inv_full);
+    return results;
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -491,6 +685,12 @@ int main(int argc, char **argv) {
                    c.name, c.rows, c.heads, c.latent, c.nope, r.rel_rms, r.max_abs, ok ? "OK" : "FAIL");
         }
         if (!ok) failures++;
+    }
+    if (!profile) {
+        for (const fused_result &r : run_fused_cases()) {
+            printf("dots3 fused %-18s %s\n", r.name, r.same ? "bit-identical" : "MISMATCH");
+            if (!r.same) failures++;
+        }
     }
     ds4_gpu_cleanup();
     return failures ? 1 : 0;

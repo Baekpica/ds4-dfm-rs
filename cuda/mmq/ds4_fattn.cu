@@ -1717,6 +1717,7 @@ void dots3_value_project_hmma_kernel(
         const float * __restrict__ latent,
         const __half * __restrict__ scale,
         const int8_t * __restrict__ code,
+        const float * __restrict__ gate_logits,
         const uint32_t rows,
         const uint32_t q_heads,
         const uint32_t latent_dim) {
@@ -1778,15 +1779,23 @@ void dots3_value_project_hmma_kernel(
         }
     }
 
+    /* Headwise sigmoid gate folded in (the separate gate pass multiplied the
+     * finished sums by the same factor). */
 #pragma unroll
     for (int r = 0; r < 2; r++) {
         const uint32_t token = token0 + warp * 16u + lane / 4u + 8u * (uint32_t)r;
         if (token >= rows) continue;
+        float g = 1.0f;
+        if (gate_logits) {
+            const float x = gate_logits[(size_t)token * q_heads + head];
+            g = x >= 0.0f ? 1.0f / (1.0f + __expf(-x))
+                          : __expf(x) / (1.0f + __expf(x));
+        }
         float *dst = heads + ((size_t)token * q_heads + head) * D3_VP_VALUES + (lane & 3u) * 2u;
 #pragma unroll
         for (uint32_t c = 0; c < D3_VP_CB; c++) {
             *reinterpret_cast<float2 *>(dst + c * 8u) =
-                make_float2(output[c].x[r * 2], output[c].x[r * 2 + 1]);
+                make_float2(output[c].x[r * 2] * g, output[c].x[r * 2 + 1] * g);
         }
     }
 }
@@ -2106,8 +2115,8 @@ extern "C" int ds4_mmq_dots3_prefill_attn_hmma(
 
 extern "C" int ds4_mmq_dots3_value_project_hmma(
         float *heads, const float *latent, const void *scale,
-        const void *code, int rows, int q_heads, int latent_dim,
-        cudaStream_t stream) {
+        const void *code, const float *gate_logits, int rows, int q_heads,
+        int latent_dim, cudaStream_t stream) {
     if (!heads || !latent || !scale || !code || rows <= 0 || q_heads <= 0 ||
         latent_dim <= 0 || latent_dim % D3_VP_KB != 0) {
         return -1;
@@ -2118,7 +2127,7 @@ extern "C" int ds4_mmq_dots3_value_project_hmma(
                     (unsigned)((rows + D3_VP_TOKENS - 1) / D3_VP_TOKENS), 1);
     dots3_value_project_hmma_kernel<<<grid, D3_VP_THREADS, 0, stream>>>(
         heads, latent, (const __half *)scale, (const int8_t *)code,
-        (uint32_t)rows, (uint32_t)q_heads, (uint32_t)latent_dim);
+        gate_logits, (uint32_t)rows, (uint32_t)q_heads, (uint32_t)latent_dim);
     return cudaGetLastError() == cudaSuccess ? 0 : -2;
 }
 

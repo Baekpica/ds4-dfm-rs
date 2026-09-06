@@ -3196,9 +3196,58 @@ int ds4_gpu_dots3_value_project_planes_tensor(
         const ds4_gpu_tensor *latent,
         const void           *scale,
         const void           *code,
+        const ds4_gpu_tensor *gate_logits,
         uint32_t                rows,
         uint32_t                q_heads,
         uint32_t                latent_dim);
+/* Fused dots3 launches (bit-identical to the separate kernels they replace). */
+int ds4_gpu_dots3_kv_finish_tensor(
+        ds4_gpu_tensor       *latent_cache,
+        ds4_gpu_tensor       *k_pe_cache,
+        const ds4_gpu_tensor *kv_raw,
+        const ds4_gpu_tensor *w_latent,
+        const ds4_gpu_tensor *w_rope,
+        const ds4_gpu_tensor *positions,
+        const ds4_gpu_tensor *inv_freq,
+        uint32_t                rows,
+        uint32_t                kv_lora,
+        uint32_t                rope_dim,
+        uint32_t                cache_cap,
+        bool                    ring,
+        float                   eps);
+int ds4_gpu_dots3_idx_k_finish_tensor(
+        ds4_gpu_tensor       *cache,
+        const ds4_gpu_tensor *x,
+        const ds4_gpu_tensor *weight,
+        const ds4_gpu_tensor *bias,
+        const ds4_gpu_tensor *positions,
+        const ds4_gpu_tensor *inv_freq,
+        uint32_t                rows,
+        uint32_t                cache_cap,
+        float                   eps);
+int ds4_gpu_dots3_idx_q_finish_tensor(
+        ds4_gpu_tensor       *x,
+        const ds4_gpu_tensor *positions,
+        const ds4_gpu_tensor *inv_freq,
+        uint32_t                rows,
+        uint32_t                heads);
+int ds4_gpu_dots3_ffn_residual_tensor(
+        ds4_gpu_tensor       *x,
+        const ds4_gpu_tensor *routed,
+        const ds4_gpu_tensor *shared,
+        uint64_t                n);
+int ds4_gpu_dots3_value_project_gated_tensor(
+        ds4_gpu_tensor       *heads,
+        const ds4_gpu_tensor *latent,
+        const void           *model_map,
+        uint64_t                model_size,
+        uint64_t                kv_b_offset,
+        const ds4_gpu_tensor *gate_logits,
+        uint32_t                rows,
+        uint32_t                q_heads,
+        uint32_t                kv_latent_dim,
+        uint32_t                qk_nope,
+        uint32_t                value_dim);
 
 int ds4_gpu_motif3_rope_tensor(
         ds4_gpu_tensor       *out,
@@ -3384,7 +3433,8 @@ int ds4_gpu_dots3_idx_score_tensor(
         const ds4_gpu_tensor *q_positions,
         uint32_t                n_queries,
         uint32_t                n_keys,
-        uint32_t                key_cache_cap);
+        uint32_t                key_cache_cap,
+        float                   w_scale);
 int ds4_gpu_dots3_scale_tensor(
         ds4_gpu_tensor       *x,
         float                   scale,
