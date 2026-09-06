@@ -432,8 +432,14 @@ decoder layers run (`DS4_QWEN_PLE_NO_LOOKAHEAD=1` disables that). One prefill
 stream therefore wants at least one chunk in cache (1024 MiB with slack); two
 banks that alternate chunks want two (2048 MiB, the maximum). Sixteen page
 workers already saturate the sidecar reads at ~90K IOPS in bursts that overlap
-compute, so more workers do not help. This reference shape asks the shared
-Rust scheduler for two persistent banks:
+compute, so more workers do not help. A prompt's first chunk has nothing
+queued for it, so every prompt opens with a 2,048-row chunk whose remaining
+decoder layers hide the reads of the full-size chunk behind it; prompts
+shorter than two opening chunks stay one chunk, since a short trailing
+chunk costs more than the reads it hides
+(`DS4_QWEN_PREFILL_OPENING` sets the opening rows; `0` opens at the chunk
+cap). This reference shape asks the shared Rust scheduler for two persistent
+banks:
 
 ```sh
 DS4_QWEN_BATCH=1 \
@@ -574,6 +580,24 @@ session from 2K through 64K, followed by 128 greedy tokens at each frontier.
 With embedded MTP draft 2 active throughout, mean prefill including MTP prefix
 maintenance was **1,163.5 tok/s** and mean decode was **28.0 tok/s**; no MTP
 quench or runtime failure occurred.*
+
+The 2026-09-06 prefill rounds
+([`docs/qwen38-prefill-2026-09-06.md`](docs/qwen38-prefill-2026-09-06.md):
+opening chunk, MoE glue traffic, one-pass block output) moved the cold
+single-shot `ds4-bench` prefill of the same artifact on the same host from
+1,214.8 to **1,362.1 tok/s** at 8,192 tokens (+12.1 %), from 1,382.7 to
+**1,439.7 tok/s** at 65,536 tokens (+4.1 %) and from 1,297.5 to
+**1,325.6 tok/s** at 196,608 tokens, `main` `0510117` -> `974d706`.  On
+the production server shape (two banks, 196,608 context, `--mtp-draft 2`,
+three fresh workers per binary) the 8,259-token repeated-passage prompt went
+1,363.3 -> **1,394.2 tok/s** (+2.3 %) and the 7,937-token cold-PLE
+markdown prompt 1,406.1 -> **1,467.5 tok/s** (+4.4 %).  Decode with MTP
+draft 2 on that chat prompt reads 31.3 -> 29.8 tok/s only because the
+opening chunk's prefill GEMM shapes move a near-tie token and the new
+continuation accepts fewer drafts (1.65 -> 1.60 per step); with
+`DS4_QWEN_PREFILL_OPENING=0` the new binary reproduces the old text and
+31.4 tok/s.  Every round is bit-identical to the kernels it replaces on the
+fixtures.
 
 The original split gate claims parity class, not a universal speedup.
 

@@ -22251,10 +22251,23 @@ static bool qwen4exp_moe_ws_alloc(
  * matching the reference's post-expert multiplication by linearity. */
 /* The 640-wide expert-down input is a 512-column K-quant main projection
  * plus a 128-column tail tensor.  From prefill width on, the fused MMQ entry
- * folds the tail into the main tile loop and stores routed_down once;
- * decode widths and the paired-bank path keep the separate tail accumulate,
- * which qwen4exp_moe_tail then runs. */
+ * reads both halves in place from the SwiGLU rows, folds the tail into the
+ * main tile loop and stores routed_down once; decode widths and the
+ * paired-bank path pack the main columns (routed_gate) for the separate
+ * main GEMM and the tail accumulate, which qwen4exp_moe_tail then runs. */
 enum { QWEN4EXP_FUSED_DOWN_MIN_TOKENS = 16 };
+
+static bool qwen4exp_moe_pack_main(
+        ds4_qwen_moe_ws       *ws,
+        const ds4_layer_weights *layer,
+        uint32_t               n_tokens) {
+    const uint32_t expert_ff = (uint32_t)layer->ffn_gate_exps->dim[1];
+    const uint32_t main_dim = (uint32_t)layer->ffn_down_exps->dim[0];
+    const uint64_t assignments = (uint64_t)n_tokens * ws->n_used;
+    return ds4_gpu_qwen4exp_pack_expert_down_main_tensor(
+               ws->routed_gate, ws->routed_mid, assignments,
+               expert_ff, main_dim) != 0;
+}
 
 static bool qwen4exp_moe_down_main(
         ds4_qwen_moe_ws       *ws,
@@ -22270,7 +22283,7 @@ static bool qwen4exp_moe_down_main(
     const uint64_t assignments = (uint64_t)n_tokens * ws->n_used;
     if (fuse_tail && n_tokens >= QWEN4EXP_FUSED_DOWN_MIN_TOKENS &&
         ds4_gpu_qwen4exp_routed_down_fused_tensor(
-            ws->routed_down, ws->routed_gate, ws->routed_mid, ws->selected,
+            ws->routed_down, ws->routed_mid, ws->selected,
             model->map, model->size,
             layer->ffn_down_exps->abs_offset,
             layer->ffn_down_exps->bytes,
@@ -22283,7 +22296,8 @@ static bool qwen4exp_moe_down_main(
         ws->tail_fused = true;
         return true;
     }
-    return ds4_gpu_routed_matmul_bounded_tensor(
+    return qwen4exp_moe_pack_main(ws, layer, n_tokens) &&
+           ds4_gpu_routed_matmul_bounded_tensor(
                ws->routed_down, ws->routed_gate, ws->selected,
                model->map, model->size,
                layer->ffn_down_exps->abs_offset,
@@ -22392,11 +22406,10 @@ static bool qwen4exp_moe_prepare(
         !ds4_gpu_swiglu_weighted_tensor(
                 ws->routed_mid, ws->routed_gate, ws->routed_up,
                 ws->router_weights, expert_ff, routed_count) ||
-        !ds4_gpu_qwen4exp_pack_expert_down_main_tensor(
-                ws->routed_gate, ws->routed_mid, assignments,
-                expert_ff, main_dim) ||
-        (!defer_main && !qwen4exp_moe_down_main(
-                ws, model, layer, n_tokens, fuse_tail))) {
+        (defer_main
+             ? !qwen4exp_moe_pack_main(ws, layer, n_tokens)
+             : !qwen4exp_moe_down_main(
+                   ws, model, layer, n_tokens, fuse_tail))) {
         return false;
     }
     return true;
@@ -22476,11 +22489,6 @@ static bool qwen4exp_moe_finish(
     const uint32_t shared_ff = (uint32_t)layer->ffn_gate_shexp->dim[1];
     const uint32_t n_used = ws->n_used;
     const uint64_t shared_count = (uint64_t)n_tokens * shared_ff;
-    const uint64_t output_count = (uint64_t)n_tokens * hidden;
-    if (!ds4_gpu_moe_sum_tensor(
-            output, ws->routed_down, hidden, n_used, n_tokens)) {
-        return false;
-    }
 
     const bool paired_shared =
         layer->ffn_gate_shexp->type == DS4_TENSOR_Q8_0 &&
@@ -22502,21 +22510,22 @@ static bool qwen4exp_moe_finish(
                        hidden, shared_ff, input, n_tokens)) {
         return false;
     }
+    /* Router logits are dead after the routed branch. Reuse their first
+     * scalar per row for the always-active shared-expert gate; the routed
+     * sum and the gated shared output then form the block output in one
+     * pass. */
     if (!ds4_gpu_swiglu_tensor(
                 ws->shared_mid, ws->shared_gate, ws->shared_up,
                 (uint32_t)shared_count, 0.0f, 1.0f) ||
         !plain_graph_matmul_tensor(
                 ws->shared_out, model, layer->ffn_down_shexp,
                 shared_ff, hidden, ws->shared_mid, n_tokens) ||
-        /* Router logits are dead after the routed branch. Reuse their first
-         * scalar per row for the always-active shared-expert gate. */
         !qwen4exp_row_stable_matmul_tensor(
                 ws->router_logits, model, layer->ffn_shexp_gate_inp,
                 hidden, 1u, input, n_tokens) ||
-        !ds4_gpu_qwen4exp_shared_expert_gate_tensor(
-                ws->shared_out, ws->shared_out, ws->router_logits,
-                n_tokens, hidden) ||
-        !plain_graph_add_inplace(output, ws->shared_out, output_count)) {
+        !ds4_gpu_qwen4exp_moe_sum_shared_tensor(
+                output, ws->routed_down, ws->shared_out, ws->router_logits,
+                hidden, n_used, n_tokens)) {
         return false;
     }
     return true;
@@ -33710,6 +33719,35 @@ static uint32_t qwen4exp_env_u32(const char *name, uint32_t fallback,
         return fallback;
     }
     return (uint32_t)parsed;
+}
+
+/* Rows of a prompt's opening prefill chunk.  Nothing is queued for it, so
+ * its PLE pages come from the SSD while only the token embedding and
+ * decoder layer 0 run: ~1.4 s exposed for a cold 8,192-row chunk at ~90K
+ * IOPS, most of the exposed I/O of an 8K prefill.  A short opening chunk
+ * exposes only its own pages; the full-size chunk behind it is queued
+ * after layer 1 (qwen4exp_ple_lookahead) and read while the opening
+ * chunk's remaining layers run.  Later chunks keep the cap.  The split
+ * only pays when the chunk behind the opening one is at least as long:
+ * a short trailing chunk runs its layers at low occupancy and hides few
+ * reads (2,304 rows as 2,048 + 256 measured 7 % slower than one chunk,
+ * halves 4 % slower), so shorter prompts stay one chunk.
+ * DS4_QWEN_PREFILL_OPENING overrides the opening rows (0 = cap). */
+enum { QWEN4EXP_PREFILL_OPENING_ROWS = 2048u };
+
+static uint32_t qwen4exp_prefill_rows(uint32_t remain, uint32_t cap,
+                                      bool opening) {
+    static uint32_t opening_rows = UINT32_MAX;
+    if (opening_rows == UINT32_MAX) {
+        opening_rows = qwen4exp_env_u32(
+            "DS4_QWEN_PREFILL_OPENING", QWEN4EXP_PREFILL_OPENING_ROWS,
+            0u, 16384u);
+    }
+    const uint32_t rows = remain < cap ? remain : cap;
+    if (!opening || opening_rows == 0u || rows < 2u * opening_rows) {
+        return rows;
+    }
+    return opening_rows;
 }
 
 static bool qwen4exp_engine_open_ple(ds4_engine *engine,
@@ -59070,6 +59108,10 @@ static int family_banked_engine_continuous_generate(
                     uint32_t n = remain;
                     const uint32_t cap = family_banked_prefill_cap(ctx);
                     if (n > cap) n = cap;
+                    if (ctx->qwen) {
+                        n = qwen4exp_prefill_rows(
+                            remain, cap, cb->prefill_off == 0u);
+                    }
                     const uint32_t pos = cb->prefill_base + cb->prefill_off;
                     const bool final = n == remain;
                     uint32_t next_n = remain - n;
@@ -66517,11 +66559,13 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
         }
         s->mtp_draft_valid = false;
 
+        const int first_start = start;
         while (start < prompt->len) {
-            uint32_t rows = (uint32_t)(prompt->len - start);
-            if (rows > s->prefill_cap) rows = s->prefill_cap;
-            const bool last = start + (int)rows == prompt->len;
-            uint32_t next_rows = (uint32_t)(prompt->len - start) - rows;
+            const uint32_t remain = (uint32_t)(prompt->len - start);
+            const uint32_t rows = qwen4exp_prefill_rows(
+                remain, s->prefill_cap, start == first_start);
+            const bool last = rows == remain;
+            uint32_t next_rows = remain - rows;
             if (next_rows > s->prefill_cap) next_rows = s->prefill_cap;
             if (!qwen4exp_graph_forward_chunk(
                     g, &e->model, &e->weights,

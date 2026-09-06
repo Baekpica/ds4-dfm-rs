@@ -282,6 +282,47 @@ static void test_shared_expert_gate(void) {
     compare_f32("Qwen shared expert gate in-place", got, want, count,
                 2.0e-6f, 2.0e-6f);
 
+    /* Routed sum + gated shared expert in one pass against the three
+     * separate kernels (moe_sum, gate, add), byte for byte; one routed
+     * value is non-finite and must be dropped by both. */
+    enum { SUM_USED = 3 };
+    const uint64_t down_count = count * SUM_USED;
+    float *down = (float *)malloc(down_count * sizeof(*down));
+    float *fused = (float *)malloc(count * sizeof(*fused));
+    REQUIRE(down && fused, "moe sum host allocation");
+    for (uint64_t i = 0; i < down_count; i++)
+        down[i] = 0.5f * sinf((float)(i + 7u) * 0.011f) -
+                  0.2f * cosf((float)(i + 2u) * 0.031f);
+    down[HIDDEN + 5u] = INFINITY;
+    ds4_gpu_tensor *d_down = ds4_gpu_tensor_alloc(down_count * sizeof(float));
+    ds4_gpu_tensor *d_sum = ds4_gpu_tensor_alloc(count * sizeof(float));
+    ds4_gpu_tensor *d_fused = ds4_gpu_tensor_alloc(count * sizeof(float));
+    REQUIRE(d_down && d_sum && d_fused, "moe sum GPU allocation");
+    REQUIRE(ds4_gpu_tensor_write(d_down, 0, down, down_count * sizeof(float)) &&
+            ds4_gpu_tensor_write(d_shared, 0, shared, count * sizeof(float)),
+            "moe sum upload");
+    REQUIRE(ds4_gpu_moe_sum_tensor(d_sum, d_down, HIDDEN, SUM_USED, SHARED_ROWS) &&
+            ds4_gpu_qwen4exp_shared_expert_gate_tensor(
+                d_out, d_shared, d_gate, SHARED_ROWS, HIDDEN) &&
+            ds4_gpu_add_tensor(d_sum, d_sum, d_out, (uint32_t)count),
+            "moe sum reference launches");
+    REQUIRE(ds4_gpu_tensor_read(d_sum, 0, want, count * sizeof(float)),
+            "moe sum reference download");
+    REQUIRE(ds4_gpu_qwen4exp_moe_sum_shared_tensor(
+                d_fused, d_down, d_shared, d_gate, HIDDEN, SUM_USED,
+                SHARED_ROWS),
+            "moe sum + shared launch");
+    REQUIRE(ds4_gpu_tensor_read(d_fused, 0, fused, count * sizeof(float)),
+            "moe sum + shared download");
+    REQUIRE(memcmp(fused, want, count * sizeof(float)) == 0,
+            "moe sum + shared bit-identical to moe_sum + gate + add");
+    printf("Qwen MoE sum + gated shared expert (one pass) pass (bit-identical)\n");
+    ds4_gpu_tensor_free(d_fused);
+    ds4_gpu_tensor_free(d_sum);
+    ds4_gpu_tensor_free(d_down);
+    free(fused);
+    free(down);
+
     ds4_gpu_tensor_free(d_gate);
     ds4_gpu_tensor_free(d_out);
     ds4_gpu_tensor_free(d_shared);
@@ -822,7 +863,7 @@ static void test_fused_down(void *model_map, uint64_t model_size,
                 d_packed, d_mid, FUSED_ASSIGNMENTS, DOWN_MID, DOWN_MAIN),
             "fused down main pack launch");
     REQUIRE(ds4_gpu_qwen4exp_routed_down_fused_tensor(
-                d_down, d_packed, d_mid, d_ids, model_map, model_size,
+                d_down, d_mid, d_ids, model_map, model_size,
                 main_offset, main_bytes, main_type, tail_offset, tail_bytes,
                 tail_type, FUSED_ASSIGNMENTS, DOWN_MID, DOWN_MAIN, DOWN_TAIL,
                 HIDDEN, DOWN_EXPERTS, FUSED_ASSIGNMENTS),
@@ -853,13 +894,13 @@ static void test_fused_down(void *model_map, uint64_t model_size,
                 down_count);
 
     REQUIRE(!ds4_gpu_qwen4exp_routed_down_fused_tensor(
-                d_down, d_packed, d_mid, d_ids, model_map, model_size,
+                d_down, d_mid, d_ids, model_map, model_size,
                 main_offset, main_bytes, main_type, tail_offset, tail_bytes,
                 tail_type, FUSED_ASSIGNMENTS, DOWN_MID, DOWN_MAIN,
                 DOWN_TAIL - QK_5_0, HIDDEN, DOWN_EXPERTS, FUSED_ASSIGNMENTS),
             "fused entry rejects a non-128 tail");
     REQUIRE(!ds4_gpu_qwen4exp_routed_down_fused_tensor(
-                d_down, d_packed, d_mid, d_ids, model_map, model_size,
+                d_down, d_mid, d_ids, model_map, model_size,
                 main_offset, main_bytes, main_type, tail_offset, tail_bytes,
                 tail_type, FUSED_ASSIGNMENTS, DOWN_MID, DOWN_MAIN, DOWN_TAIL,
                 HIDDEN, DOWN_EXPERTS, 0u),
@@ -1109,6 +1150,97 @@ static void test_routed_pair(void *model_map, uint64_t model_size,
     free(x);
 }
 
+/* The balanced pattern above fills 128-wide tiles with a 32-wide tail per
+ * expert.  Production routes ~5 rows per expert, so the 8- and 16-wide
+ * worklist tiles carry most of the work; route all but five rows per
+ * remaining expert to expert 0 so those tiles run against the reference. */
+static void test_routed_pair_narrow(void *model_map, uint64_t model_size,
+                                    uint32_t weight_type,
+                                    uint64_t gate_offset, uint64_t up_offset,
+                                    uint64_t weight_bytes, const char *name) {
+    const uint64_t x_count = (uint64_t)PAIR_TOKENS * HIDDEN;
+    const uint64_t assignments = (uint64_t)PAIR_TOKENS * PAIR_USED;
+    const uint64_t out_count = assignments * PAIR_FF;
+    float *x = (float *)malloc(x_count * sizeof(*x));
+    int32_t *ids = (int32_t *)malloc(assignments * sizeof(*ids));
+    float *pair_gate = (float *)malloc(out_count * sizeof(*pair_gate));
+    float *pair_up = (float *)malloc(out_count * sizeof(*pair_up));
+    float *ref_gate = (float *)malloc(out_count * sizeof(*ref_gate));
+    float *ref_up = (float *)malloc(out_count * sizeof(*ref_up));
+    REQUIRE(x && ids && pair_gate && pair_up && ref_gate && ref_up,
+            "narrow routed pair host allocation");
+    for (uint64_t i = 0; i < x_count; i++)
+        x[i] = 0.21f * sinf((float)(i + 5u) * 0.017f) +
+               0.07f * cosf((float)(i + 11u) * 0.023f);
+    /* Slot 0 of every token goes to expert 0; the other slots reach
+     * experts 1..7 only for the first five tokens of each expert. */
+    for (uint32_t t = 0; t < PAIR_TOKENS; t++) {
+        for (uint32_t k = 0; k < PAIR_USED; k++) {
+            uint32_t expert = 0u;
+            if (k != 0u && t < 5u * (PAIR_EXPERTS - 1u))
+                expert = 1u + t / 5u;
+            if (k != 0u && expert == 0u)
+                expert = 0u;
+            ids[(uint64_t)t * PAIR_USED + k] = (int32_t)expert;
+        }
+    }
+    /* Top-k is without replacement: give the extra slots of a token that
+     * stayed on expert 0 the next experts round-robin. */
+    for (uint32_t t = 0; t < PAIR_TOKENS; t++)
+        for (uint32_t k = 1; k < PAIR_USED; k++)
+            for (uint32_t j = 0; j < k; j++)
+                if (ids[(uint64_t)t * PAIR_USED + k] ==
+                    ids[(uint64_t)t * PAIR_USED + j])
+                    ids[(uint64_t)t * PAIR_USED + k] =
+                        (ids[(uint64_t)t * PAIR_USED + k] + 1) % PAIR_EXPERTS;
+
+    ds4_gpu_tensor *d_x = ds4_gpu_tensor_alloc(x_count * sizeof(float));
+    ds4_gpu_tensor *d_ids = ds4_gpu_tensor_alloc(assignments * sizeof(int32_t));
+    ds4_gpu_tensor *d_gate = ds4_gpu_tensor_alloc(out_count * sizeof(float));
+    ds4_gpu_tensor *d_up = ds4_gpu_tensor_alloc(out_count * sizeof(float));
+    REQUIRE(d_x && d_ids && d_gate && d_up, "narrow routed pair GPU allocation");
+    REQUIRE(ds4_gpu_tensor_write(d_x, 0, x, x_count * sizeof(float)) &&
+            ds4_gpu_tensor_write(d_ids, 0, ids, assignments * sizeof(int32_t)),
+            "narrow routed pair input upload");
+    REQUIRE(ds4_gpu_routed_gate_up_tensor(
+                d_gate, d_up, d_x, d_ids, model_map, model_size,
+                gate_offset, weight_bytes, up_offset, weight_bytes,
+                weight_type, HIDDEN, PAIR_FF, PAIR_EXPERTS, PAIR_TOKENS,
+                PAIR_USED),
+            "narrow routed pair launch");
+    REQUIRE(ds4_gpu_tensor_read(d_gate, 0, pair_gate, out_count * sizeof(float)) &&
+            ds4_gpu_tensor_read(d_up, 0, pair_up, out_count * sizeof(float)),
+            "narrow routed pair download");
+    REQUIRE(ds4_gpu_routed_matmul_tensor(
+                d_gate, d_x, d_ids, model_map, model_size, gate_offset,
+                weight_bytes, weight_type, HIDDEN, PAIR_FF, PAIR_EXPERTS,
+                PAIR_TOKENS, PAIR_USED) &&
+            ds4_gpu_routed_matmul_tensor(
+                d_up, d_x, d_ids, model_map, model_size, up_offset,
+                weight_bytes, weight_type, HIDDEN, PAIR_FF, PAIR_EXPERTS,
+                PAIR_TOKENS, PAIR_USED),
+            "narrow routed reference launch");
+    REQUIRE(ds4_gpu_tensor_read(d_gate, 0, ref_gate, out_count * sizeof(float)) &&
+            ds4_gpu_tensor_read(d_up, 0, ref_up, out_count * sizeof(float)),
+            "narrow routed reference download");
+    char label[96];
+    snprintf(label, sizeof(label), "%s narrow tiles gate", name);
+    compare_mmq(label, pair_gate, ref_gate, out_count);
+    snprintf(label, sizeof(label), "%s narrow tiles up", name);
+    compare_mmq(label, pair_up, ref_up, out_count);
+
+    ds4_gpu_tensor_free(d_up);
+    ds4_gpu_tensor_free(d_gate);
+    ds4_gpu_tensor_free(d_ids);
+    ds4_gpu_tensor_free(d_x);
+    free(ref_up);
+    free(ref_gate);
+    free(pair_up);
+    free(pair_gate);
+    free(ids);
+    free(x);
+}
+
 enum {
     DECODE_EXPERTS = 16,
     DECODE_USED = 10,
@@ -1287,7 +1419,7 @@ static void profile_fused_down(void) {
                 d_packed, d_mid, assignments, DOWN_MID, DOWN_MAIN),
             "fused down profile pack launch");
     REQUIRE(ds4_gpu_qwen4exp_routed_down_fused_tensor(
-                d_down, d_packed, d_mid, d_ids, model_map, model_size,
+                d_down, d_mid, d_ids, model_map, model_size,
                 main_offset, main_bytes, 13u, tail_offset, tail_bytes, 6u,
                 assignments, DOWN_MID, DOWN_MAIN, DOWN_TAIL, HIDDEN, experts,
                 tokens),
@@ -1527,6 +1659,12 @@ int main(void) {
     test_routed_pair(model_map, model_size, 8u, q8_gate_offset,
                      q8_up_offset, q8_pair_bytes,
                      "Qwen MTP Q8_0 gate/up worklist pair");
+    test_routed_pair_narrow(model_map, model_size, 13u, q5k_gate_offset,
+                            q5k_up_offset, q5k_pair_bytes,
+                            "Qwen edge-layer Q5_K gate/up worklist pair");
+    test_routed_pair_narrow(model_map, model_size, 8u, q8_gate_offset,
+                            q8_up_offset, q8_pair_bytes,
+                            "Qwen MTP Q8_0 gate/up worklist pair");
     test_decode_vec(model_map, model_size, dec_gate_offset, dec_up_offset,
                     dec_gu_bytes, dec_main_offset, dec_main_bytes,
                     dec_tail_offset, dec_tail_bytes);

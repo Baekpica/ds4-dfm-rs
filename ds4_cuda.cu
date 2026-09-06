@@ -18079,6 +18079,35 @@ __global__ static void qwen4exp_shared_expert_gate_kernel(
     out[i] = shared[i] * gate;
 }
 
+/* Routed expert sum plus the sigmoid-gated shared expert in one pass:
+ * out = sum_e guard(down[t][e]) + shared[t] * sigmoid(gate_logit[t]).
+ * The product and the add keep their own roundings (no contraction), so the
+ * result is bit-identical to moe_sum, the shared-expert gate and the
+ * in-place add it replaces, without the two [rows x hidden] round trips. */
+__global__ static void qwen4exp_moe_sum_shared_kernel(
+        float *out,
+        const float *down,
+        const float *shared,
+        const float *gate_logits,
+        uint32_t hidden_size,
+        uint32_t n_used,
+        uint64_t count) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    const uint64_t tok = i / hidden_size;
+    const uint32_t col = (uint32_t)(i - tok * hidden_size);
+    float acc = 0.0f;
+    for (uint32_t e = 0; e < n_used; e++) {
+        const float v = down[(tok * n_used + e) * hidden_size + col];
+        if (isfinite(v)) acc += v;
+    }
+    const float logit = gate_logits[tok];
+    const float gate = logit >= 0.0f
+        ? 1.0f / (1.0f + __expf(-logit))
+        : __expf(logit) / (1.0f + __expf(logit));
+    out[i] = __fadd_rn(acc, __fmul_rn(shared[i], gate));
+}
+
 /* The high-precision recipe stores expert-down as a semantic 512+128 split.
  * Routed MMQ needs contiguous K rows, so compact the main columns after the
  * weighted SwiGLU while preserving the original 640-wide activation for the
@@ -32076,6 +32105,38 @@ extern "C" int ds4_gpu_qwen4exp_shared_expert_gate_tensor(
     return cuda_ok(cudaGetLastError(), "Qwen4Exp shared-expert gate launch");
 }
 
+extern "C" int ds4_gpu_qwen4exp_moe_sum_shared_tensor(
+        ds4_gpu_tensor       *out,
+        const ds4_gpu_tensor *down,
+        const ds4_gpu_tensor *shared,
+        const ds4_gpu_tensor *gate_logits,
+        uint32_t                hidden_size,
+        uint32_t                n_used,
+        uint32_t                rows) {
+    if (!out || !down || !shared || !gate_logits || rows == 0u ||
+        hidden_size == 0u || n_used == 0u ||
+        out->ptr == down->ptr || out->ptr == shared->ptr ||
+        (uint64_t)rows > UINT64_MAX / hidden_size) {
+        return 0;
+    }
+    const uint64_t count = (uint64_t)rows * hidden_size;
+    if (count > UINT64_MAX / n_used ||
+        count * n_used > UINT64_MAX / sizeof(float) ||
+        count > (uint64_t)UINT_MAX * 256u ||
+        out->bytes < count * sizeof(float) ||
+        shared->bytes < count * sizeof(float) ||
+        down->bytes < count * n_used * sizeof(float) ||
+        gate_logits->bytes < (uint64_t)rows * sizeof(float)) {
+        return 0;
+    }
+    qwen4exp_moe_sum_shared_kernel<<<
+        (unsigned)((count + 255u) / 256u), 256u, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)down->ptr,
+            (const float *)shared->ptr, (const float *)gate_logits->ptr,
+            hidden_size, n_used, count);
+    return cuda_ok(cudaGetLastError(), "Qwen4Exp MoE sum + shared launch");
+}
+
 extern "C" int ds4_gpu_qwen4exp_pack_expert_down_main_tensor(
         ds4_gpu_tensor       *packed_main,
         const ds4_gpu_tensor *mid,
@@ -32228,12 +32289,13 @@ extern "C" int ds4_gpu_qwen4exp_q5_0_tail_accum_tensor(
  * in the MTP block) share the expert map, the compact worklist and the MMA
  * accumulators, so the [assignments x hidden] output is stored once instead
  * of being written by the main GEMM and then re-walked by a tail accumulate.
- * Returns 0 with nothing launched when the fused MMQ entry declines the
- * shape or DS4_QWEN_NO_FUSED_DOWN_TAIL is set; the caller then keeps the
- * separate main + F32 tail path. */
+ * Both halves read the [main | tail] SwiGLU rows in place (mid_width floats
+ * between rows); nothing is packed first.  Returns 0 with nothing launched
+ * when the fused MMQ entry declines the shape or
+ * DS4_QWEN_NO_FUSED_DOWN_TAIL is set; the caller then packs the main
+ * columns and keeps the separate main + F32 tail path. */
 extern "C" int ds4_gpu_qwen4exp_routed_down_fused_tensor(
         ds4_gpu_tensor       *down,
-        const ds4_gpu_tensor *packed_main,
         const ds4_gpu_tensor *mid,
         const ds4_gpu_tensor *ids,
         const void             *model_map,
@@ -32253,9 +32315,8 @@ extern "C" int ds4_gpu_qwen4exp_routed_down_fused_tensor(
         uint32_t                max_rows_per_expert) {
     static int disabled = -1;
     if (disabled < 0) disabled = getenv("DS4_QWEN_NO_FUSED_DOWN_TAIL") != NULL;
-    if (disabled || !down || !packed_main || !mid || !ids || !model_map ||
-        !ds4_cuda_use_mmq() || down->ptr == mid->ptr ||
-        down->ptr == packed_main->ptr || assignments == 0u ||
+    if (disabled || !down || !mid || !ids || !model_map ||
+        !ds4_cuda_use_mmq() || down->ptr == mid->ptr || assignments == 0u ||
         assignments > (uint64_t)INT_MAX || max_rows_per_expert == 0u ||
         max_rows_per_expert > assignments || mid_width == 0u ||
         mid_width > (uint32_t)INT_MAX || main_dim == 0u ||
@@ -32295,7 +32356,6 @@ extern "C" int ds4_gpu_qwen4exp_routed_down_fused_tensor(
         main_bytes < rows * main_blocks_per_row * main_block_bytes ||
         tail_offset > model_size || tail_bytes > model_size - tail_offset ||
         tail_bytes < rows * tail_blocks_per_row * tail_block_bytes ||
-        packed_main->bytes < assignments * main_dim * sizeof(float) ||
         mid->bytes < assignments * mid_width * sizeof(float) ||
         ids->bytes < assignments * sizeof(int32_t) ||
         down->bytes < assignments * out_dim * sizeof(float)) {
@@ -32313,24 +32373,27 @@ extern "C" int ds4_gpu_qwen4exp_routed_down_fused_tensor(
     switch (main_type) {
     case 13u:
         rc = ds4_mmq_q5_K_moe_bounded_q5_0_tail(
-            main_weights, tail_weights, (const float *)packed_main->ptr,
-            x_tail, (int)mid_width, (const int32_t *)ids->ptr,
+            main_weights, tail_weights, (const float *)mid->ptr,
+            (int)mid_width, x_tail, (int)mid_width,
+            (const int32_t *)ids->ptr,
             (float *)down->ptr, (int)out_dim, (int)main_dim,
             (int)assignments, (int)n_expert, 1, (int)max_rows_per_expert,
             stream);
         break;
     case 14u:
         rc = ds4_mmq_q6_K_moe_bounded_q5_0_tail(
-            main_weights, tail_weights, (const float *)packed_main->ptr,
-            x_tail, (int)mid_width, (const int32_t *)ids->ptr,
+            main_weights, tail_weights, (const float *)mid->ptr,
+            (int)mid_width, x_tail, (int)mid_width,
+            (const int32_t *)ids->ptr,
             (float *)down->ptr, (int)out_dim, (int)main_dim,
             (int)assignments, (int)n_expert, 1, (int)max_rows_per_expert,
             stream);
         break;
     default:
         rc = ds4_mmq_q8_0_moe_bounded_q8_0_tail(
-            main_weights, tail_weights, (const float *)packed_main->ptr,
-            x_tail, (int)mid_width, (const int32_t *)ids->ptr,
+            main_weights, tail_weights, (const float *)mid->ptr,
+            (int)mid_width, x_tail, (int)mid_width,
+            (const int32_t *)ids->ptr,
             (float *)down->ptr, (int)out_dim, (int)main_dim,
             (int)assignments, (int)n_expert, 1, (int)max_rows_per_expert,
             stream);

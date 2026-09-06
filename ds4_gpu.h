@@ -2540,6 +2540,18 @@ int ds4_gpu_qwen4exp_shared_expert_gate_tensor(
         uint32_t                rows,
         uint32_t                hidden_size);
 
+/* out = sum over the n_used routed down rows of each token (non-finite
+ * values dropped) + shared * sigmoid(gate_logit): moe_sum, the shared-expert
+ * gate and the in-place add in one pass, bit-identical to the three. */
+int ds4_gpu_qwen4exp_moe_sum_shared_tensor(
+        ds4_gpu_tensor       *out,
+        const ds4_gpu_tensor *down,
+        const ds4_gpu_tensor *shared,
+        const ds4_gpu_tensor *gate_logits,
+        uint32_t                hidden_size,
+        uint32_t                n_used,
+        uint32_t                rows);
+
 /* Qwen4Exp's expert-down activation is 640-wide but the recipe stores the
  * weights as a 512+128 split. Pack the contiguous main input for MMQ, then
  * accumulate the Q5_0 base or Q8_0 MTP tail directly into that MMQ output. */
@@ -2571,7 +2583,6 @@ int ds4_gpu_qwen4exp_q5_0_tail_accum_tensor(
  * not covered, so callers keep the separate main + tail path. */
 int ds4_gpu_qwen4exp_routed_down_fused_tensor(
         ds4_gpu_tensor       *down,
-        const ds4_gpu_tensor *packed_main,
         const ds4_gpu_tensor *mid,
         const ds4_gpu_tensor *ids,
         const void             *model_map,
