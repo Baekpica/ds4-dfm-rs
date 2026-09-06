@@ -1216,7 +1216,7 @@ pub fn variant_from_bind_name(s: &str) -> Option<Variant> {
         "solar-open2" => Some(Variant::SolarOpen2_250B),
         "motif3" => Some(Variant::Motif3),
         "exaone-moe" => Some(Variant::Kexaone236B),
-        "dots3-note" => Some(Variant::Dots3NotePrev),
+        "dots3note" | "dots3-note" => Some(Variant::Dots3NotePrev),
         "qwen4exp" => Some(Variant::Qwen38FlashNext),
         "glm5-next" => Some(Variant::Glm53Flash),
         "k2-horizon" => Some(Variant::K2Horizon375B),

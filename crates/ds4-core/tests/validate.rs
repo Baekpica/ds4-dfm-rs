@@ -302,6 +302,44 @@ fn motif_ok() -> Vec<(&'static str, Val<'static>)> {
 
 fn dots3_ok() -> Vec<(&'static str, Val<'static>)> {
     vec![
+        ("general.architecture", Val::Str("dots3note")),
+        ("dots3note.block_count", Val::U32(47)),
+        ("dots3note.context_length", Val::U64(524288)),
+        ("dots3note.embedding_length", Val::U32(5120)),
+        ("dots3note.vocab_size", Val::U32(152064)),
+        ("dots3note.feed_forward_length", Val::U32(13824)),
+        ("dots3note.leading_dense_block_count", Val::U32(1)),
+        ("dots3note.expert_count", Val::U32(256)),
+        ("dots3note.expert_used_count", Val::U32(8)),
+        ("dots3note.expert_feed_forward_length", Val::U32(1536)),
+        ("dots3note.expert_shared_count", Val::U32(1)),
+        ("dots3note.attention.head_count", Val::U32(128)),
+        ("dots3note.attention.head_count_kv", Val::U32(128)),
+        ("dots3note.attention.key_length", Val::U32(192)),
+        ("dots3note.attention.value_length", Val::U32(128)),
+        ("dots3note.sliding_window", Val::U32(513)),
+        ("dots3note.index_topk", Val::U32(2048)),
+        ("dots3note.q_lora_rank", Val::U32(1024)),
+        ("dots3note.kv_lora_rank", Val::U32(512)),
+        ("dots3note.swa_kv_lora_rank", Val::U32(1024)),
+        ("dots3note.full_attention_count", Val::U32(13)),
+        ("dots3note.language_only", Val::Bool(true)),
+        ("dots3note.mtp.present", Val::Bool(true)),
+        ("dots3note.rope.freq_base", Val::F32(80_000_000.0)),
+        ("dots3note.rope.freq_base_swa", Val::F32(50_000.0)),
+        (
+            "dots3note.attention.layer_norm_rms_epsilon",
+            Val::F32(1.0e-5),
+        ),
+        (
+            "dots3note.source.config_sha256",
+            Val::Str("99b7de680dd456111c36efb8749f8ae7177328e97b65a3e39a6700cbc1173833"),
+        ),
+    ]
+}
+
+fn dots3_ok_legacy() -> Vec<(&'static str, Val<'static>)> {
+    vec![
         ("general.architecture", Val::Str("dots3-note")),
         ("dots3-note.block_count", Val::U32(47)),
         ("dots3-note.context_length", Val::U64(524288)),
@@ -496,6 +534,10 @@ fn families_ok_match_c() {
     let dots = tmp("dots3-ok.gguf");
     write_gguf(&dots, &dots3_ok());
     assert_same(&dots);
+
+    let dots_legacy = tmp("dots3-legacy-ok.gguf");
+    write_gguf(&dots_legacy, &dots3_ok_legacy());
+    assert_same(&dots_legacy);
 
     let sched = solar_sched();
     let solar = tmp("solar-ok.gguf");
