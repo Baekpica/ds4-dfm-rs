@@ -40163,6 +40163,59 @@ static int dots3_value_hmma_disabled(void) {
     return value && value[0] == '1';
 }
 
+/* dots3 decode-width value projection on the transposed planes.  The
+ * transposed kernel above runs one 128-thread block per (head, token),
+ * thread = value column, walking all latent/32 blocks: 512 warps for a
+ * full layer at ~115 GB/s.  Here four thread groups of 128 columns split
+ * the blocks (group g takes b = g, g + 4, ...) and sum through shared
+ * memory: 2,048 warps per full layer.  Per-block dots keep the transposed
+ * kernel's order; only the block sum is re-associated (fp32 reorder). */
+enum { DOTS3_VALUE_DECODE_GROUPS = 4 };
+
+__global__ static void dots3_value_project_q8_0_decode_kernel(
+        float *heads, const float *latent, const __half *scale,
+        const int8_t *code, uint32_t rows, uint32_t q_heads,
+        uint32_t latent_dim, uint32_t value_dim) {
+    const uint32_t head = blockIdx.x;
+    const uint32_t token = blockIdx.y;
+    const uint32_t group = threadIdx.x / value_dim;
+    const uint32_t d = threadIdx.x - group * value_dim;
+    if (head >= q_heads || token >= rows) return;
+    extern __shared__ float xsh[];
+    float *partial = xsh + latent_dim;
+    const float *src = latent + ((uint64_t)token * q_heads + head) * latent_dim;
+    for (uint32_t j = threadIdx.x; j < latent_dim; j += blockDim.x)
+        xsh[j] = src[j];
+    __syncthreads();
+
+    const uint32_t k_blocks = latent_dim >> 5;
+    float acc = 0.0f;
+    for (uint32_t b = group; b < k_blocks; b += DOTS3_VALUE_DECODE_GROUPS) {
+        const uint64_t hb = (uint64_t)head * k_blocks + b;
+        const float dq = __half2float(scale[hb * value_dim + d]);
+        float s = 0.0f;
+#pragma unroll 8
+        for (uint32_t k = 0; k < 32u; k++) {
+            s += (float)code[(hb * 32u + k) * value_dim + d] * xsh[b * 32u + k];
+        }
+        acc += dq * s;
+    }
+    partial[group * value_dim + d] = acc;
+    __syncthreads();
+    if (group != 0u) return;
+    float total = 0.0f;
+    for (uint32_t g = 0; g < DOTS3_VALUE_DECODE_GROUPS; g++)
+        total += partial[g * value_dim + d];
+    heads[((uint64_t)token * q_heads + head) * value_dim + d] = total;
+}
+
+/* DS4_DOTS3_VALUE_NO_DECODE=1 restores the one-group transposed kernel at
+ * decode widths (diagnostic, read per call). */
+static int dots3_value_decode_disabled(void) {
+    const char *value = getenv("DS4_DOTS3_VALUE_NO_DECODE");
+    return value && value[0] == '1';
+}
+
 /* dots3 value projection straight from the transposed artifact planes:
  * prefill widths on the tensor-core GEMM, decode widths on the grouped
  * walk.  The production entry below resolves the planes from the derived
@@ -40187,6 +40240,17 @@ extern "C" int ds4_gpu_dots3_value_project_planes_tensor(
         }
     }
     dim3 grid(q_heads, rows, 1);
+    if (!dots3_value_decode_disabled()) {
+        const size_t shared = ((size_t)latent_dim +
+            (size_t)DOTS3_VALUE_DECODE_GROUPS * value_dim) * sizeof(float);
+        dots3_value_project_q8_0_decode_kernel
+            <<<grid, DOTS3_VALUE_DECODE_GROUPS * value_dim, shared>>>(
+                (float *)heads->ptr, (const float *)latent->ptr,
+                (const __half *)scale, (const int8_t *)code,
+                rows, q_heads, latent_dim, value_dim);
+        return cuda_ok(cudaGetLastError(),
+                       "dots3 decode value projection launch");
+    }
     motif3_value_project_q8_0_transposed_kernel<false>
         <<<grid, 128, (size_t)latent_dim * sizeof(float)>>>(
             (float *)heads->ptr, (const float *)latent->ptr,

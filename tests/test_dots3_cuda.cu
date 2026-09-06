@@ -259,6 +259,27 @@ vp_result run_vp_case(const vp_case &c, bool profile, int reps) {
     };
     launch();
     check(cudaDeviceSynchronize(), "vp sync");
+    /* Decode widths: the grouped kernel against the one-group transposed
+     * kernel it replaces (fp32 reorder of the block sum only). */
+    double alt_rel = 0.0;
+    if (c.rows < 16u && !profile) {
+        std::vector<float> a(out_n), b(out_n);
+        if (!ds4_gpu_tensor_read(t_out, 0, a.data(), out_n * 4u)) std::exit(1);
+        setenv("DS4_DOTS3_VALUE_NO_DECODE", "1", 1);
+        launch();
+        check(cudaDeviceSynchronize(), "vp alt sync");
+        unsetenv("DS4_DOTS3_VALUE_NO_DECODE");
+        if (!ds4_gpu_tensor_read(t_out, 0, b.data(), out_n * 4u)) std::exit(1);
+        double num = 0.0, den = 0.0;
+        for (size_t i = 0; i < out_n; i++) {
+            const double d = (double)a[i] - b[i];
+            num += d * d;
+            den += (double)b[i] * b[i];
+        }
+        alt_rel = den > 0.0 ? std::sqrt(num / den) : 0.0;
+        launch();
+        check(cudaDeviceSynchronize(), "vp sync");
+    }
     float ms = 0.0f;
     if (profile) {
         cudaEvent_t e0, e1;
@@ -292,6 +313,7 @@ vp_result run_vp_case(const vp_case &c, bool profile, int reps) {
     ds4_gpu_tensor_free(t_code);
     ds4_gpu_tensor_free(t_scale);
     ds4_gpu_tensor_free(t_lat);
+    if (alt_rel > 1.0e-5) finite = false;   /* grouped vs one-group walk */
     return {den > 0.0 ? std::sqrt(num / den) : 0.0, max_abs, finite, ms};
 }
 
@@ -434,15 +456,17 @@ int main(int argc, char **argv) {
     }
     std::vector<vp_case> vp_cases;
     if (profile) {
-        vp_cases = {{"full-4k", 128u, 512u, 4096u}, {"swa-4k", 64u, 1024u, 4096u}};
+        vp_cases = {{"full-4k", 128u, 512u, 4096u}, {"swa-4k", 64u, 1024u, 4096u},
+                    {"dec-full", 128u, 512u, 1u}, {"dec-swa", 64u, 1024u, 1u}};
     } else {
-        vp_cases = {{"full", 4u, 512u, 100u}, {"swa", 4u, 1024u, 67u}, {"full-16", 2u, 512u, 16u}};
+        vp_cases = {{"full", 4u, 512u, 100u}, {"swa", 4u, 1024u, 67u}, {"full-16", 2u, 512u, 16u},
+                    {"dec-full", 8u, 512u, 1u}, {"dec-swa", 8u, 1024u, 3u}};
     }
     for (const auto &c : vp_cases) {
         const vp_result r = run_vp_case(c, profile, 8);
         const bool ok = r.finite && r.rel_rms <= 1.0e-2;
         if (profile) {
-            printf("dots3 value profile %-10s rows=%u heads=%u latent=%u: hmma %.3f ms %s\n",
+            printf("dots3 value profile %-10s rows=%u heads=%u latent=%u: %.3f ms %s\n",
                    c.name, c.rows, c.heads, c.latent, r.ms, r.finite ? "finite" : "NAN");
         } else {
             printf("dots3 value %-10s rows=%u heads=%u latent=%u: rel_rms=%.3e max_abs=%.3e %s\n",
@@ -460,7 +484,7 @@ int main(int argc, char **argv) {
         const vp_result r = run_ab_case(c, profile, 8);
         const bool ok = r.finite && r.rel_rms <= 1.0e-2;
         if (profile) {
-            printf("dots3 absorb profile %-10s rows=%u heads=%u latent=%u nope=%u: hmma %.3f ms %s\n",
+            printf("dots3 absorb profile %-10s rows=%u heads=%u latent=%u nope=%u: %.3f ms %s\n",
                    c.name, c.rows, c.heads, c.latent, c.nope, r.ms, r.finite ? "finite" : "NAN");
         } else {
             printf("dots3 absorb %-10s rows=%u heads=%u latent=%u nope=%u: rel_rms=%.3e max_abs=%.3e %s\n",
