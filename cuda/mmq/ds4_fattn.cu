@@ -1791,6 +1791,157 @@ void dots3_value_project_hmma_kernel(
     }
 }
 
+/* dots3-note Q/K absorption on tensor cores (prefill widths).
+ *
+ * q_absorbed[t, h, j] = sum_d q_nope[t, h, d] * W_UK[h][d][j] is one
+ * [tokens x nope] . [nope x latent] GEMM per head over the raw Q8_0
+ * attn_kv_b rows (row h*(nope+128)+d holds latent_dim columns in 34-byte
+ * blocks).  Block = (head, 64 tokens), four warps of 16 tokens; the whole
+ * nope-wide A operand lives in registers (8 or 12 k-steps) and the kernel
+ * walks the latent columns one 32-wide Q8_0 block at a time, dequantizing
+ * that [nope x 32] slab to FP16 in a double-buffered shared tile.  The
+ * scale varies along the reduction here (per (d, block)), so the weights
+ * are rounded to FP16 as well as the activations. */
+enum {
+    D3_AB_TOKENS  = 64,
+    D3_AB_WARPS   = 4,
+    D3_AB_THREADS = D3_AB_WARPS * 32,
+    D3_AB_NB      = 32,                    /* latent columns per step */
+    D3_AB_B_ROW   = D3_AB_NB + D3_FA_PAD,  /* fp16 */
+    D3_AB_MAX_K   = 192,
+    D3_AB_ROWS_PT = (D3_AB_MAX_K + D3_AB_THREADS - 1) / D3_AB_THREADS,
+    D3_AB_WORDS   = 9,                     /* 4-byte words covering one 34-byte block */
+};
+
+/* Raw Q8_0 block (scale + 32 codes) for row d, column block b, fetched as
+ * nine aligned words.  The block starts at byte 34*b of the row: even b
+ * starts on a word, odd b two bytes into one, so `shift` says where the
+ * scale sits inside the first word. */
+struct dots3_ab_stage {
+    uint32_t w[D3_AB_ROWS_PT][D3_AB_WORDS];
+};
+
+__device__ __forceinline__ void dots3_ab_fetch(
+        dots3_ab_stage &st, const unsigned char *weight, uint64_t row_bytes,
+        uint32_t row0, uint32_t nope, uint32_t b) {
+#pragma unroll
+    for (uint32_t p = 0; p < D3_AB_ROWS_PT; p++) {
+        const uint32_t d = threadIdx.x + p * D3_AB_THREADS;
+        if (d >= nope) break;
+        const unsigned char *blk = weight + (size_t)(row0 + d) * row_bytes + (size_t)b * 34u;
+        const unsigned char *span = reinterpret_cast<const unsigned char *>(
+            reinterpret_cast<uintptr_t>(blk) & ~(uintptr_t)3u);
+        const uint32_t *words = reinterpret_cast<const uint32_t *>(span);
+#pragma unroll
+        for (uint32_t i = 0; i + 1u < D3_AB_WORDS; i++) st.w[p][i] = words[i];
+        /* Bytes 32..35 of the span: an odd block (span starts two bytes
+         * early) owns all four, an even block ends at byte 33 -- never read
+         * the neighbour's bytes past the tensor's last row. */
+        const uint16_t *tail = reinterpret_cast<const uint16_t *>(span + 32);
+        st.w[p][D3_AB_WORDS - 1u] =
+            (uint32_t)tail[0] | ((b & 1u) ? (uint32_t)tail[1] << 16 : 0u);
+    }
+}
+
+__device__ __forceinline__ void dots3_ab_store(
+        const dots3_ab_stage &st, __half *s_b, uint32_t nope, uint32_t b) {
+    const uint32_t shift = (b & 1u) ? 2u : 0u;   /* bytes before the scale */
+#pragma unroll
+    for (uint32_t p = 0; p < D3_AB_ROWS_PT; p++) {
+        const uint32_t d = threadIdx.x + p * D3_AB_THREADS;
+        if (d >= nope) break;
+        const unsigned char *bytes = reinterpret_cast<const unsigned char *>(st.w[p]);
+        uint16_t sh;
+        memcpy(&sh, bytes + shift, 2u);
+        const float scale = __half2float(__ushort_as_half(sh));
+        const int8_t *codes = reinterpret_cast<const int8_t *>(bytes + shift + 2u);
+        half2 *dst = reinterpret_cast<half2 *>(s_b + (size_t)d * D3_AB_B_ROW);
+#pragma unroll
+        for (uint32_t k = 0; k < D3_AB_NB / 2u; k++) {
+            dst[k] = dots3_f2_to_h2(scale * (float)codes[2u * k],
+                                    scale * (float)codes[2u * k + 1u]);
+        }
+    }
+}
+
+template <uint32_t NOPE>
+__global__ __launch_bounds__(D3_AB_THREADS, 2)
+void dots3_absorb_hmma_kernel(
+        float * __restrict__ out,
+        const float * __restrict__ q,
+        const unsigned char * __restrict__ weight,
+        const uint32_t rows,
+        const uint32_t q_heads,
+        const uint32_t latent_dim,
+        const uint32_t key_dim,
+        const uint32_t value_dim,
+        const uint64_t row_bytes) {
+    __shared__ __align__(16) __half s_b[2][NOPE * D3_AB_B_ROW];
+    const uint32_t head = blockIdx.x;
+    const uint32_t token0 = blockIdx.y * D3_AB_TOKENS;
+    const uint32_t warp = threadIdx.x >> 5u;
+    const uint32_t lane = threadIdx.x & 31u;
+    if (head >= q_heads || token0 >= rows) return;
+    const uint32_t row0 = head * (NOPE + value_dim);
+    const uint32_t n_blocks = latent_dim / D3_AB_NB;
+    const uint32_t a_row = ((lane >> 3) & 1u) * 8u + (lane & 7u);
+    const uint32_t a_col = (lane >> 4) * 8u;
+
+    /* A: this warp's 16 tokens x NOPE, straight from the F32 rows. */
+    tile_a qa[NOPE / 16u];
+#pragma unroll
+    for (uint32_t kc = 0; kc < NOPE / 16u; kc++) {
+#pragma unroll
+        for (int l = 0; l < tile_a::ne; l++) {
+            const uint32_t i = (uint32_t)((l % 2) * 8) + lane / 4u;
+            const uint32_t j = (uint32_t)((l / 2) * 4) + (lane % 4u);
+            uint32_t t = token0 + warp * 16u + i;
+            if (t >= rows) t = rows - 1u;
+            const float2 xy = *reinterpret_cast<const float2 *>(
+                q + ((size_t)t * q_heads + head) * key_dim + kc * 16u + 2u * j);
+            qa[kc].x[l] = dots3_f2_to_h2(xy.x, xy.y);
+        }
+    }
+
+    dots3_ab_stage st;
+    dots3_ab_fetch(st, weight, row_bytes, row0, NOPE, 0u);
+    for (uint32_t b = 0; b < n_blocks; b++) {
+        const uint32_t buf = b & 1u;
+        dots3_ab_store(st, s_b[buf], NOPE, b);
+        __syncthreads();
+        if (b + 1u < n_blocks) dots3_ab_fetch(st, weight, row_bytes, row0, NOPE, b + 1u);
+        tile_c acc[D3_AB_NB / 8u];
+#pragma unroll
+        for (uint32_t kc = 0; kc < NOPE / 16u; kc++) {
+            const __half *b_base =
+                s_b[buf] + (size_t)(kc * 16u + a_row) * D3_AB_B_ROW + a_col;
+#pragma unroll
+            for (uint32_t c = 0; c < D3_AB_NB / 8u; c += 2u) {
+                tile_b b0, b1;
+                uint32_t *b0_x = reinterpret_cast<uint32_t *>(b0.x);
+                uint32_t *b1_x = reinterpret_cast<uint32_t *>(b1.x);
+                solar_fattn_ldsm_x4_trans(
+                    b0_x[0], b0_x[1], b1_x[0], b1_x[1],
+                    b_base + c * 8u);
+                mma(acc[c], qa[kc], b0);
+                mma(acc[c + 1u], qa[kc], b1);
+            }
+        }
+#pragma unroll
+        for (int r = 0; r < 2; r++) {
+            const uint32_t token = token0 + warp * 16u + lane / 4u + 8u * (uint32_t)r;
+            if (token >= rows) continue;
+            float *dst = out + ((size_t)token * q_heads + head) * latent_dim +
+                         b * D3_AB_NB + (lane & 3u) * 2u;
+#pragma unroll
+            for (uint32_t c = 0; c < D3_AB_NB / 8u; c++) {
+                *reinterpret_cast<float2 *>(dst + c * 8u) =
+                    make_float2(acc[c].x[r * 2], acc[c].x[r * 2 + 1]);
+            }
+        }
+    }
+}
+
 }  // namespace
 
 static int solar_fattn_gqa_pair(int n_head, int n_head_kv) {
@@ -1968,5 +2119,34 @@ extern "C" int ds4_mmq_dots3_value_project_hmma(
     dots3_value_project_hmma_kernel<<<grid, D3_VP_THREADS, 0, stream>>>(
         heads, latent, (const __half *)scale, (const int8_t *)code,
         (uint32_t)rows, (uint32_t)q_heads, (uint32_t)latent_dim);
+    return cudaGetLastError() == cudaSuccess ? 0 : -2;
+}
+
+extern "C" int ds4_mmq_dots3_absorb_hmma(
+        float *out, const float *q, const void *weight,
+        int rows, int q_heads, int latent_dim, int qk_nope, int key_dim,
+        int value_dim, size_t row_bytes, cudaStream_t stream) {
+    if (!out || !q || !weight || rows <= 0 || q_heads <= 0 ||
+        latent_dim <= 0 || latent_dim % D3_AB_NB != 0 ||
+        (qk_nope != 128 && qk_nope != 192) || key_dim < qk_nope ||
+        value_dim <= 0 || row_bytes == 0u ||
+        row_bytes != (size_t)(latent_dim / 32) * 34u) {
+        return -1;
+    }
+    const int device = ggml_cuda_get_device();
+    if (ggml_cuda_info().devices[device].cc < GGML_CUDA_CC_AMPERE) return -1;
+    const dim3 grid((unsigned)q_heads,
+                    (unsigned)((rows + D3_AB_TOKENS - 1) / D3_AB_TOKENS), 1);
+    if (qk_nope == 128) {
+        dots3_absorb_hmma_kernel<128u><<<grid, D3_AB_THREADS, 0, stream>>>(
+            out, q, (const unsigned char *)weight, (uint32_t)rows,
+            (uint32_t)q_heads, (uint32_t)latent_dim, (uint32_t)key_dim,
+            (uint32_t)value_dim, (uint64_t)row_bytes);
+    } else {
+        dots3_absorb_hmma_kernel<192u><<<grid, D3_AB_THREADS, 0, stream>>>(
+            out, q, (const unsigned char *)weight, (uint32_t)rows,
+            (uint32_t)q_heads, (uint32_t)latent_dim, (uint32_t)key_dim,
+            (uint32_t)value_dim, (uint64_t)row_bytes);
+    }
     return cudaGetLastError() == cudaSuccess ? 0 : -2;
 }

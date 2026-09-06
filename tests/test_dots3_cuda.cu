@@ -277,6 +277,107 @@ vp_result run_vp_case(const vp_case &c, bool profile, int reps) {
     return {den > 0.0 ? std::sqrt(num / den) : 0.0, max_abs, finite, ms};
 }
 
+/* Q/K absorption: synthetic raw Q8_0 attn_kv_b rows (row h*(nope+128)+d,
+ * latent_dim columns in 34-byte blocks), HMMA against an FP32 host
+ * reference on the dequantized weights.  Decode widths keep the engine's
+ * wide kernel (see ds4_cuda.cu) and are not exercised here. */
+struct ab_case { const char *name; uint32_t heads, latent, nope, rows; };
+
+vp_result run_ab_case(const ab_case &c, bool profile, int reps) {
+    rng r(c.rows * 11u + c.latent + c.nope);
+    const uint32_t key_dim = c.nope + 64u;
+    const uint32_t value_dim = 128u;
+    const uint32_t k_blocks = c.latent / 32u;
+    const size_t row_bytes = (size_t)k_blocks * 34u;
+    const size_t weight_rows = (size_t)c.heads * (c.nope + value_dim);
+    const size_t q_n = (size_t)c.rows * c.heads * key_dim;
+    const size_t out_n = (size_t)c.rows * c.heads * c.latent;
+    std::vector<float> q(q_n);
+    for (auto &x : q) x = r.normal();
+    std::vector<uint8_t> raw(weight_rows * row_bytes);
+    std::vector<float> w((size_t)c.heads * c.nope * c.latent);   /* dequantized [h][d][j] */
+    for (size_t row = 0; row < weight_rows; row++) {
+        const uint32_t h = (uint32_t)(row / (c.nope + value_dim));
+        const uint32_t d = (uint32_t)(row % (c.nope + value_dim));
+        for (uint32_t b = 0; b < k_blocks; b++) {
+            uint8_t *blk = raw.data() + row * row_bytes + (size_t)b * 34u;
+            const float s = 0.005f + 0.01f * r.uniform();
+            const __half hs = __float2half(s);
+            memcpy(blk, &hs, 2);
+            for (uint32_t k = 0; k < 32u; k++) {
+                const int8_t code = (int8_t)((int)(r.next() % 255u) - 127);
+                blk[2u + k] = (uint8_t)code;
+                if (d < c.nope) {
+                    w[((size_t)h * c.nope + d) * c.latent + b * 32u + k] =
+                        __half2float(hs) * (float)code;
+                }
+            }
+        }
+    }
+    std::vector<float> ref(out_n);
+    if (!profile) {
+        for (uint32_t t = 0; t < c.rows; t++) {
+            for (uint32_t h = 0; h < c.heads; h++) {
+                const float *qh = q.data() + ((size_t)t * c.heads + h) * key_dim;
+                for (uint32_t j = 0; j < c.latent; j++) {
+                    double acc = 0.0;
+                    for (uint32_t d = 0; d < c.nope; d++)
+                        acc += (double)qh[d] * w[((size_t)h * c.nope + d) * c.latent + j];
+                    ref[((size_t)t * c.heads + h) * c.latent + j] = (float)acc;
+                }
+            }
+        }
+    }
+    ds4_gpu_tensor *t_q = upload(q.data(), q_n * 4u, "q");
+    ds4_gpu_tensor *t_w = upload(raw.data(), raw.size(), "raw kv_b");
+    ds4_gpu_tensor *t_out = ds4_gpu_tensor_alloc(out_n * 4u);
+    if (!t_out) { fprintf(stderr, "absorb out alloc failed\n"); std::exit(1); }
+    auto launch = [&]() {
+        if (ds4_mmq_dots3_absorb_hmma(
+                (float *)ds4_gpu_tensor_ptr(t_out), (const float *)ds4_gpu_tensor_ptr(t_q),
+                ds4_gpu_tensor_ptr(t_w), (int)c.rows, (int)c.heads, (int)c.latent,
+                (int)c.nope, (int)key_dim, (int)value_dim, row_bytes, 0) != 0) {
+            fprintf(stderr, "%s: absorb hmma launch failed\n", c.name);
+            std::exit(1);
+        }
+    };
+    launch();
+    check(cudaDeviceSynchronize(), "absorb sync");
+    float ms = 0.0f;
+    if (profile) {
+        cudaEvent_t e0, e1;
+        check(cudaEventCreate(&e0), "event0");
+        check(cudaEventCreate(&e1), "event1");
+        check(cudaEventRecord(e0), "t0");
+        for (int i = 0; i < reps; i++) launch();
+        check(cudaEventRecord(e1), "t1");
+        check(cudaEventSynchronize(e1), "timed sync");
+        check(cudaEventElapsedTime(&ms, e0, e1), "elapsed");
+        ms /= (float)reps;
+        cudaEventDestroy(e0);
+        cudaEventDestroy(e1);
+    }
+    std::vector<float> out(out_n);
+    if (!ds4_gpu_tensor_read(t_out, 0, out.data(), out_n * 4u)) {
+        fprintf(stderr, "absorb readback failed\n");
+        std::exit(1);
+    }
+    double num = 0.0, den = 0.0, max_abs = 0.0;
+    bool finite = true;
+    for (size_t i = 0; i < out_n; i++) {
+        if (!std::isfinite(out[i])) finite = false;
+        if (profile) continue;
+        const double d = (double)out[i] - ref[i];
+        num += d * d;
+        den += (double)ref[i] * ref[i];
+        if (std::fabs(d) > max_abs) max_abs = std::fabs(d);
+    }
+    ds4_gpu_tensor_free(t_out);
+    ds4_gpu_tensor_free(t_w);
+    ds4_gpu_tensor_free(t_q);
+    return {den > 0.0 ? std::sqrt(num / den) : 0.0, max_abs, finite, ms};
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -321,6 +422,24 @@ int main(int argc, char **argv) {
         } else {
             printf("dots3 value %-10s rows=%u heads=%u latent=%u: rel_rms=%.3e max_abs=%.3e %s\n",
                    c.name, c.rows, c.heads, c.latent, r.rel_rms, r.max_abs, ok ? "OK" : "FAIL");
+        }
+        if (!ok) failures++;
+    }
+    std::vector<ab_case> ab_cases;
+    if (profile) {
+        ab_cases = {{"full-4k", 128u, 512u, 128u, 4096u}, {"swa-4k", 64u, 1024u, 192u, 4096u}};
+    } else {
+        ab_cases = {{"full", 4u, 512u, 128u, 100u}, {"swa", 4u, 1024u, 192u, 67u}, {"full-16", 2u, 512u, 128u, 16u}};
+    }
+    for (const auto &c : ab_cases) {
+        const vp_result r = run_ab_case(c, profile, 8);
+        const bool ok = r.finite && r.rel_rms <= 1.0e-2;
+        if (profile) {
+            printf("dots3 absorb profile %-10s rows=%u heads=%u latent=%u nope=%u: hmma %.3f ms %s\n",
+                   c.name, c.rows, c.heads, c.latent, c.nope, r.ms, r.finite ? "finite" : "NAN");
+        } else {
+            printf("dots3 absorb %-10s rows=%u heads=%u latent=%u nope=%u: rel_rms=%.3e max_abs=%.3e %s\n",
+                   c.name, c.rows, c.heads, c.latent, c.nope, r.rel_rms, r.max_abs, ok ? "OK" : "FAIL");
         }
         if (!ok) failures++;
     }

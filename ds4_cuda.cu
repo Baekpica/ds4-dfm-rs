@@ -39328,6 +39328,21 @@ __global__ static void motif3_qk_absorb_q8_0_group5_kernel(
     }
 }
 
+/* dots3 Q/K absorption: widths from this many rows run the tensor-core
+ * kernel.  DS4_DOTS3_ABSORB_NO_HMMA=1 keeps the scalar kernel at every
+ * width (diagnostic, read per call).  Decode widths keep the wide kernel
+ * below on purpose: three rewrites of its raw-row walk (one lane per
+ * column, one lane per 32-column block, 16-byte lanes over the contiguous
+ * row with shuffled scales) each measured 2-8 % slower on the decode step
+ * although every one moved fewer bytes -- the wide kernel's two-byte loads
+ * issue fewer L1 wavefronts per row than any narrower lane mapping. */
+enum { DOTS3_ABSORB_HMMA_MIN_ROWS = 16 };
+
+static int dots3_absorb_hmma_disabled(void) {
+    const char *value = getenv("DS4_DOTS3_ABSORB_NO_HMMA");
+    return value && value[0] == '1';
+}
+
 extern "C" int ds4_gpu_motif3_qk_absorb_q8_0_tensor(
         ds4_gpu_tensor *q_absorbed, const ds4_gpu_tensor *q_full,
         const void *model_map, uint64_t model_size, uint64_t kv_b_offset,
@@ -39362,6 +39377,20 @@ extern "C" int ds4_gpu_motif3_qk_absorb_q8_0_tensor(
     const bool dots_swa_shape = group_size == 1u && q_heads == 64u &&
         kv_heads == 64u && kv_latent_dim == 1024u && qk_nope == 192u &&
         key_dim == 256u && value_dim == 128u;
+    /* dots3 prefill widths: tensor-core GEMM per head over the raw Q8_0
+     * rows (cuda/mmq/ds4_fattn.cu); decode widths keep the scalar kernel. */
+    if ((dots_full_shape || dots_swa_shape) &&
+        rows >= DOTS3_ABSORB_HMMA_MIN_ROWS && !dots3_absorb_hmma_disabled()) {
+        const int rc = ds4_mmq_dots3_absorb_hmma(
+                (float *)q_absorbed->ptr, (const float *)q_full->ptr, weight,
+                (int)rows, (int)q_heads, (int)kv_latent_dim, (int)qk_nope,
+                (int)key_dim, (int)value_dim, (size_t)row_bytes,
+                ds4_current_stream());
+        if (rc == 0) return 1;
+        if (rc != -1) {
+            return cuda_ok(cudaGetLastError(), "dots3 absorb hmma launch");
+        }
+    }
     if (dots_full_shape || dots_swa_shape) {
         dim3 grid(q_heads, rows, 1);
         const uint32_t threads = dots_full_shape ? 64u : 128u;

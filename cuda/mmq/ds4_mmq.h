@@ -100,6 +100,15 @@ int ds4_mmq_dots3_value_project_hmma(
         const void *code, int rows, int q_heads, int latent_dim,
         cudaStream_t stream);
 
+// dots3-note Q/K absorption (W_UK per head, raw Q8_0 attn_kv_b rows) for
+// prefill widths.  Weights and activations rounded to BF16, FP32
+// accumulate.  Returns 0, -1 when unsupported (caller keeps its fallback),
+// -2 on launch failure.
+int ds4_mmq_dots3_absorb_hmma(
+        float *out, const float *q, const void *weight,
+        int rows, int q_heads, int latent_dim, int qk_nope, int key_dim,
+        int value_dim, size_t row_bytes, cudaStream_t stream);
+
 // Dense matmul entry points. Per-type wrappers that all share the same
 // underlying mul_mat_q template, parameterised by the weight quant type.
 //
