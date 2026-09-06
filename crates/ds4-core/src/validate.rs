@@ -722,26 +722,14 @@ fn validate_motif3(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
 }
 
 fn validate_dots3(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
-    expect_u32(
-        "block_count",
-        dots3_u32(g, "block_count")?,
-        shape.n_layer,
-    )?;
-    expect_u64(
-        "context_length",
-        dots3_u64c(g, "context_length")?,
-        524288,
-    )?;
+    expect_u32("block_count", dots3_u32(g, "block_count")?, shape.n_layer)?;
+    expect_u64("context_length", dots3_u64c(g, "context_length")?, 524288)?;
     expect_u32(
         "embedding_length",
         dots3_u32(g, "embedding_length")?,
         shape.n_embd,
     )?;
-    expect_u32(
-        "vocab_size",
-        dots3_u32(g, "vocab_size")?,
-        shape.n_vocab,
-    )?;
+    expect_u32("vocab_size", dots3_u32(g, "vocab_size")?, shape.n_vocab)?;
     expect_u32(
         "feed_forward_length",
         dots3_u32(g, "feed_forward_length")?,
@@ -802,11 +790,7 @@ fn validate_dots3(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
         dots3_u32(g, "index_topk")?,
         shape.n_indexer_top_k,
     )?;
-    expect_u32(
-        "q_lora_rank",
-        dots3_u32(g, "q_lora_rank")?,
-        shape.n_lora_q,
-    )?;
+    expect_u32("q_lora_rank", dots3_u32(g, "q_lora_rank")?, shape.n_lora_q)?;
     expect_u32(
         "kv_lora_rank",
         dots3_u32(g, "kv_lora_rank")?,
@@ -822,11 +806,7 @@ fn validate_dots3(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
         dots3_u32(g, "full_attention_count")?,
         shape.n_full_attn_count,
     )?;
-    expect_bool(
-        "language_only",
-        dots3_bool(g, "language_only")?,
-        true,
-    )?;
+    expect_bool("language_only", dots3_bool(g, "language_only")?, true)?;
     expect_bool("mtp.present", dots3_bool(g, "mtp.present")?, true)?;
     expect_f32(
         "rope.freq_base",

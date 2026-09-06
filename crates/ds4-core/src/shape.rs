@@ -304,9 +304,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"exaone-moe") => ArchRoute::Fixed(Variant::Kexaone236B),
         Some(b"solar-open2") => ArchRoute::Fixed(Variant::SolarOpen2_250B),
         Some(b"motif3") => ArchRoute::Fixed(Variant::Motif3),
-        Some(b"dots3note") | Some(b"dots3-note") => {
-            ArchRoute::Fixed(Variant::Dots3NotePrev)
-        }
+        Some(b"dots3note") | Some(b"dots3-note") => ArchRoute::Fixed(Variant::Dots3NotePrev),
         Some(b"qwen4exp") => ArchRoute::Fixed(Variant::Qwen38FlashNext),
         Some(b"glm5-next") => ArchRoute::Fixed(Variant::Glm53Flash),
         Some(b"k2-horizon") => ArchRoute::Fixed(Variant::K2Horizon375B),
