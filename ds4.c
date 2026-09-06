@@ -41637,6 +41637,7 @@ typedef struct {
     ds4_gpu_tensor *idx_w;
     ds4_gpu_tensor *idx_scores;    /* idx_sub x ctx_cap, cache-time alloc */
     ds4_gpu_tensor *idx_selected;  /* cap x top_k */
+    ds4_gpu_tensor *attn_partial;  /* decode split-attention partials */
     /* Dequantized (Q8_0 -> F32) in-attention norm vectors with the official
      * sqrt(n_embd/rank) LoRA rescale folded into q_a/kv_a. */
     ds4_gpu_tensor *w_q_a_norm[DS4_MAX_LAYER];
@@ -44913,7 +44914,7 @@ static void dots3_graph_free(ds4_dots3_gpu_graph *g) {
     D3_FREE(routed_out);
     D3_FREE(ffn_out); D3_FREE(final_norm); D3_FREE(logits);
     D3_FREE(idx_k); D3_FREE(idx_q); D3_FREE(idx_w); D3_FREE(idx_scores);
-    D3_FREE(idx_selected);
+    D3_FREE(idx_selected); D3_FREE(attn_partial);
 #undef D3_FREE
     for (uint32_t il = 0; il < DS4_MAX_LAYER; il++) {
         ds4_gpu_tensor_free(g->w_q_a_norm[il]);
@@ -45012,6 +45013,10 @@ static uint64_t dots3_graph_memory_estimate(uint32_t ctx_cap) {
         (uint64_t)cap * row_i32 * sizeof(int32_t);
 }
 
+/* Mirror of DOTS3_ATTN_SPLIT_MAX_ROWS / DOTS3_ATTN_SPLITS in ds4_cuda.cu:
+ * the split-attention entry checks the partial buffer against them. */
+enum { DOTS3_ATTN_PARTIAL_ROWS = 2, DOTS3_ATTN_PARTIAL_SPLITS = 16 };
+
 static bool dots3_graph_alloc(ds4_dots3_gpu_graph *g, uint32_t cap) {
     if (!g || cap == 0 || cap > 8192u) return false;
     memset(g, 0, sizeof(*g));
@@ -45068,6 +45073,11 @@ static bool dots3_graph_alloc(ds4_dots3_gpu_graph *g, uint32_t cap) {
     D3_ALLOC(idx_q, (uint64_t)cap * DS4_N_INDEXER_HEAD * DS4_N_INDEXER_HEAD_DIM, float);
     D3_ALLOC(idx_w, (uint64_t)cap * DS4_N_INDEXER_HEAD, float);
     D3_ALLOC(idx_selected, (uint64_t)cap * DS4_N_INDEXER_TOP_K, int32_t);
+    /* Decode attention partials: rows x heads x splits x (latent + 4),
+     * sized for the wide geometry (see DOTS3_ATTN_* in ds4_cuda.cu). */
+    D3_ALLOC(attn_partial,
+             (uint64_t)DOTS3_ATTN_PARTIAL_ROWS * DOTS3_ATTN_PARTIAL_SPLITS *
+                 DS4_N_HEAD * (DS4_N_SWA_KV_LORA + 4u), float);
 #undef D3_ALLOC
 
     float inv_full[DS4_MAX_ROT / 2u];
@@ -45335,8 +45345,8 @@ static bool dots3_graph_attention(
             g->q_absorbed, g->q_raw, model->map, model->size,
             l->attn_kv_b->abs_offset, rows, heads, heads, 1u,
             kv_lora, nope, qk_dim, DS4_N_VALUE_MLA), "qk absorb");
-    D3_ATTN(ds4_gpu_dots3_latent_attention_tensor(
-            g->latent_out, g->q_raw, g->q_absorbed,
+    D3_ATTN(ds4_gpu_dots3_latent_attention_split_tensor(
+            g->latent_out, g->attn_partial, g->q_raw, g->q_absorbed,
             g->layer_kv_latent[il], g->layer_k_pe[il],
             selection, selection ? DS4_N_INDEXER_TOP_K : 0u,
             rows, pos0, cache_cap, full ? 0u : DS4_N_SWA,

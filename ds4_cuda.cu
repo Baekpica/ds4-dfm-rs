@@ -40897,6 +40897,234 @@ extern "C" int ds4_gpu_dots3_latent_attention_tensor(
     return cuda_ok(cudaGetLastError(), "dots3 latent attention launch");
 }
 
+/* Decode-width latent attention split across the key range.
+ *
+ * At one row the warp-per-(token, head) walk above runs 16 (full) or 8
+ * (SWA) blocks on 48 SMs and every warp serializes 2048 / 513 key steps
+ * (~0.7 us each), so a full layer cost 1.4 ms and attention was 37 % of
+ * the decode step.  Here grid.z splits the key list into DOTS3_ATTN_SPLITS
+ * ranges: each warp walks one range with the same per-key arithmetic and
+ * publishes (unnormalized O, running max, running sum); the combine kernel
+ * merges the ranges per (token, head).  Same math as the serial walk, fp32
+ * reordering only.  Partial layout per (token, head, split): latent_dim
+ * floats of O, then M and S, on a 16-byte aligned stride. */
+enum {
+    DOTS3_ATTN_SPLITS = 16,
+    DOTS3_ATTN_SPLIT_MIN_KEYS = 64,     /* below this the serial walk wins */
+    DOTS3_ATTN_SPLIT_MAX_ROWS = 2,
+    DOTS3_ATTN_PARTIAL_EXTRA = 4,       /* M, S, pad to a float4 stride */
+};
+
+static int dots3_attn_split_disabled(void) {
+    const char *value = getenv("DS4_DOTS3_ATTN_NO_SPLIT");
+    return value && value[0] == '1';
+}
+
+template <uint32_t kGroups, bool kUseSelection, bool kUseWindow>
+__global__ static void dots3_latent_attention_split_kernel(
+        float *partial, const float *q, const float *q_absorbed,
+        const __nv_bfloat16 *latent_cache, const __nv_bfloat16 *k_pe_cache,
+        const int32_t *selected, uint32_t sel_stride,
+        uint32_t rows, uint32_t pos0, uint32_t cache_cap, uint32_t window,
+        uint32_t q_heads, uint32_t latent_dim, uint32_t qk_nope,
+        uint32_t qk_rope, float scale, uint32_t split_keys) {
+    const uint32_t token = blockIdx.y;
+    const uint32_t split = blockIdx.z;
+    const uint32_t warp = threadIdx.x >> 5u;
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t head = blockIdx.x * 8u + warp;
+    constexpr uint32_t storage_groups = kGroups ? kGroups : 8u;
+    const uint32_t groups = kGroups ? kGroups : latent_dim / 128u;
+    if (token >= rows || head >= q_heads || groups > 8u ||
+        (latent_dim & 127u) || qk_rope != 64u) return;
+
+    const uint32_t qpos = pos0 + token;
+    const uint32_t end = qpos + 1u;
+    const uint32_t visible = kUseWindow ? min(end, window) : end;
+    const uint32_t first = end - visible;
+    const uint32_t key_dim = qk_nope + qk_rope;
+    const float *qh = q + ((uint64_t)token * q_heads + head) * key_dim;
+    const float4 *low4 = (const float4 *)(q_absorbed +
+        ((uint64_t)token * q_heads + head) * latent_dim);
+    float4 low[storage_groups];
+#pragma unroll
+    for (uint32_t g = 0; g < groups; g++) low[g] = low4[lane + 32u * g];
+    float qrope[4] = {0.f, 0.f, 0.f, 0.f};
+    if (lane < 16u) {
+        qrope[0] = qh[qk_nope + lane * 4u + 0u];
+        qrope[1] = qh[qk_nope + lane * 4u + 1u];
+        qrope[2] = qh[qk_nope + lane * 4u + 2u];
+        qrope[3] = qh[qk_nope + lane * 4u + 3u];
+    }
+
+    float M = -FLT_MAX / 2.0f;
+    float S = 0.0f;
+    float4 o[storage_groups];
+#pragma unroll
+    for (uint32_t g = 0; g < groups; g++) o[g] = make_float4(0.f, 0.f, 0.f, 0.f);
+    const uint32_t count = kUseSelection ? sel_stride : visible;
+    const uint32_t j0 = split * split_keys;
+    const uint32_t j1 = min(count, j0 + split_keys);
+    for (uint32_t j = j0; j < j1; j++) {
+        uint32_t logical;
+        if constexpr (kUseSelection) {
+            const int32_t id = selected[(uint64_t)token * sel_stride + j];
+            if (id < 0 || (uint32_t)id > qpos) continue;
+            logical = (uint32_t)id;
+        } else {
+            logical = first + j;
+        }
+        const uint32_t slot = kUseWindow ? logical % cache_cap : logical;
+        if (slot >= cache_cap) continue;
+        const __nv_bfloat16 *kvrow = latent_cache + (uint64_t)slot * latent_dim;
+        float partial_dot = 0.0f;
+        float4 k[storage_groups];
+#pragma unroll
+        for (uint32_t g = 0; g < groups; g++) {
+            k[g] = motif3_load_bf16x4(kvrow + (lane + 32u * g) * 4u);
+            partial_dot += low[g].x * k[g].x + low[g].y * k[g].y +
+                           low[g].z * k[g].z + low[g].w * k[g].w;
+        }
+        if (lane < 16u) {
+            const float4 kp = motif3_load_bf16x4(
+                    k_pe_cache + (uint64_t)slot * qk_rope + lane * 4u);
+            partial_dot += qrope[0] * kp.x + qrope[1] * kp.y +
+                           qrope[2] * kp.z + qrope[3] * kp.w;
+        }
+        for (uint32_t off = 16u; off > 0u; off >>= 1u)
+            partial_dot += __shfl_xor_sync(0xffffffffu, partial_dot, off);
+        const float score = partial_dot * scale;
+        const float new_m = fmaxf(M, score);
+        const float old_scale = expf(M - new_m);
+        const float row_scale = expf(score - new_m);
+#pragma unroll
+        for (uint32_t g = 0; g < groups; g++) {
+            o[g].x = o[g].x * old_scale + k[g].x * row_scale;
+            o[g].y = o[g].y * old_scale + k[g].y * row_scale;
+            o[g].z = o[g].z * old_scale + k[g].z * row_scale;
+            o[g].w = o[g].w * old_scale + k[g].w * row_scale;
+        }
+        S = S * old_scale + row_scale;
+        M = new_m;
+    }
+    const uint32_t stride = latent_dim + DOTS3_ATTN_PARTIAL_EXTRA;
+    float *dst = partial +
+        (((uint64_t)token * q_heads + head) * gridDim.z + split) * stride;
+    float4 *dst4 = (float4 *)dst;
+#pragma unroll
+    for (uint32_t g = 0; g < groups; g++) dst4[lane + 32u * g] = o[g];
+    if (lane == 0u) {
+        dst[latent_dim] = M;
+        dst[latent_dim + 1u] = S;
+    }
+}
+
+/* Merge the split partials: out = sum_s e^(M_s - M) O_s / sum_s e^(M_s - M) S_s. */
+__global__ static void dots3_latent_attention_combine_kernel(
+        float *out, const float *partial, uint32_t rows, uint32_t q_heads,
+        uint32_t latent_dim, uint32_t splits) {
+    const uint32_t head = blockIdx.x;
+    const uint32_t token = blockIdx.y;
+    if (token >= rows || head >= q_heads) return;
+    const uint32_t stride = latent_dim + DOTS3_ATTN_PARTIAL_EXTRA;
+    const float *base = partial +
+        ((uint64_t)token * q_heads + head) * splits * stride;
+    __shared__ float weight[DOTS3_ATTN_SPLITS];
+    __shared__ float inv_sum;
+    if (threadIdx.x == 0u) {
+        float m = -FLT_MAX / 2.0f;
+        for (uint32_t s = 0; s < splits; s++)
+            m = fmaxf(m, base[(uint64_t)s * stride + latent_dim]);
+        float sum = 0.0f;
+        for (uint32_t s = 0; s < splits; s++) {
+            const float w = expf(base[(uint64_t)s * stride + latent_dim] - m);
+            weight[s] = w;
+            sum += w * base[(uint64_t)s * stride + latent_dim + 1u];
+        }
+        inv_sum = sum > 0.0f ? 1.0f / sum : 0.0f;
+    }
+    __syncthreads();
+    float *dst = out + ((uint64_t)token * q_heads + head) * latent_dim;
+    for (uint32_t d = threadIdx.x; d < latent_dim; d += blockDim.x) {
+        float acc = 0.0f;
+        for (uint32_t s = 0; s < splits; s++)
+            acc += weight[s] * base[(uint64_t)s * stride + d];
+        dst[d] = acc * inv_sum;
+    }
+}
+
+extern "C" int ds4_gpu_dots3_latent_attention_split_tensor(
+        ds4_gpu_tensor *out, ds4_gpu_tensor *partial, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *q_absorbed,
+        const ds4_gpu_tensor *latent_cache, const ds4_gpu_tensor *k_pe_cache,
+        const ds4_gpu_tensor *selected, uint32_t sel_stride,
+        uint32_t rows, uint32_t pos0, uint32_t cache_cap, uint32_t window,
+        uint32_t q_heads, uint32_t latent_dim, uint32_t qk_nope,
+        uint32_t qk_rope, float scale) {
+    /* Longest key list among the rows decides the split; the serial walk
+     * keeps every case the split does not cover. */
+    const uint32_t end_max = pos0 + rows;
+    const uint32_t visible_max = window ? (end_max < window ? end_max : window)
+                                        : end_max;
+    const uint32_t count = selected ? sel_stride : visible_max;
+    const uint32_t stride = latent_dim + DOTS3_ATTN_PARTIAL_EXTRA;
+    const bool split_ok = partial && rows <= DOTS3_ATTN_SPLIT_MAX_ROWS &&
+        count >= DOTS3_ATTN_SPLIT_MIN_KEYS && !dots3_attn_split_disabled() &&
+        (latent_dim == 512u || latent_dim == 1024u) && qk_rope == 64u &&
+        partial->bytes >= (uint64_t)rows * q_heads * DOTS3_ATTN_SPLITS *
+                              stride * sizeof(float);
+    if (!split_ok) {
+        return ds4_gpu_dots3_latent_attention_tensor(
+                out, q, q_absorbed, latent_cache, k_pe_cache, selected,
+                sel_stride, rows, pos0, cache_cap, window, q_heads,
+                latent_dim, qk_nope, qk_rope, scale);
+    }
+    const uint32_t key_dim = qk_nope + qk_rope;
+    if (!out || !q || !q_absorbed || !latent_cache || !k_pe_cache ||
+        rows == 0 || cache_cap == 0 || q_heads == 0 ||
+        (selected && (sel_stride == 0 ||
+                      selected->bytes <
+                          (uint64_t)rows * sel_stride * sizeof(int32_t))) ||
+        out->bytes < (uint64_t)rows * q_heads * latent_dim * sizeof(float) ||
+        q->bytes < (uint64_t)rows * q_heads * key_dim * sizeof(float) ||
+        q_absorbed->bytes <
+            (uint64_t)rows * q_heads * latent_dim * sizeof(float) ||
+        latent_cache->bytes <
+            (uint64_t)cache_cap * latent_dim * sizeof(__nv_bfloat16) ||
+        k_pe_cache->bytes <
+            (uint64_t)cache_cap * qk_rope * sizeof(__nv_bfloat16)) return 0;
+    const uint32_t splits = DOTS3_ATTN_SPLITS;
+    const uint32_t split_keys = (count + splits - 1u) / splits;
+    dim3 grid((q_heads + 7u) / 8u, rows, splits);
+#define D3_SPLIT_LAUNCH(groups_, selection_, window_)                        \
+    dots3_latent_attention_split_kernel<groups_, selection_, window_>        \
+        <<<grid, 256>>>(                                                      \
+            (float *)partial->ptr, (const float *)q->ptr,                    \
+            (const float *)q_absorbed->ptr,                                  \
+            (const __nv_bfloat16 *)latent_cache->ptr,                        \
+            (const __nv_bfloat16 *)k_pe_cache->ptr,                          \
+            selected ? (const int32_t *)selected->ptr : NULL, sel_stride,    \
+            rows, pos0, cache_cap, window, q_heads, latent_dim,              \
+            qk_nope, qk_rope, scale, split_keys)
+#define D3_SPLIT_GEOMETRY(selection_, window_) do {                          \
+        if (latent_dim == 512u) D3_SPLIT_LAUNCH(4u, selection_, window_);    \
+        else D3_SPLIT_LAUNCH(8u, selection_, window_);                       \
+    } while (0)
+    if (selected && window) D3_SPLIT_GEOMETRY(true, true);
+    else if (selected) D3_SPLIT_GEOMETRY(true, false);
+    else if (window) D3_SPLIT_GEOMETRY(false, true);
+    else D3_SPLIT_GEOMETRY(false, false);
+#undef D3_SPLIT_GEOMETRY
+#undef D3_SPLIT_LAUNCH
+    if (!cuda_ok(cudaGetLastError(), "dots3 split latent attention launch"))
+        return 0;
+    dim3 combine_grid(q_heads, rows, 1);
+    dots3_latent_attention_combine_kernel<<<combine_grid, 256>>>(
+            (float *)out->ptr, (const float *)partial->ptr, rows, q_heads,
+            latent_dim, splits);
+    return cuda_ok(cudaGetLastError(), "dots3 latent attention combine launch");
+}
+
 /* Headwise sigmoid output gate: attn[t,h,:] *= sigmoid(gate_logit[t,h]),
  * computed from the same normed hidden state that fed the projections. */
 __global__ static void dots3_gate_mul_kernel(

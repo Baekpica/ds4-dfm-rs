@@ -68,6 +68,7 @@ struct attn_case {
     uint32_t heads, latent, nope, rows, pos0, cache_cap, window, sel_stride;
     bool selection;
     bool fillers;          /* mix DSA filler ids into the selection */
+    bool split;            /* decode split-K entry vs the serial kernel */
 };
 
 struct attn_result { double rel_rms, max_abs; bool finite; };
@@ -117,15 +118,30 @@ attn_result run_case(const attn_case &c, bool profile, int reps) {
     if (!t_ref || !t_out) { fprintf(stderr, "output alloc failed\n"); std::exit(1); }
     const float scale = 1.0f / std::sqrt((float)key_dim);
 
+    ds4_gpu_tensor *t_part = c.split
+        ? ds4_gpu_tensor_alloc((uint64_t)c.rows * c.heads * 16u * (c.latent + 4u) * 4u)
+        : nullptr;
     auto launch = [&](ds4_gpu_tensor *out, bool scalar) {
         if (scalar) setenv("DS4_DOTS3_ATTN_NO_HMMA", "1", 1);
         else unsetenv("DS4_DOTS3_ATTN_NO_HMMA");
-        if (!ds4_gpu_dots3_latent_attention_tensor(
-                out, t_q, t_qa, t_lat, t_kpe, t_sel,
-                c.selection ? c.sel_stride : 0u, c.rows, c.pos0, c.cache_cap,
-                c.window, c.heads, c.latent, c.nope, 64u, scale)) {
+        const int ok = c.split
+            ? (scalar ? ds4_gpu_dots3_latent_attention_tensor(
+                            out, t_q, t_qa, t_lat, t_kpe, t_sel,
+                            c.selection ? c.sel_stride : 0u, c.rows, c.pos0,
+                            c.cache_cap, c.window, c.heads, c.latent, c.nope,
+                            64u, scale)
+                      : ds4_gpu_dots3_latent_attention_split_tensor(
+                            out, t_part, t_q, t_qa, t_lat, t_kpe, t_sel,
+                            c.selection ? c.sel_stride : 0u, c.rows, c.pos0,
+                            c.cache_cap, c.window, c.heads, c.latent, c.nope,
+                            64u, scale))
+            : ds4_gpu_dots3_latent_attention_tensor(
+                  out, t_q, t_qa, t_lat, t_kpe, t_sel,
+                  c.selection ? c.sel_stride : 0u, c.rows, c.pos0, c.cache_cap,
+                  c.window, c.heads, c.latent, c.nope, 64u, scale);
+        if (!ok) {
             fprintf(stderr, "%s: latent attention launch failed (%s)\n",
-                    c.name, scalar ? "scalar" : "hmma");
+                    c.name, scalar ? "scalar" : "hmma/split");
             std::exit(1);
         }
     };
@@ -140,7 +156,7 @@ attn_result run_case(const attn_case &c, bool profile, int reps) {
         float ms[2] = {0.0f, 0.0f};
         for (int which = 0; which < 2; which++) {
             const bool scalar = which == 0;
-            const int n = scalar ? 2 : reps;
+            const int n = scalar && !c.split ? 2 : reps;
             check(cudaEventRecord(e0), "t0");
             for (int i = 0; i < n; i++) launch(scalar ? t_ref : t_out, scalar);
             check(cudaEventRecord(e1), "t1");
@@ -149,9 +165,10 @@ attn_result run_case(const attn_case &c, bool profile, int reps) {
             ms[which] /= (float)n;
         }
         printf("dots3 attention profile %-14s rows=%u heads=%u latent=%u keys=%u: "
-               "scalar %.3f ms, hmma %.3f ms (%.2fx)\n",
+               "scalar %.3f ms, %s %.3f ms (%.2fx)\n",
                c.name, c.rows, c.heads, c.latent,
-               c.selection ? c.sel_stride : c.window, ms[0], ms[1],
+               c.selection ? c.sel_stride : c.window, ms[0],
+               c.split ? "split" : "hmma", ms[1],
                ms[1] > 0.0f ? ms[0] / ms[1] : 0.0f);
         cudaEventDestroy(e0);
         cudaEventDestroy(e1);
@@ -174,6 +191,7 @@ attn_result run_case(const attn_case &c, bool profile, int reps) {
     }
     ds4_gpu_tensor_free(t_out);
     ds4_gpu_tensor_free(t_ref);
+    if (t_part) ds4_gpu_tensor_free(t_part);
     if (t_sel) ds4_gpu_tensor_free(t_sel);
     ds4_gpu_tensor_free(t_kpe);
     ds4_gpu_tensor_free(t_lat);
@@ -387,22 +405,29 @@ int main(int argc, char **argv) {
     std::vector<attn_case> cases;
     if (profile) {
         cases = {
-            {"full-dsa-4k", 128u, 512u, 128u, 4096u, 4096u, 8257u, 0u, 2048u, true, false},
-            {"swa-4k", 64u, 1024u, 192u, 4096u, 4096u, 513u + 4096u, 513u, 0u, false, false},
+            {"full-dsa-4k", 128u, 512u, 128u, 4096u, 4096u, 8257u, 0u, 2048u, true, false, false},
+            {"swa-4k", 64u, 1024u, 192u, 4096u, 4096u, 513u + 4096u, 513u, 0u, false, false, false},
+            {"dec-full-dsa", 128u, 512u, 128u, 1u, 8000u, 8257u, 0u, 2048u, true, false, true},
+            {"dec-swa", 64u, 1024u, 192u, 1u, 8000u, 513u + 4096u, 513u, 0u, false, false, true},
         };
     } else {
         cases = {
-            {"full-dsa", 128u, 512u, 128u, 64u, 3000u, 4096u, 0u, 2048u, true, true},
-            {"full-dsa-short", 128u, 512u, 128u, 40u, 0u, 4096u, 0u, 2048u, true, true},
-            {"full-causal", 128u, 512u, 128u, 48u, 1000u, 2048u, 0u, 0u, false, false},
-            {"swa-ring", 64u, 1024u, 192u, 40u, 4600u, 513u + 4096u, 513u, 0u, false, false},
-            {"swa-open", 64u, 1024u, 192u, 40u, 0u, 513u + 4096u, 513u, 0u, false, false},
+            {"full-dsa", 128u, 512u, 128u, 64u, 3000u, 4096u, 0u, 2048u, true, true, false},
+            {"full-dsa-short", 128u, 512u, 128u, 40u, 0u, 4096u, 0u, 2048u, true, true, false},
+            {"full-causal", 128u, 512u, 128u, 48u, 1000u, 2048u, 0u, 0u, false, false, false},
+            {"swa-ring", 64u, 1024u, 192u, 40u, 4600u, 513u + 4096u, 513u, 0u, false, false, false},
+            {"swa-open", 64u, 1024u, 192u, 40u, 0u, 513u + 4096u, 513u, 0u, false, false, false},
+            {"dec-full-dsa", 128u, 512u, 128u, 1u, 3000u, 4096u, 0u, 2048u, true, true, true},
+            {"dec-full-short", 128u, 512u, 128u, 2u, 30u, 4096u, 0u, 2048u, true, true, true},
+            {"dec-full-causal", 128u, 512u, 128u, 1u, 1500u, 2048u, 0u, 0u, false, false, true},
+            {"dec-swa-ring", 64u, 1024u, 192u, 1u, 4620u, 513u + 4096u, 513u, 0u, false, false, true},
+            {"dec-swa-open", 64u, 1024u, 192u, 2u, 100u, 513u + 4096u, 513u, 0u, false, false, true},
         };
     }
     int failures = 0;
     for (const auto &c : cases) {
         const attn_result r = run_case(c, profile, 8);
-        const bool ok = r.finite && r.rel_rms <= 1.0e-2;
+        const bool ok = r.finite && r.rel_rms <= (c.split ? 1.0e-4 : 1.0e-2);
         printf("dots3 attention %-14s rows=%u heads=%u latent=%u: rel_rms=%.3e max_abs=%.3e %s\n",
                c.name, c.rows, c.heads, c.latent, r.rel_rms, r.max_abs, ok ? "OK" : "FAIL");
         if (!ok) failures++;

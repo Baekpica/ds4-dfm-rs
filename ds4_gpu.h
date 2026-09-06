@@ -3329,6 +3329,28 @@ int ds4_gpu_dots3_latent_attention_tensor(
         uint32_t                qk_nope,
         uint32_t                qk_rope,
         float                   scale);
+/* Decode widths: the same attention with the key list split across
+ * DOTS3_ATTN_SPLITS blocks and merged through `partial` (rows x heads x
+ * splits x (latent_dim + 4) floats); falls back to the serial kernel when
+ * the split does not apply. */
+int ds4_gpu_dots3_latent_attention_split_tensor(
+        ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *partial,
+        const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *q_absorbed,
+        const ds4_gpu_tensor *latent_cache,
+        const ds4_gpu_tensor *k_pe_cache,
+        const ds4_gpu_tensor *selected,
+        uint32_t                sel_stride,
+        uint32_t                rows,
+        uint32_t                pos0,
+        uint32_t                cache_cap,
+        uint32_t                window,
+        uint32_t                q_heads,
+        uint32_t                latent_dim,
+        uint32_t                qk_nope,
+        uint32_t                qk_rope,
+        float                   scale);
 int ds4_gpu_dots3_gate_mul_tensor(
         ds4_gpu_tensor       *attn,
         const ds4_gpu_tensor *gate_logits,
