@@ -1784,6 +1784,10 @@ int main(int argc, char ** argv) {
         /*M=*/2048, /*N=*/512, /*K=*/2560, 0xD2A02560);
     all_ok &= run_q8_0_dense_d2r_preq(
         /*M=*/2048, /*N=*/512, /*K=*/2560, 0xD2A02561);
+    /* Qwen GDN/QSA o_proj: K=6144 is an aligned artifact (K%1024) but
+     * used to miss the dispatch cap of 4096. */
+    all_ok &= run_q8_0_dense_d2r(
+        /*M=*/2560, /*N=*/512, /*K=*/6144, 0xD2A06144);
     all_ok &= run_q8_0_dense_vec_row2(
         /*M=*/257, /*K=*/2560, 0xA11E0002);
 

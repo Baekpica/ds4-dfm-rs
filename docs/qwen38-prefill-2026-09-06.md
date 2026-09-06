@@ -174,6 +174,24 @@ is run noise (emit is off at decode width).  First engaged logs:
 `HC mix emits producer q8` then `dense q8 D2R consuming producer q8`
 at the 2,048-row opening chunk.
 
+## Round 6: o_proj D2R at K=6144 (`feature/qwen-prefill-opt-20260906-r4`)
+
+The remaining fat `mul_mat_q` on the 6,144-row chunk was one launch per
+layer (0.201 s of 0.252 s): Qwen o_proj, M=2560 K=6144.  The weight
+already has an aligned artifact (K % 1024 == 0).  Dispatch kept
+`K <= 4096` because DeepSeek o_proj at K=8192 measured 0.81x vs mmq.
+The cap is now 6144; `DS4_MMQ_DENSE_D2R_MAX_K=4096` restores the old
+gate.  K=8192 stays on mmq.  Value-parity, same as the other D2R
+entries.  First engaged log on the new path is
+`M=2560 N=2048 K=6144` (opening-chunk o_proj).
+
+| shape | round 5 same-hour off | round 6 |
+|---|---:|---:|
+| cold 8,192 tokens | 1413.3 (1409.4 / 1413.3 / 1414.1) | **1431.5** (1428.3 / 1431.5 / 1438.7), +1.3 % |
+| cold 65,536 tokens | 1516.5 (1515.1 / 1516.5 / 1523.8) | **1554.8** (1541.2 / 1554.8 / 1557.5), +2.5 % |
+
+Decode after the prefill unchanged (~24.5 / 24.1 tok/s).
+
 ## Cumulative and the production shape
 
 Cold single-shot `ds4-bench` prefill, `main` `0510117` -> `974d706`: 8,192
@@ -208,10 +226,8 @@ sibling artifact (owner swapped to it, same protocol): repeated prompt
 
 ## Open boundaries
 
-- Remaining dense `mul_mat_q` after round 4 (0.24 s / 6.5 % of the
-  6,144-row chunk): o_proj at K=6144 (D2R dispatch keeps K<=4096; deep K
-  measured slower on mmq at 8192), index_qk at M=640, GDN in_a/in_b at
-  M=48.  Raising the K cap for 6144 is untested.
+- Remaining dense `mul_mat_q` after round 6: index_qk at M=640 and GDN
+  in_a/in_b at M=48.  DeepSeek o_proj K=8192 stays on mmq (0.81x).
 - 303 MMQ output sanitize passes on the 6,144-row chunk (0.030 s, 0.8 %;
   was 387 / 2.5 % before D2R retired its own outputs).  Every remaining
   Qwen consumer could still guard at read as the routed path does

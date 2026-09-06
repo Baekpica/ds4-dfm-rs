@@ -24573,8 +24573,11 @@ static int cuda_matmul_q8_0_tensor_labeled_impl(ds4_gpu_tensor *out, const void 
         }
         /* Dense-q8 D2R on the kind-5 aligned artifact (weight server
          * --repack-q8-aligned; artifact presence is the opt-in).  Batch
-         * floors are shape-specific; K=8192 (o_proj) stays on mmq which
-         * measured faster at deep K.  Kill switch DS4_MMQ_DENSE_D2R=0.
+         * floors are shape-specific.  Default K cap is 6144 so Qwen
+         * o_proj (K=6144, already an aligned artifact via K%1024) can
+         * enter; DeepSeek o_proj K=8192 stays on mmq (0.81x vs D2R).
+         * DS4_MMQ_DENSE_D2R_MAX_K overrides the cap (4096 is the prior
+         * default).  Kill switch DS4_MMQ_DENSE_D2R=0.
          * Fold order differs from mmq: value-parity, not bit-parity.  See
          * the DENSE-Q8 D2R PROTO ARC section of the D2R ledger. */
         static int dense_d2r_en = -1;
@@ -24582,9 +24585,14 @@ static int cuda_matmul_q8_0_tensor_labeled_impl(ds4_gpu_tensor *out, const void 
             DS4_MMQ_Q8_0_D2R_DEFAULT_MIN_COLS;
         static int dense_d2r_k128_min_cols =
             DS4_MMQ_Q8_0_D2R_K128_DEFAULT_MIN_COLS;
+        static int dense_d2r_max_k = 6144;
         if (dense_d2r_en < 0) {
             const char *env = getenv("DS4_MMQ_DENSE_D2R");
             dense_d2r_en = (env && env[0] == '0') ? 0 : 1;
+            const char *mk = getenv("DS4_MMQ_DENSE_D2R_MAX_K");
+            if (mk && atoi(mk) > 0) {
+                dense_d2r_max_k = atoi(mk);
+            }
             /* General prefill-scale floor stays at 512.  The wide K=128
              * shallow projection crosses over by N=4, covering short tool
              * turns as well as Solar's two 256-token boot chunks.  N=1..3
@@ -24606,7 +24614,7 @@ static int cuda_matmul_q8_0_tensor_labeled_impl(ds4_gpu_tensor *out, const void 
                 in_dim, dense_d2r_min_cols, dense_d2r_k128_min_cols);
         if (dense_d2r_en && (int)n_tok >= dense_d2r_effective_min_cols &&
             (out_dim % 128u) == 0 && out_dim >= 2048 &&
-            in_dim <= 4096 && (in_dim % 128u) == 0 &&
+            in_dim <= (uint64_t)dense_d2r_max_k && (in_dim % 128u) == 0 &&
             cuda_q8_aligned_enabled()) {
             const uint64_t q8_al_bytes = ds4_mmq_q8_0_aligned_bytes((int)out_dim, (int)in_dim);
             const char *w_al = q8_al_bytes != 0
