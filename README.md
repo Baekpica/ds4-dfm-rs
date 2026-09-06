@@ -574,29 +574,25 @@ trust domain when clients are not mutually trusted.
 ![Qwen3.8 Flash Next long-context throughput on DGX Spark](docs/qwen38-long-context-throughput.png)
 
 *Qwen3.8 Flash Next MQ-Q5 + SSD-PLE BF16 on one DGX Spark / GB10 at
-[`a8fcd97`](https://github.com/Baekpica/ds4-dfm-rs/commit/a8fcd973729594ba5158498dded34bcc5a188a8d),
+[`abdf25c`](https://github.com/Baekpica/ds4-dfm-rs/commit/abdf25c),
 measured by `ds4-bench` as 2,048-token incremental prefills on one warm
 session from 2K through 64K, followed by 128 greedy tokens at each frontier.
+Resident VMM owner with aligned Q8 artifacts, 2 GiB PLE cache, 16 workers.
 With embedded MTP draft 2 active throughout, mean prefill including MTP prefix
-maintenance was **1,163.5 tok/s** and mean decode was **28.0 tok/s**; no MTP
-quench or runtime failure occurred.*
+maintenance was **1,235.9 tok/s** and mean decode was **28.4 tok/s**; no MTP
+quench or runtime failure occurred.  The same protocol at `a8fcd97` (raw-layout
+owner, 1 GiB PLE cache) was 1,163.5 / 28.0 tok/s.*
 
 The 2026-09-06 prefill rounds
-([`docs/qwen38-prefill-2026-09-06.md`](docs/qwen38-prefill-2026-09-06.md):
-opening chunk, MoE glue traffic, one-pass block output) moved the cold
-single-shot `ds4-bench` prefill of the same artifact on the same host from
-1,214.8 to **1,362.1 tok/s** at 8,192 tokens (+12.1 %), from 1,382.7 to
-**1,439.7 tok/s** at 65,536 tokens (+4.1 %) and from 1,297.5 to
-**1,325.6 tok/s** at 196,608 tokens, `main` `0510117` -> `974d706`.  On
-the production server shape (two banks, 196,608 context, `--mtp-draft 2`,
-three fresh workers per binary) the 8,259-token repeated-passage prompt went
-1,363.3 -> **1,394.2 tok/s** (+2.3 %) and the 7,937-token cold-PLE
-markdown prompt 1,406.1 -> **1,467.5 tok/s** (+4.4 %).  Decode with MTP
-draft 2 on that chat prompt reads 31.3 -> 29.8 tok/s only because the
-opening chunk's prefill GEMM shapes move a near-tie token and the new
-continuation accepts fewer drafts (1.65 -> 1.60 per step); with
-`DS4_QWEN_PREFILL_OPENING=0` the new binary reproduces the old text and
-31.4 tok/s.  Every round is bit-identical to the kernels it replaces on the
+([`docs/qwen38-prefill-2026-09-06.md`](docs/qwen38-prefill-2026-09-06.md))
+moved the cold single-shot `ds4-bench` prefill from 1,214.8 to **1,362.1 tok/s**
+at 8,192 tokens and 1,382.7 to **1,439.7 tok/s** at 65,536 tokens
+(`main` `0510117` -> `974d706`: opening chunk, MoE glue, one-pass block
+output).  Three further rounds on `feature/qwen-prefill-opt-20260906-r4`
+(`d9989bb` / `c00eacd` / `abdf25c`: D2R for K=2560 qkv/z/q, one HC-mix Q8
+emit, o_proj K=6144 onto D2R) take the same-hour cold medians on the
+aligned-Q8 owner to **1,431.5 tok/s** at 8K and **1,554.8 tok/s** at 64K.
+Every adopted round is bit-identical to the kernels it replaces on the
 fixtures.
 
 The original split gate claims parity class, not a universal speedup.

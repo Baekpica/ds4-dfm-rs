@@ -192,6 +192,14 @@ entries.  First engaged log on the new path is
 
 Decode after the prefill unchanged (~24.5 / 24.1 tok/s).
 
+The published 2K–64K incremental sweep (same protocol as `a8fcd97`:
+`--ctx-start 2048 --ctx-max 65536 --step-incr 2048 --gen-tokens 128
+--mtp-draft 2`, one warm session) was re-run on this binary against the
+aligned-Q8 owner and a 2 GiB PLE cache: mean prefill **1,235.9 tok/s**
+(was 1,163.5), mean decode **28.4 tok/s** (was 28.0).  2K 1,032.6 /
+64K 1,198.5 tok/s prefill.  Graph:
+`docs/qwen38-long-context-throughput.{svg,png}`.
+
 ## Cumulative and the production shape
 
 Cold single-shot `ds4-bench` prefill, `main` `0510117` -> `974d706`: 8,192
