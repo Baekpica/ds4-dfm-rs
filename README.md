@@ -434,7 +434,9 @@ banks that alternate chunks want two (2048 MiB, the maximum). Sixteen page
 workers already saturate the sidecar reads at ~90K IOPS in bursts that overlap
 compute, so more workers do not help. A prompt's first chunk has nothing
 queued for it, so every prompt opens with a 2,048-row chunk whose remaining
-decoder layers hide the reads of the full-size chunk behind it
+decoder layers hide the reads of the full-size chunk behind it; prompts
+shorter than two opening chunks stay one chunk, since a short trailing
+chunk costs more than the reads it hides
 (`DS4_QWEN_PREFILL_OPENING` sets the opening rows; `0` opens at the chunk
 cap). This reference shape asks the shared Rust scheduler for two persistent
 banks:

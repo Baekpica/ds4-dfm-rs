@@ -47,6 +47,17 @@ behind it is queued after layer 1 by the existing lookahead and read while
 the opening chunk's remaining 46 layers run.  Later chunks keep the cap.
 `DS4_QWEN_PREFILL_OPENING` overrides the opening rows (0 = cap).
 
+Review follow-up (`6101811`): the split only pays when the chunk behind the
+opening one is at least as long.  A short trailing chunk runs its layers at
+low occupancy and hides few reads: 2,304 rows as 2,048 + 256 measured
+1126.7 tok/s against 1211.6 as one chunk (-7 %), 2,049 rows as 2,048 + 1
+1169.9 against 1181.3 (-1 %), and balancing the two halves (1,025 + 1,024,
+1,536 + 1,536) 1127.4 / 1127.9 against the split's 1169.9 / 1179.7 (-4 %).
+Prompts shorter than two opening chunks now stay one chunk (2,049 /
+2,304 / 3,072 rows: 1181.1 / 1206.1 / 1219.0 tok/s, the single-chunk rate);
+prompts of 4,096 rows and more, so every shape measured here, are unchanged
+(cold 8K 1362.9 tok/s after the change).
+
 | shape | base `0510117` | round 1 |
 |---|---:|---:|
 | cold 8,192 tokens | 1214.8 (1212.7 / 1214.8 / 1217.2) | **1325.7** (1322.3 / 1325.7 / 1329.6), +9.1 % |
