@@ -36347,6 +36347,11 @@ static void test_model_catalog_classify(void) {
      * aligned-dense additive candidate exactly like the repack rule. */
     TEST_ASSERT(test_tcat("blk.3.ffn_gate_shexp.weight", 2, 8, 4096, 2048, 0, 34u * 100000u) ==
                 DS4_TCAT_ARTIFACT_ADDITIVE);
+    /* Qwen GDN qkv [2560, 10240] misses K%1024 but matches D2R prefill. */
+    TEST_ASSERT(test_tcat("blk.0.linear_attn.qkv.weight", 2, 8, 2560, 10240, 0,
+                          80u * 10240u * 34u) == DS4_TCAT_ARTIFACT_ADDITIVE);
+    TEST_ASSERT(test_tcat("blk.0.linear_attn.in_a.weight", 2, 8, 2560, 48, 0,
+                          80u * 48u * 34u) == 0);
     /* token_embd is excluded from the aligned-dense tier. */
     TEST_ASSERT(test_tcat("token_embd.weight", 2, 8, 4096, 129280, 0, 34u * 100000u) == 0);
     /* attn_output_a rides the f16 prebuild tier even under the 2 MiB

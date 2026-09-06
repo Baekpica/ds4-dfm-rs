@@ -852,13 +852,15 @@ bool ds4_repack_q2k_candidate(const ds4_repack_tensor &t) {
 }
 
 /* Aligned-SoA Q8_0 dense candidates (--repack-q8-aligned): every 2D Q8_0
- * tensor big enough to matter whose row length satisfies either the decode
- * kernel's K % 1024 contract or the tensor-core D2R kernel's wide K=128
- * shallow-GEMM contract.  The latter is intentionally shape-gated at M>=8192
- * so small Q8 tensors do not consume resident artifact memory.  token_embd is
- * excluded: it is consumed by row-gather, never by a dense projection.
- * Unlike the IQ2 expert repack these artifacts are ADDITIVE (raw stays
- * served). */
+ * tensor big enough to matter whose row length satisfies the decode
+ * kernel's K % 1024 contract, the tensor-core D2R kernel's wide K=128
+ * shallow-GEMM contract, or the D2R prefill contract (K % 128, K <= 4096,
+ * M % 128, M >= 2048).  The K=128 path is shape-gated at M>=8192 so small
+ * Q8 tensors do not consume resident artifact memory.  Qwen GDN qkv/z and
+ * QSA q are K=2560 and miss the decode %1024 gate; the prefill predicate
+ * admits them.  token_embd is excluded: it is consumed by row-gather,
+ * never by a dense projection.  Unlike the IQ2 expert repack these
+ * artifacts are ADDITIVE (raw stays served). */
 bool ds4_repack_q8_candidate(const ds4_repack_tensor &t) {
     if (t.type != 8u || t.ndim != 2u) return false; /* GGML_TYPE_Q8_0 */
     if (t.dims[0] == 0 || t.dims[1] == 0) return false;
@@ -866,7 +868,12 @@ bool ds4_repack_q8_candidate(const ds4_repack_tensor &t) {
     const bool qwen_shared =
         t.dims[0] == 2560u && t.dims[1] == 640u;
     const bool shallow_d2r_shape = t.dims[0] == 128u && t.dims[1] >= 8192u;
-    if (!decode_shape && !qwen_shared && !shallow_d2r_shape) return false;
+    /* ds4_mmq_q8_0_dense_d2r: M%128==0, M>=2048, K%128==0, K<=4096. */
+    const bool d2r_prefill_shape =
+        t.dims[0] % 128u == 0 && t.dims[0] <= 4096u &&
+        t.dims[1] % 128u == 0 && t.dims[1] >= 2048u;
+    if (!decode_shape && !qwen_shared && !shallow_d2r_shape &&
+        !d2r_prefill_shape) return false;
     /* 2 MiB floor: attn_kv (512 x 4096, 2.2 MiB) is an Inc4 pair-kernel
      * consumer.  K=128 D2R weights are only ~1.06 MiB each, but their wide
      * prefill GEMM is precisely the admitted shallow shape above. */

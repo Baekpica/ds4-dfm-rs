@@ -125,6 +125,35 @@ patch is kept under `scratch/qwen-prefill-opt-20260906/r3-swiglu-store-rejected.
 | cold 8,192 tokens | 1348.1 | **1362.1** (1352.0 / 1362.1 / 1367.4), +1.0 % |
 | cold 65,536 tokens | 1422.4 | **1439.7** (1428.7 / 1439.7 / 1443.9), +1.2 % |
 
+## Round 4: K=2560 dense D2R (`feature/qwen-prefill-opt-20260906-r4`)
+
+The dense Q8_0 D2R kernel already accepted K % 128 and K <= 4096, but the
+weight owner's `ds4_repack_q8_candidate` only built aligned artifacts for
+`dims[0] % 1024 == 0` (plus the 2560x640 shared-expert special case).
+Qwen GDN qkv/z and QSA q are K=2560, so they never reached the tier and
+stayed on `mul_mat_q` (17 % of an 8K chunk on the round-3 binary).
+
+The candidate predicate now also admits the D2R prefill contract
+(K % 128, K <= 4096, M % 128, M >= 2048).  The catalog mirror matches.
+Additive artifacts: 160 tensors / 0.94 GiB -> 278 / 3.62 GiB
+(+2.68 GiB in the owner).  `DS4_MMQ_DENSE_D2R=0` is the kill switch
+(same binary, same owner).  Fold order differs from mmq: value-parity,
+not bit-parity.  The first engaged launch is GDN qkv
+`M=10240 N=2048 K=2560` on the opening chunk.
+
+On the 6,144-row chunk, 84 D2R launches take 0.29 s and the remaining
+`mul_mat_q` (o_proj K=6144, index M=640, in_a/in_b) is 0.24 s; the
+standalone sanitize pass on that chunk falls 387 -> 303 launches
+(0.13 s -> 0.030 s) because D2R writes every element through its
+isfinite epilogue.
+
+| shape | round 3 same-hour off | round 4 |
+|---|---:|---:|
+| cold 8,192 tokens | 1353.3 (1344.8 / 1353.3 / 1364.5) | **1391.1** (1386.2 / 1391.1 / 1393.1), +2.8 % |
+| cold 65,536 tokens | 1431.1 (1419.7 / 1431.1 / 1440.2) | **1504.6** (1498.0 / 1504.6 / 1508.5), +5.1 % |
+
+Decode after the prefill unchanged (24.5 / 23.9 tok/s).
+
 ## Cumulative and the production shape
 
 Cold single-shot `ds4-bench` prefill, `main` `0510117` -> `974d706`: 8,192
@@ -159,15 +188,14 @@ sibling artifact (owner swapped to it, same protocol): repeated prompt
 
 ## Open boundaries
 
-- The dense Q8_0 projections (`mul_mat_q`, 17 % of an 8K chunk) never reach
-  the aligned D2R tier: the weight owner's `ds4_repack_q8_candidate` admits
-  only `dims[0] % 1024 == 0`, which excludes Qwen's 2,560-wide qkv, z, q and
-  index projections.  Admitting them (additive artifacts, ~1.7 GiB in the
-  owner) and measuring the D2R kernel on K=2560 is untested; D2R is
-  value-parity, not bit-parity, with mmq.
-- 387 MMQ output sanitize passes per 8K chunk (2.5 %) on the dense
-  projections; every Qwen consumer could guard at read as the routed path
-  does (`DS4_ROUTED_OUT_GUARDED`).
+- Remaining dense `mul_mat_q` after round 4 (0.24 s / 6.5 % of the
+  6,144-row chunk): o_proj at K=6144 (D2R dispatch keeps K<=4096; deep K
+  measured slower on mmq at 8192), index_qk at M=640, GDN in_a/in_b at
+  M=48.  Raising the K cap for 6144 is untested.
+- 303 MMQ output sanitize passes on the 6,144-row chunk (0.030 s, 0.8 %;
+  was 387 / 2.5 % before D2R retired its own outputs).  Every remaining
+  Qwen consumer could still guard at read as the routed path does
+  (`DS4_ROUTED_OUT_GUARDED`).
 - The dense GEMMs that read one hyper-connection output (qkv + z, index +
   q, the shared pair) each quantize it again (~0.5 ms each at 8K rows); one
   producer emit per sub-layer through the existing `cuda_norm_q8` registry

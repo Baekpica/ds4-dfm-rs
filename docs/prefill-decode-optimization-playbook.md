@@ -18,6 +18,7 @@ Campaigns this distills (all in `docs/` and `scratch/`):
 | 2026-09-04 long context (5 rounds) | same | cold 64K 530 -> 1371 tok/s, cold 196K 1052 -> 1288 |
 | 2026-09-05 K2-Horizon-375B MQ87 (12 prefill + 4 decode rounds) | K2 IQ1/IQ2 experts | 8K prefill 287 -> 645 tok/s (+125 %), decode 5.5 -> 13.3 tok/s |
 | 2026-09-06 prefill (3 rounds) | Qwen | cold 8K 1215 -> 1362 tok/s (+12 %), 64K +4 % |
+| 2026-09-06-r4 (D2R K=2560) | Qwen | cold 8K 1353 -> 1391 tok/s (+2.8 %), 64K +5.1 % |
 
 The one-line version: **almost every large win came from removing work the
 graph did not need (idle time, fallbacks, repeated transformations, redundant
@@ -166,10 +167,11 @@ predicates before touching any kernel.
   of 64), which is why it was rejected once and adopted only with the
   revised gate (section 5.3).
 - **Tiers that exist but are never entered.**  Qwen's dense Q8 projections
-  never reach the aligned D2R tier because the weight owner's repack rule
-  admits only `dims[0] % 1024 == 0`; nobody had looked.  The "engaged path"
-  log line for a tier is worth checking against the tensor list once per
-  family.
+  missed the aligned D2R tier because the weight owner's repack rule
+  admitted only `dims[0] % 1024 == 0` (K=2560 qkv/z/q).  Admitting the
+  D2R prefill contract moved them: cold 8K +2.8 %, 64K +5.1 %.  The
+  "engaged path" log line for a tier is worth checking against the tensor
+  list once per family.
 
 ### 2.3 Repeated transformations
 

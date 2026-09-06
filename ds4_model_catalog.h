@@ -109,8 +109,15 @@ static inline uint32_t ds4_tensor_catalog_classify(const char *name,
     if (ggml_type == DS4_TCAT_GGML_Q8_0 && ndim == 2 && dims &&
         dims[0] != 0 && dims[1] != 0 && bytes % 34u == 0 && bytes != 0) {
         /* ds4_repack_q8_candidate mirror: aligned dense (2 MiB floor,
-         * token_embd excluded). */
-        if (dims[0] % 1024u == 0 && bytes >= 2u * 1024u * 1024u &&
+         * token_embd excluded).  Decode-vec is K%1024; D2R prefill is
+         * K%128 / K<=4096 / M%128 / M>=2048 (Qwen GDN qkv/z, QSA q). */
+        const int decode_shape = dims[0] % 1024u == 0;
+        const int qwen_shared = dims[0] == 2560u && dims[1] == 640u;
+        const int shallow_d2r = dims[0] == 128u && dims[1] >= 8192u;
+        const int d2r_prefill = dims[0] % 128u == 0 && dims[0] <= 4096u &&
+            dims[1] % 128u == 0 && dims[1] >= 2048u;
+        if ((decode_shape || qwen_shared || shallow_d2r || d2r_prefill) &&
+            (shallow_d2r || qwen_shared || bytes >= 2u * 1024u * 1024u) &&
             !ds4_tcat_contains(name, name_len, "token_embd")) {
             traits |= DS4_TCAT_ARTIFACT_ADDITIVE;
         }

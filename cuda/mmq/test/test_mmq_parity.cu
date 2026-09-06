@@ -1716,6 +1716,9 @@ int main(int argc, char ** argv) {
         /*M=*/128, /*N=*/129, /*K=*/128, 0xD2A00128);
     all_ok &= run_q8_0_dense_d2r(
         /*M=*/128, /*N=*/4, /*K=*/128, 0xD2A00004);
+    /* Qwen GDN qkv / z / QSA q: K=2560 misses the decode %1024 gate. */
+    all_ok &= run_q8_0_dense_d2r(
+        /*M=*/2048, /*N=*/512, /*K=*/2560, 0xD2A02560);
     all_ok &= run_q8_0_dense_vec_row2(
         /*M=*/257, /*K=*/2560, 0xA11E0002);
 
