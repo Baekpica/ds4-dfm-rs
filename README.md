@@ -107,8 +107,7 @@ PASS* cells reproduced on the matching C control, with no Rust-only failure.
 The detailed evidence is in
 [`SPLIT_READINESS.md`](docs/rust-migration/SPLIT_READINESS.md).
 
-The `0.1.0` workspace version prepares the release; the stable tag depends on
-the recorded release gates. Only explicit, validated GGUF layouts are accepted.
+Only explicit, validated GGUF layouts are accepted.
 
 ## Design philosophy
 
