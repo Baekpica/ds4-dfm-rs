@@ -42,6 +42,7 @@ def parse_args(argv=None):
     parser.add_argument("--max-gib", type=float, default=24)
     parser.add_argument("--high-gib", type=float, default=21)
     parser.add_argument("--reserve-gib", type=float, default=12)
+    parser.add_argument("--trip-gib", type=float, help="watchdog floor; defaults to reserve, use a lower floor for a stable owner")
     parser.add_argument("--poll-seconds", type=float, default=0.1)
     parser.add_argument("--grace-seconds", type=float, default=1)
     parser.add_argument("--timeout", type=float, default=1800, help="seconds; 0 keeps monitoring a server indefinitely")
@@ -50,10 +51,14 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if args.command[:1] == ["--"]:
         args.command.pop(0)
+    if args.trip_gib is None:
+        args.trip_gib = args.reserve_gib
     for name in ("max_gib", "high_gib", "reserve_gib", "poll_seconds", "grace_seconds"):
         value = getattr(args, name)
         if not math.isfinite(value) or value <= 0:
             parser.error(f"{name.replace('_', '-')} must be finite and positive")
+    if not math.isfinite(args.trip_gib) or not 0 < args.trip_gib <= args.reserve_gib:
+        parser.error("trip-gib must be positive and no greater than reserve-gib")
     if not math.isfinite(args.timeout) or args.timeout < 0:
         parser.error("timeout must be finite and nonnegative")
     if not args.command:
@@ -164,9 +169,10 @@ def run_guard(args, read_memory=None):
             print(f"host-memory-guard: refused: {error}", file=sys.stderr, flush=True)
             return GUARD_EXIT
         record("start", **before, max_gib=maximum, high_gib=high,
-               reserve_gib=args.reserve_gib, command=args.command)
+               reserve_gib=args.reserve_gib, trip_gib=args.trip_gib, command=args.command)
         print(f"host-memory-guard: available={before['available_gib']:.2f} GiB, "
-              f"scope max/high={maximum:.2f}/{high:.2f}, reserve={args.reserve_gib:.2f}", flush=True)
+              f"scope max/high={maximum:.2f}/{high:.2f}, reserve={args.reserve_gib:.2f}, "
+              f"trip={args.trip_gib:.2f}", flush=True)
         command = ["systemd-run", "--user", "--scope", "--slice=ds4guard.slice", "--quiet", f"--unit={unit}",
                    "-p", f"MemoryMax={int(maximum * GIB)}",
                    "-p", f"MemoryHigh={int(high * GIB)}", "-p", "MemorySwapMax=0",
@@ -184,10 +190,10 @@ def run_guard(args, read_memory=None):
                     reason = "watchdog telemetry could not be saved"
                 elif stopped[0]:
                     reason = "watchdog received a stop signal"
-                elif snapshot["available_gib"] < args.reserve_gib:
-                    reason = "host memory reserve crossed"
+                elif snapshot["available_gib"] < args.trip_gib:
+                    reason = "host memory watchdog floor crossed"
                 elif (snapshot["psi_full_avg10"] >= 20 and
-                      snapshot["available_gib"] < args.reserve_gib + 4):
+                      snapshot["available_gib"] < args.trip_gib + 4):
                     reason = "sustained host memory stalls near reserve"
                 elif args.timeout and now - start >= args.timeout:
                     reason = "job deadline exceeded"
@@ -211,7 +217,7 @@ def run_guard(args, read_memory=None):
                     grace_deadline = time.monotonic() + args.grace_seconds
                     while time.monotonic() < grace_deadline:
                         try:
-                            if read_memory()["available_gib"] < args.reserve_gib * 2 / 3:
+                            if read_memory()["available_gib"] < args.trip_gib * 2 / 3:
                                 break
                         except (OSError, ValueError, KeyError, StopIteration):
                             break

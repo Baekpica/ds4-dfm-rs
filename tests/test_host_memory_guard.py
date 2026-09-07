@@ -115,6 +115,55 @@ class HostMemoryGuardTest(unittest.TestCase):
     def test_guard_sighup(self):
         self.check_stopped_guard(signal.SIGHUP)
 
+    def test_worker_stops_before_guarded_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            memory = root / 'memory.json'
+            def available(gib):
+                temp = root / 'memory.new'
+                temp.write_text(json.dumps({'available_gib': gib, 'psi_full_avg10': 0}))
+                temp.replace(memory)
+            available(20)
+            harness = (
+                "import sys,json,pathlib; "
+                f"sys.path.insert(0,{str(ROOT/'tools')!r}); "
+                "import host_memory_guard as g; "
+                "sys.exit(g.run_guard(g.parse_args(sys.argv[2:]),"
+                "lambda:json.loads(pathlib.Path(sys.argv[1]).read_text())))"
+            )
+            jobs = []
+            try:
+                for name, trip in [('owner', '8'), ('worker', '12')]:
+                    marker = root / name
+                    payload = (
+                        "import os,time,pathlib; "
+                        f"pathlib.Path({str(marker)!r}).write_text(str(os.getpid())); time.sleep(30)"
+                    )
+                    jobs.append(subprocess.Popen([sys.executable, '-c', harness, str(memory),
+                        '--max-gib', '0.25', '--high-gib', '0.2', '--reserve-gib', '12',
+                        '--trip-gib', trip, '--grace-seconds', '0.1', '--poll-seconds', '0.02',
+                        '--timeout', '10', '--log', str(root/(name+'.jsonl')),
+                        '--', sys.executable, '-c', payload]))
+                deadline = time.monotonic() + 5
+                while not all((root/name).exists() for name in ('owner', 'worker')):
+                    if any(job.poll() is not None for job in jobs) or time.monotonic() > deadline:
+                        self.fail('both guarded payloads must start')
+                    time.sleep(0.02)
+                available(11)
+                self.assertEqual(jobs[1].wait(timeout=5), guard.GUARD_EXIT)
+                self.assertIsNone(jobs[0].poll(), 'owner should survive the worker threshold')
+                self.assertTrue(pathlib.Path(f"/proc/{(root/'owner').read_text()}").exists())
+                available(7)
+                self.assertEqual(jobs[0].wait(timeout=5), guard.GUARD_EXIT)
+                for name in ('owner', 'worker'):
+                    stat = pathlib.Path(f"/proc/{(root/name).read_text()}/stat")
+                    self.assertTrue(not stat.exists() or stat.read_text().split()[2] == 'Z')
+            finally:
+                for job in jobs:
+                    if job.poll() is None:
+                        job.terminate()
+                        job.wait(timeout=5)
+
     def test_cgroup_limits_are_installed(self):
         with tempfile.TemporaryDirectory() as tmp:
             limits = pathlib.Path(tmp) / "limits.json"

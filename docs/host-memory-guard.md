@@ -16,15 +16,21 @@ python3 tools/host_memory_guard.py \
   --log scratch/bench.memory.jsonl -- ./ds4-bench <benchmark arguments>
 ```
 
-For a persistent owner, use its measured ceiling and `--timeout 0`; the
-default job deadline is 1,800 seconds. The guard samples the whole host
+For a persistent owner, use its measured ceiling, `--reserve-gib 12
+--trip-gib 8 --timeout 0`; keep the worker's default 12 GiB trip floor.
+Both retain the same admission reserve. Different trip floors let the
+worker release memory before the stable owner's emergency watchdog acts.
+If memory drops below both floors, or severe pressure persists, both jobs
+can be stopped. Two watchers using the same floor have no shutdown priority.
+
+The default job deadline is 1,800 seconds. The guard samples the whole host
 every 100 ms, including memory that the CUDA driver may not charge to the
-scope. It sends SIGTERM when the reserve is crossed, or when memory PSI
-full stalls reach 20% near the reserve, then SIGKILL after one second.
+scope. It sends SIGTERM when the trip floor is crossed, or when memory PSI
+full stalls reach 20% within 4 GiB of that floor, then SIGKILL after one second.
 Only that job's scope is targeted, including profiler descendants that
 create a separate process session. A filesystem cgroup kill is the fallback
-if the user service manager does not respond. A worker trip leaves the
-separate owner intact. Exit 75 means the job was refused or interrupted by
+if the user service manager does not respond. It never directly kills a
+separate owner's scope. Exit 75 means the job was refused or interrupted by
 the guard; do not use its partial benchmark outputs.
 
 Timestamped JSONL samples and stop events are synced to disk. Stop the
@@ -35,5 +41,6 @@ lockup; this guard addresses memory admission and observed memory pressure.
 
 `python3 tests/test_host_memory_guard.py` checks the installed cgroup limits,
 owner-aware admission, launch refusal, escaped descendants, user-manager
-failure and repeated termination signals using small processes. It does
-not deliberately exhaust host memory.
+failure and repeated termination signals using small processes. A two-guard
+test verifies worker-first shutdown and the owner's lower emergency floor.
+The tests do not deliberately exhaust host memory.
