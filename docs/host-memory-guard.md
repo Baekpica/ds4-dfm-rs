@@ -30,7 +30,9 @@ full stalls reach 20% within 4 GiB of that floor, then SIGKILL after one second.
 Only that job's scope is targeted, including profiler descendants that
 create a separate process session. A filesystem cgroup kill is the fallback
 if the user service manager does not respond. It never directly kills a
-separate owner's scope. Exit 75 means the job was refused or interrupted by
+separate owner's scope. If `cgroup.kill` is missing or cannot be written,
+it scans `cgroup.procs` and signals pidfds after verifying scope membership.
+Exit 75 means the job was refused or interrupted by
 the guard; do not use its partial benchmark outputs.
 
 Timestamped JSONL samples and stop events are synced to disk. Stop the

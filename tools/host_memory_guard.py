@@ -113,11 +113,9 @@ def kill_scope_files(path):
     try:
         (path / "cgroup.kill").write_text("1\n")
         return
-    except FileNotFoundError:
-        return
     except OSError:
         pass
-    # Some systemd versions delegate cgroup.procs but not cgroup.kill.
+    # Missing cgroup.kill also needs the fallback while the scope still exists.
     for procs in path.rglob("cgroup.procs"):
         try:
             pids = procs.read_text().split()

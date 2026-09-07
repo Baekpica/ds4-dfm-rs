@@ -35,6 +35,33 @@ class HostMemoryGuardTest(unittest.TestCase):
             self.assertFalse(marker.exists())
 
     def test_low_memory_kills_scope_descendants(self):
+        self.check_low_memory_cleanup()
+
+    def test_missing_cgroup_kill_uses_pidfds(self):
+        scopes = set()
+        write_text = pathlib.Path.write_text
+        def missing_kill(path, *args, **kwargs):
+            if path.name == 'cgroup.kill':
+                scopes.add(path.parent)
+                raise FileNotFoundError('simulated kernel without cgroup.kill')
+            return write_text(path, *args, **kwargs)
+        try:
+            # Keep real cgroup.procs and pidfds, but remove both fast kill paths.
+            with mock.patch.object(pathlib.Path, 'write_text', missing_kill):
+                self.check_low_memory_cleanup()
+            self.assertTrue(scopes, 'the filesystem backstop must be exercised')
+            for scope in scopes:
+                self.assertFalse(guard.scope_populated(scope))
+        finally:
+            # Clean up escaped children even when testing the broken implementation.
+            for scope in scopes:
+                guard.kill_scope_files(scope)
+
+    def test_removed_scope_needs_no_cleanup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            guard.kill_scope_files(pathlib.Path(tmp) / 'removed.scope')
+
+    def check_low_memory_cleanup(self):
         with tempfile.TemporaryDirectory() as tmp:
             marker = pathlib.Path(tmp) / "pids.json"
             log = pathlib.Path(tmp) / "guard.jsonl"
