@@ -52,6 +52,11 @@ impl PayloadLayout {
         }
     }
 
+    fn exceeds_context(self, tokens: usize, ctx: i32) -> bool {
+        // Native QWN3 can persist an exactly full context.
+        ctx <= 0 || tokens > ctx as usize || (tokens == ctx as usize && self != Self::Qwen4Exp)
+    }
+
     pub fn oracle_name(self) -> &'static str {
         self.family().oracle_name()
     }
@@ -201,7 +206,7 @@ pub(crate) fn read_prefix_range(
         ));
     }
     let n = fields[7] as usize;
-    if n >= ctx.max(0) as usize {
+    if PayloadLayout::from_fields(&fields).exceeds_context(n, ctx) {
         return Err(invalid_data("session payload exceeds context"));
     }
     let prefix_len = HEADER_BYTES as u64 + fields[7] as u64 * 4;
@@ -247,7 +252,10 @@ impl SessionLedger {
                 "session payload was written for a different model family",
             ));
         }
-        if prefix.tokens.len() >= self.ctx.max(0) as usize {
+        if prefix
+            .layout()
+            .exceeds_context(prefix.tokens.len(), self.ctx)
+        {
             return Err(err("session payload exceeds context"));
         }
         let tokens: Vec<i32> = prefix.tokens.iter().map(|&t| t as i32).collect();
@@ -510,6 +518,54 @@ mod tests {
     use std::io::{Cursor, Seek};
 
     use super::*;
+
+    #[test]
+    fn qwen_full_context_payload() {
+        let mut prefix = fixture_deepseek();
+        prefix.fields[2] = 3;
+        prefix.fields[5] = LAYOUT_QWEN4EXP;
+        prefix.fields[12] = 368_640;
+        let bytes = prefix.encode();
+        // Both the file reader and host ledger must accept native's full
+        // Qwen frontier, while still rejecting an overfull/invalid context.
+        for (ctx, expected) in [(3, true), (2, false), (0, false), (-1, false)] {
+            let read = read_prefix_range(
+                &mut Cursor::new(&bytes),
+                0,
+                bytes.len() as u64,
+                ModelFamily::Qwen4Exp,
+                ctx,
+            );
+            let mut host = SessionLedger::new(
+                ModelFamily::Qwen4Exp,
+                crate::session::SessionBackend::Cuda,
+                ctx,
+                3,
+            );
+            assert_eq!(
+                (read.is_ok(), host.apply_payload(&prefix).is_ok()),
+                (expected, expected),
+                "ctx={ctx}"
+            );
+        }
+        let prefix = fixture_deepseek();
+        let bytes = prefix.encode();
+        assert!(read_prefix_range(
+            &mut Cursor::new(&bytes),
+            0,
+            bytes.len() as u64,
+            ModelFamily::DeepSeek4,
+            3,
+        )
+        .is_err());
+        let mut host = SessionLedger::new(
+            ModelFamily::DeepSeek4,
+            crate::session::SessionBackend::Cuda,
+            3,
+            3,
+        );
+        assert!(host.apply_payload(&prefix).is_err());
+    }
 
     #[test]
     fn qwen_prefix_restores_host_ledger() {
