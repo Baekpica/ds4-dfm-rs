@@ -28048,6 +28048,8 @@ __global__ static void qwen4exp_vision_layernorm_kernel(
         __syncthreads();
     }
     const float mean = red[0] / (float)dim;
+    /* All warps must read the mean before red[] holds variance partials. */
+    __syncthreads();
     float sq = 0.0f;
     for (uint32_t d = threadIdx.x; d < dim; d += blockDim.x) {
         const float v = src[d] - mean;
