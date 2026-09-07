@@ -96,8 +96,77 @@ static void reference_head_rms(float *out, const float *x, const float *gate,
     }
 }
 
+static void test_moe_residual(uint32_t rows, uint32_t hidden) {
+    const uint32_t used = 8u;
+    const uint32_t count = rows * hidden;
+    const uint64_t bytes = (uint64_t)count * sizeof(float);
+    float *down = malloc(bytes * used);
+    float *x = malloc(bytes), *shared = malloc(bytes);
+    float *want = malloc(bytes), *got = malloc(bytes);
+    CHECK(down && x && shared && want && got, "MoE host allocation");
+    for (uint64_t i = 0; i < (uint64_t)count * used; i++) {
+        uint32_t bits = (uint32_t)i * 1664525u + 1013904223u;
+        down[i] = ((float)(bits & 65535u) - 32768.0f) / 4096.0f;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        x[i] = (float)(i % 127u) / 32.0f - 2.0f;
+        shared[i] = (float)(i % 79u) / 64.0f - 0.5f;
+    }
+    /* Guard nonfinite routed values, and pin the left-to-right slot sum
+     * with cancellation too large for an alternate association to hide. */
+    down[0] = NAN;
+    down[hidden] = INFINITY;
+    down[2u * hidden] = -INFINITY;
+    down[1] = 1.0e20f;
+    down[hidden + 1u] = -1.0e20f;
+    down[2u * hidden + 1u] = 3.25f;
+
+    ds4_gpu_tensor *dx = ds4_gpu_tensor_alloc(bytes);
+    ds4_gpu_tensor *dd = ds4_gpu_tensor_alloc(bytes * used);
+    ds4_gpu_tensor *ds = ds4_gpu_tensor_alloc(bytes);
+    ds4_gpu_tensor *tmp = ds4_gpu_tensor_alloc(bytes);
+    CHECK(dx && dd && ds && tmp, "MoE device allocation");
+    CHECK(ds4_gpu_tensor_write(dx, 0, x, bytes), "write residual");
+    CHECK(ds4_gpu_tensor_write(dd, 0, down, bytes * used), "write experts");
+    CHECK(ds4_gpu_tensor_write(ds, 0, shared, bytes), "write shared");
+    CHECK(ds4_gpu_moe_sum_tensor(tmp, dd, hidden, used, rows), "reference sum");
+    CHECK(ds4_gpu_add_tensor(tmp, tmp, ds, count), "reference shared add");
+    CHECK(ds4_gpu_add_tensor(tmp, dx, tmp, count), "reference residual add");
+    CHECK(ds4_gpu_tensor_read(tmp, 0, want, bytes), "reference read");
+    CHECK(ds4_gpu_solar_moe_residual_tensor(dx, dd, ds, hidden, used, rows) == 1,
+          "fused MoE residual");
+    CHECK(ds4_gpu_tensor_read(dx, 0, got, bytes), "fused read");
+    CHECK(memcmp(got, want, bytes) == 0, "MoE residual byte parity");
+    printf("MoE residual %u x %u x %u: byte-identical\n", rows, used, hidden);
+
+    CHECK(ds4_gpu_solar_moe_residual_tensor(NULL, dd, ds, hidden, used, rows) == 0,
+          "reject null residual");
+    CHECK(ds4_gpu_solar_moe_residual_tensor(dx, NULL, ds, hidden, used, rows) == 0,
+          "reject null experts");
+    CHECK(ds4_gpu_solar_moe_residual_tensor(dx, dd, NULL, hidden, used, rows) == 0,
+          "reject null shared");
+    CHECK(ds4_gpu_solar_moe_residual_tensor(dx, dd, ds, hidden, used, 0) == 0,
+          "reject empty rows");
+    CHECK(ds4_gpu_solar_moe_residual_tensor(dx, dx, ds, hidden, used, rows) == 0,
+          "reject short expert buffer");
+    ds4_gpu_tensor *overlap = ds4_gpu_tensor_view(dd, sizeof(float), bytes);
+    CHECK(overlap, "overlapping view");
+    CHECK(ds4_gpu_solar_moe_residual_tensor(overlap, dd, ds, hidden, used, rows) == 0,
+          "reject overlapping expert view");
+    ds4_gpu_tensor_free(overlap);
+    CHECK(ds4_gpu_solar_moe_residual_tensor(dx, dd, dx, hidden, used, rows) == 0,
+          "reject shared residual alias");
+    ds4_gpu_tensor_free(dx); ds4_gpu_tensor_free(dd);
+    ds4_gpu_tensor_free(ds); ds4_gpu_tensor_free(tmp);
+    free(down); free(x); free(shared); free(want); free(got);
+}
+
 int main(void) {
     CHECK(ds4_gpu_init(), "CUDA init");
+    test_moe_residual(1u, 4096u);
+    test_moe_residual(7u, 259u);
+    test_moe_residual(257u, 4096u);
+    test_moe_residual(4096u, 4096u);
     const uint64_t bytes = (uint64_t)T_COUNT * sizeof(float);
     float *x = malloc(bytes);
     float *gate = malloc(bytes);

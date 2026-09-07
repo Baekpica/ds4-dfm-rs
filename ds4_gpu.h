@@ -4115,6 +4115,15 @@ int ds4_gpu_solar_sigmoid_gate_tensor(
         const ds4_gpu_tensor *gate,
         uint64_t                count);
 
+/* x += (sum_e finite(down[token][e]) + shared), with the same slot order
+ * and separate F32 additions as moe_sum + add + residual add. Inputs must
+ * not overlap x. Returns 1 on success, 0 before launch (caller may fall
+ * back), -1 after a failed launch (caller must fail, not add twice). */
+int ds4_gpu_solar_moe_residual_tensor(
+        ds4_gpu_tensor *x, const ds4_gpu_tensor *down,
+        const ds4_gpu_tensor *shared, uint32_t hidden_size,
+        uint32_t n_used, uint32_t rows);
+
 int ds4_gpu_solar_head_rms_sigmoid_gate_tensor(
         ds4_gpu_tensor       *out,
         const ds4_gpu_tensor *x,
