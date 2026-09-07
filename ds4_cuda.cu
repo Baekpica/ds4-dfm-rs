@@ -28048,6 +28048,8 @@ __global__ static void qwen4exp_vision_layernorm_kernel(
         __syncthreads();
     }
     const float mean = red[0] / (float)dim;
+    /* All warps must read the mean before red[] holds variance partials. */
+    __syncthreads();
     float sq = 0.0f;
     for (uint32_t d = threadIdx.x; d < dim; d += blockDim.x) {
         const float v = src[d] - mean;
@@ -28410,6 +28412,100 @@ extern "C" int ds4_gpu_qwen4exp_vision_qkv_rope_tensor(
     return cuda_ok(cudaGetLastError(), "Qwen vision QKV RoPE launch");
 }
 
+/* Two queries per warp reuse the same K/V registers. Each query keeps the
+ * original dot reduction, online softmax, and value accumulation order.
+ * Explicit FMA association below preserves the old kernel's rounding. */
+__global__ static void qwen_vision_tile_kernel(
+        float *out, const float *qkv,
+        const int32_t *segment_start, const int32_t *segment_end,
+        uint32_t rows, uint32_t heads, uint32_t head_dim) {
+    constexpr uint32_t query_tile = 16u, key_tile = 32u;
+    extern __shared__ float kv_tile[];
+    float *key = kv_tile, *value = key + key_tile * head_dim;
+    const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+    const uint32_t row0 = blockIdx.x * query_tile;
+    const uint32_t head = blockIdx.y, width = heads * head_dim;
+    const int32_t begin = segment_start[row0], end = segment_end[row0];
+    bool same = true;
+    for (uint32_t r = row0 + 1u; r < min(row0 + query_tile, rows); r++) {
+        same = same && segment_start[r] == begin && segment_end[r] == end;
+    }
+    if (!same) {
+#pragma unroll
+        for (uint32_t i = 0; i < 2u; i++) {
+            const uint32_t row = row0 + warp + 8u * i;
+            if (row < rows) {
+                qwen4exp_vision_attention_row(out, qkv, segment_start,
+                    segment_end, row, head, heads, head_dim);
+            }
+        }
+        return;
+    }
+    float q0[2], q1[2], q2[2];
+    float acc0[2] = {}, acc1[2] = {}, acc2[2] = {};
+    float m[2] = {-INFINITY, -INFINITY}, l[2] = {};
+#pragma unroll
+    for (uint32_t i = 0; i < 2u; i++) {
+        const uint32_t row = row0 + warp + 8u * i;
+        const bool active = row < rows;
+        const float *q = qkv + (uint64_t)(active ? row : row0) * 3u * width +
+            (uint64_t)head * head_dim;
+        q0[i] = active && lane < head_dim ? q[lane] : 0.0f;
+        q1[i] = active && lane + 32u < head_dim ? q[lane + 32u] : 0.0f;
+        q2[i] = active && lane + 64u < head_dim ? q[lane + 64u] : 0.0f;
+    }
+    const float scale = rsqrtf((float)head_dim);
+    for (int32_t base = begin; base < end; base += key_tile) {
+        const uint32_t valid = min((uint32_t)(end - base), key_tile);
+        const uint32_t tile_values = valid * head_dim;
+        for (uint32_t j = threadIdx.x; j < 2u * tile_values; j += blockDim.x) {
+            const bool is_value = j >= tile_values;
+            const uint32_t local = is_value ? j - tile_values : j;
+            const uint32_t k = local / head_dim, d = local % head_dim;
+            const uint64_t at = (uint64_t)(base + k) * 3u * width +
+                (uint64_t)(is_value ? 2u : 1u) * width + (uint64_t)head * head_dim + d;
+            (is_value ? value : key)[local] = qkv[at];
+        }
+        __syncthreads();
+        for (uint32_t k = 0; k < valid; k++) {
+            const float *pk = key + k * head_dim, *pv = value + k * head_dim;
+            const float k0 = lane < head_dim ? pk[lane] : 0.0f;
+            const float k1 = lane + 32u < head_dim ? pk[lane + 32u] : 0.0f;
+            const float k2 = lane + 64u < head_dim ? pk[lane + 64u] : 0.0f;
+            const float v0 = lane < head_dim ? pv[lane] : 0.0f;
+            const float v1 = lane + 32u < head_dim ? pv[lane + 32u] : 0.0f;
+            const float v2 = lane + 64u < head_dim ? pv[lane + 64u] : 0.0f;
+#pragma unroll
+            for (uint32_t i = 0; i < 2u; i++) {
+                float dot = 0.0f;
+                if (lane < head_dim) { dot += q0[i] * k0; }
+                if (lane + 32u < head_dim) { dot += q1[i] * k1; }
+                if (lane + 64u < head_dim) { dot += q2[i] * k2; }
+                dot = __shfl_sync(0xffffffffu, warp_sum_f32(dot), 0) * scale;
+                const float next_m = fmaxf(m[i], dot);
+                const float alpha = isfinite(m[i]) ? expf(m[i] - next_m) : 0.0f;
+                const float beta = expf(dot - next_m);
+                if (lane < head_dim) { acc0[i] = fmaf(acc0[i], alpha, __fmul_rn(v0, beta)); }
+                if (lane + 32u < head_dim) { acc1[i] = fmaf(acc1[i], alpha, __fmul_rn(v1, beta)); }
+                if (lane + 64u < head_dim) { acc2[i] = fmaf(acc2[i], alpha, __fmul_rn(v2, beta)); }
+                l[i] = l[i] * alpha + beta; m[i] = next_m;
+            }
+        }
+        __syncthreads();
+    }
+#pragma unroll
+    for (uint32_t i = 0; i < 2u; i++) {
+        const uint32_t row = row0 + warp + 8u * i;
+        if (row < rows) {
+            float *dst = out + (uint64_t)row * width + (uint64_t)head * head_dim;
+            const float inv = l[i] > 0.0f ? 1.0f / l[i] : 0.0f;
+            if (lane < head_dim) { dst[lane] = acc0[i] * inv; }
+            if (lane + 32u < head_dim) { dst[lane + 32u] = acc1[i] * inv; }
+            if (lane + 64u < head_dim) { dst[lane + 64u] = acc2[i] * inv; }
+        }
+    }
+}
+
 extern "C" int ds4_gpu_qwen4exp_vision_attention_tensor(
         ds4_gpu_tensor *out, const ds4_gpu_tensor *qkv,
         const ds4_gpu_tensor *segment_start,
@@ -28427,6 +28523,14 @@ extern "C" int ds4_gpu_qwen4exp_vision_attention_tensor(
     if (getenv("DS4_CUDA_NO_QWEN_VISION_TILE") != NULL) {
         qwen4exp_vision_attention_naive_kernel<<<
             rows * heads, 32u, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)qkv->ptr,
+            (const int32_t *)segment_start->ptr,
+            (const int32_t *)segment_end->ptr, rows, heads, head_dim);
+    } else if (head_dim == 72u && rows >= 512u &&
+               getenv("DS4_QWEN_VISION_LEGACY") == NULL) {
+        const dim3 grid((rows + 15u) / 16u, heads);
+        const uint32_t shared = 2u * 32u * head_dim * sizeof(float);
+        qwen_vision_tile_kernel<<<grid, 256u, shared, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)qkv->ptr,
             (const int32_t *)segment_start->ptr,
             (const int32_t *)segment_end->ptr, rows, heads, head_dim);

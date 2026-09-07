@@ -251,6 +251,8 @@ Image limits match the frozen C behavior:
 
 See [`QWEN_V065_RESTAMP_2026-08-31.md`](docs/rust-migration/QWEN_V065_RESTAMP_2026-08-31.md)
 and [`qwen38-image-input-spec.md`](docs/qwen38-image-input-spec.md).
+Measured image latency and agent checks:
+[`qwen38-image-2026-09-07.md`](docs/qwen38-image-2026-09-07.md).
 
 ### GLM 5.3 Flash release scope
 
