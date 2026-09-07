@@ -32336,9 +32336,15 @@ extern "C" int ds4_gpu_qwen4exp_q5_0_tail_accum_tensor(
  * when the fused MMQ entry declines the shape or
  * DS4_QWEN_NO_FUSED_DOWN_TAIL is set; the caller then packs the main
  * columns and keeps the separate main + F32 tail path. */
-extern "C" int ds4_gpu_qwen4exp_routed_down_fused_tensor(
+/* mid is the [assignments x mid_width] SwiGLU input of the classic path;
+ * with mid NULL the gate / up rows and per-assignment router weights are
+ * quantized straight into the fused entry's operands (swiglu-emit mode). */
+static int qwen4exp_routed_down_fused_impl(
         ds4_gpu_tensor       *down,
         const ds4_gpu_tensor *mid,
+        const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *up,
+        const ds4_gpu_tensor *weights,
         const ds4_gpu_tensor *ids,
         const void             *model_map,
         uint64_t                model_size,
@@ -32357,8 +32363,14 @@ extern "C" int ds4_gpu_qwen4exp_routed_down_fused_tensor(
         uint32_t                max_rows_per_expert) {
     static int disabled = -1;
     if (disabled < 0) disabled = getenv("DS4_QWEN_NO_FUSED_DOWN_TAIL") != NULL;
-    if (disabled || !down || !mid || !ids || !model_map ||
-        !ds4_cuda_use_mmq() || down->ptr == mid->ptr || assignments == 0u ||
+    const bool emit = mid == NULL;
+    if (emit ? (!gate || !up || !weights || down->ptr == gate->ptr ||
+                down->ptr == up->ptr)
+             : down->ptr == mid->ptr) {
+        return 0;
+    }
+    if (disabled || !down || !ids || !model_map ||
+        !ds4_cuda_use_mmq() || assignments == 0u ||
         assignments > (uint64_t)INT_MAX || max_rows_per_expert == 0u ||
         max_rows_per_expert > assignments || mid_width == 0u ||
         mid_width > (uint32_t)INT_MAX || main_dim == 0u ||
@@ -32398,7 +32410,10 @@ extern "C" int ds4_gpu_qwen4exp_routed_down_fused_tensor(
         main_bytes < rows * main_blocks_per_row * main_block_bytes ||
         tail_offset > model_size || tail_bytes > model_size - tail_offset ||
         tail_bytes < rows * tail_blocks_per_row * tail_block_bytes ||
-        mid->bytes < assignments * mid_width * sizeof(float) ||
+        (emit ? (gate->bytes < assignments * mid_width * sizeof(float) ||
+                 up->bytes < assignments * mid_width * sizeof(float) ||
+                 weights->bytes < assignments * sizeof(float))
+              : mid->bytes < assignments * mid_width * sizeof(float)) ||
         ids->bytes < assignments * sizeof(int32_t) ||
         down->bytes < assignments * out_dim * sizeof(float)) {
         return 0;
@@ -32409,37 +32424,38 @@ extern "C" int ds4_gpu_qwen4exp_routed_down_fused_tensor(
         model_map, tail_offset, tail_bytes, "qwen4exp_expert_down_tail");
     if (!main_weights || !tail_weights) return 0;
 
-    const float *x_tail = (const float *)mid->ptr + main_dim;
     const cudaStream_t stream = ds4_current_stream();
     int rc = -1;
-    switch (main_type) {
-    case 13u:
-        rc = ds4_mmq_q5_K_moe_bounded_q5_0_tail(
-            main_weights, tail_weights, (const float *)mid->ptr,
-            (int)mid_width, x_tail, (int)mid_width,
-            (const int32_t *)ids->ptr,
-            (float *)down->ptr, (int)out_dim, (int)main_dim,
-            (int)assignments, (int)n_expert, 1, (int)max_rows_per_expert,
-            stream);
-        break;
-    case 14u:
-        rc = ds4_mmq_q6_K_moe_bounded_q5_0_tail(
-            main_weights, tail_weights, (const float *)mid->ptr,
-            (int)mid_width, x_tail, (int)mid_width,
-            (const int32_t *)ids->ptr,
-            (float *)down->ptr, (int)out_dim, (int)main_dim,
-            (int)assignments, (int)n_expert, 1, (int)max_rows_per_expert,
-            stream);
-        break;
-    default:
-        rc = ds4_mmq_q8_0_moe_bounded_q8_0_tail(
-            main_weights, tail_weights, (const float *)mid->ptr,
-            (int)mid_width, x_tail, (int)mid_width,
-            (const int32_t *)ids->ptr,
-            (float *)down->ptr, (int)out_dim, (int)main_dim,
-            (int)assignments, (int)n_expert, 1, (int)max_rows_per_expert,
-            stream);
-        break;
+    if (emit) {
+        const float *g = (const float *)gate->ptr;
+        const float *u = (const float *)up->ptr;
+        const float *w = (const float *)weights->ptr;
+#define DS4_QWEN_DOWN_SWIGLU(entry)                                        \
+        rc = entry(main_weights, tail_weights, g, u, w, (int)mid_width,    \
+                   (const int32_t *)ids->ptr, (float *)down->ptr,          \
+                   (int)out_dim, (int)main_dim, (int)assignments,          \
+                   (int)n_expert, 1, (int)max_rows_per_expert, stream)
+        switch (main_type) {
+        case 13u: DS4_QWEN_DOWN_SWIGLU(ds4_mmq_q5_K_moe_bounded_q5_0_tail_swiglu); break;
+        case 14u: DS4_QWEN_DOWN_SWIGLU(ds4_mmq_q6_K_moe_bounded_q5_0_tail_swiglu); break;
+        default:  DS4_QWEN_DOWN_SWIGLU(ds4_mmq_q8_0_moe_bounded_q8_0_tail_swiglu); break;
+        }
+#undef DS4_QWEN_DOWN_SWIGLU
+    } else {
+        const float *x = (const float *)mid->ptr;
+        const float *x_tail = x + main_dim;
+#define DS4_QWEN_DOWN_MID(entry)                                           \
+        rc = entry(main_weights, tail_weights, x, (int)mid_width, x_tail,  \
+                   (int)mid_width, (const int32_t *)ids->ptr,              \
+                   (float *)down->ptr, (int)out_dim, (int)main_dim,        \
+                   (int)assignments, (int)n_expert, 1,                     \
+                   (int)max_rows_per_expert, stream)
+        switch (main_type) {
+        case 13u: DS4_QWEN_DOWN_MID(ds4_mmq_q5_K_moe_bounded_q5_0_tail); break;
+        case 14u: DS4_QWEN_DOWN_MID(ds4_mmq_q6_K_moe_bounded_q5_0_tail); break;
+        default:  DS4_QWEN_DOWN_MID(ds4_mmq_q8_0_moe_bounded_q8_0_tail); break;
+        }
+#undef DS4_QWEN_DOWN_MID
     }
     if (rc != 0) return 0;
     static bool logged_fused_down = false;
@@ -32447,10 +32463,77 @@ extern "C" int ds4_gpu_qwen4exp_routed_down_fused_tensor(
         logged_fused_down = true;
         fprintf(stderr,
                 "ds4: Qwen expert-down main+tail fused MMQ active "
-                "(main=%u tail=%u rows=%llu)\n",
-                main_type, tail_type, (unsigned long long)assignments);
+                "(main=%u tail=%u rows=%llu%s)\n",
+                main_type, tail_type, (unsigned long long)assignments,
+                emit ? ", operands from SwiGLU emit" : "");
     }
     return cuda_ok(cudaGetLastError(), "Qwen4Exp fused expert-down launch");
+}
+
+extern "C" int ds4_gpu_qwen4exp_routed_down_fused_tensor(
+        ds4_gpu_tensor       *down,
+        const ds4_gpu_tensor *mid,
+        const ds4_gpu_tensor *ids,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                main_offset,
+        uint64_t                main_bytes,
+        uint32_t                main_type,
+        uint64_t                tail_offset,
+        uint64_t                tail_bytes,
+        uint32_t                tail_type,
+        uint64_t                assignments,
+        uint32_t                mid_width,
+        uint32_t                main_dim,
+        uint32_t                tail_dim,
+        uint32_t                out_dim,
+        uint32_t                n_expert,
+        uint32_t                max_rows_per_expert) {
+    if (!mid) return 0;
+    return qwen4exp_routed_down_fused_impl(
+        down, mid, NULL, NULL, NULL, ids, model_map, model_size,
+        main_offset, main_bytes, main_type, tail_offset, tail_bytes,
+        tail_type, assignments, mid_width, main_dim, tail_dim, out_dim,
+        n_expert, max_rows_per_expert);
+}
+
+/* Fused expert-down whose operands are quantized straight from the routed
+ * gate / up rows and the per-assignment router weights: the weighted
+ * SwiGLU never materializes as F32, saving one [assignments x mid_width]
+ * write, two gathered re-reads and two launches per layer.  Operands and
+ * output are byte-identical to the SwiGLU + fused path.  Returns 0 with
+ * nothing launched when the fused entry declines the shape or
+ * DS4_QWEN_NO_SWIGLU_Q8_EMIT is set; the caller then runs the SwiGLU pass
+ * and the mid-based entry. */
+extern "C" int ds4_gpu_qwen4exp_routed_down_fused_swiglu_tensor(
+        ds4_gpu_tensor       *down,
+        const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *up,
+        const ds4_gpu_tensor *weights,
+        const ds4_gpu_tensor *ids,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                main_offset,
+        uint64_t                main_bytes,
+        uint32_t                main_type,
+        uint64_t                tail_offset,
+        uint64_t                tail_bytes,
+        uint32_t                tail_type,
+        uint64_t                assignments,
+        uint32_t                mid_width,
+        uint32_t                main_dim,
+        uint32_t                tail_dim,
+        uint32_t                out_dim,
+        uint32_t                n_expert,
+        uint32_t                max_rows_per_expert) {
+    static int disabled = -1;
+    if (disabled < 0) disabled = getenv("DS4_QWEN_NO_SWIGLU_Q8_EMIT") != NULL;
+    if (disabled || !gate || !up || !weights) return 0;
+    return qwen4exp_routed_down_fused_impl(
+        down, NULL, gate, up, weights, ids, model_map, model_size,
+        main_offset, main_bytes, main_type, tail_offset, tail_bytes,
+        tail_type, assignments, mid_width, main_dim, tail_dim, out_dim,
+        n_expert, max_rows_per_expert);
 }
 
 extern "C" int ds4_gpu_qwen4exp_q5_0_tail_accum_bank2_tensor(

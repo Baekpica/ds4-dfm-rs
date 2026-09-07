@@ -917,6 +917,106 @@ static void test_fused_down(void *model_map, uint64_t model_size,
     free(mid);
 }
 
+/* The swiglu-emit fused entry (operands quantized straight from the routed
+ * gate / up rows) against the weighted SwiGLU pass + mid-based fused entry:
+ * the two expert-down outputs must be byte-identical, non-finite gate / up
+ * values included. */
+static void test_fused_down_swiglu(void *model_map, uint64_t model_size,
+                                   uint64_t main_offset, uint64_t main_bytes,
+                                   uint32_t main_type, uint64_t tail_offset,
+                                   uint64_t tail_bytes, uint32_t tail_type,
+                                   const char *name) {
+    const uint64_t mid_count = (uint64_t)FUSED_ASSIGNMENTS * DOWN_MID;
+    const uint64_t down_count = (uint64_t)FUSED_ASSIGNMENTS * HIDDEN;
+    float *gate = (float *)malloc(mid_count * sizeof(*gate));
+    float *up = (float *)malloc(mid_count * sizeof(*up));
+    float *weights = (float *)malloc(FUSED_ASSIGNMENTS * sizeof(*weights));
+    float *via_mid = (float *)malloc(down_count * sizeof(*via_mid));
+    float *emitted = (float *)malloc(down_count * sizeof(*emitted));
+    int32_t *ids = (int32_t *)malloc(FUSED_ASSIGNMENTS * sizeof(*ids));
+    REQUIRE(gate && up && weights && via_mid && emitted && ids,
+            "swiglu-emit host allocation");
+    for (uint64_t i = 0; i < mid_count; i++) {
+        gate[i] = 1.7f * sinf((float)(i + 3u) * 0.013f) +
+                  0.4f * cosf((float)(i + 9u) * 0.021f);
+        up[i] = 0.8f * cosf((float)(i + 7u) * 0.017f) -
+                0.3f * sinf((float)(i + 1u) * 0.009f);
+    }
+    gate[41] = NAN;
+    up[77] = INFINITY;
+    gate[mid_count - 5u] = -INFINITY;
+    for (uint32_t a = 0; a < FUSED_ASSIGNMENTS; a++) {
+        weights[a] = 0.05f + 0.9f * (float)((a * 13u) % 17u) / 17.0f;
+        ids[a] = (int32_t)((a * 7u + a / 5u) % DOWN_EXPERTS);
+    }
+
+    ds4_gpu_tensor *d_gate = ds4_gpu_tensor_alloc(mid_count * sizeof(float));
+    ds4_gpu_tensor *d_up = ds4_gpu_tensor_alloc(mid_count * sizeof(float));
+    ds4_gpu_tensor *d_mid = ds4_gpu_tensor_alloc(mid_count * sizeof(float));
+    ds4_gpu_tensor *d_weights = ds4_gpu_tensor_alloc(
+        FUSED_ASSIGNMENTS * sizeof(float));
+    ds4_gpu_tensor *d_ids = ds4_gpu_tensor_alloc(
+        FUSED_ASSIGNMENTS * sizeof(int32_t));
+    ds4_gpu_tensor *d_via_mid = ds4_gpu_tensor_alloc(down_count * sizeof(float));
+    ds4_gpu_tensor *d_emitted = ds4_gpu_tensor_alloc(down_count * sizeof(float));
+    REQUIRE(d_gate && d_up && d_mid && d_weights && d_ids && d_via_mid &&
+            d_emitted, "swiglu-emit GPU allocation");
+    REQUIRE(ds4_gpu_tensor_write(d_gate, 0, gate, mid_count * sizeof(float)) &&
+            ds4_gpu_tensor_write(d_up, 0, up, mid_count * sizeof(float)) &&
+            ds4_gpu_tensor_write(d_weights, 0, weights,
+                                 FUSED_ASSIGNMENTS * sizeof(float)) &&
+            ds4_gpu_tensor_write(d_ids, 0, ids,
+                                 FUSED_ASSIGNMENTS * sizeof(int32_t)),
+            "swiglu-emit input upload");
+    REQUIRE(ds4_gpu_swiglu_weighted_tensor(
+                d_mid, d_gate, d_up, d_weights, DOWN_MID, mid_count),
+            "weighted SwiGLU launch");
+    REQUIRE(ds4_gpu_qwen4exp_routed_down_fused_tensor(
+                d_via_mid, d_mid, d_ids, model_map, model_size,
+                main_offset, main_bytes, main_type, tail_offset, tail_bytes,
+                tail_type, FUSED_ASSIGNMENTS, DOWN_MID, DOWN_MAIN, DOWN_TAIL,
+                HIDDEN, DOWN_EXPERTS, FUSED_ASSIGNMENTS),
+            "fused expert-down launch (via mid)");
+    REQUIRE(ds4_gpu_qwen4exp_routed_down_fused_swiglu_tensor(
+                d_emitted, d_gate, d_up, d_weights, d_ids, model_map,
+                model_size, main_offset, main_bytes, main_type, tail_offset,
+                tail_bytes, tail_type, FUSED_ASSIGNMENTS, DOWN_MID, DOWN_MAIN,
+                DOWN_TAIL, HIDDEN, DOWN_EXPERTS, FUSED_ASSIGNMENTS),
+            "fused expert-down launch (SwiGLU emit)");
+    REQUIRE(ds4_gpu_tensor_read(d_via_mid, 0, via_mid,
+                                down_count * sizeof(float)) &&
+            ds4_gpu_tensor_read(d_emitted, 0, emitted,
+                                down_count * sizeof(float)),
+            "swiglu-emit download");
+    uint64_t finite = 0;
+    for (uint64_t i = 0; i < down_count; i++) finite += isfinite(via_mid[i]);
+    REQUIRE(finite == down_count, "via-mid expert-down is finite");
+    REQUIRE(memcmp(via_mid, emitted, down_count * sizeof(float)) == 0,
+            "SwiGLU-emit expert-down is byte-identical to the mid path");
+    printf("%s: byte-identical (%u assignments)\n", name,
+           (unsigned)FUSED_ASSIGNMENTS);
+    REQUIRE(!ds4_gpu_qwen4exp_routed_down_fused_swiglu_tensor(
+                d_emitted, d_gate, d_up, d_weights, d_ids, model_map,
+                model_size, main_offset, main_bytes, main_type, tail_offset,
+                tail_bytes, tail_type, FUSED_ASSIGNMENTS, DOWN_MID + 128u,
+                DOWN_MAIN, DOWN_TAIL, HIDDEN, DOWN_EXPERTS, FUSED_ASSIGNMENTS),
+            "swiglu-emit entry rejects a width that is not main + tail");
+
+    ds4_gpu_tensor_free(d_emitted);
+    ds4_gpu_tensor_free(d_via_mid);
+    ds4_gpu_tensor_free(d_ids);
+    ds4_gpu_tensor_free(d_weights);
+    ds4_gpu_tensor_free(d_mid);
+    ds4_gpu_tensor_free(d_up);
+    ds4_gpu_tensor_free(d_gate);
+    free(ids);
+    free(emitted);
+    free(via_mid);
+    free(weights);
+    free(up);
+    free(gate);
+}
+
 /* Production-shape launch for NCU: Q5_K[512] main + Q5_0[128] tail over
  * 8,025 tokens x top-10 through 512 experts, nothing else resident. */
 enum {
@@ -1544,8 +1644,12 @@ int main(void) {
     const uint64_t q8_main_blocks =
         (uint64_t)DOWN_EXPERTS * HIDDEN * Q8_MAIN_BLOCKS_PER_ROW;
     const uint64_t q8_main_bytes = q8_main_blocks * sizeof(test_block_q8_0);
-    const uint64_t dense_tail_offset =
+    /* Production main type: Q5_K takes the DS4 operand layout. */
+    const uint64_t q5k_main_offset =
         (q8_main_offset + q8_main_bytes + 4095u) & ~4095ull;
+    const uint64_t q5k_main_bytes = main_blocks * sizeof(test_block_q5_k);
+    const uint64_t dense_tail_offset =
+        (q5k_main_offset + q5k_main_bytes + 4095u) & ~4095ull;
     const uint64_t dense_tail_blocks =
         (uint64_t)HIDDEN * DENSE_TAIL_BLOCKS_PER_ROW;
     const uint64_t dense_tail_bytes =
@@ -1596,6 +1700,8 @@ int main(void) {
     memset(model_map, 0, (size_t)model_size);
     fill_q6((test_block_q6_k *)((unsigned char *)model_map + main_offset),
             main_blocks);
+    fill_q5_k((test_block_q5_k *)((unsigned char *)model_map + q5k_main_offset),
+              main_blocks);
     fill_q5_0((test_block_q5_0 *)((unsigned char *)model_map + tail_offset),
               tail_blocks);
     fill_q8_0((test_block_q8_0 *)(
@@ -1649,6 +1755,15 @@ int main(void) {
     test_fused_down(model_map, model_size, q8_main_offset, q8_main_bytes,
                     8u, q8_tail_offset, q8_tail_bytes, 8u,
                     "Qwen MTP fused Q8_0[512] + Q8_0[128] MMQ");
+    test_fused_down_swiglu(model_map, model_size, q5k_main_offset,
+                           q5k_main_bytes, 13u, tail_offset, tail_bytes, 6u,
+                           "Qwen fused Q5_K[512] + Q5_0[128] from SwiGLU emit");
+    test_fused_down_swiglu(model_map, model_size, main_offset, main_bytes,
+                           14u, tail_offset, tail_bytes, 6u,
+                           "Qwen fused Q6_K[512] + Q5_0[128] from SwiGLU emit");
+    test_fused_down_swiglu(model_map, model_size, q8_main_offset,
+                           q8_main_bytes, 8u, q8_tail_offset, q8_tail_bytes,
+                           8u, "Qwen MTP fused Q8_0[512] + Q8_0[128] from SwiGLU emit");
     test_dense_tail(model_map, model_size, dense_tail_offset,
                     dense_tail_bytes);
     test_shexp_pair(model_map, model_size, shexp_gate_offset,

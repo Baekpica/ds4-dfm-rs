@@ -22371,6 +22371,41 @@ static bool qwen4exp_moe_down_main(
                n_expert, (uint32_t)assignments, 1u, n_tokens) != 0;
 }
 
+/* Fused expert-down straight from the routed gate / up rows: the weighted
+ * SwiGLU is quantized into the MMQ operands inside the entry, so
+ * routed_mid is never written.  false = declined (shape, width or
+ * DS4_QWEN_NO_SWIGLU_Q8_EMIT); the caller then runs the SwiGLU pass and
+ * qwen4exp_moe_down_main, which is byte-identical. */
+static bool qwen4exp_moe_down_swiglu_fused(
+        ds4_qwen_moe_ws       *ws,
+        const ds4_model       *model,
+        const ds4_layer_weights *layer,
+        uint32_t               n_tokens) {
+    const uint32_t hidden = (uint32_t)layer->ffn_gate_inp->dim[0];
+    const uint32_t n_expert = (uint32_t)layer->ffn_gate_inp->dim[1];
+    const uint32_t expert_ff = (uint32_t)layer->ffn_gate_exps->dim[1];
+    const uint32_t main_dim = (uint32_t)layer->ffn_down_exps->dim[0];
+    const uint32_t tail_dim = (uint32_t)layer->ffn_down_exps_tail->dim[0];
+    const uint64_t assignments = (uint64_t)n_tokens * ws->n_used;
+    if (n_tokens < QWEN4EXP_FUSED_DOWN_MIN_TOKENS ||
+        !ds4_gpu_qwen4exp_routed_down_fused_swiglu_tensor(
+            ws->routed_down, ws->routed_gate, ws->routed_up,
+            ws->router_weights, ws->selected,
+            model->map, model->size,
+            layer->ffn_down_exps->abs_offset,
+            layer->ffn_down_exps->bytes,
+            layer->ffn_down_exps->type,
+            layer->ffn_down_exps_tail->abs_offset,
+            layer->ffn_down_exps_tail->bytes,
+            layer->ffn_down_exps_tail->type,
+            assignments, expert_ff, main_dim, tail_dim, hidden, n_expert,
+            n_tokens)) {
+        return false;
+    }
+    ws->tail_fused = true;
+    return true;
+}
+
 /* Qwen's F32 router and shared-expert gate at decode widths (2..8 rows:
  * the two-bank lane and the two-row MTP verify pass) must give every row
  * the one-row arithmetic; the row-stable entry keeps them off cuBLAS. */
@@ -22467,17 +22502,23 @@ static bool qwen4exp_moe_prepare(
                 layer->ffn_up_exps->abs_offset,
                 layer->ffn_up_exps->bytes,
                 layer->ffn_gate_exps->type, hidden, expert_ff,
-                n_expert, n_tokens, n_used) ||
-        !ds4_gpu_swiglu_weighted_tensor(
-                ws->routed_mid, ws->routed_gate, ws->routed_up,
-                ws->router_weights, expert_ff, routed_count) ||
-        (defer_main
-             ? !qwen4exp_moe_pack_main(ws, layer, n_tokens)
-             : !qwen4exp_moe_down_main(
-                   ws, model, layer, n_tokens, fuse_tail))) {
+                n_expert, n_tokens, n_used)) {
         return false;
     }
-    return true;
+    /* Prefill widths quantize the weighted SwiGLU straight into the fused
+     * expert-down; every other path materializes routed_mid first. */
+    if (!defer_main && fuse_tail &&
+        qwen4exp_moe_down_swiglu_fused(ws, model, layer, n_tokens)) {
+        return true;
+    }
+    if (!ds4_gpu_swiglu_weighted_tensor(
+                ws->routed_mid, ws->routed_gate, ws->routed_up,
+                ws->router_weights, expert_ff, routed_count)) {
+        return false;
+    }
+    return defer_main
+        ? qwen4exp_moe_pack_main(ws, layer, n_tokens)
+        : qwen4exp_moe_down_main(ws, model, layer, n_tokens, fuse_tail);
 }
 
 static bool qwen4exp_moe_main_bank2(
