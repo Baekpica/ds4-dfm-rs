@@ -8,6 +8,7 @@ members = [
     "crates/ds4-web",
     "crates/ds4-server",
     "crates/ds4-dist",
+    "crates/ds4-perf",
 ]
 
 [workspace.package]

@@ -1,0 +1,7 @@
+Start (ns),Duration (ns),Bytes (B),Device,Ctx,Name
+0,900,100000,GB10 (0),1,[CUDA memcpy HtoD]
+1100,300,,GB10 (0),1,ordinary_kernel
+1300,300,,GB10 (0),1,"foo<int, 128, bar<float>>"
+1600,100,1024,GB10 (0),1,[CUDA memcpy DtoH]
+3100,500,,GB10 (0),1,decode
+3400,500,,GB10 (0),1,decode
