@@ -1,8 +1,8 @@
 # DS4 API surface matrix
 
-Status: independent Rust host, v0.1.0 in preparation; the latest published
-release is v0.1.0-rc.4. This document describes current source behavior.
-Candidate qualification is tracked in the [release ledger](releases/v0.1.0.md).
+Status: independent Rust host, v0.1.0. This document describes current source
+behavior. Qualification and workload limits are recorded in the
+[release ledger](releases/v0.1.0.md).
 The original route oracle came from the v0.5.6/v0.6.0 API-promotion arc.
 
 Wire contracts are shared across the [supported families](../README.md#supported-model-families).

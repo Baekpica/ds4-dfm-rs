@@ -7,8 +7,8 @@ with `-c` suffixes are retained behavior oracles, not the production hosts.
 
 Start with [README.md](README.md), the [documentation index](docs/README.md),
 and the [architecture](docs/rust-migration/ARCHITECTURE.md).
-The [v0.1.0 gate ledger](docs/releases/v0.1.0.md) separates release preparation
-from verified production qualification. Dated reports establish only their
+The [v0.1.0 gate ledger](docs/releases/v0.1.0.md) records verified production
+qualification and workload limits. Dated reports establish only their
 recorded commit, artifact and workload; old PIDs and handoffs are not live state.
 
 ## Inference Performance Optimization Guidelines

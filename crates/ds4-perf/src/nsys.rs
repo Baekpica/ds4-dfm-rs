@@ -244,7 +244,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reports_reuse_the_completed_export() {
+    fn reports_reuse_export() {
         let out = std::env::temp_dir().join(format!("ds4-nsys-export-{}", std::process::id()));
         std::fs::create_dir(&out).unwrap();
         let caps = Capabilities {

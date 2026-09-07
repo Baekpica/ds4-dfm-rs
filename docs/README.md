@@ -13,7 +13,7 @@ release candidate or describe live processes.
 | [Contributing](../CONTRIBUTING.md) | Host CI, native gates and performance validation |
 | [Architecture](rust-migration/ARCHITECTURE.md) | Rust host and native compute ownership |
 | [FFI contract](rust-migration/FFI_CONTRACT.md) | Opaque native inference boundary |
-| [v0.1.0 release ledger](releases/v0.1.0.md) | Release definition, passed evidence and pending gates |
+| [v0.1.0 release ledger](releases/v0.1.0.md) | Release qualification, evidence and workload limits |
 | [API surface matrix](ds4-api-surface-matrix.md) | Wire contracts, routing and unsupported behavior |
 | [Model families](ds4-dfm-model-families.md) | Family contracts and dated Spark evidence |
 | [Memory guard](host-memory-guard.md) | Admission policy and operational limits |

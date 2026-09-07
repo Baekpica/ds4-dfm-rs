@@ -6,12 +6,12 @@ through [Entrpi/ds4](https://github.com/Entrpi/ds4) and Baekpica DFM; the
 Entrpi fork point was `e16ead1` (2026-05-29). See [LINEAGE.md](docs/LINEAGE.md)
 for exact provenance. Historical entries retain their original scope.
 
-## Unreleased — v0.1.0 in preparation
+## v0.1.0 — 2026-09-07
 
 - Defines v0.1.0 as the first independent Rust-host baseline with a stable
-  host/runtime boundary and native performance observability. Workspace and
-  archive versions target 0.1.0; production qualification remains tracked in
-  the [release gate ledger](docs/releases/v0.1.0.md).
+  host/runtime boundary and native performance observability. The
+  [release ledger](docs/releases/v0.1.0.md) records production, profiler,
+  numerical and memory qualification with exact artifact/workload limits.
 - Adds `ds4-perf doctor` and `scout`: explicit benchmark capability checks,
   separate baseline/capture runs, Nsight normalization, prefill/decode
   attribution, conservative diagnosis and retained raw artifacts.
@@ -21,9 +21,15 @@ for exact provenance. Historical entries retain their original scope.
 - Aligns shared agent instructions, architecture, contributor and API/family
   guides with the Rust host. Removes superseded status, seeding plans and
   handoffs while preserving historical evidence through fixed Git links.
+- Fixes Qwen Session disk-KV prefixes, exactly full contexts and bounded
+  payload ranges. Preserves the native max_seq bank boundary.
+- Reuses completed Nsight SQLite exports and accepts validated weight-owner
+  content metadata in the proof harness.
+- Qualifies post-RC.4 Qwen numerical reorderings per their recorded contracts;
+  cumulative continuation can differ from RC.4. Fresh D2R controls, reference
+  kernels and exact repeats are recorded in the release ledger.
 
-The following K2 integration landed after RC.4 and is included in this
-preparation. The latest published tag remains `v0.1.0-rc.4`.
+The following K2 integration landed after RC.4 and is included in v0.1.0.
 
 - Adds an explicit K2-Horizon-375B path for the public four-shard MQ87
   artifact (`general.architecture=k2-horizon`, 93,091,935,552 bytes,
