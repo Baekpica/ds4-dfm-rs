@@ -24960,8 +24960,24 @@ static bool plain_graph_layer_tail(ds4_plain_gpu_graph *g,
                 (uint32_t)shared_count, 0.0f, 1.0f) ||
         !plain_graph_matmul_tensor(
                 shared_out, model, layer->ffn_down_shexp,
-                n_ff_shared, g->n_embd, shared_mid, n_tokens) ||
-        !ds4_gpu_moe_sum_tensor(
+                n_ff_shared, g->n_embd, shared_mid, n_tokens)) {
+        return false;
+    }
+    static int solar_fused_residual = -1;
+    if (solar_fused_residual < 0) {
+        const char *env = getenv("DS4_SOLAR_MOE_RESIDUAL");
+        solar_fused_residual = !(env && env[0] == '0');
+    }
+    if (batch && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2 &&
+        solar_fused_residual) {
+        const int rc = ds4_gpu_solar_moe_residual_tensor(
+                x, routed_down, shared_out, (uint32_t)g->n_embd,
+                n_used, n_tokens);
+        /* A refusal leaves x intact. A failed launch must never replay the
+         * residual addition, which may already have modified x. */
+        if (rc != 0) return rc > 0;
+    }
+    if (!ds4_gpu_moe_sum_tensor(
                 ffn_out, routed_down, (uint32_t)g->n_embd,
                 n_used, n_tokens) ||
         !plain_graph_add_inplace(ffn_out, shared_out, residual_count) ||

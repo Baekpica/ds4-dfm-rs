@@ -573,6 +573,14 @@ trust domain when clients are not mutually trusted.
 
 ## Performance and release evidence
 
+> **Solar Open2 250B MXQ-v1 · one DGX Spark:** verified cold prefill reaches **1,108.09 tok/s at 8K (+1.39%)** and **780.02 tok/s at 64K (+1.02%)** after the fused MoE pass. Interleaved medians of three; all 196,608 frontier logits and 64 greedy IDs match byte for byte. Decode differs by less than 0.1%. [Protocol, raw data and campaign limits](docs/solar-open2-optimization-2026-09-07.md).
+
+![Solar Open2 verified cold comparison and baseline-only sweep through 64K](docs/solar-open2-2026-09-07-throughput.png)
+
+*The lower curves show the baseline only. The campaign ended after repeated
+host freezes; the second prefill candidate and decode drafts are excluded.
+No optimized sweep or new agent-serving performance result is claimed.*
+
 ![Qwen3.8 Flash Next long-context throughput on DGX Spark](docs/qwen38-long-context-throughput.png)
 
 *Qwen3.8 Flash Next MQ-Q5 + SSD-PLE BF16 on one DGX Spark / GB10 at

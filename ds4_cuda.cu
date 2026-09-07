@@ -36189,6 +36189,23 @@ __global__ static void moe_sum_kernel(float *out, const float *down, uint32_t ou
     out[gid] = acc;
 }
 
+/* Keep moe_sum's finite guard and serial slot accumulation. The two final
+ * adds replace two full [token, hidden] round trips without reassociation. */
+__global__ static void solar_moe_residual_kernel(
+        float *x, const float *down, const float *shared,
+        uint32_t hidden_size, uint32_t n_used, uint64_t count) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    const uint64_t token = i / hidden_size;
+    const uint32_t col = (uint32_t)(i - token * hidden_size);
+    float sum = 0.0f;
+    for (uint32_t e = 0; e < n_used; e++) {
+        const float v = down[(token * n_used + e) * hidden_size + col];
+        if (isfinite(v)) sum += v;
+    }
+    x[i] = __fadd_rn(x[i], __fadd_rn(sum, shared[i]));
+}
+
 __device__ static float dev_iq2_xxs_dot_f32(const cuda_block_iq2_xxs *row, const float *x, uint32_t nb) {
     float acc = 0.0f;
     for (uint32_t b = 0; b < nb; b++) {
@@ -42035,6 +42052,30 @@ extern "C" int ds4_gpu_moe_sum_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor 
         out_dim, n_expert, n_tokens, /*guard_nonfinite=*/1);
     return cuda_ok(cudaGetLastError(), "moe_sum fallback launch");
 }
+extern "C" int ds4_gpu_solar_moe_residual_tensor(
+        ds4_gpu_tensor *x, const ds4_gpu_tensor *down,
+        const ds4_gpu_tensor *shared, uint32_t hidden_size,
+        uint32_t n_used, uint32_t rows) {
+    const uint64_t count = (uint64_t)rows * hidden_size;
+    if (!x || !down || !shared || !count || !n_used ||
+        count > UINT32_MAX || count > UINT64_MAX / n_used / sizeof(float) ||
+        x->bytes < count * sizeof(float) ||
+        shared->bytes < count * sizeof(float) ||
+        down->bytes < count * n_used * sizeof(float)) return 0;
+    const uintptr_t dst = (uintptr_t)x->ptr;
+    const uintptr_t dp = (uintptr_t)down->ptr;
+    const uintptr_t sp = (uintptr_t)shared->ptr;
+    const uint64_t bytes = count * sizeof(float);
+    /* Tensor views can alias even when their wrapper pointers differ. */
+    if ((dst >= dp ? dst - dp < bytes * n_used : dp - dst < bytes) ||
+        (dst >= sp ? dst - sp < bytes : sp - dst < bytes)) return 0;
+    solar_moe_residual_kernel<<<(uint32_t)((count + 255u) / 256u),
+                               256, 0, ds4_current_stream()>>>(
+        (float *)x->ptr, (const float *)down->ptr,
+        (const float *)shared->ptr, hidden_size, n_used, count);
+    return cuda_ok(cudaGetLastError(), "Solar MoE residual") ? 1 : -1;
+}
+
 extern "C" int ds4_gpu_hc_split_sinkhorn_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *mix, const void *model_map, uint64_t model_size, uint64_t scale_offset, uint64_t base_offset, uint32_t n_hc, uint32_t sinkhorn_iters, float eps) {
     if (!out || !mix || !model_map || n_hc != 4) return 0;
     const uint64_t mix_bytes = 24ull * sizeof(float);

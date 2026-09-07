@@ -15824,6 +15824,15 @@ int ds4_gpu_moe_sum_tensor(
     return 0;
 }
 
+int ds4_gpu_solar_moe_residual_tensor(
+        ds4_gpu_tensor *x, const ds4_gpu_tensor *down,
+        const ds4_gpu_tensor *shared, uint32_t hidden_size,
+        uint32_t n_used, uint32_t rows) {
+    (void)x; (void)down; (void)shared;
+    (void)hidden_size; (void)n_used; (void)rows;
+    return 0;
+}
+
 int ds4_gpu_hc_expand_rmsf16_split_moe_tensor(
         ds4_gpu_tensor *out_hc, ds4_gpu_tensor *xh_out,
         const ds4_gpu_tensor *moe_down_unsummed, const ds4_gpu_tensor *block_add,
