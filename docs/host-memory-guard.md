@@ -39,6 +39,11 @@ reclaim page cache only after the affected processes have exited. A
 userspace watchdog cannot guarantee recovery from a kernel or GPU-driver
 lockup; this guard addresses memory admission and observed memory pressure.
 
+During the 2026-09-07 Solar 64K campaign, a host freeze still required a
+forced reboot while the guard was active. Its cause is unresolved. Treat
+this script as an optional admission and cleanup aid, not a demonstrated
+fix for that incident. See the [campaign closure](solar-open2-optimization-2026-09-07.md#campaign-closure-and-limits).
+
 `python3 tests/test_host_memory_guard.py` checks the installed cgroup limits,
 owner-aware admission, launch refusal, escaped descendants, user-manager
 failure and repeated termination signals using small processes. A two-guard
