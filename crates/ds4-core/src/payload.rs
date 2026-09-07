@@ -17,6 +17,7 @@ pub const LAYOUT_SOLAR: u32 = 0x3352_4C53; /* "SLR3" */
 pub const LAYOUT_EXAONE: u32 = 0x3341_5845; /* "EXA3" */
 pub const LAYOUT_MOTIF3: u32 = 0x3346_544D; /* "MTF3" */
 pub const LAYOUT_DOTS3: u32 = 0x3353_5444; /* "DTS3" */
+pub const LAYOUT_QWEN4EXP: u32 = 0x334e_5751; /* "QWN3" */
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PayloadLayout {
@@ -25,6 +26,7 @@ pub enum PayloadLayout {
     Exaone,
     Motif3,
     Dots3,
+    Qwen4Exp,
 }
 
 impl PayloadLayout {
@@ -34,6 +36,7 @@ impl PayloadLayout {
             LAYOUT_EXAONE => Self::Exaone,
             LAYOUT_MOTIF3 => Self::Motif3,
             LAYOUT_DOTS3 => Self::Dots3,
+            LAYOUT_QWEN4EXP => Self::Qwen4Exp,
             _ => Self::DeepSeek,
         }
     }
@@ -45,6 +48,7 @@ impl PayloadLayout {
             Self::Exaone => ModelFamily::ExaoneMoe,
             Self::Motif3 => ModelFamily::Motif3,
             Self::Dots3 => ModelFamily::Dots3Note,
+            Self::Qwen4Exp => ModelFamily::Qwen4Exp,
         }
     }
 
@@ -225,7 +229,8 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
                 return Err(err("session payload token count does not match live rows"));
             }
         }
-        PayloadLayout::DeepSeek => {}
+        // QWN3 word 12 is the PLE convolution byte count, not live rows.
+        PayloadLayout::DeepSeek | PayloadLayout::Qwen4Exp => {}
     }
     Ok(())
 }
@@ -505,6 +510,72 @@ mod tests {
     use std::io::{Cursor, Seek};
 
     use super::*;
+
+    #[test]
+    fn qwen_prefix_restores_host_ledger() {
+        // Native QWN3 stores PLE convolution bytes in word 12, not live rows.
+        let prefix = HostPrefix {
+            fields: [
+                MAGIC,
+                VERSION,
+                2048,
+                2048,
+                12,
+                u32::from_le_bytes(*b"QWN3"),
+                2048,
+                3,
+                48,
+                4,
+                128,
+                248320,
+                368_640,
+            ],
+            tokens: vec![10, 20, 30],
+        };
+        let mut bytes = vec![0xaa, 0xbb, 0xcc];
+        bytes.extend_from_slice(&prefix.encode());
+        bytes.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        let length = bytes.len() as u64 - 3;
+        let mut cursor = Cursor::new(bytes.clone());
+        let parsed =
+            read_prefix_range(&mut cursor, 3, length, ModelFamily::Qwen4Exp, 2048).unwrap();
+        assert_eq!(parsed, prefix);
+        assert_eq!(
+            cursor.stream_position().unwrap(),
+            3 + prefix.prefix_len() as u64
+        );
+        assert_eq!(parse_prefix(&prefix.encode()).unwrap(), prefix);
+        let mut host = SessionLedger::new(
+            ModelFamily::Qwen4Exp,
+            crate::session::SessionBackend::Cuda,
+            2048,
+            2048,
+        );
+        host.apply_payload(&parsed).unwrap();
+        assert_eq!(host.tokens(), &[10, 20, 30]);
+
+        // A valid Qwen prefix must never enter another family's ledger.
+        let mut wrong = Cursor::new(bytes.clone());
+        assert_eq!(
+            read_prefix_range(&mut wrong, 3, length, ModelFamily::DeepSeek4, 2048,)
+                .unwrap_err()
+                .to_string(),
+            "session payload was written for a different model family"
+        );
+        let mut short = Cursor::new(bytes);
+        assert_eq!(
+            read_prefix_range(
+                &mut short,
+                3,
+                prefix.prefix_len() as u64 - 1,
+                ModelFamily::Qwen4Exp,
+                2048,
+            )
+            .unwrap_err()
+            .to_string(),
+            "truncated session payload"
+        );
+    }
 
     #[test]
     fn range_reader_validates_prefix_without_reading_native_tail() {

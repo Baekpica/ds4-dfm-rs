@@ -87,13 +87,25 @@ KV, Solar recurrent KDA plus GQA state, EXAONE full/sliding LLLG rings,
 Motif latent KV plus rotated `k_pe` rings, and dots3 full/SWA latent KV plus
 DSA keys. Tagged layouts and bounded payload ranges protect restores.
 
-GLM 5.3 session snapshots explicitly return unsupported. Qwen's native payload
-uses `QWN3`, but the current Rust [payload prefix parser](../crates/ds4-core/src/payload.rs)
-does not recognize it and rejects a serial range restore as a different
-family. Historical Qwen cache gates do not establish that this current path
-works; repair and revalidation belong in the v0.1.0 KV gate. K2 also needs its
-own candidate lifecycle evidence. Do not infer disk-KV support from shared
-CLI flags or a successful generation request.
+Qwen's continuous bank runtime uses the configured/native-fitted `max_seq`,
+including width one. Its [bank payload restore](../crates/ds4-core/src/batch.rs)
+goes directly to the native loader. The standalone Rust `Session` APIs use
+Rust's [payload prefix parser](../crates/ds4-core/src/payload.rs); v0.1.0 adds
+its missing `QWN3` family mapping. This also repairs serial disk caching for
+non-streaming, non-thinking, tool-free Chat with `return_token_ids=true`,
+which [routes to serial](../crates/ds4-server/src/route/mod.rs) even when a
+continuous lane is available.
+
+The release gate saved and restored a 512-token Qwen Q5 session, including a
+bounded payload inside another file. Whole-file and fresh-session range loads
+preserved all 248,320 frontier logits and eight greedy decode steps exactly.
+An HTTP restart reused all 916 prompt tokens; the pre-fix server rejected the
+same saved family and recomputed them. These Session results are separate from
+the [recorded bank cache gates](rust-migration/QWEN_V065_RESTAMP_2026-08-31.md).
+
+GLM 5.3 session snapshots explicitly return unsupported. K2 needs its own
+candidate lifecycle evidence. Do not infer disk-KV support from shared CLI
+flags or a successful generation request.
 
 Example for a validated payload family, within its measured context limit:
 
