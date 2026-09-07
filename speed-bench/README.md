@@ -1,8 +1,14 @@
 ## Benchmarking
 
-Here we collect prefill and generation speed obtained with different hardware.
+This directory collects manual prefill/generation sweeps and historical
+hardware CSVs. Record the exact artifact, build, backend and workload when
+adding results; old CSVs are not current release qualification.
 
-Run `ds4-bench` as:
+For CUDA phase attribution and diagnosis, use the
+[ds4-perf workflow](../docs/prefill-decode-optimization-playbook.md#local-scout-with-ds4-perf):
+`make ds4-bench-perf`, then `ds4-perf doctor` and `scout`.
+
+Example Metal sweep (add `--cuda` and use an appropriate filename for CUDA):
 
 ```
 ./ds4-bench \
@@ -11,7 +17,8 @@ Run `ds4-bench` as:
   --ctx-start 2048 \
   --ctx-max 65536 \
   --step-incr 2048 \
-  --gen-tokens 128
+  --gen-tokens 128 \
+  --csv speed-bench/m3_max.csv
 ```
 
 Provide PR including your numbers if your hardware was not already tested.

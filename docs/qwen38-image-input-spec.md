@@ -1,7 +1,11 @@
 # Qwen3.8 image-input implementation specification
 
 Status: V1 image inference verified on 2026-08-28; V2 cache identity and reuse
-verified on 2026-08-29
+verified on 2026-08-29. This is the original implementation contract and
+its recorded evidence. For current scope, see the
+[Qwen release guide](../README.md#qwen-release-scope),
+[September 7 image benchmarks](qwen38-image-2026-09-07.md) and
+[current disk-KV limits](ds4-dfm-model-families.md#disk-kv-contract-and-limits).
 
 ## Objective
 

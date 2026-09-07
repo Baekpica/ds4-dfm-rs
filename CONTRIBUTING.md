@@ -1,144 +1,98 @@
 # Contributing
 
-DwarfStar4 changes should be tested against the failure mode they can realistically
-affect. The project has two regression tracks: correctness and speed. Please
-include the commands you ran, the machine/backend, the model quant, and any
-notable failures in the PR or commit notes.
+Read [AGENT.md](AGENT.md) and the [architecture](docs/rust-migration/ARCHITECTURE.md).
+Rust owns the production host; CUDA/MMQ/VMM remains native. Keep each change
+scoped and report the exact commands, commit/build, hardware, model artifact,
+workload and failures. The [v0.1.0 ledger](docs/releases/v0.1.0.md) defines the
+release bar; a version bump or host-only CI pass does not close live GPU gates.
+Backend changes require correctness and speed evidence. Accept a speed
+regression only when a necessary correctness repair justifies it explicitly.
 
-Do not send PRs affecting one or more inference backends without checking if the
-resulting code is still correct and fast. The only acceptable regression speed
-is when an important correctness bug is fixed and it requires some speed penalty.
+## Rust host checks
 
-## Correctness Regression Tests
-
-Build the default backend first:
-
-```sh
-make clean
-make
-```
-
-The C test runner is `ds4_test`. Running it without arguments is equivalent to
-`--all`:
+Use the pinned `rust-toolchain.toml`. Build the C parity oracles before running
+all workspace tests; otherwise some oracle-dependent tests can skip work.
+The [Host parity workflow](.github/workflows/host-parity.yml) runs this sequence
+on a hosted CPU runner:
 
 ```sh
-make test
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked
+make -j1 test-kv-parity
+make -j1 test-web-parity
+make -j1 test-dist-parity
+make -j1 test-server-parity
+make -j1 test-catalog-parity
+make -j1 test-tokenizer-parity
+make -j1 test-session-parity
+make -j1 test-agent-parity
+cargo test --workspace --locked -- --test-threads=1
+cargo check --workspace --all-targets --locked
 ```
 
-Useful narrower checks:
+Use a narrower affected-crate test during development. `cargo test -p ds4-perf`
+is model-free and tests CSV parsing, diagnosis, capability detection and process
+orchestration without requiring Nsight. Keep original goldens; do not refresh
+them to conceal a mismatch.
+
+## Native builds and live gates
+
+On Linux, plain `make` prints help. Select the actual CUDA backend:
 
 ```sh
-./ds4_test --server
-./ds4_test --logprob-vectors
-./ds4_test --long-context
-./ds4_test --tool-call-quality
-./ds4_test --metal-kernels
+make cuda-spark                     # DGX Spark / GB10
+# or: make cuda-generic
+# or: make cuda CUDA_ARCH=sm_N
 ```
 
-What they cover:
+On macOS, `make` selects the inherited Metal build. `make cpu` builds the C
+reference executables; it is not a production CPU performance target. Avoid
+large CPU inference on macOS because of the documented VM failures.
 
-- `--server`: request parsing, chat rendering, streaming, tool-call parsing,
-  thinking controls, KV disk-cache bookkeeping, and other server-side logic.
-  This is the best quick check for API and prompt-rendering changes.
-- `--logprob-vectors`: compares local token bytes and top-logprob slices against
-  official DeepSeek V4 Flash continuation vectors. This catches tokenizer,
-  template, attention, and logits regressions.
-- `--long-context`: runs a long-context story fact-recall regression from
-  `tests/long_context_story_prompt.txt`. The model must retrieve spelled-out
-  person-number assignments from a long prose prompt and return `Name=number`
-  lines that the test parses.
-- `--tool-call-quality`: exercises actual model behavior for DSML tool-call
-  emission in both fast and exact paths.
-- `--metal-kernels`: isolated Metal kernel numeric checks.
+Native checks include `make cuda-regression`, `make test-model-family-kernels`
+and `make test-mmq-parity`, according to the affected path. `make test` and
+`ds4_test` retain C/native regression coverage; `ds4_test --server` does not
+replace the Rust server parity and live API gates. DeepSeek-specific tests
+require their documented DeepSeek fixtures, not an arbitrary supported GGUF.
+See the [baseline/proof protocols](docs/rust-migration/BASELINE.md),
+[parity matrix](docs/rust-migration/PARITY_MATRIX.md), and
+[current family scope](README.md#supported-model-families).
 
-The runner defaults to `ds4flash.gguf`. Override paths when needed:
+Start tool verification with a short, single-frontier GPU smoke. Run production,
+capture/eager, long-context, KV, concurrency and soak gates when required by the
+change or release claim. Preserve explicit artifact, context, token-count,
+cache and MTP settings. A short smoke does not substitute for those gates.
 
-```sh
-DS4_TEST_MODEL=/path/to/model.gguf ./ds4_test --logprob-vectors
-DS4_TEST_VECTOR_FILE=/path/to/official.vec ./ds4_test --logprob-vectors
-DS4_TEST_LONG_PROMPT=/path/to/prompt.txt ./ds4_test --long-context
-```
+## Performance and profiling
 
-For CUDA-specific changes, test on a CUDA machine:
+Use `ds4-bench` for throughput. Its sweep rows measure the newly computed
+prefill suffix at each frontier; a cold single-frontier workload is a different
+protocol. Reuse the original fixture and protocol for every comparison.
 
-```sh
-make
-make cuda-regression
-```
+The [profiling guide](docs/prefill-decode-optimization-playbook.md#local-scout-with-ds4-perf)
+shows the canonical `ds4-perf doctor` / `scout` workflow and
+`make ds4-bench-perf` build. NVTX uses the optional official Rust SDK in the
+benchmark host; native inference ABI changes are not needed for annotations.
 
-For CPU portability, at least verify that the CPU target still builds:
+Compare fresh unprofiled processes with the same model, prompt, backend,
+context/output length, memory policy, owner, cache state and clock conditions.
+Report prefill and decode separately. Nsight explains structure; profiled TPS
+is not an unprofiled baseline. Pair any optimization with full-vocabulary logits,
+greedy tokens and the relevant state/correctness gate. Retain raw evidence in
+ignored `scratch/`; publish only scoped summaries and intended fixtures.
 
-```sh
-make cpu
-```
+Inspect existing GPU processes before loading a model. Keep intended weight
+owners resident across bounded workers; do not co-reside an independent model
+copy or unrestricted NCU replay with a large owner. Follow
+[host-memory-guard.md](docs/host-memory-guard.md), including its known limits.
 
-The CPU backend is a reference/debug path, not the production performance
-target. Remember that executing the CPU path on Metal can crash the system
-because of a kernel bug in macOS.
+## Quantization and bug reports
 
-## Quality Checks For Quantization Changes
+Quantization work also needs the
+[official-continuation scorer](gguf-tools/quality-testing/README.md) against the
+same manifest for old and new artifacts. Those DeepSeek vectors are scoped
+reference evidence, not a gate for every family.
 
-For GGUF or quantization work, use the official-continuation scorer in
-`gguf-tools/quality-testing`. The test compares how much probability a local
-GGUF assigns to official DeepSeek V4 Flash continuations, token by token.
-
-Build the scorer:
-
-```sh
-make -C gguf-tools quality-score
-```
-
-Then score old and new GGUFs against the same manifest and compare:
-
-```sh
-gguf-tools/quality-testing/score_official OLD.gguf \
-  gguf-tools/quality-testing/data/manifest.tsv /tmp/old.tsv 4096
-
-gguf-tools/quality-testing/score_official NEW.gguf \
-  gguf-tools/quality-testing/data/manifest.tsv /tmp/new.tsv 4096
-
-python3 gguf-tools/quality-testing/compare_scores.py /tmp/old.tsv /tmp/new.tsv
-```
-
-Lower `avg_nll` is better. See
-`gguf-tools/quality-testing/README.md` for collecting or refreshing official
-continuations.
-
-## Speed Regression Tests
-
-Use `ds4-bench` for throughput regressions. It reports instantaneous prefill and
-generation speed at context frontiers, not one whole-run average. Prefill is
-incremental: each row measures only the newly processed suffix since the
-previous frontier.
-
-Default linear sweep:
-
-```sh
-./ds4-bench \
-  -m ds4flash.gguf \
-  --prompt-file speed-bench/promessi_sposi.txt \
-  --ctx-start 2048 \
-  --ctx-max 65536 \
-  --step-incr 2048 \
-  --gen-tokens 128 \
-  --csv /tmp/ds4-speed.csv
-```
-
-Use the same machine, backend, model file, context sweep, power/thermal state,
-and background load when comparing two commits. For backend work, run at least
-one before/after CSV and compare both `prefill_tps` and `gen_tps`. Generation is
-greedy and skips EOS so each frontier gets the same number of generated tokens.
-
-To generate a graph for a CSV:
-
-```sh
-python3 speed-bench/plot_speed.py /tmp/ds4-speed.csv --title "Machine t/s"
-```
-
-## Reporting sessions bugs
-
-For debugging a failing generation, keep the trace:
-
-```sh
-./ds4-server --trace /tmp/ds4-trace.txt ...
-```
+For a generation or API failure, retain the request shape, runtime SHA/build,
+model identity, server stdout/stderr and relevant profiler artifacts. Use small
+reproducible inputs and exclude credentials from shared logs.

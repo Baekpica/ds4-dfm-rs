@@ -1,15 +1,16 @@
 # ds4-dfm model families on DGX Spark
 
-`ds4-dfm` is the Baekpica release line for serving Korean
-**DFM (독자 파운데이션 모델, 독파모)** model families with DwarfStar. It follows
-the CUDA serving base in [Entrpi/ds4](https://github.com/Entrpi/ds4), which in
-turn follows [antirez/ds4](https://github.com/antirez/ds4). The versioning rule
-is deliberately small: an Entrpi release such as `v0.6.0` becomes
-`v0.6.0-dfm` after the additional model families pass this repository's
-integration gates. The previous integrated cut was `v0.5.6.3-dfm`.
-The branch also carries selected non-DFM family ports, currently dots3-note
-Preview, Qwen3.8, GLM 5.3 Flash, and K2-Horizon-375B; that inclusion does not
-classify the source model as a Korean DFM.
+`ds4-dfm-rs` is the independent Rust-host continuation of DwarfStar DFM
+(독자 파운데이션 모델, 독파모). The workspace targets v0.1.0; the latest
+published release remains v0.1.0-rc.4. Rust owns the host runtime and native
+CUDA/MMQ/VMM remains the compute backend. See [LINEAGE.md](LINEAGE.md) for
+the inherited C release history and the [release ledger](releases/v0.1.0.md)
+for candidate qualification.
+
+The runtime also carries explicit non-DFM family ports, including dots3-note,
+Qwen3.8, GLM 5.3 Flash and K2-Horizon. Inclusion does not classify those source
+models as Korean DFM. The [repository README](../README.md#supported-model-families)
+defines the exact artifact support scope.
 
 The reference target is one NVIDIA DGX Spark with a GB10 GPU and 128 GB of
 unified memory. Other operating systems and accelerators are not release
@@ -18,16 +19,19 @@ targets for the DFM additions yet.
 ## Design contract
 
 ds4 is not a general GGUF runtime. A model is accepted only when its GGUF
-metadata and tensor layouts match one of the explicit shapes in `ds4.c`.
-Adding a family means adding its validator, weight binder, tokenizer and chat
-protocol, state lifecycle, and the C/CUDA kernels its topology requires.
+metadata and tensor layouts match an explicit Rust
+[shape contract](../crates/ds4-core/src/shape.rs) and native execution path.
+Rust owns identification, validation, tensor bind plans, tokenizer/chat
+behavior and lifecycle policy. Native code owns weight upload, CUDA/MMQ/VMM,
+graphs and numerical state. Adding a family must cover both sides and their
+state, API and correctness gates.
 
 The implementation stays close to upstream's style:
 
-- model selection is a small enum and direct switch;
+- model selection is a small enum and direct dispatch;
 - shared arithmetic reuses the existing CUDA primitives and aligned weight
   artifacts;
-- genuinely different attention, recurrent state, or expert math gets a
+- different attention, recurrent state, or expert math gets a
   direct family path;
 - no plugin registry, graph framework, or broad abstraction layer is added;
 - external MTP and DSpark support models remain DeepSeek-only. The embedded
@@ -39,11 +43,13 @@ This keeps the changes reviewable for a possible future upstream contribution.
 
 | Family | Shape selected from | Native state/runtime | Current server lane |
 |---|---|---|---|
-| DeepSeek V4 Flash | `general.architecture=deepseek4` | Entrpi compressed KV and continuous graph | continuous or serial |
+| DeepSeek V4 Flash / PRO | `general.architecture=deepseek4` | Entrpi compressed KV and continuous graph | continuous or serial; Flash is the main live oracle |
 | Solar Open2 250B | `general.architecture=solar-open2` | recurrent KDA state plus compressed GQA KV | persistent multi-bank |
 | K-EXAONE 236B A23B | `general.architecture=exaone-moe` | LLLG full/sliding GQA KV | persistent multi-bank |
 | Motif-3 | `general.architecture=motif3` | normalized latent KV, rotated `k_pe`, and SWA rings | persistent multi-bank |
 | dots3-note Preview | `general.architecture=dots3note` (legacy `dots3-note`) | dual-geometry latent KV, DSA keys, and SWA rings | serial |
+| Qwen3.8 Flash Next SSD-PLE | `general.architecture=qwen4exp` | Q5 main + four SSD-PLE sidecars, GDN/QSA state, embedded MTP, still images | configured/native-fitted N-bank scheduler; one/two banks gated |
+| GLM 5.3 Flash | `general.architecture=glm5-next` | exact Q2 main + vision sidecar | serial; 2,048-context cap |
 | K2-Horizon 375B A23B | `general.architecture=k2-horizon` | full-attention GQA KV, partial NeoX RoPE, shared-expert MoE | persistent one-bank (32K gated) |
 
 The scheduler implementation may differ because the model states differ, but
@@ -73,15 +79,23 @@ otherwise the file stem with any `-00001-of-00011` shard suffix removed.
 A listening port is not an acceptance result; `/v1/models`, a real
 generation request, and settled `/v1/stats` counters must all pass.
 
-## Common disk-KV contract
+## Disk-KV contract and limits
 
-`--kv-disk-dir` and `--kv-disk-space-mb` use the same server policy for every
-integrated family. DeepSeek/GLM keeps its compressed-KV payload, Solar keeps
-recurrent KDA plus GQA state, EXAONE keeps its full/sliding LLLG rings,
-Motif-3 keeps normalized latent KV plus rotated `k_pe` rings, and dots3-note
-keeps its full/SWA latent KV plus DSA keys. Serial sessions and continuous
-banks share the family payload format, validate their tagged layout before
-any restore, and reject truncated or cross-family data.
+`--kv-disk-dir` and `--kv-disk-space-mb` are shared host policy. Payload support
+is family-specific: the recorded lifecycle gates cover DeepSeek compressed
+KV, Solar recurrent KDA plus GQA state, EXAONE full/sliding LLLG rings,
+Motif latent KV plus rotated `k_pe` rings, and dots3 full/SWA latent KV plus
+DSA keys. Tagged layouts and bounded payload ranges protect restores.
+
+GLM 5.3 session snapshots explicitly return unsupported. Qwen's native payload
+uses `QWN3`, but the current Rust [payload prefix parser](../crates/ds4-core/src/payload.rs)
+does not recognize it and rejects a serial range restore as a different
+family. Historical Qwen cache gates do not establish that this current path
+works; repair and revalidation belong in the v0.1.0 KV gate. K2 also needs its
+own candidate lifecycle evidence. Do not infer disk-KV support from shared
+CLI flags or a successful generation request.
+
+Example for a validated payload family, within its measured context limit:
 
 ```sh
 ./ds4-server -m "$MODEL" --cuda -c 131072 \
@@ -140,7 +154,8 @@ If the memory preflight passes, run the same command without `--dry-run` in a
 durable tmux session. Do not start a worker until the owner reports both
 `broker listening` and `ready manifest=...`.
 
-The worker command is common to all five families:
+A VMM-backed worker uses this launch shape; choose the artifact-specific
+owner and worker options from the README:
 
 ```sh
 DS4_CUDA_WEIGHT_IPC_MANIFEST="$RUN/weights.manifest" \
@@ -170,6 +185,12 @@ Before changing large models:
 
 `clear_cache` does not reclaim allocations from a live CUDA process. Never run
 a second full-model owner beside the first one on the reference machine.
+
+## Historical integration evidence
+
+The following C release and optimization results preserve their original
+commits, artifacts and workloads. They are not fresh v0.1.0 Rust-host gates
+or instructions to reuse a recorded owner/process.
 
 ## Integration evidence for `v0.6.3-dfm`
 
@@ -264,7 +285,7 @@ A later Motif-only optimization series on the same `dfm` line
 (`d03bd89` HG16, `b0db5a1` SWA→HMMA, `91823ca` MoE D2R,
 `a8e9e61` HG16 cp.async, `a09ff4f` FATTN TK=32) remesured 8K/32K and
 then the strict 256K serial Chat gate on the same artifact and host.
-Current tip (`2c81427`, kernels through `a09ff4f`): 8K prefill
+Measured tip (`2c81427`, kernels through `a09ff4f`): 8K prefill
 627.19 tok/s and decode 15.06 tok/s; 32K prefill 545.62 tok/s and
 decode 12.95 tok/s; 32K OpenAI sentinels exact (546.7 / 12.8); 256K
 OpenAI Chat 262,080-token prefill **238.59 tok/s** and 43 decode tokens
@@ -314,10 +335,10 @@ also includes the later strict long-context gate documented below:
 | DeepSeek V4 Flash | 80.76 GiB base plus 6.49 GiB DSpark; 72.56 GiB aligned artifacts | detected DSpark automatically; one Chat request completed with zero failures |
 | Solar Open2 250B | 11 shards, 88.97 GiB; 32.23 GiB aligned IQ2 artifacts | two persistent banks; two concurrent Chat requests completed on the continuous route |
 | K-EXAONE 236B A23B | 3 shards, 85.56 GiB; 30.16 GiB aligned IQ2 artifacts | two persistent banks; two concurrent Chat requests completed on the continuous route |
-| Motif-3 | 94,162,541,472-byte canonical GGUF; current owner exports 7.00 GiB raw plus 80.68 GiB in 153 aligned expert artifacts | all four API surfaces, strict 262,080-token prompt plus decode, and three concurrent 196K-context banks passed |
+| Motif-3 | 94,162,541,472-byte canonical GGUF; owner used for that run exported 7.00 GiB raw plus 80.68 GiB in 153 aligned expert artifacts | all four API surfaces, strict 262,080-token prompt plus decode, and three concurrent 196K-context banks passed |
 
 The Motif artifact is 94.16 GB, or 87.6957 GiB; 87.70 is its binary GiB size,
-not its decimal GB size. The current owner exported 207 VMM ranges: 54 raw
+not its decimal GB size. The owner used for that run exported 207 VMM ranges: 54 raw
 ranges plus 153 aligned Q2_K and IQ2_XXS expert artifacts. The worker imported
 those ranges without a duplicate model copy.
 
@@ -450,30 +471,37 @@ published metric. 1,048,576-token serving is not claimed.
   value projection, fused attention-side launches). Short-context only.
 - dots3-note DSA above top-2048 has a deterministic 2,600-token smoke; exact
   CPU/GPU parity is gated in the dense-equivalent range at or below 2,048.
-- Motif-3 has three verified persistent banks at `-c 196608` on the reference
-  Spark. Concurrent 256K banks are not claimed.
+- The historical Motif-3 evidence above records three persistent banks at
+  `-c 196608` on the reference Spark. It is not a new candidate memory gate;
+  concurrent 256K banks are not claimed.
 - The Motif-3 256K result validates one strict serial request on this exact
   artifact and GB10 host. It does not validate concurrent 256K banks or other
   accelerators.
 - Motif-3 serving uses plain decoding; MTP and DSpark support models remain
   DeepSeek-only.
-- Solar Open2 serving is verified at `-c 196608` with three banks on this
-  host. The source 1,048,576-token metadata is not a measured Spark pass.
+- Historical Solar Open2 serving evidence includes `-c 196608` with three
+  banks. The source 1,048,576-token metadata is not a measured Spark pass;
+  the [September 7 campaign](solar-open2-optimization-2026-09-07.md#campaign-closure-and-limits)
+  records unresolved 64K host freezes.
 - Solar, EXAONE, and Motif-3 serial snapshots now reject corrupted family tags,
   and their continuous banks restore into a different idle bank before a
   one-token warm suffix. The CUDA lifecycle gates passed on the production
-  mixed-quant GGUFs; DeepSeek/GLM retains the existing compressed-KV format.
+  mixed-quant GGUFs. DeepSeek retains its compressed-KV format; GLM session
+  snapshots are unsupported.
 - The 2026-08-15 Motif restart gate persisted a 738-token bank as 43.82 MiB,
   then restored all 738 cached tokens in 33.1 ms and computed only the
   24-token suffix. The cache file remained after the successful load.
 - Disk KV reduces repeated prefill across eviction or restart. It does not lower
-  the resident KV allocation of a live bank; the Motif Spark operating point
-  remains two banks at `-c 196608` with a 4,096-token prefill chunk.
+  the resident KV allocation of a live bank. Select context and bank width
+  from the exact artifact, memory policy and measured headroom.
 - Model cards contain only verified behavior and performance. Profiling
   results, failed experiments, and proposed kernels belong in the technical
-  handoff until a release gate validates them.
+  reports until a release gate validates them.
 
 ## Profiling order
+
+Use the [ds4-perf profiling guide](prefill-decode-optimization-playbook.md)
+for the instrumented benchmark, doctor/scout commands and evidence rules.
 
 Do not use a 256K run as the first performance experiment. Establish a short
 correctness baseline, profile an 8K or 16K prefill and a separate decode

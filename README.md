@@ -9,7 +9,7 @@ the HTTP server, and the coding agent are built and tested together.
 `ds4-dfm-rs` is the independent Rust-host continuation of the DFM line from
 [`Baekpica/ds4`](https://github.com/Baekpica/ds4). Its NVIDIA reference machine
 is the 128 GB DGX Spark / GB10. It retains the native Metal and CUDA heritage,
-but this release's complete live gate ran on CUDA.
+and the published RC live evidence is CUDA-based.
 
 As in the original [`antirez/ds4`](https://github.com/antirez/ds4), model
 support is intentionally opportunistic. The project follows useful open
@@ -28,6 +28,8 @@ retired when a better model makes it irrelevant.
 - Serve Qwen3.8 Flash Next Q5 with SSD-PLE sidecars, embedded MTP, and still
   image input.
 - Serve K2-Horizon-375B MQ87 with IFM chat/tool syntax on the continuous lane.
+- Profile prefill and decode with [ds4-perf](docs/prefill-decode-optimization-playbook.md#local-scout-with-ds4-perf),
+  inspect conservative diagnoses, and retain the raw Nsight evidence.
 - Treat the existing family implementations as rails for a new model or a
   specific machine, while keeping the resulting path small enough to inspect.
 
@@ -79,12 +81,19 @@ optimized C/CUDA/Metal backend, Git ancestry and authorship, and the full
 
 ## Status
 
-`v0.1.0-rc.4` adds the explicit GLM 5.3 Flash Q2 text and still-image path to
-the Rust host. Its tagged release claim is limited to the two GLM artifacts
+**v0.1.0 is in preparation:** the first independent Rust-host release with a
+stable host/runtime boundary and a native performance-observability workflow.
+Rust owns the host runtime, policy, serving, KV/state, distributed execution,
+observability, and performance orchestration. CUDA/MMQ/VMM remains native.
+The [release definition and gates](docs/releases/v0.1.0.md) distinguish current
+ds4-perf evidence from the production checks required before tagging.
+
+The latest published tag, `v0.1.0-rc.4`, adds the GLM 5.3 Flash Q2 text and
+still-image path to the Rust host. Its tagged release claim is limited to the two GLM artifacts
 and the DGX Spark CUDA execution path documented below. This branch also adds
 the K2-Horizon-375B MQ87 family; that path is not a new RC tag.
 
-| Item | RC scope |
+| Item | Baseline evidence |
 |---|---|
 | Release baseline | `v0.6.5-dfm` (`d02e2a4`) |
 | Frozen Qwen C behavior | post-tag cut `4d40d97` |
@@ -99,8 +108,8 @@ PASS* cells reproduced on the matching C control, with no Rust-only failure.
 The detailed evidence is in
 [`SPLIT_READINESS.md`](docs/rust-migration/SPLIT_READINESS.md).
 
-This remains release-candidate software. It accepts only explicit, validated
-GGUF layouts; it is not a general GGUF runner.
+The `0.1.0` workspace version prepares the release; the stable tag depends on
+the recorded release gates. Only explicit, validated GGUF layouts are accepted.
 
 ## Design philosophy
 
@@ -161,6 +170,8 @@ native structs.
 | Model/session handles and lifetime policy | safe Rust over opaque native handles |
 | KVC metadata, persistence policy, cross-host codecs | Rust (`ds4-kv`) |
 | Distributed protocol and orchestration | Rust (`ds4-dist`) |
+| Profiling orchestration, normalization, diagnosis | Rust (`ds4-perf`, separate process) |
+| Prefill/decode NVTX annotations | Rust (`ds4-cli`, optional official NVIDIA SDK) |
 | CUDA/VMM/MMQ/graphs/attention/MoE/vision | native C/CUDA |
 | Metal and CPU reference paths | inherited native backend |
 | C parity executables and `ds4-eval` | retained release oracles |
@@ -172,7 +183,7 @@ See [`ARCHITECTURE.md`](docs/rust-migration/ARCHITECTURE.md) and
 
 ## Supported hardware and backends
 
-| Backend | Status in `v0.1.0-rc.4` |
+| Backend | Documented scope |
 |---|---|
 | NVIDIA DGX Spark / GB10 | Release target. The split-era full matrix, long-context, Qwen image/MTP, ABBA, and soak gates ran here; RC.3's agent-serving matrix, RC.4's GLM Q2 text/vision gates, and the K2-Horizon-375B MQ87 32K CLI/HTTP gates also ran here. |
 | Other NVIDIA CUDA systems | Source path retained through `make cuda-generic` or an explicit `CUDA_ARCH`; not covered by the RC's full live matrix. |
@@ -188,7 +199,7 @@ different GPU or quant without rerunning the same gate.
 Every family below has an explicit architecture selector, validator, binder,
 tokenizer/chat contract, state lifecycle, and native execution path.
 
-| Family | GGUF architecture | RC note |
+| Family | GGUF architecture | Documented scope |
 |---|---|---|
 | DeepSeek V4 Flash / PRO | `deepseek4` | Flash is the main live oracle; external MTP/DSpark support is DeepSeek-only. |
 | Solar Open2 250B | `solar-open2` | Recurrent KDA state, compressed GQA KV, persistent banks. |
@@ -676,7 +687,7 @@ make -j1 test-tokenizer-parity
 make -j1 test-session-parity
 make -j1 test-agent-parity
 
-cargo test --workspace --no-default-features --locked -- --test-threads=1
+cargo test --workspace --locked -- --test-threads=1
 cargo check --workspace --all-targets --locked
 ```
 
@@ -693,8 +704,10 @@ make -j1 test-mmq-parity
 ```
 
 Family loaders, real-model forwards, long-context runs, OPP-C, ABBA, and soak
-gates need the matching models and release hardware. Their fixed order and
-evidence are under [`docs/rust-migration/`](docs/rust-migration/README.md).
+gates need the matching models and release hardware. The
+[migration evidence](docs/rust-migration/README.md) preserves the original
+protocols; the [v0.1.0 ledger](docs/releases/v0.1.0.md) tracks current release
+qualification. See [CONTRIBUTING.md](CONTRIBUTING.md) for the validation workflow.
 
 ## Repository layout
 
@@ -706,11 +719,14 @@ evidence are under [`docs/rust-migration/`](docs/rust-migration/README.md).
 | `crates/ds4-dist` | distributed codecs and runtime |
 | `crates/ds4-cli` | CLI, bench, and agent hosts |
 | `crates/ds4-web` | blocking agent web helpers |
+| `crates/ds4-perf` | standalone profiling orchestration and diagnosis |
 | `crates/ds4-sys` | narrow unsafe FFI and OS adapters |
 | `native/bridge` | opaque Rust/native boundary |
 | `ds4.c`, `ds4_cuda.cu`, `cuda/`, `metal/` | native engine and kernels |
 | `tests/parity` | C behavior oracles consumed by Rust tests |
-| `docs/rust-migration` | campaign contract, decisions, matrices, and evidence |
+| `docs/README.md` | current guides, dated evidence and design index |
+| `docs/releases` | release definitions and qualification gates |
+| `docs/rust-migration` | current boundary contracts and frozen migration evidence |
 
 ## Lineage
 
@@ -750,6 +766,8 @@ Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before sending a change.
 
 ## Documentation
 
+- [Documentation index](docs/README.md) — current guides, dated evidence and design records
+- [v0.1.0 release ledger](docs/releases/v0.1.0.md) — preparation and required gates
 - [`CHANGELOG.md`](CHANGELOG.md) — inherited and fork-side release history
 - [`docs/LINEAGE.md`](docs/LINEAGE.md) — repository provenance and split refs
 - [`docs/rust-migration/SPLIT_READINESS.md`](docs/rust-migration/SPLIT_READINESS.md) — genesis decision and immutable evidence

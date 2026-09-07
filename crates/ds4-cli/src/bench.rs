@@ -358,10 +358,18 @@ fn maybe_warn_distributed_step_shape(args: &BenchArgs, session: &Session<'_>) {
 }
 
 pub fn run(args: BenchArgs) -> Result<i32, String> {
+    let nvtx = if cfg!(feature = "perf-nvtx") {
+        "available"
+    } else {
+        "unavailable (build with make ds4-bench-perf)"
+    };
     if args.help {
         print!("{}\nDistributed:\n{}", help_text(), ds4_dist::USAGE);
+        println!("NVTX: {nvtx}");
         return Ok(0);
     }
+    // Scout reads the actual invocation, without probing an opaque command with --help.
+    eprintln!("ds4-bench NVTX: {nvtx}");
 
     let (prompt_path, chat_prompt) = prompt_source(&args)?;
     let text = read_prompt(prompt_path)?;
@@ -494,9 +502,13 @@ fn run_sweep<W: Write>(
 
     loop {
         let prefix = TokenBuffer::from_tokens(prompt.as_slice()[..frontier as usize].to_vec());
+        #[cfg(feature = "perf-nvtx")]
+        let prefill_range = nvtx::LocalRange::new(c"ds4.prefill");
         let prefill_t0 = Instant::now();
         session.sync(&prefix).map_err(|e| e.to_string())?;
         let prefill_sec = prefill_t0.elapsed().as_secs_f64();
+        #[cfg(feature = "perf-nvtx")]
+        drop(prefill_range);
         let prefill_tokens = frontier - previous;
         write_frontier_logits_json(args, model, session, frontier, previous)?;
 
@@ -509,6 +521,8 @@ fn run_sweep<W: Write>(
                 .map_err(|e| format!("snapshot at {frontier} failed: {e}"))?;
         }
 
+        #[cfg(feature = "perf-nvtx")]
+        let decode_range = (args.gen_tokens > 0).then(|| nvtx::LocalRange::new(c"ds4.decode"));
         let gen_t0 = Instant::now();
         let mut generated = 0;
         let mut after_first = None;
@@ -555,6 +569,8 @@ fn run_sweep<W: Write>(
             }
         }
         let gen_t1 = Instant::now();
+        #[cfg(feature = "perf-nvtx")]
+        drop(decode_range);
         if let (Some(dir), Some(ids)) = (&args.dump_frontier_logits_dir, decoded) {
             // Keep greedy-token evidence with the logits, outside timed I/O.
             let path = std::path::Path::new(dir).join(format!("tokens-{frontier}.json"));

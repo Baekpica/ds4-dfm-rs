@@ -1,16 +1,35 @@
 # Changelog
 
-All notable fork-side changes to this project are documented here.
-Fork: [Entrpi/ds4](https://github.com/Entrpi/ds4) of
-[antirez/ds4](https://github.com/antirez/ds4); upstream fork point `e16ead1`
-(2026-05-29). Upstream's own changes are not repeated here.
+This records the independent `ds4-dfm-rs` releases and inherited DFM/Entrpi
+history. The lineage runs from [antirez/ds4](https://github.com/antirez/ds4)
+through [Entrpi/ds4](https://github.com/Entrpi/ds4) and Baekpica DFM; the
+Entrpi fork point was `e16ead1` (2026-05-29). See [LINEAGE.md](docs/LINEAGE.md)
+for exact provenance. Historical entries retain their original scope.
 
-## Unreleased
+## Unreleased — v0.1.0 in preparation
+
+- Defines v0.1.0 as the first independent Rust-host baseline with a stable
+  host/runtime boundary and native performance observability. Workspace and
+  archive versions target 0.1.0; production qualification remains tracked in
+  the [release gate ledger](docs/releases/v0.1.0.md).
+- Adds `ds4-perf doctor` and `scout`: explicit benchmark capability checks,
+  separate baseline/capture runs, Nsight normalization, prefill/decode
+  attribution, conservative diagnosis and retained raw artifacts.
+- Uses NVIDIA's official Rust `nvtx` 2.0.0 SDK as an optional `ds4-cli`
+  dependency. `make ds4-bench-perf` enables `perf-nvtx` and direct RAII ranges
+  around measured prefill/decode; ordinary inference builds omit the SDK.
+- Aligns shared agent instructions, architecture, contributor and API/family
+  guides with the Rust host. Removes superseded status, seeding plans and
+  handoffs while preserving historical evidence through fixed Git links.
+
+The following K2 integration landed after RC.4 and is included in this
+preparation. The latest published tag remains `v0.1.0-rc.4`.
 
 - Adds an explicit K2-Horizon-375B path for the public four-shard MQ87
   artifact (`general.architecture=k2-horizon`, 93,091,935,552 bytes,
-  842 tensors). The shape, tokenizer, IFM chat/XML tool protocol, IQ expert
-  kernels, and partial NeoX RoPE stay native behind the Rust host.
+  842 tensors). Shape validation, tokenizer and IFM chat/XML tool behavior
+  belong to the Rust host; IQ expert kernels and partial NeoX RoPE remain
+  native compute.
 - On DGX Spark / GB10, whole-map `cudaHostRegister` of the 86.70 GiB mmap
   fails; unregistered units are promoted through the existing VMM arena
   (95/95, 0 cold) so CUDA graphs do not capture the mmap. Default
@@ -20,7 +39,6 @@ Fork: [Entrpi/ds4](https://github.com/Entrpi/ds4) of
   `-c 32768 --cont-width 1`. Official IFM `high` thinking is the gated
   path. 524K live serving, `low`/`medium` think variants, other quants,
   Metal, and distributed execution are outside this entry.
-- Does not bump the tagged RC.4 version.
 
 ## v0.1.0-rc.4 — 2026-09-03
 

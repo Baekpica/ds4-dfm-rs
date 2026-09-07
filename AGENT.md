@@ -1,4 +1,17 @@
-# Inference Performance Optimization Guidelines
+# Repository instructions
+
+`ds4-dfm-rs` is the independent Rust-host continuation of DwarfStar DFM.
+The default `ds4`, `ds4-server`, `ds4-bench`, and `ds4-agent` are Rust hosts.
+CUDA/MMQ/VMM and hardware-specific kernels remain native. C executables
+with `-c` suffixes are retained behavior oracles, not the production hosts.
+
+Start with [README.md](README.md), the [documentation index](docs/README.md),
+and the [architecture](docs/rust-migration/ARCHITECTURE.md).
+The [v0.1.0 gate ledger](docs/releases/v0.1.0.md) separates release preparation
+from verified production qualification. Dated reports establish only their
+recorded commit, artifact and workload; old PIDs and handoffs are not live state.
+
+## Inference Performance Optimization Guidelines
 
 When optimizing inference performance, prioritize end-to-end execution-path efficiency over isolated kernel micro-optimizations.
 
@@ -44,14 +57,14 @@ The guiding principle is:
 
 # Agent Notes
 
-`ds4.c` is a DeepSeek V4 Flash specific inference engine. It is not a generic
-GGUF runner. The goal is a small, readable, high-performance C codebase with
-Objective-C only where Metal requires it and Metal kernels under `metal/`.
+Support is limited to explicit model-family/artifact contracts listed in
+[README.md](README.md#supported-model-families). Keep the Rust host and native
+backend small and direct; this is not a generic GGUF runner.
 
 ## Goals
 
-- Keep the production path as whole-model GPU graph inference
-  (Metal on macOS, CUDA on Linux).
+- Keep production inference on the validated GPU execution paths. DGX Spark
+  CUDA is the release reference; inherited Metal support needs separate checks.
 - Keep model loading mmap-backed; do not eagerly copy the full GGUF.
 - Keep the CPU backend CPU-only and use it only as reference/debug code.
 - Preserve correctness before speed. Do not keep a faster path with unexplained
@@ -69,24 +82,31 @@ Objective-C only where Metal requires it and Metal kernels under `metal/`.
 - Keep public APIs narrow. CLI/server code should not know tensor internals.
 - Do not add permanent semantic variants behind flags. Diagnostic switches are
   fine when they validate the one release path.
-- Do not introduce C++.
+- Keep new host/control-plane code in Rust; do not add a C++ host layer.
+  Existing CUDA/MMQ implementation stays native.
 
 ## Safety
 
 - Avoid large CPU inference runs on macOS; the CPU path has previously exposed
   kernel VM failures with very large mappings.
-- Do not run multiple huge model processes concurrently. The instance lock is
-  intentional.
+- Do not load independent huge model copies concurrently. Use the intended
+  weight owner and bounded workers; inspect ownership and memory first.
+- Preserve unrelated servers and resident owners. Stop only processes owned by
+  the task. See [host-memory-guard.md](docs/host-memory-guard.md) for the guard's
+  admission rules and documented limits.
 - Prefer short GPU smoke tests for build verification
   (Metal on macOS, CUDA on Linux).
 
 ## Layout
 
-- `ds4.c`: model loading, tokenizer, CPU reference code, Metal graph scheduling,
-  sessions, disk-cache payload serialization.
-- `ds4_cli.c`: command line, linenoise REPL, interactive transcript handling.
-- `ds4_server.c`: OpenAI/Anthropic compatible HTTP API, worker queue, streaming,
-  tool-call mapping, disk KV cache policy.
+- `crates/ds4-cli`: production CLI, benchmark and coding agent.
+- `crates/ds4-server`: HTTP, admission, scheduling, streaming and tools.
+- `crates/ds4-core`: model/session ownership, host catalog and tokenizer.
+- `crates/ds4-kv`, `ds4-dist`, `ds4-web`: KV policy, distributed runtime and web helpers.
+- `crates/ds4-sys` + `native/bridge`: narrow native inference boundary.
+- `crates/ds4-perf`: standalone benchmark/profiler orchestration and diagnosis.
+- `ds4.c`: native engine, GPU state/execution and retained compatibility helpers.
+- `ds4_cli.c`, `ds4_server.c`, `ds4_bench.c`, `ds4_agent.c`: C host oracles.
 - `ds4_metal.m`: Objective-C Metal runtime and kernel wrappers.
 - `metal/*.metal`: compute kernels.
 - `ds4_cuda.cu`: CUDA backend. Single TU; mirrors `ds4_metal.m`'s role on
@@ -127,9 +147,19 @@ Objective-C only where Metal requires it and Metal kernels under `metal/`.
 
 ## Testing
 
-Use `make` for build validation. Use `make test` for unit/regression tests when a
-model and a GPU backend are available. Use live server tests only when
-intentionally testing the API surface.
+Use the [contribution checks](CONTRIBUTING.md): Rust host parity and serialized
+workspace tests are model-free; CUDA/family/proof gates need their exact
+fixtures. On Linux, `make` prints help: select `make cuda-spark`,
+`make cuda-generic`, or an explicit CUDA architecture for native validation.
+Use live server tests only when intentionally testing the API surface.
+
+For ds4-perf, run `cargo test -p ds4-perf`. Build optional instrumentation with
+`make ds4-bench-perf` after the CUDA build. Use NVIDIA's official Rust `nvtx`
+SDK directly in `ds4-cli` under `perf-nvtx`; keep its default features disabled
+and enable only `std` unless a measured need justifies more. Use `LocalRange`
+for the measured `ds4.prefill` / `ds4.decode` operations. Do not add custom NVTX
+FFI, route it through `ds4-core`/`ds4-sys`/the bridge, or annotate each token or
+kernel. Ordinary inference builds remain independent of this optional SDK.
 
 Multi-process testing (proof harness, multi-profile sweeps, MTP correctness
 work that loads base + MTP gguf into the same device) goes through
@@ -160,7 +190,10 @@ VMM arena, which is on by default.
 
 - Don't touch blocks of code unrelated to the feature you implement. e.g. Don't add comments to a block of code if you did not create it or modify it. As much as possible try to minimize the number of changed lines when implementing a feature.
 
-- Strictly adhere to the layered boundary hierarchy: each layer may only communicate with its immediate neighbor directly below it. Never "punch holes" through layers (e.g., controllers or UI components must never directly call database queries, raw hardware drivers, or low-level network clients; always route through the intermediate service/abstraction layer).
+- Preserve the inference boundary: host → ds4-core → ds4-sys → native backend.
+  Host-only libraries such as the official NVTX SDK are side dependencies;
+  they do not belong in the inference ABI. Keep raw device handles out of
+  application code and follow [FFI_CONTRACT.md](docs/rust-migration/FFI_CONTRACT.md).
 
 - Always use {}, even on a one-line "if" statement.
 
