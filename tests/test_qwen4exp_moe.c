@@ -1001,6 +1001,17 @@ static void test_fused_down_swiglu(void *model_map, uint64_t model_size,
                 tail_bytes, tail_type, FUSED_ASSIGNMENTS, DOWN_MID + 128u,
                 DOWN_MAIN, DOWN_TAIL, HIDDEN, DOWN_EXPERTS, FUSED_ASSIGNMENTS),
             "swiglu-emit entry rejects a width that is not main + tail");
+    REQUIRE(!ds4_gpu_qwen4exp_routed_down_fused_swiglu_tensor(
+                NULL, d_gate, d_up, d_weights, d_ids, model_map,
+                model_size, main_offset, main_bytes, main_type, tail_offset,
+                tail_bytes, tail_type, FUSED_ASSIGNMENTS, DOWN_MID, DOWN_MAIN,
+                DOWN_TAIL, HIDDEN, DOWN_EXPERTS, FUSED_ASSIGNMENTS) &&
+            !ds4_gpu_qwen4exp_routed_down_fused_tensor(
+                NULL, d_mid, d_ids, model_map, model_size,
+                main_offset, main_bytes, main_type, tail_offset, tail_bytes,
+                tail_type, FUSED_ASSIGNMENTS, DOWN_MID, DOWN_MAIN, DOWN_TAIL,
+                HIDDEN, DOWN_EXPERTS, FUSED_ASSIGNMENTS),
+            "fused entries decline a null output");
 
     ds4_gpu_tensor_free(d_emitted);
     ds4_gpu_tensor_free(d_via_mid);

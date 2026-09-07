@@ -365,7 +365,14 @@ bool ds4_qwen38_ple_cuda_gather(
         /* Rows whose pages already sit ready in the cache (every row of
          * a prefetched chunk) are leased under one lock; the walk below
          * only runs from the first row that is still loading.
-         * DS4_PLE_NO_BATCH_ACQUIRE=1 keeps the per-row walk (A/B). */
+         * DS4_PLE_NO_BATCH_ACQUIRE=1 keeps the per-row walk (A/B).
+         *
+         * A tile that already holds leases must never wait for a cache
+         * slot: its leases are released by the stream callback only
+         * after the tile is enqueued, so a set whose ways this tile has
+         * pinned would never drain.  Only the first row of an empty tile
+         * blocks; every later row is a try, and a full set ends the
+         * tile, which is enqueued before the next tile blocks. */
         size_t tile_rows = 0;
         if (batch_acquire_enabled() &&
             !ds4_ple_store_acquire_ready_rows(
@@ -383,13 +390,12 @@ bool ds4_qwen38_ple_cuda_gather(
                 return false;
             }
         }
-        const size_t blocking_row = tile_rows;
         while (tile_rows < capacity) {
             ds4_ple_row_view *view =
                 &leases->views[tile_rows];
             bool acquired = false;
             bool ok;
-            if (tile_rows == blocking_row) {
+            if (tile_rows == 0u) {
                 ok = ds4_ple_store_acquire_row(
                     context->store,
                     row_ids[emitted + tile_rows], view,

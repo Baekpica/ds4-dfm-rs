@@ -32415,13 +32415,15 @@ static int qwen4exp_routed_down_fused_impl(
     static int disabled = -1;
     if (disabled < 0) disabled = getenv("DS4_QWEN_NO_FUSED_DOWN_TAIL") != NULL;
     const bool emit = mid == NULL;
-    if (emit ? (!gate || !up || !weights || down->ptr == gate->ptr ||
-                down->ptr == up->ptr)
+    if (disabled || !down || !ids || !model_map ||
+        (emit && (!gate || !up || !weights))) {
+        return 0;
+    }
+    if (emit ? (down->ptr == gate->ptr || down->ptr == up->ptr)
              : down->ptr == mid->ptr) {
         return 0;
     }
-    if (disabled || !down || !ids || !model_map ||
-        !ds4_cuda_use_mmq() || assignments == 0u ||
+    if (!ds4_cuda_use_mmq() || assignments == 0u ||
         assignments > (uint64_t)INT_MAX || max_rows_per_expert == 0u ||
         max_rows_per_expert > assignments || mid_width == 0u ||
         mid_width > (uint32_t)INT_MAX || main_dim == 0u ||
