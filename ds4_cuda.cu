@@ -27636,13 +27636,33 @@ extern "C" int ds4_gpu_qwen4exp_qsa_store_kv_tensor(
  * shared memory and the scratch is never touched.  Each dot product is
  * summed over eight 32-dim warp slices, so scores differ from the per-slot
  * kernel by fp32 reordering only.  Decode widths keep the split reduce
- * (row-invariant two-row MTP verify). */
+ * (row-invariant two-row MTP verify).
+ *
+ * The value tile takes the same path as the key tile: its gather is issued
+ * together with the key gather into registers, parked in the key tile's
+ * storage once the scores no longer need the keys, and the PV loop reads
+ * it from shared memory.  Before, every PV step gathered its 1 KiB value
+ * row from L2/DRAM on the critical path (32 dependent round trips per
+ * tile behind an unroll of four); the FMAs and their order are unchanged. */
 #define QSA_FUSED_TILE 32u
 #define QSA_FUSED_THREADS 256u
 #define QSA_FUSED_WARPS (QSA_FUSED_THREADS / 32u)
 /* 256 + 4 floats: successive tile rows start 16 B apart modulo the 128 B
  * bank window, so the eight slot rows one LDS.128 touches never collide. */
 #define QSA_FUSED_KEY_STRIDE 260u
+/* Value rows are read one float per thread across the block (thread = dim),
+ * so they pack at the natural 256-float stride inside the key tile. */
+#define QSA_FUSED_VALUE_STRIDE 256u
+/* float4 gathers per thread for one 32 x 256 tile. */
+#define QSA_FUSED_GATHER_PER_THREAD (QSA_FUSED_TILE * 64u / QSA_FUSED_THREADS)
+
+/* Score partials are stored per (warp, head, slot); the four head groups
+ * a lane set writes at once sit 96 words apart, i.e. in the same banks,
+ * so the slot index is XOR-swizzled by 8 x head group. */
+__device__ __forceinline__ uint32_t qsa_part_slot(uint32_t slot,
+                                                  uint32_t head_group) {
+    return slot ^ (8u * head_group);
+}
 
 /* Read once: the score scratch is sized at allocation from the same
  * answer the dispatcher uses later. */
@@ -27664,7 +27684,7 @@ static int qsa_fused_applies(uint32_t rows, uint32_t heads,
 }
 
 
-__global__ static void __launch_bounds__(QSA_FUSED_THREADS)
+__global__ static void __launch_bounds__(QSA_FUSED_THREADS, 2)
 qwen4exp_qsa_attention_fused_gqa12_kernel(
         float *out, const float *query, const float *gate,
         const float *k_cache, const float *v_cache,
@@ -27680,16 +27700,17 @@ qwen4exp_qsa_attention_fused_gqa12_kernel(
     const float *q_row = query + first_head * 256u;
     const int32_t *sel = selected + (uint64_t)row * selected_cap;
 
+    /* Keys during the score phase, values during the PV loop. */
     __shared__ __align__(16) float key_tile[QSA_FUSED_TILE * QSA_FUSED_KEY_STRIDE];
     /* part holds the eight warp slices of the tile's 12 x 32 scores; the
-     * summed scores alias slice 0 and the probabilities slice 1, each
-     * written only by the thread that already consumed that element. */
+     * softmax warps sum them in warp order, so no reduced copy exists. */
     __shared__ __align__(16) float part[QSA_FUSED_WARPS * 12u * QSA_FUSED_TILE];
+    __shared__ __align__(16) float prob[QSA_FUSED_TILE * 12u];
     __shared__ float scale_s[12u];
     __shared__ float inv_sum_s[12u];
-    __shared__ uint32_t token_tile[QSA_FUSED_TILE];
-    float *score_tile = part;
-    float *prob = part + 12u * QSA_FUSED_TILE;
+    /* Double-buffered: the next tile's ids land during this tile's PV
+     * loop, so the gather starts without a barrier of its own. */
+    __shared__ uint32_t token_tile[2][QSA_FUSED_TILE];
 
     /* Phase-2 lane mapping: three heads x four slots per lane. */
     const uint32_t hg = lane >> 3u;
@@ -27702,24 +27723,37 @@ qwen4exp_qsa_attention_fused_gqa12_kernel(
 #pragma unroll
     for (uint32_t h = 0; h < 12u; h++) acc[h] = 0.0f;
 
+    if (tid < QSA_FUSED_TILE) {
+        int32_t token = tid < count ? sel[tid] : -1;
+        if (token < 0 || (uint32_t)token >= cache_cap) token = -1;
+        token_tile[0][tid] = (uint32_t)token;
+    }
+    __syncthreads();
+
     for (uint32_t base = 0; base < count; base += QSA_FUSED_TILE) {
         const uint32_t tile_count = min(count - base, QSA_FUSED_TILE);
-        if (tid < QSA_FUSED_TILE) {
-            int32_t token = tid < tile_count ? sel[base + tid] : -1;
-            if (token < 0 || (uint32_t)token >= cache_cap) token = -1;
-            token_tile[tid] = (uint32_t)token;
-        }
-        __syncthreads();
-        for (uint32_t i = tid; i < QSA_FUSED_TILE * 64u;
-             i += QSA_FUSED_THREADS) {
-            const uint32_t slot = i >> 6u;
-            const uint32_t c = i & 63u;
-            const uint32_t token = token_tile[slot];
+        const uint32_t cur = (base / QSA_FUSED_TILE) & 1u;
+        const uint32_t *tokens = token_tile[cur];
+        /* Gather the key tile into shared memory and the value tile into
+         * registers in one pass: thread t owns float4 column (t & 63) of
+         * slots (t >> 6) + 4i.  The value loads stay in flight through
+         * the score phase and land in the key tile's storage after it. */
+        float4 v_regs[QSA_FUSED_GATHER_PER_THREAD];
+#pragma unroll
+        for (uint32_t i = 0; i < QSA_FUSED_GATHER_PER_THREAD; i++) {
+            const uint32_t slot = (tid >> 6u) + 4u * i;
+            const uint32_t c = tid & 63u;
+            const uint32_t token = tokens[slot];
             float4 k = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
-            if (token != UINT32_MAX)
-                k = *(const float4 *)(k_cache +
-                    ((uint64_t)token * 2u + kv_head) * 256u + c * 4u);
+            float4 v = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+            if (token != UINT32_MAX) {
+                const uint64_t at =
+                    ((uint64_t)token * 2u + kv_head) * 256u + c * 4u;
+                k = *(const float4 *)(k_cache + at);
+                v = *(const float4 *)(v_cache + at);
+            }
             *(float4 *)(key_tile + slot * QSA_FUSED_KEY_STRIDE + c * 4u) = k;
+            v_regs[i] = v;
         }
         __syncthreads();
 
@@ -27755,27 +27789,36 @@ qwen4exp_qsa_attention_fused_gqa12_kernel(
 #pragma unroll
                 for (uint32_t j = 0; j < 4u; j++)
                     part[(warp * 12u + 3u * hg + a) * QSA_FUSED_TILE +
-                         sg + 8u * j] = s[a][j];
+                         qsa_part_slot(sg + 8u * j, hg)] = s[a][j];
         }
         __syncthreads();
-        for (uint32_t o = tid; o < 12u * QSA_FUSED_TILE;
-             o += QSA_FUSED_THREADS) {
-            float v = 0.0f;
+        /* Keys are dead once every warp's partials are in part[]: park
+         * the value tile in their place while the scores are folded. */
 #pragma unroll
-            for (uint32_t w = 0; w < QSA_FUSED_WARPS; w++)
-                v += part[w * 12u * QSA_FUSED_TILE + o];
-            score_tile[o] = v * 0.0625f;
+        for (uint32_t i = 0; i < QSA_FUSED_GATHER_PER_THREAD; i++) {
+            const uint32_t slot = (tid >> 6u) + 4u * i;
+            const uint32_t c = tid & 63u;
+            *(float4 *)(key_tile + slot * QSA_FUSED_VALUE_STRIDE + c * 4u) =
+                v_regs[i];
         }
-        __syncthreads();
 
 #pragma unroll
         for (uint32_t pass = 0; pass < 2u; pass++) {
             const uint32_t h = warp + 8u * pass;
             if (h < 12u) {
                 const bool valid = lane < tile_count &&
-                    token_tile[lane] != UINT32_MAX;
-                const float sc = valid
-                    ? score_tile[h * QSA_FUSED_TILE + lane] : -INFINITY;
+                    tokens[lane] != UINT32_MAX;
+                /* Sum the eight warp slices in warp order, as the
+                 * separate reduce pass did. */
+                float sc = -INFINITY;
+                if (valid) {
+                    const uint32_t at = qsa_part_slot(lane, h / 3u);
+                    float v = 0.0f;
+#pragma unroll
+                    for (uint32_t w = 0; w < QSA_FUSED_WARPS; w++)
+                        v += part[(w * 12u + h) * QSA_FUSED_TILE + at];
+                    sc = v * 0.0625f;
+                }
                 float m = sc;
 #pragma unroll
                 for (uint32_t off = 16u; off > 0u; off >>= 1u)
@@ -27798,13 +27841,21 @@ qwen4exp_qsa_attention_fused_gqa12_kernel(
         }
         __syncthreads();
 
+        /* Stage the next tile's ids while this tile's values are folded;
+         * this buffer was last read two barriers ago. */
+        if (tid < QSA_FUSED_TILE && base + QSA_FUSED_TILE < count) {
+            const uint32_t next = base + QSA_FUSED_TILE + tid;
+            int32_t token = next < count ? sel[next] : -1;
+            if (token < 0 || (uint32_t)token >= cache_cap) token = -1;
+            token_tile[cur ^ 1u][tid] = (uint32_t)token;
+        }
 #pragma unroll
         for (uint32_t h = 0; h < 12u; h++) acc[h] *= scale_s[h];
-#pragma unroll 4
+        /* Masked slots carry p = 0 and a zero value row: same products
+         * as the old kernel's clamped gather of row 0 times p = 0. */
+#pragma unroll 8
         for (uint32_t t = 0; t < tile_count; t++) {
-            const uint32_t token = token_tile[t];
-            const uint32_t src = token == UINT32_MAX ? 0u : token;
-            const float v = v_cache[((uint64_t)src * 2u + kv_head) * 256u + tid];
+            const float v = key_tile[t * QSA_FUSED_VALUE_STRIDE + tid];
             const float4 *p4 = (const float4 *)(prob + t * 12u);
             const float4 p0 = p4[0];
             const float4 p1 = p4[1];
