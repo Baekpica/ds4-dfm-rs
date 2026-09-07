@@ -74,10 +74,10 @@ the wider upstream GLM backend matrix.
 
 ## Versioning after the split
 
-[v0.1.0 is in preparation](releases/v0.1.0.md): the first independent
-Rust-host baseline with stable host/runtime ownership and native performance
-observability through `ds4-perf`. This does not change the native lineage or
-publish a stable tag before production qualification.
+[v0.1.0](releases/v0.1.0.md) is the first independent Rust-host baseline with
+stable host/runtime ownership and native performance observability through
+`ds4-perf`. Its ledger records production qualification and workload limits.
+The native lineage remains unchanged.
 
 `v0.6.5-dfm` remains the behavioral baseline, not the new repository's version.
 `ds4-dfm-rs` starts at `v0.1.0-rc.1` so Rust-host releases can advance without

@@ -568,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn qwen_prefix_restores_host_ledger() {
+    fn qwen_prefix_restores_ledger() {
         // Native QWN3 stores PLE convolution bytes in word 12, not live rows.
         let prefix = HostPrefix {
             fields: [

@@ -1,11 +1,11 @@
 # ds4-dfm model families on DGX Spark
 
 `ds4-dfm-rs` is the independent Rust-host continuation of DwarfStar DFM
-(독자 파운데이션 모델, 독파모). The workspace targets v0.1.0; the latest
-published release remains v0.1.0-rc.4. Rust owns the host runtime and native
-CUDA/MMQ/VMM remains the compute backend. See [LINEAGE.md](LINEAGE.md) for
+(독자 파운데이션 모델, 독파모). v0.1.0 is the first independent Rust-host
+baseline. Rust owns the host runtime; native CUDA/MMQ/VMM remains the compute
+backend. See [LINEAGE.md](LINEAGE.md) for
 the inherited C release history and the [release ledger](releases/v0.1.0.md)
-for candidate qualification.
+for qualification and workload limits.
 
 The runtime also carries explicit non-DFM family ports, including dots3-note,
 Qwen3.8, GLM 5.3 Flash and K2-Horizon. Inclusion does not classify those source
@@ -100,12 +100,16 @@ The release gate saved and restored a 512-token Qwen Q5 session, including a
 bounded payload inside another file. Whole-file and fresh-session range loads
 preserved all 248,320 frontier logits and eight greedy decode steps exactly.
 An HTTP restart reused all 916 prompt tokens; the pre-fix server rejected the
-same saved family and recomputed them. These Session results are separate from
-the [recorded bank cache gates](rust-migration/QWEN_V065_RESTAMP_2026-08-31.md).
+same saved family and recomputed them. An exactly full 2,048-token context
+also restored all frontier logits exactly through both load paths. A fresh
+`max_seq=1` continuous-bank restart restored 920 tokens and computed a
+21-token suffix. See the [release ledger](releases/v0.1.0.md) and the
+[historical bank gates](rust-migration/QWEN_V065_RESTAMP_2026-08-31.md).
 
-GLM 5.3 session snapshots explicitly return unsupported. K2 needs its own
-candidate lifecycle evidence. Do not infer disk-KV support from shared CLI
-flags or a successful generation request.
+GLM 5.3 session snapshots explicitly return unsupported. K2's qualified
+32K serving path uses in-process VMM; external weight-owner import and disk-KV
+are not qualified. Do not infer disk-KV support from shared CLI flags or a
+successful generation request.
 
 Example for a validated payload family, within its measured context limit:
 

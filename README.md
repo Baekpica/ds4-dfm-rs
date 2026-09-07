@@ -81,17 +81,16 @@ optimized C/CUDA/Metal backend, Git ancestry and authorship, and the full
 
 ## Status
 
-**v0.1.0 is in preparation:** the first independent Rust-host release with a
-stable host/runtime boundary and a native performance-observability workflow.
+**v0.1.0:** the first independent Rust-host release with a stable host/runtime
+boundary and a native performance-observability workflow.
 Rust owns the host runtime, policy, serving, KV/state, distributed execution,
 observability, and performance orchestration. CUDA/MMQ/VMM remains native.
-The [release definition and gates](docs/releases/v0.1.0.md) distinguish current
-ds4-perf evidence from the production checks required before tagging.
+The [release ledger](docs/releases/v0.1.0.md) records production, profiler,
+numerical and memory qualification, with exact artifacts and workload limits.
 
-The latest published tag, `v0.1.0-rc.4`, adds the GLM 5.3 Flash Q2 text and
-still-image path to the Rust host. Its tagged release claim is limited to the two GLM artifacts
-and the DGX Spark CUDA execution path documented below. This branch also adds
-the K2-Horizon-375B MQ87 family; that path is not a new RC tag.
+The release includes `ds4-perf`, Qwen Session KV restoration, and the
+post-RC.4 K2-Horizon MQ87 integration. Supported family/artifact contracts
+below remain specific to their validated DGX Spark CUDA paths.
 
 | Item | Baseline evidence |
 |---|---|
@@ -328,7 +327,9 @@ existing VMM materializer then promotes every unit (95/95, 0 cold) so CUDA
 graphs never capture the unregistered mmap. Default `DS4_MEMGOV=enforce`
 accepted the 32K first boot on this host.
 
-The following command reproduces the live serving shape:
+The following command reproduces the live serving shape with in-process VMM.
+External weight-owner import is not qualified for this artifact; see the
+[release ledger](docs/releases/v0.1.0.md).
 
 ```sh
 MODEL=/path/to/K2-Horizon-375B-A23B-Mixed-Quant-GGUF/K2-Horizon-375B-A23B-MQ87-00001-of-00004.gguf
@@ -767,7 +768,7 @@ Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before sending a change.
 ## Documentation
 
 - [Documentation index](docs/README.md) — current guides, dated evidence and design records
-- [v0.1.0 release ledger](docs/releases/v0.1.0.md) — preparation and required gates
+- [v0.1.0 release ledger](docs/releases/v0.1.0.md) — qualification, evidence and scope
 - [`CHANGELOG.md`](CHANGELOG.md) — inherited and fork-side release history
 - [`docs/LINEAGE.md`](docs/LINEAGE.md) — repository provenance and split refs
 - [`docs/rust-migration/SPLIT_READINESS.md`](docs/rust-migration/SPLIT_READINESS.md) — genesis decision and immutable evidence
