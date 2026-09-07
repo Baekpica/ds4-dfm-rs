@@ -183,7 +183,7 @@ See [`ARCHITECTURE.md`](docs/rust-migration/ARCHITECTURE.md) and
 
 ## Supported hardware and backends
 
-| Backend | Status in `v0.1.0-rc.4` |
+| Backend | Documented scope |
 |---|---|
 | NVIDIA DGX Spark / GB10 | Release target. The split-era full matrix, long-context, Qwen image/MTP, ABBA, and soak gates ran here; RC.3's agent-serving matrix, RC.4's GLM Q2 text/vision gates, and the K2-Horizon-375B MQ87 32K CLI/HTTP gates also ran here. |
 | Other NVIDIA CUDA systems | Source path retained through `make cuda-generic` or an explicit `CUDA_ARCH`; not covered by the RC's full live matrix. |
@@ -199,7 +199,7 @@ different GPU or quant without rerunning the same gate.
 Every family below has an explicit architecture selector, validator, binder,
 tokenizer/chat contract, state lifecycle, and native execution path.
 
-| Family | GGUF architecture | RC note |
+| Family | GGUF architecture | Documented scope |
 |---|---|---|
 | DeepSeek V4 Flash / PRO | `deepseek4` | Flash is the main live oracle; external MTP/DSpark support is DeepSeek-only. |
 | Solar Open2 250B | `solar-open2` | Recurrent KDA state, compressed GQA KV, persistent banks. |
@@ -687,7 +687,7 @@ make -j1 test-tokenizer-parity
 make -j1 test-session-parity
 make -j1 test-agent-parity
 
-cargo test --workspace --no-default-features --locked -- --test-threads=1
+cargo test --workspace --locked -- --test-threads=1
 cargo check --workspace --all-targets --locked
 ```
 
@@ -704,8 +704,10 @@ make -j1 test-mmq-parity
 ```
 
 Family loaders, real-model forwards, long-context runs, OPP-C, ABBA, and soak
-gates need the matching models and release hardware. Their fixed order and
-evidence are under [`docs/rust-migration/`](docs/rust-migration/README.md).
+gates need the matching models and release hardware. The
+[migration evidence](docs/rust-migration/README.md) preserves the original
+protocols; the [v0.1.0 ledger](docs/releases/v0.1.0.md) tracks current release
+qualification. See [CONTRIBUTING.md](CONTRIBUTING.md) for the validation workflow.
 
 ## Repository layout
 
@@ -717,11 +719,14 @@ evidence are under [`docs/rust-migration/`](docs/rust-migration/README.md).
 | `crates/ds4-dist` | distributed codecs and runtime |
 | `crates/ds4-cli` | CLI, bench, and agent hosts |
 | `crates/ds4-web` | blocking agent web helpers |
+| `crates/ds4-perf` | standalone profiling orchestration and diagnosis |
 | `crates/ds4-sys` | narrow unsafe FFI and OS adapters |
 | `native/bridge` | opaque Rust/native boundary |
 | `ds4.c`, `ds4_cuda.cu`, `cuda/`, `metal/` | native engine and kernels |
 | `tests/parity` | C behavior oracles consumed by Rust tests |
-| `docs/rust-migration` | campaign contract, decisions, matrices, and evidence |
+| `docs/README.md` | current guides, dated evidence and design index |
+| `docs/releases` | release definitions and qualification gates |
+| `docs/rust-migration` | current boundary contracts and frozen migration evidence |
 
 ## Lineage
 
@@ -761,6 +766,8 @@ Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before sending a change.
 
 ## Documentation
 
+- [Documentation index](docs/README.md) — current guides, dated evidence and design records
+- [v0.1.0 release ledger](docs/releases/v0.1.0.md) — preparation and required gates
 - [`CHANGELOG.md`](CHANGELOG.md) — inherited and fork-side release history
 - [`docs/LINEAGE.md`](docs/LINEAGE.md) — repository provenance and split refs
 - [`docs/rust-migration/SPLIT_READINESS.md`](docs/rust-migration/SPLIT_READINESS.md) — genesis decision and immutable evidence

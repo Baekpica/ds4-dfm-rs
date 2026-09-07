@@ -1,6 +1,9 @@
 # ds4-dfm-rs split readiness
 
-Status: **GREEN for guarded repository seeding**
+Historical decision: **GREEN for guarded repository seeding**. The split
+completed at genesis `fe7733fb4f7e18204b6ea0a00fe3b136d2029b17`. This record
+preserves the original decision and evidence; seeding is not a pending task.
+Use the [v0.1.0 ledger](../releases/v0.1.0.md) for current qualification.
 
 Decision date: 2026-08-31 KST
 

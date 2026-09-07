@@ -1,7 +1,11 @@
 # FFI contract
 
-Rust talks to the existing native runtime through **one** header:
-`native/bridge/ds4_bridge.h`.
+Rust talks to the native inference runtime through **one** header:
+[`native/bridge/ds4_bridge.h`](../../native/bridge/ds4_bridge.h).
+
+NVTX is host observability: `ds4-cli` uses the optional official NVIDIA Rust
+SDK directly. Profiler symbols and handles do not belong in this ABI,
+`ds4-sys`, or `ds4-core`.
 
 ```text
 Rust application
@@ -10,7 +14,7 @@ ds4-core (safe)
     ↓
 ds4-sys (unsafe)
     ↓
-ds4_bridge.h          ← the only stable ABI
+ds4_bridge.h          ← the source-matched inference ABI
     ↓
 ds4_bridge.c
     ↓
@@ -20,7 +24,8 @@ existing ds4.h / ds4.c / ds4_cuda.cu internals
 ## Hard rules
 
 1. Do **not** bindgen `ds4.h`, `ds4_gpu.h`, or `cuda/mmq/*.h`.
-2. Do **not** expose C struct layouts to Rust. Handles are opaque.
+2. Keep native engine/device structures opaque. Only the documented
+   host-owned metadata descriptors and scalar/POD options cross by layout.
 3. Do **not** put `CUstream`, device pointers, MMQ descriptors, or
    graph execs in Rust application code.
 4. `unsafe` belongs in `ds4-sys` or a tiny reviewed native/OS adapter.
@@ -29,41 +34,28 @@ existing ds4.h / ds4.c / ds4_cuda.cu internals
 5. Errors cross the boundary as `int` + caller-provided `char *err`
    buffer, matching the existing C session helpers. No C++ exceptions.
    No Rust panic across FFI.
-6. Strings and token buffers passed into the bridge are borrowed for
-   the duration of the call. The bridge must copy if it retains them.
+6. Call-scoped strings and token buffers are borrowed until return. The
+   bridge must copy retained data or document a longer borrow backed by a
+   live Rust owner (for example, model vocabulary strings).
 7. Every successful `*_create` / `*_open` has exactly one `*_free`.
    Rust `Drop` is the only application-side destructor.
 
-## Opaque handles (Phase 1 skeleton)
+## Opaque handles and safe ownership
 
-```c
-typedef struct ds4_bridge_model ds4_bridge_model;
-typedef struct ds4_bridge_session ds4_bridge_session;
-```
+`ds4_bridge_model`, `ds4_bridge_session`, snapshots and batch contexts are
+opaque handles. The [safe wrappers](../../crates/ds4-core/src/lib.rs) own them
+through `NonNull` and matching `Drop` implementations. `Session<'m>` borrows
+its `Model`; snapshots and batches preserve the same model lifetime. Native
+execution handles are thread-affine, not transferable application state.
 
-Rust side (Phase 2):
+Do not typedef these handles to `ds4_engine` / `ds4_session`. The bridge
+structs may contain those pointers; Rust callers must not inspect them.
 
-```rust
-pub struct Model {
-    raw: NonNull<ds4_bridge_model>,
-}
+## Selected ABI operations
 
-pub struct Session {
-    raw: NonNull<ds4_bridge_session>,
-}
-```
-
-`Session` must not outlive `Model`. Encode that in the safe wrapper
-(`Session` holds a borrow or an `Arc<Model>`), not by leaking raw
-pointers into callers.
-
-Do not typedef these to `ds4_engine` / `ds4_session`. The bridge
-structs may *contain* those pointers. Rust must not know.
-
-## Initial ABI surface
-
-Phase 1 declares this set. Later phases add functions; they do not
-widen the existing ones to dump internals.
+The header is the authoritative symbol list. This table explains contracts
+used by the host and retained C parity helpers; it is not an export-count
+freeze or permission to bind native internals.
 
 | Function | Meaning |
 |---|---|
@@ -144,8 +136,8 @@ tables. The C CLI/server
 leave tensors/shape/vocab/bind and the sibling paths/maps NULL, so
 the GGUF cursor walk, C validate,
 C `vocab_load`, C `model_find_tensor` name walk, and C
-`weights_validate_layout` (base and sibling) stay the production
-default. Weight upload / VMM bind stay native. Tokenizer encode / decode / special / stop
+`weights_validate_layout` (base and sibling) stay the C oracle
+behavior. Weight upload / VMM bind stay native. Tokenizer encode / decode / special / stop
 (`ds4-core::Vocab`) is host-owned; `Model` keeps the `Vocab` so
 native token-string pointers stay valid for the engine lifetime.
 `--tokenize` / `--validate` still must not open the engine. Session timeline / sync plan /
@@ -181,13 +173,13 @@ Token arrays are `const int32_t *` + length. Do not export
 |---|---|---|---|
 | `ds4_bridge_model` | bridge | `ds4_bridge_model_free` | `NonNull`, `Drop` |
 | `ds4_bridge_session` | bridge | `ds4_bridge_session_free` | `NonNull`, `Drop` |
-| error buffer | Rust caller | Rust caller | `&mut [u8]` / `CString` scratch |
+| error buffer | Rust caller | Rust caller | `&mut [u8]` scratch |
 | token scratch | Rust caller | Rust caller | `&[i32]` |
 | GPU tensors / graphs | native session | native session free | invisible |
 
 The bridge must not return interior pointers into engine arenas.
 
-## What the bridge must not grow into
+## Native boundary scope
 
 These remain C-internal or later *narrow* additions with their own
 review, not dump-the-header expansions:
@@ -199,12 +191,14 @@ review, not dump-the-header expansions:
 - distributed pthread/socket internals
 - KV store `kv_buf` / malloc arena
 
-KV (Phase 4) and distributed (Phase 6) get their own explicit codecs
-or file-format modules in Rust. They do not ride on a giant bindgen.
+KV and distributed protocols use explicit codecs and file-format modules
+in Rust. They do not ride on a giant bindgen. New native exports require a
+concrete inference need, reviewed ownership and relevant parity evidence;
+keep host policy and profiling annotations out of this boundary.
 
 ## Linkage
 
-Phase 1–3 link the existing `make cuda-spark` objects plus
+Native Rust builds link the selected Make backend objects plus
 `native/bridge/ds4_bridge.c`. The CUDA Driver API, CUDA Runtime, and
 cuBLAS stay on the native link line (`-lcuda -lcudart -lcublas`).
 
@@ -213,57 +207,11 @@ second context, a second VMM arena).
 
 ## Versioning
 
-The ABI is source-stable on `rust-host`. Changing a function
-signature is a dedicated commit that updates this file, the header,
-`ds4-sys`, and the parity tests together.
+The bridge is a source-matched contract. A signature or descriptor change
+updates the header, native implementation, `ds4-sys`, safe wrappers and
+relevant parity tests together. The production Rust consumer is `ds4-sys`;
+C proof programs may also include the bridge header.
 
-There is no promise of binary compatibility with out-of-tree
-callers. The only in-tree consumer is `ds4-sys`.
-
-## Final CUDA-facing ABI (Phase 8/9 target)
-
-Once the host is Rust, the remaining native exports shrink toward:
-
-```text
-backend_create
-load_weights
-session_create
-prefill
-decode
-kv_save / kv_load primitives
-backend_destroy
-```
-
-Until then, `ds4_bridge_*` wrapping the current `ds4_engine` /
-`ds4_session` API is the correct strangler seam: same CUDA path,
-no kernel rewrite.
-
-## Freeze: no unplanned `ds4_bridge_*` growth
-
-`native/bridge/ds4_bridge.h` is frozen against **new** symbols except
-those that map to create / load / session / prefill / decode / KV /
-destroy. This wave does **not** mass-delete extras. Header and `.c`
-currently declare the same 62 functions.
-
-Allowed existing (21): `model_open`, `model_open_distributed`,
-`model_free`, `session_create`, `session_free`, `session_sync`,
-`session_sync_cb`, `eval`, `session_save_payload`,
-`session_load_payload`, `session_load_payload_range`,
-`session_save_layer_payload`, `session_load_layer_payload`,
-`snapshot_create`, `snapshot_free`, `session_save_snapshot`,
-`session_load_snapshot`, `batch_ctx_create_fit`, `batch_ctx_destroy`,
-`batch_ctx_bank_save_payload`, `batch_ctx_bank_load_payload_range`.
-
-Frozen extras (41; keep until a dedicated shrink):
-
-| Group | Symbols |
-|---|---|
-| Host bind inventory | `bind_plan_check`, `bind_plan_match` |
-| Dist / worker oracle | `model_run_distributed_worker`, `session_eval_layer_slice`, `session_layer_slice_reset`, `session_distributed_route_ready` |
-| Device warm | `model_boot_prewarm` |
-| Decode / sample extras | `eval_speculative_argmax`, `session_argmax`, `session_argmax_excluding`, `session_sample` |
-| Session queries / control | `session_pos`, `session_ctx`, `session_power`, `session_set_power`, `session_rewind`, `session_invalidate`, `session_generation`, `session_prefill_cap`, `session_exaone_rewind_span` |
-| Tokenizer / identity | `tokenize_text`, `tokenize_rendered_chat`, `token_text`, `token_eos`, `token_is_stop`, `encode_chat_prompt`, `model_id`, `model_routed_quant_bits` |
-| Proof / debug | `session_top_logprobs`, `session_copy_logits`, `session_output_head_bench`, `snapshot_len` |
-| Memgov snaps | `mem_census_snap`, `mem_observe_snap`, `mem_substrate_outstanding` |
-| Batch / continuous | `batch_ctx_max_seq`, `batch_ctx_raw_cap`, `batch_ctx_seq_cap`, `batch_ctx_generate_static`, `batch_ctx_bank_snapshot`, `continuous_generate` |
+There is no promise of binary compatibility with out-of-tree callers. The
+[v0.1.0 boundary](../releases/v0.1.0.md) establishes stable ownership and
+behavior; it does not freeze an obsolete migration-era symbol count.

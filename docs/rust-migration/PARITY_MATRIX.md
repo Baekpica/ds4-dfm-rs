@@ -1,6 +1,10 @@
 # Parity matrix
 
-> **Freshness (2026-08-31 KST):** the complete `v0.6.5-dfm` live matrix is
+Frozen migration evidence. Preserve its fixture definitions and recorded
+results; use the [v0.1.0 ledger](../releases/v0.1.0.md) for current release
+qualification. Passing this historical matrix is not a new candidate pass.
+
+> **Recorded result (2026-08-31 KST):** the complete `v0.6.5-dfm` live matrix is
 > green at `eb4ba77`: PASS 57 + PASS* 3 (C-shared E-2, E-3, E-6), FAIL 0,
 > BLOCKED 0. The final host-only fix and 13/13 cheap/parity re-audit are green
 > at `d126e56`. Qwen Q5+Sidecar owns the campaign's only two-hour soak;
@@ -683,5 +687,6 @@ performance gate.
 
 ## Status of this matrix
 
-Track per-subsystem color in [STATUS.md](STATUS.md). This file is
-the definition of the colors; STATUS is the current paint.
+The superseded subsystem status is available as an
+[archived snapshot](https://github.com/Baekpica/ds4-dfm-rs/blob/ac750d61ef0306d30cc595081883f61ec847c3d8/docs/rust-migration/STATUS.md).
+Current release gates belong in the [v0.1.0 ledger](../releases/v0.1.0.md).

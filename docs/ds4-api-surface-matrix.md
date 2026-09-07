@@ -1,13 +1,12 @@
 # DS4 API surface matrix
 
-Status: Rust host `v0.1.0-rc.4`. The original route oracle came from the
-v0.5.6/v0.6.0 API-promotion arc; this document records what each HTTP
-generation surface supports today, which serving lane executes it, and the
-known gaps.
+Status: independent Rust host, v0.1.0 in preparation; the latest published
+release is v0.1.0-rc.4. This document describes current source behavior.
+Candidate qualification is tracked in the [release ledger](releases/v0.1.0.md).
+The original route oracle came from the v0.5.6/v0.6.0 API-promotion arc.
 
-The wire contracts below are model-family neutral in `ds4-dfm-rs`. DeepSeek
-uses the Entrpi continuous graph, while Solar Open2, K-EXAONE, Motif-3, Qwen,
-and GLM 5.3 provide family-native state where supported.
+Wire contracts are shared across the [supported families](../README.md#supported-model-families).
+Native state and serving-lane support remain family-specific.
 Tokenizer, prompt/tool syntax, and stop-token handling are dispatched by the
 loaded model family without changing the endpoint schemas.
 
@@ -53,8 +52,7 @@ Inc 6 allows keeping it serial; the scoping comment sits at
 continuation records at the cont finalize; their output-only follow-ups
 claim the bank back under generation/frontier equality
 (`cont_bank_continuation_admit`), and victim placement never destroys a
-bank inside its record's grace/pin window (Inc 6c). Kill switches, kept
-one release: `DS4_SERVER_CONT_ANTHROPIC` / `DS4_SERVER_CONT_RESPONSES`
+bank inside its record's grace/pin window (Inc 6c). Compatibility kill switches: `DS4_SERVER_CONT_ANTHROPIC` / `DS4_SERVER_CONT_RESPONSES`
 (stateless promotion, Inc 3) and `DS4_SERVER_CONT_TOOLS_ANTHROPIC` /
 `DS4_SERVER_CONT_TOOLS_RESPONSES` (tool promotion, Inc 6 — effective only
 while the surface's stateless switch is on).
@@ -63,30 +61,30 @@ Within OpenAI, still serial: non-streaming `return_token_ids` chat,
 completion-kind requests with `return_token_ids`, and completion-kind
 requests carrying tools.
 
-GLM 5.3 text and image requests use the serial lane in RC.4. Inline PNG/JPEG
-inputs share the four API parsers, but only the exact Q2 main GGUF plus vision
-sidecar is in the release support claim.
+GLM 5.3 text and image requests use the serial lane. Inline PNG/JPEG inputs
+have message shapes in Chat Completions, Responses and Anthropic Messages;
+legacy Completions has no image form. GLM live evidence covers text/image
+Chat with the exact Q2 main GGUF and vision sidecar. Responses and Anthropic
+image shapes have model-free parser coverage, not equivalent GLM live gates.
+See the [artifact and API scope](../README.md#glm-53-flash-release-scope).
 
 ## Output-budget (`max_tokens`) semantics today
 
-All four parsers accept any integer without range validation (per-surface
-range enforcement is Inc 2 work, after endpoint-native errors exist).
-Since Inc 0b, every lane interprets the budget through one helper
-(`request_decode_budget`) with three states:
+All four parsers reject negative decode budgets with an endpoint-native
+error naming the supplied field. Numeric values above `i32::MAX` are capped;
+fractional values are truncated, so this is not strict integer validation.
+The shared `request_decode_budget` helper distinguishes:
 
 - **omitted** — the server default (`--tokens`, default 393216);
-- **explicit `<= 0`** — zero decode tokens (prefill-only): the serial
-  lane's long-standing semantics and Anthropic's documented
-  cache-prewarm contract (`stop_reason: "max_tokens"`, empty content);
+- **explicit zero** — zero requested decode tokens;
 - **positive** — the requested budget.
 
-Residual, documented: the batched engine floors `max_new` at 1 (it
-cannot retire an admission without sampling a seed token), so an
-explicit zero that reaches a batched lane decodes exactly one token
-instead of the pre-0b behavior of substituting the full server default.
-No supported surface routes zero-budget work to a batched lane today
-(Anthropic is serial by the API gate); true zero-decode stays a serial
-capability until prefill-only routing lands (plan Inc 3).
+The serial lane supports zero-decode prefill. Anthropic explicitly adds the
+prefill-only routing need for a zero budget, preserving its cache-prewarm
+contract (`stop_reason: "max_tokens"`, empty content). Other surfaces can
+route zero-budget requests to a batched lane, whose native engine floors
+`max_new` at one to retire the admission. Those requests may decode one token.
+Do not rely on route-independent zero-decode behavior outside Anthropic.
 
 The Anthropic parser requires `messages` but does not require
 `max_tokens` (upstream requires it); an omitted value gets the server
@@ -128,10 +126,13 @@ an authenticated namespace lands (documented restriction; also in
   `DS4_SERVER_CHUNKED=0` restores the Content-Length-only reader), and
   `Accept`; the header is accepted and discarded, so a retry is a new
   generation with new IDs.
-- **`/v1/batch`** is a bulk scheduling consumer, not a projection surface.
-- **`return_token_ids`** is an OpenAI Chat extension only.
+- **`/v1/batch`** is not implemented by the Rust host (404); the retained C
+  bulk path does not make it a production Rust endpoint.
+- **`return_token_ids`** is a DS4 extension on OpenAI Chat and Completion,
+  with the serial-routing restrictions described above; it is not a shared
+  four-surface feature.
 
-## Known defects recorded as fixtures (fixed in later increments)
+## Historical defects and retained fixtures
 
 1. **FIXED (Inc 0b): continuous legacy-Completion streaming emitted chat
    deltas.** `cont_on_token` projected every streaming row through the
@@ -161,7 +162,7 @@ an authenticated namespace lands (documented restriction; also in
    refusals). Negative decode budgets now reject at parse with the
    client's own field name (`max_tokens` / `max_completion_tokens` /
    `max_output_tokens`); explicit ZERO stays supported on every surface
-   (Inc 0b route-invariant prefill-only, the Anthropic prewarm contract).
+   with the lane-dependent behavior described under output budgets above.
 4. **FIXED (Inc 0b): admission accounting dropped decode-growth
    commitments** once a bank's prefill landed (the old `outstanding`
    charge covered pending prompt targets only). Every continuous
@@ -195,14 +196,13 @@ an authenticated namespace lands (documented restriction; also in
 
 ## Recorded quirks (current behavior, not upstream-shaped)
 
-- **Anthropic response IDs**: the serial lane mints one `chatcmpl-N` /
+- **Anthropic response IDs**: the host mints a shared `chatcmpl-N` /
   `cmpl-N` job ID for every surface, and `anthropic_final_response` /
   the Anthropic stream use it directly — so Anthropic clients see
   `"id":"chatcmpl-N"` instead of an upstream-shaped `msg_*` ID.
   Responses is unaffected (`responses_final_response` and
   `responses_stream_init` mint their own `resp_*`/`rs_*`/`msg_*` IDs).
-  Identity minting moves into the typed wire session in a later
-  increment; until then this is frozen, documented behavior.
+  This is the current compatibility behavior.
 
 ## Route observation metrics
 
@@ -214,9 +214,9 @@ to serial increments both lanes. These counters are observation only;
 they exist so route promotion can prove engagement (an eligible request
 actually moved lanes) instead of inferring it.
 
-## Fixture inventory (`ds4_test --server`)
+## Retained C oracle fixtures (`ds4_test --server`)
 
-Deterministic token/text tapes replayed through the CURRENT projectors,
+These fixtures replay deterministic token/text tapes through the C projectors,
 validated by protocol event validators (event order, one open/close per
 block/item, contiguous Responses `sequence_number`, UTF-8 hold-back):
 
@@ -237,7 +237,9 @@ block/item, contiguous Responses `sequence_number`, UTF-8 hold-back):
 
 Existing per-feature streaming tests (`test_openai_tool_stream_*`,
 `test_anthropic_tool_stream_*`, `test_responses_*`) cover tool-call
-projection per surface and remain part of the oracle.
+projection per surface and remain part of the oracle. Current Rust checks
+include `make test-server-parity` and the `ds4-server` crate tests; see
+[CONTRIBUTING.md](../CONTRIBUTING.md).
 
 Live-sampled output is never a byte oracle: continuous temp-0 emissions
 jitter run-to-run, so live end-to-end gates assert schema, event automata,

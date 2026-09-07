@@ -1,6 +1,11 @@
 # C golden baseline
 
-The resumed campaign uses the `v0.6.5-dfm` release lineage as its immutable
+Historical oracle for the completed migration, frozen on 2026-08-31. The
+commands and results below describe that campaign; do not repeat its branch
+setup. Current release qualification is tracked in the
+[v0.1.0 ledger](../releases/v0.1.0.md).
+
+The migration campaign used the `v0.6.5-dfm` release lineage as its immutable
 correctness oracle. Qwen behavior is frozen at the final C feature cut
 `4d40d97`; see
 [QWEN_V065_RESTAMP_2026-08-31.md](QWEN_V065_RESTAMP_2026-08-31.md).

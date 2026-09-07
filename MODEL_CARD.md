@@ -4,7 +4,11 @@ This document extracts the most important information from the official
 DeepSeek-V4-Flash Hugging Face model card, with emphasis on facts that matter
 for local inference, DS4 development, and benchmark interpretation.
 
-Source: https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash
+This is an upstream DeepSeek synopsis, not DS4 runtime or GGUF release
+evidence. Use the [supported artifact scope](README.md#supported-model-families)
+and [release ledger](docs/releases/v0.1.0.md) for this repository's claims.
+
+Source: [official DeepSeek-V4-Flash card, pinned revision](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/blob/60d8d70770c6776ff598c94bb586a859a38244f1/README.md)
 
 ## Model Family
 
@@ -141,8 +145,8 @@ official prompt renderer is the Python code in
 `encoding/encoding_dsv4.py`, with examples and tests in the same `encoding`
 directory:
 
-- https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/raw/main/encoding/encoding_dsv4.py
-- https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/raw/main/encoding/test_encoding_dsv4.py
+- https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/raw/60d8d70770c6776ff598c94bb586a859a38244f1/encoding/encoding_dsv4.py
+- https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/raw/60d8d70770c6776ff598c94bb586a859a38244f1/encoding/test_encoding_dsv4.py
 
 The important special tokens are:
 
