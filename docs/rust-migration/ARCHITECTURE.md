@@ -5,6 +5,28 @@ The C tree in the `v0.6.5-dfm` lineage remains the behavior oracle until a
 subsystem has passed the parity matrix and is promoted. Qwen behavior is
 frozen at the post-tag C cut `4d40d97`.
 
+## Independent Rust-host baseline
+
+[v0.1.0](../releases/v0.1.0.md) defines the first independent Rust-host release
+with a stable host/runtime boundary and a native performance-observability
+workflow. The RC series established migration, parity, and ownership; the
+independent host also owns observability and performance orchestration.
+
+`ds4-perf` runs benchmarks and Nsight in separate processes. Optional NVTX
+annotations belong to `ds4-cli`, which uses NVIDIA's maintained Rust SDK
+directly. They do not extend `ds4-core`, `ds4-sys`, or the inference bridge.
+`ds4-sys` remains the unsafe boundary for ds4's native backend.
+
+```text
+Workflow: ds4-perf scout -> diagnosis -> code change -> A/B + proof
+
+ds4-cli -- optional --> NVIDIA nvtx
+   |
+ds4-core
+   |
+ds4-sys -> native CUDA / MMQ / VMM
+```
+
 ## Strangler, not rewrite
 
 ```text
@@ -102,7 +124,8 @@ crates/
 ├── ds4-kv/       KVC format + store policy (Phase 4)
 ├── ds4-web/      agent web utility (Phase 5; blocking I/O)
 ├── ds4-server/   route_decide + HTTP door + parsers + projectors + admit + bounded owner FIFO + /metrics memgov porcelain + live census overlay + family render + tool-schema/invoke + generated-tool parse (Phase 7)
-└── ds4-dist/     distributed codecs + runtime (Phase 6)
+├── ds4-dist/     distributed codecs + runtime (Phase 6)
+└── ds4-perf/     standalone benchmark / Nsight orchestration and diagnosis
 native/
 └── bridge/
     ├── ds4_bridge.h

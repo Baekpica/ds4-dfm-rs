@@ -9,7 +9,7 @@ the HTTP server, and the coding agent are built and tested together.
 `ds4-dfm-rs` is the independent Rust-host continuation of the DFM line from
 [`Baekpica/ds4`](https://github.com/Baekpica/ds4). Its NVIDIA reference machine
 is the 128 GB DGX Spark / GB10. It retains the native Metal and CUDA heritage,
-but this release's complete live gate ran on CUDA.
+and the published RC live evidence is CUDA-based.
 
 As in the original [`antirez/ds4`](https://github.com/antirez/ds4), model
 support is intentionally opportunistic. The project follows useful open
@@ -28,6 +28,8 @@ retired when a better model makes it irrelevant.
 - Serve Qwen3.8 Flash Next Q5 with SSD-PLE sidecars, embedded MTP, and still
   image input.
 - Serve K2-Horizon-375B MQ87 with IFM chat/tool syntax on the continuous lane.
+- Profile prefill and decode with [ds4-perf](docs/prefill-decode-optimization-playbook.md#local-scout-with-ds4-perf),
+  inspect conservative diagnoses, and retain the raw Nsight evidence.
 - Treat the existing family implementations as rails for a new model or a
   specific machine, while keeping the resulting path small enough to inspect.
 
@@ -79,12 +81,19 @@ optimized C/CUDA/Metal backend, Git ancestry and authorship, and the full
 
 ## Status
 
-`v0.1.0-rc.4` adds the explicit GLM 5.3 Flash Q2 text and still-image path to
-the Rust host. Its tagged release claim is limited to the two GLM artifacts
+**v0.1.0 is in preparation:** the first independent Rust-host release with a
+stable host/runtime boundary and a native performance-observability workflow.
+Rust owns the host runtime, policy, serving, KV/state, distributed execution,
+observability, and performance orchestration. CUDA/MMQ/VMM remains native.
+The [release definition and gates](docs/releases/v0.1.0.md) distinguish current
+ds4-perf evidence from the production checks required before tagging.
+
+The latest published tag, `v0.1.0-rc.4`, adds the GLM 5.3 Flash Q2 text and
+still-image path to the Rust host. Its tagged release claim is limited to the two GLM artifacts
 and the DGX Spark CUDA execution path documented below. This branch also adds
 the K2-Horizon-375B MQ87 family; that path is not a new RC tag.
 
-| Item | RC scope |
+| Item | Baseline evidence |
 |---|---|
 | Release baseline | `v0.6.5-dfm` (`d02e2a4`) |
 | Frozen Qwen C behavior | post-tag cut `4d40d97` |
@@ -99,8 +108,8 @@ PASS* cells reproduced on the matching C control, with no Rust-only failure.
 The detailed evidence is in
 [`SPLIT_READINESS.md`](docs/rust-migration/SPLIT_READINESS.md).
 
-This remains release-candidate software. It accepts only explicit, validated
-GGUF layouts; it is not a general GGUF runner.
+The `0.1.0` workspace version prepares the release; the stable tag depends on
+the recorded release gates. Only explicit, validated GGUF layouts are accepted.
 
 ## Design philosophy
 
@@ -161,6 +170,8 @@ native structs.
 | Model/session handles and lifetime policy | safe Rust over opaque native handles |
 | KVC metadata, persistence policy, cross-host codecs | Rust (`ds4-kv`) |
 | Distributed protocol and orchestration | Rust (`ds4-dist`) |
+| Profiling orchestration, normalization, diagnosis | Rust (`ds4-perf`, separate process) |
+| Prefill/decode NVTX annotations | Rust (`ds4-cli`, optional official NVIDIA SDK) |
 | CUDA/VMM/MMQ/graphs/attention/MoE/vision | native C/CUDA |
 | Metal and CPU reference paths | inherited native backend |
 | C parity executables and `ds4-eval` | retained release oracles |
