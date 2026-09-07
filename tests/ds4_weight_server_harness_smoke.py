@@ -349,11 +349,39 @@ def run_base_only_default_scope(tmp: Path, base: Path, fake_engine: Path, fake_w
         raise AssertionError("base-only validation unexpectedly required uploaded_mtp")
 
 
+def run_content_manifest(tmp: Path, base: Path) -> None:
+    from ds4_proof import validate_weight_manifest
+
+    manifest = tmp / "content.manifest"
+    prefix = ("DS4_WEIGHT_SERVER_VMM_V1\nbroker /tmp/test-broker\n"
+              f"owner {os.getpid()} 0 base -\n")
+    allocation = "alloc 0 base 1 0 1 1\n"
+    content = "content base 1 fnv1a-p16m-v1 0123456789abcdef\n"
+    for record in ["", content]:
+        manifest.write_text(prefix + record + allocation)
+        result = validate_weight_manifest(manifest, str(base), None, "base")
+        assert result["ranges"] == {"base": 1}
+    for record in [
+        content.replace("base 1", "base 2"),
+        content.replace("base", "unexpected"),
+        content.replace("fnv1a-p16m-v1", "unknown"),
+        content.replace("0123456789abcdef", "not-a-fingerprint"),
+        content + content,
+    ]:
+        manifest.write_text(prefix + record + allocation)
+        try:
+            validate_weight_manifest(manifest, str(base), None, "base")
+        except ValueError:
+            continue
+        raise AssertionError(f"accepted malformed content record: {record!r}")
+
+
 def main() -> int:
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     with tempfile.TemporaryDirectory(prefix="ds4-weight-harness-smoke.") as raw_tmp:
         tmp = Path(raw_tmp)
         base, mtp, fake_engine, fake_weight_server = write_fake_tools(tmp)
+        run_content_manifest(tmp, base)
         run_owned_lifecycle(tmp, base, mtp, fake_engine, fake_weight_server)
         run_budget_preset(tmp, base, mtp, fake_engine)
         run_external_manifest(tmp, base, mtp, fake_engine)

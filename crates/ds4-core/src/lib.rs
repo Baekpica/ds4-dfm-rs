@@ -60,8 +60,8 @@ pub use mem_gov::{
 pub use payload::{
     dump_cmd as payload_dump_cmd, dump_script as payload_dump_script, encode_fields, parse_prefix,
     put_u32, tail as payload_tail, HostPrefix, PayloadError, PayloadLayout, HEADER_BYTES,
-    LAYOUT_DOTS3, LAYOUT_EXAONE, LAYOUT_MOTIF3, LAYOUT_SOLAR, MAGIC as PAYLOAD_MAGIC,
-    U32_FIELDS as PAYLOAD_U32_FIELDS, VERSION as PAYLOAD_VERSION,
+    LAYOUT_DOTS3, LAYOUT_EXAONE, LAYOUT_MOTIF3, LAYOUT_QWEN4EXP, LAYOUT_SOLAR,
+    MAGIC as PAYLOAD_MAGIC, U32_FIELDS as PAYLOAD_U32_FIELDS, VERSION as PAYLOAD_VERSION,
 };
 pub use progress::PrefillCheckpoint;
 pub use session::{

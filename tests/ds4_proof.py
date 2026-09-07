@@ -1753,6 +1753,7 @@ def validate_weight_manifest(path: Path, base_model: str, mtp_model: str | None,
     backend = ""
     broker_path = ""
     owner: dict[str, Any] = {}
+    content_models: set[str] = set()
     for lineno, raw in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -1770,6 +1771,16 @@ def validate_weight_manifest(path: Path, base_model: str, mtp_model: str | None,
             if backend != "vmm" or len(parts) != 2:
                 raise ValueError(f"invalid weight manifest broker line {lineno}: {raw}")
             broker_path = parts[1]
+            continue
+        if parts and parts[0] == "content":
+            # Validate metadata here; native import verifies the file digest.
+            if (len(parts) != 5 or parts[1] not in expected
+                    or parts[1] in content_models
+                    or parts[2] != str(expected[parts[1]])
+                    or parts[3] != "fnv1a-p16m-v1"
+                    or re.fullmatch(r"[0-9a-fA-F]{16}", parts[4]) is None):
+                raise ValueError(f"invalid weight manifest content line {lineno}: {raw}")
+            content_models.add(parts[1])
             continue
         if parts and parts[0] == "owner":
             if len(parts) != 5:

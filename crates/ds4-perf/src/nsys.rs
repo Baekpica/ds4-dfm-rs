@@ -55,7 +55,16 @@ pub fn profile_command(caps: &Capabilities, out: &Path, bench: &[OsString]) -> V
 }
 
 pub fn collect(caps: &Capabilities, out: &Path) -> Evidence {
+    collect_with(caps, out, runner::run)
+}
+
+fn collect_with(
+    caps: &Capabilities,
+    out: &Path,
+    mut run: impl FnMut(&[OsString], &Path, &str) -> Result<(), String>,
+) -> Evidence {
     let mut evidence = Evidence::default();
+    let mut input = out.join("trace.nsys-rep");
     // Keep each stdout/stderr verbatim. In particular cuda_api_sync is an
     // analyze rule in newer Nsight, not a stats report.
     for (requested, file) in [
@@ -90,9 +99,15 @@ pub fn collect(caps: &Capabilities, out: &Path) -> Evidence {
         .map(Into::into)
         .into();
         command.push(selected.into());
-        command.push(out.join("trace.nsys-rep").into());
-        match runner::run(&command, out, file) {
+        command.push(input.clone().into());
+        match run(&command, out, file) {
             Ok(()) => {
+                // Reuse the completed export. Reopening the .nsys-rep can
+                // trigger Nsight's stale-export check between reports.
+                let sqlite = out.join("trace.sqlite");
+                if sqlite.is_file() {
+                    input = sqlite;
+                }
                 if let Err(err) = std::fs::copy(
                     out.join(format!("{file}.stdout")),
                     out.join(format!("{file}.csv")),
@@ -227,6 +242,42 @@ fn projection(reader: impl BufRead, phases: &mut BTreeMap<String, Phase>) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reports_reuse_the_completed_export() {
+        let out = std::env::temp_dir().join(format!("ds4-nsys-export-{}", std::process::id()));
+        std::fs::create_dir(&out).unwrap();
+        let caps = Capabilities {
+            reports: "nvtx_gpu_proj_sum -- projection\nnvtx_kern_sum[:base] -- kernels\ncuda_gpu_kern_sum[:base] -- kernels\n".into(),
+            ..Default::default()
+        };
+        let mut completed = Vec::new();
+        let evidence = collect_with(&caps, &out, |command, dir, name| {
+            let input = Path::new(command.last().unwrap());
+            let sqlite = dir.join("trace.sqlite");
+            // Reproduce Nsight rejecting a second .nsys-rep read as stale,
+            // even though the first report just completed its SQLite export.
+            if sqlite.exists() && input != sqlite {
+                return Err("Existing SQLite export found: older than input file".into());
+            }
+            std::fs::write(sqlite, []).unwrap();
+            let csv = if name == "nsys-nvtx-kernels" {
+                "Name,Total Time (ns)\n:ds4.decode/kernel,3000\n"
+            } else {
+                "Name,Total Time (ns)\nkernel,3000\n"
+            };
+            std::fs::write(dir.join(format!("{name}.stdout")), csv).unwrap();
+            completed.push(name.to_owned());
+            Ok(())
+        });
+        std::fs::remove_dir_all(out).unwrap();
+        assert_eq!(
+            completed,
+            ["nsys-nvtx", "nsys-nvtx-kernels", "nsys-kernels"]
+        );
+        assert_eq!(evidence.phases["ds4.decode"].kernels[0].total_ns, 3000.0);
+        assert_eq!(evidence.global[0].name, "kernel");
+    }
 
     #[test]
     fn templates_repeats_and_phases() {
