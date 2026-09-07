@@ -574,14 +574,15 @@ trust domain when clients are not mutually trusted.
 ![Qwen3.8 Flash Next long-context throughput on DGX Spark](docs/qwen38-long-context-throughput.png)
 
 *Qwen3.8 Flash Next MQ-Q5 + SSD-PLE BF16 on one DGX Spark / GB10 at
-[`abdf25c`](https://github.com/Baekpica/ds4-dfm-rs/commit/abdf25c),
+[`6e036c4`](https://github.com/Baekpica/ds4-dfm-rs/commit/6e036c4),
 measured by `ds4-bench` as 2,048-token incremental prefills on one warm
 session from 2K through 64K, followed by 128 greedy tokens at each frontier.
 Resident VMM owner with aligned Q8 artifacts, 2 GiB PLE cache, 16 workers.
 With embedded MTP draft 2 active throughout, mean prefill including MTP prefix
-maintenance was **1,235.9 tok/s** and mean decode was **28.4 tok/s**; no MTP
-quench or runtime failure occurred.  The same protocol at `a8fcd97` (raw-layout
-owner, 1 GiB PLE cache) was 1,163.5 / 28.0 tok/s.*
+maintenance was **1,248.8 tok/s** and mean decode was
+**28.4 tok/s**; no MTP quench or runtime failure occurred.  The
+same protocol at `abdf25c` was 1,235.9 / 28.4 tok/s and at `a8fcd97`
+(raw-layout owner, 1 GiB PLE cache) 1,163.5 / 28.0 tok/s.*
 
 The 2026-09-06 prefill rounds
 ([`docs/qwen38-prefill-2026-09-06.md`](docs/qwen38-prefill-2026-09-06.md))
@@ -590,10 +591,23 @@ at 8,192 tokens and 1,382.7 to **1,439.7 tok/s** at 65,536 tokens
 (`main` `0510117` -> `974d706`: opening chunk, MoE glue, one-pass block
 output).  Three further rounds on `feature/qwen-prefill-opt-20260906-r4`
 (`d9989bb` / `c00eacd` / `abdf25c`: D2R for K=2560 qkv/z/q, one HC-mix Q8
-emit, o_proj K=6144 onto D2R) take the same-hour cold medians on the
+emit, o_proj K=6144 onto D2R) took the same-hour cold medians on the
 aligned-Q8 owner to **1,431.5 tok/s** at 8K and **1,554.8 tok/s** at 64K.
-Every adopted round is bit-identical to the kernels it replaces on the
-fixtures.
+
+The 2026-09-07 rounds
+([`docs/qwen38-prefill-2026-09-07.md`](docs/qwen38-prefill-2026-09-07.md):
+SwiGLU quantized straight into the fused expert-down, four barriers per
+fused-QSA tile with conflict-free partial stores, SSD-PLE gather leased in
+16,384-row tiles under one lock; `ef37468` -> `6e036c4`) take the same
+protocol from 1,429.9 to **1,504.6 tok/s** at 8K (+5.2 %), from 1,557.2 to
+**1,648.4 tok/s** at 64K (+5.9 %) and from 1,439.9 to **1,513.0 tok/s** at
+196,608 tokens (+5.1 %, one run each), base and final interleaved in the same
+hour; on the production two-bank server shape the 8,259-token repeated prompt
+went 1,481.7 -> **1,559.9 tok/s** (+5.3 %) and the 7,937-token cold-PLE
+markdown prompt 1,555.9 -> **1,652.6 tok/s** (+6.2 %), with the 175-token
+greedy continuation byte-identical before and after.  Every adopted round is
+bit-identical to the kernels it replaces on the fixtures, and the 8,192-token
+frontier logits of the final binary match the base binary's byte for byte.
 
 The original split gate claims parity class, not a universal speedup.
 

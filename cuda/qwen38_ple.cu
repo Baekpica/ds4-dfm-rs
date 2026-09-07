@@ -25,7 +25,15 @@ typedef struct {
     ds4_ple_row_view views[1];
 } ds4_ple_cuda_leases;
 
-#define DS4_PLE_CUDA_TILE_ROWS 256u
+/* Rows per gather tile.  Every tile costs a pageable descriptor copy, a
+ * kernel launch and a lease-release host function that the stream waits
+ * on, so at 256 rows a prefetched 6,144-token chunk (105K rows) paid that
+ * fixed cost 410 times while the GPU idled at layer 1; 16,384-row tiles
+ * pay it 7 times and pin at most 64 MiB of pages per tile (two banks
+ * gather alternately into one 2 GiB cache).  The ready-row lease takes a
+ * whole tile under one lock, and a tile still ends early at a row whose
+ * page is loading.  DS4_PLE_CUDA_TILE_ROWS overrides (256 = old size). */
+#define DS4_PLE_CUDA_TILE_ROWS 16384u
 
 struct ds4_qwen38_ple_cuda {
     ds4_ple_store *store;
@@ -89,11 +97,29 @@ __global__ static void qwen38_ple_gather_kernel(
     }
 }
 
+static size_t ple_tile_rows(void) {
+    static size_t rows = 0;
+    if (rows == 0) {
+        const char *v = getenv("DS4_PLE_CUDA_TILE_ROWS");
+        const long parsed = v && v[0] ? strtol(v, NULL, 10) : 0;
+        rows = parsed > 0 ? (size_t)parsed : DS4_PLE_CUDA_TILE_ROWS;
+    }
+    return rows;
+}
+
+static bool batch_acquire_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *v = getenv("DS4_PLE_NO_BATCH_ACQUIRE");
+        enabled = !(v && v[0] && !(v[0] == '0' && v[1] == '\0'));
+    }
+    return enabled != 0;
+}
+
 static void release_leases(ds4_ple_cuda_leases *leases) {
     if (!leases) return;
-    for (size_t i = 0; i < leases->row_count; i++)
-        ds4_ple_store_release_row(
-            leases->store, &leases->views[i]);
+    ds4_ple_store_release_rows(
+        leases->store, leases->views, leases->row_count);
     free(leases->host_descriptors);
     free(leases);
 }
@@ -301,10 +327,9 @@ bool ds4_qwen38_ple_cuda_gather(
             error, error_size,
             "PLE CUDA row count exceeds the grid limit");
     cudaStream_t stream = (cudaStream_t)stream_handle;
+    const size_t tile_rows_max = ple_tile_rows();
     const size_t descriptor_capacity =
-        row_count < DS4_PLE_CUDA_TILE_ROWS
-            ? row_count
-            : DS4_PLE_CUDA_TILE_ROWS;
+        row_count < tile_rows_max ? row_count : tile_rows_max;
     ds4_ple_cuda_row *device_descriptors = NULL;
     cudaError_t status = cudaMallocAsync(
         (void **)&device_descriptors,
@@ -337,7 +362,34 @@ bool ds4_qwen38_ple_cuda_gather(
         ds4_ple_cuda_row *descriptors =
             (ds4_ple_cuda_row *)leases->host_descriptors;
 
+        /* Rows whose pages already sit ready in the cache (every row of
+         * a prefetched chunk) are leased under one lock; the walk below
+         * only runs from the first row that is still loading.
+         * DS4_PLE_NO_BATCH_ACQUIRE=1 keeps the per-row walk (A/B).
+         *
+         * A tile that already holds leases must never wait for a cache
+         * slot: its leases are released by the stream callback only
+         * after the tile is enqueued, so a set whose ways this tile has
+         * pinned would never drain.  Only the first row of an empty tile
+         * blocks; every later row is a try, and a full set ends the
+         * tile, which is enqueued before the next tile blocks. */
         size_t tile_rows = 0;
+        if (batch_acquire_enabled() &&
+            !ds4_ple_store_acquire_ready_rows(
+                context->store, row_ids + emitted, capacity,
+                leases->views, &tile_rows, error, error_size)) {
+            abort_gather(stream, device_descriptors, leases);
+            return false;
+        }
+        leases->row_count = tile_rows;
+        for (size_t i = 0; i < tile_rows; i++) {
+            if (!describe_row(
+                    context, &leases->views[i], &descriptors[i],
+                    error, error_size)) {
+                abort_gather(stream, device_descriptors, leases);
+                return false;
+            }
+        }
         while (tile_rows < capacity) {
             ds4_ple_row_view *view =
                 &leases->views[tile_rows];

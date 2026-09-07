@@ -1719,6 +1719,81 @@ int ds4_mmq_moe_worklist_tail_launch(
     return 0;
 }
 
+/* Weighted SwiGLU straight into the fused expert-down's two Q8_1 operands
+ * (Qwen3.8 [main | tail] rows, width = K + 128).  One block per sorted
+ * assignment, one warp per 128-value block: warps 0..K/128-1 write the
+ * main operand, the last warp the tail block.  Lane mapping, shuffle order
+ * and rounding mirror quantize_mmq_q8_1, and the SwiGLU expression mirrors
+ * the F32 kernel it replaces, so both operands are byte-identical to the
+ * F32 mid + two gathered quantize passes; the [assignments x width] mid is
+ * never written or read back.  Layouts are the main/tail types' scale
+ * layouts (D4 or DS4), warp-uniform. */
+static __global__ void ds4_swiglu_weighted_q8_tail_emit(
+        const float * __restrict__ gate,
+        const float * __restrict__ up,
+        const float * __restrict__ router_weights,
+        const int32_t * __restrict__ ids_src1,
+        block_q8_1_mmq * __restrict__ out_main,
+        block_q8_1_mmq * __restrict__ out_tail,
+        int main_layout,
+        int tail_layout,
+        int width,
+        int n_assign) {
+    const int sorted = (int)blockIdx.x;
+    const int warp = (int)threadIdx.x >> 5;
+    const int lane = (int)threadIdx.x & 31;
+    const int k128_count = width / 128;
+    if (sorted >= n_assign || warp >= k128_count) return;
+    const int src = ids_src1[sorted];
+    const uint64_t at = (uint64_t)src * width + warp * 128 + lane * 4;
+    const float4 g4 = *reinterpret_cast<const float4 *>(gate + at);
+    const float4 u4 = *reinterpret_cast<const float4 *>(up + at);
+    const float weight = router_weights[src];
+    const float *gp = reinterpret_cast<const float *>(&g4);
+    const float *uptr = reinterpret_cast<const float *>(&u4);
+    float v[4];
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        float g = gp[j];
+        float u = uptr[j];
+        if (!isfinite(g)) g = 0.0f;
+        if (!isfinite(u)) u = 0.0f;
+        v[j] = (g / (1.0f + expf(-g))) * u * weight;
+    }
+    float amax = fabsf(v[0]);
+    amax = fmaxf(amax, fabsf(v[1]));
+    amax = fmaxf(amax, fabsf(v[2]));
+    amax = fmaxf(amax, fabsf(v[3]));
+#pragma unroll
+    for (int offset = 4; offset > 0; offset >>= 1) {
+        amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, offset, 32));
+    }
+    float sum = v[0] + v[1] + v[2] + v[3];
+#pragma unroll
+    for (int offset = 4; offset > 0; offset >>= 1) {
+        sum += __shfl_xor_sync(0xffffffffu, sum, offset, 32);
+    }
+    const bool tail = warp == k128_count - 1;
+    const int layout = tail ? tail_layout : main_layout;
+    block_q8_1_mmq &b = tail
+        ? out_tail[sorted]
+        : out_main[(uint64_t)warp * n_assign + sorted];
+    const float d_inv = 127.0f / amax;
+    char4 q;
+    q.x = roundf(v[0] * d_inv);
+    q.y = roundf(v[1] * d_inv);
+    q.z = roundf(v[2] * d_inv);
+    q.w = roundf(v[3] * d_inv);
+    reinterpret_cast<char4 *>(b.qs)[lane] = q;
+    if ((lane & 7) != 0) return;
+    const float d = 1.0f / d_inv;
+    if (layout == (int)MMQ_Q8_1_DS_LAYOUT_DS4) {
+        b.ds4[lane >> 3] = make_half2(d, sum);
+    } else {
+        b.d4[lane >> 3] = d;
+    }
+}
+
 /* Routed MoE matmul over a [main | tail] activation row: main is the
  * K-column input read with x_stride floats between rows, the tail is read
  * in place through x_tail_stride.  w_row_blocks / w_tail_row_blocks give
@@ -1749,18 +1824,30 @@ int ds4_mmq_moe_tail_impl(
         /* false skips the whole-buffer non-finite pass; only valid when
          * every consumer zeroes non-finite values at read. */
         bool            sanitize_out,
-        cudaStream_t    stream) {
-    if (!W || !W_tail || !X_f32 || !X_tail_f32 || !ids || !out_f32) {
+        cudaStream_t    stream,
+        /* Weighted-SwiGLU emit mode: gate/up rows of x_stride = K + 128
+         * floats and one router weight per row replace X_f32 / X_tail_f32
+         * (both NULL); the operands are quantized straight from them. */
+        const float   * gate = NULL,
+        const float   * up = NULL,
+        const float   * router_weights = NULL) {
+    const bool emit = gate != NULL;
+    if (!W || !W_tail || !ids || !out_f32 ||
+        (emit ? (!up || !router_weights || X_f32 || X_tail_f32)
+              : (!X_f32 || !X_tail_f32))) {
         fprintf(stderr, "%s: null pointer\n", tag);
         return -1;
     }
     constexpr int tail_blocks = DS4_MMQ_TAIL_K / QK8_0;
+    const uintptr_t x_align = emit
+        ? ((uintptr_t)gate | (uintptr_t)up)
+        : ((uintptr_t)X_f32 | (uintptr_t)X_tail_f32);
     if (M <= 0 || K <= 0 || K % 256 != 0 || n_tokens <= 0 ||
         n_experts <= 0 || n_expert_used <= 0 || n_expert_used > n_experts ||
-        x_stride < K || x_stride % 4 != 0 ||
-        ((uintptr_t)X_f32 & 15u) != 0u ||
-        x_tail_stride < DS4_MMQ_TAIL_K || x_tail_stride % 4 != 0 ||
-        ((uintptr_t)X_tail_f32 & 15u) != 0u || max_rows_per_expert <= 0 ||
+        x_stride < K || x_stride % 4 != 0 || (x_align & 15u) != 0u ||
+        (emit ? x_stride != K + DS4_MMQ_TAIL_K
+              : (x_tail_stride < DS4_MMQ_TAIL_K || x_tail_stride % 4 != 0)) ||
+        max_rows_per_expert <= 0 ||
         w_row_blocks < 0 ||
         (w_row_blocks > 0 && w_row_blocks < K / ggml_blck_size(type)) ||
         w_tail_row_blocks < 0 ||
@@ -1832,34 +1919,51 @@ int ds4_mmq_moe_tail_impl(
         slack_bytes;
     ggml_cuda_pool_alloc<char> src1_q8_1(ctx->pool(), nbytes_main);
     ybuf_memset(src1_q8_1.get(), nbytes_main, stream);
-    quantize_mmq_q8_1_cuda(
-        X_f32, ids_src1.get(), (void *)src1_q8_1.get(),
-        type, /*ne00=*/K, /*s01=*/(int64_t)x_stride,
-        /*s02=*/(int64_t)x_stride, /*s03=*/(int64_t)x_stride * n_tokens,
-        /*ne0=*/ne10_padded, /*ne1=*/ne_get_rows, /*ne2=*/1, /*ne3=*/1,
-        stream);
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        fprintf(stderr, "%s: main quantize failed: %s\n", tag, cudaGetErrorString(err));
-        return -3;
-    }
-
-    // 3. Tail activation -> one D4 block per row, gathered through the same
+    // 3. Tail activation -> one block per row, gathered through the same
     //    map straight out of the wide mid buffer.
     const size_t nbytes_tail =
         (size_t)ne_get_rows * sizeof(block_q8_1_mmq) + slack_bytes;
     ggml_cuda_pool_alloc<char> tail_q8_1(ctx->pool(), nbytes_tail);
     ybuf_memset(tail_q8_1.get(), nbytes_tail, stream);
-    quantize_mmq_q8_1_cuda(
-        X_tail_f32, ids_src1.get(), (void *)tail_q8_1.get(),
-        tail_type, /*ne00=*/DS4_MMQ_TAIL_K, /*s01=*/(int64_t)x_tail_stride,
-        /*s02=*/0, /*s03=*/0,
-        /*ne0=*/DS4_MMQ_TAIL_K, /*ne1=*/ne_get_rows, /*ne2=*/1, /*ne3=*/1,
-        stream);
-    err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        fprintf(stderr, "%s: tail quantize failed: %s\n", tag, cudaGetErrorString(err));
-        return -3;
+    if (emit) {
+        // Both operands straight from the gate/up rows: no F32 mid.
+        const int k128_count = x_stride / 128;
+        ds4_swiglu_weighted_q8_tail_emit<<<
+            (unsigned)ne_get_rows, (unsigned)(32 * k128_count), 0, stream>>>(
+            gate, up, router_weights, ids_src1.get(),
+            (block_q8_1_mmq *)src1_q8_1.get(),
+            (block_q8_1_mmq *)tail_q8_1.get(),
+            (int)mmq_get_q8_1_ds_layout(type),
+            (int)mmq_get_q8_1_ds_layout(tail_type),
+            x_stride, (int)ne_get_rows);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            fprintf(stderr, "%s: swiglu emit failed: %s\n", tag, cudaGetErrorString(err));
+            return -3;
+        }
+    } else {
+        quantize_mmq_q8_1_cuda(
+            X_f32, ids_src1.get(), (void *)src1_q8_1.get(),
+            type, /*ne00=*/K, /*s01=*/(int64_t)x_stride,
+            /*s02=*/(int64_t)x_stride, /*s03=*/(int64_t)x_stride * n_tokens,
+            /*ne0=*/ne10_padded, /*ne1=*/ne_get_rows, /*ne2=*/1, /*ne3=*/1,
+            stream);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            fprintf(stderr, "%s: main quantize failed: %s\n", tag, cudaGetErrorString(err));
+            return -3;
+        }
+        quantize_mmq_q8_1_cuda(
+            X_tail_f32, ids_src1.get(), (void *)tail_q8_1.get(),
+            tail_type, /*ne00=*/DS4_MMQ_TAIL_K, /*s01=*/(int64_t)x_tail_stride,
+            /*s02=*/0, /*s03=*/0,
+            /*ne0=*/DS4_MMQ_TAIL_K, /*ne1=*/ne_get_rows, /*ne2=*/1, /*ne3=*/1,
+            stream);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            fprintf(stderr, "%s: tail quantize failed: %s\n", tag, cudaGetErrorString(err));
+            return -3;
+        }
     }
 
     const int rc = ds4_mmq_moe_worklist_tail_launch<type, tail_type>(
@@ -3554,6 +3658,31 @@ extern "C" int ds4_mmq_q8_0_moe_bounded_q8_0_tail(
         /* moe_sum reads with guard_nonfinite: no standalone pass. */
         /*sanitize_out=*/false, stream);
 }
+
+/* Weighted-SwiGLU emit variants of the three fused tail entries: the
+ * operands come straight from the [n_tokens x width] gate/up rows and the
+ * per-row router weights (width = K + 128); no F32 mid is involved. */
+#define DS4_MMQ_TAIL_SWIGLU_ENTRY(name, type, tail_type)                    \
+extern "C" int name(                                                       \
+        const void * W, const void * W_tail,                               \
+        const float * gate, const float * up,                              \
+        const float * router_weights, int width,                           \
+        const int32_t * ids, float * out_f32,                              \
+        int M, int K, int n_tokens, int n_experts, int n_expert_used,      \
+        int max_rows_per_expert, cudaStream_t stream) {                    \
+    return ds4_mmq_moe_tail_impl<type, tail_type>(                         \
+        #name, W, W_tail, NULL, width, NULL, width, ids, out_f32,          \
+        M, K, n_tokens, n_experts, n_expert_used, max_rows_per_expert,     \
+        /*w_row_blocks=*/0, /*w_tail_row_blocks=*/0,                       \
+        /*sanitize_out=*/false, stream, gate, up, router_weights);         \
+}
+DS4_MMQ_TAIL_SWIGLU_ENTRY(ds4_mmq_q5_K_moe_bounded_q5_0_tail_swiglu,
+                          GGML_TYPE_Q5_K, GGML_TYPE_Q5_0)
+DS4_MMQ_TAIL_SWIGLU_ENTRY(ds4_mmq_q6_K_moe_bounded_q5_0_tail_swiglu,
+                          GGML_TYPE_Q6_K, GGML_TYPE_Q5_0)
+DS4_MMQ_TAIL_SWIGLU_ENTRY(ds4_mmq_q8_0_moe_bounded_q8_0_tail_swiglu,
+                          GGML_TYPE_Q8_0, GGML_TYPE_Q8_0)
+#undef DS4_MMQ_TAIL_SWIGLU_ENTRY
 
 /* Dense Q8_0 GEMM with K = 256n + 128 (the Qwen shared-expert down,
  * K = 640).  Generic MMQ needs K % 256 == 0 and the warp-per-row batch

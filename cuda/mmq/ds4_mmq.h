@@ -601,6 +601,59 @@ int ds4_mmq_q8_0_moe_bounded_q8_0_tail(
     int             max_rows_per_expert,
     cudaStream_t    stream);
 
+// Weighted-SwiGLU emit variants: gate / up are [n_tokens x width] F32 rows
+// (width = K + 128) and router_weights one F32 per row; the fused entry
+// quantizes SwiGLU(gate, up) * weight straight into its main and tail
+// operands, byte-identical to the F32 mid + quantize path.
+int ds4_mmq_q5_K_moe_bounded_q5_0_tail_swiglu(
+    const void    * W,
+    const void    * W_tail,
+    const float   * gate,
+    const float   * up,
+    const float   * router_weights,
+    int             width,
+    const int32_t * ids,
+    float         * out_f32,
+    int             M,
+    int             K,
+    int             n_tokens,
+    int             n_experts,
+    int             n_expert_used,
+    int             max_rows_per_expert,
+    cudaStream_t    stream);
+int ds4_mmq_q6_K_moe_bounded_q5_0_tail_swiglu(
+    const void    * W,
+    const void    * W_tail,
+    const float   * gate,
+    const float   * up,
+    const float   * router_weights,
+    int             width,
+    const int32_t * ids,
+    float         * out_f32,
+    int             M,
+    int             K,
+    int             n_tokens,
+    int             n_experts,
+    int             n_expert_used,
+    int             max_rows_per_expert,
+    cudaStream_t    stream);
+int ds4_mmq_q8_0_moe_bounded_q8_0_tail_swiglu(
+    const void    * W,
+    const void    * W_tail,
+    const float   * gate,
+    const float   * up,
+    const float   * router_weights,
+    int             width,
+    const int32_t * ids,
+    float         * out_f32,
+    int             M,
+    int             K,
+    int             n_tokens,
+    int             n_experts,
+    int             n_expert_used,
+    int             max_rows_per_expert,
+    cudaStream_t    stream);
+
 int ds4_mmq_q4_K_moe_bounded(
     const void    * W,
     const float   * X_f32,

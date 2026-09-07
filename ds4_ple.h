@@ -195,6 +195,27 @@ void ds4_ple_store_release_row(
     ds4_ple_store *store,
     ds4_ple_row_view *view);
 
+/* Acquire the leading rows of row_ids whose pages are already resident and
+ * ready, in order, under one store lock; *acquired is how many were taken
+ * (the first row that would have to wait, or has no slot, stops the walk
+ * without being queued).  One lock per tile instead of two per row, which
+ * is what the gather's host-side cost was once every page had been
+ * prefetched. */
+bool ds4_ple_store_acquire_ready_rows(
+    ds4_ple_store *store,
+    const uint64_t *row_ids,
+    size_t count,
+    ds4_ple_row_view *views,
+    size_t *acquired,
+    char *error,
+    size_t error_size);
+
+/* Release count views under one lock. */
+void ds4_ple_store_release_rows(
+    ds4_ple_store *store,
+    ds4_ple_row_view *views,
+    size_t count);
+
 /* The complete fixed-size cache allocation can be registered once with CUDA.
  * Row-view pointers are offsets into this span. */
 bool ds4_ple_store_cache_span(

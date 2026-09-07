@@ -1617,6 +1617,116 @@ void ds4_ple_store_release_row(
     memset(view, 0, sizeof(*view));
 }
 
+/* Resident-and-ready lookup with the store lock held: a hit takes a
+ * reference and refreshes the LRU clock like cache_request_page, a miss or
+ * a loading page returns false without queueing anything. */
+static bool cache_lookup_ready_locked(
+        ds4_ple_store *store,
+        uint32_t file_index,
+        uint64_t page_offset,
+        uint32_t *slot_out) {
+    const uint32_t set =
+        (uint32_t)(cache_hash(file_index, page_offset) % store->set_count);
+    const uint32_t first = set * DS4_PLE_CACHE_WAYS;
+    for (uint32_t way = 0; way < DS4_PLE_CACHE_WAYS; way++) {
+        const uint32_t index = first + way;
+        ds4_ple_cache_slot *slot = &store->slots[index];
+        if (slot->state != DS4_PLE_PAGE_READY ||
+            slot->file_index != file_index ||
+            slot->page_offset != page_offset)
+            continue;
+        slot->last_access = ++store->access_clock;
+        slot->refcount++;
+        store->stats.page_requests++;
+        store->stats.cache_hits++;
+        *slot_out = index;
+        return true;
+    }
+    return false;
+}
+
+bool ds4_ple_store_acquire_ready_rows(
+        ds4_ple_store *store,
+        const uint64_t *row_ids,
+        size_t count,
+        ds4_ple_row_view *views,
+        size_t *acquired,
+        char *error,
+        size_t error_size) {
+    if (!store || !row_ids || !views || !acquired)
+        return ple_error(error, error_size,
+                         "PLE ready-row acquisition received a null");
+    *acquired = 0;
+    if (count == 0) return true;
+    memset(views, 0, count * sizeof(*views));
+
+    pthread_mutex_lock(&store->mutex);
+    size_t taken = 0;
+    for (; taken < count; taken++) {
+        uint32_t file_index = 0;
+        uint64_t offset = 0;
+        if (!resolve_row(store, row_ids[taken], &file_index, &offset,
+                         error, error_size)) {
+            pthread_mutex_unlock(&store->mutex);
+            ds4_ple_store_release_rows(store, views, taken);
+            return false;
+        }
+        const uint64_t page0 =
+            offset & ~(uint64_t)(DS4_PLE_PAGE_BYTES - 1u);
+        const uint32_t within = (uint32_t)(offset - page0);
+        const uint32_t first_bytes =
+            within + DS4_PLE_ROW_BYTES <= DS4_PLE_PAGE_BYTES
+                ? DS4_PLE_ROW_BYTES
+                : DS4_PLE_PAGE_BYTES - within;
+        ds4_ple_row_view *view = &views[taken];
+        uint32_t slot0 = 0;
+        if (!cache_lookup_ready_locked(store, file_index, page0, &slot0))
+            break;
+        view->segments[0] = store->slots[slot0].data + within;
+        view->segment_bytes[0] = first_bytes;
+        view->slots[0] = slot0;
+        view->segment_count = 1;
+        if (first_bytes < DS4_PLE_ROW_BYTES) {
+            uint32_t slot1 = 0;
+            if (!cache_lookup_ready_locked(
+                    store, file_index, page0 + DS4_PLE_PAGE_BYTES,
+                    &slot1)) {
+                store->slots[slot0].refcount--;
+                memset(view, 0, sizeof(*view));
+                break;
+            }
+            view->segments[1] = store->slots[slot1].data;
+            view->segment_bytes[1] = DS4_PLE_ROW_BYTES - first_bytes;
+            view->slots[1] = slot1;
+            view->segment_count = 2;
+        }
+    }
+    store->stats.row_lookups += taken;
+    store->stats.logical_bytes += (uint64_t)taken * DS4_PLE_ROW_BYTES;
+    store->stats.wait_samples += taken;
+    pthread_mutex_unlock(&store->mutex);
+    *acquired = taken;
+    return true;
+}
+
+void ds4_ple_store_release_rows(
+        ds4_ple_store *store,
+        ds4_ple_row_view *views,
+        size_t count) {
+    if (!store || !views || count == 0) return;
+    pthread_mutex_lock(&store->mutex);
+    for (size_t i = 0; i < count; i++) {
+        ds4_ple_row_view *view = &views[i];
+        for (uint32_t s = 0; s < view->segment_count && s < 2u; s++) {
+            ds4_ple_cache_slot *slot = &store->slots[view->slots[s]];
+            if (slot->refcount) slot->refcount--;
+        }
+    }
+    if (store->set_waiters) pthread_cond_broadcast(&store->state_cond);
+    pthread_mutex_unlock(&store->mutex);
+    memset(views, 0, count * sizeof(*views));
+}
+
 bool ds4_ple_store_read_row(
         ds4_ple_store *store,
         uint64_t global_row,

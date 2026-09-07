@@ -2601,6 +2601,31 @@ int ds4_gpu_qwen4exp_routed_down_fused_tensor(
         uint32_t                n_expert,
         uint32_t                max_rows_per_expert);
 
+/* Fused expert-down fed straight from the routed gate / up rows and the
+ * per-assignment router weights (no F32 SwiGLU buffer); byte-identical to
+ * ds4_gpu_swiglu_weighted_tensor + the entry above.  0 = declined. */
+int ds4_gpu_qwen4exp_routed_down_fused_swiglu_tensor(
+        ds4_gpu_tensor       *down,
+        const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *up,
+        const ds4_gpu_tensor *weights,
+        const ds4_gpu_tensor *ids,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                main_offset,
+        uint64_t                main_bytes,
+        uint32_t                main_type,
+        uint64_t                tail_offset,
+        uint64_t                tail_bytes,
+        uint32_t                tail_type,
+        uint64_t                assignments,
+        uint32_t                mid_width,
+        uint32_t                main_dim,
+        uint32_t                tail_dim,
+        uint32_t                out_dim,
+        uint32_t                n_expert,
+        uint32_t                max_rows_per_expert);
+
 int ds4_gpu_qwen4exp_q5_0_tail_accum_bank2_tensor(
         ds4_gpu_tensor       *down0,
         const ds4_gpu_tensor *mid0,

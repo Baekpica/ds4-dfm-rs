@@ -220,6 +220,47 @@ int main(int argc, char **argv) {
            (double)layout->total_file_bytes /
                (1024.0 * 1024.0 * 1024.0));
 
+    /* Smallest cache the store accepts: one 16-way set.  A tile that has
+     * leased all sixteen ways must end and be enqueued rather than wait
+     * for a slot its own leases hold (they are released only by the
+     * stream callback behind the tile); the gather must still complete
+     * and match, tile by tile, through the single set. */
+    const size_t minimum_cache_pages = 16u;   /* one set of the store's 16 ways */
+    const size_t minimum_cache_bytes = minimum_cache_pages * DS4_PLE_PAGE_BYTES;
+    ds4_ple_store *small_store = ds4_ple_store_open(
+        argv[1], "ple/ple-manifest.json", minimum_cache_bytes, 2u, true,
+        error, sizeof(error));
+    if (!small_store) fail_ple("ds4_ple_store_open (minimum cache)", error);
+    ds4_qwen38_ple_cuda *small_context =
+        ds4_qwen38_ple_cuda_create(small_store, error, sizeof(error));
+    if (!small_context)
+        fail_ple("ds4_qwen38_ple_cuda_create (minimum cache)", error);
+    check_cuda(cudaMemset(device_first, 0, output_bytes),
+               "cudaMemset minimum-cache output");
+    const uint64_t small_started = now_ns();
+    if (!ds4_qwen38_ple_cuda_gather(
+            small_context, row_ids, token_count, device_first,
+            (void *)first_stream, error, sizeof(error)))
+        fail_ple("minimum-cache ds4_qwen38_ple_cuda_gather", error);
+    check_cuda(cudaStreamSynchronize(first_stream),
+               "cudaStreamSynchronize minimum cache");
+    const uint64_t small_finished = now_ns();
+    check_cuda(cudaMemcpy(actual_first, device_first, output_bytes,
+                          cudaMemcpyDeviceToHost),
+               "cudaMemcpy minimum-cache output");
+    if (memcmp(reference, actual_first, output_bytes) != 0) {
+        fprintf(stderr, "CUDA PLE minimum-cache gather mismatch\n");
+        return 1;
+    }
+    ds4_qwen38_ple_cuda_stats small_stats;
+    ds4_qwen38_ple_cuda_get_stats(small_context, &small_stats);
+    printf("minimum cache: %zu pages, %zu rows gathered and matched in %.3f ms\n",
+           minimum_cache_bytes / DS4_PLE_PAGE_BYTES,
+           (size_t)small_stats.gathered_rows,
+           (double)(small_finished - small_started) / 1.0e6);
+    ds4_qwen38_ple_cuda_destroy(small_context);
+    ds4_ple_store_close(small_store);
+
     check_cuda(cudaEventDestroy(started), "cudaEventDestroy started");
     check_cuda(cudaEventDestroy(finished), "cudaEventDestroy finished");
     check_cuda(cudaStreamDestroy(first_stream), "cudaStreamDestroy first");
