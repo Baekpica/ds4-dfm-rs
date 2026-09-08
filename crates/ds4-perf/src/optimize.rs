@@ -200,7 +200,7 @@ fn candidates(
             {
                 continue;
             }
-            result.push(Candidate {name:format!("chunk-{value}"),environment:BTreeMap::from([(key.into(),value.to_string())]),reason:if wide {"Fragmentation/underfilled geometry: test wider work before changing kernels"} else {"Test work decomposition at a smaller/larger chunk while preserving model, context and cache policy"}.into()});
+            result.push(Candidate {name:format!("chunk-{value}"),environment:BTreeMap::from([(key.into(),value.to_string())]),reason:if wide {"Fragmentation/underfilled geometry: test work granularity before changing kernels"} else {"Test work decomposition at a smaller/larger chunk while preserving model, context and cache policy"}.into()});
         }
     }
     (result, reasons)

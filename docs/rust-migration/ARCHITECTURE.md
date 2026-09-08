@@ -47,7 +47,8 @@ and broker contract. See the [memory guard](../host-memory-guard.md).
 | `ds4-dist` | Distributed protocol and blocking orchestration |
 | `ds4-web` | Blocking agent web helpers |
 | `ds4-sys` | ds4 native inference bindings and reviewed OS adapters |
-| `ds4-perf` | Separate benchmark/Nsight processes, normalization and diagnosis |
+| `ds4-perf` | Inspect, scout, compare and bounded performance experiments |
+| `ds4-perf-gpu` | Optional CUDA calibration and CUPTI collection via cudarc |
 
 `make` builds Rust production names `ds4`, `ds4-server`, `ds4-bench`, and
 `ds4-agent` when a backend build is selected. Cargo retains the `*-rs` binary
@@ -79,8 +80,9 @@ payload state remains native.
 ## Performance observability
 
 ```text
-ds4-perf scout -> fresh ds4-bench + nsys processes -> diagnosis
-             -> targeted ncu -> code change -> same-workload A/B + proof
+ds4-perf -> machine/calibration -> scout/fit/NCU -> compare/decision
+    |
+    +-- optional ds4-perf-gpu: CUDA calibration and CUPTI collection
 
 ds4-cli -- optional perf-nvtx --> NVIDIA nvtx
    |
@@ -92,8 +94,12 @@ directly around measured `ds4.prefill` and `ds4.decode` operations. Profiling
 handles do not cross `ds4-core`, `ds4-sys`, or the native bridge. Ordinary
 inference builds do not enable the SDK. `ds4-perf` is not an inference dependency.
 
-The [profiling guide](../prefill-decode-optimization-playbook.md) defines the
-build, capability checks, preserved evidence and conservative diagnosis.
+CUDA profiling calls and CUPTI callbacks use maintained cudarc bindings in
+`ds4-perf-gpu`. Its unsafe adapter is separate from native inference; the
+orchestration executable and inference packages do not expose device handles.
+
+The [profiling guide](../ds4-perf.md) defines the build, capability checks,
+versioned evidence, comparison policy and bounded automatic experiments.
 Nsight Systems is structural evidence; it does not establish memory-bound
 versus compute-bound behavior, correctness, or end-to-end improvement.
 
