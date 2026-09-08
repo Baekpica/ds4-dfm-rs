@@ -486,7 +486,9 @@ static bool manifest_parse_logical_part(
             if (!json_u64(json, &part->payload_bytes)) return false;
         } else if (json_key_eq(key, key_len, "row_stride_bytes")) {
             bit = 1u << 6;
-            if (!json_u64(json, &value) || value > UINT32_MAX) return false;
+            if (!json_u64(json, &value) || value > UINT32_MAX) {
+                return false;
+            }
             part->row_stride_bytes = (uint32_t)value;
         } else if (json_key_eq(key, key_len, "embedding_row_dimension")) {
             bit = 1u << 7;
@@ -686,7 +688,9 @@ static bool manifest_expect_u64(ds4_ple_json *json, uint64_t expected) {
 
 static bool parse_fp8_scale(ds4_ple_json *json, ds4_ple_store *store) {
     uint64_t seen = 0;
-    if (!json_take(json, '{')) return false;
+    if (!json_take(json, '{')) {
+        return false;
+    }
     for (;;) {
         json_ws(json);
         if (json->cursor < json->end && *json->cursor == '}') {
@@ -695,7 +699,9 @@ static bool parse_fp8_scale(ds4_ple_json *json, ds4_ple_store *store) {
         }
         const char *key = NULL;
         size_t length = 0;
-        if (!json_string(json, &key, &length, false) || !json_take(json, ':')) return false;
+        if (!json_string(json, &key, &length, false) || !json_take(json, ':')) {
+            return false;
+        }
         uint64_t bit = 0;
         bool ok = true;
         if (json_key_eq(key, length, "dtype")) {
@@ -722,13 +728,17 @@ static bool parse_fp8_scale(ds4_ple_json *json, ds4_ple_store *store) {
         } else {
             ok = json_skip_value(json, 0);
         }
-        if (!ok || (bit && !manifest_seen(json, &seen, bit))) return false;
+        if (!ok || (bit && !manifest_seen(json, &seen, bit))) {
+            return false;
+        }
         json_ws(json);
         if (json->cursor < json->end && *json->cursor == '}') {
             json->cursor++;
             break;
         }
-        if (!json_take(json, ',')) return false;
+        if (!json_take(json, ',')) {
+            return false;
+        }
     }
     if (seen != 31u) {
         json_fail(json, "PLE FP8 scale is missing required fields");
@@ -739,7 +749,9 @@ static bool parse_fp8_scale(ds4_ple_json *json, ds4_ple_store *store) {
 
 static bool parse_fp8_quant(ds4_ple_json *json, ds4_ple_store *store) {
     uint64_t seen = 0;
-    if (!json_take(json, '{')) return false;
+    if (!json_take(json, '{')) {
+        return false;
+    }
     for (;;) {
         json_ws(json);
         if (json->cursor < json->end && *json->cursor == '}') {
@@ -748,7 +760,9 @@ static bool parse_fp8_quant(ds4_ple_json *json, ds4_ple_store *store) {
         }
         const char *key = NULL;
         size_t length = 0;
-        if (!json_string(json, &key, &length, false) || !json_take(json, ':')) return false;
+        if (!json_string(json, &key, &length, false) || !json_take(json, ':')) {
+            return false;
+        }
         uint64_t bit = 0;
         bool ok = true;
         if (json_key_eq(key, length, "format")) {
@@ -761,20 +775,26 @@ static bool parse_fp8_quant(ds4_ple_json *json, ds4_ple_store *store) {
             bit = 4u;
             json_ws(json);
             ok = json->end - json->cursor >= 5 && memcmp(json->cursor, "false", 5) == 0;
-            if (ok) json->cursor += 5;
+            if (ok) {
+                json->cursor += 5;
+            }
         } else if (json_key_eq(key, length, "scale")) {
             bit = 8u;
             ok = parse_fp8_scale(json, store);
         } else {
             ok = json_skip_value(json, 0);
         }
-        if (!ok || (bit && !manifest_seen(json, &seen, bit))) return false;
+        if (!ok || (bit && !manifest_seen(json, &seen, bit))) {
+            return false;
+        }
         json_ws(json);
         if (json->cursor < json->end && *json->cursor == '}') {
             json->cursor++;
             break;
         }
-        if (!json_take(json, ',')) return false;
+        if (!json_take(json, ',')) {
+            return false;
+        }
     }
     if (seen != 15u) {
         json_fail(json, "PLE FP8 quantization is missing required fields");
@@ -1104,7 +1124,9 @@ static bool manifest_validate_layout(ds4_ple_store *store,
 
 static bool store_load_scale(ds4_ple_store *store, const char *root,
                              char *error, size_t error_size) {
-    if (store->layout.format_version != 2u) return true;
+    if (store->layout.format_version != 2u) {
+        return true;
+    }
     if (!path_is_safe_relative(store->scale_path) || store->scale_bits != DS4_PLE_FP8_SCALE_BITS) {
         return ple_error(error, error_size, "PLE FP8 scale must match official BF16 bits 0x3951 with a relative path");
     }
@@ -1116,7 +1138,9 @@ static bool store_load_scale(ds4_ple_store *store, const char *root,
     const bool valid = read_ok && size == sizeof(uint16_t) &&
         ((uint16_t)(uint8_t)data[0] | ((uint16_t)(uint8_t)data[1] << 8)) == store->scale_bits;
     free(data);
-    if (!valid) return ple_error(error, error_size, "PLE FP8 scale file does not match the manifest");
+    if (!valid) {
+        return ple_error(error, error_size, "PLE FP8 scale file does not match the manifest");
+    }
 
     uint32_t scale_word = (uint32_t)store->scale_bits << 16;
     float scale = 0.0f;
@@ -1133,7 +1157,9 @@ static bool store_load_scale(ds4_ple_store *store, const char *root,
          * Match FP8Embedding: BF16(code) * BF16(scale), rounded to BF16. */
         float value = exponent ? ldexpf((float)(8u + mantissa), (int)exponent - 10)
                                : ldexpf((float)mantissa, -9);
-        if (sign) value = -value;
+        if (sign) {
+            value = -value;
+        }
         value *= scale;
         uint32_t word = 0;
         memcpy(&word, &value, sizeof(word));
@@ -1588,8 +1614,11 @@ ds4_ple_store *ds4_ple_store_open(
     const char *file_root = artifact_root;
     if (store->layout.format_version == 2u) {
         char *slash = strrchr(manifest_path, '/');
-        if (slash == manifest_path) slash[1] = '\0';
-        else if (slash) *slash = '\0';
+        if (slash == manifest_path) {
+            slash[1] = '\0';
+        } else if (slash) {
+            *slash = '\0';
+        }
         file_root = manifest_path;
     }
     const bool files_ok = store_load_scale(store, file_root, error, error_size) &&

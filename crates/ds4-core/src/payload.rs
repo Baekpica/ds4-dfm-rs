@@ -18,6 +18,8 @@ pub const LAYOUT_EXAONE: u32 = 0x3341_5845; /* "EXA3" */
 pub const LAYOUT_MOTIF3: u32 = 0x3346_544D; /* "MTF3" */
 pub const LAYOUT_DOTS3: u32 = 0x3353_5444; /* "DTS3" */
 pub const LAYOUT_QWEN4EXP: u32 = 0x334e_5751; /* "QWN3" */
+// Native restore also checks the effective PLE format; the host prefix is shared.
+const LAYOUT_QWEN_FP8: u32 = 0x3346_5751; /* "QWF3" */
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PayloadLayout {
@@ -36,7 +38,7 @@ impl PayloadLayout {
             LAYOUT_EXAONE => Self::Exaone,
             LAYOUT_MOTIF3 => Self::Motif3,
             LAYOUT_DOTS3 => Self::Dots3,
-            LAYOUT_QWEN4EXP => Self::Qwen4Exp,
+            LAYOUT_QWEN4EXP | LAYOUT_QWEN_FP8 => Self::Qwen4Exp,
             _ => Self::DeepSeek,
         }
     }
@@ -53,7 +55,7 @@ impl PayloadLayout {
     }
 
     fn exceeds_context(self, tokens: usize, ctx: i32) -> bool {
-        // Native QWN3 can persist an exactly full context.
+        // Native Qwen payloads can persist an exactly full context.
         ctx <= 0 || tokens > ctx as usize || (tokens == ctx as usize && self != Self::Qwen4Exp)
     }
 
@@ -565,6 +567,33 @@ mod tests {
             3,
         );
         assert!(host.apply_payload(&prefix).is_err());
+    }
+
+    #[test]
+    fn qwen_fp8_full_context_restores_ledger() {
+        let mut prefix = fixture_deepseek();
+        prefix.fields[2] = prefix.tokens.len() as u32;
+        prefix.fields[5] = u32::from_le_bytes(*b"QWF3");
+        prefix.fields[12] = 368_640;
+        let bytes = prefix.encode();
+        let parsed = read_prefix_range(
+            &mut Cursor::new(&bytes),
+            0,
+            bytes.len() as u64,
+            ModelFamily::Qwen4Exp,
+            prefix.tokens.len() as i32,
+        )
+        .unwrap();
+        assert_eq!(parsed.layout(), PayloadLayout::Qwen4Exp);
+
+        let mut host = SessionLedger::new(
+            ModelFamily::Qwen4Exp,
+            crate::session::SessionBackend::Cuda,
+            prefix.tokens.len() as i32,
+            prefix.tokens.len() as u32,
+        );
+        host.apply_payload(&parsed).unwrap();
+        assert_eq!(host.tokens(), &[10, 20, 30]);
     }
 
     #[test]

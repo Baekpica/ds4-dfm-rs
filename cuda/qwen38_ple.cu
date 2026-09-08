@@ -99,15 +99,17 @@ __global__ static void qwen38_ple_gather_kernel(
     }
 }
 
-/* Only the storage boundary changes: downstream PLE compute still receives
- * the source embedding's scaled BF16 values in the same layout. */
+/* Match the existing gather's BF16 output layout and source rounding;
+ * the subsequent FP32 promotion and PLE projections remain unchanged. */
 __global__ static void qwen38_ple_fp8_gather_kernel(
         const ds4_ple_cuda_row *rows,
         const uint16_t *decode_table,
         uint16_t *output,
         size_t row_count) {
     const size_t row = (size_t)blockIdx.x;
-    if (row >= row_count) return;
+    if (row >= row_count) {
+        return;
+    }
     const ds4_ple_cuda_row descriptor = rows[row];
     for (uint32_t column = threadIdx.x;
          column < DS4_PLE_ROW_DIM;
@@ -333,7 +335,9 @@ void ds4_qwen38_ple_cuda_destroy(
     /* Stream callbacks hold row leases and refer to the store. Destruction is
      * rare, so a device-wide drain is the unambiguous lifetime boundary. */
     (void)cudaDeviceSynchronize();
-    if (context->decode_table) (void)cudaFree(context->decode_table);
+    if (context->decode_table) {
+        (void)cudaFree(context->decode_table);
+    }
     if (context->registered)
         (void)cudaHostUnregister(context->host_base);
     free(context);

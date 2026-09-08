@@ -47439,6 +47439,7 @@ int ds4_session_output_head_bench(ds4_session *s, int iters, FILE *fp, char *err
 #define DS4_SESSION_MOTIF3_LAYOUT_MAGIC UINT32_C(0x3346544d) /* "MTF3" */
 #define DS4_SESSION_DOTS3_LAYOUT_MAGIC  UINT32_C(0x33535444) /* "DTS3" */
 #define DS4_SESSION_QWEN4EXP_LAYOUT_MAGIC UINT32_C(0x334e5751) /* "QWN3" */
+#define DS4_SESSION_QWEN_FP8_LAYOUT_MAGIC UINT32_C(0x33465751) /* "QWF3" */
 
 static void payload_set_err(char *err, size_t errlen, const char *msg) {
     if (errlen != 0) snprintf(err, errlen, "%s", msg);
@@ -47760,11 +47761,19 @@ static uint64_t qwen4exp_payload_bytes_for_graph(
     return bytes;
 }
 
+/* Identical tensor layouts still represent different effective PLE weights. */
+static uint32_t qwen_payload_tag(const ds4_ple_store *store) {
+    return ds4_ple_store_decode_table(store)
+        ? DS4_SESSION_QWEN_FP8_LAYOUT_MAGIC
+        : DS4_SESSION_QWEN4EXP_LAYOUT_MAGIC;
+}
+
 static int qwen4exp_payload_save_graph(
-        ds4_qwen_gpu_graph *g, const int *tokens, uint32_t n_tokens,
+        ds4_qwen_gpu_graph *g, const ds4_ple_store *store,
+        const int *tokens, uint32_t n_tokens,
         const float *logits, FILE *fp, char *err, size_t errlen) {
     const uint64_t total = qwen4exp_payload_bytes_for_graph(g, n_tokens);
-    if (!fp || !tokens || total == 0u || g->length != n_tokens) {
+    if (!store || !fp || !tokens || total == 0u || g->length != n_tokens) {
         payload_set_err(err, errlen, "invalid Qwen4Exp session payload layout");
         return 1;
     }
@@ -47798,7 +47807,7 @@ static int qwen4exp_payload_save_graph(
         g->context_cap,
         g->capacity,
         qwen4exp_full_attention_layers(),
-        DS4_SESSION_QWEN4EXP_LAYOUT_MAGIC,
+        qwen_payload_tag(store),
         qsa_kv_row_bytes,
         n_tokens,
         DS4_N_LAYER,
@@ -47872,13 +47881,13 @@ static int qwen4exp_payload_restore_graph(
         h[2] == 0u || h[2] > g->context_cap ||
         h[3] == 0u || h[3] > h[2] ||
         h[4] != qwen4exp_full_attention_layers() ||
-        h[5] != DS4_SESSION_QWEN4EXP_LAYOUT_MAGIC ||
+        h[5] != qwen_payload_tag(store) ||
         h[6] != qsa_kv_row_bytes || h[8] != DS4_N_LAYER ||
         h[9] != DS4_N_SSM_CONV || h[10] != DS4_N_INDEXER_HEAD_DIM ||
         h[11] != DS4_N_VOCAB || h[12] != ple_conv_bytes ||
         n_tokens == 0u || n_tokens > h[2]) {
         payload_set_err(err, errlen,
-                        "session payload was written for a different Qwen4Exp layout");
+                        "session payload was written for a different Qwen4Exp layout or PLE format");
         return 1;
     }
     const uint64_t total = qwen4exp_payload_bytes_for_graph(g, n_tokens);
@@ -51126,7 +51135,7 @@ int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen)
             return 1;
         }
         return qwen4exp_payload_save_graph(
-            &s->qwen_graph, s->checkpoint.v,
+            &s->qwen_graph, s->engine->qwen_ple_store, s->checkpoint.v,
             (uint32_t)s->checkpoint.len, s->logits,
             fp, err, errlen);
     }
@@ -53768,7 +53777,7 @@ static int qwen_cont_bank_save_payload(
         return 1;
     }
     return qwen4exp_payload_save_graph(
-        &ctx->qwen->graph[bank],
+        &ctx->qwen->graph[bank], ctx->e->qwen_ple_store,
         ctx->bank_hist + (size_t)bank * ctx->seq_cap,
         ctx->bank_hist_len[bank], NULL, fp, err, errlen);
 }

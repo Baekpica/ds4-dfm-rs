@@ -12,6 +12,64 @@
 #include <string.h>
 #include <time.h>
 
+#define QWEN_PLE_BF16_LAYOUT_MAGIC UINT32_C(0x334e5751) /* "QWN3" */
+#define QWEN_PLE_FP8_LAYOUT_MAGIC UINT32_C(0x33465751)  /* "QWF3" */
+#define QWEN_PLE_LAYOUT_WORD 5u
+
+static uint32_t test_ple_layout(void) {
+    const char *fp8 = getenv("DS4_TEST_PLE_FP8");
+    return fp8 && strcmp(fp8, "1") == 0
+        ? QWEN_PLE_FP8_LAYOUT_MAGIC
+        : QWEN_PLE_BF16_LAYOUT_MAGIC;
+}
+
+static uint32_t other_ple_layout(uint32_t layout) {
+    return layout == QWEN_PLE_FP8_LAYOUT_MAGIC
+        ? QWEN_PLE_BF16_LAYOUT_MAGIC
+        : QWEN_PLE_FP8_LAYOUT_MAGIC;
+}
+
+static uint32_t get_u32_le(const uint8_t *p) {
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8u |
+           (uint32_t)p[2] << 16u | (uint32_t)p[3] << 24u;
+}
+
+static void put_u32_le(uint8_t *p, uint32_t layout) {
+    p[0] = (uint8_t)layout;
+    p[1] = (uint8_t)(layout >> 8u);
+    p[2] = (uint8_t)(layout >> 16u);
+    p[3] = (uint8_t)(layout >> 24u);
+}
+
+static uint32_t snapshot_layout(const uint8_t *snapshot) {
+    return get_u32_le(
+        snapshot + QWEN_PLE_LAYOUT_WORD * sizeof(uint32_t));
+}
+
+static void snapshot_set_layout(uint8_t *snapshot, uint32_t layout) {
+    put_u32_le(
+        snapshot + QWEN_PLE_LAYOUT_WORD * sizeof(uint32_t), layout);
+}
+
+static int payload_file_layout(FILE *fp, uint32_t *layout) {
+    uint8_t bytes[sizeof(uint32_t)];
+    if (fseek(fp, (long)(QWEN_PLE_LAYOUT_WORD * sizeof(uint32_t)), SEEK_SET) != 0 ||
+        fread(bytes, 1u, sizeof(bytes), fp) != sizeof(bytes) ||
+        fseek(fp, 0, SEEK_SET) != 0) {
+        return 1;
+    }
+    *layout = get_u32_le(bytes);
+    return 0;
+}
+
+static int payload_file_set_layout(FILE *fp, uint32_t layout) {
+    uint8_t bytes[sizeof(uint32_t)];
+    put_u32_le(bytes, layout);
+    return fseek(fp, (long)(QWEN_PLE_LAYOUT_WORD * sizeof(uint32_t)), SEEK_SET) != 0 ||
+           fwrite(bytes, 1u, sizeof(bytes), fp) != sizeof(bytes) ||
+           fflush(fp) != 0 || fseek(fp, 0, SEEK_SET) != 0;
+}
+
 static double bench_now(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -75,7 +133,7 @@ static int serial_snapshot_roundtrip(ds4_engine *engine,
                                      char *err, size_t errlen) {
     ds4_session *session = NULL;
     ds4_session_snapshot snapshot = {0};
-    ds4_session_snapshot corrupt = {0};
+    ds4_session_snapshot opposite = {0};
     int rc = 1;
     if (ds4_session_create(&session, engine, 128) != 0 ||
         ds4_session_sync(session, prompt, err, errlen) != 0 ||
@@ -83,13 +141,21 @@ static int serial_snapshot_roundtrip(ds4_engine *engine,
         snapshot.len != ds4_session_payload_bytes(session)) {
         goto done;
     }
-    corrupt.ptr = malloc((size_t)snapshot.len);
-    if (!corrupt.ptr) goto done;
-    memcpy(corrupt.ptr, snapshot.ptr, (size_t)snapshot.len);
-    corrupt.len = corrupt.cap = snapshot.len;
-    corrupt.ptr[5u * sizeof(uint32_t)] ^= UINT8_C(1);
-    if (ds4_session_load_snapshot(session, &corrupt, err, errlen) == 0 ||
+    const uint32_t expected_layout = test_ple_layout();
+    if (snapshot_layout(snapshot.ptr) != expected_layout) {
+        snprintf(err, errlen, "Qwen snapshot emitted the wrong PLE layout tag");
+        goto done;
+    }
+    opposite.ptr = malloc((size_t)snapshot.len);
+    if (!opposite.ptr) {
+        goto done;
+    }
+    memcpy(opposite.ptr, snapshot.ptr, (size_t)snapshot.len);
+    opposite.len = opposite.cap = snapshot.len;
+    snapshot_set_layout(opposite.ptr, other_ple_layout(expected_layout));
+    if (ds4_session_load_snapshot(session, &opposite, err, errlen) == 0 ||
         ds4_session_pos(session) != 0) {
+        snprintf(err, errlen, "Qwen snapshot accepted the opposite PLE layout tag");
         goto done;
     }
     ds4_session_snapshot truncated = snapshot;
@@ -106,7 +172,7 @@ static int serial_snapshot_roundtrip(ds4_engine *engine,
     }
     rc = 0;
 done:
-    ds4_session_snapshot_free(&corrupt);
+    ds4_session_snapshot_free(&opposite);
     ds4_session_snapshot_free(&snapshot);
     ds4_session_free(session);
     return rc;
@@ -491,12 +557,42 @@ int main(int argc, char **argv) {
         failed = 1;
         goto cleanup;
     }
-    FILE *bank_fp = fopen(bank_payload.path, "rb");
-    if (!bank_fp || ds4_cont_bank_restore_payload(
+    const uint32_t expected_layout = test_ple_layout();
+    uint32_t emitted_layout = 0u;
+    FILE *bank_fp = fopen(bank_payload.path, "r+b");
+    if (!bank_fp || payload_file_layout(bank_fp, &emitted_layout) != 0) {
+        fprintf(stderr, "Qwen durable bank layout read failed\n");
+        if (bank_fp) {
+            fclose(bank_fp);
+        }
+        failed = 1;
+        goto cleanup;
+    }
+    if (emitted_layout != expected_layout) {
+        fprintf(stderr,
+                "Qwen durable bank emitted layout=%08x want=%08x\n",
+                emitted_layout, expected_layout);
+        fclose(bank_fp);
+        failed = 1;
+        goto cleanup;
+    }
+    if (payload_file_set_layout(
+            bank_fp, other_ple_layout(expected_layout)) != 0 ||
+        ds4_cont_bank_restore_payload(
+            ctx, 1u, bank_fp, bank_payload.bytes,
+            err, sizeof(err)) == 0) {
+        fprintf(stderr, "Qwen durable bank PLE layout identity failed: %s\n", err);
+        fclose(bank_fp);
+        failed = 1;
+        goto cleanup;
+    }
+    err[0] = '\0';
+    if (payload_file_set_layout(bank_fp, expected_layout) != 0 ||
+        ds4_cont_bank_restore_payload(
             ctx, 1u, bank_fp, bank_payload.bytes,
             err, sizeof(err)) != 0) {
         fprintf(stderr, "Qwen durable bank restore failed: %s\n", err);
-        if (bank_fp) fclose(bank_fp);
+        fclose(bank_fp);
         failed = 1;
         goto cleanup;
     }

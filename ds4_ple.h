@@ -135,8 +135,9 @@ bool ds4_ple_hash_rows(
     char *error,
     size_t error_size);
 
-/* artifact_root is the directory containing the main GGUF shards. The
- * manifest path is relative to that root (normally ple/ple-manifest.json).
+/* The manifest path is relative to artifact_root (normally the main GGUF
+ * directory with ple/ple-manifest.json, or an explicitly selected sidecar).
+ * V1 payload paths use artifact_root; V2 paths use the manifest directory.
  * cache_bytes is rounded down to a sixteen-way set-associative number of 4 KiB
  * pages and is the only sidecar payload allocation made by this subsystem. */
 ds4_ple_store *ds4_ple_store_open(
