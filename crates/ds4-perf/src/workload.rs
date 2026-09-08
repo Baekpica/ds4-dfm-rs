@@ -114,12 +114,25 @@ impl Workload {
             }
             // PLE is a sidecar read by the Qwen host even when weights are IPC.
             let parent = path.parent().ok_or("model has no parent directory")?;
-            let ple = parent.join("ple/ple-manifest.json");
-            if ple.exists() {
+            let selected = env
+                .get(std::ffi::OsStr::new("DS4_QWEN_PLE_DIR"))
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from);
+            let ple = selected
+                .as_ref()
+                .map(|p| p.join("ple-manifest.json"))
+                .unwrap_or_else(|| parent.join("ple/ple-manifest.json"));
+            if selected.is_some() || ple.exists() {
                 require(&ple)?;
                 let manifest: serde_json::Value =
                     serde_json::from_slice(&std::fs::read(&ple).map_err(|e| e.to_string())?)
                         .map_err(|e| e.to_string())?;
+                let fp8 = manifest.get("format_version").and_then(|v| v.as_u64()) == Some(2);
+                let root = if fp8 {
+                    ple.parent().ok_or("PLE manifest has no parent")?
+                } else {
+                    selected.as_deref().unwrap_or(parent)
+                };
                 let parts = manifest
                     .get("logical_parts")
                     .and_then(|v| v.as_array())
@@ -129,7 +142,14 @@ impl Workload {
                         .get("physical_file")
                         .and_then(|v| v.as_str())
                         .ok_or("PLE physical file missing")?;
-                    require(&parent.join(file))?;
+                    require(&root.join(file))?;
+                }
+                if fp8 {
+                    let scale = manifest
+                        .pointer("/quantization/scale/path")
+                        .and_then(|v| v.as_str())
+                        .ok_or("PLE FP8 scale missing")?;
+                    require(&root.join(scale))?;
                 }
             }
         }
@@ -145,6 +165,77 @@ impl Workload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sidecar_override_is_pinned() {
+        use crate::experiment::InputFile;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("ds4-fp8-{}-{nonce}", std::process::id()));
+        let sidecar = root.join("fp8");
+        std::fs::create_dir_all(&sidecar).unwrap();
+        for name in ["model", "prompt", "fp8/part.bin", "fp8/scale.bin"] {
+            std::fs::write(root.join(name), b"fixture").unwrap();
+        }
+        std::fs::write(
+            sidecar.join("ple-manifest.json"),
+            br#"{
+            "format_version":2,"logical_parts":[{"physical_file":"part.bin"}],
+            "quantization":{"scale":{"path":"scale.bin"}}
+        }"#,
+        )
+        .unwrap();
+        let mut workload = Workload {
+            protocol: "ds4-bench-v1".into(),
+            name: "fixture".into(),
+            family: "qwen4exp".into(),
+            files: BTreeMap::new(),
+            shape: BTreeMap::new(),
+            cache_state: "fresh".into(),
+        };
+        for name in ["model", "prompt"] {
+            workload.files.insert(
+                name.into(),
+                InputFile {
+                    path: root.join(name).canonicalize().unwrap(),
+                    sha256: String::new(),
+                },
+            );
+        }
+        let command = vec![
+            "bench".into(),
+            "-m".into(),
+            root.join("model").into(),
+            "--prompt-file".into(),
+            root.join("prompt").into(),
+        ];
+        let env = BTreeMap::from([("DS4_QWEN_PLE_DIR".into(), sidecar.clone().into())]);
+        let missing_manifest = workload.verify_scope(&command, &env).is_err();
+        for name in ["ple-manifest.json", "part.bin"] {
+            workload.files.insert(
+                name.into(),
+                InputFile {
+                    path: sidecar.join(name).canonicalize().unwrap(),
+                    sha256: String::new(),
+                },
+            );
+        }
+        let missing_scale = workload.verify_scope(&command, &env).is_err();
+        workload.files.insert(
+            "scale".into(),
+            InputFile {
+                path: sidecar.join("scale.bin").canonicalize().unwrap(),
+                sha256: String::new(),
+            },
+        );
+        let complete = workload.verify_scope(&command, &env);
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(missing_manifest, "an override must pin its manifest");
+        assert!(missing_scale, "FP8 scale bytes are a consumed input");
+        complete.unwrap();
+    }
+
     #[test]
     fn expands_split_models() {
         let result = shards(Path::new("/models/a-00001-of-00003.gguf")).unwrap();

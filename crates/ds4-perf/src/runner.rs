@@ -188,6 +188,7 @@ const PERF_ENV: &[&str] = &[
     "DS4_QWEN_PREFILL_CHUNK",
     "DS4_QWEN_PLE_CACHE_MB",
     "DS4_QWEN_PLE_WORKERS",
+    "DS4_QWEN_PLE_DIR",
     "DS4_PLE_CUDA_TILE_ROWS",
     "DS4_PLE_NO_BATCH_ACQUIRE",
     "DS4_QWEN_NO_SWIGLU_Q8_EMIT",
@@ -600,6 +601,7 @@ mod tests {
         let out = environment(
             [
                 ("DS4_QWEN_PLE_CACHE_MB", "2048"),
+                ("DS4_QWEN_PLE_DIR", "/models/PLE-FP8"),
                 ("DS4_QWEN_PREFILL_OPENING", "1"),
                 ("DS4_MMQ_DENSE_D2R", "0"),
                 ("DS4_API_KEY", "secret"),
@@ -610,6 +612,7 @@ mod tests {
             .map(|(k, v)| (k.into(), v.into())),
         );
         assert!(out.contains("DS4_QWEN_PLE_CACHE_MB='2048'"));
+        assert!(out.contains("DS4_QWEN_PLE_DIR='/models/PLE-FP8'"));
         assert!(out.contains("DS4_QWEN_PREFILL_OPENING='1'"));
         assert!(out.contains("DS4_MMQ_DENSE_D2R='0'"));
         assert!(!out.contains("secret"));
