@@ -135,6 +135,9 @@ controls prevent automatic acceptance. GPU process snapshots must match the
 intended owners before and after each run; transient contention between these
 snapshots is not detected. Historical comparisons read preserved
 proofs and hashes; they do not reload the model.
+Scout consumers also reparse each referenced unprofiled benchmark CSV and
+require its rows to match the serialized samples. Hashing and parsing use the
+same bytes; benchmark stdout is limited to 64 MiB per sample on load.
 
 Every token sequence and full-vocabulary frontier is checked, including within-run
 repeat consistency. Default logit tolerances are `atol=0.0001`, `rtol=0.0001`;
@@ -158,7 +161,10 @@ capture/eager, long-context, or serving correctness gates.
 Evidence orders concrete runtime experiments: phase diagnosis first, then
 complete fit/calibration and NCU evidence when available. Initial controls cover
 Qwen prefill chunks/PLE workers, Dots3 prefill chunks, and Solar grouped GQA
-chunks. Unsupported families need a supported control before automatic execution;
+chunks. These proposals require measured prefill evidence; decode diagnosis,
+geometry and NCU counters cannot select or reorder prefill controls. Decode
+performance remains part of every acceptance comparison.
+Unsupported families need a supported control before automatic execution;
 the tool does not generate CUDA edits. `--plan FILE` supplies up to 32 explicit
 one-variable candidates using the same reviewed controls:
 

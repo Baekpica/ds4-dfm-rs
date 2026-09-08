@@ -8,6 +8,7 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -127,6 +128,46 @@ impl Payload for Scout {
         }
         Ok(())
     }
+}
+
+/// Bind normalized samples to the exact hashed, unprofiled process outputs.
+pub fn load(path: &Path) -> Result<Artifact<Scout>, String> {
+    let value: Artifact<Scout> = artifact::load(path)?;
+    let scout = value.require()?;
+    let root = path.parent().unwrap_or(Path::new("."));
+    const MAX_TIMING_BYTES: u64 = 64 * 1024 * 1024;
+    for (index, sample) in scout.samples.iter().enumerate() {
+        let name = if index == 0 {
+            "bench.stdout".into()
+        } else {
+            format!("bench-{index:02}.stdout")
+        };
+        let reference = value
+            .inputs
+            .iter()
+            .find(|r| r.path == name)
+            .ok_or_else(|| format!("unreferenced raw benchmark: {name}"))?;
+        let mut bytes = Vec::new();
+        fs::File::open(root.join(&name))
+            .map_err(|e| e.to_string())?
+            .take(MAX_TIMING_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > MAX_TIMING_BYTES {
+            return Err("raw benchmark exceeds 64 MiB".into());
+        }
+        // Hash and parse the same bytes, so a later file change cannot replace
+        // the data used to validate this sample.
+        if artifact::hash_bytes(&bytes) != reference.sha256 {
+            return Err(format!("raw benchmark changed: {name}"));
+        }
+        if bench::parse(bytes.as_slice())? != sample.rows {
+            return Err(format!(
+                "sample summary disagrees with raw benchmark: {name}"
+            ));
+        }
+    }
+    Ok(value)
 }
 
 pub struct Prepared {

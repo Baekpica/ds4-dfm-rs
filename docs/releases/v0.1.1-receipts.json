@@ -79,8 +79,8 @@
   ],
   "executables": {
     "ds4-perf": {
-      "sha256": "c00ff12145daf0028f67f02a63e4735e39e357f8024b28ebfe1c7af2a1ef6e36",
-      "bytes": 3358200
+      "sha256": "157744152d8d25b16eb65582cc96fd8201a7e8871f30cbe7e2259eb1687623c0",
+      "bytes": 3362176
     },
     "ds4-perf-gpu": {
       "sha256": "3b624ab79be3b9647f6778577d82b93456138387bb616488e2612683009002e6",
@@ -105,6 +105,10 @@
     "scratch/perf-v011/bin/ds4-perf-auto-verified": {
       "sha256": "98eb4ccc66d4fb9ed13d9af8c74296230ba682272f60fc833afd6e19927f30bd",
       "bytes": 3358336
+    },
+    "scratch/perf-v011/bin/ds4-perf-before-review": {
+      "sha256": "c00ff12145daf0028f67f02a63e4735e39e357f8024b28ebfe1c7af2a1ef6e36",
+      "bytes": 3358200
     },
     "scratch/qwen-v010-8002/bin/ds4-server": {
       "sha256": "d3a6894a7ced868c22ed162d261f782ed75d9f7698c56b91c36634e3a3715ab5",
@@ -235,6 +239,30 @@
           "failure": "candidate not retained: [Inconclusive, Inconclusive]"
         }
       ]
+    },
+    {
+      "path": "scratch/perf-v011/plan-reviewed/decision.json",
+      "kind": "decision",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "e20195272f3ef3c10a3f7123a2c9c413dfdb5085fa57f5e038f3727db0de5742",
+      "trials": []
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-reviewed-before/compare.json",
+      "kind": "compare",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "207f5b16c7dc9707244b2278c621bcc88b4e53c7a640ff1503e23307a0ae2f57",
+      "verdict": "inconclusive"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-reviewed-after/compare.json",
+      "kind": "compare",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "97b32a33d319544952620c296f6a2ce6e0cd8177eca8fcd807ecbbf43edb4ea3",
+      "verdict": "inconclusive"
     },
     {
       "path": "scratch/perf-v011/qwen-auto-final/control-00/scout.json",

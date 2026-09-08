@@ -102,19 +102,25 @@ fn candidates(
     let mut reasons = Vec::new();
     let mut host = false;
     let mut wide = false;
+    let mut prefill = false;
     for (name, phase) in &scout.evidence.phases {
         let diagnosis = report::classify(phase);
         reasons.push(format!(
             "{name}: {diagnosis:?}; wall_ns={:?}, busy_ns={:?}",
             phase.wall_ns, phase.busy_ns
         ));
-        host |= diagnosis == report::Diagnosis::HostIdle;
-        wide |= diagnosis == report::Diagnosis::Fragmentation;
+        // Initial runtime proposals target prefill. Decode still contributes
+        // diagnostic context and must pass the later regression comparison.
+        if name == "ds4.prefill" {
+            prefill |= diagnosis != report::Diagnosis::Unknown;
+            host |= diagnosis == report::Diagnosis::HostIdle;
+            wide |= diagnosis == report::Diagnosis::Fragmentation;
+        }
     }
     if let Some(fit) = fit {
-        if let Some(bound) = fit.bounds.first() {
+        if let Some(bound) = fit.bounds.iter().find(|b| b.launch.phase == "ds4.prefill") {
             reasons.push(format!(
-                "top geometry: {} grid={:?} block={:?} waves_lower={} tail_fill={:.3}",
+                "top prefill geometry: {} grid={:?} block={:?} waves_lower={} tail_fill={:.3}",
                 bound.launch.kernel,
                 bound.launch.grid,
                 bound.launch.block,
@@ -136,7 +142,9 @@ fn candidates(
                         "{} observed active warps: {:?} {}",
                         target.phase, metric.value, metric.unit
                     ));
-                    wide |= metric.value.is_some_and(|v| v < 30.0);
+                    if target.phase == "ds4.prefill" {
+                        wide |= metric.value.is_some_and(|v| v < 30.0);
+                    }
                 }
             }
         }
@@ -154,6 +162,10 @@ fn candidates(
             }
             result.push(Candidate {name:format!("ple-workers-{workers}"),environment:BTreeMap::from([("DS4_QWEN_PLE_WORKERS".into(),workers.to_string())]),reason:"Host GPU-free spans: test PLE worker parallelism with fixed cache allocation; not a claim that PLE caused the gap".into()});
         }
+    }
+    if !prefill {
+        reasons.push("No measured prefill phase for automatic prefill controls".into());
+        return (result, reasons);
     }
     let control = if family.starts_with("qwen") {
         Some(("DS4_QWEN_PREFILL_CHUNK", 256, 16384))
@@ -483,7 +495,7 @@ pub fn run(args: &cli::Optimize) -> Result<(), String> {
     };
     let mut refs = Vec::new();
     let result = (|| {
-        let source: Artifact<Scout> = artifact::load(&args.scout)?;
+        let source = experiment::load(&args.scout)?;
         refs.push(artifact::reference(&args.scout, &args.out)?);
         let root = args.scout.parent().unwrap_or(Path::new("."));
         let fit = root.join("fit.json");

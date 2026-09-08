@@ -509,8 +509,8 @@ pub fn run(args: &cli::Compare) -> Result<(), String> {
     }
     artifact::directory(&args.out)?;
     let result = (|| {
-        let a: Artifact<Scout> = artifact::load(&args.baseline)?;
-        let b: Artifact<Scout> = artifact::load(&args.candidate)?;
+        let a = experiment::load(&args.baseline)?;
+        let b = experiment::load(&args.candidate)?;
         analyze(
             a.require()?,
             args.baseline.parent().unwrap_or(Path::new(".")),

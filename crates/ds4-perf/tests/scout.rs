@@ -445,6 +445,133 @@ fn auto_retains_only_proved_gain() {
 }
 
 #[test]
+fn rejects_forged_timings() {
+    let f = Fixture::new();
+    let source = f.source();
+    let original: serde_json::Value = serde_json::from_slice(&fs::read(&source).unwrap()).unwrap();
+    for metric in ["prefill_tps", "gen_tps", "first_token_sec", "unhashed"] {
+        let mut forged = original.clone();
+        if metric == "unhashed" {
+            forged["inputs"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|r| r["path"] != "bench.stdout");
+        } else {
+            forged["data"]["samples"][0]["rows"][0][metric] = 123.0.into();
+        }
+        fs::write(&source, serde_json::to_vec(&forged).unwrap()).unwrap();
+        let out = format!("forged-{metric}");
+        f.workflow()
+            .args(["compare", "--baseline"])
+            .arg(&source)
+            .arg("--candidate")
+            .arg(&source)
+            .args(["--out", &out])
+            .output()
+            .unwrap();
+        let result: serde_json::Value =
+            serde_json::from_slice(&fs::read(f.0.join(out).join("compare.json")).unwrap()).unwrap();
+        assert_eq!(result["data"]["verdict"], "incomparable", "{metric}");
+        assert!(result["data"]["reasons"][0]
+            .as_str()
+            .unwrap()
+            .contains("raw benchmark"));
+    }
+}
+
+#[test]
+fn decode_does_not_tune_prefill() {
+    let f = Fixture::new();
+    let source = f.source();
+    let mut data: serde_json::Value = serde_json::from_slice(&fs::read(&source).unwrap()).unwrap();
+    for (name, busy, gap, count) in [
+        ("idle", 5_000_000, 5_000_000, 1),
+        ("fragmented", 9_000_000, 1_000, 1_000),
+    ] {
+        data["data"]["evidence"]["phases"] = serde_json::json!({
+            "ds4.decode": {"name":"ds4.decode", "wall_ns":10_000_000,
+                "projected_ns":10_000_000, "busy_ns":busy, "mem_ns":0,
+                "gap_ns":gap, "kernels":[{"name":"decode", "total_ns":busy,
+                    "count":count}]}
+        });
+        fs::write(&source, serde_json::to_vec(&data).unwrap()).unwrap();
+        let out = format!("decode-{name}");
+        let result = f
+            .workflow()
+            .args(["optimize", "--scout"])
+            .arg(&source)
+            .args(["--out", &out])
+            .output()
+            .unwrap();
+        assert!(result.status.success());
+        let result: serde_json::Value =
+            serde_json::from_slice(&fs::read(f.0.join(out).join("decision.json")).unwrap())
+                .unwrap();
+        assert_eq!(result["data"]["candidates"], serde_json::json!([]));
+    }
+}
+
+#[test]
+fn geometry_signals_are_scoped() {
+    let f = Fixture::new();
+    let source = f.source();
+    let mut data: serde_json::Value = serde_json::from_slice(&fs::read(&source).unwrap()).unwrap();
+    data["data"]["evidence"]["phases"] = serde_json::json!({
+        "ds4.prefill": {"name":"ds4.prefill", "wall_ns":10_000_000,
+            "projected_ns":10_000_000, "busy_ns":9_000_000, "mem_ns":0,
+            "gap_ns":1_000, "kernels":[{"name":"prefill", "total_ns":9_000_000,
+                "count":1}]}
+    });
+    fs::write(&source, serde_json::to_vec(&data).unwrap()).unwrap();
+    for phase in ["ds4.decode", "ds4.prefill"] {
+        for kind in ["fit", "ncu"] {
+            let data = if kind == "fit" {
+                serde_json::json!({"calibration_status":"fixture", "workload_shape_status":"fixture",
+                    "bounds":[{"operand_shape":null,"operand_shape_source":"unknown",
+                        "launch":{"phase":phase,"kernel":"fixture","grid":[1,1,1],"block":[32,1,1],
+                            "registers_per_thread":16,"shared_bytes":0,"instances":1,"total_ns":1000},
+                        "resident_blocks_upper":1,"occupancy_upper":0.1,"waves_lower":1,
+                        "last_wave_fill":0.1,"block_limits":{}}],"unknown_launches":0,
+                    "observed_copy_gb_s":null,"observed_fp32_gflop_s":null,"observed_launch_us":null,
+                    "shape":{},"limits":[]})
+            } else {
+                serde_json::json!({"targets":[{"selection":"fixture", "phase":phase,
+                    "kernel":"fixture","captured":true,"launch":{"id":"0","kernel":"fixture",
+                        "process":"1","device":"0","grid":"1,1,1","block":"32,1,1"},
+                    "metrics":[{"name":"sm__warps_active.avg.pct_of_peak_sustained_active",
+                        "unit":"%","value":10.0,"unavailable":null}]}],"limits":[]})
+            };
+            let path = source.parent().unwrap().join(format!("{kind}.json"));
+            let artifact = serde_json::json!({"kind":kind,"schema_version":1,"producer_version":"0.1.1",
+                "created_unix":0,"complete":true,"inputs":[],"warnings":[],"data":data});
+            fs::write(&path, serde_json::to_vec(&artifact).unwrap()).unwrap();
+            let out = format!("geometry-{phase}-{kind}");
+            let result = f
+                .workflow()
+                .args(["optimize", "--scout"])
+                .arg(&source)
+                .args(["--out", &out])
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let result: serde_json::Value =
+                serde_json::from_slice(&fs::read(f.0.join(out).join("decision.json")).unwrap())
+                    .unwrap();
+            let expected = if phase == "ds4.prefill" { "512" } else { "128" };
+            assert_eq!(
+                result["data"]["candidates"][0]["environment"]["DS4_QWEN_PREFILL_CHUNK"], expected,
+                "{phase} {kind}"
+            );
+            fs::remove_file(path).unwrap();
+        }
+    }
+}
+
+#[test]
 fn rejects_ties_and_regressions() {
     let f = Fixture::new();
     let source = f.source();
