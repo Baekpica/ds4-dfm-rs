@@ -16,6 +16,8 @@ extern "C" {
 #define DS4_PLE_N_PHYSICAL_FILES 4u
 #define DS4_PLE_ROW_DIM 160u
 #define DS4_PLE_ROW_BYTES 320u
+#define DS4_PLE_FP8_ROW_BYTES 160u
+#define DS4_PLE_FP8_CODES 256u
 #define DS4_PLE_PAGE_BYTES 4096u
 #define DS4_PLE_LATENCY_BUCKETS 64u
 
@@ -151,6 +153,10 @@ void ds4_ple_store_close(ds4_ple_store *store);
 const ds4_ple_layout *ds4_ple_store_layout(const ds4_ple_store *store);
 const ds4_ple_hash_config *ds4_ple_store_hash_config(const ds4_ple_store *store);
 
+/* Source-compatible FP8 -> scaled BF16 lookup, or NULL for BF16 storage.
+ * The store owns the table; CUDA copies it once when registering the cache. */
+const uint16_t *ds4_ple_store_decode_table(const ds4_ple_store *store);
+
 /* Queue all pages touched by the supplied global row ids and return without
  * waiting for I/O. A busy cache set may drop a speculative prefetch; a later
  * blocking read will retry it. */
@@ -170,7 +176,7 @@ bool ds4_ple_store_read_row(
     char *error,
     size_t error_size);
 
-/* Acquire one or two cache-page segments for a row without copying it.
+/* Acquire one or two raw storage segments (layout.row_stride_bytes in total).
  * Callers must release the view after their CPU operation or CUDA event is
  * complete; referenced slots cannot be evicted in the meantime. */
 bool ds4_ple_store_acquire_row(

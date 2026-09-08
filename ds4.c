@@ -33904,9 +33904,15 @@ static bool qwen4exp_engine_open_ple(ds4_engine *engine,
     }
     const uint32_t workers = qwen4exp_env_u32(
         "DS4_QWEN_PLE_WORKERS", 32u, 1u, 64u);
+    /* Explicit sidecar selection keeps existing base/Uncensored GGUFs usable
+     * without changing their published BF16 metadata or their compute path. */
+    const char *ple_dir = getenv("DS4_QWEN_PLE_DIR");
+    const bool override_ple = ple_dir && ple_dir[0];
     char error[512] = {0};
     engine->qwen_ple_store = ds4_ple_store_open(
-        root, "ple/ple-manifest.json", (size_t)cache_mb << 20,
+        override_ple ? ple_dir : root,
+        override_ple ? "ple-manifest.json" : "ple/ple-manifest.json",
+        (size_t)cache_mb << 20,
         workers, true, error, sizeof(error));
     free(root);
     if (!engine->qwen_ple_store) {
@@ -33926,10 +33932,11 @@ static bool qwen4exp_engine_open_ple(ds4_engine *engine,
     const ds4_ple_layout *layout =
         ds4_ple_store_layout(engine->qwen_ple_store);
     fprintf(stderr,
-            "ds4: Qwen SSD-PLE ready: cache=%.0f MiB workers=%u direct=%u/%u\n",
+            "ds4: Qwen SSD-PLE ready: cache=%.0f MiB workers=%u direct=%u/%u dtype=%s\n",
             (double)layout->cache_bytes / 1048576.0,
             layout->worker_count, layout->direct_io_file_count,
-            layout->physical_file_count);
+            layout->physical_file_count,
+            layout->format_version == 2u ? "FP8_E4M3FN" : "BF16");
     return true;
 #endif
 }
