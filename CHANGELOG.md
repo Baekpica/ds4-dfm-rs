@@ -6,6 +6,17 @@ through [Entrpi/ds4](https://github.com/Entrpi/ds4) and Baekpica DFM; the
 Entrpi fork point was `e16ead1` (2026-05-29). See [LINEAGE.md](docs/LINEAGE.md)
 for exact provenance. Historical entries retain their original scope.
 
+## v0.1.1 — 2026-09-08
+
+- Adds `ds4-perf inspect --calibrate`, scout fit/NCU/direct CUPTI collection,
+  matched correctness/performance comparison, and bounded automatic runtime
+  experiments. The [workflow guide](docs/ds4-perf.md) defines commands and limits.
+- Records typed, versioned artifacts with transitive SHA-256 evidence checks,
+  raw profiler outputs, explicit partial status, and reproducible controls.
+- Keeps the inference ABI and optional official Rust NVTX integration intact;
+  CUDA calibration/CUPTI lives in a separate profiling helper. See the
+  [validation ledger](docs/releases/v0.1.1.md).
+
 ## v0.1.0 — 2026-09-07
 
 - Defines v0.1.0 as the first independent Rust-host baseline with a stable

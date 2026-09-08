@@ -8,7 +8,8 @@ with `-c` suffixes are retained behavior oracles, not the production hosts.
 Start with [README.md](README.md), the [documentation index](docs/README.md),
 and the [architecture](docs/rust-migration/ARCHITECTURE.md).
 The [v0.1.0 gate ledger](docs/releases/v0.1.0.md) records verified production
-qualification and workload limits. Dated reports establish only their
+qualification and workload limits; the [v0.1.1 ledger](docs/releases/v0.1.1.md)
+records the performance workflow. Dated reports establish only their
 recorded commit, artifact and workload; old PIDs and handoffs are not live state.
 
 ## Inference Performance Optimization Guidelines
@@ -104,7 +105,8 @@ backend small and direct; this is not a generic GGUF runner.
 - `crates/ds4-core`: model/session ownership, host catalog and tokenizer.
 - `crates/ds4-kv`, `ds4-dist`, `ds4-web`: KV policy, distributed runtime and web helpers.
 - `crates/ds4-sys` + `native/bridge`: narrow native inference boundary.
-- `crates/ds4-perf`: standalone benchmark/profiler orchestration and diagnosis.
+- `crates/ds4-perf`: standalone inspect/scout/compare/optimize workflow.
+- `crates/ds4-perf-gpu`: optional profiling-only CUDA calibration/CUPTI helper.
 - `ds4.c`: native engine, GPU state/execution and retained compatibility helpers.
 - `ds4_cli.c`, `ds4_server.c`, `ds4_bench.c`, `ds4_agent.c`: C host oracles.
 - `ds4_metal.m`: Objective-C Metal runtime and kernel wrappers.
@@ -153,7 +155,8 @@ fixtures. On Linux, `make` prints help: select `make cuda-spark`,
 `make cuda-generic`, or an explicit CUDA architecture for native validation.
 Use live server tests only when intentionally testing the API surface.
 
-For ds4-perf, run `cargo test -p ds4-perf`. Build optional instrumentation with
+For ds4-perf, follow [the workflow and evidence contract](docs/ds4-perf.md).
+Run `cargo test -p ds4-perf`. Build optional instrumentation with
 `make ds4-bench-perf` after the CUDA build. Use NVIDIA's official Rust `nvtx`
 SDK directly in `ds4-cli` under `perf-nvtx`; keep its default features disabled
 and enable only `std` unless a measured need justifies more. Use `LocalRange`

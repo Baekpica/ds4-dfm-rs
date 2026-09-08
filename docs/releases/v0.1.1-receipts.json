@@ -1,0 +1,424 @@
+{
+  "release": "v0.1.1",
+  "hardware": {
+    "gpu": "NVIDIA GB10",
+    "sms": 48,
+    "cuda": "13.3.73",
+    "driver": "610.43.02",
+    "nsys": "2026.1.3",
+    "ncu": "2026.2.1"
+  },
+  "scope": {
+    "prompt": "speed-bench/promessi_sposi.txt",
+    "frontier_tokens": 2048,
+    "generated_tokens": 8,
+    "measured_processes_per_run": 3,
+    "cache_policy": "warmup-then-fresh"
+  },
+  "workload_files": [
+    {
+      "role": "model",
+      "name": "Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+      "bytes": 32066883520,
+      "sha256": "b8c8633f475351008d68981f4b37b409669b3dabd1620d6ead12584e648fe523"
+    },
+    {
+      "role": "model-shard-2",
+      "name": "Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00002-of-00003.gguf",
+      "bytes": 31811595296,
+      "sha256": "14a3514bbf080266d501b07aa9da73ee1e0bfcf5ffd6bf0669034ed4b3fd35c9"
+    },
+    {
+      "role": "model-shard-3",
+      "name": "Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00003-of-00003.gguf",
+      "bytes": 19396505568,
+      "sha256": "92dfbce1fcc6f722ac0ef7ec100bda02fbeb7b1b5cfecd1b57e51e18f82df111"
+    },
+    {
+      "role": "ple-1",
+      "name": "ple-bf16-00001-of-00004.bin",
+      "bytes": 25600196608,
+      "sha256": "c13cfa3065b2343de314d31c0061fdb4471505e385d98549be7772d60ae684db"
+    },
+    {
+      "role": "ple-2",
+      "name": "ple-bf16-00002-of-00004.bin",
+      "bytes": 25600196608,
+      "sha256": "9e957bfeafe75e779c209b1447c7d728cf6acb6e3f809ba0a89df30bba675c3c"
+    },
+    {
+      "role": "ple-3",
+      "name": "ple-bf16-00003-of-00004.bin",
+      "bytes": 25600196608,
+      "sha256": "4aac201fd0dc517a14608f5721b1d05933c2d4deb092ddf215492ecdb7c7a383"
+    },
+    {
+      "role": "ple-4",
+      "name": "ple-bf16-00004-of-00004.bin",
+      "bytes": 25600196608,
+      "sha256": "1e55bf840e6f37d76df4ec4274e13bf04e62ba823d989966b1a7c251cedff3b3"
+    },
+    {
+      "role": "ple-manifest",
+      "name": "ple-manifest.json",
+      "bytes": 76351,
+      "sha256": "eca58f81115459eb59bdfb5a5e82a4a2729760ba934ecbd52cc862bcaf820c0c"
+    },
+    {
+      "role": "prompt",
+      "name": "promessi_sposi.txt",
+      "bytes": 1329139,
+      "sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f"
+    },
+    {
+      "role": "owner-manifest",
+      "name": "weights.manifest",
+      "bytes": 37651,
+      "sha256": "f7d8107569600883b7da118948dfd30d0adf48d7a9d780d7fefe85d2e26c4a29"
+    }
+  ],
+  "executables": {
+    "ds4-perf": {
+      "sha256": "157744152d8d25b16eb65582cc96fd8201a7e8871f30cbe7e2259eb1687623c0",
+      "bytes": 3362176
+    },
+    "ds4-perf-gpu": {
+      "sha256": "3b624ab79be3b9647f6778577d82b93456138387bb616488e2612683009002e6",
+      "bytes": 1144688
+    },
+    "ds4-bench-perf": {
+      "sha256": "0f503d5622ac65a4f0bb8914c5b1b9758af7c2080ee8beea59dac5517c56cb6f",
+      "bytes": 48738384
+    },
+    "libds4_perf_gpu.so": {
+      "sha256": "6119ba14f75ab94328bfcf2fd5490be870271e097381b29b28036c9f9d5edf68",
+      "bytes": 877256
+    },
+    "scratch/perf-v011/bin/ds4-perf-nsys-final": {
+      "sha256": "cc4fc3deaa10252a02839c2ca4b61aaa9fd07a8b827cca3d8dfa4a2c80a5373e",
+      "bytes": 3283400
+    },
+    "scratch/perf-v011/bin/ds4-perf-auto-json-failure": {
+      "sha256": "5788e0a35e42722b52ccbcce97beb15dbbb5a5d788654d2b2579f829a6089624",
+      "bytes": 3283664
+    },
+    "scratch/perf-v011/bin/ds4-perf-auto-verified": {
+      "sha256": "98eb4ccc66d4fb9ed13d9af8c74296230ba682272f60fc833afd6e19927f30bd",
+      "bytes": 3358336
+    },
+    "scratch/perf-v011/bin/ds4-perf-before-review": {
+      "sha256": "c00ff12145daf0028f67f02a63e4735e39e357f8024b28ebfe1c7af2a1ef6e36",
+      "bytes": 3358200
+    },
+    "scratch/qwen-v010-8002/bin/ds4-server": {
+      "sha256": "d3a6894a7ced868c22ed162d261f782ed75d9f7698c56b91c36634e3a3715ab5",
+      "bytes": 50184984
+    },
+    "scratch/qwen-v010-8002/bin/ds4_weight_server": {
+      "sha256": "655a51e75f92899dc4805009b7673751b838f51190ff917add57ab09dd6f4565",
+      "bytes": 1829592
+    }
+  },
+  "artifacts": [
+    {
+      "path": "scratch/perf-v011/inspect-final/machine.json",
+      "kind": "machine",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "519325d2c35067b069919c78a8b4383a5844de30cc0d087896126bb4b0e40d0a"
+    },
+    {
+      "path": "scratch/perf-v011/inspect-final/calibration.json",
+      "kind": "calibration",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "15afb1875aceaf86abd7b9c4eb353d554bba8afcb7551f9f2cf628d7bbd723fd"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-nsys-final/collection.json",
+      "kind": "scout",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "188d71d375166b74f806189467561aa5b79e46a84515de64f2df9695e47e03c0"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-nsys-final/scout.json",
+      "kind": "scout",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "bcf42f45b9511e70461ae4f99e49afbbc60f4bdec21f1ab31324b0f6f2ef3202"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-nsys-final/fit.json",
+      "kind": "fit",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "96ecfaeb45ce003cdc9c8e0135e67a0dc8ce2b538d3a3848c474c47e1980519c"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-nsys-final/ncu.json",
+      "kind": "ncu",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "f0dc7902cb6078d1dfa9c2ab6b0293f85abe3040e364a4e085a88ef9aea7c2f3"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-cupti-final/collection.json",
+      "kind": "scout",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "9ca1e781aa0a550731a86ea1536ccb8af443168090a55d560ad41d40f3388eb0"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-cupti-final/scout.json",
+      "kind": "scout",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "38538edd456c69292f04b243d278167ae7fb02ee91617353b709deb048a38d50"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-cupti-final/fit.json",
+      "kind": "fit",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "fe13a7317296c619a96796d71db7ff598d81936514a20874919578a3268f1f1e"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-self-compare/compare.json",
+      "kind": "compare",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "76fe7a7e8683577c5edeedb02f299207c4bfc49220ac321f6da426c7e4d15bfb",
+      "verdict": "pass"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-collector-compare/compare.json",
+      "kind": "compare",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "9996c4aa463233acce12677a767dbb54b24ce62a1594b8b1ba9553369154836a",
+      "verdict": "pass"
+    },
+    {
+      "path": "scratch/perf-v011/plan-final/decision.json",
+      "kind": "decision",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "c651d1183bc745bf6a9419d00fd8e06de0a951d07c36fc83b669914b863f9455",
+      "trials": []
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-final/decision.json",
+      "kind": "decision",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "1496135f96ff9d532f46539c53221f8a1af2935c78c4fbcc725a1e052aaa0b59",
+      "trials": [
+        {
+          "candidate": "ple-workers-32",
+          "accepted": false,
+          "verdicts": [],
+          "failure": "after comparison: comparison summary disagrees with raw samples"
+        }
+      ]
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-verified/decision.json",
+      "kind": "decision",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "fcfb089da016939af683530e04978264d9bd832241880fde778695691a42376d",
+      "trials": [
+        {
+          "candidate": "ple-workers-32",
+          "accepted": false,
+          "verdicts": [
+            "inconclusive",
+            "inconclusive"
+          ],
+          "failure": "candidate not retained: [Inconclusive, Inconclusive]"
+        }
+      ]
+    },
+    {
+      "path": "scratch/perf-v011/plan-reviewed/decision.json",
+      "kind": "decision",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "e20195272f3ef3c10a3f7123a2c9c413dfdb5085fa57f5e038f3727db0de5742",
+      "trials": []
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-reviewed-before/compare.json",
+      "kind": "compare",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "207f5b16c7dc9707244b2278c621bcc88b4e53c7a640ff1503e23307a0ae2f57",
+      "verdict": "inconclusive"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-reviewed-after/compare.json",
+      "kind": "compare",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "97b32a33d319544952620c296f6a2ce6e0cd8177eca8fcd807ecbbf43edb4ea3",
+      "verdict": "inconclusive"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-final/control-00/scout.json",
+      "kind": "scout",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "88dad1ece8067c9bc39165a34df8f69349122a2aa902b8492dfec03cff808b7f"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-final/control-01/scout.json",
+      "kind": "scout",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "ca55f659ebdaf208a77538f28b2534b09b079ce787effd9e51563789023eac01"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-final/control-00/fit.json",
+      "kind": "fit",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "a453db206046247dde449cc161e1f8e0f652347e3b66d3a2aef40ac29a9eecf1"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-final/control-01/fit.json",
+      "kind": "fit",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "9fedcae7468753b89b3bfb3069f5c1efc2d0fef621210f20afe7995830caea9b"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-final/candidate-01/scout.json",
+      "kind": "scout",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "934ef216f747d952a6ceeb8bf2fba47309be00d426b0bc561c708431fbb135e7"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-final/candidate-01/fit.json",
+      "kind": "fit",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "5268f4ecba9a06bff1d6b9ec5506a521c83087bf0ad9f584f7333b50e8b644cc"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-final/compare-01-after/compare.json",
+      "kind": "compare",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "03d64b5eb4e7e980d32599a196b833e3cb9b7fbcc97515e8f57dac3a66e2aa9b",
+      "verdict": "inconclusive"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-final/compare-01-before/compare.json",
+      "kind": "compare",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "121f130a5111c5394df61f3a52af30595167bcabfc30adedb8725a48ee910139",
+      "verdict": "inconclusive"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-verified/control-00/scout.json",
+      "kind": "scout",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "72e171ea38502e030ce28eb59e75a52020dd7d1458e4e4af48e024a73b6c9424"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-verified/control-01/scout.json",
+      "kind": "scout",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "2af8886d11d75867eeadf5ea3eec01df126ce4368834b5620b54fd0c93d957e9"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-verified/control-00/fit.json",
+      "kind": "fit",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "863cc1150970fceb10803ea351886525e643c209169857288c24452960424a66"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-verified/control-01/fit.json",
+      "kind": "fit",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "c074f70302a3f520d039ba941dc4a60cf0b913c3462468b4972064ab6092e720"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-verified/candidate-01/scout.json",
+      "kind": "scout",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "700a44a5ca4685629114579050363b613838a941cfe0063ce8881ab4a9bd4f9b"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-verified/candidate-01/fit.json",
+      "kind": "fit",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "abdb315e19a8a25dc9312139d0bc3cad0c732fc50b7ae776f2fbdc3f355acf9c"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-verified/compare-01-after/compare.json",
+      "kind": "compare",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "bf4b66cd4d5cb993e4574d24863f0409067059d7729964877dc27f62b36c2eb1",
+      "verdict": "inconclusive"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-auto-verified/compare-01-before/compare.json",
+      "kind": "compare",
+      "schema_version": 1,
+      "complete": true,
+      "sha256": "5071e685a78202b44a882f5a5806eb27811dbd111d11e59a291d985a5b2f0c6a",
+      "verdict": "inconclusive"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-nsys-final/trace.nsys-rep",
+      "bytes": 3010841,
+      "sha256": "6318c6e8a053052a9b500f1da4a7e6058be53b7257da5552c325316fa0aa608e"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-nsys-final/trace.sqlite",
+      "bytes": 7688192,
+      "sha256": "0381148333f90d7ec5ebb1f1f7f079c3b2069e2b57699d6565c572fb5592bfaa"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-nsys-final/ncu/ds4-prefill.ncu-rep",
+      "bytes": 165663340,
+      "sha256": "46a4056bd7511e9fa55d6118fba9a75fe07decd3604b33b6958c930da79313b9"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-nsys-final/ncu/ds4-decode.ncu-rep",
+      "bytes": 17059752,
+      "sha256": "42951b849ee9168bc1c4d993dee502fccc75702a31dde5a55942ea72029f6cbe"
+    },
+    {
+      "path": "scratch/perf-v011/qwen-cupti-final/activity.jsonl",
+      "bytes": 10168026,
+      "sha256": "076daa7b16eeffddb9674ffe1d8d8ef7665cb594339d77d24a3da40c30ed958a"
+    },
+    {
+      "path": "scratch/perf-v011/restored-serving-final/verification.json",
+      "bytes": 5347,
+      "sha256": "6d50082d59d74e033317ac8b567603524880fcb5706662e528913be123d7d303"
+    },
+    {
+      "path": "scratch/perf-v011/restored-serving-final/runtime.json",
+      "bytes": 1310,
+      "sha256": "4a244dd10fb2ef7e8f5bbf84b2eb88da7e6aeaafc1a294becc064cc50b5335ed"
+    },
+    {
+      "path": "scratch/perf-v011/restored-serving-final/worker.log",
+      "bytes": 5168,
+      "sha256": "21a7fe4cde4eff1b26e2aba0444d1e690d032d86b5a1a510a23bcc553f58a17a"
+    }
+  ]
+}

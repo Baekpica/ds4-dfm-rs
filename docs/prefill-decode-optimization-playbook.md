@@ -30,71 +30,17 @@ it round after round.
 
 ## Local scout with ds4-perf
 
-Build the standalone Rust control plane with `cargo build -p ds4-perf --release`.
-After `make cuda-spark` (or `make cuda CUDA_ARCH=...`), explicitly build
-`make ds4-bench-perf`. This creates `./ds4-bench-perf` with the `ds4-cli`
-`perf-nvtx` feature and NVIDIA's [official Rust SDK](https://github.com/NVIDIA/NVTX/tree/dev/rust)
-(`nvtx` 2, locked to 2.0.0, only `std`; default features disabled).
-`ds4-cli` uses `nvtx::LocalRange` directly with static C strings for
-`ds4.prefill` and `ds4.decode`, covering their measured operations.
-NVTX does not pass through `ds4-core`, `ds4-sys`, or the native bridge.
-The SDK's build uses `bindgen`/`cc` and needs libclang (`LIBCLANG_PATH` for
-a local installation). Ordinary `make ds4-bench` and inference builds
-have no NVTX dependency; `ds4-perf` remains a standalone tool.
+Use the [ds4-perf guide](ds4-perf.md) for the four-command workflow,
+optional NVIDIA NVTX/CUPTI builds, workload contracts, bounded NCU capture,
+comparison gates, and automatic experiments. The production annotations remain
+`ds4.prefill` and `ds4.decode` at the measured Rust operations.
 
-```sh
-./target/release/ds4-perf doctor --bench ./ds4-bench-perf
-./target/release/ds4-perf scout --out scratch/perf/qwen38-cold2k -- \
-  ./ds4-bench-perf --cuda -m /path/to/model.gguf \
-  --prompt-file speed-bench/promessi_sposi.txt \
-  --ctx-start 2048 --ctx-max 2048 --gen-tokens 8
-```
-
-```text
-ds4-bench -> ds4-perf scout -> nsys + NVTX -> execution-path diagnosis
-          -> targeted ncu -> code change -> A/B + correctness proof
-```
-
-Pass one frontier per invocation and leave the bench CSV on stdout (omit
-`--csv FILE`). The command and inherited environment run unchanged in two
-fresh processes: an unprofiled throughput baseline, then an Nsight trace.
-Keep any intentional VMM owner resident; scout observes process state and
-never stops other processes. Fresh workers do not imply cold OS/owner caches.
-
-Each new output directory preserves the command, executable hash, host/git/tool
-manifest, allowlisted performance environment, process snapshots, stdout/stderr,
-raw `trace.nsys-rep`, Nsight CSV and normalized phase/kernel CSV, plus `report.txt`.
-`command.argv` preserves Unix arguments as NUL-separated bytes. Existing output
-directories are rejected. Use `scratch/perf/` to keep **all** artifacts ignored;
-raw Nsight report extensions are also ignored repository-wide. The strict
-environment allowlist is in `crates/ds4-perf/src/runner.rs`; unlisted variables
-are inherited but not recorded, so the manifest is not a complete comparison
-identity. Confirm model/prompt revisions, caches, clocks and policy separately.
-
-The report keeps prefill/decode separate. GPU projection is the span between
-the first and last associated GPU operations, **including gaps**; GPU coverage
-instead uses the union of traced GPU intervals clipped to each CPU NVTX phase.
-Kernel shares use summed phase kernel durations and can overlap. These follow
-the [Nsight report definitions](https://docs.nvidia.com/nsight-systems/AnalysisGuide/index.html).
-The named heuristics in `report.rs` prioritize host/idle, memory operations,
-short-launch fragmentation, then a dominant kernel. Missing structural data or
-ambiguous multi-context traces produce `UNKNOWN`. They cannot establish
-memory-bound versus compute-bound behavior. Multi-frontier input is retained,
-but its phase summaries aggregate the frontiers.
-
-`ds4-perf doctor` defaults to `./ds4-bench`; `--bench PATH` checks the actual
-benchmark's capability marker. Scout reads that marker from the baseline's
-stderr without modifying the opaque command. A known uninstrumented benchmark
-fails with a build hint; older/other commands with no marker degrade to CUDA-only
-evidence if no ds4 ranges appear. No prefill/decode attribution is invented.
-
-Doctor probes installed report/options support, including `cuda_api_sync` as
-an analysis rule where appropriate. Unsupported reports degrade explicitly;
-missing NCU never blocks scout. A dominant kernel gets a phase-filtered NCU
-suggestion limited to one launch. Review whether that launch is representative
-and its replay memory needs; prefer a model-free probe when an owner is resident.
-NCU never runs automatically. Profiled TPS is informational, not a baseline or
-a correctness proof; this tooling makes no performance-improvement claim.
+Nsight reports diagnose execution structure; only fresh unprofiled samples
+support throughput comparisons. Keep the original model, prompt, token counts,
+cache protocol, and intended weight owner. Record prefill and decode separately.
+The heuristics prioritize host/idle, memory operations, short-launch fragmentation,
+and dominant kernels. Missing or ambiguous data stays unknown. GPU coverage is
+an interval union inside the Rust phase; summed kernel durations may overlap.
 
 GB10 validation (2026-09-07): Qwen MQ-Q5 SSD-PLE BF16, 2,048-token cold frontier
 and eight greedy tokens, three fresh unprofiled runs per build. All 248,320

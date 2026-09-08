@@ -30,17 +30,38 @@ pub trait Probe {
 pub struct System;
 impl Probe for System {
     fn capture(&mut self, program: &str, args: &[&str]) -> Capture {
-        match Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .output()
-        {
-            Ok(output) => Capture {
-                ok: output.status.success(),
-                out: String::from_utf8_lossy(&output.stdout).into(),
-                err: String::from_utf8_lossy(&output.stderr).into(),
-            },
-            Err(err) => Capture::failed(&err.to_string()),
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let out = std::env::temp_dir().join(format!("ds4-probe-{}-{nonce}", std::process::id()));
+        if let Err(error) = fs::create_dir(&out) {
+            return Capture::failed(&error.to_string());
+        }
+        let mut command = vec![OsString::from(program)];
+        command.extend(args.iter().map(OsString::from));
+        let result = controls(&[]).and_then(|env| {
+            run_limited(
+                &command,
+                &out,
+                "probe",
+                &env,
+                crate::process::Limits {
+                    timeout: std::time::Duration::from_secs(60),
+                    bytes: 64 * 1024 * 1024,
+                },
+            )
+        });
+        let stdout = fs::read(out.join("probe.stdout")).unwrap_or_default();
+        let mut stderr = fs::read(out.join("probe.stderr")).unwrap_or_default();
+        if let Err(error) = &result {
+            stderr.extend_from_slice(format!("\n{error}").as_bytes());
+        }
+        let _ = fs::remove_dir_all(&out);
+        Capture {
+            ok: result.is_ok(),
+            out: String::from_utf8_lossy(&stdout).into(),
+            err: String::from_utf8_lossy(&stderr).into(),
         }
     }
 }
@@ -63,22 +84,54 @@ pub fn quote(s: &str) -> String {
 }
 
 pub fn run(command: &[OsString], out: &Path, name: &str) -> Result<(), String> {
+    run_with(command, out, name, &controls(&[])?)
+}
+
+pub fn run_with(
+    command: &[OsString],
+    out: &Path,
+    name: &str,
+    env: &std::collections::BTreeMap<OsString, OsString>,
+) -> Result<(), String> {
+    run_limited(command, out, name, env, crate::process::Limits::default())
+}
+
+pub fn run_limited(
+    command: &[OsString],
+    out: &Path,
+    name: &str,
+    env: &std::collections::BTreeMap<OsString, OsString>,
+    limits: crate::process::Limits,
+) -> Result<(), String> {
+    if command.is_empty() {
+        return Err("empty process command".into());
+    }
     write(&out.join(format!("{name}.command.txt")), &shell(command))?;
     let stdout = File::create(out.join(format!("{name}.stdout"))).map_err(|e| e.to_string())?;
     let stderr = File::create(out.join(format!("{name}.stderr"))).map_err(|e| e.to_string())?;
     let start = std::time::Instant::now();
-    let status = Command::new(&command[0])
+    let mut process = Command::new(&command[0]);
+    for key in PERF_ENV {
+        process.env_remove(key);
+    }
+    process
         .args(&command[1..])
+        .env_remove("CUDA_INJECTION64_PATH")
+        .env_remove("NVTX_INJECTION64_PATH")
+        .env_remove("DS4_PERF_CUPTI_OUTPUT")
+        .envs(env)
         .stdin(Stdio::null())
         .stdout(stdout)
-        .stderr(stderr)
-        .status();
+        .stderr(stderr);
+    let status = crate::process::run(&mut process, out, limits);
     let success = status.as_ref().is_ok_and(|s| s.success());
     write(
         &out.join(format!("{name}.status.txt")),
         &format!(
-            "status={status:?}\nwall_sec={}\n",
-            start.elapsed().as_secs_f64()
+            "status={status:?}\nwall_sec={}\ntimeout_sec={}\noutput_budget_bytes={}\n",
+            start.elapsed().as_secs_f64(),
+            limits.timeout.as_secs(),
+            limits.bytes
         ),
     )?;
     if success {
@@ -94,6 +147,10 @@ pub fn run(command: &[OsString], out: &Path, name: &str) -> Result<(), String> {
 
 // Explicitly reviewed runtime controls only. Never record arbitrary DS4_* keys.
 const PERF_ENV: &[&str] = &[
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "CUDA_CACHE_PATH",
+    "CUDA_HOME",
     "CUBLAS_WORKSPACE_CONFIG",
     "CUDA_VISIBLE_DEVICES",
     "CUDA_DEVICE_ORDER",
@@ -176,6 +233,24 @@ const PERF_ENV: &[&str] = &[
     "DS4_CONT_MTP_MODE",
 ];
 
+pub fn controls(
+    overrides: &[String],
+) -> Result<std::collections::BTreeMap<OsString, OsString>, String> {
+    let mut env: std::collections::BTreeMap<_, _> = std::env::vars_os()
+        .filter(|(k, _)| k.to_str().is_some_and(|k| PERF_ENV.contains(&k)))
+        .collect();
+    for assignment in overrides {
+        let (key, value) = assignment
+            .split_once('=')
+            .ok_or("--env requires NAME=VALUE")?;
+        if !PERF_ENV.contains(&key) {
+            return Err(format!("unreviewed performance environment control: {key}"));
+        }
+        env.insert(key.into(), value.into());
+    }
+    Ok(env)
+}
+
 pub fn environment(vars: impl IntoIterator<Item = (OsString, OsString)>) -> String {
     let mut vars: Vec<_> = vars
         .into_iter()
@@ -204,7 +279,16 @@ pub fn resolve(program: &OsStr) -> Option<std::path::PathBuf> {
         .and_then(|p| p.canonicalize().ok())
 }
 
-pub fn scout(out: &Path, command: &[OsString]) -> Result<(), String> {
+pub fn scout(args: &crate::cli::Scout) -> Result<(), String> {
+    if args.device != 0 {
+        return Err("ds4-bench uses visible CUDA device 0; select hardware with CUDA_VISIBLE_DEVICES before running ds4-perf".into());
+    }
+    if matches!(args.collector, crate::cli::Collector::Nsys)
+        && (args.cupti_library.is_some() || args.cupti_sdk.is_some())
+    {
+        return Err("CUPTI library options require --collector cupti".into());
+    }
+    let out = &args.out;
     if out.as_os_str().to_string_lossy().contains('%') {
         return Err(
             "output path must not contain Nsight filename substitution character '%'".into(),
@@ -216,7 +300,19 @@ pub fn scout(out: &Path, command: &[OsString]) -> Result<(), String> {
     fs::create_dir(out)
         .map_err(|e| format!("cannot create new output directory {}: {e}", out.display()))?;
     let out = out.canonicalize().map_err(|e| e.to_string())?;
-    let result = scout_inner(&out, command);
+    let result = match crate::experiment::prepare(&out, args) {
+        Ok(prepared) => {
+            let pinned = prepared.pin(args);
+            let work = scout_inner(&out, &pinned, &prepared);
+            let finish = crate::experiment::finish(&out, &pinned, prepared, &work);
+            work.map(|_| ()).and(finish)
+        }
+        Err(error) => {
+            crate::experiment::failed(&out, error.clone())?;
+            Err(error)
+        }
+    };
+    let result = result.and_then(|()| crate::process::check_bytes(&out, args.budget.limits()));
     write(
         &out.join("status.txt"),
         &match &result {
@@ -227,7 +323,12 @@ pub fn scout(out: &Path, command: &[OsString]) -> Result<(), String> {
     result
 }
 
-fn scout_inner(out: &Path, command: &[OsString]) -> Result<(), String> {
+fn scout_inner(
+    out: &Path,
+    args: &crate::cli::Scout,
+    prepared: &crate::experiment::Prepared,
+) -> Result<crate::nsys::Evidence, String> {
+    let command = &args.command;
     use crate::{bench, csv, doctor, nsys, report};
     eprintln!("ds4-perf: capability probes; artifacts {}", out.display());
     let mut system = System;
@@ -247,7 +348,10 @@ fn scout_inner(out: &Path, command: &[OsString]) -> Result<(), String> {
         }
         fs::write(out.join("command.argv"), argv).map_err(|e| e.to_string())?;
     }
-    write(&out.join("env.txt"), &environment(std::env::vars_os()))?;
+    write(
+        &out.join("env.txt"),
+        &environment(prepared.environment.clone()),
+    )?;
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -280,14 +384,21 @@ fn scout_inner(out: &Path, command: &[OsString]) -> Result<(), String> {
     let mut evidence = nsys::Evidence::default();
     let mut rows = Vec::new();
     let work = (|| -> Result<(), String> {
-        if !d.caps.can_scout() {
+        if matches!(args.collector, crate::cli::Collector::Nsys) && !d.caps.can_scout() {
             return Err(
                 "nsys CUDA/NVTX collection or required kernel reports unavailable; see doctor.txt"
                     .into(),
             );
         }
+        if args.cache_policy == "warmup-then-fresh" {
+            prepared.run(command, out, "warmup")?;
+        }
         eprintln!("ds4-perf: fresh unprofiled baseline");
-        run(command, out, "bench")?;
+        prepared.run(
+            &crate::experiment::bench_command(args, out, "bench"),
+            out,
+            "bench",
+        )?;
         let stderr = fs::read_to_string(out.join("bench.stderr")).map_err(|e| e.to_string())?;
         d.benchmark(&stderr, "ds4-bench NVTX: ");
         if d.facts["NVTX"].starts_with("unavailable") {
@@ -313,18 +424,41 @@ fn scout_inner(out: &Path, command: &[OsString]) -> Result<(), String> {
                 rows.iter().map(bench::Row::csv).collect::<String>()
             ),
         )?;
-        eprintln!("ds4-perf: fresh Nsight Systems process");
-        run(
-            &nsys::profile_command(&d.caps, out, command),
-            out,
-            "profile",
-        )?;
-        if !out.join("trace.nsys-rep").is_file() {
-            return Err("nsys did not produce trace.nsys-rep; see profile.stdout/stderr".into());
+        for index in 1..args.repeats {
+            let name = format!("bench-{index:02}");
+            if args.cache_policy == "warmup-then-fresh" {
+                prepared.run(command, out, &format!("warmup-{index:02}"))?;
+            }
+            eprintln!("ds4-perf: fresh unprofiled sample {index}");
+            prepared.run(
+                &crate::experiment::bench_command(args, out, &name),
+                out,
+                &name,
+            )?;
         }
-        eprintln!("ds4-perf: Nsight post-processing and phase analysis");
+        if args.cache_policy == "warmup-then-fresh" {
+            prepared.run(command, out, "profile-warmup")?;
+        }
         let warnings = std::mem::take(&mut evidence.warnings);
-        evidence = nsys::collect(&d.caps, out);
+        evidence = match args.collector {
+            crate::cli::Collector::Nsys => {
+                eprintln!("ds4-perf: fresh Nsight Systems process");
+                prepared.run(
+                    &nsys::profile_command(&d.caps, out, command),
+                    out,
+                    "profile",
+                )?;
+                if !out.join("trace.nsys-rep").is_file() {
+                    return Err(
+                        "nsys did not produce trace.nsys-rep; see profile.stdout/stderr".into(),
+                    );
+                }
+                nsys::collect_prepared(&d.caps, out, prepared)
+            }
+            crate::cli::Collector::Cupti => {
+                crate::cupti::capture(out, args, &prepared.environment)?
+            }
+        };
         evidence.warnings.extend(warnings);
         Ok(())
     })();
@@ -338,7 +472,7 @@ fn scout_inner(out: &Path, command: &[OsString]) -> Result<(), String> {
     let report = report::render(&d, command, &rows, &evidence);
     write(&out.join("report.txt"), &report)?;
     print!("{report}");
-    work
+    work.map(|_| evidence)
 }
 
 fn save_manifest(out: &Path, d: &crate::doctor::Doctor, context: &str) -> Result<(), String> {
@@ -409,6 +543,52 @@ fn normalized(out: &Path, evidence: &crate::nsys::Evidence) -> Result<(), String
     }
     write(&out.join("normalized-phases.csv"), &phases)?;
     write(&out.join("normalized-kernels.csv"), &kernels)
+}
+
+pub fn replay_controls(
+    overrides: &[String],
+) -> Result<std::collections::BTreeMap<OsString, OsString>, String> {
+    let mut env = controls(overrides)?;
+    let keys: std::collections::BTreeSet<_> = overrides
+        .iter()
+        .filter_map(|v| v.split_once('=').map(|(k, _)| OsString::from(k)))
+        .collect();
+    env.retain(|k, _| keys.contains(k));
+    Ok(env)
+}
+
+pub fn device_environment(
+    env: &std::collections::BTreeMap<OsString, OsString>,
+) -> Result<(), String> {
+    for key in [
+        "CUDA_VISIBLE_DEVICES",
+        "CUDA_DEVICE_ORDER",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+    ] {
+        if env.get(std::ffi::OsStr::new(key)).cloned() != std::env::var_os(key) {
+            return Err(format!("set {key} on ds4-perf itself so inspection and benchmark use the same device/libraries"));
+        }
+    }
+    Ok(())
+}
+
+pub fn unreviewed_env() -> Vec<String> {
+    std::env::vars_os()
+        .filter_map(|(k, _)| k.into_string().ok())
+        .filter(|k| {
+            ["DS4_", "CUDA_", "LD_"]
+                .iter()
+                .any(|prefix| k.starts_with(prefix))
+                && !PERF_ENV.contains(&k.as_str())
+                && ![
+                    "CUDA_INJECTION64_PATH",
+                    "NVTX_INJECTION64_PATH",
+                    "DS4_PERF_CUPTI_OUTPUT",
+                ]
+                .contains(&k.as_str())
+        })
+        .collect()
 }
 
 #[cfg(test)]

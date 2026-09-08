@@ -5,3 +5,14 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 description = "Model-free performance orchestration and Nsight diagnostics for ds4"
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+# Evidence summaries must retain the exact f64 samples used for decisions.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = { version = "0.11", default-features = false }
+ctrlc = { version = "3.5", features = ["termination"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["signal", "process"] }

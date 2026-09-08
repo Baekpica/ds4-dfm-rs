@@ -68,6 +68,9 @@ __pycache__/
 /.antigravitycli/
 /target/
 /ds4-bench-perf
+/ds4-perf
+/ds4-perf-gpu
+/libds4_perf_gpu.so
 *.nsys-rep
 *.qdrep
 *.qdstrm

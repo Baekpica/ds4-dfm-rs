@@ -5,7 +5,10 @@ Rust talks to the native inference runtime through **one** header:
 
 NVTX is host observability: `ds4-cli` uses the optional official NVIDIA Rust
 SDK directly. Profiler symbols and handles do not belong in this ABI,
-`ds4-sys`, or `ds4-core`.
+`ds4-sys`, or `ds4-core`. The optional `ds4-perf-gpu` helper isolates
+profiling-only CUDA/CUPTI calls and callbacks behind maintained cudarc bindings.
+That adapter is independent of this inference ABI; see the
+[profiling contract](../ds4-perf.md).
 
 ```text
 Rust application

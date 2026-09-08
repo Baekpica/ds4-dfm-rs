@@ -69,8 +69,8 @@ Use `ds4-bench` for throughput. Its sweep rows measure the newly computed
 prefill suffix at each frontier; a cold single-frontier workload is a different
 protocol. Reuse the original fixture and protocol for every comparison.
 
-The [profiling guide](docs/prefill-decode-optimization-playbook.md#local-scout-with-ds4-perf)
-shows the canonical `ds4-perf doctor` / `scout` workflow and
+The [profiling guide](docs/ds4-perf.md)
+shows `inspect` / `scout` / `compare` / `optimize` and
 `make ds4-bench-perf` build. NVTX uses the optional official Rust SDK in the
 benchmark host; native inference ABI changes are not needed for annotations.
 

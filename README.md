@@ -28,8 +28,8 @@ retired when a better model makes it irrelevant.
 - Serve Qwen3.8 Flash Next Q5 with SSD-PLE sidecars, embedded MTP, and still
   image input.
 - Serve K2-Horizon-375B MQ87 with IFM chat/tool syntax on the continuous lane.
-- Profile prefill and decode with [ds4-perf](docs/prefill-decode-optimization-playbook.md#local-scout-with-ds4-perf),
-  inspect conservative diagnoses, and retain the raw Nsight evidence.
+- Profile prefill and decode with [ds4-perf](docs/ds4-perf.md),
+  calibrate the GPU, compare proved experiments, and retain raw profiler evidence.
 - Treat the existing family implementations as rails for a new model or a
   specific machine, while keeping the resulting path small enough to inspect.
 

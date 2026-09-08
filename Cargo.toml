@@ -9,10 +9,11 @@ members = [
     "crates/ds4-server",
     "crates/ds4-dist",
     "crates/ds4-perf",
+    "crates/ds4-perf-gpu",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 publish = false

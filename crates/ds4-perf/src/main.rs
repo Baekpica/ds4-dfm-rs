@@ -2,29 +2,51 @@
 
 mod bench;
 mod cli;
+mod compare;
 mod csv;
+mod cupti;
 mod doctor;
+mod experiment;
+mod fit;
+mod inspect;
+mod knobs;
+mod ncu;
 mod nsys;
+mod optimize;
+mod process;
 mod report;
 mod runner;
 mod timeline;
+mod workload;
+
+use clap::Parser;
 
 fn main() {
-    match cli::parse(std::env::args_os().skip(1)) {
-        Ok(cli::Args::Help) => print!("{}", cli::USAGE),
-        Ok(cli::Args::Doctor { bench }) => print!(
-            "{}",
-            doctor::inspect(&mut runner::System, Some(&bench)).render()
+    if let Err(error) = process::signals() {
+        eprintln!("ds4-perf: signal handler: {error}");
+        std::process::exit(1);
+    }
+    let result = match cli::Cli::parse().command {
+        cli::Command::Inspect(args) => inspect::run(
+            &args.out,
+            args.device,
+            args.calibrate,
+            args.gpu_helper.as_deref(),
+            args.bench.as_deref(),
         ),
-        Ok(cli::Args::Scout { out, command }) => {
-            if let Err(err) = runner::scout(&out, &command) {
-                eprintln!("ds4-perf: {err}");
-                std::process::exit(1);
-            }
+        cli::Command::Doctor { bench } => {
+            print!(
+                "{}",
+                doctor::inspect(&mut runner::System, Some(&bench)).render()
+            );
+            Ok(())
         }
-        Err(err) => {
-            eprintln!("ds4-perf: {err}");
-            std::process::exit(2);
-        }
+        cli::Command::Scout(args) => runner::scout(&args),
+        cli::Command::Compare(args) => compare::run(&args),
+        cli::Command::Optimize(args) => optimize::run(&args),
+    };
+    if let Err(error) = result {
+        eprintln!("ds4-perf: {error}");
+        std::process::exit(1);
     }
 }

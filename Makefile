@@ -164,6 +164,8 @@ help:
 	@echo "DS4 build targets:"
 	@echo "  make cuda-spark          Build CUDA for DGX Spark / GB10 (sm_121a arch alias)"
 	@echo "  make ds4-bench-perf        Build ./ds4-bench-perf with Rust NVTX (after CUDA build)"
+	@echo "  make ds4-perf              Build standalone profiling orchestration"
+	@echo "  make ds4-perf-gpu          Build optional CUDA 13.3 calibration/CUPTI helper"
 	@echo "  make cuda-generic        Build CUDA for a generic local CUDA GPU"
 	@echo "  make cuda CUDA_ARCH=sm_N Build CUDA with an explicit nvcc -arch value"
 	@echo "  make cpu                 Build CPU-only C oracles (ds4-*-c) + ./ds4-eval"
@@ -349,6 +351,17 @@ ds4-agent: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
 		$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/ds4-agent-rs" $@
+
+.PHONY: ds4-perf ds4-perf-gpu
+ds4-perf:
+	cargo build --release --locked -p ds4-perf
+	cp -f "$(DS4_RS_TARGET_DIR)/release/ds4-perf" $@
+
+# Profiling-only CUDA bindings; inference packages do not depend on this helper.
+ds4-perf-gpu:
+	cargo build --release --locked -p ds4-perf-gpu --features cuda
+	cp -f "$(DS4_RS_TARGET_DIR)/release/ds4-perf-gpu" $@
+	cp -f "$(DS4_RS_TARGET_DIR)/release/libds4_perf_gpu.so" libds4_perf_gpu.so
 
 # NVTX is an optional Rust-host dependency; native linking stays identical.
 # The official SDK build requires libclang for bindgen.
