@@ -81,14 +81,18 @@ optimized C/CUDA/Metal backend, Git ancestry and authorship, and the full
 
 ## Status
 
-**v0.1.0:** the first independent Rust-host release with a stable host/runtime
-boundary and a native performance-observability workflow.
+**v0.1.1:** measured performance workflows and optional official Qwen FP8 PLE
+sidecars. The [release ledger](docs/releases/v0.1.1.md) records verification
+and limits; the [FP8 guide](docs/qwen38-ple-fp8.md) covers selection, KV
+compatibility and paired benchmarks.
+
+The first independent Rust-host baseline is **v0.1.0**.
 Rust owns the host runtime, policy, serving, KV/state, distributed execution,
 observability, and performance orchestration. CUDA/MMQ/VMM remains native.
-The [release ledger](docs/releases/v0.1.0.md) records production, profiler,
+The [baseline ledger](docs/releases/v0.1.0.md) records production, profiler,
 numerical and memory qualification, with exact artifacts and workload limits.
 
-The release includes `ds4-perf`, Qwen Session KV restoration, and the
+The baseline includes `ds4-perf`, Qwen Session KV restoration, and the
 post-RC.4 K2-Horizon MQ87 integration. Supported family/artifact contracts
 below remain specific to their validated DGX Spark CUDA paths.
 
@@ -708,8 +712,10 @@ make -j1 test-mmq-parity
 Family loaders, real-model forwards, long-context runs, OPP-C, ABBA, and soak
 gates need the matching models and release hardware. The
 [migration evidence](docs/rust-migration/README.md) preserves the original
-protocols; the [v0.1.0 ledger](docs/releases/v0.1.0.md) tracks current release
-qualification. See [CONTRIBUTING.md](CONTRIBUTING.md) for the validation workflow.
+protocols; the [v0.1.0 ledger](docs/releases/v0.1.0.md) records baseline
+qualification and the [v0.1.1 ledger](docs/releases/v0.1.1.md) records the
+performance workflow and FP8 additions. See [CONTRIBUTING.md](CONTRIBUTING.md)
+for the validation workflow.
 
 ## Repository layout
 
@@ -770,6 +776,7 @@ Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before sending a change.
 
 - [Documentation index](docs/README.md) — current guides, dated evidence and design records
 - [v0.1.0 release ledger](docs/releases/v0.1.0.md) — qualification, evidence and scope
+- [v0.1.1 release ledger](docs/releases/v0.1.1.md) — performance workflow and FP8 PLE
 - [`CHANGELOG.md`](CHANGELOG.md) — inherited and fork-side release history
 - [`docs/LINEAGE.md`](docs/LINEAGE.md) — repository provenance and split refs
 - [`docs/rust-migration/SPLIT_READINESS.md`](docs/rust-migration/SPLIT_READINESS.md) — genesis decision and immutable evidence

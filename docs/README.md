@@ -14,7 +14,7 @@ release candidate or describe live processes.
 | [Architecture](rust-migration/ARCHITECTURE.md) | Rust host and native compute ownership |
 | [FFI contract](rust-migration/FFI_CONTRACT.md) | Opaque native inference boundary |
 | [v0.1.0 release ledger](releases/v0.1.0.md) | Production baseline qualification and workload limits |
-| [v0.1.1 release ledger](releases/v0.1.1.md) | Performance workflow validation and limits |
+| [v0.1.1 release ledger](releases/v0.1.1.md) | Performance workflow, FP8 PLE validation and limits |
 | [API surface matrix](ds4-api-surface-matrix.md) | Wire contracts, routing and unsupported behavior |
 | [Model families](ds4-dfm-model-families.md) | Family contracts and dated Spark evidence |
 | [Qwen FP8 PLE](qwen38-ple-fp8.md) | Sidecar selection, KV compatibility and paired card sweeps |

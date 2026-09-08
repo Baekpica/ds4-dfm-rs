@@ -16,6 +16,13 @@ for exact provenance. Historical entries retain their original scope.
 - Keeps the inference ABI and optional official Rust NVTX integration intact;
   CUDA calibration/CUPTI lives in a separate profiling helper. See the
   [validation ledger](docs/releases/v0.1.1.md).
+- Adds optional official Qwen FP8 PLE sidecars via `DS4_QWEN_PLE_DIR`,
+  source-compatible BF16 gather output, separate BF16/FP8 KV snapshot tags,
+  and selected-sidecar input pinning in `ds4-perf`.
+- Publishes paired base/Uncensored Q5 2K–64K sweeps and FP8 compatibility
+  checks, including the existing Uncensored BF16 partial-fork failure. See
+  the [FP8 guide and evidence](docs/qwen38-ple-fp8.md) for numerical and
+  workload limits.
 
 ## v0.1.0 — 2026-09-07
 
