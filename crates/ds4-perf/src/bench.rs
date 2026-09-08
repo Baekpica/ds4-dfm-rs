@@ -4,7 +4,8 @@ use std::io::BufRead;
 pub const HEADER: &str =
     "ctx_tokens,prefill_tokens,prefill_tps,gen_tokens,gen_tps,first_token_sec,kvcache_bytes";
 
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Row {
     pub ctx: u64,
     pub prefill_tokens: u64,

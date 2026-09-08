@@ -104,6 +104,10 @@ esac
     }
 
     fn command(&self, out: &str) -> Command {
+        self.options(out, &[])
+    }
+
+    fn options(&self, out: &str, options: &[&str]) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ds4-perf"));
         c.current_dir(&self.0)
             .env("PATH", format!("{}:/usr/bin:/bin", self.0.display()))
@@ -117,14 +121,13 @@ esac
             .env("DS4_PRIVATE_SECRET", "must-not-be-recorded")
             .args([
                 "scout",
+                "--gpu-helper",
+                "/missing-test-helper",
                 "--out",
                 out,
-                "--",
-                "./ds4-bench",
-                "a b",
-                "'$(touch BAD)`id`",
-                "--",
-            ]);
+            ])
+            .args(options)
+            .args(["--", "./ds4-bench", "a b", "'$(touch BAD)`id`", "--"]);
         c
     }
     fn run(&self, out: &str) -> Output {
@@ -276,4 +279,383 @@ fn doctor_checks_selected_benchmark() {
     let report = String::from_utf8_lossy(&result.stdout);
     assert!(report.contains("./other-bench"));
     assert!(report.contains("NVTX             unavailable"));
+}
+
+#[test]
+fn requested_proof_is_required() {
+    let f = Fixture::new();
+    let output = f
+        .options("no-proof", &["--proof", "--repeats", "3"])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "missing requested proof must fail"
+    );
+    let scout: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.0.join("no-proof/scout.json")).unwrap()).unwrap();
+    assert_eq!(scout["complete"], false);
+}
+
+impl Fixture {
+    fn workflow_files(&self) {
+        fs::write(self.0.join("model.gguf"), "model fixture").unwrap();
+        fs::write(self.0.join("prompt.txt"), "prompt fixture").unwrap();
+        let gpu = serde_json::json!({"ordinal":0,"name":"Fixture GPU","uuid":"fixture-uuid","compute_major":12,"compute_minor":1,"driver_version":13030,"total_memory_bytes":1073741824_u64,"free_memory_bytes":536870912_u64,"multiprocessors":48,"warp_size":32,"max_threads_per_block":1024,"max_threads_per_sm":1536,"max_blocks_per_sm":24,"registers_per_sm":65536,"shared_bytes_per_sm":102400,"shared_bytes_per_block":101376,"l2_bytes":25165824,"memory_bus_bits":256,"memory_clock_khz":8533000,"clock_khz":2418000,"unavailable":{}});
+        fs::write(self.0.join("gpu.json"), serde_json::to_vec(&gpu).unwrap()).unwrap();
+        script(&self.0, "gpu-helper", "cat gpu.json");
+        script(
+            &self.0,
+            "ds4-bench",
+            r#"
+if [ "${1:-}" = --help ]; then echo 'NVTX: available'; exit 0; fi
+printf 'ds4-bench NVTX: available\n' >&2
+proof=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in --dump-frontier-logits-dir) proof=$2; shift;; esac
+  shift
+done
+tps=100
+ids='[1,1,1,1,1,1,1,1]'
+case "${DS4_QWEN_PREFILL_CHUNK:-256}" in
+  512) tps=150;;
+  2048) ids='[1,1,1,1,1,1,1,2]';;
+  4096) tps=80;;
+  8192) echo 'candidate intentionally failed' >&2; exit 7;;
+esac
+if [ -n "$proof" ] && [ "${DS4_QWEN_PREFILL_CHUNK:-256}" != 16384 ]; then
+  mkdir -p "$proof"
+  printf '%s\n' '{"source":"ds4-bench","model":"model.gguf","backend":"cuda","quality":false,"quant_bits":2,"prompt_tokens":2048,"frontier_tokens":2048,"prefill_tokens":2048,"ctx":2057,"vocab":3,"argmax_id":1,"argmax_logit":2.0,"logits":[0.0,2.0,1.0]}' > "$proof/frontier_002048.logits.json"
+  printf '%s\n' "$ids" > "$proof/tokens-2048.json"
+fi
+printf 'ctx_tokens,prefill_tokens,prefill_tps,gen_tokens,gen_tps,first_token_sec,kvcache_bytes\n2048,2048,%s,8,20,0.05,1234\n' "$tps"
+"#,
+        );
+        let workload = serde_json::json!({"protocol":"ds4-bench-v1","name":"fixture","family":"qwen","files":{"model":{"path":"model.gguf","sha256":ds4_perf::artifact::hash(&self.0.join("model.gguf")).unwrap()},"prompt":{"path":"prompt.txt","sha256":ds4_perf::artifact::hash(&self.0.join("prompt.txt")).unwrap()}},"shape":{"ctx_tokens":2048,"gen_tokens":8},"cache_state":"fixture warmup process"});
+        fs::write(
+            self.0.join("workload.json"),
+            serde_json::to_vec(&workload).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn workflow(&self) -> Command {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_ds4-perf"));
+        c.current_dir(&self.0)
+            .env("PATH", format!("{}:/usr/bin:/bin", self.0.display()))
+            .env(
+                "FIXTURES",
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures"),
+            )
+            .env("DS4_QWEN_PREFILL_CHUNK", "256");
+        c
+    }
+
+    fn source(&self) -> PathBuf {
+        self.workflow_files();
+        let result = self
+            .workflow()
+            .args([
+                "scout",
+                "--out",
+                "source",
+                "--gpu-helper",
+                "./gpu-helper",
+                "--proof",
+                "--repeats",
+                "3",
+                "--workload",
+                "workload.json",
+                "--cache-policy",
+                "warmup-then-fresh",
+                "--",
+                "./ds4-bench",
+                "--cuda",
+                "-m",
+                "model.gguf",
+                "--prompt-file",
+                "prompt.txt",
+                "--ctx-start",
+                "2048",
+                "--ctx-max",
+                "2048",
+                "--gen-tokens",
+                "8",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        self.0.join("source/scout.json")
+    }
+
+    fn plan(&self, candidates: &[(&str, &str)]) -> PathBuf {
+        let plan = serde_json::json!({"candidates":candidates.iter().map(|(name,value)| serde_json::json!({"name":name,"environment":{"DS4_QWEN_PREFILL_CHUNK":value},"reason":"controlled test fixture"})).collect::<Vec<_>>()});
+        let path = self.0.join("plan.json");
+        fs::write(&path, serde_json::to_vec(&plan).unwrap()).unwrap();
+        path
+    }
+}
+
+#[test]
+fn auto_retains_only_proved_gain() {
+    let f = Fixture::new();
+    let source = f.source();
+    let plan = f.plan(&[
+        ("fast", "512"),
+        ("bad-tokens", "2048"),
+        ("failed-process", "8192"),
+        ("unreached", "4096"),
+    ]);
+    let result = f
+        .workflow()
+        .args(["optimize", "--auto", "--scout"])
+        .arg(source)
+        .arg("--plan")
+        .arg(plan)
+        .args(["--out", "auto", "--rounds", "3", "--repeats", "3"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let decision: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.0.join("auto/decision.json")).unwrap()).unwrap();
+    assert_eq!(decision["complete"], true);
+    let data = &decision["data"];
+    assert_eq!(data["trials"].as_array().unwrap().len(), 3);
+    assert_eq!(data["trials"][0]["accepted"], true);
+    assert_eq!(data["trials"][1]["accepted"], false);
+    assert_eq!(data["trials"][2]["accepted"], false);
+    assert_eq!(
+        data["selected"]["environment"]["DS4_QWEN_PREFILL_CHUNK"],
+        "512"
+    );
+    assert_eq!(data["stop_reason"], "round budget reached");
+    assert!(f.0.join("auto/candidate-03/warmup.stderr").exists());
+    let compare: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.0.join("auto/compare-02-before/compare.json")).unwrap())
+            .unwrap();
+    assert_eq!(compare["data"]["verdict"], "incorrect");
+}
+
+#[test]
+fn ties_and_regressions_are_rejected() {
+    let f = Fixture::new();
+    let source = f.source();
+    let plan = f.plan(&[("tie", "1024"), ("slow", "4096")]);
+    let result = f
+        .workflow()
+        .args(["optimize", "--auto", "--scout"])
+        .arg(&source)
+        .arg("--plan")
+        .arg(plan)
+        .args(["--out", "auto", "--rounds", "2", "--repeats", "3"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let decision: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.0.join("auto/decision.json")).unwrap()).unwrap();
+    assert_eq!(decision["data"]["selected"], serde_json::Value::Null);
+    let result = f
+        .workflow()
+        .args(["compare", "--regression", "--baseline"])
+        .arg(&source)
+        .args([
+            "--candidate",
+            "auto/candidate-02/scout.json",
+            "--out",
+            "regression",
+        ])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let comparison: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.0.join("regression/compare.json")).unwrap()).unwrap();
+    assert_eq!(comparison["data"]["verdict"], "regressed");
+    fs::write(
+        f.0.join("source/bench-proof/tokens-2048.json"),
+        "[2,2,2,2,2,2,2,2]",
+    )
+    .unwrap();
+    let result = f
+        .workflow()
+        .args(["compare", "--regression", "--baseline"])
+        .arg(&source)
+        .args([
+            "--candidate",
+            "auto/candidate-01/scout.json",
+            "--out",
+            "tampered",
+        ])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let comparison: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.0.join("tampered/compare.json")).unwrap()).unwrap();
+    assert_eq!(comparison["data"]["verdict"], "incomparable");
+}
+
+#[test]
+fn rejects_ignored_collector_flags() {
+    let f = Fixture::new();
+    let result = f
+        .options("bad-flags", &["--cupti-sdk", "/unused"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("require --collector cupti"));
+}
+
+#[test]
+fn records_nsys_replay_identity() {
+    let f = Fixture::new();
+    assert!(f.run("identity").status.success());
+    let scout: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.0.join("identity/scout.json")).unwrap()).unwrap();
+    assert_eq!(
+        scout["data"]["replay"]["collector"]["path"],
+        f.0.join("nsys").to_str().unwrap()
+    );
+}
+
+#[test]
+fn rejects_forged_process_scope() {
+    let f = Fixture::new();
+    let source = f.source();
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&source).unwrap()).unwrap();
+    value["data"]["process_scope"]["before"] = serde_json::json!([999999]);
+    value["data"]["process_scope"]["verified"] = serde_json::json!(true);
+    fs::write(&source, serde_json::to_vec(&value).unwrap()).unwrap();
+    let result = f
+        .workflow()
+        .args(["compare", "--regression", "--baseline"])
+        .arg(&source)
+        .arg("--candidate")
+        .arg(&source)
+        .args(["--out", "forged"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let comparison: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.0.join("forged/compare.json")).unwrap()).unwrap();
+    assert_eq!(comparison["data"]["verdict"], "incomparable");
+}
+
+#[test]
+fn bounds_ncu_queries() {
+    let f = Fixture::new();
+    script(
+        &f.0,
+        "ncu",
+        r#"case "${1:-}" in --query-metrics) sleep 3;; *) echo 'fake ncu --launch-count --nvtx';; esac"#,
+    );
+    let result = f
+        .options("query-budget", &["--ncu", "--timeout-seconds", "1"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let scout: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.0.join("query-budget/scout.json")).unwrap()).unwrap();
+    assert_eq!(scout["complete"], false);
+    let status = fs::read_to_string(f.0.join("query-budget/ncu/query.status.txt")).unwrap();
+    assert!(status.contains("deadline"), "{status}");
+}
+
+#[test]
+fn bounds_decision_publication() {
+    let f = Fixture::new();
+    let source = f.source();
+    let plan = f.plan(&[("large-reason", "512")]);
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&plan).unwrap()).unwrap();
+    value["candidates"][0]["reason"] = serde_json::json!("x".repeat(1100000));
+    fs::write(&plan, serde_json::to_vec(&value).unwrap()).unwrap();
+    let result = f
+        .workflow()
+        .args(["optimize", "--scout"])
+        .arg(source)
+        .arg("--plan")
+        .arg(plan)
+        .args(["--out", "large-decision", "--max-output-mib", "1"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let decision: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.0.join("large-decision/decision.json")).unwrap())
+            .unwrap();
+    assert_eq!(decision["complete"], false);
+    assert!(decision["data"]["stop_reason"]
+        .as_str()
+        .unwrap()
+        .contains("budget"));
+}
+
+#[test]
+fn failed_probe_is_partial() {
+    let f = Fixture::new();
+    script(&f.0, "ps", "exit 1");
+    let result = f.run("probe-failed");
+    assert!(!result.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.0.join("probe-failed/scout.json")).unwrap()).unwrap();
+    assert_eq!(value["complete"], false);
+}
+
+#[test]
+fn rejects_unbound_device() {
+    let f = Fixture::new();
+    let result = f
+        .options("device-mismatch", &["--device", "1"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("CUDA_VISIBLE_DEVICES"));
+}
+
+#[test]
+fn partial_fit_is_incomplete() {
+    let f = Fixture::new();
+    f.workflow_files();
+    let result = f
+        .workflow()
+        .args([
+            "scout",
+            "--out",
+            "partial-fit",
+            "--fit",
+            "--gpu-helper",
+            "./gpu-helper",
+            "--workload",
+            "workload.json",
+            "--",
+            "./ds4-bench",
+            "--cuda",
+            "-m",
+            "model.gguf",
+            "--prompt-file",
+            "prompt.txt",
+            "--ctx-start",
+            "2048",
+            "--ctx-max",
+            "2048",
+            "--gen-tokens",
+            "8",
+        ])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    for name in ["fit.json", "scout.json"] {
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(f.0.join("partial-fit").join(name)).unwrap()).unwrap();
+        assert_eq!(value["complete"], false);
+    }
 }

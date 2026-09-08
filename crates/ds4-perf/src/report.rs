@@ -187,6 +187,15 @@ fn top_kernels(out: &mut String, kernels: &[Kernel]) {
     }
 }
 
+pub fn bounded_ncu(
+    help: &str,
+    phase: &str,
+    name: &str,
+    bench: &[OsString],
+) -> Option<Vec<OsString>> {
+    ncu_command(help, phase, name, bench)
+}
+
 fn ncu_command(help: &str, phase: &str, name: &str, bench: &[OsString]) -> Option<Vec<OsString>> {
     if ![
         "--kernel-name-base",
@@ -194,13 +203,18 @@ fn ncu_command(help: &str, phase: &str, name: &str, bench: &[OsString]) -> Optio
         "--launch-count",
         "--nvtx-include",
         "--nvtx",
+        "--replay-mode",
+        "--app-replay-match",
+        "--app-replay-mode",
     ]
     .iter()
     .all(|flag| help.contains(flag))
     {
         return None;
     }
-    let base = if name.contains(['<', '(']) {
+    let base = if name.starts_with("_Z") {
+        "mangled"
+    } else if name.contains(['<', '(']) {
         "demangled"
     } else {
         "function"
@@ -224,6 +238,13 @@ fn ncu_command(help: &str, phase: &str, name: &str, bench: &[OsString]) -> Optio
         "--nvtx",
         "--nvtx-include",
         &format!("{phase}/"),
+        // Avoid saving the full accessible model allocation for kernel replay.
+        "--replay-mode",
+        "application",
+        "--app-replay-match",
+        "all",
+        "--app-replay-mode",
+        "strict",
     ]
     .map(Into::into)
     .into();
@@ -273,7 +294,7 @@ mod tests {
     }
     #[test]
     fn ncu_is_phase_and_launch_limited() {
-        let help = "--kernel-name --kernel-name-base --launch-count --nvtx --nvtx-include";
+        let help = "--kernel-name --kernel-name-base --launch-count --nvtx --nvtx-include --replay-mode --app-replay-match --app-replay-mode";
         let cmd = ncu_command(
             help,
             "ds4.decode",
@@ -285,6 +306,11 @@ mod tests {
         assert!(cmd
             .windows(2)
             .any(|w| w == ["--nvtx-include", "ds4.decode/"]));
+        assert!(cmd
+            .windows(2)
+            .any(|w| w == ["--replay-mode", "application"]));
+        assert!(cmd.windows(2).any(|w| w == ["--app-replay-match", "all"]));
+        assert!(cmd.windows(2).any(|w| w == ["--app-replay-mode", "strict"]));
         assert!(!cmd.iter().any(|s| s == "full"));
         assert!(ncu_command("", "ds4.decode", "foo", &[]).is_none());
     }

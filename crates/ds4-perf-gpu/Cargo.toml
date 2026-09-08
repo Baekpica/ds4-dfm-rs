@@ -1,0 +1,25 @@
+[package]
+name = "ds4-perf-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Isolated CUDA calibration and CUPTI collection for ds4-perf"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "ds4-perf-gpu"
+path = "src/main.rs"
+required-features = ["cuda"]
+
+[features]
+default = []
+cuda = ["dep:cudarc", "dep:libc"]
+
+[dependencies]
+ds4-perf = { path = "../ds4-perf" }
+serde_json = "1"
+cudarc = { version = "0.19.9", optional = true, default-features = false, features = ["std", "driver", "nvrtc", "cupti", "dynamic-loading", "cuda-13030"] }
+libc = { version = "0.2", optional = true }

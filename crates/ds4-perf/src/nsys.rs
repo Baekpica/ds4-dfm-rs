@@ -1,4 +1,4 @@
-use crate::{csv, doctor::Capabilities, runner};
+use crate::{csv, doctor::Capabilities};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::BufRead;
@@ -6,14 +6,16 @@ use std::path::Path;
 
 pub const PHASES: [&str; 2] = ["ds4.prefill", "ds4.decode"];
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Kernel {
     pub name: String,
     pub total_ns: f64,
     pub count: Option<u64>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Phase {
     pub name: String,
     pub wall_ns: Option<f64>,
@@ -24,7 +26,8 @@ pub struct Phase {
     pub kernels: Vec<Kernel>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Evidence {
     pub phases: BTreeMap<String, Phase>,
     pub global: Vec<Kernel>,
@@ -54,8 +57,12 @@ pub fn profile_command(caps: &Capabilities, out: &Path, bench: &[OsString]) -> V
     args
 }
 
-pub fn collect(caps: &Capabilities, out: &Path) -> Evidence {
-    collect_with(caps, out, runner::run)
+pub fn collect_prepared(
+    caps: &Capabilities,
+    out: &Path,
+    prepared: &crate::experiment::Prepared,
+) -> Evidence {
+    collect_with(caps, out, |cmd, out, name| prepared.run(cmd, out, name))
 }
 
 fn collect_with(
@@ -93,7 +100,7 @@ fn collect_with(
             "nsys",
             if rule { "analyze" } else { "stats" },
             "--format",
-            "csv",
+            "csv:noconv",
             if rule { "--rule" } else { "--report" },
         ]
         .map(Into::into)
