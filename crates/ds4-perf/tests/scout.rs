@@ -445,7 +445,7 @@ fn auto_retains_only_proved_gain() {
 }
 
 #[test]
-fn ties_and_regressions_are_rejected() {
+fn rejects_ties_and_regressions() {
     let f = Fixture::new();
     let source = f.source();
     let plan = f.plan(&[("tie", "1024"), ("slow", "4096")]);
@@ -506,7 +506,7 @@ fn ties_and_regressions_are_rejected() {
 }
 
 #[test]
-fn rejects_ignored_collector_flags() {
+fn rejects_unused_flags() {
     let f = Fixture::new();
     let result = f
         .options("bad-flags", &["--cupti-sdk", "/unused"])

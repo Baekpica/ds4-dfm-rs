@@ -561,7 +561,20 @@ pub fn run(args: &cli::Compare) -> Result<(), String> {
 mod tests {
     use super::*;
     #[test]
-    fn separates_regression_and_noise() {
+    fn preserves_live_roundtrip() {
+        // These measured Qwen ratios exposed a lossy JSON parse on reload.
+        let recorded: Comparison =
+            serde_json::from_str(include_str!("../tests/fixtures/compare-live.json")).unwrap();
+        recorded.validate().unwrap();
+        let encoded = serde_json::to_vec(&recorded).unwrap();
+        let mut loaded: Comparison = serde_json::from_slice(&encoded).unwrap();
+        loaded.validate().unwrap();
+        loaded.metrics[0].median_percent += 0.01;
+        assert!(loaded.validate().is_err());
+    }
+
+    #[test]
+    fn separates_regression_noise() {
         let stable = delta("prefill", 2048, &[1.0, 1.01, 0.99], &[1.1, 1.11, 1.09]).unwrap();
         assert!(stable.lower_percent > 3.0);
         let noise = delta("prefill", 2048, &[0.9, 1.0, 1.1], &[0.9, 1.03, 1.2]).unwrap();
