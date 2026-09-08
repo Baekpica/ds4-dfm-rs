@@ -40,6 +40,8 @@ struct ds4_qwen38_ple_cuda {
     uint8_t *host_base;
     uint8_t *device_base;
     size_t cache_bytes;
+    uint32_t row_stride_bytes;
+    uint16_t *decode_table;
     bool registered;
     ds4_qwen38_ple_cuda_stats stats;
 };
@@ -94,6 +96,28 @@ __global__ static void qwen38_ple_gather_kernel(
                       (byte - descriptor.first_bytes);
         output[row * DS4_PLE_ROW_DIM + column] =
             *(const uint16_t *)source;
+    }
+}
+
+/* Match the existing gather's BF16 output layout and source rounding;
+ * the subsequent FP32 promotion and PLE projections remain unchanged. */
+__global__ static void qwen38_ple_fp8_gather_kernel(
+        const ds4_ple_cuda_row *rows,
+        const uint16_t *decode_table,
+        uint16_t *output,
+        size_t row_count) {
+    const size_t row = (size_t)blockIdx.x;
+    if (row >= row_count) {
+        return;
+    }
+    const ds4_ple_cuda_row descriptor = rows[row];
+    for (uint32_t column = threadIdx.x;
+         column < DS4_PLE_ROW_DIM;
+         column += blockDim.x) {
+        const uint8_t code = column < descriptor.first_bytes
+            ? descriptor.first[column]
+            : descriptor.second[column - descriptor.first_bytes];
+        output[row * DS4_PLE_ROW_DIM + column] = decode_table[code];
     }
 }
 
@@ -167,7 +191,7 @@ static bool describe_row(
                 (view->segment_count == 2u
                      ? view->segment_bytes[1]
                      : 0u) !=
-            DS4_PLE_ROW_BYTES)
+            context->row_stride_bytes)
         return ple_cuda_error(
             error, error_size,
             "PLE CUDA row view is malformed");
@@ -288,6 +312,20 @@ ds4_qwen38_ple_cuda *ds4_qwen38_ple_cuda_create(
     context->host_base = (uint8_t *)host_base;
     context->device_base = (uint8_t *)device_base;
     context->cache_bytes = cache_bytes;
+    context->row_stride_bytes = ds4_ple_store_layout(store)->row_stride_bytes;
+    const uint16_t *table = ds4_ple_store_decode_table(store);
+    if (table) {
+        const size_t bytes = DS4_PLE_FP8_CODES * sizeof(uint16_t);
+        status = cudaMalloc((void **)&context->decode_table, bytes);
+        if (status == cudaSuccess) {
+            status = cudaMemcpy(context->decode_table, table, bytes, cudaMemcpyHostToDevice);
+        }
+        if (status != cudaSuccess) {
+            cuda_error(error, error_size, status, "upload PLE FP8 decode table");
+            ds4_qwen38_ple_cuda_destroy(context);
+            return NULL;
+        }
+    }
     return context;
 }
 
@@ -297,6 +335,9 @@ void ds4_qwen38_ple_cuda_destroy(
     /* Stream callbacks hold row leases and refer to the store. Destruction is
      * rare, so a device-wide drain is the unambiguous lifetime boundary. */
     (void)cudaDeviceSynchronize();
+    if (context->decode_table) {
+        (void)cudaFree(context->decode_table);
+    }
     if (context->registered)
         (void)cudaHostUnregister(context->host_base);
     free(context);
@@ -437,12 +478,19 @@ bool ds4_qwen38_ple_cuda_gather(
             tile_rows * sizeof(*descriptors),
             cudaMemcpyHostToDevice, stream);
         if (status == cudaSuccess) {
-            qwen38_ple_gather_kernel<<<
-                (uint32_t)tile_rows, 128u, 0, stream>>>(
-                device_descriptors,
-                (uint16_t *)device_output +
-                    emitted * DS4_PLE_ROW_DIM,
-                tile_rows);
+            if (context->decode_table) {
+                qwen38_ple_fp8_gather_kernel<<<
+                    (uint32_t)tile_rows, 128u, 0, stream>>>(
+                    device_descriptors, context->decode_table,
+                    (uint16_t *)device_output + emitted * DS4_PLE_ROW_DIM,
+                    tile_rows);
+            } else {
+                qwen38_ple_gather_kernel<<<
+                    (uint32_t)tile_rows, 128u, 0, stream>>>(
+                    device_descriptors,
+                    (uint16_t *)device_output + emitted * DS4_PLE_ROW_DIM,
+                    tile_rows);
+            }
             status = cudaGetLastError();
         }
         if (status == cudaSuccess)

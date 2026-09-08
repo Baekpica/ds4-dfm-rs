@@ -36,5 +36,7 @@ jobs:
           make test-agent-parity
       - name: Serialized workspace tests
         run: cargo test --workspace --locked -- --test-threads=1
+      - name: PLE storage formats
+        run: make test-ple-formats
       - name: All host targets
         run: cargo check --workspace --all-targets --locked

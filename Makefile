@@ -1098,6 +1098,10 @@ test-qwen4exp-ple: tests/test_qwen4exp_ple
 tests/libds4ple_test.so: ds4_ple.c ds4_ple.h
 	$(CC) $(CFLAGS) -fPIC -shared -I. -o $@ ds4_ple.c $(LDLIBS)
 
+.PHONY: test-ple-formats
+test-ple-formats: tests/libds4ple_test.so
+	python3 tests/test_ple_fp8.py
+
 test-qwen4exp-ple-reference: tests/libds4ple_test.so
 	@test -n "$(DS4_QWEN4EXP_ROOT)" || \
 		{ echo "set DS4_QWEN4EXP_ROOT to the SSD-PLE artifact root" >&2; exit 2; }

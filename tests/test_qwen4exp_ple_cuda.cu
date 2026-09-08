@@ -32,15 +32,16 @@ static void fail_ple(const char *operation, const char *error) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s ARTIFACT_ROOT\n", argv[0]);
+    if (argc != 2 && argc != 3) {
+        fprintf(stderr, "usage: %s ARTIFACT_ROOT [MANIFEST_RELATIVE_PATH]\n", argv[0]);
         return 2;
     }
 
     char error[512] = {0};
+    const char *manifest = argc == 3 ? argv[2] : "ple/ple-manifest.json";
     const size_t cache_bytes = 32u * 1024u * 1024u;
     ds4_ple_store *store = ds4_ple_store_open(
-        argv[1], "ple/ple-manifest.json", cache_bytes, 8u, true,
+        argv[1], manifest, cache_bytes, 8u, true,
         error, sizeof(error));
     if (!store) fail_ple("ds4_ple_store_open", error);
 
@@ -228,7 +229,7 @@ int main(int argc, char **argv) {
     const size_t minimum_cache_pages = 16u;   /* one set of the store's 16 ways */
     const size_t minimum_cache_bytes = minimum_cache_pages * DS4_PLE_PAGE_BYTES;
     ds4_ple_store *small_store = ds4_ple_store_open(
-        argv[1], "ple/ple-manifest.json", minimum_cache_bytes, 2u, true,
+        argv[1], manifest, minimum_cache_bytes, 2u, true,
         error, sizeof(error));
     if (!small_store) fail_ple("ds4_ple_store_open (minimum cache)", error);
     ds4_qwen38_ple_cuda *small_context =

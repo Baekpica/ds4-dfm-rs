@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <math.h>
 #include <limits.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -24,9 +25,13 @@
 #define DS4_PLE_CACHE_WAYS 16u
 #define DS4_PLE_JSON_MAX_DEPTH 64u
 #define DS4_PLE_PATH_CAP 256u
+#define DS4_PLE_FP8_SCALE_BITS 0x3951u
+#define DS4_PLE_ROWS_PER_PART UINT64_C(2500012)
+#define DS4_PLE_PARTS_PER_FILE 32u
 
 typedef struct {
     uint32_t logical_part;
+    uint32_t row_stride_bytes;
     uint32_t physical_file_index;
     uint64_t global_row_start;
     uint64_t rows;
@@ -74,6 +79,9 @@ struct ds4_ple_store {
     ds4_ple_hash_config hash_config;
     ds4_ple_logical_part logical[DS4_PLE_N_LOGICAL_PARTS];
     ds4_ple_physical_file physical[DS4_PLE_N_PHYSICAL_FILES];
+    char scale_path[DS4_PLE_PATH_CAP];
+    uint16_t scale_bits;
+    uint16_t decode_table[DS4_PLE_FP8_CODES];
 
     void *cache_memory;
     ds4_ple_cache_slot *slots;
@@ -478,7 +486,10 @@ static bool manifest_parse_logical_part(
             if (!json_u64(json, &part->payload_bytes)) return false;
         } else if (json_key_eq(key, key_len, "row_stride_bytes")) {
             bit = 1u << 6;
-            if (!json_u64(json, &value) || value != DS4_PLE_ROW_BYTES) return false;
+            if (!json_u64(json, &value) || value > UINT32_MAX) {
+                return false;
+            }
+            part->row_stride_bytes = (uint32_t)value;
         } else if (json_key_eq(key, key_len, "embedding_row_dimension")) {
             bit = 1u << 7;
             if (!json_u64(json, &value) || value != DS4_PLE_ROW_DIM) return false;
@@ -641,6 +652,8 @@ enum {
     TOP_LOGICAL = UINT64_C(1) << 21,
     TOP_PHYSICAL = UINT64_C(1) << 22,
     TOP_HASH_REFERENCE = UINT64_C(1) << 23,
+    TOP_QUANTIZATION = UINT64_C(1) << 24,
+    TOP_PATHS = UINT64_C(1) << 25,
 };
 
 static bool manifest_seen(ds4_ple_json *json, uint64_t *seen, uint64_t bit) {
@@ -662,23 +675,129 @@ static bool manifest_expect_string(ds4_ple_json *json, const char *expected) {
     return true;
 }
 
-static bool manifest_expect_qwen_variant(ds4_ple_json *json) {
-    char value[128];
-    if (!json_copy_string(json, value, sizeof(value))) return false;
-    if (strcmp(value, "MQ-Q5-SSD-PLE-BF16") != 0 &&
-        strcmp(value, "MQ-Q6-SSD-PLE-BF16") != 0) {
-        json_fail(json, "PLE manifest has an unsupported artifact variant");
-        return false;
-    }
-    return true;
-}
-
 static bool manifest_expect_u64(ds4_ple_json *json, uint64_t expected) {
     uint64_t value = 0;
     if (!json_u64(json, &value)) return false;
     if (value != expected) {
         json_fail(json, "PLE manifest expected integer %" PRIu64 ", got %" PRIu64,
                   expected, value);
+        return false;
+    }
+    return true;
+}
+
+static bool parse_fp8_scale(ds4_ple_json *json, ds4_ple_store *store) {
+    uint64_t seen = 0;
+    if (!json_take(json, '{')) {
+        return false;
+    }
+    for (;;) {
+        json_ws(json);
+        if (json->cursor < json->end && *json->cursor == '}') {
+            json->cursor++;
+            break;
+        }
+        const char *key = NULL;
+        size_t length = 0;
+        if (!json_string(json, &key, &length, false) || !json_take(json, ':')) {
+            return false;
+        }
+        uint64_t bit = 0;
+        bool ok = true;
+        if (json_key_eq(key, length, "dtype")) {
+            bit = 1u;
+            ok = manifest_expect_string(json, "BF16");
+        } else if (json_key_eq(key, length, "path")) {
+            bit = 2u;
+            ok = json_copy_string(json, store->scale_path, sizeof(store->scale_path));
+        } else if (json_key_eq(key, length, "file_bytes")) {
+            bit = 4u;
+            ok = manifest_expect_u64(json, sizeof(uint16_t));
+        } else if (json_key_eq(key, length, "shape")) {
+            bit = 8u;
+            ok = json_take(json, '[') && manifest_expect_u64(json, 1u) && json_take(json, ']');
+        } else if (json_key_eq(key, length, "bits_hex")) {
+            bit = 16u;
+            char hex[8] = {0};
+            ok = json_copy_string(json, hex, sizeof(hex));
+            char *end = NULL;
+            const unsigned long value = ok ? strtoul(hex, &end, 16) : 0;
+            ok = ok && strlen(hex) == 6u && hex[0] == '0' && hex[1] == 'x' &&
+                end == hex + 6 && value <= UINT16_MAX;
+            store->scale_bits = (uint16_t)value;
+        } else {
+            ok = json_skip_value(json, 0);
+        }
+        if (!ok || (bit && !manifest_seen(json, &seen, bit))) {
+            return false;
+        }
+        json_ws(json);
+        if (json->cursor < json->end && *json->cursor == '}') {
+            json->cursor++;
+            break;
+        }
+        if (!json_take(json, ',')) {
+            return false;
+        }
+    }
+    if (seen != 31u) {
+        json_fail(json, "PLE FP8 scale is missing required fields");
+        return false;
+    }
+    return true;
+}
+
+static bool parse_fp8_quant(ds4_ple_json *json, ds4_ple_store *store) {
+    uint64_t seen = 0;
+    if (!json_take(json, '{')) {
+        return false;
+    }
+    for (;;) {
+        json_ws(json);
+        if (json->cursor < json->end && *json->cursor == '}') {
+            json->cursor++;
+            break;
+        }
+        const char *key = NULL;
+        size_t length = 0;
+        if (!json_string(json, &key, &length, false) || !json_take(json, ':')) {
+            return false;
+        }
+        uint64_t bit = 0;
+        bool ok = true;
+        if (json_key_eq(key, length, "format")) {
+            bit = 1u;
+            ok = manifest_expect_string(json, "E4M3FN");
+        } else if (json_key_eq(key, length, "scheme")) {
+            bit = 2u;
+            ok = manifest_expect_string(json, "per_tensor");
+        } else if (json_key_eq(key, length, "scale_is_inverse")) {
+            bit = 4u;
+            json_ws(json);
+            ok = json->end - json->cursor >= 5 && memcmp(json->cursor, "false", 5) == 0;
+            if (ok) {
+                json->cursor += 5;
+            }
+        } else if (json_key_eq(key, length, "scale")) {
+            bit = 8u;
+            ok = parse_fp8_scale(json, store);
+        } else {
+            ok = json_skip_value(json, 0);
+        }
+        if (!ok || (bit && !manifest_seen(json, &seen, bit))) {
+            return false;
+        }
+        json_ws(json);
+        if (json->cursor < json->end && *json->cursor == '}') {
+            json->cursor++;
+            break;
+        }
+        if (!json_take(json, ',')) {
+            return false;
+        }
+    }
+    if (seen != 15u) {
+        json_fail(json, "PLE FP8 quantization is missing required fields");
         return false;
     }
     return true;
@@ -693,6 +812,8 @@ static bool manifest_parse(ds4_ple_store *store, const char *data, size_t size,
         .error_size = error_size,
     };
     uint64_t seen = 0;
+    char variant[128] = {0};
+    char dtype[32] = {0};
     if (error && error_size) error[0] = 0;
     if (!json_take(&json, '{')) return false;
     for (;;) {
@@ -708,11 +829,12 @@ static bool manifest_parse(ds4_ple_store *store, const char *data, size_t size,
         bool ok = true;
         if (json_key_eq(key, key_len, "format_version")) {
             bit = TOP_FORMAT;
-            ok = manifest_expect_u64(&json, 1u);
-            store->layout.format_version = 1u;
+            uint64_t version = 0;
+            ok = json_u64(&json, &version) && (version == 1u || version == 2u);
+            store->layout.format_version = (uint32_t)version;
         } else if (json_key_eq(key, key_len, "artifact_variant")) {
             bit = TOP_VARIANT;
-            ok = manifest_expect_qwen_variant(&json);
+            ok = json_copy_string(&json, variant, sizeof(variant));
         } else if (json_key_eq(key, key_len, "byte_order")) {
             bit = TOP_BYTE_ORDER;
             ok = manifest_expect_string(&json, "little");
@@ -721,15 +843,16 @@ static bool manifest_parse(ds4_ple_store *store, const char *data, size_t size,
             ok = manifest_expect_string(&json, "ssd_backed_bounded_page_cache");
         } else if (json_key_eq(key, key_len, "storage_dtype")) {
             bit = TOP_DTYPE;
-            ok = manifest_expect_string(&json, "BF16");
+            ok = json_copy_string(&json, dtype, sizeof(dtype));
         } else if (json_key_eq(key, key_len, "alignment_bytes")) {
             bit = TOP_ALIGNMENT;
             ok = manifest_expect_u64(&json, DS4_PLE_PAGE_BYTES);
             store->layout.alignment_bytes = DS4_PLE_PAGE_BYTES;
         } else if (json_key_eq(key, key_len, "row_stride_bytes")) {
             bit = TOP_ROW_STRIDE;
-            ok = manifest_expect_u64(&json, DS4_PLE_ROW_BYTES);
-            store->layout.row_stride_bytes = DS4_PLE_ROW_BYTES;
+            uint64_t stride = 0;
+            ok = json_u64(&json, &stride) && stride <= UINT32_MAX;
+            store->layout.row_stride_bytes = (uint32_t)stride;
         } else if (json_key_eq(key, key_len, "embedding_row_dimension")) {
             bit = TOP_ROW_DIM;
             ok = manifest_expect_u64(&json, DS4_PLE_ROW_DIM);
@@ -787,6 +910,12 @@ static bool manifest_parse(ds4_ple_store *store, const char *data, size_t size,
         } else if (json_key_eq(key, key_len, "hash_reference")) {
             bit = TOP_HASH_REFERENCE;
             ok = manifest_parse_hash_reference(&json);
+        } else if (json_key_eq(key, key_len, "quantization")) {
+            bit = TOP_QUANTIZATION;
+            ok = parse_fp8_quant(&json, store);
+        } else if (json_key_eq(key, key_len, "physical_paths_relative_to")) {
+            bit = TOP_PATHS;
+            ok = manifest_expect_string(&json, "directory containing ple-manifest.json");
         } else {
             ok = json_skip_value(&json, 0);
         }
@@ -800,8 +929,16 @@ static bool manifest_parse(ds4_ple_store *store, const char *data, size_t size,
     }
     json_ws(&json);
     if (json.cursor != json.end) return ple_error(error, error_size, "PLE manifest has trailing data");
-    const uint64_t required = (UINT64_C(1) << 24) - 1u;
+    const bool fp8 = store->layout.format_version == 2u;
+    const uint64_t required = (UINT64_C(1) << (fp8 ? 26 : 24)) - 1u;
     if (seen != required) return ple_error(error, error_size, "PLE manifest is missing required top-level fields");
+    if ((fp8 && (strcmp(variant, "PLE-FP8") != 0 || strcmp(dtype, "FP8_E4M3FN") != 0 ||
+                 store->layout.row_stride_bytes != DS4_PLE_FP8_ROW_BYTES)) ||
+        (!fp8 && ((strcmp(variant, "MQ-Q5-SSD-PLE-BF16") != 0 &&
+                   strcmp(variant, "MQ-Q6-SSD-PLE-BF16") != 0) ||
+                  strcmp(dtype, "BF16") != 0 || store->layout.row_stride_bytes != DS4_PLE_ROW_BYTES))) {
+        return ple_error(error, error_size, "PLE version, variant, dtype and stride disagree");
+    }
 
     store->hash_config.unigram_vocab_size = 248320u;
     store->hash_config.eos_token_id = 248044u;
@@ -876,12 +1013,14 @@ static bool read_small_file(const char *path, char **data, size_t *size,
 
 static bool manifest_validate_layout(ds4_ple_store *store,
                                      char *error, size_t error_size) {
+    const uint32_t stride = store->layout.row_stride_bytes;
+    const bool fp8 = store->layout.format_version == 2u;
     if (store->layout.usable_vocabulary_rows != UINT64_C(320001446) ||
         store->layout.padded_vocabulary_rows != UINT64_C(320001536) ||
-        store->layout.total_payload_bytes != UINT64_C(102400491520) ||
-        store->layout.total_file_bytes != UINT64_C(102400786432))
+        store->layout.total_payload_bytes != UINT64_C(320001536) * stride ||
+        store->layout.total_file_bytes != (fp8 ? UINT64_C(51200393216) : UINT64_C(102400786432)))
         return ple_error(error, error_size,
-                         "PLE manifest aggregate sizes do not match the BF16 reference");
+                         "PLE manifest aggregate sizes do not match the storage reference");
 
     uint64_t row_cursor = 0;
     uint64_t payload_sum = 0;
@@ -894,8 +1033,8 @@ static bool manifest_validate_layout(ds4_ple_store *store,
         if ((part->file_offset % DS4_PLE_PAGE_BYTES) != 0)
             return ple_error(error, error_size,
                              "PLE logical part %u is not page aligned", i);
-        if (part->rows > UINT64_MAX / DS4_PLE_ROW_BYTES ||
-            part->payload_bytes != part->rows * DS4_PLE_ROW_BYTES)
+        if (part->row_stride_bytes != stride || part->rows > UINT64_MAX / stride ||
+            part->payload_bytes != part->rows * stride)
             return ple_error(error, error_size,
                              "PLE logical part %u has an invalid payload", i);
         if (UINT64_MAX - row_cursor < part->rows ||
@@ -948,6 +1087,85 @@ static bool manifest_validate_layout(ds4_ple_store *store,
     if (last_head_end != store->layout.usable_vocabulary_rows)
         return ple_error(error, error_size,
                          "PLE head vocabularies do not match usable rows");
+    if (fp8) {
+        /* V2 is the published official sidecar, not a generic FP8 table.
+         * Self-consistent but different controls would silently change rows. */
+        static const uint64_t multipliers[DS4_PLE_NGRAM_SIZE] = {
+            UINT64_C(23703573157769), UINT64_C(20109073645365), UINT64_C(8052911324071),
+        };
+        static const uint64_t vocabs[DS4_PLE_N_HEADS] = {
+            20000003, 20000023, 20000033, 20000047, 20000059, 20000063, 20000069, 20000077,
+            20000081, 20000093, 20000107, 20000147, 20000153, 20000159, 20000161, 20000171,
+        };
+        if (memcmp(store->hash_config.layer_multipliers, multipliers, sizeof(multipliers)) != 0 ||
+            memcmp(store->hash_config.head_vocab_sizes, vocabs, sizeof(vocabs)) != 0) {
+            return ple_error(error, error_size, "PLE FP8 hash controls differ from the official reference");
+        }
+        const uint64_t payload = DS4_PLE_ROWS_PER_PART * DS4_PLE_FP8_ROW_BYTES;
+        const uint64_t aligned = (payload + DS4_PLE_PAGE_BYTES - 1u) &
+                                 ~(uint64_t)(DS4_PLE_PAGE_BYTES - 1u);
+        for (uint32_t i = 0; i < DS4_PLE_N_LOGICAL_PARTS; i++) {
+            const ds4_ple_logical_part *part = &store->logical[i];
+            if (part->rows != DS4_PLE_ROWS_PER_PART ||
+                part->physical_file_index != i / DS4_PLE_PARTS_PER_FILE ||
+                part->file_offset != (i % DS4_PLE_PARTS_PER_FILE) * aligned) {
+                return ple_error(error, error_size, "PLE FP8 part %u differs from the official layout", i);
+            }
+        }
+        for (uint32_t i = 0; i < DS4_PLE_N_PHYSICAL_FILES; i++) {
+            if (store->physical[i].file_bytes != DS4_PLE_PARTS_PER_FILE * aligned ||
+                store->physical[i].payload_bytes != DS4_PLE_PARTS_PER_FILE * payload) {
+                return ple_error(error, error_size, "PLE FP8 file %u differs from the official layout", i);
+            }
+        }
+    }
+    return true;
+}
+
+static bool store_load_scale(ds4_ple_store *store, const char *root,
+                             char *error, size_t error_size) {
+    if (store->layout.format_version != 2u) {
+        return true;
+    }
+    if (!path_is_safe_relative(store->scale_path) || store->scale_bits != DS4_PLE_FP8_SCALE_BITS) {
+        return ple_error(error, error_size, "PLE FP8 scale must match official BF16 bits 0x3951 with a relative path");
+    }
+    char *path = path_join(root, store->scale_path);
+    char *data = NULL;
+    size_t size = 0;
+    const bool read_ok = path && read_small_file(path, &data, &size, error, error_size);
+    free(path);
+    const bool valid = read_ok && size == sizeof(uint16_t) &&
+        ((uint16_t)(uint8_t)data[0] | ((uint16_t)(uint8_t)data[1] << 8)) == store->scale_bits;
+    free(data);
+    if (!valid) {
+        return ple_error(error, error_size, "PLE FP8 scale file does not match the manifest");
+    }
+
+    uint32_t scale_word = (uint32_t)store->scale_bits << 16;
+    float scale = 0.0f;
+    memcpy(&scale, &scale_word, sizeof(scale));
+    for (uint32_t code = 0; code < DS4_PLE_FP8_CODES; code++) {
+        const uint32_t exponent = (code >> 3) & 15u;
+        const uint32_t mantissa = code & 7u;
+        const uint16_t sign = (uint16_t)((code & 128u) << 8);
+        if (exponent == 15u && mantissa == 7u) {
+            store->decode_table[code] = sign | 0x7fc0u;
+            continue;
+        }
+        /* Every finite E4M3FN value is exactly representable in BF16.
+         * Match FP8Embedding: BF16(code) * BF16(scale), rounded to BF16. */
+        float value = exponent ? ldexpf((float)(8u + mantissa), (int)exponent - 10)
+                               : ldexpf((float)mantissa, -9);
+        if (sign) {
+            value = -value;
+        }
+        value *= scale;
+        uint32_t word = 0;
+        memcpy(&word, &value, sizeof(word));
+        word += 0x7fffu + ((word >> 16) & 1u);
+        store->decode_table[code] = (uint16_t)(word >> 16);
+    }
     return true;
 }
 
@@ -1272,7 +1490,7 @@ static bool resolve_row(ds4_ple_store *store, uint64_t global_row,
                          "PLE row mapping has a gap");
     *file_index = part->physical_file_index;
     *file_offset =
-        part->file_offset + local * DS4_PLE_ROW_BYTES;
+        part->file_offset + local * store->layout.row_stride_bytes;
     return true;
 }
 
@@ -1290,7 +1508,7 @@ static bool prefetch_one_row(ds4_ple_store *store, uint64_t row,
     if (!cache_request_page(store, file_index, page0, false, false,
                             &ignored, error, error_size))
         return false;
-    if (within + DS4_PLE_ROW_BYTES > DS4_PLE_PAGE_BYTES) {
+    if (within + store->layout.row_stride_bytes > DS4_PLE_PAGE_BYTES) {
         if (!cache_request_page(store, file_index,
                                 page0 + DS4_PLE_PAGE_BYTES,
                                 false, false, &ignored,
@@ -1389,12 +1607,26 @@ ds4_ple_store *ds4_ple_store_open(
         store_destroy(store);
         return NULL;
     }
-    free(manifest_path);
     free(manifest_data);
 
-    if (!store_open_files(store, artifact_root,
+    /* V1 paths belong to the GGUF artifact root; V2 paths belong to the
+     * selected manifest directory, so one FP8 sidecar can serve both models. */
+    const char *file_root = artifact_root;
+    if (store->layout.format_version == 2u) {
+        char *slash = strrchr(manifest_path, '/');
+        if (slash == manifest_path) {
+            slash[1] = '\0';
+        } else if (slash) {
+            *slash = '\0';
+        }
+        file_root = manifest_path;
+    }
+    const bool files_ok = store_load_scale(store, file_root, error, error_size) &&
+        store_open_files(store, file_root,
                           prefer_direct_io,
-                          error, error_size)) {
+                          error, error_size);
+    free(manifest_path);
+    if (!files_ok) {
         store_destroy(store);
         return NULL;
     }
@@ -1475,6 +1707,10 @@ const ds4_ple_hash_config *ds4_ple_store_hash_config(
     return store ? &store->hash_config : NULL;
 }
 
+const uint16_t *ds4_ple_store_decode_table(const ds4_ple_store *store) {
+    return store && store->layout.format_version == 2u ? store->decode_table : NULL;
+}
+
 bool ds4_ple_store_prefetch_rows(
         ds4_ple_store *store,
         const uint64_t *row_ids,
@@ -1516,8 +1752,8 @@ static bool store_acquire_row(
         offset & ~(uint64_t)(DS4_PLE_PAGE_BYTES - 1u);
     const uint32_t within = (uint32_t)(offset - page0);
     const uint32_t first_bytes =
-        within + DS4_PLE_ROW_BYTES <= DS4_PLE_PAGE_BYTES
-            ? DS4_PLE_ROW_BYTES
+        within + store->layout.row_stride_bytes <= DS4_PLE_PAGE_BYTES
+            ? store->layout.row_stride_bytes
             : DS4_PLE_PAGE_BYTES - within;
     uint32_t slot0 = 0;
     const uint8_t *data0 = NULL;
@@ -1534,7 +1770,7 @@ static bool store_acquire_row(
     view->slots[0] = slot0;
     view->segment_count = 1;
 
-    if (first_bytes < DS4_PLE_ROW_BYTES) {
+    if (first_bytes < store->layout.row_stride_bytes) {
         uint32_t slot1 = 0;
         const uint8_t *data1 = NULL;
         if (!cache_request_page(
@@ -1559,7 +1795,7 @@ static bool store_acquire_row(
         }
         view->segments[1] = data1;
         view->segment_bytes[1] =
-            DS4_PLE_ROW_BYTES - first_bytes;
+            store->layout.row_stride_bytes - first_bytes;
         view->slots[1] = slot1;
         view->segment_count = 2;
     }
@@ -1569,7 +1805,7 @@ static bool store_acquire_row(
         finished >= started ? finished - started : 0;
     pthread_mutex_lock(&store->mutex);
     store->stats.row_lookups++;
-    store->stats.logical_bytes += DS4_PLE_ROW_BYTES;
+    store->stats.logical_bytes += store->layout.row_stride_bytes;
     store->stats.wait_samples++;
     store->stats.wait_nanoseconds_total += elapsed;
     if (elapsed > store->stats.wait_nanoseconds_max)
@@ -1675,8 +1911,8 @@ bool ds4_ple_store_acquire_ready_rows(
             offset & ~(uint64_t)(DS4_PLE_PAGE_BYTES - 1u);
         const uint32_t within = (uint32_t)(offset - page0);
         const uint32_t first_bytes =
-            within + DS4_PLE_ROW_BYTES <= DS4_PLE_PAGE_BYTES
-                ? DS4_PLE_ROW_BYTES
+            within + store->layout.row_stride_bytes <= DS4_PLE_PAGE_BYTES
+                ? store->layout.row_stride_bytes
                 : DS4_PLE_PAGE_BYTES - within;
         ds4_ple_row_view *view = &views[taken];
         uint32_t slot0 = 0;
@@ -1686,7 +1922,7 @@ bool ds4_ple_store_acquire_ready_rows(
         view->segment_bytes[0] = first_bytes;
         view->slots[0] = slot0;
         view->segment_count = 1;
-        if (first_bytes < DS4_PLE_ROW_BYTES) {
+        if (first_bytes < store->layout.row_stride_bytes) {
             uint32_t slot1 = 0;
             if (!cache_lookup_ready_locked(
                     store, file_index, page0 + DS4_PLE_PAGE_BYTES,
@@ -1696,13 +1932,13 @@ bool ds4_ple_store_acquire_ready_rows(
                 break;
             }
             view->segments[1] = store->slots[slot1].data;
-            view->segment_bytes[1] = DS4_PLE_ROW_BYTES - first_bytes;
+            view->segment_bytes[1] = store->layout.row_stride_bytes - first_bytes;
             view->slots[1] = slot1;
             view->segment_count = 2;
         }
     }
     store->stats.row_lookups += taken;
-    store->stats.logical_bytes += (uint64_t)taken * DS4_PLE_ROW_BYTES;
+    store->stats.logical_bytes += (uint64_t)taken * store->layout.row_stride_bytes;
     store->stats.wait_samples += taken;
     pthread_mutex_unlock(&store->mutex);
     *acquired = taken;
@@ -1743,11 +1979,21 @@ bool ds4_ple_store_read_row(
             store, global_row, &view,
             error, error_size))
         return false;
-    memcpy(output, view.segments[0],
-           view.segment_bytes[0]);
-    if (view.segment_count == 2)
-        memcpy((uint8_t *)output + view.segment_bytes[0],
-               view.segments[1], view.segment_bytes[1]);
+    if (store->layout.format_version == 2u) {
+        for (uint32_t column = 0; column < DS4_PLE_ROW_DIM; column++) {
+            const uint8_t code = column < view.segment_bytes[0]
+                ? view.segments[0][column]
+                : view.segments[1][column - view.segment_bytes[0]];
+            memcpy((uint8_t *)output + column * sizeof(uint16_t),
+                   &store->decode_table[code], sizeof(uint16_t));
+        }
+    } else {
+        memcpy(output, view.segments[0], view.segment_bytes[0]);
+        if (view.segment_count == 2) {
+            memcpy((uint8_t *)output + view.segment_bytes[0],
+                   view.segments[1], view.segment_bytes[1]);
+        }
+    }
     ds4_ple_store_release_row(store, &view);
     return true;
 }
