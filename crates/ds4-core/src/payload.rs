@@ -570,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn qwen_fp8_full_context_restores_ledger() {
+    fn qwen_fp8_full_ctx_ledger() {
         let mut prefix = fixture_deepseek();
         prefix.fields[2] = prefix.tokens.len() as u32;
         prefix.fields[5] = u32::from_le_bytes(*b"QWF3");

@@ -1,0 +1,136 @@
+{
+  "base-bf16-1": {
+    "mtp_quench": [],
+    "ple": [
+      "ds4: Qwen PLE SSD stats: reads=798566 physical_bytes=3270926336 logical_bytes=365455360 hits=1537348 inflight=95383 misses=798566 evictions=276803 page_requests=2431297 dropped=0 read_errors=0",
+      "ds4: Qwen PLE SSD read latency: samples=798566 mean=199.317 us p50<=262.144 us p95<=524.288 us p99<=1048.576 us max=4286.320 us",
+      "ds4: Qwen PLE layer wait: samples=2711 rows=1142048 mean=3.834 ms p50<=1.049 ms p95<=4.194 ms p99<=268.435 ms max=365.693 ms",
+      "ds4: Qwen PLE gather split: total=10.393 s row_acquire=9.709 s (rows=1142048 blocked=70434 blocked_wait=8.870 s) enqueue=0.177 s"
+    ],
+    "minimum_available_gib": 16.910015106201172,
+    "max_memory_psi_full_avg10": 0.0
+  },
+  "base-fp8-1": {
+    "mtp_quench": [],
+    "ple": [
+      "ds4: Qwen PLE SSD stats: reads=761988 physical_bytes=3121102848 logical_bytes=182589440 hits=1526867 inflight=67636 misses=761988 evictions=241817 page_requests=2356491 dropped=0 read_errors=0",
+      "ds4: Qwen PLE SSD read latency: samples=761988 mean=132.201 us p50<=131.072 us p95<=524.288 us p99<=524.288 us max=3677.495 us",
+      "ds4: Qwen PLE layer wait: samples=2681 rows=1141184 mean=2.613 ms p50<=1.049 ms p95<=4.194 ms p99<=134.218 ms max=246.424 ms",
+      "ds4: Qwen PLE gather split: total=7.006 s row_acquire=6.284 s (rows=1141184 blocked=43807 blocked_wait=5.389 s) enqueue=0.189 s"
+    ],
+    "minimum_available_gib": 16.926311492919922,
+    "max_memory_psi_full_avg10": 0.0
+  },
+  "base-fp8-2": {
+    "mtp_quench": [],
+    "ple": [
+      "ds4: Qwen PLE SSD stats: reads=761988 physical_bytes=3121102848 logical_bytes=182589440 hits=1528374 inflight=66138 misses=761988 evictions=241817 page_requests=2356500 dropped=0 read_errors=0",
+      "ds4: Qwen PLE SSD read latency: samples=761988 mean=131.492 us p50<=131.072 us p95<=524.288 us p99<=524.288 us max=3725.048 us",
+      "ds4: Qwen PLE layer wait: samples=2681 rows=1141184 mean=2.351 ms p50<=1.049 ms p95<=4.194 ms p99<=134.218 ms max=257.087 ms",
+      "ds4: Qwen PLE gather split: total=6.302 s row_acquire=5.622 s (rows=1141184 blocked=42172 blocked_wait=4.725 s) enqueue=0.158 s"
+    ],
+    "minimum_available_gib": 16.91628646850586,
+    "max_memory_psi_full_avg10": 0.0
+  },
+  "base-bf16-2": {
+    "mtp_quench": [],
+    "ple": [
+      "ds4: Qwen PLE SSD stats: reads=798566 physical_bytes=3270926336 logical_bytes=365455360 hits=1539881 inflight=92866 misses=798566 evictions=276803 page_requests=2431313 dropped=0 read_errors=0",
+      "ds4: Qwen PLE SSD read latency: samples=798566 mean=189.410 us p50<=131.072 us p95<=524.288 us p99<=1048.576 us max=3643.146 us",
+      "ds4: Qwen PLE layer wait: samples=2711 rows=1142048 mean=3.637 ms p50<=1.049 ms p95<=4.194 ms p99<=268.435 ms max=329.983 ms",
+      "ds4: Qwen PLE gather split: total=9.861 s row_acquire=9.171 s (rows=1142048 blocked=68012 blocked_wait=8.289 s) enqueue=0.176 s"
+    ],
+    "minimum_available_gib": 16.903911590576172,
+    "max_memory_psi_full_avg10": 0.0
+  },
+  "base-bf16-3": {
+    "mtp_quench": [
+      "ds4: Qwen MTP quenched after 15 cycles: accepted=3 speculative=794.782 ms baseline=42.701 ms/token"
+    ],
+    "ple": [
+      "ds4: Qwen PLE SSD stats: reads=786997 physical_bytes=3223539712 logical_bytes=359198720 hits=1509498 inflight=93239 misses=786997 evictions=265642 page_requests=2389734 dropped=0 read_errors=0",
+      "ds4: Qwen PLE SSD read latency: samples=786997 mean=185.294 us p50<=131.072 us p95<=524.288 us p99<=1048.576 us max=3858.697 us",
+      "ds4: Qwen PLE layer wait: samples=4127 rows=1122496 mean=2.547 ms p50<=1.049 ms p95<=4.194 ms p99<=4.194 ms max=335.270 ms",
+      "ds4: Qwen PLE gather split: total=10.511 s row_acquire=9.789 s (rows=1122496 blocked=68237 blocked_wait=8.924 s) enqueue=0.236 s"
+    ],
+    "minimum_available_gib": 16.87940216064453,
+    "max_memory_psi_full_avg10": 0.0
+  },
+  "base-fp8-3": {
+    "mtp_quench": [],
+    "ple": [
+      "ds4: Qwen PLE SSD stats: reads=761988 physical_bytes=3121102848 logical_bytes=182589440 hits=1528977 inflight=65537 misses=761988 evictions=241817 page_requests=2356502 dropped=0 read_errors=0",
+      "ds4: Qwen PLE SSD read latency: samples=761988 mean=132.286 us p50<=131.072 us p95<=524.288 us p99<=524.288 us max=4090.691 us",
+      "ds4: Qwen PLE layer wait: samples=2681 rows=1141184 mean=2.428 ms p50<=1.049 ms p95<=4.194 ms p99<=134.218 ms max=252.300 ms",
+      "ds4: Qwen PLE gather split: total=6.511 s row_acquire=5.808 s (rows=1141184 blocked=41662 blocked_wait=4.926 s) enqueue=0.174 s"
+    ],
+    "minimum_available_gib": 16.91781234741211,
+    "max_memory_psi_full_avg10": 0.0
+  },
+  "uncensored-bf16-1": {
+    "mtp_quench": [],
+    "ple": [
+      "ds4: Qwen PLE SSD stats: reads=798242 physical_bytes=3269599232 logical_bytes=365122560 hits=1538306 inflight=92958 misses=798242 evictions=276520 page_requests=2429506 dropped=0 read_errors=0",
+      "ds4: Qwen PLE SSD read latency: samples=798242 mean=187.780 us p50<=131.072 us p95<=524.288 us p99<=1048.576 us max=3513.407 us",
+      "ds4: Qwen PLE layer wait: samples=2676 rows=1141008 mean=3.539 ms p50<=1.049 ms p95<=4.194 ms p99<=268.435 ms max=353.398 ms",
+      "ds4: Qwen PLE gather split: total=9.471 s row_acquire=8.833 s (rows=1141008 blocked=68004 blocked_wait=7.995 s) enqueue=0.164 s"
+    ],
+    "minimum_available_gib": 16.769001007080078,
+    "max_memory_psi_full_avg10": 0.0
+  },
+  "uncensored-fp8-1": {
+    "mtp_quench": [],
+    "ple": [
+      "ds4: Qwen PLE SSD stats: reads=761189 physical_bytes=3117830144 logical_bytes=182579200 hits=1524982 inflight=70024 misses=761189 evictions=241131 page_requests=2356195 dropped=0 read_errors=0",
+      "ds4: Qwen PLE SSD read latency: samples=761189 mean=138.275 us p50<=131.072 us p95<=524.288 us p99<=524.288 us max=3601.725 us",
+      "ds4: Qwen PLE layer wait: samples=2681 rows=1141120 mean=2.562 ms p50<=1.049 ms p95<=4.194 ms p99<=134.218 ms max=274.319 ms",
+      "ds4: Qwen PLE gather split: total=6.868 s row_acquire=6.161 s (rows=1141120 blocked=45802 blocked_wait=5.259 s) enqueue=0.174 s"
+    ],
+    "minimum_available_gib": 16.748760223388672,
+    "max_memory_psi_full_avg10": 0.0
+  },
+  "uncensored-fp8-2": {
+    "mtp_quench": [],
+    "ple": [
+      "ds4: Qwen PLE SSD stats: reads=761189 physical_bytes=3117830144 logical_bytes=182579200 hits=1525011 inflight=70000 misses=761189 evictions=241131 page_requests=2356200 dropped=0 read_errors=0",
+      "ds4: Qwen PLE SSD read latency: samples=761189 mean=137.471 us p50<=131.072 us p95<=524.288 us p99<=524.288 us max=3914.619 us",
+      "ds4: Qwen PLE layer wait: samples=2681 rows=1141120 mean=2.566 ms p50<=1.049 ms p95<=4.194 ms p99<=134.218 ms max=322.916 ms",
+      "ds4: Qwen PLE gather split: total=6.880 s row_acquire=6.192 s (rows=1141120 blocked=45869 blocked_wait=5.303 s) enqueue=0.169 s"
+    ],
+    "minimum_available_gib": 16.727184295654297,
+    "max_memory_psi_full_avg10": 0.0
+  },
+  "uncensored-bf16-2": {
+    "mtp_quench": [],
+    "ple": [
+      "ds4: Qwen PLE SSD stats: reads=798242 physical_bytes=3269599232 logical_bytes=365122560 hits=1539089 inflight=92157 misses=798242 evictions=276520 page_requests=2429488 dropped=0 read_errors=0",
+      "ds4: Qwen PLE SSD read latency: samples=798242 mean=185.919 us p50<=131.072 us p95<=524.288 us p99<=1048.576 us max=3776.458 us",
+      "ds4: Qwen PLE layer wait: samples=2676 rows=1141008 mean=3.518 ms p50<=1.049 ms p95<=4.194 ms p99<=268.435 ms max=345.722 ms",
+      "ds4: Qwen PLE gather split: total=9.413 s row_acquire=8.759 s (rows=1141008 blocked=67160 blocked_wait=7.909 s) enqueue=0.168 s"
+    ],
+    "minimum_available_gib": 16.73440933227539,
+    "max_memory_psi_full_avg10": 0.0
+  },
+  "uncensored-bf16-3": {
+    "mtp_quench": [],
+    "ple": [
+      "ds4: Qwen PLE SSD stats: reads=798242 physical_bytes=3269599232 logical_bytes=365122560 hits=1540058 inflight=91189 misses=798242 evictions=276520 page_requests=2429489 dropped=0 read_errors=0",
+      "ds4: Qwen PLE SSD read latency: samples=798242 mean=187.281 us p50<=131.072 us p95<=524.288 us p99<=1048.576 us max=3673.145 us",
+      "ds4: Qwen PLE layer wait: samples=2676 rows=1141008 mean=3.505 ms p50<=1.049 ms p95<=4.194 ms p99<=268.435 ms max=331.333 ms",
+      "ds4: Qwen PLE gather split: total=9.379 s row_acquire=8.697 s (rows=1141008 blocked=66163 blocked_wait=7.774 s) enqueue=0.165 s"
+    ],
+    "minimum_available_gib": 16.741512298583984,
+    "max_memory_psi_full_avg10": 0.0
+  },
+  "uncensored-fp8-3": {
+    "mtp_quench": [],
+    "ple": [
+      "ds4: Qwen PLE SSD stats: reads=761189 physical_bytes=3117830144 logical_bytes=182579200 hits=1525570 inflight=69438 misses=761189 evictions=241131 page_requests=2356197 dropped=0 read_errors=0",
+      "ds4: Qwen PLE SSD read latency: samples=761189 mean=138.159 us p50<=131.072 us p95<=524.288 us p99<=524.288 us max=4121.722 us",
+      "ds4: Qwen PLE layer wait: samples=2681 rows=1141120 mean=2.570 ms p50<=1.049 ms p95<=4.194 ms p99<=134.218 ms max=277.941 ms",
+      "ds4: Qwen PLE gather split: total=6.889 s row_acquire=6.180 s (rows=1141120 blocked=45279 blocked_wait=5.228 s) enqueue=0.168 s"
+    ],
+    "minimum_available_gib": 16.697391510009766,
+    "max_memory_psi_full_avg10": 0.0
+  }
+}

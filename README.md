@@ -204,7 +204,7 @@ tokenizer/chat contract, state lifecycle, and native execution path.
 | K-EXAONE 236B A23B | `exaone-moe` | LLLG full/sliding GQA KV and persistent banks. |
 | Motif-3 | `motif3` | Latent KV, rotated `k_pe`, SWA rings, persistent banks. |
 | dots3-note Preview | `dots3note` (`dots3-note` accepted) | Dual-geometry latent state; current live serving path is serial. Tensor-core prefill attention / MLA GEMMs and split-K decode attention since 2026-09-06. |
-| Qwen3.8 Flash Next SSD-PLE | `qwen4exp` | Q5 main GGUF + four shared SSD-PLE sidecars, embedded MTP, N-bank Rust scheduling, still-image input; one- and two-bank live gates. |
+| Qwen3.8 Flash Next SSD-PLE | `qwen4exp` | Q5 main GGUF + BF16 or [official FP8 SSD-PLE](docs/qwen38-ple-fp8.md), embedded MTP, N-bank Rust scheduling, still-image input; one- and two-bank live gates. |
 | GLM 5.3 Flash | `glm5-next` | Q2 single-file GGUF plus the explicit vision sidecar; CUDA serial serving on one DGX Spark. |
 | K2-Horizon 375B A23B | `k2-horizon` | Four-shard MQ87 GGUF; IFM BPE/XML tools; continuous 32K one-bank serving on one DGX Spark. |
 
@@ -231,7 +231,7 @@ collection. Support remains limited to the validated layouts described above.
 
 ### Qwen release scope
 
-The Qwen RC claim is deliberately narrow:
+The initial Rust RC qualification covered:
 
 - [`MQ-Q5-SSD-PLE-BF16`](https://huggingface.co/Baekpica/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF), three main GGUF shards;
 - four shared BF16 SSD-PLE sidecars referenced by that Q5 layout;
@@ -242,6 +242,10 @@ The Qwen RC claim is deliberately narrow:
 
 Q6, original safetensors, and a resident BF16 GGUF were not release gates and
 are not implied by this claim.
+
+For the optional FP8 PLE sidecar with the existing base and
+[Uncensored](https://huggingface.co/Baekpica/Qwen3.8-Flash-Next-Uncensored-Mixed-Quant-SSD-PLE-GGUF)
+main GGUFs, see [selection, validation and paired 64K sweeps](docs/qwen38-ple-fp8.md).
 
 Rust normalizes ordered image parts, bounds and owns payload bytes, places
 image tokens, and owns decoded-pixel cache identity. Decoding reuses the pinned
@@ -592,18 +596,16 @@ trust domain when clients are not mutually trusted.
 host freezes; the second prefill candidate and decode drafts are excluded.
 No optimized sweep or new agent-serving performance result is claimed.*
 
-![Qwen3.8 Flash Next long-context throughput on DGX Spark](docs/qwen38-long-context-throughput.png)
+![Qwen3.8 Flash Next Q5 paired BF16 and FP8 PLE throughput](docs/qwen38-ple-fp8-base.png)
 
-*Qwen3.8 Flash Next MQ-Q5 + SSD-PLE BF16 on one DGX Spark / GB10 at
-[`6e036c4`](https://github.com/Baekpica/ds4-dfm-rs/commit/6e036c4),
-measured by `ds4-bench` as 2,048-token incremental prefills on one warm
-session from 2K through 64K, followed by 128 greedy tokens at each frontier.
-Resident VMM owner with aligned Q8 artifacts, 2 GiB PLE cache, 16 workers.
-With embedded MTP draft 2 active throughout, mean prefill including MTP prefix
-maintenance was **1,248.8 tok/s** and mean decode was
-**28.4 tok/s**; no MTP quench or runtime failure occurred.  The
-same protocol at `abdf25c` was 1,235.9 / 28.4 tok/s and at `a8fcd97`
-(raw-layout owner, 1 GiB PLE cache) 1,163.5 / 28.0 tok/s.*
+*Base Q5 on one DGX Spark / GB10, with only the PLE sidecar changed:
+**1,245.1 → 1,323.1 tok/s prefill (+6.3%)** and
+**28.59 → 28.93 tok/s decode (+1.2%)**. Median of three run means per format;
+curves show per-frontier medians and observed min/max bands. The original
+card protocol uses one warm session, 2,048-token incremental prefills through
+64K and 128 greedy tokens per frontier, aligned-Q8 owner, 2 GiB PLE cache and
+16 workers. MTP draft 2 was requested; one BF16 run autoquenched and remains
+in the data. [Base/Uncensored results, exact protocol and limits](docs/qwen38-ple-fp8.md).*
 
 The 2026-09-06 prefill rounds
 ([`docs/qwen38-prefill-2026-09-06.md`](docs/qwen38-prefill-2026-09-06.md))

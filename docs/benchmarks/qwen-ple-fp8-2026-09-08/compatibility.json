@@ -1,0 +1,1475 @@
+{
+  "base-bf16-batch": {
+    "command": [
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/tests/test_qwen4exp_batch",
+      "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf"
+    ],
+    "environment": {
+      "CUDA_VISIBLE_DEVICES": "0",
+      "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/qwen-v010-8002/weights.manifest",
+      "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+      "DS4_MEMGOV": "observe",
+      "DS4_SESSION_GRAPH_FIT": "0",
+      "DS4_SESSION_GRAPH_HEADROOM_MB": "0",
+      "DS4_QWEN_PREFILL_CHUNK": "8192",
+      "DS4_QWEN_PLE_CACHE_MB": "2048",
+      "DS4_QWEN_PLE_WORKERS": "16"
+    },
+    "started_unix": 1788848798.72357,
+    "executable_sha256": "ca965eb5a2001e7de7f11bdffb30ff0cf8d47c65fbfa87d39959db2fc17f1304",
+    "exit_code": 0,
+    "finished_unix": 1788848809.0201893,
+    "log_sha256": "4558cc88edcb6c5288d653f4680701e2e1ae8ba1a54fc90aa73387b30f1554cb"
+  },
+  "base-fp8-batch": {
+    "command": [
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/tests/test_qwen4exp_batch",
+      "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf"
+    ],
+    "environment": {
+      "CUDA_VISIBLE_DEVICES": "0",
+      "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/qwen-v010-8002/weights.manifest",
+      "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+      "DS4_MEMGOV": "observe",
+      "DS4_SESSION_GRAPH_FIT": "0",
+      "DS4_SESSION_GRAPH_HEADROOM_MB": "0",
+      "DS4_QWEN_PREFILL_CHUNK": "8192",
+      "DS4_QWEN_PLE_CACHE_MB": "2048",
+      "DS4_QWEN_PLE_WORKERS": "16",
+      "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+      "DS4_TEST_PLE_FP8": "1"
+    },
+    "started_unix": 1788848761.3197193,
+    "executable_sha256": "ca965eb5a2001e7de7f11bdffb30ff0cf8d47c65fbfa87d39959db2fc17f1304",
+    "exit_code": 0,
+    "finished_unix": 1788848771.1236286,
+    "log_sha256": "664bd858965cc0781ddb582cf86437f993f5e55f38459f117d2a30768e3a1b03"
+  },
+  "uncensored-bf16-batch": {
+    "command": [
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/tests/test_qwen4exp_batch",
+      "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Uncensored-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-Uncensored-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf"
+    ],
+    "environment": {
+      "CUDA_VISIBLE_DEVICES": "0",
+      "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/uncensored-owner/weights.manifest",
+      "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+      "DS4_MEMGOV": "observe",
+      "DS4_SESSION_GRAPH_FIT": "0",
+      "DS4_SESSION_GRAPH_HEADROOM_MB": "0",
+      "DS4_QWEN_PREFILL_CHUNK": "8192",
+      "DS4_QWEN_PLE_CACHE_MB": "2048",
+      "DS4_QWEN_PLE_WORKERS": "16"
+    },
+    "started_unix": 1788850600.2649188,
+    "executable_sha256": "ca965eb5a2001e7de7f11bdffb30ff0cf8d47c65fbfa87d39959db2fc17f1304",
+    "exit_code": 1,
+    "finished_unix": 1788850610.0449677,
+    "log_sha256": "273110a03c8d74e3b1341066ebe34dfd21c335db267cd28f68ef8bfaa78e9f47"
+  },
+  "uncensored-fp8-batch": {
+    "command": [
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/tests/test_qwen4exp_batch",
+      "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Uncensored-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-Uncensored-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf"
+    ],
+    "environment": {
+      "CUDA_VISIBLE_DEVICES": "0",
+      "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/uncensored-owner/weights.manifest",
+      "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+      "DS4_MEMGOV": "observe",
+      "DS4_SESSION_GRAPH_FIT": "0",
+      "DS4_SESSION_GRAPH_HEADROOM_MB": "0",
+      "DS4_QWEN_PREFILL_CHUNK": "8192",
+      "DS4_QWEN_PLE_CACHE_MB": "2048",
+      "DS4_QWEN_PLE_WORKERS": "16",
+      "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+      "DS4_TEST_PLE_FP8": "1"
+    },
+    "started_unix": 1788849188.9471693,
+    "executable_sha256": "ca965eb5a2001e7de7f11bdffb30ff0cf8d47c65fbfa87d39959db2fc17f1304",
+    "exit_code": 0,
+    "finished_unix": 1788849197.391212,
+    "log_sha256": "53fa541f37966366290e2199dc5f717a50505d9149fc0fe8d744599478d9a71c"
+  },
+  "uncensored-bf16-control": {
+    "command": [
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/bf16-control/test_qwen4exp_batch",
+      "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Uncensored-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-Uncensored-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf"
+    ],
+    "environment": {
+      "CUDA_VISIBLE_DEVICES": "0",
+      "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/uncensored-owner/weights.manifest",
+      "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+      "DS4_MEMGOV": "observe",
+      "DS4_SESSION_GRAPH_FIT": "0",
+      "DS4_SESSION_GRAPH_HEADROOM_MB": "0",
+      "DS4_QWEN_PREFILL_CHUNK": "8192",
+      "DS4_QWEN_PLE_CACHE_MB": "2048",
+      "DS4_QWEN_PLE_WORKERS": "16"
+    },
+    "started_unix": 1788850894.967032,
+    "executable_sha256": "74b29478c3e394f93e3339f87088d230b091e703a984bbe65c1f8de1d63d244c",
+    "exit_code": 1,
+    "finished_unix": 1788850904.5606623,
+    "log_sha256": "6bca4139566f8065eb74836c5266b8d33916215a6f8406d9633eaca188d0c528"
+  },
+  "base-fp8-frontier-64k": {
+    "command": [
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/ds4-bench",
+      "--cuda",
+      "-m",
+      "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+      "--prompt-file",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/speed-bench/promessi_sposi.txt",
+      "--ctx-start",
+      "65536",
+      "--ctx-max",
+      "65536",
+      "--step-incr",
+      "2048",
+      "--gen-tokens",
+      "16",
+      "--mtp-draft",
+      "2",
+      "--csv",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/base-fp8-frontier-64k.csv",
+      "--dump-frontier-logits-dir",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/base-fp8-frontier-64k.proof"
+    ],
+    "environment": {
+      "CUDA_VISIBLE_DEVICES": "0",
+      "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/qwen-v010-8002/weights.manifest",
+      "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+      "DS4_MEMGOV": "observe",
+      "DS4_SESSION_GRAPH_FIT": "0",
+      "DS4_SESSION_GRAPH_HEADROOM_MB": "0",
+      "DS4_QWEN_PREFILL_CHUNK": "8192",
+      "DS4_QWEN_PLE_CACHE_MB": "2048",
+      "DS4_QWEN_PLE_WORKERS": "16",
+      "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+      "DS4_TEST_PLE_FP8": "1"
+    },
+    "started_unix": 1788848822.3634455,
+    "executable_sha256": "54d36b6b90334e3e1d731299fa9697301e5ec9bfbe4dce12329785b3af62e90d",
+    "exit_code": 0,
+    "finished_unix": 1788848874.2364278,
+    "vocab": 248320,
+    "all_finite": true,
+    "argmax_id": 2747,
+    "argmax_logit": 18.976727,
+    "frontier_tokens": 65536,
+    "log_sha256": "07f254a948a4f1bba163060de189394d767b7aa805ecc3e3dbd2fc1da2574074"
+  },
+  "uncensored-fp8-frontier-64k": {
+    "command": [
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/ds4-bench",
+      "--cuda",
+      "-m",
+      "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Uncensored-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-Uncensored-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+      "--prompt-file",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/speed-bench/promessi_sposi.txt",
+      "--ctx-start",
+      "65536",
+      "--ctx-max",
+      "65536",
+      "--step-incr",
+      "2048",
+      "--gen-tokens",
+      "16",
+      "--mtp-draft",
+      "2",
+      "--csv",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/uncensored-fp8-frontier-64k.csv",
+      "--dump-frontier-logits-dir",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/uncensored-fp8-frontier-64k.proof"
+    ],
+    "environment": {
+      "CUDA_VISIBLE_DEVICES": "0",
+      "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/uncensored-owner/weights.manifest",
+      "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+      "DS4_MEMGOV": "observe",
+      "DS4_SESSION_GRAPH_FIT": "0",
+      "DS4_SESSION_GRAPH_HEADROOM_MB": "0",
+      "DS4_QWEN_PREFILL_CHUNK": "8192",
+      "DS4_QWEN_PLE_CACHE_MB": "2048",
+      "DS4_QWEN_PLE_WORKERS": "16",
+      "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+      "DS4_TEST_PLE_FP8": "1"
+    },
+    "started_unix": 1788850637.6397624,
+    "executable_sha256": "54d36b6b90334e3e1d731299fa9697301e5ec9bfbe4dce12329785b3af62e90d",
+    "exit_code": 0,
+    "finished_unix": 1788850690.1036766,
+    "vocab": 248320,
+    "all_finite": true,
+    "argmax_id": 2747,
+    "argmax_logit": 18.735668,
+    "frontier_tokens": 65536,
+    "log_sha256": "03521ecffbdcd48f5e0c1baf40b88ef8bf6946ea236b3bc2f78b1395905f2bb8"
+  },
+  "q6-fp8-frontier-2k": {
+    "command": [
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/ds4-bench",
+      "--cuda",
+      "-m",
+      "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q6-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q6-SSD-PLE-BF16-00001-of-00004.gguf",
+      "--prompt-file",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/speed-bench/promessi_sposi.txt",
+      "--ctx-start",
+      "2048",
+      "--ctx-max",
+      "2048",
+      "--step-incr",
+      "2048",
+      "--gen-tokens",
+      "16",
+      "--mtp-draft",
+      "2",
+      "--csv",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/q6-fp8-frontier-2k.csv",
+      "--dump-frontier-logits-dir",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/q6-fp8-frontier-2k.proof"
+    ],
+    "environment": {
+      "CUDA_VISIBLE_DEVICES": "0",
+      "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/q6-owner/weights.manifest",
+      "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+      "DS4_MEMGOV": "observe",
+      "DS4_SESSION_GRAPH_FIT": "0",
+      "DS4_SESSION_GRAPH_HEADROOM_MB": "0",
+      "DS4_QWEN_PREFILL_CHUNK": "8192",
+      "DS4_QWEN_PLE_CACHE_MB": "2048",
+      "DS4_QWEN_PLE_WORKERS": "16",
+      "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+      "DS4_TEST_PLE_FP8": "1"
+    },
+    "started_unix": 1788851137.4271734,
+    "executable_sha256": "54d36b6b90334e3e1d731299fa9697301e5ec9bfbe4dce12329785b3af62e90d",
+    "exit_code": 0,
+    "finished_unix": 1788851146.8060205,
+    "vocab": 248320,
+    "all_finite": true,
+    "argmax_id": 303,
+    "argmax_logit": 16.227692,
+    "frontier_tokens": 2048,
+    "log_sha256": "099af94489cbd0e3e1e774d5d698df032828c52b66230bf0cbca54f86e48fd36"
+  },
+  "base-fp8-http": {
+    "runtime": {
+      "pid": 330237,
+      "exe": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/ds4-server",
+      "sha256": "b00613240c31ce5fb1a9dc42af8c4a0bb0cf1de5227e3545786bdb6c485c1851",
+      "command": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/ds4-server",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+        "-c",
+        "262144",
+        "-n",
+        "32768",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8002",
+        "--cors",
+        "--model-id",
+        "Qwen3.8-Flash-Next-Mixed-Quant",
+        "--mem-floor-gb",
+        "2",
+        "--mtp-draft",
+        "2",
+        "--no-update-check",
+        "--kv-disk-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/base-fp8-serving/kv",
+        "--kv-disk-space-mb",
+        "32768"
+      ],
+      "environment": [
+        "DS4_SESSION_GRAPH_HEADROOM_MB=0",
+        "DS4_SERVER_WARM=1",
+        "DS4_SERVER_FORK=1",
+        "DS4_QWEN_PLE_CACHE_MB=2048",
+        "DS4_MEMGOV=observe",
+        "DS4_CUDA_WEIGHT_IPC_MANIFEST=/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/qwen-v010-8002/weights.manifest",
+        "DS4_QWEN_PLE_WORKERS=16",
+        "DS4_QWEN_BATCH=1",
+        "DS4_SERVER_FORK_PARTIAL=1",
+        "CUDA_VISIBLE_DEVICES=0",
+        "DS4_CUDA_WEIGHT_IPC_SCOPE=base",
+        "DS4_SESSION_GRAPH_FIT=0",
+        "DS4_SERVER_COALESCE_MAX_TOKENS=16384",
+        "DS4_QWEN_PLE_DIR=/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+        "DS4_SERVER_COALESCE_MAX=2",
+        "DS4_QWEN_PREFILL_CHUNK=8192",
+        "DS4_SERVER_CONTINUOUS=1",
+        "DS4_SERVER_COALESCE_WAIT_MS=20"
+      ]
+    },
+    "verification": {
+      "passed": true,
+      "models": {
+        "object": "list",
+        "data": [
+          {
+            "id": "Qwen3.8-Flash-Next-Mixed-Quant",
+            "object": "model",
+            "created": 1767225600,
+            "owned_by": "ds4.c",
+            "name": "Qwen3.8-Flash-Next-Mixed-Quant",
+            "context_length": 262144,
+            "top_provider": {
+              "context_length": 262144,
+              "max_completion_tokens": 32768,
+              "is_moderated": false
+            },
+            "supported_parameters": [
+              "tools",
+              "tool_choice",
+              "max_tokens",
+              "temperature",
+              "top_p",
+              "top_k",
+              "min_p",
+              "stop",
+              "seed",
+              "stream",
+              "reasoning_effort"
+            ]
+          }
+        ]
+      },
+      "results": [
+        {
+          "name": "ready",
+          "seconds": 0.1861420079949312,
+          "choice": {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "READY"
+            },
+            "finish_reason": "stop"
+          },
+          "usage": {
+            "prompt_tokens": 20,
+            "completion_tokens": 1,
+            "total_tokens": 21,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 20
+            }
+          },
+          "timings": {
+            "ttft_ms": 132.9,
+            "prefill_tokens": 20,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 151.6,
+            "decode_tok_s": 23.6,
+            "tok_per_step": 2.0
+          }
+        },
+        {
+          "name": "bank1",
+          "seconds": 4.927985702001024,
+          "choice": {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "BANK1 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
+            },
+            "finish_reason": "stop"
+          },
+          "usage": {
+            "prompt_tokens": 39,
+            "completion_tokens": 89,
+            "total_tokens": 128,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 39
+            }
+          },
+          "timings": {
+            "ttft_ms": 166.2,
+            "prefill_tokens": 39,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 236.3,
+            "decode_tok_s": 18.7,
+            "tok_per_step": 1.01
+          }
+        },
+        {
+          "name": "bank2",
+          "seconds": 4.965778084995691,
+          "choice": {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "BANK2 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
+            },
+            "finish_reason": "stop"
+          },
+          "usage": {
+            "prompt_tokens": 39,
+            "completion_tokens": 89,
+            "total_tokens": 128,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 39
+            }
+          },
+          "timings": {
+            "ttft_ms": 383.1,
+            "prefill_tokens": 39,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 102.0,
+            "decode_tok_s": 19.4,
+            "tok_per_step": 1.01
+          }
+        },
+        {
+          "name": "tool-call",
+          "seconds": 2.537412809993839,
+          "choice": {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_9cf9e9783919a7c9cac40bd0f752e1f1",
+                  "type": "function",
+                  "function": {
+                    "name": "lookup_release",
+                    "arguments": "{\"version\":\"v0.1.0\"}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": "tool_calls"
+          },
+          "usage": {
+            "prompt_tokens": 1202,
+            "completion_tokens": 31,
+            "total_tokens": 1233,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 1202
+            }
+          },
+          "timings": {
+            "ttft_ms": 1018.6,
+            "prefill_tokens": 1202,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 1185.8,
+            "decode_tok_s": 20.4,
+            "tok_per_step": 2.0
+          }
+        },
+        {
+          "name": "tool-followup",
+          "seconds": 0.5584296500019263,
+          "choice": {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "QWEN010"
+            },
+            "finish_reason": "stop"
+          },
+          "usage": {
+            "prompt_tokens": 1286,
+            "completion_tokens": 6,
+            "total_tokens": 1292,
+            "prompt_tokens_details": {
+              "cached_tokens": 1233,
+              "cache_write_tokens": 53
+            }
+          },
+          "timings": {
+            "ttft_ms": 268.1,
+            "prefill_tokens": 53,
+            "prefill_cached_tokens": 1233,
+            "prefill_tok_s": 204.7,
+            "decode_tok_s": 21.3,
+            "tok_per_step": 2.33
+          }
+        },
+        {
+          "name": "image",
+          "seconds": 1.6242651430075057,
+          "choice": {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "3"
+            },
+            "finish_reason": "stop"
+          },
+          "usage": {
+            "prompt_tokens": 799,
+            "completion_tokens": 1,
+            "total_tokens": 800,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 799
+            }
+          },
+          "timings": {
+            "ttft_ms": 1558.9,
+            "prefill_tokens": 799,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 1100.0,
+            "decode_tok_s": 18.5,
+            "tok_per_step": 2.0
+          }
+        }
+      ]
+    },
+    "statistics": {
+      "routes": {
+        "openai_chat_serial": 0,
+        "openai_chat_continuous": 6,
+        "openai_chat_static": 0,
+        "openai_completion_serial": 0,
+        "openai_completion_continuous": 0,
+        "openai_completion_static": 0,
+        "anthropic_messages_serial": 0,
+        "anthropic_messages_continuous": 0,
+        "anthropic_messages_static": 0,
+        "openai_responses_serial": 0,
+        "openai_responses_continuous": 0,
+        "openai_responses_static": 0
+      },
+      "route_decisions": {
+        "continuous": 6,
+        "static_no_cont": 0,
+        "static_prompt_bounds": 0,
+        "coalesce_off": 0,
+        "surface": 0,
+        "need_live_frontier": 0,
+        "need_continuation_publish": 0,
+        "need_corrective_recovery": 0,
+        "need_durable_response": 0,
+        "need_prefill_only": 0,
+        "token_ids_projection": 0,
+        "tools_completion_kind": 0,
+        "cont_unavailable": 0,
+        "continuous_bank_continuation": 0
+      },
+      "think_modes": {
+        "none": 6,
+        "low": 0,
+        "high": 0,
+        "max": 0
+      },
+      "sheds": {
+        "clients": 0,
+        "queue_depth": 0,
+        "queue_bytes": 0,
+        "queue_age": 0,
+        "slow_reader": 0,
+        "continuation_hold": 0
+      },
+      "clients": 1,
+      "queue_depth": 0,
+      "inflight_body_bytes": 0,
+      "memory": {
+        "census_supported": true,
+        "census_epoch": 2876,
+        "classes": {
+          "engine_other": {
+            "unified_device": {
+              "live": 121610240,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "weight_arena": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "weight_span": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "weight_whole": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "weight_derived": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "weight_import": {
+            "unified_device": {
+              "live": 87386226688,
+              "slack": 230091328
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "weight_artifact": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "weight_host_pin": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "stage_pin": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "scalars_mirror": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "session_tensors": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "kv_primary": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "batch_bank": {
+            "unified_device": {
+              "live": 21996122624,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "scratch_sticky": {
+            "unified_device": {
+              "live": 99069440,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "kernel_partials": {
+            "unified_device": {
+              "live": 54826016,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "graph_exec": {
+            "unified_device": {
+              "live": 33198080,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "diag": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          }
+        },
+        "totals": {
+          "device_live": 109691053088,
+          "device_slack": 230091328,
+          "host_pin_live": 0,
+          "host_pin_slack": 0
+        },
+        "census_faults": 0,
+        "substrate_outstanding": 0,
+        "observation": {
+          "status": "ok",
+          "source": "meminfo_available",
+          "free_bytes": 12696936448,
+          "total_bytes": 130596167680,
+          "cuda_free_bytes": 4584718336,
+          "meminfo_available_bytes": 12696936448,
+          "calls_cuda_free": 0,
+          "calls_meminfo_available": 0,
+          "errors": 0
+        },
+        "reconcile": {
+          "supported": false
+        }
+      },
+      "governor": {
+        "shadow": true,
+        "epoch": 0,
+        "faults": 0,
+        "modes": {
+          "engine_boot": "observe",
+          "prewarm": "observe",
+          "batch_bank_plan": "observe",
+          "serial_session": "observe",
+          "static_batch": "observe"
+        },
+        "leases": {
+          "engine_boot": {
+            "intent": 0,
+            "resident": 0,
+            "reservation": 0
+          },
+          "prewarm": {
+            "intent": 0,
+            "resident": 0,
+            "reservation": 0
+          },
+          "batch_bank_plan": {
+            "intent": 0,
+            "resident": 0,
+            "reservation": 0
+          },
+          "serial_session": {
+            "intent": 0,
+            "resident": 0,
+            "reservation": 0
+          },
+          "static_batch": {
+            "intent": 0,
+            "resident": 0,
+            "reservation": 0
+          }
+        },
+        "decisions": {
+          "agree": 0,
+          "live_stricter": 0,
+          "shadow_stricter": 0,
+          "verdict_class": 0,
+          "obs_policy": 0,
+          "fault": 0
+        }
+      }
+    }
+  },
+  "uncensored-fp8-http": {
+    "runtime": {
+      "pid": 344632,
+      "exe": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/ds4-server",
+      "sha256": "b00613240c31ce5fb1a9dc42af8c4a0bb0cf1de5227e3545786bdb6c485c1851",
+      "command": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/ds4-server",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Uncensored-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-Uncensored-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+        "-c",
+        "262144",
+        "-n",
+        "32768",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8002",
+        "--cors",
+        "--model-id",
+        "Qwen3.8-Flash-Next-Uncensored-Mixed-Quant",
+        "--mem-floor-gb",
+        "2",
+        "--mtp-draft",
+        "2",
+        "--no-update-check",
+        "--kv-disk-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/uncensored-fp8-serving/kv",
+        "--kv-disk-space-mb",
+        "32768"
+      ],
+      "environment": {
+        "DS4_SESSION_GRAPH_HEADROOM_MB": "0",
+        "DS4_SERVER_WARM": "1",
+        "DS4_SERVER_FORK": "1",
+        "DS4_QWEN_PLE_CACHE_MB": "2048",
+        "DS4_MEMGOV": "observe",
+        "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/uncensored-owner/weights.manifest",
+        "DS4_QWEN_PLE_WORKERS": "16",
+        "DS4_QWEN_BATCH": "1",
+        "DS4_SERVER_FORK_PARTIAL": "1",
+        "CUDA_VISIBLE_DEVICES": "0",
+        "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+        "DS4_SESSION_GRAPH_FIT": "0",
+        "DS4_SERVER_COALESCE_MAX_TOKENS": "16384",
+        "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+        "DS4_SERVER_COALESCE_MAX": "2",
+        "DS4_QWEN_PREFILL_CHUNK": "8192",
+        "DS4_SERVER_CONTINUOUS": "1",
+        "DS4_SERVER_COALESCE_WAIT_MS": "20"
+      }
+    },
+    "verification": {
+      "passed": true,
+      "models": {
+        "object": "list",
+        "data": [
+          {
+            "id": "Qwen3.8-Flash-Next-Uncensored-Mixed-Quant",
+            "object": "model",
+            "created": 1767225600,
+            "owned_by": "ds4.c",
+            "name": "Qwen3.8-Flash-Next-Uncensored-Mixed-Quant",
+            "context_length": 262144,
+            "top_provider": {
+              "context_length": 262144,
+              "max_completion_tokens": 32768,
+              "is_moderated": false
+            },
+            "supported_parameters": [
+              "tools",
+              "tool_choice",
+              "max_tokens",
+              "temperature",
+              "top_p",
+              "top_k",
+              "min_p",
+              "stop",
+              "seed",
+              "stream",
+              "reasoning_effort"
+            ]
+          }
+        ]
+      },
+      "results": [
+        {
+          "name": "ready",
+          "seconds": 0.1857558180054184,
+          "choice": {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "READY"
+            },
+            "finish_reason": "stop"
+          },
+          "usage": {
+            "prompt_tokens": 20,
+            "completion_tokens": 1,
+            "total_tokens": 21,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 20
+            }
+          },
+          "timings": {
+            "ttft_ms": 133.2,
+            "prefill_tokens": 20,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 151.5,
+            "decode_tok_s": 23.9,
+            "tok_per_step": 2.0
+          }
+        },
+        {
+          "name": "bank2",
+          "seconds": 4.912622796007781,
+          "choice": {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "BANK2 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
+            },
+            "finish_reason": "stop"
+          },
+          "usage": {
+            "prompt_tokens": 39,
+            "completion_tokens": 89,
+            "total_tokens": 128,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 39
+            }
+          },
+          "timings": {
+            "ttft_ms": 165.8,
+            "prefill_tokens": 39,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 236.7,
+            "decode_tok_s": 18.8,
+            "tok_per_step": 1.01
+          }
+        },
+        {
+          "name": "bank1",
+          "seconds": 4.949597254002583,
+          "choice": {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "BANK1 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
+            },
+            "finish_reason": "stop"
+          },
+          "usage": {
+            "prompt_tokens": 39,
+            "completion_tokens": 89,
+            "total_tokens": 128,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 39
+            }
+          },
+          "timings": {
+            "ttft_ms": 381.7,
+            "prefill_tokens": 39,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 102.4,
+            "decode_tok_s": 19.5,
+            "tok_per_step": 1.01
+          }
+        },
+        {
+          "name": "tool-call",
+          "seconds": 2.5463126420072513,
+          "choice": {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_6b06727779f7336627332d0d09e66f9f",
+                  "type": "function",
+                  "function": {
+                    "name": "lookup_release",
+                    "arguments": "{\"version\":\"v0.1.0\"}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": "tool_calls"
+          },
+          "usage": {
+            "prompt_tokens": 1202,
+            "completion_tokens": 31,
+            "total_tokens": 1233,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 1202
+            }
+          },
+          "timings": {
+            "ttft_ms": 1023.8,
+            "prefill_tokens": 1202,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 1179.7,
+            "decode_tok_s": 20.4,
+            "tok_per_step": 2.0
+          }
+        },
+        {
+          "name": "tool-followup",
+          "seconds": 0.5616146469983505,
+          "choice": {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "QWEN010"
+            },
+            "finish_reason": "stop"
+          },
+          "usage": {
+            "prompt_tokens": 1286,
+            "completion_tokens": 6,
+            "total_tokens": 1292,
+            "prompt_tokens_details": {
+              "cached_tokens": 1233,
+              "cache_write_tokens": 53
+            }
+          },
+          "timings": {
+            "ttft_ms": 269.4,
+            "prefill_tokens": 53,
+            "prefill_cached_tokens": 1233,
+            "prefill_tok_s": 203.7,
+            "decode_tok_s": 21.2,
+            "tok_per_step": 2.33
+          }
+        },
+        {
+          "name": "image",
+          "seconds": 1.6298958030092763,
+          "choice": {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "3"
+            },
+            "finish_reason": "stop"
+          },
+          "usage": {
+            "prompt_tokens": 799,
+            "completion_tokens": 1,
+            "total_tokens": 800,
+            "prompt_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 799
+            }
+          },
+          "timings": {
+            "ttft_ms": 1566.1,
+            "prefill_tokens": 799,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 1094.4,
+            "decode_tok_s": 18.5,
+            "tok_per_step": 2.0
+          }
+        }
+      ]
+    },
+    "statistics": {
+      "routes": {
+        "openai_chat_serial": 0,
+        "openai_chat_continuous": 6,
+        "openai_chat_static": 0,
+        "openai_completion_serial": 0,
+        "openai_completion_continuous": 0,
+        "openai_completion_static": 0,
+        "anthropic_messages_serial": 0,
+        "anthropic_messages_continuous": 0,
+        "anthropic_messages_static": 0,
+        "openai_responses_serial": 0,
+        "openai_responses_continuous": 0,
+        "openai_responses_static": 0
+      },
+      "route_decisions": {
+        "continuous": 6,
+        "static_no_cont": 0,
+        "static_prompt_bounds": 0,
+        "coalesce_off": 0,
+        "surface": 0,
+        "need_live_frontier": 0,
+        "need_continuation_publish": 0,
+        "need_corrective_recovery": 0,
+        "need_durable_response": 0,
+        "need_prefill_only": 0,
+        "token_ids_projection": 0,
+        "tools_completion_kind": 0,
+        "cont_unavailable": 0,
+        "continuous_bank_continuation": 0
+      },
+      "think_modes": {
+        "none": 6,
+        "low": 0,
+        "high": 0,
+        "max": 0
+      },
+      "sheds": {
+        "clients": 0,
+        "queue_depth": 0,
+        "queue_bytes": 0,
+        "queue_age": 0,
+        "slow_reader": 0,
+        "continuation_hold": 0
+      },
+      "clients": 1,
+      "queue_depth": 0,
+      "inflight_body_bytes": 0,
+      "memory": {
+        "census_supported": true,
+        "census_epoch": 2884,
+        "classes": {
+          "engine_other": {
+            "unified_device": {
+              "live": 121610240,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "weight_arena": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "weight_span": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "weight_whole": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "weight_derived": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "weight_import": {
+            "unified_device": {
+              "live": 87386226688,
+              "slack": 230091392
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "weight_artifact": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "weight_host_pin": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "stage_pin": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "scalars_mirror": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "session_tensors": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "kv_primary": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "batch_bank": {
+            "unified_device": {
+              "live": 21996122624,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "scratch_sticky": {
+            "unified_device": {
+              "live": 99069440,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "kernel_partials": {
+            "unified_device": {
+              "live": 54826016,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "graph_exec": {
+            "unified_device": {
+              "live": 33239040,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          },
+          "diag": {
+            "unified_device": {
+              "live": 0,
+              "slack": 0
+            },
+            "pinned_host": {
+              "live": 0,
+              "slack": 0
+            }
+          }
+        },
+        "totals": {
+          "device_live": 109691094048,
+          "device_slack": 230091392,
+          "host_pin_live": 0,
+          "host_pin_slack": 0
+        },
+        "census_faults": 0,
+        "substrate_outstanding": 0,
+        "observation": {
+          "status": "ok",
+          "source": "meminfo_available",
+          "free_bytes": 12169609216,
+          "total_bytes": 130596167680,
+          "cuda_free_bytes": 9037123584,
+          "meminfo_available_bytes": 12169609216,
+          "calls_cuda_free": 0,
+          "calls_meminfo_available": 0,
+          "errors": 0
+        },
+        "reconcile": {
+          "supported": false
+        }
+      },
+      "governor": {
+        "shadow": true,
+        "epoch": 0,
+        "faults": 0,
+        "modes": {
+          "engine_boot": "observe",
+          "prewarm": "observe",
+          "batch_bank_plan": "observe",
+          "serial_session": "observe",
+          "static_batch": "observe"
+        },
+        "leases": {
+          "engine_boot": {
+            "intent": 0,
+            "resident": 0,
+            "reservation": 0
+          },
+          "prewarm": {
+            "intent": 0,
+            "resident": 0,
+            "reservation": 0
+          },
+          "batch_bank_plan": {
+            "intent": 0,
+            "resident": 0,
+            "reservation": 0
+          },
+          "serial_session": {
+            "intent": 0,
+            "resident": 0,
+            "reservation": 0
+          },
+          "static_batch": {
+            "intent": 0,
+            "resident": 0,
+            "reservation": 0
+          }
+        },
+        "decisions": {
+          "agree": 0,
+          "live_stricter": 0,
+          "shadow_stricter": 0,
+          "verdict_class": 0,
+          "obs_policy": 0,
+          "fault": 0
+        }
+      }
+    }
+  },
+  "uncensored-fp8-cold-disk-kv": {
+    "passed": true,
+    "runtime": {
+      "pid": 348773,
+      "exe": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/ds4-server",
+      "sha256": "b00613240c31ce5fb1a9dc42af8c4a0bb0cf1de5227e3545786bdb6c485c1851"
+    },
+    "cached_tokens": 1233
+  },
+  "pre_pr_control_build": {
+    "source_commit": "0290c4f443ae1e5d320254d2898890a622bdf2a0",
+    "commands": [
+      [
+        "cc",
+        "-O3",
+        "-ffast-math",
+        "-g",
+        "-march=native",
+        "-Wall",
+        "-Wextra",
+        "-std=c99",
+        "-D_GNU_SOURCE",
+        "-fno-finite-math-only",
+        "-I/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/bf16-control",
+        "-I/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf",
+        "-I/usr/local/cuda/include",
+        "-c",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/bf16-control/tests/test_qwen4exp_batch.c",
+        "-o",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/bf16-control/tests/test_qwen4exp_batch.o"
+      ],
+      [
+        "/usr/local/cuda/bin/nvcc",
+        "-O3",
+        "-g",
+        "-lineinfo",
+        "--use_fast_math",
+        "-std=c++17",
+        "-gencode",
+        "arch=compute_121a,code=sm_121a",
+        "-DDS4_CUDA_HAVE_MXF4=1",
+        "-Xcompiler",
+        "-march=native",
+        "-Xcompiler",
+        "-pthread",
+        "-I/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/bf16-control",
+        "-I/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf",
+        "-o",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/bf16-control/test_qwen4exp_batch",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/bf16-control/ds4.o",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/bf16-control/ds4_ple.o",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/bf16-control/cuda/qwen38_ple.o",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/scratch/ple-fp8/bf16-control/tests/test_qwen4exp_batch.o",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/ds4_distributed.o",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/ds4_cuda.o",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/cuda/mmq/ds4_ggml_stubs.o",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/cuda/mmq/ds4_mmq.o",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/cuda/mmq/ds4_mmq_d2r.o",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/cuda/mmq/quantize.o",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/cuda/mmq/mmid.o",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/cuda/mmq/mmvq.o",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/cuda/mmq/ds4_repack.o",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/ds4-perf/cuda/mmq/ds4_fattn.o",
+        "-lm",
+        "-Xcompiler",
+        "-pthread",
+        "-L/usr/local/cuda/targets/sbsa-linux/lib",
+        "-L/usr/local/cuda/lib64",
+        "-lcudart",
+        "-lcublas",
+        "-lcuda"
+      ]
+    ],
+    "sha256": "74b29478c3e394f93e3339f87088d230b091e703a984bbe65c1f8de1d63d244c",
+    "source_files_sha256": {
+      "ds4_ple.h": "027dcea7849fc86b9e1e39bc25844d94ecd73b0490141e130983c07d9dff35fb",
+      "ds4.h": "30125a5fec5a6b52de9d2249b8e019dd66c5ffc09257502b68b96e7b9ea3a149",
+      "ds4.c": "71c4d13349cfd6bd7eabf77a97e443e06503ad81a452e0ce556d668cb26f2748",
+      "ds4_ple.c": "ede4a9c6327a585ea0731399a86f916e412fcc4fbd70892a606777eb35655237",
+      "cuda/qwen38_ple.h": "cf4a1d35ec1f884f7e5230abe7bcdb5a8aa3f724c064cd39e44c6c78c8f19be6",
+      "cuda/qwen38_ple.cu": "1dc8373ef955223b9b4d35781716b4360d3e019136cc8201f58d0f132b6d85dc",
+      "tests/test_qwen4exp_batch.c": "a6213476d1740797390aa1ccb2503aaac4e2dcc4b223f91e15ce7139ee53fad9"
+    }
+  }
+}

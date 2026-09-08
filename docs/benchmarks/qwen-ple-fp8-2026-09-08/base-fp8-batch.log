@@ -1,0 +1,76 @@
+host-memory-guard: available=36.23 GiB, scope max/high=32.00/29.00, reserve=4.00, trip=3.00
+ds4: mapped 3 GGUF shards (77.56 GiB) into one 77.56 GiB address range, 1628 tensors
+ds4: CUDA backend initialized on NVIDIA GB10 (sm_121)
+ds4: weight residency: base=eager mtp=eager drafter=eager (legacy-alias)
+ds4: model catalog base: 1628 tensors, 98 routed-expert, 0 artifact-replaced, 278 artifact-additive, 0 optional
+ds4: CUDA integrated + VMM import: skipping full host registration (77.56 GiB mmap left unpinned; weights served from device VMM)
+ds4: Qwen SSD-PLE ready: cache=2048 MiB workers=16 direct=4/4 dtype=FP8_E4M3FN
+ds4: CUDA imported shared VMM weight cache for base: 77.55 GiB across 93 ranges (content identity verified) plus 3711.83 MiB across 278 derived artifacts
+ds4: aligned artifacts imported from weight server (278 artifacts, 3.62 GiB)
+ds4: model units base: 107 units, covered 77.55 GiB, planned 77.55 GiB, promote 32.92 GiB, cold 44.63 GiB (verify=0)
+ds4: materialize base: funded 0/53 promote units (48 unfunded), populated 0 (0.00 GiB), ready 3, import 2, mapped-policy 0, lazy-policy 0, failed 0
+ds4: model source base [primary]: map 77.56 GiB, device 81.38 GiB, host-pinned 0.00 GiB (/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf)
+ds4: model-source ledger reconciled: 7 weight classes x 2 domains == census cells (1 sources)
+ds4: range plan base: model 93/93 planned, derived 278/278, q8 0/0, multi 0, refused 0
+ds4: cuda backend initialized for graph diagnostics
+ds4: Qwen graph allocated: ctx=128 prefill=128 plan=0.24 GiB
+ds4: Qwen embedded MTP ready: one QSA layer, exact sequential target verification
+ds4: Qwen graph memory committed: est=241.9 MiB measured=242.5 MiB
+ds4: session graph allocated lazily (ctx=128 prefill_cap=128)
+ds4: CUDA Q8_0 dispatch: mmq (sm_121, 546 GB/s memory bandwidth) [default]
+ds4: packed FP8 compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP8_KV=0 restores F32-primary)
+ds4: fp8 predecode scratch prewarmed (32 MiB)
+ds4: dense decode using aligned Q8_0 artifacts (M1-Inc3)
+ds4: compact routed MMQ pair worklist active (type=13 rows=50 experts=512, token-compact quantize)
+ds4: routed gate/up using Q5_K pair (bounded prefill)
+ds4: compact routed MMQ worklist active (type=13 rows=50 experts=512)
+ds4: Q5_K routed MMQ expert-bucket bound active (rows=50 bound=5)
+ds4: q8 pair prefill using aligned Q8_0 artifacts
+ds4: compact routed MMQ pair worklist active (type=12 rows=50 experts=512, token-compact quantize)
+ds4: routed gate/up using Q4_K pair (bounded prefill)
+ds4: compact routed MMQ pair worklist active (type=8 rows=40 experts=512, token-compact quantize)
+ds4: routed gate/up using Q8_0 pair (bounded prefill)
+ds4: q8 pair decode using aligned Q8_0 artifacts (M1-Inc4)
+ds4: Qwen graph allocated: ctx=128 prefill=128 plan=0.24 GiB
+ds4: Qwen embedded MTP ready: one QSA layer, exact sequential target verification
+ds4: Qwen graph memory committed: est=241.9 MiB measured=242.5 MiB
+ds4: session graph allocated lazily (ctx=128 prefill_cap=128)
+ds4: Qwen graph allocated: ctx=128 prefill=128 plan=0.24 GiB
+ds4: Qwen embedded MTP ready: one QSA layer, exact sequential target verification
+ds4: Qwen graph memory committed: est=241.9 MiB measured=242.5 MiB
+ds4: session graph allocated lazily (ctx=128 prefill_cap=128)
+ds4: Qwen graph allocated: ctx=128 prefill=128 plan=0.24 GiB
+ds4: Qwen embedded MTP ready: one QSA layer, exact sequential target verification
+ds4: Qwen graph memory committed: est=241.9 MiB measured=242.5 MiB
+ds4: session graph allocated lazily (ctx=128 prefill_cap=128)
+ds4: Qwen graph allocated: ctx=128 prefill=128 plan=0.24 GiB
+ds4: Qwen embedded MTP ready: one QSA layer, exact sequential target verification
+ds4: Qwen graph memory committed: est=241.9 MiB measured=242.5 MiB
+ds4: session graph allocated lazily (ctx=128 prefill_cap=128)
+ds4: Qwen graph allocated: ctx=128 prefill=128 plan=0.24 GiB
+ds4: Qwen embedded MTP ready: one QSA layer, exact sequential target verification
+ds4: Qwen graph memory committed: est=241.9 MiB measured=242.5 MiB
+ds4: session graph allocated lazily (ctx=128 prefill_cap=128)
+ds4: Qwen graph allocated: ctx=128 prefill=128 plan=0.24 GiB
+ds4: Qwen embedded MTP ready: one QSA layer, exact sequential target verification
+ds4: Qwen graph memory committed: est=241.9 MiB measured=242.5 MiB
+ds4: session graph allocated lazily (ctx=128 prefill_cap=128)
+ds4: Qwen graph allocated: ctx=128 prefill=128 plan=0.24 GiB
+ds4: Qwen embedded MTP ready: one QSA layer, exact sequential target verification
+ds4: Qwen graph allocated: ctx=128 prefill=128 plan=0.24 GiB
+ds4: Qwen embedded MTP ready: one QSA layer, exact sequential target verification
+ds4: Qwen bank runtime: 2 bank states, shared HC row batch, ctx=128 prefill=128, partial=32 x 113.98 MiB checkpoints stride=4096
+ds4: mem observation source=meminfo-available
+ds4: Qwen true row batch active: two-row embedding/HC/Q8 output/PLE gather/GDN Q8 projections and paired GDN recurrent/QSA Q-gate/MoE router/top-k/Q5 routed-main/Q5 tail; other PLE/QSA/MoE work bank-owned
+ds4: Qwen graph allocated: ctx=128 prefill=128 plan=0.24 GiB
+ds4: Qwen embedded MTP ready: one QSA layer, exact sequential target verification
+ds4: Qwen graph memory committed: est=241.9 MiB measured=242.5 MiB
+ds4: session graph allocated lazily (ctx=128 prefill_cap=128)
+ds4: invalidated 782 captured graph(s): Qwen idle graph retire
+ds4: Qwen bank 0 idle graph retired (0.34 GiB released)
+ds4: Qwen graph allocated: ctx=128 prefill=128 plan=0.24 GiB
+ds4: Qwen embedded MTP ready: one QSA layer, exact sequential target verification
+ds4: Qwen bank 0 graph rebuilt on demand (0.24 GiB)
+ds4: invalidated 198 captured graph(s): GPU cleanup
+ds4: packed FP4 indexer compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP4_INDEX=0 restores F32-primary)
+Qwen3.8 two-bank parity, disk KV, partial fork, and graph lifecycle: PASS (MTP drafts=0/6 hits=0/3)

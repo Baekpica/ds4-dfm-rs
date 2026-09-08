@@ -29,6 +29,13 @@ The bandwidth figure is informational; we don't tier on it.
 
 ## Env-var inventory
 
+- `DS4_QWEN_PLE_DIR=/absolute/path/to/PLE-FP8` selects that directory's
+  `ple-manifest.json` for the Qwen SSD-PLE loader. It supports the official
+  FP8 E4M3FN sidecar without changing the main GGUF. Unset it to use the
+  existing BF16 `ple/` directory beside the main GGUF. Missing or unsupported
+  selected files fail loading. Use a separate disk-KV directory per main model
+  and PLE format. See [FP8 PLE support](../docs/qwen38-ple-fp8.md).
+
 - `DS4_MMQ_IQ2XXS_WORKLIST=0`, `DS4_MMQ_IQ1S_WORKLIST=0` or
   `DS4_MMQ_IQ2XS_WORKLIST=0` disables compact expert worklists for the
   respective raw IQ MoE prefill type.
