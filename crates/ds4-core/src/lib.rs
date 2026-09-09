@@ -13,6 +13,7 @@ mod bind;
 mod gguf;
 mod identify;
 mod inkling;
+mod inkling_audio;
 mod inkling_media;
 mod layout;
 mod mapped;

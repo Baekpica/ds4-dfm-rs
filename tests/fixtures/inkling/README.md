@@ -70,3 +70,13 @@ Rust preprocessing tests cover source patch geometry, both temporal copies,
 PNG alpha removal, JPEG EXIF rotation, and token-budget rejection. The file
 decoder accepts PNG/JPEG up to 32 MiB, 32768 pixels per edge, 128 MiB decoded
 storage, and 8192 patches per image; each request can impose a smaller budget.
+
+`audio-vectors.json` runs the pinned Transformers feature extractor and
+processor methods on CPU using `make_audio_vectors.py SOURCE_DIR OUTPUT`.
+The manifest records source hashes and dependency versions. Six waveforms
+cover silence, impulses, tones, noise, hop edges and 66 frames. Tests require
+exact dMel codes and bounded mel energy error. FFT rounding in nearly silent
+tonal bands can amplify log-space error; log-mel values are not bit-exact.
+The current reader accepts 16 kHz PCM/float WAV, up to 8 channels (mean
+downmix), 32 MiB encoded and 8192 frames, subject to a smaller token budget.
+Resampling and compressed audio codecs are not implemented.
