@@ -193,6 +193,10 @@ seven-row trial across the local-ring boundary matched all eight layers'
 KV/convolution state and next hidden output exactly, even with changed
 rejected inputs. This restores carried state; selecting accepted hidden
 rows/logits and connecting target verification remain separate work.
+The target now retains every row's final-normalized BF16 hidden before
+the head's division by 16. A real MQ85GB gate checks those rows against
+an independent CPU normalization equation and requires exact seed,
+full-vocabulary logits and state parity across prefill/decode/chunks.
 
 ## Checks
 

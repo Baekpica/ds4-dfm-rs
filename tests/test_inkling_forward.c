@@ -3,6 +3,36 @@
 
 typedef struct { unsigned char *data; size_t bytes; } inkling_snapshot;
 
+static void check_seed(const ds4_inkling_graph *g, const ds4_model *m,
+                        const ds4_weights *w, unsigned rows) {
+    const size_t count = (size_t)rows * IK_HIDDEN, bytes = count * sizeof(float);
+    float *raw = xmalloc(bytes), *seed = xmalloc(bytes);
+    const uint16_t *weights = tensor_data(m, w->output_norm);
+    if (!ds4_gpu_tensor_read(g->buf[IK_X], 0, raw, bytes) ||
+        !ds4_gpu_tensor_read(g->buf[IK_FINAL], 0, seed, bytes)) {
+        ds4_die("Inkling normalized hidden read failed");
+    }
+    for (unsigned row = 0; row < rows; row++) {
+        double sum = 0;
+        for (unsigned c = 0; c < IK_HIDDEN; c++) {
+            const double v = raw[row * IK_HIDDEN + c]; sum += v * v;
+        }
+        const double scale = 1.0 / sqrt(sum / IK_HIDDEN + 1e-6);
+        for (unsigned c = 0; c < IK_HIDDEN; c++) {
+            uint32_t bits = (uint32_t)weights[c] << 16; float weight;
+            memcpy(&weight, &bits, sizeof(weight));
+            const double want = raw[row * IK_HIDDEN + c] * scale * weight;
+            const float got = seed[row * IK_HIDDEN + c];
+            memcpy(&bits, &got, sizeof(bits));
+            /* Half a BF16 relative ulp plus FP32 norm reduction rounding. */
+            if (!isfinite(got) || (bits & 0xffffu) || fabs(got - want) > 0.004 * fabs(want) + 1e-7) {
+                ds4_die("Inkling draft seed must retain final norm before muP division");
+            }
+        }
+    }
+    free(raw); free(seed);
+}
+
 static inkling_snapshot read_state(const ds4_inkling_graph *g) {
     size_t bytes = 0;
     for (unsigned i = 0; i < INKLING_LAYERS; i++) {
@@ -168,6 +198,8 @@ int main(int argc, char **argv) {
     float *prefill = xcalloc(INKLING_VALID_VOCAB, sizeof(float));
     float *decode = xcalloc(INKLING_VALID_VOCAB, sizeof(float));
     const size_t bytes = INKLING_VALID_VOCAB * sizeof(float);
+    const size_t seed_bytes = (size_t)rows * IK_HIDDEN * sizeof(float);
+    float *full_seed = xmalloc(seed_bytes), *decode_seed = xmalloc(seed_bytes);
     const char *trace = getenv("INKLING_TEST_TRACE");
     char trace_prefix[1024];
     if (trace) {
@@ -178,6 +210,10 @@ int main(int argc, char **argv) {
     if (!test_forward(&g, &model, &weights, tokens, rows, features) ||
         !ds4_gpu_tensor_read(g.logits, 0, prefill, bytes)) {
         ds4_die("Inkling prefill failed");
+    }
+    check_seed(&g, &model, &weights, rows);
+    if (!ds4_gpu_tensor_read(g.buf[IK_FINAL], 0, full_seed, seed_bytes)) {
+        ds4_die("Inkling full hidden read failed");
     }
     const char *dump = getenv("INKLING_TEST_LOGITS");
     if (dump) {
@@ -198,6 +234,10 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Inkling: decode position %u\n", i);
         if (!test_forward(&g, &model, &weights, &tokens[i], 1, features ? features + i : NULL)) {
             ds4_die("Inkling decode failed");
+        }
+        if (!ds4_gpu_tensor_read(g.buf[IK_FINAL], 0, decode_seed + (size_t)i * IK_HIDDEN,
+                                  IK_HIDDEN * sizeof(float))) {
+            ds4_die("Inkling decode hidden read failed");
         }
     }
     if (!ds4_gpu_tensor_read(g.logits, 0, decode, bytes)) {
@@ -229,7 +269,8 @@ int main(int argc, char **argv) {
     printf("Inkling committed KV/convolution: %zu bytes %s\n", full_state.bytes,
            state_diff ? "DIFFER" : "EXACT");
     int failed = memcmp(prefill, decode, bytes) != 0 || ptop != dtop ||
-                 g.position != rows || ref2 == 0 || state_diff;
+                 g.position != rows || ref2 == 0 || state_diff ||
+                 memcmp(full_seed, decode_seed, seed_bytes) != 0;
     const unsigned chunks[] = {2, 3, 7};
     for (unsigned j = 0; j < sizeof(chunks) / sizeof(chunks[0]); j++) {
         const unsigned chunk = chunks[j];
@@ -248,12 +289,17 @@ int main(int argc, char **argv) {
             if (!test_forward(&g, &model, &weights, tokens + pos, count, features ? features + pos : NULL)) {
                 ds4_die("Inkling chunk forward failed");
             }
+            if (!ds4_gpu_tensor_read(g.buf[IK_FINAL], 0, decode_seed + (size_t)pos * IK_HIDDEN,
+                                      (size_t)count * IK_HIDDEN * sizeof(float))) {
+                ds4_die("Inkling chunk hidden read failed");
+            }
         }
         if (!ds4_gpu_tensor_read(g.logits, 0, decode, bytes)) {
             ds4_die("Inkling chunk logits read failed");
         }
         inkling_snapshot chunk_state = read_state(&g);
         const int mismatch = memcmp(prefill, decode, bytes) != 0 ||
+            memcmp(full_seed, decode_seed, seed_bytes) != 0 ||
             full_state.bytes != chunk_state.bytes ||
             memcmp(full_state.data, chunk_state.data, full_state.bytes) != 0;
         printf("Inkling chunk %u logits/state: %s\n", chunk, mismatch ? "DIFFER" : "EXACT");
@@ -304,5 +350,6 @@ int main(int argc, char **argv) {
     free(full_state.data);
     free(decode_state.data);
     free(tokens);
+    free(full_seed); free(decode_seed);
     return failed;
 }

@@ -20734,7 +20734,7 @@ enum {
     IK_PROJECTED, IK_CONV, IK_K_IN, IK_V_IN, IK_GATE, IK_IDS, IK_GAMMA,
     IK_SHARED_GAMMA, IK_PAIRS, IK_MIDDLE, IK_DOWN, IK_SHARED_IDS,
     IK_SHARED_PAIRS, IK_SHARED_MIDDLE, IK_SHARED_DOWN, IK_TOKENS, IK_POSITIONS,
-    IK_BUFFERS,
+    IK_FINAL, IK_BUFFERS,
 };
 
 typedef struct {
@@ -20774,7 +20774,7 @@ static const uint32_t inkling_width[IK_BUFFERS] = {
     [IK_SHARED_PAIRS] = IK_SHARED * 2 * IK_MID,
     [IK_SHARED_MIDDLE] = IK_SHARED * IK_MID,
     [IK_SHARED_DOWN] = IK_SHARED * IK_HIDDEN,
-    [IK_TOKENS] = 1, [IK_POSITIONS] = 1,
+    [IK_TOKENS] = 1, [IK_POSITIONS] = 1, [IK_FINAL] = IK_HIDDEN,
 };
 
 static uint32_t inkling_prefill_cap(uint32_t ctx) {
@@ -21300,6 +21300,29 @@ static bool inkling_embed_rows(ds4_inkling_graph *g, const ds4_model *m,
     return true;
 }
 
+static bool inkling_head_logits(ds4_inkling_graph *g, const ds4_model *m,
+                                const ds4_weights *w, const ds4_gpu_tensor *hidden,
+                                unsigned n) {
+    if (!hidden || !n || n > g->cap) {
+        return false;
+    }
+    /* muP division belongs to the head; the unscaled chain stays intact. */
+    const uint64_t bytes = IK_HIDDEN * sizeof(float);
+    ds4_gpu_tensor *last = ds4_gpu_tensor_view(hidden, (uint64_t)(n - 1) * bytes, bytes);
+    bool ok = last && ds4_gpu_inkling_add_scale(g->buf[IK_NORM], last, NULL,
+                                                1.0f / IK_LOGIT_DIVISOR, IK_HIDDEN) &&
+        plain_graph_matmul_tensor(g->logits, m, w->output, IK_HIDDEN, DS4_N_VOCAB, g->buf[IK_NORM], 1);
+    ds4_gpu_tensor_free(last);
+    if (ok) {
+        const uint32_t padding = DS4_N_VOCAB - INKLING_VALID_VOCAB;
+        ds4_gpu_tensor *tail = ds4_gpu_tensor_view(g->logits,
+            (uint64_t)INKLING_VALID_VOCAB * sizeof(float), padding * sizeof(float));
+        ok = tail && ds4_gpu_tensor_fill_f32(tail, -INFINITY, padding);
+        ds4_gpu_tensor_free(tail);
+    }
+    return ok;
+}
+
 static bool inkling_graph_media(ds4_inkling_graph *g, const ds4_model *m,
                                 const ds4_weights *w, const int *tokens, unsigned n,
                                 const float *const *features) {
@@ -21343,22 +21366,10 @@ static bool inkling_graph_media(ds4_inkling_graph *g, const ds4_model *m,
         metal_graph_debug_dump_tensor("inkling_mlp_output", b[IK_PROJECTED],
                                        (uint64_t)n * IK_HIDDEN, i, g->position);
     }
-    /* Only the last row needs logits; apply muP division after final norm. */
-    ds4_gpu_tensor *last = ds4_gpu_tensor_view(b[IK_X],
-                            (uint64_t)(n - 1) * IK_HIDDEN * sizeof(float), IK_HIDDEN * sizeof(float));
-    bool ok = last && ds4_gpu_inkling_norm(b[IK_NORM], last, m->map, m->size,
-                                          w->output_norm->abs_offset, IK_HIDDEN, 1) &&
-        ds4_gpu_inkling_add_scale(b[IK_NORM], b[IK_NORM], NULL,
-                                  1.0f / IK_LOGIT_DIVISOR, IK_HIDDEN) &&
-        plain_graph_matmul_tensor(g->logits, m, w->output, IK_HIDDEN, DS4_N_VOCAB, b[IK_NORM], 1);
-    ds4_gpu_tensor_free(last);
-    if (ok) {
-        const uint32_t padding = DS4_N_VOCAB - INKLING_VALID_VOCAB;
-        ds4_gpu_tensor *tail = ds4_gpu_tensor_view(g->logits,
-            (uint64_t)INKLING_VALID_VOCAB * sizeof(float), padding * sizeof(float));
-        ok = tail && ds4_gpu_tensor_fill_f32(tail, -INFINITY, padding);
-        ds4_gpu_tensor_free(tail);
-    }
+    /* MTP prefill needs every target row after final norm, before /16. */
+    bool ok = ds4_gpu_inkling_norm(b[IK_FINAL], b[IK_X], m->map, m->size,
+                                    w->output_norm->abs_offset, IK_HIDDEN, n) &&
+        inkling_head_logits(g, m, w, b[IK_FINAL], n);
     if (ok) {
         g->position += n;
         g->failed = false;
