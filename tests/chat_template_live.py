@@ -165,6 +165,9 @@ class Probe:
                 body["messages"][0]["content"] = [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}}, {"type": "text", "text": question}]
             else:
                 body["messages"][0]["content"] = [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + data}}, {"type": "text", "text": question}]
+            if self.args.image_order == "text-first":
+                field = "input" if api == "responses" else "messages"
+                body[field][0]["content"].reverse()
             text, calls, finish = self.request(api, "image-" + color, body)
             assert color in text.lower() and not calls and finish in ("stop", "end_turn", "completed"), (text, finish)
 
@@ -215,6 +218,7 @@ def main():
     parser.add_argument("--model", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--images", type=Path, help="Directory containing fixed red.png and blue.png fixtures")
+    parser.add_argument("--image-order", choices=("image-first", "text-first"), default="image-first", help="Preserve the selected fixture's media/question order")
     parser.add_argument("--concurrent", action="store_true", help="Require two banks and check independent live tool frontiers")
     Probe(parser.parse_args()).run()
 
