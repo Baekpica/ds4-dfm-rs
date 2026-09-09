@@ -21527,10 +21527,10 @@ static bool inkling_draft_keep(ds4_inkling_mtp_graph *d, unsigned depth, unsigne
     return true;
 }
 
-static bool inkling_draft_tokens(ds4_inkling_mtp_graph *d, const ds4_model *main,
-                                 const ds4_weights *shared, const ds4_model *mtp,
-                                 const ds4_inkling_draft *w, unsigned depth,
-                                 const ds4_gpu_tensor *hidden, const int *tokens, unsigned n) {
+static bool inkling_draft_rows(ds4_inkling_mtp_graph *d, const ds4_model *main,
+                               const ds4_weights *shared, const ds4_model *mtp,
+                               const ds4_inkling_draft *w, unsigned depth,
+                               const ds4_gpu_tensor *hidden, const int *tokens, unsigned n) {
     ds4_inkling_graph *g = &d->graph;
     if (g->failed || !hidden || !tokens || depth >= INKLING_DRAFT_LAYERS || !n ||
         n > g->cap || n > g->context - d->positions[depth] ||
@@ -21550,11 +21550,177 @@ static bool inkling_draft_tokens(ds4_inkling_mtp_graph *d, const ds4_model *main
                                           shared->token_embd->abs_offset, DS4_N_VOCAB, n, IK_HIDDEN) ||
         !ds4_gpu_inkling_norm(b[IK_PROJECTED], b[IK_PROJECTED], main->map, main->size,
                                shared->inkling.embed_norm->abs_offset, IK_HIDDEN, n) ||
-        !inkling_draft_forward(d, mtp, w, depth, hidden, b[IK_PROJECTED], n) ||
-        !inkling_head_logits(g, main, shared, b[IK_X], n)) {
+        !inkling_draft_forward(d, mtp, w, depth, hidden, b[IK_PROJECTED], n)) {
         g->failed = true;
         return false;
     }
+    return true;
+}
+
+static bool inkling_draft_tokens(ds4_inkling_mtp_graph *d, const ds4_model *main,
+                                 const ds4_weights *shared, const ds4_model *mtp,
+                                 const ds4_inkling_draft *w, unsigned depth,
+                                 const ds4_gpu_tensor *hidden, const int *tokens, unsigned n) {
+    if (!inkling_draft_rows(d, main, shared, mtp, w, depth, hidden, tokens, n)) {
+        return false;
+    }
+    if (!inkling_head_logits(&d->graph, main, shared, d->graph.buf[IK_X], n)) {
+        d->graph.failed = true;
+        return false;
+    }
+    return true;
+}
+
+typedef struct {
+    ds4_inkling_mtp_graph draft;
+    ds4_gpu_tensor *tail, *joined;
+    int *ids;
+    uint32_t position, tail_rows;
+} ds4_inkling_spec;
+
+static void inkling_spec_free(ds4_inkling_spec *s) {
+    inkling_draft_free(&s->draft);
+    ds4_gpu_tensor_free(s->tail);
+    ds4_gpu_tensor_free(s->joined);
+    free(s->ids);
+    memset(s, 0, sizeof(*s));
+}
+
+static bool inkling_spec_reset(ds4_inkling_spec *s) {
+    if (!inkling_draft_reset(&s->draft)) {
+        return false;
+    }
+    s->position = 0;
+    s->tail_rows = 0;
+    return true;
+}
+
+static bool inkling_spec_alloc(ds4_inkling_spec *s, const ds4_model *m,
+                               const ds4_inkling_draft *w, uint32_t ctx, uint32_t cap) {
+    memset(s, 0, sizeof(*s));
+    const unsigned verify = ctx < IK_VERIFY_ROWS ? ctx : IK_VERIFY_ROWS;
+    if (cap < verify || !inkling_draft_alloc(&s->draft, m, w, ctx, cap)) {
+        return false;
+    }
+    const uint64_t row_bytes = IK_HIDDEN * sizeof(float);
+    s->tail = ds4_gpu_tensor_alloc(INKLING_DRAFT_LAYERS * row_bytes);
+    s->joined = ds4_gpu_tensor_alloc((cap + INKLING_DRAFT_LAYERS) * row_bytes);
+    if (!s->tail || !s->joined) {
+        inkling_spec_free(s);
+        return false;
+    }
+    s->ids = xcalloc(cap, sizeof(*s->ids));
+    return true;
+}
+
+static bool inkling_spec_valid(const ds4_inkling_spec *s) {
+    const ds4_inkling_mtp_graph *d = &s->draft;
+    const unsigned tail = s->position < INKLING_DRAFT_LAYERS ? s->position : INKLING_DRAFT_LAYERS;
+    if (d->graph.failed || d->graph.n_layers != INKLING_DRAFT_LAYERS ||
+        s->position > d->graph.context || s->tail_rows != tail) {
+        return false;
+    }
+    for (unsigned i = 0; i < INKLING_DRAFT_LAYERS; i++) {
+        if (d->positions[i] != s->position - tail) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool inkling_spec_extend(ds4_inkling_spec *s, const ds4_model *main,
+                                const ds4_weights *shared, const ds4_model *mtp,
+                                const ds4_inkling_draft *w, const ds4_gpu_tensor *hidden,
+                                const int *tokens, unsigned total, unsigned n) {
+    ds4_inkling_mtp_graph *d = &s->draft;
+    ds4_inkling_graph *g = &d->graph;
+    if (!inkling_spec_valid(s) || !hidden || !tokens || !n || n > g->cap ||
+        n > g->context - s->position || total != s->position + n) {
+        return false;
+    }
+    const unsigned start = s->position - s->tail_rows;
+    for (unsigned i = start; i < total; i++) {
+        if (tokens[i] < 0 || tokens[i] >= INKLING_VALID_VOCAB) {
+            return false;
+        }
+    }
+    /* At depth i, row t consumes token[t+i+1]. Only rows below N-8 are
+     * independent of future predictions. Retain the remaining target seeds. */
+    const unsigned joined = s->tail_rows + n;
+    const unsigned tail = joined < INKLING_DRAFT_LAYERS ? joined : INKLING_DRAFT_LAYERS;
+    const unsigned stable = joined - tail;
+    const uint64_t row_bytes = IK_HIDDEN * sizeof(float);
+    g->failed = true;
+    if ((s->tail_rows && !ds4_gpu_tensor_copy(s->joined, 0, s->tail, 0, s->tail_rows * row_bytes)) ||
+        !ds4_gpu_tensor_copy(s->joined, s->tail_rows * row_bytes, hidden, 0, n * row_bytes)) {
+        return false;
+    }
+    g->failed = false;
+    /* Stable rows need no rollback. Preserve allocated journals while
+     * suspending recording, so later prompt extensions can exceed nine rows. */
+    const unsigned tracked = g->undo_cap;
+    g->undo_cap = 0;
+    bool ok = true;
+    for (unsigned depth = 0; stable && depth < INKLING_DRAFT_LAYERS; depth++) {
+        for (unsigned row = 0; row < stable; row++) {
+            s->ids[row] = tokens[start + row + depth + 1];
+        }
+        const ds4_gpu_tensor *h = depth ? g->buf[IK_X] : s->joined;
+        if (!inkling_draft_rows(d, main, shared, mtp, w, depth, h, s->ids, stable)) {
+            ok = false;
+            break;
+        }
+    }
+    g->undo_cap = tracked;
+    g->failed = true;
+    if (!ok || !ds4_gpu_tensor_copy(s->tail, 0, s->joined, stable * row_bytes, tail * row_bytes)) {
+        return false;
+    }
+    s->position = total;
+    s->tail_rows = tail;
+    g->failed = false;
+    return true;
+}
+
+static bool inkling_spec_propose(ds4_inkling_spec *s, const ds4_model *main,
+                                 const ds4_weights *shared, const ds4_model *mtp,
+                                 const ds4_inkling_draft *w, const int *tokens,
+                                 int first, int *draft, unsigned count) {
+    ds4_inkling_mtp_graph *d = &s->draft;
+    ds4_inkling_graph *g = &d->graph;
+    if (!inkling_spec_valid(s) || !tokens || !draft || !s->position || s->position >= g->context ||
+        !count || count > INKLING_DRAFT_LAYERS || count > g->context - s->position - 1 ||
+        first < 0 || first >= INKLING_VALID_VOCAB) {
+        return false;
+    }
+    const unsigned start = s->position - s->tail_rows;
+    int ids[INKLING_DRAFT_LAYERS], result[INKLING_DRAFT_LAYERS];
+    for (unsigned i = start; i < s->position; i++) {
+        if (tokens[i] < 0 || tokens[i] >= INKLING_VALID_VOCAB) {
+            return false;
+        }
+        ids[i - start] = i + 1 < s->position ? tokens[i + 1] : first;
+    }
+    const unsigned cap = g->context < IK_VERIFY_ROWS ? g->context : IK_VERIFY_ROWS;
+    if (!inkling_graph_track(g, cap)) {
+        return false;
+    }
+    for (unsigned depth = 0; depth < count; depth++) {
+        const ds4_gpu_tensor *h = depth ? g->buf[IK_X] : s->tail;
+        if (!inkling_draft_tokens(d, main, shared, mtp, w, depth, h, ids, s->tail_rows) ||
+            !ds4_gpu_argmax_tensor(g->buf[IK_TOKENS], g->logits, INKLING_VALID_VOCAB) ||
+            !ds4_gpu_tensor_read(g->buf[IK_TOKENS], 0, result + depth, sizeof(*result)) ||
+            result[depth] < 0 || result[depth] >= INKLING_VALID_VOCAB ||
+            !inkling_draft_keep(d, depth, 0)) {
+            g->failed = true;
+            return false;
+        }
+        /* Restore before the next depth: raw IK_X survives, while speculative
+         * KV and convolution histories never enter the stable prefix. */
+        memmove(ids, ids + 1, (s->tail_rows - 1) * sizeof(*ids));
+        ids[s->tail_rows - 1] = result[depth];
+    }
+    memcpy(draft, result, count * sizeof(*result));
     return true;
 }
 

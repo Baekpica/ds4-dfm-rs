@@ -213,6 +213,14 @@ With supplied hidden inputs, every depth matches separately assembled
 primitives exactly for hidden output and all valid-vocabulary logits.
 This uses the raw Q8 head path and does not qualify end-to-end speculation.
 
+The draft cache retains only rows below the target length minus eight. Its
+remaining target hidden rows are recomputed for each proposal, then rolled
+back before the next depth. An actual-weight component gate with supplied
+target hidden matched full-prefix rotation for lengths 1–41, chunks 1/3/13
+and 1–8 draft tokens, including all stable KV/convolution state. Repeated
+proposals, reset, invalid inputs and context limits passed. Session lifetime
+and Rust acceptance still need to connect these graph operations.
+
 ## Checks
 
 ```sh
