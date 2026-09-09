@@ -70,7 +70,29 @@ int main(int argc, char **argv) {
     model_open(&model, argv[1], false, false);
     ds4_weights weights;
     weights_bind(&weights, &model, false, 0, UINT32_MAX, true, false);
-    if (!ds4_gpu_init() || !ds4_gpu_set_model_map(model.map, model.size)) {
+    if (!ds4_gpu_init()) {
+        ds4_die("Inkling GPU initialization failed");
+    }
+    /* Match production startup: aligned Q8 changes the reduction order.
+     * The existing CUDA opt-outs also exercise the original raw tier. */
+    ds4_gpu_tensor_record *records = xcalloc(model.n_tensors, sizeof(*records));
+    for (uint64_t i = 0; i < model.n_tensors; i++) {
+        const ds4_tensor *t = &model.tensors[i];
+        records[i].name = t->name.ptr;
+        records[i].name_len = (uint32_t)t->name.len;
+        records[i].type = t->type;
+        records[i].ndim = t->ndim;
+        memcpy(records[i].dims, t->dim, sizeof(t->dim));
+        records[i].offset = t->abs_offset;
+        records[i].bytes = t->bytes;
+    }
+    int built = ds4_gpu_build_derived_artifacts_from_records(
+        model.map, model.size, records, (uint32_t)model.n_tensors);
+    free(records);
+    if (built > 0) {
+        model_release_mapping_cache(&model);
+    }
+    if (!ds4_gpu_set_model_map(model.map, model.size)) {
         ds4_die("Inkling GPU/map initialization failed");
     }
     ds4_inkling_graph g;
@@ -90,6 +112,13 @@ int main(int argc, char **argv) {
     if (!inkling_graph_forward(&g, &model, &weights, tokens, rows) ||
         !ds4_gpu_tensor_read(g.logits, 0, prefill, bytes)) {
         ds4_die("Inkling prefill failed");
+    }
+    const char *dump = getenv("INKLING_TEST_LOGITS");
+    if (dump) {
+        FILE *fp = fopen(dump, "wb");
+        if (!fp || fwrite(prefill, 1, bytes, fp) != bytes || fclose(fp) != 0) {
+            ds4_die("Inkling reference logits write failed");
+        }
     }
     inkling_snapshot full_state = read_state(&g);
     if (!inkling_graph_reset(&g)) {

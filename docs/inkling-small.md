@@ -1,7 +1,7 @@
 # Inkling Small integration
 
-Work in progress; native text graphs and sessions are implemented, while
-Rust model opening remains gated. The target is
+Work in progress; native text graphs, sessions and Rust model opening are
+implemented. HTTP serving, media and MTP remain unqualified. The target is
 MQ85GB with the separate eight-layer MTP-BF16 draft stack, including text,
 image and audio input with text output, matching the
 [base model](https://huggingface.co/thinkingmachines/Inkling-Small/blob/8cc5877b44d343f88b92086aa1fb72897950f06a/README.md).
@@ -26,8 +26,9 @@ revision, a sidecar role and BF16 recipe. Main loading rejects MTP-only files.
 `ModelFamily::Inkling` is 7 and `Variant::InklingSmall` is 9 in the host
 catalog and native shape. Native binding resolves all 888 main and 160 draft
 tensors, including media weights, without reading their payloads; the real
-GGUF descriptor gate checks each name and exactly-once coverage. Rust model
-opening still returns an explicit error until its full startup path is qualified.
+GGUF descriptor gate checks each name and exactly-once coverage. Rust opening
+allows a full CUDA model and rejects distributed slices, steering and explicit
+draft/media sidecars until their Inkling paths are implemented.
 
 The Rust tokenizer reads the embedded source JSON: 199998 BPE entries,
 60 fixed special IDs, Unicode segmentation and `ignore_merges=true`.
@@ -105,12 +106,23 @@ prefill cap is 64 (`DS4_INKLING_PREFILL_CHUNK`, range 1–2048, capped by contex
 Batching, snapshots, distributed execution and speculative drafts remain
 unavailable until their Inkling-specific state paths are implemented.
 
+Rust CLI startup loaded the actual MQ85GB through the host tensor/vocabulary
+tables and completed a 28-token source-template chat prefill. All 200058
+logits and 168 layer-component arrays matched the native graph byte-for-byte
+with the same default aligned-Q8 artifacts. That native gate also matched
+decode and 2/3/7-token chunks, including all 9977856 KV/convolution bytes.
+The raw-Q8 control matched separately with `DS4_CUDA_NO_Q8_ALIGNED=1`.
+Raw and aligned Q8 are different reduction paths: comparing them gave final
+relative RMS 0.175 on this fixture, starting with a small layer-0 dense-MLP
+BF16 difference. These checks establish matched-path host/native parity,
+not independent source parity or equivalence between the two Q8 paths.
+
 ## Remaining qualification
 
 1. Connect source chat/reasoning/tool rendering, streamed content markers and
    REPL effort placement to the CLI and server.
-2. Qualify Rust → bridge → CUDA model startup and text generation before
-   removing the host guard; then connect session persistence and serving.
+2. Qualify text generation beyond startup/prefill; then connect session
+   persistence and serving.
 3. Prove chunk/decode and captured/eager full-vocabulary logits and greedy
    parity. Cover local-ring wrap, global attention and convolution history.
 4. Implement HMLP image and 16-kHz dMel audio preprocessing/encoding, feature

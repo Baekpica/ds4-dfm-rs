@@ -33,6 +33,7 @@
 /tests/parity/load_c_oracle
 /tests/parity/validate_c_oracle
 /tests/parity/vocab_c_oracle
+/tests/parity/agent_c_oracle
 /scratch/
 /ds4_native
 /ds4_server_test

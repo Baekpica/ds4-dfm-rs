@@ -189,6 +189,33 @@ impl Default for OpenTuning {
     }
 }
 
+fn inkling_open_check(
+    backend: Backend,
+    tuning: &OpenTuning,
+    mtp: Option<&str>,
+    dspark: Option<&str>,
+    distributed: Option<&DistributedConfig>,
+) -> Result<()> {
+    let message = if backend != Backend::Cuda || distributed.is_some() {
+        "Inkling requires one full CUDA model"
+    } else if tuning.steering_file.is_some()
+        || tuning.steering_attn != 0.0
+        || tuning.steering_ffn != 0.0
+    {
+        "Inkling does not support directional steering"
+    } else if mtp.is_some() || dspark.is_some() {
+        "Inkling MTP graph integration is not implemented yet"
+    } else if tuning.vision_path.is_some() {
+        "Inkling uses embedded media weights; encoder integration is not implemented yet"
+    } else {
+        return Ok(());
+    };
+    Err(Error {
+        code: 1,
+        message: message.into(),
+    })
+}
+
 fn open_tuning(options: &[ModelOpenOption]) -> Result<OpenTuning> {
     let mut tuning = OpenTuning::default();
 
@@ -1060,13 +1087,8 @@ impl Model {
             code: 1,
             message: format!("validate failed: {}", e.token()),
         })?;
-        // Host catalog/tokenization are available before the native graph.
-        // Never send an unimplemented variant to the process-fatal C loader.
         if identified.shape.family == ModelFamily::Inkling {
-            return Err(Error {
-                code: 1,
-                message: "Inkling native inference is not implemented yet".into(),
-            });
+            inkling_open_check(backend, &tuning, mtp_path, dspark_path, distributed)?;
         }
         let vocab = Vocab::load(&g, identified.shape.family).map_err(|e| Error {
             code: 1,
@@ -2142,6 +2164,44 @@ mod tests {
         assert_eq!(Backend::Cuda.to_c(), 0);
         assert_eq!(Backend::Metal.to_c(), 1);
         assert_eq!(Backend::Cpu.to_c(), 2);
+    }
+
+    #[test]
+    fn inkling_open_contract() {
+        let tuning = OpenTuning::default();
+        assert!(inkling_open_check(Backend::Cuda, &tuning, None, None, None).is_ok());
+        for backend in [Backend::Cpu, Backend::Metal] {
+            assert!(inkling_open_check(backend, &tuning, None, None, None).is_err());
+        }
+        assert!(
+            inkling_open_check(Backend::Cuda, &tuning, Some("mtp.gguf"), None, None)
+                .unwrap_err()
+                .message
+                .contains("MTP")
+        );
+        assert!(
+            inkling_open_check(Backend::Cuda, &tuning, None, Some("draft.gguf"), None).is_err()
+        );
+        for configured in [
+            OpenTuning {
+                steering_file: Some("direction.bin".into()),
+                ..tuning.clone()
+            },
+            OpenTuning {
+                steering_attn: 1.0,
+                ..tuning.clone()
+            },
+            OpenTuning {
+                steering_ffn: 1.0,
+                ..tuning.clone()
+            },
+            OpenTuning {
+                vision_path: Some("vision.gguf".into()),
+                ..tuning.clone()
+            },
+        ] {
+            assert!(inkling_open_check(Backend::Cuda, &configured, None, None, None).is_err());
+        }
     }
 
     #[test]

@@ -64804,9 +64804,23 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
 
     const bool graph_backend = ds4_backend_uses_graph(opt->backend);
     model_open(&e->model, opt->model_path, graph_backend, !opt->inspect_only);
-    if (opt->warm_weights) model_warm_weights(&e->model);
     if (g_host_shape) model_apply_host_shape();
     else config_validate_model(&e->model);
+    if (!opt->inspect_only && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING &&
+        (e->backend != DS4_BACKEND_CUDA || load_slice ||
+         opt->distributed.role != DS4_DISTRIBUTED_NONE ||
+         (e->directional_steering_file && e->directional_steering_file[0]) ||
+         e->directional_steering_attn_scale != 0.0f ||
+         e->directional_steering_ffn_scale != 0.0f)) {
+        fprintf(stderr, "ds4: Inkling requires one full CUDA model "
+                        "without distributed slices or directional steering\n");
+        ds4_engine_close(e);
+        *out = NULL;
+        return 1;
+    }
+    if (opt->warm_weights) {
+        model_warm_weights(&e->model);
+    }
     if (!opt->inspect_only) {
         if (g_host_vocab) model_apply_host_vocab(&e->vocab);
         else vocab_load(&e->vocab, &e->model);
