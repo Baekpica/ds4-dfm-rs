@@ -68,7 +68,29 @@
         "path": "scratch/jinja/v012-binaries.json",
         "sha256": "5f36efbf184678abe52c51e5d039eefb07c8a4e72bf9c00e6e6f50b60c561b51"
       }
-    ]
+    ],
+    "post_review": {
+      "scope": "Model-free host CI after the named-template and local-clock fixes; original GPU evidence retains its recorded scope.",
+      "runner": "GitHub Actions ubuntu-24.04",
+      "head_commit": "980622b2803a91b9779a1825e3bd285bad37b44d",
+      "checkout_commit": "3c63cdd4aa6a94f926a1fe4d91f82b7337ff686f",
+      "tree": "3c496b8dd5d470a3f7c8931ca063ebb19196fa06",
+      "run_id": 34410395739,
+      "run_attempt": 1,
+      "url": "https://github.com/Baekpica/ds4-dfm-rs/actions/runs/34410395739",
+      "conclusion": "success",
+      "workspace": {
+        "passed": 1024,
+        "failed": 0,
+        "ignored": 4
+      },
+      "evidence": [
+        {
+          "path": "scratch/jinja/release-pr-ci-full.log",
+          "sha256": "253fb00259735db86c6dd4137bd362b9c57c545f5a032eafe3992f36d9860142"
+        }
+      ]
+    }
   },
   "image_diagnostic": {
     "scope": "Inkling image ordering, MTP on and off; byte equality of legacy and Jinja prompts.",
