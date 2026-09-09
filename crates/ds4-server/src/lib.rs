@@ -1,6 +1,7 @@
 //! Server host. Phase 7 ports surfaces by feature; no API redesign.
 
 pub mod admit;
+pub mod chat_input;
 pub mod cont;
 pub mod dist_cli;
 pub mod dsml;

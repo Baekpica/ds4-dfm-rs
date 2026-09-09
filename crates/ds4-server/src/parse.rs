@@ -37,6 +37,7 @@ pub enum ChatPart {
     Text(String),
     Image(usize),
     Audio(usize),
+    ToolResult { id: String, content: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1155,6 +1156,11 @@ fn parse_anthropic_content_block(
             });
         }
         Some("tool_result") => {
+            // Keep original bytes before the legacy encoder escapes XML.
+            msg.parts.push(ChatPart::ToolResult {
+                id: id.clone().unwrap_or_default(),
+                content: tool_result.clone().unwrap_or_default(),
+            });
             if let Some(ref i) = id {
                 add_tool_call_id(msg, i);
             }
