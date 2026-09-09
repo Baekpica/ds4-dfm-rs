@@ -270,6 +270,7 @@ name = "ds4-core"
 version = "0.1.1"
 dependencies = [
  "ds4-sys",
+ "regex",
  "serde_json",
 ]
 

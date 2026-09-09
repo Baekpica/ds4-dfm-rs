@@ -23,28 +23,36 @@ convolution tensors are required. MTP metadata must declare the same source
 revision, a sidecar role and BF16 recipe. Main loading rejects MTP-only files.
 
 `ModelFamily::Inkling` is 7 and `Variant::InklingSmall` is 9 in the host
-catalog. Native enum/shape/graph integration is still pending. Vocab loading
-returns an explicit unsupported-family error until the source tokenizer is
-implemented; it cannot fall through to another family's tokenizer.
+catalog. Native enum/shape/graph integration is still pending. Model opening
+returns an explicit unimplemented-inference error before entering native code.
+
+The Rust tokenizer reads the embedded source JSON: 199998 BPE entries,
+60 fixed special IDs, Unicode segmentation and `ignore_merges=true`.
+It preserves literal special strings in ordinary text and recognizes them
+in rendered chat. Token output ends at ID 200006; message and thinking
+boundaries do not stop generation. Basic role messages and the four thinking
+effort levels match independently rendered source-template fixtures. Server
+tool/reasoning streams, media insertion and REPL assembly remain pending.
+The tokenizer has 200058 entries; native logits must exclude the weight
+matrix's padding through row 201023.
 
 ## Remaining qualification
 
-1. Verify all downloaded shard hashes and real main-model metadata/binding.
-2. Implement embedded tokenizer JSON loading, exact o200k-style segmentation,
-   special-token decoding, source chat/reasoning/tool rendering and stop rules.
-3. Bind native weights through the existing Rust → bridge → CUDA boundary.
+1. Connect source chat/reasoning/tool rendering, streamed content markers and
+   REPL effort placement to the CLI and server.
+2. Bind native weights through the existing Rust → bridge → CUDA boundary.
    Implement relative GQA, interleaved SwiGLU, sigmoid top-6 routing with two
    shared sink weights, and all four residual causal convolutions per layer.
    Preserve BF16 boundaries, FP32 router/reductions and 1/128 attention scale.
-4. Prove chunk/decode and captured/eager full-vocabulary logits and greedy
+3. Prove chunk/decode and captured/eager full-vocabulary logits and greedy
    parity. Cover local-ring wrap, global attention and convolution history.
-5. Implement HMLP image and 16-kHz dMel audio preprocessing/encoding, feature
+4. Implement HMLP image and 16-kHz dMel audio preprocessing/encoding, feature
    insertion and API transport. Compare processed inputs and encoder outputs
    to pinned references; run real image/audio requests and text follow-ups.
-6. Connect all eight BF16 MTP layers, hidden-state chaining, draft verification
+5. Connect all eight BF16 MTP layers, hidden-state chaining, draft verification
    and accepted-prefix rollback for KV and convolution state. Compare MTP
    off/on tokens and committed state across accept/reject cases.
-7. Qualify VMM owner/worker loading, memory admission, session reuse/rewind,
+6. Qualify VMM owner/worker loading, memory admission, session reuse/rewind,
    persistence, concurrent serving, API behavior and end-to-end performance
    on the requested artifacts. Update supported-family docs only after this.
 
@@ -64,16 +72,19 @@ make -j1 test-catalog-parity test-tokenizer-parity
 cargo check --workspace --all-targets --locked
 ```
 
-The two artifact tests require files and are explicitly ignored by ordinary
+The artifact tests require files and are explicitly ignored by ordinary
 model-free tests. Run them intentionally; they do not allocate GPU weights:
 
 ```sh
 export INKLING_ARTIFACT_DIR=/home/sunghoon/workspace/ds4-exaone/models/Inkling-Small-Mixed-Quant-GGUF
 cargo test -p ds4-core --lib attach_inkling_mtp_artifact --locked -- --ignored
 cargo test -p ds4-core --test inkling_catalog checks_downloaded_artifacts --locked -- --ignored
+cargo test -p ds4-core --test inkling_tokenizer --locked -- --ignored --test-threads=1
 ```
 
-September 9: the real MTP SHA-256 and metadata/160-tensor attachment passed.
-MQ85GB download was still live; main artifact and all numerical/serving gates
-remain unverified. Inspect current processes before any full-model gate:
-an unrelated Qwen weight owner was resident during catalog work.
+September 9: all six MQ85GB shard hashes, MTP SHA-256, real main/MTP
+metadata and tensor binding passed. The tokenizer matched 654 source
+vectors in both ordinary and rendered-chat modes, including decoded bytes;
+all four basic chat-template effort fixtures passed. Numerical and serving
+gates remain unverified. Qwen's resident weight owner was stopped with user
+authorization before native testing; inspect current ownership before loading.

@@ -12,6 +12,8 @@ use crate::gguf::{GgufError, GgufFile, GGUF_VALUE_INT32, GGUF_VALUE_STRING, GGUF
 use crate::shape::ModelFamily;
 use crate::TokenBuffer;
 
+mod inkling;
+
 const REASONING_EFFORT_HIGH_PREFIX: &str = concat!(
     "Reasoning Effort: Absolute maximum with no shortcuts permitted.\n",
     "You MUST be very thorough in your thinking and comprehensively decompose the problem to resolve the root cause, rigorously stress-testing your logic against all potential paths, edge cases, and adversarial scenarios.\n",
@@ -45,7 +47,7 @@ pub enum TokError {
     MissingToken(String),
     SolarMissingControl,
     EmbeddedNul,
-    UnsupportedFamily,
+    InvalidTokenizer(&'static str),
 }
 
 impl std::fmt::Display for TokError {
@@ -56,7 +58,7 @@ impl std::fmt::Display for TokError {
             TokError::MissingToken(t) => write!(f, "missing-token {t}"),
             TokError::SolarMissingControl => write!(f, "solar-missing-control"),
             TokError::EmbeddedNul => write!(f, "embedded-nul"),
-            TokError::UnsupportedFamily => write!(f, "tokenizer family is not implemented"),
+            TokError::InvalidTokenizer(key) => write!(f, "invalid-tokenizer {key}"),
         }
     }
 }
@@ -170,22 +172,36 @@ impl Vocab {
     }
 
     pub fn load(g: &GgufFile, family: ModelFamily) -> Result<Self, TokError> {
-        if family == ModelFamily::Inkling {
-            return Err(TokError::UnsupportedFamily);
-        }
         let is_k2_horizon = family == ModelFamily::ExaoneMoe
             && (g.get_string("general.architecture") == Some(b"k2-horizon")
                 || g.get_string("tokenizer.ggml.pre") == Some(b"k2-horizon"));
-        let tokens_arr = g
-            .get_array("tokenizer.ggml.tokens")
-            .filter(|a| a.typ == GGUF_VALUE_STRING && a.len <= i32::MAX as u64)
-            .ok_or(TokError::MissingTable("tokenizer.ggml.tokens"))?;
-        let merges_arr = g
-            .get_array("tokenizer.ggml.merges")
-            .filter(|a| a.typ == GGUF_VALUE_STRING)
-            .ok_or(TokError::MissingTable("tokenizer.ggml.merges"))?;
+        let inkling_tables;
+        let (token_bytes, merge_bytes) = if family == ModelFamily::Inkling {
+            inkling_tables = inkling::tables(g)?;
+            (
+                inkling_tables
+                    .0
+                    .iter()
+                    .map(Vec::as_slice)
+                    .collect::<Vec<_>>(),
+                inkling_tables
+                    .1
+                    .iter()
+                    .map(Vec::as_slice)
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            let tokens_arr = g
+                .get_array("tokenizer.ggml.tokens")
+                .filter(|a| a.typ == GGUF_VALUE_STRING && a.len <= i32::MAX as u64)
+                .ok_or(TokError::MissingTable("tokenizer.ggml.tokens"))?;
+            let merges_arr = g
+                .get_array("tokenizer.ggml.merges")
+                .filter(|a| a.typ == GGUF_VALUE_STRING)
+                .ok_or(TokError::MissingTable("tokenizer.ggml.merges"))?;
 
-        let token_bytes = g.array_strings(&tokens_arr)?;
+            (g.array_strings(&tokens_arr)?, g.array_strings(&merges_arr)?)
+        };
         let mut tokens = Vec::with_capacity(token_bytes.len());
         let mut token_to_id = HashMap::with_capacity(token_bytes.len());
         let mut motif3_added_first = [false; 256];
@@ -200,9 +216,12 @@ impl Vocab {
         let mut user_defined = HashMap::new();
         let mut user_defined_max_len = 0u32;
         let mut user_defined_first = [false; 256];
-        if let Some(types) = g.get_array("tokenizer.ggml.token_type") {
+        if let Some(types) = g
+            .get_array("tokenizer.ggml.token_type")
+            .filter(|_| family != ModelFamily::Inkling)
+        {
             if (types.typ == GGUF_VALUE_UINT32 || types.typ == GGUF_VALUE_INT32)
-                && types.len == tokens_arr.len
+                && types.len == token_bytes.len() as u64
             {
                 if let Ok(ty) = g.array_le_u32s(&types) {
                     for (i, &typ) in ty.iter().enumerate() {
@@ -223,7 +242,6 @@ impl Vocab {
             }
         }
 
-        let merge_bytes = g.array_strings(&merges_arr)?;
         let mut merges = Vec::with_capacity(merge_bytes.len());
         let mut merge_rank = HashMap::with_capacity(merge_bytes.len());
         for (i, m) in merge_bytes.iter().enumerate() {
@@ -287,7 +305,7 @@ impl Vocab {
 
     fn load_specials(&mut self, g: &GgufFile) -> Result<(), TokError> {
         match self.family {
-            ModelFamily::Inkling => return Err(TokError::UnsupportedFamily),
+            ModelFamily::Inkling => inkling::specials(self)?,
             ModelFamily::Glm53 => {
                 self.bos_id = g
                     .get_token_id("tokenizer.ggml.bos_token_id")
@@ -559,7 +577,10 @@ impl Vocab {
         }
         if !matches!(
             self.family,
-            ModelFamily::SolarOpen2 | ModelFamily::Dots3Note | ModelFamily::Qwen4Exp
+            ModelFamily::SolarOpen2
+                | ModelFamily::Dots3Note
+                | ModelFamily::Qwen4Exp
+                | ModelFamily::Inkling
         ) {
             tokens.push(self.bos_id);
             if self.family == ModelFamily::Glm53 && self.sop_id >= 0 {
@@ -570,6 +591,10 @@ impl Vocab {
     }
 
     pub fn chat_append_effort_prefix(&self, tokens: &mut TokenBuffer, mode: ChatThinkMode) {
+        if self.family == ModelFamily::Inkling {
+            inkling::effort(self, tokens, mode);
+            return;
+        }
         if self.is_k2_horizon {
             return;
         }
@@ -643,6 +668,7 @@ impl Vocab {
         }
 
         match self.family {
+            ModelFamily::Inkling => return inkling::message(self, tokens, role, content),
             ModelFamily::Glm53 => {
                 if role == "system" || role == "developer" {
                     self.require_chat_ids(&[(self.system_id, "<|system|>")])?;
@@ -834,6 +860,7 @@ impl Vocab {
             return Ok(());
         }
         match self.family {
+            ModelFamily::Inkling => tokens.push(self.assistant_id),
             ModelFamily::Glm53 => {
                 self.require_chat_ids(&[
                     (self.assistant_id, "<|assistant|>"),
@@ -1083,6 +1110,14 @@ fn bpe_rank(vocab: &Vocab, a: &[u8], b: &[u8]) -> i32 {
 
 fn bpe_emit_piece(vocab: &Vocab, raw: &[u8], out: &mut Vec<i32>) {
     let encoded = byte_encode(raw);
+    // Inkling's source BPE has ignore_merges=true: whole vocabulary pieces
+    // win even when applying the merge table would produce a different split.
+    if vocab.family == ModelFamily::Inkling {
+        if let Some(&id) = vocab.token_to_id.get(&encoded) {
+            out.push(id);
+            return;
+        }
+    }
     let mut sym: Vec<Vec<u8>> = Vec::new();
     let mut off = 0usize;
     while off < encoded.len() {
@@ -2053,7 +2088,7 @@ fn bpe_tokenize_text_joyai(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
 
 fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
     match vocab.family {
-        ModelFamily::Inkling => unreachable!("Inkling vocab loading is not implemented"),
+        ModelFamily::Inkling => inkling::encode(vocab, text, out),
         ModelFamily::Glm53 => bpe_tokenize_text_glm4(vocab, text, out),
         ModelFamily::Motif3 => bpe_tokenize_text_motif3(vocab, text, out),
         ModelFamily::SolarOpen2 => bpe_tokenize_text_solar(vocab, text, out),
@@ -2066,6 +2101,9 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
 }
 
 fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
+    if vocab.family == ModelFamily::Inkling {
+        return user_defined_at(vocab, p, 0);
+    }
     let specials: &[(&[u8], i32)] = &[
         (
             b"<|ifm|begin_of_text|>",

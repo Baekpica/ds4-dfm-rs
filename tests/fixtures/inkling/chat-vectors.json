@@ -1,0 +1,110 @@
+{
+  "template_sha256": "0aa1aa0c729d90176dcaa00c440c8faffca2957ffb2cc4b79456ee6d02bcf43b",
+  "jinja2_version": "3.1.2",
+  "vectors": [
+    {
+      "effort": "none",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Be concise."
+        },
+        {
+          "role": "user",
+          "content": "안녕하세요"
+        },
+        {
+          "role": "assistant",
+          "content": "Hello."
+        },
+        {
+          "role": "tool",
+          "content": "result"
+        },
+        {
+          "role": "user",
+          "content": "Continue."
+        }
+      ],
+      "rendered": "<|message_system|><|content_text|>Be concise.<|end_message|><|message_system|><|content_text|>Thinking effort level: 0<|end_message|><|message_user|><|content_text|>안녕하세요<|end_message|><|message_model|><|content_text|>Hello.<|end_message|><|content_model_end_sampling|><|message_tool|><|content_text|>result<|end_message|><|message_user|><|content_text|>Continue.<|end_message|><|message_model|>"
+    },
+    {
+      "effort": "low",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Be concise."
+        },
+        {
+          "role": "user",
+          "content": "안녕하세요"
+        },
+        {
+          "role": "assistant",
+          "content": "Hello."
+        },
+        {
+          "role": "tool",
+          "content": "result"
+        },
+        {
+          "role": "user",
+          "content": "Continue."
+        }
+      ],
+      "rendered": "<|message_system|><|content_text|>Be concise.<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.2<|end_message|><|message_user|><|content_text|>안녕하세요<|end_message|><|message_model|><|content_text|>Hello.<|end_message|><|content_model_end_sampling|><|message_tool|><|content_text|>result<|end_message|><|message_user|><|content_text|>Continue.<|end_message|><|message_model|>"
+    },
+    {
+      "effort": "high",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Be concise."
+        },
+        {
+          "role": "user",
+          "content": "안녕하세요"
+        },
+        {
+          "role": "assistant",
+          "content": "Hello."
+        },
+        {
+          "role": "tool",
+          "content": "result"
+        },
+        {
+          "role": "user",
+          "content": "Continue."
+        }
+      ],
+      "rendered": "<|message_system|><|content_text|>Be concise.<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_text|>안녕하세요<|end_message|><|message_model|><|content_text|>Hello.<|end_message|><|content_model_end_sampling|><|message_tool|><|content_text|>result<|end_message|><|message_user|><|content_text|>Continue.<|end_message|><|message_model|>"
+    },
+    {
+      "effort": "max",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Be concise."
+        },
+        {
+          "role": "user",
+          "content": "안녕하세요"
+        },
+        {
+          "role": "assistant",
+          "content": "Hello."
+        },
+        {
+          "role": "tool",
+          "content": "result"
+        },
+        {
+          "role": "user",
+          "content": "Continue."
+        }
+      ],
+      "rendered": "<|message_system|><|content_text|>Be concise.<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.99<|end_message|><|message_user|><|content_text|>안녕하세요<|end_message|><|message_model|><|content_text|>Hello.<|end_message|><|content_model_end_sampling|><|message_tool|><|content_text|>result<|end_message|><|message_user|><|content_text|>Continue.<|end_message|><|message_model|>"
+    }
+  ]
+}

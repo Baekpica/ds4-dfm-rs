@@ -1060,6 +1060,14 @@ impl Model {
             code: 1,
             message: format!("validate failed: {}", e.token()),
         })?;
+        // Host catalog/tokenization are available before the native graph.
+        // Never send an unimplemented variant to the process-fatal C loader.
+        if identified.shape.family == ModelFamily::Inkling {
+            return Err(Error {
+                code: 1,
+                message: "Inkling native inference is not implemented yet".into(),
+            });
+        }
         let vocab = Vocab::load(&g, identified.shape.family).map_err(|e| Error {
             code: 1,
             message: format!("vocab failed: {e}"),
@@ -1386,6 +1394,38 @@ impl Model {
             code: 1,
             message: "prompt contains NUL".into(),
         })?;
+        if self.family() == ModelFamily::Inkling {
+            let mode = match think_mode {
+                0 => ChatThinkMode::None,
+                1 => ChatThinkMode::Low,
+                2 => ChatThinkMode::High,
+                3 => ChatThinkMode::Max,
+                _ => {
+                    return Err(Error {
+                        code: 1,
+                        message: "invalid Inkling thinking mode".into(),
+                    })
+                }
+            };
+            let mut out = TokenBuffer::new();
+            let append_error = |e: TokError| Error {
+                code: 1,
+                message: e.to_string(),
+            };
+            if let Some(system) = system.filter(|s| !s.is_empty()) {
+                self.vocab
+                    .chat_append_message(&mut out, "system", system)
+                    .map_err(append_error)?;
+            }
+            self.vocab.chat_append_effort_prefix(&mut out, mode);
+            self.vocab
+                .chat_append_message(&mut out, "user", prompt)
+                .map_err(append_error)?;
+            self.vocab
+                .chat_append_assistant_prefix(&mut out, mode)
+                .map_err(append_error)?;
+            return Ok(out);
+        }
         // BPE merges only shrink and specials add a bounded prefix.
         let cap = prompt.len() + system.map_or(0, <[u8]>::len) + 256;
         let mut out = vec![0i32; cap];

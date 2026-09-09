@@ -1,4 +1,4 @@
-# Inkling catalog fixtures
+# Inkling reference fixtures
 
 Source model: [thinkingmachines/Inkling-Small](https://huggingface.co/thinkingmachines/Inkling-Small/tree/8cc5877b44d343f88b92086aa1fb72897950f06a),
 revision `8cc5877b44d343f88b92086aa1fb72897950f06a`, Apache-2.0.
@@ -18,5 +18,17 @@ JSON are verbatim source assets, also retained in `ds4-core/src/inkling`:
 | config.json | `dcb5b1d587bce2f1e6b29833d739a724d05b4bfaa2dc1164fbe679330478ba53` |
 | processor_config.json | `b4a3962ea5f7ec39f40b5cf14e57ce99776c3dcce4756a110f7a169809e3a04c` |
 
-These fixtures prove catalog and precision contracts. They contain no
-reference logits and do not establish numerical execution parity.
+`tokenizer-vectors.json` contains 654 ordinary/rendered-chat encoding vectors
+from the source tokenizer using Hugging Face `tokenizers` 0.23.2. It covers
+multilingual text, all 60 special strings, whitespace, controls and seeded
+Unicode cases. `chat-vectors.json` contains four basic conversations rendered
+by the source Jinja template with Jinja2 3.1.2. Both record input SHA-256;
+their adjacent generators reproduce them without loading weights:
+
+```sh
+python make_tokenizer_vectors.py /path/to/MQ85GB/tokenizer.json tokenizer-vectors.json
+python make_chat_vectors.py /path/to/MQ85GB/chat_template.jinja chat-vectors.json
+```
+
+These fixtures prove catalog, tokenizer and basic chat contracts. They contain
+no reference logits and do not establish numerical execution or API parity.
