@@ -141,6 +141,14 @@ int ds4_session_sync_multimodal(ds4_session *s,
     (void)s; (void)prompt; (void)spans; (void)span_count; (void)err; (void)errlen;
     STUB("ds4_session_sync_multimodal");
 }
+int ds4_session_sync_inkling(ds4_session *s, const ds4_tokens *prompt,
+                              const ds4_inkling_pixels *images, uint32_t image_count,
+                              const ds4_inkling_audio *audios, uint32_t audio_count,
+                              char *err, size_t errlen) {
+    (void)s; (void)prompt; (void)images; (void)image_count; (void)audios; (void)audio_count;
+    (void)err; (void)errlen;
+    STUB("ds4_session_sync_inkling");
+}
 void ds4_session_set_progress(ds4_session *s, ds4_session_progress_fn fn, void *ud) {
     (void)s;
     bridge_progress = fn;
@@ -154,6 +162,17 @@ void ds4_session_set_progress(ds4_session *s, ds4_session_progress_fn fn, void *
 }
 int ds4_session_eval(ds4_session *s, int token, char *err, size_t errlen) {
     (void)s; (void)token; (void)err; (void)errlen; STUB("ds4_session_eval");
+}
+int ds4_session_inkling_trial(ds4_session *s, int first, int max_tokens,
+                               int *tokens, int *target, int cap,
+                               char *err, size_t errlen) {
+    (void)s; (void)first; (void)max_tokens; (void)tokens; (void)target;
+    (void)cap; (void)err; (void)errlen;
+    STUB("ds4_session_inkling_trial");
+}
+int ds4_session_inkling_commit(ds4_session *s, int keep, char *err, size_t errlen) {
+    (void)s; (void)keep; (void)err; (void)errlen;
+    STUB("ds4_session_inkling_commit");
 }
 int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                                         int max_tokens, int eos_token,

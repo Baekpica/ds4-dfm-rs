@@ -281,6 +281,7 @@ typedef enum {
     DS4_MODEL_FAMILY_DOTS3_NOTE  = 4,
     DS4_MODEL_FAMILY_QWEN4EXP    = 5,
     DS4_MODEL_FAMILY_GLM53       = 6,
+    DS4_MODEL_FAMILY_INKLING     = 7,
 } ds4_model_family;
 
 typedef enum {
@@ -293,6 +294,7 @@ typedef enum {
     DS4_VARIANT_QWEN38_FLASH_NEXT = 6,
     DS4_VARIANT_GLM53_FLASH     = 7,
     DS4_VARIANT_K2_HORIZON_375B = 8,
+    DS4_VARIANT_INKLING_SMALL   = 9,
 } ds4_variant;
 
 typedef struct {
@@ -356,6 +358,43 @@ typedef struct {
     float compress_rope_freq_base;
     uint64_t rope_orig_ctx;
 } ds4_shape;
+
+enum {
+    INKLING_LAYERS = 42,
+    INKLING_DRAFT_LAYERS = 8,
+    INKLING_IMAGE_STAGES = 4,
+    INKLING_VALID_VOCAB = 200058,
+};
+
+static const ds4_shape DS4_SHAPE_INKLING_SMALL = {
+    .name = "Inkling Small",
+    .family = DS4_MODEL_FAMILY_INKLING,
+    .variant = DS4_VARIANT_INKLING_SMALL,
+    .n_layer = INKLING_LAYERS,
+    .n_embd = 4096,
+    .n_vocab = 201024,
+    .n_head = 32,
+    .n_head_kv = 8,
+    .n_head_dim = 128,
+    .n_value_dim = 128,
+    .n_expert = 256,
+    .n_expert_used = 6,
+    .n_expert_shared = 2,
+    .n_ff_exp = 2048,
+    .n_ff_dense = 16384,
+    .n_ff_shexp = 2048,
+    .n_swa = 512,
+    .n_swa_period = 6,
+    .n_nextn_predict = INKLING_DRAFT_LAYERS,
+    .n_leading_dense = 2,
+    .n_swa_head = 32,
+    .n_full_attn_count = 7,
+    .n_ssm_conv = 4,
+    .use_qk_norm = true,
+    .rms_eps = DS4_DEFAULT_RMS_EPS,
+    .expert_weight_scale = 8.0f,
+    .rope_orig_ctx = UINT64_C(1048576),
+};
 
 static const ds4_shape DS4_SHAPE_FLASH = {
     .name = "DeepSeek V4 Flash",
@@ -2199,6 +2238,9 @@ static void model_apply_host_shape(void) {
         break;
     case DS4_VARIANT_K2_HORIZON_375B:
         g_ds4_shape = DS4_SHAPE_K2_HORIZON_375B;
+        break;
+    case DS4_VARIANT_INKLING_SMALL:
+        g_ds4_shape = DS4_SHAPE_INKLING_SMALL;
         break;
     default:
         ds4_die("unsupported");
@@ -4611,6 +4653,34 @@ typedef struct {
     ds4_tensor *ffn_shexp_gate_inp;
 } ds4_layer_weights;
 
+/* Source-interleaved Inkling weights have distinct dense/routed/shared
+ * semantics. Keep them out of the generic split gate/up and HC descriptors. */
+typedef struct {
+    ds4_tensor *attn_norm, *mlp_norm;
+    ds4_tensor *q, *k, *v, *r, *o;
+    ds4_tensor *q_norm, *k_norm, *rel_proj;
+    ds4_tensor *k_conv, *v_conv, *attn_conv, *mlp_conv;
+    ds4_tensor *w13, *w2, *scale;
+    ds4_tensor *gate, *bias, *shared_w13, *shared_w2;
+} ds4_inkling_block;
+
+typedef struct {
+    ds4_tensor *embed_norm;
+    ds4_inkling_block layer[INKLING_LAYERS];
+    ds4_tensor *image_linear[INKLING_IMAGE_STAGES];
+    ds4_tensor *image_norm[INKLING_IMAGE_STAGES];
+    ds4_tensor *audio_embed, *audio_norm;
+} ds4_inkling_weights;
+
+/* All eight draft blocks live in the sidecar; embedding/head stay shared
+ * with the target. These pointers borrow the sidecar model's mapping. */
+typedef struct {
+    ds4_tensor *embed_norm[INKLING_DRAFT_LAYERS];
+    ds4_tensor *hidden_norm[INKLING_DRAFT_LAYERS];
+    ds4_tensor *input_proj[INKLING_DRAFT_LAYERS];
+    ds4_inkling_block layer[INKLING_DRAFT_LAYERS];
+} ds4_inkling_draft;
+
 typedef struct {
     ds4_tensor *token_embd;
     ds4_tensor *output_hc_base;
@@ -4638,6 +4708,7 @@ typedef struct {
     ds4_tensor *qwen_mtp_fc_hidden_norm;
     ds4_layer_weights qwen_mtp;
     ds4_qwen_vision_weights qwen_vision;
+    ds4_inkling_weights inkling;
 } ds4_weights;
 
 typedef struct {
@@ -8027,6 +8098,86 @@ static void weights_bind_glm53(ds4_weights *w, const ds4_model *m) {
         weights_bind_glm53_layer(&w->layer[il], m, il);
 }
 
+static ds4_tensor *inkling_tensor(const ds4_model *m, const char *prefix,
+                                  const char *suffix) {
+    char name[192];
+    int n = snprintf(name, sizeof(name), "%s.%s", prefix, suffix);
+    if (n < 0 || (size_t)n >= sizeof(name)) {
+        ds4_die("Inkling tensor name exceeds buffer");
+    }
+    return required_tensor(m, name);
+}
+
+typedef enum { INKLING_DENSE, INKLING_MOE } inkling_mlp_kind;
+
+static void inkling_bind_block(ds4_inkling_block *b, const ds4_model *m,
+                               const char *p, inkling_mlp_kind kind) {
+    memset(b, 0, sizeof(*b));
+    b->attn_norm = inkling_tensor(m, p, "attn_norm.weight");
+    b->mlp_norm = inkling_tensor(m, p, "mlp_norm.weight");
+    b->q = inkling_tensor(m, p, "attn.wq_du.weight");
+    b->k = inkling_tensor(m, p, "attn.wk_dv.weight");
+    b->v = inkling_tensor(m, p, "attn.wv_dv.weight");
+    b->r = inkling_tensor(m, p, "attn.wr_du.weight");
+    b->o = inkling_tensor(m, p, "attn.wo_ud.weight");
+    b->q_norm = inkling_tensor(m, p, "attn.q_norm.weight");
+    b->k_norm = inkling_tensor(m, p, "attn.k_norm.weight");
+    b->rel_proj = inkling_tensor(m, p, "attn.rel_logits_proj.proj");
+    b->k_conv = inkling_tensor(m, p, "attn.k_sconv.weight");
+    b->v_conv = inkling_tensor(m, p, "attn.v_sconv.weight");
+    b->attn_conv = inkling_tensor(m, p, "attn_sconv.weight");
+    b->mlp_conv = inkling_tensor(m, p, "mlp_sconv.weight");
+    if (kind == INKLING_DENSE) {
+        b->w13 = inkling_tensor(m, p, "mlp.w13_dn.weight");
+        b->w2 = inkling_tensor(m, p, "mlp.w2_md.weight");
+        b->scale = inkling_tensor(m, p, "mlp.global_scale");
+        return;
+    }
+    b->w13 = inkling_tensor(m, p, "mlp.experts.w13_weight");
+    b->w2 = inkling_tensor(m, p, "mlp.experts.w2_weight");
+    b->gate = inkling_tensor(m, p, "mlp.gate.weight");
+    b->bias = inkling_tensor(m, p, "mlp.gate.bias");
+    b->scale = inkling_tensor(m, p, "mlp.gate.global_scale");
+    b->shared_w13 = inkling_tensor(m, p, "mlp.shared_experts.shared_w13_weight");
+    b->shared_w2 = inkling_tensor(m, p, "mlp.shared_experts.shared_w2_weight");
+}
+
+static void inkling_bind(ds4_weights *w, const ds4_model *m) {
+    ds4_inkling_weights *k = &w->inkling;
+    w->token_embd = required_tensor(m, "model.llm.embed.weight");
+    w->output_norm = required_tensor(m, "model.llm.norm.weight");
+    w->output = required_tensor(m, "model.llm.unembed.weight");
+    k->embed_norm = required_tensor(m, "model.llm.embed_norm.weight");
+    for (unsigned i = 0; i < INKLING_LAYERS; i++) {
+        char prefix[64];
+        snprintf(prefix, sizeof(prefix), "model.llm.layers.%u", i);
+        inkling_bind_block(&k->layer[i], m, prefix,
+                           i < DS4_N_LEADING_DENSE ? INKLING_DENSE : INKLING_MOE);
+    }
+    for (unsigned i = 0; i < INKLING_IMAGE_STAGES; i++) {
+        k->image_linear[i] = required_tensorf(m, "model.visual.layers.linear_%u.weight", i);
+        if (i + 1 < INKLING_IMAGE_STAGES) {
+            k->image_norm[i] = required_tensorf(m, "model.visual.layers.norm_%u.weight", i);
+        }
+    }
+    k->image_norm[INKLING_IMAGE_STAGES - 1] = required_tensor(m, "model.visual.final_norm.weight");
+    k->audio_embed = required_tensor(m, "model.audio.encoder.weight");
+    k->audio_norm = required_tensor(m, "model.audio.final_norm.weight");
+}
+
+static void inkling_bind_draft(ds4_inkling_draft *w, const ds4_model *m) {
+    memset(w, 0, sizeof(*w));
+    for (unsigned i = 0; i < INKLING_DRAFT_LAYERS; i++) {
+        char prefix[96];
+        snprintf(prefix, sizeof(prefix), "model.mtp.layers.%u", i);
+        w->embed_norm[i] = inkling_tensor(m, prefix, "embed_norm.weight");
+        w->hidden_norm[i] = inkling_tensor(m, prefix, "hidden_norm.weight");
+        w->input_proj[i] = inkling_tensor(m, prefix, "input_proj.weight");
+        snprintf(prefix, sizeof(prefix), "model.mtp.layers.%u.transformer_block", i);
+        inkling_bind_block(&w->layer[i], m, prefix, INKLING_DENSE);
+    }
+}
+
 static void weights_bind(
         ds4_weights     *w,
         const ds4_model *m,
@@ -8044,6 +8195,11 @@ static void weights_bind(
     (void)require_output;
     (void)optional_output;
     memset(w, 0, sizeof(*w));
+
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
+        inkling_bind(w, m);
+        return;
+    }
 
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
         weights_bind_glm53(w, m);
@@ -20558,6 +20714,1041 @@ static bool plain_graph_matmul_tensor(
     }
     return metal_graph_matmul_plain_tensor(
             out, model, weight, in_dim, out_dim, x, n_tokens);
+}
+
+/* Inkling eager text graph. Session/capture and speculative commits attach
+ * here after the complete artifact forward gate. */
+enum {
+    IK_HIDDEN = 4096, IK_Q_HEADS = 32, IK_KV_HEADS = 8, IK_HEAD = 128,
+    IK_KV = IK_KV_HEADS * IK_HEAD, IK_REL = 16,
+    IK_LOCAL = 512, IK_GLOBAL = 1024, IK_HISTORY = 3,
+    IK_EXPERTS = 256, IK_USED = 6, IK_SHARED = 2,
+    IK_MID = 2048, IK_DENSE = 16384, IK_LOGIT_DIVISOR = 16,
+    IK_VERIFY_ROWS = INKLING_DRAFT_LAYERS + 1, IK_CONV_STREAMS = 4,
+    IK_DRAFT_GLOBALS = 2,
+    IK_CONV_MASK = (1u << IK_CONV_STREAMS) - 1,
+    IK_AUDIO_TOKEN = 200053, IK_IMAGE_TOKEN = 200054,
+};
+
+enum {
+    IK_X, IK_NORM, IK_Q, IK_K, IK_V, IK_R, IK_RELATIVE, IK_HEADS,
+    IK_PROJECTED, IK_CONV, IK_K_IN, IK_V_IN, IK_GATE, IK_IDS, IK_GAMMA,
+    IK_SHARED_GAMMA, IK_PAIRS, IK_MIDDLE, IK_DOWN, IK_SHARED_IDS,
+    IK_SHARED_PAIRS, IK_SHARED_MIDDLE, IK_SHARED_DOWN, IK_TOKENS, IK_POSITIONS,
+    IK_FINAL, IK_BUFFERS,
+};
+
+typedef struct {
+    ds4_gpu_tensor *kv;
+    ds4_gpu_tensor *conv[4]; /* K, V, attention output, MLP output. */
+    uint32_t capacity;
+} inkling_layer_state;
+
+typedef struct {
+    ds4_gpu_tensor *kv;
+    ds4_gpu_tensor *conv[4]; /* Prior three rows followed by this forward's inputs. */
+    uint32_t position, rows, streams;
+} inkling_layer_undo;
+
+typedef struct {
+    ds4_gpu_tensor *buf[IK_BUFFERS];
+    ds4_gpu_tensor *logits;
+    inkling_layer_state layer[INKLING_LAYERS];
+    uint32_t context, cap, position, n_layers;
+    uint32_t *positions;
+    float dense_scale[INKLING_LAYERS];
+    inkling_layer_undo undo[INKLING_LAYERS];
+    uint32_t undo_cap;
+    bool failed;
+} ds4_inkling_graph;
+
+static const uint32_t inkling_width[IK_BUFFERS] = {
+    [IK_X] = IK_HIDDEN, [IK_NORM] = IK_HIDDEN,
+    [IK_Q] = IK_HIDDEN, [IK_K] = IK_KV, [IK_V] = IK_KV,
+    [IK_R] = IK_Q_HEADS * IK_REL, [IK_RELATIVE] = IK_Q_HEADS * IK_GLOBAL,
+    [IK_HEADS] = IK_HIDDEN, [IK_PROJECTED] = IK_HIDDEN,
+    [IK_CONV] = IK_HIDDEN, [IK_K_IN] = IK_KV, [IK_V_IN] = IK_KV,
+    [IK_GATE] = IK_EXPERTS + IK_SHARED, [IK_IDS] = IK_USED,
+    [IK_GAMMA] = IK_USED, [IK_SHARED_GAMMA] = IK_SHARED,
+    [IK_PAIRS] = 2 * IK_DENSE, [IK_MIDDLE] = IK_DENSE,
+    [IK_DOWN] = IK_USED * IK_HIDDEN, [IK_SHARED_IDS] = IK_SHARED,
+    [IK_SHARED_PAIRS] = IK_SHARED * 2 * IK_MID,
+    [IK_SHARED_MIDDLE] = IK_SHARED * IK_MID,
+    [IK_SHARED_DOWN] = IK_SHARED * IK_HIDDEN,
+    [IK_TOKENS] = 1, [IK_POSITIONS] = 1, [IK_FINAL] = IK_HIDDEN,
+};
+
+static uint32_t inkling_prefill_cap(uint32_t ctx) {
+    enum { DEFAULT_CAP = 64, MAX_CAP = 2048 };
+    uint32_t cap = DEFAULT_CAP;
+    const char *env = getenv("DS4_INKLING_PREFILL_CHUNK");
+    if (env && env[0]) {
+        char *end = NULL;
+        const long value = strtol(env, &end, 10);
+        if (end != env && !*end && value > 0 && value <= MAX_CAP) {
+            cap = (uint32_t)value;
+        }
+    }
+    return cap < ctx ? cap : ctx;
+}
+
+static ds4_context_memory inkling_context_memory(uint32_t ctx, uint32_t cap) {
+    ds4_context_memory m = {0};
+    if (!ctx || !cap || cap > ctx || ctx > DS4_SHAPE_INKLING_SMALL.rope_orig_ctx) {
+        return m;
+    }
+    const uint64_t global = DS4_SHAPE_INKLING_SMALL.n_full_attn_count;
+    m.prefill_cap = cap;
+    m.raw_cap = ctx;
+    m.raw_bytes = ((INKLING_LAYERS - global) * IK_LOCAL + global * ctx) *
+                  2 * IK_KV * sizeof(uint16_t);
+    m.raw_bytes += INKLING_LAYERS * IK_HISTORY *
+                   (2 * IK_KV + 2 * IK_HIDDEN) * sizeof(float);
+    for (unsigned i = 0; i < IK_BUFFERS; i++) {
+        m.scratch_bytes += (uint64_t)m.prefill_cap * inkling_width[i] * sizeof(float);
+    }
+    m.scratch_bytes += (uint64_t)DS4_N_VOCAB * sizeof(float);
+    m.total_bytes = m.raw_bytes + m.scratch_bytes;
+    return m;
+}
+
+static ds4_context_memory inkling_mtp_memory(uint32_t ctx, uint32_t cap) {
+    const unsigned verify = ctx < IK_VERIFY_ROWS ? ctx : IK_VERIFY_ROWS;
+    if (cap < verify) {
+        cap = verify;
+    }
+    ds4_context_memory m = inkling_context_memory(ctx, cap);
+    if (!m.total_bytes) {
+        return m;
+    }
+    const uint64_t conv_width = 2 * IK_KV + 2 * IK_HIDDEN;
+    const uint64_t row_bytes = IK_HIDDEN * sizeof(float);
+    m.raw_bytes += ((INKLING_DRAFT_LAYERS - IK_DRAFT_GLOBALS) * IK_LOCAL +
+                    (uint64_t)IK_DRAFT_GLOBALS * ctx) * 2 * IK_KV * sizeof(uint16_t);
+    m.raw_bytes += INKLING_DRAFT_LAYERS * IK_HISTORY * conv_width * sizeof(float);
+    m.raw_bytes += INKLING_DRAFT_LAYERS * row_bytes;
+    /* The draft graph has the same scratch layout, plus input concatenation
+     * and target-seed joining. Both journals are admitted and allocated now. */
+    m.scratch_bytes *= 2;
+    m.scratch_bytes += ((uint64_t)3 * cap + INKLING_DRAFT_LAYERS) * row_bytes;
+    m.scratch_bytes += (INKLING_LAYERS + INKLING_DRAFT_LAYERS) *
+        ((uint64_t)verify * 2 * IK_KV * sizeof(uint16_t) +
+         (IK_HISTORY + verify) * conv_width * sizeof(float));
+    m.total_bytes = m.raw_bytes + m.scratch_bytes;
+    return m;
+}
+
+static void inkling_track_free(ds4_inkling_graph *g) {
+    for (unsigned i = 0; i < INKLING_LAYERS; i++) {
+        ds4_gpu_tensor_free(g->undo[i].kv);
+        for (unsigned j = 0; j < 4; j++) {
+            ds4_gpu_tensor_free(g->undo[i].conv[j]);
+        }
+    }
+    memset(g->undo, 0, sizeof(g->undo));
+    g->undo_cap = 0;
+}
+
+static bool inkling_graph_track(ds4_inkling_graph *g, unsigned cap) {
+    if (!cap || cap > IK_VERIFY_ROWS || cap > g->cap || !g->n_layers) {
+        return false;
+    }
+    if (g->undo_cap) {
+        return cap == g->undo_cap;
+    }
+    for (unsigned i = 0; i < g->n_layers; i++) {
+        inkling_layer_undo *u = &g->undo[i];
+        u->kv = ds4_gpu_tensor_alloc((uint64_t)cap * 2 * IK_KV * sizeof(uint16_t));
+        if (!u->kv) {
+            goto fail;
+        }
+        for (unsigned j = 0; j < 4; j++) {
+            const unsigned width = j < 2 ? IK_KV : IK_HIDDEN;
+            u->conv[j] = ds4_gpu_tensor_alloc((uint64_t)(IK_HISTORY + cap) * width * sizeof(float));
+            if (!u->conv[j]) {
+                goto fail;
+            }
+        }
+    }
+    g->undo_cap = cap;
+    return true;
+fail:
+    inkling_track_free(g);
+    return false;
+}
+
+static bool inkling_record_layer(ds4_inkling_graph *g, unsigned il, unsigned n) {
+    if (!g->undo_cap) {
+        return true;
+    }
+    if (il >= g->n_layers || n > g->undo_cap) {
+        return false;
+    }
+    inkling_layer_undo *u = &g->undo[il];
+    const inkling_layer_state *s = &g->layer[il];
+    u->rows = 0;
+    u->streams = 0;
+    u->position = g->positions[0];
+    /* Preserve only the ring slots this forward can overwrite, not all KV. */
+    const uint64_t row_bytes = 2 * IK_KV * sizeof(uint16_t);
+    for (unsigned i = 0; i < n; i++) {
+        const unsigned slot = (u->position + i) % s->capacity;
+        if (!ds4_gpu_tensor_copy(u->kv, i * row_bytes, s->kv, slot * row_bytes, row_bytes)) {
+            return false;
+        }
+    }
+    for (unsigned j = 0; j < 4; j++) {
+        const unsigned width = j < 2 ? IK_KV : IK_HIDDEN;
+        if (!ds4_gpu_tensor_copy(u->conv[j], 0, s->conv[j], 0, IK_HISTORY * width * sizeof(float))) {
+            return false;
+        }
+    }
+    u->rows = n;
+    return true;
+}
+
+static bool inkling_record_input(ds4_inkling_graph *g, unsigned il, unsigned stream,
+                                  const ds4_gpu_tensor *input, unsigned n) {
+    if (!g->undo_cap) {
+        return true;
+    }
+    inkling_layer_undo *u = &g->undo[il];
+    const uint64_t row_bytes = (stream < 2 ? IK_KV : IK_HIDDEN) * sizeof(float);
+    if (u->rows != n || !ds4_gpu_tensor_copy(u->conv[stream], IK_HISTORY * row_bytes,
+                                              input, 0, n * row_bytes)) {
+        return false;
+    }
+    u->streams |= 1u << stream;
+    return true;
+}
+
+static bool inkling_restore_layer(ds4_inkling_graph *g, unsigned il, unsigned keep) {
+    if (il >= g->n_layers || g->failed) {
+        return false;
+    }
+    inkling_layer_undo *u = &g->undo[il];
+    inkling_layer_state *s = &g->layer[il];
+    if (!u->rows || u->streams != IK_CONV_MASK || keep > u->rows) {
+        return false;
+    }
+    g->failed = true;
+    const uint64_t kv_bytes = 2 * IK_KV * sizeof(uint16_t);
+    for (unsigned i = keep; i < u->rows; i++) {
+        const unsigned slot = (u->position + i) % s->capacity;
+        if (!ds4_gpu_tensor_copy(s->kv, slot * kv_bytes, u->kv, i * kv_bytes, kv_bytes)) {
+            return false;
+        }
+    }
+    /* Concatenate old history and in-forward inputs; the accepted prefix's
+     * last three rows are a slice. Never rerun convolutions to commit state. */
+    for (unsigned j = 0; j < 4; j++) {
+        const uint64_t row_bytes = (j < 2 ? IK_KV : IK_HIDDEN) * sizeof(float);
+        if (!ds4_gpu_tensor_copy(s->conv[j], 0, u->conv[j], keep * row_bytes, IK_HISTORY * row_bytes)) {
+            return false;
+        }
+    }
+    u->rows = 0;
+    g->failed = false;
+    return true;
+}
+
+static void inkling_graph_free(ds4_inkling_graph *g) {
+    inkling_track_free(g);
+    for (unsigned i = 0; i < IK_BUFFERS; i++) {
+        ds4_gpu_tensor_free(g->buf[i]);
+    }
+    ds4_gpu_tensor_free(g->logits);
+    for (unsigned i = 0; i < INKLING_LAYERS; i++) {
+        ds4_gpu_tensor_free(g->layer[i].kv);
+        for (unsigned j = 0; j < 4; j++) {
+            ds4_gpu_tensor_free(g->layer[i].conv[j]);
+        }
+    }
+    free(g->positions);
+    memset(g, 0, sizeof(*g));
+}
+
+static bool inkling_graph_reset(ds4_inkling_graph *g) {
+    g->failed = true;
+    for (unsigned i = 0; i < g->n_layers; i++) {
+        inkling_layer_state *s = &g->layer[i];
+        g->undo[i].rows = 0;
+        /* Prefix length masks stale KV; only convolution history needs clear. */
+        for (unsigned j = 0; j < 4; j++) {
+            unsigned width = j < 2 ? IK_KV : IK_HIDDEN;
+            if (!ds4_gpu_tensor_fill_f32(s->conv[j], 0, IK_HISTORY * width)) {
+                return false;
+            }
+        }
+    }
+    g->position = 0;
+    g->failed = false;
+    return true;
+}
+
+static bool inkling_graph_alloc_blocks(ds4_inkling_graph *g, const ds4_model *m,
+                                       const ds4_inkling_block *blocks, unsigned layers,
+                                       uint32_t ctx, uint32_t cap) {
+    memset(g, 0, sizeof(*g));
+    if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_INKLING || !ctx || !cap ||
+        cap > ctx || ctx > DS4_SHAPE_INKLING_SMALL.rope_orig_ctx || !blocks ||
+        (layers != INKLING_LAYERS && layers != INKLING_DRAFT_LAYERS)) {
+        return false;
+    }
+    g->context = ctx;
+    g->cap = cap;
+    g->n_layers = layers;
+    g->positions = calloc(cap, sizeof(*g->positions));
+    if (!g->positions) {
+        goto fail;
+    }
+    for (unsigned i = 0; i < IK_BUFFERS; i++) {
+        g->buf[i] = ds4_gpu_tensor_alloc((uint64_t)cap * inkling_width[i] * sizeof(float));
+        if (!g->buf[i]) {
+            goto fail;
+        }
+    }
+    g->logits = ds4_gpu_tensor_alloc((uint64_t)DS4_N_VOCAB * sizeof(float));
+    if (!g->logits) {
+        goto fail;
+    }
+    uint32_t *ids = calloc((size_t)cap * IK_SHARED, sizeof(*ids));
+    if (!ids) {
+        goto fail;
+    }
+    for (uint64_t i = 0; i < (uint64_t)cap * IK_SHARED; i++) {
+        ids[i] = i % IK_SHARED;
+    }
+    bool ids_ok = ds4_gpu_tensor_write(g->buf[IK_SHARED_IDS], 0, ids,
+                                       (uint64_t)cap * IK_SHARED * sizeof(*ids));
+    free(ids);
+    if (!ids_ok) {
+        goto fail;
+    }
+    for (unsigned i = 0; i < layers; i++) {
+        inkling_layer_state *s = &g->layer[i];
+        s->capacity = blocks[i].rel_proj->dim[0] == IK_LOCAL ? IK_LOCAL : ctx;
+        s->kv = ds4_gpu_tensor_alloc((uint64_t)s->capacity * 2 * IK_KV * sizeof(uint16_t));
+        if (!s->kv) {
+            goto fail;
+        }
+        for (unsigned j = 0; j < 4; j++) {
+            unsigned channels = j < 2 ? IK_KV : IK_HIDDEN;
+            s->conv[j] = ds4_gpu_tensor_alloc(IK_HISTORY * channels * sizeof(float));
+            if (!s->conv[j]) {
+                goto fail;
+            }
+        }
+    }
+    for (unsigned i = 0; i < layers; i++) {
+        if (blocks[i].gate) {
+            continue;
+        }
+        /* Only dense BF16 scales are read on CPU; matrices stay mapped. */
+        uint16_t bf;
+        memcpy(&bf, tensor_data(m, blocks[i].scale), sizeof(bf));
+        uint32_t bits = (uint32_t)bf << 16;
+        memcpy(&g->dense_scale[i], &bits, sizeof(bits));
+        if (!isfinite(g->dense_scale[i])) {
+            goto fail;
+        }
+    }
+    if (inkling_graph_reset(g)) {
+        return true;
+    }
+fail:
+    inkling_graph_free(g);
+    return false;
+}
+
+static bool inkling_graph_alloc(ds4_inkling_graph *g, const ds4_model *m,
+                                 const ds4_weights *w, uint32_t ctx, uint32_t cap) {
+    return inkling_graph_alloc_blocks(g, m, w->inkling.layer, INKLING_LAYERS, ctx, cap);
+}
+
+static bool inkling_projection(ds4_gpu_tensor *out, const ds4_model *m,
+                               const ds4_tensor *w, const ds4_gpu_tensor *x,
+                               uint32_t rows) {
+    /* cuBLAS changes its reduction with token width. BF16 boundary flips
+     * amplify through the router, so use the existing fixed row reduction. */
+    if (w->type == DS4_TENSOR_BF16) {
+        return ds4_gpu_matmul_bf16_stable_rows_tensor(out, m->map, m->size,
+                    w->abs_offset, w->dim[0], w->dim[1], x, rows) != 0;
+    }
+    /* Dense Q8 MMVQ also changes reduction geometry with column count.
+     * Keep the initial artifact path equal to decode before tuning prefill. */
+    const uint64_t in_bytes = w->dim[0] * sizeof(float);
+    const uint64_t out_bytes = w->dim[1] * sizeof(float);
+    for (unsigned r = 0; r < rows; r++) {
+        ds4_gpu_tensor *in_row = ds4_gpu_tensor_view(x, r * in_bytes, in_bytes);
+        ds4_gpu_tensor *out_row = ds4_gpu_tensor_view(out, r * out_bytes, out_bytes);
+        bool ok = in_row && out_row && plain_graph_matmul_tensor(
+                    out_row, m, w, w->dim[0], w->dim[1], in_row, 1);
+        ds4_gpu_tensor_free(in_row);
+        ds4_gpu_tensor_free(out_row);
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool inkling_linear(ds4_gpu_tensor *out, const ds4_model *m,
+                            const ds4_tensor *w, const ds4_gpu_tensor *x,
+                            uint32_t rows) {
+    return inkling_projection(out, m, w, x, rows) &&
+           ds4_gpu_inkling_add_scale(out, out, NULL, 1.0f, rows * w->dim[1]);
+}
+
+enum {
+    IK_IMAGE_PIXELS = 2 * 40 * 40 * 3,
+    IK_IMAGE_SCRATCH = 2 * 8 * 8 * 128,
+    IK_IMAGE_CHUNK = 16, IK_AUDIO_CHUNK = 64,
+    IK_AUDIO_BINS = 80, IK_AUDIO_LEVELS = 16,
+    IK_MEDIA_LIMIT = 4, IK_MEDIA_MAX_ROWS = 8192,
+};
+
+static bool inkling_image_stage(ds4_gpu_tensor *out, ds4_gpu_tensor *fold,
+                                const ds4_gpu_tensor *x, const ds4_model *m,
+                                const ds4_inkling_weights *w,
+                                unsigned stage, unsigned patches) {
+    static const uint32_t rows_per_patch[] = {128, 32, 2, 1};
+    if (!m || !w || !patches || patches > IK_IMAGE_CHUNK || stage >= INKLING_IMAGE_STAGES ||
+        !w->image_linear[stage] || !w->image_norm[stage]) {
+        return false;
+    }
+    const uint32_t rows = patches * rows_per_patch[stage];
+    const uint32_t width = w->image_linear[stage]->dim[1];
+    /* Each source projection, RMSNorm and GELU has its own BF16 store. */
+    return ds4_gpu_inkling_fold(fold, x, patches, stage) &&
+        inkling_linear(out, m, w->image_linear[stage], fold, rows) &&
+        ds4_gpu_inkling_norm(out, out, m->map, m->size,
+                             w->image_norm[stage]->abs_offset, width, rows) &&
+        (stage + 1 == INKLING_IMAGE_STAGES ||
+         ds4_gpu_inkling_gelu(out, out, (uint64_t)rows * width));
+}
+
+static bool inkling_image_encode(float *out, const float *pixels, uint32_t patches,
+                                 const ds4_model *m, const ds4_inkling_weights *w) {
+    if (!out || !pixels || !patches || !m || !w) {
+        return false;
+    }
+    for (uint64_t i = 0; i < (uint64_t)patches * IK_IMAGE_PIXELS; i++) {
+        if (!isfinite(pixels[i])) {
+            return false;
+        }
+    }
+    /* HMLP patches have no cross-patch attention. Bound scratch independently
+     * of image size; keep the original patch order across workspace chunks. */
+    const uint32_t cap = patches < IK_IMAGE_CHUNK ? patches : IK_IMAGE_CHUNK;
+    const uint64_t bytes = (uint64_t)cap * IK_IMAGE_SCRATCH * sizeof(float);
+    ds4_gpu_tensor *a = ds4_gpu_tensor_alloc(bytes), *b = ds4_gpu_tensor_alloc(bytes);
+    bool ok = a && b;
+    for (uint32_t start = 0; ok && start < patches;) {
+        const uint32_t count = patches - start < cap ? patches - start : cap;
+        ok = ds4_gpu_tensor_write(a, 0, pixels + (uint64_t)start * IK_IMAGE_PIXELS,
+                                  (uint64_t)count * IK_IMAGE_PIXELS * sizeof(float));
+        for (unsigned stage = 0; ok && stage < INKLING_IMAGE_STAGES; stage++) {
+            ok = inkling_image_stage(a, b, a, m, w, stage, count);
+        }
+        if (ok) {
+            ok = ds4_gpu_tensor_read(a, 0, out + (uint64_t)start * IK_HIDDEN,
+                                     (uint64_t)count * IK_HIDDEN * sizeof(float));
+        }
+        start += count;
+    }
+    ds4_gpu_tensor_free(a);
+    ds4_gpu_tensor_free(b);
+    return ok;
+}
+
+static bool inkling_audio_encode(float *out, const int32_t *ids, uint32_t rows,
+                                 const ds4_model *m, const ds4_inkling_weights *w) {
+    if (!out || !ids || !rows || !m || !w || !w->audio_embed || !w->audio_norm) {
+        return false;
+    }
+    /* Reject the complete request before work, including invalid later chunks. */
+    for (uint64_t i = 0; i < (uint64_t)rows * IK_AUDIO_BINS; i++) {
+        if (ids[i] < 0 || ids[i] >= IK_AUDIO_LEVELS) {
+            return false;
+        }
+    }
+    const uint32_t cap = rows < IK_AUDIO_CHUNK ? rows : IK_AUDIO_CHUNK;
+    ds4_gpu_tensor *codes = ds4_gpu_tensor_alloc((uint64_t)cap * IK_AUDIO_BINS * sizeof(int32_t));
+    ds4_gpu_tensor *features = ds4_gpu_tensor_alloc((uint64_t)cap * IK_HIDDEN * sizeof(float));
+    bool ok = codes && features;
+    for (uint32_t start = 0; ok && start < rows;) {
+        const uint32_t count = rows - start < cap ? rows - start : cap;
+        ok = ds4_gpu_tensor_write(codes, 0, ids + (uint64_t)start * IK_AUDIO_BINS,
+                                   (uint64_t)count * IK_AUDIO_BINS * sizeof(int32_t)) &&
+            ds4_gpu_inkling_audio(features, codes, m->map, m->size,
+                                   w->audio_embed->abs_offset, count) &&
+            ds4_gpu_inkling_norm(features, features, m->map, m->size,
+                                  w->audio_norm->abs_offset, IK_HIDDEN, count) &&
+            ds4_gpu_tensor_read(features, 0, out + (uint64_t)start * IK_HIDDEN,
+                                  (uint64_t)count * IK_HIDDEN * sizeof(float));
+        start += count;
+    }
+    ds4_gpu_tensor_free(codes);
+    ds4_gpu_tensor_free(features);
+    return ok;
+}
+
+static bool inkling_routed(ds4_gpu_tensor *out, const ds4_model *m,
+                           const ds4_tensor *w, const ds4_gpu_tensor *x,
+                           const ds4_gpu_tensor *ids, uint32_t rows, uint32_t used) {
+    /* Keep one source token per call. Wider MMQ uses different activation
+     * scale precision from MMVQ; the BF16 differences can change routing.
+     * Down inputs are flattened assignments, grouped by token. */
+    const unsigned group = used > 1 ? 1 : w->dim[2] == IK_SHARED ? IK_SHARED : IK_USED;
+    if (rows % group != 0) {
+        return false;
+    }
+    const uint64_t in_bytes = group * w->dim[0] * sizeof(float);
+    const uint64_t out_bytes = group * used * w->dim[1] * sizeof(float);
+    const uint64_t id_bytes = (uint64_t)group * used * sizeof(uint32_t);
+    for (unsigned i = 0; i < rows / group; i++) {
+        ds4_gpu_tensor *in = ds4_gpu_tensor_view(x, i * in_bytes, in_bytes);
+        ds4_gpu_tensor *dest = ds4_gpu_tensor_view(out, i * out_bytes, out_bytes);
+        ds4_gpu_tensor *selected = ds4_gpu_tensor_view(ids, i * id_bytes, id_bytes);
+        bool ok = in && dest && selected && ds4_gpu_routed_matmul_tensor(
+            dest, in, selected, m->map, m->size, w->abs_offset, w->bytes, w->type,
+            w->dim[0], w->dim[1], w->dim[2], group, used);
+        ds4_gpu_tensor_free(in);
+        ds4_gpu_tensor_free(dest);
+        ds4_gpu_tensor_free(selected);
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool inkling_mlp(ds4_inkling_graph *g, const ds4_model *m,
+                        const ds4_inkling_block *w, uint32_t il, uint32_t n) {
+    ds4_gpu_tensor **b = g->buf;
+    if (!w->gate) {
+        return inkling_linear(b[IK_PAIRS], m, w->w13, b[IK_NORM], n) &&
+            ds4_gpu_inkling_swiglu(b[IK_MIDDLE], b[IK_PAIRS], NULL, IK_DENSE, n) &&
+            inkling_linear(b[IK_PROJECTED], m, w->w2, b[IK_MIDDLE], n) &&
+            ds4_gpu_inkling_add_scale(b[IK_PROJECTED], b[IK_PROJECTED], NULL,
+                                      g->dense_scale[il], (uint64_t)n * IK_HIDDEN);
+    }
+    /* Router logits retain FP32, unlike the BF16 ordinary projections. */
+    return inkling_projection(b[IK_GATE], m, w->gate, b[IK_NORM], n) &&
+        ds4_gpu_inkling_route(b[IK_IDS], b[IK_GAMMA], b[IK_SHARED_GAMMA], b[IK_GATE],
+            m->map, m->size, w->bias->abs_offset, w->scale->abs_offset, n,
+            IK_EXPERTS + IK_SHARED) &&
+        inkling_routed(b[IK_PAIRS], m, w->w13, b[IK_NORM], b[IK_IDS], n, IK_USED) &&
+        ds4_gpu_inkling_swiglu(b[IK_MIDDLE], b[IK_PAIRS], NULL, IK_MID, n * IK_USED) &&
+        inkling_routed(b[IK_DOWN], m, w->w2, b[IK_MIDDLE], b[IK_IDS], n * IK_USED, 1) &&
+        inkling_routed(b[IK_SHARED_PAIRS], m, w->shared_w13, b[IK_NORM],
+                       b[IK_SHARED_IDS], n, IK_SHARED) &&
+        ds4_gpu_inkling_swiglu(b[IK_SHARED_MIDDLE], b[IK_SHARED_PAIRS],
+                              b[IK_SHARED_GAMMA], IK_MID, n * IK_SHARED) &&
+        inkling_routed(b[IK_SHARED_DOWN], m, w->shared_w2, b[IK_SHARED_MIDDLE],
+                       b[IK_SHARED_IDS], n * IK_SHARED, 1) &&
+        ds4_gpu_inkling_combine(b[IK_PROJECTED], b[IK_DOWN], b[IK_SHARED_DOWN],
+                                b[IK_GAMMA], IK_HIDDEN, n);
+}
+
+static bool inkling_graph_layer(ds4_inkling_graph *g, const ds4_model *m,
+                                const ds4_inkling_block *w, unsigned il, unsigned n) {
+    ds4_gpu_tensor **b = g->buf;
+    inkling_layer_state *s = &g->layer[il];
+    const unsigned extent = w->rel_proj->dim[0];
+    /* K convolution precedes head norm; cache normalized K and convolved V. */
+    if (!inkling_record_layer(g, il, n) ||
+        !ds4_gpu_inkling_norm(b[IK_NORM], b[IK_X], m->map, m->size,
+                             w->attn_norm->abs_offset, IK_HIDDEN, n) ||
+        !inkling_linear(b[IK_Q], m, w->q, b[IK_NORM], n) ||
+        !inkling_linear(b[IK_K_IN], m, w->k, b[IK_NORM], n) ||
+        !inkling_linear(b[IK_V_IN], m, w->v, b[IK_NORM], n) ||
+        !inkling_linear(b[IK_R], m, w->r, b[IK_NORM], n) ||
+        !inkling_record_input(g, il, 0, b[IK_K_IN], n) ||
+        !inkling_record_input(g, il, 1, b[IK_V_IN], n) ||
+        !ds4_gpu_inkling_sconv(b[IK_K], s->conv[0], b[IK_K_IN], s->conv[0],
+                              m->map, m->size, w->k_conv->abs_offset, IK_KV, n) ||
+        !ds4_gpu_inkling_sconv(b[IK_V], s->conv[1], b[IK_V_IN], s->conv[1],
+                              m->map, m->size, w->v_conv->abs_offset, IK_KV, n) ||
+        !ds4_gpu_inkling_norm(b[IK_Q], b[IK_Q], m->map, m->size,
+                             w->q_norm->abs_offset, IK_HEAD, n * IK_Q_HEADS) ||
+        !ds4_gpu_inkling_norm(b[IK_K], b[IK_K], m->map, m->size,
+                             w->k_norm->abs_offset, IK_HEAD, n * IK_KV_HEADS) ||
+        !ds4_gpu_inkling_attn_prep(b[IK_Q], b[IK_RELATIVE], b[IK_Q], b[IK_R],
+             b[IK_POSITIONS], m->map, m->size, w->rel_proj->abs_offset, n, extent) ||
+        !ds4_gpu_inkling_attention(b[IK_HEADS], b[IK_Q], b[IK_RELATIVE], b[IK_K],
+             b[IK_V], s->kv, b[IK_POSITIONS], n, s->capacity, extent) ||
+        !ds4_gpu_inkling_kv_store(s->kv, b[IK_K], b[IK_V], b[IK_POSITIONS], n, s->capacity) ||
+        !inkling_linear(b[IK_PROJECTED], m, w->o, b[IK_HEADS], n) ||
+        !inkling_record_input(g, il, 2, b[IK_PROJECTED], n) ||
+        !ds4_gpu_inkling_sconv(b[IK_CONV], s->conv[2], b[IK_PROJECTED], s->conv[2],
+                              m->map, m->size, w->attn_conv->abs_offset, IK_HIDDEN, n) ||
+        !ds4_gpu_inkling_add_scale(b[IK_X], b[IK_X], b[IK_CONV], 1, (uint64_t)n * IK_HIDDEN) ||
+        !ds4_gpu_inkling_norm(b[IK_NORM], b[IK_X], m->map, m->size,
+                             w->mlp_norm->abs_offset, IK_HIDDEN, n) ||
+        !inkling_mlp(g, m, w, il, n) ||
+        !inkling_record_input(g, il, 3, b[IK_PROJECTED], n) ||
+        !ds4_gpu_inkling_sconv(b[IK_CONV], s->conv[3], b[IK_PROJECTED], s->conv[3],
+                              m->map, m->size, w->mlp_conv->abs_offset, IK_HIDDEN, n)) {
+        return false;
+    }
+    return ds4_gpu_inkling_add_scale(b[IK_X], b[IK_X], b[IK_CONV], 1, (uint64_t)n * IK_HIDDEN);
+}
+
+static bool inkling_embed_rows(ds4_inkling_graph *g, const ds4_model *m,
+                               const ds4_weights *w, const int *tokens, unsigned n,
+                               const float *const *features) {
+    ds4_gpu_tensor **b = g->buf;
+    if (!ds4_gpu_tensor_write(b[IK_TOKENS], 0, tokens, n * sizeof(*tokens)) ||
+        !ds4_gpu_embed_tokens_q8_0_tensor(b[IK_X], b[IK_TOKENS], m->map, m->size,
+                                          w->token_embd->abs_offset, DS4_N_VOCAB, n, IK_HIDDEN) ||
+        !ds4_gpu_inkling_norm(b[IK_X], b[IK_X], m->map, m->size,
+                              w->inkling.embed_norm->abs_offset, IK_HIDDEN, n)) {
+        return false;
+    }
+    /* Both media towers already normalize their outputs. Replace placeholder
+     * rows AFTER text embed_norm; never normalize media with the text weight. */
+    for (unsigned i = 0; features && i < n; i++) {
+        if (!features[i]) {
+            continue;
+        }
+        const uint64_t bytes = IK_HIDDEN * sizeof(float);
+        if (!ds4_gpu_tensor_write(b[IK_X], i * bytes, features[i], bytes)) {
+            return false;
+        }
+        ds4_gpu_tensor *row = ds4_gpu_tensor_view(b[IK_X], i * bytes, bytes);
+        bool ok = row && ds4_gpu_inkling_add_scale(row, row, NULL, 1, IK_HIDDEN);
+        ds4_gpu_tensor_free(row);
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool inkling_head_logits(ds4_inkling_graph *g, const ds4_model *m,
+                                const ds4_weights *w, const ds4_gpu_tensor *hidden,
+                                unsigned n) {
+    if (!hidden || !n || n > g->cap) {
+        return false;
+    }
+    /* muP division belongs to the head; the unscaled chain stays intact. */
+    const uint64_t bytes = IK_HIDDEN * sizeof(float);
+    ds4_gpu_tensor *last = ds4_gpu_tensor_view(hidden, (uint64_t)(n - 1) * bytes, bytes);
+    bool ok = last && ds4_gpu_inkling_add_scale(g->buf[IK_NORM], last, NULL,
+                                                1.0f / IK_LOGIT_DIVISOR, IK_HIDDEN) &&
+        plain_graph_matmul_tensor(g->logits, m, w->output, IK_HIDDEN, DS4_N_VOCAB, g->buf[IK_NORM], 1);
+    ds4_gpu_tensor_free(last);
+    if (ok) {
+        const uint32_t padding = DS4_N_VOCAB - INKLING_VALID_VOCAB;
+        ds4_gpu_tensor *tail = ds4_gpu_tensor_view(g->logits,
+            (uint64_t)INKLING_VALID_VOCAB * sizeof(float), padding * sizeof(float));
+        ok = tail && ds4_gpu_tensor_fill_f32(tail, -INFINITY, padding);
+        ds4_gpu_tensor_free(tail);
+    }
+    return ok;
+}
+
+static bool inkling_graph_media(ds4_inkling_graph *g, const ds4_model *m,
+                                const ds4_weights *w, const int *tokens, unsigned n,
+                                const float *const *features) {
+    if (g->failed || !tokens || !n || n > g->cap || n > g->context - g->position ||
+        (g->undo_cap && n > g->undo_cap)) {
+        return false;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        if (tokens[i] < 0 || tokens[i] >= INKLING_VALID_VOCAB) {
+            return false;
+        }
+        if (features && features[i]) {
+            if (tokens[i] != IK_AUDIO_TOKEN && tokens[i] != IK_IMAGE_TOKEN) {
+                return false;
+            }
+            for (unsigned j = 0; j < IK_HIDDEN; j++) {
+                if (!isfinite(features[i][j])) {
+                    return false;
+                }
+            }
+        }
+        g->positions[i] = g->position + i;
+    }
+    g->failed = true; /* Partial GPU failures require reset before reuse. */
+    ds4_gpu_tensor **b = g->buf;
+    if (!ds4_gpu_tensor_write(b[IK_POSITIONS], 0, g->positions, n * sizeof(*g->positions)) ||
+        !inkling_embed_rows(g, m, w, tokens, n, features)) {
+        return false;
+    }
+    for (unsigned i = 0; i < INKLING_LAYERS; i++) {
+        if (!inkling_graph_layer(g, m, &w->inkling.layer[i], i, n)) {
+            fprintf(stderr, "ds4: Inkling layer %u forward failed\n", i);
+            return false;
+        }
+        metal_graph_debug_dump_tensor("inkling_hidden", b[IK_X],
+                                       (uint64_t)n * IK_HIDDEN, i, g->position);
+        metal_graph_debug_dump_tensor("inkling_heads", b[IK_HEADS],
+                                       (uint64_t)n * IK_HIDDEN, i, g->position);
+        metal_graph_debug_dump_tensor("inkling_mlp_input", b[IK_NORM],
+                                       (uint64_t)n * IK_HIDDEN, i, g->position);
+        metal_graph_debug_dump_tensor("inkling_mlp_output", b[IK_PROJECTED],
+                                       (uint64_t)n * IK_HIDDEN, i, g->position);
+    }
+    /* MTP prefill needs every target row after final norm, before /16. */
+    bool ok = ds4_gpu_inkling_norm(b[IK_FINAL], b[IK_X], m->map, m->size,
+                                    w->output_norm->abs_offset, IK_HIDDEN, n) &&
+        inkling_head_logits(g, m, w, b[IK_FINAL], n);
+    if (ok) {
+        g->position += n;
+        g->failed = false;
+    }
+    return ok;
+}
+
+static bool inkling_graph_forward(ds4_inkling_graph *g, const ds4_model *m,
+                                  const ds4_weights *w, const int *tokens, unsigned n) {
+    return inkling_graph_media(g, m, w, tokens, n, NULL);
+}
+
+static bool inkling_target_verify(ds4_inkling_graph *g, const ds4_model *m,
+                                  const ds4_weights *w, const int *tokens, unsigned n,
+                                  int *argmax) {
+    if (!argmax || !n || n > IK_VERIFY_ROWS || n > g->undo_cap ||
+        g->n_layers != INKLING_LAYERS || !inkling_graph_forward(g, m, w, tokens, n)) {
+        return false;
+    }
+    g->failed = true;
+    /* Keep the fixed-row head reduction used by ordinary decode. The host
+     * receives only argmax IDs; final hidden rows remain on device for MTP. */
+    for (unsigned i = 0; i < n; i++) {
+        ds4_gpu_tensor *id = ds4_gpu_tensor_view(g->buf[IK_TOKENS],
+                                                  (uint64_t)i * sizeof(int), sizeof(int));
+        bool ok = id && inkling_head_logits(g, m, w, g->buf[IK_FINAL], i + 1) &&
+            ds4_gpu_argmax_tensor(id, g->logits, INKLING_VALID_VOCAB);
+        ds4_gpu_tensor_free(id);
+        if (!ok) {
+            return false;
+        }
+    }
+    int result[IK_VERIFY_ROWS];
+    if (!ds4_gpu_tensor_read(g->buf[IK_TOKENS], 0, result, n * sizeof(*result))) {
+        return false;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        if (result[i] < 0 || result[i] >= INKLING_VALID_VOCAB) {
+            return false;
+        }
+    }
+    memcpy(argmax, result, n * sizeof(*result));
+    g->failed = false;
+    return true;
+}
+
+static bool inkling_target_keep(ds4_inkling_graph *g, const ds4_model *m,
+                                const ds4_weights *w, unsigned keep) {
+    if (g->failed || g->n_layers != INKLING_LAYERS || !g->undo_cap || !keep) {
+        return false;
+    }
+    const unsigned start = g->undo[0].position, rows = g->undo[0].rows;
+    /* Validate every journal before touching state. A target verification
+     * always commits at least the first token, already sampled by the host. */
+    for (unsigned i = 0; i < g->n_layers; i++) {
+        const inkling_layer_undo *u = &g->undo[i];
+        if (!rows || keep > rows || u->rows != rows || u->position != start ||
+            u->streams != IK_CONV_MASK || g->position != start + rows) {
+            return false;
+        }
+    }
+    for (unsigned i = 0; i < g->n_layers; i++) {
+        if (!inkling_restore_layer(g, i, keep)) {
+            return false;
+        }
+    }
+    /* Reproject the accepted row, without reexecuting layers or changing
+     * their convolution histories. All accepted final hidden rows survive. */
+    if (!inkling_head_logits(g, m, w, g->buf[IK_FINAL], keep)) {
+        g->failed = true;
+        return false;
+    }
+    g->position = start + keep;
+    return true;
+}
+
+typedef struct {
+    ds4_inkling_graph graph;
+    ds4_gpu_tensor *combined;
+    uint32_t positions[INKLING_DRAFT_LAYERS];
+} ds4_inkling_mtp_graph;
+
+static void inkling_draft_free(ds4_inkling_mtp_graph *d) {
+    inkling_graph_free(&d->graph);
+    ds4_gpu_tensor_free(d->combined);
+    memset(d, 0, sizeof(*d));
+}
+
+static bool inkling_draft_reset(ds4_inkling_mtp_graph *d) {
+    if (!inkling_graph_reset(&d->graph)) {
+        return false;
+    }
+    memset(d->positions, 0, sizeof(d->positions));
+    return true;
+}
+
+static bool inkling_draft_alloc(ds4_inkling_mtp_graph *d, const ds4_model *m,
+                                const ds4_inkling_draft *w, uint32_t ctx, uint32_t cap) {
+    memset(d, 0, sizeof(*d));
+    if (!inkling_graph_alloc_blocks(&d->graph, m, w->layer, INKLING_DRAFT_LAYERS, ctx, cap)) {
+        return false;
+    }
+    d->combined = ds4_gpu_tensor_alloc((uint64_t)cap * 2 * IK_HIDDEN * sizeof(float));
+    if (!d->combined) {
+        inkling_draft_free(d);
+        return false;
+    }
+    return true;
+}
+
+static bool inkling_draft_forward(ds4_inkling_mtp_graph *d, const ds4_model *m,
+                                  const ds4_inkling_draft *w, unsigned depth,
+                                  const ds4_gpu_tensor *hidden,
+                                  const ds4_gpu_tensor *embeddings, unsigned n) {
+    ds4_inkling_graph *g = &d->graph;
+    if (g->failed || !hidden || !embeddings || depth >= INKLING_DRAFT_LAYERS ||
+        !n || n > g->cap || n > g->context - d->positions[depth] ||
+        (g->undo_cap && n > g->undo_cap)) {
+        return false;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        g->positions[i] = d->positions[depth] + i;
+    }
+    g->failed = true;
+    ds4_gpu_tensor **b = g->buf;
+    /* The caller supplies main-normalized embeddings. Normalize the incoming
+     * hidden first, so a preceding depth can hand off IK_X without a copy. */
+    if (!ds4_gpu_tensor_write(b[IK_POSITIONS], 0, g->positions, n * sizeof(*g->positions)) ||
+        !ds4_gpu_inkling_norm(b[IK_NORM], hidden, m->map, m->size,
+                               w->hidden_norm[depth]->abs_offset, IK_HIDDEN, n) ||
+        !ds4_gpu_inkling_norm(b[IK_CONV], embeddings, m->map, m->size,
+                               w->embed_norm[depth]->abs_offset, IK_HIDDEN, n) ||
+        !ds4_gpu_concat_rows_tensor(d->combined, b[IK_NORM], b[IK_CONV], n, IK_HIDDEN) ||
+        !inkling_linear(b[IK_X], m, w->input_proj[depth], d->combined, n) ||
+        !inkling_graph_layer(g, m, &w->layer[depth], depth, n)) {
+        return false;
+    }
+    /* chain_hidden_post_norm=false: retain the raw block result in IK_X.
+     * Only the shared LM-head input is divided by 16, after this handoff. */
+    d->positions[depth] += n;
+    g->failed = false;
+    return true;
+}
+
+static bool inkling_draft_keep(ds4_inkling_mtp_graph *d, unsigned depth, unsigned keep) {
+    if (depth >= INKLING_DRAFT_LAYERS) {
+        return false;
+    }
+    const inkling_layer_undo *u = &d->graph.undo[depth];
+    if (d->positions[depth] != u->position + u->rows ||
+        !inkling_restore_layer(&d->graph, depth, keep)) {
+        return false;
+    }
+    d->positions[depth] = u->position + keep;
+    return true;
+}
+
+static bool inkling_draft_rows(ds4_inkling_mtp_graph *d, const ds4_model *main,
+                               const ds4_weights *shared, const ds4_model *mtp,
+                               const ds4_inkling_draft *w, unsigned depth,
+                               const ds4_gpu_tensor *hidden, const int *tokens, unsigned n) {
+    ds4_inkling_graph *g = &d->graph;
+    if (g->failed || !hidden || !tokens || depth >= INKLING_DRAFT_LAYERS || !n ||
+        n > g->cap || n > g->context - d->positions[depth] ||
+        (g->undo_cap && n > g->undo_cap)) {
+        return false;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        if (tokens[i] < 0 || tokens[i] >= INKLING_VALID_VOCAB) {
+            return false;
+        }
+    }
+    ds4_gpu_tensor **b = g->buf;
+    /* Use separate scratch for shared embeddings: hidden may alias IK_X
+     * from the preceding depth, and the draft norms need both inputs. */
+    if (!ds4_gpu_tensor_write(b[IK_TOKENS], 0, tokens, n * sizeof(*tokens)) ||
+        !ds4_gpu_embed_tokens_q8_0_tensor(b[IK_PROJECTED], b[IK_TOKENS], main->map, main->size,
+                                          shared->token_embd->abs_offset, DS4_N_VOCAB, n, IK_HIDDEN) ||
+        !ds4_gpu_inkling_norm(b[IK_PROJECTED], b[IK_PROJECTED], main->map, main->size,
+                               shared->inkling.embed_norm->abs_offset, IK_HIDDEN, n) ||
+        !inkling_draft_forward(d, mtp, w, depth, hidden, b[IK_PROJECTED], n)) {
+        g->failed = true;
+        return false;
+    }
+    return true;
+}
+
+static bool inkling_draft_tokens(ds4_inkling_mtp_graph *d, const ds4_model *main,
+                                 const ds4_weights *shared, const ds4_model *mtp,
+                                 const ds4_inkling_draft *w, unsigned depth,
+                                 const ds4_gpu_tensor *hidden, const int *tokens, unsigned n) {
+    if (!inkling_draft_rows(d, main, shared, mtp, w, depth, hidden, tokens, n)) {
+        return false;
+    }
+    if (!inkling_head_logits(&d->graph, main, shared, d->graph.buf[IK_X], n)) {
+        d->graph.failed = true;
+        return false;
+    }
+    return true;
+}
+
+typedef struct {
+    ds4_inkling_mtp_graph draft;
+    ds4_gpu_tensor *tail, *joined;
+    int *ids;
+    uint32_t position, tail_rows;
+} ds4_inkling_spec;
+
+static void inkling_spec_free(ds4_inkling_spec *s) {
+    inkling_draft_free(&s->draft);
+    ds4_gpu_tensor_free(s->tail);
+    ds4_gpu_tensor_free(s->joined);
+    free(s->ids);
+    memset(s, 0, sizeof(*s));
+}
+
+static bool inkling_spec_reset(ds4_inkling_spec *s) {
+    if (!inkling_draft_reset(&s->draft)) {
+        return false;
+    }
+    s->position = 0;
+    s->tail_rows = 0;
+    return true;
+}
+
+static bool inkling_spec_alloc(ds4_inkling_spec *s, const ds4_model *m,
+                               const ds4_inkling_draft *w, uint32_t ctx, uint32_t cap) {
+    memset(s, 0, sizeof(*s));
+    const unsigned verify = ctx < IK_VERIFY_ROWS ? ctx : IK_VERIFY_ROWS;
+    if (cap < verify || !inkling_draft_alloc(&s->draft, m, w, ctx, cap)) {
+        return false;
+    }
+    const uint64_t row_bytes = IK_HIDDEN * sizeof(float);
+    s->tail = ds4_gpu_tensor_alloc(INKLING_DRAFT_LAYERS * row_bytes);
+    s->joined = ds4_gpu_tensor_alloc((cap + INKLING_DRAFT_LAYERS) * row_bytes);
+    if (!s->tail || !s->joined) {
+        inkling_spec_free(s);
+        return false;
+    }
+    s->ids = xcalloc(cap, sizeof(*s->ids));
+    return true;
+}
+
+static bool inkling_spec_valid(const ds4_inkling_spec *s) {
+    const ds4_inkling_mtp_graph *d = &s->draft;
+    const unsigned tail = s->position < INKLING_DRAFT_LAYERS ? s->position : INKLING_DRAFT_LAYERS;
+    if (d->graph.failed || d->graph.n_layers != INKLING_DRAFT_LAYERS ||
+        s->position > d->graph.context || s->tail_rows != tail) {
+        return false;
+    }
+    for (unsigned i = 0; i < INKLING_DRAFT_LAYERS; i++) {
+        if (d->positions[i] != s->position - tail) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool inkling_spec_extend(ds4_inkling_spec *s, const ds4_model *main,
+                                const ds4_weights *shared, const ds4_model *mtp,
+                                const ds4_inkling_draft *w, const ds4_gpu_tensor *hidden,
+                                const int *tokens, unsigned total, unsigned n) {
+    ds4_inkling_mtp_graph *d = &s->draft;
+    ds4_inkling_graph *g = &d->graph;
+    if (!inkling_spec_valid(s) || !hidden || !tokens || !n || n > g->cap ||
+        n > g->context - s->position || total != s->position + n) {
+        return false;
+    }
+    const unsigned start = s->position - s->tail_rows;
+    for (unsigned i = start; i < total; i++) {
+        if (tokens[i] < 0 || tokens[i] >= INKLING_VALID_VOCAB) {
+            return false;
+        }
+    }
+    /* At depth i, row t consumes token[t+i+1]. Only rows below N-8 are
+     * independent of future predictions. Retain the remaining target seeds. */
+    const unsigned joined = s->tail_rows + n;
+    const unsigned tail = joined < INKLING_DRAFT_LAYERS ? joined : INKLING_DRAFT_LAYERS;
+    const unsigned stable = joined - tail;
+    const uint64_t row_bytes = IK_HIDDEN * sizeof(float);
+    g->failed = true;
+    if ((s->tail_rows && !ds4_gpu_tensor_copy(s->joined, 0, s->tail, 0, s->tail_rows * row_bytes)) ||
+        !ds4_gpu_tensor_copy(s->joined, s->tail_rows * row_bytes, hidden, 0, n * row_bytes)) {
+        return false;
+    }
+    g->failed = false;
+    /* Stable rows need no rollback. Preserve allocated journals while
+     * suspending recording, so later prompt extensions can exceed nine rows. */
+    const unsigned tracked = g->undo_cap;
+    g->undo_cap = 0;
+    bool ok = true;
+    for (unsigned depth = 0; stable && depth < INKLING_DRAFT_LAYERS; depth++) {
+        for (unsigned row = 0; row < stable; row++) {
+            s->ids[row] = tokens[start + row + depth + 1];
+        }
+        const ds4_gpu_tensor *h = depth ? g->buf[IK_X] : s->joined;
+        if (!inkling_draft_rows(d, main, shared, mtp, w, depth, h, s->ids, stable)) {
+            ok = false;
+            break;
+        }
+    }
+    g->undo_cap = tracked;
+    g->failed = true;
+    if (!ok || !ds4_gpu_tensor_copy(s->tail, 0, s->joined, stable * row_bytes, tail * row_bytes)) {
+        return false;
+    }
+    s->position = total;
+    s->tail_rows = tail;
+    g->failed = false;
+    return true;
+}
+
+static bool inkling_spec_propose(ds4_inkling_spec *s, const ds4_model *main,
+                                 const ds4_weights *shared, const ds4_model *mtp,
+                                 const ds4_inkling_draft *w, const int *tokens,
+                                 int first, int *draft, unsigned count) {
+    ds4_inkling_mtp_graph *d = &s->draft;
+    ds4_inkling_graph *g = &d->graph;
+    if (!inkling_spec_valid(s) || !tokens || !draft || !s->position || s->position >= g->context ||
+        !count || count > INKLING_DRAFT_LAYERS || count > g->context - s->position - 1 ||
+        first < 0 || first >= INKLING_VALID_VOCAB) {
+        return false;
+    }
+    const unsigned start = s->position - s->tail_rows;
+    int ids[INKLING_DRAFT_LAYERS], result[INKLING_DRAFT_LAYERS];
+    for (unsigned i = start; i < s->position; i++) {
+        if (tokens[i] < 0 || tokens[i] >= INKLING_VALID_VOCAB) {
+            return false;
+        }
+        ids[i - start] = i + 1 < s->position ? tokens[i + 1] : first;
+    }
+    const unsigned cap = g->context < IK_VERIFY_ROWS ? g->context : IK_VERIFY_ROWS;
+    if (!inkling_graph_track(g, cap)) {
+        return false;
+    }
+    for (unsigned depth = 0; depth < count; depth++) {
+        const ds4_gpu_tensor *h = depth ? g->buf[IK_X] : s->tail;
+        if (!inkling_draft_tokens(d, main, shared, mtp, w, depth, h, ids, s->tail_rows) ||
+            !ds4_gpu_argmax_tensor(g->buf[IK_TOKENS], g->logits, INKLING_VALID_VOCAB) ||
+            !ds4_gpu_tensor_read(g->buf[IK_TOKENS], 0, result + depth, sizeof(*result)) ||
+            result[depth] < 0 || result[depth] >= INKLING_VALID_VOCAB ||
+            !inkling_draft_keep(d, depth, 0)) {
+            g->failed = true;
+            return false;
+        }
+        /* Restore before the next depth: raw IK_X survives, while speculative
+         * KV and convolution histories never enter the stable prefix. */
+        memmove(ids, ids + 1, (s->tail_rows - 1) * sizeof(*ids));
+        ids[s->tail_rows - 1] = result[depth];
+    }
+    memcpy(draft, result, count * sizeof(*result));
+    return true;
 }
 
 static void plain_batch_ws_free(struct ds4_plain_batch_ws *w) {
@@ -33323,6 +34514,9 @@ ds4_context_memory ds4_context_memory_estimate(ds4_backend backend, int ctx_size
     uint32_t ctx = ctx_size > 0 ? (uint32_t)ctx_size : 1u;
 
     if (ds4_backend_uses_graph(backend)) {
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
+            return inkling_context_memory(ctx, inkling_prefill_cap(ctx));
+        }
         if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_EXAONE_MOE) {
             return exaone_graph_context_memory_estimate(ctx, 0u);
         }
@@ -33777,6 +34971,7 @@ struct ds4_engine {
     ds4_vocab vocab;
     ds4_weights weights;
     ds4_mtp_weights mtp_weights;
+    ds4_inkling_draft inkling_mtp;
     ds4_dspark_weights dspark_weights;
     ds4_ple_store *qwen_ple_store;
     ds4_qwen38_ple_cuda *qwen_ple_cuda;
@@ -43800,6 +44995,11 @@ struct ds4_session {
     bool motif3_graph_ready;
     ds4_dots3_gpu_graph dots3_graph;
     bool dots3_graph_ready;
+    ds4_inkling_graph inkling_graph;
+    ds4_inkling_spec inkling_spec;
+    int inkling_trial[IK_VERIFY_ROWS];
+    unsigned inkling_trial_n;
+    bool inkling_graph_ready;
     ds4_solar_gpu_graph solar_graph;
     bool solar_graph_ready;
     bool solar_state_valid;
@@ -48648,6 +49848,10 @@ static DS4_MAYBE_UNUSED bool ds4_session_is_motif3(const ds4_session *s) {
     return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MOTIF3;
 }
 
+static bool ds4_session_is_inkling(const ds4_session *s) {
+    return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING;
+}
+
 static bool ds4_session_is_solar(const ds4_session *s) {
     return s && s->engine &&
            DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2;
@@ -48724,7 +49928,9 @@ uint64_t ds4_session_layer_payload_bytes(ds4_session *s,
         !ds4_layer_payload_range_valid(layer_start, layer_end))
         return 0;
     if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
-        ds4_session_is_glm53(s)) return 0;
+        ds4_session_is_glm53(s) || ds4_session_is_inkling(s)) {
+        return 0;
+    }
     if (ds4_session_is_cpu(s)) return 0;
     /* EXAONE's dedicated K/V layout is not part of the DeepSeek disk
      * payload ABI. */
@@ -49191,7 +50397,7 @@ int ds4_session_save_layer_payload(ds4_session *s, FILE *fp,
         return 1;
     }
     if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
-        ds4_session_is_glm53(s)) {
+        ds4_session_is_glm53(s) || ds4_session_is_inkling(s)) {
         payload_set_err(err, errlen,
                         "this model family does not support distributed layer payloads");
         return 1;
@@ -49394,7 +50600,7 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
         return 1;
     }
     if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
-        ds4_session_is_glm53(s)) {
+        ds4_session_is_glm53(s) || ds4_session_is_inkling(s)) {
         payload_set_err(err, errlen,
                         "this model family does not support distributed layer payloads");
         return 1;
@@ -50940,7 +52146,9 @@ uint64_t ds4_session_payload_bytes(ds4_session *s) {
     if (!s || !s->checkpoint_valid) return 0;
     if (s->distributed) return 0;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_glm53(s)) return 0;
+    if (ds4_session_is_glm53(s) || ds4_session_is_inkling(s)) {
+        return 0;
+    }
     if (ds4_session_is_qwen4exp(s)) {
         if (!s->qwen_graph_ready ||
             s->qwen_graph.length != (uint32_t)s->checkpoint.len) return 0u;
@@ -51114,6 +52322,10 @@ int ds4_session_stage_payload(ds4_session *s, ds4_session_payload_file *out,
 }
 
 int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen) {
+    if (ds4_session_is_inkling(s)) {
+        payload_set_err(err, errlen, "Inkling session snapshots are not implemented yet");
+        return 1;
+    }
     if (!s || !fp || !s->checkpoint_valid) {
         payload_set_err(err, errlen, "session has no valid checkpoint to save");
         return 1;
@@ -51573,6 +52785,10 @@ static int session_solar_load_payload(ds4_session *s,
 #endif
 
 int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, char *err, size_t errlen) {
+    if (ds4_session_is_inkling(s)) {
+        payload_set_err(err, errlen, "Inkling session snapshots are not implemented yet");
+        return 1;
+    }
     if (!s || !fp) {
         payload_set_err(err, errlen, "invalid session payload load");
         return 1;
@@ -55075,6 +56291,11 @@ static uint32_t qwen4exp_graph_prefill_cap_for_context(uint32_t ctx_size);
  * rows BOUNDED. */
 uint64_t ds4_engine_session_graph_bytes_estimate(ds4_engine *e, int ctx) {
     if (!e || ctx <= 0) return 0;
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
+        const uint32_t cap = inkling_prefill_cap((uint32_t)ctx);
+        return (e->mtp_ready ? inkling_mtp_memory((uint32_t)ctx, cap)
+                             : inkling_context_memory((uint32_t)ctx, cap)).total_bytes;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
         const uint32_t prefill_cap =
             qwen4exp_graph_prefill_cap_for_context((uint32_t)ctx);
@@ -63026,7 +64247,8 @@ int ds4_engine_generate_argmax(
         void              *progress_ud) {
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2 ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MOTIF3 ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_EXAONE_MOE) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_EXAONE_MOE ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
         return generate_public_session_argmax(
             e, prompt, n_predict, ctx_size, emit, done, emit_ud,
             progress, progress_ud);
@@ -64249,9 +65471,23 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
 
     const bool graph_backend = ds4_backend_uses_graph(opt->backend);
     model_open(&e->model, opt->model_path, graph_backend, !opt->inspect_only);
-    if (opt->warm_weights) model_warm_weights(&e->model);
     if (g_host_shape) model_apply_host_shape();
     else config_validate_model(&e->model);
+    if (!opt->inspect_only && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING &&
+        (e->backend != DS4_BACKEND_CUDA || load_slice ||
+         opt->distributed.role != DS4_DISTRIBUTED_NONE ||
+         (e->directional_steering_file && e->directional_steering_file[0]) ||
+         e->directional_steering_attn_scale != 0.0f ||
+         e->directional_steering_ffn_scale != 0.0f)) {
+        fprintf(stderr, "ds4: Inkling requires one full CUDA model "
+                        "without distributed slices or directional steering\n");
+        ds4_engine_close(e);
+        *out = NULL;
+        return 1;
+    }
+    if (opt->warm_weights) {
+        model_warm_weights(&e->model);
+    }
     if (!opt->inspect_only) {
         if (g_host_vocab) model_apply_host_vocab(&e->vocab);
         else vocab_load(&e->vocab, &e->model);
@@ -64331,11 +65567,11 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         const char *dspark_path = opt->dspark_path;
         if (!dspark_path || !dspark_path[0])
             dspark_path = getenv("DS4_DSPARK_MODEL");
-        if ((opt->mtp_path && opt->mtp_path[0]) ||
+        if ((opt->mtp_path && opt->mtp_path[0] && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_INKLING) ||
             (dspark_path && dspark_path[0])) {
             fprintf(stderr,
-                    "ds4: MTP and DSpark support models are DeepSeek-only; "
-                    "remove --mtp/--dspark (or DS4_DSPARK_MODEL) for this model family\n");
+                    "ds4: this model family does not accept the requested "
+                    "MTP/DSpark support model\n");
             ds4_engine_close(e);
             *out = NULL;
             return 1;
@@ -64348,14 +65584,21 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
          * above skips (the host already ran the expected-layout table). */
         if (g_host_mtp_bind_map) ds4_host_bind_map_install(g_host_mtp_bind_map);
         model_open(&e->mtp_model, opt->mtp_path, graph_backend, true);
-        mtp_weights_bind(&e->mtp_weights, &e->mtp_model);
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
+            inkling_bind_draft(&e->inkling_mtp, &e->mtp_model);
+            if (e->mtp_draft_tokens > INKLING_DRAFT_LAYERS) {
+                e->mtp_draft_tokens = INKLING_DRAFT_LAYERS;
+            }
+        } else {
+            mtp_weights_bind(&e->mtp_weights, &e->mtp_model);
+        }
         ds4_host_bind_map_clear();
         e->mtp_ready = true;
         /* v0.5.1 inc4: nothing in the gguf identifies which base checkpoint
          * this module was extracted for (see the engine fields) -- arm the
          * accept guard so a wrong-generation pairing announces and disables
          * itself instead of silently halving decode speed forever. */
-        {
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK4) {
             const char *ge = getenv("DS4_MTP_ACCEPT_GUARD");
             e->mtp_guard_on = !(ge && ge[0] == '0' && ge[1] == '\0');
         }
@@ -65033,7 +66276,8 @@ uint64_t ds4_engine_hidden_f32_values(ds4_engine *e) {
     (void)e;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2 ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_EXAONE_MOE ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
         return (uint64_t)DS4_N_EMBD;
     }
     return (uint64_t)DS4_N_HC * DS4_N_EMBD;
@@ -65043,7 +66287,10 @@ int ds4_engine_n_hc(ds4_engine *e) {
     (void)e;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2 ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_EXAONE_MOE ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) return 1;
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
+        return 1;
+    }
     return (int)DS4_N_HC;
 }
 
@@ -65054,6 +66301,9 @@ bool ds4_engine_supports_batching(ds4_engine *e) {
     /* dots3 serves through serial latent sessions for now; its persistent
      * multi-bank runtime is future work, and refusing here routes the
      * server onto the serial lane instead of the DeepSeek bank body. */
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
+        return false;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE) return false;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) return false;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
@@ -65366,8 +66616,74 @@ static uint64_t session_tensors_census_live(void) {
     return ds4_mem_cell_live(&cell);
 }
 
+static bool inkling_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
+                                 ds4_session_graph_fit_quote *q) {
+    const uint64_t need = (e->mtp_ready ? inkling_mtp_memory(ctx, cap)
+                                       : inkling_context_memory(ctx, cap)).total_bytes;
+    if (q) {
+        memset(q, 0, sizeof(*q));
+        q->need_bytes = need;
+    }
+    if (e->backend != DS4_BACKEND_CUDA || !need) {
+        return false;
+    }
+    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
+    uint64_t available = 0, total = 0;
+    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+        if (q) {
+            q->fits = 1;
+            q->fail_open = 1;
+        }
+        return true;
+    }
+    const uint64_t substrate = ds4_gpu_substrate_outstanding();
+    available = available > substrate ? available - substrate : 0;
+    const uint64_t margin = ds4_session_graph_headroom_bytes();
+    const uint64_t ask = need > UINT64_MAX - margin ? UINT64_MAX : need + margin;
+    const bool fits = available >= ask;
+    if (q) {
+        q->fits = fits;
+        q->avail_bytes = available;
+        q->headroom_bytes = margin;
+        q->deficit_bytes = fits ? 0 : ask - available;
+    }
+    return fits;
+}
+
 static int ds4_session_alloc_graph(ds4_session *s) {
     ds4_engine *e = s->engine;
+    if (ds4_session_is_inkling(s)) {
+        const uint32_t ctx = (uint32_t)s->ctx_size;
+        const ds4_context_memory memory = e->mtp_ready ? inkling_mtp_memory(ctx, s->prefill_cap)
+                                                        : inkling_context_memory(ctx, s->prefill_cap);
+        const uint64_t estimate = memory.total_bytes;
+        const unsigned verify = ctx < IK_VERIFY_ROWS ? ctx : IK_VERIFY_ROWS;
+        ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, estimate, 0);
+        const uint64_t before = session_tensors_census_live();
+        ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
+        const bool ok = inkling_session_fit(e, ctx, s->prefill_cap, NULL) &&
+            inkling_graph_alloc(&s->inkling_graph, &e->model, &e->weights,
+                                 ctx, memory.prefill_cap) &&
+            (!e->mtp_ready ||
+             (inkling_spec_alloc(&s->inkling_spec, &e->mtp_model, &e->inkling_mtp, ctx, memory.prefill_cap) &&
+              inkling_graph_track(&s->inkling_graph, verify) &&
+              inkling_graph_track(&s->inkling_spec.draft.graph, verify)));
+        ds4_gpu_mem_scope_end();
+        if (!ok) {
+            inkling_graph_free(&s->inkling_graph);
+            inkling_spec_free(&s->inkling_spec);
+            s->inkling_graph_ready = false;
+            s->graph_alloc_bytes = 0;
+            ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
+            return 1;
+        }
+        s->inkling_graph_ready = true;
+        const uint64_t after = session_tensors_census_live();
+        s->graph_alloc_bytes = after > before ? after - before : estimate;
+        ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION,
+                            s->graph_alloc_bytes, s->graph_alloc_bytes);
+        return 0;
+    }
     if (ds4_session_is_glm53(s)) {
         const uint64_t est = glm53_graph_bytes_estimate((uint32_t)s->ctx_size);
         ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, est, 0);
@@ -65619,6 +66935,10 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
     memset(q, 0, sizeof(*q));
     if (!e || ctx_size <= 0) return 0;
 #ifndef DS4_NO_GPU
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
+        return inkling_session_fit(e, (uint32_t)ctx_size,
+                                   inkling_prefill_cap((uint32_t)ctx_size), q);
+    }
     if (e->backend == DS4_BACKEND_CPU) {
         q->fits = 1;
         q->fail_open = 1;
@@ -65678,6 +66998,34 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
 
 int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
     if (!out || !e || ctx_size <= 0) return 1;
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
+#ifdef DS4_NO_GPU
+        return 1;
+#else
+        if ((uint32_t)ctx_size > DS4_SHAPE_INKLING_SMALL.rope_orig_ctx ||
+            e->backend != DS4_BACKEND_CUDA || !e->metal_ready ||
+            e->distributed.role != DS4_DISTRIBUTED_NONE ||
+            e->dspark_ready) {
+            fprintf(stderr, "ds4: Inkling requires one full CUDA model without DSpark\n");
+            return 1;
+        }
+        ds4_session *s = xcalloc(1, sizeof(*s));
+        s->engine = e;
+        s->ctx_size = ctx_size;
+        s->generation = 1;
+        s->prefill_cap = inkling_prefill_cap((uint32_t)ctx_size);
+        s->logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(*s->logits));
+        if (ds4_session_lazy_graph_enabled()) {
+            s->graph_pending = true;
+        } else if (ds4_session_alloc_graph(s) != 0) {
+            free(s->logits);
+            free(s);
+            return 1;
+        }
+        *out = s;
+        return 0;
+#endif
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
 #ifdef DS4_NO_GPU
         fprintf(stderr, "ds4: GLM-5.3 sessions require the CUDA backend\n");
@@ -65919,7 +67267,12 @@ void ds4_session_free(ds4_session *s) {
     }
 #ifndef DS4_NO_GPU
     else {
-        if (ds4_session_is_glm53(s)) {
+        if (ds4_session_is_inkling(s)) {
+            inkling_graph_free(&s->inkling_graph);
+            inkling_spec_free(&s->inkling_spec);
+            s->inkling_graph_ready = false;
+            ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
+        } else if (ds4_session_is_glm53(s)) {
             glm53_graph_free(&s->glm53_graph);
             s->glm53_graph_ready = false;
             ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
@@ -65989,8 +67342,10 @@ int ds4_session_set_power(ds4_session *s, int power_percent) {
 #ifndef DS4_NO_GPU
     if (!ds4_session_is_cpu(s) && !ds4_session_is_motif3(s) &&
         !ds4_session_is_exaone(s) && !ds4_session_is_dots3(s) &&
-        !ds4_session_is_qwen4exp(s) && !ds4_session_is_glm53(s))
+        !ds4_session_is_qwen4exp(s) && !ds4_session_is_glm53(s) &&
+        !ds4_session_is_inkling(s)) {
         s->graph.power_percent = (uint32_t)power_percent;
+    }
 #endif
     return 0;
 }
@@ -66019,7 +67374,8 @@ int ds4_session_layer_slice_reset(ds4_session *s, char *err, size_t errlen) {
     }
     if (ds4_session_is_solar(s) || ds4_session_is_exaone(s) ||
         ds4_session_is_motif3(s) || ds4_session_is_dots3(s) ||
-        ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s)) {
+        ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s) ||
+        ds4_session_is_inkling(s)) {
         if (errlen) snprintf(err, errlen,
                              "layer-slice sessions do not support this model family");
         return 1;
@@ -66054,7 +67410,8 @@ int ds4_session_eval_output_head_from_hc(ds4_session *s,
         if (errlen) snprintf(err, errlen, "invalid output-head hidden-state input");
         return 1;
     }
-    if (ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s)) {
+    if (ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s) ||
+        ds4_session_is_inkling(s)) {
         if (errlen) snprintf(err, errlen,
                              "this model family does not expose the DeepSeek HC output-head ABI");
         return 1;
@@ -66156,7 +67513,8 @@ int ds4_session_eval_layer_slice(ds4_session *s,
         if (errlen) snprintf(err, errlen, "missing layer-slice session");
         return 1;
     }
-    if (ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s)) {
+    if (ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s) ||
+        ds4_session_is_inkling(s)) {
         if (errlen) snprintf(err, errlen,
                              "this model family does not support layer-slice execution");
         return 1;
@@ -66567,12 +67925,213 @@ static int ds4_session_sync_glm53(
  *
  * A non-matching prompt discards the checkpoint and prefills from token zero.
  */
+#ifndef DS4_NO_GPU
+static bool inkling_session_forward(ds4_session *s, const int *prefix, unsigned total,
+                                     unsigned n, const float *const *features) {
+    ds4_engine *e = s->engine;
+    ds4_inkling_graph *g = &s->inkling_graph;
+    const unsigned tracked = g->undo_cap;
+    g->undo_cap = 0;
+    const bool ok = inkling_graph_media(g, &e->model, &e->weights, prefix + total - n, n, features);
+    g->undo_cap = tracked;
+    return ok && (!e->mtp_ready ||
+        inkling_spec_extend(&s->inkling_spec, &e->model, &e->weights, &e->mtp_model,
+                            &e->inkling_mtp, g->buf[IK_FINAL], prefix, total, n));
+}
+
+static int inkling_session_sync(ds4_session *s, const ds4_tokens *prompt,
+                                 const float *const *features,
+                                 char *err, size_t errlen) {
+    ds4_inkling_graph *g = &s->inkling_graph;
+    if (!s->inkling_graph_ready || s->inkling_trial_n) {
+        payload_set_err(err, errlen, "Inkling sync needs an initialized graph without pending verification");
+        return 1;
+    }
+    for (int i = 0; i < prompt->len; i++) {
+        if (prompt->v[i] < 0 || prompt->v[i] >= INKLING_VALID_VOCAB) {
+            payload_set_err(err, errlen, "Inkling prompt has an invalid token");
+            return 1;
+        }
+        if (!features && (prompt->v[i] == IK_IMAGE_TOKEN || prompt->v[i] == IK_AUDIO_TOKEN)) {
+            payload_set_err(err, errlen, "Inkling media placeholders require multimodal sync");
+            return 1;
+        }
+    }
+    int start = 0;
+    if (!features && s->checkpoint_valid && !g->failed && g->position == (uint32_t)s->checkpoint.len &&
+        (!s->engine->mtp_ready || (inkling_spec_valid(&s->inkling_spec) && s->inkling_spec.position == g->position)) &&
+        prompt->len >= s->checkpoint.len && ds4_tokens_starts_with(prompt, &s->checkpoint)) {
+        start = s->checkpoint.len;
+        if (start == prompt->len) {
+            return 0;
+        }
+    } else {
+        /* Convolution history cannot be reconstructed by shortening KV alone. */
+        ds4_session_invalidate(s);
+        if (g->failed || (s->engine->mtp_ready && !inkling_spec_valid(&s->inkling_spec))) {
+            payload_set_err(err, errlen, "Inkling state reset failed");
+            return 1;
+        }
+    }
+    s->mtp_draft_valid = false;
+    while (start < prompt->len) {
+        uint32_t rows = (uint32_t)(prompt->len - start);
+        if (rows > s->prefill_cap) {
+            rows = s->prefill_cap;
+        }
+        if (!inkling_session_forward(s, prompt->v, (unsigned)start + rows, rows,
+                                       features ? features + start : NULL)) {
+            ds4_session_invalidate(s);
+            payload_set_err(err, errlen, "Inkling prefill failed");
+            return 1;
+        }
+        start += (int)rows;
+        if (s->progress) {
+            s->progress(s->progress_ud, "prefill_chunk", start, prompt->len);
+        }
+    }
+    if (!ds4_gpu_tensor_read(g->logits, 0, s->logits, DS4_N_VOCAB * sizeof(float))) {
+        ds4_session_invalidate(s);
+        payload_set_err(err, errlen, "Inkling logits readback failed");
+        return 1;
+    }
+    ds4_tokens_copy(&s->checkpoint, prompt);
+    s->checkpoint_valid = true;
+    return 0;
+}
+
+static int inkling_session_eval(ds4_session *s, int token, char *err, size_t errlen) {
+    ds4_inkling_graph *g = &s->inkling_graph;
+    if (token < 0 || token >= INKLING_VALID_VOCAB || !s->inkling_graph_ready ||
+        !s->checkpoint_valid || s->inkling_trial_n || g->failed || g->position >= g->context ||
+        g->position != (uint32_t)s->checkpoint.len ||
+        (s->engine->mtp_ready && (!inkling_spec_valid(&s->inkling_spec) || s->inkling_spec.position != g->position))) {
+        payload_set_err(err, errlen, "Inkling decode needs a valid token and checkpoint");
+        return 1;
+    }
+    token_vec_push(&s->checkpoint, token);
+    if (!inkling_session_forward(s, s->checkpoint.v, (unsigned)s->checkpoint.len, 1, NULL) ||
+        !ds4_gpu_tensor_read(g->logits, 0, s->logits, DS4_N_VOCAB * sizeof(float))) {
+        ds4_session_invalidate(s);
+        payload_set_err(err, errlen, "Inkling decode failed");
+        return 1;
+    }
+    s->mtp_draft_valid = false;
+    return 0;
+}
+
+static void inkling_trial_failed(ds4_session *s) {
+    /* Partial GPU work is unusable. Rust owns the explicit invalidate that
+     * resets both graphs and advances native and host generations once. */
+    s->checkpoint_valid = false;
+    s->inkling_trial_n = 0;
+    s->mtp_draft_valid = false;
+    s->inkling_graph.failed = true;
+    s->inkling_spec.draft.graph.failed = true;
+}
+#endif
+
+int ds4_session_inkling_trial(ds4_session *s, int first, int max_tokens,
+                               int *tokens, int *target, int cap,
+                               char *err, size_t errlen) {
+#ifdef DS4_NO_GPU
+    (void)s; (void)first; (void)max_tokens; (void)tokens; (void)target; (void)cap;
+    payload_set_err(err, errlen, "Inkling MTP requires CUDA");
+    return -1;
+#else
+    if (!s || !ds4_session_is_inkling(s) || !tokens || !target || cap <= 0) {
+        payload_set_err(err, errlen, "invalid Inkling trial output");
+        return -1;
+    }
+    if (max_tokens <= 0 || !s->engine->mtp_ready) {
+        return 0;
+    }
+    ds4_engine *e = s->engine;
+    ds4_inkling_graph *g = &s->inkling_graph;
+    if (!s->inkling_graph_ready || !s->checkpoint_valid || s->inkling_trial_n ||
+        g->failed || g->position != (unsigned)s->checkpoint.len || g->position >= g->context ||
+        !inkling_spec_valid(&s->inkling_spec) || s->inkling_spec.position != g->position ||
+        first < 0 || first >= INKLING_VALID_VOCAB) {
+        payload_set_err(err, errlen, "Inkling trial needs a valid token and committed checkpoint");
+        return -1;
+    }
+    unsigned n = (unsigned)max_tokens;
+    if (n > (unsigned)cap) {
+        n = (unsigned)cap;
+    }
+    if (n > IK_VERIFY_ROWS) {
+        n = IK_VERIFY_ROWS;
+    }
+    if (n > (unsigned)e->mtp_draft_tokens + 1) {
+        n = (unsigned)e->mtp_draft_tokens + 1;
+    }
+    if (n > g->context - g->position) {
+        n = g->context - g->position;
+    }
+    int predicted[IK_VERIFY_ROWS];
+    s->inkling_trial[0] = first;
+    if ((n > 1 && !inkling_spec_propose(&s->inkling_spec, &e->model, &e->weights,
+                                        &e->mtp_model, &e->inkling_mtp, s->checkpoint.v,
+                                        first, s->inkling_trial + 1, n - 1)) ||
+        !inkling_target_verify(g, &e->model, &e->weights, s->inkling_trial, n, predicted)) {
+        inkling_trial_failed(s);
+        payload_set_err(err, errlen, "Inkling draft/target verification failed");
+        return -1;
+    }
+    s->inkling_trial_n = n;
+    memcpy(tokens, s->inkling_trial, n * sizeof(*tokens));
+    memcpy(target, predicted, n * sizeof(*target));
+    return (int)n;
+#endif
+}
+
+int ds4_session_inkling_commit(ds4_session *s, int keep, char *err, size_t errlen) {
+#ifdef DS4_NO_GPU
+    (void)s; (void)keep;
+    payload_set_err(err, errlen, "Inkling MTP requires CUDA");
+    return 1;
+#else
+    if (!s || !ds4_session_is_inkling(s) || !s->engine->mtp_ready ||
+        !s->checkpoint_valid || keep <= 0 || (unsigned)keep > s->inkling_trial_n) {
+        payload_set_err(err, errlen, "invalid Inkling accepted prefix");
+        return 1;
+    }
+    ds4_engine *e = s->engine;
+    ds4_inkling_graph *g = &s->inkling_graph;
+    if (!inkling_target_keep(g, &e->model, &e->weights, (unsigned)keep)) {
+        inkling_trial_failed(s);
+        payload_set_err(err, errlen, "Inkling target state restore failed");
+        return 1;
+    }
+    for (int i = 0; i < keep; i++) {
+        token_vec_push(&s->checkpoint, s->inkling_trial[i]);
+    }
+    if (!inkling_spec_extend(&s->inkling_spec, &e->model, &e->weights, &e->mtp_model,
+                              &e->inkling_mtp, g->buf[IK_FINAL], s->checkpoint.v,
+                              (unsigned)s->checkpoint.len, (unsigned)keep) ||
+        !ds4_gpu_tensor_read(g->logits, 0, s->logits, DS4_N_VOCAB * sizeof(float))) {
+        inkling_trial_failed(s);
+        payload_set_err(err, errlen, "Inkling accepted draft state update failed");
+        return 1;
+    }
+    s->inkling_trial_n = 0;
+    s->mtp_draft_valid = false;
+    return 0;
+#endif
+}
+
 int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
     if (!s || !prompt || prompt->len <= 0 || prompt->len > s->ctx_size) {
         snprintf(err, errlen, "prompt exceeds context");
         return 1;
     }
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_inkling(s)) {
+        if (ds4_session_ensure_graph(s, err, errlen) != 0) {
+            return 1;
+        }
+        return inkling_session_sync(s, prompt, NULL, err, errlen);
+    }
     if (ds4_session_is_motif3(s)) {
         if (ds4_session_ensure_graph(s, err, errlen) != 0) return 1;
         if (!s->motif3_graph_ready ||
@@ -67049,6 +68608,117 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
 #endif
 }
 
+int ds4_session_sync_inkling(ds4_session *s, const ds4_tokens *prompt,
+                              const ds4_inkling_pixels *images, uint32_t image_count,
+                              const ds4_inkling_audio *audios, uint32_t audio_count,
+                              char *err, size_t errlen) {
+#ifdef DS4_NO_GPU
+    (void)s; (void)prompt; (void)images; (void)image_count; (void)audios; (void)audio_count;
+    payload_set_err(err, errlen, "Inkling media requires CUDA");
+    return 1;
+#else
+    if (!s || !ds4_session_is_inkling(s) || !prompt || !prompt->v || prompt->len <= 0 ||
+        prompt->len > s->ctx_size || (image_count && !images) || (audio_count && !audios) ||
+        image_count > IK_MEDIA_LIMIT || audio_count > IK_MEDIA_LIMIT ||
+        image_count + audio_count == 0 || image_count + audio_count > IK_MEDIA_LIMIT) {
+        payload_set_err(err, errlen, "invalid Inkling media sync input");
+        return 1;
+    }
+    typedef struct {
+        const float *pixels;
+        const int32_t *codes;
+        uint64_t values;
+        uint32_t start, rows;
+        int token;
+    } media_span;
+    const uint32_t count = image_count + audio_count;
+    media_span spans[IK_MEDIA_LIMIT] = {0};
+    for (uint32_t i = 0; i < image_count; i++) {
+        spans[i] = (media_span){.pixels = images[i].pixels, .values = images[i].pixel_count,
+            .start = images[i].token_offset, .rows = images[i].token_count, .token = IK_IMAGE_TOKEN};
+    }
+    for (uint32_t i = 0; i < audio_count; i++) {
+        spans[image_count + i] = (media_span){.codes = audios[i].codes, .values = audios[i].code_count,
+            .start = audios[i].token_offset, .rows = audios[i].token_count, .token = IK_AUDIO_TOKEN};
+    }
+    /* Sort the two modality lists together before exact-coverage admission. */
+    for (uint32_t i = 1; i < count; i++) {
+        media_span span = spans[i];
+        uint32_t j = i;
+        while (j && spans[j - 1].start > span.start) {
+            spans[j] = spans[j - 1];
+            j--;
+        }
+        spans[j] = span;
+    }
+    uint32_t previous_end = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        const media_span *span = &spans[i];
+        const uint32_t start = span->start, n = span->rows;
+        const uint32_t width = span->token == IK_IMAGE_TOKEN ? IK_IMAGE_PIXELS : IK_AUDIO_BINS;
+        if ((!span->pixels && !span->codes) || !n || n > IK_MEDIA_MAX_ROWS || start < previous_end ||
+            start >= (uint32_t)prompt->len || n > (uint32_t)prompt->len - start ||
+            span->values != (uint64_t)n * width) {
+            payload_set_err(err, errlen, "invalid Inkling media span");
+            return 1;
+        }
+        for (uint32_t pos = previous_end; pos < start + n; pos++) {
+            const int token = prompt->v[pos];
+            if (token < 0 || token >= INKLING_VALID_VOCAB || (pos >= start && token != span->token) ||
+                (pos < start && (token == IK_IMAGE_TOKEN || token == IK_AUDIO_TOKEN))) {
+                payload_set_err(err, errlen, "Inkling media placeholders do not match inputs");
+                return 1;
+            }
+        }
+        previous_end = start + n;
+    }
+    for (uint32_t pos = previous_end; pos < (uint32_t)prompt->len; pos++) {
+        if (prompt->v[pos] < 0 || prompt->v[pos] >= INKLING_VALID_VOCAB ||
+            prompt->v[pos] == IK_IMAGE_TOKEN || prompt->v[pos] == IK_AUDIO_TOKEN) {
+            payload_set_err(err, errlen, "Inkling media placeholder has no input");
+            return 1;
+        }
+    }
+    float *storage[IK_MEDIA_LIMIT] = {0};
+    const float **features = calloc((size_t)prompt->len, sizeof(*features));
+    int rc = 1;
+    if (!features) {
+        payload_set_err(err, errlen, "Inkling feature row allocation failed");
+        return 1;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        const media_span *span = &spans[i];
+        storage[i] = malloc((uint64_t)span->rows * IK_HIDDEN * sizeof(float));
+        bool encoded = false;
+        if (storage[i] && span->token == IK_IMAGE_TOKEN) {
+            encoded = inkling_image_encode(storage[i], span->pixels, span->rows,
+                                            &s->engine->model, &s->engine->weights.inkling);
+        } else if (storage[i]) {
+            encoded = inkling_audio_encode(storage[i], span->codes, span->rows,
+                                            &s->engine->model, &s->engine->weights.inkling);
+        }
+        if (!encoded) {
+            payload_set_err(err, errlen, "Inkling media encoding failed");
+            goto cleanup;
+        }
+        for (uint32_t row = 0; row < span->rows; row++) {
+            features[span->start + row] = storage[i] + (uint64_t)row * IK_HIDDEN;
+        }
+    }
+    /* Token identity cannot distinguish changed media. Refill from zero until
+     * media identity is part of the checkpoint; encoder failures preserve KV. */
+    if (ds4_session_ensure_graph(s, err, errlen) == 0) {
+        rc = inkling_session_sync(s, prompt, features, err, errlen);
+    }
+cleanup:
+    for (uint32_t i = 0; i < count; i++) {
+        free(storage[i]);
+    }
+    free(features);
+    return rc;
+#endif
+}
+
 int ds4_session_sync_multimodal(ds4_session *s,
                                 const ds4_tokens *prompt,
                                 const ds4_vision_span *spans,
@@ -67255,14 +68925,23 @@ int ds4_session_token_logprob(ds4_session *s, int token, ds4_token_score *out) {
 }
 
 int ds4_session_copy_logits(ds4_session *s, float *out, int cap) {
-    if (!s || !out || cap < (int)DS4_N_VOCAB) return 0;
-    memcpy(out, s->logits, (size_t)DS4_N_VOCAB * sizeof(out[0]));
-    return (int)DS4_N_VOCAB;
+    const int count = ds4_session_is_inkling(s) ? INKLING_VALID_VOCAB : (int)DS4_N_VOCAB;
+    if (!s || !out || cap < count) {
+        return 0;
+    }
+    memcpy(out, s->logits, (size_t)count * sizeof(out[0]));
+    return count;
 }
 
 int ds4_session_set_logits(ds4_session *s, const float *logits, int n) {
-    if (!s || !logits || n != (int)DS4_N_VOCAB) return 1;
-    memcpy(s->logits, logits, (size_t)DS4_N_VOCAB * sizeof(s->logits[0]));
+    const int count = ds4_session_is_inkling(s) ? INKLING_VALID_VOCAB : (int)DS4_N_VOCAB;
+    if (!s || !logits || n != count) {
+        return 1;
+    }
+    memcpy(s->logits, logits, (size_t)count * sizeof(s->logits[0]));
+    for (uint32_t i = (uint32_t)count; i < DS4_N_VOCAB; i++) {
+        s->logits[i] = -INFINITY;
+    }
     return 0;
 }
 
@@ -67273,6 +68952,11 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
         if (errlen) snprintf(err, errlen, "context reached (%d)", s->ctx_size);
         return 1;
     }
+#ifndef DS4_NO_GPU
+    if (ds4_session_is_inkling(s)) {
+        return inkling_session_eval(s, token, err, errlen);
+    }
+#endif
     if (s->distributed) {
         if (!s->checkpoint_valid) {
             if (errlen) snprintf(err, errlen, "distributed decode requires a valid checkpoint");
@@ -67930,6 +69614,13 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
             s, first_token, max_tokens, eos_token,
             accepted, accepted_cap, err, errlen);
 #endif
+    }
+    if (ds4_session_is_inkling(s)) {
+        if (ds4_session_eval(s, first_token, err, errlen) != 0) {
+            return -1;
+        }
+        accepted[0] = first_token;
+        return 1;
     }
     if (ds4_session_is_solar(s)) {
         /* Solar has no MTP attachment.  Keep callers on the same API while
@@ -69178,7 +70869,13 @@ void ds4_session_invalidate(ds4_session *s) {
     s->checkpoint.len = 0;
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_glm53(s) && s->glm53_graph_ready) {
+    if (ds4_session_is_inkling(s) && s->inkling_graph_ready) {
+        s->inkling_trial_n = 0;
+        (void)inkling_graph_reset(&s->inkling_graph);
+        if (s->engine->mtp_ready) {
+            (void)inkling_spec_reset(&s->inkling_spec);
+        }
+    } else if (ds4_session_is_glm53(s) && s->glm53_graph_ready) {
         (void)glm53_graph_reset(&s->glm53_graph);
     } else if (ds4_session_is_solar(s)) {
         s->solar_state_valid = false;
@@ -69207,7 +70904,16 @@ void ds4_session_rewind(ds4_session *s, int pos) {
     s->checkpoint.len = pos;
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_glm53(s) && pos != old_pos) {
+    if (ds4_session_is_inkling(s) && (pos != old_pos || s->inkling_trial_n)) {
+        s->checkpoint_valid = false;
+        s->inkling_trial_n = 0;
+        if (s->inkling_graph_ready) {
+            (void)inkling_graph_reset(&s->inkling_graph);
+            if (s->engine->mtp_ready) {
+                (void)inkling_spec_reset(&s->inkling_spec);
+            }
+        }
+    } else if (ds4_session_is_glm53(s) && pos != old_pos) {
         s->checkpoint_valid = false;
         if (s->glm53_graph_ready)
             (void)glm53_graph_reset(&s->glm53_graph);

@@ -409,7 +409,7 @@ fn qwen_image_inputs_normalize_across_all_three_surfaces() {
         assert_ne!(request.needs & NEED_IMAGE, 0);
         assert_eq!(
             generation_blocked(request, 0),
-            Some("image input is supported only by Qwen4Exp or GLM-5.3")
+            Some("image input is supported only by Qwen4Exp, GLM-5.3 or Inkling")
         );
         assert_eq!(
             generation_blocked(request, 6),
@@ -446,5 +446,72 @@ fn image_input_rejects_remote_urls_wrong_magic_and_non_user_roles() {
     assert_eq!(
         rust_parse("chat", &assistant).unwrap_err(),
         "images are allowed only in user messages"
+    );
+}
+
+#[test]
+fn inkling_audio_chat_input() {
+    const WAV: &str = "UklGRiYAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQIAAAAAAA==";
+    let block =
+        serde_json::json!({"type":"input_audio", "input_audio":{"format":"wav", "data":WAV}});
+    let body = serde_json::json!({"messages":[{"role":"user", "content":[{"type":"text","text":"Transcribe."},block]}]});
+    let result = rust_parse("chat", &body.to_string());
+    assert!(result.is_ok(), "{result:?}");
+    let parsed = result.unwrap();
+    assert_eq!(parsed.audios.len(), 1);
+    assert_eq!(
+        parsed.messages[0].parts,
+        [ChatPart::Text("Transcribe.".into()), ChatPart::Audio(0)]
+    );
+    assert_ne!(parsed.needs & ds4_server::route::NEED_AUDIO, 0);
+    let route = ds4_server::route_decide(
+        parsed.needs,
+        WireSurface::OpenaiChat,
+        &ds4_server::RouteEnv {
+            have_cont: true,
+            coalesce: true,
+            prompt_len: 128,
+            seq_cap: 1024,
+            cont_anthropic: true,
+            cont_responses: true,
+            cont_tools_anthropic: true,
+            cont_tools_responses: true,
+        },
+    );
+    assert_eq!(route.lane, ds4_server::LANE_SERIAL);
+    assert_eq!(generation_blocked(&parsed, 9), None);
+    assert_eq!(
+        generation_blocked(&parsed, 6),
+        Some("audio input requires Inkling")
+    );
+    let prompt = ds4_server::render_prompt(&parsed, 9).unwrap();
+    assert!(String::from_utf8(prompt)
+        .unwrap()
+        .contains("<|content_audio_input|><|unused_200053|><|audio_end|>"));
+    for bad in [
+        body.to_string().replace("\"wav\"", "\"mp3\""),
+        body.to_string().replace("\"user\"", "\"assistant\""),
+        body.to_string().replace(WAV, "!!!!"),
+        body.to_string().replace(WAV, "AAAA"),
+        serde_json::json!({"messages":[{"role":"user","content":vec![block;5]}]}).to_string(),
+    ] {
+        assert!(rust_parse("chat", &bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn audio_image_budget_preflight() {
+    // Two 10 MiB audio payloads exhaust the shared budget. A following
+    // image must be refused before decoding or inspecting its bytes.
+    let size = 10 * 1024 * 1024;
+    let mut data = "UklGRgAAAABXQVZF".to_string();
+    data.push_str(&"AAAA".repeat((size - 12) / 3));
+    data.push_str("AA==");
+    let block =
+        serde_json::json!({"type":"input_audio", "input_audio":{"format":"wav", "data":data}});
+    let body = serde_json::json!({"messages":[{"role":"user", "content":[block.clone(),block,{"type":"image_url","image_url":"data:image/png;base64,AAAA"}]}]});
+    assert_eq!(
+        rust_parse("chat", &body.to_string()).unwrap_err(),
+        "media exceeds 20 MiB request limit"
     );
 }

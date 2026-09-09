@@ -31,8 +31,8 @@ use crate::render::{
     SOLAR_IM_END,
 };
 use crate::retry::{
-    build_invalid_tool_error_suffix, parse_failure_should_retry, terminal_finish,
-    truncation_outcome, TruncationOutcome,
+    build_recovery_suffix, parse_failure_should_retry, terminal_finish, truncation_outcome,
+    TruncationOutcome,
 };
 use crate::route::{decode_budget, think_mode_enabled, Api, ReqKind};
 use crate::stream::{
@@ -100,6 +100,12 @@ pub struct VisionPromptInput {
     pub token_offset: u32,
 }
 
+#[derive(Clone, Debug)]
+pub struct AudioPromptInput {
+    pub data: Arc<[u8]>,
+    pub token_offset: u32,
+}
+
 /// C `serial_session_ensure_fit` view of the serial session lane.
 /// `None` from [`DecodeIo::serial_session_probe`] means the engine has no
 /// native serial session (stub/test engines): the host must pass native and
@@ -138,6 +144,20 @@ pub trait DecodeIo {
     ) -> Result<(), GenerateError> {
         Err(GenerateError::Unsupported("vision encoder is not loaded"))
     }
+    fn audio_probe(&self, _data: &[u8]) -> Result<u32, GenerateError> {
+        Err(GenerateError::Unsupported("audio encoder is not loaded"))
+    }
+    fn sync_media_prompt(
+        &mut self,
+        tokens: &[i32],
+        images: &[VisionPromptInput],
+        audios: &[AudioPromptInput],
+    ) -> Result<(), GenerateError> {
+        if audios.is_empty() {
+            return self.sync_vision_prompt(tokens, images);
+        }
+        Err(GenerateError::Unsupported("audio encoder is not loaded"))
+    }
     fn sync(&mut self, tokens: &[i32]) -> Result<(), GenerateError>;
     fn sync_prompt(
         &mut self,
@@ -168,6 +188,12 @@ pub trait DecodeIo {
         Ok(())
     }
     fn eval(&mut self, token: i32) -> Result<(), GenerateError>;
+    /// Commit a nonempty greedy prefix bounded by the positive budget.
+    /// Implementations may include EOS as the final accepted token.
+    fn eval_greedy(&mut self, first: i32, _budget: i32) -> Result<Vec<i32>, GenerateError> {
+        self.eval(first)?;
+        Ok(vec![first])
+    }
     fn sample(
         &mut self,
         temperature: f32,
@@ -807,13 +833,16 @@ pub struct GenerateOutcome {
 }
 
 pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'static str> {
+    if !parsed.audios.is_empty() && syntax_for_model_id(model_id) != ModelSyntax::Inkling {
+        return Some("audio input requires Inkling");
+    }
     if parsed.images.is_empty() {
         None
     } else {
         match syntax_for_model_id(model_id) {
-            ModelSyntax::Glm53 => None,
+            ModelSyntax::Glm53 | ModelSyntax::Inkling => None,
             ModelSyntax::Qwen4Exp => Some("image input requires continuous runtime"),
-            _ => Some("image input is supported only by Qwen4Exp or GLM-5.3"),
+            _ => Some("image input is supported only by Qwen4Exp, GLM-5.3 or Inkling"),
         }
     }
 }
@@ -824,6 +853,7 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         ModelSyntax::Exaone => ChatFormat::Exaone,
         ModelSyntax::Qwen4Exp => ChatFormat::Qwen4Exp,
         ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
+        ModelSyntax::Inkling => ChatFormat::Inkling,
         ModelSyntax::DeepSeek | ModelSyntax::Motif3 | ModelSyntax::Dots3 | ModelSyntax::Glm53 => {
             ChatFormat::DeepSeek
         }
@@ -1010,6 +1040,7 @@ pub(crate) fn prepare_required_prefixes(
             ChatFormat::Exaone => "<tool_call>",
             ChatFormat::Qwen4Exp => crate::render::QWEN_TOOL_CALL_START,
             ChatFormat::K2Horizon => crate::render::K2_TOOL_CALLS_START,
+            ChatFormat::Inkling => crate::render::inkling::INVOKE,
             ChatFormat::DeepSeek => crate::tools::DSML_TOOL_CALLS_START,
         };
         let toks = tokenize(marker.as_bytes())?;
@@ -1138,7 +1169,7 @@ fn decode_pass(
     stop_requested: Option<fn() -> bool>,
 ) -> Result<(), GenerateError> {
     let mut last_heartbeat = Instant::now();
-    while acc.completion < max_tokens && engine.pos() < engine.ctx() {
+    'decode: while acc.completion < max_tokens && engine.pos() < engine.ctx() {
         if stop_requested.is_some_and(|stop| stop()) {
             *finish = "error";
             break;
@@ -1178,61 +1209,108 @@ fn decode_pass(
             *finish = "stop";
             break;
         }
-        engine.eval(token)?;
-        *decode_steps += 1;
-        if first_tok.is_none() {
-            *first_tok = Some(Instant::now());
-        }
-        let piece = engine.token_text(token)?;
-        let feed = acc.feed(&piece, &parsed.stops);
-
-        if req.stream {
-            let view = &acc.text[..feed.emit_limit.min(acc.text.len())];
-            match req.api {
-                Api::Openai if req.kind == ReqKind::Completion => {
-                    if let Some(delta) = last_delta(&acc.text, feed.emit_limit, piece.len()) {
-                        sse_chunk(w, req, job_id, Some(delta), None);
-                    }
-                }
-                Api::Openai => {
-                    if let Some(st) = oa.as_mut() {
-                        openai_sse_stream_update(w, req, job_id, st, view, false);
-                    }
-                }
-                Api::Anthropic => {
-                    if let Some(st) = anth.as_mut() {
-                        if !anthropic_sse_stream_update(w, req, job_id, st, view, false) {
-                            return Err(GenerateError::Io);
-                        }
-                    }
-                }
-                Api::Responses => {
-                    if let Some(st) = resp.as_mut() {
-                        if !responses_sse_stream_update(w, req, st, view, false) {
-                            return Err(GenerateError::Io);
-                        }
-                    }
-                }
-            }
-            stream_heartbeat_if_due(
-                w,
-                req,
-                resp.as_deref_mut(),
-                &mut last_heartbeat,
-                Instant::now(),
-                ": decode\n\n",
-            );
-            flush(w, out)?;
-        }
-
-        if feed.hit_stop {
-            *finish = "stop";
+        let budget = (max_tokens - acc.completion).min(engine.ctx() - engine.pos());
+        // Forced control prefixes can change policy between tokens. Only
+        // an unconstrained greedy segment may be committed ahead of output.
+        let accepted = if temperature <= 0.0
+            && matches!(ov, SampleOverride::None)
+            && parsed.required_tool_prefix.is_empty()
+            && parsed.required_think_end_prefix.is_empty()
+        {
+            engine.eval_greedy(token, budget)?
+        } else {
+            engine.eval(token)?;
+            vec![token]
+        };
+        if accepted.is_empty() || accepted.len() > budget as usize || accepted[0] != token {
             engine.invalidate();
-            break;
+            return Err(GenerateError::Engine("invalid greedy prefix result".into()));
         }
-        if acc.track_tools && acc.saw_tool_end && req.chat_format == ChatFormat::DeepSeek {
-            *finish = "tool_calls";
-            break;
+        let count = accepted.len();
+        for (index, token) in accepted.into_iter().enumerate() {
+            if stop_requested.is_some_and(|stop| stop()) {
+                *finish = "error";
+                engine.invalidate();
+                break 'decode;
+            }
+            if token < 0 {
+                engine.invalidate();
+                return Err(GenerateError::Engine("invalid greedy prefix token".into()));
+            }
+            if engine.token_is_stop(token) {
+                *finish = "stop";
+                if index + 1 < count {
+                    engine.invalidate();
+                }
+                break 'decode;
+            }
+            // A speculative prefix advances multiple tokens in one decode step.
+            if index == 0 {
+                *decode_steps += 1;
+            }
+            if first_tok.is_none() {
+                *first_tok = Some(Instant::now());
+            }
+            let piece = engine.token_text(token).inspect_err(|_| {
+                engine.invalidate();
+            })?;
+            let feed = acc.feed(&piece, &parsed.stops);
+
+            if req.stream {
+                let view = &acc.text[..feed.emit_limit.min(acc.text.len())];
+                match req.api {
+                    Api::Openai if req.kind == ReqKind::Completion => {
+                        if let Some(delta) = last_delta(&acc.text, feed.emit_limit, piece.len()) {
+                            sse_chunk(w, req, job_id, Some(delta), None);
+                        }
+                    }
+                    Api::Openai => {
+                        if let Some(st) = oa.as_mut() {
+                            openai_sse_stream_update(w, req, job_id, st, view, false);
+                        }
+                    }
+                    Api::Anthropic => {
+                        if let Some(st) = anth.as_mut() {
+                            if !anthropic_sse_stream_update(w, req, job_id, st, view, false) {
+                                engine.invalidate();
+                                return Err(GenerateError::Io);
+                            }
+                        }
+                    }
+                    Api::Responses => {
+                        if let Some(st) = resp.as_mut() {
+                            if !responses_sse_stream_update(w, req, st, view, false) {
+                                engine.invalidate();
+                                return Err(GenerateError::Io);
+                            }
+                        }
+                    }
+                }
+                stream_heartbeat_if_due(
+                    w,
+                    req,
+                    resp.as_deref_mut(),
+                    &mut last_heartbeat,
+                    Instant::now(),
+                    ": decode\n\n",
+                );
+                flush(w, out).inspect_err(|_| {
+                    engine.invalidate();
+                })?;
+            }
+
+            if feed.hit_stop {
+                *finish = "stop";
+                engine.invalidate();
+                break 'decode;
+            }
+            if acc.track_tools && acc.saw_tool_end && req.chat_format == ChatFormat::DeepSeek {
+                *finish = "tool_calls";
+                if index + 1 < count {
+                    engine.invalidate();
+                }
+                break 'decode;
+            }
         }
     }
     Ok(())
@@ -1296,19 +1374,43 @@ pub(crate) struct PreparedSerialPrompt {
     pub(crate) prompt: Vec<u8>,
     pub(crate) tokens: Vec<i32>,
     pub(crate) vision: Vec<VisionPromptInput>,
+    audios: Vec<AudioPromptInput>,
 }
 
-fn prepare_glm_vision(
+struct MediaPrompt {
+    tokens: Vec<i32>,
+    vision: Vec<VisionPromptInput>,
+    audios: Vec<AudioPromptInput>,
+}
+
+fn prepare_media(
     engine: &dyn DecodeIo,
     parsed: &ParsedRequest,
     tokens: Vec<i32>,
-) -> Result<(Vec<i32>, Vec<VisionPromptInput>), GenerateError> {
-    const IMAGE_TOKEN: i32 = 154854;
-    if parsed.images.is_empty() {
-        return Ok((tokens, Vec::new()));
+) -> Result<MediaPrompt, GenerateError> {
+    if parsed.images.is_empty() && parsed.audios.is_empty() {
+        return Ok(MediaPrompt {
+            tokens,
+            vision: Vec::new(),
+            audios: Vec::new(),
+        });
     }
-    if engine.model_id() != ModelSyntax::Glm53 as i32 || parsed.images.len() > 4 {
-        return Err(GenerateError::Unsupported("GLM-5.3 supports 1 to 4 images"));
+    const GLM_IMAGE_TOKEN: i32 = 154854;
+    const INKLING_IMAGE_TOKEN: i32 = 200054;
+    const INKLING_AUDIO_TOKEN: i32 = 200053;
+    let image_token = match syntax_for_model_id(engine.model_id()) {
+        ModelSyntax::Glm53 => GLM_IMAGE_TOKEN,
+        ModelSyntax::Inkling => INKLING_IMAGE_TOKEN,
+        _ => {
+            return Err(GenerateError::Unsupported(
+                "serial images require GLM-5.3 or Inkling",
+            ))
+        }
+    };
+    if parsed.images.len() + parsed.audios.len() > 4 {
+        return Err(GenerateError::Unsupported(
+            "serial media supports 1 to 4 inputs",
+        ));
     }
     let mut probes = Vec::with_capacity(parsed.images.len());
     let mut expanded_len = tokens.len();
@@ -1316,7 +1418,7 @@ fn prepare_glm_vision(
         let probe = engine.vision_probe(&image.data)?;
         if probe.token_count == 0 {
             return Err(GenerateError::Engine(
-                "GLM-5.3 image probe returned zero tokens".into(),
+                "image probe returned zero tokens".into(),
             ));
         }
         expanded_len = expanded_len
@@ -1324,35 +1426,77 @@ fn prepare_glm_vision(
             .ok_or_else(|| GenerateError::Engine("expanded image prompt is too large".into()))?;
         probes.push(probe);
     }
+    let mut audio_counts = Vec::with_capacity(parsed.audios.len());
+    for audio in &parsed.audios {
+        let count = engine.audio_probe(&audio.data)?;
+        if count == 0 {
+            return Err(GenerateError::Engine(
+                "audio probe returned zero tokens".into(),
+            ));
+        }
+        expanded_len = expanded_len
+            .checked_add(count as usize - 1)
+            .ok_or_else(|| GenerateError::Engine("expanded media prompt is too large".into()))?;
+        audio_counts.push(count);
+    }
     let mut expanded = Vec::with_capacity(expanded_len);
     let mut images = Vec::with_capacity(parsed.images.len());
     let mut image_index = 0usize;
+    let mut audios = Vec::with_capacity(parsed.audios.len());
+    let mut audio_index = 0usize;
     for token in tokens {
-        if token != IMAGE_TOKEN {
+        if image_token == INKLING_IMAGE_TOKEN && token == INKLING_AUDIO_TOKEN {
+            let Some((audio, count)) = parsed
+                .audios
+                .get(audio_index)
+                .zip(audio_counts.get(audio_index))
+            else {
+                return Err(GenerateError::Engine(
+                    "ambiguous audio placeholder in prompt".into(),
+                ));
+            };
+            let token_offset = u32::try_from(expanded.len())
+                .map_err(|_| GenerateError::Engine("expanded media prompt is too large".into()))?;
+            expanded.extend(std::iter::repeat_n(token, *count as usize));
+            audios.push(AudioPromptInput {
+                data: audio.data.clone(),
+                token_offset,
+            });
+            audio_index += 1;
+            continue;
+        }
+        if token != image_token {
             expanded.push(token);
             continue;
         }
         let Some((image, probe)) = parsed.images.get(image_index).zip(probes.get(image_index))
         else {
             return Err(GenerateError::Engine(
-                "ambiguous literal <|image|> in prompt".into(),
+                "ambiguous image placeholder in prompt".into(),
             ));
         };
         let token_offset = u32::try_from(expanded.len())
             .map_err(|_| GenerateError::Engine("expanded image prompt is too large".into()))?;
-        expanded.extend(std::iter::repeat_n(IMAGE_TOKEN, probe.token_count as usize));
+        expanded.extend(std::iter::repeat_n(image_token, probe.token_count as usize));
         images.push(VisionPromptInput {
             data: image.data.clone(),
             token_offset,
         });
         image_index += 1;
     }
-    if image_index != parsed.images.len() || expanded.len() != expanded_len {
+    if image_index != parsed.images.len()
+        || audio_index != parsed.audios.len()
+        || expanded.len() != expanded_len
+    {
         return Err(GenerateError::Engine(
-            "GLM-5.3 image placeholder count does not match payloads".into(),
+            "media placeholder count does not match payloads".into(),
         ));
     }
-    Ok((expanded, images))
+    Ok(MediaPrompt {
+        tokens: expanded,
+        vision: images,
+        audios,
+    })
 }
 
 pub(crate) fn prepare_serial_prompt(
@@ -1365,7 +1509,9 @@ pub(crate) fn prepare_serial_prompt(
 
     let mut parsed = parsed.clone();
     let syntax = syntax_for_model_id(engine.model_id());
-    let tool_replay = parsed.images.is_empty() && tool_replay_disk_cache_eligible(&parsed, syntax);
+    let tool_replay = parsed.images.is_empty()
+        && parsed.audios.is_empty()
+        && tool_replay_disk_cache_eligible(&parsed, syntax);
     if tool_replay {
         engine.restore_tool_replay(&mut parsed.messages);
     }
@@ -1385,13 +1531,18 @@ pub(crate) fn prepare_serial_prompt(
         }
         ReqKind::Chat => engine.tokenize_rendered_chat(&prompt)?,
     };
-    let (tokens, vision) = prepare_glm_vision(engine, &parsed, tokens)?;
+    let MediaPrompt {
+        tokens,
+        vision,
+        audios,
+    } = prepare_media(engine, &parsed, tokens)?;
     Ok(PreparedSerialPrompt {
         parsed,
         tool_replay,
         prompt,
         tokens,
         vision,
+        audios,
     })
 }
 
@@ -1439,6 +1590,7 @@ pub(crate) fn generate_terminal_prepared(
         prompt,
         tokens,
         vision,
+        audios,
     } = prep;
     let syntax = syntax_for_model_id(engine.model_id());
     let mut req = stream_req_from_parsed(&parsed, engine.model_id());
@@ -1448,8 +1600,10 @@ pub(crate) fn generate_terminal_prepared(
         flush(&mut w, out)?;
     }
     let t_prefill = Instant::now();
-    let sync_result = if !vision.is_empty() {
-        engine.sync_vision_prompt(&tokens, &vision).map(|()| 0)
+    let sync_result = if !vision.is_empty() || !audios.is_empty() {
+        engine
+            .sync_media_prompt(&tokens, &vision, &audios)
+            .map(|()| 0)
     } else if tool_replay {
         engine.sync_tool_replay_prompt(&prompt, &tokens)
     } else {
@@ -1582,11 +1736,11 @@ pub(crate) fn generate_terminal_prepared(
             TruncationOutcome::RetryUnterminated => {
                 if append_recovery_suffix(
                     engine,
-                    &build_invalid_tool_error_suffix(
+                    &build_recovery_suffix(
                         req.chat_format,
                         parsed.think_mode,
-                        acc.thinking_inside(),
                         &prompt,
+                        &acc,
                         "unterminated tool call",
                     ),
                 )
@@ -1636,11 +1790,11 @@ pub(crate) fn generate_terminal_prepared(
         {
             if append_recovery_suffix(
                 engine,
-                &build_invalid_tool_error_suffix(
+                &build_recovery_suffix(
                     req.chat_format,
                     parsed.think_mode,
-                    acc.thinking_inside(),
                     &prompt,
+                    &acc,
                     "invalid tool call",
                 ),
             )
@@ -1931,7 +2085,10 @@ impl DecodeIo for ScriptedDecode {
     }
 
     fn vision_probe(&self, _data: &[u8]) -> Result<VisionProbe, GenerateError> {
-        if self.model_id == ModelSyntax::Glm53 as i32 {
+        if matches!(
+            syntax_for_model_id(self.model_id),
+            ModelSyntax::Glm53 | ModelSyntax::Inkling
+        ) {
             Ok(VisionProbe { token_count: 16 })
         } else {
             Err(GenerateError::Unsupported("vision encoder is not loaded"))
@@ -1942,6 +2099,22 @@ impl DecodeIo for ScriptedDecode {
         &mut self,
         tokens: &[i32],
         _images: &[VisionPromptInput],
+    ) -> Result<(), GenerateError> {
+        self.sync(tokens)
+    }
+
+    fn audio_probe(&self, _data: &[u8]) -> Result<u32, GenerateError> {
+        if syntax_for_model_id(self.model_id) == ModelSyntax::Inkling {
+            return Ok(2);
+        }
+        Err(GenerateError::Unsupported("audio encoder is not loaded"))
+    }
+
+    fn sync_media_prompt(
+        &mut self,
+        tokens: &[i32],
+        _images: &[VisionPromptInput],
+        _audios: &[AudioPromptInput],
     ) -> Result<(), GenerateError> {
         self.sync(tokens)
     }
@@ -2318,10 +2491,25 @@ impl DecodeIo for NativeDecode<'_> {
             .map_err(|error| GenerateError::Engine(error.to_string()))
     }
 
+    fn audio_probe(&self, data: &[u8]) -> Result<u32, GenerateError> {
+        self.model
+            .audio_probe(data)
+            .map_err(|error| GenerateError::Engine(error.to_string()))
+    }
+
     fn sync_vision_prompt(
         &mut self,
         tokens: &[i32],
         images: &[VisionPromptInput],
+    ) -> Result<(), GenerateError> {
+        self.sync_media_prompt(tokens, images, &[])
+    }
+
+    fn sync_media_prompt(
+        &mut self,
+        tokens: &[i32],
+        images: &[VisionPromptInput],
+        audios: &[AudioPromptInput],
     ) -> Result<(), GenerateError> {
         self.prompt_sync_elapsed = None;
         self.session_disk_storable = false;
@@ -2334,10 +2522,17 @@ impl DecodeIo for NativeDecode<'_> {
                 token_offset: image.token_offset,
             })
             .collect::<Vec<_>>();
+        let audios = audios
+            .iter()
+            .map(|audio| ds4_core::AudioInput {
+                data: &audio.data,
+                token_offset: audio.token_offset,
+            })
+            .collect::<Vec<_>>();
         let started = Instant::now();
         let result = self
             .session()?
-            .sync_vision(&tokens, &images)
+            .sync_media(&tokens, &images, &audios)
             .map_err(|error| GenerateError::Engine(error.to_string()));
         if result.is_ok() {
             self.prompt_sync_elapsed = Some(started.elapsed());
@@ -2511,6 +2706,20 @@ impl DecodeIo for NativeDecode<'_> {
         self.session()?
             .eval(token)
             .map(|_| ())
+            .map_err(|e| GenerateError::Engine(e.to_string()))
+    }
+
+    fn eval_greedy(&mut self, first: i32, budget: i32) -> Result<Vec<i32>, GenerateError> {
+        if self.model.family() != ds4_core::ModelFamily::Inkling
+            || self.model.mtp().is_none()
+            || std::env::var_os("DS4_MTP_SPEC_DISABLE").is_some()
+        {
+            self.eval(first)?;
+            return Ok(vec![first]);
+        }
+        let eos = self.model.token_eos();
+        self.session()?
+            .eval_speculative_argmax(first, budget, eos)
             .map_err(|e| GenerateError::Engine(e.to_string()))
     }
 

@@ -47864,3 +47864,4 @@ static int ds4_gpu_glm53_matmul_bf16(
 
 #define DS4_GLM53_VISION_STREAM cuda_decode_stream()
 #include "ds4_glm53_vision_gpu.cuh"
+#include "ds4_inkling_gpu.cuh"

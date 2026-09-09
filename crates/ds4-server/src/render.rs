@@ -8,6 +8,8 @@ use crate::json::{
 use crate::parse::{ChatMsg, ChatPart, ToolCall, ToolChoice, ToolSchemaOrder};
 use crate::route::{think_mode_enabled, Api, ThinkMode};
 
+pub(crate) mod inkling;
+
 /// Copied from `ds4.c` `DS4_REASONING_EFFORT_HIGH_PREFIX`.
 pub const THINK_HIGH_PREFIX: &str = concat!(
     "Reasoning Effort: Absolute maximum with no shortcuts permitted.\n",
@@ -83,6 +85,7 @@ pub enum ModelSyntax {
     Qwen4Exp = 6,
     Glm53 = 7,
     K2Horizon = 8,
+    Inkling = 9,
 }
 
 /// C `server_model_syntax_for_engine`.
@@ -95,6 +98,7 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
         6 => ModelSyntax::Qwen4Exp,
         7 => ModelSyntax::Glm53,
         8 => ModelSyntax::K2Horizon,
+        9 => ModelSyntax::Inkling,
         _ => ModelSyntax::DeepSeek,
     }
 }
@@ -107,6 +111,7 @@ pub fn tool_start_marker(syntax: ModelSyntax) -> &'static str {
         ModelSyntax::Qwen4Exp => QWEN_TOOL_CALL_START,
         ModelSyntax::Glm53 => GLM_TOOL_CALL_START,
         ModelSyntax::K2Horizon => K2_TOOL_CALLS_START,
+        ModelSyntax::Inkling => inkling::INVOKE,
         ModelSyntax::DeepSeek => DSML_TOOL_CALLS,
     }
 }
@@ -639,10 +644,10 @@ For each function call, output the function name and arguments within the follow
     );
 }
 
-fn append_glm_message_content(out: &mut Vec<u8>, m: &ChatMsg) {
+fn append_glm_message_content(out: &mut Vec<u8>, m: &ChatMsg) -> Result<(), RenderError> {
     if m.parts.is_empty() {
         put(out, &m.content);
-        return;
+        return Ok(());
     }
     for part in &m.parts {
         match part {
@@ -652,8 +657,10 @@ fn append_glm_message_content(out: &mut Vec<u8>, m: &ChatMsg) {
                 put(out, GLM_IMAGE);
                 put(out, GLM_VISION_END);
             }
+            ChatPart::Audio(_) => return Err(RenderError("audio input requires Inkling")),
         }
     }
+    Ok(())
 }
 
 fn append_glm_tool_result_message(out: &mut Vec<u8>, m: &ChatMsg) {
@@ -731,7 +738,7 @@ pub fn render_glm_chat_ex(
         } else if m.role == "user" {
             observation_open = false;
             put(&mut out, "<|user|>");
-            append_glm_message_content(&mut out, m);
+            append_glm_message_content(&mut out, m)?;
             pending_assistant = true;
         } else if m.role == "assistant" {
             observation_open = false;
@@ -1741,6 +1748,9 @@ pub fn render_qwen_chat_ex(
                             content.push_str(QWEN_IMAGE_PAD);
                             content.push_str(QWEN_VISION_END);
                         }
+                        ChatPart::Audio(_) => {
+                            return Err(RenderError("audio input requires Inkling"))
+                        }
                     }
                 }
                 put_trimmed(&mut out, &content);
@@ -1821,6 +1831,14 @@ pub fn render_chat_choice(
     think_mode: ThinkMode,
     tool_choice: ToolChoice,
 ) -> Result<Vec<u8>, RenderError> {
+    if syntax != ModelSyntax::Inkling
+        && msgs
+            .iter()
+            .flat_map(|m| &m.parts)
+            .any(|p| matches!(p, ChatPart::Audio(_)))
+    {
+        return Err(RenderError("audio input requires Inkling"));
+    }
     match syntax {
         ModelSyntax::Motif3 => render_motif3_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
         ModelSyntax::Exaone => render_exaone_chat(msgs, tool_schemas, think_mode),
@@ -1831,6 +1849,7 @@ pub fn render_chat_choice(
         ModelSyntax::Qwen4Exp => render_qwen_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
         ModelSyntax::Glm53 => render_glm_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
         ModelSyntax::K2Horizon => render_k2_chat(msgs, tool_schemas, think_mode),
+        ModelSyntax::Inkling => inkling::render(msgs, tool_schemas, think_mode),
         ModelSyntax::DeepSeek => {
             render_dsml_chat_choice(msgs, tool_schemas, think_mode, tool_choice)
         }
@@ -1878,6 +1897,7 @@ pub fn render_live_tool_tail(
     let tail = &msgs[start..];
     let mut out = Vec::new();
     match syntax {
+        ModelSyntax::Inkling => return inkling::live_tail(tail, msgs),
         ModelSyntax::Glm53 => {
             let think = think_mode_enabled(think_mode);
             let mut pending_assistant = false;
@@ -1895,7 +1915,7 @@ pub fn render_live_tool_tail(
                 } else if m.role == "user" {
                     observation_open = false;
                     put(&mut out, "<|user|>");
-                    append_glm_message_content(&mut out, m);
+                    append_glm_message_content(&mut out, m)?;
                     pending_assistant = true;
                 } else if m.role == "assistant" {
                     observation_open = false;

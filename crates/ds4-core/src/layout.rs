@@ -2726,6 +2726,9 @@ fn deepseek_block(out: &mut Vec<LayoutSpec>, prefix: &str, shape: &Shape) {
 }
 
 pub fn expected_mtp_layouts(shape: &Shape) -> Vec<LayoutSpec> {
+    if shape.family == ModelFamily::Inkling {
+        return crate::inkling::mtp_layouts();
+    }
     let mut out = Vec::new();
     let e = shape.n_embd as u64;
     let hc = shape.n_hc as u64;
@@ -2867,6 +2870,7 @@ pub fn expected_dspark_layouts(shape: &Shape, markov_rank: u32) -> Vec<LayoutSpe
 
 pub fn expected_layouts(shape: &Shape) -> Vec<LayoutSpec> {
     match shape.family {
+        ModelFamily::Inkling => crate::inkling::main_layouts(),
         ModelFamily::Glm53 => expected_glm53(shape),
         ModelFamily::Qwen4Exp => expected_qwen4exp(shape),
         ModelFamily::Motif3 => expected_motif3(shape),

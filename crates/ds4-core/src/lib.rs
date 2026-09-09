@@ -12,6 +12,10 @@ mod batch;
 mod bind;
 mod gguf;
 mod identify;
+mod inkling;
+mod inkling_audio;
+mod inkling_media;
+mod inkling_mtp;
 mod layout;
 mod mapped;
 mod mem;
@@ -96,12 +100,13 @@ use std::ptr::{self, NonNull};
 use ds4_sys::{
     ds4_bridge_bind_plan, ds4_bridge_bind_plan_check, ds4_bridge_bind_slot,
     ds4_bridge_distributed_options, ds4_bridge_encode_chat_prompt, ds4_bridge_eval,
-    ds4_bridge_eval_speculative_argmax, ds4_bridge_graph_fit_quote, ds4_bridge_model,
-    ds4_bridge_model_boot_prewarm, ds4_bridge_model_free, ds4_bridge_model_open,
-    ds4_bridge_model_open_distributed, ds4_bridge_model_open_options,
-    ds4_bridge_model_run_distributed_worker, ds4_bridge_model_vision_probe, ds4_bridge_session,
-    ds4_bridge_session_argmax, ds4_bridge_session_argmax_excluding, ds4_bridge_session_copy_logits,
-    ds4_bridge_session_create, ds4_bridge_session_ctx, ds4_bridge_session_distributed_route_ready,
+    ds4_bridge_eval_speculative_argmax, ds4_bridge_graph_fit_quote, ds4_bridge_inkling_audio,
+    ds4_bridge_inkling_pixels, ds4_bridge_model, ds4_bridge_model_boot_prewarm,
+    ds4_bridge_model_free, ds4_bridge_model_open, ds4_bridge_model_open_distributed,
+    ds4_bridge_model_open_options, ds4_bridge_model_run_distributed_worker,
+    ds4_bridge_model_vision_probe, ds4_bridge_session, ds4_bridge_session_argmax,
+    ds4_bridge_session_argmax_excluding, ds4_bridge_session_copy_logits, ds4_bridge_session_create,
+    ds4_bridge_session_ctx, ds4_bridge_session_distributed_route_ready,
     ds4_bridge_session_eval_layer_slice, ds4_bridge_session_free, ds4_bridge_session_generation,
     ds4_bridge_session_graph_fit_quote, ds4_bridge_session_graph_pending,
     ds4_bridge_session_invalidate, ds4_bridge_session_layer_slice_reset,
@@ -113,11 +118,11 @@ use ds4_sys::{
     ds4_bridge_session_set_power, ds4_bridge_session_sync, ds4_bridge_session_sync_vision,
     ds4_bridge_session_top_logprobs, ds4_bridge_shard, ds4_bridge_snapshot,
     ds4_bridge_snapshot_create, ds4_bridge_snapshot_free, ds4_bridge_snapshot_len,
-    ds4_bridge_token_score, ds4_bridge_vision_info, ds4_bridge_vision_input, ds4_host_bind_look,
-    ds4_host_bind_map, ds4_host_shape, ds4_host_str, ds4_host_tensor, ds4_host_tensor_dir,
-    ds4_host_vocab, DS4_BRIDGE_BACKEND_CPU, DS4_BRIDGE_BACKEND_CUDA, DS4_BRIDGE_BACKEND_METAL,
-    DS4_BRIDGE_DISTRIBUTED_COORDINATOR, DS4_BRIDGE_DISTRIBUTED_NONE, DS4_BRIDGE_DISTRIBUTED_WORKER,
-    DS4_BRIDGE_MAX_DIMS,
+    ds4_bridge_sync_inkling, ds4_bridge_token_score, ds4_bridge_vision_info,
+    ds4_bridge_vision_input, ds4_host_bind_look, ds4_host_bind_map, ds4_host_shape, ds4_host_str,
+    ds4_host_tensor, ds4_host_tensor_dir, ds4_host_vocab, DS4_BRIDGE_BACKEND_CPU,
+    DS4_BRIDGE_BACKEND_CUDA, DS4_BRIDGE_BACKEND_METAL, DS4_BRIDGE_DISTRIBUTED_COORDINATOR,
+    DS4_BRIDGE_DISTRIBUTED_NONE, DS4_BRIDGE_DISTRIBUTED_WORKER, DS4_BRIDGE_MAX_DIMS,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,6 +164,12 @@ pub struct VisionInput<'a> {
     pub token_offset: u32,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct AudioInput<'a> {
+    pub data: &'a [u8],
+    pub token_offset: u32,
+}
+
 #[derive(Clone, Debug)]
 struct OpenTuning {
     quality: bool,
@@ -186,6 +197,33 @@ impl Default for OpenTuning {
             vision_path: None,
         }
     }
+}
+
+fn inkling_open_check(
+    backend: Backend,
+    tuning: &OpenTuning,
+    _mtp: Option<&str>,
+    dspark: Option<&str>,
+    distributed: Option<&DistributedConfig>,
+) -> Result<()> {
+    let message = if backend != Backend::Cuda || distributed.is_some() {
+        "Inkling requires one full CUDA model"
+    } else if tuning.steering_file.is_some()
+        || tuning.steering_attn != 0.0
+        || tuning.steering_ffn != 0.0
+    {
+        "Inkling does not support directional steering"
+    } else if dspark.is_some() {
+        "Inkling does not support DSpark sidecars"
+    } else if tuning.vision_path.is_some() {
+        "Inkling uses embedded image/audio weights"
+    } else {
+        return Ok(());
+    };
+    Err(Error {
+        code: 1,
+        message: message.into(),
+    })
 }
 
 fn open_tuning(options: &[ModelOpenOption]) -> Result<OpenTuning> {
@@ -950,8 +988,8 @@ impl Model {
         )
     }
 
-    /// `mtp_path` / `dspark_path` attach the DeepSeek-only sibling support
-    /// models. The host resolves each sibling's bind catalog and expected
+    /// `mtp_path` attaches a DeepSeek or Inkling sibling; `dspark_path` is
+    /// DeepSeek-only. The host resolves each sibling's bind catalog and expected
     /// layouts, then native skips that sibling's name walk and layout check.
     pub fn open_with_support(
         path: &str,
@@ -1059,6 +1097,9 @@ impl Model {
             code: 1,
             message: format!("validate failed: {}", e.token()),
         })?;
+        if identified.shape.family == ModelFamily::Inkling {
+            inkling_open_check(backend, &tuning, mtp_path, dspark_path, distributed)?;
+        }
         let vocab = Vocab::load(&g, identified.shape.family).map_err(|e| Error {
             code: 1,
             message: format!("vocab failed: {e}"),
@@ -1235,6 +1276,9 @@ impl Model {
     }
 
     pub fn vision_probe(&self, data: &[u8]) -> Result<VisionImageInfo> {
+        if self.family == ModelFamily::Inkling {
+            return inkling_media::probe_image(data);
+        }
         let mut info = ds4_bridge_vision_info::default();
         let mut err = [0u8; 512];
         let rc = unsafe {
@@ -1261,6 +1305,16 @@ impl Model {
             grid_width: info.grid_width,
             token_count: info.token_count,
         })
+    }
+
+    pub fn audio_probe(&self, data: &[u8]) -> Result<u32> {
+        if self.family != ModelFamily::Inkling {
+            return Err(Error {
+                code: 1,
+                message: "audio input requires Inkling".into(),
+            });
+        }
+        inkling_audio::probe_audio(data, u32::MAX)
     }
 
     pub fn session(&self, ctx_size: i32) -> Result<Session<'_>> {
@@ -1385,6 +1439,38 @@ impl Model {
             code: 1,
             message: "prompt contains NUL".into(),
         })?;
+        if self.family() == ModelFamily::Inkling {
+            let mode = match think_mode {
+                0 => ChatThinkMode::None,
+                1 => ChatThinkMode::Low,
+                2 => ChatThinkMode::High,
+                3 => ChatThinkMode::Max,
+                _ => {
+                    return Err(Error {
+                        code: 1,
+                        message: "invalid Inkling thinking mode".into(),
+                    })
+                }
+            };
+            let mut out = TokenBuffer::new();
+            let append_error = |e: TokError| Error {
+                code: 1,
+                message: e.to_string(),
+            };
+            if let Some(system) = system.filter(|s| !s.is_empty()) {
+                self.vocab
+                    .chat_append_message(&mut out, "system", system)
+                    .map_err(append_error)?;
+            }
+            self.vocab.chat_append_effort_prefix(&mut out, mode);
+            self.vocab
+                .chat_append_message(&mut out, "user", prompt)
+                .map_err(append_error)?;
+            self.vocab
+                .chat_append_assistant_prefix(&mut out, mode)
+                .map_err(append_error)?;
+            return Ok(out);
+        }
         // BPE merges only shrink and specials add a bounded prefix.
         let cap = prompt.len() + system.map_or(0, <[u8]>::len) + 256;
         let mut out = vec![0i32; cap];
@@ -1506,6 +1592,9 @@ impl Session<'_> {
 
     pub fn sync_vision(&mut self, tokens: &TokenBuffer, images: &[VisionInput<'_>]) -> Result<()> {
         self.check_sync(tokens)?;
+        if self.host.family == ModelFamily::Inkling {
+            return self.sync_inkling(tokens, images, &[]);
+        }
         if images.is_empty() || images.len() > 4 {
             return Err(Error {
                 code: 1,
@@ -1528,6 +1617,76 @@ impl Session<'_> {
                 tokens.len() as i32,
                 images.as_ptr(),
                 images.len() as u32,
+                err.as_mut_ptr() as *mut c_char,
+                err.len(),
+            )
+        };
+        self.host.invalidate();
+        if rc != 0 {
+            return Err(fail(rc, &err));
+        }
+        self.host.replace_checkpoint(tokens.as_slice());
+        Ok(())
+    }
+
+    pub fn sync_media(
+        &mut self,
+        tokens: &TokenBuffer,
+        images: &[VisionInput<'_>],
+        audios: &[AudioInput<'_>],
+    ) -> Result<()> {
+        if audios.is_empty() {
+            return self.sync_vision(tokens, images);
+        }
+        self.check_sync(tokens)?;
+        if self.host.family != ModelFamily::Inkling {
+            return Err(Error {
+                code: 1,
+                message: "audio input requires Inkling".into(),
+            });
+        }
+        self.sync_inkling(tokens, images, audios)
+    }
+
+    fn sync_inkling(
+        &mut self,
+        tokens: &TokenBuffer,
+        images: &[VisionInput<'_>],
+        audios: &[AudioInput<'_>],
+    ) -> Result<()> {
+        let prepared = inkling_media::prepare_media(tokens.as_slice(), images, audios)?;
+        let image_inputs: Vec<_> = prepared
+            .images
+            .iter()
+            .map(|(offset, image)| ds4_bridge_inkling_pixels {
+                pixels: image.pixels.as_ptr(),
+                pixel_count: image.pixels.len() as u64,
+                token_offset: *offset,
+                token_count: image.rows * image.cols,
+            })
+            .collect();
+        let audio_inputs: Vec<_> = prepared
+            .audios
+            .iter()
+            .map(|(offset, audio)| ds4_bridge_inkling_audio {
+                codes: audio.codes.as_ptr(),
+                code_count: audio.codes.len() as u64,
+                token_offset: *offset,
+                token_count: audio.frames,
+            })
+            .collect();
+        let mut err = [0u8; 512];
+        // Prepared media own disjoint input buffers until the synchronous
+        // native encoder/prefill call returns. No device handles escape core.
+        let rc = unsafe {
+            ds4_bridge_sync_inkling(
+                self.raw.as_ptr(),
+                tokens.as_slice().as_ptr(),
+                tokens.len() as i32,
+                image_inputs.as_ptr(),
+                image_inputs.len() as u32,
+                audio_inputs.as_ptr(),
+                audio_inputs.len() as u32,
                 err.as_mut_ptr() as *mut c_char,
                 err.len(),
             )
@@ -1623,6 +1782,9 @@ impl Session<'_> {
         max_tokens: i32,
         eos: i32,
     ) -> Result<Vec<i32>> {
+        if self.host.family == ModelFamily::Inkling {
+            return self.eval_inkling_argmax(first, max_tokens, eos);
+        }
         let mut accepted = vec![0i32; 17];
         let mut err = [0u8; 512];
         let n = unsafe {
@@ -2101,6 +2263,39 @@ mod tests {
         assert_eq!(Backend::Cuda.to_c(), 0);
         assert_eq!(Backend::Metal.to_c(), 1);
         assert_eq!(Backend::Cpu.to_c(), 2);
+    }
+
+    #[test]
+    fn inkling_open_contract() {
+        let tuning = OpenTuning::default();
+        assert!(inkling_open_check(Backend::Cuda, &tuning, None, None, None).is_ok());
+        for backend in [Backend::Cpu, Backend::Metal] {
+            assert!(inkling_open_check(backend, &tuning, None, None, None).is_err());
+        }
+        assert!(inkling_open_check(Backend::Cuda, &tuning, Some("mtp.gguf"), None, None).is_ok());
+        assert!(
+            inkling_open_check(Backend::Cuda, &tuning, None, Some("draft.gguf"), None).is_err()
+        );
+        for configured in [
+            OpenTuning {
+                steering_file: Some("direction.bin".into()),
+                ..tuning.clone()
+            },
+            OpenTuning {
+                steering_attn: 1.0,
+                ..tuning.clone()
+            },
+            OpenTuning {
+                steering_ffn: 1.0,
+                ..tuning.clone()
+            },
+            OpenTuning {
+                vision_path: Some("vision.gguf".into()),
+                ..tuning.clone()
+            },
+        ] {
+            assert!(inkling_open_check(Backend::Cuda, &configured, None, None, None).is_err());
+        }
     }
 
     #[test]

@@ -47,6 +47,8 @@ Do not reuse recorded PIDs or assume those services are running.
 
 ## Design records
 
+- [Inkling Small integration](inkling-small.md): MQ85GB/MTP serving,
+  multimodal checks and remaining qualification.
 - [Qwen image input contract](qwen38-image-input-spec.md): original design;
   use the current README and dated image evidence for implemented scope.
 - [W2A16 fused-dequant GEMM proposal](ds4-w2a16-fused-dequant-gemm-design.md):

@@ -115,7 +115,9 @@ pub fn rendered_solar_system_region(prompt: &[u8]) -> Vec<u8> {
 }
 
 pub fn rendered_chat_system_region(format: ChatFormat, prompt: &[u8]) -> Vec<u8> {
-    if format == ChatFormat::SolarOpen2 {
+    if format == ChatFormat::Inkling {
+        crate::render::inkling::system_region(prompt)
+    } else if format == ChatFormat::SolarOpen2 {
         rendered_solar_system_region(prompt)
     } else if format == ChatFormat::Qwen4Exp {
         let prefix = b"<|im_start|>system\n";
@@ -260,7 +262,9 @@ pub fn try_repair_solar(s: &[u8]) -> Option<Vec<u8>> {
 pub fn try_repair_tool_call_format(format: ChatFormat, s: &[u8]) -> Option<Vec<u8>> {
     match format {
         ChatFormat::SolarOpen2 => try_repair_solar(s),
-        ChatFormat::Exaone | ChatFormat::Qwen4Exp | ChatFormat::K2Horizon => None,
+        ChatFormat::Exaone | ChatFormat::Qwen4Exp | ChatFormat::K2Horizon | ChatFormat::Inkling => {
+            None
+        }
         ChatFormat::DeepSeek => try_repair_dsml(s),
     }
 }
@@ -277,6 +281,9 @@ pub fn build_invalid_tool_error_suffix(
     prompt: &[u8],
     detail: &str,
 ) -> Vec<u8> {
+    if format == ChatFormat::Inkling {
+        return crate::render::inkling::recovery(&[], detail);
+    }
     let solar = format == ChatFormat::SolarOpen2;
     let qwen = format == ChatFormat::Qwen4Exp;
     let system = rendered_chat_system_region(format, prompt);
@@ -360,6 +367,19 @@ Emit a new valid DSML tool call, or answer normally if no tool is needed.",
         }
     }
     suffix
+}
+
+pub(crate) fn build_recovery_suffix(
+    format: ChatFormat,
+    think_mode: ThinkMode,
+    prompt: &[u8],
+    acc: &crate::tools::SemAccum,
+    detail: &str,
+) -> Vec<u8> {
+    if format == ChatFormat::Inkling {
+        return crate::render::inkling::recovery(&acc.text, detail);
+    }
+    build_invalid_tool_error_suffix(format, think_mode, acc.thinking_inside(), prompt, detail)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -36,6 +36,7 @@ fn distributed_config(opt: &ds4_dist::Options) -> Option<DistributedConfig> {
 fn main() {
     let mut cfg = ServerConfig::default();
     let mut model_path: Option<String> = None;
+    let mut mtp_path: Option<String> = None;
     let mut backend = Backend::Cuda;
     let mut n_threads = 0i32;
     let mut cont_width = std::env::var("DS4_SERVER_COALESCE_MAX")
@@ -80,6 +81,7 @@ fn main() {
             "--vision" => model_options.push(ModelOpenOption::Vision(
                 args.next().unwrap_or_else(|| usage()),
             )),
+            "--mtp" => mtp_path = Some(args.next().unwrap_or_else(|| usage())),
             "--backend" => {
                 backend = match args.next().unwrap_or_else(|| usage()).as_str() {
                     "cuda" => Backend::Cuda,
@@ -146,6 +148,9 @@ fn main() {
         }
     }
     kv.validate().unwrap_or_else(|error| cli_error(&error));
+    if mtp_path.is_some() && model_path.is_none() {
+        cli_error("--mtp requires --model");
+    }
     dist.finish(&mut cfg.listen_host, &mut cfg.listen_port)
         .unwrap_or_else(|error| cli_error(&format!("ds4-server-rs: {error}")));
     if cfg.model_name == "ds4" {
@@ -163,14 +168,20 @@ fn main() {
                     backend,
                     n_threads,
                     true,
-                    None,
+                    mtp_path.as_deref(),
                     None,
                     config,
                     &model_options,
                 ),
-                None => {
-                    Model::open_configured(path, backend, n_threads, true, None, &model_options)
-                }
+                None => Model::open_with_support_options(
+                    path,
+                    backend,
+                    n_threads,
+                    true,
+                    mtp_path.as_deref(),
+                    None,
+                    &model_options,
+                ),
             };
             match opened {
                 Ok(m) => {
@@ -276,7 +287,7 @@ fn cli_error(message: &str) -> ! {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--vision GGUF] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
+        "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--vision GGUF] [--mtp GGUF] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
 Disk KV: [--kv-disk-dir DIR] [--kv-disk-space-mb N] [--kv-cache-min-tokens N]\n\
          [--kv-cache-cold-max-tokens N] [--kv-cache-continued-interval-tokens N]\n\
          [--kv-cache-boundary-trim-tokens N]\n\

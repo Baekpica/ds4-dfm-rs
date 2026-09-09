@@ -14,9 +14,10 @@ use ds4_dist::{
 
 fn hidden_values(shape: &Shape) -> u64 {
     match shape.family {
-        ModelFamily::SolarOpen2 | ModelFamily::ExaoneMoe | ModelFamily::Qwen4Exp => {
-            u64::from(shape.n_embd)
-        }
+        ModelFamily::SolarOpen2
+        | ModelFamily::ExaoneMoe
+        | ModelFamily::Qwen4Exp
+        | ModelFamily::Inkling => u64::from(shape.n_embd),
         ModelFamily::DeepSeek4
         | ModelFamily::Motif3
         | ModelFamily::Dots3Note

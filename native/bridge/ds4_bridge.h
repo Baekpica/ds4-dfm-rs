@@ -126,6 +126,20 @@ typedef struct {
 } ds4_bridge_vision_input;
 
 typedef struct {
+    const float *pixels; /* borrowed F32 BTHWC [token_count,2,40,40,3] */
+    uint64_t pixel_count;
+    uint32_t token_offset;
+    uint32_t token_count;
+} ds4_bridge_inkling_pixels;
+
+typedef struct {
+    const int32_t *codes; /* borrowed [token_count,80], each in [0,15] */
+    uint64_t code_count;
+    uint32_t token_offset;
+    uint32_t token_count;
+} ds4_bridge_inkling_audio;
+
+typedef struct {
     uint32_t source_width;
     uint32_t source_height;
     uint32_t content_width;
@@ -182,12 +196,21 @@ int ds4_bridge_session_sync_vision(ds4_bridge_session *s,
                                    const ds4_bridge_vision_input *images,
                                    uint32_t image_count,
                                    char *err, size_t errlen);
+int ds4_bridge_sync_inkling(ds4_bridge_session *s,
+                             const int32_t *tokens, int n_tokens,
+                             const ds4_bridge_inkling_pixels *images, uint32_t image_count,
+                             const ds4_bridge_inkling_audio *audios, uint32_t audio_count,
+                             char *err, size_t errlen);
 int ds4_bridge_session_sync_cb(ds4_bridge_session *s,
                                const int32_t *tokens, int n_tokens,
                                ds4_bridge_prefill_fn progress, void *ud,
                                char *err, size_t errlen);
 int ds4_bridge_eval(ds4_bridge_session *s, int32_t token,
                     char *err, size_t errlen);
+int ds4_bridge_inkling_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
+                              int32_t *tokens, int32_t *target, int32_t cap,
+                              char *err, size_t errlen);
+int ds4_bridge_inkling_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);
 int ds4_bridge_eval_speculative_argmax(ds4_bridge_session *s,
                                        int32_t first_token,
                                        int32_t max_tokens,

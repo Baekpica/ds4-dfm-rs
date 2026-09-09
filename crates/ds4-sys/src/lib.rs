@@ -222,6 +222,24 @@ pub struct ds4_bridge_vision_input {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ds4_bridge_inkling_pixels {
+    pub pixels: *const f32,
+    pub pixel_count: u64,
+    pub token_offset: u32,
+    pub token_count: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ds4_bridge_inkling_audio {
+    pub codes: *const i32,
+    pub code_count: u64,
+    pub token_offset: u32,
+    pub token_count: u32,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ds4_bridge_vision_info {
     pub source_width: u32,
@@ -486,6 +504,18 @@ extern "C" {
         errlen: usize,
     ) -> c_int;
 
+    pub fn ds4_bridge_sync_inkling(
+        s: *mut ds4_bridge_session,
+        tokens: *const i32,
+        n_tokens: c_int,
+        images: *const ds4_bridge_inkling_pixels,
+        image_count: u32,
+        audios: *const ds4_bridge_inkling_audio,
+        audio_count: u32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
     pub fn ds4_bridge_session_sync_cb(
         s: *mut ds4_bridge_session,
         tokens: *const i32,
@@ -499,6 +529,24 @@ extern "C" {
     pub fn ds4_bridge_eval(
         s: *mut ds4_bridge_session,
         token: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_inkling_trial(
+        s: *mut ds4_bridge_session,
+        first: i32,
+        max_tokens: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_inkling_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
         err: *mut c_char,
         errlen: usize,
     ) -> c_int;

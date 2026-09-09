@@ -54,7 +54,10 @@ struct PromptSyncDecode {
     events: Vec<&'static str>,
     replay_raw: Option<String>,
     replay_prompts: Vec<Vec<u8>>,
+    rendered: std::cell::RefCell<Vec<Vec<u8>>>,
     remembered_tools: Vec<(Vec<String>, String)>,
+    prefix_width: usize,
+    prefix_budgets: Vec<i32>,
 }
 
 impl PromptSyncDecode {
@@ -76,7 +79,10 @@ impl PromptSyncDecode {
             events: Vec::new(),
             replay_raw: None,
             replay_prompts: Vec::new(),
+            rendered: std::cell::RefCell::new(Vec::new()),
             remembered_tools: Vec::new(),
+            prefix_width: 1,
+            prefix_budgets: Vec::new(),
         }
     }
 }
@@ -91,6 +97,7 @@ impl DecodeIo for PromptSyncDecode {
     }
 
     fn tokenize_rendered_chat(&self, text: &[u8]) -> Result<Vec<i32>, GenerateError> {
+        self.rendered.borrow_mut().push(text.to_vec());
         self.inner.tokenize_rendered_chat(text)
     }
 
@@ -175,6 +182,24 @@ impl DecodeIo for PromptSyncDecode {
         self.inner.eval(token)
     }
 
+    fn eval_greedy(&mut self, first: i32, budget: i32) -> Result<Vec<i32>, GenerateError> {
+        self.prefix_budgets.push(budget);
+        if self.prefix_width == 0 {
+            return Ok(Vec::new());
+        }
+        self.eval(first)?;
+        let mut tokens = vec![first];
+        let mut rng = 1;
+        while tokens.len() < self.prefix_width.min(budget as usize)
+            && !self.token_is_stop(*tokens.last().unwrap())
+        {
+            let token = self.inner.sample(0.0, 0, 1.0, 0.0, &mut rng);
+            self.inner.eval(token)?;
+            tokens.push(token);
+        }
+        Ok(tokens)
+    }
+
     fn sample(
         &mut self,
         temperature: f32,
@@ -227,6 +252,161 @@ impl DecodeIo for PromptSyncDecode {
 }
 
 #[test]
+fn mtp_prefix_limits() {
+    for (cap, ctx) in [(2, 8192), (8, 3)] {
+        let mut parsed = user_req();
+        parsed.max_tokens = cap;
+        let mut script = ScriptedDecode::from_pieces(&[b"<|content_text|>Hello", b" world", b"!"]);
+        script.ctx = ctx;
+        script.model_id = 9;
+        let mut engine = PromptSyncDecode::new(script, 0, 1);
+        engine.prefix_width = 9;
+        let mut out = Vec::new();
+        let result = generate_and_write(
+            &mut engine,
+            &parsed,
+            "mtp-limit",
+            CREATED_TEST,
+            false,
+            cap,
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(result.timings.decode_tokens, 2);
+        assert_eq!(result.timings.decode_steps, 1);
+        assert_eq!(engine.prefix_budgets, [2]);
+        assert_eq!(engine.pos(), 3);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("Hello world"), "{text}");
+    }
+}
+
+#[test]
+fn mtp_prefix_stops() {
+    for stream in [false, true] {
+        for stop in [None, Some(" world")] {
+            let mut parsed = user_req();
+            parsed.stream = stream;
+            if let Some(stop) = stop {
+                parsed.stops.push(stop.into());
+            }
+            let mut script =
+                ScriptedDecode::from_pieces(&[b"<|content_text|>Hello", b" world", b"!"]);
+            script.model_id = 9;
+            let mut engine = PromptSyncDecode::new(script, 0, 1);
+            engine.prefix_width = 9;
+            let mut out = Vec::new();
+            let result = generate_and_write(
+                &mut engine,
+                &parsed,
+                "mtp-stop",
+                CREATED_TEST,
+                false,
+                8,
+                &mut out,
+            )
+            .unwrap();
+            let text = String::from_utf8(out).unwrap();
+            assert_eq!(engine.prefix_budgets, [8]);
+            assert!(text.contains("Hello"), "{text}");
+            assert!(text.contains("\"finish_reason\":\"stop\""), "{text}");
+            assert_eq!(
+                result.timings.decode_tokens,
+                if stop.is_some() { 2 } else { 3 }
+            );
+            assert!(!text.contains(" world") || stop.is_none(), "{text}");
+            if stop.is_some() {
+                assert_eq!(engine.invalidations, 1);
+                assert_eq!(engine.pos(), 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn mtp_prefix_empty() {
+    let mut engine = PromptSyncDecode::new(ScriptedDecode::from_pieces(&[b"Hello"]), 0, 1);
+    engine.prefix_width = 0;
+    let result = generate_and_write(
+        &mut engine,
+        &user_req(),
+        "mtp-empty",
+        CREATED_TEST,
+        false,
+        8,
+        &mut Vec::new(),
+    );
+    assert!(matches!(result, Err(GenerateError::Engine(_))));
+    assert_eq!(engine.invalidations, 1);
+}
+
+#[test]
+fn mtp_disconnect() {
+    struct Disconnect;
+    impl Write for Disconnect {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            if data.windows(5).any(|s| s == b"Hello") {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut parsed = user_req();
+    parsed.stream = true;
+    let mut script = ScriptedDecode::from_pieces(&[b"<|content_text|>Hello", b" world"]);
+    script.model_id = 9;
+    let mut engine = PromptSyncDecode::new(script, 0, 1);
+    engine.prefix_width = 9;
+    let result = generate_and_write(
+        &mut engine,
+        &parsed,
+        "mtp-disconnect",
+        CREATED_TEST,
+        false,
+        8,
+        &mut Disconnect,
+    );
+    assert!(matches!(result, Err(GenerateError::Io)));
+    assert_eq!(engine.prefix_budgets, [8]);
+    assert_eq!(engine.invalidations, 1);
+    assert_eq!(engine.pos(), 0);
+}
+
+#[test]
+fn mtp_sampling_policy() {
+    for mode in 0..3 {
+        let mut parsed = user_req();
+        match mode {
+            0 => parsed.temperature = 0.7,
+            1 => parsed.think_mode = ThinkMode::Low,
+            _ => {
+                parsed.has_tool_results = true;
+                parsed.required_think_end_prefix = vec![7];
+            }
+        }
+        let mut script = ScriptedDecode::from_pieces(&[b"<|content_text|>Hello"]);
+        script.model_id = 9;
+        let mut engine = PromptSyncDecode::new(script, 0, 1);
+        engine.prefix_width = 9;
+        generate_and_write(
+            &mut engine,
+            &parsed,
+            "mtp-policy",
+            CREATED_TEST,
+            false,
+            8,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert!(engine.prefix_budgets.is_empty());
+        assert!(engine.events.contains(&"eval"));
+    }
+}
+
+#[test]
 fn stop_list_find_matches_c_order() {
     let stops = vec!["STOP".into(), "END".into()];
     assert_eq!(
@@ -273,6 +453,125 @@ fn glm_serial_image_expands_placeholder_before_sync() {
     assert_eq!(engine.live[0], 154830);
     assert!(engine.live[1..17].iter().all(|&token| token == 154854));
     assert_eq!(engine.live[17], 154831);
+}
+
+#[test]
+fn inkling_images_expand_in_order() {
+    let mut parsed = user_req();
+    parsed.messages[0].parts = vec![
+        ChatPart::Image(0),
+        ChatPart::Text("Then".into()),
+        ChatPart::Image(1),
+    ];
+    parsed.images = vec![
+        RequestImage {
+            mime: ImageMime::Png,
+            data: Arc::from([1u8])
+        };
+        2
+    ];
+    let mut engine = ScriptedDecode::from_pieces(&[]);
+    engine.model_id = 9;
+    engine.prompt_tokens = vec![200000, 200054, 200010, 200054, 200001];
+    let mut out = Vec::new();
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "inkling-images",
+        CREATED_TEST,
+        false,
+        1,
+        &mut out,
+    )
+    .unwrap();
+    assert_eq!(
+        engine.live,
+        [
+            vec![200000],
+            vec![200054; 16],
+            vec![200010],
+            vec![200054; 16],
+            vec![200001]
+        ]
+        .concat()
+    );
+    engine.prompt_tokens = vec![200054];
+    assert!(generate_and_write(
+        &mut engine,
+        &parsed,
+        "inkling-missing",
+        CREATED_TEST,
+        false,
+        1,
+        &mut out
+    )
+    .is_err());
+    engine.prompt_tokens = vec![200054; 3];
+    assert!(generate_and_write(
+        &mut engine,
+        &parsed,
+        "inkling-extra",
+        CREATED_TEST,
+        false,
+        1,
+        &mut out
+    )
+    .is_err());
+}
+
+#[test]
+fn inkling_audio_expands_in_order() {
+    let body = r#"{"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"format":"wav","data":"UklGRiYAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQIAAAAAAA=="}}]}]}"#;
+    let mut parsed =
+        ds4_server::parse_chat_request(&ds4_server::ParseEnv::default(), body).unwrap();
+    let mut engine = ScriptedDecode::from_pieces(&[]);
+    engine.model_id = 9;
+    engine.prompt_tokens = vec![200000, 200053, 200043, 200001];
+    let mut out = Vec::new();
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "inkling-audio",
+        CREATED_TEST,
+        false,
+        1,
+        &mut out,
+    )
+    .unwrap();
+    assert_eq!(engine.live, [200000, 200053, 200053, 200043, 200001]);
+    for tokens in [vec![200000, 200001], vec![200053, 200053]] {
+        engine.prompt_tokens = tokens;
+        assert!(generate_and_write(
+            &mut engine,
+            &parsed,
+            "missing-audio",
+            CREATED_TEST,
+            false,
+            1,
+            &mut out
+        )
+        .is_err());
+    }
+    parsed.images.push(RequestImage {
+        mime: ImageMime::Png,
+        data: Arc::from([1u8]),
+    });
+    parsed.messages[0].parts.push(ChatPart::Image(0));
+    engine.prompt_tokens = vec![200053, 10, 200054, 200001];
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "mixed-audio",
+        CREATED_TEST,
+        false,
+        1,
+        &mut out,
+    )
+    .unwrap();
+    assert_eq!(
+        engine.live,
+        [vec![200053; 2], vec![10], vec![200054; 16], vec![200001]].concat()
+    );
 }
 
 #[test]
@@ -1325,4 +1624,120 @@ fn scripted_motif_does_not_retry_invalid_tools() {
     assert!(!s.contains("should-not-run"), "{s}");
     assert!(s.contains("DSML"), "{s}");
     assert_eq!(engine.idx, 1, "Motif must not consume a second decode pass");
+}
+
+fn inkling_retry_case(invalid: &[u8], closure: &str) {
+    let parsed = tools_req();
+    let valid = br#"bash<|content_invoke_tool_json|>{"name":"bash","args":{"command":"ls"}}<|end_message|>"#;
+    let mut tape = ScriptedDecode::from_pieces(&[invalid, valid]);
+    tape.model_id = 9;
+    tape.steps.insert(
+        1,
+        ScriptedStep {
+            token: 98,
+            piece: Vec::new(),
+            stop: true,
+        },
+    );
+    let mut engine = PromptSyncDecode::new(tape, 0, 1);
+    let mut out = Vec::new();
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "inkling-retry",
+        CREATED_TEST,
+        false,
+        16,
+        &mut out,
+    )
+    .unwrap();
+    let response = String::from_utf8(out).unwrap();
+    assert_eq!(
+        engine.sync_calls, 1,
+        "exactly one corrective retry: {response}"
+    );
+    let rendered = engine.rendered.borrow();
+    let suffix = String::from_utf8(rendered.last().unwrap().clone()).unwrap();
+    assert!(
+        suffix.starts_with(&format!(
+            "{closure}<|message_tool|><|content_text|>Tool error: invalid Inkling tool call"
+        )),
+        "{suffix}"
+    );
+    assert!(
+        suffix.ends_with("<|end_message|><|message_model|>"),
+        "{suffix}"
+    );
+    assert!(!suffix.contains("DSML"), "{suffix}");
+    assert!(
+        response.contains("\"finish_reason\":\"tool_calls\""),
+        "{response}"
+    );
+    assert!(response.contains("\"name\":\"bash\""), "{response}");
+    assert!(!response.contains("Tool error:"), "{response}");
+}
+
+#[test]
+fn inkling_unterminated_retry() {
+    inkling_retry_case(
+        br#"bash<|content_invoke_tool_json|>{"name":"bash","args":{"command":"ls"}"#,
+        "<|end_message|><|content_model_end_sampling|>",
+    );
+}
+
+#[test]
+fn inkling_malformed_retry() {
+    inkling_retry_case(
+        br#"bash<|content_invoke_tool_json|>{"name":"bash","args":[]}<|end_message|>"#,
+        "<|content_model_end_sampling|>",
+    );
+}
+
+#[test]
+fn inkling_second_tool_retry() {
+    inkling_retry_case(br#"bash<|content_invoke_tool_json|>{"name":"bash","args":{"command":"ls"}}<|end_message|><|message_model|>bash<|content_invoke_tool_json|>{"name":"bash","args":{}"#,
+                       "<|end_message|><|content_model_end_sampling|>");
+}
+
+#[test]
+fn inkling_bad_tool_terminal() {
+    let bad = br#"bash<|content_invoke_tool_json|>{"name":"bash","args":[]}<|end_message|>"#;
+    for stream in [false, true] {
+        for cap in [1, 16] {
+            let mut parsed = tools_req();
+            parsed.stream = stream;
+            parsed.max_tokens = cap;
+            let mut tape = ScriptedDecode::from_pieces(&[bad, bad]);
+            tape.model_id = 9;
+            tape.steps.insert(
+                1,
+                ScriptedStep {
+                    token: 98,
+                    piece: Vec::new(),
+                    stop: true,
+                },
+            );
+            let mut engine = PromptSyncDecode::new(tape, 0, 1);
+            let mut out = Vec::new();
+            generate_and_write(
+                &mut engine,
+                &parsed,
+                "inkling-terminal",
+                CREATED_TEST,
+                false,
+                16,
+                &mut out,
+            )
+            .unwrap();
+            let response = String::from_utf8(out).unwrap();
+            let finish = if cap == 1 { "length" } else { "error" };
+            assert!(
+                response.contains(&format!("\"finish_reason\":\"{finish}\"")),
+                "{response}"
+            );
+            assert!(!response.contains("<|"), "{response}");
+            assert!(!response.contains("Tool error:"), "{response}");
+            assert_eq!(engine.sync_calls, usize::from(!stream && cap != 1));
+        }
+    }
 }

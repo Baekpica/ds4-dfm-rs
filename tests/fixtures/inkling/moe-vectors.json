@@ -1,0 +1,8 @@
+{
+  "torch": "2.14.0+cpu",
+  "device": "cpu",
+  "source_revision": "8cc5877b44d343f88b92086aa1fb72897950f06a",
+  "sglang_revision": "03d06a764e4a83268eefd1bafc676418f7269c89",
+  "fixture_sha256": "f2dc12b4b373de6492623dcc720dc8df14e875d3bae18d2a9f77ef47446d8ab1",
+  "scope": "Published MoE equations, stable lower-ID selection, BF16 boundaries; not full SGLang runtime parity"
+}

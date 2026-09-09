@@ -119,6 +119,22 @@ typedef struct {
     ds4_vision_embedding embedding;
 } ds4_vision_span;
 
+/* Rust-prepared BTHWC [patches,2,40,40,3] pixels, borrowed through sync. */
+typedef struct {
+    const float *pixels;
+    uint64_t pixel_count; /* F32 values, not bytes. */
+    uint32_t token_offset;
+    uint32_t token_count;
+} ds4_inkling_pixels;
+
+/* Rust-prepared [frames,80] discrete mel codes in [0,15]. */
+typedef struct {
+    const int32_t *codes;
+    uint64_t code_count;
+    uint32_t token_offset;
+    uint32_t token_count;
+} ds4_inkling_audio;
+
 typedef struct {
     int id;
     float logit;
@@ -1283,6 +1299,11 @@ int ds4_session_sync_multimodal(ds4_session *s,
                                 const ds4_vision_span *spans,
                                 uint32_t span_count,
                                 char *err, size_t errlen);
+/* Inkling spans must cover every media placeholder. Always refills KV. */
+int ds4_session_sync_inkling(ds4_session *s, const ds4_tokens *prompt,
+                              const ds4_inkling_pixels *images, uint32_t image_count,
+                              const ds4_inkling_audio *audios, uint32_t audio_count,
+                              char *err, size_t errlen);
 bool ds4_session_rewrite_requires_rebuild(int live_len, int canonical_len, int common);
 ds4_session_rewrite_result ds4_session_rewrite_from_common(
         ds4_session *s, const ds4_tokens *prompt, int common,
@@ -1301,6 +1322,16 @@ int ds4_session_token_logprob(ds4_session *s, int token, ds4_token_score *out);
 int ds4_session_copy_logits(ds4_session *s, float *out, int cap);
 int ds4_session_set_logits(ds4_session *s, const float *logits, int n);
 int ds4_session_eval(ds4_session *s, int token, char *err, size_t errlen);
+/* Trial returns 1..9 pending rows, 0 when MTP is absent or no budget remains,
+ * and -1 on error. Rust chooses the greedy accepted prefix and commits it.
+ * Output arrays each hold cap integers. Other decode/sync calls require
+ * commit or invalidation before using a pending session. Operational failure
+ * poisons device state without changing generation; the caller must invalidate
+ * before reuse. Invalid arguments leave a pending trial unchanged. */
+int ds4_session_inkling_trial(ds4_session *s, int first, int max_tokens,
+                               int *tokens, int *target, int cap,
+                               char *err, size_t errlen);
+int ds4_session_inkling_commit(ds4_session *s, int keep, char *err, size_t errlen);
 int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                                         int max_tokens, int eos_token,
                                         int *accepted, int accepted_cap,

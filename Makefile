@@ -97,7 +97,8 @@ endif
         test-qwen4exp-verify \
         test-qwen-vision-attention test-qwen-vision-model test-qwen-vision-norm \
         test-mmid-fast \
-        test-mmq-parity test-model-family-kernels \
+        test-mmq-parity test-model-family-kernels test-inkling-kernels test-inkling-moe \
+        test-inkling-attn-prep test-inkling-attention test-inkling-norm test-inkling-media \
         test-solar-loader test-solar-kda test-solar-kda-prefill \
         test-solar-kda-chunk \
         test-glm53-loader test-glm53-vision-loader test-glm53-image \
@@ -599,6 +600,44 @@ tests/test_solar_kv.o: tests/test_solar_kv.c ds4_gpu.h
 tests/test_model_family_kernels.o: tests/test_model_family_kernels.c ds4_gpu.h
 	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
 
+tests/test_inkling_kernels.o: tests/test_inkling_kernels.c ds4_gpu.h
+	$(CC) $(CFLAGS) -fno-fast-math -I. -c -o $@ $<
+
+tests/test_inkling_moe.o: tests/test_inkling_moe.c tests/fixtures/inkling/moe-vectors.h ds4_gpu.h
+	$(CC) $(CFLAGS) -fno-fast-math -I. -c -o $@ $<
+
+tests/test_inkling_attn_prep.o: tests/test_inkling_attn_prep.c ds4_gpu.h
+	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I. -c -o $@ $<
+
+tests/test_inkling_attention.o: tests/test_inkling_attention.c ds4_gpu.h
+	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I. -c -o $@ $<
+
+tests/test_inkling_norm.o: tests/test_inkling_norm.c ds4_gpu.h
+	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I. -c -o $@ $<
+
+tests/test_inkling_media.o: tests/test_inkling_media.c ds4_gpu.h
+	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I. -c -o $@ $<
+
+tests/test_inkling_forward.o: tests/test_inkling_forward.c ds4.c ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -fno-fast-math -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -c -o $@ $<
+
+tests/test_inkling_session.o: tests/test_inkling_session.c ds4.c ds4.h ds4_gpu.h native/bridge/ds4_host_load.h
+	$(CC) $(CFLAGS) -O0 -fno-fast-math -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -c -o $@ $<
+
+tests/test_inkling_encoders.o: tests/test_inkling_encoders.c ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -fno-fast-math -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -c -o $@ $<
+
+tests/test_inkling_mtp.o: tests/test_inkling_mtp.c ds4.c ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -fno-fast-math -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -c -o $@ $<
+
+tests/test_inkling_mtp_shared.o: tests/test_inkling_mtp_shared.c ds4.c ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -fno-fast-math -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -c -o $@ $<
+
 tests/test_qwen4exp_primitives.o: tests/test_qwen4exp_primitives.c ds4_gpu.h
 	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
 
@@ -662,7 +701,7 @@ ds4_agent_cpu.o: ds4_agent.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_
 ds4_metal.o: ds4_metal.m ds4_gpu.h $(METAL_SRCS)
 	$(CC) $(OBJCFLAGS) -c -o $@ ds4_metal.m
 
-ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_glm53_vision_gpu.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
+ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
 	$(NVCC) $(NVCCFLAGS) -c -o $@ ds4_cuda.cu
 
 # Vendored mmq pieces. ds4_mmq.cu transitively pulls in mmq.cuh which has
@@ -759,6 +798,57 @@ tests/test_model_family_kernels: tests/test_model_family_kernels.o $(DS4_CUDA_CO
 
 test-model-family-kernels: tests/test_model_family_kernels
 	./tests/test_model_family_kernels
+
+tests/test_inkling_kernels: tests/test_inkling_kernels.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+test-inkling-kernels: tests/test_inkling_kernels
+	./tests/test_inkling_kernels
+
+tests/test_inkling_moe: tests/test_inkling_moe.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+test-inkling-moe: tests/test_inkling_moe
+	./tests/test_inkling_moe
+
+tests/test_inkling_attn_prep: tests/test_inkling_attn_prep.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+test-inkling-attn-prep: tests/test_inkling_attn_prep
+	./tests/test_inkling_attn_prep
+
+tests/test_inkling_attention: tests/test_inkling_attention.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+test-inkling-attention: tests/test_inkling_attention
+	./tests/test_inkling_attention
+
+tests/test_inkling_norm: tests/test_inkling_norm.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+test-inkling-norm: tests/test_inkling_norm
+	./tests/test_inkling_norm
+
+tests/test_inkling_media: tests/test_inkling_media.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+test-inkling-media: tests/test_inkling_media
+	./tests/test_inkling_media
+
+tests/test_inkling_forward: tests/test_inkling_forward.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_inkling_session: tests/test_inkling_session.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_inkling_encoders: tests/test_inkling_encoders.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_inkling_mtp: tests/test_inkling_mtp.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_inkling_mtp_shared: tests/test_inkling_mtp_shared.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
 
 tests/test_qwen4exp_primitives: tests/test_qwen4exp_primitives.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
@@ -960,6 +1050,10 @@ tests/test_exaone_tokenizer: tests/test_exaone_tokenizer.o
 endif
 
 tests/test_split_gguf: tests/test_split_gguf.c ds4.c ds4.h
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+tests/test_inkling_loader: tests/test_inkling_loader.c ds4.c ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
@@ -1209,6 +1303,18 @@ tests/test_motif3_long: tests/test_motif3_long.o ds4_kvstore.o rax.o $(CORE_OBJS
 endif
 
 clean:
+	rm -f tests/test_inkling_kernels tests/test_inkling_kernels.o
+	rm -f tests/test_inkling_moe tests/test_inkling_moe.o
+	rm -f tests/test_inkling_attn_prep tests/test_inkling_attn_prep.o
+	rm -f tests/test_inkling_attention tests/test_inkling_attention.o
+	rm -f tests/test_inkling_norm tests/test_inkling_norm.o
+	rm -f tests/test_inkling_media tests/test_inkling_media.o
+	rm -f tests/test_inkling_loader
+	rm -f tests/test_inkling_forward tests/test_inkling_forward.o
+	rm -f tests/test_inkling_session tests/test_inkling_session.o
+	rm -f tests/test_inkling_mtp tests/test_inkling_mtp.o
+	rm -f tests/test_inkling_mtp_shared tests/test_inkling_mtp_shared.o
+	rm -f tests/test_inkling_encoders tests/test_inkling_encoders.o
 	rm -f tests/test_qwen_vision_norm tests/test_qwen_vision_norm.o
 	rm -f tests/test_qwen_vision_attention tests/test_qwen_vision_attention.o tests/test_qwen_vision_model tests/test_qwen_vision_model.o
 	rm -f ds4-agent-rs tests/parity/agent_c_oracle tests/parity/agent_c_oracle.o

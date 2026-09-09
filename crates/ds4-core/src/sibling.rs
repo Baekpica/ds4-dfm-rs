@@ -48,7 +48,10 @@ pub(crate) fn attach_siblings(
 ) -> Result<(Option<SiblingAttach>, Option<SiblingAttach>)> {
     let mtp_path = nonempty(paths.mtp);
     let dspark_path = nonempty(paths.dspark);
-    if (mtp_path.is_some() || dspark_path.is_some()) && family != ModelFamily::DeepSeek4 {
+    let mtp_supported = matches!(family, ModelFamily::DeepSeek4 | ModelFamily::Inkling);
+    if (mtp_path.is_some() && !mtp_supported)
+        || (dspark_path.is_some() && family != ModelFamily::DeepSeek4)
+    {
         return Err(Error {
             code: 1,
             message: DEEPSEEK_ONLY.into(),
@@ -78,6 +81,16 @@ fn kind_token(kind: SupportCatalog) -> &'static str {
 
 fn open_one(kind: SupportCatalog, path: &str, shape: Shape) -> Result<SiblingAttach> {
     let token = kind_token(kind);
+    if shape.family == ModelFamily::Inkling {
+        let g = crate::GgufFile::open(std::path::Path::new(path)).map_err(|e| Error {
+            code: 1,
+            message: format!("{token} metadata failed: {e}"),
+        })?;
+        crate::inkling::validate_mtp(&g).map_err(|e| Error {
+            code: 1,
+            message: format!("{token} metadata failed: {e}"),
+        })?;
+    }
     let inv = TensorInventory::open(std::path::Path::new(path)).map_err(|e| Error {
         code: 1,
         message: format!("{token} tensor inventory failed: {}", e.token()),
@@ -179,6 +192,59 @@ mod tests {
         })
         .unwrap();
         assert!(mtp.is_none() && dspark.is_none());
+    }
+
+    #[test]
+    fn inkling_mtp_checks_metadata() {
+        let path = temp_gguf("inkling-mtp", &["model.mtp.layers.0.embed_norm.weight"]);
+        let err = attach_siblings(
+            ModelFamily::Inkling,
+            crate::shape::SHAPE_INKLING_SMALL,
+            SiblingPaths {
+                mtp: path.to_str(),
+                dspark: None,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.message.starts_with("mtp metadata failed:"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn inkling_rejects_dspark() {
+        let err = attach_siblings(
+            ModelFamily::Inkling,
+            crate::shape::SHAPE_INKLING_SMALL,
+            SiblingPaths {
+                mtp: None,
+                dspark: Some("/unused"),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.message, DEEPSEEK_ONLY);
+    }
+
+    #[test]
+    #[ignore = "requires the real Inkling MTP-BF16 sidecar"]
+    fn attach_inkling_mtp_artifact() {
+        let root = std::env::var("INKLING_ARTIFACT_DIR").expect("set INKLING_ARTIFACT_DIR");
+        let path = format!("{root}/MTP-BF16/Inkling-Small-MTP-BF16.gguf");
+        let (mtp, dspark) = attach_siblings(
+            ModelFamily::Inkling,
+            crate::shape::SHAPE_INKLING_SMALL,
+            SiblingPaths {
+                mtp: Some(&path),
+                dspark: None,
+            },
+        )
+        .unwrap();
+        assert!(dspark.is_none());
+        let plan = mtp.unwrap();
+        assert_eq!(plan.bind_plan().slots.len(), 160);
+        assert!(plan.bind_plan().missing_required().is_empty());
     }
 
     #[test]

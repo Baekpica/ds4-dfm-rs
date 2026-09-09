@@ -509,6 +509,38 @@ cleanup:
     return rc;
 }
 
+int ds4_bridge_sync_inkling(ds4_bridge_session *s,
+                             const int32_t *tokens, int n_tokens,
+                             const ds4_bridge_inkling_pixels *images, uint32_t image_count,
+                             const ds4_bridge_inkling_audio *audios, uint32_t audio_count,
+                             char *err, size_t errlen) {
+    enum { MEDIA_LIMIT = 4 };
+    if (!s || !s->session || !tokens || n_tokens <= 0 ||
+        (image_count && !images) || (audio_count && !audios) ||
+        image_count > MEDIA_LIMIT || audio_count > MEDIA_LIMIT ||
+        image_count + audio_count == 0 || image_count + audio_count > MEDIA_LIMIT) {
+        set_err(err, errlen, "invalid Inkling media sync input");
+        return 1;
+    }
+    ds4_inkling_pixels native_images[MEDIA_LIMIT] = {0};
+    ds4_inkling_audio native_audios[MEDIA_LIMIT] = {0};
+    for (uint32_t i = 0; i < image_count; i++) {
+        native_images[i].pixels = images[i].pixels;
+        native_images[i].pixel_count = images[i].pixel_count;
+        native_images[i].token_offset = images[i].token_offset;
+        native_images[i].token_count = images[i].token_count;
+    }
+    for (uint32_t i = 0; i < audio_count; i++) {
+        native_audios[i].codes = audios[i].codes;
+        native_audios[i].code_count = audios[i].code_count;
+        native_audios[i].token_offset = audios[i].token_offset;
+        native_audios[i].token_count = audios[i].token_count;
+    }
+    const ds4_tokens prompt = {.v = (int *)(void *)tokens, .len = n_tokens, .cap = n_tokens};
+    return ds4_session_sync_inkling(s->session, &prompt, native_images, image_count,
+                                    native_audios, audio_count, err, errlen);
+}
+
 int ds4_bridge_session_sync_cb(ds4_bridge_session *s,
                                const int32_t *tokens, int n_tokens,
                                ds4_bridge_prefill_fn progress, void *ud,
@@ -569,6 +601,26 @@ int ds4_bridge_session_layer_slice_reset(ds4_bridge_session *s,
         return 1;
     }
     return ds4_session_layer_slice_reset(s->session, err, errlen);
+}
+
+int ds4_bridge_inkling_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
+                              int32_t *tokens, int32_t *target, int32_t cap,
+                              char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return -1;
+    }
+    return ds4_session_inkling_trial(s->session, first, max_tokens, tokens, target, cap, err, errlen);
+}
+
+int ds4_bridge_inkling_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return 1;
+    }
+    return ds4_session_inkling_commit(s->session, keep, err, errlen);
 }
 
 int ds4_bridge_eval_speculative_argmax(ds4_bridge_session *s,

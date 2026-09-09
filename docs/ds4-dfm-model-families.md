@@ -8,8 +8,8 @@ the inherited C release history and the [release ledger](releases/v0.1.0.md)
 for qualification and workload limits.
 
 The runtime also carries explicit non-DFM family ports, including dots3-note,
-Qwen3.8, GLM 5.3 Flash and K2-Horizon. Inclusion does not classify those source
-models as Korean DFM. The [repository README](../README.md#supported-model-families)
+Qwen3.8, GLM 5.3 Flash, K2-Horizon and Inkling Small. Inclusion does not classify
+those source models as Korean DFM. The [repository README](../README.md#supported-model-families)
 defines the exact artifact support scope.
 
 The reference target is one NVIDIA DGX Spark with a GB10 GPU and 128 GB of
@@ -34,8 +34,9 @@ The implementation stays close to upstream's style:
 - different attention, recurrent state, or expert math gets a
   direct family path;
 - no plugin registry, graph framework, or broad abstraction layer is added;
-- external MTP and DSpark support models remain DeepSeek-only. The embedded
-  dots3-note MTP block is bound and validated but is not executed yet.
+- external MTP sidecars require the exact DeepSeek or Inkling family contract;
+  DSpark remains DeepSeek-only. The embedded dots3-note MTP block is bound and
+  validated but is not executed yet.
 
 This keeps the changes reviewable for a possible future upstream contribution.
 
@@ -51,6 +52,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | Qwen3.8 Flash Next SSD-PLE | `general.architecture=qwen4exp` | Q5 main + four SSD-PLE sidecars, GDN/QSA state, embedded MTP, still images | configured/native-fitted N-bank scheduler; one/two banks gated |
 | GLM 5.3 Flash | `general.architecture=glm5-next` | exact Q2 main + vision sidecar | serial; 2,048-context cap |
 | K2-Horizon 375B A23B | `general.architecture=k2-horizon` | full-attention GQA KV, partial NeoX RoPE, shared-expert MoE | persistent one-bank (32K gated) |
+| Inkling Small | `general.architecture=inkling` | MQ85GB source-interleaved GQA, four-tap convolution, embedded media encoders, optional eight-layer MTP-BF16 | serial CUDA; [1,024-context checks](inkling-small.md) |
 
 The scheduler implementation may differ because the model states differ, but
 the operator and client contract is the same. Changing `-m` to a GGUF from a
@@ -182,9 +184,10 @@ DS4_CUDA_WEIGHT_IPC_SCOPE=base \
 
 For a split model, `MODEL` is its first shard. DeepSeek can place a DSpark
 drafter beside the base model; the standard launch resolver attaches it
-automatically when its expected file name is present. The other families do
-not accept external MTP or DSpark attachments; dots3-note's in-file MTP block
-is currently validation-only.
+automatically when its expected file name is present. Inkling accepts its exact
+MTP-BF16 sidecar; use the [full base+MTP owner launch](inkling-small.md#serving)
+for the tested configuration. Other families do not accept external MTP or
+DSpark attachments; dots3-note's in-file MTP block is validation-only.
 
 ## DGX Spark memory hygiene
 
@@ -493,8 +496,8 @@ published metric. 1,048,576-token serving is not claimed.
 - The Motif-3 256K result validates one strict serial request on this exact
   artifact and GB10 host. It does not validate concurrent 256K banks or other
   accelerators.
-- Motif-3 serving uses plain decoding; MTP and DSpark support models remain
-  DeepSeek-only.
+- Motif-3 serving uses plain decoding; it does not accept MTP or DSpark
+  support models.
 - Historical Solar Open2 serving evidence includes `-c 196608` with three
   banks. The source 1,048,576-token metadata is not a measured Spark pass;
   the [September 7 campaign](solar-open2-optimization-2026-09-07.md#campaign-closure-and-limits)

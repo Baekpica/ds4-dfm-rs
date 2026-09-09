@@ -2505,6 +2505,117 @@ int ds4_gpu_swiglu_tensor(
         float                   clamp,
         float                   weight);
 
+/* Inkling CUDA residual 4-tap convolution. F32 buffers carry BF16 values:
+ * x/out [rows, channels], history/next [3, channels], oldest first. Inputs
+ * are rounded to BF16; weights are native BF16 [channels, 1, 4]. History
+ * must be zeroed for a new sequence. next == history is supported; all
+ * other writable spans must be disjoint. Warm weight mapping before capture;
+ * keep rows/channels and buffer addresses in the graph key. History values
+ * remain live across replay; no position scalar is baked into the kernel. */
+int ds4_gpu_inkling_sconv(
+        ds4_gpu_tensor *out, ds4_gpu_tensor *next,
+        const ds4_gpu_tensor *x, const ds4_gpu_tensor *history,
+        const void *model_map, uint64_t model_size, uint64_t weight_offset,
+        uint32_t channels, uint32_t rows);
+
+/* Inkling top-6 over 256 sigmoid+bias scores, lower-ID ties. Logsigmoid
+ * normalization includes both shared raw logits, then scales by 8*global.
+ * logits is F32 [rows,stride>=258]; IDs/routed [rows,6], shared [rows,2].
+ * Bias [256] and global scale [1] are native F32 weights. Outputs must be
+ * disjoint from one another and logits. Warm mapping before graph capture. */
+int ds4_gpu_inkling_route(
+        ds4_gpu_tensor *ids, ds4_gpu_tensor *routed, ds4_gpu_tensor *shared,
+        const ds4_gpu_tensor *logits, const void *model_map, uint64_t model_size,
+        uint64_t bias_offset, uint64_t scale_offset, uint32_t rows, uint32_t stride);
+
+/* F32 storage, BF16 projection/activation boundaries. Pairs are interleaved
+ * [rows,2*width]. Optional F32 gamma [rows] is for shared experts, before the
+ * final BF16 cast; dense/MTP and routed experts pass NULL. Routed weights are
+ * applied AFTER down projection by combine. Output [rows,width] is disjoint. */
+int ds4_gpu_inkling_swiglu(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *pairs, const ds4_gpu_tensor *gamma,
+        uint32_t width, uint32_t rows);
+
+/* Round down outputs to BF16 before FP32 accumulation. Routed [rows,6,width]
+ * uses F32 weights [rows,6]; shared [rows,2,width] is already gamma-weighted.
+ * Round both branch sums before their final BF16 addition. Disjoint output. */
+int ds4_gpu_inkling_combine(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *routed, const ds4_gpu_tensor *shared,
+        const ds4_gpu_tensor *weights, uint32_t width, uint32_t rows);
+
+/* Relative attention preparation after Q RMSNorm and R projection. F32
+ * buffers carry BF16 q [rows,32,128] and r [rows,32,16]. Native BF16 proj is
+ * [16,extent], extent 512 (local) or 1024 (global). Outputs are BF16-valued
+ * F32 q_out [rows,32,128], rel_out [rows,32,extent]. For global layers, apply
+ * tau=1+0.1*log(max((position+1)/128000,1)) AFTER BF16 projection rounding.
+ * Absolute U32 positions [rows] remain device-live across graph replay.
+ * q_out==q is allowed; all other writable spans must be disjoint. */
+int ds4_gpu_inkling_attn_prep(
+        ds4_gpu_tensor *q_out, ds4_gpu_tensor *rel_out,
+        const ds4_gpu_tensor *q, const ds4_gpu_tensor *r, const ds4_gpu_tensor *positions,
+        const void *model_map, uint64_t model_size, uint64_t proj_offset,
+        uint32_t rows, uint32_t extent);
+
+/* Single-sequence GQA: 32 Q heads, 8 KV heads, width 128, scale 1/128.
+ * F32 inputs carry BF16 q [rows,32,128], relative [rows,32,extent], and
+ * current k/v [rows,8,128]. Cache is native BF16 [capacity,2,8,128], K then V,
+ * addressed by absolute position modulo capacity. position is one live U32
+ * device scalar: the committed prefix length, shared across captured calls.
+ * Local extent 512 requires capacity>=512; global extent 1024 requires
+ * position+rows<=capacity. Position+rows-1 must fit U32. Invalid device
+ * positions produce NaN output. Host must keep prefix/cache state consistent.
+ * Output [rows,32,128] is BF16-valued F32, disjoint from every input.
+ * Forward reads current K/V directly and NEVER updates cache; arbitrary
+ * prefill chunks therefore cannot overwrite a still-visible local prefix. */
+int ds4_gpu_inkling_attention(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *q, const ds4_gpu_tensor *relative,
+        const ds4_gpu_tensor *k, const ds4_gpu_tensor *v, const ds4_gpu_tensor *cache,
+        const ds4_gpu_tensor *position, uint32_t rows, uint32_t capacity, uint32_t extent);
+
+/* Commit only the accepted leading rows of current K/V after attention.
+ * Same live position and cache layout. Zero rows is a no-op. For rows>capacity
+ * store only the final capacity rows, avoiding duplicate concurrent ring
+ * writes. Invalid U32 position spans leave cache unchanged. Cache must be
+ * disjoint from inputs. Key rows/capacity and all addresses in captured graphs. */
+int ds4_gpu_inkling_kv_store(
+        ds4_gpu_tensor *cache, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        const ds4_gpu_tensor *position, uint32_t rows, uint32_t capacity);
+
+/* Native BF16 RMS weight [width], epsilon 1e-6. F32 x/out [rows,width]
+ * carry BF16 values: round x, reduce/multiply in FP32, round output once.
+ * Exact in-place output is allowed; partial overlap is rejected. */
+int ds4_gpu_inkling_norm(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x, const void *model_map,
+        uint64_t model_size, uint64_t weight_offset, uint32_t width, uint32_t rows);
+
+/* BF16(BF16(a)*scale + BF16(b)); NULL b omits the addition. Use scale=1
+ * for residuals or plain projection rounding, NULL b for dense/global or
+ * logits-input scaling. Scale is a finite model constant, fixed in capture.
+ * Exact out==a/out==b is supported; partial writable overlap is rejected. */
+int ds4_gpu_inkling_add_scale(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *a, const ds4_gpu_tensor *b,
+        float scale, uint64_t count);
+
+/* HMLP stages 0..3 fold BTHWC neighborhoods into channels in source order.
+ * Input/output use F32 storage with BF16 rounding, disjoint spans. Stage
+ * shapes are [2,40,40,3], [2,8,8,128], [2,4,4,320], [2,1,1,4800].
+ * Capture keys must include stage, patch count and buffer addresses. */
+int ds4_gpu_inkling_fold(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x, uint32_t patches, uint32_t stage);
+
+/* Source exact (erf) GELU, with BF16 input/output boundaries in F32 storage.
+ * Exact in-place output is supported; partial overlap is rejected. */
+int ds4_gpu_inkling_gelu(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x, uint64_t count);
+
+/* Sum the 80 selected native BF16 codebook embeddings in FP32, then round
+ * to BF16. IDs are device-live I32 [rows,80], each in [0,16). Invalid IDs
+ * produce NaN for that row. Output F32 [rows,4096] is disjoint from IDs;
+ * apply the separate audio RMSNorm before inserting features into text. */
+int ds4_gpu_inkling_audio(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *ids, const void *model_map,
+        uint64_t model_size, uint64_t weight_offset, uint32_t rows);
+
 /* Model-family router semantics used by Solar Open 2 and EXAONE: sigmoid
  * probabilities, top-k selection on probability + optional bias, then
  * normalization of the selected UNBIASED probabilities and final scaling. */
