@@ -16,8 +16,15 @@ enum {
     INKLING_KEY_SHIFT = 16,
     INKLING_INDEX_MASK = (1u << INKLING_KEY_SHIFT) - 1,
     INKLING_FF_MAX = 16384,
+    INKLING_HEADS = 32,
+    INKLING_HEAD_DIM = 128,
+    INKLING_REL_DIM = 16,
+    INKLING_LOCAL_EXTENT = 512,
+    INKLING_GLOBAL_EXTENT = 1024,
+    INKLING_TAU_FLOOR = 128000,
 };
 static constexpr uint32_t INKLING_FLOAT_SIGN = UINT32_C(1) << 31;
+static constexpr float INKLING_TAU_ALPHA = 0.1f;
 
 static __device__ __forceinline__ float inkling_bf16(float value) {
     return __bfloat162float(__float2bfloat16_rn(value));
@@ -280,4 +287,63 @@ extern "C" int ds4_gpu_inkling_combine(
         (float *)out->ptr, (const float *)routed->ptr, (const float *)shared->ptr,
         (const float *)weights->ptr, width, count);
     return cuda_ok(cudaGetLastError(), "Inkling MoE combine launch");
+}
+
+static __global__ void inkling_attn_prep_kernel(
+        float *q_out, float *rel_out, const float *q, const float *r,
+        const uint32_t *positions, const uint16_t *proj, uint64_t head_rows, uint32_t extent) {
+    for (uint64_t head = blockIdx.x; head < head_rows; head += gridDim.x) {
+        float tau = 1.0f;
+        if (extent == INKLING_GLOBAL_EXTENT) {
+            const float n = (float)((uint64_t)positions[head / INKLING_HEADS] + 1);
+            const float ratio = fmaxf(__fdiv_rn(n, (float)INKLING_TAU_FLOOR), 1.0f);
+            tau = __fadd_rn(1.0f, __fmul_rn(INKLING_TAU_ALPHA, logf(ratio)));
+        }
+        if (threadIdx.x < INKLING_HEAD_DIM) {
+            const uint64_t i = head * INKLING_HEAD_DIM + threadIdx.x;
+            q_out[i] = inkling_bf16(__fmul_rn(inkling_bf16(q[i]), tau));
+        }
+        for (uint32_t e = threadIdx.x; e < extent; e += blockDim.x) {
+            float sum = 0.0f;
+            #pragma unroll
+            for (int d = 0; d < INKLING_REL_DIM; d++) {
+                const float w = __uint_as_float((uint32_t)proj[d * extent + e] << 16);
+                sum = fmaf(inkling_bf16(r[head * INKLING_REL_DIM + d]), w, sum);
+            }
+            // Preserve the published post-projection tau contract. Folding tau
+            // into R moves a BF16 rounding boundary and changes the model math.
+            rel_out[head * extent + e] = inkling_bf16(__fmul_rn(inkling_bf16(sum), tau));
+        }
+    }
+}
+
+extern "C" int ds4_gpu_inkling_attn_prep(
+        ds4_gpu_tensor *q_out, ds4_gpu_tensor *rel_out,
+        const ds4_gpu_tensor *q, const ds4_gpu_tensor *r, const ds4_gpu_tensor *positions,
+        const void *model_map, uint64_t model_size, uint64_t proj_offset,
+        uint32_t rows, uint32_t extent) {
+    if (!q_out || !rel_out || !q || !r || !positions || !model_map || !rows ||
+        (extent != INKLING_LOCAL_EXTENT && extent != INKLING_GLOBAL_EXTENT) ||
+        proj_offset % sizeof(uint16_t) || proj_offset > model_size) { return 0; }
+    const uint64_t weight_bytes = (uint64_t)INKLING_REL_DIM * extent * sizeof(uint16_t);
+    const uint64_t head_rows = (uint64_t)rows * INKLING_HEADS;
+    const uint64_t qbytes = head_rows * INKLING_HEAD_DIM * sizeof(float);
+    const uint64_t rbytes = head_rows * INKLING_REL_DIM * sizeof(float);
+    const uint64_t obytes = head_rows * extent * sizeof(float);
+    const uint64_t pbytes = (uint64_t)rows * sizeof(uint32_t);
+    if (weight_bytes > model_size - proj_offset || q_out->bytes < qbytes || rel_out->bytes < obytes ||
+        q->bytes < qbytes || r->bytes < rbytes || positions->bytes < pbytes ||
+        inkling_overlap(q_out, qbytes, rel_out, obytes) ||
+        (q_out->ptr != q->ptr && inkling_overlap(q_out, qbytes, q, qbytes)) ||
+        inkling_overlap(q_out, qbytes, r, rbytes) || inkling_overlap(q_out, qbytes, positions, pbytes) ||
+        inkling_overlap(rel_out, obytes, q, qbytes) || inkling_overlap(rel_out, obytes, r, rbytes) ||
+        inkling_overlap(rel_out, obytes, positions, pbytes)) { return 0; }
+    const uint16_t *proj = (const uint16_t *)cuda_resolve_weight_ptr(
+        model_map, proj_offset, weight_bytes, 0, "inkling relative projection");
+    if (!proj) { return 0; }
+    const unsigned blocks = (unsigned)(head_rows < INKLING_MAX_BLOCKS ? head_rows : INKLING_MAX_BLOCKS);
+    inkling_attn_prep_kernel<<<blocks, INKLING_THREADS, 0, ds4_current_stream()>>>(
+        (float *)q_out->ptr, (float *)rel_out->ptr, (const float *)q->ptr, (const float *)r->ptr,
+        (const uint32_t *)positions->ptr, proj, head_rows, extent);
+    return cuda_ok(cudaGetLastError(), "Inkling attention preparation launch");
 }

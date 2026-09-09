@@ -2543,6 +2543,19 @@ int ds4_gpu_inkling_combine(
         ds4_gpu_tensor *out, const ds4_gpu_tensor *routed, const ds4_gpu_tensor *shared,
         const ds4_gpu_tensor *weights, uint32_t width, uint32_t rows);
 
+/* Relative attention preparation after Q RMSNorm and R projection. F32
+ * buffers carry BF16 q [rows,32,128] and r [rows,32,16]. Native BF16 proj is
+ * [16,extent], extent 512 (local) or 1024 (global). Outputs are BF16-valued
+ * F32 q_out [rows,32,128], rel_out [rows,32,extent]. For global layers, apply
+ * tau=1+0.1*log(max((position+1)/128000,1)) AFTER BF16 projection rounding.
+ * Absolute U32 positions [rows] remain device-live across graph replay.
+ * q_out==q is allowed; all other writable spans must be disjoint. */
+int ds4_gpu_inkling_attn_prep(
+        ds4_gpu_tensor *q_out, ds4_gpu_tensor *rel_out,
+        const ds4_gpu_tensor *q, const ds4_gpu_tensor *r, const ds4_gpu_tensor *positions,
+        const void *model_map, uint64_t model_size, uint64_t proj_offset,
+        uint32_t rows, uint32_t extent);
+
 /* Model-family router semantics used by Solar Open 2 and EXAONE: sigmoid
  * probabilities, top-k selection on probability + optional bias, then
  * normalization of the selected UNBIASED probabilities and final scaling. */

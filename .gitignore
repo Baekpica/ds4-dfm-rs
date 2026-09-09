@@ -81,3 +81,4 @@ __pycache__/
 /tests/test_exaone_tokenizer
 /tests/test_inkling_kernels
 /tests/test_inkling_moe
+/tests/test_inkling_attn_prep

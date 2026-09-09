@@ -56,6 +56,14 @@ replays changed expert IDs and weights correctly; Compute Sanitizer reported
 zero errors and convolution regression passed. This does not yet connect the
 expert matmuls or qualify full-model numerical parity.
 
+CUDA attention preparation projects each head's 16 relative features into
+512 local or 1024 global distance bins. Global Q and relative profiles receive
+the source log scale after BF16 rounding, starting beyond position 127999.
+Absolute positions stay live on device during captured replay. Eight GB10
+shape cases and five replays matched the FP64 formula at BF16 boundaries;
+Compute Sanitizer reported zero errors. QK RMSNorm, attention/KV execution
+and native graph integration remain pending.
+
 ## Remaining qualification
 
 1. Connect source chat/reasoning/tool rendering, streamed content markers and
