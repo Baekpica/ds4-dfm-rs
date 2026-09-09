@@ -1,6 +1,7 @@
 # Inkling Small integration
 
-Work in progress; native inference is not implemented yet. The target is
+Work in progress; the native eager text graph is implemented, while production
+session integration remains pending. The target is
 MQ85GB with the separate eight-layer MTP-BF16 draft stack, including text,
 image and audio input with text output, matching the
 [base model](https://huggingface.co/thinkingmachines/Inkling-Small/blob/8cc5877b44d343f88b92086aa1fb72897950f06a/README.md).
@@ -25,7 +26,7 @@ revision, a sidecar role and BF16 recipe. Main loading rejects MTP-only files.
 `ModelFamily::Inkling` is 7 and `Variant::InklingSmall` is 9 in the host
 catalog and native shape. Native binding resolves all 888 main and 160 draft
 tensors, including media weights, without reading their payloads; the real
-GGUF descriptor gate checks each name and exactly-once coverage. Graph and
+GGUF descriptor gate checks each name and exactly-once coverage. Production
 session integration is still pending. Model opening
 returns an explicit unimplemented-inference error before entering native code.
 
@@ -46,7 +47,7 @@ in-place history update is also supported. On GB10, 18 channel/length pairs
 matched the independent FP64 formula and their chunk/decode counterparts;
 history also matched through seven CUDA graph replays. Compute Sanitizer
 reported zero memory errors, and the existing model-family primitive suite
-passed. These are synthetic component gates; native graph wiring is pending.
+passed. These are synthetic component gates.
 
 CUDA MoE primitives now implement stable sigmoid-plus-bias top-6 selection,
 logsigmoid normalization across six routed and two shared logits, interleaved
@@ -56,16 +57,15 @@ CPU PyTorch fixtures cover ties, selection-only bias, extreme logits and zero
 scale, plus both BF16 reduction boundaries. GB10 gates passed at up to 513
 router/combine rows and 257 SwiGLU rows, including width 16384. Six graph
 replays changed expert IDs and weights correctly; Compute Sanitizer reported
-zero errors and convolution regression passed. This does not yet connect the
-expert matmuls or qualify full-model numerical parity.
+zero errors and convolution regression passed. These component gates do not
+qualify full-model numerical parity.
 
 CUDA attention preparation projects each head's 16 relative features into
 512 local or 1024 global distance bins. Global Q and relative profiles receive
 the source log scale after BF16 rounding, starting beyond position 127999.
 Absolute positions stay live on device during captured replay. Eight GB10
 shape cases and five replays matched the FP64 formula at BF16 boundaries;
-Compute Sanitizer reported zero errors. Native graph integration remains
-pending.
+Compute Sanitizer reported zero errors.
 
 CUDA GQA attention now reads the committed BF16 KV prefix and current K/V
 without mutating the cache. A separate store commits the accepted prefix,
@@ -81,16 +81,29 @@ and HMLP widths. They preserve FP32 normalization/weight arithmetic before
 the output cast and invalidate stale producer-Q8 data on overwritten buffers.
 GB10 checks passed 18 norm shapes, exact scale/residual boundaries, seven
 captured replays and the Q8 reuse regression. Compute Sanitizer reported
-zero errors. Native layer and graph wiring remain pending.
+zero errors.
+
+The eager graph connects all 42 layers and masks the 966 padded output rows
+to negative infinity. On the actual MQ85GB artifact, five-token text and
+12-token chat fixtures produced byte-identical valid-vocabulary logits,
+greedy output and committed KV/convolution state across full prefill, decode
+and 2/3-token chunks; the chat fixture also covered seven-token chunks. The
+next greedy token after `The capital of France is` was ` Paris`.
+BF16 fixed-row reductions and per-token quantized matmuls preserve this
+initial numerical baseline; wider dispatches showed final-logit drift across
+token widths and were excluded. Prefill performance is not optimized. This is
+internal execution parity; independent full-model source parity, long-context
+and captured execution remain unverified.
+The five-token graph also passed Compute Sanitizer memory-access checks.
+API-error reporting was disabled for that gate after the default run reported
+six expected host-registration fallback errors; both logs were retained.
 
 ## Remaining qualification
 
 1. Connect source chat/reasoning/tool rendering, streamed content markers and
    REPL effort placement to the CLI and server.
-2. Bind native weights through the existing Rust → bridge → CUDA boundary.
-   Connect relative GQA/KV, expert matmuls, MoE primitives and all four
-   residual causal convolutions per layer.
-   Preserve BF16 boundaries, FP32 router/reductions and 1/128 attention scale.
+2. Connect the native graph through Rust → bridge → CUDA session ownership,
+   allocation/admission, prefill/decode, reset and checkpoint lifecycle.
 3. Prove chunk/decode and captured/eager full-vocabulary logits and greedy
    parity. Cover local-ring wrap, global attention and convolution history.
 4. Implement HMLP image and 16-kHz dMel audio preprocessing/encoding, feature
@@ -105,8 +118,10 @@ zero errors. Native layer and graph wiring remain pending.
 
 Reference code is pinned to SGLang
 `03d06a764e4a83268eefd1bafc676418f7269c89` and Transformers
-`cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55`. SGLang `InklingMTPLayer` chains
-the raw block hidden state; it applies main embedding norm before draft
+`cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55`. The first draft receives the
+target's final-normalized hidden state before division by 16. Subsequent
+SGLang `InklingMTPLayer` calls chain raw draft block hidden states. Draft
+embedding preparation applies main embedding norm before draft
 embedding norm and concatenates hidden then embedding. Draft global layers
 are 1 and 3; main global layers are 5, 11, 17, 23, 29, 35 and 41.
 
@@ -142,6 +157,6 @@ cargo test -p ds4-core --test inkling_tokenizer --locked -- --ignored --test-thr
 September 9: all six MQ85GB shard hashes, MTP SHA-256, real main/MTP
 metadata and tensor binding passed. The tokenizer matched 654 source
 vectors in both ordinary and rendered-chat modes, including decoded bytes;
-all four basic chat-template effort fixtures passed. Full-model numerical
-and serving gates remain unverified. Qwen's resident weight owner was stopped with user
+all four basic chat-template effort fixtures passed. Independent full-model
+source parity and serving gates remain unverified. Qwen's resident weight owner was stopped with user
 authorization before native testing; inspect current ownership before loading.

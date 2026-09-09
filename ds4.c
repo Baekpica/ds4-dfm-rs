@@ -20716,6 +20716,345 @@ static bool plain_graph_matmul_tensor(
             out, model, weight, in_dim, out_dim, x, n_tokens);
 }
 
+/* Inkling eager text graph. Session/capture and speculative commits attach
+ * here after the complete artifact forward gate. */
+enum {
+    IK_HIDDEN = 4096, IK_Q_HEADS = 32, IK_KV_HEADS = 8, IK_HEAD = 128,
+    IK_KV = IK_KV_HEADS * IK_HEAD, IK_REL = 16,
+    IK_LOCAL = 512, IK_GLOBAL = 1024, IK_HISTORY = 3,
+    IK_EXPERTS = 256, IK_USED = 6, IK_SHARED = 2,
+    IK_MID = 2048, IK_DENSE = 16384, IK_LOGIT_DIVISOR = 16,
+};
+
+enum {
+    IK_X, IK_NORM, IK_Q, IK_K, IK_V, IK_R, IK_RELATIVE, IK_HEADS,
+    IK_PROJECTED, IK_CONV, IK_K_IN, IK_V_IN, IK_GATE, IK_IDS, IK_GAMMA,
+    IK_SHARED_GAMMA, IK_PAIRS, IK_MIDDLE, IK_DOWN, IK_SHARED_IDS,
+    IK_SHARED_PAIRS, IK_SHARED_MIDDLE, IK_SHARED_DOWN, IK_TOKENS, IK_POSITIONS,
+    IK_BUFFERS,
+};
+
+typedef struct {
+    ds4_gpu_tensor *kv;
+    ds4_gpu_tensor *conv[4]; /* K, V, attention output, MLP output. */
+    uint32_t capacity;
+} inkling_layer_state;
+
+typedef struct {
+    ds4_gpu_tensor *buf[IK_BUFFERS];
+    ds4_gpu_tensor *logits;
+    inkling_layer_state layer[INKLING_LAYERS];
+    uint32_t context, cap, position;
+    uint32_t *positions;
+    float dense_scale[2];
+    bool failed;
+} ds4_inkling_graph;
+
+static void inkling_graph_free(ds4_inkling_graph *g) {
+    for (unsigned i = 0; i < IK_BUFFERS; i++) {
+        ds4_gpu_tensor_free(g->buf[i]);
+    }
+    ds4_gpu_tensor_free(g->logits);
+    for (unsigned i = 0; i < INKLING_LAYERS; i++) {
+        ds4_gpu_tensor_free(g->layer[i].kv);
+        for (unsigned j = 0; j < 4; j++) {
+            ds4_gpu_tensor_free(g->layer[i].conv[j]);
+        }
+    }
+    free(g->positions);
+    memset(g, 0, sizeof(*g));
+}
+
+static bool inkling_graph_reset(ds4_inkling_graph *g) {
+    g->failed = true;
+    for (unsigned i = 0; i < INKLING_LAYERS; i++) {
+        inkling_layer_state *s = &g->layer[i];
+        /* Prefix length masks stale KV; only convolution history needs clear. */
+        for (unsigned j = 0; j < 4; j++) {
+            unsigned width = j < 2 ? IK_KV : IK_HIDDEN;
+            if (!ds4_gpu_tensor_fill_f32(s->conv[j], 0, IK_HISTORY * width)) {
+                return false;
+            }
+        }
+    }
+    g->position = 0;
+    g->failed = false;
+    return true;
+}
+
+static bool inkling_graph_alloc(ds4_inkling_graph *g, const ds4_model *m,
+                                 const ds4_weights *w, uint32_t ctx, uint32_t cap) {
+    memset(g, 0, sizeof(*g));
+    if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_INKLING || !ctx || !cap ||
+        cap > ctx || ctx > DS4_SHAPE_INKLING_SMALL.rope_orig_ctx) {
+        return false;
+    }
+    g->context = ctx;
+    g->cap = cap;
+    g->positions = calloc(cap, sizeof(*g->positions));
+    if (!g->positions) {
+        goto fail;
+    }
+    const uint32_t width[IK_BUFFERS] = {
+        [IK_X] = IK_HIDDEN, [IK_NORM] = IK_HIDDEN,
+        [IK_Q] = IK_HIDDEN, [IK_K] = IK_KV, [IK_V] = IK_KV,
+        [IK_R] = IK_Q_HEADS * IK_REL, [IK_RELATIVE] = IK_Q_HEADS * IK_GLOBAL,
+        [IK_HEADS] = IK_HIDDEN, [IK_PROJECTED] = IK_HIDDEN,
+        [IK_CONV] = IK_HIDDEN, [IK_K_IN] = IK_KV, [IK_V_IN] = IK_KV,
+        [IK_GATE] = IK_EXPERTS + IK_SHARED, [IK_IDS] = IK_USED,
+        [IK_GAMMA] = IK_USED, [IK_SHARED_GAMMA] = IK_SHARED,
+        [IK_PAIRS] = 2 * IK_DENSE, [IK_MIDDLE] = IK_DENSE,
+        [IK_DOWN] = IK_USED * IK_HIDDEN, [IK_SHARED_IDS] = IK_SHARED,
+        [IK_SHARED_PAIRS] = IK_SHARED * 2 * IK_MID,
+        [IK_SHARED_MIDDLE] = IK_SHARED * IK_MID,
+        [IK_SHARED_DOWN] = IK_SHARED * IK_HIDDEN,
+        [IK_TOKENS] = 1, [IK_POSITIONS] = 1,
+    };
+    for (unsigned i = 0; i < IK_BUFFERS; i++) {
+        g->buf[i] = ds4_gpu_tensor_alloc((uint64_t)cap * width[i] * sizeof(float));
+        if (!g->buf[i]) {
+            goto fail;
+        }
+    }
+    g->logits = ds4_gpu_tensor_alloc((uint64_t)DS4_N_VOCAB * sizeof(float));
+    if (!g->logits) {
+        goto fail;
+    }
+    uint32_t *ids = calloc((size_t)cap * IK_SHARED, sizeof(*ids));
+    if (!ids) {
+        goto fail;
+    }
+    for (uint64_t i = 0; i < (uint64_t)cap * IK_SHARED; i++) {
+        ids[i] = i % IK_SHARED;
+    }
+    bool ids_ok = ds4_gpu_tensor_write(g->buf[IK_SHARED_IDS], 0, ids,
+                                       (uint64_t)cap * IK_SHARED * sizeof(*ids));
+    free(ids);
+    if (!ids_ok) {
+        goto fail;
+    }
+    for (unsigned i = 0; i < INKLING_LAYERS; i++) {
+        inkling_layer_state *s = &g->layer[i];
+        s->capacity = w->inkling.layer[i].rel_proj->dim[0] == IK_LOCAL ? IK_LOCAL : ctx;
+        s->kv = ds4_gpu_tensor_alloc((uint64_t)s->capacity * 2 * IK_KV * sizeof(uint16_t));
+        if (!s->kv) {
+            goto fail;
+        }
+        for (unsigned j = 0; j < 4; j++) {
+            unsigned channels = j < 2 ? IK_KV : IK_HIDDEN;
+            s->conv[j] = ds4_gpu_tensor_alloc(IK_HISTORY * channels * sizeof(float));
+            if (!s->conv[j]) {
+                goto fail;
+            }
+        }
+    }
+    for (unsigned i = 0; i < 2; i++) {
+        /* Only two BF16 scalars are read on CPU; all matrices stay mapped. */
+        uint16_t bf;
+        memcpy(&bf, tensor_data(m, w->inkling.layer[i].scale), sizeof(bf));
+        uint32_t bits = (uint32_t)bf << 16;
+        memcpy(&g->dense_scale[i], &bits, sizeof(bits));
+        if (!isfinite(g->dense_scale[i])) {
+            goto fail;
+        }
+    }
+    if (inkling_graph_reset(g)) {
+        return true;
+    }
+fail:
+    inkling_graph_free(g);
+    return false;
+}
+
+static bool inkling_projection(ds4_gpu_tensor *out, const ds4_model *m,
+                               const ds4_tensor *w, const ds4_gpu_tensor *x,
+                               uint32_t rows) {
+    /* cuBLAS changes its reduction with token width. BF16 boundary flips
+     * amplify through the router, so use the existing fixed row reduction. */
+    if (w->type == DS4_TENSOR_BF16) {
+        return ds4_gpu_matmul_bf16_stable_rows_tensor(out, m->map, m->size,
+                    w->abs_offset, w->dim[0], w->dim[1], x, rows) != 0;
+    }
+    /* Dense Q8 MMVQ also changes reduction geometry with column count.
+     * Keep the initial artifact path equal to decode before tuning prefill. */
+    const uint64_t in_bytes = w->dim[0] * sizeof(float);
+    const uint64_t out_bytes = w->dim[1] * sizeof(float);
+    for (unsigned r = 0; r < rows; r++) {
+        ds4_gpu_tensor *in_row = ds4_gpu_tensor_view(x, r * in_bytes, in_bytes);
+        ds4_gpu_tensor *out_row = ds4_gpu_tensor_view(out, r * out_bytes, out_bytes);
+        bool ok = in_row && out_row && plain_graph_matmul_tensor(
+                    out_row, m, w, w->dim[0], w->dim[1], in_row, 1);
+        ds4_gpu_tensor_free(in_row);
+        ds4_gpu_tensor_free(out_row);
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool inkling_linear(ds4_gpu_tensor *out, const ds4_model *m,
+                            const ds4_tensor *w, const ds4_gpu_tensor *x,
+                            uint32_t rows) {
+    return inkling_projection(out, m, w, x, rows) &&
+           ds4_gpu_inkling_add_scale(out, out, NULL, 1.0f, rows * w->dim[1]);
+}
+
+static bool inkling_routed(ds4_gpu_tensor *out, const ds4_model *m,
+                           const ds4_tensor *w, const ds4_gpu_tensor *x,
+                           const ds4_gpu_tensor *ids, uint32_t rows, uint32_t used) {
+    /* Keep one source token per call. Wider MMQ uses different activation
+     * scale precision from MMVQ; the BF16 differences can change routing.
+     * Down inputs are flattened assignments, grouped by token. */
+    const unsigned group = used > 1 ? 1 : w->dim[2] == IK_SHARED ? IK_SHARED : IK_USED;
+    if (rows % group != 0) {
+        return false;
+    }
+    const uint64_t in_bytes = group * w->dim[0] * sizeof(float);
+    const uint64_t out_bytes = group * used * w->dim[1] * sizeof(float);
+    const uint64_t id_bytes = (uint64_t)group * used * sizeof(uint32_t);
+    for (unsigned i = 0; i < rows / group; i++) {
+        ds4_gpu_tensor *in = ds4_gpu_tensor_view(x, i * in_bytes, in_bytes);
+        ds4_gpu_tensor *dest = ds4_gpu_tensor_view(out, i * out_bytes, out_bytes);
+        ds4_gpu_tensor *selected = ds4_gpu_tensor_view(ids, i * id_bytes, id_bytes);
+        bool ok = in && dest && selected && ds4_gpu_routed_matmul_tensor(
+            dest, in, selected, m->map, m->size, w->abs_offset, w->bytes, w->type,
+            w->dim[0], w->dim[1], w->dim[2], group, used);
+        ds4_gpu_tensor_free(in);
+        ds4_gpu_tensor_free(dest);
+        ds4_gpu_tensor_free(selected);
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool inkling_mlp(ds4_inkling_graph *g, const ds4_model *m,
+                        const ds4_inkling_block *w, uint32_t il, uint32_t n) {
+    ds4_gpu_tensor **b = g->buf;
+    if (!w->gate) {
+        return inkling_linear(b[IK_PAIRS], m, w->w13, b[IK_NORM], n) &&
+            ds4_gpu_inkling_swiglu(b[IK_MIDDLE], b[IK_PAIRS], NULL, IK_DENSE, n) &&
+            inkling_linear(b[IK_PROJECTED], m, w->w2, b[IK_MIDDLE], n) &&
+            ds4_gpu_inkling_add_scale(b[IK_PROJECTED], b[IK_PROJECTED], NULL,
+                                      g->dense_scale[il], (uint64_t)n * IK_HIDDEN);
+    }
+    /* Router logits retain FP32, unlike the BF16 ordinary projections. */
+    return inkling_projection(b[IK_GATE], m, w->gate, b[IK_NORM], n) &&
+        ds4_gpu_inkling_route(b[IK_IDS], b[IK_GAMMA], b[IK_SHARED_GAMMA], b[IK_GATE],
+            m->map, m->size, w->bias->abs_offset, w->scale->abs_offset, n,
+            IK_EXPERTS + IK_SHARED) &&
+        inkling_routed(b[IK_PAIRS], m, w->w13, b[IK_NORM], b[IK_IDS], n, IK_USED) &&
+        ds4_gpu_inkling_swiglu(b[IK_MIDDLE], b[IK_PAIRS], NULL, IK_MID, n * IK_USED) &&
+        inkling_routed(b[IK_DOWN], m, w->w2, b[IK_MIDDLE], b[IK_IDS], n * IK_USED, 1) &&
+        inkling_routed(b[IK_SHARED_PAIRS], m, w->shared_w13, b[IK_NORM],
+                       b[IK_SHARED_IDS], n, IK_SHARED) &&
+        ds4_gpu_inkling_swiglu(b[IK_SHARED_MIDDLE], b[IK_SHARED_PAIRS],
+                              b[IK_SHARED_GAMMA], IK_MID, n * IK_SHARED) &&
+        inkling_routed(b[IK_SHARED_DOWN], m, w->shared_w2, b[IK_SHARED_MIDDLE],
+                       b[IK_SHARED_IDS], n * IK_SHARED, 1) &&
+        ds4_gpu_inkling_combine(b[IK_PROJECTED], b[IK_DOWN], b[IK_SHARED_DOWN],
+                                b[IK_GAMMA], IK_HIDDEN, n);
+}
+
+static bool inkling_graph_layer(ds4_inkling_graph *g, const ds4_model *m,
+                                const ds4_inkling_block *w, unsigned il, unsigned n) {
+    ds4_gpu_tensor **b = g->buf;
+    inkling_layer_state *s = &g->layer[il];
+    const unsigned extent = w->rel_proj->dim[0];
+    /* K convolution precedes head norm; cache normalized K and convolved V. */
+    if (!ds4_gpu_inkling_norm(b[IK_NORM], b[IK_X], m->map, m->size,
+                             w->attn_norm->abs_offset, IK_HIDDEN, n) ||
+        !inkling_linear(b[IK_Q], m, w->q, b[IK_NORM], n) ||
+        !inkling_linear(b[IK_K_IN], m, w->k, b[IK_NORM], n) ||
+        !inkling_linear(b[IK_V_IN], m, w->v, b[IK_NORM], n) ||
+        !inkling_linear(b[IK_R], m, w->r, b[IK_NORM], n) ||
+        !ds4_gpu_inkling_sconv(b[IK_K], s->conv[0], b[IK_K_IN], s->conv[0],
+                              m->map, m->size, w->k_conv->abs_offset, IK_KV, n) ||
+        !ds4_gpu_inkling_sconv(b[IK_V], s->conv[1], b[IK_V_IN], s->conv[1],
+                              m->map, m->size, w->v_conv->abs_offset, IK_KV, n) ||
+        !ds4_gpu_inkling_norm(b[IK_Q], b[IK_Q], m->map, m->size,
+                             w->q_norm->abs_offset, IK_HEAD, n * IK_Q_HEADS) ||
+        !ds4_gpu_inkling_norm(b[IK_K], b[IK_K], m->map, m->size,
+                             w->k_norm->abs_offset, IK_HEAD, n * IK_KV_HEADS) ||
+        !ds4_gpu_inkling_attn_prep(b[IK_Q], b[IK_RELATIVE], b[IK_Q], b[IK_R],
+             b[IK_POSITIONS], m->map, m->size, w->rel_proj->abs_offset, n, extent) ||
+        !ds4_gpu_inkling_attention(b[IK_HEADS], b[IK_Q], b[IK_RELATIVE], b[IK_K],
+             b[IK_V], s->kv, b[IK_POSITIONS], n, s->capacity, extent) ||
+        !ds4_gpu_inkling_kv_store(s->kv, b[IK_K], b[IK_V], b[IK_POSITIONS], n, s->capacity) ||
+        !inkling_linear(b[IK_PROJECTED], m, w->o, b[IK_HEADS], n) ||
+        !ds4_gpu_inkling_sconv(b[IK_CONV], s->conv[2], b[IK_PROJECTED], s->conv[2],
+                              m->map, m->size, w->attn_conv->abs_offset, IK_HIDDEN, n) ||
+        !ds4_gpu_inkling_add_scale(b[IK_X], b[IK_X], b[IK_CONV], 1, (uint64_t)n * IK_HIDDEN) ||
+        !ds4_gpu_inkling_norm(b[IK_NORM], b[IK_X], m->map, m->size,
+                             w->mlp_norm->abs_offset, IK_HIDDEN, n) ||
+        !inkling_mlp(g, m, w, il, n) ||
+        !ds4_gpu_inkling_sconv(b[IK_CONV], s->conv[3], b[IK_PROJECTED], s->conv[3],
+                              m->map, m->size, w->mlp_conv->abs_offset, IK_HIDDEN, n)) {
+        return false;
+    }
+    return ds4_gpu_inkling_add_scale(b[IK_X], b[IK_X], b[IK_CONV], 1, (uint64_t)n * IK_HIDDEN);
+}
+
+static bool inkling_graph_forward(ds4_inkling_graph *g, const ds4_model *m,
+                                  const ds4_weights *w, const int *tokens, unsigned n) {
+    if (g->failed || !tokens || !n || n > g->cap || n > g->context - g->position) {
+        return false;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        if (tokens[i] < 0 || tokens[i] >= INKLING_VALID_VOCAB) {
+            return false;
+        }
+        g->positions[i] = g->position + i;
+    }
+    g->failed = true; /* Partial GPU failures require reset before reuse. */
+    ds4_gpu_tensor **b = g->buf;
+    if (!ds4_gpu_tensor_write(b[IK_TOKENS], 0, tokens, n * sizeof(*tokens)) ||
+        !ds4_gpu_tensor_write(b[IK_POSITIONS], 0, g->positions, n * sizeof(*g->positions)) ||
+        !ds4_gpu_embed_tokens_q8_0_tensor(b[IK_X], b[IK_TOKENS], m->map, m->size,
+                                          w->token_embd->abs_offset, DS4_N_VOCAB, n, IK_HIDDEN) ||
+        !ds4_gpu_inkling_norm(b[IK_X], b[IK_X], m->map, m->size,
+                              w->inkling.embed_norm->abs_offset, IK_HIDDEN, n)) {
+        return false;
+    }
+    for (unsigned i = 0; i < INKLING_LAYERS; i++) {
+        if (!inkling_graph_layer(g, m, &w->inkling.layer[i], i, n)) {
+            fprintf(stderr, "ds4: Inkling layer %u forward failed\n", i);
+            return false;
+        }
+        metal_graph_debug_dump_tensor("inkling_hidden", b[IK_X],
+                                       (uint64_t)n * IK_HIDDEN, i, g->position);
+        metal_graph_debug_dump_tensor("inkling_heads", b[IK_HEADS],
+                                       (uint64_t)n * IK_HIDDEN, i, g->position);
+        metal_graph_debug_dump_tensor("inkling_mlp_input", b[IK_NORM],
+                                       (uint64_t)n * IK_HIDDEN, i, g->position);
+        metal_graph_debug_dump_tensor("inkling_mlp_output", b[IK_PROJECTED],
+                                       (uint64_t)n * IK_HIDDEN, i, g->position);
+    }
+    /* Only the last row needs logits; apply muP division after final norm. */
+    ds4_gpu_tensor *last = ds4_gpu_tensor_view(b[IK_X],
+                            (uint64_t)(n - 1) * IK_HIDDEN * sizeof(float), IK_HIDDEN * sizeof(float));
+    bool ok = last && ds4_gpu_inkling_norm(b[IK_NORM], last, m->map, m->size,
+                                          w->output_norm->abs_offset, IK_HIDDEN, 1) &&
+        ds4_gpu_inkling_add_scale(b[IK_NORM], b[IK_NORM], NULL,
+                                  1.0f / IK_LOGIT_DIVISOR, IK_HIDDEN) &&
+        plain_graph_matmul_tensor(g->logits, m, w->output, IK_HIDDEN, DS4_N_VOCAB, b[IK_NORM], 1);
+    ds4_gpu_tensor_free(last);
+    if (ok) {
+        const uint32_t padding = DS4_N_VOCAB - INKLING_VALID_VOCAB;
+        ds4_gpu_tensor *tail = ds4_gpu_tensor_view(g->logits,
+            (uint64_t)INKLING_VALID_VOCAB * sizeof(float), padding * sizeof(float));
+        ok = tail && ds4_gpu_tensor_fill_f32(tail, -INFINITY, padding);
+        ds4_gpu_tensor_free(tail);
+    }
+    if (ok) {
+        g->position += n;
+        g->failed = false;
+    }
+    return ok;
+}
+
 static void plain_batch_ws_free(struct ds4_plain_batch_ws *w) {
     if (!w) return;
     ds4_gpu_tensor **all[] = {

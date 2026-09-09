@@ -615,6 +615,10 @@ tests/test_inkling_attention.o: tests/test_inkling_attention.c ds4_gpu.h
 tests/test_inkling_norm.o: tests/test_inkling_norm.c ds4_gpu.h
 	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I. -c -o $@ $<
 
+tests/test_inkling_forward.o: tests/test_inkling_forward.c ds4.c ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -fno-fast-math -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -c -o $@ $<
+
 tests/test_qwen4exp_primitives.o: tests/test_qwen4exp_primitives.c ds4_gpu.h
 	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
 
@@ -805,6 +809,9 @@ tests/test_inkling_norm: tests/test_inkling_norm.o $(DS4_CUDA_CORE_OBJS)
 
 test-inkling-norm: tests/test_inkling_norm
 	./tests/test_inkling_norm
+
+tests/test_inkling_forward: tests/test_inkling_forward.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
 
 tests/test_qwen4exp_primitives: tests/test_qwen4exp_primitives.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
@@ -1265,6 +1272,7 @@ clean:
 	rm -f tests/test_inkling_attention tests/test_inkling_attention.o
 	rm -f tests/test_inkling_norm tests/test_inkling_norm.o
 	rm -f tests/test_inkling_loader
+	rm -f tests/test_inkling_forward tests/test_inkling_forward.o
 	rm -f tests/test_qwen_vision_norm tests/test_qwen_vision_norm.o
 	rm -f tests/test_qwen_vision_attention tests/test_qwen_vision_attention.o tests/test_qwen_vision_model tests/test_qwen_vision_model.o
 	rm -f ds4-agent-rs tests/parity/agent_c_oracle tests/parity/agent_c_oracle.o
