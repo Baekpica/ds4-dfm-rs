@@ -49,6 +49,10 @@ cases = [
         {"type": "text", "text": "Before"}, {"type": "image"},
         {"type": "text", "text": "After"},
     ]}], []),
+    ("audio_parts", [{"role": "user", "content": [
+        {"type": "input_audio"}, {"type": "text", "text": "Transcribe and describe"},
+        {"type": "image"}, {"type": "audio"},
+    ]}], []),
 ]
 vectors = []
 for name, messages, functions in cases:

@@ -644,10 +644,10 @@ For each function call, output the function name and arguments within the follow
     );
 }
 
-fn append_glm_message_content(out: &mut Vec<u8>, m: &ChatMsg) {
+fn append_glm_message_content(out: &mut Vec<u8>, m: &ChatMsg) -> Result<(), RenderError> {
     if m.parts.is_empty() {
         put(out, &m.content);
-        return;
+        return Ok(());
     }
     for part in &m.parts {
         match part {
@@ -657,8 +657,10 @@ fn append_glm_message_content(out: &mut Vec<u8>, m: &ChatMsg) {
                 put(out, GLM_IMAGE);
                 put(out, GLM_VISION_END);
             }
+            ChatPart::Audio(_) => return Err(RenderError("audio input requires Inkling")),
         }
     }
+    Ok(())
 }
 
 fn append_glm_tool_result_message(out: &mut Vec<u8>, m: &ChatMsg) {
@@ -736,7 +738,7 @@ pub fn render_glm_chat_ex(
         } else if m.role == "user" {
             observation_open = false;
             put(&mut out, "<|user|>");
-            append_glm_message_content(&mut out, m);
+            append_glm_message_content(&mut out, m)?;
             pending_assistant = true;
         } else if m.role == "assistant" {
             observation_open = false;
@@ -1746,6 +1748,9 @@ pub fn render_qwen_chat_ex(
                             content.push_str(QWEN_IMAGE_PAD);
                             content.push_str(QWEN_VISION_END);
                         }
+                        ChatPart::Audio(_) => {
+                            return Err(RenderError("audio input requires Inkling"))
+                        }
                     }
                 }
                 put_trimmed(&mut out, &content);
@@ -1826,6 +1831,14 @@ pub fn render_chat_choice(
     think_mode: ThinkMode,
     tool_choice: ToolChoice,
 ) -> Result<Vec<u8>, RenderError> {
+    if syntax != ModelSyntax::Inkling
+        && msgs
+            .iter()
+            .flat_map(|m| &m.parts)
+            .any(|p| matches!(p, ChatPart::Audio(_)))
+    {
+        return Err(RenderError("audio input requires Inkling"));
+    }
     match syntax {
         ModelSyntax::Motif3 => render_motif3_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
         ModelSyntax::Exaone => render_exaone_chat(msgs, tool_schemas, think_mode),
@@ -1902,7 +1915,7 @@ pub fn render_live_tool_tail(
                 } else if m.role == "user" {
                     observation_open = false;
                     put(&mut out, "<|user|>");
-                    append_glm_message_content(&mut out, m);
+                    append_glm_message_content(&mut out, m)?;
                     pending_assistant = true;
                 } else if m.role == "assistant" {
                     observation_open = false;

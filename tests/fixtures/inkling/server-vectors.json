@@ -740,6 +740,110 @@
       "tools": [],
       "effort": "max",
       "rendered": "<|message_system|><|content_text|>Thinking effort level: 0.99<|end_message|><|message_user|><|content_text|>Before<|end_message|><|message_user|><|content_image|><|unused_200054|><|end_message|><|message_user|><|content_text|>After<|end_message|><|message_model|>"
+    },
+    {
+      "name": "audio_parts",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_audio"
+            },
+            {
+              "type": "text",
+              "text": "Transcribe and describe"
+            },
+            {
+              "type": "image"
+            },
+            {
+              "type": "audio"
+            }
+          ]
+        }
+      ],
+      "tools": [],
+      "effort": "none",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0<|end_message|><|message_user|><|content_audio_input|><|unused_200053|><|audio_end|><|end_message|><|message_user|><|content_text|>Transcribe and describe<|end_message|><|message_user|><|content_image|><|unused_200054|><|end_message|><|message_user|><|content_audio_input|><|unused_200053|><|audio_end|><|end_message|><|message_model|>"
+    },
+    {
+      "name": "audio_parts",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_audio"
+            },
+            {
+              "type": "text",
+              "text": "Transcribe and describe"
+            },
+            {
+              "type": "image"
+            },
+            {
+              "type": "audio"
+            }
+          ]
+        }
+      ],
+      "tools": [],
+      "effort": "low",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0.2<|end_message|><|message_user|><|content_audio_input|><|unused_200053|><|audio_end|><|end_message|><|message_user|><|content_text|>Transcribe and describe<|end_message|><|message_user|><|content_image|><|unused_200054|><|end_message|><|message_user|><|content_audio_input|><|unused_200053|><|audio_end|><|end_message|><|message_model|>"
+    },
+    {
+      "name": "audio_parts",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_audio"
+            },
+            {
+              "type": "text",
+              "text": "Transcribe and describe"
+            },
+            {
+              "type": "image"
+            },
+            {
+              "type": "audio"
+            }
+          ]
+        }
+      ],
+      "tools": [],
+      "effort": "high",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_audio_input|><|unused_200053|><|audio_end|><|end_message|><|message_user|><|content_text|>Transcribe and describe<|end_message|><|message_user|><|content_image|><|unused_200054|><|end_message|><|message_user|><|content_audio_input|><|unused_200053|><|audio_end|><|end_message|><|message_model|>"
+    },
+    {
+      "name": "audio_parts",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_audio"
+            },
+            {
+              "type": "text",
+              "text": "Transcribe and describe"
+            },
+            {
+              "type": "image"
+            },
+            {
+              "type": "audio"
+            }
+          ]
+        }
+      ],
+      "tools": [],
+      "effort": "max",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0.99<|end_message|><|message_user|><|content_audio_input|><|unused_200053|><|audio_end|><|end_message|><|message_user|><|content_text|>Transcribe and describe<|end_message|><|message_user|><|content_image|><|unused_200054|><|end_message|><|message_user|><|content_audio_input|><|unused_200053|><|audio_end|><|end_message|><|message_model|>"
     }
   ]
 }

@@ -36,6 +36,7 @@ pub struct ToolCall {
 pub enum ChatPart {
     Text(String),
     Image(usize),
+    Audio(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +48,11 @@ pub enum ImageMime {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestImage {
     pub mime: ImageMime,
+    pub data: Arc<[u8]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestAudio {
     pub data: Arc<[u8]>,
 }
 
@@ -136,6 +142,7 @@ pub struct ParsedRequest {
     pub live_call_ids: Vec<String>,
     pub messages: Vec<ChatMsg>,
     pub images: Vec<RequestImage>,
+    pub audios: Vec<RequestAudio>,
     pub tool_schemas: String,
     pub tool_orders: Vec<ToolSchemaOrder>,
     pub prompt_text: Option<String>,
@@ -175,6 +182,7 @@ impl ParsedRequest {
             live_call_ids: Vec::new(),
             messages: Vec::new(),
             images: Vec::new(),
+            audios: Vec::new(),
             tool_schemas: String::new(),
             tool_orders: Vec::new(),
             prompt_text: None,
@@ -200,6 +208,9 @@ impl ParsedRequest {
             max_tokens: self.max_tokens,
             has_images: !self.images.is_empty(),
         });
+        if !self.audios.is_empty() {
+            self.needs |= crate::route::NEED_AUDIO;
+        }
     }
 }
 
@@ -218,18 +229,18 @@ fn base64_value(c: u8) -> Option<u32> {
     }
 }
 
-fn base64_decode_image(src: &str, request_remaining: usize) -> Result<Vec<u8>, String> {
+fn decode_media_base64(src: &str, request_remaining: usize) -> Result<Vec<u8>, String> {
     let src = src.as_bytes();
     if src.is_empty() || src.len() & 3 != 0 {
-        return Err("invalid image base64 length".into());
+        return Err("invalid media base64 length".into());
     }
     let padding = usize::from(src[src.len() - 1] == b'=') + usize::from(src[src.len() - 2] == b'=');
     let decoded = src.len() / 4 * 3 - padding;
     if decoded == 0 || decoded > CHAT_IMAGE_MAX_BYTES {
-        return Err("image exceeds 10 MiB decoded limit".into());
+        return Err("media exceeds 10 MiB decoded limit".into());
     }
     if decoded > request_remaining {
-        return Err("images exceed 20 MiB request limit".into());
+        return Err("media exceeds 20 MiB request limit".into());
     }
     let mut out = Vec::with_capacity(decoded);
     for (i, chunk) in src.chunks_exact(4).enumerate() {
@@ -247,7 +258,7 @@ fn base64_decode_image(src: &str, request_remaining: usize) -> Result<Vec<u8>, S
             || (chunk[2] == b'=' && b.unwrap() & 15 != 0)
             || (chunk[3] == b'=' && c.is_some_and(|v| v & 3 != 0))
         {
-            return Err("invalid image base64 data".into());
+            return Err("invalid media base64 data".into());
         }
         let v = a.unwrap() << 18 | b.unwrap() << 12 | c.unwrap_or(0) << 6 | d.unwrap_or(0);
         if out.len() < decoded {
@@ -261,7 +272,7 @@ fn base64_decode_image(src: &str, request_remaining: usize) -> Result<Vec<u8>, S
         }
     }
     if out.len() != decoded {
-        return Err("invalid image base64 padding".into());
+        return Err("invalid media base64 padding".into());
     }
     Ok(out)
 }
@@ -270,20 +281,26 @@ fn add_image_base64(
     images: &mut Vec<RequestImage>,
     mime_type: &str,
     payload: &str,
+    audio_count: usize,
+    audio_bytes: usize,
 ) -> Result<usize, String> {
     let mime = match mime_type {
         "image/png" => ImageMime::Png,
         "image/jpeg" => ImageMime::Jpeg,
         _ => return Err(format!("unsupported image media type: {mime_type}")),
     };
-    if images.len() >= CHAT_IMAGE_MAX_COUNT {
-        return Err("at most 4 images are supported".into());
+    if images.len().saturating_add(audio_count) >= CHAT_IMAGE_MAX_COUNT {
+        return Err("at most 4 media inputs are supported".into());
     }
-    let total = images.iter().map(|image| image.data.len()).sum::<usize>();
+    let total = images
+        .iter()
+        .map(|image| image.data.len())
+        .sum::<usize>()
+        .saturating_add(audio_bytes);
     if total > CHAT_IMAGE_TOTAL_MAX {
-        return Err("images exceed 20 MiB request limit".into());
+        return Err("media exceeds 20 MiB request limit".into());
     }
-    let data = base64_decode_image(payload, CHAT_IMAGE_TOTAL_MAX - total)?;
+    let data = decode_media_base64(payload, CHAT_IMAGE_TOTAL_MAX - total)?;
     let magic_matches = match mime {
         ImageMime::Png => data.starts_with(b"\x89PNG\r\n\x1a\n"),
         ImageMime::Jpeg => data.starts_with(&[0xff, 0xd8, 0xff]),
@@ -299,7 +316,12 @@ fn add_image_base64(
     Ok(index)
 }
 
-fn add_image_data_uri(images: &mut Vec<RequestImage>, uri: &str) -> Result<usize, String> {
+fn add_image_data_uri(
+    images: &mut Vec<RequestImage>,
+    uri: &str,
+    audio_count: usize,
+    audio_bytes: usize,
+) -> Result<usize, String> {
     let Some(rest) = uri.strip_prefix("data:") else {
         return Err("image_url must be a base64 data URI".into());
     };
@@ -309,7 +331,67 @@ fn add_image_data_uri(images: &mut Vec<RequestImage>, uri: &str) -> Result<usize
     if mime.is_empty() {
         return Err("image_url must be a base64 data URI".into());
     }
-    add_image_base64(images, mime, payload)
+    add_image_base64(images, mime, payload, audio_count, audio_bytes)
+}
+
+fn add_audio(
+    audios: &mut Vec<RequestAudio>,
+    images: &[RequestImage],
+    format: &str,
+    payload: &str,
+) -> Result<usize, String> {
+    if format != "wav" {
+        return Err("audio input currently requires WAV format".into());
+    }
+    if images.len() + audios.len() >= CHAT_IMAGE_MAX_COUNT {
+        return Err("at most 4 media inputs are supported".into());
+    }
+    let total = images.iter().map(|v| v.data.len()).sum::<usize>()
+        + audios.iter().map(|v| v.data.len()).sum::<usize>();
+    if total > CHAT_IMAGE_TOTAL_MAX {
+        return Err("media exceeds 20 MiB request limit".into());
+    }
+    let data = decode_media_base64(payload, CHAT_IMAGE_TOTAL_MAX - total)?;
+    if !data.starts_with(b"RIFF") || data.get(8..12) != Some(b"WAVE") {
+        return Err("audio bytes do not match WAV format".into());
+    }
+    let index = audios.len();
+    audios.push(RequestAudio { data: data.into() });
+    Ok(index)
+}
+
+fn validate_audio_refs(
+    msgs: &[ChatMsg],
+    images: &[RequestImage],
+    audios: &[RequestAudio],
+) -> Result<(), String> {
+    let total = images.iter().map(|v| v.data.len()).sum::<usize>()
+        + audios.iter().map(|v| v.data.len()).sum::<usize>();
+    if images.len() + audios.len() > CHAT_IMAGE_MAX_COUNT || total > CHAT_IMAGE_TOTAL_MAX {
+        return Err("media exceeds the 4 input or 20 MiB request limit".into());
+    }
+    let mut seen = vec![false; audios.len()];
+    for msg in msgs {
+        for part in &msg.parts {
+            let ChatPart::Audio(index) = part else {
+                continue;
+            };
+            if msg.role != "user" {
+                return Err("audio is allowed only in user messages".into());
+            }
+            let Some(slot) = seen.get_mut(*index) else {
+                return Err("invalid audio reference".into());
+            };
+            if *slot {
+                return Err("duplicate audio reference".into());
+            }
+            *slot = true;
+        }
+    }
+    if seen.iter().any(|v| !v) {
+        return Err("unreferenced audio payload".into());
+    }
+    Ok(())
 }
 
 fn append_text_part(msg: &mut ChatMsg, text: String) {
@@ -726,6 +808,7 @@ fn parse_openai_message_content(
     p: &mut Json<'_>,
     msg: &mut ChatMsg,
     images: &mut Vec<RequestImage>,
+    audios: &mut Vec<RequestAudio>,
     err: &mut String,
 ) -> bool {
     p.ws();
@@ -750,6 +833,7 @@ fn parse_openai_message_content(
             let mut typ = None;
             let mut text = None;
             let mut image_url = None;
+            let mut input_audio = None;
             p.ws();
             while p.peek().is_some() && p.peek() != Some(b'}') {
                 let Some(key) = json_string(p) else {
@@ -767,6 +851,11 @@ fn parse_openai_message_content(
                 } else if key == "text" {
                     text = json_string(p);
                     if text.is_none() {
+                        return false;
+                    }
+                } else if key == "input_audio" {
+                    input_audio = json_raw_value(p);
+                    if input_audio.is_none() {
                         return false;
                     }
                 } else if key == "image_url" {
@@ -788,13 +877,36 @@ fn parse_openai_message_content(
             }
             match (typ.as_deref(), text, image_url) {
                 (Some("text"), Some(text), _) => append_text_part(msg, text),
-                (Some("image_url"), _, Some(url)) => match add_image_data_uri(images, &url) {
+                (Some("image_url"), _, Some(url)) => match add_image_data_uri(
+                    images,
+                    &url,
+                    audios.len(),
+                    audios.iter().map(|v| v.data.len()).sum(),
+                ) {
                     Ok(index) => msg.parts.push(ChatPart::Image(index)),
                     Err(error) => {
                         *err = error;
                         return false;
                     }
                 },
+                (Some("input_audio"), _, _) => {
+                    let value = input_audio
+                        .as_deref()
+                        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+                    let format = value.as_ref().and_then(|v| v["format"].as_str());
+                    let data = value.as_ref().and_then(|v| v["data"].as_str());
+                    let (Some(format), Some(data)) = (format, data) else {
+                        *err = "input_audio requires format and base64 data".into();
+                        return false;
+                    };
+                    match add_audio(audios, images, format, data) {
+                        Ok(index) => msg.parts.push(ChatPart::Audio(index)),
+                        Err(error) => {
+                            *err = error;
+                            return false;
+                        }
+                    }
+                }
                 _ => {
                     *err = "unsupported chat content block".into();
                     return false;
@@ -815,6 +927,7 @@ fn parse_openai_message_content(
 fn parse_messages(
     p: &mut Json<'_>,
     images: &mut Vec<RequestImage>,
+    audios: &mut Vec<RequestAudio>,
     err: &mut String,
 ) -> Option<Vec<ChatMsg>> {
     p.ws();
@@ -842,7 +955,7 @@ fn parse_messages(
             } else if key == "content" {
                 msg.content.clear();
                 msg.parts.clear();
-                if !parse_openai_message_content(p, &mut msg, images, err) {
+                if !parse_openai_message_content(p, &mut msg, images, audios, err) {
                     if err.is_empty() {
                         *err = "invalid chat content".into();
                     }
@@ -1026,7 +1139,7 @@ fn parse_anthropic_content_block(
                 *err = "Anthropic image source must use base64 data".into();
                 return false;
             }
-            match add_image_base64(images, &media_type, &data) {
+            match add_image_base64(images, &media_type, &data, 0, 0) {
                 Ok(index) => msg.parts.push(ChatPart::Image(index)),
                 Err(error) => {
                     *err = error;
@@ -1881,7 +1994,7 @@ fn parse_responses_content_array_mm(
                     *err = "unsupported Responses content block".into();
                     return None;
                 };
-                match add_image_data_uri(images, &image_url) {
+                match add_image_data_uri(images, &image_url, 0, 0) {
                     Ok(index) => parts.push(ChatPart::Image(index)),
                     Err(error) => {
                         *err = error;
@@ -2279,6 +2392,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
     let mut reasoning_effort = env.default_effort;
     let mut msgs = Vec::new();
     let mut images = Vec::new();
+    let mut audios = Vec::new();
     let mut tool_schemas = String::new();
     let mut orders = Vec::new();
 
@@ -2296,7 +2410,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
             return bad(&mut err, "invalid JSON request");
         }
         let ok = if key == "messages" {
-            match parse_messages(&mut p, &mut images, &mut err) {
+            match parse_messages(&mut p, &mut images, &mut audios, &mut err) {
                 Some(m) => {
                     msgs = m;
                     got_messages = true;
@@ -2416,6 +2530,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
         return Err("missing messages".into());
     }
     validate_image_references(&msgs, &images)?;
+    validate_audio_refs(&msgs, &images, &audios)?;
     r.has_tool_results = chat_history_has_pending_tool_results(&msgs);
     if !prepare_tool_choice(&mut r, &mut tool_schemas, &mut orders, &mut err) {
         return Err(err);
@@ -2423,6 +2538,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
     apply_think(&mut r, got_thinking, thinking_enabled, reasoning_effort);
     r.messages = msgs;
     r.images = images;
+    r.audios = audios;
     r.tool_schemas = tool_schemas;
     r.tool_orders = orders;
     r.finish_needs();

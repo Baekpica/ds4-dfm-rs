@@ -16,6 +16,7 @@ const SYSTEM: &str = "<|message_system|>";
 const USER: &str = "<|message_user|>";
 const TOOL: &str = "<|message_tool|>";
 const IMAGE: &str = "<|content_image|><|unused_200054|>";
+const AUDIO: &str = "<|content_audio_input|><|unused_200053|><|audio_end|>";
 
 fn source_json(value: &Value) -> String {
     match value {
@@ -149,6 +150,7 @@ fn append_message(out: &mut String, msg: &ChatMsg, history: &[ChatMsg]) -> Resul
             match part {
                 ChatPart::Text(text) => message(out, role, TEXT, text),
                 ChatPart::Image(_) => message(out, role, IMAGE, ""),
+                ChatPart::Audio(_) => message(out, role, AUDIO, ""),
             }
         }
     } else if !msg.content.is_empty() || (msg.calls.is_empty() && msg.reasoning.is_empty()) {

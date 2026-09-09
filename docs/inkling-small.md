@@ -1,7 +1,8 @@
 # Inkling Small integration
 
-Work in progress; native text graphs, sessions and Rust model opening are
-implemented. HTTP serving, media and MTP remain unqualified. The target is
+Work in progress; Rust text and serial HTTP image/audio paths are implemented
+with short artifact smoke tests. MTP and production serving qualification
+remain incomplete. The target is
 MQ85GB with the separate eight-layer MTP-BF16 draft stack, including text,
 image and audio input with text output, matching the
 [base model](https://huggingface.co/thinkingmachines/Inkling-Small/blob/8cc5877b44d343f88b92086aa1fb72897950f06a/README.md).
@@ -36,7 +37,8 @@ It preserves literal special strings in ordinary text and recognizes them
 in rendered chat. Token output ends at ID 200006; message and thinking
 boundaries do not stop generation. Basic role messages and the four thinking
 effort levels match independently rendered source-template fixtures. Server
-tool/reasoning streams, media insertion and REPL assembly remain pending.
+tool/reasoning streams and media insertion now have targeted checks; REPL
+effort assembly remains pending.
 The tokenizer has 200058 entries; native logits must exclude the weight
 matrix's padding through row 201023.
 
@@ -122,20 +124,42 @@ ordinary text that spells those markers and resetting TTY color between
 channels. A guarded MQ85GB one-shot run with context 128, temperature zero,
 thinking disabled and a 32-token output cap answered `4` to
 `What is 2 + 2? Reply with just the number.` without leaking control markers.
-This is a short text-generation smoke; REPL effort assembly, agent tools and
-HTTP output processing still require their own integration.
+This is a short text-generation smoke; broader agent/REPL behavior remains
+unqualified.
+
+Serial HTTP text, reasoning and tools passed buffered/SSE checks across
+Chat Completions, Messages and Responses at context 1024. Image requests on
+all three surfaces passed red/blue identification, repeat and changed-image
+requests, two-image order, and text follow-ups. PNG/JPEG preprocessing and
+native HMLP stages have separate source-reference checks.
+
+OpenAI Chat accepts `input_audio` content blocks with
+`input_audio: {"format":"wav","data":"BASE64"}`. Input is 16 kHz PCM/float
+WAV, with mean downmix for up to eight channels. Resampling and compressed
+audio codecs are unavailable; Responses and Messages do not accept audio.
+The request limit is four combined media inputs, 10 MiB per base64-decoded
+payload and 20 MiB total. Media feature rows must fit the session context.
+Media requests refill KV and do not store disk checkpoints, so changed media
+with identical placeholder tokens cannot reuse stale features.
+
+Rust audio fixtures require exact discrete mel codes against pinned HF
+methods, with bounded pre-log energy error; nearly silent FFT bands are not
+bit-exact in log space. Native tests cover audio-only and mixed sessions,
+repeat/change identity and malformed inputs preserving prior state. Speech
+smokes cover buffered/SSE transcription and follow-ups. A mixed audio/image
+request answered both questions when they followed the media; an earlier
+instruction-first prompt answered only the image question. These are scoped
+smokes, not broad ASR or multimodal quality qualification.
 
 ## Remaining qualification
 
-1. Connect source chat/reasoning/tool rendering, streamed content markers and
-   REPL effort placement to the CLI and server.
-2. Extend generation checks beyond the short one-shot smoke; connect session
-   persistence and serving.
+1. Finish REPL effort placement and broader agent integration.
+2. Extend generation checks beyond short serial smokes; connect session
+   persistence and serving lifecycle.
 3. Prove chunk/decode and captured/eager full-vocabulary logits and greedy
    parity. Cover local-ring wrap, global attention and convolution history.
-4. Implement HMLP image and 16-kHz dMel audio preprocessing/encoding, feature
-   insertion and API transport. Compare processed inputs and encoder outputs
-   to pinned references; run real image/audio requests and text follow-ups.
+4. Broaden media quality/codec coverage beyond the tested PNG/JPEG and 16 kHz
+   WAV fixtures, including longer and mixed requests.
 5. Connect all eight BF16 MTP layers, hidden-state chaining, draft verification
    and accepted-prefix rollback for KV and convolution state. Compare MTP
    off/on tokens and committed state across accept/reject cases.

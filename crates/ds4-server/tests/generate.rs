@@ -343,6 +343,61 @@ fn inkling_images_expand_in_order() {
 }
 
 #[test]
+fn inkling_audio_expands_in_order() {
+    let body = r#"{"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"format":"wav","data":"UklGRiYAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQIAAAAAAA=="}}]}]}"#;
+    let mut parsed =
+        ds4_server::parse_chat_request(&ds4_server::ParseEnv::default(), body).unwrap();
+    let mut engine = ScriptedDecode::from_pieces(&[]);
+    engine.model_id = 9;
+    engine.prompt_tokens = vec![200000, 200053, 200043, 200001];
+    let mut out = Vec::new();
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "inkling-audio",
+        CREATED_TEST,
+        false,
+        1,
+        &mut out,
+    )
+    .unwrap();
+    assert_eq!(engine.live, [200000, 200053, 200053, 200043, 200001]);
+    for tokens in [vec![200000, 200001], vec![200053, 200053]] {
+        engine.prompt_tokens = tokens;
+        assert!(generate_and_write(
+            &mut engine,
+            &parsed,
+            "missing-audio",
+            CREATED_TEST,
+            false,
+            1,
+            &mut out
+        )
+        .is_err());
+    }
+    parsed.images.push(RequestImage {
+        mime: ImageMime::Png,
+        data: Arc::from([1u8]),
+    });
+    parsed.messages[0].parts.push(ChatPart::Image(0));
+    engine.prompt_tokens = vec![200053, 10, 200054, 200001];
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "mixed-audio",
+        CREATED_TEST,
+        false,
+        1,
+        &mut out,
+    )
+    .unwrap();
+    assert_eq!(
+        engine.live,
+        [vec![200053; 2], vec![10], vec![200054; 16], vec![200001]].concat()
+    );
+}
+
+#[test]
 fn continued_store_is_best_effort_and_runs_before_sampling_without_final_catchup() {
     let mut parsed = user_req();
     parsed.max_tokens = 2;

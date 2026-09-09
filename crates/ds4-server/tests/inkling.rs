@@ -256,6 +256,7 @@ fn source_chat_vectors() {
                         .map(|part| match part["type"].as_str().unwrap() {
                             "text" => ChatPart::Text(part["text"].as_str().unwrap().into()),
                             "image" => ChatPart::Image(0),
+                            "audio" | "input_audio" => ChatPart::Audio(0),
                             _ => unreachable!(),
                         })
                         .collect();

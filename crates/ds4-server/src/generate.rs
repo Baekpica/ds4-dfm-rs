@@ -100,6 +100,12 @@ pub struct VisionPromptInput {
     pub token_offset: u32,
 }
 
+#[derive(Clone, Debug)]
+pub struct AudioPromptInput {
+    pub data: Arc<[u8]>,
+    pub token_offset: u32,
+}
+
 /// C `serial_session_ensure_fit` view of the serial session lane.
 /// `None` from [`DecodeIo::serial_session_probe`] means the engine has no
 /// native serial session (stub/test engines): the host must pass native and
@@ -137,6 +143,20 @@ pub trait DecodeIo {
         _images: &[VisionPromptInput],
     ) -> Result<(), GenerateError> {
         Err(GenerateError::Unsupported("vision encoder is not loaded"))
+    }
+    fn audio_probe(&self, _data: &[u8]) -> Result<u32, GenerateError> {
+        Err(GenerateError::Unsupported("audio encoder is not loaded"))
+    }
+    fn sync_media_prompt(
+        &mut self,
+        tokens: &[i32],
+        images: &[VisionPromptInput],
+        audios: &[AudioPromptInput],
+    ) -> Result<(), GenerateError> {
+        if audios.is_empty() {
+            return self.sync_vision_prompt(tokens, images);
+        }
+        Err(GenerateError::Unsupported("audio encoder is not loaded"))
     }
     fn sync(&mut self, tokens: &[i32]) -> Result<(), GenerateError>;
     fn sync_prompt(
@@ -807,6 +827,9 @@ pub struct GenerateOutcome {
 }
 
 pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'static str> {
+    if !parsed.audios.is_empty() && syntax_for_model_id(model_id) != ModelSyntax::Inkling {
+        return Some("audio input requires Inkling");
+    }
     if parsed.images.is_empty() {
         None
     } else {
@@ -1298,18 +1321,30 @@ pub(crate) struct PreparedSerialPrompt {
     pub(crate) prompt: Vec<u8>,
     pub(crate) tokens: Vec<i32>,
     pub(crate) vision: Vec<VisionPromptInput>,
+    audios: Vec<AudioPromptInput>,
 }
 
-fn prepare_vision(
+struct MediaPrompt {
+    tokens: Vec<i32>,
+    vision: Vec<VisionPromptInput>,
+    audios: Vec<AudioPromptInput>,
+}
+
+fn prepare_media(
     engine: &dyn DecodeIo,
     parsed: &ParsedRequest,
     tokens: Vec<i32>,
-) -> Result<(Vec<i32>, Vec<VisionPromptInput>), GenerateError> {
-    if parsed.images.is_empty() {
-        return Ok((tokens, Vec::new()));
+) -> Result<MediaPrompt, GenerateError> {
+    if parsed.images.is_empty() && parsed.audios.is_empty() {
+        return Ok(MediaPrompt {
+            tokens,
+            vision: Vec::new(),
+            audios: Vec::new(),
+        });
     }
     const GLM_IMAGE_TOKEN: i32 = 154854;
     const INKLING_IMAGE_TOKEN: i32 = 200054;
+    const INKLING_AUDIO_TOKEN: i32 = 200053;
     let image_token = match syntax_for_model_id(engine.model_id()) {
         ModelSyntax::Glm53 => GLM_IMAGE_TOKEN,
         ModelSyntax::Inkling => INKLING_IMAGE_TOKEN,
@@ -1319,9 +1354,9 @@ fn prepare_vision(
             ))
         }
     };
-    if parsed.images.len() > 4 {
+    if parsed.images.len() + parsed.audios.len() > 4 {
         return Err(GenerateError::Unsupported(
-            "serial vision supports 1 to 4 images",
+            "serial media supports 1 to 4 inputs",
         ));
     }
     let mut probes = Vec::with_capacity(parsed.images.len());
@@ -1338,10 +1373,45 @@ fn prepare_vision(
             .ok_or_else(|| GenerateError::Engine("expanded image prompt is too large".into()))?;
         probes.push(probe);
     }
+    let mut audio_counts = Vec::with_capacity(parsed.audios.len());
+    for audio in &parsed.audios {
+        let count = engine.audio_probe(&audio.data)?;
+        if count == 0 {
+            return Err(GenerateError::Engine(
+                "audio probe returned zero tokens".into(),
+            ));
+        }
+        expanded_len = expanded_len
+            .checked_add(count as usize - 1)
+            .ok_or_else(|| GenerateError::Engine("expanded media prompt is too large".into()))?;
+        audio_counts.push(count);
+    }
     let mut expanded = Vec::with_capacity(expanded_len);
     let mut images = Vec::with_capacity(parsed.images.len());
     let mut image_index = 0usize;
+    let mut audios = Vec::with_capacity(parsed.audios.len());
+    let mut audio_index = 0usize;
     for token in tokens {
+        if image_token == INKLING_IMAGE_TOKEN && token == INKLING_AUDIO_TOKEN {
+            let Some((audio, count)) = parsed
+                .audios
+                .get(audio_index)
+                .zip(audio_counts.get(audio_index))
+            else {
+                return Err(GenerateError::Engine(
+                    "ambiguous audio placeholder in prompt".into(),
+                ));
+            };
+            let token_offset = u32::try_from(expanded.len())
+                .map_err(|_| GenerateError::Engine("expanded media prompt is too large".into()))?;
+            expanded.extend(std::iter::repeat_n(token, *count as usize));
+            audios.push(AudioPromptInput {
+                data: audio.data.clone(),
+                token_offset,
+            });
+            audio_index += 1;
+            continue;
+        }
         if token != image_token {
             expanded.push(token);
             continue;
@@ -1361,12 +1431,19 @@ fn prepare_vision(
         });
         image_index += 1;
     }
-    if image_index != parsed.images.len() || expanded.len() != expanded_len {
+    if image_index != parsed.images.len()
+        || audio_index != parsed.audios.len()
+        || expanded.len() != expanded_len
+    {
         return Err(GenerateError::Engine(
-            "image placeholder count does not match payloads".into(),
+            "media placeholder count does not match payloads".into(),
         ));
     }
-    Ok((expanded, images))
+    Ok(MediaPrompt {
+        tokens: expanded,
+        vision: images,
+        audios,
+    })
 }
 
 pub(crate) fn prepare_serial_prompt(
@@ -1379,7 +1456,9 @@ pub(crate) fn prepare_serial_prompt(
 
     let mut parsed = parsed.clone();
     let syntax = syntax_for_model_id(engine.model_id());
-    let tool_replay = parsed.images.is_empty() && tool_replay_disk_cache_eligible(&parsed, syntax);
+    let tool_replay = parsed.images.is_empty()
+        && parsed.audios.is_empty()
+        && tool_replay_disk_cache_eligible(&parsed, syntax);
     if tool_replay {
         engine.restore_tool_replay(&mut parsed.messages);
     }
@@ -1399,13 +1478,18 @@ pub(crate) fn prepare_serial_prompt(
         }
         ReqKind::Chat => engine.tokenize_rendered_chat(&prompt)?,
     };
-    let (tokens, vision) = prepare_vision(engine, &parsed, tokens)?;
+    let MediaPrompt {
+        tokens,
+        vision,
+        audios,
+    } = prepare_media(engine, &parsed, tokens)?;
     Ok(PreparedSerialPrompt {
         parsed,
         tool_replay,
         prompt,
         tokens,
         vision,
+        audios,
     })
 }
 
@@ -1453,6 +1537,7 @@ pub(crate) fn generate_terminal_prepared(
         prompt,
         tokens,
         vision,
+        audios,
     } = prep;
     let syntax = syntax_for_model_id(engine.model_id());
     let mut req = stream_req_from_parsed(&parsed, engine.model_id());
@@ -1462,8 +1547,10 @@ pub(crate) fn generate_terminal_prepared(
         flush(&mut w, out)?;
     }
     let t_prefill = Instant::now();
-    let sync_result = if !vision.is_empty() {
-        engine.sync_vision_prompt(&tokens, &vision).map(|()| 0)
+    let sync_result = if !vision.is_empty() || !audios.is_empty() {
+        engine
+            .sync_media_prompt(&tokens, &vision, &audios)
+            .map(|()| 0)
     } else if tool_replay {
         engine.sync_tool_replay_prompt(&prompt, &tokens)
     } else {
@@ -1963,6 +2050,22 @@ impl DecodeIo for ScriptedDecode {
         self.sync(tokens)
     }
 
+    fn audio_probe(&self, _data: &[u8]) -> Result<u32, GenerateError> {
+        if syntax_for_model_id(self.model_id) == ModelSyntax::Inkling {
+            return Ok(2);
+        }
+        Err(GenerateError::Unsupported("audio encoder is not loaded"))
+    }
+
+    fn sync_media_prompt(
+        &mut self,
+        tokens: &[i32],
+        _images: &[VisionPromptInput],
+        _audios: &[AudioPromptInput],
+    ) -> Result<(), GenerateError> {
+        self.sync(tokens)
+    }
+
     fn sync(&mut self, tokens: &[i32]) -> Result<(), GenerateError> {
         self.live = tokens.to_vec();
         self.pos = tokens.len() as i32;
@@ -2335,10 +2438,25 @@ impl DecodeIo for NativeDecode<'_> {
             .map_err(|error| GenerateError::Engine(error.to_string()))
     }
 
+    fn audio_probe(&self, data: &[u8]) -> Result<u32, GenerateError> {
+        self.model
+            .audio_probe(data)
+            .map_err(|error| GenerateError::Engine(error.to_string()))
+    }
+
     fn sync_vision_prompt(
         &mut self,
         tokens: &[i32],
         images: &[VisionPromptInput],
+    ) -> Result<(), GenerateError> {
+        self.sync_media_prompt(tokens, images, &[])
+    }
+
+    fn sync_media_prompt(
+        &mut self,
+        tokens: &[i32],
+        images: &[VisionPromptInput],
+        audios: &[AudioPromptInput],
     ) -> Result<(), GenerateError> {
         self.prompt_sync_elapsed = None;
         self.session_disk_storable = false;
@@ -2351,10 +2469,17 @@ impl DecodeIo for NativeDecode<'_> {
                 token_offset: image.token_offset,
             })
             .collect::<Vec<_>>();
+        let audios = audios
+            .iter()
+            .map(|audio| ds4_core::AudioInput {
+                data: &audio.data,
+                token_offset: audio.token_offset,
+            })
+            .collect::<Vec<_>>();
         let started = Instant::now();
         let result = self
             .session()?
-            .sync_vision(&tokens, &images)
+            .sync_media(&tokens, &images, &audios)
             .map_err(|error| GenerateError::Engine(error.to_string()));
         if result.is_ok() {
             self.prompt_sync_elapsed = Some(started.elapsed());

@@ -30,9 +30,9 @@ python make_tokenizer_vectors.py /path/to/MQ85GB/tokenizer.json tokenizer-vector
 python make_chat_vectors.py /path/to/MQ85GB/chat_template.jinja chat-vectors.json
 ```
 
-`server-vectors.json` adds 28 source-template cases covering all four host
+`server-vectors.json` adds 32 source-template cases covering all four host
 effort levels, system/history messages, tool declarations/results, sorted
-JSON and interleaved text/image placeholders. Regenerate with:
+JSON and interleaved text/image/audio placeholders. Regenerate with:
 
 ```sh
 python make_server_vectors.py /path/to/MQ85GB/chat_template.jinja server-vectors.json
