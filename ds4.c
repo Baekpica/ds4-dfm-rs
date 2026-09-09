@@ -20941,7 +20941,7 @@ enum {
     IK_IMAGE_SCRATCH = 2 * 8 * 8 * 128,
     IK_IMAGE_CHUNK = 16, IK_AUDIO_CHUNK = 64,
     IK_AUDIO_BINS = 80, IK_AUDIO_LEVELS = 16,
-    IK_IMAGE_LIMIT = 4, IK_IMAGE_MAX_PATCHES = 8192,
+    IK_MEDIA_LIMIT = 4, IK_MEDIA_MAX_ROWS = 8192,
 };
 
 static bool inkling_image_stage(ds4_gpu_tensor *out, ds4_gpu_tensor *fold,
@@ -67948,45 +67948,77 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
 }
 
 int ds4_session_sync_inkling(ds4_session *s, const ds4_tokens *prompt,
-                              const ds4_inkling_pixels *images, uint32_t count,
+                              const ds4_inkling_pixels *images, uint32_t image_count,
+                              const ds4_inkling_audio *audios, uint32_t audio_count,
                               char *err, size_t errlen) {
 #ifdef DS4_NO_GPU
-    (void)s; (void)prompt; (void)images; (void)count;
-    payload_set_err(err, errlen, "Inkling images require CUDA");
+    (void)s; (void)prompt; (void)images; (void)image_count; (void)audios; (void)audio_count;
+    payload_set_err(err, errlen, "Inkling media requires CUDA");
     return 1;
 #else
     if (!s || !ds4_session_is_inkling(s) || !prompt || !prompt->v || prompt->len <= 0 ||
-        prompt->len > s->ctx_size || !images || !count || count > IK_IMAGE_LIMIT) {
-        payload_set_err(err, errlen, "invalid Inkling image sync input");
+        prompt->len > s->ctx_size || (image_count && !images) || (audio_count && !audios) ||
+        image_count > IK_MEDIA_LIMIT || audio_count > IK_MEDIA_LIMIT ||
+        image_count + audio_count == 0 || image_count + audio_count > IK_MEDIA_LIMIT) {
+        payload_set_err(err, errlen, "invalid Inkling media sync input");
         return 1;
+    }
+    typedef struct {
+        const float *pixels;
+        const int32_t *codes;
+        uint64_t values;
+        uint32_t start, rows;
+        int token;
+    } media_span;
+    const uint32_t count = image_count + audio_count;
+    media_span spans[IK_MEDIA_LIMIT] = {0};
+    for (uint32_t i = 0; i < image_count; i++) {
+        spans[i] = (media_span){.pixels = images[i].pixels, .values = images[i].pixel_count,
+            .start = images[i].token_offset, .rows = images[i].token_count, .token = IK_IMAGE_TOKEN};
+    }
+    for (uint32_t i = 0; i < audio_count; i++) {
+        spans[image_count + i] = (media_span){.codes = audios[i].codes, .values = audios[i].code_count,
+            .start = audios[i].token_offset, .rows = audios[i].token_count, .token = IK_AUDIO_TOKEN};
+    }
+    /* Sort the two modality lists together before exact-coverage admission. */
+    for (uint32_t i = 1; i < count; i++) {
+        media_span span = spans[i];
+        uint32_t j = i;
+        while (j && spans[j - 1].start > span.start) {
+            spans[j] = spans[j - 1];
+            j--;
+        }
+        spans[j] = span;
     }
     uint32_t previous_end = 0;
     for (uint32_t i = 0; i < count; i++) {
-        const ds4_inkling_pixels *image = &images[i];
-        const uint32_t start = image->token_offset, n = image->token_count;
-        if (!image->pixels || !n || n > IK_IMAGE_MAX_PATCHES || start < previous_end ||
+        const media_span *span = &spans[i];
+        const uint32_t start = span->start, n = span->rows;
+        const uint32_t width = span->token == IK_IMAGE_TOKEN ? IK_IMAGE_PIXELS : IK_AUDIO_BINS;
+        if ((!span->pixels && !span->codes) || !n || n > IK_MEDIA_MAX_ROWS || start < previous_end ||
             start >= (uint32_t)prompt->len || n > (uint32_t)prompt->len - start ||
-            image->pixel_count != (uint64_t)n * IK_IMAGE_PIXELS) {
-            payload_set_err(err, errlen, "invalid Inkling image span");
+            span->values != (uint64_t)n * width) {
+            payload_set_err(err, errlen, "invalid Inkling media span");
             return 1;
         }
         for (uint32_t pos = previous_end; pos < start + n; pos++) {
             const int token = prompt->v[pos];
-            if ((pos >= start && token != IK_IMAGE_TOKEN) ||
+            if (token < 0 || token >= INKLING_VALID_VOCAB || (pos >= start && token != span->token) ||
                 (pos < start && (token == IK_IMAGE_TOKEN || token == IK_AUDIO_TOKEN))) {
-                payload_set_err(err, errlen, "Inkling image placeholders do not match inputs");
+                payload_set_err(err, errlen, "Inkling media placeholders do not match inputs");
                 return 1;
             }
         }
         previous_end = start + n;
     }
     for (uint32_t pos = previous_end; pos < (uint32_t)prompt->len; pos++) {
-        if (prompt->v[pos] == IK_IMAGE_TOKEN || prompt->v[pos] == IK_AUDIO_TOKEN) {
+        if (prompt->v[pos] < 0 || prompt->v[pos] >= INKLING_VALID_VOCAB ||
+            prompt->v[pos] == IK_IMAGE_TOKEN || prompt->v[pos] == IK_AUDIO_TOKEN) {
             payload_set_err(err, errlen, "Inkling media placeholder has no input");
             return 1;
         }
     }
-    float *storage[IK_IMAGE_LIMIT] = {0};
+    float *storage[IK_MEDIA_LIMIT] = {0};
     const float **features = calloc((size_t)prompt->len, sizeof(*features));
     int rc = 1;
     if (!features) {
@@ -67994,18 +68026,25 @@ int ds4_session_sync_inkling(ds4_session *s, const ds4_tokens *prompt,
         return 1;
     }
     for (uint32_t i = 0; i < count; i++) {
-        const ds4_inkling_pixels *image = &images[i];
-        storage[i] = malloc((uint64_t)image->token_count * IK_HIDDEN * sizeof(float));
-        if (!storage[i] || !inkling_image_encode(storage[i], image->pixels, image->token_count,
-                                                 &s->engine->model, &s->engine->weights.inkling)) {
-            payload_set_err(err, errlen, "Inkling image encoding failed");
+        const media_span *span = &spans[i];
+        storage[i] = malloc((uint64_t)span->rows * IK_HIDDEN * sizeof(float));
+        bool encoded = false;
+        if (storage[i] && span->token == IK_IMAGE_TOKEN) {
+            encoded = inkling_image_encode(storage[i], span->pixels, span->rows,
+                                            &s->engine->model, &s->engine->weights.inkling);
+        } else if (storage[i]) {
+            encoded = inkling_audio_encode(storage[i], span->codes, span->rows,
+                                            &s->engine->model, &s->engine->weights.inkling);
+        }
+        if (!encoded) {
+            payload_set_err(err, errlen, "Inkling media encoding failed");
             goto cleanup;
         }
-        for (uint32_t row = 0; row < image->token_count; row++) {
-            features[image->token_offset + row] = storage[i] + (uint64_t)row * IK_HIDDEN;
+        for (uint32_t row = 0; row < span->rows; row++) {
+            features[span->start + row] = storage[i] + (uint64_t)row * IK_HIDDEN;
         }
     }
-    /* Token identity cannot distinguish changed pixels. Refill from zero until
+    /* Token identity cannot distinguish changed media. Refill from zero until
      * media identity is part of the checkpoint; encoder failures preserve KV. */
     if (ds4_session_ensure_graph(s, err, errlen) == 0) {
         rc = inkling_session_sync(s, prompt, features, err, errlen);

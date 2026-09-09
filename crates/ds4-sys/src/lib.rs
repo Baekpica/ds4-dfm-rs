@@ -231,6 +231,15 @@ pub struct ds4_bridge_inkling_pixels {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ds4_bridge_inkling_audio {
+    pub codes: *const i32,
+    pub code_count: u64,
+    pub token_offset: u32,
+    pub token_count: u32,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ds4_bridge_vision_info {
     pub source_width: u32,
@@ -500,7 +509,9 @@ extern "C" {
         tokens: *const i32,
         n_tokens: c_int,
         images: *const ds4_bridge_inkling_pixels,
-        count: u32,
+        image_count: u32,
+        audios: *const ds4_bridge_inkling_audio,
+        audio_count: u32,
         err: *mut c_char,
         errlen: usize,
     ) -> c_int;

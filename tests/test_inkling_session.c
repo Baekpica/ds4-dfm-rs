@@ -19,37 +19,88 @@ static void check_image_sync(ds4_session *s) {
     char err[256] = {0};
     size_t bytes = INKLING_VALID_VOCAB * sizeof(float);
     float *first = xmalloc(bytes), *second = xmalloc(bytes), *got = xmalloc(bytes);
-    check(ds4_session_sync_inkling(s, &prompt, &image, 1, err, sizeof(err)) == 0, err);
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, NULL, 0, err, sizeof(err)) == 0, err);
     memcpy(first, s->logits, bytes);
     uint64_t generation = ds4_session_generation(s);
-    check(ds4_session_sync_inkling(s, &prompt, &image, 1, err, sizeof(err)) == 0 &&
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, NULL, 0, err, sizeof(err)) == 0 &&
           ds4_session_generation(s) > generation && memcmp(first, s->logits, bytes) == 0,
           "repeated Inkling image changed logits or reused token-only identity");
     for (unsigned i = 0; i < sizeof(pixels) / sizeof(pixels[0]); i++) {
         pixels[i] = -pixels[i];
     }
-    check(ds4_session_sync_inkling(s, &prompt, &image, 1, err, sizeof(err)) == 0, err);
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, NULL, 0, err, sizeof(err)) == 0, err);
     memcpy(second, s->logits, bytes);
     check(memcmp(first, second, bytes) != 0, "changed Inkling image reused old KV");
     generation = ds4_session_generation(s);
     check(ds4_session_sync(s, &prompt, err, sizeof(err)) != 0,
           "Inkling image placeholders accepted without pixels");
     image.pixel_count--;
-    check(ds4_session_sync_inkling(s, &prompt, &image, 1, err, sizeof(err)) != 0,
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, NULL, 0, err, sizeof(err)) != 0,
           "Inkling image pixel length mismatch accepted");
     image.pixel_count++;
     image.token_offset = 1;
-    check(ds4_session_sync_inkling(s, &prompt, &image, 1, err, sizeof(err)) != 0,
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, NULL, 0, err, sizeof(err)) != 0,
           "Inkling image features accepted on text token");
     image.token_offset = 2;
     pixels[0] = NAN;
-    check(ds4_session_sync_inkling(s, &prompt, &image, 1, err, sizeof(err)) != 0 &&
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, NULL, 0, err, sizeof(err)) != 0 &&
           ds4_session_generation(s) == generation && ds4_session_pos(s) == prompt.len,
           "invalid Inkling pixels changed checkpoint frontier");
     check(ds4_session_copy_logits(s, got, INKLING_VALID_VOCAB) == INKLING_VALID_VOCAB &&
           memcmp(second, got, bytes) == 0, "invalid Inkling image changed logits");
     free(first); free(second); free(got);
     puts("Inkling image session: repeat/changed-image identity and invalid-input state passed");
+}
+
+static void check_audio_sync(ds4_session *s) {
+    int32_t codes[2 * IK_AUDIO_BINS];
+    float pixels[IK_IMAGE_PIXELS] = {0};
+    for (unsigned i = 0; i < 2 * IK_AUDIO_BINS; i++) {
+        codes[i] = (i * 7 + 3) % IK_AUDIO_LEVELS;
+    }
+    int ids[] = {200000, 200005, 200054, 200020, 200053, 200053, 200043, 200010, 200001};
+    ds4_tokens prompt = {.v = ids, .len = 9, .cap = 9};
+    ds4_inkling_pixels image = {.pixels = pixels, .pixel_count = IK_IMAGE_PIXELS,
+                                .token_offset = 2, .token_count = 1};
+    ds4_inkling_audio audio = {.codes = codes, .code_count = 2 * IK_AUDIO_BINS,
+                               .token_offset = 4, .token_count = 2};
+    char err[256] = {0};
+    const size_t bytes = INKLING_VALID_VOCAB * sizeof(float);
+    float *first = xmalloc(bytes), *second = xmalloc(bytes);
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, &audio, 1, err, sizeof(err)) == 0, err);
+    memcpy(first, s->logits, bytes);
+    uint64_t generation = ds4_session_generation(s);
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, &audio, 1, err, sizeof(err)) == 0 &&
+          ds4_session_generation(s) > generation && memcmp(first, s->logits, bytes) == 0,
+          "repeated Inkling audio changed logits or reused token identity");
+    for (unsigned i = 0; i < 2 * IK_AUDIO_BINS; i++) {
+        codes[i] = 15 - codes[i];
+    }
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, &audio, 1, err, sizeof(err)) == 0 &&
+          memcmp(first, s->logits, bytes) != 0, "changed Inkling audio reused old KV");
+    memcpy(second, s->logits, bytes);
+    generation = ds4_session_generation(s);
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, NULL, 0, err, sizeof(err)) != 0,
+          "uncovered Inkling audio accepted");
+    audio.code_count--;
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, &audio, 1, err, sizeof(err)) != 0,
+          "wrong Inkling code length accepted");
+    audio.code_count++;
+    audio.token_offset = 2;
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, &audio, 1, err, sizeof(err)) != 0,
+          "overlapping Inkling audio/image accepted");
+    audio.token_offset = 4;
+    codes[159] = 16;
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, &audio, 1, err, sizeof(err)) != 0 &&
+          ds4_session_generation(s) == generation && ds4_session_pos(s) == prompt.len &&
+          memcmp(second, s->logits, bytes) == 0, "invalid Inkling audio changed checkpoint");
+    codes[159] = 4;
+    prompt.v = ids + 3; prompt.len = 6;
+    audio.token_offset = 1;
+    check(ds4_session_sync_inkling(s, &prompt, NULL, 0, &audio, 1, err, sizeof(err)) == 0,
+          "audio-only Inkling sync failed");
+    free(first); free(second);
+    puts("Inkling audio session: mixed/audio-only, repeat/change and invalid state passed");
 }
 
 int main(int argc, char **argv) {
@@ -154,6 +205,7 @@ int main(int argc, char **argv) {
            "estimate=%llu measured=%llu\n", (unsigned long long)estimate,
            (unsigned long long)measured);
     check_image_sync(s);
+    check_audio_sync(s);
     ds4_session_free(s);
     check(session_tensors_census_live() == 0, "Inkling leaked session tensors");
     ds4_gpu_cleanup();

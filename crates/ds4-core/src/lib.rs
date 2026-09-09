@@ -99,12 +99,13 @@ use std::ptr::{self, NonNull};
 use ds4_sys::{
     ds4_bridge_bind_plan, ds4_bridge_bind_plan_check, ds4_bridge_bind_slot,
     ds4_bridge_distributed_options, ds4_bridge_encode_chat_prompt, ds4_bridge_eval,
-    ds4_bridge_eval_speculative_argmax, ds4_bridge_graph_fit_quote, ds4_bridge_inkling_pixels,
-    ds4_bridge_model, ds4_bridge_model_boot_prewarm, ds4_bridge_model_free, ds4_bridge_model_open,
-    ds4_bridge_model_open_distributed, ds4_bridge_model_open_options,
-    ds4_bridge_model_run_distributed_worker, ds4_bridge_model_vision_probe, ds4_bridge_session,
-    ds4_bridge_session_argmax, ds4_bridge_session_argmax_excluding, ds4_bridge_session_copy_logits,
-    ds4_bridge_session_create, ds4_bridge_session_ctx, ds4_bridge_session_distributed_route_ready,
+    ds4_bridge_eval_speculative_argmax, ds4_bridge_graph_fit_quote, ds4_bridge_inkling_audio,
+    ds4_bridge_inkling_pixels, ds4_bridge_model, ds4_bridge_model_boot_prewarm,
+    ds4_bridge_model_free, ds4_bridge_model_open, ds4_bridge_model_open_distributed,
+    ds4_bridge_model_open_options, ds4_bridge_model_run_distributed_worker,
+    ds4_bridge_model_vision_probe, ds4_bridge_session, ds4_bridge_session_argmax,
+    ds4_bridge_session_argmax_excluding, ds4_bridge_session_copy_logits, ds4_bridge_session_create,
+    ds4_bridge_session_ctx, ds4_bridge_session_distributed_route_ready,
     ds4_bridge_session_eval_layer_slice, ds4_bridge_session_free, ds4_bridge_session_generation,
     ds4_bridge_session_graph_fit_quote, ds4_bridge_session_graph_pending,
     ds4_bridge_session_invalidate, ds4_bridge_session_layer_slice_reset,
@@ -158,6 +159,12 @@ pub struct VisionImageInfo {
 
 #[derive(Clone, Copy, Debug)]
 pub struct VisionInput<'a> {
+    pub data: &'a [u8],
+    pub token_offset: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct AudioInput<'a> {
     pub data: &'a [u8],
     pub token_offset: u32,
 }
@@ -1299,6 +1306,16 @@ impl Model {
         })
     }
 
+    pub fn audio_probe(&self, data: &[u8]) -> Result<u32> {
+        if self.family != ModelFamily::Inkling {
+            return Err(Error {
+                code: 1,
+                message: "audio input requires Inkling".into(),
+            });
+        }
+        inkling_audio::probe_audio(data, u32::MAX)
+    }
+
     pub fn session(&self, ctx_size: i32) -> Result<Session<'_>> {
         let mut raw = ptr::null_mut();
         let mut err = [0u8; 512];
@@ -1575,7 +1592,7 @@ impl Session<'_> {
     pub fn sync_vision(&mut self, tokens: &TokenBuffer, images: &[VisionInput<'_>]) -> Result<()> {
         self.check_sync(tokens)?;
         if self.host.family == ModelFamily::Inkling {
-            return self.sync_inkling(tokens, images);
+            return self.sync_inkling(tokens, images, &[]);
         }
         if images.is_empty() || images.len() > 4 {
             return Err(Error {
@@ -1611,9 +1628,34 @@ impl Session<'_> {
         Ok(())
     }
 
-    fn sync_inkling(&mut self, tokens: &TokenBuffer, images: &[VisionInput<'_>]) -> Result<()> {
-        let prepared = inkling_media::prepare_spans(tokens.as_slice(), images)?;
-        let inputs: Vec<_> = prepared
+    pub fn sync_media(
+        &mut self,
+        tokens: &TokenBuffer,
+        images: &[VisionInput<'_>],
+        audios: &[AudioInput<'_>],
+    ) -> Result<()> {
+        if audios.is_empty() {
+            return self.sync_vision(tokens, images);
+        }
+        self.check_sync(tokens)?;
+        if self.host.family != ModelFamily::Inkling {
+            return Err(Error {
+                code: 1,
+                message: "audio input requires Inkling".into(),
+            });
+        }
+        self.sync_inkling(tokens, images, audios)
+    }
+
+    fn sync_inkling(
+        &mut self,
+        tokens: &TokenBuffer,
+        images: &[VisionInput<'_>],
+        audios: &[AudioInput<'_>],
+    ) -> Result<()> {
+        let prepared = inkling_media::prepare_media(tokens.as_slice(), images, audios)?;
+        let image_inputs: Vec<_> = prepared
+            .images
             .iter()
             .map(|(offset, image)| ds4_bridge_inkling_pixels {
                 pixels: image.pixels.as_ptr(),
@@ -1622,16 +1664,28 @@ impl Session<'_> {
                 token_count: image.rows * image.cols,
             })
             .collect();
+        let audio_inputs: Vec<_> = prepared
+            .audios
+            .iter()
+            .map(|(offset, audio)| ds4_bridge_inkling_audio {
+                codes: audio.codes.as_ptr(),
+                code_count: audio.codes.len() as u64,
+                token_offset: *offset,
+                token_count: audio.frames,
+            })
+            .collect();
         let mut err = [0u8; 512];
-        // Prepared images own disjoint pixel buffers until the synchronous
+        // Prepared media own disjoint input buffers until the synchronous
         // native encoder/prefill call returns. No device handles escape core.
         let rc = unsafe {
             ds4_bridge_sync_inkling(
                 self.raw.as_ptr(),
                 tokens.as_slice().as_ptr(),
                 tokens.len() as i32,
-                inputs.as_ptr(),
-                inputs.len() as u32,
+                image_inputs.as_ptr(),
+                image_inputs.len() as u32,
+                audio_inputs.as_ptr(),
+                audio_inputs.len() as u32,
                 err.as_mut_ptr() as *mut c_char,
                 err.len(),
             )

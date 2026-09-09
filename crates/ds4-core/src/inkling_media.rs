@@ -16,7 +16,7 @@ const MAX_ENCODED: usize = 32 * 1024 * 1024;
 const MAX_DECODED: u64 = 128 * 1024 * 1024;
 const MAX_EDGE: u32 = 32768;
 const MAX_PATCHES: u32 = 8192;
-const MAX_IMAGES: usize = 4;
+const MAX_MEDIA: usize = 4;
 const IMAGE_TOKEN: i32 = 200054;
 const AUDIO_TOKEN: i32 = 200053;
 
@@ -24,6 +24,11 @@ pub(crate) struct ImagePixels {
     pub(crate) pixels: Vec<f32>,
     pub(crate) rows: u32,
     pub(crate) cols: u32,
+}
+
+pub(crate) struct PreparedMedia {
+    pub(crate) images: Vec<(u32, ImagePixels)>,
+    pub(crate) audios: Vec<(u32, crate::inkling_audio::AudioCodes)>,
 }
 
 fn image_error(message: &str) -> Error {
@@ -120,35 +125,61 @@ pub(crate) fn prepare_image(data: &[u8], budget: u32) -> Result<ImagePixels> {
     prepare_rgb(rgb.as_raw(), rgb.width(), rgb.height(), budget)
 }
 
-pub(crate) fn prepare_spans(
+pub(crate) fn prepare_media(
     tokens: &[i32],
     images: &[crate::VisionInput<'_>],
-) -> Result<Vec<(u32, ImagePixels)>> {
-    if images.is_empty() || images.len() > MAX_IMAGES {
-        return Err(image_error("Inkling requires 1 to 4 images"));
+    audios: &[crate::AudioInput<'_>],
+) -> Result<PreparedMedia> {
+    if images.len() > MAX_MEDIA
+        || audios.len() > MAX_MEDIA
+        || images.len() + audios.len() == 0
+        || images.len() + audios.len() > MAX_MEDIA
+    {
+        return Err(image_error("Inkling requires 1 to 4 media inputs"));
     }
-    let mut previous_end = 0usize;
-    let mut counts = Vec::with_capacity(images.len());
-    // Validate every span and the aggregate token budget before pixel decode.
+    if images
+        .windows(2)
+        .any(|p| p[0].token_offset >= p[1].token_offset)
+        || audios
+            .windows(2)
+            .any(|p| p[0].token_offset >= p[1].token_offset)
+    {
+        return Err(image_error("Inkling media inputs must follow prompt order"));
+    }
+    let mut spans = Vec::with_capacity(images.len() + audios.len());
+    let mut image_counts = Vec::with_capacity(images.len());
+    let mut audio_counts = Vec::with_capacity(audios.len());
+    // Preflight the complete mixed prompt before allocating decoded media.
     for image in images {
         let count = probe_image(image.data)?.token_count;
-        let start = image.token_offset as usize;
+        spans.push((image.token_offset, count, IMAGE_TOKEN));
+        image_counts.push(count);
+    }
+    for audio in audios {
+        let budget = tokens.len().min(u32::MAX as usize) as u32;
+        let count = crate::inkling_audio::probe_audio(audio.data, budget)?;
+        spans.push((audio.token_offset, count, AUDIO_TOKEN));
+        audio_counts.push(count);
+    }
+    spans.sort_unstable_by_key(|span| span.0);
+    let mut previous_end = 0usize;
+    for (offset, count, token) in spans {
+        let start = offset as usize;
         let end = start
             .checked_add(count as usize)
-            .ok_or_else(|| image_error("Inkling image span overflows"))?;
+            .ok_or_else(|| image_error("Inkling media span overflows"))?;
         if start < previous_end
             || end > tokens.len()
             || tokens[previous_end..start]
                 .iter()
                 .any(|t| matches!(*t, IMAGE_TOKEN | AUDIO_TOKEN))
-            || tokens[start..end].iter().any(|t| *t != IMAGE_TOKEN)
+            || tokens[start..end].iter().any(|t| *t != token)
         {
             return Err(image_error(
-                "Inkling image span does not match placeholders",
+                "Inkling media span does not match placeholders",
             ));
         }
         previous_end = end;
-        counts.push(count);
     }
     if tokens[previous_end..]
         .iter()
@@ -156,11 +187,22 @@ pub(crate) fn prepare_spans(
     {
         return Err(image_error("Inkling media placeholder has no input"));
     }
-    images
+    let images = images
         .iter()
-        .zip(counts)
+        .zip(image_counts)
         .map(|(image, count)| Ok((image.token_offset, prepare_image(image.data, count)?)))
-        .collect()
+        .collect::<Result<_>>()?;
+    let audios = audios
+        .iter()
+        .zip(audio_counts)
+        .map(|(audio, count)| {
+            Ok((
+                audio.token_offset,
+                crate::inkling_audio::prepare_audio(audio.data, count)?,
+            ))
+        })
+        .collect::<Result<_>>()?;
+    Ok(PreparedMedia { images, audios })
 }
 
 pub(crate) fn prepare_rgb(rgb: &[u8], width: u32, height: u32, budget: u32) -> Result<ImagePixels> {
@@ -351,17 +393,85 @@ mod tests {
                 token_offset: 4,
             },
         ];
-        let got = prepare_spans(&tokens, &images).unwrap();
+        let got = prepare_media(&tokens, &images, &[]).unwrap().images;
         assert_eq!(
             got.iter().map(|(offset, _)| *offset).collect::<Vec<_>>(),
             vec![1, 4]
         );
         assert_eq!(got[0].1.pixels, got[1].1.pixels);
-        assert!(prepare_spans(&tokens, &images[..1]).is_err());
-        assert!(prepare_spans(&tokens, &[images[0], images[0]]).is_err());
-        assert!(prepare_spans(&tokens, &[images[1], images[0]]).is_err());
-        assert!(prepare_spans(&tokens[..5], &images).is_err());
-        assert!(prepare_spans(&[200000, 200053, 200053], &images[..1]).is_err());
-        assert!(prepare_spans(&tokens, &[]).is_err());
+        assert!(prepare_media(&tokens, &images[..1], &[]).is_err());
+        assert!(prepare_media(&tokens, &[images[0], images[0]], &[]).is_err());
+        assert!(prepare_media(&tokens, &[images[1], images[0]], &[]).is_err());
+        assert!(prepare_media(&tokens[..5], &images, &[]).is_err());
+        assert!(prepare_media(&[200000, 200053, 200053], &images[..1], &[]).is_err());
+        assert!(prepare_media(&tokens, &[], &[]).is_err());
+    }
+
+    #[test]
+    fn mixed_media_spans_are_exact() {
+        let image = png(40, 1, &[12, 64, 231, 0].repeat(40));
+        let mut audio = Vec::new();
+        let mut writer = hound::WavWriter::new(
+            Cursor::new(&mut audio),
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 16000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for _ in 0..800 {
+            writer.write_sample(0i16).unwrap();
+        }
+        writer.finalize().unwrap();
+        let tokens = [200054, 200054, 200053, 10, 200054, 200054, 200053];
+        let images = [
+            crate::VisionInput {
+                data: &image,
+                token_offset: 0,
+            },
+            crate::VisionInput {
+                data: &image,
+                token_offset: 4,
+            },
+        ];
+        let audios = [
+            crate::AudioInput {
+                data: &audio,
+                token_offset: 2,
+            },
+            crate::AudioInput {
+                data: &audio,
+                token_offset: 6,
+            },
+        ];
+        let got = prepare_media(&tokens, &images, &audios).unwrap();
+        assert_eq!(got.images.len(), 2);
+        assert_eq!(got.audios.len(), 2);
+        assert_eq!(got.audios[0].1.codes.len(), 80);
+        assert!(prepare_media(&tokens, &images, &audios[..1]).is_err());
+        assert!(prepare_media(&tokens, &images[..1], &audios).is_err());
+        assert!(prepare_media(&tokens, &images, &[audios[0], audios[0]]).is_err());
+        assert!(prepare_media(
+            &tokens,
+            &images,
+            &[crate::AudioInput {
+                data: &audio,
+                token_offset: 1
+            }]
+        )
+        .is_err());
+        assert!(prepare_media(&tokens, &images, &[audios[0], audios[1], audios[1]]).is_err());
+        assert!(prepare_media(&tokens, &[], &[]).is_err());
+        assert!(prepare_media(
+            &[200053],
+            &[],
+            &[crate::AudioInput {
+                data: &audio,
+                token_offset: 0
+            }]
+        )
+        .is_ok());
     }
 }

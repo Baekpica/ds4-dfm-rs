@@ -127,6 +127,14 @@ typedef struct {
     uint32_t token_count;
 } ds4_inkling_pixels;
 
+/* Rust-prepared [frames,80] discrete mel codes in [0,15]. */
+typedef struct {
+    const int32_t *codes;
+    uint64_t code_count;
+    uint32_t token_offset;
+    uint32_t token_count;
+} ds4_inkling_audio;
+
 typedef struct {
     int id;
     float logit;
@@ -1291,9 +1299,10 @@ int ds4_session_sync_multimodal(ds4_session *s,
                                 const ds4_vision_span *spans,
                                 uint32_t span_count,
                                 char *err, size_t errlen);
-/* Inkling image spans must cover every media placeholder. Always refills KV. */
+/* Inkling spans must cover every media placeholder. Always refills KV. */
 int ds4_session_sync_inkling(ds4_session *s, const ds4_tokens *prompt,
-                              const ds4_inkling_pixels *images, uint32_t count,
+                              const ds4_inkling_pixels *images, uint32_t image_count,
+                              const ds4_inkling_audio *audios, uint32_t audio_count,
                               char *err, size_t errlen);
 bool ds4_session_rewrite_requires_rebuild(int live_len, int canonical_len, int common);
 ds4_session_rewrite_result ds4_session_rewrite_from_common(

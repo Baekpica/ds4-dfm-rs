@@ -133,6 +133,13 @@ typedef struct {
 } ds4_bridge_inkling_pixels;
 
 typedef struct {
+    const int32_t *codes; /* borrowed [token_count,80], each in [0,15] */
+    uint64_t code_count;
+    uint32_t token_offset;
+    uint32_t token_count;
+} ds4_bridge_inkling_audio;
+
+typedef struct {
     uint32_t source_width;
     uint32_t source_height;
     uint32_t content_width;
@@ -191,7 +198,8 @@ int ds4_bridge_session_sync_vision(ds4_bridge_session *s,
                                    char *err, size_t errlen);
 int ds4_bridge_sync_inkling(ds4_bridge_session *s,
                              const int32_t *tokens, int n_tokens,
-                             const ds4_bridge_inkling_pixels *images, uint32_t count,
+                             const ds4_bridge_inkling_pixels *images, uint32_t image_count,
+                             const ds4_bridge_inkling_audio *audios, uint32_t audio_count,
                              char *err, size_t errlen);
 int ds4_bridge_session_sync_cb(ds4_bridge_session *s,
                                const int32_t *tokens, int n_tokens,
