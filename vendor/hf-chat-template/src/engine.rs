@@ -64,6 +64,22 @@ pub(crate) fn build(source: String, cfg: &EngineConfig) -> Result<Environment<'s
     // Python-compatible tojson (overrides minijinja's sorted/space-less builtin).
     env.add_filter("tojson", tojson_filter);
 
+    // Tool schemas also print defaults outside JSON. Keep plain float output
+    // and the explicit string filter consistent with Python's shortest repr.
+    env.set_formatter(|out, state, value| {
+        if value.is_number() && !value.is_integer() {
+            let text = crate::json::float_repr(f64::try_from(value.clone())?);
+            return minijinja::escape_formatter(out, state, &Value::from(text));
+        }
+        minijinja::escape_formatter(out, state, value)
+    });
+    env.add_filter("string", |value: Value| -> Result<String, Error> {
+        if value.is_number() && !value.is_integer() {
+            return Ok(crate::json::float_repr(f64::try_from(value)?));
+        }
+        Ok(value.to_string())
+    });
+
     let source = match neutralize_generation_tags(&source) {
         Cow::Borrowed(_) => source,
         Cow::Owned(rewritten) => rewritten,

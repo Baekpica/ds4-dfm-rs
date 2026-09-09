@@ -1,0 +1,159 @@
+{% set image_count = namespace(value=0) %}
+{% set video_count = namespace(value=0) %}
+
+{%- set role_indicators = {
+    'user': '<|user|>\n',
+    'assistant': '<|assistant|>\n',
+    'system': '<|system|>\n',
+    'tool': '<|tool|>\n',
+    'tool_declare': '<|tool_declare|>\n'
+} %}
+{%- set end_of_turn = '<|endofturn|>\n' %}
+
+
+{%- macro declare_available_tools(tools) %}
+    {{- "# Tools" }}
+    {{- "\n" }}
+    {%- for tool in tools %}
+        {{- "<tool>" }}
+        {{- tool | tojson(ensure_ascii=False) | safe }}
+        {{- "</tool>\n" }}
+    {%- endfor %}
+{%- endmacro %}
+
+
+{%- set ns = namespace(last_query_index = messages|length - 1, last_query_index_not_yet_determined = true) %}
+{%- for message in messages[::-1] %}
+    {%- set index = (messages|length - 1) - loop.index0 %}
+    {%- if ns.last_query_index_not_yet_determined and message.role == "user" and message.content is string %}
+        {%- set ns.last_query_index = index -%}
+        {%- set ns.last_query_index_not_yet_determined = false -%}
+    {%- endif %}
+{%- endfor %}
+
+{%- if tools is defined and tools %}
+    {{- role_indicators['tool_declare'] }}
+    {{- declare_available_tools(tools) }}
+    {{- end_of_turn -}}  
+{%- endif %}
+
+{%- for i in range(messages | length) %}
+    {%- set msg = messages[i] %}
+    {%- set role = msg.role %}
+    {%- if role not in role_indicators %}
+        {{- raise_exception('Unknown role: ' ~ role) }}
+    {%- endif %}
+    
+    {%- if i == 0 %}
+        {%- if role == 'system' %}
+            {{- role_indicators['system'] }}
+            {{- msg.content }}
+            {{- end_of_turn -}}
+            {%- continue %}          
+        {%- endif %}
+    {%- endif %}
+
+    {%- if role == 'assistant' %}
+        {{- role_indicators['assistant'] }}
+
+        {%- set content = (msg.content if (msg.content is defined and msg.content) else "") -%}
+        {%- set reasoning = none -%}
+
+        {%- if msg.reasoning_content is defined and msg.reasoning_content%}
+            {%- set reasoning = msg.reasoning_content.strip() -%}
+        {%- elif content and "</think>" in content %}
+            {%- set _parts = content.split('</think>') -%}
+            {%- set reasoning = _parts[0].lstrip('<think>').strip() -%}
+            {%- set content = _parts[-1].strip() -%}
+        {%- endif %}
+
+        {%- if not (reasoning and i > ns.last_query_index) or (skip_think is defined and skip_think) %}
+            {%- set reasoning = none %}
+        {%- endif %}
+
+        {%- set content = content.strip() -%}
+        
+        {{- "<think>\n" }}
+        {{- (reasoning if reasoning is not none else "") }}
+        {{- "\n</think>\n\n" }}
+
+        {{- content }}
+
+        {%- if msg.tool_calls %}
+            {%- if content is defined and content %}
+                {{- "\n" }}
+            {%- endif %}
+            {%- for tool_call in msg.tool_calls %}
+                {%- if tool_call.function is defined %}
+                    {%- set tool_call = tool_call.function %}
+                {%- endif %}
+
+                {%- if tool_call.arguments is defined %}
+                    {%- set arguments = tool_call.arguments %}
+                {%- elif tool_call.parameters is defined %}
+                    {%- set arguments = tool_call.parameters %}
+                {%- else %}
+                    {{- raise_exception('arguments or parameters are mandatory: ' ~ tool_call) }}
+                {%- endif %}
+                {%- if arguments is string %}
+                    {{- "<tool_call>" }}{"name": "{{- tool_call.name }}", "arguments": {{ arguments }}}{{- "</tool_call>" }}
+                {%- else %}
+                    {{- "<tool_call>" }}{"name": "{{- tool_call.name }}", "arguments": {{ arguments | tojson(ensure_ascii=False) | safe }}}{{- "</tool_call>" }}
+                {%- endif %}
+                {%- if not loop.last %}
+                    {{- "\n" }}
+                {%- endif %}
+
+            {%- endfor %}
+        {%- endif %}
+        {{- end_of_turn -}}
+
+    {%- elif role == "tool" %}
+        {%- if i == 0 or messages[i - 1].role != "tool" %}
+            {{- role_indicators['tool'] }}
+        {%- endif %}
+        {%- if msg.content is defined %}          
+            {%- if msg.content is string %}  
+                {{- "<tool_result>" }}{{ msg.content }}{{- "</tool_result>" }} 
+            {%- else %}
+                {{- "<tool_result>" }}{{ msg.content | tojson(ensure_ascii=False) | safe }}{{- "</tool_result>" }}            
+            {%- endif %}
+        {%- endif %}
+        {%- if loop.last or messages[i + 1].role != "tool" %}
+            {{- end_of_turn -}}
+        {%- else %}
+            {{- "\n" }}
+        {%- endif %}
+
+    {%- else %}
+        {{- role_indicators[role] }}
+        {%- if msg.content is string %}
+            {{- msg.content }}
+        {%- else %}
+            {%- for content in msg.content %} 
+                {%- if content.type == 'image' %}
+                    {%- set image_count.value = image_count.value + 1 %}
+                    {%- if add_vision_id %}Picture {{ image_count.value }}: {% endif %}<vision><image_pad></vision>
+                {%- elif content.type == 'video' %}
+                    {%- set video_count.value = video_count.value + 1 %}
+                    {%- if add_vision_id %}Video {{ video_count.value }}: {% endif %}<vision><video_pad></vision>
+                {%- elif content.type == 'text' %}
+                    {{- content.text }}
+                {%- else %}
+                    {{- content.text }}
+                {%- endif %}
+            {%- endfor %}
+        {%- endif %}
+        {{- end_of_turn -}}
+    {%- endif %}
+{% endfor %}
+
+
+{%- if add_generation_prompt %}
+    {{- role_indicators['assistant'] }}
+    {%- if enable_thinking is not defined or enable_thinking is true %}
+        {{- "<think>\n" }}
+    {%- else %}
+        {{- "<think>\n\n</think>\n\n" }}
+    {%- endif %}
+{%- endif %}

@@ -9,9 +9,11 @@ Source, published tests, documentation and licenses are retained. Cargo.toml
 is the published Cargo.toml.orig. Registry metadata and the upstream lockfile
 are omitted; the workspace lockfile pins dependencies.
 
-Local patch: `src/json.rs` honors Python `tojson` sorting, separators, ASCII
+Local patches: `src/json.rs` honors Python `tojson` sorting, separators, ASCII
 escaping and integer/string indentation, rejects unsupported options, and
 matches Python float spelling. Indentation allocation is capped at 4096.
+`src/engine.rs` applies the same float spelling to ordinary output and the
+`string` filter; K2's official tool schema uses ordinary numeric output.
 The host enables serde_json `float_roundtrip` to preserve parsed float values.
 Independent Python fixtures live in `tests/fixtures/chat-template` at the
 workspace root; official Inkling vectors exercise these options together.

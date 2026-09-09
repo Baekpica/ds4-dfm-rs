@@ -1,0 +1,9 @@
+{
+  "repo": "Qwen/Qwen3.8-Flash-Next",
+  "revision": "f5d08274bafd880402bd16f5e3e6c514136ec06c",
+  "template_path": "chat_template.jinja",
+  "template_sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+  "tokenizer_config_sha256": "b11349aafa7cdc6a320767cf7ceb29ed82f7eda5d65e8e0819e76f0ce947bf27",
+  "special_tokens": {},
+  "source_url": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/f5d08274bafd880402bd16f5e3e6c514136ec06c/chat_template.jinja"
+}

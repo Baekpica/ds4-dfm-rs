@@ -1,0 +1,9 @@
+{
+  "repo": "thinkingmachines/Inkling-Small",
+  "revision": "8cc5877b44d343f88b92086aa1fb72897950f06a",
+  "template_path": "chat_template.jinja",
+  "template_sha256": "0aa1aa0c729d90176dcaa00c440c8faffca2957ffb2cc4b79456ee6d02bcf43b",
+  "tokenizer_config_sha256": "2e36c9748a2081abb935b2e745ee22e82efa32589c2500df7e5bc0f93145cd77",
+  "special_tokens": {},
+  "source_url": "https://huggingface.co/thinkingmachines/Inkling-Small/blob/8cc5877b44d343f88b92086aa1fb72897950f06a/chat_template.jinja"
+}

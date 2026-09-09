@@ -1,0 +1,9 @@
+{
+  "repo": "LGAI-EXAONE/K-EXAONE-236B-A23B",
+  "revision": "61e6d578eb102b578e5704e2916ac841df9eca0a",
+  "template_path": "chat_template.jinja",
+  "template_sha256": "fdb4ee5f147172f967129b448c312a9017cd0760947206ec26d3f49025cf80d4",
+  "tokenizer_config_sha256": "1236c9a991c9c2c7060b7ad13c179aa2e651a90b56fadcdc26462fb865f8dce6",
+  "special_tokens": {},
+  "source_url": "https://huggingface.co/LGAI-EXAONE/K-EXAONE-236B-A23B/blob/61e6d578eb102b578e5704e2916ac841df9eca0a/chat_template.jinja"
+}

@@ -1,0 +1,144 @@
+{%- if enable_thinking is not defined -%}
+    {%- set enable_thinking = true -%}
+{%- endif -%}
+{%- if clear_thinking is not defined -%}
+    {%- set clear_thinking = false -%}
+{%- endif -%}
+
+{%- set image_count = namespace(value=0) -%}
+{%- set audio_count = namespace(value=0) -%}
+{%- set video_count = namespace(value=0) -%}
+{%- set last_user_index = namespace(value=-1) -%}
+
+{%- macro render_content(content) -%}
+    {%- if not content -%}
+        {{- '' -}}
+    {%- elif content is string -%}
+        {{- content -}}
+    {%- else -%}
+        {%- for item in content -%}
+            {%- if item['type'] == 'image' or 'image' in item or 'image_url' in item -%}
+                {%- set image_count.value = image_count.value + 1 -%}
+                {%- if not loop.first -%}{{- '\n' -}}{%- endif -%}
+                {%- if add_vision_id -%}Picture {{ image_count.value }}: {% endif -%}
+                <|img|><|imgpad|><|endofimg|>
+            {%- elif item['type'] == 'video' or 'video' in item or 'video_url' in item -%}
+                {%- set video_count.value = video_count.value + 1 -%}
+                {%- if not loop.first -%}{{- '\n' -}}{%- endif -%}
+                {%- if add_vision_id -%}Video {{ video_count.value }}: {% endif -%}
+                <|video_pad|>
+            {%- elif item['type'] == 'audio' or 'audio' in item or 'audio_url' in item -%}
+                {%- set audio_count.value = audio_count.value + 1 -%}
+                {%- if not loop.first -%}{{- '\n' -}}{%- endif -%}
+                {%- if add_vision_id -%}Audio {{ audio_count.value }}: {% endif -%}
+                <|audio_comp_start|><|audio_comp_pad|><|audio_comp_end|>
+            {%- elif 'text' in item -%}
+                {{- item['text'] -}}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- if tools -%}
+    {{- '<|system|>' -}}
+    {%- if messages[0]['role'] == 'system' -%}
+        {{- render_content(messages[0]['content']) -}}
+    {%- else -%}
+        {{- 'You are a helpful assistant.' -}}
+    {%- endif -%}
+    {{- "\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>" -}}
+    {%- for tool in tools -%}
+        {{- "\n" -}}
+        {{- tool | tojson -}}
+    {%- endfor -%}
+    {{- "\n</tools>\n\nWhen making tool calls, use XML format to invoke tools and pass parameters:\n\n<dots_function_call>\n<invoke name=\"tool-name-1\">\n<parameter name=\"param-key-1\">\nparam-value-1\n</parameter>\n<parameter name=\"param-key-2\">\nparam-value-2\n</parameter>\n...\n</invoke>\n</dots_function_call><|endofsystem|>" -}}
+{%- else -%}
+    {%- if messages[0]['role'] == 'system' -%}
+        {{- '<|system|>' -}}
+        {{- render_content(messages[0]['content']) -}}
+        {{- '<|endofsystem|>' -}}
+    {%- else -%}
+        {{- '<|system|>You are a helpful assistant.<|endofsystem|>' -}}
+    {%- endif -%}
+{%- endif -%}
+
+{%- for m in messages -%}
+    {%- if m['role'] == 'user' -%}
+        {%- set last_user_index.value = loop.index0 -%}
+    {%- endif -%}
+{%- endfor -%}
+
+{%- for message in messages -%}
+    {%- set content = render_content(message['content']) -%}
+    {%- if (message['role'] == 'user') or (message['role'] == 'system' and not loop.first) -%}
+        {{- '<|user|>' -}}
+        {{- content -}}
+        {%- if message['role'] == 'user' and enable_thinking is false and not content.endswith('<no_think>') -%}
+            {{- '<no_think>' -}}
+        {%- endif -%}
+        {{- '<|endofuser|>' -}}
+    {%- elif message['role'] == 'assistant' -%}
+        {%- set reasoning_content = '' -%}
+        {%- if message.reasoning_content is string -%}
+            {%- set reasoning_content = message.reasoning_content -%}
+        {%- else -%}
+            {%- if '</think>' in content -%}
+                {%- set reasoning_content = content.split('</think>')[0].rstrip('\n').split('<think>')[-1].lstrip('\n') -%}
+                {%- set content = content.split('</think>')[-1].lstrip('\n') -%}
+            {%- endif -%}
+        {%- endif -%}
+        {%- set reasoning_content = reasoning_content|trim -%}
+        {{- '<|assistant|>' -}}
+        {%- if enable_thinking is false -%}
+            {{- '<think>\n\n</think>\n\n' + content -}}
+        {%- elif clear_thinking and loop.index0 < last_user_index.value -%}
+            {{- '<think>\n\n</think>\n\n' + content -}}
+        {%- elif reasoning_content -%}
+            {{- '<think>\n' + reasoning_content + '\n</think>\n\n' + content -}}
+        {%- else -%}
+            {{- content -}}
+        {%- endif -%}
+        {%- if message.get('tool_calls') -%}
+            {%- for tool_call in message['tool_calls'] -%}
+                {%- if tool_call.function is defined -%}
+                    {%- set tool_call = tool_call.function -%}
+                {%- endif -%}
+                {{- '\n<dots_function_call>\n<invoke name="' -}}
+                {{- tool_call.name -}}
+                {{- '">' -}}
+                {%- for arg_name, arg_value in tool_call.arguments.items() -%}
+                    {{- '\n<parameter name="' -}}
+                    {{- arg_name -}}
+                    {{- '">' -}}
+                    {{- '\n' -}}
+                    {%- if arg_value is string -%}
+                        {{- arg_value -}}
+                    {%- else -%}
+                        {{- arg_value|tojson -}}
+                    {%- endif -%}
+                    {{- '\n' -}}
+                    {{- '</parameter>' -}}
+                {%- endfor -%}
+                {{- '\n</invoke>\n</dots_function_call>' -}}
+            {%- endfor -%}
+        {%- endif -%}
+        {{- '<|endofassistant|>' -}}
+    {%- elif message['role'] == 'tool' -%}
+        {%- if (loop.index0 == 0) or (messages[loop.index0 - 1]['role'] != 'tool') -%}
+            {{- '<|user|>' -}}
+        {%- endif -%}
+        {{- '\n<dots_function_response>\n' -}}
+        {{- content -}}
+        {{- '\n</dots_function_response>' -}}
+        {%- if loop.last or (messages[loop.index0 + 1]['role'] != 'tool') -%}
+            {{- '<|endofuser|>' -}}
+        {%- endif -%}
+    {%- endif -%}
+{%- endfor -%}
+
+{%- if add_generation_prompt -%}
+    {{- '<|assistant|>' -}}
+    {%- if enable_thinking is false -%}
+        {{- '<think>\n\n</think>\n\n' -}}
+    {%- endif -%}
+{%- endif -%}

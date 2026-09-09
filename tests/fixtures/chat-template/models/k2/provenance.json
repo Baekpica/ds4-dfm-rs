@@ -1,0 +1,11 @@
+{
+  "repo": "IFM/K2-Horizon-375B-A23B",
+  "revision": "d33e3ae45281865ebf9f044b12d3635b1d1e17fe",
+  "template_path": "chat_template.jinja",
+  "template_sha256": "a892cd0b0195599f283a8c706787520d9a6747640efb2f4dec4144b0abb62590",
+  "tokenizer_config_sha256": "581375b2ce8d56d59f609f08a7165365ac53b6543f3442ef0117b4951b0d747c",
+  "special_tokens": {
+    "bos_token": "<|ifm|begin_of_text|>"
+  },
+  "source_url": "https://huggingface.co/IFM/K2-Horizon-375B-A23B/blob/d33e3ae45281865ebf9f044b12d3635b1d1e17fe/chat_template.jinja"
+}

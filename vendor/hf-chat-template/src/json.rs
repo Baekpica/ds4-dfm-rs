@@ -105,13 +105,7 @@ impl Options {
             Json::Number(value) if value.is_f64() => {
                 // Rust's shortest round-trip Debug uses Python's notation
                 // boundaries. Python pads the exponent and always signs it.
-                let number = format!("{:?}", value.as_f64().expect("f64"));
-                if let Some((mantissa, exponent)) = number.split_once('e') {
-                    let exponent: i32 = exponent.parse().expect("float exponent");
-                    write!(out, "{mantissa}e{exponent:+03}").expect("string write");
-                } else {
-                    out.push_str(&number);
-                }
+                out.push_str(&float_repr(value.as_f64().expect("f64")));
             }
             Json::Number(value) => write!(out, "{value}").expect("string write"),
             Json::Array(items) => {
@@ -150,6 +144,15 @@ impl Options {
             }
         }
     }
+}
+
+pub(crate) fn float_repr(value: f64) -> String {
+    let number = format!("{value:?}");
+    if let Some((mantissa, exponent)) = number.split_once('e') {
+        let exponent: i32 = exponent.parse().expect("float exponent");
+        return format!("{mantissa}e{exponent:+03}");
+    }
+    number
 }
 
 pub(crate) fn tojson_filter(value: Value, kwargs: Kwargs) -> Result<String, Error> {
