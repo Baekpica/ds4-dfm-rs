@@ -187,6 +187,13 @@ At 529 rows, 7-row chunks and decode also matched all hidden outputs and
 17899520 state bytes across local-ring wrap. An extra row beyond context
 was rejected without changing any draft state.
 
+An optional journal retains only overwritten KV slots and convolution
+inputs from a speculative forward. Restoring each accepted prefix of a
+seven-row trial across the local-ring boundary matched all eight layers'
+KV/convolution state and next hidden output exactly, even with changed
+rejected inputs. This restores carried state; selecting accepted hidden
+rows/logits and connecting target verification remain separate work.
+
 ## Checks
 
 ```sh

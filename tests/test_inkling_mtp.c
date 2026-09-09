@@ -43,6 +43,84 @@ static size_t read_state(const ds4_inkling_mtp_graph *d, unsigned char *out) {
     return offset;
 }
 
+static void write_state(ds4_inkling_mtp_graph *d, const unsigned char *in, unsigned rows) {
+    size_t offset = 0;
+    for (unsigned i = 0; i < INKLING_DRAFT_LAYERS; i++) {
+        inkling_layer_state *s = &d->graph.layer[i];
+        const unsigned valid = rows < s->capacity ? rows : s->capacity;
+        size_t bytes = (size_t)valid * 2 * IK_KV * sizeof(uint16_t);
+        CHECK(ds4_gpu_tensor_write(s->kv, 0, in + offset, bytes)); offset += bytes;
+        for (unsigned j = 0; j < 4; j++) {
+            bytes = IK_HISTORY * (j < 2 ? IK_KV : IK_HIDDEN) * sizeof(float);
+            CHECK(ds4_gpu_tensor_write(s->conv[j], 0, in + offset, bytes)); offset += bytes;
+        }
+        d->positions[i] = rows;
+    }
+}
+
+static void check_rollback(const ds4_model *m, const ds4_inkling_draft *w,
+                            const float *seed, const float *embed) {
+    enum { PREFIX = IK_LOCAL - 3, CONTEXT = IK_LOCAL + 17 };
+    ds4_inkling_mtp_graph trial, baseline;
+    CHECK(inkling_draft_alloc(&trial, m, w, CONTEXT, TEST_ROWS));
+    CHECK(inkling_draft_alloc(&baseline, m, w, CONTEXT, TEST_ROWS));
+    const size_t bytes = TEST_ROWS * IK_HIDDEN * sizeof(float);
+    ds4_gpu_tensor *h = ds4_gpu_tensor_alloc(bytes), *e = ds4_gpu_tensor_alloc(bytes);
+    CHECK(h && e && ds4_gpu_tensor_write(h, 0, seed, bytes) &&
+          ds4_gpu_tensor_write(e, 0, embed, bytes));
+    for (unsigned start = 0; start < PREFIX;) {
+        const unsigned n = PREFIX - start < TEST_ROWS ? PREFIX - start : TEST_ROWS;
+        for (unsigned i = 0; i < INKLING_DRAFT_LAYERS; i++) {
+            CHECK(inkling_draft_forward(&trial, m, w, i, h, e, n));
+        }
+        start += n;
+    }
+    const size_t state_cap = INKLING_DRAFT_LAYERS *
+        (CONTEXT * 2 * IK_KV * sizeof(uint16_t) +
+         IK_HISTORY * (2 * IK_KV + 2 * IK_HIDDEN) * sizeof(float));
+    unsigned char *prefix = xmalloc(state_cap), *got = xmalloc(state_cap), *want = xmalloc(state_cap);
+    const size_t prefix_bytes = read_state(&trial, prefix);
+    float *changed = xmalloc(bytes), *next = xmalloc(IK_HIDDEN * sizeof(float));
+    float *next_ref = xmalloc(IK_HIDDEN * sizeof(float));
+    CHECK(!inkling_graph_track(&trial.graph, 0));
+    CHECK(!inkling_graph_track(&trial.graph, IK_VERIFY_ROWS + 1));
+    CHECK(inkling_graph_track(&trial.graph, TEST_ROWS));
+    CHECK(inkling_graph_track(&trial.graph, TEST_ROWS));
+    CHECK(!inkling_graph_track(&trial.graph, TEST_ROWS - 1));
+    for (unsigned keep = 0; keep <= TEST_ROWS; keep++) {
+        write_state(&trial, prefix, PREFIX); write_state(&baseline, prefix, PREFIX);
+        CHECK(read_state(&trial, got) == prefix_bytes && memcmp(prefix, got, prefix_bytes) == 0);
+        CHECK(read_state(&baseline, got) == prefix_bytes && memcmp(prefix, got, prefix_bytes) == 0);
+        memcpy(changed, seed, bytes);
+        for (unsigned row = keep; row < TEST_ROWS; row++) {
+            for (unsigned c = 0; c < IK_HIDDEN; c++) { changed[row * IK_HIDDEN + c] *= -3; }
+        }
+        for (unsigned i = 0; i < INKLING_DRAFT_LAYERS; i++) {
+            CHECK(ds4_gpu_tensor_write(h, 0, changed, bytes));
+            CHECK(inkling_draft_forward(&trial, m, w, i, h, e, TEST_ROWS));
+            CHECK(ds4_gpu_tensor_write(h, 0, seed, bytes));
+            if (keep) { CHECK(inkling_draft_forward(&baseline, m, w, i, h, e, keep)); }
+            CHECK(!inkling_draft_keep(&trial, i, TEST_ROWS + 1));
+            CHECK(inkling_draft_keep(&trial, i, keep));
+            CHECK(!inkling_draft_keep(&trial, i, keep)); /* One journal entry is consumed once. */
+            CHECK(trial.positions[i] == PREFIX + keep);
+        }
+        const size_t want_bytes = read_state(&baseline, want);
+        CHECK(read_state(&trial, got) == want_bytes && memcmp(want, got, want_bytes) == 0);
+        for (unsigned i = 0; i < INKLING_DRAFT_LAYERS; i++) {
+            CHECK(inkling_draft_forward(&trial, m, w, i, h, e, 1));
+            CHECK(ds4_gpu_tensor_read(trial.graph.buf[IK_X], 0, next, IK_HIDDEN * sizeof(float)));
+            CHECK(inkling_draft_forward(&baseline, m, w, i, h, e, 1));
+            CHECK(ds4_gpu_tensor_read(baseline.graph.buf[IK_X], 0, next_ref, IK_HIDDEN * sizeof(float)));
+            CHECK(memcmp(next, next_ref, IK_HIDDEN * sizeof(float)) == 0);
+        }
+        printf("keep %u/7 across ring: all8 state and next hidden exact; changed rejects isolated\n", keep);
+    }
+    inkling_draft_free(&trial); inkling_draft_free(&baseline);
+    ds4_gpu_tensor_free(h); ds4_gpu_tensor_free(e);
+    free(prefix); free(got); free(want); free(changed); free(next); free(next_ref);
+}
+
 static void check_ring(const ds4_model *m, const ds4_inkling_draft *w,
                         const float *seed, const float *embed) {
     enum { RING_ROWS = IK_LOCAL + 17 };
@@ -158,6 +236,7 @@ int main(int argc, char **argv) {
     for (unsigned i = 0; i < INKLING_DRAFT_LAYERS; i++) { CHECK(d.positions[i] == TEST_ROWS); }
     inkling_draft_free(&d); ds4_gpu_tensor_free(h); ds4_gpu_tensor_free(e);
     check_ring(&m, &w, seed, embed);
+    check_rollback(&m, &w, seed, embed);
     ds4_gpu_cleanup(); model_close(&m);
     free(seed); free(embed); free(want); free(full); free(incremental); free(state); free(got);
     puts("Inkling eight-layer draft component passed");
