@@ -20724,6 +20724,7 @@ enum {
     IK_LOCAL = 512, IK_GLOBAL = 1024, IK_HISTORY = 3,
     IK_EXPERTS = 256, IK_USED = 6, IK_SHARED = 2,
     IK_MID = 2048, IK_DENSE = 16384, IK_LOGIT_DIVISOR = 16,
+    IK_AUDIO_TOKEN = 200053, IK_IMAGE_TOKEN = 200054,
 };
 
 enum {
@@ -21125,8 +21126,40 @@ static bool inkling_graph_layer(ds4_inkling_graph *g, const ds4_model *m,
     return ds4_gpu_inkling_add_scale(b[IK_X], b[IK_X], b[IK_CONV], 1, (uint64_t)n * IK_HIDDEN);
 }
 
-static bool inkling_graph_forward(ds4_inkling_graph *g, const ds4_model *m,
-                                  const ds4_weights *w, const int *tokens, unsigned n) {
+static bool inkling_embed_rows(ds4_inkling_graph *g, const ds4_model *m,
+                               const ds4_weights *w, const int *tokens, unsigned n,
+                               const float *const *features) {
+    ds4_gpu_tensor **b = g->buf;
+    if (!ds4_gpu_tensor_write(b[IK_TOKENS], 0, tokens, n * sizeof(*tokens)) ||
+        !ds4_gpu_embed_tokens_q8_0_tensor(b[IK_X], b[IK_TOKENS], m->map, m->size,
+                                          w->token_embd->abs_offset, DS4_N_VOCAB, n, IK_HIDDEN) ||
+        !ds4_gpu_inkling_norm(b[IK_X], b[IK_X], m->map, m->size,
+                              w->inkling.embed_norm->abs_offset, IK_HIDDEN, n)) {
+        return false;
+    }
+    /* Both media towers already normalize their outputs. Replace placeholder
+     * rows AFTER text embed_norm; never normalize media with the text weight. */
+    for (unsigned i = 0; features && i < n; i++) {
+        if (!features[i]) {
+            continue;
+        }
+        const uint64_t bytes = IK_HIDDEN * sizeof(float);
+        if (!ds4_gpu_tensor_write(b[IK_X], i * bytes, features[i], bytes)) {
+            return false;
+        }
+        ds4_gpu_tensor *row = ds4_gpu_tensor_view(b[IK_X], i * bytes, bytes);
+        bool ok = row && ds4_gpu_inkling_add_scale(row, row, NULL, 1, IK_HIDDEN);
+        ds4_gpu_tensor_free(row);
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool inkling_graph_media(ds4_inkling_graph *g, const ds4_model *m,
+                                const ds4_weights *w, const int *tokens, unsigned n,
+                                const float *const *features) {
     if (g->failed || !tokens || !n || n > g->cap || n > g->context - g->position) {
         return false;
     }
@@ -21134,16 +21167,22 @@ static bool inkling_graph_forward(ds4_inkling_graph *g, const ds4_model *m,
         if (tokens[i] < 0 || tokens[i] >= INKLING_VALID_VOCAB) {
             return false;
         }
+        if (features && features[i]) {
+            if (tokens[i] != IK_AUDIO_TOKEN && tokens[i] != IK_IMAGE_TOKEN) {
+                return false;
+            }
+            for (unsigned j = 0; j < IK_HIDDEN; j++) {
+                if (!isfinite(features[i][j])) {
+                    return false;
+                }
+            }
+        }
         g->positions[i] = g->position + i;
     }
     g->failed = true; /* Partial GPU failures require reset before reuse. */
     ds4_gpu_tensor **b = g->buf;
-    if (!ds4_gpu_tensor_write(b[IK_TOKENS], 0, tokens, n * sizeof(*tokens)) ||
-        !ds4_gpu_tensor_write(b[IK_POSITIONS], 0, g->positions, n * sizeof(*g->positions)) ||
-        !ds4_gpu_embed_tokens_q8_0_tensor(b[IK_X], b[IK_TOKENS], m->map, m->size,
-                                          w->token_embd->abs_offset, DS4_N_VOCAB, n, IK_HIDDEN) ||
-        !ds4_gpu_inkling_norm(b[IK_X], b[IK_X], m->map, m->size,
-                              w->inkling.embed_norm->abs_offset, IK_HIDDEN, n)) {
+    if (!ds4_gpu_tensor_write(b[IK_POSITIONS], 0, g->positions, n * sizeof(*g->positions)) ||
+        !inkling_embed_rows(g, m, w, tokens, n, features)) {
         return false;
     }
     for (unsigned i = 0; i < INKLING_LAYERS; i++) {
@@ -21181,6 +21220,11 @@ static bool inkling_graph_forward(ds4_inkling_graph *g, const ds4_model *m,
         g->failed = false;
     }
     return ok;
+}
+
+static bool inkling_graph_forward(ds4_inkling_graph *g, const ds4_model *m,
+                                  const ds4_weights *w, const int *tokens, unsigned n) {
+    return inkling_graph_media(g, m, w, tokens, n, NULL);
 }
 
 static void plain_batch_ws_free(struct ds4_plain_batch_ws *w) {

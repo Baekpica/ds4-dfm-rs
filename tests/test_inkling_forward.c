@@ -52,6 +52,70 @@ static int check_padding(const ds4_inkling_graph *g) {
     return failed;
 }
 
+static float **load_features(const int *tokens, unsigned rows) {
+    const char *dir = getenv("INKLING_TEST_MEDIA");
+    if (!dir) {
+        return NULL;
+    }
+    FILE *files[2];
+    const char *names[] = {"audio-output.f32", "image-stage-3.f32"};
+    for (unsigned i = 0; i < 2; i++) {
+        char path[1024];
+        int n = snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+        if (n < 0 || n >= (int)sizeof(path) || !(files[i] = fopen(path, "rb"))) {
+            ds4_die("cannot read Inkling media reference");
+        }
+    }
+    float **features = xcalloc(rows, sizeof(*features));
+    for (unsigned i = 0; i < rows; i++) {
+        if (tokens[i] != 200053 && tokens[i] != 200054) {
+            continue;
+        }
+        features[i] = xmalloc(IK_HIDDEN * sizeof(float));
+        if (fread(features[i], sizeof(float), IK_HIDDEN, files[tokens[i] - 200053]) != IK_HIDDEN) {
+            ds4_die("too few Inkling media reference rows");
+        }
+    }
+    for (unsigned i = 0; i < 2; i++) {
+        if (fgetc(files[i]) != EOF || fclose(files[i]) != 0) {
+            ds4_die("Inkling fixture rows must match all placeholder tokens");
+        }
+    }
+    return features;
+}
+
+static bool test_forward(ds4_inkling_graph *g, const ds4_model *m,
+                          const ds4_weights *w, const int *tokens, unsigned n,
+                          float **features) {
+    return features ? inkling_graph_media(g, m, w, tokens, n, (const float *const *)features)
+                    : inkling_graph_forward(g, m, w, tokens, n);
+}
+
+static void check_features(ds4_inkling_graph *g, const ds4_model *m,
+                            const ds4_weights *w, const int *tokens,
+                            unsigned n, float **features) {
+    if (!features) {
+        return;
+    }
+    const size_t bytes = (size_t)n * IK_HIDDEN * sizeof(float);
+    float *text = xmalloc(bytes), *media = xmalloc(bytes);
+    if (!inkling_embed_rows(g, m, w, tokens, n, NULL) ||
+        !ds4_gpu_tensor_read(g->buf[IK_X], 0, text, bytes) ||
+        !inkling_embed_rows(g, m, w, tokens, n, (const float *const *)features) ||
+        !ds4_gpu_tensor_read(g->buf[IK_X], 0, media, bytes)) {
+        ds4_die("Inkling input features read failed");
+    }
+    for (unsigned i = 0; i < n; i++) {
+        const float *want = features[i] ? features[i] : text + i * IK_HIDDEN;
+        if (memcmp(media + i * IK_HIDDEN, want, IK_HIDDEN * sizeof(float)) != 0) {
+            ds4_die("Inkling media was reordered or text-normalized twice");
+        }
+    }
+    free(text);
+    free(media);
+    puts("Inkling media replaces normalized embeddings exactly; text rows unchanged");
+}
+
 int main(int argc, char **argv) {
     if (argc < 4) {
         fprintf(stderr, "usage: %s <MQ85GB-first.gguf> <token> <token> [...]\n", argv[0]);
@@ -62,6 +126,7 @@ int main(int argc, char **argv) {
     for (unsigned i = 0; i < rows; i++) {
         tokens[i] = atoi(argv[i + 2]);
     }
+    float **features = load_features(tokens, rows);
     const ds4_host_shape host = {.variant = DS4_VARIANT_INKLING_SMALL};
     ds4_host_shape_install(&host);
     model_apply_host_shape();
@@ -99,6 +164,7 @@ int main(int argc, char **argv) {
     if (!inkling_graph_alloc(&g, &model, &weights, rows + 16, rows)) {
         ds4_die("Inkling graph allocation failed");
     }
+    check_features(&g, &model, &weights, tokens, rows, features);
     float *prefill = xcalloc(INKLING_VALID_VOCAB, sizeof(float));
     float *decode = xcalloc(INKLING_VALID_VOCAB, sizeof(float));
     const size_t bytes = INKLING_VALID_VOCAB * sizeof(float);
@@ -109,7 +175,7 @@ int main(int argc, char **argv) {
         setenv("DS4_METAL_GRAPH_DUMP_PREFIX", trace_prefix, 1);
     }
     fprintf(stderr, "Inkling: prefill %u tokens\n", rows);
-    if (!inkling_graph_forward(&g, &model, &weights, tokens, rows) ||
+    if (!test_forward(&g, &model, &weights, tokens, rows, features) ||
         !ds4_gpu_tensor_read(g.logits, 0, prefill, bytes)) {
         ds4_die("Inkling prefill failed");
     }
@@ -130,7 +196,7 @@ int main(int argc, char **argv) {
     }
     for (unsigned i = 0; i < rows; i++) {
         fprintf(stderr, "Inkling: decode position %u\n", i);
-        if (!inkling_graph_forward(&g, &model, &weights, &tokens[i], 1)) {
+        if (!test_forward(&g, &model, &weights, &tokens[i], 1, features ? features + i : NULL)) {
             ds4_die("Inkling decode failed");
         }
     }
@@ -179,7 +245,7 @@ int main(int argc, char **argv) {
         }
         for (unsigned pos = 0; pos < rows; pos += chunk) {
             unsigned count = rows - pos < chunk ? rows - pos : chunk;
-            if (!inkling_graph_forward(&g, &model, &weights, tokens + pos, count)) {
+            if (!test_forward(&g, &model, &weights, tokens + pos, count, features ? features + pos : NULL)) {
                 ds4_die("Inkling chunk forward failed");
             }
         }
@@ -206,6 +272,29 @@ int main(int argc, char **argv) {
         inkling_graph_forward(&g, &model, &weights, tokens, g.cap + 1) ||
         g.position != rows) {
         failed = 1;
+    }
+    if (features) {
+        float value[IK_HIDDEN] = {0};
+        const float *bad[] = {value};
+        const int text_token = 1, image_token = 200054;
+        if (inkling_graph_media(&g, &model, &weights, &text_token, 1, bad) ||
+            g.position != rows || g.failed) {
+            ds4_die("Inkling accepted media on an ordinary text token");
+        }
+        value[IK_HIDDEN - 1] = NAN;
+        if (inkling_graph_media(&g, &model, &weights, &image_token, 1, bad) ||
+            g.position != rows || g.failed) {
+            ds4_die("Inkling accepted nonfinite media or mutated the frontier");
+        }
+        inkling_snapshot state = read_state(&g);
+        if (state.bytes != full_state.bytes || memcmp(state.data, full_state.data, state.bytes) != 0) {
+            ds4_die("invalid Inkling features mutated committed state");
+        }
+        free(state.data);
+        for (unsigned i = 0; i < rows; i++) {
+            free(features[i]);
+        }
+        free(features);
     }
     inkling_graph_free(&g);
     ds4_gpu_cleanup();
