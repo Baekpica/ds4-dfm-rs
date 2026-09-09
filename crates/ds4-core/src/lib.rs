@@ -10,6 +10,7 @@
 
 mod batch;
 mod bind;
+pub mod chat_template;
 mod gguf;
 mod identify;
 mod inkling;

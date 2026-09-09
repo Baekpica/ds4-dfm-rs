@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["vendor/hf-chat-template"]
 members = [
     "crates/ds4-sys",
     "crates/ds4-core",
@@ -17,3 +18,6 @@ version = "0.1.1"
 edition = "2021"
 license = "MIT"
 publish = false
+
+[patch.crates-io]
+hf-chat-template = { path = "vendor/hf-chat-template" }

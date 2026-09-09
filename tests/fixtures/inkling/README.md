@@ -3,6 +3,10 @@
 Source model: [thinkingmachines/Inkling-Small](https://huggingface.co/thinkingmachines/Inkling-Small/tree/8cc5877b44d343f88b92086aa1fb72897950f06a),
 revision `8cc5877b44d343f88b92086aa1fb72897950f06a`, Apache-2.0.
 
+`chat_template.jinja` is the unmodified template from that revision.
+SHA-256: `0aa1aa0c729d90176dcaa00c440c8faffca2957ffb2cc4b79456ee6d02bcf43b`.
+The shared Rust template adapter checks it against `server-vectors.json`.
+
 `mq85gb.tsv` and `mtp-bf16.tsv` contain every tensor's original name, GGML
 type, safetensors dimension order and payload size. They are extracted from
 the published conversion plans, independently of the runtime layout code:
