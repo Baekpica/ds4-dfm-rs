@@ -16,10 +16,10 @@ required-features = ["native"]
 
 [features]
 default = []
-native = ["dep:ds4-core"]
+native = []
 
 [dependencies]
-ds4-core = { path = "../ds4-core", optional = true }
+ds4-core = { path = "../ds4-core" }
 ds4-dist = { path = "../ds4-dist" }
 ds4-kv = { path = "../ds4-kv" }
 ds4-sys = { path = "../ds4-sys" }

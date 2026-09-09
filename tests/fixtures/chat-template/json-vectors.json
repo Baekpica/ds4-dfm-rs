@@ -1,0 +1,392 @@
+{
+  "oracle": "Python json.dumps; ensure_ascii=False unless specified",
+  "python_version": "3.12.3",
+  "jinja2_version": "3.1.2",
+  "vectors": [
+    {
+      "name": "nested_default",
+      "template": "{{ value | tojson }}",
+      "context": {
+        "value": {
+          "z": [
+            true,
+            null,
+            -7
+          ],
+          "a": {
+            "y": {},
+            "b": []
+          }
+        }
+      },
+      "expected": "{\"z\": [true, null, -7], \"a\": {\"y\": {}, \"b\": []}}"
+    },
+    {
+      "name": "source_map_order",
+      "template": "{{ {'z': 1, 'a': 2, 'm': {'y': 3, 'b': 4}} | tojson }}",
+      "context": {
+        "value": null
+      },
+      "expected": "{\"z\": 1, \"a\": 2, \"m\": {\"y\": 3, \"b\": 4}}"
+    },
+    {
+      "name": "sort_keys_recursive",
+      "template": "{{ value | tojson(sort_keys=true) }}",
+      "context": {
+        "value": {
+          "z": [
+            true,
+            null,
+            -7
+          ],
+          "a": {
+            "y": {},
+            "b": []
+          }
+        }
+      },
+      "expected": "{\"a\": {\"b\": [], \"y\": {}}, \"z\": [true, null, -7]}"
+    },
+    {
+      "name": "preserve_input_order",
+      "template": "{{ value | tojson(sort_keys=false) }}",
+      "context": {
+        "value": {
+          "z": [
+            true,
+            null,
+            -7
+          ],
+          "a": {
+            "y": {},
+            "b": []
+          }
+        }
+      },
+      "expected": "{\"z\": [true, null, -7], \"a\": {\"y\": {}, \"b\": []}}"
+    },
+    {
+      "name": "compact_separators",
+      "template": "{{ value | tojson(separators=(',', ':')) }}",
+      "context": {
+        "value": {
+          "z": [
+            true,
+            null,
+            -7
+          ],
+          "a": {
+            "y": {},
+            "b": []
+          }
+        }
+      },
+      "expected": "{\"z\":[true,null,-7],\"a\":{\"y\":{},\"b\":[]}}"
+    },
+    {
+      "name": "custom_separators",
+      "template": "{{ value | tojson(separators=(' | ', ' => ')) }}",
+      "context": {
+        "value": {
+          "z": [
+            true,
+            null,
+            -7
+          ],
+          "a": {
+            "y": {},
+            "b": []
+          }
+        }
+      },
+      "expected": "{\"z\" => [true | null | -7] | \"a\" => {\"y\" => {} | \"b\" => []}}"
+    },
+    {
+      "name": "unicode_default",
+      "template": "{{ value | tojson }}",
+      "context": {
+        "value": {
+          "한글": "é / 😀",
+          "lines": "  "
+        }
+      },
+      "expected": "{\"한글\": \"é / 😀\", \"lines\": \"  \"}"
+    },
+    {
+      "name": "ascii_escape",
+      "template": "{{ value | tojson(ensure_ascii=true, sort_keys=true) }}",
+      "context": {
+        "value": {
+          "한글": "é / 😀",
+          "lines": "  "
+        }
+      },
+      "expected": "{\"lines\": \"\\u2028\\u2029\\u007f\", \"\\ud55c\\uae00\": \"\\u00e9 / \\ud83d\\ude00\"}"
+    },
+    {
+      "name": "string_escape",
+      "template": "{{ value | tojson }}",
+      "context": {
+        "value": "\"\\/\b\f\n\r\t\u0000\u0001\u001f <tag>&'"
+      },
+      "expected": "\"\\\"\\\\/\\b\\f\\n\\r\\t\\u0000\\u0001\\u001f <tag>&'\""
+    },
+    {
+      "name": "indent_two",
+      "template": "{{ value | tojson(indent=2) }}",
+      "context": {
+        "value": {
+          "z": [
+            true,
+            null,
+            -7
+          ],
+          "a": {
+            "y": {},
+            "b": []
+          }
+        }
+      },
+      "expected": "{\n  \"z\": [\n    true,\n    null,\n    -7\n  ],\n  \"a\": {\n    \"y\": {},\n    \"b\": []\n  }\n}"
+    },
+    {
+      "name": "indent_tab",
+      "template": "{{ value | tojson(indent='\t') }}",
+      "context": {
+        "value": {
+          "z": [
+            true,
+            null,
+            -7
+          ],
+          "a": {
+            "y": {},
+            "b": []
+          }
+        }
+      },
+      "expected": "{\n\t\"z\": [\n\t\ttrue,\n\t\tnull,\n\t\t-7\n\t],\n\t\"a\": {\n\t\t\"y\": {},\n\t\t\"b\": []\n\t}\n}"
+    },
+    {
+      "name": "indent_zero",
+      "template": "{{ value | tojson(indent=0) }}",
+      "context": {
+        "value": {
+          "z": [
+            true,
+            null,
+            -7
+          ],
+          "a": {
+            "y": {},
+            "b": []
+          }
+        }
+      },
+      "expected": "{\n\"z\": [\ntrue,\nnull,\n-7\n],\n\"a\": {\n\"y\": {},\n\"b\": []\n}\n}"
+    },
+    {
+      "name": "indent_negative",
+      "template": "{{ value | tojson(indent=-2) }}",
+      "context": {
+        "value": {
+          "z": [
+            true,
+            null,
+            -7
+          ],
+          "a": {
+            "y": {},
+            "b": []
+          }
+        }
+      },
+      "expected": "{\n\"z\": [\ntrue,\nnull,\n-7\n],\n\"a\": {\n\"y\": {},\n\"b\": []\n}\n}"
+    },
+    {
+      "name": "indent_compact",
+      "template": "{{ value | tojson(indent=2, separators=(',', ':'), sort_keys=true) }}",
+      "context": {
+        "value": {
+          "z": [
+            true,
+            null,
+            -7
+          ],
+          "a": {
+            "y": {},
+            "b": []
+          }
+        }
+      },
+      "expected": "{\n  \"a\":{\n    \"b\":[],\n    \"y\":{}\n  },\n  \"z\":[\n    true,\n    null,\n    -7\n  ]\n}"
+    },
+    {
+      "name": "empty_containers",
+      "template": "{{ value | tojson(indent=2) }}",
+      "context": {
+        "value": [
+          [],
+          {},
+          [
+            [],
+            {}
+          ]
+        ]
+      },
+      "expected": "[\n  [],\n  {},\n  [\n    [],\n    {}\n  ]\n]"
+    },
+    {
+      "name": "integral_floats",
+      "template": "{{ value | tojson }}",
+      "context": {
+        "value": [
+          1.0,
+          -2.0,
+          1000.0,
+          1,
+          -2
+        ]
+      },
+      "expected": "[1.0, -2.0, 1000.0, 1, -2]"
+    },
+    {
+      "name": "signed_zero",
+      "template": "{{ value | tojson }}",
+      "context": {
+        "value": [
+          0.0,
+          -0.0,
+          0
+        ]
+      },
+      "expected": "[0.0, -0.0, 0]"
+    },
+    {
+      "name": "small_exponents",
+      "template": "{{ value | tojson }}",
+      "context": {
+        "value": [
+          1e-05,
+          1e-06,
+          1e-07,
+          -1e-05
+        ]
+      },
+      "expected": "[1e-05, 1e-06, 1e-07, -1e-05]"
+    },
+    {
+      "name": "lower_threshold",
+      "template": "{{ value | tojson }}",
+      "context": {
+        "value": [
+          0.0001,
+          9.999999999999999e-05,
+          0.00010000000000000002
+        ]
+      },
+      "expected": "[0.0001, 9.999999999999999e-05, 0.00010000000000000002]"
+    },
+    {
+      "name": "upper_threshold",
+      "template": "{{ value | tojson }}",
+      "context": {
+        "value": [
+          9999999999999998.0,
+          1e+16,
+          1.0000000000000002e+16,
+          -1e+16
+        ]
+      },
+      "expected": "[9999999999999998.0, 1e+16, 1.0000000000000002e+16, -1e+16]"
+    },
+    {
+      "name": "large_exponents",
+      "template": "{{ value | tojson }}",
+      "context": {
+        "value": [
+          1e+20,
+          1e+100,
+          -1e+100
+        ]
+      },
+      "expected": "[1e+20, 1e+100, -1e+100]"
+    },
+    {
+      "name": "unknown_keyword",
+      "template": "{{ value | tojson(unknown_option=true) }}",
+      "context": {
+        "value": {
+          "z": [
+            true,
+            null,
+            -7
+          ],
+          "a": {
+            "y": {},
+            "b": []
+          }
+        }
+      },
+      "error_type": "TypeError",
+      "error_message": "JSONEncoder.__init__() got an unexpected keyword argument 'unknown_option'"
+    },
+    {
+      "name": "invalid_indent",
+      "template": "{{ value | tojson(indent=1.5) }}",
+      "context": {
+        "value": {
+          "z": [
+            true,
+            null,
+            -7
+          ],
+          "a": {
+            "y": {},
+            "b": []
+          }
+        }
+      },
+      "error_type": "TypeError",
+      "error_message": "can't multiply sequence by non-int of type 'float'"
+    },
+    {
+      "name": "short_separators",
+      "template": "{{ value | tojson(separators=[',']) }}",
+      "context": {
+        "value": {
+          "z": [
+            true,
+            null,
+            -7
+          ],
+          "a": {
+            "y": {},
+            "b": []
+          }
+        }
+      },
+      "error_type": "ValueError",
+      "error_message": "not enough values to unpack (expected 2, got 1)"
+    },
+    {
+      "name": "invalid_separator",
+      "template": "{{ value | tojson(separators=(',', 1)) }}",
+      "context": {
+        "value": {
+          "z": [
+            true,
+            null,
+            -7
+          ],
+          "a": {
+            "y": {},
+            "b": []
+          }
+        }
+      },
+      "error_type": "TypeError",
+      "error_message": "make_encoder() argument 5 must be str, not int"
+    }
+  ]
+}

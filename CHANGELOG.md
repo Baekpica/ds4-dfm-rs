@@ -6,6 +6,20 @@ through [Entrpi/ds4](https://github.com/Entrpi/ds4) and Baekpica DFM; the
 Entrpi fork point was `e16ead1` (2026-05-29). See [LINEAGE.md](docs/LINEAGE.md)
 for exact provenance. Historical entries retain their original scope.
 
+## v0.1.2 — 2026-09-10
+
+- Executes official model Jinja through a shared local `hf-chat-template`
+  adapter. Loads templates beside GGUFs, from tokenizer configuration or
+  embedded metadata. DeepSeek V4 retains its explicit encoder exception.
+- Uses structured messages for all three chat APIs and CLI/REPL. Preserves
+  tool history and validates complete rendered token prefixes before KV reuse.
+  See [template setup and boundaries](docs/chat-templates.md).
+- Recognizes GLM's official user/observation stop tokens to prevent role
+  delimiter leakage after generation.
+- Includes [Inkling Small MQ85GB / MTP](docs/inkling-small.md), with scoped
+  text, image, audio and serial tool checks. Numerical, modality and runtime
+  limits remain artifact-specific; see the [release ledger](docs/releases/v0.1.2.md).
+
 ## v0.1.1 — 2026-09-08
 
 - Adds `ds4-perf inspect --calibrate`, scout fit/NCU/direct CUPTI collection,

@@ -10,6 +10,7 @@
 
 mod batch;
 mod bind;
+pub mod chat_template;
 mod gguf;
 mod identify;
 mod inkling;
@@ -475,6 +476,7 @@ pub struct Model {
     mtp: Option<SiblingAttach>,
     dspark: Option<SiblingAttach>,
     vocab: Vocab,
+    chat_template: Option<chat_template::Template>,
     _distributed: Option<FfiDistributed>,
     _not_send: PhantomData<*const ()>,
 }
@@ -1104,6 +1106,7 @@ impl Model {
             code: 1,
             message: format!("vocab failed: {e}"),
         })?;
+        let chat_template = chat_template::Template::load(std::path::Path::new(path), &g)?;
         let mut ffi_vocab = pack_host_vocab(&vocab);
         let compress = host_compress_ratios(&identified.shape);
         let ffi_shape = ds4_host_shape {
@@ -1238,6 +1241,7 @@ impl Model {
             mtp,
             dspark,
             vocab,
+            chat_template,
             _distributed: ffi_distributed,
             _not_send: PhantomData,
         })
@@ -1409,8 +1413,31 @@ impl Model {
         self.vocab.is_stop(token)
     }
 
-    /// CLI chat-template encode through the engine (`ds4_encode_chat_prompt`):
-    /// exact C `-p` prompt-token parity for the proof harness.
+    pub fn chat_template(&self) -> Option<&chat_template::Template> {
+        self.chat_template.as_ref()
+    }
+
+    pub fn encode_messages(
+        &self,
+        messages: &[serde_json::Value],
+        mode: ChatThinkMode,
+    ) -> Result<TokenBuffer> {
+        let template = self.chat_template().ok_or_else(|| Error {
+            code: 1,
+            message: "missing chat_template.jinja or tokenizer.chat_template".into(),
+        })?;
+        let rendered = template.render_chat(
+            messages,
+            &[],
+            chat_template::ChatOptions::new(self.model_id(), mode),
+        )?;
+        Ok(TokenBuffer::from_tokens(
+            self.vocab.encode_rendered_chat(&rendered),
+        ))
+    }
+
+    /// CLI input uses the same artifact template as the server. DeepSeek V4
+    /// retains its encoder because its source model does not publish Jinja.
     pub fn encode_chat_prompt(
         &self,
         system: Option<&str>,
@@ -1428,6 +1455,32 @@ impl Model {
         prompt: &[u8],
         think_mode: i32,
     ) -> Result<TokenBuffer> {
+        if self.chat_template.is_some() || self.family != ModelFamily::DeepSeek4 {
+            let text = |bytes| {
+                std::str::from_utf8(bytes).map_err(|e| Error {
+                    code: 1,
+                    message: format!("chat template input is not UTF-8: {e}"),
+                })
+            };
+            let mode = match think_mode {
+                0 => ChatThinkMode::None,
+                1 => ChatThinkMode::Low,
+                2 => ChatThinkMode::High,
+                3 => ChatThinkMode::Max,
+                _ => {
+                    return Err(Error {
+                        code: 1,
+                        message: "invalid thinking mode".into(),
+                    })
+                }
+            };
+            let mut messages = Vec::new();
+            if let Some(system) = system.filter(|s| !s.is_empty()) {
+                messages.push(serde_json::json!({"role":"system", "content":text(system)?}));
+            }
+            messages.push(serde_json::json!({"role":"user", "content":text(prompt)?}));
+            return self.encode_messages(&messages, mode);
+        }
         let c_system = match system {
             Some(s) => Some(CString::new(s).map_err(|_| Error {
                 code: 1,
@@ -1439,38 +1492,6 @@ impl Model {
             code: 1,
             message: "prompt contains NUL".into(),
         })?;
-        if self.family() == ModelFamily::Inkling {
-            let mode = match think_mode {
-                0 => ChatThinkMode::None,
-                1 => ChatThinkMode::Low,
-                2 => ChatThinkMode::High,
-                3 => ChatThinkMode::Max,
-                _ => {
-                    return Err(Error {
-                        code: 1,
-                        message: "invalid Inkling thinking mode".into(),
-                    })
-                }
-            };
-            let mut out = TokenBuffer::new();
-            let append_error = |e: TokError| Error {
-                code: 1,
-                message: e.to_string(),
-            };
-            if let Some(system) = system.filter(|s| !s.is_empty()) {
-                self.vocab
-                    .chat_append_message(&mut out, "system", system)
-                    .map_err(append_error)?;
-            }
-            self.vocab.chat_append_effort_prefix(&mut out, mode);
-            self.vocab
-                .chat_append_message(&mut out, "user", prompt)
-                .map_err(append_error)?;
-            self.vocab
-                .chat_append_assistant_prefix(&mut out, mode)
-                .map_err(append_error)?;
-            return Ok(out);
-        }
         // BPE merges only shrink and specials add a bounded prefix.
         let cap = prompt.len() + system.map_or(0, <[u8]>::len) + 256;
         let mut out = vec![0i32; cap];

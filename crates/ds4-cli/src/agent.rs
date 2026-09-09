@@ -310,6 +310,13 @@ fn mtp_open_options(args: &AgentArgs) -> Vec<ds4_core::ModelOpenOption> {
 
 const THINK_EFFORT_MIN_CONTEXT: i32 = 393216;
 
+fn agent_family(family: ds4_core::ModelFamily) -> Result<(), String> {
+    if family == ds4_core::ModelFamily::DeepSeek4 {
+        return Ok(());
+    }
+    Err("ds4-agent's built-in executor requires DeepSeek DSML; use an HTTP tool client for this family".into())
+}
+
 fn effective_think(args: &AgentArgs) -> ds4_core::ChatThinkMode {
     if matches!(
         args.think,
@@ -411,6 +418,10 @@ pub fn run(name: &str, args: AgentArgs) -> Result<i32, String> {
         std::env::set_current_dir(path)
             .map_err(|error| format!("failed to chdir to {path}: {error}"))?;
     }
+
+    let identified = ds4_core::identify_gguf(std::path::Path::new(&args.model))
+        .map_err(|error| error.to_string())?;
+    agent_family(identified.shape.family)?;
 
     let think = effective_think(&args);
     if args.think == ds4_core::ChatThinkMode::High && think != ds4_core::ChatThinkMode::High {
@@ -971,6 +982,12 @@ fn project_output(chunks: &[&[u8]]) -> Result<Vec<u8>, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_requires_dsml_family() {
+        assert!(agent_family(ds4_core::ModelFamily::DeepSeek4).is_ok());
+        assert!(agent_family(ds4_core::ModelFamily::Inkling).is_err());
+    }
     use std::path::PathBuf;
     use std::process::Command;
 

@@ -1,0 +1,9 @@
+{
+  "repo": "dots-studio/dots3-note-prev",
+  "revision": "1e1e7b0cd37a3a48a6c8d7fa55d5f9d14377006b",
+  "template_path": "chat_template.jinja",
+  "template_sha256": "2475e8400b5f245a30302763a91368055f4e1c3d8b4b7d6956848803e161b781",
+  "tokenizer_config_sha256": "70ea84c16ddd07deeb082ef995401da94c47c61d2f49f979ca2d37e1a364031e",
+  "special_tokens": {},
+  "source_url": "https://huggingface.co/dots-studio/dots3-note-prev/blob/1e1e7b0cd37a3a48a6c8d7fa55d5f9d14377006b/chat_template.jinja"
+}

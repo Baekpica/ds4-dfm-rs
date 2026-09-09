@@ -1,0 +1,9 @@
+{
+  "repo": "Motif-Technologies/Motif-3",
+  "revision": "ccceb1a5fd7b5eb32e47841216b3caf5666c07bc",
+  "template_path": "chat_template.jinja",
+  "template_sha256": "998a066fd57a07187040a896e7fc455b2aa21dd490d156e82b63518be0a49297",
+  "tokenizer_config_sha256": "9cf7345dbacf8514c9ef790f39ed1fdd9b18083af33ece279b4fd913af57fd56",
+  "special_tokens": {},
+  "source_url": "https://huggingface.co/Motif-Technologies/Motif-3/blob/ccceb1a5fd7b5eb32e47841216b3caf5666c07bc/chat_template.jinja"
+}

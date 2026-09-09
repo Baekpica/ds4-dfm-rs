@@ -67,6 +67,10 @@ pub struct ContStepper {
     pub model_id: i32,
     pub prompt: Vec<u8>,
     #[cfg(feature = "native")]
+    chat_request: Option<ParsedRequest>,
+    #[cfg(feature = "native")]
+    chat_history: Option<crate::chat_input::History>,
+    #[cfg(feature = "native")]
     cache_prompt: Option<Vec<u8>>,
     #[cfg(feature = "native")]
     image_cache_spans: Vec<ImageCacheSpan>,
@@ -164,6 +168,10 @@ impl ContStepper {
                 job_id: job_id.to_string(),
                 model_id,
                 prompt,
+                #[cfg(feature = "native")]
+                chat_request: None,
+                #[cfg(feature = "native")]
+                chat_history: None,
                 #[cfg(feature = "native")]
                 cache_prompt: None,
                 #[cfg(feature = "native")]
@@ -525,6 +533,13 @@ impl ContStepper {
                 ),
             };
             self.w.out.extend_from_slice(&bytes);
+        }
+        #[cfg(feature = "native")]
+        if self.finish != "error" && self.finish != "length" && !parsed_gen.calls.is_empty() {
+            self.chat_history = self
+                .chat_request
+                .take()
+                .map(|request| crate::chat_input::History::capture(request, &parsed_gen));
         }
         let outcome = GenerateOutcome {
             tool_ids: parsed_gen
@@ -1391,6 +1406,12 @@ pub trait ContSource {
 /// the native feature (tests supply a scripted implementation).
 pub trait ContExec {
     fn model_id(&self) -> i32;
+    fn render_request(&self, parsed: &ParsedRequest) -> Result<Vec<u8>, GenerateError> {
+        render_prompt(parsed, self.model_id())
+    }
+    fn restore_chat(&self, _parsed: &mut ParsedRequest) -> Result<(), GenerateError> {
+        Ok(())
+    }
     fn seq_cap(&self) -> i32;
     fn set_stop_requested(&mut self, _stop_requested: Option<fn() -> bool>) {}
     /// Number of persistent continuous banks available to this executor.
@@ -1519,7 +1540,8 @@ pub fn cont_prompt_tokens(
         chat_format_for_syntax(syntax_for_model_id(exec.model_id())),
         |literal| Ok(exec.encode_chat(literal)),
     )?;
-    let prompt = render_prompt(parsed, exec.model_id())?;
+    exec.restore_chat(parsed)?;
+    let prompt = exec.render_request(parsed)?;
     let tokens = match parsed.kind {
         ReqKind::Completion => exec.encode_text(std::str::from_utf8(&prompt).unwrap_or("")),
         ReqKind::Chat => exec.encode_chat(&prompt),
@@ -1555,8 +1577,16 @@ mod native {
         host: ContHost<'m>,
     }
 
+    struct BankHistory {
+        generation: u64,
+        frontier: usize,
+        history: crate::chat_input::History,
+    }
+
     struct ContHost<'m> {
         vocab: &'m Vocab,
+        template: Option<&'m ds4_core::chat_template::Template>,
+        histories: Vec<Option<BankHistory>>,
         model_id: i32,
         quant_bits: i32,
         ctx: i32,
@@ -1946,7 +1976,8 @@ mod native {
                 chat_format_for_syntax(syntax_for_model_id(self.host.model_id)),
                 |literal| Ok(self.host.vocab.encode_rendered_bytes(literal)),
             )?;
-            let prompt = render_prompt(parsed, self.host.model_id)?;
+            self.host.restore_request(self.batch, parsed)?;
+            let prompt = self.host.render_request(parsed)?;
             let tokens = match parsed.kind {
                 ReqKind::Completion => self
                     .host
@@ -2143,6 +2174,14 @@ mod native {
     }
 
     impl<'m> ContLane<'m> {
+        pub fn with_template(
+            mut self,
+            template: Option<&'m ds4_core::chat_template::Template>,
+        ) -> Self {
+            self.host.template = template;
+            self
+        }
+
         pub fn new(
             batch: BatchCtx<'m>,
             vocab: &'m Vocab,
@@ -2174,6 +2213,8 @@ mod native {
                 batch,
                 host: ContHost {
                     vocab,
+                    template: None,
+                    histories: (0..max_seq).map(|_| None).collect(),
                     model_id,
                     quant_bits,
                     ctx,
@@ -2196,6 +2237,51 @@ mod native {
     }
 
     impl ContHost<'_> {
+        fn restore_request(
+            &self,
+            batch: &BatchCtx<'_>,
+            parsed: &mut ParsedRequest,
+        ) -> Result<bool, GenerateError> {
+            if self.template.is_none() || parsed.live_call_ids.is_empty() {
+                return Ok(false);
+            }
+            let saved = self.histories.iter().enumerate().find_map(|(bank, saved)| {
+                if parsed
+                    .directed_bank
+                    .is_some_and(|directed| directed != bank as i32)
+                {
+                    return None;
+                }
+                saved
+                    .as_ref()
+                    .filter(|saved| saved.history.matches(parsed))
+                    .map(|saved| (bank, saved))
+            });
+            let Some((bank, saved)) = saved else {
+                if parsed.responses_requires_live_tool_state
+                    || parsed.anthropic_requires_live_tool_state
+                    || parsed.directed_bank.is_some()
+                {
+                    return Err(GenerateError::Unsupported(
+                        "retained chat history is unavailable",
+                    ));
+                }
+                return Ok(false);
+            };
+            let snapshot = batch
+                .bank_snapshot(bank as i32)
+                .map_err(|e| GenerateError::Engine(e.to_string()))?;
+            if snapshot.generation != saved.generation || snapshot.tokens.len() != saved.frontier {
+                return Err(GenerateError::Unsupported(
+                    "retained chat frontier is no longer live",
+                ));
+            }
+            saved.history.restore(parsed)
+        }
+
+        fn render_request(&self, parsed: &ParsedRequest) -> Result<Vec<u8>, GenerateError> {
+            crate::chat_input::render_model(self.template, self.model_id, parsed)
+        }
         fn identity(&self) -> Option<(u8, u8, u32)> {
             crate::generate::kv_identity(self.model_id, self.quant_bits, self.ctx)
         }
@@ -2276,7 +2362,11 @@ mod native {
             cache_spans: &[ImageCacheSpan],
             prompt_tokens: &[i32],
         ) -> Option<WarmAdmitPlan> {
-            let full = self.warm_full_plan(batch, prompt, cache_prompt);
+            // Jinja may rewrite earlier messages. Text prefix keys only pick
+            // candidates; the complete rendered token sequence validates reuse.
+            let full = self
+                .warm_full_plan(batch, prompt, cache_prompt)
+                .filter(|plan| self.template.is_none() || plan.tokens == prompt_tokens);
             let partial =
                 self.warm_partial_plan(batch, prompt, cache_prompt, cache_spans, prompt_tokens);
             match (full, partial) {
@@ -2742,7 +2832,8 @@ mod native {
             reserve: &crate::serve_cont_roll::RollReserve,
         ) -> Result<PreparedSlot, GenerateError> {
             let mut parsed = work.parsed.clone();
-            let attached_tool_blocks = if parsed.kind == ReqKind::Chat {
+            let restored_chat = self.restore_request(batch, &mut parsed)?;
+            let attached_tool_blocks = if parsed.kind == ReqKind::Chat && self.template.is_none() {
                 if let Ok(model_id) = u8::try_from(self.model_id) {
                     if let Some(store) = store.as_deref() {
                         self.tool_memory
@@ -2754,13 +2845,14 @@ mod native {
                 0
             };
             let parsed = &parsed;
-            let prepared = work
-                .prepared
-                .filter(|_| can_reuse_cont_prompt(attached_tool_blocks, !parsed.images.is_empty()));
+            let prepared = work.prepared.filter(|_| {
+                !restored_chat
+                    && can_reuse_cont_prompt(attached_tool_blocks, !parsed.images.is_empty())
+            });
             let (prompt, tokens) = match prepared {
                 Some(prepared) => (prepared.prompt.clone(), prepared.tokens.clone()),
                 None => {
-                    let prompt = render_prompt(parsed, self.model_id)?;
+                    let prompt = self.render_request(parsed)?;
                     let tokens = match parsed.kind {
                         ReqKind::Completion => self
                             .vocab
@@ -2779,25 +2871,66 @@ mod native {
                         "continuation bank is already in flight",
                     ));
                 }
-                let suffix = render_live_tool_tail(
-                    syntax_for_model_id(self.model_id),
-                    parsed.api,
-                    &parsed.messages,
-                    parsed.think_mode,
-                )?;
                 let snapshot = batch.bank_snapshot(bank).map_err(|_| {
                     GenerateError::Unsupported("continuation bank is no longer live")
                 })?;
-                let (tokens, cached) = live_continuation_tokens(
-                    &snapshot.tokens,
-                    &suffix,
-                    batch.seq_cap(),
-                    |suffix| self.vocab.encode_rendered_bytes(suffix),
-                )
-                .ok_or(GenerateError::Unsupported(
-                    "continuation suffix is empty or exceeds the sequence capacity",
-                ))?;
-                (tokens, Vec::new(), None, Vec::new(), Some(cached))
+                if self.template.is_some() {
+                    let prepared =
+                        prepare_qwen_images(self.model_id, parsed, Some(&prompt), tokens)?;
+                    if prepared.tokens.len() > batch.seq_cap() as usize {
+                        return Err(GenerateError::Unsupported(
+                            "rendered continuation exceeds sequence capacity",
+                        ));
+                    }
+                    let media_match = prepared.images.is_empty()
+                        || self
+                            .warm
+                            .get(bank as usize)
+                            .and_then(|warm| warm.record.as_ref())
+                            .is_some_and(|record| {
+                                prepared.cache_prompt.as_deref().is_some_and(|key| {
+                                    [
+                                        record.cache_text.as_deref(),
+                                        record.exact_cache_text.as_deref(),
+                                    ]
+                                    .into_iter()
+                                    .flatten()
+                                    .any(|prefix| key.starts_with(prefix))
+                                })
+                            });
+                    let cached = if media_match
+                        && prepared.tokens.len() > snapshot.tokens.len()
+                        && prepared.tokens.starts_with(&snapshot.tokens)
+                    {
+                        snapshot.tokens.len() as i32
+                    } else {
+                        0
+                    };
+                    (
+                        prepared.tokens,
+                        prepared.images,
+                        prepared.cache_prompt,
+                        prepared.cache_spans,
+                        Some(cached),
+                    )
+                } else {
+                    let suffix = render_live_tool_tail(
+                        syntax_for_model_id(self.model_id),
+                        parsed.api,
+                        &parsed.messages,
+                        parsed.think_mode,
+                    )?;
+                    let (tokens, cached) = live_continuation_tokens(
+                        &snapshot.tokens,
+                        &suffix,
+                        batch.seq_cap(),
+                        |suffix| self.vocab.encode_rendered_bytes(suffix),
+                    )
+                    .ok_or(GenerateError::Unsupported(
+                        "continuation suffix is empty or exceeds the sequence capacity",
+                    ))?;
+                    (tokens, Vec::new(), None, Vec::new(), Some(cached))
+                }
             } else {
                 let prepared = prepare_qwen_images(self.model_id, parsed, Some(&prompt), tokens)?;
                 (
@@ -2821,6 +2954,8 @@ mod native {
                 batch.seq_cap(),
             );
             stepper.cache_prompt = cache_prompt;
+            stepper.chat_request =
+                (self.template.is_some() && parsed.kind == ReqKind::Chat).then(|| parsed.clone());
             stepper.image_cache_spans = cache_spans;
             let (temperature, top_k, top_p, min_p) = stepper.sampling(parsed);
             let capture_done = bank_scope(parsed);
@@ -2855,6 +2990,7 @@ mod native {
                                 stepper.cache_prompt.as_deref(),
                                 &protected,
                             )
+                            .filter(|plan| self.template.is_none() || plan.tokens == tokens)
                         })
                     })
                     .or_else(|| {
@@ -3016,6 +3152,12 @@ mod native {
                     outcome.bank = Some(bank);
                     outcome.generation = snapshot.generation;
                     outcome.frontier = i32::try_from(snapshot.tokens.len()).unwrap_or(0);
+                    self.histories[bank as usize] =
+                        job.stepper.chat_history.take().map(|history| BankHistory {
+                            generation: snapshot.generation,
+                            frontier: snapshot.tokens.len(),
+                            history,
+                        });
                 }
             }
             let mut tool_remembered = false;
@@ -3071,6 +3213,14 @@ mod native {
     impl ContExec for ContLane<'_> {
         fn model_id(&self) -> i32 {
             self.host.model_id
+        }
+
+        fn render_request(&self, parsed: &ParsedRequest) -> Result<Vec<u8>, GenerateError> {
+            self.host.render_request(parsed)
+        }
+
+        fn restore_chat(&self, parsed: &mut ParsedRequest) -> Result<(), GenerateError> {
+            self.host.restore_request(&self.batch, parsed).map(|_| ())
         }
 
         fn set_stop_requested(&mut self, stop_requested: Option<fn() -> bool>) {

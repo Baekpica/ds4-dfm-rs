@@ -38,6 +38,14 @@ and broker contract. See the [memory guard](../host-memory-guard.md).
 
 ## Crates and binaries
 
+For Jinja-backed artifacts, input grammar runs the model's official Jinja
+behind the local `ds4-core::chat_template` adapter. API normalization,
+tokenizer/media processing and output protocols remain separate. REPL reuses
+the server's host-only output parser. See
+[template assets and continuation](../chat-templates.md), including
+the DeepSeek V4 encoder exception. New families with official Jinja do not need
+another imperative input renderer.
+
 | Crate | Responsibility |
 |---|---|
 | `ds4-cli` | CLI, benchmark, coding agent |

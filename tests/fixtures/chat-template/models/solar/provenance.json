@@ -1,0 +1,9 @@
+{
+  "repo": "upstage/Solar-Open2-250B",
+  "revision": "9190fbe63a2ad8e17fc766ccceb36de7c66f004b",
+  "template_path": "chat_template.jinja",
+  "template_sha256": "5da6ffcd2d06aacce4d9f1be10078ff57e0d8ddd589c97cc8f0001e9fbf33f3a",
+  "tokenizer_config_sha256": "ce2869a6878e292b5cf38e4271550eb01f5e51372e9af6a15aac67bd7ed04fdb",
+  "special_tokens": {},
+  "source_url": "https://huggingface.co/upstage/Solar-Open2-250B/blob/9190fbe63a2ad8e17fc766ccceb36de7c66f004b/chat_template.jinja"
+}

@@ -1,0 +1,3 @@
+# Official source fixtures retain byte-exact whitespace and line endings.
+models/**/chat_template.jinja -text -whitespace
+models/**/LICENSE -text -whitespace

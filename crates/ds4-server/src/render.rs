@@ -658,6 +658,7 @@ fn append_glm_message_content(out: &mut Vec<u8>, m: &ChatMsg) -> Result<(), Rend
                 put(out, GLM_VISION_END);
             }
             ChatPart::Audio(_) => return Err(RenderError("audio input requires Inkling")),
+            ChatPart::ToolResult { .. } => {}
         }
     }
     Ok(())
@@ -1751,6 +1752,7 @@ pub fn render_qwen_chat_ex(
                         ChatPart::Audio(_) => {
                             return Err(RenderError("audio input requires Inkling"))
                         }
+                        ChatPart::ToolResult { .. } => {}
                     }
                 }
                 put_trimmed(&mut out, &content);

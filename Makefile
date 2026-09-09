@@ -319,7 +319,8 @@ native/bridge/ds4_bridge.o: native/bridge/ds4_bridge.c native/bridge/ds4_bridge.
 # ./ds4-eval stays C.
 DS4_RS_ROOT := $(abspath .)
 DS4_RS_LINK_OBJS := native/bridge/ds4_bridge.o $(CORE_OBJS)
-DS4_RS_SOURCES := Cargo.toml Cargo.lock $(shell find crates -type f -print)
+DS4_RS_SOURCES := Cargo.toml Cargo.lock $(shell find crates -type f -print) \
+	vendor/hf-chat-template/Cargo.toml $(shell find vendor/hf-chat-template/src -type f -print)
 # Cargo does not fingerprint external link-object contents; include them in rustc metadata.
 DS4_RS_LINK_FINGERPRINT = $(shell cksum $(DS4_RS_LINK_OBJS) 2>/dev/null | cksum | awk '{print $$1}')
 # Cargo honors an externally supplied CARGO_TARGET_DIR. Copy the binary from

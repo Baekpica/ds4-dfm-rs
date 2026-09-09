@@ -458,6 +458,31 @@ fn write_family(family: ModelFamily) -> PathBuf {
     path
 }
 
+#[test]
+fn glm_source_stops() {
+    let path = tmp("glm-source-stops.gguf");
+    let mut builder = Builder::with_bytes();
+    let bos = builder.push_str("[gMASK]", 3);
+    let eos = builder.push_str("<|endoftext|>", 3);
+    for marker in ["<|user|>", "<|observation|>", "<|assistant|>", "</think>"] {
+        builder.push_str(marker, 3);
+    }
+    builder.write_specials(&path, "glm5-next", bos, eos);
+    let vocab = Vocab::load_path(&path, ModelFamily::Glm53).unwrap();
+    // Official generation_config: endoftext, user, observation (154820/7/9).
+    for marker in ["<|endoftext|>", "<|user|>", "<|observation|>"] {
+        let tokens = vocab.encode_rendered_chat(marker);
+        assert_eq!(tokens.len(), 1);
+        assert!(
+            vocab.is_stop(tokens[0]),
+            "{marker} must terminate generation"
+        );
+    }
+    assert!(!vocab.is_stop(vocab.assistant_id));
+    assert!(!vocab.is_stop(vocab.think_end_id));
+    fs::remove_file(path).unwrap();
+}
+
 fn load(family: ModelFamily, path: &Path) -> Vocab {
     Vocab::load_path(path, family).expect("rust vocab_load")
 }

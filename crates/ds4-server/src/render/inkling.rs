@@ -151,6 +151,7 @@ fn append_message(out: &mut String, msg: &ChatMsg, history: &[ChatMsg]) -> Resul
                 ChatPart::Text(text) => message(out, role, TEXT, text),
                 ChatPart::Image(_) => message(out, role, IMAGE, ""),
                 ChatPart::Audio(_) => message(out, role, AUDIO, ""),
+                ChatPart::ToolResult { .. } => {}
             }
         }
     } else if !msg.content.is_empty() || (msg.calls.is_empty() && msg.reasoning.is_empty()) {
