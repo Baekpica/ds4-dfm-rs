@@ -42,3 +42,7 @@ Third-party templates retain their source licenses, not the host's MIT
 license. Adjacent license files are copied unchanged when present at the
 pinned revision. The Inkling and K2 source cards declare Apache-2.0; the
 pinned Motif card declares MIT but has no separate license file.
+
+`images/red.png` and `images/blue.png` retain the synthetic solid-color inputs
+from the local Inkling HTTP checks. They exercise placeholder order and changed
+image identity in `tests/chat_template_live.py`; they are not quality benchmarks.
