@@ -198,6 +198,12 @@ the head's division by 16. A real MQ85GB gate checks those rows against
 an independent CPU normalization equation and requires exact seed,
 full-vocabulary logits and state parity across prefill/decode/chunks.
 
+A separate component gate imports all eight BF16 depths from a VMM owner
+and uses the actual MQ85GB Q8 embedding, embedding norm and output head.
+With supplied hidden inputs, every depth matches separately assembled
+primitives exactly for hidden output and all valid-vocabulary logits.
+This uses the raw Q8 head path and does not qualify end-to-end speculation.
+
 ## Checks
 
 ```sh

@@ -21463,6 +21463,37 @@ static bool inkling_draft_keep(ds4_inkling_mtp_graph *d, unsigned depth, unsigne
     return true;
 }
 
+static bool inkling_draft_tokens(ds4_inkling_mtp_graph *d, const ds4_model *main,
+                                 const ds4_weights *shared, const ds4_model *mtp,
+                                 const ds4_inkling_draft *w, unsigned depth,
+                                 const ds4_gpu_tensor *hidden, const int *tokens, unsigned n) {
+    ds4_inkling_graph *g = &d->graph;
+    if (g->failed || !hidden || !tokens || depth >= INKLING_DRAFT_LAYERS || !n ||
+        n > g->cap || n > g->context - d->positions[depth] ||
+        (g->undo_cap && n > g->undo_cap)) {
+        return false;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        if (tokens[i] < 0 || tokens[i] >= INKLING_VALID_VOCAB) {
+            return false;
+        }
+    }
+    ds4_gpu_tensor **b = g->buf;
+    /* Use separate scratch for shared embeddings: hidden may alias IK_X
+     * from the preceding depth, and the draft norms need both inputs. */
+    if (!ds4_gpu_tensor_write(b[IK_TOKENS], 0, tokens, n * sizeof(*tokens)) ||
+        !ds4_gpu_embed_tokens_q8_0_tensor(b[IK_PROJECTED], b[IK_TOKENS], main->map, main->size,
+                                          shared->token_embd->abs_offset, DS4_N_VOCAB, n, IK_HIDDEN) ||
+        !ds4_gpu_inkling_norm(b[IK_PROJECTED], b[IK_PROJECTED], main->map, main->size,
+                               shared->inkling.embed_norm->abs_offset, IK_HIDDEN, n) ||
+        !inkling_draft_forward(d, mtp, w, depth, hidden, b[IK_PROJECTED], n) ||
+        !inkling_head_logits(g, main, shared, b[IK_X], n)) {
+        g->failed = true;
+        return false;
+    }
+    return true;
+}
+
 static void plain_batch_ws_free(struct ds4_plain_batch_ws *w) {
     if (!w) return;
     ds4_gpu_tensor **all[] = {

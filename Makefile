@@ -634,6 +634,10 @@ tests/test_inkling_mtp.o: tests/test_inkling_mtp.c ds4.c ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -fno-fast-math -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -c -o $@ $<
 
+tests/test_inkling_mtp_shared.o: tests/test_inkling_mtp_shared.c ds4.c ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -fno-fast-math -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -c -o $@ $<
+
 tests/test_qwen4exp_primitives.o: tests/test_qwen4exp_primitives.c ds4_gpu.h
 	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
 
@@ -841,6 +845,9 @@ tests/test_inkling_encoders: tests/test_inkling_encoders.o $(DS4_CUDA_SUPPORT_OB
 	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
 
 tests/test_inkling_mtp: tests/test_inkling_mtp.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_inkling_mtp_shared: tests/test_inkling_mtp_shared.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
 
 tests/test_qwen4exp_primitives: tests/test_qwen4exp_primitives.o $(DS4_CUDA_CORE_OBJS)
@@ -1306,6 +1313,7 @@ clean:
 	rm -f tests/test_inkling_forward tests/test_inkling_forward.o
 	rm -f tests/test_inkling_session tests/test_inkling_session.o
 	rm -f tests/test_inkling_mtp tests/test_inkling_mtp.o
+	rm -f tests/test_inkling_mtp_shared tests/test_inkling_mtp_shared.o
 	rm -f tests/test_inkling_encoders tests/test_inkling_encoders.o
 	rm -f tests/test_qwen_vision_norm tests/test_qwen_vision_norm.o
 	rm -f tests/test_qwen_vision_attention tests/test_qwen_vision_attention.o tests/test_qwen_vision_model tests/test_qwen_vision_model.o
