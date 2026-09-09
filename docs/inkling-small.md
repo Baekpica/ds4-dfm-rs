@@ -36,8 +36,8 @@ tool/reasoning streams, media insertion and REPL assembly remain pending.
 The tokenizer has 200058 entries; native logits must exclude the weight
 matrix's padding through row 201023.
 
-The first CUDA primitive is the four-tap residual convolution. It preserves
-BF16 input/output boundaries and FP32 accumulation, with a three-row history
+The CUDA four-tap residual convolution preserves BF16 input/output boundaries
+and FP32 accumulation, with a three-row history
 in oldest-first order. A separate next-state buffer supports snapshots; an
 in-place history update is also supported. On GB10, 18 channel/length pairs
 matched the independent FP64 formula and their chunk/decode counterparts;
@@ -45,13 +45,24 @@ history also matched through seven CUDA graph replays. Compute Sanitizer
 reported zero memory errors, and the existing model-family primitive suite
 passed. These are synthetic component gates; native graph wiring is pending.
 
+CUDA MoE primitives now implement stable sigmoid-plus-bias top-6 selection,
+logsigmoid normalization across six routed and two shared logits, interleaved
+SwiGLU and expert-output combination. Routed weights apply after the down
+projection; shared weights apply inside SwiGLU before its BF16 cast. Independent
+CPU PyTorch fixtures cover ties, selection-only bias, extreme logits and zero
+scale, plus both BF16 reduction boundaries. GB10 gates passed at up to 513
+router/combine rows and 257 SwiGLU rows, including width 16384. Six graph
+replays changed expert IDs and weights correctly; Compute Sanitizer reported
+zero errors and convolution regression passed. This does not yet connect the
+expert matmuls or qualify full-model numerical parity.
+
 ## Remaining qualification
 
 1. Connect source chat/reasoning/tool rendering, streamed content markers and
    REPL effort placement to the CLI and server.
 2. Bind native weights through the existing Rust → bridge → CUDA boundary.
-   Implement relative GQA, interleaved SwiGLU, sigmoid top-6 routing with two
-   shared sink weights, and all four residual causal convolutions per layer.
+   Implement relative GQA and connect expert matmuls, MoE primitives and all
+   four residual causal convolutions per layer.
    Preserve BF16 boundaries, FP32 router/reductions and 1/128 attention scale.
 3. Prove chunk/decode and captured/eager full-vocabulary logits and greedy
    parity. Cover local-ring wrap, global attention and convolution history.

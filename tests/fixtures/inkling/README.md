@@ -30,5 +30,15 @@ python make_tokenizer_vectors.py /path/to/MQ85GB/tokenizer.json tokenizer-vector
 python make_chat_vectors.py /path/to/MQ85GB/chat_template.jinja chat-vectors.json
 ```
 
-These fixtures prove catalog, tokenizer and basic chat contracts. They contain
-no reference logits and do not establish numerical execution or API parity.
+`moe-vectors.h` contains CPU PyTorch 2.14.0 reference values for eight router
+cases, plain/shared-weighted interleaved SwiGLU and routed/shared output
+combination. The generator follows the published precision contract and
+pinned SGLang equations; its JSON sidecar records revisions and fixture hash.
+It uses synthetic inputs and no model weights:
+
+```sh
+python make_moe_vectors.py moe-vectors.h
+```
+
+These fixtures cover catalogs, tokenizer, basic chat and MoE primitives. They
+contain no full-model logits and do not establish serving or API parity.

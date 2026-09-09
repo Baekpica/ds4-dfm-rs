@@ -2518,6 +2518,31 @@ int ds4_gpu_inkling_sconv(
         const void *model_map, uint64_t model_size, uint64_t weight_offset,
         uint32_t channels, uint32_t rows);
 
+/* Inkling top-6 over 256 sigmoid+bias scores, lower-ID ties. Logsigmoid
+ * normalization includes both shared raw logits, then scales by 8*global.
+ * logits is F32 [rows,stride>=258]; IDs/routed [rows,6], shared [rows,2].
+ * Bias [256] and global scale [1] are native F32 weights. Outputs must be
+ * disjoint from one another and logits. Warm mapping before graph capture. */
+int ds4_gpu_inkling_route(
+        ds4_gpu_tensor *ids, ds4_gpu_tensor *routed, ds4_gpu_tensor *shared,
+        const ds4_gpu_tensor *logits, const void *model_map, uint64_t model_size,
+        uint64_t bias_offset, uint64_t scale_offset, uint32_t rows, uint32_t stride);
+
+/* F32 storage, BF16 projection/activation boundaries. Pairs are interleaved
+ * [rows,2*width]. Optional F32 gamma [rows] is for shared experts, before the
+ * final BF16 cast; dense/MTP and routed experts pass NULL. Routed weights are
+ * applied AFTER down projection by combine. Output [rows,width] is disjoint. */
+int ds4_gpu_inkling_swiglu(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *pairs, const ds4_gpu_tensor *gamma,
+        uint32_t width, uint32_t rows);
+
+/* Round down outputs to BF16 before FP32 accumulation. Routed [rows,6,width]
+ * uses F32 weights [rows,6]; shared [rows,2,width] is already gamma-weighted.
+ * Round both branch sums before their final BF16 addition. Disjoint output. */
+int ds4_gpu_inkling_combine(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *routed, const ds4_gpu_tensor *shared,
+        const ds4_gpu_tensor *weights, uint32_t width, uint32_t rows);
+
 /* Model-family router semantics used by Solar Open 2 and EXAONE: sigmoid
  * probabilities, top-k selection on probability + optional bias, then
  * normalization of the selected UNBIASED probabilities and final scaling. */
