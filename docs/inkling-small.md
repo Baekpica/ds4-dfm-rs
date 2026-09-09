@@ -61,16 +61,25 @@ CUDA attention preparation projects each head's 16 relative features into
 the source log scale after BF16 rounding, starting beyond position 127999.
 Absolute positions stay live on device during captured replay. Eight GB10
 shape cases and five replays matched the FP64 formula at BF16 boundaries;
-Compute Sanitizer reported zero errors. QK RMSNorm, attention/KV execution
-and native graph integration remain pending.
+Compute Sanitizer reported zero errors. QK RMSNorm and native graph
+integration remain pending.
+
+CUDA GQA attention now reads the committed BF16 KV prefix and current K/V
+without mutating the cache. A separate store commits the accepted prefix,
+including chunks wider than the local ring. On GB10, 1105-token local/global
+inputs matched across full, decode and 7/63/257/700-token chunks; FP64 probes
+covered window and relative-extent boundaries. Fourteen captured replays per
+geometry matched output and cache through changing positions and ring wrap.
+Rejected K/V suffixes left accepted outputs and committed state unchanged.
+Compute Sanitizer reported zero errors. These remain component gates.
 
 ## Remaining qualification
 
 1. Connect source chat/reasoning/tool rendering, streamed content markers and
    REPL effort placement to the CLI and server.
 2. Bind native weights through the existing Rust → bridge → CUDA boundary.
-   Implement relative GQA and connect expert matmuls, MoE primitives and all
-   four residual causal convolutions per layer.
+   Connect relative GQA/KV, expert matmuls, MoE primitives and all four
+   residual causal convolutions per layer.
    Preserve BF16 boundaries, FP32 router/reductions and 1/128 attention scale.
 3. Prove chunk/decode and captured/eager full-vocabulary logits and greedy
    parity. Cover local-ring wrap, global attention and convolution history.
@@ -123,6 +132,6 @@ cargo test -p ds4-core --test inkling_tokenizer --locked -- --ignored --test-thr
 September 9: all six MQ85GB shard hashes, MTP SHA-256, real main/MTP
 metadata and tensor binding passed. The tokenizer matched 654 source
 vectors in both ordinary and rendered-chat modes, including decoded bytes;
-all four basic chat-template effort fixtures passed. Numerical and serving
-gates remain unverified. Qwen's resident weight owner was stopped with user
+all four basic chat-template effort fixtures passed. Full-model numerical
+and serving gates remain unverified. Qwen's resident weight owner was stopped with user
 authorization before native testing; inspect current ownership before loading.

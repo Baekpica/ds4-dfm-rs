@@ -2556,6 +2556,31 @@ int ds4_gpu_inkling_attn_prep(
         const void *model_map, uint64_t model_size, uint64_t proj_offset,
         uint32_t rows, uint32_t extent);
 
+/* Single-sequence GQA: 32 Q heads, 8 KV heads, width 128, scale 1/128.
+ * F32 inputs carry BF16 q [rows,32,128], relative [rows,32,extent], and
+ * current k/v [rows,8,128]. Cache is native BF16 [capacity,2,8,128], K then V,
+ * addressed by absolute position modulo capacity. position is one live U32
+ * device scalar: the committed prefix length, shared across captured calls.
+ * Local extent 512 requires capacity>=512; global extent 1024 requires
+ * position+rows<=capacity. Position+rows-1 must fit U32. Invalid device
+ * positions produce NaN output. Host must keep prefix/cache state consistent.
+ * Output [rows,32,128] is BF16-valued F32, disjoint from every input.
+ * Forward reads current K/V directly and NEVER updates cache; arbitrary
+ * prefill chunks therefore cannot overwrite a still-visible local prefix. */
+int ds4_gpu_inkling_attention(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *q, const ds4_gpu_tensor *relative,
+        const ds4_gpu_tensor *k, const ds4_gpu_tensor *v, const ds4_gpu_tensor *cache,
+        const ds4_gpu_tensor *position, uint32_t rows, uint32_t capacity, uint32_t extent);
+
+/* Commit only the accepted leading rows of current K/V after attention.
+ * Same live position and cache layout. Zero rows is a no-op. For rows>capacity
+ * store only the final capacity rows, avoiding duplicate concurrent ring
+ * writes. Invalid U32 position spans leave cache unchanged. Cache must be
+ * disjoint from inputs. Key rows/capacity and all addresses in captured graphs. */
+int ds4_gpu_inkling_kv_store(
+        ds4_gpu_tensor *cache, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        const ds4_gpu_tensor *position, uint32_t rows, uint32_t capacity);
+
 /* Model-family router semantics used by Solar Open 2 and EXAONE: sigmoid
  * probabilities, top-k selection on probability + optional bias, then
  * normalization of the selected UNBIASED probabilities and final scaling. */

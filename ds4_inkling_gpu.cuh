@@ -22,6 +22,11 @@ enum {
     INKLING_LOCAL_EXTENT = 512,
     INKLING_GLOBAL_EXTENT = 1024,
     INKLING_TAU_FLOOR = 128000,
+    INKLING_KV_HEADS = 8,
+    INKLING_KV_WIDTH = INKLING_KV_HEADS * INKLING_HEAD_DIM,
+    INKLING_KV_ROW = 2 * INKLING_KV_WIDTH,
+    INKLING_ATTN_WARPS = 4,
+    INKLING_ATTN_DPL = INKLING_HEAD_DIM / INKLING_WARP,
 };
 static constexpr uint32_t INKLING_FLOAT_SIGN = UINT32_C(1) << 31;
 static constexpr float INKLING_TAU_ALPHA = 0.1f;
@@ -346,4 +351,150 @@ extern "C" int ds4_gpu_inkling_attn_prep(
         (float *)q_out->ptr, (float *)rel_out->ptr, (const float *)q->ptr, (const float *)r->ptr,
         (const uint32_t *)positions->ptr, proj, head_rows, extent);
     return cuda_ok(cudaGetLastError(), "Inkling attention preparation launch");
+}
+
+static __device__ __forceinline__ float inkling_kv_value(
+        const uint16_t *cache, const float *current, uint64_t key, uint32_t base,
+        uint32_t capacity, uint32_t channel, uint32_t cache_offset) {
+    if (key >= base) {
+        return inkling_bf16(current[(key - base) * INKLING_KV_WIDTH + channel]);
+    }
+    const uint64_t index = (key % capacity) * INKLING_KV_ROW + cache_offset + channel;
+    return __uint_as_float((uint32_t)cache[index] << 16);
+}
+
+static __global__ void inkling_attention_kernel(
+        float *out, const float *q, const float *relative, const float *k, const float *v,
+        const uint16_t *cache, const uint32_t *position, uint32_t rows, uint32_t capacity,
+        uint32_t extent) {
+    const unsigned warp = threadIdx.x / INKLING_WARP, lane = threadIdx.x % INKLING_WARP;
+    __shared__ float maxima[INKLING_ATTN_WARPS], sums[INKLING_ATTN_WARPS];
+    __shared__ float partial[INKLING_ATTN_WARPS * INKLING_HEAD_DIM];
+    const uint32_t base = *position;
+    const uint64_t end = (uint64_t)base + rows;
+    const bool valid = end - 1 <= UINT32_MAX && (extent == INKLING_LOCAL_EXTENT || end <= capacity);
+    const uint64_t head_rows = (uint64_t)rows * INKLING_HEADS;
+    for (uint64_t head_row = blockIdx.x; head_row < head_rows; head_row += gridDim.x) {
+        if (!valid) {
+            if (threadIdx.x < INKLING_HEAD_DIM) { out[head_row * INKLING_HEAD_DIM + threadIdx.x] = NAN; }
+            continue;
+        }
+        const uint64_t query = base + head_row / INKLING_HEADS;
+        const unsigned kv_head = (head_row % INKLING_HEADS) / (INKLING_HEADS / INKLING_KV_HEADS);
+        const uint64_t first = extent == INKLING_LOCAL_EXTENT && query + 1 > INKLING_LOCAL_EXTENT
+            ? query + 1 - INKLING_LOCAL_EXTENT : 0;
+        float qv[INKLING_ATTN_DPL], acc[INKLING_ATTN_DPL] = {0.0f};
+        #pragma unroll
+        for (int d = 0; d < INKLING_ATTN_DPL; d++) {
+            qv[d] = inkling_bf16(q[head_row * INKLING_HEAD_DIM + lane + d * INKLING_WARP]);
+        }
+        float maximum = -INFINITY, sum = 0.0f;
+        // Independent warp scans avoid a block barrier for every key. Each
+        // warp carries an FP32 online-softmax state; merge once after the scan.
+        for (uint64_t key = first + warp; key <= query; key += INKLING_ATTN_WARPS) {
+            float dot = 0.0f;
+            #pragma unroll
+            for (int d = 0; d < INKLING_ATTN_DPL; d++) {
+                const unsigned c = kv_head * INKLING_HEAD_DIM + lane + d * INKLING_WARP;
+                dot = fmaf(qv[d], inkling_kv_value(cache, k, key, base, capacity, c, 0), dot);
+            }
+            #pragma unroll
+            for (int delta = INKLING_WARP / 2; delta > 0; delta /= 2) {
+                dot = __fadd_rn(dot, __shfl_xor_sync(UINT32_MAX, dot, delta));
+            }
+            const uint64_t distance = query - key;
+            const float bias = distance < extent ? inkling_bf16(relative[head_row * extent + distance]) : 0.0f;
+            const float score = __fadd_rn(dot / (float)INKLING_HEAD_DIM, bias);
+            const float next_max = fmaxf(maximum, score);
+            const float alpha = __expf(maximum - next_max), beta = __expf(score - next_max);
+            sum = fmaf(sum, alpha, beta);
+            maximum = next_max;
+            #pragma unroll
+            for (int d = 0; d < INKLING_ATTN_DPL; d++) {
+                const unsigned c = kv_head * INKLING_HEAD_DIM + lane + d * INKLING_WARP;
+                const float value = inkling_kv_value(cache, v, key, base, capacity, c, INKLING_KV_WIDTH);
+                acc[d] = fmaf(beta, value, __fmul_rn(acc[d], alpha));
+            }
+        }
+        if (lane == 0) { maxima[warp] = maximum; sums[warp] = sum; }
+        #pragma unroll
+        for (int d = 0; d < INKLING_ATTN_DPL; d++) {
+            partial[warp * INKLING_HEAD_DIM + lane + d * INKLING_WARP] = acc[d];
+        }
+        __syncthreads();
+        float max_all = -INFINITY;
+        #pragma unroll
+        for (int w = 0; w < INKLING_ATTN_WARPS; w++) { max_all = fmaxf(max_all, maxima[w]); }
+        float total = 0.0f, value = 0.0f;
+        #pragma unroll
+        for (int w = 0; w < INKLING_ATTN_WARPS; w++) {
+            const float scale = __expf(maxima[w] - max_all);
+            total = fmaf(sums[w], scale, total);
+            value = fmaf(partial[w * INKLING_HEAD_DIM + threadIdx.x], scale, value);
+        }
+        out[head_row * INKLING_HEAD_DIM + threadIdx.x] = inkling_bf16(__fdiv_rn(value, total));
+        __syncthreads();
+    }
+}
+
+extern "C" int ds4_gpu_inkling_attention(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *q, const ds4_gpu_tensor *relative,
+        const ds4_gpu_tensor *k, const ds4_gpu_tensor *v, const ds4_gpu_tensor *cache,
+        const ds4_gpu_tensor *position, uint32_t rows, uint32_t capacity, uint32_t extent) {
+    if (!out || !q || !relative || !k || !v || !cache || !position || !rows || !capacity ||
+        (extent != INKLING_LOCAL_EXTENT && extent != INKLING_GLOBAL_EXTENT) ||
+        (extent == INKLING_LOCAL_EXTENT && capacity < INKLING_LOCAL_EXTENT)) { return 0; }
+    const uint64_t head_rows = (uint64_t)rows * INKLING_HEADS;
+    const uint64_t qbytes = head_rows * INKLING_HEAD_DIM * sizeof(float);
+    const uint64_t rbytes = head_rows * extent * sizeof(float);
+    const uint64_t kvbytes = (uint64_t)rows * INKLING_KV_WIDTH * sizeof(float);
+    const uint64_t cbytes = (uint64_t)capacity * INKLING_KV_ROW * sizeof(uint16_t);
+    const ds4_gpu_tensor *inputs[] = {q, relative, k, v, cache, position};
+    const uint64_t sizes[] = {qbytes, rbytes, kvbytes, kvbytes, cbytes, sizeof(uint32_t)};
+    if (out->bytes < qbytes) { return 0; }
+    for (unsigned i = 0; i < sizeof(inputs) / sizeof(inputs[0]); i++) {
+        if (inputs[i]->bytes < sizes[i] || inkling_overlap(out, qbytes, inputs[i], sizes[i])) { return 0; }
+    }
+    const unsigned blocks = (unsigned)(head_rows < INKLING_MAX_BLOCKS ? head_rows : INKLING_MAX_BLOCKS);
+    inkling_attention_kernel<<<blocks, INKLING_WARP * INKLING_ATTN_WARPS, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)q->ptr, (const float *)relative->ptr,
+        (const float *)k->ptr, (const float *)v->ptr, (const uint16_t *)cache->ptr,
+        (const uint32_t *)position->ptr, rows, capacity, extent);
+    return cuda_ok(cudaGetLastError(), "Inkling attention launch");
+}
+
+static __global__ void inkling_kv_store_kernel(
+        uint16_t *cache, const float *k, const float *v, const uint32_t *position,
+        uint32_t rows, uint32_t capacity, uint32_t start, uint64_t count) {
+    const uint32_t base = *position;
+    if ((uint64_t)base + rows - 1 > UINT32_MAX) { return; }
+    for (uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+         i < count; i += (uint64_t)gridDim.x * blockDim.x) {
+        const uint64_t row = start + i / INKLING_KV_WIDTH;
+        const unsigned c = i % INKLING_KV_WIDTH;
+        const uint64_t src = row * INKLING_KV_WIDTH + c;
+        const uint64_t dst = ((base + row) % capacity) * INKLING_KV_ROW + c;
+        cache[dst] = __bfloat16_as_ushort(__float2bfloat16_rn(k[src]));
+        cache[dst + INKLING_KV_WIDTH] = __bfloat16_as_ushort(__float2bfloat16_rn(v[src]));
+    }
+}
+
+extern "C" int ds4_gpu_inkling_kv_store(
+        ds4_gpu_tensor *cache, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        const ds4_gpu_tensor *position, uint32_t rows, uint32_t capacity) {
+    if (!cache || !k || !v || !position || !capacity) { return 0; }
+    const uint64_t kvbytes = (uint64_t)rows * INKLING_KV_WIDTH * sizeof(float);
+    const uint64_t cbytes = (uint64_t)capacity * INKLING_KV_ROW * sizeof(uint16_t);
+    if (cache->bytes < cbytes || k->bytes < kvbytes || v->bytes < kvbytes || position->bytes < sizeof(uint32_t) ||
+        inkling_overlap(cache, cbytes, k, kvbytes) || inkling_overlap(cache, cbytes, v, kvbytes) ||
+        inkling_overlap(cache, cbytes, position, sizeof(uint32_t))) { return 0; }
+    if (!rows) { return 1; }
+    const uint32_t start = rows > capacity ? rows - capacity : 0;
+    const uint64_t count = (uint64_t)(rows - start) * INKLING_KV_WIDTH;
+    const uint64_t grid = (count + INKLING_THREADS - 1) / INKLING_THREADS;
+    const unsigned blocks = (unsigned)(grid < INKLING_MAX_BLOCKS ? grid : INKLING_MAX_BLOCKS);
+    inkling_kv_store_kernel<<<blocks, INKLING_THREADS, 0, ds4_current_stream()>>>(
+        (uint16_t *)cache->ptr, (const float *)k->ptr, (const float *)v->ptr,
+        (const uint32_t *)position->ptr, rows, capacity, start, count);
+    return cuda_ok(cudaGetLastError(), "Inkling KV store launch");
 }

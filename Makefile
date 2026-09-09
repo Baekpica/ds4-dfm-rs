@@ -98,7 +98,7 @@ endif
         test-qwen-vision-attention test-qwen-vision-model test-qwen-vision-norm \
         test-mmid-fast \
         test-mmq-parity test-model-family-kernels test-inkling-kernels test-inkling-moe \
-        test-inkling-attn-prep \
+        test-inkling-attn-prep test-inkling-attention \
         test-solar-loader test-solar-kda test-solar-kda-prefill \
         test-solar-kda-chunk \
         test-glm53-loader test-glm53-vision-loader test-glm53-image \
@@ -609,6 +609,9 @@ tests/test_inkling_moe.o: tests/test_inkling_moe.c tests/fixtures/inkling/moe-ve
 tests/test_inkling_attn_prep.o: tests/test_inkling_attn_prep.c ds4_gpu.h
 	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I. -c -o $@ $<
 
+tests/test_inkling_attention.o: tests/test_inkling_attention.c ds4_gpu.h
+	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I. -c -o $@ $<
+
 tests/test_qwen4exp_primitives.o: tests/test_qwen4exp_primitives.c ds4_gpu.h
 	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
 
@@ -787,6 +790,12 @@ tests/test_inkling_attn_prep: tests/test_inkling_attn_prep.o $(DS4_CUDA_CORE_OBJ
 
 test-inkling-attn-prep: tests/test_inkling_attn_prep
 	./tests/test_inkling_attn_prep
+
+tests/test_inkling_attention: tests/test_inkling_attention.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+test-inkling-attention: tests/test_inkling_attention
+	./tests/test_inkling_attention
 
 tests/test_qwen4exp_primitives: tests/test_qwen4exp_primitives.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
@@ -1240,6 +1249,7 @@ clean:
 	rm -f tests/test_inkling_kernels tests/test_inkling_kernels.o
 	rm -f tests/test_inkling_moe tests/test_inkling_moe.o
 	rm -f tests/test_inkling_attn_prep tests/test_inkling_attn_prep.o
+	rm -f tests/test_inkling_attention tests/test_inkling_attention.o
 	rm -f tests/test_qwen_vision_norm tests/test_qwen_vision_norm.o
 	rm -f tests/test_qwen_vision_attention tests/test_qwen_vision_attention.o tests/test_qwen_vision_model tests/test_qwen_vision_model.o
 	rm -f ds4-agent-rs tests/parity/agent_c_oracle tests/parity/agent_c_oracle.o
