@@ -56,6 +56,8 @@ struct PromptSyncDecode {
     replay_prompts: Vec<Vec<u8>>,
     rendered: std::cell::RefCell<Vec<Vec<u8>>>,
     remembered_tools: Vec<(Vec<String>, String)>,
+    prefix_width: usize,
+    prefix_budgets: Vec<i32>,
 }
 
 impl PromptSyncDecode {
@@ -79,6 +81,8 @@ impl PromptSyncDecode {
             replay_prompts: Vec::new(),
             rendered: std::cell::RefCell::new(Vec::new()),
             remembered_tools: Vec::new(),
+            prefix_width: 1,
+            prefix_budgets: Vec::new(),
         }
     }
 }
@@ -178,6 +182,24 @@ impl DecodeIo for PromptSyncDecode {
         self.inner.eval(token)
     }
 
+    fn eval_greedy(&mut self, first: i32, budget: i32) -> Result<Vec<i32>, GenerateError> {
+        self.prefix_budgets.push(budget);
+        if self.prefix_width == 0 {
+            return Ok(Vec::new());
+        }
+        self.eval(first)?;
+        let mut tokens = vec![first];
+        let mut rng = 1;
+        while tokens.len() < self.prefix_width.min(budget as usize)
+            && !self.token_is_stop(*tokens.last().unwrap())
+        {
+            let token = self.inner.sample(0.0, 0, 1.0, 0.0, &mut rng);
+            self.inner.eval(token)?;
+            tokens.push(token);
+        }
+        Ok(tokens)
+    }
+
     fn sample(
         &mut self,
         temperature: f32,
@@ -226,6 +248,161 @@ impl DecodeIo for PromptSyncDecode {
         self.invalidations += 1;
         self.inner.live.clear();
         self.inner.pos = 0;
+    }
+}
+
+#[test]
+fn mtp_prefix_limits() {
+    for (cap, ctx) in [(2, 8192), (8, 3)] {
+        let mut parsed = user_req();
+        parsed.max_tokens = cap;
+        let mut script = ScriptedDecode::from_pieces(&[b"<|content_text|>Hello", b" world", b"!"]);
+        script.ctx = ctx;
+        script.model_id = 9;
+        let mut engine = PromptSyncDecode::new(script, 0, 1);
+        engine.prefix_width = 9;
+        let mut out = Vec::new();
+        let result = generate_and_write(
+            &mut engine,
+            &parsed,
+            "mtp-limit",
+            CREATED_TEST,
+            false,
+            cap,
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(result.timings.decode_tokens, 2);
+        assert_eq!(result.timings.decode_steps, 1);
+        assert_eq!(engine.prefix_budgets, [2]);
+        assert_eq!(engine.pos(), 3);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("Hello world"), "{text}");
+    }
+}
+
+#[test]
+fn mtp_prefix_stops() {
+    for stream in [false, true] {
+        for stop in [None, Some(" world")] {
+            let mut parsed = user_req();
+            parsed.stream = stream;
+            if let Some(stop) = stop {
+                parsed.stops.push(stop.into());
+            }
+            let mut script =
+                ScriptedDecode::from_pieces(&[b"<|content_text|>Hello", b" world", b"!"]);
+            script.model_id = 9;
+            let mut engine = PromptSyncDecode::new(script, 0, 1);
+            engine.prefix_width = 9;
+            let mut out = Vec::new();
+            let result = generate_and_write(
+                &mut engine,
+                &parsed,
+                "mtp-stop",
+                CREATED_TEST,
+                false,
+                8,
+                &mut out,
+            )
+            .unwrap();
+            let text = String::from_utf8(out).unwrap();
+            assert_eq!(engine.prefix_budgets, [8]);
+            assert!(text.contains("Hello"), "{text}");
+            assert!(text.contains("\"finish_reason\":\"stop\""), "{text}");
+            assert_eq!(
+                result.timings.decode_tokens,
+                if stop.is_some() { 2 } else { 3 }
+            );
+            assert!(!text.contains(" world") || stop.is_none(), "{text}");
+            if stop.is_some() {
+                assert_eq!(engine.invalidations, 1);
+                assert_eq!(engine.pos(), 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn mtp_prefix_empty() {
+    let mut engine = PromptSyncDecode::new(ScriptedDecode::from_pieces(&[b"Hello"]), 0, 1);
+    engine.prefix_width = 0;
+    let result = generate_and_write(
+        &mut engine,
+        &user_req(),
+        "mtp-empty",
+        CREATED_TEST,
+        false,
+        8,
+        &mut Vec::new(),
+    );
+    assert!(matches!(result, Err(GenerateError::Engine(_))));
+    assert_eq!(engine.invalidations, 1);
+}
+
+#[test]
+fn mtp_disconnect() {
+    struct Disconnect;
+    impl Write for Disconnect {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            if data.windows(5).any(|s| s == b"Hello") {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut parsed = user_req();
+    parsed.stream = true;
+    let mut script = ScriptedDecode::from_pieces(&[b"<|content_text|>Hello", b" world"]);
+    script.model_id = 9;
+    let mut engine = PromptSyncDecode::new(script, 0, 1);
+    engine.prefix_width = 9;
+    let result = generate_and_write(
+        &mut engine,
+        &parsed,
+        "mtp-disconnect",
+        CREATED_TEST,
+        false,
+        8,
+        &mut Disconnect,
+    );
+    assert!(matches!(result, Err(GenerateError::Io)));
+    assert_eq!(engine.prefix_budgets, [8]);
+    assert_eq!(engine.invalidations, 1);
+    assert_eq!(engine.pos(), 0);
+}
+
+#[test]
+fn mtp_sampling_policy() {
+    for mode in 0..3 {
+        let mut parsed = user_req();
+        match mode {
+            0 => parsed.temperature = 0.7,
+            1 => parsed.think_mode = ThinkMode::Low,
+            _ => {
+                parsed.has_tool_results = true;
+                parsed.required_think_end_prefix = vec![7];
+            }
+        }
+        let mut script = ScriptedDecode::from_pieces(&[b"<|content_text|>Hello"]);
+        script.model_id = 9;
+        let mut engine = PromptSyncDecode::new(script, 0, 1);
+        engine.prefix_width = 9;
+        generate_and_write(
+            &mut engine,
+            &parsed,
+            "mtp-policy",
+            CREATED_TEST,
+            false,
+            8,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert!(engine.prefix_budgets.is_empty());
+        assert!(engine.events.contains(&"eval"));
     }
 }
 

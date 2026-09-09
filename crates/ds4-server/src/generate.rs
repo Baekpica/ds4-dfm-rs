@@ -188,6 +188,12 @@ pub trait DecodeIo {
         Ok(())
     }
     fn eval(&mut self, token: i32) -> Result<(), GenerateError>;
+    /// Commit a nonempty greedy prefix bounded by the positive budget.
+    /// Implementations may include EOS as the final accepted token.
+    fn eval_greedy(&mut self, first: i32, _budget: i32) -> Result<Vec<i32>, GenerateError> {
+        self.eval(first)?;
+        Ok(vec![first])
+    }
     fn sample(
         &mut self,
         temperature: f32,
@@ -1163,7 +1169,7 @@ fn decode_pass(
     stop_requested: Option<fn() -> bool>,
 ) -> Result<(), GenerateError> {
     let mut last_heartbeat = Instant::now();
-    while acc.completion < max_tokens && engine.pos() < engine.ctx() {
+    'decode: while acc.completion < max_tokens && engine.pos() < engine.ctx() {
         if stop_requested.is_some_and(|stop| stop()) {
             *finish = "error";
             break;
@@ -1203,61 +1209,108 @@ fn decode_pass(
             *finish = "stop";
             break;
         }
-        engine.eval(token)?;
-        *decode_steps += 1;
-        if first_tok.is_none() {
-            *first_tok = Some(Instant::now());
-        }
-        let piece = engine.token_text(token)?;
-        let feed = acc.feed(&piece, &parsed.stops);
-
-        if req.stream {
-            let view = &acc.text[..feed.emit_limit.min(acc.text.len())];
-            match req.api {
-                Api::Openai if req.kind == ReqKind::Completion => {
-                    if let Some(delta) = last_delta(&acc.text, feed.emit_limit, piece.len()) {
-                        sse_chunk(w, req, job_id, Some(delta), None);
-                    }
-                }
-                Api::Openai => {
-                    if let Some(st) = oa.as_mut() {
-                        openai_sse_stream_update(w, req, job_id, st, view, false);
-                    }
-                }
-                Api::Anthropic => {
-                    if let Some(st) = anth.as_mut() {
-                        if !anthropic_sse_stream_update(w, req, job_id, st, view, false) {
-                            return Err(GenerateError::Io);
-                        }
-                    }
-                }
-                Api::Responses => {
-                    if let Some(st) = resp.as_mut() {
-                        if !responses_sse_stream_update(w, req, st, view, false) {
-                            return Err(GenerateError::Io);
-                        }
-                    }
-                }
-            }
-            stream_heartbeat_if_due(
-                w,
-                req,
-                resp.as_deref_mut(),
-                &mut last_heartbeat,
-                Instant::now(),
-                ": decode\n\n",
-            );
-            flush(w, out)?;
-        }
-
-        if feed.hit_stop {
-            *finish = "stop";
+        let budget = (max_tokens - acc.completion).min(engine.ctx() - engine.pos());
+        // Forced control prefixes can change policy between tokens. Only
+        // an unconstrained greedy segment may be committed ahead of output.
+        let accepted = if temperature <= 0.0
+            && matches!(ov, SampleOverride::None)
+            && parsed.required_tool_prefix.is_empty()
+            && parsed.required_think_end_prefix.is_empty()
+        {
+            engine.eval_greedy(token, budget)?
+        } else {
+            engine.eval(token)?;
+            vec![token]
+        };
+        if accepted.is_empty() || accepted.len() > budget as usize || accepted[0] != token {
             engine.invalidate();
-            break;
+            return Err(GenerateError::Engine("invalid greedy prefix result".into()));
         }
-        if acc.track_tools && acc.saw_tool_end && req.chat_format == ChatFormat::DeepSeek {
-            *finish = "tool_calls";
-            break;
+        let count = accepted.len();
+        for (index, token) in accepted.into_iter().enumerate() {
+            if stop_requested.is_some_and(|stop| stop()) {
+                *finish = "error";
+                engine.invalidate();
+                break 'decode;
+            }
+            if token < 0 {
+                engine.invalidate();
+                return Err(GenerateError::Engine("invalid greedy prefix token".into()));
+            }
+            if engine.token_is_stop(token) {
+                *finish = "stop";
+                if index + 1 < count {
+                    engine.invalidate();
+                }
+                break 'decode;
+            }
+            // A speculative prefix advances multiple tokens in one decode step.
+            if index == 0 {
+                *decode_steps += 1;
+            }
+            if first_tok.is_none() {
+                *first_tok = Some(Instant::now());
+            }
+            let piece = engine.token_text(token).inspect_err(|_| {
+                engine.invalidate();
+            })?;
+            let feed = acc.feed(&piece, &parsed.stops);
+
+            if req.stream {
+                let view = &acc.text[..feed.emit_limit.min(acc.text.len())];
+                match req.api {
+                    Api::Openai if req.kind == ReqKind::Completion => {
+                        if let Some(delta) = last_delta(&acc.text, feed.emit_limit, piece.len()) {
+                            sse_chunk(w, req, job_id, Some(delta), None);
+                        }
+                    }
+                    Api::Openai => {
+                        if let Some(st) = oa.as_mut() {
+                            openai_sse_stream_update(w, req, job_id, st, view, false);
+                        }
+                    }
+                    Api::Anthropic => {
+                        if let Some(st) = anth.as_mut() {
+                            if !anthropic_sse_stream_update(w, req, job_id, st, view, false) {
+                                engine.invalidate();
+                                return Err(GenerateError::Io);
+                            }
+                        }
+                    }
+                    Api::Responses => {
+                        if let Some(st) = resp.as_mut() {
+                            if !responses_sse_stream_update(w, req, st, view, false) {
+                                engine.invalidate();
+                                return Err(GenerateError::Io);
+                            }
+                        }
+                    }
+                }
+                stream_heartbeat_if_due(
+                    w,
+                    req,
+                    resp.as_deref_mut(),
+                    &mut last_heartbeat,
+                    Instant::now(),
+                    ": decode\n\n",
+                );
+                flush(w, out).inspect_err(|_| {
+                    engine.invalidate();
+                })?;
+            }
+
+            if feed.hit_stop {
+                *finish = "stop";
+                engine.invalidate();
+                break 'decode;
+            }
+            if acc.track_tools && acc.saw_tool_end && req.chat_format == ChatFormat::DeepSeek {
+                *finish = "tool_calls";
+                if index + 1 < count {
+                    engine.invalidate();
+                }
+                break 'decode;
+            }
         }
     }
     Ok(())
@@ -2653,6 +2706,20 @@ impl DecodeIo for NativeDecode<'_> {
         self.session()?
             .eval(token)
             .map(|_| ())
+            .map_err(|e| GenerateError::Engine(e.to_string()))
+    }
+
+    fn eval_greedy(&mut self, first: i32, budget: i32) -> Result<Vec<i32>, GenerateError> {
+        if self.model.family() != ds4_core::ModelFamily::Inkling
+            || self.model.mtp().is_none()
+            || std::env::var_os("DS4_MTP_SPEC_DISABLE").is_some()
+        {
+            self.eval(first)?;
+            return Ok(vec![first]);
+        }
+        let eos = self.model.token_eos();
+        self.session()?
+            .eval_speculative_argmax(first, budget, eos)
             .map_err(|e| GenerateError::Engine(e.to_string()))
     }
 
