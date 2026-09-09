@@ -98,7 +98,7 @@ endif
         test-qwen-vision-attention test-qwen-vision-model test-qwen-vision-norm \
         test-mmid-fast \
         test-mmq-parity test-model-family-kernels test-inkling-kernels test-inkling-moe \
-        test-inkling-attn-prep test-inkling-attention test-inkling-norm \
+        test-inkling-attn-prep test-inkling-attention test-inkling-norm test-inkling-media \
         test-solar-loader test-solar-kda test-solar-kda-prefill \
         test-solar-kda-chunk \
         test-glm53-loader test-glm53-vision-loader test-glm53-image \
@@ -615,6 +615,9 @@ tests/test_inkling_attention.o: tests/test_inkling_attention.c ds4_gpu.h
 tests/test_inkling_norm.o: tests/test_inkling_norm.c ds4_gpu.h
 	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I. -c -o $@ $<
 
+tests/test_inkling_media.o: tests/test_inkling_media.c ds4_gpu.h
+	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I. -c -o $@ $<
+
 tests/test_inkling_forward.o: tests/test_inkling_forward.c ds4.c ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -fno-fast-math -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -c -o $@ $<
@@ -813,6 +816,12 @@ tests/test_inkling_norm: tests/test_inkling_norm.o $(DS4_CUDA_CORE_OBJS)
 
 test-inkling-norm: tests/test_inkling_norm
 	./tests/test_inkling_norm
+
+tests/test_inkling_media: tests/test_inkling_media.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+test-inkling-media: tests/test_inkling_media
+	./tests/test_inkling_media
 
 tests/test_inkling_forward: tests/test_inkling_forward.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
@@ -1278,6 +1287,7 @@ clean:
 	rm -f tests/test_inkling_attn_prep tests/test_inkling_attn_prep.o
 	rm -f tests/test_inkling_attention tests/test_inkling_attention.o
 	rm -f tests/test_inkling_norm tests/test_inkling_norm.o
+	rm -f tests/test_inkling_media tests/test_inkling_media.o
 	rm -f tests/test_inkling_loader
 	rm -f tests/test_inkling_forward tests/test_inkling_forward.o
 	rm -f tests/test_inkling_session tests/test_inkling_session.o

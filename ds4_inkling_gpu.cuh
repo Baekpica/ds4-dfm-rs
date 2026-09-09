@@ -28,10 +28,14 @@ enum {
     INKLING_ATTN_WARPS = 4,
     INKLING_ATTN_DPL = INKLING_HEAD_DIM / INKLING_WARP,
     INKLING_NORM_MAX = 16384,
+    INKLING_AUDIO_BINS = 80,
+    INKLING_AUDIO_LEVELS = 16,
+    INKLING_MEDIA_WIDTH = 4096,
 };
 static constexpr uint32_t INKLING_FLOAT_SIGN = UINT32_C(1) << 31;
 static constexpr float INKLING_TAU_ALPHA = 0.1f;
 static constexpr float INKLING_RMS_EPS = 1e-6f;
+static constexpr float INKLING_GELU_SCALE = 0.7071067811865475244f;
 
 static __device__ __forceinline__ float inkling_bf16(float value) {
     return __bfloat162float(__float2bfloat16_rn(value));
@@ -572,4 +576,117 @@ extern "C" int ds4_gpu_inkling_add_scale(
     inkling_add_scale_kernel<<<blocks, INKLING_THREADS, 0, ds4_current_stream()>>>(
         (float *)out->ptr, (const float *)a->ptr, b ? (const float *)b->ptr : NULL, scale, count);
     return cuda_ok(cudaGetLastError(), "Inkling BF16 scale/residual launch");
+}
+
+struct inkling_fold_shape {
+    uint32_t time, spatial, channels, time_fold, spatial_fold;
+};
+static constexpr inkling_fold_shape inkling_fold_shapes[] = {
+    {2, 40, 3, 1, 5}, {2, 8, 128, 1, 2},
+    {2, 4, 320, 1, 4}, {2, 1, 4800, 2, 1},
+};
+
+static __global__ void inkling_fold_kernel(
+        float *out, const float *x, inkling_fold_shape s, uint64_t count) {
+    const uint32_t new_t = s.time / s.time_fold;
+    const uint32_t new_hw = s.spatial / s.spatial_fold;
+    for (uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+         i < count; i += (uint64_t)gridDim.x * blockDim.x) {
+        // Invert source reshape/permute: B,T',H',W',tf,hf,wf,C.
+        uint64_t at = i;
+        const uint32_t c = at % s.channels; at /= s.channels;
+        const uint32_t fw = at % s.spatial_fold; at /= s.spatial_fold;
+        const uint32_t fh = at % s.spatial_fold; at /= s.spatial_fold;
+        const uint32_t ft = at % s.time_fold; at /= s.time_fold;
+        const uint32_t nw = at % new_hw; at /= new_hw;
+        const uint32_t nh = at % new_hw; at /= new_hw;
+        const uint32_t nt = at % new_t; at /= new_t;
+        const uint64_t src = ((((at * s.time + nt * s.time_fold + ft) * s.spatial +
+            nh * s.spatial_fold + fh) * s.spatial + nw * s.spatial_fold + fw) * s.channels + c);
+        out[i] = inkling_bf16(x[src]);
+    }
+}
+
+extern "C" int ds4_gpu_inkling_fold(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x, uint32_t patches, uint32_t stage) {
+    if (!out || !x || !patches || stage >= sizeof(inkling_fold_shapes) / sizeof(inkling_fold_shapes[0])) {
+        return 0;
+    }
+    const inkling_fold_shape shape = inkling_fold_shapes[stage];
+    const uint64_t count = (uint64_t)patches * shape.time * shape.spatial * shape.spatial * shape.channels;
+    const uint64_t bytes = count * sizeof(float);
+    if (out->bytes < bytes || x->bytes < bytes || inkling_overlap(out, bytes, x, bytes)) {
+        return 0;
+    }
+    cuda_norm_q8_invalidate(out->ptr);
+    const uint64_t grid = (count + INKLING_THREADS - 1) / INKLING_THREADS;
+    const unsigned blocks = (unsigned)(grid < INKLING_MAX_BLOCKS ? grid : INKLING_MAX_BLOCKS);
+    inkling_fold_kernel<<<blocks, INKLING_THREADS, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)x->ptr, shape, count);
+    return cuda_ok(cudaGetLastError(), "Inkling HMLP fold launch");
+}
+
+static __global__ void inkling_gelu_kernel(float *out, const float *x, uint64_t count) {
+    for (uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+         i < count; i += (uint64_t)gridDim.x * blockDim.x) {
+        const float value = inkling_bf16(x[i]);
+        const float cdf = __fadd_rn(1.0f, erff(__fmul_rn(value, INKLING_GELU_SCALE)));
+        out[i] = inkling_bf16(__fmul_rn(__fmul_rn(0.5f, value), cdf));
+    }
+}
+
+extern "C" int ds4_gpu_inkling_gelu(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x, uint64_t count) {
+    if (!out || !x || !count || count > UINT64_MAX / sizeof(float)) { return 0; }
+    const uint64_t bytes = count * sizeof(float);
+    if (out->bytes < bytes || x->bytes < bytes ||
+        (out->ptr != x->ptr && inkling_overlap(out, bytes, x, bytes))) { return 0; }
+    cuda_norm_q8_invalidate(out->ptr);
+    const uint64_t grid = (count + INKLING_THREADS - 1) / INKLING_THREADS;
+    const unsigned blocks = (unsigned)(grid < INKLING_MAX_BLOCKS ? grid : INKLING_MAX_BLOCKS);
+    inkling_gelu_kernel<<<blocks, INKLING_THREADS, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)x->ptr, count);
+    return cuda_ok(cudaGetLastError(), "Inkling GELU launch");
+}
+
+static __global__ void inkling_audio_kernel(
+        float *out, const int32_t *ids, const uint16_t *weight, uint64_t count) {
+    for (uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+         i < count; i += (uint64_t)gridDim.x * blockDim.x) {
+        const uint32_t col = i % INKLING_MEDIA_WIDTH;
+        const uint64_t row = i / INKLING_MEDIA_WIDTH;
+        float sum = 0.0f;
+        for (unsigned bin = 0; bin < INKLING_AUDIO_BINS; bin++) {
+            const int32_t code = ids[row * INKLING_AUDIO_BINS + bin];
+            if (code < 0 || code >= INKLING_AUDIO_LEVELS) {
+                sum = NAN;
+                break;
+            }
+            const uint64_t index = (bin * INKLING_AUDIO_LEVELS + (unsigned)code) *
+                                   (uint64_t)INKLING_MEDIA_WIDTH + col;
+            sum = __fadd_rn(sum, __uint_as_float((uint32_t)weight[index] << 16));
+        }
+        out[i] = inkling_bf16(sum);
+    }
+}
+
+extern "C" int ds4_gpu_inkling_audio(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *ids, const void *model_map,
+        uint64_t model_size, uint64_t weight_offset, uint32_t rows) {
+    const uint64_t weight_bytes = (uint64_t)INKLING_AUDIO_BINS * INKLING_AUDIO_LEVELS *
+                                  INKLING_MEDIA_WIDTH * sizeof(uint16_t);
+    if (!out || !ids || !model_map || !rows || weight_offset % sizeof(uint16_t) ||
+        weight_offset > model_size || weight_bytes > model_size - weight_offset) { return 0; }
+    const uint64_t count = (uint64_t)rows * INKLING_MEDIA_WIDTH;
+    const uint64_t bytes = count * sizeof(float), ibytes = (uint64_t)rows * INKLING_AUDIO_BINS * sizeof(int32_t);
+    if (out->bytes < bytes || ids->bytes < ibytes || inkling_overlap(out, bytes, ids, ibytes)) { return 0; }
+    const uint16_t *weight = (const uint16_t *)cuda_resolve_weight_ptr(
+        model_map, weight_offset, weight_bytes, 0, "inkling audio embeddings");
+    if (!weight) { return 0; }
+    cuda_norm_q8_invalidate(out->ptr);
+    const uint64_t grid = (count + INKLING_THREADS - 1) / INKLING_THREADS;
+    const unsigned blocks = (unsigned)(grid < INKLING_MAX_BLOCKS ? grid : INKLING_MAX_BLOCKS);
+    inkling_audio_kernel<<<blocks, INKLING_THREADS, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const int32_t *)ids->ptr, weight, count);
+    return cuda_ok(cudaGetLastError(), "Inkling audio embedding launch");
 }

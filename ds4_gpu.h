@@ -2596,6 +2596,26 @@ int ds4_gpu_inkling_add_scale(
         ds4_gpu_tensor *out, const ds4_gpu_tensor *a, const ds4_gpu_tensor *b,
         float scale, uint64_t count);
 
+/* HMLP stages 0..3 fold BTHWC neighborhoods into channels in source order.
+ * Input/output use F32 storage with BF16 rounding, disjoint spans. Stage
+ * shapes are [2,40,40,3], [2,8,8,128], [2,4,4,320], [2,1,1,4800].
+ * Capture keys must include stage, patch count and buffer addresses. */
+int ds4_gpu_inkling_fold(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x, uint32_t patches, uint32_t stage);
+
+/* Source exact (erf) GELU, with BF16 input/output boundaries in F32 storage.
+ * Exact in-place output is supported; partial overlap is rejected. */
+int ds4_gpu_inkling_gelu(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x, uint64_t count);
+
+/* Sum the 80 selected native BF16 codebook embeddings in FP32, then round
+ * to BF16. IDs are device-live I32 [rows,80], each in [0,16). Invalid IDs
+ * produce NaN for that row. Output F32 [rows,4096] is disjoint from IDs;
+ * apply the separate audio RMSNorm before inserting features into text. */
+int ds4_gpu_inkling_audio(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *ids, const void *model_map,
+        uint64_t model_size, uint64_t weight_offset, uint32_t rows);
+
 /* Model-family router semantics used by Solar Open 2 and EXAONE: sigmoid
  * probabilities, top-k selection on probability + optional bias, then
  * normalization of the selected UNBIASED probabilities and final scaling. */
