@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod bench;
+mod conversation;
 pub mod repl;
 pub mod session_exec;
 pub mod session_snapshot;
@@ -373,6 +374,9 @@ fn apply_effort_prefix(
     chat: &mut repl::ReplChat,
     session: Option<&mut ds4_core::Session<'_>>,
 ) {
+    if chat.conversation.is_some() {
+        return;
+    }
     let want = chat.wants_effort_prefix();
     if want && chat.prefix_tokens == 0 {
         let mut prefix = ds4_core::TokenBuffer::new();
@@ -402,17 +406,33 @@ fn run_chat_turn(
 
     let vocab = model.vocab();
     apply_effort_prefix(vocab, chat, Some(session));
-    let rollback = chat.transcript.len();
-    vocab
-        .chat_append_message(&mut chat.transcript, "user", user_text.as_bytes())
-        .map_err(|e| e.to_string())?;
+    let rollback = chat.transcript.as_slice().to_vec();
     let think = chat.effective_think();
-    vocab
-        .chat_append_assistant_prefix(&mut chat.transcript, think)
-        .map_err(|e| e.to_string())?;
+    let messages = chat
+        .conversation
+        .as_ref()
+        .map(|chat| chat.prompt(user_text));
+    if let Some(messages) = &messages {
+        let tokens = model
+            .encode_messages(messages, think)
+            .map_err(|e| e.to_string())?;
+        // Templates may remove old reasoning or change earlier prefixes.
+        if !tokens.as_slice().starts_with(&rollback) {
+            session.invalidate();
+        }
+        chat.transcript = tokens;
+    } else {
+        vocab
+            .chat_append_message(&mut chat.transcript, "user", user_text.as_bytes())
+            .map_err(|e| e.to_string())?;
+        vocab
+            .chat_append_assistant_prefix(&mut chat.transcript, think)
+            .map_err(|e| e.to_string())?;
+    }
 
     if let Err(e) = session.sync(&chat.transcript) {
-        chat.transcript.truncate(rollback);
+        chat.transcript = ds4_core::TokenBuffer::from_tokens(rollback);
+        session.invalidate();
         eprintln!("ds4: prompt processing failed: {e}");
         return Ok(());
     }
@@ -432,14 +452,16 @@ fn run_chat_turn(
     let use_mtp = use_mtp_spec(args.temp, args.mtp.as_deref(), args.mtp_draft);
     let eos = model.token_eos();
     let mut generated = 0i32;
+    let mut raw = Vec::new();
+    let mut failed = false;
     repl::interrupt_clear();
 
     while generated < max_tokens && !repl::interrupt_requested() {
         let token = session.sample(args.temp, 0, args.top_p, args.min_p, &mut rng);
         if token < 0 {
             eprintln!("ds4: decode failed: failed to sample the next token");
-            printer.finish(&mut out).map_err(|e| e.to_string())?;
-            return Ok(());
+            failed = true;
+            break;
         }
         if model.token_is_stop(token) {
             break;
@@ -449,14 +471,14 @@ fn run_chat_turn(
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("ds4: decode failed: {e}");
-                    printer.finish(&mut out).map_err(|e| e.to_string())?;
-                    return Ok(());
+                    failed = true;
+                    break;
                 }
             }
         } else if let Err(e) = session.eval(token) {
             eprintln!("ds4: decode failed: {e}");
-            printer.finish(&mut out).map_err(|e| e.to_string())?;
-            return Ok(());
+            failed = true;
+            break;
         } else {
             vec![token]
         };
@@ -467,6 +489,7 @@ fn run_chat_turn(
                 break;
             }
             let piece = model.token_text(t).map_err(|e| e.to_string())?;
+            raw.extend_from_slice(&piece);
             printer
                 .write_token(&mut out, t, &piece)
                 .map_err(|e| e.to_string())?;
@@ -483,12 +506,27 @@ fn run_chat_turn(
     }
     printer.finish(&mut out).map_err(|e| e.to_string())?;
     let interrupted = repl::interrupt_requested();
-    match repl::interrupt_end(interrupted, generated) {
+    let end = if failed {
+        repl::InterruptEnd::Rollback
+    } else {
+        repl::interrupt_end(interrupted, generated)
+    };
+    match end {
         repl::InterruptEnd::Rollback => {
-            chat.transcript.truncate(rollback);
+            chat.transcript = ds4_core::TokenBuffer::from_tokens(rollback);
             session.invalidate();
         }
-        repl::InterruptEnd::KeepEos => chat.transcript.push(eos),
+        repl::InterruptEnd::KeepEos => {
+            if let Some((conversation, messages)) = chat.conversation.as_mut().zip(messages) {
+                if let Err(error) = conversation.accept(messages, model.model_id(), &raw, think) {
+                    chat.transcript = ds4_core::TokenBuffer::from_tokens(rollback);
+                    session.invalidate();
+                    eprintln!("ds4: {error}");
+                    return Ok(());
+                }
+            }
+            chat.transcript.push(eos);
+        }
     }
     if interrupted {
         repl::interrupt_clear();
@@ -1236,14 +1274,20 @@ pub fn run(name: &str, args: ShadowArgs) -> Result<i32, String> {
 fn run_repl(model: &ds4_core::Model, mut args: ShadowArgs) -> Result<i32, String> {
     let mut chat = repl::ReplChat::new(args.nothink, args.ctx);
     let vocab = model.vocab();
-    vocab
-        .chat_begin(&mut chat.transcript)
-        .map_err(|e| e.to_string())?;
-    apply_effort_prefix(vocab, &mut chat, None);
-    if !args.system.is_empty() {
+    if model.chat_template().is_some() {
+        chat.conversation = Some(conversation::Conversation::new(&args.system));
+    } else if model.family() == ds4_core::ModelFamily::DeepSeek4 {
         vocab
-            .chat_append_message(&mut chat.transcript, "system", args.system.as_bytes())
+            .chat_begin(&mut chat.transcript)
             .map_err(|e| e.to_string())?;
+        apply_effort_prefix(vocab, &mut chat, None);
+        if !args.system.is_empty() {
+            vocab
+                .chat_append_message(&mut chat.transcript, "system", args.system.as_bytes())
+                .map_err(|e| e.to_string())?;
+        }
+    } else {
+        return Err("missing chat_template.jinja or tokenizer.chat_template".into());
     }
     let mut session = session_ready(model, &args, chat.ctx)?;
     let _sigint = repl::InterruptGuard::install();

@@ -398,6 +398,7 @@ pub enum ReplThinkCmd {
 }
 
 pub struct ReplChat {
+    pub(crate) conversation: Option<crate::conversation::Conversation>,
     pub transcript: ds4_core::TokenBuffer,
     pub prefix_tokens: usize,
     pub think: ReplThinkCmd,
@@ -407,6 +408,7 @@ pub struct ReplChat {
 impl ReplChat {
     pub fn new(nothink: bool, ctx: i32) -> Self {
         Self {
+            conversation: None,
             transcript: ds4_core::TokenBuffer::new(),
             prefix_tokens: 0,
             think: if nothink {

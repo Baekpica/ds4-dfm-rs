@@ -34,5 +34,7 @@ ds4-core = { path = "../ds4-core" }
 ds4-dist = { path = "../ds4-dist" }
 ds4-kv = { path = "../ds4-kv" }
 ds4-web = { path = "../ds4-web" }
+ds4-server = { path = "../ds4-server" }
+serde_json = "1"
 libc = "0.2"
 nvtx = { version = "2", optional = true, default-features = false, features = ["std"] }
