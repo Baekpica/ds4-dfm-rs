@@ -1009,6 +1009,10 @@ tests/test_split_gguf: tests/test_split_gguf.c ds4.c ds4.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
+tests/test_inkling_loader: tests/test_inkling_loader.c ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
 tests/test_solar_loader: tests/test_solar_loader.c ds4.c ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
@@ -1260,6 +1264,7 @@ clean:
 	rm -f tests/test_inkling_attn_prep tests/test_inkling_attn_prep.o
 	rm -f tests/test_inkling_attention tests/test_inkling_attention.o
 	rm -f tests/test_inkling_norm tests/test_inkling_norm.o
+	rm -f tests/test_inkling_loader
 	rm -f tests/test_qwen_vision_norm tests/test_qwen_vision_norm.o
 	rm -f tests/test_qwen_vision_attention tests/test_qwen_vision_attention.o tests/test_qwen_vision_model tests/test_qwen_vision_model.o
 	rm -f ds4-agent-rs tests/parity/agent_c_oracle tests/parity/agent_c_oracle.o

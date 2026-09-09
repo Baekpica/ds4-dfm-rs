@@ -281,6 +281,7 @@ typedef enum {
     DS4_MODEL_FAMILY_DOTS3_NOTE  = 4,
     DS4_MODEL_FAMILY_QWEN4EXP    = 5,
     DS4_MODEL_FAMILY_GLM53       = 6,
+    DS4_MODEL_FAMILY_INKLING     = 7,
 } ds4_model_family;
 
 typedef enum {
@@ -293,6 +294,7 @@ typedef enum {
     DS4_VARIANT_QWEN38_FLASH_NEXT = 6,
     DS4_VARIANT_GLM53_FLASH     = 7,
     DS4_VARIANT_K2_HORIZON_375B = 8,
+    DS4_VARIANT_INKLING_SMALL   = 9,
 } ds4_variant;
 
 typedef struct {
@@ -356,6 +358,43 @@ typedef struct {
     float compress_rope_freq_base;
     uint64_t rope_orig_ctx;
 } ds4_shape;
+
+enum {
+    INKLING_LAYERS = 42,
+    INKLING_DRAFT_LAYERS = 8,
+    INKLING_IMAGE_STAGES = 4,
+    INKLING_VALID_VOCAB = 200058,
+};
+
+static const ds4_shape DS4_SHAPE_INKLING_SMALL = {
+    .name = "Inkling Small",
+    .family = DS4_MODEL_FAMILY_INKLING,
+    .variant = DS4_VARIANT_INKLING_SMALL,
+    .n_layer = INKLING_LAYERS,
+    .n_embd = 4096,
+    .n_vocab = 201024,
+    .n_head = 32,
+    .n_head_kv = 8,
+    .n_head_dim = 128,
+    .n_value_dim = 128,
+    .n_expert = 256,
+    .n_expert_used = 6,
+    .n_expert_shared = 2,
+    .n_ff_exp = 2048,
+    .n_ff_dense = 16384,
+    .n_ff_shexp = 2048,
+    .n_swa = 512,
+    .n_swa_period = 6,
+    .n_nextn_predict = INKLING_DRAFT_LAYERS,
+    .n_leading_dense = 2,
+    .n_swa_head = 32,
+    .n_full_attn_count = 7,
+    .n_ssm_conv = 4,
+    .use_qk_norm = true,
+    .rms_eps = DS4_DEFAULT_RMS_EPS,
+    .expert_weight_scale = 8.0f,
+    .rope_orig_ctx = UINT64_C(1048576),
+};
 
 static const ds4_shape DS4_SHAPE_FLASH = {
     .name = "DeepSeek V4 Flash",
@@ -2199,6 +2238,9 @@ static void model_apply_host_shape(void) {
         break;
     case DS4_VARIANT_K2_HORIZON_375B:
         g_ds4_shape = DS4_SHAPE_K2_HORIZON_375B;
+        break;
+    case DS4_VARIANT_INKLING_SMALL:
+        g_ds4_shape = DS4_SHAPE_INKLING_SMALL;
         break;
     default:
         ds4_die("unsupported");
@@ -4611,6 +4653,34 @@ typedef struct {
     ds4_tensor *ffn_shexp_gate_inp;
 } ds4_layer_weights;
 
+/* Source-interleaved Inkling weights have distinct dense/routed/shared
+ * semantics. Keep them out of the generic split gate/up and HC descriptors. */
+typedef struct {
+    ds4_tensor *attn_norm, *mlp_norm;
+    ds4_tensor *q, *k, *v, *r, *o;
+    ds4_tensor *q_norm, *k_norm, *rel_proj;
+    ds4_tensor *k_conv, *v_conv, *attn_conv, *mlp_conv;
+    ds4_tensor *w13, *w2, *scale;
+    ds4_tensor *gate, *bias, *shared_w13, *shared_w2;
+} ds4_inkling_block;
+
+typedef struct {
+    ds4_tensor *embed_norm;
+    ds4_inkling_block layer[INKLING_LAYERS];
+    ds4_tensor *image_linear[INKLING_IMAGE_STAGES];
+    ds4_tensor *image_norm[INKLING_IMAGE_STAGES];
+    ds4_tensor *audio_embed, *audio_norm;
+} ds4_inkling_weights;
+
+/* All eight draft blocks live in the sidecar; embedding/head stay shared
+ * with the target. These pointers borrow the sidecar model's mapping. */
+typedef struct {
+    ds4_tensor *embed_norm[INKLING_DRAFT_LAYERS];
+    ds4_tensor *hidden_norm[INKLING_DRAFT_LAYERS];
+    ds4_tensor *input_proj[INKLING_DRAFT_LAYERS];
+    ds4_inkling_block layer[INKLING_DRAFT_LAYERS];
+} ds4_inkling_draft;
+
 typedef struct {
     ds4_tensor *token_embd;
     ds4_tensor *output_hc_base;
@@ -4638,6 +4708,7 @@ typedef struct {
     ds4_tensor *qwen_mtp_fc_hidden_norm;
     ds4_layer_weights qwen_mtp;
     ds4_qwen_vision_weights qwen_vision;
+    ds4_inkling_weights inkling;
 } ds4_weights;
 
 typedef struct {
@@ -8027,6 +8098,86 @@ static void weights_bind_glm53(ds4_weights *w, const ds4_model *m) {
         weights_bind_glm53_layer(&w->layer[il], m, il);
 }
 
+static ds4_tensor *inkling_tensor(const ds4_model *m, const char *prefix,
+                                  const char *suffix) {
+    char name[192];
+    int n = snprintf(name, sizeof(name), "%s.%s", prefix, suffix);
+    if (n < 0 || (size_t)n >= sizeof(name)) {
+        ds4_die("Inkling tensor name exceeds buffer");
+    }
+    return required_tensor(m, name);
+}
+
+typedef enum { INKLING_DENSE, INKLING_MOE } inkling_mlp_kind;
+
+static void inkling_bind_block(ds4_inkling_block *b, const ds4_model *m,
+                               const char *p, inkling_mlp_kind kind) {
+    memset(b, 0, sizeof(*b));
+    b->attn_norm = inkling_tensor(m, p, "attn_norm.weight");
+    b->mlp_norm = inkling_tensor(m, p, "mlp_norm.weight");
+    b->q = inkling_tensor(m, p, "attn.wq_du.weight");
+    b->k = inkling_tensor(m, p, "attn.wk_dv.weight");
+    b->v = inkling_tensor(m, p, "attn.wv_dv.weight");
+    b->r = inkling_tensor(m, p, "attn.wr_du.weight");
+    b->o = inkling_tensor(m, p, "attn.wo_ud.weight");
+    b->q_norm = inkling_tensor(m, p, "attn.q_norm.weight");
+    b->k_norm = inkling_tensor(m, p, "attn.k_norm.weight");
+    b->rel_proj = inkling_tensor(m, p, "attn.rel_logits_proj.proj");
+    b->k_conv = inkling_tensor(m, p, "attn.k_sconv.weight");
+    b->v_conv = inkling_tensor(m, p, "attn.v_sconv.weight");
+    b->attn_conv = inkling_tensor(m, p, "attn_sconv.weight");
+    b->mlp_conv = inkling_tensor(m, p, "mlp_sconv.weight");
+    if (kind == INKLING_DENSE) {
+        b->w13 = inkling_tensor(m, p, "mlp.w13_dn.weight");
+        b->w2 = inkling_tensor(m, p, "mlp.w2_md.weight");
+        b->scale = inkling_tensor(m, p, "mlp.global_scale");
+        return;
+    }
+    b->w13 = inkling_tensor(m, p, "mlp.experts.w13_weight");
+    b->w2 = inkling_tensor(m, p, "mlp.experts.w2_weight");
+    b->gate = inkling_tensor(m, p, "mlp.gate.weight");
+    b->bias = inkling_tensor(m, p, "mlp.gate.bias");
+    b->scale = inkling_tensor(m, p, "mlp.gate.global_scale");
+    b->shared_w13 = inkling_tensor(m, p, "mlp.shared_experts.shared_w13_weight");
+    b->shared_w2 = inkling_tensor(m, p, "mlp.shared_experts.shared_w2_weight");
+}
+
+static void inkling_bind(ds4_weights *w, const ds4_model *m) {
+    ds4_inkling_weights *k = &w->inkling;
+    w->token_embd = required_tensor(m, "model.llm.embed.weight");
+    w->output_norm = required_tensor(m, "model.llm.norm.weight");
+    w->output = required_tensor(m, "model.llm.unembed.weight");
+    k->embed_norm = required_tensor(m, "model.llm.embed_norm.weight");
+    for (unsigned i = 0; i < INKLING_LAYERS; i++) {
+        char prefix[64];
+        snprintf(prefix, sizeof(prefix), "model.llm.layers.%u", i);
+        inkling_bind_block(&k->layer[i], m, prefix,
+                           i < DS4_N_LEADING_DENSE ? INKLING_DENSE : INKLING_MOE);
+    }
+    for (unsigned i = 0; i < INKLING_IMAGE_STAGES; i++) {
+        k->image_linear[i] = required_tensorf(m, "model.visual.layers.linear_%u.weight", i);
+        if (i + 1 < INKLING_IMAGE_STAGES) {
+            k->image_norm[i] = required_tensorf(m, "model.visual.layers.norm_%u.weight", i);
+        }
+    }
+    k->image_norm[INKLING_IMAGE_STAGES - 1] = required_tensor(m, "model.visual.final_norm.weight");
+    k->audio_embed = required_tensor(m, "model.audio.encoder.weight");
+    k->audio_norm = required_tensor(m, "model.audio.final_norm.weight");
+}
+
+static void inkling_bind_draft(ds4_inkling_draft *w, const ds4_model *m) {
+    memset(w, 0, sizeof(*w));
+    for (unsigned i = 0; i < INKLING_DRAFT_LAYERS; i++) {
+        char prefix[96];
+        snprintf(prefix, sizeof(prefix), "model.mtp.layers.%u", i);
+        w->embed_norm[i] = inkling_tensor(m, prefix, "embed_norm.weight");
+        w->hidden_norm[i] = inkling_tensor(m, prefix, "hidden_norm.weight");
+        w->input_proj[i] = inkling_tensor(m, prefix, "input_proj.weight");
+        snprintf(prefix, sizeof(prefix), "model.mtp.layers.%u.transformer_block", i);
+        inkling_bind_block(&w->layer[i], m, prefix, INKLING_DENSE);
+    }
+}
+
 static void weights_bind(
         ds4_weights     *w,
         const ds4_model *m,
@@ -8044,6 +8195,11 @@ static void weights_bind(
     (void)require_output;
     (void)optional_output;
     memset(w, 0, sizeof(*w));
+
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
+        inkling_bind(w, m);
+        return;
+    }
 
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
         weights_bind_glm53(w, m);

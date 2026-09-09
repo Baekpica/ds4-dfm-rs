@@ -23,7 +23,10 @@ convolution tensors are required. MTP metadata must declare the same source
 revision, a sidecar role and BF16 recipe. Main loading rejects MTP-only files.
 
 `ModelFamily::Inkling` is 7 and `Variant::InklingSmall` is 9 in the host
-catalog. Native enum/shape/graph integration is still pending. Model opening
+catalog and native shape. Native binding resolves all 888 main and 160 draft
+tensors, including media weights, without reading their payloads; the real
+GGUF descriptor gate checks each name and exactly-once coverage. Graph and
+session integration is still pending. Model opening
 returns an explicit unimplemented-inference error before entering native code.
 
 The Rust tokenizer reads the embedded source JSON: 199998 BPE entries,
