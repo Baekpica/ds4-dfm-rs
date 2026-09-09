@@ -80,3 +80,12 @@ tonal bands can amplify log-space error; log-mel values are not bit-exact.
 The current reader accepts 16 kHz PCM/float WAV, up to 8 channels (mean
 downmix), 32 MiB encoded and 8192 frames, subject to a smaller token budget.
 Resampling and compressed audio codecs are not implemented.
+
+## MTP block reference
+
+`make_mtp_vectors.py <MTP-BF16.gguf> <output-dir>` reads the separate
+160-tensor sidecar and generates seven-row references for all eight depths.
+It follows the pinned SGLang BF16 block equations with CPU FP64 matrix
+products, supplied main-normalized embeddings, and raw hidden chaining.
+`reference.json` records per-tensor and output hashes. This component oracle
+does not qualify shared embedding/head execution or target speculation.

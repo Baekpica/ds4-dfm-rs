@@ -176,6 +176,17 @@ embedding preparation applies main embedding norm before draft
 embedding norm and concatenates hidden then embedding. Draft global layers
 are 1 and 3; main global layers are 5, 11, 17, 23, 29, 35 and 41.
 
+All eight BF16 draft blocks have a native execution path with independent
+KV and four convolution histories per depth. A seven-row component fixture
+uses actual sidecar weights and supplied normalized embeddings/hidden input.
+Against a CPU equation oracle, per-depth relative RMS error was at most
+0.00438. Full-width and 1/2/3-row chunks produced identical chained hidden
+outputs and all 1212416 KV/convolution bytes. These checks exclude shared
+embedding/head execution, target verification and speculative commits.
+At 529 rows, 7-row chunks and decode also matched all hidden outputs and
+17899520 state bytes across local-ring wrap. An extra row beyond context
+was rejected without changing any draft state.
+
 ## Checks
 
 ```sh

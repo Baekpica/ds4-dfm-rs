@@ -20745,9 +20745,9 @@ typedef struct {
     ds4_gpu_tensor *buf[IK_BUFFERS];
     ds4_gpu_tensor *logits;
     inkling_layer_state layer[INKLING_LAYERS];
-    uint32_t context, cap, position;
+    uint32_t context, cap, position, n_layers;
     uint32_t *positions;
-    float dense_scale[2];
+    float dense_scale[INKLING_LAYERS];
     bool failed;
 } ds4_inkling_graph;
 
@@ -20818,7 +20818,7 @@ static void inkling_graph_free(ds4_inkling_graph *g) {
 
 static bool inkling_graph_reset(ds4_inkling_graph *g) {
     g->failed = true;
-    for (unsigned i = 0; i < INKLING_LAYERS; i++) {
+    for (unsigned i = 0; i < g->n_layers; i++) {
         inkling_layer_state *s = &g->layer[i];
         /* Prefix length masks stale KV; only convolution history needs clear. */
         for (unsigned j = 0; j < 4; j++) {
@@ -20833,15 +20833,18 @@ static bool inkling_graph_reset(ds4_inkling_graph *g) {
     return true;
 }
 
-static bool inkling_graph_alloc(ds4_inkling_graph *g, const ds4_model *m,
-                                 const ds4_weights *w, uint32_t ctx, uint32_t cap) {
+static bool inkling_graph_alloc_blocks(ds4_inkling_graph *g, const ds4_model *m,
+                                       const ds4_inkling_block *blocks, unsigned layers,
+                                       uint32_t ctx, uint32_t cap) {
     memset(g, 0, sizeof(*g));
     if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_INKLING || !ctx || !cap ||
-        cap > ctx || ctx > DS4_SHAPE_INKLING_SMALL.rope_orig_ctx) {
+        cap > ctx || ctx > DS4_SHAPE_INKLING_SMALL.rope_orig_ctx || !blocks ||
+        (layers != INKLING_LAYERS && layers != INKLING_DRAFT_LAYERS)) {
         return false;
     }
     g->context = ctx;
     g->cap = cap;
+    g->n_layers = layers;
     g->positions = calloc(cap, sizeof(*g->positions));
     if (!g->positions) {
         goto fail;
@@ -20869,9 +20872,9 @@ static bool inkling_graph_alloc(ds4_inkling_graph *g, const ds4_model *m,
     if (!ids_ok) {
         goto fail;
     }
-    for (unsigned i = 0; i < INKLING_LAYERS; i++) {
+    for (unsigned i = 0; i < layers; i++) {
         inkling_layer_state *s = &g->layer[i];
-        s->capacity = w->inkling.layer[i].rel_proj->dim[0] == IK_LOCAL ? IK_LOCAL : ctx;
+        s->capacity = blocks[i].rel_proj->dim[0] == IK_LOCAL ? IK_LOCAL : ctx;
         s->kv = ds4_gpu_tensor_alloc((uint64_t)s->capacity * 2 * IK_KV * sizeof(uint16_t));
         if (!s->kv) {
             goto fail;
@@ -20884,10 +20887,13 @@ static bool inkling_graph_alloc(ds4_inkling_graph *g, const ds4_model *m,
             }
         }
     }
-    for (unsigned i = 0; i < 2; i++) {
-        /* Only two BF16 scalars are read on CPU; all matrices stay mapped. */
+    for (unsigned i = 0; i < layers; i++) {
+        if (blocks[i].gate) {
+            continue;
+        }
+        /* Only dense BF16 scales are read on CPU; matrices stay mapped. */
         uint16_t bf;
-        memcpy(&bf, tensor_data(m, w->inkling.layer[i].scale), sizeof(bf));
+        memcpy(&bf, tensor_data(m, blocks[i].scale), sizeof(bf));
         uint32_t bits = (uint32_t)bf << 16;
         memcpy(&g->dense_scale[i], &bits, sizeof(bits));
         if (!isfinite(g->dense_scale[i])) {
@@ -20900,6 +20906,11 @@ static bool inkling_graph_alloc(ds4_inkling_graph *g, const ds4_model *m,
 fail:
     inkling_graph_free(g);
     return false;
+}
+
+static bool inkling_graph_alloc(ds4_inkling_graph *g, const ds4_model *m,
+                                 const ds4_weights *w, uint32_t ctx, uint32_t cap) {
+    return inkling_graph_alloc_blocks(g, m, w->inkling.layer, INKLING_LAYERS, ctx, cap);
 }
 
 static bool inkling_projection(ds4_gpu_tensor *out, const ds4_model *m,
@@ -21226,6 +21237,73 @@ static bool inkling_graph_media(ds4_inkling_graph *g, const ds4_model *m,
 static bool inkling_graph_forward(ds4_inkling_graph *g, const ds4_model *m,
                                   const ds4_weights *w, const int *tokens, unsigned n) {
     return inkling_graph_media(g, m, w, tokens, n, NULL);
+}
+
+typedef struct {
+    ds4_inkling_graph graph;
+    ds4_gpu_tensor *combined;
+    uint32_t positions[INKLING_DRAFT_LAYERS];
+} ds4_inkling_mtp_graph;
+
+static void inkling_draft_free(ds4_inkling_mtp_graph *d) {
+    inkling_graph_free(&d->graph);
+    ds4_gpu_tensor_free(d->combined);
+    memset(d, 0, sizeof(*d));
+}
+
+static bool inkling_draft_reset(ds4_inkling_mtp_graph *d) {
+    if (!inkling_graph_reset(&d->graph)) {
+        return false;
+    }
+    memset(d->positions, 0, sizeof(d->positions));
+    return true;
+}
+
+static bool inkling_draft_alloc(ds4_inkling_mtp_graph *d, const ds4_model *m,
+                                const ds4_inkling_draft *w, uint32_t ctx, uint32_t cap) {
+    memset(d, 0, sizeof(*d));
+    if (!inkling_graph_alloc_blocks(&d->graph, m, w->layer, INKLING_DRAFT_LAYERS, ctx, cap)) {
+        return false;
+    }
+    d->combined = ds4_gpu_tensor_alloc((uint64_t)cap * 2 * IK_HIDDEN * sizeof(float));
+    if (!d->combined) {
+        inkling_draft_free(d);
+        return false;
+    }
+    return true;
+}
+
+static bool inkling_draft_forward(ds4_inkling_mtp_graph *d, const ds4_model *m,
+                                  const ds4_inkling_draft *w, unsigned depth,
+                                  const ds4_gpu_tensor *hidden,
+                                  const ds4_gpu_tensor *embeddings, unsigned n) {
+    ds4_inkling_graph *g = &d->graph;
+    if (g->failed || !hidden || !embeddings || depth >= INKLING_DRAFT_LAYERS ||
+        !n || n > g->cap || n > g->context - d->positions[depth]) {
+        return false;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        g->positions[i] = d->positions[depth] + i;
+    }
+    g->failed = true;
+    ds4_gpu_tensor **b = g->buf;
+    /* The caller supplies main-normalized embeddings. Normalize the incoming
+     * hidden first, so a preceding depth can hand off IK_X without a copy. */
+    if (!ds4_gpu_tensor_write(b[IK_POSITIONS], 0, g->positions, n * sizeof(*g->positions)) ||
+        !ds4_gpu_inkling_norm(b[IK_NORM], hidden, m->map, m->size,
+                               w->hidden_norm[depth]->abs_offset, IK_HIDDEN, n) ||
+        !ds4_gpu_inkling_norm(b[IK_CONV], embeddings, m->map, m->size,
+                               w->embed_norm[depth]->abs_offset, IK_HIDDEN, n) ||
+        !ds4_gpu_concat_rows_tensor(d->combined, b[IK_NORM], b[IK_CONV], n, IK_HIDDEN) ||
+        !inkling_linear(b[IK_X], m, w->input_proj[depth], d->combined, n) ||
+        !inkling_graph_layer(g, m, &w->layer[depth], depth, n)) {
+        return false;
+    }
+    /* chain_hidden_post_norm=false: retain the raw block result in IK_X.
+     * Only the shared LM-head input is divided by 16, after this handoff. */
+    d->positions[depth] += n;
+    g->failed = false;
+    return true;
 }
 
 static void plain_batch_ws_free(struct ds4_plain_batch_ws *w) {
