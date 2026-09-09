@@ -603,6 +603,26 @@ int ds4_bridge_session_layer_slice_reset(ds4_bridge_session *s,
     return ds4_session_layer_slice_reset(s->session, err, errlen);
 }
 
+int ds4_bridge_inkling_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
+                              int32_t *tokens, int32_t *target, int32_t cap,
+                              char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return -1;
+    }
+    return ds4_session_inkling_trial(s->session, first, max_tokens, tokens, target, cap, err, errlen);
+}
+
+int ds4_bridge_inkling_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return 1;
+    }
+    return ds4_session_inkling_commit(s->session, keep, err, errlen);
+}
+
 int ds4_bridge_eval_speculative_argmax(ds4_bridge_session *s,
                                        int32_t first_token,
                                        int32_t max_tokens,

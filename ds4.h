@@ -1322,6 +1322,16 @@ int ds4_session_token_logprob(ds4_session *s, int token, ds4_token_score *out);
 int ds4_session_copy_logits(ds4_session *s, float *out, int cap);
 int ds4_session_set_logits(ds4_session *s, const float *logits, int n);
 int ds4_session_eval(ds4_session *s, int token, char *err, size_t errlen);
+/* Trial returns 1..9 pending rows, 0 when MTP is absent or no budget remains,
+ * and -1 on error. Rust chooses the greedy accepted prefix and commits it.
+ * Output arrays each hold cap integers. Other decode/sync calls require
+ * commit or invalidation before using a pending session. Operational failure
+ * poisons device state without changing generation; the caller must invalidate
+ * before reuse. Invalid arguments leave a pending trial unchanged. */
+int ds4_session_inkling_trial(ds4_session *s, int first, int max_tokens,
+                               int *tokens, int *target, int cap,
+                               char *err, size_t errlen);
+int ds4_session_inkling_commit(ds4_session *s, int keep, char *err, size_t errlen);
 int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                                         int max_tokens, int eos_token,
                                         int *accepted, int accepted_cap,

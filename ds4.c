@@ -20725,6 +20725,7 @@ enum {
     IK_EXPERTS = 256, IK_USED = 6, IK_SHARED = 2,
     IK_MID = 2048, IK_DENSE = 16384, IK_LOGIT_DIVISOR = 16,
     IK_VERIFY_ROWS = INKLING_DRAFT_LAYERS + 1, IK_CONV_STREAMS = 4,
+    IK_DRAFT_GLOBALS = 2,
     IK_CONV_MASK = (1u << IK_CONV_STREAMS) - 1,
     IK_AUDIO_TOKEN = 200053, IK_IMAGE_TOKEN = 200054,
 };
@@ -20807,6 +20808,32 @@ static ds4_context_memory inkling_context_memory(uint32_t ctx, uint32_t cap) {
         m.scratch_bytes += (uint64_t)m.prefill_cap * inkling_width[i] * sizeof(float);
     }
     m.scratch_bytes += (uint64_t)DS4_N_VOCAB * sizeof(float);
+    m.total_bytes = m.raw_bytes + m.scratch_bytes;
+    return m;
+}
+
+static ds4_context_memory inkling_mtp_memory(uint32_t ctx, uint32_t cap) {
+    const unsigned verify = ctx < IK_VERIFY_ROWS ? ctx : IK_VERIFY_ROWS;
+    if (cap < verify) {
+        cap = verify;
+    }
+    ds4_context_memory m = inkling_context_memory(ctx, cap);
+    if (!m.total_bytes) {
+        return m;
+    }
+    const uint64_t conv_width = 2 * IK_KV + 2 * IK_HIDDEN;
+    const uint64_t row_bytes = IK_HIDDEN * sizeof(float);
+    m.raw_bytes += ((INKLING_DRAFT_LAYERS - IK_DRAFT_GLOBALS) * IK_LOCAL +
+                    (uint64_t)IK_DRAFT_GLOBALS * ctx) * 2 * IK_KV * sizeof(uint16_t);
+    m.raw_bytes += INKLING_DRAFT_LAYERS * IK_HISTORY * conv_width * sizeof(float);
+    m.raw_bytes += INKLING_DRAFT_LAYERS * row_bytes;
+    /* The draft graph has the same scratch layout, plus input concatenation
+     * and target-seed joining. Both journals are admitted and allocated now. */
+    m.scratch_bytes *= 2;
+    m.scratch_bytes += ((uint64_t)3 * cap + INKLING_DRAFT_LAYERS) * row_bytes;
+    m.scratch_bytes += (INKLING_LAYERS + INKLING_DRAFT_LAYERS) *
+        ((uint64_t)verify * 2 * IK_KV * sizeof(uint16_t) +
+         (IK_HISTORY + verify) * conv_width * sizeof(float));
     m.total_bytes = m.raw_bytes + m.scratch_bytes;
     return m;
 }
@@ -34944,6 +34971,7 @@ struct ds4_engine {
     ds4_vocab vocab;
     ds4_weights weights;
     ds4_mtp_weights mtp_weights;
+    ds4_inkling_draft inkling_mtp;
     ds4_dspark_weights dspark_weights;
     ds4_ple_store *qwen_ple_store;
     ds4_qwen38_ple_cuda *qwen_ple_cuda;
@@ -44968,6 +44996,9 @@ struct ds4_session {
     ds4_dots3_gpu_graph dots3_graph;
     bool dots3_graph_ready;
     ds4_inkling_graph inkling_graph;
+    ds4_inkling_spec inkling_spec;
+    int inkling_trial[IK_VERIFY_ROWS];
+    unsigned inkling_trial_n;
     bool inkling_graph_ready;
     ds4_solar_gpu_graph solar_graph;
     bool solar_graph_ready;
@@ -56261,7 +56292,9 @@ static uint32_t qwen4exp_graph_prefill_cap_for_context(uint32_t ctx_size);
 uint64_t ds4_engine_session_graph_bytes_estimate(ds4_engine *e, int ctx) {
     if (!e || ctx <= 0) return 0;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
-        return inkling_context_memory((uint32_t)ctx, inkling_prefill_cap((uint32_t)ctx)).total_bytes;
+        const uint32_t cap = inkling_prefill_cap((uint32_t)ctx);
+        return (e->mtp_ready ? inkling_mtp_memory((uint32_t)ctx, cap)
+                             : inkling_context_memory((uint32_t)ctx, cap)).total_bytes;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
         const uint32_t prefill_cap =
@@ -65534,11 +65567,11 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         const char *dspark_path = opt->dspark_path;
         if (!dspark_path || !dspark_path[0])
             dspark_path = getenv("DS4_DSPARK_MODEL");
-        if ((opt->mtp_path && opt->mtp_path[0]) ||
+        if ((opt->mtp_path && opt->mtp_path[0] && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_INKLING) ||
             (dspark_path && dspark_path[0])) {
             fprintf(stderr,
-                    "ds4: MTP and DSpark support models are DeepSeek-only; "
-                    "remove --mtp/--dspark (or DS4_DSPARK_MODEL) for this model family\n");
+                    "ds4: this model family does not accept the requested "
+                    "MTP/DSpark support model\n");
             ds4_engine_close(e);
             *out = NULL;
             return 1;
@@ -65551,14 +65584,21 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
          * above skips (the host already ran the expected-layout table). */
         if (g_host_mtp_bind_map) ds4_host_bind_map_install(g_host_mtp_bind_map);
         model_open(&e->mtp_model, opt->mtp_path, graph_backend, true);
-        mtp_weights_bind(&e->mtp_weights, &e->mtp_model);
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
+            inkling_bind_draft(&e->inkling_mtp, &e->mtp_model);
+            if (e->mtp_draft_tokens > INKLING_DRAFT_LAYERS) {
+                e->mtp_draft_tokens = INKLING_DRAFT_LAYERS;
+            }
+        } else {
+            mtp_weights_bind(&e->mtp_weights, &e->mtp_model);
+        }
         ds4_host_bind_map_clear();
         e->mtp_ready = true;
         /* v0.5.1 inc4: nothing in the gguf identifies which base checkpoint
          * this module was extracted for (see the engine fields) -- arm the
          * accept guard so a wrong-generation pairing announces and disables
          * itself instead of silently halving decode speed forever. */
-        {
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK4) {
             const char *ge = getenv("DS4_MTP_ACCEPT_GUARD");
             e->mtp_guard_on = !(ge && ge[0] == '0' && ge[1] == '\0');
         }
@@ -66576,14 +66616,15 @@ static uint64_t session_tensors_census_live(void) {
     return ds4_mem_cell_live(&cell);
 }
 
-static bool inkling_session_fit(ds4_backend backend, uint32_t ctx, uint32_t cap,
+static bool inkling_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
                                  ds4_session_graph_fit_quote *q) {
-    const uint64_t need = inkling_context_memory(ctx, cap).total_bytes;
+    const uint64_t need = (e->mtp_ready ? inkling_mtp_memory(ctx, cap)
+                                       : inkling_context_memory(ctx, cap)).total_bytes;
     if (q) {
         memset(q, 0, sizeof(*q));
         q->need_bytes = need;
     }
-    if (backend != DS4_BACKEND_CUDA || !need) {
+    if (e->backend != DS4_BACKEND_CUDA || !need) {
         return false;
     }
     const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
@@ -66612,16 +66653,25 @@ static bool inkling_session_fit(ds4_backend backend, uint32_t ctx, uint32_t cap,
 static int ds4_session_alloc_graph(ds4_session *s) {
     ds4_engine *e = s->engine;
     if (ds4_session_is_inkling(s)) {
-        const uint64_t estimate = inkling_context_memory((uint32_t)s->ctx_size, s->prefill_cap).total_bytes;
+        const uint32_t ctx = (uint32_t)s->ctx_size;
+        const ds4_context_memory memory = e->mtp_ready ? inkling_mtp_memory(ctx, s->prefill_cap)
+                                                        : inkling_context_memory(ctx, s->prefill_cap);
+        const uint64_t estimate = memory.total_bytes;
+        const unsigned verify = ctx < IK_VERIFY_ROWS ? ctx : IK_VERIFY_ROWS;
         ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, estimate, 0);
         const uint64_t before = session_tensors_census_live();
         ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
-        const bool ok = inkling_session_fit(e->backend, (uint32_t)s->ctx_size, s->prefill_cap, NULL) &&
+        const bool ok = inkling_session_fit(e, ctx, s->prefill_cap, NULL) &&
             inkling_graph_alloc(&s->inkling_graph, &e->model, &e->weights,
-                                 (uint32_t)s->ctx_size, s->prefill_cap);
+                                 ctx, memory.prefill_cap) &&
+            (!e->mtp_ready ||
+             (inkling_spec_alloc(&s->inkling_spec, &e->mtp_model, &e->inkling_mtp, ctx, memory.prefill_cap) &&
+              inkling_graph_track(&s->inkling_graph, verify) &&
+              inkling_graph_track(&s->inkling_spec.draft.graph, verify)));
         ds4_gpu_mem_scope_end();
         if (!ok) {
             inkling_graph_free(&s->inkling_graph);
+            inkling_spec_free(&s->inkling_spec);
             s->inkling_graph_ready = false;
             s->graph_alloc_bytes = 0;
             ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
@@ -66886,7 +66936,7 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
     if (!e || ctx_size <= 0) return 0;
 #ifndef DS4_NO_GPU
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
-        return inkling_session_fit(e->backend, (uint32_t)ctx_size,
+        return inkling_session_fit(e, (uint32_t)ctx_size,
                                    inkling_prefill_cap((uint32_t)ctx_size), q);
     }
     if (e->backend == DS4_BACKEND_CPU) {
@@ -66955,9 +67005,8 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
         if ((uint32_t)ctx_size > DS4_SHAPE_INKLING_SMALL.rope_orig_ctx ||
             e->backend != DS4_BACKEND_CUDA || !e->metal_ready ||
             e->distributed.role != DS4_DISTRIBUTED_NONE ||
-            e->mtp_ready || e->dspark_ready) {
-            fprintf(stderr, "ds4: Inkling requires one full CUDA model without "
-                            "draft sidecars until MTP graph integration\n");
+            e->dspark_ready) {
+            fprintf(stderr, "ds4: Inkling requires one full CUDA model without DSpark\n");
             return 1;
         }
         ds4_session *s = xcalloc(1, sizeof(*s));
@@ -67220,6 +67269,7 @@ void ds4_session_free(ds4_session *s) {
     else {
         if (ds4_session_is_inkling(s)) {
             inkling_graph_free(&s->inkling_graph);
+            inkling_spec_free(&s->inkling_spec);
             s->inkling_graph_ready = false;
             ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
         } else if (ds4_session_is_glm53(s)) {
@@ -67876,12 +67926,25 @@ static int ds4_session_sync_glm53(
  * A non-matching prompt discards the checkpoint and prefills from token zero.
  */
 #ifndef DS4_NO_GPU
+static bool inkling_session_forward(ds4_session *s, const int *prefix, unsigned total,
+                                     unsigned n, const float *const *features) {
+    ds4_engine *e = s->engine;
+    ds4_inkling_graph *g = &s->inkling_graph;
+    const unsigned tracked = g->undo_cap;
+    g->undo_cap = 0;
+    const bool ok = inkling_graph_media(g, &e->model, &e->weights, prefix + total - n, n, features);
+    g->undo_cap = tracked;
+    return ok && (!e->mtp_ready ||
+        inkling_spec_extend(&s->inkling_spec, &e->model, &e->weights, &e->mtp_model,
+                            &e->inkling_mtp, g->buf[IK_FINAL], prefix, total, n));
+}
+
 static int inkling_session_sync(ds4_session *s, const ds4_tokens *prompt,
                                  const float *const *features,
                                  char *err, size_t errlen) {
     ds4_inkling_graph *g = &s->inkling_graph;
-    if (!s->inkling_graph_ready) {
-        payload_set_err(err, errlen, "Inkling graph is not initialized");
+    if (!s->inkling_graph_ready || s->inkling_trial_n) {
+        payload_set_err(err, errlen, "Inkling sync needs an initialized graph without pending verification");
         return 1;
     }
     for (int i = 0; i < prompt->len; i++) {
@@ -67896,6 +67959,7 @@ static int inkling_session_sync(ds4_session *s, const ds4_tokens *prompt,
     }
     int start = 0;
     if (!features && s->checkpoint_valid && !g->failed && g->position == (uint32_t)s->checkpoint.len &&
+        (!s->engine->mtp_ready || (inkling_spec_valid(&s->inkling_spec) && s->inkling_spec.position == g->position)) &&
         prompt->len >= s->checkpoint.len && ds4_tokens_starts_with(prompt, &s->checkpoint)) {
         start = s->checkpoint.len;
         if (start == prompt->len) {
@@ -67904,7 +67968,7 @@ static int inkling_session_sync(ds4_session *s, const ds4_tokens *prompt,
     } else {
         /* Convolution history cannot be reconstructed by shortening KV alone. */
         ds4_session_invalidate(s);
-        if (g->failed) {
+        if (g->failed || (s->engine->mtp_ready && !inkling_spec_valid(&s->inkling_spec))) {
             payload_set_err(err, errlen, "Inkling state reset failed");
             return 1;
         }
@@ -67915,8 +67979,8 @@ static int inkling_session_sync(ds4_session *s, const ds4_tokens *prompt,
         if (rows > s->prefill_cap) {
             rows = s->prefill_cap;
         }
-        if (!inkling_graph_media(g, &s->engine->model, &s->engine->weights,
-                                  prompt->v + start, rows, features ? features + start : NULL)) {
+        if (!inkling_session_forward(s, prompt->v, (unsigned)start + rows, rows,
+                                       features ? features + start : NULL)) {
             ds4_session_invalidate(s);
             payload_set_err(err, errlen, "Inkling prefill failed");
             return 1;
@@ -67939,21 +68003,122 @@ static int inkling_session_sync(ds4_session *s, const ds4_tokens *prompt,
 static int inkling_session_eval(ds4_session *s, int token, char *err, size_t errlen) {
     ds4_inkling_graph *g = &s->inkling_graph;
     if (token < 0 || token >= INKLING_VALID_VOCAB || !s->inkling_graph_ready ||
-        !s->checkpoint_valid || g->failed || g->position != (uint32_t)s->checkpoint.len) {
+        !s->checkpoint_valid || s->inkling_trial_n || g->failed || g->position >= g->context ||
+        g->position != (uint32_t)s->checkpoint.len ||
+        (s->engine->mtp_ready && (!inkling_spec_valid(&s->inkling_spec) || s->inkling_spec.position != g->position))) {
         payload_set_err(err, errlen, "Inkling decode needs a valid token and checkpoint");
         return 1;
     }
-    if (!inkling_graph_forward(g, &s->engine->model, &s->engine->weights, &token, 1) ||
+    token_vec_push(&s->checkpoint, token);
+    if (!inkling_session_forward(s, s->checkpoint.v, (unsigned)s->checkpoint.len, 1, NULL) ||
         !ds4_gpu_tensor_read(g->logits, 0, s->logits, DS4_N_VOCAB * sizeof(float))) {
         ds4_session_invalidate(s);
         payload_set_err(err, errlen, "Inkling decode failed");
         return 1;
     }
-    token_vec_push(&s->checkpoint, token);
     s->mtp_draft_valid = false;
     return 0;
 }
+
+static void inkling_trial_failed(ds4_session *s) {
+    /* Partial GPU work is unusable. Rust owns the explicit invalidate that
+     * resets both graphs and advances native and host generations once. */
+    s->checkpoint_valid = false;
+    s->inkling_trial_n = 0;
+    s->mtp_draft_valid = false;
+    s->inkling_graph.failed = true;
+    s->inkling_spec.draft.graph.failed = true;
+}
 #endif
+
+int ds4_session_inkling_trial(ds4_session *s, int first, int max_tokens,
+                               int *tokens, int *target, int cap,
+                               char *err, size_t errlen) {
+#ifdef DS4_NO_GPU
+    (void)s; (void)first; (void)max_tokens; (void)tokens; (void)target; (void)cap;
+    payload_set_err(err, errlen, "Inkling MTP requires CUDA");
+    return -1;
+#else
+    if (!s || !ds4_session_is_inkling(s) || !tokens || !target || cap <= 0) {
+        payload_set_err(err, errlen, "invalid Inkling trial output");
+        return -1;
+    }
+    if (max_tokens <= 0 || !s->engine->mtp_ready) {
+        return 0;
+    }
+    ds4_engine *e = s->engine;
+    ds4_inkling_graph *g = &s->inkling_graph;
+    if (!s->inkling_graph_ready || !s->checkpoint_valid || s->inkling_trial_n ||
+        g->failed || g->position != (unsigned)s->checkpoint.len || g->position >= g->context ||
+        !inkling_spec_valid(&s->inkling_spec) || s->inkling_spec.position != g->position ||
+        first < 0 || first >= INKLING_VALID_VOCAB) {
+        payload_set_err(err, errlen, "Inkling trial needs a valid token and committed checkpoint");
+        return -1;
+    }
+    unsigned n = (unsigned)max_tokens;
+    if (n > (unsigned)cap) {
+        n = (unsigned)cap;
+    }
+    if (n > IK_VERIFY_ROWS) {
+        n = IK_VERIFY_ROWS;
+    }
+    if (n > (unsigned)e->mtp_draft_tokens + 1) {
+        n = (unsigned)e->mtp_draft_tokens + 1;
+    }
+    if (n > g->context - g->position) {
+        n = g->context - g->position;
+    }
+    int predicted[IK_VERIFY_ROWS];
+    s->inkling_trial[0] = first;
+    if ((n > 1 && !inkling_spec_propose(&s->inkling_spec, &e->model, &e->weights,
+                                        &e->mtp_model, &e->inkling_mtp, s->checkpoint.v,
+                                        first, s->inkling_trial + 1, n - 1)) ||
+        !inkling_target_verify(g, &e->model, &e->weights, s->inkling_trial, n, predicted)) {
+        inkling_trial_failed(s);
+        payload_set_err(err, errlen, "Inkling draft/target verification failed");
+        return -1;
+    }
+    s->inkling_trial_n = n;
+    memcpy(tokens, s->inkling_trial, n * sizeof(*tokens));
+    memcpy(target, predicted, n * sizeof(*target));
+    return (int)n;
+#endif
+}
+
+int ds4_session_inkling_commit(ds4_session *s, int keep, char *err, size_t errlen) {
+#ifdef DS4_NO_GPU
+    (void)s; (void)keep;
+    payload_set_err(err, errlen, "Inkling MTP requires CUDA");
+    return 1;
+#else
+    if (!s || !ds4_session_is_inkling(s) || !s->engine->mtp_ready ||
+        !s->checkpoint_valid || keep <= 0 || (unsigned)keep > s->inkling_trial_n) {
+        payload_set_err(err, errlen, "invalid Inkling accepted prefix");
+        return 1;
+    }
+    ds4_engine *e = s->engine;
+    ds4_inkling_graph *g = &s->inkling_graph;
+    if (!inkling_target_keep(g, &e->model, &e->weights, (unsigned)keep)) {
+        inkling_trial_failed(s);
+        payload_set_err(err, errlen, "Inkling target state restore failed");
+        return 1;
+    }
+    for (int i = 0; i < keep; i++) {
+        token_vec_push(&s->checkpoint, s->inkling_trial[i]);
+    }
+    if (!inkling_spec_extend(&s->inkling_spec, &e->model, &e->weights, &e->mtp_model,
+                              &e->inkling_mtp, g->buf[IK_FINAL], s->checkpoint.v,
+                              (unsigned)s->checkpoint.len, (unsigned)keep) ||
+        !ds4_gpu_tensor_read(g->logits, 0, s->logits, DS4_N_VOCAB * sizeof(float))) {
+        inkling_trial_failed(s);
+        payload_set_err(err, errlen, "Inkling accepted draft state update failed");
+        return 1;
+    }
+    s->inkling_trial_n = 0;
+    s->mtp_draft_valid = false;
+    return 0;
+#endif
+}
 
 int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
     if (!s || !prompt || prompt->len <= 0 || prompt->len > s->ctx_size) {
@@ -70705,7 +70870,11 @@ void ds4_session_invalidate(ds4_session *s) {
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
     if (ds4_session_is_inkling(s) && s->inkling_graph_ready) {
+        s->inkling_trial_n = 0;
         (void)inkling_graph_reset(&s->inkling_graph);
+        if (s->engine->mtp_ready) {
+            (void)inkling_spec_reset(&s->inkling_spec);
+        }
     } else if (ds4_session_is_glm53(s) && s->glm53_graph_ready) {
         (void)glm53_graph_reset(&s->glm53_graph);
     } else if (ds4_session_is_solar(s)) {
@@ -70735,10 +70904,14 @@ void ds4_session_rewind(ds4_session *s, int pos) {
     s->checkpoint.len = pos;
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_inkling(s) && pos != old_pos) {
+    if (ds4_session_is_inkling(s) && (pos != old_pos || s->inkling_trial_n)) {
         s->checkpoint_valid = false;
+        s->inkling_trial_n = 0;
         if (s->inkling_graph_ready) {
             (void)inkling_graph_reset(&s->inkling_graph);
+            if (s->engine->mtp_ready) {
+                (void)inkling_spec_reset(&s->inkling_spec);
+            }
         }
     } else if (ds4_session_is_glm53(s) && pos != old_pos) {
         s->checkpoint_valid = false;

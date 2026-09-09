@@ -28,8 +28,8 @@ revision, a sidecar role and BF16 recipe. Main loading rejects MTP-only files.
 catalog and native shape. Native binding resolves all 888 main and 160 draft
 tensors, including media weights, without reading their payloads; the real
 GGUF descriptor gate checks each name and exactly-once coverage. Rust opening
-allows a full CUDA model and rejects distributed slices, steering and explicit
-draft/media sidecars until their Inkling paths are implemented.
+allows a full CUDA model with the exact MTP-BF16 sidecar. It rejects distributed
+slices, steering, DSpark and external media sidecars.
 
 The Rust tokenizer reads the embedded source JSON: 199998 BPE entries,
 60 fixed special IDs, Unicode segmentation and `ignore_merges=true`.
@@ -105,8 +105,8 @@ invalidate and rewind followed by replay. The MQ85GB session gate matched
 cold/reused logits and measured exactly 100,306,688 graph bytes at context 32,
 matching its memory quote; host session parity also passed. The default
 prefill cap is 64 (`DS4_INKLING_PREFILL_CHUNK`, range 1–2048, capped by context).
-Batching, snapshots, distributed execution and speculative drafts remain
-unavailable until their Inkling-specific state paths are implemented.
+Batching, snapshots and distributed execution remain unavailable until their
+Inkling-specific state paths are implemented.
 
 Rust CLI startup loaded the actual MQ85GB through the host tensor/vocabulary
 tables and completed a 28-token source-template chat prefill. All 200058
@@ -160,9 +160,8 @@ smokes, not broad ASR or multimodal quality qualification.
    parity. Cover local-ring wrap, global attention and convolution history.
 4. Broaden media quality/codec coverage beyond the tested PNG/JPEG and 16 kHz
    WAV fixtures, including longer and mixed requests.
-5. Connect all eight BF16 MTP layers, hidden-state chaining, draft verification
-   and accepted-prefix rollback for KV and convolution state. Compare MTP
-   off/on tokens and committed state across accept/reject cases.
+5. Connect MTP to serial HTTP generation and qualify stop, streaming and
+   continuation behavior. Extend MTP off/on checks beyond short fixtures.
 6. Qualify VMM owner/worker loading, memory admission, session reuse/rewind,
    persistence, concurrent serving, API behavior and end-to-end performance
    on the requested artifacts. Update supported-family docs only after this.
@@ -218,8 +217,23 @@ remaining target hidden rows are recomputed for each proposal, then rolled
 back before the next depth. An actual-weight component gate with supplied
 target hidden matched full-prefix rotation for lengths 1–41, chunks 1/3/13
 and 1–8 draft tokens, including all stable KV/convolution state. Repeated
-proposals, reset, invalid inputs and context limits passed. Session lifetime
-and Rust acceptance still need to connect these graph operations.
+proposals, reset, invalid inputs and context limits passed.
+
+Sessions now load the sidecar, maintain all eight draft states during prefill
+and decode, and expose bounded trial/commit operations through the bridge.
+Rust chooses the greedy accepted prefix, stopping at the first mismatch or
+EOS. A native MQ85GB/MTP test generated 18 greedy tokens in seven trials;
+every committed target logit, KV byte and convolution value matched ordinary
+decode. Cold replay, invalid commit bounds, injected restore failure and
+recovery passed, as did image/audio identity checks with MTP attached.
+Context-32 allocation matched its 164265472-byte quote exactly.
+
+Rust CLI MTP on/off produced the same five-capital answer with a shared
+base+MTP VMM owner, default aligned Q8, context 128, prefill chunk 1,
+temperature zero, thinking disabled and a 32-token output cap. This checks
+the application path, not MTP throughput. A sidecar-only owner with a
+self-loaded base failed during prefill; its CUDA cause is unresolved. Use
+the full base+MTP owner topology for this scoped runtime validation.
 
 ## Checks
 

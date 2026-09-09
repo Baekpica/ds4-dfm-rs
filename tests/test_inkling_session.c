@@ -103,9 +103,109 @@ static void check_audio_sync(ds4_session *s) {
     puts("Inkling audio session: mixed/audio-only, repeat/change and invalid state passed");
 }
 
+static void check_targets(const ds4_session *s, const ds4_session *reference) {
+    const ds4_inkling_graph *g = &s->inkling_graph, *r = &reference->inkling_graph;
+    check(g->position == r->position && g->position == (unsigned)s->checkpoint.len,
+          "Inkling MTP target frontier differs");
+    check(memcmp(s->logits, reference->logits, INKLING_VALID_VOCAB * sizeof(float)) == 0,
+          "Inkling MTP target logits differ");
+    const size_t capacity = (size_t)(g->context + IK_LOCAL) * 2 * IK_KV * sizeof(uint16_t);
+    unsigned char *got = xmalloc(capacity), *want = xmalloc(capacity);
+    for (unsigned i = 0; i < INKLING_LAYERS; i++) {
+        const unsigned valid = g->position < g->layer[i].capacity ? g->position : g->layer[i].capacity;
+        size_t bytes = (size_t)valid * 2 * IK_KV * sizeof(uint16_t);
+        check(ds4_gpu_tensor_read(g->layer[i].kv, 0, got, bytes) &&
+              ds4_gpu_tensor_read(r->layer[i].kv, 0, want, bytes) && memcmp(got, want, bytes) == 0,
+              "Inkling MTP committed target KV differs");
+        for (unsigned j = 0; j < IK_CONV_STREAMS; j++) {
+            bytes = IK_HISTORY * (j < 2 ? IK_KV : IK_HIDDEN) * sizeof(float);
+            check(ds4_gpu_tensor_read(g->layer[i].conv[j], 0, got, bytes) &&
+                  ds4_gpu_tensor_read(r->layer[i].conv[j], 0, want, bytes) && memcmp(got, want, bytes) == 0,
+                  "Inkling MTP committed target convolution differs");
+        }
+    }
+    free(got); free(want);
+}
+
+static void check_mtp(ds4_session *s, const ds4_tokens *prompt) {
+    if (!s->engine->mtp_ready) {
+        return;
+    }
+    /* A second session shares the same target mapping; no second weight copy. */
+    ds4_engine base_engine = *s->engine;
+    base_engine.mtp_ready = false;
+    ds4_session *base = NULL;
+    char err[256] = {0};
+    check(ds4_session_create(&base, &base_engine, s->ctx_size) == 0, "Inkling MTP reference session failed");
+    check(ds4_session_sync(s, prompt, err, sizeof(err)) == 0 &&
+          ds4_session_sync(base, prompt, err, sizeof(err)) == 0, err);
+    ds4_tokens transcript = {0};
+    ds4_tokens_copy(&transcript, prompt);
+    unsigned cycles = 0, generated = 0;
+    while (generated < 18) {
+        int tokens[IK_VERIFY_ROWS], target[IK_VERIFY_ROWS];
+        const int first = ds4_session_argmax(s), before = ds4_session_pos(s);
+        check(first == ds4_session_argmax(base), "Inkling MTP first token differs");
+        const int n = ds4_session_inkling_trial(s, first, 18 - (int)generated,
+                                               tokens, target, IK_VERIFY_ROWS, err, sizeof(err));
+        check(n > 0 && n <= IK_VERIFY_ROWS && n <= 18 - (int)generated, err);
+        check(ds4_session_pos(s) == before && tokens[0] == first, "Inkling trial committed tokens early");
+        check(ds4_session_eval(s, first, err, sizeof(err)) != 0 &&
+              ds4_session_sync(s, &transcript, err, sizeof(err)) != 0 &&
+              ds4_session_inkling_trial(s, first, 1, tokens, target, IK_VERIFY_ROWS, err, sizeof(err)) < 0,
+              "Inkling allowed another operation during pending verification");
+        check(ds4_session_inkling_commit(s, 0, err, sizeof(err)) != 0 &&
+              ds4_session_inkling_commit(s, n + 1, err, sizeof(err)) != 0 &&
+              ds4_session_pos(s) == before, "Inkling accepted invalid commit bounds");
+        int keep = 1;
+        while (keep < n && tokens[keep - 1] != 200006 && tokens[keep] == target[keep - 1]) {
+            keep++;
+        }
+        check(ds4_session_inkling_commit(s, keep, err, sizeof(err)) == 0, err);
+        check(ds4_session_inkling_commit(s, keep, err, sizeof(err)) != 0,
+              "Inkling committed one trial twice");
+        for (int i = 0; i < keep; i++) {
+            check(tokens[i] == ds4_session_argmax(base), "Inkling MTP accepted a non-greedy token");
+            check(ds4_session_eval(base, tokens[i], err, sizeof(err)) == 0, err);
+            ds4_tokens_push(&transcript, tokens[i]);
+        }
+        check_targets(s, base);
+        check(s->inkling_spec.position == (unsigned)transcript.len && inkling_spec_valid(&s->inkling_spec),
+              "Inkling draft boundary did not follow committed target");
+        generated += (unsigned)keep;
+        cycles++;
+    }
+    ds4_session_invalidate(s);
+    check(ds4_session_sync(s, &transcript, err, sizeof(err)) == 0, err);
+    check_targets(s, base);
+    /* A failed restore must poison state; the host owns the one generation
+     * change when it invalidates both native and Rust timelines. */
+    int tokens[IK_VERIFY_ROWS], target[IK_VERIFY_ROWS];
+    const int first = ds4_session_argmax(s);
+    check(ds4_session_inkling_trial(s, first, 2, tokens, target,
+                                    IK_VERIFY_ROWS, err, sizeof(err)) == 2, err);
+    const uint64_t generation = ds4_session_generation(s);
+    s->inkling_graph.undo[INKLING_LAYERS - 1].streams = 0;
+    check(ds4_session_inkling_commit(s, 1, err, sizeof(err)) != 0,
+          "Inkling committed incomplete target restore");
+    check(ds4_session_generation(s) == generation,
+          "Inkling failed commit changed host-owned generation");
+    check(!s->checkpoint_valid && s->inkling_graph.failed &&
+          s->inkling_spec.draft.graph.failed && !s->inkling_trial_n,
+          "Inkling failed commit left usable state");
+    ds4_session_invalidate(s);
+    check(ds4_session_generation(s) == generation + 1,
+          "Inkling recovery changed generation more than once");
+    check(ds4_session_sync(s, &transcript, err, sizeof(err)) == 0, err);
+    check_targets(s, base);
+    printf("Inkling native MTP: %u cycles, %u greedy tokens, all target logits/KV/convolution exact\n", cycles, generated);
+    ds4_session_free(base);
+    ds4_tokens_free(&transcript);
+}
+
 int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s <MQ85GB-first.gguf>\n", argv[0]);
+    if (argc != 2 && argc != 4) {
+        fprintf(stderr, "usage: %s <MQ85GB-first.gguf> [<MTP.gguf> <manifest>]\n", argv[0]);
         return 2;
     }
     const ds4_host_shape host = {.variant = DS4_VARIANT_INKLING_SMALL};
@@ -130,6 +230,14 @@ int main(int argc, char **argv) {
     e.vocab.n_vocab = INKLING_VALID_VOCAB;
     check(ds4_gpu_init() && ds4_gpu_set_model_map(e.model.map, e.model.size),
           "Inkling GPU/map initialization failed");
+    if (argc == 4) {
+        model_open(&e.mtp_model, argv[2], false, false);
+        inkling_bind_draft(&e.inkling_mtp, &e.mtp_model);
+        check(ds4_gpu_import_model_ipc_manifest(e.mtp_model.map, e.mtp_model.size, argv[3], "mtp"),
+              "Inkling MTP owner import failed");
+        e.mtp_ready = true;
+        e.mtp_draft_tokens = INKLING_DRAFT_LAYERS;
+    }
     setenv("DS4_SESSION_LAZY_GRAPH", "1", 1);
     ds4_session *s = NULL;
     const int context = 32;
@@ -204,12 +312,16 @@ int main(int argc, char **argv) {
     printf("Inkling session: lazy alloc, no-op/extend/decode/reset/rewind parity; "
            "estimate=%llu measured=%llu\n", (unsigned long long)estimate,
            (unsigned long long)measured);
+    check_mtp(s, &prompt);
     check_image_sync(s);
     check_audio_sync(s);
     ds4_session_free(s);
     check(session_tensors_census_live() == 0, "Inkling leaked session tensors");
     ds4_gpu_cleanup();
     model_close(&e.model);
+    if (e.mtp_ready) {
+        model_close(&e.mtp_model);
+    }
     ds4_tokens_free(&prompt);
     free(base);
     free(got);

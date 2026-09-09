@@ -15,6 +15,7 @@ mod identify;
 mod inkling;
 mod inkling_audio;
 mod inkling_media;
+mod inkling_mtp;
 mod layout;
 mod mapped;
 mod mem;
@@ -201,7 +202,7 @@ impl Default for OpenTuning {
 fn inkling_open_check(
     backend: Backend,
     tuning: &OpenTuning,
-    mtp: Option<&str>,
+    _mtp: Option<&str>,
     dspark: Option<&str>,
     distributed: Option<&DistributedConfig>,
 ) -> Result<()> {
@@ -212,10 +213,10 @@ fn inkling_open_check(
         || tuning.steering_ffn != 0.0
     {
         "Inkling does not support directional steering"
-    } else if mtp.is_some() || dspark.is_some() {
-        "Inkling MTP graph integration is not implemented yet"
+    } else if dspark.is_some() {
+        "Inkling does not support DSpark sidecars"
     } else if tuning.vision_path.is_some() {
-        "Inkling uses embedded media weights; encoder integration is not implemented yet"
+        "Inkling uses embedded image/audio weights"
     } else {
         return Ok(());
     };
@@ -1781,6 +1782,9 @@ impl Session<'_> {
         max_tokens: i32,
         eos: i32,
     ) -> Result<Vec<i32>> {
+        if self.host.family == ModelFamily::Inkling {
+            return self.eval_inkling_argmax(first, max_tokens, eos);
+        }
         let mut accepted = vec![0i32; 17];
         let mut err = [0u8; 512];
         let n = unsafe {
@@ -2268,12 +2272,7 @@ mod tests {
         for backend in [Backend::Cpu, Backend::Metal] {
             assert!(inkling_open_check(backend, &tuning, None, None, None).is_err());
         }
-        assert!(
-            inkling_open_check(Backend::Cuda, &tuning, Some("mtp.gguf"), None, None)
-                .unwrap_err()
-                .message
-                .contains("MTP")
-        );
+        assert!(inkling_open_check(Backend::Cuda, &tuning, Some("mtp.gguf"), None, None).is_ok());
         assert!(
             inkling_open_check(Backend::Cuda, &tuning, None, Some("draft.gguf"), None).is_err()
         );
