@@ -30,7 +30,8 @@ Selection uses the directory containing the opened GGUF (the first shard for
 a split model), in this order:
 
 1. `chat_template.jinja`.
-2. `tokenizer_config.json`'s `chat_template` string or `default` template.
+2. `tokenizer_config.json`'s `chat_template` string or `default` template
+   from a named array or object.
 3. GGUF `tokenizer.chat_template`.
 
 A selected empty, invalid or unsupported template fails loading; the engine

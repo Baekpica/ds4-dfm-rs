@@ -87,13 +87,7 @@ impl Template {
         let (source, origin) = if let Some(text) = read_optional(&sidecar)? {
             (text, sidecar.display().to_string())
         } else if let Some(text) = config.get("chat_template").filter(|v| !v.is_null()) {
-            let text = text
-                .as_str()
-                .or_else(|| text.get("default").and_then(Value::as_str))
-                .ok_or_else(|| {
-                    asset_error("tokenizer_config chat_template needs a string or default template")
-                })?;
-            (text.into(), config_path.display().to_string())
+            (config_source(text)?, config_path.display().to_string())
         } else {
             // DeepSeek V4 publishes a Python encoder, not Jinja. Its historical
             // GGUF template is not that encoder; do not silently select it.
@@ -192,6 +186,23 @@ impl Template {
         let mut rendered = self.render(&context)?;
         rendered.push_str(options.prefill);
         Ok(rendered)
+    }
+}
+
+fn config_source(value: &Value) -> Result<String> {
+    use hf_chat_template::ChatTemplateField;
+    const DEFAULT_TEMPLATE: &str = "default";
+
+    if let Some(source) = value.get(DEFAULT_TEMPLATE).and_then(Value::as_str) {
+        return Ok(source.into());
+    }
+    match serde_json::from_value(value.clone()).map_err(asset_error)? {
+        ChatTemplateField::Single(source) => Ok(source),
+        ChatTemplateField::Named(templates) => templates
+            .into_iter()
+            .find(|template| template.name == DEFAULT_TEMPLATE)
+            .map(|template| template.template)
+            .ok_or_else(|| asset_error("named chat_template needs a default template")),
     }
 }
 

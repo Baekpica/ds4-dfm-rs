@@ -71,6 +71,48 @@ fn config_then_embedded() {
 }
 
 #[test]
+fn named_config_uses_default() {
+    let fixture = Fixture::new("named-config", Some("embedded"));
+    std::fs::write(
+        fixture.0.join("tokenizer_config.json"),
+        serde_json::to_vec(&json!({
+            "bos_token": {"content": "<BOS>"},
+            "chat_template": [
+                {"name": "tool_use", "template": "tools"},
+                {"name": "default", "template": "{{ bos_token }}default"}
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let template = fixture.load().unwrap().unwrap();
+    assert_eq!(template.render(&json!({})).unwrap(), "<BOS>default");
+    assert!(template.source().ends_with("tokenizer_config.json"));
+}
+
+#[test]
+fn bad_named_config_is_an_error() {
+    let fixture = Fixture::new("bad-named-config", Some("embedded"));
+    for templates in [
+        json!([]),
+        json!([{"name": "tool_use", "template": "tools"}]),
+        json!([{"name": "default", "template": " "}]),
+        json!([{"name": "default", "template": "{% if %}"}]),
+        json!([{"name": "default", "template": 7}]),
+    ] {
+        std::fs::write(
+            fixture.0.join("tokenizer_config.json"),
+            serde_json::to_vec(&json!({"chat_template": templates})).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            fixture.load().is_err(),
+            "invalid named template must not fall back"
+        );
+    }
+}
+
+#[test]
 fn broken_sidecar_is_an_error() {
     let fixture = Fixture::new("invalid", Some("embedded"));
     std::fs::write(fixture.0.join("chat_template.jinja"), "{% if %}").unwrap();
