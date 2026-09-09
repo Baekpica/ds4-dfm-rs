@@ -20935,6 +20935,99 @@ static bool inkling_linear(ds4_gpu_tensor *out, const ds4_model *m,
            ds4_gpu_inkling_add_scale(out, out, NULL, 1.0f, rows * w->dim[1]);
 }
 
+enum {
+    IK_IMAGE_PIXELS = 2 * 40 * 40 * 3,
+    IK_IMAGE_SCRATCH = 2 * 8 * 8 * 128,
+    IK_IMAGE_CHUNK = 16, IK_AUDIO_CHUNK = 64,
+    IK_AUDIO_BINS = 80, IK_AUDIO_LEVELS = 16,
+};
+
+static bool inkling_image_stage(ds4_gpu_tensor *out, ds4_gpu_tensor *fold,
+                                const ds4_gpu_tensor *x, const ds4_model *m,
+                                const ds4_inkling_weights *w,
+                                unsigned stage, unsigned patches) {
+    static const uint32_t rows_per_patch[] = {128, 32, 2, 1};
+    if (!m || !w || !patches || patches > IK_IMAGE_CHUNK || stage >= INKLING_IMAGE_STAGES ||
+        !w->image_linear[stage] || !w->image_norm[stage]) {
+        return false;
+    }
+    const uint32_t rows = patches * rows_per_patch[stage];
+    const uint32_t width = w->image_linear[stage]->dim[1];
+    /* Each source projection, RMSNorm and GELU has its own BF16 store. */
+    return ds4_gpu_inkling_fold(fold, x, patches, stage) &&
+        inkling_linear(out, m, w->image_linear[stage], fold, rows) &&
+        ds4_gpu_inkling_norm(out, out, m->map, m->size,
+                             w->image_norm[stage]->abs_offset, width, rows) &&
+        (stage + 1 == INKLING_IMAGE_STAGES ||
+         ds4_gpu_inkling_gelu(out, out, (uint64_t)rows * width));
+}
+
+static bool inkling_image_encode(float *out, const float *pixels, uint32_t patches,
+                                 const ds4_model *m, const ds4_inkling_weights *w) {
+    if (!out || !pixels || !patches || !m || !w) {
+        return false;
+    }
+    for (uint64_t i = 0; i < (uint64_t)patches * IK_IMAGE_PIXELS; i++) {
+        if (!isfinite(pixels[i])) {
+            return false;
+        }
+    }
+    /* HMLP patches have no cross-patch attention. Bound scratch independently
+     * of image size; keep the original patch order across workspace chunks. */
+    const uint32_t cap = patches < IK_IMAGE_CHUNK ? patches : IK_IMAGE_CHUNK;
+    const uint64_t bytes = (uint64_t)cap * IK_IMAGE_SCRATCH * sizeof(float);
+    ds4_gpu_tensor *a = ds4_gpu_tensor_alloc(bytes), *b = ds4_gpu_tensor_alloc(bytes);
+    bool ok = a && b;
+    for (uint32_t start = 0; ok && start < patches;) {
+        const uint32_t count = patches - start < cap ? patches - start : cap;
+        ok = ds4_gpu_tensor_write(a, 0, pixels + (uint64_t)start * IK_IMAGE_PIXELS,
+                                  (uint64_t)count * IK_IMAGE_PIXELS * sizeof(float));
+        for (unsigned stage = 0; ok && stage < INKLING_IMAGE_STAGES; stage++) {
+            ok = inkling_image_stage(a, b, a, m, w, stage, count);
+        }
+        if (ok) {
+            ok = ds4_gpu_tensor_read(a, 0, out + (uint64_t)start * IK_HIDDEN,
+                                     (uint64_t)count * IK_HIDDEN * sizeof(float));
+        }
+        start += count;
+    }
+    ds4_gpu_tensor_free(a);
+    ds4_gpu_tensor_free(b);
+    return ok;
+}
+
+static bool inkling_audio_encode(float *out, const int32_t *ids, uint32_t rows,
+                                 const ds4_model *m, const ds4_inkling_weights *w) {
+    if (!out || !ids || !rows || !m || !w || !w->audio_embed || !w->audio_norm) {
+        return false;
+    }
+    /* Reject the complete request before work, including invalid later chunks. */
+    for (uint64_t i = 0; i < (uint64_t)rows * IK_AUDIO_BINS; i++) {
+        if (ids[i] < 0 || ids[i] >= IK_AUDIO_LEVELS) {
+            return false;
+        }
+    }
+    const uint32_t cap = rows < IK_AUDIO_CHUNK ? rows : IK_AUDIO_CHUNK;
+    ds4_gpu_tensor *codes = ds4_gpu_tensor_alloc((uint64_t)cap * IK_AUDIO_BINS * sizeof(int32_t));
+    ds4_gpu_tensor *features = ds4_gpu_tensor_alloc((uint64_t)cap * IK_HIDDEN * sizeof(float));
+    bool ok = codes && features;
+    for (uint32_t start = 0; ok && start < rows;) {
+        const uint32_t count = rows - start < cap ? rows - start : cap;
+        ok = ds4_gpu_tensor_write(codes, 0, ids + (uint64_t)start * IK_AUDIO_BINS,
+                                   (uint64_t)count * IK_AUDIO_BINS * sizeof(int32_t)) &&
+            ds4_gpu_inkling_audio(features, codes, m->map, m->size,
+                                   w->audio_embed->abs_offset, count) &&
+            ds4_gpu_inkling_norm(features, features, m->map, m->size,
+                                  w->audio_norm->abs_offset, IK_HIDDEN, count) &&
+            ds4_gpu_tensor_read(features, 0, out + (uint64_t)start * IK_HIDDEN,
+                                  (uint64_t)count * IK_HIDDEN * sizeof(float));
+        start += count;
+    }
+    ds4_gpu_tensor_free(codes);
+    ds4_gpu_tensor_free(features);
+    return ok;
+}
+
 static bool inkling_routed(ds4_gpu_tensor *out, const ds4_model *m,
                            const ds4_tensor *w, const ds4_gpu_tensor *x,
                            const ds4_gpu_tensor *ids, uint32_t rows, uint32_t used) {

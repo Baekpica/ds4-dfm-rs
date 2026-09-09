@@ -48,6 +48,17 @@ It uses synthetic inputs and no model weights:
 python make_moe_vectors.py moe-vectors.h
 ```
 
-These fixtures cover catalogs, tokenizer, chat framing and MoE primitives.
-They contain no full-model logits or media encoder outputs and do not
-establish serving or API parity.
+`make_media_vectors.py` extracts only the ten BF16 media tensors from local
+MQ85GB shards and writes CPU image/audio encoder references to an ignored
+directory. The manifest records every extracted tensor's source offset and
+SHA-256. It follows the SGLang CUDA norm contract and uses FP64 matmul/sums
+before BF16 stores; CUDA reduction differences are measured by the gate.
+
+```sh
+python make_media_vectors.py /path/to/MQ85GB /path/to/scratch/media-reference
+```
+
+Run `tests/test_inkling_encoders /path/to/scratch/media-reference` through
+the host memory guard. This checks all image stages, audio features, and
+item order across workspace chunks. It does not cover preprocessing,
+full-model logits, serving or API parity.
