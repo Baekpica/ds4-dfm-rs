@@ -2581,6 +2581,21 @@ int ds4_gpu_inkling_kv_store(
         ds4_gpu_tensor *cache, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
         const ds4_gpu_tensor *position, uint32_t rows, uint32_t capacity);
 
+/* Native BF16 RMS weight [width], epsilon 1e-6. F32 x/out [rows,width]
+ * carry BF16 values: round x, reduce/multiply in FP32, round output once.
+ * Exact in-place output is allowed; partial overlap is rejected. */
+int ds4_gpu_inkling_norm(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x, const void *model_map,
+        uint64_t model_size, uint64_t weight_offset, uint32_t width, uint32_t rows);
+
+/* BF16(BF16(a)*scale + BF16(b)); NULL b omits the addition. Use scale=1
+ * for residuals or plain projection rounding, NULL b for dense/global or
+ * logits-input scaling. Scale is a finite model constant, fixed in capture.
+ * Exact out==a/out==b is supported; partial writable overlap is rejected. */
+int ds4_gpu_inkling_add_scale(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *a, const ds4_gpu_tensor *b,
+        float scale, uint64_t count);
+
 /* Model-family router semantics used by Solar Open 2 and EXAONE: sigmoid
  * probabilities, top-k selection on probability + optional bias, then
  * normalization of the selected UNBIASED probabilities and final scaling. */

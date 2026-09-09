@@ -61,8 +61,8 @@ CUDA attention preparation projects each head's 16 relative features into
 the source log scale after BF16 rounding, starting beyond position 127999.
 Absolute positions stay live on device during captured replay. Eight GB10
 shape cases and five replays matched the FP64 formula at BF16 boundaries;
-Compute Sanitizer reported zero errors. QK RMSNorm and native graph
-integration remain pending.
+Compute Sanitizer reported zero errors. Native graph integration remains
+pending.
 
 CUDA GQA attention now reads the committed BF16 KV prefix and current K/V
 without mutating the cache. A separate store commits the accepted prefix,
@@ -72,6 +72,13 @@ covered window and relative-extent boundaries. Fourteen captured replays per
 geometry matched output and cache through changing positions and ring wrap.
 Rejected K/V suffixes left accepted outputs and committed state unchanged.
 Compute Sanitizer reported zero errors. These remain component gates.
+
+BF16 RMSNorm and scale/residual primitives cover the text, attention-head
+and HMLP widths. They preserve FP32 normalization/weight arithmetic before
+the output cast and invalidate stale producer-Q8 data on overwritten buffers.
+GB10 checks passed 18 norm shapes, exact scale/residual boundaries, seven
+captured replays and the Q8 reuse regression. Compute Sanitizer reported
+zero errors. Native layer and graph wiring remain pending.
 
 ## Remaining qualification
 

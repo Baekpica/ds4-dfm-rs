@@ -83,3 +83,4 @@ __pycache__/
 /tests/test_inkling_moe
 /tests/test_inkling_attn_prep
 /tests/test_inkling_attention
+/tests/test_inkling_norm

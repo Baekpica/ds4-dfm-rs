@@ -27,9 +27,11 @@ enum {
     INKLING_KV_ROW = 2 * INKLING_KV_WIDTH,
     INKLING_ATTN_WARPS = 4,
     INKLING_ATTN_DPL = INKLING_HEAD_DIM / INKLING_WARP,
+    INKLING_NORM_MAX = 16384,
 };
 static constexpr uint32_t INKLING_FLOAT_SIGN = UINT32_C(1) << 31;
 static constexpr float INKLING_TAU_ALPHA = 0.1f;
+static constexpr float INKLING_RMS_EPS = 1e-6f;
 
 static __device__ __forceinline__ float inkling_bf16(float value) {
     return __bfloat162float(__float2bfloat16_rn(value));
@@ -497,4 +499,77 @@ extern "C" int ds4_gpu_inkling_kv_store(
         (uint16_t *)cache->ptr, (const float *)k->ptr, (const float *)v->ptr,
         (const uint32_t *)position->ptr, rows, capacity, start, count);
     return cuda_ok(cudaGetLastError(), "Inkling KV store launch");
+}
+
+static __global__ void inkling_norm_kernel(
+        float *out, const float *x, const uint16_t *weight, uint32_t width, uint32_t rows) {
+    __shared__ float partial[INKLING_THREADS];
+    for (uint64_t row = blockIdx.x; row < rows; row += gridDim.x) {
+        const float *xr = x + row * width;
+        float sum = 0.0f;
+        for (unsigned i = threadIdx.x; i < width; i += blockDim.x) {
+            const float value = inkling_bf16(xr[i]);
+            sum = __fadd_rn(sum, __fmul_rn(value, value));
+        }
+        partial[threadIdx.x] = sum;
+        __syncthreads();
+        for (unsigned stride = INKLING_THREADS / 2; stride; stride /= 2) {
+            if (threadIdx.x < stride) { partial[threadIdx.x] = __fadd_rn(partial[threadIdx.x], partial[threadIdx.x + stride]); }
+            __syncthreads();
+        }
+        const float variance = __fadd_rn(__fdiv_rn(partial[0], (float)width), INKLING_RMS_EPS);
+        const float scale = rsqrtf(variance);
+        for (unsigned i = threadIdx.x; i < width; i += blockDim.x) {
+            const float w = __uint_as_float((uint32_t)weight[i] << 16);
+            // The CUDA source applies the BF16 weight in FP32, before its
+            // only output cast; do not round the normalized value first.
+            out[row * width + i] = inkling_bf16(__fmul_rn(__fmul_rn(inkling_bf16(xr[i]), scale), w));
+        }
+        __syncthreads();
+    }
+}
+
+extern "C" int ds4_gpu_inkling_norm(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x, const void *model_map,
+        uint64_t model_size, uint64_t weight_offset, uint32_t width, uint32_t rows) {
+    if (!out || !x || !model_map || !width || !rows || width > INKLING_NORM_MAX ||
+        weight_offset % sizeof(uint16_t) || weight_offset > model_size ||
+        (uint64_t)width * sizeof(uint16_t) > model_size - weight_offset) { return 0; }
+    const uint64_t bytes = (uint64_t)rows * width * sizeof(float);
+    if (out->bytes < bytes || x->bytes < bytes ||
+        (out->ptr != x->ptr && inkling_overlap(out, bytes, x, bytes))) { return 0; }
+    const uint16_t *weight = (const uint16_t *)cuda_resolve_weight_ptr(
+        model_map, weight_offset, (uint64_t)width * sizeof(uint16_t), 0, "inkling RMS weight");
+    if (!weight) { return 0; }
+    cuda_norm_q8_invalidate(out->ptr);
+    const unsigned blocks = rows < INKLING_MAX_BLOCKS ? rows : INKLING_MAX_BLOCKS;
+    inkling_norm_kernel<<<blocks, INKLING_THREADS, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)x->ptr, weight, width, rows);
+    return cuda_ok(cudaGetLastError(), "Inkling RMSNorm launch");
+}
+
+static __global__ void inkling_add_scale_kernel(
+        float *out, const float *a, const float *b, float scale, uint64_t count) {
+    for (uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+         i < count; i += (uint64_t)gridDim.x * blockDim.x) {
+        float value = __fmul_rn(inkling_bf16(a[i]), scale);
+        if (b) { value = __fadd_rn(value, inkling_bf16(b[i])); }
+        out[i] = inkling_bf16(value);
+    }
+}
+
+extern "C" int ds4_gpu_inkling_add_scale(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *a, const ds4_gpu_tensor *b,
+        float scale, uint64_t count) {
+    if (!out || !a || !count || count > UINT64_MAX / sizeof(float) || !isfinite(scale)) { return 0; }
+    const uint64_t bytes = count * sizeof(float);
+    if (out->bytes < bytes || a->bytes < bytes ||
+        (out->ptr != a->ptr && inkling_overlap(out, bytes, a, bytes)) ||
+        (b && (b->bytes < bytes || (out->ptr != b->ptr && inkling_overlap(out, bytes, b, bytes))))) { return 0; }
+    cuda_norm_q8_invalidate(out->ptr);
+    const uint64_t grid = (count + INKLING_THREADS - 1) / INKLING_THREADS;
+    const unsigned blocks = (unsigned)(grid < INKLING_MAX_BLOCKS ? grid : INKLING_MAX_BLOCKS);
+    inkling_add_scale_kernel<<<blocks, INKLING_THREADS, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)a->ptr, b ? (const float *)b->ptr : NULL, scale, count);
+    return cuda_ok(cudaGetLastError(), "Inkling BF16 scale/residual launch");
 }
