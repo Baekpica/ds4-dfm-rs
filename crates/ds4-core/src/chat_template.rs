@@ -161,6 +161,27 @@ impl Template {
         tools: &[Value],
         options: ChatOptions,
     ) -> Result<String> {
+        let mut messages = messages.to_vec();
+        for message in &mut messages {
+            if message["role"] != "assistant" {
+                continue;
+            }
+            // APIs may omit hidden reasoning. Supply an empty canonical field,
+            // while preserving any explicit template-specific thinking value.
+            const THINKING_FIELDS: &[&str] = &[
+                "reasoning_content",
+                "reasoning",
+                "think",
+                "think_fast",
+                "think_faster",
+            ];
+            if !THINKING_FIELDS
+                .iter()
+                .any(|field| message.get(field).is_some())
+            {
+                message["reasoning_content"] = "".into();
+            }
+        }
         let context = json!({
             "messages": messages,
             "tools": tools,
