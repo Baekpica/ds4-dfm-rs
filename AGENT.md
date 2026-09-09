@@ -11,6 +11,9 @@ The [v0.1.0 gate ledger](docs/releases/v0.1.0.md) records verified production
 qualification and workload limits; the [v0.1.1 ledger](docs/releases/v0.1.1.md)
 records the performance workflow. Dated reports establish only their
 recorded commit, artifact and workload; old PIDs and handoffs are not live state.
+The [v0.1.2 ledger](docs/releases/v0.1.2.md) records shared Jinja qualification.
+New families use [official input templates](docs/chat-templates.md); keep
+tokenizer/media processing and output protocol work outside input grammar.
 
 ## Inference Performance Optimization Guidelines
 

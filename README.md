@@ -19,10 +19,12 @@ retired when a better model makes it irrelevant.
 
 ## So, what can I do with this software?
 
-- Run one of the eight validated model families on a DGX Spark without pulling
+- Run one of the nine validated model families on a DGX Spark without pulling
   in a general inference framework.
 - Serve OpenAI-compatible Chat, Completions, and Responses APIs, Anthropic
-  Messages, or use the native coding agent against the same model lifecycle.
+  Messages, or use the built-in DeepSeek DSML coding agent.
+- Execute official [model Jinja templates](docs/chat-templates.md) for chat
+  input, including tool history and REPL turns.
 - Use long contexts, persistent KV state, distributed execution, and the
   family-specific acceleration path that was actually validated for the model.
 - Serve Qwen3.8 Flash Next Q5 with SSD-PLE sidecars, embedded MTP, and still
@@ -81,10 +83,16 @@ optimized C/CUDA/Metal backend, Git ancestry and authorship, and the full
 
 ## Status
 
-**v0.1.1:** measured performance workflows and optional official Qwen FP8 PLE
-sidecars. The [release ledger](docs/releases/v0.1.1.md) records verification
-and limits; the [FP8 guide](docs/qwen38-ple-fp8.md) covers selection, KV
-compatibility and paired benchmarks.
+**v0.1.2:** official model Jinja drives Chat, Messages, Responses and CLI
+input through one Rust adapter. The [release ledger](docs/releases/v0.1.2.md)
+records local artifact and protocol checks, including the
+[Inkling Small / MTP checkpoint](docs/inkling-small.md).
+DeepSeek V4 retains its encoder exception; see
+[template setup and boundaries](docs/chat-templates.md).
+
+The [v0.1.1 ledger](docs/releases/v0.1.1.md) records measured performance
+workflows and optional official Qwen FP8 PLE sidecars; the
+[FP8 guide](docs/qwen38-ple-fp8.md) covers selection and paired benchmarks.
 
 The first independent Rust-host baseline is **v0.1.0**.
 Rust owns the host runtime, policy, serving, KV/state, distributed execution,
@@ -716,7 +724,8 @@ gates need the matching models and release hardware. The
 [migration evidence](docs/rust-migration/README.md) preserves the original
 protocols; the [v0.1.0 ledger](docs/releases/v0.1.0.md) records baseline
 qualification and the [v0.1.1 ledger](docs/releases/v0.1.1.md) records the
-performance workflow and FP8 additions. See [CONTRIBUTING.md](CONTRIBUTING.md)
+performance workflow and FP8 additions. The [v0.1.2 ledger](docs/releases/v0.1.2.md)
+records shared Jinja and Inkling scope. See [CONTRIBUTING.md](CONTRIBUTING.md)
 for the validation workflow.
 
 ## Repository layout
@@ -779,6 +788,7 @@ Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before sending a change.
 - [Documentation index](docs/README.md) — current guides, dated evidence and design records
 - [v0.1.0 release ledger](docs/releases/v0.1.0.md) — qualification, evidence and scope
 - [v0.1.1 release ledger](docs/releases/v0.1.1.md) — performance workflow and FP8 PLE
+- [v0.1.2 release ledger](docs/releases/v0.1.2.md) — official Jinja and Inkling checkpoint
 - [`CHANGELOG.md`](CHANGELOG.md) — inherited and fork-side release history
 - [`docs/LINEAGE.md`](docs/LINEAGE.md) — repository provenance and split refs
 - [`docs/rust-migration/SPLIT_READINESS.md`](docs/rust-migration/SPLIT_READINESS.md) — genesis decision and immutable evidence

@@ -36,8 +36,8 @@ It preserves literal special strings in ordinary text and recognizes them
 in rendered chat. Token output ends at ID 200006; message and thinking
 boundaries do not stop generation. Basic role messages and the four thinking
 effort levels match independently rendered source-template fixtures. Server
-tool/reasoning streams and media insertion now have targeted checks; REPL
-effort assembly remains pending.
+tool/reasoning streams and media insertion have targeted checks. Production
+input and REPL effort now use the [shared Jinja adapter](chat-templates.md).
 The tokenizer has 200058 entries; native logits must exclude the weight
 matrix's padding through row 201023.
 
@@ -152,7 +152,7 @@ smokes, not broad ASR or multimodal quality qualification.
 
 ## Remaining qualification
 
-1. Finish REPL effort placement and broader agent integration.
+1. Broaden agent and REPL qualification beyond the [v0.1.2 checks](releases/v0.1.2.md).
 2. Extend generation checks beyond short serial smokes; implement disk
    snapshots, batching and distributed execution before qualifying those paths.
 3. Extend full-model chunk/decode parity to long context and qualify
@@ -166,9 +166,9 @@ smokes, not broad ASR or multimodal quality qualification.
    qualifying that topology; extend lifecycle and sustained-load checks for
    the full base+MTP owner.
 
-Shared Rust Jinja chat-template loading is a separate follow-up. This model
-checkpoint uses the family renderer and its pinned source-template fixtures;
-it adds no Jinja dependency.
+The original model checkpoint used the family renderer and pinned template
+fixtures. The [v0.1.2 Jinja work](chat-templates.md) replaces production input
+rendering with the official source file; output protocol handling stays local.
 
 ## MTP implementation and evidence
 
