@@ -1,12 +1,11 @@
 # Inkling Small integration
 
-Work in progress; Rust text and serial HTTP image/audio paths are implemented
-with short artifact smoke tests. MTP and production serving qualification
-remain incomplete. The target is
-MQ85GB with the separate eight-layer MTP-BF16 draft stack, including text,
-image and audio input with text output, matching the
+MQ85GB and the separate eight-layer MTP-BF16 draft stack have Rust CLI and
+serial CUDA HTTP paths on DGX Spark. Short artifact checks cover text, image
+and audio input with text output, matching the modalities of the
 [base model](https://huggingface.co/thinkingmachines/Inkling-Small/blob/8cc5877b44d343f88b92086aa1fb72897950f06a/README.md).
-Catalog checks do not qualify serving.
+Long-context serving, independent full-model source parity and performance
+remain unqualified. The checks below apply to MQ85GB, not MQ89 or Q8_0 main.
 
 ## Artifact contract
 
@@ -154,17 +153,24 @@ smokes, not broad ASR or multimodal quality qualification.
 ## Remaining qualification
 
 1. Finish REPL effort placement and broader agent integration.
-2. Extend generation checks beyond short serial smokes; connect session
-   persistence and serving lifecycle.
-3. Prove chunk/decode and captured/eager full-vocabulary logits and greedy
-   parity. Cover local-ring wrap, global attention and convolution history.
+2. Extend generation checks beyond short serial smokes; implement disk
+   snapshots, batching and distributed execution before qualifying those paths.
+3. Extend full-model chunk/decode parity to long context and qualify
+   captured/eager execution. Cover local-ring wrap, global attention and
+   convolution history beyond the existing component checks.
 4. Broaden media quality/codec coverage beyond the tested PNG/JPEG and 16 kHz
    WAV fixtures, including longer and mixed requests.
-5. Connect MTP to serial HTTP generation and qualify stop, streaming and
-   continuation behavior. Extend MTP off/on checks beyond short fixtures.
-6. Qualify VMM owner/worker loading, memory admission, session reuse/rewind,
-   persistence, concurrent serving, API behavior and end-to-end performance
-   on the requested artifacts. Update supported-family docs only after this.
+5. Extend MTP off/on checks beyond short fixtures and measure acceptance,
+   prefill/decode latency and memory at the intended serving context.
+6. Resolve the sidecar-only owner/self-loaded base prefill failure before
+   qualifying that topology; extend lifecycle and sustained-load checks for
+   the full base+MTP owner.
+
+Shared Rust Jinja chat-template loading is a separate follow-up. This model
+checkpoint uses the family renderer and its pinned source-template fixtures;
+it adds no Jinja dependency.
+
+## MTP implementation and evidence
 
 Reference code is pinned to SGLang
 `03d06a764e4a83268eefd1bafc676418f7269c89` and Transformers
@@ -235,6 +241,94 @@ the application path, not MTP throughput. A sidecar-only owner with a
 self-loaded base failed during prefill; its CUDA cause is unresolved. Use
 the full base+MTP owner topology for this scoped runtime validation.
 
+At runtime commit `4ea3f94` on September 9, fresh Rust HTTP workers with that
+same owner passed 21
+identical requests each with MTP off/on (`--mtp-draft 8`). Context was 1024,
+output cap 128, default prefill chunk 64, temperature zero and thinking off.
+Visible text, finish reasons and completion-token counts matched for every
+request:
+
+- Chat, Messages and Responses: text and red PNG, buffered and SSE (12).
+- Chat: 16 kHz speech transcription, buffered and SSE, plus mixed audio/image (3).
+- Chat: substring stop, buffered and SSE, two-token cap, text follow-up,
+  and two barrier-started requests handled serially (6).
+
+With MTP attached, another 18 requests passed buffered/SSE tool calls,
+tool-result continuation and reasoning across all three message APIs.
+Forced-control and stochastic reasoning segments retained ordinary decoding.
+All 39 requests used the serial lane; the queue settled with no sheds or
+memory census faults. The worker guard recorded no pressure trip.
+
+For the first cold Chat prompt, `Name five European capitals, separated by
+commas.`, both modes emitted `Paris, London, Berlin, Rome, Madrid` with 11
+completion tokens. MTP averaged 2.75 tokens per decode step versus 1.00 off,
+but request wall time increased from 1.150 s to 3.079 s. This implementation
+establishes a correctness baseline; these short requests show no speedup and
+are not a throughput benchmark. End-to-end optimization remains pending.
+
+Model-free regressions cover output/context caps, EOS, substring stops,
+stream disconnect invalidation, malformed prefixes and forced/stochastic
+bypass. The workspace passed 950 tests with four artifact tests ignored;
+the final server suite and C-oracle parity passed 412 tests after the
+decode-step accounting fix. Format, clippy and all-target checks passed
+with existing lint warnings.
+
+## Serving
+
+Download the six MQ85GB shards and optional MTP sidecar into one directory:
+
+```sh
+hf download Baekpica/Inkling-Small-Mixed-Quant-GGUF \
+  --include 'MQ85GB/*' --local-dir ./models/Inkling-Small
+hf download Baekpica/Inkling-Small-GGUF \
+  --include 'MTP-BF16/*' --local-dir ./models/Inkling-Small
+make -j2 ds4-server ds4_weight_server CUDA_ARCH=sm_121
+```
+
+After the build exits successfully, set these paths in both terminals:
+
+```sh
+export INKLING_MAIN=./models/Inkling-Small/MQ85GB/Inkling-Small-MQ85GB-00001-of-00006.gguf
+export INKLING_MTP=./models/Inkling-Small/MTP-BF16/Inkling-Small-MTP-BF16.gguf
+mkdir -p scratch/inkling
+```
+
+Start the full weight owner in the first terminal. It retains about 86 GiB
+including aligned Q8 artifacts. Stop other large model owners before loading.
+
+```sh
+python3 tools/host_memory_guard.py --max-gib 104 --high-gib 100 \
+  --reserve-gib 12 --trip-gib 8 --timeout 0 \
+  --log scratch/inkling/owner.memory.jsonl -- \
+  ./ds4_weight_server --base "$INKLING_MAIN" --mtp "$INKLING_MTP" \
+  --scope both --backend vmm --reserve-gb 20 \
+  --manifest scratch/inkling/weights.ipc
+```
+
+Wait for both `broker listening` and `ready manifest=...`. Then start the
+serial worker in the second terminal:
+
+```sh
+DS4_CUDA_WEIGHT_IPC_MANIFEST=scratch/inkling/weights.ipc \
+DS4_CUDA_WEIGHT_IPC_SCOPE=both \
+python3 tools/host_memory_guard.py --max-gib 12 --high-gib 10 \
+  --reserve-gib 12 --timeout 0 \
+  --log scratch/inkling/server.memory.jsonl -- \
+  ./ds4-server --cuda -m "$INKLING_MAIN" --mtp "$INKLING_MTP" \
+  --mtp-draft 8 --cont-width 0 -c 1024 -n 128 \
+  --host 127.0.0.1 --port 18085 --model-id inkling-small-mq85gb
+```
+
+Wait for boot prewarm and `/v1/models`, then issue a real request. For greedy
+MTP, send `temperature: 0` and disable thinking (`reasoning_effort: "none"`
+in Chat, `reasoning: {"effort":"none"}` in Responses, or
+`thinking: {"type":"disabled"}` in Messages). Stochastic and forced-control
+segments use ordinary decoding. `DS4_MTP_SPEC_DISABLE=1` disables speculative
+steps while retaining the sidecar; omit `--mtp` and `--mtp-draft` for a worker
+without draft state. Shut down workers before their owner.
+
+This is the tested short-context launch, not a long-context memory guarantee.
+
 ## Checks
 
 ```sh
@@ -268,5 +362,5 @@ September 9: all six MQ85GB shard hashes, MTP SHA-256, real main/MTP
 metadata and tensor binding passed. The tokenizer matched 654 source
 vectors in both ordinary and rendered-chat modes, including decoded bytes;
 all four basic chat-template effort fixtures passed. Independent full-model
-source parity and serving gates remain unverified. Qwen's resident weight owner was stopped with user
-authorization before native testing; inspect current ownership before loading.
+source parity remains unverified. Inspect current ownership before loading;
+these dated checks do not describe a live service.

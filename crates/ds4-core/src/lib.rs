@@ -988,8 +988,8 @@ impl Model {
         )
     }
 
-    /// `mtp_path` / `dspark_path` attach the DeepSeek-only sibling support
-    /// models. The host resolves each sibling's bind catalog and expected
+    /// `mtp_path` attaches a DeepSeek or Inkling sibling; `dspark_path` is
+    /// DeepSeek-only. The host resolves each sibling's bind catalog and expected
     /// layouts, then native skips that sibling's name walk and layout check.
     pub fn open_with_support(
         path: &str,

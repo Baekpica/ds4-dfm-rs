@@ -68,6 +68,12 @@ Chat with the exact Q2 main GGUF and vision sidecar. Responses and Anthropic
 image shapes have model-free parser coverage, not equivalent GLM live gates.
 See the [artifact and API scope](../README.md#glm-53-flash-release-scope).
 
+Inkling Small uses serial CUDA serving with text output. Chat, Responses and
+Messages accept PNG/JPEG images; only Chat accepts 16 kHz PCM/float WAV audio.
+Legacy Completions accepts text only. The optional eight-layer MTP sidecar
+preserves the wire contracts and uses speculative decoding for unforced greedy
+tokens. See [MQ85GB validation and limits](inkling-small.md).
+
 ## Output-budget (`max_tokens`) semantics today
 
 All four parsers reject negative decode budgets with an endpoint-native

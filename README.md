@@ -203,7 +203,7 @@ tokenizer/chat contract, state lifecycle, and native execution path.
 
 | Family | GGUF architecture | Documented scope |
 |---|---|---|
-| DeepSeek V4 Flash / PRO | `deepseek4` | Flash is the main live oracle; external MTP/DSpark support is DeepSeek-only. |
+| DeepSeek V4 Flash / PRO | `deepseek4` | Flash is the main live oracle; DeepSeek MTP and DSpark sidecars. |
 | Solar Open2 250B | `solar-open2` | Recurrent KDA state, compressed GQA KV, persistent banks. |
 | K-EXAONE 236B A23B | `exaone-moe` | LLLG full/sliding GQA KV and persistent banks. |
 | Motif-3 | `motif3` | Latent KV, rotated `k_pe`, SWA rings, persistent banks. |
@@ -211,6 +211,7 @@ tokenizer/chat contract, state lifecycle, and native execution path.
 | Qwen3.8 Flash Next SSD-PLE | `qwen4exp` | Q5 main GGUF + BF16 or [official FP8 SSD-PLE](docs/qwen38-ple-fp8.md), embedded MTP, N-bank Rust scheduling, still-image input; one- and two-bank live gates. |
 | GLM 5.3 Flash | `glm5-next` | Q2 single-file GGUF plus the explicit vision sidecar; CUDA serial serving on one DGX Spark. |
 | K2-Horizon 375B A23B | `k2-horizon` | Four-shard MQ87 GGUF; IFM BPE/XML tools; continuous 32K one-bank serving on one DGX Spark. |
+| Inkling Small | `inkling` | MQ85GB + optional eight-layer MTP-BF16; serial CUDA text/image/audio input and text output. [1,024-context HTTP checks and limits](docs/inkling-small.md). |
 
 The current family contract and measured model-specific limits are documented
 in [`ds4-dfm-model-families.md`](docs/ds4-dfm-model-families.md). Arbitrary
@@ -218,7 +219,7 @@ GGUFs, alternate tensor layouts, and unlisted architectures are rejected.
 
 ### Model Zoo
 
-The six Baekpica artifacts are grouped in the
+See also the
 [`DS4-Mixed-Quant-for-Spark`](https://huggingface.co/collections/Baekpica/ds4-mixed-quant-for-spark)
 collection. Support remains limited to the validated layouts described above.
 
@@ -232,6 +233,7 @@ collection. Support remains limited to the validated layouts described above.
 | Qwen3.8 Flash Next SSD-PLE | [`Baekpica/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF`](https://huggingface.co/Baekpica/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
 | GLM 5.3 Flash | [`GLM-5.3-Flash-Q2.gguf`](https://huggingface.co/antirez/glm-5.3-flash-gguf/blob/main/GLM-5.3-Flash-Q2.gguf) + [`vision encoder`](https://huggingface.co/antirez/glm-5.3-flash-gguf/blob/main/GLM-5.3-Flash-Vision-Encoder.gguf) | [`antirez`](https://huggingface.co/antirez) |
 | K2-Horizon 375B A23B | [`Baekpica/K2-Horizon-375B-A23B-Mixed-Quant-GGUF`](https://huggingface.co/Baekpica/K2-Horizon-375B-A23B-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
+| Inkling Small | [`MQ85GB`](https://huggingface.co/Baekpica/Inkling-Small-Mixed-Quant-GGUF/tree/main/MQ85GB) + optional [`MTP-BF16`](https://huggingface.co/Baekpica/Inkling-Small-GGUF/tree/main/MTP-BF16) | [`Baekpica`](https://huggingface.co/Baekpica) |
 
 ### Qwen release scope
 
