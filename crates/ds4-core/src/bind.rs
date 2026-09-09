@@ -756,6 +756,24 @@ fn dump_name_table(header: String, names: &[BindName]) -> String {
     out
 }
 
+// Source-layout names and shape validation must describe the same tensors.
+fn inkling_names(layouts: Vec<crate::layout::LayoutSpec>) -> Vec<BindName> {
+    layouts
+        .into_iter()
+        .map(|s| BindName {
+            name: s.name,
+            need: BindNeed::Required,
+        })
+        .collect()
+}
+
+fn mtp_names(shape: &Shape) -> Vec<BindName> {
+    if shape.family == ModelFamily::Inkling {
+        return inkling_names(crate::inkling::mtp_layouts());
+    }
+    bind_mtp_names()
+}
+
 /// Names `weights_bind` looks up for the main GGUF (not MTP/DSpark siblings).
 pub fn bind_names(shape: &Shape) -> Vec<BindName> {
     let mut out = Vec::new();
@@ -825,6 +843,7 @@ pub fn bind_names(shape: &Shape) -> Vec<BindName> {
                 bind_deepseek_layer(&mut out, shape, il);
             }
         }
+        ModelFamily::Inkling => return inkling_names(crate::inkling::main_layouts()),
     }
     out
 }
@@ -845,7 +864,7 @@ pub fn dump_bind_mtp_shape(shape: &Shape) -> String {
             "BIND kind=mtp name={} family={} variant={}\n",
             shape.name, shape.family as u32, shape.variant as u32
         ),
-        &bind_mtp_names(),
+        &mtp_names(shape),
     )
 }
 
@@ -915,7 +934,7 @@ impl BindPlan {
     }
 
     pub fn resolve_mtp(shape: Shape, inventory: &TensorInventory) -> Self {
-        Self::resolve_names(shape, bind_mtp_names(), inventory)
+        Self::resolve_names(shape, mtp_names(&shape), inventory)
     }
 
     pub fn resolve_dspark(shape: Shape, inventory: &TensorInventory) -> Self {
@@ -1220,6 +1239,7 @@ pub fn variant_from_bind_name(s: &str) -> Option<Variant> {
         "qwen4exp" => Some(Variant::Qwen38FlashNext),
         "glm5-next" => Some(Variant::Glm53Flash),
         "k2-horizon" => Some(Variant::K2Horizon375B),
+        "inkling" => Some(Variant::InklingSmall),
         _ => None,
     }
 }
@@ -1230,7 +1250,7 @@ pub enum SupportCatalog {
     Dspark,
 }
 
-/// `flash` / `mtp-flash` / `dspark-pro`. Support catalogs are DeepSeek-only.
+/// Main and sibling catalogs. Inkling MTP uses its own dense draft stack.
 pub fn dump_bind_names_variant(name: &str) -> Option<String> {
     let (support, v) = catalog_from_bind_name(name)?;
     let shape = shape_for_variant(v);
@@ -1241,11 +1261,11 @@ pub fn dump_bind_names_variant(name: &str) -> Option<String> {
     })
 }
 
-/// `flash` / `mtp-flash` / `dspark-pro`. Support catalogs are DeepSeek-only.
+/// Main and sibling catalogs; DSpark remains DeepSeek-only.
 pub fn catalog_from_bind_name(s: &str) -> Option<(Option<SupportCatalog>, Variant)> {
     if let Some(rest) = s.strip_prefix("mtp-") {
         return variant_from_bind_name(rest)
-            .filter(|v| matches!(v, Variant::Flash | Variant::Pro))
+            .filter(|v| matches!(v, Variant::Flash | Variant::Pro | Variant::InklingSmall))
             .map(|v| (Some(SupportCatalog::Mtp), v));
     }
     if let Some(rest) = s.strip_prefix("dspark-") {

@@ -45,6 +45,7 @@ pub enum TokError {
     MissingToken(String),
     SolarMissingControl,
     EmbeddedNul,
+    UnsupportedFamily,
 }
 
 impl std::fmt::Display for TokError {
@@ -55,6 +56,7 @@ impl std::fmt::Display for TokError {
             TokError::MissingToken(t) => write!(f, "missing-token {t}"),
             TokError::SolarMissingControl => write!(f, "solar-missing-control"),
             TokError::EmbeddedNul => write!(f, "embedded-nul"),
+            TokError::UnsupportedFamily => write!(f, "tokenizer family is not implemented"),
         }
     }
 }
@@ -168,6 +170,9 @@ impl Vocab {
     }
 
     pub fn load(g: &GgufFile, family: ModelFamily) -> Result<Self, TokError> {
+        if family == ModelFamily::Inkling {
+            return Err(TokError::UnsupportedFamily);
+        }
         let is_k2_horizon = family == ModelFamily::ExaoneMoe
             && (g.get_string("general.architecture") == Some(b"k2-horizon")
                 || g.get_string("tokenizer.ggml.pre") == Some(b"k2-horizon"));
@@ -282,6 +287,7 @@ impl Vocab {
 
     fn load_specials(&mut self, g: &GgufFile) -> Result<(), TokError> {
         match self.family {
+            ModelFamily::Inkling => return Err(TokError::UnsupportedFamily),
             ModelFamily::Glm53 => {
                 self.bos_id = g
                     .get_token_id("tokenizer.ggml.bos_token_id")
@@ -2047,6 +2053,7 @@ fn bpe_tokenize_text_joyai(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
 
 fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
     match vocab.family {
+        ModelFamily::Inkling => unreachable!("Inkling vocab loading is not implemented"),
         ModelFamily::Glm53 => bpe_tokenize_text_glm4(vocab, text, out),
         ModelFamily::Motif3 => bpe_tokenize_text_motif3(vocab, text, out),
         ModelFamily::SolarOpen2 => bpe_tokenize_text_solar(vocab, text, out),

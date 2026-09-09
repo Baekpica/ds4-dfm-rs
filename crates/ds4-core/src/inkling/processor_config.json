@@ -1,0 +1,46 @@
+{
+  "audio_token": "<|unused_200053|>",
+  "audio_bos_token": "<|content_audio_input|>",
+  "dmel_max_value": 2.0,
+  "dmel_min_value": -7.0,
+  "feature_extractor": {
+    "audio_token_duration_s": 0.05,
+    "feature_extractor_type": "InklingFeatureExtractor",
+    "feature_size": 80,
+    "hop_length": 800,
+    "n_fft": 1600,
+    "padding_side": "right",
+    "padding_value": 0.0,
+    "return_attention_mask": true,
+    "sampling_rate": 16000,
+    "window_size": 1600,
+    "window_size_multiplier": 2.0
+  },
+  "image_processor": {
+    "do_convert_rgb": true,
+    "do_normalize": true,
+    "do_rescale": true,
+    "do_resize": true,
+    "image_mean": [
+      0.48145466,
+      0.4578275,
+      0.40821073
+    ],
+    "image_processor_type": "InklingImageProcessor",
+    "image_std": [
+      0.26862954,
+      0.26130258,
+      0.27577711
+    ],
+    "resample": 3,
+    "rescale_factor": 0.00392156862745098,
+    "size": {
+      "height": 40,
+      "width": 40
+    }
+  },
+  "image_token": "<|unused_200054|>",
+  "image_bos_token": "<|content_image|>",
+  "num_dmel_bins": 16,
+  "processor_class": "InklingProcessor"
+}

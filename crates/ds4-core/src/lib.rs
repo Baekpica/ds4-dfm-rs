@@ -12,6 +12,7 @@ mod batch;
 mod bind;
 mod gguf;
 mod identify;
+mod inkling;
 mod layout;
 mod mapped;
 mod mem;
