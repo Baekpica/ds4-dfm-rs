@@ -220,14 +220,17 @@ fn main() {
                         batch.max_seq(),
                         batch.seq_cap()
                     );
-                    Some(ContLane::new(
-                        batch,
-                        model.vocab(),
-                        model.model_id(),
-                        model.routed_quant_bits(),
-                        cfg.ctx,
-                        model.token_eos(),
-                    ))
+                    Some(
+                        ContLane::new(
+                            batch,
+                            model.vocab(),
+                            model.model_id(),
+                            model.routed_quant_bits(),
+                            cfg.ctx,
+                            model.token_eos(),
+                        )
+                        .with_template(model.chat_template()),
+                    )
                 }
                 Err(e) => {
                     eprintln!("ds4-server-rs: continuous lane unavailable ({e}); serial only");

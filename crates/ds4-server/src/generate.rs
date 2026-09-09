@@ -124,6 +124,24 @@ pub struct SerialSessionProbe {
 
 pub trait DecodeIo {
     fn model_id(&self) -> i32;
+    fn template(&self) -> Option<&ds4_core::chat_template::Template> {
+        None
+    }
+    fn render_request(&self, parsed: &ParsedRequest) -> Result<Vec<u8>, GenerateError> {
+        if let Some(template) = self.template() {
+            return crate::chat_input::render(template, self.model_id(), parsed);
+        }
+        render_prompt(parsed, self.model_id())
+    }
+    fn restore_chat(&self, _parsed: &mut ParsedRequest) -> Result<(), GenerateError> {
+        Ok(())
+    }
+    fn remember_chat(
+        &mut self,
+        _parsed: &ParsedRequest,
+        _generated: &crate::tools::ParsedGenerated,
+    ) {
+    }
     fn kv_store_mut(&mut self) -> Option<&mut KvStore> {
         None
     }
@@ -592,6 +610,38 @@ fn discard_loaded(store: &mut KvStore, io: &mut impl SerialKvIo, path: &Path) {
 }
 
 #[cfg(any(feature = "native", test))]
+fn disk_sync_template(
+    io: &mut impl SerialKvIo,
+    store: Option<&mut KvStore>,
+    model_id: i32,
+    quant_bits: i32,
+    prompt: &[u8],
+    tokens: &[i32],
+    policy: DiskSyncPolicy,
+) -> Result<i32, GenerateError> {
+    disk_sync_prompt_impl(
+        io,
+        store,
+        model_id,
+        quant_bits,
+        prompt,
+        tokens,
+        None,
+        false,
+        policy,
+        false,
+        PromptReuse::Tokens,
+    )
+}
+
+#[cfg(any(feature = "native", test))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PromptReuse {
+    Tokens,
+    LegacyText,
+}
+
+#[cfg(any(feature = "native", test))]
 fn disk_sync_prompt(
     io: &mut impl SerialKvIo,
     store: Option<&mut KvStore>,
@@ -614,6 +664,7 @@ fn disk_sync_prompt(
         thinking_visible_eligible,
         policy,
         false,
+        PromptReuse::LegacyText,
     )
 }
 
@@ -638,6 +689,7 @@ fn disk_sync_tool_replay(
         false,
         policy,
         true,
+        PromptReuse::LegacyText,
     )
 }
 
@@ -653,6 +705,7 @@ fn disk_sync_prompt_impl(
     thinking_visible_eligible: bool,
     policy: DiskSyncPolicy,
     allow_tool_map: bool,
+    reuse: PromptReuse,
 ) -> Result<i32, GenerateError> {
     let identity = kv_identity(model_id, quant_bits, io.ctx());
     let prefill_checkpoints = policy.load && !allow_tool_map;
@@ -669,7 +722,7 @@ fn disk_sync_prompt_impl(
         )?;
         return Ok(cached);
     }
-    if thinking_visible_eligible {
+    if reuse == PromptReuse::LegacyText && thinking_visible_eligible {
         if let Some(checkpoint) = checkpoint {
             if !live.is_empty()
                 && usize::try_from(checkpoint.frontier).ok() == Some(live.len())
@@ -691,7 +744,7 @@ fn disk_sync_prompt_impl(
             }
         }
     }
-    if !live.is_empty() {
+    if reuse == PromptReuse::LegacyText && !live.is_empty() {
         let rendered = io.render_tokens(&live)?;
         if prompt.starts_with(&rendered) {
             let cached = live.len() as i32;
@@ -795,9 +848,30 @@ fn disk_sync_prompt_impl(
             prefill_checkpoints,
         );
     }
+    if reuse == PromptReuse::Tokens && !canonical_tokens.starts_with(&loaded) {
+        io.invalidate();
+        return cold_sync_and_store(
+            io,
+            store,
+            (model_id, quant_bits, ctx),
+            canonical_tokens,
+            prefill_checkpoints,
+        );
+    }
     let cached = loaded.len() as i32;
     store.continued_last_store_tokens = cached;
     let _ = store.touch_hit(&path);
+    if reuse == PromptReuse::Tokens {
+        sync_maybe_checkpoint(
+            io,
+            canonical_tokens,
+            Some(store),
+            identity,
+            cached,
+            prefill_checkpoints,
+        )?;
+        return Ok(cached);
+    }
     let mut effective = loaded;
     let suffix = &prompt[envelope.text.len()..];
     let suffix_tokens = match io.tokenize_suffix(suffix) {
@@ -1148,6 +1222,52 @@ fn append_recovery_suffix(engine: &mut dyn DecodeIo, suffix: &[u8]) -> Result<i3
     engine.sync(&target)?;
     let delta = engine.pos() - before;
     Ok(if delta > 0 { delta } else { 0 })
+}
+
+fn retry_chat(
+    engine: &mut dyn DecodeIo,
+    parsed: &mut ParsedRequest,
+    prompt: &mut Vec<u8>,
+    acc: &SemAccum,
+    detail: &str,
+) -> Result<(), GenerateError> {
+    if engine.template().is_none() {
+        let format = chat_format_for_syntax(syntax_for_model_id(engine.model_id()));
+        return append_recovery_suffix(
+            engine,
+            &build_recovery_suffix(format, parsed.think_mode, prompt, acc, detail),
+        )
+        .map(|_| ());
+    }
+
+    // Discard the invalid generation. Re-render the valid conversation with a
+    // correction, so recovery never invents a model's role or tool delimiters.
+    let mut retry = parsed.clone();
+    let correction = format!("\n\nTool error: {detail}. The previous attempt was not executed. Emit a valid tool call matching the provided schema, or answer normally if no tool is needed.");
+    if let Some(last) = retry.messages.last_mut().filter(|m| m.role == "user") {
+        last.content.push_str(&correction);
+        if !last.parts.is_empty() {
+            last.parts.push(crate::parse::ChatPart::Text(correction));
+        }
+    } else {
+        retry.messages.push(crate::parse::ChatMsg {
+            role: "user".into(),
+            content: correction,
+            ..Default::default()
+        });
+    }
+    let rendered = engine.render_request(&retry)?;
+    let tokens = engine.tokenize_rendered_chat(&rendered)?;
+    let media = prepare_media(engine, &retry, tokens)?;
+    engine.invalidate();
+    if media.vision.is_empty() && media.audios.is_empty() {
+        engine.sync(&media.tokens)?;
+    } else {
+        engine.sync_media_prompt(&media.tokens, &media.vision, &media.audios)?;
+    }
+    *parsed = retry;
+    *prompt = rendered;
+    Ok(())
 }
 
 fn decode_pass(
@@ -1508,6 +1628,7 @@ pub(crate) fn prepare_serial_prompt(
     }
 
     let mut parsed = parsed.clone();
+    engine.restore_chat(&mut parsed)?;
     let syntax = syntax_for_model_id(engine.model_id());
     let tool_replay = parsed.images.is_empty()
         && parsed.audios.is_empty()
@@ -1523,7 +1644,7 @@ pub(crate) fn prepare_serial_prompt(
         )?;
     }
 
-    let prompt = render_prompt(&parsed, engine.model_id())?;
+    let prompt = engine.render_request(&parsed)?;
     let tokens = match parsed.kind {
         ReqKind::Completion => {
             let text = std::str::from_utf8(&prompt).unwrap_or("");
@@ -1585,9 +1706,9 @@ pub(crate) fn generate_terminal_prepared(
     out: &mut impl Write,
 ) -> Result<(GenerateOutcome, Vec<u8>), GenerateError> {
     let PreparedSerialPrompt {
-        parsed,
+        mut parsed,
         tool_replay,
-        prompt,
+        mut prompt,
         tokens,
         vision,
         audios,
@@ -1734,15 +1855,12 @@ pub(crate) fn generate_terminal_prepared(
                 acc.saw_tool_end = true;
             }
             TruncationOutcome::RetryUnterminated => {
-                if append_recovery_suffix(
+                if retry_chat(
                     engine,
-                    &build_recovery_suffix(
-                        req.chat_format,
-                        parsed.think_mode,
-                        &prompt,
-                        &acc,
-                        "unterminated tool call",
-                    ),
+                    &mut parsed,
+                    &mut prompt,
+                    &acc,
+                    "unterminated tool call",
                 )
                 .is_ok()
                 {
@@ -1788,18 +1906,7 @@ pub(crate) fn generate_terminal_prepared(
                 acc.saw_tool_start,
             )
         {
-            if append_recovery_suffix(
-                engine,
-                &build_recovery_suffix(
-                    req.chat_format,
-                    parsed.think_mode,
-                    &prompt,
-                    &acc,
-                    "invalid tool call",
-                ),
-            )
-            .is_ok()
-            {
+            if retry_chat(engine, &mut parsed, &mut prompt, &acc, "invalid tool call").is_ok() {
                 recovery_attempted = true;
                 continue;
             }
@@ -1969,6 +2076,9 @@ pub(crate) fn generate_terminal_prepared(
         };
         bytes
     };
+    if finish != "error" && finish != "length" {
+        engine.remember_chat(&parsed, &parsed_gen);
+    }
     let outcome = GenerateOutcome {
         tool_ids: parsed_gen
             .calls
@@ -2320,6 +2430,7 @@ pub struct NativeDecode<'a> {
     session_disk_storable: bool,
     thinking_visible: Option<ThinkingVisibleCheckpoint>,
     tool_memory: ToolMemory,
+    chat_history: Option<crate::chat_input::History>,
     prompt_sync_elapsed: Option<Duration>,
     ctx: i32,
 }
@@ -2335,6 +2446,7 @@ impl<'a> NativeDecode<'a> {
             session_disk_storable: false,
             thinking_visible: None,
             tool_memory: ToolMemory::default(),
+            chat_history: None,
             prompt_sync_elapsed: None,
             ctx,
         }
@@ -2391,7 +2503,17 @@ impl<'a> NativeDecode<'a> {
             save_current,
             load: disk_eligible,
         };
-        let result = if tool_replay {
+        let result = if self.model.chat_template().is_some() {
+            disk_sync_template(
+                &mut io,
+                store.as_mut(),
+                model_id,
+                quant_bits,
+                prompt,
+                tokens,
+                policy,
+            )
+        } else if tool_replay {
             disk_sync_tool_replay(
                 &mut io,
                 store.as_mut(),
@@ -2438,6 +2560,36 @@ impl<'a> NativeDecode<'a> {
 impl DecodeIo for NativeDecode<'_> {
     fn model_id(&self) -> i32 {
         self.model.model_id()
+    }
+
+    fn template(&self) -> Option<&ds4_core::chat_template::Template> {
+        self.model.chat_template()
+    }
+
+    fn render_request(&self, parsed: &ParsedRequest) -> Result<Vec<u8>, GenerateError> {
+        crate::chat_input::render_model(self.model.chat_template(), self.model_id(), parsed)
+    }
+
+    fn restore_chat(&self, parsed: &mut ParsedRequest) -> Result<(), GenerateError> {
+        if self.model.chat_template().is_some() && !parsed.live_call_ids.is_empty() {
+            if let Some(history) = &self.chat_history {
+                history.restore(parsed)?;
+            } else if parsed.responses_requires_live_tool_state
+                || parsed.anthropic_requires_live_tool_state
+            {
+                return Err(GenerateError::Unsupported(
+                    "retained chat history is unavailable",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn remember_chat(&mut self, parsed: &ParsedRequest, generated: &crate::tools::ParsedGenerated) {
+        if self.model.chat_template().is_some() {
+            self.chat_history = (!generated.calls.is_empty())
+                .then(|| crate::chat_input::History::capture(parsed.clone(), generated));
+        }
     }
 
     fn kv_store_mut(&mut self) -> Option<&mut KvStore> {
@@ -2942,6 +3094,82 @@ mod disk_sync_tests {
             self.events.push("invalidate");
             self.invalidations += 1;
             self.live.clear();
+        }
+    }
+
+    #[test]
+    fn template_rejects_text_prefix() {
+        // Identical prompt bytes do not prove identical tokens: a BPE merge
+        // can cross the old frontier. Only the complete tokenization is valid.
+        let mut io = FakeSerial::new(&[1, 2], b"prefix");
+        io.suffix_tokens = vec![99];
+        let cached = super::disk_sync_template(
+            &mut io,
+            None,
+            6,
+            2,
+            b"prefix suffix",
+            &[1, 3, 4],
+            DiskSyncPolicy {
+                save_current: false,
+                load: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(cached, 0);
+        assert_eq!(io.live, [1, 3, 4]);
+        assert!(io.suffixes.is_empty());
+    }
+
+    #[test]
+    fn template_keeps_token_prefix() {
+        let mut io = FakeSerial::new(&[1, 2], b"prefix");
+        let cached = super::disk_sync_template(
+            &mut io,
+            None,
+            6,
+            2,
+            b"different text",
+            &[1, 2, 4],
+            DiskSyncPolicy {
+                save_current: false,
+                load: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(cached, 2);
+        assert_eq!(io.live, [1, 2, 4]);
+        assert!(io.suffixes.is_empty());
+    }
+
+    #[test]
+    fn template_checks_disk_tokens() {
+        for (name, loaded, expected) in [
+            ("jinja-disk-hit", vec![1, 2], 2),
+            ("jinja-disk-miss", vec![1, 9], 0),
+        ] {
+            let (dir, mut store) = store(name);
+            candidate(&mut store, b"prefix", 2);
+            let mut io = FakeSerial::new(&[], b"prefix suffix");
+            io.loaded_tokens = loaded;
+            io.suffix_tokens = vec![99];
+            let cached = super::disk_sync_template(
+                &mut io,
+                Some(&mut store),
+                0,
+                2,
+                b"prefix suffix",
+                &[1, 2, 3],
+                DiskSyncPolicy {
+                    save_current: false,
+                    load: true,
+                },
+            )
+            .unwrap();
+            assert_eq!(cached, expected, "{name}");
+            assert_eq!(io.live, [1, 2, 3], "{name}");
+            assert!(io.suffixes.is_empty(), "{name}");
+            let _ = fs::remove_dir_all(dir);
         }
     }
 

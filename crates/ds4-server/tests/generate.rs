@@ -38,6 +38,7 @@ fn user_req() -> ParsedRequest {
 }
 
 struct PromptSyncDecode {
+    template: Option<ds4_core::chat_template::Template>,
     inner: ScriptedDecode,
     cached_tokens: i32,
     effective_prompt_pos: i32,
@@ -63,6 +64,7 @@ struct PromptSyncDecode {
 impl PromptSyncDecode {
     fn new(inner: ScriptedDecode, cached_tokens: i32, effective_prompt_pos: i32) -> Self {
         Self {
+            template: None,
             inner,
             cached_tokens,
             effective_prompt_pos,
@@ -88,6 +90,9 @@ impl PromptSyncDecode {
 }
 
 impl DecodeIo for PromptSyncDecode {
+    fn template(&self) -> Option<&ds4_core::chat_template::Template> {
+        self.template.as_ref()
+    }
     fn model_id(&self) -> i32 {
         self.inner.model_id()
     }
@@ -1683,6 +1688,62 @@ fn inkling_unterminated_retry() {
         br#"bash<|content_invoke_tool_json|>{"name":"bash","args":{"command":"ls"}"#,
         "<|end_message|><|content_model_end_sampling|>",
     );
+}
+
+#[test]
+fn jinja_retry_renders_full_chat() {
+    use ds4_core::chat_template::{RenderClock, Template};
+    let parsed = tools_req();
+    let bad = br#"bash<|content_invoke_tool_json|>{"name":"bash","args":[]}<|end_message|>"#;
+    let good = br#"bash<|content_invoke_tool_json|>{"name":"bash","args":{"command":"ls"}}<|end_message|>"#;
+    let mut tape = ScriptedDecode::from_pieces(&[bad, good]);
+    tape.model_id = 9;
+    tape.steps.insert(
+        1,
+        ScriptedStep {
+            token: 98,
+            piece: Vec::new(),
+            stop: true,
+        },
+    );
+    let mut engine = PromptSyncDecode::new(tape, 0, 1);
+    engine.template = Some(
+        Template::compile(
+            include_str!(
+                "../../../tests/fixtures/chat-template/models/inkling/chat_template.jinja"
+            ),
+            RenderClock::Fixed(0),
+        )
+        .unwrap(),
+    );
+    let mut out = Vec::new();
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "jinja-retry",
+        CREATED_TEST,
+        false,
+        16,
+        &mut out,
+    )
+    .unwrap();
+    let renders = engine.rendered.borrow();
+    assert_eq!(renders.len(), 2);
+    let retry = String::from_utf8_lossy(&renders[1]);
+    assert!(retry.starts_with("<|message_system|>"), "{retry}");
+    assert!(retry.contains("Tool error:"), "{retry}");
+    assert!(
+        retry.contains("hi\n\nTool error:"),
+        "original request retained: {retry}"
+    );
+    assert!(
+        !retry.contains("\"args\":[]"),
+        "failed output is not committed: {retry}"
+    );
+    assert_eq!(engine.invalidations, 1);
+    assert!(String::from_utf8(out)
+        .unwrap()
+        .contains("\"finish_reason\":\"tool_calls\""));
 }
 
 #[test]
