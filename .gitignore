@@ -86,3 +86,4 @@ __pycache__/
 /tests/test_inkling_norm
 /tests/test_inkling_loader
 /tests/test_inkling_forward
+/tests/test_inkling_session

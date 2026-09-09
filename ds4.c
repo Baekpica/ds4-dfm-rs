@@ -20750,6 +20750,56 @@ typedef struct {
     bool failed;
 } ds4_inkling_graph;
 
+static const uint32_t inkling_width[IK_BUFFERS] = {
+    [IK_X] = IK_HIDDEN, [IK_NORM] = IK_HIDDEN,
+    [IK_Q] = IK_HIDDEN, [IK_K] = IK_KV, [IK_V] = IK_KV,
+    [IK_R] = IK_Q_HEADS * IK_REL, [IK_RELATIVE] = IK_Q_HEADS * IK_GLOBAL,
+    [IK_HEADS] = IK_HIDDEN, [IK_PROJECTED] = IK_HIDDEN,
+    [IK_CONV] = IK_HIDDEN, [IK_K_IN] = IK_KV, [IK_V_IN] = IK_KV,
+    [IK_GATE] = IK_EXPERTS + IK_SHARED, [IK_IDS] = IK_USED,
+    [IK_GAMMA] = IK_USED, [IK_SHARED_GAMMA] = IK_SHARED,
+    [IK_PAIRS] = 2 * IK_DENSE, [IK_MIDDLE] = IK_DENSE,
+    [IK_DOWN] = IK_USED * IK_HIDDEN, [IK_SHARED_IDS] = IK_SHARED,
+    [IK_SHARED_PAIRS] = IK_SHARED * 2 * IK_MID,
+    [IK_SHARED_MIDDLE] = IK_SHARED * IK_MID,
+    [IK_SHARED_DOWN] = IK_SHARED * IK_HIDDEN,
+    [IK_TOKENS] = 1, [IK_POSITIONS] = 1,
+};
+
+static uint32_t inkling_prefill_cap(uint32_t ctx) {
+    enum { DEFAULT_CAP = 64, MAX_CAP = 2048 };
+    uint32_t cap = DEFAULT_CAP;
+    const char *env = getenv("DS4_INKLING_PREFILL_CHUNK");
+    if (env && env[0]) {
+        char *end = NULL;
+        const long value = strtol(env, &end, 10);
+        if (end != env && !*end && value > 0 && value <= MAX_CAP) {
+            cap = (uint32_t)value;
+        }
+    }
+    return cap < ctx ? cap : ctx;
+}
+
+static ds4_context_memory inkling_context_memory(uint32_t ctx, uint32_t cap) {
+    ds4_context_memory m = {0};
+    if (!ctx || !cap || cap > ctx || ctx > DS4_SHAPE_INKLING_SMALL.rope_orig_ctx) {
+        return m;
+    }
+    const uint64_t global = DS4_SHAPE_INKLING_SMALL.n_full_attn_count;
+    m.prefill_cap = cap;
+    m.raw_cap = ctx;
+    m.raw_bytes = ((INKLING_LAYERS - global) * IK_LOCAL + global * ctx) *
+                  2 * IK_KV * sizeof(uint16_t);
+    m.raw_bytes += INKLING_LAYERS * IK_HISTORY *
+                   (2 * IK_KV + 2 * IK_HIDDEN) * sizeof(float);
+    for (unsigned i = 0; i < IK_BUFFERS; i++) {
+        m.scratch_bytes += (uint64_t)m.prefill_cap * inkling_width[i] * sizeof(float);
+    }
+    m.scratch_bytes += (uint64_t)DS4_N_VOCAB * sizeof(float);
+    m.total_bytes = m.raw_bytes + m.scratch_bytes;
+    return m;
+}
+
 static void inkling_graph_free(ds4_inkling_graph *g) {
     for (unsigned i = 0; i < IK_BUFFERS; i++) {
         ds4_gpu_tensor_free(g->buf[i]);
@@ -20795,23 +20845,8 @@ static bool inkling_graph_alloc(ds4_inkling_graph *g, const ds4_model *m,
     if (!g->positions) {
         goto fail;
     }
-    const uint32_t width[IK_BUFFERS] = {
-        [IK_X] = IK_HIDDEN, [IK_NORM] = IK_HIDDEN,
-        [IK_Q] = IK_HIDDEN, [IK_K] = IK_KV, [IK_V] = IK_KV,
-        [IK_R] = IK_Q_HEADS * IK_REL, [IK_RELATIVE] = IK_Q_HEADS * IK_GLOBAL,
-        [IK_HEADS] = IK_HIDDEN, [IK_PROJECTED] = IK_HIDDEN,
-        [IK_CONV] = IK_HIDDEN, [IK_K_IN] = IK_KV, [IK_V_IN] = IK_KV,
-        [IK_GATE] = IK_EXPERTS + IK_SHARED, [IK_IDS] = IK_USED,
-        [IK_GAMMA] = IK_USED, [IK_SHARED_GAMMA] = IK_SHARED,
-        [IK_PAIRS] = 2 * IK_DENSE, [IK_MIDDLE] = IK_DENSE,
-        [IK_DOWN] = IK_USED * IK_HIDDEN, [IK_SHARED_IDS] = IK_SHARED,
-        [IK_SHARED_PAIRS] = IK_SHARED * 2 * IK_MID,
-        [IK_SHARED_MIDDLE] = IK_SHARED * IK_MID,
-        [IK_SHARED_DOWN] = IK_SHARED * IK_HIDDEN,
-        [IK_TOKENS] = 1, [IK_POSITIONS] = 1,
-    };
     for (unsigned i = 0; i < IK_BUFFERS; i++) {
-        g->buf[i] = ds4_gpu_tensor_alloc((uint64_t)cap * width[i] * sizeof(float));
+        g->buf[i] = ds4_gpu_tensor_alloc((uint64_t)cap * inkling_width[i] * sizeof(float));
         if (!g->buf[i]) {
             goto fail;
         }
@@ -33818,6 +33853,9 @@ ds4_context_memory ds4_context_memory_estimate(ds4_backend backend, int ctx_size
     uint32_t ctx = ctx_size > 0 ? (uint32_t)ctx_size : 1u;
 
     if (ds4_backend_uses_graph(backend)) {
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
+            return inkling_context_memory(ctx, inkling_prefill_cap(ctx));
+        }
         if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_EXAONE_MOE) {
             return exaone_graph_context_memory_estimate(ctx, 0u);
         }
@@ -44295,6 +44333,8 @@ struct ds4_session {
     bool motif3_graph_ready;
     ds4_dots3_gpu_graph dots3_graph;
     bool dots3_graph_ready;
+    ds4_inkling_graph inkling_graph;
+    bool inkling_graph_ready;
     ds4_solar_gpu_graph solar_graph;
     bool solar_graph_ready;
     bool solar_state_valid;
@@ -49143,6 +49183,10 @@ static DS4_MAYBE_UNUSED bool ds4_session_is_motif3(const ds4_session *s) {
     return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MOTIF3;
 }
 
+static bool ds4_session_is_inkling(const ds4_session *s) {
+    return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING;
+}
+
 static bool ds4_session_is_solar(const ds4_session *s) {
     return s && s->engine &&
            DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2;
@@ -49219,7 +49263,9 @@ uint64_t ds4_session_layer_payload_bytes(ds4_session *s,
         !ds4_layer_payload_range_valid(layer_start, layer_end))
         return 0;
     if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
-        ds4_session_is_glm53(s)) return 0;
+        ds4_session_is_glm53(s) || ds4_session_is_inkling(s)) {
+        return 0;
+    }
     if (ds4_session_is_cpu(s)) return 0;
     /* EXAONE's dedicated K/V layout is not part of the DeepSeek disk
      * payload ABI. */
@@ -49686,7 +49732,7 @@ int ds4_session_save_layer_payload(ds4_session *s, FILE *fp,
         return 1;
     }
     if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
-        ds4_session_is_glm53(s)) {
+        ds4_session_is_glm53(s) || ds4_session_is_inkling(s)) {
         payload_set_err(err, errlen,
                         "this model family does not support distributed layer payloads");
         return 1;
@@ -49889,7 +49935,7 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
         return 1;
     }
     if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
-        ds4_session_is_glm53(s)) {
+        ds4_session_is_glm53(s) || ds4_session_is_inkling(s)) {
         payload_set_err(err, errlen,
                         "this model family does not support distributed layer payloads");
         return 1;
@@ -51435,7 +51481,9 @@ uint64_t ds4_session_payload_bytes(ds4_session *s) {
     if (!s || !s->checkpoint_valid) return 0;
     if (s->distributed) return 0;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_glm53(s)) return 0;
+    if (ds4_session_is_glm53(s) || ds4_session_is_inkling(s)) {
+        return 0;
+    }
     if (ds4_session_is_qwen4exp(s)) {
         if (!s->qwen_graph_ready ||
             s->qwen_graph.length != (uint32_t)s->checkpoint.len) return 0u;
@@ -51609,6 +51657,10 @@ int ds4_session_stage_payload(ds4_session *s, ds4_session_payload_file *out,
 }
 
 int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen) {
+    if (ds4_session_is_inkling(s)) {
+        payload_set_err(err, errlen, "Inkling session snapshots are not implemented yet");
+        return 1;
+    }
     if (!s || !fp || !s->checkpoint_valid) {
         payload_set_err(err, errlen, "session has no valid checkpoint to save");
         return 1;
@@ -52068,6 +52120,10 @@ static int session_solar_load_payload(ds4_session *s,
 #endif
 
 int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, char *err, size_t errlen) {
+    if (ds4_session_is_inkling(s)) {
+        payload_set_err(err, errlen, "Inkling session snapshots are not implemented yet");
+        return 1;
+    }
     if (!s || !fp) {
         payload_set_err(err, errlen, "invalid session payload load");
         return 1;
@@ -55570,6 +55626,9 @@ static uint32_t qwen4exp_graph_prefill_cap_for_context(uint32_t ctx_size);
  * rows BOUNDED. */
 uint64_t ds4_engine_session_graph_bytes_estimate(ds4_engine *e, int ctx) {
     if (!e || ctx <= 0) return 0;
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
+        return inkling_context_memory((uint32_t)ctx, inkling_prefill_cap((uint32_t)ctx)).total_bytes;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
         const uint32_t prefill_cap =
             qwen4exp_graph_prefill_cap_for_context((uint32_t)ctx);
@@ -63521,7 +63580,8 @@ int ds4_engine_generate_argmax(
         void              *progress_ud) {
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2 ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MOTIF3 ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_EXAONE_MOE) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_EXAONE_MOE ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
         return generate_public_session_argmax(
             e, prompt, n_predict, ctx_size, emit, done, emit_ud,
             progress, progress_ud);
@@ -65528,7 +65588,8 @@ uint64_t ds4_engine_hidden_f32_values(ds4_engine *e) {
     (void)e;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2 ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_EXAONE_MOE ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
         return (uint64_t)DS4_N_EMBD;
     }
     return (uint64_t)DS4_N_HC * DS4_N_EMBD;
@@ -65538,7 +65599,10 @@ int ds4_engine_n_hc(ds4_engine *e) {
     (void)e;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2 ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_EXAONE_MOE ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) return 1;
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
+        return 1;
+    }
     return (int)DS4_N_HC;
 }
 
@@ -65549,6 +65613,9 @@ bool ds4_engine_supports_batching(ds4_engine *e) {
     /* dots3 serves through serial latent sessions for now; its persistent
      * multi-bank runtime is future work, and refusing here routes the
      * server onto the serial lane instead of the DeepSeek bank body. */
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
+        return false;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE) return false;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) return false;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
@@ -65861,8 +65928,64 @@ static uint64_t session_tensors_census_live(void) {
     return ds4_mem_cell_live(&cell);
 }
 
+static bool inkling_session_fit(ds4_backend backend, uint32_t ctx, uint32_t cap,
+                                 ds4_session_graph_fit_quote *q) {
+    const uint64_t need = inkling_context_memory(ctx, cap).total_bytes;
+    if (q) {
+        memset(q, 0, sizeof(*q));
+        q->need_bytes = need;
+    }
+    if (backend != DS4_BACKEND_CUDA || !need) {
+        return false;
+    }
+    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
+    uint64_t available = 0, total = 0;
+    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+        if (q) {
+            q->fits = 1;
+            q->fail_open = 1;
+        }
+        return true;
+    }
+    const uint64_t substrate = ds4_gpu_substrate_outstanding();
+    available = available > substrate ? available - substrate : 0;
+    const uint64_t margin = ds4_session_graph_headroom_bytes();
+    const uint64_t ask = need > UINT64_MAX - margin ? UINT64_MAX : need + margin;
+    const bool fits = available >= ask;
+    if (q) {
+        q->fits = fits;
+        q->avail_bytes = available;
+        q->headroom_bytes = margin;
+        q->deficit_bytes = fits ? 0 : ask - available;
+    }
+    return fits;
+}
+
 static int ds4_session_alloc_graph(ds4_session *s) {
     ds4_engine *e = s->engine;
+    if (ds4_session_is_inkling(s)) {
+        const uint64_t estimate = inkling_context_memory((uint32_t)s->ctx_size, s->prefill_cap).total_bytes;
+        ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, estimate, 0);
+        const uint64_t before = session_tensors_census_live();
+        ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
+        const bool ok = inkling_session_fit(e->backend, (uint32_t)s->ctx_size, s->prefill_cap, NULL) &&
+            inkling_graph_alloc(&s->inkling_graph, &e->model, &e->weights,
+                                 (uint32_t)s->ctx_size, s->prefill_cap);
+        ds4_gpu_mem_scope_end();
+        if (!ok) {
+            inkling_graph_free(&s->inkling_graph);
+            s->inkling_graph_ready = false;
+            s->graph_alloc_bytes = 0;
+            ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
+            return 1;
+        }
+        s->inkling_graph_ready = true;
+        const uint64_t after = session_tensors_census_live();
+        s->graph_alloc_bytes = after > before ? after - before : estimate;
+        ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION,
+                            s->graph_alloc_bytes, s->graph_alloc_bytes);
+        return 0;
+    }
     if (ds4_session_is_glm53(s)) {
         const uint64_t est = glm53_graph_bytes_estimate((uint32_t)s->ctx_size);
         ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, est, 0);
@@ -66114,6 +66237,10 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
     memset(q, 0, sizeof(*q));
     if (!e || ctx_size <= 0) return 0;
 #ifndef DS4_NO_GPU
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
+        return inkling_session_fit(e->backend, (uint32_t)ctx_size,
+                                   inkling_prefill_cap((uint32_t)ctx_size), q);
+    }
     if (e->backend == DS4_BACKEND_CPU) {
         q->fits = 1;
         q->fail_open = 1;
@@ -66173,6 +66300,35 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
 
 int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
     if (!out || !e || ctx_size <= 0) return 1;
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
+#ifdef DS4_NO_GPU
+        return 1;
+#else
+        if ((uint32_t)ctx_size > DS4_SHAPE_INKLING_SMALL.rope_orig_ctx ||
+            e->backend != DS4_BACKEND_CUDA || !e->metal_ready ||
+            e->distributed.role != DS4_DISTRIBUTED_NONE ||
+            e->mtp_ready || e->dspark_ready) {
+            fprintf(stderr, "ds4: Inkling requires one full CUDA model without "
+                            "draft sidecars until MTP graph integration\n");
+            return 1;
+        }
+        ds4_session *s = xcalloc(1, sizeof(*s));
+        s->engine = e;
+        s->ctx_size = ctx_size;
+        s->generation = 1;
+        s->prefill_cap = inkling_prefill_cap((uint32_t)ctx_size);
+        s->logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(*s->logits));
+        if (ds4_session_lazy_graph_enabled()) {
+            s->graph_pending = true;
+        } else if (ds4_session_alloc_graph(s) != 0) {
+            free(s->logits);
+            free(s);
+            return 1;
+        }
+        *out = s;
+        return 0;
+#endif
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
 #ifdef DS4_NO_GPU
         fprintf(stderr, "ds4: GLM-5.3 sessions require the CUDA backend\n");
@@ -66414,7 +66570,11 @@ void ds4_session_free(ds4_session *s) {
     }
 #ifndef DS4_NO_GPU
     else {
-        if (ds4_session_is_glm53(s)) {
+        if (ds4_session_is_inkling(s)) {
+            inkling_graph_free(&s->inkling_graph);
+            s->inkling_graph_ready = false;
+            ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
+        } else if (ds4_session_is_glm53(s)) {
             glm53_graph_free(&s->glm53_graph);
             s->glm53_graph_ready = false;
             ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
@@ -66484,8 +66644,10 @@ int ds4_session_set_power(ds4_session *s, int power_percent) {
 #ifndef DS4_NO_GPU
     if (!ds4_session_is_cpu(s) && !ds4_session_is_motif3(s) &&
         !ds4_session_is_exaone(s) && !ds4_session_is_dots3(s) &&
-        !ds4_session_is_qwen4exp(s) && !ds4_session_is_glm53(s))
+        !ds4_session_is_qwen4exp(s) && !ds4_session_is_glm53(s) &&
+        !ds4_session_is_inkling(s)) {
         s->graph.power_percent = (uint32_t)power_percent;
+    }
 #endif
     return 0;
 }
@@ -66514,7 +66676,8 @@ int ds4_session_layer_slice_reset(ds4_session *s, char *err, size_t errlen) {
     }
     if (ds4_session_is_solar(s) || ds4_session_is_exaone(s) ||
         ds4_session_is_motif3(s) || ds4_session_is_dots3(s) ||
-        ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s)) {
+        ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s) ||
+        ds4_session_is_inkling(s)) {
         if (errlen) snprintf(err, errlen,
                              "layer-slice sessions do not support this model family");
         return 1;
@@ -66549,7 +66712,8 @@ int ds4_session_eval_output_head_from_hc(ds4_session *s,
         if (errlen) snprintf(err, errlen, "invalid output-head hidden-state input");
         return 1;
     }
-    if (ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s)) {
+    if (ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s) ||
+        ds4_session_is_inkling(s)) {
         if (errlen) snprintf(err, errlen,
                              "this model family does not expose the DeepSeek HC output-head ABI");
         return 1;
@@ -66651,7 +66815,8 @@ int ds4_session_eval_layer_slice(ds4_session *s,
         if (errlen) snprintf(err, errlen, "missing layer-slice session");
         return 1;
     }
-    if (ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s)) {
+    if (ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s) ||
+        ds4_session_is_inkling(s)) {
         if (errlen) snprintf(err, errlen,
                              "this model family does not support layer-slice execution");
         return 1;
@@ -67062,12 +67227,93 @@ static int ds4_session_sync_glm53(
  *
  * A non-matching prompt discards the checkpoint and prefills from token zero.
  */
+#ifndef DS4_NO_GPU
+static int inkling_session_sync(ds4_session *s, const ds4_tokens *prompt,
+                                 char *err, size_t errlen) {
+    ds4_inkling_graph *g = &s->inkling_graph;
+    if (!s->inkling_graph_ready) {
+        payload_set_err(err, errlen, "Inkling graph is not initialized");
+        return 1;
+    }
+    for (int i = 0; i < prompt->len; i++) {
+        if (prompt->v[i] < 0 || prompt->v[i] >= INKLING_VALID_VOCAB) {
+            payload_set_err(err, errlen, "Inkling prompt has an invalid token");
+            return 1;
+        }
+    }
+    int start = 0;
+    if (s->checkpoint_valid && !g->failed && g->position == (uint32_t)s->checkpoint.len &&
+        prompt->len >= s->checkpoint.len && ds4_tokens_starts_with(prompt, &s->checkpoint)) {
+        start = s->checkpoint.len;
+        if (start == prompt->len) {
+            return 0;
+        }
+    } else {
+        /* Convolution history cannot be reconstructed by shortening KV alone. */
+        ds4_session_invalidate(s);
+        if (g->failed) {
+            payload_set_err(err, errlen, "Inkling state reset failed");
+            return 1;
+        }
+    }
+    s->mtp_draft_valid = false;
+    while (start < prompt->len) {
+        uint32_t rows = (uint32_t)(prompt->len - start);
+        if (rows > s->prefill_cap) {
+            rows = s->prefill_cap;
+        }
+        if (!inkling_graph_forward(g, &s->engine->model, &s->engine->weights,
+                                    prompt->v + start, rows)) {
+            ds4_session_invalidate(s);
+            payload_set_err(err, errlen, "Inkling prefill failed");
+            return 1;
+        }
+        start += (int)rows;
+        if (s->progress) {
+            s->progress(s->progress_ud, "prefill_chunk", start, prompt->len);
+        }
+    }
+    if (!ds4_gpu_tensor_read(g->logits, 0, s->logits, DS4_N_VOCAB * sizeof(float))) {
+        ds4_session_invalidate(s);
+        payload_set_err(err, errlen, "Inkling logits readback failed");
+        return 1;
+    }
+    ds4_tokens_copy(&s->checkpoint, prompt);
+    s->checkpoint_valid = true;
+    return 0;
+}
+
+static int inkling_session_eval(ds4_session *s, int token, char *err, size_t errlen) {
+    ds4_inkling_graph *g = &s->inkling_graph;
+    if (token < 0 || token >= INKLING_VALID_VOCAB || !s->inkling_graph_ready ||
+        !s->checkpoint_valid || g->failed || g->position != (uint32_t)s->checkpoint.len) {
+        payload_set_err(err, errlen, "Inkling decode needs a valid token and checkpoint");
+        return 1;
+    }
+    if (!inkling_graph_forward(g, &s->engine->model, &s->engine->weights, &token, 1) ||
+        !ds4_gpu_tensor_read(g->logits, 0, s->logits, DS4_N_VOCAB * sizeof(float))) {
+        ds4_session_invalidate(s);
+        payload_set_err(err, errlen, "Inkling decode failed");
+        return 1;
+    }
+    token_vec_push(&s->checkpoint, token);
+    s->mtp_draft_valid = false;
+    return 0;
+}
+#endif
+
 int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
     if (!s || !prompt || prompt->len <= 0 || prompt->len > s->ctx_size) {
         snprintf(err, errlen, "prompt exceeds context");
         return 1;
     }
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_inkling(s)) {
+        if (ds4_session_ensure_graph(s, err, errlen) != 0) {
+            return 1;
+        }
+        return inkling_session_sync(s, prompt, err, errlen);
+    }
     if (ds4_session_is_motif3(s)) {
         if (ds4_session_ensure_graph(s, err, errlen) != 0) return 1;
         if (!s->motif3_graph_ready ||
@@ -67750,14 +67996,23 @@ int ds4_session_token_logprob(ds4_session *s, int token, ds4_token_score *out) {
 }
 
 int ds4_session_copy_logits(ds4_session *s, float *out, int cap) {
-    if (!s || !out || cap < (int)DS4_N_VOCAB) return 0;
-    memcpy(out, s->logits, (size_t)DS4_N_VOCAB * sizeof(out[0]));
-    return (int)DS4_N_VOCAB;
+    const int count = ds4_session_is_inkling(s) ? INKLING_VALID_VOCAB : (int)DS4_N_VOCAB;
+    if (!s || !out || cap < count) {
+        return 0;
+    }
+    memcpy(out, s->logits, (size_t)count * sizeof(out[0]));
+    return count;
 }
 
 int ds4_session_set_logits(ds4_session *s, const float *logits, int n) {
-    if (!s || !logits || n != (int)DS4_N_VOCAB) return 1;
-    memcpy(s->logits, logits, (size_t)DS4_N_VOCAB * sizeof(s->logits[0]));
+    const int count = ds4_session_is_inkling(s) ? INKLING_VALID_VOCAB : (int)DS4_N_VOCAB;
+    if (!s || !logits || n != count) {
+        return 1;
+    }
+    memcpy(s->logits, logits, (size_t)count * sizeof(s->logits[0]));
+    for (uint32_t i = (uint32_t)count; i < DS4_N_VOCAB; i++) {
+        s->logits[i] = -INFINITY;
+    }
     return 0;
 }
 
@@ -67768,6 +68023,11 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
         if (errlen) snprintf(err, errlen, "context reached (%d)", s->ctx_size);
         return 1;
     }
+#ifndef DS4_NO_GPU
+    if (ds4_session_is_inkling(s)) {
+        return inkling_session_eval(s, token, err, errlen);
+    }
+#endif
     if (s->distributed) {
         if (!s->checkpoint_valid) {
             if (errlen) snprintf(err, errlen, "distributed decode requires a valid checkpoint");
@@ -68425,6 +68685,13 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
             s, first_token, max_tokens, eos_token,
             accepted, accepted_cap, err, errlen);
 #endif
+    }
+    if (ds4_session_is_inkling(s)) {
+        if (ds4_session_eval(s, first_token, err, errlen) != 0) {
+            return -1;
+        }
+        accepted[0] = first_token;
+        return 1;
     }
     if (ds4_session_is_solar(s)) {
         /* Solar has no MTP attachment.  Keep callers on the same API while
@@ -69673,7 +69940,9 @@ void ds4_session_invalidate(ds4_session *s) {
     s->checkpoint.len = 0;
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_glm53(s) && s->glm53_graph_ready) {
+    if (ds4_session_is_inkling(s) && s->inkling_graph_ready) {
+        (void)inkling_graph_reset(&s->inkling_graph);
+    } else if (ds4_session_is_glm53(s) && s->glm53_graph_ready) {
         (void)glm53_graph_reset(&s->glm53_graph);
     } else if (ds4_session_is_solar(s)) {
         s->solar_state_valid = false;
@@ -69702,7 +69971,12 @@ void ds4_session_rewind(ds4_session *s, int pos) {
     s->checkpoint.len = pos;
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_glm53(s) && pos != old_pos) {
+    if (ds4_session_is_inkling(s) && pos != old_pos) {
+        s->checkpoint_valid = false;
+        if (s->inkling_graph_ready) {
+            (void)inkling_graph_reset(&s->inkling_graph);
+        }
+    } else if (ds4_session_is_glm53(s) && pos != old_pos) {
         s->checkpoint_valid = false;
         if (s->glm53_graph_ready)
             (void)glm53_graph_reset(&s->glm53_graph);
