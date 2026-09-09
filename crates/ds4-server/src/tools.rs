@@ -1286,6 +1286,8 @@ pub fn parse_generated_message(
         ModelSyntax::Qwen4Exp => parse_qwen_generated(text, require_thinking_closed, orders),
         ModelSyntax::K2Horizon => parse_k2_generated(text, require_thinking_closed, orders),
         ModelSyntax::Glm53 => parse_glm_generated(text, require_thinking_closed),
+        // Malformed tool envelopes must not become user-visible raw text.
+        ModelSyntax::Inkling => return crate::render::inkling::parse(text).unwrap_or_default(),
         ModelSyntax::DeepSeek => {
             if format == ChatFormat::SolarOpen2 {
                 parse_solar_generated(text, require_thinking_closed, orders)
@@ -1317,6 +1319,7 @@ pub fn parse_generated_for_model_id(
         ModelSyntax::Exaone => ChatFormat::Exaone,
         ModelSyntax::Qwen4Exp => ChatFormat::Qwen4Exp,
         ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
+        ModelSyntax::Inkling => ChatFormat::Inkling,
         _ => ChatFormat::DeepSeek,
     };
     parse_generated_message(syntax, text, require_thinking_closed, format, orders)
@@ -1353,6 +1356,25 @@ pub fn parse_generated_for_response(
     orders: &[ToolSchemaOrder],
     finish: &str,
 ) -> (ParsedGenerated, &'static str) {
+    if syntax == ModelSyntax::Inkling {
+        let mut parsed =
+            parse_generated_message(syntax, text, require_thinking_closed, format, orders);
+        if !has_tools {
+            parsed.calls.clear();
+        }
+        if !parsed.ok {
+            parsed.recovered = has_tools && saw_tool_start && finish != "error";
+            return (
+                parsed,
+                if finish == "length" {
+                    "length"
+                } else {
+                    "error"
+                },
+            );
+        }
+        return (parsed, intern_finish(finish));
+    }
     if !has_tools {
         let (content, reasoning) = split_reasoning_response(text, format, require_thinking_closed);
         return (
@@ -1405,6 +1427,7 @@ pub fn find_tool_start(s: &[u8], format: ChatFormat) -> Option<usize> {
         ChatFormat::Exaone => find_substr(s, b"<tool_call>"),
         ChatFormat::Qwen4Exp => find_substr(s, QWEN_TOOL_CALL_START.as_bytes()),
         ChatFormat::K2Horizon => find_substr(s, crate::render::K2_TOOL_CALLS_START.as_bytes()),
+        ChatFormat::Inkling => find_substr(s, crate::render::inkling::INVOKE.as_bytes()),
         ChatFormat::DeepSeek => {
             let cands = [
                 DSML_TOOL_CALLS_START.as_bytes(),
@@ -1424,6 +1447,7 @@ pub fn find_tool_end(s: &[u8], format: ChatFormat) -> Option<usize> {
         ChatFormat::Exaone => find_substr(s, b"</tool_call>"),
         ChatFormat::Qwen4Exp => find_substr(s, QWEN_TOOL_CALL_END.as_bytes()),
         ChatFormat::K2Horizon => find_substr(s, crate::render::K2_TOOL_CALLS_END.as_bytes()),
+        ChatFormat::Inkling => find_substr(s, crate::render::inkling::END.as_bytes()),
         ChatFormat::DeepSeek => {
             let cands = [
                 DSML_TOOL_CALLS_END.as_bytes(),
@@ -1622,6 +1646,7 @@ fn tool_marker_stream_safe_len(text: &[u8], format: ChatFormat) -> usize {
         ChatFormat::Exaone => &[b"<tool_call>"],
         ChatFormat::Qwen4Exp => &[QWEN_TOOL_CALL_START.as_bytes()],
         ChatFormat::K2Horizon => &[crate::render::K2_TOOL_CALLS_START.as_bytes()],
+        ChatFormat::Inkling => &[crate::render::inkling::INVOKE.as_bytes()],
         ChatFormat::DeepSeek => &[
             DSML_TOOL_CALLS_START.as_bytes(),
             DSML_TOOL_CALLS_START_SHORT.as_bytes(),
@@ -1696,7 +1721,7 @@ impl SemAccum {
             text: Vec::new(),
             track_tools: kind_chat && has_tools,
             cut_tool_syntax: kind_chat && !has_tools,
-            think_gates: think_enabled,
+            think_gates: think_enabled || format == ChatFormat::Inkling,
             chat_format: format,
             thinking_inside: false,
             think_tail: Vec::new(),
@@ -1715,7 +1740,7 @@ impl SemAccum {
         };
         if !prompt.is_empty() {
             a.feed_thinking(prompt);
-        } else if think_enabled {
+        } else if think_enabled && format != ChatFormat::Inkling {
             a.thinking_inside = true;
         }
         a.tool_scan_waiting = a.think_gates && a.thinking_inside;
@@ -1723,6 +1748,23 @@ impl SemAccum {
     }
 
     fn feed_thinking(&mut self, piece: &[u8]) {
+        if self.chat_format == ChatFormat::Inkling {
+            let start = crate::render::inkling::THINK.as_bytes();
+            let end = crate::render::inkling::END.as_bytes();
+            let keep = start.len().max(end.len());
+            for &byte in piece {
+                if self.think_tail.len() == keep {
+                    self.think_tail.remove(0);
+                }
+                self.think_tail.push(byte);
+                if self.think_tail.ends_with(start) {
+                    self.thinking_inside = true;
+                } else if self.think_tail.ends_with(end) {
+                    self.thinking_inside = false;
+                }
+            }
+            return;
+        }
         for &c in piece {
             if self.think_tail.len() == 16 {
                 self.think_tail.remove(0);

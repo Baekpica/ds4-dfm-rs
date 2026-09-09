@@ -53,6 +53,7 @@ pub struct RequestImage {
 #[derive(Debug, Clone, Default)]
 pub struct ChatMsg {
     pub role: String,
+    pub name: String,
     pub content: String,
     pub reasoning: String,
     pub tool_call_id: String,
@@ -836,6 +837,8 @@ fn parse_messages(
             }
             if key == "role" {
                 msg.role = json_string(p)?;
+            } else if key == "name" {
+                msg.name = json_string(p)?;
             } else if key == "content" {
                 msg.content.clear();
                 msg.parts.clear();

@@ -31,8 +31,8 @@ use crate::render::{
     SOLAR_IM_END,
 };
 use crate::retry::{
-    build_invalid_tool_error_suffix, parse_failure_should_retry, terminal_finish,
-    truncation_outcome, TruncationOutcome,
+    build_recovery_suffix, parse_failure_should_retry, terminal_finish, truncation_outcome,
+    TruncationOutcome,
 };
 use crate::route::{decode_budget, think_mode_enabled, Api, ReqKind};
 use crate::stream::{
@@ -824,6 +824,7 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         ModelSyntax::Exaone => ChatFormat::Exaone,
         ModelSyntax::Qwen4Exp => ChatFormat::Qwen4Exp,
         ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
+        ModelSyntax::Inkling => ChatFormat::Inkling,
         ModelSyntax::DeepSeek | ModelSyntax::Motif3 | ModelSyntax::Dots3 | ModelSyntax::Glm53 => {
             ChatFormat::DeepSeek
         }
@@ -1010,6 +1011,7 @@ pub(crate) fn prepare_required_prefixes(
             ChatFormat::Exaone => "<tool_call>",
             ChatFormat::Qwen4Exp => crate::render::QWEN_TOOL_CALL_START,
             ChatFormat::K2Horizon => crate::render::K2_TOOL_CALLS_START,
+            ChatFormat::Inkling => crate::render::inkling::INVOKE,
             ChatFormat::DeepSeek => crate::tools::DSML_TOOL_CALLS_START,
         };
         let toks = tokenize(marker.as_bytes())?;
@@ -1582,11 +1584,11 @@ pub(crate) fn generate_terminal_prepared(
             TruncationOutcome::RetryUnterminated => {
                 if append_recovery_suffix(
                     engine,
-                    &build_invalid_tool_error_suffix(
+                    &build_recovery_suffix(
                         req.chat_format,
                         parsed.think_mode,
-                        acc.thinking_inside(),
                         &prompt,
+                        &acc,
                         "unterminated tool call",
                     ),
                 )
@@ -1636,11 +1638,11 @@ pub(crate) fn generate_terminal_prepared(
         {
             if append_recovery_suffix(
                 engine,
-                &build_invalid_tool_error_suffix(
+                &build_recovery_suffix(
                     req.chat_format,
                     parsed.think_mode,
-                    acc.thinking_inside(),
                     &prompt,
+                    &acc,
                     "invalid tool call",
                 ),
             )

@@ -312,6 +312,7 @@ dependencies = [
  "ds4-dist",
  "ds4-kv",
  "ds4-sys",
+ "serde_json",
 ]
 
 [[package]]

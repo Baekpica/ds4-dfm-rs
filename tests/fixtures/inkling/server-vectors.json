@@ -1,0 +1,745 @@
+{
+  "template_sha256": "0aa1aa0c729d90176dcaa00c440c8faffca2957ffb2cc4b79456ee6d02bcf43b",
+  "vectors": [
+    {
+      "name": "no_system",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hi"
+        }
+      ],
+      "tools": [],
+      "effort": "none",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0<|end_message|><|message_user|><|content_text|>Hi<|end_message|><|message_model|>"
+    },
+    {
+      "name": "no_system",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hi"
+        }
+      ],
+      "tools": [],
+      "effort": "low",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0.2<|end_message|><|message_user|><|content_text|>Hi<|end_message|><|message_model|>"
+    },
+    {
+      "name": "no_system",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hi"
+        }
+      ],
+      "tools": [],
+      "effort": "high",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_text|>Hi<|end_message|><|message_model|>"
+    },
+    {
+      "name": "no_system",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hi"
+        }
+      ],
+      "tools": [],
+      "effort": "max",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0.99<|end_message|><|message_user|><|content_text|>Hi<|end_message|><|message_model|>"
+    },
+    {
+      "name": "systems",
+      "messages": [
+        {
+          "role": "system",
+          "content": "A"
+        },
+        {
+          "role": "system",
+          "content": " B\n"
+        },
+        {
+          "role": "user",
+          "content": " Hi "
+        }
+      ],
+      "tools": [],
+      "effort": "none",
+      "rendered": "<|message_system|><|content_text|>A<|end_message|><|message_system|><|content_text|> B\n<|end_message|><|message_system|><|content_text|>Thinking effort level: 0<|end_message|><|message_user|><|content_text|> Hi <|end_message|><|message_model|>"
+    },
+    {
+      "name": "systems",
+      "messages": [
+        {
+          "role": "system",
+          "content": "A"
+        },
+        {
+          "role": "system",
+          "content": " B\n"
+        },
+        {
+          "role": "user",
+          "content": " Hi "
+        }
+      ],
+      "tools": [],
+      "effort": "low",
+      "rendered": "<|message_system|><|content_text|>A<|end_message|><|message_system|><|content_text|> B\n<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.2<|end_message|><|message_user|><|content_text|> Hi <|end_message|><|message_model|>"
+    },
+    {
+      "name": "systems",
+      "messages": [
+        {
+          "role": "system",
+          "content": "A"
+        },
+        {
+          "role": "system",
+          "content": " B\n"
+        },
+        {
+          "role": "user",
+          "content": " Hi "
+        }
+      ],
+      "tools": [],
+      "effort": "high",
+      "rendered": "<|message_system|><|content_text|>A<|end_message|><|message_system|><|content_text|> B\n<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_text|> Hi <|end_message|><|message_model|>"
+    },
+    {
+      "name": "systems",
+      "messages": [
+        {
+          "role": "system",
+          "content": "A"
+        },
+        {
+          "role": "system",
+          "content": " B\n"
+        },
+        {
+          "role": "user",
+          "content": " Hi "
+        }
+      ],
+      "tools": [],
+      "effort": "max",
+      "rendered": "<|message_system|><|content_text|>A<|end_message|><|message_system|><|content_text|> B\n<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.99<|end_message|><|message_user|><|content_text|> Hi <|end_message|><|message_model|>"
+    },
+    {
+      "name": "empty",
+      "messages": [],
+      "tools": [],
+      "effort": "none",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0<|end_message|><|message_model|>"
+    },
+    {
+      "name": "empty",
+      "messages": [],
+      "tools": [],
+      "effort": "low",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0.2<|end_message|><|message_model|>"
+    },
+    {
+      "name": "empty",
+      "messages": [],
+      "tools": [],
+      "effort": "high",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_model|>"
+    },
+    {
+      "name": "empty",
+      "messages": [],
+      "tools": [],
+      "effort": "max",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0.99<|end_message|><|message_model|>"
+    },
+    {
+      "name": "history",
+      "messages": [
+        {
+          "role": "user",
+          "content": "2 + 2?"
+        },
+        {
+          "role": "assistant",
+          "reasoning_content": "Check.",
+          "content": "4"
+        },
+        {
+          "role": "user",
+          "content": "Continue."
+        }
+      ],
+      "tools": [],
+      "effort": "none",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0<|end_message|><|message_user|><|content_text|>2 + 2?<|end_message|><|message_model|><|content_thinking|>Check.<|end_message|><|message_model|><|content_text|>4<|end_message|><|content_model_end_sampling|><|message_user|><|content_text|>Continue.<|end_message|><|message_model|>"
+    },
+    {
+      "name": "history",
+      "messages": [
+        {
+          "role": "user",
+          "content": "2 + 2?"
+        },
+        {
+          "role": "assistant",
+          "reasoning_content": "Check.",
+          "content": "4"
+        },
+        {
+          "role": "user",
+          "content": "Continue."
+        }
+      ],
+      "tools": [],
+      "effort": "low",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0.2<|end_message|><|message_user|><|content_text|>2 + 2?<|end_message|><|message_model|><|content_thinking|>Check.<|end_message|><|message_model|><|content_text|>4<|end_message|><|content_model_end_sampling|><|message_user|><|content_text|>Continue.<|end_message|><|message_model|>"
+    },
+    {
+      "name": "history",
+      "messages": [
+        {
+          "role": "user",
+          "content": "2 + 2?"
+        },
+        {
+          "role": "assistant",
+          "reasoning_content": "Check.",
+          "content": "4"
+        },
+        {
+          "role": "user",
+          "content": "Continue."
+        }
+      ],
+      "tools": [],
+      "effort": "high",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_text|>2 + 2?<|end_message|><|message_model|><|content_thinking|>Check.<|end_message|><|message_model|><|content_text|>4<|end_message|><|content_model_end_sampling|><|message_user|><|content_text|>Continue.<|end_message|><|message_model|>"
+    },
+    {
+      "name": "history",
+      "messages": [
+        {
+          "role": "user",
+          "content": "2 + 2?"
+        },
+        {
+          "role": "assistant",
+          "reasoning_content": "Check.",
+          "content": "4"
+        },
+        {
+          "role": "user",
+          "content": "Continue."
+        }
+      ],
+      "tools": [],
+      "effort": "max",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0.99<|end_message|><|message_user|><|content_text|>2 + 2?<|end_message|><|message_model|><|content_thinking|>Check.<|end_message|><|message_model|><|content_text|>4<|end_message|><|content_model_end_sampling|><|message_user|><|content_text|>Continue.<|end_message|><|message_model|>"
+    },
+    {
+      "name": "tool_result",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Be concise."
+        },
+        {
+          "role": "user",
+          "content": "Weather?"
+        },
+        {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_1",
+              "function": {
+                "name": "weather",
+                "arguments": {
+                  "z": [
+                    1e-07,
+                    1e+20,
+                    1.0,
+                    -0.0
+                  ],
+                  "city": "서울",
+                  "nested": {
+                    "z": false,
+                    "a": null
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "Sunny"
+        },
+        {
+          "role": "user",
+          "content": "Thanks"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "description": "서울 날씨",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        }
+      ],
+      "effort": "none",
+      "rendered": "<|message_system|>tool_declare<|content_xml|>[{\"description\":\"서울 날씨\",\"name\":\"weather\",\"parameters\":{\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"},\"type\":\"function\"}]<|end_message|><|message_system|><|content_text|>Be concise.<|end_message|><|message_system|><|content_text|>Thinking effort level: 0<|end_message|><|message_user|><|content_text|>Weather?<|end_message|><|message_model|>weather<|content_invoke_tool_json|>{\"name\":\"weather\",\"args\":{\"city\":\"서울\",\"nested\":{\"a\":null,\"z\":false},\"z\":[1e-07,1e+20,1.0,-0.0]}}<|end_message|><|content_model_end_sampling|><|message_tool|>weather<|content_text|>Sunny<|end_message|><|message_user|><|content_text|>Thanks<|end_message|><|message_model|>"
+    },
+    {
+      "name": "tool_result",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Be concise."
+        },
+        {
+          "role": "user",
+          "content": "Weather?"
+        },
+        {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_1",
+              "function": {
+                "name": "weather",
+                "arguments": {
+                  "z": [
+                    1e-07,
+                    1e+20,
+                    1.0,
+                    -0.0
+                  ],
+                  "city": "서울",
+                  "nested": {
+                    "z": false,
+                    "a": null
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "Sunny"
+        },
+        {
+          "role": "user",
+          "content": "Thanks"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "description": "서울 날씨",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        }
+      ],
+      "effort": "low",
+      "rendered": "<|message_system|>tool_declare<|content_xml|>[{\"description\":\"서울 날씨\",\"name\":\"weather\",\"parameters\":{\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"},\"type\":\"function\"}]<|end_message|><|message_system|><|content_text|>Be concise.<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.2<|end_message|><|message_user|><|content_text|>Weather?<|end_message|><|message_model|>weather<|content_invoke_tool_json|>{\"name\":\"weather\",\"args\":{\"city\":\"서울\",\"nested\":{\"a\":null,\"z\":false},\"z\":[1e-07,1e+20,1.0,-0.0]}}<|end_message|><|content_model_end_sampling|><|message_tool|>weather<|content_text|>Sunny<|end_message|><|message_user|><|content_text|>Thanks<|end_message|><|message_model|>"
+    },
+    {
+      "name": "tool_result",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Be concise."
+        },
+        {
+          "role": "user",
+          "content": "Weather?"
+        },
+        {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_1",
+              "function": {
+                "name": "weather",
+                "arguments": {
+                  "z": [
+                    1e-07,
+                    1e+20,
+                    1.0,
+                    -0.0
+                  ],
+                  "city": "서울",
+                  "nested": {
+                    "z": false,
+                    "a": null
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "Sunny"
+        },
+        {
+          "role": "user",
+          "content": "Thanks"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "description": "서울 날씨",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        }
+      ],
+      "effort": "high",
+      "rendered": "<|message_system|>tool_declare<|content_xml|>[{\"description\":\"서울 날씨\",\"name\":\"weather\",\"parameters\":{\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"},\"type\":\"function\"}]<|end_message|><|message_system|><|content_text|>Be concise.<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_text|>Weather?<|end_message|><|message_model|>weather<|content_invoke_tool_json|>{\"name\":\"weather\",\"args\":{\"city\":\"서울\",\"nested\":{\"a\":null,\"z\":false},\"z\":[1e-07,1e+20,1.0,-0.0]}}<|end_message|><|content_model_end_sampling|><|message_tool|>weather<|content_text|>Sunny<|end_message|><|message_user|><|content_text|>Thanks<|end_message|><|message_model|>"
+    },
+    {
+      "name": "tool_result",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Be concise."
+        },
+        {
+          "role": "user",
+          "content": "Weather?"
+        },
+        {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_1",
+              "function": {
+                "name": "weather",
+                "arguments": {
+                  "z": [
+                    1e-07,
+                    1e+20,
+                    1.0,
+                    -0.0
+                  ],
+                  "city": "서울",
+                  "nested": {
+                    "z": false,
+                    "a": null
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "Sunny"
+        },
+        {
+          "role": "user",
+          "content": "Thanks"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "description": "서울 날씨",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        }
+      ],
+      "effort": "max",
+      "rendered": "<|message_system|>tool_declare<|content_xml|>[{\"description\":\"서울 날씨\",\"name\":\"weather\",\"parameters\":{\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"},\"type\":\"function\"}]<|end_message|><|message_system|><|content_text|>Be concise.<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.99<|end_message|><|message_user|><|content_text|>Weather?<|end_message|><|message_model|>weather<|content_invoke_tool_json|>{\"name\":\"weather\",\"args\":{\"city\":\"서울\",\"nested\":{\"a\":null,\"z\":false},\"z\":[1e-07,1e+20,1.0,-0.0]}}<|end_message|><|content_model_end_sampling|><|message_tool|>weather<|content_text|>Sunny<|end_message|><|message_user|><|content_text|>Thanks<|end_message|><|message_model|>"
+    },
+    {
+      "name": "named_result",
+      "messages": [
+        {
+          "role": "tool",
+          "name": "weather",
+          "content": "Sunny"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "description": "서울 날씨",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        }
+      ],
+      "effort": "none",
+      "rendered": "<|message_system|>tool_declare<|content_xml|>[{\"description\":\"서울 날씨\",\"name\":\"weather\",\"parameters\":{\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"},\"type\":\"function\"}]<|end_message|><|message_system|><|content_text|>Thinking effort level: 0<|end_message|><|message_tool|>weather<|content_text|>Sunny<|end_message|><|message_model|>"
+    },
+    {
+      "name": "named_result",
+      "messages": [
+        {
+          "role": "tool",
+          "name": "weather",
+          "content": "Sunny"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "description": "서울 날씨",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        }
+      ],
+      "effort": "low",
+      "rendered": "<|message_system|>tool_declare<|content_xml|>[{\"description\":\"서울 날씨\",\"name\":\"weather\",\"parameters\":{\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"},\"type\":\"function\"}]<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.2<|end_message|><|message_tool|>weather<|content_text|>Sunny<|end_message|><|message_model|>"
+    },
+    {
+      "name": "named_result",
+      "messages": [
+        {
+          "role": "tool",
+          "name": "weather",
+          "content": "Sunny"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "description": "서울 날씨",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        }
+      ],
+      "effort": "high",
+      "rendered": "<|message_system|>tool_declare<|content_xml|>[{\"description\":\"서울 날씨\",\"name\":\"weather\",\"parameters\":{\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"},\"type\":\"function\"}]<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_tool|>weather<|content_text|>Sunny<|end_message|><|message_model|>"
+    },
+    {
+      "name": "named_result",
+      "messages": [
+        {
+          "role": "tool",
+          "name": "weather",
+          "content": "Sunny"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "weather",
+            "description": "서울 날씨",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        }
+      ],
+      "effort": "max",
+      "rendered": "<|message_system|>tool_declare<|content_xml|>[{\"description\":\"서울 날씨\",\"name\":\"weather\",\"parameters\":{\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"},\"type\":\"function\"}]<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.99<|end_message|><|message_tool|>weather<|content_text|>Sunny<|end_message|><|message_model|>"
+    },
+    {
+      "name": "parts",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Before"
+            },
+            {
+              "type": "image"
+            },
+            {
+              "type": "text",
+              "text": "After"
+            }
+          ]
+        }
+      ],
+      "tools": [],
+      "effort": "none",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0<|end_message|><|message_user|><|content_text|>Before<|end_message|><|message_user|><|content_image|><|unused_200054|><|end_message|><|message_user|><|content_text|>After<|end_message|><|message_model|>"
+    },
+    {
+      "name": "parts",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Before"
+            },
+            {
+              "type": "image"
+            },
+            {
+              "type": "text",
+              "text": "After"
+            }
+          ]
+        }
+      ],
+      "tools": [],
+      "effort": "low",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0.2<|end_message|><|message_user|><|content_text|>Before<|end_message|><|message_user|><|content_image|><|unused_200054|><|end_message|><|message_user|><|content_text|>After<|end_message|><|message_model|>"
+    },
+    {
+      "name": "parts",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Before"
+            },
+            {
+              "type": "image"
+            },
+            {
+              "type": "text",
+              "text": "After"
+            }
+          ]
+        }
+      ],
+      "tools": [],
+      "effort": "high",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_text|>Before<|end_message|><|message_user|><|content_image|><|unused_200054|><|end_message|><|message_user|><|content_text|>After<|end_message|><|message_model|>"
+    },
+    {
+      "name": "parts",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Before"
+            },
+            {
+              "type": "image"
+            },
+            {
+              "type": "text",
+              "text": "After"
+            }
+          ]
+        }
+      ],
+      "tools": [],
+      "effort": "max",
+      "rendered": "<|message_system|><|content_text|>Thinking effort level: 0.99<|end_message|><|message_user|><|content_text|>Before<|end_message|><|message_user|><|content_image|><|unused_200054|><|end_message|><|message_user|><|content_text|>After<|end_message|><|message_model|>"
+    }
+  ]
+}

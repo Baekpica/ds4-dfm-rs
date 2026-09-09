@@ -30,6 +30,14 @@ python make_tokenizer_vectors.py /path/to/MQ85GB/tokenizer.json tokenizer-vector
 python make_chat_vectors.py /path/to/MQ85GB/chat_template.jinja chat-vectors.json
 ```
 
+`server-vectors.json` adds 28 source-template cases covering all four host
+effort levels, system/history messages, tool declarations/results, sorted
+JSON and interleaved text/image placeholders. Regenerate with:
+
+```sh
+python make_server_vectors.py /path/to/MQ85GB/chat_template.jinja server-vectors.json
+```
+
 `moe-vectors.h` contains CPU PyTorch 2.14.0 reference values for eight router
 cases, plain/shared-weighted interleaved SwiGLU and routed/shared output
 combination. The generator follows the published precision contract and
@@ -40,5 +48,6 @@ It uses synthetic inputs and no model weights:
 python make_moe_vectors.py moe-vectors.h
 ```
 
-These fixtures cover catalogs, tokenizer, basic chat and MoE primitives. They
-contain no full-model logits and do not establish serving or API parity.
+These fixtures cover catalogs, tokenizer, chat framing and MoE primitives.
+They contain no full-model logits or media encoder outputs and do not
+establish serving or API parity.

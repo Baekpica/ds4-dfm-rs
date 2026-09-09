@@ -11,8 +11,12 @@ use crate::route::{think_mode_enabled, Api, ReqKind, ThinkMode};
 use crate::tool_stream::{DsmlToolStream, ToolSink};
 use crate::tools::find_tool_start;
 
+mod inkling;
+use inkling::{Channel, Channels, Flush};
+
 /// Frozen epoch used by the C stream oracle and tape tests.
 pub const CREATED_TEST: i64 = 1_767_225_600;
+const ITEM_IN_PROGRESS: &str = "in_progress";
 
 pub const TEST_RESP_ID: &str = "resp_aaaaaaaaaaaaaaaaaaaaaaaa";
 pub const TEST_RS_ID: &str = "rs_aaaaaaaaaaaaaaaaaaaaaaaa";
@@ -29,12 +33,14 @@ pub enum ChatFormat {
     Exaone,
     Qwen4Exp,
     K2Horizon,
+    Inkling,
 }
 
 pub fn think_start(fmt: ChatFormat) -> &'static str {
     match fmt {
         ChatFormat::SolarOpen2 => "<|think:start|>",
         ChatFormat::K2Horizon => crate::render::K2_THINK_START,
+        ChatFormat::Inkling => crate::render::inkling::THINK,
         _ => "<think>",
     }
 }
@@ -43,6 +49,7 @@ pub fn think_end(fmt: ChatFormat) -> &'static str {
     match fmt {
         ChatFormat::SolarOpen2 => "<|think:end|>",
         ChatFormat::K2Horizon => crate::render::K2_THINK_END,
+        ChatFormat::Inkling => crate::render::inkling::END,
         _ => "</think>",
     }
 }
@@ -250,7 +257,12 @@ fn append_responses_function_call_item(
     out.extend_from_slice(b",\"call_id\":");
     out.extend(json_escape_bytes(call_id.as_bytes()));
     out.extend_from_slice(b",\"arguments\":");
-    append_json_object_string(out, &tc.arguments);
+    // Clients append argument deltas to the added item's initial value.
+    if item_status == ITEM_IN_PROGRESS {
+        out.extend_from_slice(b"\"\"");
+    } else {
+        append_json_object_string(out, &tc.arguments);
+    }
     out.push(b'}');
 }
 
@@ -687,6 +699,7 @@ pub enum OpenaiMode {
 
 #[derive(Debug)]
 pub struct OpenaiStream {
+    inkling: Option<Channels>,
     pub mode: OpenaiMode,
     pub emit_pos: usize,
     pub active: bool,
@@ -696,6 +709,7 @@ pub struct OpenaiStream {
 
 pub fn openai_stream_start(r: &StreamReq) -> OpenaiStream {
     OpenaiStream {
+        inkling: (r.chat_format == ChatFormat::Inkling).then(Channels::default),
         mode: if think_mode_enabled(r.think_mode) {
             OpenaiMode::Thinking
         } else {
@@ -717,6 +731,20 @@ pub fn openai_sse_stream_update(
     final_: bool,
 ) -> bool {
     if !st.active {
+        return true;
+    }
+    if let Some(channels) = &mut st.inkling {
+        let flush = if final_ { Flush::Final } else { Flush::More };
+        while let Some(fragment) = channels.advance(raw, flush) {
+            let field = match fragment.channel {
+                Channel::Text => "content",
+                Channel::Thinking => "reasoning_content",
+                _ => continue,
+            };
+            if !fragment.body.is_empty() {
+                sse_chat_delta_n(w, r, id, field, &raw[fragment.body]);
+            }
+        }
         return true;
     }
     if st.mode == OpenaiMode::Thinking {
@@ -856,6 +884,7 @@ enum AnthBlock {
 
 #[derive(Debug)]
 pub struct AnthropicStream {
+    inkling: Option<Channels>,
     mode: AnthMode,
     open_block: AnthBlock,
     next_index: i32,
@@ -954,6 +983,7 @@ pub fn anthropic_sse_start_live(
     msg.extend_from_slice(b"}}");
     sse_event(w, "message_start", &msg);
     AnthropicStream {
+        inkling: (r.chat_format == ChatFormat::Inkling).then(Channels::default),
         mode: if think_mode_enabled(r.think_mode) {
             AnthMode::Thinking
         } else {
@@ -979,6 +1009,34 @@ pub fn anthropic_sse_stream_update(
     final_: bool,
 ) -> bool {
     if !st.active {
+        return true;
+    }
+    if st.inkling.is_some() {
+        let flush = if final_ { Flush::Final } else { Flush::More };
+        while let Some(fragment) = st.inkling.as_mut().unwrap().advance(raw, flush) {
+            let block = match fragment.channel {
+                Channel::Thinking => AnthBlock::Thinking,
+                Channel::Text => AnthBlock::Text,
+                _ => AnthBlock::None,
+            };
+            if st.open_block != block && !anthropic_sse_close_block_live(w, id, st) {
+                return false;
+            }
+            if block != AnthBlock::None && !fragment.body.is_empty() {
+                if !anthropic_sse_open_block(w, st, block) {
+                    return false;
+                }
+                anthropic_sse_delta_live(w, st, block, &raw[fragment.body]);
+                st.sent_thinking |= block == AnthBlock::Thinking;
+                st.sent_text |= block == AnthBlock::Text;
+            }
+            if (fragment.closed || final_) && !anthropic_sse_close_block_live(w, id, st) {
+                return false;
+            }
+        }
+        if final_ && !anthropic_sse_close_block_live(w, id, st) {
+            return false;
+        }
         return true;
     }
     if st.mode == AnthMode::Thinking {
@@ -1206,6 +1264,7 @@ enum RespMode {
 
 #[derive(Debug)]
 pub struct ResponsesStream {
+    inkling: Option<Channels>,
     mode: RespMode,
     emit_pos: usize,
     active: bool,
@@ -1242,6 +1301,7 @@ pub fn responses_stream_init(
     message_id: &str,
 ) -> ResponsesStream {
     ResponsesStream {
+        inkling: (r.chat_format == ChatFormat::Inkling).then(Channels::default),
         mode: if think_mode_enabled(r.think_mode) {
             RespMode::Thinking
         } else {
@@ -1452,7 +1512,10 @@ fn responses_sse_reasoning_done(
     } else {
         "incomplete"
     };
-    let rtext = if st.reasoning_end > st.reasoning_start {
+    let channel_text = st.inkling.as_ref().map(|c| c.text(raw, Channel::Thinking));
+    let rtext = if let Some(text) = &channel_text {
+        text.as_slice()
+    } else if st.reasoning_end > st.reasoning_start {
         &raw[st.reasoning_start..st.reasoning_end]
     } else {
         b""
@@ -1527,7 +1590,9 @@ fn json_escape_fragment(s: &[u8]) -> Vec<u8> {
 
 fn responses_message_text_escape_fixed(st: &ResponsesStream, raw: &[u8]) -> Vec<u8> {
     let mut b = vec![b'"'];
-    if st.message_end > st.message_start {
+    if let Some(channels) = &st.inkling {
+        b.extend(json_escape_fragment(&channels.text(raw, Channel::Text)));
+    } else if st.message_end > st.message_start {
         b.extend(json_escape_fragment(&raw[st.message_start..st.message_end]));
     }
     if st.message_tail_end > st.message_tail_start {
@@ -1603,7 +1668,7 @@ fn responses_sse_function_calls(
             tc,
             &item_id,
             &call_id,
-            "in_progress",
+            ITEM_IN_PROGRESS,
             &r.tool_orders,
         );
         added.push(b'}');
@@ -1690,7 +1755,10 @@ fn responses_sse_completed(
         } else {
             "incomplete"
         };
-        let rtext = if st.reasoning_end > st.reasoning_start {
+        let channel_text = st.inkling.as_ref().map(|c| c.text(raw, Channel::Thinking));
+        let rtext = if let Some(text) = &channel_text {
+            text.as_slice()
+        } else if st.reasoning_end > st.reasoning_start {
             &raw[st.reasoning_start..st.reasoning_end]
         } else {
             b""
@@ -1760,6 +1828,49 @@ pub fn responses_sse_stream_update(
     final_: bool,
 ) -> bool {
     if !st.active {
+        return true;
+    }
+    if st.inkling.is_some() {
+        let flush = if final_ { Flush::Final } else { Flush::More };
+        while let Some(fragment) = st.inkling.as_mut().unwrap().advance(raw, flush) {
+            if fragment.channel == Channel::Thinking {
+                st.reasoning_closed_naturally |= fragment.closed;
+            }
+            if fragment.body.is_empty() {
+                continue;
+            }
+            match fragment.channel {
+                Channel::Thinking if r.reasoning_summary_emit => {
+                    if !st.reasoning_item_opened {
+                        st.reasoning_index = st.next_output_index;
+                        st.next_output_index += 1;
+                        responses_sse_reasoning_added(w, st);
+                        st.reasoning_item_opened = true;
+                    }
+                    if !st.reasoning_summary_started {
+                        responses_sse_reasoning_summary_part_added(w, st);
+                        st.reasoning_summary_started = true;
+                    }
+                    responses_sse_reasoning_delta(w, st, &raw[fragment.body]);
+                    st.reasoning_emitted_any = true;
+                }
+                Channel::Text => {
+                    if !st.message_item_opened {
+                        st.message_index = st.next_output_index;
+                        st.next_output_index += 1;
+                        responses_sse_message_added(w, st);
+                        st.message_item_opened = true;
+                    }
+                    if !st.message_text_part_open {
+                        responses_sse_message_text_part_added(w, st);
+                        st.message_text_part_open = true;
+                    }
+                    responses_sse_output_text_delta(w, st, &raw[fragment.body]);
+                    st.message_emitted_any = true;
+                }
+                _ => {}
+            }
+        }
         return true;
     }
     let emit_reasoning = r.reasoning_summary_emit;

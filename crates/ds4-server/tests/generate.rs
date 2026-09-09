@@ -54,6 +54,7 @@ struct PromptSyncDecode {
     events: Vec<&'static str>,
     replay_raw: Option<String>,
     replay_prompts: Vec<Vec<u8>>,
+    rendered: std::cell::RefCell<Vec<Vec<u8>>>,
     remembered_tools: Vec<(Vec<String>, String)>,
 }
 
@@ -76,6 +77,7 @@ impl PromptSyncDecode {
             events: Vec::new(),
             replay_raw: None,
             replay_prompts: Vec::new(),
+            rendered: std::cell::RefCell::new(Vec::new()),
             remembered_tools: Vec::new(),
         }
     }
@@ -91,6 +93,7 @@ impl DecodeIo for PromptSyncDecode {
     }
 
     fn tokenize_rendered_chat(&self, text: &[u8]) -> Result<Vec<i32>, GenerateError> {
+        self.rendered.borrow_mut().push(text.to_vec());
         self.inner.tokenize_rendered_chat(text)
     }
 
@@ -1325,4 +1328,120 @@ fn scripted_motif_does_not_retry_invalid_tools() {
     assert!(!s.contains("should-not-run"), "{s}");
     assert!(s.contains("DSML"), "{s}");
     assert_eq!(engine.idx, 1, "Motif must not consume a second decode pass");
+}
+
+fn inkling_retry_case(invalid: &[u8], closure: &str) {
+    let parsed = tools_req();
+    let valid = br#"bash<|content_invoke_tool_json|>{"name":"bash","args":{"command":"ls"}}<|end_message|>"#;
+    let mut tape = ScriptedDecode::from_pieces(&[invalid, valid]);
+    tape.model_id = 9;
+    tape.steps.insert(
+        1,
+        ScriptedStep {
+            token: 98,
+            piece: Vec::new(),
+            stop: true,
+        },
+    );
+    let mut engine = PromptSyncDecode::new(tape, 0, 1);
+    let mut out = Vec::new();
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "inkling-retry",
+        CREATED_TEST,
+        false,
+        16,
+        &mut out,
+    )
+    .unwrap();
+    let response = String::from_utf8(out).unwrap();
+    assert_eq!(
+        engine.sync_calls, 1,
+        "exactly one corrective retry: {response}"
+    );
+    let rendered = engine.rendered.borrow();
+    let suffix = String::from_utf8(rendered.last().unwrap().clone()).unwrap();
+    assert!(
+        suffix.starts_with(&format!(
+            "{closure}<|message_tool|><|content_text|>Tool error: invalid Inkling tool call"
+        )),
+        "{suffix}"
+    );
+    assert!(
+        suffix.ends_with("<|end_message|><|message_model|>"),
+        "{suffix}"
+    );
+    assert!(!suffix.contains("DSML"), "{suffix}");
+    assert!(
+        response.contains("\"finish_reason\":\"tool_calls\""),
+        "{response}"
+    );
+    assert!(response.contains("\"name\":\"bash\""), "{response}");
+    assert!(!response.contains("Tool error:"), "{response}");
+}
+
+#[test]
+fn inkling_unterminated_retry() {
+    inkling_retry_case(
+        br#"bash<|content_invoke_tool_json|>{"name":"bash","args":{"command":"ls"}"#,
+        "<|end_message|><|content_model_end_sampling|>",
+    );
+}
+
+#[test]
+fn inkling_malformed_retry() {
+    inkling_retry_case(
+        br#"bash<|content_invoke_tool_json|>{"name":"bash","args":[]}<|end_message|>"#,
+        "<|content_model_end_sampling|>",
+    );
+}
+
+#[test]
+fn inkling_second_tool_retry() {
+    inkling_retry_case(br#"bash<|content_invoke_tool_json|>{"name":"bash","args":{"command":"ls"}}<|end_message|><|message_model|>bash<|content_invoke_tool_json|>{"name":"bash","args":{}"#,
+                       "<|end_message|><|content_model_end_sampling|>");
+}
+
+#[test]
+fn inkling_bad_tool_terminal() {
+    let bad = br#"bash<|content_invoke_tool_json|>{"name":"bash","args":[]}<|end_message|>"#;
+    for stream in [false, true] {
+        for cap in [1, 16] {
+            let mut parsed = tools_req();
+            parsed.stream = stream;
+            parsed.max_tokens = cap;
+            let mut tape = ScriptedDecode::from_pieces(&[bad, bad]);
+            tape.model_id = 9;
+            tape.steps.insert(
+                1,
+                ScriptedStep {
+                    token: 98,
+                    piece: Vec::new(),
+                    stop: true,
+                },
+            );
+            let mut engine = PromptSyncDecode::new(tape, 0, 1);
+            let mut out = Vec::new();
+            generate_and_write(
+                &mut engine,
+                &parsed,
+                "inkling-terminal",
+                CREATED_TEST,
+                false,
+                16,
+                &mut out,
+            )
+            .unwrap();
+            let response = String::from_utf8(out).unwrap();
+            let finish = if cap == 1 { "length" } else { "error" };
+            assert!(
+                response.contains(&format!("\"finish_reason\":\"{finish}\"")),
+                "{response}"
+            );
+            assert!(!response.contains("<|"), "{response}");
+            assert!(!response.contains("Tool error:"), "{response}");
+            assert_eq!(engine.sync_calls, usize::from(!stream && cap != 1));
+        }
+    }
 }
