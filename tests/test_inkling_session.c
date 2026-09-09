@@ -7,6 +7,51 @@ static void check(int ok, const char *message) {
     }
 }
 
+static void check_image_sync(ds4_session *s) {
+    float pixels[2 * 40 * 40 * 3];
+    for (unsigned i = 0; i < sizeof(pixels) / sizeof(pixels[0]); i++) {
+        pixels[i] = ((int)(i * 13 % 257) - 128) / 63.0f;
+    }
+    int ids[] = {200000, 200005, 200054, 200010, 200001};
+    ds4_tokens prompt = {.v = ids, .len = 5, .cap = 5};
+    ds4_inkling_pixels image = {.pixels = pixels, .pixel_count = 2 * 40 * 40 * 3,
+                                .token_offset = 2, .token_count = 1};
+    char err[256] = {0};
+    size_t bytes = INKLING_VALID_VOCAB * sizeof(float);
+    float *first = xmalloc(bytes), *second = xmalloc(bytes), *got = xmalloc(bytes);
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, err, sizeof(err)) == 0, err);
+    memcpy(first, s->logits, bytes);
+    uint64_t generation = ds4_session_generation(s);
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, err, sizeof(err)) == 0 &&
+          ds4_session_generation(s) > generation && memcmp(first, s->logits, bytes) == 0,
+          "repeated Inkling image changed logits or reused token-only identity");
+    for (unsigned i = 0; i < sizeof(pixels) / sizeof(pixels[0]); i++) {
+        pixels[i] = -pixels[i];
+    }
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, err, sizeof(err)) == 0, err);
+    memcpy(second, s->logits, bytes);
+    check(memcmp(first, second, bytes) != 0, "changed Inkling image reused old KV");
+    generation = ds4_session_generation(s);
+    check(ds4_session_sync(s, &prompt, err, sizeof(err)) != 0,
+          "Inkling image placeholders accepted without pixels");
+    image.pixel_count--;
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, err, sizeof(err)) != 0,
+          "Inkling image pixel length mismatch accepted");
+    image.pixel_count++;
+    image.token_offset = 1;
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, err, sizeof(err)) != 0,
+          "Inkling image features accepted on text token");
+    image.token_offset = 2;
+    pixels[0] = NAN;
+    check(ds4_session_sync_inkling(s, &prompt, &image, 1, err, sizeof(err)) != 0 &&
+          ds4_session_generation(s) == generation && ds4_session_pos(s) == prompt.len,
+          "invalid Inkling pixels changed checkpoint frontier");
+    check(ds4_session_copy_logits(s, got, INKLING_VALID_VOCAB) == INKLING_VALID_VOCAB &&
+          memcmp(second, got, bytes) == 0, "invalid Inkling image changed logits");
+    free(first); free(second); free(got);
+    puts("Inkling image session: repeat/changed-image identity and invalid-input state passed");
+}
+
 int main(int argc, char **argv) {
     if (argc != 2) {
         fprintf(stderr, "usage: %s <MQ85GB-first.gguf>\n", argv[0]);
@@ -108,6 +153,7 @@ int main(int argc, char **argv) {
     printf("Inkling session: lazy alloc, no-op/extend/decode/reset/rewind parity; "
            "estimate=%llu measured=%llu\n", (unsigned long long)estimate,
            (unsigned long long)measured);
+    check_image_sync(s);
     ds4_session_free(s);
     check(session_tensors_census_live() == 0, "Inkling leaked session tensors");
     ds4_gpu_cleanup();

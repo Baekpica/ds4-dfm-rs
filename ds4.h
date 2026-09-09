@@ -119,6 +119,14 @@ typedef struct {
     ds4_vision_embedding embedding;
 } ds4_vision_span;
 
+/* Rust-prepared BTHWC [patches,2,40,40,3] pixels, borrowed through sync. */
+typedef struct {
+    const float *pixels;
+    uint64_t pixel_count; /* F32 values, not bytes. */
+    uint32_t token_offset;
+    uint32_t token_count;
+} ds4_inkling_pixels;
+
 typedef struct {
     int id;
     float logit;
@@ -1283,6 +1291,10 @@ int ds4_session_sync_multimodal(ds4_session *s,
                                 const ds4_vision_span *spans,
                                 uint32_t span_count,
                                 char *err, size_t errlen);
+/* Inkling image spans must cover every media placeholder. Always refills KV. */
+int ds4_session_sync_inkling(ds4_session *s, const ds4_tokens *prompt,
+                              const ds4_inkling_pixels *images, uint32_t count,
+                              char *err, size_t errlen);
 bool ds4_session_rewrite_requires_rebuild(int live_len, int canonical_len, int common);
 ds4_session_rewrite_result ds4_session_rewrite_from_common(
         ds4_session *s, const ds4_tokens *prompt, int common,

@@ -98,8 +98,8 @@ use std::ptr::{self, NonNull};
 use ds4_sys::{
     ds4_bridge_bind_plan, ds4_bridge_bind_plan_check, ds4_bridge_bind_slot,
     ds4_bridge_distributed_options, ds4_bridge_encode_chat_prompt, ds4_bridge_eval,
-    ds4_bridge_eval_speculative_argmax, ds4_bridge_graph_fit_quote, ds4_bridge_model,
-    ds4_bridge_model_boot_prewarm, ds4_bridge_model_free, ds4_bridge_model_open,
+    ds4_bridge_eval_speculative_argmax, ds4_bridge_graph_fit_quote, ds4_bridge_inkling_pixels,
+    ds4_bridge_model, ds4_bridge_model_boot_prewarm, ds4_bridge_model_free, ds4_bridge_model_open,
     ds4_bridge_model_open_distributed, ds4_bridge_model_open_options,
     ds4_bridge_model_run_distributed_worker, ds4_bridge_model_vision_probe, ds4_bridge_session,
     ds4_bridge_session_argmax, ds4_bridge_session_argmax_excluding, ds4_bridge_session_copy_logits,
@@ -115,11 +115,11 @@ use ds4_sys::{
     ds4_bridge_session_set_power, ds4_bridge_session_sync, ds4_bridge_session_sync_vision,
     ds4_bridge_session_top_logprobs, ds4_bridge_shard, ds4_bridge_snapshot,
     ds4_bridge_snapshot_create, ds4_bridge_snapshot_free, ds4_bridge_snapshot_len,
-    ds4_bridge_token_score, ds4_bridge_vision_info, ds4_bridge_vision_input, ds4_host_bind_look,
-    ds4_host_bind_map, ds4_host_shape, ds4_host_str, ds4_host_tensor, ds4_host_tensor_dir,
-    ds4_host_vocab, DS4_BRIDGE_BACKEND_CPU, DS4_BRIDGE_BACKEND_CUDA, DS4_BRIDGE_BACKEND_METAL,
-    DS4_BRIDGE_DISTRIBUTED_COORDINATOR, DS4_BRIDGE_DISTRIBUTED_NONE, DS4_BRIDGE_DISTRIBUTED_WORKER,
-    DS4_BRIDGE_MAX_DIMS,
+    ds4_bridge_sync_inkling, ds4_bridge_token_score, ds4_bridge_vision_info,
+    ds4_bridge_vision_input, ds4_host_bind_look, ds4_host_bind_map, ds4_host_shape, ds4_host_str,
+    ds4_host_tensor, ds4_host_tensor_dir, ds4_host_vocab, DS4_BRIDGE_BACKEND_CPU,
+    DS4_BRIDGE_BACKEND_CUDA, DS4_BRIDGE_BACKEND_METAL, DS4_BRIDGE_DISTRIBUTED_COORDINATOR,
+    DS4_BRIDGE_DISTRIBUTED_NONE, DS4_BRIDGE_DISTRIBUTED_WORKER, DS4_BRIDGE_MAX_DIMS,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1573,6 +1573,9 @@ impl Session<'_> {
 
     pub fn sync_vision(&mut self, tokens: &TokenBuffer, images: &[VisionInput<'_>]) -> Result<()> {
         self.check_sync(tokens)?;
+        if self.host.family == ModelFamily::Inkling {
+            return self.sync_inkling(tokens, images);
+        }
         if images.is_empty() || images.len() > 4 {
             return Err(Error {
                 code: 1,
@@ -1595,6 +1598,39 @@ impl Session<'_> {
                 tokens.len() as i32,
                 images.as_ptr(),
                 images.len() as u32,
+                err.as_mut_ptr() as *mut c_char,
+                err.len(),
+            )
+        };
+        self.host.invalidate();
+        if rc != 0 {
+            return Err(fail(rc, &err));
+        }
+        self.host.replace_checkpoint(tokens.as_slice());
+        Ok(())
+    }
+
+    fn sync_inkling(&mut self, tokens: &TokenBuffer, images: &[VisionInput<'_>]) -> Result<()> {
+        let prepared = inkling_media::prepare_spans(tokens.as_slice(), images)?;
+        let inputs: Vec<_> = prepared
+            .iter()
+            .map(|(offset, image)| ds4_bridge_inkling_pixels {
+                pixels: image.pixels.as_ptr(),
+                pixel_count: image.pixels.len() as u64,
+                token_offset: *offset,
+                token_count: image.rows * image.cols,
+            })
+            .collect();
+        let mut err = [0u8; 512];
+        // Prepared images own disjoint pixel buffers until the synchronous
+        // native encoder/prefill call returns. No device handles escape core.
+        let rc = unsafe {
+            ds4_bridge_sync_inkling(
+                self.raw.as_ptr(),
+                tokens.as_slice().as_ptr(),
+                tokens.len() as i32,
+                inputs.as_ptr(),
+                inputs.len() as u32,
                 err.as_mut_ptr() as *mut c_char,
                 err.len(),
             )

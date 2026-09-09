@@ -222,6 +222,15 @@ pub struct ds4_bridge_vision_input {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ds4_bridge_inkling_pixels {
+    pub pixels: *const f32,
+    pub pixel_count: u64,
+    pub token_offset: u32,
+    pub token_count: u32,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ds4_bridge_vision_info {
     pub source_width: u32,
@@ -482,6 +491,16 @@ extern "C" {
         n_tokens: c_int,
         images: *const ds4_bridge_vision_input,
         image_count: u32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_sync_inkling(
+        s: *mut ds4_bridge_session,
+        tokens: *const i32,
+        n_tokens: c_int,
+        images: *const ds4_bridge_inkling_pixels,
+        count: u32,
         err: *mut c_char,
         errlen: usize,
     ) -> c_int;

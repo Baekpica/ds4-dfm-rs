@@ -20941,6 +20941,7 @@ enum {
     IK_IMAGE_SCRATCH = 2 * 8 * 8 * 128,
     IK_IMAGE_CHUNK = 16, IK_AUDIO_CHUNK = 64,
     IK_AUDIO_BINS = 80, IK_AUDIO_LEVELS = 16,
+    IK_IMAGE_LIMIT = 4, IK_IMAGE_MAX_PATCHES = 8192,
 };
 
 static bool inkling_image_stage(ds4_gpu_tensor *out, ds4_gpu_tensor *fold,
@@ -67380,6 +67381,7 @@ static int ds4_session_sync_glm53(
  */
 #ifndef DS4_NO_GPU
 static int inkling_session_sync(ds4_session *s, const ds4_tokens *prompt,
+                                 const float *const *features,
                                  char *err, size_t errlen) {
     ds4_inkling_graph *g = &s->inkling_graph;
     if (!s->inkling_graph_ready) {
@@ -67391,9 +67393,13 @@ static int inkling_session_sync(ds4_session *s, const ds4_tokens *prompt,
             payload_set_err(err, errlen, "Inkling prompt has an invalid token");
             return 1;
         }
+        if (!features && (prompt->v[i] == IK_IMAGE_TOKEN || prompt->v[i] == IK_AUDIO_TOKEN)) {
+            payload_set_err(err, errlen, "Inkling media placeholders require multimodal sync");
+            return 1;
+        }
     }
     int start = 0;
-    if (s->checkpoint_valid && !g->failed && g->position == (uint32_t)s->checkpoint.len &&
+    if (!features && s->checkpoint_valid && !g->failed && g->position == (uint32_t)s->checkpoint.len &&
         prompt->len >= s->checkpoint.len && ds4_tokens_starts_with(prompt, &s->checkpoint)) {
         start = s->checkpoint.len;
         if (start == prompt->len) {
@@ -67413,8 +67419,8 @@ static int inkling_session_sync(ds4_session *s, const ds4_tokens *prompt,
         if (rows > s->prefill_cap) {
             rows = s->prefill_cap;
         }
-        if (!inkling_graph_forward(g, &s->engine->model, &s->engine->weights,
-                                    prompt->v + start, rows)) {
+        if (!inkling_graph_media(g, &s->engine->model, &s->engine->weights,
+                                  prompt->v + start, rows, features ? features + start : NULL)) {
             ds4_session_invalidate(s);
             payload_set_err(err, errlen, "Inkling prefill failed");
             return 1;
@@ -67463,7 +67469,7 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
         if (ds4_session_ensure_graph(s, err, errlen) != 0) {
             return 1;
         }
-        return inkling_session_sync(s, prompt, err, errlen);
+        return inkling_session_sync(s, prompt, NULL, err, errlen);
     }
     if (ds4_session_is_motif3(s)) {
         if (ds4_session_ensure_graph(s, err, errlen) != 0) return 1;
@@ -67938,6 +67944,78 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
     s->mtp_draft_valid = false;
     s->graph.mtp_n_raw = 0;
     return 0;
+#endif
+}
+
+int ds4_session_sync_inkling(ds4_session *s, const ds4_tokens *prompt,
+                              const ds4_inkling_pixels *images, uint32_t count,
+                              char *err, size_t errlen) {
+#ifdef DS4_NO_GPU
+    (void)s; (void)prompt; (void)images; (void)count;
+    payload_set_err(err, errlen, "Inkling images require CUDA");
+    return 1;
+#else
+    if (!s || !ds4_session_is_inkling(s) || !prompt || !prompt->v || prompt->len <= 0 ||
+        prompt->len > s->ctx_size || !images || !count || count > IK_IMAGE_LIMIT) {
+        payload_set_err(err, errlen, "invalid Inkling image sync input");
+        return 1;
+    }
+    uint32_t previous_end = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        const ds4_inkling_pixels *image = &images[i];
+        const uint32_t start = image->token_offset, n = image->token_count;
+        if (!image->pixels || !n || n > IK_IMAGE_MAX_PATCHES || start < previous_end ||
+            start >= (uint32_t)prompt->len || n > (uint32_t)prompt->len - start ||
+            image->pixel_count != (uint64_t)n * IK_IMAGE_PIXELS) {
+            payload_set_err(err, errlen, "invalid Inkling image span");
+            return 1;
+        }
+        for (uint32_t pos = previous_end; pos < start + n; pos++) {
+            const int token = prompt->v[pos];
+            if ((pos >= start && token != IK_IMAGE_TOKEN) ||
+                (pos < start && (token == IK_IMAGE_TOKEN || token == IK_AUDIO_TOKEN))) {
+                payload_set_err(err, errlen, "Inkling image placeholders do not match inputs");
+                return 1;
+            }
+        }
+        previous_end = start + n;
+    }
+    for (uint32_t pos = previous_end; pos < (uint32_t)prompt->len; pos++) {
+        if (prompt->v[pos] == IK_IMAGE_TOKEN || prompt->v[pos] == IK_AUDIO_TOKEN) {
+            payload_set_err(err, errlen, "Inkling media placeholder has no input");
+            return 1;
+        }
+    }
+    float *storage[IK_IMAGE_LIMIT] = {0};
+    const float **features = calloc((size_t)prompt->len, sizeof(*features));
+    int rc = 1;
+    if (!features) {
+        payload_set_err(err, errlen, "Inkling feature row allocation failed");
+        return 1;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        const ds4_inkling_pixels *image = &images[i];
+        storage[i] = malloc((uint64_t)image->token_count * IK_HIDDEN * sizeof(float));
+        if (!storage[i] || !inkling_image_encode(storage[i], image->pixels, image->token_count,
+                                                 &s->engine->model, &s->engine->weights.inkling)) {
+            payload_set_err(err, errlen, "Inkling image encoding failed");
+            goto cleanup;
+        }
+        for (uint32_t row = 0; row < image->token_count; row++) {
+            features[image->token_offset + row] = storage[i] + (uint64_t)row * IK_HIDDEN;
+        }
+    }
+    /* Token identity cannot distinguish changed pixels. Refill from zero until
+     * media identity is part of the checkpoint; encoder failures preserve KV. */
+    if (ds4_session_ensure_graph(s, err, errlen) == 0) {
+        rc = inkling_session_sync(s, prompt, features, err, errlen);
+    }
+cleanup:
+    for (uint32_t i = 0; i < count; i++) {
+        free(storage[i]);
+    }
+    free(features);
+    return rc;
 #endif
 }
 

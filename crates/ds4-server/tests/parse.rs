@@ -409,7 +409,7 @@ fn qwen_image_inputs_normalize_across_all_three_surfaces() {
         assert_ne!(request.needs & NEED_IMAGE, 0);
         assert_eq!(
             generation_blocked(request, 0),
-            Some("image input is supported only by Qwen4Exp or GLM-5.3")
+            Some("image input is supported only by Qwen4Exp, GLM-5.3 or Inkling")
         );
         assert_eq!(
             generation_blocked(request, 6),

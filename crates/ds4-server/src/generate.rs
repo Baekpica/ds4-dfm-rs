@@ -811,9 +811,9 @@ pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'sta
         None
     } else {
         match syntax_for_model_id(model_id) {
-            ModelSyntax::Glm53 => None,
+            ModelSyntax::Glm53 | ModelSyntax::Inkling => None,
             ModelSyntax::Qwen4Exp => Some("image input requires continuous runtime"),
-            _ => Some("image input is supported only by Qwen4Exp or GLM-5.3"),
+            _ => Some("image input is supported only by Qwen4Exp, GLM-5.3 or Inkling"),
         }
     }
 }
@@ -1300,17 +1300,29 @@ pub(crate) struct PreparedSerialPrompt {
     pub(crate) vision: Vec<VisionPromptInput>,
 }
 
-fn prepare_glm_vision(
+fn prepare_vision(
     engine: &dyn DecodeIo,
     parsed: &ParsedRequest,
     tokens: Vec<i32>,
 ) -> Result<(Vec<i32>, Vec<VisionPromptInput>), GenerateError> {
-    const IMAGE_TOKEN: i32 = 154854;
     if parsed.images.is_empty() {
         return Ok((tokens, Vec::new()));
     }
-    if engine.model_id() != ModelSyntax::Glm53 as i32 || parsed.images.len() > 4 {
-        return Err(GenerateError::Unsupported("GLM-5.3 supports 1 to 4 images"));
+    const GLM_IMAGE_TOKEN: i32 = 154854;
+    const INKLING_IMAGE_TOKEN: i32 = 200054;
+    let image_token = match syntax_for_model_id(engine.model_id()) {
+        ModelSyntax::Glm53 => GLM_IMAGE_TOKEN,
+        ModelSyntax::Inkling => INKLING_IMAGE_TOKEN,
+        _ => {
+            return Err(GenerateError::Unsupported(
+                "serial images require GLM-5.3 or Inkling",
+            ))
+        }
+    };
+    if parsed.images.len() > 4 {
+        return Err(GenerateError::Unsupported(
+            "serial vision supports 1 to 4 images",
+        ));
     }
     let mut probes = Vec::with_capacity(parsed.images.len());
     let mut expanded_len = tokens.len();
@@ -1318,7 +1330,7 @@ fn prepare_glm_vision(
         let probe = engine.vision_probe(&image.data)?;
         if probe.token_count == 0 {
             return Err(GenerateError::Engine(
-                "GLM-5.3 image probe returned zero tokens".into(),
+                "image probe returned zero tokens".into(),
             ));
         }
         expanded_len = expanded_len
@@ -1330,19 +1342,19 @@ fn prepare_glm_vision(
     let mut images = Vec::with_capacity(parsed.images.len());
     let mut image_index = 0usize;
     for token in tokens {
-        if token != IMAGE_TOKEN {
+        if token != image_token {
             expanded.push(token);
             continue;
         }
         let Some((image, probe)) = parsed.images.get(image_index).zip(probes.get(image_index))
         else {
             return Err(GenerateError::Engine(
-                "ambiguous literal <|image|> in prompt".into(),
+                "ambiguous image placeholder in prompt".into(),
             ));
         };
         let token_offset = u32::try_from(expanded.len())
             .map_err(|_| GenerateError::Engine("expanded image prompt is too large".into()))?;
-        expanded.extend(std::iter::repeat_n(IMAGE_TOKEN, probe.token_count as usize));
+        expanded.extend(std::iter::repeat_n(image_token, probe.token_count as usize));
         images.push(VisionPromptInput {
             data: image.data.clone(),
             token_offset,
@@ -1351,7 +1363,7 @@ fn prepare_glm_vision(
     }
     if image_index != parsed.images.len() || expanded.len() != expanded_len {
         return Err(GenerateError::Engine(
-            "GLM-5.3 image placeholder count does not match payloads".into(),
+            "image placeholder count does not match payloads".into(),
         ));
     }
     Ok((expanded, images))
@@ -1387,7 +1399,7 @@ pub(crate) fn prepare_serial_prompt(
         }
         ReqKind::Chat => engine.tokenize_rendered_chat(&prompt)?,
     };
-    let (tokens, vision) = prepare_glm_vision(engine, &parsed, tokens)?;
+    let (tokens, vision) = prepare_vision(engine, &parsed, tokens)?;
     Ok(PreparedSerialPrompt {
         parsed,
         tool_replay,
@@ -1933,7 +1945,10 @@ impl DecodeIo for ScriptedDecode {
     }
 
     fn vision_probe(&self, _data: &[u8]) -> Result<VisionProbe, GenerateError> {
-        if self.model_id == ModelSyntax::Glm53 as i32 {
+        if matches!(
+            syntax_for_model_id(self.model_id),
+            ModelSyntax::Glm53 | ModelSyntax::Inkling
+        ) {
             Ok(VisionProbe { token_count: 16 })
         } else {
             Err(GenerateError::Unsupported("vision encoder is not loaded"))

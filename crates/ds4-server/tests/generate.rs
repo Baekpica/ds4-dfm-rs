@@ -279,6 +279,70 @@ fn glm_serial_image_expands_placeholder_before_sync() {
 }
 
 #[test]
+fn inkling_images_expand_in_order() {
+    let mut parsed = user_req();
+    parsed.messages[0].parts = vec![
+        ChatPart::Image(0),
+        ChatPart::Text("Then".into()),
+        ChatPart::Image(1),
+    ];
+    parsed.images = vec![
+        RequestImage {
+            mime: ImageMime::Png,
+            data: Arc::from([1u8])
+        };
+        2
+    ];
+    let mut engine = ScriptedDecode::from_pieces(&[]);
+    engine.model_id = 9;
+    engine.prompt_tokens = vec![200000, 200054, 200010, 200054, 200001];
+    let mut out = Vec::new();
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "inkling-images",
+        CREATED_TEST,
+        false,
+        1,
+        &mut out,
+    )
+    .unwrap();
+    assert_eq!(
+        engine.live,
+        [
+            vec![200000],
+            vec![200054; 16],
+            vec![200010],
+            vec![200054; 16],
+            vec![200001]
+        ]
+        .concat()
+    );
+    engine.prompt_tokens = vec![200054];
+    assert!(generate_and_write(
+        &mut engine,
+        &parsed,
+        "inkling-missing",
+        CREATED_TEST,
+        false,
+        1,
+        &mut out
+    )
+    .is_err());
+    engine.prompt_tokens = vec![200054; 3];
+    assert!(generate_and_write(
+        &mut engine,
+        &parsed,
+        "inkling-extra",
+        CREATED_TEST,
+        false,
+        1,
+        &mut out
+    )
+    .is_err());
+}
+
+#[test]
 fn continued_store_is_best_effort_and_runs_before_sampling_without_final_catchup() {
     let mut parsed = user_req();
     parsed.max_tokens = 2;

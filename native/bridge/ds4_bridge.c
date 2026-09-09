@@ -509,6 +509,26 @@ cleanup:
     return rc;
 }
 
+int ds4_bridge_sync_inkling(ds4_bridge_session *s,
+                             const int32_t *tokens, int n_tokens,
+                             const ds4_bridge_inkling_pixels *images, uint32_t count,
+                             char *err, size_t errlen) {
+    enum { IMAGE_LIMIT = 4 };
+    if (!s || !s->session || !tokens || n_tokens <= 0 || !images || !count || count > IMAGE_LIMIT) {
+        set_err(err, errlen, "invalid Inkling image sync input");
+        return 1;
+    }
+    ds4_inkling_pixels native[IMAGE_LIMIT] = {0};
+    for (uint32_t i = 0; i < count; i++) {
+        native[i].pixels = images[i].pixels;
+        native[i].pixel_count = images[i].pixel_count;
+        native[i].token_offset = images[i].token_offset;
+        native[i].token_count = images[i].token_count;
+    }
+    const ds4_tokens prompt = {.v = (int *)(void *)tokens, .len = n_tokens, .cap = n_tokens};
+    return ds4_session_sync_inkling(s->session, &prompt, native, count, err, errlen);
+}
+
 int ds4_bridge_session_sync_cb(ds4_bridge_session *s,
                                const int32_t *tokens, int n_tokens,
                                ds4_bridge_prefill_fn progress, void *ud,
