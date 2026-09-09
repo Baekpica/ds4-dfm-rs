@@ -8,7 +8,9 @@ use crate::{ChatThinkMode, Error, GgufFile, Result};
 
 #[derive(Debug, Clone, Copy)]
 pub enum RenderClock {
+    /// Host-local time, matching Transformers' `datetime.now()`.
     System,
+    /// UTC timestamp for deterministic reference fixtures.
     Fixed(i64),
 }
 
@@ -59,10 +61,13 @@ impl ChatOptions {
 
 impl Template {
     pub fn compile(source: &str, clock: RenderClock) -> Result<Self> {
-        let mut builder = hf_chat_template::ChatTemplate::builder(source);
-        if let RenderClock::Fixed(seconds) = clock {
-            builder = builder.clock(hf_chat_template::FixedClock::from_unix_secs(seconds));
-        }
+        let builder = hf_chat_template::ChatTemplate::builder(source);
+        let builder = match clock {
+            RenderClock::System => builder.clock(hf_chat_template::LocalClock),
+            RenderClock::Fixed(seconds) => {
+                builder.clock(hf_chat_template::FixedClock::from_unix_secs(seconds))
+            }
+        };
         Ok(Self {
             renderer: builder.build().map_err(template_error)?,
             defaults: Map::new(),

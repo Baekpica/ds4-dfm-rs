@@ -4,6 +4,8 @@ For Jinja-backed artifacts, production Chat, Messages, Responses, one-shot
 CLI and REPL input use `ds4-core::chat_template::Template`. The local adapter
 wraps pinned `hf-chat-template` 1.0.0 with Python compatibility enabled.
 Models compile their template once at load time; inference does not contact HF.
+`strftime_now` uses the host's local timezone, matching Transformers. Fixed
+reference clocks remain UTC.
 
 ```text
 API / CLI messages and tools
