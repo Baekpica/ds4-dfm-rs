@@ -99,6 +99,21 @@ class Probe:
 
     def request(self, api, name, body):
         body = {"model": self.args.model, "temperature": 0, **body}
+        budget = getattr(self.args, "max_tokens", None)
+        if budget is not None:
+            body["max_output_tokens" if api == "responses" else "max_tokens"] = budget
+        effort = getattr(self.args, "reasoning_effort", None)
+        if effort is not None:
+            if api == "responses":
+                body["reasoning"] = {"effort": effort}
+            else:
+                body["reasoning_effort"] = effort
+                if api == "anthropic":
+                    body["thinking"] = {"type": "disabled" if effort == "none" else "enabled"}
+                    if effort == "high":
+                        body["output_config"] = {"effort": effort}
+                    else:
+                        body.pop("output_config", None)
         stem = self.args.output / (api + "-" + name)
         data = json.dumps(body, ensure_ascii=False, indent=2).encode()
         stem.with_suffix(".request.json").write_bytes(data)
@@ -219,6 +234,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--images", type=Path, help="Directory containing fixed red.png and blue.png fixtures")
     parser.add_argument("--image-order", choices=("image-first", "text-first"), default="image-first", help="Preserve the selected fixture's media/question order")
+    parser.add_argument("--reasoning-effort", choices=("none", "high"), help="Override the fixture's reasoning setting on all three APIs")
+    parser.add_argument("--max-tokens", type=int, help="Override the fixture's output budget")
     parser.add_argument("--concurrent", action="store_true", help="Require two banks and check independent live tool frontiers")
     Probe(parser.parse_args()).run()
 
