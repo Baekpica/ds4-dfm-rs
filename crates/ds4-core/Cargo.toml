@@ -13,3 +13,4 @@ path = "src/lib.rs"
 ds4-sys = { path = "../ds4-sys" }
 serde_json = "1"
 regex = "1"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }

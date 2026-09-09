@@ -13,6 +13,7 @@ mod bind;
 mod gguf;
 mod identify;
 mod inkling;
+mod inkling_media;
 mod layout;
 mod mapped;
 mod mem;
@@ -1266,6 +1267,9 @@ impl Model {
     }
 
     pub fn vision_probe(&self, data: &[u8]) -> Result<VisionImageInfo> {
+        if self.family == ModelFamily::Inkling {
+            return inkling_media::probe_image(data);
+        }
         let mut info = ds4_bridge_vision_info::default();
         let mut err = [0u8; 512];
         let rc = unsafe {

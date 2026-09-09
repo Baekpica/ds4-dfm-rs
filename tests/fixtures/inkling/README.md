@@ -62,3 +62,11 @@ Run `tests/test_inkling_encoders /path/to/scratch/media-reference` through
 the host memory guard. This checks all image stages, audio features, and
 item order across workspace chunks. It does not cover preprocessing,
 full-model logits, serving or API parity.
+
+`image-normalize.json` records FP32 output bits for raw RGB values -1..255,
+including padding. `make_image_vectors.py` reproduces the pinned
+[TorchvisionBackend fused normalization](https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/image_processing_backends.py).
+Rust preprocessing tests cover source patch geometry, both temporal copies,
+PNG alpha removal, JPEG EXIF rotation, and token-budget rejection. The file
+decoder accepts PNG/JPEG up to 32 MiB, 32768 pixels per edge, 128 MiB decoded
+storage, and 8192 patches per image; each request can impose a smaller budget.
