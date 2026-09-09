@@ -5,5 +5,10 @@
   "template_sha256": "41cff9af7b3a86c96751b107a8444f245fbda0bd5320b636a5bb1f7f4ba1a5c3",
   "tokenizer_config_sha256": "98b1271574f41abf89427ae2dda030d94dc9478f0edc5a8bd240db213c6fd5fc",
   "special_tokens": {},
-  "source_url": "https://huggingface.co/zai-org/GLM-5.3-Flash/blob/84c6a6aa9497188e15a635ba793b0f95a79b1033/chat_template.jinja"
+  "source_url": "https://huggingface.co/zai-org/GLM-5.3-Flash/blob/84c6a6aa9497188e15a635ba793b0f95a79b1033/chat_template.jinja",
+  "generation_config": {
+    "file": "generation_config.json",
+    "sha256": "230c30609ecbbb9e6583bedde8e7bdda0c6eb8fe5fad0eaeb3d1b293d751cb4f",
+    "source_url": "https://huggingface.co/zai-org/GLM-5.3-Flash/blob/84c6a6aa9497188e15a635ba793b0f95a79b1033/generation_config.json"
+  }
 }

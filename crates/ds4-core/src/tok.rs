@@ -1007,6 +1007,12 @@ impl Vocab {
             return true;
         }
         match self.family {
+            ModelFamily::Glm53 => {
+                // Official generation_config stops at user/observation too;
+                // a role transition must not leak into assistant content.
+                (self.user_id >= 0 && token == self.user_id)
+                    || (self.observation_id >= 0 && token == self.observation_id)
+            }
             ModelFamily::SolarOpen2 | ModelFamily::Qwen4Exp => {
                 self.eot_id >= 0 && token == self.eot_id
             }
