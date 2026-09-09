@@ -117,11 +117,19 @@ relative RMS 0.175 on this fixture, starting with a small layer-0 dense-MLP
 BF16 difference. These checks establish matched-path host/native parity,
 not independent source parity or equivalence between the two Q8 paths.
 
+The Rust CLI projects Inkling thinking/text boundaries by token ID, preserving
+ordinary text that spells those markers and resetting TTY color between
+channels. A guarded MQ85GB one-shot run with context 128, temperature zero,
+thinking disabled and a 32-token output cap answered `4` to
+`What is 2 + 2? Reply with just the number.` without leaking control markers.
+This is a short text-generation smoke; REPL effort assembly, agent tools and
+HTTP output processing still require their own integration.
+
 ## Remaining qualification
 
 1. Connect source chat/reasoning/tool rendering, streamed content markers and
    REPL effort placement to the CLI and server.
-2. Qualify text generation beyond startup/prefill; then connect session
+2. Extend generation checks beyond the short one-shot smoke; connect session
    persistence and serving.
 3. Prove chunk/decode and captured/eager full-vocabulary logits and greedy
    parity. Cover local-ring wrap, global attention and convolution history.

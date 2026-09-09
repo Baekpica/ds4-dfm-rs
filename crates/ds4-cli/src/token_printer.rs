@@ -1,9 +1,15 @@
-//! C `token_printer_*` from `ds4_cli.c`: hide `<think>` / `</think>`, grey the body on TTY.
+//! CLI output: preserve C thinking formatting and project Inkling channel IDs.
 
 use std::io::{self, IsTerminal, Write};
 
+use ds4_core::ModelFamily;
+
 const THINK_OPEN: &[u8] = b"<think>";
 const THINK_CLOSE: &[u8] = b"</think>";
+const INKLING_MODEL: i32 = 200001;
+const INKLING_TEXT: i32 = 200004;
+const INKLING_THINK: i32 = 200008;
+const INKLING_END: i32 = 200010;
 
 /// C `token_printer_set_grey`: SGR 90 bright-black.
 const GREY: &[u8] = b"\x1b[90m";
@@ -11,6 +17,7 @@ const GREY: &[u8] = b"\x1b[90m";
 const RESET: &[u8] = b"\x1b[0m";
 
 pub(crate) struct TokenPrinter {
+    family: ModelFamily,
     format_thinking: bool,
     in_think: bool,
     color_open: bool,
@@ -20,12 +27,18 @@ pub(crate) struct TokenPrinter {
 }
 
 impl TokenPrinter {
-    pub(crate) fn new(format_thinking: bool) -> Self {
-        Self::with_color(format_thinking, io::stdout().is_terminal())
+    pub(crate) fn new(family: ModelFamily, format_thinking: bool) -> Self {
+        let mut printer = Self::with_color(format_thinking, io::stdout().is_terminal());
+        printer.family = family;
+        if family == ModelFamily::Inkling {
+            printer.in_think = false;
+        }
+        printer
     }
 
     pub(crate) fn with_color(format_thinking: bool, use_color: bool) -> Self {
         Self {
+            family: ModelFamily::DeepSeek4,
             format_thinking,
             in_think: format_thinking,
             color_open: false,
@@ -33,6 +46,40 @@ impl TokenPrinter {
             pending: Vec::new(),
             last_output_newline: true,
         }
+    }
+
+    pub(crate) fn write_token<W: Write>(
+        &mut self,
+        out: &mut W,
+        token: i32,
+        text: &[u8],
+    ) -> io::Result<()> {
+        if self.family != ModelFamily::Inkling {
+            return self.write_text(out, text);
+        }
+        // Use special IDs so ordinary text that spells a marker stays literal.
+        // Inkling emits these boundaries even when thinking effort is zero.
+        match token {
+            INKLING_MODEL => return Ok(()),
+            INKLING_THINK => {
+                self.in_think = self.format_thinking;
+                return Ok(());
+            }
+            INKLING_TEXT | INKLING_END => {
+                self.in_think = false;
+                self.reset_color(out)?;
+                if token == INKLING_END && !self.last_output_newline {
+                    out.write_all(b"\n")?;
+                    self.last_output_newline = true;
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
+        for &byte in text {
+            self.write_char(out, byte)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn write_text<W: Write>(&mut self, out: &mut W, text: &[u8]) -> io::Result<()> {
@@ -116,5 +163,84 @@ impl TokenPrinter {
             self.color_open = false;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    enum Style {
+        Plain,
+        Thinking,
+        Color,
+    }
+
+    fn inkling_output(style: Style, pieces: &[(i32, &[u8])]) -> Vec<u8> {
+        let mut printer = TokenPrinter::new(ModelFamily::Inkling, !matches!(style, Style::Plain));
+        printer.use_color = matches!(style, Style::Color);
+        let mut output = Vec::new();
+        for &(id, text) in pieces {
+            printer.write_token(&mut output, id, text).unwrap();
+        }
+        printer.finish(&mut output).unwrap();
+        output
+    }
+
+    #[test]
+    fn inkling_text_boundaries() {
+        let pieces: &[(i32, &[u8])] = &[
+            (200004, b"<|content_text|>"),
+            (19, b"4"),
+            (200010, b"<|end_message|>"),
+        ];
+        for style in [Style::Plain, Style::Thinking] {
+            assert_eq!(inkling_output(style, pieces), b"4\n");
+        }
+    }
+
+    #[test]
+    fn inkling_thinking_transition() {
+        let pieces: &[(i32, &[u8])] = &[
+            (200008, b"<|content_thinking|>"),
+            (100, b"Let me check."),
+            (200010, b"<|end_message|>"),
+            (200001, b"<|message_model|>"),
+            (200004, b"<|content_text|>"),
+            (19, b"4"),
+            (200010, b"<|end_message|>"),
+        ];
+        assert_eq!(
+            inkling_output(Style::Thinking, pieces),
+            b"Let me check.\n4\n"
+        );
+        assert_eq!(
+            inkling_output(Style::Color, pieces),
+            b"\x1b[90mLet me check.\x1b[0m\n4\n"
+        );
+    }
+
+    #[test]
+    fn inkling_literal_markers() {
+        let text = b"Use <think> and <|content_text|> literally.";
+        assert_eq!(
+            inkling_output(Style::Thinking, &[(100, text)]),
+            [text.as_slice(), b"\n"].concat()
+        );
+    }
+
+    #[test]
+    fn inkling_empty_thinking() {
+        assert_eq!(
+            inkling_output(
+                Style::Color,
+                &[
+                    (200008, b"<|content_thinking|>"),
+                    (200010, b"<|end_message|>"),
+                    (200004, b"<|content_text|>"),
+                    (19, b"4"),
+                ]
+            ),
+            b"4\n"
+        );
     }
 }

@@ -428,7 +428,7 @@ fn run_chat_turn(
     }
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let mut printer = TokenPrinter::new(chat.thinking_enabled());
+    let mut printer = TokenPrinter::new(model.family(), chat.thinking_enabled());
     let use_mtp = use_mtp_spec(args.temp, args.mtp.as_deref(), args.mtp_draft);
     let eos = model.token_eos();
     let mut generated = 0i32;
@@ -468,7 +468,7 @@ fn run_chat_turn(
             }
             let piece = model.token_text(t).map_err(|e| e.to_string())?;
             printer
-                .write_text(&mut out, &piece)
+                .write_token(&mut out, t, &piece)
                 .map_err(|e| e.to_string())?;
             out.flush().map_err(|e| e.to_string())?;
             chat.transcript.push(t);
@@ -532,7 +532,7 @@ fn run_one_shot(model: &ds4_core::Model, args: &ShadowArgs, text: &str) -> Resul
     }
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let mut printer = TokenPrinter::new(!args.nothink);
+    let mut printer = TokenPrinter::new(model.family(), !args.nothink);
     let mut decode_error = None;
     let use_mtp = use_mtp_spec(args.temp, args.mtp.as_deref(), args.mtp_draft);
     let eos = model.token_eos();
@@ -572,7 +572,7 @@ fn run_one_shot(model: &ds4_core::Model, args: &ShadowArgs, text: &str) -> Resul
                 }
                 let piece = model.token_text(t).map_err(|e| e.to_string())?;
                 printer
-                    .write_text(&mut out, &piece)
+                    .write_token(&mut out, t, &piece)
                     .map_err(|e| e.to_string())?;
                 out.flush().map_err(|e| e.to_string())?;
                 generated += 1;
@@ -594,7 +594,7 @@ fn run_one_shot(model: &ds4_core::Model, args: &ShadowArgs, text: &str) -> Resul
 
         let piece = model.token_text(token).map_err(|e| e.to_string())?;
         printer
-            .write_text(&mut out, &piece)
+            .write_token(&mut out, token, &piece)
             .map_err(|e| e.to_string())?;
         out.flush().map_err(|e| e.to_string())?;
         generated += 1;
