@@ -97,7 +97,7 @@ endif
         test-qwen4exp-verify \
         test-qwen-vision-attention test-qwen-vision-model test-qwen-vision-norm \
         test-mmid-fast \
-        test-mmq-parity test-model-family-kernels \
+        test-mmq-parity test-model-family-kernels test-inkling-kernels \
         test-solar-loader test-solar-kda test-solar-kda-prefill \
         test-solar-kda-chunk \
         test-glm53-loader test-glm53-vision-loader test-glm53-image \
@@ -599,6 +599,9 @@ tests/test_solar_kv.o: tests/test_solar_kv.c ds4_gpu.h
 tests/test_model_family_kernels.o: tests/test_model_family_kernels.c ds4_gpu.h
 	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
 
+tests/test_inkling_kernels.o: tests/test_inkling_kernels.c ds4_gpu.h
+	$(CC) $(CFLAGS) -fno-fast-math -I. -c -o $@ $<
+
 tests/test_qwen4exp_primitives.o: tests/test_qwen4exp_primitives.c ds4_gpu.h
 	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
 
@@ -662,7 +665,7 @@ ds4_agent_cpu.o: ds4_agent.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_
 ds4_metal.o: ds4_metal.m ds4_gpu.h $(METAL_SRCS)
 	$(CC) $(OBJCFLAGS) -c -o $@ ds4_metal.m
 
-ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_glm53_vision_gpu.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
+ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
 	$(NVCC) $(NVCCFLAGS) -c -o $@ ds4_cuda.cu
 
 # Vendored mmq pieces. ds4_mmq.cu transitively pulls in mmq.cuh which has
@@ -759,6 +762,12 @@ tests/test_model_family_kernels: tests/test_model_family_kernels.o $(DS4_CUDA_CO
 
 test-model-family-kernels: tests/test_model_family_kernels
 	./tests/test_model_family_kernels
+
+tests/test_inkling_kernels: tests/test_inkling_kernels.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+test-inkling-kernels: tests/test_inkling_kernels
+	./tests/test_inkling_kernels
 
 tests/test_qwen4exp_primitives: tests/test_qwen4exp_primitives.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
@@ -1209,6 +1218,7 @@ tests/test_motif3_long: tests/test_motif3_long.o ds4_kvstore.o rax.o $(CORE_OBJS
 endif
 
 clean:
+	rm -f tests/test_inkling_kernels tests/test_inkling_kernels.o
 	rm -f tests/test_qwen_vision_norm tests/test_qwen_vision_norm.o
 	rm -f tests/test_qwen_vision_attention tests/test_qwen_vision_attention.o tests/test_qwen_vision_model tests/test_qwen_vision_model.o
 	rm -f ds4-agent-rs tests/parity/agent_c_oracle tests/parity/agent_c_oracle.o

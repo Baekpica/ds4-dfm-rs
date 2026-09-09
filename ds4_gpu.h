@@ -2505,6 +2505,19 @@ int ds4_gpu_swiglu_tensor(
         float                   clamp,
         float                   weight);
 
+/* Inkling CUDA residual 4-tap convolution. F32 buffers carry BF16 values:
+ * x/out [rows, channels], history/next [3, channels], oldest first. Inputs
+ * are rounded to BF16; weights are native BF16 [channels, 1, 4]. History
+ * must be zeroed for a new sequence. next == history is supported; all
+ * other writable spans must be disjoint. Warm weight mapping before capture;
+ * keep rows/channels and buffer addresses in the graph key. History values
+ * remain live across replay; no position scalar is baked into the kernel. */
+int ds4_gpu_inkling_sconv(
+        ds4_gpu_tensor *out, ds4_gpu_tensor *next,
+        const ds4_gpu_tensor *x, const ds4_gpu_tensor *history,
+        const void *model_map, uint64_t model_size, uint64_t weight_offset,
+        uint32_t channels, uint32_t rows);
+
 /* Model-family router semantics used by Solar Open 2 and EXAONE: sigmoid
  * probabilities, top-k selection on probability + optional bias, then
  * normalization of the selected UNBIASED probabilities and final scaling. */

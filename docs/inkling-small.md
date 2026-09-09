@@ -36,6 +36,15 @@ tool/reasoning streams, media insertion and REPL assembly remain pending.
 The tokenizer has 200058 entries; native logits must exclude the weight
 matrix's padding through row 201023.
 
+The first CUDA primitive is the four-tap residual convolution. It preserves
+BF16 input/output boundaries and FP32 accumulation, with a three-row history
+in oldest-first order. A separate next-state buffer supports snapshots; an
+in-place history update is also supported. On GB10, 18 channel/length pairs
+matched the independent FP64 formula and their chunk/decode counterparts;
+history also matched through seven CUDA graph replays. Compute Sanitizer
+reported zero memory errors, and the existing model-family primitive suite
+passed. These are synthetic component gates; native graph wiring is pending.
+
 ## Remaining qualification
 
 1. Connect source chat/reasoning/tool rendering, streamed content markers and
@@ -70,6 +79,16 @@ cargo test -p ds4-core --test inkling_catalog --locked
 cargo test -p ds4-core --lib inkling --locked
 make -j1 test-catalog-parity test-tokenizer-parity
 cargo check --workspace --all-targets --locked
+```
+
+The convolution gate uses small synthetic weights and the normal CUDA
+backend, including captured decode with changing input/history:
+
+```sh
+make -j2 tests/test_inkling_kernels CUDA_ARCH=sm_121
+python3 tools/host_memory_guard.py --max-gib 4 --high-gib 3 \
+  --timeout 120 --log scratch/inkling/sconv.memory.jsonl \
+  -- ./tests/test_inkling_kernels
 ```
 
 The artifact tests require files and are explicitly ignored by ordinary
