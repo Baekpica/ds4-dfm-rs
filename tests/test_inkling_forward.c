@@ -62,6 +62,164 @@ static inkling_snapshot read_state(const ds4_inkling_graph *g) {
     return s;
 }
 
+static void write_state(ds4_inkling_graph *g, const inkling_snapshot *s, unsigned pos) {
+    size_t offset = 0;
+    for (unsigned i = 0; i < INKLING_LAYERS; i++) {
+        const unsigned valid = pos < g->layer[i].capacity ? pos : g->layer[i].capacity;
+        size_t bytes = (size_t)valid * 2 * IK_KV * sizeof(uint16_t);
+        if (offset + bytes > s->bytes ||
+            !ds4_gpu_tensor_write(g->layer[i].kv, 0, s->data + offset, bytes)) {
+            ds4_die("Inkling fixture KV restore failed");
+        }
+        offset += bytes;
+        for (unsigned j = 0; j < IK_CONV_STREAMS; j++) {
+            bytes = IK_HISTORY * (j < 2 ? IK_KV : IK_HIDDEN) * sizeof(float);
+            if (offset + bytes > s->bytes ||
+                !ds4_gpu_tensor_write(g->layer[i].conv[j], 0, s->data + offset, bytes)) {
+                ds4_die("Inkling fixture convolution restore failed");
+            }
+            offset += bytes;
+        }
+    }
+    g->position = pos;
+    inkling_snapshot check = read_state(g);
+    if (offset != s->bytes || check.bytes != s->bytes || memcmp(check.data, s->data, s->bytes)) {
+        ds4_die("Inkling fixture state restore is not exact");
+    }
+    free(check.data);
+}
+
+static void check_verify(ds4_inkling_graph *g, const ds4_model *m,
+                          const ds4_weights *w, const int *tokens, unsigned n) {
+    if (n < IK_VERIFY_ROWS) {
+        return;
+    }
+    const unsigned count = IK_VERIFY_ROWS;
+    const size_t logits_bytes = INKLING_VALID_VOCAB * sizeof(float);
+    const size_t seed_bytes = IK_HIDDEN * sizeof(float);
+    inkling_snapshot states[IK_VERIFY_ROWS];
+    float *logits = xmalloc(count * logits_bytes), *got = xmalloc(logits_bytes);
+    float *seeds = xmalloc(count * seed_bytes), *seed = xmalloc(seed_bytes);
+    int tops[IK_VERIFY_ROWS], trial[IK_VERIFY_ROWS], verified[IK_VERIFY_ROWS];
+    if (!inkling_graph_reset(g) || !inkling_graph_forward(g, m, w, tokens, n)) {
+        ds4_die("Inkling verification prefix failed");
+    }
+    inkling_snapshot prefix = read_state(g);
+    verified[0] = -1;
+    if (inkling_target_verify(g, m, w, tokens, 1, verified) || verified[0] != -1 ||
+        g->position != n || g->failed) {
+        ds4_die("Inkling target verification requires a journal");
+    }
+    for (unsigned i = 0; i < count; i++) {
+        float *row = logits + (size_t)i * INKLING_VALID_VOCAB;
+        if (!inkling_graph_forward(g, m, w, tokens + i, 1) ||
+            !ds4_gpu_tensor_read(g->logits, 0, row, logits_bytes) ||
+            !ds4_gpu_tensor_read(g->buf[IK_FINAL], 0, seeds + (size_t)i * IK_HIDDEN, seed_bytes)) {
+            ds4_die("Inkling accepted-prefix baseline failed");
+        }
+        tops[i] = 0;
+        for (unsigned j = 0; j < INKLING_VALID_VOCAB; j++) {
+            if (!isfinite(row[j])) {
+                ds4_die("Inkling verification baseline has nonfinite logits");
+            }
+            if (row[j] > row[tops[i]]) {
+                tops[i] = (int)j;
+            }
+        }
+        states[i] = read_state(g);
+    }
+    if (!inkling_graph_track(g, count)) {
+        ds4_die("Inkling target journal allocation failed");
+    }
+    write_state(g, &prefix, n);
+    memcpy(trial, tokens, count * sizeof(*trial));
+    trial[count - 1] = INKLING_VALID_VOCAB;
+    for (unsigned i = 0; i < count; i++) {
+        verified[i] = -1;
+    }
+    if (inkling_target_verify(g, m, w, trial, count, verified) ||
+        inkling_target_verify(g, m, w, tokens, 0, verified) ||
+        inkling_target_verify(g, m, w, tokens, count + 1, verified) ||
+        inkling_target_verify(g, m, w, tokens, 1, NULL) || g->position != n || g->failed) {
+        ds4_die("Inkling target verification accepted invalid input");
+    }
+    g->position = g->context;
+    if (inkling_target_verify(g, m, w, tokens, 1, verified) || g->failed) {
+        ds4_die("Inkling target verification exceeded context");
+    }
+    g->position = n;
+    inkling_snapshot unchanged_prefix = read_state(g);
+    if (unchanged_prefix.bytes != prefix.bytes ||
+        memcmp(unchanged_prefix.data, prefix.data, prefix.bytes)) {
+        ds4_die("Inkling invalid verification changed state");
+    }
+    free(unchanged_prefix.data);
+    for (unsigned i = 0; i < count; i++) {
+        if (verified[i] != -1) {
+            ds4_die("Inkling invalid verification published argmax output");
+        }
+    }
+    for (unsigned keep = 1; keep <= count; keep++) {
+        write_state(g, &prefix, n);
+        for (unsigned i = 0; i < count; i++) {
+            /* Change only rejected rows; accepted logits/state must stay exact. */
+            trial[i] = i < keep ? tokens[i] : (tokens[i] + 1009) % INKLING_VALID_VOCAB;
+            verified[i] = -1;
+        }
+        if (!inkling_target_verify(g, m, w, trial, count, verified) ||
+            memcmp(verified, tops, keep * sizeof(*tops))) {
+            ds4_die("Inkling target verification disagrees with scalar argmax");
+        }
+        inkling_snapshot pending = read_state(g);
+        g->undo[INKLING_LAYERS - 1].streams = 0;
+        if (inkling_target_keep(g, m, w, keep) || g->failed) {
+            ds4_die("Inkling target committed an incomplete final-layer journal");
+        }
+        g->undo[INKLING_LAYERS - 1].streams = IK_CONV_MASK;
+        if (inkling_target_keep(g, m, w, 0) || inkling_target_keep(g, m, w, count + 1) ||
+            g->failed || g->position != n + count) {
+            ds4_die("Inkling target accepted an invalid commit length");
+        }
+        inkling_snapshot unchanged = read_state(g);
+        if (pending.bytes != unchanged.bytes || memcmp(pending.data, unchanged.data, pending.bytes)) {
+            ds4_die("Inkling invalid commit changed pending state");
+        }
+        free(pending.data); free(unchanged.data);
+        if (!inkling_target_keep(g, m, w, keep) || g->position != n + keep ||
+            !ds4_gpu_tensor_read(g->logits, 0, got, logits_bytes) ||
+            !ds4_gpu_tensor_read(g->buf[IK_FINAL], (keep - 1) * seed_bytes, seed, seed_bytes)) {
+            ds4_die("Inkling target accepted-prefix commit failed");
+        }
+        inkling_snapshot committed = read_state(g);
+        const inkling_snapshot *want = &states[keep - 1];
+        if (committed.bytes != want->bytes || memcmp(committed.data, want->data, want->bytes) ||
+            memcmp(got, logits + (size_t)(keep - 1) * INKLING_VALID_VOCAB, logits_bytes) ||
+            memcmp(seed, seeds + (size_t)(keep - 1) * IK_HIDDEN, seed_bytes) ||
+            inkling_target_keep(g, m, w, keep) || g->failed) {
+            ds4_die("Inkling committed target state, logits or hidden differ");
+        }
+        free(committed.data);
+        printf("Inkling target keep %u/%u: argmax/logits/seed/state exact\n", keep, count);
+    }
+    write_state(g, &prefix, n);
+    if (!inkling_target_verify(g, m, w, tokens, 1, verified) || verified[0] != tops[0] ||
+        !inkling_target_keep(g, m, w, 1) || g->position != n + 1) {
+        ds4_die("Inkling one-row verification/commit failed");
+    }
+    inkling_snapshot single = read_state(g);
+    if (single.bytes != states[0].bytes || memcmp(single.data, states[0].data, single.bytes) ||
+        !ds4_gpu_tensor_read(g->logits, 0, got, logits_bytes) || memcmp(got, logits, logits_bytes)) {
+        ds4_die("Inkling one-row committed state/logits differ");
+    }
+    free(single.data);
+    puts("Inkling one-row target verification and input/commit rejection passed");
+    for (unsigned i = 0; i < count; i++) {
+        free(states[i].data);
+    }
+    free(prefix.data); free(logits); free(got); free(seeds); free(seed);
+    inkling_track_free(g);
+}
+
 static int check_padding(const ds4_inkling_graph *g) {
     const unsigned count = DS4_N_VOCAB - INKLING_VALID_VOCAB;
     float *padding = xmalloc(count * sizeof(float));
@@ -341,6 +499,9 @@ int main(int argc, char **argv) {
             free(features[i]);
         }
         free(features);
+    }
+    if (!features) {
+        check_verify(&g, &model, &weights, tokens, rows);
     }
     inkling_graph_free(&g);
     ds4_gpu_cleanup();

@@ -21382,6 +21382,70 @@ static bool inkling_graph_forward(ds4_inkling_graph *g, const ds4_model *m,
     return inkling_graph_media(g, m, w, tokens, n, NULL);
 }
 
+static bool inkling_target_verify(ds4_inkling_graph *g, const ds4_model *m,
+                                  const ds4_weights *w, const int *tokens, unsigned n,
+                                  int *argmax) {
+    if (!argmax || !n || n > IK_VERIFY_ROWS || n > g->undo_cap ||
+        g->n_layers != INKLING_LAYERS || !inkling_graph_forward(g, m, w, tokens, n)) {
+        return false;
+    }
+    g->failed = true;
+    /* Keep the fixed-row head reduction used by ordinary decode. The host
+     * receives only argmax IDs; final hidden rows remain on device for MTP. */
+    for (unsigned i = 0; i < n; i++) {
+        ds4_gpu_tensor *id = ds4_gpu_tensor_view(g->buf[IK_TOKENS],
+                                                  (uint64_t)i * sizeof(int), sizeof(int));
+        bool ok = id && inkling_head_logits(g, m, w, g->buf[IK_FINAL], i + 1) &&
+            ds4_gpu_argmax_tensor(id, g->logits, INKLING_VALID_VOCAB);
+        ds4_gpu_tensor_free(id);
+        if (!ok) {
+            return false;
+        }
+    }
+    int result[IK_VERIFY_ROWS];
+    if (!ds4_gpu_tensor_read(g->buf[IK_TOKENS], 0, result, n * sizeof(*result))) {
+        return false;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        if (result[i] < 0 || result[i] >= INKLING_VALID_VOCAB) {
+            return false;
+        }
+    }
+    memcpy(argmax, result, n * sizeof(*result));
+    g->failed = false;
+    return true;
+}
+
+static bool inkling_target_keep(ds4_inkling_graph *g, const ds4_model *m,
+                                const ds4_weights *w, unsigned keep) {
+    if (g->failed || g->n_layers != INKLING_LAYERS || !g->undo_cap || !keep) {
+        return false;
+    }
+    const unsigned start = g->undo[0].position, rows = g->undo[0].rows;
+    /* Validate every journal before touching state. A target verification
+     * always commits at least the first token, already sampled by the host. */
+    for (unsigned i = 0; i < g->n_layers; i++) {
+        const inkling_layer_undo *u = &g->undo[i];
+        if (!rows || keep > rows || u->rows != rows || u->position != start ||
+            u->streams != IK_CONV_MASK || g->position != start + rows) {
+            return false;
+        }
+    }
+    for (unsigned i = 0; i < g->n_layers; i++) {
+        if (!inkling_restore_layer(g, i, keep)) {
+            return false;
+        }
+    }
+    /* Reproject the accepted row, without reexecuting layers or changing
+     * their convolution histories. All accepted final hidden rows survive. */
+    if (!inkling_head_logits(g, m, w, g->buf[IK_FINAL], keep)) {
+        g->failed = true;
+        return false;
+    }
+    g->position = start + keep;
+    return true;
+}
+
 typedef struct {
     ds4_inkling_graph graph;
     ds4_gpu_tensor *combined;

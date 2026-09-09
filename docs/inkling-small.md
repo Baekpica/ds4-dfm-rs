@@ -198,6 +198,15 @@ the head's division by 16. A real MQ85GB gate checks those rows against
 an independent CPU normalization equation and requires exact seed,
 full-vocabulary logits and state parity across prefill/decode/chunks.
 
+Target verification now returns each trial row's greedy token. Accepted-prefix
+commit restores all 42 layers and selects the accepted row's logits without
+rerunning those layers. On actual MQ85GB with default aligned Q8, accepting
+1 through 9 trial tokens matched scalar-prefix argmax, logits, normalized
+hidden and all KV/convolution bytes exactly, including changed rejected
+tokens. One-row verification and nonmutating input/commit rejection also
+passed. This short graph gate does not connect draft generation or Rust
+acceptance, and does not qualify long-context MTP.
+
 A separate component gate imports all eight BF16 depths from a VMM owner
 and uses the actual MQ85GB Q8 embedding, embedding norm and output head.
 With supplied hidden inputs, every depth matches separately assembled
