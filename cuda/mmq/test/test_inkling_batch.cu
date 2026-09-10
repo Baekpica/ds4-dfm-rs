@@ -138,8 +138,53 @@ static void batch_case(ggml_type type, int m, int tokens, int ne, int used,
         exact(got, want, out_bytes);
     }
 
+    if (type == GGML_TYPE_Q8_0 && ne == SHARED && used == SHARED) {
+        CUDA(cudaMemset(got, 0xff, out_bytes));
+        CHECK(setenv("DS4_INKLING_NO_SHARED_TILE", "1", 1) == 0);
+        CHECK(ds4_mmq_inkling_moe(dw, type, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+        CHECK(unsetenv("DS4_INKLING_NO_SHARED_TILE") == 0);
+        exact(got, want, out_bytes);
+    }
+
+    if (type == GGML_TYPE_Q8_0 && ne == SHARED && used == 1) {
+        CUDA(cudaMemset(got, 0xff, out_bytes));
+        CHECK(setenv("DS4_INKLING_NO_SHARED_DOWN_TILE", "1", 1) == 0);
+        CHECK(ds4_mmq_inkling_moe(dw, type, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+        CHECK(unsetenv("DS4_INKLING_NO_SHARED_DOWN_TILE") == 0);
+        exact(got, want, out_bytes);
+    }
+
+    if (type == GGML_TYPE_Q4_K) {
+        CUDA(cudaMemset(got, 0xff, out_bytes));
+        CHECK(setenv("DS4_INKLING_NO_Q4_TILE", "1", 1) == 0);
+        CHECK(ds4_mmq_inkling_moe(dw, type, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+        CHECK(unsetenv("DS4_INKLING_NO_Q4_TILE") == 0);
+        exact(got, want, out_bytes);
+    }
+
     const size_t work_bytes = ds4_mmvq_inkling_bytes(rows, ne, used);
     void *work = device_copy(nullptr, work_bytes);
+    if ((type == GGML_TYPE_Q8_0 && ne == SHARED && tokens == 65) ||
+        (type == GGML_TYPE_Q4_K && tokens == 513)) {
+        cudaStream_t stream;
+        CUDA(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+        CUDA(cudaMemsetAsync(got, 0xff, out_bytes, stream));
+        CHECK(ds4_mmvq_inkling(dw, type, q8, di, got, work, work_bytes,
+                              m, k, rows, ne, used, stream) == 0);
+        CUDA(cudaStreamSynchronize(stream));
+        exact(got, want, out_bytes);
+        CUDA(cudaStreamDestroy(stream));
+
+        // Exercise canonical four-byte alignment too. Shared-Q8 vector
+        // staging falls back; Q4_K keeps scalar-aligned loads.
+        auto *unaligned = (char *)device_copy(nullptr, q8bytes + sizeof(float));
+        CUDA(cudaMemcpy(unaligned + sizeof(float), q8, q8bytes, cudaMemcpyDeviceToDevice));
+        CUDA(cudaMemset(got, 0xff, out_bytes));
+        CHECK(ds4_mmvq_inkling(dw, type, unaligned + sizeof(float), di, got, work,
+                              work_bytes, m, k, rows, ne, used, nullptr) == 0);
+        exact(got, want, out_bytes);
+        CUDA(cudaFree(unaligned));
+    }
     CHECK(ds4_mmvq_inkling(dw, type, q8, di, got, work, work_bytes - 1,
                           m, k, rows, ne, used, nullptr) == -1);
     exact(got, want, out_bytes);
@@ -270,6 +315,22 @@ int main() {
         for (Routes route : {SPREAD, REPEATED, INVALID}) {
             batch_case(GGML_TYPE_Q8_0, 128, tokens, SHARED, SHARED, route);
         }
+    }
+    // Persistent shared-expert tiles: ragged rows/columns, repeated and invalid
+    // routes, maximum worklists, and explicit nonblocking stream execution.
+    for (int tokens : {63, 64, 65, 8192}) {
+        for (Routes route : {REPEATED, INVALID}) {
+            batch_case(GGML_TYPE_Q8_0, 126, tokens, SHARED, SHARED, route);
+            batch_case(GGML_TYPE_Q8_0, 126, tokens, SHARED, 1, route);
+        }
+    }
+    for (int used : {int(USED), 1}) {
+        for (int tokens : {511, 512, 513, 8192}) {
+            batch_case(GGML_TYPE_Q4_K, 126, tokens, MAX_EXPERTS, used, RANDOM);
+            batch_case(GGML_TYPE_Q4_K, 126, tokens, MAX_EXPERTS, used, INVALID);
+        }
+        batch_case(GGML_TYPE_Q4_K, 126, 513, MAX_EXPERTS, used, REPEATED);
+        batch_case(GGML_TYPE_Q4_K, HIDDEN, 512, MAX_EXPERTS, used, RANDOM);
     }
     wrapper_case(); puts("Inkling expert batch checks passed"); return 0;
 }
