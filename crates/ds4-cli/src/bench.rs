@@ -206,6 +206,12 @@ fn uses_distributed_replay(args: &BenchArgs) -> bool {
     args.dist.role == ds4_dist::Role::Coordinator
 }
 
+fn uses_prefix_replay(args: &BenchArgs, family: ModelFamily) -> bool {
+    // Inkling has live KV/convolution state but no serialized checkpoint.
+    // Restore its prefix by replaying outside both measured phase ranges.
+    uses_distributed_replay(args) || family == ModelFamily::Inkling
+}
+
 fn use_mtp_spec(family: ModelFamily, mtp: Option<&str>, draft: i32) -> bool {
     draft > 1
         && (mtp.is_some() || family == ModelFamily::Qwen4Exp)
@@ -450,7 +456,7 @@ pub fn run(args: BenchArgs) -> Result<i32, String> {
             .map_err(|e| format!("output-head bench failed: {e}"))?;
         return Ok(0);
     }
-    let mut snapshot = if uses_distributed_replay(&args) {
+    let mut snapshot = if uses_prefix_replay(&args, model.family()) {
         None
     } else {
         Some(SessionSnapshot::new().map_err(|e| e.to_string())?)
@@ -496,7 +502,7 @@ fn run_sweep<W: Write>(
 
     let eos = model.token_eos();
     let use_mtp = use_mtp_spec(model.family(), args.mtp.as_deref(), args.mtp_draft);
-    let distributed = uses_distributed_replay(args);
+    let replay = uses_prefix_replay(args, model.family());
     let mut previous = 0;
     let mut frontier = args.ctx_start;
 
@@ -512,7 +518,7 @@ fn run_sweep<W: Write>(
         let prefill_tokens = frontier - previous;
         write_frontier_logits_json(args, model, session, frontier, previous)?;
 
-        if args.gen_tokens > 0 && !distributed {
+        if args.gen_tokens > 0 && !replay {
             let snapshot = snapshot
                 .as_mut()
                 .ok_or_else(|| "local bench snapshot is missing".to_string())?;
@@ -579,10 +585,10 @@ fn run_sweep<W: Write>(
         }
 
         if args.gen_tokens > 0 && frontier < args.ctx_max {
-            if distributed {
+            if replay {
                 session
                     .sync(&prefix)
-                    .map_err(|e| format!("distributed replay restore at {frontier} failed: {e}"))?;
+                    .map_err(|e| format!("prefix replay restore at {frontier} failed: {e}"))?;
             } else {
                 let snapshot = snapshot
                     .as_ref()
@@ -609,7 +615,7 @@ fn run_sweep<W: Write>(
             gen_tps: rate(args.gen_tokens, gen_sec),
             gen_tps_ss: rate(ss_tokens, ss_sec),
             first_token_sec,
-            kvcache_bytes: if distributed {
+            kvcache_bytes: if replay {
                 0
             } else {
                 snapshot.as_ref().map_or(0, SessionSnapshot::len)
@@ -753,6 +759,15 @@ fn help_text() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inkling_sweep_replays_prefix() {
+        let mut args = BenchArgs::default();
+        assert!(uses_prefix_replay(&args, ModelFamily::Inkling));
+        assert!(!uses_prefix_replay(&args, ModelFamily::Qwen4Exp));
+        args.dist.role = ds4_dist::Role::Coordinator;
+        assert!(uses_prefix_replay(&args, ModelFamily::DeepSeek4));
+    }
 
     fn argv(args: &[&str]) -> Vec<String> {
         std::iter::once("ds4-bench-rs")

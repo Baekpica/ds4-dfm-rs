@@ -73,6 +73,13 @@ files outside measured NVTX operations. Requested proof or repeated samples
 that are missing make the scout incomplete. Unsupported opaque commands may
 still be structurally profiled without proof or a workload contract.
 
+Inkling has no serialized session checkpoint. Between sweep frontiers the
+benchmark replays the prompt prefix outside both measured ranges, restoring
+its KV and convolution history before measuring the next suffix. Its CSV
+`kvcache_bytes` is therefore zero (no serialized snapshot), not a KV allocation
+measurement. `tests/test_inkling_bench.py` compares sweep logits and tokens with
+independent cold frontiers; run it under the memory guard with the same owner.
+
 `--fit` joins device properties, calibration, workload metadata, and measured
 grid/block/register/shared-memory geometry. Nsight exports use native units
 (`csv:noconv`) so rounded memory sizes cannot alter resource bounds. Fit reports
