@@ -14,6 +14,11 @@ enum {
     INKLING_WARP = 32,
     INKLING_LINEAR_TILE = 8,
     INKLING_LINEAR_WARPS = 8,
+    INKLING_LT_TOKENS = 16,
+    INKLING_LT_ROWS = 4,
+    INKLING_LT_WARPS = 4,
+    INKLING_LT_SLAB = 4,
+    INKLING_LT_MIN_BLOCKS = 2,
     INKLING_LINEAR_DECODE_WARPS = 4,
     INKLING_ROUTE_WARPS = 4,
     INKLING_KEY_SHIFT = 16,
@@ -80,6 +85,77 @@ static __global__ void inkling_linear_kernel(
     }
 }
 
+/* Prefill tile: one CTA owns WARPS*ROWS weight rows and TOKENS tokens. The
+ * token slab lives in shared memory, so every weight vector is read once per
+ * token group and every activation vector once per row slab. Each output
+ * keeps the lane K stripe, eight-FMA chains, FP32 adds and XOR tree of
+ * inkling_linear_kernel, so results are byte-identical.
+ *
+ *   xs[t][s][lane]   uint4 (8 BF16) of token t at K step s0+s, lane stripe
+ *   acc[r][t]        one accumulator per (row, token), same order as before
+ */
+template<unsigned TOKENS, unsigned ROWS, unsigned WARPS, unsigned SLAB>
+__launch_bounds__(WARPS * INKLING_WARP, INKLING_LT_MIN_BLOCKS)
+static __global__ void inkling_linear_tile_kernel(
+        float *out, const __nv_bfloat16 *w, const __nv_bfloat16 *x,
+        uint32_t in_dim, uint32_t out_dim, uint32_t rows) {
+    __shared__ uint4 xs[TOKENS][SLAB][INKLING_WARP];
+    const unsigned warp = threadIdx.x / INKLING_WARP, lane = threadIdx.x % INKLING_WARP;
+    const uint32_t groups = (rows + TOKENS - 1) / TOKENS;
+    const uint32_t steps = in_dim / (8 * INKLING_WARP);
+    const uint64_t jobs = (uint64_t)groups * (out_dim / (WARPS * ROWS));
+    for (uint64_t job = blockIdx.x; job < jobs; job += gridDim.x) {
+        // Token groups vary fastest: neighbouring CTAs share weight rows in L2.
+        const uint32_t tok0 = (job % groups) * TOKENS;
+        const uint32_t row0 = (job / groups) * (WARPS * ROWS) + warp * ROWS;
+        const uint4 *wr[ROWS];
+        #pragma unroll
+        for (unsigned r = 0; r < ROWS; r++) {
+            wr[r] = (const uint4 *)(w + (uint64_t)(row0 + r) * in_dim);
+        }
+        float acc[ROWS][TOKENS] = {};
+        for (uint32_t s0 = 0; s0 < steps; s0 += SLAB) {
+            for (unsigned i = threadIdx.x; i < TOKENS * SLAB * INKLING_WARP; i += WARPS * INKLING_WARP) {
+                const unsigned t = i / (SLAB * INKLING_WARP), s = i / INKLING_WARP % SLAB, l = i % INKLING_WARP;
+                const uint32_t tok = tok0 + t;
+                xs[t][s][l] = tok < rows && s0 + s < steps
+                    ? ((const uint4 *)(x + (uint64_t)tok * in_dim))[(s0 + s) * INKLING_WARP + l]
+                    : make_uint4(0u, 0u, 0u, 0u);
+            }
+            __syncthreads();
+            #pragma unroll
+            for (unsigned s = 0; s < SLAB; s++) {
+                if (s0 + s >= steps) { break; }
+                uint4 wv[ROWS];
+                #pragma unroll
+                for (unsigned r = 0; r < ROWS; r++) { wv[r] = wr[r][(s0 + s) * INKLING_WARP + lane]; }
+                #pragma unroll
+                for (unsigned t = 0; t < TOKENS; t++) {
+                    const uint4 xv = xs[t][s][lane];
+                    #pragma unroll
+                    for (unsigned r = 0; r < ROWS; r++) { acc[r][t] += bf16x8_dot(wv[r], xv); }
+                }
+            }
+            __syncthreads();
+        }
+        #pragma unroll
+        for (unsigned r = 0; r < ROWS; r++) {
+            #pragma unroll
+            for (unsigned t = 0; t < TOKENS; t++) {
+                float sum = acc[r][t];
+                #pragma unroll
+                for (unsigned off = INKLING_WARP / 2; off; off /= 2) {
+                    sum += __shfl_xor_sync(0xffffffffu, sum, off);
+                }
+                if (lane == 0 && tok0 + t < rows) {
+                    out[(uint64_t)(tok0 + t) * out_dim + row0 + r] =
+                        inkling_bf16(__fmul_rn(inkling_bf16(sum), 1.0f));
+                }
+            }
+        }
+    }
+}
+
 extern "C" int ds4_gpu_inkling_linear(
         ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
         const void *model_map, uint64_t model_size, uint64_t weight_offset,
@@ -113,6 +189,17 @@ extern "C" int ds4_gpu_inkling_linear(
                          INKLING_THREADS, 0, stream>>>(xb, (const float *)x->ptr, count);
     if (!cuda_ok(cudaGetLastError(), "Inkling BF16 input launch")) { return -1; }
     cuda_norm_q8_invalidate(out->ptr);
+    if (rows >= INKLING_LT_TOKENS && in_dim % (8 * INKLING_WARP) == 0 &&
+        out_dim % (INKLING_LT_WARPS * INKLING_LT_ROWS) == 0 &&
+        !getenv("DS4_INKLING_NO_LINEAR_TILE")) {
+        const uint64_t jobs = (((uint64_t)rows + INKLING_LT_TOKENS - 1) / INKLING_LT_TOKENS) *
+            (out_dim / (INKLING_LT_WARPS * INKLING_LT_ROWS));
+        const unsigned blocks = jobs < INKLING_MAX_BLOCKS ? jobs : INKLING_MAX_BLOCKS;
+        inkling_linear_tile_kernel<INKLING_LT_TOKENS, INKLING_LT_ROWS, INKLING_LT_WARPS, INKLING_LT_SLAB>
+            <<<blocks, INKLING_LT_WARPS * INKLING_WARP, 0, stream>>>(
+            (float *)out->ptr, w, xb, in_dim, out_dim, rows);
+        return cuda_ok(cudaGetLastError(), "Inkling BF16 tile launch") ? 1 : -1;
+    }
     unsigned tile = INKLING_LINEAR_TILE;
     while (tile > rows) { tile /= 2; }
     const unsigned warps = rows == 1 ? INKLING_LINEAR_DECODE_WARPS : INKLING_LINEAR_WARPS;

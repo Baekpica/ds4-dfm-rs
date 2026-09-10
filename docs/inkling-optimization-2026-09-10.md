@@ -224,6 +224,44 @@ the kill switch are byte-exact against the per-token oracle. Native
 exactly; accepted-prefix restore 1–9, eight MTP cycles, image/audio and
 53 `ds4-perf` tests pass.
 
+## Round 5: BF16 projection tiles
+
+The round-4 trace spent 3.94 s (28.7%) in ordinary BF16 projections. The
+round-1 kernel grouped eight token warps per weight row, but each warp still
+streamed its token's activation vector from L2 for every output row, so a
+64-token launch moved about 2 GB through L2 for 33.5 MB of weights. One CTA
+now owns 16 weight rows and 16 tokens: the token slab is staged in shared
+memory once per row tile, each lane reuses a weight vector across the 16
+token accumulators, and every output keeps its lane K stripe, eight-FMA
+chains, FP32 adds, XOR tree and BF16 store. Widths below 16 and K widths
+not divisible by 256 (media 4800) keep the grouped kernel; decode is
+unchanged. `DS4_INKLING_NO_LINEAR_TILE=1` restores the grouped kernel.
+
+| Path | Prefill samples (tok/s) | Decode samples (tok/s) |
+| --- | --- | --- |
+| Round-4 control | 149.51 / 149.44 / 150.07 | 17.97 / 17.98 / 17.98 |
+| BF16 tile candidate | 193.21 / 192.99 / 193.77 | 17.97 / 17.99 / 17.99 |
+| Rollback control | 149.65 / 149.82 / 150.29 | 17.96 / 17.96 / 17.97 |
+
+Candidate medians are **193.21 prefill / 17.99 decode tok/s**: 29.2% more
+prefill throughput than round 4, decode unchanged. Both comparisons report
+`Improved` with zero logit or token differences. This retains the second
+additional prefill improvement. In the full-model trace the BF16 kernels
+fall from 3.94 s to 0.88 s (Q 0.32 s, O 0.33 s, K/V 0.09 s each, R 0.05 s);
+prefill wall time is 10.64 s, and the expert tiles (IQ2_XXS up 2.71 s,
+shared Q8 up 2.25 s, IQ2_XS down 1.77 s) now hold 70% of it.
+
+The standalone kernel probe measured 4096×4096: 64 rows 1.069 → 0.218 ms,
+512 rows 9.257 → 1.595 ms; 4096×1024, 64 rows 0.259 → 0.061 ms; the MTP head
+4096×32768 at 129 rows 18.46 → 3.56 ms; all byte-exact. Eight tile variants
+were exact; the chosen four-warp tile uses 158 registers without spills,
+whereas the eight-warp variant spilled 744 bytes and ran slower than the
+grouped kernel. The native linear test covers rows 1–129, 512 and 2048,
+media K=4800, the MTP head, partial aliases, bounds and the kill switch,
+all exact through the API. Native 12-token logits match round 4 and the
+kill-switch control; session, accepted-prefix, eight MTP cycles and
+image/audio gates pass.
+
 ## Reproduction and evidence
 
 Build with `make -j2 ds4-bench-perf ds4-perf CUDA_ARCH=sm_121` after configuring
@@ -246,7 +284,8 @@ MTP sidecar, tokenizer config and Jinja sidecar; the first shard's key is
 `model`. Add `--env DS4_INKLING_NO_LINEAR=1` before `--` for the BF16 control,
 `--env DS4_INKLING_NO_MOE_BATCH=1` for the expert-batch rollback control,
 `--env DS4_INKLING_NO_Q8_BATCH=1` for the dense-Q8 rollback control, or
-`--env DS4_INKLING_NO_MOE_TILE=1` for the expert-tile rollback control.
+`--env DS4_INKLING_NO_MOE_TILE=1` for the expert-tile rollback control, or
+`--env DS4_INKLING_NO_LINEAR_TILE=1` for the BF16-tile rollback control.
 See [ds4-perf](ds4-perf.md) for calibration, workload schema, memory guards
 and `compare --regression`.
 
@@ -269,6 +308,7 @@ the corrected expert-test build typo are retained separately.
 | Expert batch executable | `5dc6b64ebc3e23ef1c5ae808580e200ca0a4d33206447420787122d7ad88073f` |
 | Dense Q8 executable | `65766c3d6af9490875c4738306dea3ef9f0026dc19198bab8b45b11e4bce07b8` |
 | Expert tile executable | `036a9c986739d5b36166a6d759d290f6680c24873d6ff11a2b04b96ae8dbc6d9` |
+| BF16 tile executable | `82c0f12a2c77bf25781fafa6d75e49a975176cf4a0f873f2715f6e6f0c7166fc` |
 | Prompt | `f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f` |
 | Shared IPC manifest | `4f9e46dce133c5a14bf85f3ecd71e0437b27bbcaad38a1c679d4aebd3b5a8de8` |
 | Frontier proof JSON | `34867789bafce5999ea77da41112db7e77f866aea4aef234f0b4b85510dd2587` |

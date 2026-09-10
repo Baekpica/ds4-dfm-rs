@@ -47,6 +47,12 @@ The bandwidth figure is informational; we don't tier on it.
   Q8 weight fragment once and replay the original lane, warp-partial and XOR
   reduction order. Same routing tables and activation bytes; decode is unchanged.
 
+- `DS4_INKLING_NO_LINEAR_TILE=1` restores the token-grouped ordinary BF16
+  projection kernel. Unset it to run 16-token by 16-row CTA tiles that stage
+  the token slab in shared memory; every output keeps the same lane stripe,
+  FMA chains and XOR tree. Widths below 16 and K not divisible by 256 keep
+  the grouped kernel. Decode is unchanged.
+
 - `DS4_QWEN_PLE_DIR=/absolute/path/to/PLE-FP8` selects that directory's
   `ple-manifest.json` for the Qwen SSD-PLE loader. It supports the official
   FP8 E4M3FN sidecar without changing the main GGUF. Unset it to use the
