@@ -14,7 +14,12 @@ a retained routed-IQ2 gain. Rounds 4–7 retain four additional improvements,
 with the routed-IQ2 gain in round 4. The first three candidates are separate.
 Work prioritized prefill, with decode retained as a regression gate. The
 original three-decode-improvement target is deferred and has not been achieved;
-this report claims no decode speedup.
+this report claims no decode speedup. Rounds 8–12 extend the campaign with an
+8192-token workload: rounds 10–12 retain three further prefill improvements
+(BF16 panels above 4096 rows, attention grouped by KV head and dense Q8
+tiles), raising the 8K chunk-512 median from 230.84 to 272.76 tok/s and the
+2K median from 259.67 to 283.82 tok/s with exact logits throughout. The
+chunk default remains 512.
 
 ## Protocol
 
@@ -547,6 +552,50 @@ attention falls from 6.405 to 2.238 s and prefill wall from 35.749 to
 31.638 s with an unchanged kernel count. Evidence, counters and the private
 probe are under `scratch/inkling-perf/extra-three/r11/`.
 
+## Round 12: dense Q8 prefill tiles
+
+After round 11, the layer 0-1 dense MLP took 1.80 s of the 31.6 s prefill
+trace across 4096 launches. The aligned Q8 vec kernel computed eight tokens
+per launch, so every 512-token chunk streamed each up and down weight
+matrix 64 times: about 438 GB per 8K prefill, which is the measured device
+bandwidth for 1.8 s.
+
+A prefill tile keeps each aligned weight row's codes and scales in
+registers while eight-token groups stream through shared memory, so a
+weight row is read once per call. Up (K 4096) keeps two rows per warp; down
+(K 16384) keeps one row per warp and stages each group in two K slices.
+Every output keeps the vec kernel's lane-per-block chain, dp4a order,
+scale expression and shfl_down tree, so results are byte-identical. All
+rows of a call are quantized in one launch, which yields the same Q8_1 bytes
+as the eight-row launches.
+
+Dispatch covers 1 to 8192 rows at the two Inkling widths; other shapes and
+`DS4_INKLING_NO_Q8_TILE=1` keep the eight-column loop. Native timings at
+512 rows: up 38.1 to 8.9 ms, down 21.6 to 9.4 ms; the batch test checks
+2 to 8192 rows, the rollback, kill switches and rejected shapes exactly.
+
+| Input / chunk 512 | Prefill samples (tok/s) | Decode median (tok/s) |
+| --- | --- | --- |
+| 8K tile rollback | 261.79 / 261.46 / 260.90 | 14.21 |
+| 8K tile candidate | 273.50 / 272.76 / 272.06 | 14.21 |
+| 2K tile rollback | 272.91 / 271.70 / 271.64 | 17.96 |
+| 2K tile candidate | 284.53 / 283.82 / 283.40 | 17.96 |
+
+The 8K median improves **4.3%**, from 261.46 to 272.76 tok/s, and the 2K
+median 4.5%, from 271.70 to 283.82 tok/s. Both comparisons report
+`Improved`, each checking 1,200,348 logits with max_abs=0 and zero token
+differences; decode and first-step medians are unchanged. In the 8K
+trace the dense MLP falls from 1.802 to 0.571 s, quantize launches from
+6672 to 2640 and the kernel count from 42,976 to 34,912; prefill wall falls
+from 31.564 to 30.323 s. Evidence and the private probe are under
+`scratch/inkling-perf/extra-three/r12/` and `r12d/`.
+
+With this binary, an explicit 8192 chunk measured 277.34 / 276.21 / 270.82
+tok/s at 8K: a 1.3% median gain over the chunk-512 candidate with
+overlapping samples. `ds4-perf compare` reports `Pass`, not `Improved`, and
+the wide chunk needs 5.58 GB of graph scratch at context 8257, so **the
+default remains 512**. Evidence: `scratch/inkling-perf/extra-three/r13/`.
+
 ## Reproduction and evidence
 
 Build with `make -j2 ds4-bench-perf ds4-perf CUDA_ARCH=sm_121` after configuring
@@ -573,7 +622,8 @@ MTP sidecar, tokenizer config and Jinja sidecar; the first shard's key is
 `--env DS4_INKLING_NO_LINEAR_TILE=1` for the BF16-tile rollback control, or
 `--env DS4_INKLING_NO_SHARED_Q8=1` for the shared-up rollback control, or
 `--env DS4_INKLING_NO_LINEAR_PANEL=1` for the BF16-panel rollback control, or
-`--env DS4_INKLING_NO_ATTN_GROUP=1` for the grouped-attention rollback control.
+`--env DS4_INKLING_NO_ATTN_GROUP=1` for the grouped-attention rollback control, or
+`--env DS4_INKLING_NO_Q8_TILE=1` for the dense-Q8-tile rollback control.
 Use `--env DS4_INKLING_PREFILL_CHUNK=64` to restore the preceding chunk cap.
 See [ds4-perf](ds4-perf.md) for calibration, workload schema, memory guards
 and `compare --regression`.
@@ -602,6 +652,7 @@ the corrected expert-test build typo are retained separately.
 | Shared Q8 up executable | `66aac1ebaba2326865e9a80cbee2ae552e4b37d546cc9c8a69a1f6e7f62b3594` |
 | BF16 panel executable | `fb87ed77ea6cf92aa206cb3393ced758cf904f79d682b9e32561245e58495c36` |
 | Grouped attention executable | `cfffb1723f4d24d650fe4edd7c2a2b9b3946c7a6b87c351be1eab1683455274b` |
+| Dense Q8 tile executable | `d2c9dfca3e25f2b75ce3cde57aab92e948f6cbfa15357ef8ce3893eeb9631bb6` |
 | Prompt | `f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f` |
 | Baseline–round-3 IPC manifest | `4f9e46dce133c5a14bf85f3ecd71e0437b27bbcaad38a1c679d4aebd3b5a8de8` |
 | Round-4–7 IPC manifest | `43b795a0d21d293af31ca3fdca0a30402ee464a58279e7b9c04f41432d0583e7` |

@@ -320,6 +320,14 @@ extern "C" int ds4_gpu_inkling_q8(
         "Inkling dense Q8 prefill");
     if (!weights) { return 0; }
     cuda_norm_q8_invalidate(out->ptr);
+    // Prefill tiles read each aligned weight row once per call; other shapes
+    // and the rollback keep the eight-column loop below.
+    if (!getenv("DS4_INKLING_NO_Q8_TILE")) {
+        const int rc = ds4_mmq_q8_0_aligned_dense_batch(weights, (const float *)x->ptr,
+            (float *)out->ptr, out_dim, rows, in_dim, ds4_current_stream());
+        if (rc < 0) { return -1; }
+        if (rc == 0) { return 1; }
+    }
     // Tile the width without entering the raw MMVQ/MMQ numerical paths.
     for (uint32_t row = 0; row < rows; row += INKLING_Q8_COLUMNS) {
         const uint32_t cols = std::min<uint32_t>(rows - row, INKLING_Q8_COLUMNS);

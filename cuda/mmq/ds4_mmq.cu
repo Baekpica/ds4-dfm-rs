@@ -6257,6 +6257,169 @@ extern "C" int ds4_mmq_q8_0_aligned_dense_vec(
     return 0;
 }
 
+// Prefill tile over the same aligned artifact: every warp keeps its rows'
+// codes and scales in registers while eight-token groups stream through
+// shared memory, so a weight row is read once per call instead of once per
+// eight tokens. Each output keeps the NC kernel's lane-per-block chain
+// (blocks lane, lane+32, ...), dp4a order, scale expression and shfl_down
+// tree, so results are byte-identical to the eight-column path.
+//
+//   smem xs[token][block]: the token's 36-byte q8_1 blocks of one K slice
+//   w0/w1/dw[r][j]:        row r, block lane + 32 j (all K, register-resident)
+enum { Q8_TILE_WARP = 32, Q8_TILE_TOKENS = 8, Q8_TILE_WORDS = 9 /* ds + 8 code words */ };
+
+template <int NB, int R, int WARPS, int SLICES, int MIN_BLOCKS>
+__launch_bounds__(WARPS * Q8_TILE_WARP, MIN_BLOCKS)
+__global__ void q8_0_aligned_dense_tile_kernel(
+        float             *out,        // [N * M], column-major like the NC kernel
+        const int4        *qs,         // aligned codes, 2 int4 per block
+        const __half      *dq,         // block scales
+        const block_q8_1  *x8,         // [N * nb] canonical Q8_1 activations
+        int                M,
+        int                N,
+        int                nb)         // blocks per row = K/32 = 32 * NB
+{
+    constexpr int PER_SLICE = NB / SLICES, SLICE_BLOCKS = PER_SLICE * Q8_TILE_WARP;
+    constexpr int SLICE_WORDS = SLICE_BLOCKS * Q8_TILE_WORDS, SLICE_INT4 = SLICE_WORDS / 4;
+    extern __shared__ int4 xs4[];
+    const int *xs = (const int *)xs4;
+    const int warp = threadIdx.x / Q8_TILE_WARP, lane = threadIdx.x % Q8_TILE_WARP;
+    const int row0 = (blockIdx.x * WARPS + warp) * R;
+    int4 w0[R][NB], w1[R][NB];
+    float dw[R][NB];
+#pragma unroll
+    for (int r = 0; r < R; r++) {
+        const long long rbase = (long long)min(row0 + r, M - 1) * nb;
+#pragma unroll
+        for (int j = 0; j < NB; j++) {
+            const int b = lane + Q8_TILE_WARP * j;
+            w0[r][j] = qs[(rbase + b) * 2 + 0];
+            w1[r][j] = qs[(rbase + b) * 2 + 1];
+            dw[r][j] = __half2float(dq[rbase + b]);
+        }
+    }
+    for (int g = 0; g < N; g += Q8_TILE_TOKENS) {
+        float acc[R][Q8_TILE_TOKENS];
+#pragma unroll
+        for (int r = 0; r < R; r++) {
+#pragma unroll
+            for (int c = 0; c < Q8_TILE_TOKENS; c++) acc[r][c] = 0.0f;
+        }
+        for (int s = 0; s < SLICES; s++) {
+            __syncthreads();
+            // Stage eight tokens' contiguous blocks of this K slice; tokens
+            // past N stage zeros and are never written.
+            for (int i = threadIdx.x; i < Q8_TILE_TOKENS * SLICE_INT4; i += WARPS * Q8_TILE_WARP) {
+                const int c = i / SLICE_INT4, at = i % SLICE_INT4;
+                const int token = g + c;
+                xs4[c * SLICE_INT4 + at] = token < N
+                    ? ((const int4 *)(x8 + (size_t)token * nb + (size_t)s * SLICE_BLOCKS))[at]
+                    : make_int4(0, 0, 0, 0);
+            }
+            __syncthreads();
+#pragma unroll
+            for (int j = 0; j < PER_SLICE; j++) {
+                const int jj = s * PER_SLICE + j;
+                const int *blk = xs + (lane + Q8_TILE_WARP * j) * Q8_TILE_WORDS;
+#pragma unroll
+                for (int c = 0; c < Q8_TILE_TOKENS; c++) {
+                    const int *u = blk + c * SLICE_WORDS + 1;
+                    const half2 ds = *(const half2 *)(blk + c * SLICE_WORDS);
+#pragma unroll
+                    for (int r = 0; r < R; r++) {
+                        int sumi = 0;
+                        sumi = ggml_cuda_dp4a(w0[r][jj].x, u[0], sumi);
+                        sumi = ggml_cuda_dp4a(w0[r][jj].y, u[1], sumi);
+                        sumi = ggml_cuda_dp4a(w0[r][jj].z, u[2], sumi);
+                        sumi = ggml_cuda_dp4a(w0[r][jj].w, u[3], sumi);
+                        sumi = ggml_cuda_dp4a(w1[r][jj].x, u[4], sumi);
+                        sumi = ggml_cuda_dp4a(w1[r][jj].y, u[5], sumi);
+                        sumi = ggml_cuda_dp4a(w1[r][jj].z, u[6], sumi);
+                        sumi = ggml_cuda_dp4a(w1[r][jj].w, u[7], sumi);
+                        acc[r][c] += dw[r][jj] * __low2float(ds) * (float)sumi;
+                    }
+                }
+            }
+        }
+#pragma unroll
+        for (int r = 0; r < R; r++) {
+#pragma unroll
+            for (int c = 0; c < Q8_TILE_TOKENS; c++) {
+#pragma unroll
+                for (int off = 16; off > 0; off >>= 1)
+                    acc[r][c] += __shfl_down_sync(0xffffffffu, acc[r][c], off);
+                if (lane == 0 && g + c < N && row0 + r < M) out[(size_t)(g + c) * M + row0 + r] = acc[r][c];
+            }
+        }
+    }
+}
+
+// Launch one shape instantiation; the dynamic shared-memory opt-in is cached.
+template <int NB, int R, int WARPS, int SLICES, int MIN_BLOCKS>
+static int q8_0_aligned_dense_tile_launch(
+        float *out, const int4 *qs, const __half *dq, const block_q8_1 *x8,
+        int M, int N, int nb, cudaStream_t stream) {
+    const size_t smem = (size_t)Q8_TILE_TOKENS * (NB / SLICES) * Q8_TILE_WARP * Q8_TILE_WORDS * sizeof(int);
+    auto kernel = q8_0_aligned_dense_tile_kernel<NB, R, WARPS, SLICES, MIN_BLOCKS>;
+    static bool configured = false;
+    if (!configured) {
+        if (cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem) != cudaSuccess) return -3;
+        configured = true;
+    }
+    kernel<<<(unsigned)((M + WARPS * R - 1) / (WARPS * R)), WARPS * Q8_TILE_WARP, smem, stream>>>(
+        out, qs, dq, x8, M, N, nb);
+    return cudaGetLastError() == cudaSuccess ? 0 : -3;
+}
+
+extern "C" int ds4_mmq_q8_0_aligned_dense_batch(
+        const void * W_aligned, const float * X_f32, float * out_f32,
+        int M, int N, int K, cudaStream_t stream) {
+    const char *tag = "ds4_mmq_q8_0_aligned_dense_batch";
+    if (!W_aligned || !X_f32 || !out_f32) {
+        fprintf(stderr, "%s: null pointer\n", tag);
+        return -1;
+    }
+    // Instantiated for the Inkling dense MLP widths only; other shapes keep
+    // the eight-column kernel. K % 1024 keeps the q8_1 column stride at nb.
+    if (N < 1 || N > 8192 || M <= 0 || (K != 4096 && K != 16384)) return 1;
+    const int dev = ggml_cuda_get_device();
+    ggml_backend_cuda_context * ctx = get_ctx_for_device(dev);
+    if (!ctx) {
+        fprintf(stderr, "%s: failed to get cuda context for device %d\n", tag, dev);
+        return -1;
+    }
+    ds4_pool_set_stream(stream);
+    const int nb = K / 32;
+    const size_t nbytes_q8_1 = (size_t)N * nb * sizeof(block_q8_1);
+    ggml_cuda_pool_alloc<char> q8_pool(ctx->pool(), nbytes_q8_1);
+    char *x8 = q8_pool.get();
+    // Row-wise quantization: one launch for all N rows yields the same bytes
+    // as the eight-row launches of the vec path.
+    quantize_row_q8_1_cuda(
+        X_f32, /*ids=*/nullptr, (void *)x8,
+        GGML_TYPE_Q8_0, /*ne00=*/K,
+        /*s11=*/(int64_t)K, /*s12=*/(int64_t)K * N, /*s13=*/(int64_t)K * N,
+        /*ne0=*/K, /*ne1=*/N, /*ne2=*/1, /*ne3=*/1,
+        stream);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "%s: quantize_row_q8_1_cuda failed: %s\n", tag, cudaGetErrorString(err));
+        return -2;
+    }
+    const uint64_t nblk = (uint64_t)M * (uint64_t)nb;
+    const uint64_t dq_bytes = (nblk * 2u + 63u) & ~63ull;
+    const int4   *qsp = (const int4 *)((const char *)W_aligned + dq_bytes);
+    const __half *dqp = (const __half *)W_aligned;
+    const block_q8_1 *x8p = (const block_q8_1 *)x8;
+    // Up (K 4096): two rows per warp, one slice. Down (K 16384): one row per
+    // warp, two K slices so eight tokens fit shared memory.
+    const int rc = K == 4096
+        ? q8_0_aligned_dense_tile_launch<4, 2, 8, 1, 2>(out_f32, qsp, dqp, x8p, M, N, nb, stream)
+        : q8_0_aligned_dense_tile_launch<16, 1, 8, 2, 1>(out_f32, qsp, dqp, x8p, M, N, nb, stream);
+    if (rc != 0) fprintf(stderr, "%s: kernel launch failed: %s\n", tag, cudaGetErrorString(cudaGetLastError()));
+    return rc;
+}
+
 // ---------------------------------------------------------------------------
 // Aligned row-pair-SoA Q2_K routed-expert decode matvec (megakernel program
 // M2, moe-down increment).  The production down leg runs

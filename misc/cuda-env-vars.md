@@ -74,6 +74,12 @@ The bandwidth figure is informational; we don't tier on it.
   32-bit key arithmetic and prefetched keys. Decode and MTP verify widths
   keep the per-head kernel. Outputs are byte-identical.
 
+- `DS4_INKLING_NO_Q8_TILE=1` restores the eight-column aligned dense Q8
+  loop for the layer 0-1 MLP. The prefill tile keeps each weight row in
+  registers while eight-token groups stream through shared memory, so a
+  weight row is read once per call instead of once per eight tokens. Only
+  K 4096/16384 use it; outputs are byte-identical.
+
 - `DS4_QWEN_PLE_DIR=/absolute/path/to/PLE-FP8` selects that directory's
   `ple-manifest.json` for the Qwen SSD-PLE loader. It supports the official
   FP8 E4M3FN sidecar without changing the main GGUF. Unset it to use the

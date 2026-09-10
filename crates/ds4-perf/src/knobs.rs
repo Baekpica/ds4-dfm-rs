@@ -13,6 +13,7 @@ pub fn tunable(key: &str) -> bool {
             | "DS4_INKLING_NO_LINEAR_TILE"
             | "DS4_INKLING_NO_LINEAR_PANEL"
             | "DS4_INKLING_NO_ATTN_GROUP"
+            | "DS4_INKLING_NO_Q8_TILE"
             | "DS4_INKLING_NO_SHARED_Q8"
             | "DS4_INKLING_PREFILL_CHUNK"
             | "DS4_CUDA_SOLAR_GQA_CHUNK"
@@ -36,6 +37,7 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         | "DS4_INKLING_NO_LINEAR_TILE"
         | "DS4_INKLING_NO_LINEAR_PANEL"
         | "DS4_INKLING_NO_ATTN_GROUP"
+        | "DS4_INKLING_NO_Q8_TILE"
         | "DS4_INKLING_NO_SHARED_Q8" => family == "inkling" && value == "1",
         "DS4_INKLING_PREFILL_CHUNK" => family == "inkling" && (1..=8192).contains(&n),
         "DS4_CUDA_SOLAR_GQA_CHUNK" => {
@@ -65,6 +67,7 @@ mod tests {
             "DS4_INKLING_NO_LINEAR_TILE",
             "DS4_INKLING_NO_LINEAR_PANEL",
             "DS4_INKLING_NO_ATTN_GROUP",
+            "DS4_INKLING_NO_Q8_TILE",
             "DS4_INKLING_NO_SHARED_Q8",
         ] {
             assert!(tunable(key));

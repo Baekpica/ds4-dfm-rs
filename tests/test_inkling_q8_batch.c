@@ -77,10 +77,22 @@ static void batch_case(const void *map, const ds4_gpu_tensor_record *w, unsigned
     }
     CHECK(ds4_gpu_tensor_read(out, 0, got, out_bytes));
     CHECK(memcmp(got, want, out_bytes) == 0);
+    /* The eight-column rollback reproduces the tile output exactly. */
+    for (size_t i = 0; i < out_bytes / sizeof(float); i++) { got[i] = -1.0f / 0.0f; }
+    CHECK(ds4_gpu_tensor_write(out, 0, got, out_bytes));
+    CHECK(setenv("DS4_INKLING_NO_Q8_TILE", "1", 1) == 0);
+    CHECK(ds4_gpu_inkling_q8(out, dx, map, MAP_BYTES, w->offset,
+        w->bytes, k, m, rows) == 1);
+    CHECK(unsetenv("DS4_INKLING_NO_Q8_TILE") == 0);
+    CHECK(ds4_gpu_tensor_read(out, 0, got, out_bytes));
+    CHECK(memcmp(got, want, out_bytes) == 0);
 
-    double elapsed[2] = {0};
-    if (rows == 64) {
-        for (unsigned mode = 0; mode < 2; mode++) {
+    double elapsed[3] = {0};
+    if (rows == 64 || rows == 512) {
+        /* Modes: one-row reference, eight-column rollback, tile. */
+        for (unsigned mode = 0; mode < 3; mode++) {
+            if (mode == 1) { CHECK(setenv("DS4_INKLING_NO_Q8_TILE", "1", 1) == 0); }
+            else { CHECK(unsetenv("DS4_INKLING_NO_Q8_TILE") == 0); }
             CHECK(ds4_gpu_synchronize()); const double start = now();
             for (unsigned repeat = 0; repeat < REPEATS; repeat++) {
                 if (mode == 0) { reference(out, dx, map, w, rows); }
@@ -89,9 +101,11 @@ static void batch_case(const void *map, const ds4_gpu_tensor_record *w, unsigned
             }
             CHECK(ds4_gpu_synchronize()); elapsed[mode] = (now() - start) / REPEATS;
         }
+        CHECK(ds4_gpu_tensor_read(out, 0, got, out_bytes));
+        CHECK(memcmp(got, want, out_bytes) == 0);
     }
-    printf("dense Q8 k=%u m=%u rows=%u exact; %.3f -> %.3f ms\n",
-           k, m, rows, elapsed[0] * 1e3, elapsed[1] * 1e3);
+    printf("dense Q8 k=%u m=%u rows=%u exact; reference=%.3f no-tile-control=%.3f selected=%.3f ms\n",
+           k, m, rows, elapsed[0] * 1e3, elapsed[1] * 1e3, elapsed[2] * 1e3);
     ds4_gpu_tensor_free(dx); ds4_gpu_tensor_free(out);
     free(x); free(got); free(want);
 }
@@ -100,6 +114,7 @@ int main(void) {
     CHECK(sizeof(q8_block) == Q8_BYTES);
     CHECK(unsetenv("DS4_INKLING_NO_Q8_BATCH") == 0);
     CHECK(unsetenv("DS4_CUDA_NO_Q8_ALIGNED_NC") == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_Q8_TILE") == 0);
     CHECK(ds4_gpu_init());
     void *map = NULL; CHECK(posix_memalign(&map, OFFSET, MAP_BYTES) == 0);
     q8_block *w = (q8_block *)((char *)map + OFFSET);
@@ -125,7 +140,7 @@ int main(void) {
     free(sentinel); free(unchanged); ds4_gpu_tensor_free(input); ds4_gpu_tensor_free(output);
     CHECK(ds4_gpu_build_derived_artifacts_from_records(map, MAP_BYTES, weights, 2) == 2);
     CHECK(ds4_gpu_set_model_map(map, MAP_BYTES));
-    const unsigned rows[] = {2, 3, 7, 8, 9, 15, 64, 65, 2048, 8191, 8192};
+    const unsigned rows[] = {2, 3, 7, 8, 9, 15, 64, 65, 511, 512, 2048, 8191, 8192};
     for (unsigned i = 0; i < 2; i++) {
         for (unsigned r = 0; r < sizeof(rows) / sizeof(rows[0]); r++) {
             batch_case(map, &weights[i], rows[r]);

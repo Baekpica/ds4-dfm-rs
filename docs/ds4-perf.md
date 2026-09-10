@@ -159,6 +159,9 @@ for 4096-input q/k/v/r/o shapes. The configured prefill chunk is unchanged.
 `DS4_INKLING_NO_ATTN_GROUP=1` restores per-head prefill attention CTAs;
 the optimized path scores the four query heads of a KV head in one CTA
 with prefetched keys. Widths below 16 rows keep the per-head kernel.
+`DS4_INKLING_NO_Q8_TILE=1` restores the eight-column dense Q8 loop; the
+optimized prefill path keeps each aligned weight row in registers while
+eight-token groups stream through shared memory.
 `DS4_INKLING_NO_SHARED_Q8=1` restores warp-owned shared-Q8 up tiles;
 the optimized prefill path reuses each payload across eight assignments
 with the original four-warp reduction. Shared down and decode are unchanged.

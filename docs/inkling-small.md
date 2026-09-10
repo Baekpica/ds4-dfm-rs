@@ -5,9 +5,9 @@ serial CUDA HTTP paths on DGX Spark. Short artifact checks cover text, image
 and audio input with text output, matching the modalities of the
 [base model](https://huggingface.co/thinkingmachines/Inkling-Small/blob/8cc5877b44d343f88b92086aa1fb72897950f06a/README.md).
 The [GB10 performance report](inkling-optimization-2026-09-10.md) measures
-2048-token prefill and 64-token decode with MTP off. Long-context serving and
-independent full-model source parity remain unqualified. These checks apply
-to MQ85GB, not MQ89 or Q8_0 main.
+8192- and 2048-token prefill and 64-token decode with MTP off. Long-context
+serving and independent full-model source parity remain unqualified. These
+checks apply to MQ85GB, not MQ89 or Q8_0 main.
 
 ## Artifact contract
 
