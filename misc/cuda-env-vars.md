@@ -29,9 +29,10 @@ The bandwidth figure is informational; we don't tier on it.
 
 ## Env-var inventory
 
-- `DS4_INKLING_PREFILL_CHUNK=N` selects 1–2048 prompt rows per chunk,
-  capped by context. Default 512 improves expert-tile fill; 64 restores the
-  previous default and uses less graph scratch.
+- `DS4_INKLING_PREFILL_CHUNK=N` selects 1–8192 prompt rows per chunk,
+  capped by context. Default 512 is retained after the 8192 candidate regressed
+  the matched 8K workload. Shorter prompts use only their actual rows;
+  larger caps increase graph scratch.
 
 - `DS4_INKLING_NO_LINEAR=1` restores the separate stable BF16 projection and
   output-rounding kernels. Unset it to enable Inkling's token-grouped ordinary

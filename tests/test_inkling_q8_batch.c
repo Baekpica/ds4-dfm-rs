@@ -65,7 +65,7 @@ static void batch_case(const void *map, const ds4_gpu_tensor_record *w, unsigned
     CHECK(ds4_gpu_inkling_q8(out, dx, map, MAP_BYTES, UINT64_MAX,
         w->bytes, k, m, rows) == -1);
     CHECK(ds4_gpu_inkling_q8(out, dx, map, MAP_BYTES, w->offset,
-        w->bytes, k, m, rows + 1) == (rows == 2048 ? 0 : -1));
+        w->bytes, k, m, rows + 1) == (rows == 8192 ? 0 : -1));
     CHECK(ds4_gpu_inkling_q8(out, out, map, MAP_BYTES, w->offset,
         w->bytes, k, m, rows) == -1);
     const char *kills[] = {"DS4_INKLING_NO_Q8_BATCH", "DS4_CUDA_NO_Q8_ALIGNED_NC"};
@@ -125,7 +125,7 @@ int main(void) {
     free(sentinel); free(unchanged); ds4_gpu_tensor_free(input); ds4_gpu_tensor_free(output);
     CHECK(ds4_gpu_build_derived_artifacts_from_records(map, MAP_BYTES, weights, 2) == 2);
     CHECK(ds4_gpu_set_model_map(map, MAP_BYTES));
-    const unsigned rows[] = {2, 3, 7, 8, 9, 15, 64, 65, 2048};
+    const unsigned rows[] = {2, 3, 7, 8, 9, 15, 64, 65, 2048, 8191, 8192};
     for (unsigned i = 0; i < 2; i++) {
         for (unsigned r = 0; r < sizeof(rows) / sizeof(rows[0]); r++) {
             batch_case(map, &weights[i], rows[r]);

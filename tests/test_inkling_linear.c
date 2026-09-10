@@ -135,6 +135,7 @@ int main(void) {
     linear_case(map, 512, 258, 9); linear_case(map, WIDTH, MTP_OUTPUT, 9);
     linear_case(map, WIDTH, MTP_OUTPUT, 129); linear_case(map, WIDTH, 512, 512);
     linear_case(map, 512, 320, 2048); linear_case(map, 4800, WIDTH, 16);
+    linear_case(map, 512, 320, 8191); linear_case(map, 512, 320, 8192);
     unsupported(map); ds4_gpu_cleanup(); free(map);
     puts("Inkling linear checks passed"); return 0;
 }

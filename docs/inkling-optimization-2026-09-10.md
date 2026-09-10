@@ -352,11 +352,67 @@ Evidence and source/build hashes are in `scratch/inkling-perf/resume-codex/r7/`.
 The initial model-free test launch inherited the live owner's IPC environment;
 that failed invocation is retained, and the clean-environment retry passed.
 
-Final repository checks pass: `cargo fmt`, workspace Clippy, all eight C/Rust
+Round-7 repository checks pass: `cargo fmt`, workspace Clippy, all eight C/Rust
 host parity targets, serialized `cargo test --workspace --locked`, and
 `cargo check --workspace --all-targets --locked`. They ran after the timed
 scouts, without the live IPC environment. Logs are in
 `scratch/inkling-perf/resume-codex/final-checks/`.
+
+## Round 8: wider chunk validation
+
+A new, fixed three-round prefill campaign starts at `450fea0`: rounds 8–10.
+Round 8 tests chunk capacity; the remaining two rounds target kernels with
+an explicit 8192 chunk. No further chunk sweep is included.
+
+The supported maximum rises from 2048 to 8192. This is a maximum batch width,
+so shorter prompts remain valid. Host sizing, CUDA wrappers, MMVQ assignment
+bounds and `ds4-perf` validation use the same limit. **The default stays 512:**
+the 8192 default candidate failed the speed gate.
+
+The extended workload uses the same raw prompt and 64 greedy output tokens,
+with 8192 input tokens and context allocation 8257. It retains the same owner,
+artifacts, warmup/fresh-process policy and three repeats. The 2K regression
+workload remains separate.
+
+| Input / chunk | Prefill samples (tok/s) | Decode median (tok/s) |
+| --- | --- | --- |
+| 8K / 512 control | 230.99 / 230.71 / 230.61 | 14.20 |
+| 8K / 8192 candidate | 217.02 / 215.90 / 214.31 | 14.21 |
+| 2K / 512 control | 260.54 / 259.42 / 259.15 | 17.94 |
+| 2K / 8192 candidate | 263.04 / 261.95 / 262.44 | 17.95 |
+
+At 8K, increasing the chunk alone reduces median throughput **6.4%**;
+`ds4-perf compare --regression` reports `Regressed`. The separate 2K
+comparison reports `Pass`: its 1.2% median gain does not exceed the robust
+gain threshold across the sample ranges. Each comparison checks 1,200,348
+logits with max_abs=0 and zero token differences. An earlier 1024-chunk
+pilot at 2K measured 264.37 versus 259.42 tok/s with exact proof; it is
+intermediate round-8 evidence, not another round or the selected default.
+
+The 8K trace explains the next kernel target: ordinary BF16 projections take
+3.031 s across 3360 calls at chunk 512, versus 5.445 s across 210 calls at
+chunk 8192. Reducing launch count alone does not offset the larger working
+set. Total profiled prefill wall time rises from 35.800 to 37.953 s. These
+trace times are separate from the unprofiled throughput table.
+
+Native dense-Q8, routed-expert, BF16 and attention tests cover 8191/8192
+rows, incomplete tiles and grid stride. Cold/replayed 8192/16385-token
+frontiers are exact. At context 8257 and chunk 8192, base graph allocation
+matches its quote of 5,576,422,656 bytes; MTP matches 11,348,081,152 bytes.
+Base/MTP session, media and accepted-prefix checks pass, including short
+prompts with the large configured cap.
+
+The first MTP fixture allocated an unnecessary second 8K reference graph
+and tripped the memory-pressure guard. Its failed evidence is retained.
+The reference now allocates only its 18-token transcript plus verification
+margin; the target remains at context 8257/chunk 8192. The bounded retry
+passes exact logits, KV and convolution state. The resident owner survived.
+This is fixture memory repair, not a runtime memory reduction.
+
+Evidence is under `scratch/inkling-perf/extra-three/r8/` and `r8-wide/`.
+The latter's `run.status` records the expected nonzero exit after the failed
+speed gate; `wide-compare/compare.json` records `Regressed`.
+`completion.json` records the completed experiment and rejected default.
 
 ## Reproduction and evidence
 

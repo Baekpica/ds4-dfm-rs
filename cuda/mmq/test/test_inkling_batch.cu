@@ -234,7 +234,8 @@ int main() {
     CHECK(unsetenv("DS4_INKLING_NO_MOE_BATCH") == 0);
     CHECK(unsetenv("DS4_INKLING_NO_MOE_TILE") == 0);
     CHECK(ds4_gpu_init()); CHECK(ds4_mmq_init(0) == 0);
-    CHECK(ds4_mmvq_inkling_bytes(2048 * USED + 1, MAX_EXPERTS, 1) == 0);
+    CHECK(ds4_mmvq_inkling_bytes(8192 * USED + 1, MAX_EXPERTS, 1) == 0);
+    CHECK(ds4_mmvq_inkling_bytes(8193, MAX_EXPERTS, USED) == 0);
     const ggml_type types[] = {GGML_TYPE_Q8_0, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K,
                                GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS};
     for (auto type : types) {
@@ -249,8 +250,10 @@ int main() {
         batch_case(type, HIDDEN, 9, SHARED, SHARED, REPEATED);
         batch_case(type, HIDDEN, 9, SHARED, 1, REPEATED);
     }
-    batch_case(GGML_TYPE_IQ2_XXS, 2, 2048, MAX_EXPERTS, USED, REPEATED);
-    batch_case(GGML_TYPE_IQ2_XS, 2, 2048, MAX_EXPERTS, 1, SPREAD);
+    for (int tokens : {8191, 8192}) {
+        batch_case(GGML_TYPE_IQ2_XXS, 2, tokens, MAX_EXPERTS, USED, REPEATED);
+        batch_case(GGML_TYPE_IQ2_XS, 2, tokens, MAX_EXPERTS, 1, SPREAD);
+    }
     // Production routed/shared geometry at the default and wider prefill chunks.
     for (int tokens : {64, 65, 256, 512}) {
         batch_case(GGML_TYPE_IQ2_XXS, HIDDEN, tokens, MAX_EXPERTS, USED, RANDOM);

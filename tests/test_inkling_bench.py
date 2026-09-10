@@ -51,8 +51,8 @@ def main():
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--prompt-file", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--chunk-boundary", type=int, default=64, choices=range(1, 2049),
-                        metavar="1..2048", help="prefill chunk boundary to cross")
+    parser.add_argument("--chunk-boundary", type=int, default=64, choices=range(1, 8193),
+                        metavar="1..8192", help="prefill chunk boundary to cross")
     args = parser.parse_args()
     args.out.mkdir(parents=True)
 

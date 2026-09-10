@@ -156,7 +156,9 @@ the optimized path shares a shared-memory token slab across a row tile.
 `DS4_INKLING_NO_SHARED_Q8=1` restores warp-owned shared-Q8 up tiles;
 the optimized prefill path reuses each payload across eight assignments
 with the original four-warp reduction. Shared down and decode are unchanged.
-`DS4_INKLING_PREFILL_CHUNK=N` (1–2048) sets the Inkling prefill chunk width.
+`DS4_INKLING_PREFILL_CHUNK=N` (1–8192) sets the maximum Inkling prefill chunk width;
+shorter prompts remain valid. The default is 512, capped by context.
+Increasing it to 8192 alone regressed the matched 8K Inkling workload.
 Scout consumers also reparse each referenced unprofiled benchmark CSV and
 require its rows to match the serialized samples. Hashing and parsing use the
 same bytes; benchmark stdout is limited to 64 MiB per sample on load.

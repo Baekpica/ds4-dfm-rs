@@ -7,7 +7,7 @@
 #include <string.h>
 
 enum { QH = 32, KH = 8, DIM = 128, QWIDTH = QH * DIM, KWIDTH = KH * DIM,
-       LOCAL = 512, GLOBAL = 1024, TOKENS = 1105, KV_ROW = 2 * KWIDTH,
+       LOCAL = 512, GLOBAL = 1024, TOKENS = 8201, KV_ROW = 2 * KWIDTH,
        BF_SHIFT = 16, BF_HALF = 0x7fff, POISON = 0x7fc1,
        CAPTURE_ROWS = 3, CAPTURE_START = 508, CAPTURE_STEPS = 16,
        VERIFY_ROWS = 9, ACCEPT_ROWS = 3 };
@@ -287,7 +287,7 @@ static void rejected(struct fixture *f) {
 
 int main(void) {
     CHECK(ds4_gpu_init());
-    const unsigned extents[] = {LOCAL, GLOBAL}, chunks[] = {TOKENS, 1, 7, 63, 257, 700};
+    const unsigned extents[] = {LOCAL, GLOBAL}, chunks[] = {TOKENS, 1, 7, 63, 257, 700, 8192};
     for (unsigned e = 0; e < sizeof(extents) / sizeof(extents[0]); e++) {
         struct fixture f;
         init(&f, extents[e]);

@@ -131,24 +131,27 @@ static void check_mtp(ds4_session *s, const ds4_tokens *prompt) {
     if (!s->engine->mtp_ready) {
         return;
     }
-    /* A second session shares the same target mapping; no second weight copy. */
+    enum { CHECK_TOKENS = 18 };
+    /* The reference shares weights and only consumes this short transcript.
+     * Do not duplicate a wide target's unused prefill scratch for the oracle. */
     ds4_engine base_engine = *s->engine;
     base_engine.mtp_ready = false;
     ds4_session *base = NULL;
     char err[256] = {0};
-    check(ds4_session_create(&base, &base_engine, s->ctx_size) == 0, "Inkling MTP reference session failed");
+    const int reference_ctx = prompt->len + CHECK_TOKENS + IK_VERIFY_ROWS;
+    check(ds4_session_create(&base, &base_engine, reference_ctx) == 0, "Inkling MTP reference session failed");
     check(ds4_session_sync(s, prompt, err, sizeof(err)) == 0 &&
           ds4_session_sync(base, prompt, err, sizeof(err)) == 0, err);
     ds4_tokens transcript = {0};
     ds4_tokens_copy(&transcript, prompt);
     unsigned cycles = 0, generated = 0;
-    while (generated < 18) {
+    while (generated < CHECK_TOKENS) {
         int tokens[IK_VERIFY_ROWS], target[IK_VERIFY_ROWS];
         const int first = ds4_session_argmax(s), before = ds4_session_pos(s);
         check(first == ds4_session_argmax(base), "Inkling MTP first token differs");
-        const int n = ds4_session_inkling_trial(s, first, 18 - (int)generated,
+        const int n = ds4_session_inkling_trial(s, first, CHECK_TOKENS - (int)generated,
                                                tokens, target, IK_VERIFY_ROWS, err, sizeof(err));
-        check(n > 0 && n <= IK_VERIFY_ROWS && n <= 18 - (int)generated, err);
+        check(n > 0 && n <= IK_VERIFY_ROWS && n <= CHECK_TOKENS - (int)generated, err);
         check(ds4_session_pos(s) == before && tokens[0] == first, "Inkling trial committed tokens early");
         check(ds4_session_eval(s, first, err, sizeof(err)) != 0 &&
               ds4_session_sync(s, &transcript, err, sizeof(err)) != 0 &&
@@ -203,6 +206,37 @@ static void check_mtp(ds4_session *s, const ds4_tokens *prompt) {
     ds4_tokens_free(&transcript);
 }
 
+/* Check sizing and context clamping without importing weights or allocating
+ * a graph, before admitting the wide base/MTP integration fixtures. */
+static void memory_quotes(ds4_engine *e) {
+    const unsigned chunks[] = {1, 512, 2048, 8192};
+    const unsigned contexts[] = {32, 2113, 8257, 16394};
+    check(setenv("DS4_SESSION_GRAPH_FIT", "0", 1) == 0, "set fit override");
+    for (unsigned c = 0; c < sizeof(chunks) / sizeof(chunks[0]); c++) {
+        char value[16];
+        snprintf(value, sizeof(value), "%u", chunks[c]);
+        check(setenv("DS4_INKLING_PREFILL_CHUNK", value, 1) == 0, "set chunk");
+        for (unsigned i = 0; i < sizeof(contexts) / sizeof(contexts[0]); i++) {
+            const unsigned ctx = contexts[i], cap = chunks[c] < ctx ? chunks[c] : ctx;
+            check(inkling_prefill_cap(ctx) == cap, "Inkling chunk/context clamp");
+            for (unsigned mode = 0; mode < 2; mode++) {
+                e->mtp_ready = mode != 0;
+                ds4_session_graph_fit_quote q;
+                const uint64_t bytes = ds4_engine_session_graph_bytes_estimate(e, ctx);
+                check(bytes && ds4_engine_session_graph_fit_quote(e, ctx, &q) &&
+                      q.fail_open && q.need_bytes == bytes, "Inkling memory quote differs");
+                printf("memory context=%u cap=%u mtp=%u bytes=%llu\n",
+                       ctx, cap, mode, (unsigned long long)bytes);
+            }
+        }
+    }
+    check(unsetenv("DS4_INKLING_PREFILL_CHUNK") == 0, "clear chunk");
+    const unsigned fallback = inkling_prefill_cap(contexts[3]);
+    check(fallback == 512, "Inkling default chunk changed");
+    check(setenv("DS4_INKLING_PREFILL_CHUNK", "8193", 1) == 0, "set invalid chunk");
+    check(inkling_prefill_cap(contexts[3]) == fallback, "out-of-range chunk accepted");
+}
+
 int main(int argc, char **argv) {
     if (argc != 2 && argc != 4) {
         fprintf(stderr, "usage: %s <MQ85GB-first.gguf> [<MTP.gguf> <manifest>]\n", argv[0]);
@@ -213,6 +247,10 @@ int main(int argc, char **argv) {
     model_apply_host_shape();
     ds4_host_shape_clear();
     ds4_engine e = {.backend = DS4_BACKEND_CUDA, .metal_ready = true};
+    if (argc == 2 && !strcmp(argv[1], "--memory-quotes")) {
+        memory_quotes(&e);
+        return 0;
+    }
     check(!ds4_engine_supports_batching(&e), "Inkling entered DeepSeek batching");
     check(ds4_engine_hidden_f32_values(&e) == IK_HIDDEN &&
           ds4_engine_n_hc(&e) == 1, "Inkling hidden stream contract");
