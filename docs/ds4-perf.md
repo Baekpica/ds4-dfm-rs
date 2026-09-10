@@ -145,6 +145,8 @@ proofs and hashes; they do not reload the model.
 Inkling's `DS4_INKLING_NO_LINEAR=1` is a reviewed diagnostic control for
 comparing its ordinary BF16 projection with the prior implementation.
 Unset the variable for the optimized path; comparisons reject other values.
+`DS4_INKLING_NO_MOE_BATCH=1` similarly restores per-token expert projections;
+the optimized path groups prefill assignments while retaining MMVQ reductions.
 Scout consumers also reparse each referenced unprofiled benchmark CSV and
 require its rows to match the serialized samples. Hashing and parsing use the
 same bytes; benchmark stdout is limited to 64 MiB per sample on load.

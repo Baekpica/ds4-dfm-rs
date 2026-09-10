@@ -21205,6 +21205,9 @@ static bool inkling_audio_encode(float *out, const int32_t *ids, uint32_t rows,
 static bool inkling_routed(ds4_gpu_tensor *out, const ds4_model *m,
                            const ds4_tensor *w, const ds4_gpu_tensor *x,
                            const ds4_gpu_tensor *ids, uint32_t rows, uint32_t used) {
+    const int fast = ds4_gpu_inkling_routed(out, x, ids, m->map, m->size,
+        w->abs_offset, w->bytes, w->type, w->dim[0], w->dim[1], w->dim[2], rows, used);
+    if (fast != 0) { return fast > 0; }
     /* Keep one source token per call. Wider MMQ uses different activation
      * scale precision from MMVQ; the BF16 differences can change routing.
      * Down inputs are flattened assignments, grouped by token. */

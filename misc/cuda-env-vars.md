@@ -33,6 +33,11 @@ The bandwidth figure is informational; we don't tier on it.
   output-rounding kernels. Unset it to enable Inkling's token-grouped ordinary
   projections; router logits retain FP32. This diagnostic switch tests presence.
 
+- `DS4_INKLING_NO_MOE_BATCH=1` restores Inkling's per-token expert projections.
+  Unset it for expert-grouped prefill on the validated MQ85GB shapes. Both paths
+  retain canonical Q8_1 activation scales and the original MMVQ reductions.
+  This diagnostic switch tests presence; one-token decode is unchanged.
+
 - `DS4_QWEN_PLE_DIR=/absolute/path/to/PLE-FP8` selects that directory's
   `ple-manifest.json` for the Qwen SSD-PLE loader. It supports the official
   FP8 E4M3FN sidecar without changing the main GGUF. Unset it to use the

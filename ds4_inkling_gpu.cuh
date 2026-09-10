@@ -34,6 +34,8 @@ enum {
     INKLING_AUDIO_BINS = 80,
     INKLING_AUDIO_LEVELS = 16,
     INKLING_MEDIA_WIDTH = 4096,
+    INKLING_MOE_MIDDLE = 2048,
+    INKLING_PREFILL_MAX = 2048,
 };
 static constexpr uint32_t INKLING_FLOAT_SIGN = UINT32_C(1) << 31;
 static constexpr float INKLING_TAU_ALPHA = 0.1f;
@@ -175,6 +177,45 @@ static bool inkling_overlap(const ds4_gpu_tensor *a, uint64_t a_bytes,
                             const ds4_gpu_tensor *b, uint64_t b_bytes) {
     const uintptr_t pa = (uintptr_t)a->ptr, pb = (uintptr_t)b->ptr;
     return pa <= pb ? pb - pa < a_bytes : pa - pb < b_bytes;
+}
+
+extern "C" int ds4_gpu_inkling_routed(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x, const ds4_gpu_tensor *ids,
+        const void *model_map, uint64_t model_size, uint64_t weight_offset,
+        uint64_t weight_bytes, uint32_t type, uint32_t in_dim, uint32_t out_dim,
+        uint32_t experts, uint32_t rows, uint32_t used) {
+    if (!out || !x || !ids || !model_map || !rows || !used ||
+        weight_offset > model_size || weight_bytes > model_size - weight_offset) {
+        return -1;
+    }
+    const unsigned active = experts == INKLING_SHARED ? INKLING_SHARED : INKLING_USED;
+    const unsigned group = used > 1 ? 1 : active;
+    if ((experts != INKLING_ROUTED && experts != INKLING_SHARED) ||
+        (used != 1 && used != active) || out_dim != INKLING_MEDIA_WIDTH ||
+        in_dim != (used > 1 ? INKLING_MEDIA_WIDTH : INKLING_MOE_MIDDLE) ||
+        rows % group || rows / group <= 1 || rows / group > INKLING_PREFILL_MAX) {
+        return 0;
+    }
+    const uint64_t required = ds4_mmq_inkling_wbytes(type, out_dim, in_dim, experts);
+    if (!required) { return 0; }
+    const uint64_t xbytes = (uint64_t)rows * in_dim * sizeof(float);
+    const uint64_t obytes = (uint64_t)rows * used * out_dim * sizeof(float);
+    const uint64_t ibytes = (uint64_t)rows * used * sizeof(int32_t);
+    if (weight_bytes < required || x->bytes < xbytes || out->bytes < obytes ||
+        ids->bytes < ibytes || inkling_overlap(out, obytes, x, xbytes) ||
+        inkling_overlap(out, obytes, ids, ibytes) ||
+        inkling_overlap(x, xbytes, ids, ibytes) ||
+        ds4_tensor_device_idx(out) != ds4_tensor_device_idx(x) ||
+        ds4_tensor_device_idx(out) != ds4_tensor_device_idx(ids)) { return -1; }
+    if (getenv("DS4_INKLING_NO_MOE_BATCH") || !ds4_cuda_use_mmq()) { return 0; }
+    const void *weights = cuda_model_range_ptr(
+        model_map, weight_offset, required, "Inkling batched experts");
+    if (!weights) { return -1; }
+    cuda_norm_q8_invalidate(out->ptr);
+    const int rc = ds4_mmq_inkling_moe(weights, type, (const float *)x->ptr,
+        (const int32_t *)ids->ptr, (float *)out->ptr,
+        out_dim, in_dim, rows, experts, used, ds4_current_stream());
+    return rc == 0 ? 1 : -1;
 }
 
 extern "C" int ds4_gpu_inkling_sconv(

@@ -4124,6 +4124,46 @@ extern "C" int ds4_mmq_iq1_m_moe_pair_bounded(
 
 #include "mmvq.cuh"
 
+enum { INKLING_MMQ_HIDDEN = 4096, INKLING_MMQ_MIDDLE = 2048,
+       INKLING_MMQ_EXPERTS = 256, INKLING_MMQ_ROWS = 2 };
+
+extern "C" uint64_t ds4_mmq_inkling_wbytes(int type, int m, int k, int experts) {
+    if (type != GGML_TYPE_Q8_0 && type != GGML_TYPE_Q3_K && type != GGML_TYPE_Q4_K &&
+        type != GGML_TYPE_IQ2_XXS && type != GGML_TYPE_IQ2_XS) { return 0; }
+    if (m <= 0 || m > INKLING_MMQ_HIDDEN || m % INKLING_MMQ_ROWS ||
+        (k != INKLING_MMQ_HIDDEN && k != INKLING_MMQ_MIDDLE) ||
+        experts <= 0 || experts > INKLING_MMQ_EXPERTS) { return 0; }
+    return (uint64_t)experts * m * (k / ggml_blck_size((ggml_type)type)) *
+        ggml_type_size((ggml_type)type);
+}
+
+extern "C" int ds4_mmq_inkling_moe(
+        const void *weights, int type, const float *x, const int32_t *ids,
+        float *out, int m, int k, int rows, int experts, int used,
+        cudaStream_t stream) {
+    const uint64_t work_bytes = ds4_mmvq_inkling_bytes(rows, experts, used);
+    if (!weights || !x || !ids || !out || !work_bytes ||
+        !ds4_mmq_inkling_wbytes(type, m, k, experts) ||
+        (used > 1 ? k != INKLING_MMQ_HIDDEN : k != INKLING_MMQ_MIDDLE)) {
+        fprintf(stderr, "Inkling MMVQ: invalid batch\n");
+        return -1;
+    }
+    ggml_backend_cuda_context *ctx = get_ctx_for_device(ggml_cuda_get_device());
+    if (!ctx) { return -1; }
+    ds4_pool_set_stream(stream);
+    ggml_cuda_pool_alloc<char> q8(ctx->pool(),
+        (size_t)rows * k / QK8_1 * sizeof(block_q8_1));
+    ggml_cuda_pool_alloc<char> work(ctx->pool(), work_bytes);
+    // The per-row quantizer and half scale/sum match the decode oracle.
+    quantize_row_q8_1_cuda(x, nullptr, q8.get(), (ggml_type)type, k,
+                          k, k, (int64_t)k * rows, k, 1, rows, 1, stream);
+    if (cudaGetLastError() != cudaSuccess) { return -2; }
+    const int rc = ds4_mmvq_inkling(weights, (ggml_type)type, q8.get(), ids,
+        out, work.get(), work_bytes, m, k, rows, experts, used, stream);
+    if (rc) { fprintf(stderr, "Inkling MMVQ: batch failed (%d)\n", rc); }
+    return rc;
+}
+
 namespace {
 
 template <ggml_type type>

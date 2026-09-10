@@ -52,6 +52,11 @@ keeps ds4 self-contained at the cost of a periodic re-sync.
 
 ## What llama.cpp's `mmq.cu` does that we don't vendor
 
+`inkling_mmvq.cuh` is a ds4 specialization included by `mmvq.cu`. It reuses
+the private quantized-dot traits and warp reductions to group Inkling expert
+assignments without changing their arithmetic. `mmvq.cuh` declares its narrow
+driver interface; it is not copied from upstream.
+
 The upstream `ggml/src/ggml-cuda/mmq.cu` (372 lines) is the ggml-backend
 dispatch entry. It talks to `ggml_tensor` / `ggml_backend_buffer_get_usage`,
 does its own activation Q8_1 quantization, and wires into the ggml op graph.

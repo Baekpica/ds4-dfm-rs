@@ -53,8 +53,8 @@ Candidate medians are **56.76 prefill / 17.95 decode tok/s**. Against the
 initial control, prefill throughput improves 60.7%; decode throughput is
 0.8% lower. This is a prefill improvement, with no decode gain claimed.
 Both initial and rollback `ds4-perf compare --regression` runs report
-`Improved`, with zero logit or token differences. Retained count: prefill
-1/3, decode 0/3; the campaign continues.
+`Improved`, with zero logit or token differences. This retains one prefill
+improvement; it does not count toward the decode goal.
 
 The 4096×4096, 64-row component gate including conversion and final store
 measured 9.150 ms → 1.375 ms. In the full-model trace, ordinary BF16 kernels
@@ -69,6 +69,42 @@ accepted-prefix restoration for lengths 1–9. Eight MTP cycles, 18 greedy
 tokens and image/audio session regressions pass. Synthetic tests cover
 projection shapes, non-BF16 inputs, aliases, bounds and the kill switch;
 53 `ds4-perf` tests pass.
+
+## Round 2: batched expert MMVQ
+
+The round-1 trace spent 26.357 s in token-at-a-time routed/shared MMVQ.
+The new path quantizes the complete activation batch once, buckets routes
+by expert and executes compact four-assignment/two-output-row tiles. It
+preserves the canonical Q8 activation bytes, each format's integer dot
+fragments and the original four-warp up / one-warp down reduction. Invalid
+routes remain zero; the final finite guard moves into the output store.
+Width-one decode keeps its existing path. `DS4_INKLING_NO_MOE_BATCH=1`
+restores the round-1 implementation.
+
+| Path | Prefill samples (tok/s) | Decode samples (tok/s) |
+| --- | --- | --- |
+| Round-1 control | 56.89 / 56.75 / 56.76 | 17.95 / 17.96 / 17.94 |
+| Expert batch candidate | 95.96 / 96.37 / 96.43 | 17.95 / 17.96 / 17.95 |
+| Rollback control | 56.86 / 56.79 / 56.67 | 17.96 / 17.94 / 17.92 |
+
+Candidate medians are **96.37 prefill / 17.95 decode tok/s**: 69.8% more
+prefill throughput than round 1, with the same decode median. All nine
+frontier and token proof pairs across these three paths have identical
+hashes. Both `ds4-perf compare --regression` comparisons report `Improved`
+with zero logit/token differences. Retained count: prefill **2/3**, decode
+**0/3**; the campaign continues.
+
+The new expert kernels take 12.786 s in the full-model prefill trace;
+prefill wall time is 21.465 s. BF16 projections take 3.967 s and dense Q8
+3.508 s. The 64-token, 17-expert component fixture including preparation
+measured IQ2_XXS up 6.632 → 4.347 ms and IQ2_XS down 4.297 → 2.220 ms.
+These component fixtures do not represent full-model throughput.
+
+Five quantization formats pass byte-exact component comparisons, including
+ragged/repeated/invalid routes, maximum assignment counts, workspace bounds
+and diagnostic controls. Native full/chunk/decode, accepted-prefix restore,
+eight MTP cycles, image/audio and 53 `ds4-perf` checks also pass. Native
+full-vocabulary output matches the rollback path exactly.
 
 ## Reproduction and evidence
 
@@ -89,19 +125,22 @@ same owner, artifact mappings and guard for both sides:
 
 The workload manifest must include all six shards, prompt, IPC manifest,
 MTP sidecar, tokenizer config and Jinja sidecar; the first shard's key is
-`model`. Add `--env DS4_INKLING_NO_LINEAR=1` before `--` for the BF16 control.
+`model`. Add `--env DS4_INKLING_NO_LINEAR=1` before `--` for the BF16 control,
+or `--env DS4_INKLING_NO_MOE_BATCH=1` for the expert-batch rollback control.
 See [ds4-perf](ds4-perf.md) for calibration, workload schema, memory guards
 and `compare --regression`.
 
 Raw evidence is retained under `scratch/inkling-perf/`: `baseline/`,
-`round1/`, `round1-control/`, their comparisons, binary/source hashes,
-memory logs and `linear-*` component/state logs. Initial fixture failures
-and the invalid first workload manifest are retained separately.
+`round1/`, `round1-control/`, `round2/`, `round2-control/`, their comparisons,
+binary/source hashes, memory logs and `linear-*` / `batch-*` component/state
+logs. Initial fixture failures, the invalid first workload manifest and
+the corrected expert-test build typo are retained separately.
 
 | Identity | SHA-256 |
 | --- | --- |
 | Corrected control executable | `6d5f2f114437dce760fe36cafcbc2496f51bd88d1941e7f59c518ebf2b40133c` |
 | BF16 executable | `7c97e70f9feab2fd916dd65a4ddf9f1edf0afe7c9b7faee6bb8d1cd15b6f2f59` |
+| Expert batch executable | `5dc6b64ebc3e23ef1c5ae808580e200ca0a4d33206447420787122d7ad88073f` |
 | Prompt | `f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f` |
 | Shared IPC manifest | `4f9e46dce133c5a14bf85f3ecd71e0437b27bbcaad38a1c679d4aebd3b5a8de8` |
 | Frontier proof JSON | `34867789bafce5999ea77da41112db7e77f866aea4aef234f0b4b85510dd2587` |
