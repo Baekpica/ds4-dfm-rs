@@ -504,6 +504,8 @@ static int inkling_shared_q8_launch(
     return cudaGetLastError() == cudaSuccess ? 0 : -2;
 }
 
+#include "inkling_shared_tile.cuh"
+
 // Routing tables, then the 16-byte aligned activation SoA for the tile path.
 static uint64_t inkling_route_bytes(uint64_t assignments, int experts) {
     return ((experts + 1) + assignments * (experts + 2)) * sizeof(int32_t);
@@ -561,6 +563,13 @@ int ds4_mmvq_inkling(
     if (type == GGML_TYPE_Q8_0 && experts == IK_SHARED_EXPERTS &&
         used == IK_SHARED_EXPERTS && rows >= IK_SHARED_Q8_MIN &&
         !getenv("DS4_INKLING_NO_SHARED_Q8") && !getenv("DS4_INKLING_NO_MOE_TILE")) {
+        // Keep narrow verification on the existing kernel. Wider prefill can
+        // retain every weight fragment while its routed input groups stream.
+        if (rows >= IK_ST_MIN && !getenv("DS4_INKLING_NO_SHARED_TILE")) {
+            const int rc = inkling_shared_tile_launch(weights, (const block_q8_1 *)x,
+                out, counts, buckets, m, k, assignments, used, stream);
+            if (rc <= 0) { return rc; }
+        }
         inkling_tiles_kernel<IK_SHARED_Q8_COLS><<<1, IK_MMVQ_THREADS, 0, stream>>>(
             counts, tile_experts, tile_starts, experts);
         return inkling_shared_q8_launch<4>(weights, (const block_q8_1 *)x, out,

@@ -165,6 +165,10 @@ eight-token groups stream through shared memory.
 `DS4_INKLING_NO_SHARED_Q8=1` restores warp-owned shared-Q8 up tiles;
 the optimized prefill path reuses each payload across eight assignments
 with the original four-warp reduction. Shared down and decode are unchanged.
+`DS4_INKLING_NO_SHARED_TILE=1` restores the eight-column shared Q8 up kernel;
+from 64 prompt rows, the optimized path holds weights in registers across
+all routed columns and stages inputs for a CTA in shared memory. Unaligned
+Q8_1 input pointers and insufficient block shared memory keep the prior path.
 `DS4_INKLING_PREFILL_CHUNK=N` (1–8192) sets the maximum Inkling prefill chunk width;
 shorter prompts remain valid. The default is 512, capped by context.
 Increasing it to 8192 alone regressed the matched 8K Inkling workload.

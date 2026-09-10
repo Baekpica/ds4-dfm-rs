@@ -53,8 +53,14 @@ The bandwidth figure is informational; we don't tier on it.
   reduction order. Same routing tables and activation bytes; decode is unchanged.
 
 - `DS4_INKLING_NO_SHARED_Q8=1` restores warp-owned shared-Q8 up tiles.
-  Unset it for four-warp payload reuse with two shared experts and at least
-  16 prompt rows. Shared down, routed experts and decode keep their paths.
+  Unset it for payload reuse with two shared experts and at least 16 prompt
+  rows; from 64 rows, weight-resident tiles are preferred. Shared down,
+  routed experts and decode keep their paths.
+
+- `DS4_INKLING_NO_SHARED_TILE=1` restores the eight-column shared Q8 up
+  kernel. From 64 prompt rows, the default keeps each weight row in registers
+  across all input groups. Unaligned Q8_1 input pointers or insufficient
+  shared memory keep the prior kernel; every output retains its MMVQ reduction.
 
 - `DS4_INKLING_NO_LINEAR_TILE=1` restores the token-grouped ordinary BF16
   projection kernel. Unset it to run 16-token by 16-row CTA tiles that stage
