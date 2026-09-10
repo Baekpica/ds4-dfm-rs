@@ -19,6 +19,8 @@ enum {
     INKLING_LT_WARPS = 4,
     INKLING_LT_SLAB = 4,
     INKLING_LT_MIN_BLOCKS = 2,
+    INKLING_LT_PANEL_TOKENS = 512,
+    INKLING_LT_PANEL_MIN_ROWS = 4097,
     INKLING_LINEAR_DECODE_WARPS = 4,
     INKLING_ROUTE_WARPS = 4,
     INKLING_KEY_SHIFT = 16,
@@ -94,7 +96,7 @@ static __global__ void inkling_linear_kernel(
  *   xs[t][s][lane]   uint4 (8 BF16) of token t at K step s0+s, lane stripe
  *   acc[r][t]        one accumulator per (row, token), same order as before
  */
-template<unsigned TOKENS, unsigned ROWS, unsigned WARPS, unsigned SLAB>
+template<unsigned TOKENS, unsigned ROWS, unsigned WARPS, unsigned SLAB, unsigned PANEL_GROUPS = 0>
 __launch_bounds__(WARPS * INKLING_WARP, INKLING_LT_MIN_BLOCKS)
 static __global__ void inkling_linear_tile_kernel(
         float *out, const __nv_bfloat16 *w, const __nv_bfloat16 *x,
@@ -105,9 +107,21 @@ static __global__ void inkling_linear_tile_kernel(
     const uint32_t steps = in_dim / (8 * INKLING_WARP);
     const uint64_t jobs = (uint64_t)groups * (out_dim / (WARPS * ROWS));
     for (uint64_t job = blockIdx.x; job < jobs; job += gridDim.x) {
-        // Token groups vary fastest: neighbouring CTAs share weight rows in L2.
-        const uint32_t tok0 = (job % groups) * TOKENS;
-        const uint32_t row0 = (job / groups) * (WARPS * ROWS) + warp * ROWS;
+        uint32_t tok0, row0;
+        if constexpr (PANEL_GROUPS == 0) {
+            // Preserve the existing schedule for short inputs and rollback.
+            tok0 = (job % groups) * TOKENS;
+            row0 = (job / groups) * (WARPS * ROWS) + warp * ROWS;
+        } else {
+            // Sweep weight rows within a bounded token panel to reuse inputs
+            // in L2. The last panel uses its actual width, without padding jobs.
+            const uint64_t panel_jobs = (uint64_t)PANEL_GROUPS * (out_dim / (WARPS * ROWS));
+            const uint32_t base = (job / panel_jobs) * PANEL_GROUPS;
+            const uint32_t width = min(PANEL_GROUPS, groups - base);
+            const uint64_t local = job % panel_jobs;
+            tok0 = (base + local % width) * TOKENS;
+            row0 = (local / width) * (WARPS * ROWS) + warp * ROWS;
+        }
         const uint4 *wr[ROWS];
         #pragma unroll
         for (unsigned r = 0; r < ROWS; r++) {
@@ -195,9 +209,20 @@ extern "C" int ds4_gpu_inkling_linear(
         const uint64_t jobs = (((uint64_t)rows + INKLING_LT_TOKENS - 1) / INKLING_LT_TOKENS) *
             (out_dim / (INKLING_LT_WARPS * INKLING_LT_ROWS));
         const unsigned blocks = jobs < INKLING_MAX_BLOCKS ? jobs : INKLING_MAX_BLOCKS;
-        inkling_linear_tile_kernel<INKLING_LT_TOKENS, INKLING_LT_ROWS, INKLING_LT_WARPS, INKLING_LT_SLAB>
-            <<<blocks, INKLING_LT_WARPS * INKLING_WARP, 0, stream>>>(
-            (float *)out->ptr, w, xb, in_dim, out_dim, rows);
+        // Restrict the panel schedule to measured wide q/k/v/r/o shapes.
+        if (rows >= INKLING_LT_PANEL_MIN_ROWS && in_dim == INKLING_MEDIA_WIDTH &&
+            (out_dim == INKLING_MEDIA_WIDTH || out_dim == INKLING_KV_WIDTH ||
+             out_dim == INKLING_HEADS * INKLING_REL_DIM) &&
+            !getenv("DS4_INKLING_NO_LINEAR_PANEL")) {
+            inkling_linear_tile_kernel<INKLING_LT_TOKENS, INKLING_LT_ROWS, INKLING_LT_WARPS,
+                INKLING_LT_SLAB, INKLING_LT_PANEL_TOKENS / INKLING_LT_TOKENS>
+                <<<blocks, INKLING_LT_WARPS * INKLING_WARP, 0, stream>>>(
+                (float *)out->ptr, w, xb, in_dim, out_dim, rows);
+        } else {
+            inkling_linear_tile_kernel<INKLING_LT_TOKENS, INKLING_LT_ROWS, INKLING_LT_WARPS, INKLING_LT_SLAB>
+                <<<blocks, INKLING_LT_WARPS * INKLING_WARP, 0, stream>>>(
+                (float *)out->ptr, w, xb, in_dim, out_dim, rows);
+        }
         return cuda_ok(cudaGetLastError(), "Inkling BF16 tile launch") ? 1 : -1;
     }
     unsigned tile = INKLING_LINEAR_TILE;

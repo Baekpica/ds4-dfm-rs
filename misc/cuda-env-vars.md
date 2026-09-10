@@ -62,6 +62,12 @@ The bandwidth figure is informational; we don't tier on it.
   FMA chains and XOR tree. Widths below 16 and K not divisible by 256 keep
   the grouped kernel. Decode is unchanged.
 
+- `DS4_INKLING_NO_LINEAR_PANEL=1` restores the original BF16 tile job order.
+  Above 4096 prompt rows, the candidate schedules q/k/v/r/o output rows
+  within internal 512-token panels (input width 4096; output 512/1024/4096).
+  This changes kernel work order, not the prefill chunk. Other shapes and
+  smaller inputs retain the original schedule.
+
 - `DS4_QWEN_PLE_DIR=/absolute/path/to/PLE-FP8` selects that directory's
   `ple-manifest.json` for the Qwen SSD-PLE loader. It supports the official
   FP8 E4M3FN sidecar without changing the main GGUF. Unset it to use the

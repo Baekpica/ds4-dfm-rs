@@ -414,6 +414,90 @@ The latter's `run.status` records the expected nonzero exit after the failed
 speed gate; `wide-compare/compare.json` records `Regressed`.
 `completion.json` records the completed experiment and rejected default.
 
+## Round 9: Q3 routed-up payload reuse, not retained
+
+At an explicit 8192 chunk, layer 40's routed Q3_K up projection consumed
+0.799 s, about 2.1% of prefill wall time. Its fallback repeated weight
+fragment decoding across columns and performed an unused SoA conversion.
+The candidate shares decoded payloads across eight assignments, consumes
+canonical Q8_1 input directly, and preserves all four-warp reductions.
+Dispatch was restricted to 256 experts, six routes, 4096-by-4096 weights
+and at least 2048 prompt rows. Smaller component workloads regressed.
+
+The component probe, including activation/routing preparation, improved
+8K from 789.300 to 498.036 ms and 2K from 196.062 to 125.571 ms. It remained
+byte-exact. The four-column alternative was slower than the eight-column
+candidate. Full-shape 2047/2048/2049/8192 tests, invalid routes, workspace
+bounds, nonblocking stream and rollback tests all pass.
+
+| 8K input / chunk 8192 | Prefill samples (tok/s) | Decode median (tok/s) |
+| --- | --- | --- |
+| Preceding round-8 control | 217.02 / 215.90 / 214.31 | 14.21 |
+| Q3 candidate | 219.18 / 216.73 / 216.34 | 14.20 |
+
+The full-model median improves only 0.4%, from 215.90 to 216.73 tok/s,
+with overlapping sample ranges. The candidate is not retained; an isolated
+kernel gain is insufficient. The same-hour comparison uses the preceding
+fresh-process control, identical prompt/artifacts and an unchanged chunk.
+
+In the full-model trace, Q3 falls from 798.942 to 498.192 ms, while total
+prefill wall time falls only from 37.953 to 37.710 s. Kernel count drops
+10681 to 10679 by removing the unused relayout and duplicate tile table.
+The candidate uses 94 registers per thread, with zero local bytes
+reported by Nsight. This confirms the local gain without establishing a
+sufficient end-to-end improvement. Raw source, binary hashes and rejected
+candidate evidence remain under `scratch/inkling-perf/extra-three/r9/` and
+`q3-probe/`.
+
+`ds4-perf compare` reports `Pass`, not `Improved`: 1,200,348 logits
+checked with max_abs=0 and zero token differences. No additional Q3
+variant or speed retest is included in the fixed campaign.
+
+## Round 10: BF16 token panels above 4096 rows
+
+At the explicit 8192 chunk, ordinary BF16 projections took 5.445 s across
+210 calls versus 3.031 s across 3360 calls at chunk 512: each 16-token group
+swept every weight row before the next group, so an 8192-row input slab no
+longer stayed in L2. The candidate changes only the CUDA tile job order.
+Neighbouring jobs now visit output rows within internal 512-token panels,
+so each panel's input stays resident while all weight rows pass once. Every
+output keeps its lane K stripe, FMA chain, XOR tree and BF16 store, so
+results are byte-identical. The job count is unchanged; the final partial
+panel uses its actual width, without padding or duplicate outputs.
+
+Dispatch requires at least 4097 rows, 4096 input width and 512/1024/4096
+output width, the q/k/v/r/o shapes. Inputs of 4096 rows or fewer and all
+other shapes keep the original schedule, so the chunk-512 release path is
+unchanged. `DS4_INKLING_NO_LINEAR_PANEL=1` restores the original order.
+The configured prefill chunk is not changed by this round.
+
+Native component timings for the 4096-by-4096 projection: 2048 rows
+14.09 to 14.01 ms and 4096 rows 64.6 to 64.4 ms (unchanged schedule),
+4097 rows 65.9 to 31.3 ms and 8192 rows 110.0 to 65.3 ms. At 8192 rows,
+the 1024-wide output falls 32.0 to 16.4 ms and the 512-wide output 16.6 to
+8.9 ms. An initial 2049-row minimum regressed 2049 rows from 13.06 to
+15.09 ms and was narrowed before any full-model scout.
+
+| 8K input / chunk 8192 | Prefill samples (tok/s) | Decode median (tok/s) |
+| --- | --- | --- |
+| Panel rollback | 216.70 / 212.95 / 213.43 | 14.21 |
+| Panel candidate | 233.42 / 232.49 / 230.02 | 14.21 |
+
+The median improves **8.9%** at chunk 8192, from 213.43 to 232.49 tok/s.
+`ds4-perf compare` reports `Improved`, checking 1,200,348 logits with
+max_abs=0 and zero token differences; decode and first-step medians are
+unchanged. Against the round-8 chunk-512 control (230.71 tok/s) the 8192
+chunk is now on par, not robustly faster, so **the default remains 512**.
+The panel order is retained as the wide-input kernel path. In the trace,
+BF16 falls from 5.451 to 3.080 s and prefill wall from 38.186 to 35.857 s
+with an unchanged kernel count.
+
+Native tests cover 2047/2048/2049/4096/4097/8192 rows, the three wide
+output widths, NaN-poisoned outputs before selected and rollback calls,
+partial aliases and unsupported shapes. Evidence is under
+`scratch/inkling-perf/extra-three/r10/`; `user-stop-2107/` retains the
+interrupted build that preceded the resumed run.
+
 ## Reproduction and evidence
 
 Build with `make -j2 ds4-bench-perf ds4-perf CUDA_ARCH=sm_121` after configuring
@@ -438,7 +522,8 @@ MTP sidecar, tokenizer config and Jinja sidecar; the first shard's key is
 `--env DS4_INKLING_NO_Q8_BATCH=1` for the dense-Q8 rollback control, or
 `--env DS4_INKLING_NO_MOE_TILE=1` for the expert-tile rollback control, or
 `--env DS4_INKLING_NO_LINEAR_TILE=1` for the BF16-tile rollback control, or
-`--env DS4_INKLING_NO_SHARED_Q8=1` for the shared-up rollback control.
+`--env DS4_INKLING_NO_SHARED_Q8=1` for the shared-up rollback control, or
+`--env DS4_INKLING_NO_LINEAR_PANEL=1` for the BF16-panel rollback control.
 Use `--env DS4_INKLING_PREFILL_CHUNK=64` to restore the preceding chunk cap.
 See [ds4-perf](ds4-perf.md) for calibration, workload schema, memory guards
 and `compare --regression`.
@@ -465,6 +550,7 @@ the corrected expert-test build typo are retained separately.
 | BF16 tile executable | `82c0f12a2c77bf25781fafa6d75e49a975176cf4a0f873f2715f6e6f0c7166fc` |
 | Chunk-512 executable | `27c8f157dcd0475754b48602e2ee2f9f49e30dea30457e96c9f3b416165de121` |
 | Shared Q8 up executable | `66aac1ebaba2326865e9a80cbee2ae552e4b37d546cc9c8a69a1f6e7f62b3594` |
+| BF16 panel executable | `fb87ed77ea6cf92aa206cb3393ced758cf904f79d682b9e32561245e58495c36` |
 | Prompt | `f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f` |
 | Baseline–round-3 IPC manifest | `4f9e46dce133c5a14bf85f3ecd71e0437b27bbcaad38a1c679d4aebd3b5a8de8` |
 | Round-4–7 IPC manifest | `43b795a0d21d293af31ca3fdca0a30402ee464a58279e7b9c04f41432d0583e7` |
