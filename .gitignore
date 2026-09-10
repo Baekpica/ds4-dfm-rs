@@ -89,6 +89,7 @@ __pycache__/
 /tests/test_inkling_norm
 /tests/test_inkling_linear
 /tests/test_inkling_batch
+/tests/test_inkling_q8_batch
 /tests/test_inkling_media
 /tests/test_inkling_loader
 /tests/test_inkling_forward

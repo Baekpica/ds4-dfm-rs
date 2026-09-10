@@ -5,6 +5,16 @@ aligned dense-Q8 numerical path. Results apply to the six-shard MQ85GB
 artifact on one DGX Spark. They do not establish MQ89, Q8_0-main, independent
 source parity, long-context serving or concurrent-request performance.
 
+## Expanded target
+
+After the aligned Q8 batch candidate reached 111.53 prefill tok/s, the
+campaign target expanded to another detailed `ds4-perf` investigation and
+**at least three additional prefill improvements** from that state. The
+original three decode improvements remain required. A retained improvement
+to the routed IQ2 kernels is also mandatory. The first three
+prefill candidates do not count toward this additional target. Publication
+waits for the complete campaign and its correctness/regression checks.
+
 ## Protocol
 
 The raw `speed-bench/promessi_sposi.txt` fixture supplies 2048 prefill tokens,
@@ -91,8 +101,8 @@ Candidate medians are **96.37 prefill / 17.95 decode tok/s**: 69.8% more
 prefill throughput than round 1, with the same decode median. All nine
 frontier and token proof pairs across these three paths have identical
 hashes. Both `ds4-perf compare --regression` comparisons report `Improved`
-with zero logit/token differences. Retained count: prefill **2/3**, decode
-**0/3**; the campaign continues.
+with zero logit/token differences. This retains the second prefill
+improvement; no decode gain is claimed.
 
 The new expert kernels take 12.786 s in the full-model prefill trace;
 prefill wall time is 21.465 s. BF16 projections take 3.967 s and dense Q8
@@ -105,6 +115,72 @@ ragged/repeated/invalid routes, maximum assignment counts, workspace bounds
 and diagnostic controls. Native full/chunk/decode, accepted-prefix restore,
 eight MTP cycles, image/audio and 53 `ds4-perf` checks also pass. Native
 full-vocabulary output matches the rollback path exactly.
+
+## Round 3: aligned dense Q8 batches
+
+Round 2 still spent 3.508 s in dense Q8 projections. The two dense layers
+now group up to eight adjacent tokens through the existing aligned-Q8
+primitive. The aligned weight artifact, activation quantization and each
+output's reduction stay unchanged. The fast path covers dense up/down
+shapes at widths 2–2048; shared experts use the separate round-2 path.
+`DS4_INKLING_NO_Q8_BATCH=1` restores per-row dispatch.
+
+| Path | Prefill samples (tok/s) | Decode samples (tok/s) |
+| --- | --- | --- |
+| Round-2 control | 95.96 / 96.37 / 96.43 | 17.95 / 17.96 / 17.95 |
+| Dense Q8 candidate | 112.23 / 111.53 / 111.27 | 17.96 / 17.94 / 17.96 |
+| Rollback control | 96.19 / 95.80 / 95.61 | 17.94 / 17.94 / 17.93 |
+
+Candidate medians are **111.53 prefill / 17.96 decode tok/s**: 15.7% more
+prefill throughput than round 2. Both preceding and rollback comparisons
+report `Improved`, with zero full-vocabulary logit or greedy-token
+differences. Decode is unchanged within measurement variation. The three
+original prefill improvements are retained; the expanded target still
+requires **three additional prefill improvements and three decode gains**.
+
+The 64-token dense component gate measured up 36.428 → 5.275 ms and down
+19.658 → 3.117 ms, including activation preparation. Boundary widths through
+2048, incomplete eight-column tiles, aliases, spans, absent artifacts and
+kill switches pass. Native full/chunk/decode, accepted-prefix restore,
+eight MTP cycles, image/audio and 53 `ds4-perf` checks pass with exact
+logits and state.
+
+## Investigation after round 3
+
+A fresh `ds4-perf scout` with Nsight Systems and Compute reproduced round 3:
+prefill 112.30 / 111.89 / 111.24 and decode 17.89 / 17.94 / 17.92 tok/s.
+The repeatability comparison reports `Pass`; this is not another improvement.
+All proof arrays and tokens remain exact. The fresh trace has 18.583 s of
+prefill wall time and 67,312 kernels. Only 91.7 ms (0.49%) falls outside
+the union of kernel intervals.
+
+| Prefill path | Kernel time | Share of phase wall |
+| --- | --- | --- |
+| Routed IQ2_XXS up, layers 3–39 | 5.805 s | 31.24% |
+| Routed IQ2_XS down, layers 3–39 | 2.606 s | 14.02% |
+| Shared Q8 up | 2.145 s | 11.54% |
+| Shared Q8 down | 1.077 s | 5.80% |
+| Ordinary BF16 projections | 3.964 s | 21.33% |
+
+Launch order, shapes and format specializations were checked against all
+40 sparse layers and 32 prefill chunks. Routing worklists take about 28 ms
+and activation conversion 20 ms. The measured priority is the routed IQ2
+path, followed by repeated shared-Q8/BF16 payload loads.
+
+The automatic Compute sample selects the first routed Q8 layer, so five
+additional exact kernel targets isolate IQ2 up/down, shared Q8 up/down and
+BF16 query projection. IQ2 uses 94/95 registers per thread, reaches about
+35% active warps, and executes no Tensor Core instructions. Long-scoreboard
+stalls account for 31.6%/39.0% of the sampled IQ2 up/down warp stalls. Shared
+Q8 and BF16 also show substantial load-dependency stalls. These counters
+motivate load reuse and alternate execution schedules; they do not establish
+DRAM saturation. Requested L1/L2 bytes are not DRAM traffic.
+
+Supplementary counters use one matching launch, strict application replay,
+no forced cache flush and no clock lock. They are diagnostic evidence,
+separate from unprofiled speed samples. A single-sample chunk-size sweep
+peaks at 116.59 tok/s with 256 tokens per chunk, with exact proofs; it lacks
+the repeated A/B protocol and does not count as a retained improvement.
 
 ## Reproduction and evidence
 
@@ -126,14 +202,18 @@ same owner, artifact mappings and guard for both sides:
 The workload manifest must include all six shards, prompt, IPC manifest,
 MTP sidecar, tokenizer config and Jinja sidecar; the first shard's key is
 `model`. Add `--env DS4_INKLING_NO_LINEAR=1` before `--` for the BF16 control,
-or `--env DS4_INKLING_NO_MOE_BATCH=1` for the expert-batch rollback control.
+`--env DS4_INKLING_NO_MOE_BATCH=1` for the expert-batch rollback control,
+or `--env DS4_INKLING_NO_Q8_BATCH=1` for the dense-Q8 rollback control.
 See [ds4-perf](ds4-perf.md) for calibration, workload schema, memory guards
 and `compare --regression`.
 
 Raw evidence is retained under `scratch/inkling-perf/`: `baseline/`,
-`round1/`, `round1-control/`, `round2/`, `round2-control/`, their comparisons,
-binary/source hashes, memory logs and `linear-*` / `batch-*` component/state
-logs. Initial fixture failures, the invalid first workload manifest and
+`round1/`, `round1-control/`, `round2/`, `round2-control/`, `round3/`,
+`round3-control/`, their comparisons, binary/source hashes, memory logs and
+`linear-*` / `batch-*` / `q8-*` component/state logs. The repeated investigation
+is in `deep-current/`, `deep-repeatability/`, `deep-vs-control/` and
+`deep-targeted-ncu/`; decomposition and exact counter commands are retained.
+Initial fixture failures, the invalid first workload manifest and
 the corrected expert-test build typo are retained separately.
 
 | Identity | SHA-256 |
@@ -141,6 +221,7 @@ the corrected expert-test build typo are retained separately.
 | Corrected control executable | `6d5f2f114437dce760fe36cafcbc2496f51bd88d1941e7f59c518ebf2b40133c` |
 | BF16 executable | `7c97e70f9feab2fd916dd65a4ddf9f1edf0afe7c9b7faee6bb8d1cd15b6f2f59` |
 | Expert batch executable | `5dc6b64ebc3e23ef1c5ae808580e200ca0a4d33206447420787122d7ad88073f` |
+| Dense Q8 executable | `65766c3d6af9490875c4738306dea3ef9f0026dc19198bab8b45b11e4bce07b8` |
 | Prompt | `f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f` |
 | Shared IPC manifest | `4f9e46dce133c5a14bf85f3ecd71e0437b27bbcaad38a1c679d4aebd3b5a8de8` |
 | Frontier proof JSON | `34867789bafce5999ea77da41112db7e77f866aea4aef234f0b4b85510dd2587` |

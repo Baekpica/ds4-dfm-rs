@@ -36,6 +36,8 @@ enum {
     INKLING_MEDIA_WIDTH = 4096,
     INKLING_MOE_MIDDLE = 2048,
     INKLING_PREFILL_MAX = 2048,
+    INKLING_Q8_BLOCK = 32,
+    INKLING_Q8_COLUMNS = 8,
 };
 static constexpr uint32_t INKLING_FLOAT_SIGN = UINT32_C(1) << 31;
 static constexpr float INKLING_TAU_ALPHA = 0.1f;
@@ -177,6 +179,41 @@ static bool inkling_overlap(const ds4_gpu_tensor *a, uint64_t a_bytes,
                             const ds4_gpu_tensor *b, uint64_t b_bytes) {
     const uintptr_t pa = (uintptr_t)a->ptr, pb = (uintptr_t)b->ptr;
     return pa <= pb ? pb - pa < a_bytes : pa - pb < b_bytes;
+}
+
+extern "C" int ds4_gpu_inkling_q8(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *model_map, uint64_t model_size, uint64_t weight_offset,
+        uint64_t weight_bytes, uint32_t in_dim, uint32_t out_dim, uint32_t rows) {
+    if (!out || !x || !model_map || !rows || weight_offset > model_size ||
+        weight_bytes > model_size - weight_offset) { return -1; }
+    if (rows <= 1 || rows > INKLING_PREFILL_MAX ||
+        !((in_dim == INKLING_MEDIA_WIDTH && out_dim == 2 * INKLING_FF_MAX) ||
+          (in_dim == INKLING_FF_MAX && out_dim == INKLING_MEDIA_WIDTH))) { return 0; }
+    const uint64_t required = (uint64_t)in_dim * out_dim / INKLING_Q8_BLOCK *
+        sizeof(cuda_block_q8_0);
+    const uint64_t xbytes = (uint64_t)rows * in_dim * sizeof(float);
+    const uint64_t obytes = (uint64_t)rows * out_dim * sizeof(float);
+    if (weight_bytes < required || x->bytes < xbytes || out->bytes < obytes ||
+        inkling_overlap(out, obytes, x, xbytes) ||
+        ds4_tensor_device_idx(out) != ds4_tensor_device_idx(x)) { return -1; }
+    if (getenv("DS4_INKLING_NO_Q8_BATCH") || getenv("DS4_CUDA_NO_Q8_ALIGNED_NC") ||
+        !cuda_q8_aligned_enabled() || !ds4_cuda_use_mmq()) { return 0; }
+    const uint64_t aligned_bytes = ds4_mmq_q8_0_aligned_bytes(out_dim, in_dim);
+    const void *weights = cuda_derived_weight_ptr(model_map, weight_offset, weight_bytes,
+        CUDA_DERIVED_Q8_0_ALIGNED_DENSE, in_dim, out_dim, 1, aligned_bytes,
+        "Inkling dense Q8 prefill");
+    if (!weights) { return 0; }
+    cuda_norm_q8_invalidate(out->ptr);
+    // Tile the width without entering the raw MMVQ/MMQ numerical paths.
+    for (uint32_t row = 0; row < rows; row += INKLING_Q8_COLUMNS) {
+        const uint32_t cols = std::min<uint32_t>(rows - row, INKLING_Q8_COLUMNS);
+        if (ds4_mmq_q8_0_aligned_dense_vec(weights,
+                (const float *)x->ptr + (uint64_t)row * in_dim,
+                (float *)out->ptr + (uint64_t)row * out_dim,
+                out_dim, cols, in_dim, ds4_current_stream()) != 0) { return -1; }
+    }
+    return 1;
 }
 
 extern "C" int ds4_gpu_inkling_routed(

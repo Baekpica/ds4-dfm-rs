@@ -21075,8 +21075,14 @@ static bool inkling_projection(ds4_gpu_tensor *out, const ds4_model *m,
         return ds4_gpu_matmul_bf16_stable_rows_tensor(out, m->map, m->size,
                     w->abs_offset, w->dim[0], w->dim[1], x, rows) != 0;
     }
-    /* Dense Q8 MMVQ also changes reduction geometry with column count.
-     * Keep the initial artifact path equal to decode before tuning prefill. */
+    if (w->type == DS4_TENSOR_Q8_0 && w->dim[0] <= UINT32_MAX &&
+        w->dim[1] <= UINT32_MAX) {
+        const int fast = ds4_gpu_inkling_q8(out, x, m->map, m->size,
+            w->abs_offset, w->bytes, w->dim[0], w->dim[1], rows);
+        if (fast != 0) { return fast > 0; }
+    }
+    /* Raw Q8 MMVQ changes reduction geometry with column count. Keep one
+     * row when no compatible aligned artifact is available. */
     const uint64_t in_bytes = w->dim[0] * sizeof(float);
     const uint64_t out_bytes = w->dim[1] * sizeof(float);
     for (unsigned r = 0; r < rows; r++) {
