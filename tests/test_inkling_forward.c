@@ -348,6 +348,15 @@ int main(int argc, char **argv) {
     if (!ds4_gpu_set_model_map(model.map, model.size)) {
         ds4_die("Inkling GPU/map initialization failed");
     }
+    const char *manifest = getenv("DS4_CUDA_WEIGHT_IPC_MANIFEST");
+    if (manifest) {
+        /* set_model_map skips host registration; it does not import ranges. */
+        if (!manifest[0] || !ds4_gpu_import_model_ipc_manifest(
+                model.map, model.size, manifest, "base")) {
+            ds4_die("Inkling base owner import failed");
+        }
+        model_release_mapping_cache(&model);
+    }
     ds4_inkling_graph g;
     if (!inkling_graph_alloc(&g, &model, &weights, rows + 16, rows)) {
         ds4_die("Inkling graph allocation failed");

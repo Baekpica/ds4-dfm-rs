@@ -230,6 +230,14 @@ int main(int argc, char **argv) {
     e.vocab.n_vocab = INKLING_VALID_VOCAB;
     check(ds4_gpu_init() && ds4_gpu_set_model_map(e.model.map, e.model.size),
           "Inkling GPU/map initialization failed");
+    const char *manifest = getenv("DS4_CUDA_WEIGHT_IPC_MANIFEST");
+    if (manifest) {
+        /* Match production's explicit import before the first embedding. */
+        check(manifest[0] && ds4_gpu_import_model_ipc_manifest(
+                e.model.map, e.model.size, manifest, "base"),
+              "Inkling base owner import failed");
+        model_release_mapping_cache(&e.model);
+    }
     if (argc == 4) {
         model_open(&e.mtp_model, argv[2], false, false);
         inkling_bind_draft(&e.inkling_mtp, &e.mtp_model);
