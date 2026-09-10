@@ -103,7 +103,7 @@ Native CUDA sessions support lazy allocation, exact-prefix reuse, decode,
 invalidate and rewind followed by replay. The MQ85GB session gate matched
 cold/reused logits and measured exactly 100,306,688 graph bytes at context 32,
 matching its memory quote; host session parity also passed. The default
-prefill cap is 64 (`DS4_INKLING_PREFILL_CHUNK`, range 1–2048, capped by context).
+prefill cap is 512 (`DS4_INKLING_PREFILL_CHUNK`, range 1–2048, capped by context).
 Batching, snapshots and distributed execution remain unavailable until their
 Inkling-specific state paths are implemented.
 

@@ -8,6 +8,7 @@ import argparse
 import csv
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -18,12 +19,17 @@ def run(args, name, start, end):
     command = [
         str(args.bench.resolve()), "--cuda", "-m", str(args.model.resolve()),
         "--prompt-file", str(args.prompt_file.resolve()),
-        "--ctx-start", str(start), "--ctx-max", str(end), "--step-incr", "65",
-        "--ctx-alloc", "138", "--gen-tokens", "8",
+        "--ctx-start", str(start), "--ctx-max", str(end),
+        "--step-incr", str(args.chunk_boundary + 1),
+        "--ctx-alloc", str(2 * args.chunk_boundary + 10), "--gen-tokens", "8",
         "--dump-frontier-logits-dir", str((out / "proof").resolve()),
     ]
     (out / "command.json").write_text(json.dumps(command, indent=2) + "\n")
-    result = subprocess.run(command, capture_output=True, text=True, timeout=900)
+    # Pin the actual cap so inherited tuning cannot bypass the tested boundary.
+    controls = {"DS4_INKLING_PREFILL_CHUNK": str(args.chunk_boundary)}
+    (out / "environment.json").write_text(json.dumps(controls, indent=2) + "\n")
+    result = subprocess.run(command, env={**os.environ, **controls},
+                            capture_output=True, text=True, timeout=900)
     (out / "stdout.csv").write_text(result.stdout)
     (out / "stderr.log").write_text(result.stderr)
     assert result.returncode == 0, f"{name}: exit {result.returncode}; see {out}"
@@ -45,11 +51,15 @@ def main():
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--prompt-file", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--chunk-boundary", type=int, default=64, choices=range(1, 2049),
+                        metavar="1..2048", help="prefill chunk boundary to cross")
     args = parser.parse_args()
     args.out.mkdir(parents=True)
 
-    sweep = run(args, "sweep", 64, 129)
-    for frontier in [64, 129]:
+    # Replay a prefix, then cross the next chunk boundary with one trailing row.
+    frontiers = [args.chunk_boundary, 2 * args.chunk_boundary + 1]
+    sweep = run(args, "sweep", *frontiers)
+    for frontier in frontiers:
         cold = run(args, f"cold-{frontier}", frontier, frontier)
         name = f"frontier_{frontier:06}.logits.json"
         actual = json.loads((sweep / name).read_text())
@@ -62,7 +72,8 @@ def main():
         actual = json.loads((sweep / name).read_text())
         expected = json.loads((cold / name).read_text())
         assert len(actual) == 8 and actual == expected, f"frontier {frontier}: tokens differ"
-    print("PASS: Inkling 64/129-token sweep and cold frontiers have exact logits and tokens")
+    print(f"PASS: Inkling {frontiers[0]}/{frontiers[1]}-token sweep and cold frontiers "
+          "have exact logits and tokens")
 
 
 if __name__ == "__main__":

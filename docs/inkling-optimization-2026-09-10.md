@@ -10,8 +10,10 @@ source parity, long-context serving or concurrent-request performance.
 After the aligned Q8 batch candidate reached 111.53 prefill tok/s, the
 campaign target expanded to another detailed `ds4-perf` investigation and
 **at least three additional prefill improvements** from that state. The
-original three decode improvements remain required. A retained improvement
-to the routed IQ2 kernels is also mandatory. The first three
+original target also included three decode improvements. Work is now focused
+on prefill, with decode retained as a regression gate; the decode improvement
+target is deferred and has not been achieved. A retained improvement to the
+routed IQ2 kernels is also mandatory. The first three
 prefill candidates do not count toward this additional target. Publication
 waits for the complete campaign and its correctness/regression checks.
 
@@ -262,6 +264,47 @@ all exact through the API. Native 12-token logits match round 4 and the
 kill-switch control; session, accepted-prefix, eight MTP cycles and
 image/audio gates pass.
 
+## Round 6: 512-token prefill chunks
+
+The default chunk grows from 64 to 512 tokens. More assignments per expert
+improve tile fill and weight reuse; the kernel arithmetic remains unchanged.
+`DS4_INKLING_PREFILL_CHUNK=64` restores the previous default. Graph scratch
+grows with the cap, which is still bounded by the allocated context.
+
+| Path | Prefill samples (tok/s) | Decode samples (tok/s) |
+| --- | --- | --- |
+| BF16-tile control | 193.21 / 192.99 / 193.77 | 17.97 / 17.99 / 17.99 |
+| Chunk-512 candidate | 248.92 / 247.48 / 247.74 | 17.95 / 17.95 / 17.95 |
+| Chunk-64 rollback | 193.05 / 192.68 / 192.21 | 17.95 / 17.95 / 17.95 |
+
+The candidate median is **247.74 prefill / 17.95 decode tok/s**, a 28.2%
+prefill throughput gain over the preceding candidate and 28.6% over the fresh
+rollback. Both comparisons report `Improved`, checking 1,200,348 logits
+with max_abs=0 and no token mismatches. This retains the third additional
+prefill improvement after round 3. No decode improvement is claimed.
+
+The prefill trace falls from 10.64 to 8.31 s and from 72,560 to 11,156 kernel
+launches. Routed IQ2 up/down take 1.65/1.02 s. Shared Q8 up/down take
+1.92/0.56 s; the shared-up path is now the largest single expert operation.
+These timings are diagnostic; only the unprofiled samples enter comparison.
+
+The 512/1025-token sweep matches independent cold frontiers exactly across
+all 200058 logits and eight following greedy tokens. The fixture pins and
+records its chunk cap; the original 64/129-token fixture remains available.
+Short native full/chunk/decode and accepted-prefix state checks, eight MTP
+cycles, and image/audio session checks also pass. These short state checks
+and text boundary proofs do not qualify long-context or concurrent serving.
+
+At context 2113, native session allocation exactly matches its estimate:
+181,045,504 → 468,718,848 bytes for the base session, and 283,648,512 →
+881,015,296 bytes with MTP. Increasing the cap therefore costs 274.35 MiB
+or 569.69 MiB respectively. Both caps pass session/media checks; both MTP
+runs pass eight cycles with exact target logits/KV/convolution state.
+
+Raw chunk evidence is under `scratch/inkling-perf/r5/`; the directory retains
+its original experiment number although this is the sixth retained prefill
+change. Boundary and detailed topology receipts are in `resume-codex/`.
+
 ## Reproduction and evidence
 
 Build with `make -j2 ds4-bench-perf ds4-perf CUDA_ARCH=sm_121` after configuring
@@ -309,6 +352,7 @@ the corrected expert-test build typo are retained separately.
 | Dense Q8 executable | `65766c3d6af9490875c4738306dea3ef9f0026dc19198bab8b45b11e4bce07b8` |
 | Expert tile executable | `036a9c986739d5b36166a6d759d290f6680c24873d6ff11a2b04b96ae8dbc6d9` |
 | BF16 tile executable | `82c0f12a2c77bf25781fafa6d75e49a975176cf4a0f873f2715f6e6f0c7166fc` |
+| Chunk-512 executable | `27c8f157dcd0475754b48602e2ee2f9f49e30dea30457e96c9f3b416165de121` |
 | Prompt | `f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f` |
 | Shared IPC manifest | `4f9e46dce133c5a14bf85f3ecd71e0437b27bbcaad38a1c679d4aebd3b5a8de8` |
 | Frontier proof JSON | `34867789bafce5999ea77da41112db7e77f866aea4aef234f0b4b85510dd2587` |

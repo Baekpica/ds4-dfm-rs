@@ -29,6 +29,10 @@ The bandwidth figure is informational; we don't tier on it.
 
 ## Env-var inventory
 
+- `DS4_INKLING_PREFILL_CHUNK=N` selects 1–2048 prompt rows per chunk,
+  capped by context. Default 512 improves expert-tile fill; 64 restores the
+  previous default and uses less graph scratch.
+
 - `DS4_INKLING_NO_LINEAR=1` restores the separate stable BF16 projection and
   output-rounding kernels. Unset it to enable Inkling's token-grouped ordinary
   projections; router logits retain FP32. This diagnostic switch tests presence.

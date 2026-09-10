@@ -248,7 +248,16 @@ int main(int argc, char **argv) {
     }
     setenv("DS4_SESSION_LAZY_GRAPH", "1", 1);
     ds4_session *s = NULL;
-    const int context = 32;
+    int context = 32;
+    const char *context_env = getenv("INKLING_TEST_CONTEXT");
+    if (context_env) {
+        char *end = NULL;
+        const long value = strtol(context_env, &end, 10);
+        check(end != context_env && !*end && value >= context &&
+              (uint64_t)value <= DS4_SHAPE_INKLING_SMALL.rope_orig_ctx,
+              "invalid Inkling test context");
+        context = (int)value;
+    }
     check(ds4_session_create(&s, &e, context) == 0 && s &&
           ds4_session_graph_pending(s), "Inkling lazy session create failed");
     check(ds4_session_graph_bytes_committed(s) == 0, "pending graph owns memory");
@@ -318,7 +327,8 @@ int main(int argc, char **argv) {
           "Inkling entered DeepSeek payload format");
     fclose(fp);
     printf("Inkling session: lazy alloc, no-op/extend/decode/reset/rewind parity; "
-           "estimate=%llu measured=%llu\n", (unsigned long long)estimate,
+           "context=%d cap=%u estimate=%llu measured=%llu\n", context, s->prefill_cap,
+           (unsigned long long)estimate,
            (unsigned long long)measured);
     check_mtp(s, &prompt);
     check_image_sync(s);
