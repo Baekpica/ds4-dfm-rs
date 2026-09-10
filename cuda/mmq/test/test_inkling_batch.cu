@@ -146,9 +146,17 @@ static void batch_case(ggml_type type, int m, int tokens, int ne, int used,
         exact(got, want, out_bytes);
     }
 
+    if (type == GGML_TYPE_Q8_0 && ne == SHARED && used == 1) {
+        CUDA(cudaMemset(got, 0xff, out_bytes));
+        CHECK(setenv("DS4_INKLING_NO_SHARED_DOWN_TILE", "1", 1) == 0);
+        CHECK(ds4_mmq_inkling_moe(dw, type, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+        CHECK(unsetenv("DS4_INKLING_NO_SHARED_DOWN_TILE") == 0);
+        exact(got, want, out_bytes);
+    }
+
     const size_t work_bytes = ds4_mmvq_inkling_bytes(rows, ne, used);
     void *work = device_copy(nullptr, work_bytes);
-    if (type == GGML_TYPE_Q8_0 && ne == SHARED && used == SHARED && tokens == 65) {
+    if (type == GGML_TYPE_Q8_0 && ne == SHARED && tokens == 65) {
         cudaStream_t stream;
         CUDA(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
         CUDA(cudaMemsetAsync(got, 0xff, out_bytes, stream));
@@ -299,11 +307,12 @@ int main() {
             batch_case(GGML_TYPE_Q8_0, 128, tokens, SHARED, SHARED, route);
         }
     }
-    // Persistent shared-up tiles: ragged rows/columns, repeated and invalid
+    // Persistent shared-expert tiles: ragged rows/columns, repeated and invalid
     // routes, maximum worklists, and explicit nonblocking stream execution.
     for (int tokens : {63, 64, 65, 8192}) {
         for (Routes route : {REPEATED, INVALID}) {
             batch_case(GGML_TYPE_Q8_0, 126, tokens, SHARED, SHARED, route);
+            batch_case(GGML_TYPE_Q8_0, 126, tokens, SHARED, 1, route);
         }
     }
     wrapper_case(); puts("Inkling expert batch checks passed"); return 0;

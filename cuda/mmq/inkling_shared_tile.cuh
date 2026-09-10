@@ -4,7 +4,7 @@
 enum { IK_ST_WARP = 32, IK_ST_COLS = 8, IK_ST_WORDS = sizeof(block_q8_1) / sizeof(int), IK_ST_MIN = 64 };
 
 template<unsigned R, unsigned WARPS, unsigned PARTS, unsigned STEPS>
-__launch_bounds__(WARPS * IK_ST_WARP, 1)
+__launch_bounds__(WARPS * IK_ST_WARP, PARTS == 1 ? 2 : 1)
 static __global__ void inkling_shared_tile_kernel(
         const block_q8_0 *weights, const block_q8_1 *x, float *out,
         const int32_t *counts, const int32_t *buckets,
@@ -42,7 +42,7 @@ static __global__ void inkling_shared_tile_kernel(
                 ? buckets[(uint64_t)expert * assignments + begin + threadIdx.x] : -1;
         }
         __syncthreads();
-        // Canonical Q8_1 rows at K=4096 have a 16-byte aligned row stride.
+        // Canonical Q8_1 rows at K=2048/4096 have a 16-byte aligned row stride.
         for (unsigned at = threadIdx.x; at < IK_ST_COLS * row_vectors; at += WARPS * IK_ST_WARP) {
             const unsigned c = at / row_vectors, j = at % row_vectors;
             slab4[at] = selected[c] >= 0
@@ -105,7 +105,12 @@ static int inkling_shared_tile_launch(
     if ((uintptr_t)x % alignof(int4) ||
         device.smpb < slab_bytes + IK_ST_COLS * sizeof(int32_t)) { return 1; }
     const dim3 grid((m + ROWS * WARPS - 1) / (ROWS * WARPS), IK_SHARED_EXPERTS);
-    inkling_shared_tile_kernel<ROWS, WARPS, 4, 4><<<grid, WARPS * IK_ST_WARP, slab_bytes, stream>>>(
-        (const block_q8_0 *)weights, x, out, counts, buckets, m, k, assignments, used);
+    if (used > 1) {
+        inkling_shared_tile_kernel<ROWS, WARPS, 4, 4><<<grid, WARPS * IK_ST_WARP, slab_bytes, stream>>>(
+            (const block_q8_0 *)weights, x, out, counts, buckets, m, k, assignments, used);
+    } else {
+        inkling_shared_tile_kernel<ROWS, WARPS, 1, 8><<<grid, WARPS * IK_ST_WARP, slab_bytes, stream>>>(
+            (const block_q8_0 *)weights, x, out, counts, buckets, m, k, assignments, used);
+    }
     return cudaGetLastError() == cudaSuccess ? 0 : -2;
 }

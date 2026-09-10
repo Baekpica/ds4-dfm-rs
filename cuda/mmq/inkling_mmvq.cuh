@@ -558,8 +558,8 @@ int ds4_mmvq_inkling(
         cudaMemsetAsync(out, 0, (uint64_t)assignments * m * sizeof(float), stream) != cudaSuccess) { return -2; }
     inkling_bucket_kernel<<<(assignments + IK_MMVQ_THREADS - 1) / IK_MMVQ_THREADS,
                             IK_MMVQ_THREADS, 0, stream>>>(counts, buckets, ids, assignments, experts);
-    // Dense shared-up assignments favor four cooperating warps. The down
-    // projection remains on warp-owned tiles; the wider reuse regressed it.
+    // Shared up keeps its four-partition sum; wide prefill retains weights
+    // across input groups, while narrow rows use the cooperating-warp kernel.
     if (type == GGML_TYPE_Q8_0 && experts == IK_SHARED_EXPERTS &&
         used == IK_SHARED_EXPERTS && rows >= IK_SHARED_Q8_MIN &&
         !getenv("DS4_INKLING_NO_SHARED_Q8") && !getenv("DS4_INKLING_NO_MOE_TILE")) {
@@ -575,6 +575,15 @@ int ds4_mmvq_inkling(
         return inkling_shared_q8_launch<4>(weights, (const block_q8_1 *)x, out,
             counts, buckets, tile_experts, tile_starts,
             m, k, assignments, used, device.nsm, stream);
+    }
+    // Shared down retains its one-warp, eight-step MMVQ chain. Its rows
+    // contain two assignments per prompt token, unlike shared up.
+    if (type == GGML_TYPE_Q8_0 && experts == IK_SHARED_EXPERTS && used == 1 &&
+        rows >= IK_ST_MIN * IK_SHARED_EXPERTS &&
+        !getenv("DS4_INKLING_NO_SHARED_DOWN_TILE") && !getenv("DS4_INKLING_NO_MOE_TILE")) {
+        const int rc = inkling_shared_tile_launch(weights, (const block_q8_1 *)x,
+            out, counts, buckets, m, k, assignments, used, stream);
+        if (rc <= 0) { return rc; }
     }
     // Warp tiles are the release path; the switch restores the four-warp
     // column kernel for A/B controls. Both keep the same routing tables.

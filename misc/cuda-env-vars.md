@@ -62,6 +62,11 @@ The bandwidth figure is informational; we don't tier on it.
   across all input groups. Unaligned Q8_1 input pointers or insufficient
   shared memory keep the prior kernel; every output retains its MMVQ reduction.
 
+- `DS4_INKLING_NO_SHARED_DOWN_TILE=1` restores warp-owned shared Q8 down
+  tiles. From 64 prompt tokens (128 assignment rows), the default retains
+  weights across input groups with the original one-warp reduction. Alignment
+  and shared-memory limits fall back to the previous kernel.
+
 - `DS4_INKLING_NO_LINEAR_TILE=1` restores the token-grouped ordinary BF16
   projection kernel. Unset it to run 16-token by 16-row CTA tiles that stage
   the token slab in shared memory; every output keeps the same lane stripe,
