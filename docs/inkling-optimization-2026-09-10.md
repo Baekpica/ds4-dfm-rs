@@ -520,9 +520,9 @@ of issue slots stalled on memory.
 
 One CTA now owns a (query, KV head) pair. Its four warps keep the release
 key phases, but each warp scores the four query heads together, so K/V are
-read once per four heads. Key arithmetic is 32-bit, the ring slot advances
-without a modulo, and the next key's K/V and biases are prefetched while the
-current key is scored. Per (head, key) the FMA chain, XOR tree, score,
+read once per four heads. Keys stay 64-bit while row offsets and distances
+use 32-bit arithmetic, the ring slot advances without a modulo, and the next
+key's K/V and biases are prefetched while the current key is scored. Per (head, key) the FMA chain, XOR tree, score,
 online-softmax update and four-warp merge are unchanged, so outputs are
 byte-identical. A bound of six CTAs per SM keeps 80 registers without
 spills; an eight-CTA bound spilled and was slower.
@@ -569,8 +569,9 @@ scale expression and shfl_down tree, so results are byte-identical. All
 rows of a call are quantized in one launch, which yields the same Q8_1 bytes
 as the eight-row launches.
 
-Dispatch covers 1 to 8192 rows at the two Inkling widths; other shapes and
-`DS4_INKLING_NO_Q8_TILE=1` keep the eight-column loop. Native timings at
+Dispatch covers 1 to 8192 rows at the two Inkling widths; other shapes,
+devices whose dynamic shared-memory opt-in is below the 73,728-byte down
+tile and `DS4_INKLING_NO_Q8_TILE=1` keep the eight-column loop. Native timings at
 512 rows: up 38.1 to 8.9 ms, down 21.6 to 9.4 ms; the batch test checks
 2 to 8192 rows, the rollback, kill switches and rejected shapes exactly.
 
@@ -595,6 +596,15 @@ tok/s at 8K: a 1.3% median gain over the chunk-512 candidate with
 overlapping samples. `ds4-perf compare` reports `Pass`, not `Improved`, and
 the wide chunk needs 5.58 GB of graph scratch at context 8257, so **the
 default remains 512**. Evidence: `scratch/inkling-perf/extra-three/r13/`.
+
+Two review fixes follow the round-12 measurement: the grouped attention
+loop keeps 64-bit `query`/`first` and steps over a 32-bit distance with a
+wrap-safe guard, with a native case ending exactly at UINT32_MAX, and the
+dense Q8 tile returns to the eight-column loop when the device's dynamic
+shared-memory opt-in is below the down tile. The fixed binary measures
+272.48 / 271.54 / 271.42 tok/s at 8K (`Pass` against the round-12
+candidate, exact logits and tokens; `r13/fix2/`). A first attempt with a
+fully 64-bit key loop measured 255 tok/s and was discarded (`r13/fix/`).
 
 ## Reproduction and evidence
 
@@ -653,6 +663,7 @@ the corrected expert-test build typo are retained separately.
 | BF16 panel executable | `fb87ed77ea6cf92aa206cb3393ced758cf904f79d682b9e32561245e58495c36` |
 | Grouped attention executable | `cfffb1723f4d24d650fe4edd7c2a2b9b3946c7a6b87c351be1eab1683455274b` |
 | Dense Q8 tile executable | `d2c9dfca3e25f2b75ce3cde57aab92e948f6cbfa15357ef8ce3893eeb9631bb6` |
+| Review-fix executable | `0ab5bb013f1c503f22e27971d336b1e30fa470ba827af82f0bd53a7c62628ab5` |
 | Prompt | `f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f` |
 | Baseline–round-3 IPC manifest | `4f9e46dce133c5a14bf85f3ecd71e0437b27bbcaad38a1c679d4aebd3b5a8de8` |
 | Round-4–7 IPC manifest | `43b795a0d21d293af31ca3fdca0a30402ee464a58279e7b9c04f41432d0583e7` |

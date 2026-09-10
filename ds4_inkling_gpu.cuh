@@ -769,10 +769,17 @@ static __global__ void inkling_attention_group_kernel(
             }
             continue;
         }
-        // valid guarantees every key index fits 32 bits.
-        const uint32_t query = base + (uint32_t)(group / INKLING_KV_HEADS);
-        const uint32_t first = extent == INKLING_LOCAL_EXTENT && query + 1 > INKLING_LOCAL_EXTENT
+        // valid only bounds the last query, so query and first stay 64-bit.
+        // Every per-key quantity below is a 32-bit distance from first:
+        // query - first <= query fits, and the step guard never wraps.
+        const uint64_t query = base + group / INKLING_KV_HEADS;
+        const uint64_t first = extent == INKLING_LOCAL_EXTENT && query + 1 > INKLING_LOCAL_EXTENT
             ? query + 1 - INKLING_LOCAL_EXTENT : 0;
+        const uint32_t span = (uint32_t)(query - first);
+        // Index i is in the current rows once first + i >= base; the row is
+        // then i - cur0 + lead (only one of the two is nonzero, both < rows).
+        const uint32_t cur0 = base > first ? (uint32_t)(base - first) : 0;
+        const uint32_t lead = first > base ? (uint32_t)(first - base) : 0;
         const unsigned channel = kv_head * INKLING_HEAD_DIM + lane;
         const float *rel[INKLING_ATTN_GROUP];
         float qv[INKLING_ATTN_GROUP][INKLING_ATTN_DPL];
@@ -788,10 +795,10 @@ static __global__ void inkling_attention_group_kernel(
                 qv[h][d] = inkling_bf16(q[(head_row0 + h) * INKLING_HEAD_DIM + lane + d * INKLING_WARP]);
             }
         }
-        // Fetch one key's lane channels of K and V plus the four head biases.
-        auto fetch = [&](uint32_t key, uint32_t slot, float *kk, float *vv, float *bb) {
-            if (key >= base) {
-                const uint32_t at = (key - base) * INKLING_KV_WIDTH + channel;
+        // Fetch key first+i: lane channels of K and V plus the four head biases.
+        auto fetch = [&](uint32_t i, uint32_t slot, float *kk, float *vv, float *bb) {
+            if (i >= cur0) {
+                const uint32_t at = (i - cur0 + lead) * INKLING_KV_WIDTH + channel;
                 #pragma unroll
                 for (int d = 0; d < INKLING_ATTN_DPL; d++) {
                     kk[d] = inkling_bf16(k[at + d * INKLING_WARP]);
@@ -805,22 +812,23 @@ static __global__ void inkling_attention_group_kernel(
                     vv[d] = __uint_as_float((uint32_t)row[INKLING_KV_WIDTH + d * INKLING_WARP] << 16);
                 }
             }
-            const uint32_t distance = query - key;
+            const uint32_t distance = span - i;
             #pragma unroll
             for (int h = 0; h < INKLING_ATTN_GROUP; h++) {
                 bb[h] = distance < extent ? inkling_bf16(rel[h][distance]) : 0.0f;
             }
         };
-        uint32_t key = first + warp;
-        uint32_t slot = key % capacity;
+        uint32_t i = warp;
+        uint32_t slot = (uint32_t)((first + warp) % capacity);
         float kk[INKLING_ATTN_DPL] = {}, vv[INKLING_ATTN_DPL] = {}, bb[INKLING_ATTN_GROUP] = {};
-        if (key <= query) { fetch(key, slot, kk, vv, bb); }
-        for (; key <= query; key += INKLING_ATTN_WARPS) {
+        if (i <= span) { fetch(i, slot, kk, vv, bb); }
+        while (i <= span) {
             // Capacity is at least the warp count, so one wrap suffices.
             uint32_t next_slot = slot + INKLING_ATTN_WARPS;
             if (next_slot >= capacity) { next_slot -= capacity; }
+            const bool more = span - i >= INKLING_ATTN_WARPS;
             float kn[INKLING_ATTN_DPL] = {}, vn[INKLING_ATTN_DPL] = {}, bn[INKLING_ATTN_GROUP] = {};
-            if (query - key >= INKLING_ATTN_WARPS) { fetch(key + INKLING_ATTN_WARPS, next_slot, kn, vn, bn); }
+            if (more) { fetch(i + INKLING_ATTN_WARPS, next_slot, kn, vn, bn); }
             #pragma unroll
             for (int h = 0; h < INKLING_ATTN_GROUP; h++) {
                 float dot = 0.0f;
@@ -845,6 +853,8 @@ static __global__ void inkling_attention_group_kernel(
             #pragma unroll
             for (int h = 0; h < INKLING_ATTN_GROUP; h++) { bb[h] = bn[h]; }
             slot = next_slot;
+            if (!more) { break; }
+            i += INKLING_ATTN_WARPS;
         }
         #pragma unroll
         for (int h = 0; h < INKLING_ATTN_GROUP; h++) {

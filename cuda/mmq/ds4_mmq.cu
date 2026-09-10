@@ -6354,18 +6354,26 @@ __global__ void q8_0_aligned_dense_tile_kernel(
     }
 }
 
+// Dynamic shared memory of one eight-token K slice for NB blocks per lane.
+static size_t q8_0_aligned_dense_tile_smem(int nb_per_lane, int slices) {
+    return (size_t)Q8_TILE_TOKENS * (nb_per_lane / slices) * Q8_TILE_WARP * Q8_TILE_WORDS * sizeof(int);
+}
+
 // Launch one shape instantiation; the dynamic shared-memory opt-in is cached.
+// Returns 1 when the device refuses the opt-in so the caller keeps its
+// eight-column path instead of failing the projection.
 template <int NB, int R, int WARPS, int SLICES, int MIN_BLOCKS>
 static int q8_0_aligned_dense_tile_launch(
         float *out, const int4 *qs, const __half *dq, const block_q8_1 *x8,
         int M, int N, int nb, cudaStream_t stream) {
-    const size_t smem = (size_t)Q8_TILE_TOKENS * (NB / SLICES) * Q8_TILE_WARP * Q8_TILE_WORDS * sizeof(int);
+    const size_t smem = q8_0_aligned_dense_tile_smem(NB, SLICES);
     auto kernel = q8_0_aligned_dense_tile_kernel<NB, R, WARPS, SLICES, MIN_BLOCKS>;
-    static bool configured = false;
-    if (!configured) {
-        if (cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem) != cudaSuccess) return -3;
-        configured = true;
+    static int configured = 0;   // 0 untried, 1 accepted, -1 refused
+    if (configured == 0) {
+        configured = cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem) == cudaSuccess ? 1 : -1;
+        if (configured < 0) (void)cudaGetLastError();
     }
+    if (configured < 0) return 1;
     kernel<<<(unsigned)((M + WARPS * R - 1) / (WARPS * R)), WARPS * Q8_TILE_WARP, smem, stream>>>(
         out, qs, dq, x8, M, N, nb);
     return cudaGetLastError() == cudaSuccess ? 0 : -3;
@@ -6383,6 +6391,14 @@ extern "C" int ds4_mmq_q8_0_aligned_dense_batch(
     // the eight-column kernel. K % 1024 keeps the q8_1 column stride at nb.
     if (N < 1 || N > 8192 || M <= 0 || (K != 4096 && K != 16384)) return 1;
     const int dev = ggml_cuda_get_device();
+    // The down tile stages 73,728 bytes per CTA; devices whose opt-in limit
+    // is smaller keep the eight-column path before any quantization work.
+    int optin = 0;
+    if (cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev) != cudaSuccess) {
+        (void)cudaGetLastError();
+        return 1;
+    }
+    if ((size_t)optin < q8_0_aligned_dense_tile_smem(K == 4096 ? 4 : 16, K == 4096 ? 1 : 2)) return 1;
     ggml_backend_cuda_context * ctx = get_ctx_for_device(dev);
     if (!ctx) {
         fprintf(stderr, "%s: failed to get cuda context for device %d\n", tag, dev);
@@ -6416,7 +6432,7 @@ extern "C" int ds4_mmq_q8_0_aligned_dense_batch(
     const int rc = K == 4096
         ? q8_0_aligned_dense_tile_launch<4, 2, 8, 1, 2>(out_f32, qsp, dqp, x8p, M, N, nb, stream)
         : q8_0_aligned_dense_tile_launch<16, 1, 8, 2, 1>(out_f32, qsp, dqp, x8p, M, N, nb, stream);
-    if (rc != 0) fprintf(stderr, "%s: kernel launch failed: %s\n", tag, cudaGetErrorString(cudaGetLastError()));
+    if (rc < 0) fprintf(stderr, "%s: kernel launch failed: %s\n", tag, cudaGetErrorString(cudaGetLastError()));
     return rc;
 }
 

@@ -324,6 +324,33 @@ static void timing(struct fixture *f, unsigned rows) {
     ds4_gpu_tensor_free(v); ds4_gpu_tensor_free(out); free(got);
 }
 
+/* Local rows ending exactly at UINT32_MAX are valid: the grouped kernel must
+ * match the per-head kernel there instead of wrapping its key arithmetic. */
+static void wrap_boundary(struct fixture *f) {
+    const unsigned rows = 16;
+    const uint32_t seed = UINT32_MAX - rows + 1 - LOCAL, start = UINT32_MAX - rows + 1;
+    CHECK(ds4_gpu_tensor_write(f->cache, 0, f->poison, (size_t)f->cap * KV_ROW * sizeof(uint16_t)));
+    CHECK(ds4_gpu_tensor_write(f->position, 0, &seed, sizeof(seed)));
+    CHECK(ds4_gpu_inkling_kv_store(f->cache, f->dk, f->dv, f->position, LOCAL, f->cap));
+    CHECK(ds4_gpu_tensor_write(f->position, 0, &start, sizeof(start)));
+    ds4_gpu_tensor *q = view(f->dq, LOCAL, rows, QWIDTH), *r = view(f->dr, LOCAL, rows, QH * f->extent);
+    ds4_gpu_tensor *k = view(f->dk, LOCAL, rows, KWIDTH), *v = view(f->dv, LOCAL, rows, KWIDTH);
+    ds4_gpu_tensor *out = view(f->out, 0, rows, QWIDTH);
+    const size_t bytes = (size_t)rows * QWIDTH * sizeof(float);
+    float *grouped = malloc(bytes), *control = malloc(bytes);
+    CHECK(grouped && control);
+    CHECK(ds4_gpu_inkling_attention(out, q, r, k, v, f->cache, f->position, rows, f->cap, f->extent));
+    CHECK(ds4_gpu_tensor_read(out, 0, grouped, bytes));
+    CHECK(setenv("DS4_INKLING_NO_ATTN_GROUP", "1", 1) == 0);
+    CHECK(ds4_gpu_inkling_attention(out, q, r, k, v, f->cache, f->position, rows, f->cap, f->extent));
+    CHECK(unsetenv("DS4_INKLING_NO_ATTN_GROUP") == 0);
+    CHECK(ds4_gpu_tensor_read(out, 0, control, bytes));
+    exact(grouped, control, bytes / sizeof(float));
+    ds4_gpu_tensor_free(q); ds4_gpu_tensor_free(r); ds4_gpu_tensor_free(k);
+    ds4_gpu_tensor_free(v); ds4_gpu_tensor_free(out); free(grouped); free(control);
+    printf("attention extent=%u rows=%u ending at UINT32_MAX exact\n", f->extent, rows);
+}
+
 int main(void) {
     CHECK(unsetenv("DS4_INKLING_NO_ATTN_GROUP") == 0);
     CHECK(ds4_gpu_init());
@@ -337,6 +364,7 @@ int main(void) {
         run_chunks(&f, 8192); run_chunks(&f, 257);
         CHECK(unsetenv("DS4_INKLING_NO_ATTN_GROUP") == 0);
         captured(&f); rejected(&f);
+        if (extents[e] == LOCAL) { wrap_boundary(&f); }
         timing(&f, 512); timing(&f, 16);
         destroy(&f);
     }

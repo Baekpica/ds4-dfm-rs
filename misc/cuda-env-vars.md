@@ -71,14 +71,15 @@ The bandwidth figure is informational; we don't tier on it.
 - `DS4_INKLING_NO_ATTN_GROUP=1` restores per-head prefill attention CTAs.
   At 16 or more rows, the grouped kernel scores the four query heads of a
   KV head in one CTA, reading each K/V element once per four heads with
-  32-bit key arithmetic and prefetched keys. Decode and MTP verify widths
-  keep the per-head kernel. Outputs are byte-identical.
+  64-bit keys, 32-bit row offsets and prefetched keys. Decode and MTP verify
+  widths keep the per-head kernel. Outputs are byte-identical.
 
 - `DS4_INKLING_NO_Q8_TILE=1` restores the eight-column aligned dense Q8
   loop for the layer 0-1 MLP. The prefill tile keeps each weight row in
   registers while eight-token groups stream through shared memory, so a
   weight row is read once per call instead of once per eight tokens. Only
-  K 4096/16384 use it; outputs are byte-identical.
+  K 4096/16384 use it, and devices whose dynamic shared-memory opt-in is
+  below the 73,728-byte down tile keep the loop; outputs are byte-identical.
 
 - `DS4_QWEN_PLE_DIR=/absolute/path/to/PLE-FP8` selects that directory's
   `ple-manifest.json` for the Qwen SSD-PLE loader. It supports the official
