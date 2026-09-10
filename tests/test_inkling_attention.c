@@ -10,7 +10,7 @@ enum { QH = 32, KH = 8, DIM = 128, QWIDTH = QH * DIM, KWIDTH = KH * DIM,
        LOCAL = 512, GLOBAL = 1024, TOKENS = 8201, KV_ROW = 2 * KWIDTH,
        BF_SHIFT = 16, BF_HALF = 0x7fff, POISON = 0x7fc1,
        CAPTURE_ROWS = 3, CAPTURE_START = 508, CAPTURE_STEPS = 16,
-       VERIFY_ROWS = 9, ACCEPT_ROWS = 3 };
+       VERIFY_ROWS = 9, ACCEPT_ROWS = 3, TIMING_START = 7680, TIMING_REPEATS = 10 };
 
 #define CHECK(expr) do { \
     if (!(expr)) { \
@@ -285,14 +285,60 @@ static void rejected(struct fixture *f) {
     printf("attention extent=%u reject suffix / accepted-prefix KV passed\n", f->extent);
 }
 
+#include <time.h>
+static double now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
+/* Time the grouped prefill kernel against its rollback on production widths
+ * at a late position; both paths already matched the baseline above. */
+static void timing(struct fixture *f, unsigned rows) {
+    uint32_t start = TIMING_START;
+    seed_prefix(f, start);
+    CHECK(ds4_gpu_tensor_write(f->position, 0, &start, sizeof(start)));
+    ds4_gpu_tensor *q = view(f->dq, start, rows, QWIDTH), *r = view(f->dr, start, rows, QH * f->extent);
+    ds4_gpu_tensor *k = view(f->dk, start, rows, KWIDTH), *v = view(f->dv, start, rows, KWIDTH);
+    ds4_gpu_tensor *out = view(f->out, start, rows, QWIDTH);
+    float *got = malloc((size_t)rows * QWIDTH * sizeof(float));
+    CHECK(got);
+    double elapsed[2];
+    for (unsigned mode = 0; mode < 2; mode++) {
+        if (mode == 1) { CHECK(setenv("DS4_INKLING_NO_ATTN_GROUP", "1", 1) == 0); }
+        else { CHECK(unsetenv("DS4_INKLING_NO_ATTN_GROUP") == 0); }
+        CHECK(ds4_gpu_inkling_attention(out, q, r, k, v, f->cache, f->position, rows, f->cap, f->extent));
+        CHECK(ds4_gpu_synchronize());
+        const double begin = now();
+        for (unsigned i = 0; i < TIMING_REPEATS; i++) {
+            CHECK(ds4_gpu_inkling_attention(out, q, r, k, v, f->cache, f->position, rows, f->cap, f->extent));
+        }
+        CHECK(ds4_gpu_synchronize()); elapsed[mode] = (now() - begin) / TIMING_REPEATS;
+        CHECK(ds4_gpu_tensor_read(out, 0, got, (size_t)rows * QWIDTH * sizeof(float)));
+        exact(got, f->baseline + (size_t)start * QWIDTH, (size_t)rows * QWIDTH);
+    }
+    CHECK(unsetenv("DS4_INKLING_NO_ATTN_GROUP") == 0);
+    printf("attention extent=%u rows=%u at %u exact; selected=%.3f us no-group-control=%.3f us\n",
+           f->extent, rows, start, elapsed[0] * 1e6, elapsed[1] * 1e6);
+    ds4_gpu_tensor_free(q); ds4_gpu_tensor_free(r); ds4_gpu_tensor_free(k);
+    ds4_gpu_tensor_free(v); ds4_gpu_tensor_free(out); free(got);
+}
+
 int main(void) {
+    CHECK(unsetenv("DS4_INKLING_NO_ATTN_GROUP") == 0);
     CHECK(ds4_gpu_init());
-    const unsigned extents[] = {LOCAL, GLOBAL}, chunks[] = {TOKENS, 1, 7, 63, 257, 700, 8192};
+    const unsigned extents[] = {LOCAL, GLOBAL}, chunks[] = {TOKENS, 1, 7, 15, 16, 63, 257, 700, 8192};
     for (unsigned e = 0; e < sizeof(extents) / sizeof(extents[0]); e++) {
         struct fixture f;
         init(&f, extents[e]);
         for (unsigned c = 0; c < sizeof(chunks) / sizeof(chunks[0]); c++) { run_chunks(&f, chunks[c]); }
-        captured(&f); rejected(&f); destroy(&f);
+        /* The rollback kernel must reproduce the grouped baseline exactly. */
+        CHECK(setenv("DS4_INKLING_NO_ATTN_GROUP", "1", 1) == 0);
+        run_chunks(&f, 8192); run_chunks(&f, 257);
+        CHECK(unsetenv("DS4_INKLING_NO_ATTN_GROUP") == 0);
+        captured(&f); rejected(&f);
+        timing(&f, 512); timing(&f, 16);
+        destroy(&f);
     }
     ds4_gpu_cleanup();
     puts("Inkling attention/KV checks passed");

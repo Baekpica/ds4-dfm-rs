@@ -156,6 +156,9 @@ the optimized path shares a shared-memory token slab across a row tile.
 `DS4_INKLING_NO_LINEAR_PANEL=1` restores the original BF16 tile job order;
 above 4096 rows, the candidate reuses inputs within internal 512-token panels
 for 4096-input q/k/v/r/o shapes. The configured prefill chunk is unchanged.
+`DS4_INKLING_NO_ATTN_GROUP=1` restores per-head prefill attention CTAs;
+the optimized path scores the four query heads of a KV head in one CTA
+with prefetched keys. Widths below 16 rows keep the per-head kernel.
 `DS4_INKLING_NO_SHARED_Q8=1` restores warp-owned shared-Q8 up tiles;
 the optimized prefill path reuses each payload across eight assignments
 with the original four-warp reduction. Shared down and decode are unchanged.

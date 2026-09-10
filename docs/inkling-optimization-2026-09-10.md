@@ -498,6 +498,55 @@ partial aliases and unsupported shapes. Evidence is under
 `scratch/inkling-perf/extra-three/r10/`; `user-stop-2107/` retains the
 interrupted build that preceded the resumed run.
 
+## Round 11: attention grouped by KV head
+
+The fixed three-round campaign ended with round 10. At the user's request,
+further prefill rounds continue under the same protocol: the 8K input at the
+release chunk 512 is the primary comparison and the 2K workload is the
+regression check. Both use the same owner, artifacts and proof.
+
+At 8K input and chunk 512, attention took 6.405 s of the 35.8 s prefill
+trace: 4.4 s in the seven global layers and 2.0 s in the 35 local layers.
+The release kernel gave each (query, head) row its own CTA, so the four
+query heads of a KV head re-read the same K/V rows, every element paid a
+64-bit ring modulo, and each key's loads stalled before the next key's could
+issue. Counters showed about 118 instructions per (head, key) pair with 57%
+of issue slots stalled on memory.
+
+One CTA now owns a (query, KV head) pair. Its four warps keep the release
+key phases, but each warp scores the four query heads together, so K/V are
+read once per four heads. Key arithmetic is 32-bit, the ring slot advances
+without a modulo, and the next key's K/V and biases are prefetched while the
+current key is scored. Per (head, key) the FMA chain, XOR tree, score,
+online-softmax update and four-warp merge are unchanged, so outputs are
+byte-identical. A bound of six CTAs per SM keeps 80 registers without
+spills; an eight-CTA bound spilled and was slower.
+
+Dispatch requires at least 16 rows; decode and MTP verify widths keep the
+per-head kernel. `DS4_INKLING_NO_ATTN_GROUP=1` restores it at every width.
+
+Native component timings at position 7680: local 512 rows 3.47 to 1.57 ms,
+global 512 rows 97.2 to 22.4 ms and global 16 rows 2.58 to 1.27 ms. The
+attention test cross-checks 1/7/15-row chunks on the per-head kernel against
+16-row and full-prompt chunks on the grouped kernel, and the rollback against
+the grouped baseline, all exact, with the existing FP64 probes, captured
+replays, ring wrap and rejected-suffix checks.
+
+| Input / chunk 512 | Prefill samples (tok/s) | Decode median (tok/s) |
+| --- | --- | --- |
+| 8K grouped rollback | 230.76 / 230.84 / 230.89 | 14.21 |
+| 8K grouped candidate | 261.98 / 261.22 / 261.08 | 14.21 |
+| 2K grouped rollback | 260.23 / 259.67 / 259.63 | 17.97 |
+| 2K grouped candidate | 273.07 / 271.83 / 271.92 | 17.97 |
+
+The 8K median improves **13.2%**, from 230.84 to 261.22 tok/s, and the 2K
+median 4.7%, from 259.67 to 271.92 tok/s. Both comparisons report
+`Improved`, each checking 1,200,348 logits with max_abs=0 and zero token
+differences; decode and first-step medians are unchanged. In the 8K trace,
+attention falls from 6.405 to 2.238 s and prefill wall from 35.749 to
+31.638 s with an unchanged kernel count. Evidence, counters and the private
+probe are under `scratch/inkling-perf/extra-three/r11/`.
+
 ## Reproduction and evidence
 
 Build with `make -j2 ds4-bench-perf ds4-perf CUDA_ARCH=sm_121` after configuring
@@ -523,7 +572,8 @@ MTP sidecar, tokenizer config and Jinja sidecar; the first shard's key is
 `--env DS4_INKLING_NO_MOE_TILE=1` for the expert-tile rollback control, or
 `--env DS4_INKLING_NO_LINEAR_TILE=1` for the BF16-tile rollback control, or
 `--env DS4_INKLING_NO_SHARED_Q8=1` for the shared-up rollback control, or
-`--env DS4_INKLING_NO_LINEAR_PANEL=1` for the BF16-panel rollback control.
+`--env DS4_INKLING_NO_LINEAR_PANEL=1` for the BF16-panel rollback control, or
+`--env DS4_INKLING_NO_ATTN_GROUP=1` for the grouped-attention rollback control.
 Use `--env DS4_INKLING_PREFILL_CHUNK=64` to restore the preceding chunk cap.
 See [ds4-perf](ds4-perf.md) for calibration, workload schema, memory guards
 and `compare --regression`.
@@ -551,6 +601,7 @@ the corrected expert-test build typo are retained separately.
 | Chunk-512 executable | `27c8f157dcd0475754b48602e2ee2f9f49e30dea30457e96c9f3b416165de121` |
 | Shared Q8 up executable | `66aac1ebaba2326865e9a80cbee2ae552e4b37d546cc9c8a69a1f6e7f62b3594` |
 | BF16 panel executable | `fb87ed77ea6cf92aa206cb3393ced758cf904f79d682b9e32561245e58495c36` |
+| Grouped attention executable | `cfffb1723f4d24d650fe4edd7c2a2b9b3946c7a6b87c351be1eab1683455274b` |
 | Prompt | `f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f` |
 | Baseline–round-3 IPC manifest | `4f9e46dce133c5a14bf85f3ecd71e0437b27bbcaad38a1c679d4aebd3b5a8de8` |
 | Round-4–7 IPC manifest | `43b795a0d21d293af31ca3fdca0a30402ee464a58279e7b9c04f41432d0583e7` |

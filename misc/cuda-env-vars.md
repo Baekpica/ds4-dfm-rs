@@ -68,6 +68,12 @@ The bandwidth figure is informational; we don't tier on it.
   This changes kernel work order, not the prefill chunk. Other shapes and
   smaller inputs retain the original schedule.
 
+- `DS4_INKLING_NO_ATTN_GROUP=1` restores per-head prefill attention CTAs.
+  At 16 or more rows, the grouped kernel scores the four query heads of a
+  KV head in one CTA, reading each K/V element once per four heads with
+  32-bit key arithmetic and prefetched keys. Decode and MTP verify widths
+  keep the per-head kernel. Outputs are byte-identical.
+
 - `DS4_QWEN_PLE_DIR=/absolute/path/to/PLE-FP8` selects that directory's
   `ple-manifest.json` for the Qwen SSD-PLE loader. It supports the official
   FP8 E4M3FN sidecar without changing the main GGUF. Unset it to use the

@@ -37,6 +37,9 @@ enum {
     INKLING_KV_ROW = 2 * INKLING_KV_WIDTH,
     INKLING_ATTN_WARPS = 4,
     INKLING_ATTN_DPL = INKLING_HEAD_DIM / INKLING_WARP,
+    INKLING_ATTN_GROUP = INKLING_HEADS / INKLING_KV_HEADS,
+    INKLING_ATTN_GROUP_MIN_ROWS = 16,
+    INKLING_ATTN_GROUP_MIN_BLOCKS = 6,
     INKLING_NORM_MAX = 16384,
     INKLING_AUDIO_BINS = 80,
     INKLING_AUDIO_LEVELS = 16,
@@ -719,6 +722,149 @@ static __global__ void inkling_attention_kernel(
     }
 }
 
+
+/* Prefill attention grouped by KV head. One CTA owns one (query, KV head)
+ * pair; its four warps keep the release key phases, but each warp scores the
+ * four query heads sharing that KV head, so every K/V element is read once
+ * per four heads. Keys use 32-bit arithmetic, the ring slot advances without
+ * a modulo, and the next key's K/V/bias are prefetched while the current key
+ * is scored. Per (head, key) the FMA chain, XOR tree, score, online-softmax
+ * update and four-warp merge are the release sequence, so outputs are
+ * byte-identical. The block bound keeps six CTAs per SM without spills.
+ *
+ *   release CTA: head row h,  warp w -> keys first+w, first+w+4, ...
+ *   this CTA:    (query, kv), warp w -> same keys, heads 4kv..4kv+3 together
+ */
+__launch_bounds__(INKLING_WARP * INKLING_ATTN_WARPS, INKLING_ATTN_GROUP_MIN_BLOCKS)
+static __global__ void inkling_attention_group_kernel(
+        float *out, const float *q, const float *relative, const float *k, const float *v,
+        const uint16_t *cache, const uint32_t *position, uint32_t rows, uint32_t capacity,
+        uint32_t extent) {
+    const unsigned warp = threadIdx.x / INKLING_WARP, lane = threadIdx.x % INKLING_WARP;
+    __shared__ float maxima[INKLING_ATTN_GROUP][INKLING_ATTN_WARPS];
+    __shared__ float sums[INKLING_ATTN_GROUP][INKLING_ATTN_WARPS];
+    __shared__ float partial[INKLING_ATTN_GROUP][INKLING_ATTN_WARPS * INKLING_HEAD_DIM];
+    const uint32_t base = *position;
+    const uint64_t end = (uint64_t)base + rows;
+    const bool valid = end - 1 <= UINT32_MAX && (extent == INKLING_LOCAL_EXTENT || end <= capacity);
+    const uint64_t groups = (uint64_t)rows * INKLING_KV_HEADS;
+    for (uint64_t group = blockIdx.x; group < groups; group += gridDim.x) {
+        const unsigned kv_head = group % INKLING_KV_HEADS;
+        const uint64_t head_row0 = (group / INKLING_KV_HEADS) * INKLING_HEADS +
+            kv_head * INKLING_ATTN_GROUP;
+        if (!valid) {
+            if (threadIdx.x < INKLING_HEAD_DIM) {
+                #pragma unroll
+                for (int h = 0; h < INKLING_ATTN_GROUP; h++) {
+                    out[(head_row0 + h) * INKLING_HEAD_DIM + threadIdx.x] = NAN;
+                }
+            }
+            continue;
+        }
+        // valid guarantees every key index fits 32 bits.
+        const uint32_t query = base + (uint32_t)(group / INKLING_KV_HEADS);
+        const uint32_t first = extent == INKLING_LOCAL_EXTENT && query + 1 > INKLING_LOCAL_EXTENT
+            ? query + 1 - INKLING_LOCAL_EXTENT : 0;
+        const unsigned channel = kv_head * INKLING_HEAD_DIM + lane;
+        const float *rel[INKLING_ATTN_GROUP];
+        float qv[INKLING_ATTN_GROUP][INKLING_ATTN_DPL];
+        float acc[INKLING_ATTN_GROUP][INKLING_ATTN_DPL] = {};
+        float maximum[INKLING_ATTN_GROUP], sum[INKLING_ATTN_GROUP];
+        #pragma unroll
+        for (int h = 0; h < INKLING_ATTN_GROUP; h++) {
+            maximum[h] = -INFINITY;
+            sum[h] = 0.0f;
+            rel[h] = relative + (head_row0 + h) * extent;
+            #pragma unroll
+            for (int d = 0; d < INKLING_ATTN_DPL; d++) {
+                qv[h][d] = inkling_bf16(q[(head_row0 + h) * INKLING_HEAD_DIM + lane + d * INKLING_WARP]);
+            }
+        }
+        // Fetch one key's lane channels of K and V plus the four head biases.
+        auto fetch = [&](uint32_t key, uint32_t slot, float *kk, float *vv, float *bb) {
+            if (key >= base) {
+                const uint32_t at = (key - base) * INKLING_KV_WIDTH + channel;
+                #pragma unroll
+                for (int d = 0; d < INKLING_ATTN_DPL; d++) {
+                    kk[d] = inkling_bf16(k[at + d * INKLING_WARP]);
+                    vv[d] = inkling_bf16(v[at + d * INKLING_WARP]);
+                }
+            } else {
+                const uint16_t *row = cache + (uint64_t)slot * INKLING_KV_ROW + channel;
+                #pragma unroll
+                for (int d = 0; d < INKLING_ATTN_DPL; d++) {
+                    kk[d] = __uint_as_float((uint32_t)row[d * INKLING_WARP] << 16);
+                    vv[d] = __uint_as_float((uint32_t)row[INKLING_KV_WIDTH + d * INKLING_WARP] << 16);
+                }
+            }
+            const uint32_t distance = query - key;
+            #pragma unroll
+            for (int h = 0; h < INKLING_ATTN_GROUP; h++) {
+                bb[h] = distance < extent ? inkling_bf16(rel[h][distance]) : 0.0f;
+            }
+        };
+        uint32_t key = first + warp;
+        uint32_t slot = key % capacity;
+        float kk[INKLING_ATTN_DPL] = {}, vv[INKLING_ATTN_DPL] = {}, bb[INKLING_ATTN_GROUP] = {};
+        if (key <= query) { fetch(key, slot, kk, vv, bb); }
+        for (; key <= query; key += INKLING_ATTN_WARPS) {
+            // Capacity is at least the warp count, so one wrap suffices.
+            uint32_t next_slot = slot + INKLING_ATTN_WARPS;
+            if (next_slot >= capacity) { next_slot -= capacity; }
+            float kn[INKLING_ATTN_DPL] = {}, vn[INKLING_ATTN_DPL] = {}, bn[INKLING_ATTN_GROUP] = {};
+            if (query - key >= INKLING_ATTN_WARPS) { fetch(key + INKLING_ATTN_WARPS, next_slot, kn, vn, bn); }
+            #pragma unroll
+            for (int h = 0; h < INKLING_ATTN_GROUP; h++) {
+                float dot = 0.0f;
+                #pragma unroll
+                for (int d = 0; d < INKLING_ATTN_DPL; d++) { dot = fmaf(qv[h][d], kk[d], dot); }
+                #pragma unroll
+                for (int delta = INKLING_WARP / 2; delta > 0; delta /= 2) {
+                    dot = __fadd_rn(dot, __shfl_xor_sync(UINT32_MAX, dot, delta));
+                }
+                const float score = __fadd_rn(dot / (float)INKLING_HEAD_DIM, bb[h]);
+                const float next_max = fmaxf(maximum[h], score);
+                const float alpha = __expf(maximum[h] - next_max), beta = __expf(score - next_max);
+                sum[h] = fmaf(sum[h], alpha, beta);
+                maximum[h] = next_max;
+                #pragma unroll
+                for (int d = 0; d < INKLING_ATTN_DPL; d++) {
+                    acc[h][d] = fmaf(beta, vv[d], __fmul_rn(acc[h][d], alpha));
+                }
+            }
+            #pragma unroll
+            for (int d = 0; d < INKLING_ATTN_DPL; d++) { kk[d] = kn[d]; vv[d] = vn[d]; }
+            #pragma unroll
+            for (int h = 0; h < INKLING_ATTN_GROUP; h++) { bb[h] = bn[h]; }
+            slot = next_slot;
+        }
+        #pragma unroll
+        for (int h = 0; h < INKLING_ATTN_GROUP; h++) {
+            if (lane == 0) { maxima[h][warp] = maximum[h]; sums[h][warp] = sum[h]; }
+            #pragma unroll
+            for (int d = 0; d < INKLING_ATTN_DPL; d++) {
+                partial[h][warp * INKLING_HEAD_DIM + lane + d * INKLING_WARP] = acc[h][d];
+            }
+        }
+        __syncthreads();
+        #pragma unroll
+        for (int h = 0; h < INKLING_ATTN_GROUP; h++) {
+            float max_all = -INFINITY;
+            #pragma unroll
+            for (int w = 0; w < INKLING_ATTN_WARPS; w++) { max_all = fmaxf(max_all, maxima[h][w]); }
+            float total = 0.0f, value = 0.0f;
+            #pragma unroll
+            for (int w = 0; w < INKLING_ATTN_WARPS; w++) {
+                const float scale = __expf(maxima[h][w] - max_all);
+                total = fmaf(sums[h][w], scale, total);
+                value = fmaf(partial[h][w * INKLING_HEAD_DIM + threadIdx.x], scale, value);
+            }
+            out[(head_row0 + h) * INKLING_HEAD_DIM + threadIdx.x] = inkling_bf16(__fdiv_rn(value, total));
+        }
+        __syncthreads();
+    }
+}
+
 extern "C" int ds4_gpu_inkling_attention(
         ds4_gpu_tensor *out, const ds4_gpu_tensor *q, const ds4_gpu_tensor *relative,
         const ds4_gpu_tensor *k, const ds4_gpu_tensor *v, const ds4_gpu_tensor *cache,
@@ -736,6 +882,17 @@ extern "C" int ds4_gpu_inkling_attention(
     if (out->bytes < qbytes) { return 0; }
     for (unsigned i = 0; i < sizeof(inputs) / sizeof(inputs[0]); i++) {
         if (inputs[i]->bytes < sizes[i] || inkling_overlap(out, qbytes, inputs[i], sizes[i])) { return 0; }
+    }
+    // Prefill widths share K/V across each KV head's query heads; decode and
+    // MTP verify widths keep the per-head kernel.
+    if (rows >= INKLING_ATTN_GROUP_MIN_ROWS && !getenv("DS4_INKLING_NO_ATTN_GROUP")) {
+        const uint64_t groups = head_rows / INKLING_ATTN_GROUP;
+        const unsigned blocks = (unsigned)(groups < INKLING_MAX_BLOCKS ? groups : INKLING_MAX_BLOCKS);
+        inkling_attention_group_kernel<<<blocks, INKLING_WARP * INKLING_ATTN_WARPS, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const float *)relative->ptr,
+            (const float *)k->ptr, (const float *)v->ptr, (const uint16_t *)cache->ptr,
+            (const uint32_t *)position->ptr, rows, capacity, extent);
+        return cuda_ok(cudaGetLastError(), "Inkling grouped attention launch");
     }
     const unsigned blocks = (unsigned)(head_rows < INKLING_MAX_BLOCKS ? head_rows : INKLING_MAX_BLOCKS);
     inkling_attention_kernel<<<blocks, INKLING_WARP * INKLING_ATTN_WARPS, 0, ds4_current_stream()>>>(
