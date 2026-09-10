@@ -51,6 +51,10 @@ The bandwidth figure is informational; we don't tier on it.
   Q8 weight fragment once and replay the original lane, warp-partial and XOR
   reduction order. Same routing tables and activation bytes; decode is unchanged.
 
+- `DS4_INKLING_NO_SHARED_Q8=1` restores warp-owned shared-Q8 up tiles.
+  Unset it for four-warp payload reuse with two shared experts and at least
+  16 prompt rows. Shared down, routed experts and decode keep their paths.
+
 - `DS4_INKLING_NO_LINEAR_TILE=1` restores the token-grouped ordinary BF16
   projection kernel. Unset it to run 16-token by 16-row CTA tiles that stage
   the token slab in shared memory; every output keeps the same lane stripe,

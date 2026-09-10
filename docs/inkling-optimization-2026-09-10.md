@@ -5,17 +5,16 @@ aligned dense-Q8 numerical path. Results apply to the six-shard MQ85GB
 artifact on one DGX Spark. They do not establish MQ89, Q8_0-main, independent
 source parity, long-context serving or concurrent-request performance.
 
-## Expanded target
+## Campaign scope
 
 After the aligned Q8 batch candidate reached 111.53 prefill tok/s, the
 campaign target expanded to another detailed `ds4-perf` investigation and
-**at least three additional prefill improvements** from that state. The
-original target also included three decode improvements. Work is now focused
-on prefill, with decode retained as a regression gate; the decode improvement
-target is deferred and has not been achieved. A retained improvement to the
-routed IQ2 kernels is also mandatory. The first three
-prefill candidates do not count toward this additional target. Publication
-waits for the complete campaign and its correctness/regression checks.
+**at least three additional prefill improvements** from that state, including
+a retained routed-IQ2 gain. Rounds 4–7 retain four additional improvements,
+with the routed-IQ2 gain in round 4. The first three candidates are separate.
+Work prioritized prefill, with decode retained as a regression gate. The
+original three-decode-improvement target is deferred and has not been achieved;
+this report claims no decode speedup.
 
 ## Protocol
 
@@ -305,6 +304,60 @@ Raw chunk evidence is under `scratch/inkling-perf/r5/`; the directory retains
 its original experiment number although this is the sixth retained prefill
 change. Boundary and detailed topology receipts are in `resume-codex/`.
 
+## Round 7: shared Q8 up payload reuse
+
+Shared Q8 up took 1.92 s, the largest single expert operation after round 6.
+The warp-owned tile repeatedly loaded each two-byte-aligned weight fragment
+across columns. Four cooperating warps now reuse each fragment across eight
+assignments and two output rows, while preserving the original K partitions,
+FP32 multiply/FMA chains, ascending inter-warp merge, XOR tree and finite guard.
+The path consumes canonical Q8_1 activations directly and avoids a separate
+SoA transformation for these calls. It uses the existing workspace and stream.
+
+Dispatch requires Q8_0, two experts, two used experts and at least 16 prompt
+rows: only shared up meets this topology. Shared down and width-one decode
+keep their previous paths. `DS4_INKLING_NO_SHARED_Q8=1` restores the round-6
+shared-up tile; `DS4_INKLING_NO_MOE_TILE=1` also disables this specialization.
+
+| Path | Prefill samples (tok/s) | Decode samples (tok/s) |
+| --- | --- | --- |
+| Chunk-512 control | 248.92 / 247.48 / 247.74 | 17.95 / 17.95 / 17.95 |
+| Shared-up candidate | 260.31 / 259.32 / 259.25 | 17.95 / 17.95 / 17.94 |
+| Shared-up rollback | 248.49 / 247.38 / 247.05 | 17.95 / 17.94 / 17.96 |
+
+The candidate median is **259.32 prefill / 17.95 decode tok/s**, 4.7% more
+prefill throughput than round 6 and 4.8% more than the fresh rollback.
+Both comparisons report `Improved`, each checking 1,200,348 logits with
+max_abs=0 and no token mismatches. Decode and first-decode-step medians are
+unchanged. This retains the fourth additional prefill improvement after round 3.
+
+In the full-model trace, shared Q8 up falls from 1.916 to 1.535 s across
+160 calls, about 20% less kernel time. Prefill wall falls from 8.31 to 7.96 s;
+kernel count falls from 11,156 to 10,996 by eliminating 160 SoA transforms.
+The trace reports 64 registers per thread and 6,144 bytes of static shared memory.
+These profile measurements explain the change; the table uses unprofiled TPS.
+
+The component probe used production geometry, preallocated workspace,
+alternating timing order and cached occupancy queries on both paths. At 512
+tokens, the eight-column shared-up candidate took 9.496 ms versus 11.998 ms.
+The same approach regressed shared down (3.553 to 5.210 ms), and a 16-column
+up variant also regressed; neither is enabled. All candidates were byte-exact.
+
+Native tests cover 15/16/17-token dispatch boundaries, production 64/512-token
+shapes, repeated/invalid routes, aliases, workspace bounds and both controls.
+Actual 18-token full/chunk/decode logits and accepted-prefix state 1–9 match
+the rollback exactly. Context-2113 MTP session/media checks, eight MTP cycles,
+the 512/1025-token cold/replay boundary proof and 53 `ds4-perf` tests pass.
+Evidence and source/build hashes are in `scratch/inkling-perf/resume-codex/r7/`.
+The initial model-free test launch inherited the live owner's IPC environment;
+that failed invocation is retained, and the clean-environment retry passed.
+
+Final repository checks pass: `cargo fmt`, workspace Clippy, all eight C/Rust
+host parity targets, serialized `cargo test --workspace --locked`, and
+`cargo check --workspace --all-targets --locked`. They ran after the timed
+scouts, without the live IPC environment. Logs are in
+`scratch/inkling-perf/resume-codex/final-checks/`.
+
 ## Reproduction and evidence
 
 Build with `make -j2 ds4-bench-perf ds4-perf CUDA_ARCH=sm_121` after configuring
@@ -328,7 +381,9 @@ MTP sidecar, tokenizer config and Jinja sidecar; the first shard's key is
 `--env DS4_INKLING_NO_MOE_BATCH=1` for the expert-batch rollback control,
 `--env DS4_INKLING_NO_Q8_BATCH=1` for the dense-Q8 rollback control, or
 `--env DS4_INKLING_NO_MOE_TILE=1` for the expert-tile rollback control, or
-`--env DS4_INKLING_NO_LINEAR_TILE=1` for the BF16-tile rollback control.
+`--env DS4_INKLING_NO_LINEAR_TILE=1` for the BF16-tile rollback control, or
+`--env DS4_INKLING_NO_SHARED_Q8=1` for the shared-up rollback control.
+Use `--env DS4_INKLING_PREFILL_CHUNK=64` to restore the preceding chunk cap.
 See [ds4-perf](ds4-perf.md) for calibration, workload schema, memory guards
 and `compare --regression`.
 
@@ -353,7 +408,9 @@ the corrected expert-test build typo are retained separately.
 | Expert tile executable | `036a9c986739d5b36166a6d759d290f6680c24873d6ff11a2b04b96ae8dbc6d9` |
 | BF16 tile executable | `82c0f12a2c77bf25781fafa6d75e49a975176cf4a0f873f2715f6e6f0c7166fc` |
 | Chunk-512 executable | `27c8f157dcd0475754b48602e2ee2f9f49e30dea30457e96c9f3b416165de121` |
+| Shared Q8 up executable | `66aac1ebaba2326865e9a80cbee2ae552e4b37d546cc9c8a69a1f6e7f62b3594` |
 | Prompt | `f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f` |
-| Shared IPC manifest | `4f9e46dce133c5a14bf85f3ecd71e0437b27bbcaad38a1c679d4aebd3b5a8de8` |
+| Baseline–round-3 IPC manifest | `4f9e46dce133c5a14bf85f3ecd71e0437b27bbcaad38a1c679d4aebd3b5a8de8` |
+| Round-4–7 IPC manifest | `43b795a0d21d293af31ca3fdca0a30402ee464a58279e7b9c04f41432d0583e7` |
 | Frontier proof JSON | `34867789bafce5999ea77da41112db7e77f866aea4aef234f0b4b85510dd2587` |
 | Token proof JSON | `867d71cc5e5221be944f879c86eed3f024dd602aaacfa17a463e23a034c1b8ed` |

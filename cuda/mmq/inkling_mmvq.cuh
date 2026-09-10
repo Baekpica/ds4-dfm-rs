@@ -403,6 +403,107 @@ static int inkling_tile_dispatch(
     #undef IK_TILE
 }
 
+// Shared Q8 tiles reuse each decoded payload across columns while retaining
+// the MMVQ K partitions, FMA chains and ordered inter-warp merge. Prefill only.
+enum { IK_SHARED_EXPERTS = 2, IK_SHARED_Q8_COLS = 8, IK_SHARED_Q8_MIN = 16, IK_SHARED_WARP = 32 };
+template<unsigned C, unsigned W>
+__launch_bounds__(W * IK_SHARED_WARP, 1)
+static __global__ void inkling_shared_q8_kernel(const block_q8_0 *weights,
+        const block_q8_1 *x, float *out, const int32_t *counts,
+        const int32_t *buckets, const int32_t *experts, const int32_t *starts,
+        unsigned m, unsigned k, unsigned assignments, unsigned used) {
+    const unsigned tid = threadIdx.x, lane = tid % IK_SHARED_WARP;
+    const unsigned warp = tid / IK_SHARED_WARP, blocks = k / QK8_1;
+    const unsigned row_tiles = m / IK_MMVQ_ROWS;
+    const uint64_t jobs = (uint64_t)counts[IK_SHARED_EXPERTS] * row_tiles;
+    __shared__ float partial[W > 1 ? W - 1 : 1][C][IK_MMVQ_ROWS][IK_SHARED_WARP];
+    for (uint64_t job = blockIdx.x; job < jobs; job += gridDim.x) {
+        const unsigned tile = job / row_tiles, row = job % row_tiles * IK_MMVQ_ROWS;
+        const unsigned expert = experts[tile], begin = starts[tile];
+        int32_t selected[C];
+        #pragma unroll
+        for (unsigned c = 0; c < C; c++) {
+            selected[c] = begin + c < (unsigned)counts[expert]
+                ? buckets[(uint64_t)expert * assignments + begin + c] : -1;
+        }
+        float sum[C][IK_MMVQ_ROWS] = {};
+        // Q8 MMVQ assigns four eight-value fragments per block. Keep the
+        // same K iterations and FMA/warp merge; hoist only repeated loads.
+        const unsigned qs = 2 * (tid % 4);
+        for (unsigned bx = tid / 4; bx < blocks; bx += W * IK_SHARED_WARP / 4) {
+            int payload[IK_MMVQ_ROWS][2];
+            float delta[IK_MMVQ_ROWS];
+            #pragma unroll
+            for (unsigned r = 0; r < IK_MMVQ_ROWS; r++) {
+                const auto *w = weights + ((uint64_t)expert * m + row + r) * blocks + bx;
+                payload[r][0] = get_int_b2(w->qs, qs);
+                payload[r][1] = get_int_b2(w->qs, qs + 1);
+                delta[r] = __half2float(w->d);
+            }
+            #pragma unroll
+            for (unsigned c = 0; c < C; c++) {
+                if (selected[c] < 0) { continue; }
+                const auto *q = x + (uint64_t)(selected[c] / used) * blocks + bx;
+                const int u0 = get_int_b4(q->qs, qs), u1 = get_int_b4(q->qs, qs + 1);
+                const float xd = __low2float(q->ds);
+                #pragma unroll
+                for (unsigned r = 0; r < IK_MMVQ_ROWS; r++) {
+                    int dot = ggml_cuda_dp4a(payload[r][0], u0, 0);
+                    dot = ggml_cuda_dp4a(payload[r][1], u1, dot);
+                    const float scale = __fmul_rn(delta[r], xd);
+                    sum[c][r] = fmaf(scale, (float)dot, sum[c][r]);
+                }
+            }
+        }
+        if constexpr (W > 1) {
+            if (warp > 0) {
+                #pragma unroll
+                for (unsigned c = 0; c < C; c++) {
+                    #pragma unroll
+                    for (unsigned r = 0; r < IK_MMVQ_ROWS; r++) {
+                        partial[warp - 1][c][r][lane] = sum[c][r];
+                    }
+                }
+            }
+            __syncthreads();
+        }
+        if (warp == 0) {
+            #pragma unroll
+            for (unsigned c = 0; c < C; c++) {
+                #pragma unroll
+                for (unsigned r = 0; r < IK_MMVQ_ROWS; r++) {
+                    #pragma unroll
+                    for (unsigned w = 0; w + 1 < W; w++) {
+                        sum[c][r] = __fadd_rn(sum[c][r], partial[w][c][r][lane]);
+                    }
+                    sum[c][r] = warp_reduce_sum<IK_SHARED_WARP>(sum[c][r]);
+                }
+                if (lane < IK_MMVQ_ROWS && selected[c] >= 0) {
+                    const float value = sum[c][lane];
+                    out[(uint64_t)selected[c] * m + row + lane] = isfinite(value) ? value : 0.0f;
+                }
+            }
+        }
+        if constexpr (W > 1) { __syncthreads(); }
+    }
+}
+
+template<unsigned W>
+static int inkling_shared_q8_launch(
+        const void *weights, const block_q8_1 *x, float *out, const int32_t *counts,
+        const int32_t *buckets, const int32_t *experts, const int32_t *starts,
+        uint32_t m, uint32_t k, uint32_t assignments, uint32_t used,
+        uint32_t sms, cudaStream_t stream) {
+    static int active = 0;
+    if (!active && (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active,
+            inkling_shared_q8_kernel<IK_SHARED_Q8_COLS, W>, W * IK_SHARED_WARP, 0) != cudaSuccess ||
+            active <= 0)) { return -2; }
+    inkling_shared_q8_kernel<IK_SHARED_Q8_COLS, W><<<sms * active, W * IK_SHARED_WARP, 0, stream>>>(
+        (const block_q8_0 *)weights, x, out, counts, buckets, experts, starts,
+        m, k, assignments, used);
+    return cudaGetLastError() == cudaSuccess ? 0 : -2;
+}
+
 // Routing tables, then the 16-byte aligned activation SoA for the tile path.
 static uint64_t inkling_route_bytes(uint64_t assignments, int experts) {
     return ((experts + 1) + assignments * (experts + 2)) * sizeof(int32_t);
@@ -455,6 +556,17 @@ int ds4_mmvq_inkling(
         cudaMemsetAsync(out, 0, (uint64_t)assignments * m * sizeof(float), stream) != cudaSuccess) { return -2; }
     inkling_bucket_kernel<<<(assignments + IK_MMVQ_THREADS - 1) / IK_MMVQ_THREADS,
                             IK_MMVQ_THREADS, 0, stream>>>(counts, buckets, ids, assignments, experts);
+    // Dense shared-up assignments favor four cooperating warps. The down
+    // projection remains on warp-owned tiles; the wider reuse regressed it.
+    if (type == GGML_TYPE_Q8_0 && experts == IK_SHARED_EXPERTS &&
+        used == IK_SHARED_EXPERTS && rows >= IK_SHARED_Q8_MIN &&
+        !getenv("DS4_INKLING_NO_SHARED_Q8") && !getenv("DS4_INKLING_NO_MOE_TILE")) {
+        inkling_tiles_kernel<IK_SHARED_Q8_COLS><<<1, IK_MMVQ_THREADS, 0, stream>>>(
+            counts, tile_experts, tile_starts, experts);
+        return inkling_shared_q8_launch<4>(weights, (const block_q8_1 *)x, out,
+            counts, buckets, tile_experts, tile_starts,
+            m, k, assignments, used, device.nsm, stream);
+    }
     // Warp tiles are the release path; the switch restores the four-warp
     // column kernel for A/B controls. Both keep the same routing tables.
     if (!getenv("DS4_INKLING_NO_MOE_TILE")) {

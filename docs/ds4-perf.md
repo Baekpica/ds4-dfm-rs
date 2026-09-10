@@ -153,6 +153,9 @@ the optimized path uses existing aligned-Q8 column tiles with identical reductio
 the optimized path decodes each weight fragment once for a warp-owned tile.
 `DS4_INKLING_NO_LINEAR_TILE=1` restores the token-grouped BF16 projection;
 the optimized path shares a shared-memory token slab across a row tile.
+`DS4_INKLING_NO_SHARED_Q8=1` restores warp-owned shared-Q8 up tiles;
+the optimized prefill path reuses each payload across eight assignments
+with the original four-warp reduction. Shared down and decode are unchanged.
 `DS4_INKLING_PREFILL_CHUNK=N` (1–2048) sets the Inkling prefill chunk width.
 Scout consumers also reparse each referenced unprofiled benchmark CSV and
 require its rows to match the serialized samples. Hashing and parsing use the

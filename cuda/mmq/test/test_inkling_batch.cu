@@ -130,6 +130,14 @@ static void batch_case(ggml_type type, int m, int tokens, int ne, int used,
     CHECK(unsetenv("DS4_INKLING_NO_MOE_TILE") == 0);
     exact(got, want, out_bytes);
 
+    if (type == GGML_TYPE_Q8_0 && ne == SHARED && used == SHARED) {
+        CUDA(cudaMemset(got, 0xff, out_bytes));
+        CHECK(setenv("DS4_INKLING_NO_SHARED_Q8", "1", 1) == 0);
+        CHECK(ds4_mmq_inkling_moe(dw, type, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+        CHECK(unsetenv("DS4_INKLING_NO_SHARED_Q8") == 0);
+        exact(got, want, out_bytes);
+    }
+
     const size_t work_bytes = ds4_mmvq_inkling_bytes(rows, ne, used);
     void *work = device_copy(nullptr, work_bytes);
     CHECK(ds4_mmvq_inkling(dw, type, q8, di, got, work, work_bytes - 1,
@@ -254,6 +262,11 @@ int main() {
         batch_case(GGML_TYPE_Q8_0, HIDDEN, tokens, SHARED, SHARED, SPREAD);
         batch_case(GGML_TYPE_Q8_0, HIDDEN, tokens, SHARED, 1, SPREAD);
         batch_case(GGML_TYPE_Q8_0, HIDDEN, tokens, MAX_EXPERTS, USED, RANDOM);
+    }
+    for (int tokens : {15, 16, 17}) {
+        for (Routes route : {SPREAD, REPEATED, INVALID}) {
+            batch_case(GGML_TYPE_Q8_0, 128, tokens, SHARED, SHARED, route);
+        }
     }
     wrapper_case(); puts("Inkling expert batch checks passed"); return 0;
 }
