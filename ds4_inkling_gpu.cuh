@@ -12,6 +12,14 @@ enum {
     INKLING_ACTIVE = INKLING_USED + INKLING_SHARED,
     INKLING_LOGITS = INKLING_ROUTED + INKLING_SHARED,
     INKLING_WARP = 32,
+    INKLING_LINEAR_TILE = 8,
+    INKLING_LINEAR_WARPS = 8,
+    INKLING_LT_TOKENS = 16,
+    INKLING_LT_ROWS = 4,
+    INKLING_LT_WARPS = 4,
+    INKLING_LT_SLAB = 4,
+    INKLING_LT_MIN_BLOCKS = 2,
+    INKLING_LINEAR_DECODE_WARPS = 4,
     INKLING_ROUTE_WARPS = 4,
     INKLING_KEY_SHIFT = 16,
     INKLING_INDEX_MASK = (1u << INKLING_KEY_SHIFT) - 1,
@@ -31,6 +39,10 @@ enum {
     INKLING_AUDIO_BINS = 80,
     INKLING_AUDIO_LEVELS = 16,
     INKLING_MEDIA_WIDTH = 4096,
+    INKLING_MOE_MIDDLE = 2048,
+    INKLING_PREFILL_MAX = 2048,
+    INKLING_Q8_BLOCK = 32,
+    INKLING_Q8_COLUMNS = 8,
 };
 static constexpr uint32_t INKLING_FLOAT_SIGN = UINT32_C(1) << 31;
 static constexpr float INKLING_TAU_ALPHA = 0.1f;
@@ -39,6 +51,171 @@ static constexpr float INKLING_GELU_SCALE = 0.7071067811865475244f;
 
 static __device__ __forceinline__ float inkling_bf16(float value) {
     return __bfloat162float(__float2bfloat16_rn(value));
+}
+
+template<unsigned TOKENS>
+static __global__ void inkling_linear_kernel(
+        float *out, const __nv_bfloat16 *w, const __nv_bfloat16 *x,
+        uint32_t in_dim, uint32_t out_dim, uint32_t rows) {
+    const unsigned lane = threadIdx.x % INKLING_WARP;
+    const uint64_t groups = TOKENS == 1 ? 1 : ((uint64_t)rows + TOKENS - 1) / TOKENS;
+    const uint64_t total = (uint64_t)out_dim * groups * TOKENS;
+    const uint64_t step = (uint64_t)gridDim.x * blockDim.x / INKLING_WARP;
+    for (uint64_t warp = ((uint64_t)blockIdx.x * blockDim.x + threadIdx.x) / INKLING_WARP;
+         warp < total; warp += step) {
+        // Keep one accumulator per output; adjacent warps reuse a weight row.
+        const uint32_t row = TOKENS == 1 ? warp : (warp / TOKENS) / groups;
+        const uint32_t tok = TOKENS == 1 ? 0 : ((warp / TOKENS) % groups) * TOKENS + warp % TOKENS;
+        if (tok >= rows) { continue; }
+        const uint4 *wr = (const uint4 *)(w + (uint64_t)row * in_dim);
+        const uint4 *xr = (const uint4 *)(x + (uint64_t)tok * in_dim);
+        float sum = 0.0f;
+        for (uint32_t i = lane; i < in_dim / 8u; i += INKLING_WARP) {
+            sum += bf16x8_dot(wr[i], xr[i]);
+        }
+        #pragma unroll
+        for (unsigned off = INKLING_WARP / 2; off; off /= 2) {
+            sum += __shfl_xor_sync(0xffffffffu, sum, off);
+        }
+        if (lane == 0) {
+            // Match add_scale(..., 1), including its FP32 multiply boundary.
+            out[(uint64_t)tok * out_dim + row] =
+                inkling_bf16(__fmul_rn(inkling_bf16(sum), 1.0f));
+        }
+    }
+}
+
+/* Prefill tile: one CTA owns WARPS*ROWS weight rows and TOKENS tokens. The
+ * token slab lives in shared memory, so every weight vector is read once per
+ * token group and every activation vector once per row slab. Each output
+ * keeps the lane K stripe, eight-FMA chains, FP32 adds and XOR tree of
+ * inkling_linear_kernel, so results are byte-identical.
+ *
+ *   xs[t][s][lane]   uint4 (8 BF16) of token t at K step s0+s, lane stripe
+ *   acc[r][t]        one accumulator per (row, token), same order as before
+ */
+template<unsigned TOKENS, unsigned ROWS, unsigned WARPS, unsigned SLAB>
+__launch_bounds__(WARPS * INKLING_WARP, INKLING_LT_MIN_BLOCKS)
+static __global__ void inkling_linear_tile_kernel(
+        float *out, const __nv_bfloat16 *w, const __nv_bfloat16 *x,
+        uint32_t in_dim, uint32_t out_dim, uint32_t rows) {
+    __shared__ uint4 xs[TOKENS][SLAB][INKLING_WARP];
+    const unsigned warp = threadIdx.x / INKLING_WARP, lane = threadIdx.x % INKLING_WARP;
+    const uint32_t groups = (rows + TOKENS - 1) / TOKENS;
+    const uint32_t steps = in_dim / (8 * INKLING_WARP);
+    const uint64_t jobs = (uint64_t)groups * (out_dim / (WARPS * ROWS));
+    for (uint64_t job = blockIdx.x; job < jobs; job += gridDim.x) {
+        // Token groups vary fastest: neighbouring CTAs share weight rows in L2.
+        const uint32_t tok0 = (job % groups) * TOKENS;
+        const uint32_t row0 = (job / groups) * (WARPS * ROWS) + warp * ROWS;
+        const uint4 *wr[ROWS];
+        #pragma unroll
+        for (unsigned r = 0; r < ROWS; r++) {
+            wr[r] = (const uint4 *)(w + (uint64_t)(row0 + r) * in_dim);
+        }
+        float acc[ROWS][TOKENS] = {};
+        for (uint32_t s0 = 0; s0 < steps; s0 += SLAB) {
+            for (unsigned i = threadIdx.x; i < TOKENS * SLAB * INKLING_WARP; i += WARPS * INKLING_WARP) {
+                const unsigned t = i / (SLAB * INKLING_WARP), s = i / INKLING_WARP % SLAB, l = i % INKLING_WARP;
+                const uint32_t tok = tok0 + t;
+                xs[t][s][l] = tok < rows && s0 + s < steps
+                    ? ((const uint4 *)(x + (uint64_t)tok * in_dim))[(s0 + s) * INKLING_WARP + l]
+                    : make_uint4(0u, 0u, 0u, 0u);
+            }
+            __syncthreads();
+            #pragma unroll
+            for (unsigned s = 0; s < SLAB; s++) {
+                if (s0 + s >= steps) { break; }
+                uint4 wv[ROWS];
+                #pragma unroll
+                for (unsigned r = 0; r < ROWS; r++) { wv[r] = wr[r][(s0 + s) * INKLING_WARP + lane]; }
+                #pragma unroll
+                for (unsigned t = 0; t < TOKENS; t++) {
+                    const uint4 xv = xs[t][s][lane];
+                    #pragma unroll
+                    for (unsigned r = 0; r < ROWS; r++) { acc[r][t] += bf16x8_dot(wv[r], xv); }
+                }
+            }
+            __syncthreads();
+        }
+        #pragma unroll
+        for (unsigned r = 0; r < ROWS; r++) {
+            #pragma unroll
+            for (unsigned t = 0; t < TOKENS; t++) {
+                float sum = acc[r][t];
+                #pragma unroll
+                for (unsigned off = INKLING_WARP / 2; off; off /= 2) {
+                    sum += __shfl_xor_sync(0xffffffffu, sum, off);
+                }
+                if (lane == 0 && tok0 + t < rows) {
+                    out[(uint64_t)(tok0 + t) * out_dim + row0 + r] =
+                        inkling_bf16(__fmul_rn(inkling_bf16(sum), 1.0f));
+                }
+            }
+        }
+    }
+}
+
+extern "C" int ds4_gpu_inkling_linear(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *model_map, uint64_t model_size, uint64_t weight_offset,
+        uint32_t in_dim, uint32_t out_dim, uint32_t rows) {
+    if (!out || !x || !model_map || !in_dim || !out_dim || !rows ||
+        out_dim > UINT64_MAX / sizeof(uint16_t) / in_dim ||
+        x->bytes / sizeof(float) / in_dim < rows ||
+        out->bytes / sizeof(float) / out_dim < rows ||
+        weight_offset > model_size ||
+        ds4_tensor_device_idx(out) != ds4_tensor_device_idx(x)) {
+        return -1;
+    }
+    const uint64_t weight_bytes = (uint64_t)out_dim * in_dim * sizeof(uint16_t);
+    if (weight_bytes > model_size - weight_offset) { return -1; }
+    if ((in_dim & 7u) || getenv("DS4_INKLING_NO_LINEAR") ||
+        getenv("DS4_CUDA_NO_BF16_ROWS_WARP") ||
+        (uint64_t)rows * in_dim > (uint64_t)INT_MAX * INKLING_THREADS) {
+        return 0;
+    }
+    const int tier = ds4_tensor_device_idx(out);
+    const __nv_bfloat16 *w = (const __nv_bfloat16 *)cuda_resolve_weight_ptr(
+        model_map, weight_offset, weight_bytes, tier, "inkling BF16 linear");
+    if (!w) { return -1; }
+    if ((uintptr_t)w & 15u) { return 0; }
+    __nv_bfloat16 *xb = (__nv_bfloat16 *)cuda_tmp_alloc_on(
+        tier, (uint64_t)rows * in_dim * sizeof(__nv_bfloat16), "inkling BF16 input");
+    if (!xb) { return -1; }
+    const uint64_t count = (uint64_t)rows * in_dim;
+    const cudaStream_t stream = cuda_decode_stream();
+    f32_to_bf16_kernel<<<(count + INKLING_THREADS - 1) / INKLING_THREADS,
+                         INKLING_THREADS, 0, stream>>>(xb, (const float *)x->ptr, count);
+    if (!cuda_ok(cudaGetLastError(), "Inkling BF16 input launch")) { return -1; }
+    cuda_norm_q8_invalidate(out->ptr);
+    if (rows >= INKLING_LT_TOKENS && in_dim % (8 * INKLING_WARP) == 0 &&
+        out_dim % (INKLING_LT_WARPS * INKLING_LT_ROWS) == 0 &&
+        !getenv("DS4_INKLING_NO_LINEAR_TILE")) {
+        const uint64_t jobs = (((uint64_t)rows + INKLING_LT_TOKENS - 1) / INKLING_LT_TOKENS) *
+            (out_dim / (INKLING_LT_WARPS * INKLING_LT_ROWS));
+        const unsigned blocks = jobs < INKLING_MAX_BLOCKS ? jobs : INKLING_MAX_BLOCKS;
+        inkling_linear_tile_kernel<INKLING_LT_TOKENS, INKLING_LT_ROWS, INKLING_LT_WARPS, INKLING_LT_SLAB>
+            <<<blocks, INKLING_LT_WARPS * INKLING_WARP, 0, stream>>>(
+            (float *)out->ptr, w, xb, in_dim, out_dim, rows);
+        return cuda_ok(cudaGetLastError(), "Inkling BF16 tile launch") ? 1 : -1;
+    }
+    unsigned tile = INKLING_LINEAR_TILE;
+    while (tile > rows) { tile /= 2; }
+    const unsigned warps = rows == 1 ? INKLING_LINEAR_DECODE_WARPS : INKLING_LINEAR_WARPS;
+    const uint64_t outputs = (uint64_t)out_dim * (((uint64_t)rows + tile - 1) / tile) * tile;
+    const uint64_t grid = (outputs + warps - 1) / warps;
+    const unsigned blocks = grid < INKLING_MAX_BLOCKS ? grid : INKLING_MAX_BLOCKS;
+    #define IK_LINEAR_LAUNCH(T) inkling_linear_kernel<T><<<blocks, warps * INKLING_WARP, 0, stream>>>( \
+        (float *)out->ptr, w, xb, in_dim, out_dim, rows)
+    switch (tile) {
+    case 8: IK_LINEAR_LAUNCH(8); break;
+    case 4: IK_LINEAR_LAUNCH(4); break;
+    case 2: IK_LINEAR_LAUNCH(2); break;
+    default: IK_LINEAR_LAUNCH(1); break;
+    }
+    #undef IK_LINEAR_LAUNCH
+    return cuda_ok(cudaGetLastError(), "Inkling BF16 projection launch") ? 1 : -1;
 }
 
 static __global__ void inkling_sconv_kernel(
@@ -89,6 +266,80 @@ static bool inkling_overlap(const ds4_gpu_tensor *a, uint64_t a_bytes,
                             const ds4_gpu_tensor *b, uint64_t b_bytes) {
     const uintptr_t pa = (uintptr_t)a->ptr, pb = (uintptr_t)b->ptr;
     return pa <= pb ? pb - pa < a_bytes : pa - pb < b_bytes;
+}
+
+extern "C" int ds4_gpu_inkling_q8(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *model_map, uint64_t model_size, uint64_t weight_offset,
+        uint64_t weight_bytes, uint32_t in_dim, uint32_t out_dim, uint32_t rows) {
+    if (!out || !x || !model_map || !rows || weight_offset > model_size ||
+        weight_bytes > model_size - weight_offset) { return -1; }
+    if (rows <= 1 || rows > INKLING_PREFILL_MAX ||
+        !((in_dim == INKLING_MEDIA_WIDTH && out_dim == 2 * INKLING_FF_MAX) ||
+          (in_dim == INKLING_FF_MAX && out_dim == INKLING_MEDIA_WIDTH))) { return 0; }
+    const uint64_t required = (uint64_t)in_dim * out_dim / INKLING_Q8_BLOCK *
+        sizeof(cuda_block_q8_0);
+    const uint64_t xbytes = (uint64_t)rows * in_dim * sizeof(float);
+    const uint64_t obytes = (uint64_t)rows * out_dim * sizeof(float);
+    if (weight_bytes < required || x->bytes < xbytes || out->bytes < obytes ||
+        inkling_overlap(out, obytes, x, xbytes) ||
+        ds4_tensor_device_idx(out) != ds4_tensor_device_idx(x)) { return -1; }
+    if (getenv("DS4_INKLING_NO_Q8_BATCH") || getenv("DS4_CUDA_NO_Q8_ALIGNED_NC") ||
+        !cuda_q8_aligned_enabled() || !ds4_cuda_use_mmq()) { return 0; }
+    const uint64_t aligned_bytes = ds4_mmq_q8_0_aligned_bytes(out_dim, in_dim);
+    const void *weights = cuda_derived_weight_ptr(model_map, weight_offset, weight_bytes,
+        CUDA_DERIVED_Q8_0_ALIGNED_DENSE, in_dim, out_dim, 1, aligned_bytes,
+        "Inkling dense Q8 prefill");
+    if (!weights) { return 0; }
+    cuda_norm_q8_invalidate(out->ptr);
+    // Tile the width without entering the raw MMVQ/MMQ numerical paths.
+    for (uint32_t row = 0; row < rows; row += INKLING_Q8_COLUMNS) {
+        const uint32_t cols = std::min<uint32_t>(rows - row, INKLING_Q8_COLUMNS);
+        if (ds4_mmq_q8_0_aligned_dense_vec(weights,
+                (const float *)x->ptr + (uint64_t)row * in_dim,
+                (float *)out->ptr + (uint64_t)row * out_dim,
+                out_dim, cols, in_dim, ds4_current_stream()) != 0) { return -1; }
+    }
+    return 1;
+}
+
+extern "C" int ds4_gpu_inkling_routed(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x, const ds4_gpu_tensor *ids,
+        const void *model_map, uint64_t model_size, uint64_t weight_offset,
+        uint64_t weight_bytes, uint32_t type, uint32_t in_dim, uint32_t out_dim,
+        uint32_t experts, uint32_t rows, uint32_t used) {
+    if (!out || !x || !ids || !model_map || !rows || !used ||
+        weight_offset > model_size || weight_bytes > model_size - weight_offset) {
+        return -1;
+    }
+    const unsigned active = experts == INKLING_SHARED ? INKLING_SHARED : INKLING_USED;
+    const unsigned group = used > 1 ? 1 : active;
+    if ((experts != INKLING_ROUTED && experts != INKLING_SHARED) ||
+        (used != 1 && used != active) || out_dim != INKLING_MEDIA_WIDTH ||
+        in_dim != (used > 1 ? INKLING_MEDIA_WIDTH : INKLING_MOE_MIDDLE) ||
+        rows % group || rows / group <= 1 || rows / group > INKLING_PREFILL_MAX) {
+        return 0;
+    }
+    const uint64_t required = ds4_mmq_inkling_wbytes(type, out_dim, in_dim, experts);
+    if (!required) { return 0; }
+    const uint64_t xbytes = (uint64_t)rows * in_dim * sizeof(float);
+    const uint64_t obytes = (uint64_t)rows * used * out_dim * sizeof(float);
+    const uint64_t ibytes = (uint64_t)rows * used * sizeof(int32_t);
+    if (weight_bytes < required || x->bytes < xbytes || out->bytes < obytes ||
+        ids->bytes < ibytes || inkling_overlap(out, obytes, x, xbytes) ||
+        inkling_overlap(out, obytes, ids, ibytes) ||
+        inkling_overlap(x, xbytes, ids, ibytes) ||
+        ds4_tensor_device_idx(out) != ds4_tensor_device_idx(x) ||
+        ds4_tensor_device_idx(out) != ds4_tensor_device_idx(ids)) { return -1; }
+    if (getenv("DS4_INKLING_NO_MOE_BATCH") || !ds4_cuda_use_mmq()) { return 0; }
+    const void *weights = cuda_model_range_ptr(
+        model_map, weight_offset, required, "Inkling batched experts");
+    if (!weights) { return -1; }
+    cuda_norm_q8_invalidate(out->ptr);
+    const int rc = ds4_mmq_inkling_moe(weights, type, (const float *)x->ptr,
+        (const int32_t *)ids->ptr, (float *)out->ptr,
+        out_dim, in_dim, rows, experts, used, ds4_current_stream());
+    return rc == 0 ? 1 : -1;
 }
 
 extern "C" int ds4_gpu_inkling_sconv(

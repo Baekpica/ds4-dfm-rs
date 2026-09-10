@@ -7,6 +7,14 @@
 // based on the quantization type and GPU architecture (compute capability).
 int get_mmvq_mmid_max_batch(ggml_type type, int cc);
 
+// Inkling keeps the width-one up and dedicated MoE down reductions while
+// grouping assignments by expert. Input is canonical row-major Q8_1.
+uint64_t ds4_mmvq_inkling_bytes(int rows, int experts, int used);
+int ds4_mmvq_inkling(
+        const void *weights, ggml_type type, const void *x, const int32_t *ids,
+        float *out, void *workspace, uint64_t workspace_bytes, int m, int k,
+        int rows, int experts, int used, cudaStream_t stream);
+
 // ds4: direct switch over the per-type templated mmvq dispatch.  Was
 // `static` upstream; we promote it so ds4_mmq.cu can call it without
 // constructing ggml_tensor structs.  Args match the original signature

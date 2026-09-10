@@ -2505,6 +2505,34 @@ int ds4_gpu_swiglu_tensor(
         float                   clamp,
         float                   weight);
 
+/* Inkling BF16 projection with the scale-one BF16 output boundary folded
+ * into the store. Fixed warp reduction matches stable_rows + add_scale.
+ * Returns 1 on success, 0 for an unsupported fast path (out untouched),
+ * and -1 on invalid input or a CUDA error. Input/output may overlap: the
+ * complete input is converted before projection starts. */
+int ds4_gpu_inkling_linear(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *model_map, uint64_t model_size, uint64_t weight_offset,
+        uint32_t in_dim, uint32_t out_dim, uint32_t rows);
+
+/* Inkling expert batching with decode-equivalent MMVQ reductions. Up uses
+ * rows source tokens; down uses rows flattened assignments (used == 1).
+ * Tensor spans must be disjoint. Returns 1 on success, 0 for an unsupported
+ * path with out untouched, -1 on invalid input or a CUDA error. */
+int ds4_gpu_inkling_routed(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x, const ds4_gpu_tensor *ids,
+        const void *model_map, uint64_t model_size, uint64_t weight_offset,
+        uint64_t weight_bytes, uint32_t type, uint32_t in_dim, uint32_t out_dim,
+        uint32_t experts, uint32_t rows, uint32_t used);
+
+/* Inkling dense Q8 prefill through the existing aligned 1..8-column kernels.
+ * Requires an existing aligned artifact and disjoint tensor spans. Returns
+ * 1 on success, 0 for an unsupported path (out untouched), -1 on error. */
+int ds4_gpu_inkling_q8(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *model_map, uint64_t model_size, uint64_t weight_offset,
+        uint64_t weight_bytes, uint32_t in_dim, uint32_t out_dim, uint32_t rows);
+
 /* Inkling CUDA residual 4-tap convolution. F32 buffers carry BF16 values:
  * x/out [rows, channels], history/next [3, channels], oldest first. Inputs
  * are rounded to BF16; weights are native BF16 [channels, 1, 4]. History

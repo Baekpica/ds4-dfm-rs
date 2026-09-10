@@ -29,6 +29,38 @@ The bandwidth figure is informational; we don't tier on it.
 
 ## Env-var inventory
 
+- `DS4_INKLING_PREFILL_CHUNK=N` selects 1–2048 prompt rows per chunk,
+  capped by context. Default 512 improves expert-tile fill; 64 restores the
+  previous default and uses less graph scratch.
+
+- `DS4_INKLING_NO_LINEAR=1` restores the separate stable BF16 projection and
+  output-rounding kernels. Unset it to enable Inkling's token-grouped ordinary
+  projections; router logits retain FP32. This diagnostic switch tests presence.
+
+- `DS4_INKLING_NO_MOE_BATCH=1` restores Inkling's per-token expert projections.
+  Unset it for expert-grouped prefill on the validated MQ85GB shapes. Both paths
+  retain canonical Q8_1 activation scales and the original MMVQ reductions.
+  This diagnostic switch tests presence; one-token decode is unchanged.
+
+- `DS4_INKLING_NO_Q8_BATCH=1` restores per-token dense Inkling MLP projections.
+  Unset it to reuse the existing aligned Q8 kernels at widths 1–8. Missing or
+  disabled aligned artifacts keep the original path. Decode is unchanged.
+
+- `DS4_INKLING_NO_MOE_TILE=1` restores the four-column, four-warp expert batch
+  kernel. Unset it to run warp-owned row/column tiles that decode each IQ2 or
+  Q8 weight fragment once and replay the original lane, warp-partial and XOR
+  reduction order. Same routing tables and activation bytes; decode is unchanged.
+
+- `DS4_INKLING_NO_SHARED_Q8=1` restores warp-owned shared-Q8 up tiles.
+  Unset it for four-warp payload reuse with two shared experts and at least
+  16 prompt rows. Shared down, routed experts and decode keep their paths.
+
+- `DS4_INKLING_NO_LINEAR_TILE=1` restores the token-grouped ordinary BF16
+  projection kernel. Unset it to run 16-token by 16-row CTA tiles that stage
+  the token slab in shared memory; every output keeps the same lane stripe,
+  FMA chains and XOR tree. Widths below 16 and K not divisible by 256 keep
+  the grouped kernel. Decode is unchanged.
+
 - `DS4_QWEN_PLE_DIR=/absolute/path/to/PLE-FP8` selects that directory's
   `ple-manifest.json` for the Qwen SSD-PLE loader. It supports the official
   FP8 E4M3FN sidecar without changing the main GGUF. Unset it to use the

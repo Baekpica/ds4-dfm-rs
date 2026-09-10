@@ -48,6 +48,15 @@ int ds4_mmq_init(int device);
 //   n_experts: 0 for dense matmul, >0 for MoE (e.g. 256 for V4 Flash).
 int ds4_mmq_should_use(int type_x, int64_t ne11, int64_t n_experts);
 
+// Inkling expert batches with canonical Q8_1 input and fixed MMVQ reductions.
+// The byte query returns zero for unsupported types/shapes. All device spans
+// are caller-owned and disjoint; the driver owns temporary stream-local work.
+uint64_t ds4_mmq_inkling_wbytes(int type, int m, int k, int experts);
+int ds4_mmq_inkling_moe(
+        const void *weights, int type, const float *x, const int32_t *ids,
+        float *out, int m, int k, int rows, int experts, int used,
+        cudaStream_t stream);
+
 // Tensor-core prefill attention for the production 128-wide GQA head.
 // The Solar entry decodes compressed K/V once per shared 16-key tile and
 // reuses it across 64 query rows. Returns 0 on success and -1 when the

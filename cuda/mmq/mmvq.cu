@@ -1045,6 +1045,8 @@ void mul_mat_vec_q_switch_type(
     }
 }
 
+#include "inkling_mmvq.cuh"
+
 // ds4: ggml-graph entry points elided.  ds4 calls mul_mat_vec_q_switch_type
 // (above) directly through ds4_mmq.cu and never builds ggml_tensor structs.
 // Re-enable with DS4_MMVQ_INCLUDE_GGML_ENTRIES if the full upstream entries

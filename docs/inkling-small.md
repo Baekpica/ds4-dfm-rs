@@ -4,8 +4,10 @@ MQ85GB and the separate eight-layer MTP-BF16 draft stack have Rust CLI and
 serial CUDA HTTP paths on DGX Spark. Short artifact checks cover text, image
 and audio input with text output, matching the modalities of the
 [base model](https://huggingface.co/thinkingmachines/Inkling-Small/blob/8cc5877b44d343f88b92086aa1fb72897950f06a/README.md).
-Long-context serving, independent full-model source parity and performance
-remain unqualified. The checks below apply to MQ85GB, not MQ89 or Q8_0 main.
+The [GB10 performance report](inkling-optimization-2026-09-10.md) measures
+2048-token prefill and 64-token decode with MTP off. Long-context serving and
+independent full-model source parity remain unqualified. These checks apply
+to MQ85GB, not MQ89 or Q8_0 main.
 
 ## Artifact contract
 
@@ -90,9 +92,10 @@ to negative infinity. On the actual MQ85GB artifact, five-token text and
 greedy output and committed KV/convolution state across full prefill, decode
 and 2/3-token chunks; the chat fixture also covered seven-token chunks. The
 next greedy token after `The capital of France is` was ` Paris`.
-BF16 fixed-row reductions and per-token quantized matmuls preserve this
-initial numerical baseline; wider dispatches showed final-logit drift across
-token widths and were excluded. Prefill performance is not optimized. This is
+The initial BF16 fixed-row reductions and per-token quantized matmuls define
+the numerical baseline. Generic wider dispatches changed logits and were
+excluded. The [optimization report](inkling-optimization-2026-09-10.md) records
+batch paths that preserve this baseline and their full-model checks. This is
 internal execution parity; independent full-model source parity, long-context
 and captured execution remain unverified.
 The five-token graph also passed Compute Sanitizer memory-access checks.
@@ -103,7 +106,7 @@ Native CUDA sessions support lazy allocation, exact-prefix reuse, decode,
 invalidate and rewind followed by replay. The MQ85GB session gate matched
 cold/reused logits and measured exactly 100,306,688 graph bytes at context 32,
 matching its memory quote; host session parity also passed. The default
-prefill cap is 64 (`DS4_INKLING_PREFILL_CHUNK`, range 1–2048, capped by context).
+prefill cap is 512 (`DS4_INKLING_PREFILL_CHUNK`, range 1–2048, capped by context).
 Batching, snapshots and distributed execution remain unavailable until their
 Inkling-specific state paths are implemented.
 
@@ -264,7 +267,9 @@ commas.`, both modes emitted `Paris, London, Berlin, Rome, Madrid` with 11
 completion tokens. MTP averaged 2.75 tokens per decode step versus 1.00 off,
 but request wall time increased from 1.150 s to 3.079 s. This implementation
 establishes a correctness baseline; these short requests show no speedup and
-are not a throughput benchmark. End-to-end optimization remains pending.
+are not a throughput benchmark. The separate
+[performance campaign](inkling-optimization-2026-09-10.md) times MTP-off
+prefill and decode; it does not establish an MTP speedup.
 
 Model-free regressions cover output/context caps, EOS, substring stops,
 stream disconnect invalidation, malformed prefixes and forced/stochastic

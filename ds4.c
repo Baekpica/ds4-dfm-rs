@@ -20779,7 +20779,9 @@ static const uint32_t inkling_width[IK_BUFFERS] = {
 };
 
 static uint32_t inkling_prefill_cap(uint32_t ctx) {
-    enum { DEFAULT_CAP = 64, MAX_CAP = 2048 };
+    /* Wider chunks improve expert-tile fill and weight reuse across prompt
+     * rows. Arithmetic stays chunk-invariant; graph scratch grows with cap. */
+    enum { DEFAULT_CAP = 512, MAX_CAP = 2048 };
     uint32_t cap = DEFAULT_CAP;
     const char *env = getenv("DS4_INKLING_PREFILL_CHUNK");
     if (env && env[0]) {
@@ -21075,8 +21077,14 @@ static bool inkling_projection(ds4_gpu_tensor *out, const ds4_model *m,
         return ds4_gpu_matmul_bf16_stable_rows_tensor(out, m->map, m->size,
                     w->abs_offset, w->dim[0], w->dim[1], x, rows) != 0;
     }
-    /* Dense Q8 MMVQ also changes reduction geometry with column count.
-     * Keep the initial artifact path equal to decode before tuning prefill. */
+    if (w->type == DS4_TENSOR_Q8_0 && w->dim[0] <= UINT32_MAX &&
+        w->dim[1] <= UINT32_MAX) {
+        const int fast = ds4_gpu_inkling_q8(out, x, m->map, m->size,
+            w->abs_offset, w->bytes, w->dim[0], w->dim[1], rows);
+        if (fast != 0) { return fast > 0; }
+    }
+    /* Raw Q8 MMVQ changes reduction geometry with column count. Keep one
+     * row when no compatible aligned artifact is available. */
     const uint64_t in_bytes = w->dim[0] * sizeof(float);
     const uint64_t out_bytes = w->dim[1] * sizeof(float);
     for (unsigned r = 0; r < rows; r++) {
@@ -21096,6 +21104,14 @@ static bool inkling_projection(ds4_gpu_tensor *out, const ds4_model *m,
 static bool inkling_linear(ds4_gpu_tensor *out, const ds4_model *m,
                             const ds4_tensor *w, const ds4_gpu_tensor *x,
                             uint32_t rows) {
+    if (w->type == DS4_TENSOR_BF16 && w->dim[0] <= UINT32_MAX &&
+        w->dim[1] <= UINT32_MAX) {
+        const int fast = ds4_gpu_inkling_linear(out, x, m->map, m->size,
+                            w->abs_offset, w->dim[0], w->dim[1], rows);
+        if (fast != 0) {
+            return fast > 0;
+        }
+    }
     return inkling_projection(out, m, w, x, rows) &&
            ds4_gpu_inkling_add_scale(out, out, NULL, 1.0f, rows * w->dim[1]);
 }
@@ -21197,6 +21213,9 @@ static bool inkling_audio_encode(float *out, const int32_t *ids, uint32_t rows,
 static bool inkling_routed(ds4_gpu_tensor *out, const ds4_model *m,
                            const ds4_tensor *w, const ds4_gpu_tensor *x,
                            const ds4_gpu_tensor *ids, uint32_t rows, uint32_t used) {
+    const int fast = ds4_gpu_inkling_routed(out, x, ids, m->map, m->size,
+        w->abs_offset, w->bytes, w->type, w->dim[0], w->dim[1], w->dim[2], rows, used);
+    if (fast != 0) { return fast > 0; }
     /* Keep one source token per call. Wider MMQ uses different activation
      * scale precision from MMVQ; the BF16 differences can change routing.
      * Down inputs are flattened assignments, grouped by token. */
