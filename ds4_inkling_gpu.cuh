@@ -12,6 +12,9 @@ enum {
     INKLING_ACTIVE = INKLING_USED + INKLING_SHARED,
     INKLING_LOGITS = INKLING_ROUTED + INKLING_SHARED,
     INKLING_WARP = 32,
+    INKLING_LINEAR_TILE = 8,
+    INKLING_LINEAR_WARPS = 8,
+    INKLING_LINEAR_DECODE_WARPS = 4,
     INKLING_ROUTE_WARPS = 4,
     INKLING_KEY_SHIFT = 16,
     INKLING_INDEX_MASK = (1u << INKLING_KEY_SHIFT) - 1,
@@ -39,6 +42,89 @@ static constexpr float INKLING_GELU_SCALE = 0.7071067811865475244f;
 
 static __device__ __forceinline__ float inkling_bf16(float value) {
     return __bfloat162float(__float2bfloat16_rn(value));
+}
+
+template<unsigned TOKENS>
+static __global__ void inkling_linear_kernel(
+        float *out, const __nv_bfloat16 *w, const __nv_bfloat16 *x,
+        uint32_t in_dim, uint32_t out_dim, uint32_t rows) {
+    const unsigned lane = threadIdx.x % INKLING_WARP;
+    const uint64_t groups = TOKENS == 1 ? 1 : ((uint64_t)rows + TOKENS - 1) / TOKENS;
+    const uint64_t total = (uint64_t)out_dim * groups * TOKENS;
+    const uint64_t step = (uint64_t)gridDim.x * blockDim.x / INKLING_WARP;
+    for (uint64_t warp = ((uint64_t)blockIdx.x * blockDim.x + threadIdx.x) / INKLING_WARP;
+         warp < total; warp += step) {
+        // Keep one accumulator per output; adjacent warps reuse a weight row.
+        const uint32_t row = TOKENS == 1 ? warp : (warp / TOKENS) / groups;
+        const uint32_t tok = TOKENS == 1 ? 0 : ((warp / TOKENS) % groups) * TOKENS + warp % TOKENS;
+        if (tok >= rows) { continue; }
+        const uint4 *wr = (const uint4 *)(w + (uint64_t)row * in_dim);
+        const uint4 *xr = (const uint4 *)(x + (uint64_t)tok * in_dim);
+        float sum = 0.0f;
+        for (uint32_t i = lane; i < in_dim / 8u; i += INKLING_WARP) {
+            sum += bf16x8_dot(wr[i], xr[i]);
+        }
+        #pragma unroll
+        for (unsigned off = INKLING_WARP / 2; off; off /= 2) {
+            sum += __shfl_xor_sync(0xffffffffu, sum, off);
+        }
+        if (lane == 0) {
+            // Match add_scale(..., 1), including its FP32 multiply boundary.
+            out[(uint64_t)tok * out_dim + row] =
+                inkling_bf16(__fmul_rn(inkling_bf16(sum), 1.0f));
+        }
+    }
+}
+
+extern "C" int ds4_gpu_inkling_linear(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *model_map, uint64_t model_size, uint64_t weight_offset,
+        uint32_t in_dim, uint32_t out_dim, uint32_t rows) {
+    if (!out || !x || !model_map || !in_dim || !out_dim || !rows ||
+        out_dim > UINT64_MAX / sizeof(uint16_t) / in_dim ||
+        x->bytes / sizeof(float) / in_dim < rows ||
+        out->bytes / sizeof(float) / out_dim < rows ||
+        weight_offset > model_size ||
+        ds4_tensor_device_idx(out) != ds4_tensor_device_idx(x)) {
+        return -1;
+    }
+    const uint64_t weight_bytes = (uint64_t)out_dim * in_dim * sizeof(uint16_t);
+    if (weight_bytes > model_size - weight_offset) { return -1; }
+    if ((in_dim & 7u) || getenv("DS4_INKLING_NO_LINEAR") ||
+        getenv("DS4_CUDA_NO_BF16_ROWS_WARP") ||
+        (uint64_t)rows * in_dim > (uint64_t)INT_MAX * INKLING_THREADS) {
+        return 0;
+    }
+    const int tier = ds4_tensor_device_idx(out);
+    const __nv_bfloat16 *w = (const __nv_bfloat16 *)cuda_resolve_weight_ptr(
+        model_map, weight_offset, weight_bytes, tier, "inkling BF16 linear");
+    if (!w) { return -1; }
+    if ((uintptr_t)w & 15u) { return 0; }
+    __nv_bfloat16 *xb = (__nv_bfloat16 *)cuda_tmp_alloc_on(
+        tier, (uint64_t)rows * in_dim * sizeof(__nv_bfloat16), "inkling BF16 input");
+    if (!xb) { return -1; }
+    const uint64_t count = (uint64_t)rows * in_dim;
+    const cudaStream_t stream = cuda_decode_stream();
+    f32_to_bf16_kernel<<<(count + INKLING_THREADS - 1) / INKLING_THREADS,
+                         INKLING_THREADS, 0, stream>>>(xb, (const float *)x->ptr, count);
+    if (!cuda_ok(cudaGetLastError(), "Inkling BF16 input launch")) { return -1; }
+    cuda_norm_q8_invalidate(out->ptr);
+    unsigned tile = INKLING_LINEAR_TILE;
+    while (tile > rows) { tile /= 2; }
+    const unsigned warps = rows == 1 ? INKLING_LINEAR_DECODE_WARPS : INKLING_LINEAR_WARPS;
+    const uint64_t outputs = (uint64_t)out_dim * (((uint64_t)rows + tile - 1) / tile) * tile;
+    const uint64_t grid = (outputs + warps - 1) / warps;
+    const unsigned blocks = grid < INKLING_MAX_BLOCKS ? grid : INKLING_MAX_BLOCKS;
+    #define IK_LINEAR_LAUNCH(T) inkling_linear_kernel<T><<<blocks, warps * INKLING_WARP, 0, stream>>>( \
+        (float *)out->ptr, w, xb, in_dim, out_dim, rows)
+    switch (tile) {
+    case 8: IK_LINEAR_LAUNCH(8); break;
+    case 4: IK_LINEAR_LAUNCH(4); break;
+    case 2: IK_LINEAR_LAUNCH(2); break;
+    default: IK_LINEAR_LAUNCH(1); break;
+    }
+    #undef IK_LINEAR_LAUNCH
+    return cuda_ok(cudaGetLastError(), "Inkling BF16 projection launch") ? 1 : -1;
 }
 
 static __global__ void inkling_sconv_kernel(

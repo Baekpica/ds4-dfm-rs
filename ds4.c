@@ -21096,6 +21096,14 @@ static bool inkling_projection(ds4_gpu_tensor *out, const ds4_model *m,
 static bool inkling_linear(ds4_gpu_tensor *out, const ds4_model *m,
                             const ds4_tensor *w, const ds4_gpu_tensor *x,
                             uint32_t rows) {
+    if (w->type == DS4_TENSOR_BF16 && w->dim[0] <= UINT32_MAX &&
+        w->dim[1] <= UINT32_MAX) {
+        const int fast = ds4_gpu_inkling_linear(out, x, m->map, m->size,
+                            w->abs_offset, w->dim[0], w->dim[1], rows);
+        if (fast != 0) {
+            return fast > 0;
+        }
+    }
     return inkling_projection(out, m, w, x, rows) &&
            ds4_gpu_inkling_add_scale(out, out, NULL, 1.0f, rows * w->dim[1]);
 }

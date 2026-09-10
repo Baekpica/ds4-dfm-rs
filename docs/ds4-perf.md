@@ -142,6 +142,9 @@ controls prevent automatic acceptance. GPU process snapshots must match the
 intended owners before and after each run; transient contention between these
 snapshots is not detected. Historical comparisons read preserved
 proofs and hashes; they do not reload the model.
+Inkling's `DS4_INKLING_NO_LINEAR=1` is a reviewed diagnostic control for
+comparing its ordinary BF16 projection with the prior implementation.
+Unset the variable for the optimized path; comparisons reject other values.
 Scout consumers also reparse each referenced unprofiled benchmark CSV and
 require its rows to match the serialized samples. Hashing and parsing use the
 same bytes; benchmark stdout is limited to 64 MiB per sample on load.

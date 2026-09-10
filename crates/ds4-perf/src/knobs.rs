@@ -6,6 +6,7 @@ pub fn tunable(key: &str) -> bool {
         "DS4_QWEN_PREFILL_CHUNK"
             | "DS4_QWEN_PLE_WORKERS"
             | "DS4_DOTS3_PREFILL_CHUNK"
+            | "DS4_INKLING_NO_LINEAR"
             | "DS4_CUDA_SOLAR_GQA_CHUNK"
     )
 }
@@ -19,6 +20,8 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         "DS4_QWEN_PREFILL_CHUNK" => family.starts_with("qwen") && (1..=16384).contains(&n),
         "DS4_QWEN_PLE_WORKERS" => family.starts_with("qwen") && (1..=64).contains(&n),
         "DS4_DOTS3_PREFILL_CHUNK" => family.starts_with("dots") && (1..=8192).contains(&n),
+        // Native diagnostic switches test presence; "0" would still disable.
+        "DS4_INKLING_NO_LINEAR" => family == "inkling" && value == "1",
         "DS4_CUDA_SOLAR_GQA_CHUNK" => {
             family.starts_with("solar") && [64, 128, 256, 512, 1024, 2048].contains(&n)
         }
@@ -30,4 +33,23 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inkling_linear_control() {
+        let key = "DS4_INKLING_NO_LINEAR";
+        assert!(tunable(key));
+        assert!(validate(key, "1", "Inkling").is_ok());
+        for value in ["0", "2", "01", "true", ""] {
+            assert!(validate(key, value, "inkling").is_err());
+        }
+        for family in ["qwen", "inkling-other", ""] {
+            assert!(validate(key, "1", family).is_err());
+        }
+        assert!(!tunable("DS4_INKLING_UNKNOWN"));
+    }
 }

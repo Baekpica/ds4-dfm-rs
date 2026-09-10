@@ -87,6 +87,7 @@ __pycache__/
 /tests/test_inkling_mtp
 /tests/test_inkling_mtp_shared
 /tests/test_inkling_norm
+/tests/test_inkling_linear
 /tests/test_inkling_media
 /tests/test_inkling_loader
 /tests/test_inkling_forward
