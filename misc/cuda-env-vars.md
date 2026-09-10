@@ -42,6 +42,11 @@ The bandwidth figure is informational; we don't tier on it.
   Unset it to reuse the existing aligned Q8 kernels at widths 1–8. Missing or
   disabled aligned artifacts keep the original path. Decode is unchanged.
 
+- `DS4_INKLING_NO_MOE_TILE=1` restores the four-column, four-warp expert batch
+  kernel. Unset it to run warp-owned row/column tiles that decode each IQ2 or
+  Q8 weight fragment once and replay the original lane, warp-partial and XOR
+  reduction order. Same routing tables and activation bytes; decode is unchanged.
+
 - `DS4_QWEN_PLE_DIR=/absolute/path/to/PLE-FP8` selects that directory's
   `ple-manifest.json` for the Qwen SSD-PLE loader. It supports the official
   FP8 E4M3FN sidecar without changing the main GGUF. Unset it to use the

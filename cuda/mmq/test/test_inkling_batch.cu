@@ -81,7 +81,7 @@ static void exact(const void *a, const void *b, size_t bytes) {
     CHECK(false);
 }
 
-enum Routes { SPREAD, REPEATED, INVALID };
+enum Routes { SPREAD, REPEATED, INVALID, RANDOM };
 static void batch_case(ggml_type type, int m, int tokens, int ne, int used,
                        Routes routing) {
     const int group = used > 1 ? 1 : ne == SHARED ? SHARED : USED;
@@ -92,7 +92,8 @@ static void batch_case(ggml_type type, int m, int tokens, int ne, int used,
     std::vector<int32_t> ids(assignments);
     for (auto &v : x) { v = ((int)(random_bits() % 2001) - 1000) / 417.0f; }
     for (int a = 0; a < assignments; a++) {
-        ids[a] = routing == REPEATED ? ne - 1 : (a * 13 + a / used) % ne;
+        ids[a] = routing == REPEATED ? ne - 1 :
+            routing == RANDOM ? random_bits() % ne : (a * 13 + a / used) % ne;
         if (routing == INVALID && a % 3 == 0) { ids[a] = -1; }
     }
     void *dw = device_copy(w.data(), w.size());
@@ -122,6 +123,12 @@ static void batch_case(ggml_type type, int m, int tokens, int ne, int used,
     reference();
     CHECK(ds4_mmq_inkling_moe(dw, type, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
     exact(got, want, out_bytes);
+    // The warp-tile kill switch restores the four-column kernel exactly.
+    CUDA(cudaMemset(got, 0xff, out_bytes));
+    CHECK(setenv("DS4_INKLING_NO_MOE_TILE", "1", 1) == 0);
+    CHECK(ds4_mmq_inkling_moe(dw, type, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_MOE_TILE") == 0);
+    exact(got, want, out_bytes);
 
     const size_t work_bytes = ds4_mmvq_inkling_bytes(rows, ne, used);
     void *work = device_copy(nullptr, work_bytes);
@@ -138,10 +145,13 @@ static void batch_case(ggml_type type, int m, int tokens, int ne, int used,
     for (float v : zero) { CHECK(v == 0); }
     CUDA(cudaMemcpy(di, ids.data(), ids.size() * sizeof(int32_t), cudaMemcpyHostToDevice));
 
-    float elapsed[2] = {};
-    if (m == HIDDEN && tokens == 64) {
+    float elapsed[3] = {};
+    if (m == HIDDEN && tokens >= 64) {
         cudaEvent_t start, stop; CUDA(cudaEventCreate(&start)); CUDA(cudaEventCreate(&stop));
-        for (int mode = 0; mode < 2; mode++) {
+        // Modes: per-token legacy, four-column batch (kill switch), warp tiles.
+        for (int mode = 0; mode < 3; mode++) {
+            if (mode == 1) { CHECK(setenv("DS4_INKLING_NO_MOE_TILE", "1", 1) == 0); }
+            else { CHECK(unsetenv("DS4_INKLING_NO_MOE_TILE") == 0); }
             CUDA(cudaEventRecord(start));
             for (int repeat = 0; repeat < REPEATS; repeat++) {
                 if (mode == 0) { reference(); }
@@ -154,8 +164,9 @@ static void batch_case(ggml_type type, int m, int tokens, int ne, int used,
         CUDA(cudaEventDestroy(start)); CUDA(cudaEventDestroy(stop));
         exact(got, want, out_bytes);
     }
-    printf("type=%d M=%d tokens=%d experts=%d used=%d routes=%d exact; %.3f -> %.3f ms\n",
-           type, m, tokens, ne, used, routing, elapsed[0] / REPEATS, elapsed[1] / REPEATS);
+    printf("type=%d M=%d tokens=%d experts=%d used=%d routes=%d exact; %.3f -> %.3f -> %.3f ms\n",
+           type, m, tokens, ne, used, routing, elapsed[0] / REPEATS, elapsed[1] / REPEATS,
+           elapsed[2] / REPEATS);
     CUDA(cudaFree(work)); CUDA(cudaFree(q8)); CUDA(cudaFree(q8rows));
     CUDA(cudaFree(dw)); CUDA(cudaFree(dx)); CUDA(cudaFree(di));
     CUDA(cudaFree(got)); CUDA(cudaFree(want));
@@ -213,6 +224,7 @@ static void wrapper_case() {
 
 int main() {
     CHECK(unsetenv("DS4_INKLING_NO_MOE_BATCH") == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_MOE_TILE") == 0);
     CHECK(ds4_gpu_init()); CHECK(ds4_mmq_init(0) == 0);
     CHECK(ds4_mmvq_inkling_bytes(2048 * USED + 1, MAX_EXPERTS, 1) == 0);
     const ggml_type types[] = {GGML_TYPE_Q8_0, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K,
@@ -231,5 +243,17 @@ int main() {
     }
     batch_case(GGML_TYPE_IQ2_XXS, 2, 2048, MAX_EXPERTS, USED, REPEATED);
     batch_case(GGML_TYPE_IQ2_XS, 2, 2048, MAX_EXPERTS, 1, SPREAD);
+    // Production routed/shared geometry at the default and wider prefill chunks.
+    for (int tokens : {64, 65, 256, 512}) {
+        batch_case(GGML_TYPE_IQ2_XXS, HIDDEN, tokens, MAX_EXPERTS, USED, RANDOM);
+        batch_case(GGML_TYPE_IQ2_XS, HIDDEN, tokens, MAX_EXPERTS, 1, RANDOM);
+    }
+    batch_case(GGML_TYPE_IQ2_XXS, HIDDEN, 64, MAX_EXPERTS, USED, INVALID);
+    batch_case(GGML_TYPE_IQ2_XS, HIDDEN, 64, MAX_EXPERTS, 1, INVALID);
+    for (int tokens : {64, 512}) {
+        batch_case(GGML_TYPE_Q8_0, HIDDEN, tokens, SHARED, SHARED, SPREAD);
+        batch_case(GGML_TYPE_Q8_0, HIDDEN, tokens, SHARED, 1, SPREAD);
+        batch_case(GGML_TYPE_Q8_0, HIDDEN, tokens, MAX_EXPERTS, USED, RANDOM);
+    }
     wrapper_case(); puts("Inkling expert batch checks passed"); return 0;
 }
