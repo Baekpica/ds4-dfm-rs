@@ -99,6 +99,47 @@ convolution state exactly.
 
 Benchmark binary SHA-256: `6e809e6b7f0656c0b35ee52d22583eb5e3835d54dddbc0067f3968b47c8de9fc`.
 
+## Round 15: Q4_K expert prefill coverage
+
+The three Q4_K projections in layers 40–41 still fell back to four-column
+MMVQ after building an unused activation relayout and eight-column worklist.
+The new eight-column tile loads each payload fragment and unpacks its scales
+once, then reuses them across inputs. Up keeps four ordered warp partitions
+and two K steps; down keeps one partition and four steps. Lane dot products, ordered
+sums, XOR reduction and nonfinite handling match the retained oracle.
+
+The path starts at 3072 assignments, or 512 prompt tokens with six routed
+experts. `DS4_INKLING_NO_Q4_TILE=1` restores the old path. Smaller widths keep
+their dispatch; the isolated 64-token up candidate regressed and was not
+enabled. Shared Q8 and IQ2 are unchanged in this round.
+
+| Input | Prefill control → default (tok/s) | Gain | Decode control → default (tok/s) | Verdict |
+|---|---:|---:|---:|---|
+| 8,192 | 307.82 → 312.88 | +1.64% | 14.21 → 14.22 | Improved |
+| 2,048 | 322.32 → 327.86 | +1.72% | 17.96 → 17.97 | Improved |
+
+Every comparison checks 1,200,348 logits (`max_abs=0`, no bad values)
+and has zero generated-token mismatches. Three throughput samples per side:
+
+- 8,192 control: 308.22 / 307.82 / 307.59; default: 313.03 / 312.88 / 312.29 tok/s.
+- 2,048 control: 323.24 / 322.32 / 321.56; default: 329.42 / 327.86 / 327.59 tok/s.
+
+Q4_K expert kernels in the same-binary 8K trace: 1.273 → 0.832 s
+(4.7% of control prefill);
+prefill wall 26.835 → 26.437 s,
+kernel calls 32,992 → 32,896.
+The new kernels use 72/110 registers per thread and 0 local bytes in the trace.
+
+Isolated 512-token probes measured up 43.865 → 28.179 ms and down
+22.747 → 12.930 ms. Native tests cover 511/512/513 and 8192 tokens, ragged
+126-row matrices, random/repeated/invalid routing, full 4096-row matrices,
+nonblocking streams and four-byte Q8_1 input alignment. The full-model
+forward gate uses 515 tokens to enter the new path, with exact logits,
+hidden, KV and convolution versus single-token decode and chunks 2/3/7.
+The committed KV/convolution snapshot checks 93,327,360 bytes exactly;
+accepted-prefix 1–9 checks also pass.
+
+Benchmark binary SHA-256: `ba07a8f4c0e22f30daeb0cb8063f5e96ce200c2341fe306aaf604f46944d2bb6`.
 ## Rejected probes
 
 Six IQ2 tile/occupancy variants failed to establish a gain at the 512-token

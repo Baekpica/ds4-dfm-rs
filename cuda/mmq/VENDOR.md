@@ -55,7 +55,9 @@ keeps ds4 self-contained at the cost of a periodic re-sync.
 `inkling_mmvq.cuh` is a ds4 specialization included by `mmvq.cu`. It reuses
 the private quantized-dot traits and warp reductions to group Inkling expert
 assignments without changing their arithmetic. `mmvq.cuh` declares its narrow
-driver interface; it is not copied from upstream.
+driver interface; it is not copied from upstream. Its local prefill kernels
+in `inkling_shared_tile.cuh` and `inkling_q4.cuh` preserve the same per-column
+arithmetic while reusing weights and quantized-dot fragments.
 
 The upstream `ggml/src/ggml-cuda/mmq.cu` (372 lines) is the ggml-backend
 dispatch entry. It talks to `ggml_tensor` / `ggml_backend_buffer_get_usage`,

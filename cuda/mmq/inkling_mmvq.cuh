@@ -505,6 +505,7 @@ static int inkling_shared_q8_launch(
 }
 
 #include "inkling_shared_tile.cuh"
+#include "inkling_q4.cuh"
 
 // Routing tables, then the 16-byte aligned activation SoA for the tile path.
 static uint64_t inkling_route_bytes(uint64_t assignments, int experts) {
@@ -584,6 +585,21 @@ int ds4_mmvq_inkling(
         const int rc = inkling_shared_tile_launch(weights, (const block_q8_1 *)x,
             out, counts, buckets, m, k, assignments, used, stream);
         if (rc <= 0) { return rc; }
+    }
+    // Q4_K otherwise repeats scale/payload decoding per column and builds
+    // an unused activation SoA before falling back to the four-column path.
+    if (type == GGML_TYPE_Q4_K && assignments >= IK_Q4_MIN_ASSIGNMENTS &&
+        !getenv("DS4_INKLING_NO_Q4_TILE") && !getenv("DS4_INKLING_NO_MOE_TILE")) {
+        inkling_tiles_kernel<IK_Q4_COLS><<<1, IK_MMVQ_THREADS, 0, stream>>>(
+            counts, tile_experts, tile_starts, experts);
+        if (used > 1) {
+            return inkling_q4_launch<2, IK_Q4_COLS, 4, 2>(weights, (const block_q8_1 *)x,
+                out, counts, buckets, tile_experts, tile_starts,
+                m, k, assignments, experts, used, device.nsm, stream);
+        }
+        return inkling_q4_launch<2, IK_Q4_COLS, 1, 4>(weights, (const block_q8_1 *)x,
+            out, counts, buckets, tile_experts, tile_starts,
+            m, k, assignments, experts, used, device.nsm, stream);
     }
     // Warp tiles are the release path; the switch restores the four-warp
     // column kernel for A/B controls. Both keep the same routing tables.

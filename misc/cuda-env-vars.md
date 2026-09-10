@@ -67,6 +67,11 @@ The bandwidth figure is informational; we don't tier on it.
   weights across input groups with the original one-warp reduction. Alignment
   and shared-memory limits fall back to the previous kernel.
 
+- `DS4_INKLING_NO_Q4_TILE=1` restores four-column Q4_K expert batches.
+  From 3072 routed assignments (512 tokens with six selected experts), the
+  default reuses payload loads and unpacked scales across eight columns and
+  skips the unused activation relayout. MMVQ sums and narrow paths are unchanged.
+
 - `DS4_INKLING_NO_LINEAR_TILE=1` restores the token-grouped ordinary BF16
   projection kernel. Unset it to run 16-token by 16-row CTA tiles that stage
   the token slab in shared memory; every output keeps the same lane stripe,
