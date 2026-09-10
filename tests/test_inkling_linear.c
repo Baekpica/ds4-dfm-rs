@@ -50,12 +50,20 @@ static void linear_case(const void *map, unsigned k, unsigned m, unsigned rows) 
     ds4_gpu_tensor *dx = upload(x, in_bytes), *out = upload(NULL, out_bytes);
     reference(out, dx, map, k, m, rows);
     CHECK(ds4_gpu_tensor_read(out, 0, want, out_bytes));
+    CHECK(ds4_gpu_tensor_fill_f32(out, NAN, (uint64_t)m * rows));
     CHECK(ds4_gpu_inkling_linear(out, dx, map, MAP_BYTES, OFFSET, k, m, rows) == 1);
     CHECK(ds4_gpu_tensor_read(out, 0, got, out_bytes));
     CHECK(memcmp(got, want, out_bytes) == 0);
     CHECK(setenv("DS4_INKLING_NO_LINEAR_TILE", "1", 1) == 0);
     CHECK(ds4_gpu_inkling_linear(out, dx, map, MAP_BYTES, OFFSET, k, m, rows) == 1);
     CHECK(unsetenv("DS4_INKLING_NO_LINEAR_TILE") == 0);
+    CHECK(ds4_gpu_tensor_read(out, 0, got, out_bytes));
+    CHECK(memcmp(got, want, out_bytes) == 0);
+
+    CHECK(setenv("DS4_INKLING_NO_LINEAR_PANEL", "1", 1) == 0);
+    CHECK(ds4_gpu_tensor_fill_f32(out, NAN, (uint64_t)m * rows));
+    CHECK(ds4_gpu_inkling_linear(out, dx, map, MAP_BYTES, OFFSET, k, m, rows) == 1);
+    CHECK(unsetenv("DS4_INKLING_NO_LINEAR_PANEL") == 0);
     CHECK(ds4_gpu_tensor_read(out, 0, got, out_bytes));
     CHECK(memcmp(got, want, out_bytes) == 0);
 
@@ -73,10 +81,12 @@ static void linear_case(const void *map, unsigned k, unsigned m, unsigned rows) 
         ds4_gpu_tensor_free(alias);
     }
 
-    double elapsed[3];
-    for (unsigned mode = 0; mode < 3; mode++) {
+    double elapsed[4];
+    for (unsigned mode = 0; mode < 4; mode++) {
         if (mode == 1) { CHECK(setenv("DS4_INKLING_NO_LINEAR_TILE", "1", 1) == 0); }
         else { CHECK(unsetenv("DS4_INKLING_NO_LINEAR_TILE") == 0); }
+        if (mode == 2) { CHECK(setenv("DS4_INKLING_NO_LINEAR_PANEL", "1", 1) == 0); }
+        else { CHECK(unsetenv("DS4_INKLING_NO_LINEAR_PANEL") == 0); }
         CHECK(ds4_gpu_synchronize());
         const double start = now();
         for (unsigned i = 0; i < REPEATS; i++) {
@@ -85,8 +95,8 @@ static void linear_case(const void *map, unsigned k, unsigned m, unsigned rows) 
         }
         CHECK(ds4_gpu_synchronize()); elapsed[mode] = (now() - start) / REPEATS;
     }
-    printf("linear k=%u m=%u rows=%u exact; reference=%.3f us grouped=%.3f us tiled=%.3f us\n",
-           k, m, rows, elapsed[0] * 1e6, elapsed[1] * 1e6, elapsed[2] * 1e6);
+    printf("linear k=%u m=%u rows=%u exact; reference=%.3f us grouped=%.3f us no-panel-control=%.3f us selected=%.3f us\n",
+           k, m, rows, elapsed[0] * 1e6, elapsed[1] * 1e6, elapsed[2] * 1e6, elapsed[3] * 1e6);
     ds4_gpu_tensor_free(input); ds4_gpu_tensor_free(base);
     ds4_gpu_tensor_free(dx); ds4_gpu_tensor_free(out);
     free(x); free(got); free(want);
@@ -116,6 +126,7 @@ static void unsupported(const void *map) {
 }
 
 int main(void) {
+    CHECK(unsetenv("DS4_INKLING_NO_LINEAR_PANEL") == 0);
     CHECK(unsetenv("DS4_INKLING_NO_LINEAR") == 0);
     CHECK(unsetenv("DS4_INKLING_NO_LINEAR_TILE") == 0);
     CHECK(unsetenv("DS4_CUDA_NO_BF16_ROWS_WARP") == 0);
@@ -135,6 +146,15 @@ int main(void) {
     linear_case(map, 512, 258, 9); linear_case(map, WIDTH, MTP_OUTPUT, 9);
     linear_case(map, WIDTH, MTP_OUTPUT, 129); linear_case(map, WIDTH, 512, 512);
     linear_case(map, 512, 320, 2048); linear_case(map, 4800, WIDTH, 16);
+    linear_case(map, 512, 320, 8191); linear_case(map, 512, 320, 8192);
+    const unsigned edges[] = {2047, 2048, 2049, 4097};
+    for (unsigned i = 0; i < sizeof(edges) / sizeof(edges[0]); i++) {
+        linear_case(map, 512, 320, edges[i]);
+    }
+    linear_case(map, WIDTH, WIDTH, 2048); linear_case(map, WIDTH, WIDTH, 2049);
+    linear_case(map, WIDTH, WIDTH, 4096); linear_case(map, WIDTH, WIDTH, 4097);
+    linear_case(map, WIDTH, WIDTH, 8192);
+    linear_case(map, WIDTH, 1024, 8192); linear_case(map, WIDTH, 512, 8192);
     unsupported(map); ds4_gpu_cleanup(); free(map);
     puts("Inkling linear checks passed"); return 0;
 }

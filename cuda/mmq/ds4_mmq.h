@@ -1158,6 +1158,19 @@ int ds4_mmq_q8_0_aligned_dense_vec(
     int           K,
     cudaStream_t  stream);
 
+// Prefill tile over the same aligned artifact for 1..8192 rows at the
+// Inkling dense MLP widths (K 4096 or 16384). Outputs are byte-identical to
+// the eight-column vec path. Returns 1 for other shapes so the caller can
+// keep its eight-column loop.
+int ds4_mmq_q8_0_aligned_dense_batch(
+    const void  * W_aligned,
+    const float * X_f32,
+    float       * out_f32,
+    int           M,
+    int           N,
+    int           K,
+    cudaStream_t  stream);
+
 int ds4_mmq_iq2_xxs_aligned_moe_vec(
     const void    * W_aligned,
     const float   * X_f32,

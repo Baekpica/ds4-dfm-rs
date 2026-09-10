@@ -14,7 +14,12 @@ a retained routed-IQ2 gain. Rounds 4–7 retain four additional improvements,
 with the routed-IQ2 gain in round 4. The first three candidates are separate.
 Work prioritized prefill, with decode retained as a regression gate. The
 original three-decode-improvement target is deferred and has not been achieved;
-this report claims no decode speedup.
+this report claims no decode speedup. Rounds 8–12 extend the campaign with an
+8192-token workload: rounds 10–12 retain three further prefill improvements
+(BF16 panels above 4096 rows, attention grouped by KV head and dense Q8
+tiles), raising the 8K chunk-512 median from 230.84 to 272.76 tok/s and the
+2K median from 259.67 to 283.82 tok/s with exact logits throughout. The
+chunk default remains 512.
 
 ## Protocol
 
@@ -352,11 +357,254 @@ Evidence and source/build hashes are in `scratch/inkling-perf/resume-codex/r7/`.
 The initial model-free test launch inherited the live owner's IPC environment;
 that failed invocation is retained, and the clean-environment retry passed.
 
-Final repository checks pass: `cargo fmt`, workspace Clippy, all eight C/Rust
+Round-7 repository checks pass: `cargo fmt`, workspace Clippy, all eight C/Rust
 host parity targets, serialized `cargo test --workspace --locked`, and
 `cargo check --workspace --all-targets --locked`. They ran after the timed
 scouts, without the live IPC environment. Logs are in
 `scratch/inkling-perf/resume-codex/final-checks/`.
+
+## Round 8: wider chunk validation
+
+A new, fixed three-round prefill campaign starts at `450fea0`: rounds 8–10.
+Round 8 tests chunk capacity; the remaining two rounds target kernels with
+an explicit 8192 chunk. No further chunk sweep is included.
+
+The supported maximum rises from 2048 to 8192. This is a maximum batch width,
+so shorter prompts remain valid. Host sizing, CUDA wrappers, MMVQ assignment
+bounds and `ds4-perf` validation use the same limit. **The default stays 512:**
+the 8192 default candidate failed the speed gate.
+
+The extended workload uses the same raw prompt and 64 greedy output tokens,
+with 8192 input tokens and context allocation 8257. It retains the same owner,
+artifacts, warmup/fresh-process policy and three repeats. The 2K regression
+workload remains separate.
+
+| Input / chunk | Prefill samples (tok/s) | Decode median (tok/s) |
+| --- | --- | --- |
+| 8K / 512 control | 230.99 / 230.71 / 230.61 | 14.20 |
+| 8K / 8192 candidate | 217.02 / 215.90 / 214.31 | 14.21 |
+| 2K / 512 control | 260.54 / 259.42 / 259.15 | 17.94 |
+| 2K / 8192 candidate | 263.04 / 261.95 / 262.44 | 17.95 |
+
+At 8K, increasing the chunk alone reduces median throughput **6.4%**;
+`ds4-perf compare --regression` reports `Regressed`. The separate 2K
+comparison reports `Pass`: its 1.2% median gain does not exceed the robust
+gain threshold across the sample ranges. Each comparison checks 1,200,348
+logits with max_abs=0 and zero token differences. An earlier 1024-chunk
+pilot at 2K measured 264.37 versus 259.42 tok/s with exact proof; it is
+intermediate round-8 evidence, not another round or the selected default.
+
+The 8K trace explains the next kernel target: ordinary BF16 projections take
+3.031 s across 3360 calls at chunk 512, versus 5.445 s across 210 calls at
+chunk 8192. Reducing launch count alone does not offset the larger working
+set. Total profiled prefill wall time rises from 35.800 to 37.953 s. These
+trace times are separate from the unprofiled throughput table.
+
+Native dense-Q8, routed-expert, BF16 and attention tests cover 8191/8192
+rows, incomplete tiles and grid stride. Cold/replayed 8192/16385-token
+frontiers are exact. At context 8257 and chunk 8192, base graph allocation
+matches its quote of 5,576,422,656 bytes; MTP matches 11,348,081,152 bytes.
+Base/MTP session, media and accepted-prefix checks pass, including short
+prompts with the large configured cap.
+
+The first MTP fixture allocated an unnecessary second 8K reference graph
+and tripped the memory-pressure guard. Its failed evidence is retained.
+The reference now allocates only its 18-token transcript plus verification
+margin; the target remains at context 8257/chunk 8192. The bounded retry
+passes exact logits, KV and convolution state. The resident owner survived.
+This is fixture memory repair, not a runtime memory reduction.
+
+Evidence is under `scratch/inkling-perf/extra-three/r8/` and `r8-wide/`.
+The latter's `run.status` records the expected nonzero exit after the failed
+speed gate; `wide-compare/compare.json` records `Regressed`.
+`completion.json` records the completed experiment and rejected default.
+
+## Round 9: Q3 routed-up payload reuse, not retained
+
+At an explicit 8192 chunk, layer 40's routed Q3_K up projection consumed
+0.799 s, about 2.1% of prefill wall time. Its fallback repeated weight
+fragment decoding across columns and performed an unused SoA conversion.
+The candidate shares decoded payloads across eight assignments, consumes
+canonical Q8_1 input directly, and preserves all four-warp reductions.
+Dispatch was restricted to 256 experts, six routes, 4096-by-4096 weights
+and at least 2048 prompt rows. Smaller component workloads regressed.
+
+The component probe, including activation/routing preparation, improved
+8K from 789.300 to 498.036 ms and 2K from 196.062 to 125.571 ms. It remained
+byte-exact. The four-column alternative was slower than the eight-column
+candidate. Full-shape 2047/2048/2049/8192 tests, invalid routes, workspace
+bounds, nonblocking stream and rollback tests all pass.
+
+| 8K input / chunk 8192 | Prefill samples (tok/s) | Decode median (tok/s) |
+| --- | --- | --- |
+| Preceding round-8 control | 217.02 / 215.90 / 214.31 | 14.21 |
+| Q3 candidate | 219.18 / 216.73 / 216.34 | 14.20 |
+
+The full-model median improves only 0.4%, from 215.90 to 216.73 tok/s,
+with overlapping sample ranges. The candidate is not retained; an isolated
+kernel gain is insufficient. The same-hour comparison uses the preceding
+fresh-process control, identical prompt/artifacts and an unchanged chunk.
+
+In the full-model trace, Q3 falls from 798.942 to 498.192 ms, while total
+prefill wall time falls only from 37.953 to 37.710 s. Kernel count drops
+10681 to 10679 by removing the unused relayout and duplicate tile table.
+The candidate uses 94 registers per thread, with zero local bytes
+reported by Nsight. This confirms the local gain without establishing a
+sufficient end-to-end improvement. Raw source, binary hashes and rejected
+candidate evidence remain under `scratch/inkling-perf/extra-three/r9/` and
+`q3-probe/`.
+
+`ds4-perf compare` reports `Pass`, not `Improved`: 1,200,348 logits
+checked with max_abs=0 and zero token differences. No additional Q3
+variant or speed retest is included in the fixed campaign.
+
+## Round 10: BF16 token panels above 4096 rows
+
+At the explicit 8192 chunk, ordinary BF16 projections took 5.445 s across
+210 calls versus 3.031 s across 3360 calls at chunk 512: each 16-token group
+swept every weight row before the next group, so an 8192-row input slab no
+longer stayed in L2. The candidate changes only the CUDA tile job order.
+Neighbouring jobs now visit output rows within internal 512-token panels,
+so each panel's input stays resident while all weight rows pass once. Every
+output keeps its lane K stripe, FMA chain, XOR tree and BF16 store, so
+results are byte-identical. The job count is unchanged; the final partial
+panel uses its actual width, without padding or duplicate outputs.
+
+Dispatch requires at least 4097 rows, 4096 input width and 512/1024/4096
+output width, the q/k/v/r/o shapes. Inputs of 4096 rows or fewer and all
+other shapes keep the original schedule, so the chunk-512 release path is
+unchanged. `DS4_INKLING_NO_LINEAR_PANEL=1` restores the original order.
+The configured prefill chunk is not changed by this round.
+
+Native component timings for the 4096-by-4096 projection: 2048 rows
+14.09 to 14.01 ms and 4096 rows 64.6 to 64.4 ms (unchanged schedule),
+4097 rows 65.9 to 31.3 ms and 8192 rows 110.0 to 65.3 ms. At 8192 rows,
+the 1024-wide output falls 32.0 to 16.4 ms and the 512-wide output 16.6 to
+8.9 ms. An initial 2049-row minimum regressed 2049 rows from 13.06 to
+15.09 ms and was narrowed before any full-model scout.
+
+| 8K input / chunk 8192 | Prefill samples (tok/s) | Decode median (tok/s) |
+| --- | --- | --- |
+| Panel rollback | 216.70 / 212.95 / 213.43 | 14.21 |
+| Panel candidate | 233.42 / 232.49 / 230.02 | 14.21 |
+
+The median improves **8.9%** at chunk 8192, from 213.43 to 232.49 tok/s.
+`ds4-perf compare` reports `Improved`, checking 1,200,348 logits with
+max_abs=0 and zero token differences; decode and first-step medians are
+unchanged. Against the round-8 chunk-512 control (230.71 tok/s) the 8192
+chunk is now on par, not robustly faster, so **the default remains 512**.
+The panel order is retained as the wide-input kernel path. In the trace,
+BF16 falls from 5.451 to 3.080 s and prefill wall from 38.186 to 35.857 s
+with an unchanged kernel count.
+
+Native tests cover 2047/2048/2049/4096/4097/8192 rows, the three wide
+output widths, NaN-poisoned outputs before selected and rollback calls,
+partial aliases and unsupported shapes. Evidence is under
+`scratch/inkling-perf/extra-three/r10/`; `user-stop-2107/` retains the
+interrupted build that preceded the resumed run.
+
+## Round 11: attention grouped by KV head
+
+The fixed three-round campaign ended with round 10. At the user's request,
+further prefill rounds continue under the same protocol: the 8K input at the
+release chunk 512 is the primary comparison and the 2K workload is the
+regression check. Both use the same owner, artifacts and proof.
+
+At 8K input and chunk 512, attention took 6.405 s of the 35.8 s prefill
+trace: 4.4 s in the seven global layers and 2.0 s in the 35 local layers.
+The release kernel gave each (query, head) row its own CTA, so the four
+query heads of a KV head re-read the same K/V rows, every element paid a
+64-bit ring modulo, and each key's loads stalled before the next key's could
+issue. Counters showed about 118 instructions per (head, key) pair with 57%
+of issue slots stalled on memory.
+
+One CTA now owns a (query, KV head) pair. Its four warps keep the release
+key phases, but each warp scores the four query heads together, so K/V are
+read once per four heads. Keys stay 64-bit while row offsets and distances
+use 32-bit arithmetic, the ring slot advances without a modulo, and the next
+key's K/V and biases are prefetched while the current key is scored. Per (head, key) the FMA chain, XOR tree, score,
+online-softmax update and four-warp merge are unchanged, so outputs are
+byte-identical. A bound of six CTAs per SM keeps 80 registers without
+spills; an eight-CTA bound spilled and was slower.
+
+Dispatch requires at least 16 rows; decode and MTP verify widths keep the
+per-head kernel. `DS4_INKLING_NO_ATTN_GROUP=1` restores it at every width.
+
+Native component timings at position 7680: local 512 rows 3.47 to 1.57 ms,
+global 512 rows 97.2 to 22.4 ms and global 16 rows 2.58 to 1.27 ms. The
+attention test cross-checks 1/7/15-row chunks on the per-head kernel against
+16-row and full-prompt chunks on the grouped kernel, and the rollback against
+the grouped baseline, all exact, with the existing FP64 probes, captured
+replays, ring wrap and rejected-suffix checks.
+
+| Input / chunk 512 | Prefill samples (tok/s) | Decode median (tok/s) |
+| --- | --- | --- |
+| 8K grouped rollback | 230.76 / 230.84 / 230.89 | 14.21 |
+| 8K grouped candidate | 261.98 / 261.22 / 261.08 | 14.21 |
+| 2K grouped rollback | 260.23 / 259.67 / 259.63 | 17.97 |
+| 2K grouped candidate | 273.07 / 271.83 / 271.92 | 17.97 |
+
+The 8K median improves **13.2%**, from 230.84 to 261.22 tok/s, and the 2K
+median 4.7%, from 259.67 to 271.92 tok/s. Both comparisons report
+`Improved`, each checking 1,200,348 logits with max_abs=0 and zero token
+differences; decode and first-step medians are unchanged. In the 8K trace,
+attention falls from 6.405 to 2.238 s and prefill wall from 35.749 to
+31.638 s with an unchanged kernel count. Evidence, counters and the private
+probe are under `scratch/inkling-perf/extra-three/r11/`.
+
+## Round 12: dense Q8 prefill tiles
+
+After round 11, the layer 0-1 dense MLP took 1.80 s of the 31.6 s prefill
+trace across 4096 launches. The aligned Q8 vec kernel computed eight tokens
+per launch, so every 512-token chunk streamed each up and down weight
+matrix 64 times: about 438 GB per 8K prefill, which is the measured device
+bandwidth for 1.8 s.
+
+A prefill tile keeps each aligned weight row's codes and scales in
+registers while eight-token groups stream through shared memory, so a
+weight row is read once per call. Up (K 4096) keeps two rows per warp; down
+(K 16384) keeps one row per warp and stages each group in two K slices.
+Every output keeps the vec kernel's lane-per-block chain, dp4a order,
+scale expression and shfl_down tree, so results are byte-identical. All
+rows of a call are quantized in one launch, which yields the same Q8_1 bytes
+as the eight-row launches.
+
+Dispatch covers 1 to 8192 rows at the two Inkling widths; other shapes,
+devices whose dynamic shared-memory opt-in is below the 73,728-byte down
+tile and `DS4_INKLING_NO_Q8_TILE=1` keep the eight-column loop. Native timings at
+512 rows: up 38.1 to 8.9 ms, down 21.6 to 9.4 ms; the batch test checks
+2 to 8192 rows, the rollback, kill switches and rejected shapes exactly.
+
+| Input / chunk 512 | Prefill samples (tok/s) | Decode median (tok/s) |
+| --- | --- | --- |
+| 8K tile rollback | 261.79 / 261.46 / 260.90 | 14.21 |
+| 8K tile candidate | 273.50 / 272.76 / 272.06 | 14.21 |
+| 2K tile rollback | 272.91 / 271.70 / 271.64 | 17.96 |
+| 2K tile candidate | 284.53 / 283.82 / 283.40 | 17.96 |
+
+The 8K median improves **4.3%**, from 261.46 to 272.76 tok/s, and the 2K
+median 4.5%, from 271.70 to 283.82 tok/s. Both comparisons report
+`Improved`, each checking 1,200,348 logits with max_abs=0 and zero token
+differences; decode and first-step medians are unchanged. In the 8K
+trace the dense MLP falls from 1.802 to 0.571 s, quantize launches from
+6672 to 2640 and the kernel count from 42,976 to 34,912; prefill wall falls
+from 31.564 to 30.323 s. Evidence and the private probe are under
+`scratch/inkling-perf/extra-three/r12/` and `r12d/`.
+
+With this binary, an explicit 8192 chunk measured 277.34 / 276.21 / 270.82
+tok/s at 8K: a 1.3% median gain over the chunk-512 candidate with
+overlapping samples. `ds4-perf compare` reports `Pass`, not `Improved`, and
+the wide chunk needs 5.58 GB of graph scratch at context 8257, so **the
+default remains 512**. Evidence: `scratch/inkling-perf/extra-three/r13/`.
+
+Two review fixes follow the round-12 measurement: the grouped attention
+loop keeps 64-bit `query`/`first` and steps over a 32-bit distance with a
+wrap-safe guard, with a native case ending exactly at UINT32_MAX, and the
+dense Q8 tile returns to the eight-column loop when the device's dynamic
+shared-memory opt-in is below the down tile. The fixed binary measures
+272.48 / 271.54 / 271.42 tok/s at 8K (`Pass` against the round-12
+candidate, exact logits and tokens; `r13/fix2/`). A first attempt with a
+fully 64-bit key loop measured 255 tok/s and was discarded (`r13/fix/`).
 
 ## Reproduction and evidence
 
@@ -382,7 +630,10 @@ MTP sidecar, tokenizer config and Jinja sidecar; the first shard's key is
 `--env DS4_INKLING_NO_Q8_BATCH=1` for the dense-Q8 rollback control, or
 `--env DS4_INKLING_NO_MOE_TILE=1` for the expert-tile rollback control, or
 `--env DS4_INKLING_NO_LINEAR_TILE=1` for the BF16-tile rollback control, or
-`--env DS4_INKLING_NO_SHARED_Q8=1` for the shared-up rollback control.
+`--env DS4_INKLING_NO_SHARED_Q8=1` for the shared-up rollback control, or
+`--env DS4_INKLING_NO_LINEAR_PANEL=1` for the BF16-panel rollback control, or
+`--env DS4_INKLING_NO_ATTN_GROUP=1` for the grouped-attention rollback control, or
+`--env DS4_INKLING_NO_Q8_TILE=1` for the dense-Q8-tile rollback control.
 Use `--env DS4_INKLING_PREFILL_CHUNK=64` to restore the preceding chunk cap.
 See [ds4-perf](ds4-perf.md) for calibration, workload schema, memory guards
 and `compare --regression`.
@@ -409,6 +660,10 @@ the corrected expert-test build typo are retained separately.
 | BF16 tile executable | `82c0f12a2c77bf25781fafa6d75e49a975176cf4a0f873f2715f6e6f0c7166fc` |
 | Chunk-512 executable | `27c8f157dcd0475754b48602e2ee2f9f49e30dea30457e96c9f3b416165de121` |
 | Shared Q8 up executable | `66aac1ebaba2326865e9a80cbee2ae552e4b37d546cc9c8a69a1f6e7f62b3594` |
+| BF16 panel executable | `fb87ed77ea6cf92aa206cb3393ced758cf904f79d682b9e32561245e58495c36` |
+| Grouped attention executable | `cfffb1723f4d24d650fe4edd7c2a2b9b3946c7a6b87c351be1eab1683455274b` |
+| Dense Q8 tile executable | `d2c9dfca3e25f2b75ce3cde57aab92e948f6cbfa15357ef8ce3893eeb9631bb6` |
+| Review-fix executable | `0ab5bb013f1c503f22e27971d336b1e30fa470ba827af82f0bd53a7c62628ab5` |
 | Prompt | `f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f` |
 | Baseline–round-3 IPC manifest | `4f9e46dce133c5a14bf85f3ecd71e0437b27bbcaad38a1c679d4aebd3b5a8de8` |
 | Round-4–7 IPC manifest | `43b795a0d21d293af31ca3fdca0a30402ee464a58279e7b9c04f41432d0583e7` |

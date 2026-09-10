@@ -20779,9 +20779,9 @@ static const uint32_t inkling_width[IK_BUFFERS] = {
 };
 
 static uint32_t inkling_prefill_cap(uint32_t ctx) {
-    /* Wider chunks improve expert-tile fill and weight reuse across prompt
-     * rows. Arithmetic stays chunk-invariant; graph scratch grows with cap. */
-    enum { DEFAULT_CAP = 512, MAX_CAP = 2048 };
+    /* Chunk width trades expert-tile fill against activation working set.
+     * Arithmetic stays chunk-invariant; graph scratch grows with cap. */
+    enum { DEFAULT_CAP = 512, MAX_CAP = 8192 };
     uint32_t cap = DEFAULT_CAP;
     const char *env = getenv("DS4_INKLING_PREFILL_CHUNK");
     if (env && env[0]) {

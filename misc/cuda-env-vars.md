@@ -29,9 +29,10 @@ The bandwidth figure is informational; we don't tier on it.
 
 ## Env-var inventory
 
-- `DS4_INKLING_PREFILL_CHUNK=N` selects 1–2048 prompt rows per chunk,
-  capped by context. Default 512 improves expert-tile fill; 64 restores the
-  previous default and uses less graph scratch.
+- `DS4_INKLING_PREFILL_CHUNK=N` selects 1–8192 prompt rows per chunk,
+  capped by context. Default 512 is retained after the 8192 candidate regressed
+  the matched 8K workload. Shorter prompts use only their actual rows;
+  larger caps increase graph scratch.
 
 - `DS4_INKLING_NO_LINEAR=1` restores the separate stable BF16 projection and
   output-rounding kernels. Unset it to enable Inkling's token-grouped ordinary
@@ -60,6 +61,25 @@ The bandwidth figure is informational; we don't tier on it.
   the token slab in shared memory; every output keeps the same lane stripe,
   FMA chains and XOR tree. Widths below 16 and K not divisible by 256 keep
   the grouped kernel. Decode is unchanged.
+
+- `DS4_INKLING_NO_LINEAR_PANEL=1` restores the original BF16 tile job order.
+  Above 4096 prompt rows, the candidate schedules q/k/v/r/o output rows
+  within internal 512-token panels (input width 4096; output 512/1024/4096).
+  This changes kernel work order, not the prefill chunk. Other shapes and
+  smaller inputs retain the original schedule.
+
+- `DS4_INKLING_NO_ATTN_GROUP=1` restores per-head prefill attention CTAs.
+  At 16 or more rows, the grouped kernel scores the four query heads of a
+  KV head in one CTA, reading each K/V element once per four heads with
+  64-bit keys, 32-bit row offsets and prefetched keys. Decode and MTP verify
+  widths keep the per-head kernel. Outputs are byte-identical.
+
+- `DS4_INKLING_NO_Q8_TILE=1` restores the eight-column aligned dense Q8
+  loop for the layer 0-1 MLP. The prefill tile keeps each weight row in
+  registers while eight-token groups stream through shared memory, so a
+  weight row is read once per call instead of once per eight tokens. Only
+  K 4096/16384 use it, and devices whose dynamic shared-memory opt-in is
+  below the 73,728-byte down tile keep the loop; outputs are byte-identical.
 
 - `DS4_QWEN_PLE_DIR=/absolute/path/to/PLE-FP8` selects that directory's
   `ple-manifest.json` for the Qwen SSD-PLE loader. It supports the official
