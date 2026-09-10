@@ -51,8 +51,9 @@ Do not reuse recorded PIDs or assume those services are running.
 
 - [Inkling Small integration](inkling-small.md): MQ85GB/MTP serving,
   multimodal checks and remaining qualification.
-- [Inkling MQ85GB optimization](inkling-optimization-2026-09-10.md): GB10
-  prefill/decode measurements and numerical controls.
+- Inkling MQ85GB: [rounds 1–12](inkling-optimization-2026-09-10.md) and
+  [rounds 13–15](inkling-optimization-2026-09-11.md), GB10 prefill/decode
+  measurements and numerical controls.
 - [Qwen image input contract](qwen38-image-input-spec.md): original design;
   use the current README and dated image evidence for implemented scope.
 - [W2A16 fused-dequant GEMM proposal](ds4-w2a16-fused-dequant-gemm-design.md):

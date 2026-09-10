@@ -5,6 +5,26 @@ from merged runtime `49895b8` (the tree of reviewed round-12 `4c32556`).
 All measurements use MQ85GB on one DGX Spark / GB10, CUDA 13.3.73,
 driver 610.43.02, compiled for `sm_121a` through `CUDA_ARCH=sm_121`.
 
+## Three retained rounds
+
+These cumulative comparisons use the final binary with all three new
+switches set and with defaults. The controls restore the prior merged
+runtime's retained paths, using fresh runs with the same fixture and
+artifacts. Their medians are separate from the per-round controls below.
+
+| Input | Prefill control → default (tok/s) | Gain | Decode control → default (tok/s) | Verdict |
+|---|---:|---:|---:|---|
+| 8,192 | 271.21 → 312.88 | +15.36% | 14.21 → 14.22 | Improved |
+| 2,048 | 283.41 → 327.86 | +15.68% | 17.96 → 17.97 | Improved |
+
+Every comparison checks 1,200,348 logits (`max_abs=0`, no bad values)
+and has zero generated-token mismatches. Three throughput samples per side:
+
+- 8,192 control: 272.26 / 271.21 / 271.15; default: 313.03 / 312.88 / 312.29 tok/s.
+- 2,048 control: 284.42 / 283.41 / 283.11; default: 329.42 / 327.86 / 327.59 tok/s.
+
+Retained commits: R13 [`4081119`](https://github.com/Baekpica/ds4-dfm-rs/commit/4081119a9efa718188a03eeb6ab86552ed51a053), R14 [`5509610`](https://github.com/Baekpica/ds4-dfm-rs/commit/550961016d4b8f32149f6bd96c9eb3d02a20accc), R15 [`f7881de`](https://github.com/Baekpica/ds4-dfm-rs/commit/f7881de7ef83596ae9c39958001c4c5ac6cdba05).
+
 ## Protocol
 
 - `speed-bench/promessi_sposi.txt`, 8192/2048 input tokens, 64 greedy output
@@ -19,6 +39,9 @@ driver 610.43.02, compiled for `sm_121a` through `CUDA_ARCH=sm_121`.
   on the same binary. Full-vocabulary logits and generated IDs must match;
   prefill, decode and first-token latency pass `compare --regression`.
   Sample envelopes describe observed variation, not confidence intervals.
+
+Temperature/clock samples are retained in `thermals.csv`; no clock or
+power policy was changed for this campaign.
 
 ## Round 13: shared Q8 up weights retained across columns
 
@@ -147,12 +170,27 @@ fixture. Constraining four-row tiles to six or eight resident CTAs spilled;
 two-row/eight-column tiles avoided spills but did not improve the measured
 up/down pair. None was integrated or counted as a retained round.
 
+## Final validation
+
+- Native batch and full-forward gates pass for every round, including the
+  515-token Q4_K threshold check and exact committed KV/convolution state.
+- `tests/test_inkling_session` passes with the shared MQ85GB + eight-layer
+  MTP-BF16 owner: lifecycle, accepted greedy tokens and committed target state,
+  image/audio identity and invalid-input state. This short-context regression
+  does not measure MTP throughput or repeat the historical HTTP checks.
+- `cargo fmt`, workspace clippy, all eight host parity targets, serialized
+  workspace tests, `make test-ple-formats` and all-target workspace check pass.
+- The four default Rust hosts are relinked; CLI/bench/agent `--help` and
+  server `--version` startup checks succeed.
+  No native host/control-plane boundary or weight payload changes.
+
 ## Evidence
 
 Raw commands, hashes, guards, proofs, traces and comparisons are retained
 under `scratch/inkling-perf/next-three/`, including `baseline/`, `r13/`,
-`iq2/`, `shared/`, `q4/` and `thermals.csv`. The workload manifests are the
-unchanged `scratch/inkling-perf/extra-three/workload-8k.json` and
+`r14/`, `r15/`, `cumulative/`, `final-checks/`, `final-session/`,
+`final-hosts/`, `iq2/`, `shared/`, `q4/` and `thermals.csv`. The workload manifests
+are the unchanged `scratch/inkling-perf/extra-three/workload-8k.json` and
 `scratch/inkling-perf/r4/workload.json`. These are MQ85GB text-prefill
 measurements, not source-model, long-context, media-performance or MTP
 throughput qualification. [HTTP/media scope](inkling-small.md) remains
