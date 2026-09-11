@@ -2,6 +2,7 @@
 
 Continuation of [rounds 1–12](inkling-optimization-2026-09-10.md), starting
 from merged runtime `49895b8` (the tree of reviewed round-12 `4c32556`).
+Continued in [rounds 16–18](inkling-optimization-2026-09-11-r16.md).
 All measurements use MQ85GB on one DGX Spark / GB10, CUDA 13.3.73,
 driver 610.43.02, compiled for `sm_121a` through `CUDA_ARCH=sm_121`.
 
