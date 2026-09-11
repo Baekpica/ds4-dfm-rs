@@ -172,12 +172,19 @@ Q8_1 input pointers and insufficient block shared memory keep the prior path.
 `DS4_INKLING_NO_SHARED_DOWN_TILE=1` restores warp-owned shared Q8 down tiles;
 from 64 prompt tokens (128 assignment rows), weights stay in registers while
 input groups stream through shared memory with the original one-warp sum.
+`DS4_INKLING_NO_Q8_ROUTED_TILE=1` restores warp-owned routed Q8 tiles;
+from 64 prompt rows, the optimized path keeps weights in registers across
+all routed columns with the shared-expert tile schedule.
+`DS4_INKLING_NO_IQ2_XS_ALIGNED=1` restores 74-byte IQ2_XS down tiles;
+the optimized path reads owner SoA artifacts with the same MMVQ reduction.
+`DS4_INKLING_NO_IQ2_ALIGNED=1` restores 66-byte IQ2_XXS expert tiles;
+the optimized path reads owner SoA artifacts with the same MMVQ reduction.
 `DS4_INKLING_NO_Q4_TILE=1` restores four-column Q4_K expert batches;
 from 3072 routed assignments, eight-column tiles reuse payload loads and
 unpacked scales with the same MMVQ partial sums and skip the unused relayout.
 `DS4_INKLING_PREFILL_CHUNK=N` (1–8192) sets the maximum Inkling prefill chunk width;
-shorter prompts remain valid. The default is 512, capped by context.
-Increasing it to 8192 alone regressed the matched 8K Inkling workload.
+shorter prompts remain valid. The default is 1024, capped by context.
+`DS4_INKLING_PREFILL_CHUNK=512` restores the previous cap.
 Scout consumers also reparse each referenced unprofiled benchmark CSV and
 require its rows to match the serialized samples. Hashing and parsing use the
 same bytes; benchmark stdout is limited to 64 MiB per sample on load.

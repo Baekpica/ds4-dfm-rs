@@ -4,7 +4,8 @@ MQ85GB and the separate eight-layer MTP-BF16 draft stack have Rust CLI and
 serial CUDA HTTP paths on DGX Spark. Short artifact checks cover text, image
 and audio input with text output, matching the modalities of the
 [base model](https://huggingface.co/thinkingmachines/Inkling-Small/blob/8cc5877b44d343f88b92086aa1fb72897950f06a/README.md).
-The [GB10 performance report](inkling-optimization-2026-09-11.md) measures
+The [GB10 performance report](inkling-optimization-2026-09-11.md) and
+[rounds 16–18](inkling-optimization-2026-09-11-r16.md) measure
 8192- and 2048-token prefill and 64-token decode with MTP off. Long-context
 serving and independent full-model source parity remain unqualified. These
 checks apply to MQ85GB, not MQ89 or Q8_0 main.
@@ -106,7 +107,7 @@ Native CUDA sessions support lazy allocation, exact-prefix reuse, decode,
 invalidate and rewind followed by replay. The MQ85GB session gate matched
 cold/reused logits and measured exactly 100,306,688 graph bytes at context 32,
 matching its memory quote; host session parity also passed. The default
-prefill cap is 512 (`DS4_INKLING_PREFILL_CHUNK`, range 1–8192, capped by context).
+prefill cap is 1024 (`DS4_INKLING_PREFILL_CHUNK`, range 1–8192, capped by context).
 Shorter prompts use their actual rows. Larger caps increase graph scratch;
 8192 is an experimental setting, not a measured default improvement.
 Batching, snapshots and distributed execution remain unavailable until their
@@ -270,8 +271,10 @@ completion tokens. MTP averaged 2.75 tokens per decode step versus 1.00 off,
 but request wall time increased from 1.150 s to 3.079 s. This implementation
 establishes a correctness baseline; these short requests show no speedup and
 are not a throughput benchmark. The separate
-[performance campaign](inkling-optimization-2026-09-10.md) times MTP-off
-prefill and decode; it does not establish an MTP speedup.
+[performance campaign](inkling-optimization-2026-09-10.md)
+([rounds 13–15](inkling-optimization-2026-09-11.md),
+[rounds 16–18](inkling-optimization-2026-09-11-r16.md))
+times MTP-off prefill and decode; it does not establish an MTP speedup.
 
 Model-free regressions cover output/context caps, EOS, substring stops,
 stream disconnect invalidation, malformed prefixes and forced/stochastic

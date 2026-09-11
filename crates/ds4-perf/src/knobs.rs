@@ -18,6 +18,9 @@ pub fn tunable(key: &str) -> bool {
             | "DS4_INKLING_NO_SHARED_TILE"
             | "DS4_INKLING_NO_SHARED_DOWN_TILE"
             | "DS4_INKLING_NO_Q4_TILE"
+            | "DS4_INKLING_NO_Q8_ROUTED_TILE"
+            | "DS4_INKLING_NO_IQ2_ALIGNED"
+            | "DS4_INKLING_NO_IQ2_XS_ALIGNED"
             | "DS4_INKLING_PREFILL_CHUNK"
             | "DS4_CUDA_SOLAR_GQA_CHUNK"
     )
@@ -44,7 +47,10 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         | "DS4_INKLING_NO_SHARED_Q8"
         | "DS4_INKLING_NO_SHARED_TILE"
         | "DS4_INKLING_NO_SHARED_DOWN_TILE"
-        | "DS4_INKLING_NO_Q4_TILE" => family == "inkling" && value == "1",
+        | "DS4_INKLING_NO_Q4_TILE"
+        | "DS4_INKLING_NO_Q8_ROUTED_TILE"
+        | "DS4_INKLING_NO_IQ2_ALIGNED"
+        | "DS4_INKLING_NO_IQ2_XS_ALIGNED" => family == "inkling" && value == "1",
         "DS4_INKLING_PREFILL_CHUNK" => family == "inkling" && (1..=8192).contains(&n),
         "DS4_CUDA_SOLAR_GQA_CHUNK" => {
             family.starts_with("solar") && [64, 128, 256, 512, 1024, 2048].contains(&n)
@@ -78,6 +84,9 @@ mod tests {
             "DS4_INKLING_NO_SHARED_TILE",
             "DS4_INKLING_NO_SHARED_DOWN_TILE",
             "DS4_INKLING_NO_Q4_TILE",
+            "DS4_INKLING_NO_Q8_ROUTED_TILE",
+            "DS4_INKLING_NO_IQ2_ALIGNED",
+            "DS4_INKLING_NO_IQ2_XS_ALIGNED",
         ] {
             assert!(tunable(key));
             assert!(validate(key, "1", "Inkling").is_ok());
@@ -89,7 +98,7 @@ mod tests {
             }
         }
         assert!(tunable("DS4_INKLING_PREFILL_CHUNK"));
-        for value in ["1", "512", "2048", "2049", "8192"] {
+        for value in ["1", "512", "1024", "2048", "2049", "8192"] {
             assert!(validate("DS4_INKLING_PREFILL_CHUNK", value, "inkling").is_ok());
         }
         for value in ["0", "8193", "x"] {

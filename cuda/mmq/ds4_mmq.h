@@ -56,6 +56,18 @@ int ds4_mmq_inkling_moe(
         const void *weights, int type, const float *x, const int32_t *ids,
         float *out, int m, int k, int rows, int experts, int used,
         cudaStream_t stream);
+int ds4_mmq_inkling_moe_iq2_aligned(
+        const void *weights, const float *x, const int32_t *ids,
+        float *out, int m, int k, int rows, int experts, int used,
+        cudaStream_t stream);
+int ds4_mmq_inkling_moe_iq2_xs_aligned(
+        const void *weights, const float *x, const int32_t *ids,
+        float *out, int m, int k, int rows, int experts, int used,
+        cudaStream_t stream);
+uint64_t ds4_mmq_iq2_xs_aligned_bytes(int M, int K, int n_experts);
+int ds4_mmq_iq2_xs_aligned_derepack(
+    const void *W_aligned, void *raw_out,
+    int M, int K, int n_experts, cudaStream_t stream);
 
 // Tensor-core prefill attention for the production 128-wide GQA head.
 // The Solar entry decodes compressed K/V once per shared 16-key tile and

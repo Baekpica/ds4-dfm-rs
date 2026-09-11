@@ -3377,8 +3377,8 @@ static bool accelerator_cache_model_tensor_spans(const ds4_model *m, uint64_t *c
             free(spans);
             return false;
         }
-        const bool expert =
-            memmem(t->name.ptr, t->name.len, "_exps.", 6) != NULL;
+        const bool expert = m->tensor_traits &&
+            (m->tensor_traits[i] & DS4_TCAT_ROUTED_EXPERT) != 0;
         if (expert) {
             if (!replacement_mode) continue;
             if (ds4_gpu_model_range_replaced(m->map, t->abs_offset,
@@ -20780,8 +20780,10 @@ static const uint32_t inkling_width[IK_BUFFERS] = {
 
 static uint32_t inkling_prefill_cap(uint32_t ctx) {
     /* Chunk width trades expert-tile fill against activation working set.
-     * Arithmetic stays chunk-invariant; graph scratch grows with cap. */
-    enum { DEFAULT_CAP = 512, MAX_CAP = 8192 };
+     * Arithmetic stays chunk-invariant; graph scratch grows with cap.
+     * 1024 vs 512 doubles assignments per expert and linear/attn rows on
+     * the 8K campaign shape; 8192 alone previously regressed. */
+    enum { DEFAULT_CAP = 1024, MAX_CAP = 8192 };
     uint32_t cap = DEFAULT_CAP;
     const char *env = getenv("DS4_INKLING_PREFILL_CHUNK");
     if (env && env[0]) {

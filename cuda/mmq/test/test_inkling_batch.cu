@@ -1,5 +1,6 @@
 // Canonical activation bytes and fixed-reduction MoE batch parity.
 #include "ds4_mmq.h"
+#include "ds4_repack.h"
 #include "mmvq.cuh"
 #include "quantize.cuh"
 #include "../../../ds4_gpu.h"
@@ -154,6 +155,14 @@ static void batch_case(ggml_type type, int m, int tokens, int ne, int used,
         exact(got, want, out_bytes);
     }
 
+    if (type == GGML_TYPE_Q8_0 && ne != SHARED) {
+        CUDA(cudaMemset(got, 0xff, out_bytes));
+        CHECK(setenv("DS4_INKLING_NO_Q8_ROUTED_TILE", "1", 1) == 0);
+        CHECK(ds4_mmq_inkling_moe(dw, type, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+        CHECK(unsetenv("DS4_INKLING_NO_Q8_ROUTED_TILE") == 0);
+        exact(got, want, out_bytes);
+    }
+
     if (type == GGML_TYPE_Q4_K) {
         CUDA(cudaMemset(got, 0xff, out_bytes));
         CHECK(setenv("DS4_INKLING_NO_Q4_TILE", "1", 1) == 0);
@@ -165,6 +174,7 @@ static void batch_case(ggml_type type, int m, int tokens, int ne, int used,
     const size_t work_bytes = ds4_mmvq_inkling_bytes(rows, ne, used);
     void *work = device_copy(nullptr, work_bytes);
     if ((type == GGML_TYPE_Q8_0 && ne == SHARED && tokens == 65) ||
+        (type == GGML_TYPE_Q8_0 && ne != SHARED && tokens == 65) ||
         (type == GGML_TYPE_Q4_K && tokens == 513)) {
         cudaStream_t stream;
         CUDA(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
@@ -225,6 +235,146 @@ static void batch_case(ggml_type type, int m, int tokens, int ne, int used,
     CUDA(cudaFree(got)); CUDA(cudaFree(want));
 }
 
+static std::vector<unsigned char> pack_iq2_aligned(
+        const std::vector<unsigned char> &raw, int m, int k, int ne) {
+    const uint64_t nblk = (uint64_t)ne * m * (k / 256);
+    CHECK(raw.size() == nblk * 66u);
+    const uint64_t bytes = ds4_mmq_iq2_xxs_aligned_bytes(m, k, ne);
+    CHECK(bytes != 0);
+    std::vector<unsigned char> art(bytes);
+    const uint64_t dq_bytes = (nblk * 2u + 63u) & ~63ull;
+    for (uint64_t b = 0; b < nblk; b++) {
+        memcpy(art.data() + b * 2, raw.data() + b * 66, 2);
+        memcpy(art.data() + dq_bytes + b * 64, raw.data() + b * 66 + 2, 64);
+    }
+    return art;
+}
+
+static void candidate_case() {
+    ds4_repack_tensor t;
+    t.type = 16;
+    t.ndim = 3;
+    t.dims[0] = 4096;
+    t.dims[1] = 4096;
+    t.dims[2] = 256;
+    t.bytes = 66ull * 16ull * 4096ull * 256ull;
+    t.name = "model.llm.layers.3.mlp.experts.w13_weight";
+    CHECK(ds4_repack_iq2_candidate(t));
+    t.name = "blk.7.ffn_gate_exps.weight";
+    t.dims[0] = 2048;
+    t.dims[1] = 1024;
+    t.bytes = 66ull * 1000ull;
+    CHECK(ds4_repack_iq2_candidate(t));
+    t.name = "model.llm.layers.3.mlp.experts.w2_weight";
+    CHECK(!ds4_repack_iq2_candidate(t));
+    t.name = "model.llm.layers.3.mlp.shared_experts.shared_w13_weight";
+    t.dims[0] = 4096;
+    t.dims[1] = 4096;
+    t.dims[2] = 2;
+    t.bytes = 66ull * 16ull * 4096ull * 2ull;
+    CHECK(!ds4_repack_iq2_candidate(t));
+    t.name = "model.llm.layers.3.mlp.experts.w13_weight";
+    t.dims[0] = 1000;
+    t.bytes = 66ull * 1000ull;
+    CHECK(!ds4_repack_iq2_candidate(t));
+    t.type = 17;
+    t.dims[0] = 2048;
+    t.dims[1] = 4096;
+    t.dims[2] = 256;
+    t.bytes = 74ull * 8ull * 4096ull * 256ull;
+    t.name = "model.llm.layers.3.mlp.experts.w2_weight";
+    CHECK(ds4_repack_iq2_xs_candidate(t));
+    t.name = "model.llm.layers.3.mlp.experts.w13_weight";
+    CHECK(!ds4_repack_iq2_xs_candidate(t));
+}
+
+static std::vector<unsigned char> pack_iq2_xs_aligned(
+        const std::vector<unsigned char> &raw, int m, int k, int ne) {
+    const uint64_t nblk = (uint64_t)ne * m * (k / 256);
+    CHECK(raw.size() == nblk * 74u);
+    const uint64_t bytes = ds4_mmq_iq2_xs_aligned_bytes(m, k, ne);
+    CHECK(bytes != 0);
+    std::vector<unsigned char> art(bytes);
+    const uint64_t dq_bytes = (nblk * 2u + 63u) & ~63ull;
+    const uint64_t sc_bytes = (nblk * 8u + 63u) & ~63ull;
+    for (uint64_t b = 0; b < nblk; b++) {
+        memcpy(art.data() + b * 2, raw.data() + b * 74, 2);
+        memcpy(art.data() + dq_bytes + b * 8, raw.data() + b * 74 + 66, 8);
+        memcpy(art.data() + dq_bytes + sc_bytes + b * 64, raw.data() + b * 74 + 2, 64);
+    }
+    return art;
+}
+
+static void aligned_xs_case(int m, int tokens, int ne, Routes routing) {
+    const int used = 1, rows = tokens, assignments = rows * used, k = MIDDLE;
+    auto w = weights(GGML_TYPE_IQ2_XS, m, k, ne);
+    auto art = pack_iq2_xs_aligned(w, m, k, ne);
+    std::vector<float> x((size_t)rows * k);
+    std::vector<int32_t> ids(assignments);
+    for (auto &v : x) { v = ((int)(random_bits() % 2001) - 1000) / 417.0f; }
+    for (int a = 0; a < assignments; a++) {
+        ids[a] = routing == REPEATED ? ne - 1 :
+            routing == RANDOM ? random_bits() % ne : (a * 13 + a / used) % ne;
+        if (routing == INVALID && a % 3 == 0) { ids[a] = -1; }
+    }
+    void *dw = device_copy(w.data(), w.size());
+    void *da = device_copy(art.data(), art.size());
+    auto *dx = (float *)device_copy(x.data(), x.size() * sizeof(float));
+    auto *di = (int32_t *)device_copy(ids.data(), ids.size() * sizeof(int32_t));
+    const size_t out_bytes = (size_t)assignments * m * sizeof(float);
+    auto *got = (float *)device_copy(nullptr, out_bytes);
+    auto *want = (float *)device_copy(nullptr, out_bytes);
+    CHECK(ds4_mmq_inkling_moe(dw, GGML_TYPE_IQ2_XS, dx, di, want, m, k, rows, ne, used, nullptr) == 0);
+    CHECK(ds4_mmq_inkling_moe_iq2_xs_aligned(da, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+    exact(got, want, out_bytes);
+    printf("aligned-xs M=%d tokens=%d experts=%d routes=%d exact\n", m, tokens, ne, routing);
+    CUDA(cudaFree(dw)); CUDA(cudaFree(da)); CUDA(cudaFree(dx)); CUDA(cudaFree(di));
+    CUDA(cudaFree(got)); CUDA(cudaFree(want));
+}
+
+static void aligned_case(int m, int tokens, int ne, Routes routing) {
+    const int used = USED, rows = tokens, assignments = rows * used, k = HIDDEN;
+    auto w = weights(GGML_TYPE_IQ2_XXS, m, k, ne);
+    auto art = pack_iq2_aligned(w, m, k, ne);
+    std::vector<float> x((size_t)rows * k);
+    std::vector<int32_t> ids(assignments);
+    for (auto &v : x) { v = ((int)(random_bits() % 2001) - 1000) / 417.0f; }
+    for (int a = 0; a < assignments; a++) {
+        ids[a] = routing == REPEATED ? ne - 1 :
+            routing == RANDOM ? random_bits() % ne : (a * 13 + a / used) % ne;
+        if (routing == INVALID && a % 3 == 0) { ids[a] = -1; }
+    }
+    void *dw = device_copy(w.data(), w.size());
+    void *da = device_copy(art.data(), art.size());
+    auto *dx = (float *)device_copy(x.data(), x.size() * sizeof(float));
+    auto *di = (int32_t *)device_copy(ids.data(), ids.size() * sizeof(int32_t));
+    const size_t out_bytes = (size_t)assignments * m * sizeof(float);
+    auto *got = (float *)device_copy(nullptr, out_bytes);
+    auto *want = (float *)device_copy(nullptr, out_bytes);
+    CHECK(ds4_mmq_inkling_moe(dw, GGML_TYPE_IQ2_XXS, dx, di, want, m, k, rows, ne, used, nullptr) == 0);
+    CHECK(ds4_mmq_inkling_moe_iq2_aligned(da, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+    exact(got, want, out_bytes);
+    CUDA(cudaMemset(got, 0xff, out_bytes));
+    CHECK(setenv("DS4_INKLING_NO_IQ2_ALIGNED", "1", 1) == 0);
+    CHECK(ds4_mmq_inkling_moe_iq2_aligned(da, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_IQ2_ALIGNED") == 0);
+    exact(got, want, out_bytes);
+    const size_t work_bytes = ds4_mmvq_inkling_bytes(rows, ne, used);
+    void *work = device_copy(nullptr, work_bytes);
+    const size_t q8row = k / QK8_1 * sizeof(block_q8_1), q8bytes = rows * q8row;
+    auto *q8 = (char *)device_copy(nullptr, q8bytes);
+    quantize_row_q8_1_cuda(dx, nullptr, q8, GGML_TYPE_IQ2_XXS, k, k, k,
+                          (int64_t)k * rows, k, 1, rows, 1, nullptr);
+    CUDA(cudaMemset(got, 0xff, out_bytes));
+    CHECK(ds4_mmvq_inkling_iq2_aligned(da, q8, di, got, work, work_bytes,
+                                      m, k, rows, ne, used, nullptr) == 0);
+    exact(got, want, out_bytes);
+    printf("aligned M=%d tokens=%d experts=%d routes=%d exact\n", m, tokens, ne, routing);
+    CUDA(cudaFree(work)); CUDA(cudaFree(q8));
+    CUDA(cudaFree(dw)); CUDA(cudaFree(da)); CUDA(cudaFree(dx)); CUDA(cudaFree(di));
+    CUDA(cudaFree(got)); CUDA(cudaFree(want));
+}
+
 static ds4_gpu_tensor *tensor(const void *data, size_t bytes) {
     auto *t = ds4_gpu_tensor_alloc(bytes); CHECK(t);
     if (data) { CHECK(ds4_gpu_tensor_write(t, 0, data, bytes)); }
@@ -278,7 +428,10 @@ static void wrapper_case() {
 int main() {
     CHECK(unsetenv("DS4_INKLING_NO_MOE_BATCH") == 0);
     CHECK(unsetenv("DS4_INKLING_NO_MOE_TILE") == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_IQ2_ALIGNED") == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_IQ2_XS_ALIGNED") == 0);
     CHECK(ds4_gpu_init()); CHECK(ds4_mmq_init(0) == 0);
+    candidate_case();
     CHECK(ds4_mmvq_inkling_bytes(8192 * USED + 1, MAX_EXPERTS, 1) == 0);
     CHECK(ds4_mmvq_inkling_bytes(8193, MAX_EXPERTS, USED) == 0);
     const ggml_type types[] = {GGML_TYPE_Q8_0, GGML_TYPE_Q3_K, GGML_TYPE_Q4_K,
@@ -305,6 +458,14 @@ int main() {
         batch_case(GGML_TYPE_IQ2_XS, HIDDEN, tokens, MAX_EXPERTS, 1, RANDOM);
     }
     batch_case(GGML_TYPE_IQ2_XXS, HIDDEN, 64, MAX_EXPERTS, USED, INVALID);
+    aligned_case(128, 64, MAX_EXPERTS, SPREAD);
+    aligned_case(HIDDEN, 1, MAX_EXPERTS, RANDOM);
+    aligned_case(HIDDEN, 64, MAX_EXPERTS, RANDOM);
+    aligned_case(HIDDEN, 512, MAX_EXPERTS, RANDOM);
+    aligned_case(HIDDEN, 64, MAX_EXPERTS, INVALID);
+    aligned_xs_case(HIDDEN, 1, MAX_EXPERTS, RANDOM);
+    aligned_xs_case(HIDDEN, 64, MAX_EXPERTS, RANDOM);
+    aligned_xs_case(HIDDEN, 512, MAX_EXPERTS, SPREAD);
     batch_case(GGML_TYPE_IQ2_XS, HIDDEN, 64, MAX_EXPERTS, 1, INVALID);
     for (int tokens : {64, 512}) {
         batch_case(GGML_TYPE_Q8_0, HIDDEN, tokens, SHARED, SHARED, SPREAD);
@@ -331,6 +492,14 @@ int main() {
         }
         batch_case(GGML_TYPE_Q4_K, 126, 513, MAX_EXPERTS, used, REPEATED);
         batch_case(GGML_TYPE_Q4_K, HIDDEN, 512, MAX_EXPERTS, used, RANDOM);
+    }
+    for (int used : {int(USED), 1}) {
+        for (int tokens : {63, 64, 65, 8192}) {
+            batch_case(GGML_TYPE_Q8_0, 126, tokens, MAX_EXPERTS, used, RANDOM);
+            batch_case(GGML_TYPE_Q8_0, 126, tokens, MAX_EXPERTS, used, INVALID);
+        }
+        batch_case(GGML_TYPE_Q8_0, 126, 65, MAX_EXPERTS, used, REPEATED);
+        batch_case(GGML_TYPE_Q8_0, HIDDEN, 512, MAX_EXPERTS, used, RANDOM);
     }
     wrapper_case(); puts("Inkling expert batch checks passed"); return 0;
 }

@@ -809,6 +809,9 @@ enum cuda_derived_kind {
     /* Motif-3/Dots3 MLA W_UV Q8_0: scales/codes transposed across its 128
      * value rows so a value-projection warp reads adjacent memory. ADDITIVE. */
     CUDA_DERIVED_MOTIF3_KV_B_VALUE_Q8_0 = 7,
+    /* Inkling fused-down IQ2_XS: [__half d[nblk]][pad 64][uint8 sc[nblk*8]]
+     * [pad 64][uint2 qs[nblk*8]]. REPLACE, same residency as XXS w13. */
+    CUDA_DERIVED_IQ2_XS_ALIGNED_MOE = 8,
 };
 
 struct cuda_derived_range {
@@ -3075,6 +3078,7 @@ static int cuda_model_map_replaces_complete(const void *model_map) {
     for (const cuda_derived_range &r : g_derived_ranges) {
         if (r.host_base == model_map &&
             (r.kind == CUDA_DERIVED_IQ2_XXS_ALIGNED_MOE ||
+             r.kind == CUDA_DERIVED_IQ2_XS_ALIGNED_MOE ||
              r.kind == CUDA_DERIVED_Q2_K_ALIGNED_MOE)) {
             return 1;
         }
@@ -6145,6 +6149,10 @@ static int cuda_build_derived_artifacts_from_catalog(
         ok = ds4_repack_build_iq2_aligned(a, arts, &part);
         built_bytes += part;
     }
+    if (ok && build_moe) {
+        ok = ds4_repack_build_iq2_xs_aligned(a, arts, &part);
+        built_bytes += part;
+    }
     if (ok && build_q8) {
         ok = ds4_repack_build_q8_aligned(a, arts, &part);
         built_bytes += part;
@@ -6212,7 +6220,8 @@ static int cuda_build_derived_artifacts_from_catalog(
     uint64_t replace_candidates = 0;
     if (build_moe) {
         for (const ds4_repack_tensor &t : records) {
-            if (!ds4_repack_iq2_candidate(t) && !ds4_repack_q2k_candidate(t)) continue;
+            if (!ds4_repack_iq2_candidate(t) && !ds4_repack_iq2_xs_candidate(t) &&
+                !ds4_repack_q2k_candidate(t)) continue;
             replace_candidates++;
             bool have = false;
             for (const ds4_repack_artifact &art : arts) {
@@ -6316,6 +6325,7 @@ extern "C" int ds4_gpu_model_range_replaced(
             r.source_offset == offset &&
             r.source_bytes == bytes &&
             (r.kind == CUDA_DERIVED_IQ2_XXS_ALIGNED_MOE ||
+             r.kind == CUDA_DERIVED_IQ2_XS_ALIGNED_MOE ||
              r.kind == CUDA_DERIVED_Q2_K_ALIGNED_MOE)) {
             return 1;
         }
@@ -23960,6 +23970,47 @@ static const char *cuda_moe_iq2_derepack_scratch(
     return (const char *)buf[which];
 }
 
+static const char *cuda_moe_iq2_xs_derepack_scratch(
+        const char *art,
+        uint64_t model_offset,
+        uint64_t raw_bytes,
+        uint32_t out_dim,
+        uint32_t in_dim,
+        uint32_t n_total_expert,
+        cudaStream_t stream) {
+    if (!art || raw_bytes == 0 || ds4_capture_active()) return NULL;
+    static void *buf = NULL;
+    static uint64_t buf_bytes = 0;
+    static uint64_t tag = UINT64_MAX;
+    if (buf_bytes < raw_bytes) {
+        if (buf) {
+            (void)cudaFree(buf);
+            cuda_mem_note_free(DS4_MEMC_SCRATCH_STICKY, DS4_MEMD_UNIFIED_DEVICE,
+                               buf_bytes, buf_bytes);
+            buf = NULL; buf_bytes = 0; tag = UINT64_MAX;
+        }
+        cudaError_t err = cudaMalloc(&buf, raw_bytes);
+        if (err != cudaSuccess) {
+            fprintf(stderr, "ds4: iq2 xs derepack scratch alloc failed (%.1f MiB): %s\n",
+                    (double)raw_bytes / (1024.0 * 1024.0), cudaGetErrorString(err));
+            buf = NULL;
+            return NULL;
+        }
+        buf_bytes = raw_bytes;
+        cuda_mem_note_alloc(DS4_MEMC_SCRATCH_STICKY, DS4_MEMD_UNIFIED_DEVICE,
+                            raw_bytes, raw_bytes);
+    }
+    if (tag != model_offset) {
+        if (ds4_mmq_iq2_xs_aligned_derepack(
+                art, buf, (int)out_dim, (int)in_dim, (int)n_total_expert, stream) != 0) {
+            tag = UINT64_MAX;
+            return NULL;
+        }
+        tag = model_offset;
+    }
+    return (const char *)buf;
+}
+
 /* M2 moe-down: raw-layout device scratch for the batched/mmq down consumers
  * when the raw Q2_K down span was excluded from the upload
  * (--repack-q2k-aligned).  Same contract as cuda_moe_iq2_derepack_scratch:
@@ -32919,8 +32970,50 @@ static int routed_matmul_tensor_impl(
         return 0;
     }
 
-    const char *weights = cuda_model_range_ptr(
-        model_map, weight_offset, weight_bytes, "routed_expert_weights");
+    /* IQ2_XXS REPLACE artifacts are not 66-byte blocks. Decode/fallback
+     * must read the SoA pointer or a derepack scratch, never the excluded
+     * VMM hole (IMA on Inkling w13 after --repack-iq2-aligned). */
+    const bool use_vec = assignments <= DS4_ROUTED_VEC_MAX_ROWS;
+    int iq2_soa = 0;
+    const char *weights = NULL;
+    if (weight_type == 16u) {
+        const uint64_t al_bytes = ds4_mmq_iq2_xxs_aligned_bytes(
+            (int)out_dim, (int)in_dim, (int)n_expert);
+        const char *art = al_bytes
+            ? cuda_derived_weight_ptr(
+                  model_map, weight_offset, weight_bytes,
+                  CUDA_DERIVED_IQ2_XXS_ALIGNED_MOE, in_dim, out_dim, n_expert,
+                  al_bytes, "routed_iq2_aligned")
+            : NULL;
+        const int want_soa = art && cuda_moe_iq2_aligned_enabled() &&
+            getenv("DS4_INKLING_NO_IQ2_ALIGNED") == NULL;
+        if (want_soa && use_vec && n_tokens <= 16u && (in_dim % 1024u) == 0u) {
+            weights = art;
+            iq2_soa = 1;
+        } else if (art) {
+            weights = cuda_moe_iq2_derepack_scratch(
+                0, art, weight_offset, weight_bytes,
+                out_dim, in_dim, n_expert, ds4_current_stream());
+        }
+    } else if (weight_type == 17u) {
+        const uint64_t al_bytes = ds4_mmq_iq2_xs_aligned_bytes(
+            (int)out_dim, (int)in_dim, (int)n_expert);
+        const char *art = al_bytes
+            ? cuda_derived_weight_ptr(
+                  model_map, weight_offset, weight_bytes,
+                  CUDA_DERIVED_IQ2_XS_ALIGNED_MOE, in_dim, out_dim, n_expert,
+                  al_bytes, "routed_iq2_xs_aligned")
+            : NULL;
+        if (art) {
+            weights = cuda_moe_iq2_xs_derepack_scratch(
+                art, weight_offset, weight_bytes,
+                out_dim, in_dim, n_expert, ds4_current_stream());
+        }
+    }
+    if (!weights) {
+        weights = cuda_model_range_ptr(
+            model_map, weight_offset, weight_bytes, "routed_expert_weights");
+    }
     if (!weights) return 0;
     const float *xp = (const float *)x->ptr;
     const int32_t *idp = (const int32_t *)ids->ptr;
@@ -32936,7 +33029,6 @@ static int routed_matmul_tensor_impl(
      * of ten mostly empty 128-wide MMQ tiles.  The bound covers the
      * two-row MTP verify pass (2 x top-10) so its rows keep the exact
      * per-assignment arithmetic of one-row decode. */
-    const bool use_vec = assignments <= DS4_ROUTED_VEC_MAX_ROWS;
     const char *bound_global = getenv("DS4_MMQ_EXPERT_BOUND");
     const char *bound_type = weight_type == 11u
         ? getenv("DS4_MMQ_Q3_BOUND")
@@ -33056,7 +33148,8 @@ static int routed_matmul_tensor_impl(
         break;
     case 16u:
         rc = use_vec
-            ? vec_rows(ds4_mmq_iq2_xxs_moe_vec)
+            ? vec_rows(iq2_soa ? ds4_mmq_iq2_xxs_aligned_moe_vec
+                               : ds4_mmq_iq2_xxs_moe_vec)
             : out_policy == DS4_ROUTED_OUT_GUARDED
                 ? ds4_mmq_iq2_xxs_moe_guarded(weights, xp, idp, op, M, K, NT, NE, NU, stream)
                 : ds4_mmq_iq2_xxs_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);

@@ -209,8 +209,9 @@ static void check_mtp(ds4_session *s, const ds4_tokens *prompt) {
 /* Check sizing and context clamping without importing weights or allocating
  * a graph, before admitting the wide base/MTP integration fixtures. */
 static void memory_quotes(ds4_engine *e) {
-    const unsigned chunks[] = {1, 512, 2048, 8192};
+    const unsigned chunks[] = {1, 512, 1024, 2048, 8192};
     const unsigned contexts[] = {32, 2113, 8257, 16394};
+    uint64_t bytes_512 = 0, bytes_1024 = 0;
     check(setenv("DS4_SESSION_GRAPH_FIT", "0", 1) == 0, "set fit override");
     for (unsigned c = 0; c < sizeof(chunks) / sizeof(chunks[0]); c++) {
         char value[16];
@@ -227,12 +228,20 @@ static void memory_quotes(ds4_engine *e) {
                       q.fail_open && q.need_bytes == bytes, "Inkling memory quote differs");
                 printf("memory context=%u cap=%u mtp=%u bytes=%llu\n",
                        ctx, cap, mode, (unsigned long long)bytes);
+                if (ctx == 8257 && mode == 0 && chunks[c] == 512) {
+                    bytes_512 = bytes;
+                }
+                if (ctx == 8257 && mode == 0 && chunks[c] == 1024) {
+                    bytes_1024 = bytes;
+                }
             }
         }
     }
+    check(bytes_512 && bytes_1024 > bytes_512,
+          "1024-cap campaign scratch not larger than 512");
     check(unsetenv("DS4_INKLING_PREFILL_CHUNK") == 0, "clear chunk");
     const unsigned fallback = inkling_prefill_cap(contexts[3]);
-    check(fallback == 512, "Inkling default chunk changed");
+    check(fallback == 1024, "Inkling default chunk changed");
     check(setenv("DS4_INKLING_PREFILL_CHUNK", "8193", 1) == 0, "set invalid chunk");
     check(inkling_prefill_cap(contexts[3]) == fallback, "out-of-range chunk accepted");
 }
