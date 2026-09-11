@@ -72,6 +72,12 @@ The bandwidth figure is informational; we don't tier on it.
   all input groups using the shared-expert tile schedule. Unaligned Q8_1
   input or insufficient shared memory keep the prior kernel.
 
+- `DS4_INKLING_NO_SHARED_SOA=1` restores canonical 36-byte Q8_1 slabs and
+  float block deltas in the resident shared/routed Q8 prefill tiles. Unset it
+  to stage the activation SoA (one 8-byte LDS per dp4a pair, conflict-free
+  K steps) with half deltas, which fits two CTAs per SM for up and four for
+  down. Outputs are byte-identical.
+
 - `DS4_INKLING_NO_IQ2_XS_ALIGNED=1` restores 74-byte IQ2_XS down tiles.
   Unset it to load owner SoA artifacts for Inkling fused w2 with the same
   MMVQ decode and reduction. Missing artifacts keep the raw path.
