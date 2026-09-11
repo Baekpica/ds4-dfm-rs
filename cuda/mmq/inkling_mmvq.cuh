@@ -593,6 +593,7 @@ static int inkling_shared_q8_launch(
 
 #include "inkling_shared_tile.cuh"
 #include "inkling_q4.cuh"
+#include "inkling_q3.cuh"
 
 // Routing tables, then the 16-byte aligned activation SoA for the tile path.
 static uint64_t inkling_route_bytes(uint64_t assignments, int experts) {
@@ -709,6 +710,14 @@ int ds4_mmvq_inkling(
             counts, tile_experts, tile_starts, experts);
         inkling_relayout_kernel<<<(groups + IK_MMVQ_THREADS - 1) / IK_MMVQ_THREADS,
                                   IK_MMVQ_THREADS, 0, stream>>>(xq, xd, (const block_q8_1 *)x, groups);
+        // Q3_K up otherwise re-decodes every fragment per column below.
+        // Wide prefill decodes once per eight columns from the same tables.
+        if (type == GGML_TYPE_Q3_K && used > 1 && assignments >= IK_Q3_MIN_ASSIGNMENTS &&
+            !getenv("DS4_INKLING_NO_Q3_TILE")) {
+            const int rc = inkling_q3_launch<IK_Q3_ROWS, 4, 2>(weights, xq, xd, out, counts,
+                buckets, tile_experts, tile_starts, m, k, assignments, experts, used, device.nsm, stream);
+            if (rc <= 0) { return rc == 0 && cudaGetLastError() == cudaSuccess ? 0 : -2; }
+        }
         const int rc = inkling_tile_dispatch(weights, type, xq, xd, out, counts, buckets,
             tile_experts, tile_starts, m, k, assignments, experts, used, device.nsm, stream, 0);
         if (rc <= 0) { return rc == 0 && cudaGetLastError() == cudaSuccess ? 0 : -2; }

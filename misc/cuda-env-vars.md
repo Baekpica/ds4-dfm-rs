@@ -72,6 +72,12 @@ The bandwidth figure is informational; we don't tier on it.
   all input groups using the shared-expert tile schedule. Unaligned Q8_1
   input or insufficient shared memory keep the prior kernel.
 
+- `DS4_INKLING_NO_Q3_TILE=1` restores the four-column Q3_K expert kernel,
+  which re-unpacks the 3-bit values and scales for every column. Unset it to
+  decode each row fragment once for eight routed columns from 256 prompt
+  tokens (1536 assignments); lane products, FMA chains, warp merge and XOR
+  tree are unchanged, so outputs are byte-identical.
+
 - `DS4_INKLING_NO_IQ2_LEAN=1` restores the branched column loop and
   table-driven sign masks in the IQ2_XXS/IQ2_XS expert prefill tiles. Unset
   it to load all eight columns unconditionally (padding reads row 0, stores
