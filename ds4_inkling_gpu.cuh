@@ -48,6 +48,7 @@ enum {
     INKLING_PREFILL_MAX = 8192,
     INKLING_Q8_BLOCK = 32,
     INKLING_Q8_COLUMNS = 8,
+    INKLING_IQ2_XXS = 16, /* DS4_TENSOR_IQ2_XXS / GGML_TYPE_IQ2_XXS */
 };
 static constexpr uint32_t INKLING_FLOAT_SIGN = UINT32_C(1) << 31;
 static constexpr float INKLING_TAU_ALPHA = 0.1f;
@@ -350,10 +351,18 @@ extern "C" int ds4_gpu_inkling_routed(
     }
     const unsigned active = experts == INKLING_SHARED ? INKLING_SHARED : INKLING_USED;
     const unsigned group = used > 1 ? 1 : active;
+    const unsigned tokens = group ? rows / group : 0;
     if ((experts != INKLING_ROUTED && experts != INKLING_SHARED) ||
         (used != 1 && used != active) || out_dim != INKLING_MEDIA_WIDTH ||
         in_dim != (used > 1 ? INKLING_MEDIA_WIDTH : INKLING_MOE_MIDDLE) ||
-        rows % group || rows / group <= 1 || rows / group > INKLING_PREFILL_MAX) {
+        rows % group || tokens == 0 || tokens > INKLING_PREFILL_MAX) {
+        return 0;
+    }
+    /* Decode (one source token) stays on the vec fallback except IQ2 SoA,
+     * which must reuse the prefill MMVQ tile so full vs incremental match. */
+    const int decode_one = tokens <= 1;
+    if (decode_one && (type != INKLING_IQ2_XXS || experts == INKLING_SHARED ||
+                       getenv("DS4_INKLING_NO_IQ2_ALIGNED"))) {
         return 0;
     }
     const uint64_t required = ds4_mmq_inkling_wbytes(type, out_dim, in_dim, experts);
@@ -368,8 +377,35 @@ extern "C" int ds4_gpu_inkling_routed(
         ds4_tensor_device_idx(out) != ds4_tensor_device_idx(x) ||
         ds4_tensor_device_idx(out) != ds4_tensor_device_idx(ids)) { return -1; }
     if (getenv("DS4_INKLING_NO_MOE_BATCH") || !ds4_cuda_use_mmq()) { return 0; }
-    const void *weights = cuda_model_range_ptr(
-        model_map, weight_offset, required, "Inkling batched experts");
+    // Fused IQ2_XXS w13: SoA tile when the owner artifact is present. The
+    // kill switch derepacks into a raw scratch; range_ptr would hit the
+    // excluded VMM hole.
+    const void *weights = nullptr;
+    if (type == INKLING_IQ2_XXS && experts != INKLING_SHARED) {
+        const uint64_t aligned_bytes = ds4_mmq_iq2_xxs_aligned_bytes(out_dim, in_dim, experts);
+        const void *aligned = aligned_bytes
+            ? cuda_derived_weight_ptr(model_map, weight_offset, required,
+                CUDA_DERIVED_IQ2_XXS_ALIGNED_MOE, in_dim, out_dim, experts,
+                aligned_bytes, "Inkling routed IQ2 aligned")
+            : nullptr;
+        if (aligned && !getenv("DS4_INKLING_NO_IQ2_ALIGNED")) {
+            cuda_norm_q8_invalidate(out->ptr);
+            const int rc = ds4_mmq_inkling_moe_iq2_aligned(aligned, (const float *)x->ptr,
+                (const int32_t *)ids->ptr, (float *)out->ptr,
+                out_dim, in_dim, rows, experts, used, ds4_current_stream());
+            return rc == 0 ? 1 : -1;
+        }
+        if (decode_one) { return 0; }
+        if (aligned) {
+            weights = cuda_moe_iq2_derepack_scratch(
+                0, (const char *)aligned, weight_offset, required,
+                out_dim, in_dim, experts, ds4_current_stream());
+        }
+    }
+    if (!weights) {
+        weights = cuda_model_range_ptr(
+            model_map, weight_offset, required, "Inkling batched experts");
+    }
     if (!weights) { return -1; }
     cuda_norm_q8_invalidate(out->ptr);
     const int rc = ds4_mmq_inkling_moe(weights, type, (const float *)x->ptr,

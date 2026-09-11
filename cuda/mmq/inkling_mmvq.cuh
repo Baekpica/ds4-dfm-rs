@@ -176,6 +176,19 @@ template<> struct ik_tile_traits<GGML_TYPE_IQ2_XXS> {
     static __device__ __forceinline__ float delta(const void *w, uint64_t block) {
         return __half2float(((const block_iq2_xxs *)w)[block].d);
     }
+    /* Aligned SoA: [__half dq[nblk]][pad 64B][uint2 qs[nblk*8]]. VDR=2 so
+     * iqs is even and one uint2 is the same 8 bytes as the two get_int_b2
+     * reads. Decode and the integer dot stay the MMVQ tile formula. */
+    static __device__ __forceinline__ Raw load_soa(const void *w, uint64_t nblk,
+                                                  uint64_t block, unsigned iqs) {
+        const uint64_t dq_bytes = (nblk * 2u + 63u) & ~63ull;
+        const uint2 *qs = (const uint2 *)((const char *)w + dq_bytes);
+        const uint2 cw = qs[block * 8ull + (uint64_t)(iqs / 2u)];
+        return { cw.x, cw.y };
+    }
+    static __device__ __forceinline__ float delta_soa(const void *w, uint64_t block) {
+        return __half2float(((const __half *)w)[block]);
+    }
     static __device__ __forceinline__ void decode(Frag &f, const Raw &r) {
         #pragma unroll
         for (unsigned j = 0; j < 4; j++) {
@@ -272,7 +285,7 @@ static __device__ __forceinline__ void inkling_tile_load_x(int *u, const int8_t 
     }
 }
 
-template<ggml_type TYPE, unsigned R, unsigned C, unsigned WARPS, unsigned ITERS>
+template<ggml_type TYPE, unsigned R, unsigned C, unsigned WARPS, unsigned ITERS, bool ALIGNED>
 __launch_bounds__(IK_TILE_WARPS * 32)
 static __global__ void inkling_tile_kernel(
         const void *weights, const int8_t *xq, const half2 *xd, float *out,
@@ -287,6 +300,10 @@ static __global__ void inkling_tile_kernel(
     const uint32_t row_groups = m / R;
     const uint64_t jobs = (uint64_t)counts[experts] * row_groups;
     const uint64_t stride = (uint64_t)gridDim.x * (blockDim.x / WARP);
+    uint64_t nblk = 0;
+    if constexpr (ALIGNED) {
+        nblk = (uint64_t)experts * m * blocks_per_row;
+    }
 
     for (uint64_t job = ((uint64_t)blockIdx.x * blockDim.x + threadIdx.x) / WARP;
          job < jobs; job += stride) {
@@ -314,8 +331,13 @@ static __global__ void inkling_tile_kernel(
                 #pragma unroll
                 for (unsigned r = 0; r < R; r++) {
                     const uint64_t block = weight_base + r * blocks_per_row + bx;
-                    T::decode(frag[r], T::load(weights, block, iqs));
-                    frag[r].wd = T::delta(weights, block);
+                    if constexpr (ALIGNED) {
+                        T::decode(frag[r], T::load_soa(weights, nblk, block, iqs));
+                        frag[r].wd = T::delta_soa(weights, block);
+                    } else {
+                        T::decode(frag[r], T::load(weights, block, iqs));
+                        frag[r].wd = T::delta(weights, block);
+                    }
                 }
                 const uint32_t group = T::group(bx, iqs);
                 #pragma unroll
@@ -364,7 +386,7 @@ static __global__ void inkling_tile_kernel(
     }
 }
 
-template<ggml_type TYPE, unsigned R, unsigned C, unsigned WARPS, unsigned ITERS>
+template<ggml_type TYPE, unsigned R, unsigned C, unsigned WARPS, unsigned ITERS, bool ALIGNED>
 static int inkling_tile_launch(
         const void *weights, const int8_t *xq, const half2 *xd, float *out,
         const int32_t *counts, const int32_t *buckets, const int32_t *tile_experts,
@@ -375,9 +397,9 @@ static int inkling_tile_launch(
     if (m % R || k / T::QK != ITERS * K_STEP) { return 1; }
     static int resident = 0;
     if (!resident && (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&resident,
-            inkling_tile_kernel<TYPE, R, C, WARPS, ITERS>, IK_TILE_WARPS * 32, 0) != cudaSuccess ||
+            inkling_tile_kernel<TYPE, R, C, WARPS, ITERS, ALIGNED>, IK_TILE_WARPS * 32, 0) != cudaSuccess ||
             resident <= 0)) { return -2; }
-    inkling_tile_kernel<TYPE, R, C, WARPS, ITERS><<<sms * resident, IK_TILE_WARPS * 32, 0, stream>>>(
+    inkling_tile_kernel<TYPE, R, C, WARPS, ITERS, ALIGNED><<<sms * resident, IK_TILE_WARPS * 32, 0, stream>>>(
         weights, xq, xd, out, counts, buckets, tile_experts, tile_starts,
         m, k, assignments, experts, used);
     return 0;
@@ -389,15 +411,19 @@ static int inkling_tile_dispatch(
         float *out, const int32_t *counts, const int32_t *buckets,
         const int32_t *tile_experts, const int32_t *tile_starts, uint32_t m,
         uint32_t k, uint32_t assignments, uint32_t experts, uint32_t used,
-        uint32_t sms, cudaStream_t stream) {
-    #define IK_TILE(T, R, W, I) inkling_tile_launch<T, R, IK_TILE_COLUMNS, W, I>( \
+        uint32_t sms, cudaStream_t stream, int aligned) {
+    #define IK_TILE(T, R, W, I, A) inkling_tile_launch<T, R, IK_TILE_COLUMNS, W, I, A>( \
         weights, xq, xd, out, counts, buckets, tile_experts, tile_starts, \
         m, k, assignments, experts, used, sms, stream)
     // Four-warp up keeps one fragment per lane; Q8 up carries four per warp.
     switch (type) {
-    case GGML_TYPE_IQ2_XXS: return used > 1 ? IK_TILE(GGML_TYPE_IQ2_XXS, 4, 4, 1) : 1;
-    case GGML_TYPE_IQ2_XS: return used > 1 ? 1 : IK_TILE(GGML_TYPE_IQ2_XS, 4, 1, 2);
-    case GGML_TYPE_Q8_0: return used > 1 ? IK_TILE(GGML_TYPE_Q8_0, 2, 4, 4) : IK_TILE(GGML_TYPE_Q8_0, 4, 1, 8);
+    case GGML_TYPE_IQ2_XXS:
+        if (used <= 1) { return 1; }
+        return aligned ? IK_TILE(GGML_TYPE_IQ2_XXS, 4, 4, 1, true)
+                       : IK_TILE(GGML_TYPE_IQ2_XXS, 4, 4, 1, false);
+    case GGML_TYPE_IQ2_XS: return used > 1 ? 1 : IK_TILE(GGML_TYPE_IQ2_XS, 4, 1, 2, false);
+    case GGML_TYPE_Q8_0: return used > 1 ? IK_TILE(GGML_TYPE_Q8_0, 2, 4, 4, false)
+                                         : IK_TILE(GGML_TYPE_Q8_0, 4, 1, 8, false);
     default: return 1;
     }
     #undef IK_TILE
@@ -623,7 +649,7 @@ int ds4_mmvq_inkling(
         inkling_relayout_kernel<<<(groups + IK_MMVQ_THREADS - 1) / IK_MMVQ_THREADS,
                                   IK_MMVQ_THREADS, 0, stream>>>(xq, xd, (const block_q8_1 *)x, groups);
         const int rc = inkling_tile_dispatch(weights, type, xq, xd, out, counts, buckets,
-            tile_experts, tile_starts, m, k, assignments, experts, used, device.nsm, stream);
+            tile_experts, tile_starts, m, k, assignments, experts, used, device.nsm, stream, 0);
         if (rc <= 0) { return rc == 0 && cudaGetLastError() == cudaSuccess ? 0 : -2; }
         // Unsupported tile shape: rebuild the four-column tables below.
         if (cudaMemsetAsync(counts + experts, 0, sizeof(int32_t), stream) != cudaSuccess) { return -2; }
@@ -641,4 +667,37 @@ int ds4_mmvq_inkling(
     }
     #undef IK_MMVQ_CASE
     return cudaGetLastError() == cudaSuccess ? 0 : -2;
+}
+
+int ds4_mmvq_inkling_iq2_aligned(
+        const void *weights, const void *x, const int32_t *ids,
+        float *out, void *workspace, uint64_t workspace_bytes, int m, int k,
+        int rows, int experts, int used, cudaStream_t stream) {
+    const uint64_t required = ds4_mmvq_inkling_bytes(rows, experts, used);
+    if (!weights || !x || !ids || !out || !workspace || m <= 0 || m > IK_MMVQ_HIDDEN ||
+        m % IK_MMVQ_ROWS || k != IK_MMVQ_HIDDEN || used <= 1 ||
+        !required || workspace_bytes < required) { return -1; }
+    const auto &device = ggml_cuda_info().devices[ggml_cuda_get_device()];
+    if (device.warp_size != 32 || device.nsm <= 0) { return -1; }
+    const uint32_t assignments = rows * used;
+    int32_t *counts = (int32_t *)workspace, *buckets = counts + experts + 1;
+    int32_t *tile_experts = buckets + (uint64_t)assignments * experts;
+    int32_t *tile_starts = tile_experts + assignments;
+    if (cudaMemsetAsync(counts, 0, (experts + 1) * sizeof(int32_t), stream) != cudaSuccess ||
+        cudaMemsetAsync(out, 0, (uint64_t)assignments * m * sizeof(float), stream) != cudaSuccess) { return -2; }
+    inkling_bucket_kernel<<<(assignments + IK_MMVQ_THREADS - 1) / IK_MMVQ_THREADS,
+                            IK_MMVQ_THREADS, 0, stream>>>(counts, buckets, ids, assignments, experts);
+    const uint64_t groups = (uint64_t)rows * k / QK8_1;
+    const uintptr_t soa = ((uintptr_t)workspace + inkling_route_bytes(assignments, experts) +
+                           IK_TILE_ALIGN - 1) & ~(uintptr_t)(IK_TILE_ALIGN - 1);
+    int8_t *xq = (int8_t *)soa;
+    half2 *xd = (half2 *)(xq + (uint64_t)rows * k);
+    inkling_tiles_kernel<IK_TILE_COLUMNS><<<1, IK_MMVQ_THREADS, 0, stream>>>(
+        counts, tile_experts, tile_starts, experts);
+    inkling_relayout_kernel<<<(groups + IK_MMVQ_THREADS - 1) / IK_MMVQ_THREADS,
+                              IK_MMVQ_THREADS, 0, stream>>>(xq, xd, (const block_q8_1 *)x, groups);
+    const int rc = inkling_tile_dispatch(weights, GGML_TYPE_IQ2_XXS, xq, xd, out, counts, buckets,
+        tile_experts, tile_starts, m, k, assignments, experts, used, device.nsm, stream, 1);
+    if (rc <= 0) { return rc == 0 && cudaGetLastError() == cudaSuccess ? 0 : -2; }
+    return -1;
 }

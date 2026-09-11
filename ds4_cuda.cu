@@ -32919,8 +32919,36 @@ static int routed_matmul_tensor_impl(
         return 0;
     }
 
-    const char *weights = cuda_model_range_ptr(
-        model_map, weight_offset, weight_bytes, "routed_expert_weights");
+    /* IQ2_XXS REPLACE artifacts are not 66-byte blocks. Decode/fallback
+     * must read the SoA pointer or a derepack scratch, never the excluded
+     * VMM hole (IMA on Inkling w13 after --repack-iq2-aligned). */
+    const bool use_vec = assignments <= DS4_ROUTED_VEC_MAX_ROWS;
+    int iq2_soa = 0;
+    const char *weights = NULL;
+    if (weight_type == 16u) {
+        const uint64_t al_bytes = ds4_mmq_iq2_xxs_aligned_bytes(
+            (int)out_dim, (int)in_dim, (int)n_expert);
+        const char *art = al_bytes
+            ? cuda_derived_weight_ptr(
+                  model_map, weight_offset, weight_bytes,
+                  CUDA_DERIVED_IQ2_XXS_ALIGNED_MOE, in_dim, out_dim, n_expert,
+                  al_bytes, "routed_iq2_aligned")
+            : NULL;
+        const int want_soa = art && cuda_moe_iq2_aligned_enabled() &&
+            getenv("DS4_INKLING_NO_IQ2_ALIGNED") == NULL;
+        if (want_soa && use_vec && n_tokens <= 16u && (in_dim % 1024u) == 0u) {
+            weights = art;
+            iq2_soa = 1;
+        } else if (art) {
+            weights = cuda_moe_iq2_derepack_scratch(
+                0, art, weight_offset, weight_bytes,
+                out_dim, in_dim, n_expert, ds4_current_stream());
+        }
+    }
+    if (!weights) {
+        weights = cuda_model_range_ptr(
+            model_map, weight_offset, weight_bytes, "routed_expert_weights");
+    }
     if (!weights) return 0;
     const float *xp = (const float *)x->ptr;
     const int32_t *idp = (const int32_t *)ids->ptr;
@@ -32936,7 +32964,6 @@ static int routed_matmul_tensor_impl(
      * of ten mostly empty 128-wide MMQ tiles.  The bound covers the
      * two-row MTP verify pass (2 x top-10) so its rows keep the exact
      * per-assignment arithmetic of one-row decode. */
-    const bool use_vec = assignments <= DS4_ROUTED_VEC_MAX_ROWS;
     const char *bound_global = getenv("DS4_MMQ_EXPERT_BOUND");
     const char *bound_type = weight_type == 11u
         ? getenv("DS4_MMQ_Q3_BOUND")
@@ -33056,7 +33083,8 @@ static int routed_matmul_tensor_impl(
         break;
     case 16u:
         rc = use_vec
-            ? vec_rows(ds4_mmq_iq2_xxs_moe_vec)
+            ? vec_rows(iq2_soa ? ds4_mmq_iq2_xxs_aligned_moe_vec
+                               : ds4_mmq_iq2_xxs_moe_vec)
             : out_policy == DS4_ROUTED_OUT_GUARDED
                 ? ds4_mmq_iq2_xxs_moe_guarded(weights, xp, idp, op, M, K, NT, NE, NU, stream)
                 : ds4_mmq_iq2_xxs_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);

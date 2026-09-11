@@ -4164,6 +4164,32 @@ extern "C" int ds4_mmq_inkling_moe(
     return rc;
 }
 
+extern "C" int ds4_mmq_inkling_moe_iq2_aligned(
+        const void *weights, const float *x, const int32_t *ids,
+        float *out, int m, int k, int rows, int experts, int used,
+        cudaStream_t stream) {
+    const uint64_t work_bytes = ds4_mmvq_inkling_bytes(rows, experts, used);
+    if (!weights || !x || !ids || !out || !work_bytes ||
+        !ds4_mmq_inkling_wbytes(GGML_TYPE_IQ2_XXS, m, k, experts) ||
+        k != INKLING_MMQ_HIDDEN || used <= 1) {
+        fprintf(stderr, "Inkling MMVQ: invalid IQ2 aligned batch\n");
+        return -1;
+    }
+    ggml_backend_cuda_context *ctx = get_ctx_for_device(ggml_cuda_get_device());
+    if (!ctx) { return -1; }
+    ds4_pool_set_stream(stream);
+    ggml_cuda_pool_alloc<char> q8(ctx->pool(),
+        (size_t)rows * k / QK8_1 * sizeof(block_q8_1));
+    ggml_cuda_pool_alloc<char> work(ctx->pool(), work_bytes);
+    quantize_row_q8_1_cuda(x, nullptr, q8.get(), GGML_TYPE_IQ2_XXS, k,
+                          k, k, (int64_t)k * rows, k, 1, rows, 1, stream);
+    if (cudaGetLastError() != cudaSuccess) { return -2; }
+    const int rc = ds4_mmvq_inkling_iq2_aligned(weights, q8.get(), ids,
+        out, work.get(), work_bytes, m, k, rows, experts, used, stream);
+    if (rc) { fprintf(stderr, "Inkling MMVQ: IQ2 aligned batch failed (%d)\n", rc); }
+    return rc;
+}
+
 namespace {
 
 template <ggml_type type>

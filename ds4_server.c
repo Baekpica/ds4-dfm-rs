@@ -36337,6 +36337,13 @@ static void test_model_catalog_classify(void) {
                 (DS4_TCAT_ROUTED_EXPERT | DS4_TCAT_ARTIFACT_REPLACED));
     TEST_ASSERT(test_tcat("mtp.0.ffn_down_exps.weight", 3, 10, 2560, 2048, 256, 84 * 500) ==
                 (DS4_TCAT_ROUTED_EXPERT | DS4_TCAT_ARTIFACT_REPLACED));
+    TEST_ASSERT(test_tcat("model.llm.layers.3.mlp.experts.w13_weight", 3, 16,
+                         4096, 4096, 256, 66ull * 16ull * 4096ull * 256ull) ==
+                (DS4_TCAT_ROUTED_EXPERT | DS4_TCAT_ARTIFACT_REPLACED));
+    TEST_ASSERT(test_tcat("model.llm.layers.3.mlp.experts.w13_weight", 3, 16,
+                         1000, 4096, 256, 66ull * 1000) == DS4_TCAT_ROUTED_EXPERT);
+    TEST_ASSERT(test_tcat("model.llm.layers.3.mlp.shared_experts.shared_w13_weight",
+                         3, 16, 4096, 4096, 2, 66ull * 16ull * 4096ull * 2ull) == 0);
     /* Routed but NOT replaced: bad alignment / wrong type / wrong stack. */
     TEST_ASSERT(test_tcat("dspark.1.ffn_up_exps.weight", 3, 16, 1000, 1024, 64, 66 * 10) ==
                 DS4_TCAT_ROUTED_EXPERT);

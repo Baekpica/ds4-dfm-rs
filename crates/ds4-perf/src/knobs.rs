@@ -19,6 +19,7 @@ pub fn tunable(key: &str) -> bool {
             | "DS4_INKLING_NO_SHARED_DOWN_TILE"
             | "DS4_INKLING_NO_Q4_TILE"
             | "DS4_INKLING_NO_Q8_ROUTED_TILE"
+            | "DS4_INKLING_NO_IQ2_ALIGNED"
             | "DS4_INKLING_PREFILL_CHUNK"
             | "DS4_CUDA_SOLAR_GQA_CHUNK"
     )
@@ -46,7 +47,8 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         | "DS4_INKLING_NO_SHARED_TILE"
         | "DS4_INKLING_NO_SHARED_DOWN_TILE"
         | "DS4_INKLING_NO_Q4_TILE"
-        | "DS4_INKLING_NO_Q8_ROUTED_TILE" => family == "inkling" && value == "1",
+        | "DS4_INKLING_NO_Q8_ROUTED_TILE"
+        | "DS4_INKLING_NO_IQ2_ALIGNED" => family == "inkling" && value == "1",
         "DS4_INKLING_PREFILL_CHUNK" => family == "inkling" && (1..=8192).contains(&n),
         "DS4_CUDA_SOLAR_GQA_CHUNK" => {
             family.starts_with("solar") && [64, 128, 256, 512, 1024, 2048].contains(&n)
@@ -81,6 +83,7 @@ mod tests {
             "DS4_INKLING_NO_SHARED_DOWN_TILE",
             "DS4_INKLING_NO_Q4_TILE",
             "DS4_INKLING_NO_Q8_ROUTED_TILE",
+            "DS4_INKLING_NO_IQ2_ALIGNED",
         ] {
             assert!(tunable(key));
             assert!(validate(key, "1", "Inkling").is_ok());

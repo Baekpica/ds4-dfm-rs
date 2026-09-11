@@ -820,8 +820,9 @@ __global__ static void dequant_q8_0_f16_colmajor_kernel(
 
 /* ---- candidate predicates ------------------------------------------------ */
 
-/* --repack-iq2-aligned candidates: routed-expert gate/up stacks in IQ2_XXS.
- * dims[0] % 1024: the aligned decode kernel covers 4 blocks per warp pass. */
+/* --repack-iq2-aligned candidates: routed-expert IQ2_XXS stacks.
+ * dims[0] % 1024: the aligned decode kernel covers 4 blocks per warp pass.
+ * Inkling fused w13 uses .mlp.experts.w13_weight instead of ffn_{gate,up}_exps. */
 bool ds4_repack_iq2_candidate(const ds4_repack_tensor &t) {
     if (t.type != 16u || t.ndim != 3u) return false; /* GGML_TYPE_IQ2_XXS */
     if (t.dims[0] == 0 || t.dims[1] == 0 || t.dims[2] == 0 || t.dims[2] > UINT32_MAX) return false;
@@ -829,11 +830,14 @@ bool ds4_repack_iq2_candidate(const ds4_repack_tensor &t) {
     if (t.bytes == 0 || t.bytes % 66u != 0) return false;
     static const char gate_sfx[] = ".ffn_gate_exps.weight";
     static const char up_sfx[] = ".ffn_up_exps.weight";
+    static const char w13_sfx[] = ".mlp.experts.w13_weight";
     const size_t n = t.name.size();
     const size_t gl = sizeof(gate_sfx) - 1u;
     const size_t ul = sizeof(up_sfx) - 1u;
+    const size_t wl = sizeof(w13_sfx) - 1u;
     if (n > gl && t.name.compare(n - gl, gl, gate_sfx) == 0) return true;
     if (n > ul && t.name.compare(n - ul, ul, up_sfx) == 0) return true;
+    if (n > wl && t.name.compare(n - wl, wl, w13_sfx) == 0) return true;
     return false;
 }
 

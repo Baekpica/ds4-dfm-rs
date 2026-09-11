@@ -72,6 +72,11 @@ The bandwidth figure is informational; we don't tier on it.
   all input groups using the shared-expert tile schedule. Unaligned Q8_1
   input or insufficient shared memory keep the prior kernel.
 
+- `DS4_INKLING_NO_IQ2_ALIGNED=1` restores 66-byte IQ2_XXS expert tiles.
+  Unset it to load owner `--repack-iq2-aligned` SoA artifacts (Inkling fused
+  w13 and ffn gate/up) with the same MMVQ decode and reduction. Missing
+  artifacts keep the raw path. Decode is unchanged.
+
 - `DS4_INKLING_NO_Q4_TILE=1` restores four-column Q4_K expert batches.
   From 3072 routed assignments (512 tokens with six selected experts), the
   default reuses payload loads and unpacked scales across eight columns and

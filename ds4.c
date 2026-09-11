@@ -3377,8 +3377,8 @@ static bool accelerator_cache_model_tensor_spans(const ds4_model *m, uint64_t *c
             free(spans);
             return false;
         }
-        const bool expert =
-            memmem(t->name.ptr, t->name.len, "_exps.", 6) != NULL;
+        const bool expert = m->tensor_traits &&
+            (m->tensor_traits[i] & DS4_TCAT_ROUTED_EXPERT) != 0;
         if (expert) {
             if (!replacement_mode) continue;
             if (ds4_gpu_model_range_replaced(m->map, t->abs_offset,
