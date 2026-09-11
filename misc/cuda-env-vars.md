@@ -72,6 +72,13 @@ The bandwidth figure is informational; we don't tier on it.
   all input groups using the shared-expert tile schedule. Unaligned Q8_1
   input or insufficient shared memory keep the prior kernel.
 
+- `DS4_INKLING_NO_ATTN_TRANSPOSE=1` restores the all-lane head reduction in
+  the grouped prefill attention kernel. Unset it to reduce the four head
+  dots with a transposed butterfly (offset 16 and 8 steps split heads across
+  lane groups, steps 4/2/1 and the online softmax run once per 8-lane group,
+  alpha/beta broadcast for the V update). Each head's XOR tree pairs the same
+  lanes in the same order, so outputs are byte-identical.
+
 - `DS4_INKLING_NO_Q3_TILE=1` restores the four-column Q3_K expert kernel,
   which re-unpacks the 3-bit values and scales for every column. Unset it to
   decode each row fragment once for eight routed columns from 256 prompt

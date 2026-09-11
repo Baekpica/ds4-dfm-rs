@@ -172,6 +172,9 @@ Q8_1 input pointers and insufficient block shared memory keep the prior path.
 `DS4_INKLING_NO_SHARED_DOWN_TILE=1` restores warp-owned shared Q8 down tiles;
 from 64 prompt tokens (128 assignment rows), weights stay in registers while
 input groups stream through shared memory with the original one-warp sum.
+`DS4_INKLING_NO_ATTN_TRANSPOSE=1` restores the all-lane head reduction in
+grouped prefill attention; the optimized path finishes each head's XOR tree
+in one 8-lane group and broadcasts its softmax scalars.
 `DS4_INKLING_NO_Q3_TILE=1` restores four-column Q3_K expert batches; from
 256 prompt tokens the optimized path decodes each fragment once for eight
 routed columns with the same lane products and ordered sums.
