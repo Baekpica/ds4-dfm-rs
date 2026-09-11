@@ -50,6 +50,7 @@ enum derived_kind {
      * other derived kinds this REPLACES the raw upload of its source tensor,
      * so it does not count against --derive-budget-gb. */
     DERIVED_IQ2_XXS_ALIGNED_MOE = 4,
+    DERIVED_IQ2_XS_ALIGNED_MOE = 8,
     /* Aligned-SoA Q8_0 dense repack (--repack-q8-aligned): [__half dq[nblk]]
      * [pad to 64B][int8 qs[nblk*32]], nblk = out_dim * (in_dim/32), block
      * order identical to the raw tensor byte order.  Layout contract shared
@@ -745,7 +746,8 @@ static bool upload_model(const char *id, const char *path, uint64_t span_bytes,
         uint64_t excluded_bytes = 0;
         size_t excluded_iq2 = 0, excluded_q2k = 0;
         for (const tensor_record &t : records) {
-            if (exclude_iq2_aligned && ds4_repack_iq2_candidate(t)) {
+            if (exclude_iq2_aligned &&
+                (ds4_repack_iq2_candidate(t) || ds4_repack_iq2_xs_candidate(t))) {
                 excluded.insert(t.off);
                 excluded_bytes += t.bytes;
                 excluded_iq2++;
@@ -1210,6 +1212,8 @@ static bool ws_build_aligned_artifacts(uint32_t kind,
         ? ds4_repack_build_motif3_kv_b_value(a, arts, repacked_bytes_out)
         : kind == DERIVED_IQ2_XXS_ALIGNED_MOE
         ? ds4_repack_build_iq2_aligned(a, arts, repacked_bytes_out)
+        : kind == DERIVED_IQ2_XS_ALIGNED_MOE
+        ? ds4_repack_build_iq2_xs_aligned(a, arts, repacked_bytes_out)
         : ds4_repack_build_q2k_aligned(a, arts, repacked_bytes_out);
     if (!ok) return false;
     for (size_t i = 0; i < arts.size(); i++) {
@@ -1834,6 +1838,20 @@ int main(int argc, char **argv) {
                                         vmm_granularity,
                                         copy_chunk_bytes,
                                         &repacked_bytes)) {
+            return 1;
+        }
+        uint64_t xs_bytes = 0;
+        if (!ws_build_aligned_artifacts(DERIVED_IQ2_XS_ALIGNED_MOE,
+                                        "base",
+                                        base,
+                                        base_model_size,
+                                        base_records,
+                                        ranges,
+                                        backend,
+                                        device,
+                                        vmm_granularity,
+                                        copy_chunk_bytes,
+                                        &xs_bytes)) {
             return 1;
         }
     }

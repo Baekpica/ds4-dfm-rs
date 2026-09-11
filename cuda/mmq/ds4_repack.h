@@ -56,6 +56,7 @@ enum {
     DS4_REPACK_Q8_0_ALIGNED_DENSE = 5,
     DS4_REPACK_Q2_K_ALIGNED_MOE = 6,
     DS4_REPACK_MOTIF3_KV_B_VALUE_Q8_0 = 7,
+    DS4_REPACK_IQ2_XS_ALIGNED_MOE = 8,
 };
 
 struct ds4_repack_artifact {
@@ -112,6 +113,7 @@ bool ds4_repack_read_stage(const ds4_repack_file &m, void *stage, uint64_t stage
 
 /* Candidate predicates for the three aligned repacks. */
 bool ds4_repack_iq2_candidate(const ds4_repack_tensor &t);
+bool ds4_repack_iq2_xs_candidate(const ds4_repack_tensor &t);
 bool ds4_repack_q2k_candidate(const ds4_repack_tensor &t);
 bool ds4_repack_q8_candidate(const ds4_repack_tensor &t);
 bool ds4_repack_q8_f16_candidate(const ds4_repack_tensor &t);
@@ -134,6 +136,9 @@ bool ds4_repack_build_q8_aligned(const ds4_repack_build_args &a,
 bool ds4_repack_build_iq2_aligned(const ds4_repack_build_args &a,
                                   std::vector<ds4_repack_artifact> &out,
                                   uint64_t *repacked_bytes_out);
+bool ds4_repack_build_iq2_xs_aligned(const ds4_repack_build_args &a,
+                                    std::vector<ds4_repack_artifact> &out,
+                                    uint64_t *repacked_bytes_out);
 bool ds4_repack_build_q2k_aligned(const ds4_repack_build_args &a,
                                   std::vector<ds4_repack_artifact> &out,
                                   uint64_t *repacked_bytes_out);

@@ -18,6 +18,10 @@ int ds4_mmvq_inkling_iq2_aligned(
         const void *weights, const void *x, const int32_t *ids,
         float *out, void *workspace, uint64_t workspace_bytes, int m, int k,
         int rows, int experts, int used, cudaStream_t stream);
+int ds4_mmvq_inkling_iq2_xs_aligned(
+        const void *weights, const void *x, const int32_t *ids,
+        float *out, void *workspace, uint64_t workspace_bytes, int m, int k,
+        int rows, int experts, int used, cudaStream_t stream);
 
 // ds4: direct switch over the per-type templated mmvq dispatch.  Was
 // `static` upstream; we promote it so ds4_mmq.cu can call it without

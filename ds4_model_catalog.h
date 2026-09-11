@@ -22,13 +22,13 @@
  *
  * Trait bits (0 = ALWAYS-HOT, the pre-cacheable default):
  * - ROUTED_EXPERT: the 3-D ffn_{gate,up,down}_exps stacks and Inkling
- *   mlp.experts.w13 — top-K of N experts fire per token, so pre-caching
+ *   mlp.experts.w13/w2 — top-K of N experts fire per token, so pre-caching
  *   them starves hot tensors. Binder names (blk.N./mtp.0./dspark.N.
  *   prefixes share the ffn_*_exps suffixes); 2-D shared-expert *_shexp
  *   tensors and exp_probs_b bias are NOT routed.
  * - ARTIFACT_REPLACED: an aligned repack artifact REPLACES the raw range
- *   when built/imported (IQ2_XXS gate/up/w13, Q2_K down) — byte-neutral
- *   layouts, raw consumers fall back to the host mmap.
+ *   when built/imported (IQ2_XXS gate/up/w13, IQ2_XS w2, Q2_K down) —
+ *   byte-neutral layouts, raw consumers fall back to the host mmap.
  * - ARTIFACT_ADDITIVE: an artifact may shadow the raw range for specific
  *   consumers while the raw stays served (Q8_0 aligned dense, Q8_0->f16
  *   colmajor prebuild).
@@ -76,6 +76,7 @@ static inline int ds4_tcat_contains(const char *name, uint64_t len,
 #define DS4_TCAT_GGML_Q8_0    8u
 #define DS4_TCAT_GGML_Q2_K    10u
 #define DS4_TCAT_GGML_IQ2_XXS 16u
+#define DS4_TCAT_GGML_IQ2_XS  17u
 
 static inline uint32_t ds4_tensor_catalog_classify(const char *name,
                                                    uint64_t name_len,
@@ -88,14 +89,22 @@ static inline uint32_t ds4_tensor_catalog_classify(const char *name,
     const int up   = ds4_tcat_has_suffix(name, name_len, ".ffn_up_exps.weight");
     const int down = ds4_tcat_has_suffix(name, name_len, ".ffn_down_exps.weight");
     const int w13  = ds4_tcat_has_suffix(name, name_len, ".mlp.experts.w13_weight");
+    const int w2   = ds4_tcat_has_suffix(name, name_len, ".mlp.experts.w2_weight");
 
-    if (ndim == 3 && (gate || up || down || w13)) {
+    if (ndim == 3 && (gate || up || down || w13 || w2)) {
         traits |= DS4_TCAT_ROUTED_EXPERT;
         /* ds4_repack_iq2_candidate mirror: IQ2_XXS gate/up and Inkling w13. */
         if (ggml_type == DS4_TCAT_GGML_IQ2_XXS && (gate || up || w13) && dims &&
             dims[0] != 0 && dims[1] != 0 && dims[2] != 0 &&
             dims[2] <= UINT32_MAX && dims[0] % 1024u == 0 &&
             bytes != 0 && bytes % 66u == 0) {
+            traits |= DS4_TCAT_ARTIFACT_REPLACED;
+        }
+        /* ds4_repack_iq2_xs_candidate mirror: Inkling fused-down w2. */
+        if (ggml_type == DS4_TCAT_GGML_IQ2_XS && w2 && dims &&
+            dims[0] != 0 && dims[1] != 0 && dims[2] != 0 &&
+            dims[2] <= UINT32_MAX && dims[0] % 256u == 0 &&
+            bytes != 0 && bytes % 74u == 0) {
             traits |= DS4_TCAT_ARTIFACT_REPLACED;
         }
         /* ds4_repack_q2k_candidate mirror: Q2_K down stacks. */

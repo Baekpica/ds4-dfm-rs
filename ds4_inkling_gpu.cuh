@@ -49,6 +49,7 @@ enum {
     INKLING_Q8_BLOCK = 32,
     INKLING_Q8_COLUMNS = 8,
     INKLING_IQ2_XXS = 16, /* DS4_TENSOR_IQ2_XXS / GGML_TYPE_IQ2_XXS */
+    INKLING_IQ2_XS = 17,  /* DS4_TENSOR_IQ2_XS / GGML_TYPE_IQ2_XS */
 };
 static constexpr uint32_t INKLING_FLOAT_SIGN = UINT32_C(1) << 31;
 static constexpr float INKLING_TAU_ALPHA = 0.1f;
@@ -361,9 +362,14 @@ extern "C" int ds4_gpu_inkling_routed(
     /* Decode (one source token) stays on the vec fallback except IQ2 SoA,
      * which must reuse the prefill MMVQ tile so full vs incremental match. */
     const int decode_one = tokens <= 1;
-    if (decode_one && (type != INKLING_IQ2_XXS || experts == INKLING_SHARED ||
-                       getenv("DS4_INKLING_NO_IQ2_ALIGNED"))) {
-        return 0;
+    if (decode_one) {
+        const int xxs_ok = type == INKLING_IQ2_XXS &&
+            getenv("DS4_INKLING_NO_IQ2_ALIGNED") == NULL;
+        const int xs_ok = type == INKLING_IQ2_XS &&
+            getenv("DS4_INKLING_NO_IQ2_XS_ALIGNED") == NULL;
+        if (experts == INKLING_SHARED || (!xxs_ok && !xs_ok)) {
+            return 0;
+        }
     }
     const uint64_t required = ds4_mmq_inkling_wbytes(type, out_dim, in_dim, experts);
     if (!required) { return 0; }
@@ -399,6 +405,26 @@ extern "C" int ds4_gpu_inkling_routed(
         if (aligned) {
             weights = cuda_moe_iq2_derepack_scratch(
                 0, (const char *)aligned, weight_offset, required,
+                out_dim, in_dim, experts, ds4_current_stream());
+        }
+    } else if (type == INKLING_IQ2_XS && experts != INKLING_SHARED) {
+        const uint64_t aligned_bytes = ds4_mmq_iq2_xs_aligned_bytes(out_dim, in_dim, experts);
+        const void *aligned = aligned_bytes
+            ? cuda_derived_weight_ptr(model_map, weight_offset, required,
+                CUDA_DERIVED_IQ2_XS_ALIGNED_MOE, in_dim, out_dim, experts,
+                aligned_bytes, "Inkling routed IQ2_XS aligned")
+            : nullptr;
+        if (aligned && !getenv("DS4_INKLING_NO_IQ2_XS_ALIGNED")) {
+            cuda_norm_q8_invalidate(out->ptr);
+            const int rc = ds4_mmq_inkling_moe_iq2_xs_aligned(aligned, (const float *)x->ptr,
+                (const int32_t *)ids->ptr, (float *)out->ptr,
+                out_dim, in_dim, rows, experts, used, ds4_current_stream());
+            return rc == 0 ? 1 : -1;
+        }
+        if (decode_one) { return 0; }
+        if (aligned) {
+            weights = cuda_moe_iq2_xs_derepack_scratch(
+                (const char *)aligned, weight_offset, required,
                 out_dim, in_dim, experts, ds4_current_stream());
         }
     }

@@ -175,6 +175,8 @@ input groups stream through shared memory with the original one-warp sum.
 `DS4_INKLING_NO_Q8_ROUTED_TILE=1` restores warp-owned routed Q8 tiles;
 from 64 prompt rows, the optimized path keeps weights in registers across
 all routed columns with the shared-expert tile schedule.
+`DS4_INKLING_NO_IQ2_XS_ALIGNED=1` restores 74-byte IQ2_XS down tiles;
+the optimized path reads owner SoA artifacts with the same MMVQ reduction.
 `DS4_INKLING_NO_IQ2_ALIGNED=1` restores 66-byte IQ2_XXS expert tiles;
 the optimized path reads owner SoA artifacts with the same MMVQ reduction.
 `DS4_INKLING_NO_Q4_TILE=1` restores four-column Q4_K expert batches;

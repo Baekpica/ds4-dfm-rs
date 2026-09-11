@@ -277,6 +277,59 @@ static void candidate_case() {
     t.dims[0] = 1000;
     t.bytes = 66ull * 1000ull;
     CHECK(!ds4_repack_iq2_candidate(t));
+    t.type = 17;
+    t.dims[0] = 2048;
+    t.dims[1] = 4096;
+    t.dims[2] = 256;
+    t.bytes = 74ull * 8ull * 4096ull * 256ull;
+    t.name = "model.llm.layers.3.mlp.experts.w2_weight";
+    CHECK(ds4_repack_iq2_xs_candidate(t));
+    t.name = "model.llm.layers.3.mlp.experts.w13_weight";
+    CHECK(!ds4_repack_iq2_xs_candidate(t));
+}
+
+static std::vector<unsigned char> pack_iq2_xs_aligned(
+        const std::vector<unsigned char> &raw, int m, int k, int ne) {
+    const uint64_t nblk = (uint64_t)ne * m * (k / 256);
+    CHECK(raw.size() == nblk * 74u);
+    const uint64_t bytes = ds4_mmq_iq2_xs_aligned_bytes(m, k, ne);
+    CHECK(bytes != 0);
+    std::vector<unsigned char> art(bytes);
+    const uint64_t dq_bytes = (nblk * 2u + 63u) & ~63ull;
+    const uint64_t sc_bytes = (nblk * 8u + 63u) & ~63ull;
+    for (uint64_t b = 0; b < nblk; b++) {
+        memcpy(art.data() + b * 2, raw.data() + b * 74, 2);
+        memcpy(art.data() + dq_bytes + b * 8, raw.data() + b * 74 + 66, 8);
+        memcpy(art.data() + dq_bytes + sc_bytes + b * 64, raw.data() + b * 74 + 2, 64);
+    }
+    return art;
+}
+
+static void aligned_xs_case(int m, int tokens, int ne, Routes routing) {
+    const int used = 1, rows = tokens, assignments = rows * used, k = MIDDLE;
+    auto w = weights(GGML_TYPE_IQ2_XS, m, k, ne);
+    auto art = pack_iq2_xs_aligned(w, m, k, ne);
+    std::vector<float> x((size_t)rows * k);
+    std::vector<int32_t> ids(assignments);
+    for (auto &v : x) { v = ((int)(random_bits() % 2001) - 1000) / 417.0f; }
+    for (int a = 0; a < assignments; a++) {
+        ids[a] = routing == REPEATED ? ne - 1 :
+            routing == RANDOM ? random_bits() % ne : (a * 13 + a / used) % ne;
+        if (routing == INVALID && a % 3 == 0) { ids[a] = -1; }
+    }
+    void *dw = device_copy(w.data(), w.size());
+    void *da = device_copy(art.data(), art.size());
+    auto *dx = (float *)device_copy(x.data(), x.size() * sizeof(float));
+    auto *di = (int32_t *)device_copy(ids.data(), ids.size() * sizeof(int32_t));
+    const size_t out_bytes = (size_t)assignments * m * sizeof(float);
+    auto *got = (float *)device_copy(nullptr, out_bytes);
+    auto *want = (float *)device_copy(nullptr, out_bytes);
+    CHECK(ds4_mmq_inkling_moe(dw, GGML_TYPE_IQ2_XS, dx, di, want, m, k, rows, ne, used, nullptr) == 0);
+    CHECK(ds4_mmq_inkling_moe_iq2_xs_aligned(da, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+    exact(got, want, out_bytes);
+    printf("aligned-xs M=%d tokens=%d experts=%d routes=%d exact\n", m, tokens, ne, routing);
+    CUDA(cudaFree(dw)); CUDA(cudaFree(da)); CUDA(cudaFree(dx)); CUDA(cudaFree(di));
+    CUDA(cudaFree(got)); CUDA(cudaFree(want));
 }
 
 static void aligned_case(int m, int tokens, int ne, Routes routing) {
@@ -376,6 +429,7 @@ int main() {
     CHECK(unsetenv("DS4_INKLING_NO_MOE_BATCH") == 0);
     CHECK(unsetenv("DS4_INKLING_NO_MOE_TILE") == 0);
     CHECK(unsetenv("DS4_INKLING_NO_IQ2_ALIGNED") == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_IQ2_XS_ALIGNED") == 0);
     CHECK(ds4_gpu_init()); CHECK(ds4_mmq_init(0) == 0);
     candidate_case();
     CHECK(ds4_mmvq_inkling_bytes(8192 * USED + 1, MAX_EXPERTS, 1) == 0);
@@ -409,6 +463,9 @@ int main() {
     aligned_case(HIDDEN, 64, MAX_EXPERTS, RANDOM);
     aligned_case(HIDDEN, 512, MAX_EXPERTS, RANDOM);
     aligned_case(HIDDEN, 64, MAX_EXPERTS, INVALID);
+    aligned_xs_case(HIDDEN, 1, MAX_EXPERTS, RANDOM);
+    aligned_xs_case(HIDDEN, 64, MAX_EXPERTS, RANDOM);
+    aligned_xs_case(HIDDEN, 512, MAX_EXPERTS, SPREAD);
     batch_case(GGML_TYPE_IQ2_XS, HIDDEN, 64, MAX_EXPERTS, 1, INVALID);
     for (int tokens : {64, 512}) {
         batch_case(GGML_TYPE_Q8_0, HIDDEN, tokens, SHARED, SHARED, SPREAD);

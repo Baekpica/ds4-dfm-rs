@@ -699,6 +699,29 @@ __global__ static void repack_iq2_xxs_aligned_kernel(
     qs[blk * 8ull + p] = v;
 }
 
+/* IQ2_XS 74B AoS: [half d][uint2 qs x8][uint8 scales x8] -> SoA. */
+__global__ static void repack_iq2_xs_aligned_kernel(
+        __half *dq,
+        uint8_t *sc,
+        uint2 *qs,
+        const unsigned char *raw,
+        uint64_t nblk) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= nblk * 8ull) return;
+    const uint64_t blk = i >> 3;
+    const uint32_t p = (uint32_t)(i & 7u);
+    const unsigned char *src = raw + blk * 74ull;
+    if (p == 0u) {
+        uint16_t h;
+        memcpy(&h, src, 2u);
+        dq[blk] = __ushort_as_half(h);
+        memcpy(sc + blk * 8ull, src + 66u, 8u);
+    }
+    uint2 v;
+    memcpy(&v, src + 2u + (uint64_t)p * 8u, 8u);
+    qs[blk * 8ull + p] = v;
+}
+
 /* Row-pair-SoA Q2_K repack.  Source raw block_q2_K is 84 bytes =
  * [u8 scales[16]][u8 qs[64]][half d][half dmin]; the pair block for rows
  * (2p, 2p+1) at column-block b interleaves the two rows so the decode twin
@@ -839,6 +862,18 @@ bool ds4_repack_iq2_candidate(const ds4_repack_tensor &t) {
     if (n > ul && t.name.compare(n - ul, ul, up_sfx) == 0) return true;
     if (n > wl && t.name.compare(n - wl, wl, w13_sfx) == 0) return true;
     return false;
+}
+
+/* Inkling fused-down IQ2_XS: 74-byte blocks, K % 256 for whole superblocks. */
+bool ds4_repack_iq2_xs_candidate(const ds4_repack_tensor &t) {
+    if (t.type != 17u || t.ndim != 3u) return false; /* GGML_TYPE_IQ2_XS */
+    if (t.dims[0] == 0 || t.dims[1] == 0 || t.dims[2] == 0 || t.dims[2] > UINT32_MAX) return false;
+    if (t.dims[0] % 256u != 0) return false;
+    if (t.bytes == 0 || t.bytes % 74u != 0) return false;
+    static const char w2_sfx[] = ".mlp.experts.w2_weight";
+    const size_t n = t.name.size();
+    const size_t wl = sizeof(w2_sfx) - 1u;
+    return n > wl && t.name.compare(n - wl, wl, w2_sfx) == 0;
 }
 
 /* --repack-q2k-aligned candidates: routed-expert down stacks in Q2_K.
@@ -1526,6 +1561,116 @@ bool ds4_repack_build_iq2_aligned(const ds4_repack_build_args &a,
     }
     fprintf(stderr,
             "%s: iq2 aligned repack %s: %u tensors %.2f GiB in %.1fs (threads=%d)\n",
+            a.log_prefix,
+            a.model_id,
+            count,
+            (double)total_bytes / 1073741824.0,
+            repack_now_sec() - t0,
+            nthreads);
+    if (repacked_bytes_out) *repacked_bytes_out = total_bytes;
+    return true;
+}
+
+bool ds4_repack_build_iq2_xs_aligned(const ds4_repack_build_args &a,
+                                    std::vector<ds4_repack_artifact> &out,
+                                    uint64_t *repacked_bytes_out) {
+    if (repacked_bytes_out) *repacked_bytes_out = 0;
+    ds4_repack_file m;
+    if (!repack_open_source(a, m)) return false;
+    uint64_t chunk = a.copy_chunk_bytes / 74u * 74u;
+    if (chunk < 74u * 16384u) chunk = 74u * 16384u;
+
+    const double t0 = repack_now_sec();
+    std::vector<repack_job> jobs;
+    bool ok = true;
+    for (const ds4_repack_tensor &t : *a.records) {
+        if (!ds4_repack_iq2_xs_candidate(t)) continue;
+        const uint64_t nblk = t.bytes / 74u;
+        const uint64_t expect_blk = (t.dims[0] / 256u) * t.dims[1] * t.dims[2];
+        if (nblk != expect_blk || t.off > m.size || t.bytes > m.size - t.off) {
+            fprintf(stderr,
+                    "%s: iq2 xs repack skipped %s: geometry mismatch (nblk=%llu expect=%llu)\n",
+                    a.log_prefix,
+                    t.name.c_str(),
+                    (unsigned long long)nblk,
+                    (unsigned long long)expect_blk);
+            ok = false;
+            break;
+        }
+        const uint64_t dq_bytes = repack_align_up(nblk * 2u, 64u);
+        const uint64_t sc_bytes = repack_align_up(nblk * 8u, 64u);
+        const uint64_t art_bytes = dq_bytes + sc_bytes + nblk * 64u;
+
+        repack_job j;
+        j.chunk = chunk;
+        j.art.t = &t;
+        j.art.kind = DS4_REPACK_IQ2_XS_ALIGNED_MOE;
+        j.art.bytes = art_bytes;
+        j.art.in_dim = t.dims[0];
+        j.art.out_dim = t.dims[1];
+        j.art.group_count = (uint32_t)t.dims[2];
+        if (!repack_alloc_artifact(a, "iq2-xs", &j.art)) {
+            ok = false;
+            break;
+        }
+        jobs.push_back(j);
+    }
+
+    const int nthreads = repack_thread_count(jobs.size());
+    if (ok)
+        ok = run_repack_jobs(a.log_prefix, "iq2-xs", m, a.device, jobs,
+            [&m, &a](const repack_job &j, cudaStream_t stream, unsigned char *stage,
+                     uint64_t stage_bytes, unsigned char *scratch) -> bool {
+        const ds4_repack_tensor &t = *j.art.t;
+        const uint64_t nblk = t.bytes / 74u;
+        const uint64_t dq_bytes = repack_align_up(nblk * 2u, 64u);
+        const uint64_t sc_bytes = repack_align_up(nblk * 8u, 64u);
+        __half *dq = (__half *)j.art.dev;
+        uint8_t *sc = (uint8_t *)j.art.dev + dq_bytes;
+        uint2 *qs = (uint2 *)((char *)j.art.dev + dq_bytes + sc_bytes);
+        for (uint64_t done = 0; done < t.bytes; done += j.chunk) {
+            const uint64_t nb = t.bytes - done < j.chunk ? t.bytes - done : j.chunk;
+            if (!repack_read_upload(a.log_prefix, m, "iq2-xs", t, stage, stage_bytes, scratch, done, nb, stream))
+                return false;
+            const uint64_t cblk = nb / 74u;
+            const uint64_t blk0 = done / 74u;
+            repack_iq2_xs_aligned_kernel<<<(unsigned)((cblk * 8u + 255u) / 256u), 256, 0, stream>>>(
+                dq + blk0, sc + blk0 * 8u, qs + blk0 * 8u, scratch, cblk);
+            cudaError_t err = cudaGetLastError();
+            if (err == cudaSuccess) err = cudaStreamSynchronize(stream);
+            if (err != cudaSuccess) {
+                fprintf(stderr, "%s: iq2 xs repack kernel failed for %s: %s\n",
+                        a.log_prefix, t.name.c_str(), cudaGetErrorString(err));
+                return false;
+            }
+#if defined(POSIX_FADV_DONTNEED)
+            (void)posix_fadvise(m.fd, (off_t)(t.off + done), (off_t)nb, POSIX_FADV_DONTNEED);
+#endif
+        }
+        return true;
+    });
+
+    if (!ok) {
+        for (repack_job &j : jobs) repack_free_artifact(a, &j.art);
+        repack_close_source(a, m);
+        return false;
+    }
+
+    uint64_t total_bytes = 0;
+    uint32_t count = 0;
+    for (repack_job &j : jobs) {
+        out.push_back(j.art);
+        total_bytes += j.art.bytes;
+        count++;
+    }
+
+    repack_close_source(a, m);
+    if (count == 0) {
+        fprintf(stderr, "%s: iq2 xs aligned repack found no candidate tensors in %s\n",
+                a.log_prefix, a.model_id);
+    }
+    fprintf(stderr,
+            "%s: iq2 xs aligned repack %s: %u tensors %.2f GiB in %.1fs (threads=%d)\n",
             a.log_prefix,
             a.model_id,
             count,
