@@ -142,7 +142,22 @@ enum {
     IK_TILE_COLUMNS = 8,
     IK_TILE_WARPS = 4,
     IK_TILE_ALIGN = 16,
+    IK_TILE_LEAN_BLOCKS = 3,
+    IK_TILE_LEAN_MIN = 256 * 6, /* assignments: 256 prompt tokens, six experts */
 };
+
+/* Sign masks for a 7-bit IQ2 sign code (bit 7 is the parity). Byte b of .x
+ * is 0xFF when value b is negated, .y covers values 4..7, and .z/.w hold
+ * the same bits as 0x01: (grid ^ mask) + bit equals __vsub4(grid ^ mask,
+ * mask) because every grid byte is at least 8, so the +1 never carries.
+ * The nibble spread n * 0x204081 lands bit k in byte k. */
+static __device__ __forceinline__ uint4 ik_iq2_signs(uint32_t code) {
+    const uint32_t parity = __popc(code) & 1;
+    const uint32_t bits = code ^ (parity << 7);
+    const uint32_t lo = ((bits & 0xF) * 0x00204081u) & 0x01010101u;
+    const uint32_t hi = ((bits >> 4) * 0x00204081u) & 0x01010101u;
+    return make_uint4(lo * 0xFFu, hi * 0xFFu, lo, hi);
+}
 
 /* Activation SoA: qs[rows][k] int8 rows (16-byte aligned) and ds[rows][k/32]
  * half2 scales. The canonical 36-byte Q8_1 blocks are only 4-byte aligned. */
@@ -189,15 +204,23 @@ template<> struct ik_tile_traits<GGML_TYPE_IQ2_XXS> {
     static __device__ __forceinline__ float delta_soa(const void *w, uint64_t block) {
         return __half2float(((const __half *)w)[block]);
     }
+    // LEAN applies the signs arithmetically; the values are identical.
+    template<bool LEAN>
     static __device__ __forceinline__ void decode(Frag &f, const Raw &r) {
         #pragma unroll
         for (unsigned j = 0; j < 4; j++) {
             const uint2 grid = ((const uint2 *)iq2xxs_grid)[(r.q2 >> (8 * j)) & 0xFF];
-            const uint32_t signs = unpack_ksigns((uint8_t)(r.aux >> (7 * j)));
-            const int s0 = __vcmpne4(signs & 0x08040201, 0);
-            const int s1 = __vcmpne4(signs & 0x80402010, 0);
-            f.v[2 * j] = __vsub4(grid.x ^ s0, s0);
-            f.v[2 * j + 1] = __vsub4(grid.y ^ s1, s1);
+            if constexpr (LEAN) {
+                const uint4 s = ik_iq2_signs((r.aux >> (7 * j)) & 0x7F);
+                f.v[2 * j] = (int)((grid.x ^ s.x) + s.z);
+                f.v[2 * j + 1] = (int)((grid.y ^ s.y) + s.w);
+            } else {
+                const uint32_t signs = unpack_ksigns((uint8_t)(r.aux >> (7 * j)));
+                const int s0 = __vcmpne4(signs & 0x08040201, 0);
+                const int s1 = __vcmpne4(signs & 0x80402010, 0);
+                f.v[2 * j] = __vsub4(grid.x ^ s0, s0);
+                f.v[2 * j + 1] = __vsub4(grid.y ^ s1, s1);
+            }
         }
         f.ls = r.aux >> 27 | 1;
     }
@@ -239,16 +262,23 @@ template<> struct ik_tile_traits<GGML_TYPE_IQ2_XS> {
     static __device__ __forceinline__ float delta_soa(const void *w, uint64_t block) {
         return __half2float(((const __half *)w)[block]);
     }
+    template<bool LEAN>
     static __device__ __forceinline__ void decode(Frag &f, const Raw &r) {
         #pragma unroll
         for (unsigned j = 0; j < 4; j++) {
             const uint16_t q = (uint16_t)((j < 2 ? r.lo : r.hi) >> (16 * (j % 2)));
             const uint2 grid = ((const uint2 *)iq2xs_grid)[q & 0x1FF];
-            const uint32_t signs = unpack_ksigns((uint8_t)(q >> 9));
-            const int s0 = __vcmpne4(signs & 0x08040201, 0);
-            const int s1 = __vcmpne4(signs & 0x80402010, 0);
-            f.v[2 * j] = __vsub4(grid.x ^ s0, s0);
-            f.v[2 * j + 1] = __vsub4(grid.y ^ s1, s1);
+            if constexpr (LEAN) {
+                const uint4 s = ik_iq2_signs(q >> 9);
+                f.v[2 * j] = (int)((grid.x ^ s.x) + s.z);
+                f.v[2 * j + 1] = (int)((grid.y ^ s.y) + s.w);
+            } else {
+                const uint32_t signs = unpack_ksigns((uint8_t)(q >> 9));
+                const int s0 = __vcmpne4(signs & 0x08040201, 0);
+                const int s1 = __vcmpne4(signs & 0x80402010, 0);
+                f.v[2 * j] = __vsub4(grid.x ^ s0, s0);
+                f.v[2 * j + 1] = __vsub4(grid.y ^ s1, s1);
+            }
         }
         f.ls0 = r.scale & 0x0F;
         f.ls1 = r.scale >> 4;
@@ -278,6 +308,7 @@ template<> struct ik_tile_traits<GGML_TYPE_Q8_0> {
     static __device__ __forceinline__ float delta(const void *w, uint64_t block) {
         return __half2float(((const block_q8_0 *)w)[block].d);
     }
+    template<bool>
     static __device__ __forceinline__ void decode(Frag &f, const Raw &r) { f.v[0] = r.v0; f.v[1] = r.v1; }
     static __device__ __forceinline__ int dot(const Frag &f, const int *u) {
         int sumi = ggml_cuda_dp4a(f.v[0], u[0], 0);
@@ -299,8 +330,13 @@ static __device__ __forceinline__ void inkling_tile_load_x(int *u, const int8_t 
     }
 }
 
-template<ggml_type TYPE, unsigned R, unsigned C, unsigned WARPS, unsigned ITERS, bool ALIGNED>
-__launch_bounds__(IK_TILE_WARPS * 32)
+/* LEAN (IQ2 release path): every column loads unconditionally, with row 0
+ * standing in for a padded column whose store stays guarded, so the eight
+ * column chains interleave without a branch; the row index is hoisted out
+ * of the K steps and signs are applied arithmetically. Three CTAs per SM
+ * hide more load latency than four at the release register count. */
+template<ggml_type TYPE, unsigned R, unsigned C, unsigned WARPS, unsigned ITERS, bool ALIGNED, bool LEAN>
+__launch_bounds__(IK_TILE_WARPS * 32, LEAN ? IK_TILE_LEAN_BLOCKS : 0)
 static __global__ void inkling_tile_kernel(
         const void *weights, const int8_t *xq, const half2 *xd, float *out,
         const int32_t *counts, const int32_t *buckets,
@@ -325,10 +361,12 @@ static __global__ void inkling_tile_kernel(
         const uint32_t expert = tile_experts[tile], start = tile_starts[tile];
         const uint64_t weight_base = ((uint64_t)expert * m + row0) * blocks_per_row;
         int32_t source[C];
+        uint32_t xrow[C];
         #pragma unroll
         for (unsigned c = 0; c < C; c++) {
             source[c] = start + c < (uint32_t)counts[expert]
                 ? buckets[(uint64_t)expert * assignments + start + c] : -1;
+            xrow[c] = LEAN && source[c] >= 0 ? (uint32_t)source[c] / used : 0u;
         }
         float acc[R][C] = {};
 
@@ -346,21 +384,21 @@ static __global__ void inkling_tile_kernel(
                 for (unsigned r = 0; r < R; r++) {
                     const uint64_t block = weight_base + r * blocks_per_row + bx;
                     if constexpr (ALIGNED) {
-                        T::decode(frag[r], T::load_soa(weights, nblk, block, iqs));
+                        T::template decode<LEAN>(frag[r], T::load_soa(weights, nblk, block, iqs));
                         frag[r].wd = T::delta_soa(weights, block);
                     } else {
-                        T::decode(frag[r], T::load(weights, block, iqs));
+                        T::template decode<LEAN>(frag[r], T::load(weights, block, iqs));
                         frag[r].wd = T::delta(weights, block);
                     }
                 }
                 const uint32_t group = T::group(bx, iqs);
                 #pragma unroll
                 for (unsigned c = 0; c < C; c++) {
-                    if (source[c] < 0) { continue; }
-                    const uint32_t xrow = source[c] / used;
+                    if (!LEAN && source[c] < 0) { continue; }
+                    const uint32_t row = LEAN ? xrow[c] : (uint32_t)source[c] / used;
                     int u[T::X_WORDS];
-                    inkling_tile_load_x<T::X_WORDS>(u, xq + (uint64_t)xrow * k + group * QK8_1 + T::offset(iqs));
-                    const float xs = __low2float(xd[(uint64_t)xrow * groups_per_row + group]);
+                    inkling_tile_load_x<T::X_WORDS>(u, xq + (uint64_t)row * k + group * QK8_1 + T::offset(iqs));
+                    const float xs = __low2float(xd[(uint64_t)row * groups_per_row + group]);
                     #pragma unroll
                     for (unsigned r = 0; r < R; r++) {
                         const int sumi = T::dot(frag[r], u);
@@ -400,7 +438,7 @@ static __global__ void inkling_tile_kernel(
     }
 }
 
-template<ggml_type TYPE, unsigned R, unsigned C, unsigned WARPS, unsigned ITERS, bool ALIGNED>
+template<ggml_type TYPE, unsigned R, unsigned C, unsigned WARPS, unsigned ITERS, bool ALIGNED, bool LEAN>
 static int inkling_tile_launch(
         const void *weights, const int8_t *xq, const half2 *xd, float *out,
         const int32_t *counts, const int32_t *buckets, const int32_t *tile_experts,
@@ -411,9 +449,9 @@ static int inkling_tile_launch(
     if (m % R || k / T::QK != ITERS * K_STEP) { return 1; }
     static int resident = 0;
     if (!resident && (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&resident,
-            inkling_tile_kernel<TYPE, R, C, WARPS, ITERS, ALIGNED>, IK_TILE_WARPS * 32, 0) != cudaSuccess ||
+            inkling_tile_kernel<TYPE, R, C, WARPS, ITERS, ALIGNED, LEAN>, IK_TILE_WARPS * 32, 0) != cudaSuccess ||
             resident <= 0)) { return -2; }
-    inkling_tile_kernel<TYPE, R, C, WARPS, ITERS, ALIGNED><<<sms * resident, IK_TILE_WARPS * 32, 0, stream>>>(
+    inkling_tile_kernel<TYPE, R, C, WARPS, ITERS, ALIGNED, LEAN><<<sms * resident, IK_TILE_WARPS * 32, 0, stream>>>(
         weights, xq, xd, out, counts, buckets, tile_experts, tile_starts,
         m, k, assignments, experts, used);
     return 0;
@@ -426,23 +464,29 @@ static int inkling_tile_dispatch(
         const int32_t *tile_experts, const int32_t *tile_starts, uint32_t m,
         uint32_t k, uint32_t assignments, uint32_t experts, uint32_t used,
         uint32_t sms, cudaStream_t stream, int aligned) {
-    #define IK_TILE(T, R, W, I, A) inkling_tile_launch<T, R, IK_TILE_COLUMNS, W, I, A>( \
+    #define IK_TILE(T, R, W, I, A, L) inkling_tile_launch<T, R, IK_TILE_COLUMNS, W, I, A, L>( \
         weights, xq, xd, out, counts, buckets, tile_experts, tile_starts, \
         m, k, assignments, experts, used, sms, stream)
+    #define IK_TILE_IQ2(T, R, W, I) (aligned \
+        ? (lean ? IK_TILE(T, R, W, I, true, true) : IK_TILE(T, R, W, I, true, false)) \
+        : (lean ? IK_TILE(T, R, W, I, false, true) : IK_TILE(T, R, W, I, false, false)))
     // Four-warp up keeps one fragment per lane; Q8 up carries four per warp.
+    // Lean tiles pay for their padded columns, so decode and narrow verify
+    // widths keep the branched kernel (below 256 tokens the down tile loses).
+    // The switch restores branched columns and table signs for A/B controls.
+    const bool lean = assignments >= IK_TILE_LEAN_MIN && !getenv("DS4_INKLING_NO_IQ2_LEAN");
     switch (type) {
     case GGML_TYPE_IQ2_XXS:
         if (used <= 1) { return 1; }
-        return aligned ? IK_TILE(GGML_TYPE_IQ2_XXS, 4, 4, 1, true)
-                       : IK_TILE(GGML_TYPE_IQ2_XXS, 4, 4, 1, false);
+        return IK_TILE_IQ2(GGML_TYPE_IQ2_XXS, 4, 4, 1);
     case GGML_TYPE_IQ2_XS:
         if (used > 1) { return 1; }
-        return aligned ? IK_TILE(GGML_TYPE_IQ2_XS, 4, 1, 2, true)
-                       : IK_TILE(GGML_TYPE_IQ2_XS, 4, 1, 2, false);
-    case GGML_TYPE_Q8_0: return used > 1 ? IK_TILE(GGML_TYPE_Q8_0, 2, 4, 4, false)
-                                         : IK_TILE(GGML_TYPE_Q8_0, 4, 1, 8, false);
+        return IK_TILE_IQ2(GGML_TYPE_IQ2_XS, 4, 1, 2);
+    case GGML_TYPE_Q8_0: return used > 1 ? IK_TILE(GGML_TYPE_Q8_0, 2, 4, 4, false, false)
+                                         : IK_TILE(GGML_TYPE_Q8_0, 4, 1, 8, false, false);
     default: return 1;
     }
+    #undef IK_TILE_IQ2
     #undef IK_TILE
 }
 
@@ -549,6 +593,7 @@ static int inkling_shared_q8_launch(
 
 #include "inkling_shared_tile.cuh"
 #include "inkling_q4.cuh"
+#include "inkling_q3.cuh"
 
 // Routing tables, then the 16-byte aligned activation SoA for the tile path.
 static uint64_t inkling_route_bytes(uint64_t assignments, int experts) {
@@ -665,6 +710,14 @@ int ds4_mmvq_inkling(
             counts, tile_experts, tile_starts, experts);
         inkling_relayout_kernel<<<(groups + IK_MMVQ_THREADS - 1) / IK_MMVQ_THREADS,
                                   IK_MMVQ_THREADS, 0, stream>>>(xq, xd, (const block_q8_1 *)x, groups);
+        // Q3_K up otherwise re-decodes every fragment per column below.
+        // Wide prefill decodes once per eight columns from the same tables.
+        if (type == GGML_TYPE_Q3_K && used > 1 && assignments >= IK_Q3_MIN_ASSIGNMENTS &&
+            !getenv("DS4_INKLING_NO_Q3_TILE")) {
+            const int rc = inkling_q3_launch<IK_Q3_ROWS, 4, 2>(weights, xq, xd, out, counts,
+                buckets, tile_experts, tile_starts, m, k, assignments, experts, used, device.nsm, stream);
+            if (rc <= 0) { return rc == 0 && cudaGetLastError() == cudaSuccess ? 0 : -2; }
+        }
         const int rc = inkling_tile_dispatch(weights, type, xq, xd, out, counts, buckets,
             tile_experts, tile_starts, m, k, assignments, experts, used, device.nsm, stream, 0);
         if (rc <= 0) { return rc == 0 && cudaGetLastError() == cudaSuccess ? 0 : -2; }

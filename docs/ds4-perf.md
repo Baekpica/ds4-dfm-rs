@@ -172,6 +172,16 @@ Q8_1 input pointers and insufficient block shared memory keep the prior path.
 `DS4_INKLING_NO_SHARED_DOWN_TILE=1` restores warp-owned shared Q8 down tiles;
 from 64 prompt tokens (128 assignment rows), weights stay in registers while
 input groups stream through shared memory with the original one-warp sum.
+`DS4_INKLING_NO_Q3_TILE=1` restores four-column Q3_K expert batches; from
+256 prompt tokens the optimized path decodes each fragment once for eight
+routed columns with the same lane products and ordered sums.
+`DS4_INKLING_NO_IQ2_LEAN=1` restores branched column loops and table-driven
+signs in the IQ2 expert tiles; from 256 prompt tokens the optimized path
+loads every column (row 0 for padding), hoists the row index and spreads
+signs arithmetically at three CTAs per SM.
+`DS4_INKLING_NO_SHARED_SOA=1` restores canonical-row slabs and float deltas in
+the resident Q8 tiles; the optimized path stages the relayout SoA and keeps
+half deltas so two CTAs (up) or four (down) share an SM.
 `DS4_INKLING_NO_Q8_ROUTED_TILE=1` restores warp-owned routed Q8 tiles;
 from 64 prompt rows, the optimized path keeps weights in registers across
 all routed columns with the shared-expert tile schedule.

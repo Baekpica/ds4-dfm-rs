@@ -72,6 +72,26 @@ The bandwidth figure is informational; we don't tier on it.
   all input groups using the shared-expert tile schedule. Unaligned Q8_1
   input or insufficient shared memory keep the prior kernel.
 
+- `DS4_INKLING_NO_Q3_TILE=1` restores the four-column Q3_K expert kernel,
+  which re-unpacks the 3-bit values and scales for every column. Unset it to
+  decode each row fragment once for eight routed columns from 256 prompt
+  tokens (1536 assignments); lane products, FMA chains, warp merge and XOR
+  tree are unchanged, so outputs are byte-identical.
+
+- `DS4_INKLING_NO_IQ2_LEAN=1` restores the branched column loop and
+  table-driven sign masks in the IQ2_XXS/IQ2_XS expert prefill tiles. Unset
+  it to load all eight columns unconditionally (padding reads row 0, stores
+  stay guarded), hoist the row index out of the K steps, spread signs with
+  `n * 0x204081`, and cap registers for three CTAs per SM from 256 prompt
+  tokens (1536 assignments); narrower widths keep the branched kernel.
+  Outputs are byte-identical.
+
+- `DS4_INKLING_NO_SHARED_SOA=1` restores canonical 36-byte Q8_1 slabs and
+  float block deltas in the resident shared/routed Q8 prefill tiles. Unset it
+  to stage the activation SoA (one 8-byte LDS per dp4a pair, conflict-free
+  K steps) with half deltas, which fits two CTAs per SM for up and four for
+  down. Outputs are byte-identical.
+
 - `DS4_INKLING_NO_IQ2_XS_ALIGNED=1` restores 74-byte IQ2_XS down tiles.
   Unset it to load owner SoA artifacts for Inkling fused w2 with the same
   MMVQ decode and reduction. Missing artifacts keep the raw path.

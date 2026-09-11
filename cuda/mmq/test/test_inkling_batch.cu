@@ -155,11 +155,37 @@ static void batch_case(ggml_type type, int m, int tokens, int ne, int used,
         exact(got, want, out_bytes);
     }
 
+    // The SoA slab switch restores canonical-row slabs on every Q8 tile path.
+    if (type == GGML_TYPE_Q8_0) {
+        CUDA(cudaMemset(got, 0xff, out_bytes));
+        CHECK(setenv("DS4_INKLING_NO_SHARED_SOA", "1", 1) == 0);
+        CHECK(ds4_mmq_inkling_moe(dw, type, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+        CHECK(unsetenv("DS4_INKLING_NO_SHARED_SOA") == 0);
+        exact(got, want, out_bytes);
+    }
+
     if (type == GGML_TYPE_Q8_0 && ne != SHARED) {
         CUDA(cudaMemset(got, 0xff, out_bytes));
         CHECK(setenv("DS4_INKLING_NO_Q8_ROUTED_TILE", "1", 1) == 0);
         CHECK(ds4_mmq_inkling_moe(dw, type, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
         CHECK(unsetenv("DS4_INKLING_NO_Q8_ROUTED_TILE") == 0);
+        exact(got, want, out_bytes);
+    }
+
+    // Branched columns and table signs must reproduce the lean IQ2 tiles.
+    if (type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS) {
+        CUDA(cudaMemset(got, 0xff, out_bytes));
+        CHECK(setenv("DS4_INKLING_NO_IQ2_LEAN", "1", 1) == 0);
+        CHECK(ds4_mmq_inkling_moe(dw, type, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+        CHECK(unsetenv("DS4_INKLING_NO_IQ2_LEAN") == 0);
+        exact(got, want, out_bytes);
+    }
+
+    if (type == GGML_TYPE_Q3_K) {
+        CUDA(cudaMemset(got, 0xff, out_bytes));
+        CHECK(setenv("DS4_INKLING_NO_Q3_TILE", "1", 1) == 0);
+        CHECK(ds4_mmq_inkling_moe(dw, type, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+        CHECK(unsetenv("DS4_INKLING_NO_Q3_TILE") == 0);
         exact(got, want, out_bytes);
     }
 
@@ -327,6 +353,11 @@ static void aligned_xs_case(int m, int tokens, int ne, Routes routing) {
     CHECK(ds4_mmq_inkling_moe(dw, GGML_TYPE_IQ2_XS, dx, di, want, m, k, rows, ne, used, nullptr) == 0);
     CHECK(ds4_mmq_inkling_moe_iq2_xs_aligned(da, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
     exact(got, want, out_bytes);
+    CUDA(cudaMemset(got, 0xff, out_bytes));
+    CHECK(setenv("DS4_INKLING_NO_IQ2_LEAN", "1", 1) == 0);
+    CHECK(ds4_mmq_inkling_moe_iq2_xs_aligned(da, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_IQ2_LEAN") == 0);
+    exact(got, want, out_bytes);
     printf("aligned-xs M=%d tokens=%d experts=%d routes=%d exact\n", m, tokens, ne, routing);
     CUDA(cudaFree(dw)); CUDA(cudaFree(da)); CUDA(cudaFree(dx)); CUDA(cudaFree(di));
     CUDA(cudaFree(got)); CUDA(cudaFree(want));
@@ -353,6 +384,11 @@ static void aligned_case(int m, int tokens, int ne, Routes routing) {
     auto *want = (float *)device_copy(nullptr, out_bytes);
     CHECK(ds4_mmq_inkling_moe(dw, GGML_TYPE_IQ2_XXS, dx, di, want, m, k, rows, ne, used, nullptr) == 0);
     CHECK(ds4_mmq_inkling_moe_iq2_aligned(da, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+    exact(got, want, out_bytes);
+    CUDA(cudaMemset(got, 0xff, out_bytes));
+    CHECK(setenv("DS4_INKLING_NO_IQ2_LEAN", "1", 1) == 0);
+    CHECK(ds4_mmq_inkling_moe_iq2_aligned(da, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_IQ2_LEAN") == 0);
     exact(got, want, out_bytes);
     CUDA(cudaMemset(got, 0xff, out_bytes));
     CHECK(setenv("DS4_INKLING_NO_IQ2_ALIGNED", "1", 1) == 0);
@@ -430,6 +466,9 @@ int main() {
     CHECK(unsetenv("DS4_INKLING_NO_MOE_TILE") == 0);
     CHECK(unsetenv("DS4_INKLING_NO_IQ2_ALIGNED") == 0);
     CHECK(unsetenv("DS4_INKLING_NO_IQ2_XS_ALIGNED") == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_SHARED_SOA") == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_IQ2_LEAN") == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_Q3_TILE") == 0);
     CHECK(ds4_gpu_init()); CHECK(ds4_mmq_init(0) == 0);
     candidate_case();
     CHECK(ds4_mmvq_inkling_bytes(8192 * USED + 1, MAX_EXPERTS, 1) == 0);
@@ -485,6 +524,15 @@ int main() {
             batch_case(GGML_TYPE_Q8_0, 126, tokens, SHARED, 1, route);
         }
     }
+    // Decode-once Q3_K up tiles: threshold edges, ragged 124/126 rows (126
+    // falls back to four columns), full width, random/repeated/invalid routes.
+    for (int tokens : {255, 256, 257, 8192}) {
+        batch_case(GGML_TYPE_Q3_K, 124, tokens, MAX_EXPERTS, USED, RANDOM);
+        batch_case(GGML_TYPE_Q3_K, 124, tokens, MAX_EXPERTS, USED, INVALID);
+    }
+    batch_case(GGML_TYPE_Q3_K, 126, 512, MAX_EXPERTS, USED, RANDOM);
+    batch_case(GGML_TYPE_Q3_K, 124, 257, MAX_EXPERTS, USED, REPEATED);
+    batch_case(GGML_TYPE_Q3_K, HIDDEN, 512, MAX_EXPERTS, USED, RANDOM);
     for (int used : {int(USED), 1}) {
         for (int tokens : {511, 512, 513, 8192}) {
             batch_case(GGML_TYPE_Q4_K, 126, tokens, MAX_EXPERTS, used, RANDOM);

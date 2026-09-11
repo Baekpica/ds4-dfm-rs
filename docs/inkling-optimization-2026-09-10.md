@@ -1,7 +1,8 @@
 # Inkling MQ85GB optimization on GB10
 
-Continued in [rounds 13–15](inkling-optimization-2026-09-11.md) and
-[rounds 16–18](inkling-optimization-2026-09-11-r16.md), September 11.
+Continued in [rounds 13–15](inkling-optimization-2026-09-11.md),
+[rounds 16–18](inkling-optimization-2026-09-11-r16.md), September 11, and
+[rounds 19–21](inkling-optimization-2026-09-12.md), September 12.
 
 This campaign starts at merged v0.1.2 main `10658bdf` and keeps the default
 aligned dense-Q8 numerical path. Results apply to the six-shard MQ85GB
