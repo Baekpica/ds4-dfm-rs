@@ -154,6 +154,14 @@ static void batch_case(ggml_type type, int m, int tokens, int ne, int used,
         exact(got, want, out_bytes);
     }
 
+    if (type == GGML_TYPE_Q8_0 && ne != SHARED) {
+        CUDA(cudaMemset(got, 0xff, out_bytes));
+        CHECK(setenv("DS4_INKLING_NO_Q8_ROUTED_TILE", "1", 1) == 0);
+        CHECK(ds4_mmq_inkling_moe(dw, type, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+        CHECK(unsetenv("DS4_INKLING_NO_Q8_ROUTED_TILE") == 0);
+        exact(got, want, out_bytes);
+    }
+
     if (type == GGML_TYPE_Q4_K) {
         CUDA(cudaMemset(got, 0xff, out_bytes));
         CHECK(setenv("DS4_INKLING_NO_Q4_TILE", "1", 1) == 0);
@@ -165,6 +173,7 @@ static void batch_case(ggml_type type, int m, int tokens, int ne, int used,
     const size_t work_bytes = ds4_mmvq_inkling_bytes(rows, ne, used);
     void *work = device_copy(nullptr, work_bytes);
     if ((type == GGML_TYPE_Q8_0 && ne == SHARED && tokens == 65) ||
+        (type == GGML_TYPE_Q8_0 && ne != SHARED && tokens == 65) ||
         (type == GGML_TYPE_Q4_K && tokens == 513)) {
         cudaStream_t stream;
         CUDA(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
@@ -331,6 +340,14 @@ int main() {
         }
         batch_case(GGML_TYPE_Q4_K, 126, 513, MAX_EXPERTS, used, REPEATED);
         batch_case(GGML_TYPE_Q4_K, HIDDEN, 512, MAX_EXPERTS, used, RANDOM);
+    }
+    for (int used : {int(USED), 1}) {
+        for (int tokens : {63, 64, 65, 8192}) {
+            batch_case(GGML_TYPE_Q8_0, 126, tokens, MAX_EXPERTS, used, RANDOM);
+            batch_case(GGML_TYPE_Q8_0, 126, tokens, MAX_EXPERTS, used, INVALID);
+        }
+        batch_case(GGML_TYPE_Q8_0, 126, 65, MAX_EXPERTS, used, REPEATED);
+        batch_case(GGML_TYPE_Q8_0, HIDDEN, 512, MAX_EXPERTS, used, RANDOM);
     }
     wrapper_case(); puts("Inkling expert batch checks passed"); return 0;
 }

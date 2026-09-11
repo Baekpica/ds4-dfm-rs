@@ -18,6 +18,9 @@ static __global__ void inkling_shared_tile_kernel(
     __shared__ int32_t selected[IK_ST_COLS];
     int2 payload[R][PARTS][STEPS];
     float delta[R][PARTS][STEPS];
+    // Routed Q8 has 256 experts; most CTAs own an empty bucket and must not
+    // load another expert's weights. Shared experts keep n > 0.
+    if (n == 0) { return; }
 
     // The last CTA may own padded rows; clamp loads and guard their stores.
     #pragma unroll
@@ -98,13 +101,14 @@ static __global__ void inkling_shared_tile_kernel(
 static int inkling_shared_tile_launch(
         const void *weights, const block_q8_1 *x, float *out,
         const int32_t *counts, const int32_t *buckets, unsigned m,
-        unsigned k, unsigned assignments, unsigned used, cudaStream_t stream) {
+        unsigned k, unsigned assignments, unsigned used, unsigned experts,
+        cudaStream_t stream) {
     constexpr unsigned ROWS = 2, WARPS = 8;
     const size_t slab_bytes = IK_ST_COLS * (k / QK8_1) * sizeof(block_q8_1);
     const auto &device = ggml_cuda_info().devices[ggml_cuda_get_device()];
-    if ((uintptr_t)x % alignof(int4) ||
+    if (!experts || experts > IK_MMVQ_EXPERTS || (uintptr_t)x % alignof(int4) ||
         device.smpb < slab_bytes + IK_ST_COLS * sizeof(int32_t)) { return 1; }
-    const dim3 grid((m + ROWS * WARPS - 1) / (ROWS * WARPS), IK_SHARED_EXPERTS);
+    const dim3 grid((m + ROWS * WARPS - 1) / (ROWS * WARPS), experts);
     if (used > 1) {
         inkling_shared_tile_kernel<ROWS, WARPS, 4, 4><<<grid, WARPS * IK_ST_WARP, slab_bytes, stream>>>(
             (const block_q8_0 *)weights, x, out, counts, buckets, m, k, assignments, used);

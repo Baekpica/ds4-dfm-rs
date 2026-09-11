@@ -568,7 +568,7 @@ int ds4_mmvq_inkling(
         // retain every weight fragment while its routed input groups stream.
         if (rows >= IK_ST_MIN && !getenv("DS4_INKLING_NO_SHARED_TILE")) {
             const int rc = inkling_shared_tile_launch(weights, (const block_q8_1 *)x,
-                out, counts, buckets, m, k, assignments, used, stream);
+                out, counts, buckets, m, k, assignments, used, experts, stream);
             if (rc <= 0) { return rc; }
         }
         inkling_tiles_kernel<IK_SHARED_Q8_COLS><<<1, IK_MMVQ_THREADS, 0, stream>>>(
@@ -583,7 +583,16 @@ int ds4_mmvq_inkling(
         rows >= IK_ST_MIN * IK_SHARED_EXPERTS &&
         !getenv("DS4_INKLING_NO_SHARED_DOWN_TILE") && !getenv("DS4_INKLING_NO_MOE_TILE")) {
         const int rc = inkling_shared_tile_launch(weights, (const block_q8_1 *)x,
-            out, counts, buckets, m, k, assignments, used, stream);
+            out, counts, buckets, m, k, assignments, used, experts, stream);
+        if (rc <= 0) { return rc; }
+    }
+    // Routed Q8 otherwise reloads weights for every eight-column tile after
+    // an activation relayout. Wide prefill keeps the shared-tile schedule.
+    if (type == GGML_TYPE_Q8_0 && experts != IK_SHARED_EXPERTS &&
+        rows >= IK_ST_MIN && !getenv("DS4_INKLING_NO_Q8_ROUTED_TILE") &&
+        !getenv("DS4_INKLING_NO_MOE_TILE")) {
+        const int rc = inkling_shared_tile_launch(weights, (const block_q8_1 *)x,
+            out, counts, buckets, m, k, assignments, used, experts, stream);
         if (rc <= 0) { return rc; }
     }
     // Q4_K otherwise repeats scale/payload decoding per column and builds
