@@ -98,7 +98,7 @@ mod tests {
             }
         }
         assert!(tunable("DS4_INKLING_PREFILL_CHUNK"));
-        for value in ["1", "512", "2048", "2049", "8192"] {
+        for value in ["1", "512", "1024", "2048", "2049", "8192"] {
             assert!(validate("DS4_INKLING_PREFILL_CHUNK", value, "inkling").is_ok());
         }
         for value in ["0", "8193", "x"] {

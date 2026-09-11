@@ -183,8 +183,8 @@ the optimized path reads owner SoA artifacts with the same MMVQ reduction.
 from 3072 routed assignments, eight-column tiles reuse payload loads and
 unpacked scales with the same MMVQ partial sums and skip the unused relayout.
 `DS4_INKLING_PREFILL_CHUNK=N` (1–8192) sets the maximum Inkling prefill chunk width;
-shorter prompts remain valid. The default is 512, capped by context.
-Increasing it to 8192 alone regressed the matched 8K Inkling workload.
+shorter prompts remain valid. The default is 1024, capped by context.
+`DS4_INKLING_PREFILL_CHUNK=512` restores the previous cap.
 Scout consumers also reparse each referenced unprofiled benchmark CSV and
 require its rows to match the serialized samples. Hashing and parsing use the
 same bytes; benchmark stdout is limited to 64 MiB per sample on load.
