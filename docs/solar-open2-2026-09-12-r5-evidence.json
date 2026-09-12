@@ -1,0 +1,139 @@
+{
+  "schema": "solar-open2-2026-09-12-r5-evidence-v1",
+  "entry_commit": "504321b",
+  "arms": {
+    "off-8k": {
+      "ctx_tokens": 8192,
+      "DS4_SOLAR_FATTN_WS": 0,
+      "complete": true,
+      "samples": 3,
+      "prefill_tps_median": 1118.54,
+      "gen_tps_median": 18.07,
+      "first_token_sec_median": 0.1492,
+      "proof_sha256_sets": [
+        {
+          "frontier_008192.logits.json": "acc6dcb45eb554fe4b7ab0ff2a1222c0d3883049f43ea30587c3ca6aa529c5a1",
+          "tokens-8192.json": "3c782f2252cfce0cdeedb263a03dc5d6e03d29545d42f0c7ae05d3d7cc17f5ca"
+        }
+      ],
+      "guard_min_available_gib": 14.105,
+      "guard_events": [
+        "exit",
+        "sample",
+        "start"
+      ]
+    },
+    "on-8k": {
+      "ctx_tokens": 8192,
+      "DS4_SOLAR_FATTN_WS": 1,
+      "complete": true,
+      "samples": 3,
+      "prefill_tps_median": 1138.54,
+      "gen_tps_median": 18.03,
+      "first_token_sec_median": 0.1527,
+      "proof_sha256_sets": [
+        {
+          "frontier_008192.logits.json": "acc6dcb45eb554fe4b7ab0ff2a1222c0d3883049f43ea30587c3ca6aa529c5a1",
+          "tokens-8192.json": "3c782f2252cfce0cdeedb263a03dc5d6e03d29545d42f0c7ae05d3d7cc17f5ca"
+        }
+      ],
+      "guard_min_available_gib": 14.1,
+      "guard_events": [
+        "exit",
+        "sample",
+        "start"
+      ]
+    },
+    "off-64k": {
+      "ctx_tokens": 65536,
+      "DS4_SOLAR_FATTN_WS": 0,
+      "complete": true,
+      "samples": 3,
+      "prefill_tps_median": 782.24,
+      "gen_tps_median": 13.7,
+      "first_token_sec_median": 0.1666,
+      "proof_sha256_sets": [
+        {
+          "frontier_065536.logits.json": "b9c7f5f05dae4024ee297b7883a35a64c53e1e947715082116eac6b29e0cd394",
+          "tokens-65536.json": "95c1b3bb5022d30695b53e2d6720ac1d3cc99a1bf9dee14abbc771bd25b1117e"
+        }
+      ],
+      "guard_min_available_gib": 12.178,
+      "guard_events": [
+        "exit",
+        "sample",
+        "start"
+      ]
+    },
+    "on-64k": {
+      "ctx_tokens": 65536,
+      "DS4_SOLAR_FATTN_WS": 1,
+      "complete": false,
+      "samples": 0,
+      "note": "Host hard-froze about 65 s into the first warmup (2026-09-12 23:15 KST); no sample, proof or profile. See report.",
+      "guard_last_available_gib": 14.508,
+      "guard_last_psi_full_avg10": 0.0
+    }
+  },
+  "compare_8k": {
+    "verdict": "inconclusive",
+    "correctness": {
+      "max_abs": 0.0,
+      "max_scaled": 0.0,
+      "bad": 0,
+      "checked": 1179648,
+      "rel_rms": 0.0,
+      "rel_rms_scaled": 0.0
+    },
+    "token_mismatches": 0,
+    "argmax_mismatches": 0,
+    "metrics": [
+      {
+        "metric": "decode",
+        "baseline_median": 0.05534034311012728,
+        "candidate_median": 0.05546311702717693,
+        "median_percent": 0.2218524681087075,
+        "lower_percent": -0.11068068622025473,
+        "upper_percent": 0.2773155851358844
+      },
+      {
+        "metric": "first_token",
+        "baseline_median": 0.1492,
+        "candidate_median": 0.1527,
+        "median_percent": 2.3458445040214437,
+        "lower_percent": -1.518151815181512,
+        "upper_percent": 5.890318212593093
+      },
+      {
+        "metric": "prefill",
+        "baseline_median": 0.0008940225651295439,
+        "candidate_median": 0.0008783178456619882,
+        "median_percent": -1.7566356913239711,
+        "lower_percent": -2.3271665894731175,
+        "upper_percent": -1.5496657325333008
+      }
+    ]
+  },
+  "power_probe_64k_tail": {
+    "shape": "4096 queries at position 61440, capacity 65601, 64 heads, 8 KV heads, synthetic K-FP8/V-FP4",
+    "pair_kernel": {
+      "watts": 64.3,
+      "sm_mhz": 2554,
+      "temp_c": 52
+    },
+    "ws_kernel": {
+      "watts": 105.6,
+      "sm_mhz": 2418,
+      "temp_c": 66
+    },
+    "sampler": "nvidia-smi --query-gpu=power.draw,clocks.sm,temperature.gpu -lms 200 during 3 s bursts"
+  },
+  "bench_binary_sha256": "b94449933053b2709fea75e975a8f5cb32b5c1b58764989cf8d10c9a646f7372",
+  "host": {
+    "product": "30KLS02X00 (Lenovo ThinkStation PGX, GB10)",
+    "bios": "S0QKT0EA 2026-07-13",
+    "driver": "610.43.02",
+    "cuda": "13.3",
+    "max_sm_mhz": 3003
+  }
+}

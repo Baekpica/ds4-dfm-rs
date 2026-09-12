@@ -41,6 +41,9 @@ release candidate or describe live processes.
   unsuccessful experiments and remaining limits.
 - [Solar, September 12](solar-open2-optimization-2026-09-12.md): four-round
   closure, guarded baseline evidence and unchanged acceptance limits.
+- [Solar, September 12, round 5](solar-open2-optimization-2026-09-12-r5.md):
+  opt-in warp-specialized K-FP8/V-FP4 prefill attention (byte-exact, 2.6x
+  at 64K depth) and the GB10 power trip behind both host freezes.
 - Partial reuse: [Solar, August 21](solar-partial-reuse-2026-08-21.md) and
   [Motif, August 22](motif3-partial-reuse-2026-08-22.md).
 
