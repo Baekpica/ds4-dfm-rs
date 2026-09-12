@@ -75,6 +75,11 @@ static void run_shape(uint32_t rows, uint32_t pos, uint32_t cap,
     CHECK(ds4_gpu_tensor_write(q, 0, query, bytes));
     CHECK(ds4_gpu_tensor_write(kv, 0, cache, cache_bytes));
     CHECK(ds4_gpu_synchronize());
+    /* The dispatcher falls back to the pair kernel when the device cannot
+     * run the warp-specialized one; that would compare the pair kernel
+     * against itself, so refuse instead of passing vacuously. */
+    CHECK(ds4_mmq_solar_prefill_attn_ws_available(
+        ds4_gpu_tensor_ptr(kv), row_bytes) == 1);
     double times[2];
     for (int variant = 0; variant < 2; variant++) {
         CHECK(setenv(CONTROL, variant ? "1" : "0", 1) == 0);

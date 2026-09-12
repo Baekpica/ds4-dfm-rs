@@ -1432,13 +1432,20 @@ static int solar_fattn_ws_enabled(void) {
     return value && value[0] == '1';
 }
 
-/* Launch the warp-specialized kernel when the format, geometry, copy
- * alignment and device allow it; 0 means the caller keeps the pair path. */
+/* cp.async copy width the cache supports: the K/V regions sit at
+ * multiples of 64 bytes inside a row, so only the row stride and the
+ * cache base decide.  0 means the pair kernel must run. */
+static int solar_fattn_ws_width(const void *kv, uint64_t row_bytes) {
+    const uintptr_t base = (uintptr_t)kv;
+    if ((row_bytes % 16u) == 0u && (base % 16u) == 0u) { return 16; }
+    if ((row_bytes % 8u) == 0u && (base % 8u) == 0u) { return 8; }
+    return 0;
+}
+
+/* Opt the kernel into its 95 KB dynamic shared memory; 0 when the device
+ * cannot provide it. */
 template <int CPW>
-static int solar_fattn_ws_launch(
-        float *heads, const float *q, const void *kv, uint64_t row_bytes,
-        int n_tokens, int pos0, int n_head, int n_head_kv, int kv_cap,
-        int window, float scale, cudaStream_t stream) {
+static int solar_fattn_ws_device_ok(void) {
     const auto &device = ggml_cuda_info().devices[ggml_cuda_get_device()];
     const int smem = (int)sizeof(solar_ws_smem);
     if (device.smpbo < (size_t)smem) { return 0; }
@@ -1448,12 +1455,24 @@ static int solar_fattn_ws_launch(
         (void)cudaGetLastError();
         return 0;
     }
+    return 1;
+}
+
+/* Launch the warp-specialized kernel when the device allows it; 0 means
+ * the caller keeps the pair path. */
+template <int CPW>
+static int solar_fattn_ws_launch(
+        float *heads, const float *q, const void *kv, uint64_t row_bytes,
+        int n_tokens, int pos0, int n_head, int n_head_kv, int kv_cap,
+        int window, float scale, cudaStream_t stream) {
+    if (!solar_fattn_ws_device_ok<CPW>()) { return 0; }
     const int tiles = (n_tokens + FA_TQ - 1) / FA_TQ;
     const dim3 grid(tiles, n_head / 2, 1);
-    ds4_fattn_hmma_solar_ws_kernel<CPW><<<grid, WS_THREADS, smem, stream>>>(
-        heads, q, kv, row_bytes, (uint32_t)n_tokens, (uint32_t)pos0,
-        (uint32_t)n_head, (uint32_t)n_head_kv, (uint32_t)kv_cap,
-        (uint32_t)window, scale);
+    ds4_fattn_hmma_solar_ws_kernel<CPW>
+        <<<grid, WS_THREADS, (int)sizeof(solar_ws_smem), stream>>>(
+            heads, q, kv, row_bytes, (uint32_t)n_tokens, (uint32_t)pos0,
+            (uint32_t)n_head, (uint32_t)n_head_kv, (uint32_t)kv_cap,
+            (uint32_t)window, scale);
     return 1;
 }
 
@@ -1462,21 +1481,18 @@ static int solar_fattn_ws_try(
         int n_tokens, int pos0, int n_head, int n_head_kv, int kv_cap,
         int window, float scale, cudaStream_t stream) {
     if (!solar_fattn_ws_enabled()) { return 0; }
-    /* cp.async needs the row chunks aligned to their copy width; the
-     * K/V regions sit at multiples of 64 bytes inside a row, so only the
-     * row stride and the cache base decide. */
-    const uintptr_t base = (uintptr_t)kv;
-    if ((row_bytes % 16u) == 0u && (base % 16u) == 0u) {
+    switch (solar_fattn_ws_width(kv, row_bytes)) {
+    case 16:
         return solar_fattn_ws_launch<16>(
             heads, q, kv, row_bytes, n_tokens, pos0, n_head, n_head_kv,
             kv_cap, window, scale, stream);
-    }
-    if ((row_bytes % 8u) == 0u && (base % 8u) == 0u) {
+    case 8:
         return solar_fattn_ws_launch<8>(
             heads, q, kv, row_bytes, n_tokens, pos0, n_head, n_head_kv,
             kv_cap, window, scale, stream);
+    default:
+        return 0;
     }
-    return 0;
 }
 
 enum {
@@ -2602,6 +2618,18 @@ extern "C" int ds4_mmq_exaone_prefill_attn_hmma(
         heads, q, kv, 0u, n_tokens, pos0, n_head, n_head_kv, kv_cap,
         window, scale, stream);
     return cudaGetLastError() == cudaSuccess ? 0 : -2;
+}
+
+extern "C" int ds4_mmq_solar_prefill_attn_ws_available(
+        const void *kv, size_t row_bytes) {
+    if (!kv || row_bytes == 0u) { return 0; }
+    const int device = ggml_cuda_get_device();
+    if (ggml_cuda_info().devices[device].cc < GGML_CUDA_CC_AMPERE) { return 0; }
+    switch (solar_fattn_ws_width(kv, (uint64_t)row_bytes)) {
+    case 16: return solar_fattn_ws_device_ok<16>();
+    case 8: return solar_fattn_ws_device_ok<8>();
+    default: return 0;
+    }
 }
 
 extern "C" int ds4_mmq_solar_prefill_attn_hmma(
