@@ -458,6 +458,11 @@ The [September 12 Rust-host campaign](solar-open2-optimization-2026-09-12.md)
 records guarded 8K/64K controls and four unretained attention candidates.
 Its fresh-process protocol is separate from the historical HTTP results
 below; it establishes no new native speedup or fix for the host freezes.
+[Round 5](solar-open2-optimization-2026-09-12-r5.md) of the same campaign
+adds an opt-in warp-specialized K-FP8/V-FP4 prefill attention kernel
+(`DS4_SOLAR_FATTN_WS=1`, byte-identical, 2.6x on the 64K tail component)
+and traces both 64K host freezes to the GB10 power trip; its 8K A/B and the
+64K control are recorded there. It is not the default.
 
 The numbers below used
 [`b2e52b9`](https://github.com/Baekpica/ds4/commit/b2e52b9048ba339327539212de1c47d009dde126)

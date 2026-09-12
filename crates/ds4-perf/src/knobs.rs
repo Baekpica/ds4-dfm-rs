@@ -35,6 +35,7 @@ pub fn tunable(key: &str) -> bool {
             | "DS4_CUDA_SOLAR_GQA_CHUNK"
             | "DS4_FATTN_HMMA_LDSM"
             | "DS4_SOLAR_FATTN_GQA2"
+            | "DS4_SOLAR_FATTN_WS"
     )
 }
 
@@ -77,7 +78,7 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         "DS4_CUDA_SOLAR_GQA_CHUNK" => {
             family.starts_with("solar") && [64, 128, 256, 512, 1024, 2048].contains(&n)
         }
-        "DS4_FATTN_HMMA_LDSM" | "DS4_SOLAR_FATTN_GQA2" => {
+        "DS4_FATTN_HMMA_LDSM" | "DS4_SOLAR_FATTN_GQA2" | "DS4_SOLAR_FATTN_WS" => {
             family == "solar-open2" && matches!(value, "0" | "1")
         }
         _ => false,
@@ -96,7 +97,11 @@ mod tests {
 
     #[test]
     fn solar_attention_controls() {
-        for key in ["DS4_FATTN_HMMA_LDSM", "DS4_SOLAR_FATTN_GQA2"] {
+        for key in [
+            "DS4_FATTN_HMMA_LDSM",
+            "DS4_SOLAR_FATTN_GQA2",
+            "DS4_SOLAR_FATTN_WS",
+        ] {
             assert!(tunable(key));
             for value in ["0", "1"] {
                 assert!(validate(key, value, "solar-open2").is_ok());

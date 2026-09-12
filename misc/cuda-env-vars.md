@@ -266,6 +266,19 @@ The bandwidth figure is informational; we don't tier on it.
   64-key tile in registers while the current one is consumed. Both paths
   write identical bytes; the switch is a diagnostic rollback.
 
+- `DS4_SOLAR_FATTN_WS=1` (default off) selects the warp-specialized kernel
+  (`ds4_fattn_hmma_solar_ws_kernel`) for Solar's K-FP8/V-FP4 prefill
+  attention: four producer warps stream raw K/V rows through a two-stage
+  `cp.async` ring and decode them into double-buffered half tiles while
+  eight consumer warps run the same 16-key HMMA / online-softmax steps.
+  Same conversions, same operation order, byte-identical output, 2.6x
+  faster at 64K depth. It is opt-in because it draws about 105 W against
+  the pair kernel's 64 W at 64K depth, and the GB10 hosts measured so far
+  hard-freeze without a log line under sustained draw above roughly 90 W
+  (a known platform fault). Cap the SM clock first, e.g.
+  `sudo nvidia-smi -lgc 300,2200`, and confirm `power.draw` with a short
+  run before any long-context prefill with this switch on.
+
 - `DS4_MODEL_ANON_HUGE=N` (Linux, default off; lives in ds4.c model_open, not
   the CUDA backend). Copy GPU-backend model files out of the file-backed mmap
   into anonymous `MADV_HUGEPAGE` memory at load. `N<=1` copies every GPU

@@ -52,6 +52,7 @@
 /tests/test_solar_kda_chunk
 /tests/test_solar_gates
 /tests/test_solar_kv
+/tests/test_solar_fattn
 /tests/test_solar_tokenizer
 /tests/test_solar_session
 /ds4flash.gguf

@@ -84,6 +84,12 @@ int ds4_mmq_solar_prefill_attn_hmma(
         int n_tokens, int pos0, int n_head, int n_head_kv, int head_dim,
         int kv_cap, int window, float scale, cudaStream_t stream);
 
+// 1 when DS4_SOLAR_FATTN_WS=1 would run the warp-specialized kernel on this
+// cache (copy alignment, device shared-memory opt-in); 0 when the pair
+// kernel would run instead.  Lets a parity test refuse to compare the pair
+// kernel against itself.
+int ds4_mmq_solar_prefill_attn_ws_available(const void *kv, size_t row_bytes);
+
 // Inkling prefill attention on bf16 tensor cores: the current chunk's K/V
 // rows are staged as bf16 into `stage` ([rows][2048] u16, the cache row
 // layout), then 64-query x 2-head CTAs stream 64-key tiles through shared
