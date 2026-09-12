@@ -33,6 +33,8 @@ pub fn tunable(key: &str) -> bool {
             | "DS4_INKLING_ATTN_HMMA"
             | "DS4_INKLING_PREFILL_CHUNK"
             | "DS4_CUDA_SOLAR_GQA_CHUNK"
+            | "DS4_FATTN_HMMA_LDSM"
+            | "DS4_SOLAR_FATTN_GQA2"
     )
 }
 
@@ -75,6 +77,9 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         "DS4_CUDA_SOLAR_GQA_CHUNK" => {
             family.starts_with("solar") && [64, 128, 256, 512, 1024, 2048].contains(&n)
         }
+        "DS4_FATTN_HMMA_LDSM" | "DS4_SOLAR_FATTN_GQA2" => {
+            family == "solar-open2" && matches!(value, "0" | "1")
+        }
         _ => false,
     };
     if !valid {
@@ -88,6 +93,22 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn solar_attention_controls() {
+        for key in ["DS4_FATTN_HMMA_LDSM", "DS4_SOLAR_FATTN_GQA2"] {
+            assert!(tunable(key));
+            for value in ["0", "1"] {
+                assert!(validate(key, value, "solar-open2").is_ok());
+            }
+            for value in ["2", "01", "true", ""] {
+                assert!(validate(key, value, "solar-open2").is_err());
+            }
+            assert!(validate(key, "1", "inkling").is_err());
+        }
+        assert!(!tunable("DS4_METAL_PREFILL_CHUNK"));
+        assert!(!tunable("DS4_SOLAR_KV_FORMAT"));
+    }
 
     #[test]
     fn inkling_controls() {

@@ -199,6 +199,10 @@ const PERF_ENV: &[&str] = &[
     "DS4_SOLAR_MOE_RESIDUAL",
     "DS4_CUDA_SOLAR_GQA_GROUPED",
     "DS4_CUDA_SOLAR_GQA_CHUNK",
+    // Solar graph width; DS4_CONT_PREFILL_CHUNK does not set it.
+    "DS4_METAL_PREFILL_CHUNK",
+    "DS4_FATTN_HMMA_LDSM",
+    "DS4_SOLAR_FATTN_GQA2",
     "DS4_DOTS3_PREFILL_CHUNK",
     "DS4_INKLING_NO_LINEAR",
     "DS4_INKLING_NO_MOE_BATCH",
@@ -630,6 +634,9 @@ mod tests {
                 ("DS4_QWEN_PLE_DIR", "/models/PLE-FP8"),
                 ("DS4_QWEN_PREFILL_OPENING", "1"),
                 ("DS4_MMQ_DENSE_D2R", "0"),
+                ("DS4_METAL_PREFILL_CHUNK", "4096"),
+                ("DS4_FATTN_HMMA_LDSM", "0"),
+                ("DS4_SOLAR_FATTN_GQA2", "1"),
                 ("DS4_API_KEY", "secret"),
                 ("DS4_UNKNOWN", "secret"),
                 ("HF_TOKEN", "secret"),
@@ -641,6 +648,9 @@ mod tests {
         assert!(out.contains("DS4_QWEN_PLE_DIR='/models/PLE-FP8'"));
         assert!(out.contains("DS4_QWEN_PREFILL_OPENING='1'"));
         assert!(out.contains("DS4_MMQ_DENSE_D2R='0'"));
+        assert!(out.contains("DS4_METAL_PREFILL_CHUNK='4096'"));
+        assert!(out.contains("DS4_FATTN_HMMA_LDSM='0'"));
+        assert!(out.contains("DS4_SOLAR_FATTN_GQA2='1'"));
         assert!(!out.contains("secret"));
         assert_eq!(quote("a'$(x)`id`"), "'a'\\''$(x)`id`'");
     }
