@@ -28,6 +28,12 @@ shard. On September 13, 2026, the downloaded artifacts passed all bindings:
 
 These are tensor payload sizes, excluding GGUF metadata and alignment.
 
+The small `make test-step37-primitives CUDA_ARCH=sm_121` CUDA gate passes on
+GB10: post-SiLU clamps, biased sigmoid routing, 64/96-head output gating,
+Q/K normalization and split-half RoPE. It replays changed device positions
+through 262,143 on a non-default stream. The CUDA backend object also builds.
+These component checks do not establish complete model logits or performance.
+
 This is a host preflight/bind plan, not native model execution. Production
 family routing remains unsupported until the native ABI, gated mixed-head
 attention, sigmoid MoE routing, RoPE frequency factors, tokenizer, Step vision

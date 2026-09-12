@@ -711,7 +711,7 @@ ds4_agent_cpu.o: ds4_agent.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_
 ds4_metal.o: ds4_metal.m ds4_gpu.h $(METAL_SRCS)
 	$(CC) $(OBJCFLAGS) -c -o $@ ds4_metal.m
 
-ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
+ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
 	$(NVCC) $(NVCCFLAGS) -c -o $@ ds4_cuda.cu
 
 # Vendored mmq pieces. ds4_mmq.cu transitively pulls in mmq.cuh which has
@@ -815,6 +815,13 @@ tests/test_model_family_kernels: tests/test_model_family_kernels.o $(DS4_CUDA_CO
 
 test-model-family-kernels: tests/test_model_family_kernels
 	./tests/test_model_family_kernels
+
+tests/test_step37_primitives: tests/test_step37_primitives.cu cuda/step37_primitives.cuh tests/fixtures/step37/primitives.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+.PHONY: test-step37-primitives
+test-step37-primitives: tests/test_step37_primitives
+	./tests/test_step37_primitives
 
 tests/test_inkling_kernels: tests/test_inkling_kernels.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
@@ -1342,6 +1349,7 @@ endif
 
 clean:
 	rm -f tests/test_solar_fattn tests/test_solar_fattn.o
+	rm -f tests/test_step37_primitives
 	rm -f tests/test_inkling_kernels tests/test_inkling_kernels.o
 	rm -f tests/test_inkling_moe tests/test_inkling_moe.o
 	rm -f tests/test_inkling_attn_prep tests/test_inkling_attn_prep.o

@@ -4512,6 +4512,22 @@ int ds4_gpu_exaone_moe_matmul_tensor(
         uint32_t                n_tokens,
         uint32_t                n_expert_used);
 
+/* Step 3.7 CUDA primitives. Frequencies contain the per-layer RoPE factors;
+ * positions and the resulting cos/sin table remain on the execution stream. */
+int ds4_gpu_step37_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *up, const ds4_gpu_tensor *weights,
+        uint32_t width, uint32_t rows, float limit);
+int ds4_gpu_step37_router(ds4_gpu_tensor *ids, ds4_gpu_tensor *weights,
+        const ds4_gpu_tensor *logits, const void *map, uint64_t size,
+        uint64_t offset, uint32_t rows);
+int ds4_gpu_step37_rope(ds4_gpu_tensor *table, const ds4_gpu_tensor *frequency,
+        const ds4_gpu_tensor *positions, uint32_t rotary, uint32_t rows);
+int ds4_gpu_step37_qk(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *map, uint64_t size, uint64_t offset,
+        const ds4_gpu_tensor *table, uint32_t heads, uint32_t rotary, uint32_t rows);
+int ds4_gpu_step37_gate(ds4_gpu_tensor *values, const ds4_gpu_tensor *gate,
+        uint32_t heads, uint32_t rows);
+
 #ifdef __cplusplus
 }
 #endif

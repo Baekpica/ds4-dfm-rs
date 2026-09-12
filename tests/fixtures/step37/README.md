@@ -16,3 +16,8 @@ Original model revision: `5f6244077ac62e04eec3f320501ff8c2b293373a`.
 `mtp.tsv`, `vision.tsv` and their metadata JSON files come from the handoff's
 `sidecar-inventory.json`. They preserve the official Q8 MTP and F16 projector
 layouts without payload data. Tests use them independently of runtime specs.
+
+`primitives.h` exports FP32 values from the handoff's
+`ds4-initial/fixtures/step37-primitives.json` (Torch 2.11.0+cu130, H100 NVL,
+seed 3707). It covers clamps 0/7/16 and 288-expert top-8 routing, including
+logits near -30 that expose the legacy normalization floor.
