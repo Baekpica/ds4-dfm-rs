@@ -815,13 +815,20 @@ static __global__ void inkling_attention_kernel(
  *
  *   step 16: lanes 0-15 keep heads 0,1 (lanes 16-31: heads 2,3)
  *   step 8:  lanes 0-7 keep head 0, 8-15 head 1, 16-23 head 2, 24-31 head 3
+ *
+ * MODE 2 scores keys i and i+4 in one iteration: their dots and butterflies
+ * are independent (twice the ILP for the latency-bound reduction) while the
+ * softmax scalars and V updates are applied in the release key order.
+ *
+ *   MODE 0 all-lane reduction   MODE 1 transposed   MODE 2 transposed, two keys
  */
-template<bool TRANSPOSED>
+template<int MODE>
 __launch_bounds__(INKLING_WARP * INKLING_ATTN_WARPS, INKLING_ATTN_GROUP_MIN_BLOCKS)
 static __global__ void inkling_attention_group_kernel(
         float *out, const float *q, const float *relative, const float *k, const float *v,
         const uint16_t *cache, const uint32_t *position, uint32_t rows, uint32_t capacity,
         uint32_t extent) {
+    constexpr bool TRANSPOSED = MODE >= 1;
     const unsigned warp = threadIdx.x / INKLING_WARP, lane = threadIdx.x % INKLING_WARP;
     __shared__ float maxima[INKLING_ATTN_GROUP][INKLING_ATTN_WARPS];
     __shared__ float sums[INKLING_ATTN_GROUP][INKLING_ATTN_WARPS];
@@ -870,6 +877,9 @@ static __global__ void inkling_attention_group_kernel(
                 qv[h][d] = inkling_bf16(q[(head_row0 + h) * INKLING_HEAD_DIM + lane + d * INKLING_WARP]);
             }
         }
+        // A runtime index into rel[] would spill the pointers; keep the
+        // transposed path's single bias row as one scalar pointer.
+        const float *relh = relative + (head_row0 + head_lane) * extent;
         // Fetch key first+i: lane channels of K and V plus the four head biases.
         auto fetch = [&](uint32_t i, uint32_t slot, float *kk, float *vv, float *bb) {
             if (i >= cur0) {
@@ -890,7 +900,7 @@ static __global__ void inkling_attention_group_kernel(
             const uint32_t distance = span - i;
             if constexpr (TRANSPOSED) {
                 // Only the bias of the head this lane group scores.
-                bb[0] = distance < extent ? inkling_bf16(rel[head_lane][distance]) : 0.0f;
+                bb[0] = distance < extent ? inkling_bf16(relh[distance]) : 0.0f;
             } else {
                 #pragma unroll
                 for (int h = 0; h < INKLING_ATTN_GROUP; h++) {
@@ -898,8 +908,74 @@ static __global__ void inkling_attention_group_kernel(
                 }
             }
         };
+        // Transposed score of one key for this lane group's head, then its
+        // online-softmax scalars; the V update broadcasts them per head.
+        auto score_group = [&](const float *kk, float bias, float &alpha, float &beta) {
+            float dot[INKLING_ATTN_GROUP];
+            #pragma unroll
+            for (int h = 0; h < INKLING_ATTN_GROUP; h++) {
+                dot[h] = 0.0f;
+                #pragma unroll
+                for (int d = 0; d < INKLING_ATTN_DPL; d++) { dot[h] = fmaf(qv[h][d], kk[d], dot[h]); }
+            }
+            // Each lane sends the values its partner keeps and adds the
+            // partner's copy of its own, the release pairing per head.
+            const bool upper = lane & (INKLING_WARP / 2);
+            const float r0 = __shfl_xor_sync(UINT32_MAX, upper ? dot[0] : dot[2], INKLING_WARP / 2);
+            const float r1 = __shfl_xor_sync(UINT32_MAX, upper ? dot[1] : dot[3], INKLING_WARP / 2);
+            const float a0 = __fadd_rn(upper ? dot[2] : dot[0], r0);
+            const float a1 = __fadd_rn(upper ? dot[3] : dot[1], r1);
+            const bool odd = lane & INKLING_ATTN_HEAD_LANES;
+            const float r2 = __shfl_xor_sync(UINT32_MAX, odd ? a0 : a1, INKLING_ATTN_HEAD_LANES);
+            float red = __fadd_rn(odd ? a1 : a0, r2);
+            #pragma unroll
+            for (int delta = INKLING_ATTN_HEAD_LANES / 2; delta > 0; delta /= 2) {
+                red = __fadd_rn(red, __shfl_xor_sync(UINT32_MAX, red, delta));
+            }
+            const float score = __fadd_rn(red / (float)INKLING_HEAD_DIM, bias);
+            const float next_max = fmaxf(maximum[0], score);
+            alpha = __expf(maximum[0] - next_max);
+            beta = __expf(score - next_max);
+            sum[0] = fmaf(sum[0], alpha, beta);
+            maximum[0] = next_max;
+        };
+        auto accumulate = [&](const float *vv, float alpha, float beta) {
+            #pragma unroll
+            for (int h = 0; h < INKLING_ATTN_GROUP; h++) {
+                const float ah = __shfl_sync(UINT32_MAX, alpha, h * INKLING_ATTN_HEAD_LANES);
+                const float bh = __shfl_sync(UINT32_MAX, beta, h * INKLING_ATTN_HEAD_LANES);
+                #pragma unroll
+                for (int d = 0; d < INKLING_ATTN_DPL; d++) {
+                    acc[h][d] = fmaf(bh, vv[d], __fmul_rn(acc[h][d], ah));
+                }
+            }
+        };
         uint32_t i = warp;
         uint32_t slot = (uint32_t)((first + warp) % capacity);
+        if constexpr (MODE == 2) {
+            while (i <= span) {
+                // Keys i and i+4 (when present) load and score together.
+                uint32_t slot1 = slot + INKLING_ATTN_WARPS;
+                if (slot1 >= capacity) { slot1 -= capacity; }
+                const bool two = span - i >= INKLING_ATTN_WARPS;
+                float k0[INKLING_ATTN_DPL], v0[INKLING_ATTN_DPL], b0[INKLING_ATTN_GROUP];
+                float k1[INKLING_ATTN_DPL] = {}, v1[INKLING_ATTN_DPL] = {}, b1[INKLING_ATTN_GROUP] = {};
+                fetch(i, slot, k0, v0, b0);
+                if (two) { fetch(i + INKLING_ATTN_WARPS, slot1, k1, v1, b1); }
+                float alpha, beta;
+                score_group(k0, b0[0], alpha, beta);
+                accumulate(v0, alpha, beta);
+                if (two) {
+                    score_group(k1, b1[0], alpha, beta);
+                    accumulate(v1, alpha, beta);
+                }
+                uint32_t next_slot = slot1 + INKLING_ATTN_WARPS;
+                if (next_slot >= capacity) { next_slot -= capacity; }
+                slot = next_slot;
+                if (!two || span - i < 2 * INKLING_ATTN_WARPS) { break; }
+                i += 2 * INKLING_ATTN_WARPS;
+            }
+        } else {
         float kk[INKLING_ATTN_DPL] = {}, vv[INKLING_ATTN_DPL] = {}, bb[INKLING_ATTN_GROUP] = {};
         if (i <= span) { fetch(i, slot, kk, vv, bb); }
         while (i <= span) {
@@ -910,41 +986,9 @@ static __global__ void inkling_attention_group_kernel(
             float kn[INKLING_ATTN_DPL] = {}, vn[INKLING_ATTN_DPL] = {}, bn[INKLING_ATTN_GROUP] = {};
             if (more) { fetch(i + INKLING_ATTN_WARPS, next_slot, kn, vn, bn); }
             if constexpr (TRANSPOSED) {
-                float dot[INKLING_ATTN_GROUP];
-                #pragma unroll
-                for (int h = 0; h < INKLING_ATTN_GROUP; h++) {
-                    dot[h] = 0.0f;
-                    #pragma unroll
-                    for (int d = 0; d < INKLING_ATTN_DPL; d++) { dot[h] = fmaf(qv[h][d], kk[d], dot[h]); }
-                }
-                // Each lane sends the values its partner keeps and adds the
-                // partner's copy of its own, the release pairing per head.
-                const bool upper = lane & (INKLING_WARP / 2);
-                const float r0 = __shfl_xor_sync(UINT32_MAX, upper ? dot[0] : dot[2], INKLING_WARP / 2);
-                const float r1 = __shfl_xor_sync(UINT32_MAX, upper ? dot[1] : dot[3], INKLING_WARP / 2);
-                const float a0 = __fadd_rn(upper ? dot[2] : dot[0], r0);
-                const float a1 = __fadd_rn(upper ? dot[3] : dot[1], r1);
-                const bool odd = lane & INKLING_ATTN_HEAD_LANES;
-                const float r2 = __shfl_xor_sync(UINT32_MAX, odd ? a0 : a1, INKLING_ATTN_HEAD_LANES);
-                float red = __fadd_rn(odd ? a1 : a0, r2);
-                #pragma unroll
-                for (int delta = INKLING_ATTN_HEAD_LANES / 2; delta > 0; delta /= 2) {
-                    red = __fadd_rn(red, __shfl_xor_sync(UINT32_MAX, red, delta));
-                }
-                const float score = __fadd_rn(red / (float)INKLING_HEAD_DIM, bb[0]);
-                const float next_max = fmaxf(maximum[0], score);
-                const float alpha = __expf(maximum[0] - next_max), beta = __expf(score - next_max);
-                sum[0] = fmaf(sum[0], alpha, beta);
-                maximum[0] = next_max;
-                #pragma unroll
-                for (int h = 0; h < INKLING_ATTN_GROUP; h++) {
-                    const float ah = __shfl_sync(UINT32_MAX, alpha, h * INKLING_ATTN_HEAD_LANES);
-                    const float bh = __shfl_sync(UINT32_MAX, beta, h * INKLING_ATTN_HEAD_LANES);
-                    #pragma unroll
-                    for (int d = 0; d < INKLING_ATTN_DPL; d++) {
-                        acc[h][d] = fmaf(bh, vv[d], __fmul_rn(acc[h][d], ah));
-                    }
-                }
+                float alpha, beta;
+                score_group(kk, bb[0], alpha, beta);
+                accumulate(vv, alpha, beta);
             } else {
             #pragma unroll
             for (int h = 0; h < INKLING_ATTN_GROUP; h++) {
@@ -973,6 +1017,7 @@ static __global__ void inkling_attention_group_kernel(
             slot = next_slot;
             if (!more) { break; }
             i += INKLING_ATTN_WARPS;
+        }
         }
         if constexpr (TRANSPOSED) {
             if (lane % INKLING_ATTN_HEAD_LANES == 0) {
@@ -1030,13 +1075,16 @@ extern "C" int ds4_gpu_inkling_attention(
     if (rows >= INKLING_ATTN_GROUP_MIN_ROWS && !getenv("DS4_INKLING_NO_ATTN_GROUP")) {
         const uint64_t groups = head_rows / INKLING_ATTN_GROUP;
         const unsigned blocks = (unsigned)(groups < INKLING_MAX_BLOCKS ? groups : INKLING_MAX_BLOCKS);
-        // The switch restores the all-lane reduction for A/B controls.
-        #define IK_ATTN_GROUP(T) inkling_attention_group_kernel<T> \
+        // Switches restore the all-lane reduction (NO_ATTN_TRANSPOSE) or the
+        // one-key transposed loop (NO_ATTN_PAIR) for A/B controls.
+        #define IK_ATTN_GROUP(M) inkling_attention_group_kernel<M> \
             <<<blocks, INKLING_WARP * INKLING_ATTN_WARPS, 0, ds4_current_stream()>>>( \
             (float *)out->ptr, (const float *)q->ptr, (const float *)relative->ptr, \
             (const float *)k->ptr, (const float *)v->ptr, (const uint16_t *)cache->ptr, \
             (const uint32_t *)position->ptr, rows, capacity, extent)
-        if (getenv("DS4_INKLING_NO_ATTN_TRANSPOSE")) { IK_ATTN_GROUP(false); } else { IK_ATTN_GROUP(true); }
+        if (getenv("DS4_INKLING_NO_ATTN_TRANSPOSE")) { IK_ATTN_GROUP(0); }
+        else if (getenv("DS4_INKLING_NO_ATTN_PAIR")) { IK_ATTN_GROUP(1); }
+        else { IK_ATTN_GROUP(2); }
         #undef IK_ATTN_GROUP
         return cuda_ok(cudaGetLastError(), "Inkling grouped attention launch");
     }

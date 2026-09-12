@@ -690,11 +690,11 @@ int ds4_mmvq_inkling(
         inkling_tiles_kernel<IK_Q4_COLS><<<1, IK_MMVQ_THREADS, 0, stream>>>(
             counts, tile_experts, tile_starts, experts);
         if (used > 1) {
-            return inkling_q4_launch<2, IK_Q4_COLS, 4, 2>(weights, (const block_q8_1 *)x,
+            return inkling_q4_dispatch<4, 2, 0>(weights, (const block_q8_1 *)x,
                 out, counts, buckets, tile_experts, tile_starts,
                 m, k, assignments, experts, used, device.nsm, stream);
         }
-        return inkling_q4_launch<2, IK_Q4_COLS, 1, 4>(weights, (const block_q8_1 *)x,
+        return inkling_q4_dispatch<1, 4, IK_Q4_LEAN_DOWN_BLOCKS>(weights, (const block_q8_1 *)x,
             out, counts, buckets, tile_experts, tile_starts,
             m, k, assignments, experts, used, device.nsm, stream);
     }
