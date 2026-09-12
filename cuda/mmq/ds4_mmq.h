@@ -84,6 +84,17 @@ int ds4_mmq_solar_prefill_attn_hmma(
         int n_tokens, int pos0, int n_head, int n_head_kv, int head_dim,
         int kv_cap, int window, float scale, cudaStream_t stream);
 
+// Inkling prefill attention on bf16 tensor cores: the current chunk's K/V
+// rows are staged as bf16 into `stage` ([rows][2048] u16, the cache row
+// layout), then 64-query x 2-head CTAs stream 64-key tiles through shared
+// memory. Not byte-identical to the exact kernels (summation order and a
+// bf16-pair probability). Returns 0 on success, -1 when unsupported (the
+// caller keeps the exact kernels) and -2 on a launch error.
+int ds4_mmq_inkling_prefill_attn_hmma(
+        float *out, const float *q, const float *relative, const float *k, const float *v,
+        uint16_t *stage, const uint16_t *cache, const uint32_t *position,
+        uint32_t rows, uint32_t capacity, uint32_t extent, cudaStream_t stream);
+
 // Motif-3 full-layer prefill in the compute-friendly MLA form used by the
 // official vLLM port: expanded GQA Q/K (192) and V (128), while decode keeps
 // the latent 512+64 MQA path.  One call attends a query chunk to one contiguous

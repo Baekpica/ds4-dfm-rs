@@ -175,6 +175,22 @@ static __global__ void inkling_relayout_kernel(
     dst[1] = make_int4(w[4], w[5], w[6], w[7]);
 }
 
+/* Same rows with the block scale converted to float once: the resident Q8
+ * tiles stream these rows through shared memory with cp.async. */
+static __global__ void inkling_relayout_f32_kernel(
+        int8_t *qs, float *ds, const block_q8_1 *x, uint64_t groups) {
+    const uint64_t g = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (g >= groups) { return; }
+    const block_q8_1 *b = x + g;
+    ds[g] = __low2float(b->ds);
+    int w[QK8_1 / 4];
+    #pragma unroll
+    for (int i = 0; i < QK8_1 / 4; i++) { w[i] = get_int_b4(b->qs, i); }
+    int4 *dst = (int4 *)(qs + g * QK8_1);
+    dst[0] = make_int4(w[0], w[1], w[2], w[3]);
+    dst[1] = make_int4(w[4], w[5], w[6], w[7]);
+}
+
 template<ggml_type TYPE> struct ik_tile_traits;
 
 /* IQ2_XXS fragment: 32 values = 4 grid bytes + 4x7 sign bits + 4-bit scale.
@@ -457,6 +473,142 @@ static int inkling_tile_launch(
     return 0;
 }
 
+/* Tile-per-CTA slab (IQ2 release path from IK_TILE_LEAN_MIN): the four
+ * warps of a CTA share one eight-column tile whose activation fragments
+ * are staged once in shared memory (8 rows of K int8 plus their scales),
+ * then sweep the tile's row groups. Every activation fragment is read from
+ * L1 once per warp job in the lean kernel; here it is read once per tile
+ * and served from shared memory to 256 row groups. Decode, dots, the
+ * per-fragment FMA and the ordered merges are the lean kernel's, so
+ * outputs are byte-identical. Up runs two CTAs per SM (36 KB slabs),
+ * down four (18 KB): 18.1 -> 14.8 ms and 10.8 -> 7.3 ms at 1024 tokens. */
+enum { IK_SLAB_UP_BLOCKS = 2, IK_SLAB_DOWN_BLOCKS = 4 };
+
+template<ggml_type TYPE, unsigned R, unsigned C, unsigned WARPS, unsigned ITERS, unsigned K, unsigned MINB>
+__launch_bounds__(IK_TILE_WARPS * 32, MINB)
+static __global__ void inkling_tile_slab_kernel(
+        const void *weights, const int8_t *xq, const half2 *xd, float *out,
+        const int32_t *counts, const int32_t *buckets,
+        const int32_t *tile_experts, const int32_t *tile_starts,
+        uint32_t m, uint32_t assignments, uint32_t experts, uint32_t used) {
+    using T = ik_tile_traits<TYPE>;
+    constexpr unsigned WARP = 32, K_STEP = WARP * WARPS / T::TPB;
+    constexpr uint32_t BLOCKS = K / T::QK, GROUPS = K / QK8_1;
+    extern __shared__ int4 slab4[];
+    int8_t *sq = (int8_t *)slab4;                 // [C][K]
+    half2 *sd = (half2 *)(sq + (size_t)C * K);    // [C][GROUPS]
+    __shared__ int32_t source[C];
+    const unsigned warp = threadIdx.x / WARP, lane = threadIdx.x % WARP;
+    const uint32_t row_groups = m / R, tiles = (uint32_t)counts[experts];
+    const uint64_t nblk = (uint64_t)experts * m * BLOCKS;
+
+    for (uint32_t tile = blockIdx.x; tile < tiles; tile += gridDim.x) {
+        const uint32_t expert = tile_experts[tile], start = tile_starts[tile];
+        const uint32_t count = (uint32_t)counts[expert];
+        __syncthreads();
+        if (threadIdx.x < C) {
+            source[threadIdx.x] = start + threadIdx.x < count
+                ? buckets[(uint64_t)expert * assignments + start + threadIdx.x] : -1;
+        }
+        __syncthreads();
+        // Stage the eight columns' rows; a padded column reads row 0.
+        for (unsigned v = threadIdx.x; v < C * (K / 16); v += IK_TILE_WARPS * WARP) {
+            const unsigned c = v / (K / 16), j = v % (K / 16);
+            const uint32_t row = source[c] >= 0 ? (uint32_t)source[c] / used : 0u;
+            ((int4 *)(sq + (size_t)c * K))[j] = ((const int4 *)(xq + (uint64_t)row * K))[j];
+        }
+        for (unsigned v = threadIdx.x; v < C * (GROUPS / 4); v += IK_TILE_WARPS * WARP) {
+            const unsigned c = v / (GROUPS / 4), j = v % (GROUPS / 4);
+            const uint32_t row = source[c] >= 0 ? (uint32_t)source[c] / used : 0u;
+            ((int4 *)(sd + (size_t)c * GROUPS))[j] = ((const int4 *)(xd + (uint64_t)row * GROUPS))[j];
+        }
+        __syncthreads();
+        for (uint32_t rg = warp; rg < row_groups; rg += IK_TILE_WARPS) {
+            const uint32_t row0 = rg * R;
+            const uint64_t weight_base = ((uint64_t)expert * m + row0) * BLOCKS;
+            float acc[R][C] = {};
+            #pragma unroll
+            for (unsigned q = 0; q < WARPS; q++) {
+                const unsigned tid = q * WARP + lane;
+                const uint32_t bx0 = tid / T::TPB, iqs = T::VDR * (tid % T::TPB);
+                float pq[R][C] = {};
+                #pragma unroll
+                for (unsigned i = 0; i < ITERS; i++) {
+                    const uint32_t bx = bx0 + i * K_STEP;
+                    typename T::Frag frag[R];
+                    #pragma unroll
+                    for (unsigned r = 0; r < R; r++) {
+                        const uint64_t block = weight_base + r * BLOCKS + bx;
+                        T::template decode<true>(frag[r], T::load_soa(weights, nblk, block, iqs));
+                        frag[r].wd = T::delta_soa(weights, block);
+                    }
+                    const uint32_t group = T::group(bx, iqs);
+                    #pragma unroll
+                    for (unsigned c = 0; c < C; c++) {
+                        int u[T::X_WORDS];
+                        inkling_tile_load_x<T::X_WORDS>(u, sq + (size_t)c * K + group * QK8_1 + T::offset(iqs));
+                        const float xs = __low2float(sd[(size_t)c * GROUPS + group]);
+                        #pragma unroll
+                        for (unsigned r = 0; r < R; r++) {
+                            const int sumi = T::dot(frag[r], u);
+                            const float d = __fmul_rn(frag[r].wd, xs);
+                            if constexpr (WARPS == 1) {
+                                acc[r][c] = fmaf(d, (float)sumi, acc[r][c]);
+                            } else if constexpr (ITERS == 1) {
+                                const float p = fmaf(d, (float)sumi, 0.0f);
+                                acc[r][c] = q == 0 ? p : __fadd_rn(acc[r][c], p);
+                            } else {
+                                pq[r][c] = fmaf(d, (float)sumi, pq[r][c]);
+                            }
+                        }
+                    }
+                }
+                if constexpr (WARPS > 1 && ITERS > 1) {
+                    #pragma unroll
+                    for (unsigned r = 0; r < R; r++) {
+                        #pragma unroll
+                        for (unsigned c = 0; c < C; c++) {
+                            acc[r][c] = q == 0 ? pq[r][c] : __fadd_rn(acc[r][c], pq[r][c]);
+                        }
+                    }
+                }
+            }
+            #pragma unroll
+            for (unsigned r = 0; r < R; r++) {
+                #pragma unroll
+                for (unsigned c = 0; c < C; c++) {
+                    const float value = warp_reduce_sum<WARP>(acc[r][c]);
+                    if (lane == 0 && source[c] >= 0) {
+                        out[(uint64_t)source[c] * m + row0 + r] = isfinite(value) ? value : 0.0f;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Returns 1 when the shape has no slab instantiation or the slab does not fit.
+template<ggml_type TYPE, unsigned R, unsigned WARPS, unsigned ITERS, unsigned K, unsigned MINB>
+static int inkling_tile_slab_launch(
+        const void *weights, const int8_t *xq, const half2 *xd, float *out,
+        const int32_t *counts, const int32_t *buckets, const int32_t *tile_experts,
+        const int32_t *tile_starts, uint32_t m, uint32_t k, uint32_t assignments,
+        uint32_t experts, uint32_t used, uint32_t sms, cudaStream_t stream) {
+    using T = ik_tile_traits<TYPE>;
+    constexpr unsigned K_STEP = 32 * WARPS / T::TPB;
+    constexpr size_t SLAB = (size_t)IK_TILE_COLUMNS * K + (size_t)IK_TILE_COLUMNS * (K / QK8_1) * sizeof(half2);
+    if (m % R || k != K || K / T::QK != ITERS * K_STEP) { return 1; }
+    const auto &device = ggml_cuda_info().devices[ggml_cuda_get_device()];
+    if (device.smpb < SLAB) { return 1; }
+    auto kern = inkling_tile_slab_kernel<TYPE, R, IK_TILE_COLUMNS, WARPS, ITERS, K, MINB>;
+    static int resident = 0;
+    if (!resident && (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&resident, kern, IK_TILE_WARPS * 32, SLAB) != cudaSuccess ||
+            resident <= 0)) { return -2; }
+    kern<<<sms * resident, IK_TILE_WARPS * 32, SLAB, stream>>>(
+        weights, xq, xd, out, counts, buckets, tile_experts, tile_starts, m, assignments, experts, used);
+    return cudaGetLastError() == cudaSuccess ? 0 : -2;
+}
+
 // Returns 0 when launched, 1 when the shape has no tile instantiation.
 static int inkling_tile_dispatch(
         const void *weights, ggml_type type, const int8_t *xq, const half2 *xd,
@@ -475,17 +627,32 @@ static int inkling_tile_dispatch(
     // widths keep the branched kernel (below 256 tokens the down tile loses).
     // The switch restores branched columns and table signs for A/B controls.
     const bool lean = assignments >= IK_TILE_LEAN_MIN && !getenv("DS4_INKLING_NO_IQ2_LEAN");
+    // Wide aligned IQ2 stages each tile's activations once per CTA; the
+    // switch keeps the per-warp lean tile for A/B controls.
+    const bool slab = lean && aligned && !getenv("DS4_INKLING_NO_IQ2_SLAB");
+    #define IK_SLAB(T, R, W, I, K, B) inkling_tile_slab_launch<T, R, W, I, K, B>( \
+        weights, xq, xd, out, counts, buckets, tile_experts, tile_starts, \
+        m, k, assignments, experts, used, sms, stream)
     switch (type) {
     case GGML_TYPE_IQ2_XXS:
         if (used <= 1) { return 1; }
+        if (slab) {
+            const int rc = IK_SLAB(GGML_TYPE_IQ2_XXS, 4, 4, 1, IK_MMVQ_HIDDEN, IK_SLAB_UP_BLOCKS);
+            if (rc <= 0) { return rc; }
+        }
         return IK_TILE_IQ2(GGML_TYPE_IQ2_XXS, 4, 4, 1);
     case GGML_TYPE_IQ2_XS:
         if (used > 1) { return 1; }
+        if (slab) {
+            const int rc = IK_SLAB(GGML_TYPE_IQ2_XS, 4, 1, 2, IK_MMVQ_MIDDLE, IK_SLAB_DOWN_BLOCKS);
+            if (rc <= 0) { return rc; }
+        }
         return IK_TILE_IQ2(GGML_TYPE_IQ2_XS, 4, 1, 2);
     case GGML_TYPE_Q8_0: return used > 1 ? IK_TILE(GGML_TYPE_Q8_0, 2, 4, 4, false, false)
                                          : IK_TILE(GGML_TYPE_Q8_0, 4, 1, 8, false, false);
     default: return 1;
     }
+    #undef IK_SLAB
     #undef IK_TILE_IQ2
     #undef IK_TILE
 }
@@ -647,6 +814,20 @@ int ds4_mmvq_inkling(
         cudaMemsetAsync(out, 0, (uint64_t)assignments * m * sizeof(float), stream) != cudaSuccess) { return -2; }
     inkling_bucket_kernel<<<(assignments + IK_MMVQ_THREADS - 1) / IK_MMVQ_THREADS,
                             IK_MMVQ_THREADS, 0, stream>>>(counts, buckets, ids, assignments, experts);
+    // Resident Q8 tiles stream float-scale SoA rows through a cp.async column
+    // ring; the switch keeps the staged-slab kernels for A/B controls.
+    auto pipe = [&]() -> int {
+        if (getenv("DS4_INKLING_NO_SHARED_PIPE")) { return 1; }
+        const uint64_t groups = (uint64_t)rows * k / QK8_1;
+        const uintptr_t soa = ((uintptr_t)workspace + inkling_route_bytes(assignments, experts) +
+                               IK_TILE_ALIGN - 1) & ~(uintptr_t)(IK_TILE_ALIGN - 1);
+        int8_t *xq = (int8_t *)soa;
+        float *xd = (float *)(xq + (uint64_t)rows * k);
+        inkling_relayout_f32_kernel<<<(groups + IK_MMVQ_THREADS - 1) / IK_MMVQ_THREADS,
+                                      IK_MMVQ_THREADS, 0, stream>>>(xq, xd, (const block_q8_1 *)x, groups);
+        return inkling_shared_pipe_launch(weights, xq, xd, out, counts, buckets,
+                                          m, k, assignments, used, experts, stream);
+    };
     // Shared up keeps its four-partition sum; wide prefill retains weights
     // across input groups, while narrow rows use the cooperating-warp kernel.
     if (type == GGML_TYPE_Q8_0 && experts == IK_SHARED_EXPERTS &&
@@ -655,7 +836,9 @@ int ds4_mmvq_inkling(
         // Keep narrow verification on the existing kernel. Wider prefill can
         // retain every weight fragment while its routed input groups stream.
         if (rows >= IK_ST_MIN && !getenv("DS4_INKLING_NO_SHARED_TILE")) {
-            const int rc = inkling_shared_tile_launch(weights, (const block_q8_1 *)x,
+            int rc = pipe();
+            if (rc <= 0) { return rc; }
+            rc = inkling_shared_tile_launch(weights, (const block_q8_1 *)x,
                 out, counts, buckets, m, k, assignments, used, experts, stream);
             if (rc <= 0) { return rc; }
         }
@@ -670,7 +853,9 @@ int ds4_mmvq_inkling(
     if (type == GGML_TYPE_Q8_0 && experts == IK_SHARED_EXPERTS && used == 1 &&
         rows >= IK_ST_MIN * IK_SHARED_EXPERTS &&
         !getenv("DS4_INKLING_NO_SHARED_DOWN_TILE") && !getenv("DS4_INKLING_NO_MOE_TILE")) {
-        const int rc = inkling_shared_tile_launch(weights, (const block_q8_1 *)x,
+        int rc = pipe();
+        if (rc <= 0) { return rc; }
+        rc = inkling_shared_tile_launch(weights, (const block_q8_1 *)x,
             out, counts, buckets, m, k, assignments, used, experts, stream);
         if (rc <= 0) { return rc; }
     }
@@ -679,7 +864,9 @@ int ds4_mmvq_inkling(
     if (type == GGML_TYPE_Q8_0 && experts != IK_SHARED_EXPERTS &&
         rows >= IK_ST_MIN && !getenv("DS4_INKLING_NO_Q8_ROUTED_TILE") &&
         !getenv("DS4_INKLING_NO_MOE_TILE")) {
-        const int rc = inkling_shared_tile_launch(weights, (const block_q8_1 *)x,
+        int rc = pipe();
+        if (rc <= 0) { return rc; }
+        rc = inkling_shared_tile_launch(weights, (const block_q8_1 *)x,
             out, counts, buckets, m, k, assignments, used, experts, stream);
         if (rc <= 0) { return rc; }
     }

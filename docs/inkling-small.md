@@ -6,8 +6,9 @@ and audio input with text output, matching the modalities of the
 [base model](https://huggingface.co/thinkingmachines/Inkling-Small/blob/8cc5877b44d343f88b92086aa1fb72897950f06a/README.md).
 The [GB10 performance report](inkling-optimization-2026-09-11.md),
 [rounds 16–18](inkling-optimization-2026-09-11-r16.md),
-[rounds 19–21](inkling-optimization-2026-09-12.md) and
-[rounds 22–24](inkling-optimization-2026-09-12-r22.md) measure
+[rounds 19–21](inkling-optimization-2026-09-12.md),
+[rounds 22–24](inkling-optimization-2026-09-12-r22.md) and
+[rounds 25–27](inkling-optimization-2026-09-12-r25.md) measure
 8192- and 2048-token prefill and 64-token decode with MTP off. Long-context
 serving and independent full-model source parity remain unqualified. These
 checks apply to MQ85GB, not MQ89 or Q8_0 main.
@@ -277,8 +278,14 @@ are not a throughput benchmark. The separate
 ([rounds 13–15](inkling-optimization-2026-09-11.md),
 [rounds 16–18](inkling-optimization-2026-09-11-r16.md),
 [rounds 19–21](inkling-optimization-2026-09-12.md),
-[rounds 22–24](inkling-optimization-2026-09-12-r22.md))
+[rounds 22–24](inkling-optimization-2026-09-12-r22.md),
+[rounds 25–27](inkling-optimization-2026-09-12-r25.md))
 times MTP-off prefill and decode; it does not establish an MTP speedup.
+Round 27 adds an opt-in tensor-core prefill attention
+(`DS4_INKLING_ATTN_HMMA=1`, chunks of 16 rows and more) that is not
+byte-identical to the per-row kernels (summation order) and therefore
+breaks the byte-exact prefill/decode parity below while it is on; the
+default stays exact and the opt-in path is bounded separately.
 
 Model-free regressions cover output/context caps, EOS, substring stops,
 stream disconnect invalidation, malformed prefixes and forced/stochastic

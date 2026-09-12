@@ -191,6 +191,9 @@ static uint64_t g_substrate_promotable_covered;
 /* Defined with the norm producer registry below; cleanup lives earlier in
  * this translation unit, so keep the lifecycle hook visible here. */
 static void cuda_norm_q8_release(void);
+/* Defined with the Inkling primitives (ds4_inkling_gpu.cuh), included after
+ * cleanup; releases the sticky tensor-core attention staging copy. */
+static void inkling_attn_stage_release(void);
 
 static void cuda_substrate_cover(const void *model_map, uint64_t bytes) {
     if (g_model_fd_host_base && model_map == g_model_fd_host_base)
@@ -4254,6 +4257,7 @@ extern "C" void ds4_gpu_cleanup(void) {
         g_tt_scratch = NULL;
         g_tt_scratch_bytes = 0;
     }
+    inkling_attn_stage_release();
     if (g_fp8_predecode_scratch) {
         (void)cudaFree(g_fp8_predecode_scratch);
         g_fp8_predecode_scratch = NULL;

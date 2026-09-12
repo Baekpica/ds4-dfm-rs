@@ -72,6 +72,33 @@ The bandwidth figure is informational; we don't tier on it.
   all input groups using the shared-expert tile schedule. Unaligned Q8_1
   input or insufficient shared memory keep the prior kernel.
 
+- `DS4_INKLING_NO_IQ2_SLAB=1` keeps the per-warp lean IQ2_XXS/IQ2_XS expert
+  tiles (each warp job re-reads its eight activation fragments from L1).
+  Unset it to let each CTA own one eight-column tile, stage the tile's
+  activations once in shared memory (36 KB up at two CTAs per SM, 18 KB
+  down at four) and sweep the row groups with four warps. Applies with the
+  lean gate (256 prompt tokens) on aligned SoA weights. Outputs are
+  byte-identical.
+
+- `DS4_INKLING_ATTN_HMMA=1` opts into tensor-core prefill attention for
+  widths of 16 rows and more: 64-query tiles of two heads, the current
+  chunk's K/V staged as bf16 rows (a sticky device copy), 64-key tiles
+  streamed through shared memory with cp.async, an online softmax per tile
+  and probabilities as a bf16 hi/lo pair. Outputs differ from the default
+  grouped kernel by fp32 summation order only (under 1% of bf16 outputs
+  move by one ulp; the fixture bounds both against an FP64 softmax) and are
+  chunk-invariant among prefill widths, but the model amplifies that to
+  different greedy tokens, so prefill/decode parity is not byte-exact with
+  it on. Decode and verify widths below 16 rows keep the exact per-head
+  kernel; `DS4_INKLING_NO_ATTN_GROUP=1` bypasses it.
+
+- `DS4_INKLING_NO_SHARED_PIPE=1` restores the staged-slab resident Q8
+  prefill tiles (the round-23 column kernel). Unset it to relayout the
+  activations into int8 rows with float scales and stream them through a
+  four-stage cp.async column ring issued two columns ahead; up keeps two
+  rows per warp at two CTAs per SM, down owns four rows per four-warp CTA
+  at four CTAs. Outputs are byte-identical.
+
 - `DS4_INKLING_NO_ATTN_PAIR=1` scores one key per warp iteration in the
   grouped prefill attention kernel. Unset it to load and score keys i and
   i+4 together (independent dots and butterflies) while the softmax scalars

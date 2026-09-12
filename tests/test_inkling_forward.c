@@ -3,6 +3,14 @@
 
 typedef struct { unsigned char *data; size_t bytes; } inkling_snapshot;
 
+/* Relative RMS logit deviation allowed for the opt-in tensor-core prefill
+ * path against the exact per-row kernels. The model amplifies any bf16-level
+ * reordering to about 0.1 (a one-ulp change in the exact kernel's output
+ * rounding gives 0.06-0.10 prefill/decode deviation), so this bound only
+ * catches gross errors; the greedy token must match. See
+ * docs/inkling-optimization-2026-09-12-r25.md. */
+#define INKLING_HMMA_REL_RMS_MAX 0.5
+
 static void check_seed(const ds4_inkling_graph *g, const ds4_model *m,
                         const ds4_weights *w, unsigned rows) {
     const size_t count = (size_t)rows * IK_HIDDEN, bytes = count * sizeof(float);
@@ -373,6 +381,12 @@ int main(int argc, char **argv) {
         snprintf(trace_prefix, sizeof(trace_prefix), "%s/prefill", trace);
         setenv("DS4_METAL_GRAPH_DUMP_PREFIX", trace_prefix, 1);
     }
+    /* The prefill/decode/chunk parity below is byte-exact on the default
+     * attention kernels; the opt-in tensor-core prefill path is bounded
+     * separately at the end. */
+    if (unsetenv("DS4_INKLING_ATTN_HMMA") != 0) {
+        ds4_die("Inkling attention control not cleared");
+    }
     fprintf(stderr, "Inkling: prefill %u tokens\n", rows);
     if (!test_forward(&g, &model, &weights, tokens, rows, features) ||
         !ds4_gpu_tensor_read(g.logits, 0, prefill, bytes)) {
@@ -511,6 +525,44 @@ int main(int argc, char **argv) {
     }
     if (!features) {
         check_verify(&g, &model, &weights, tokens, rows);
+    }
+    /* The opt-in tensor-core prefill attention (16+ row chunks) is not
+     * byte-exact with the per-row kernels: bound its full-prefill logits
+     * against the exact prefill and require the same greedy token. */
+    if (setenv("DS4_INKLING_ATTN_HMMA", "1", 1) != 0) {
+        ds4_die("Inkling attention control not set");
+    }
+    if (rows >= 16 && !features) {
+        if (!inkling_graph_reset(&g) || !test_forward(&g, &model, &weights, tokens, rows, NULL) ||
+            !ds4_gpu_tensor_read(g.logits, 0, decode, bytes)) {
+            ds4_die("Inkling tensor-core prefill failed");
+        }
+        double herr2 = 0, htop_abs = 0;
+        unsigned htop = 0;
+        for (unsigned i = 0; i < INKLING_VALID_VOCAB; i++) {
+            if (!isfinite(decode[i])) {
+                ds4_die("nonfinite Inkling tensor-core logits");
+            }
+            const double err = (double)prefill[i] - decode[i];
+            herr2 += err * err;
+            htop_abs = fmax(htop_abs, fabs(err));
+            if (decode[i] > decode[htop]) {
+                htop = i;
+            }
+        }
+        inkling_snapshot hmma_state = read_state(&g);
+        size_t state_moved = 0;
+        for (size_t i = 0; i < full_state.bytes && i < hmma_state.bytes; i++) {
+            state_moved += full_state.data[i] != hmma_state.data[i];
+        }
+        const double hrel = sqrt(herr2 / fmax(ref2, 1e-30));
+        printf("Inkling %u-token tensor-core/exact prefill: rel_rms=%g max_abs=%g top=%u/%u state bytes moved %zu/%zu\n",
+               rows, hrel, htop_abs, htop, ptop, state_moved, full_state.bytes);
+        failed |= htop != ptop || hmma_state.bytes != full_state.bytes || hrel > INKLING_HMMA_REL_RMS_MAX;
+        free(hmma_state.data);
+    }
+    if (unsetenv("DS4_INKLING_ATTN_HMMA") != 0) {
+        ds4_die("Inkling attention control not cleared");
     }
     inkling_graph_free(&g);
     ds4_gpu_cleanup();

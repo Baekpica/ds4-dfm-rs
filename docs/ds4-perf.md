@@ -172,6 +172,16 @@ Q8_1 input pointers and insufficient block shared memory keep the prior path.
 `DS4_INKLING_NO_SHARED_DOWN_TILE=1` restores warp-owned shared Q8 down tiles;
 from 64 prompt tokens (128 assignment rows), weights stay in registers while
 input groups stream through shared memory with the original one-warp sum.
+`DS4_INKLING_NO_IQ2_SLAB=1` keeps the per-warp lean IQ2 tiles; the optimized
+path stages each eight-column tile's activations once per CTA in shared
+memory and sweeps its row groups with four warps.
+`DS4_INKLING_ATTN_HMMA=1` opts into the tensor-core prefill attention, which
+scores 64-query tiles on the bf16 tensor cores and is not byte-identical to
+the default grouped kernel (summation order); `compare --regression` reports
+it as `Incorrect` because the model turns that into different greedy tokens.
+`DS4_INKLING_NO_SHARED_PIPE=1` restores the staged-slab resident Q8 tiles;
+the optimized path streams float-scale SoA rows through a cp.async column
+ring (two rows per warp for up, four rows per four-warp CTA for down).
 `DS4_INKLING_NO_ATTN_PAIR=1` scores one key per warp iteration in grouped
 prefill attention; the optimized path loads and scores keys i and i+4
 together and applies their softmax updates in order.
@@ -214,6 +224,21 @@ same bytes; benchmark stdout is limited to 64 MiB per sample on load.
 Every token sequence and full-vocabulary frontier is checked, including within-run
 repeat consistency. Default logit tolerances are `atol=0.0001`, `rtol=0.0001`;
 `--logit-atol` and `--logit-rtol` define an explicit alternative contract.
+`--logit-rel-rms X` (off by default) switches to the relaxed contract for
+summation-order changes that a chaotic model amplifies: each frontier must
+stay within a context-dependent relative RMS bound of the baseline and keep
+its argmax, greedy sequences may diverge (`token_mismatches` and
+`argmax_mismatches` are still reported), and per-logit statistics remain
+informational. The bound is `X` at 1,024 tokens and grows with
+`log2(ctx) / 10` (1.1X at 2K, 1.3X at 8K, 1.6X at 64K): reordering noise
+grows with the attended length while the model's amplification saturates,
+so the allowance follows the length slowly and never linearly.
+`correctness.rel_rms` is the largest observed ratio and `rel_rms_scaled`
+its largest fraction of the bound. Inkling MQ85GB turns a one-ulp
+reordering in one kernel into relative RMS 0.063 at 16 tokens and 0.105 at
+515 with a different greedy continuation, so exact rounds keep the default
+contract and only reordering-class changes use `--logit-rel-rms`, with the
+observed floor recorded in the round's report.
 Prefill/decode inverse TPS and first-token seconds are compared separately.
 The min/max sample envelope is conservative observed variation, not a statistical
 confidence interval. The default slowdown limit is 3%; overlapping evidence is

@@ -111,6 +111,12 @@ pub struct Compare {
     pub logit_atol: f64,
     #[arg(long, default_value_t = 0.0001)]
     pub logit_rtol: f64,
+    /// Relaxed contract for summation-order changes: when positive, each
+    /// frontier must stay within this relative RMS of the baseline at 1024
+    /// tokens (the bound grows with log2 of the context) and keep its argmax;
+    /// greedy sequences may diverge. Zero keeps the exact contract.
+    #[arg(long, default_value_t = 0.0)]
+    pub logit_rel_rms: f64,
 }
 
 #[derive(Args, Debug)]
