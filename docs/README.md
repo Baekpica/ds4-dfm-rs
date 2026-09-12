@@ -54,6 +54,9 @@ Do not reuse recorded PIDs or assume those services are running.
 
 ## Design records
 
+- [Step 3.7 initial loader](step37-initial.md): MQ83 metadata and tensor preflight;
+  native execution remains pending.
+
 - [Inkling Small integration](inkling-small.md): MQ85GB/MTP serving,
   multimodal checks and remaining qualification.
 - Inkling MQ85GB: [rounds 1–12](inkling-optimization-2026-09-10.md),

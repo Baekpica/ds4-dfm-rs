@@ -26,6 +26,7 @@ mod progress;
 mod session;
 mod shape;
 mod sibling;
+mod step37;
 mod tensors;
 mod tok;
 mod validate;
@@ -79,6 +80,7 @@ pub use shape::{
     SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B,
 };
 pub use sibling::SiblingAttach;
+pub use step37::{Step37Error, Step37Layer, Step37Plan};
 pub use tensors::{
     apply_host_dir, consume_host_dir, dump_apply_tapes, dump_consume_tapes, dump_nbytes_table,
     dump_sibling_script, model_split_sibling_path, tensor_nbytes, tensor_type_name, TensorError,
