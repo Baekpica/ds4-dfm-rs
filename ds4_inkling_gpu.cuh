@@ -1055,6 +1055,18 @@ static __global__ void inkling_attention_group_kernel(
 static uint16_t *g_inkling_attn_stage = NULL;
 static uint64_t g_inkling_attn_stage_bytes = 0;
 
+// Frees the sticky staging copy and its census entry (growth and
+// ds4_gpu_cleanup); the caller drains the device first when work may
+// still read it.
+static void inkling_attn_stage_release(void) {
+    if (!g_inkling_attn_stage) { return; }
+    (void)cudaFree(g_inkling_attn_stage);
+    cuda_mem_note_free(DS4_MEMC_SCRATCH_STICKY, DS4_MEMD_UNIFIED_DEVICE,
+                       g_inkling_attn_stage_bytes, g_inkling_attn_stage_bytes);
+    g_inkling_attn_stage = NULL;
+    g_inkling_attn_stage_bytes = 0;
+}
+
 // Sticky high-water bf16 copy of the current chunk's K/V rows for the
 // tensor-core prefill attention. Growth drains the device first (eager
 // work may still read the retiring pointer) and is refused under graph
@@ -1064,13 +1076,7 @@ static uint16_t *inkling_attn_stage_ensure(uint32_t rows) {
     if (g_inkling_attn_stage_bytes >= bytes) { return g_inkling_attn_stage; }
     if (ds4_capture_active()) { return NULL; }
     (void)cudaDeviceSynchronize();
-    if (g_inkling_attn_stage) {
-        (void)cudaFree(g_inkling_attn_stage);
-        cuda_mem_note_free(DS4_MEMC_SCRATCH_STICKY, DS4_MEMD_UNIFIED_DEVICE,
-                           g_inkling_attn_stage_bytes, g_inkling_attn_stage_bytes);
-        g_inkling_attn_stage = NULL;
-        g_inkling_attn_stage_bytes = 0;
-    }
+    inkling_attn_stage_release();
     void *ptr = NULL;
     if (cudaMalloc(&ptr, (size_t)bytes) != cudaSuccess) {
         (void)cudaGetLastError();
