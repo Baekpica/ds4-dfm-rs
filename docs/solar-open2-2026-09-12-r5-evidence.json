@@ -1,6 +1,10 @@
 {
   "schema": "solar-open2-2026-09-12-r5-evidence-v1",
-  "entry_commit": "504321b",
+  "entry_commit": "6cf97af",
+  "entry_tree": "99421010b18b5f362ab96668cf06ac9daa717e2e",
+  "entry_note": "origin/main squash of PR #34; its tree is identical to the pre-squash 504321b the scouts ran on (git rev-parse <sha>^{tree}).",
+  "candidate_commit": "88c8371",
+  "measured_source": "ds4-bench-perf (bench_binary_sha256) was built from the entry tree plus the round-5 kernel as landed in 88c8371, with one difference: the measured build ran the warp-specialized kernel by default, while 88c8371 makes it opt-in. Both arms set DS4_SOLAR_FATTN_WS explicitly (0 and 1), so the default is not exercised by any recorded sample. ds4_mmq_solar_prefill_attn_ws_available (0e2337a) postdates the measurement and does not touch the kernels.",
   "arms": {
     "off-8k": {
       "ctx_tokens": 8192,

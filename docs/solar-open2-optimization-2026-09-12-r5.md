@@ -197,7 +197,9 @@ compare --logit-atol 0 --logit-rtol 0 --regression`.
 - [Measured samples](solar-open2-2026-09-12-r5-rounds.csv): the nine
   completed samples in execution order.
 - [Evidence summary](solar-open2-2026-09-12-r5-evidence.json): medians,
-  proof hashes, guard minima, the 8K compare metrics, the power probe and
-  the host identity.
+  proof hashes, guard minima, the 8K compare metrics, the power probe, the
+  host identity and the source identity: entry `6cf97af` (tree-identical
+  to the pre-squash commit the scouts ran on), candidate kernel as landed
+  in `88c8371`, measured with the switch set explicitly on both arms.
 - Raw scouts, guard logs, the probe (`probe/fattn_probe.cu`, `build.sh`)
   and the power samples stay under `scratch/solar-longctx/r5`.
