@@ -54,8 +54,9 @@ Do not reuse recorded PIDs or assume those services are running.
 - Inkling MQ85GB: [rounds 1–12](inkling-optimization-2026-09-10.md),
   [rounds 13–15](inkling-optimization-2026-09-11.md),
   [rounds 16–18](inkling-optimization-2026-09-11-r16.md),
-  [rounds 19–21](inkling-optimization-2026-09-12.md), and
-  [rounds 22–24](inkling-optimization-2026-09-12-r22.md), GB10 prefill/decode
+  [rounds 19–21](inkling-optimization-2026-09-12.md),
+  [rounds 22–24](inkling-optimization-2026-09-12-r22.md), and
+  [rounds 25–27](inkling-optimization-2026-09-12-r25.md), GB10 prefill/decode
   measurements and numerical controls.
 - [Qwen image input contract](qwen38-image-input-spec.md): original design;
   use the current README and dated image evidence for implemented scope.
