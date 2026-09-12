@@ -220,6 +220,21 @@ same bytes; benchmark stdout is limited to 64 MiB per sample on load.
 Every token sequence and full-vocabulary frontier is checked, including within-run
 repeat consistency. Default logit tolerances are `atol=0.0001`, `rtol=0.0001`;
 `--logit-atol` and `--logit-rtol` define an explicit alternative contract.
+`--logit-rel-rms X` (off by default) switches to the relaxed contract for
+summation-order changes that a chaotic model amplifies: each frontier must
+stay within a context-dependent relative RMS bound of the baseline and keep
+its argmax, greedy sequences may diverge (`token_mismatches` and
+`argmax_mismatches` are still reported), and per-logit statistics remain
+informational. The bound is `X` at 1,024 tokens and grows with
+`log2(ctx) / 10` (1.1X at 2K, 1.3X at 8K, 1.6X at 64K): reordering noise
+grows with the attended length while the model's amplification saturates,
+so the allowance follows the length slowly and never linearly.
+`correctness.rel_rms` is the largest observed ratio and `rel_rms_scaled`
+its largest fraction of the bound. Inkling MQ85GB turns a one-ulp
+reordering in one kernel into relative RMS 0.063 at 16 tokens and 0.105 at
+515 with a different greedy continuation, so exact rounds keep the default
+contract and only reordering-class changes use `--logit-rel-rms`, with the
+observed floor recorded in the round's report.
 Prefill/decode inverse TPS and first-token seconds are compared separately.
 The min/max sample envelope is conservative observed variation, not a statistical
 confidence interval. The default slowdown limit is 3%; overlapping evidence is

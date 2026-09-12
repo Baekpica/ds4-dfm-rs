@@ -29,6 +29,27 @@ pub struct LogitError {
     pub max_scaled: f64,
     pub bad: u64,
     pub checked: u64,
+    /// Largest relative RMS of a candidate frontier against its reference
+    /// (sqrt(sum diff^2 / sum ref^2)); the relaxed contract's statistic.
+    #[serde(default)]
+    pub rel_rms: f64,
+    /// Largest `rel_rms / rel_rms_bound(ctx)`; above 1 the relaxed contract
+    /// is violated.
+    #[serde(default)]
+    pub rel_rms_scaled: f64,
+}
+
+/// Reference context of the relaxed contract: `--logit-rel-rms` is the bound
+/// at this width and grows with log2(ctx) from it.
+const REL_RMS_REFERENCE_CTX: f64 = 1024.0;
+
+/// Context-dependent relative RMS bound. Reordering noise accumulates with
+/// the attended length but the model's amplification saturates, and a
+/// one-ulp perturbation of Inkling MQ85GB measured 0.063 at 16 tokens and
+/// 0.105 at 515 (log-linear), so the bound grows logarithmically: at 2K it
+/// is 1.1x the reference, at 8K 1.3x, at 64K 1.6x, never linear in ctx.
+fn rel_rms_bound(reference: f64, ctx: u64) -> f64 {
+    reference * (ctx.max(2) as f64).log2() / REL_RMS_REFERENCE_CTX.log2()
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,9 +71,19 @@ pub struct Comparison {
     pub correctness: LogitError,
     /// Number of proof comparisons with a greedy sequence or argmax mismatch.
     pub token_mismatches: u64,
+    /// Number of proof comparisons whose frontier argmax differs (a subset of
+    /// `token_mismatches`).
+    #[serde(default)]
+    pub argmax_mismatches: u64,
     pub max_slowdown_percent: f64,
     pub logit_atol: f64,
     pub logit_rtol: f64,
+    /// Relaxed contract when positive: a frontier is correct when its relative
+    /// RMS stays within `rel_rms_bound(ctx)` (this value at 1024 tokens,
+    /// growing with log2(ctx)) and its argmax matches; greedy sequences may
+    /// diverge. Zero keeps the per-logit atol/rtol and sequence contract.
+    #[serde(default)]
+    pub logit_rel_rms: f64,
     pub changes: BTreeMap<String, String>,
     pub reasons: Vec<String>,
     pub method: String,
@@ -68,8 +99,11 @@ impl Payload for Comparison {
             self.max_slowdown_percent,
             self.logit_atol,
             self.logit_rtol,
+            self.logit_rel_rms,
             self.correctness.max_abs,
             self.correctness.max_scaled,
+            self.correctness.rel_rms,
+            self.correctness.rel_rms_scaled,
         ]
         .into_iter()
         .any(|v| !v.is_finite() || v < 0.0)
@@ -85,6 +119,7 @@ impl Payload for Comparison {
         if self.metrics.is_empty()
             || self.correctness.checked == 0
             || self.correctness.bad > self.correctness.checked
+            || self.argmax_mismatches > self.token_mismatches
         {
             return Err("conclusive comparison lacks timing/correctness evidence".into());
         }
@@ -92,7 +127,9 @@ impl Payload for Comparison {
             &self.metrics,
             &self.correctness,
             self.token_mismatches,
+            self.argmax_mismatches,
             self.max_slowdown_percent,
+            self.logit_rel_rms,
         );
         if self.verdict != expected {
             return Err("comparison verdict disagrees with evidence".into());
@@ -177,6 +214,7 @@ fn logit_error(a: &[f64], b: &[f64], atol: f64, rtol: f64) -> Result<LogitError,
         return Err("invalid full-vocabulary logits".into());
     }
     let mut error = LogitError::default();
+    let (mut diff2, mut ref2) = (0.0f64, 0.0f64);
     for (a, b) in a.iter().zip(b) {
         let difference = (a - b).abs();
         let tolerance = atol + rtol * a.abs();
@@ -187,7 +225,10 @@ fn logit_error(a: &[f64], b: &[f64], atol: f64, rtol: f64) -> Result<LogitError,
             .max((difference / tolerance.max(f64::MIN_POSITIVE)).min(f64::MAX));
         error.bad += u64::from(difference > tolerance);
         error.checked += 1;
+        diff2 += difference * difference;
+        ref2 += a * a;
     }
+    error.rel_rms = (diff2 / ref2.max(f64::MIN_POSITIVE)).sqrt().min(f64::MAX);
     Ok(error)
 }
 
@@ -425,6 +466,7 @@ fn analyze(
     let candidate = proofs(br, b)?;
     let mut correctness = LogitError::default();
     let mut token_mismatches = 0;
+    let mut argmax_mismatches = 0;
     for (ctx, base) in &baseline {
         let (reference, tokens) = &base[0];
         let candidates = candidate.get(ctx).ok_or("missing candidate frontier")?;
@@ -440,6 +482,7 @@ fn analyze(
             }
             token_mismatches +=
                 u64::from(ids != tokens || frontier.argmax_id != reference.argmax_id);
+            argmax_mismatches += u64::from(frontier.argmax_id != reference.argmax_id);
             let error = logit_error(
                 &reference.logits,
                 &frontier.logits,
@@ -450,6 +493,11 @@ fn analyze(
             correctness.max_scaled = correctness.max_scaled.max(error.max_scaled);
             correctness.bad += error.bad;
             correctness.checked += error.checked;
+            correctness.rel_rms = correctness.rel_rms.max(error.rel_rms);
+            if args.logit_rel_rms > 0.0 {
+                let scaled = error.rel_rms / rel_rms_bound(args.logit_rel_rms, *ctx);
+                correctness.rel_rms_scaled = correctness.rel_rms_scaled.max(scaled.min(f64::MAX));
+            }
         }
     }
     let metrics = timing
@@ -460,16 +508,20 @@ fn analyze(
         &metrics,
         &correctness,
         token_mismatches,
+        argmax_mismatches,
         args.max_slowdown_percent,
+        args.logit_rel_rms,
     );
     Ok(Comparison {
         verdict,
         metrics,
         correctness,
         token_mismatches,
+        argmax_mismatches,
         max_slowdown_percent: args.max_slowdown_percent,
         logit_atol: args.logit_atol,
         logit_rtol: args.logit_rtol,
+        logit_rel_rms: args.logit_rel_rms,
         changes,
         reasons: Vec::new(),
         method: "sample-extrema-envelope-v1".into(),
@@ -480,9 +532,20 @@ fn verdict(
     metrics: &[Delta],
     correctness: &LogitError,
     mismatches: u64,
+    argmax_mismatches: u64,
     tolerance: f64,
+    logit_rel_rms: f64,
 ) -> Verdict {
-    if correctness.bad > 0 || mismatches > 0 {
+    // The relaxed contract accepts summation-order changes that a chaotic
+    // model amplifies into different greedy continuations: it bounds the
+    // frontier's relative RMS per context and keeps its argmax instead of
+    // every logit and the whole sequence.
+    let incorrect = if logit_rel_rms > 0.0 {
+        correctness.rel_rms_scaled > 1.0 || argmax_mismatches > 0
+    } else {
+        correctness.bad > 0 || mismatches > 0
+    };
+    if incorrect {
         return Verdict::Incorrect;
     }
     if metrics.iter().any(|d| d.lower_percent > tolerance) {
@@ -501,9 +564,14 @@ fn verdict(
 }
 
 pub fn run(args: &cli::Compare) -> Result<(), String> {
-    if [args.max_slowdown_percent, args.logit_atol, args.logit_rtol]
-        .into_iter()
-        .any(|v| !v.is_finite() || v < 0.0)
+    if [
+        args.max_slowdown_percent,
+        args.logit_atol,
+        args.logit_rtol,
+        args.logit_rel_rms,
+    ]
+    .into_iter()
+    .any(|v| !v.is_finite() || v < 0.0)
     {
         return Err("comparison tolerances must be finite and nonnegative".into());
     }
@@ -526,9 +594,11 @@ pub fn run(args: &cli::Compare) -> Result<(), String> {
             metrics: Vec::new(),
             correctness: LogitError::default(),
             token_mismatches: 0,
+            argmax_mismatches: 0,
             max_slowdown_percent: args.max_slowdown_percent,
             logit_atol: args.logit_atol,
             logit_rtol: args.logit_rtol,
+            logit_rel_rms: args.logit_rel_rms,
             changes: BTreeMap::new(),
             reasons: vec![error],
             method: "sample-extrema-envelope-v1".into(),
@@ -590,5 +660,36 @@ mod tests {
         b[3] = 0.01;
         assert_eq!(logit_error(&a, &b, 1e-4, 1e-4).unwrap().bad, 1);
         assert!(logit_error(&a, &[f64::NAN], 1e-4, 1e-4).is_err());
+    }
+    #[test]
+    fn relaxed_contract_bounds_rms_and_argmax() {
+        let a = vec![0.0, 3.0, -4.0];
+        let b = vec![0.3, 3.0, -4.0];
+        let mut error = logit_error(&a, &b, 1e-4, 1e-4).unwrap();
+        assert_eq!(error.bad, 1);
+        assert!((error.rel_rms - 0.06).abs() < 1e-12);
+        // The bound is the reference at 1024 tokens and grows with log2(ctx).
+        assert!((rel_rms_bound(0.1, 1024) - 0.1).abs() < 1e-12);
+        assert!((rel_rms_bound(0.1, 8192) - 0.13).abs() < 1e-12);
+        assert!(rel_rms_bound(0.1, 65536) < 0.17);
+        let stable = delta("prefill", 2048, &[1.0, 1.01, 0.99], &[0.9, 0.91, 0.89]).unwrap();
+        let metrics = [stable];
+        // Strict: any bad logit or sequence mismatch is incorrect.
+        assert_eq!(
+            verdict(&metrics, &error, 1, 0, 3.0, 0.0),
+            Verdict::Incorrect
+        );
+        // Relaxed: the sequence may diverge while the scaled RMS and argmax hold.
+        error.rel_rms_scaled = error.rel_rms / rel_rms_bound(0.1, 2048);
+        assert_eq!(verdict(&metrics, &error, 1, 0, 3.0, 0.1), Verdict::Improved);
+        assert_eq!(
+            verdict(&metrics, &error, 1, 1, 3.0, 0.1),
+            Verdict::Incorrect
+        );
+        error.rel_rms_scaled = error.rel_rms / rel_rms_bound(0.05, 2048);
+        assert_eq!(
+            verdict(&metrics, &error, 1, 0, 3.0, 0.05),
+            Verdict::Incorrect
+        );
     }
 }

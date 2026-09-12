@@ -344,6 +344,7 @@ fn compare_trial(base: &Path, candidate: &Path, out: &Path) -> Result<Verdict, S
         max_slowdown_percent: 3.0,
         logit_atol: 0.0001,
         logit_rtol: 0.0001,
+        logit_rel_rms: 0.0,
     })?;
     let artifact: Artifact<Comparison> = artifact::load(&out.join("compare.json"))?;
     let data = artifact.data.ok_or("comparison has no result")?;
