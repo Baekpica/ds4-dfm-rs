@@ -42,7 +42,11 @@ fn type_id(typ: &str) -> u32 {
 
 impl Fixture {
     fn new(change: impl FnOnce(&mut Value)) -> Self {
-        let mut metadata: Value = serde_json::from_str(METADATA).unwrap();
+        Self::from_metadata(METADATA, change)
+    }
+
+    fn from_metadata(source: &str, change: impl FnOnce(&mut Value)) -> Self {
+        let mut metadata: Value = serde_json::from_str(source).unwrap();
         change(&mut metadata);
         let metadata = metadata.as_array().unwrap();
         let mut out = b"GGUF".to_vec();
@@ -88,8 +92,12 @@ impl Drop for Fixture {
 }
 
 fn inventory() -> TensorInventory {
+    fixture_inventory(INVENTORY)
+}
+
+fn fixture_inventory(source: &str) -> TensorInventory {
     let mut offset = 4096;
-    let tensors = INVENTORY
+    let tensors = source
         .lines()
         .map(|line| {
             let parts: Vec<_> = line.split('\t').collect();
@@ -224,4 +232,101 @@ fn rejects_tensor_contracts() {
         .unwrap_err()
         .to_string()
         .contains("tensor count"));
+}
+
+const MTP_META: &str = include_str!("../../../../tests/fixtures/step37/mtp-metadata.json");
+const MTP_TENSORS: &str = include_str!("../../../../tests/fixtures/step37/mtp.tsv");
+const VISION_META: &str = include_str!("../../../../tests/fixtures/step37/vision-metadata.json");
+const VISION_TENSORS: &str = include_str!("../../../../tests/fixtures/step37/vision.tsv");
+
+#[test]
+fn sidecar_metadata_and_bindings() {
+    for (kind, metadata, tensors, count) in [
+        (Step37Sidecar::Mtp, MTP_META, MTP_TENSORS, 55),
+        (Step37Sidecar::Vision, VISION_META, VISION_TENSORS, 667),
+    ] {
+        let f = Fixture::from_metadata(metadata, |_| {});
+        check_sidecar(&GgufFile::open(&f.0).unwrap(), kind).unwrap();
+        let mut inv = fixture_inventory(tensors);
+        inv.tensors.reverse();
+        let bound = check_specs(&inv, sidecar_specs(kind)).unwrap();
+        assert_eq!(bound.len(), count);
+        let unique: BTreeSet<_> = bound.into_iter().collect();
+        assert_eq!(unique.len(), count);
+    }
+}
+
+#[test]
+fn rejects_wrong_sidecar_semantics() {
+    for (kind, metadata, key, value) in [
+        (
+            Step37Sidecar::Mtp,
+            MTP_META,
+            "step35.nextn_predict_layers",
+            serde_json::json!(1),
+        ),
+        (
+            Step37Sidecar::Mtp,
+            MTP_META,
+            "step35.block_count",
+            serde_json::json!(45),
+        ),
+        (
+            Step37Sidecar::Mtp,
+            MTP_META,
+            "step35.attention.head_count",
+            serde_json::json!(vec![64; 48]),
+        ),
+        (
+            Step37Sidecar::Vision,
+            VISION_META,
+            "clip.projector_type",
+            serde_json::json!("qwen2vl"),
+        ),
+        (
+            Step37Sidecar::Vision,
+            VISION_META,
+            "clip.vision.projector.scale_factor",
+            serde_json::json!(2),
+        ),
+        (
+            Step37Sidecar::Vision,
+            VISION_META,
+            "clip.vision.image_mean",
+            serde_json::json!([0.5, 0.5, 0.5]),
+        ),
+    ] {
+        let f = Fixture::from_metadata(metadata, |rows| {
+            rows.as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|r| r[0] == key)
+                .unwrap()[2] = value;
+        });
+        let err = check_sidecar(&GgufFile::open(&f.0).unwrap(), kind).unwrap_err();
+        assert!(err.to_string().contains(key), "{err}");
+    }
+}
+
+#[test]
+fn mtp_heads_must_remain_independent() {
+    let mut inv = fixture_inventory(MTP_TENSORS);
+    let first = inv
+        .find_index("blk.45.nextn.shared_head_head.weight")
+        .unwrap();
+    let second = inv
+        .find_index("blk.46.nextn.shared_head_head.weight")
+        .unwrap();
+    inv.tensors[second].abs_offset = inv.tensors[first].abs_offset;
+    assert!(check_specs(&inv, sidecar_specs(Step37Sidecar::Mtp))
+        .unwrap_err()
+        .to_string()
+        .contains("overlapping"));
+    let mut inv = fixture_inventory(VISION_TENSORS);
+    let i = inv.find_index("mm.0.weight").unwrap();
+    inv.tensors[i].dim[0] = 1;
+    assert!(check_specs(&inv, sidecar_specs(Step37Sidecar::Vision))
+        .unwrap_err()
+        .to_string()
+        .contains("mm.0.weight"));
 }

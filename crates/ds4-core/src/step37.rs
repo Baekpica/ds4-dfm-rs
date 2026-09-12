@@ -101,7 +101,7 @@ impl Step37Layer {
 
     /// Routed and shared SwiGLU clamps, respectively; zero disables clipping.
     pub fn swiglu_clamps(self) -> (f32, f32) {
-        if self.index >= CLAMP_START {
+        if (CLAMP_START..LAYERS).contains(&self.index) {
             (7.0, 16.0)
         } else {
             (0.0, 0.0)
@@ -344,7 +344,11 @@ fn specs() -> Vec<Spec> {
 }
 
 fn check_tensors(inv: &TensorInventory) -> Result<Vec<usize>, Step37Error> {
-    if inv.tensors.len() != TENSORS {
+    check_specs(inv, specs())
+}
+
+fn check_specs(inv: &TensorInventory, specs: Vec<Spec>) -> Result<Vec<usize>, Step37Error> {
+    if inv.tensors.len() != specs.len() {
         return Err(mismatch("tensor count"));
     }
     let mut names = BTreeSet::new();
@@ -353,8 +357,8 @@ fn check_tensors(inv: &TensorInventory) -> Result<Vec<usize>, Step37Error> {
             return Err(mismatch(&format!("duplicate {}", t.name)));
         }
     }
-    let mut bindings = Vec::with_capacity(TENSORS);
-    for spec in specs() {
+    let mut bindings = Vec::with_capacity(specs.len());
+    for spec in specs {
         let index = inv
             .find_index(&spec.name)
             .ok_or_else(|| mismatch(&spec.name))?;
@@ -381,6 +385,265 @@ fn check_tensors(inv: &TensorInventory) -> Result<Vec<usize>, Step37Error> {
         }
     }
     Ok(bindings)
+}
+
+/// Explicit optional artifacts; neither can be loaded as the MQ83 backbone.
+#[derive(Clone, Copy, Debug)]
+pub enum Step37Sidecar {
+    Mtp,
+    Vision,
+}
+
+#[derive(Debug)]
+pub struct Step37SidecarPlan {
+    inventory: TensorInventory,
+    bindings: Vec<usize>,
+}
+
+impl Step37SidecarPlan {
+    pub fn inspect(path: &Path, kind: Step37Sidecar) -> Result<Self, Step37Error> {
+        let first = GgufFile::open(path)?;
+        check_sidecar(&first, kind)?;
+        let inventory = TensorInventory::from_file(path, &first)?;
+        let bindings = check_specs(&inventory, sidecar_specs(kind))?;
+        Ok(Self {
+            inventory,
+            bindings,
+        })
+    }
+
+    pub fn bindings(&self) -> impl Iterator<Item = &TensorInfo> {
+        self.bindings.iter().map(|&i| &self.inventory.tensors[i])
+    }
+
+    pub fn payload_bytes(&self) -> u64 {
+        self.bindings().map(|t| t.bytes).sum()
+    }
+}
+
+fn check_sidecar(g: &GgufFile, kind: Step37Sidecar) -> Result<(), Step37Error> {
+    if g.split_count() > 1 || g.get_u16("split.no").is_some_and(|v| v != 0) {
+        return Err(mismatch("sidecar split identity"));
+    }
+    let arch: &[u8] = match kind {
+        Step37Sidecar::Mtp => b"step35",
+        Step37Sidecar::Vision => b"clip",
+    };
+    if g.get_string("general.architecture") != Some(arch) {
+        return Err(mismatch("general.architecture"));
+    }
+    match kind {
+        Step37Sidecar::Mtp => check_mtp(g),
+        Step37Sidecar::Vision => check_vision(g),
+    }
+}
+
+fn check_mtp(g: &GgufFile) -> Result<(), Step37Error> {
+    const TOTAL: u32 = LAYERS + 3;
+    for (key, expected) in [
+        ("step35.block_count", TOTAL),
+        ("step35.nextn_predict_layers", 3),
+        ("step35.context_length", 262144),
+        ("step35.embedding_length", EMBED as u32),
+        ("step35.feed_forward_length", DENSE_FF as u32),
+        ("step35.attention.key_length", HEAD_DIM as u32),
+        ("step35.attention.value_length", HEAD_DIM as u32),
+        ("step35.attention.sliding_window", 512),
+    ] {
+        if g.get_u32(key) != Some(expected) {
+            return Err(mismatch(key));
+        }
+    }
+    for (key, expected) in [
+        ("step35.rope.freq_base", 5_000_000.0),
+        ("step35.rope.freq_base_swa", 10_000.0),
+        ("step35.attention.layer_norm_rms_epsilon", 1e-5),
+    ] {
+        if g.get_f32_compat(key) != Some(expected) {
+            return Err(mismatch(key));
+        }
+    }
+    for (key, expected) in [
+        (
+            "step35.attention.head_count",
+            (0..TOTAL)
+                .map(|index| Step37Layer { index }.query_heads())
+                .collect(),
+        ),
+        (
+            "step35.attention.head_count_kv",
+            vec![KV_HEADS as u32; TOTAL as usize],
+        ),
+    ] {
+        let a = g.get_array(key).ok_or_else(|| mismatch(key))?;
+        if g.array_le_u32s(&a)? != expected {
+            return Err(mismatch(key));
+        }
+    }
+    let key = "step35.attention.sliding_window_pattern";
+    let a = g.get_array(key).ok_or_else(|| mismatch(key))?;
+    if g.array_bools(&a)?
+        != (0..TOTAL)
+            .map(|i| !i.is_multiple_of(FULL_PERIOD))
+            .collect::<Vec<_>>()
+    {
+        return Err(mismatch(key));
+    }
+    // Prediction blocks 45-47 are dense and unclamped, even though the last
+    // two backbone blocks use routed/shared clamps.
+    for (key, clamp) in [
+        ("step35.swiglu_clamp_exp", 7.0),
+        ("step35.swiglu_clamp_shexp", 16.0),
+    ] {
+        let a = g.get_array(key).ok_or_else(|| mismatch(key))?;
+        let want: Vec<_> = (0..TOTAL)
+            .map(|i| {
+                if (CLAMP_START..LAYERS).contains(&i) {
+                    clamp
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        if g.array_f32s(&a)? != want {
+            return Err(mismatch(key));
+        }
+    }
+    Ok(())
+}
+
+fn check_vision(g: &GgufFile) -> Result<(), Step37Error> {
+    for (key, expected) in [
+        ("general.type", b"mmproj".as_slice()),
+        ("clip.projector_type", b"step3vl".as_slice()),
+    ] {
+        if g.get_string(key) != Some(expected) {
+            return Err(mismatch(key));
+        }
+    }
+    if g.get_bool("clip.has_vision_encoder") != Some(true) {
+        return Err(mismatch("clip.has_vision_encoder"));
+    }
+    for (key, expected) in [
+        ("clip.vision.projection_dim", EMBED as u32),
+        ("clip.vision.image_size", 728),
+        ("clip.vision.patch_size", 14),
+        ("clip.vision.embedding_length", 1536),
+        ("clip.vision.feed_forward_length", 8960),
+        ("clip.vision.block_count", 47),
+        ("clip.vision.attention.head_count", 16),
+        ("clip.vision.projector.scale_factor", 4),
+        ("clip.vision.preproc_image_size", 3024),
+    ] {
+        if g.get_u32(key) != Some(expected) {
+            return Err(mismatch(key));
+        }
+    }
+    let key = "clip.vision.attention.layer_norm_epsilon";
+    if g.get_f32_compat(key) != Some(1e-5) {
+        return Err(mismatch(key));
+    }
+    for (key, expected) in [
+        (
+            "clip.vision.image_mean",
+            [0.48145466, 0.4578275, 0.40821072],
+        ),
+        ("clip.vision.image_std", [0.26862954, 0.2613026, 0.2757771]),
+    ] {
+        let a = g.get_array(key).ok_or_else(|| mismatch(key))?;
+        if g.array_f32s(&a)? != expected {
+            return Err(mismatch(key));
+        }
+    }
+    Ok(())
+}
+
+fn sidecar_specs(kind: Step37Sidecar) -> Vec<Spec> {
+    let mut out = Vec::new();
+    let mut add = |name: String, typ, dims: &[u64]| {
+        out.push(Spec {
+            name,
+            typ,
+            dims: dims.to_vec(),
+        })
+    };
+    match kind {
+        Step37Sidecar::Mtp => {
+            add("rope_freqs.weight".into(), F32, &[64]);
+            add("output_norm.weight".into(), F32, &[EMBED]);
+            for name in ["token_embd.weight", "output.weight"] {
+                add(name.into(), Q8_0, &[EMBED, VOCAB]);
+            }
+            for i in LAYERS..LAYERS + 3 {
+                let p = format!("blk.{i}");
+                for name in [
+                    "attn_norm",
+                    "ffn_norm",
+                    "nextn.enorm",
+                    "nextn.hnorm",
+                    "nextn.shared_head_norm",
+                ] {
+                    add(format!("{p}.{name}.weight"), F32, &[EMBED]);
+                }
+                for name in ["attn_q_norm", "attn_k_norm"] {
+                    add(format!("{p}.{name}.weight"), F32, &[HEAD_DIM]);
+                }
+                let q = u64::from(Step37Layer { index: i }.query_heads());
+                for (name, input, output) in [
+                    ("nextn.eh_proj", 2 * EMBED, EMBED),
+                    ("nextn.shared_head_head", EMBED, VOCAB),
+                    ("attn_q", EMBED, q * HEAD_DIM),
+                    ("attn_k", EMBED, KV_HEADS * HEAD_DIM),
+                    ("attn_v", EMBED, KV_HEADS * HEAD_DIM),
+                    ("attn_output", q * HEAD_DIM, EMBED),
+                    ("attn_gate", EMBED, q),
+                    ("ffn_gate", EMBED, DENSE_FF),
+                    ("ffn_up", EMBED, DENSE_FF),
+                    ("ffn_down", DENSE_FF, EMBED),
+                ] {
+                    add(format!("{p}.{name}.weight"), Q8_0, &[input, output]);
+                }
+            }
+        }
+        Step37Sidecar::Vision => {
+            const F16: u32 = 1;
+            const WIDTH: u64 = 1536;
+            const FF: u64 = 8960;
+            add("v.patch_embd.weight".into(), F16, &[14, 14, 3, WIDTH]);
+            add("v.position_embd.weight".into(), F32, &[WIDTH, 2704]);
+            for name in ["v.pre_ln.weight", "v.pre_ln.bias"] {
+                add(name.into(), F32, &[WIDTH]);
+            }
+            for i in 0..47 {
+                let p = format!("v.blk.{i}");
+                for name in [
+                    "ln1.weight",
+                    "ln1.bias",
+                    "ln2.weight",
+                    "ln2.bias",
+                    "ls1.weight",
+                    "ls2.weight",
+                ] {
+                    add(format!("{p}.{name}"), F32, &[WIDTH]);
+                }
+                for (name, input, output) in [
+                    ("attn_qkv", WIDTH, 3 * WIDTH),
+                    ("attn_out", WIDTH, WIDTH),
+                    ("ffn_up", WIDTH, FF),
+                    ("ffn_down", FF, WIDTH),
+                ] {
+                    add(format!("{p}.{name}.weight"), F16, &[input, output]);
+                    add(format!("{p}.{name}.bias"), F32, &[output]);
+                }
+            }
+            add("mm.model.fc.weight".into(), F16, &[4 * WIDTH, EMBED]);
+            for (i, input, output) in [(0, WIDTH, 2 * WIDTH), (1, 2 * WIDTH, 4 * WIDTH)] {
+                add(format!("mm.{i}.weight"), F16, &[3, 3, input, output]);
+                add(format!("mm.{i}.bias"), F32, &[output]);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
