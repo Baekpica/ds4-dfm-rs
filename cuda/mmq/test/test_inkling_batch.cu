@@ -190,6 +190,15 @@ static void batch_case(ggml_type type, int m, int tokens, int ne, int used,
         exact(got, want, out_bytes);
     }
 
+    // Per-warp lean tiles must reproduce the tile-per-CTA slab kernel.
+    if (type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS) {
+        CUDA(cudaMemset(got, 0xff, out_bytes));
+        CHECK(setenv("DS4_INKLING_NO_IQ2_SLAB", "1", 1) == 0);
+        CHECK(ds4_mmq_inkling_moe(dw, type, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+        CHECK(unsetenv("DS4_INKLING_NO_IQ2_SLAB") == 0);
+        exact(got, want, out_bytes);
+    }
+
     // Branched columns and table signs must reproduce the lean IQ2 tiles.
     if (type == GGML_TYPE_IQ2_XXS || type == GGML_TYPE_IQ2_XS) {
         CUDA(cudaMemset(got, 0xff, out_bytes));
@@ -384,6 +393,11 @@ static void aligned_xs_case(int m, int tokens, int ne, Routes routing) {
     CHECK(ds4_mmq_inkling_moe_iq2_xs_aligned(da, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
     CHECK(unsetenv("DS4_INKLING_NO_IQ2_LEAN") == 0);
     exact(got, want, out_bytes);
+    CUDA(cudaMemset(got, 0xff, out_bytes));
+    CHECK(setenv("DS4_INKLING_NO_IQ2_SLAB", "1", 1) == 0);
+    CHECK(ds4_mmq_inkling_moe_iq2_xs_aligned(da, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_IQ2_SLAB") == 0);
+    exact(got, want, out_bytes);
     printf("aligned-xs M=%d tokens=%d experts=%d routes=%d exact\n", m, tokens, ne, routing);
     CUDA(cudaFree(dw)); CUDA(cudaFree(da)); CUDA(cudaFree(dx)); CUDA(cudaFree(di));
     CUDA(cudaFree(got)); CUDA(cudaFree(want));
@@ -415,6 +429,11 @@ static void aligned_case(int m, int tokens, int ne, Routes routing) {
     CHECK(setenv("DS4_INKLING_NO_IQ2_LEAN", "1", 1) == 0);
     CHECK(ds4_mmq_inkling_moe_iq2_aligned(da, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
     CHECK(unsetenv("DS4_INKLING_NO_IQ2_LEAN") == 0);
+    exact(got, want, out_bytes);
+    CUDA(cudaMemset(got, 0xff, out_bytes));
+    CHECK(setenv("DS4_INKLING_NO_IQ2_SLAB", "1", 1) == 0);
+    CHECK(ds4_mmq_inkling_moe_iq2_aligned(da, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_IQ2_SLAB") == 0);
     exact(got, want, out_bytes);
     CUDA(cudaMemset(got, 0xff, out_bytes));
     CHECK(setenv("DS4_INKLING_NO_IQ2_ALIGNED", "1", 1) == 0);
@@ -498,6 +517,7 @@ int main() {
     CHECK(unsetenv("DS4_INKLING_NO_SHARED_COLUMN") == 0);
     CHECK(unsetenv("DS4_INKLING_NO_Q4_LEAN") == 0);
     CHECK(unsetenv("DS4_INKLING_NO_SHARED_PIPE") == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_IQ2_SLAB") == 0);
     CHECK(ds4_gpu_init()); CHECK(ds4_mmq_init(0) == 0);
     candidate_case();
     CHECK(ds4_mmvq_inkling_bytes(8192 * USED + 1, MAX_EXPERTS, 1) == 0);

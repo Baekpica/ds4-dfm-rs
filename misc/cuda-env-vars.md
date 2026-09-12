@@ -72,6 +72,14 @@ The bandwidth figure is informational; we don't tier on it.
   all input groups using the shared-expert tile schedule. Unaligned Q8_1
   input or insufficient shared memory keep the prior kernel.
 
+- `DS4_INKLING_NO_IQ2_SLAB=1` keeps the per-warp lean IQ2_XXS/IQ2_XS expert
+  tiles (each warp job re-reads its eight activation fragments from L1).
+  Unset it to let each CTA own one eight-column tile, stage the tile's
+  activations once in shared memory (36 KB up at two CTAs per SM, 18 KB
+  down at four) and sweep the row groups with four warps. Applies with the
+  lean gate (256 prompt tokens) on aligned SoA weights. Outputs are
+  byte-identical.
+
 - `DS4_INKLING_NO_SHARED_PIPE=1` restores the staged-slab resident Q8
   prefill tiles (the round-23 column kernel). Unset it to relayout the
   activations into int8 rows with float scales and stream them through a
