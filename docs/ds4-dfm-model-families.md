@@ -454,6 +454,11 @@ the 611 MHz pin did not recur.
 
 ## Solar Open2 DGX Spark performance evidence
 
+The [September 12 Rust-host campaign](solar-open2-optimization-2026-09-12.md)
+records guarded 8K/64K controls and four unretained attention candidates.
+Its fresh-process protocol is separate from the historical HTTP results
+below; it establishes no new native speedup or fix for the host freezes.
+
 The numbers below used
 [`b2e52b9`](https://github.com/Baekpica/ds4/commit/b2e52b9048ba339327539212de1c47d009dde126)
 on `origin/dfm`, built with CUDA 13.3 as `sm_121a` on one DGX Spark GB10
