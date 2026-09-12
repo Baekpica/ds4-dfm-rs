@@ -28,6 +28,7 @@ pub fn tunable(key: &str) -> bool {
             | "DS4_INKLING_NO_SHARED_COLUMN"
             | "DS4_INKLING_NO_ATTN_PAIR"
             | "DS4_INKLING_NO_Q4_LEAN"
+            | "DS4_INKLING_NO_SHARED_PIPE"
             | "DS4_INKLING_PREFILL_CHUNK"
             | "DS4_CUDA_SOLAR_GQA_CHUNK"
     )
@@ -64,7 +65,8 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         | "DS4_INKLING_NO_ATTN_TRANSPOSE"
         | "DS4_INKLING_NO_SHARED_COLUMN"
         | "DS4_INKLING_NO_ATTN_PAIR"
-        | "DS4_INKLING_NO_Q4_LEAN" => family == "inkling" && value == "1",
+        | "DS4_INKLING_NO_Q4_LEAN"
+        | "DS4_INKLING_NO_SHARED_PIPE" => family == "inkling" && value == "1",
         "DS4_INKLING_PREFILL_CHUNK" => family == "inkling" && (1..=8192).contains(&n),
         "DS4_CUDA_SOLAR_GQA_CHUNK" => {
             family.starts_with("solar") && [64, 128, 256, 512, 1024, 2048].contains(&n)
@@ -108,6 +110,7 @@ mod tests {
             "DS4_INKLING_NO_SHARED_COLUMN",
             "DS4_INKLING_NO_ATTN_PAIR",
             "DS4_INKLING_NO_Q4_LEAN",
+            "DS4_INKLING_NO_SHARED_PIPE",
         ] {
             assert!(tunable(key));
             assert!(validate(key, "1", "Inkling").is_ok());

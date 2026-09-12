@@ -72,6 +72,13 @@ The bandwidth figure is informational; we don't tier on it.
   all input groups using the shared-expert tile schedule. Unaligned Q8_1
   input or insufficient shared memory keep the prior kernel.
 
+- `DS4_INKLING_NO_SHARED_PIPE=1` restores the staged-slab resident Q8
+  prefill tiles (the round-23 column kernel). Unset it to relayout the
+  activations into int8 rows with float scales and stream them through a
+  four-stage cp.async column ring issued two columns ahead; up keeps two
+  rows per warp at two CTAs per SM, down owns four rows per four-warp CTA
+  at four CTAs. Outputs are byte-identical.
+
 - `DS4_INKLING_NO_ATTN_PAIR=1` scores one key per warp iteration in the
   grouped prefill attention kernel. Unset it to load and score keys i and
   i+4 together (independent dots and butterflies) while the softmax scalars

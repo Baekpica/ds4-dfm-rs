@@ -175,6 +175,22 @@ static __global__ void inkling_relayout_kernel(
     dst[1] = make_int4(w[4], w[5], w[6], w[7]);
 }
 
+/* Same rows with the block scale converted to float once: the resident Q8
+ * tiles stream these rows through shared memory with cp.async. */
+static __global__ void inkling_relayout_f32_kernel(
+        int8_t *qs, float *ds, const block_q8_1 *x, uint64_t groups) {
+    const uint64_t g = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (g >= groups) { return; }
+    const block_q8_1 *b = x + g;
+    ds[g] = __low2float(b->ds);
+    int w[QK8_1 / 4];
+    #pragma unroll
+    for (int i = 0; i < QK8_1 / 4; i++) { w[i] = get_int_b4(b->qs, i); }
+    int4 *dst = (int4 *)(qs + g * QK8_1);
+    dst[0] = make_int4(w[0], w[1], w[2], w[3]);
+    dst[1] = make_int4(w[4], w[5], w[6], w[7]);
+}
+
 template<ggml_type TYPE> struct ik_tile_traits;
 
 /* IQ2_XXS fragment: 32 values = 4 grid bytes + 4x7 sign bits + 4-bit scale.
@@ -647,6 +663,20 @@ int ds4_mmvq_inkling(
         cudaMemsetAsync(out, 0, (uint64_t)assignments * m * sizeof(float), stream) != cudaSuccess) { return -2; }
     inkling_bucket_kernel<<<(assignments + IK_MMVQ_THREADS - 1) / IK_MMVQ_THREADS,
                             IK_MMVQ_THREADS, 0, stream>>>(counts, buckets, ids, assignments, experts);
+    // Resident Q8 tiles stream float-scale SoA rows through a cp.async column
+    // ring; the switch keeps the staged-slab kernels for A/B controls.
+    auto pipe = [&]() -> int {
+        if (getenv("DS4_INKLING_NO_SHARED_PIPE")) { return 1; }
+        const uint64_t groups = (uint64_t)rows * k / QK8_1;
+        const uintptr_t soa = ((uintptr_t)workspace + inkling_route_bytes(assignments, experts) +
+                               IK_TILE_ALIGN - 1) & ~(uintptr_t)(IK_TILE_ALIGN - 1);
+        int8_t *xq = (int8_t *)soa;
+        float *xd = (float *)(xq + (uint64_t)rows * k);
+        inkling_relayout_f32_kernel<<<(groups + IK_MMVQ_THREADS - 1) / IK_MMVQ_THREADS,
+                                      IK_MMVQ_THREADS, 0, stream>>>(xq, xd, (const block_q8_1 *)x, groups);
+        return inkling_shared_pipe_launch(weights, xq, xd, out, counts, buckets,
+                                          m, k, assignments, used, experts, stream);
+    };
     // Shared up keeps its four-partition sum; wide prefill retains weights
     // across input groups, while narrow rows use the cooperating-warp kernel.
     if (type == GGML_TYPE_Q8_0 && experts == IK_SHARED_EXPERTS &&
@@ -655,7 +685,9 @@ int ds4_mmvq_inkling(
         // Keep narrow verification on the existing kernel. Wider prefill can
         // retain every weight fragment while its routed input groups stream.
         if (rows >= IK_ST_MIN && !getenv("DS4_INKLING_NO_SHARED_TILE")) {
-            const int rc = inkling_shared_tile_launch(weights, (const block_q8_1 *)x,
+            int rc = pipe();
+            if (rc <= 0) { return rc; }
+            rc = inkling_shared_tile_launch(weights, (const block_q8_1 *)x,
                 out, counts, buckets, m, k, assignments, used, experts, stream);
             if (rc <= 0) { return rc; }
         }
@@ -670,7 +702,9 @@ int ds4_mmvq_inkling(
     if (type == GGML_TYPE_Q8_0 && experts == IK_SHARED_EXPERTS && used == 1 &&
         rows >= IK_ST_MIN * IK_SHARED_EXPERTS &&
         !getenv("DS4_INKLING_NO_SHARED_DOWN_TILE") && !getenv("DS4_INKLING_NO_MOE_TILE")) {
-        const int rc = inkling_shared_tile_launch(weights, (const block_q8_1 *)x,
+        int rc = pipe();
+        if (rc <= 0) { return rc; }
+        rc = inkling_shared_tile_launch(weights, (const block_q8_1 *)x,
             out, counts, buckets, m, k, assignments, used, experts, stream);
         if (rc <= 0) { return rc; }
     }
@@ -679,7 +713,9 @@ int ds4_mmvq_inkling(
     if (type == GGML_TYPE_Q8_0 && experts != IK_SHARED_EXPERTS &&
         rows >= IK_ST_MIN && !getenv("DS4_INKLING_NO_Q8_ROUTED_TILE") &&
         !getenv("DS4_INKLING_NO_MOE_TILE")) {
-        const int rc = inkling_shared_tile_launch(weights, (const block_q8_1 *)x,
+        int rc = pipe();
+        if (rc <= 0) { return rc; }
+        rc = inkling_shared_tile_launch(weights, (const block_q8_1 *)x,
             out, counts, buckets, m, k, assignments, used, experts, stream);
         if (rc <= 0) { return rc; }
     }
