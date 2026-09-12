@@ -72,6 +72,13 @@ The bandwidth figure is informational; we don't tier on it.
   all input groups using the shared-expert tile schedule. Unaligned Q8_1
   input or insufficient shared memory keep the prior kernel.
 
+- `DS4_INKLING_NO_SHARED_COLUMN=1` keeps the SoA slab of the resident
+  shared/routed Q8 prefill tiles but sums all eight columns in one K loop
+  (the round-19 kernel, 144 spill bytes). Unset it to run the K loop once
+  per column with the activation scales converted to float once while
+  staging; only one column's partial and merged sums stay live. Outputs are
+  byte-identical.
+
 - `DS4_INKLING_NO_ATTN_TRANSPOSE=1` restores the all-lane head reduction in
   the grouped prefill attention kernel. Unset it to reduce the four head
   dots with a transposed butterfly (offset 16 and 8 steps split heads across

@@ -164,6 +164,15 @@ static void batch_case(ggml_type type, int m, int tokens, int ne, int used,
         exact(got, want, out_bytes);
     }
 
+    // The column switch keeps the SoA slab but sums eight columns per K loop.
+    if (type == GGML_TYPE_Q8_0) {
+        CUDA(cudaMemset(got, 0xff, out_bytes));
+        CHECK(setenv("DS4_INKLING_NO_SHARED_COLUMN", "1", 1) == 0);
+        CHECK(ds4_mmq_inkling_moe(dw, type, dx, di, got, m, k, rows, ne, used, nullptr) == 0);
+        CHECK(unsetenv("DS4_INKLING_NO_SHARED_COLUMN") == 0);
+        exact(got, want, out_bytes);
+    }
+
     if (type == GGML_TYPE_Q8_0 && ne != SHARED) {
         CUDA(cudaMemset(got, 0xff, out_bytes));
         CHECK(setenv("DS4_INKLING_NO_Q8_ROUTED_TILE", "1", 1) == 0);
@@ -469,6 +478,7 @@ int main() {
     CHECK(unsetenv("DS4_INKLING_NO_SHARED_SOA") == 0);
     CHECK(unsetenv("DS4_INKLING_NO_IQ2_LEAN") == 0);
     CHECK(unsetenv("DS4_INKLING_NO_Q3_TILE") == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_SHARED_COLUMN") == 0);
     CHECK(ds4_gpu_init()); CHECK(ds4_mmq_init(0) == 0);
     candidate_case();
     CHECK(ds4_mmvq_inkling_bytes(8192 * USED + 1, MAX_EXPERTS, 1) == 0);
