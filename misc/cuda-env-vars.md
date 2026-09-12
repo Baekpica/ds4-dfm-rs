@@ -72,6 +72,32 @@ The bandwidth figure is informational; we don't tier on it.
   all input groups using the shared-expert tile schedule. Unaligned Q8_1
   input or insufficient shared memory keep the prior kernel.
 
+- `DS4_INKLING_NO_ATTN_PAIR=1` scores one key per warp iteration in the
+  grouped prefill attention kernel. Unset it to load and score keys i and
+  i+4 together (independent dots and butterflies) while the softmax scalars
+  and V updates are applied in the release key order. Outputs are
+  byte-identical.
+
+- `DS4_INKLING_NO_Q4_LEAN=1` restores the two-row branched Q4_K expert
+  prefill tiles. Unset it to own four rows per warp, hoist the activation row
+  out of the K steps and load every column (padding reads row 0, stores stay
+  guarded); down caps registers for three CTAs per SM. Ragged row counts
+  keep the two-row kernel. Outputs are byte-identical.
+
+- `DS4_INKLING_NO_SHARED_COLUMN=1` keeps the SoA slab of the resident
+  shared/routed Q8 prefill tiles but sums all eight columns in one K loop
+  (the round-19 kernel, 144 spill bytes). Unset it to run the K loop once
+  per column with the activation scales converted to float once while
+  staging; only one column's partial and merged sums stay live. Outputs are
+  byte-identical.
+
+- `DS4_INKLING_NO_ATTN_TRANSPOSE=1` restores the all-lane head reduction in
+  the grouped prefill attention kernel. Unset it to reduce the four head
+  dots with a transposed butterfly (offset 16 and 8 steps split heads across
+  lane groups, steps 4/2/1 and the online softmax run once per 8-lane group,
+  alpha/beta broadcast for the V update). Each head's XOR tree pairs the same
+  lanes in the same order, so outputs are byte-identical.
+
 - `DS4_INKLING_NO_Q3_TILE=1` restores the four-column Q3_K expert kernel,
   which re-unpacks the 3-bit values and scales for every column. Unset it to
   decode each row fragment once for eight routed columns from 256 prompt

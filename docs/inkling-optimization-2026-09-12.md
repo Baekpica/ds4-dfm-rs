@@ -1,5 +1,6 @@
 # Inkling MQ85GB prefill on GB10, 2026-09-12 (rounds 19–21)
 
+Continued in [rounds 22–24](inkling-optimization-2026-09-12-r22.md).
 Continuation of [rounds 16–18](inkling-optimization-2026-09-11-r16.md). Starting
 tree is merged main `6baf01f` after PR #30. All measurements use MQ85GB on
 one DGX Spark / GB10, CUDA 13.3.73, driver 610.43.02, `sm_121a` via

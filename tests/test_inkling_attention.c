@@ -353,16 +353,24 @@ static void wrap_boundary(struct fixture *f) {
 
 int main(void) {
     CHECK(unsetenv("DS4_INKLING_NO_ATTN_GROUP") == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_ATTN_TRANSPOSE") == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_ATTN_PAIR") == 0);
     CHECK(ds4_gpu_init());
     const unsigned extents[] = {LOCAL, GLOBAL}, chunks[] = {TOKENS, 1, 7, 15, 16, 63, 257, 700, 8192};
     for (unsigned e = 0; e < sizeof(extents) / sizeof(extents[0]); e++) {
         struct fixture f;
         init(&f, extents[e]);
         for (unsigned c = 0; c < sizeof(chunks) / sizeof(chunks[0]); c++) { run_chunks(&f, chunks[c]); }
-        /* The rollback kernel must reproduce the grouped baseline exactly. */
+        /* The rollback kernels must reproduce the grouped baseline exactly. */
         CHECK(setenv("DS4_INKLING_NO_ATTN_GROUP", "1", 1) == 0);
         run_chunks(&f, 8192); run_chunks(&f, 257);
         CHECK(unsetenv("DS4_INKLING_NO_ATTN_GROUP") == 0);
+        CHECK(setenv("DS4_INKLING_NO_ATTN_TRANSPOSE", "1", 1) == 0);
+        run_chunks(&f, 8192); run_chunks(&f, 257);
+        CHECK(unsetenv("DS4_INKLING_NO_ATTN_TRANSPOSE") == 0);
+        CHECK(setenv("DS4_INKLING_NO_ATTN_PAIR", "1", 1) == 0);
+        run_chunks(&f, 8192); run_chunks(&f, 257);
+        CHECK(unsetenv("DS4_INKLING_NO_ATTN_PAIR") == 0);
         captured(&f); rejected(&f);
         if (extents[e] == LOCAL) { wrap_boundary(&f); }
         timing(&f, 512); timing(&f, 16);

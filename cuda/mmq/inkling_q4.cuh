@@ -1,7 +1,13 @@
 /* Q4_K prefill coverage: decode each row fragment once for eight routed
- * columns, preserving the original MMVQ lane products and ordered sums. */
-enum { IK_Q4_WARP = 32, IK_Q4_WARPS = 4, IK_Q4_COLS = 8,
-       IK_Q4_MIN_ASSIGNMENTS = 512 * 6 };
+ * columns, preserving the original MMVQ lane products and ordered sums.
+ * LEAN tiles (the release path from IK_Q4_MIN_ASSIGNMENTS) hoist the
+ * activation row out of the K steps, load every column (a padded column
+ * reads row 0 and its store stays guarded) so the eight column chains
+ * interleave without a branch, and own four rows per warp: up 52.8 -> 38.7 ms
+ * and down 26.3 -> 17.6 ms at 1024 tokens, byte-identical. Down caps
+ * registers for three CTAs per SM; up keeps the compiler's 255. */
+enum { IK_Q4_WARP = 32, IK_Q4_WARPS = 4, IK_Q4_COLS = 8, IK_Q4_LEAN_ROWS = 4,
+       IK_Q4_LEAN_DOWN_BLOCKS = 3, IK_Q4_MIN_ASSIGNMENTS = 512 * 6 };
 
 struct InklingQ4Frag {
     int v[2];
@@ -27,8 +33,8 @@ static __device__ __forceinline__ InklingQ4Frag inkling_q4_load(
     return f;
 }
 
-template<unsigned R, unsigned C, unsigned W, unsigned ITERS>
-__launch_bounds__(IK_Q4_WARPS * IK_Q4_WARP)
+template<unsigned R, unsigned C, unsigned W, unsigned ITERS, bool LEAN, unsigned MINB>
+__launch_bounds__(IK_Q4_WARPS * IK_Q4_WARP, MINB)
 static __global__ void inkling_q4_kernel(const block_q4_K *weights,
         const block_q8_1 *x, float *out, const int32_t *counts,
         const int32_t *buckets, const int32_t *tile_experts,
@@ -45,10 +51,12 @@ static __global__ void inkling_q4_kernel(const block_q4_K *weights,
         const unsigned tile = job / row_groups, row = job % row_groups * R;
         const unsigned expert = tile_experts[tile], begin = starts[tile];
         int selected[C];
+        unsigned xrow[C];
         #pragma unroll
         for (unsigned c = 0; c < C; c++) {
             selected[c] = begin + c < (unsigned)counts[expert]
                 ? buckets[(uint64_t)expert * assignments + begin + c] : -1;
+            xrow[c] = LEAN && selected[c] >= 0 ? (unsigned)selected[c] / used : 0u;
         }
         float acc[R][C] = {};
         #pragma unroll
@@ -67,8 +75,9 @@ static __global__ void inkling_q4_kernel(const block_q4_K *weights,
                 }
                 #pragma unroll
                 for (unsigned c = 0; c < C; c++) {
-                    if (selected[c] < 0) { continue; }
-                    const auto *xr = x + (uint64_t)(selected[c] / used) * x_blocks + bx * (QK_K / QK8_1) + offset;
+                    if (!LEAN && selected[c] < 0) { continue; }
+                    const auto *xr = x + (uint64_t)(LEAN ? xrow[c] : (unsigned)(selected[c] / used)) * x_blocks +
+                        bx * (QK_K / QK8_1) + offset;
                     int u[2 * QR4_K];
                     float d8[QR4_K];
                     #pragma unroll
@@ -106,7 +115,7 @@ static __global__ void inkling_q4_kernel(const block_q4_K *weights,
     }
 }
 
-template<unsigned R, unsigned C, unsigned W, unsigned I>
+template<unsigned R, unsigned C, unsigned W, unsigned I, bool LEAN, unsigned MINB>
 static int inkling_q4_launch(const void *w, const block_q8_1 *x, float *out,
         const int32_t *counts, const int32_t *buckets, const int32_t *experts,
         const int32_t *starts, unsigned m, unsigned k, unsigned assignments,
@@ -114,8 +123,24 @@ static int inkling_q4_launch(const void *w, const block_q8_1 *x, float *out,
     if (m % R) { return -1; }
     static int active = 0;
     if (!active && (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active,
-            inkling_q4_kernel<R, C, W, I>, IK_Q4_WARPS * IK_Q4_WARP, 0) != cudaSuccess || active <= 0)) { return -2; }
-    inkling_q4_kernel<R, C, W, I><<<sms * active, IK_Q4_WARPS * IK_Q4_WARP, 0, stream>>>(
+            inkling_q4_kernel<R, C, W, I, LEAN, MINB>, IK_Q4_WARPS * IK_Q4_WARP, 0) != cudaSuccess || active <= 0)) { return -2; }
+    inkling_q4_kernel<R, C, W, I, LEAN, MINB><<<sms * active, IK_Q4_WARPS * IK_Q4_WARP, 0, stream>>>(
         (const block_q4_K *)w, x, out, counts, buckets, experts, starts, m, k, assignments, ne, used);
     return cudaGetLastError() == cudaSuccess ? 0 : -2;
+}
+
+// Lean four-row tiles when the rows divide; ragged shapes and the switch
+// keep the two-row branched kernel. A zero block bound leaves the register
+// heuristic to the compiler (an explicit 1 lets it take all 255).
+template<unsigned W, unsigned I, unsigned MINB>
+static int inkling_q4_dispatch(const void *w, const block_q8_1 *x, float *out,
+        const int32_t *counts, const int32_t *buckets, const int32_t *experts,
+        const int32_t *starts, unsigned m, unsigned k, unsigned assignments,
+        unsigned ne, unsigned used, unsigned sms, cudaStream_t stream) {
+    if (m % IK_Q4_LEAN_ROWS == 0 && !getenv("DS4_INKLING_NO_Q4_LEAN")) {
+        return inkling_q4_launch<IK_Q4_LEAN_ROWS, IK_Q4_COLS, W, I, true, MINB>(w, x, out,
+            counts, buckets, experts, starts, m, k, assignments, ne, used, sms, stream);
+    }
+    return inkling_q4_launch<2, IK_Q4_COLS, W, I, false, 0>(w, x, out,
+        counts, buckets, experts, starts, m, k, assignments, ne, used, sms, stream);
 }
