@@ -10,7 +10,8 @@ enum { QH = 32, KH = 8, DIM = 128, QWIDTH = QH * DIM, KWIDTH = KH * DIM,
        LOCAL = 512, GLOBAL = 1024, TOKENS = 8201, KV_ROW = 2 * KWIDTH,
        BF_SHIFT = 16, BF_HALF = 0x7fff, POISON = 0x7fc1,
        CAPTURE_ROWS = 3, CAPTURE_START = 508, CAPTURE_STEPS = 16,
-       VERIFY_ROWS = 9, ACCEPT_ROWS = 3, TIMING_START = 7680, TIMING_REPEATS = 10 };
+       VERIFY_ROWS = 9, ACCEPT_ROWS = 3, TIMING_START = 7680, TIMING_REPEATS = 10,
+       HMMA_ROWS = 16, HMMA_SLACK_SHIFT = -16 };
 
 #define CHECK(expr) do { \
     if (!(expr)) { \
@@ -21,7 +22,8 @@ enum { QH = 32, KH = 8, DIM = 128, QWIDTH = QH * DIM, KWIDTH = KH * DIM,
 
 struct fixture {
     unsigned extent, cap;
-    float *q, *k, *v, *rel, *baseline;
+    double vmax;
+    float *q, *k, *v, *rel, *baseline, *hmma;
     uint16_t *poison;
     ds4_gpu_tensor *dq, *dk, *dv, *dr, *out, *cache, *position;
 };
@@ -70,13 +72,14 @@ static void init(struct fixture *f, unsigned extent) {
     size_t rn = (size_t)TOKENS * QH * extent;
     f->q = malloc(qn * sizeof(float)); f->k = malloc(kn * sizeof(float));
     f->v = malloc(kn * sizeof(float)); f->rel = malloc(rn * sizeof(float));
-    f->baseline = malloc(qn * sizeof(float));
+    f->baseline = malloc(qn * sizeof(float)); f->hmma = malloc(qn * sizeof(float));
     f->poison = malloc((size_t)f->cap * KV_ROW * sizeof(uint16_t));
-    CHECK(f->q && f->k && f->v && f->rel && f->baseline && f->poison);
+    CHECK(f->q && f->k && f->v && f->rel && f->baseline && f->hmma && f->poison);
     for (size_t i = 0; i < qn; i++) { f->q[i] = ((int)(i * 19 % 127) - 63) / 16.0f + 0.00003f; }
     for (size_t i = 0; i < kn; i++) {
         f->k[i] = ((int)(i * 31 % 139) - 69) / 32.0f + 0.00003f;
         f->v[i] = ((int)(i * 43 % 151) - 75) / 64.0f + 0.00003f;
+        f->vmax = fmax(f->vmax, fabs(bf(f->v[i])));
     }
     for (unsigned t = 0; t < TOKENS; t++) {
         for (unsigned h = 0; h < QH; h++) {
@@ -98,7 +101,7 @@ static void destroy(struct fixture *f) {
     ds4_gpu_tensor_free(f->dq); ds4_gpu_tensor_free(f->dk); ds4_gpu_tensor_free(f->dv);
     ds4_gpu_tensor_free(f->dr); ds4_gpu_tensor_free(f->out); ds4_gpu_tensor_free(f->cache);
     ds4_gpu_tensor_free(f->position);
-    free(f->q); free(f->k); free(f->v); free(f->rel); free(f->baseline); free(f->poison);
+    free(f->q); free(f->k); free(f->v); free(f->rel); free(f->baseline); free(f->hmma); free(f->poison);
 }
 
 static void check_cache(struct fixture *f, unsigned committed) {
@@ -118,7 +121,15 @@ static void check_cache(struct fixture *f, unsigned committed) {
     free(want); free(got);
 }
 
-static void reference(struct fixture *f, unsigned t) {
+/* The opt-in tensor-core prefill path is selected for 16+ row widths. */
+static int hmma_active(void) {
+    return getenv("DS4_INKLING_ATTN_HMMA") && !getenv("DS4_INKLING_NO_ATTN_GROUP");
+}
+
+/* FP64 softmax attention of query t against `out`. `slack` is the absolute
+ * allowance beyond half a BF16 ulp: zero for the exact kernels, the bf16
+ * probability-pair bound 2^-16 * max|V| for the tensor-core path. */
+static void reference(struct fixture *f, unsigned t, const float *out, double slack) {
     unsigned first = f->extent == LOCAL && t + 1 > LOCAL ? t + 1 - LOCAL : 0;
     double scores[TOKENS], sums[DIM];
     for (unsigned h = 0; h < QH; h++) {
@@ -145,10 +156,10 @@ static void reference(struct fixture *f, unsigned t) {
         }
         for (unsigned d = 0; d < DIM; d++) {
             double want = sums[d] / denom;
-            float got = f->baseline[(size_t)t * QWIDTH + h * DIM + d];
+            float got = out[(size_t)t * QWIDTH + h * DIM + d];
             /* Half a BF16 ulp plus an FP32 softmax/reduction allowance. */
             double ulp = ldexp(1.0, ilogb(fmax(fabs(want), 0x1p-126)) - 7);
-            CHECK(isfinite(got) && fabs(got - want) <= 0.501 * ulp + 2e-6);
+            CHECK(isfinite(got) && fabs(got - want) <= 0.501 * ulp + slack + 2e-6);
         }
     }
 }
@@ -171,16 +182,43 @@ static void run_chunks(struct fixture *f, unsigned chunk) {
         ds4_gpu_tensor_free(v); ds4_gpu_tensor_free(out);
     }
     CHECK(ds4_gpu_tensor_read(f->out, 0, got, bytes));
-    if (chunk == TOKENS) {
+    const unsigned probes[] = {0, 1, LOCAL - 1, LOCAL, GLOBAL - 1, GLOBAL, TOKENS - 1};
+    if (chunk == TOKENS && hmma_active()) {
+        memcpy(f->hmma, got, bytes);
+        for (unsigned i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
+            reference(f, probes[i], f->hmma, ldexp(f->vmax, HMMA_SLACK_SHIFT));
+        }
+    } else if (chunk == TOKENS) {
         memcpy(f->baseline, got, bytes);
-        const unsigned probes[] = {0, 1, LOCAL - 1, LOCAL, GLOBAL - 1, GLOBAL, TOKENS - 1};
-        for (unsigned i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) { reference(f, probes[i]); }
+        for (unsigned i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) { reference(f, probes[i], f->baseline, 0); }
     } else {
-        exact(got, f->baseline, bytes / sizeof(float));
+        /* Each chunk reproduces the baseline of the kernel its width selects. */
+        for (uint32_t at = 0; at < TOKENS; at += chunk) {
+            unsigned rows = TOKENS - at < chunk ? TOKENS - at : chunk;
+            const float *want = rows >= HMMA_ROWS && hmma_active() ? f->hmma : f->baseline;
+            exact(got + (size_t)at * QWIDTH, want + (size_t)at * QWIDTH, (size_t)rows * QWIDTH);
+        }
     }
     check_cache(f, TOKENS);
     free(got);
-    printf("attention extent=%u chunk=%u outputs/cache passed\n", f->extent, chunk);
+    printf("attention extent=%u chunk=%u outputs/cache passed (%s)\n", f->extent, chunk,
+           hmma_active() ? "tensor-core" : "exact");
+}
+
+/* Two outputs of the same query from the tensor-core and exact paths: both
+ * are within the FP64 bound, so they differ by at most one BF16 ulp plus
+ * twice the probability-pair slack. */
+static void within(struct fixture *f, const float *a, const float *b, size_t n, const char *what) {
+    size_t moved = 0;
+    double worst = 0;
+    for (size_t i = 0; i < n; i++) {
+        double ulp = ldexp(1.0, ilogb(fmax(fmax(fabs(a[i]), fabs(b[i])), 0x1p-126)) - 7);
+        double diff = fabs((double)a[i] - b[i]);
+        CHECK(isfinite(a[i]) && diff <= ulp + ldexp(f->vmax, HMMA_SLACK_SHIFT + 1) + 4e-6);
+        moved += a[i] != b[i];
+        worst = fmax(worst, diff);
+    }
+    printf("attention extent=%u %s: %zu/%zu outputs moved, max %.3g abs\n", f->extent, what, moved, n, worst);
 }
 
 static void seed_prefix(struct fixture *f, uint32_t count) {
@@ -292,8 +330,8 @@ static double now(void) {
     return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
-/* Time the grouped prefill kernel against its rollback on production widths
- * at a late position; both paths already matched the baseline above. */
+/* Time the selected prefill kernel against its rollbacks on production
+ * widths at a late position; every path reproduces its baseline. */
 static void timing(struct fixture *f, unsigned rows) {
     uint32_t start = TIMING_START;
     seed_prefix(f, start);
@@ -303,10 +341,10 @@ static void timing(struct fixture *f, unsigned rows) {
     ds4_gpu_tensor *out = view(f->out, start, rows, QWIDTH);
     float *got = malloc((size_t)rows * QWIDTH * sizeof(float));
     CHECK(got);
-    double elapsed[2];
-    for (unsigned mode = 0; mode < 2; mode++) {
-        if (mode == 1) { CHECK(setenv("DS4_INKLING_NO_ATTN_GROUP", "1", 1) == 0); }
-        else { CHECK(unsetenv("DS4_INKLING_NO_ATTN_GROUP") == 0); }
+    const char *controls[] = {"DS4_INKLING_ATTN_HMMA", NULL, "DS4_INKLING_NO_ATTN_GROUP"};
+    double elapsed[3];
+    for (unsigned mode = 0; mode < 3; mode++) {
+        if (controls[mode]) { CHECK(setenv(controls[mode], "1", 1) == 0); }
         CHECK(ds4_gpu_inkling_attention(out, q, r, k, v, f->cache, f->position, rows, f->cap, f->extent));
         CHECK(ds4_gpu_synchronize());
         const double begin = now();
@@ -315,17 +353,19 @@ static void timing(struct fixture *f, unsigned rows) {
         }
         CHECK(ds4_gpu_synchronize()); elapsed[mode] = (now() - begin) / TIMING_REPEATS;
         CHECK(ds4_gpu_tensor_read(out, 0, got, (size_t)rows * QWIDTH * sizeof(float)));
-        exact(got, f->baseline + (size_t)start * QWIDTH, (size_t)rows * QWIDTH);
+        const float *want = hmma_active() ? f->hmma : f->baseline;
+        exact(got, want + (size_t)start * QWIDTH, (size_t)rows * QWIDTH);
+        if (controls[mode]) { CHECK(unsetenv(controls[mode]) == 0); }
     }
-    CHECK(unsetenv("DS4_INKLING_NO_ATTN_GROUP") == 0);
-    printf("attention extent=%u rows=%u at %u exact; selected=%.3f us no-group-control=%.3f us\n",
-           f->extent, rows, start, elapsed[0] * 1e6, elapsed[1] * 1e6);
+    printf("attention extent=%u rows=%u at %u exact; tensor-core=%.3f us grouped=%.3f us per-head=%.3f us\n",
+           f->extent, rows, start, elapsed[0] * 1e6, elapsed[1] * 1e6, elapsed[2] * 1e6);
     ds4_gpu_tensor_free(q); ds4_gpu_tensor_free(r); ds4_gpu_tensor_free(k);
     ds4_gpu_tensor_free(v); ds4_gpu_tensor_free(out); free(got);
 }
 
 /* Local rows ending exactly at UINT32_MAX are valid: the grouped kernel must
- * match the per-head kernel there instead of wrapping its key arithmetic. */
+ * match the per-head kernel there and the tensor-core kernel must stay within
+ * its bound instead of wrapping key arithmetic. */
 static void wrap_boundary(struct fixture *f) {
     const unsigned rows = 16;
     const uint32_t seed = UINT32_MAX - rows + 1 - LOCAL, start = UINT32_MAX - rows + 1;
@@ -337,8 +377,12 @@ static void wrap_boundary(struct fixture *f) {
     ds4_gpu_tensor *k = view(f->dk, LOCAL, rows, KWIDTH), *v = view(f->dv, LOCAL, rows, KWIDTH);
     ds4_gpu_tensor *out = view(f->out, 0, rows, QWIDTH);
     const size_t bytes = (size_t)rows * QWIDTH * sizeof(float);
-    float *grouped = malloc(bytes), *control = malloc(bytes);
-    CHECK(grouped && control);
+    float *tensor = malloc(bytes), *grouped = malloc(bytes), *control = malloc(bytes);
+    CHECK(tensor && grouped && control);
+    CHECK(setenv("DS4_INKLING_ATTN_HMMA", "1", 1) == 0);
+    CHECK(ds4_gpu_inkling_attention(out, q, r, k, v, f->cache, f->position, rows, f->cap, f->extent));
+    CHECK(unsetenv("DS4_INKLING_ATTN_HMMA") == 0);
+    CHECK(ds4_gpu_tensor_read(out, 0, tensor, bytes));
     CHECK(ds4_gpu_inkling_attention(out, q, r, k, v, f->cache, f->position, rows, f->cap, f->extent));
     CHECK(ds4_gpu_tensor_read(out, 0, grouped, bytes));
     CHECK(setenv("DS4_INKLING_NO_ATTN_GROUP", "1", 1) == 0);
@@ -346,8 +390,9 @@ static void wrap_boundary(struct fixture *f) {
     CHECK(unsetenv("DS4_INKLING_NO_ATTN_GROUP") == 0);
     CHECK(ds4_gpu_tensor_read(out, 0, control, bytes));
     exact(grouped, control, bytes / sizeof(float));
+    within(f, tensor, control, bytes / sizeof(float), "tensor-core vs per-head at UINT32_MAX");
     ds4_gpu_tensor_free(q); ds4_gpu_tensor_free(r); ds4_gpu_tensor_free(k);
-    ds4_gpu_tensor_free(v); ds4_gpu_tensor_free(out); free(grouped); free(control);
+    ds4_gpu_tensor_free(v); ds4_gpu_tensor_free(out); free(tensor); free(grouped); free(control);
     printf("attention extent=%u rows=%u ending at UINT32_MAX exact\n", f->extent, rows);
 }
 
@@ -355,22 +400,33 @@ int main(void) {
     CHECK(unsetenv("DS4_INKLING_NO_ATTN_GROUP") == 0);
     CHECK(unsetenv("DS4_INKLING_NO_ATTN_TRANSPOSE") == 0);
     CHECK(unsetenv("DS4_INKLING_NO_ATTN_PAIR") == 0);
+    CHECK(unsetenv("DS4_INKLING_ATTN_HMMA") == 0);
     CHECK(ds4_gpu_init());
-    const unsigned extents[] = {LOCAL, GLOBAL}, chunks[] = {TOKENS, 1, 7, 15, 16, 63, 257, 700, 8192};
+    const unsigned extents[] = {LOCAL, GLOBAL}, chunks[] = {1, 7, 15, 16, 63, 257, 700, 8192};
     for (unsigned e = 0; e < sizeof(extents) / sizeof(extents[0]); e++) {
         struct fixture f;
         init(&f, extents[e]);
+        /* Exact baseline from the default grouped kernel, then the opt-in
+         * tensor-core path: within its FP64 bound, chunk-invariant among
+         * 16+ row chunks, while narrower chunks keep the exact per-head
+         * kernel. */
+        run_chunks(&f, TOKENS);
+        CHECK(setenv("DS4_INKLING_ATTN_HMMA", "1", 1) == 0);
+        run_chunks(&f, TOKENS);
+        within(&f, f.hmma, f.baseline, (size_t)TOKENS * QWIDTH, "tensor-core vs exact");
         for (unsigned c = 0; c < sizeof(chunks) / sizeof(chunks[0]); c++) { run_chunks(&f, chunks[c]); }
-        /* The rollback kernels must reproduce the grouped baseline exactly. */
-        CHECK(setenv("DS4_INKLING_NO_ATTN_GROUP", "1", 1) == 0);
+        CHECK(unsetenv("DS4_INKLING_ATTN_HMMA") == 0);
+        /* The default and rollback kernels reproduce the exact baseline. */
         run_chunks(&f, 8192); run_chunks(&f, 257);
-        CHECK(unsetenv("DS4_INKLING_NO_ATTN_GROUP") == 0);
         CHECK(setenv("DS4_INKLING_NO_ATTN_TRANSPOSE", "1", 1) == 0);
         run_chunks(&f, 8192); run_chunks(&f, 257);
         CHECK(unsetenv("DS4_INKLING_NO_ATTN_TRANSPOSE") == 0);
         CHECK(setenv("DS4_INKLING_NO_ATTN_PAIR", "1", 1) == 0);
         run_chunks(&f, 8192); run_chunks(&f, 257);
         CHECK(unsetenv("DS4_INKLING_NO_ATTN_PAIR") == 0);
+        CHECK(setenv("DS4_INKLING_NO_ATTN_GROUP", "1", 1) == 0);
+        run_chunks(&f, 8192); run_chunks(&f, 257);
+        CHECK(unsetenv("DS4_INKLING_NO_ATTN_GROUP") == 0);
         captured(&f); rejected(&f);
         if (extents[e] == LOCAL) { wrap_boundary(&f); }
         timing(&f, 512); timing(&f, 16);

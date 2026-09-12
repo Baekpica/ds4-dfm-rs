@@ -1052,6 +1052,37 @@ static __global__ void inkling_attention_group_kernel(
     }
 }
 
+static uint16_t *g_inkling_attn_stage = NULL;
+static uint64_t g_inkling_attn_stage_bytes = 0;
+
+// Sticky high-water bf16 copy of the current chunk's K/V rows for the
+// tensor-core prefill attention. Growth drains the device first (eager
+// work may still read the retiring pointer) and is refused under graph
+// capture, where the caller keeps the exact kernels.
+static uint16_t *inkling_attn_stage_ensure(uint32_t rows) {
+    const uint64_t bytes = (uint64_t)rows * INKLING_KV_ROW * sizeof(uint16_t);
+    if (g_inkling_attn_stage_bytes >= bytes) { return g_inkling_attn_stage; }
+    if (ds4_capture_active()) { return NULL; }
+    (void)cudaDeviceSynchronize();
+    if (g_inkling_attn_stage) {
+        (void)cudaFree(g_inkling_attn_stage);
+        cuda_mem_note_free(DS4_MEMC_SCRATCH_STICKY, DS4_MEMD_UNIFIED_DEVICE,
+                           g_inkling_attn_stage_bytes, g_inkling_attn_stage_bytes);
+        g_inkling_attn_stage = NULL;
+        g_inkling_attn_stage_bytes = 0;
+    }
+    void *ptr = NULL;
+    if (cudaMalloc(&ptr, (size_t)bytes) != cudaSuccess) {
+        (void)cudaGetLastError();
+        return NULL;
+    }
+    (void)cudaMemset(ptr, 0, (size_t)bytes);
+    cuda_mem_note_alloc(DS4_MEMC_SCRATCH_STICKY, DS4_MEMD_UNIFIED_DEVICE, bytes, bytes);
+    g_inkling_attn_stage = (uint16_t *)ptr;
+    g_inkling_attn_stage_bytes = bytes;
+    return g_inkling_attn_stage;
+}
+
 extern "C" int ds4_gpu_inkling_attention(
         ds4_gpu_tensor *out, const ds4_gpu_tensor *q, const ds4_gpu_tensor *relative,
         const ds4_gpu_tensor *k, const ds4_gpu_tensor *v, const ds4_gpu_tensor *cache,
@@ -1073,6 +1104,28 @@ extern "C" int ds4_gpu_inkling_attention(
     // Prefill widths share K/V across each KV head's query heads; decode and
     // MTP verify widths keep the per-head kernel.
     if (rows >= INKLING_ATTN_GROUP_MIN_ROWS && !getenv("DS4_INKLING_NO_ATTN_GROUP")) {
+        // Opt-in tensor-core prefill attention (cuda/mmq/inkling_attention.cuh):
+        // bf16 MMAs on the bf16-rounded Q/K/V with fp32 softmax and
+        // accumulation in tile order. Outputs differ from the grouped kernel
+        // by summation order, which this model amplifies to different greedy
+        // tokens, so the byte-exact grouped kernel stays the default.
+        if (getenv("DS4_INKLING_ATTN_HMMA")) {
+            uint16_t *stage = inkling_attn_stage_ensure(rows);
+            const int rc = stage ? ds4_mmq_inkling_prefill_attn_hmma(
+                (float *)out->ptr, (const float *)q->ptr, (const float *)relative->ptr,
+                (const float *)k->ptr, (const float *)v->ptr, stage, (const uint16_t *)cache->ptr,
+                (const uint32_t *)position->ptr, rows, capacity, extent, ds4_current_stream()) : -1;
+            if (rc == 0) { return 1; }
+            if (rc == -2) {
+                fprintf(stderr, "ds4: Inkling tensor-core attention launch failed\n");
+                return 0;
+            }
+            static int noted = 0;
+            if (!noted) {
+                fprintf(stderr, "ds4: Inkling tensor-core attention unavailable; using the grouped kernel\n");
+                noted = 1;
+            }
+        }
         const uint64_t groups = head_rows / INKLING_ATTN_GROUP;
         const unsigned blocks = (unsigned)(groups < INKLING_MAX_BLOCKS ? groups : INKLING_MAX_BLOCKS);
         // Switches restore the all-lane reduction (NO_ATTN_TRANSPOSE) or the

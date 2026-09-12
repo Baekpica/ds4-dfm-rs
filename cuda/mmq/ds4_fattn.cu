@@ -31,6 +31,8 @@
 
 using namespace ggml_cuda_mma;
 
+#include "inkling_attention.cuh"
+
 namespace {
 
 enum {

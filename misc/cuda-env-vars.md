@@ -80,6 +80,18 @@ The bandwidth figure is informational; we don't tier on it.
   lean gate (256 prompt tokens) on aligned SoA weights. Outputs are
   byte-identical.
 
+- `DS4_INKLING_ATTN_HMMA=1` opts into tensor-core prefill attention for
+  widths of 16 rows and more: 64-query tiles of two heads, the current
+  chunk's K/V staged as bf16 rows (a sticky device copy), 64-key tiles
+  streamed through shared memory with cp.async, an online softmax per tile
+  and probabilities as a bf16 hi/lo pair. Outputs differ from the default
+  grouped kernel by fp32 summation order only (under 1% of bf16 outputs
+  move by one ulp; the fixture bounds both against an FP64 softmax) and are
+  chunk-invariant among prefill widths, but the model amplifies that to
+  different greedy tokens, so prefill/decode parity is not byte-exact with
+  it on. Decode and verify widths below 16 rows keep the exact per-head
+  kernel; `DS4_INKLING_NO_ATTN_GROUP=1` bypasses it.
+
 - `DS4_INKLING_NO_SHARED_PIPE=1` restores the staged-slab resident Q8
   prefill tiles (the round-23 column kernel). Unset it to relayout the
   activations into int8 rows with float scales and stream them through a

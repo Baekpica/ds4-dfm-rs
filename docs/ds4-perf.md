@@ -175,6 +175,10 @@ input groups stream through shared memory with the original one-warp sum.
 `DS4_INKLING_NO_IQ2_SLAB=1` keeps the per-warp lean IQ2 tiles; the optimized
 path stages each eight-column tile's activations once per CTA in shared
 memory and sweeps its row groups with four warps.
+`DS4_INKLING_ATTN_HMMA=1` opts into the tensor-core prefill attention, which
+scores 64-query tiles on the bf16 tensor cores and is not byte-identical to
+the default grouped kernel (summation order); `compare --regression` reports
+it as `Incorrect` because the model turns that into different greedy tokens.
 `DS4_INKLING_NO_SHARED_PIPE=1` restores the staged-slab resident Q8 tiles;
 the optimized path streams float-scale SoA rows through a cp.async column
 ring (two rows per warp for up, four rows per four-warp CTA for down).
