@@ -39,6 +39,8 @@ release candidate or describe live processes.
 - [dots3, September 6](dots3-optimization-2026-09-06.md) and
   [Solar, September 7](solar-open2-optimization-2026-09-07.md), including
   unsuccessful experiments and remaining limits.
+- [Solar, September 12](solar-open2-optimization-2026-09-12.md): four-round
+  closure, guarded baseline evidence and unchanged acceptance limits.
 - Partial reuse: [Solar, August 21](solar-partial-reuse-2026-08-21.md) and
   [Motif, August 22](motif3-partial-reuse-2026-08-22.md).
 

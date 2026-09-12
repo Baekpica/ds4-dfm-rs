@@ -1,0 +1,980 @@
+{
+  "runtime_entry": "847ab696512fa181dc10ae545c89dbc9b0a03276",
+  "retained_native_candidates": [],
+  "scouts": [
+    {
+      "round": "r1",
+      "arm": "off",
+      "depth": "64k",
+      "source": "r1/verified-off-64k/scout/scout.json",
+      "created_unix": 1789205007,
+      "binary_sha256": "95df6cf2a69f618229e4d6b89a397ebfa469a0bd6d4c8e474f0c6a233a812cae",
+      "gpu_uuid": "012cd6bb43aeb629e2264496d1243471",
+      "driver_version": 13030,
+      "controls": {
+        "DS4_CONT_PREFILL_CHUNK": "4096",
+        "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/tmp/ds4-solar-r0.manifest",
+        "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+        "DS4_MEMGOV": "observe",
+        "DS4_METAL_PREFILL_CHUNK": "4096",
+        "DS4_SOLAR_FATTN_PREFETCH": "0",
+        "DS4_SOLAR_KV_FORMAT": "kfp8-vfp4",
+        "DS4_SOLAR_MOE_RESIDUAL": "1",
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.3/lib64:"
+      },
+      "proof_sha256": [
+        {
+          "frontier_065536.logits.json": "b9c7f5f05dae4024ee297b7883a35a64c53e1e947715082116eac6b29e0cd394",
+          "tokens-65536.json": "95c1b3bb5022d30695b53e2d6720ac1d3cc99a1bf9dee14abbc771bd25b1117e"
+        },
+        {
+          "frontier_065536.logits.json": "b9c7f5f05dae4024ee297b7883a35a64c53e1e947715082116eac6b29e0cd394",
+          "tokens-65536.json": "95c1b3bb5022d30695b53e2d6720ac1d3cc99a1bf9dee14abbc771bd25b1117e"
+        },
+        {
+          "frontier_065536.logits.json": "b9c7f5f05dae4024ee297b7883a35a64c53e1e947715082116eac6b29e0cd394",
+          "tokens-65536.json": "95c1b3bb5022d30695b53e2d6720ac1d3cc99a1bf9dee14abbc771bd25b1117e"
+        }
+      ],
+      "minimum_available_gib": 12.075874328613281,
+      "maximum_psi_full_avg10": 0.97,
+      "phase_seconds": {
+        "ds4.decode": {
+          "wall": 4.768043776,
+          "kernel_sum": 4.492937952,
+          "attention": 0.0
+        },
+        "ds4.prefill": {
+          "wall": 84.883385648,
+          "kernel_sum": 84.617703808,
+          "attention": 28.942857952
+        }
+      }
+    },
+    {
+      "round": "r1",
+      "arm": "off",
+      "depth": "8k",
+      "source": "r1/verified-off-8k/scout/scout.json",
+      "created_unix": 1789203470,
+      "binary_sha256": "95df6cf2a69f618229e4d6b89a397ebfa469a0bd6d4c8e474f0c6a233a812cae",
+      "gpu_uuid": "012cd6bb43aeb629e2264496d1243471",
+      "driver_version": 13030,
+      "controls": {
+        "DS4_CONT_PREFILL_CHUNK": "4096",
+        "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/tmp/ds4-solar-r0.manifest",
+        "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+        "DS4_MEMGOV": "observe",
+        "DS4_METAL_PREFILL_CHUNK": "4096",
+        "DS4_SOLAR_FATTN_PREFETCH": "0",
+        "DS4_SOLAR_KV_FORMAT": "kfp8-vfp4",
+        "DS4_SOLAR_MOE_RESIDUAL": "1",
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.3/lib64:"
+      },
+      "proof_sha256": [
+        {
+          "frontier_008192.logits.json": "acc6dcb45eb554fe4b7ab0ff2a1222c0d3883049f43ea30587c3ca6aa529c5a1",
+          "tokens-8192.json": "3c782f2252cfce0cdeedb263a03dc5d6e03d29545d42f0c7ae05d3d7cc17f5ca"
+        },
+        {
+          "frontier_008192.logits.json": "acc6dcb45eb554fe4b7ab0ff2a1222c0d3883049f43ea30587c3ca6aa529c5a1",
+          "tokens-8192.json": "3c782f2252cfce0cdeedb263a03dc5d6e03d29545d42f0c7ae05d3d7cc17f5ca"
+        },
+        {
+          "frontier_008192.logits.json": "acc6dcb45eb554fe4b7ab0ff2a1222c0d3883049f43ea30587c3ca6aa529c5a1",
+          "tokens-8192.json": "3c782f2252cfce0cdeedb263a03dc5d6e03d29545d42f0c7ae05d3d7cc17f5ca"
+        }
+      ],
+      "minimum_available_gib": 14.014007568359375,
+      "maximum_psi_full_avg10": 0.99,
+      "phase_seconds": {
+        "ds4.decode": {
+          "wall": 3.6231976,
+          "kernel_sum": 3.349388288,
+          "attention": 0.0
+        },
+        "ds4.prefill": {
+          "wall": 7.379859536,
+          "kernel_sum": 7.198551135,
+          "attention": 0.3327264
+        }
+      },
+      "comparison": {
+        "verdict": "improved",
+        "metrics": [
+          {
+            "metric": "decode",
+            "ctx": 8192,
+            "unit": "seconds/token",
+            "baseline": [
+              0.05614823133071309,
+              0.056179775280898875,
+              0.05614823133071309
+            ],
+            "candidate": [
+              0.056179775280898875,
+              0.05611672278338945,
+              0.05614823133071309
+            ],
+            "baseline_median": 0.05614823133071309,
+            "candidate_median": 0.05614823133071309,
+            "median_percent": 0.0,
+            "lower_percent": -0.11223344556677839,
+            "upper_percent": 0.05617977528089568
+          },
+          {
+            "metric": "first_token",
+            "ctx": 8192,
+            "unit": "seconds",
+            "baseline": [
+              0.1488,
+              0.1519,
+              0.1534
+            ],
+            "candidate": [
+              0.1524,
+              0.1497,
+              0.1508
+            ],
+            "baseline_median": 0.1519,
+            "candidate_median": 0.1508,
+            "median_percent": -0.7241606319947413,
+            "lower_percent": -2.411994784876148,
+            "upper_percent": 2.4193548387096975
+          },
+          {
+            "metric": "prefill",
+            "ctx": 8192,
+            "unit": "seconds/token",
+            "baseline": [
+              0.0008961456774413248,
+              0.0008970299338888939,
+              0.0008985371814685692
+            ],
+            "candidate": [
+              0.000884658256515508,
+              0.0008850654063335281,
+              0.0008870438377064595
+            ],
+            "baseline_median": 0.0008970299338888939,
+            "candidate_median": 0.0008850654063335281,
+            "median_percent": -1.333793567344621,
+            "lower_percent": -1.5446133158760755,
+            "upper_percent": -1.015665194173876
+          }
+        ],
+        "correctness": {
+          "max_abs": 0.0,
+          "max_scaled": 0.0,
+          "bad": 0,
+          "checked": 1179648,
+          "rel_rms": 0.0,
+          "rel_rms_scaled": 0.0
+        },
+        "token_mismatches": 0,
+        "argmax_mismatches": 0,
+        "max_slowdown_percent": 3.0,
+        "logit_atol": 0.0,
+        "logit_rtol": 0.0,
+        "logit_rel_rms": 0.0,
+        "method": "sample-extrema-envelope-v1"
+      }
+    },
+    {
+      "round": "r1",
+      "arm": "on",
+      "depth": "8k",
+      "source": "r1/verified-on-8k/scout/scout.json",
+      "created_unix": 1789203912,
+      "binary_sha256": "95df6cf2a69f618229e4d6b89a397ebfa469a0bd6d4c8e474f0c6a233a812cae",
+      "gpu_uuid": "012cd6bb43aeb629e2264496d1243471",
+      "driver_version": 13030,
+      "controls": {
+        "DS4_CONT_PREFILL_CHUNK": "4096",
+        "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/tmp/ds4-solar-r0.manifest",
+        "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+        "DS4_MEMGOV": "observe",
+        "DS4_METAL_PREFILL_CHUNK": "4096",
+        "DS4_SOLAR_FATTN_PREFETCH": "1",
+        "DS4_SOLAR_KV_FORMAT": "kfp8-vfp4",
+        "DS4_SOLAR_MOE_RESIDUAL": "1",
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.3/lib64:"
+      },
+      "proof_sha256": [
+        {
+          "frontier_008192.logits.json": "acc6dcb45eb554fe4b7ab0ff2a1222c0d3883049f43ea30587c3ca6aa529c5a1",
+          "tokens-8192.json": "3c782f2252cfce0cdeedb263a03dc5d6e03d29545d42f0c7ae05d3d7cc17f5ca"
+        },
+        {
+          "frontier_008192.logits.json": "acc6dcb45eb554fe4b7ab0ff2a1222c0d3883049f43ea30587c3ca6aa529c5a1",
+          "tokens-8192.json": "3c782f2252cfce0cdeedb263a03dc5d6e03d29545d42f0c7ae05d3d7cc17f5ca"
+        },
+        {
+          "frontier_008192.logits.json": "acc6dcb45eb554fe4b7ab0ff2a1222c0d3883049f43ea30587c3ca6aa529c5a1",
+          "tokens-8192.json": "3c782f2252cfce0cdeedb263a03dc5d6e03d29545d42f0c7ae05d3d7cc17f5ca"
+        }
+      ],
+      "minimum_available_gib": 14.015525817871094,
+      "maximum_psi_full_avg10": 1.09,
+      "phase_seconds": {
+        "ds4.decode": {
+          "wall": 3.629096736,
+          "kernel_sum": 3.357556704,
+          "attention": 0.0
+        },
+        "ds4.prefill": {
+          "wall": 7.313428944,
+          "kernel_sum": 7.133991583,
+          "attention": 0.233892544
+        }
+      },
+      "comparison": {
+        "verdict": "improved",
+        "metrics": [
+          {
+            "metric": "decode",
+            "ctx": 8192,
+            "unit": "seconds/token",
+            "baseline": [
+              0.05614823133071309,
+              0.056179775280898875,
+              0.05614823133071309
+            ],
+            "candidate": [
+              0.056179775280898875,
+              0.05611672278338945,
+              0.05614823133071309
+            ],
+            "baseline_median": 0.05614823133071309,
+            "candidate_median": 0.05614823133071309,
+            "median_percent": 0.0,
+            "lower_percent": -0.11223344556677839,
+            "upper_percent": 0.05617977528089568
+          },
+          {
+            "metric": "first_token",
+            "ctx": 8192,
+            "unit": "seconds",
+            "baseline": [
+              0.1488,
+              0.1519,
+              0.1534
+            ],
+            "candidate": [
+              0.1524,
+              0.1497,
+              0.1508
+            ],
+            "baseline_median": 0.1519,
+            "candidate_median": 0.1508,
+            "median_percent": -0.7241606319947413,
+            "lower_percent": -2.411994784876148,
+            "upper_percent": 2.4193548387096975
+          },
+          {
+            "metric": "prefill",
+            "ctx": 8192,
+            "unit": "seconds/token",
+            "baseline": [
+              0.0008961456774413248,
+              0.0008970299338888939,
+              0.0008985371814685692
+            ],
+            "candidate": [
+              0.000884658256515508,
+              0.0008850654063335281,
+              0.0008870438377064595
+            ],
+            "baseline_median": 0.0008970299338888939,
+            "candidate_median": 0.0008850654063335281,
+            "median_percent": -1.333793567344621,
+            "lower_percent": -1.5446133158760755,
+            "upper_percent": -1.015665194173876
+          }
+        ],
+        "correctness": {
+          "max_abs": 0.0,
+          "max_scaled": 0.0,
+          "bad": 0,
+          "checked": 1179648,
+          "rel_rms": 0.0,
+          "rel_rms_scaled": 0.0
+        },
+        "token_mismatches": 0,
+        "argmax_mismatches": 0,
+        "max_slowdown_percent": 3.0,
+        "logit_atol": 0.0,
+        "logit_rtol": 0.0,
+        "logit_rel_rms": 0.0,
+        "method": "sample-extrema-envelope-v1"
+      }
+    },
+    {
+      "round": "r2",
+      "arm": "off",
+      "depth": "8k",
+      "source": "r2/direct/off-8k/scout/scout.json",
+      "created_unix": 1789210288,
+      "binary_sha256": "47017915150cbd7c384f50ab0d9ec7798b96fff8c151b2db0c88da0f70655e72",
+      "gpu_uuid": "012cd6bb43aeb629e2264496d1243471",
+      "driver_version": 13030,
+      "controls": {
+        "DS4_CONT_PREFILL_CHUNK": "4096",
+        "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/tmp/ds4-solar-r2.manifest",
+        "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+        "DS4_MEMGOV": "observe",
+        "DS4_METAL_PREFILL_CHUNK": "4096",
+        "DS4_SOLAR_FATTN_SOFTMAX": "0",
+        "DS4_SOLAR_KV_FORMAT": "kfp8-vfp4",
+        "DS4_SOLAR_MOE_RESIDUAL": "1",
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.3/lib64:"
+      },
+      "proof_sha256": [
+        {
+          "frontier_008192.logits.json": "acc6dcb45eb554fe4b7ab0ff2a1222c0d3883049f43ea30587c3ca6aa529c5a1",
+          "tokens-8192.json": "3c782f2252cfce0cdeedb263a03dc5d6e03d29545d42f0c7ae05d3d7cc17f5ca"
+        },
+        {
+          "frontier_008192.logits.json": "acc6dcb45eb554fe4b7ab0ff2a1222c0d3883049f43ea30587c3ca6aa529c5a1",
+          "tokens-8192.json": "3c782f2252cfce0cdeedb263a03dc5d6e03d29545d42f0c7ae05d3d7cc17f5ca"
+        },
+        {
+          "frontier_008192.logits.json": "acc6dcb45eb554fe4b7ab0ff2a1222c0d3883049f43ea30587c3ca6aa529c5a1",
+          "tokens-8192.json": "3c782f2252cfce0cdeedb263a03dc5d6e03d29545d42f0c7ae05d3d7cc17f5ca"
+        }
+      ],
+      "minimum_available_gib": 14.015235900878906,
+      "maximum_psi_full_avg10": 0.95,
+      "phase_seconds": {
+        "ds4.decode": {
+          "wall": 3.576249616,
+          "kernel_sum": 3.304260192,
+          "attention": 0.0
+        },
+        "ds4.prefill": {
+          "wall": 7.33769792,
+          "kernel_sum": 7.159435968,
+          "attention": 0.331972864
+        }
+      },
+      "comparison": {
+        "verdict": "incorrect",
+        "metrics": [
+          {
+            "metric": "decode",
+            "ctx": 8192,
+            "unit": "seconds/token",
+            "baseline": [
+              0.05546311702717693,
+              0.05543237250554324,
+              0.05546311702717693
+            ],
+            "candidate": [
+              0.055401662049861494,
+              0.05543237250554324,
+              0.05564830272676684
+            ],
+            "baseline_median": 0.05546311702717693,
+            "candidate_median": 0.05543237250554324,
+            "median_percent": -0.05543237250553723,
+            "lower_percent": -0.1108033240997286,
+            "upper_percent": 0.3895381190873737
+          },
+          {
+            "metric": "first_token",
+            "ctx": 8192,
+            "unit": "seconds",
+            "baseline": [
+              0.1508,
+              0.1507,
+              0.1508
+            ],
+            "candidate": [
+              0.1489,
+              0.1497,
+              0.1513
+            ],
+            "baseline_median": 0.1508,
+            "candidate_median": 0.1497,
+            "median_percent": -0.7294429708222694,
+            "lower_percent": -1.2599469496021087,
+            "upper_percent": 0.3981420039814054
+          },
+          {
+            "metric": "prefill",
+            "ctx": 8192,
+            "unit": "seconds/token",
+            "baseline": [
+              0.0008917265609673449,
+              0.0008930405351098887,
+              0.0008934075457201312
+            ],
+            "candidate": [
+              0.0008813989564236356,
+              0.0008827527762574814,
+              0.0008844391771177895
+            ],
+            "baseline_median": 0.0008930405351098887,
+            "candidate_median": 0.0008827527762574814,
+            "median_percent": -1.1519923730160198,
+            "lower_percent": -1.3441334085460444,
+            "upper_percent": -0.817221799656842
+          }
+        ],
+        "correctness": {
+          "max_abs": 0.7684968000000001,
+          "max_scaled": 5052.996271299855,
+          "bad": 588546,
+          "checked": 1179648,
+          "rel_rms": 0.04022757110552071,
+          "rel_rms_scaled": 3.0944285465785155
+        },
+        "token_mismatches": 3,
+        "argmax_mismatches": 0,
+        "max_slowdown_percent": 3.0,
+        "logit_atol": 0.0001,
+        "logit_rtol": 0.0001,
+        "logit_rel_rms": 0.01,
+        "method": "sample-extrema-envelope-v1"
+      }
+    },
+    {
+      "round": "r2",
+      "arm": "on",
+      "depth": "8k",
+      "source": "r2/direct/on-8k/scout/scout.json",
+      "created_unix": 1789210729,
+      "binary_sha256": "47017915150cbd7c384f50ab0d9ec7798b96fff8c151b2db0c88da0f70655e72",
+      "gpu_uuid": "012cd6bb43aeb629e2264496d1243471",
+      "driver_version": 13030,
+      "controls": {
+        "DS4_CONT_PREFILL_CHUNK": "4096",
+        "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/tmp/ds4-solar-r2.manifest",
+        "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+        "DS4_MEMGOV": "observe",
+        "DS4_METAL_PREFILL_CHUNK": "4096",
+        "DS4_SOLAR_FATTN_SOFTMAX": "1",
+        "DS4_SOLAR_KV_FORMAT": "kfp8-vfp4",
+        "DS4_SOLAR_MOE_RESIDUAL": "1",
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.3/lib64:"
+      },
+      "proof_sha256": [
+        {
+          "frontier_008192.logits.json": "41393ce6b7867a1a58423bbcd7d24da6e139962fa22ddaca1a97181d16355df0",
+          "tokens-8192.json": "eae5220f359bdfdd6e0dce110044fe992bb821fe63aacb6aa4cdb8cf0e692009"
+        },
+        {
+          "frontier_008192.logits.json": "41393ce6b7867a1a58423bbcd7d24da6e139962fa22ddaca1a97181d16355df0",
+          "tokens-8192.json": "eae5220f359bdfdd6e0dce110044fe992bb821fe63aacb6aa4cdb8cf0e692009"
+        },
+        {
+          "frontier_008192.logits.json": "41393ce6b7867a1a58423bbcd7d24da6e139962fa22ddaca1a97181d16355df0",
+          "tokens-8192.json": "eae5220f359bdfdd6e0dce110044fe992bb821fe63aacb6aa4cdb8cf0e692009"
+        }
+      ],
+      "minimum_available_gib": 14.010494232177734,
+      "maximum_psi_full_avg10": 0.82,
+      "phase_seconds": {
+        "ds4.decode": {
+          "wall": 3.5769544,
+          "kernel_sum": 3.30700688,
+          "attention": 0.0
+        },
+        "ds4.prefill": {
+          "wall": 7.25404616,
+          "kernel_sum": 7.07698592,
+          "attention": 0.246226368
+        }
+      },
+      "comparison": {
+        "verdict": "incorrect",
+        "metrics": [
+          {
+            "metric": "decode",
+            "ctx": 8192,
+            "unit": "seconds/token",
+            "baseline": [
+              0.05546311702717693,
+              0.05543237250554324,
+              0.05546311702717693
+            ],
+            "candidate": [
+              0.055401662049861494,
+              0.05543237250554324,
+              0.05564830272676684
+            ],
+            "baseline_median": 0.05546311702717693,
+            "candidate_median": 0.05543237250554324,
+            "median_percent": -0.05543237250553723,
+            "lower_percent": -0.1108033240997286,
+            "upper_percent": 0.3895381190873737
+          },
+          {
+            "metric": "first_token",
+            "ctx": 8192,
+            "unit": "seconds",
+            "baseline": [
+              0.1508,
+              0.1507,
+              0.1508
+            ],
+            "candidate": [
+              0.1489,
+              0.1497,
+              0.1513
+            ],
+            "baseline_median": 0.1508,
+            "candidate_median": 0.1497,
+            "median_percent": -0.7294429708222694,
+            "lower_percent": -1.2599469496021087,
+            "upper_percent": 0.3981420039814054
+          },
+          {
+            "metric": "prefill",
+            "ctx": 8192,
+            "unit": "seconds/token",
+            "baseline": [
+              0.0008917265609673449,
+              0.0008930405351098887,
+              0.0008934075457201312
+            ],
+            "candidate": [
+              0.0008813989564236356,
+              0.0008827527762574814,
+              0.0008844391771177895
+            ],
+            "baseline_median": 0.0008930405351098887,
+            "candidate_median": 0.0008827527762574814,
+            "median_percent": -1.1519923730160198,
+            "lower_percent": -1.3441334085460444,
+            "upper_percent": -0.817221799656842
+          }
+        ],
+        "correctness": {
+          "max_abs": 0.7684968000000001,
+          "max_scaled": 5052.996271299855,
+          "bad": 588546,
+          "checked": 1179648,
+          "rel_rms": 0.04022757110552071,
+          "rel_rms_scaled": 3.0944285465785155
+        },
+        "token_mismatches": 3,
+        "argmax_mismatches": 0,
+        "max_slowdown_percent": 3.0,
+        "logit_atol": 0.0001,
+        "logit_rtol": 0.0001,
+        "logit_rel_rms": 0.01,
+        "method": "sample-extrema-envelope-v1"
+      }
+    },
+    {
+      "round": "r4",
+      "arm": "off",
+      "depth": "8k",
+      "source": "r4/direct/off-8k/scout/scout.json",
+      "created_unix": 1789211617,
+      "binary_sha256": "d25156b8312e2509bb1c364216d5b95e429c0c62fb15c7532f79612180a3a929",
+      "gpu_uuid": "012cd6bb43aeb629e2264496d1243471",
+      "driver_version": 13030,
+      "controls": {
+        "DS4_CONT_PREFILL_CHUNK": "4096",
+        "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/tmp/ds4-solar-r2.manifest",
+        "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+        "DS4_MEMGOV": "observe",
+        "DS4_METAL_PREFILL_CHUNK": "4096",
+        "DS4_SOLAR_FATTN_DIRECT_SCALE": "0",
+        "DS4_SOLAR_KV_FORMAT": "kfp8-vfp4",
+        "DS4_SOLAR_MOE_RESIDUAL": "1",
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.3/lib64:"
+      },
+      "proof_sha256": [
+        {
+          "frontier_008192.logits.json": "acc6dcb45eb554fe4b7ab0ff2a1222c0d3883049f43ea30587c3ca6aa529c5a1",
+          "tokens-8192.json": "3c782f2252cfce0cdeedb263a03dc5d6e03d29545d42f0c7ae05d3d7cc17f5ca"
+        },
+        {
+          "frontier_008192.logits.json": "acc6dcb45eb554fe4b7ab0ff2a1222c0d3883049f43ea30587c3ca6aa529c5a1",
+          "tokens-8192.json": "3c782f2252cfce0cdeedb263a03dc5d6e03d29545d42f0c7ae05d3d7cc17f5ca"
+        },
+        {
+          "frontier_008192.logits.json": "acc6dcb45eb554fe4b7ab0ff2a1222c0d3883049f43ea30587c3ca6aa529c5a1",
+          "tokens-8192.json": "3c782f2252cfce0cdeedb263a03dc5d6e03d29545d42f0c7ae05d3d7cc17f5ca"
+        }
+      ],
+      "minimum_available_gib": 14.00131607055664,
+      "maximum_psi_full_avg10": 0.97,
+      "phase_seconds": {
+        "ds4.decode": {
+          "wall": 3.57433664,
+          "kernel_sum": 3.303326016,
+          "attention": 0.0
+        },
+        "ds4.prefill": {
+          "wall": 7.362300208,
+          "kernel_sum": 7.178023135,
+          "attention": 0.332176032
+        }
+      },
+      "comparison": {
+        "verdict": "inconclusive",
+        "metrics": [
+          {
+            "metric": "decode",
+            "ctx": 8192,
+            "unit": "seconds/token",
+            "baseline": [
+              0.05555555555555555,
+              0.055401662049861494,
+              0.05552470849528039
+            ],
+            "candidate": [
+              0.05558643690939411,
+              0.05549389567147614,
+              0.05549389567147614
+            ],
+            "baseline_median": 0.05552470849528039,
+            "candidate_median": 0.05549389567147614,
+            "median_percent": -0.055493895671454574,
+            "lower_percent": -0.11098779134294245,
+            "upper_percent": 0.33351862145636346
+          },
+          {
+            "metric": "first_token",
+            "ctx": 8192,
+            "unit": "seconds",
+            "baseline": [
+              0.1492,
+              0.1474,
+              0.1447
+            ],
+            "candidate": [
+              0.1529,
+              0.152,
+              0.1524
+            ],
+            "baseline_median": 0.1474,
+            "candidate_median": 0.1524,
+            "median_percent": 3.3921302578018953,
+            "lower_percent": 1.8766756032171594,
+            "upper_percent": 5.666897028334494
+          },
+          {
+            "metric": "prefill",
+            "ctx": 8192,
+            "unit": "seconds/token",
+            "baseline": [
+              0.0008918299458659223,
+              0.000893878718535469,
+              0.0008937908350687772
+            ],
+            "candidate": [
+              0.0008822076363893006,
+              0.0008833454057205448,
+              0.0008839153916187143
+            ],
+            "baseline_median": 0.0008937908350687772,
+            "candidate_median": 0.0008833454057205448,
+            "median_percent": -1.1686659717682901,
+            "lower_percent": -1.3056673018561504,
+            "upper_percent": -0.8874510531851842
+          }
+        ],
+        "correctness": {
+          "max_abs": 0.0,
+          "max_scaled": 0.0,
+          "bad": 0,
+          "checked": 1179648,
+          "rel_rms": 0.0,
+          "rel_rms_scaled": 0.0
+        },
+        "token_mismatches": 0,
+        "argmax_mismatches": 0,
+        "max_slowdown_percent": 3.0,
+        "logit_atol": 0.0,
+        "logit_rtol": 0.0,
+        "logit_rel_rms": 0.0,
+        "method": "sample-extrema-envelope-v1"
+      }
+    },
+    {
+      "round": "r4",
+      "arm": "on",
+      "depth": "8k",
+      "source": "r4/direct/on-8k/scout/scout.json",
+      "created_unix": 1789212059,
+      "binary_sha256": "d25156b8312e2509bb1c364216d5b95e429c0c62fb15c7532f79612180a3a929",
+      "gpu_uuid": "012cd6bb43aeb629e2264496d1243471",
+      "driver_version": 13030,
+      "controls": {
+        "DS4_CONT_PREFILL_CHUNK": "4096",
+        "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/tmp/ds4-solar-r2.manifest",
+        "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+        "DS4_MEMGOV": "observe",
+        "DS4_METAL_PREFILL_CHUNK": "4096",
+        "DS4_SOLAR_FATTN_DIRECT_SCALE": "1",
+        "DS4_SOLAR_KV_FORMAT": "kfp8-vfp4",
+        "DS4_SOLAR_MOE_RESIDUAL": "1",
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.3/lib64:"
+      },
+      "proof_sha256": [
+        {
+          "frontier_008192.logits.json": "acc6dcb45eb554fe4b7ab0ff2a1222c0d3883049f43ea30587c3ca6aa529c5a1",
+          "tokens-8192.json": "3c782f2252cfce0cdeedb263a03dc5d6e03d29545d42f0c7ae05d3d7cc17f5ca"
+        },
+        {
+          "frontier_008192.logits.json": "acc6dcb45eb554fe4b7ab0ff2a1222c0d3883049f43ea30587c3ca6aa529c5a1",
+          "tokens-8192.json": "3c782f2252cfce0cdeedb263a03dc5d6e03d29545d42f0c7ae05d3d7cc17f5ca"
+        },
+        {
+          "frontier_008192.logits.json": "acc6dcb45eb554fe4b7ab0ff2a1222c0d3883049f43ea30587c3ca6aa529c5a1",
+          "tokens-8192.json": "3c782f2252cfce0cdeedb263a03dc5d6e03d29545d42f0c7ae05d3d7cc17f5ca"
+        }
+      ],
+      "minimum_available_gib": 14.03329086303711,
+      "maximum_psi_full_avg10": 0.92,
+      "phase_seconds": {
+        "ds4.decode": {
+          "wall": 3.58398032,
+          "kernel_sum": 3.311019328,
+          "attention": 0.0
+        },
+        "ds4.prefill": {
+          "wall": 7.24920352,
+          "kernel_sum": 7.067410782,
+          "attention": 0.247646048
+        }
+      },
+      "comparison": {
+        "verdict": "inconclusive",
+        "metrics": [
+          {
+            "metric": "decode",
+            "ctx": 8192,
+            "unit": "seconds/token",
+            "baseline": [
+              0.05555555555555555,
+              0.055401662049861494,
+              0.05552470849528039
+            ],
+            "candidate": [
+              0.05558643690939411,
+              0.05549389567147614,
+              0.05549389567147614
+            ],
+            "baseline_median": 0.05552470849528039,
+            "candidate_median": 0.05549389567147614,
+            "median_percent": -0.055493895671454574,
+            "lower_percent": -0.11098779134294245,
+            "upper_percent": 0.33351862145636346
+          },
+          {
+            "metric": "first_token",
+            "ctx": 8192,
+            "unit": "seconds",
+            "baseline": [
+              0.1492,
+              0.1474,
+              0.1447
+            ],
+            "candidate": [
+              0.1529,
+              0.152,
+              0.1524
+            ],
+            "baseline_median": 0.1474,
+            "candidate_median": 0.1524,
+            "median_percent": 3.3921302578018953,
+            "lower_percent": 1.8766756032171594,
+            "upper_percent": 5.666897028334494
+          },
+          {
+            "metric": "prefill",
+            "ctx": 8192,
+            "unit": "seconds/token",
+            "baseline": [
+              0.0008918299458659223,
+              0.000893878718535469,
+              0.0008937908350687772
+            ],
+            "candidate": [
+              0.0008822076363893006,
+              0.0008833454057205448,
+              0.0008839153916187143
+            ],
+            "baseline_median": 0.0008937908350687772,
+            "candidate_median": 0.0008833454057205448,
+            "median_percent": -1.1686659717682901,
+            "lower_percent": -1.3056673018561504,
+            "upper_percent": -0.8874510531851842
+          }
+        ],
+        "correctness": {
+          "max_abs": 0.0,
+          "max_scaled": 0.0,
+          "bad": 0,
+          "checked": 1179648,
+          "rel_rms": 0.0,
+          "rel_rms_scaled": 0.0
+        },
+        "token_mismatches": 0,
+        "argmax_mismatches": 0,
+        "max_slowdown_percent": 3.0,
+        "logit_atol": 0.0,
+        "logit_rtol": 0.0,
+        "logit_rel_rms": 0.0,
+        "method": "sample-extrema-envelope-v1"
+      }
+    }
+  ],
+  "supplementary_8k": {
+    "data_valid": true,
+    "samples_per_arm": 4,
+    "all_metrics_finite_positive": true,
+    "proofs_byte_exact": true,
+    "binary_unchanged": true,
+    "metrics": {
+      "prefill": {
+        "median_percent": -1.1448577321394815,
+        "lower_percent": -1.3797129135822317,
+        "upper_percent": -0.403283115406472
+      },
+      "decode": {
+        "median_percent": 0.0277776242254113,
+        "lower_percent": -0.05537098560353115,
+        "upper_percent": 0.2218524681087075
+      },
+      "first_token": {
+        "median_percent": 2.2298456260720467,
+        "lower_percent": -2.031144211239,
+        "upper_percent": 4.513888888888884
+      }
+    },
+    "passes_3_percent_ceiling": false,
+    "note": "Original scout remains Inconclusive. Supplement is separate CLI evidence."
+  },
+  "final_baseline_serving": {
+    "build": {
+      "commit": "4341ffd767fe6fc11f6d5ae28f7dc1cd52bd640a",
+      "sha256": {
+        "ds4": "22b2fe1bf985ac00120807d8b142ff358f639b14904a95d999d6ae230a215d56",
+        "ds4-server": "50419f911830251df4b803a2408cf523cbb89a37e6e53fb385bf9f3aff5e03bf",
+        "tests/test_solar_forward": "947d3e132b28dbfe8e03d52da7ee0e2a774c10d56e62feddfb3f8f4221f7ffcb",
+        "tests/test_solar_session": "f181fcda968025b4c9af868102372608b51eb3779b4c8a4bd1eeabf47002ae4f",
+        "cuda/mmq/ds4_fattn.cu": "89cc5665fc26105bb0203a076437eabc4026f118dd498ba7d6c9cee3caa5d703",
+        "ds4-bench-perf": "1b100191b64137d0260df996a2931aa185397e9f183f45630b29981880c2708e",
+        "ds4-perf": "76fa87d1690e0343a1f602d8589f30d71f0a3c3cc3cc008af569c831dc869a4b"
+      }
+    },
+    "forward_257": {
+      "exit": 134,
+      "result": "CUDA illegal memory access"
+    },
+    "forward_canonical_4": {
+      "exit": 134,
+      "result": "CUDA illegal memory access"
+    },
+    "session": {
+      "exit": 1,
+      "cold_warm_max_abs": 0.331638336,
+      "existing_limit": 0.25,
+      "argmax": [
+        4360,
+        4360
+      ],
+      "result": "failed",
+      "prompt_tokens": 4,
+      "context": 128,
+      "prefill_cap": 3,
+      "earlier_snapshot_byte_checks": "passed",
+      "later_lifecycle_checks": "not run after drift failure"
+    },
+    "http": {
+      "configured_context": 131072,
+      "configured_banks": 1,
+      "prefill_chunk": 2048,
+      "native_floor_gib": 13,
+      "worker_reserve_and_trip_gib": 12,
+      "raw_prepared_prompt_tokens": 124006,
+      "processed_requests": 0,
+      "prefill_tested_tokens": 0,
+      "guard_events": [
+        {
+          "time": 1789212583.042589,
+          "event": "start",
+          "unit": "ds4-hostguard-47088-1789212583033654744.scope",
+          "available_gib": 20.251445770263672,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.2,
+          "high_gib": 7.379999999999999,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "./ds4-server",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/Solar-Open2-250B-MXQ-v1-00001-of-00011.gguf",
+            "-c",
+            "131072",
+            "-n",
+            "128",
+            "-t",
+            "6",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "18082",
+            "--model-id",
+            "solar-open2-longctx-test",
+            "--no-update-check",
+            "--mem-floor-gb",
+            "13"
+          ]
+        },
+        {
+          "time": 1789212584.0527873,
+          "event": "sample",
+          "unit": "ds4-hostguard-47088-1789212583033654744.scope",
+          "available_gib": 19.695064544677734,
+          "psi_full_avg10": 0.0
+        },
+        {
+          "time": 1789212585.060469,
+          "event": "sample",
+          "unit": "ds4-hostguard-47088-1789212583033654744.scope",
+          "available_gib": 19.683998107910156,
+          "psi_full_avg10": 0.0
+        },
+        {
+          "time": 1789212586.0670044,
+          "event": "sample",
+          "unit": "ds4-hostguard-47088-1789212583033654744.scope",
+          "available_gib": 13.617061614990234,
+          "psi_full_avg10": 0.0
+        },
+        {
+          "time": 1789212586.1710413,
+          "event": "terminate",
+          "unit": "ds4-hostguard-47088-1789212583033654744.scope",
+          "reason": "host memory watchdog floor crossed",
+          "available_gib": 11.523868560791016,
+          "psi_full_avg10": 0.0
+        },
+        {
+          "time": 1789212587.182583,
+          "event": "kill",
+          "unit": "ds4-hostguard-47088-1789212583033654744.scope",
+          "reason": "host memory watchdog floor crossed"
+        },
+        {
+          "time": 1789212587.1959486,
+          "event": "exit",
+          "unit": "ds4-hostguard-47088-1789212583033654744.scope",
+          "status": 75,
+          "payload_status": -15
+        }
+      ],
+      "result": "guard terminated initialization before listen; no serving qualification"
+    },
+    "forward_harness_limit": "Direct harness omits VMM import; these runs do not validate public engine owner import. Exact illegal access source not localized."
+  }
+}

@@ -602,6 +602,11 @@ trust domain when clients are not mutually trusted.
 
 ## Performance and release evidence
 
+The [September 12 Solar campaign](docs/solar-open2-optimization-2026-09-12.md)
+closed after four candidates without retaining a new kernel. It records
+guarded 8K/64K baseline measurements, numerical and timing acceptance
+results, and the limits of the memory guard.
+
 > **Solar Open2 250B MXQ-v1 · one DGX Spark:** verified cold prefill reaches **1,108.09 tok/s at 8K (+1.39%)** and **780.02 tok/s at 64K (+1.02%)** after the fused MoE pass. Interleaved medians of three; all 196,608 frontier logits and 64 greedy IDs match byte for byte. Decode differs by less than 0.1%. [Protocol, raw data and campaign limits](docs/solar-open2-optimization-2026-09-07.md).
 
 ![Solar Open2 verified cold comparison and baseline-only sweep through 64K](docs/solar-open2-2026-09-07-throughput.png)
