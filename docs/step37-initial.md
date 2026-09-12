@@ -5,8 +5,9 @@ Prefill and Decode optimization, documentation/HF model card updates, and a
 PR after validation. The September 13 scope extension permits improvements
 during implementation. Retain only measured candidates with logits, greedy
 token and KV parity; report fresh-process prefill/decode and MTP controls
-separately. Full-model verification may temporarily stop Qwen, with its exact
-launch configuration and API service restored afterwards (owner approval).
+separately. Full-model verification may stop Qwen. The latest owner instruction cancels
+automatic restoration; leave Qwen stopped and focus on Step implementation.
+Its running binaries and configuration were backed up before shutdown.
 The HF update may include required tokenizer, Jinja and processor assets;
 preserve upstream revisions and verify uploaded bytes.
 
@@ -54,6 +55,10 @@ tool and media-marker inputs. The unchanged official Jinja matches Python
 Jinja on 20 text/history/image/tool/observation cases across four effort
 values. The adapter adds the template's `fromjson` filter and rejects malformed
 tool JSON. These checks establish input compatibility, not generated output.
+
+The image crop planner matches 28 independent official Python cases, including
+thin-image padding, the 728/3024 limits, crop order and media token counts.
+Pixel conversion and vision inference are still pending.
 
 The Spark handoff supplies BF16 full-vocabulary logits and real image fixtures;
 its README records that the MQ83 output comparison has not run. Remaining gates:
