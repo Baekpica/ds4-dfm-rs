@@ -13,6 +13,7 @@ use crate::shape::ModelFamily;
 use crate::TokenBuffer;
 
 mod inkling;
+mod step37;
 
 const REASONING_EFFORT_HIGH_PREFIX: &str = concat!(
     "Reasoning Effort: Absolute maximum with no shortcuts permitted.\n",
@@ -225,7 +226,7 @@ impl Vocab {
             {
                 if let Ok(ty) = g.array_le_u32s(&types) {
                     for (i, &typ) in ty.iter().enumerate() {
-                        if typ != 4 {
+                        if typ != 4 && !(family == ModelFamily::Step37 && typ == 3) {
                             continue;
                         }
                         let token = &tokens[i];
@@ -306,6 +307,7 @@ impl Vocab {
     fn load_specials(&mut self, g: &GgufFile) -> Result<(), TokError> {
         match self.family {
             ModelFamily::Inkling => inkling::specials(self)?,
+            ModelFamily::Step37 => step37::specials(self, g)?,
             ModelFamily::Glm53 => {
                 self.bos_id = g
                     .get_token_id("tokenizer.ggml.bos_token_id")
@@ -570,6 +572,11 @@ impl Vocab {
     }
 
     pub fn chat_begin(&self, tokens: &mut TokenBuffer) -> Result<(), TokError> {
+        if self.family == ModelFamily::Step37 {
+            return Err(TokError::InvalidTokenizer(
+                "Step 3.7 chat requires official Jinja",
+            ));
+        }
         if self.family == ModelFamily::ExaoneMoe {
             self.require_chat_ids(&[(self.bos_id, "[BOS]")])?;
         } else if self.family == ModelFamily::Glm53 {
@@ -591,6 +598,9 @@ impl Vocab {
     }
 
     pub fn chat_append_effort_prefix(&self, tokens: &mut TokenBuffer, mode: ChatThinkMode) {
+        if self.family == ModelFamily::Step37 {
+            return;
+        }
         if self.family == ModelFamily::Inkling {
             inkling::effort(self, tokens, mode);
             return;
@@ -669,6 +679,11 @@ impl Vocab {
 
         match self.family {
             ModelFamily::Inkling => return inkling::message(self, tokens, role, content),
+            ModelFamily::Step37 => {
+                return Err(TokError::InvalidTokenizer(
+                    "Step 3.7 chat requires official Jinja",
+                ))
+            }
             ModelFamily::Glm53 => {
                 if role == "system" || role == "developer" {
                     self.require_chat_ids(&[(self.system_id, "<|system|>")])?;
@@ -861,6 +876,11 @@ impl Vocab {
         }
         match self.family {
             ModelFamily::Inkling => tokens.push(self.assistant_id),
+            ModelFamily::Step37 => {
+                return Err(TokError::InvalidTokenizer(
+                    "Step 3.7 chat requires official Jinja",
+                ))
+            }
             ModelFamily::Glm53 => {
                 self.require_chat_ids(&[
                     (self.assistant_id, "<|assistant|>"),
@@ -2095,6 +2115,7 @@ fn bpe_tokenize_text_joyai(vocab: &Vocab, s: &[u8], out: &mut Vec<i32>) {
 fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
     match vocab.family {
         ModelFamily::Inkling => inkling::encode(vocab, text, out),
+        ModelFamily::Step37 => step37::encode(vocab, text, out),
         ModelFamily::Glm53 => bpe_tokenize_text_glm4(vocab, text, out),
         ModelFamily::Motif3 => bpe_tokenize_text_motif3(vocab, text, out),
         ModelFamily::SolarOpen2 => bpe_tokenize_text_solar(vocab, text, out),
@@ -2107,7 +2128,7 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
 }
 
 fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
-    if vocab.family == ModelFamily::Inkling {
+    if matches!(vocab.family, ModelFamily::Inkling | ModelFamily::Step37) {
         return user_defined_at(vocab, p, 0);
     }
     let specials: &[(&[u8], i32)] = &[

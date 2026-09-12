@@ -282,6 +282,7 @@ typedef enum {
     DS4_MODEL_FAMILY_QWEN4EXP    = 5,
     DS4_MODEL_FAMILY_GLM53       = 6,
     DS4_MODEL_FAMILY_INKLING     = 7,
+    DS4_MODEL_FAMILY_STEP37      = 8,
 } ds4_model_family;
 
 typedef enum {
@@ -295,6 +296,7 @@ typedef enum {
     DS4_VARIANT_GLM53_FLASH     = 7,
     DS4_VARIANT_K2_HORIZON_375B = 8,
     DS4_VARIANT_INKLING_SMALL   = 9,
+    DS4_VARIANT_STEP37_FLASH    = 10,
 } ds4_variant;
 
 typedef struct {
@@ -394,6 +396,28 @@ static const ds4_shape DS4_SHAPE_INKLING_SMALL = {
     .rms_eps = DS4_DEFAULT_RMS_EPS,
     .expert_weight_scale = 8.0f,
     .rope_orig_ctx = UINT64_C(1048576),
+};
+
+enum { STEP37_LAYERS = 45, STEP37_DRAFT_LAYERS = 3, STEP37_FULL_PERIOD = 4 };
+
+static const ds4_shape DS4_SHAPE_STEP37_FLASH = {
+    .name = "Step-3.7-Flash",
+    .family = DS4_MODEL_FAMILY_STEP37,
+    .variant = DS4_VARIANT_STEP37_FLASH,
+    /* The three predictor blocks live in a separate artifact. */
+    .n_layer = STEP37_LAYERS,
+    .n_nextn_predict = STEP37_DRAFT_LAYERS,
+    .n_embd = 4096, .n_vocab = 128896,
+    .n_head = 64, .n_swa_head = 96, .n_head_kv = 8,
+    .n_head_dim = 128, .n_value_dim = 128, .n_rot = 64,
+    .n_expert = 288, .n_expert_used = 8, .n_expert_shared = 1,
+    .n_ff_exp = 1280, .n_ff_dense = 11264, .n_ff_shexp = 1280,
+    .n_leading_dense = 3, .n_swa = 512, .n_swa_period = STEP37_FULL_PERIOD,
+    .n_full_attn_count = 12,
+    .use_rope = true, .use_qk_norm = true, .rms_eps = DS4_DEFAULT_RMS_EPS,
+    .expert_weight_scale = 3.0f,
+    .rope_freq_base = 5000000.0f, .rope_freq_base_swa = 10000.0f,
+    .rope_scale_factor = 1.0f, .rope_orig_ctx = UINT64_C(262144),
 };
 
 static const ds4_shape DS4_SHAPE_FLASH = {
@@ -2241,6 +2265,9 @@ static void model_apply_host_shape(void) {
         break;
     case DS4_VARIANT_INKLING_SMALL:
         g_ds4_shape = DS4_SHAPE_INKLING_SMALL;
+        break;
+    case DS4_VARIANT_STEP37_FLASH:
+        g_ds4_shape = DS4_SHAPE_STEP37_FLASH;
         break;
     default:
         ds4_die("unsupported");
@@ -4631,6 +4658,7 @@ typedef struct {
     ds4_tensor *nextn_enorm;
     ds4_tensor *nextn_hnorm;
     ds4_tensor *nextn_shared_head_norm;
+    ds4_tensor *nextn_shared_head_head; /* Step: each predictor owns a distinct head. */
     /* dots3-note extras.  attn_k_rope_norm is an RMSNorm over the shared
      * 64-dim rope key applied before rotation; the headwise output gate
      * reuses attn_gate.  The DSA lightning indexer keeps its own projections;
@@ -4709,6 +4737,7 @@ typedef struct {
     ds4_layer_weights qwen_mtp;
     ds4_qwen_vision_weights qwen_vision;
     ds4_inkling_weights inkling;
+    ds4_tensor *step37_rope_freqs;
 } ds4_weights;
 
 typedef struct {
@@ -8178,6 +8207,57 @@ static void inkling_bind_draft(ds4_inkling_draft *w, const ds4_model *m) {
     }
 }
 
+/* Rust has checked the exact artifact recipe before this pointer adapter.
+ * Preserve main block numbers and the independent predictor output heads. */
+static void step37_bind_block(ds4_layer_weights *l, const ds4_model *m, uint32_t il) {
+    memset(l, 0, sizeof(*l));
+    l->attn_norm = required_tensorf(m, "blk.%u.attn_norm.weight", il);
+    l->attn_q = required_tensorf(m, "blk.%u.attn_q.weight", il);
+    l->attn_k = required_tensorf(m, "blk.%u.attn_k.weight", il);
+    l->attn_v = required_tensorf(m, "blk.%u.attn_v.weight", il);
+    l->attn_q_norm = required_tensorf(m, "blk.%u.attn_q_norm.weight", il);
+    l->attn_k_norm = required_tensorf(m, "blk.%u.attn_k_norm.weight", il);
+    l->attn_gate = required_tensorf(m, "blk.%u.attn_gate.weight", il);
+    l->attn_output = required_tensorf(m, "blk.%u.attn_output.weight", il);
+    l->ffn_norm = required_tensorf(m, "blk.%u.ffn_norm.weight", il);
+    if (il < DS4_N_LEADING_DENSE || il >= STEP37_LAYERS) {
+        l->ffn_gate = required_tensorf(m, "blk.%u.ffn_gate.weight", il);
+        l->ffn_up = required_tensorf(m, "blk.%u.ffn_up.weight", il);
+        l->ffn_down = required_tensorf(m, "blk.%u.ffn_down.weight", il);
+    } else {
+        l->ffn_gate_inp = required_tensorf(m, "blk.%u.ffn_gate_inp.weight", il);
+        l->ffn_gate_exps = required_tensorf(m, "blk.%u.ffn_gate_exps.weight", il);
+        l->ffn_up_exps = required_tensorf(m, "blk.%u.ffn_up_exps.weight", il);
+        l->ffn_down_exps = required_tensorf(m, "blk.%u.ffn_down_exps.weight", il);
+        l->ffn_gate_shexp = required_tensorf(m, "blk.%u.ffn_gate_shexp.weight", il);
+        l->ffn_up_shexp = required_tensorf(m, "blk.%u.ffn_up_shexp.weight", il);
+        l->ffn_down_shexp = required_tensorf(m, "blk.%u.ffn_down_shexp.weight", il);
+        l->ffn_exp_probs_b = required_tensorf(m, "blk.%u.exp_probs_b.bias", il);
+    }
+    if (il >= STEP37_LAYERS) {
+        l->nextn_eh_proj = required_tensorf(m, "blk.%u.nextn.eh_proj.weight", il);
+        l->nextn_enorm = required_tensorf(m, "blk.%u.nextn.enorm.weight", il);
+        l->nextn_hnorm = required_tensorf(m, "blk.%u.nextn.hnorm.weight", il);
+        l->nextn_shared_head_norm = required_tensorf(m, "blk.%u.nextn.shared_head_norm.weight", il);
+        l->nextn_shared_head_head = required_tensorf(m, "blk.%u.nextn.shared_head_head.weight", il);
+    }
+}
+
+static void step37_bind_common(ds4_weights *w, const ds4_model *m) {
+    memset(w, 0, sizeof(*w));
+    w->token_embd = required_tensor(m, "token_embd.weight");
+    w->output_norm = required_tensor(m, "output_norm.weight");
+    w->output = required_tensor(m, "output.weight");
+    w->step37_rope_freqs = required_tensor(m, "rope_freqs.weight");
+}
+
+static void step37_bind_draft(ds4_weights *w, const ds4_model *m) {
+    step37_bind_common(w, m);
+    for (uint32_t i = STEP37_LAYERS; i < STEP37_LAYERS + STEP37_DRAFT_LAYERS; i++) {
+        step37_bind_block(&w->layer[i], m, i);
+    }
+}
+
 static void weights_bind(
         ds4_weights     *w,
         const ds4_model *m,
@@ -8195,6 +8275,14 @@ static void weights_bind(
     (void)require_output;
     (void)optional_output;
     memset(w, 0, sizeof(*w));
+
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37) {
+        step37_bind_common(w, m);
+        for (uint32_t i = 0; i < STEP37_LAYERS; i++) {
+            step37_bind_block(&w->layer[i], m, i);
+        }
+        return;
+    }
 
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
         inkling_bind(w, m);
@@ -8409,6 +8497,7 @@ static void model_map_span_vec_include_layer(ds4_model_map_span_vec *spans, cons
     DS4_INCLUDE_TENSOR(l->nextn_enorm);
     DS4_INCLUDE_TENSOR(l->nextn_hnorm);
     DS4_INCLUDE_TENSOR(l->nextn_shared_head_norm);
+    DS4_INCLUDE_TENSOR(l->nextn_shared_head_head);
     DS4_INCLUDE_TENSOR(l->qwen_attn_hc.norm);
     DS4_INCLUDE_TENSOR(l->qwen_attn_hc.mix_down);
     DS4_INCLUDE_TENSOR(l->qwen_attn_hc.mix_up);
@@ -65494,6 +65583,12 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     model_open(&e->model, opt->model_path, graph_backend, !opt->inspect_only);
     if (g_host_shape) model_apply_host_shape();
     else config_validate_model(&e->model);
+    if (!opt->inspect_only && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37) {
+        fprintf(stderr, "ds4: Step 3.7 native forward is not enabled yet\n");
+        ds4_engine_close(e);
+        *out = NULL;
+        return 1;
+    }
     if (!opt->inspect_only && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING &&
         (e->backend != DS4_BACKEND_CUDA || load_slice ||
          opt->distributed.role != DS4_DISTRIBUTED_NONE ||

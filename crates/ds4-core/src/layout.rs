@@ -2871,6 +2871,7 @@ pub fn expected_dspark_layouts(shape: &Shape, markov_rank: u32) -> Vec<LayoutSpe
 pub fn expected_layouts(shape: &Shape) -> Vec<LayoutSpec> {
     match shape.family {
         ModelFamily::Inkling => crate::inkling::main_layouts(),
+        ModelFamily::Step37 => crate::Step37Plan::layouts(),
         ModelFamily::Glm53 => expected_glm53(shape),
         ModelFamily::Qwen4Exp => expected_qwen4exp(shape),
         ModelFamily::Motif3 => expected_motif3(shape),

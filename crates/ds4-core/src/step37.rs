@@ -117,6 +117,29 @@ pub struct Step37Plan {
 }
 
 impl Step37Plan {
+    /// Shape validation used by the host before native allocation.
+    pub(crate) fn validate(g: &GgufFile) -> Result<(), crate::validate::ValidateError> {
+        check_metadata(g)
+            .map_err(|e| crate::validate::ValidateError::TokenKey("step37", e.to_string()))
+    }
+
+    /// Publish the same semantic tensor contract to the host layout/bind seam.
+    pub(crate) fn layouts() -> Vec<crate::layout::LayoutSpec> {
+        specs()
+            .into_iter()
+            .map(|s| {
+                let mut dim = [0; 8];
+                dim[..s.dims.len()].copy_from_slice(&s.dims);
+                crate::layout::LayoutSpec {
+                    name: s.name,
+                    class: crate::layout::TypeClass::Exact(s.typ),
+                    ndim: s.dims.len() as u32,
+                    dim,
+                }
+            })
+            .collect()
+    }
+
     /// Read metadata through mmap and resolve all shards without copying weights.
     /// This accepts the MQ83 main artifact only, not MTP or vision sidecars.
     pub fn inspect(path: &Path) -> Result<Self, Step37Error> {

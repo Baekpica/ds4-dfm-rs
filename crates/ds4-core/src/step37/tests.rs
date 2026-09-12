@@ -147,10 +147,10 @@ fn metadata_and_layer_schedule() {
     assert_eq!(Step37Layer { index: 43 }.swiglu_clamps(), (7.0, 16.0));
     assert_eq!(Step37Layer { index: 44 }.sliding_window(), None);
     assert_eq!(Step37Layer { index: 43 }.sliding_window(), Some(512));
-    // Preflight cannot accidentally route a model into an unrelated native family.
+    // The architecture has its own family; it cannot fall through to DeepSeek.
     assert_eq!(
         crate::shape::route_architecture(Some(b"step35")),
-        crate::shape::ArchRoute::Unsupported
+        crate::shape::ArchRoute::Fixed(crate::shape::Variant::Step37Flash)
     );
 }
 
@@ -329,4 +329,19 @@ fn mtp_heads_must_remain_independent() {
         .unwrap_err()
         .to_string()
         .contains("mm.0.weight"));
+}
+
+#[test]
+fn host_catalog_uses_exact_contract() {
+    let f = Fixture::new(|_| {});
+    let g = GgufFile::open(&f.0).unwrap();
+    let id = crate::identify::identify_file(&g).unwrap();
+    assert_eq!(id.shape.family, crate::shape::ModelFamily::Step37);
+    assert_eq!((id.shape.n_head, id.shape.n_swa_head), (64, 96));
+    crate::validate::validate_file(&g, &id.shape).unwrap();
+    let inv = inventory();
+    let plan = crate::bind::BindPlan::resolve(id.shape, &inv);
+    assert_eq!(plan.slots.len(), 754);
+    assert!(plan.missing_required().is_empty());
+    crate::layout::validate_layouts(&plan).unwrap();
 }

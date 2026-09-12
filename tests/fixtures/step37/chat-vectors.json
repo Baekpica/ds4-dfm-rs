@@ -1,0 +1,703 @@
+{
+  "source_revision": "5f6244077ac62e04eec3f320501ff8c2b293373a",
+  "template_sha256": "f428623fc81c940c35be3509fbffc086b4b4360d8800e46103e6f34d02891633",
+  "jinja2_version": "3.1.6",
+  "vectors": [
+    {
+      "name": "plain",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Hello"
+          }
+        ],
+        "tools": [],
+        "reasoning_effort": "none",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: none\n\n<|im_end|>\n<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "plain",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Hello"
+          }
+        ],
+        "tools": [],
+        "reasoning_effort": "low",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: low\n\n<|im_end|>\n<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "plain",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Hello"
+          }
+        ],
+        "tools": [],
+        "reasoning_effort": "high",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: high\n\n<|im_end|>\n<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "plain",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Hello"
+          }
+        ],
+        "tools": [],
+        "reasoning_effort": "max",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: max\n\n<|im_end|>\n<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "history",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Hi"
+          },
+          {
+            "role": "assistant",
+            "content": "Hello",
+            "reasoning_content": "Think"
+          },
+          {
+            "role": "user",
+            "content": "Continue"
+          }
+        ],
+        "tools": [],
+        "reasoning_effort": "none",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: none\n\n<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello<|im_end|>\n<|im_start|>user\nContinue<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "history",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Hi"
+          },
+          {
+            "role": "assistant",
+            "content": "Hello",
+            "reasoning_content": "Think"
+          },
+          {
+            "role": "user",
+            "content": "Continue"
+          }
+        ],
+        "tools": [],
+        "reasoning_effort": "low",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: low\n\n<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello<|im_end|>\n<|im_start|>user\nContinue<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "history",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Hi"
+          },
+          {
+            "role": "assistant",
+            "content": "Hello",
+            "reasoning_content": "Think"
+          },
+          {
+            "role": "user",
+            "content": "Continue"
+          }
+        ],
+        "tools": [],
+        "reasoning_effort": "high",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: high\n\n<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello<|im_end|>\n<|im_start|>user\nContinue<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "history",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Hi"
+          },
+          {
+            "role": "assistant",
+            "content": "Hello",
+            "reasoning_content": "Think"
+          },
+          {
+            "role": "user",
+            "content": "Continue"
+          }
+        ],
+        "tools": [],
+        "reasoning_effort": "max",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: max\n\n<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello<|im_end|>\n<|im_start|>user\nContinue<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "image",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Read"
+              },
+              {
+                "type": "image"
+              },
+              {
+                "type": "text",
+                "text": "this"
+              },
+              {
+                "type": "image"
+              }
+            ]
+          }
+        ],
+        "tools": [],
+        "reasoning_effort": "none",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: none\n\n<|im_end|>\n<|im_start|>user\nRead<im_patch>this<im_patch><|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "image",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Read"
+              },
+              {
+                "type": "image"
+              },
+              {
+                "type": "text",
+                "text": "this"
+              },
+              {
+                "type": "image"
+              }
+            ]
+          }
+        ],
+        "tools": [],
+        "reasoning_effort": "low",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: low\n\n<|im_end|>\n<|im_start|>user\nRead<im_patch>this<im_patch><|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "image",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Read"
+              },
+              {
+                "type": "image"
+              },
+              {
+                "type": "text",
+                "text": "this"
+              },
+              {
+                "type": "image"
+              }
+            ]
+          }
+        ],
+        "tools": [],
+        "reasoning_effort": "high",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: high\n\n<|im_end|>\n<|im_start|>user\nRead<im_patch>this<im_patch><|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "image",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Read"
+              },
+              {
+                "type": "image"
+              },
+              {
+                "type": "text",
+                "text": "this"
+              },
+              {
+                "type": "image"
+              }
+            ]
+          }
+        ],
+        "tools": [],
+        "reasoning_effort": "max",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: max\n\n<|im_end|>\n<|im_start|>user\nRead<im_patch>this<im_patch><|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "tool_return",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Be concise"
+          },
+          {
+            "role": "user",
+            "content": "Weather?"
+          },
+          {
+            "role": "assistant",
+            "content": null,
+            "reasoning_content": "Check",
+            "tool_calls": [
+              {
+                "function": {
+                  "name": "weather",
+                  "arguments": "{\"city\":\"서울\",\"days\":[1,2]}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "맑음"
+          },
+          {
+            "role": "tool",
+            "content": "20 °C"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "weather",
+              "description": "서울 날씨",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ]
+              }
+            }
+          }
+        ],
+        "reasoning_effort": "none",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: none\n\nBe concise\n\n# Tools\n\nYou have access to the following functions in JSONSchema format:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"weather\", \"description\": \"서울 날씨\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...>\n...\n</function> block must be nested within <tool_call>\n...\n</tool_call> XML tags\n- Required parameters MUST be specified\n</IMPORTANT><|im_end|>\n<|im_start|>user\nWeather?<|im_end|>\n<|im_start|>assistant\n<think>\nCheck\n</think>\n<tool_call>\n<function=weather>\n<parameter=city>\n서울\n</parameter>\n<parameter=days>\n[1, 2]\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool_response\n<tool_response>맑음</tool_response><tool_response>20 °C</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "tool_return",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Be concise"
+          },
+          {
+            "role": "user",
+            "content": "Weather?"
+          },
+          {
+            "role": "assistant",
+            "content": null,
+            "reasoning_content": "Check",
+            "tool_calls": [
+              {
+                "function": {
+                  "name": "weather",
+                  "arguments": "{\"city\":\"서울\",\"days\":[1,2]}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "맑음"
+          },
+          {
+            "role": "tool",
+            "content": "20 °C"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "weather",
+              "description": "서울 날씨",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ]
+              }
+            }
+          }
+        ],
+        "reasoning_effort": "low",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: low\n\nBe concise\n\n# Tools\n\nYou have access to the following functions in JSONSchema format:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"weather\", \"description\": \"서울 날씨\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...>\n...\n</function> block must be nested within <tool_call>\n...\n</tool_call> XML tags\n- Required parameters MUST be specified\n</IMPORTANT><|im_end|>\n<|im_start|>user\nWeather?<|im_end|>\n<|im_start|>assistant\n<think>\nCheck\n</think>\n<tool_call>\n<function=weather>\n<parameter=city>\n서울\n</parameter>\n<parameter=days>\n[1, 2]\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool_response\n<tool_response>맑음</tool_response><tool_response>20 °C</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "tool_return",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Be concise"
+          },
+          {
+            "role": "user",
+            "content": "Weather?"
+          },
+          {
+            "role": "assistant",
+            "content": null,
+            "reasoning_content": "Check",
+            "tool_calls": [
+              {
+                "function": {
+                  "name": "weather",
+                  "arguments": "{\"city\":\"서울\",\"days\":[1,2]}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "맑음"
+          },
+          {
+            "role": "tool",
+            "content": "20 °C"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "weather",
+              "description": "서울 날씨",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ]
+              }
+            }
+          }
+        ],
+        "reasoning_effort": "high",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: high\n\nBe concise\n\n# Tools\n\nYou have access to the following functions in JSONSchema format:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"weather\", \"description\": \"서울 날씨\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...>\n...\n</function> block must be nested within <tool_call>\n...\n</tool_call> XML tags\n- Required parameters MUST be specified\n</IMPORTANT><|im_end|>\n<|im_start|>user\nWeather?<|im_end|>\n<|im_start|>assistant\n<think>\nCheck\n</think>\n<tool_call>\n<function=weather>\n<parameter=city>\n서울\n</parameter>\n<parameter=days>\n[1, 2]\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool_response\n<tool_response>맑음</tool_response><tool_response>20 °C</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "tool_return",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Be concise"
+          },
+          {
+            "role": "user",
+            "content": "Weather?"
+          },
+          {
+            "role": "assistant",
+            "content": null,
+            "reasoning_content": "Check",
+            "tool_calls": [
+              {
+                "function": {
+                  "name": "weather",
+                  "arguments": "{\"city\":\"서울\",\"days\":[1,2]}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "맑음"
+          },
+          {
+            "role": "tool",
+            "content": "20 °C"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "weather",
+              "description": "서울 날씨",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ]
+              }
+            }
+          }
+        ],
+        "reasoning_effort": "max",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: max\n\nBe concise\n\n# Tools\n\nYou have access to the following functions in JSONSchema format:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"weather\", \"description\": \"서울 날씨\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...>\n...\n</function> block must be nested within <tool_call>\n...\n</tool_call> XML tags\n- Required parameters MUST be specified\n</IMPORTANT><|im_end|>\n<|im_start|>user\nWeather?<|im_end|>\n<|im_start|>assistant\n<think>\nCheck\n</think>\n<tool_call>\n<function=weather>\n<parameter=city>\n서울\n</parameter>\n<parameter=days>\n[1, 2]\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool_response\n<tool_response>맑음</tool_response><tool_response>20 °C</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "observation",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Read"
+          },
+          {
+            "role": "system",
+            "name": "observation",
+            "content": {
+              "value": "Found"
+            }
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "weather",
+              "description": "서울 날씨",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ]
+              }
+            }
+          }
+        ],
+        "reasoning_effort": "none",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: none\n\n# Tools\n\nYou have access to the following functions in JSONSchema format:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"weather\", \"description\": \"서울 날씨\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...>\n...\n</function> block must be nested within <tool_call>\n...\n</tool_call> XML tags\n- Required parameters MUST be specified\n</IMPORTANT><|im_end|>\n<|im_start|>user\nRead<|im_end|>\n<|im_start|>observation\nFound<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "observation",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Read"
+          },
+          {
+            "role": "system",
+            "name": "observation",
+            "content": {
+              "value": "Found"
+            }
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "weather",
+              "description": "서울 날씨",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ]
+              }
+            }
+          }
+        ],
+        "reasoning_effort": "low",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: low\n\n# Tools\n\nYou have access to the following functions in JSONSchema format:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"weather\", \"description\": \"서울 날씨\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...>\n...\n</function> block must be nested within <tool_call>\n...\n</tool_call> XML tags\n- Required parameters MUST be specified\n</IMPORTANT><|im_end|>\n<|im_start|>user\nRead<|im_end|>\n<|im_start|>observation\nFound<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "observation",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Read"
+          },
+          {
+            "role": "system",
+            "name": "observation",
+            "content": {
+              "value": "Found"
+            }
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "weather",
+              "description": "서울 날씨",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ]
+              }
+            }
+          }
+        ],
+        "reasoning_effort": "high",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: high\n\n# Tools\n\nYou have access to the following functions in JSONSchema format:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"weather\", \"description\": \"서울 날씨\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...>\n...\n</function> block must be nested within <tool_call>\n...\n</tool_call> XML tags\n- Required parameters MUST be specified\n</IMPORTANT><|im_end|>\n<|im_start|>user\nRead<|im_end|>\n<|im_start|>observation\nFound<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    },
+    {
+      "name": "observation",
+      "context": {
+        "bos_token": "<｜begin▁of▁sentence｜>",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Read"
+          },
+          {
+            "role": "system",
+            "name": "observation",
+            "content": {
+              "value": "Found"
+            }
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "weather",
+              "description": "서울 날씨",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ]
+              }
+            }
+          }
+        ],
+        "reasoning_effort": "max",
+        "add_generation_prompt": true
+      },
+      "rendered": "<｜begin▁of▁sentence｜><|im_start|>system\nReasoning: max\n\n# Tools\n\nYou have access to the following functions in JSONSchema format:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"weather\", \"description\": \"서울 날씨\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...>\n...\n</function> block must be nested within <tool_call>\n...\n</tool_call> XML tags\n- Required parameters MUST be specified\n</IMPORTANT><|im_end|>\n<|im_start|>user\nRead<|im_end|>\n<|im_start|>observation\nFound<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    }
+  ]
+}

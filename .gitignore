@@ -81,6 +81,8 @@ __pycache__/
 /tests/test_exaone_kernels
 /tests/test_exaone_forward
 /tests/test_exaone_tokenizer
+/tests/test_step37_primitives
+/tests/test_step37_loader
 /tests/test_inkling_kernels
 /tests/test_inkling_moe
 /tests/test_inkling_attn_prep

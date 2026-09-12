@@ -14,6 +14,8 @@ escaping and integer/string indentation, rejects unsupported options, and
 matches Python float spelling. Indentation allocation is capped at 4096.
 `src/engine.rs` applies the same float spelling to ordinary output and the
 `string` filter; K2's official tool schema uses ordinary numeric output.
+It also registers `fromjson` for serialized tool arguments in the unchanged
+Step 3.7 template; malformed JSON aborts rendering.
 The host enables serde_json `float_roundtrip` to preserve parsed float values.
 Independent Python fixtures live in `tests/fixtures/chat-template` at the
 workspace root; official Inkling vectors exercise these options together.

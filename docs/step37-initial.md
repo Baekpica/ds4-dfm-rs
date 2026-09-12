@@ -1,5 +1,15 @@
 # Step 3.7 integration status
 
+The goal includes native Rust-host serving with MTP and still-image input,
+Prefill and Decode optimization, documentation/HF model card updates, and a
+PR after validation. The September 13 scope extension permits improvements
+during implementation. Retain only measured candidates with logits, greedy
+token and KV parity; report fresh-process prefill/decode and MTP controls
+separately. Full-model verification may temporarily stop Qwen, with its exact
+launch configuration and API service restored afterwards (owner approval).
+The HF update may include required tokenizer, Jinja and processor assets;
+preserve upstream revisions and verify uploaded bytes.
+
 `ds4_core::Step37Plan::inspect` validates the MQ83 main artifact and resolves
 754 tensor bindings across nine mmap-backed shards. It preserves the per-layer
 64/96 query-head schedule, full/SWA RoPE settings and separate routed/shared
@@ -34,11 +44,16 @@ Q/K normalization and split-half RoPE. It replays changed device positions
 through 262,143 on a non-default stream. The CUDA backend object also builds.
 These component checks do not establish complete model logits or performance.
 
-This is a host preflight/bind plan, not native model execution. Production
-family routing remains unsupported until the native ABI, gated mixed-head
-attention, sigmoid MoE routing, RoPE frequency factors, tokenizer, Step vision
-and external MTP paths are implemented and compared with the supplied fixtures.
-No new CUDA owner, eager weight copy or inference FFI is introduced.
+Rust family selection and native descriptors now bind all 754 main and 55
+MTP tensors. Native loading retains a clear execution guard while the forward
+path is unfinished. The main shape has 45 layers; the three external predictor
+blocks must not be subtracted from that count.
+
+The Rust tokenizer matches the pinned upstream tokenizer on 56 text, Unicode,
+tool and media-marker inputs. The unchanged official Jinja matches Python
+Jinja on 20 text/history/image/tool/observation cases across four effort
+values. The adapter adds the template's `fromjson` filter and rejects malformed
+tool JSON. These checks establish input compatibility, not generated output.
 
 The Spark handoff supplies BF16 full-vocabulary logits and real image fixtures;
 its README records that the MQ83 output comparison has not run. Remaining gates:
@@ -48,4 +63,6 @@ its README records that the MQ83 output comparison has not run. Remaining gates:
 - External MTP prediction, acceptance and rejected-prefix rollback.
 - Vision processing, encoder/projector execution and real document/chart requests.
 - Guarded GB10 residency, context/bank admission and prefill/decode measurements.
+- Profile and optimize Prefill and Decode; keep before/after throughput and
+  numerical evidence, including MTP-on/off and multimodal workloads.
 - Final repository documentation, verified HF model card update and GitHub PR.

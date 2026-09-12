@@ -1102,6 +1102,10 @@ tests/test_inkling_loader: tests/test_inkling_loader.c ds4.c ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
+tests/test_step37_loader: tests/test_step37_loader.c ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
 tests/test_solar_loader: tests/test_solar_loader.c ds4.c ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)

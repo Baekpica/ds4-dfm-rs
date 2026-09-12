@@ -49,6 +49,7 @@ impl ChatOptions {
         let prefill = match (model_id, mode) {
             (7, None) => "</think>",
             (8, None) => "</ifm|think>\n",
+            (id, None) if id == crate::Variant::Step37Flash as i32 => "</think>\n",
             _ => "",
         };
         Self {

@@ -26,6 +26,7 @@ pub enum ModelFamily {
     Qwen4Exp = 5,
     Glm53 = 6,
     Inkling = 7,
+    Step37 = 8,
 }
 
 impl ModelFamily {
@@ -39,6 +40,7 @@ impl ModelFamily {
             "qwen4exp" => Some(Self::Qwen4Exp),
             "glm5-next" => Some(Self::Glm53),
             "inkling" => Some(Self::Inkling),
+            "step35" => Some(Self::Step37),
             _ => None,
         }
     }
@@ -53,6 +55,7 @@ impl ModelFamily {
             Self::Qwen4Exp => "qwen4exp",
             Self::Glm53 => "glm5-next",
             Self::Inkling => "inkling",
+            Self::Step37 => "step35",
         }
     }
 }
@@ -70,6 +73,7 @@ pub enum Variant {
     Glm53Flash = 7,
     K2Horizon375B = 8,
     InklingSmall = 9,
+    Step37Flash = 10,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -313,6 +317,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"glm5-next") => ArchRoute::Fixed(Variant::Glm53Flash),
         Some(b"k2-horizon") => ArchRoute::Fixed(Variant::K2Horizon375B),
         Some(b"inkling") => ArchRoute::Fixed(Variant::InklingSmall),
+        Some(b"step35") => ArchRoute::Fixed(Variant::Step37Flash),
         Some(_) => ArchRoute::Unsupported,
     }
 }
@@ -329,6 +334,7 @@ pub fn shape_for_variant(v: Variant) -> Shape {
         Variant::Glm53Flash => SHAPE_GLM53_FLASH,
         Variant::K2Horizon375B => SHAPE_K2_HORIZON_375B,
         Variant::InklingSmall => SHAPE_INKLING_SMALL,
+        Variant::Step37Flash => SHAPE_STEP37_FLASH,
     }
 }
 
@@ -987,4 +993,63 @@ pub const SHAPE_GLM53_FLASH: Shape = Shape {
     rope_yarn_beta_slow: 0.0,
     compress_rope_freq_base: 0.0,
     rope_orig_ctx: 1_048_576,
+};
+
+// Main layer count excludes the three external prediction blocks.
+pub(crate) const SHAPE_STEP37_FLASH: Shape = Shape {
+    name: "Step-3.7-Flash",
+    family: ModelFamily::Step37,
+    variant: Variant::Step37Flash,
+    n_layer: 45,
+    n_embd: 4096,
+    n_vocab: 128896,
+    n_head: 64,
+    n_head_kv: 8,
+    n_noise_head: 0,
+    n_head_dim: 128,
+    n_value_dim: 128,
+    n_rot: 64,
+    n_out_group: 0,
+    n_lora_q: 0,
+    n_lora_o: 0,
+    n_expert: 288,
+    n_expert_used: 8,
+    n_expert_shared: 1,
+    n_ff_exp: 1280,
+    n_ff_dense: 11264,
+    n_ff_shexp: 1280,
+    n_hash_layer: 0,
+    n_swa: 512,
+    n_swa_period: 4,
+    n_indexer_head: 0,
+    n_indexer_head_dim: 0,
+    n_indexer_top_k: 0,
+    n_hc: 0,
+    n_hc_sinkhorn_iter: 0,
+    n_nextn_predict: 3,
+    n_leading_dense: 3,
+    n_kv_lora: 0,
+    n_key_mla: 0,
+    n_value_mla: 0,
+    n_swa_head: 96,
+    n_swa_kv_lora: 0,
+    n_swa_key_mla: 0,
+    n_full_attn_count: 12,
+    n_kda_head_dim: 0,
+    n_ssm_conv: 0,
+    use_rope: true,
+    use_qk_norm: true,
+    rms_eps: 1e-5,
+    kda_l2_eps: 0.0,
+    kda_gate_clamp_min: 0.0,
+    hc_eps: 0.0,
+    expert_weight_scale: 3.0,
+    swiglu_clamp_exp: 0.0,
+    rope_freq_base: 5_000_000.0,
+    rope_freq_base_swa: 10_000.0,
+    rope_scale_factor: 1.0,
+    rope_yarn_beta_fast: 0.0,
+    rope_yarn_beta_slow: 0.0,
+    compress_rope_freq_base: 0.0,
+    rope_orig_ctx: 262144,
 };
