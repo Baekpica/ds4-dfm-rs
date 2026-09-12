@@ -598,6 +598,9 @@ tests/test_solar_gates.o: tests/test_solar_gates.c ds4_gpu.h
 tests/test_solar_kv.o: tests/test_solar_kv.c ds4_gpu.h
 	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
 
+tests/test_solar_fattn.o: tests/test_solar_fattn.c ds4_gpu.h cuda/mmq/ds4_mmq.h
+	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
+
 tests/test_model_family_kernels.o: tests/test_model_family_kernels.c ds4_gpu.h
 	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
 
@@ -781,6 +784,13 @@ tests/test_solar_kv: tests/test_solar_kv.o $(DS4_CUDA_CORE_OBJS)
 
 test-solar-kv: tests/test_solar_kv
 	./tests/test_solar_kv
+
+.PHONY: test-solar-fattn
+tests/test_solar_fattn: tests/test_solar_fattn.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+test-solar-fattn: tests/test_solar_fattn
+	./tests/test_solar_fattn
 
 cuda/mmq/test/test_mmq_parity.o: cuda/mmq/test/test_mmq_parity.cu cuda/mmq/ds4_mmq.h
 	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<
@@ -1331,6 +1341,7 @@ tests/test_motif3_long: tests/test_motif3_long.o ds4_kvstore.o rax.o $(CORE_OBJS
 endif
 
 clean:
+	rm -f tests/test_solar_fattn tests/test_solar_fattn.o
 	rm -f tests/test_inkling_kernels tests/test_inkling_kernels.o
 	rm -f tests/test_inkling_moe tests/test_inkling_moe.o
 	rm -f tests/test_inkling_attn_prep tests/test_inkling_attn_prep.o

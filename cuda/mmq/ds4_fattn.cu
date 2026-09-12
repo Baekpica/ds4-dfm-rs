@@ -19,6 +19,11 @@
  * BF16 K/V, stages the next 64-key tile in registers while the current
  * one is consumed (K2 round 6; DS4_FATTN_HMMA_LDSM=0 restores the scalar
  * loads and the direct fill, bit-identical).
+ *
+ * With DS4_SOLAR_FATTN_WS=1, K-FP8/V-FP4 pairs take
+ * ds4_fattn_hmma_solar_ws_kernel instead: producer warps stream and decode
+ * the tiles while the eight consumer warps walk them (Solar round 5,
+ * bit-identical; opt-in because of its power draw on GB10 hosts).
  */
 #include "common.cuh"
 #include "mma.cuh"
@@ -904,6 +909,574 @@ __global__ void ds4_fattn_hmma_gqa2_kernel(
                 output[cb].x[l] / row_l[r];
         }
     }
+}
+
+/* Warp-specialized K-FP8/V-FP4 GQA-pair prefill (Solar round 5).
+ *
+ * The pair kernel above fills each 64-key tile synchronously: scale
+ * loads, a barrier, packed K/V loads, decode, another barrier, then the
+ * HMMA walk.  At 131 registers it runs one CTA per SM, so nothing hides
+ * the global round trip or the decode; at 64K context the tail chunk
+ * spent 292 ms per layer in it and the tensor pipe idled three quarters
+ * of the time.  This kernel splits the roles:
+ *
+ *   warps 0-7   consumers  two Q heads x 64 queries, same HMMA layout,
+ *                          same 16-key online-softmax steps
+ *   warps 8-11  producers  cp.async raw rows -> two-stage raw ring,
+ *                          decode -> double-buffered half tiles
+ *
+ *   producers:  raw[0] raw[1] raw[0] ...      (cp.async, 2 tiles ahead)
+ *               dec->half[0] dec->half[1] ... (FULL[b] arrive)
+ *   consumers:  FULL[0] wait, walk half[0], EMPTY[0] arrive, FULL[1] ...
+ *
+ * Named barriers 1-4 (count 384) pair one producer arrive with one
+ * consumer sync (FULL) or the reverse (EMPTY), so consumers never wait
+ * for a decode and producers never wait for HMMA work.  One CTA per SM
+ * (95 KB dynamic shared memory, 384 threads, <=168 registers, no spills).
+ *
+ * Numerical contract: byte-identical to the pair kernel.  Every element
+ * is decoded with the same conversion and the same fp32 multiply and
+ * half rounding (the x2 hardware conversions are exact); each query row
+ * consumes the same 16-key steps in the same order with the same
+ * operations.  Interior tiles (warp-uniform: no causal or window edge
+ * inside the 64 keys) skip only the mask chain, which can change no
+ * finite score, and the output rescale is skipped only when every factor
+ * in the warp is exactly 1.0f (an identity multiply).
+ * DS4_SOLAR_FATTN_WS=1 selects it; see solar_fattn_ws_enabled. */
+enum {
+    WS_TK        = 64,
+    WS_KRAW      = FA_HD,                 /* K bytes per row per KV head */
+    WS_VRAW      = FA_HD / 2,             /* V bytes per row per KV head */
+    WS_CONSUMERS = 2 * FA_WARPS,
+    WS_PRODUCERS = 4,
+    WS_CTHREADS  = WS_CONSUMERS * 32,
+    WS_PTHREADS  = WS_PRODUCERS * 32,
+    WS_THREADS   = WS_CTHREADS + WS_PTHREADS,
+    WS_BAR_FULL0  = 1,
+    WS_BAR_EMPTY0 = 3,
+    WS_BAR_PROD   = 5,
+};
+
+__device__ __forceinline__ void solar_ws_cp_async_16(void *dst, const void *src) {
+    const unsigned s = (unsigned)__cvta_generic_to_shared(dst);
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" :: "r"(s), "l"(src));
+}
+
+__device__ __forceinline__ void solar_ws_cp_async_8(void *dst, const void *src) {
+    const unsigned s = (unsigned)__cvta_generic_to_shared(dst);
+    asm volatile("cp.async.ca.shared.global [%0], [%1], 8;\n" :: "r"(s), "l"(src));
+}
+
+__device__ __forceinline__ void solar_ws_cp_async_4(void *dst, const void *src) {
+    const unsigned s = (unsigned)__cvta_generic_to_shared(dst);
+    asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" :: "r"(s), "l"(src));
+}
+
+__device__ __forceinline__ void solar_ws_cp_commit() {
+    asm volatile("cp.async.commit_group;\n" ::);
+}
+
+__device__ __forceinline__ void solar_ws_cp_wait_1() {
+    asm volatile("cp.async.wait_group 1;\n" ::);
+}
+
+__device__ __forceinline__ void solar_ws_bar_sync(uint32_t id, uint32_t count) {
+    asm volatile("bar.sync %0, %1;\n" :: "r"(id), "r"(count) : "memory");
+}
+
+__device__ __forceinline__ void solar_ws_bar_arrive(uint32_t id, uint32_t count) {
+    asm volatile("bar.arrive %0, %1;\n" :: "r"(id), "r"(count) : "memory");
+}
+
+/* One KV head's raw bytes of a 64-key tile plus, per row, the 4-byte
+ * words holding its K and V scales. */
+struct solar_ws_raw {
+    uint8_t  k[WS_TK][WS_KRAW];
+    uint8_t  v[WS_TK][WS_VRAW];
+    uint32_t s[WS_TK][2];
+};
+
+struct solar_ws_smem {
+    __half       s_k[2][WS_TK][FA_ROW];
+    __half       s_v[2][WS_TK][FA_ROW];
+    solar_ws_raw raw[2];
+};
+
+/* Raw copies of tile kt0 into one ring stage.  Two producer threads share
+ * a row (one address computation each) and alternate its CPW-byte K/V
+ * chunks and the two scale words.  Rows past tile_len duplicate row kt0
+ * like the direct fill, so the staged tile is identical. */
+template <int CPW>
+__device__ __forceinline__ void solar_ws_issue_tile(
+        solar_ws_raw  &raw,
+        const uint8_t *kv,
+        uint64_t       row_bytes,
+        uint32_t       n_head_kv,
+        uint32_t       kvh,
+        uint32_t       kv_cap,
+        uint32_t       kt0,
+        uint32_t       tile_len,
+        uint32_t       ptid) {
+    constexpr uint32_t KCH = WS_KRAW / CPW;
+    constexpr uint32_t VCH = WS_VRAW / CPW;
+    constexpr uint32_t PARTS = KCH + VCH + 2u;
+    const uint64_t k_bytes = (uint64_t)n_head_kv * FA_HD;
+    const uint64_t v_bytes = k_bytes / 2u;
+    const uint32_t r = ptid >> 1;
+    const uint32_t src = r < tile_len ? kt0 + r : kt0;
+    const uint8_t *row = kv + (uint64_t)(src % kv_cap) * row_bytes;
+    const uint8_t *krow = row + (uint64_t)kvh * FA_HD;
+    const uint8_t *vrow = row + k_bytes + (uint64_t)kvh * WS_VRAW;
+    const uint8_t *srow = row + k_bytes + v_bytes;
+#pragma unroll
+    for (uint32_t part = ptid & 1u; part < PARTS; part += 2u) {
+        if (part < KCH) {
+            if constexpr (CPW == 16) {
+                solar_ws_cp_async_16(&raw.k[r][part * CPW], krow + part * CPW);
+            } else {
+                solar_ws_cp_async_8(&raw.k[r][part * CPW], krow + part * CPW);
+            }
+        } else if (part < KCH + VCH) {
+            const uint32_t vp = part - KCH;
+            if constexpr (CPW == 16) {
+                solar_ws_cp_async_16(&raw.v[r][vp * CPW], vrow + vp * CPW);
+            } else {
+                solar_ws_cp_async_8(&raw.v[r][vp * CPW], vrow + vp * CPW);
+            }
+        } else if (part == KCH + VCH) {
+            solar_ws_cp_async_4(&raw.s[r][0], srow + ((kvh * 2u) & ~3u));
+        } else {
+            solar_ws_cp_async_4(
+                &raw.s[r][1], srow + (((n_head_kv + kvh) * 2u) & ~3u));
+        }
+    }
+}
+
+/* raw -> half tiles.  Element pairs go through the x2 hardware
+ * conversions (e4m3x2 / e2m1x2 -> half2, exact) and half -> float
+ * (exact); the fp32 product and the single rn half rounding are those of
+ * solar_fattn_fill_kv_tile, so the bytes match while the instruction
+ * count halves. */
+__device__ __forceinline__ void solar_ws_decode_tile(
+        const solar_ws_raw &raw,
+        __half              s_k[][FA_ROW],
+        __half              s_v[][FA_ROW],
+        uint32_t            n_head_kv,
+        uint32_t            kvh,
+        uint32_t            ptid) {
+    constexpr uint32_t NGRP = FA_HD / 4u;
+    const uint32_t k_sel = kvh & 1u;
+    const uint32_t v_sel = (n_head_kv + kvh) & 1u;
+#pragma unroll 4
+    for (uint32_t i = 0; i < (WS_TK * NGRP) / WS_PTHREADS; i++) {
+        const uint32_t idx = ptid + i * WS_PTHREADS;
+        const uint32_t r = idx / NGRP;
+        const uint32_t g = idx - r * NGRP;
+        const uint32_t c = g * 4u;
+        const uint32_t kpack = *reinterpret_cast<const uint32_t *>(&raw.k[r][c]);
+        const uint16_t vpack = *reinterpret_cast<const uint16_t *>(&raw.v[r][c >> 1u]);
+        const uint32_t kw = raw.s[r][0];
+        const uint32_t vw = raw.s[r][1];
+        const float sk = __half2float(__ushort_as_half(
+            (uint16_t)(k_sel ? kw >> 16u : kw & 0xffffu)));
+        const float sv = __half2float(__ushort_as_half(
+            (uint16_t)(v_sel ? vw >> 16u : vw & 0xffffu)));
+        const __half2_raw k01 = __nv_cvt_fp8x2_to_halfraw2(
+            (__nv_fp8x2_storage_t)(kpack & 0xffffu), __NV_E4M3);
+        const __half2_raw k23 = __nv_cvt_fp8x2_to_halfraw2(
+            (__nv_fp8x2_storage_t)(kpack >> 16u), __NV_E4M3);
+        const __half2_raw v01 = __nv_cvt_fp4x2_to_halfraw2(
+            (__nv_fp4x2_storage_t)(vpack & 0xffu), __NV_E2M1);
+        const __half2_raw v23 = __nv_cvt_fp4x2_to_halfraw2(
+            (__nv_fp4x2_storage_t)(vpack >> 8u), __NV_E2M1);
+        const float2 fk01 = __half22float2(__half2(k01));
+        const float2 fk23 = __half22float2(__half2(k23));
+        const float2 fv01 = __half22float2(__half2(v01));
+        const float2 fv23 = __half22float2(__half2(v23));
+        const __half2 hk01 = __floats2half2_rn(fk01.x * sk, fk01.y * sk);
+        const __half2 hk23 = __floats2half2_rn(fk23.x * sk, fk23.y * sk);
+        const __half2 hv01 = __floats2half2_rn(fv01.x * sv, fv01.y * sv);
+        const __half2 hv23 = __floats2half2_rn(fv23.x * sv, fv23.y * sv);
+        uint2 kq, vq;
+        kq.x = *reinterpret_cast<const uint32_t *>(&hk01);
+        kq.y = *reinterpret_cast<const uint32_t *>(&hk23);
+        vq.x = *reinterpret_cast<const uint32_t *>(&hv01);
+        vq.y = *reinterpret_cast<const uint32_t *>(&hv23);
+        *reinterpret_cast<uint2 *>(&s_k[r][c]) = kq;
+        *reinterpret_cast<uint2 *>(&s_v[r][c]) = vq;
+    }
+}
+
+/* Q.K^T of one 16-key step: kc ascending per nb, from zero, as in
+ * solar_fattn_consume_16_ldsm. */
+__device__ __forceinline__ void solar_ws_qk_step(
+        tile_c          scores[2],
+        const tile_a    qa[FA_HD / 16],
+        const __half  (*s_k)[FA_ROW],
+        uint32_t        lane) {
+    const uint32_t k_row = lane & 7u;
+    const uint32_t k_col = (lane >> 3) * 8u;
+#pragma unroll
+    for (int nb = 0; nb < 2; nb++) {
+        tile_c zero;
+        scores[nb] = zero;
+#pragma unroll
+        for (int kc = 0; kc < FA_HD / 16; kc += 2) {
+            tile_b keys0, keys1;
+            uint32_t *k0 = reinterpret_cast<uint32_t *>(keys0.x);
+            uint32_t *k1 = reinterpret_cast<uint32_t *>(keys1.x);
+            solar_fattn_ldsm_x4(
+                k0[0], k0[1], k1[0], k1[1],
+                &s_k[nb * 8 + k_row][kc * 16 + k_col]);
+            mma(scores[nb], qa[kc], keys0);
+            mma(scores[nb], qa[kc + 1], keys1);
+        }
+    }
+}
+
+/* Online softmax of one interior step: the tracked sequence without the
+ * mask chain.  __fmul_rn keeps the score scaling a plain FMUL; in the
+ * masked path the select between the multiply and the subtraction
+ * already blocks FMA contraction, and the bytes must not diverge here. */
+__device__ __forceinline__ void solar_ws_softmax_step(
+        tile_c  scores[2],
+        float   row_m[2],
+        float   row_l[2],
+        float   rescale[2],
+        float   scale) {
+    float tile_max[2] = {-INFINITY, -INFINITY};
+#pragma unroll
+    for (int nb = 0; nb < 2; nb++) {
+#pragma unroll
+        for (int l = 0; l < tile_c::ne; l++) {
+            const int r = l / 2;
+            const float score = __fmul_rn(scores[nb].x[l], scale);
+            scores[nb].x[l] = score;
+            tile_max[r] = fmaxf(tile_max[r], score);
+        }
+    }
+#pragma unroll
+    for (int r = 0; r < 2; r++) {
+        tile_max[r] = fmaxf(
+            tile_max[r], __shfl_xor_sync(0xffffffffu, tile_max[r], 1));
+        tile_max[r] = fmaxf(
+            tile_max[r], __shfl_xor_sync(0xffffffffu, tile_max[r], 2));
+    }
+    float tile_sum[2] = {0.0f, 0.0f};
+#pragma unroll
+    for (int r = 0; r < 2; r++) {
+        const float next_max = fmaxf(row_m[r], tile_max[r]);
+        rescale[r] = row_m[r] == -INFINITY
+            ? 0.0f : __expf(row_m[r] - next_max);
+        row_m[r] = next_max;
+    }
+#pragma unroll
+    for (int nb = 0; nb < 2; nb++) {
+#pragma unroll
+        for (int l = 0; l < tile_c::ne; l++) {
+            const int r = l / 2;
+            const float weight = __expf(scores[nb].x[l] - row_m[r]);
+            scores[nb].x[l] = weight;
+            tile_sum[r] += weight;
+        }
+    }
+#pragma unroll
+    for (int r = 0; r < 2; r++) {
+        tile_sum[r] += __shfl_xor_sync(0xffffffffu, tile_sum[r], 1);
+        tile_sum[r] += __shfl_xor_sync(0xffffffffu, tile_sum[r], 2);
+        row_l[r] = row_l[r] * rescale[r] + tile_sum[r];
+    }
+}
+
+/* P.V of one 16-key step.  The accumulator rescale is an identity when
+ * every factor in the warp is exactly 1.0f (the running max did not move
+ * for any of the warp's 16 rows, the common case deep in a walk), so it
+ * is skipped only then. */
+__device__ __forceinline__ void solar_ws_pv_step(
+        tile_c          output[FA_HD / 8],
+        const tile_c    scores[2],
+        const float     rescale[2],
+        const __half  (*s_v)[FA_ROW],
+        uint32_t        lane) {
+    tile_a probabilities;
+#pragma unroll
+    for (int l = 0; l < tile_a::ne; l++) {
+        probabilities.x[l] = __floats2half2_rn(
+            scores[l / 2].x[(l % 2) * 2],
+            scores[l / 2].x[(l % 2) * 2 + 1]);
+    }
+    const uint32_t v_row = ((lane >> 3) & 1u) * 8u + (lane & 7u);
+    const uint32_t v_col = (lane >> 4) * 8u;
+    const bool apply = !__all_sync(
+        0xffffffffu, rescale[0] == 1.0f && rescale[1] == 1.0f);
+    if (apply) {
+#pragma unroll
+        for (int cb = 0; cb < FA_HD / 8; cb++) {
+#pragma unroll
+            for (int l = 0; l < tile_c::ne; l++) {
+                output[cb].x[l] *= rescale[l / 2];
+            }
+        }
+    }
+#pragma unroll
+    for (int cb = 0; cb < FA_HD / 8; cb += 2) {
+        tile_b values0, values1;
+        uint32_t *v0 = reinterpret_cast<uint32_t *>(values0.x);
+        uint32_t *v1 = reinterpret_cast<uint32_t *>(values1.x);
+        solar_fattn_ldsm_x4_trans(
+            v0[0], v0[1], v1[0], v1[1], &s_v[v_row][cb * 8 + v_col]);
+        mma(output[cb], probabilities, values0);
+        mma(output[cb + 1], probabilities, values1);
+    }
+}
+
+template <int CPW>
+__global__ void __launch_bounds__(WS_THREADS, 1)
+ds4_fattn_hmma_solar_ws_kernel(
+        float * __restrict__ heads,
+        const float * __restrict__ q,
+        const void * __restrict__ kv,
+        const uint64_t row_bytes,
+        const uint32_t n_tokens,
+        const uint32_t pos0,
+        const uint32_t n_head,
+        const uint32_t n_head_kv,
+        const uint32_t kv_cap,
+        const uint32_t window,
+        const float scale) {
+    constexpr uint32_t N_Q = 2u;
+    constexpr uint32_t GROUP_THREADS = (uint32_t)FA_WARPS * 32u;
+    extern __shared__ __align__(16) uint8_t solar_ws_dyn[];
+    solar_ws_smem &sm = *reinterpret_cast<solar_ws_smem *>(solar_ws_dyn);
+    __shared__ uint32_t shared_first;
+    __shared__ uint32_t shared_last;
+
+    const uint32_t tq0 = blockIdx.x * FA_TQ;
+    const uint32_t h0 = blockIdx.y * N_Q;
+    if (tq0 >= n_tokens || h0 + 1u >= n_head) { return; }
+    const uint32_t group = n_head / n_head_kv;
+    const uint32_t kvh = h0 / group;
+    const bool producer = (threadIdx.x >> 5) >= (uint32_t)WS_CONSUMERS;
+    const uint32_t local = threadIdx.x % GROUP_THREADS;
+    const uint32_t hi = producer ? 0u : threadIdx.x / GROUP_THREADS;
+    const uint32_t h = h0 + hi;
+    const uint32_t warp = local >> 5;
+    const uint32_t lane = local & 31u;
+
+    /* Block key range from the consumer rows; producers hold no rows. */
+    const uint32_t qrow[2] = {
+        warp * FA_WQ + lane / 4,
+        warp * FA_WQ + lane / 4 + 8u,
+    };
+    uint32_t qpos[2], qfirst[2];
+    bool alive[2];
+    float row_m[2], row_l[2];
+#pragma unroll
+    for (int r = 0; r < 2; r++) {
+        alive[r] = !producer && tq0 + qrow[r] < n_tokens;
+        qpos[r] = alive[r] ? pos0 + tq0 + qrow[r] : pos0;
+        qfirst[r] = window && qpos[r] + 1u > window
+            ? qpos[r] + 1u - window : 0u;
+        row_m[r] = -INFINITY;
+        row_l[r] = 0.0f;
+    }
+    uint32_t block_first = 0xffffffffu;
+    uint32_t block_last = 0u;
+#pragma unroll
+    for (int r = 0; r < 2; r++) {
+        if (!alive[r]) { continue; }
+        block_first = min(block_first, qfirst[r]);
+        block_last = max(block_last, qpos[r]);
+    }
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        block_first = min(
+            block_first,
+            __shfl_xor_sync(0xffffffffu, block_first, offset));
+        block_last = max(
+            block_last,
+            __shfl_xor_sync(0xffffffffu, block_last, offset));
+    }
+    if (threadIdx.x == 0u) {
+        shared_first = 0xffffffffu;
+        shared_last = 0u;
+    }
+    __syncthreads();
+    if (lane == 0u && !producer) {
+        atomicMin(&shared_first, block_first);
+        atomicMax(&shared_last, block_last);
+    }
+    __syncthreads();
+    block_first = shared_first;
+    block_last = shared_last;
+    if (block_first == 0xffffffffu) { return; }
+    const uint32_t n_tiles = (block_last - block_first) / WS_TK + 1u;
+
+    if (producer) {
+        const uint32_t ptid = threadIdx.x - WS_CTHREADS;
+        const uint8_t *kvb = (const uint8_t *)kv;
+        auto tile_len_of = [&](uint32_t t) {
+            const uint32_t remaining =
+                block_last - (block_first + t * WS_TK) + 1u;
+            return remaining < (uint32_t)WS_TK ? remaining : (uint32_t)WS_TK;
+        };
+        /* Two tiles in flight; an empty commit keeps the group count
+         * uniform so wait_group 1 always means "tile t landed". */
+        solar_ws_issue_tile<CPW>(
+            sm.raw[0], kvb, row_bytes, n_head_kv, kvh, kv_cap, block_first,
+            tile_len_of(0), ptid);
+        solar_ws_cp_commit();
+        if (n_tiles > 1u) {
+            solar_ws_issue_tile<CPW>(
+                sm.raw[1], kvb, row_bytes, n_head_kv, kvh, kv_cap,
+                block_first + WS_TK, tile_len_of(1), ptid);
+        }
+        solar_ws_cp_commit();
+        for (uint32_t t = 0; t < n_tiles; t++) {
+            const uint32_t b = t & 1u;
+            solar_ws_cp_wait_1();
+            /* Every producer's copies of tile t are visible. */
+            solar_ws_bar_sync(WS_BAR_PROD, WS_PTHREADS);
+            /* Consumers released half[b] (tile t-2). */
+            if (t >= 2u) { solar_ws_bar_sync(WS_BAR_EMPTY0 + b, WS_THREADS); }
+            solar_ws_decode_tile(sm.raw[b], sm.s_k[b], sm.s_v[b],
+                                 n_head_kv, kvh, ptid);
+            __threadfence_block();
+            solar_ws_bar_arrive(WS_BAR_FULL0 + b, WS_THREADS);
+            /* raw[b] fully read before tile t+2 overwrites it. */
+            solar_ws_bar_sync(WS_BAR_PROD, WS_PTHREADS);
+            if (t + 2u < n_tiles) {
+                solar_ws_issue_tile<CPW>(
+                    sm.raw[b], kvb, row_bytes, n_head_kv, kvh, kv_cap,
+                    block_first + (t + 2u) * WS_TK, tile_len_of(t + 2u), ptid);
+            }
+            solar_ws_cp_commit();
+        }
+        /* Balance the consumers' last EMPTY arrives. */
+        for (uint32_t t = n_tiles > 2u ? n_tiles - 2u : 0u; t < n_tiles; t++) {
+            solar_ws_bar_sync(WS_BAR_EMPTY0 + (t & 1u), WS_THREADS);
+        }
+        return;
+    }
+
+    tile_a qa[FA_HD / 16];
+    solar_fattn_load_qa(qa, q, tq0, n_tokens, n_head, h, warp, lane);
+    tile_c output[FA_HD / 8];
+    /* Warp-uniform interior bounds: row 0 of the warp has the smallest
+     * qpos (dead rows only trail alive rows); qfirst grows with qpos. */
+    const uint32_t warp_qmin = __shfl_sync(0xffffffffu, qpos[0], 0);
+    uint32_t warp_fmax = max(qfirst[0], qfirst[1]);
+#pragma unroll
+    for (int offset = 4; offset < 32; offset <<= 1) {
+        warp_fmax = max(
+            warp_fmax, __shfl_xor_sync(0xffffffffu, warp_fmax, offset));
+    }
+    for (uint32_t t = 0; t < n_tiles; t++) {
+        const uint32_t b = t & 1u;
+        const uint32_t kt0 = block_first + t * WS_TK;
+        const uint32_t remaining = block_last - kt0 + 1u;
+        const uint32_t tile_len =
+            remaining < (uint32_t)WS_TK ? remaining : (uint32_t)WS_TK;
+        solar_ws_bar_sync(WS_BAR_FULL0 + b, WS_THREADS);
+        const __half (*s_k)[FA_ROW] = sm.s_k[b];
+        const __half (*s_v)[FA_ROW] = sm.s_v[b];
+        const bool interior = tile_len == (uint32_t)WS_TK &&
+            kt0 >= warp_fmax && kt0 + (WS_TK - 1u) <= warp_qmin;
+        if (interior) {
+#pragma unroll
+            for (uint32_t step = 0; step < (uint32_t)WS_TK;
+                 step += (uint32_t)FA_CONSUME) {
+                tile_c scores[2];
+                float rescale[2];
+                solar_ws_qk_step(scores, qa, s_k + step, lane);
+                solar_ws_softmax_step(scores, row_m, row_l, rescale, scale);
+                solar_ws_pv_step(output, scores, rescale, s_v + step, lane);
+            }
+        } else {
+            for (uint32_t step = 0; step < (uint32_t)WS_TK;
+                 step += (uint32_t)FA_CONSUME) {
+                if (step >= tile_len) { break; }
+                const uint32_t step_len =
+                    tile_len - step < (uint32_t)FA_CONSUME
+                        ? tile_len - step : (uint32_t)FA_CONSUME;
+                solar_fattn_consume_16_ldsm(
+                    output, row_m, row_l, qa, s_k + step, s_v + step,
+                    alive, qpos, qfirst, kt0 + step, step_len, lane, scale);
+            }
+        }
+        solar_ws_bar_arrive(WS_BAR_EMPTY0 + b, WS_THREADS);
+    }
+
+#pragma unroll
+    for (int cb = 0; cb < FA_HD / 8; cb++) {
+#pragma unroll
+        for (int l = 0; l < tile_c::ne; l++) {
+            const int r = l / 2;
+            if (!alive[r] || row_l[r] <= 0.0f) { continue; }
+            const uint32_t token = tq0 + qrow[r];
+            const int col = (int)(lane % 4) * 2 + (l % 2);
+            heads[((size_t)token * n_head + h) * FA_HD + cb * 8 + col] =
+                output[cb].x[l] / row_l[r];
+        }
+    }
+}
+
+/* Opt-in: DS4_SOLAR_FATTN_WS=1 selects the warp-specialized kernel for the
+ * K-FP8/V-FP4 format (bit-identical, 2.6x faster at 64K depth).  It stays
+ * off by default because on the GB10 hosts measured so far it draws about
+ * 105 W against the pair kernel's 64 W at 64K depth, and sustained draw
+ * above roughly 90 W hard-freezes those hosts without a log line (a known
+ * platform fault; cap the SM clock with nvidia-smi -lgc before enabling). */
+static int solar_fattn_ws_enabled(void) {
+    const char *value = getenv("DS4_SOLAR_FATTN_WS");
+    return value && value[0] == '1';
+}
+
+/* Launch the warp-specialized kernel when the format, geometry, copy
+ * alignment and device allow it; 0 means the caller keeps the pair path. */
+template <int CPW>
+static int solar_fattn_ws_launch(
+        float *heads, const float *q, const void *kv, uint64_t row_bytes,
+        int n_tokens, int pos0, int n_head, int n_head_kv, int kv_cap,
+        int window, float scale, cudaStream_t stream) {
+    const auto &device = ggml_cuda_info().devices[ggml_cuda_get_device()];
+    const int smem = (int)sizeof(solar_ws_smem);
+    if (device.smpbo < (size_t)smem) { return 0; }
+    if (cudaFuncSetAttribute(ds4_fattn_hmma_solar_ws_kernel<CPW>,
+                             cudaFuncAttributeMaxDynamicSharedMemorySize,
+                             smem) != cudaSuccess) {
+        (void)cudaGetLastError();
+        return 0;
+    }
+    const int tiles = (n_tokens + FA_TQ - 1) / FA_TQ;
+    const dim3 grid(tiles, n_head / 2, 1);
+    ds4_fattn_hmma_solar_ws_kernel<CPW><<<grid, WS_THREADS, smem, stream>>>(
+        heads, q, kv, row_bytes, (uint32_t)n_tokens, (uint32_t)pos0,
+        (uint32_t)n_head, (uint32_t)n_head_kv, (uint32_t)kv_cap,
+        (uint32_t)window, scale);
+    return 1;
+}
+
+static int solar_fattn_ws_try(
+        float *heads, const float *q, const void *kv, uint64_t row_bytes,
+        int n_tokens, int pos0, int n_head, int n_head_kv, int kv_cap,
+        int window, float scale, cudaStream_t stream) {
+    if (!solar_fattn_ws_enabled()) { return 0; }
+    /* cp.async needs the row chunks aligned to their copy width; the
+     * K/V regions sit at multiples of 64 bytes inside a row, so only the
+     * row stride and the cache base decide. */
+    const uintptr_t base = (uintptr_t)kv;
+    if ((row_bytes % 16u) == 0u && (base % 16u) == 0u) {
+        return solar_fattn_ws_launch<16>(
+            heads, q, kv, row_bytes, n_tokens, pos0, n_head, n_head_kv,
+            kv_cap, window, scale, stream);
+    }
+    if ((row_bytes % 8u) == 0u && (base % 8u) == 0u) {
+        return solar_fattn_ws_launch<8>(
+            heads, q, kv, row_bytes, n_tokens, pos0, n_head, n_head_kv,
+            kv_cap, window, scale, stream);
+    }
+    return 0;
 }
 
 enum {
@@ -1983,6 +2556,14 @@ static void solar_fattn_launch(
     const int tiles = (n_tokens + FA_TQ - 1) / FA_TQ;
     if (solar_fattn_gqa_pair(n_head, n_head_kv)) {
         const dim3 grid(tiles, n_head / 2, 1);
+        if constexpr (FORMAT == SOLAR_KV_KFP8_VFP4) {
+            if (solar_fattn_ldsm_enabled() &&
+                solar_fattn_ws_try(heads, q, kv, row_bytes, n_tokens, pos0,
+                                   n_head, n_head_kv, kv_cap, window, scale,
+                                   stream)) {
+                return;
+            }
+        }
         if (solar_fattn_ldsm_enabled()) {
             ds4_fattn_hmma_gqa2_kernel<FORMAT, true>
                 <<<grid, FA_WARPS * 32 * 2, 0, stream>>>(
