@@ -182,3 +182,12 @@ are separate from the MQ83 oracle comparison above. Remaining gates:
 - Profile and optimize Prefill and Decode; keep before/after throughput and
   numerical evidence, including MTP-on/off and multimodal workloads.
 - Final repository documentation, verified HF model card update and GitHub PR.
+
+
+CPU image preprocessing now follows the official crop/padding and two
+separate interpolation contracts: Pillow RGB8 bilinear before normalization,
+then Torch CHW float bilinear antialias. Across nine RGB inputs and 34 crops,
+all intermediate RGB bytes match exactly and every final float differs by
+at most 4.77e-7. The gate also covers the 3024-pixel cap and black rows from
+out-of-bounds crops. Encoded-image decoding and native vision integration
+remain pending; this component does not qualify image answers.

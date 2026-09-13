@@ -132,3 +132,30 @@ accepted stream against width-one decode, and validates session admission,
 pending-call bounds, rewind and reset. `STEP37_TEST_TRUNCATE=1` additionally
 requires all four commit lengths by stopping the first cycles early; use the
 arithmetic fixture for that check. Stop the owned sidecar after the workers.
+
+
+## CPU image pixels
+
+`make_pixel_vectors.py` executes the pinned official `GPUToTensor`,
+`Step3VisionProcessor` and `ImagePatcher` classes directly. It needs Pillow
+12.3.0, Torch 2.11.0 and torchvision 0.26.0. Its JSON records source and
+pixel hashes plus library versions. It writes full RGB/CHW float crops to
+scratch and four tiny model-free interpolation cases to `resize-vectors.json`.
+
+```sh
+python tests/fixtures/step37/make_pixel_vectors.py "$PROCESSING_STEP3" "$PIXEL_REFERENCE"
+STEP37_PIXEL_REF="$PIXEL_REFERENCE" cargo test -p ds4-core --lib official_image_pixels -- --ignored --nocapture
+```
+
+Use an absolute `PIXEL_REFERENCE` path. Nine RGB inputs (33×27 through
+3041×777) cover padding, aspect ratios, the 728-pixel boundary, the 0.2 crop
+rounding threshold, out-of-bounds black crop rows and the 3024-pixel cap.
+All 34 crops have exact RGB bytes and full normalized/resized CHW floats
+within 1e-6 (observed maximum 4.77e-7). Geometry separately matches 28 cases.
+The RGB resize follows Pillow's 22-bit coefficients and per-pass rounding;
+float resize follows Torch's separable bilinear antialias coefficients.
+
+Token admission (maximum 8192) and each intermediate RGB buffer's 128 MiB
+limit precede pixel allocation. This is a per-buffer bound, not a total
+process-memory limit. This gate does not exercise encoded-image decoding,
+EXIF, GPU vision or generated image answers.

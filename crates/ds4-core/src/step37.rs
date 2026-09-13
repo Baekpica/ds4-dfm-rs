@@ -1,5 +1,6 @@
 //! Step 3.7 MQ83 artifact contract and per-layer native bind plan.
 mod media;
+mod resample;
 
 use std::collections::BTreeSet;
 use std::path::Path;
