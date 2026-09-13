@@ -104,3 +104,4 @@ __pycache__/
 /tests/test_cuda_span_lease
 /tests/test_step37_state
 /tests/test_step37_mtp
+/tests/test_step37_spec

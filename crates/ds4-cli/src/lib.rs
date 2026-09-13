@@ -1009,9 +1009,7 @@ C-compatible flags (same names as `ds4 --help`):
   --dump-tokens --dump-logits FILE --dump-logprobs FILE --logprobs-top-k N
   -h, --help              Show this help
 
---mtp/--dspark attach the DeepSeek-only sibling support models; the host
-resolves each sibling bind catalog + expected layouts, native skips that
-sibling's name walk and layout check.
+--mtp attaches DeepSeek, Inkling or Step predictors; --dspark requires DeepSeek.
 --dump-logprobs mirrors the C CLI proof loop (chat-template encode via
 the engine, argmax decode, host stop set); ctx grows to fit prompt+n
 unless -c is explicit.

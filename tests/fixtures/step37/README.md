@@ -112,3 +112,23 @@ byte-identical. `STEP37_TRACE=DIR` saves initial per-layer diagnostics.
 Without `--local`, inputs propagate from native outputs; the default Q8
 synthetic chain still fails the unchanged 3% criterion. It is not an
 end-to-end MTP token/KV gate or a throughput measurement.
+
+
+The production MTP lifecycle gate imports the sidecar from a VMM weight owner:
+
+```sh
+make tests/test_step37_spec ds4_weight_server CUDA_ARCH=sm_121
+# Inspect the owner's dry-run plan before the guarded owner launch.
+./ds4_weight_server --base "$STEP37_MAIN" --mtp "$STEP37_MTP" --backend vmm --scope mtp --manifest "$MANIFEST" --dry-run
+./ds4_weight_server --base "$STEP37_MAIN" --mtp "$STEP37_MTP" --backend vmm --scope mtp --manifest "$MANIFEST"
+# In another terminal, under the 100 GiB host guard, one worker at a time:
+tests/test_step37_spec "$STEP37_MAIN" "$STEP37_MTP" "$MANIFEST" "$ARITHMETIC_TOKENS"
+tests/test_step37_spec "$STEP37_MAIN" "$STEP37_MTP" "$MANIFEST" "$RING832_TOKENS"
+```
+
+Each run generates 32 tokens. It compares complete vocabulary rows and all
+causally live target KV with an independent width-matched graph, checks the
+accepted stream against width-one decode, and validates session admission,
+pending-call bounds, rewind and reset. `STEP37_TEST_TRUNCATE=1` additionally
+requires all four commit lengths by stopping the first cycles early; use the
+arithmetic fixture for that check. Stop the owned sidecar after the workers.

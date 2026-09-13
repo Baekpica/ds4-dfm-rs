@@ -2868,8 +2868,10 @@ impl DecodeIo for NativeDecode<'_> {
     }
 
     fn eval_greedy(&mut self, first: i32, budget: i32) -> Result<Vec<i32>, GenerateError> {
-        if self.model.family() != ds4_core::ModelFamily::Inkling
-            || self.model.mtp().is_none()
+        if !matches!(
+            self.model.family(),
+            ds4_core::ModelFamily::Inkling | ds4_core::ModelFamily::Step37
+        ) || self.model.mtp().is_none()
             || std::env::var_os("DS4_MTP_SPEC_DISABLE").is_some()
         {
             self.eval(first)?;

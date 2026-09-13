@@ -117,6 +117,22 @@ pub struct Step37Plan {
     layers: Vec<Step37Layer>,
 }
 
+fn layout_specs(specs: Vec<Spec>) -> Vec<crate::layout::LayoutSpec> {
+    specs
+        .into_iter()
+        .map(|s| {
+            let mut dim = [0; 8];
+            dim[..s.dims.len()].copy_from_slice(&s.dims);
+            crate::layout::LayoutSpec {
+                name: s.name,
+                class: crate::layout::TypeClass::Exact(s.typ),
+                ndim: s.dims.len() as u32,
+                dim,
+            }
+        })
+        .collect()
+}
+
 impl Step37Plan {
     pub(crate) fn validate_inventory(inv: &TensorInventory) -> Result<(), Step37Error> {
         check_tensors(inv).map(|_| ())
@@ -130,19 +146,7 @@ impl Step37Plan {
 
     /// Publish the same semantic tensor contract to the host layout/bind seam.
     pub(crate) fn layouts() -> Vec<crate::layout::LayoutSpec> {
-        specs()
-            .into_iter()
-            .map(|s| {
-                let mut dim = [0; 8];
-                dim[..s.dims.len()].copy_from_slice(&s.dims);
-                crate::layout::LayoutSpec {
-                    name: s.name,
-                    class: crate::layout::TypeClass::Exact(s.typ),
-                    ndim: s.dims.len() as u32,
-                    dim,
-                }
-            })
-            .collect()
+        layout_specs(specs())
     }
 
     /// Read metadata through mmap and resolve all shards without copying weights.
@@ -429,6 +433,10 @@ pub struct Step37SidecarPlan {
 }
 
 impl Step37SidecarPlan {
+    pub(crate) fn layouts(kind: Step37Sidecar) -> Vec<crate::layout::LayoutSpec> {
+        layout_specs(sidecar_specs(kind))
+    }
+
     pub fn inspect(path: &Path, kind: Step37Sidecar) -> Result<Self, Step37Error> {
         let first = GgufFile::open(path)?;
         check_sidecar(&first, kind)?;

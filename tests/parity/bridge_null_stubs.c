@@ -174,6 +174,17 @@ int ds4_session_inkling_commit(ds4_session *s, int keep, char *err, size_t errle
     (void)s; (void)keep; (void)err; (void)errlen;
     STUB("ds4_session_inkling_commit");
 }
+int ds4_session_step37_trial(ds4_session *s, int first, int max_tokens,
+                               int *tokens, int *target, int cap,
+                               char *err, size_t errlen) {
+    (void)s; (void)first; (void)max_tokens; (void)tokens; (void)target;
+    (void)cap; (void)err; (void)errlen;
+    STUB("ds4_session_step37_trial");
+}
+int ds4_session_step37_commit(ds4_session *s, int keep, char *err, size_t errlen) {
+    (void)s; (void)keep; (void)err; (void)errlen;
+    STUB("ds4_session_step37_commit");
+}
 int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                                         int max_tokens, int eos_token,
                                         int *accepted, int accepted_cap,

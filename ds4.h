@@ -1332,6 +1332,12 @@ int ds4_session_inkling_trial(ds4_session *s, int first, int max_tokens,
                                int *tokens, int *target, int cap,
                                char *err, size_t errlen);
 int ds4_session_inkling_commit(ds4_session *s, int keep, char *err, size_t errlen);
+/* Step uses the same trial/commit contract with at most four rows.
+ * Operational failures also invalidate the native generation. */
+int ds4_session_step37_trial(ds4_session *s, int first, int max_tokens,
+                              int *tokens, int *target, int cap,
+                              char *err, size_t errlen);
+int ds4_session_step37_commit(ds4_session *s, int keep, char *err, size_t errlen);
 int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                                         int max_tokens, int eos_token,
                                         int *accepted, int accepted_cap,

@@ -768,6 +768,9 @@ fn inkling_names(layouts: Vec<crate::layout::LayoutSpec>) -> Vec<BindName> {
 }
 
 fn mtp_names(shape: &Shape) -> Vec<BindName> {
+    if shape.family == ModelFamily::Step37 {
+        return inkling_names(crate::Step37SidecarPlan::layouts(crate::Step37Sidecar::Mtp));
+    }
     if shape.family == ModelFamily::Inkling {
         return inkling_names(crate::inkling::mtp_layouts());
     }

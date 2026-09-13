@@ -27,6 +27,7 @@ mod session;
 mod shape;
 mod sibling;
 mod step37;
+mod step37_mtp;
 mod tensors;
 mod tok;
 mod validate;
@@ -992,7 +993,7 @@ impl Model {
         )
     }
 
-    /// `mtp_path` attaches a DeepSeek or Inkling sibling; `dspark_path` is
+    /// `mtp_path` attaches a DeepSeek, Inkling or Step sibling; `dspark_path` is
     /// DeepSeek-only. The host resolves each sibling's bind catalog and expected
     /// layouts, then native skips that sibling's name walk and layout check.
     pub fn open_with_support(
@@ -1827,6 +1828,9 @@ impl Session<'_> {
         if self.host.family == ModelFamily::Inkling {
             return self.eval_inkling_argmax(first, max_tokens, eos);
         }
+        if self.host.family == ModelFamily::Step37 {
+            return self.eval_step37_argmax(first, max_tokens, eos);
+        }
         let mut accepted = vec![0i32; 17];
         let mut err = [0u8; 512];
         let n = unsafe {
@@ -2463,6 +2467,80 @@ mod tests {
             STEP_GENERATION.with(|g| g.set(g.get() + 1));
         }
         1
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_step37_trial(
+        _s: *mut ds4_bridge_session,
+        first: i32,
+        _max: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        _cap: i32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        if first == 3 {
+            // SAFETY: the tested wrapper supplies four live output slots.
+            unsafe {
+                *tokens = first;
+                *target = 1;
+            }
+            return 1;
+        }
+        if first == -2 {
+            STEP_GENERATION.with(|g| g.set(g.get() + 1));
+        }
+        -1
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_step37_commit(
+        _s: *mut ds4_bridge_session,
+        _keep: i32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        STEP_GENERATION.with(|g| g.set(g.get() + 1));
+        1
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_eval(
+        _s: *mut ds4_bridge_session,
+        _token: i32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        1
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_session_invalidate(_s: *mut ds4_bridge_session) {
+        STEP_GENERATION.with(|g| g.set(g.get() + 1));
+    }
+
+    #[test]
+    fn step_mtp_errors_reconcile_generation_once() {
+        for first in [-1, -2, 3] {
+            STEP_GENERATION.with(|g| g.set(1));
+            let mut session = std::mem::ManuallyDrop::new(Session {
+                raw: NonNull::<ds4_bridge_session>::dangling(),
+                host: SessionLedger::new(ModelFamily::Step37, SessionBackend::Cuda, 1024, 64),
+                _model: PhantomData,
+                _not_send: PhantomData,
+            });
+            session.host.replace_checkpoint(&[1, 2, 3]);
+            assert!(session.eval_step37_argmax(first, 4, 99).is_err());
+            assert_eq!(session.host.valid, first == -1);
+            assert_eq!(session.generation(), session.native_generation());
+            assert_eq!(session.generation(), if first == -1 { 1 } else { 2 });
+            if first == -1 {
+                assert_eq!(session.host.tokens(), &[1, 2, 3]);
+            } else {
+                assert!(session.host.tokens().is_empty());
+            }
+        }
     }
 
     #[test]

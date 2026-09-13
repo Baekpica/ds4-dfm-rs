@@ -48,7 +48,7 @@ These component checks do not establish complete model logits or performance.
 Rust family selection and native descriptors now bind all 754 main and 55
 MTP tensors. Main text execution now uses the public native session behind
 the Rust host. Step accepts one full CUDA model; distributed slices, other
-backends and draft sidecars remain guarded until their own implementation.
+backends and DSpark sidecars remain guarded.
 The main shape has 45 layers; the three external predictor blocks must not
 be subtracted from that count.
 
@@ -125,9 +125,48 @@ KV and next hidden bytes exactly in both controls.
 The uncontrolled synthetic Q8 trajectory is not a 3% logit-parity pass:
 re-quantization accumulates differences, reaching 6.66% against the CPU Q8_1
 chain. The CPU reference does not reproduce MMVQ reduction order. Keep this
-diagnostic distinct from matched-input operator checks. Production MTP
-attachment, prompt warming and target-token/committed-KV verification remain
-unimplemented; the public session still rejects draft sidecars.
+diagnostic distinct from matched-input operator checks.
+
+Rust now attaches the validated 55-tensor sidecar and owns greedy acceptance
+and EOS handling. Native sessions retain three target hidden rows, warm the
+stable prefix in all three predictors, draft up to three tokens and verify
+up to four target rows. Commit shortens the widened KV rings and uses the
+accepted row's existing hidden output; it does not re-forward accepted tokens.
+Failed GPU work invalidates both predictors and the target, with one native
+and Rust generation transition.
+
+The arithmetic (24-token) and wrapped-ring (832-token) fixtures each pass
+32 generated tokens with an owner-imported MTP Q8 sidecar. Every trial row's
+complete vocabulary and the committed 45-layer live KV are byte-identical to
+a width-matched independent target graph. All 64 accepted tokens match a
+separate width-one, MTP-off control. Together the fixtures exercise commit
+lengths 1–4, pending-operation rejection, invalid commit bounds, no-op sync,
+rewind/rebuild and reset. Allocations exactly match estimates: 87,308,480
+and 208,069,376 bytes at contexts 60 and 868, respectively. This is correctness
+evidence, not an MTP throughput claim.
+The Rust CLI also loads the owner-backed sidecar with the default memory
+governor, uses `--mtp-draft 3` at context 512, and returns
+exactly `4` with a normal stop for the arithmetic chat request.
+
+The sidecar-attached Rust server also passes the same 36 API requests at
+context 4096, covering buffered/SSE text, tools and continuations with
+thinking disabled/high. `DS4_MTP_SPEC_LOG` confirms 42 greedy MTP cycles.
+The existing server thinking policy uses nonzero-temperature sampling and
+therefore ordinary decode; that portion verifies sidecar coexistence rather
+than speculative acceleration. `DS4_MTP_SPEC_DISABLE` retains the server's
+ordinary greedy decode fallback.
+
+The three-depth historical warm policy is causally aligned by
+`token[t+depth+1]`, with a uniform stable frontier `N-3`. Pinned vLLM warms
+only depth 0 on its first pass, then runs depths 1 and 2 on one row each.
+This runtime's fuller predictor history is not a claim of vLLM draft-logit
+parity. Target verification determines the committed stream.
+
+The current `--scope mtp` owner path suppresses in-process base artifacts
+because startup checks for any manifest, not which source it covers. These
+MTP gates therefore use raw-layout main dispatch. Profile this fallback and
+validate source-specific artifact construction during the optimization phase;
+do not compare these runs with aligned main-only results as identical paths.
 
 The image crop planner matches 28 independent official Python cases, including
 thin-image padding, the 728/3024 limits, crop order and media token counts.
@@ -137,7 +176,7 @@ The Spark handoff supplies BF16 logits and real image fixtures. BF16 outputs
 are separate from the MQ83 oracle comparison above. Remaining gates:
 
 - Longer Rust continuations and further cross-engine drift investigation.
-- External MTP prediction, acceptance and rejected-prefix rollback.
+- Longer MTP continuations and measured MTP-on/off performance controls.
 - Vision processing, encoder/projector execution and real document/chart requests.
 - Guarded GB10 residency, context/bank admission and prefill/decode measurements.
 - Profile and optimize Prefill and Decode; keep before/after throughput and

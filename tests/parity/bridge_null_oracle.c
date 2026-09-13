@@ -241,6 +241,12 @@ int main(void) {
         fail("sample");
     if (ds4_bridge_session_ctx(NULL) != -1) fail("ctx");
     if (ds4_bridge_session_argmax(NULL) != -1) fail("argmax");
+    if (ds4_bridge_step37_trial(NULL, 1, 4, NULL, NULL, 4, err, sizeof(err)) != -1) {
+        fail("Step trial NULL session");
+    }
+    if (ds4_bridge_step37_commit(NULL, 1, err, sizeof(err)) == 0) {
+        fail("Step commit NULL session");
+    }
     if (ds4_bridge_session_argmax_excluding(NULL, 7) != -1)
         fail("argmax_excluding");
     if (ds4_bridge_session_pos(NULL) != -1) fail("pos");

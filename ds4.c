@@ -35088,6 +35088,7 @@ struct ds4_engine {
     ds4_vocab vocab;
     ds4_weights weights;
     ds4_mtp_weights mtp_weights;
+    ds4_weights step37_mtp;
     ds4_inkling_draft inkling_mtp;
     ds4_dspark_weights dspark_weights;
     ds4_ple_store *qwen_ple_store;
@@ -45116,6 +45117,9 @@ struct ds4_session {
     ds4_dots3_gpu_graph dots3_graph;
     bool dots3_graph_ready;
     ds4_step37_graph step37_graph;
+    ds4_step37_spec step37_spec;
+    int step37_trial[S37_VERIFY];
+    unsigned step37_trial_n;
     bool step37_graph_ready;
     ds4_inkling_graph inkling_graph;
     ds4_inkling_spec inkling_spec;
@@ -56427,7 +56431,8 @@ uint64_t ds4_engine_session_graph_bytes_estimate(ds4_engine *e, int ctx) {
     if (!e || ctx <= 0) return 0;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37) {
         return e->backend == DS4_BACKEND_CUDA
-            ? step37_memory((unsigned)ctx, step37_prefill_cap((unsigned)ctx)).total_bytes : 0;
+            ? (e->mtp_ready ? step37_mtp_memory((unsigned)ctx, step37_prefill_cap((unsigned)ctx))
+                             : step37_memory((unsigned)ctx, step37_prefill_cap((unsigned)ctx))).total_bytes : 0;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
         const uint32_t cap = inkling_prefill_cap((uint32_t)ctx);
@@ -65615,11 +65620,11 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     if (!opt->inspect_only && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37 &&
         (e->backend != DS4_BACKEND_CUDA || load_slice ||
          opt->distributed.role != DS4_DISTRIBUTED_NONE ||
-         (opt->mtp_path && opt->mtp_path[0]) || (opt->dspark_path && opt->dspark_path[0]) ||
+         (opt->dspark_path && opt->dspark_path[0]) ||
          (e->directional_steering_file && e->directional_steering_file[0]) ||
          e->directional_steering_attn_scale != 0.0f || e->directional_steering_ffn_scale != 0.0f)) {
         fprintf(stderr, "ds4: Step requires one full CUDA model without distributed slices, "
-                        "steering or unimplemented draft sidecars\n");
+                        "steering or DSpark sidecars\n");
         ds4_engine_close(e);
         *out = NULL;
         return 1;
@@ -65718,7 +65723,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         const char *dspark_path = opt->dspark_path;
         if (!dspark_path || !dspark_path[0])
             dspark_path = getenv("DS4_DSPARK_MODEL");
-        if ((opt->mtp_path && opt->mtp_path[0] && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_INKLING) ||
+        if ((opt->mtp_path && opt->mtp_path[0] && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_INKLING &&
+             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_STEP37) ||
             (dspark_path && dspark_path[0])) {
             fprintf(stderr,
                     "ds4: this model family does not accept the requested "
@@ -65739,6 +65745,11 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             inkling_bind_draft(&e->inkling_mtp, &e->mtp_model);
             if (e->mtp_draft_tokens > INKLING_DRAFT_LAYERS) {
                 e->mtp_draft_tokens = INKLING_DRAFT_LAYERS;
+            }
+        } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37) {
+            step37_bind_draft(&e->step37_mtp, &e->mtp_model);
+            if (e->mtp_draft_tokens > STEP37_DRAFT_LAYERS) {
+                e->mtp_draft_tokens = STEP37_DRAFT_LAYERS;
             }
         } else {
             mtp_weights_bind(&e->mtp_weights, &e->mtp_model);
@@ -66772,7 +66783,8 @@ static uint64_t session_tensors_census_live(void) {
 
 static bool step37_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
                                ds4_session_graph_fit_quote *q) {
-    const uint64_t need = step37_memory(ctx, cap).total_bytes;
+    const uint64_t need = (e->mtp_ready ? step37_mtp_memory(ctx, cap)
+                                       : step37_memory(ctx, cap)).total_bytes;
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
     const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
@@ -66833,15 +66845,19 @@ static int ds4_session_alloc_graph(ds4_session *s) {
     ds4_engine *e = s->engine;
     if (ds4_session_is_step37(s)) {
         const unsigned ctx = (unsigned)s->ctx_size;
-        const uint64_t estimate = step37_memory(ctx, s->prefill_cap).total_bytes;
+        const uint64_t estimate = (e->mtp_ready ? step37_mtp_memory(ctx, s->prefill_cap)
+                                               : step37_memory(ctx, s->prefill_cap)).total_bytes;
         ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, estimate, 0);
         const uint64_t before = session_tensors_census_live();
         ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
         const bool ok = step37_session_fit(e, ctx, s->prefill_cap, NULL) &&
-            step37_graph_alloc(&s->step37_graph, &e->model, &e->weights, ctx, s->prefill_cap);
+            step37_graph_alloc(&s->step37_graph, &e->model, &e->weights, ctx, s->prefill_cap) &&
+            (!e->mtp_ready || step37_spec_alloc(&s->step37_spec, &e->mtp_model, &e->step37_mtp,
+                                                ctx, s->prefill_cap));
         ds4_gpu_mem_scope_end();
         if (!ok) {
             step37_graph_free(&s->step37_graph);
+            step37_spec_free(&s->step37_spec);
             s->step37_graph_ready = false;
             s->graph_alloc_bytes = 0;
             ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
@@ -67208,12 +67224,13 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
 #else
         if ((unsigned)ctx_size > S37_CONTEXT || e->backend != DS4_BACKEND_CUDA ||
             !e->metal_ready || e->distributed.role != DS4_DISTRIBUTED_NONE ||
-            e->mtp_ready || e->dspark_ready) { return 1; }
+            e->dspark_ready) { return 1; }
         ds4_session *s = xcalloc(1, sizeof(*s));
         s->engine = e;
         s->ctx_size = ctx_size;
         s->generation = 1;
         s->prefill_cap = step37_prefill_cap((unsigned)ctx_size);
+        if (e->mtp_ready) { s->prefill_cap = step37_mtp_cap((unsigned)ctx_size, s->prefill_cap); }
         s->logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(*s->logits));
         if (ds4_session_lazy_graph_enabled()) {
             s->graph_pending = true;
@@ -67497,6 +67514,7 @@ void ds4_session_free(ds4_session *s) {
     else {
         if (ds4_session_is_step37(s)) {
             step37_graph_free(&s->step37_graph);
+            step37_spec_free(&s->step37_spec);
             s->step37_graph_ready = false;
             ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
         } else if (ds4_session_is_inkling(s)) {
@@ -68161,6 +68179,8 @@ static int ds4_session_sync_glm53(
 /* A failed enqueue/readback poisons the frontier until explicit reset. */
 static int step37_session_fail(ds4_session *s, char *err, size_t errlen) {
     s->step37_graph.failed = true;
+    s->step37_spec.draft.graph.failed = true;
+    s->step37_trial_n = 0;
     s->checkpoint_valid = false;
     s->checkpoint.len = 0;
     s->mtp_draft_valid = false;
@@ -68180,8 +68200,8 @@ static bool step37_read_logits(ds4_session *s) {
 
 static int step37_session_sync(ds4_session *s, const ds4_tokens *prompt,
                                 char *err, size_t errlen) {
-    if (!prompt->v) {
-        payload_set_err(err, errlen, "Step prompt has no token data");
+    if (!prompt->v || s->step37_trial_n) {
+        payload_set_err(err, errlen, "Step sync needs tokens and no pending trial");
         return 1;
     }
     for (int i = 0; i < prompt->len; i++) {
@@ -68198,12 +68218,14 @@ static int step37_session_sync(ds4_session *s, const ds4_tokens *prompt,
     }
     unsigned start = 0;
     if (s->checkpoint_valid && !g->failed && g->position == (unsigned)s->checkpoint.len &&
+        (!s->engine->mtp_ready || (step37_spec_valid(&s->step37_spec) &&
+                                 s->step37_spec.position == g->position)) &&
         prompt->len >= s->checkpoint.len && ds4_tokens_starts_with(prompt, &s->checkpoint)) {
         start = (unsigned)s->checkpoint.len;
         if (start == (unsigned)prompt->len) { return 0; }
     } else {
         ds4_session_invalidate(s);
-        if (g->failed) {
+        if (g->failed || (s->engine->mtp_ready && !step37_spec_valid(&s->step37_spec))) {
             payload_set_err(err, errlen, "Step graph reset failed");
             return 1;
         }
@@ -68211,7 +68233,9 @@ static int step37_session_sync(ds4_session *s, const ds4_tokens *prompt,
     while (start < (unsigned)prompt->len) {
         unsigned n = (unsigned)prompt->len - start;
         if (n > g->cap) { n = g->cap; }
-        if (!step37_forward(g, &s->engine->model, &s->engine->weights, prompt->v + start, n, start)) {
+        if (!step37_forward(g, &s->engine->model, &s->engine->weights, prompt->v + start, n, start) ||
+            (s->engine->mtp_ready && !step37_spec_extend(&s->step37_spec, &s->engine->mtp_model,
+                &s->engine->step37_mtp, g->ws.b_cur, prompt->v, start + n, n))) {
             return step37_session_fail(s, err, errlen);
         }
         start += n;
@@ -68227,14 +68251,20 @@ static int step37_session_sync(ds4_session *s, const ds4_tokens *prompt,
 static int step37_session_eval(ds4_session *s, int token, char *err, size_t errlen) {
     ds4_step37_graph *g = &s->step37_graph;
     if (token < 0 || (unsigned)token >= DS4_N_VOCAB || !s->step37_graph_ready ||
-        !s->checkpoint_valid || g->failed || g->position >= g->context ||
-        g->position != (unsigned)s->checkpoint.len) {
+        !s->checkpoint_valid || s->step37_trial_n || g->failed || g->position >= g->context ||
+        g->position != (unsigned)s->checkpoint.len ||
+        (s->engine->mtp_ready && (!step37_spec_valid(&s->step37_spec) ||
+                                 s->step37_spec.position != g->position))) {
         payload_set_err(err, errlen, "Step decode needs a valid token and checkpoint");
         return 1;
     }
     if (!step37_forward(g, &s->engine->model, &s->engine->weights, &token, 1, g->position) ||
         !step37_read_logits(s)) { return step37_session_fail(s, err, errlen); }
     token_vec_push(&s->checkpoint, token);
+    if (s->engine->mtp_ready && !step37_spec_extend(&s->step37_spec, &s->engine->mtp_model,
+            &s->engine->step37_mtp, g->ws.b_cur, s->checkpoint.v, (unsigned)s->checkpoint.len, 1)) {
+        return step37_session_fail(s, err, errlen);
+    }
     s->mtp_draft_valid = false;
     return 0;
 }
@@ -68343,6 +68373,90 @@ static void inkling_trial_failed(ds4_session *s) {
     s->inkling_spec.draft.graph.failed = true;
 }
 #endif
+
+/* Rust owns acceptance. Native retains only the trial's device frontier and
+ * raw hidden rows; commit shortens KV without re-running accepted tokens. */
+int ds4_session_step37_trial(ds4_session *s, int first, int max_tokens,
+                              int *tokens, int *target, int cap,
+                              char *err, size_t errlen) {
+#ifdef DS4_NO_GPU
+    (void)s; (void)first; (void)max_tokens; (void)tokens; (void)target; (void)cap;
+    payload_set_err(err, errlen, "Step MTP requires CUDA");
+    return -1;
+#else
+    if (!s || !ds4_session_is_step37(s) || !tokens || !target || cap <= 0) {
+        payload_set_err(err, errlen, "invalid Step trial output");
+        return -1;
+    }
+    if (max_tokens <= 0 || !s->engine->mtp_ready) { return 0; }
+    ds4_engine *e = s->engine;
+    ds4_step37_graph *g = &s->step37_graph;
+    if (!s->step37_graph_ready || !s->checkpoint_valid || s->step37_trial_n || g->failed ||
+        g->position != (unsigned)s->checkpoint.len || g->position >= g->context ||
+        !step37_spec_valid(&s->step37_spec) || s->step37_spec.position != g->position ||
+        first < 0 || (unsigned)first >= DS4_N_VOCAB) {
+        payload_set_err(err, errlen, "Step trial needs a valid token and committed checkpoint");
+        return -1;
+    }
+    unsigned n = (unsigned)max_tokens;
+    if (n > (unsigned)cap) { n = (unsigned)cap; }
+    if (n > S37_VERIFY) { n = S37_VERIFY; }
+    if (n > (unsigned)e->mtp_draft_tokens + 1) { n = (unsigned)e->mtp_draft_tokens + 1; }
+    if (n > g->context - g->position) { n = g->context - g->position; }
+    int predicted[S37_VERIFY];
+    s->step37_trial[0] = first;
+    if ((n > 1 && !step37_spec_propose(&s->step37_spec, &e->mtp_model, &e->step37_mtp,
+                                      s->checkpoint.v, first, s->step37_trial + 1, n - 1)) ||
+        !step37_forward(g, &e->model, &e->weights, s->step37_trial, n, g->position)) {
+        step37_session_fail(s, err, errlen);
+        return -1;
+    }
+    for (unsigned row = 0; row < n; row++) {
+        if (!step37_head(g, &e->model, &e->weights, row) || !step37_read_logits(s)) {
+            step37_session_fail(s, err, errlen);
+            return -1;
+        }
+        predicted[row] = sample_argmax(s->logits, DS4_N_VOCAB);
+    }
+    s->step37_trial_n = n;
+    memcpy(tokens, s->step37_trial, n * sizeof(*tokens));
+    memcpy(target, predicted, n * sizeof(*target));
+    return (int)n;
+#endif
+}
+
+int ds4_session_step37_commit(ds4_session *s, int keep, char *err, size_t errlen) {
+#ifdef DS4_NO_GPU
+    (void)s; (void)keep;
+    payload_set_err(err, errlen, "Step MTP requires CUDA");
+    return 1;
+#else
+    if (!s || !ds4_session_is_step37(s) || !s->engine->mtp_ready || !s->checkpoint_valid ||
+        keep <= 0 || (unsigned)keep > s->step37_trial_n) {
+        payload_set_err(err, errlen, "invalid Step accepted prefix");
+        return 1;
+    }
+    ds4_engine *e = s->engine;
+    ds4_step37_graph *g = &s->step37_graph;
+    const unsigned end = (unsigned)s->checkpoint.len + (unsigned)keep;
+    if (g->position != (unsigned)s->checkpoint.len + s->step37_trial_n ||
+        !step37_rewind(g, end) || !step37_head(g, &e->model, &e->weights, (unsigned)keep - 1) ||
+        !step37_read_logits(s)) {
+        return step37_session_fail(s, err, errlen);
+    }
+    for (int i = 0; i < keep; i++) { token_vec_push(&s->checkpoint, s->step37_trial[i]); }
+    if (!step37_spec_extend(&s->step37_spec, &e->mtp_model, &e->step37_mtp,
+                            g->ws.b_cur, s->checkpoint.v, end, (unsigned)keep)) {
+        return step37_session_fail(s, err, errlen);
+    }
+    if (getenv("DS4_MTP_SPEC_LOG")) {
+        fprintf(stderr, "ds4: Step mtp trial=%u keep=%d pos=%u\n", s->step37_trial_n, keep, end);
+    }
+    s->step37_trial_n = 0;
+    s->mtp_draft_valid = false;
+    return 0;
+#endif
+}
 
 int ds4_session_inkling_trial(ds4_session *s, int first, int max_tokens,
                                int *tokens, int *target, int cap,
@@ -69153,6 +69267,9 @@ int ds4_session_exaone_rewind_span(ds4_session *s) {
 }
 
 static bool step37_logits_unready(const ds4_session *s) {
+#ifndef DS4_NO_GPU
+    if (ds4_session_is_step37(s) && s->step37_trial_n) { return true; }
+#endif
     return ds4_session_is_step37(s) && !s->checkpoint_valid;
 }
 
@@ -71199,7 +71316,9 @@ void ds4_session_invalidate(ds4_session *s) {
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
     if (ds4_session_is_step37(s) && s->step37_graph_ready) {
+        s->step37_trial_n = 0;
         (void)step37_reset(&s->step37_graph);
+        if (s->engine->mtp_ready) { (void)step37_spec_reset(&s->step37_spec); }
     } else if (ds4_session_is_inkling(s) && s->inkling_graph_ready) {
         s->inkling_trial_n = 0;
         (void)inkling_graph_reset(&s->inkling_graph);
@@ -71235,11 +71354,15 @@ void ds4_session_rewind(ds4_session *s, int pos) {
     s->checkpoint.len = pos;
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_step37(s) && pos != old_pos) {
+    if (ds4_session_is_step37(s) && (pos != old_pos || s->step37_trial_n)) {
         /* The truncated prefix has no matching output logits. Sync must
          * replay it before sampling or extending through the decode API. */
         s->checkpoint_valid = false;
-        if (s->step37_graph_ready) { (void)step37_reset(&s->step37_graph); }
+        s->step37_trial_n = 0;
+        if (s->step37_graph_ready) {
+            (void)step37_reset(&s->step37_graph);
+            if (s->engine->mtp_ready) { (void)step37_spec_reset(&s->step37_spec); }
+        }
     } else if (ds4_session_is_inkling(s) && (pos != old_pos || s->inkling_trial_n)) {
         s->checkpoint_valid = false;
         s->inkling_trial_n = 0;
