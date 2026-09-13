@@ -73,6 +73,11 @@ backend small and direct; this is not a generic GGUF runner.
 - Keep the CPU backend CPU-only and use it only as reference/debug code.
 - Preserve correctness before speed. Do not keep a faster path with unexplained
   attention, KV cache, or logits drift.
+- For mixed-quant artifacts, accept explained arithmetic differences when they
+  do not materially affect output quality. Assess logits, representative answers
+  and relevant cache state; bit identity or a fixed relative-RMS threshold alone
+  is not the acceptance criterion. KV, position and media-layout errors remain
+  correctness failures.
 - Make long local agent sessions practical through live KV reuse and disk KV
   checkpoints.
 

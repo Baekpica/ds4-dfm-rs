@@ -54,8 +54,8 @@ Do not reuse recorded PIDs or assume those services are running.
 
 ## Design records
 
-- [Step 3.7 integration](step37-initial.md): MQ83 text, MTP and KV verification;
-  vision and performance qualification remain pending.
+- [Step 3.7 integration](step37-initial.md): MQ83 text/image serving, MTP,
+  numerical and KV verification; measured qualification limits.
 
 - [Inkling Small integration](inkling-small.md): MQ85GB/MTP serving,
   multimodal checks and remaining qualification.

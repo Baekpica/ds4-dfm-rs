@@ -71,6 +71,7 @@ freeze or permission to bind native internals.
 | `ds4_bridge_session_free` | `ds4_session_free` |
 | `ds4_bridge_session_sync` | prefix tokens → `ds4_session_sync` |
 | `ds4_bridge_session_sync_cb` | one `ds4_session_sync` plus call-scoped durable `prefill_chunk` frontiers |
+| `ds4_bridge_sync_step37` | validated Step image crops and expanded prompt → synchronous native vision encoding and full target/MTP refill |
 | `ds4_bridge_eval` | `ds4_session_eval` one token |
 | `ds4_bridge_session_argmax` | greedy next id |
 | `ds4_bridge_session_pos` | native committed timeline (host `SessionLedger` is authoritative) |
@@ -178,9 +179,17 @@ Token arrays are `const int32_t *` + length. Do not export
 | `ds4_bridge_session` | bridge | `ds4_bridge_session_free` | `NonNull`, `Drop` |
 | error buffer | Rust caller | Rust caller | `&mut [u8]` scratch |
 | token scratch | Rust caller | Rust caller | `&[i32]` |
+| Step normalized CHW crops | Rust caller | Rust caller after synchronous sync | borrowed F32 buffers and checked span descriptors |
 | GPU tensors / graphs | native session | native session free | invisible |
 
 The bridge must not return interior pointers into engine arenas.
+
+Step image sync retains only native-owned GPU features. Rust preflights the
+complete image/token budget before decoding; native code rechecks dimensions,
+finite pixels and placeholder coverage before GPU mutation. Rejected preflight
+preserves the frontier. A failure after encoding begins invalidates target/MTP
+state and advances the session generation so Rust discards its checkpoint.
+Changed images force refill even when the expanded prompt tokens are identical.
 
 ## Native boundary scope
 

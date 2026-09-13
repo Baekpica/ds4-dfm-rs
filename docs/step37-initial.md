@@ -166,25 +166,19 @@ only depth 0 on its first pass, then runs depths 1 and 2 on one row each.
 This runtime's fuller predictor history is not a claim of vLLM draft-logit
 parity. Target verification determines the committed stream.
 
-The current `--scope mtp` owner path suppresses in-process base artifacts
-because startup checks for any manifest, not which source it covers. These
-MTP gates therefore use raw-layout main dispatch. Profile this fallback and
-validate source-specific artifact construction during the optimization phase;
-do not compare these runs with aligned main-only results as identical paths.
+The initial MTP gates above used raw-layout BASE dispatch: startup previously
+disabled local artifacts whenever any IPC manifest was present. The optimized
+path now builds BASE artifacts when the manifest supplies only MTP. Its
+separate correctness, quality and fresh-process measurements are recorded in
+[the optimization report](step37-optimization-2026-09-13.md).
 
 The image crop planner matches 28 independent official Python cases, including
 thin-image padding, the 728/3024 limits, crop order and media token counts.
 
-The Spark handoff supplies BF16 logits and real image fixtures. BF16 outputs
-are separate from the MQ83 oracle comparison above. Remaining gates:
-
-- Representative longer text/image continuations and output quality checks.
-- Longer MTP continuations and measured MTP-on/off performance controls.
-- Longer mixed text/image continuations beyond the bounded image suite.
-- Guarded GB10 residency, context/bank admission and prefill/decode measurements.
-- Profile and optimize Prefill and Decode; keep before/after throughput and
-  numerical evidence, including MTP-on/off and multimodal workloads.
-- Final repository documentation, verified HF model card update and GitHub PR.
+The Spark handoff also supplies BF16 logits and real image fixtures. These
+are distinct from the same-MQ83 runtime comparison above; broad MQ83-versus-BF16
+fidelity and long multimodal conversations remain unqualified. The supported
+serving limits and commands are below.
 
 
 CPU image preprocessing now follows the official crop/padding and two
@@ -249,3 +243,58 @@ passes Messages with the correct image order. Responses retains its existing
 full-input replay contract. Greedy image decoding uses MTP. These are bounded
 functional/output checks, not a broad vision-quality or throughput benchmark.
 Step currently uses the serial lane; multi-sequence graphs are unavailable.
+
+A separate text benchmark completes 16384 prompt tokens and 1024 generated
+tokens at context 17416 with MTP draft 3. Default and graph-disabled runs have
+identical full-vocabulary frontier logits and all 1024 tokens. This establishes
+that bounded workload, not 262144-token capacity or long image conversations.
+
+All [CONTRIBUTING host checks](../CONTRIBUTING.md) pass: formatting, clippy,
+eight C/Rust parity targets, serialized workspace tests and all-target checks.
+Native operator, artifact-scope and image/MTP state results are recorded in
+[the optimization report](step37-optimization-2026-09-13.md).
+
+## Running the supported artifact
+
+Download `MQ83/`, `MTP/` and `vision/` from
+[the model repository](https://huggingface.co/Baekpica/Step-3.7-Flash-Mixed-Quant-GGUF).
+Keep the tokenizer configuration and Jinja files next to the main shards.
+The Rust processor reads image geometry from the validated model contract;
+it does not require a Python processor at runtime.
+
+After `make cuda-spark`, start the MTP owner in one terminal. Use an absolute
+manifest path so the second terminal can resolve the VMM broker:
+
+```sh
+STEP_MODEL=/path/to/Step-3.7-Flash-Mixed-Quant-GGUF
+python3 tools/host_memory_guard.py --max-gib 6 --high-gib 5 \
+  --timeout 0 --log scratch/step-owner-guard.jsonl -- \
+  ./ds4_weight_server --backend vmm --scope mtp \
+  --base "$STEP_MODEL/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf" \
+  --mtp "$STEP_MODEL/MTP/Step3.7-flash-mtp-Q8_0.gguf" \
+  --manifest /tmp/ds4-step37.ipc
+```
+
+Wait for the owner to report `ready`, then start a bounded worker:
+
+```sh
+STEP_MODEL=/path/to/Step-3.7-Flash-Mixed-Quant-GGUF
+DS4_CUDA_WEIGHT_IPC_MANIFEST=/tmp/ds4-step37.ipc \
+DS4_CUDA_WEIGHT_IPC_SCOPE=mtp \
+python3 tools/host_memory_guard.py --max-gib 100 --high-gib 96 \
+  --timeout 0 --log scratch/step-worker-guard.jsonl -- \
+  ./ds4-server --cuda --host 127.0.0.1 --port 8000 \
+  --model-id step-3.7-flash-mq83 -c 4096 --tokens 128 \
+  -m "$STEP_MODEL/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf" \
+  --mtp "$STEP_MODEL/MTP/Step3.7-flash-mtp-Q8_0.gguf" --mtp-draft 3 \
+  --vision "$STEP_MODEL/vision/mmproj-step3.7-flash-f16.gguf"
+```
+
+Set `reasoning_effort: "none"` and `temperature: 0` for greedy MTP. Sampled
+reasoning and forced protocol prefixes use ordinary decode. Still images
+are bounded PNG/JPEG inputs, up to four per request.
+Audio, distributed slices, multiple sequence banks and serialized disk KV
+are unsupported for Step. Follow-up requests replay their complete history;
+changed images refill the session. The benchmark also restores sweep prefixes
+by replay outside timing. `kvcache_bytes=0` describes absent serialization,
+not zero live KV memory.
