@@ -174,6 +174,23 @@ int main(int argc, char **argv) {
     CHECK(restored_next == ref_fork[GEN - 1]);
     printf("Step cont: bank disk KV round-trips %d committed tokens; frontier logits live\n", rn);
 
+    /* Disk restore changes lineage, so old prefix checkpoints cannot survive
+     * it. Rebuild a source, then restore its exact prompt checkpoint after
+     * decode has advanced beyond that frontier. */
+    CHECK(step37_ckpt_find(ctx_b->step37, (uint32_t)bank, (uint32_t)len_a, (uint32_t)len_a) < 0);
+    cont_req trunk = {.tokens = prompt.v, .n = len_a};
+    driver td = {.reqs = &trunk, .count = 1};
+    CHECK(!ds4_engine_continuous_generate(ctx_b, admit_cb, NULL, done_cb, &td, err, sizeof(err)));
+    CHECK(ds4_batch_ctx_supports_partial_reuse(ctx_b));
+    cont_req cut = {.tokens = prompt.v, .n = len_a,
+                    .fork_bank = trunk.placed_bank + 1, .n_cached = len_a};
+    driver pd = {.reqs = &cut, .count = 1};
+    const uint64_t partial_before = ctx_b->fork_partial;
+    CHECK(!ds4_engine_continuous_generate(ctx_b, admit_cb, NULL, done_cb, &pd, err, sizeof(err)));
+    CHECK(ctx_b->fork_partial == partial_before + 1);
+    CHECK(cut.out_n == GEN && !memcmp(cut.out, ref_a, GEN * sizeof(int)));
+    printf("Step cont: partial fork restores %d-row prompt checkpoint, %d tokens exact\n", len_a, GEN);
+
     ds4_batch_ctx_destroy(ctx_b);
     CHECK(!session_tensors_census_live());
     ds4_gpu_cleanup();

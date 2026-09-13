@@ -44622,7 +44622,169 @@ typedef struct ds4_step37_batch_runtime {
     ds4_step37_graph *graph;   /* per-bank, self-contained (KV + scratch) */
     float *bank_logits;
     uint8_t *bank_logits_valid;
+    ds4_gpu_tensor *checkpoint_slab;
+    ds4_partial_checkpoint checkpoint[DS4_PARTIAL_CHECKPOINT_SLOTS];
+    float *checkpoint_logits;
+    uint64_t checkpoint_slot_bytes, checkpoint_clock;
+    uint32_t checkpoint_stride;
 } ds4_step37_batch_runtime;
+
+/* Only SWA needs snapshots: full-attention rows remain in the source bank.
+ * Reserve virtual slots, and map them only within the shared memory budget. */
+static void step37_ckpt_init(ds4_step37_batch_runtime *rt) {
+    const char *off = getenv("DS4_SERVER_FORK_PARTIAL");
+    if (off && strcmp(off, "0") == 0) { return; }
+    for (unsigned il = 0; il < STEP37_LAYERS; il++) {
+        if (step37_sliding(il)) {
+            rt->checkpoint_slot_bytes += (uint64_t)S37_WINDOW * 2 * S37_KV * sizeof(uint16_t);
+        }
+    }
+    rt->checkpoint_slab = ds4_gpu_tensor_reserve(
+        rt->checkpoint_slot_bytes * DS4_PARTIAL_CHECKPOINT_SLOTS);
+    if (!rt->checkpoint_slab) { return; }
+    rt->checkpoint_logits = xcalloc(
+        (size_t)DS4_PARTIAL_CHECKPOINT_SLOTS * DS4_N_VOCAB, sizeof(float));
+    enum { CHECKPOINT_ALIGN = 4096 };
+    uint32_t stride = (rt->ctx_size + DS4_PARTIAL_PERIODIC_TARGET - 1) / DS4_PARTIAL_PERIODIC_TARGET;
+    rt->checkpoint_stride = ((stride + CHECKPOINT_ALIGN - 1) / CHECKPOINT_ALIGN) * CHECKPOINT_ALIGN;
+}
+
+static void step37_ckpt_drop(ds4_step37_batch_runtime *rt, uint32_t bank) {
+    for (unsigned i = 0; i < DS4_PARTIAL_CHECKPOINT_SLOTS; i++) {
+        if (partial_checkpoint_ref(&rt->checkpoint[i], bank)) {
+            partial_checkpoint_clear_ref(&rt->checkpoint[i], bank);
+        }
+    }
+}
+
+static void step37_ckpt_inherit(ds4_step37_batch_runtime *rt, uint32_t src,
+                                uint32_t dst, uint32_t cut) {
+    if (src != dst) { step37_ckpt_drop(rt, dst); }
+    for (unsigned i = 0; i < DS4_PARTIAL_CHECKPOINT_SLOTS; i++) {
+        ds4_partial_checkpoint *cp = &rt->checkpoint[i];
+        if (!partial_checkpoint_ref(cp, src)) { continue; }
+        if (cp->pos <= cut) { partial_checkpoint_set_ref(cp, dst); }
+        else if (src == dst) { partial_checkpoint_clear_ref(cp, dst); }
+    }
+}
+
+static int step37_ckpt_find(ds4_step37_batch_runtime *rt, uint32_t bank,
+                            uint32_t cut, uint32_t request_len) {
+    int best = -1;
+    for (unsigned i = 0; i < DS4_PARTIAL_CHECKPOINT_SLOTS; i++) {
+        const ds4_partial_checkpoint *cp = &rt->checkpoint[i];
+        if (!cp->pos || cp->pos > cut || !partial_checkpoint_ref(cp, bank) ||
+            (cp->pos == request_len && !cp->logits_valid)) { continue; }
+        if (best < 0 || cp->pos > rt->checkpoint[best].pos) { best = (int)i; }
+    }
+    return best;
+}
+
+typedef enum { STEP37_CKPT_SAVE, STEP37_CKPT_LOAD } step37_ckpt_dir;
+
+/* Compact logical window order avoids dependence on ring wrap or capacity. */
+static bool step37_ckpt_window(ds4_step37_batch_runtime *rt, uint32_t bank,
+                               uint32_t il, uint64_t off, uint32_t pos,
+                               step37_ckpt_dir dir) {
+    ds4_step37_graph *g = &rt->graph[bank];
+    const uint64_t row = 2u * S37_KV * sizeof(uint16_t);
+    const uint32_t count = pos < S37_WINDOW ? pos : S37_WINDOW;
+    if (!g->kv_cap[il]) { return false; }
+    for (uint32_t done = 0; done < count;) {
+        uint32_t slot = (pos - count + done) % g->kv_cap[il];
+        uint32_t rows = count - done;
+        if (rows > g->kv_cap[il] - slot) { rows = g->kv_cap[il] - slot; }
+        bool ok = dir == STEP37_CKPT_SAVE
+            ? ds4_gpu_tensor_copy(rt->checkpoint_slab, off + done * row, g->kv[il], slot * row, rows * row)
+            : ds4_gpu_tensor_copy(g->kv[il], slot * row, rt->checkpoint_slab, off + done * row, rows * row);
+        if (!ok) { return false; }
+        done += rows;
+    }
+    return true;
+}
+
+static bool step37_ckpt_capture(ds4_step37_batch_runtime *rt, uint32_t bank,
+                                uint32_t pos, bool logits_valid, uint64_t reserve) {
+    if (!rt || !rt->checkpoint_slab || bank >= rt->max_seq || !pos ||
+        rt->graph[bank].failed || pos != rt->graph[bank].position) { return false; }
+    uint32_t slot = 0;
+    for (uint32_t i = 0; i < DS4_PARTIAL_CHECKPOINT_SLOTS; i++) {
+        ds4_partial_checkpoint *cp = &rt->checkpoint[i];
+        if (cp->pos == pos && partial_checkpoint_ref(cp, bank)) {
+            if (logits_valid && rt->bank_logits_valid[bank]) {
+                memcpy(rt->checkpoint_logits + (size_t)i * DS4_N_VOCAB,
+                       rt->bank_logits + (size_t)bank * DS4_N_VOCAB, DS4_N_VOCAB * sizeof(float));
+                cp->logits_valid = 1;
+            }
+            cp->last_use = ++rt->checkpoint_clock;
+            return true;
+        }
+        if (!cp->pos || (rt->checkpoint[slot].pos && cp->last_use < rt->checkpoint[slot].last_use)) {
+            slot = i;
+        }
+    }
+    const uint64_t base = slot * rt->checkpoint_slot_bytes;
+    uint64_t need = batch_span_need(rt->checkpoint_slab, base, rt->checkpoint_slot_bytes);
+    if (need > ds4_mem_usable_beyond(reserve) ||
+        !ds4_gpu_tensor_ensure(rt->checkpoint_slab, base, rt->checkpoint_slot_bytes)) { return false; }
+    /* Invalidate before overwriting: a failed copy must never leave old
+     * lineage pointing at a partially replaced slot. */
+    ds4_partial_checkpoint *cp = &rt->checkpoint[slot];
+    memset(cp, 0, sizeof(*cp));
+    uint64_t off = base;
+    for (unsigned il = 0; il < STEP37_LAYERS; il++) {
+        if (!step37_sliding(il)) { continue; }
+        if (!step37_ckpt_window(rt, bank, il, off, pos, STEP37_CKPT_SAVE)) { return false; }
+        off += (uint64_t)S37_WINDOW * 2 * S37_KV * sizeof(uint16_t);
+    }
+    if (!ds4_gpu_synchronize()) { return false; }
+    cp->pos = pos;
+    cp->last_use = ++rt->checkpoint_clock;
+    partial_checkpoint_set_ref(cp, bank);
+    if (logits_valid && rt->bank_logits_valid[bank]) {
+        memcpy(rt->checkpoint_logits + (size_t)slot * DS4_N_VOCAB,
+               rt->bank_logits + (size_t)bank * DS4_N_VOCAB, DS4_N_VOCAB * sizeof(float));
+        cp->logits_valid = 1;
+    }
+    return true;
+}
+
+static bool step37_ckpt_restore(ds4_step37_batch_runtime *rt, uint32_t src,
+                                uint32_t dst, uint32_t slot, uint32_t cut, uint32_t *out) {
+    if (!rt || src >= rt->max_seq || dst >= rt->max_seq || slot >= DS4_PARTIAL_CHECKPOINT_SLOTS) { return false; }
+    ds4_partial_checkpoint *cp = &rt->checkpoint[slot];
+    const uint32_t pos = cp->pos;
+    if (!pos || pos > cut || pos > rt->graph[src].position ||
+        rt->graph[src].failed || !partial_checkpoint_ref(cp, src)) { return false; }
+    ds4_step37_graph *g = &rt->graph[dst];
+    g->failed = true;
+    rt->bank_logits_valid[dst] = 0;
+    const uint64_t row = 2u * S37_KV * sizeof(uint16_t);
+    uint64_t off = slot * rt->checkpoint_slot_bytes;
+    for (unsigned il = 0; il < STEP37_LAYERS; il++) {
+        if (step37_sliding(il)) {
+            if (!step37_ckpt_window(rt, dst, il, off, pos, STEP37_CKPT_LOAD)) { return false; }
+            off += S37_WINDOW * row;
+        } else if (src != dst && !ds4_gpu_tensor_copy(g->kv[il], 0, rt->graph[src].kv[il], 0, pos * row)) {
+            return false;
+        }
+    }
+    if (!ds4_gpu_synchronize()) { return false; }
+    g->position = pos;
+    /* Only the live window was restored, not older chunk slack. Keep the
+     * rewind floor at this checkpoint until new rows replenish that slack. */
+    g->high_water = pos + g->cap;
+    g->failed = false;
+    if (cp->logits_valid) {
+        memcpy(rt->bank_logits + (size_t)dst * DS4_N_VOCAB,
+               rt->checkpoint_logits + (size_t)slot * DS4_N_VOCAB, DS4_N_VOCAB * sizeof(float));
+        rt->bank_logits_valid[dst] = 1;
+    }
+    cp->last_use = ++rt->checkpoint_clock;
+    step37_ckpt_inherit(rt, src, dst, pos);
+    if (out) { *out = pos; }
+    return true;
+}
 
 static void step37_batch_runtime_free(ds4_step37_batch_runtime *rt) {
     if (!rt) { return; }
@@ -44632,6 +44794,8 @@ static void step37_batch_runtime_free(ds4_step37_batch_runtime *rt) {
     free(rt->graph);
     free(rt->bank_logits);
     free(rt->bank_logits_valid);
+    ds4_gpu_tensor_free(rt->checkpoint_slab);
+    free(rt->checkpoint_logits);
     free(rt);
 }
 
@@ -44656,6 +44820,7 @@ static ds4_step37_batch_runtime *step37_batch_runtime_create(
         step37_batch_runtime_free(rt);
         return NULL;
     }
+    step37_ckpt_init(rt);
     return rt;
 }
 
@@ -44670,6 +44835,7 @@ static bool step37_batch_runtime_read_logits(ds4_step37_batch_runtime *rt, uint3
 
 static bool step37_batch_runtime_reset_bank(ds4_step37_batch_runtime *rt, uint32_t bank) {
     if (!rt || bank >= rt->max_seq) { return false; }
+    step37_ckpt_drop(rt, bank);
     rt->bank_logits_valid[bank] = 0u;
     return step37_reset(&rt->graph[bank]);
 }
@@ -55692,6 +55858,7 @@ static int step37_cont_bank_restore_payload(
         ds4_batch_ctx *ctx, uint32_t bank, FILE *fp,
         uint64_t payload_bytes, char *err, size_t errlen) {
     ds4_step37_batch_runtime *rt = ctx->step37;
+    step37_ckpt_drop(rt, bank);
     ctx->bank_gen[bank]++;
     ctx->bank_hist_valid[bank] = 0u;
     ctx->bank_hist_len[bank] = 0u;
@@ -58233,9 +58400,7 @@ static int step37_batch_ctx_create_impl(
     ctx->bank_gen = xmalloc(ctx->max_seq * sizeof(*ctx->bank_gen));
     for (uint32_t b = 0; b < ctx->max_seq; b++) { ctx->bank_gen[b] = 1u; }
     ctx->bank_last_use = xcalloc(ctx->max_seq, sizeof(*ctx->bank_last_use));
-    /* Full-frontier fork and warm reuse only; below-frontier partial reuse
-     * needs a sliding-window checkpoint pool, still serial-lane work. */
-    ctx->supports_partial_reuse = false;
+    ctx->supports_partial_reuse = ctx->step37->checkpoint_slab != NULL;
     ds4_metric_set(&ds4_metrics_get()->banks_total, ctx->max_seq);
     *out = ctx;
     return 0;
@@ -60901,8 +61066,11 @@ static bool family_banked_copy(
             ctx->qwen, src, dst, tokens);
         return ok;
     }
-    if (ctx->step37)
-        return step37_batch_runtime_copy_bank(ctx->step37, src, dst, tokens);
+    if (ctx->step37) {
+        const bool ok = step37_batch_runtime_copy_bank(ctx->step37, src, dst, tokens);
+        if (ok) { step37_ckpt_inherit(ctx->step37, src, dst, tokens); }
+        return ok;
+    }
     return ctx->motif3
         ? motif3_batch_runtime_copy_bank(ctx->motif3, src, dst)
         : exaone_batch_runtime_copy_bank(ctx->exaone, src, dst, tokens);
@@ -60956,6 +61124,10 @@ static bool family_banked_decode(
 
 static bool family_banked_checkpoint_due(
         const ds4_batch_ctx *ctx, uint32_t before, uint32_t after) {
+    if (ctx->step37) {
+        const uint32_t stride = ctx->step37->checkpoint_stride;
+        return stride && after > before && before / stride != after / stride;
+    }
     return ctx->qwen
         ? qwen_batch_runtime_checkpoint_due(ctx->qwen, before, after)
         : ctx->motif3 && motif3_batch_runtime_checkpoint_due(
@@ -60965,7 +61137,9 @@ static bool family_banked_checkpoint_due(
 static void family_banked_capture_checkpoint(
         ds4_batch_ctx *ctx, uint32_t bank, uint32_t pos,
         bool logits_valid) {
-    if (ctx->qwen) {
+    if (ctx->step37) {
+        (void)step37_ckpt_capture(ctx->step37, bank, pos, logits_valid, ctx->serial_reserve);
+    } else if (ctx->qwen) {
         (void)qwen_batch_runtime_capture_checkpoint(
             ctx->qwen, bank, pos, logits_valid, ctx->serial_reserve);
     } else if (ctx->motif3) {
@@ -61113,6 +61287,32 @@ static int family_banked_engine_continuous_generate(
                     }
                     cached = requested_cached;
                     forked = true;
+                } else if (source_prefix &&
+                           requested_cached < source_frontier && ctx->step37) {
+                    const int checkpoint = step37_ckpt_find(
+                        ctx->step37, (uint32_t)src, requested_cached, (uint32_t)req.n);
+                    uint32_t pos = 0;
+                    if (checkpoint < 0) {
+                        ctx->fork_rejects++;
+                    } else if (!step37_ckpt_restore(ctx->step37, (uint32_t)src, b,
+                                                    (uint32_t)checkpoint, requested_cached, &pos)) {
+                        ctx->bank_gen[b]++;
+                        ctx->bank_hist_valid[b] = 0;
+                        step37_ckpt_drop(ctx->step37, b);
+                        FCG_ERR("continuous_generate: Step checkpoint restore failed src=%d dst=%u", src, b);
+                        ok = false;
+                        break;
+                    } else {
+                        if ((uint32_t)src != b) {
+                            memcpy(ctx->bank_hist + (size_t)b * ctx->seq_cap,
+                                   ctx->bank_hist + (size_t)src * ctx->seq_cap, (size_t)pos * sizeof(int));
+                        }
+                        ctx->bank_gen[b]++;
+                        ctx->bank_hist_len[b] = pos;
+                        ctx->bank_hist_valid[b] = 1;
+                        cached = pos;
+                        forked = partial = true;
+                    }
                 } else if (source_prefix &&
                            requested_cached < source_frontier &&
                            (ctx->qwen || ctx->motif3)) {

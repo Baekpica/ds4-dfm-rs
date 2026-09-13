@@ -70,10 +70,20 @@ Motif-3, which gives, at `DS4_SERVER_COALESCE_MAX=2`:
 - warm prefix reuse and per-bank disk KV (`--kv-disk-dir`), reusing the same
   `STP3` payload as the serial lane.
 
+The follow-up adds below-frontier partial fork. Up to 32 shared checkpoints
+store only the sliding layers' live 512-row windows and frontier logits;
+full-attention rows copy from the source bank. Slots map on demand within
+the memory reserve. Request boundaries and periodic prefill/decode frontiers
+are captured; a cut resumes from the nearest retained checkpoint and replays
+its suffix. `DS4_SERVER_FORK_PARTIAL=0` disables this pool.
+
+Forks inherit checkpoint references. Reset and disk restore discard the old
+lineage. A compact restore refuses rewinds below its saved window; older ring
+slack was not captured. Missing checkpoints fall back to cold prefill.
+
 The banked lane runs ordinary (non-speculative) decode. MTP speculation lives
 in the serial session's trial/commit and the shared continuous loop only wires
-per-token speculation for Qwen; below-frontier partial reuse likewise stays
-serial-lane work. Image requests fall back to the serial session automatically
+per-token speculation for Qwen. Image requests fall back to the serial session automatically
 (`prepare_qwen_images` refuses a non-Qwen model, so the continuous prompt is
 not prepared and the router picks the serial lane).
 
@@ -84,6 +94,14 @@ not prepared and the router picks the serial lane).
 - a full-frontier fork of a 175-row committed bank matches a serial session
   prefilling those rows;
 - a bank disk-KV snapshot round-trips 190 committed tokens.
+- a partial fork restores the 160-row prompt checkpoint after generation has
+  advanced, then matches all 16 serial continuation tokens.
+
+`tests/test_step37_checkpoint` is a model-free GPU copy gate. It checks every
+live KV row after wrapped-window and in-place restoration, all vocabulary
+logits, source-bank preservation, shared lineage and the restored rewind floor.
+The follow-up MQ83 gate passed with the GPU locked to 300–2200 MHz (observed
+2197 MHz); this is correctness evidence, not an uncapped speed comparison.
 
 ## Running the two configurations
 
@@ -101,7 +119,7 @@ Concurrent sessions (two banks, fork, warm, bank disk KV):
 
 ```sh
 DS4_STEP37_BATCH=1 DS4_SERVER_COALESCE_MAX=2 DS4_SERVER_CONTINUOUS=1 \
-DS4_SERVER_FORK=1 \
+DS4_SERVER_FORK=1 DS4_SERVER_FORK_PARTIAL=1 \
 ./ds4-server --cuda --port 8000 -c 262144 \
   -m "$STEP/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf" \
   --kv-disk-dir /path/to/step-kv --kv-disk-space-mb 32768
@@ -115,5 +133,3 @@ initial-integration doc; the banked lane leaves the imported predictor idle.
 - Per-bank MTP speculation on the continuous lane (Qwen commits at most one
   drafted token per step; Step accepts up to three, which the shared loop does
   not yet express).
-- Below-frontier partial fork for the banked lane (needs a sliding-window
-  checkpoint pool like Motif-3's).
