@@ -89,7 +89,7 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         "DS4_EXAONE_PREFILL_GQA" => {
             (family.starts_with("step") || family.starts_with("exaone") || family == "k2")
                 && value == "0"
-        },
+        }
         _ => false,
     };
     if !valid {
