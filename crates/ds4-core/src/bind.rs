@@ -1270,7 +1270,12 @@ pub fn dump_bind_names_variant(name: &str) -> Option<String> {
 pub fn catalog_from_bind_name(s: &str) -> Option<(Option<SupportCatalog>, Variant)> {
     if let Some(rest) = s.strip_prefix("mtp-") {
         return variant_from_bind_name(rest)
-            .filter(|v| matches!(v, Variant::Flash | Variant::Pro | Variant::InklingSmall))
+            .filter(|v| {
+                matches!(
+                    v,
+                    Variant::Flash | Variant::Pro | Variant::InklingSmall | Variant::Step37Flash
+                )
+            })
             .map(|v| (Some(SupportCatalog::Mtp), v));
     }
     if let Some(rest) = s.strip_prefix("dspark-") {
