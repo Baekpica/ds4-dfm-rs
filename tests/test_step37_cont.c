@@ -165,7 +165,14 @@ int main(int argc, char **argv) {
     CHECK(rn == fcount + GEN - 1 && rt);
     for (int i = 0; i < fcount; i++) { CHECK(rt[i] == frontier[i]); }
     for (int i = 0; i < GEN - 1; i++) { CHECK(rt[fcount + i] == ref_fork[i]); }
-    printf("Step cont: bank disk KV round-trips %d committed tokens\n", rn);
+    /* The restore must carry live frontier logits (not an all-zero
+     * distribution), so the bank's argmax is the real pending token -- the
+     * last token the fork generated but had not yet committed. */
+    CHECK(ctx_b->step37->bank_logits_valid[bank]);
+    const int restored_next =
+        sample_argmax(ctx_b->step37->bank_logits + (size_t)bank * DS4_N_VOCAB, DS4_N_VOCAB);
+    CHECK(restored_next == ref_fork[GEN - 1]);
+    printf("Step cont: bank disk KV round-trips %d committed tokens; frontier logits live\n", rn);
 
     ds4_batch_ctx_destroy(ctx_b);
     CHECK(!session_tensors_census_live());

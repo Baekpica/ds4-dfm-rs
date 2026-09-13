@@ -55660,10 +55660,14 @@ static int exaone_cont_bank_restore_payload(
 
 /* Step banks reuse the serial disk-KV format with no predictor state (the
  * banked lane never advances MTP), so a saved bank checkpoint reloads on a
- * plain serial session and vice versa. */
+ * plain serial session and vice versa.  The bank's frontier logits must be
+ * live: the serial loader marks the restored checkpoint valid, so a payload
+ * carrying an all-zero distribution would make ds4_session_argmax return token
+ * 0 at the reused frontier instead of the real next token. */
 static uint64_t step37_cont_bank_payload_bytes(ds4_batch_ctx *ctx, uint32_t bank) {
     if (!ctx || !ctx->step37 || bank >= ctx->max_seq ||
         !ctx->bank_hist_valid[bank] || ctx->bank_hist_len[bank] == 0u ||
+        !ctx->step37->bank_logits_valid[bank] ||
         ctx->step37->graph[bank].position != ctx->bank_hist_len[bank]) {
         return 0u;
     }
@@ -55680,7 +55684,8 @@ static int step37_cont_bank_save_payload(
     return step37_payload_save_graph(
         &ctx->step37->graph[bank], NULL,
         ctx->bank_hist + (size_t)bank * ctx->seq_cap,
-        ctx->bank_hist_len[bank], NULL, fp, err, errlen);
+        ctx->bank_hist_len[bank],
+        ctx->step37->bank_logits + (size_t)bank * DS4_N_VOCAB, fp, err, errlen);
 }
 
 static int step37_cont_bank_restore_payload(
