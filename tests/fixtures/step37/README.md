@@ -201,3 +201,14 @@ exposed `sincosf` substitution error at angle 40. Step now retains the
 and the source's fixed F32 frequency cache. The unchanged small gate and
 compute-sanitizer pass. This encoder component does not yet qualify API
 image input, multimodal MTP or generated visual answers.
+
+
+`make_media_vectors.py PROCESSING_STEP3 TOKENIZER_CONFIG` executes the
+source processor's replacement methods to produce `media-vectors.json`.
+Eight cases check every patch/base boundary token and row separator. Rust
+prepares patches first and the base last, preserving this order through the
+full 34-crop pixel comparison. Two-image tests reject malformed, overlapping,
+out-of-order and missing spans, and enforce one shared 8192-token budget
+before decoding. Byte input currently accepts PNG/JPEG with 8-bit channels,
+up to 32 MiB encoded and 128 MiB per decoded buffer. EXIF rotation and RGB
+conversion are explicit; an asymmetric JPEG gate checks rotation direction.

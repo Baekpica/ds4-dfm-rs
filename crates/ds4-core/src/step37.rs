@@ -2,6 +2,8 @@
 mod media;
 mod resample;
 
+pub(crate) use media::Step37Media;
+
 use std::collections::BTreeSet;
 use std::path::Path;
 

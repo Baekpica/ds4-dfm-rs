@@ -3,9 +3,12 @@
 The goal includes native Rust-host serving with MTP and still-image input,
 Prefill and Decode optimization, documentation/HF model card updates, and a
 PR after validation. The September 13 scope extension permits improvements
-during implementation. Retain only measured candidates with logits, greedy
-token and KV parity; report fresh-process prefill/decode and MTP controls
-separately. Full-model verification may stop Qwen. The latest owner instruction cancels
+during implementation. The owner's later numerical policy accepts arithmetic
+differences consistent with Mixed Quant when they do not materially affect
+generated output. Compare logits, tokens and representative answer quality;
+a fixed cross-engine error threshold alone is not a release blocker. Preserve
+structural KV, position and media-layout correctness. Report measured fresh-
+process prefill/decode and MTP controls separately. Full-model verification may stop Qwen. The latest owner instruction cancels
 automatic restoration; leave Qwen stopped and focus on Step implementation.
 Its running binaries and configuration were backed up before shutdown.
 The HF update may include required tokenizer, Jinja and processor assets;
@@ -202,3 +205,12 @@ and all 81/169 final 4096-wide features are checked. The small kernel gate
 also passes compute-sanitizer with production fast-math flags after retaining
 accurate RoPE trigonometry. API image wiring and multimodal MTP are pending.
 These are encoder component checks, not generated-image or throughput claims.
+
+
+Rust now preflights and decodes bounded 8-bit PNG/JPEG data, applies EXIF
+orientation and constructs exact official patch/base token replacements.
+All image spans and the request-wide 8192-token budget are checked before
+pixel allocation. Prepared crops carry validated absolute token offsets in
+patch-first/base-last order. The full 34-crop pixel gate passes through this
+preparation path. Native session injection and server image routing remain
+pending.
