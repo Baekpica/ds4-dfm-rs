@@ -169,6 +169,127 @@ static int compare_states(const ds4_qwen_gpu_graph *ga,
     return failures;
 }
 
+/* Compare only live prefix rows; unused cache capacity is uninitialized. */
+static int compare_mtp(const ds4_qwen_gpu_graph *ga,
+                       const ds4_qwen_gpu_graph *gb,
+                       float *scratch_a, float *scratch_b) {
+    const ds4_qwen_qsa_state *a = &ga->mtp_qsa_state;
+    const ds4_qwen_qsa_state *b = &gb->mtp_qsa_state;
+    if (!ga->mtp_enabled || !gb->mtp_enabled || a->length == 0u ||
+        a->length != b->length || !ga->mtp_pending_valid ||
+        !gb->mtp_pending_valid) {
+        fprintf(stderr, "MTP prefix is missing or has different frontiers\n");
+        return 1;
+    }
+    const uint64_t kv_bytes = (uint64_t)a->length * a->kv_heads *
+        a->head_dim * sizeof(float);
+    const uint64_t raw_bytes = (uint64_t)a->length * a->index_head_dim *
+        sizeof(float);
+    const uint64_t pool_bytes = (uint64_t)(a->length / a->ratio) *
+        a->index_head_dim * sizeof(float);
+    int failures = compare_tensor("MTP keys", a->k_cache, b->k_cache,
+                                  kv_bytes, scratch_a, scratch_b);
+    failures += compare_tensor("MTP values", a->v_cache, b->v_cache,
+                               kv_bytes, scratch_a, scratch_b);
+    failures += compare_tensor("MTP raw index", a->raw_index, b->raw_index,
+                               raw_bytes, scratch_a, scratch_b);
+    failures += compare_tensor("MTP pooled index", a->pooled_index,
+                               b->pooled_index, pool_bytes,
+                               scratch_a, scratch_b);
+    failures += compare_tensor("MTP pending target", ga->mtp_pending_hc,
+                               gb->mtp_pending_hc,
+                               ds4_gpu_tensor_bytes(ga->mtp_pending_hc),
+                               scratch_a, scratch_b);
+    printf("MTP prefix %u rows: %d state mismatches\n", a->length, failures);
+    return failures;
+}
+
+static int seed_old_vocab(ds4_qwen_gpu_graph *g, const ds4_model *model) {
+    const int token = 0;
+    if (!qwen_mtp_vocab_feed(g, model, &token, 1u)) {
+        return -1;
+    }
+    for (uint32_t id = QWEN_DRAFT_BASE_VOCAB; id < DS4_N_VOCAB; id++) {
+        if (g->mtp_vocab_seen[id]) {
+            continue;
+        }
+        if (!qwen_mtp_vocab_add(g, id)) {
+            return -1;
+        }
+        g->mtp_vocab_uploaded = g->mtp_vocab_count;
+        return (int)id;
+    }
+    return -1;
+}
+
+static int check_vocab_reset(const char *label, ds4_qwen_gpu_graph *g,
+                             const ds4_model *model, int old_id) {
+    if (g->mtp_vocab_count != 0u || g->mtp_vocab_uploaded != 0u) {
+        fprintf(stderr, "%s retained old draft vocabulary: %u / %u\n",
+                label, g->mtp_vocab_count, g->mtp_vocab_uploaded);
+        return 1;
+    }
+    const int token = 0;
+    if (!qwen_mtp_vocab_feed(g, model, &token, 1u) ||
+        g->mtp_vocab_seen[old_id]) {
+        fprintf(stderr, "%s failed to rebuild draft vocabulary\n", label);
+        return 1;
+    }
+    return 0;
+}
+
+/* Exercise real bank replacement paths with a prior request's high-ID hint. */
+static int check_bank_vocab(ds4_engine *e, const ds4_tokens *prompt) {
+    enum { PREFIX_ROWS = 16, BANK_CONTEXT = 128 };
+    ds4_qwen_batch_runtime *rt = qwen_batch_runtime_create(
+        e, BANK_CONTEXT, 2u, BANK_CONTEXT);
+    int failures = 0;
+    if (!rt || prompt->len < PREFIX_ROWS ||
+        !qwen_batch_runtime_prefill(rt, e, 0u, prompt->v, PREFIX_ROWS,
+                                    0u, true, NULL, 0u) ||
+        !qwen_batch_runtime_capture_checkpoint(rt, 0u, PREFIX_ROWS, true, 0u)) {
+        failures = 1;
+        goto done;
+    }
+    const uint32_t source_count = rt->graph[0].mtp_vocab_count;
+    if (!qwen_batch_runtime_copy_bank(rt, 0u, 0u, PREFIX_ROWS) ||
+        rt->graph[0].mtp_vocab_count != source_count) {
+        failures++;
+    }
+    for (uint32_t round = 0u; round < 3u; round++) {
+        int old_id = seed_old_vocab(&rt->graph[1], &e->model);
+        if (old_id < 0 ||
+            !qwen_batch_runtime_copy_bank(rt, 0u, 1u, PREFIX_ROWS)) {
+            failures++;
+            goto done;
+        }
+        failures += check_vocab_reset("bank copy", &rt->graph[1],
+                                      &e->model, old_id);
+        old_id = seed_old_vocab(&rt->graph[1], &e->model);
+        if (old_id < 0 || !qwen_batch_runtime_restore_checkpoint(
+                rt, e->qwen_ple_store, prompt->v, 0u, 1u, 0u,
+                PREFIX_ROWS, NULL)) {
+            failures++;
+            goto done;
+        }
+        failures += check_vocab_reset("checkpoint copy", &rt->graph[1],
+                                      &e->model, old_id);
+    }
+    const int old_id = seed_old_vocab(&rt->graph[0], &e->model);
+    if (old_id < 0 || !qwen_batch_runtime_restore_checkpoint(
+            rt, e->qwen_ple_store, prompt->v, 0u, 0u, 0u,
+            PREFIX_ROWS, NULL)) {
+        failures++;
+        goto done;
+    }
+    failures += check_vocab_reset("checkpoint rewind", &rt->graph[0],
+                                  &e->model, old_id);
+done:
+    qwen_batch_runtime_free(rt);
+    printf("Qwen bank vocabulary replacement: %s\n", failures ? "FAIL" : "PASS");
+    return failures;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2 || argc > 3) {
         fprintf(stderr, "usage: %s <first-model-shard.gguf> [steps]\n", argv[0]);
@@ -204,9 +325,15 @@ int main(int argc, char **argv) {
         failed = 1;
         goto cleanup;
     }
+    if (check_bank_vocab(engine, &prompt)) {
+        failed = 1;
+        goto cleanup;
+    }
     if (ds4_session_create(&a.session, engine, 2048) != 0 ||
         ds4_session_create(&b.session, engine, 2048) != 0 ||
+        setenv("DS4_QWEN_MTP_FULL_PREFIX", "1", 1) != 0 ||
         ds4_session_sync(a.session, &prompt, err, sizeof(err)) != 0 ||
+        unsetenv("DS4_QWEN_MTP_FULL_PREFIX") != 0 ||
         ds4_session_sync(b.session, &prompt, err, sizeof(err)) != 0) {
         fprintf(stderr, "session sync failed: %s\n", err);
         failed = 1;
@@ -227,6 +354,11 @@ int main(int argc, char **argv) {
     oracle1 = xmalloc((size_t)DS4_N_VOCAB * sizeof(float));
     scratch_a = xmalloc(largest);
     scratch_b = xmalloc(largest);
+    if (compare_mtp(a.graph, b.graph, scratch_a, scratch_b) ||
+        compare_logits("prefix logits", a.session->logits, b.session->logits)) {
+        failed = 1;
+        goto cleanup;
+    }
     ds4_engine *e = a.session->engine;
     if (!qwen4exp_graph_verify_ensure(b.graph)) {
         fprintf(stderr, "verify checkpoint allocation failed\n");

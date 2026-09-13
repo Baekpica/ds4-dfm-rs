@@ -8,6 +8,24 @@ in-process (default) or import it from the `ds4_weight_server` sidecar.
 
 Every CUDA-specific env var is below, with the intent behind each default.
 
+## Qwen embedded MTP
+
+The Q8 draft head scores low BPE IDs, non-normal token types and observed
+MTP input IDs. The target head and acceptance verification use the full
+vocabulary. Proposal hints are bounded by vocabulary size, reset with the
+graph, and are independent of accepted KV state.
+
+| Variable | Diagnostic control |
+|---|---|
+| `DS4_QWEN_MTP_FULL_VOCAB=1` | Score all draft vocabulary rows. |
+| `DS4_QWEN_MTP_CPU_ARGMAX=1` | Download draft logits and select on CPU. |
+| `DS4_QWEN_MTP_FULL_PREFIX=1` | Compute discarded attention/MoE outputs while preparing MTP history. |
+
+Defaults use the compact Q8 head and GPU selection. Other draft weight
+formats retain their full head; Metal retains CPU selection.
+Prefix preparation normally computes only QSA index/KV history from shifted
+target hidden states. Actual draft generation retains the complete MTP layer.
+
 ## Q8_0 dispatcher
 
 cuBLAS is initialised unconditionally at backend startup regardless of the

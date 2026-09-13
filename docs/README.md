@@ -20,6 +20,7 @@ release candidate or describe live processes.
 | [API surface matrix](ds4-api-surface-matrix.md) | Wire contracts, routing and unsupported behavior |
 | [Model families](ds4-dfm-model-families.md) | Family contracts and dated Spark evidence |
 | [Qwen FP8 PLE](qwen38-ple-fp8.md) | Sidecar selection, KV compatibility and paired card sweeps |
+| [Qwen performance, September 14](qwen38-perf-2026-09-14.md) | Draft/prefix A/B results, rejected experiments and serving limits |
 | [Memory guard](host-memory-guard.md) | Admission policy and operational limits |
 | [ds4-perf](ds4-perf.md) | Inspect, scout, compare, optimize and evidence contracts |
 | [Optimization playbook](prefill-decode-optimization-playbook.md) | Execution-path diagnosis and numerical proof |

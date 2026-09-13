@@ -974,6 +974,17 @@ tests/test_qwen4exp_moe_forward: tests/test_qwen4exp_moe_forward.o $(DS4_CUDA_SU
 tests/test_qwen4exp_verify.o: tests/test_qwen4exp_verify.c ds4.c ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include -c -o $@ $<
 
+tests/test_qwen4exp_draft.o: tests/test_qwen4exp_draft.c ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -Wno-unused-function -I. -I$(CUDA_HOME)/include -c -o $@ $<
+
+tests/test_qwen4exp_draft: tests/test_qwen4exp_draft.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-qwen4exp-draft
+test-qwen4exp-draft: tests/test_qwen4exp_draft
+	./tests/test_qwen4exp_draft
+	DS4_QWEN_MTP_CPU_ARGMAX=1 ./tests/test_qwen4exp_draft
+
 tests/test_qwen4exp_verify: tests/test_qwen4exp_verify.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
