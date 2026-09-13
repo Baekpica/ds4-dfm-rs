@@ -53,7 +53,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | GLM 5.3 Flash | `general.architecture=glm5-next` | exact Q2 main + vision sidecar | serial; 2,048-context cap |
 | K2-Horizon 375B A23B | `general.architecture=k2-horizon` | full-attention GQA KV, partial NeoX RoPE, shared-expert MoE | persistent one-bank (32K gated) |
 | Inkling Small | `general.architecture=inkling` | MQ85GB source-interleaved GQA, four-tap convolution, embedded media encoders, optional eight-layer MTP-BF16 | serial CUDA; [1,024-context checks](inkling-small.md) |
-| Step 3.7 Flash | `general.architecture=step35` | MQ83 full/sliding GQA, post-SiLU expert clamps, optional Q8 MTP and F16 vision | serial CUDA; [artifact and verification scope](step37-initial.md) |
+| Step 3.7 Flash | `general.architecture=step35` | MQ83 full/sliding GQA, post-SiLU expert clamps, optional Q8 MTP and F16 vision | serial CUDA; [artifact and verification scope](step37-initial.md); [GB10 post-landing throughput](step37-optimization-2026-09-13-r2.md) |
 
 The scheduler implementation may differ because the model states differ, but
 the operator and client contract is the same. Changing `-m` to a GGUF from a

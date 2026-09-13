@@ -12,7 +12,8 @@ That earlier work is not counted here.
 - `speed-bench/promessi_sposi.txt`, SHA-256
   `f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f`.
 - 2048 prompt tokens, 64 greedy generated tokens, allocated context 2120,
-  Step prefill chunk 512 and `--mtp-draft 3` unless a round changes a knob.
+  `--mtp-draft 3`. The campaign started at chunk 512 and left the default
+  at 2048.
 - Fresh processes, warmup-then-fresh, three unprofiled samples plus nsys.
 - With speculation, report MTP tok/s and a `DS4_MTP_SPEC_DISABLE=1`
   ordinary-decode control. Gate decode on the ordinary control, not MTP
@@ -34,9 +35,12 @@ Campaign baseline is the landed binary (`bench-baseline`).
 | Prefill 2 chunk 1024 | **1063.70** | **+52.2%** | 17.01 | **19.62** | retained |
 | Prefill 3 chunk 2048 | **1233.87** | **+76.5%** | 21.40 | **19.72** | retained |
 | Decode 1 verify GQA | 1243.02 | +77.9% | **22.43** | **19.83** | retained |
+| Decode IQ2 pair-vec n≤8 | 1234.43 | +76.6% | 21.27 | 19.67 | rejected |
+| Decode Q4 vec @32 assign | 1235.26 | +76.8% | 20.34 | 19.64 | rejected |
 
 MTP decode tok/s on Prefill 1 fell because acceptance/launch counts
-changed. Ordinary decode did not regress.
+changed. Ordinary decode did not regress. The two later Decode probes
+lost MTP tok/s and were not kept. The campaign closed after Decode 1.
 
 ## Prefill 1: Step SWA HMMA tiles
 
@@ -145,8 +149,37 @@ streams match the Prefill 3 binary exactly.
 
 A serial per-row decode loop was slower (20.47 tok/s) and was not kept.
 
+## Rejected Decode probes
+
+IQ2 aligned pair-vec already accepts n≤16, but production used it only
+at n=1. Forcing n=2..8 onto that kernel was numerically close to SOA
+(rel RMS 1.81e-4) and slower: MTP 21.33 / 21.27 / 21.25 tok/s versus
+Decode 1's 22.43.
+
+Q4 MTP verify is 4×8=32 assignments, just above
+`DS4_ROUTED_VEC_MAX_ROWS` (20), so it uses the compact worklist. Moving
+those rows onto pair-vec / mmvq (rel RMS 1.04e-4 versus worklist) was
+slower: MTP 20.34 / 20.46 / 20.22 tok/s. The worklist stays.
+
 ## Remaining bottlenecks (after Decode 1)
 
-Prefill: Q4 worklist MMQ, IQ2 gate/up, generic `mul_mat_q`.
-Decode: Q8 NC `q8_0_aligned_dense_vec_nc_kernel` remains the largest
-verify/decode projection cost.
+Prefill: Q4 worklist MMQ, IQ2 D2R gate/up, generic `mul_mat_q`.
+Decode, profiled after Decode 1: Q8 NC
+`q8_0_aligned_dense_vec_nc_kernel` 0.682s / 7644, `mul_mat_vec_q`
+0.453s / 4044, Q4 worklist 0.408s / 1566, n=1 Q8 vec 0.362s / 166.
+Largest host gap in `ds4.decode` is 0.123s (85.6% GPU coverage).
+
+## Campaign close
+
+The owner ended the campaign after the retained rounds above. Final
+locked cells on the 2048+64 protocol, default chunk 2048:
+
+| Cell | Prefill tok/s | Decode tok/s |
+|---|---:|---:|
+| MTP draft 3 median | 1243.02 | 22.43 |
+| Ordinary (`DS4_MTP_SPEC_DISABLE=1`) | 1242.95 | 19.83 |
+| 16K+64 ordinary, chunk 2048 | 1269.26 | 18.28 |
+
+16K Prefill does not fall off versus 2K. Those 16K numbers are
+post-Prefill-3, MTP-off. Decode 1 does not change n=1 ordinary
+attention. Scratch at the campaign context is 1163 MiB at chunk 2048.

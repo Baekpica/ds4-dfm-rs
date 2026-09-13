@@ -56,6 +56,8 @@ Do not reuse recorded PIDs or assume those services are running.
 
 - [Step 3.7 integration](step37-initial.md): MQ83 text/image serving, MTP,
   numerical and KV verification; measured qualification limits.
+  GB10 throughput: [BASE artifacts](step37-optimization-2026-09-13.md),
+  then [SWA HMMA, chunk 2048, MTP verify GQA](step37-optimization-2026-09-13-r2.md).
 
 - [Inkling Small integration](inkling-small.md): MQ85GB/MTP serving,
   multimodal checks and remaining qualification.
