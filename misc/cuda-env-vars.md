@@ -30,10 +30,15 @@ The bandwidth figure is informational; we don't tier on it.
 ## Env-var inventory
 
 - `DS4_STEP37_PREFILL_CHUNK=N` selects 1–4096 Step 3.7 prompt rows per
-  chunk, capped by context. Default 2048. `512` restores the pre-campaign
-  default; that is not equivalent to `1024`, which is only the
-  intermediate campaign stage. Invalid values use the default. The SWA
+  chunk, capped by context. Default 4096. `2048` restores the capped-clock
+  campaign control and leaves more memory for banks; the tested mixed
+  image/bank configuration uses `512`. Invalid values use the default. The SWA
   ring retains an extra chunk, so both scratch and KV grow with it.
+
+- `DS4_STEP37_NO_Q8_REUSE=1` disables exact post-norm Q8 sharing.
+  `DS4_STEP37_LEGACY_TRIAL_HEAD=1` restores the redundant trial head;
+  `DS4_STEP37_LEGACY_COMMIT_HEAD=1` reprojects committed logits. These are
+  independent diagnostic controls for the [capped A/B report](../docs/step37-optimization-2026-09-13-r3.md).
 
 - `DS4_STEP37_NO_SWA_HMMA=1` restores the warp walk on Step sliding
   prefill. Unset uses the GQA2 HMMA tiles already used on full-attention

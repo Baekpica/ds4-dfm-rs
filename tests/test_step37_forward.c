@@ -11,9 +11,17 @@ static void trace(const char *name, const void *tensor, unsigned width, unsigned
     char path[1024];
     snprintf(path, sizeof(path), "%s/%s-%u.bin", dir, name, layer);
     FILE *f = fopen(path, "wb");
-    const size_t count = (size_t)width * rows;
+    const char *selected = getenv("STEP37_TRACE_ROW");
+    const unsigned row = selected ? (unsigned)strtoul(selected, NULL, 10) : 0;
+    if (selected && row >= rows) {
+        if (f) { fclose(f); }
+        return;
+    }
+    const size_t count = (size_t)width * (selected ? 1 : rows);
+    const size_t offset = (size_t)row * width * sizeof(float);
     float *bytes = xmalloc(count * sizeof(float));
     const char *replay = getenv("STEP37_REPLAY");
+    if (selected && replay) { ds4_die("Step row trace cannot replay a partial layer"); }
     if (replay && !strcmp(name, "attn_norm_in")) {
         char source[1024];
         snprintf(source, sizeof(source), "%s/%s-%u.bin", replay, name, layer);
@@ -23,7 +31,7 @@ static void trace(const char *name, const void *tensor, unsigned width, unsigned
                 0, bytes, count * sizeof(float))) { ds4_die("Step layer replay failed"); }
         fclose(input);
     }
-    if (!f || !ds4_gpu_tensor_read(tensor, 0, bytes, count * sizeof(float)) ||
+    if (!f || !ds4_gpu_tensor_read(tensor, offset, bytes, count * sizeof(float)) ||
         fwrite(bytes, sizeof(float), count, f) != count) { ds4_die("Step trace write failed"); }
     fclose(f); free(bytes);
 }
@@ -160,17 +168,22 @@ int main(int argc, char **argv) {
         ds4_die("Step context admission geometry mismatch");
     }
     (void)unsetenv("DS4_STEP37_PREFILL_CHUNK");
-    if (step37_prefill_cap(4096) != 2048u || step37_prefill_cap(1024) != 1024u) {
+    if (step37_prefill_cap(4096) != 4096u || step37_prefill_cap(1024) != 1024u) {
         ds4_die("Step default prefill chunk mismatch");
     }
-    if (setenv("DS4_STEP37_PREFILL_CHUNK", "1024", 1) != 0 ||
-        step37_prefill_cap(4096) != 1024u ||
+    if (setenv("DS4_STEP37_PREFILL_CHUNK", "2048", 1) != 0 ||
+        step37_prefill_cap(4096) != 2048u ||
         unsetenv("DS4_STEP37_PREFILL_CHUNK") != 0) {
         ds4_die("Step prefill chunk restore mismatch");
     }
     ds4_weights w;
     weights_bind(&w, &m, false, 0, UINT32_MAX, true, false);
     if (!ds4_gpu_init() || !ds4_gpu_set_model_map(m.map, m.size)) { return 1; }
+    if (getenv("STEP37_TEST_OWNER_BASE")) {
+        const char *manifest = getenv("DS4_CUDA_WEIGHT_IPC_MANIFEST");
+        if (!manifest || !ds4_gpu_import_model_ipc_manifest(m.map, m.size, manifest, "base")) { return 1; }
+        model_release_mapping_cache(&m);
+    }
     int rc;
     if (argv[2][0] != '@') {
         rc = run_case(&m, &w, argv[2], argv[3], cap, decode);

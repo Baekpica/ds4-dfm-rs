@@ -86,8 +86,13 @@ int main(int argc, char **argv) {
     step37_bind_draft(&e.step37_mtp, &e.mtp_model);
     e.vocab.n_vocab = DS4_N_VOCAB;
     CHECK(ds4_gpu_init());
-    build_artifacts(&e.model);
+    const bool owner_base = getenv("STEP37_TEST_OWNER_BASE") != NULL;
+    if (!owner_base) { build_artifacts(&e.model); }
     CHECK(ds4_gpu_set_model_map(e.model.map, e.model.size));
+    if (owner_base) {
+        CHECK(ds4_gpu_import_model_ipc_manifest(e.model.map, e.model.size, argv[3], "base"));
+        model_release_mapping_cache(&e.model);
+    }
     CHECK(ds4_gpu_import_model_ipc_manifest(e.mtp_model.map, e.mtp_model.size, argv[3], "mtp"));
     CHECK(!ds4_gpu_model_map_replacements_complete(e.mtp_model.map));
     model_release_mapping_cache(&e.mtp_model);
@@ -130,6 +135,9 @@ int main(int argc, char **argv) {
     CHECK(step37_graph_alloc(&reference, &e.model, &e.weights, ctx, ctx < CHUNK ? ctx : CHUNK) &&
           step37_graph_alloc(&serial, &e.model, &e.weights, ctx, ctx < CHUNK ? ctx : CHUNK));
     reference.media = &s->step37_media; serial.media = &s->step37_media;
+    /* Compare optimized prefill against per-consumer quantization at the
+     * same width, including every live target KV row below. */
+    CHECK(!setenv("DS4_STEP37_NO_Q8_REUSE", "1", 1));
     for (unsigned pos = 0; pos < (unsigned)prompt.len;) {
         unsigned n = (unsigned)prompt.len - pos;
         if (n > CHUNK) { n = CHUNK; }
@@ -137,6 +145,7 @@ int main(int argc, char **argv) {
         CHECK(step37_forward(&serial, &e.model, &e.weights, prompt.v + pos, n, pos));
         pos += n;
     }
+    CHECK(!unsetenv("DS4_STEP37_NO_Q8_REUSE"));
     same_kv(&s->step37_graph, &reference);
     const size_t logbytes = DS4_N_VOCAB * sizeof(float);
     float *logits = xmalloc(logbytes), *control = xmalloc(logbytes);
@@ -186,6 +195,10 @@ int main(int argc, char **argv) {
             CHECK(step37_head(&reference, &e.model, &e.weights, (unsigned)row) &&
                   ds4_gpu_tensor_read(reference.logits, 0, logits, logbytes));
             CHECK(target[row] == sample_argmax(logits, DS4_N_VOCAB));
+            if (!getenv("DS4_STEP37_LEGACY_COMMIT_HEAD")) {
+                CHECK(s->step37_spec.logits_rows == (unsigned)n);
+                CHECK(!memcmp(logits, s->step37_spec.verify_logits + (size_t)row * DS4_N_VOCAB, logbytes));
+            }
             CHECK(step37_head(&s->step37_graph, &e.model, &e.weights, (unsigned)row) &&
                   ds4_gpu_tensor_read(s->step37_graph.logits, 0, control, logbytes));
             CHECK(!memcmp(logits, control, logbytes));
@@ -196,6 +209,7 @@ int main(int argc, char **argv) {
          * every commit length while preserving greedy token verification. */
         if (truncate && cycles < S37_VERIFY && keep > (int)cycles + 1) { keep = (int)cycles + 1; }
         CHECK(!ds4_session_step37_commit(s, keep, err, sizeof(err)));
+        CHECK(!s->step37_spec.logits_rows);
         accepted += (unsigned)keep - 1;
         check_spec_counts(proposed, accepted);
         CHECK(ds4_session_step37_commit(s, keep, err, sizeof(err)));

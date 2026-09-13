@@ -1795,6 +1795,7 @@ static int cont_tramp_admit(void *ud, ds4_cont_request *req)
     req->top_p = br.top_p;
     req->min_p = br.min_p;
     req->seed = br.seed;
+    req->step_accept = br.step_accept;
     /* The engine calls these with ITS ud (this frame), so the request
      * carries the shared trampolines; the per-call fns land in t->*. */
     t->sample_override = br.sample_override;

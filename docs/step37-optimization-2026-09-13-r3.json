@@ -1,0 +1,1538 @@
+{
+  "hardware": "NVIDIA GB10",
+  "runtime_source_commits": {
+    "candidate": "cacb3bcd47d5865edc185e1d79f22556d807debf",
+    "final": "8029894"
+  },
+  "gpu_clock_lock_mhz": [
+    300,
+    2200
+  ],
+  "fixture_sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f",
+  "model_files": {
+    "Step-3.7-Flash-MQ83-00001-of-00009.gguf": "aa5180c0d294f5658a412a14c5753c7c5980a0b3e4522978ebccf954be0a1f26",
+    "Step3.7-flash-mtp-Q8_0.gguf": "469a81667a6cd6d87a85d501d57155fd90cee5af7010fd289c5169881763fd57",
+    "Step-3.7-Flash-MQ83-00002-of-00009.gguf": "e79571de2c0b1c686cbadce7f0a8f675747a29b2767adb2c229847606290c1e1",
+    "Step-3.7-Flash-MQ83-00003-of-00009.gguf": "c06d0f2e00164af5b415b9c4941019c41354f255ec776fcdaaa67a15b611df74",
+    "Step-3.7-Flash-MQ83-00004-of-00009.gguf": "cb36282224ea27b7cf2176f6c587e942a64cbf2294b0b7e12285877a38739d79",
+    "Step-3.7-Flash-MQ83-00005-of-00009.gguf": "863ebce847e5d32a40165e329cfaa762088ae45140dee84d364bf17e0001d363",
+    "Step-3.7-Flash-MQ83-00006-of-00009.gguf": "cbd44b749b4524e4700884051b2ec4234f292f02eb5c41693d2efb3a6afc434e",
+    "Step-3.7-Flash-MQ83-00007-of-00009.gguf": "d846f09d281ee22e032cf7c1c869f7205605a6499b25f2352798ab0edd61b147",
+    "Step-3.7-Flash-MQ83-00008-of-00009.gguf": "80883ecc614aa71adccf9d7d0fff58a016290325bc7616ca566986f6c018ca81",
+    "Step-3.7-Flash-MQ83-00009-of-00009.gguf": "06a8070d345f95c6f1683c8db3c742303a4420ff2051a7f055c08c9bf889c20e"
+  },
+  "protocol": {
+    "order": [
+      "A/B",
+      "B/A",
+      "A/B"
+    ],
+    "fresh_process_per_sample": true,
+    "separate_identical_warmup": true,
+    "output_tokens": 64,
+    "mtp_draft": 3,
+    "prefix_or_disk_reuse": false,
+    "owner": "shared BASE aligned artifacts + raw Q8 MTP",
+    "switch_order": [
+      "DS4_STEP37_LEGACY_TRIAL_HEAD",
+      "DS4_STEP37_LEGACY_COMMIT_HEAD",
+      "DS4_STEP37_NO_Q8_REUSE"
+    ]
+  },
+  "rounds": {
+    "d1-2048": {
+      "binary_sha256": "0c1070c17073b7d57362e9178029ac78ae9e63f78d08e755f1ea265e1c7ecd70",
+      "input_tokens": 2048,
+      "allocated_context": 2120,
+      "switch_values": [
+        [
+          1,
+          1,
+          1
+        ],
+        [
+          0,
+          1,
+          1
+        ]
+      ],
+      "samples": [
+        {
+          "repeat": 0,
+          "arm": 0,
+          "prefill_tps": 1183.74,
+          "gen_tokens": 64,
+          "gen_tps": 21.87,
+          "label": "d1-2048-0-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 0,
+          "arm": 1,
+          "prefill_tps": 1183.15,
+          "gen_tokens": 64,
+          "gen_tps": 22.3,
+          "label": "d1-2048-0-1",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 1,
+          "arm": 1,
+          "prefill_tps": 1182.39,
+          "gen_tokens": 64,
+          "gen_tps": 22.28,
+          "label": "d1-2048-1-1",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 1,
+          "arm": 0,
+          "prefill_tps": 1180.99,
+          "gen_tokens": 64,
+          "gen_tps": 21.79,
+          "label": "d1-2048-1-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 2,
+          "arm": 0,
+          "prefill_tps": 1183.64,
+          "gen_tokens": 64,
+          "gen_tps": 21.89,
+          "label": "d1-2048-2-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 2,
+          "arm": 1,
+          "prefill_tps": 1183.93,
+          "gen_tokens": 64,
+          "gen_tps": 22.4,
+          "label": "d1-2048-2-1",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        }
+      ],
+      "analysis": {
+        "pairs": [],
+        "phase": {
+          "prefill_tps": {
+            "a": 1183.64,
+            "b": 1183.15,
+            "gain_pct": -0.04139772228042293,
+            "paired_pct": [
+              -0.04984202612059452,
+              0.11854461087732471,
+              0.024500692778195443
+            ],
+            "a_samples": [
+              1183.74,
+              1180.99,
+              1183.64
+            ],
+            "b_samples": [
+              1183.15,
+              1182.39,
+              1183.93
+            ]
+          },
+          "gen_tps": {
+            "a": 21.87,
+            "b": 22.3,
+            "gain_pct": 1.9661636945587535,
+            "paired_pct": [
+              1.9661636945587535,
+              2.248737953189539,
+              2.3298309730470423
+            ],
+            "a_samples": [
+              21.87,
+              21.79,
+              21.89
+            ],
+            "b_samples": [
+              22.3,
+              22.28,
+              22.4
+            ]
+          }
+        },
+        "proof": {
+          "0-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "0-1-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "1-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "1-1-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "2-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "2-1-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          }
+        },
+        "speed_gate": true,
+        "exact_proof_gate": true
+      }
+    },
+    "d2-2048": {
+      "binary_sha256": "0c1070c17073b7d57362e9178029ac78ae9e63f78d08e755f1ea265e1c7ecd70",
+      "input_tokens": 2048,
+      "allocated_context": 2120,
+      "switch_values": [
+        [
+          0,
+          1,
+          1
+        ],
+        [
+          0,
+          0,
+          1
+        ]
+      ],
+      "samples": [
+        {
+          "repeat": 0,
+          "arm": 0,
+          "prefill_tps": 1185.01,
+          "gen_tokens": 64,
+          "gen_tps": 22.32,
+          "label": "d2-2048-0-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 0,
+          "arm": 1,
+          "prefill_tps": 1185.79,
+          "gen_tokens": 64,
+          "gen_tps": 22.77,
+          "label": "d2-2048-0-1",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 1,
+          "arm": 1,
+          "prefill_tps": 1177.06,
+          "gen_tokens": 64,
+          "gen_tps": 22.84,
+          "label": "d2-2048-1-1",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 1,
+          "arm": 0,
+          "prefill_tps": 1188.37,
+          "gen_tokens": 64,
+          "gen_tps": 22.3,
+          "label": "d2-2048-1-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 2,
+          "arm": 0,
+          "prefill_tps": 1190.15,
+          "gen_tokens": 64,
+          "gen_tps": 22.43,
+          "label": "d2-2048-2-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 2,
+          "arm": 1,
+          "prefill_tps": 1187.45,
+          "gen_tokens": 64,
+          "gen_tps": 22.77,
+          "label": "d2-2048-2-1",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        }
+      ],
+      "analysis": {
+        "pairs": [],
+        "phase": {
+          "prefill_tps": {
+            "a": 1188.37,
+            "b": 1185.79,
+            "gain_pct": -0.21710410057472762,
+            "paired_pct": [
+              0.06582222934827797,
+              -0.9517237897287867,
+              -0.22686216023191097
+            ],
+            "a_samples": [
+              1185.01,
+              1188.37,
+              1190.15
+            ],
+            "b_samples": [
+              1185.79,
+              1177.06,
+              1187.45
+            ]
+          },
+          "gen_tps": {
+            "a": 22.32,
+            "b": 22.77,
+            "gain_pct": 2.0161290322580516,
+            "paired_pct": [
+              2.0161290322580516,
+              2.4215246636771326,
+              1.5158270173874167
+            ],
+            "a_samples": [
+              22.32,
+              22.3,
+              22.43
+            ],
+            "b_samples": [
+              22.77,
+              22.84,
+              22.77
+            ]
+          }
+        },
+        "proof": {
+          "0-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "0-1-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "1-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "1-1-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "2-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "2-1-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          }
+        },
+        "speed_gate": true,
+        "exact_proof_gate": true
+      }
+    },
+    "p1-2048": {
+      "binary_sha256": "0c1070c17073b7d57362e9178029ac78ae9e63f78d08e755f1ea265e1c7ecd70",
+      "input_tokens": 2048,
+      "allocated_context": 2120,
+      "switch_values": [
+        [
+          0,
+          0,
+          1
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "samples": [
+        {
+          "repeat": 0,
+          "arm": 0,
+          "prefill_tps": 1187.41,
+          "gen_tokens": 64,
+          "gen_tps": 22.74,
+          "label": "p1-2048-0-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 0,
+          "arm": 1,
+          "prefill_tps": 1203.08,
+          "gen_tokens": 64,
+          "gen_tps": 22.89,
+          "label": "p1-2048-0-1",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 1,
+          "arm": 1,
+          "prefill_tps": 1197.27,
+          "gen_tokens": 64,
+          "gen_tps": 22.85,
+          "label": "p1-2048-1-1",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 1,
+          "arm": 0,
+          "prefill_tps": 1179.6,
+          "gen_tokens": 64,
+          "gen_tps": 22.74,
+          "label": "p1-2048-1-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 2,
+          "arm": 0,
+          "prefill_tps": 1183.19,
+          "gen_tokens": 64,
+          "gen_tps": 22.77,
+          "label": "p1-2048-2-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 2,
+          "arm": 1,
+          "prefill_tps": 1201.2,
+          "gen_tokens": 64,
+          "gen_tps": 22.91,
+          "label": "p1-2048-2-1",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        }
+      ],
+      "analysis": {
+        "pairs": [],
+        "phase": {
+          "prefill_tps": {
+            "a": 1183.19,
+            "b": 1201.2,
+            "gain_pct": 1.522156204836067,
+            "paired_pct": [
+              1.319678965142601,
+              1.4979654120040653,
+              1.522156204836067
+            ],
+            "a_samples": [
+              1187.41,
+              1179.6,
+              1183.19
+            ],
+            "b_samples": [
+              1203.08,
+              1197.27,
+              1201.2
+            ]
+          },
+          "gen_tps": {
+            "a": 22.74,
+            "b": 22.89,
+            "gain_pct": 0.6596306068601621,
+            "paired_pct": [
+              0.6596306068601621,
+              0.4837291116974729,
+              0.6148440931049715
+            ],
+            "a_samples": [
+              22.74,
+              22.74,
+              22.77
+            ],
+            "b_samples": [
+              22.89,
+              22.85,
+              22.91
+            ]
+          }
+        },
+        "proof": {
+          "0-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "0-1-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "1-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "1-1-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "2-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "2-1-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          }
+        },
+        "speed_gate": true,
+        "exact_proof_gate": true
+      }
+    },
+    "p2-16384": {
+      "binary_sha256": "0c1070c17073b7d57362e9178029ac78ae9e63f78d08e755f1ea265e1c7ecd70",
+      "input_tokens": 16384,
+      "allocated_context": 16456,
+      "switch_values": [
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "samples": [
+        {
+          "repeat": 0,
+          "arm": 0,
+          "prefill_tps": 1215.83,
+          "gen_tokens": 64,
+          "gen_tps": 14.76,
+          "label": "p2-16384-0-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 0,
+          "arm": 1,
+          "prefill_tps": 1289.22,
+          "gen_tokens": 64,
+          "gen_tps": 16.32,
+          "label": "p2-16384-0-1",
+          "chunk": "4096",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 1,
+          "arm": 1,
+          "prefill_tps": 1288.3,
+          "gen_tokens": 64,
+          "gen_tps": 16.38,
+          "label": "p2-16384-1-1",
+          "chunk": "4096",
+          "observed_sm_max_mhz": 2190,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 1,
+          "arm": 0,
+          "prefill_tps": 1219.96,
+          "gen_tokens": 64,
+          "gen_tps": 14.77,
+          "label": "p2-16384-1-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2190,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 2,
+          "arm": 0,
+          "prefill_tps": 1215.0,
+          "gen_tokens": 64,
+          "gen_tps": 14.77,
+          "label": "p2-16384-2-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2190,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 2,
+          "arm": 1,
+          "prefill_tps": 1288.83,
+          "gen_tokens": 64,
+          "gen_tps": 16.35,
+          "label": "p2-16384-2-1",
+          "chunk": "4096",
+          "observed_sm_max_mhz": 2190,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        }
+      ],
+      "analysis": {
+        "pairs": [],
+        "phase": {
+          "prefill_tps": {
+            "a": 1215.83,
+            "b": 1288.83,
+            "gain_pct": 6.00412886670012,
+            "paired_pct": [
+              6.036205719549614,
+              5.601823010590512,
+              6.076543209876539
+            ],
+            "a_samples": [
+              1215.83,
+              1219.96,
+              1215.0
+            ],
+            "b_samples": [
+              1289.22,
+              1288.3,
+              1288.83
+            ]
+          },
+          "gen_tps": {
+            "a": 14.77,
+            "b": 16.35,
+            "gain_pct": 10.697359512525395,
+            "paired_pct": [
+              10.569105691056912,
+              10.90047393364928,
+              10.697359512525395
+            ],
+            "a_samples": [
+              14.76,
+              14.77,
+              14.77
+            ],
+            "b_samples": [
+              16.32,
+              16.38,
+              16.35
+            ]
+          }
+        },
+        "proof": {
+          "0-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "0-1-proof": {
+            "tokens_equal": false,
+            "logits_equal": false,
+            "max_abs": 1.4047215,
+            "relative_rms": 0.045557886910841026
+          },
+          "1-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "1-1-proof": {
+            "tokens_equal": false,
+            "logits_equal": false,
+            "max_abs": 1.4047215,
+            "relative_rms": 0.045557886910841026
+          },
+          "2-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "2-1-proof": {
+            "tokens_equal": false,
+            "logits_equal": false,
+            "max_abs": 1.4047215,
+            "relative_rms": 0.045557886910841026
+          }
+        },
+        "speed_gate": true,
+        "exact_proof_gate": false
+      }
+    },
+    "p2ordinary-16384": {
+      "binary_sha256": "0c1070c17073b7d57362e9178029ac78ae9e63f78d08e755f1ea265e1c7ecd70",
+      "input_tokens": 16384,
+      "allocated_context": 16456,
+      "switch_values": [
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "samples": [
+        {
+          "repeat": 0,
+          "arm": 0,
+          "prefill_tps": 1214.18,
+          "gen_tokens": 64,
+          "gen_tps": 18.4,
+          "label": "p2ordinary-16384-0-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 0,
+          "arm": 1,
+          "prefill_tps": 1290.53,
+          "gen_tokens": 64,
+          "gen_tps": 18.41,
+          "label": "p2ordinary-16384-0-1",
+          "chunk": "4096",
+          "observed_sm_max_mhz": 2190,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 1,
+          "arm": 1,
+          "prefill_tps": 1290.74,
+          "gen_tokens": 64,
+          "gen_tps": 18.41,
+          "label": "p2ordinary-16384-1-1",
+          "chunk": "4096",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 1,
+          "arm": 0,
+          "prefill_tps": 1213.84,
+          "gen_tokens": 64,
+          "gen_tps": 18.42,
+          "label": "p2ordinary-16384-1-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2190,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 2,
+          "arm": 0,
+          "prefill_tps": 1216.69,
+          "gen_tokens": 64,
+          "gen_tps": 18.45,
+          "label": "p2ordinary-16384-2-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 2,
+          "arm": 1,
+          "prefill_tps": 1291.65,
+          "gen_tokens": 64,
+          "gen_tps": 18.42,
+          "label": "p2ordinary-16384-2-1",
+          "chunk": "4096",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        }
+      ],
+      "analysis": {
+        "pairs": [],
+        "phase": {
+          "prefill_tps": {
+            "a": 1214.18,
+            "b": 1290.74,
+            "gain_pct": 6.305490125022639,
+            "paired_pct": [
+              6.288194501638955,
+              6.335266591972588,
+              6.1609777346735894
+            ],
+            "a_samples": [
+              1214.18,
+              1213.84,
+              1216.69
+            ],
+            "b_samples": [
+              1290.53,
+              1290.74,
+              1291.65
+            ]
+          },
+          "gen_tps": {
+            "a": 18.42,
+            "b": 18.41,
+            "gain_pct": -0.054288816503811343,
+            "paired_pct": [
+              0.05434782608697564,
+              -0.054288816503811343,
+              -0.1626016260162455
+            ],
+            "a_samples": [
+              18.4,
+              18.42,
+              18.45
+            ],
+            "b_samples": [
+              18.41,
+              18.41,
+              18.42
+            ]
+          }
+        },
+        "proof": {
+          "0-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "0-1-proof": {
+            "tokens_equal": false,
+            "logits_equal": false,
+            "max_abs": 1.4047215,
+            "relative_rms": 0.045557886910841026
+          },
+          "1-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "1-1-proof": {
+            "tokens_equal": false,
+            "logits_equal": false,
+            "max_abs": 1.4047215,
+            "relative_rms": 0.045557886910841026
+          },
+          "2-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "2-1-proof": {
+            "tokens_equal": false,
+            "logits_equal": false,
+            "max_abs": 1.4047215,
+            "relative_rms": 0.045557886910841026
+          }
+        },
+        "speed_gate": true,
+        "exact_proof_gate": false
+      }
+    },
+    "final-2048": {
+      "binary_sha256": "958d5c59b88960356740654306270417d89ce41410a2562861c4d91432910490",
+      "input_tokens": 2048,
+      "allocated_context": 2120,
+      "switch_values": [
+        [
+          1,
+          1,
+          1
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "samples": [
+        {
+          "repeat": 0,
+          "arm": 0,
+          "prefill_tps": 1187.7,
+          "gen_tokens": 64,
+          "gen_tps": 21.89,
+          "label": "final-2048-0-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 0,
+          "arm": 1,
+          "prefill_tps": 1194.64,
+          "gen_tokens": 64,
+          "gen_tps": 22.75,
+          "label": "final-2048-0-1",
+          "chunk": "4096",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 1,
+          "arm": 1,
+          "prefill_tps": 1196.84,
+          "gen_tokens": 64,
+          "gen_tps": 22.88,
+          "label": "final-2048-1-1",
+          "chunk": "4096",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 1,
+          "arm": 0,
+          "prefill_tps": 1186.06,
+          "gen_tokens": 64,
+          "gen_tps": 21.78,
+          "label": "final-2048-1-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 2,
+          "arm": 0,
+          "prefill_tps": 1185.37,
+          "gen_tokens": 64,
+          "gen_tps": 21.92,
+          "label": "final-2048-2-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 2,
+          "arm": 1,
+          "prefill_tps": 1193.35,
+          "gen_tokens": 64,
+          "gen_tps": 22.77,
+          "label": "final-2048-2-1",
+          "chunk": "4096",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        }
+      ],
+      "analysis": {
+        "pairs": [],
+        "phase": {
+          "prefill_tps": {
+            "a": 1186.06,
+            "b": 1194.64,
+            "gain_pct": 0.7234035377637005,
+            "paired_pct": [
+              0.5843226403974056,
+              0.9088916243697565,
+              0.6732075217020794
+            ],
+            "a_samples": [
+              1187.7,
+              1186.06,
+              1185.37
+            ],
+            "b_samples": [
+              1194.64,
+              1196.84,
+              1193.35
+            ]
+          },
+          "gen_tps": {
+            "a": 21.89,
+            "b": 22.77,
+            "gain_pct": 4.020100502512558,
+            "paired_pct": [
+              3.9287345820009145,
+              5.050505050505039,
+              3.8777372262773557
+            ],
+            "a_samples": [
+              21.89,
+              21.78,
+              21.92
+            ],
+            "b_samples": [
+              22.75,
+              22.88,
+              22.77
+            ]
+          }
+        },
+        "proof": {
+          "0-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "0-1-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "1-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "1-1-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "2-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "2-1-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          }
+        },
+        "speed_gate": false,
+        "exact_proof_gate": true
+      }
+    },
+    "final-16384": {
+      "binary_sha256": "958d5c59b88960356740654306270417d89ce41410a2562861c4d91432910490",
+      "input_tokens": 16384,
+      "allocated_context": 16456,
+      "switch_values": [
+        [
+          1,
+          1,
+          1
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "samples": [
+        {
+          "repeat": 0,
+          "arm": 0,
+          "prefill_tps": 1203.5,
+          "gen_tokens": 64,
+          "gen_tps": 14.29,
+          "label": "final-16384-0-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 0,
+          "arm": 1,
+          "prefill_tps": 1287.39,
+          "gen_tokens": 64,
+          "gen_tps": 16.29,
+          "label": "final-16384-0-1",
+          "chunk": "4096",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 1,
+          "arm": 1,
+          "prefill_tps": 1290.22,
+          "gen_tokens": 64,
+          "gen_tps": 16.35,
+          "label": "final-16384-1-1",
+          "chunk": "4096",
+          "observed_sm_max_mhz": 2190,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 1,
+          "arm": 0,
+          "prefill_tps": 1203.19,
+          "gen_tokens": 64,
+          "gen_tps": 14.24,
+          "label": "final-16384-1-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 2,
+          "arm": 0,
+          "prefill_tps": 1203.08,
+          "gen_tokens": 64,
+          "gen_tps": 14.26,
+          "label": "final-16384-2-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 2,
+          "arm": 1,
+          "prefill_tps": 1290.01,
+          "gen_tokens": 64,
+          "gen_tps": 16.34,
+          "label": "final-16384-2-1",
+          "chunk": "4096",
+          "observed_sm_max_mhz": 2190,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        }
+      ],
+      "analysis": {
+        "pairs": [],
+        "phase": {
+          "prefill_tps": {
+            "a": 1203.19,
+            "b": 1290.01,
+            "gain_pct": 7.215817950614611,
+            "paired_pct": [
+              6.970502700457004,
+              7.233271553121279,
+              7.225620906340402
+            ],
+            "a_samples": [
+              1203.5,
+              1203.19,
+              1203.08
+            ],
+            "b_samples": [
+              1287.39,
+              1290.22,
+              1290.01
+            ]
+          },
+          "gen_tps": {
+            "a": 14.26,
+            "b": 16.34,
+            "gain_pct": 14.586255259467041,
+            "paired_pct": [
+              13.99580125962212,
+              14.81741573033708,
+              14.586255259467041
+            ],
+            "a_samples": [
+              14.29,
+              14.24,
+              14.26
+            ],
+            "b_samples": [
+              16.29,
+              16.35,
+              16.34
+            ]
+          }
+        },
+        "proof": {
+          "0-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "0-1-proof": {
+            "tokens_equal": false,
+            "logits_equal": false,
+            "max_abs": 1.4047215,
+            "relative_rms": 0.045557886910841026
+          },
+          "1-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "1-1-proof": {
+            "tokens_equal": false,
+            "logits_equal": false,
+            "max_abs": 1.4047215,
+            "relative_rms": 0.045557886910841026
+          },
+          "2-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "2-1-proof": {
+            "tokens_equal": false,
+            "logits_equal": false,
+            "max_abs": 1.4047215,
+            "relative_rms": 0.045557886910841026
+          }
+        },
+        "speed_gate": true,
+        "exact_proof_gate": false
+      }
+    }
+  },
+  "numerical_contract": "D1/D2/P1: exact full vocabulary and tokens. P2: explained cross-width arithmetic; inspect report for cache and bounded answer gates.",
+  "quality_2048": [
+    {
+      "case": 0,
+      "usage": {
+        "prompt_tokens": 17837,
+        "completion_tokens": 27,
+        "total_tokens": 17864,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 17837
+        }
+      },
+      "expected": {
+        "start": "AZURE-17",
+        "middle": "COPPER-42",
+        "end": "IVORY-93",
+        "sum": 42
+      },
+      "answer": {
+        "start": "AZURE-17",
+        "middle": "COPPER-42",
+        "end": "IVORY-93",
+        "sum": 42
+      },
+      "seconds": 16.4355144489964,
+      "prompt_sha256": "bf8df36bb439bd6555137984726d23586ef4c06965546d18a559667338c26684"
+    },
+    {
+      "case": 1,
+      "usage": {
+        "prompt_tokens": 17849,
+        "completion_tokens": 44,
+        "total_tokens": 17893,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 17849
+        }
+      },
+      "expected": {
+        "start": "AZURE-18",
+        "middle": "COPPER-43",
+        "end": "IVORY-94",
+        "sum": 42
+      },
+      "answer": {
+        "start": "AZURE-18",
+        "middle": "COPPER-43",
+        "end": "IVORY-94",
+        "sum": 42
+      },
+      "seconds": 16.628846698004054,
+      "prompt_sha256": "4b88b96b9f92e18eaa7298eedb76dcf59a32498aab5d9463df696daa4c564419"
+    },
+    {
+      "case": 2,
+      "usage": {
+        "prompt_tokens": 17841,
+        "completion_tokens": 44,
+        "total_tokens": 17885,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 17841
+        }
+      },
+      "expected": {
+        "start": "AZURE-19",
+        "middle": "COPPER-44",
+        "end": "IVORY-95",
+        "sum": 42
+      },
+      "answer": {
+        "start": "AZURE-19",
+        "middle": "COPPER-44",
+        "end": "IVORY-95",
+        "sum": 42
+      },
+      "seconds": 16.631547530007083,
+      "prompt_sha256": "80567bc458c03fa932c8ab30f2a8216b5e6b5b915405776c5ab092d5c78480d6"
+    },
+    {
+      "case": 3,
+      "usage": {
+        "prompt_tokens": 17851,
+        "completion_tokens": 44,
+        "total_tokens": 17895,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 17851
+        }
+      },
+      "expected": {
+        "start": "AZURE-20",
+        "middle": "COPPER-45",
+        "end": "IVORY-96",
+        "sum": 42
+      },
+      "answer": {
+        "sum": 42,
+        "start": "AZURE-20",
+        "middle": "COPPER-45",
+        "end": "IVORY-96"
+      },
+      "seconds": 16.647751059004804,
+      "prompt_sha256": "e0e49f3f822a39bf87364b1e4c5a32a3f7a8cbadcdc288f483b600013ab49227"
+    }
+  ],
+  "quality_4096": [
+    {
+      "case": 0,
+      "usage": {
+        "prompt_tokens": 17837,
+        "completion_tokens": 34,
+        "total_tokens": 17871,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 17837
+        }
+      },
+      "expected": {
+        "start": "AZURE-17",
+        "middle": "COPPER-42",
+        "end": "IVORY-93",
+        "sum": 42
+      },
+      "answer": {
+        "start": "AZURE-17",
+        "middle": "COPPER-42",
+        "end": "IVORY-93",
+        "sum": 42
+      },
+      "strict_match": true,
+      "semantic_match": true,
+      "seconds": 15.640347628999734,
+      "prompt_sha256": "bf8df36bb439bd6555137984726d23586ef4c06965546d18a559667338c26684"
+    },
+    {
+      "case": 1,
+      "usage": {
+        "prompt_tokens": 17849,
+        "completion_tokens": 44,
+        "total_tokens": 17893,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 17849
+        }
+      },
+      "expected": {
+        "start": "AZURE-18",
+        "middle": "COPPER-43",
+        "end": "IVORY-94",
+        "sum": 42
+      },
+      "answer": {
+        "start": "AZURE-18",
+        "middle": "COPPER-43",
+        "end": "IVORY-94",
+        "sum": "42"
+      },
+      "strict_match": false,
+      "semantic_match": true,
+      "seconds": 15.583454295003321,
+      "prompt_sha256": "4b88b96b9f92e18eaa7298eedb76dcf59a32498aab5d9463df696daa4c564419"
+    },
+    {
+      "case": 2,
+      "usage": {
+        "prompt_tokens": 17841,
+        "completion_tokens": 27,
+        "total_tokens": 17868,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 17841
+        }
+      },
+      "expected": {
+        "start": "AZURE-19",
+        "middle": "COPPER-44",
+        "end": "IVORY-95",
+        "sum": 42
+      },
+      "answer": {
+        "start": "AZURE-19",
+        "middle": "COPPER-44",
+        "end": "IVORY-95",
+        "sum": 42
+      },
+      "strict_match": true,
+      "semantic_match": true,
+      "seconds": 15.178317975995014,
+      "prompt_sha256": "80567bc458c03fa932c8ab30f2a8216b5e6b5b915405776c5ab092d5c78480d6"
+    },
+    {
+      "case": 3,
+      "usage": {
+        "prompt_tokens": 17851,
+        "completion_tokens": 44,
+        "total_tokens": 17895,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 17851
+        }
+      },
+      "expected": {
+        "start": "AZURE-20",
+        "middle": "COPPER-45",
+        "end": "IVORY-96",
+        "sum": 42
+      },
+      "answer": {
+        "sum": 42,
+        "start": "AZURE-20",
+        "middle": "COPPER-45",
+        "end": "IVORY-96"
+      },
+      "strict_match": true,
+      "semantic_match": true,
+      "seconds": 15.585654574999353,
+      "prompt_sha256": "e0e49f3f822a39bf87364b1e4c5a32a3f7a8cbadcdc288f483b600013ab49227"
+    }
+  ],
+  "serving": {
+    "text": {
+      "configured_context": 65536,
+      "banks": 2,
+      "chunk": 2048,
+      "requests": 4,
+      "cached_tokens_on_repeat_and_concurrent": 4096,
+      "continuous_routes": 4
+    },
+    "images": {
+      "configured_context": 8192,
+      "banks": 2,
+      "chunk": 512,
+      "requests": 9,
+      "routes": {
+        "chat_serial": 6,
+        "responses_serial": 2,
+        "messages_serial": 1
+      }
+    },
+    "disk": {
+      "native_round_trip": "pass",
+      "files_written": true,
+      "chat_restart_cached_tokens": 0,
+      "reason": "official template removes previous thinking text; restored payload has no earlier partial checkpoint"
+    },
+    "limits": [
+      "262144 startup: fitted to one bank, memory guard stopped before readiness",
+      "8192 image+bank at chunk4096: fitted to one bank; image serial admission HTTP503",
+      "native bank planner reads DS4_MEM_FLOOR_GB; Rust serial admission reads --mem-floor-gb"
+    ]
+  },
+  "quality_review": {
+    "strict_2048": 4,
+    "strict_4096": 3,
+    "semantic_2048": 4,
+    "semantic_4096": 4,
+    "cases": 4,
+    "semantic_scoring_added_after_strict_failure": true,
+    "difference": "Korean answer sum is string 42 instead of integer 42"
+  }
+}

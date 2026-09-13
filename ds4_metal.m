@@ -17780,6 +17780,13 @@ int ds4_gpu_matmul_q8_0_hc_expand_n2_split_residual_tensor(
 }
 
 /* Step is CUDA-qualified. Keep Metal linkage explicit without a fallback. */
+int ds4_gpu_step37_norm(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *map, uint64_t size, uint64_t offset,
+        uint32_t width, uint32_t rows, float eps) {
+    (void)out; (void)x; (void)map; (void)size; (void)offset;
+    (void)width; (void)rows; (void)eps;
+    return 0;
+}
 int ds4_gpu_step37_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down,
                       const ds4_gpu_tensor *weights, uint32_t width, uint32_t rows) {
     (void)out; (void)down; (void)weights; (void)width; (void)rows;

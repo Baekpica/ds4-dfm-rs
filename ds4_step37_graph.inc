@@ -93,7 +93,9 @@ typedef struct {
 } ds4_step37_graph;
 
 static unsigned step37_prefill_cap(unsigned ctx) {
-    enum { DEFAULT_CHUNK = 2048, MAX_CHUNK = 4096 };
+    /* Wider worklists reduce prefill launches. Pin 2048 (or smaller) when
+     * concurrent banks and the serial image lane need more memory headroom. */
+    enum { DEFAULT_CHUNK = 4096, MAX_CHUNK = 4096 };
     unsigned cap = DEFAULT_CHUNK;
     const char *value = getenv("DS4_STEP37_PREFILL_CHUNK");
     if (value && *value) {
@@ -227,7 +229,7 @@ static bool step37_layer(ds4_step37_graph *g, const ds4_model *m,
     const unsigned window = sliding ? S37_WINDOW : 0;
     ds4_gpu_tensor *rope = sliding ? g->rope_swa : g->rope_full;
     STEP37_TRACE("attn_norm_in", b->b_cur, S37_HIDDEN, n, il, pos);
-    if (!ds4_gpu_exaone_rms_norm_tensor(b->b_norm, b->b_cur, m->map, m->size,
+    if (!ds4_gpu_step37_norm(b->b_norm, b->b_cur, m->map, m->size,
             l->attn_norm->abs_offset, S37_HIDDEN, n, DS4_RMS_EPS) ||
         !plain_graph_matmul_tensor(b->b_q, m, l->attn_q, S37_HIDDEN, q_dim, b->b_norm, n) ||
         !plain_graph_matmul_tensor(b->b_k, m, l->attn_k, S37_HIDDEN, S37_KV, b->b_norm, n) ||
@@ -253,7 +255,7 @@ static bool step37_layer(ds4_step37_graph *g, const ds4_model *m,
     if (!attn_ok || !ds4_gpu_step37_gate(b->b_heads, g->gate, heads, n) ||
         !plain_graph_matmul_tensor(b->b_attn_out, m, l->attn_output, q_dim, S37_HIDDEN, b->b_heads, n) ||
         !ds4_gpu_exaone_add_tensor(b->b_cur, b->b_attn_out, (uint64_t)n * S37_HIDDEN) ||
-        !ds4_gpu_exaone_rms_norm_tensor(b->b_norm, b->b_cur, m->map, m->size,
+        !ds4_gpu_step37_norm(b->b_norm, b->b_cur, m->map, m->size,
                 l->ffn_norm->abs_offset, S37_HIDDEN, n, DS4_RMS_EPS)) { return false; }
     STEP37_TRACE("attn_gated", b->b_heads, q_dim, n, il, pos);
     STEP37_TRACE("attn_proj", b->b_attn_out, S37_HIDDEN, n, il, pos);
@@ -316,8 +318,11 @@ static bool step37_head(ds4_step37_graph *g, const ds4_model *m, const ds4_weigh
     return ok;
 }
 
-static bool step37_forward(ds4_step37_graph *g, const ds4_model *m, const ds4_weights *w,
-                            const int *tokens, unsigned n, unsigned pos) {
+typedef enum { STEP37_HEAD_LAST, STEP37_HEAD_SKIP } step37_head_mode;
+
+static bool step37_forward_impl(ds4_step37_graph *g, const ds4_model *m, const ds4_weights *w,
+                                 const int *tokens, unsigned n, unsigned pos,
+                                 step37_head_mode head) {
     if (g->failed || !n || n > g->cap || pos != g->position || pos > g->context ||
         n > g->context - pos) { return false; }
     for (unsigned i = 0; i < n; i++) {
@@ -341,13 +346,18 @@ static bool step37_forward(ds4_step37_graph *g, const ds4_model *m, const ds4_we
             return false;
         }
     }
-    const bool ok = step37_head(g, m, w, n - 1);
+    const bool ok = head == STEP37_HEAD_SKIP || step37_head(g, m, w, n - 1);
     if (ok) {
         g->position = pos + n;
         if (g->high_water < g->position) { g->high_water = g->position; }
         g->failed = false;
     }
     return ok;
+}
+
+static bool step37_forward(ds4_step37_graph *g, const ds4_model *m, const ds4_weights *w,
+                            const int *tokens, unsigned n, unsigned pos) {
+    return step37_forward_impl(g, m, w, tokens, n, pos, STEP37_HEAD_LAST);
 }
 
 /* The widened SWA ring retains one extra chunk for a tail rewrite. Reset to
@@ -485,6 +495,8 @@ typedef struct {
     ds4_step37_draft draft;
     ds4_gpu_tensor *tail, *joined;
     int *ids;
+    float *verify_logits;
+    unsigned logits_rows;
     unsigned position, tail_rows;
 } ds4_step37_spec;
 
@@ -509,6 +521,7 @@ static void step37_spec_free(ds4_step37_spec *s) {
     ds4_gpu_tensor_free(s->tail);
     ds4_gpu_tensor_free(s->joined);
     free(s->ids);
+    free(s->verify_logits);
     memset(s, 0, sizeof(*s));
 }
 
@@ -518,6 +531,7 @@ static bool step37_spec_reset(ds4_step37_spec *s) {
     memset(s->draft.high_water, 0, sizeof(s->draft.high_water));
     s->draft.hidden_valid = false;
     s->position = s->tail_rows = 0;
+    s->logits_rows = 0;
     return true;
 }
 
@@ -532,6 +546,7 @@ static bool step37_spec_alloc(ds4_step37_spec *s, const ds4_model *m,
     s->joined = ds4_gpu_tensor_alloc((cap + STEP37_DRAFT_LAYERS) * row_bytes);
     if (!s->tail || !s->joined) { step37_spec_free(s); return false; }
     s->ids = xcalloc(cap, sizeof(*s->ids));
+    s->verify_logits = xcalloc((size_t)S37_VERIFY * DS4_N_VOCAB, sizeof(float));
     return true;
 }
 

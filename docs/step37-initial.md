@@ -323,18 +323,18 @@ default and one is opt-in:
   and held hidden rows when `--mtp` is loaded). A follow-up whose prompt reloads
   a stored prefix resumes from the checkpoint instead of replaying it. The
   format is the shared DSV4 layout tagged `STP3`.
-- **MTP** stays the serial-lane default (`--mtp-draft 3`), the fastest
-  single-stream decode.
+- **MTP** (`--mtp-draft 3`) works on both serial and banked greedy text
+  decode. Its benefit depends on draft acceptance and workload.
 - **Multiple sequence banks** are opt-in with `DS4_STEP37_BATCH=1` (mirroring
   `DS4_QWEN_BATCH`). With it, `DS4_SERVER_COALESCE_MAX=2` serves two independent
-  sequences on the continuous lane, with full-frontier fork
-  (`DS4_SERVER_FORK=1`), warm prefix reuse and per-bank disk KV. The banked lane
-  runs ordinary decode: MTP speculation and image input remain on the serial
-  session, and an image request transparently falls back to it. Below-frontier
-  partial reuse is not yet wired for the banked lane.
+  sequences on the continuous lane, subject to memory fitting. Full-frontier
+  fork (`DS4_SERVER_FORK=1`), checkpoint-based partial fork
+  (`DS4_SERVER_FORK_PARTIAL=1`), warm reuse and bank disk KV preserve target
+  and MTP predictor state. Images use the serial fallback and are excluded
+  from disk snapshots. Sampled requests use ordinary decode.
 
-Choose the lane per deployment: leave `DS4_STEP37_BATCH` unset for the fastest
-single user (serial + MTP + disk KV), or set it to serve concurrent sessions
+Choose the lane per deployment: leave `DS4_STEP37_BATCH` unset for a serial
+session with MTP and disk KV, or set it to serve concurrent sessions
 with fork and warm reuse. The benchmark still restores sweep prefixes by replay
 outside timing; `kvcache_bytes=0` there describes the benchmark's replay mode,
 not the served disk-KV path.
