@@ -155,6 +155,18 @@ pub trait DecodeIo {
     fn vision_probe(&self, _data: &[u8]) -> Result<VisionProbe, GenerateError> {
         Err(GenerateError::Unsupported("vision encoder is not loaded"))
     }
+    fn vision_tokens(&self, data: &[u8]) -> Result<Vec<i32>, GenerateError> {
+        let marker = match syntax_for_model_id(self.model_id()) {
+            ModelSyntax::Glm53 => 154854,
+            ModelSyntax::Inkling => 200054,
+            _ => {
+                return Err(GenerateError::Unsupported(
+                    "image token format is unavailable",
+                ))
+            }
+        };
+        Ok(vec![marker; self.vision_probe(data)?.token_count as usize])
+    }
     fn sync_vision_prompt(
         &mut self,
         _tokens: &[i32],
@@ -914,9 +926,9 @@ pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'sta
         None
     } else {
         match syntax_for_model_id(model_id) {
-            ModelSyntax::Glm53 | ModelSyntax::Inkling => None,
+            ModelSyntax::Glm53 | ModelSyntax::Inkling | ModelSyntax::Step37 => None,
             ModelSyntax::Qwen4Exp => Some("image input requires continuous runtime"),
-            _ => Some("image input is supported only by Qwen4Exp, GLM-5.3 or Inkling"),
+            _ => Some("image input is supported only by Qwen4Exp, GLM-5.3, Inkling or Step"),
         }
     }
 }
@@ -925,7 +937,8 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
     match syntax {
         ModelSyntax::SolarOpen2 => ChatFormat::SolarOpen2,
         ModelSyntax::Exaone => ChatFormat::Exaone,
-        ModelSyntax::Qwen4Exp => ChatFormat::Qwen4Exp,
+        // Only the generated thinking/tool envelope is shared with Qwen.
+        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 => ChatFormat::Qwen4Exp,
         ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
         ModelSyntax::Inkling => ChatFormat::Inkling,
         ModelSyntax::DeepSeek | ModelSyntax::Motif3 | ModelSyntax::Dots3 | ModelSyntax::Glm53 => {
@@ -1009,6 +1022,11 @@ pub(crate) fn thinking_visible_key(
     format: ChatFormat,
     terminal: bool,
 ) -> Option<Vec<u8>> {
+    if syntax == ModelSyntax::Step37 {
+        // Removing reasoning changes Step's history grammar. Re-render its
+        // structured history with Jinja instead of inventing a cached prefix.
+        return None;
+    }
     let mut visible = if format == ChatFormat::K2Horizon {
         if !prompt.ends_with(b"<ifm|think>\n") {
             return None;
@@ -1517,13 +1535,15 @@ fn prepare_media(
     }
     const GLM_IMAGE_TOKEN: i32 = 154854;
     const INKLING_IMAGE_TOKEN: i32 = 200054;
+    const STEP_IMAGE_TOKEN: i32 = 128001;
     const INKLING_AUDIO_TOKEN: i32 = 200053;
     let image_token = match syntax_for_model_id(engine.model_id()) {
         ModelSyntax::Glm53 => GLM_IMAGE_TOKEN,
         ModelSyntax::Inkling => INKLING_IMAGE_TOKEN,
+        ModelSyntax::Step37 => STEP_IMAGE_TOKEN,
         _ => {
             return Err(GenerateError::Unsupported(
-                "serial images require GLM-5.3 or Inkling",
+                "serial images require GLM-5.3, Inkling or Step",
             ))
         }
     };
@@ -1532,19 +1552,19 @@ fn prepare_media(
             "serial media supports 1 to 4 inputs",
         ));
     }
-    let mut probes = Vec::with_capacity(parsed.images.len());
+    let mut image_spans = Vec::with_capacity(parsed.images.len());
     let mut expanded_len = tokens.len();
     for image in &parsed.images {
-        let probe = engine.vision_probe(&image.data)?;
-        if probe.token_count == 0 {
+        let span = engine.vision_tokens(&image.data)?;
+        if span.is_empty() {
             return Err(GenerateError::Engine(
                 "image probe returned zero tokens".into(),
             ));
         }
         expanded_len = expanded_len
-            .checked_add(probe.token_count as usize - 1)
+            .checked_add(span.len() - 1)
             .ok_or_else(|| GenerateError::Engine("expanded image prompt is too large".into()))?;
-        probes.push(probe);
+        image_spans.push(span);
     }
     let mut audio_counts = Vec::with_capacity(parsed.audios.len());
     for audio in &parsed.audios {
@@ -1589,7 +1609,10 @@ fn prepare_media(
             expanded.push(token);
             continue;
         }
-        let Some((image, probe)) = parsed.images.get(image_index).zip(probes.get(image_index))
+        let Some((image, span)) = parsed
+            .images
+            .get(image_index)
+            .zip(image_spans.get(image_index))
         else {
             return Err(GenerateError::Engine(
                 "ambiguous image placeholder in prompt".into(),
@@ -1597,7 +1620,7 @@ fn prepare_media(
         };
         let token_offset = u32::try_from(expanded.len())
             .map_err(|_| GenerateError::Engine("expanded image prompt is too large".into()))?;
-        expanded.extend(std::iter::repeat_n(image_token, probe.token_count as usize));
+        expanded.extend_from_slice(span);
         images.push(VisionPromptInput {
             data: image.data.clone(),
             token_offset,
@@ -2205,6 +2228,18 @@ impl DecodeIo for ScriptedDecode {
         }
     }
 
+    fn vision_tokens(&self, data: &[u8]) -> Result<Vec<i32>, GenerateError> {
+        if syntax_for_model_id(self.model_id) == ModelSyntax::Step37 {
+            return Ok([vec![128000], vec![128001; 169], vec![128002]].concat());
+        }
+        let marker = if syntax_for_model_id(self.model_id) == ModelSyntax::Inkling {
+            200054
+        } else {
+            154854
+        };
+        Ok(vec![marker; self.vision_probe(data)?.token_count as usize])
+    }
+
     fn sync_vision_prompt(
         &mut self,
         tokens: &[i32],
@@ -2643,6 +2678,12 @@ impl DecodeIo for NativeDecode<'_> {
             .map_err(|error| GenerateError::Engine(error.to_string()))
     }
 
+    fn vision_tokens(&self, data: &[u8]) -> Result<Vec<i32>, GenerateError> {
+        self.model
+            .vision_tokens(data)
+            .map_err(|error| GenerateError::Engine(error.to_string()))
+    }
+
     fn audio_probe(&self, data: &[u8]) -> Result<u32, GenerateError> {
         self.model
             .audio_probe(data)
@@ -2862,8 +2903,10 @@ impl DecodeIo for NativeDecode<'_> {
     }
 
     fn eval_greedy(&mut self, first: i32, budget: i32) -> Result<Vec<i32>, GenerateError> {
-        if self.model.family() != ds4_core::ModelFamily::Inkling
-            || self.model.mtp().is_none()
+        if !matches!(
+            self.model.family(),
+            ds4_core::ModelFamily::Inkling | ds4_core::ModelFamily::Step37
+        ) || self.model.mtp().is_none()
             || std::env::var_os("DS4_MTP_SPEC_DISABLE").is_some()
         {
             self.eval(first)?;

@@ -350,7 +350,9 @@ impl Builder {
 fn write_family(family: ModelFamily) -> PathBuf {
     let path = tmp(&format!("{}.gguf", family.oracle_name()));
     match family {
-        ModelFamily::Inkling => panic!("Inkling has no frozen C tokenizer oracle"),
+        ModelFamily::Inkling | ModelFamily::Step37 => {
+            panic!("this family uses a dedicated upstream tokenizer oracle")
+        }
         ModelFamily::Glm53 => {
             let mut b = Builder::with_bytes().with_he();
             let bos = b.push_str("[gMASK]", 3);
@@ -542,7 +544,9 @@ fn family_cases(family: ModelFamily) {
     ];
     let mut renders: Vec<String> = Vec::new();
     match family {
-        ModelFamily::Inkling => panic!("Inkling has no frozen C tokenizer oracle"),
+        ModelFamily::Inkling | ModelFamily::Step37 => {
+            panic!("this family uses a dedicated upstream tokenizer oracle")
+        }
         ModelFamily::Glm53 => {
             encodes.extend(["12345", "HelloWorld", "안녕하세요"]);
             renders.push("[gMASK]<sop><|user|>hello<|assistant|>".into());
@@ -642,7 +646,9 @@ fn family_cases(family: ModelFamily) {
 
     let mut tokens = TokenBuffer::from_tokens(vec![7]);
     match family {
-        ModelFamily::Inkling => panic!("Inkling has no frozen C tokenizer oracle"),
+        ModelFamily::Inkling | ModelFamily::Step37 => {
+            panic!("this family uses a dedicated upstream tokenizer oracle")
+        }
         ModelFamily::SolarOpen2 => {
             let mut missing = vocab.clone();
             missing.tool_response_start_id = -1;

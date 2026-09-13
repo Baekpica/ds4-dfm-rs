@@ -86,6 +86,7 @@ pub enum ModelSyntax {
     Glm53 = 7,
     K2Horizon = 8,
     Inkling = 9,
+    Step37 = 10,
 }
 
 /// C `server_model_syntax_for_engine`.
@@ -99,6 +100,7 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
         7 => ModelSyntax::Glm53,
         8 => ModelSyntax::K2Horizon,
         9 => ModelSyntax::Inkling,
+        10 => ModelSyntax::Step37,
         _ => ModelSyntax::DeepSeek,
     }
 }
@@ -108,7 +110,7 @@ pub fn tool_start_marker(syntax: ModelSyntax) -> &'static str {
         ModelSyntax::SolarOpen2 => SOLAR_TOOL_CALLS,
         ModelSyntax::Motif3 | ModelSyntax::Exaone => MOTIF_TOOL_CALLS,
         ModelSyntax::Dots3 => DOTS3_TOOL_CALLS,
-        ModelSyntax::Qwen4Exp => QWEN_TOOL_CALL_START,
+        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 => QWEN_TOOL_CALL_START,
         ModelSyntax::Glm53 => GLM_TOOL_CALL_START,
         ModelSyntax::K2Horizon => K2_TOOL_CALLS_START,
         ModelSyntax::Inkling => inkling::INVOKE,
@@ -1842,6 +1844,9 @@ pub fn render_chat_choice(
         return Err(RenderError("audio input requires Inkling"));
     }
     match syntax {
+        ModelSyntax::Step37 => Err(RenderError(
+            "Step input requires its official Jinja template",
+        )),
         ModelSyntax::Motif3 => render_motif3_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
         ModelSyntax::Exaone => render_exaone_chat(msgs, tool_schemas, think_mode),
         ModelSyntax::Dots3 => render_dots3_chat(msgs, tool_schemas, think_mode),
@@ -1899,6 +1904,11 @@ pub fn render_live_tool_tail(
     let tail = &msgs[start..];
     let mut out = Vec::new();
     match syntax {
+        ModelSyntax::Step37 => {
+            return Err(RenderError(
+                "Step tool results require retained history and Jinja",
+            ));
+        }
         ModelSyntax::Inkling => return inkling::live_tail(tail, msgs),
         ModelSyntax::Glm53 => {
             let think = think_mode_enabled(think_mode);

@@ -509,6 +509,26 @@ cleanup:
     return rc;
 }
 
+int ds4_bridge_sync_step37(ds4_bridge_session *s,
+                            const int32_t *tokens, int n_tokens,
+                            const ds4_bridge_step37_pixels *crops, uint32_t crop_count,
+                            char *err, size_t errlen) {
+    enum { MAX_CROPS = 8192 / 81 };
+    if (!s || !s->session || !tokens || n_tokens <= 0 || !crops ||
+        !crop_count || crop_count > MAX_CROPS) {
+        set_err(err, errlen, "invalid Step crop sync input");
+        return 1;
+    }
+    ds4_step37_pixels native_crops[MAX_CROPS];
+    for (uint32_t i = 0; i < crop_count; i++) {
+        native_crops[i] = (ds4_step37_pixels){.pixels = crops[i].pixels,
+            .pixel_count = crops[i].pixel_count, .token_offset = crops[i].token_offset,
+            .token_count = crops[i].token_count, .edge = crops[i].edge};
+    }
+    const ds4_tokens prompt = {.v = (int *)(void *)tokens, .len = n_tokens, .cap = n_tokens};
+    return ds4_session_sync_step37(s->session, &prompt, native_crops, crop_count, err, errlen);
+}
+
 int ds4_bridge_sync_inkling(ds4_bridge_session *s,
                              const int32_t *tokens, int n_tokens,
                              const ds4_bridge_inkling_pixels *images, uint32_t image_count,
@@ -621,6 +641,26 @@ int ds4_bridge_inkling_commit(ds4_bridge_session *s, int32_t keep, char *err, si
         return 1;
     }
     return ds4_session_inkling_commit(s->session, keep, err, errlen);
+}
+
+int ds4_bridge_step37_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
+                              int32_t *tokens, int32_t *target, int32_t cap,
+                              char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return -1;
+    }
+    return ds4_session_step37_trial(s->session, first, max_tokens, tokens, target, cap, err, errlen);
+}
+
+int ds4_bridge_step37_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return 1;
+    }
+    return ds4_session_step37_commit(s->session, keep, err, errlen);
 }
 
 int ds4_bridge_eval_speculative_argmax(ds4_bridge_session *s,
@@ -1227,6 +1267,16 @@ int ds4_bridge_session_output_head_bench(ds4_bridge_session *s,
 
 /* Declared in ds4_gpu.h; the bridge does not include that header. */
 uint64_t ds4_gpu_substrate_outstanding(void);
+
+void ds4_bridge_spec_snapshot(ds4_bridge_spec_metrics *out)
+{
+    if (!out) { return; }
+    const ds4_metrics *m = ds4_metrics_get();
+    /* Read hits first to reduce skew against concurrent trial updates. */
+    out->hits = ds4_metric_read(&m->spec_hits);
+    out->drafts = ds4_metric_read(&m->spec_drafts);
+    out->quench = ds4_metric_read(&m->spec_quench);
+}
 
 /* Seqlock snapshot + last-stable cache, copied from ds4_server.c
  * mem_census_snapshot.  Do not include ds4_mem_census.h from Rust. */

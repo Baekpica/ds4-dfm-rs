@@ -17,7 +17,8 @@ fn hidden_values(shape: &Shape) -> u64 {
         ModelFamily::SolarOpen2
         | ModelFamily::ExaoneMoe
         | ModelFamily::Qwen4Exp
-        | ModelFamily::Inkling => u64::from(shape.n_embd),
+        | ModelFamily::Inkling
+        | ModelFamily::Step37 => u64::from(shape.n_embd),
         ModelFamily::DeepSeek4
         | ModelFamily::Motif3
         | ModelFamily::Dots3Note

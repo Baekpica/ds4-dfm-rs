@@ -26,6 +26,9 @@ mod progress;
 mod session;
 mod shape;
 mod sibling;
+mod spec;
+mod step37;
+mod step37_mtp;
 mod tensors;
 mod tok;
 mod validate;
@@ -79,6 +82,8 @@ pub use shape::{
     SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B,
 };
 pub use sibling::SiblingAttach;
+pub use spec::{snapshot_spec, SpecMetrics};
+pub use step37::{Step37Error, Step37Layer, Step37Plan, Step37Sidecar, Step37SidecarPlan};
 pub use tensors::{
     apply_host_dir, consume_host_dir, dump_apply_tapes, dump_consume_tapes, dump_nbytes_table,
     dump_sibling_script, model_split_sibling_path, tensor_nbytes, tensor_type_name, TensorError,
@@ -119,11 +124,12 @@ use ds4_sys::{
     ds4_bridge_session_set_power, ds4_bridge_session_sync, ds4_bridge_session_sync_vision,
     ds4_bridge_session_top_logprobs, ds4_bridge_shard, ds4_bridge_snapshot,
     ds4_bridge_snapshot_create, ds4_bridge_snapshot_free, ds4_bridge_snapshot_len,
-    ds4_bridge_sync_inkling, ds4_bridge_token_score, ds4_bridge_vision_info,
-    ds4_bridge_vision_input, ds4_host_bind_look, ds4_host_bind_map, ds4_host_shape, ds4_host_str,
-    ds4_host_tensor, ds4_host_tensor_dir, ds4_host_vocab, DS4_BRIDGE_BACKEND_CPU,
-    DS4_BRIDGE_BACKEND_CUDA, DS4_BRIDGE_BACKEND_METAL, DS4_BRIDGE_DISTRIBUTED_COORDINATOR,
-    DS4_BRIDGE_DISTRIBUTED_NONE, DS4_BRIDGE_DISTRIBUTED_WORKER, DS4_BRIDGE_MAX_DIMS,
+    ds4_bridge_step37_pixels, ds4_bridge_sync_inkling, ds4_bridge_sync_step37,
+    ds4_bridge_token_score, ds4_bridge_vision_info, ds4_bridge_vision_input, ds4_host_bind_look,
+    ds4_host_bind_map, ds4_host_shape, ds4_host_str, ds4_host_tensor, ds4_host_tensor_dir,
+    ds4_host_vocab, DS4_BRIDGE_BACKEND_CPU, DS4_BRIDGE_BACKEND_CUDA, DS4_BRIDGE_BACKEND_METAL,
+    DS4_BRIDGE_DISTRIBUTED_COORDINATOR, DS4_BRIDGE_DISTRIBUTED_NONE, DS4_BRIDGE_DISTRIBUTED_WORKER,
+    DS4_BRIDGE_MAX_DIMS,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -477,6 +483,7 @@ pub struct Model {
     dspark: Option<SiblingAttach>,
     vocab: Vocab,
     chat_template: Option<chat_template::Template>,
+    vision_ready: bool,
     _distributed: Option<FfiDistributed>,
     _not_send: PhantomData<*const ()>,
 }
@@ -990,7 +997,7 @@ impl Model {
         )
     }
 
-    /// `mtp_path` attaches a DeepSeek or Inkling sibling; `dspark_path` is
+    /// `mtp_path` attaches a DeepSeek, Inkling or Step sibling; `dspark_path` is
     /// DeepSeek-only. The host resolves each sibling's bind catalog and expected
     /// layouts, then native skips that sibling's name walk and layout check.
     pub fn open_with_support(
@@ -1126,6 +1133,20 @@ impl Model {
             code: 1,
             message: format!("validate failed: {}", e.token()),
         })?;
+        if identified.shape.family == ModelFamily::Step37 {
+            Step37Plan::validate_inventory(&inventory).map_err(|e| Error {
+                code: 1,
+                message: e.to_string(),
+            })?;
+            if let Some(path) = tuning.vision_path.as_deref() {
+                Step37SidecarPlan::inspect(Path::new(path), Step37Sidecar::Vision).map_err(
+                    |e| Error {
+                        code: 1,
+                        message: e.to_string(),
+                    },
+                )?;
+            }
+        }
         let bind_plan = BindPlan::resolve(identified.shape, &inventory);
         if let Some(name) = bind_plan.missing_required().first() {
             return Err(Error {
@@ -1242,6 +1263,7 @@ impl Model {
             dspark,
             vocab,
             chat_template,
+            vision_ready: tuning.vision_path.is_some(),
             _distributed: ffi_distributed,
             _not_send: PhantomData,
         })
@@ -1280,6 +1302,15 @@ impl Model {
     }
 
     pub fn vision_probe(&self, data: &[u8]) -> Result<VisionImageInfo> {
+        if self.family == ModelFamily::Step37 {
+            if !self.vision_ready {
+                return Err(Error {
+                    code: 1,
+                    message: "Step vision encoder is not loaded".into(),
+                });
+            }
+            return step37::Step37Media::probe(data);
+        }
         if self.family == ModelFamily::Inkling {
             return inkling_media::probe_image(data);
         }
@@ -1309,6 +1340,27 @@ impl Model {
             grid_width: info.grid_width,
             token_count: info.token_count,
         })
+    }
+
+    /// Replace one template image marker with the model's complete image span.
+    pub fn vision_tokens(&self, data: &[u8]) -> Result<Vec<i32>> {
+        if self.family == ModelFamily::Step37 && self.vision_ready {
+            return step37::Step37Media::tokens(data);
+        }
+        let info = self.vision_probe(data)?;
+        const INKLING_IMAGE_TOKEN: i32 = 200054;
+        const GLM_IMAGE_TOKEN: i32 = 154854;
+        let marker = match self.family {
+            ModelFamily::Inkling => INKLING_IMAGE_TOKEN,
+            ModelFamily::Glm53 => GLM_IMAGE_TOKEN,
+            _ => {
+                return Err(Error {
+                    code: 1,
+                    message: "unsupported serial image format".into(),
+                })
+            }
+        };
+        Ok(vec![marker; info.token_count as usize])
     }
 
     pub fn audio_probe(&self, data: &[u8]) -> Result<u32> {
@@ -1556,6 +1608,17 @@ const fn ledger_ctx(configured: i32, native_effective: i32) -> i32 {
 }
 
 impl Session<'_> {
+    fn step_failed(&mut self) {
+        if self.host.family != ModelFamily::Step37 {
+            return;
+        }
+        let generation = self.native_generation();
+        if generation != self.host.generation {
+            self.host.clear_checkpoint_keep_generation();
+            self.host.generation = generation;
+        }
+    }
+
     pub fn host(&self) -> &SessionLedger {
         &self.host
     }
@@ -1605,6 +1668,7 @@ impl Session<'_> {
             )
         };
         if rc != 0 {
+            self.step_failed();
             return Err(fail(rc, &err));
         }
         self.host.commit_sync(tokens.as_slice(), &plan);
@@ -1613,6 +1677,9 @@ impl Session<'_> {
 
     pub fn sync_vision(&mut self, tokens: &TokenBuffer, images: &[VisionInput<'_>]) -> Result<()> {
         self.check_sync(tokens)?;
+        if self.host.family == ModelFamily::Step37 {
+            return self.sync_step37_media(tokens, images);
+        }
         if self.host.family == ModelFamily::Inkling {
             return self.sync_inkling(tokens, images, &[]);
         }
@@ -1667,6 +1734,45 @@ impl Session<'_> {
             });
         }
         self.sync_inkling(tokens, images, audios)
+    }
+
+    fn sync_step37_media(
+        &mut self,
+        tokens: &TokenBuffer,
+        images: &[VisionInput<'_>],
+    ) -> Result<()> {
+        let prepared = step37::Step37Media::prepare(tokens.as_slice(), images)?;
+        let crops: Vec<_> = prepared
+            .crops
+            .iter()
+            .map(|crop| ds4_bridge_step37_pixels {
+                pixels: crop.pixels.as_ptr(),
+                pixel_count: crop.pixels.len() as u64,
+                token_offset: crop.offset,
+                token_count: crop.rows,
+                edge: crop.edge,
+            })
+            .collect();
+        let mut err = [0u8; 512];
+        // Rust owns all CHW buffers until this synchronous encoder/refill call
+        // returns. The session retains only its independent GPU feature copy.
+        let rc = unsafe {
+            ds4_bridge_sync_step37(
+                self.raw.as_ptr(),
+                tokens.as_slice().as_ptr(),
+                tokens.len() as i32,
+                crops.as_ptr(),
+                crops.len() as u32,
+                err.as_mut_ptr() as *mut c_char,
+                err.len(),
+            )
+        };
+        self.step_failed();
+        if rc != 0 {
+            return Err(fail(rc, &err));
+        }
+        self.host.replace_checkpoint(tokens.as_slice());
+        Ok(())
     }
 
     fn sync_inkling(
@@ -1731,6 +1837,7 @@ impl Session<'_> {
             )
         };
         if rc != 0 {
+            self.step_failed();
             return Err(fail(rc, &err));
         }
         self.host.commit_eval(token);
@@ -1806,6 +1913,9 @@ impl Session<'_> {
         if self.host.family == ModelFamily::Inkling {
             return self.eval_inkling_argmax(first, max_tokens, eos);
         }
+        if self.host.family == ModelFamily::Step37 {
+            return self.eval_step37_argmax(first, max_tokens, eos);
+        }
         let mut accepted = vec![0i32; 17];
         let mut err = [0u8; 512];
         let n = unsafe {
@@ -1821,6 +1931,7 @@ impl Session<'_> {
             )
         };
         if n < 0 {
+            self.step_failed();
             return Err(fail(n, &err));
         }
         accepted.truncate(n as usize);
@@ -2417,6 +2528,211 @@ mod tests {
 
         assert_eq!(session.ctx(), 8192);
         assert_eq!(session.ctx(), session.host().ctx);
+    }
+
+    thread_local! {
+        static STEP_GENERATION: Cell<u64> = const { Cell::new(1) };
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_session_generation(_s: *mut ds4_bridge_session) -> u64 {
+        STEP_GENERATION.with(Cell::get)
+    }
+
+    #[no_mangle]
+    unsafe extern "C" fn ds4_bridge_session_sync(
+        _s: *mut ds4_bridge_session,
+        tokens: *const i32,
+        n: i32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        // -1 models rejected input; -2 models failure after KV writes.
+        if n > 0 && *tokens == -2 {
+            STEP_GENERATION.with(|g| g.set(g.get() + 1));
+        }
+        1
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_step37_trial(
+        _s: *mut ds4_bridge_session,
+        first: i32,
+        _max: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        _cap: i32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        if first == 3 {
+            // SAFETY: the tested wrapper supplies four live output slots.
+            unsafe {
+                *tokens = first;
+                *target = 1;
+            }
+            return 1;
+        }
+        if first == -2 {
+            STEP_GENERATION.with(|g| g.set(g.get() + 1));
+        }
+        -1
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_step37_commit(
+        _s: *mut ds4_bridge_session,
+        _keep: i32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        STEP_GENERATION.with(|g| g.set(g.get() + 1));
+        1
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_eval(
+        _s: *mut ds4_bridge_session,
+        _token: i32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        1
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_session_invalidate(_s: *mut ds4_bridge_session) {
+        STEP_GENERATION.with(|g| g.set(g.get() + 1));
+    }
+
+    thread_local! {
+        static STEP_MEDIA_RESULT: Cell<i32> = const { Cell::new(0) };
+        static STEP_MEDIA_CALLS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    #[no_mangle]
+    unsafe extern "C" fn ds4_bridge_sync_step37(
+        _s: *mut ds4_bridge_session,
+        tokens: *const i32,
+        n: i32,
+        crops: *const ds4_bridge_step37_pixels,
+        count: u32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        STEP_MEDIA_CALLS.with(|c| c.set(c.get() + 1));
+        assert_eq!(count, 1);
+        assert_eq!(n, 172);
+        assert_eq!(*tokens, 17);
+        let crop = &*crops;
+        assert_eq!(
+            (crop.edge, crop.token_offset, crop.token_count),
+            (728, 2, 169)
+        );
+        assert_eq!(crop.pixel_count, 3 * 728 * 728);
+        // The synchronous borrow includes the complete CHW buffer.
+        assert!((*crop.pixels.add(crop.pixel_count as usize - 1)).is_finite());
+        let outcome = STEP_MEDIA_RESULT.with(Cell::get);
+        if outcome != 1 {
+            STEP_GENERATION.with(|g| g.set(g.get() + 1));
+        }
+        i32::from(outcome != 0)
+    }
+
+    #[test]
+    fn step_media_reconciles_generation() {
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(3, 2, image::Rgb([90, 120, 30]))
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = encoded.into_inner();
+        let mut ids = vec![17];
+        ids.extend(step37::Step37Media::tokens(&bytes).unwrap());
+        let tokens = TokenBuffer::from_tokens(ids);
+        for outcome in [1, 2, 0] {
+            STEP_GENERATION.with(|g| g.set(1));
+            STEP_MEDIA_RESULT.with(|v| v.set(outcome));
+            STEP_MEDIA_CALLS.with(|v| v.set(0));
+            let mut session = std::mem::ManuallyDrop::new(Session {
+                raw: NonNull::<ds4_bridge_session>::dangling(),
+                host: SessionLedger::new(ModelFamily::Step37, SessionBackend::Cuda, 1024, 64),
+                _model: PhantomData,
+                _not_send: PhantomData,
+            });
+            session.host.replace_checkpoint(&[1, 2, 3]);
+            assert!(session
+                .sync_step37_media(
+                    &tokens,
+                    &[VisionInput {
+                        data: &bytes,
+                        token_offset: u32::MAX,
+                    }]
+                )
+                .is_err());
+            assert_eq!(STEP_MEDIA_CALLS.with(Cell::get), 0);
+            assert_eq!(session.host.tokens(), &[1, 2, 3]);
+            let result = session.sync_step37_media(
+                &tokens,
+                &[VisionInput {
+                    data: &bytes,
+                    token_offset: 1,
+                }],
+            );
+            assert_eq!(result.is_ok(), outcome == 0);
+            assert_eq!(STEP_MEDIA_CALLS.with(Cell::get), 1);
+            assert_eq!(session.generation(), if outcome == 1 { 1 } else { 2 });
+            assert_eq!(session.generation(), session.native_generation());
+            assert_eq!(session.host.valid, outcome != 2);
+            let expected = match outcome {
+                0 => tokens.as_slice(),
+                1 => &[1, 2, 3],
+                _ => &[],
+            };
+            assert_eq!(session.host.tokens(), expected);
+        }
+    }
+
+    #[test]
+    fn step_mtp_errors_reconcile_generation_once() {
+        for first in [-1, -2, 3] {
+            STEP_GENERATION.with(|g| g.set(1));
+            let mut session = std::mem::ManuallyDrop::new(Session {
+                raw: NonNull::<ds4_bridge_session>::dangling(),
+                host: SessionLedger::new(ModelFamily::Step37, SessionBackend::Cuda, 1024, 64),
+                _model: PhantomData,
+                _not_send: PhantomData,
+            });
+            session.host.replace_checkpoint(&[1, 2, 3]);
+            assert!(session.eval_step37_argmax(first, 4, 99).is_err());
+            assert_eq!(session.host.valid, first == -1);
+            assert_eq!(session.generation(), session.native_generation());
+            assert_eq!(session.generation(), if first == -1 { 1 } else { 2 });
+            if first == -1 {
+                assert_eq!(session.host.tokens(), &[1, 2, 3]);
+            } else {
+                assert!(session.host.tokens().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn step_sync_error_preserves_only_untouched_state() {
+        STEP_GENERATION.with(|g| g.set(1));
+        let mut session = std::mem::ManuallyDrop::new(Session {
+            raw: NonNull::<ds4_bridge_session>::dangling(),
+            host: SessionLedger::new(ModelFamily::Step37, SessionBackend::Cuda, 1024, 64),
+            _model: PhantomData,
+            _not_send: PhantomData,
+        });
+        session.host.replace_checkpoint(&[1, 2, 3]);
+        assert!(session.sync(&TokenBuffer::from_tokens(vec![-1])).is_err());
+        assert!(session.host.valid);
+        assert_eq!(session.host.tokens(), &[1, 2, 3]);
+        assert_eq!(session.generation(), 1);
+        assert!(session.sync(&TokenBuffer::from_tokens(vec![-2])).is_err());
+        assert!(!session.host.valid);
+        assert!(session.host.tokens().is_empty());
+        assert_eq!(session.generation(), 2);
     }
 
     #[test]

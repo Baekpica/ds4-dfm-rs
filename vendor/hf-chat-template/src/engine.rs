@@ -63,6 +63,13 @@ pub(crate) fn build(source: String, cfg: &EngineConfig) -> Result<Environment<'s
 
     // Python-compatible tojson (overrides minijinja's sorted/space-less builtin).
     env.add_filter("tojson", tojson_filter);
+    // Step's official template accepts serialized tool arguments as well
+    // as mappings. Keep their parsing in the template's own grammar.
+    env.add_filter("fromjson", |text: String| -> Result<Value, Error> {
+        let value: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| Error::new(ErrorKind::InvalidOperation, e.to_string()))?;
+        Ok(Value::from_serialize(value))
+    });
 
     // Tool schemas also print defaults outside JSON. Keep plain float output
     // and the explicit string filter consistent with Python's shortest repr.

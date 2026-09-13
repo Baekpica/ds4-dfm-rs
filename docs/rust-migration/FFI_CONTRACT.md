@@ -71,6 +71,7 @@ freeze or permission to bind native internals.
 | `ds4_bridge_session_free` | `ds4_session_free` |
 | `ds4_bridge_session_sync` | prefix tokens → `ds4_session_sync` |
 | `ds4_bridge_session_sync_cb` | one `ds4_session_sync` plus call-scoped durable `prefill_chunk` frontiers |
+| `ds4_bridge_sync_step37` | validated Step image crops and expanded prompt → synchronous native vision encoding and full target/MTP refill |
 | `ds4_bridge_eval` | `ds4_session_eval` one token |
 | `ds4_bridge_session_argmax` | greedy next id |
 | `ds4_bridge_session_pos` | native committed timeline (host `SessionLedger` is authoritative) |
@@ -90,6 +91,7 @@ freeze or permission to bind native internals.
 | `ds4_bridge_token_eos` | engine EOS / family EOT |
 | `ds4_bridge_token_is_stop` | `ds4_token_is_stop` (1/0) |
 | `ds4_bridge_model_id` | `ds4_engine_model_id` (syntax dispatch) |
+| `ds4_bridge_spec_snapshot` | cumulative process-global draft/hit/quench counters; individually atomic reads into caller-owned POD |
 | `ds4_bridge_mem_census_snap` | process-global CUDA census image (seqlock + last-stable torn cache); `supported=0` when the backend keeps no census |
 | `ds4_bridge_mem_observe_snap` | typed observation (`status`/`source` + free/total/cuda_free/meminfo) |
 | `ds4_bridge_mem_substrate_outstanding` | `ds4_gpu_substrate_outstanding` (0 on Metal/CPU stubs) |
@@ -178,9 +180,17 @@ Token arrays are `const int32_t *` + length. Do not export
 | `ds4_bridge_session` | bridge | `ds4_bridge_session_free` | `NonNull`, `Drop` |
 | error buffer | Rust caller | Rust caller | `&mut [u8]` scratch |
 | token scratch | Rust caller | Rust caller | `&[i32]` |
+| Step normalized CHW crops | Rust caller | Rust caller after synchronous sync | borrowed F32 buffers and checked span descriptors |
 | GPU tensors / graphs | native session | native session free | invisible |
 
 The bridge must not return interior pointers into engine arenas.
+
+Step image sync retains only native-owned GPU features. Rust preflights the
+complete image/token budget before decoding; native code rechecks dimensions,
+finite pixels and placeholder coverage before GPU mutation. Rejected preflight
+preserves the frontier. A failure after encoding begins invalidates target/MTP
+state and advances the session generation so Rust discards its checkpoint.
+Changed images force refill even when the expanded prompt tokens are identical.
 
 ## Native boundary scope
 

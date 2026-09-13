@@ -17778,3 +17778,39 @@ int ds4_gpu_matmul_q8_0_hc_expand_n2_split_residual_tensor(
     }
     return ok;
 }
+
+/* Step is CUDA-qualified. Keep Metal linkage explicit without a fallback. */
+int ds4_gpu_step37_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down,
+                      const ds4_gpu_tensor *weights, uint32_t width, uint32_t rows) {
+    (void)out; (void)down; (void)weights; (void)width; (void)rows;
+    return 0;
+}
+int ds4_gpu_step37_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *up, const ds4_gpu_tensor *weights,
+        uint32_t width, uint32_t rows, float limit) {
+    (void)out; (void)gate; (void)up; (void)weights; (void)width; (void)rows; (void)limit;
+    return 0;
+}
+int ds4_gpu_step37_router(ds4_gpu_tensor *ids, ds4_gpu_tensor *weights,
+        const ds4_gpu_tensor *logits, const void *map, uint64_t size,
+        uint64_t offset, uint32_t rows) {
+    (void)ids; (void)weights; (void)logits; (void)map; (void)size; (void)offset; (void)rows;
+    return 0;
+}
+int ds4_gpu_step37_rope(ds4_gpu_tensor *table, const ds4_gpu_tensor *frequency,
+        const ds4_gpu_tensor *positions, uint32_t rotary, uint32_t rows) {
+    (void)table; (void)frequency; (void)positions; (void)rotary; (void)rows;
+    return 0;
+}
+int ds4_gpu_step37_qk(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *map, uint64_t size, uint64_t offset,
+        const ds4_gpu_tensor *table, uint32_t heads, uint32_t rotary, uint32_t rows) {
+    (void)out; (void)x; (void)map; (void)size; (void)offset; (void)table;
+    (void)heads; (void)rotary; (void)rows;
+    return 0;
+}
+int ds4_gpu_step37_gate(ds4_gpu_tensor *values, const ds4_gpu_tensor *gate,
+        uint32_t heads, uint32_t rows) {
+    (void)values; (void)gate; (void)heads; (void)rows;
+    return 0;
+}

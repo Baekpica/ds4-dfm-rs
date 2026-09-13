@@ -2,10 +2,11 @@
 
 use ds4_core::{
     bind_dspark_names, bind_mtp_names, bind_names, catalog_from_bind_name, dump_bind_check_oracle,
-    dump_bind_lookup_tapes, dump_bind_match_oracle, dump_bind_names, dump_bind_support,
-    expected_compress_ratio, BindNeed, BindPlan, SupportCatalog, TensorInventory, Variant,
-    SHAPE_FLASH, SHAPE_MOTIF3,
+    dump_bind_lookup_tapes, dump_bind_match_oracle, dump_bind_names, dump_bind_names_variant,
+    dump_bind_support, expected_compress_ratio, BindNeed, BindPlan, SupportCatalog,
+    TensorInventory, Variant, SHAPE_FLASH, SHAPE_MOTIF3,
 };
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -118,6 +119,27 @@ fn support_catalog_names_are_deepseek_only() {
     assert!(catalog_from_bind_name("dspark-solar-open2").is_none());
     assert_eq!(bind_mtp_names().len(), 32);
     assert_eq!(bind_dspark_names().len(), 9 + 3 * 24);
+}
+
+#[test]
+fn step_mtp_catalog_is_complete() {
+    assert_eq!(
+        catalog_from_bind_name("mtp-step35"),
+        Some((Some(SupportCatalog::Mtp), Variant::Step37Flash))
+    );
+    let dump = dump_bind_names_variant("mtp-step35").expect("Step MTP catalog");
+    let actual: BTreeSet<_> = dump
+        .lines()
+        .filter_map(|line| line.strip_prefix("NAME "))
+        .map(|line| line.split_whitespace().next().unwrap())
+        .collect();
+    let expected: BTreeSet<_> = include_str!("../../../tests/fixtures/step37/mtp.tsv")
+        .lines()
+        .map(|line| line.split('\t').next().unwrap())
+        .collect();
+    assert_eq!(actual, expected);
+    assert!(dump.ends_with("COUNT n=55 req=55 opt=0\n"));
+    assert!(catalog_from_bind_name("dspark-step35").is_none());
 }
 
 #[test]

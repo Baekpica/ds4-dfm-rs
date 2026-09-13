@@ -161,6 +161,15 @@ fn metrics_supported_matches_c() {
 }
 
 #[test]
+fn mixed_artifact_source_matches_c() {
+    let mut rt = supported_runtime();
+    rt.artifact_source = 3;
+    let rust = render_metrics(&RouteMetrics::default(), &AdmitState::default(), &rt);
+    assert!(rust.contains("source=\"mixed\""));
+    assert_eq!(rust, c_str(&["mixed"]));
+}
+
+#[test]
 fn stats_memgov_zero_matches_c() {
     assert_eq!(
         render_stats_memgov_json(&MemgovSnap::default()),

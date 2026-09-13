@@ -43,6 +43,9 @@ pub fn render(
                     Value::Object(fields) => Value::Object(
                         fields
                             .into_iter()
+                            // Responses puts the tool discriminator beside the
+                            // function fields; Jinja receives a nested function.
+                            .filter(|(key, _)| parsed.api != Api::Responses || key != "type")
                             .map(|(key, value)| {
                                 (
                                     if key == "input_schema" {

@@ -81,6 +81,9 @@ __pycache__/
 /tests/test_exaone_kernels
 /tests/test_exaone_forward
 /tests/test_exaone_tokenizer
+/tests/test_step37_primitives
+/tests/test_step37_loader
+/tests/test_step37_forward
 /tests/test_inkling_kernels
 /tests/test_inkling_moe
 /tests/test_inkling_attn_prep
@@ -96,3 +99,14 @@ __pycache__/
 /tests/test_inkling_forward
 /tests/test_inkling_session
 /tests/test_inkling_encoders
+
+/tests/test_step37_session
+/tests/test_cuda_span_lease
+/tests/test_cuda_artifact_scope
+/tests/test_step37_state
+/tests/test_step37_mtp
+/tests/test_step37_spec
+
+/tests/test_step37_vision
+/tests/test_step37_vision_ops
+/tests/test_step37_media

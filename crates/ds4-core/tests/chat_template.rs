@@ -53,3 +53,73 @@ fn preserve_bos_and_clock() {
         "<BOS>1970-01-01"
     );
 }
+
+#[test]
+fn step37_official_messages() {
+    let template = Template::compile(
+        include_str!("../../../tests/fixtures/step37/chat_template.jinja"),
+        RenderClock::Fixed(0),
+    )
+    .unwrap();
+    let rendered = template
+        .render(&json!({
+            "bos_token":"<｜begin▁of▁sentence｜>",
+            "messages":[{"role":"user","content":"Hello"}],
+            "add_generation_prompt":true,
+        }))
+        .unwrap();
+    assert_eq!(rendered, "<｜begin▁of▁sentence｜><|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n");
+    let rendered = template.render(&json!({
+        "bos_token":"<｜begin▁of▁sentence｜>",
+        "messages":[{"role":"user","content":[{"type":"image"},{"type":"text","text":"Read this"}]}],
+        "add_generation_prompt":true,
+    })).unwrap();
+    assert!(rendered.contains("user\n<im_patch>Read this<|im_end|>"));
+    let off = template
+        .render_chat(
+            &[json!({"role":"user","content":"Hello"})],
+            &[],
+            ds4_core::chat_template::ChatOptions::new(10, ds4_core::ChatThinkMode::None),
+        )
+        .unwrap();
+    assert!(off.ends_with("<think>\n</think>\n"));
+}
+
+#[test]
+fn step37_python_jinja_parity() {
+    let template = Template::compile(
+        include_str!("../../../tests/fixtures/step37/chat_template.jinja"),
+        RenderClock::Fixed(0),
+    )
+    .unwrap();
+    let fixtures: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/step37/chat-vectors.json"
+    ))
+    .unwrap();
+    for case in fixtures["vectors"].as_array().unwrap() {
+        assert_eq!(
+            template.render(&case["context"]).unwrap(),
+            case["rendered"].as_str().unwrap(),
+            "{}",
+            case["name"]
+        );
+    }
+}
+
+#[test]
+fn step37_invalid_tool_json() {
+    let template = Template::compile(
+        include_str!("../../../tests/fixtures/step37/chat_template.jinja"),
+        RenderClock::Fixed(0),
+    )
+    .unwrap();
+    assert!(template
+        .render(&json!({
+            "messages": [{"role":"user","content":"Go"},
+                {"role":"assistant","content":null,"tool_calls":[{
+                    "function":{"name":"run","arguments":"{broken"}
+                }]}],
+            "add_generation_prompt": true,
+        }))
+        .is_err());
+}

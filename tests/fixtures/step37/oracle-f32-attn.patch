@@ -1,0 +1,10 @@
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -2043,0 +2044,7 @@
++    // Diagnostic contract: keep F16 KV storage, evaluate attention in F32.
++    // This separates cache rounding from the CUDA FA/matmul F16 intermediates.
++    if (arch == LLM_ARCH_STEP35 && std::getenv("STEP37_F32_ATTN")) {
++        k = ggml_cast(ctx0, k, GGML_TYPE_F32);
++        v = ggml_cast(ctx0, v, GGML_TYPE_F32);
++    }
++

@@ -48,7 +48,10 @@ pub(crate) fn attach_siblings(
 ) -> Result<(Option<SiblingAttach>, Option<SiblingAttach>)> {
     let mtp_path = nonempty(paths.mtp);
     let dspark_path = nonempty(paths.dspark);
-    let mtp_supported = matches!(family, ModelFamily::DeepSeek4 | ModelFamily::Inkling);
+    let mtp_supported = matches!(
+        family,
+        ModelFamily::DeepSeek4 | ModelFamily::Inkling | ModelFamily::Step37
+    );
     if (mtp_path.is_some() && !mtp_supported)
         || (dspark_path.is_some() && family != ModelFamily::DeepSeek4)
     {
@@ -81,6 +84,13 @@ fn kind_token(kind: SupportCatalog) -> &'static str {
 
 fn open_one(kind: SupportCatalog, path: &str, shape: Shape) -> Result<SiblingAttach> {
     let token = kind_token(kind);
+    if shape.family == ModelFamily::Step37 {
+        crate::Step37SidecarPlan::inspect(std::path::Path::new(path), crate::Step37Sidecar::Mtp)
+            .map_err(|e| Error {
+                code: 1,
+                message: format!("{token} metadata failed: {e}"),
+            })?;
+    }
     if shape.family == ModelFamily::Inkling {
         let g = crate::GgufFile::open(std::path::Path::new(path)).map_err(|e| Error {
             code: 1,
@@ -225,6 +235,42 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.message, DEEPSEEK_ONLY);
+    }
+
+    #[test]
+    fn step_mtp_checks_metadata() {
+        let path = temp_gguf("step-mtp", &["blk.45.nextn.enorm.weight"]);
+        let err = attach_siblings(
+            ModelFamily::Step37,
+            crate::shape::SHAPE_STEP37_FLASH,
+            SiblingPaths {
+                mtp: path.to_str(),
+                dspark: None,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.message.starts_with("mtp metadata failed:"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the real Step MTP-Q8 sidecar"]
+    fn attach_step_mtp_artifact() {
+        let path = std::env::var("STEP37_MTP").expect("set STEP37_MTP");
+        let (mtp, dspark) = attach_siblings(
+            ModelFamily::Step37,
+            crate::shape::SHAPE_STEP37_FLASH,
+            SiblingPaths {
+                mtp: Some(&path),
+                dspark: None,
+            },
+        )
+        .unwrap();
+        assert!(dspark.is_none());
+        assert_eq!(mtp.unwrap().bind_plan().slots.len(), 55);
     }
 
     #[test]

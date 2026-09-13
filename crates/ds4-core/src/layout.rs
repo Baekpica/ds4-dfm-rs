@@ -2726,6 +2726,9 @@ fn deepseek_block(out: &mut Vec<LayoutSpec>, prefix: &str, shape: &Shape) {
 }
 
 pub fn expected_mtp_layouts(shape: &Shape) -> Vec<LayoutSpec> {
+    if shape.family == ModelFamily::Step37 {
+        return crate::Step37SidecarPlan::layouts(crate::Step37Sidecar::Mtp);
+    }
     if shape.family == ModelFamily::Inkling {
         return crate::inkling::mtp_layouts();
     }
@@ -2871,6 +2874,7 @@ pub fn expected_dspark_layouts(shape: &Shape, markov_rank: u32) -> Vec<LayoutSpe
 pub fn expected_layouts(shape: &Shape) -> Vec<LayoutSpec> {
     match shape.family {
         ModelFamily::Inkling => crate::inkling::main_layouts(),
+        ModelFamily::Step37 => crate::Step37Plan::layouts(),
         ModelFamily::Glm53 => expected_glm53(shape),
         ModelFamily::Qwen4Exp => expected_qwen4exp(shape),
         ModelFamily::Motif3 => expected_motif3(shape),
@@ -3044,6 +3048,9 @@ pub fn validate_layouts(plan: &BindPlan) -> Result<(), LayoutError> {
 pub fn validate_mtp_layouts(plan: &BindPlan) -> Result<(), LayoutError> {
     let by_name = plan_by_name(plan);
     expect_specs(&expected_mtp_layouts(&plan.shape), &by_name)?;
+    if plan.shape.family == ModelFamily::Step37 {
+        return Ok(());
+    }
     expect_gate_up(
         &by_name,
         "mtp.0.ffn_gate_exps.weight",

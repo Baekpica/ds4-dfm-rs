@@ -551,7 +551,7 @@ typedef struct {
     uint64_t bytes;
 } ds4_gpu_tensor_record;
 
-/* Self-load aligned artifacts (v0.2.2): with no weight-server manifest, build
+/* Self-load aligned artifacts: when BASE is not imported, build
  * the aligned-SoA repack artifacts in-process at load (shared layout library
  * cuda/mmq/ds4_repack.cu) so self-load boots ride the same fast dispatches as
  * manifest imports.  Call BEFORE ds4_gpu_set_model_map_range for the base
@@ -567,7 +567,7 @@ int ds4_gpu_model_map_replacements_complete(const void *model_map);
 int ds4_gpu_model_range_replaced(const void *model_map, uint64_t offset,
                                  uint64_t bytes);
 int ds4_gpu_model_map_needs_device_copy(const void *model_map);
-/* Aligned-artifact tier for observability: source 0=none 1=imported 2=built.
+/* Aligned-artifact tier: source 0=none 1=imported 2=built 3=built+imported.
  * Any out pointer may be NULL. */
 void ds4_gpu_derived_artifact_stats(int *source, uint64_t *count, uint64_t *bytes, double *build_secs);
 /* Print the canonical one-line boot banner for the artifact tier. */
@@ -4511,6 +4511,36 @@ int ds4_gpu_exaone_moe_matmul_tensor(
         uint32_t                n_expert,
         uint32_t                n_tokens,
         uint32_t                n_expert_used);
+
+/* Step 3.7 CUDA primitives. Frequencies contain the per-layer RoPE factors;
+ * positions and the resulting cos/sin table remain on the execution stream. */
+/* Step vision consumes one normalized 728/504 RGB crop at a time. */
+int ds4_gpu_step37_columns(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
+        uint32_t edge, uint32_t channels);
+int ds4_gpu_step37_position(ds4_gpu_tensor *hidden,
+        const void *map, uint64_t size, uint64_t offset, uint32_t edge);
+int ds4_gpu_step37_vqkv(ds4_gpu_tensor *qkv,
+        const void *map, uint64_t size, uint64_t offset, uint32_t edge);
+int ds4_gpu_step37_vgelu(ds4_gpu_tensor *x,
+        const void *map, uint64_t size, uint64_t offset, uint32_t rows);
+int ds4_gpu_step37_vresidual(ds4_gpu_tensor *residual, const ds4_gpu_tensor *x,
+        const void *map, uint64_t size, uint64_t bias, uint64_t scale, uint32_t rows);
+
+int ds4_gpu_step37_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down,
+                      const ds4_gpu_tensor *weights, uint32_t width, uint32_t rows);
+int ds4_gpu_step37_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *up, const ds4_gpu_tensor *weights,
+        uint32_t width, uint32_t rows, float limit);
+int ds4_gpu_step37_router(ds4_gpu_tensor *ids, ds4_gpu_tensor *weights,
+        const ds4_gpu_tensor *logits, const void *map, uint64_t size,
+        uint64_t offset, uint32_t rows);
+int ds4_gpu_step37_rope(ds4_gpu_tensor *table, const ds4_gpu_tensor *frequency,
+        const ds4_gpu_tensor *positions, uint32_t rotary, uint32_t rows);
+int ds4_gpu_step37_qk(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *map, uint64_t size, uint64_t offset,
+        const ds4_gpu_tensor *table, uint32_t heads, uint32_t rotary, uint32_t rows);
+int ds4_gpu_step37_gate(ds4_gpu_tensor *values, const ds4_gpu_tensor *gate,
+        uint32_t heads, uint32_t rows);
 
 #ifdef __cplusplus
 }

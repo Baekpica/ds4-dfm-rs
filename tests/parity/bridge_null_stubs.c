@@ -53,6 +53,11 @@ ds4_dist_options bridge_dist_run_options;
 static ds4_session_progress_fn bridge_progress;
 static void *bridge_progress_ud;
 
+ds4_metrics *ds4_metrics_get(void) {
+    static ds4_metrics metrics;
+    return &metrics;
+}
+
 void ds4_host_tensor_dir_install(const ds4_host_tensor_dir *d) { (void)d; }
 void ds4_host_tensor_dir_clear(void) {}
 void ds4_host_shape_install(const ds4_host_shape *s) { (void)s; }
@@ -149,6 +154,12 @@ int ds4_session_sync_inkling(ds4_session *s, const ds4_tokens *prompt,
     (void)err; (void)errlen;
     STUB("ds4_session_sync_inkling");
 }
+int ds4_session_sync_step37(ds4_session *s, const ds4_tokens *prompt,
+                             const ds4_step37_pixels *crops, uint32_t crop_count,
+                             char *err, size_t errlen) {
+    (void)s; (void)prompt; (void)crops; (void)crop_count; (void)err; (void)errlen;
+    STUB("ds4_session_sync_step37");
+}
 void ds4_session_set_progress(ds4_session *s, ds4_session_progress_fn fn, void *ud) {
     (void)s;
     bridge_progress = fn;
@@ -173,6 +184,17 @@ int ds4_session_inkling_trial(ds4_session *s, int first, int max_tokens,
 int ds4_session_inkling_commit(ds4_session *s, int keep, char *err, size_t errlen) {
     (void)s; (void)keep; (void)err; (void)errlen;
     STUB("ds4_session_inkling_commit");
+}
+int ds4_session_step37_trial(ds4_session *s, int first, int max_tokens,
+                               int *tokens, int *target, int cap,
+                               char *err, size_t errlen) {
+    (void)s; (void)first; (void)max_tokens; (void)tokens; (void)target;
+    (void)cap; (void)err; (void)errlen;
+    STUB("ds4_session_step37_trial");
+}
+int ds4_session_step37_commit(ds4_session *s, int keep, char *err, size_t errlen) {
+    (void)s; (void)keep; (void)err; (void)errlen;
+    STUB("ds4_session_step37_commit");
 }
 int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                                         int max_tokens, int eos_token,

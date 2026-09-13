@@ -458,6 +458,7 @@ pub struct RuntimeMetrics {
 
 pub fn artifact_source_name(source: u64) -> &'static str {
     match source {
+        3 => "mixed",
         2 => "built",
         1 => "imported",
         _ => "none",

@@ -1764,6 +1764,7 @@ pub fn validate_qwen_inventory(
 pub fn validate_file(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
     match shape.family {
         ModelFamily::Inkling => crate::inkling::validate_main(g),
+        ModelFamily::Step37 => crate::Step37Plan::validate(g),
         ModelFamily::Glm53 => validate_glm53(g, shape),
         ModelFamily::Qwen4Exp => validate_qwen4exp(g, shape),
         ModelFamily::DeepSeek4 => validate_deepseek(g, shape),
@@ -1821,6 +1822,7 @@ pub fn dump_validate(path: &std::path::Path) -> String {
                         Variant::Glm53Flash => SHAPE_GLM53_FLASH,
                         Variant::K2Horizon375B => SHAPE_K2_HORIZON_375B,
                         Variant::InklingSmall => crate::shape::SHAPE_INKLING_SMALL,
+                        Variant::Step37Flash => crate::shape::SHAPE_STEP37_FLASH,
                         Variant::Flash => SHAPE_FLASH,
                         Variant::Pro => SHAPE_PRO,
                     };

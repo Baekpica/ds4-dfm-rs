@@ -1283,7 +1283,10 @@ pub fn parse_generated_message(
         }
         ModelSyntax::Dots3 => parse_dots3_generated(text, require_thinking_closed),
         ModelSyntax::SolarOpen2 => parse_solar_generated(text, require_thinking_closed, orders),
-        ModelSyntax::Qwen4Exp => parse_qwen_generated(text, require_thinking_closed, orders),
+        // Step shares this output XML, but renders input through its own Jinja.
+        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 => {
+            parse_qwen_generated(text, require_thinking_closed, orders)
+        }
         ModelSyntax::K2Horizon => parse_k2_generated(text, require_thinking_closed, orders),
         ModelSyntax::Glm53 => parse_glm_generated(text, require_thinking_closed),
         // Malformed tool envelopes must not become user-visible raw text.
@@ -1317,7 +1320,7 @@ pub fn parse_generated_for_model_id(
     let format = match syntax {
         ModelSyntax::SolarOpen2 => ChatFormat::SolarOpen2,
         ModelSyntax::Exaone => ChatFormat::Exaone,
-        ModelSyntax::Qwen4Exp => ChatFormat::Qwen4Exp,
+        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 => ChatFormat::Qwen4Exp,
         ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
         ModelSyntax::Inkling => ChatFormat::Inkling,
         _ => ChatFormat::DeepSeek,

@@ -161,6 +161,14 @@ pub struct ds4_bridge_distributed_options {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct ds4_bridge_spec_metrics {
+    pub drafts: u64,
+    pub hits: u64,
+    pub quench: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ds4_bridge_mem_cell {
     pub requested: u64,
     pub committed: u64,
@@ -228,6 +236,16 @@ pub struct ds4_bridge_inkling_pixels {
     pub pixel_count: u64,
     pub token_offset: u32,
     pub token_count: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ds4_bridge_step37_pixels {
+    pub pixels: *const f32,
+    pub pixel_count: u64,
+    pub token_offset: u32,
+    pub token_count: u32,
+    pub edge: u32,
 }
 
 #[repr(C)]
@@ -504,6 +522,16 @@ extern "C" {
         errlen: usize,
     ) -> c_int;
 
+    pub fn ds4_bridge_sync_step37(
+        s: *mut ds4_bridge_session,
+        tokens: *const i32,
+        n_tokens: c_int,
+        crops: *const ds4_bridge_step37_pixels,
+        crop_count: u32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
     pub fn ds4_bridge_sync_inkling(
         s: *mut ds4_bridge_session,
         tokens: *const i32,
@@ -545,6 +573,24 @@ extern "C" {
     ) -> c_int;
 
     pub fn ds4_bridge_inkling_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_step37_trial(
+        s: *mut ds4_bridge_session,
+        first: i32,
+        max_tokens: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_step37_commit(
         s: *mut ds4_bridge_session,
         keep: i32,
         err: *mut c_char,
@@ -770,6 +816,8 @@ extern "C" {
     ) -> c_int;
 
     pub fn ds4_bridge_mem_census_snap(out: *mut ds4_bridge_mem_census) -> c_int;
+
+    pub fn ds4_bridge_spec_snapshot(out: *mut ds4_bridge_spec_metrics);
 
     pub fn ds4_bridge_mem_observe_snap(out: *mut ds4_bridge_mem_observe) -> c_int;
 

@@ -107,6 +107,32 @@ int main(void) {
     uint64_t rng = 1;
 
     {
+        ds4_bridge_spec_snapshot(NULL);
+        ds4_metrics *m = ds4_metrics_get();
+        ds4_metric_set(&m->spec_drafts, 9);
+        ds4_metric_set(&m->spec_hits, 6);
+        ds4_metric_set(&m->spec_quench, 1);
+        for (int i = 0; i < 2; i++) {
+            ds4_bridge_spec_metrics spec = {0};
+            ds4_bridge_spec_snapshot(&spec);
+            if (spec.drafts != 9 || spec.hits != 6 || spec.quench != 1) {
+                fail("speculation snapshot values");
+            }
+        }
+    }
+
+    {
+        const ds4_bridge_step37_pixels crop = {0};
+        ds4_bridge_session fake = {.session = (ds4_session *)1};
+        if (!ds4_bridge_sync_step37(NULL, toks, 1, &crop, 1, err, sizeof(err)) ||
+            !ds4_bridge_sync_step37(&fake, toks, 1, NULL, 1, err, sizeof(err)) ||
+            !ds4_bridge_sync_step37(&fake, toks, 1, &crop, 0, err, sizeof(err)) ||
+            !ds4_bridge_sync_step37(&fake, toks, 1, &crop, 102, err, sizeof(err))) {
+            fail("Step invalid crop bridge input accepted");
+        }
+    }
+
+    {
         const uint8_t image[] = {1, 2, 3};
         ds4_bridge_qwen_image_info info;
         uint64_t hash = 0;
@@ -241,6 +267,12 @@ int main(void) {
         fail("sample");
     if (ds4_bridge_session_ctx(NULL) != -1) fail("ctx");
     if (ds4_bridge_session_argmax(NULL) != -1) fail("argmax");
+    if (ds4_bridge_step37_trial(NULL, 1, 4, NULL, NULL, 4, err, sizeof(err)) != -1) {
+        fail("Step trial NULL session");
+    }
+    if (ds4_bridge_step37_commit(NULL, 1, err, sizeof(err)) == 0) {
+        fail("Step commit NULL session");
+    }
     if (ds4_bridge_session_argmax_excluding(NULL, 7) != -1)
         fail("argmax_excluding");
     if (ds4_bridge_session_pos(NULL) != -1) fail("pos");

@@ -205,6 +205,7 @@ const PERF_ENV: &[&str] = &[
     "DS4_SOLAR_FATTN_GQA2",
     "DS4_SOLAR_FATTN_WS",
     "DS4_DOTS3_PREFILL_CHUNK",
+    "DS4_STEP37_PREFILL_CHUNK",
     "DS4_INKLING_NO_LINEAR",
     "DS4_INKLING_NO_MOE_BATCH",
     "DS4_INKLING_NO_Q8_BATCH",
@@ -636,6 +637,7 @@ mod tests {
                 ("DS4_QWEN_PREFILL_OPENING", "1"),
                 ("DS4_MMQ_DENSE_D2R", "0"),
                 ("DS4_METAL_PREFILL_CHUNK", "4096"),
+                ("DS4_STEP37_PREFILL_CHUNK", "512"),
                 ("DS4_FATTN_HMMA_LDSM", "0"),
                 ("DS4_SOLAR_FATTN_GQA2", "1"),
                 ("DS4_API_KEY", "secret"),
@@ -650,6 +652,7 @@ mod tests {
         assert!(out.contains("DS4_QWEN_PREFILL_OPENING='1'"));
         assert!(out.contains("DS4_MMQ_DENSE_D2R='0'"));
         assert!(out.contains("DS4_METAL_PREFILL_CHUNK='4096'"));
+        assert!(out.contains("DS4_STEP37_PREFILL_CHUNK='512'"));
         assert!(out.contains("DS4_FATTN_HMMA_LDSM='0'"));
         assert!(out.contains("DS4_SOLAR_FATTN_GQA2='1'"));
         assert!(!out.contains("secret"));

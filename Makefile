@@ -303,7 +303,7 @@ proof-rust-cuda-opp-c: ds4 ds4-c
 			--work-dir "$$root/rust" --check-expected "$$expected"
 endif
 
-ds4.o: ds4.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h vendor/stb_image.h
+ds4.o: ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h vendor/stb_image.h
 	$(CC) $(CFLAGS) -c -o $@ ds4.c
 
 # Rust FFI seam: wraps ds4.h so crates/ds4-sys never bindgens the engine header.
@@ -711,7 +711,7 @@ ds4_agent_cpu.o: ds4_agent.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_
 ds4_metal.o: ds4_metal.m ds4_gpu.h $(METAL_SRCS)
 	$(CC) $(OBJCFLAGS) -c -o $@ ds4_metal.m
 
-ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
+ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
 	$(NVCC) $(NVCCFLAGS) -c -o $@ ds4_cuda.cu
 
 # Vendored mmq pieces. ds4_mmq.cu transitively pulls in mmq.cuh which has
@@ -815,6 +815,20 @@ tests/test_model_family_kernels: tests/test_model_family_kernels.o $(DS4_CUDA_CO
 
 test-model-family-kernels: tests/test_model_family_kernels
 	./tests/test_model_family_kernels
+
+tests/test_step37_vision_ops: tests/test_step37_vision_ops.cu cuda/step37_vision.cuh
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+.PHONY: test-step37-vision-ops
+test-step37-vision-ops: tests/test_step37_vision_ops
+	./tests/test_step37_vision_ops
+
+tests/test_step37_primitives: tests/test_step37_primitives.cu cuda/step37_primitives.cuh tests/fixtures/step37/primitives.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+.PHONY: test-step37-primitives
+test-step37-primitives: tests/test_step37_primitives
+	./tests/test_step37_primitives
 
 tests/test_inkling_kernels: tests/test_inkling_kernels.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
@@ -1095,6 +1109,68 @@ tests/test_inkling_loader: tests/test_inkling_loader.c ds4.c ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
+tests/test_step37_loader: tests/test_step37_loader.c ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+tests/test_step37_state: tests/test_step37_state.c ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+ifeq ($(UNAME_S),Linux)
+tests/test_step37_media.o: tests/test_step37_media.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/test_step37_media: tests/test_step37_media.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_step37_vision.o: tests/test_step37_vision.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_step37_vision: tests/test_step37_vision.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_step37_forward.o: tests/test_step37_forward.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_step37_forward: tests/test_step37_forward.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_step37_session.o: tests/test_step37_session.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_step37_session: tests/test_step37_session.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_step37_mtp.o: tests/test_step37_mtp.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_step37_mtp: tests/test_step37_mtp.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_step37_spec.o: tests/test_step37_spec.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_step37_spec: tests/test_step37_spec.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_cuda_span_lease.o: tests/test_cuda_span_lease.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h ds4_mem_gov.h
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/test_cuda_span_lease: tests/test_cuda_span_lease.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_cuda_artifact_scope.o: tests/test_cuda_artifact_scope.c ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_cuda_artifact_scope: tests/test_cuda_artifact_scope.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-cuda-artifact-scope
+test-cuda-artifact-scope: tests/test_cuda_artifact_scope
+	python3 tests/test_cuda_artifact_scope.py
+endif
+
 tests/test_solar_loader: tests/test_solar_loader.c ds4.c ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
@@ -1342,6 +1418,14 @@ endif
 
 clean:
 	rm -f tests/test_solar_fattn tests/test_solar_fattn.o
+	rm -f tests/test_step37_media tests/test_step37_media.o
+	rm -f tests/test_step37_vision_ops tests/test_step37_vision tests/test_step37_vision.o
+	rm -f tests/test_step37_primitives tests/test_step37_loader tests/test_step37_forward tests/test_step37_forward.o
+	rm -f tests/test_step37_session tests/test_step37_session.o tests/test_step37_state
+	rm -f tests/test_step37_mtp tests/test_step37_mtp.o
+	rm -f tests/test_step37_spec tests/test_step37_spec.o
+	rm -f tests/test_cuda_span_lease tests/test_cuda_span_lease.o
+	rm -f tests/test_cuda_artifact_scope tests/test_cuda_artifact_scope.o
 	rm -f tests/test_inkling_kernels tests/test_inkling_kernels.o
 	rm -f tests/test_inkling_moe tests/test_inkling_moe.o
 	rm -f tests/test_inkling_attn_prep tests/test_inkling_attn_prep.o

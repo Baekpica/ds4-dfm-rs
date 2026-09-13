@@ -19,7 +19,7 @@ retired when a better model makes it irrelevant.
 
 ## So, what can I do with this software?
 
-- Run one of the nine validated model families on a DGX Spark without pulling
+- Run one of the ten validated model families on a DGX Spark without pulling
   in a general inference framework.
 - Serve OpenAI-compatible Chat, Completions, and Responses APIs, Anthropic
   Messages, or use the built-in DeepSeek DSML coding agent.
@@ -220,6 +220,7 @@ tokenizer/chat contract, state lifecycle, and native execution path.
 | GLM 5.3 Flash | `glm5-next` | Q2 single-file GGUF plus the explicit vision sidecar; CUDA serial serving on one DGX Spark. |
 | K2-Horizon 375B A23B | `k2-horizon` | Four-shard MQ87 GGUF; IFM BPE/XML tools; continuous 32K one-bank serving on one DGX Spark. |
 | Inkling Small | `inkling` | MQ85GB + optional eight-layer MTP-BF16; serial CUDA text/image/audio input and text output. [HTTP checks and limits](docs/inkling-small.md), [GB10 performance](docs/inkling-optimization-2026-09-11.md). |
+| Step 3.7 Flash | `step35` | Nine-shard MQ83, optional three-block Q8 MTP and F16 vision sidecars; serial CUDA text/image serving. [Verification and limits](docs/step37-initial.md). |
 
 The current family contract and measured model-specific limits are documented
 in [`ds4-dfm-model-families.md`](docs/ds4-dfm-model-families.md). Arbitrary
@@ -242,6 +243,7 @@ collection. Support remains limited to the validated layouts described above.
 | GLM 5.3 Flash | [`GLM-5.3-Flash-Q2.gguf`](https://huggingface.co/antirez/glm-5.3-flash-gguf/blob/main/GLM-5.3-Flash-Q2.gguf) + [`vision encoder`](https://huggingface.co/antirez/glm-5.3-flash-gguf/blob/main/GLM-5.3-Flash-Vision-Encoder.gguf) | [`antirez`](https://huggingface.co/antirez) |
 | K2-Horizon 375B A23B | [`Baekpica/K2-Horizon-375B-A23B-Mixed-Quant-GGUF`](https://huggingface.co/Baekpica/K2-Horizon-375B-A23B-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
 | Inkling Small | [`MQ85GB`](https://huggingface.co/Baekpica/Inkling-Small-Mixed-Quant-GGUF/tree/main/MQ85GB) + optional [`MTP-BF16`](https://huggingface.co/Baekpica/Inkling-Small-GGUF/tree/main/MTP-BF16) | [`Baekpica`](https://huggingface.co/Baekpica) |
+| Step 3.7 Flash | [`MQ83 + MTP + vision`](https://huggingface.co/Baekpica/Step-3.7-Flash-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
 
 ### Qwen release scope
 

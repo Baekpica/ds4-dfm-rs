@@ -145,7 +145,7 @@ static unsigned long long slack(cell c)
 
 static const char *artifact_source_name(unsigned long long source)
 {
-    return source == 2 ? "built" : source == 1 ? "imported" : "none";
+    return source == 3 ? "mixed" : source == 2 ? "built" : source == 1 ? "imported" : "none";
 }
 
 static void zero_runtime(runtime *rt)
@@ -608,8 +608,9 @@ int main(int argc, char **argv)
         dump_stats_memgov(&rt.memgov);
         return 0;
     }
-    if (!strcmp(argv[1], "supported")) {
+    if (!strcmp(argv[1], "supported") || !strcmp(argv[1], "mixed")) {
         fill_supported(&rt);
+        if (!strcmp(argv[1], "mixed")) { rt.artifact_source = 3; }
         dump_prefix(&rt);
         dump_fragment();
         dump_runtime(&rt);

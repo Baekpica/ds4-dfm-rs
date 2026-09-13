@@ -133,6 +133,14 @@ typedef struct {
 } ds4_bridge_inkling_pixels;
 
 typedef struct {
+    const float *pixels; /* borrowed normalized CHW [3,edge,edge] */
+    uint64_t pixel_count;
+    uint32_t token_offset;
+    uint32_t token_count;
+    uint32_t edge;
+} ds4_bridge_step37_pixels;
+
+typedef struct {
     const int32_t *codes; /* borrowed [token_count,80], each in [0,15] */
     uint64_t code_count;
     uint32_t token_offset;
@@ -196,6 +204,10 @@ int ds4_bridge_session_sync_vision(ds4_bridge_session *s,
                                    const ds4_bridge_vision_input *images,
                                    uint32_t image_count,
                                    char *err, size_t errlen);
+int ds4_bridge_sync_step37(ds4_bridge_session *s,
+                            const int32_t *tokens, int n_tokens,
+                            const ds4_bridge_step37_pixels *crops, uint32_t crop_count,
+                            char *err, size_t errlen);
 int ds4_bridge_sync_inkling(ds4_bridge_session *s,
                              const int32_t *tokens, int n_tokens,
                              const ds4_bridge_inkling_pixels *images, uint32_t image_count,
@@ -211,6 +223,10 @@ int ds4_bridge_inkling_trial(ds4_bridge_session *s, int32_t first, int32_t max_t
                               int32_t *tokens, int32_t *target, int32_t cap,
                               char *err, size_t errlen);
 int ds4_bridge_inkling_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);
+int ds4_bridge_step37_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
+                              int32_t *tokens, int32_t *target, int32_t cap,
+                              char *err, size_t errlen);
+int ds4_bridge_step37_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);
 int ds4_bridge_eval_speculative_argmax(ds4_bridge_session *s,
                                        int32_t first_token,
                                        int32_t max_tokens,
@@ -330,6 +346,16 @@ int ds4_bridge_session_copy_logits(ds4_bridge_session *s, float *out, int cap);
 int ds4_bridge_session_output_head_bench(ds4_bridge_session *s,
                                          int iters, const char *path,
                                          char *err, size_t errlen);
+
+/* Process-global speculative counters. Each field is read atomically;
+ * the caller owns out, and NULL is a no-op. No model handle is needed. */
+typedef struct {
+    uint64_t drafts;
+    uint64_t hits;
+    uint64_t quench;
+} ds4_bridge_spec_metrics;
+
+void ds4_bridge_spec_snapshot(ds4_bridge_spec_metrics *out);
 
 /* Live CUDA memgov census.  Process-global after backend init; no model
  * handle.  Counts match ds4_mem_census.h (DS4_MEMC__COUNT x DS4_MEMD__COUNT).

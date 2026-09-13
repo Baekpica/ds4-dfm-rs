@@ -768,6 +768,9 @@ fn inkling_names(layouts: Vec<crate::layout::LayoutSpec>) -> Vec<BindName> {
 }
 
 fn mtp_names(shape: &Shape) -> Vec<BindName> {
+    if shape.family == ModelFamily::Step37 {
+        return inkling_names(crate::Step37SidecarPlan::layouts(crate::Step37Sidecar::Mtp));
+    }
     if shape.family == ModelFamily::Inkling {
         return inkling_names(crate::inkling::mtp_layouts());
     }
@@ -844,6 +847,7 @@ pub fn bind_names(shape: &Shape) -> Vec<BindName> {
             }
         }
         ModelFamily::Inkling => return inkling_names(crate::inkling::main_layouts()),
+        ModelFamily::Step37 => return inkling_names(crate::Step37Plan::layouts()),
     }
     out
 }
@@ -1240,6 +1244,7 @@ pub fn variant_from_bind_name(s: &str) -> Option<Variant> {
         "glm5-next" => Some(Variant::Glm53Flash),
         "k2-horizon" => Some(Variant::K2Horizon375B),
         "inkling" => Some(Variant::InklingSmall),
+        "step35" => Some(Variant::Step37Flash),
         _ => None,
     }
 }
@@ -1265,7 +1270,12 @@ pub fn dump_bind_names_variant(name: &str) -> Option<String> {
 pub fn catalog_from_bind_name(s: &str) -> Option<(Option<SupportCatalog>, Variant)> {
     if let Some(rest) = s.strip_prefix("mtp-") {
         return variant_from_bind_name(rest)
-            .filter(|v| matches!(v, Variant::Flash | Variant::Pro | Variant::InklingSmall))
+            .filter(|v| {
+                matches!(
+                    v,
+                    Variant::Flash | Variant::Pro | Variant::InklingSmall | Variant::Step37Flash
+                )
+            })
             .map(|v| (Some(SupportCatalog::Mtp), v));
     }
     if let Some(rest) = s.strip_prefix("dspark-") {

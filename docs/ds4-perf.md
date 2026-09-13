@@ -73,9 +73,9 @@ files outside measured NVTX operations. Requested proof or repeated samples
 that are missing make the scout incomplete. Unsupported opaque commands may
 still be structurally profiled without proof or a workload contract.
 
-Inkling has no serialized session checkpoint. Between sweep frontiers the
-benchmark replays the prompt prefix outside both measured ranges, restoring
-its KV and convolution history before measuring the next suffix. Its CSV
+Inkling and Step have no serialized session checkpoint. Between sweep
+frontiers the benchmark replays the prompt prefix outside both measured
+ranges, restoring their live state before measuring the next suffix. Their CSV
 `kvcache_bytes` is therefore zero (no serialized snapshot), not a KV allocation
 measurement. `tests/test_inkling_bench.py` compares sweep logits and tokens with
 independent cold frontiers; run it under the memory guard with the same owner.
