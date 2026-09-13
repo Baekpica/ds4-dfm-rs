@@ -207,9 +207,9 @@ fn uses_distributed_replay(args: &BenchArgs) -> bool {
 }
 
 fn uses_prefix_replay(args: &BenchArgs, family: ModelFamily) -> bool {
-    // Inkling has live KV/convolution state but no serialized checkpoint.
-    // Restore its prefix by replaying outside both measured phase ranges.
-    uses_distributed_replay(args) || family == ModelFamily::Inkling
+    // These families have live GPU state without serialized checkpoints.
+    // Restore the prefix outside both measured phase ranges.
+    uses_distributed_replay(args) || matches!(family, ModelFamily::Inkling | ModelFamily::Step37)
 }
 
 fn use_mtp_spec(family: ModelFamily, mtp: Option<&str>, draft: i32) -> bool {
@@ -767,6 +767,12 @@ mod tests {
         assert!(!uses_prefix_replay(&args, ModelFamily::Qwen4Exp));
         args.dist.role = ds4_dist::Role::Coordinator;
         assert!(uses_prefix_replay(&args, ModelFamily::DeepSeek4));
+    }
+
+    #[test]
+    fn step_sweep_replays_prefix() {
+        let args = BenchArgs::default();
+        assert!(uses_prefix_replay(&args, ModelFamily::Step37));
     }
 
     fn argv(args: &[&str]) -> Vec<String> {
