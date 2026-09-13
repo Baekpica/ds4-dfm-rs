@@ -93,7 +93,9 @@ typedef struct {
 } ds4_step37_graph;
 
 static unsigned step37_prefill_cap(unsigned ctx) {
-    enum { DEFAULT_CHUNK = 2048, MAX_CHUNK = 4096 };
+    /* Wider worklists reduce prefill launches. Pin 2048 (or smaller) when
+     * concurrent banks and the serial image lane need more memory headroom. */
+    enum { DEFAULT_CHUNK = 4096, MAX_CHUNK = 4096 };
     unsigned cap = DEFAULT_CHUNK;
     const char *value = getenv("DS4_STEP37_PREFILL_CHUNK");
     if (value && *value) {
