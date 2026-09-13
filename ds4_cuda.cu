@@ -1750,6 +1750,12 @@ static const char *cuda_model_range_populate_device_copy(const void *model_map,
     g_model_range_bytes += bytes;
     cuda_mem_note_alloc_src(DS4_MEMC_WEIGHT_SPAN, DS4_MEMD_UNIFIED_DEVICE,
                             bytes, bytes, model_map);
+    /* The aligned-model remainder walk uses this tier instead of the unit
+     * materializer. Retire each allocation's debt before the next quote;
+     * otherwise already resident spans are charged against free memory again. */
+    if (!g_model_plan_frozen) {
+        ds4_gov_publish_use(DS4_GOVC_ENGINE_BOOT, g_model_range_bytes, g_model_range_bytes);
+    }
     cuda_substrate_cover(model_map, bytes);   /* tripwire: promotion materialized */
     if (cuda_weight_env().verbose) {
         fprintf(stderr, "ds4: CUDA cached %s %.2f MiB (total %.2f GiB)\n",
