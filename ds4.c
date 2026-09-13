@@ -23255,6 +23255,11 @@ static bool qwen4exp_qsa_ws_alloc(
     return true;
 }
 
+typedef enum {
+    QWEN_QSA_OUTPUT,
+    QWEN_QSA_CACHE_ONLY,
+} qwen_qsa_pass;
+
 static bool qwen4exp_qsa_forward_impl(
         ds4_qwen_qsa_ws            *ws,
         ds4_qwen_qsa_state         *state,
@@ -23265,7 +23270,8 @@ static bool qwen4exp_qsa_forward_impl(
         uint32_t                    n_tokens,
         uint32_t                    pos0,
         const ds4_gpu_tensor       *mrope_positions,
-        bool                        q_gate_ready) {
+        bool                        q_gate_ready,
+        qwen_qsa_pass               pass) {
     if (!ws || !state || !model || !weights || !input || !output ||
         n_tokens == 0u || n_tokens > ws->capacity || pos0 != state->length ||
         pos0 > state->context_cap || n_tokens > state->context_cap - pos0 ||
@@ -23275,6 +23281,7 @@ static bool qwen4exp_qsa_forward_impl(
         !weights->k || !weights->k_norm || !weights->v || !weights->output) {
         return false;
     }
+    const bool output_needed = pass == QWEN_QSA_OUTPUT;
     const uint32_t hidden = ws->hidden_size;
     const uint32_t index_heads = ws->index_heads;
     const uint32_t index_head_dim = ws->index_head_dim;
@@ -23316,8 +23323,11 @@ static bool qwen4exp_qsa_forward_impl(
         !ds4_gpu_qwen4exp_qsa_split_index_tensor(
                 ws->index_query, state->raw_index, ws->index_qk,
                 n_tokens, pos0, state->context_cap,
-                index_heads, index_head_dim) ||
-        !ds4_gpu_qwen4exp_shared_group_rms_norm_rows_tensor(
+                index_heads, index_head_dim)) {
+        return false;
+    }
+    if (output_needed &&
+        (!ds4_gpu_qwen4exp_shared_group_rms_norm_rows_tensor(
                 ws->index_query, ws->index_query,
                 model->map, model->size, weights->index_q_norm->abs_offset,
                 index_q_dim, index_head_dim, n_tokens, DS4_RMS_EPS) ||
@@ -23330,7 +23340,7 @@ static bool qwen4exp_qsa_forward_impl(
               : ds4_gpu_qwen4exp_rope_tensor(
                     ws->index_query, n_tokens, index_heads, index_head_dim,
                     ws->rotary_dim, pos0, DS4_ROPE_FREQ_BASE, yarn_factor,
-                    (uint32_t)DS4_ROPE_ORIG_CTX))) {
+                    (uint32_t)DS4_ROPE_ORIG_CTX)))) {
         return false;
     }
 
@@ -23349,7 +23359,7 @@ static bool qwen4exp_qsa_forward_impl(
     }
 
     const uint32_t topk_blocks = max_blocks < 512u ? max_blocks : 512u;
-    if (max_blocks != 0u &&
+    if (output_needed && max_blocks != 0u &&
         (!ds4_gpu_qwen4exp_qsa_block_scores_tensor(
                  ws->block_scores, ws->index_query, state->pooled_index,
                  n_tokens, pos0, max_blocks, index_heads,
@@ -23359,14 +23369,14 @@ static bool qwen4exp_qsa_forward_impl(
                  max_blocks, n_tokens, topk_blocks, 0u, UINT32_MAX))) {
         return false;
     }
-    if (!ds4_gpu_qwen4exp_qsa_expand_selection_tensor(
+    if (output_needed && !ds4_gpu_qwen4exp_qsa_expand_selection_tensor(
                 ws->selected_tokens, ws->selected_counts,
                 max_blocks ? ws->selected_blocks : NULL,
                 n_tokens, pos0, max_blocks, topk_blocks,
                 ws->ratio, ws->token_budget)) {
         return false;
     }
-    if (!q_gate_ready &&
+    if (output_needed && !q_gate_ready &&
         (!plain_graph_matmul_tensor(
              ws->q_projected, model, weights->q,
              hidden, 2u * q_dim, input, n_tokens) ||
@@ -23393,15 +23403,15 @@ static bool qwen4exp_qsa_forward_impl(
         return false;
     }
 
-    if (!ds4_gpu_qwen4exp_shared_group_rms_norm_rows_tensor(
+    if ((output_needed && !ds4_gpu_qwen4exp_shared_group_rms_norm_rows_tensor(
                 ws->query, ws->query, model->map, model->size,
                 weights->q_norm->abs_offset, q_dim, head_dim,
-                n_tokens, DS4_RMS_EPS) ||
+                n_tokens, DS4_RMS_EPS)) ||
         !ds4_gpu_qwen4exp_shared_group_rms_norm_rows_tensor(
                 ws->key, ws->key, model->map, model->size,
                 weights->k_norm->abs_offset, kv_dim, head_dim,
                 n_tokens, DS4_RMS_EPS) ||
-        !(mrope_positions
+        (output_needed && !(mrope_positions
               ? ds4_gpu_qwen4exp_mrope_tensor(
                     ws->query, mrope_positions, n_tokens, heads, head_dim,
                     ws->rotary_dim, pos0, DS4_ROPE_FREQ_BASE, yarn_factor,
@@ -23409,7 +23419,7 @@ static bool qwen4exp_qsa_forward_impl(
               : ds4_gpu_qwen4exp_rope_tensor(
                     ws->query, n_tokens, heads, head_dim, ws->rotary_dim,
                     pos0, DS4_ROPE_FREQ_BASE, yarn_factor,
-                    (uint32_t)DS4_ROPE_ORIG_CTX)) ||
+                    (uint32_t)DS4_ROPE_ORIG_CTX))) ||
         !(mrope_positions
               ? ds4_gpu_qwen4exp_mrope_tensor(
                     ws->key, mrope_positions, n_tokens, kv_heads, head_dim,
@@ -23421,8 +23431,13 @@ static bool qwen4exp_qsa_forward_impl(
                     (uint32_t)DS4_ROPE_ORIG_CTX)) ||
         !ds4_gpu_qwen4exp_qsa_store_kv_tensor(
                 state->k_cache, state->v_cache, ws->key, ws->value,
-                n_tokens, pos0, state->context_cap, kv_heads, head_dim) ||
-        !ds4_gpu_qwen4exp_qsa_attention_tensor(
+                n_tokens, pos0, state->context_cap, kv_heads, head_dim)) {
+        return false;
+    }
+
+    /* A shifted target prefix only contributes index and KV history. */
+    if (output_needed &&
+        (!ds4_gpu_qwen4exp_qsa_attention_tensor(
                 ws->attention, ws->attention_scores,
                 ws->query, ws->gate, state->k_cache, state->v_cache,
                 ws->selected_tokens, ws->selected_counts,
@@ -23430,7 +23445,7 @@ static bool qwen4exp_qsa_forward_impl(
                 ws->selected_cap, state->context_cap) ||
         !plain_graph_matmul_tensor(
                 output, model, weights->output,
-                q_dim, hidden, ws->attention, n_tokens)) {
+                q_dim, hidden, ws->attention, n_tokens))) {
         return false;
     }
     state->length = pos0 + n_tokens;
@@ -23449,7 +23464,7 @@ static bool qwen4exp_qsa_forward(
         const ds4_gpu_tensor       *mrope_positions) {
     return qwen4exp_qsa_forward_impl(
         ws, state, model, weights, input, output, n_tokens, pos0,
-        mrope_positions, false);
+        mrope_positions, false, QWEN_QSA_OUTPUT);
 }
 
 static bool qwen4exp_qsa_forward_bank2(
@@ -23504,10 +23519,10 @@ static bool qwen4exp_qsa_forward_bank2(
 
     return qwen4exp_qsa_forward_impl(
                ws[0], state[0], model, weights, input[0], output[0],
-               1u, pos0[0], mrope_positions[0], true) &&
+               1u, pos0[0], mrope_positions[0], true, QWEN_QSA_OUTPUT) &&
            qwen4exp_qsa_forward_impl(
                ws[1], state[1], model, weights, input[1], output[1],
-               1u, pos0[1], mrope_positions[1], true);
+               1u, pos0[1], mrope_positions[1], true, QWEN_QSA_OUTPUT);
 }
 
 /* Qwen4Exp keeps its MoE scratch separate from the older plain-residual
@@ -25672,15 +25687,23 @@ static bool qwen4exp_graph_mtp_step(
     QWEN_MTP_REQUIRE(plain_graph_add_inplace(
         graph->hidden[1], graph->hc.mix_logits, hc_values), "input-fusion");
 
+    const qwen_qsa_pass pass = !logits &&
+        !getenv("DS4_QWEN_MTP_FULL_PREFIX")
+        ? QWEN_QSA_CACHE_ONLY : QWEN_QSA_OUTPUT;
     ds4_gpu_tensor *current = graph->hidden[1];
     ds4_gpu_tensor *next = graph->mtp_hidden;
     QWEN_MTP_REQUIRE(qwen4exp_hc_begin(
         &graph->hc, model, &layer->qwen_attn_hc, current, rows, false),
         "attention-hc-mix");
-    QWEN_MTP_REQUIRE(qwen4exp_qsa_forward(
+    QWEN_MTP_REQUIRE(qwen4exp_qsa_forward_impl(
         &graph->qsa_ws, &graph->mtp_qsa_state, model,
         &layer->qwen_qsa, graph->hc.mixed, graph->block,
-        rows, graph->mtp_qsa_state.length, NULL), "qsa");
+        rows, graph->mtp_qsa_state.length, NULL, false, pass), "qsa");
+    /* Prefix inputs come from the target; the discarded MTP hidden output
+     * is neither recurrent state nor input to the next draft. */
+    if (pass == QWEN_QSA_CACHE_ONLY) {
+        return true;
+    }
     QWEN_MTP_REQUIRE(qwen4exp_hc_finish(
         &graph->hc, current, graph->block, next, rows),
         "attention-hc-inject");

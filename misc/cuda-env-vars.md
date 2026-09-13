@@ -19,9 +19,12 @@ graph, and are independent of accepted KV state.
 |---|---|
 | `DS4_QWEN_MTP_FULL_VOCAB=1` | Score all draft vocabulary rows. |
 | `DS4_QWEN_MTP_CPU_ARGMAX=1` | Download draft logits and select on CPU. |
+| `DS4_QWEN_MTP_FULL_PREFIX=1` | Compute discarded attention/MoE outputs while preparing MTP history. |
 
 Defaults use the compact Q8 head and GPU selection. Other draft weight
 formats retain their full head; Metal retains CPU selection.
+Prefix preparation normally computes only QSA index/KV history from shifted
+target hidden states. Actual draft generation retains the complete MTP layer.
 
 ## Q8_0 dispatcher
 

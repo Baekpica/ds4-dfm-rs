@@ -169,6 +169,41 @@ static int compare_states(const ds4_qwen_gpu_graph *ga,
     return failures;
 }
 
+/* Compare only live prefix rows; unused cache capacity is uninitialized. */
+static int compare_mtp(const ds4_qwen_gpu_graph *ga,
+                       const ds4_qwen_gpu_graph *gb,
+                       float *scratch_a, float *scratch_b) {
+    const ds4_qwen_qsa_state *a = &ga->mtp_qsa_state;
+    const ds4_qwen_qsa_state *b = &gb->mtp_qsa_state;
+    if (!ga->mtp_enabled || !gb->mtp_enabled || a->length == 0u ||
+        a->length != b->length || !ga->mtp_pending_valid ||
+        !gb->mtp_pending_valid) {
+        fprintf(stderr, "MTP prefix is missing or has different frontiers\n");
+        return 1;
+    }
+    const uint64_t kv_bytes = (uint64_t)a->length * a->kv_heads *
+        a->head_dim * sizeof(float);
+    const uint64_t raw_bytes = (uint64_t)a->length * a->index_head_dim *
+        sizeof(float);
+    const uint64_t pool_bytes = (uint64_t)(a->length / a->ratio) *
+        a->index_head_dim * sizeof(float);
+    int failures = compare_tensor("MTP keys", a->k_cache, b->k_cache,
+                                  kv_bytes, scratch_a, scratch_b);
+    failures += compare_tensor("MTP values", a->v_cache, b->v_cache,
+                               kv_bytes, scratch_a, scratch_b);
+    failures += compare_tensor("MTP raw index", a->raw_index, b->raw_index,
+                               raw_bytes, scratch_a, scratch_b);
+    failures += compare_tensor("MTP pooled index", a->pooled_index,
+                               b->pooled_index, pool_bytes,
+                               scratch_a, scratch_b);
+    failures += compare_tensor("MTP pending target", ga->mtp_pending_hc,
+                               gb->mtp_pending_hc,
+                               ds4_gpu_tensor_bytes(ga->mtp_pending_hc),
+                               scratch_a, scratch_b);
+    printf("MTP prefix %u rows: %d state mismatches\n", a->length, failures);
+    return failures;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2 || argc > 3) {
         fprintf(stderr, "usage: %s <first-model-shard.gguf> [steps]\n", argv[0]);
@@ -206,7 +241,9 @@ int main(int argc, char **argv) {
     }
     if (ds4_session_create(&a.session, engine, 2048) != 0 ||
         ds4_session_create(&b.session, engine, 2048) != 0 ||
+        setenv("DS4_QWEN_MTP_FULL_PREFIX", "1", 1) != 0 ||
         ds4_session_sync(a.session, &prompt, err, sizeof(err)) != 0 ||
+        unsetenv("DS4_QWEN_MTP_FULL_PREFIX") != 0 ||
         ds4_session_sync(b.session, &prompt, err, sizeof(err)) != 0) {
         fprintf(stderr, "session sync failed: %s\n", err);
         failed = 1;
@@ -227,6 +264,11 @@ int main(int argc, char **argv) {
     oracle1 = xmalloc((size_t)DS4_N_VOCAB * sizeof(float));
     scratch_a = xmalloc(largest);
     scratch_b = xmalloc(largest);
+    if (compare_mtp(a.graph, b.graph, scratch_a, scratch_b) ||
+        compare_logits("prefix logits", a.session->logits, b.session->logits)) {
+        failed = 1;
+        goto cleanup;
+    }
     ds4_engine *e = a.session->engine;
     if (!qwen4exp_graph_verify_ensure(b.graph)) {
         fprintf(stderr, "verify checkpoint allocation failed\n");
