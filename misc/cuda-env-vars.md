@@ -29,8 +29,9 @@ target hidden states. Actual draft generation retains the complete MTP layer.
 ## Qwen fused QSA
 
 Prefill widths above the decode split cap (8 rows) use one 256-thread
-block per (row, KV head). The default PV loop maps six heads × two
-dims per thread. Diagnostic restores keep the original kernels.
+block per (row, KV head). The default PV loop maps twelve heads × one
+dim per thread. `DS4_QWEN_QSA_PV6X2=1` selects the rejected six-head ×
+two-dim mapping. `DS4_QWEN_QSA_NO_FUSED=1` restores the split scorer.
 
 | Variable | Diagnostic control |
 |---|---|
