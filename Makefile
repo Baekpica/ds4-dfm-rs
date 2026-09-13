@@ -1118,6 +1118,12 @@ tests/test_step37_state: tests/test_step37_state.c ds4.c ds4.h ds4_gpu.h
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
 ifeq ($(UNAME_S),Linux)
+tests/test_step37_media.o: tests/test_step37_media.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/test_step37_media: tests/test_step37_media.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
 tests/test_step37_vision.o: tests/test_step37_vision.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
 
@@ -1402,6 +1408,7 @@ endif
 
 clean:
 	rm -f tests/test_solar_fattn tests/test_solar_fattn.o
+	rm -f tests/test_step37_media tests/test_step37_media.o
 	rm -f tests/test_step37_vision_ops tests/test_step37_vision tests/test_step37_vision.o
 	rm -f tests/test_step37_primitives tests/test_step37_loader tests/test_step37_forward tests/test_step37_forward.o
 	rm -f tests/test_step37_session tests/test_step37_session.o tests/test_step37_state

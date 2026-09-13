@@ -108,3 +108,4 @@ __pycache__/
 
 /tests/test_step37_vision
 /tests/test_step37_vision_ops
+/tests/test_step37_media

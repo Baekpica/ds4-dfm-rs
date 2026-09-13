@@ -5,6 +5,42 @@ enum { S37_HIDDEN = 4096, S37_MAX_HEADS = 96, S37_KV = 1024, S37_HEAD = 128,
        S37_DENSE = 11264, S37_EXPERT_FF = 1280, S37_EXPERTS = 288, S37_USED = 8,
        S37_WINDOW = 512, S37_CONTEXT = 262144 };
 
+enum { S37_IMAGE_TOKEN = 128001, S37_MEDIA_ROWS = 8192, S37_MEDIA_CROPS = S37_MEDIA_ROWS / 81 };
+typedef struct {
+    unsigned position, rows, feature;
+} ds4_step37_image_span;
+typedef struct {
+    ds4_gpu_tensor *features;
+    ds4_step37_image_span spans[S37_MEDIA_CROPS];
+    unsigned rows, count;
+} ds4_step37_media;
+
+static bool step37_media_apply(const ds4_step37_media *media, ds4_gpu_tensor *out,
+                                unsigned position, unsigned rows) {
+    if (!media || !media->count) { return true; }
+    if (!out || !media->features || !rows || media->count > S37_MEDIA_CROPS ||
+        !media->rows || media->rows > S37_MEDIA_ROWS || position > S37_CONTEXT ||
+        rows > S37_CONTEXT - position) { return false; }
+    unsigned previous_end = 0;
+    for (unsigned i = 0; i < media->count; i++) {
+        const ds4_step37_image_span *span = &media->spans[i];
+        if (!span->rows || span->position < previous_end || span->position > S37_CONTEXT ||
+            span->rows > S37_CONTEXT - span->position || span->feature > media->rows ||
+            span->rows > media->rows - span->feature) { return false; }
+        previous_end = span->position + span->rows;
+    }
+    const uint64_t row_bytes = S37_HIDDEN * sizeof(float);
+    for (unsigned i = 0; i < media->count; i++) {
+        const ds4_step37_image_span *span = &media->spans[i];
+        unsigned start = position > span->position ? position : span->position;
+        unsigned end = position + rows < span->position + span->rows ? position + rows : span->position + span->rows;
+        if (start >= end) { continue; }
+        if (!ds4_gpu_tensor_copy(out, (start - position) * row_bytes, media->features,
+                (span->feature + start - span->position) * row_bytes, (end - start) * row_bytes)) { return false; }
+    }
+    return true;
+}
+
 typedef struct {
     ds4_exaone_batch_ws ws;
     ds4_gpu_tensor *positions, *tokens, *freq_full, *freq_swa;
@@ -14,6 +50,7 @@ typedef struct {
     unsigned context, cap, position, high_water;
     uint64_t bytes;
     unsigned *host_positions;
+    const ds4_step37_media *media; /* Borrowed from the session, shared with MTP. */
     bool failed;
 } ds4_step37_graph;
 
@@ -256,7 +293,8 @@ static bool step37_forward(ds4_step37_graph *g, const ds4_model *m, const ds4_we
         !ds4_gpu_step37_rope(g->rope_full, g->freq_full, g->positions, S37_HEAD / 2, n) ||
         !ds4_gpu_step37_rope(g->rope_swa, g->freq_swa, g->positions, S37_HEAD, n) ||
         !ds4_gpu_embed_tokens_quant_tensor(g->ws.b_cur, g->tokens, m->map, m->size,
-                w->token_embd->abs_offset, w->token_embd->type, DS4_N_VOCAB, n, S37_HIDDEN)) {
+                w->token_embd->abs_offset, w->token_embd->type, DS4_N_VOCAB, n, S37_HIDDEN) ||
+        !step37_media_apply(g->media, g->ws.b_cur, pos, n)) {
         return false;
     }
     for (unsigned il = 0; il < STEP37_LAYERS; il++) {
@@ -475,14 +513,17 @@ static bool step37_draft_tokens(ds4_step37_draft *d, const ds4_model *m,
                                  const ds4_weights *w, unsigned depth,
                                  ds4_gpu_tensor *hidden, const int *tokens, unsigned n) {
     ds4_step37_graph *g = &d->graph;
-    if (g->failed || !tokens || !n || n > g->cap) { return false; }
+    if (g->failed || depth >= STEP37_DRAFT_LAYERS || !tokens || !n || n > g->cap) { return false; }
     for (unsigned i = 0; i < n; i++) {
         if (tokens[i] < 0 || (unsigned)tokens[i] >= DS4_N_VOCAB) { return false; }
     }
     /* Dense predictors leave the shared-expert output scratch unused. */
     if (!ds4_gpu_tensor_write(g->tokens, 0, tokens, n * sizeof(*tokens)) ||
         !ds4_gpu_embed_tokens_quant_tensor(g->ws.b_shared_out, g->tokens, m->map, m->size,
-            w->token_embd->abs_offset, w->token_embd->type, DS4_N_VOCAB, n, S37_HIDDEN)) {
+            w->token_embd->abs_offset, w->token_embd->type, DS4_N_VOCAB, n, S37_HIDDEN) ||
+        // A predictor at depth d consumes the actual embedding at t+d+1,
+        // including visual features when that known future position is media.
+        !step37_media_apply(g->media, g->ws.b_shared_out, d->position[depth] + depth + 1, n)) {
         g->failed = true;
         return false;
     }
