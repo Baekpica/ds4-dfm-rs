@@ -492,6 +492,9 @@ typedef struct {
      * returns 0 to abandon a pending admission; on_admitted returns 0
      * to cancel before prefill (n_cached + n_computed == n). */
     int (*sample_override)(void *ud, void *user);
+    /* Call-scoped Step trial buffers; return an accepted prefix in [1,n].
+     * Rust owns this pure policy. NULL disables bank speculation. */
+    int (*step_accept)(const int32_t *tokens, const int32_t *target, int n, int eos);
     int (*alive)(void *ud, void *user);
     int (*on_admitted)(void *ud, void *user, int n_cached, int n_computed,
                        int bank);

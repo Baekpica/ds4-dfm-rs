@@ -55,7 +55,7 @@ all three predictors resume byte-identically. Both pass on the MQ83 model.
 
 `DS4_STEP37_BATCH=1` enables `ds4_engine_supports_batching` for Step, exactly as
 `DS4_QWEN_BATCH=1` does for Qwen. Left unset, Step stays on the serial lane with
-MTP, the fastest single-stream decode.
+MTP.
 
 `ds4_step37_batch_runtime` holds one self-contained `ds4_step37_graph` per bank
 (its own 45-layer KV rings and prefill scratch), so admission, prefill and
@@ -71,7 +71,7 @@ Motif-3, which gives, at `DS4_SERVER_COALESCE_MAX=2`:
   `STP3` payload as the serial lane.
 
 The follow-up adds below-frontier partial fork. Up to 32 shared checkpoints
-store only the sliding layers' live 512-row windows and frontier logits;
+store the sliding layers' live 512-row windows and frontier logits;
 full-attention rows copy from the source bank. Slots map on demand within
 the memory reserve. Request boundaries and periodic prefill/decode frontiers
 are captured; a cut resumes from the nearest retained checkpoint and replays
@@ -81,9 +81,13 @@ Forks inherit checkpoint references. Reset and disk restore discard the old
 lineage. A compact restore refuses rewinds below its saved window; older ring
 slack was not captured. Missing checkpoints fall back to cold prefill.
 
-The banked lane runs ordinary (non-speculative) decode. MTP speculation lives
-in the serial session's trial/commit and the shared continuous loop only wires
-per-token speculation for Qwen. Image requests fall back to the serial session automatically
+With `--mtp`, each bank owns three predictor rings and held target hidden
+rows. Greedy decode uses the existing native trial/commit with Rust selecting
+the accepted prefix. Forks and disk checkpoints carry predictor state too.
+Cancellation, EOS and forced protocol tokens can shorten the emitted prefix;
+only that prefix commits. Sampled requests use ordinary decode while keeping
+predictors current. `DS4_MTP_SPEC_DISABLE=1` keeps ordinary decode for diagnosis.
+Image requests fall back to the serial session automatically
 (`prepare_qwen_images` refuses a non-Qwen model, so the continuous prompt is
 not prepared and the router picks the serial lane).
 
@@ -105,7 +109,7 @@ The follow-up MQ83 gate passed with the GPU locked to 300–2200 MHz (observed
 
 ## Running the two configurations
 
-Single stream, fastest (serial + MTP + disk KV):
+Single stream (serial + MTP + disk KV):
 
 ```sh
 ./ds4-server --cuda --port 8000 -c 262144 \
@@ -122,14 +126,18 @@ DS4_STEP37_BATCH=1 DS4_SERVER_COALESCE_MAX=2 DS4_SERVER_CONTINUOUS=1 \
 DS4_SERVER_FORK=1 DS4_SERVER_FORK_PARTIAL=1 \
 ./ds4-server --cuda --port 8000 -c 262144 \
   -m "$STEP/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf" \
+  --mtp "$STEP/MTP/Step3.7-flash-mtp-Q8_0.gguf" --mtp-draft 3 \
   --kv-disk-dir /path/to/step-kv --kv-disk-space-mb 32768
 ```
 
 Both accept the MTP owner sidecar (`DS4_CUDA_WEIGHT_IPC_MANIFEST`) from the
-initial-integration doc; the banked lane leaves the imported predictor idle.
+initial-integration doc. Bank count is subject to the memory-fit policy;
+these commands do not establish that two full 262K banks fit on every host.
 
-## Deferred
-
-- Per-bank MTP speculation on the continuous lane (Qwen commits at most one
-  drafted token per step; Step accepts up to three, which the shared loop does
-  not yet express).
+The follow-up MTP gate uses one MQ83 mapping and an owner-imported Q8 MTP.
+Two banks, full/partial fork and serial controls match all generated tokens,
+all 128,896 logits, every live target/predictor KV row and held hidden row.
+The disk gate clears KV before restoration and compares the complete saved
+payload byte-for-byte. Synthetic wrapped-ring restoration, cancellation,
+EOS and forced-token boundaries also pass under the 300–2200 MHz cap.
+Live HTTP and performance qualification are recorded separately.

@@ -678,6 +678,9 @@ typedef struct {
      * reported via on_token, preserving seeded plain/speculative alignment.
      * `ud`/`user` are the same handles on_token receives. */
     int      (*sample_override)(void *ud, void *user);
+    /* Pure host acceptance policy for Step's bounded trial (1..4 rows).
+     * Returns the accepted prefix length; NULL keeps ordinary decode. */
+    int      (*step_accept)(const int *tokens, const int *target, int n, int eos);
     /* v0.5.2: liveness probe for the ADMISSION PREFILL phase (may be NULL).
      * Polled between prefill chunks; return 0 when the request's client is
      * gone -- the engine abandons the pending admission (bank reset to free)

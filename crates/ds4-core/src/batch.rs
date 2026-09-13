@@ -216,6 +216,7 @@ unsafe extern "C" fn tramp_admit(ud: *mut c_void, req: *mut ds4_bridge_cont_requ
     r.min_p = a.min_p;
     r.seed = a.seed;
     r.sample_override = Some(tramp_sample_override);
+    r.step_accept = Some(crate::step37_mtp::accept_banked);
     r.alive = Some(tramp_alive);
     r.on_admitted = Some(tramp_on_admitted);
     r.place_bank = a.place_bank;

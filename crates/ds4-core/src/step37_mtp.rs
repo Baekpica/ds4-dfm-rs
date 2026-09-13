@@ -1,5 +1,20 @@
 const TRIAL_CAP: usize = 4;
 
+pub(super) unsafe extern "C" fn accept_banked(
+    tokens: *const i32,
+    target: *const i32,
+    n: i32,
+    eos: i32,
+) -> i32 {
+    if tokens.is_null() || target.is_null() || n <= 0 || n as usize > TRIAL_CAP {
+        return 0;
+    }
+    // SAFETY: The synchronous native trial lends n entries for this call.
+    let tokens = unsafe { std::slice::from_raw_parts(tokens, n as usize) };
+    let target = unsafe { std::slice::from_raw_parts(target, n as usize) };
+    accepted_prefix(tokens, target, eos).unwrap_or(0) as i32
+}
+
 impl crate::Session<'_> {
     pub(super) fn eval_step37_argmax(
         &mut self,
@@ -86,6 +101,31 @@ fn accepted_prefix(tokens: &[i32], target: &[i32], eos: i32) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::accepted_prefix;
+
+    #[test]
+    fn bank_callback_matches_serial_policy() {
+        let tokens = [10, 11, 12, 13];
+        let target = [11, 12, 99, 14];
+        // SAFETY: Both arrays have the advertised four live entries.
+        unsafe {
+            assert_eq!(
+                super::accept_banked(tokens.as_ptr(), target.as_ptr(), 4, 99),
+                3
+            );
+            assert_eq!(
+                super::accept_banked(tokens.as_ptr(), target.as_ptr(), 4, 11),
+                2
+            );
+            assert_eq!(
+                super::accept_banked(std::ptr::null(), target.as_ptr(), 4, 99),
+                0
+            );
+            assert_eq!(
+                super::accept_banked(tokens.as_ptr(), target.as_ptr(), 5, 99),
+                0
+            );
+        }
+    }
 
     #[test]
     fn acceptance_stops_at_first_miss() {
