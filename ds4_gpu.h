@@ -551,7 +551,7 @@ typedef struct {
     uint64_t bytes;
 } ds4_gpu_tensor_record;
 
-/* Self-load aligned artifacts (v0.2.2): with no weight-server manifest, build
+/* Self-load aligned artifacts: when BASE is not imported, build
  * the aligned-SoA repack artifacts in-process at load (shared layout library
  * cuda/mmq/ds4_repack.cu) so self-load boots ride the same fast dispatches as
  * manifest imports.  Call BEFORE ds4_gpu_set_model_map_range for the base
@@ -567,7 +567,7 @@ int ds4_gpu_model_map_replacements_complete(const void *model_map);
 int ds4_gpu_model_range_replaced(const void *model_map, uint64_t offset,
                                  uint64_t bytes);
 int ds4_gpu_model_map_needs_device_copy(const void *model_map);
-/* Aligned-artifact tier for observability: source 0=none 1=imported 2=built.
+/* Aligned-artifact tier: source 0=none 1=imported 2=built 3=built+imported.
  * Any out pointer may be NULL. */
 void ds4_gpu_derived_artifact_stats(int *source, uint64_t *count, uint64_t *bytes, double *build_secs);
 /* Print the canonical one-line boot banner for the artifact tier. */

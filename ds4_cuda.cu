@@ -1157,6 +1157,7 @@ enum {
     CUDA_DERIVED_ARTIFACTS_NONE = 0,
     CUDA_DERIVED_ARTIFACTS_IMPORTED = 1,
     CUDA_DERIVED_ARTIFACTS_BUILT = 2,
+    CUDA_DERIVED_ARTIFACTS_MIXED = 3,
 };
 static int g_derived_artifact_source = CUDA_DERIVED_ARTIFACTS_NONE;
 static uint64_t g_derived_artifact_count;
@@ -1167,7 +1168,7 @@ static const char *g_derived_artifact_none_reason;
  * an in-process artifact: the whole-model host registration is skipped only
  * then (a partial set would leave some expert raws on the pageable tier
  * while still pinning ~90 GiB — the worst of both). */
-static int g_derived_replaces_complete;
+static const void *g_derived_replaced_map;
 /* memgov D5-4 adjudication: g_model_range_bytes survives v0.5.7 -- it
  * feeds the RETAINED legacy budget predicates (the D4-0 adjudication
  * keeps legacy formulas until a full release of field confidence) and
@@ -3083,7 +3084,7 @@ static uint64_t cuda_model_cache_limit_bytes(void) {
  * lands exactly where a weight-server import puts it (device artifacts +
  * device copies of the non-expert raws; expert raws stay cold on disk). */
 static int cuda_model_map_replaces_complete(const void *model_map) {
-    if (!g_derived_replaces_complete || !model_map) return 0;
+    if (!model_map || g_derived_replaced_map != model_map) { return 0; }
     for (const cuda_derived_range &r : g_derived_ranges) {
         if (r.host_base == model_map &&
             (r.kind == CUDA_DERIVED_IQ2_XXS_ALIGNED_MOE ||
@@ -3877,7 +3878,7 @@ static void cuda_model_range_release_all(void) {
     g_derived_artifact_count = 0;
     g_derived_artifact_bytes = 0;
     g_derived_artifact_build_secs = 0.0;
-    g_derived_replaces_complete = 0;
+    g_derived_replaced_map = NULL;
     for (const cuda_model_range &r : g_model_ranges) {
         if (r.host_registered && r.registered_base) {
             (void)cudaHostUnregister(r.registered_base);
@@ -6026,7 +6027,10 @@ extern "C" int ds4_gpu_import_model_ipc_manifest(
                 " plus %.2f MiB across %llu derived artifacts",
                 (double)imported_derived_bytes / 1048576.0,
                 (unsigned long long)imported_derived_ranges);
-        g_derived_artifact_source = CUDA_DERIVED_ARTIFACTS_IMPORTED;
+        g_derived_artifact_source =
+            g_derived_artifact_source == CUDA_DERIVED_ARTIFACTS_BUILT ||
+            g_derived_artifact_source == CUDA_DERIVED_ARTIFACTS_MIXED
+                ? CUDA_DERIVED_ARTIFACTS_MIXED : CUDA_DERIVED_ARTIFACTS_IMPORTED;
         g_derived_artifact_count += imported_derived_ranges;
         g_derived_artifact_bytes += imported_derived_bytes;
     } else if (strcmp(model_id, "base") == 0 &&
@@ -6068,7 +6072,12 @@ typedef struct {
 } ds4_gpu_tensor_record;
 
 static int cuda_derived_artifact_build_device(int *dev_out) {
-    if (getenv("DS4_CUDA_WEIGHT_IPC_MANIFEST") != NULL) return 0;
+    /* This API produces BASE artifacts. Sharing only MTP leaves BASE local;
+     * a BASE/default/both import owns its own artifact production. Invalid
+     * scopes remain suppressed here and are rejected by the engine later. */
+    const char *manifest = getenv("DS4_CUDA_WEIGHT_IPC_MANIFEST");
+    const char *scope = getenv("DS4_CUDA_WEIGHT_IPC_SCOPE");
+    if (manifest && manifest[0] && (!scope || strcmp(scope, "mtp"))) { return 0; }
     if (getenv("DS4_CUDA_NO_DERIVED_WEIGHTS") != NULL) {
         g_derived_artifact_none_reason = "DS4_CUDA_NO_DERIVED_WEIGHTS is set";
         return 0;
@@ -6241,7 +6250,8 @@ static int cuda_build_derived_artifacts_from_catalog(
         }
     }
     if (replace_candidates == 0) replaces_complete = 0;
-    g_derived_replaces_complete = replaces_complete;
+    /* A later MTP import must not inherit BASE's replacement completeness. */
+    g_derived_replaced_map = replaces_complete ? model_map : NULL;
 
     g_derived_artifact_source = CUDA_DERIVED_ARTIFACTS_BUILT;
     g_derived_artifact_count = published;
@@ -6370,6 +6380,14 @@ extern "C" void ds4_gpu_report_derived_artifacts(void) {
                 "ds4: aligned artifacts imported from weight server (%llu artifacts, %.2f GiB)\n",
                 (unsigned long long)g_derived_artifact_count,
                 (double)g_derived_artifact_bytes / 1073741824.0);
+        break;
+    case CUDA_DERIVED_ARTIFACTS_MIXED:
+        fprintf(stderr,
+                "ds4: aligned artifacts built locally and imported "
+                "(%llu artifacts, %.2f GiB, local build %.1fs)\n",
+                (unsigned long long)g_derived_artifact_count,
+                (double)g_derived_artifact_bytes / 1073741824.0,
+                g_derived_artifact_build_secs);
         break;
     default:
         fprintf(stderr,

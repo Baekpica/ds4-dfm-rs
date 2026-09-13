@@ -8,6 +8,23 @@
 static char err[256];
 static ds4_step37_pixels crops[2];
 static unsigned crop_count;
+static void build_artifacts(ds4_model *model) {
+    if (!getenv("STEP37_TEST_ARTIFACTS")) { return; }
+    CHECK(model->n_tensors <= UINT32_MAX);
+    ds4_gpu_tensor_record *records = xcalloc(model->n_tensors, sizeof(*records));
+    for (uint64_t i = 0; i < model->n_tensors; i++) {
+        const ds4_tensor *t = &model->tensors[i];
+        records[i] = (ds4_gpu_tensor_record){.name = t->name.ptr,
+            .name_len = (uint32_t)t->name.len, .type = t->type, .ndim = t->ndim,
+            .offset = t->abs_offset, .bytes = t->bytes};
+        for (unsigned d = 0; d < t->ndim; d++) { records[i].dims[d] = t->dim[d]; }
+    }
+    CHECK(ds4_gpu_build_derived_artifacts_from_records(model->map, model->size,
+        records, (uint32_t)model->n_tensors) > 0);
+    free(records);
+    CHECK(ds4_gpu_model_map_replacements_complete(model->map));
+    model_release_mapping_cache(model);
+}
 static int sync_prompt(ds4_session *s, const ds4_tokens *prompt) {
     return crop_count ? ds4_session_sync_step37(s, prompt, crops, crop_count, err, sizeof(err))
                       : ds4_session_sync(s, prompt, err, sizeof(err));
@@ -63,8 +80,11 @@ int main(int argc, char **argv) {
     model_open(&e.mtp_model, argv[2], false, false);
     step37_bind_draft(&e.step37_mtp, &e.mtp_model);
     e.vocab.n_vocab = DS4_N_VOCAB;
-    CHECK(ds4_gpu_init() && ds4_gpu_set_model_map(e.model.map, e.model.size));
+    CHECK(ds4_gpu_init());
+    build_artifacts(&e.model);
+    CHECK(ds4_gpu_set_model_map(e.model.map, e.model.size));
     CHECK(ds4_gpu_import_model_ipc_manifest(e.mtp_model.map, e.mtp_model.size, argv[3], "mtp"));
+    CHECK(!ds4_gpu_model_map_replacements_complete(e.mtp_model.map));
     model_release_mapping_cache(&e.mtp_model);
     if (argc == 7) {
         model_open(&e.vision_model, argv[5], true, false);

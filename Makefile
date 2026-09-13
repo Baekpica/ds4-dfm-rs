@@ -1159,6 +1159,16 @@ tests/test_cuda_span_lease.o: tests/test_cuda_span_lease.c ds4.c ds4_step37_grap
 
 tests/test_cuda_span_lease: tests/test_cuda_span_lease.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_cuda_artifact_scope.o: tests/test_cuda_artifact_scope.c ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_cuda_artifact_scope: tests/test_cuda_artifact_scope.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-cuda-artifact-scope
+test-cuda-artifact-scope: tests/test_cuda_artifact_scope
+	python3 tests/test_cuda_artifact_scope.py
 endif
 
 tests/test_solar_loader: tests/test_solar_loader.c ds4.c ds4.h ds4_gpu.h
@@ -1415,6 +1425,7 @@ clean:
 	rm -f tests/test_step37_mtp tests/test_step37_mtp.o
 	rm -f tests/test_step37_spec tests/test_step37_spec.o
 	rm -f tests/test_cuda_span_lease tests/test_cuda_span_lease.o
+	rm -f tests/test_cuda_artifact_scope tests/test_cuda_artifact_scope.o
 	rm -f tests/test_inkling_kernels tests/test_inkling_kernels.o
 	rm -f tests/test_inkling_moe tests/test_inkling_moe.o
 	rm -f tests/test_inkling_attn_prep tests/test_inkling_attn_prep.o

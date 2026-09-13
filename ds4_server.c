@@ -21985,7 +21985,7 @@ static void handle_batch(server *s, int fd, const char *body) {
  * minutes at deep ctx -- so they stay pollable while the box is saturated. */
 
 static const char *server_artifact_source_name(uint64_t source) {
-    return source == 2 ? "built" : source == 1 ? "imported" : "none";
+    return source == 3 ? "mixed" : source == 2 ? "built" : source == 1 ? "imported" : "none";
 }
 
 /* memgov D0a-3: census snapshot publication.  ONE registry image per

@@ -65943,16 +65943,11 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             }
         }
 #ifndef __APPLE__
-        /* Self-load aligned artifacts: with no weight-server manifest, build
-         * the aligned-SoA repack artifacts in-process BEFORE the model map
-         * registers — ds4_gpu_set_model_map keys its residency shape (skip
-         * the whole-file pin) on the artifacts existing.  Failure or opt-out
-         * (DS4_CUDA_BUILD_ARTIFACTS=0) falls back to the raw tier; the
-         * manifest import below stays the preferred producer. */
+        /* Build BASE artifacts before map registration chooses residency.
+         * The builder defers to BASE imports, but an MTP-only manifest must
+         * leave BASE's local producer available. Failure/opt-out keeps raw. */
         {
-            const char *weight_manifest_probe = getenv("DS4_CUDA_WEIGHT_IPC_MANIFEST");
-            if ((!weight_manifest_probe || !weight_manifest_probe[0]) &&
-                !load_slice) {
+            if (!load_slice) {
                 int built = 0;
                 if (e->model.split_count > 1u &&
                     e->model.n_tensors <= UINT32_MAX) {
