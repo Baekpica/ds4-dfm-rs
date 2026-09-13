@@ -1123,6 +1123,12 @@ tests/test_step37_session.o: tests/test_step37_session.c ds4.c ds4_step37_graph.
 tests/test_step37_session: tests/test_step37_session.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
+tests/test_step37_mtp.o: tests/test_step37_mtp.c ds4.c ds4_step37_graph.inc ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_step37_mtp: tests/test_step37_mtp.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
 tests/test_cuda_span_lease.o: tests/test_cuda_span_lease.c ds4.c ds4_step37_graph.inc ds4.h ds4_gpu.h ds4_mem_gov.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
 
@@ -1379,6 +1385,7 @@ clean:
 	rm -f tests/test_solar_fattn tests/test_solar_fattn.o
 	rm -f tests/test_step37_primitives tests/test_step37_loader tests/test_step37_forward tests/test_step37_forward.o
 	rm -f tests/test_step37_session tests/test_step37_session.o tests/test_step37_state
+	rm -f tests/test_step37_mtp tests/test_step37_mtp.o
 	rm -f tests/test_cuda_span_lease tests/test_cuda_span_lease.o
 	rm -f tests/test_inkling_kernels tests/test_inkling_kernels.o
 	rm -f tests/test_inkling_moe tests/test_inkling_moe.o

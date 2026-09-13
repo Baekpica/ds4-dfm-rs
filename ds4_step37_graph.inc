@@ -9,8 +9,8 @@ typedef struct {
     ds4_exaone_batch_ws ws;
     ds4_gpu_tensor *positions, *tokens, *freq_full, *freq_swa;
     ds4_gpu_tensor *rope_full, *rope_swa, *gate, *logits;
-    ds4_gpu_tensor *kv[STEP37_LAYERS];
-    unsigned kv_cap[STEP37_LAYERS];
+    ds4_gpu_tensor *kv[STEP37_LAYERS + STEP37_DRAFT_LAYERS];
+    unsigned kv_cap[STEP37_LAYERS + STEP37_DRAFT_LAYERS];
     unsigned context, cap, position, high_water;
     uint64_t bytes;
     unsigned *host_positions;
@@ -64,12 +64,14 @@ static void step37_graph_free(ds4_step37_graph *g) {
     for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
         ds4_gpu_tensor_free(all[i]);
     }
-    for (unsigned i = 0; i < STEP37_LAYERS; i++) { ds4_gpu_tensor_free(g->kv[i]); }
+    for (unsigned i = 0; i < STEP37_LAYERS + STEP37_DRAFT_LAYERS; i++) {
+        ds4_gpu_tensor_free(g->kv[i]);
+    }
     free(g->host_positions);
     memset(g, 0, sizeof(*g));
 }
 
-static bool step37_graph_alloc(ds4_step37_graph *g, const ds4_model *m,
+static bool step37_scratch_alloc(ds4_step37_graph *g, const ds4_model *m,
                                 const ds4_weights *w, unsigned ctx, unsigned cap) {
     memset(g, 0, sizeof(*g));
     if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_STEP37 || !ctx || !cap || cap > ctx ||
@@ -109,6 +111,12 @@ static bool step37_graph_alloc(ds4_step37_graph *g, const ds4_model *m,
         !ds4_gpu_tensor_write(g->freq_swa, 0, swa, sizeof(swa))) {
         step37_graph_free(g); return false;
     }
+    return true;
+}
+
+static bool step37_graph_alloc(ds4_step37_graph *g, const ds4_model *m,
+                                const ds4_weights *w, unsigned ctx, unsigned cap) {
+    if (!step37_scratch_alloc(g, m, w, ctx, cap)) { return false; }
     for (unsigned i = 0; i < STEP37_LAYERS; i++) {
         /* Store the whole chunk before attention: keep its preceding window. */
         unsigned rows = step37_sliding(i) ? S37_WINDOW + cap : ctx;
@@ -276,5 +284,114 @@ static bool step37_reset(ds4_step37_graph *g) {
     g->position = 0;
     g->high_water = 0;
     g->failed = false;
+    return true;
+}
+
+/* External predictors have separate sliding KV and output heads. Their
+ * unnormalized hidden output feeds the next depth; the head norm is separate. */
+typedef struct {
+    ds4_step37_graph graph;
+    ds4_gpu_tensor *combined;
+    unsigned position[STEP37_DRAFT_LAYERS], high_water[STEP37_DRAFT_LAYERS];
+    unsigned hidden_depth, hidden_rows;
+    bool hidden_valid;
+} ds4_step37_draft;
+
+static uint64_t step37_draft_bytes(unsigned ctx, unsigned cap) {
+    ds4_context_memory main = step37_memory(ctx, cap);
+    if (!main.total_bytes) { return 0; }
+    const unsigned rows = ctx < S37_WINDOW + cap ? ctx : S37_WINDOW + cap;
+    return main.scratch_bytes +
+        (uint64_t)STEP37_DRAFT_LAYERS * rows * 2 * S37_KV * sizeof(uint16_t) +
+        (uint64_t)cap * 2 * S37_HIDDEN * sizeof(float);
+}
+
+static void step37_draft_free(ds4_step37_draft *d) {
+    step37_graph_free(&d->graph);
+    ds4_gpu_tensor_free(d->combined);
+    memset(d, 0, sizeof(*d));
+}
+
+static bool step37_draft_alloc(ds4_step37_draft *d, const ds4_model *m,
+                                const ds4_weights *w, unsigned ctx, unsigned cap) {
+    memset(d, 0, sizeof(*d));
+    if (!step37_scratch_alloc(&d->graph, m, w, ctx, cap)) { return false; }
+    const unsigned rows = ctx < S37_WINDOW + cap ? ctx : S37_WINDOW + cap;
+    const uint64_t kv_bytes = (uint64_t)rows * 2 * S37_KV * sizeof(uint16_t);
+    for (unsigned il = STEP37_LAYERS; il < STEP37_LAYERS + STEP37_DRAFT_LAYERS; il++) {
+        if (!w->layer[il].nextn_shared_head_head) { step37_draft_free(d); return false; }
+        d->graph.kv[il] = ds4_gpu_tensor_alloc(kv_bytes);
+        if (!d->graph.kv[il]) { step37_draft_free(d); return false; }
+        d->graph.kv_cap[il] = rows;
+        d->graph.bytes += kv_bytes;
+    }
+    const uint64_t combined_bytes = (uint64_t)cap * 2 * S37_HIDDEN * sizeof(float);
+    d->combined = ds4_gpu_tensor_alloc(combined_bytes);
+    if (!d->combined) { step37_draft_free(d); return false; }
+    d->graph.bytes += combined_bytes;
+    if (d->graph.bytes != step37_draft_bytes(ctx, cap)) {
+        step37_draft_free(d); return false;
+    }
+    return true;
+}
+
+static bool step37_draft_forward(ds4_step37_draft *d, const ds4_model *m,
+                                  const ds4_weights *w, unsigned depth,
+                                  ds4_gpu_tensor *hidden, ds4_gpu_tensor *embedding,
+                                  unsigned n) {
+    ds4_step37_graph *g = &d->graph;
+    if (g->failed || depth >= STEP37_DRAFT_LAYERS || !n || n > g->cap ||
+        !hidden || !embedding || d->position[depth] > g->context ||
+        n > g->context - d->position[depth]) { return false; }
+    const unsigned pos = d->position[depth];
+    const unsigned il = STEP37_LAYERS + depth;
+    const ds4_layer_weights *l = &w->layer[il];
+    for (unsigned i = 0; i < n; i++) { g->host_positions[i] = pos + i; }
+    d->hidden_valid = false;
+    g->failed = true;
+    if (!ds4_gpu_tensor_write(g->positions, 0, g->host_positions, n * sizeof(unsigned)) ||
+        !ds4_gpu_step37_rope(g->rope_swa, g->freq_swa, g->positions, S37_HEAD, n) ||
+        !ds4_gpu_exaone_rms_norm_tensor(g->ws.b_attn_out, embedding, m->map, m->size,
+                l->nextn_enorm->abs_offset, S37_HIDDEN, n, DS4_RMS_EPS) ||
+        !ds4_gpu_exaone_rms_norm_tensor(g->ws.b_norm, hidden, m->map, m->size,
+                l->nextn_hnorm->abs_offset, S37_HIDDEN, n, DS4_RMS_EPS) ||
+        !ds4_gpu_concat_rows_tensor(d->combined, g->ws.b_attn_out, g->ws.b_norm, n, S37_HIDDEN) ||
+        !plain_graph_matmul_tensor(g->ws.b_cur, m, l->nextn_eh_proj,
+                2 * S37_HIDDEN, S37_HIDDEN, d->combined, n) ||
+        !step37_layer(g, m, w, il, n, pos)) { return false; }
+    d->position[depth] = pos + n;
+    if (d->high_water[depth] < pos + n) { d->high_water[depth] = pos + n; }
+    d->hidden_depth = depth;
+    d->hidden_rows = n;
+    d->hidden_valid = true;
+    g->failed = false;
+    return true;
+}
+
+static bool step37_draft_logits(ds4_step37_draft *d, const ds4_model *m,
+                                 const ds4_weights *w, unsigned depth, unsigned n) {
+    ds4_step37_graph *g = &d->graph;
+    if (g->failed || !d->hidden_valid || depth != d->hidden_depth || n != d->hidden_rows) {
+        return false;
+    }
+    const ds4_layer_weights *l = &w->layer[STEP37_LAYERS + depth];
+    ds4_gpu_tensor *last = ds4_gpu_tensor_view(g->ws.b_cur,
+            (uint64_t)(n - 1) * S37_HIDDEN * sizeof(float), S37_HIDDEN * sizeof(float));
+    g->failed = true;
+    const bool ok = last && ds4_gpu_exaone_rms_norm_tensor(g->ws.b_norm, last, m->map, m->size,
+            l->nextn_shared_head_norm->abs_offset, S37_HIDDEN, 1, DS4_RMS_EPS) &&
+        plain_graph_matmul_tensor(g->logits, m, l->nextn_shared_head_head,
+                S37_HIDDEN, DS4_N_VOCAB, g->ws.b_norm, 1);
+    ds4_gpu_tensor_free(last);
+    g->failed = !ok;
+    return ok;
+}
+
+static bool step37_draft_rewind(ds4_step37_draft *d, unsigned depth, unsigned pos) {
+    if (d->graph.failed || depth >= STEP37_DRAFT_LAYERS || pos > d->position[depth] ||
+        (pos && d->high_water[depth] - pos > d->graph.cap)) { return false; }
+    d->position[depth] = pos;
+    if (!pos) { d->high_water[depth] = 0; }
+    d->hidden_valid = false;
     return true;
 }

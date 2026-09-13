@@ -113,6 +113,22 @@ The MQ83 directory also contains the template/configuration for discovery beside
 the shards. All seven uploaded files, including `provenance/input-assets.json`,
 passed remote byte verification. This asset upload makes no inference claim.
 
+The native MTP component executes all three Q8 predictor blocks and their
+separate heads. Against independent CPU Q8_1 equations with identical input
+at each block, hidden relative RMS errors are 0.92%, 0.82%, 0.75%; head errors
+are 1.14%, 1.28%, 1.17%, with all three greedy choices matching. A separate
+FP32-input control chains all three blocks with at most 0.017% hidden error
+(the one-row head still quantizes activations; head error is at most 0.53%).
+All kept-prefix lengths 0–7 across a wrapped 512-row window preserve live
+KV and next hidden bytes exactly in both controls.
+
+The uncontrolled synthetic Q8 trajectory is not a 3% logit-parity pass:
+re-quantization accumulates differences, reaching 6.66% against the CPU Q8_1
+chain. The CPU reference does not reproduce MMVQ reduction order. Keep this
+diagnostic distinct from matched-input operator checks. Production MTP
+attachment, prompt warming and target-token/committed-KV verification remain
+unimplemented; the public session still rejects draft sidecars.
+
 The image crop planner matches 28 independent official Python cases, including
 thin-image padding, the 728/3024 limits, crop order and media token counts.
 Pixel conversion and vision inference are still pending.

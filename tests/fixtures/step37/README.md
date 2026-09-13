@@ -88,3 +88,27 @@ The live `tests/chat_template_live.py` protocol passes all 18 requests with
 `--reasoning-effort high --max-tokens 256`, against a single Step server at
 context 4096. It exercises all three APIs, buffered/SSE tool calls and result
 continuations. Keep MTP and image qualification separate.
+
+The MTP component gate uses the actual Q8 sidecar without a main model.
+`make_mtp_vectors.py` needs CPU PyTorch, NumPy and the pinned StepFun
+`gguf-py` on `PYTHONPATH`. It writes both weights/file hashes and its selected
+activation contract. Keep the two output directories separate:
+
+```sh
+python tests/fixtures/step37/make_mtp_vectors.py "$STEP37_MTP" "$REF_FP32"
+python tests/fixtures/step37/make_mtp_vectors.py "$STEP37_MTP" "$REF_Q8" --activation q8_1
+make tests/test_step37_mtp CUDA_ARCH=sm_121
+# Default CUDA small-width Q8 path, identical reference input at each depth:
+tests/test_step37_mtp "$STEP37_MTP" "$REF_Q8" --local
+# Full predictor chain with dequantized F32 GEMMs (head still uses N=1 Q8):
+DS4_CUDA_USE_MMQ=0 DS4_CUDA_Q8_F32_ALL=1 NVIDIA_TF32_OVERRIDE=0   tests/test_step37_mtp "$STEP37_MTP" "$REF_FP32"
+```
+
+Run GPU commands serially under the host memory guard (16 GiB suffices).
+Both compare all seven hidden rows and the complete final-row vocabulary,
+check each head's greedy token, and vary rejected rows for keep counts 0–7
+across a wrapped SWA ring. Causally live KV and the next hidden row must be
+byte-identical. `STEP37_TRACE=DIR` saves initial per-layer diagnostics.
+Without `--local`, inputs propagate from native outputs; the default Q8
+synthetic chain still fails the unchanged 3% criterion. It is not an
+end-to-end MTP token/KV gate or a throughput measurement.
