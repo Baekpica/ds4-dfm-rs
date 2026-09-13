@@ -96,6 +96,9 @@ backend small and direct; this is not a generic GGUF runner.
 
 ## Safety
 
+- The DGX Spark reference host has a user-managed GPU clock range of
+  300–2200 MHz (confirmed 2026-09-14). Preserve it for benchmarks and
+  restored serving, and record observed clocks alongside A/B results.
 - Avoid large CPU inference runs on macOS; the CPU path has previously exposed
   kernel VM failures with very large mappings.
 - Do not load independent huge model copies concurrently. Use the intended
