@@ -414,7 +414,7 @@ static const ds4_shape DS4_SHAPE_STEP37_FLASH = {
     .n_ff_exp = 1280, .n_ff_dense = 11264, .n_ff_shexp = 1280,
     .n_leading_dense = 3, .n_swa = 512, .n_swa_period = STEP37_FULL_PERIOD,
     .n_full_attn_count = 12,
-    .use_rope = true, .use_qk_norm = true, .rms_eps = DS4_DEFAULT_RMS_EPS,
+    .use_rope = true, .use_qk_norm = true, .rms_eps = 1e-5f,
     .expert_weight_scale = 3.0f,
     .rope_freq_base = 5000000.0f, .rope_freq_base_swa = 10000.0f,
     .rope_scale_factor = 1.0f, .rope_orig_ctx = UINT64_C(262144),
@@ -66393,7 +66393,8 @@ uint64_t ds4_engine_hidden_f32_values(ds4_engine *e) {
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2 ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_EXAONE_MOE ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37) {
         return (uint64_t)DS4_N_EMBD;
     }
     return (uint64_t)DS4_N_HC * DS4_N_EMBD;
@@ -66404,7 +66405,8 @@ int ds4_engine_n_hc(ds4_engine *e) {
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2 ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_EXAONE_MOE ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37) {
         return 1;
     }
     return (int)DS4_N_HC;

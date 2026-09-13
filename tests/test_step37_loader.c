@@ -82,7 +82,9 @@ int main(int argc, char **argv) {
     if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_STEP37 || DS4_N_LAYER != 45 ||
         DS4_N_NEXTN_PREDICT != 3 || DS4_N_EMBD != 4096 || DS4_N_VOCAB != 128896 ||
         DS4_N_HEAD != 64 || g_ds4_shape.n_swa_head != 96 || DS4_N_HEAD_KV != 8 ||
-        DS4_N_EXPERT != 288 || DS4_N_EXPERT_USED != 8 || !DS4_USE_ROPE || !DS4_USE_QK_NORM) {
+        DS4_N_EXPERT != 288 || DS4_N_EXPERT_USED != 8 || !DS4_USE_ROPE || !DS4_USE_QK_NORM ||
+        DS4_RMS_EPS != 1e-5f || ds4_engine_n_hc(NULL) != 1 ||
+        ds4_engine_hidden_f32_values(NULL) != 4096) {
         ds4_die("wrong Step host shape");
     }
     for (unsigned sidecar = 0; sidecar < 2; sidecar++) {
