@@ -220,7 +220,7 @@ tokenizer/chat contract, state lifecycle, and native execution path.
 | GLM 5.3 Flash | `glm5-next` | Q2 single-file GGUF plus the explicit vision sidecar; CUDA serial serving on one DGX Spark. |
 | K2-Horizon 375B A23B | `k2-horizon` | Four-shard MQ87 GGUF; IFM BPE/XML tools; continuous 32K one-bank serving on one DGX Spark. |
 | Inkling Small | `inkling` | MQ85GB + optional eight-layer MTP-BF16; serial CUDA text/image/audio input and text output. [HTTP checks and limits](docs/inkling-small.md), [GB10 performance](docs/inkling-optimization-2026-09-11.md). |
-| Step 3.7 Flash | `step35` | Nine-shard MQ83, optional three-block Q8 MTP and F16 vision sidecars; serial CUDA text/image serving. [Verification and limits](docs/step37-initial.md). |
+| Step 3.7 Flash | `step35` | Nine-shard MQ83, optional three-block Q8 MTP and F16 vision sidecars; serial CUDA text/image serving. [Verification and limits](docs/step37-initial.md), [GB10 throughput](docs/step37-optimization-2026-09-13-r2.md). |
 
 The current family contract and measured model-specific limits are documented
 in [`ds4-dfm-model-families.md`](docs/ds4-dfm-model-families.md). Arbitrary
@@ -665,6 +665,7 @@ The original split gate claims parity class, not a universal speedup.
 | GLM 5.3 Q2 + vision smoke | Exact Q2 and vision sidecar: native 16-image-token prefill with finite logits; Rust text and PNG Chat requests returned HTTP 200 at context 256. |
 | K2-Horizon-375B MQ87 | Four-shard 86.70 GiB MQ87: CLI 32K raw-token `33785`; default memgov 95/95 VMM promote; HTTP Chat/tool/stream/concurrent on one 32K bank. |
 | dots3-note MQ87 (2026-09-06 rounds) | 8,192-token cold prefill 278.3 → 604.3 tok/s (+117 %), greedy decode 11.66 → 16.78 tok/s (+44 %) on one DGX Spark, serial lane, same-binary kill-switch A/B; frontier logits same argmax / top-10 10/10, 64 greedy IDs identical; resident CPU-reference gate passed (`docs/dots3-optimization-2026-09-06.md`). |
+| Step 3.7 Flash MQ83 (2026-09-13 post-landing) | Same 2048+64 `promessi_sposi` protocol on one GB10: Prefill 698.88 → **1243.02 tok/s** (+77.9%), MTP draft-3 Decode 21.32 → **22.43 tok/s** (+5.2%), ordinary Decode 19.49 → 19.83. Default Step chunk is 2048; `DS4_STEP37_PREFILL_CHUNK=512` is the pre-campaign rollback. 16K ordinary Prefill 1269 tok/s, Decode 18.28. Two later Decode probes were slower and were not kept. [`docs/step37-optimization-2026-09-13-r2.md`](docs/step37-optimization-2026-09-13-r2.md). |
 
 The Qwen measurements used only the Q5+Sidecar artifact, fresh sequential C
 and Rust processes, and the conditions recorded in the evidence documents.

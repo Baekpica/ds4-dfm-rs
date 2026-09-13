@@ -36,6 +36,9 @@ pub fn tunable(key: &str) -> bool {
             | "DS4_FATTN_HMMA_LDSM"
             | "DS4_SOLAR_FATTN_GQA2"
             | "DS4_SOLAR_FATTN_WS"
+            | "DS4_STEP37_PREFILL_CHUNK"
+            | "DS4_STEP37_NO_SWA_HMMA"
+            | "DS4_EXAONE_PREFILL_GQA"
     )
 }
 
@@ -80,6 +83,12 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         }
         "DS4_FATTN_HMMA_LDSM" | "DS4_SOLAR_FATTN_GQA2" | "DS4_SOLAR_FATTN_WS" => {
             family == "solar-open2" && matches!(value, "0" | "1")
+        }
+        "DS4_STEP37_PREFILL_CHUNK" => family.starts_with("step") && (1..=4096).contains(&n),
+        "DS4_STEP37_NO_SWA_HMMA" => family.starts_with("step") && value == "1",
+        "DS4_EXAONE_PREFILL_GQA" => {
+            (family.starts_with("step") || family.starts_with("exaone") || family.starts_with("k2"))
+                && value == "0"
         }
         _ => false,
     };
@@ -162,5 +171,29 @@ mod tests {
         }
         assert!(validate("DS4_INKLING_PREFILL_CHUNK", "512", "qwen").is_err());
         assert!(!tunable("DS4_INKLING_UNKNOWN"));
+    }
+
+    #[test]
+    fn step37_controls() {
+        assert!(tunable("DS4_STEP37_PREFILL_CHUNK"));
+        assert!(tunable("DS4_STEP37_NO_SWA_HMMA"));
+        assert!(tunable("DS4_EXAONE_PREFILL_GQA"));
+        assert!(validate("DS4_EXAONE_PREFILL_GQA", "0", "step37").is_ok());
+        assert!(validate("DS4_EXAONE_PREFILL_GQA", "0", "k2-horizon").is_ok());
+        assert!(validate("DS4_EXAONE_PREFILL_GQA", "0", "k2").is_ok());
+        assert!(validate("DS4_EXAONE_PREFILL_GQA", "1", "step37").is_err());
+        assert!(validate("DS4_EXAONE_PREFILL_GQA", "0", "qwen").is_err());
+        for value in ["1", "512", "1024", "2048", "4096"] {
+            assert!(validate("DS4_STEP37_PREFILL_CHUNK", value, "step37").is_ok());
+        }
+        for value in ["0", "4097", "x"] {
+            assert!(validate("DS4_STEP37_PREFILL_CHUNK", value, "step37").is_err());
+        }
+        assert!(validate("DS4_STEP37_PREFILL_CHUNK", "512", "qwen").is_err());
+        assert!(validate("DS4_STEP37_NO_SWA_HMMA", "1", "step37").is_ok());
+        assert!(validate("DS4_STEP37_NO_SWA_HMMA", "1", "qwen").is_err());
+        for value in ["0", "2", ""] {
+            assert!(validate("DS4_STEP37_NO_SWA_HMMA", value, "step37").is_err());
+        }
     }
 }

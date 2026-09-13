@@ -730,13 +730,143 @@ static void test_attention_prefill(int sliding, uint32_t n_tok) {
     free(v); free(k); free(q); free(kv);
 }
 
+/* Step SWA is 96 query heads / 8 KV heads at window 512. Production now
+ * routes that geometry through the same HMMA tiles as full attention.
+ * Compare against the warp path, not the CPU oracle: fp16 MMA vs f32. */
+static void test_step37_swa_prefill_hmma(void) {
+    enum { HEADS = 96, KV_HEADS = 8, HEAD_DIM = 128, N_TOK = 64, WINDOW = 512 };
+    const uint32_t kv_cap = WINDOW + N_TOK;
+    const uint32_t kv_dim = KV_HEADS * HEAD_DIM;
+    const size_t qn = (size_t)N_TOK * HEADS * HEAD_DIM;
+    const size_t kvn = (size_t)N_TOK * kv_dim;
+    uint64_t s = 3713;
+    float *q = xmalloc(qn * sizeof(float));
+    float *k = xmalloc(kvn * sizeof(float));
+    float *v = xmalloc(kvn * sizeof(float));
+    for (size_t i = 0; i < qn; i++) {
+        q[i] = frand(&s);
+    }
+    for (size_t i = 0; i < kvn; i++) {
+        k[i] = frand(&s) * 0.5f;
+        v[i] = frand(&s) * 0.5f;
+    }
+
+    ds4_gpu_tensor *gk = ds4_gpu_tensor_alloc(kvn * sizeof(float));
+    ds4_gpu_tensor *gv = ds4_gpu_tensor_alloc(kvn * sizeof(float));
+    ds4_gpu_tensor *gkv = ds4_gpu_tensor_alloc(
+        (size_t)kv_cap * kv_dim * 2u * sizeof(uint16_t));
+    ds4_gpu_tensor *gq = ds4_gpu_tensor_alloc(qn * sizeof(float));
+    ds4_gpu_tensor *go = ds4_gpu_tensor_alloc(qn * sizeof(float));
+    float *warp = xmalloc(qn * sizeof(float));
+    float *hmma = xmalloc(qn * sizeof(float));
+    int ok = gk && gv && gkv && gq && go &&
+        ds4_gpu_tensor_write(gk, 0, k, kvn * sizeof(float)) &&
+        ds4_gpu_tensor_write(gv, 0, v, kvn * sizeof(float)) &&
+        ds4_gpu_tensor_write(gq, 0, q, qn * sizeof(float)) &&
+        ds4_gpu_tensor_fill_f32(gkv, 0.0f, (size_t)kv_cap * kv_dim) &&
+        ds4_gpu_exaone_kv_store_tensor(gkv, gk, gv, kv_dim, N_TOK, 0, kv_cap);
+
+    (void)setenv("DS4_STEP37_NO_SWA_HMMA", "1", 1);
+    ok = ok && ds4_gpu_exaone_attention_prefill_tensor(
+                   go, gq, gkv, N_TOK, 0, HEADS, KV_HEADS, HEAD_DIM,
+                   kv_cap, WINDOW) &&
+         ds4_gpu_tensor_read(go, 0, warp, qn * sizeof(float));
+    (void)unsetenv("DS4_STEP37_NO_SWA_HMMA");
+    ok = ok && ds4_gpu_exaone_attention_prefill_tensor(
+                   go, gq, gkv, N_TOK, 0, HEADS, KV_HEADS, HEAD_DIM,
+                   kv_cap, WINDOW) &&
+         ds4_gpu_tensor_read(go, 0, hmma, qn * sizeof(float));
+    if (!ok) {
+        printf("Step SWA prefill HMMA launch failed\n");
+        g_fail++;
+    } else {
+        diff_quant_gemm("Step SWA prefill HMMA vs warp", hmma, warp, qn, 1e-3);
+    }
+
+    free(hmma);
+    free(warp);
+    ds4_gpu_tensor_free(go);
+    ds4_gpu_tensor_free(gq);
+    ds4_gpu_tensor_free(gkv);
+    ds4_gpu_tensor_free(gv);
+    ds4_gpu_tensor_free(gk);
+    free(v);
+    free(k);
+    free(q);
+}
+
+/* MTP verify is n=4. Production now runs those rows through decode GQA
+ * instead of the warp prefill walk. Compare against the warp path. */
+static void test_step37_verify_gqa(void) {
+    enum { HEADS = 96, KV_HEADS = 8, HEAD_DIM = 128, N_STORE = 64, N_TOK = 4, WINDOW = 512 };
+    const uint32_t pos0 = N_STORE - N_TOK;
+    const uint32_t kv_cap = WINDOW + N_STORE;
+    const uint32_t kv_dim = KV_HEADS * HEAD_DIM;
+    const size_t qn = (size_t)N_TOK * HEADS * HEAD_DIM;
+    const size_t kvn = (size_t)N_STORE * kv_dim;
+    uint64_t s = 3714;
+    float *q = xmalloc(qn * sizeof(float));
+    float *k = xmalloc(kvn * sizeof(float));
+    float *v = xmalloc(kvn * sizeof(float));
+    for (size_t i = 0; i < qn; i++) {
+        q[i] = frand(&s);
+    }
+    for (size_t i = 0; i < kvn; i++) {
+        k[i] = frand(&s) * 0.5f;
+        v[i] = frand(&s) * 0.5f;
+    }
+
+    ds4_gpu_tensor *gk = ds4_gpu_tensor_alloc(kvn * sizeof(float));
+    ds4_gpu_tensor *gv = ds4_gpu_tensor_alloc(kvn * sizeof(float));
+    ds4_gpu_tensor *gkv = ds4_gpu_tensor_alloc(
+        (size_t)kv_cap * kv_dim * 2u * sizeof(uint16_t));
+    ds4_gpu_tensor *gq = ds4_gpu_tensor_alloc(qn * sizeof(float));
+    ds4_gpu_tensor *go = ds4_gpu_tensor_alloc(qn * sizeof(float));
+    float *warp = xmalloc(qn * sizeof(float));
+    float *gqa = xmalloc(qn * sizeof(float));
+    int ok = gk && gv && gkv && gq && go &&
+        ds4_gpu_tensor_write(gk, 0, k, kvn * sizeof(float)) &&
+        ds4_gpu_tensor_write(gv, 0, v, kvn * sizeof(float)) &&
+        ds4_gpu_tensor_write(gq, 0, q, qn * sizeof(float)) &&
+        ds4_gpu_tensor_fill_f32(gkv, 0.0f, (size_t)kv_cap * kv_dim) &&
+        ds4_gpu_exaone_kv_store_tensor(gkv, gk, gv, kv_dim, N_STORE, 0, kv_cap);
+
+    (void)setenv("DS4_EXAONE_PREFILL_GQA", "0", 1);
+    ok = ok && ds4_gpu_exaone_attention_prefill_tensor(
+                   go, gq, gkv, N_TOK, pos0, HEADS, KV_HEADS, HEAD_DIM,
+                   kv_cap, WINDOW) &&
+         ds4_gpu_tensor_read(go, 0, warp, qn * sizeof(float));
+    (void)unsetenv("DS4_EXAONE_PREFILL_GQA");
+    ok = ok && ds4_gpu_exaone_attention_prefill_tensor(
+                   go, gq, gkv, N_TOK, pos0, HEADS, KV_HEADS, HEAD_DIM,
+                   kv_cap, WINDOW) &&
+         ds4_gpu_tensor_read(go, 0, gqa, qn * sizeof(float));
+    if (!ok) {
+        printf("Step verify GQA launch failed\n");
+        g_fail++;
+    } else {
+        diff_quant_gemm("Step verify GQA vs warp", gqa, warp, qn, 1e-3);
+    }
+
+    free(gqa);
+    free(warp);
+    ds4_gpu_tensor_free(go);
+    ds4_gpu_tensor_free(gq);
+    ds4_gpu_tensor_free(gkv);
+    ds4_gpu_tensor_free(gv);
+    ds4_gpu_tensor_free(gk);
+    free(v);
+    free(k);
+    free(q);
+}
+
 /* GQA-pair HMMA prefill attention with ldmatrix fragment loads and the
  * register-staged tile prefetch (DS4_FATTN_HMMA_LDSM=1, the default)
  * against the scalar-load kernel (=0).  Same tile bytes, same mma order,
  * so the outputs must match to the byte: a difference is a fragment
  * layout mistake, not rounding.  Full attention goes through the
- * production wrapper.  The sliding cell calls the HMMA entry directly with
- * a window, which the wrapper never does (windows stay on the warp path),
+ * production wrapper.  EXAONE/K2 sliding cells still call the HMMA entry
+ * directly; Step SWA (96 heads) is the wrapper exception, tested above.
  * so the mask arithmetic of the new consume step is under test too. */
 static void test_attention_ldsm(int sliding, uint32_t n_tok) {
     const uint32_t window = sliding ? 128u : 0u;
@@ -1748,6 +1878,8 @@ int main(int argc, char **argv) {
     test_attention_ldsm(1, 1024u);
     test_attention_ldsm(0, 2048u);
     test_attention_ldsm(1, 2048u);
+    test_step37_swa_prefill_hmma();
+    test_step37_verify_gqa();
     test_prefill_chunk_residency();
     test_router(map, map_size, bias_off);
     test_swiglu_and_combine();

@@ -176,7 +176,15 @@ The initial MTP gates above used raw-layout BASE dispatch: startup previously
 disabled local artifacts whenever any IPC manifest was present. The optimized
 path now builds BASE artifacts when the manifest supplies only MTP. Its
 separate correctness, quality and fresh-process measurements are recorded in
-[the optimization report](step37-optimization-2026-09-13.md).
+[the first optimization report](step37-optimization-2026-09-13.md).
+
+A later campaign on that landed binary is
+[step37-optimization-2026-09-13-r2.md](step37-optimization-2026-09-13-r2.md).
+Default Step prefill chunk is 2048.
+`DS4_STEP37_PREFILL_CHUNK=512` restores the pre-campaign default; `1024`
+is the intermediate stage. On the same 2048+64 protocol, one GB10
+measures median Prefill **1243 tok/s** and MTP Decode **22.43 tok/s**
+(ordinary Decode 19.83). 16K ordinary Prefill does not fall off (1269 tok/s).
 
 The image crop planner matches 28 independent official Python cases, including
 thin-image padding, the 728/3024 limits, crop order and media token counts.
@@ -258,7 +266,9 @@ that bounded workload, not 262144-token capacity or long image conversations.
 All [CONTRIBUTING host checks](../CONTRIBUTING.md) pass: formatting, clippy,
 eight C/Rust parity targets, serialized workspace tests and all-target checks.
 Native operator, artifact-scope and image/MTP state results are recorded in
-[the optimization report](step37-optimization-2026-09-13.md).
+[the first optimization report](step37-optimization-2026-09-13.md).
+Post-landing Prefill/Decode numbers are in
+[the follow-up campaign](step37-optimization-2026-09-13-r2.md).
 
 ## Running the supported artifact
 

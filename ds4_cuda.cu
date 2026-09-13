@@ -47148,11 +47148,23 @@ __global__ static void exaone_attn_decode_gqa_kernel(
         uint32_t last,
         uint32_t chunk,
         uint32_t split_count,
-        float scale) {
+        float scale,
+        uint32_t pos0,
+        uint32_t window) {
     const uint32_t split = blockIdx.x;
     const uint32_t h0 = blockIdx.y * (uint32_t)DS4_EXAONE_GQA_TILE;
+    const uint32_t row = blockIdx.z;
     if (split >= split_count || h0 >= n_head) {
         return;
+    }
+    /* grid.z > 1 is MTP verify: one query row per z, own causal/window. */
+    if (gridDim.z > 1u) {
+        const uint32_t pos = pos0 + row;
+        first = (window && pos + 1u > window) ? pos + 1u - window : 0u;
+        last = pos;
+        chunk = last - first + 1u;
+        q += (size_t)row * n_head * head_dim;
+        out += (size_t)row * n_head * head_dim;
     }
     const uint32_t chunk_first = first + split * chunk;
     uint32_t chunk_last = chunk_first + chunk - 1u;
@@ -47271,13 +47283,14 @@ static int exaone_attn_launch_gqa(
         dim3 grid, uint32_t shmem, float *out, const float *q,
         const __half *kv, uint32_t n_head, uint32_t n_head_kv,
         uint32_t head_dim, uint32_t kv_cap, uint32_t first, uint32_t last,
-        uint32_t chunk, uint32_t split_count, float scale) {
+        uint32_t chunk, uint32_t split_count, float scale,
+        uint32_t pos0 = 0u, uint32_t window = 0u) {
 #define DS4_EXAONE_GQA_CASE(DPL)                                             \
     case DPL:                                                                \
         exaone_attn_decode_gqa_kernel<DPL, PARTIAL><<<                       \
             grid, head_dim, shmem, cuda_decode_stream()>>>(                  \
             out, q, kv, n_head, n_head_kv, head_dim, kv_cap, first, last,    \
-            chunk, split_count, scale);                                      \
+            chunk, split_count, scale, pos0, window);                        \
         return 1
     switch (head_dim / 32u) {
     DS4_EXAONE_GQA_CASE(2);
@@ -47748,12 +47761,21 @@ extern "C" int ds4_gpu_exaone_attention_prefill_tensor(
 
     /* EXAONE/K2 KV is the same [K|V] f16 row as Solar BF16. Full-attention
      * prefill of 64+ tokens can reuse the HMMA tile kernel; nsys 8K put the
-     * generic warp walk at 41% of K2 prefill GPU time. Sliding windows stay
-     * on the warp path (ring+window contract). DS4_EXAONE_PREFILL_HMMA=0
-     * restores the warp path. */
+     * generic warp walk at 41% of K2 prefill GPU time. Other families keep
+     * sliding windows on the warp path (ring+window contract). Step SWA is
+     * 96x/8 GQA at window 512; the same kernel already masks and rings.
+     * DS4_EXAONE_PREFILL_HMMA=0 restores every warp path.
+     * DS4_STEP37_NO_SWA_HMMA=1 restores only Step SWA. */
+    enum { DS4_STEP37_SWA_HEADS = 96, DS4_STEP37_SWA_KV_HEADS = 8 };
     const char *hmma_env = getenv("DS4_EXAONE_PREFILL_HMMA");
+    const char *step_swa_off = getenv("DS4_STEP37_NO_SWA_HMMA");
     const int hmma_enabled = !(hmma_env && hmma_env[0] == '0');
-    if (hmma_enabled && head_dim == 128u && n_tokens >= 64u && window == 0u) {
+    const int step_swa_hmma = window != 0u &&
+        n_head == (uint32_t)DS4_STEP37_SWA_HEADS &&
+        n_head_kv == (uint32_t)DS4_STEP37_SWA_KV_HEADS &&
+        !(step_swa_off && step_swa_off[0] == '1');
+    if (hmma_enabled && head_dim == 128u && n_tokens >= 64u &&
+        (window == 0u || step_swa_hmma)) {
         const int rc = ds4_mmq_exaone_prefill_attn_hmma(
             (float *)heads->ptr, (const float *)q->ptr, kv->ptr,
             (int)n_tokens, (int)pos0, (int)n_head, (int)n_head_kv,
@@ -47763,11 +47785,38 @@ extern "C" int ds4_gpu_exaone_attention_prefill_tensor(
             static int logged = 0;
             if (!logged) {
                 fprintf(stderr,
-                        "ds4: EXAONE/K2 prefill attention using HMMA tiles\n");
+                        window ? "ds4: Step SWA prefill attention using HMMA tiles\n"
+                               : "ds4: EXAONE/K2 prefill attention using HMMA tiles\n");
                 logged = 1;
             }
             return 1;
         }
+    }
+
+    /* MTP verify is n=2..4. One GQA-pair launch covers every query row
+     * (grid.z) instead of a warp block per (row, head). n>=64 stays on
+     * HMMA above. DS4_EXAONE_PREFILL_GQA=0 restores the warp walk. */
+    const char *prefill_gqa_env = getenv("DS4_EXAONE_PREFILL_GQA");
+    const int prefill_gqa = !(prefill_gqa_env && prefill_gqa_env[0] == '0');
+    const uint32_t group = n_head / n_head_kv;
+    if (prefill_gqa && n_tokens > 1u && n_tokens < 64u && head_dim == 128u &&
+        (group % (uint32_t)DS4_EXAONE_GQA_TILE) == 0u) {
+        const uint32_t span = n_tokens; /* last-first+1 computed per row */
+        if (!exaone_attn_launch_gqa<false>(
+                dim3(1u, n_head / (uint32_t)DS4_EXAONE_GQA_TILE, n_tokens),
+                shmem, (float *)heads->ptr, (const float *)q->ptr,
+                (const __half *)kv->ptr, n_head, n_head_kv, head_dim, kv_cap,
+                /*first=*/0u, /*last=*/0u, /*chunk=*/span, /*split_count=*/1u,
+                scale, pos0, window)) {
+            return 0;
+        }
+        static int logged = 0;
+        if (!logged) {
+            fprintf(stderr,
+                    "ds4: EXAONE/K2 short prefill attention using GQA decode\n");
+            logged = 1;
+        }
+        return cuda_ok(cudaGetLastError(), "exaone attention prefill gqa");
     }
 
     dim3 grid(n_tokens, n_head, 1u);

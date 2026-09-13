@@ -159,6 +159,15 @@ int main(int argc, char **argv) {
         step37_memory(262145, 512).total_bytes || step37_memory(512, 513).total_bytes) {
         ds4_die("Step context admission geometry mismatch");
     }
+    (void)unsetenv("DS4_STEP37_PREFILL_CHUNK");
+    if (step37_prefill_cap(4096) != 2048u || step37_prefill_cap(1024) != 1024u) {
+        ds4_die("Step default prefill chunk mismatch");
+    }
+    if (setenv("DS4_STEP37_PREFILL_CHUNK", "1024", 1) != 0 ||
+        step37_prefill_cap(4096) != 1024u ||
+        unsetenv("DS4_STEP37_PREFILL_CHUNK") != 0) {
+        ds4_die("Step prefill chunk restore mismatch");
+    }
     ds4_weights w;
     weights_bind(&w, &m, false, 0, UINT32_MAX, true, false);
     if (!ds4_gpu_init() || !ds4_gpu_set_model_map(m.map, m.size)) { return 1; }
