@@ -24999,6 +24999,13 @@ static void qwen4exp_graph_free(ds4_qwen_gpu_graph *graph) {
     memset(graph, 0, sizeof(*graph));
 }
 
+/* A replacement history drops request-specific hints; feed rebuilds the
+ * membership map lazily before observing the new request's tokens. */
+static void qwen_mtp_vocab_reset(ds4_qwen_gpu_graph *graph) {
+    graph->mtp_vocab_count = 0u;
+    graph->mtp_vocab_uploaded = 0u;
+}
+
 static bool qwen4exp_graph_reset(ds4_qwen_gpu_graph *graph,
                                  ds4_ple_store *store) {
     if (!graph || !store || !qwen4exp_ple_ws_reset(
@@ -25014,8 +25021,7 @@ static bool qwen4exp_graph_reset(ds4_qwen_gpu_graph *graph,
         !qwen4exp_qsa_state_reset(&graph->mtp_qsa_state)) return false;
     graph->mtp_pending_valid = false;
     qwen4exp_graph_clear_multimodal(graph);
-    graph->mtp_vocab_count = 0u;
-    graph->mtp_vocab_uploaded = 0u;
+    qwen_mtp_vocab_reset(graph);
     graph->length = 0u;
     return true;
 }
@@ -44323,6 +44329,7 @@ static bool qwen_batch_runtime_copy_bank(
             return false;
         }
         rt->graph[dst].mtp_pending_valid = false;
+        qwen_mtp_vocab_reset(&rt->graph[dst]);
         rt->mtp_baseline_ms[dst] = 0.0;
         rt->mtp_speculative_ms[dst] = 0.0;
         rt->mtp_verify_cycles[dst] = 0u;
@@ -47773,6 +47780,7 @@ static bool qwen_batch_runtime_restore_checkpoint(
         return false;
     }
     dst_graph->mtp_pending_valid = false;
+    qwen_mtp_vocab_reset(dst_graph);
     rt->mtp_baseline_ms[dst] = 0.0;
     rt->mtp_speculative_ms[dst] = 0.0;
     rt->mtp_verify_cycles[dst] = 0u;
