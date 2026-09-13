@@ -925,7 +925,8 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
     match syntax {
         ModelSyntax::SolarOpen2 => ChatFormat::SolarOpen2,
         ModelSyntax::Exaone => ChatFormat::Exaone,
-        ModelSyntax::Qwen4Exp => ChatFormat::Qwen4Exp,
+        // Only the generated thinking/tool envelope is shared with Qwen.
+        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 => ChatFormat::Qwen4Exp,
         ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
         ModelSyntax::Inkling => ChatFormat::Inkling,
         ModelSyntax::DeepSeek | ModelSyntax::Motif3 | ModelSyntax::Dots3 | ModelSyntax::Glm53 => {
@@ -1009,6 +1010,11 @@ pub(crate) fn thinking_visible_key(
     format: ChatFormat,
     terminal: bool,
 ) -> Option<Vec<u8>> {
+    if syntax == ModelSyntax::Step37 {
+        // Removing reasoning changes Step's history grammar. Re-render its
+        // structured history with Jinja instead of inventing a cached prefix.
+        return None;
+    }
     let mut visible = if format == ChatFormat::K2Horizon {
         if !prompt.ends_with(b"<ifm|think>\n") {
             return None;

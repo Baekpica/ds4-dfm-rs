@@ -97,6 +97,15 @@ Jinja on 20 text/history/image/tool/observation cases across four effort
 values. The adapter adds the template's `fromjson` filter and rejects malformed
 tool JSON. These checks establish input compatibility, not generated output.
 
+Step has an explicit Rust output protocol: its thinking and function XML
+share the existing Qwen output parser; input remains the official Step Jinja.
+The server passes all host parity tests and 36 live requests at context 4096:
+Chat Completions, Messages and Responses, each with thinking disabled/high,
+text followups, buffered/streamed tools and tool-result continuation. The
+normalization gate also fixed a duplicated Responses tool discriminator.
+The live fixture is `tests/chat_template_live.py`, with output caps 128/256.
+These are single-request text gates, not batching, vision or MTP qualification.
+
 The pinned upstream tokenizer JSON, configuration, special-token map and
 Jinja are available in HF commit
 [`9acdcd0`](https://huggingface.co/Baekpica/Step-3.7-Flash-Mixed-Quant-GGUF/commit/9acdcd0e817a029ec486d7fe77fc24be537fdd43).
@@ -112,7 +121,6 @@ The Spark handoff supplies BF16 logits and real image fixtures. BF16 outputs
 are separate from the MQ83 oracle comparison above. Remaining gates:
 
 - Longer Rust continuations and further cross-engine drift investigation.
-- Official tokenizer/Jinja, tool output parsing and Rust server API checks.
 - External MTP prediction, acceptance and rejected-prefix rollback.
 - Vision processing, encoder/projector execution and real document/chart requests.
 - Guarded GB10 residency, context/bank admission and prefill/decode measurements.

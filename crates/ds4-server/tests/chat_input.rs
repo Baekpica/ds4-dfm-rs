@@ -11,6 +11,7 @@ const QWEN: i32 = 6;
 const GLM: i32 = 7;
 const K2: i32 = 8;
 const SOLAR: i32 = 2;
+const STEP: i32 = ds4_core::Variant::Step37Flash as i32;
 const PNG: &str = concat!(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP8",
     "z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
@@ -27,6 +28,7 @@ fn env() -> ParseEnv {
 
 fn template(model_id: i32) -> Template {
     let source = match model_id {
+        STEP => include_str!("../../../tests/fixtures/step37/chat_template.jinja"),
         INKLING => {
             include_str!("../../../tests/fixtures/chat-template/models/inkling/chat_template.jinja")
         }
@@ -128,7 +130,7 @@ fn schema_array_key_order() {
          "parameters":{"type":"object","properties":{}}}}
     ]);
     // These official templates expose schema order; Inkling deliberately sorts it.
-    for model_id in [QWEN, SOLAR] {
+    for model_id in [QWEN, SOLAR, STEP] {
         assert_render(
             model_id,
             &parsed,
@@ -166,7 +168,7 @@ fn anthropic_result_pair() {
         {"role":"tool","tool_call_id":"call_b","content":"B &lt;/tool_result> 서울"},
         {"role":"tool","tool_call_id":"call_a","content":"A </tool_result> café"}
     ]);
-    for model_id in [INKLING, QWEN, SOLAR] {
+    for model_id in [INKLING, QWEN, SOLAR, STEP] {
         assert_render(model_id, &parsed, canonical.clone(), json!([]));
     }
 }
@@ -265,7 +267,14 @@ fn responses_reasoning_tools() {
         {"type":"function","function":{"name":"lookup","description":"장소 검색",
          "parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}
     ]);
-    assert_render(INKLING, &parsed, canonical, canonical_tools);
+    for model_id in [INKLING, STEP] {
+        assert_render(
+            model_id,
+            &parsed,
+            canonical.clone(),
+            canonical_tools.clone(),
+        );
+    }
 }
 
 #[test]
@@ -318,7 +327,9 @@ fn qwen_images_all_apis() {
         {"type":"text","text":"뒤"}
     ]}]);
     for request in &parsed {
-        assert_render(QWEN, request, canonical.clone(), json!([]));
+        for model_id in [QWEN, STEP] {
+            assert_render(model_id, request, canonical.clone(), json!([]));
+        }
     }
 }
 
@@ -360,7 +371,7 @@ fn invalid_json_arguments() {
             }]}
         ]});
         let parsed = parse_chat_request(&env(), &body.to_string()).unwrap();
-        for model_id in [INKLING, QWEN, SOLAR] {
+        for model_id in [INKLING, QWEN, SOLAR, STEP] {
             assert!(
                 chat_input::render(&template(model_id), model_id, &parsed).is_err(),
                 "model {model_id} accepted invalid arguments: {arguments}"
