@@ -183,3 +183,5 @@ locked cells on the 2048+64 protocol, default chunk 2048:
 16K Prefill does not fall off versus 2K. Those 16K numbers are
 post-Prefill-3, MTP-off. Decode 1 does not change n=1 ordinary
 attention. Scratch at the campaign context is 1163 MiB at chunk 2048.
+`DS4_STEP37_PREFILL_CHUNK=512` is the pre-campaign compatibility
+rollback; `1024` is only the intermediate stage.

@@ -180,7 +180,9 @@ separate correctness, quality and fresh-process measurements are recorded in
 
 A later campaign on that landed binary is
 [step37-optimization-2026-09-13-r2.md](step37-optimization-2026-09-13-r2.md).
-Default Step prefill chunk is 2048. On the same 2048+64 protocol, one GB10
+Default Step prefill chunk is 2048.
+`DS4_STEP37_PREFILL_CHUNK=512` restores the pre-campaign default; `1024`
+is the intermediate stage. On the same 2048+64 protocol, one GB10
 measures median Prefill **1243 tok/s** and MTP Decode **22.43 tok/s**
 (ordinary Decode 19.83). 16K ordinary Prefill does not fall off (1269 tok/s).
 

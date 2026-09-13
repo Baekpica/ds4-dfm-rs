@@ -30,9 +30,10 @@ The bandwidth figure is informational; we don't tier on it.
 ## Env-var inventory
 
 - `DS4_STEP37_PREFILL_CHUNK=N` selects 1–4096 Step 3.7 prompt rows per
-  chunk, capped by context. Default 2048; `1024` restores the previous
-  cap. Invalid values use the default. The SWA ring retains an extra
-  chunk, so both scratch and KV grow with it.
+  chunk, capped by context. Default 2048. `512` restores the pre-campaign
+  default; that is not equivalent to `1024`, which is only the
+  intermediate campaign stage. Invalid values use the default. The SWA
+  ring retains an extra chunk, so both scratch and KV grow with it.
 
 - `DS4_STEP37_NO_SWA_HMMA=1` restores the warp walk on Step sliding
   prefill. Unset uses the GQA2 HMMA tiles already used on full-attention
