@@ -51,6 +51,32 @@ static void same(ds4_session *s, ds4_step37_graph *r) {
     }
 }
 
+/* A restored session holds only the causally live rows: every full-attention
+ * row and the last window of each sliding ring. */
+static void same_window(ds4_session *s, ds4_step37_graph *r) {
+    const unsigned end = (unsigned)ds4_session_pos(s);
+    check(r->position == end, "Step reference frontier differs");
+    float *logits = xmalloc(DS4_N_VOCAB * sizeof(float));
+    check(ds4_gpu_tensor_read(r->logits, 0, logits, DS4_N_VOCAB * sizeof(float)) &&
+          !memcmp(logits, s->logits, DS4_N_VOCAB * sizeof(float)), "Step restored logits differ");
+    free(logits);
+    const size_t row_bytes = 2 * S37_KV * sizeof(uint16_t);
+    for (unsigned il = 0; il < STEP37_LAYERS; il++) {
+        const unsigned cap = s->step37_graph.kv_cap[il];
+        check(cap == r->kv_cap[il], "Step restored ring capacity differs");
+        const size_t bytes = (size_t)cap * row_bytes;
+        unsigned char *a = xmalloc(bytes), *b = xmalloc(bytes);
+        check(ds4_gpu_tensor_read(s->step37_graph.kv[il], 0, a, bytes) &&
+              ds4_gpu_tensor_read(r->kv[il], 0, b, bytes), "Step restored KV read");
+        const unsigned start = step37_sliding(il) && end > S37_WINDOW ? end - S37_WINDOW : 0;
+        for (unsigned pos = start; pos < end; pos++) {
+            check(!memcmp(a + (pos % cap) * row_bytes, b + (pos % cap) * row_bytes, row_bytes),
+                  "Step restored KV differs");
+        }
+        free(a); free(b);
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc != 2 && argc != 3) { return 2; }
     const ds4_host_shape host = {.variant = DS4_VARIANT_STEP37_FLASH};
@@ -129,11 +155,29 @@ int main(int argc, char **argv) {
     check(ds4_session_eval(s, token, err, sizeof(err)), "Step invalidated decode accepted");
     check(!ds4_session_sync(s, &prompt, err, sizeof(err)), err);
     same(s, &reference);
+    /* Disk payload: full rows plus each sliding window restore into a fresh
+     * session and continue byte-identically. */
     FILE *fp = tmpfile();
-    check(fp && !ds4_session_payload_bytes(s) && ds4_session_save_payload(s, fp, err, sizeof(err)) &&
-          ds4_session_load_payload(s, fp, 0, err, sizeof(err)), "Step entered DeepSeek disk payload");
-    fclose(fp);
+    const uint64_t payload = ds4_session_payload_bytes(s);
+    check(fp && payload && !ds4_session_save_payload(s, fp, err, sizeof(err)) &&
+          (uint64_t)ftell(fp) == payload, "Step payload save");
     const int expected = ds4_session_argmax(s);
+    ds4_session *restored = NULL;
+    check(!ds4_session_create(&restored, &e, ctx) && restored, "Step restore session create");
+    const uint64_t fresh = ds4_session_generation(restored);
+    rewind(fp);
+    check(ds4_session_load_payload(restored, fp, payload - 1, err, sizeof(err)) &&
+          !restored->checkpoint_valid, "Step truncated payload accepted");
+    rewind(fp);
+    check(!ds4_session_load_payload(restored, fp, payload, err, sizeof(err)), err);
+    fclose(fp);
+    check(ds4_session_pos(restored) == prompt.len && ds4_session_argmax(restored) == expected &&
+          ds4_session_generation(restored) == fresh + 2, "Step restored frontier");
+    same_window(restored, &reference);
+    check(!ds4_session_eval(restored, expected, err, sizeof(err)) &&
+          step37_forward(&reference, &e.model, &e.weights, &expected, 1, prompt.len), err);
+    same_window(restored, &reference);
+    ds4_session_free(restored);
     step37_graph_free(&reference);
     ds4_session_free(s);
     check(!session_tensors_census_live(), "Step leaked session tensors");

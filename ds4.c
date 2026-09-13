@@ -44608,6 +44608,138 @@ static bool exaone_batch_runtime_decode(
     return true;
 }
 
+/* Step continuous lane: N self-contained per-bank graphs sharing only the
+ * resident weights.  Each bank owns its full 45-layer KV rings and prefill
+ * scratch, so admission/prefill/decode reuse the single-graph forward exactly
+ * (byte-identical to a serial session).  MTP speculation and images stay on
+ * the serial lane; the banked lane runs ordinary greedy/sampled decode. */
+enum { DS4_STEP37_BANK_MAX = DS4_MULTISEQ_MAX_SEQ };
+
+typedef struct ds4_step37_batch_runtime {
+    uint32_t max_seq;
+    uint32_t ctx_size;
+    uint32_t prefill_cap;
+    ds4_step37_graph *graph;   /* per-bank, self-contained (KV + scratch) */
+    float *bank_logits;
+    uint8_t *bank_logits_valid;
+} ds4_step37_batch_runtime;
+
+static void step37_batch_runtime_free(ds4_step37_batch_runtime *rt) {
+    if (!rt) { return; }
+    if (rt->graph) {
+        for (uint32_t b = 0; b < rt->max_seq; b++) { step37_graph_free(&rt->graph[b]); }
+    }
+    free(rt->graph);
+    free(rt->bank_logits);
+    free(rt->bank_logits_valid);
+    free(rt);
+}
+
+static ds4_step37_batch_runtime *step37_batch_runtime_create(
+        ds4_engine *e, uint32_t ctx_size, uint32_t max_seq, uint32_t prefill_cap) {
+    if (!e || max_seq == 0u || max_seq > DS4_STEP37_BANK_MAX ||
+        prefill_cap == 0u || prefill_cap > ctx_size) { return NULL; }
+    ds4_step37_batch_runtime *rt = xcalloc(1, sizeof(*rt));
+    rt->max_seq = max_seq;
+    rt->ctx_size = ctx_size;
+    rt->prefill_cap = prefill_cap;
+    rt->graph = xcalloc(max_seq, sizeof(*rt->graph));
+    for (uint32_t b = 0; b < max_seq; b++) {
+        if (!step37_graph_alloc(&rt->graph[b], &e->model, &e->weights, ctx_size, prefill_cap)) {
+            step37_batch_runtime_free(rt);
+            return NULL;
+        }
+    }
+    rt->bank_logits = xcalloc((size_t)max_seq * DS4_N_VOCAB, sizeof(*rt->bank_logits));
+    rt->bank_logits_valid = xcalloc(max_seq, sizeof(*rt->bank_logits_valid));
+    if (!rt->bank_logits || !rt->bank_logits_valid) {
+        step37_batch_runtime_free(rt);
+        return NULL;
+    }
+    return rt;
+}
+
+static bool step37_batch_runtime_read_logits(ds4_step37_batch_runtime *rt, uint32_t bank) {
+    if (!rt || bank >= rt->max_seq || ds4_gpu_synchronize() == 0) { return false; }
+    float *dst = rt->bank_logits + (size_t)bank * DS4_N_VOCAB;
+    const bool ok = ds4_gpu_tensor_read(rt->graph[bank].logits, 0, dst,
+                                        (uint64_t)DS4_N_VOCAB * sizeof(float)) != 0;
+    rt->bank_logits_valid[bank] = ok ? 1u : 0u;
+    return ok;
+}
+
+static bool step37_batch_runtime_reset_bank(ds4_step37_batch_runtime *rt, uint32_t bank) {
+    if (!rt || bank >= rt->max_seq) { return false; }
+    rt->bank_logits_valid[bank] = 0u;
+    return step37_reset(&rt->graph[bank]);
+}
+
+/* Fork: clone the committed KV rings of one bank into another.  The ring
+ * stores logical position p at slot p % cap starting from 0, so the first
+ * min(tokens, cap) slots are exactly the occupied ones. */
+static bool step37_batch_runtime_copy_bank(ds4_step37_batch_runtime *rt, uint32_t src,
+                                           uint32_t dst, uint32_t tokens) {
+    if (!rt || src >= rt->max_seq || dst >= rt->max_seq) { return false; }
+    if (src == dst) { return true; }
+    ds4_step37_graph *sg = &rt->graph[src];
+    ds4_step37_graph *dg = &rt->graph[dst];
+    const uint64_t row = 2u * S37_KV * sizeof(uint16_t);
+    bool ok = true;
+    for (unsigned il = 0; ok && il < STEP37_LAYERS; il++) {
+        const unsigned rows = tokens < sg->kv_cap[il] ? tokens : sg->kv_cap[il];
+        ok = rows == 0u || ds4_gpu_tensor_copy(dg->kv[il], 0, sg->kv[il], 0,
+                                               (uint64_t)rows * row) != 0;
+    }
+    if (ok) { ok = ds4_gpu_synchronize() != 0; }
+    if (!ok) {
+        rt->bank_logits_valid[dst] = 0u;
+        return false;
+    }
+    dg->position = sg->position;
+    dg->high_water = sg->high_water;
+    dg->failed = false;
+    if (rt->bank_logits_valid[src]) {
+        memcpy(rt->bank_logits + (size_t)dst * DS4_N_VOCAB,
+               rt->bank_logits + (size_t)src * DS4_N_VOCAB,
+               (size_t)DS4_N_VOCAB * sizeof(float));
+        rt->bank_logits_valid[dst] = 1u;
+    } else {
+        rt->bank_logits_valid[dst] = 0u;
+    }
+    return true;
+}
+
+static bool step37_batch_runtime_prefill(ds4_step37_batch_runtime *rt, ds4_engine *e,
+                                         uint32_t bank, const int *tokens, uint32_t rows,
+                                         uint32_t pos, bool final) {
+    if (!rt || bank >= rt->max_seq) { return false; }
+    rt->bank_logits_valid[bank] = 0u;
+    if (!step37_forward(&rt->graph[bank], &e->model, &e->weights, tokens, rows, pos)) {
+        return false;
+    }
+    return !final || step37_batch_runtime_read_logits(rt, bank);
+}
+
+static bool step37_batch_runtime_decode(ds4_step37_batch_runtime *rt, ds4_engine *e,
+                                        const uint32_t *banks, const int *tokens,
+                                        const uint32_t *positions, uint32_t n_rows) {
+    if (!rt || !banks || !tokens || !positions || n_rows == 0u || n_rows > rt->max_seq) {
+        return false;
+    }
+    /* One resident graph per bank; decode each row on its own KV. */
+    for (uint32_t i = 0; i < n_rows; i++) {
+        const uint32_t bank = banks[i];
+        if (bank >= rt->max_seq) { return false; }
+        rt->bank_logits_valid[bank] = 0u;
+        if (!step37_forward(&rt->graph[bank], &e->model, &e->weights,
+                            &tokens[i], 1u, positions[i]) ||
+            !step37_batch_runtime_read_logits(rt, bank)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* ponytail: full DSA is exact while every visible token fits the model's
  * top-k.  Add the compact indexer/cache path before raising this ceiling. */
 enum { DS4_GLM53_RESIDENT_CTX_MAX = 2048u };
@@ -49490,6 +49622,235 @@ static int exaone_payload_restore_graph(
     return 0;
 }
 
+/* Step persists the live frontier only: every full-attention row and the last
+ * window of each sliding ring, written in logical order so a payload does not
+ * depend on the ring capacity (prefill chunk) or context it was written with.
+ * MTP adds each predictor's window plus the held target hidden rows. Images
+ * are excluded: their device features would have to travel with the rows. */
+#define DS4_SESSION_STEP37_LAYOUT_MAGIC UINT32_C(0x33505453) /* "STP3" */
+enum { STEP37_PAYLOAD_MTP = 1u };
+typedef enum { STEP37_PAYLOAD_WRITE, STEP37_PAYLOAD_READ } step37_payload_dir;
+
+static uint32_t step37_payload_window(uint32_t n, bool sliding) {
+    if (!sliding) { return n; }
+    return n < S37_WINDOW ? n : S37_WINDOW;
+}
+
+static uint64_t step37_payload_body_bytes(uint32_t n, bool mtp) {
+    const uint64_t row = 2u * S37_KV * sizeof(uint16_t);
+    uint64_t bytes = (uint64_t)n * sizeof(uint32_t) + (uint64_t)DS4_N_VOCAB * sizeof(float);
+    for (unsigned il = 0; il < STEP37_LAYERS; il++) {
+        bytes += (uint64_t)step37_payload_window(n, step37_sliding(il)) * row;
+    }
+    if (!mtp) { return bytes; }
+    /* Rows before the held tail are in every predictor's ring. */
+    const uint32_t tail = n < STEP37_DRAFT_LAYERS ? n : STEP37_DRAFT_LAYERS;
+    bytes += (uint64_t)STEP37_DRAFT_LAYERS * step37_payload_window(n - tail, true) * row;
+    return bytes + (uint64_t)tail * S37_HIDDEN * sizeof(float);
+}
+
+static uint64_t step37_payload_bytes_for_graph(const ds4_step37_graph *g,
+                                               const ds4_step37_spec *spec, uint32_t n) {
+    if (!g || !g->cap || g->failed || !n || n >= g->context || g->position != n ||
+        (spec && (!step37_spec_valid(spec) || spec->position != n))) { return 0; }
+    for (unsigned il = 0; il < STEP37_LAYERS; il++) {
+        if (!g->kv[il]) { return 0; }
+    }
+    for (unsigned d = 0; spec && d < STEP37_DRAFT_LAYERS; d++) {
+        if (!spec->draft.graph.kv[STEP37_LAYERS + d]) { return 0; }
+    }
+    return (uint64_t)DS4_SESSION_PAYLOAD_U32_FIELDS * sizeof(uint32_t) +
+        step37_payload_body_bytes(n, spec != NULL);
+}
+
+/* Move logical rows [first, first + rows) of one ring through the stream.
+ * Slot = position % cap, so a span covers at most two device segments. */
+static int step37_payload_ring_span(step37_payload_dir dir, FILE *fp, ds4_gpu_tensor *kv,
+                                    unsigned cap, unsigned first, unsigned rows, uint8_t *buf,
+                                    uint64_t *remaining, char *err, size_t errlen) {
+    const uint64_t row = 2u * S37_KV * sizeof(uint16_t);
+    if (!kv || !cap) {
+        payload_set_err(err, errlen, "Step payload ring is not allocated");
+        return 1;
+    }
+    while (rows) {
+        const unsigned slot = first % cap;
+        unsigned span = rows;
+        if (slot + span > cap) { span = cap - slot; }
+        const int rc = dir == STEP37_PAYLOAD_READ
+            ? payload_read_tensor_span(fp, kv, (uint64_t)slot * row, (uint64_t)span * row,
+                                       buf, DS4_SESSION_IO_CHUNK, remaining, err, errlen)
+            : payload_write_tensor_span(fp, kv, (uint64_t)slot * row, (uint64_t)span * row,
+                                        buf, DS4_SESSION_IO_CHUNK, err, errlen);
+        if (rc) { return rc; }
+        first += span;
+        rows -= span;
+    }
+    return 0;
+}
+
+static int step37_payload_skip(FILE *fp, uint64_t bytes, uint8_t *buf, uint64_t *remaining,
+                               char *err, size_t errlen) {
+    while (bytes) {
+        const size_t n = bytes > DS4_SESSION_IO_CHUNK ? DS4_SESSION_IO_CHUNK : (size_t)bytes;
+        if (payload_read_bytes(fp, buf, n, remaining, err, errlen)) { return 1; }
+        bytes -= n;
+    }
+    return 0;
+}
+
+static int step37_payload_save_graph(ds4_step37_graph *g, ds4_step37_spec *spec,
+                                     const int *tokens, uint32_t n, const float *logits,
+                                     FILE *fp, char *err, size_t errlen) {
+    if (!fp || !tokens || !step37_payload_bytes_for_graph(g, spec, n)) {
+        payload_set_err(err, errlen, "invalid Step session payload layout");
+        return 1;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        if (tokens[i] < 0 || (uint32_t)tokens[i] >= DS4_N_VOCAB) {
+            payload_set_err(err, errlen, "Step session payload contains an invalid token");
+            return 1;
+        }
+    }
+    if (ds4_gpu_synchronize() == 0) {
+        payload_set_err(err, errlen, "failed to synchronize accelerator before Step snapshot");
+        return 1;
+    }
+    const uint32_t header[DS4_SESSION_PAYLOAD_U32_FIELDS] = {
+        DS4_SESSION_PAYLOAD_MAGIC, DS4_SESSION_PAYLOAD_VERSION, g->context, g->cap,
+        STEP37_LAYERS, DS4_SESSION_STEP37_LAYOUT_MAGIC, 2u * S37_KV * sizeof(uint16_t), n,
+        spec ? STEP37_PAYLOAD_MTP : 0u, S37_KV, S37_WINDOW, DS4_N_VOCAB, n,
+    };
+    for (uint32_t i = 0; i < DS4_SESSION_PAYLOAD_U32_FIELDS; i++) {
+        if (payload_write_u32(fp, header[i], err, errlen)) { return 1; }
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        if (payload_write_u32(fp, (uint32_t)tokens[i], err, errlen)) { return 1; }
+    }
+    uint8_t *buf = xmalloc(DS4_SESSION_IO_CHUNK);
+    int rc = payload_write_logits(fp, logits, buf, err, errlen);
+    for (unsigned il = 0; !rc && il < STEP37_LAYERS; il++) {
+        const uint32_t rows = step37_payload_window(n, step37_sliding(il));
+        rc = step37_payload_ring_span(STEP37_PAYLOAD_WRITE, fp, g->kv[il], g->kv_cap[il],
+                                      n - rows, rows, buf, NULL, err, errlen);
+    }
+    if (!rc && spec) {
+        ds4_step37_graph *d = &spec->draft.graph;
+        const uint32_t base = n - spec->tail_rows;
+        const uint32_t rows = step37_payload_window(base, true);
+        for (unsigned i = 0; !rc && i < STEP37_DRAFT_LAYERS; i++) {
+            const unsigned il = STEP37_LAYERS + i;
+            rc = step37_payload_ring_span(STEP37_PAYLOAD_WRITE, fp, d->kv[il], d->kv_cap[il],
+                                          base - rows, rows, buf, NULL, err, errlen);
+        }
+        if (!rc) {
+            rc = payload_write_tensor_span(fp, spec->tail, 0,
+                    (uint64_t)spec->tail_rows * S37_HIDDEN * sizeof(float),
+                    buf, DS4_SESSION_IO_CHUNK, err, errlen);
+        }
+    }
+    free(buf);
+    return rc;
+}
+
+/* A payload with predictor state restores into a plain session by skipping
+ * it; the reverse cannot rebuild predictor rings without the target hidden
+ * rows and is rejected. */
+static int step37_payload_restore_graph(ds4_step37_graph *g, ds4_step37_spec *spec, FILE *fp,
+                                        uint64_t *remaining,
+                                        const uint32_t h[DS4_SESSION_PAYLOAD_U32_FIELDS],
+                                        int **tokens_out, float *logits,
+                                        char *err, size_t errlen) {
+    const uint32_t n = h[7], flags = h[8];
+    if (!g || !g->cap || !fp || !remaining || !tokens_out || !logits ||
+        h[0] != DS4_SESSION_PAYLOAD_MAGIC || h[1] != DS4_SESSION_PAYLOAD_VERSION ||
+        h[4] != STEP37_LAYERS || h[5] != DS4_SESSION_STEP37_LAYOUT_MAGIC ||
+        h[6] != 2u * S37_KV * sizeof(uint16_t) || (flags & ~(uint32_t)STEP37_PAYLOAD_MTP) ||
+        h[9] != S37_KV || h[10] != S37_WINDOW || h[11] != DS4_N_VOCAB || h[12] != n ||
+        !n || n >= g->context) {
+        payload_set_err(err, errlen, "session payload was written for a different Step layout");
+        return 1;
+    }
+    const bool saved_mtp = (flags & STEP37_PAYLOAD_MTP) != 0;
+    if (spec && !saved_mtp) {
+        payload_set_err(err, errlen, "Step session payload has no MTP predictor state");
+        return 1;
+    }
+    if (*remaining != step37_payload_body_bytes(n, saved_mtp)) {
+        payload_set_err(err, errlen, "Step session payload byte count does not match its header");
+        return 1;
+    }
+    if (!step37_reset(g) || (spec && !step37_spec_reset(spec))) {
+        payload_set_err(err, errlen, "failed to reset Step graph before restore");
+        return 1;
+    }
+    int *tokens = xmalloc((size_t)n * sizeof(*tokens));
+    int rc = 0;
+    for (uint32_t i = 0; !rc && i < n; i++) {
+        uint32_t tok = 0;
+        rc = payload_read_u32(fp, &tok, remaining, err, errlen);
+        if (!rc && tok >= DS4_N_VOCAB) {
+            payload_set_err(err, errlen, "Step session payload contains an invalid token");
+            rc = 1;
+        }
+        tokens[i] = (int)tok;
+    }
+    if (!rc) {
+        rc = payload_read_bytes(fp, logits, (uint64_t)DS4_N_VOCAB * sizeof(float),
+                                remaining, err, errlen);
+    }
+    uint8_t *buf = xmalloc(DS4_SESSION_IO_CHUNK);
+    for (unsigned il = 0; !rc && il < STEP37_LAYERS; il++) {
+        const uint32_t rows = step37_payload_window(n, step37_sliding(il));
+        rc = step37_payload_ring_span(STEP37_PAYLOAD_READ, fp, g->kv[il], g->kv_cap[il],
+                                      n - rows, rows, buf, remaining, err, errlen);
+    }
+    const uint32_t tail = n < STEP37_DRAFT_LAYERS ? n : STEP37_DRAFT_LAYERS;
+    const uint32_t base = n - tail;
+    if (!rc && saved_mtp) {
+        const uint64_t row = 2u * S37_KV * sizeof(uint16_t);
+        const uint32_t rows = step37_payload_window(base, true);
+        ds4_step37_graph *d = spec ? &spec->draft.graph : NULL;
+        for (unsigned i = 0; !rc && i < STEP37_DRAFT_LAYERS; i++) {
+            const unsigned il = STEP37_LAYERS + i;
+            rc = d ? step37_payload_ring_span(STEP37_PAYLOAD_READ, fp, d->kv[il], d->kv_cap[il],
+                                              base - rows, rows, buf, remaining, err, errlen)
+                   : step37_payload_skip(fp, (uint64_t)rows * row, buf, remaining, err, errlen);
+        }
+        const uint64_t tail_bytes = (uint64_t)tail * S37_HIDDEN * sizeof(float);
+        if (!rc) {
+            rc = spec ? payload_read_tensor_span(fp, spec->tail, 0, tail_bytes, buf,
+                                                 DS4_SESSION_IO_CHUNK, remaining, err, errlen)
+                      : step37_payload_skip(fp, tail_bytes, buf, remaining, err, errlen);
+        }
+    }
+    free(buf);
+    if (!rc && *remaining) {
+        payload_set_err(err, errlen, "Step session payload has trailing bytes");
+        rc = 1;
+    }
+    if (!rc && ds4_gpu_synchronize() == 0) {
+        payload_set_err(err, errlen, "failed to synchronize accelerator after Step restore");
+        rc = 1;
+    }
+    if (rc) {
+        free(tokens);
+        return 1;
+    }
+    g->position = n;
+    g->high_water = n;
+    if (spec) {
+        for (unsigned i = 0; i < STEP37_DRAFT_LAYERS; i++) {
+            spec->draft.position[i] = base;
+            spec->draft.high_water[i] = base;
+        }
+        spec->position = n;
+        spec->tail_rows = tail;
+    }
+    *tokens_out = tokens;
+    return 0;
+}
+
 static uint64_t motif3_payload_bytes_for_graph(
         const ds4_motif3_gpu_graph *g, uint32_t n_tokens) {
     if (!g || !g->latent_cache_ready || n_tokens == 0u ||
@@ -52283,8 +52644,13 @@ uint64_t ds4_session_payload_bytes(ds4_session *s) {
     if (!s || !s->checkpoint_valid) return 0;
     if (s->distributed) return 0;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_glm53(s) || ds4_session_is_inkling(s) || ds4_session_is_step37(s)) {
+    if (ds4_session_is_glm53(s) || ds4_session_is_inkling(s)) {
         return 0;
+    }
+    if (ds4_session_is_step37(s)) {
+        if (!s->step37_graph_ready || s->step37_trial_n || s->step37_media.count) { return 0; }
+        return step37_payload_bytes_for_graph(&s->step37_graph,
+                s->engine->mtp_ready ? &s->step37_spec : NULL, (uint32_t)s->checkpoint.len);
     }
     if (ds4_session_is_qwen4exp(s)) {
         if (!s->qwen_graph_ready ||
@@ -52459,10 +52825,18 @@ int ds4_session_stage_payload(ds4_session *s, ds4_session_payload_file *out,
 }
 
 int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen) {
+#ifndef DS4_NO_GPU
     if (ds4_session_is_step37(s)) {
-        payload_set_err(err, errlen, "Step session snapshots are not implemented yet");
-        return 1;
+        if (!fp || !ds4_session_payload_bytes(s)) {
+            payload_set_err(err, errlen,
+                            "Step session has no snapshot-ready checkpoint (pending trial, image features or MTP frontier mismatch)");
+            return 1;
+        }
+        return step37_payload_save_graph(&s->step37_graph,
+                s->engine->mtp_ready ? &s->step37_spec : NULL, s->checkpoint.v,
+                (uint32_t)s->checkpoint.len, s->logits, fp, err, errlen);
     }
+#endif
     if (ds4_session_is_inkling(s)) {
         payload_set_err(err, errlen, "Inkling session snapshots are not implemented yet");
         return 1;
@@ -52926,10 +53300,6 @@ static int session_solar_load_payload(ds4_session *s,
 #endif
 
 int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, char *err, size_t errlen) {
-    if (ds4_session_is_step37(s)) {
-        payload_set_err(err, errlen, "Step session snapshots are not implemented yet");
-        return 1;
-    }
     if (ds4_session_is_inkling(s)) {
         payload_set_err(err, errlen, "Inkling session snapshots are not implemented yet");
         return 1;
@@ -52982,6 +53352,17 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
         s->checkpoint.len = 0;
         s->mtp_draft_valid = false;
         s->solar_state_valid = false;
+    } else if (ds4_session_is_step37(s)) {
+        s->checkpoint_valid = false;
+        s->checkpoint.len = 0;
+        s->mtp_draft_valid = false;
+        s->step37_trial_n = 0;
+        s->step37_media.count = 0;
+        s->step37_media.rows = 0;
+        if (s->step37_graph_ready) {
+            (void)step37_reset(&s->step37_graph);
+            if (s->engine->mtp_ready) { (void)step37_spec_reset(&s->step37_spec); }
+        }
     }
 #endif
     if (s->distributed) {
@@ -53003,7 +53384,8 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
             s, fp, &remaining, h, err, errlen);
     }
     if (ds4_session_is_qwen4exp(s) || ds4_session_is_motif3(s) ||
-        ds4_session_is_exaone(s) || ds4_session_is_dots3(s)) {
+        ds4_session_is_exaone(s) || ds4_session_is_dots3(s) ||
+        ds4_session_is_step37(s)) {
         if (ds4_session_ensure_graph(s, err, errlen) != 0) return 1;
         float *new_logits = xmalloc(
             (size_t)DS4_N_VOCAB * sizeof(*new_logits));
@@ -53013,6 +53395,11 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
                   &s->qwen_graph, s->engine->qwen_ple_store,
                   fp, &remaining, h,
                   &tokens, new_logits, err, errlen)
+            : ds4_session_is_step37(s)
+            ? step37_payload_restore_graph(
+                  &s->step37_graph,
+                  s->engine->mtp_ready ? &s->step37_spec : NULL,
+                  fp, &remaining, h, &tokens, new_logits, err, errlen)
             : ds4_session_is_motif3(s)
             ? motif3_payload_restore_graph(
                   &s->motif3_graph, fp, &remaining, h,
@@ -54683,6 +55070,7 @@ struct ds4_batch_ctx {
     ds4_exaone_batch_runtime *exaone; /* non-NULL selects the EXAONE dispatch */
     ds4_motif3_batch_runtime *motif3; /* non-NULL selects the Motif-3 dispatch */
     ds4_qwen_batch_runtime *qwen; /* non-NULL selects the Qwen bank dispatch */
+    ds4_step37_batch_runtime *step37; /* non-NULL selects the Step bank dispatch */
     bool            supports_partial_reuse; /* explicit runtime capability */
     ds4_gpu_graph   g;
     ds4_batch_slabs sl;            /* allocated for max_seq banks */
@@ -55270,6 +55658,69 @@ static int exaone_cont_bank_restore_payload(
     return 0;
 }
 
+/* Step banks reuse the serial disk-KV format with no predictor state (the
+ * banked lane never advances MTP), so a saved bank checkpoint reloads on a
+ * plain serial session and vice versa. */
+static uint64_t step37_cont_bank_payload_bytes(ds4_batch_ctx *ctx, uint32_t bank) {
+    if (!ctx || !ctx->step37 || bank >= ctx->max_seq ||
+        !ctx->bank_hist_valid[bank] || ctx->bank_hist_len[bank] == 0u ||
+        ctx->step37->graph[bank].position != ctx->bank_hist_len[bank]) {
+        return 0u;
+    }
+    return step37_payload_bytes_for_graph(
+        &ctx->step37->graph[bank], NULL, ctx->bank_hist_len[bank]);
+}
+
+static int step37_cont_bank_save_payload(
+        ds4_batch_ctx *ctx, uint32_t bank, FILE *fp, char *err, size_t errlen) {
+    if (step37_cont_bank_payload_bytes(ctx, bank) == 0u) {
+        payload_set_err(err, errlen, "Step bank payload layout is invalid");
+        return 1;
+    }
+    return step37_payload_save_graph(
+        &ctx->step37->graph[bank], NULL,
+        ctx->bank_hist + (size_t)bank * ctx->seq_cap,
+        ctx->bank_hist_len[bank], NULL, fp, err, errlen);
+}
+
+static int step37_cont_bank_restore_payload(
+        ds4_batch_ctx *ctx, uint32_t bank, FILE *fp,
+        uint64_t payload_bytes, char *err, size_t errlen) {
+    ds4_step37_batch_runtime *rt = ctx->step37;
+    ctx->bank_gen[bank]++;
+    ctx->bank_hist_valid[bank] = 0u;
+    ctx->bank_hist_len[bank] = 0u;
+    rt->bank_logits_valid[bank] = 0u;
+
+    uint64_t remaining = payload_bytes;
+    uint32_t h[DS4_SESSION_PAYLOAD_U32_FIELDS];
+    for (uint32_t i = 0; i < DS4_SESSION_PAYLOAD_U32_FIELDS; i++) {
+        if (payload_read_u32(fp, &h[i], &remaining, err, errlen) != 0) { return 1; }
+    }
+    if (h[7] == 0u || h[7] > ctx->seq_cap) {
+        payload_set_err(err, errlen, "Step bank payload does not fit current token bound");
+        return 1;
+    }
+    int *tokens = NULL;
+    float *logits = rt->bank_logits + (size_t)bank * DS4_N_VOCAB;
+    if (step37_payload_restore_graph(
+            &rt->graph[bank], NULL, fp, &remaining, h, &tokens, logits, err, errlen) != 0) {
+        free(tokens);
+        return 1;
+    }
+    memcpy(ctx->bank_hist + (size_t)bank * ctx->seq_cap, tokens,
+           (size_t)h[7] * sizeof(*tokens));
+    free(tokens);
+    bool logits_valid = false;
+    for (uint32_t i = 0; i < DS4_N_VOCAB; i++) {
+        if (isfinite(logits[i]) && logits[i] != 0.0f) { logits_valid = true; break; }
+    }
+    rt->bank_logits_valid[bank] = logits_valid ? 1u : 0u;
+    ctx->bank_hist_len[bank] = h[7];
+    ctx->bank_hist_valid[bank] = 1u;
+    return 0;
+}
+
 static uint64_t motif3_cont_bank_payload_bytes(ds4_batch_ctx *ctx,
                                                uint32_t bank) {
     if (!ctx || !ctx->motif3 || bank >= ctx->max_seq ||
@@ -55357,6 +55808,7 @@ uint64_t ds4_cont_bank_payload_bytes(ds4_batch_ctx *ctx, uint32_t bank) {
     if (ctx->qwen) return qwen_cont_bank_payload_bytes(ctx, bank);
     if (ctx->motif3) return motif3_cont_bank_payload_bytes(ctx, bank);
     if (ctx->exaone) return exaone_cont_bank_payload_bytes(ctx, bank);
+    if (ctx->step37) return step37_cont_bank_payload_bytes(ctx, bank);
     if (ctx->solar) return solar_cont_bank_payload_bytes(ctx, bank);
     ds4_gpu_graph *g = &ctx->g;
     ds4_gpu_graph *wg = ds4_cont_bank_walk_graph(ctx);
@@ -55410,6 +55862,8 @@ int ds4_cont_bank_save_payload(ds4_batch_ctx *ctx, uint32_t bank,
         return motif3_cont_bank_save_payload(ctx, bank, fp, err, errlen);
     if (ctx->exaone)
         return exaone_cont_bank_save_payload(ctx, bank, fp, err, errlen);
+    if (ctx->step37)
+        return step37_cont_bank_save_payload(ctx, bank, fp, err, errlen);
     if (ctx->solar) {
         return solar_cont_bank_save_payload(
             ctx, bank, fp, err, errlen);
@@ -55499,6 +55953,9 @@ int ds4_cont_bank_restore_payload(ds4_batch_ctx *ctx, uint32_t bank,
             ctx, bank, fp, payload_bytes, err, errlen);
     if (ctx->exaone)
         return exaone_cont_bank_restore_payload(
+            ctx, bank, fp, payload_bytes, err, errlen);
+    if (ctx->step37)
+        return step37_cont_bank_restore_payload(
             ctx, bank, fp, payload_bytes, err, errlen);
     if (ctx->solar) {
         return solar_cont_bank_restore_payload(
@@ -56997,7 +57454,7 @@ uint64_t ds4_batch_ctx_trim_free(ds4_batch_ctx *ctx, uint64_t want_bytes) {
     /* EXAONE and Motif banks use fixed CUDA allocations.  They are fit before
      * allocation and cannot be partially unmapped; never fall through to the
      * unrelated DeepSeek slab trimmer. */
-    if (ctx->exaone || ctx->motif3 || ctx->qwen) return 0;
+    if (ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37) return 0;
     if (ctx->solar) {
         /* ds4_gpu_tensor_trim unmaps VMM pages.  gen_mu prevents new server
          * launches but does not drain work already queued on the device; match
@@ -57249,7 +57706,7 @@ int ds4_batch_ctx_reclaim_prepare(ds4_batch_ctx *ctx, const uint32_t *ordered_id
     memset(plan, 0, sizeof(*plan));
     plan->want_bytes = want_bytes;
     if (!ctx || !ds4_batch_trim_enabled()) return DS4_RECLAIM_UNSUPPORTED;
-    if (ctx->exaone || ctx->motif3)
+    if (ctx->exaone || ctx->motif3 || ctx->step37)
         return DS4_RECLAIM_UNSUPPORTED;
     if (ctx->solar) return DS4_RECLAIM_UNSUPPORTED;
     if (ctx->in_pass) return DS4_RECLAIM_BUSY;
@@ -57687,6 +58144,99 @@ static int motif3_batch_ctx_create_impl(
 #undef MBC_ERR
 }
 
+static int step37_batch_ctx_create_impl(
+        ds4_engine *e, int ctx_size, int max_seq, bool fit,
+        ds4_batch_ctx **out, char *err, size_t errlen) {
+#define STBC_ERR(...) do { if (err && errlen) snprintf(err, errlen, __VA_ARGS__); } while (0)
+    const uint32_t prefill_cap = e->mtp_ready
+        ? step37_mtp_cap((uint32_t)ctx_size, step37_prefill_cap((uint32_t)ctx_size))
+        : step37_prefill_cap((uint32_t)ctx_size);
+    /* Per-bank cost is one self-contained graph; MTP predictors stay on the
+     * serial lane, so the banked graph never allocates the spec rings. */
+    const uint64_t per_bank =
+        step37_memory((uint32_t)ctx_size, prefill_cap).total_bytes +
+        (uint64_t)DS4_N_VOCAB * sizeof(float);
+    uint32_t chosen = (uint32_t)max_seq;
+    if (chosen > DS4_STEP37_BANK_MAX) { chosen = DS4_STEP37_BANK_MAX; }
+    if (per_bank == 0u) {
+        STBC_ERR("batch_ctx_create: Step memory plan is invalid (ctx=%d prefill=%u)",
+                 ctx_size, prefill_cap);
+        return 1;
+    }
+
+    uint64_t free_b = 0u, total_b = 0u;
+    if (ds4_gpu_mem_info(&free_b, &total_b) == 0) {
+        const uint64_t outstanding = ds4_gpu_substrate_outstanding();
+        free_b = free_b > outstanding ? free_b - outstanding : 0u;
+        const uint64_t headroom = ds4_batch_fit_headroom_bytes(ctx_size);
+        const uint64_t budget = free_b > headroom ? free_b - headroom : 0u;
+        uint32_t affordable = (uint32_t)(budget / per_bank);
+        if (affordable > chosen) { affordable = chosen; }
+        if (affordable < chosen) {
+            if (!fit || affordable == 0u) {
+                STBC_ERR("batch_ctx_create: Step banks need %.2f GiB/bank x %u plus "
+                         "%.2f GiB headroom, only %.2f GiB is free (ctx=%d max_seq=%u)",
+                         (double)per_bank / 1073741824.0, chosen,
+                         (double)headroom / 1073741824.0,
+                         (double)free_b / 1073741824.0, ctx_size, chosen);
+                return 1;
+            }
+            fprintf(stderr,
+                    "ds4: Step batch fit: max_seq %u -> %u (%.2f GiB/bank, free %.2f GiB, "
+                    "headroom %.2f GiB)\n", chosen, affordable,
+                    (double)per_bank / 1073741824.0, (double)free_b / 1073741824.0,
+                    (double)headroom / 1073741824.0);
+            chosen = affordable;
+        }
+    }
+
+    ds4_batch_ctx *ctx = xcalloc(1, sizeof(*ctx));
+    ctx->e = e;
+    ctx->ctx_size = (uint32_t)ctx_size;
+    ctx->prefill_cap = prefill_cap;
+    ctx->raw_cap = (uint32_t)ctx_size;
+    ctx->seq_cap = (uint32_t)ctx_size;
+    ctx->max_seq = chosen;
+
+    for (;;) {
+        ctx->step37 = step37_batch_runtime_create(
+            e, ctx->ctx_size, ctx->max_seq, ctx->prefill_cap);
+        if (ctx->step37) { break; }
+        if (!fit || ctx->max_seq <= 1u) {
+            STBC_ERR("batch_ctx_create: Step runtime allocation failed (max_seq=%u ctx=%u)",
+                     ctx->max_seq, ctx->ctx_size);
+            free(ctx);
+            return 1;
+        }
+        uint32_t next = ctx->max_seq * 3u / 4u;
+        if (next >= ctx->max_seq) { next = ctx->max_seq - 1u; }
+        if (next < 1u) { next = 1u; }
+        fprintf(stderr, "ds4: Step batch allocation failed at max_seq=%u, retrying at %u\n",
+                ctx->max_seq, next);
+        ctx->max_seq = next;
+    }
+
+    if ((uint64_t)ctx->max_seq * ctx->seq_cap > SIZE_MAX / sizeof(*ctx->bank_hist)) {
+        STBC_ERR("batch_ctx_create: Step bank history size overflow");
+        step37_batch_runtime_free(ctx->step37);
+        free(ctx);
+        return 1;
+    }
+    ctx->bank_hist = xmalloc((size_t)ctx->max_seq * ctx->seq_cap * sizeof(*ctx->bank_hist));
+    ctx->bank_hist_len = xcalloc(ctx->max_seq, sizeof(*ctx->bank_hist_len));
+    ctx->bank_hist_valid = xcalloc(ctx->max_seq, sizeof(*ctx->bank_hist_valid));
+    ctx->bank_gen = xmalloc(ctx->max_seq * sizeof(*ctx->bank_gen));
+    for (uint32_t b = 0; b < ctx->max_seq; b++) { ctx->bank_gen[b] = 1u; }
+    ctx->bank_last_use = xcalloc(ctx->max_seq, sizeof(*ctx->bank_last_use));
+    /* Full-frontier fork and warm reuse only; below-frontier partial reuse
+     * needs a sliding-window checkpoint pool, still serial-lane work. */
+    ctx->supports_partial_reuse = false;
+    ds4_metric_set(&ds4_metrics_get()->banks_total, ctx->max_seq);
+    *out = ctx;
+    return 0;
+#undef STBC_ERR
+}
+
 static int ds4_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq, int max_total_tokens,
                                      bool fit, ds4_batch_ctx **out, char *err, size_t errlen) {
 #define BC_ERR(...) do { if (err && errlen) snprintf(err, errlen, __VA_ARGS__); } while (0)
@@ -57718,6 +58268,10 @@ static int ds4_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq, i
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MOTIF3) {
         return motif3_batch_ctx_create_impl(
+            e, ctx_size, max_seq, fit, out, err, errlen);
+    }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37) {
+        return step37_batch_ctx_create_impl(
             e, ctx_size, max_seq, fit, out, err, errlen);
     }
 
@@ -58349,6 +58903,16 @@ void ds4_batch_ctx_destroy(ds4_batch_ctx *ctx) {
         free(ctx);
         return;
     }
+    if (ctx->step37) {
+        step37_batch_runtime_free(ctx->step37);
+        free(ctx->bank_hist);
+        free(ctx->bank_hist_len);
+        free(ctx->bank_hist_valid);
+        free(ctx->bank_gen);
+        free(ctx->bank_last_use);
+        free(ctx);
+        return;
+    }
     if (ctx->solar) {
         solar_batch_runtime_free(ctx->solar);
         free(ctx->bank_hist);
@@ -58892,7 +59456,7 @@ static int ds4_engine_batched_generate_ctx_impl(ds4_batch_ctx *ctx, const ds4_to
     for (int i = 0; i < n; i++) {
         if (prompts[i].len <= 0) { BCG_ERR("batched_generate_ctx: prompt %d is empty", i); return 1; }
         const uint32_t L = (uint32_t)prompts[i].len;
-        if ((ctx->exaone || ctx->motif3 || ctx->qwen) && L > ctx->seq_cap) {
+        if ((ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37) && L > ctx->seq_cap) {
             BCG_ERR("batched_generate_ctx: family prompt %d length %u "
                     "exceeds context %u", i, L, ctx->seq_cap);
             return 1;
@@ -58904,7 +59468,7 @@ static int ds4_engine_batched_generate_ctx_impl(ds4_batch_ctx *ctx, const ds4_to
         }
         n_packed += L;
     }
-    if (ctx->exaone || ctx->motif3 || ctx->qwen) {
+    if (ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37) {
         return family_engine_batched_generate_ctx(
             ctx, prompts, n, max_new_tokens, eos_ids, out, err, errlen);
     }
@@ -60273,6 +60837,7 @@ static int solar_engine_continuous_generate(
  * the public scheduling semantics identical without a generic callback layer. */
 static uint32_t family_banked_prefill_cap(const ds4_batch_ctx *ctx) {
     if (ctx->qwen) return ctx->qwen->prefill_cap;
+    if (ctx->step37) return ctx->step37->prefill_cap;
     return ctx->motif3 ? ctx->motif3->prefill_cap
                        : ctx->exaone->shared_ws.prefill_cap;
 }
@@ -60292,6 +60857,7 @@ static uint32_t family_banked_graphs_live(const ds4_batch_ctx *ctx) {
 static bool family_banked_logits_valid(
         const ds4_batch_ctx *ctx, uint32_t bank) {
     if (ctx->qwen) return ctx->qwen->bank_logits_valid[bank] != 0u;
+    if (ctx->step37) return ctx->step37->bank_logits_valid[bank] != 0u;
     return ctx->motif3 ? ctx->motif3->bank_logits_valid[bank] != 0u
                        : ctx->exaone->bank_logits_valid[bank] != 0u;
 }
@@ -60299,6 +60865,8 @@ static bool family_banked_logits_valid(
 static float *family_banked_logits(ds4_batch_ctx *ctx, uint32_t bank) {
     if (ctx->qwen)
         return ctx->qwen->bank_logits + (size_t)bank * DS4_N_VOCAB;
+    if (ctx->step37)
+        return ctx->step37->bank_logits + (size_t)bank * DS4_N_VOCAB;
     return (ctx->motif3 ? ctx->motif3->bank_logits
                         : ctx->exaone->bank_logits) +
            (size_t)bank * DS4_N_VOCAB;
@@ -60311,6 +60879,8 @@ static void family_banked_reset(ds4_batch_ctx *ctx, uint32_t bank) {
             ctx->qwen, ctx->e->qwen_ple_store, bank);
     } else if (ctx->motif3) {
         motif3_batch_runtime_reset_bank(ctx->motif3, bank);
+    } else if (ctx->step37) {
+        (void)step37_batch_runtime_reset_bank(ctx->step37, bank);
     } else {
         ctx->exaone->bank_logits_valid[bank] = 0u;
     }
@@ -60326,6 +60896,8 @@ static bool family_banked_copy(
             ctx->qwen, src, dst, tokens);
         return ok;
     }
+    if (ctx->step37)
+        return step37_batch_runtime_copy_bank(ctx->step37, src, dst, tokens);
     return ctx->motif3
         ? motif3_batch_runtime_copy_bank(ctx->motif3, src, dst)
         : exaone_batch_runtime_copy_bank(ctx->exaone, src, dst, tokens);
@@ -60347,6 +60919,10 @@ static bool family_banked_prefill(
             ctx->motif3, &ctx->e->model, &ctx->e->weights,
             bank, tokens, rows, pos, final);
     }
+    if (ctx->step37) {
+        return step37_batch_runtime_prefill(
+            ctx->step37, ctx->e, bank, tokens, rows, pos, final);
+    }
     ctx->exaone->bank_logits_valid[bank] = 0u;
     return exaone_graph_prefill_chunk(
                &ctx->exaone->graph[bank], &ctx->e->model, &ctx->e->weights,
@@ -60361,6 +60937,9 @@ static bool family_banked_decode(
     if (ctx->qwen)
         return qwen_batch_runtime_decode(
             ctx->qwen, ctx->e, banks, tokens, positions, rows);
+    if (ctx->step37)
+        return step37_batch_runtime_decode(
+            ctx->step37, ctx->e, banks, tokens, positions, rows);
     return ctx->motif3
         ? motif3_batch_runtime_decode(
               ctx->motif3, &ctx->e->model, &ctx->e->weights,
@@ -60402,7 +60981,7 @@ static int family_banked_engine_continuous_generate(
     ds4_family_cont_bank *bank = xcalloc(MS, sizeof(*bank));
     uint32_t prefill_cursor = 0u;
     bool ok = ctx->exaone != NULL || ctx->motif3 != NULL ||
-              ctx->qwen != NULL;
+              ctx->qwen != NULL || ctx->step37 != NULL;
     bool rehydrate_blocked = false;
     ctx->last_done_set = 0u;
     ds4_metric_set(&ds4_metrics_get()->banks_live, 0u);
@@ -60992,7 +61571,7 @@ static int family_engine_batched_generate_ctx(
         .out = out,
         .n = n,
     };
-    const int rc = (ctx->exaone || ctx->motif3 || ctx->qwen)
+    const int rc = (ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37)
         ? family_banked_engine_continuous_generate(
               ctx, family_static_admit, NULL, family_static_done,
               &batch, err, errlen)
@@ -61053,7 +61632,7 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
         CG_ERR("continuous_generate: this model does not yet implement the multi-sequence graph");
         return 1;
     }
-    if (ctx->exaone || ctx->motif3 || ctx->qwen) {
+    if (ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37) {
         return family_banked_engine_continuous_generate(
             ctx, admit, on_token, on_done, ud, err, errlen);
     }
@@ -66481,14 +67060,22 @@ bool ds4_engine_supports_batching(ds4_engine *e) {
     /* dots3 serves through serial latent sessions for now; its persistent
      * multi-bank runtime is future work, and refusing here routes the
      * server onto the serial lane instead of the DeepSeek bank body. */
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37) {
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
         return false;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE) return false;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) return false;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
         const char *enabled = getenv("DS4_QWEN_BATCH");
+        return enabled && enabled[0] == '1' && enabled[1] == '\0';
+    }
+    /* Step's banked lane serves independent sequences with full-frontier fork,
+     * warm reuse and bank disk KV, but ordinary (non-speculative) decode: MTP
+     * lives in the serial session's trial/commit and the shared cont loop only
+     * wires per-token speculation for Qwen.  Opt in (like DS4_QWEN_BATCH) so a
+     * single-stream deployment keeps the faster MTP serial path by default. */
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37) {
+        const char *enabled = getenv("DS4_STEP37_BATCH");
         return enabled && enabled[0] == '1' && enabled[1] == '\0';
     }
     /* Solar, EXAONE, and Motif dispatch to family-specific persistent-bank
