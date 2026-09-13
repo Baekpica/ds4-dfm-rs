@@ -102,6 +102,27 @@ static void compare_f32(const char *name, const float *got, const float *want,
            name, max_abs, rel_rms);
 }
 
+static void fill_f32(ds4_gpu_tensor *dst, float value, uint64_t count,
+                     const char *what) {
+    float *buf = malloc(count * sizeof(*buf));
+    REQUIRE(buf, what);
+    for (uint64_t i = 0; i < count; i++) {
+        buf[i] = value;
+    }
+    upload_f32(dst, buf, count, what);
+    free(buf);
+}
+
+static uint64_t count_equal(const float *x, uint64_t count, float value) {
+    uint64_t n = 0u;
+    for (uint64_t i = 0; i < count; i++) {
+        if (x[i] == value) {
+            n++;
+        }
+    }
+    return n;
+}
+
 static void zero_rms_norm(float *x, const float *weight, uint32_t rows,
                           uint32_t width, uint32_t group) {
     for (uint32_t row = 0; row < rows; row++) {
@@ -826,6 +847,41 @@ int main(void) {
     printf("%-48s pass (%u rows, counts %u..%u)\n",
            "QSA top-512 blocks -> chronological tokens", ROWS,
            counts_got[0], counts_got[ROWS - 1u]);
+    /* Adjacent rows keep the 2,048-token budget plus a few new ids.
+     * Jaccard here decides whether a later selected-K/V reuse round is
+     * worth writing: high overlap is necessary, not sufficient. */
+    {
+        float min_j = 1.0f, max_j = 0.0f, sum_j = 0.0f;
+        for (uint32_t row = 1; row < ROWS; row++) {
+            const int32_t *a = tokens_want +
+                (uint64_t)(row - 1u) * SELECTED_CAP;
+            const int32_t *b = tokens_want + (uint64_t)row * SELECTED_CAP;
+            uint32_t i = 0u, j = 0u, inter = 0u;
+            while (i < counts_want[row - 1u] && j < counts_want[row]) {
+                if (a[i] == b[j]) {
+                    inter++;
+                    i++;
+                    j++;
+                } else if (a[i] < b[j]) {
+                    i++;
+                } else {
+                    j++;
+                }
+            }
+            const uint32_t uni =
+                counts_want[row - 1u] + counts_want[row] - inter;
+            const float jac = uni == 0u ? 0.0f : (float)inter / (float)uni;
+            if (jac < min_j) {
+                min_j = jac;
+            }
+            if (jac > max_j) {
+                max_j = jac;
+            }
+            sum_j += jac;
+        }
+        printf("QSA adjacent selected Jaccard                 min %.4f mean %.4f max %.4f\n",
+               min_j, sum_j / (float)(ROWS - 1u), max_j);
+    }
 
     upload_f32(dqproj, q_projected, qproj_count, "QSA q projection upload");
     upload_f32(dkey, key, kv_rows_count, "QSA key upload");
@@ -855,11 +911,27 @@ int main(void) {
                 dkcache, dvcache, dkey, dvalue, ROWS, POS0, CACHE_CAP,
                 KV_HEADS, HEAD_DIM),
             "QSA KV store");
+    /* Fused attention never writes the score scratch; the split scorer
+     * fills every slot.  Poison the buffer so a sticky kill switch cannot
+     * pretend to compare two fused launches. */
+    const float scratch_sentinel = 1234.5f;
+    float *scratch_got = malloc(attn_score_count * sizeof(*scratch_got));
+    REQUIRE(scratch_got, "QSA score-scratch probe allocation");
+    REQUIRE(unsetenv("DS4_QWEN_QSA_NO_FUSED") == 0 &&
+            unsetenv("DS4_QWEN_QSA_PV6X2") == 0,
+            "QSA fused defaults");
+    fill_f32(dattn_scores, scratch_sentinel, attn_score_count,
+             "QSA fused score-scratch poison");
     REQUIRE(ds4_gpu_qwen4exp_qsa_attention_tensor(
                 dout, dattn_scores, dquery, dgate, dkcache, dvcache,
                 dtokens, dcounts, ROWS, HEADS, KV_HEADS, HEAD_DIM,
                 SELECTED_CAP, CACHE_CAP),
             "QSA selected attention");
+    read_f32(dattn_scores, scratch_got, attn_score_count,
+             "QSA fused score-scratch download");
+    REQUIRE(count_equal(scratch_got, attn_score_count, scratch_sentinel) ==
+            attn_score_count,
+            "fused QSA must not write the split score scratch");
     read_f32(dquery, query_got, q_count, "QSA query download");
     read_f32(dgate, gate_got, q_count, "QSA gate download");
     compare_f32("QSA main query norm + first-64 RoPE",
@@ -875,6 +947,8 @@ int main(void) {
     {
         float *serial_got = malloc(q_count * sizeof(*serial_got));
         REQUIRE(serial_got, "QSA serial reduce allocation");
+        fill_f32(dattn_scores, scratch_sentinel, attn_score_count,
+                 "QSA split score-scratch poison");
         REQUIRE(setenv("DS4_QWEN_QSA_NO_FUSED", "1", 1) == 0,
                 "QSA fused kill switch");
         REQUIRE(ds4_gpu_qwen4exp_qsa_attention_tensor(
@@ -883,6 +957,11 @@ int main(void) {
                     SELECTED_CAP, CACHE_CAP),
                 "QSA selected attention (per-slot scorer)");
         unsetenv("DS4_QWEN_QSA_NO_FUSED");
+        read_f32(dattn_scores, scratch_got, attn_score_count,
+                 "QSA split score-scratch download");
+        REQUIRE(count_equal(scratch_got, attn_score_count, scratch_sentinel) ==
+                0u,
+                "NO_FUSED must launch the split scorer that writes scratch");
         read_f32(dout, serial_got, q_count, "QSA serial attention download");
         compare_f32("QSA fused tiles vs per-slot scorer + serial reduce",
                     attn_got, serial_got, q_count, 4.0e-6f, 2.0e-6);
@@ -890,6 +969,32 @@ int main(void) {
                     serial_got, attn_want, q_count, 2.0e-5f, 2.0e-5);
         free(serial_got);
     }
+    /* Opt-in 6x2 PV vs default 12x1: same slot FMA order. Not the
+     * production default; 8K/64K A/B missed the 2% bar. */
+    {
+        float *pv6_got = malloc(q_count * sizeof(*pv6_got));
+        REQUIRE(pv6_got, "QSA PV6 attention allocation");
+        fill_f32(dattn_scores, scratch_sentinel, attn_score_count,
+                 "QSA PV6 score-scratch poison");
+        REQUIRE(setenv("DS4_QWEN_QSA_PV6X2", "1", 1) == 0,
+                "QSA PV 6x2 opt-in");
+        REQUIRE(ds4_gpu_qwen4exp_qsa_attention_tensor(
+                    dout, dattn_scores, dquery, dgate, dkcache, dvcache,
+                    dtokens, dcounts, ROWS, HEADS, KV_HEADS, HEAD_DIM,
+                    SELECTED_CAP, CACHE_CAP),
+                "QSA selected attention (PV 6x2)");
+        unsetenv("DS4_QWEN_QSA_PV6X2");
+        read_f32(dattn_scores, scratch_got, attn_score_count,
+                 "QSA PV6 score-scratch download");
+        REQUIRE(count_equal(scratch_got, attn_score_count, scratch_sentinel) ==
+                attn_score_count,
+                "PV 6x2 opt-in must stay on the fused kernel");
+        read_f32(dout, pv6_got, q_count, "QSA PV6 attention download");
+        compare_f32("QSA fused PV 6x2 vs 12x1 mapping",
+                    attn_got, pv6_got, q_count, 4.0e-6f, 2.0e-6);
+        free(pv6_got);
+    }
+    free(scratch_got);
     /* Decode widths (seven rows here) take the split reduce (17 chunks of
      * the 2,051-slot cap); the serial gqa12 kernel behind its kill switch
      * must agree to fp32 reordering noise. */

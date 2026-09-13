@@ -26,6 +26,24 @@ formats retain their full head; Metal retains CPU selection.
 Prefix preparation normally computes only QSA index/KV history from shifted
 target hidden states. Actual draft generation retains the complete MTP layer.
 
+## Qwen fused QSA
+
+Prefill widths above the decode split cap (8 rows) use one 256-thread
+block per (row, KV head). The default PV loop maps twelve heads × one
+dim per thread. `DS4_QWEN_QSA_PV6X2=1` selects the rejected six-head ×
+two-dim mapping. `DS4_QWEN_QSA_NO_FUSED=1` restores the split scorer.
+
+| Variable | Diagnostic control |
+|---|---|
+| `DS4_QWEN_QSA_NO_FUSED=1` | Per-slot scorer + serial/split reduce. |
+| `DS4_QWEN_QSA_PV6X2=1` | Fused kernel, 6-head × 2-dim PV mapping. |
+| `DS4_QWEN_QSA_NO_SPLIT_REDUCE=1` | Decode-width serial gqa12 reduce. |
+
+All three are read per dispatch so a fixture can compare paths in one
+process. Outputs match to fp32 reordering. `PV6X2` is a rejected
+mapping kept for comparison; it is not the default. Selected-K/V
+row-pair reuse was rejected (full-model logits drifted; no e2e gain).
+
 ## Q8_0 dispatcher
 
 cuBLAS is initialised unconditionally at backend startup regardless of the
