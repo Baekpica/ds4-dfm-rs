@@ -24921,6 +24921,11 @@ typedef struct {
     ds4_qwen_qsa_state mtp_qsa_state;
     ds4_gpu_tensor *mtp_hidden;
     ds4_gpu_tensor *mtp_pending_hc;
+    ds4_gpu_tensor *mtp_vocab_gpu;
+    uint32_t *mtp_vocab_ids;
+    uint8_t *mtp_vocab_seen;
+    uint32_t mtp_vocab_count;
+    uint32_t mtp_vocab_uploaded;
     bool mtp_enabled;
     bool mtp_pending_valid;
     bool mtp_suspended;
@@ -24956,6 +24961,9 @@ static void qwen4exp_graph_free(ds4_qwen_gpu_graph *graph) {
     qwen4exp_qsa_state_free(&graph->mtp_qsa_state);
     ds4_gpu_tensor_free(graph->mtp_pending_hc);
     ds4_gpu_tensor_free(graph->mtp_hidden);
+    ds4_gpu_tensor_free(graph->mtp_vocab_gpu);
+    free(graph->mtp_vocab_ids);
+    free(graph->mtp_vocab_seen);
     for (uint32_t il = 0; il < DS4_MAX_LAYER; il++) {
         qwen4exp_gdn_state_free(&graph->gdn_state[il]);
         qwen4exp_qsa_state_free(&graph->qsa_state[il]);
@@ -24991,6 +24999,8 @@ static bool qwen4exp_graph_reset(ds4_qwen_gpu_graph *graph,
         !qwen4exp_qsa_state_reset(&graph->mtp_qsa_state)) return false;
     graph->mtp_pending_valid = false;
     qwen4exp_graph_clear_multimodal(graph);
+    graph->mtp_vocab_count = 0u;
+    graph->mtp_vocab_uploaded = 0u;
     graph->length = 0u;
     return true;
 }
@@ -25493,6 +25503,118 @@ static bool qwen4exp_graph_mtp_save_pending(
     return true;
 }
 
+enum { QWEN_DRAFT_BASE_VOCAB = 65536u, QWEN_TOKEN_NORMAL = 1u };
+
+static bool qwen_mtp_vocab_enabled(const ds4_tensor *output) {
+#ifdef __APPLE__
+    (void)output;
+    return false;
+#else
+    const char *full = getenv("DS4_QWEN_MTP_FULL_VOCAB");
+    return output && output->type == DS4_TENSOR_Q8_0 &&
+           DS4_N_VOCAB > QWEN_DRAFT_BASE_VOCAB &&
+           !(full && full[0] && !(full[0] == '0' && full[1] == '\0'));
+#endif
+}
+
+static bool qwen_mtp_vocab_add(ds4_qwen_gpu_graph *g, uint32_t id) {
+    if (id >= DS4_N_VOCAB) {
+        return false;
+    }
+    if (!g->mtp_vocab_seen[id]) {
+        g->mtp_vocab_seen[id] = 1u;
+        g->mtp_vocab_ids[g->mtp_vocab_count++] = id;
+    }
+    return true;
+}
+
+/* The list is only a proposal hint: target logits and verification always
+ * cover the full vocabulary. Include low BPE IDs, all non-normal token types,
+ * and observed committed input IDs so non-English prompts seed their domain.
+ * Hints are bounded by vocabulary size and reset with the graph; they are
+ * deliberately not KV state and need not be rolled back with rejected drafts. */
+static bool qwen_mtp_vocab_feed(ds4_qwen_gpu_graph *g, const ds4_model *model,
+                                const int *tokens, uint32_t rows) {
+    if (!g->mtp_vocab_ids) {
+        g->mtp_vocab_ids = malloc((size_t)DS4_N_VOCAB * sizeof(uint32_t));
+        g->mtp_vocab_seen = calloc(DS4_N_VOCAB, 1u);
+        g->mtp_vocab_gpu = ds4_gpu_tensor_alloc(
+            (uint64_t)DS4_N_VOCAB * sizeof(uint32_t));
+        if (!g->mtp_vocab_ids || !g->mtp_vocab_seen || !g->mtp_vocab_gpu) {
+            free(g->mtp_vocab_ids);
+            free(g->mtp_vocab_seen);
+            ds4_gpu_tensor_free(g->mtp_vocab_gpu);
+            g->mtp_vocab_ids = NULL;
+            g->mtp_vocab_seen = NULL;
+            g->mtp_vocab_gpu = NULL;
+            return false;
+        }
+    }
+    if (!g->mtp_vocab_count) {
+        memset(g->mtp_vocab_seen, 0, DS4_N_VOCAB);
+        g->mtp_vocab_uploaded = 0u;
+        for (uint32_t id = 0; id < QWEN_DRAFT_BASE_VOCAB; id++) {
+            if (!qwen_mtp_vocab_add(g, id)) {
+                return false;
+            }
+        }
+        ds4_array_ref types;
+        if (model_get_array(model, "tokenizer.ggml.token_type", &types) &&
+            types.len <= DS4_N_VOCAB &&
+            (types.type == GGUF_VALUE_INT32 || types.type == GGUF_VALUE_UINT32)) {
+            ds4_cursor cursor = cursor_at(model, types.data_pos);
+            for (uint32_t id = 0; id < types.len; id++) {
+                uint32_t type = 0u;
+                if (!cursor_u32(&cursor, &type)) {
+                    return false;
+                }
+                if (type != QWEN_TOKEN_NORMAL && !qwen_mtp_vocab_add(g, id)) {
+                    return false;
+                }
+            }
+        }
+    }
+    for (uint32_t row = 0; row < rows; row++) {
+        if (tokens[row] < 0 || !qwen_mtp_vocab_add(g, (uint32_t)tokens[row])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Drafting needs only the winning ID. Keep the CPU path for A/B and
+ * preserve its finite sentinel even if every logit is masked or invalid. */
+static bool qwen_mtp_pick(ds4_qwen_gpu_graph *graph, float *logits,
+                          uint32_t count, int *draft) {
+    if (!graph || !logits || !draft || count == 0u || count > DS4_N_VOCAB) {
+        return false;
+    }
+#ifndef __APPLE__
+    const char *cpu = getenv("DS4_QWEN_MTP_CPU_ARGMAX");
+    if (!cpu || !cpu[0] || (cpu[0] == '0' && cpu[1] == '\0')) {
+        float value = 0.0f;
+        if (!ds4_gpu_argmax_rows_tensor(
+                graph->tokens, graph->logits, count, 1u) ||
+            !ds4_gpu_tensor_read(graph->tokens, 0, draft, sizeof(*draft)) ||
+            *draft < 0 || (uint32_t)*draft >= count ||
+            !ds4_gpu_tensor_read(graph->logits,
+                (uint64_t)*draft * sizeof(float), &value, sizeof(value))) {
+            return false;
+        }
+        if (!(value > DS4_NEG_INF)) {
+            *draft = 0;
+        }
+        return true;
+    }
+#endif
+    if (!ds4_gpu_tensor_read(graph->logits, 0, logits,
+                            (uint64_t)count * sizeof(float))) {
+        return false;
+    }
+    *draft = sample_argmax(logits, count);
+    return true;
+}
+
 static bool qwen4exp_graph_mtp_step(
         ds4_qwen_gpu_graph *graph,
         const ds4_model *model,
@@ -25500,10 +25622,15 @@ static bool qwen4exp_graph_mtp_step(
         const ds4_gpu_tensor *target_hc,
         const int *tokens,
         uint32_t rows,
-        float *logits) {
+        float *logits,
+        int *draft) {
     if (!graph || !model || !weights || !target_hc || !tokens ||
         !graph->mtp_enabled || rows == 0u || rows > graph->capacity ||
         rows > graph->context_cap - graph->mtp_qsa_state.length) return false;
+    const bool short_vocab = qwen_mtp_vocab_enabled(weights->output);
+    if (short_vocab && !qwen_mtp_vocab_feed(graph, model, tokens, rows)) {
+        return false;
+    }
     const uint32_t hidden = DS4_N_EMBD;
     const uint32_t hc = DS4_N_HC;
     const uint64_t width = (uint64_t)hidden * hc;
@@ -25577,13 +25704,36 @@ static bool qwen4exp_graph_mtp_step(
     const uint64_t row_bytes = (uint64_t)hidden * sizeof(float);
     ds4_gpu_tensor *last = ds4_gpu_tensor_view(
         graph->hc.mixed, (uint64_t)(rows - 1u) * row_bytes, row_bytes);
-    const bool ok = last && plain_graph_matmul_tensor(
-        graph->logits, model, weights->output,
-        hidden, DS4_N_VOCAB, last, 1u);
+    const uint32_t count = short_vocab && draft
+        ? graph->mtp_vocab_count : DS4_N_VOCAB;
+    bool ok = last != NULL;
+    if (ok && count < DS4_N_VOCAB) {
+        const uint32_t uploaded = graph->mtp_vocab_uploaded;
+        if (uploaded < count) {
+            ok = ds4_gpu_tensor_write(graph->mtp_vocab_gpu,
+                (uint64_t)uploaded * sizeof(uint32_t),
+                graph->mtp_vocab_ids + uploaded,
+                (uint64_t)(count - uploaded) * sizeof(uint32_t)) != 0;
+            if (ok) {
+                graph->mtp_vocab_uploaded = count;
+            }
+        }
+        ok = ok && ds4_gpu_matmul_q8_0_candidates_tensor(
+            graph->logits, graph->mtp_vocab_gpu, count,
+            model->map, model->size, weights->output->abs_offset,
+            hidden, DS4_N_VOCAB, last) != 0;
+    } else if (ok) {
+        ok = plain_graph_matmul_tensor(graph->logits, model, weights->output,
+                                      hidden, DS4_N_VOCAB, last, 1u);
+    }
     ds4_gpu_tensor_free(last);
-    const bool read_ok = ok && ds4_gpu_tensor_read(
-        graph->logits, 0, logits,
-        (uint64_t)DS4_N_VOCAB * sizeof(float)) != 0;
+    const bool read_ok = ok && (draft
+        ? qwen_mtp_pick(graph, logits, count, draft)
+        : ds4_gpu_tensor_read(graph->logits, 0, logits,
+            (uint64_t)DS4_N_VOCAB * sizeof(float)) != 0);
+    if (read_ok && draft && count < DS4_N_VOCAB) {
+        *draft = (int)graph->mtp_vocab_ids[*draft];
+    }
 #undef QWEN_MTP_REQUIRE
     return read_ok;
 }
@@ -25600,14 +25750,14 @@ static bool qwen4exp_graph_mtp_feed_chunk(
     if (graph->mtp_pending_valid &&
         !qwen4exp_graph_mtp_step(
             graph, model, weights, graph->mtp_pending_hc,
-            tokens, 1u, NULL)) return false;
+            tokens, 1u, NULL, NULL)) return false;
     if (rows > 1u) {
         const uint64_t row_bytes =
             (uint64_t)DS4_N_EMBD * DS4_N_HC * sizeof(float);
         ds4_gpu_tensor *prefix = ds4_gpu_tensor_view(
             graph->hidden[0], 0, (uint64_t)(rows - 1u) * row_bytes);
         const bool ok = prefix && qwen4exp_graph_mtp_step(
-            graph, model, weights, prefix, tokens + 1, rows - 1u, NULL);
+            graph, model, weights, prefix, tokens + 1, rows - 1u, NULL, NULL);
         ds4_gpu_tensor_free(prefix);
         if (!ok) return false;
     }
@@ -44315,15 +44465,15 @@ static bool qwen_batch_runtime_decode_next(
 
     const uint64_t before = qwen_batch_census_live();
     const double cycle_t0 = now_sec();
+    int draft = 0;
     if (!qwen4exp_graph_mtp_step(
             g, &e->model, &e->weights, g->mtp_pending_hc,
-            &token, 1u, rt->mtp_logits)) {
+            &token, 1u, rt->mtp_logits, &draft)) {
         qwen4exp_graph_mtp_disable(g, "bank draft step failed");
         return qwen_batch_runtime_decode_next(
             rt, e, bank, token, pos, temperature, top_k, top_p, min_p,
             rng, override, next_token, committed, drafted, hit);
     }
-    const int draft = sample_argmax(rt->mtp_logits, DS4_N_VOCAB);
     *drafted = true;
     /* One two-row pass verifies the draft next to the committed token; the
      * one-row-per-token verifier remains for images/mrope graphs and as the
@@ -44350,7 +44500,7 @@ static bool qwen_batch_runtime_decode_next(
         ds4_gpu_tensor *target_first = ds4_gpu_tensor_view(
             g->hidden[0], 0u, row_bytes);
         const bool caught_up = target_first && qwen4exp_graph_mtp_step(
-            g, &e->model, &e->weights, target_first, &draft, 1u, NULL);
+            g, &e->model, &e->weights, target_first, &draft, 1u, NULL, NULL);
         ds4_gpu_tensor_free(target_first);
         if (!caught_up)
             qwen4exp_graph_mtp_disable(
@@ -70991,14 +71141,14 @@ static int ds4_session_eval_qwen_mtp(
 
     const uint32_t pos = (uint32_t)s->checkpoint.len;
     const double cycle_t0 = now_sec();
+    int draft = 0;
     if (!qwen4exp_graph_mtp_step(
             g, &e->model, &e->weights, g->mtp_pending_hc,
-            &first_token, 1u, s->mtp_logits)) {
+            &first_token, 1u, s->mtp_logits, &draft)) {
         qwen4exp_graph_mtp_disable(g, "draft step failed");
         return ds4_session_qwen_mtp_plain_step(
             s, first_token, accepted, err, errlen);
     }
-    const int draft = sample_argmax(s->mtp_logits, DS4_N_VOCAB);
     ds4_metric_add(&ds4_metrics_get()->spec_drafts, 1);
     const bool paired = qwen4exp_mtp_pair_verify_enabled() &&
         qwen4exp_graph_verify_ready(g, pos) &&
@@ -71027,7 +71177,7 @@ static int ds4_session_eval_qwen_mtp(
         ds4_gpu_tensor *target_first = ds4_gpu_tensor_view(
             g->hidden[0], 0u, hc_row_bytes);
         const bool mtp_ok = target_first && qwen4exp_graph_mtp_step(
-            g, &e->model, &e->weights, target_first, &draft, 1u, NULL);
+            g, &e->model, &e->weights, target_first, &draft, 1u, NULL, NULL);
         ds4_gpu_tensor_free(target_first);
         if (!mtp_ok)
             qwen4exp_graph_mtp_disable(g, "accepted-prefix catch-up failed");
