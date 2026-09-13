@@ -44644,8 +44644,12 @@ static void step37_ckpt_init(ds4_step37_batch_runtime *rt) {
         rt->checkpoint_slot_bytes += (uint64_t)STEP37_DRAFT_LAYERS *
             (S37_WINDOW * 2 * S37_KV * sizeof(uint16_t) + S37_HIDDEN * sizeof(float));
     }
-    rt->checkpoint_slab = ds4_gpu_tensor_reserve(
-        rt->checkpoint_slot_bytes * DS4_PARTIAL_CHECKPOINT_SLOTS);
+    /* Include the final physical page in the logical slab so a fully dead
+     * pool can be trimmed without leaving an unreachable padding page. */
+    uint64_t bytes = rt->checkpoint_slot_bytes * DS4_PARTIAL_CHECKPOINT_SLOTS;
+    const uint64_t page = ds4_gpu_vmm_demand_page();
+    if (page) { bytes = (bytes + page - 1u) / page * page; }
+    rt->checkpoint_slab = ds4_gpu_tensor_reserve(bytes);
     if (!rt->checkpoint_slab) { return; }
     rt->checkpoint_logits = xcalloc(
         (size_t)DS4_PARTIAL_CHECKPOINT_SLOTS * DS4_N_VOCAB, sizeof(float));
@@ -44660,6 +44664,24 @@ static void step37_ckpt_drop(ds4_step37_batch_runtime *rt, uint32_t bank) {
             partial_checkpoint_clear_ref(&rt->checkpoint[i], bank);
         }
     }
+}
+
+static uint64_t step37_ckpt_trim(ds4_step37_batch_runtime *rt, uint64_t want) {
+    if (!rt || !rt->checkpoint_slab || !want || !ds4_gpu_synchronize()) { return 0; }
+    uint64_t freed = 0;
+    /* The serial-reclaim caller holds gen_mu. Drain queued device work above
+     * before unmapping, and keep every slot still referenced by any bank.
+     * Coalesce dead runs so pages shared by two dead slots are reclaimable. */
+    for (uint32_t i = 0; i < DS4_PARTIAL_CHECKPOINT_SLOTS && freed < want;) {
+        if (rt->checkpoint[i].pos) { i++; continue; }
+        const uint64_t start = (uint64_t)i * rt->checkpoint_slot_bytes;
+        do { i++; } while (i < DS4_PARTIAL_CHECKPOINT_SLOTS && !rt->checkpoint[i].pos);
+        const uint64_t end = i == DS4_PARTIAL_CHECKPOINT_SLOTS
+            ? ds4_gpu_tensor_bytes(rt->checkpoint_slab)
+            : (uint64_t)i * rt->checkpoint_slot_bytes;
+        freed += ds4_gpu_tensor_trim(rt->checkpoint_slab, start, end - start);
+    }
+    return freed;
 }
 
 static void step37_ckpt_inherit(ds4_step37_batch_runtime *rt, uint32_t src,
@@ -57694,10 +57716,11 @@ static uint64_t solar_trim_bank_cuda(uint32_t b, void *user) {
  * class, nothing more. */
 uint64_t ds4_batch_ctx_trim_free(ds4_batch_ctx *ctx, uint64_t want_bytes) {
     if (!ctx || want_bytes == 0) return 0;
+    if (ctx->step37) { return step37_ckpt_trim(ctx->step37, want_bytes); }
     /* EXAONE and Motif banks use fixed CUDA allocations.  They are fit before
      * allocation and cannot be partially unmapped; never fall through to the
      * unrelated DeepSeek slab trimmer. */
-    if (ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37) return 0;
+    if (ctx->exaone || ctx->motif3 || ctx->qwen) return 0;
     if (ctx->solar) {
         /* ds4_gpu_tensor_trim unmaps VMM pages.  gen_mu prevents new server
          * launches but does not drain work already queued on the device; match

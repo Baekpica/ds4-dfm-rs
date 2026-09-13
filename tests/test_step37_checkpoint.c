@@ -125,6 +125,7 @@ int main(void) {
      * older ring slack is not present, so rewind below it must be refused. */
     CHECK(!step37_rewind(&rt->graph[1], FRONTIER - 1));
     CHECK(step37_ckpt_find(rt, 1, FRONTIER, FRONTIER) == slot);
+    const unsigned shared_slot = (unsigned)slot;
 
     /* In-place rollback keeps no future lineage, and resetting a bank must
      * not invalidate a checkpoint still referenced by its fork. */
@@ -149,8 +150,39 @@ int main(void) {
     CHECK(!rt->bank_logits_valid[0]);
     check_bank(&rt->graph[0], SHORT_PREFIX);
     check_predictors(&rt->spec[0], SHORT_PREFIX);
+
+    /* Reclaim dead slots through the serial-lane API, retaining shared
+     * checkpoints even when their unaligned VMM pages border dead slots. */
+    ds4_batch_ctx ctx = {.step37 = rt};
+    const uint64_t slab_bytes = ds4_gpu_tensor_bytes(rt->checkpoint_slab);
+    uint64_t before = ds4_gpu_tensor_resident(rt->checkpoint_slab, 0, slab_bytes);
+    CHECK(before > 0 && ds4_batch_ctx_trim_free(&ctx, 0) == 0);
+    CHECK(step37_batch_runtime_reset_bank(rt, 0));
+    uint64_t freed = ds4_batch_ctx_trim_free(&ctx, UINT64_MAX);
+    uint64_t after = ds4_gpu_tensor_resident(rt->checkpoint_slab, 0, slab_bytes);
+    CHECK(freed > 0 && after > 0 && before - after == freed);
+    CHECK(step37_ckpt_restore(rt, 1, 0, shared_slot, FRONTIER, &restored));
+    check_bank(&rt->graph[0], FRONTIER);
+    check_predictors(&rt->spec[0], FRONTIER);
+    CHECK(rt->bank_logits[17] == 7.0f);
+
+    CHECK(step37_batch_runtime_reset_bank(rt, 0));
+    CHECK(step37_batch_runtime_reset_bank(rt, 1));
+    before = ds4_gpu_tensor_resident(rt->checkpoint_slab, 0, slab_bytes);
+    CHECK(ds4_batch_ctx_trim_free(&ctx, UINT64_MAX) == before);
+    CHECK(ds4_gpu_tensor_resident(rt->checkpoint_slab, 0, slab_bytes) == 0);
+    CHECK(ds4_batch_ctx_trim_free(&ctx, UINT64_MAX) == 0);
+    /* A reclaimed slot can be mapped and used again. */
+    fill_bank(&rt->graph[0], FRONTIER);
+    fill_predictors(&rt->spec[0], FRONTIER);
+    rt->bank_logits_valid[0] = 1;
+    CHECK(step37_ckpt_capture(rt, 0, FRONTIER, true, 0));
+    slot = step37_ckpt_find(rt, 0, FRONTIER, FRONTIER);
+    CHECK(slot >= 0 && step37_ckpt_restore(rt, 0, 1, (unsigned)slot, FRONTIER, &restored));
+    check_bank(&rt->graph[1], FRONTIER);
+    check_predictors(&rt->spec[1], FRONTIER);
     step37_batch_runtime_free(rt);
     ds4_gpu_cleanup();
-    puts("Step checkpoint: wrapped SWA, full KV, logits, fork, in-place, lineage PASS");
+    puts("Step checkpoint: wrapped SWA, full KV, logits, fork, lineage, reclaim/remap PASS");
     return 0;
 }

@@ -79,6 +79,10 @@ its suffix. `DS4_SERVER_FORK_PARTIAL=0` disables this pool.
 Forks inherit checkpoint references. Reset and disk restore discard the old
 lineage. A compact restore refuses rewinds below its saved window; older ring
 slack was not captured. Missing checkpoints fall back to cold prefill.
+When the serial lane needs memory, it can reclaim unreferenced checkpoint
+pages after draining queued GPU work. Shared checkpoints stay resident;
+adjacent dead slots and final padding are reclaimed together. The checkpoint
+gate verifies resident-byte accounting, preserved state and remapping.
 
 With `--mtp`, each bank owns three predictor rings and held target hidden
 rows. Greedy decode uses the existing native trial/commit with Rust selecting
