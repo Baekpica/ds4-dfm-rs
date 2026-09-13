@@ -4526,6 +4526,9 @@ int ds4_gpu_step37_vgelu(ds4_gpu_tensor *x,
 int ds4_gpu_step37_vresidual(ds4_gpu_tensor *residual, const ds4_gpu_tensor *x,
         const void *map, uint64_t size, uint64_t bias, uint64_t scale, uint32_t rows);
 
+int ds4_gpu_step37_norm(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *map, uint64_t size, uint64_t offset,
+        uint32_t width, uint32_t rows, float eps);
 int ds4_gpu_step37_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down,
                       const ds4_gpu_tensor *weights, uint32_t width, uint32_t rows);
 int ds4_gpu_step37_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,

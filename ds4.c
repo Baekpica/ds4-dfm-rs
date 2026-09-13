@@ -44611,8 +44611,8 @@ static bool exaone_batch_runtime_decode(
 /* Step continuous lane: N self-contained per-bank graphs sharing only the
  * resident weights.  Each bank owns its full 45-layer KV rings and prefill
  * scratch, so admission/prefill/decode reuse the single-graph forward exactly
- * (byte-identical to a serial session).  MTP speculation and images stay on
- * the serial lane; the banked lane runs ordinary greedy/sampled decode. */
+ * (byte-identical to a serial session). Optional predictor state follows
+ * each bank through speculation and reuse. Images use the serial lane. */
 enum { DS4_STEP37_BANK_MAX = DS4_MULTISEQ_MAX_SEQ };
 
 typedef struct ds4_step37_batch_runtime {
@@ -69402,9 +69402,15 @@ int ds4_session_step37_trial(ds4_session *s, int first, int max_tokens,
     if (n > g->context - g->position) { n = g->context - g->position; }
     int predicted[S37_VERIFY];
     s->step37_trial[0] = first;
+    s->step37_spec.logits_rows = 0;
+    const bool cache_logits = !getenv("DS4_STEP37_LEGACY_COMMIT_HEAD");
+    /* The verification loop projects every row below, including the last.
+     * Avoid projecting that last row twice. The switch keeps a timing control. */
+    const step37_head_mode head = getenv("DS4_STEP37_LEGACY_TRIAL_HEAD")
+        ? STEP37_HEAD_LAST : STEP37_HEAD_SKIP;
     if ((n > 1 && !step37_spec_propose(&s->step37_spec, &e->mtp_model, &e->step37_mtp,
                                       s->checkpoint.v, first, s->step37_trial + 1, n - 1)) ||
-        !step37_forward(g, &e->model, &e->weights, s->step37_trial, n, g->position)) {
+        !step37_forward_impl(g, &e->model, &e->weights, s->step37_trial, n, g->position, head)) {
         step37_session_fail(s, err, errlen);
         return -1;
     }
@@ -69414,7 +69420,12 @@ int ds4_session_step37_trial(ds4_session *s, int first, int max_tokens,
             return -1;
         }
         predicted[row] = sample_argmax(s->logits, DS4_N_VOCAB);
+        if (cache_logits) {
+            memcpy(s->step37_spec.verify_logits + (size_t)row * DS4_N_VOCAB,
+                   s->logits, DS4_N_VOCAB * sizeof(float));
+        }
     }
+    if (cache_logits) { s->step37_spec.logits_rows = n; }
     s->step37_trial_n = n;
     memcpy(tokens, s->step37_trial, n * sizeof(*tokens));
     memcpy(target, predicted, n * sizeof(*target));
@@ -69437,9 +69448,20 @@ int ds4_session_step37_commit(ds4_session *s, int keep, char *err, size_t errlen
     ds4_engine *e = s->engine;
     ds4_step37_graph *g = &s->step37_graph;
     const unsigned end = (unsigned)s->checkpoint.len + (unsigned)keep;
-    if (g->position != (unsigned)s->checkpoint.len + s->step37_trial_n ||
-        !step37_rewind(g, end) || !step37_head(g, &e->model, &e->weights, (unsigned)keep - 1) ||
-        !step37_read_logits(s)) {
+    if (g->position != (unsigned)s->checkpoint.len + s->step37_trial_n || !step37_rewind(g, end)) {
+        return step37_session_fail(s, err, errlen);
+    }
+    /* Trial already read every vocabulary row. Preserve its accepted row
+     * instead of projecting it again, including the device-logits contract. */
+    const bool cached = s->step37_spec.logits_rows == s->step37_trial_n &&
+        !getenv("DS4_STEP37_LEGACY_COMMIT_HEAD");
+    if (cached) {
+        const float *logits = s->step37_spec.verify_logits + (size_t)(keep - 1) * DS4_N_VOCAB;
+        if (!ds4_gpu_tensor_write(g->logits, 0, logits, DS4_N_VOCAB * sizeof(float))) {
+            return step37_session_fail(s, err, errlen);
+        }
+        memcpy(s->logits, logits, DS4_N_VOCAB * sizeof(float));
+    } else if (!step37_head(g, &e->model, &e->weights, (unsigned)keep - 1) || !step37_read_logits(s)) {
         return step37_session_fail(s, err, errlen);
     }
     for (int i = 0; i < keep; i++) { token_vec_push(&s->checkpoint, s->step37_trial[i]); }
@@ -69452,6 +69474,7 @@ int ds4_session_step37_commit(ds4_session *s, int keep, char *err, size_t errlen
     }
     ds4_metric_add(&ds4_metrics_get()->spec_hits, (uint64_t)keep - 1);
     s->step37_trial_n = 0;
+    s->step37_spec.logits_rows = 0;
     s->mtp_draft_valid = false;
     return 0;
 #endif

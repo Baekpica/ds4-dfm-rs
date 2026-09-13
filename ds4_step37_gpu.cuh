@@ -1,6 +1,18 @@
 /* Included by the native CUDA backend; no host or Rust ABI state escapes. */
 #include "cuda/step37_primitives.cuh"
 
+/* Keep the original norm reduction. Q/K/V and the FFN consumers reuse one
+ * exact D4 quantization; scalar/verify widths retain their existing path. */
+extern "C" int ds4_gpu_step37_norm(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *map, uint64_t size, uint64_t offset,
+        uint32_t width, uint32_t rows, float eps) {
+    if (!ds4_gpu_exaone_rms_norm_tensor(out, x, map, size, offset, width, rows, eps)) { return 0; }
+    if (width == 4096 && rows >= 64 && !getenv("DS4_STEP37_NO_Q8_REUSE")) {
+        cuda_norm_emit_q8(out, rows, width);
+    }
+    return 1;
+}
+
 extern "C" int ds4_gpu_step37_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down,
         const ds4_gpu_tensor *weights, uint32_t width, uint32_t rows) {
     const uint64_t count = (uint64_t)width * rows;

@@ -24342,10 +24342,9 @@ static void cuda_norm_q8_publish(const void *src, uint32_t rows, uint32_t n) {
     g_norm_q8_reg.n     = n;
 }
 
-/* Qwen qkv/z (and QSA q / index) all read the same HC mix.  Quantize it
- * once so the dense D2R/mmq preq consumers skip their per-GEMM quantize.
- * DS4_CUDA_NO_NORM_Q8EMIT keeps the old per-consumer path. */
-static void cuda_hc_mixed_emit_q8(const ds4_gpu_tensor *mixed,
+/* Quantize a shared activation once for dense D2R/MMQ consumers.
+ * DS4_CUDA_NO_NORM_Q8EMIT keeps the per-consumer path. */
+static void cuda_norm_emit_q8(const ds4_gpu_tensor *mixed,
                                   uint32_t rows, uint32_t hidden) {
     if (!mixed || rows < 64u || (hidden & 127u) != 0u) {
         return;
@@ -24366,7 +24365,7 @@ static void cuda_hc_mixed_emit_q8(const ds4_gpu_tensor *mixed,
     if (!logged) {
         logged = 1;
         fprintf(stderr,
-                "ds4: HC mix emits producer q8 (first rows=%u n=%u)\n",
+                "ds4: activation emits producer q8 (first rows=%u n=%u)\n",
                 rows, hidden);
     }
 }
@@ -26847,7 +26846,7 @@ extern "C" int ds4_gpu_qwen4exp_hc_mix_inject_tensor(
         if (!cuda_ok(cudaGetLastError(), "Qwen4Exp HC injection launch"))
             return 0;
     }
-    cuda_hc_mixed_emit_q8(mixed, rows, hidden_size);
+    cuda_norm_emit_q8(mixed, rows, hidden_size);
     return 1;
 }
 
@@ -26991,7 +26990,7 @@ extern "C" int ds4_gpu_qwen4exp_hc_mix_fused_tensor(
     if (!cuda_ok(cudaGetLastError(), "Qwen4Exp HC fused mix launch")) {
         return 0;
     }
-    cuda_hc_mixed_emit_q8(mixed, rows, hidden_size);
+    cuda_norm_emit_q8(mixed, rows, hidden_size);
     return 1;
 }
 
@@ -47477,6 +47476,7 @@ extern "C" int ds4_gpu_exaone_rms_norm_tensor(
             model_map, weight_offset, (uint64_t)n * sizeof(float),
             ds4_tensor_device_idx(out), "exaone_norm");
     if (!w) return 0;
+    cuda_norm_q8_invalidate(out->ptr);
     exaone_rms_norm_kernel<<<n_tokens, 1024, 0, cuda_decode_stream()>>>(
             (float *)out->ptr, (const float *)x->ptr, w, n, n_tokens, eps);
     return cuda_ok(cudaGetLastError(), "exaone rms norm");
