@@ -159,3 +159,45 @@ Token admission (maximum 8192) and each intermediate RGB buffer's 128 MiB
 limit precede pixel allocation. This is a per-buffer bound, not a total
 process-memory limit. This gate does not exercise encoded-image decoding,
 EXIF, GPU vision or generated image answers.
+
+
+## F16 vision encoder
+
+The native component consumes normalized CHW crops and executes all 47
+ViT blocks, two stride-2 padded convolutions and the 4096-wide projector.
+`make_vision_vectors.py` uses actual GGUF weights, the original
+`EncoderRope2D` methods and independent PyTorch operations. Its default
+contract matches the native GEMM: round inputs to F16, accumulate and output
+F32. `--contract fp32` is an explicit unrounded-input diagnostic. TF32 is
+disabled and reference attention uses the F32 math SDPA backend.
+
+```sh
+make tests/test_step37_vision test-step37-vision-ops CUDA_ARCH=sm_121
+# Python needs the pinned gguf-py on PYTHONPATH. Run every GPU job serially
+# under host_memory_guard.py: 20 GiB for Python, 12 GiB for native.
+python tests/fixtures/step37/make_vision_vectors.py "$STEP37_VISION" "$VISION_ENCODER" "$PIXELS_504" "$REF_504" --edge 504
+python tests/fixtures/step37/make_vision_vectors.py "$STEP37_VISION" "$VISION_ENCODER" "$PIXELS_728" "$REF_728" --edge 728
+tests/test_step37_vision "$STEP37_VISION" "$REF_504" 504
+tests/test_step37_vision "$STEP37_VISION" "$REF_728" 728
+# Identical reference input at every attention/MLP/conv checkpoint:
+tests/test_step37_vision "$STEP37_VISION" "$REF_504" 504 --local
+tests/test_step37_vision "$STEP37_VISION" "$REF_728" 728 --local
+compute-sanitizer --tool memcheck --error-exitcode 99 tests/test_step37_vision_ops
+```
+
+The locked pixel inputs are `case-7-1.f32` (504) and `case-0-0.f32` (728)
+from the CPU pixel generator. The native gate compares every attention and
+MLP residual, both downsamplers and all final feature values. Relative RMS
+limits are 1% for the complete trajectory and 0.1% for matched-input replay.
+It also rejects invalid crop shapes and out-of-range native weight spans.
+Scratch is 130,460,544 bytes (504) or 272,195,456 bytes (728); these figures
+exclude weights and the CUDA backend's shared scratch.
+
+The small operator gate covers CHW patches, HWC downsampling, black padding,
+position interpolation, both full coordinate grids, QuickGELU and residual
+scales on a non-default stream. Under the production fast-math flags it
+exposed `sincosf` substitution error at angle 40. Step now retains the
+[documented accurate libdevice call](https://docs.nvidia.com/cuda/archive/12.6.3/libdevice-users-guide/__nv_sincosf.html)
+and the source's fixed F32 frequency cache. The unchanged small gate and
+compute-sanitizer pass. This encoder component does not yet qualify API
+image input, multimodal MTP or generated visual answers.

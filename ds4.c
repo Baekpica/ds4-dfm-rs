@@ -43753,6 +43753,7 @@ static bool exaone_graph_decode(ds4_exaone_gpu_graph *g,
 }
 
 #include "ds4_step37_graph.inc"
+#include "ds4_step37_vision.inc"
 
 /* Shared partial-prefix checkpoint bookkeeping.  A slot is an immutable
  * snapshot of one bank's non-rewindable state at a committed position;

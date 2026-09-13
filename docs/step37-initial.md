@@ -191,3 +191,14 @@ all intermediate RGB bytes match exactly and every final float differs by
 at most 4.77e-7. The gate also covers the 3024-pixel cap and black rows from
 out-of-bounds crops. Encoded-image decoding and native vision integration
 remain pending; this component does not qualify image answers.
+
+
+The native F16 vision component now executes the complete 47-layer encoder
+and projector for both crop sizes. Against independent PyTorch equations
+with the same F16-rounded GEMM input contract, complete 504/728 trajectories
+have final-feature relative RMS differences of 0.103%/0.101%; same-input
+attention/MLP/convolution replay stays below 0.003%. Every residual stage
+and all 81/169 final 4096-wide features are checked. The small kernel gate
+also passes compute-sanitizer with production fast-math flags after retaining
+accurate RoPE trigonometry. API image wiring and multimodal MTP are pending.
+These are encoder component checks, not generated-image or throughput claims.

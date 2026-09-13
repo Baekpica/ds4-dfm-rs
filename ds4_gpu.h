@@ -4514,6 +4514,18 @@ int ds4_gpu_exaone_moe_matmul_tensor(
 
 /* Step 3.7 CUDA primitives. Frequencies contain the per-layer RoPE factors;
  * positions and the resulting cos/sin table remain on the execution stream. */
+/* Step vision consumes one normalized 728/504 RGB crop at a time. */
+int ds4_gpu_step37_columns(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
+        uint32_t edge, uint32_t channels);
+int ds4_gpu_step37_position(ds4_gpu_tensor *hidden,
+        const void *map, uint64_t size, uint64_t offset, uint32_t edge);
+int ds4_gpu_step37_vqkv(ds4_gpu_tensor *qkv,
+        const void *map, uint64_t size, uint64_t offset, uint32_t edge);
+int ds4_gpu_step37_vgelu(ds4_gpu_tensor *x,
+        const void *map, uint64_t size, uint64_t offset, uint32_t rows);
+int ds4_gpu_step37_vresidual(ds4_gpu_tensor *residual, const ds4_gpu_tensor *x,
+        const void *map, uint64_t size, uint64_t bias, uint64_t scale, uint32_t rows);
+
 int ds4_gpu_step37_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down,
                       const ds4_gpu_tensor *weights, uint32_t width, uint32_t rows);
 int ds4_gpu_step37_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,

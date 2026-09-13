@@ -105,3 +105,6 @@ __pycache__/
 /tests/test_step37_state
 /tests/test_step37_mtp
 /tests/test_step37_spec
+
+/tests/test_step37_vision
+/tests/test_step37_vision_ops

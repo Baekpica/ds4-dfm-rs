@@ -47969,3 +47969,4 @@ static int ds4_gpu_glm53_matmul_bf16(
 #include "ds4_glm53_vision_gpu.cuh"
 #include "ds4_inkling_gpu.cuh"
 #include "ds4_step37_gpu.cuh"
+#include "ds4_step37_vision_gpu.cuh"
