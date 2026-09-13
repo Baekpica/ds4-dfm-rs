@@ -20,6 +20,7 @@ pub const LAYOUT_DOTS3: u32 = 0x3353_5444; /* "DTS3" */
 pub const LAYOUT_QWEN4EXP: u32 = 0x334e_5751; /* "QWN3" */
 // Native restore also checks the effective PLE format; the host prefix is shared.
 const LAYOUT_QWEN_FP8: u32 = 0x3346_5751; /* "QWF3" */
+pub const LAYOUT_STEP37: u32 = 0x3350_5453; /* "STP3" */
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PayloadLayout {
@@ -29,6 +30,7 @@ pub enum PayloadLayout {
     Motif3,
     Dots3,
     Qwen4Exp,
+    Step37,
 }
 
 impl PayloadLayout {
@@ -39,6 +41,7 @@ impl PayloadLayout {
             LAYOUT_MOTIF3 => Self::Motif3,
             LAYOUT_DOTS3 => Self::Dots3,
             LAYOUT_QWEN4EXP | LAYOUT_QWEN_FP8 => Self::Qwen4Exp,
+            LAYOUT_STEP37 => Self::Step37,
             _ => Self::DeepSeek,
         }
     }
@@ -51,6 +54,7 @@ impl PayloadLayout {
             Self::Motif3 => ModelFamily::Motif3,
             Self::Dots3 => ModelFamily::Dots3Note,
             Self::Qwen4Exp => ModelFamily::Qwen4Exp,
+            Self::Step37 => ModelFamily::Step37,
         }
     }
 
@@ -231,7 +235,8 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
         PayloadLayout::Solar
         | PayloadLayout::Exaone
         | PayloadLayout::Motif3
-        | PayloadLayout::Dots3 => {
+        | PayloadLayout::Dots3
+        | PayloadLayout::Step37 => {
             if p.fields[12] != p.fields[7] {
                 return Err(err("session payload token count does not match live rows"));
             }
@@ -567,6 +572,63 @@ mod tests {
             3,
         );
         assert!(host.apply_payload(&prefix).is_err());
+    }
+
+    #[test]
+    fn step37_prefix_restores_ledger() {
+        // Native "STP3" header: ctx, prefill chunk, 45 layers, tag, 4096-byte
+        // KV rows, tokens, MTP flag, kv width, window, vocab, tokens again.
+        let prefix = HostPrefix {
+            fields: [
+                MAGIC,
+                VERSION,
+                4096,
+                2048,
+                45,
+                LAYOUT_STEP37,
+                4096,
+                3,
+                1,
+                1024,
+                512,
+                128_896,
+                3,
+            ],
+            tokens: vec![7, 8, 9],
+        };
+        let bytes = prefix.encode();
+        let parsed = read_prefix_range(
+            &mut Cursor::new(&bytes),
+            0,
+            bytes.len() as u64,
+            ModelFamily::Step37,
+            4096,
+        )
+        .unwrap();
+        assert_eq!(parsed.layout(), PayloadLayout::Step37);
+        assert_eq!(parsed.layout().family(), ModelFamily::Step37);
+        let mut host = SessionLedger::new(
+            ModelFamily::Step37,
+            crate::session::SessionBackend::Cuda,
+            4096,
+            2048,
+        );
+        host.apply_payload(&parsed).unwrap();
+        assert_eq!(host.tokens(), &[7, 8, 9]);
+
+        // Another family must not accept a Step payload, and a Step ledger
+        // rejects a payload whose live-row word disagrees with its tokens.
+        assert!(read_prefix_range(
+            &mut Cursor::new(&bytes),
+            0,
+            bytes.len() as u64,
+            ModelFamily::Qwen4Exp,
+            4096,
+        )
+        .is_err());
+        let mut mismatched = prefix.clone();
+        mismatched.fields[12] = 2;
+        assert!(parse_prefix(&mismatched.encode()).is_err());
     }
 
     #[test]

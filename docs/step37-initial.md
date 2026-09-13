@@ -309,8 +309,32 @@ python3 tools/host_memory_guard.py --max-gib 100 --high-gib 96 \
 Set `reasoning_effort: "none"` and `temperature: 0` for greedy MTP. Sampled
 reasoning and forced protocol prefixes use ordinary decode. Still images
 are bounded PNG/JPEG inputs, up to four per request.
-Audio, distributed slices, multiple sequence banks and serialized disk KV
-are unsupported for Step. Follow-up requests replay their complete history;
-changed images refill the session. The benchmark also restores sweep prefixes
-by replay outside timing. `kvcache_bytes=0` describes absent serialization,
-not zero live KV memory.
+Audio and distributed slices are unsupported for Step.
+
+## Serving parity with the Qwen worker
+
+The serving levers are covered in
+[step37-serving-2026-09-13.md](step37-serving-2026-09-13.md). Two are on by
+default and one is opt-in:
+
+- **Disk KV.** Add `--kv-disk-dir DIR --kv-disk-space-mb N` to the worker.
+  The serial session now persists its live frontier (every full-attention row
+  and the last window of each sliding ring, plus the three MTP predictor rings
+  and held hidden rows when `--mtp` is loaded). A follow-up whose prompt reloads
+  a stored prefix resumes from the checkpoint instead of replaying it. The
+  format is the shared DSV4 layout tagged `STP3`.
+- **MTP** stays the serial-lane default (`--mtp-draft 3`), the fastest
+  single-stream decode.
+- **Multiple sequence banks** are opt-in with `DS4_STEP37_BATCH=1` (mirroring
+  `DS4_QWEN_BATCH`). With it, `DS4_SERVER_COALESCE_MAX=2` serves two independent
+  sequences on the continuous lane, with full-frontier fork
+  (`DS4_SERVER_FORK=1`), warm prefix reuse and per-bank disk KV. The banked lane
+  runs ordinary decode: MTP speculation and image input remain on the serial
+  session, and an image request transparently falls back to it. Below-frontier
+  partial reuse is not yet wired for the banked lane.
+
+Choose the lane per deployment: leave `DS4_STEP37_BATCH` unset for the fastest
+single user (serial + MTP + disk KV), or set it to serve concurrent sessions
+with fork and warm reuse. The benchmark still restores sweep prefixes by replay
+outside timing; `kvcache_bytes=0` there describes the benchmark's replay mode,
+not the served disk-KV path.

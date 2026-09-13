@@ -1154,6 +1154,12 @@ tests/test_step37_spec.o: tests/test_step37_spec.c ds4.c ds4_step37_graph.inc ds
 tests/test_step37_spec: tests/test_step37_spec.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
+tests/test_step37_cont.o: tests/test_step37_cont.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_step37_cont: tests/test_step37_cont.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
 tests/test_cuda_span_lease.o: tests/test_cuda_span_lease.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h ds4_mem_gov.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
 
@@ -1424,6 +1430,7 @@ clean:
 	rm -f tests/test_step37_session tests/test_step37_session.o tests/test_step37_state
 	rm -f tests/test_step37_mtp tests/test_step37_mtp.o
 	rm -f tests/test_step37_spec tests/test_step37_spec.o
+	rm -f tests/test_step37_cont tests/test_step37_cont.o
 	rm -f tests/test_cuda_span_lease tests/test_cuda_span_lease.o
 	rm -f tests/test_cuda_artifact_scope tests/test_cuda_artifact_scope.o
 	rm -f tests/test_inkling_kernels tests/test_inkling_kernels.o

@@ -143,7 +143,27 @@ int main(int argc, char **argv) {
     unsigned generated = 0, cycles = 0, proposed = 0, accepted = 0;
     unsigned kept_mask = 0;
     const bool truncate = getenv("STEP37_TEST_TRUNCATE") != NULL;
+    bool snapshotted = false;
     while (generated < GENERATED) {
+        /* Mid-run disk payload: predictor rings, positions and the held
+         * hidden rows restore so later cycles stay byte-identical. */
+        if (!crop_count && !snapshotted && generated >= GENERATED / 2) {
+            FILE *snap = tmpfile();
+            const uint64_t bytes = ds4_session_payload_bytes(s);
+            CHECK(snap && bytes && !ds4_session_save_payload(s, snap, err, sizeof(err)) &&
+                  (uint64_t)ftell(snap) == bytes);
+            ds4_session_invalidate(s);
+            CHECK(!s->step37_spec.position && ds4_session_argmax(s) == -1);
+            rewind(snap);
+            CHECK(!ds4_session_load_payload(s, snap, bytes, err, sizeof(err)));
+            fclose(snap);
+            CHECK(s->checkpoint_valid && ds4_session_pos(s) == prompt.len &&
+                  step37_spec_valid(&s->step37_spec) &&
+                  s->step37_spec.position == (unsigned)prompt.len);
+            same_kv(&s->step37_graph, &reference);
+            puts("Step speculation: mid-run payload restored target and predictor state");
+            snapshotted = true;
+        }
         int tokens[S37_VERIFY], target[S37_VERIFY];
         const int first = ds4_session_argmax(s), before = ds4_session_pos(s);
         CHECK(!ds4_session_step37_trial(s, first, 0, tokens, target, S37_VERIFY, err, sizeof(err)));
