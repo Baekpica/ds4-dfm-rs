@@ -93,7 +93,7 @@ typedef struct {
 } ds4_step37_graph;
 
 static unsigned step37_prefill_cap(unsigned ctx) {
-    enum { DEFAULT_CHUNK = 512, MAX_CHUNK = 4096 };
+    enum { DEFAULT_CHUNK = 1024, MAX_CHUNK = 4096 };
     unsigned cap = DEFAULT_CHUNK;
     const char *value = getenv("DS4_STEP37_PREFILL_CHUNK");
     if (value && *value) {

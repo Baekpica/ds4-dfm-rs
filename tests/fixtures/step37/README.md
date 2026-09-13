@@ -79,7 +79,8 @@ tests/test_step37_session "$STEP37_MAIN" scratch/step37/fixtures/ring832.tokens
 The small span-lease regression needs CUDA but no model. Host-only state
 and ledger tests reject stale logits and preserve only untouched checkpoints
 on errors. Production Step sessions use `DS4_STEP37_PREFILL_CHUNK` (default
-512, valid 1–4096, capped by context); 64 is the locked structural gate width.
+1024, valid 1–4096, capped by context); `DS4_STEP37_PREFILL_CHUNK=512`
+restores the previous cap. 64 is the locked structural gate width.
 
 Rust server output tests use `cargo test -p ds4-server --test step37_output`
 and `--test chat_input`; `make -j1 test-server-parity` covers existing families.

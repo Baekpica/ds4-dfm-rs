@@ -31,6 +31,7 @@ Campaign baseline is the landed binary (`bench-baseline`).
 |---|---:|---:|---:|---:|---|
 | baseline | 698.88 | — | 21.32 | 19.49 | locked |
 | Prefill 1 Step SWA HMMA | **917.55** | **+31.3%** | 17.60 | **19.70** | retained |
+| Prefill 2 chunk 1024 | **1063.70** | **+52.2%** | 17.01 | **19.62** | retained |
 
 MTP decode tok/s on Prefill 1 fell because acceptance/launch counts
 changed. Ordinary decode did not regress.
@@ -66,7 +67,34 @@ MTP-off (`DS4_MTP_SPEC_DISABLE=1`, one fresh process each): Prefill
 700.95 → 920.01 tok/s; Decode 19.49 → 19.70 tok/s; first-token 0.1581 →
 0.1596 s.
 
-## Remaining bottlenecks (after Prefill 1)
+## Prefill 2: default chunk 512 → 1024
+
+After Prefill 1, Q4 `ds4_moe_worklist_mmq_kernel` is 0.678s / 232 launches.
+At 512 tokens the worklist sees ~21 rows per expert (8-of-288). 1024 doubles
+those assignments and halves the 2K chunk count (4 → 2). Scratch at the
+campaign context grows 291 → 582 MiB; sliding KV adds one window of extra
+rows. `DS4_STEP37_PREFILL_CHUNK=512` restores the previous cap.
+
+Same-binary MTP-off, three fresh processes at 1024 versus the Prefill 1
+ordinary cell:
+
+| Metric | Chunk 512 | Chunk 1024 samples | Median change |
+|---|---|---|---:|
+| Prefill tok/s | 920.01 | 1079.15 / 1063.70 / 1066.37 | +15.9% |
+| Decode tok/s | 19.70 | 19.50 / 19.83 / 19.62 | flat |
+| First decode call, seconds | 0.1596 | 0.1574 / 0.1537 / 0.1560 | flat |
+
+MTP-on (draft 3) Prefill 1062.15 / 1064.24 / 1063.70 tok/s. Decode stays
+acceptance-limited (~17.0 tok/s). 1024 repeats are byte-identical. Versus
+chunk 512: same frontier argmax, top-10 9/10, top-50 47/50, rel RMS 5.02%,
+KL 6.48e-4, max \|Δlogit\| 0.90; 40/64 generated tokens match; first
+difference at index 37. Mixed-quant chunk-width MoE order is the expected
+source. A 2048-token probe reached 1240 Prefill tok/s and is not the default.
+
+`tests/test_step37_forward` asserts the default cap is 1024 and that
+`DS4_STEP37_PREFILL_CHUNK=512` restores 512.
+
+## Remaining bottlenecks (after Prefill 2)
 
 Prefill: Q4 worklist MMQ 0.678s, IQ2 gate/up 0.458s, generic `mul_mat_q`
 0.379s / 1176 launches.
