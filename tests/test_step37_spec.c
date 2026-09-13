@@ -6,6 +6,11 @@
     fprintf(stderr, "Step speculation FAIL line %d: %s (%s)\n", __LINE__, #x, err); exit(1); \
 } } while (0)
 static char err[256];
+static void check_spec_counts(uint64_t drafts, uint64_t hits) {
+    const ds4_metrics *m = ds4_metrics_get();
+    CHECK(ds4_metric_read(&m->spec_drafts) == drafts);
+    CHECK(ds4_metric_read(&m->spec_hits) == hits);
+}
 static ds4_step37_pixels crops[2];
 static unsigned crop_count;
 static void build_artifacts(ds4_model *model) {
@@ -141,14 +146,21 @@ int main(int argc, char **argv) {
     while (generated < GENERATED) {
         int tokens[S37_VERIFY], target[S37_VERIFY];
         const int first = ds4_session_argmax(s), before = ds4_session_pos(s);
-        const int n = ds4_session_step37_trial(s, first, GENERATED - (int)generated,
+        CHECK(!ds4_session_step37_trial(s, first, 0, tokens, target, S37_VERIFY, err, sizeof(err)));
+        check_spec_counts(proposed, accepted);
+        /* The first trial verifies only the target token: no draft or hit. */
+        const int budget = cycles ? GENERATED - (int)generated : 1;
+        const int n = ds4_session_step37_trial(s, first, budget,
                                                tokens, target, S37_VERIFY, err, sizeof(err));
         CHECK(n > 0 && n <= S37_VERIFY && tokens[0] == first && ds4_session_pos(s) == before);
+        proposed += (unsigned)n - 1;
+        check_spec_counts(proposed, accepted);
         CHECK(ds4_session_argmax(s) == -1 && ds4_session_eval(s, first, err, sizeof(err)) &&
               ds4_session_sync(s, &prompt, err, sizeof(err)) &&
               ds4_session_step37_trial(s, first, 1, tokens, target, S37_VERIFY, err, sizeof(err)) < 0);
         CHECK(ds4_session_step37_commit(s, 0, err, sizeof(err)) &&
               ds4_session_step37_commit(s, n + 1, err, sizeof(err)) && ds4_session_pos(s) == before);
+        check_spec_counts(proposed, accepted);
         CHECK(step37_forward(&reference, &e.model, &e.weights, tokens, (unsigned)n, reference.position));
         for (int row = 0; row < n; row++) {
             CHECK(step37_head(&reference, &e.model, &e.weights, (unsigned)row) &&
@@ -164,7 +176,10 @@ int main(int argc, char **argv) {
          * every commit length while preserving greedy token verification. */
         if (truncate && cycles < S37_VERIFY && keep > (int)cycles + 1) { keep = (int)cycles + 1; }
         CHECK(!ds4_session_step37_commit(s, keep, err, sizeof(err)));
+        accepted += (unsigned)keep - 1;
+        check_spec_counts(proposed, accepted);
         CHECK(ds4_session_step37_commit(s, keep, err, sizeof(err)));
+        check_spec_counts(proposed, accepted);
         CHECK(step37_rewind(&reference, (unsigned)before + (unsigned)keep) &&
               step37_head(&reference, &e.model, &e.weights, (unsigned)keep - 1) &&
               ds4_gpu_tensor_read(reference.logits, 0, logits, logbytes));
@@ -179,7 +194,6 @@ int main(int argc, char **argv) {
         CHECK(step37_spec_valid(&s->step37_spec) && s->step37_spec.position == reference.position);
         printf("cycle %u: draft=%d keep=%d; complete logits/live KV exact, mode-0 tokens match\n", cycles, n - 1, keep);
         fflush(stdout);
-        proposed += (unsigned)n - 1; accepted += (unsigned)keep - 1;
         kept_mask |= 1u << ((unsigned)keep - 1);
         generated += (unsigned)keep; cycles++;
     }
@@ -209,6 +223,7 @@ int main(int argc, char **argv) {
     ds4_session_invalidate(s);
     CHECK(!s->step37_media.count);
     CHECK(!s->checkpoint_valid && !s->step37_spec.position && !s->step37_trial_n);
+    check_spec_counts(proposed, accepted);
     printf("Step speculation PASS: %u tokens, %u cycles, %u/%u draft acceptance; memory=%" PRIu64 "\n",
            generated, cycles, accepted, proposed, estimate);
     step37_graph_free(&reference); step37_graph_free(&serial);

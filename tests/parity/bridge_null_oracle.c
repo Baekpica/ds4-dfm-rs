@@ -107,6 +107,21 @@ int main(void) {
     uint64_t rng = 1;
 
     {
+        ds4_bridge_spec_snapshot(NULL);
+        ds4_metrics *m = ds4_metrics_get();
+        ds4_metric_set(&m->spec_drafts, 9);
+        ds4_metric_set(&m->spec_hits, 6);
+        ds4_metric_set(&m->spec_quench, 1);
+        for (int i = 0; i < 2; i++) {
+            ds4_bridge_spec_metrics spec = {0};
+            ds4_bridge_spec_snapshot(&spec);
+            if (spec.drafts != 9 || spec.hits != 6 || spec.quench != 1) {
+                fail("speculation snapshot values");
+            }
+        }
+    }
+
+    {
         const ds4_bridge_step37_pixels crop = {0};
         ds4_bridge_session fake = {.session = (ds4_session *)1};
         if (!ds4_bridge_sync_step37(NULL, toks, 1, &crop, 1, err, sizeof(err)) ||

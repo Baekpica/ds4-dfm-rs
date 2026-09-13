@@ -347,6 +347,16 @@ int ds4_bridge_session_output_head_bench(ds4_bridge_session *s,
                                          int iters, const char *path,
                                          char *err, size_t errlen);
 
+/* Process-global speculative counters. Each field is read atomically;
+ * the caller owns out, and NULL is a no-op. No model handle is needed. */
+typedef struct {
+    uint64_t drafts;
+    uint64_t hits;
+    uint64_t quench;
+} ds4_bridge_spec_metrics;
+
+void ds4_bridge_spec_snapshot(ds4_bridge_spec_metrics *out);
+
 /* Live CUDA memgov census.  Process-global after backend init; no model
  * handle.  Counts match ds4_mem_census.h (DS4_MEMC__COUNT x DS4_MEMD__COUNT).
  * supported=0 means the backend keeps no census (Metal/CPU/stubs): porcelain

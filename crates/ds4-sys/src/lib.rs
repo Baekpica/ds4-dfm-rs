@@ -161,6 +161,14 @@ pub struct ds4_bridge_distributed_options {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct ds4_bridge_spec_metrics {
+    pub drafts: u64,
+    pub hits: u64,
+    pub quench: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ds4_bridge_mem_cell {
     pub requested: u64,
     pub committed: u64,
@@ -808,6 +816,8 @@ extern "C" {
     ) -> c_int;
 
     pub fn ds4_bridge_mem_census_snap(out: *mut ds4_bridge_mem_census) -> c_int;
+
+    pub fn ds4_bridge_spec_snapshot(out: *mut ds4_bridge_spec_metrics);
 
     pub fn ds4_bridge_mem_observe_snap(out: *mut ds4_bridge_mem_observe) -> c_int;
 

@@ -26,6 +26,7 @@ mod progress;
 mod session;
 mod shape;
 mod sibling;
+mod spec;
 mod step37;
 mod step37_mtp;
 mod tensors;
@@ -81,6 +82,7 @@ pub use shape::{
     SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B,
 };
 pub use sibling::SiblingAttach;
+pub use spec::{snapshot_spec, SpecMetrics};
 pub use step37::{Step37Error, Step37Layer, Step37Plan, Step37Sidecar, Step37SidecarPlan};
 pub use tensors::{
     apply_host_dir, consume_host_dir, dump_apply_tapes, dump_consume_tapes, dump_nbytes_table,

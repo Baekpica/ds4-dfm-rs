@@ -1268,6 +1268,16 @@ int ds4_bridge_session_output_head_bench(ds4_bridge_session *s,
 /* Declared in ds4_gpu.h; the bridge does not include that header. */
 uint64_t ds4_gpu_substrate_outstanding(void);
 
+void ds4_bridge_spec_snapshot(ds4_bridge_spec_metrics *out)
+{
+    if (!out) { return; }
+    const ds4_metrics *m = ds4_metrics_get();
+    /* Read hits first to reduce skew against concurrent trial updates. */
+    out->hits = ds4_metric_read(&m->spec_hits);
+    out->drafts = ds4_metric_read(&m->spec_drafts);
+    out->quench = ds4_metric_read(&m->spec_quench);
+}
+
 /* Seqlock snapshot + last-stable cache, copied from ds4_server.c
  * mem_census_snapshot.  Do not include ds4_mem_census.h from Rust. */
 typedef char ds4_bridge_memc_count_ok[

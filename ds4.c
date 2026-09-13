@@ -68448,6 +68448,7 @@ int ds4_session_step37_trial(ds4_session *s, int first, int max_tokens,
     s->step37_trial_n = n;
     memcpy(tokens, s->step37_trial, n * sizeof(*tokens));
     memcpy(target, predicted, n * sizeof(*target));
+    ds4_metric_add(&ds4_metrics_get()->spec_drafts, n - 1);
     return (int)n;
 #endif
 }
@@ -68479,6 +68480,7 @@ int ds4_session_step37_commit(ds4_session *s, int keep, char *err, size_t errlen
     if (getenv("DS4_MTP_SPEC_LOG")) {
         fprintf(stderr, "ds4: Step mtp trial=%u keep=%d pos=%u\n", s->step37_trial_n, keep, end);
     }
+    ds4_metric_add(&ds4_metrics_get()->spec_hits, (uint64_t)keep - 1);
     s->step37_trial_n = 0;
     s->mtp_draft_valid = false;
     return 0;

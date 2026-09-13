@@ -91,6 +91,7 @@ freeze or permission to bind native internals.
 | `ds4_bridge_token_eos` | engine EOS / family EOT |
 | `ds4_bridge_token_is_stop` | `ds4_token_is_stop` (1/0) |
 | `ds4_bridge_model_id` | `ds4_engine_model_id` (syntax dispatch) |
+| `ds4_bridge_spec_snapshot` | cumulative process-global draft/hit/quench counters; individually atomic reads into caller-owned POD |
 | `ds4_bridge_mem_census_snap` | process-global CUDA census image (seqlock + last-stable torn cache); `supported=0` when the backend keeps no census |
 | `ds4_bridge_mem_observe_snap` | typed observation (`status`/`source` + free/total/cuda_free/meminfo) |
 | `ds4_bridge_mem_substrate_outstanding` | `ds4_gpu_substrate_outstanding` (0 on Metal/CPU stubs) |

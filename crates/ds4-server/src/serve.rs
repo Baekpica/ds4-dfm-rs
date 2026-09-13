@@ -250,6 +250,13 @@ impl ServerInner {
         if self.have_engine {
             overlay_live_census(&mut rt.memgov);
         }
+        #[cfg(any(feature = "native", test))]
+        if self.have_engine {
+            let spec = ds4_core::snapshot_spec();
+            rt.spec_drafts = spec.drafts;
+            rt.spec_hits = spec.hits;
+            rt.spec_quench = spec.quench;
+        }
         rt
     }
 
@@ -2587,6 +2594,48 @@ mod owner_tests {
         assert_eq!(inner.runtime.tokens_prefilled_cached, 260);
         assert_eq!(inner.runtime.tokens_decoded, 7);
         assert_eq!(inner.runtime.decode_steps, 4);
+    }
+
+    #[cfg(not(feature = "native"))]
+    #[test]
+    fn live_speculation_replaces_cached_counters() {
+        let mut inner = ServerInner::default();
+        inner.have_engine = true;
+        inner.runtime.spec_drafts = 99;
+        inner.runtime.spec_hits = 88;
+        inner.runtime.spec_quench = 77;
+        // The model-free bridge fixture supplies fresh process totals.
+        SPEC_COUNTS.with(|counts| counts.set([9, 6, 1]));
+        for _ in 0..2 {
+            let rt = inner.render_runtime(0);
+            assert_eq!((rt.spec_drafts, rt.spec_hits, rt.spec_quench), (9, 6, 1));
+        }
+        SPEC_COUNTS.with(|counts| counts.set([12, 8, 2]));
+        let rt = inner.render_runtime(0);
+        assert_eq!((rt.spec_drafts, rt.spec_hits, rt.spec_quench), (12, 8, 2));
+        inner.have_engine = false;
+        let rt = inner.render_runtime(0);
+        assert_eq!((rt.spec_drafts, rt.spec_hits, rt.spec_quench), (99, 88, 77));
+        SPEC_COUNTS.with(|counts| counts.set([0; 3]));
+    }
+
+    #[cfg(not(feature = "native"))]
+    thread_local! {
+        static SPEC_COUNTS: std::cell::Cell<[u64; 3]> = const { std::cell::Cell::new([0; 3]) };
+    }
+
+    #[cfg(not(feature = "native"))]
+    #[no_mangle]
+    extern "C" fn ds4_bridge_spec_snapshot(out: *mut ds4_sys::ds4_bridge_spec_metrics) {
+        let [drafts, hits, quench] = SPEC_COUNTS.with(std::cell::Cell::get);
+        // SAFETY: snapshot_spec lends a live output slot for this fixture call.
+        unsafe {
+            *out = ds4_sys::ds4_bridge_spec_metrics {
+                drafts,
+                hits,
+                quench,
+            }
+        };
     }
 
     #[test]

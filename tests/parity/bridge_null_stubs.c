@@ -53,6 +53,11 @@ ds4_dist_options bridge_dist_run_options;
 static ds4_session_progress_fn bridge_progress;
 static void *bridge_progress_ud;
 
+ds4_metrics *ds4_metrics_get(void) {
+    static ds4_metrics metrics;
+    return &metrics;
+}
+
 void ds4_host_tensor_dir_install(const ds4_host_tensor_dir *d) { (void)d; }
 void ds4_host_tensor_dir_clear(void) {}
 void ds4_host_shape_install(const ds4_host_shape *s) { (void)s; }
