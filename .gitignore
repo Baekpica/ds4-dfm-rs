@@ -100,4 +100,6 @@ __pycache__/
 /tests/test_inkling_session
 /tests/test_inkling_encoders
 
+/tests/test_step37_session
 /tests/test_cuda_span_lease
+/tests/test_step37_state

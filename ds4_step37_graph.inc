@@ -11,11 +11,25 @@ typedef struct {
     ds4_gpu_tensor *rope_full, *rope_swa, *gate, *logits;
     ds4_gpu_tensor *kv[STEP37_LAYERS];
     unsigned kv_cap[STEP37_LAYERS];
-    unsigned context, cap, position;
+    unsigned context, cap, position, high_water;
     uint64_t bytes;
     unsigned *host_positions;
     bool failed;
 } ds4_step37_graph;
+
+static unsigned step37_prefill_cap(unsigned ctx) {
+    enum { DEFAULT_CHUNK = 512, MAX_CHUNK = 4096 };
+    unsigned cap = DEFAULT_CHUNK;
+    const char *value = getenv("DS4_STEP37_PREFILL_CHUNK");
+    if (value && *value) {
+        char *end = NULL;
+        unsigned long parsed = strtoul(value, &end, 10);
+        if (end != value && !*end && parsed > 0 && parsed <= MAX_CHUNK) {
+            cap = (unsigned)parsed;
+        }
+    }
+    return cap < ctx ? cap : ctx;
+}
 
 static bool step37_sliding(unsigned il) {
     return il >= STEP37_LAYERS || il % STEP37_FULL_PERIOD != 0;
@@ -237,15 +251,30 @@ static bool step37_forward(ds4_step37_graph *g, const ds4_model *m, const ds4_we
             w->output_norm->abs_offset, S37_HIDDEN, 1, DS4_RMS_EPS) &&
         plain_graph_matmul_tensor(g->logits, m, w->output, S37_HIDDEN, DS4_N_VOCAB, g->ws.b_norm, 1);
     ds4_gpu_tensor_free(last);
-    if (ok) { g->position = pos + n; g->failed = false; }
+    if (ok) {
+        g->position = pos + n;
+        if (g->high_water < g->position) { g->high_water = g->position; }
+        g->failed = false;
+    }
     return ok;
 }
 
 /* The widened SWA ring retains one extra chunk for a tail rewrite. Reset to
  * zero is also safe: causal attention cannot read the old future rows. */
 static bool step37_rewind(ds4_step37_graph *g, unsigned pos) {
-    if (!g || !g->cap || g->failed || pos > g->position ||
-        (pos && g->position - pos > g->cap)) { return false; }
+    if (!g || !g->cap || g->failed || pos > g->position) { return false; }
+    /* Repeated rewinds must not move the physical retention boundary. */
+    unsigned newest = g->high_water > g->position ? g->high_water : g->position;
+    if (pos && newest - pos > g->cap) { return false; }
+    g->high_water = pos ? newest : 0;
     g->position = pos;
+    return true;
+}
+
+static bool step37_reset(ds4_step37_graph *g) {
+    if (g->failed && !ds4_gpu_synchronize()) { return false; }
+    g->position = 0;
+    g->high_water = 0;
+    g->failed = false;
     return true;
 }

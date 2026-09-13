@@ -405,6 +405,9 @@ impl SessionLedger {
             self.valid = false;
             self.solar_state_valid = false;
         }
+        if self.family == ModelFamily::Step37 && pos != old {
+            self.valid = false;
+        }
         RewindResult {
             pos,
             bump,
@@ -576,6 +579,21 @@ fn split_pair(s: &str) -> (Vec<i32>, Vec<i32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn step_rewind_requires_logits_replay() {
+        let mut host = SessionLedger::new(ModelFamily::Step37, SessionBackend::Cuda, 1024, 64);
+        let prompt = [1, 2, 3, 4];
+        let plan = host.plan_sync(&prompt, 0);
+        host.commit_sync(&prompt, &plan);
+        let generation = host.generation;
+        assert!(host.rewind(4).valid);
+        assert_eq!(host.generation, generation);
+        assert!(!host.rewind(3).valid);
+        let replay = host.plan_sync(&prompt, 0);
+        assert!(replay.rebuild);
+        assert_eq!(replay.start, 0);
+    }
 
     #[test]
     fn allows_prompt_that_exactly_fills_context() {

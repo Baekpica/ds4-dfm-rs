@@ -1564,6 +1564,17 @@ const fn ledger_ctx(configured: i32, native_effective: i32) -> i32 {
 }
 
 impl Session<'_> {
+    fn step_failed(&mut self) {
+        if self.host.family != ModelFamily::Step37 {
+            return;
+        }
+        let generation = self.native_generation();
+        if generation != self.host.generation {
+            self.host.clear_checkpoint_keep_generation();
+            self.host.generation = generation;
+        }
+    }
+
     pub fn host(&self) -> &SessionLedger {
         &self.host
     }
@@ -1613,6 +1624,7 @@ impl Session<'_> {
             )
         };
         if rc != 0 {
+            self.step_failed();
             return Err(fail(rc, &err));
         }
         self.host.commit_sync(tokens.as_slice(), &plan);
@@ -1739,6 +1751,7 @@ impl Session<'_> {
             )
         };
         if rc != 0 {
+            self.step_failed();
             return Err(fail(rc, &err));
         }
         self.host.commit_eval(token);
@@ -1829,6 +1842,7 @@ impl Session<'_> {
             )
         };
         if n < 0 {
+            self.step_failed();
             return Err(fail(n, &err));
         }
         accepted.truncate(n as usize);
@@ -2425,6 +2439,50 @@ mod tests {
 
         assert_eq!(session.ctx(), 8192);
         assert_eq!(session.ctx(), session.host().ctx);
+    }
+
+    thread_local! {
+        static STEP_GENERATION: Cell<u64> = const { Cell::new(1) };
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_session_generation(_s: *mut ds4_bridge_session) -> u64 {
+        STEP_GENERATION.with(Cell::get)
+    }
+
+    #[no_mangle]
+    unsafe extern "C" fn ds4_bridge_session_sync(
+        _s: *mut ds4_bridge_session,
+        tokens: *const i32,
+        n: i32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        // -1 models rejected input; -2 models failure after KV writes.
+        if n > 0 && *tokens == -2 {
+            STEP_GENERATION.with(|g| g.set(g.get() + 1));
+        }
+        1
+    }
+
+    #[test]
+    fn step_sync_error_preserves_only_untouched_state() {
+        STEP_GENERATION.with(|g| g.set(1));
+        let mut session = std::mem::ManuallyDrop::new(Session {
+            raw: NonNull::<ds4_bridge_session>::dangling(),
+            host: SessionLedger::new(ModelFamily::Step37, SessionBackend::Cuda, 1024, 64),
+            _model: PhantomData,
+            _not_send: PhantomData,
+        });
+        session.host.replace_checkpoint(&[1, 2, 3]);
+        assert!(session.sync(&TokenBuffer::from_tokens(vec![-1])).is_err());
+        assert!(session.host.valid);
+        assert_eq!(session.host.tokens(), &[1, 2, 3]);
+        assert_eq!(session.generation(), 1);
+        assert!(session.sync(&TokenBuffer::from_tokens(vec![-2])).is_err());
+        assert!(!session.host.valid);
+        assert!(session.host.tokens().is_empty());
+        assert_eq!(session.generation(), 2);
     }
 
     #[test]

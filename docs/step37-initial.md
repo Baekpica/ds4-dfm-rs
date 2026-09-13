@@ -46,9 +46,11 @@ through 262,143 on a non-default stream. The CUDA backend object also builds.
 These component checks do not establish complete model logits or performance.
 
 Rust family selection and native descriptors now bind all 754 main and 55
-MTP tensors. Native loading retains an execution guard while Rust session
-integration is unfinished. The main shape has 45 layers; the three external predictor
-blocks must not be subtracted from that count.
+MTP tensors. Main text execution now uses the public native session behind
+the Rust host. Step accepts one full CUDA model; distributed slices, other
+backends and draft sidecars remain guarded until their own implementation.
+The main shape has 45 layers; the three external predictor blocks must not
+be subtracted from that count.
 
 The standalone eager CUDA forward executes the MQ83 main model. Eight locked
 text fixtures (24–45 tokens, prefill cap 64, eight decode evaluations) produce
@@ -74,6 +76,21 @@ Startup timings include lazy weight materialization and are not performance
 comparisons. The test protocol is in
 [the fixture README](../tests/fixtures/step37/README.md).
 
+The native session gate compares lazy allocation, prefix extension, decode,
+rewind/rebuild and reset against the standalone graph at context 848 with
+64-row chunks. Full-vocabulary logits and 45-layer KV match byte for byte;
+its session allocation is exactly the estimated 158,151,040 bytes. Repeated
+rewinds cannot move the physical retention boundary. Invalid tokens preserve
+valid state; failed GPU work and strict rewinds invalidate output readers.
+Rust mirrors the checkpoint and generation transitions.
+
+The real Rust CLI also completes the arithmetic raw-token probe with the
+same nine greedy choices. This exercises default aligned artifacts and the
+enforced memory governor. It exposed and fixed a missing boot-lease update
+in raw-span promotion; the regression also preserves the settled census after
+boot. Model-source residency at this short context is 83.35 GiB including
+additive artifacts. This is not a maximum-context or throughput qualification.
+
 The Rust tokenizer matches the pinned upstream tokenizer on 56 text, Unicode,
 tool and media-marker inputs. The unchanged official Jinja matches Python
 Jinja on 20 text/history/image/tool/observation cases across four effort
@@ -94,7 +111,7 @@ Pixel conversion and vision inference are still pending.
 The Spark handoff supplies BF16 logits and real image fixtures. BF16 outputs
 are separate from the MQ83 oracle comparison above. Remaining gates:
 
-- Rust sessions, longer continuations and further cross-engine drift investigation.
+- Longer Rust continuations and further cross-engine drift investigation.
 - Official tokenizer/Jinja, tool output parsing and Rust server API checks.
 - External MTP prediction, acceptance and rejected-prefix rollback.
 - Vision processing, encoder/projector execution and real document/chart requests.

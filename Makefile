@@ -1106,11 +1106,21 @@ tests/test_step37_loader: tests/test_step37_loader.c ds4.c ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
 		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
+tests/test_step37_state: tests/test_step37_state.c ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
 ifeq ($(UNAME_S),Linux)
 tests/test_step37_forward.o: tests/test_step37_forward.c ds4.c ds4_step37_graph.inc ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
 
 tests/test_step37_forward: tests/test_step37_forward.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_step37_session.o: tests/test_step37_session.c ds4.c ds4_step37_graph.inc ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_step37_session: tests/test_step37_session.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
 tests/test_cuda_span_lease.o: tests/test_cuda_span_lease.c ds4.c ds4_step37_graph.inc ds4.h ds4_gpu.h ds4_mem_gov.h
@@ -1368,6 +1378,7 @@ endif
 clean:
 	rm -f tests/test_solar_fattn tests/test_solar_fattn.o
 	rm -f tests/test_step37_primitives tests/test_step37_loader tests/test_step37_forward tests/test_step37_forward.o
+	rm -f tests/test_step37_session tests/test_step37_session.o tests/test_step37_state
 	rm -f tests/test_cuda_span_lease tests/test_cuda_span_lease.o
 	rm -f tests/test_inkling_kernels tests/test_inkling_kernels.o
 	rm -f tests/test_inkling_moe tests/test_inkling_moe.o

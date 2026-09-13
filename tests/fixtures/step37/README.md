@@ -63,3 +63,20 @@ still fails cross-engine rows; see [the measured status](../../../docs/step37-in
 reference input to each layer. Replay is a local operator check, not a full
 model trajectory. The KV proof instead requires byte-identical logits and
 all live KV rows across full/ring layouts and a matched-width tail rewrite.
+
+The public session gate keeps one model mapping and compares native session
+logits/KV with a separate graph using identical chunk widths:
+
+```sh
+make tests/test_step37_session tests/test_step37_state tests/test_cuda_span_lease CUDA_ARCH=sm_121
+tests/test_step37_state
+tests/test_cuda_span_lease
+tests/test_step37_session --policy
+# Run under host_memory_guard.py; includes the public generation callback.
+tests/test_step37_session "$STEP37_MAIN" scratch/step37/fixtures/ring832.tokens
+```
+
+The small span-lease regression needs CUDA but no model. Host-only state
+and ledger tests reject stale logits and preserve only untouched checkpoints
+on errors. Production Step sessions use `DS4_STEP37_PREFILL_CHUNK` (default
+512, valid 1–4096, capped by context); 64 is the locked structural gate width.

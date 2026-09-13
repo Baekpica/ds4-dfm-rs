@@ -29,6 +29,10 @@ The bandwidth figure is informational; we don't tier on it.
 
 ## Env-var inventory
 
+- `DS4_STEP37_PREFILL_CHUNK=N` selects 1–4096 Step 3.7 prompt rows per
+  chunk, capped by context. Default 512; invalid values use the default.
+  The SWA ring retains an extra chunk, so both scratch and KV grow with it.
+
 - `DS4_INKLING_PREFILL_CHUNK=N` selects 1–8192 prompt rows per chunk,
   capped by context. Default 512 is retained after the 8192 candidate regressed
   the matched 8K workload. Shorter prompts use only their actual rows;
