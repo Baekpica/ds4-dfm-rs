@@ -345,3 +345,13 @@ fn host_catalog_uses_exact_contract() {
     assert!(plan.missing_required().is_empty());
     crate::layout::validate_layouts(&plan).unwrap();
 }
+
+#[test]
+fn production_inventory_rejects_extra_tensor() {
+    let mut inv = inventory();
+    Step37Plan::validate_inventory(&inv).unwrap();
+    let mut extra = inv.tensors[0].clone();
+    extra.name = "unexpected.weight".into();
+    inv.tensors.push(extra);
+    assert!(Step37Plan::validate_inventory(&inv).is_err());
+}

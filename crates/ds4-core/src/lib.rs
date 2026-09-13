@@ -1128,6 +1128,12 @@ impl Model {
             code: 1,
             message: format!("validate failed: {}", e.token()),
         })?;
+        if identified.shape.family == ModelFamily::Step37 {
+            Step37Plan::validate_inventory(&inventory).map_err(|e| Error {
+                code: 1,
+                message: e.to_string(),
+            })?;
+        }
         let bind_plan = BindPlan::resolve(identified.shape, &inventory);
         if let Some(name) = bind_plan.missing_required().first() {
             return Err(Error {

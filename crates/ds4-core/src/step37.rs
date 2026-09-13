@@ -119,6 +119,10 @@ pub struct Step37Plan {
 }
 
 impl Step37Plan {
+    pub(crate) fn validate_inventory(inv: &TensorInventory) -> Result<(), Step37Error> {
+        check_tensors(inv).map(|_| ())
+    }
+
     /// Shape validation used by the host before native allocation.
     pub(crate) fn validate(g: &GgufFile) -> Result<(), crate::validate::ValidateError> {
         check_metadata(g)
