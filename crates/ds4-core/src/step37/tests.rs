@@ -48,11 +48,15 @@ impl Fixture {
     fn from_metadata(source: &str, change: impl FnOnce(&mut Value)) -> Self {
         let mut metadata: Value = serde_json::from_str(source).unwrap();
         change(&mut metadata);
+        Self::from_rows(metadata, Some(VOCAB))
+    }
+
+    fn from_rows(metadata: Value, token_count: Option<u64>) -> Self {
         let metadata = metadata.as_array().unwrap();
         let mut out = b"GGUF".to_vec();
         out.extend(3u32.to_le_bytes());
         out.extend(0u64.to_le_bytes());
-        out.extend((metadata.len() as u64 + 1).to_le_bytes());
+        out.extend((metadata.len() as u64 + u64::from(token_count.is_some())).to_le_bytes());
         for row in metadata {
             string(&mut out, row[0].as_str().unwrap());
             let typ = row[1][0].as_str().unwrap();
@@ -69,12 +73,14 @@ impl Fixture {
                 value(&mut out, subtype, v);
             }
         }
-        // Token contents belong to tokenizer tests; preflight checks the count.
-        string(&mut out, "tokenizer.ggml.tokens");
-        out.extend(9u32.to_le_bytes());
-        out.extend(8u32.to_le_bytes());
-        out.extend(VOCAB.to_le_bytes());
-        out.resize(out.len() + VOCAB as usize * 8, 0);
+        if let Some(count) = token_count {
+            // Token contents belong to tokenizer tests; preflight checks the count.
+            string(&mut out, "tokenizer.ggml.tokens");
+            out.extend(9u32.to_le_bytes());
+            out.extend(8u32.to_le_bytes());
+            out.extend(count.to_le_bytes());
+            out.resize(out.len() + count as usize * 8, 0);
+        }
         let path = std::env::temp_dir().join(format!(
             "ds4-step37-{}-{}.gguf",
             std::process::id(),
@@ -93,6 +99,39 @@ impl Drop for Fixture {
 
 fn inventory() -> TensorInventory {
     fixture_inventory(INVENTORY)
+}
+
+fn shard_fixture(index: u32, change: impl FnOnce(&mut Value)) -> Fixture {
+    // The published siblings carry only the three split keys.
+    let mut rows = if index == 0 {
+        serde_json::from_str(METADATA).unwrap()
+    } else {
+        serde_json::json!([
+            ["split.no", ["UINT16"], index],
+            ["split.count", ["UINT16"], SHARDS]
+        ])
+    };
+    rows.as_array_mut().unwrap().push(serde_json::json!([
+        "split.tensors.count",
+        ["INT32"],
+        TENSORS
+    ]));
+    change(&mut rows);
+    Fixture::from_rows(rows, (index == 0).then_some(VOCAB))
+}
+
+fn shard_inventory() -> (Vec<Fixture>, TensorInventory) {
+    let files: Vec<_> = (0..SHARDS).map(|i| shard_fixture(i, |_| {})).collect();
+    let mut inv = inventory();
+    inv.shards = files
+        .iter()
+        .map(|file| ShardPlan {
+            path: file.0.clone(),
+            size: std::fs::metadata(&file.0).unwrap().len(),
+            base: 0,
+        })
+        .collect();
+    (files, inv)
 }
 
 fn fixture_inventory(source: &str) -> TensorInventory {
@@ -348,10 +387,103 @@ fn host_catalog_uses_exact_contract() {
 
 #[test]
 fn production_inventory_rejects_extra_tensor() {
-    let mut inv = inventory();
+    let (_files, mut inv) = shard_inventory();
     Step37Plan::validate_inventory(&inv).unwrap();
     let mut extra = inv.tensors[0].clone();
     extra.name = "unexpected.weight".into();
     inv.tensors.push(extra);
     assert!(Step37Plan::validate_inventory(&inv).is_err());
+}
+
+#[test]
+fn production_inventory_checks_every_shard_identity() {
+    let (files, mut inv) = shard_inventory();
+    Step37Plan::validate_inventory(&inv).unwrap();
+    for index in (0..SHARDS).rev() {
+        for (key, replacement, expected) in [
+            (
+                "step37.source_revision",
+                serde_json::json!("other-revision"),
+                "source_revision",
+            ),
+            ("step37.source_revision", Value::Null, "source_revision"),
+            (
+                "step37.source_revision",
+                serde_json::json!(7),
+                "source_revision",
+            ),
+            ("split.no", Value::Null, "split identity"),
+            ("split.count", Value::Null, "split identity"),
+            ("split.tensors.count", Value::Null, "split identity"),
+            (
+                "split.no",
+                serde_json::json!((index + 1) % SHARDS),
+                "split identity",
+            ),
+            (
+                "split.count",
+                serde_json::json!(SHARDS - 1),
+                "split identity",
+            ),
+            (
+                "split.tensors.count",
+                serde_json::json!(TENSORS - 1),
+                "split identity",
+            ),
+        ] {
+            if index != 0 && key == "step37.source_revision" && replacement.is_null() {
+                continue;
+            }
+            let bad = shard_fixture(index, |rows| {
+                let rows = rows.as_array_mut().unwrap();
+                if replacement.is_null() {
+                    rows.retain(|row| row[0] != key);
+                    return;
+                }
+                let typ = if key == "step37.source_revision" && replacement.is_number() {
+                    "UINT32"
+                } else if key == "step37.source_revision" {
+                    "STRING"
+                } else {
+                    rows.iter().find(|row| row[0] == key).unwrap()[1][0]
+                        .as_str()
+                        .unwrap()
+                }
+                .to_owned();
+                rows.retain(|row| row[0] != key);
+                rows.push(serde_json::json!([key, [typ], replacement]));
+            });
+            inv.shards[index as usize].path = bad.0.clone();
+            let error = Step37Plan::validate_inventory(&inv)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "shard {index}: {error}");
+            assert!(error.contains(bad.0.to_str().unwrap()), "{error}");
+            inv.shards[index as usize].path = files[index as usize].0.clone();
+        }
+        if index != 0 {
+            let tagged = shard_fixture(index, |rows| {
+                rows.as_array_mut().unwrap().push(serde_json::json!([
+                    "step37.source_revision",
+                    ["STRING"],
+                    std::str::from_utf8(SOURCE_REV).unwrap()
+                ]));
+            });
+            inv.shards[index as usize].path = tagged.0.clone();
+            Step37Plan::validate_inventory(&inv).unwrap();
+            inv.shards[index as usize].path = files[index as usize].0.clone();
+        }
+    }
+    inv.shards.pop();
+    assert!(Step37Plan::validate_inventory(&inv).is_err());
+}
+
+#[test]
+#[ignore = "requires STEP37_MODEL_PATH pointing to the first MQ83 shard"]
+fn downloaded_shards_pass_production_contract() {
+    let path = std::env::var("STEP37_MODEL_PATH").expect("set STEP37_MODEL_PATH");
+    let plan = Step37Plan::inspect(Path::new(&path)).unwrap();
+    Step37Plan::validate_inventory(&plan.inventory).unwrap();
+    assert_eq!(plan.inventory.shards.len(), SHARDS as usize);
+    assert_eq!(plan.bindings.len(), TENSORS);
 }

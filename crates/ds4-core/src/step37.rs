@@ -27,6 +27,7 @@ const F32: u32 = 0;
 const Q8_0: u32 = 8;
 const Q4_K: u32 = 12;
 const IQ2_XXS: u32 = 16;
+const SOURCE_KEY: &str = "step37.source_revision";
 const SOURCE_REV: &[u8] = b"5f6244077ac62e04eec3f320501ff8c2b293373a";
 
 #[derive(Debug)]
@@ -138,6 +139,7 @@ fn layout_specs(specs: Vec<Spec>) -> Vec<crate::layout::LayoutSpec> {
 
 impl Step37Plan {
     pub(crate) fn validate_inventory(inv: &TensorInventory) -> Result<(), Step37Error> {
+        check_shards(inv)?;
         check_tensors(inv).map(|_| ())
     }
 
@@ -158,15 +160,7 @@ impl Step37Plan {
         let first = GgufFile::open(path)?;
         check_metadata(&first)?;
         let inventory = TensorInventory::from_file(path, &first)?;
-        for (index, shard) in inventory.shards.iter().enumerate() {
-            let g = GgufFile::open(&shard.path)?;
-            if g.get_u16("split.no") != Some(index as u16)
-                || g.split_count() != SHARDS
-                || g.get_token_id("split.tensors.count") != Some(TENSORS as i32)
-            {
-                return Err(mismatch("split identity"));
-            }
-        }
+        check_shards(&inventory)?;
         let bindings = check_tensors(&inventory)?;
         Ok(Self {
             inventory,
@@ -189,12 +183,40 @@ impl Step37Plan {
     }
 }
 
+fn check_shards(inv: &TensorInventory) -> Result<(), Step37Error> {
+    if inv.shards.len() != SHARDS as usize {
+        return Err(mismatch("expected nine main shards"));
+    }
+    // Published siblings contain only split keys. Check any explicit revision,
+    // but leave payload identity to the artifact's SHA256SUMS verification.
+    for (index, shard) in inv.shards.iter().enumerate() {
+        let g = GgufFile::open(&shard.path)?;
+        let has_revision = g
+            .kv_entries()
+            .iter()
+            .any(|e| g.key_bytes(e) == SOURCE_KEY.as_bytes());
+        if (index == 0 || has_revision) && g.get_string(SOURCE_KEY) != Some(SOURCE_REV) {
+            return Err(mismatch(&format!("{}: {SOURCE_KEY}", shard.path.display())));
+        }
+        if g.get_u16("split.no") != Some(index as u16)
+            || g.split_count() != SHARDS
+            || g.get_token_id("split.tensors.count") != Some(TENSORS as i32)
+        {
+            return Err(mismatch(&format!(
+                "{}: split identity",
+                shard.path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn check_metadata(g: &GgufFile) -> Result<(), Step37Error> {
     if g.get_string("general.architecture") != Some(b"step35") {
         return Err(mismatch("general.architecture"));
     }
     for (key, expected) in [
-        ("step37.source_revision", SOURCE_REV),
+        (SOURCE_KEY, SOURCE_REV),
         ("tokenizer.ggml.model", b"gpt2".as_slice()),
         ("tokenizer.ggml.pre", b"deepseek-v3".as_slice()),
     ] {

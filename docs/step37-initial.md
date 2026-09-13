@@ -22,6 +22,12 @@ clamps. Shared experts require Q8_0; routed precision follows the locked recipe.
 Main loading rejects MTP sidecars, wrong source metadata, duplicate or
 overlapping tensors, and incompatible dimensions/quantization.
 
+Production open and inspect validate every shard's split index, shard count
+and total tensor count. The published source revision appears only in the
+first shard; siblings carry three split keys. An explicit sibling revision
+must match. Metadata checks do not verify payload identity; use the published
+`MQ83/SHA256SUMS` to verify the complete artifact before loading.
+
 `Step37SidecarPlan::inspect` separately validates the Q8 MTP (55 tensors) and
 F16 `step3vl` vision projector (667 tensors). It preserves all three distinct
 MTP output heads, the unclamped dense predictor blocks, vision layer scales,
