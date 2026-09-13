@@ -35077,6 +35077,10 @@ struct ds4_vocab {
     bool motif3_added_first[256];
 };
 
+#ifndef DS4_NO_GPU
+#include "ds4_step37_vision.inc"
+#endif
+
 struct ds4_engine {
     ds4_model model;
     ds4_model mtp_model;
@@ -35084,6 +35088,7 @@ struct ds4_engine {
 #ifndef DS4_NO_GPU
     ds4_model vision_model;
     ds4_glm53_vision_weights vision_weights;
+    ds4_step37_vision_weights step37_vision_weights;
 #endif
     ds4_vocab vocab;
     ds4_weights weights;
@@ -43753,7 +43758,6 @@ static bool exaone_graph_decode(ds4_exaone_gpu_graph *g,
 }
 
 #include "ds4_step37_graph.inc"
-#include "ds4_step37_vision.inc"
 
 /* Shared partial-prefix checkpoint bookkeeping.  A slot is an immutable
  * snapshot of one bank's non-rewindable state at a committed position;
@@ -45119,6 +45123,8 @@ struct ds4_session {
     bool dots3_graph_ready;
     ds4_step37_graph step37_graph;
     ds4_step37_spec step37_spec;
+    ds4_step37_vision step37_vision;
+    ds4_step37_media step37_media;
     int step37_trial[S37_VERIFY];
     unsigned step37_trial_n;
     bool step37_graph_ready;
@@ -56422,6 +56428,14 @@ int ds4_gov_governed_check_margin(const char *site, const ds4_gov_claim *cl,
     return gov_governed_dispatch(site, cl, legacy_status, &margin_bytes, NULL);
 }
 
+static uint64_t step37_session_bytes(const ds4_engine *e, unsigned ctx, unsigned cap) {
+    const uint64_t base = (e->mtp_ready ? step37_mtp_memory(ctx, cap)
+                                      : step37_memory(ctx, cap)).total_bytes;
+    if (!base || !e->vision_ready) { return base; }
+    const unsigned rows = ctx < S37_MEDIA_ROWS ? ctx : S37_MEDIA_ROWS;
+    return base + step37_vision_bytes(728) + (uint64_t)rows * S37_HIDDEN * sizeof(float);
+}
+
 static uint32_t qwen4exp_graph_prefill_cap_for_context(uint32_t ctx_size);
 
 /* Absolute session-graph intent at a ctx: the serial-reserve estimator
@@ -56432,8 +56446,7 @@ uint64_t ds4_engine_session_graph_bytes_estimate(ds4_engine *e, int ctx) {
     if (!e || ctx <= 0) return 0;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37) {
         return e->backend == DS4_BACKEND_CUDA
-            ? (e->mtp_ready ? step37_mtp_memory((unsigned)ctx, step37_prefill_cap((unsigned)ctx))
-                             : step37_memory((unsigned)ctx, step37_prefill_cap((unsigned)ctx))).total_bytes : 0;
+            ? step37_session_bytes(e, (unsigned)ctx, step37_prefill_cap((unsigned)ctx)) : 0;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
         const uint32_t cap = inkling_prefill_cap((uint32_t)ctx);
@@ -65669,29 +65682,36 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     }
 #ifndef DS4_NO_GPU
     if (opt->vision_path && opt->vision_path[0]) {
-        if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 ||
+        if ((DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_STEP37) ||
             e->backend != DS4_BACKEND_CUDA ||
             opt->distributed.role != DS4_DISTRIBUTED_NONE || load_slice) {
             fprintf(stderr,
-                    "ds4: --vision currently requires one full GLM-5.3 CUDA model\n");
+                    "ds4: --vision requires one full GLM-5.3 or Step CUDA model\n");
             ds4_engine_close(e);
             *out = NULL;
             return 1;
         }
         model_open(&e->vision_model, opt->vision_path, true, false);
-        glm53_vision_weights_bind(&e->vision_weights, &e->vision_model);
-        e->vision_image_token = (int)required_u32(
-                &e->vision_model, "glm5-next-vision.image_token_id");
-        e->vision_start_token = (int)required_u32(
-                &e->vision_model, "glm5-next-vision.image_start_token_id");
-        e->vision_end_token = (int)required_u32(
-                &e->vision_model, "glm5-next-vision.image_end_token_id");
-        if (e->vision_image_token != 154854 ||
-            e->vision_start_token != 154830 ||
-            e->vision_end_token != 154831)
-            ds4_die("unexpected GLM-5.3 vision token IDs");
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37) {
+            step37_vision_bind(&e->step37_vision_weights, &e->vision_model);
+            e->vision_image_token = S37_IMAGE_TOKEN;
+            e->vision_start_token = 128000;
+            e->vision_end_token = 128002;
+        } else {
+            glm53_vision_weights_bind(&e->vision_weights, &e->vision_model);
+            e->vision_image_token = (int)required_u32(
+                    &e->vision_model, "glm5-next-vision.image_token_id");
+            e->vision_start_token = (int)required_u32(
+                    &e->vision_model, "glm5-next-vision.image_start_token_id");
+            e->vision_end_token = (int)required_u32(
+                    &e->vision_model, "glm5-next-vision.image_end_token_id");
+            if (e->vision_image_token != 154854 ||
+                e->vision_start_token != 154830 ||
+                e->vision_end_token != 154831)
+                ds4_die("unexpected GLM-5.3 vision token IDs");
+        }
         e->vision_ready = true;
-        fprintf(stderr, "ds4: GLM-5.3 vision encoder loaded: %s\n",
+        fprintf(stderr, "ds4: vision encoder loaded: %s\n",
                 opt->vision_path);
     }
 #else
@@ -66036,7 +66056,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     e->vision_model.size - e->vision_model.tensor_data_pos) != 0;
             if (!e->vision_map_ready) {
                 fprintf(stderr,
-                        "ds4: CUDA failed to map the GLM-5.3 vision encoder\n");
+                        "ds4: CUDA failed to map the vision encoder\n");
                 ds4_engine_close(e);
                 *out = NULL;
                 return 1;
@@ -66354,7 +66374,7 @@ int ds4_engine_vision_probe(ds4_engine *e,
     if (error && error_cap) snprintf(error, error_cap, "CUDA vision is unavailable");
     return 0;
 #else
-    if (!e || !e->vision_ready) {
+    if (!e || !e->vision_ready || DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53) {
         if (error && error_cap) snprintf(error, error_cap, "vision encoder is not loaded");
         return 0;
     }
@@ -66379,7 +66399,7 @@ int ds4_engine_vision_encode_memory(ds4_engine *e,
     if (error && error_cap) snprintf(error, error_cap, "CUDA vision is unavailable");
     return 0;
 #else
-    if (!e || !e->vision_ready || !e->vision_map_ready) {
+    if (!e || !e->vision_ready || !e->vision_map_ready || DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53) {
         if (error && error_cap) snprintf(error, error_cap, "vision encoder is not ready");
         return 0;
     }
@@ -66784,8 +66804,7 @@ static uint64_t session_tensors_census_live(void) {
 
 static bool step37_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
                                ds4_session_graph_fit_quote *q) {
-    const uint64_t need = (e->mtp_ready ? step37_mtp_memory(ctx, cap)
-                                       : step37_memory(ctx, cap)).total_bytes;
+    const uint64_t need = step37_session_bytes(e, ctx, cap);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
     const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
@@ -66846,24 +66865,31 @@ static int ds4_session_alloc_graph(ds4_session *s) {
     ds4_engine *e = s->engine;
     if (ds4_session_is_step37(s)) {
         const unsigned ctx = (unsigned)s->ctx_size;
-        const uint64_t estimate = (e->mtp_ready ? step37_mtp_memory(ctx, s->prefill_cap)
-                                               : step37_memory(ctx, s->prefill_cap)).total_bytes;
+        const uint64_t estimate = step37_session_bytes(e, ctx, s->prefill_cap);
+        const unsigned media_rows = ctx < S37_MEDIA_ROWS ? ctx : S37_MEDIA_ROWS;
         ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, estimate, 0);
         const uint64_t before = session_tensors_census_live();
         ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
         const bool ok = step37_session_fit(e, ctx, s->prefill_cap, NULL) &&
             step37_graph_alloc(&s->step37_graph, &e->model, &e->weights, ctx, s->prefill_cap) &&
             (!e->mtp_ready || step37_spec_alloc(&s->step37_spec, &e->mtp_model, &e->step37_mtp,
-                                                ctx, s->prefill_cap));
+                                                ctx, s->prefill_cap)) &&
+            (!e->vision_ready || (step37_vision_alloc(&s->step37_vision, 728) &&
+             (s->step37_media.features = ds4_gpu_tensor_alloc((uint64_t)media_rows * S37_HIDDEN * sizeof(float)))));
         ds4_gpu_mem_scope_end();
         if (!ok) {
             step37_graph_free(&s->step37_graph);
             step37_spec_free(&s->step37_spec);
+            step37_vision_free(&s->step37_vision);
+            ds4_gpu_tensor_free(s->step37_media.features);
+            memset(&s->step37_media, 0, sizeof(s->step37_media));
             s->step37_graph_ready = false;
             s->graph_alloc_bytes = 0;
             ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
             return 1;
         }
+        s->step37_graph.media = &s->step37_media;
+        s->step37_spec.draft.graph.media = &s->step37_media;
         s->step37_graph_ready = true;
         const uint64_t after = session_tensors_census_live();
         s->graph_alloc_bytes = after > before ? after - before : estimate;
@@ -67516,6 +67542,9 @@ void ds4_session_free(ds4_session *s) {
         if (ds4_session_is_step37(s)) {
             step37_graph_free(&s->step37_graph);
             step37_spec_free(&s->step37_spec);
+            step37_vision_free(&s->step37_vision);
+            ds4_gpu_tensor_free(s->step37_media.features);
+            memset(&s->step37_media, 0, sizeof(s->step37_media));
             s->step37_graph_ready = false;
             ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
         } else if (ds4_session_is_inkling(s)) {
@@ -68200,14 +68229,15 @@ static bool step37_read_logits(ds4_session *s) {
 }
 
 static int step37_session_sync(ds4_session *s, const ds4_tokens *prompt,
-                                char *err, size_t errlen) {
+                                const ds4_step37_media *media, char *err, size_t errlen) {
     if (!prompt->v || s->step37_trial_n) {
         payload_set_err(err, errlen, "Step sync needs tokens and no pending trial");
         return 1;
     }
     for (int i = 0; i < prompt->len; i++) {
-        if (prompt->v[i] < 0 || (unsigned)prompt->v[i] >= DS4_N_VOCAB) {
-            payload_set_err(err, errlen, "Step prompt has an invalid token");
+        if ((!media && prompt->v[i] == S37_IMAGE_TOKEN) ||
+            prompt->v[i] < 0 || (unsigned)prompt->v[i] >= DS4_N_VOCAB) {
+            payload_set_err(err, errlen, "Step prompt has an invalid or unbound image token");
             return 1;
         }
     }
@@ -68218,7 +68248,7 @@ static int step37_session_sync(ds4_session *s, const ds4_tokens *prompt,
         return 1;
     }
     unsigned start = 0;
-    if (s->checkpoint_valid && !g->failed && g->position == (unsigned)s->checkpoint.len &&
+    if (!media && !s->step37_media.count && s->checkpoint_valid && !g->failed && g->position == (unsigned)s->checkpoint.len &&
         (!s->engine->mtp_ready || (step37_spec_valid(&s->step37_spec) &&
                                  s->step37_spec.position == g->position)) &&
         prompt->len >= s->checkpoint.len && ds4_tokens_starts_with(prompt, &s->checkpoint)) {
@@ -68226,6 +68256,7 @@ static int step37_session_sync(ds4_session *s, const ds4_tokens *prompt,
         if (start == (unsigned)prompt->len) { return 0; }
     } else {
         ds4_session_invalidate(s);
+        if (media) { s->step37_media = *media; }
         if (g->failed || (s->engine->mtp_ready && !step37_spec_valid(&s->step37_spec))) {
             payload_set_err(err, errlen, "Step graph reset failed");
             return 1;
@@ -68555,7 +68586,7 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
     }
 #ifndef DS4_NO_GPU
     if (ds4_session_is_step37(s)) {
-        return step37_session_sync(s, prompt, err, errlen);
+        return step37_session_sync(s, prompt, NULL, err, errlen);
     }
     if (ds4_session_is_inkling(s)) {
         if (ds4_session_ensure_graph(s, err, errlen) != 0) {
@@ -69036,6 +69067,39 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
     s->mtp_draft_valid = false;
     s->graph.mtp_n_raw = 0;
     return 0;
+#endif
+}
+
+int ds4_session_sync_step37(ds4_session *s, const ds4_tokens *prompt,
+                             const ds4_step37_pixels *crops, uint32_t crop_count,
+                             char *err, size_t errlen) {
+#ifdef DS4_NO_GPU
+    (void)s; (void)prompt; (void)crops; (void)crop_count;
+    payload_set_err(err, errlen, "Step media requires CUDA");
+    return 1;
+#else
+    ds4_step37_media media;
+    if (!s || !ds4_session_is_step37(s) || !s->engine->vision_ready ||
+        !s->engine->vision_map_ready || !prompt || prompt->len > s->ctx_size || s->step37_trial_n ||
+        !step37_media_check(prompt, crops, crop_count, &media)) {
+        payload_set_err(err, errlen, "invalid Step media input or vision encoder unavailable");
+        return 1;
+    }
+    if (ds4_session_ensure_graph(s, err, errlen)) { return 1; }
+    media.features = s->step37_media.features;
+    const uint64_t row_bytes = S37_HIDDEN * sizeof(float);
+    // Reusing feature storage mutates media identity. Any enqueue failure
+    // poisons the checkpoint; successful encoding forces a full target refill.
+    for (unsigned i = 0; i < crop_count; i++) {
+        if (!step37_vision_shape(&s->step37_vision, crops[i].edge) ||
+            !step37_vision_forward(&s->step37_vision, &s->engine->vision_model,
+                                    &s->engine->step37_vision_weights, crops[i].pixels) ||
+            !ds4_gpu_tensor_copy(media.features, media.spans[i].feature * row_bytes,
+                s->step37_vision.output, 0, media.spans[i].rows * row_bytes)) {
+            return step37_session_fail(s, err, errlen);
+        }
+    }
+    return step37_session_sync(s, prompt, &media, err, errlen);
 #endif
 }
 
@@ -71318,6 +71382,8 @@ void ds4_session_invalidate(ds4_session *s) {
 #ifndef DS4_NO_GPU
     if (ds4_session_is_step37(s) && s->step37_graph_ready) {
         s->step37_trial_n = 0;
+        s->step37_media.count = 0;
+        s->step37_media.rows = 0;
         (void)step37_reset(&s->step37_graph);
         if (s->engine->mtp_ready) { (void)step37_spec_reset(&s->step37_spec); }
     } else if (ds4_session_is_inkling(s) && s->inkling_graph_ready) {
@@ -71360,6 +71426,8 @@ void ds4_session_rewind(ds4_session *s, int pos) {
          * replay it before sampling or extending through the decode API. */
         s->checkpoint_valid = false;
         s->step37_trial_n = 0;
+        s->step37_media.count = 0;
+        s->step37_media.rows = 0;
         if (s->step37_graph_ready) {
             (void)step37_reset(&s->step37_graph);
             if (s->engine->mtp_ready) { (void)step37_spec_reset(&s->step37_spec); }

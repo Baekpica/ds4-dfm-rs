@@ -127,6 +127,15 @@ typedef struct {
     uint32_t token_count;
 } ds4_inkling_pixels;
 
+/* Rust-normalized CHW [3,edge,edge] crop, borrowed through Step sync. */
+typedef struct {
+    const float *pixels;
+    uint64_t pixel_count;
+    uint32_t token_offset;
+    uint32_t token_count;
+    uint32_t edge;
+} ds4_step37_pixels;
+
 /* Rust-prepared [frames,80] discrete mel codes in [0,15]. */
 typedef struct {
     const int32_t *codes;
@@ -1294,6 +1303,10 @@ typedef enum {
  * checkpoint is a prefix, only the suffix is evaluated; otherwise the backend
  * state is refilled from scratch. */
 int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen);
+/* Crop spans cover every image row. Always refills; retains GPU features for MTP. */
+int ds4_session_sync_step37(ds4_session *s, const ds4_tokens *prompt,
+                             const ds4_step37_pixels *crops, uint32_t crop_count,
+                             char *err, size_t errlen);
 int ds4_session_sync_multimodal(ds4_session *s,
                                 const ds4_tokens *prompt,
                                 const ds4_vision_span *spans,

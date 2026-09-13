@@ -15,6 +15,44 @@ typedef struct {
     unsigned rows, count;
 } ds4_step37_media;
 
+/* Rust checks the full markup. The native boundary independently checks
+ * borrowed pixel sizes and exact placeholder coverage before device writes. */
+static bool step37_media_check(const ds4_tokens *prompt, const ds4_step37_pixels *crops,
+                                unsigned count, ds4_step37_media *out) {
+    if (!prompt || !prompt->v || prompt->len <= 0 || prompt->len > S37_CONTEXT ||
+        !crops || !count || count > S37_MEDIA_CROPS || !out) { return false; }
+    ds4_step37_media media = {0};
+    unsigned previous = 0;
+    for (unsigned i = 0; i < count; i++) {
+        const ds4_step37_pixels *crop = &crops[i];
+        const unsigned edge = crop->edge, start = crop->token_offset, n = crop->token_count;
+        if (!crop->pixels || (edge != 504 && edge != 728) || n != (edge / 56) * (edge / 56) ||
+            crop->pixel_count != (uint64_t)edge * edge * 3 || start < previous ||
+            start >= (unsigned)prompt->len || n > (unsigned)prompt->len - start ||
+            n > S37_MEDIA_ROWS - media.rows) { return false; }
+        for (unsigned pos = previous; pos < start + n; pos++) {
+            const int token = prompt->v[pos];
+            if (token < 0 || (unsigned)token >= DS4_N_VOCAB ||
+                (pos >= start ? token != S37_IMAGE_TOKEN : token == S37_IMAGE_TOKEN)) { return false; }
+        }
+        media.spans[i] = (ds4_step37_image_span){.position = start, .rows = n, .feature = media.rows};
+        media.rows += n;
+        previous = start + n;
+    }
+    for (unsigned pos = previous; pos < (unsigned)prompt->len; pos++) {
+        const int token = prompt->v[pos];
+        if (token < 0 || (unsigned)token >= DS4_N_VOCAB || token == S37_IMAGE_TOKEN) { return false; }
+    }
+    for (unsigned i = 0; i < count; i++) {
+        for (uint64_t j = 0; j < crops[i].pixel_count; j++) {
+            if (!isfinite(crops[i].pixels[j])) { return false; }
+        }
+    }
+    media.count = count;
+    *out = media;
+    return true;
+}
+
 static bool step37_media_apply(const ds4_step37_media *media, ds4_gpu_tensor *out,
                                 unsigned position, unsigned rows) {
     if (!media || !media->count) { return true; }

@@ -8,7 +8,8 @@ differences consistent with Mixed Quant when they do not materially affect
 generated output. Compare logits, tokens and representative answer quality;
 a fixed cross-engine error threshold alone is not a release blocker. Preserve
 structural KV, position and media-layout correctness. Report measured fresh-
-process prefill/decode and MTP controls separately. Full-model verification may stop Qwen. The latest owner instruction cancels
+process prefill/decode and MTP controls separately. Full-model verification
+may stop Qwen. The latest owner instruction cancels
 automatic restoration; leave Qwen stopped and focus on Step implementation.
 Its running binaries and configuration were backed up before shutdown.
 The HF update may include required tokenizer, Jinja and processor assets;
@@ -173,14 +174,13 @@ do not compare these runs with aligned main-only results as identical paths.
 
 The image crop planner matches 28 independent official Python cases, including
 thin-image padding, the 728/3024 limits, crop order and media token counts.
-Pixel conversion and vision inference are still pending.
 
 The Spark handoff supplies BF16 logits and real image fixtures. BF16 outputs
 are separate from the MQ83 oracle comparison above. Remaining gates:
 
-- Longer Rust continuations and further cross-engine drift investigation.
+- Representative longer text/image continuations and output quality checks.
 - Longer MTP continuations and measured MTP-on/off performance controls.
-- Vision processing, encoder/projector execution and real document/chart requests.
+- Longer mixed text/image continuations beyond the bounded image suite.
 - Guarded GB10 residency, context/bank admission and prefill/decode measurements.
 - Profile and optimize Prefill and Decode; keep before/after throughput and
   numerical evidence, including MTP-on/off and multimodal workloads.
@@ -192,8 +192,7 @@ separate interpolation contracts: Pillow RGB8 bilinear before normalization,
 then Torch CHW float bilinear antialias. Across nine RGB inputs and 34 crops,
 all intermediate RGB bytes match exactly and every final float differs by
 at most 4.77e-7. The gate also covers the 3024-pixel cap and black rows from
-out-of-bounds crops. Encoded-image decoding and native vision integration
-remain pending; this component does not qualify image answers.
+out-of-bounds crops. This component does not qualify image answers.
 
 
 The native F16 vision component now executes the complete 47-layer encoder
@@ -203,7 +202,7 @@ have final-feature relative RMS differences of 0.103%/0.101%; same-input
 attention/MLP/convolution replay stays below 0.003%. Every residual stage
 and all 81/169 final 4096-wide features are checked. The small kernel gate
 also passes compute-sanitizer with production fast-math flags after retaining
-accurate RoPE trigonometry. API image wiring and multimodal MTP are pending.
+accurate RoPE trigonometry. API image answers remain a separate live gate.
 These are encoder component checks, not generated-image or throughput claims.
 
 
@@ -212,5 +211,41 @@ orientation and constructs exact official patch/base token replacements.
 All image spans and the request-wide 8192-token budget are checked before
 pixel allocation. Prepared crops carry validated absolute token offsets in
 patch-first/base-last order. The full 34-crop pixel gate passes through this
-preparation path. Native session injection and server image routing remain
-pending.
+preparation path. Rust owns bounded encoded-image decoding; the narrow FFI
+borrows CHW buffers only for synchronous native encoding/refill. The server
+substitutes complete image spans rather than repeating a placeholder token.
+
+The native session shares resident GPU image features between target and MTP
+next-token embeddings. Image sync always refills KV; ordinary text sync
+rejects image placeholders. The reusable maximum-size encoder workspace uses
+272,195,456 bytes, plus up to 8192 x 4096 F32 feature values; admission and
+committed allocation include both. The 728-to-504-to-728 shape gate checks
+all attention segment bounds. A full 504 encoder replay with reused scratch
+retains the same 0.103% projected-feature difference as its fixed-size run.
+
+A 278-token prompt with one 504 and one 728 normalized crop passes 32
+MTP-generated tokens against an independent width-one control. Every trial
+vocabulary and committed 45-layer live KV match the width-matched reference
+byte-for-byte; 22 of 29 proposed draft tokens are accepted. The session's
+419,545,728-byte allocation matches its quote. Changed pixels with unchanged
+tokens force target/MTP refill and alter logits. A rejected vision GEMM after
+input upload poisons both frontiers; malformed spans preserve the old state.
+The same gate at 1086 prompt tokens crosses the SWA ring and also passes 32
+generated tokens, unchanged-token image replacement and encoder failure.
+Draft acceptance is 22/27; allocation is 511,132,288 bytes at context 1122.
+The native 128-case splice/shape/admission gate, 95 Rust core tests,
+43 server generation tests and affected server/catalog/session parity gates
+also pass. These gates do not measure speed.
+
+
+The Rust server at context 4096 with `--vision` and `--mtp-draft 3` passes
+21 image/text requests: red/blue recognition and subsequent text/follow-up
+on all three APIs, plus the fixed dashboard, invoice, Earth photograph and
+four-image suite in `tests/step37_images_live.py`. The 256/1024/1920-pixel
+screenshots retain their original files. Changed Failed=3/9 screenshots
+produce the corresponding counts; invoice total/tax are $385/$35. Full-history
+image continuations pass Chat Completions and Responses; four-image SSE
+passes Messages with the correct image order. Responses retains its existing
+full-input replay contract. Greedy image decoding uses MTP. These are bounded
+functional/output checks, not a broad vision-quality or throughput benchmark.
+Step currently uses the serial lane; multi-sequence graphs are unavailable.

@@ -12,7 +12,7 @@ typedef struct {
 typedef struct {
     ds4_gpu_tensor *pixels, *columns, *hidden, *norm, *qkv, *attention, *temp, *mlp;
     ds4_gpu_tensor *down1, *down2, *output, *start, *end;
-    unsigned edge, rows, output_rows;
+    unsigned edge, rows, output_rows, capacity;
     uint64_t bytes;
 } ds4_step37_vision;
 
@@ -48,13 +48,33 @@ static void step37_vision_free(ds4_step37_vision *g) {
     memset(g, 0, sizeof(*g));
 }
 
-/* Allocate a fresh or freed graph; crop-size changes require free first. */
+static uint64_t step37_vision_bytes(unsigned edge) {
+    if (edge != 504 && edge != 728) { return 0; }
+    const unsigned rows = (edge / S37V_PATCH) * (edge / S37V_PATCH);
+    return (uint64_t)rows * (3 * S37V_PATCH * S37V_PATCH + 10 * S37V_DIM + S37V_FFN + 4096 / 16 + 2) * sizeof(float);
+}
+
+/* One maximum-crop workspace serves patches and base crops serially. Both
+ * shape and attention limits must change; stale limits attend padding rows. */
+static bool step37_vision_shape(ds4_step37_vision *g, unsigned edge) {
+    if (!g || (edge != 504 && edge != 728)) { return false; }
+    const unsigned rows = (edge / S37V_PATCH) * (edge / S37V_PATCH);
+    if (rows > g->capacity) { return false; }
+    if (g->edge == edge) { return true; }
+    int segments[52 * 52];
+    for (unsigned i = 0; i < rows; i++) { segments[i] = (int)rows; }
+    if (!ds4_gpu_tensor_write(g->end, 0, segments, rows * sizeof(int))) { return false; }
+    g->edge = edge; g->rows = rows; g->output_rows = rows / 16;
+    return true;
+}
+
+/* Allocate a fresh or freed graph, retaining its maximum row capacity. */
 static bool step37_vision_alloc(ds4_step37_vision *g, unsigned edge) {
     memset(g, 0, sizeof(*g));
     if (edge != 504 && edge != 728) { return false; }
     g->edge = edge;
     const unsigned grid = edge / S37V_PATCH, rows = grid * grid;
-    g->rows = rows; g->output_rows = rows / 16;
+    g->rows = rows; g->output_rows = rows / 16; g->capacity = rows;
 #define S37V_ALLOC(field, count) do { \
     uint64_t bytes = (uint64_t)(count) * sizeof(float); \
     g->field = ds4_gpu_tensor_alloc(bytes); \

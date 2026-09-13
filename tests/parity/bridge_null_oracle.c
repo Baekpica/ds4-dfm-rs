@@ -107,6 +107,17 @@ int main(void) {
     uint64_t rng = 1;
 
     {
+        const ds4_bridge_step37_pixels crop = {0};
+        ds4_bridge_session fake = {.session = (ds4_session *)1};
+        if (!ds4_bridge_sync_step37(NULL, toks, 1, &crop, 1, err, sizeof(err)) ||
+            !ds4_bridge_sync_step37(&fake, toks, 1, NULL, 1, err, sizeof(err)) ||
+            !ds4_bridge_sync_step37(&fake, toks, 1, &crop, 0, err, sizeof(err)) ||
+            !ds4_bridge_sync_step37(&fake, toks, 1, &crop, 102, err, sizeof(err))) {
+            fail("Step invalid crop bridge input accepted");
+        }
+    }
+
+    {
         const uint8_t image[] = {1, 2, 3};
         ds4_bridge_qwen_image_info info;
         uint64_t hash = 0;

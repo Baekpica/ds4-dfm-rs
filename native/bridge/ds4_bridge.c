@@ -509,6 +509,26 @@ cleanup:
     return rc;
 }
 
+int ds4_bridge_sync_step37(ds4_bridge_session *s,
+                            const int32_t *tokens, int n_tokens,
+                            const ds4_bridge_step37_pixels *crops, uint32_t crop_count,
+                            char *err, size_t errlen) {
+    enum { MAX_CROPS = 8192 / 81 };
+    if (!s || !s->session || !tokens || n_tokens <= 0 || !crops ||
+        !crop_count || crop_count > MAX_CROPS) {
+        set_err(err, errlen, "invalid Step crop sync input");
+        return 1;
+    }
+    ds4_step37_pixels native_crops[MAX_CROPS];
+    for (uint32_t i = 0; i < crop_count; i++) {
+        native_crops[i] = (ds4_step37_pixels){.pixels = crops[i].pixels,
+            .pixel_count = crops[i].pixel_count, .token_offset = crops[i].token_offset,
+            .token_count = crops[i].token_count, .edge = crops[i].edge};
+    }
+    const ds4_tokens prompt = {.v = (int *)(void *)tokens, .len = n_tokens, .cap = n_tokens};
+    return ds4_session_sync_step37(s->session, &prompt, native_crops, crop_count, err, errlen);
+}
+
 int ds4_bridge_sync_inkling(ds4_bridge_session *s,
                              const int32_t *tokens, int n_tokens,
                              const ds4_bridge_inkling_pixels *images, uint32_t image_count,

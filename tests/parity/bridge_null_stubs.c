@@ -149,6 +149,12 @@ int ds4_session_sync_inkling(ds4_session *s, const ds4_tokens *prompt,
     (void)err; (void)errlen;
     STUB("ds4_session_sync_inkling");
 }
+int ds4_session_sync_step37(ds4_session *s, const ds4_tokens *prompt,
+                             const ds4_step37_pixels *crops, uint32_t crop_count,
+                             char *err, size_t errlen) {
+    (void)s; (void)prompt; (void)crops; (void)crop_count; (void)err; (void)errlen;
+    STUB("ds4_session_sync_step37");
+}
 void ds4_session_set_progress(ds4_session *s, ds4_session_progress_fn fn, void *ud) {
     (void)s;
     bridge_progress = fn;

@@ -28,15 +28,21 @@ static void vision_trace(const char *name, const void *tensor, unsigned width, u
     free(got); free(want);
 }
 int main(int argc, char **argv) {
-    CHECK(argc == 4 || (argc == 5 && !strcmp(argv[4], "--local")));
+    CHECK(argc == 4 || (argc == 5 && (!strcmp(argv[4], "--local") || !strcmp(argv[4], "--reuse"))));
     const unsigned edge = (unsigned)atoi(argv[3]); CHECK(edge == 504 || edge == 728);
-    reference_dir = argv[2]; local_replay = argc == 5;
+    reference_dir = argv[2]; local_replay = argc == 5 && !strcmp(argv[4], "--local");
+    const bool reuse = argc == 5 && !strcmp(argv[4], "--reuse");
     ds4_model m; model_open(&m, argv[1], true, false);
     ds4_step37_vision_weights weights; step37_vision_bind(&weights, &m);
     CHECK(ds4_gpu_init() && ds4_gpu_set_model_map(m.map, m.size));
     ds4_step37_vision graph;
     CHECK(!step37_vision_alloc(&graph, 727));
-    CHECK(step37_vision_alloc(&graph, edge));
+    CHECK(step37_vision_alloc(&graph, reuse ? 728 : edge));
+    if (reuse) {
+        CHECK(step37_vision_shape(&graph, 504));
+        CHECK(step37_vision_shape(&graph, 728));
+        CHECK(step37_vision_shape(&graph, edge));
+    }
     CHECK(!ds4_gpu_step37_columns(graph.columns, graph.pixels, 729, 3));
     CHECK(!ds4_gpu_step37_columns(graph.columns, graph.pixels, 728, 4));
     CHECK(!ds4_gpu_step37_position(graph.hidden, m.map, m.size, m.size, edge / 14));

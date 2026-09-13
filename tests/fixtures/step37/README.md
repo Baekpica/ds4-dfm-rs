@@ -212,3 +212,12 @@ out-of-order and missing spans, and enforce one shared 8192-token budget
 before decoding. Byte input currently accepts PNG/JPEG with 8-bit channels,
 up to 32 MiB encoded and 128 MiB per decoded buffer. EXIF rotation and RGB
 conversion are explicit; an asymmetric JPEG gate checks rotation direction.
+
+
+Production image sessions accept the validated F16 projector through
+`--vision`. `tests/test_step37_media.c` covers crop admission, reused attention
+limits and GPU feature spans without model weights. `tests/test_step37_spec`
+accepts optional `VISION_GGUF REFERENCE_ROOT` arguments for main+vision+MTP
+state checks using the generated `vision-reference504/728` pixels. The
+balanced HTTP answer gate is `tests/step37_images_live.py --output DIR`;
+it uses the unmodified Qwen image fixtures and records their hashes.

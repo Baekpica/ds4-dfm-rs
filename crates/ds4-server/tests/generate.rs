@@ -118,6 +118,17 @@ impl DecodeIo for PromptSyncDecode {
         self.inner.token_is_stop(token)
     }
 
+    fn vision_tokens(&self, data: &[u8]) -> Result<Vec<i32>, GenerateError> {
+        self.inner.vision_tokens(data)
+    }
+    fn sync_vision_prompt(
+        &mut self,
+        tokens: &[i32],
+        images: &[ds4_server::generate::VisionPromptInput],
+    ) -> Result<(), GenerateError> {
+        self.inner.sync_vision_prompt(tokens, images)
+    }
+
     fn sync(&mut self, tokens: &[i32]) -> Result<(), GenerateError> {
         self.sync_calls += 1;
         self.inner.sync(tokens)
@@ -458,6 +469,68 @@ fn glm_serial_image_expands_placeholder_before_sync() {
     assert_eq!(engine.live[0], 154830);
     assert!(engine.live[1..17].iter().all(|&token| token == 154854));
     assert_eq!(engine.live[17], 154831);
+}
+
+#[test]
+fn step_images_expand_complete_spans() {
+    let mut parsed = user_req();
+    parsed.messages[0].parts = vec![ChatPart::Image(0), ChatPart::Image(1)];
+    parsed.images = vec![
+        RequestImage {
+            mime: ImageMime::Png,
+            data: Arc::from([1u8])
+        };
+        2
+    ];
+    let mut engine = ScriptedDecode::from_pieces(&[]);
+    engine.model_id = 10;
+    engine.prompt_tokens = vec![17, 128001, 18, 128001, 19];
+    let mut engine = PromptSyncDecode::new(engine, 0, 0);
+    engine.template = Some(
+        ds4_core::chat_template::Template::compile(
+            include_str!("../../../tests/fixtures/step37/chat_template.jinja"),
+            ds4_core::chat_template::RenderClock::Fixed(0),
+        )
+        .unwrap(),
+    );
+    let mut out = Vec::new();
+    generate_and_write(
+        &mut engine,
+        &parsed,
+        "step-images",
+        CREATED_TEST,
+        false,
+        1,
+        &mut out,
+    )
+    .unwrap();
+    let span = [vec![128000], vec![128001; 169], vec![128002]].concat();
+    assert_eq!(
+        engine.inner.live,
+        [vec![17], span.clone(), vec![18], span, vec![19]].concat()
+    );
+    engine.inner.prompt_tokens = vec![128001];
+    assert!(generate_and_write(
+        &mut engine,
+        &parsed,
+        "step-missing-image",
+        CREATED_TEST,
+        false,
+        1,
+        &mut out
+    )
+    .is_err());
+    engine.inner.prompt_tokens = vec![128001; 3];
+    assert!(generate_and_write(
+        &mut engine,
+        &parsed,
+        "step-extra-image",
+        CREATED_TEST,
+        false,
+        1,
+        &mut out
+    )
+    .is_err());
 }
 
 #[test]
