@@ -1,0 +1,76 @@
+# Step 3.7 Flash: post-landing performance campaign
+
+This campaign starts from landed main (`59ee609` / merge `1d83368`)
+after the BASE-artifact round in
+[step37-optimization-2026-09-13.md](step37-optimization-2026-09-13.md).
+That earlier work is not counted here.
+
+## Protocol
+
+- One GB10, CUDA 13.3, `sm_121`. MQ83 nine-shard GGUF plus official Q8 MTP.
+- Resident raw MTP-only VMM owner. Local BASE artifacts stay on.
+- `speed-bench/promessi_sposi.txt`, SHA-256
+  `f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f`.
+- 2048 prompt tokens, 64 greedy generated tokens, allocated context 2120,
+  Step prefill chunk 512 and `--mtp-draft 3` unless a round changes a knob.
+- Fresh processes, warmup-then-fresh, three unprofiled samples plus nsys.
+- With speculation, report MTP tok/s and a `DS4_MTP_SPEC_DISABLE=1`
+  ordinary-decode control. Gate decode on the ordinary control, not MTP
+  acceptance.
+
+Pinned binaries, hashed workload and scouts live under
+`scratch/step37/perf-r2/`. `ds4-perf compare` stays **Incomparable**:
+the optional CUDA identity helper is absent. Numbers below are manual
+reviews of the scout CSVs.
+
+## Scoreboard
+
+Campaign baseline is the landed binary (`bench-baseline`).
+
+| Round | Prefill tok/s | vs base | Decode MTP | Decode ordinary | Verdict |
+|---|---:|---:|---:|---:|---|
+| baseline | 698.88 | — | 21.32 | 19.49 | locked |
+| Prefill 1 Step SWA HMMA | **917.55** | **+31.3%** | 17.60 | **19.70** | retained |
+
+MTP decode tok/s on Prefill 1 fell because acceptance/launch counts
+changed. Ordinary decode did not regress.
+
+## Prefill 1: Step SWA HMMA tiles
+
+Bottleneck: `exaone_attn_prefill_kernel` 0.744s / 144 launches (25.8% of
+profiled Prefill). Full-attention layers already used
+`ds4_fattn_hmma_gqa2_kernel`. Sliding layers stayed on the warp walk
+even though that kernel already applies the window mask and `src % kv_cap`
+ring.
+
+Step SWA is 96 query / 8 KV heads, window 512, head dim 128. The GQA2
+pair kernel requires an even group; group size 12 is even. EXAONE/K2
+SWA remains on the warp path. `DS4_EXAONE_PREFILL_HMMA=0` restores every
+warp path. `DS4_STEP37_NO_SWA_HMMA=1` restores only Step SWA.
+
+`tests/test_exaone_kernels` compares production HMMA against the warp
+path on 96×8, window 512, 64 tokens, `kv_cap=576`: rel RMS **1.463e-04**
+(fp16 MMA vs f32 warp).
+
+| Metric | Baseline samples | Candidate samples | Median change |
+|---|---|---|---:|
+| Prefill tok/s | 700.42 / 698.52 / 698.88 | 918.11 / 913.43 / 917.55 | +31.3% |
+| Decode tok/s, MTP draft 3 | 20.98 / 21.40 / 21.32 | 17.72 / 17.60 / 17.59 | −17.4% |
+| First decode call, seconds | 0.252 / 0.237 / 0.243 | 0.241 / 0.240 / 0.242 | flat |
+
+Profiled Prefill wall 2.94s → 2.20s. Attention moved to
+`ds4_fattn_hmma_gqa2_kernel` 0.074s / 192 launches. New Prefill #1 is
+Q4 `ds4_moe_worklist_mmq_kernel` 0.678s / 232.
+
+MTP-off (`DS4_MTP_SPEC_DISABLE=1`, one fresh process each): Prefill
+700.95 → 920.01 tok/s; Decode 19.49 → 19.70 tok/s; first-token 0.1581 →
+0.1596 s.
+
+## Remaining bottlenecks (after Prefill 1)
+
+Prefill: Q4 worklist MMQ 0.678s, IQ2 gate/up 0.458s, generic `mul_mat_q`
+0.379s / 1176 launches.
+
+Decode: Q8 NC `q8_0_aligned_dense_vec_nc_kernel` 0.680s / 7644 launches
+on the baseline; MTP verify (`n>1`) still uses the warp prefill
+attention kernel.

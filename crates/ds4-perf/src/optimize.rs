@@ -178,6 +178,8 @@ fn candidates(
             .is_none_or(|v| v != "0")
     {
         Some(("DS4_CUDA_SOLAR_GQA_CHUNK", 64, 2048))
+    } else if family.starts_with("step") {
+        Some(("DS4_STEP37_PREFILL_CHUNK", 512, 4096))
     } else {
         None
     };
