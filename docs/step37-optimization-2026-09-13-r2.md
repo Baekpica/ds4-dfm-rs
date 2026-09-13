@@ -32,7 +32,8 @@ Campaign baseline is the landed binary (`bench-baseline`).
 | baseline | 698.88 | — | 21.32 | 19.49 | locked |
 | Prefill 1 Step SWA HMMA | **917.55** | **+31.3%** | 17.60 | **19.70** | retained |
 | Prefill 2 chunk 1024 | **1063.70** | **+52.2%** | 17.01 | **19.62** | retained |
-| Prefill 3 chunk 2048 | **1233.87** | **+76.5%** | 21.60 | **19.72** | retained |
+| Prefill 3 chunk 2048 | **1233.87** | **+76.5%** | 21.40 | **19.72** | retained |
+| Decode 1 verify GQA | 1243.02 | +77.9% | **22.43** | **19.83** | retained |
 
 MTP decode tok/s on Prefill 1 fell because acceptance/launch counts
 changed. Ordinary decode did not regress.
@@ -121,11 +122,31 @@ KL 1.83e-3.
 `tests/test_step37_forward` asserts the default cap is 2048 and that
 `DS4_STEP37_PREFILL_CHUNK=1024` restores 1024.
 
-## Remaining bottlenecks (after Prefill 3)
+Prefill 3's locked MTP median at default 2048 is 1238.78 / 21.40 tok/s
+(three fresh processes). That is the Decode 1 comparator.
 
-Prefill: Q4 worklist MMQ 0.678s, IQ2 gate/up 0.458s, generic `mul_mat_q`
-0.379s / 1176 launches.
+## Decode 1: MTP verify through batched GQA
 
-Decode: Q8 NC `q8_0_aligned_dense_vec_nc_kernel` 0.680s / 7644 launches
-on the baseline; MTP verify (`n>1`) still uses the warp prefill
-attention kernel.
+MTP verify is n=2..4, so it used `exaone_attn_prefill_kernel` (one block
+per row×head). A single GQA-pair launch now covers every query row on
+`grid.z`. The kernel already applies the window and KV-cap ring. n=1
+decode and n≥64 HMMA prefill are unchanged.
+`DS4_EXAONE_PREFILL_GQA=0` restores the warp walk.
+
+`tests/test_exaone_kernels` compares n=4 Step SWA against the warp path:
+rel RMS **0** (byte-identical). Full-model 2K frontiers and 64-token
+streams match the Prefill 3 binary exactly.
+
+| Metric | Prefill 3 samples | Decode 1 samples | Median change |
+|---|---|---|---:|
+| Prefill tok/s, MTP | 1239.90 / 1235.61 / 1238.78 | 1243.02 / 1252.36 / 1241.78 | flat |
+| Decode tok/s, MTP draft 3 | 21.40 / 21.37 / 21.48 | 22.48 / 22.36 / 22.43 | **+4.8%** |
+| Ordinary decode tok/s | 19.76 | 19.83 | flat |
+
+A serial per-row decode loop was slower (20.47 tok/s) and was not kept.
+
+## Remaining bottlenecks (after Decode 1)
+
+Prefill: Q4 worklist MMQ, IQ2 gate/up, generic `mul_mat_q`.
+Decode: Q8 NC `q8_0_aligned_dense_vec_nc_kernel` remains the largest
+verify/decode projection cost.
