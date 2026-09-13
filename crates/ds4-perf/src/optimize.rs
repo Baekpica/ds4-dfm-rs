@@ -179,7 +179,7 @@ fn candidates(
     {
         Some(("DS4_CUDA_SOLAR_GQA_CHUNK", 64, 2048))
     } else if family.starts_with("step") {
-        Some(("DS4_STEP37_PREFILL_CHUNK", 1024, 4096))
+        Some(("DS4_STEP37_PREFILL_CHUNK", 2048, 4096))
     } else {
         None
     };

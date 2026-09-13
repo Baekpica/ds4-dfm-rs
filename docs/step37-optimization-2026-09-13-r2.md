@@ -32,6 +32,7 @@ Campaign baseline is the landed binary (`bench-baseline`).
 | baseline | 698.88 | — | 21.32 | 19.49 | locked |
 | Prefill 1 Step SWA HMMA | **917.55** | **+31.3%** | 17.60 | **19.70** | retained |
 | Prefill 2 chunk 1024 | **1063.70** | **+52.2%** | 17.01 | **19.62** | retained |
+| Prefill 3 chunk 2048 | **1233.87** | **+76.5%** | 21.60 | **19.72** | retained |
 
 MTP decode tok/s on Prefill 1 fell because acceptance/launch counts
 changed. Ordinary decode did not regress.
@@ -94,7 +95,33 @@ source. A 2048-token probe reached 1240 Prefill tok/s and is not the default.
 `tests/test_step37_forward` asserts the default cap is 1024 and that
 `DS4_STEP37_PREFILL_CHUNK=512` restores 512.
 
-## Remaining bottlenecks (after Prefill 2)
+## Prefill 3: default chunk 1024 → 2048
+
+A 2K prompt is then one chunk instead of two. Worklist rows per expert
+double again. Scratch at the campaign context grows 582 → 1163 MiB.
+`DS4_STEP37_PREFILL_CHUNK=1024` restores the previous cap.
+
+Same-binary MTP-off, three fresh processes:
+
+| Metric | Chunk 1024 median | Chunk 2048 samples | Median change |
+|---|---|---|---:|
+| Prefill tok/s | 1066.37 | 1240.11 / 1232.43 / 1233.87 | +15.7% |
+| Decode tok/s | 19.62 | 19.85 / 19.72 / 19.64 | flat |
+| First decode call, seconds | 0.1560 | 0.1554 / 0.1479 / 0.1504 | flat |
+
+2048 repeats are byte-identical. Versus 1024 at 2K: same frontier argmax,
+top-10 9/10, top-50 47/50, rel RMS 6.01%, KL 2.84e-3. One MTP-on cell is
+1244.71 / 21.60 tok/s.
+
+16K + 64 ordinary: chunk 1024 is 1054.69 / 18.61 tok/s; chunk 2048 is
+1269.26 / 18.28 tok/s. Prefill does not fall off versus 2K. The 16K
+frontier swaps a 0.06-logit top-2 tie (ids 27353 / 201); top-10 9/10,
+KL 1.83e-3.
+
+`tests/test_step37_forward` asserts the default cap is 2048 and that
+`DS4_STEP37_PREFILL_CHUNK=1024` restores 1024.
+
+## Remaining bottlenecks (after Prefill 3)
 
 Prefill: Q4 worklist MMQ 0.678s, IQ2 gate/up 0.458s, generic `mul_mat_q`
 0.379s / 1176 launches.

@@ -160,11 +160,11 @@ int main(int argc, char **argv) {
         ds4_die("Step context admission geometry mismatch");
     }
     (void)unsetenv("DS4_STEP37_PREFILL_CHUNK");
-    if (step37_prefill_cap(4096) != 1024u || step37_prefill_cap(512) != 512u) {
+    if (step37_prefill_cap(4096) != 2048u || step37_prefill_cap(1024) != 1024u) {
         ds4_die("Step default prefill chunk mismatch");
     }
-    if (setenv("DS4_STEP37_PREFILL_CHUNK", "512", 1) != 0 ||
-        step37_prefill_cap(4096) != 512u ||
+    if (setenv("DS4_STEP37_PREFILL_CHUNK", "1024", 1) != 0 ||
+        step37_prefill_cap(4096) != 1024u ||
         unsetenv("DS4_STEP37_PREFILL_CHUNK") != 0) {
         ds4_die("Step prefill chunk restore mismatch");
     }
