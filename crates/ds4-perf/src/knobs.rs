@@ -87,7 +87,7 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         "DS4_STEP37_PREFILL_CHUNK" => family.starts_with("step") && (1..=4096).contains(&n),
         "DS4_STEP37_NO_SWA_HMMA" => family.starts_with("step") && value == "1",
         "DS4_EXAONE_PREFILL_GQA" => {
-            (family.starts_with("step") || family.starts_with("exaone") || family == "k2")
+            (family.starts_with("step") || family.starts_with("exaone") || family.starts_with("k2"))
                 && value == "0"
         }
         _ => false,
@@ -179,6 +179,8 @@ mod tests {
         assert!(tunable("DS4_STEP37_NO_SWA_HMMA"));
         assert!(tunable("DS4_EXAONE_PREFILL_GQA"));
         assert!(validate("DS4_EXAONE_PREFILL_GQA", "0", "step37").is_ok());
+        assert!(validate("DS4_EXAONE_PREFILL_GQA", "0", "k2-horizon").is_ok());
+        assert!(validate("DS4_EXAONE_PREFILL_GQA", "0", "k2").is_ok());
         assert!(validate("DS4_EXAONE_PREFILL_GQA", "1", "step37").is_err());
         assert!(validate("DS4_EXAONE_PREFILL_GQA", "0", "qwen").is_err());
         for value in ["1", "512", "1024", "2048", "4096"] {
