@@ -58,6 +58,8 @@ Do not reuse recorded PIDs or assume those services are running.
   numerical and KV verification; measured qualification limits.
   GB10 throughput: [BASE artifacts](step37-optimization-2026-09-13.md),
   then [SWA HMMA, chunk 2048, MTP verify GQA](step37-optimization-2026-09-13-r2.md).
+  [Banked MTP, partial fork and disk KV](step37-serving-2026-09-13.md);
+  [300–2200 MHz matched optimization rounds](step37-optimization-2026-09-13-r3.md).
 
 - [Inkling Small integration](inkling-small.md): MQ85GB/MTP serving,
   multimodal checks and remaining qualification.

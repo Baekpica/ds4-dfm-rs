@@ -1,5 +1,9 @@
 {
   "hardware": "NVIDIA GB10",
+  "runtime_source_commits": {
+    "candidate": "cacb3bcd47d5865edc185e1d79f22556d807debf",
+    "final": "8029894"
+  },
   "gpu_clock_lock_mhz": [
     300,
     2200
@@ -915,6 +919,358 @@
         "speed_gate": true,
         "exact_proof_gate": false
       }
+    },
+    "final-2048": {
+      "binary_sha256": "958d5c59b88960356740654306270417d89ce41410a2562861c4d91432910490",
+      "input_tokens": 2048,
+      "allocated_context": 2120,
+      "switch_values": [
+        [
+          1,
+          1,
+          1
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "samples": [
+        {
+          "repeat": 0,
+          "arm": 0,
+          "prefill_tps": 1187.7,
+          "gen_tokens": 64,
+          "gen_tps": 21.89,
+          "label": "final-2048-0-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 0,
+          "arm": 1,
+          "prefill_tps": 1194.64,
+          "gen_tokens": 64,
+          "gen_tps": 22.75,
+          "label": "final-2048-0-1",
+          "chunk": "4096",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 1,
+          "arm": 1,
+          "prefill_tps": 1196.84,
+          "gen_tokens": 64,
+          "gen_tps": 22.88,
+          "label": "final-2048-1-1",
+          "chunk": "4096",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 1,
+          "arm": 0,
+          "prefill_tps": 1186.06,
+          "gen_tokens": 64,
+          "gen_tps": 21.78,
+          "label": "final-2048-1-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 2,
+          "arm": 0,
+          "prefill_tps": 1185.37,
+          "gen_tokens": 64,
+          "gen_tps": 21.92,
+          "label": "final-2048-2-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 2,
+          "arm": 1,
+          "prefill_tps": 1193.35,
+          "gen_tokens": 64,
+          "gen_tps": 22.77,
+          "label": "final-2048-2-1",
+          "chunk": "4096",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        }
+      ],
+      "analysis": {
+        "pairs": [],
+        "phase": {
+          "prefill_tps": {
+            "a": 1186.06,
+            "b": 1194.64,
+            "gain_pct": 0.7234035377637005,
+            "paired_pct": [
+              0.5843226403974056,
+              0.9088916243697565,
+              0.6732075217020794
+            ],
+            "a_samples": [
+              1187.7,
+              1186.06,
+              1185.37
+            ],
+            "b_samples": [
+              1194.64,
+              1196.84,
+              1193.35
+            ]
+          },
+          "gen_tps": {
+            "a": 21.89,
+            "b": 22.77,
+            "gain_pct": 4.020100502512558,
+            "paired_pct": [
+              3.9287345820009145,
+              5.050505050505039,
+              3.8777372262773557
+            ],
+            "a_samples": [
+              21.89,
+              21.78,
+              21.92
+            ],
+            "b_samples": [
+              22.75,
+              22.88,
+              22.77
+            ]
+          }
+        },
+        "proof": {
+          "0-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "0-1-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "1-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "1-1-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "2-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "2-1-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          }
+        },
+        "speed_gate": false,
+        "exact_proof_gate": true
+      }
+    },
+    "final-16384": {
+      "binary_sha256": "958d5c59b88960356740654306270417d89ce41410a2562861c4d91432910490",
+      "input_tokens": 16384,
+      "allocated_context": 16456,
+      "switch_values": [
+        [
+          1,
+          1,
+          1
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "samples": [
+        {
+          "repeat": 0,
+          "arm": 0,
+          "prefill_tps": 1203.5,
+          "gen_tokens": 64,
+          "gen_tps": 14.29,
+          "label": "final-16384-0-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 0,
+          "arm": 1,
+          "prefill_tps": 1287.39,
+          "gen_tokens": 64,
+          "gen_tps": 16.29,
+          "label": "final-16384-0-1",
+          "chunk": "4096",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 1,
+          "arm": 1,
+          "prefill_tps": 1290.22,
+          "gen_tokens": 64,
+          "gen_tps": 16.35,
+          "label": "final-16384-1-1",
+          "chunk": "4096",
+          "observed_sm_max_mhz": 2190,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 1,
+          "arm": 0,
+          "prefill_tps": 1203.19,
+          "gen_tokens": 64,
+          "gen_tps": 14.24,
+          "label": "final-16384-1-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 2,
+          "arm": 0,
+          "prefill_tps": 1203.08,
+          "gen_tokens": 64,
+          "gen_tps": 14.26,
+          "label": "final-16384-2-0",
+          "chunk": "2048",
+          "observed_sm_max_mhz": 2197,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        },
+        {
+          "repeat": 2,
+          "arm": 1,
+          "prefill_tps": 1290.01,
+          "gen_tokens": 64,
+          "gen_tps": 16.34,
+          "label": "final-16384-2-1",
+          "chunk": "4096",
+          "observed_sm_max_mhz": 2190,
+          "exit": 0,
+          "clock_limit_exceeded": false
+        }
+      ],
+      "analysis": {
+        "pairs": [],
+        "phase": {
+          "prefill_tps": {
+            "a": 1203.19,
+            "b": 1290.01,
+            "gain_pct": 7.215817950614611,
+            "paired_pct": [
+              6.970502700457004,
+              7.233271553121279,
+              7.225620906340402
+            ],
+            "a_samples": [
+              1203.5,
+              1203.19,
+              1203.08
+            ],
+            "b_samples": [
+              1287.39,
+              1290.22,
+              1290.01
+            ]
+          },
+          "gen_tps": {
+            "a": 14.26,
+            "b": 16.34,
+            "gain_pct": 14.586255259467041,
+            "paired_pct": [
+              13.99580125962212,
+              14.81741573033708,
+              14.586255259467041
+            ],
+            "a_samples": [
+              14.29,
+              14.24,
+              14.26
+            ],
+            "b_samples": [
+              16.29,
+              16.35,
+              16.34
+            ]
+          }
+        },
+        "proof": {
+          "0-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "0-1-proof": {
+            "tokens_equal": false,
+            "logits_equal": false,
+            "max_abs": 1.4047215,
+            "relative_rms": 0.045557886910841026
+          },
+          "1-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "1-1-proof": {
+            "tokens_equal": false,
+            "logits_equal": false,
+            "max_abs": 1.4047215,
+            "relative_rms": 0.045557886910841026
+          },
+          "2-0-proof": {
+            "tokens_equal": true,
+            "logits_equal": true,
+            "max_abs": 0.0,
+            "relative_rms": 0.0
+          },
+          "2-1-proof": {
+            "tokens_equal": false,
+            "logits_equal": false,
+            "max_abs": 1.4047215,
+            "relative_rms": 0.045557886910841026
+          }
+        },
+        "speed_gate": true,
+        "exact_proof_gate": false
+      }
     }
   },
   "numerical_contract": "D1/D2/P1: exact full vocabulary and tokens. P2: explained cross-width arithmetic; inspect report for cache and bounded answer gates.",
@@ -1137,5 +1493,46 @@
       "seconds": 15.585654574999353,
       "prompt_sha256": "e0e49f3f822a39bf87364b1e4c5a32a3f7a8cbadcdc288f483b600013ab49227"
     }
-  ]
+  ],
+  "serving": {
+    "text": {
+      "configured_context": 65536,
+      "banks": 2,
+      "chunk": 2048,
+      "requests": 4,
+      "cached_tokens_on_repeat_and_concurrent": 4096,
+      "continuous_routes": 4
+    },
+    "images": {
+      "configured_context": 8192,
+      "banks": 2,
+      "chunk": 512,
+      "requests": 9,
+      "routes": {
+        "chat_serial": 6,
+        "responses_serial": 2,
+        "messages_serial": 1
+      }
+    },
+    "disk": {
+      "native_round_trip": "pass",
+      "files_written": true,
+      "chat_restart_cached_tokens": 0,
+      "reason": "official template removes previous thinking text; restored payload has no earlier partial checkpoint"
+    },
+    "limits": [
+      "262144 startup: fitted to one bank, memory guard stopped before readiness",
+      "8192 image+bank at chunk4096: fitted to one bank; image serial admission HTTP503",
+      "native bank planner reads DS4_MEM_FLOOR_GB; Rust serial admission reads --mem-floor-gb"
+    ]
+  },
+  "quality_review": {
+    "strict_2048": 4,
+    "strict_4096": 3,
+    "semantic_2048": 4,
+    "semantic_4096": 4,
+    "cases": 4,
+    "semantic_scoring_added_after_strict_failure": true,
+    "difference": "Korean answer sum is string 42 instead of integer 42"
+  }
 }

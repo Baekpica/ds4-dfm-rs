@@ -113,6 +113,30 @@ continuation and draft acceptance. It is not an isolated decode-kernel gain.
 Ordinary decode is faster on this particular long-context workload; MTP is
 not universally faster.
 
+## Final aggregate A/B
+
+The rebuilt final binary uses source `8029894` (SHA-256
+`958d5c59b88960356740654306270417d89ce41410a2562861c4d91432910490`).
+A enables all three legacy switches and chunk 2048; B enables all retained
+changes and chunk 4096. The same fresh-process protocol is repeated.
+
+| Input + output | Prefill A → B, tok/s | Net change | MTP Decode A → B, tok/s | Net change |
+|---|---:|---:|---:|---:|
+| 2048 + 64 | 1186.06 → 1194.64 | +0.72% | 21.89 → 22.77 | +4.02% |
+| 16384 + 64 | 1203.19 → 1290.01 | +7.22% | 14.26 → 16.34 | +14.59% |
+
+The 2K aggregate preserves every frontier logit and output token. Its
+prefill gain is below the per-round 1% retention threshold; it is reported
+as measured, not relabeled as another valid prefill round. Prefill 1 was
+isolated with chunk 2048 in both arms; the aggregate also changes the
+allocated chunk (context limits B to 2120). Round percentages do not predict
+the aggregate. The two retained prefill rounds are the separate P1/P2
+comparisons above.
+
+The 16K aggregate changes the continuation and draft acceptance, as in P2;
+its decode gain includes that effect. The separate ordinary P2 control is
+18.41 tok/s after the change, faster than MTP on this workload.
+
 ## Correctness
 
 - `tests/test_step37_checkpoint`: wrapped target/predictor windows, full KV,

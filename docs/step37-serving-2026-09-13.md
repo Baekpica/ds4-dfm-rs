@@ -1,7 +1,6 @@
-# Step 3.7 Flash: serving parity with the Qwen worker
+# Step 3.7 Flash: banked serving and cache reuse
 
-This work brings Step 3.7 Flash up to the serving-option level of the Qwen3.8
-worker: disk KV checkpoints, opt-in multiple sequence banks with fork and warm
+This work adds several Qwen3.8 serving options to Step 3.7 Flash: disk KV checkpoints, opt-in multiple sequence banks with fork and warm
 reuse, and per-bank disk KV. It builds on landed main (`32842f3`, the post-#37
 optimization campaign) and does not change the numerics of the serial forward,
 MTP, or vision paths.
@@ -107,32 +106,64 @@ logits, source-bank preservation, shared lineage and the restored rewind floor.
 The follow-up MQ83 gate passed with the GPU locked to 300–2200 MHz (observed
 2197 MHz); this is correctness evidence, not an uncapped speed comparison.
 
-## Running the two configurations
+## Verified configurations
 
-Single stream (serial + MTP + disk KV):
+Serial text (32768 configured context; long-answer probes use about 17.8K):
 
 ```sh
-./ds4-server --cuda --port 8000 -c 262144 \
+./ds4-server --cuda --port 8000 -c 32768 \
   -m "$STEP/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf" \
   --mtp "$STEP/MTP/Step3.7-flash-mtp-Q8_0.gguf" --mtp-draft 3 \
-  --vision "$STEP/vision/mmproj-step3.7-flash-f16.gguf" \
   --kv-disk-dir /path/to/step-kv --kv-disk-space-mb 32768
 ```
 
-Concurrent sessions (two banks, fork, warm, bank disk KV):
+Concurrent text (two 65536-context banks; bounded 6.3K requests):
 
 ```sh
+DS4_MEM_FLOOR_GB=12 DS4_STEP37_PREFILL_CHUNK=2048 \
 DS4_STEP37_BATCH=1 DS4_SERVER_COALESCE_MAX=2 DS4_SERVER_CONTINUOUS=1 \
 DS4_SERVER_FORK=1 DS4_SERVER_FORK_PARTIAL=1 \
-./ds4-server --cuda --port 8000 -c 262144 \
+./ds4-server --cuda --port 8000 --mem-floor-gb 12 -c 65536 \
   -m "$STEP/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf" \
   --mtp "$STEP/MTP/Step3.7-flash-mtp-Q8_0.gguf" --mtp-draft 3 \
   --kv-disk-dir /path/to/step-kv --kv-disk-space-mb 32768
 ```
 
-Both accept the MTP owner sidecar (`DS4_CUDA_WEIGHT_IPC_MANIFEST`) from the
-initial-integration doc. Bank count is subject to the memory-fit policy;
-these commands do not establish that two full 262K banks fit on every host.
+The recorded tests import one shared BASE+MTP VMM owner with
+`DS4_CUDA_WEIGHT_IPC_MANIFEST` and `DS4_CUDA_WEIGHT_IPC_SCOPE=both`.
+They keep a 12GiB host-memory guard. Set both `DS4_MEM_FLOOR_GB=12` and
+`--mem-floor-gb 12`: the native bank planner reads the environment while the
+Rust serial-admission policy reads the CLI setting. A configured context is
+not a full-length capacity proof.
+
+For mixed text/image serving, the tested two-bank configuration is `-c 8192`,
+`DS4_STEP37_PREFILL_CHUNK=512`, with the same MTP options and
+`--vision "$STEP/vision/mmproj-step3.7-flash-f16.gguf"`. Nine image requests
+pass across three APIs: multiple screenshot resolutions, a changed count,
+invoice and photo follow-ups, and four-image streaming. Images take the
+serial lane beside the text banks. At chunk 4096 the planner reduced the
+bank count to one, then image admission returned HTTP 503 because no serial
+graph fit beside it. Smaller workspaces are required for this combination.
+
+The two 64K text banks serve concurrent requests through the continuous
+route, with no fallback. A repeat and both concurrent requests reuse 4096
+of about 6324 prompt tokens and preserve their answers. Native full/partial
+fork and disk round-trip correctness are established by the gates below.
+
+Disk files are written successfully, but a normal Chat follow-up after
+restart was cold: the official template removes the prior empty thinking
+block, so the saved text no longer matches the replayed prefix. Disk restore
+drops partial-checkpoint lineage and cannot recover that earlier frontier.
+A completion request also applies the template; passing a serialized prompt
+there does not bypass it. Do not infer cross-restart Chat cache hits from
+payload round-trip tests. Live partial reuse and disk reuse have different
+qualification boundaries.
+
+A `-c 262144`, two-bank startup fitted down to one 14.72GiB bank and was
+stopped by the host-memory guard before readiness. It is not qualified by
+this campaign. No clock-limit violation was recorded. These limits remain
+relative to the Qwen worker; the Step options do not imply identical memory
+costs or context capacity.
 
 The follow-up MTP gate uses one MQ83 mapping and an owner-imported Q8 MTP.
 Two banks, full/partial fork and serial controls match all generated tokens,
@@ -140,4 +171,5 @@ all 128,896 logits, every live target/predictor KV row and held hidden row.
 The disk gate clears KV before restoration and compares the complete saved
 payload byte-for-byte. Synthetic wrapped-ring restoration, cancellation,
 EOS and forced-token boundaries also pass under the 300–2200 MHz cap.
-Live HTTP and performance qualification are recorded separately.
+See the [capped performance report](step37-optimization-2026-09-13-r3.md) and
+its sample data for the matched A/B protocol.
