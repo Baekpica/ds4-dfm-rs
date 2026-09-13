@@ -27721,7 +27721,12 @@ extern "C" int ds4_gpu_qwen4exp_qsa_store_kv_tensor(
  * storage once the scores no longer need the keys, and the PV loop reads
  * it from shared memory.  Before, every PV step gathered its 1 KiB value
  * row from L2/DRAM on the critical path (32 dependent round trips per
- * tile behind an unroll of four); the FMAs and their order are unchanged. */
+ * tile behind an unroll of four); the FMAs and their order are unchanged.
+ *
+ * Default PV mapping is 12 heads x 1 dim per thread.  DS4_QWEN_QSA_PV6X2
+ * selects 6 heads x 2 dims (t%128 -> dims 2i,2i+1; t/128 -> heads 0-5
+ * or 6-11).  That mapping is bit-identical and was rejected on the
+ * unprofiled 8K/64K bar (no >=2% e2e gain). */
 #define QSA_FUSED_TILE 32u
 #define QSA_FUSED_THREADS 256u
 #define QSA_FUSED_WARPS (QSA_FUSED_THREADS / 32u)
@@ -27742,12 +27747,14 @@ __device__ __forceinline__ uint32_t qsa_part_slot(uint32_t slot,
     return slot ^ (8u * head_group);
 }
 
-/* Read once: the score scratch is sized at allocation from the same
- * answer the dispatcher uses later. */
+/* Diagnostic kill switches, read per call so a fixture can compare fused,
+ * split, and both PV mappings in one process. */
 static int qsa_fused_disabled(void) {
-    static int disabled = -1;
-    if (disabled < 0) disabled = getenv("DS4_QWEN_QSA_NO_FUSED") != NULL;
-    return disabled;
+    return getenv("DS4_QWEN_QSA_NO_FUSED") != NULL;
+}
+
+static int qsa_fused_pv6x2(void) {
+    return getenv("DS4_QWEN_QSA_PV6X2") != NULL;
 }
 
 static int qsa_fused_shape(uint32_t heads, uint32_t kv_heads,
@@ -27762,6 +27769,7 @@ static int qsa_fused_applies(uint32_t rows, uint32_t heads,
 }
 
 
+template<bool Pv6x2>
 __global__ static void __launch_bounds__(QSA_FUSED_THREADS, 2)
 qwen4exp_qsa_attention_fused_gqa12_kernel(
         float *out, const float *query, const float *gate,
@@ -27927,29 +27935,52 @@ qwen4exp_qsa_attention_fused_gqa12_kernel(
             if (token < 0 || (uint32_t)token >= cache_cap) token = -1;
             token_tile[cur ^ 1u][tid] = (uint32_t)token;
         }
-#pragma unroll
-        for (uint32_t h = 0; h < 12u; h++) acc[h] *= scale_s[h];
         /* Masked slots carry p = 0 and a zero value row: same products
          * as the old kernel's clamped gather of row 0 times p = 0. */
+        if constexpr (Pv6x2) {
+            const uint32_t pv_h0 = (tid >> 7u) * 6u;
+            const uint32_t d0 = (tid & 127u) * 2u;
+#pragma unroll
+            for (uint32_t h = 0; h < 6u; h++) {
+                const float s = scale_s[pv_h0 + h];
+                acc[2u * h] *= s;
+                acc[2u * h + 1u] *= s;
+            }
 #pragma unroll 8
-        for (uint32_t t = 0; t < tile_count; t++) {
-            const float v = key_tile[t * QSA_FUSED_VALUE_STRIDE + tid];
-            const float4 *p4 = (const float4 *)(prob + t * 12u);
-            const float4 p0 = p4[0];
-            const float4 p1 = p4[1];
-            const float4 p2 = p4[2];
-            acc[0] = fmaf(p0.x, v, acc[0]);
-            acc[1] = fmaf(p0.y, v, acc[1]);
-            acc[2] = fmaf(p0.z, v, acc[2]);
-            acc[3] = fmaf(p0.w, v, acc[3]);
-            acc[4] = fmaf(p1.x, v, acc[4]);
-            acc[5] = fmaf(p1.y, v, acc[5]);
-            acc[6] = fmaf(p1.z, v, acc[6]);
-            acc[7] = fmaf(p1.w, v, acc[7]);
-            acc[8] = fmaf(p2.x, v, acc[8]);
-            acc[9] = fmaf(p2.y, v, acc[9]);
-            acc[10] = fmaf(p2.z, v, acc[10]);
-            acc[11] = fmaf(p2.w, v, acc[11]);
+            for (uint32_t t = 0; t < tile_count; t++) {
+                const float2 v = *(const float2 *)(
+                    key_tile + t * QSA_FUSED_VALUE_STRIDE + d0);
+                const float *ph = prob + t * 12u + pv_h0;
+#pragma unroll
+                for (uint32_t h = 0; h < 6u; h++) {
+                    const float p = ph[h];
+                    acc[2u * h] = fmaf(p, v.x, acc[2u * h]);
+                    acc[2u * h + 1u] = fmaf(p, v.y, acc[2u * h + 1u]);
+                }
+            }
+        } else {
+#pragma unroll
+            for (uint32_t h = 0; h < 12u; h++) acc[h] *= scale_s[h];
+#pragma unroll 8
+            for (uint32_t t = 0; t < tile_count; t++) {
+                const float v = key_tile[t * QSA_FUSED_VALUE_STRIDE + tid];
+                const float4 *p4 = (const float4 *)(prob + t * 12u);
+                const float4 p0 = p4[0];
+                const float4 p1 = p4[1];
+                const float4 p2 = p4[2];
+                acc[0] = fmaf(p0.x, v, acc[0]);
+                acc[1] = fmaf(p0.y, v, acc[1]);
+                acc[2] = fmaf(p0.z, v, acc[2]);
+                acc[3] = fmaf(p0.w, v, acc[3]);
+                acc[4] = fmaf(p1.x, v, acc[4]);
+                acc[5] = fmaf(p1.y, v, acc[5]);
+                acc[6] = fmaf(p1.z, v, acc[6]);
+                acc[7] = fmaf(p1.w, v, acc[7]);
+                acc[8] = fmaf(p2.x, v, acc[8]);
+                acc[9] = fmaf(p2.y, v, acc[9]);
+                acc[10] = fmaf(p2.z, v, acc[10]);
+                acc[11] = fmaf(p2.w, v, acc[11]);
+            }
         }
         __syncthreads();
     }
@@ -27961,14 +27992,36 @@ qwen4exp_qsa_attention_fused_gqa12_kernel(
                 run_sum[1] > 0.0f ? 1.0f / run_sum[1] : 0.0f;
     }
     __syncthreads();
+    if constexpr (Pv6x2) {
+        const uint32_t pv_h0 = (tid >> 7u) * 6u;
+        const uint32_t d0 = (tid & 127u) * 2u;
 #pragma unroll
-    for (uint32_t h = 0; h < 12u; h++) {
-        const uint64_t at = (first_head + h) * 256u + tid;
-        const float gate_value = gate[at];
-        const float gate_scale = gate_value >= 0.0f
-            ? 1.0f / (1.0f + expf(-gate_value))
-            : expf(gate_value) / (1.0f + expf(gate_value));
-        out[at] = acc[h] * inv_sum_s[h] * gate_scale;
+        for (uint32_t h = 0; h < 6u; h++) {
+            const uint32_t head = pv_h0 + h;
+            const uint64_t at0 = (first_head + head) * 256u + d0;
+            const uint64_t at1 = at0 + 1u;
+            const float g0 = gate[at0];
+            const float g1 = gate[at1];
+            const float inv = inv_sum_s[head];
+            const float gs0 = g0 >= 0.0f
+                ? 1.0f / (1.0f + expf(-g0))
+                : expf(g0) / (1.0f + expf(g0));
+            const float gs1 = g1 >= 0.0f
+                ? 1.0f / (1.0f + expf(-g1))
+                : expf(g1) / (1.0f + expf(g1));
+            out[at0] = acc[2u * h] * inv * gs0;
+            out[at1] = acc[2u * h + 1u] * inv * gs1;
+        }
+    } else {
+#pragma unroll
+        for (uint32_t h = 0; h < 12u; h++) {
+            const uint64_t at = (first_head + h) * 256u + tid;
+            const float gate_value = gate[at];
+            const float gate_scale = gate_value >= 0.0f
+                ? 1.0f / (1.0f + expf(-gate_value))
+                : expf(gate_value) / (1.0f + expf(gate_value));
+            out[at] = acc[h] * inv_sum_s[h] * gate_scale;
+        }
     }
 }
 
@@ -28008,12 +28061,21 @@ extern "C" int ds4_gpu_qwen4exp_qsa_attention_tensor(
     }
     if (fused) {
         dim3 fused_grid(kv_heads, rows);
-        qwen4exp_qsa_attention_fused_gqa12_kernel<<<
-            fused_grid, QSA_FUSED_THREADS, 0, ds4_current_stream()>>>(
-            (float *)out->ptr, (const float *)query->ptr,
-            (const float *)gate->ptr, (const float *)k_cache->ptr,
-            (const float *)v_cache->ptr, (const int32_t *)selected->ptr,
-            (const uint32_t *)counts->ptr, selected_cap, cache_cap);
+        if (qsa_fused_pv6x2()) {
+            qwen4exp_qsa_attention_fused_gqa12_kernel<true><<<
+                fused_grid, QSA_FUSED_THREADS, 0, ds4_current_stream()>>>(
+                (float *)out->ptr, (const float *)query->ptr,
+                (const float *)gate->ptr, (const float *)k_cache->ptr,
+                (const float *)v_cache->ptr, (const int32_t *)selected->ptr,
+                (const uint32_t *)counts->ptr, selected_cap, cache_cap);
+        } else {
+            qwen4exp_qsa_attention_fused_gqa12_kernel<false><<<
+                fused_grid, QSA_FUSED_THREADS, 0, ds4_current_stream()>>>(
+                (float *)out->ptr, (const float *)query->ptr,
+                (const float *)gate->ptr, (const float *)k_cache->ptr,
+                (const float *)v_cache->ptr, (const int32_t *)selected->ptr,
+                (const uint32_t *)counts->ptr, selected_cap, cache_cap);
+        }
         return cuda_ok(cudaGetLastError(),
                        "Qwen4Exp QSA fused attention launch");
     }

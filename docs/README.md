@@ -20,7 +20,7 @@ release candidate or describe live processes.
 | [API surface matrix](ds4-api-surface-matrix.md) | Wire contracts, routing and unsupported behavior |
 | [Model families](ds4-dfm-model-families.md) | Family contracts and dated Spark evidence |
 | [Qwen FP8 PLE](qwen38-ple-fp8.md) | Sidecar selection, KV compatibility and paired card sweeps |
-| [Qwen performance, September 14](qwen38-perf-2026-09-14.md) | Draft/prefix A/B results, rejected experiments and serving limits |
+| [Qwen performance, September 14](qwen38-perf-2026-09-14.md) | Draft/prefix A/B, rejected QSA PV / pair-reuse / HC, serving limits |
 | [Memory guard](host-memory-guard.md) | Admission policy and operational limits |
 | [ds4-perf](ds4-perf.md) | Inspect, scout, compare, optimize and evidence contracts |
 | [Optimization playbook](prefill-decode-optimization-playbook.md) | Execution-path diagnosis and numerical proof |
@@ -33,8 +33,9 @@ release candidate or describe live processes.
   C-shared gaps and the completed repository split.
 - Qwen: [long-context prefill, September 4](qwen38-long-context-prefill-2026-09-04.md),
   [September 6](qwen38-prefill-2026-09-06.md),
-  [September 7](qwen38-prefill-2026-09-07.md), and
-  [image/text/agent benchmarks, September 7](qwen38-image-2026-09-07.md).
+  [September 7](qwen38-prefill-2026-09-07.md),
+  [image/text/agent benchmarks, September 7](qwen38-image-2026-09-07.md),
+  and [September 14 draft/prefix plus rejected QSA PV](qwen38-perf-2026-09-14.md).
 - K2: [September 5 optimization](k2-optimization-2026-09-05.md) and
   [continued campaign](k2-optimization-2026-09-05-cont.md).
 - [dots3, September 6](dots3-optimization-2026-09-06.md) and
