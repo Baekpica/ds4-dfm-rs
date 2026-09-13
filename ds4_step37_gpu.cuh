@@ -1,6 +1,17 @@
 /* Included by the native CUDA backend; no host or Rust ABI state escapes. */
 #include "cuda/step37_primitives.cuh"
 
+extern "C" int ds4_gpu_step37_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down,
+        const ds4_gpu_tensor *weights, uint32_t width, uint32_t rows) {
+    const uint64_t count = (uint64_t)width * rows;
+    if (!out || !down || !weights || !width || !rows || count > INT_MAX ||
+        out->bytes < count * sizeof(float) || down->bytes < count * 8 * sizeof(float) ||
+        weights->bytes < (uint64_t)rows * 8 * sizeof(float)) { return 0; }
+    step37_expert_sum<<<(count + 255) / 256, 256, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)down->ptr, (const float *)weights->ptr, width, count);
+    return cuda_ok(cudaGetLastError(), "Step37 expert sum");
+}
+
 extern "C" int ds4_gpu_step37_swiglu(
         ds4_gpu_tensor *out, const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up,
         const ds4_gpu_tensor *weights, uint32_t width, uint32_t rows, float limit) {

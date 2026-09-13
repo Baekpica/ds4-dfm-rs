@@ -55,6 +55,32 @@ static void activation(cudaStream_t stream) {
     CUDA(cudaFree(g)); CUDA(cudaFree(u)); CUDA(cudaFree(w)); CUDA(cudaFree(y));
 }
 
+static void expert_sum(cudaStream_t stream) {
+    enum { ROWS = 2, USED = 8, WIDTH = 19 };
+    float down[ROWS * USED * WIDTH], weights[ROWS * USED], got[ROWS * WIDTH];
+    for (unsigned i = 0; i < ROWS * USED * WIDTH; i++) { down[i] = sin(i * 0.41) * 12; }
+    for (unsigned i = 0; i < ROWS * USED; i++) { weights[i] = (i + 1) * 0.017f; }
+    float *d = upload(down, ROWS * USED * WIDTH), *w = upload(weights, ROWS * USED);
+    float *y = upload(down, ROWS * WIDTH);
+    step37_expert_sum<<<1, 64, 0, stream>>>(y, d, w, WIDTH, ROWS * WIDTH);
+    CUDA(cudaStreamSynchronize(stream));
+    CUDA(cudaMemcpy(got, y, sizeof(got), cudaMemcpyDeviceToHost));
+    for (unsigned i = 0; i < ROWS * WIDTH; i++) {
+        double sum = 0;
+        for (unsigned e = 0; e < USED; e++) {
+            sum += double(down[(i / WIDTH * USED + e) * WIDTH + i % WIDTH]) * weights[i / WIDTH * USED + e];
+        }
+        close(got[i], sum);
+    }
+    down[WIDTH] = NAN;
+    CUDA(cudaMemcpy(d, down, sizeof(down), cudaMemcpyHostToDevice));
+    step37_expert_sum<<<1, 64, 0, stream>>>(y, d, w, WIDTH, ROWS * WIDTH);
+    CUDA(cudaStreamSynchronize(stream));
+    CUDA(cudaMemcpy(got, y, sizeof(got), cudaMemcpyDeviceToHost));
+    CHECK(std::isnan(got[0]));
+    CUDA(cudaFree(d)); CUDA(cudaFree(w)); CUDA(cudaFree(y));
+}
+
 static void routing(cudaStream_t stream) {
     enum { ROWS = 3, EXPERTS = 288, USED = 8 };
     float *x = upload(fixture_logits, ROWS * EXPERTS);
@@ -164,6 +190,8 @@ int main() {
     CUDA(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
     activation(stream);
     puts("post-SiLU clamp PASS");
+    expert_sum(stream);
+    puts("post-down weighted sum PASS");
     routing(stream);
     puts("router PASS");
     head_gate(stream, 64);

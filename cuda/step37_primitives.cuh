@@ -24,6 +24,20 @@ __global__ static void step37_attn_gate(
     values[i] *= 1.0f / (1.0f + expf(-gate[i / 128]));
 }
 
+/* Keep route multiplication after down projection, including its quantizer.
+ * Sum selected slots in order, with separate F32 multiply/add as in GGUF. */
+__global__ static void step37_expert_sum(float *out, const float *down,
+                                       const float *weights, unsigned width, uint64_t count) {
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) { return; }
+    const uint64_t row = i / width, col = i % width;
+    float sum = 0;
+    for (unsigned e = 0; e < 8; e++) {
+        sum = __fadd_rn(sum, __fmul_rn(down[(row * 8 + e) * width + col], weights[row * 8 + e]));
+    }
+    out[i] = sum;
+}
+
 __global__ static void step37_router(
         int *ids, float *weights, const float *logits, const float *bias) {
     enum { EXPERTS = 288, USED = 8 };

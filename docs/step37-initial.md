@@ -46,9 +46,33 @@ through 262,143 on a non-default stream. The CUDA backend object also builds.
 These component checks do not establish complete model logits or performance.
 
 Rust family selection and native descriptors now bind all 754 main and 55
-MTP tensors. Native loading retains a clear execution guard while the forward
-path is unfinished. The main shape has 45 layers; the three external predictor
+MTP tensors. Native loading retains an execution guard while Rust session
+integration is unfinished. The main shape has 45 layers; the three external predictor
 blocks must not be subtracted from that count.
+
+The standalone eager CUDA forward executes the MQ83 main model. Eight locked
+text fixtures (24–45 tokens, prefill cap 64, eight decode evaluations) produce
+finite full-vocabulary logits and the same 72 greedy choices as the pinned
+StepFun llama.cpp, with both FA and diagnostic F32 attention controls.
+Cross-engine logit parity is **not** qualified: the strict 3% relative-RMS
+criterion fails on 56/72 rows against FA; the worst error is 17.60% (code).
+Changing attention precision within the oracle also changes logits (up to
+13.16% across this suite). Keep these differences explicit.
+
+Investigation fixed the native RMS epsilon (1e-6 → the source's 1e-5). A
+45-layer replay with identical reference inputs bounds local attention error
+at 3e-5 and FFN output error at 0.82%; its final logits have 0.82% relative
+RMS error. The diagnostic oracle keeps F16 KV storage, casts attention inputs
+to F32 and disables TF32; its patch is retained beside the test driver.
+This isolates local arithmetic from accumulated trajectory differences.
+
+At 832 tokens with 64-token chunks, the SWA ring and full-history KV control
+have byte-identical full-vocabulary logits and all 45 layers' live KV rows.
+Rewinding and replaying the last chunk preserves those bytes. This is a
+structural cache fixture, not a throughput or model-quality workload.
+Startup timings include lazy weight materialization and are not performance
+comparisons. The test protocol is in
+[the fixture README](../tests/fixtures/step37/README.md).
 
 The Rust tokenizer matches the pinned upstream tokenizer on 56 text, Unicode,
 tool and media-marker inputs. The unchanged official Jinja matches Python
@@ -56,14 +80,21 @@ Jinja on 20 text/history/image/tool/observation cases across four effort
 values. The adapter adds the template's `fromjson` filter and rejects malformed
 tool JSON. These checks establish input compatibility, not generated output.
 
+The pinned upstream tokenizer JSON, configuration, special-token map and
+Jinja are available in HF commit
+[`9acdcd0`](https://huggingface.co/Baekpica/Step-3.7-Flash-Mixed-Quant-GGUF/commit/9acdcd0e817a029ec486d7fe77fc24be537fdd43).
+The MQ83 directory also contains the template/configuration for discovery beside
+the shards. All seven uploaded files, including `provenance/input-assets.json`,
+passed remote byte verification. This asset upload makes no inference claim.
+
 The image crop planner matches 28 independent official Python cases, including
 thin-image padding, the 728/3024 limits, crop order and media token counts.
 Pixel conversion and vision inference are still pending.
 
-The Spark handoff supplies BF16 full-vocabulary logits and real image fixtures;
-its README records that the MQ83 output comparison has not run. Remaining gates:
+The Spark handoff supplies BF16 logits and real image fixtures. BF16 outputs
+are separate from the MQ83 oracle comparison above. Remaining gates:
 
-- Native main forward, same-artifact oracle logits, short greedy decode and KV transitions.
+- Rust sessions, longer continuations and further cross-engine drift investigation.
 - Official tokenizer/Jinja, tool output parsing and Rust server API checks.
 - External MTP prediction, acceptance and rejected-prefix rollback.
 - Vision processing, encoder/projector execution and real document/chart requests.

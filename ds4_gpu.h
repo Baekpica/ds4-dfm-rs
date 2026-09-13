@@ -4514,6 +4514,8 @@ int ds4_gpu_exaone_moe_matmul_tensor(
 
 /* Step 3.7 CUDA primitives. Frequencies contain the per-layer RoPE factors;
  * positions and the resulting cos/sin table remain on the execution stream. */
+int ds4_gpu_step37_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down,
+                      const ds4_gpu_tensor *weights, uint32_t width, uint32_t rows);
 int ds4_gpu_step37_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
         const ds4_gpu_tensor *up, const ds4_gpu_tensor *weights,
         uint32_t width, uint32_t rows, float limit);
