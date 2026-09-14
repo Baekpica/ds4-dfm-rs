@@ -759,15 +759,18 @@ impl ResolvedPlan {
     }
 
     pub fn env_overrides(&self) -> Vec<(String, String)> {
+        // The legacy alias round-trips: a forced-serial `0` must not come
+        // back as width 1, or a re-read would re-enable the bank lane.
+        let coalesce_max = match self.requested.max_seqs {
+            MaxSeqs::Off => "0".to_string(),
+            _ => self.effective.max_seqs.to_string(),
+        };
         let mut out = vec![
             (
                 "DS4_MEM_FLOOR_GB".into(),
                 self.effective.mem_floor_gb.to_string(),
             ),
-            (
-                "DS4_SERVER_COALESCE_MAX".into(),
-                self.effective.max_seqs.to_string(),
-            ),
+            ("DS4_SERVER_COALESCE_MAX".into(), coalesce_max),
         ];
         match self.effective.prefix_reuse {
             ReuseKind::None => {
@@ -1692,6 +1695,14 @@ mod tests {
             .env_overrides()
             .iter()
             .any(|(k, v)| k == "DS4_QWEN_BATCH" && v == "1"));
+        // Re-reading the published alias must not resurrect the lane.
+        let published = p
+            .env_overrides()
+            .into_iter()
+            .find(|(k, _)| k == "DS4_SERVER_COALESCE_MAX")
+            .map(|(_, v)| v)
+            .unwrap();
+        assert_eq!(MaxSeqs::parse_coalesce(&published).unwrap(), MaxSeqs::Off);
     }
 
     #[test]
