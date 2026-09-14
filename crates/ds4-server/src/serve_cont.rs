@@ -2468,12 +2468,22 @@ mod native {
             cache_prompt: Option<&[u8]>,
             cache_spans: &[ImageCacheSpan],
             prompt_tokens: &[i32],
+            miss: &mut ReuseMiss,
         ) -> Option<WarmAdmitPlan> {
             // Jinja may rewrite earlier messages. Text prefix keys only pick
             // candidates; the complete rendered token sequence validates reuse.
+            let template = self.template.is_none();
             let full = self
                 .warm_full_plan(batch, prompt, cache_prompt)
-                .filter(|plan| self.template.is_none() || plan.tokens == prompt_tokens);
+                .filter(|plan| {
+                    let kept = template || plan.tokens == prompt_tokens;
+                    if !kept {
+                        // A live bank held this conversation; the template
+                        // re-rendered it.
+                        *miss = ReuseMiss::RenderedPrefix;
+                    }
+                    kept
+                });
             let partial =
                 self.warm_partial_plan(batch, prompt, cache_prompt, cache_spans, prompt_tokens);
             match (full, partial) {
@@ -3099,6 +3109,7 @@ mod native {
                         stepper.cache_prompt.as_deref(),
                         &stepper.image_cache_spans,
                         &tokens,
+                        &mut miss,
                     )
                     .or_else(|| {
                         store.as_deref_mut().and_then(|store| {
@@ -3163,10 +3174,25 @@ mod native {
                     admit.place_bank = i32::try_from(target + 1).unwrap_or(0);
                     reuse = ReuseTaken::Cold;
                     // Only a lookup that ran can report an absence; with
-                    // reuse off nothing was examined.
+                    // reuse off nothing was examined. A stored record ruled
+                    // out by identity is a mismatch, not an absence.
                     if miss == ReuseMiss::None && capture_done && self.warm_reuse != ReuseKind::None
                     {
-                        miss = ReuseMiss::NoCheckpoint;
+                        let incompatible = self.identity().zip(store.as_deref_mut()).is_some_and(
+                            |((model_id, quant_bits, ctx), store)| {
+                                store.has_incompatible_prefix(
+                                    &stepper.prompt,
+                                    model_id,
+                                    quant_bits,
+                                    ctx,
+                                )
+                            },
+                        );
+                        miss = if incompatible {
+                            ReuseMiss::PayloadMismatch
+                        } else {
+                            ReuseMiss::NoCheckpoint
+                        };
                     }
                     admit
                 }

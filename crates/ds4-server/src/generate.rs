@@ -856,9 +856,15 @@ fn disk_sync_prompt_impl(
         }
     };
     let Some((path, envelope)) = candidate else {
+        // Order matters: a record that exists but cannot be used, then a
+        // conversation too short to have been stored, then plain absence.
+        let short =
+            i32::try_from(canonical_tokens.len()).unwrap_or(i32::MAX) < store.opt.min_tokens;
         io.note_miss(
             if store.has_incompatible_prefix(prompt, model_id, quant_bits, ctx) {
                 ReuseMiss::PayloadMismatch
+            } else if short {
+                ReuseMiss::BelowThreshold
             } else {
                 ReuseMiss::NoCheckpoint
             },
@@ -3519,6 +3525,43 @@ mod disk_sync_tests {
         io.note_miss(ReuseMiss::RenderedPrefix);
         io.note_miss(ReuseMiss::BelowThreshold);
         assert_eq!(io.miss, ReuseMiss::RenderedPrefix);
+
+        // A conversation too short to have been stored says so, rather than
+        // reporting the absence that shortness caused.
+        let short_dir = std::env::temp_dir().join(format!(
+            "ds4-server-disk-sync-miss-threshold-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&short_dir);
+        let mut short_store = Store::open(
+            &short_dir,
+            16,
+            true,
+            Options {
+                min_tokens: 8,
+                cold_max_tokens: 32,
+                continued_interval_tokens: 8,
+                boundary_trim_tokens: 0,
+                boundary_align_tokens: 0,
+            },
+        )
+        .unwrap();
+        let mut io = FakeSerial::new(&[], b"hi");
+        super::disk_sync_template(
+            &mut io,
+            Some(&mut short_store),
+            0,
+            2,
+            b"hi",
+            &[1],
+            DiskSyncPolicy {
+                save_current: false,
+                load: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(io.miss, ReuseMiss::BelowThreshold);
+        let _ = fs::remove_dir_all(short_dir);
 
         // A record for another model is a mismatch, not an absence: the
         // prompt-keyed entry is there, its identity rules it out.
