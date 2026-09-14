@@ -36,7 +36,7 @@ mod validate;
 
 pub use batch::{
     cont_sample_token, qwen_image_pixel_hash, qwen_image_probe, BankSnapshot, BatchCtx, ContAdmit,
-    ContDriver, QwenImageInfo, QwenImageInput, StaticBatchFinish, StaticBatchRequest,
+    ContDone, ContDriver, QwenImageInfo, QwenImageInput, StaticBatchFinish, StaticBatchRequest,
     StaticBatchResult, CONT_SAMPLE_GREEDY, CONT_SAMPLE_NONE,
 };
 pub use bind::{
@@ -76,8 +76,9 @@ pub use progress::PrefillCheckpoint;
 pub use serving::{
     caps_from_ident, caps_from_shape, host_reuse, parse_disk_space, resolve_plan, serving_caps,
     EffectiveView, EngineFacts, IssueLevel, MaxSeqs, MtpMode, PlanIssue, PrefixReuse,
-    QualifiedView, RequestTrace, RequestedView, ResolvedPlan, ReuseKind, ServingCaps,
-    ServingRequest, Support, DEFAULT_BANK_PERSIST, DEFAULT_MAX_SEQS, DEFAULT_MEM_FLOOR_GB,
+    QualifiedView, RequestTrace, RequestedView, ResolvedPlan, ReuseKind, ReuseTaken, ServingCaps,
+    ServingRequest, SpecLane, Support, DEFAULT_BANK_PERSIST, DEFAULT_MAX_SEQS,
+    DEFAULT_MEM_FLOOR_GB,
 };
 pub use session::{
     dump_cmd as session_dump_cmd, RewriteKind, SessionBackend, SessionLedger, SyncPlan,

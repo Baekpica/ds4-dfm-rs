@@ -1828,6 +1828,7 @@ static void cont_tramp_on_done(void *ud, void *user, const int *tokens,
         stats.decode_ms = (native.done_sec - native.first_token_sec) * 1e3;
         stats.decode_tokens = native.decode_tokens;
         stats.decode_steps = native.decode_steps;
+        stats.spec_drafts = native.spec_drafts;
     }
     if (t->on_done) {
         t->on_done(t->ud, user, (const int32_t *)tokens, (int32_t)n,

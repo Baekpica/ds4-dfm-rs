@@ -78,6 +78,16 @@ pub enum MtpKind {
     DeepSeek,
 }
 
+/// Where speculative decode executes for a family. `Serial` families also
+/// speculate on `NativeDecode`; `Bank` families only speculate inside the
+/// continuous driver, so a disabled lane removes the feature entirely.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpecLane {
+    None,
+    Serial,
+    Bank,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReuseKind {
     None,
@@ -97,6 +107,7 @@ pub struct ServingCaps {
     pub snapshot: Support,
     pub mtp: MtpKind,
     pub mtp_support: Support,
+    pub spec_lane: SpecLane,
     pub qualified_ctx: Option<u32>,
     pub qualified_banks: Option<u32>,
     pub qualified_prompt: Option<u32>,
@@ -132,6 +143,8 @@ pub struct EngineFacts {
     pub seq_cap: Option<u32>,
     pub disk_ready: Option<bool>,
     pub mtp_path_ok: Option<bool>,
+    /// `Some(false)` once the native fit refused the continuous lane.
+    pub cont_lane: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -210,10 +223,27 @@ pub fn host_reuse(lcp: u32, source_end: u32, ckpt: Option<u32>) -> ReusePath {
     }
 }
 
+/// What the host actually did to reuse KV, recorded where the decision is
+/// made. Counters cannot tell these apart: an exact-frontier append also
+/// prefills the new turn, and a fork looks like any other prefix hit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReuseTaken {
+    /// Nothing reused.
+    #[default]
+    Cold,
+    /// Reused a state ending at this prompt's common prefix; only the
+    /// appended suffix is prefilled.
+    Exact,
+    /// Restored a checkpoint below the common prefix and replayed the gap.
+    Partial,
+    /// Copied another bank's state, preserving the source.
+    Fork,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RequestTrace {
     pub effective_lane: &'static str,
-    pub reuse_kind: &'static str,
+    pub reuse_kind: ReuseTaken,
     pub speculation_active: bool,
     pub fallback_reason: Option<String>,
 }
@@ -399,6 +429,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             snapshot: Support::Present,
             mtp: MtpKind::None,
             mtp_support: Support::None,
+            spec_lane: SpecLane::None,
             qualified_ctx: Some(32768),
             qualified_banks: Some(1),
             qualified_prompt: None,
@@ -417,6 +448,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             snapshot: Support::Qualified,
             mtp: MtpKind::Embedded,
             mtp_support: Support::Qualified,
+            spec_lane: SpecLane::Bank,
             qualified_ctx: Some(262144),
             qualified_banks: Some(2),
             qualified_prompt: None,
@@ -433,6 +465,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             snapshot: Support::Qualified,
             mtp: MtpKind::Sidecar,
             mtp_support: Support::Qualified,
+            spec_lane: SpecLane::Serial,
             qualified_ctx: Some(65536),
             qualified_banks: Some(2),
             qualified_prompt: Some(6300),
@@ -449,6 +482,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             snapshot: Support::Qualified,
             mtp: MtpKind::None,
             mtp_support: Support::None,
+            spec_lane: SpecLane::None,
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
@@ -465,6 +499,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             snapshot: Support::Qualified,
             mtp: MtpKind::None,
             mtp_support: Support::None,
+            spec_lane: SpecLane::None,
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
@@ -481,6 +516,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             snapshot: Support::Qualified,
             mtp: MtpKind::None,
             mtp_support: Support::None,
+            spec_lane: SpecLane::None,
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
@@ -497,6 +533,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             snapshot: Support::Qualified,
             mtp: MtpKind::BoundOnly,
             mtp_support: Support::None,
+            spec_lane: SpecLane::None,
             qualified_ctx: None,
             qualified_banks: Some(1),
             qualified_prompt: None,
@@ -513,6 +550,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             snapshot: Support::None,
             mtp: MtpKind::Sidecar,
             mtp_support: Support::Qualified,
+            spec_lane: SpecLane::Serial,
             qualified_ctx: Some(1024),
             qualified_banks: Some(1),
             qualified_prompt: None,
@@ -529,6 +567,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             snapshot: Support::None,
             mtp: MtpKind::None,
             mtp_support: Support::None,
+            spec_lane: SpecLane::None,
             qualified_ctx: Some(2048),
             qualified_banks: Some(1),
             qualified_prompt: None,
@@ -545,6 +584,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             snapshot: Support::Qualified,
             mtp: MtpKind::DeepSeek,
             mtp_support: Support::Qualified,
+            spec_lane: SpecLane::Bank,
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
@@ -893,36 +933,25 @@ impl ResolvedPlan {
     }
 }
 
+impl ReuseTaken {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cold => "cold",
+            Self::Exact => "exact",
+            Self::Partial => "partial",
+            Self::Fork => "fork",
+        }
+    }
+}
+
 impl RequestTrace {
     pub fn to_json(&self) -> Value {
         json!({
             "effective_lane": self.effective_lane,
-            "reuse_kind": self.reuse_kind,
+            "reuse_kind": self.reuse_kind.as_str(),
             "speculation_active": self.speculation_active,
             "fallback_reason": self.fallback_reason
         })
-    }
-
-    pub fn from_timings(
-        lane: &'static str,
-        cached: i32,
-        computed: i32,
-        speculation: bool,
-        fallback: Option<String>,
-    ) -> Self {
-        let reuse_kind = if cached <= 0 {
-            "cold"
-        } else if computed <= 0 {
-            "exact"
-        } else {
-            "partial"
-        };
-        Self {
-            effective_lane: lane,
-            reuse_kind,
-            speculation_active: speculation,
-            fallback_reason: fallback,
-        }
     }
 }
 
@@ -1033,8 +1062,10 @@ fn resolve_seqs(
     }
     let fitted = facts.banks_fitted.unwrap_or(want);
     let n = fitted.min(want);
+    // A forced width that the fit reduces is a silently narrower deployment.
+    // Auto may shrink; `--max-seqs N` may not.
     if matches!(requested, MaxSeqs::Fixed(_)) && n < want {
-        issues.push(warn(
+        issues.push(error(
             "banks_not_fitted",
             format!("requested {want} banks but native fitted {n}"),
         ));
@@ -1070,6 +1101,21 @@ fn resolve_mtp(
                     "{} MTP needs CUDA; --backend {} cannot enable it",
                     caps.variant_name(),
                     backend_name(req.backend)
+                ),
+            ));
+        }
+        return (MtpMode::Off, false);
+    }
+    // Qwen/DeepSeek speculation lives in the bank driver. The legacy zero
+    // alias (or a refused fit) routes every request through NativeDecode,
+    // which only speculates for Inkling and Step, so MTP would never run.
+    if caps.spec_lane == SpecLane::Bank && bank_lane_off(req, facts) {
+        if req.mtp_mode == MtpMode::On {
+            issues.push(error(
+                "mtp_lane",
+                format!(
+                    "{} MTP runs on the continuous lane; serial serving cannot enable it",
+                    caps.variant_name()
                 ),
             ));
         }
@@ -1138,6 +1184,12 @@ fn resolve_mtp(
         MtpMode::Auto => MtpMode::Off,
     };
     (mode, weights)
+}
+
+/// The bank driver is absent when the operator forced serial through the
+/// legacy zero alias or the native fit refused the lane.
+fn bank_lane_off(req: &ServingRequest, facts: &EngineFacts) -> bool {
+    req.max_seqs == MaxSeqs::Off || facts.cont_lane == Some(false)
 }
 
 fn resolve_disk(
@@ -1323,7 +1375,7 @@ mod tests {
     }
 
     #[test]
-    fn fitted_banks_are_effective() {
+    fn forced_banks_below_the_fit_are_an_error() {
         let req = ServingRequest {
             max_seqs: MaxSeqs::Fixed(2),
             ..ServingRequest::default()
@@ -1339,7 +1391,7 @@ mod tests {
         );
         assert_eq!(p.requested.max_seqs, MaxSeqs::Fixed(2));
         assert_eq!(p.effective.max_seqs, 1);
-        assert!(!p.has_errors());
+        assert!(p.has_errors());
         assert!(p
             .issues
             .iter()
@@ -1348,6 +1400,21 @@ mod tests {
             .env_overrides()
             .iter()
             .any(|(key, value)| key == "DS4_STEP37_BATCH" && value == "0"));
+    }
+
+    #[test]
+    fn auto_banks_below_the_fit_stay_a_warning() {
+        let facts = EngineFacts {
+            banks_fitted: Some(1),
+            ..EngineFacts::default()
+        };
+        let p = resolve_plan(
+            &ServingRequest::default(),
+            Some(caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext)),
+            &facts,
+        );
+        assert_eq!(p.effective.max_seqs, 1);
+        assert!(!p.has_errors());
     }
 
     #[test]
@@ -1625,6 +1692,49 @@ mod tests {
             .env_overrides()
             .iter()
             .any(|(k, v)| k == "DS4_QWEN_BATCH" && v == "1"));
+    }
+
+    #[test]
+    fn serial_alias_rejects_forced_bank_mtp() {
+        let mut req = ServingRequest::default();
+        req.max_seqs = MaxSeqs::Off;
+        req.mtp_mode = MtpMode::On;
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "mtp_lane"));
+        assert_eq!(p.effective.mtp_mode, MtpMode::Off);
+        assert!(!p.effective.mtp_weights);
+    }
+
+    #[test]
+    fn serial_alias_keeps_step_mtp() {
+        let mut req = ServingRequest::default();
+        req.max_seqs = MaxSeqs::Off;
+        req.mtp_mode = MtpMode::On;
+        req.mtp_path = Some("step-mtp.gguf".into());
+        let p = plan(req, ModelFamily::Step37, Variant::Step37Flash);
+        assert!(!p.has_errors());
+        assert_eq!(p.effective.mtp_mode, MtpMode::On);
+    }
+
+    #[test]
+    fn a_refused_lane_disables_bank_mtp() {
+        let facts = EngineFacts {
+            cont_lane: Some(false),
+            banks_fitted: Some(1),
+            ..EngineFacts::default()
+        };
+        let p = resolve_plan(
+            &ServingRequest::default(),
+            Some(caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext)),
+            &facts,
+        );
+        assert!(!p.has_errors());
+        assert_eq!(p.effective.mtp_mode, MtpMode::Off);
+        assert!(p
+            .env_overrides()
+            .iter()
+            .any(|(k, v)| k == "DS4_MTP_SPEC_DISABLE" && v == "1"));
     }
 
     #[test]

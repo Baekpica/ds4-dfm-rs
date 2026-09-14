@@ -278,13 +278,12 @@ impl ServerInner {
         } else {
             "serial"
         });
-        self.last_request = Some(ds4_core::RequestTrace::from_timings(
-            lane,
-            t.prefill_cached,
-            t.prefill_tokens,
-            outcome.speculation_active,
-            outcome.fallback_reason.clone(),
-        ));
+        self.last_request = Some(ds4_core::RequestTrace {
+            effective_lane: lane,
+            reuse_kind: outcome.reuse,
+            speculation_active: outcome.speculation_active,
+            fallback_reason: outcome.fallback_reason.clone(),
+        });
     }
 
     fn record_tokens(&mut self, computed: i32, cached: i32, decoded: i32, steps: i32) {
@@ -2640,6 +2639,7 @@ mod owner_tests {
                 ..crate::stream::ReqTimings::default()
             },
             speculation_active: true,
+            reuse: ds4_core::ReuseTaken::Exact,
             ..GenerateOutcome::default()
         });
 
@@ -2649,7 +2649,7 @@ mod owner_tests {
         assert_eq!(inner.runtime.decode_steps, 4);
         let last = inner.last_request.as_ref().unwrap();
         assert_eq!(last.effective_lane, "serial");
-        assert_eq!(last.reuse_kind, "partial");
+        assert_eq!(last.reuse_kind, ds4_core::ReuseTaken::Exact);
         assert!(last.speculation_active);
         assert!(last.fallback_reason.is_none());
     }
@@ -2668,7 +2668,7 @@ mod owner_tests {
         });
         let last = inner.last_request.as_ref().unwrap();
         assert_eq!(last.effective_lane, "static");
-        assert_eq!(last.reuse_kind, "cold");
+        assert_eq!(last.reuse_kind, ds4_core::ReuseTaken::Cold);
         assert!(!last.speculation_active);
     }
 
@@ -2701,6 +2701,7 @@ mod owner_tests {
                 ..crate::stream::ReqTimings::default()
             },
             speculation_active: true,
+            reuse: ds4_core::ReuseTaken::Partial,
             ..GenerateOutcome::default()
         });
 

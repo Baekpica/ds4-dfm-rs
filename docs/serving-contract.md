@@ -29,7 +29,15 @@ that only has exact-frontier reuse is an error.
 
 `--max-seqs` is not context length. Keeping N banks is not the same as
 batching N requests in one kernel. Step banks each own KV and prefill
-scratch; more banks are not a linear tok/s gain.
+scratch; more banks are not a linear tok/s gain. `auto` may fit fewer
+banks than it asked for; an explicit `--max-seqs N` the native fit
+cannot honour is an error, not a narrower start.
+
+`--cont-width 0` and `DS4_SERVER_COALESCE_MAX=0` keep the legacy serial
+meaning: no bank lane. Qwen and DeepSeek speculate only inside that
+lane, so the combination rejects `--mtp-mode on` instead of reporting
+MTP enabled. Inkling and Step also speculate on the serial engine and
+are unaffected.
 
 Disk KV is not active-bank offload. Resident bank state, partial
 checkpoint memory, and disk budget are separate. A directory does not
@@ -63,6 +71,14 @@ than configured `--ctx`.
 | `fallback_reason` | Why a requested path was not used |
 
 The same fields may appear next to HTTP `timings`.
+
+Each field is recorded where the decision is made, not inferred from
+counters. `exact` reuses a state that ends at this prompt's common
+prefix and prefills only the appended turn, so cached and computed
+tokens are both positive; `partial` restores a checkpoint below that
+prefix and replays the gap; `fork` copies another bank and preserves
+the source. `speculation_active` follows the executed path: the serial
+engine's speculative eval, or a native sequence that ran draft rows.
 
 ## Miss reasons
 

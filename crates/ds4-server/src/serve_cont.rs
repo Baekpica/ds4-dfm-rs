@@ -1598,8 +1598,8 @@ mod native {
     use super::*;
 
     use ds4_core::{
-        qwen_image_pixel_hash, qwen_image_probe, BatchCtx, ContAdmit, ContDriver, QwenImageInput,
-        Vocab, CONT_SAMPLE_GREEDY, CONT_SAMPLE_NONE,
+        qwen_image_pixel_hash, qwen_image_probe, BatchCtx, ContAdmit, ContDone, ContDriver,
+        QwenImageInput, ReuseTaken, Vocab, CONT_SAMPLE_GREEDY, CONT_SAMPLE_NONE,
     };
 
     use crate::serve_static::{BatchStatic, CoalesceLimits, StaticExec, StaticJob, StaticRow};
@@ -1654,6 +1654,7 @@ mod native {
         head: Vec<u8>,
         stepper: ContStepper,
         capture_done: bool,
+        reuse: ReuseTaken,
         t_arrive: Instant,
         stop_requested: Option<fn() -> bool>,
     }
@@ -1786,6 +1787,8 @@ mod native {
                 host_abort: false,
                 engine_eos: false,
                 capture_done: self.capture_done,
+                reuse: self.reuse,
+                speculated: false,
                 stop_requested: self.stop_requested,
                 done_tokens: Vec::new(),
                 n_cached: 0,
@@ -1815,6 +1818,10 @@ mod native {
         host_abort: bool,
         engine_eos: bool,
         capture_done: bool,
+        /// Mechanism chosen at admission; only real once native reports cache.
+        reuse: ReuseTaken,
+        /// Native ran draft rows for this sequence.
+        speculated: bool,
         stop_requested: Option<fn() -> bool>,
         done_tokens: Vec<i32>,
         n_cached: i32,
@@ -1898,21 +1905,15 @@ mod native {
             self.transport_alive()
         }
 
-        fn done(
-            &mut self,
-            tokens: &[i32],
-            finish: i32,
-            decode_ms: f64,
-            decode_tokens: i32,
-            decode_steps: i32,
-        ) {
+        fn done(&mut self, tokens: &[i32], finish: i32, stats: ContDone) {
             self.engine_eos = finish == 1;
             if self.capture_done {
                 self.done_tokens.extend_from_slice(tokens);
             }
-            self.decode_ms = decode_ms;
-            self.decode_tokens = decode_tokens;
-            self.decode_steps = decode_steps;
+            self.decode_ms = stats.decode_ms;
+            self.decode_tokens = stats.decode_tokens;
+            self.decode_steps = stats.decode_steps;
+            self.speculated = stats.spec_drafts > 0;
             self.t_done = Some(Instant::now());
         }
     }
@@ -1959,19 +1960,11 @@ mod native {
             slot.on_token(self.vocab, token)
         }
 
-        fn on_done(
-            &mut self,
-            user: usize,
-            tokens: &[i32],
-            finish: i32,
-            decode_ms: f64,
-            decode_tokens: i32,
-            decode_steps: i32,
-        ) {
+        fn on_done(&mut self, user: usize, tokens: &[i32], finish: i32, stats: ContDone) {
             let Some(slot) = self.slots.get_mut(&user) else {
                 return;
             };
-            slot.done(tokens, finish, decode_ms, decode_tokens, decode_steps);
+            slot.done(tokens, finish, stats);
             self.roll.complete(user);
         }
 
@@ -2159,20 +2152,11 @@ mod native {
                 .is_some_and(|slot| slot.job.on_token(self.host.vocab, token))
         }
 
-        fn on_done(
-            &mut self,
-            user: usize,
-            tokens: &[i32],
-            finish: i32,
-            decode_ms: f64,
-            decode_tokens: i32,
-            decode_steps: i32,
-        ) {
+        fn on_done(&mut self, user: usize, tokens: &[i32], finish: i32, stats: ContDone) {
             let Some(mut slot) = self.slots.remove(&user) else {
                 return;
             };
-            slot.job
-                .done(tokens, finish, decode_ms, decode_tokens, decode_steps);
+            slot.job.done(tokens, finish, stats);
             let key = slot.key;
             let source = &mut self.source;
             let mut publish = |outcome: &GenerateOutcome| source.publish(key, outcome);
@@ -3063,6 +3047,10 @@ mod native {
                 stepper.max_tokens,
             )
             .map_err(|_| GenerateError::Unsupported(crate::serve_cont_roll::CONT_ADMIT_REFUSED))?;
+            // The trace records the mechanism, not the counters: an appended
+            // frontier turn also prefills tokens, and a fork looks like any
+            // other prefix hit.
+            let mut reuse = ReuseTaken::Exact;
             let mut admit = if let Some(bank) = directed {
                 let mut admit = ContAdmit::cold(1, tokens, stepper.max_tokens.max(1));
                 admit.place_bank = bank.saturating_add(1);
@@ -3114,6 +3102,11 @@ mod native {
                     let mut admit = ContAdmit::cold(1, plan.tokens, stepper.max_tokens.max(1));
                     admit.place_bank = i32::try_from(placement.target + 1).unwrap_or(0);
                     admit.n_cached = plan.cached;
+                    reuse = match (plan.partial, placement.fork) {
+                        (true, _) => ReuseTaken::Partial,
+                        (false, true) => ReuseTaken::Fork,
+                        (false, false) => ReuseTaken::Exact,
+                    };
                     if placement.fork || plan.partial {
                         admit.fork_bank = i32::try_from(placement.source + 1).unwrap_or(0);
                     }
@@ -3126,6 +3119,7 @@ mod native {
                         })?;
                     let mut admit = ContAdmit::cold(1, tokens, stepper.max_tokens.max(1));
                     admit.place_bank = i32::try_from(target + 1).unwrap_or(0);
+                    reuse = ReuseTaken::Cold;
                     admit
                 }
             };
@@ -3141,6 +3135,7 @@ mod native {
                 head,
                 stepper,
                 capture_done,
+                reuse,
                 t_arrive: work.t_arrive,
                 stop_requested: self.stop_requested,
             })
@@ -3245,6 +3240,14 @@ mod native {
             let (tail, mut outcome) = job
                 .stepper
                 .finalize(engine_eos, n_cached, n_computed, timings, cors);
+            outcome.speculation_active = job.speculated;
+            // Native confirms the plan: no committed prefix means the warm
+            // placement did not land, whatever admission intended.
+            outcome.reuse = if n_cached > 0 {
+                job.reuse
+            } else {
+                ReuseTaken::Cold
+            };
             if let Some(bank) = actual_bank {
                 if let Ok(snapshot) = batch.bank_snapshot(bank) {
                     outcome.bank = Some(bank);

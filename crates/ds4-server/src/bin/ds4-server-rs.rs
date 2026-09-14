@@ -301,6 +301,15 @@ fn main() {
     let kv_store = if model.is_some() { kv_store } else { None };
 
     let lane = if let Some(ref model) = model {
+        // What only the open engine knows. The refit re-resolves so a
+        // fitted-down width or a refused lane cannot stay silently claimed.
+        let opened = EngineFacts {
+            mtp_loaded: mtp_path.is_some() || model.mtp().is_some(),
+            vision_loaded: model_options
+                .iter()
+                .any(|opt| matches!(opt, ModelOpenOption::Vision(_))),
+            ..facts.clone()
+        };
         if cont_width > 0 && backend == Backend::Cuda {
             match model.batch_ctx_fit(cfg.ctx, cont_width, cfg.ctx.saturating_mul(cont_width)) {
                 Ok(batch) => {
@@ -310,13 +319,10 @@ fn main() {
                         batch.seq_cap()
                     );
                     let facts = EngineFacts {
-                        mtp_loaded: mtp_path.is_some() || model.mtp().is_some(),
-                        vision_loaded: model_options
-                            .iter()
-                            .any(|opt| matches!(opt, ModelOpenOption::Vision(_))),
                         banks_fitted: Some(batch.max_seq() as u32),
                         seq_cap: Some(batch.seq_cap() as u32),
-                        disk_ready: facts.disk_ready,
+                        cont_lane: Some(true),
+                        ..opened
                     };
                     let fitted = resolve_plan(&serve_req, caps, &facts);
                     eprint!("{}", fitted.report());
@@ -341,15 +347,15 @@ fn main() {
                 Err(e) => {
                     eprintln!("ds4-server-rs: continuous lane unavailable ({e}); serial only");
                     let facts = EngineFacts {
-                        mtp_loaded: mtp_path.is_some() || model.mtp().is_some(),
-                        vision_loaded: model_options
-                            .iter()
-                            .any(|opt| matches!(opt, ModelOpenOption::Vision(_))),
                         banks_fitted: Some(1),
-                        disk_ready: facts.disk_ready,
-                        ..EngineFacts::default()
+                        cont_lane: Some(false),
+                        ..opened
                     };
                     let serial = resolve_plan(&serve_req, caps, &facts);
+                    eprint!("{}", serial.report());
+                    if serial.has_errors() {
+                        cli_error("ds4-server-rs: serial fallback plan rejected");
+                    }
                     serial.apply_env();
                     cfg.mem_floor_gb = serial.effective.mem_floor_gb;
                     cfg.serving_plan = Some(serial);

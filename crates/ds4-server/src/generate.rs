@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 #[cfg(any(feature = "native", test))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ds4_core::ReuseTaken;
 use ds4_kv::Store as KvStore;
 #[cfg(any(feature = "native", test))]
 use ds4_kv::{
@@ -227,6 +228,10 @@ pub trait DecodeIo {
     fn last_eval_speculated(&self) -> bool {
         false
     }
+    /// The mechanism the last prompt sync used, for the request trace.
+    fn last_reuse(&self) -> ReuseTaken {
+        ReuseTaken::Cold
+    }
     fn sample(
         &mut self,
         temperature: f32,
@@ -299,6 +304,9 @@ trait SerialKvIo {
         Some(Vec::new())
     }
     fn tokenize_suffix(&mut self, suffix: &[u8]) -> Result<Vec<i32>, GenerateError>;
+    /// Record which mechanism produced the reuse. Cached/computed counts
+    /// cannot tell an appended frontier turn from a checkpoint replay.
+    fn note_reuse(&mut self, _taken: ReuseTaken) {}
     fn sync(&mut self, tokens: &[i32]) -> Result<(), GenerateError>;
     fn sync_with_prefill_checkpoints(
         &mut self,
@@ -513,6 +521,7 @@ fn restore_suppressed_continued(store: &mut KvStore, old: Option<i32>, target: i
 
 #[cfg(any(feature = "native", test))]
 fn cold_sync(io: &mut impl SerialKvIo, tokens: &[i32]) -> Result<i32, GenerateError> {
+    io.note_reuse(ReuseTaken::Cold);
     io.sync(tokens)?;
     Ok(0)
 }
@@ -525,6 +534,7 @@ fn cold_sync_and_store(
     tokens: &[i32],
     prefill_checkpoints: bool,
 ) -> Result<i32, GenerateError> {
+    io.note_reuse(ReuseTaken::Cold);
     let (model_id, quant_bits, ctx) = identity;
     let Ok(full_len) = i32::try_from(tokens.len()) else {
         sync_maybe_checkpoint(
@@ -748,6 +758,7 @@ fn disk_sync_prompt_impl(
     let live = io.live_tokens();
     if !live.is_empty() && canonical_tokens.starts_with(&live) {
         let cached = live.len() as i32;
+        io.note_reuse(ReuseTaken::Exact);
         sync_maybe_checkpoint(
             io,
             canonical_tokens,
@@ -766,6 +777,7 @@ fn disk_sync_prompt_impl(
                 && prompt.starts_with(&checkpoint.text)
             {
                 let cached = live.len() as i32;
+                io.note_reuse(ReuseTaken::Exact);
                 let mut effective = live;
                 effective.extend(io.tokenize_suffix(&prompt[checkpoint.text.len()..])?);
                 sync_maybe_checkpoint(
@@ -784,6 +796,7 @@ fn disk_sync_prompt_impl(
         let rendered = io.render_tokens(&live)?;
         if prompt.starts_with(&rendered) {
             let cached = live.len() as i32;
+            io.note_reuse(ReuseTaken::Exact);
             let mut effective = live;
             effective.extend(io.tokenize_suffix(&prompt[rendered.len()..])?);
             sync_maybe_checkpoint(
@@ -898,6 +911,9 @@ fn disk_sync_prompt_impl(
     let cached = loaded.len() as i32;
     store.continued_last_store_tokens = cached;
     let _ = store.touch_hit(&path);
+    // The candidate's text is a prefix of this prompt, so the restore lands
+    // on the frontier and only the appended turn is prefilled.
+    io.note_reuse(ReuseTaken::Exact);
     if reuse == PromptReuse::Tokens && !thinking_visible {
         sync_maybe_checkpoint(
             io,
@@ -943,6 +959,7 @@ pub struct GenerateOutcome {
     pub timings: ReqTimings,
     pub lane: Option<&'static str>,
     pub speculation_active: bool,
+    pub reuse: ReuseTaken,
     pub fallback_reason: Option<String>,
 }
 
@@ -2176,6 +2193,7 @@ pub(crate) fn generate_terminal_prepared(
         finish: finish.to_string(),
         timings: req.timings,
         speculation_active: speculation,
+        reuse: engine.last_reuse(),
         lane: None,
         fallback_reason: None,
     };
@@ -2388,12 +2406,17 @@ struct NativeSerialKvIo<'s, 'm, 'v, 't> {
     tool_memory: &'t ToolMemory,
     prefill_checkpoints: bool,
     sync_elapsed: Duration,
+    reuse: ReuseTaken,
 }
 
 #[cfg(feature = "native")]
 impl SerialKvIo for NativeSerialKvIo<'_, '_, '_, '_> {
     fn ctx(&self) -> i32 {
         self.session.ctx()
+    }
+
+    fn note_reuse(&mut self, taken: ReuseTaken) {
+        self.reuse = taken;
     }
 
     fn chat_token_ids(&self) -> (i32, i32) {
@@ -2534,6 +2557,7 @@ pub struct NativeDecode<'a> {
     ctx: i32,
     prefix_reuse: ds4_core::ReuseKind,
     speculated: bool,
+    reuse: ReuseTaken,
 }
 
 #[cfg(feature = "native")]
@@ -2552,6 +2576,7 @@ impl<'a> NativeDecode<'a> {
             ctx,
             prefix_reuse: ds4_core::ReuseKind::Exact,
             speculated: false,
+            reuse: ReuseTaken::Cold,
         }
     }
 
@@ -2606,6 +2631,7 @@ impl<'a> NativeDecode<'a> {
             tool_memory,
             prefill_checkpoints,
             sync_elapsed: Duration::ZERO,
+            reuse: ReuseTaken::Cold,
         };
         let policy = DiskSyncPolicy {
             save_current,
@@ -2660,6 +2686,11 @@ impl<'a> NativeDecode<'a> {
                 thinking_visible_eligible,
                 policy,
             )
+        };
+        self.reuse = if result.is_ok() {
+            io.reuse
+        } else {
+            ReuseTaken::Cold
         };
         if result.is_ok() {
             self.prompt_sync_elapsed = Some(io.sync_elapsed);
@@ -2797,6 +2828,7 @@ impl DecodeIo for NativeDecode<'_> {
         self.prompt_sync_elapsed = None;
         self.session_disk_storable = false;
         self.thinking_visible = None;
+        self.reuse = ReuseTaken::Cold;
         let tokens = ds4_core::TokenBuffer::from_tokens(tokens.to_vec());
         let images = images
             .iter()
@@ -2870,6 +2902,7 @@ impl DecodeIo for NativeDecode<'_> {
     }
 
     fn sync(&mut self, tokens: &[i32]) -> Result<(), GenerateError> {
+        self.reuse = ReuseTaken::Cold;
         let buf = ds4_core::TokenBuffer::from_tokens(tokens.to_vec());
         self.session()?
             .sync(&buf)
@@ -2943,6 +2976,7 @@ impl DecodeIo for NativeDecode<'_> {
             tool_memory,
             prefill_checkpoints: false,
             sync_elapsed: Duration::ZERO,
+            reuse: ReuseTaken::Cold,
         };
         try_store_continued(&mut io, store, identity)?;
         Ok(())
@@ -2971,6 +3005,7 @@ impl DecodeIo for NativeDecode<'_> {
             tool_memory,
             prefill_checkpoints: false,
             sync_elapsed: Duration::ZERO,
+            reuse: ReuseTaken::Cold,
         };
         let (model_id, quant_bits, ctx) = identity;
         try_store_live(
@@ -3012,6 +3047,10 @@ impl DecodeIo for NativeDecode<'_> {
 
     fn last_eval_speculated(&self) -> bool {
         self.speculated
+    }
+
+    fn last_reuse(&self) -> ReuseTaken {
+        self.reuse
     }
 
     fn sample(
@@ -3069,7 +3108,7 @@ mod disk_sync_tests {
         settle_thinking_visible_checkpoint, step37_history_checkpoint,
         thinking_visible_cache_eligible, thinking_visible_key, tool_replay_disk_cache_eligible,
         tool_replay_producer_eligible, try_store_continued, try_store_live, DiskSyncPolicy,
-        GenerateError, SerialKvIo, ThinkingVisibleCheckpoint,
+        GenerateError, ReuseTaken, SerialKvIo, ThinkingVisibleCheckpoint,
     };
     use crate::parse::{parse_request, ChatMsg, ParseEnv, ToolCall};
     use crate::render::{render_motif3_chat_ex, ModelSyntax};
@@ -3106,6 +3145,7 @@ mod disk_sync_tests {
         user_token_id: i32,
         assistant_token_id: i32,
         live_token_reads: Cell<usize>,
+        reuse: ReuseTaken,
     }
 
     impl FakeSerial {
@@ -3132,6 +3172,7 @@ mod disk_sync_tests {
                 user_token_id: -1,
                 assistant_token_id: -1,
                 live_token_reads: Cell::new(0),
+                reuse: ReuseTaken::Cold,
             }
         }
     }
@@ -3139,6 +3180,10 @@ mod disk_sync_tests {
     impl SerialKvIo for FakeSerial {
         fn ctx(&self) -> i32 {
             self.ctx
+        }
+
+        fn note_reuse(&mut self, taken: ReuseTaken) {
+            self.reuse = taken;
         }
 
         fn chat_token_ids(&self) -> (i32, i32) {
@@ -3378,6 +3423,51 @@ mod disk_sync_tests {
     }
 
     #[test]
+    fn appended_turn_records_exact_reuse() {
+        let mut io = FakeSerial::new(&[1, 2], b"prefix");
+        let cached = super::disk_sync_template(
+            &mut io,
+            None,
+            6,
+            2,
+            b"prefix suffix",
+            &[1, 2, 4],
+            None,
+            false,
+            DiskSyncPolicy {
+                save_current: false,
+                load: false,
+            },
+        )
+        .unwrap();
+        // Both counters are positive: cached prefix plus a prefilled turn.
+        assert_eq!(cached, 2);
+        assert_eq!(io.reuse, ReuseTaken::Exact);
+    }
+
+    #[test]
+    fn a_cold_prompt_records_cold_reuse() {
+        let mut io = FakeSerial::new(&[], b"");
+        let cached = super::disk_sync_template(
+            &mut io,
+            None,
+            6,
+            2,
+            b"prefix suffix",
+            &[1, 2, 4],
+            None,
+            false,
+            DiskSyncPolicy {
+                save_current: false,
+                load: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(cached, 0);
+        assert_eq!(io.reuse, ReuseTaken::Cold);
+    }
+
+    #[test]
     fn reuse_off_skips_live_prefix() {
         let mut io = FakeSerial::new(&[1, 2], b"prefix");
         let cached = super::disk_sync_prompt_impl(
@@ -3399,6 +3489,7 @@ mod disk_sync_tests {
         .unwrap();
         assert_eq!(cached, 0);
         assert_eq!(io.live, [1, 2, 4]);
+        assert_eq!(io.reuse, ReuseTaken::Cold);
     }
 
     fn store(tag: &str) -> (PathBuf, Store) {
