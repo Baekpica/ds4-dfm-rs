@@ -1029,9 +1029,8 @@ fn warm_placement(
 }
 
 fn history_retire_prompt(prompt: &[u8]) -> &[u8] {
-    // Official history replay drops an empty think pair. Motif emits
-    // `<think></think>`; Step none-think emits `<think>\n</think>\n`.
-    // Bank keys must use that history form or a restart/follow-up misses.
+    // History omits the empty think pair: Step `<think>\n</think>\n`,
+    // Motif `<think></think>`. Bank keys must match that form.
     if let Some(prefix) = prompt.strip_suffix(b"<think>\n</think>\n") {
         return prefix;
     }

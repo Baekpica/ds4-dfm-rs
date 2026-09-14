@@ -273,6 +273,7 @@ impl ServerInner {
             t.decode_tokens,
             t.decode_steps,
         );
+        // Speculative commit yields more tokens than decode steps.
         let spec = t.decode_steps > 0 && t.decode_tokens > t.decode_steps;
         self.last_request = Some(ds4_core::RequestTrace::from_timings(
             if outcome.bank.is_some() {

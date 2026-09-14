@@ -125,7 +125,7 @@ pub fn render_stats_json_ex(m: &RouteMetrics, admit: &AdmitState, rt: &RuntimeMe
     render_stats_json_plan(m, admit, rt, None, None)
 }
 
-/// `/v1/stats` plus optional serving plan and last-request trace.
+/// GET /v1/stats body; plan and last_request are omitted when absent.
 pub fn render_stats_json_plan(
     m: &RouteMetrics,
     admit: &AdmitState,

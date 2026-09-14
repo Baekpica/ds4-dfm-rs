@@ -728,8 +728,8 @@ impl ResolvedPlan {
         if self.effective.max_seqs > 1 {
             out.push(("DS4_SERVER_CONTINUOUS".into(), "1".into()));
         }
-        // Publish 0/1 so a fitted-down plan can retract a previous enable.
-        // Step width 1 stays serial (MTP). Qwen width 1 is still a bank lane.
+        // 0/1 so a later fitted-down plan can retract. Step width 1 is
+        // serial MTP; Qwen width 1 is still a bank.
         if self.family == Some(ModelFamily::Step37) {
             out.push((
                 "DS4_STEP37_BATCH".into(),
@@ -964,9 +964,8 @@ fn resolve_seqs(
     facts: &EngineFacts,
     issues: &mut Vec<PlanIssue>,
 ) -> (u32, bool) {
-    // Auto is the family default: serial and Step stay width 1 so `-m`
-    // boots. Persistent Auto uses the qualified bank count. Only an
-    // explicit `--max-seqs N>1` is unsupported on serial.
+    // Auto: serial/Step stay 1 so `-m` boots. Persistent uses qualified
+    // banks. Only explicit `--max-seqs N>1` errors on serial.
     let want = match requested {
         MaxSeqs::Auto => match caps.banks {
             BankLane::Serial | BankLane::OptIn => 1,

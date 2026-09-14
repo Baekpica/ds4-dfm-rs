@@ -1098,9 +1098,8 @@ fn step37_history_checkpoint(
     {
         return None;
     }
-    // Official Step history drops the empty think pair that generation
-    // opened. Disk identity must match the follow-up render, not the
-    // live generation prompt.
+    // Follow-up render drops the empty think pair. Disk keys must match
+    // that history form, not the live generation prompt.
     let header = prompt
         .strip_suffix(b"<think>\n</think>\n")
         .or_else(|| prompt.strip_suffix(b"<think>\n"))?;
