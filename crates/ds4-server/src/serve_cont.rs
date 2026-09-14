@@ -2371,6 +2371,7 @@ mod native {
             cache_prompt: Option<&[u8]>,
             cache_spans: &[ImageCacheSpan],
             prompt_tokens: &[i32],
+            miss: &mut ReuseMiss,
         ) -> Option<WarmAdmitPlan> {
             if !self.warm_fork_partial {
                 return None;
@@ -2397,6 +2398,19 @@ mod native {
                         cached,
                         partial: true,
                     });
+                }
+
+                // The text LCP passed; the tokens it covers can still be
+                // under the partial minimum. Only then is this the threshold
+                // — a stale bank record or a prompt past the sequence is not.
+                let fresh = self.warm.get(source).is_some_and(|warm| {
+                    warm.record
+                        .as_ref()
+                        .is_some_and(|record| record.generation == snapshot.generation)
+                });
+                let fits = i32::try_from(prompt_tokens.len()).is_ok_and(|n| n <= batch.seq_cap());
+                if fresh && fits {
+                    Self::note_miss(miss, ReuseMiss::BelowThreshold);
                 }
             }
             // Host text records can be missing after a one-bank Solar retire
@@ -2492,8 +2506,14 @@ mod native {
                     }
                     kept
                 });
-            let partial =
-                self.warm_partial_plan(batch, prompt, cache_prompt, cache_spans, prompt_tokens);
+            let partial = self.warm_partial_plan(
+                batch,
+                prompt,
+                cache_prompt,
+                cache_spans,
+                prompt_tokens,
+                miss,
+            );
             match (full, partial) {
                 (Some(full), Some(partial)) if partial.cached > full.cached => Some(partial),
                 (Some(full), _) => Some(full),
