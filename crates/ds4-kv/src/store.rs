@@ -1193,7 +1193,7 @@ mod tests {
     }
 
     #[test]
-    fn lcp_candidate_refuses_a_record_that_moved() {
+    fn lcp_refuses_a_moved_record() {
         let dir = std::env::temp_dir().join(format!("ds4-kv-lcp-candidate-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let mut store = Store::open(&dir, 16, false, Options::default()).unwrap();
@@ -1229,7 +1229,7 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_record_answers_for_the_key_it_kept() {
+    fn a_cut_record_keeps_its_key() {
         let dir = std::env::temp_dir().join(format!("ds4-kv-truncated-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let mut store = Store::open(&dir, 16, false, Options::default()).unwrap();
@@ -1289,7 +1289,7 @@ mod tests {
     }
 
     #[test]
-    fn an_exact_bank_record_answers_with_its_layout() {
+    fn an_exact_bank_answers_layout() {
         let dir = std::env::temp_dir().join(format!("ds4-kv-exact-bank-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let mut store = Store::open(&dir, 16, false, Options::default()).unwrap();
@@ -1314,7 +1314,7 @@ mod tests {
     }
 
     #[test]
-    fn a_record_under_the_minimum_answers_shallow() {
+    fn a_thin_record_answers_shallow() {
         let dir = std::env::temp_dir().join(format!("ds4-kv-shallow-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let mut store = Store::open(&dir, 16, false, Options::default()).unwrap();
@@ -1334,7 +1334,7 @@ mod tests {
     }
 
     #[test]
-    fn an_image_record_is_a_mismatch_only_under_its_own_key() {
+    fn an_image_key_owns_its_answer() {
         let dir = std::env::temp_dir().join(format!("ds4-kv-image-key-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let mut store = Store::open(&dir, 16, true, Options::default()).unwrap();
@@ -1370,7 +1370,7 @@ mod tests {
     }
 
     #[test]
-    fn an_edited_prompt_sees_an_identity_mismatch_through_the_lcp() {
+    fn an_edit_mismatches_by_lcp() {
         let dir = std::env::temp_dir().join(format!("ds4-kv-lcp-identity-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let mut store = Store::open(&dir, 16, false, Options::default()).unwrap();

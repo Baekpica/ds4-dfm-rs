@@ -1704,7 +1704,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_trace_that_refused_nothing_carries_no_miss_member() {
+    fn a_clean_trace_omits_the_miss() {
         let mut trace = RequestTrace {
             effective_lane: "serial",
             reuse_kind: ReuseTaken::Exact,

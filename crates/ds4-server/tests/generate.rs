@@ -1110,7 +1110,7 @@ fn one_shot_inner(
 /// only happens on the native bank lane, so it is covered by the
 /// admission unit tests instead.
 #[test]
-fn http_reuse_situations_report_their_trace() {
+fn http_reports_reuse_situations() {
     // Same chat, append: reuse at the frontier, suffix prefilled.
     let body = http_reuse_trace(ds4_core::ReuseTaken::Exact, ds4_core::ReuseMiss::None, 3);
     assert_eq!(body["last_request"]["reuse_kind"], "exact");
