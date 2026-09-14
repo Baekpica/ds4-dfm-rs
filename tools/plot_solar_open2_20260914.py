@@ -12,8 +12,9 @@ import matplotlib.pyplot as plt
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 with (DOCS / "solar-open2-2026-09-14-rounds.csv").open() as f:
-    cold = list(csv.DictReader(f))
-assert len(cold) == 12 and {r["round"] for r in cold} == {"R1"}
+    all_rows = list(csv.DictReader(f))
+cold = [r for r in all_rows if r["round"] == "R1"]
+assert len(cold) == 12
 
 plt.rcParams.update({"font.size": 11, "axes.spines.top": False,
                      "axes.spines.right": False, "figure.facecolor": "white"})

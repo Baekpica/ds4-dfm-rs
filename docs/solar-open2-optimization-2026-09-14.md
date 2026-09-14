@@ -73,14 +73,25 @@ Raw rows: [solar-open2-2026-09-14-rounds.csv](solar-open2-2026-09-14-rounds.csv)
 Graph: [solar-open2-2026-09-14-throughput.png](solar-open2-2026-09-14-throughput.png)
 (`python3 tools/plot_solar_open2_20260914.py`).
 
-## Rejected and stopped
+## Round 2: skip redundant Q3 handoff down sanitize
+
+IQ2/Q3 handoff already passes `sanitize_out=false` because Solar
+`moe_residual` and EXAONE `moe_sum` skip non-finite at read. The Q3 down
+buffer was still sanitized. Default skip; `DS4_CUDA_MOE_HANDOFF_SANITIZE=1`
+restores the pass. Control is WS on + sanitize restored.
+
+| Prompt | Prefill off → on | Change | Decode off → on |
+|---|---:|---:|---:|
+| 8,192 | 1,073.59 → 1,095.61 tok/s | +2.05% | 17.43 → 17.43 |
+| 65,536 | 925.19 → 943.18 tok/s | +1.94% | 13.02 → 13.01 |
+
+All twelve samples match logits and IDs byte for byte.
+
+## Rejected
 
 `DS4_CUDA_SOLAR_GQA_CHUNK=128` vs 64, with WS on. 8K prefill unchanged
 (1,073.92 vs 1,074.19). Prefill logits identical; greedy IDs diverge from
 generated token 30 (34/64). Default stays 64.
-
-A Q3 handoff down-sanitize skip was written but not A/B'd; it is not in
-this tree. The campaign stopped there.
 
 ## Limits
 

@@ -322,6 +322,10 @@ The bandwidth figure is informational; we don't tier on it.
   64-key tile in registers while the current one is consumed. Both paths
   write identical bytes; the switch is a diagnostic rollback.
 
+- `DS4_CUDA_MOE_HANDOFF_SANITIZE=1` restores the Q3 down sanitize after
+  the IQ2/Q3 shared-map handoff. Default off: Solar `moe_residual` and
+  EXAONE `moe_sum` already skip non-finite at read.
+
 - `DS4_SOLAR_FATTN_WS=0` restores the GQA-pair kernel. Default on: the
   warp-specialized kernel (`ds4_fattn_hmma_solar_ws_kernel`) for Solar's
   K-FP8/V-FP4 prefill attention. Four producer warps stream raw K/V rows

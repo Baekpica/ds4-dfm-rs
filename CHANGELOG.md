@@ -13,7 +13,9 @@ for exact provenance. Historical entries retain their original scope.
   captures 4,096-token boundaries.
 - Default-on warp-specialized K-FP8/V-FP4 prefill attention under a
   300–2200 MHz GB10 cap (`DS4_SOLAR_FATTN_WS=0` restores the pair kernel).
-  Clock-capped 64K cold prefill 731.24 → 927.50 tok/s. See
+  Skip redundant Q3 handoff down sanitize
+  (`DS4_CUDA_MOE_HANDOFF_SANITIZE=1` restores it). Clock-capped 64K cold
+  prefill 731.24 → 927.50 → 943.18 tok/s. See
   [14 September campaign](docs/solar-open2-optimization-2026-09-14.md).
 
 ## v0.1.2 — 2026-09-10

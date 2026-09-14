@@ -605,13 +605,13 @@ trust domain when clients are not mutually trusted.
 ## Performance and release evidence
 
 > **Solar Open2 250B MXQ-v1 · one DGX Spark, 300–2200 MHz cap (measured 2190):**
-> cold prefill **1,050.86 → 1,075.76 tok/s at 8K (+2.37%)** and
-> **731.24 → 927.50 tok/s at 64K (+26.8%)** with default-on warp-specialized
-> K-FP8/V-FP4 prefill attention (`DS4_SOLAR_FATTN_WS=0` restores the pair
-> kernel). Decode 17.40 → 17.44 and 13.06 → 13.02 tok/s. Interleaved medians
-> of three; 196,608 frontier logits and 64 greedy IDs match byte for byte.
-> Disk-KV restart and HTTP partial fork now reuse prefixes (native tests plus
-> Chat `cached_tokens=538` / `4096`).
+> two retained rounds, interleaved medians of three, byte-identical 196,608
+> logits and 64 IDs. Round 1 default-on FATTN_WS: 8K **1,050.86 → 1,075.76**
+> tok/s (+2.37%), 64K **731.24 → 927.50** (+26.8%). Round 2 skip Q3 handoff
+> down sanitize: 8K **1,073.59 → 1,095.61** (+2.05%), 64K **925.19 → 943.18**
+> (+1.94%). Decode unchanged. `DS4_SOLAR_FATTN_WS=0` and
+> `DS4_CUDA_MOE_HANDOFF_SANITIZE=1` restore the prior paths. Disk-KV restart
+> and HTTP partial fork reuse prefixes (`cached_tokens=538` / `4096`).
 > [Protocol, serving, rejects](docs/solar-open2-optimization-2026-09-14.md).
 
 ![Solar Open2 clock-capped cold FATTN_WS comparison](docs/solar-open2-2026-09-14-throughput.png)

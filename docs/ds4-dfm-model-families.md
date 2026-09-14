@@ -463,10 +463,20 @@ inside the 300–2200 MHz cap. Cold `ds4-bench` medians of three, Promessi
 Sposi, 4,096-token chunks, 64 greedy tokens, byte-identical 196,608
 logits and 64 IDs:
 
+Round 1 FATTN_WS (`DS4_SOLAR_FATTN_WS=0` restores pair):
+
 | Prompt tokens | Prefill off → on | Decode off → on |
 |---:|---:|---:|
 | 8,192 | 1,050.86 → 1,075.76 tok/s | 17.40 → 17.44 |
 | 65,536 | 731.24 → 927.50 tok/s | 13.06 → 13.02 |
+
+Round 2 skip Q3 handoff down sanitize (`DS4_CUDA_MOE_HANDOFF_SANITIZE=1`
+restores the pass), measured with WS on:
+
+| Prompt tokens | Prefill off → on | Decode off → on |
+|---:|---:|---:|
+| 8,192 | 1,073.59 → 1,095.61 tok/s | 17.43 → 17.43 |
+| 65,536 | 925.19 → 943.18 tok/s | 13.02 → 13.01 |
 
 The [September 12 Rust-host campaign](solar-open2-optimization-2026-09-12.md)
 records guarded 8K/64K controls and four unretained attention candidates
