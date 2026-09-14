@@ -856,7 +856,13 @@ fn disk_sync_prompt_impl(
         }
     };
     let Some((path, envelope)) = candidate else {
-        io.note_miss(ReuseMiss::NoCheckpoint);
+        io.note_miss(
+            if store.has_incompatible_prefix(prompt, model_id, quant_bits, ctx) {
+                ReuseMiss::PayloadMismatch
+            } else {
+                ReuseMiss::NoCheckpoint
+            },
+        );
         return cold_sync_and_store(
             io,
             store,
@@ -2830,6 +2836,7 @@ impl DecodeIo for NativeDecode<'_> {
         self.session_disk_storable = false;
         self.thinking_visible = None;
         self.reuse = ReuseTaken::Cold;
+        self.miss = ReuseMiss::None;
         let tokens = ds4_core::TokenBuffer::from_tokens(tokens.to_vec());
         let images = images
             .iter()
@@ -2904,6 +2911,7 @@ impl DecodeIo for NativeDecode<'_> {
 
     fn sync(&mut self, tokens: &[i32]) -> Result<(), GenerateError> {
         self.reuse = ReuseTaken::Cold;
+        self.miss = ReuseMiss::None;
         let buf = ds4_core::TokenBuffer::from_tokens(tokens.to_vec());
         self.session()?
             .sync(&buf)
@@ -3511,6 +3519,24 @@ mod disk_sync_tests {
         io.note_miss(ReuseMiss::RenderedPrefix);
         io.note_miss(ReuseMiss::BelowThreshold);
         assert_eq!(io.miss, ReuseMiss::RenderedPrefix);
+
+        // A record for another model is a mismatch, not an absence: the
+        // prompt-keyed entry is there, its identity rules it out.
+        let mut io = FakeSerial::new(&[], b"prefix suffix");
+        super::disk_sync_template(
+            &mut io,
+            Some(&mut store),
+            9,
+            2,
+            b"prefix suffix",
+            &[1, 2, 3],
+            DiskSyncPolicy {
+                save_current: false,
+                load: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(io.miss, ReuseMiss::PayloadMismatch);
         let _ = fs::remove_dir_all(dir);
     }
 

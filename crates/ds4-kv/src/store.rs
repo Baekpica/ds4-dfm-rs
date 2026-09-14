@@ -601,6 +601,33 @@ impl Store {
         best
     }
 
+    /// A record whose text is a prefix of this prompt exists, but its
+    /// identity — model, quantization or context — rules it out. The
+    /// restore miss is then a mismatch, not an absence.
+    pub fn has_incompatible_prefix(
+        &mut self,
+        prompt: &[u8],
+        model_id: u8,
+        quant_bits: u8,
+        ctx_size: u32,
+    ) -> bool {
+        self.refresh();
+        let reject_quant = self.reject_different_quant;
+        let min_tokens = self.opt.min_tokens;
+        self.entries.iter().any(|e| {
+            if !is_automatic_exact_replay(e.header.reason, e.header.ext_flags)
+                || e.header.text_bytes as usize > prompt.len()
+                || (e.header.tokens as i32) < min_tokens
+            {
+                return false;
+            }
+            let identity_ok = e.header.model_id == model_id
+                && ctx_size >= e.header.ctx_size
+                && (!reject_quant || e.header.quant_bits == quant_bits);
+            !identity_ok && text_sha_hex(&prompt[..e.header.text_bytes as usize]) == e.sha
+        })
+    }
+
     pub fn find_text_lcp(
         &mut self,
         prompt: &[u8],

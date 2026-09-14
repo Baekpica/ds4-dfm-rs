@@ -3162,7 +3162,10 @@ mod native {
                     let mut admit = ContAdmit::cold(1, tokens, stepper.max_tokens.max(1));
                     admit.place_bank = i32::try_from(target + 1).unwrap_or(0);
                     reuse = ReuseTaken::Cold;
-                    if miss == ReuseMiss::None && capture_done {
+                    // Only a lookup that ran can report an absence; with
+                    // reuse off nothing was examined.
+                    if miss == ReuseMiss::None && capture_done && self.warm_reuse != ReuseKind::None
+                    {
                         miss = ReuseMiss::NoCheckpoint;
                     }
                     admit
