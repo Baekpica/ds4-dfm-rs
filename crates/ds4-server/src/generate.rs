@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 #[cfg(any(feature = "native", test))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ds4_core::ReuseTaken;
+use ds4_core::{ReuseMiss, ReuseTaken};
 use ds4_kv::Store as KvStore;
 #[cfg(any(feature = "native", test))]
 use ds4_kv::{
@@ -232,6 +232,10 @@ pub trait DecodeIo {
     fn last_reuse(&self) -> ReuseTaken {
         ReuseTaken::Cold
     }
+    /// Why the last prompt sync refused a candidate, for the request trace.
+    fn last_miss(&self) -> ReuseMiss {
+        ReuseMiss::None
+    }
     fn sample(
         &mut self,
         temperature: f32,
@@ -307,6 +311,8 @@ trait SerialKvIo {
     /// Record which mechanism produced the reuse. Cached/computed counts
     /// cannot tell an appended frontier turn from a checkpoint replay.
     fn note_reuse(&mut self, _taken: ReuseTaken) {}
+    /// Record why a candidate was refused, so the trace can say it.
+    fn note_miss(&mut self, _miss: ReuseMiss) {}
     fn sync(&mut self, tokens: &[i32]) -> Result<(), GenerateError>;
     fn sync_with_prefill_checkpoints(
         &mut self,
@@ -547,6 +553,9 @@ fn cold_sync_and_store(
         )?;
         return Ok(0);
     };
+    if full_len < store.opt.min_tokens {
+        io.note_miss(ReuseMiss::BelowThreshold);
+    }
     if full_len < store.opt.min_tokens
         || store.opt.cold_max_tokens <= 0
         || full_len > store.opt.cold_max_tokens
@@ -846,6 +855,7 @@ fn disk_sync_prompt_impl(
         }
     };
     let Some((path, envelope)) = candidate else {
+        io.note_miss(ReuseMiss::NoCheckpoint);
         return cold_sync_and_store(
             io,
             store,
@@ -861,6 +871,7 @@ fn disk_sync_prompt_impl(
         _ => false,
     };
     if !extension_ok {
+        io.note_miss(ReuseMiss::PayloadMismatch);
         return cold_sync_and_store(
             io,
             store,
@@ -888,6 +899,7 @@ fn disk_sync_prompt_impl(
     }
     let loaded = io.live_tokens();
     if loaded.len() != envelope.header.tokens as usize {
+        io.note_miss(ReuseMiss::PayloadMismatch);
         io.invalidate();
         let _ = store.discard(&path);
         return cold_sync_and_store(
@@ -899,6 +911,9 @@ fn disk_sync_prompt_impl(
         );
     }
     if reuse == PromptReuse::Tokens && !canonical_tokens.starts_with(&loaded) {
+        // The template re-rendered this conversation differently, so the
+        // stored tokens are no longer a prefix of the prompt.
+        io.note_miss(ReuseMiss::RenderedPrefix);
         io.invalidate();
         return cold_sync_and_store(
             io,
@@ -960,6 +975,7 @@ pub struct GenerateOutcome {
     pub lane: Option<&'static str>,
     pub speculation_active: bool,
     pub reuse: ReuseTaken,
+    pub reuse_miss: ReuseMiss,
     pub fallback_reason: Option<String>,
 }
 
@@ -2168,6 +2184,7 @@ pub(crate) fn generate_terminal_prepared(
         timings: req.timings,
         speculation_active: speculation,
         reuse: engine.last_reuse(),
+        reuse_miss: engine.last_miss(),
         lane: None,
         fallback_reason: None,
     };
@@ -2381,6 +2398,7 @@ struct NativeSerialKvIo<'s, 'm, 'v, 't> {
     prefill_checkpoints: bool,
     sync_elapsed: Duration,
     reuse: ReuseTaken,
+    miss: ReuseMiss,
 }
 
 #[cfg(feature = "native")]
@@ -2391,6 +2409,10 @@ impl SerialKvIo for NativeSerialKvIo<'_, '_, '_, '_> {
 
     fn note_reuse(&mut self, taken: ReuseTaken) {
         self.reuse = taken;
+    }
+
+    fn note_miss(&mut self, miss: ReuseMiss) {
+        self.miss = miss;
     }
 
     fn chat_token_ids(&self) -> (i32, i32) {
@@ -2532,6 +2554,7 @@ pub struct NativeDecode<'a> {
     prefix_reuse: ds4_core::ReuseKind,
     speculated: bool,
     reuse: ReuseTaken,
+    miss: ReuseMiss,
 }
 
 #[cfg(feature = "native")]
@@ -2551,6 +2574,7 @@ impl<'a> NativeDecode<'a> {
             prefix_reuse: ds4_core::ReuseKind::Exact,
             speculated: false,
             reuse: ReuseTaken::Cold,
+            miss: ReuseMiss::None,
         }
     }
 
@@ -2606,6 +2630,7 @@ impl<'a> NativeDecode<'a> {
             prefill_checkpoints,
             sync_elapsed: Duration::ZERO,
             reuse: ReuseTaken::Cold,
+            miss: ReuseMiss::None,
         };
         let policy = DiskSyncPolicy {
             save_current,
@@ -2664,6 +2689,7 @@ impl<'a> NativeDecode<'a> {
         } else {
             ReuseTaken::Cold
         };
+        self.miss = io.miss;
         if result.is_ok() {
             self.prompt_sync_elapsed = Some(io.sync_elapsed);
         }
@@ -2949,6 +2975,7 @@ impl DecodeIo for NativeDecode<'_> {
             prefill_checkpoints: false,
             sync_elapsed: Duration::ZERO,
             reuse: ReuseTaken::Cold,
+            miss: ReuseMiss::None,
         };
         try_store_continued(&mut io, store, identity)?;
         Ok(())
@@ -2978,6 +3005,7 @@ impl DecodeIo for NativeDecode<'_> {
             prefill_checkpoints: false,
             sync_elapsed: Duration::ZERO,
             reuse: ReuseTaken::Cold,
+            miss: ReuseMiss::None,
         };
         let (model_id, quant_bits, ctx) = identity;
         try_store_live(
@@ -3023,6 +3051,10 @@ impl DecodeIo for NativeDecode<'_> {
 
     fn last_reuse(&self) -> ReuseTaken {
         self.reuse
+    }
+
+    fn last_miss(&self) -> ReuseMiss {
+        self.miss
     }
 
     fn sample(
@@ -3079,7 +3111,7 @@ mod disk_sync_tests {
         intermediate_prefill_eligible, ordinary_disk_cache_eligible,
         settle_thinking_visible_checkpoint, thinking_visible_cache_eligible, thinking_visible_key,
         tool_replay_disk_cache_eligible, tool_replay_producer_eligible, try_store_continued,
-        try_store_live, DiskSyncPolicy, GenerateError, ReuseTaken, SerialKvIo,
+        try_store_live, DiskSyncPolicy, GenerateError, ReuseMiss, ReuseTaken, SerialKvIo,
         ThinkingVisibleCheckpoint,
     };
     use crate::parse::{parse_request, ChatMsg, ParseEnv, ToolCall};
@@ -3118,6 +3150,7 @@ mod disk_sync_tests {
         assistant_token_id: i32,
         live_token_reads: Cell<usize>,
         reuse: ReuseTaken,
+        miss: ReuseMiss,
     }
 
     impl FakeSerial {
@@ -3145,6 +3178,7 @@ mod disk_sync_tests {
                 assistant_token_id: -1,
                 live_token_reads: Cell::new(0),
                 reuse: ReuseTaken::Cold,
+                miss: ReuseMiss::None,
             }
         }
     }
@@ -3156,6 +3190,10 @@ mod disk_sync_tests {
 
         fn note_reuse(&mut self, taken: ReuseTaken) {
             self.reuse = taken;
+        }
+
+        fn note_miss(&mut self, miss: ReuseMiss) {
+            self.miss = miss;
         }
 
         fn chat_token_ids(&self) -> (i32, i32) {
@@ -3400,6 +3438,69 @@ mod disk_sync_tests {
         // Both counters are positive: cached prefix plus a prefilled turn.
         assert_eq!(cached, 2);
         assert_eq!(io.reuse, ReuseTaken::Exact);
+    }
+
+    /// The four reasons `docs/serving-contract.md` names, each from the
+    /// decision that produced it.
+    #[test]
+    fn a_refused_candidate_says_why() {
+        let (dir, mut store) = store("miss-reasons");
+        candidate(&mut store, b"prefix", 2);
+
+        // The template re-rendered the conversation: stored tokens are no
+        // longer a prefix of the prompt.
+        let mut io = FakeSerial::new(&[], b"prefix suffix");
+        io.loaded_tokens = vec![41, 42];
+        super::disk_sync_template(
+            &mut io,
+            Some(&mut store),
+            0,
+            2,
+            b"prefix suffix",
+            &[1, 2, 3],
+            DiskSyncPolicy {
+                save_current: false,
+                load: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(io.miss, ReuseMiss::RenderedPrefix);
+
+        // Nothing stored under a text this prompt starts with.
+        let mut io = FakeSerial::new(&[], b"");
+        super::disk_sync_template(
+            &mut io,
+            Some(&mut store),
+            0,
+            2,
+            b"unrelated",
+            &[7],
+            DiskSyncPolicy {
+                save_current: false,
+                load: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(io.miss, ReuseMiss::NoCheckpoint);
+
+        // The payload does not hold the token count its record claims.
+        let mut io = FakeSerial::new(&[], b"prefix suffix");
+        io.loaded_tokens = vec![41];
+        super::disk_sync_template(
+            &mut io,
+            Some(&mut store),
+            0,
+            2,
+            b"prefix suffix",
+            &[41, 42, 3],
+            DiskSyncPolicy {
+                save_current: false,
+                load: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(io.miss, ReuseMiss::PayloadMismatch);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

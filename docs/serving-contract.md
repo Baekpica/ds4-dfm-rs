@@ -78,6 +78,7 @@ shared default is an error there, not a warning.
 | `effective_lane` | `serial`, `continuous`, or `static` |
 | `reuse_kind` | `cold`, `exact`, `partial`, or `fork` |
 | `speculation_active` | This request used speculative decode |
+| `reuse_miss` | Why a candidate was refused, when one was |
 | `fallback_reason` | Why a requested path was not used |
 
 The same fields may appear next to HTTP `timings`.
@@ -92,7 +93,8 @@ engine's speculative eval, or a native sequence that ran draft rows.
 
 ## Miss reasons
 
-Restore miss is not "disk broken". Examples:
+Restore miss is not "disk broken". `reuse_miss` carries the reason from the
+decision that produced it, and is absent when nothing was refused:
 
 - `rendered prefix changed` (template dropped an empty thinking block).
   Step's official follow-up render drops the empty `<think>` pair that the

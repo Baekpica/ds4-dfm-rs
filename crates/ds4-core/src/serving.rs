@@ -308,10 +308,36 @@ pub enum ReuseTaken {
     Fork,
 }
 
+/// Why a stored or live candidate was refused. Recorded at the decision, so
+/// an operator reads "the template dropped a block" instead of assuming the
+/// disk store is broken. The strings are the contract's miss reasons.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReuseMiss {
+    #[default]
+    None,
+    NoCheckpoint,
+    RenderedPrefix,
+    BelowThreshold,
+    PayloadMismatch,
+}
+
+impl ReuseMiss {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::NoCheckpoint => "no checkpoint at or below LCP",
+            Self::RenderedPrefix => "rendered prefix changed",
+            Self::BelowThreshold => "below minimum token threshold",
+            Self::PayloadMismatch => "payload family/layout mismatch",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RequestTrace {
     pub effective_lane: &'static str,
     pub reuse_kind: ReuseTaken,
+    pub reuse_miss: ReuseMiss,
     pub speculation_active: bool,
     pub fallback_reason: Option<String>,
 }
@@ -1201,6 +1227,8 @@ impl RequestTrace {
         json!({
             "effective_lane": self.effective_lane,
             "reuse_kind": self.reuse_kind.as_str(),
+            "reuse_miss": (self.reuse_miss != ReuseMiss::None)
+                .then(|| self.reuse_miss.as_str()),
             "speculation_active": self.speculation_active,
             "fallback_reason": self.fallback_reason
         })

@@ -293,6 +293,7 @@ impl ServerInner {
         self.last_request = Some(ds4_core::RequestTrace {
             effective_lane: lane,
             reuse_kind: outcome.reuse,
+            reuse_miss: outcome.reuse_miss,
             speculation_active: outcome.speculation_active,
             fallback_reason: outcome.fallback_reason.clone(),
         });
@@ -2726,6 +2727,7 @@ mod owner_tests {
         assert_eq!(last.effective_lane, "static");
         assert_eq!(last.reuse_kind, ds4_core::ReuseTaken::Cold);
         assert!(!last.speculation_active);
+        assert_eq!(last.reuse_miss, ds4_core::ReuseMiss::None);
     }
 
     #[test]
@@ -2758,6 +2760,7 @@ mod owner_tests {
             },
             speculation_active: true,
             reuse: ds4_core::ReuseTaken::Partial,
+            reuse_miss: ds4_core::ReuseMiss::RenderedPrefix,
             ..GenerateOutcome::default()
         });
 
@@ -2780,6 +2783,10 @@ mod owner_tests {
         assert!(body["serving"]["qualified"].is_object(), "{body}");
         assert_eq!(body["last_request"]["effective_lane"], "continuous");
         assert_eq!(body["last_request"]["reuse_kind"], "partial");
+        assert_eq!(
+            body["last_request"]["reuse_miss"],
+            "rendered prefix changed"
+        );
         assert_eq!(body["last_request"]["speculation_active"], true);
         assert!(body["last_request"].get("fallback_reason").is_some());
     }

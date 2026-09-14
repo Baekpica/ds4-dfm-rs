@@ -1603,7 +1603,8 @@ mod native {
 
     use ds4_core::{
         qwen_image_pixel_hash, qwen_image_probe, BatchCtx, ContAdmit, ContDone, ContDriver,
-        QwenImageInput, ReuseKind, ReuseTaken, Vocab, CONT_SAMPLE_GREEDY, CONT_SAMPLE_NONE,
+        QwenImageInput, ReuseKind, ReuseMiss, ReuseTaken, Vocab, CONT_SAMPLE_GREEDY,
+        CONT_SAMPLE_NONE,
     };
 
     use crate::serve_static::{BatchStatic, CoalesceLimits, StaticExec, StaticJob, StaticRow};
@@ -1662,6 +1663,7 @@ mod native {
         stepper: ContStepper,
         capture_done: bool,
         reuse: ReuseTaken,
+        miss: ReuseMiss,
         t_arrive: Instant,
         stop_requested: Option<fn() -> bool>,
     }
@@ -1795,6 +1797,7 @@ mod native {
                 engine_eos: false,
                 capture_done: self.capture_done,
                 reuse: self.reuse,
+                miss: self.miss,
                 speculated: false,
                 stop_requested: self.stop_requested,
                 done_tokens: Vec::new(),
@@ -1827,6 +1830,8 @@ mod native {
         capture_done: bool,
         /// Mechanism chosen at admission; only real once native reports cache.
         reuse: ReuseTaken,
+        /// Why a candidate was refused, when one was.
+        miss: ReuseMiss,
         /// Native ran draft rows for this sequence.
         speculated: bool,
         stop_requested: Option<fn() -> bool>,
@@ -3070,6 +3075,7 @@ mod native {
             // frontier turn also prefills tokens, and a fork looks like any
             // other prefix hit.
             let mut reuse = ReuseTaken::Exact;
+            let mut miss = ReuseMiss::None;
             let mut admit = if let Some(bank) = directed {
                 let mut admit = ContAdmit::cold(1, tokens, stepper.max_tokens.max(1));
                 admit.place_bank = bank.saturating_add(1);
@@ -3103,7 +3109,16 @@ mod native {
                                 stepper.cache_prompt.as_deref(),
                                 &protected,
                             )
-                            .filter(|plan| self.template.is_none() || plan.tokens == tokens)
+                            .filter(|plan| {
+                                // An official template re-rendered this
+                                // conversation, so the stored tokens are no
+                                // longer this prompt's prefix.
+                                let kept = self.template.is_none() || plan.tokens == tokens;
+                                if !kept {
+                                    miss = ReuseMiss::RenderedPrefix;
+                                }
+                                kept
+                            })
                         })
                     })
                     .or_else(|| {
@@ -3147,6 +3162,9 @@ mod native {
                     let mut admit = ContAdmit::cold(1, tokens, stepper.max_tokens.max(1));
                     admit.place_bank = i32::try_from(target + 1).unwrap_or(0);
                     reuse = ReuseTaken::Cold;
+                    if miss == ReuseMiss::None && capture_done {
+                        miss = ReuseMiss::NoCheckpoint;
+                    }
                     admit
                 }
             };
@@ -3163,6 +3181,7 @@ mod native {
                 stepper,
                 capture_done,
                 reuse,
+                miss,
                 t_arrive: work.t_arrive,
                 stop_requested: self.stop_requested,
             })
@@ -3275,6 +3294,7 @@ mod native {
             } else {
                 ReuseTaken::Cold
             };
+            outcome.reuse_miss = job.miss;
             if let Some(bank) = actual_bank {
                 if let Ok(snapshot) = batch.bank_snapshot(bank) {
                     outcome.bank = Some(bank);
