@@ -3073,7 +3073,15 @@ mod native {
             let mut admit = if let Some(bank) = directed {
                 let mut admit = ContAdmit::cold(1, tokens, stepper.max_tokens.max(1));
                 admit.place_bank = bank.saturating_add(1);
-                admit.n_cached = directed_cached.unwrap_or(0);
+                // A continuation reuses live bank KV like any other hit, so
+                // reuse-off has to refuse it too.
+                admit.n_cached = match self.warm_reuse {
+                    ReuseKind::None => {
+                        reuse = ReuseTaken::Cold;
+                        0
+                    }
+                    _ => directed_cached.unwrap_or(0),
+                };
                 admit
             } else {
                 let (hold, hold_retry) = self.protected_banks(bank_hold_retry);

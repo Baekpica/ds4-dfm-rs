@@ -252,13 +252,15 @@ fn main() {
         // metadata, required tensors and layouts. A merely readable GGUF
         // would let `--check-config` exit 0 on an artifact that cannot load.
         if let Some(id) = ident.as_ref() {
-            facts.mtp_path_ok = Some(match probe_mtp_sidecar(id.shape, path) {
-                Ok(()) => true,
-                Err(error) => {
-                    eprintln!("ds4-server-rs: --mtp {path}: {error}");
-                    false
-                }
-            });
+            facts.mtp_path_ok = Some(
+                match probe_mtp_sidecar(id.shape, dist_probe.as_ref(), path) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        eprintln!("ds4-server-rs: --mtp {path}: {error}");
+                        false
+                    }
+                },
+            );
         }
     }
     if serve_req.check_config {

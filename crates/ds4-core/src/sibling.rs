@@ -69,13 +69,25 @@ pub fn probe_dspark_sidecar(
     .map(|_| ())
 }
 
-pub fn probe_mtp_sidecar(shape: Shape, path: &str) -> Result<()> {
+pub fn probe_mtp_sidecar(
+    shape: Shape,
+    distributed: Option<&crate::DistributedConfig>,
+    path: &str,
+) -> Result<()> {
     // `attach_siblings` reads an empty path as "no sidecar", but the plan
     // reads `Some("")` as loaded weights, so answer it here.
     if path.is_empty() {
         return Err(Error {
             code: 1,
             message: "mtp path must not be empty".into(),
+        });
+    }
+    // The open loads `mtp_path` only when the role is none, so a distributed
+    // process would run without the drafter it was told to use.
+    if distributed.is_some() {
+        return Err(Error {
+            code: 1,
+            message: "a distributed launch does not attach an MTP sidecar".into(),
         });
     }
     attach_siblings(

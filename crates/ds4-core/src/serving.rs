@@ -4,7 +4,7 @@
 //! Forced options that a family cannot run become errors, not silent fallback.
 
 use crate::identify::Identified;
-use crate::shape::{ModelFamily, Shape, Variant};
+use crate::shape::{ModelFamily, Shape, Variant, SHAPE_INKLING_SMALL};
 use crate::Backend;
 use serde_json::{json, Value};
 use std::ffi::OsStr;
@@ -130,9 +130,12 @@ pub struct ServingCaps {
     pub mtp: MtpKind,
     pub mtp_support: Support,
     pub spec_lane: SpecLane,
-    /// `model_open` refuses this family on any other host: one full CUDA
-    /// model, no distributed slices.
+    /// `model_open` or `ds4_session_create` refuses this family on any other
+    /// host: one full CUDA model, no distributed slices.
     pub cuda_only: bool,
+    /// Hard runtime maximum from `ds4_session_create`, not a qualification
+    /// bound: above it the session cannot be created at all.
+    pub ctx_max: Option<u32>,
     pub qualified_ctx: Option<u32>,
     pub qualified_banks: Option<u32>,
     pub qualified_prompt: Option<u32>,
@@ -496,6 +499,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
             cuda_only: false,
+            ctx_max: None,
             qualified_ctx: Some(32768),
             qualified_banks: Some(1),
             qualified_prompt: None,
@@ -516,6 +520,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Bank,
             cuda_only: true,
+            ctx_max: None,
             qualified_ctx: Some(262144),
             qualified_banks: Some(2),
             qualified_prompt: None,
@@ -534,6 +539,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Serial,
             cuda_only: true,
+            ctx_max: Some(262144),
             qualified_ctx: Some(65536),
             qualified_banks: Some(2),
             qualified_prompt: Some(6300),
@@ -552,6 +558,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
             cuda_only: false,
+            ctx_max: None,
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
@@ -569,7 +576,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
-            cuda_only: false,
+            cuda_only: true,
+            ctx_max: Some(262144),
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
@@ -588,6 +596,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
             cuda_only: false,
+            ctx_max: None,
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
@@ -605,7 +614,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::BoundOnly,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
-            cuda_only: false,
+            cuda_only: true,
+            ctx_max: Some(524288),
             qualified_ctx: None,
             qualified_banks: Some(1),
             qualified_prompt: None,
@@ -624,6 +634,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Serial,
             cuda_only: true,
+            ctx_max: Some(SHAPE_INKLING_SMALL.rope_orig_ctx as u32),
             qualified_ctx: Some(1024),
             qualified_banks: Some(1),
             qualified_prompt: None,
@@ -641,7 +652,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
-            cuda_only: false,
+            cuda_only: true,
+            ctx_max: Some(2048),
             qualified_ctx: Some(2048),
             qualified_banks: Some(1),
             qualified_prompt: None,
@@ -660,6 +672,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Bank,
             cuda_only: false,
+            ctx_max: None,
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
@@ -751,6 +764,17 @@ pub fn resolve_plan(
         issues.push(error(
             "ctx_invalid",
             format!("ctx {} cannot create a session", req.ctx),
+        ));
+    } else if caps.ctx_max.is_some_and(|max| req.ctx as u32 > max) {
+        // A hard session maximum, not a qualification bound: the server
+        // would listen and then fail the first request.
+        issues.push(error(
+            "ctx_unavailable",
+            format!(
+                "{} sessions cap ctx at {}",
+                caps.variant_name(),
+                caps.ctx_max.unwrap_or_default()
+            ),
         ));
     } else if let Some(qctx) = caps.qualified_ctx {
         if req.ctx as u32 > qctx {
@@ -1816,6 +1840,23 @@ mod tests {
     }
 
     #[test]
+    fn a_ctx_above_the_session_cap_is_an_error() {
+        // GLM's default 8,192 cannot create a session at all.
+        let p = plan(
+            ServingRequest::default(),
+            ModelFamily::Glm53,
+            Variant::Glm53Flash,
+        );
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "ctx_unavailable"));
+
+        let mut req = ServingRequest::default();
+        req.ctx = 2048;
+        let p = plan(req, ModelFamily::Glm53, Variant::Glm53Flash);
+        assert!(!p.issues.iter().any(|i| i.code == "ctx_unavailable"));
+    }
+
+    #[test]
     fn a_nonpositive_ctx_is_an_error() {
         for ctx in [0, -1] {
             let mut req = ServingRequest::default();
@@ -1993,15 +2034,21 @@ mod tests {
 
     #[test]
     fn serial_default_auto_is_width_one() {
+        // Each family's own session cap, since the shared default context
+        // cannot create a GLM or Inkling session at all.
         let families = [
-            (ModelFamily::Inkling, Variant::InklingSmall),
-            (ModelFamily::Glm53, Variant::Glm53Flash),
-            (ModelFamily::Dots3Note, Variant::Dots3NotePrev),
+            (ModelFamily::Inkling, Variant::InklingSmall, 1024),
+            (ModelFamily::Glm53, Variant::Glm53Flash, 2048),
+            (ModelFamily::Dots3Note, Variant::Dots3NotePrev, DEFAULT_CTX),
         ];
-        for (family, variant) in families {
+        for (family, variant, ctx) in families {
             for req in [
-                ServingRequest::default(),
                 ServingRequest {
+                    ctx,
+                    ..ServingRequest::default()
+                },
+                ServingRequest {
+                    ctx,
                     max_seqs: MaxSeqs::Auto,
                     ..ServingRequest::default()
                 },

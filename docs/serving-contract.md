@@ -13,7 +13,7 @@ the same object plus `last_request`.
 
 | Flag | Meaning | Aliases |
 |---|---|---|
-| `--ctx` / `-c` | Per-sequence context limit | |
+| `--ctx` / `-c` | Per-sequence context limit, capped per family | |
 | `--max-seqs N\|auto` | Concurrent banks/sequences | `--cont-width`, `DS4_SERVER_COALESCE_MAX` |
 | `--prefix-reuse off\|exact\|partial\|auto` | Conversation reuse policy | `DS4_SERVER_FORK`, `DS4_SERVER_FORK_PARTIAL` |
 | `--mtp-mode off\|auto\|on` | Speculation policy | `DS4_MTP_SPEC_DISABLE` for off-with-weights |
@@ -63,7 +63,9 @@ requests keep predictor state and use ordinary decode.
 
 The JSON has `requested`, `effective`, `qualified`, and `issues`.
 `qualified.prompt` is the verified request length when it is smaller
-than configured `--ctx`.
+than configured `--ctx`. A family's session cap is separate from its
+qualified context: GLM sessions refuse anything above 2,048, so the
+shared default is an error there, not a warning.
 
 ## Request trace
 
