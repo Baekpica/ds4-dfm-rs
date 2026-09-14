@@ -311,7 +311,8 @@ trait SerialKvIo {
     /// Record which mechanism produced the reuse. Cached/computed counts
     /// cannot tell an appended frontier turn from a checkpoint replay.
     fn note_reuse(&mut self, _taken: ReuseTaken) {}
-    /// Record why a candidate was refused, so the trace can say it.
+    /// Record why a candidate was refused, so the trace can say it. The
+    /// first reason wins: a later, broader one would mask it.
     fn note_miss(&mut self, _miss: ReuseMiss) {}
     fn sync(&mut self, tokens: &[i32]) -> Result<(), GenerateError>;
     fn sync_with_prefill_checkpoints(
@@ -2412,7 +2413,9 @@ impl SerialKvIo for NativeSerialKvIo<'_, '_, '_, '_> {
     }
 
     fn note_miss(&mut self, miss: ReuseMiss) {
-        self.miss = miss;
+        if self.miss == ReuseMiss::None {
+            self.miss = miss;
+        }
     }
 
     fn chat_token_ids(&self) -> (i32, i32) {
@@ -3193,7 +3196,9 @@ mod disk_sync_tests {
         }
 
         fn note_miss(&mut self, miss: ReuseMiss) {
-            self.miss = miss;
+            if self.miss == ReuseMiss::None {
+                self.miss = miss;
+            }
         }
 
         fn chat_token_ids(&self) -> (i32, i32) {
@@ -3500,6 +3505,12 @@ mod disk_sync_tests {
         )
         .unwrap();
         assert_eq!(io.miss, ReuseMiss::PayloadMismatch);
+
+        // A broader reason never masks the specific one that came first.
+        let mut io = FakeSerial::new(&[], b"");
+        io.note_miss(ReuseMiss::RenderedPrefix);
+        io.note_miss(ReuseMiss::BelowThreshold);
+        assert_eq!(io.miss, ReuseMiss::RenderedPrefix);
         let _ = fs::remove_dir_all(dir);
     }
 
