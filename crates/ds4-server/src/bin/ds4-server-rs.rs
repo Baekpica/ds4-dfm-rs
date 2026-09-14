@@ -169,8 +169,9 @@ fn main() {
             // Hidden rust-shadow alias for DS4_SERVER_COALESCE_MAX.
             // Not a C flag; kept for rust-host-live scripts (e.g. --cont-width 1).
             "--cont-width" => {
-                serve_req.max_seqs = MaxSeqs::parse(&args.next().unwrap_or_else(|| usage()))
-                    .unwrap_or_else(|e| cli_error(&e));
+                serve_req.max_seqs =
+                    MaxSeqs::parse_coalesce(&args.next().unwrap_or_else(|| usage()))
+                        .unwrap_or_else(|e| cli_error(&e));
             }
             "--cors" => cfg.cors = true,
             "--mem-floor-gb" => {
@@ -216,6 +217,9 @@ fn main() {
             None => facts.disk_ready = Some(false),
         }
     }
+    if let Some(path) = mtp_path.as_deref() {
+        facts.mtp_path_ok = Some(std::path::Path::new(path).is_file());
+    }
 
     let caps = model_path
         .as_deref()
@@ -236,7 +240,11 @@ fn main() {
         cli_error("ds4-server-rs: serving plan rejected unsupported options");
     }
     cfg.serving_plan = Some(plan.clone());
-    let cont_width = plan.effective.max_seqs as i32;
+    let cont_width = if serve_req.max_seqs == MaxSeqs::Off {
+        0
+    } else {
+        plan.effective.max_seqs as i32
+    };
 
     let native_dist = distributed_config(&dist.opt);
     let launch = server_launch(dist.opt.role, model_path.is_some())
@@ -381,7 +389,9 @@ fn main() {
     );
 
     if let Some(ref model) = model {
-        let mut engine = NativeDecode::new(model, cfg.ctx).with_vocab(model.vocab());
+        let mut engine = NativeDecode::new(model, cfg.ctx)
+            .with_vocab(model.vocab())
+            .with_prefix_reuse(plan.effective.prefix_reuse);
         if let Some(store) = kv_store {
             engine = engine.with_store(store);
         }

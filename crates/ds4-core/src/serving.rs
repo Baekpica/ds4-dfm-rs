@@ -37,6 +37,8 @@ pub enum MtpMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MaxSeqs {
     Auto,
+    /// Legacy `--cont-width 0` / `DS4_SERVER_COALESCE_MAX=0`: serial, no banks.
+    Off,
     Fixed(u32),
 }
 
@@ -129,6 +131,7 @@ pub struct EngineFacts {
     pub banks_fitted: Option<u32>,
     pub seq_cap: Option<u32>,
     pub disk_ready: Option<bool>,
+    pub mtp_path_ok: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -294,9 +297,17 @@ impl MaxSeqs {
             .ok_or_else(|| format!("ds4-server-rs: --max-seqs wants N|auto (got '{raw}')"))
     }
 
+    pub fn parse_coalesce(raw: &str) -> Result<Self, String> {
+        if raw == "0" {
+            return Ok(Self::Off);
+        }
+        Self::parse(raw)
+    }
+
     pub fn as_str(self) -> String {
         match self {
             Self::Auto => "auto".into(),
+            Self::Off => "off".into(),
             Self::Fixed(n) => n.to_string(),
         }
     }
@@ -328,7 +339,7 @@ impl ServingRequest {
     pub fn from_env() -> Self {
         let mut req = Self::default();
         if let Ok(raw) = std::env::var("DS4_SERVER_COALESCE_MAX") {
-            if let Ok(parsed) = MaxSeqs::parse(&raw) {
+            if let Ok(parsed) = MaxSeqs::parse_coalesce(&raw) {
                 req.max_seqs = parsed;
             }
         }
@@ -750,7 +761,10 @@ impl ResolvedPlan {
         if self.family == Some(ModelFamily::Qwen4Exp) {
             out.push((
                 "DS4_QWEN_BATCH".into(),
-                if self.requested.backend == Backend::Cuda && self.effective.max_seqs >= 1 {
+                if self.requested.backend == Backend::Cuda
+                    && self.effective.max_seqs >= 1
+                    && self.requested.max_seqs != MaxSeqs::Off
+                {
                     "1".into()
                 } else {
                     "0".into()
@@ -772,6 +786,9 @@ impl ResolvedPlan {
     }
 
     pub fn apply_env(&self) {
+        if self.effective.mtp_mode != MtpMode::Off {
+            std::env::remove_var("DS4_MTP_SPEC_DISABLE");
+        }
         for (key, value) in self.env_overrides() {
             std::env::set_var(key, value);
         }
@@ -915,7 +932,7 @@ fn default_effective(req: &ServingRequest) -> EffectiveView {
         mtp_mode: req.mtp_mode,
         mtp_weights: req.mtp_path.is_some(),
         max_seqs: match req.max_seqs {
-            MaxSeqs::Auto => 1,
+            MaxSeqs::Auto | MaxSeqs::Off => 1,
             MaxSeqs::Fixed(n) => n,
         },
         ctx: req.ctx,
@@ -976,12 +993,16 @@ fn resolve_seqs(
     // Auto: serial/Step stay 1 so `-m` boots. Persistent uses qualified
     // banks. Only explicit `--max-seqs N>1` errors on serial.
     let want = match requested {
+        MaxSeqs::Off => 1,
         MaxSeqs::Auto => match caps.banks {
             BankLane::Serial | BankLane::OptIn => 1,
             BankLane::Persistent => caps.qualified_banks.unwrap_or(DEFAULT_MAX_SEQS),
         },
         MaxSeqs::Fixed(n) => n,
     };
+    if requested == MaxSeqs::Off {
+        return (1, false);
+    }
     // Continuous banks are CUDA-only. CPU/Metal Auto is width 1.
     if backend != Backend::Cuda {
         if let MaxSeqs::Fixed(n) = requested {
@@ -1049,6 +1070,18 @@ fn resolve_mtp(
                     "{} MTP needs CUDA; --backend {} cannot enable it",
                     caps.variant_name(),
                     backend_name(req.backend)
+                ),
+            ));
+        }
+        return (MtpMode::Off, false);
+    }
+    if has_path && facts.mtp_path_ok == Some(false) {
+        if req.mtp_mode == MtpMode::On {
+            issues.push(error(
+                "mtp_sidecar",
+                format!(
+                    "{} MTP path is missing or is not a GGUF",
+                    caps.variant_name()
                 ),
             ));
         }
@@ -1260,6 +1293,20 @@ mod tests {
         };
         let p = resolve_plan(&req, None, &EngineFacts::default());
         assert!(p.has_errors());
+    }
+
+    #[test]
+    fn mtp_on_does_not_publish_disable() {
+        let req = ServingRequest {
+            mtp_mode: MtpMode::On,
+            mtp_path: Some("mtp.gguf".into()),
+            ..ServingRequest::default()
+        };
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(!p
+            .env_overrides()
+            .iter()
+            .any(|(key, _)| key == "DS4_MTP_SPEC_DISABLE"));
     }
 
     #[test]
@@ -1564,6 +1611,39 @@ mod tests {
         assert!(MaxSeqs::parse("0").is_err());
         assert!(MaxSeqs::parse("65").is_err());
         assert_eq!(MaxSeqs::parse("1").unwrap(), MaxSeqs::Fixed(1));
+        assert_eq!(MaxSeqs::parse_coalesce("0").unwrap(), MaxSeqs::Off);
+    }
+
+    #[test]
+    fn coalesce_zero_keeps_serial() {
+        let mut req = ServingRequest::default();
+        req.max_seqs = MaxSeqs::Off;
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(!p.has_errors());
+        assert_eq!(p.effective.max_seqs, 1);
+        assert!(!p
+            .env_overrides()
+            .iter()
+            .any(|(k, v)| k == "DS4_QWEN_BATCH" && v == "1"));
+    }
+
+    #[test]
+    fn missing_mtp_path_is_an_error() {
+        let mut req = ServingRequest::default();
+        req.mtp_mode = MtpMode::On;
+        req.mtp_path = Some("missing.gguf".into());
+        let facts = EngineFacts {
+            mtp_path_ok: Some(false),
+            ..EngineFacts::default()
+        };
+        let p = resolve_plan(
+            &req,
+            Some(caps(ModelFamily::DeepSeek4, Variant::Flash)),
+            &facts,
+        );
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "mtp_sidecar"));
+        assert!(!p.effective.mtp_weights);
     }
 
     #[test]

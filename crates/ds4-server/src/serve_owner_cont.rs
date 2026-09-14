@@ -394,6 +394,10 @@ fn settle_roll_job(
     } else if job.prepared.parsed.needs & NEED_BANK_FRONTIER != 0 {
         settle_bank_continuation(cfg, &job.prepared, result, &mut job.sink)
     } else if matches!(result, Err(GenerateError::Unsupported(_))) {
+        let fallback = match &result {
+            Err(GenerateError::Unsupported(msg)) => Some((*msg).to_string()),
+            _ => None,
+        };
         run_serial(
             cfg,
             inner,
@@ -403,6 +407,7 @@ fn settle_roll_job(
             None,
             &mut job.sink,
             arrived_at,
+            fallback,
         )
     } else {
         settle_generation_result(cfg, &job.prepared, result, &mut job.sink)

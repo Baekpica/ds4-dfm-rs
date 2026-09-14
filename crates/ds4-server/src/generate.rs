@@ -224,6 +224,9 @@ pub trait DecodeIo {
         self.eval(first)?;
         Ok(vec![first])
     }
+    fn last_eval_speculated(&self) -> bool {
+        false
+    }
     fn sample(
         &mut self,
         temperature: f32,
@@ -629,6 +632,8 @@ fn disk_sync_template(
     quant_bits: i32,
     prompt: &[u8],
     tokens: &[i32],
+    checkpoint: Option<&ThinkingVisibleCheckpoint>,
+    thinking_visible_eligible: bool,
     policy: DiskSyncPolicy,
 ) -> Result<i32, GenerateError> {
     disk_sync_prompt_impl(
@@ -638,8 +643,8 @@ fn disk_sync_template(
         quant_bits,
         prompt,
         tokens,
-        None,
-        false,
+        checkpoint,
+        thinking_visible_eligible,
         policy,
         false,
         PromptReuse::Tokens,
@@ -651,6 +656,7 @@ fn disk_sync_template(
 enum PromptReuse {
     Tokens,
     LegacyText,
+    Off,
 }
 
 #[cfg(any(feature = "native", test))]
@@ -721,6 +727,24 @@ fn disk_sync_prompt_impl(
 ) -> Result<i32, GenerateError> {
     let identity = kv_identity(model_id, quant_bits, io.ctx());
     let prefill_checkpoints = policy.load && !allow_tool_map;
+    if reuse == PromptReuse::Off {
+        if policy.save_current {
+            if let (Some(store), Some((model_id, quant_bits, ctx))) =
+                (store.as_deref_mut(), identity)
+            {
+                let _ = try_store_live(
+                    io,
+                    store,
+                    model_id,
+                    quant_bits,
+                    ctx,
+                    KvReason::Evict,
+                    checkpoint,
+                );
+            }
+        }
+        return cold_sync(io, canonical_tokens);
+    }
     let live = io.live_tokens();
     if !live.is_empty() && canonical_tokens.starts_with(&live) {
         let cached = live.len() as i32;
@@ -734,7 +758,7 @@ fn disk_sync_prompt_impl(
         )?;
         return Ok(cached);
     }
-    if reuse == PromptReuse::LegacyText && thinking_visible_eligible {
+    if thinking_visible_eligible {
         if let Some(checkpoint) = checkpoint {
             if !live.is_empty()
                 && usize::try_from(checkpoint.frontier).ok() == Some(live.len())
@@ -860,7 +884,8 @@ fn disk_sync_prompt_impl(
             prefill_checkpoints,
         );
     }
-    if reuse == PromptReuse::Tokens && !canonical_tokens.starts_with(&loaded) {
+    let thinking_visible = envelope.header.ext_flags == EXT_THINKING_VISIBLE;
+    if reuse == PromptReuse::Tokens && !thinking_visible && !canonical_tokens.starts_with(&loaded) {
         io.invalidate();
         return cold_sync_and_store(
             io,
@@ -873,7 +898,7 @@ fn disk_sync_prompt_impl(
     let cached = loaded.len() as i32;
     store.continued_last_store_tokens = cached;
     let _ = store.touch_hit(&path);
-    if reuse == PromptReuse::Tokens {
+    if reuse == PromptReuse::Tokens && !thinking_visible {
         sync_maybe_checkpoint(
             io,
             canonical_tokens,
@@ -916,6 +941,9 @@ pub struct GenerateOutcome {
     pub frontier: i32,
     pub finish: String,
     pub timings: ReqTimings,
+    pub lane: Option<&'static str>,
+    pub speculation_active: bool,
+    pub fallback_reason: Option<String>,
 }
 
 pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'static str> {
@@ -1329,6 +1357,7 @@ fn decode_pass(
     mut resp: Option<&mut ResponsesStream>,
     first_tok: &mut Option<Instant>,
     decode_steps: &mut i32,
+    speculation: &mut bool,
     stop_requested: Option<fn() -> bool>,
 ) -> Result<(), GenerateError> {
     let mut last_heartbeat = Instant::now();
@@ -1380,7 +1409,11 @@ fn decode_pass(
             && parsed.required_tool_prefix.is_empty()
             && parsed.required_think_end_prefix.is_empty()
         {
-            engine.eval_greedy(token, budget)?
+            let accepted = engine.eval_greedy(token, budget)?;
+            if engine.last_eval_speculated() {
+                *speculation = true;
+            }
+            accepted
         } else {
             engine.eval(token)?;
             vec![token]
@@ -1800,6 +1833,7 @@ pub(crate) fn generate_terminal_prepared(
         .unwrap_or_else(|| decode_t0.duration_since(t_prefill));
     let mut first_tok = None;
     let mut decode_steps = 0i32;
+    let mut speculation = false;
 
     let prompt_n = engine.pos();
     let mut rng = parsed.seed;
@@ -1872,6 +1906,7 @@ pub(crate) fn generate_terminal_prepared(
             resp.as_mut(),
             &mut first_tok,
             &mut decode_steps,
+            &mut speculation,
             stop_requested,
         );
         if let Err(error) = decoded {
@@ -2140,6 +2175,9 @@ pub(crate) fn generate_terminal_prepared(
         frontier: engine.pos(),
         finish: finish.to_string(),
         timings: req.timings,
+        speculation_active: speculation,
+        lane: None,
+        fallback_reason: None,
     };
     Ok((outcome, terminal))
 }
@@ -2494,6 +2532,8 @@ pub struct NativeDecode<'a> {
     chat_history: Option<crate::chat_input::History>,
     prompt_sync_elapsed: Option<Duration>,
     ctx: i32,
+    prefix_reuse: ds4_core::ReuseKind,
+    speculated: bool,
 }
 
 #[cfg(feature = "native")]
@@ -2510,7 +2550,14 @@ impl<'a> NativeDecode<'a> {
             chat_history: None,
             prompt_sync_elapsed: None,
             ctx,
+            prefix_reuse: ds4_core::ReuseKind::Exact,
+            speculated: false,
         }
+    }
+
+    pub fn with_prefix_reuse(mut self, reuse: ds4_core::ReuseKind) -> Self {
+        self.prefix_reuse = reuse;
+        self
     }
 
     pub fn with_vocab(mut self, vocab: &'a ds4_core::Vocab) -> Self {
@@ -2564,7 +2611,22 @@ impl<'a> NativeDecode<'a> {
             save_current,
             load: disk_eligible,
         };
-        let result = if self.model.chat_template().is_some() {
+        let reuse_off = self.prefix_reuse == ds4_core::ReuseKind::None;
+        let result = if reuse_off {
+            disk_sync_prompt_impl(
+                &mut io,
+                store.as_mut(),
+                model_id,
+                quant_bits,
+                prompt,
+                tokens,
+                checkpoint.as_ref(),
+                thinking_visible_eligible,
+                policy,
+                false,
+                PromptReuse::Off,
+            )
+        } else if self.model.chat_template().is_some() {
             disk_sync_template(
                 &mut io,
                 store.as_mut(),
@@ -2572,6 +2634,8 @@ impl<'a> NativeDecode<'a> {
                 quant_bits,
                 prompt,
                 tokens,
+                checkpoint.as_ref(),
+                thinking_visible_eligible,
                 policy,
             )
         } else if tool_replay {
@@ -2935,13 +2999,19 @@ impl DecodeIo for NativeDecode<'_> {
         ) || self.model.mtp().is_none()
             || std::env::var_os("DS4_MTP_SPEC_DISABLE").is_some()
         {
+            self.speculated = false;
             self.eval(first)?;
             return Ok(vec![first]);
         }
+        self.speculated = true;
         let eos = self.model.token_eos();
         self.session()?
             .eval_speculative_argmax(first, budget, eos)
             .map_err(|e| GenerateError::Engine(e.to_string()))
+    }
+
+    fn last_eval_speculated(&self) -> bool {
+        self.speculated
     }
 
     fn sample(
@@ -3180,6 +3250,8 @@ mod disk_sync_tests {
             2,
             b"prefix suffix",
             &[1, 3, 4],
+            None,
+            false,
             DiskSyncPolicy {
                 save_current: false,
                 load: false,
@@ -3201,6 +3273,8 @@ mod disk_sync_tests {
             2,
             b"different text",
             &[1, 2, 4],
+            None,
+            false,
             DiskSyncPolicy {
                 save_current: false,
                 load: false,
@@ -3230,6 +3304,8 @@ mod disk_sync_tests {
                 2,
                 b"prefix suffix",
                 &[1, 2, 3],
+                None,
+                false,
                 DiskSyncPolicy {
                     save_current: false,
                     load: true,
@@ -3241,6 +3317,88 @@ mod disk_sync_tests {
             assert!(io.suffixes.is_empty(), "{name}");
             let _ = fs::remove_dir_all(dir);
         }
+    }
+
+    #[test]
+    fn template_restores_history_checkpoint() {
+        let (dir, mut store) = store("step-history");
+        let checkpoint = ThinkingVisibleCheckpoint {
+            text: b"<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n4<|im_end|>\n"
+                .to_vec(),
+            frontier: 2,
+        };
+        let gen = b"<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n</think>\n";
+        let mut saving = FakeSerial::new(&[41, 42], gen);
+        super::disk_sync_template(
+            &mut saving,
+            Some(&mut store),
+            0,
+            2,
+            gen,
+            &[90],
+            Some(&checkpoint),
+            true,
+            DiskSyncPolicy {
+                save_current: true,
+                load: false,
+            },
+        )
+        .unwrap();
+
+        let follow =
+            b"<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n4<|im_end|>\n<|im_start|>user\nAgain<|im_end|>\n<|im_start|>assistant\n<think>\n</think>\n";
+        let mut loading = FakeSerial::new(&[], b"");
+        loading.loaded_tokens = vec![41, 42];
+        loading.suffix_tokens = vec![7, 8];
+        let cached = super::disk_sync_template(
+            &mut loading,
+            Some(&mut store),
+            0,
+            2,
+            follow,
+            &[1, 2, 3, 4],
+            None,
+            true,
+            DiskSyncPolicy {
+                save_current: false,
+                load: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(cached, 2);
+        assert_eq!(
+            loading.suffixes,
+            [
+                b"<|im_start|>user\nAgain<|im_end|>\n<|im_start|>assistant\n<think>\n</think>\n"
+                    .to_vec()
+            ]
+        );
+        assert_eq!(loading.syncs, [vec![41, 42, 7, 8]]);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reuse_off_skips_live_prefix() {
+        let mut io = FakeSerial::new(&[1, 2], b"prefix");
+        let cached = super::disk_sync_prompt_impl(
+            &mut io,
+            None,
+            6,
+            2,
+            b"prefix suffix",
+            &[1, 2, 4],
+            None,
+            false,
+            DiskSyncPolicy {
+                save_current: false,
+                load: false,
+            },
+            false,
+            super::PromptReuse::Off,
+        )
+        .unwrap();
+        assert_eq!(cached, 0);
+        assert_eq!(io.live, [1, 2, 4]);
     }
 
     fn store(tag: &str) -> (PathBuf, Store) {

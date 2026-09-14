@@ -553,6 +553,7 @@ impl ContStepper {
             frontier: self.prompt_n + completion,
             finish: self.finish.to_string(),
             timings: self.req.timings,
+            ..GenerateOutcome::default()
         };
         (std::mem::take(&mut self.w.out), outcome)
     }

@@ -273,18 +273,17 @@ impl ServerInner {
             t.decode_tokens,
             t.decode_steps,
         );
-        // Speculative commit yields more tokens than decode steps.
-        let spec = t.decode_steps > 0 && t.decode_tokens > t.decode_steps;
+        let lane = outcome.lane.unwrap_or(if outcome.bank.is_some() {
+            "continuous"
+        } else {
+            "serial"
+        });
         self.last_request = Some(ds4_core::RequestTrace::from_timings(
-            if outcome.bank.is_some() {
-                "continuous"
-            } else {
-                "serial"
-            },
+            lane,
             t.prefill_cached,
             t.prefill_tokens,
-            spec,
-            None,
+            outcome.speculation_active,
+            outcome.fallback_reason.clone(),
         ));
     }
 
@@ -1333,6 +1332,7 @@ fn run_engine<W: TerminalSink>(
     out: &mut W,
     arrived_at: Instant,
 ) -> (u8, Settlement) {
+    let mut serial_fallback = None;
     if dec.lane == LANE_CONTINUOUS {
         if let Some(exec) = cont.as_mut() {
             exec.set_stop_requested(cfg.stop_requested);
@@ -1369,6 +1369,9 @@ fn run_engine<W: TerminalSink>(
                     settle_generation_result(cfg, job, result, out)
                 };
                 return (LANE_CONTINUOUS, settlement);
+            }
+            if let Err(GenerateError::Unsupported(msg)) = result {
+                serial_fallback = Some(msg.to_string());
             }
             // C lane-entry counters (ds4_server.c route_metrics_record):
             // cont_admit success ticks continuous BEFORE the engine's
@@ -1410,7 +1413,7 @@ fn run_engine<W: TerminalSink>(
         if matches!(&result, Err(GenerateError::Engine(msg)) if msg == STATIC_WIDTH_ERR) {
             return (
                 crate::route::LANE_SERIAL,
-                run_serial(cfg, inner, job, id, engine, cont, out, arrived_at),
+                run_serial(cfg, inner, job, id, engine, cont, out, arrived_at, None),
             );
         }
         return (
@@ -1429,7 +1432,17 @@ fn run_engine<W: TerminalSink>(
     }
     (
         crate::route::LANE_SERIAL,
-        run_serial(cfg, inner, job, id, engine, cont, out, arrived_at),
+        run_serial(
+            cfg,
+            inner,
+            job,
+            id,
+            engine,
+            cont,
+            out,
+            arrived_at,
+            serial_fallback,
+        ),
     )
 }
 
@@ -1450,12 +1463,16 @@ fn settle_static_lane<W: TerminalSink>(
                 finish: StaticFinish::Length,
             };
             let row = rows.last().unwrap_or(&empty);
-            lock_inner(inner).record_tokens(
-                prompt_n,
-                0,
-                i32::try_from(row.tokens.len()).unwrap_or(i32::MAX),
-                0,
-            );
+            let decoded = i32::try_from(row.tokens.len()).unwrap_or(i32::MAX);
+            lock_inner(inner).record_generation(&GenerateOutcome {
+                timings: crate::stream::ReqTimings {
+                    prefill_tokens: prompt_n,
+                    decode_tokens: decoded,
+                    ..crate::stream::ReqTimings::default()
+                },
+                lane: Some("static"),
+                ..GenerateOutcome::default()
+            });
             let bytes = write_static_completion(
                 StaticSettle {
                     parsed: &job.parsed,
@@ -1515,6 +1532,7 @@ fn run_serial<W: TerminalSink>(
     mut cont: Option<&mut dyn ContExec>,
     out: &mut W,
     arrived_at: Instant,
+    fallback: Option<String>,
 ) -> Settlement {
     let parsed = &job.parsed;
     let now = monotonic_now();
@@ -1639,6 +1657,8 @@ fn run_serial<W: TerminalSink>(
         Ok(result) => result,
         Err(error) => return settle_generation_result(cfg, job, Err(error), out),
     };
+    let mut generated = generated;
+    generated.fallback_reason = fallback;
     lock_inner(inner).record_generation(&generated);
     let publish = matches!(parsed.api, Api::Anthropic | Api::Responses)
         && !generated.tool_ids.is_empty()
@@ -2615,22 +2635,41 @@ mod owner_tests {
             timings: crate::stream::ReqTimings {
                 prefill_tokens: 18,
                 prefill_cached: 260,
-                decode_tokens: 7,
+                decode_tokens: 4,
                 decode_steps: 4,
                 ..crate::stream::ReqTimings::default()
             },
+            speculation_active: true,
             ..GenerateOutcome::default()
         });
 
         assert_eq!(inner.runtime.tokens_prefilled_computed, 18);
         assert_eq!(inner.runtime.tokens_prefilled_cached, 260);
-        assert_eq!(inner.runtime.tokens_decoded, 7);
+        assert_eq!(inner.runtime.tokens_decoded, 4);
         assert_eq!(inner.runtime.decode_steps, 4);
         let last = inner.last_request.as_ref().unwrap();
         assert_eq!(last.effective_lane, "serial");
         assert_eq!(last.reuse_kind, "partial");
         assert!(last.speculation_active);
         assert!(last.fallback_reason.is_none());
+    }
+
+    #[test]
+    fn static_settlement_records_static_lane() {
+        let mut inner = ServerInner::default();
+        inner.record_generation(&GenerateOutcome {
+            lane: Some("static"),
+            timings: crate::stream::ReqTimings {
+                prefill_tokens: 8,
+                decode_tokens: 3,
+                ..crate::stream::ReqTimings::default()
+            },
+            ..GenerateOutcome::default()
+        });
+        let last = inner.last_request.as_ref().unwrap();
+        assert_eq!(last.effective_lane, "static");
+        assert_eq!(last.reuse_kind, "cold");
+        assert!(!last.speculation_active);
     }
 
     #[test]
@@ -2661,6 +2700,7 @@ mod owner_tests {
                 decode_steps: 4,
                 ..crate::stream::ReqTimings::default()
             },
+            speculation_active: true,
             ..GenerateOutcome::default()
         });
 
@@ -2910,6 +2950,9 @@ mod owner_tests {
         let g = inner.lock().unwrap();
         assert_eq!(g.metrics.route_requests[0][0], 1);
         assert_eq!(g.metrics.route_requests[0][1], 1);
+        let last = g.last_request.as_ref().unwrap();
+        assert_eq!(last.effective_lane, "serial");
+        assert_eq!(last.fallback_reason.as_deref(), Some("serial fallback"));
     }
 
     #[test]
