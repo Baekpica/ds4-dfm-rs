@@ -703,7 +703,6 @@ impl Store {
 
         for e in &self.entries {
             if !is_automatic_exact_replay(e.header.reason, e.header.ext_flags)
-                || e.header.ext_flags & identity_mask != identity_flags & identity_mask
                 || e.header.text_bytes as usize > prompt.len()
             {
                 continue;
@@ -718,9 +717,13 @@ impl Store {
                 continue;
             }
 
+            // The media layout is identity too: a record keyed by this text
+            // without the flag the request needs is a mismatch, not a record
+            // about some other conversation.
             let identity_ok = e.header.model_id == model_id
                 && ctx_size >= e.header.ctx_size
-                && (!reject_quant || e.header.quant_bits == quant_bits);
+                && (!reject_quant || e.header.quant_bits == quant_bits)
+                && e.header.ext_flags & identity_mask == identity_flags & identity_mask;
             if identity_ok && (e.header.tokens as i32) >= min_tokens {
                 return PrefixAnswer::Usable;
             }
@@ -752,7 +755,6 @@ impl Store {
 
         for e in &self.entries {
             if !is_automatic_exact_replay(e.header.reason, e.header.ext_flags)
-                || e.header.ext_flags & EXT_IMAGE_PIXELS_V2 != identity_flags & EXT_IMAGE_PIXELS_V2
                 || (e.header.text_bytes as usize) < min_lcp
                 || u64::from(e.header.text_bytes) > 8 * prompt.len() as u64
             {
@@ -776,7 +778,8 @@ impl Store {
 
             let identity_ok = e.header.model_id == model_id
                 && ctx_size >= e.header.ctx_size
-                && (!reject_quant || e.header.quant_bits == quant_bits);
+                && (!reject_quant || e.header.quant_bits == quant_bits)
+                && e.header.ext_flags & EXT_IMAGE_PIXELS_V2 == identity_flags & EXT_IMAGE_PIXELS_V2;
             if identity_ok && (e.header.tokens as i32) >= min_tokens {
                 return PrefixAnswer::Usable;
             }
@@ -1187,15 +1190,16 @@ mod tests {
             store.bank_prefix_answer(key, 0, 4, 2048, EXT_IMAGE_PIXELS_V2),
             PrefixAnswer::Mismatch
         );
-        // The rendered prompt is not the key it was stored under, and the
-        // text-keyed search cannot see a bank record's image key at all.
+        // The rendered prompt is not the key it was stored under, so the
+        // text-keyed search sees nothing. Asked under this key without the
+        // media flag, the record is there and its layout rules it out.
         assert_eq!(
             store.prefix_answer(b"chat turn and one more", 0, 4, 2048),
             PrefixAnswer::None
         );
         assert_eq!(
-            store.bank_prefix_answer(key, 0, 4, 2048, 0),
-            PrefixAnswer::None
+            store.bank_prefix_answer(key, 0, 2, 2048, 0),
+            PrefixAnswer::Mismatch
         );
 
         let _ = fs::remove_dir_all(&dir);

@@ -191,6 +191,10 @@ pub trait DecodeIo {
         Err(GenerateError::Unsupported("audio encoder is not loaded"))
     }
     fn sync(&mut self, tokens: &[i32]) -> Result<(), GenerateError>;
+    /// Start this request's reuse trace. A corrective retry re-syncs inside
+    /// the same request, so the sync itself must not erase what the first
+    /// one reported.
+    fn begin_trace(&mut self) {}
     fn sync_prompt(
         &mut self,
         _prompt: &[u8],
@@ -1830,6 +1834,7 @@ pub(crate) fn generate_terminal_prepared(
         w.out.extend_from_slice(&sse_headers(cors));
         flush(&mut w, out)?;
     }
+    engine.begin_trace();
     let t_prefill = Instant::now();
     let sync_result = if !vision.is_empty() || !audios.is_empty() {
         engine
@@ -2850,7 +2855,6 @@ impl DecodeIo for NativeDecode<'_> {
         self.session_disk_storable = false;
         self.thinking_visible = None;
         self.reuse = ReuseTaken::Cold;
-        self.miss = ReuseMiss::None;
         let tokens = ds4_core::TokenBuffer::from_tokens(tokens.to_vec());
         let images = images
             .iter()
@@ -2923,9 +2927,15 @@ impl DecodeIo for NativeDecode<'_> {
         self.thinking_visible = None;
     }
 
-    fn sync(&mut self, tokens: &[i32]) -> Result<(), GenerateError> {
+    fn begin_trace(&mut self) {
         self.reuse = ReuseTaken::Cold;
         self.miss = ReuseMiss::None;
+    }
+
+    fn sync(&mut self, tokens: &[i32]) -> Result<(), GenerateError> {
+        // A retry re-syncs mid-request: nothing was reused for what it
+        // produces, but why the first sync refused a candidate still holds.
+        self.reuse = ReuseTaken::Cold;
         let buf = ds4_core::TokenBuffer::from_tokens(tokens.to_vec());
         self.session()?
             .sync(&buf)
