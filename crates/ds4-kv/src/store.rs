@@ -755,14 +755,19 @@ impl Store {
             if compatible && (e.header.tokens as i32) >= min_tokens {
                 return PrefixAnswer::Usable;
             }
-            answer = weaker_answer(answer, compatible);
+            let refused = if compatible {
+                PrefixAnswer::Shallow
+            } else {
+                PrefixAnswer::Mismatch
+            };
+            answer = weaker_answer(answer, refused);
         }
 
         // A record whose payload was truncated away is not in the catalog,
         // but its name still says it was keyed by this text. It is why the
         // prompt finds nothing, and that is a mismatch.
         if self.damaged_prefix(prompt, suffix) {
-            answer = weaker_answer(answer, false);
+            answer = weaker_answer(answer, PrefixAnswer::Mismatch);
         }
 
         answer
@@ -855,14 +860,19 @@ impl Store {
             if compatible && (e.header.tokens as i32) >= min_tokens {
                 return PrefixAnswer::Usable;
             }
-            answer = weaker_answer(answer, compatible);
+            let refused = if compatible {
+                PrefixAnswer::Shallow
+            } else {
+                PrefixAnswer::Mismatch
+            };
+            answer = weaker_answer(answer, refused);
         }
 
         // An edited prompt diverges from the record, so the damaged list has
         // to be read through the same shared prefix, not by name. A record
         // no search would replay from is not a refusal either.
         if self.damaged_lcp(prompt, min_lcp) {
-            answer = weaker_answer(answer, false);
+            answer = weaker_answer(answer, PrefixAnswer::Mismatch);
         }
 
         answer
@@ -1059,14 +1069,12 @@ fn rewrite_compatible_trailer(
     file.flush()
 }
 
-/// A record the search would not take: identity and layout speak before
-/// depth, the way the lanes report them.
-fn weaker_answer(seen: PrefixAnswer, compatible: bool) -> PrefixAnswer {
-    if !compatible {
-        return PrefixAnswer::Mismatch;
-    }
-    if seen == PrefixAnswer::None {
-        return PrefixAnswer::Shallow;
+/// Fold in a record the search would not take. A mismatch outranks one
+/// that is only too shallow, the way the lanes report the two, and both
+/// outrank having seen nothing.
+fn weaker_answer(seen: PrefixAnswer, refused: PrefixAnswer) -> PrefixAnswer {
+    if refused == PrefixAnswer::Mismatch || seen == PrefixAnswer::None {
+        return refused;
     }
     seen
 }
