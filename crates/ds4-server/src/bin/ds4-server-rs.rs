@@ -4,8 +4,8 @@
 
 use ds4_core::{
     caps_from_ident, identify_gguf, probe_mtp_sidecar, probe_vision_sidecar, resolve_plan, Backend,
-    DistributedConfig, DistributedRole, EngineFacts, MaxSeqs, Model, ModelOpenOption, MtpMode,
-    PrefixReuse, ServingRequest,
+    DistributedConfig, DistributedRole, Distribution, EngineFacts, MaxSeqs, Model, ModelOpenOption,
+    MtpMode, PrefixReuse, ServingRequest,
 };
 use ds4_server::kv_cli::DiskKvArgs;
 use ds4_server::{
@@ -189,6 +189,10 @@ fn main() {
     serve_req.ctx = cfg.ctx;
     serve_req.mem_floor_gb = cfg.mem_floor_gb;
     serve_req.backend = backend;
+    serve_req.distribution = match distributed_config(&dist.opt) {
+        Some(_) => Distribution::Sliced,
+        None => Distribution::Single,
+    };
     if let Some(dir) = kv.dir() {
         serve_req.kv_disk_dir = Some(dir.display().to_string());
     }

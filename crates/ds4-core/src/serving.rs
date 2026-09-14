@@ -38,6 +38,13 @@ pub enum MtpMode {
     On,
 }
 
+/// Whether this process is one full model or a distributed slice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Distribution {
+    Single,
+    Sliced,
+}
+
 /// Whether the native prefill fence applies. `DS4_CONT_PREFILL_NOFENCE=1`
 /// lifts it, so the plan must read the same switch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,6 +128,9 @@ pub struct ServingCaps {
     pub mtp: MtpKind,
     pub mtp_support: Support,
     pub spec_lane: SpecLane,
+    /// `model_open` refuses this family on any other host: one full CUDA
+    /// model, no distributed slices.
+    pub cuda_only: bool,
     pub qualified_ctx: Option<u32>,
     pub qualified_banks: Option<u32>,
     pub qualified_prompt: Option<u32>,
@@ -146,6 +156,7 @@ pub struct ServingRequest {
     pub check_config: bool,
     pub backend: Backend,
     pub chunk_fence: ChunkFence,
+    pub distribution: Distribution,
 }
 
 /// Facts known only after identify or engine open.
@@ -287,6 +298,7 @@ impl Default for ServingRequest {
             check_config: false,
             backend: Backend::Cuda,
             chunk_fence: ChunkFence::On,
+            distribution: Distribution::Single,
         }
     }
 }
@@ -462,6 +474,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
+            cuda_only: false,
             qualified_ctx: Some(32768),
             qualified_banks: Some(1),
             qualified_prompt: None,
@@ -481,6 +494,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::Embedded,
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Bank,
+            cuda_only: true,
             qualified_ctx: Some(262144),
             qualified_banks: Some(2),
             qualified_prompt: None,
@@ -498,6 +512,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::Sidecar,
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Serial,
+            cuda_only: false,
             qualified_ctx: Some(65536),
             qualified_banks: Some(2),
             qualified_prompt: Some(6300),
@@ -515,6 +530,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
+            cuda_only: false,
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
@@ -532,6 +548,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
+            cuda_only: false,
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
@@ -549,6 +566,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
+            cuda_only: false,
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
@@ -566,6 +584,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::BoundOnly,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
+            cuda_only: false,
             qualified_ctx: None,
             qualified_banks: Some(1),
             qualified_prompt: None,
@@ -583,6 +602,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::Sidecar,
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Serial,
+            cuda_only: true,
             qualified_ctx: Some(1024),
             qualified_banks: Some(1),
             qualified_prompt: None,
@@ -600,6 +620,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
+            cuda_only: false,
             qualified_ctx: Some(2048),
             qualified_banks: Some(1),
             qualified_prompt: None,
@@ -617,6 +638,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::DeepSeek,
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Bank,
+            cuda_only: false,
             qualified_ctx: None,
             qualified_banks: None,
             qualified_prompt: None,
@@ -688,6 +710,19 @@ pub fn resolve_plan(
     let reuse = resolve_reuse(req, caps, driver, facts, &mut issues);
     let (mtp_mode, mtp_weights) = resolve_mtp(req, caps, facts, driver, &mut issues);
     let disk = resolve_disk(req, caps, facts, &mut issues);
+
+    // `model_open` refuses these families anywhere but one full CUDA model,
+    // so the check cannot approve the host they were pointed at.
+    if caps.cuda_only && (req.backend != Backend::Cuda || req.distribution == Distribution::Sliced)
+    {
+        issues.push(error(
+            "family_host",
+            format!(
+                "{} requires one full CUDA model without distributed slices",
+                caps.variant_name()
+            ),
+        ));
+    }
 
     // Both the batch context and the serial session refuse a nonpositive
     // context, so an approved plan has to have one.
@@ -1643,6 +1678,30 @@ mod tests {
     }
 
     #[test]
+    fn a_cuda_only_family_rejects_another_host() {
+        for family in [
+            (ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext),
+            (ModelFamily::Inkling, Variant::InklingSmall),
+        ] {
+            let mut req = ServingRequest::default();
+            req.backend = crate::Backend::Cpu;
+            let p = plan(req, family.0, family.1);
+            assert!(p.has_errors());
+            assert!(p.issues.iter().any(|i| i.code == "family_host"));
+
+            let mut req = ServingRequest::default();
+            req.distribution = Distribution::Sliced;
+            let p = plan(req, family.0, family.1);
+            assert!(p.issues.iter().any(|i| i.code == "family_host"));
+        }
+        // Families the open accepts elsewhere are untouched.
+        let mut req = ServingRequest::default();
+        req.distribution = Distribution::Sliced;
+        let p = plan(req, ModelFamily::DeepSeek4, Variant::Flash);
+        assert!(!p.issues.iter().any(|i| i.code == "family_host"));
+    }
+
+    #[test]
     fn a_nonpositive_ctx_is_an_error() {
         for ctx in [0, -1] {
             let mut req = ServingRequest::default();
@@ -2153,16 +2212,17 @@ mod tests {
 
     #[test]
     fn cpu_backend_auto_stays_serial() {
+        // Solar opens on any host; Qwen would be `family_host` here.
         let mut req = ServingRequest::default();
         req.backend = crate::Backend::Cpu;
-        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        let p = plan(req, ModelFamily::SolarOpen2, Variant::SolarOpen2_250B);
         assert!(!p.has_errors());
         assert_eq!(p.effective.max_seqs, 1);
         assert_eq!(p.effective.mtp_mode, MtpMode::Off);
         assert!(!p
             .env_overrides()
             .iter()
-            .any(|(k, v)| k == "DS4_QWEN_BATCH" && v == "1"));
+            .any(|(k, v)| k == "DS4_SERVER_CONTINUOUS" && v == "1"));
     }
 
     #[test]
