@@ -227,7 +227,7 @@ fn main() {
         .map(|id| caps_from_ident(&id));
     let plan = resolve_plan(&serve_req, caps, &facts);
     plan.apply_env();
-    cfg.mem_floor_gb = plan.effective.mem_floor_gb;
+    cfg.adopt_plan(&plan);
     eprint!("{}", plan.report());
     if serve_req.print_plan || serve_req.check_config {
         println!("{}", plan.to_json());
@@ -239,7 +239,6 @@ fn main() {
         eprint!("{}", plan.report());
         cli_error("ds4-server-rs: serving plan rejected unsupported options");
     }
-    cfg.serving_plan = Some(plan.clone());
     let cont_width = if serve_req.max_seqs == MaxSeqs::Off {
         0
     } else {
@@ -330,8 +329,7 @@ fn main() {
                         cli_error("ds4-server-rs: fitted serving plan rejected");
                     }
                     fitted.apply_env();
-                    cfg.mem_floor_gb = fitted.effective.mem_floor_gb;
-                    cfg.serving_plan = Some(fitted);
+                    cfg.adopt_plan(&fitted);
                     Some(
                         ContLane::new(
                             batch,
@@ -357,8 +355,7 @@ fn main() {
                         cli_error("ds4-server-rs: serial fallback plan rejected");
                     }
                     serial.apply_env();
-                    cfg.mem_floor_gb = serial.effective.mem_floor_gb;
-                    cfg.serving_plan = Some(serial);
+                    cfg.adopt_plan(&serial);
                     None
                 }
             }

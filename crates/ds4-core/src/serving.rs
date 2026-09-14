@@ -758,6 +758,13 @@ impl ResolvedPlan {
         self.issues.iter().any(|i| i.level == IssueLevel::Error)
     }
 
+    /// The plan asks for the bank lane. Hosts must adopt this, not only the
+    /// published env: a config captured before resolution keeps its own
+    /// legacy `DS4_SERVER_CONTINUOUS`.
+    pub fn wants_bank_lane(&self) -> bool {
+        self.effective.max_seqs > 1
+    }
+
     pub fn env_overrides(&self) -> Vec<(String, String)> {
         // The legacy alias round-trips: a forced-serial `0` must not come
         // back as width 1, or a re-read would re-enable the bank lane.
@@ -786,7 +793,7 @@ impl ResolvedPlan {
                 out.push(("DS4_SERVER_FORK_PARTIAL".into(), "1".into()));
             }
         }
-        if self.effective.max_seqs > 1 {
+        if self.wants_bank_lane() {
             out.push(("DS4_SERVER_CONTINUOUS".into(), "1".into()));
         }
         // 0/1 so a later fitted-down plan can retract. Step width 1 is
@@ -1096,7 +1103,7 @@ fn resolve_mtp(
         MtpKind::None | MtpKind::BoundOnly => false,
         MtpKind::Embedded | MtpKind::Sidecar | MtpKind::DeepSeek => true,
     };
-    if req.backend != Backend::Cuda {
+    if req.backend != Backend::Cuda && facts.mtp_path_ok != Some(false) {
         if req.mtp_mode == MtpMode::On {
             issues.push(error(
                 "mtp_cuda",
@@ -1109,6 +1116,18 @@ fn resolve_mtp(
         }
         return (MtpMode::Off, false);
     }
+    // A named artifact that is not there breaks every mode: the host still
+    // hands the path to `Model::open_*`, so `off` and `auto` fail at boot.
+    if has_path && facts.mtp_path_ok == Some(false) {
+        issues.push(error(
+            "mtp_sidecar",
+            format!(
+                "{} MTP path is missing or is not a GGUF",
+                caps.variant_name()
+            ),
+        ));
+        return (MtpMode::Off, false);
+    }
     // Qwen/DeepSeek speculation lives in the bank driver. The legacy zero
     // alias (or a refused fit) routes every request through NativeDecode,
     // which only speculates for Inkling and Step, so MTP would never run.
@@ -1118,18 +1137,6 @@ fn resolve_mtp(
                 "mtp_lane",
                 format!(
                     "{} MTP runs on the continuous lane; serial serving cannot enable it",
-                    caps.variant_name()
-                ),
-            ));
-        }
-        return (MtpMode::Off, false);
-    }
-    if has_path && facts.mtp_path_ok == Some(false) {
-        if req.mtp_mode == MtpMode::On {
-            issues.push(error(
-                "mtp_sidecar",
-                format!(
-                    "{} MTP path is missing or is not a GGUF",
                     caps.variant_name()
                 ),
             ));
@@ -1750,8 +1757,31 @@ mod tests {
 
     #[test]
     fn missing_mtp_path_is_an_error() {
+        // The host opens the named artifact whatever the mode asks for.
+        for mode in [MtpMode::On, MtpMode::Auto, MtpMode::Off] {
+            let mut req = ServingRequest::default();
+            req.mtp_mode = mode;
+            req.mtp_path = Some("missing.gguf".into());
+            let facts = EngineFacts {
+                mtp_path_ok: Some(false),
+                ..EngineFacts::default()
+            };
+            let p = resolve_plan(
+                &req,
+                Some(caps(ModelFamily::DeepSeek4, Variant::Flash)),
+                &facts,
+            );
+            assert!(p.has_errors(), "{}", mode.as_str());
+            assert!(p.issues.iter().any(|i| i.code == "mtp_sidecar"));
+            assert!(!p.effective.mtp_weights);
+        }
+    }
+
+    #[test]
+    fn a_broken_mtp_path_outranks_the_backend_note() {
         let mut req = ServingRequest::default();
-        req.mtp_mode = MtpMode::On;
+        req.backend = crate::Backend::Cpu;
+        req.mtp_mode = MtpMode::Auto;
         req.mtp_path = Some("missing.gguf".into());
         let facts = EngineFacts {
             mtp_path_ok: Some(false),
@@ -1759,12 +1789,22 @@ mod tests {
         };
         let p = resolve_plan(
             &req,
-            Some(caps(ModelFamily::DeepSeek4, Variant::Flash)),
+            Some(caps(ModelFamily::Step37, Variant::Step37Flash)),
             &facts,
         );
-        assert!(p.has_errors());
         assert!(p.issues.iter().any(|i| i.code == "mtp_sidecar"));
-        assert!(!p.effective.mtp_weights);
+    }
+
+    #[test]
+    fn a_two_bank_plan_wants_the_lane() {
+        let mut req = ServingRequest::default();
+        req.max_seqs = MaxSeqs::Fixed(2);
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(p.wants_bank_lane());
+        let mut req = ServingRequest::default();
+        req.max_seqs = MaxSeqs::Off;
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(!p.wants_bank_lane());
     }
 
     #[test]

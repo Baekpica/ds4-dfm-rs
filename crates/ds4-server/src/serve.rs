@@ -199,6 +199,18 @@ fn mem_floor_gb_from_env() -> u64 {
 }
 
 impl ServerConfig {
+    /// Take the resolved plan into the captured config. The config reads its
+    /// own `DS4_SERVER_*` environment before the plan exists, so publishing
+    /// env alone leaves a legacy `DS4_SERVER_CONTINUOUS=0` routing every
+    /// request away from a lane the plan asked for and allocated.
+    pub fn adopt_plan(&mut self, plan: &ds4_core::ResolvedPlan) {
+        self.mem_floor_gb = plan.effective.mem_floor_gb;
+        if plan.wants_bank_lane() {
+            self.continuous = true;
+        }
+        self.serving_plan = Some(plan.clone());
+    }
+
     /// Integration-test fixture. Built inside the crate so `serial_fit` stays
     /// `pub(crate)` and external tests never need functional-update syntax.
     pub fn test_cfg() -> Self {
@@ -2652,6 +2664,50 @@ mod owner_tests {
         assert_eq!(last.reuse_kind, ds4_core::ReuseTaken::Exact);
         assert!(last.speculation_active);
         assert!(last.fallback_reason.is_none());
+    }
+
+    #[test]
+    fn adopting_a_bank_plan_overrides_a_legacy_serial_config() {
+        let req = ds4_core::ServingRequest {
+            max_seqs: ds4_core::MaxSeqs::Fixed(2),
+            mem_floor_gb: 12,
+            ..ds4_core::ServingRequest::default()
+        };
+        let plan = ds4_core::resolve_plan(
+            &req,
+            Some(ds4_core::serving_caps(
+                ds4_core::ModelFamily::Qwen4Exp,
+                ds4_core::Variant::Qwen38FlashNext,
+            )),
+            &ds4_core::EngineFacts::default(),
+        );
+        // `DS4_SERVER_CONTINUOUS=0` was captured before the plan existed.
+        let mut cfg = ServerConfig::default();
+        cfg.continuous = false;
+        cfg.adopt_plan(&plan);
+        assert!(cfg.continuous);
+        assert_eq!(cfg.mem_floor_gb, 12);
+        assert!(cfg.serving_plan.is_some());
+    }
+
+    #[test]
+    fn adopting_a_serial_plan_leaves_the_lane_flag_alone() {
+        let req = ds4_core::ServingRequest {
+            max_seqs: ds4_core::MaxSeqs::Off,
+            ..ds4_core::ServingRequest::default()
+        };
+        let plan = ds4_core::resolve_plan(
+            &req,
+            Some(ds4_core::serving_caps(
+                ds4_core::ModelFamily::Qwen4Exp,
+                ds4_core::Variant::Qwen38FlashNext,
+            )),
+            &ds4_core::EngineFacts::default(),
+        );
+        let mut cfg = ServerConfig::default();
+        cfg.continuous = false;
+        cfg.adopt_plan(&plan);
+        assert!(!cfg.continuous);
     }
 
     #[test]
