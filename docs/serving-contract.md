@@ -25,7 +25,11 @@ the same object plus `last_request`.
 | `--check-config` | Print resolved JSON and exit | |
 
 `auto` reuse is the best *qualified* path. Forced `partial` on a family
-that only has exact-frontier reuse is an error.
+that only has exact-frontier reuse is an error, and so is forcing it when
+this process cannot run it: checkpoint replay lives in the bank driver and
+needs the opened runtime's checkpoint store, so serial-only serving or a
+runtime without that store rejects `partial` and downgrades `auto` to
+`exact` with a warning rather than reporting reuse it will not perform.
 
 `--max-seqs` is not context length. Keeping N banks is not the same as
 batching N requests in one kernel. Step banks each own KV and prefill

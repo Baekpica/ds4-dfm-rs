@@ -145,6 +145,8 @@ pub struct EngineFacts {
     pub mtp_path_ok: Option<bool>,
     /// `Some(false)` once the native fit refused the continuous lane.
     pub cont_lane: Option<bool>,
+    /// `Some(false)` when the opened runtime has no partial checkpoint store.
+    pub partial_reuse: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -650,7 +652,7 @@ pub fn resolve_plan(
         };
     };
 
-    let reuse = resolve_reuse(req.prefix_reuse, caps, &mut issues);
+    let reuse = resolve_reuse(req, caps, facts, &mut issues);
     let (max_seqs, banks_opt_in) =
         resolve_seqs(req.max_seqs, caps, facts, req.backend, &mut issues);
     let (mtp_mode, mtp_weights) = resolve_mtp(req, caps, facts, &mut issues);
@@ -986,11 +988,12 @@ fn default_effective(req: &ServingRequest) -> EffectiveView {
 }
 
 fn resolve_reuse(
-    requested: PrefixReuse,
+    req: &ServingRequest,
     caps: ServingCaps,
+    facts: &EngineFacts,
     issues: &mut Vec<PlanIssue>,
 ) -> ReuseKind {
-    match requested {
+    match req.prefix_reuse {
         PrefixReuse::Off => ReuseKind::None,
         PrefixReuse::Exact => {
             if caps.reuse == ReuseKind::None {
@@ -1013,13 +1016,67 @@ fn resolve_reuse(
                         caps.reuse.as_str()
                     ),
                 ));
-                caps.reuse
-            } else {
-                ReuseKind::Partial
+                return caps.reuse;
+            }
+            match partial_block(req, facts) {
+                Some(block) => {
+                    issues.push(error(block.code(), block.message(caps)));
+                    ReuseKind::Exact
+                }
+                None => ReuseKind::Partial,
             }
         }
-        PrefixReuse::Auto => caps.reuse,
+        PrefixReuse::Auto => {
+            if caps.reuse != ReuseKind::Partial {
+                return caps.reuse;
+            }
+            match partial_block(req, facts) {
+                Some(block) => {
+                    issues.push(warn(block.code(), block.message(caps)));
+                    ReuseKind::Exact
+                }
+                None => ReuseKind::Partial,
+            }
+        }
     }
+}
+
+/// Why partial reuse cannot run in this process. Checkpoint replay lives in
+/// the bank driver and needs the runtime's checkpoint store; the serial
+/// path only ever extends an exact prefix.
+#[derive(Clone, Copy)]
+enum PartialBlock {
+    Lane,
+    Runtime,
+}
+
+impl PartialBlock {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Lane => "partial_lane",
+            Self::Runtime => "partial_runtime",
+        }
+    }
+
+    fn message(self, caps: ServingCaps) -> String {
+        match self {
+            Self::Lane => format!(
+                "{} partial reuse needs the continuous lane; serial serving extends exact prefixes only",
+                caps.variant_name()
+            ),
+            Self::Runtime => format!(
+                "{} runtime opened without a partial checkpoint store",
+                caps.variant_name()
+            ),
+        }
+    }
+}
+
+fn partial_block(req: &ServingRequest, facts: &EngineFacts) -> Option<PartialBlock> {
+    if bank_lane_off(req, facts) {
+        return Some(PartialBlock::Lane);
+    }
+    (facts.partial_reuse == Some(false)).then_some(PartialBlock::Runtime)
 }
 
 fn resolve_seqs(
@@ -1465,6 +1522,55 @@ mod tests {
         assert!(p.has_errors());
         assert!(p.issues.iter().any(|i| i.code == "partial_unsupported"));
         assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
+    }
+
+    #[test]
+    fn forced_partial_without_a_checkpoint_store_errors() {
+        let mut req = ServingRequest::default();
+        req.prefix_reuse = PrefixReuse::Partial;
+        let facts = EngineFacts {
+            partial_reuse: Some(false),
+            ..EngineFacts::default()
+        };
+        let p = resolve_plan(
+            &req,
+            Some(caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext)),
+            &facts,
+        );
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "partial_runtime"));
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
+    }
+
+    #[test]
+    fn auto_partial_without_a_checkpoint_store_warns() {
+        let facts = EngineFacts {
+            partial_reuse: Some(false),
+            ..EngineFacts::default()
+        };
+        let p = resolve_plan(
+            &ServingRequest::default(),
+            Some(caps(ModelFamily::Step37, Variant::Step37Flash)),
+            &facts,
+        );
+        assert!(!p.has_errors());
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
+        assert!(p.issues.iter().any(|i| i.code == "partial_runtime"));
+    }
+
+    #[test]
+    fn serial_alias_rejects_forced_partial() {
+        let mut req = ServingRequest::default();
+        req.prefix_reuse = PrefixReuse::Partial;
+        req.max_seqs = MaxSeqs::Off;
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "partial_lane"));
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
+        assert!(p
+            .env_overrides()
+            .iter()
+            .any(|(k, v)| k == "DS4_SERVER_FORK_PARTIAL" && v == "0"));
     }
 
     #[test]

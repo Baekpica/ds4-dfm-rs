@@ -321,6 +321,7 @@ fn main() {
                         banks_fitted: Some(batch.max_seq() as u32),
                         seq_cap: Some(batch.seq_cap() as u32),
                         cont_lane: Some(true),
+                        partial_reuse: Some(batch.supports_partial_reuse()),
                         ..opened
                     };
                     let fitted = resolve_plan(&serve_req, caps, &facts);
@@ -347,6 +348,7 @@ fn main() {
                     let facts = EngineFacts {
                         banks_fitted: Some(1),
                         cont_lane: Some(false),
+                        partial_reuse: Some(false),
                         ..opened
                     };
                     let serial = resolve_plan(&serve_req, caps, &facts);
