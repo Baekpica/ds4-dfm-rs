@@ -233,6 +233,23 @@ static bool out_memset_enabled() {
     return cached != 0;
 }
 
+/* IQ2/Q3 handoff writes Q3 down then used to sanitize the whole buffer.
+ * Solar moe_residual and EXAONE moe_sum already skip non-finite at read.
+ * DS4_CUDA_MOE_HANDOFF_SANITIZE=1 restores the pass. */
+static bool handoff_down_sanitize() {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("DS4_CUDA_MOE_HANDOFF_SANITIZE");
+        cached = (env && env[0] == '1') ? 1 : 0;
+        if (cached) {
+            fprintf(stderr,
+                    "ds4: DS4_CUDA_MOE_HANDOFF_SANITIZE=1 - Q3 handoff "
+                    "down sanitize restored\n");
+        }
+    }
+    return cached != 0;
+}
+
 /* v0.5 inc-12 slice 2: Y-buffer (q8_1 activation) memset diet.  The S1.1a-era
  * zero of every quantize staging buffer before quantize_mmq_q8_1 cost ~2.3
  * s/180k of stream time (reslice10 MEMSET table: 56.6/28.3/18.9/9.45/4.7 MB
@@ -3337,15 +3354,19 @@ int ds4_mmq_moe_pair_impl(
             q3_handoff->out_dim, M, ne_get_rows, n_experts,
             q3_s01, q3_s02, stream, q3_worklist_attributes_prepared);
         if (q3_rc != 0) return q3_rc == -1 ? -22 : -23;
-        ds4_mmq_sanitize_f32(
-            q3_handoff->out,
-            (uint64_t)q3_handoff->out_dim * (uint64_t)ne_get_rows,
-            stream);
-        err = cudaGetLastError();
-        if (err != cudaSuccess) {
-            fprintf(stderr, "%s: Q3 output sanitize launch failed: %s\n",
-                    tag, cudaGetErrorString(err));
-            return -24;
+        /* Consumer-guarded paths (sanitize_out=false) skip this pass.
+         * DS4_CUDA_MOE_HANDOFF_SANITIZE=1 restores it for A/B. */
+        if (sanitize_out || handoff_down_sanitize()) {
+            ds4_mmq_sanitize_f32(
+                q3_handoff->out,
+                (uint64_t)q3_handoff->out_dim * (uint64_t)ne_get_rows,
+                stream);
+            err = cudaGetLastError();
+            if (err != cudaSuccess) {
+                fprintf(stderr, "%s: Q3 output sanitize launch failed: %s\n",
+                        tag, cudaGetErrorString(err));
+                return -24;
+            }
         }
     }
     if (sanitize_out) {

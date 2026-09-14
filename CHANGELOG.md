@@ -6,6 +6,18 @@ through [Entrpi/ds4](https://github.com/Entrpi/ds4) and Baekpica DFM; the
 Entrpi fork point was `e16ead1` (2026-05-29). See [LINEAGE.md](docs/LINEAGE.md)
 for exact provenance. Historical entries retain their original scope.
 
+## Unreleased
+
+- Solar Open2: disk-KV restart reuse and HTTP partial fork on one-bank
+  workers; stride-walk prefill checkpoints so a final wide chunk still
+  captures 4,096-token boundaries.
+- Default-on warp-specialized K-FP8/V-FP4 prefill attention under a
+  300–2200 MHz GB10 cap (`DS4_SOLAR_FATTN_WS=0` restores the pair kernel).
+  Skip redundant Q3 handoff down sanitize
+  (`DS4_CUDA_MOE_HANDOFF_SANITIZE=1` restores it). Clock-capped 64K cold
+  prefill 731.24 → 927.50 → 943.18 tok/s. See
+  [14 September campaign](docs/solar-open2-optimization-2026-09-14.md).
+
 ## v0.1.2 — 2026-09-10
 
 - Executes official model Jinja through a shared local `hf-chat-template`

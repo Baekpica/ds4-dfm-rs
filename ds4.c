@@ -61085,6 +61085,19 @@ static int solar_engine_continuous_generate(
                     if (n > rt->graph.base.prefill_cap)
                         n = rt->graph.base.prefill_cap;
                     const uint32_t pos = sb->prefill_base + sb->prefill_off;
+                    /* Capture copies live KDA. A chunk that overshoots a
+                     * stride would label later state as an earlier pos.
+                     * End this forward at the next stride so the copy
+                     * matches the recurrent frontier.
+                     * Example: pos=0 n=5000 stride=4096 -> n=4096. */
+                    if (rt->checkpoint_stride != 0u) {
+                        const uint32_t stride = rt->checkpoint_stride;
+                        const uint32_t next =
+                            (pos / stride + 1u) * stride;
+                        if (next > pos && next - pos < n) {
+                            n = next - pos;
+                        }
+                    }
                     const bool final = n == remain;
                     /* Any successful chunk advances the recurrent/KV
                      * frontier.  Until the final chunk publishes matching
@@ -61117,8 +61130,8 @@ static int solar_engine_continuous_generate(
                         ok = false;
                         break;
                     }
-                    if (!final && solar_batch_runtime_checkpoint_due(
-                            rt, pos, pos + n)) {
+                    if (rt->checkpoint_stride != 0u &&
+                        (pos + n) % rt->checkpoint_stride == 0u) {
                         (void)solar_batch_runtime_capture_checkpoint(
                             rt, pb, pos + n, false, ctx->serial_reserve);
                     }

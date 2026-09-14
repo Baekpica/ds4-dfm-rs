@@ -683,6 +683,38 @@ fn qwen_image_cache_token_cap(spans: &[ImageCacheSpan], cache_lcp: usize) -> usi
         .map_or(usize::MAX, |span| span.token_offset as usize)
 }
 
+/// Matches `solar_batch_runtime_create`: max(4096, ceil(ctx/24)) then
+/// aligned up to 4096. Token-only fallback must not admit a cut with no
+/// native checkpoint; that would also hide a deeper disk restore.
+#[cfg(any(feature = "native", test))]
+const SOLAR_PARTIAL_ALIGN: usize = 4096;
+
+#[cfg(any(feature = "native", test))]
+const SOLAR_PARTIAL_PERIOD: usize = 24;
+
+#[cfg(any(feature = "native", test))]
+fn solar_partial_stride(ctx: i32) -> usize {
+    let ctx = usize::try_from(ctx.max(0)).unwrap_or(0);
+    let raw = ctx.div_ceil(SOLAR_PARTIAL_PERIOD).max(SOLAR_PARTIAL_ALIGN);
+    raw.div_ceil(SOLAR_PARTIAL_ALIGN) * SOLAR_PARTIAL_ALIGN
+}
+
+#[cfg(any(feature = "native", test))]
+fn warm_record_has_image(record: Option<&WarmRecord>) -> bool {
+    record.is_some_and(|record| {
+        record.cache_text.is_some() || (record.ext_flags & EXT_IMAGE_PIXELS_V2) != 0
+    })
+}
+
+#[cfg(any(feature = "native", test))]
+fn solar_stride_floor(cached: usize, ctx: i32) -> Option<usize> {
+    let stride = solar_partial_stride(ctx);
+    if stride == 0 || cached < stride {
+        return None;
+    }
+    Some((cached / stride) * stride)
+}
+
 fn last_delta(raw: &[u8], emit_limit: usize, piece_len: usize) -> Option<&[u8]> {
     if emit_limit == 0 {
         return None;
@@ -2333,22 +2365,80 @@ mod native {
                 return None;
             }
             let min_prefix = usize::try_from(self.warm_partial_min).ok()?;
-            let (source, cache_lcp) =
-                warm_partial_match_pick(&self.warm, prompt, cache_prompt, min_prefix)?;
-            let snapshot = batch.bank_snapshot(i32::try_from(source).ok()?).ok()?;
-            let (tokens, cached) = warm_partial_admit_tokens(
-                self.warm.get(source)?,
-                prompt_tokens,
-                &snapshot.tokens,
-                snapshot.generation,
-                self.warm_partial_min,
-                batch.seq_cap(),
-                qwen_image_cache_token_cap(cache_spans, cache_lcp),
-            )?;
-            self.warm[source].committed_tokens = i32::try_from(snapshot.tokens.len()).ok()?;
+            if let Some((source, cache_lcp)) =
+                warm_partial_match_pick(&self.warm, prompt, cache_prompt, min_prefix)
+            {
+                let snapshot = batch.bank_snapshot(i32::try_from(source).ok()?).ok()?;
+                if let Some((tokens, cached)) = warm_partial_admit_tokens(
+                    self.warm.get(source)?,
+                    prompt_tokens,
+                    &snapshot.tokens,
+                    snapshot.generation,
+                    self.warm_partial_min,
+                    batch.seq_cap(),
+                    qwen_image_cache_token_cap(cache_spans, cache_lcp),
+                ) {
+                    self.warm[source].committed_tokens =
+                        i32::try_from(snapshot.tokens.len()).ok()?;
+                    return Some(WarmAdmitPlan {
+                        source,
+                        tokens,
+                        cached,
+                        partial: true,
+                    });
+                }
+            }
+            // Host text records can be missing after a one-bank Solar retire
+            // while the native committed tokens are still the reuse source.
+            // Qwen/image banks stay on the text/image-aware plan: token IDs
+            // can match across different pixels, including a text-only
+            // follow-up against a multimodal source.
+            if syntax_for_model_id(self.model_id) != ModelSyntax::SolarOpen2
+                || !cache_spans.is_empty()
+            {
+                return None;
+            }
+            if i32::try_from(prompt_tokens.len())
+                .ok()
+                .filter(|tokens| *tokens <= batch.seq_cap())
+                .is_none()
+            {
+                return None;
+            }
+            let n_banks = usize::try_from(batch.max_seq().max(0)).ok()?;
+            let mut best = None;
+            for bank in 0..n_banks {
+                let Ok(bank_i32) = i32::try_from(bank) else {
+                    continue;
+                };
+                let Ok(snapshot) = batch.bank_snapshot(bank_i32) else {
+                    continue;
+                };
+                if warm_record_has_image(
+                    self.warm.get(bank).and_then(|state| state.record.as_ref()),
+                ) {
+                    continue;
+                }
+                let cut = warm_partial_token_cut(
+                    &snapshot.tokens,
+                    prompt_tokens,
+                    self.warm_partial_min,
+                    qwen_image_cache_token_cap(cache_spans, 0),
+                );
+                let Some(cached) = cut else {
+                    continue;
+                };
+                let Some(cached) = solar_stride_floor(cached, self.ctx) else {
+                    continue;
+                };
+                if best.is_none_or(|(_, current)| cached > current) {
+                    best = Some((bank, cached));
+                }
+            }
+            let (source, cached) = best?;
             Some(WarmAdmitPlan {
                 source,
-                tokens,
+                tokens: prompt_tokens.to_vec(),
                 cached,
                 partial: true,
             })
@@ -2785,14 +2875,13 @@ mod native {
                     self.warm[placement.source].stored_tokens
                 };
                 self.warm[placement.target].stored_tokens = stored;
+            } else if plan.partial {
+                // In-place truncate must keep native hist; persisting and
+                // dropping the bank here made the engine cold-admit.
+                self.warm[placement.source].stored_tokens =
+                    self.warm[placement.source].stored_tokens.min(plan.cached);
             } else {
-                if plan.partial {
-                    let _ = self.evict_bank(batch, store.as_deref_mut(), placement.source, false);
-                    self.warm[placement.source].stored_tokens =
-                        self.warm[placement.source].stored_tokens.min(plan.cached);
-                } else {
-                    self.warm[placement.source].record = None;
-                }
+                self.warm[placement.source].record = None;
             }
             Some(placement)
         }
@@ -3240,6 +3329,16 @@ mod native {
         }
 
         fn trim_idle_banks(&mut self, want_bytes: u64) -> u64 {
+            // One-bank Solar workers sit just above the memory floor. Serial
+            // reclaim would trim the only hist-valid bank and the next Chat
+            // request could not partial-fork. Step 3.7 and multi-bank Solar
+            // still trim idle banks / unreferenced checkpoints.
+            if self.host.warm_fork_partial
+                && self.batch.max_seq() == 1
+                && syntax_for_model_id(self.host.model_id) == ModelSyntax::SolarOpen2
+            {
+                return 0;
+            }
             self.batch.trim_free(want_bytes)
         }
 
@@ -4141,6 +4240,35 @@ mod bank_tests {
         banks[0].record.as_mut().unwrap().partial_only = true;
         banks[1].record.as_mut().unwrap().partial_only = false;
         assert!(warm_record_superseded(&banks, 0));
+    }
+
+    #[test]
+    fn token_fallback_skips_image_records_and_non_stride_cuts() {
+        assert_eq!(solar_partial_stride(8192), 4096);
+        assert_eq!(solar_partial_stride(131072), 8192);
+        assert_eq!(solar_stride_floor(4096, 8192), Some(4096));
+        assert_eq!(solar_stride_floor(4096, 131072), None);
+        assert_eq!(solar_stride_floor(9000, 131072), Some(8192));
+        assert_eq!(solar_stride_floor(8191, 8192), Some(4096));
+        assert_eq!(solar_stride_floor(8, 8192), None);
+        assert!(!warm_record_has_image(None));
+        let text = WarmRecord {
+            text: b"prefix".to_vec(),
+            cache_text: None,
+            exact_text: None,
+            exact_cache_text: None,
+            partial_only: false,
+            generation: 1,
+            ext_flags: 0,
+            trailer: Vec::new(),
+        };
+        assert!(!warm_record_has_image(Some(&text)));
+        let pixels = WarmRecord {
+            cache_text: Some(b"img".to_vec()),
+            ext_flags: EXT_IMAGE_PIXELS_V2,
+            ..text
+        };
+        assert!(warm_record_has_image(Some(&pixels)));
     }
 
     #[test]

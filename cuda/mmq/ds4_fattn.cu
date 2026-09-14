@@ -20,14 +20,17 @@
  * one is consumed (K2 round 6; DS4_FATTN_HMMA_LDSM=0 restores the scalar
  * loads and the direct fill, bit-identical).
  *
- * With DS4_SOLAR_FATTN_WS=1, K-FP8/V-FP4 pairs take
- * ds4_fattn_hmma_solar_ws_kernel instead: producer warps stream and decode
- * the tiles while the eight consumer warps walk them (Solar round 5,
- * bit-identical; opt-in because of its power draw on GB10 hosts).
+ * K-FP8/V-FP4 pairs take ds4_fattn_hmma_solar_ws_kernel: producer warps
+ * stream and decode tiles while the eight consumer warps walk them
+ * (bit-identical). Default on; DS4_SOLAR_FATTN_WS=0 restores the pair
+ * kernel. Uncapped 64K on GB10 previously froze at ~105 W; keep the
+ * 300-2200 MHz SM cap on that class of host.
  */
 #include "common.cuh"
 #include "mma.cuh"
 #include "ds4_mmq.h"
+
+#include <stdio.h>
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -1421,15 +1424,21 @@ ds4_fattn_hmma_solar_ws_kernel(
     }
 }
 
-/* Opt-in: DS4_SOLAR_FATTN_WS=1 selects the warp-specialized kernel for the
- * K-FP8/V-FP4 format (bit-identical, 2.6x faster at 64K depth).  It stays
- * off by default because on the GB10 hosts measured so far it draws about
- * 105 W against the pair kernel's 64 W at 64K depth, and sustained draw
- * above roughly 90 W hard-freezes those hosts without a log line (a known
- * platform fault; cap the SM clock with nvidia-smi -lgc before enabling). */
+/* Default on: the warp-specialized K-FP8/V-FP4 kernel is bit-identical
+ * to the GQA-pair path. DS4_SOLAR_FATTN_WS=0 restores the pair kernel.
+ * On GB10, keep the 300-2200 MHz SM cap; uncapped 64K drew ~105 W and
+ * froze the host. */
 static int solar_fattn_ws_enabled(void) {
     const char *value = getenv("DS4_SOLAR_FATTN_WS");
-    return value && value[0] == '1';
+    const int enabled = !value || value[0] != '0';
+    static int logged = 0;
+    if (enabled && !logged) {
+        logged = 1;
+        fprintf(stderr,
+                "ds4: Solar FATTN_WS default on; DS4_SOLAR_FATTN_WS=0 "
+                "restores the pair kernel; keep the GB10 300-2200 MHz SM cap\n");
+    }
+    return enabled;
 }
 
 /* cp.async copy width the cache supports: the K/V regions sit at

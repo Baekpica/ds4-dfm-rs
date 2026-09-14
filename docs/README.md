@@ -46,6 +46,9 @@ release candidate or describe live processes.
 - [Solar, September 12, round 5](solar-open2-optimization-2026-09-12-r5.md):
   opt-in warp-specialized K-FP8/V-FP4 prefill attention (byte-exact, 2.6x
   at 64K depth) and the GB10 power trip behind both host freezes.
+- [Solar, September 14](solar-open2-optimization-2026-09-14.md): disk-KV
+  and HTTP partial fork, default-on FATTN_WS under a 300–2200 MHz cap,
+  64K prefill +26.8%.
 - Partial reuse: [Solar, August 21](solar-partial-reuse-2026-08-21.md) and
   [Motif, August 22](motif3-partial-reuse-2026-08-22.md).
 
