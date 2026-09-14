@@ -3178,13 +3178,28 @@ mod native {
                     // out by identity is a mismatch, not an absence.
                     if miss == ReuseMiss::None && capture_done && self.warm_reuse != ReuseKind::None
                     {
+                        // Ask with the key `disk_plan` searched under: an
+                        // image request is stored by its media-marked cache
+                        // text, and the rendered prompt would match nothing.
+                        let request_key = stepper
+                            .cache_prompt
+                            .as_deref()
+                            .unwrap_or(stepper.prompt.as_slice());
+                        let identity_flags = stepper
+                            .cache_prompt
+                            .is_some()
+                            .then_some(EXT_IMAGE_PIXELS_V2)
+                            .unwrap_or(0);
                         let incompatible = self.identity().zip(store.as_deref_mut()).is_some_and(
                             |((model_id, quant_bits, ctx), store)| {
-                                store.has_incompatible_prefix(
-                                    &stepper.prompt,
+                                store.has_incompatible_prefix_identity(
+                                    request_key,
                                     model_id,
                                     quant_bits,
                                     ctx,
+                                    true,
+                                    EXT_IMAGE_PIXELS_V2,
+                                    identity_flags,
                                 )
                             },
                         );

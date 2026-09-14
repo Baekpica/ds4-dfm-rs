@@ -611,13 +611,37 @@ impl Store {
         quant_bits: u8,
         ctx_size: u32,
     ) -> bool {
+        self.has_incompatible_prefix_identity(prompt, model_id, quant_bits, ctx_size, false, 0, 0)
+    }
+
+    /// The same question asked the way the caller searched: with its own key
+    /// and the record filters that search applied. A bank lane keys an image
+    /// request by its media-marked cache text and needs a suffix to admit, so
+    /// asking about the rendered prompt would match nothing and report an
+    /// absence where the store holds a record only identity ruled out.
+    pub fn has_incompatible_prefix_identity(
+        &mut self,
+        prompt: &[u8],
+        model_id: u8,
+        quant_bits: u8,
+        ctx_size: u32,
+        require_suffix: bool,
+        identity_mask: u8,
+        identity_flags: u8,
+    ) -> bool {
         self.refresh();
         let reject_quant = self.reject_different_quant;
         let min_tokens = self.opt.min_tokens;
         self.entries.iter().any(|e| {
             if !is_automatic_exact_replay(e.header.reason, e.header.ext_flags)
+                || e.header.ext_flags & identity_mask != identity_flags & identity_mask
                 || e.header.text_bytes as usize > prompt.len()
                 || (e.header.tokens as i32) < min_tokens
+            {
+                return false;
+            }
+            if (require_suffix || is_bank_replay_v1(e.header.reason, e.header.ext_flags))
+                && e.header.text_bytes as usize == prompt.len()
             {
                 return false;
             }
@@ -937,6 +961,53 @@ mod tests {
         assert!(second_path.exists());
         drop(second);
         assert!(!second_path.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_image_record_is_a_mismatch_only_under_its_own_key() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-image-key-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut store = Store::open(&dir, 16, true, Options::default()).unwrap();
+        let mut record = rec(b"chat\xffDS4IMG2 turn", 512);
+        record.header.reason = Reason::BankCheckpoint;
+        record.header.ext_flags = crate::format::EXT_BANK_REPLAY_V1 | EXT_IMAGE_PIXELS_V2;
+        store.write(record).unwrap();
+        let key = b"chat\xffDS4IMG2 turn and one more";
+
+        // The identity the record was stored with: the search takes it.
+        assert!(!store.has_incompatible_prefix_identity(
+            key,
+            0,
+            2,
+            2048,
+            true,
+            EXT_IMAGE_PIXELS_V2,
+            EXT_IMAGE_PIXELS_V2
+        ));
+        // A different quantization rules it out, so the miss is a mismatch.
+        assert!(store.has_incompatible_prefix_identity(
+            key,
+            0,
+            4,
+            2048,
+            true,
+            EXT_IMAGE_PIXELS_V2,
+            EXT_IMAGE_PIXELS_V2
+        ));
+        // The rendered prompt is not the key it was stored under, and the
+        // text-keyed search cannot see a bank record's image key at all.
+        assert!(!store.has_incompatible_prefix(b"chat turn and one more", 0, 4, 2048));
+        assert!(!store.has_incompatible_prefix_identity(
+            key,
+            0,
+            4,
+            2048,
+            true,
+            EXT_IMAGE_PIXELS_V2,
+            0
+        ));
+
         let _ = fs::remove_dir_all(&dir);
     }
 
