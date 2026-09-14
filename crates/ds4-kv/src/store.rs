@@ -707,27 +707,29 @@ impl Store {
             {
                 continue;
             }
-            if (suffix == Suffix::Required
-                || is_bank_replay_v1(e.header.reason, e.header.ext_flags))
-                && e.header.text_bytes as usize == prompt.len()
-            {
+            let exact_length = e.header.text_bytes as usize == prompt.len();
+            if suffix == Suffix::Required && exact_length {
+                // Nothing left to prefill from it in this shape.
                 continue;
             }
             if text_sha_hex(&prompt[..e.header.text_bytes as usize]) != e.sha {
                 continue;
             }
 
-            // The media layout is identity too: a record keyed by this text
-            // without the flag the request needs is a mismatch, not a record
-            // about some other conversation.
-            let identity_ok = e.header.model_id == model_id
+            // A bank snapshot carries no logits, so an exact replay cannot
+            // use one: the record is there and its layout refuses. The media
+            // flag is identity in the same way — a record keyed by this text
+            // without it is a mismatch, not one about another conversation.
+            let compatible = !(exact_length
+                && is_bank_replay_v1(e.header.reason, e.header.ext_flags))
+                && e.header.model_id == model_id
                 && ctx_size >= e.header.ctx_size
                 && (!reject_quant || e.header.quant_bits == quant_bits)
                 && e.header.ext_flags & identity_mask == identity_flags & identity_mask;
-            if identity_ok && (e.header.tokens as i32) >= min_tokens {
+            if compatible && (e.header.tokens as i32) >= min_tokens {
                 return PrefixAnswer::Usable;
             }
-            answer = weaker_answer(answer, identity_ok);
+            answer = weaker_answer(answer, compatible);
         }
 
         answer
@@ -776,14 +778,14 @@ impl Store {
                 continue;
             }
 
-            let identity_ok = e.header.model_id == model_id
+            let compatible = e.header.model_id == model_id
                 && ctx_size >= e.header.ctx_size
                 && (!reject_quant || e.header.quant_bits == quant_bits)
                 && e.header.ext_flags & EXT_IMAGE_PIXELS_V2 == identity_flags & EXT_IMAGE_PIXELS_V2;
-            if identity_ok && (e.header.tokens as i32) >= min_tokens {
+            if compatible && (e.header.tokens as i32) >= min_tokens {
                 return PrefixAnswer::Usable;
             }
-            answer = weaker_answer(answer, identity_ok);
+            answer = weaker_answer(answer, compatible);
         }
 
         answer
@@ -980,10 +982,10 @@ fn rewrite_compatible_trailer(
     file.flush()
 }
 
-/// A record the search would not take: identity speaks before depth, the
-/// way the lanes report the two.
-fn weaker_answer(seen: PrefixAnswer, identity_ok: bool) -> PrefixAnswer {
-    if !identity_ok {
+/// A record the search would not take: identity and layout speak before
+/// depth, the way the lanes report them.
+fn weaker_answer(seen: PrefixAnswer, compatible: bool) -> PrefixAnswer {
+    if !compatible {
         return PrefixAnswer::Mismatch;
     }
     if seen == PrefixAnswer::None {
@@ -1144,6 +1146,31 @@ mod tests {
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::InvalidData
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_exact_bank_record_answers_with_its_layout() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-exact-bank-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut store = Store::open(&dir, 16, false, Options::default()).unwrap();
+        let mut record = rec(b"exact conversation", 512);
+        record.header.reason = Reason::BankShutdown;
+        record.header.ext_flags = crate::format::EXT_BANK_REPLAY_V1;
+        store.write(record).unwrap();
+
+        // A bank snapshot has no logits to replay from, so an exact serial
+        // prompt is refused by the record's layout, not by its absence.
+        assert_eq!(
+            store.prefix_answer(b"exact conversation", 0, 2, 2048),
+            PrefixAnswer::Mismatch
+        );
+        // With a suffix to prefill, the same record is what the search takes.
+        assert_eq!(
+            store.prefix_answer(b"exact conversation plus a turn", 0, 2, 2048),
+            PrefixAnswer::Usable
         );
 
         let _ = fs::remove_dir_all(&dir);
