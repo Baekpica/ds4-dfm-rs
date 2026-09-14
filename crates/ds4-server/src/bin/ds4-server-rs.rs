@@ -45,6 +45,7 @@ fn main() {
     let mut n_threads = 0i32;
     let mut serve_req = ServingRequest::from_env();
     let mut model_options = Vec::new();
+    let mut vision_path: Option<String> = None;
     let mut kv = DiskKvArgs::default();
     let mut dist = DistArgs::default();
     let mut args = std::env::args().skip(1);
@@ -79,9 +80,11 @@ fn main() {
                 }
                 model_path = Some(path);
             }
-            "--vision" => model_options.push(ModelOpenOption::Vision(
-                args.next().unwrap_or_else(|| usage()),
-            )),
+            "--vision" => {
+                let path = args.next().unwrap_or_else(|| usage());
+                vision_path = Some(path.clone());
+                model_options.push(ModelOpenOption::Vision(path));
+            }
             "--mtp" => {
                 let path = args.next().unwrap_or_else(|| usage());
                 serve_req.mtp_path = Some(path.clone());
@@ -129,10 +132,7 @@ fn main() {
                     .unwrap_or_else(|| usage());
             }
             "--mtp-draft" => {
-                let n = args
-                    .next()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or_else(|| usage());
+                let n = positive_count(&arg, args.next());
                 serve_req.mtp_draft = Some(n);
                 model_options.push(ModelOpenOption::MtpDraftTokens(n));
             }
@@ -214,6 +214,19 @@ fn main() {
         .as_deref()
         .and_then(|path| identify_gguf(std::path::Path::new(path)).ok());
     let caps = ident.as_ref().map(caps_from_ident);
+    if let Some(path) = vision_path.as_deref() {
+        // Same attach the open performs: embedded-media families refuse an
+        // external artifact, and Step inspects the sidecar.
+        if let Some(id) = ident.as_ref() {
+            facts.vision_path_ok = Some(match probe_vision_sidecar(id.shape, path) {
+                Ok(()) => true,
+                Err(error) => {
+                    eprintln!("ds4-server-rs: --vision {path}: {error}");
+                    false
+                }
+            });
+        }
+    }
     if let Some(path) = mtp_path.as_deref() {
         // The same attach the open performs: family acceptance, sidecar
         // metadata, required tensors and layouts. A merely readable GGUF
