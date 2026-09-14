@@ -23,6 +23,7 @@ mod mem;
 mod mem_gov;
 mod payload;
 mod progress;
+mod serving;
 mod session;
 mod shape;
 mod sibling;
@@ -72,6 +73,12 @@ pub use payload::{
     MAGIC as PAYLOAD_MAGIC, U32_FIELDS as PAYLOAD_U32_FIELDS, VERSION as PAYLOAD_VERSION,
 };
 pub use progress::PrefillCheckpoint;
+pub use serving::{
+    caps_from_ident, caps_from_shape, host_reuse, parse_disk_space, resolve_plan, serving_caps,
+    EffectiveView, EngineFacts, IssueLevel, MaxSeqs, MtpMode, PlanIssue, PrefixReuse,
+    QualifiedView, RequestTrace, RequestedView, ResolvedPlan, ReuseKind, ServingCaps,
+    ServingRequest, Support, DEFAULT_BANK_PERSIST, DEFAULT_MAX_SEQS, DEFAULT_MEM_FLOOR_GB,
+};
 pub use session::{
     dump_cmd as session_dump_cmd, RewriteKind, SessionBackend, SessionLedger, SyncPlan,
 };

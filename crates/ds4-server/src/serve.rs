@@ -29,7 +29,7 @@ use crate::http::{
 #[cfg(feature = "native")]
 use crate::metrics::MemCell;
 use crate::metrics::{
-    gov_modes_from_env, render_metrics, render_stats_json_ex, RouteMetrics, RuntimeMetrics,
+    gov_modes_from_env, render_metrics, render_stats_json_plan, RouteMetrics, RuntimeMetrics,
 };
 use crate::models::{model_id_known, model_one_json, models_list_json};
 use crate::parse::{parse_request, ParseEnv};
@@ -83,6 +83,7 @@ pub struct ServerConfig {
     /// C `DS4_SERVER_SERIAL_RIGHTSIZE` (v0.5.2 inc1): false only for the
     /// exact value "0", which restores the fail-at-full-`-c` behavior.
     pub serial_rightsize: bool,
+    pub serving_plan: Option<ds4_core::ResolvedPlan>,
     pub(crate) serial_fit: Option<SerialFitQuote>,
 }
 
@@ -186,6 +187,7 @@ impl Default for ServerConfig {
             serial_rightsize: parse_default_on(
                 std::env::var_os("DS4_SERVER_SERIAL_RIGHTSIZE").as_deref(),
             ),
+            serving_plan: None,
             serial_fit: None,
         }
     }
@@ -218,6 +220,8 @@ pub struct ServerInner {
     pub creg: ContRegistry,
     pub boot_stamp: u64,
     pub have_engine: bool,
+    pub serving_plan: Option<ds4_core::ResolvedPlan>,
+    pub last_request: Option<ds4_core::RequestTrace>,
     disconnect_abort: bool,
     out_agg_cap_bytes: u64,
     out_agg_evict_min_bytes: u64,
@@ -232,6 +236,7 @@ impl ServerInner {
         s.runtime.memgov.gov_modes = gov_modes_from_env();
         s.boot_stamp = unix_now() as u64;
         s.have_engine = cfg.have_engine;
+        s.serving_plan = cfg.serving_plan.clone();
         s.disconnect_abort = cfg.disconnect_abort;
         s.out_agg_cap_bytes = cfg.out_agg_cap_bytes;
         s.out_agg_evict_min_bytes = cfg.out_agg_evict_min_bytes;
@@ -268,6 +273,18 @@ impl ServerInner {
             t.decode_tokens,
             t.decode_steps,
         );
+        let spec = t.decode_steps > 0 && t.decode_tokens > t.decode_steps;
+        self.last_request = Some(ds4_core::RequestTrace::from_timings(
+            if outcome.bank.is_some() {
+                "continuous"
+            } else {
+                "serial"
+            },
+            t.prefill_cached,
+            t.prefill_tokens,
+            spec,
+            None,
+        ));
     }
 
     fn record_tokens(&mut self, computed: i32, cached: i32, decoded: i32, steps: i32) {
@@ -1154,7 +1171,21 @@ fn prepare_client(
         let body = {
             let g = lock_inner(inner);
             let rt = g.render_runtime(unix_now() as u64);
-            render_stats_json_ex(&g.metrics, &g.admit, &rt)
+            let serving = g
+                .serving_plan
+                .as_ref()
+                .map(|plan| plan.to_json().to_string());
+            let last = g
+                .last_request
+                .as_ref()
+                .map(|trace| trace.to_json().to_string());
+            render_stats_json_plan(
+                &g.metrics,
+                &g.admit,
+                &rt,
+                serving.as_deref(),
+                last.as_deref(),
+            )
         };
         write_all(
             stream,
@@ -2594,6 +2625,65 @@ mod owner_tests {
         assert_eq!(inner.runtime.tokens_prefilled_cached, 260);
         assert_eq!(inner.runtime.tokens_decoded, 7);
         assert_eq!(inner.runtime.decode_steps, 4);
+        let last = inner.last_request.as_ref().unwrap();
+        assert_eq!(last.effective_lane, "serial");
+        assert_eq!(last.reuse_kind, "partial");
+        assert!(last.speculation_active);
+        assert!(last.fallback_reason.is_none());
+    }
+
+    #[test]
+    fn stats_exposes_serving_and_last_request() {
+        let req = ds4_core::ServingRequest {
+            max_seqs: ds4_core::MaxSeqs::Fixed(2),
+            mem_floor_gb: 12,
+            ..ds4_core::ServingRequest::default()
+        };
+        let plan = ds4_core::resolve_plan(
+            &req,
+            Some(ds4_core::serving_caps(
+                ds4_core::ModelFamily::Qwen4Exp,
+                ds4_core::Variant::Qwen38FlashNext,
+            )),
+            &ds4_core::EngineFacts::default(),
+        );
+        let mut cfg = ServerConfig::default();
+        cfg.serving_plan = Some(plan);
+
+        let inner = Mutex::new(ServerInner::from_cfg(&cfg));
+        lock_inner(&inner).record_generation(&GenerateOutcome {
+            bank: Some(0),
+            timings: crate::stream::ReqTimings {
+                prefill_tokens: 18,
+                prefill_cached: 260,
+                decode_tokens: 7,
+                decode_steps: 4,
+                ..crate::stream::ReqTimings::default()
+            },
+            ..GenerateOutcome::default()
+        });
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        write!(client, "GET /v1/stats HTTP/1.1\r\n\r\n").unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        handle_client_inner(&cfg, &inner, &mut server, None, None);
+        drop(server);
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).unwrap();
+        let text = String::from_utf8(response).unwrap();
+        assert!(text.starts_with("HTTP/1.1 200 OK"), "{text}");
+        let json_start = text.find("{\"routes\"").expect(&text);
+        let body: serde_json::Value =
+            serde_json::from_str(text[json_start..].trim()).expect(&text[json_start..]);
+        assert!(body["serving"]["requested"].is_object(), "{body}");
+        assert!(body["serving"]["effective"].is_object(), "{body}");
+        assert!(body["serving"]["qualified"].is_object(), "{body}");
+        assert_eq!(body["last_request"]["effective_lane"], "continuous");
+        assert_eq!(body["last_request"]["reuse_kind"], "partial");
+        assert_eq!(body["last_request"]["speculation_active"], true);
+        assert!(body["last_request"].get("fallback_reason").is_some());
     }
 
     #[cfg(not(feature = "native"))]

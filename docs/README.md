@@ -16,6 +16,8 @@ release candidate or describe live processes.
 | [v0.1.0 release ledger](releases/v0.1.0.md) | Production baseline qualification and workload limits |
 | [v0.1.1 release ledger](releases/v0.1.1.md) | Performance workflow, FP8 PLE validation and limits |
 | [v0.1.2 release ledger](releases/v0.1.2.md) | Inkling checkpoint and shared Jinja qualification |
+| [v0.1.3 release ledger](releases/v0.1.3.md) | Serving Parity plan (P0–P4) and current contract |
+| [Serving contract](serving-contract.md) | Common options, requested/effective/qualified, inspect |
 | [Chat templates](chat-templates.md) | Official input grammar, local assets and continuation |
 | [API surface matrix](ds4-api-surface-matrix.md) | Wire contracts, routing and unsupported behavior |
 | [Model families](ds4-dfm-model-families.md) | Family contracts and dated Spark evidence |

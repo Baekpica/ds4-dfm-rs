@@ -50,6 +50,9 @@ impl DiskKvArgs {
         match option {
             "--kv-disk-dir" => self.dir = Some(value()?.into()),
             "--kv-disk-space-mb" => self.set_space_mb(&value()?)?,
+            "--kv-disk-space" => {
+                self.space_mb = ds4_core::parse_disk_space(&value()?)?;
+            }
             "--kv-cache-min-tokens" => self.set_min_tokens(&value()?)?,
             "--kv-cache-cold-max-tokens" => {
                 self.options.cold_max_tokens = nonnegative_i32(option, &value()?)?
@@ -77,6 +80,18 @@ impl DiskKvArgs {
     fn set_min_tokens(&mut self, value: &str) -> Result<(), String> {
         self.options.min_tokens = positive_i32("--kv-cache-min-tokens", value)?;
         Ok(())
+    }
+
+    pub fn dir(&self) -> Option<&std::path::Path> {
+        self.dir.as_deref()
+    }
+
+    pub fn space_mb(&self) -> u64 {
+        self.space_mb
+    }
+
+    pub fn min_tokens(&self) -> i32 {
+        self.options.min_tokens
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -300,5 +315,34 @@ mod tests {
         assert!(kv.open().is_none());
 
         let _ = fs::remove_file(parent);
+    }
+
+    #[test]
+    fn disk_space_alias_accepts_gib() {
+        let mut kv = DiskKvArgs::default();
+        assert!(kv.dir().is_none());
+        let min_tokens = kv.min_tokens();
+        let mut values = ["32G".to_string()].into_iter();
+        assert!(kv.parse_arg("--kv-disk-space", &mut values).unwrap());
+        assert_eq!(kv.space_mb(), 32 * 1024);
+        assert_eq!(kv.min_tokens(), min_tokens);
+    }
+
+    #[test]
+    fn server_bin_parses_serving_flags() {
+        let src = include_str!("bin/ds4-server-rs.rs");
+        for flag in [
+            "--prefix-reuse",
+            "--mtp-mode",
+            "--max-seqs",
+            "--print-plan",
+            "--check-config",
+            "--prefill-chunk",
+            "--prefill-chunk-live",
+            "--mem-floor-gb",
+            "--kv-disk-space",
+        ] {
+            assert!(src.contains(flag), "ds4-server-rs must parse {flag}");
+        }
     }
 }

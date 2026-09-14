@@ -2,7 +2,10 @@
 //! native FFI when `-m` opens a model. Continuation registry is host-owned.
 //! Incremental live DSML tool projection is host-owned.
 
-use ds4_core::{Backend, DistributedConfig, DistributedRole, Model, ModelOpenOption};
+use ds4_core::{
+    caps_from_ident, identify_gguf, resolve_plan, Backend, DistributedConfig, DistributedRole,
+    EngineFacts, MaxSeqs, Model, ModelOpenOption, MtpMode, PrefixReuse, ServingRequest,
+};
 use ds4_server::kv_cli::DiskKvArgs;
 use ds4_server::{
     accept_loop, accept_loop_with_engine, accept_loop_with_engine_cont, listen,
@@ -39,10 +42,7 @@ fn main() {
     let mut mtp_path: Option<String> = None;
     let mut backend = Backend::Cuda;
     let mut n_threads = 0i32;
-    let mut cont_width = std::env::var("DS4_SERVER_COALESCE_MAX")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2);
+    let mut serve_req = ServingRequest::from_env();
     let mut model_options = Vec::new();
     let mut kv = DiskKvArgs::default();
     let mut dist = DistArgs::default();
@@ -81,7 +81,42 @@ fn main() {
             "--vision" => model_options.push(ModelOpenOption::Vision(
                 args.next().unwrap_or_else(|| usage()),
             )),
-            "--mtp" => mtp_path = Some(args.next().unwrap_or_else(|| usage())),
+            "--mtp" => {
+                let path = args.next().unwrap_or_else(|| usage());
+                serve_req.mtp_path = Some(path.clone());
+                mtp_path = Some(path);
+            }
+            "--mtp-mode" => {
+                serve_req.mtp_mode = MtpMode::parse(&args.next().unwrap_or_else(|| usage()))
+                    .unwrap_or_else(|e| {
+                        cli_error(&e);
+                    });
+            }
+            "--prefix-reuse" => {
+                serve_req.prefix_reuse =
+                    PrefixReuse::parse(&args.next().unwrap_or_else(|| usage()))
+                        .unwrap_or_else(|e| cli_error(&e));
+            }
+            "--max-seqs" => {
+                serve_req.max_seqs = MaxSeqs::parse(&args.next().unwrap_or_else(|| usage()))
+                    .unwrap_or_else(|e| cli_error(&e));
+            }
+            "--prefill-chunk" => {
+                serve_req.sched_chunk = Some(
+                    args.next()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or_else(|| usage()),
+                );
+            }
+            "--prefill-chunk-live" => {
+                serve_req.sched_chunk_live = Some(
+                    args.next()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or_else(|| usage()),
+                );
+            }
+            "--print-plan" => serve_req.print_plan = true,
+            "--check-config" => serve_req.check_config = true,
             "--backend" => {
                 backend = match args.next().unwrap_or_else(|| usage()).as_str() {
                     "cuda" => Backend::Cuda,
@@ -100,11 +135,14 @@ fn main() {
                     .and_then(|v| v.parse().ok())
                     .unwrap_or_else(|| usage());
             }
-            "--mtp-draft" => model_options.push(ModelOpenOption::MtpDraftTokens(
-                args.next()
+            "--mtp-draft" => {
+                let n = args
+                    .next()
                     .and_then(|v| v.parse().ok())
-                    .unwrap_or_else(|| usage()),
-            )),
+                    .unwrap_or_else(|| usage());
+                serve_req.mtp_draft = Some(n);
+                model_options.push(ModelOpenOption::MtpDraftTokens(n));
+            }
             "--mtp-margin" => model_options.push(ModelOpenOption::MtpMargin(
                 args.next()
                     .and_then(|v| v.parse().ok())
@@ -120,6 +158,7 @@ fn main() {
                     .next()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or_else(|| usage());
+                serve_req.ctx = cfg.ctx;
             }
             "-t" | "--threads" => {
                 n_threads = args
@@ -130,15 +169,17 @@ fn main() {
             // Hidden rust-shadow alias for DS4_SERVER_COALESCE_MAX.
             // Not a C flag; kept for rust-host-live scripts (e.g. --cont-width 1).
             "--cont-width" => {
-                cont_width = args
+                let n = args
                     .next()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or_else(|| usage());
+                serve_req.max_seqs = MaxSeqs::Fixed(n);
             }
             "--cors" => cfg.cors = true,
             "--mem-floor-gb" => {
                 let raw = args.next().unwrap_or_else(|| usage());
                 cfg.apply_mem_floor_gb(&raw);
+                serve_req.mem_floor_gb = cfg.mem_floor_gb;
             }
             "-h" | "--help" => usage(),
             other => {
@@ -156,6 +197,36 @@ fn main() {
     if cfg.model_name == "ds4" {
         cfg.model_name = cfg.model_id.clone();
     }
+    serve_req.ctx = cfg.ctx;
+    serve_req.mem_floor_gb = cfg.mem_floor_gb;
+    if let Some(dir) = kv.dir() {
+        serve_req.kv_disk_dir = Some(dir.display().to_string());
+    }
+    if kv.space_mb() > 0 {
+        serve_req.kv_disk_space_mb = Some(kv.space_mb());
+    }
+    serve_req.kv_min_tokens = Some(kv.min_tokens());
+
+    let caps = model_path
+        .as_deref()
+        .and_then(|path| identify_gguf(std::path::Path::new(path)).ok())
+        .map(|id| caps_from_ident(&id));
+    let plan = resolve_plan(&serve_req, caps, &EngineFacts::default());
+    plan.apply_env();
+    cfg.mem_floor_gb = plan.effective.mem_floor_gb;
+    eprint!("{}", plan.report());
+    if serve_req.print_plan || serve_req.check_config {
+        println!("{}", plan.to_json());
+    }
+    if serve_req.check_config {
+        std::process::exit(if plan.has_errors() { 2 } else { 0 });
+    }
+    if plan.has_errors() {
+        eprint!("{}", plan.report());
+        cli_error("ds4-server-rs: serving plan rejected unsupported options");
+    }
+    cfg.serving_plan = Some(plan.clone());
+    let cont_width = plan.effective.max_seqs as i32;
 
     let native_dist = distributed_config(&dist.opt);
     let launch = server_launch(dist.opt.role, model_path.is_some())
@@ -220,6 +291,22 @@ fn main() {
                         batch.max_seq(),
                         batch.seq_cap()
                     );
+                    let facts = EngineFacts {
+                        mtp_loaded: mtp_path.is_some() || model.mtp().is_some(),
+                        vision_loaded: model_options
+                            .iter()
+                            .any(|opt| matches!(opt, ModelOpenOption::Vision(_))),
+                        banks_fitted: Some(batch.max_seq() as u32),
+                        seq_cap: Some(batch.seq_cap() as u32),
+                    };
+                    let fitted = resolve_plan(&serve_req, caps, &facts);
+                    eprint!("{}", fitted.report());
+                    if fitted.has_errors() {
+                        cli_error("ds4-server-rs: fitted serving plan rejected");
+                    }
+                    fitted.apply_env();
+                    cfg.mem_floor_gb = fitted.effective.mem_floor_gb;
+                    cfg.serving_plan = Some(fitted);
                     Some(
                         ContLane::new(
                             batch,
@@ -234,6 +321,18 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("ds4-server-rs: continuous lane unavailable ({e}); serial only");
+                    let facts = EngineFacts {
+                        mtp_loaded: mtp_path.is_some() || model.mtp().is_some(),
+                        vision_loaded: model_options
+                            .iter()
+                            .any(|opt| matches!(opt, ModelOpenOption::Vision(_))),
+                        banks_fitted: Some(1),
+                        ..EngineFacts::default()
+                    };
+                    let serial = resolve_plan(&serve_req, caps, &facts);
+                    serial.apply_env();
+                    cfg.mem_floor_gb = serial.effective.mem_floor_gb;
+                    cfg.serving_plan = Some(serial);
                     None
                 }
             }
@@ -290,8 +389,8 @@ fn cli_error(message: &str) -> ! {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--vision GGUF] [--mtp GGUF] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
-Disk KV: [--kv-disk-dir DIR] [--kv-disk-space-mb N] [--kv-cache-min-tokens N]\n\
+        "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--vision GGUF] [--mtp GGUF] [--mtp-mode off|auto|on] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [--max-seqs N|auto] [--prefix-reuse off|exact|partial|auto] [--prefill-chunk N] [--prefill-chunk-live N] [--print-plan] [--check-config] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
+Disk KV: [--kv-disk-dir DIR] [--kv-disk-space-mb N] [--kv-disk-space 32G] [--kv-cache-min-tokens N]\n\
          [--kv-cache-cold-max-tokens N] [--kv-cache-continued-interval-tokens N]\n\
          [--kv-cache-boundary-trim-tokens N]\n\
          [--kv-cache-boundary-align-tokens N]\n\

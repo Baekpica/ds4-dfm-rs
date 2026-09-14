@@ -1028,10 +1028,13 @@ fn warm_placement(
     })
 }
 
-fn motif3_history_retire_prompt(prompt: &[u8]) -> &[u8] {
-    // Motif none-think generation ends with an empty think pair; official
-    // history replay omits it. Bank keys must use the history form or the
-    // next tool-result turn diverges at <|assistant|>.
+fn history_retire_prompt(prompt: &[u8]) -> &[u8] {
+    // Official history replay drops an empty think pair. Motif emits
+    // `<think></think>`; Step none-think emits `<think>\n</think>\n`.
+    // Bank keys must use that history form or a restart/follow-up misses.
+    if let Some(prefix) = prompt.strip_suffix(b"<think>\n</think>\n") {
+        return prefix;
+    }
     prompt.strip_suffix(b"<think></think>").unwrap_or(prompt)
 }
 
@@ -1040,7 +1043,7 @@ fn committed_key(
     tokens: &[i32],
     mut token_text: impl FnMut(i32) -> Vec<u8>,
 ) -> Vec<u8> {
-    let mut key = motif3_history_retire_prompt(prompt).to_vec();
+    let mut key = history_retire_prompt(prompt).to_vec();
     for &token in tokens.iter().take(tokens.len().saturating_sub(1)) {
         key.extend(token_text(token));
     }
@@ -2428,7 +2431,13 @@ mod native {
                 let Some(cached) = cut else {
                     continue;
                 };
-                let Some(cached) = solar_stride_floor(cached, self.ctx) else {
+                let Ok(cached_n) = usize::try_from(cached) else {
+                    continue;
+                };
+                let Some(cached_n) = solar_stride_floor(cached_n, self.ctx) else {
+                    continue;
+                };
+                let Ok(cached) = i32::try_from(cached_n) else {
                     continue;
                 };
                 if best.is_none_or(|(_, current)| cached > current) {

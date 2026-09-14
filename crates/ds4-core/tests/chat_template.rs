@@ -86,6 +86,36 @@ fn step37_official_messages() {
 }
 
 #[test]
+fn step37_follow_up_drops_empty_think() {
+    let template = Template::compile(
+        include_str!("../../../tests/fixtures/step37/chat_template.jinja"),
+        RenderClock::Fixed(0),
+    )
+    .unwrap();
+    let opts = ds4_core::chat_template::ChatOptions::new(10, ds4_core::ChatThinkMode::None);
+    let first = template
+        .render_chat(&[json!({"role":"user","content":"Hello"})], &[], opts)
+        .unwrap();
+    assert!(first.ends_with("<think>\n</think>\n"));
+    let follow = template
+        .render_chat(
+            &[
+                json!({"role":"user","content":"Hello"}),
+                json!({"role":"assistant","content":"4"}),
+                json!({"role":"user","content":"Again"}),
+            ],
+            &[],
+            opts,
+        )
+        .unwrap();
+    let history = first.trim_end_matches("<think>\n</think>\n").to_string() + "4<|im_end|>\n";
+    assert!(
+        follow.starts_with(&history),
+        "follow={follow:?} history={history:?}"
+    );
+}
+
+#[test]
 fn step37_python_jinja_parity() {
     let template = Template::compile(
         include_str!("../../../tests/fixtures/step37/chat_template.jinja"),

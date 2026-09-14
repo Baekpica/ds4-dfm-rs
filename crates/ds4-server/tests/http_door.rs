@@ -397,6 +397,14 @@ fn tcp_models_options_unknown_bad_http() {
     cfg.ctx = 196608;
     cfg.default_tokens = 1024;
     cfg.cors = true;
+    cfg.serving_plan = Some(ds4_core::resolve_plan(
+        &ds4_core::ServingRequest::default(),
+        Some(ds4_core::serving_caps(
+            ds4_core::ModelFamily::Qwen4Exp,
+            ds4_core::Variant::Qwen38FlashNext,
+        )),
+        &ds4_core::EngineFacts::default(),
+    ));
 
     let out = one_shot(&cfg, b"GET /v1/models HTTP/1.1\r\n\r\n");
     let s = String::from_utf8_lossy(&out);
@@ -441,6 +449,10 @@ fn tcp_models_options_unknown_bad_http() {
     assert!(s.contains("\"sheds\":{"));
     assert!(s.contains("\"memory\":{\"census_supported\":false"));
     assert!(s.contains("\"governor\":{\"shadow\":true"));
+    assert!(s.contains("\"serving\":{"));
+    assert!(s.contains("\"requested\":{"));
+    assert!(s.contains("\"effective\":{"));
+    assert!(s.contains("\"qualified\":{"));
 
     let out = one_shot(
         &cfg,

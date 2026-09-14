@@ -1023,8 +1023,6 @@ pub(crate) fn thinking_visible_key(
     terminal: bool,
 ) -> Option<Vec<u8>> {
     if syntax == ModelSyntax::Step37 {
-        // Removing reasoning changes Step's history grammar. Re-render its
-        // structured history with Jinja instead of inventing a cached prefix.
         return None;
     }
     let mut visible = if format == ChatFormat::K2Horizon {
@@ -1082,6 +1080,34 @@ pub(crate) fn thinking_visible_key(
         ) {
             visible.push(b'\n');
         }
+    }
+    Some(visible)
+}
+
+fn step37_history_checkpoint(
+    parsed: &ParsedRequest,
+    syntax: ModelSyntax,
+    prompt: &[u8],
+    content: &[u8],
+    finish: &str,
+) -> Option<Vec<u8>> {
+    if parsed.kind != ReqKind::Chat
+        || syntax != ModelSyntax::Step37
+        || finish == "error"
+        || finish == "length"
+    {
+        return None;
+    }
+    // Official Step history drops the empty think pair that generation
+    // opened. Disk identity must match the follow-up render, not the
+    // live generation prompt.
+    let header = prompt
+        .strip_suffix(b"<think>\n</think>\n")
+        .or_else(|| prompt.strip_suffix(b"<think>\n"))?;
+    let mut visible = header.to_vec();
+    visible.extend_from_slice(content.trim_ascii());
+    if !visible.ends_with(b"<|im_end|>\n") {
+        visible.extend_from_slice(b"<|im_end|>\n");
     }
     Some(visible)
 }
@@ -1989,7 +2015,8 @@ pub(crate) fn generate_terminal_prepared(
     }
     .or_else(|| {
         motif3_no_think_visible_checkpoint(&parsed, syntax, &prompt, &parsed_gen.content, finish)
-    });
+    })
+    .or_else(|| step37_history_checkpoint(&parsed, syntax, &prompt, &parsed_gen.content, finish));
     if let Some(visible) = visible {
         engine.remember_thinking_visible_checkpoint(visible);
     }
@@ -2970,9 +2997,10 @@ mod disk_sync_tests {
     use super::{
         continued_decode_allowed, discard_loaded, disk_sync_prompt, disk_sync_tool_replay,
         intermediate_prefill_eligible, ordinary_disk_cache_eligible,
-        settle_thinking_visible_checkpoint, thinking_visible_cache_eligible, thinking_visible_key,
-        tool_replay_disk_cache_eligible, tool_replay_producer_eligible, try_store_continued,
-        try_store_live, DiskSyncPolicy, GenerateError, SerialKvIo, ThinkingVisibleCheckpoint,
+        settle_thinking_visible_checkpoint, step37_history_checkpoint,
+        thinking_visible_cache_eligible, thinking_visible_key, tool_replay_disk_cache_eligible,
+        tool_replay_producer_eligible, try_store_continued, try_store_live, DiskSyncPolicy,
+        GenerateError, SerialKvIo, ThinkingVisibleCheckpoint,
     };
     use crate::parse::{parse_request, ChatMsg, ParseEnv, ToolCall};
     use crate::render::{render_motif3_chat_ex, ModelSyntax};
@@ -4314,6 +4342,31 @@ mod disk_sync_tests {
 
         settle_thinking_visible_checkpoint(&mut checkpoint, true);
         assert!(checkpoint.is_none());
+    }
+
+    #[test]
+    fn step37_empty_think_is_history_form() {
+        let env = ParseEnv {
+            default_model: "ds4".into(),
+            default_tokens: 16,
+            default_effort: ThinkMode::None,
+            default_temp: 0.0,
+            live_ids: Vec::new(),
+        };
+        let parsed = parse_request(
+            WireSurface::OpenaiChat,
+            &env,
+            r#"{"messages":[{"role":"user","content":"Hello"}]}"#,
+        )
+        .unwrap();
+        let prompt =
+            b"<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n</think>\n";
+        let visible =
+            step37_history_checkpoint(&parsed, ModelSyntax::Step37, prompt, b"4", "stop").unwrap();
+        assert_eq!(
+            visible,
+            b"<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n4<|im_end|>\n"
+        );
     }
 
     #[test]

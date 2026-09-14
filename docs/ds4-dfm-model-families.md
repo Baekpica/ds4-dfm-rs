@@ -53,12 +53,14 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | GLM 5.3 Flash | `general.architecture=glm5-next` | exact Q2 main + vision sidecar | serial; 2,048-context cap |
 | K2-Horizon 375B A23B | `general.architecture=k2-horizon` | full-attention GQA KV, partial NeoX RoPE, shared-expert MoE | persistent one-bank (32K gated) |
 | Inkling Small | `general.architecture=inkling` | MQ85GB source-interleaved GQA, four-tap convolution, embedded media encoders, optional eight-layer MTP-BF16 | serial CUDA; [1,024-context checks](inkling-small.md) |
-| Step 3.7 Flash | `general.architecture=step35` | MQ83 full/sliding GQA, post-SiLU expert clamps, optional Q8 MTP and F16 vision | serial CUDA; [artifact and verification scope](step37-initial.md); [GB10 post-landing throughput](step37-optimization-2026-09-13-r2.md) |
+| Step 3.7 Flash | `general.architecture=step35` | MQ83 full/sliding GQA, post-SiLU expert clamps, optional Q8 MTP and F16 vision | serial default; opt-in text banks with full/partial fork and disk KV ([serving](step37-serving-2026-09-13.md)); images serial; [artifact scope](step37-initial.md) |
 
 The scheduler implementation may differ because the model states differ, but
 the operator and client contract is the same. Changing `-m` to a GGUF from a
 different supported family selects the corresponding runtime in the same
-binary.
+binary. Shared flag names and the requested / effective / qualified plan
+live in the [serving contract](serving-contract.md). Capability rows come
+from `ds4_core::serving_caps`, not from dated campaign prose.
 
 ## Common serving surface
 
@@ -140,6 +142,8 @@ checkpoint at or below the token LCP, copies the positional rows (Solar GQA,
 Motif-3 full-attention latent) from the source bank, and replays only the
 gap. `DS4_SERVER_FORK_PARTIAL=0` disables capture and even the VA
 reservation. EXAONE and dots3-note banks keep exact-frontier reuse only.
+`--prefix-reuse partial` on those families is an error, not a silent exact
+path. `--prefix-reuse auto` selects exact.
 
 Verified on this host: Solar 6K/10K branches of a 12K source 2.85x/4.62x
 TTFT (`docs/solar-partial-reuse-2026-08-21.md`); Motif-3 7.1K/14.1K
