@@ -2549,15 +2549,22 @@ mod native {
                 .is_some()
                 .then_some(EXT_IMAGE_PIXELS_V2)
                 .unwrap_or(0);
-            let (path, envelope) = store
-                .bank_text_prefix_candidate_identity(
-                    request_key,
-                    identity.0,
-                    identity.1,
-                    identity.2,
-                    identity_flags,
-                )
-                .ok()??;
+            // An envelope that will not read is a refusal by the record,
+            // not an absence; `Ok(None)` is the absence.
+            let candidate = match store.bank_text_prefix_candidate_identity(
+                request_key,
+                identity.0,
+                identity.1,
+                identity.2,
+                identity_flags,
+            ) {
+                Ok(candidate) => candidate,
+                Err(_) => {
+                    Self::note_miss(miss, ReuseMiss::PayloadMismatch);
+                    return None;
+                }
+            };
+            let (path, envelope) = candidate?;
             let target = self.disk_victim(protected, envelope.header.tokens)?;
             if !disk_restore_target_allowed(
                 &self.warm,
@@ -2635,16 +2642,21 @@ mod native {
                 .is_some()
                 .then_some(EXT_IMAGE_PIXELS_V2)
                 .unwrap_or(0);
-            let (path, envelope, cache_lcp) = store
-                .bank_text_lcp_candidate_identity(
-                    request_key,
-                    identity.0,
-                    identity.1,
-                    identity.2,
-                    min_prefix,
-                    identity_flags,
-                )
-                .ok()??;
+            let candidate = match store.bank_text_lcp_candidate_identity(
+                request_key,
+                identity.0,
+                identity.1,
+                identity.2,
+                min_prefix,
+                identity_flags,
+            ) {
+                Ok(candidate) => candidate,
+                Err(_) => {
+                    Self::note_miss(miss, ReuseMiss::PayloadMismatch);
+                    return None;
+                }
+            };
+            let (path, envelope, cache_lcp) = candidate?;
             let target = self.disk_victim(protected, envelope.header.tokens)?;
             if !disk_restore_target_allowed(
                 &self.warm,
@@ -3229,13 +3241,12 @@ mod native {
                             .is_some()
                             .then_some(EXT_IMAGE_PIXELS_V2)
                             .unwrap_or(0);
-                        // This lane writes through `persist_bank`, which
-                        // refuses anything below `warm_persist_min`, so a
-                        // conversation shorter than that was never stored
-                        // whatever the store's own record minimum is.
-                        let write_min = store
-                            .as_deref()
-                            .map(|store| store.opt.min_tokens.max(self.warm_persist_min.max(0)));
+                        // `warm_persist_min` is not a floor on what exists:
+                        // `shutdown_banks` persists every live bank at one
+                        // token. The store's own record minimum is, because
+                        // the searches skip anything below it, so only a
+                        // conversation under that could never be found.
+                        let write_min = store.as_deref().map(|store| store.opt.min_tokens);
                         let min_lcp = usize::try_from(self.warm_partial_min)
                             .ok()
                             .filter(|_| self.warm_disk_partial)

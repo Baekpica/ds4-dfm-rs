@@ -846,13 +846,16 @@ fn disk_sync_prompt_impl(
     let candidate = match store.text_prefix_candidate(prompt, model_id, quant_bits, ctx) {
         Ok(candidate) => candidate,
         Err(_) => {
+            // A record whose envelope will not read is refused by its
+            // payload as surely as one whose tokens disagree.
+            io.note_miss(ReuseMiss::PayloadMismatch);
             return cold_sync_and_store(
                 io,
                 store,
                 (model_id, quant_bits, ctx),
                 canonical_tokens,
                 prefill_checkpoints,
-            )
+            );
         }
     };
     let Some((path, envelope)) = candidate else {
