@@ -30,6 +30,8 @@
 #include "mma.cuh"
 #include "ds4_mmq.h"
 
+#include <stdio.h>
+
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <cuda_fp8.h>
@@ -1428,7 +1430,15 @@ ds4_fattn_hmma_solar_ws_kernel(
  * froze the host. */
 static int solar_fattn_ws_enabled(void) {
     const char *value = getenv("DS4_SOLAR_FATTN_WS");
-    return !value || value[0] != '0';
+    const int enabled = !value || value[0] != '0';
+    static int logged = 0;
+    if (enabled && !logged) {
+        logged = 1;
+        fprintf(stderr,
+                "ds4: Solar FATTN_WS default on; DS4_SOLAR_FATTN_WS=0 "
+                "restores the pair kernel; keep the GB10 300-2200 MHz SM cap\n");
+    }
+    return enabled;
 }
 
 /* cp.async copy width the cache supports: the K/V regions sit at

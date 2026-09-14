@@ -2358,6 +2358,11 @@ mod native {
             }
             // Host text records can be missing after a one-bank Solar retire
             // while the native committed tokens are still the reuse source.
+            // Image banks stay on the text/image-aware plan: token IDs can
+            // match across different pixels.
+            if !cache_spans.is_empty() {
+                return None;
+            }
             if i32::try_from(prompt_tokens.len())
                 .ok()
                 .filter(|tokens| *tokens <= batch.seq_cap())

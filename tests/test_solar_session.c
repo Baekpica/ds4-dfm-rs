@@ -348,6 +348,60 @@ done:
     return failed;
 }
 
+/* One prefill chunk that crosses stride 4096 must capture KDA at 4096, not
+ * label the end-of-chunk state as 4096. A divergent fork at that cut must
+ * match a cold oracle of the branch. */
+static int run_solar_wide_stride_gate(ds4_engine *engine,
+                                      const ds4_tokens *seed) {
+    enum { WIDE_CTX = 8192, SOURCE_LEN = 5000, CUT = 4096 };
+    ds4_batch_ctx *ctx = NULL;
+    ds4_tokens source = {0};
+    ds4_tokens branch = {0};
+    solar_cont_test req = {0};
+    char err[256] = "";
+    int failed = 0;
+
+    if (setenv("DS4_CONT_PREFILL_CHUNK", "8192", 1) != 0 ||
+        setenv("DS4_METAL_PREFILL_CHUNK", "8192", 1) != 0) {
+        perror("setenv");
+        return 1;
+    }
+    if (ds4_batch_ctx_create_fit(
+            engine, WIDE_CTX, 4, WIDE_CTX, &ctx, err, sizeof(err)) != 0 ||
+        !ctx || !ds4_batch_ctx_supports_partial_reuse(ctx)) {
+        fprintf(stderr, "Solar wide-stride context failed: %s\n", err);
+        return 1;
+    }
+    for (int i = 0; i < SOURCE_LEN; i++) {
+        ds4_tokens_push(&source, seed->v[i % seed->len]);
+    }
+    if (run_solar_cont_request(
+            ctx, &source, 0, 1, 0, -1, &req, err, sizeof(err)) ||
+        req.admitted_cached[0] != 0 ||
+        req.admitted_computed[0] != SOURCE_LEN ||
+        ds4_batch_ctx_bank_committed(ctx, 0, NULL) != SOURCE_LEN) {
+        fprintf(stderr, "Solar wide-stride source failed: %s\n", err);
+        failed = 1;
+        goto done;
+    }
+    for (int i = 0; i < CUT; i++) {
+        ds4_tokens_push(&branch, source.v[i]);
+    }
+    ds4_tokens_push(
+        &branch, (source.v[CUT] + 1) % ds4_engine_vocab_size(engine));
+    if (expect_solar_partial(
+            ctx, &branch, 0, SOURCE_LEN, CUT, CUT, 2, 3, err,
+            sizeof(err)) != 0) {
+        failed = 1;
+    }
+
+done:
+    ds4_tokens_free(&branch);
+    ds4_tokens_free(&source);
+    ds4_batch_ctx_destroy(ctx);
+    return failed;
+}
+
 static int solar_open_engine(ds4_engine **engine, const char *model_path) {
     ds4_engine_options opt = {0};
     opt.model_path = model_path;
@@ -746,6 +800,9 @@ int main(int argc, char **argv) {
     ds4_tokens_push(&prompt_alt, 4768);
     if (partial_only) {
         failed = run_solar_partial_gate(engine, &prompt);
+        if (!failed) {
+            failed = run_solar_wide_stride_gate(engine, &prompt);
+        }
         goto cleanup;
     }
     if (disk_kv_only) {

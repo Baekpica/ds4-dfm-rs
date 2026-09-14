@@ -37,8 +37,10 @@ Native `tests/test_solar_session --disk-kv-only` and `--partial-only`
 
 Fixes:
 
-- Prefill stride-walk checkpoints inside a final wide chunk. A due-at-chunk-end
-  capture never fired when the whole prompt was one final 8K-cap chunk.
+- Prefill clips each forward at the next checkpoint stride so the copied
+  KDA state matches the labeled position. A due-at-chunk-end capture never
+  fired when the whole prompt was one final 8K-cap chunk; labeling the
+  end-of-chunk state as 4096 was wrong.
 - Skip `trim_idle_banks` when partial reuse is on so a 1-bank worker does not
   drop the only hist-valid bank.
 - Snapshot-token LCP fallback when rust text records miss.
