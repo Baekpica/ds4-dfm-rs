@@ -3286,11 +3286,14 @@ mod native {
         }
 
         fn trim_idle_banks(&mut self, want_bytes: u64) -> u64 {
-            // One-bank workers sit just above the memory floor. Serial
+            // One-bank Solar workers sit just above the memory floor. Serial
             // reclaim would trim the only hist-valid bank and the next Chat
-            // request could not partial-fork. Multi-bank runtimes still
-            // trim idle banks.
-            if self.host.warm_fork_partial && self.batch.max_seq() == 1 {
+            // request could not partial-fork. Step 3.7 and multi-bank Solar
+            // still trim idle banks / unreferenced checkpoints.
+            if self.host.warm_fork_partial
+                && self.batch.max_seq() == 1
+                && syntax_for_model_id(self.host.model_id) == ModelSyntax::SolarOpen2
+            {
                 return 0;
             }
             self.batch.trim_free(want_bytes)
