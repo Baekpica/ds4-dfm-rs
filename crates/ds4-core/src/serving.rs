@@ -53,6 +53,15 @@ pub enum HostNeed {
     Cuda,
 }
 
+/// Whether the continuous lane may serve requests at all. `Serial` is the
+/// legacy `DS4_SERVER_CONTINUOUS=0` switch: banks may still exist for the
+/// static lane, but no request enters the bank driver.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LaneMode {
+    Auto,
+    Serial,
+}
+
 /// Whether this process is one full model or a distributed slice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Distribution {
@@ -179,6 +188,7 @@ pub struct ServingRequest {
     pub backend: Backend,
     pub chunk_fence: ChunkFence,
     pub distribution: Distribution,
+    pub lane: LaneMode,
 }
 
 /// Facts known only after identify or engine open.
@@ -327,6 +337,7 @@ impl Default for ServingRequest {
             backend: Backend::Cuda,
             chunk_fence: ChunkFence::On,
             distribution: Distribution::Single,
+            lane: LaneMode::Auto,
         }
     }
 }
@@ -434,11 +445,12 @@ impl ServingRequest {
                 req.max_seqs = parsed;
             }
         }
-        // README: `DS4_SERVER_CONTINUOUS=0` forces the static/serial route,
-        // so the plan must not report banks the router will not use. A CLI
-        // width still wins, since argument parsing runs after this.
+        // README: `DS4_SERVER_CONTINUOUS=0` forces the static/serial route.
+        // It disables the continuous *lane*, not the batch context — the
+        // static lane still coalesces over those banks — so it narrows the
+        // driver rather than the width.
         if std::env::var_os("DS4_SERVER_CONTINUOUS").as_deref() == Some(OsStr::new("0")) {
-            req.max_seqs = MaxSeqs::Off;
+            req.lane = LaneMode::Serial;
         }
         if let Ok(raw) = std::env::var("DS4_MEM_FLOOR_GB") {
             if let Some(gb) = parse_u64_atoi(&raw) {
@@ -1482,7 +1494,7 @@ enum BankDriver {
     Absent,
 }
 
-/// Absent when the operator forced serial through the legacy zero alias, the
+/// Absent when the operator forced serial through either legacy switch, the
 /// backend has no lane, the native fit refused it, the family serves
 /// serially, or an opt-in family stayed at width one.
 ///
@@ -1497,6 +1509,7 @@ fn bank_driver(
     facts: &EngineFacts,
 ) -> BankDriver {
     let absent = req.max_seqs == MaxSeqs::Off
+        || req.lane == LaneMode::Serial
         || req.backend != Backend::Cuda
         || facts.cont_lane == Some(false)
         || caps.banks == BankLane::Serial
@@ -1875,6 +1888,26 @@ mod tests {
         assert!(p.has_errors());
         assert!(p.issues.iter().any(|i| i.code == "mtp_sidecar"));
         assert!(!p.effective.mtp_weights);
+    }
+
+    #[test]
+    fn the_legacy_switch_keeps_banks_but_drops_the_driver() {
+        // It forces the static/serial route, so the banks the static lane
+        // coalesces over stay, while nothing enters the bank driver.
+        let mut req = ServingRequest::default();
+        req.lane = LaneMode::Serial;
+        req.mtp_mode = MtpMode::On;
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert_eq!(p.effective.max_seqs, 2);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "mtp_lane"));
+
+        let mut req = ServingRequest::default();
+        req.lane = LaneMode::Serial;
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
+        assert_eq!(p.effective.mtp_mode, MtpMode::Off);
+        assert!(!p.has_errors());
     }
 
     #[test]

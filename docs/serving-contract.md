@@ -14,7 +14,7 @@ the same object plus `last_request`.
 | Flag | Meaning | Aliases |
 |---|---|---|
 | `--ctx` / `-c` | Per-sequence context limit, capped per family | |
-| `--max-seqs N\|auto` | Concurrent banks/sequences | `--cont-width`, `DS4_SERVER_COALESCE_MAX`, `DS4_SERVER_CONTINUOUS=0` forces serial |
+| `--max-seqs N\|auto` | Concurrent banks/sequences | `--cont-width`, `DS4_SERVER_COALESCE_MAX` |
 | `--prefix-reuse off\|exact\|partial\|auto` | Conversation reuse policy | `DS4_SERVER_FORK`, `DS4_SERVER_FORK_PARTIAL` |
 | `--mtp-mode off\|auto\|on` | Speculation policy | `DS4_MTP_SPEC_DISABLE` for off-with-weights |
 | `--mtp PATH`, `--mtp-draft N` | Sidecar and draft length | |
@@ -38,7 +38,9 @@ banks than it asked for; an explicit `--max-seqs N` the native fit
 cannot honour is an error, not a narrower start.
 
 `--cont-width 0` and `DS4_SERVER_COALESCE_MAX=0` keep the legacy serial
-meaning: no bank lane. Qwen and DeepSeek speculate only inside that
+meaning: no bank lane. `DS4_SERVER_CONTINUOUS=0` is narrower — it forces
+the static/serial route, so the banks stay for the static lane to coalesce
+over while no request enters the bank driver. Qwen and DeepSeek speculate only inside that
 lane, so the combination rejects `--mtp-mode on` instead of reporting
 MTP enabled. Inkling and Step also speculate on the serial engine and
 are unaffected.
