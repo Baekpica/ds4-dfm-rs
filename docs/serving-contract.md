@@ -14,7 +14,7 @@ the same object plus `last_request`.
 | Flag | Meaning | Aliases |
 |---|---|---|
 | `--ctx` / `-c` | Per-sequence context limit, capped per family | |
-| `--max-seqs N\|auto` | Concurrent banks/sequences | `--cont-width`, `DS4_SERVER_COALESCE_MAX` |
+| `--max-seqs N\|auto` | Concurrent banks/sequences | `--cont-width`, `DS4_SERVER_COALESCE_MAX`, `DS4_SERVER_CONTINUOUS=0` forces serial |
 | `--prefix-reuse off\|exact\|partial\|auto` | Conversation reuse policy | `DS4_SERVER_FORK`, `DS4_SERVER_FORK_PARTIAL` |
 | `--mtp-mode off\|auto\|on` | Speculation policy | `DS4_MTP_SPEC_DISABLE` for off-with-weights |
 | `--mtp PATH`, `--mtp-draft N` | Sidecar and draft length | |

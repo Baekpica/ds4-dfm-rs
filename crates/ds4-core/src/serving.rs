@@ -424,14 +424,21 @@ impl Support {
 }
 
 impl ServingRequest {
-    /// Compatible aliases: `DS4_SERVER_COALESCE_MAX`, `DS4_MEM_FLOOR_GB`,
-    /// `DS4_SERVER_FORK`, `DS4_SERVER_FORK_PARTIAL`, chunk env vars.
+    /// Compatible aliases: `DS4_SERVER_COALESCE_MAX`, `DS4_SERVER_CONTINUOUS`,
+    /// `DS4_MEM_FLOOR_GB`, `DS4_SERVER_FORK`, `DS4_SERVER_FORK_PARTIAL`,
+    /// `DS4_SERVER_PERSIST_MIN_TOKENS`, chunk env vars.
     pub fn from_env() -> Self {
         let mut req = Self::default();
         if let Ok(raw) = std::env::var("DS4_SERVER_COALESCE_MAX") {
             if let Ok(parsed) = MaxSeqs::parse_coalesce(&raw) {
                 req.max_seqs = parsed;
             }
+        }
+        // README: `DS4_SERVER_CONTINUOUS=0` forces the static/serial route,
+        // so the plan must not report banks the router will not use. A CLI
+        // width still wins, since argument parsing runs after this.
+        if std::env::var_os("DS4_SERVER_CONTINUOUS").as_deref() == Some(OsStr::new("0")) {
+            req.max_seqs = MaxSeqs::Off;
         }
         if let Ok(raw) = std::env::var("DS4_MEM_FLOOR_GB") {
             if let Some(gb) = parse_u64_atoi(&raw) {
