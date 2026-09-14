@@ -38,13 +38,24 @@ impl SiblingAttach {
 /// sidecar metadata, required tensors, and layouts. `--check-config` uses
 /// this so a syntactically valid but incompatible GGUF fails before listen.
 /// Validate a DSpark drafter the way the open will. Only DeepSeek accepts
-/// one; every other single-model family refuses it, including the
-/// `DS4_DSPARK_MODEL` fallback the open still consumes.
-pub fn probe_dspark_sidecar(shape: Shape, path: &str) -> Result<()> {
+/// one, only on an undistributed launch — the open reads the
+/// `DS4_DSPARK_MODEL` fallback just there, so a distributed run would serve
+/// without the drafter it was told to use.
+pub fn probe_dspark_sidecar(
+    shape: Shape,
+    distributed: Option<&crate::DistributedConfig>,
+    path: &str,
+) -> Result<()> {
     if path.is_empty() {
         return Err(Error {
             code: 1,
             message: "dspark path must not be empty".into(),
+        });
+    }
+    if distributed.is_some() {
+        return Err(Error {
+            code: 1,
+            message: "a distributed launch does not attach a DSpark drafter".into(),
         });
     }
     attach_siblings(

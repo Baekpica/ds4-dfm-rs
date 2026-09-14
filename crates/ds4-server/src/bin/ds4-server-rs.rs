@@ -216,11 +216,11 @@ fn main() {
         .as_deref()
         .and_then(|path| identify_gguf(std::path::Path::new(path)).ok());
     let caps = ident.as_ref().map(caps_from_ident);
+    let dist_probe = distributed_config(&dist.opt);
     if let Some(path) = vision_path.as_deref() {
         // The same rules the open applies: only a full GLM-5.3 or Step CUDA
         // model takes an encoder, and then the artifact itself is opened.
         if let Some(id) = ident.as_ref() {
-            let dist_probe = distributed_config(&dist.opt);
             facts.vision_path_ok = Some(
                 match probe_vision_sidecar(id.shape, backend, dist_probe.as_ref(), path) {
                     Ok(()) => true,
@@ -236,13 +236,15 @@ fn main() {
     // drafter at all, so the check has to look at it.
     if let (Some(id), Ok(path)) = (ident.as_ref(), std::env::var("DS4_DSPARK_MODEL")) {
         if !path.is_empty() {
-            facts.dspark_ok = Some(match probe_dspark_sidecar(id.shape, &path) {
-                Ok(()) => true,
-                Err(error) => {
-                    eprintln!("ds4-server-rs: DS4_DSPARK_MODEL {path}: {error}");
-                    false
-                }
-            });
+            facts.dspark_ok = Some(
+                match probe_dspark_sidecar(id.shape, dist_probe.as_ref(), &path) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        eprintln!("ds4-server-rs: DS4_DSPARK_MODEL {path}: {error}");
+                        false
+                    }
+                },
+            );
         }
     }
     if let Some(path) = mtp_path.as_deref() {
