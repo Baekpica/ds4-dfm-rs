@@ -2333,22 +2333,64 @@ mod native {
                 return None;
             }
             let min_prefix = usize::try_from(self.warm_partial_min).ok()?;
-            let (source, cache_lcp) =
-                warm_partial_match_pick(&self.warm, prompt, cache_prompt, min_prefix)?;
-            let snapshot = batch.bank_snapshot(i32::try_from(source).ok()?).ok()?;
-            let (tokens, cached) = warm_partial_admit_tokens(
-                self.warm.get(source)?,
-                prompt_tokens,
-                &snapshot.tokens,
-                snapshot.generation,
-                self.warm_partial_min,
-                batch.seq_cap(),
-                qwen_image_cache_token_cap(cache_spans, cache_lcp),
-            )?;
-            self.warm[source].committed_tokens = i32::try_from(snapshot.tokens.len()).ok()?;
+            if let Some((source, cache_lcp)) =
+                warm_partial_match_pick(&self.warm, prompt, cache_prompt, min_prefix)
+            {
+                let snapshot = batch.bank_snapshot(i32::try_from(source).ok()?).ok()?;
+                if let Some((tokens, cached)) = warm_partial_admit_tokens(
+                    self.warm.get(source)?,
+                    prompt_tokens,
+                    &snapshot.tokens,
+                    snapshot.generation,
+                    self.warm_partial_min,
+                    batch.seq_cap(),
+                    qwen_image_cache_token_cap(cache_spans, cache_lcp),
+                ) {
+                    self.warm[source].committed_tokens =
+                        i32::try_from(snapshot.tokens.len()).ok()?;
+                    return Some(WarmAdmitPlan {
+                        source,
+                        tokens,
+                        cached,
+                        partial: true,
+                    });
+                }
+            }
+            // Host text records can be missing after a one-bank Solar retire
+            // while the native committed tokens are still the reuse source.
+            if i32::try_from(prompt_tokens.len())
+                .ok()
+                .filter(|tokens| *tokens <= batch.seq_cap())
+                .is_none()
+            {
+                return None;
+            }
+            let n_banks = usize::try_from(batch.max_seq().max(0)).ok()?;
+            let mut best = None;
+            for bank in 0..n_banks {
+                let Ok(bank_i32) = i32::try_from(bank) else {
+                    continue;
+                };
+                let Ok(snapshot) = batch.bank_snapshot(bank_i32) else {
+                    continue;
+                };
+                let cut = warm_partial_token_cut(
+                    &snapshot.tokens,
+                    prompt_tokens,
+                    self.warm_partial_min,
+                    usize::MAX,
+                );
+                let Some(cached) = cut else {
+                    continue;
+                };
+                if best.is_none_or(|(_, current)| cached > current) {
+                    best = Some((bank, cached));
+                }
+            }
+            let (source, cached) = best?;
             Some(WarmAdmitPlan {
                 source,
-                tokens,
+                tokens: prompt_tokens.to_vec(),
                 cached,
                 partial: true,
             })
@@ -2785,14 +2827,13 @@ mod native {
                     self.warm[placement.source].stored_tokens
                 };
                 self.warm[placement.target].stored_tokens = stored;
+            } else if plan.partial {
+                // In-place truncate must keep native hist; persisting and
+                // dropping the bank here made the engine cold-admit.
+                self.warm[placement.source].stored_tokens =
+                    self.warm[placement.source].stored_tokens.min(plan.cached);
             } else {
-                if plan.partial {
-                    let _ = self.evict_bank(batch, store.as_deref_mut(), placement.source, false);
-                    self.warm[placement.source].stored_tokens =
-                        self.warm[placement.source].stored_tokens.min(plan.cached);
-                } else {
-                    self.warm[placement.source].record = None;
-                }
+                self.warm[placement.source].record = None;
             }
             Some(placement)
         }
@@ -3240,6 +3281,13 @@ mod native {
         }
 
         fn trim_idle_banks(&mut self, want_bytes: u64) -> u64 {
+            // One-bank Solar workers sit just above the memory floor. Serial
+            // reclaim would trim the only hist-valid bank and the next Chat
+            // request could not partial-fork. Keep live prefix banks when
+            // partial reuse is on.
+            if self.host.warm_fork_partial {
+                return 0;
+            }
             self.batch.trim_free(want_bytes)
         }
 

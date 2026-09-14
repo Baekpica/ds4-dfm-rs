@@ -1054,6 +1054,17 @@ test-solar-session: tests/test_solar_session
 		{ echo "set DS4_SOLAR_MODEL to the first Solar GGUF shard" >&2; exit 2; }
 	./tests/test_solar_session "$(DS4_SOLAR_MODEL)"
 
+.PHONY: test-solar-session-partial test-solar-disk-kv
+test-solar-session-partial: tests/test_solar_session
+	@test -n "$(DS4_SOLAR_MODEL)" || \
+		{ echo "set DS4_SOLAR_MODEL to the first Solar GGUF shard" >&2; exit 2; }
+	./tests/test_solar_session "$(DS4_SOLAR_MODEL)" --partial-only
+
+test-solar-disk-kv: tests/test_solar_session
+	@test -n "$(DS4_SOLAR_MODEL)" || \
+		{ echo "set DS4_SOLAR_MODEL to the first Solar GGUF shard" >&2; exit 2; }
+	./tests/test_solar_session "$(DS4_SOLAR_MODEL)" --disk-kv-only
+
 ds4_weight_server: tools/ds4_weight_server.cu cuda/mmq/ds4_repack.o
 	$(NVCC) $(NVCCFLAGS) -o $@ tools/ds4_weight_server.cu cuda/mmq/ds4_repack.o $(CUDA_LDLIBS)
 

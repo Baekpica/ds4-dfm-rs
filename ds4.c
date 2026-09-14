@@ -61117,10 +61117,21 @@ static int solar_engine_continuous_generate(
                         ok = false;
                         break;
                     }
-                    if (!final && solar_batch_runtime_checkpoint_due(
-                            rt, pos, pos + n)) {
-                        (void)solar_batch_runtime_capture_checkpoint(
-                            rt, pb, pos + n, false, ctx->serial_reserve);
+                    /* Wide prefills (cap >= prompt) are one final chunk, so
+                     * a due-at-chunk-end capture never fires at stride 4096.
+                     * Walk every stride position inside (pos, pos+n]. */
+                    if (rt->checkpoint_stride != 0u) {
+                        const uint32_t stride = rt->checkpoint_stride;
+                        const uint32_t end = pos + n;
+                        uint32_t p = (pos / stride + 1u) * stride;
+                        while (p <= end) {
+                            (void)solar_batch_runtime_capture_checkpoint(
+                                rt, pb, p, false, ctx->serial_reserve);
+                            if (p > UINT32_MAX - stride) {
+                                break;
+                            }
+                            p += stride;
+                        }
                     }
                 }
 

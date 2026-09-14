@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int copy_logits(ds4_session *s, float *out, int n_vocab,
                        const char *where) {
@@ -218,7 +219,8 @@ static int expect_solar_partial(
         partial.admitted_cached[0] != expected_cached ||
         partial.admitted_computed[0] != prompt->len - expected_cached ||
         partial.admitted_bank[0] != partial_bank ||
-        ds4_batch_ctx_bank_committed(ctx, source_bank, NULL) != source_len ||
+        (source_bank != partial_bank &&
+         ds4_batch_ctx_bank_committed(ctx, source_bank, NULL) != source_len) ||
         ds4_batch_ctx_bank_committed(ctx, partial_bank, NULL) != prompt->len) {
         fprintf(stderr,
                 "Solar partial fork failed: %s done=%d token=%d/%d "
@@ -325,6 +327,20 @@ static int run_solar_partial_gate(ds4_engine *engine,
         }
     }
 
+    /* One-bank HTTP workers in-place truncate the source (src == dst). */
+    ds4_tokens_free(&branch);
+    for (int i = 0; i < cuts[0]; i++) {
+        ds4_tokens_push(&branch, source.v[i]);
+    }
+    ds4_tokens_push(
+        &branch, (source.v[cuts[0]] + 2) % ds4_engine_vocab_size(engine));
+    if (expect_solar_partial(
+            ctx, &branch, 0, 32, cuts[0], checkpoints[0],
+            1, 0, err, sizeof(err)) != 0) {
+        failed = 1;
+        goto done;
+    }
+
 done:
     ds4_tokens_free(&branch);
     ds4_tokens_free(&source);
@@ -332,12 +348,342 @@ done:
     return failed;
 }
 
+static int solar_open_engine(ds4_engine **engine, const char *model_path) {
+    ds4_engine_options opt = {0};
+    opt.model_path = model_path;
+    opt.backend = DS4_BACKEND_CUDA;
+    opt.n_threads = 8;
+    opt.defer_boot_prewarm = true;
+    if (ds4_engine_open(engine, &opt) != 0) {
+        fprintf(stderr, "Solar engine open failed\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int solar_mkstemp_payload(char *path, size_t path_len) {
+    const char *dir = getenv("SOLAR_DISK_KV_DIR");
+    if (dir == NULL || dir[0] == '\0') {
+        dir = ".";
+    }
+    if (snprintf(path, path_len, "%s/solar-disk-kv-XXXXXX", dir) >=
+        (int)path_len) {
+        fprintf(stderr, "Solar disk-KV temp path is too long\n");
+        return -1;
+    }
+    const int fd = mkstemp(path);
+    if (fd < 0) {
+        perror("Solar disk-KV mkstemp");
+        return -1;
+    }
+    return fd;
+}
+
+/* Worker-restart disk KV: save a Solar payload, close the engine, reopen,
+ * restore, and continue. Token identity is the contract; the 0.25 snapshot
+ * logit bound is not raised. */
+static int run_solar_disk_kv_gate(ds4_engine **engine, const char *model_path,
+                                  const ds4_tokens *prompt) {
+    ds4_session *session = NULL;
+    ds4_batch_ctx *ctx = NULL;
+    ds4_tokens continued = {0};
+    char err[256] = "";
+    char serial_path[512] = "";
+    char bank_path[512] = "";
+    int failed = 0;
+    int serial_fd = -1;
+    int bank_fd = -1;
+    FILE *fp = NULL;
+
+    if (ds4_session_create(&session, *engine, 128) != 0) {
+        fprintf(stderr, "Solar disk-KV session creation failed\n");
+        return 1;
+    }
+    if (ds4_session_sync(session, prompt, err, sizeof(err)) != 0) {
+        fprintf(stderr, "Solar disk-KV cold sync failed: %s\n", err);
+        ds4_session_free(session);
+        return 1;
+    }
+    const int serial_next = ds4_session_argmax(session);
+    serial_fd = solar_mkstemp_payload(serial_path, sizeof(serial_path));
+    if (serial_fd < 0) {
+        ds4_session_free(session);
+        return 1;
+    }
+    fp = fdopen(serial_fd, "wb");
+    serial_fd = -1;
+    if (fp == NULL ||
+        ds4_session_save_payload(session, fp, err, sizeof(err)) != 0) {
+        fprintf(stderr, "Solar disk-KV serial save failed: %s\n", err);
+        if (fp != NULL) {
+            fclose(fp);
+        }
+        ds4_session_free(session);
+        unlink(serial_path);
+        return 1;
+    }
+    if (fflush(fp) != 0 || fseek(fp, 0, SEEK_END) != 0) {
+        perror("Solar disk-KV serial payload size");
+        fclose(fp);
+        ds4_session_free(session);
+        unlink(serial_path);
+        return 1;
+    }
+    const uint64_t serial_bytes = (uint64_t)ftell(fp);
+    if (fclose(fp) != 0 || serial_bytes == 0u) {
+        fprintf(stderr, "Solar disk-KV serial payload is empty\n");
+        ds4_session_free(session);
+        unlink(serial_path);
+        return 1;
+    }
+    fp = NULL;
+    err[0] = '\0';
+    if (ds4_session_eval(session, serial_next, err, sizeof(err)) != 0) {
+        fprintf(stderr, "Solar disk-KV serial oracle decode failed: %s\n",
+                err);
+        ds4_session_free(session);
+        unlink(serial_path);
+        return 1;
+    }
+    const int serial_decoded = ds4_session_argmax(session);
+    ds4_session_free(session);
+    session = NULL;
+    ds4_engine_close(*engine);
+    *engine = NULL;
+
+    if (solar_open_engine(engine, model_path) != 0) {
+        unlink(serial_path);
+        return 1;
+    }
+    if (ds4_session_create(&session, *engine, 128) != 0) {
+        fprintf(stderr, "Solar disk-KV restarted session failed\n");
+        unlink(serial_path);
+        return 1;
+    }
+    fp = fopen(serial_path, "rb");
+    err[0] = '\0';
+    if (fp == NULL ||
+        ds4_session_load_payload(
+            session, fp, serial_bytes, err, sizeof(err)) != 0) {
+        fprintf(stderr, "Solar disk-KV serial load failed: %s\n", err);
+        failed = 1;
+        goto done;
+    }
+    if (fclose(fp) != 0) {
+        perror("Solar disk-KV serial close");
+        fp = NULL;
+        failed = 1;
+        goto done;
+    }
+    fp = NULL;
+    if (ds4_session_pos(session) != prompt->len ||
+        ds4_session_argmax(session) != serial_next) {
+        fprintf(stderr,
+                "Solar disk-KV serial restart did not reuse the prefix: "
+                "pos=%d want=%d token=%d want=%d\n",
+                ds4_session_pos(session), prompt->len,
+                ds4_session_argmax(session), serial_next);
+        failed = 1;
+        goto done;
+    }
+    err[0] = '\0';
+    if (ds4_session_eval(session, serial_next, err, sizeof(err)) != 0 ||
+        ds4_session_argmax(session) != serial_decoded) {
+        fprintf(stderr,
+                "Solar disk-KV serial continuation token mismatch: %s "
+                "got=%d want=%d\n",
+                err, ds4_session_argmax(session), serial_decoded);
+        failed = 1;
+        goto done;
+    }
+    fprintf(stderr,
+            "Solar disk-KV restart reuse: cached_tokens=%d serial_token=%d\n",
+            prompt->len, serial_decoded);
+
+    ds4_session_free(session);
+    session = NULL;
+
+    /* Continuous-bank payload is what --kv-disk-dir restores on the server. */
+    if (ds4_batch_ctx_create_fit(
+            *engine, 128, 4, 16, &ctx, err, sizeof(err)) != 0 ||
+        ctx == NULL) {
+        fprintf(stderr, "Solar disk-KV bank context failed: %s\n", err);
+        failed = 1;
+        goto done;
+    }
+
+    solar_cont_test source = {0};
+    if (run_solar_cont_request(
+            ctx, prompt, 0, 3, 0, -1, &source, err, sizeof(err)) ||
+        source.admitted_cached[0] != 0 ||
+        source.admitted_computed[0] != prompt->len ||
+        source.n_tokens[0] != 3) {
+        fprintf(stderr, "Solar disk-KV bank source failed: %s split=%d+%d\n",
+                err, source.admitted_cached[0], source.admitted_computed[0]);
+        failed = 1;
+        goto done;
+    }
+    /* Last sampled token is not in KV. Committed history is prompt plus
+     * the two forwarded generations; bank payloads store zeros for logits,
+     * so restart reuse prefills that last sampled token as a suffix. */
+    const int committed_len =
+        ds4_batch_ctx_bank_committed(ctx, 0, NULL);
+    if (committed_len != prompt->len + 2) {
+        fprintf(stderr, "Solar disk-KV bank committed length %d\n",
+                committed_len);
+        failed = 1;
+        goto done;
+    }
+
+    bank_fd = solar_mkstemp_payload(bank_path, sizeof(bank_path));
+    if (bank_fd < 0) {
+        failed = 1;
+        goto done;
+    }
+    fp = fdopen(bank_fd, "wb");
+    bank_fd = -1;
+    err[0] = '\0';
+    if (fp == NULL ||
+        ds4_cont_bank_save_payload(ctx, 0, fp, err, sizeof(err)) != 0) {
+        fprintf(stderr, "Solar disk-KV bank save failed: %s\n", err);
+        failed = 1;
+        goto done;
+    }
+    if (fflush(fp) != 0 || fseek(fp, 0, SEEK_END) != 0) {
+        perror("Solar disk-KV bank payload size");
+        failed = 1;
+        goto done;
+    }
+    const uint64_t bank_bytes = (uint64_t)ftell(fp);
+    if (fclose(fp) != 0 || bank_bytes == 0u) {
+        fprintf(stderr, "Solar disk-KV bank payload is empty\n");
+        fp = NULL;
+        failed = 1;
+        goto done;
+    }
+    fp = NULL;
+
+    for (int i = 0; i < prompt->len; i++) {
+        ds4_tokens_push(&continued, prompt->v[i]);
+    }
+    ds4_tokens_push(&continued, source.tokens[0][0]);
+    ds4_tokens_push(&continued, source.tokens[0][1]);
+    ds4_tokens_push(&continued, source.tokens[0][2]);
+    solar_cont_test oracle = {0};
+    if (run_solar_cont_request(
+            ctx, &continued, committed_len, 1, 0, -1, &oracle, err,
+            sizeof(err)) ||
+        oracle.admitted_cached[0] != committed_len ||
+        oracle.admitted_computed[0] != 1 ||
+        oracle.n_tokens[0] != 1) {
+        fprintf(stderr,
+                "Solar disk-KV bank oracle failed: %s split=%d+%d n=%d\n",
+                err, oracle.admitted_cached[0], oracle.admitted_computed[0],
+                oracle.n_tokens[0]);
+        failed = 1;
+        goto done;
+    }
+    const int bank_oracle = oracle.tokens[0][0];
+
+    ds4_batch_ctx_destroy(ctx);
+    ctx = NULL;
+    ds4_engine_close(*engine);
+    *engine = NULL;
+
+    if (solar_open_engine(engine, model_path) != 0) {
+        failed = 1;
+        goto done;
+    }
+    err[0] = '\0';
+    if (ds4_batch_ctx_create_fit(
+            *engine, 128, 4, 16, &ctx, err, sizeof(err)) != 0 ||
+        ctx == NULL) {
+        fprintf(stderr, "Solar disk-KV restarted bank context failed: %s\n",
+                err);
+        failed = 1;
+        goto done;
+    }
+    fp = fopen(bank_path, "rb");
+    err[0] = '\0';
+    if (fp == NULL ||
+        ds4_cont_bank_restore_payload(
+            ctx, 0, fp, bank_bytes, err, sizeof(err)) != 0) {
+        fprintf(stderr, "Solar disk-KV bank load failed: %s\n", err);
+        failed = 1;
+        goto done;
+    }
+    if (fclose(fp) != 0) {
+        perror("Solar disk-KV bank close");
+        fp = NULL;
+        failed = 1;
+        goto done;
+    }
+    fp = NULL;
+    if (ds4_batch_ctx_bank_committed(ctx, 0, NULL) != committed_len) {
+        fprintf(stderr,
+                "Solar disk-KV bank restart committed %d want %d\n",
+                ds4_batch_ctx_bank_committed(ctx, 0, NULL), committed_len);
+        failed = 1;
+        goto done;
+    }
+
+    solar_cont_test warm = {0};
+    if (run_solar_cont_request(
+            ctx, &continued, committed_len, 1, 0, -1, &warm, err,
+            sizeof(err)) ||
+        warm.admitted_cached[0] != committed_len ||
+        warm.admitted_computed[0] != 1 ||
+        warm.n_tokens[0] != 1 ||
+        warm.tokens[0][0] != bank_oracle) {
+        fprintf(stderr,
+                "Solar disk-KV bank warm reuse failed: %s split=%d+%d n=%d "
+                "token=%d want=%d\n",
+                err, warm.admitted_cached[0], warm.admitted_computed[0],
+                warm.n_tokens[0],
+                warm.n_tokens[0] > 0 ? warm.tokens[0][0] : -1,
+                bank_oracle);
+        failed = 1;
+        goto done;
+    }
+    fprintf(stderr,
+            "Solar disk-KV restart reuse: cached_tokens=%d bank_token=%d\n",
+            warm.admitted_cached[0], warm.tokens[0][0]);
+
+done:
+    if (fp != NULL) {
+        fclose(fp);
+    }
+    if (serial_fd >= 0) {
+        close(serial_fd);
+    }
+    if (bank_fd >= 0) {
+        close(bank_fd);
+    }
+    if (serial_path[0] != '\0') {
+        unlink(serial_path);
+    }
+    if (bank_path[0] != '\0') {
+        unlink(bank_path);
+    }
+    ds4_tokens_free(&continued);
+    if (session != NULL) {
+        ds4_session_free(session);
+    }
+    if (ctx != NULL) {
+        ds4_batch_ctx_destroy(ctx);
+    }
+    return failed;
+}
+
 int main(int argc, char **argv) {
     const int partial_only = argc == 3 &&
         strcmp(argv[2], "--partial-only") == 0;
-    if (argc != 2 && !partial_only) {
+    const int disk_kv_only = argc == 3 &&
+        strcmp(argv[2], "--disk-kv-only") == 0;
+    if (argc != 2 && !partial_only && !disk_kv_only) {
         fprintf(stderr,
-                "usage: %s <first-model-shard.gguf> [--partial-only]\n",
+                "usage: %s <first-model-shard.gguf> "
+                "[--partial-only|--disk-kv-only]\n",
                 argv[0]);
         return 2;
     }
@@ -400,6 +746,10 @@ int main(int argc, char **argv) {
     ds4_tokens_push(&prompt_alt, 4768);
     if (partial_only) {
         failed = run_solar_partial_gate(engine, &prompt);
+        goto cleanup;
+    }
+    if (disk_kv_only) {
+        failed = run_solar_disk_kv_gate(&engine, argv[1], &prompt);
         goto cleanup;
     }
     if (ds4_session_create(&session, engine, 128) != 0) {
@@ -1197,11 +1547,15 @@ cleanup:
     ds4_tokens_free(&prompt_alt);
     ds4_tokens_free(&prompt);
     ds4_engine_close(engine);
-    if (partial_only)
+    if (partial_only) {
         puts(failed ? "Solar partial reuse checkpoint gate FAILED"
                     : "Solar partial reuse checkpoint gate passed");
-    else
+    } else if (disk_kv_only) {
+        puts(failed ? "Solar disk-KV restart reuse FAILED"
+                    : "Solar disk-KV restart reuse passed");
+    } else {
         puts(failed ? "Solar public session lifecycle FAILED"
                     : "Solar public session lifecycle passed");
+    }
     return failed ? 1 : 0;
 }
