@@ -436,6 +436,18 @@ pub(crate) fn read_metadata(path: &Path) -> Result<Metadata, FormatError> {
     read_metadata_file(&mut f)
 }
 
+/// The header alone, without asking the file to still hold what it
+/// describes. A record whose payload was truncated away still says which
+/// text it was keyed by, which is enough to answer for it.
+pub(crate) fn read_header(path: &Path) -> Result<Header, FormatError> {
+    let mut f = fs::File::open(path)?;
+    let mut raw_header = [0u8; FIXED_HEADER];
+    read_exact(&mut f, &mut raw_header)?;
+    let mut raw_text_bytes = [0u8; 4];
+    read_exact(&mut f, &mut raw_text_bytes)?;
+    parse_header(&raw_header, le_get32(&raw_text_bytes))
+}
+
 pub(crate) fn read_text_prefix(
     path: &Path,
     max_bytes: usize,

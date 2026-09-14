@@ -2,8 +2,9 @@
 
 use crate::format::{
     fill_header, is_automatic_exact_replay, is_bank_replay_v1, path_for_sha, read_envelope,
-    read_metadata, read_path, read_text_prefix, sha_hex_name, stage_stream, text_sha_hex,
-    write_path, Envelope, FormatError, Header, Record, EXT_IMAGE_PIXELS_V2, EXT_TOOL_MAP,
+    read_header, read_metadata, read_path, read_text_prefix, sha_hex_name, stage_stream,
+    text_sha_hex, write_path, Envelope, FormatError, Header, Record, EXT_IMAGE_PIXELS_V2,
+    EXT_TOOL_MAP,
 };
 use crate::policy::{
     eviction_score, file_size_bytes, file_size_fits, EvictionContext, Options, ScoreEntry,
@@ -51,6 +52,14 @@ pub struct Entry {
     pub file_size: u64,
 }
 
+/// A file the catalog cannot use: its payload no longer holds what its
+/// header describes. The name still says which text it was keyed by.
+#[derive(Clone, Debug)]
+struct Damaged {
+    sha: String,
+    text_bytes: u32,
+}
+
 #[derive(Debug)]
 pub struct Store {
     pub dir: PathBuf,
@@ -59,6 +68,7 @@ pub struct Store {
     pub opt: Options,
     pub continued_last_store_tokens: i32,
     entries: Vec<Entry>,
+    damaged: Vec<Damaged>,
 }
 
 #[derive(Debug)]
@@ -105,6 +115,7 @@ impl Store {
             opt,
             continued_last_store_tokens: 0,
             entries: Vec::new(),
+            damaged: Vec::new(),
         };
         store.evict(0, None);
         Ok(store)
@@ -130,6 +141,7 @@ impl Store {
 
     pub fn refresh(&mut self) {
         self.entries.clear();
+        self.damaged.clear();
         let Ok(rd) = fs::read_dir(&self.dir) else {
             return;
         };
@@ -141,6 +153,14 @@ impl Store {
             };
             let path = ent.path();
             let Ok(metadata) = read_metadata(&path) else {
+                // No search can use it, but it can still be the reason a
+                // prompt keyed by its text finds nothing.
+                if let Ok(header) = read_header(&path) {
+                    self.damaged.push(Damaged {
+                        sha,
+                        text_bytes: header.text_bytes,
+                    });
+                }
                 continue;
             };
             self.entries.push(Entry {
@@ -732,7 +752,27 @@ impl Store {
             answer = weaker_answer(answer, compatible);
         }
 
+        // A record whose payload was truncated away is not in the catalog,
+        // but its name still says it was keyed by this text. It is why the
+        // prompt finds nothing, and that is a mismatch.
+        if self.damaged_prefix(prompt, suffix) {
+            answer = weaker_answer(answer, false);
+        }
+
         answer
+    }
+
+    /// A file the catalog dropped, keyed by a prefix of this prompt.
+    fn damaged_prefix(&self, prompt: &[u8], suffix: Suffix) -> bool {
+        self.damaged.iter().any(|d| {
+            let text_bytes = d.text_bytes as usize;
+            if text_bytes > prompt.len()
+                || (suffix == Suffix::Required && text_bytes == prompt.len())
+            {
+                return false;
+            }
+            text_sha_hex(&prompt[..text_bytes]) == d.sha
+        })
     }
 
     /// The LCP form: an edited prompt diverges from the record it shares a
@@ -1146,6 +1186,34 @@ mod tests {
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::InvalidData
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_truncated_record_answers_for_the_key_it_kept() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-truncated-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut store = Store::open(&dir, 16, false, Options::default()).unwrap();
+        let path = store.write(rec(b"shared prefix", 512)).unwrap();
+
+        // Cut the payload away: the header and text stay, so the catalog
+        // drops the record while its name still says what it was keyed by.
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(FIXED_HEADER as u64 + 4 + 13)
+            .unwrap();
+
+        assert_eq!(
+            store.prefix_answer(b"shared prefix and suffix", 0, 2, 2048),
+            PrefixAnswer::Mismatch
+        );
+        assert_eq!(
+            store.prefix_answer(b"another conversation", 0, 2, 2048),
+            PrefixAnswer::None
         );
 
         let _ = fs::remove_dir_all(&dir);
