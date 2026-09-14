@@ -228,10 +228,8 @@ fn main() {
     plan.apply_env();
     cfg.adopt_plan(&plan);
     eprint!("{}", plan.report());
-    if serve_req.print_plan || serve_req.check_config {
-        println!("{}", plan.to_json());
-    }
     if serve_req.check_config {
+        println!("{}", plan.to_json());
         std::process::exit(if plan.has_errors() { 2 } else { 0 });
     }
     if plan.has_errors() {
@@ -366,6 +364,13 @@ fn main() {
     } else {
         None
     };
+    // Print what serves, not what was asked: the native fit can still take
+    // banks, partial reuse and MTP away from the pre-open plan.
+    if serve_req.print_plan {
+        if let Some(plan) = cfg.serving_plan.as_ref() {
+            println!("{}", plan.to_json());
+        }
+    }
     if let Some(ref model) = model {
         model.boot_prewarm();
     }

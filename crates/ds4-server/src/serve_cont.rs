@@ -1029,12 +1029,14 @@ fn warm_placement(
     })
 }
 
-fn history_retire_prompt(prompt: &[u8]) -> &[u8] {
-    // History omits the empty think pair: Step `<think>\n</think>\n`,
-    // Motif `<think></think>`. Bank keys must match that form.
-    if let Some(prefix) = prompt.strip_suffix(b"<think>\n</think>\n") {
-        return prefix;
-    }
+fn motif3_history_retire_prompt(prompt: &[u8]) -> &[u8] {
+    // Motif none-think generation ends with an empty think pair; official
+    // history replay omits it. Bank keys must use the history form or the
+    // next tool-result turn diverges at <|assistant|>.
+    //
+    // Step is deliberately not here: its bank snapshot holds the pair, so a
+    // shortened key would extend KV the key does not describe. Its restart
+    // hit needs a checkpoint at that frontier instead.
     prompt.strip_suffix(b"<think></think>").unwrap_or(prompt)
 }
 
@@ -1043,7 +1045,7 @@ fn committed_key(
     tokens: &[i32],
     mut token_text: impl FnMut(i32) -> Vec<u8>,
 ) -> Vec<u8> {
-    let mut key = history_retire_prompt(prompt).to_vec();
+    let mut key = motif3_history_retire_prompt(prompt).to_vec();
     for &token in tokens.iter().take(tokens.len().saturating_sub(1)) {
         key.extend(token_text(token));
     }
