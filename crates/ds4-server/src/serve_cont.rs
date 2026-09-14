@@ -683,6 +683,24 @@ fn qwen_image_cache_token_cap(spans: &[ImageCacheSpan], cache_lcp: usize) -> usi
         .map_or(usize::MAX, |span| span.token_offset as usize)
 }
 
+/// Solar HTTP stride is max(4096, ctx/24) aligned to 4096. Token-only
+/// fallback must not admit a cut with no native checkpoint; that would
+/// also hide a deeper disk restore.
+#[cfg(any(feature = "native", test))]
+const SOLAR_PARTIAL_STRIDE: usize = 4096;
+
+#[cfg(any(feature = "native", test))]
+fn warm_record_has_image(record: Option<&WarmRecord>) -> bool {
+    record.is_some_and(|record| {
+        record.cache_text.is_some() || (record.ext_flags & EXT_IMAGE_PIXELS_V2) != 0
+    })
+}
+
+#[cfg(any(feature = "native", test))]
+fn solar_stride_cut(cached: usize) -> bool {
+    cached >= SOLAR_PARTIAL_STRIDE && cached.is_multiple_of(SOLAR_PARTIAL_STRIDE)
+}
+
 fn last_delta(raw: &[u8], emit_limit: usize, piece_len: usize) -> Option<&[u8]> {
     if emit_limit == 0 {
         return None;
@@ -2358,9 +2376,12 @@ mod native {
             }
             // Host text records can be missing after a one-bank Solar retire
             // while the native committed tokens are still the reuse source.
-            // Image banks stay on the text/image-aware plan: token IDs can
-            // match across different pixels.
-            if !cache_spans.is_empty() {
+            // Qwen/image banks stay on the text/image-aware plan: token IDs
+            // can match across different pixels, including a text-only
+            // follow-up against a multimodal source.
+            if syntax_for_model_id(self.model_id) != ModelSyntax::SolarOpen2
+                || !cache_spans.is_empty()
+            {
                 return None;
             }
             if i32::try_from(prompt_tokens.len())
@@ -2379,6 +2400,11 @@ mod native {
                 let Ok(snapshot) = batch.bank_snapshot(bank_i32) else {
                     continue;
                 };
+                if warm_record_has_image(
+                    self.warm.get(bank).and_then(|state| state.record.as_ref()),
+                ) {
+                    continue;
+                }
                 let cut = warm_partial_token_cut(
                     &snapshot.tokens,
                     prompt_tokens,
@@ -2388,6 +2414,9 @@ mod native {
                 let Some(cached) = cut else {
                     continue;
                 };
+                if !solar_stride_cut(cached) {
+                    continue;
+                }
                 if best.is_none_or(|(_, current)| cached > current) {
                     best = Some((bank, cached));
                 }
@@ -4197,6 +4226,32 @@ mod bank_tests {
         banks[0].record.as_mut().unwrap().partial_only = true;
         banks[1].record.as_mut().unwrap().partial_only = false;
         assert!(warm_record_superseded(&banks, 0));
+    }
+
+    #[test]
+    fn token_fallback_skips_image_records_and_non_stride_cuts() {
+        assert!(solar_stride_cut(4096));
+        assert!(solar_stride_cut(8192));
+        assert!(!solar_stride_cut(8));
+        assert!(!solar_stride_cut(4095));
+        assert!(!warm_record_has_image(None));
+        let text = WarmRecord {
+            text: b"prefix".to_vec(),
+            cache_text: None,
+            exact_text: None,
+            exact_cache_text: None,
+            partial_only: false,
+            generation: 1,
+            ext_flags: 0,
+            trailer: Vec::new(),
+        };
+        assert!(!warm_record_has_image(Some(&text)));
+        let pixels = WarmRecord {
+            cache_text: Some(b"img".to_vec()),
+            ext_flags: EXT_IMAGE_PIXELS_V2,
+            ..text
+        };
+        assert!(warm_record_has_image(Some(&pixels)));
     }
 
     #[test]
