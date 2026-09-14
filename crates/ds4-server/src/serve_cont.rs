@@ -15,7 +15,7 @@ use ds4_kv::Store as KvStore;
 #[cfg(feature = "native")]
 use ds4_kv::{bank_checkpoint_due_from_host, HostKvView};
 #[cfg(any(feature = "native", test))]
-use ds4_kv::{bank_persist_ext_flags, Reason as KvReason, EXT_IMAGE_PIXELS_V2};
+use ds4_kv::{bank_persist_ext_flags, PrefixAnswer, Reason as KvReason, EXT_IMAGE_PIXELS_V2};
 
 use crate::dsml::{SampleOverride, SamplePolicy};
 #[cfg(any(feature = "native", test))]
@@ -3290,20 +3290,21 @@ mod native {
                             .ok()
                             .filter(|_| self.warm_disk_partial)
                             .unwrap_or(0);
-                        let (mismatched, placeable) = self
+                        // Both searches in one pass each: the partial one
+                        // keys on the longest common prefix, so an edited
+                        // prompt needs the question the exact one cannot ask.
+                        let (exact, partial) = self
                             .identity()
                             .zip(store.as_deref_mut())
                             .map(|((model_id, quant_bits, ctx), store)| {
-                                // The partial search keys on the longest
-                                // common prefix, so an edited prompt needs
-                                // the LCP question the exact one cannot ask.
-                                let mismatched = store.has_bank_incompatible_prefix(
+                                let exact = store.bank_prefix_answer(
                                     request_key,
                                     model_id,
                                     quant_bits,
                                     ctx,
                                     identity_flags,
-                                ) || store.has_bank_incompatible_lcp(
+                                );
+                                let partial = store.bank_lcp_answer(
                                     request_key,
                                     model_id,
                                     quant_bits,
@@ -3311,51 +3312,25 @@ mod native {
                                     min_lcp,
                                     identity_flags,
                                 );
-                                // Either search can hold a checkpoint this
-                                // request could have used; the bank budget
-                                // refuses both the same way. Asked on its
-                                // own terms, so an incompatible record
-                                // elsewhere in the store cannot hide it.
-                                let placeable = store
-                                    .bank_text_prefix_candidate_identity(
-                                        request_key,
-                                        model_id,
-                                        quant_bits,
-                                        ctx,
-                                        identity_flags,
-                                    )
-                                    .ok()
-                                    .flatten()
-                                    .is_some()
-                                    || min_lcp > 0
-                                        && store
-                                            .bank_text_lcp_candidate_identity(
-                                                request_key,
-                                                model_id,
-                                                quant_bits,
-                                                ctx,
-                                                min_lcp,
-                                                identity_flags,
-                                            )
-                                            .ok()
-                                            .flatten()
-                                            .is_some();
-                                (mismatched, placeable)
+                                (exact, partial)
                             })
-                            .unwrap_or((false, false));
+                            .unwrap_or((PrefixAnswer::None, PrefixAnswer::None));
+                        let answered = |answer| exact == answer || partial == answer;
                         // The record this request would have used decides the
                         // answer. Only when none exists does an incompatible
                         // one speak, then a conversation too short to have
                         // been stored, then plain absence.
-                        miss = if placeable {
+                        miss = if answered(PrefixAnswer::Usable) {
                             // A record this request could have used, refused
                             // by the bank budget rather than by the cache.
                             // The contract has no reason for that, and an
                             // absence would be the wrong one.
                             ReuseMiss::None
-                        } else if mismatched {
+                        } else if answered(PrefixAnswer::Mismatch) {
                             ReuseMiss::PayloadMismatch
-                        } else if write_min.is_some_and(|min| prompt_n < min) {
+                        } else if write_min.is_some_and(|min| prompt_n < min)
+                            || answered(PrefixAnswer::Shallow)
+                        {
                             ReuseMiss::BelowThreshold
                         } else {
                             ReuseMiss::NoCheckpoint

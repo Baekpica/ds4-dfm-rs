@@ -27,6 +27,22 @@ enum Suffix {
     Required,
 }
 
+/// What a search would do with the best record it can see for a key. The
+/// store answers what it holds; the lane turns that into a miss reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrefixAnswer {
+    /// Nothing is keyed by this prompt.
+    None,
+    /// A record the search takes. Only the caller's own budget can refuse
+    /// it now, and the reuse contract has no reason for that.
+    Usable,
+    /// A record ruled out by model, quantization or context.
+    Mismatch,
+    /// A record shallower than the store's current minimum — written
+    /// before the minimum was raised, and skipped by every search since.
+    Shallow,
+}
+
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub sha: String,
@@ -628,17 +644,16 @@ impl Store {
         best
     }
 
-    /// A record whose text is a prefix of this prompt exists, but its
-    /// identity — model, quantization or context — rules it out. The
-    /// restore miss is then a mismatch, not an absence.
-    pub fn has_incompatible_prefix(
+    /// What the serial search would do with this prompt: it keys on the
+    /// rendered text and may replay a record of exactly that length.
+    pub fn prefix_answer(
         &mut self,
         prompt: &[u8],
         model_id: u8,
         quant_bits: u8,
         ctx_size: u32,
-    ) -> bool {
-        self.incompatible_prefix(
+    ) -> PrefixAnswer {
+        self.prefix_answer_masked(
             prompt,
             model_id,
             quant_bits,
@@ -649,20 +664,18 @@ impl Store {
         )
     }
 
-    /// The same question asked the way the bank lane searched: it keys an
-    /// image request by its media-marked cache text and admits only records
-    /// it can extend. Asking about the rendered prompt would match nothing
-    /// and report an absence where the store holds a record only identity
-    /// ruled out.
-    pub fn has_bank_incompatible_prefix(
+    /// What the bank search would do: it keys an image request by its
+    /// media-marked cache text and admits only records it can extend, so
+    /// asking about the rendered prompt would see nothing at all.
+    pub fn bank_prefix_answer(
         &mut self,
         prompt: &[u8],
         model_id: u8,
         quant_bits: u8,
         ctx_size: u32,
         identity_flags: u8,
-    ) -> bool {
-        self.incompatible_prefix(
+    ) -> PrefixAnswer {
+        self.prefix_answer_masked(
             prompt,
             model_id,
             quant_bits,
@@ -673,7 +686,7 @@ impl Store {
         )
     }
 
-    fn incompatible_prefix(
+    fn prefix_answer_masked(
         &mut self,
         prompt: &[u8],
         model_id: u8,
@@ -682,36 +695,45 @@ impl Store {
         suffix: Suffix,
         identity_mask: u8,
         identity_flags: u8,
-    ) -> bool {
+    ) -> PrefixAnswer {
         self.refresh();
         let reject_quant = self.reject_different_quant;
         let min_tokens = self.opt.min_tokens;
-        self.entries.iter().any(|e| {
+        let mut answer = PrefixAnswer::None;
+
+        for e in &self.entries {
             if !is_automatic_exact_replay(e.header.reason, e.header.ext_flags)
                 || e.header.ext_flags & identity_mask != identity_flags & identity_mask
                 || e.header.text_bytes as usize > prompt.len()
-                || (e.header.tokens as i32) < min_tokens
             {
-                return false;
+                continue;
             }
             if (suffix == Suffix::Required
                 || is_bank_replay_v1(e.header.reason, e.header.ext_flags))
                 && e.header.text_bytes as usize == prompt.len()
             {
-                return false;
+                continue;
             }
+            if text_sha_hex(&prompt[..e.header.text_bytes as usize]) != e.sha {
+                continue;
+            }
+
             let identity_ok = e.header.model_id == model_id
                 && ctx_size >= e.header.ctx_size
                 && (!reject_quant || e.header.quant_bits == quant_bits);
-            !identity_ok && text_sha_hex(&prompt[..e.header.text_bytes as usize]) == e.sha
-        })
+            if identity_ok && (e.header.tokens as i32) >= min_tokens {
+                return PrefixAnswer::Usable;
+            }
+            answer = weaker_answer(answer, identity_ok);
+        }
+
+        answer
     }
 
-    /// The LCP form of [`Self::has_bank_incompatible_prefix`]: a stored
-    /// record shares the prefix the partial search needs, and only its
-    /// identity keeps that search from taking it. An edited prompt diverges
-    /// from the record, so the exact-prefix question cannot see it.
-    pub fn has_bank_incompatible_lcp(
+    /// The LCP form: an edited prompt diverges from the record it shares a
+    /// prefix with, so the exact question cannot see it at all. `min_lcp`
+    /// is the partial minimum the bank search admits from.
+    pub fn bank_lcp_answer(
         &mut self,
         prompt: &[u8],
         model_id: u8,
@@ -719,43 +741,49 @@ impl Store {
         ctx_size: u32,
         min_lcp: usize,
         identity_flags: u8,
-    ) -> bool {
-        let identity_mask = EXT_IMAGE_PIXELS_V2;
+    ) -> PrefixAnswer {
         if min_lcp == 0 || prompt.len() < min_lcp {
-            return false;
+            return PrefixAnswer::None;
         }
         self.refresh();
         let reject_quant = self.reject_different_quant;
         let min_tokens = self.opt.min_tokens;
-        self.entries.iter().any(|e| {
+        let mut answer = PrefixAnswer::None;
+
+        for e in &self.entries {
             if !is_automatic_exact_replay(e.header.reason, e.header.ext_flags)
-                || e.header.ext_flags & identity_mask != identity_flags & identity_mask
-                || (e.header.tokens as i32) < min_tokens
+                || e.header.ext_flags & EXT_IMAGE_PIXELS_V2 != identity_flags & EXT_IMAGE_PIXELS_V2
                 || (e.header.text_bytes as usize) < min_lcp
                 || u64::from(e.header.text_bytes) > 8 * prompt.len() as u64
             {
-                return false;
-            }
-            let identity_ok = e.header.model_id == model_id
-                && ctx_size >= e.header.ctx_size
-                && (!reject_quant || e.header.quant_bits == quant_bits);
-            if identity_ok {
-                return false;
+                continue;
             }
             let want = (e.header.text_bytes as usize).min(prompt.len());
             let Ok((metadata, text)) = read_text_prefix(&e.path, want) else {
-                return false;
+                continue;
             };
             if metadata.header.text_bytes != e.header.text_bytes {
-                return false;
+                continue;
             }
             let lcp = text
                 .iter()
                 .zip(prompt)
                 .take_while(|(stored, asked)| stored == asked)
                 .count();
-            lcp >= min_lcp && 8 * (lcp as u64) >= u64::from(e.header.text_bytes)
-        })
+            if lcp < min_lcp || 8 * (lcp as u64) < u64::from(e.header.text_bytes) {
+                continue;
+            }
+
+            let identity_ok = e.header.model_id == model_id
+                && ctx_size >= e.header.ctx_size
+                && (!reject_quant || e.header.quant_bits == quant_bits);
+            if identity_ok && (e.header.tokens as i32) >= min_tokens {
+                return PrefixAnswer::Usable;
+            }
+            answer = weaker_answer(answer, identity_ok);
+        }
+
+        answer
     }
 
     pub fn find_text_lcp(
@@ -949,6 +977,18 @@ fn rewrite_compatible_trailer(
     file.flush()
 }
 
+/// A record the search would not take: identity speaks before depth, the
+/// way the lanes report the two.
+fn weaker_answer(seen: PrefixAnswer, identity_ok: bool) -> PrefixAnswer {
+    if !identity_ok {
+        return PrefixAnswer::Mismatch;
+    }
+    if seen == PrefixAnswer::None {
+        return PrefixAnswer::Shallow;
+    }
+    seen
+}
+
 fn format_io_error(error: FormatError) -> io::Error {
     match error {
         FormatError::Io(error) => error,
@@ -1107,6 +1147,26 @@ mod tests {
     }
 
     #[test]
+    fn a_record_under_the_minimum_answers_shallow() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-shallow-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut store = Store::open(&dir, 16, false, Options::default()).unwrap();
+        // Written while the minimum was lower; every search skips it now.
+        store.write(rec(b"shared opening", 8)).unwrap();
+
+        assert_eq!(
+            store.prefix_answer(b"shared opening and more", 0, 2, 2048),
+            PrefixAnswer::Shallow
+        );
+        assert_eq!(
+            store.prefix_answer(b"another conversation", 0, 2, 2048),
+            PrefixAnswer::None
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn an_image_record_is_a_mismatch_only_under_its_own_key() {
         let dir = std::env::temp_dir().join(format!("ds4-kv-image-key-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -1118,13 +1178,25 @@ mod tests {
         let key = b"chat\xffDS4IMG2 turn and one more";
 
         // The identity the record was stored with: the search takes it.
-        assert!(!store.has_bank_incompatible_prefix(key, 0, 2, 2048, EXT_IMAGE_PIXELS_V2));
+        assert_eq!(
+            store.bank_prefix_answer(key, 0, 2, 2048, EXT_IMAGE_PIXELS_V2),
+            PrefixAnswer::Usable
+        );
         // A different quantization rules it out, so the miss is a mismatch.
-        assert!(store.has_bank_incompatible_prefix(key, 0, 4, 2048, EXT_IMAGE_PIXELS_V2));
+        assert_eq!(
+            store.bank_prefix_answer(key, 0, 4, 2048, EXT_IMAGE_PIXELS_V2),
+            PrefixAnswer::Mismatch
+        );
         // The rendered prompt is not the key it was stored under, and the
         // text-keyed search cannot see a bank record's image key at all.
-        assert!(!store.has_incompatible_prefix(b"chat turn and one more", 0, 4, 2048));
-        assert!(!store.has_bank_incompatible_prefix(key, 0, 4, 2048, 0));
+        assert_eq!(
+            store.prefix_answer(b"chat turn and one more", 0, 4, 2048),
+            PrefixAnswer::None
+        );
+        assert_eq!(
+            store.bank_prefix_answer(key, 0, 4, 2048, 0),
+            PrefixAnswer::None
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1141,14 +1213,26 @@ mod tests {
 
         // The stored text diverges from the prompt, so the exact-prefix
         // question cannot see the record at all.
-        assert!(!store.has_bank_incompatible_prefix(edited, 1, 2, 2048, 0));
+        assert_eq!(
+            store.bank_prefix_answer(edited, 1, 2, 2048, 0),
+            PrefixAnswer::None
+        );
         // Through the LCP the partial search would have taken it, and only
         // the model it was written for rules it out.
-        assert!(store.has_bank_incompatible_lcp(edited, 1, 2, 2048, 8, 0));
+        assert_eq!(
+            store.bank_lcp_answer(edited, 1, 2, 2048, 8, 0),
+            PrefixAnswer::Mismatch
+        );
         // The identity it was stored with is not a mismatch.
-        assert!(!store.has_bank_incompatible_lcp(edited, 0, 2, 2048, 8, 0));
+        assert_eq!(
+            store.bank_lcp_answer(edited, 0, 2, 2048, 8, 0),
+            PrefixAnswer::Usable
+        );
         // Neither is a prompt that shares nothing with it.
-        assert!(!store.has_bank_incompatible_lcp(b"a different opening", 1, 2, 2048, 8, 0));
+        assert_eq!(
+            store.bank_lcp_answer(b"a different opening", 1, 2, 2048, 8, 0),
+            PrefixAnswer::None
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

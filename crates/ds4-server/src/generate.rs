@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ds4_core::{ReuseMiss, ReuseTaken};
+use ds4_kv::PrefixAnswer;
 use ds4_kv::Store as KvStore;
 #[cfg(any(feature = "native", test))]
 use ds4_kv::{
@@ -864,12 +865,13 @@ fn disk_sync_prompt_impl(
         let short =
             i32::try_from(canonical_tokens.len()).unwrap_or(i32::MAX) < store.opt.min_tokens;
         io.note_miss(
-            if store.has_incompatible_prefix(prompt, model_id, quant_bits, ctx) {
-                ReuseMiss::PayloadMismatch
-            } else if short {
-                ReuseMiss::BelowThreshold
-            } else {
-                ReuseMiss::NoCheckpoint
+            match store.prefix_answer(prompt, model_id, quant_bits, ctx) {
+                PrefixAnswer::Mismatch => ReuseMiss::PayloadMismatch,
+                // A record written before the minimum was raised is skipped
+                // by every search since, whatever this prompt's length.
+                PrefixAnswer::Shallow => ReuseMiss::BelowThreshold,
+                _ if short => ReuseMiss::BelowThreshold,
+                _ => ReuseMiss::NoCheckpoint,
             },
         );
         return cold_sync_and_store(
