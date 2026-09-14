@@ -75,10 +75,10 @@ pub use payload::{
 pub use progress::PrefillCheckpoint;
 pub use serving::{
     caps_from_ident, caps_from_shape, host_reuse, parse_disk_space, resolve_plan, serving_caps,
-    ChunkFence, Distribution, EffectiveView, EngineFacts, IssueLevel, MaxSeqs, MtpMode, PlanIssue,
-    PrefixReuse, QualifiedView, RequestTrace, RequestedView, ResolvedPlan, ReuseKind, ReuseTaken,
-    ServingCaps, ServingRequest, SpecLane, Support, DEFAULT_BANK_PERSIST, DEFAULT_MAX_SEQS,
-    DEFAULT_MEM_FLOOR_GB, PREFILL_CHUNK_FENCE,
+    ChunkFence, Distribution, EffectiveView, EngineFacts, HostNeed, IssueLevel, MaxSeqs, MtpMode,
+    PlanIssue, PrefixReuse, QualifiedView, RequestTrace, RequestedView, ResolvedPlan, ReuseKind,
+    ReuseTaken, ServingCaps, ServingRequest, SpecLane, Support, DEFAULT_BANK_PERSIST,
+    DEFAULT_MAX_SEQS, DEFAULT_MEM_FLOOR_GB, PREFILL_CHUNK_FENCE,
 };
 pub use session::{
     dump_cmd as session_dump_cmd, RewriteKind, SessionBackend, SessionLedger, SyncPlan,

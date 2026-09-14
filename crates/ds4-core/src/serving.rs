@@ -4,7 +4,7 @@
 //! Forced options that a family cannot run become errors, not silent fallback.
 
 use crate::identify::Identified;
-use crate::shape::{ModelFamily, Shape, Variant, SHAPE_INKLING_SMALL};
+use crate::shape::{ModelFamily, Shape, Variant, SHAPE_INKLING_SMALL, SHAPE_QWEN38_FLASH_NEXT};
 use crate::Backend;
 use serde_json::{json, Value};
 use std::ffi::OsStr;
@@ -18,6 +18,9 @@ pub const DEFAULT_SCHED_CHUNK: u32 = 4096;
 /// `DS4_CONT_PREFILL_NOFENCE=1`. The plan resolves the same cap so it cannot
 /// advertise a yield the scheduler will not use.
 pub const PREFILL_CHUNK_FENCE: u32 = 8192;
+/// C `QWEN4EXP_YARN_MAX_FACTOR`: how far Qwen's RoPE context may stretch
+/// before `ds4_session_create` refuses the context outright.
+pub const QWEN_YARN_MAX_FACTOR: u32 = 4;
 pub const DEFAULT_SCHED_LIVE: u32 = 512;
 /// C `DS4_SERVER_PERSIST_MIN_TOKENS`: how much a continuous bank must hold
 /// before retirement persists it. Not the disk store's record minimum.
@@ -38,6 +41,16 @@ pub enum MtpMode {
     Off,
     Auto,
     On,
+}
+
+/// What the native open and session creation require of the host. `Graph`
+/// families refuse CPU but run on Metal; `Cuda` families refuse both, and
+/// also refuse a distributed slice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostNeed {
+    Any,
+    Graph,
+    Cuda,
 }
 
 /// Whether this process is one full model or a distributed slice.
@@ -130,9 +143,8 @@ pub struct ServingCaps {
     pub mtp: MtpKind,
     pub mtp_support: Support,
     pub spec_lane: SpecLane,
-    /// `model_open` or `ds4_session_create` refuses this family on any other
-    /// host: one full CUDA model, no distributed slices.
-    pub cuda_only: bool,
+    /// The host `model_open` and `ds4_session_create` insist on.
+    pub host: HostNeed,
     /// Hard runtime maximum from `ds4_session_create`, not a qualification
     /// bound: above it the session cannot be created at all.
     pub ctx_max: Option<u32>,
@@ -498,7 +510,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
-            cuda_only: false,
+            host: HostNeed::Graph,
             ctx_max: None,
             qualified_ctx: Some(32768),
             qualified_banks: Some(1),
@@ -519,8 +531,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::Embedded,
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Bank,
-            cuda_only: true,
-            ctx_max: None,
+            host: HostNeed::Cuda,
+            ctx_max: Some(SHAPE_QWEN38_FLASH_NEXT.rope_orig_ctx as u32 * QWEN_YARN_MAX_FACTOR),
             qualified_ctx: Some(262144),
             qualified_banks: Some(2),
             qualified_prompt: None,
@@ -538,7 +550,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::Sidecar,
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Serial,
-            cuda_only: true,
+            host: HostNeed::Cuda,
             ctx_max: Some(262144),
             qualified_ctx: Some(65536),
             qualified_banks: Some(2),
@@ -557,7 +569,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
-            cuda_only: false,
+            host: HostNeed::Graph,
             ctx_max: None,
             qualified_ctx: None,
             qualified_banks: None,
@@ -576,7 +588,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
-            cuda_only: true,
+            host: HostNeed::Cuda,
             ctx_max: Some(262144),
             qualified_ctx: None,
             qualified_banks: None,
@@ -595,7 +607,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
-            cuda_only: false,
+            host: HostNeed::Graph,
             ctx_max: None,
             qualified_ctx: None,
             qualified_banks: None,
@@ -614,7 +626,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::BoundOnly,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
-            cuda_only: true,
+            host: HostNeed::Cuda,
             ctx_max: Some(524288),
             qualified_ctx: None,
             qualified_banks: Some(1),
@@ -633,7 +645,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::Sidecar,
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Serial,
-            cuda_only: true,
+            host: HostNeed::Cuda,
             ctx_max: Some(SHAPE_INKLING_SMALL.rope_orig_ctx as u32),
             qualified_ctx: Some(1024),
             qualified_banks: Some(1),
@@ -652,7 +664,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
-            cuda_only: true,
+            host: HostNeed::Cuda,
             ctx_max: Some(2048),
             qualified_ctx: Some(2048),
             qualified_banks: Some(1),
@@ -671,7 +683,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::DeepSeek,
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Bank,
-            cuda_only: false,
+            host: HostNeed::Any,
             ctx_max: None,
             qualified_ctx: None,
             qualified_banks: None,
@@ -745,16 +757,23 @@ pub fn resolve_plan(
     let (mtp_mode, mtp_weights) = resolve_mtp(req, caps, facts, driver, &mut issues);
     let disk = resolve_disk(req, caps, facts, &mut issues);
 
-    // `model_open` refuses these families anywhere but one full CUDA model,
-    // so the check cannot approve the host they were pointed at.
-    if caps.cuda_only && (req.backend != Backend::Cuda || req.distribution == Distribution::Sliced)
-    {
+    // The native open and session creation refuse these hosts outright, so
+    // the check cannot approve the one it was pointed at.
+    let host_refused = match caps.host {
+        HostNeed::Any => false,
+        HostNeed::Graph => req.backend == Backend::Cpu,
+        HostNeed::Cuda => req.backend != Backend::Cuda || req.distribution == Distribution::Sliced,
+    };
+    if host_refused {
         issues.push(error(
             "family_host",
-            format!(
-                "{} requires one full CUDA model without distributed slices",
-                caps.variant_name()
-            ),
+            match caps.host {
+                HostNeed::Graph => format!("{} sessions need a graph backend", caps.variant_name()),
+                _ => format!(
+                    "{} requires one full CUDA model without distributed slices",
+                    caps.variant_name()
+                ),
+            },
         ));
     }
 
@@ -1815,6 +1834,40 @@ mod tests {
     }
 
     #[test]
+    fn a_graph_family_rejects_cpu_but_keeps_metal() {
+        for family in [
+            (ModelFamily::SolarOpen2, Variant::SolarOpen2_250B),
+            (ModelFamily::ExaoneMoe, Variant::Kexaone236B),
+            (ModelFamily::ExaoneMoe, Variant::K2Horizon375B),
+        ] {
+            let mut req = ServingRequest::default();
+            req.backend = crate::Backend::Cpu;
+            let p = plan(req, family.0, family.1);
+            assert!(p.has_errors(), "{:?}", family.1);
+            assert!(p.issues.iter().any(|i| i.code == "family_host"));
+
+            let mut req = ServingRequest::default();
+            req.backend = crate::Backend::Metal;
+            let p = plan(req, family.0, family.1);
+            assert!(!p.issues.iter().any(|i| i.code == "family_host"));
+        }
+    }
+
+    #[test]
+    fn the_qwen_yarn_cap_is_not_the_qualified_ctx() {
+        let mut req = ServingRequest::default();
+        req.ctx = 262_144 * QWEN_YARN_MAX_FACTOR as i32;
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(!p.issues.iter().any(|i| i.code == "ctx_unavailable"));
+
+        let mut req = ServingRequest::default();
+        req.ctx = 262_144 * QWEN_YARN_MAX_FACTOR as i32 + 1;
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "ctx_unavailable"));
+    }
+
+    #[test]
     fn a_cuda_only_family_rejects_another_host() {
         for family in [
             (ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext),
@@ -2373,10 +2426,10 @@ mod tests {
 
     #[test]
     fn cpu_backend_auto_stays_serial() {
-        // Solar opens on any host; Qwen would be `family_host` here.
+        // DeepSeek is the one family the native CPU session accepts.
         let mut req = ServingRequest::default();
         req.backend = crate::Backend::Cpu;
-        let p = plan(req, ModelFamily::SolarOpen2, Variant::SolarOpen2_250B);
+        let p = plan(req, ModelFamily::DeepSeek4, Variant::Flash);
         assert!(!p.has_errors());
         assert_eq!(p.effective.max_seqs, 1);
         assert_eq!(p.effective.mtp_mode, MtpMode::Off);
