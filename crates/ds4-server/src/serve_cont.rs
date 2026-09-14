@@ -2594,7 +2594,13 @@ mod native {
             ) {
                 return None;
             }
-            let mut record = restored_record(envelope.text, 0, envelope.header.ext_flags)?;
+            // An image record whose key carries no usable marker cannot be
+            // rebuilt: the record is malformed, not missing.
+            let Some(mut record) = restored_record(envelope.text, 0, envelope.header.ext_flags)
+            else {
+                Self::note_miss(miss, ReuseMiss::PayloadMismatch);
+                return None;
+            };
             let snapshot = match batch.load_bank_payload_range(
                 i32::try_from(target).ok()?,
                 &path,
@@ -2686,7 +2692,11 @@ mod native {
             ) {
                 return None;
             }
-            let mut record = restored_record(envelope.text, 0, envelope.header.ext_flags)?;
+            let Some(mut record) = restored_record(envelope.text, 0, envelope.header.ext_flags)
+            else {
+                Self::note_miss(miss, ReuseMiss::PayloadMismatch);
+                return None;
+            };
             let snapshot = match batch.load_bank_payload_range(
                 i32::try_from(target).ok()?,
                 &path,

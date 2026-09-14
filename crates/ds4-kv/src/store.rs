@@ -394,15 +394,22 @@ impl Store {
             .zip(&envelope.text)
             .take_while(|(left, right)| left == right)
             .count();
+        // Corruption past the shared prefix still leaves the scan's answer
+        // standing, so check the record against its own name here too.
+        if !unchanged || text_sha_hex(&envelope.text) != entry.sha {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "KVC record does not match its name",
+            ));
+        }
+
         if !is_automatic_exact_replay(header.reason, header.ext_flags)
-            || !unchanged
             || header.model_id != model_id
             || (self.reject_different_quant && header.quant_bits != quant_bits)
             || header.ctx_size > ctx_size
             || header.ext_flags & identity_mask != identity_flags & identity_mask
             || lcp < min_lcp
             || 8 * (lcp as u64) < u64::from(header.text_bytes)
-            || text_sha_hex(&envelope.text) != entry.sha
         {
             return Ok(None);
         }
@@ -1060,6 +1067,42 @@ mod tests {
         assert!(second_path.exists());
         drop(second);
         assert!(!second_path.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lcp_candidate_refuses_a_record_that_moved() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-lcp-candidate-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut store = Store::open(&dir, 16, false, Options::default()).unwrap();
+        let mut record = rec(b"shared opening/stored tail", 512);
+        record.header.reason = Reason::BankShutdown;
+        record.header.ext_flags = crate::format::EXT_BANK_REPLAY_V1;
+        let path = store.write(record).unwrap();
+        let edited = b"shared opening/edited tail";
+
+        let (got, _, lcp) = store
+            .bank_text_lcp_candidate(edited, 0, 2, 8192, 8)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, path);
+        assert_eq!(lcp, 15);
+
+        // Corrupt the text past the shared prefix: the scan still picks the
+        // record, and only the full-text check can see that it moved.
+        let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::Start((FIXED_HEADER + 4 + 20) as u64))
+            .unwrap();
+        file.write_all(b"X").unwrap();
+        file.flush().unwrap();
+        assert_eq!(
+            store
+                .bank_text_lcp_candidate(edited, 0, 2, 8192, 8)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+
         let _ = fs::remove_dir_all(&dir);
     }
 
