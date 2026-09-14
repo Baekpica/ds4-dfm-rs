@@ -462,18 +462,30 @@ impl Store {
             && header.ctx_size == entry.header.ctx_size
             && header.tokens == entry.header.tokens
             && header.text_bytes == entry.header.text_bytes;
+        // The record no longer describes itself: its text does not hash to
+        // its own name, it is not this prompt's prefix after all, or the
+        // header moved under the read. The candidate was selected and then
+        // refused by its own contents, which is not an absence.
+        if !unchanged
+            || text_sha_hex(&envelope.text) != entry.sha
+            || !prompt.starts_with(&envelope.text)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "KVC record does not match its name",
+            ));
+        }
+
+        // Sound, but not usable in this shape: nothing left to prefill, or
+        // an identity this search does not take.
         let bank_without_logits = is_bank_replay_v1(header.reason, header.ext_flags)
             && envelope.text.len() == prompt.len();
         let missing_suffix = require_suffix && envelope.text.len() >= prompt.len();
         if !is_automatic_exact_replay(header.reason, header.ext_flags)
-            || !unchanged
             || header.model_id != model_id
             || header.ext_flags & identity_mask != identity_flags & identity_mask
             || bank_without_logits
             || missing_suffix
-            || envelope.text.len() > prompt.len()
-            || text_sha_hex(&envelope.text) != entry.sha
-            || !prompt.starts_with(&envelope.text)
         {
             return Ok(None);
         }
@@ -1637,10 +1649,15 @@ mod tests {
             .unwrap();
         file.write_all(b"X").unwrap();
         file.flush().unwrap();
-        assert!(store
-            .text_prefix_candidate(b"shared prefix and suffix", 0, 2, 8192)
-            .unwrap()
-            .is_none());
+        // The text no longer hashes to its own name: the record is refused
+        // by its contents, which is not the same as not being there.
+        assert_eq!(
+            store
+                .text_prefix_candidate(b"shared prefix and suffix", 0, 2, 8192)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1686,10 +1703,13 @@ mod tests {
             .unwrap();
         file.write_all(b"X").unwrap();
         file.flush().unwrap();
-        assert!(store
-            .bank_text_prefix_candidate(b"shared prefix and suffix", 0, 2, 8192)
-            .unwrap()
-            .is_none());
+        assert_eq!(
+            store
+                .bank_text_prefix_candidate(b"shared prefix and suffix", 0, 2, 8192)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
