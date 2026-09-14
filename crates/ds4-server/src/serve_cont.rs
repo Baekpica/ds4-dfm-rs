@@ -3465,7 +3465,14 @@ mod native {
             } else {
                 ReuseTaken::Cold
             };
-            outcome.reuse_miss = job.miss;
+            // One probe can refuse while the next admits — a partial bank
+            // too shallow to fork, then an exact hit. The reason belongs to
+            // a request that took nothing.
+            outcome.reuse_miss = if outcome.reuse == ReuseTaken::Cold {
+                job.miss
+            } else {
+                ReuseMiss::None
+            };
             if let Some(bank) = actual_bank {
                 if let Ok(snapshot) = batch.bank_snapshot(bank) {
                     outcome.bank = Some(bank);

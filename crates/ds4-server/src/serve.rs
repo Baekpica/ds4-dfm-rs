@@ -2759,7 +2759,8 @@ mod owner_tests {
                 ..crate::stream::ReqTimings::default()
             },
             speculation_active: true,
-            reuse: ds4_core::ReuseTaken::Partial,
+            // A request that took nothing is the one that carries a reason.
+            reuse: ds4_core::ReuseTaken::Cold,
             reuse_miss: ds4_core::ReuseMiss::RenderedPrefix,
             ..GenerateOutcome::default()
         });
@@ -2782,7 +2783,7 @@ mod owner_tests {
         assert!(body["serving"]["effective"].is_object(), "{body}");
         assert!(body["serving"]["qualified"].is_object(), "{body}");
         assert_eq!(body["last_request"]["effective_lane"], "continuous");
-        assert_eq!(body["last_request"]["reuse_kind"], "partial");
+        assert_eq!(body["last_request"]["reuse_kind"], "cold");
         assert_eq!(
             body["last_request"]["reuse_miss"],
             "rendered prefix changed"

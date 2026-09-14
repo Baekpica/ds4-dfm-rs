@@ -2724,7 +2724,13 @@ impl<'a> NativeDecode<'a> {
         } else {
             ReuseTaken::Cold
         };
-        self.miss = io.miss;
+        // A request that reused something is not a miss. The mechanism is
+        // the answer; the reason says why nothing was taken.
+        self.miss = if self.reuse == ReuseTaken::Cold {
+            io.miss
+        } else {
+            ReuseMiss::None
+        };
         if result.is_ok() {
             self.prompt_sync_elapsed = Some(io.sync_elapsed);
         }
