@@ -102,7 +102,9 @@ decision that produced it, and is absent when nothing was refused:
   checkpoint exists at that history frontier (P1); reusing across it would
   continue from a token sequence the client never sent.
 - `below minimum token threshold`
-- `payload family/layout mismatch`
+- `payload family/layout mismatch`. Also the answer when the chosen
+  payload cannot be read back — a truncated or corrupt record is refused
+  by its payload, whatever wrote it.
 - `no checkpoint at or below LCP`
 
 ## Capability table

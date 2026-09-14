@@ -901,6 +901,9 @@ fn disk_sync_prompt_impl(
         )
         .is_err()
     {
+        // The candidate was chosen and then could not be read. That is a
+        // refusal by its payload, not an absence.
+        io.note_miss(ReuseMiss::PayloadMismatch);
         io.invalidate();
         return cold_sync_and_store(
             io,
@@ -3505,6 +3508,24 @@ mod disk_sync_tests {
         // The payload does not hold the token count its record claims.
         let mut io = FakeSerial::new(&[], b"prefix suffix");
         io.loaded_tokens = vec![41];
+        super::disk_sync_template(
+            &mut io,
+            Some(&mut store),
+            0,
+            2,
+            b"prefix suffix",
+            &[41, 42, 3],
+            DiskSyncPolicy {
+                save_current: false,
+                load: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(io.miss, ReuseMiss::PayloadMismatch);
+
+        // The record was chosen and then could not be read back.
+        let mut io = FakeSerial::new(&[], b"prefix suffix");
+        io.fail_load = true;
         super::disk_sync_template(
             &mut io,
             Some(&mut store),

@@ -2577,6 +2577,7 @@ mod native {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
                     eprintln!("ds4-server-rs: bank restore skipped: {error}");
+                    Self::note_miss(miss, ReuseMiss::PayloadMismatch);
                     return None;
                 }
             };
@@ -2663,6 +2664,7 @@ mod native {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
                     eprintln!("ds4-server-rs: partial bank restore skipped: {error}");
+                    Self::note_miss(miss, ReuseMiss::PayloadMismatch);
                     return None;
                 }
             };
@@ -3238,14 +3240,14 @@ mod native {
                             .ok()
                             .filter(|_| self.warm_disk_partial)
                             .unwrap_or(0);
-                        let (incompatible, placeable) = self
+                        let (mismatched, placeable) = self
                             .identity()
                             .zip(store.as_deref_mut())
                             .map(|((model_id, quant_bits, ctx), store)| {
                                 // The partial search keys on the longest
                                 // common prefix, so an edited prompt needs
                                 // the LCP question the exact one cannot ask.
-                                let incompatible = store.has_incompatible_prefix_identity(
+                                let mismatched = store.has_incompatible_prefix_identity(
                                     request_key,
                                     model_id,
                                     quant_bits,
@@ -3264,46 +3266,48 @@ mod native {
                                 );
                                 // Either search can hold a checkpoint this
                                 // request could have used; the bank budget
-                                // refuses both the same way.
-                                let placeable = !incompatible
-                                    && (store
-                                        .bank_text_prefix_candidate_identity(
-                                            request_key,
-                                            model_id,
-                                            quant_bits,
-                                            ctx,
-                                            identity_flags,
-                                        )
-                                        .ok()
-                                        .flatten()
-                                        .is_some()
-                                        || min_lcp > 0
-                                            && store
-                                                .bank_text_lcp_candidate_identity(
-                                                    request_key,
-                                                    model_id,
-                                                    quant_bits,
-                                                    ctx,
-                                                    min_lcp,
-                                                    identity_flags,
-                                                )
-                                                .ok()
-                                                .flatten()
-                                                .is_some());
-                                (incompatible, placeable)
+                                // refuses both the same way. Asked on its
+                                // own terms, so an incompatible record
+                                // elsewhere in the store cannot hide it.
+                                let placeable = store
+                                    .bank_text_prefix_candidate_identity(
+                                        request_key,
+                                        model_id,
+                                        quant_bits,
+                                        ctx,
+                                        identity_flags,
+                                    )
+                                    .ok()
+                                    .flatten()
+                                    .is_some()
+                                    || min_lcp > 0
+                                        && store
+                                            .bank_text_lcp_candidate_identity(
+                                                request_key,
+                                                model_id,
+                                                quant_bits,
+                                                ctx,
+                                                min_lcp,
+                                                identity_flags,
+                                            )
+                                            .ok()
+                                            .flatten()
+                                            .is_some();
+                                (mismatched, placeable)
                             })
                             .unwrap_or((false, false));
-                        // Same order as the serial lane: a record that exists
-                        // but cannot be used, then a conversation too short
-                        // to have been stored, then plain absence.
-                        miss = if incompatible {
-                            ReuseMiss::PayloadMismatch
-                        } else if placeable {
+                        // The record this request would have used decides the
+                        // answer. Only when none exists does an incompatible
+                        // one speak, then a conversation too short to have
+                        // been stored, then plain absence.
+                        miss = if placeable {
                             // A record this request could have used, refused
                             // by the bank budget rather than by the cache.
                             // The contract has no reason for that, and an
                             // absence would be the wrong one.
                             ReuseMiss::None
+                        } else if mismatched {
+                            ReuseMiss::PayloadMismatch
                         } else if write_min.is_some_and(|min| prompt_n < min) {
                             ReuseMiss::BelowThreshold
                         } else {
