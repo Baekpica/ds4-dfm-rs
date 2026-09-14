@@ -975,6 +975,55 @@ fn pack_sibling_ffi(attach: &SiblingAttach) -> Result<FfiSupport> {
 //   model_id / routed_quant_bits
 // MOVE later (production already left):
 //   ds4_bridge_model_run_distributed_worker -> assemble_worker (oracle FFI)
+/// Everything `Model::open` checks before it touches the device: identify,
+/// family validation, vocab, chat template, tensor inventory, required
+/// tensors and layouts. `--check-config` runs it so an artifact that cannot
+/// load is refused before listen. Keep it in step with the open's prelude.
+pub fn probe_model_artifact(path: &str) -> Result<()> {
+    let identified = identify_gguf(std::path::Path::new(path)).map_err(|e| Error {
+        code: 1,
+        message: format!("identify failed: {}", e.token()),
+    })?;
+    let g = GgufFile::open(std::path::Path::new(path)).map_err(|e| Error {
+        code: 1,
+        message: format!("validate failed: {}", e.token()),
+    })?;
+    validate_file(&g, &identified.shape).map_err(|e| Error {
+        code: 1,
+        message: format!("validate failed: {}", e.token()),
+    })?;
+    Vocab::load(&g, identified.shape.family).map_err(|e| Error {
+        code: 1,
+        message: format!("vocab failed: {e}"),
+    })?;
+    chat_template::Template::load(std::path::Path::new(path), &g)?;
+    let inventory = TensorInventory::open(std::path::Path::new(path)).map_err(|e| Error {
+        code: 1,
+        message: format!("tensor inventory failed: {}", e.token()),
+    })?;
+    validate_qwen_inventory(&g, &inventory).map_err(|e| Error {
+        code: 1,
+        message: format!("validate failed: {}", e.token()),
+    })?;
+    if identified.shape.family == ModelFamily::Step37 {
+        Step37Plan::validate_inventory(&inventory).map_err(|e| Error {
+            code: 1,
+            message: e.to_string(),
+        })?;
+    }
+    let bind_plan = BindPlan::resolve(identified.shape, &inventory);
+    if let Some(name) = bind_plan.missing_required().first() {
+        return Err(Error {
+            code: 1,
+            message: format!("required tensor is missing: {name}"),
+        });
+    }
+    validate_layouts(&bind_plan).map_err(|e| Error {
+        code: 1,
+        message: format!("layout failed: {}", e.token()),
+    })
+}
+
 impl Model {
     pub fn open(
         path: &str,

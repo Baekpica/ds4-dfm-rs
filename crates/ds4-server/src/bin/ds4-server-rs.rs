@@ -3,9 +3,9 @@
 //! Incremental live DSML tool projection is host-owned.
 
 use ds4_core::{
-    caps_from_ident, identify_gguf, probe_mtp_sidecar, probe_vision_sidecar, resolve_plan, Backend,
-    DistributedConfig, DistributedRole, Distribution, EngineFacts, MaxSeqs, Model, ModelOpenOption,
-    MtpMode, PrefixReuse, ServingRequest,
+    caps_from_ident, identify_gguf, probe_model_artifact, probe_mtp_sidecar, probe_vision_sidecar,
+    resolve_plan, Backend, DistributedConfig, DistributedRole, Distribution, EngineFacts, MaxSeqs,
+    Model, ModelOpenOption, MtpMode, PrefixReuse, ServingRequest,
 };
 use ds4_server::kv_cli::DiskKvArgs;
 use ds4_server::{
@@ -241,6 +241,19 @@ fn main() {
                 Ok(()) => true,
                 Err(error) => {
                     eprintln!("ds4-server-rs: --mtp {path}: {error}");
+                    false
+                }
+            });
+        }
+    }
+    if serve_req.check_config {
+        // Nothing else opens the model on this path, so the check has to do
+        // the open's own pre-device validation itself.
+        if let Some(path) = model_path.as_deref() {
+            facts.artifact_ok = Some(match probe_model_artifact(path) {
+                Ok(()) => true,
+                Err(error) => {
+                    eprintln!("ds4-server-rs: -m {path}: {error}");
                     false
                 }
             });

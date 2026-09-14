@@ -175,6 +175,8 @@ pub struct EngineFacts {
     pub mtp_path_ok: Option<bool>,
     /// `Some(false)` when the named `--vision` artifact cannot attach.
     pub vision_path_ok: Option<bool>,
+    /// `Some(false)` when the base artifact cannot load at all.
+    pub artifact_ok: Option<bool>,
     /// `Some(false)` once the native fit refused the continuous lane.
     pub cont_lane: Option<bool>,
     /// `Some(false)` when the opened runtime has no partial checkpoint store.
@@ -769,6 +771,12 @@ pub fn resolve_plan(
         ));
     }
 
+    if facts.artifact_ok == Some(false) {
+        issues.push(error(
+            "artifact_invalid",
+            format!("{} artifact cannot load", caps.variant_name()),
+        ));
+    }
     if facts.vision_path_ok == Some(false) {
         issues.push(error(
             "vision_artifact",
@@ -1663,6 +1671,21 @@ mod tests {
         let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
         assert_eq!(p.effective.sched_chunk, 16384);
         assert!(!p.issues.iter().any(|i| i.code == "chunk_fenced"));
+    }
+
+    #[test]
+    fn an_unloadable_artifact_is_an_error() {
+        let facts = EngineFacts {
+            artifact_ok: Some(false),
+            ..EngineFacts::default()
+        };
+        let p = resolve_plan(
+            &ServingRequest::default(),
+            Some(caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext)),
+            &facts,
+        );
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "artifact_invalid"));
     }
 
     #[test]
