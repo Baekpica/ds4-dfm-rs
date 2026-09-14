@@ -143,6 +143,8 @@ pub struct ServingCaps {
     pub mtp: MtpKind,
     pub mtp_support: Support,
     pub spec_lane: SpecLane,
+    /// Draft width below which the engine allocates no speculative runtime.
+    pub spec_draft_min: i32,
     /// The host `model_open` and `ds4_session_create` insist on.
     pub host: HostNeed,
     /// Hard runtime maximum from `ds4_session_create`, not a qualification
@@ -510,6 +512,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
+            spec_draft_min: 1,
             host: HostNeed::Graph,
             ctx_max: None,
             qualified_ctx: Some(32768),
@@ -531,6 +534,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::Embedded,
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Bank,
+            spec_draft_min: 2,
             host: HostNeed::Cuda,
             ctx_max: Some(SHAPE_QWEN38_FLASH_NEXT.rope_orig_ctx as u32 * QWEN_YARN_MAX_FACTOR),
             qualified_ctx: Some(262144),
@@ -550,6 +554,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::Sidecar,
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Serial,
+            spec_draft_min: 1,
             host: HostNeed::Cuda,
             ctx_max: Some(262144),
             qualified_ctx: Some(65536),
@@ -569,6 +574,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
+            spec_draft_min: 1,
             host: HostNeed::Graph,
             ctx_max: None,
             qualified_ctx: None,
@@ -588,6 +594,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
+            spec_draft_min: 1,
             host: HostNeed::Cuda,
             ctx_max: Some(262144),
             qualified_ctx: None,
@@ -607,6 +614,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
+            spec_draft_min: 1,
             host: HostNeed::Graph,
             ctx_max: None,
             qualified_ctx: None,
@@ -626,6 +634,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::BoundOnly,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
+            spec_draft_min: 1,
             host: HostNeed::Cuda,
             ctx_max: Some(524288),
             qualified_ctx: None,
@@ -645,6 +654,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::Sidecar,
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Serial,
+            spec_draft_min: 1,
             host: HostNeed::Cuda,
             ctx_max: Some(SHAPE_INKLING_SMALL.rope_orig_ctx as u32),
             qualified_ctx: Some(1024),
@@ -664,6 +674,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::None,
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
+            spec_draft_min: 1,
             host: HostNeed::Cuda,
             ctx_max: Some(2048),
             qualified_ctx: Some(2048),
@@ -683,6 +694,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::DeepSeek,
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Bank,
+            spec_draft_min: 1,
             host: HostNeed::Any,
             ctx_max: None,
             qualified_ctx: None,
@@ -755,24 +767,50 @@ pub fn resolve_plan(
     let driver = bank_driver(req, caps, max_seqs, facts);
     let reuse = resolve_reuse(req, caps, driver, facts, &mut issues);
     let (mtp_mode, mtp_weights) = resolve_mtp(req, caps, facts, driver, &mut issues);
+    // A draft below the family minimum allocates no speculative runtime, so
+    // the plan would claim a feature that runs ordinary decode.
+    let draft = req.mtp_draft.unwrap_or(caps.spec_draft_min);
+    let (mtp_mode, mtp_draft) = match mtp_mode {
+        MtpMode::Off => (MtpMode::Off, None),
+        mode if draft >= caps.spec_draft_min => (mode, Some(draft)),
+        mode => {
+            let message = format!(
+                "{} speculation needs --mtp-draft of at least {}",
+                caps.variant_name(),
+                caps.spec_draft_min
+            );
+            issues.push(if mode == MtpMode::On {
+                error("mtp_draft", message)
+            } else {
+                warn("mtp_draft", message)
+            });
+            (MtpMode::Off, None)
+        }
+    };
     let disk = resolve_disk(req, caps, facts, &mut issues);
 
     // The native open and session creation refuse these hosts outright, so
     // the check cannot approve the one it was pointed at.
+    // No family but DeepSeek implements a distributed session, and the
+    // backend each one accepts differs.
+    let sliced = req.distribution == Distribution::Sliced;
     let host_refused = match caps.host {
         HostNeed::Any => false,
-        HostNeed::Graph => req.backend == Backend::Cpu,
-        HostNeed::Cuda => req.backend != Backend::Cuda || req.distribution == Distribution::Sliced,
+        HostNeed::Graph => req.backend == Backend::Cpu || sliced,
+        HostNeed::Cuda => req.backend != Backend::Cuda || sliced,
     };
     if host_refused {
         issues.push(error(
             "family_host",
-            match caps.host {
-                HostNeed::Graph => format!("{} sessions need a graph backend", caps.variant_name()),
-                _ => format!(
-                    "{} requires one full CUDA model without distributed slices",
+            match (caps.host, sliced) {
+                (_, true) => format!(
+                    "{} does not implement distributed layer sessions",
                     caps.variant_name()
                 ),
+                (HostNeed::Graph, _) => {
+                    format!("{} sessions need a graph backend", caps.variant_name())
+                }
+                _ => format!("{} sessions need the CUDA backend", caps.variant_name()),
             },
         ));
     }
@@ -884,8 +922,7 @@ pub fn resolve_plan(
             prefix_reuse: reuse,
             mtp_mode,
             mtp_weights,
-            // A draft length only describes a run that speculates.
-            mtp_draft: (mtp_mode != MtpMode::Off).then(|| req.mtp_draft.unwrap_or(1)),
+            mtp_draft,
             max_seqs,
             ctx: req.ctx,
             mem_floor_gb: req.mem_floor_gb,
@@ -925,16 +962,16 @@ impl ResolvedPlan {
         self.issues.iter().any(|i| i.level == IssueLevel::Error)
     }
 
-    /// The operator asked for the bank lane: an explicit width, or an `auto`
-    /// plan that resolved to more than one bank. Hosts must adopt this, not
-    /// only the published env — a config captured before resolution keeps
-    /// its own legacy `DS4_SERVER_CONTINUOUS`. `auto` landing on a single
-    /// bank expresses no preference and leaves that legacy value alone.
+    /// The operator asked for the bank lane by naming a width. Hosts must
+    /// adopt this, not only the published env — a config captured before
+    /// resolution keeps its own legacy `DS4_SERVER_CONTINUOUS`. `auto`
+    /// expresses no preference, so it leaves that switch alone: the README
+    /// promises `DS4_SERVER_CONTINUOUS=0` forces the static/serial route.
     pub fn wants_bank_lane(&self) -> bool {
         if self.requested.backend != Backend::Cuda || self.requested.max_seqs == MaxSeqs::Off {
             return false;
         }
-        matches!(self.requested.max_seqs, MaxSeqs::Fixed(_)) || self.effective.max_seqs > 1
+        matches!(self.requested.max_seqs, MaxSeqs::Fixed(_))
     }
 
     pub fn env_overrides(&self) -> Vec<(String, String)> {
@@ -1831,6 +1868,58 @@ mod tests {
         assert!(p.has_errors());
         assert!(p.issues.iter().any(|i| i.code == "mtp_sidecar"));
         assert!(!p.effective.mtp_weights);
+    }
+
+    #[test]
+    fn auto_leaves_the_legacy_lane_switch_alone() {
+        // README: DS4_SERVER_CONTINUOUS=0 forces the static/serial route.
+        // Only a named width overrides it.
+        let p = plan(
+            ServingRequest::default(),
+            ModelFamily::Qwen4Exp,
+            Variant::Qwen38FlashNext,
+        );
+        assert_eq!(p.effective.max_seqs, 2);
+        assert!(!p.wants_bank_lane());
+        assert!(!p
+            .env_overrides()
+            .iter()
+            .any(|(k, _)| k == "DS4_SERVER_CONTINUOUS"));
+    }
+
+    #[test]
+    fn a_graph_family_cannot_serve_a_slice() {
+        let mut req = ServingRequest::default();
+        req.distribution = Distribution::Sliced;
+        let p = plan(req, ModelFamily::SolarOpen2, Variant::SolarOpen2_250B);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "family_host"));
+    }
+
+    #[test]
+    fn a_draft_below_the_family_minimum_cannot_speculate() {
+        // Qwen allocates no speculative runtime at draft 1.
+        let mut req = ServingRequest::default();
+        req.mtp_mode = MtpMode::On;
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(!p.has_errors());
+        assert_eq!(p.effective.mtp_draft, Some(2));
+
+        let mut req = ServingRequest::default();
+        req.mtp_mode = MtpMode::On;
+        req.mtp_draft = Some(1);
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "mtp_draft"));
+        assert_eq!(p.effective.mtp_mode, MtpMode::Off);
+
+        // Auto downgrades instead of failing.
+        let mut req = ServingRequest::default();
+        req.mtp_draft = Some(1);
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(!p.has_errors());
+        assert_eq!(p.effective.mtp_mode, MtpMode::Off);
+        assert!(p.issues.iter().any(|i| i.code == "mtp_draft"));
     }
 
     #[test]

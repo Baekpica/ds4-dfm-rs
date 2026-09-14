@@ -288,6 +288,13 @@ fn main() {
         eprint!("{}", plan.report());
         cli_error("ds4-server-rs: serving plan rejected unsupported options");
     }
+    // The engine allocates a speculative runtime only above the family's
+    // draft minimum, so an unspecified draft takes the resolved one.
+    if serve_req.mtp_draft.is_none() {
+        if let Some(draft) = plan.effective.mtp_draft {
+            model_options.push(ModelOpenOption::MtpDraftTokens(draft));
+        }
+    }
     let cont_width = if serve_req.max_seqs == MaxSeqs::Off {
         0
     } else {
