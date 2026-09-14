@@ -2383,7 +2383,7 @@ mod native {
                     &snapshot.tokens,
                     prompt_tokens,
                     self.warm_partial_min,
-                    usize::MAX,
+                    qwen_image_cache_token_cap(cache_spans, 0),
                 );
                 let Some(cached) = cut else {
                     continue;
@@ -3286,11 +3286,11 @@ mod native {
         }
 
         fn trim_idle_banks(&mut self, want_bytes: u64) -> u64 {
-            // One-bank Solar workers sit just above the memory floor. Serial
+            // One-bank workers sit just above the memory floor. Serial
             // reclaim would trim the only hist-valid bank and the next Chat
-            // request could not partial-fork. Keep live prefix banks when
-            // partial reuse is on.
-            if self.host.warm_fork_partial {
+            // request could not partial-fork. Multi-bank runtimes still
+            // trim idle banks.
+            if self.host.warm_fork_partial && self.batch.max_seq() == 1 {
                 return 0;
             }
             self.batch.trim_free(want_bytes)
