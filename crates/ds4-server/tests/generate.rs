@@ -1114,7 +1114,10 @@ fn http_reuse_situations_report_their_trace() {
     // Same chat, append: reuse at the frontier, suffix prefilled.
     let body = http_reuse_trace(ds4_core::ReuseTaken::Exact, ds4_core::ReuseMiss::None, 3);
     assert_eq!(body["last_request"]["reuse_kind"], "exact");
-    assert!(body["last_request"]["reuse_miss"].is_null());
+    assert!(
+        body["last_request"].get("reuse_miss").is_none(),
+        "a request that refused nothing carries no miss member: {body}"
+    );
 
     // Edit or branch: a checkpoint below the prefix, gap replayed.
     let body = http_reuse_trace(ds4_core::ReuseTaken::Partial, ds4_core::ReuseMiss::None, 2);

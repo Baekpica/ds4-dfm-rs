@@ -2461,6 +2461,14 @@ mod native {
             })
         }
 
+        /// The first refusal wins: a later, broader one would mask the
+        /// decision that actually turned the candidate down.
+        fn note_miss(miss: &mut ReuseMiss, reason: ReuseMiss) {
+            if *miss == ReuseMiss::None {
+                *miss = reason;
+            }
+        }
+
         fn warm_plan(
             &mut self,
             batch: &BatchCtx<'_>,
@@ -2480,7 +2488,7 @@ mod native {
                     if !kept {
                         // A live bank held this conversation; the template
                         // re-rendered it.
-                        *miss = ReuseMiss::RenderedPrefix;
+                        Self::note_miss(miss, ReuseMiss::RenderedPrefix);
                     }
                     kept
                 });
@@ -2533,6 +2541,7 @@ mod native {
             prompt: &[u8],
             cache_prompt: Option<&[u8]>,
             protected: &[bool],
+            miss: &mut ReuseMiss,
         ) -> Option<WarmAdmitPlan> {
             let identity = self.identity()?;
             let request_key = cache_prompt.unwrap_or(prompt);
@@ -2572,6 +2581,10 @@ mod native {
                 }
             };
             if usize::try_from(envelope.header.tokens).ok() != Some(snapshot.tokens.len()) {
+                // The payload disagrees with its own envelope. The record is
+                // discarded, so the next request finds nothing — but this
+                // one was refused by a mismatch, not by an absence.
+                Self::note_miss(miss, ReuseMiss::PayloadMismatch);
                 let _ = store.discard_bank(&path);
                 return None;
             }
@@ -2609,6 +2622,7 @@ mod native {
             cache_spans: &[ImageCacheSpan],
             prompt_tokens: &[i32],
             protected: &[bool],
+            miss: &mut ReuseMiss,
         ) -> Option<WarmAdmitPlan> {
             if !self.warm_disk_partial {
                 return None;
@@ -2653,6 +2667,7 @@ mod native {
                 }
             };
             if usize::try_from(envelope.header.tokens).ok() != Some(snapshot.tokens.len()) {
+                Self::note_miss(miss, ReuseMiss::PayloadMismatch);
                 let _ = store.discard_bank(&path);
                 return None;
             }
@@ -2978,6 +2993,7 @@ mod native {
                     (prompt, tokens)
                 }
             };
+            let mut miss = ReuseMiss::None;
             let directed = parsed.directed_bank.filter(|bank| *bank >= 0);
             let (tokens, images, cache_prompt, cache_spans, directed_cached) = if let Some(bank) =
                 directed
@@ -3020,6 +3036,20 @@ mod native {
                     {
                         snapshot.tokens.len() as i32
                     } else {
+                        // A directed continuation never reaches `warm_plan`,
+                        // so this is the only place that can say why its own
+                        // bank was refused: the media it was keyed by, or a
+                        // template that re-rendered the prefix.
+                        if self.warm_reuse != ReuseKind::None {
+                            Self::note_miss(
+                                &mut miss,
+                                if media_match {
+                                    ReuseMiss::RenderedPrefix
+                                } else {
+                                    ReuseMiss::PayloadMismatch
+                                },
+                            );
+                        }
                         0
                     };
                     (
@@ -3085,7 +3115,6 @@ mod native {
             // frontier turn also prefills tokens, and a fork looks like any
             // other prefix hit.
             let mut reuse = ReuseTaken::Exact;
-            let mut miss = ReuseMiss::None;
             let mut admit = if let Some(bank) = directed {
                 let mut admit = ContAdmit::cold(1, tokens, stepper.max_tokens.max(1));
                 admit.place_bank = bank.saturating_add(1);
@@ -3119,6 +3148,7 @@ mod native {
                                 &stepper.prompt,
                                 stepper.cache_prompt.as_deref(),
                                 &protected,
+                                &mut miss,
                             )
                             .filter(|plan| {
                                 // An official template re-rendered this
@@ -3126,7 +3156,7 @@ mod native {
                                 // longer this prompt's prefix.
                                 let kept = self.template.is_none() || plan.tokens == tokens;
                                 if !kept {
-                                    miss = ReuseMiss::RenderedPrefix;
+                                    Self::note_miss(&mut miss, ReuseMiss::RenderedPrefix);
                                 }
                                 kept
                             })
@@ -3142,6 +3172,7 @@ mod native {
                                 &stepper.image_cache_spans,
                                 &tokens,
                                 &protected,
+                                &mut miss,
                             )
                         })
                     })
@@ -3190,6 +3221,7 @@ mod native {
                             .is_some()
                             .then_some(EXT_IMAGE_PIXELS_V2)
                             .unwrap_or(0);
+                        let threshold = store.as_deref().map(|store| store.opt.min_tokens);
                         let incompatible = self.identity().zip(store.as_deref_mut()).is_some_and(
                             |((model_id, quant_bits, ctx), store)| {
                                 store.has_incompatible_prefix_identity(
@@ -3203,8 +3235,13 @@ mod native {
                                 )
                             },
                         );
+                        // Same order as the serial lane: a record that exists
+                        // but cannot be used, then a conversation too short
+                        // to have been stored, then plain absence.
                         miss = if incompatible {
                             ReuseMiss::PayloadMismatch
+                        } else if threshold.is_some_and(|min| prompt_n < min) {
+                            ReuseMiss::BelowThreshold
                         } else {
                             ReuseMiss::NoCheckpoint
                         };

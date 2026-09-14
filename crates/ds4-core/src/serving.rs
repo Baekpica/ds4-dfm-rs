@@ -1224,14 +1224,19 @@ impl ReuseTaken {
 
 impl RequestTrace {
     pub fn to_json(&self) -> Value {
-        json!({
+        let mut trace = json!({
             "effective_lane": self.effective_lane,
             "reuse_kind": self.reuse_kind.as_str(),
-            "reuse_miss": (self.reuse_miss != ReuseMiss::None)
-                .then(|| self.reuse_miss.as_str()),
             "speculation_active": self.speculation_active,
             "fallback_reason": self.fallback_reason
-        })
+        });
+        // Absent when nothing was refused, as the contract says. A null
+        // member would read as "there is a miss, and it has no reason",
+        // and a client testing for the key would believe it.
+        if self.reuse_miss != ReuseMiss::None {
+            trace["reuse_miss"] = json!(self.reuse_miss.as_str());
+        }
+        trace
     }
 }
 
@@ -1697,6 +1702,26 @@ impl fmt::Display for ResolvedPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_trace_that_refused_nothing_carries_no_miss_member() {
+        let mut trace = RequestTrace {
+            effective_lane: "serial",
+            reuse_kind: ReuseTaken::Exact,
+            reuse_miss: ReuseMiss::None,
+            speculation_active: false,
+            fallback_reason: None,
+        };
+        let json = trace.to_json();
+        assert!(json.get("reuse_miss").is_none(), "{json}");
+        assert_eq!(json["reuse_kind"], "exact");
+
+        trace.reuse_miss = ReuseMiss::BelowThreshold;
+        assert_eq!(
+            trace.to_json()["reuse_miss"],
+            "below minimum token threshold"
+        );
+    }
 
     fn caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         serving_caps(family, variant)
