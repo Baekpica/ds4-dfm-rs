@@ -827,6 +827,13 @@ fn disk_sync_prompt_impl(
         }
     }
 
+    // A live session that holds this conversation, whose render moved: the
+    // text still leads here, the token sequence no longer does. A session
+    // about a different conversation is not that, and says nothing.
+    if !live.is_empty() && prompt.starts_with(&io.render_tokens(&live)?) {
+        io.note_miss(ReuseMiss::RenderedPrefix);
+    }
+
     let Some(store) = store else {
         return cold_sync(io, canonical_tokens);
     };
@@ -3555,6 +3562,42 @@ mod disk_sync_tests {
         )
         .unwrap();
         assert_eq!(io.miss, ReuseMiss::PayloadMismatch);
+
+        // A live session holds this conversation and the render moved: the
+        // text still leads here, the token sequence does not.
+        let mut io = FakeSerial::new(&[41, 42], b"prefix");
+        super::disk_sync_template(
+            &mut io,
+            Some(&mut store),
+            0,
+            2,
+            b"prefix suffix",
+            &[7, 8, 9],
+            DiskSyncPolicy {
+                save_current: false,
+                load: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(io.miss, ReuseMiss::RenderedPrefix);
+
+        // A live session about another conversation says nothing: its text
+        // does not lead to this prompt either.
+        let mut io = FakeSerial::new(&[41, 42], b"unrelated");
+        super::disk_sync_template(
+            &mut io,
+            Some(&mut store),
+            0,
+            2,
+            b"prefix suffix",
+            &[7, 8, 9],
+            DiskSyncPolicy {
+                save_current: false,
+                load: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(io.miss, ReuseMiss::None);
 
         // A broader reason never masks the specific one that came first.
         let mut io = FakeSerial::new(&[], b"");
