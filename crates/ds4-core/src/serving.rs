@@ -5,6 +5,7 @@
 
 use crate::identify::Identified;
 use crate::shape::{ModelFamily, Shape, Variant};
+use crate::Backend;
 use serde_json::{json, Value};
 use std::fmt::{self, Write as _};
 
@@ -117,6 +118,7 @@ pub struct ServingRequest {
     pub native_chunk: Option<u32>,
     pub print_plan: bool,
     pub check_config: bool,
+    pub backend: Backend,
 }
 
 /// Facts known only after identify or engine open.
@@ -126,6 +128,7 @@ pub struct EngineFacts {
     pub vision_loaded: bool,
     pub banks_fitted: Option<u32>,
     pub seq_cap: Option<u32>,
+    pub disk_ready: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,6 +140,7 @@ pub struct RequestedView {
     pub mem_floor_gb: u64,
     pub disk_dir: bool,
     pub mtp_path: bool,
+    pub backend: Backend,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -229,6 +233,7 @@ impl Default for ServingRequest {
             native_chunk: None,
             print_plan: false,
             check_config: false,
+            backend: Backend::Cuda,
         }
     }
 }
@@ -284,7 +289,7 @@ impl MaxSeqs {
         }
         raw.parse::<u32>()
             .ok()
-            .filter(|n| *n <= 64)
+            .filter(|n| (1..=64).contains(n))
             .map(Self::Fixed)
             .ok_or_else(|| format!("ds4-server-rs: --max-seqs wants N|auto (got '{raw}')"))
     }
@@ -559,6 +564,7 @@ pub fn resolve_plan(
         mem_floor_gb: req.mem_floor_gb,
         disk_dir: req.kv_disk_dir.is_some(),
         mtp_path: req.mtp_path.is_some(),
+        backend: req.backend,
     };
 
     let Some(caps) = caps else {
@@ -594,9 +600,10 @@ pub fn resolve_plan(
     };
 
     let reuse = resolve_reuse(req.prefix_reuse, caps, &mut issues);
-    let (max_seqs, banks_opt_in) = resolve_seqs(req.max_seqs, caps, facts, &mut issues);
+    let (max_seqs, banks_opt_in) =
+        resolve_seqs(req.max_seqs, caps, facts, req.backend, &mut issues);
     let (mtp_mode, mtp_weights) = resolve_mtp(req, caps, facts, &mut issues);
-    let disk = resolve_disk(req, caps, &mut issues);
+    let disk = resolve_disk(req, caps, facts, &mut issues);
 
     if req.ctx > 0 {
         if let Some(qctx) = caps.qualified_ctx {
@@ -743,7 +750,7 @@ impl ResolvedPlan {
         if self.family == Some(ModelFamily::Qwen4Exp) {
             out.push((
                 "DS4_QWEN_BATCH".into(),
-                if self.effective.max_seqs >= 1 {
+                if self.requested.backend == Backend::Cuda && self.effective.max_seqs >= 1 {
                     "1".into()
                 } else {
                     "0".into()
@@ -780,7 +787,8 @@ impl ResolvedPlan {
                 "ctx": self.requested.ctx,
                 "mem_floor_gb": self.requested.mem_floor_gb,
                 "disk": self.requested.disk_dir,
-                "mtp_path": self.requested.mtp_path
+                "mtp_path": self.requested.mtp_path,
+                "backend": backend_name(self.requested.backend)
             },
             "effective": {
                 "prefix_reuse": self.effective.prefix_reuse.as_str(),
@@ -962,6 +970,7 @@ fn resolve_seqs(
     requested: MaxSeqs,
     caps: ServingCaps,
     facts: &EngineFacts,
+    backend: Backend,
     issues: &mut Vec<PlanIssue>,
 ) -> (u32, bool) {
     // Auto: serial/Step stay 1 so `-m` boots. Persistent uses qualified
@@ -973,6 +982,22 @@ fn resolve_seqs(
         },
         MaxSeqs::Fixed(n) => n,
     };
+    // Continuous banks are CUDA-only. CPU/Metal Auto is width 1.
+    if backend != Backend::Cuda {
+        if let MaxSeqs::Fixed(n) = requested {
+            if n > 1 {
+                issues.push(error(
+                    "banks_cuda",
+                    format!(
+                        "{} banks need CUDA; --backend {} cannot run --max-seqs {n}",
+                        caps.variant_name(),
+                        backend_name(backend)
+                    ),
+                ));
+            }
+        }
+        return (1, false);
+    }
     if let MaxSeqs::Fixed(n) = requested {
         if n > 1 && caps.banks == BankLane::Serial {
             issues.push(error(
@@ -1016,6 +1041,19 @@ fn resolve_mtp(
         MtpKind::None | MtpKind::BoundOnly => false,
         MtpKind::Embedded | MtpKind::Sidecar | MtpKind::DeepSeek => true,
     };
+    if req.backend != Backend::Cuda {
+        if req.mtp_mode == MtpMode::On {
+            issues.push(error(
+                "mtp_cuda",
+                format!(
+                    "{} MTP needs CUDA; --backend {} cannot enable it",
+                    caps.variant_name(),
+                    backend_name(req.backend)
+                ),
+            ));
+        }
+        return (MtpMode::Off, false);
+    }
     if has_path && caps.mtp == MtpKind::None {
         issues.push(error(
             "mtp_contract",
@@ -1043,7 +1081,10 @@ fn resolve_mtp(
         ));
         return (MtpMode::Off, false);
     }
-    if req.mtp_mode == MtpMode::On && caps.mtp == MtpKind::Sidecar && !has_path && !facts.mtp_loaded
+    if req.mtp_mode == MtpMode::On
+        && matches!(caps.mtp, MtpKind::Sidecar | MtpKind::DeepSeek)
+        && !has_path
+        && !facts.mtp_loaded
     {
         issues.push(error(
             "mtp_sidecar",
@@ -1066,7 +1107,12 @@ fn resolve_mtp(
     (mode, weights)
 }
 
-fn resolve_disk(req: &ServingRequest, caps: ServingCaps, issues: &mut Vec<PlanIssue>) -> bool {
+fn resolve_disk(
+    req: &ServingRequest,
+    caps: ServingCaps,
+    facts: &EngineFacts,
+    issues: &mut Vec<PlanIssue>,
+) -> bool {
     let want = req.kv_disk_dir.is_some();
     if !want {
         return false;
@@ -1076,6 +1122,10 @@ fn resolve_disk(req: &ServingRequest, caps: ServingCaps, issues: &mut Vec<PlanIs
             "disk_unsupported",
             format!("{} session snapshots are unsupported", caps.variant_name()),
         ));
+        return false;
+    }
+    if facts.disk_ready == Some(false) {
+        issues.push(error("disk_open", "KV disk store could not be opened"));
         return false;
     }
     if caps.disk == Support::Present {
@@ -1088,6 +1138,14 @@ fn resolve_disk(req: &ServingRequest, caps: ServingCaps, issues: &mut Vec<PlanIs
         ));
     }
     true
+}
+
+fn backend_name(backend: Backend) -> &'static str {
+    match backend {
+        Backend::Cuda => "cuda",
+        Backend::Cpu => "cpu",
+        Backend::Metal => "metal",
+    }
 }
 
 fn qualified_note(caps: ServingCaps) -> &'static str {
@@ -1488,5 +1546,77 @@ mod tests {
         let p = plan(req, ModelFamily::Glm53, Variant::Glm53Flash);
         assert!(p.has_errors());
         assert!(p.issues.iter().any(|i| i.code == "reuse_unsupported"));
+    }
+
+    #[test]
+    fn deepseek_mtp_on_without_path_errors() {
+        let mut req = ServingRequest::default();
+        req.mtp_mode = MtpMode::On;
+        let p = plan(req, ModelFamily::DeepSeek4, Variant::Flash);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "mtp_sidecar"));
+        assert!(!p.effective.mtp_weights);
+        assert_eq!(p.effective.mtp_mode, MtpMode::Off);
+    }
+
+    #[test]
+    fn max_seqs_zero_is_invalid() {
+        assert!(MaxSeqs::parse("0").is_err());
+        assert!(MaxSeqs::parse("65").is_err());
+        assert_eq!(MaxSeqs::parse("1").unwrap(), MaxSeqs::Fixed(1));
+    }
+
+    #[test]
+    fn cpu_backend_rejects_forced_cuda_banks() {
+        let mut req = ServingRequest::default();
+        req.backend = crate::Backend::Cpu;
+        req.max_seqs = MaxSeqs::Fixed(2);
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "banks_cuda"));
+        assert_eq!(p.effective.max_seqs, 1);
+    }
+
+    #[test]
+    fn cpu_backend_auto_stays_serial() {
+        let mut req = ServingRequest::default();
+        req.backend = crate::Backend::Cpu;
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(!p.has_errors());
+        assert_eq!(p.effective.max_seqs, 1);
+        assert_eq!(p.effective.mtp_mode, MtpMode::Off);
+        assert!(!p
+            .env_overrides()
+            .iter()
+            .any(|(k, v)| k == "DS4_QWEN_BATCH" && v == "1"));
+    }
+
+    #[test]
+    fn metal_mtp_on_errors() {
+        let mut req = ServingRequest::default();
+        req.backend = crate::Backend::Metal;
+        req.mtp_mode = MtpMode::On;
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "mtp_cuda"));
+        assert!(!p.effective.mtp_weights);
+    }
+
+    #[test]
+    fn disk_open_failed_is_an_error() {
+        let mut req = ServingRequest::default();
+        req.kv_disk_dir = Some("/tmp/kv".into());
+        let facts = EngineFacts {
+            disk_ready: Some(false),
+            ..EngineFacts::default()
+        };
+        let p = resolve_plan(
+            &req,
+            Some(caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext)),
+            &facts,
+        );
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "disk_open"));
+        assert!(!p.effective.disk);
     }
 }

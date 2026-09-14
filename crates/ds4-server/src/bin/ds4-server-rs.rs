@@ -169,11 +169,8 @@ fn main() {
             // Hidden rust-shadow alias for DS4_SERVER_COALESCE_MAX.
             // Not a C flag; kept for rust-host-live scripts (e.g. --cont-width 1).
             "--cont-width" => {
-                let n = args
-                    .next()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or_else(|| usage());
-                serve_req.max_seqs = MaxSeqs::Fixed(n);
+                serve_req.max_seqs = MaxSeqs::parse(&args.next().unwrap_or_else(|| usage()))
+                    .unwrap_or_else(|e| cli_error(&e));
             }
             "--cors" => cfg.cors = true,
             "--mem-floor-gb" => {
@@ -199,6 +196,7 @@ fn main() {
     }
     serve_req.ctx = cfg.ctx;
     serve_req.mem_floor_gb = cfg.mem_floor_gb;
+    serve_req.backend = backend;
     if let Some(dir) = kv.dir() {
         serve_req.kv_disk_dir = Some(dir.display().to_string());
     }
@@ -207,11 +205,23 @@ fn main() {
     }
     serve_req.kv_min_tokens = Some(kv.min_tokens());
 
+    let mut facts = EngineFacts::default();
+    let mut kv_store = None;
+    if kv.dir().is_some() {
+        match kv.open() {
+            Some(store) => {
+                facts.disk_ready = Some(true);
+                kv_store = Some(store);
+            }
+            None => facts.disk_ready = Some(false),
+        }
+    }
+
     let caps = model_path
         .as_deref()
         .and_then(|path| identify_gguf(std::path::Path::new(path)).ok())
         .map(|id| caps_from_ident(&id));
-    let plan = resolve_plan(&serve_req, caps, &EngineFacts::default());
+    let plan = resolve_plan(&serve_req, caps, &facts);
     plan.apply_env();
     cfg.mem_floor_gb = plan.effective.mem_floor_gb;
     eprint!("{}", plan.report());
@@ -280,7 +290,7 @@ fn main() {
             }
         }
     }
-    let kv_store = if model.is_some() { kv.open() } else { None };
+    let kv_store = if model.is_some() { kv_store } else { None };
 
     let lane = if let Some(ref model) = model {
         if cont_width > 0 && backend == Backend::Cuda {
@@ -298,6 +308,7 @@ fn main() {
                             .any(|opt| matches!(opt, ModelOpenOption::Vision(_))),
                         banks_fitted: Some(batch.max_seq() as u32),
                         seq_cap: Some(batch.seq_cap() as u32),
+                        disk_ready: facts.disk_ready,
                     };
                     let fitted = resolve_plan(&serve_req, caps, &facts);
                     eprint!("{}", fitted.report());
@@ -327,6 +338,7 @@ fn main() {
                             .iter()
                             .any(|opt| matches!(opt, ModelOpenOption::Vision(_))),
                         banks_fitted: Some(1),
+                        disk_ready: facts.disk_ready,
                         ..EngineFacts::default()
                     };
                     let serial = resolve_plan(&serve_req, caps, &facts);
