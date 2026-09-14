@@ -531,7 +531,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp: MtpKind::Sidecar,
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Serial,
-            cuda_only: false,
+            cuda_only: true,
             qualified_ctx: Some(65536),
             qualified_banks: Some(2),
             qualified_prompt: Some(6300),
@@ -1772,6 +1772,7 @@ mod tests {
         for family in [
             (ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext),
             (ModelFamily::Inkling, Variant::InklingSmall),
+            (ModelFamily::Step37, Variant::Step37Flash),
         ] {
             let mut req = ServingRequest::default();
             req.backend = crate::Backend::Cpu;
