@@ -688,12 +688,13 @@ pub fn resolve_plan(
     }
 
     let qualified = QualifiedView {
+        // Resolution never returns a reuse stronger than the family's, and
+        // exact-frontier reuse is a subset of a qualified partial path, so a
+        // downgraded plan keeps the family's verification level.
         prefix_reuse: if reuse == ReuseKind::None {
             Support::None
-        } else if reuse == caps.reuse {
-            caps.reuse_support
         } else {
-            Support::Present
+            caps.reuse_support
         },
         disk: if disk { caps.disk } else { Support::None },
         mtp: if mtp_weights {
@@ -1545,6 +1546,21 @@ mod tests {
         assert!(p.has_errors());
         assert!(p.issues.iter().any(|i| i.code == "partial_runtime"));
         assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
+    }
+
+    #[test]
+    fn a_downgraded_reuse_keeps_the_family_verification() {
+        let facts = EngineFacts {
+            partial_reuse: Some(false),
+            ..EngineFacts::default()
+        };
+        let p = resolve_plan(
+            &ServingRequest::default(),
+            Some(caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext)),
+            &facts,
+        );
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
+        assert_eq!(p.qualified.prefix_reuse, Support::Qualified);
     }
 
     #[test]
