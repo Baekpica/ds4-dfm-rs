@@ -3,7 +3,7 @@
 use crate::format::{
     fill_header, is_automatic_exact_replay, is_bank_replay_v1, path_for_sha, read_envelope,
     read_header_text, read_metadata, read_path, read_text_prefix, sha_hex_name, stage_stream,
-    text_sha_hex, write_path, Envelope, FormatError, Header, Record, EXT_IMAGE_PIXELS_V2,
+    text_sha_hex, write_path, Envelope, FormatError, Header, Reason, Record, EXT_IMAGE_PIXELS_V2,
     EXT_TOOL_MAP,
 };
 use crate::policy::{
@@ -58,6 +58,8 @@ pub struct Entry {
 struct Damaged {
     sha: String,
     path: PathBuf,
+    reason: Reason,
+    ext_flags: u8,
     text_bytes: u32,
 }
 
@@ -160,6 +162,8 @@ impl Store {
                     self.damaged.push(Damaged {
                         sha,
                         path,
+                        reason: header.reason,
+                        ext_flags: header.ext_flags,
                         text_bytes: header.text_bytes,
                     });
                 }
@@ -768,7 +772,8 @@ impl Store {
     /// prefix. Its payload is gone; the text in front of it need not be.
     fn damaged_lcp(&self, prompt: &[u8], min_lcp: usize) -> bool {
         self.damaged.iter().any(|d| {
-            if (d.text_bytes as usize) < min_lcp
+            if !is_automatic_exact_replay(d.reason, d.ext_flags)
+                || (d.text_bytes as usize) < min_lcp
                 || u64::from(d.text_bytes) > 8 * prompt.len() as u64
             {
                 return false;
@@ -790,7 +795,8 @@ impl Store {
     fn damaged_prefix(&self, prompt: &[u8], suffix: Suffix) -> bool {
         self.damaged.iter().any(|d| {
             let text_bytes = d.text_bytes as usize;
-            if text_bytes > prompt.len()
+            if !is_automatic_exact_replay(d.reason, d.ext_flags)
+                || text_bytes > prompt.len()
                 || (suffix == Suffix::Required && text_bytes == prompt.len())
             {
                 return false;
@@ -853,7 +859,8 @@ impl Store {
         }
 
         // An edited prompt diverges from the record, so the damaged list has
-        // to be read through the same shared prefix, not by name.
+        // to be read through the same shared prefix, not by name. A record
+        // no search would replay from is not a refusal either.
         if self.damaged_lcp(prompt, min_lcp) {
             answer = weaker_answer(answer, false);
         }
@@ -1243,6 +1250,26 @@ mod tests {
         );
         assert_eq!(
             store.prefix_answer(b"another conversation", 0, 2, 2048),
+            PrefixAnswer::None
+        );
+
+        // A record no search replays from is not a refusal: it was never a
+        // candidate, damaged or not.
+        let mut session = rec(b"agent opening", 512);
+        session.header.reason = Reason::AgentSession;
+        let session_path = store.write(session).unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&session_path)
+            .unwrap()
+            .set_len(FIXED_HEADER as u64 + 4 + 13)
+            .unwrap();
+        assert_eq!(
+            store.prefix_answer(b"agent opening and more", 0, 2, 2048),
+            PrefixAnswer::None
+        );
+        assert_eq!(
+            store.bank_lcp_answer(b"agent openinG edited", 0, 2, 2048, 8, 0),
             PrefixAnswer::None
         );
 
