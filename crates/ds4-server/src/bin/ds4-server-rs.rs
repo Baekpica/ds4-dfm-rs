@@ -424,9 +424,15 @@ fn main() {
     );
 
     if let Some(ref model) = model {
+        // The fitted plan, not the pre-open one: the refit can downgrade
+        // reuse after the runtime says what it has.
+        let reuse = cfg
+            .serving_plan
+            .as_ref()
+            .map_or(plan.effective.prefix_reuse, |p| p.effective.prefix_reuse);
         let mut engine = NativeDecode::new(model, cfg.ctx)
             .with_vocab(model.vocab())
-            .with_prefix_reuse(plan.effective.prefix_reuse);
+            .with_prefix_reuse(reuse);
         if let Some(store) = kv_store {
             engine = engine.with_store(store);
         }
