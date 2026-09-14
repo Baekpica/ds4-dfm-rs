@@ -136,11 +136,9 @@ fn main() {
                 serve_req.mtp_draft = Some(n);
                 model_options.push(ModelOpenOption::MtpDraftTokens(n));
             }
-            "--mtp-margin" => model_options.push(ModelOpenOption::MtpMargin(
-                args.next()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or_else(|| usage()),
-            )),
+            "--mtp-margin" => {
+                model_options.push(ModelOpenOption::MtpMargin(margin(&arg, args.next())))
+            }
             "--version" => {
                 println!("ds4-server v{}", env!("CARGO_PKG_VERSION"));
                 return;
@@ -215,16 +213,19 @@ fn main() {
         .and_then(|path| identify_gguf(std::path::Path::new(path)).ok());
     let caps = ident.as_ref().map(caps_from_ident);
     if let Some(path) = vision_path.as_deref() {
-        // Same attach the open performs: embedded-media families refuse an
-        // external artifact, and Step inspects the sidecar.
+        // The same rules the open applies: only a full GLM-5.3 or Step CUDA
+        // model takes an encoder, and then the artifact itself is opened.
         if let Some(id) = ident.as_ref() {
-            facts.vision_path_ok = Some(match probe_vision_sidecar(id.shape, path) {
-                Ok(()) => true,
-                Err(error) => {
-                    eprintln!("ds4-server-rs: --vision {path}: {error}");
-                    false
-                }
-            });
+            let dist_probe = distributed_config(&dist.opt);
+            facts.vision_path_ok = Some(
+                match probe_vision_sidecar(id.shape, backend, dist_probe.as_ref(), path) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        eprintln!("ds4-server-rs: --vision {path}: {error}");
+                        false
+                    }
+                },
+            );
         }
     }
     if let Some(path) = mtp_path.as_deref() {
@@ -441,6 +442,18 @@ fn positive_chunk(flag: &str, raw: Option<String>) -> u32 {
             "ds4-server-rs: {flag} wants a positive token count"
         ))
     })
+}
+
+/// C `open_tuning` accepts 0 through 1000; anything else, NaN included,
+/// aborts the open, so `--check-config` must not approve it.
+fn margin(flag: &str, raw: Option<String>) -> f32 {
+    match raw
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|m| (0.0..=1000.0).contains(m))
+    {
+        Some(m) => m,
+        None => cli_error(&format!("ds4-server-rs: {flag} wants 0 to 1000")),
+    }
 }
 
 fn positive_count(flag: &str, raw: Option<String>) -> i32 {

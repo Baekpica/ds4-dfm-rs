@@ -49,11 +49,24 @@ pub fn probe_mtp_sidecar(shape: Shape, path: &str) -> Result<()> {
     .map(|_| ())
 }
 
-/// Validate an external vision sidecar the way `Model::open` will: families
-/// with embedded media reject one outright (the `inkling_open_check` rule),
-/// and Step inspects the artifact. `--check-config` uses this so a process
-/// that cannot boot is not approved.
-pub fn probe_vision_sidecar(shape: Shape, path: &str) -> Result<()> {
+/// GLM binds these three ids from the encoder and aborts on any other
+/// value, so a config check has to read them, not just open the file.
+const GLM_VISION_TOKEN_IDS: [(&str, u32); 3] = [
+    ("glm5-next-vision.image_token_id", 154854),
+    ("glm5-next-vision.image_start_token_id", 154830),
+    ("glm5-next-vision.image_end_token_id", 154831),
+];
+
+/// Validate an external vision encoder the way `model_open` will: only a
+/// full GLM-5.3 or Step CUDA model takes one, and then the artifact itself
+/// is opened. `--check-config` uses this so a process that cannot boot is
+/// not approved.
+pub fn probe_vision_sidecar(
+    shape: Shape,
+    backend: crate::Backend,
+    distributed: Option<&crate::DistributedConfig>,
+    path: &str,
+) -> Result<()> {
     if path.is_empty() {
         return Err(Error {
             code: 1,
@@ -66,12 +79,44 @@ pub fn probe_vision_sidecar(shape: Shape, path: &str) -> Result<()> {
             message: "Inkling uses embedded image/audio weights".into(),
         });
     }
+    let takes_encoder = matches!(shape.family, ModelFamily::Glm53 | ModelFamily::Step37);
+    if !takes_encoder || backend != crate::Backend::Cuda || distributed.is_some() {
+        return Err(Error {
+            code: 1,
+            message: "--vision requires one full GLM-5.3 or Step CUDA model".into(),
+        });
+    }
     if shape.family == ModelFamily::Step37 {
-        crate::Step37SidecarPlan::inspect(std::path::Path::new(path), crate::Step37Sidecar::Vision)
-            .map_err(|e| Error {
-                code: 1,
-                message: format!("vision metadata failed: {e}"),
-            })?;
+        return crate::Step37SidecarPlan::inspect(
+            std::path::Path::new(path),
+            crate::Step37Sidecar::Vision,
+        )
+        .map(|_| ())
+        .map_err(|e| Error {
+            code: 1,
+            message: format!("vision metadata failed: {e}"),
+        });
+    }
+    let g = crate::GgufFile::open(std::path::Path::new(path)).map_err(|e| Error {
+        code: 1,
+        message: format!("vision open failed: {e}"),
+    })?;
+    for (key, want) in GLM_VISION_TOKEN_IDS {
+        match g.get_u32(key) {
+            Some(id) if id == want => {}
+            Some(id) => {
+                return Err(Error {
+                    code: 1,
+                    message: format!("vision {key} is {id}, expected {want}"),
+                })
+            }
+            None => {
+                return Err(Error {
+                    code: 1,
+                    message: format!("vision metadata {key} is missing"),
+                })
+            }
+        }
     }
     Ok(())
 }

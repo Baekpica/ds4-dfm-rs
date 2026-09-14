@@ -689,14 +689,19 @@ pub fn resolve_plan(
     let (mtp_mode, mtp_weights) = resolve_mtp(req, caps, facts, driver, &mut issues);
     let disk = resolve_disk(req, caps, facts, &mut issues);
 
-    if req.ctx > 0 {
-        if let Some(qctx) = caps.qualified_ctx {
-            if req.ctx as u32 > qctx {
-                issues.push(warn(
-                    "ctx_unqualified",
-                    format!("configured ctx {} exceeds qualified ctx {qctx}", req.ctx),
-                ));
-            }
+    // Both the batch context and the serial session refuse a nonpositive
+    // context, so an approved plan has to have one.
+    if req.ctx <= 0 {
+        issues.push(error(
+            "ctx_invalid",
+            format!("ctx {} cannot create a session", req.ctx),
+        ));
+    } else if let Some(qctx) = caps.qualified_ctx {
+        if req.ctx as u32 > qctx {
+            issues.push(warn(
+                "ctx_unqualified",
+                format!("configured ctx {} exceeds qualified ctx {qctx}", req.ctx),
+            ));
         }
     }
     if caps.qualified_prompt.is_some() {
@@ -1635,6 +1640,17 @@ mod tests {
         let p = plan(req, ModelFamily::Step37, Variant::Step37Flash);
         assert_eq!(p.effective.mtp_draft, None);
         assert!(p.to_json()["effective"]["mtp_draft"].is_null());
+    }
+
+    #[test]
+    fn a_nonpositive_ctx_is_an_error() {
+        for ctx in [0, -1] {
+            let mut req = ServingRequest::default();
+            req.ctx = ctx;
+            let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+            assert!(p.has_errors(), "ctx {ctx}");
+            assert!(p.issues.iter().any(|i| i.code == "ctx_invalid"));
+        }
     }
 
     #[test]
