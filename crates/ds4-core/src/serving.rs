@@ -1191,13 +1191,25 @@ fn resolve_mtp(
         }
         return (MtpMode::Off, false);
     }
-    // A named artifact that is not there breaks every mode: the host still
-    // hands the path to `Model::open_*`, so `off` and `auto` fail at boot.
+    // Only sidecar families take a path: Qwen's MTP is embedded, dots3 binds
+    // without executing, and the rest have no contract at all.
+    if has_path && !matches!(caps.mtp, MtpKind::Sidecar | MtpKind::DeepSeek) {
+        issues.push(error(
+            "mtp_contract",
+            format!(
+                "{} does not take an MTP sidecar; drop --mtp",
+                caps.variant_name()
+            ),
+        ));
+        return (MtpMode::Off, false);
+    }
+    // A named artifact the host cannot attach breaks every mode: it still
+    // goes to `Model::open_*`, so `off` and `auto` fail at boot too.
     if has_path && facts.mtp_path_ok == Some(false) {
         issues.push(error(
             "mtp_sidecar",
             format!(
-                "{} MTP path is missing or is not a GGUF",
+                "{} MTP sidecar is missing, is not a GGUF, or does not attach",
                 caps.variant_name()
             ),
         ));
@@ -1216,16 +1228,6 @@ fn resolve_mtp(
                 ),
             ));
         }
-        return (MtpMode::Off, false);
-    }
-    if has_path && caps.mtp == MtpKind::None {
-        issues.push(error(
-            "mtp_contract",
-            format!(
-                "{} has no MTP contract; do not pass --mtp",
-                caps.variant_name()
-            ),
-        ));
         return (MtpMode::Off, false);
     }
     if req.mtp_mode == MtpMode::On && caps.mtp == MtpKind::BoundOnly {
@@ -1461,16 +1463,27 @@ mod tests {
 
     #[test]
     fn mtp_on_does_not_publish_disable() {
+        // Qwen's MTP is embedded; a sidecar path would be a contract error.
         let req = ServingRequest {
             mtp_mode: MtpMode::On,
-            mtp_path: Some("mtp.gguf".into()),
             ..ServingRequest::default()
         };
         let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(!p.has_errors());
+        assert_eq!(p.effective.mtp_mode, MtpMode::On);
         assert!(!p
             .env_overrides()
             .iter()
             .any(|(key, _)| key == "DS4_MTP_SPEC_DISABLE"));
+    }
+
+    #[test]
+    fn an_embedded_mtp_family_takes_no_sidecar() {
+        let mut req = ServingRequest::default();
+        req.mtp_path = Some("mtp.gguf".into());
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "mtp_contract"));
     }
 
     #[test]
