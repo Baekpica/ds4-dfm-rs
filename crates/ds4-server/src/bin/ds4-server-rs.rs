@@ -285,6 +285,10 @@ fn main() {
         let Some(model) = model else {
             cli_error(WORKER_REQUIRES_MODEL);
         };
+        if serve_req.print_plan {
+            // A worker never fits a lane, so this is the whole plan it has.
+            print_plan(&cfg);
+        }
         model.boot_prewarm();
         match run_assembled_worker(&model, cfg.ctx, &dist.opt) {
             Ok(rc) => std::process::exit(rc),
@@ -367,9 +371,7 @@ fn main() {
     // Print what serves, not what was asked: the native fit can still take
     // banks, partial reuse and MTP away from the pre-open plan.
     if serve_req.print_plan {
-        if let Some(plan) = cfg.serving_plan.as_ref() {
-            println!("{}", plan.to_json());
-        }
+        print_plan(&cfg);
     }
     if let Some(ref model) = model {
         model.boot_prewarm();
@@ -421,6 +423,12 @@ fn positive_chunk(flag: &str, raw: Option<String>) -> u32 {
         None => cli_error(&format!(
             "ds4-server-rs: {flag} wants a positive token count"
         )),
+    }
+}
+
+fn print_plan(cfg: &ServerConfig) {
+    if let Some(plan) = cfg.serving_plan.as_ref() {
+        println!("{}", plan.to_json());
     }
 }
 
