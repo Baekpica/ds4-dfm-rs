@@ -1068,6 +1068,8 @@ pub(crate) fn thinking_visible_key(
     terminal: bool,
 ) -> Option<Vec<u8>> {
     if syntax == ModelSyntax::Step37 {
+        // Removing reasoning changes Step's history grammar. Re-render its
+        // structured history with Jinja instead of inventing a cached prefix.
         return None;
     }
     let mut visible = if format == ChatFormat::K2Horizon {
