@@ -231,11 +231,15 @@ fn main() {
         // The same attach the open performs: family acceptance, sidecar
         // metadata, required tensors and layouts. A merely readable GGUF
         // would let `--check-config` exit 0 on an artifact that cannot load.
-        facts.mtp_path_ok = Some(
-            ident
-                .as_ref()
-                .is_some_and(|id| probe_mtp_sidecar(id.shape, path).is_ok()),
-        );
+        if let Some(id) = ident.as_ref() {
+            facts.mtp_path_ok = Some(match probe_mtp_sidecar(id.shape, path) {
+                Ok(()) => true,
+                Err(error) => {
+                    eprintln!("ds4-server-rs: --mtp {path}: {error}");
+                    false
+                }
+            });
+        }
     }
     let plan = resolve_plan(&serve_req, caps, &facts);
     plan.apply_env();
