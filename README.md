@@ -604,18 +604,21 @@ trust domain when clients are not mutually trusted.
 
 ## Performance and release evidence
 
-The [September 12 Solar campaign](docs/solar-open2-optimization-2026-09-12.md)
-closed after four candidates without retaining a new kernel. It records
-guarded 8K/64K baseline measurements, numerical and timing acceptance
-results, and the limits of the memory guard.
+> **Solar Open2 250B MXQ-v1 · one DGX Spark, 300–2200 MHz cap (measured 2190):**
+> cold prefill **1,050.86 → 1,075.76 tok/s at 8K (+2.37%)** and
+> **731.24 → 927.50 tok/s at 64K (+26.8%)** with default-on warp-specialized
+> K-FP8/V-FP4 prefill attention (`DS4_SOLAR_FATTN_WS=0` restores the pair
+> kernel). Decode 17.40 → 17.44 and 13.06 → 13.02 tok/s. Interleaved medians
+> of three; 196,608 frontier logits and 64 greedy IDs match byte for byte.
+> Disk-KV restart and HTTP partial fork now reuse prefixes (native tests plus
+> Chat `cached_tokens=538` / `4096`).
+> [Protocol, serving, rejects](docs/solar-open2-optimization-2026-09-14.md).
 
-> **Solar Open2 250B MXQ-v1 · one DGX Spark:** verified cold prefill reaches **1,108.09 tok/s at 8K (+1.39%)** and **780.02 tok/s at 64K (+1.02%)** after the fused MoE pass. Interleaved medians of three; all 196,608 frontier logits and 64 greedy IDs match byte for byte. Decode differs by less than 0.1%. [Protocol, raw data and campaign limits](docs/solar-open2-optimization-2026-09-07.md).
+![Solar Open2 clock-capped cold FATTN_WS comparison](docs/solar-open2-2026-09-14-throughput.png)
 
-![Solar Open2 verified cold comparison and baseline-only sweep through 64K](docs/solar-open2-2026-09-07-throughput.png)
-
-*The lower curves show the baseline only. The campaign ended after repeated
-host freezes; the second prefill candidate and decode drafts are excluded.
-No optimized sweep or new agent-serving performance result is claimed.*
+*Independent cold `ds4-bench` requests, 64 output tokens, 4,096-token chunks.
+Not HTTP and not the uncapped September 7/12 campaigns. Keep the SM cap on
+GB10 when this kernel is default. `python3 tools/plot_solar_open2_20260914.py`.*
 
 ![Qwen3.8 Flash Next Q5 paired BF16 and FP8 PLE throughput](docs/qwen38-ple-fp8-base.png)
 

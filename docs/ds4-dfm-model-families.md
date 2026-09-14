@@ -455,17 +455,26 @@ the 611 MHz pin did not recur.
 
 ## Solar Open2 DGX Spark performance evidence
 
-The [September 12 Rust-host campaign](solar-open2-optimization-2026-09-12.md)
-records guarded 8K/64K controls and four unretained attention candidates.
-Its fresh-process protocol is separate from the historical HTTP results
-below; it establishes no new native speedup or fix for the host freezes.
-[Round 5](solar-open2-optimization-2026-09-12-r5.md) of the same campaign
-adds an opt-in warp-specialized K-FP8/V-FP4 prefill attention kernel
-(`DS4_SOLAR_FATTN_WS=1`, byte-identical, 2.6x on the 64K tail component)
-and traces both 64K host freezes to the GB10 power trip; its 8K A/B and the
-64K control are recorded there. It is not the default.
+The [14 September 2026 campaign](solar-open2-optimization-2026-09-14.md)
+is the current clock-capped record: disk-KV restart reuse, HTTP partial
+fork, and default-on warp-specialized K-FP8/V-FP4 prefill attention
+(`DS4_SOLAR_FATTN_WS=0` restores the pair kernel). SM clock 2190 MHz
+inside the 300–2200 MHz cap. Cold `ds4-bench` medians of three, Promessi
+Sposi, 4,096-token chunks, 64 greedy tokens, byte-identical 196,608
+logits and 64 IDs:
 
-The numbers below used
+| Prompt tokens | Prefill off → on | Decode off → on |
+|---:|---:|---:|
+| 8,192 | 1,050.86 → 1,075.76 tok/s | 17.40 → 17.44 |
+| 65,536 | 731.24 → 927.50 tok/s | 13.06 → 13.02 |
+
+The [September 12 Rust-host campaign](solar-open2-optimization-2026-09-12.md)
+records guarded 8K/64K controls and four unretained attention candidates
+at uncapped clocks. [Round 5](solar-open2-optimization-2026-09-12-r5.md)
+introduced the WS kernel as opt-in after 64K froze the host; the 14
+September A/B is the 64K full-model sample under the cap.
+
+The historical HTTP numbers below used
 [`b2e52b9`](https://github.com/Baekpica/ds4/commit/b2e52b9048ba339327539212de1c47d009dde126)
 on `origin/dfm`, built with CUDA 13.3 as `sm_121a` on one DGX Spark GB10
 (driver 610.43.02, Linux 6.17.0-1029-nvidia). The GGUF is MXQ-v1 11 shards
@@ -510,9 +519,12 @@ published metric. 1,048,576-token serving is not claimed.
 - Motif-3 serving uses plain decoding; it does not accept MTP or DSpark
   support models.
 - Historical Solar Open2 serving evidence includes `-c 196608` with three
-  banks. The source 1,048,576-token metadata is not a measured Spark pass;
-  the [September 7 campaign](solar-open2-optimization-2026-09-07.md#campaign-closure-and-limits)
-  records unresolved 64K host freezes.
+  banks. The source 1,048,576-token metadata is not a measured Spark pass.
+  Uncapped 64K host freezes are recorded in the
+  [September 7](solar-open2-optimization-2026-09-07.md#campaign-closure-and-limits)
+  and [September 12 round 5](solar-open2-optimization-2026-09-12-r5.md)
+  reports. The [14 September campaign](solar-open2-optimization-2026-09-14.md)
+  completed 64K WS under a 300–2200 MHz cap; keep that cap on GB10.
 - Solar, EXAONE, and Motif-3 serial snapshots now reject corrupted family tags,
   and their continuous banks restore into a different idle bank before a
   one-token warm suffix. The CUDA lifecycle gates passed on the production
