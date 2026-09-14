@@ -214,6 +214,7 @@ pub struct EngineFacts {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RequestedView {
+    pub lane: LaneMode,
     pub prefix_reuse: PrefixReuse,
     pub mtp_mode: MtpMode,
     pub max_seqs: MaxSeqs,
@@ -739,6 +740,7 @@ pub fn resolve_plan(
 ) -> ResolvedPlan {
     let mut issues = Vec::new();
     let requested = RequestedView {
+        lane: req.lane,
         prefix_reuse: req.prefix_reuse,
         mtp_mode: req.mtp_mode,
         max_seqs: req.max_seqs,
@@ -987,7 +989,13 @@ impl ResolvedPlan {
     /// expresses no preference, so it leaves that switch alone: the README
     /// promises `DS4_SERVER_CONTINUOUS=0` forces the static/serial route.
     pub fn wants_bank_lane(&self) -> bool {
-        if self.requested.backend != Backend::Cuda || self.requested.max_seqs == MaxSeqs::Off {
+        // The legacy switch and the width are orthogonal: `--max-seqs N`
+        // sizes the banks the static lane coalesces over, it does not ask
+        // for continuous routing the switch turned off.
+        if self.requested.lane == LaneMode::Serial
+            || self.requested.backend != Backend::Cuda
+            || self.requested.max_seqs == MaxSeqs::Off
+        {
             return false;
         }
         matches!(self.requested.max_seqs, MaxSeqs::Fixed(_))
@@ -1079,6 +1087,10 @@ impl ResolvedPlan {
                 "prefix_reuse": self.requested.prefix_reuse.as_str(),
                 "mtp_mode": self.requested.mtp_mode.as_str(),
                 "max_seqs": self.requested.max_seqs.as_str(),
+                "lane": match self.requested.lane {
+                    LaneMode::Auto => "auto",
+                    LaneMode::Serial => "serial",
+                },
                 "ctx": self.requested.ctx,
                 "mem_floor_gb": self.requested.mem_floor_gb,
                 "disk": self.requested.disk_dir,
@@ -1908,6 +1920,24 @@ mod tests {
         assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
         assert_eq!(p.effective.mtp_mode, MtpMode::Off);
         assert!(!p.has_errors());
+    }
+
+    #[test]
+    fn the_legacy_switch_outranks_a_named_width() {
+        // The switch disables continuous routing; the width only sizes the
+        // banks the static lane coalesces over.
+        let mut req = ServingRequest::default();
+        req.lane = LaneMode::Serial;
+        req.max_seqs = MaxSeqs::Fixed(2);
+        req.mtp_mode = MtpMode::On;
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(!p.wants_bank_lane());
+        assert_eq!(p.effective.max_seqs, 2);
+        assert!(p.issues.iter().any(|i| i.code == "mtp_lane"));
+        assert!(!p
+            .env_overrides()
+            .iter()
+            .any(|(k, _)| k == "DS4_SERVER_CONTINUOUS"));
     }
 
     #[test]
