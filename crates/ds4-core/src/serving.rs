@@ -409,13 +409,22 @@ pub fn parse_disk_space(raw: &str) -> Result<u64, String> {
     if n == 0 {
         return Err(format!("ds4-server-rs: invalid disk space '{raw}'"));
     }
-    match unit.as_str() {
-        "" | "m" | "mb" | "mi" | "mib" => Ok(n),
-        "g" | "gb" | "gi" | "gib" => Ok(n.saturating_mul(1024)),
-        "t" | "tb" | "ti" | "tib" => Ok(n.saturating_mul(1024 * 1024)),
-        "k" | "kb" | "ki" | "kib" => Ok(n.saturating_add(1023) / 1024),
-        _ => Err(format!("ds4-server-rs: invalid disk space unit in '{raw}'")),
+    let mb = match unit.as_str() {
+        "" | "m" | "mb" | "mi" | "mib" => n,
+        "g" | "gb" | "gi" | "gib" => n.saturating_mul(1024),
+        "t" | "tb" | "ti" | "tib" => n.saturating_mul(1024 * 1024),
+        "k" | "kb" | "ki" | "kib" => n.saturating_add(1023) / 1024,
+        _ => return Err(format!("ds4-server-rs: invalid disk space unit in '{raw}'")),
+    };
+    // The `--kv-disk-space-mb` form is an i32. The alias must not accept a
+    // budget that form rejects, and the store turns MiB into bytes.
+    if mb > i32::MAX as u64 {
+        return Err(format!(
+            "ds4-server-rs: disk space '{raw}' exceeds {} MiB",
+            i32::MAX
+        ));
     }
+    Ok(mb)
 }
 
 pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
@@ -1271,8 +1280,12 @@ enum BankDriver {
 
 /// Absent when the operator forced serial through the legacy zero alias, the
 /// backend has no lane, the native fit refused it, the family serves
-/// serially, or an opt-in family stayed at width one — Step publishes
-/// `DS4_STEP37_BATCH=0` there, so its bank machinery never opens.
+/// serially, or an opt-in family stayed at width one.
+///
+/// This mirrors the native admission gate: Inkling, dots3 and GLM refuse
+/// banks outright, Qwen and Step require `DS4_QWEN_BATCH` / `DS4_STEP37_BATCH`
+/// to be `1` (which `env_overrides` publishes from the resolved width), and
+/// the remaining families are persistent.
 fn bank_driver(
     req: &ServingRequest,
     caps: ServingCaps,
@@ -1812,6 +1825,10 @@ mod tests {
         assert_eq!(parse_disk_space("32G").unwrap(), 32 * 1024);
         assert_eq!(parse_disk_space("32768").unwrap(), 32768);
         assert_eq!(parse_disk_space("8TiB").unwrap(), 8 * 1024 * 1024);
+        // The alias must refuse what `--kv-disk-space-mb` refuses; the store
+        // turns MiB into bytes.
+        assert!(parse_disk_space("4096TiB").is_err());
+        assert!(parse_disk_space("0").is_err());
         assert_eq!(MaxSeqs::parse("auto").unwrap(), MaxSeqs::Auto);
         assert_eq!(MaxSeqs::parse("2").unwrap(), MaxSeqs::Fixed(2));
         assert!(PrefixReuse::parse("maybe").is_err());

@@ -103,18 +103,10 @@ fn main() {
                     .unwrap_or_else(|e| cli_error(&e));
             }
             "--prefill-chunk" => {
-                serve_req.sched_chunk = Some(
-                    args.next()
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or_else(|| usage()),
-                );
+                serve_req.sched_chunk = Some(positive_chunk(&arg, args.next()));
             }
             "--prefill-chunk-live" => {
-                serve_req.sched_chunk_live = Some(
-                    args.next()
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or_else(|| usage()),
-                );
+                serve_req.sched_chunk_live = Some(positive_chunk(&arg, args.next()));
             }
             "--print-plan" => serve_req.print_plan = true,
             "--check-config" => serve_req.check_config = true,
@@ -413,6 +405,17 @@ fn main() {
         }
     } else {
         accept_loop(listener, cfg);
+    }
+}
+
+/// A scheduler yield of zero is not a chunk: it would be published to the
+/// native prefill loop as one.
+fn positive_chunk(flag: &str, raw: Option<String>) -> u32 {
+    match raw.and_then(|v| v.parse::<u32>().ok()).filter(|n| *n > 0) {
+        Some(n) => n,
+        None => cli_error(&format!(
+            "ds4-server-rs: {flag} wants a positive token count"
+        )),
     }
 }
 
