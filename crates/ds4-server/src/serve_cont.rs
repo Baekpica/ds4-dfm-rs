@@ -3182,6 +3182,9 @@ mod native {
                 let placement = warm.as_ref().and_then(|plan| {
                     self.place_warm(batch, plan, &protected, store.as_deref_mut())
                 });
+                // A plan the lane found but could not place is a bank-budget
+                // refusal, not a cache answer.
+                let planned = warm.is_some();
                 if let (Some(plan), Some(placement)) = (warm, placement) {
                     let mut admit = ContAdmit::cold(1, plan.tokens, stepper.max_tokens.max(1));
                     admit.place_bank = i32::try_from(placement.target + 1).unwrap_or(0);
@@ -3207,7 +3210,10 @@ mod native {
                     // Only a lookup that ran can report an absence; with
                     // reuse off nothing was examined. A stored record ruled
                     // out by identity is a mismatch, not an absence.
-                    if miss == ReuseMiss::None && capture_done && self.warm_reuse != ReuseKind::None
+                    if miss == ReuseMiss::None
+                        && !planned
+                        && capture_done
+                        && self.warm_reuse != ReuseKind::None
                     {
                         // Ask with the key `disk_plan` searched under: an
                         // image request is stored by its media-marked cache
@@ -3221,10 +3227,25 @@ mod native {
                             .is_some()
                             .then_some(EXT_IMAGE_PIXELS_V2)
                             .unwrap_or(0);
-                        let threshold = store.as_deref().map(|store| store.opt.min_tokens);
-                        let incompatible = self.identity().zip(store.as_deref_mut()).is_some_and(
-                            |((model_id, quant_bits, ctx), store)| {
-                                store.has_incompatible_prefix_identity(
+                        // This lane writes through `persist_bank`, which
+                        // refuses anything below `warm_persist_min`, so a
+                        // conversation shorter than that was never stored
+                        // whatever the store's own record minimum is.
+                        let write_min = store
+                            .as_deref()
+                            .map(|store| store.opt.min_tokens.max(self.warm_persist_min.max(0)));
+                        let min_lcp = usize::try_from(self.warm_partial_min)
+                            .ok()
+                            .filter(|_| self.warm_disk_partial)
+                            .unwrap_or(0);
+                        let (incompatible, placeable) = self
+                            .identity()
+                            .zip(store.as_deref_mut())
+                            .map(|((model_id, quant_bits, ctx), store)| {
+                                // The partial search keys on the longest
+                                // common prefix, so an edited prompt needs
+                                // the LCP question the exact one cannot ask.
+                                let incompatible = store.has_incompatible_prefix_identity(
                                     request_key,
                                     model_id,
                                     quant_bits,
@@ -3232,15 +3253,42 @@ mod native {
                                     true,
                                     EXT_IMAGE_PIXELS_V2,
                                     identity_flags,
-                                )
-                            },
-                        );
+                                ) || store.has_incompatible_lcp_identity(
+                                    request_key,
+                                    model_id,
+                                    quant_bits,
+                                    ctx,
+                                    min_lcp,
+                                    EXT_IMAGE_PIXELS_V2,
+                                    identity_flags,
+                                );
+                                let placeable = !incompatible
+                                    && store
+                                        .bank_text_prefix_candidate_identity(
+                                            request_key,
+                                            model_id,
+                                            quant_bits,
+                                            ctx,
+                                            identity_flags,
+                                        )
+                                        .ok()
+                                        .flatten()
+                                        .is_some();
+                                (incompatible, placeable)
+                            })
+                            .unwrap_or((false, false));
                         // Same order as the serial lane: a record that exists
                         // but cannot be used, then a conversation too short
                         // to have been stored, then plain absence.
                         miss = if incompatible {
                             ReuseMiss::PayloadMismatch
-                        } else if threshold.is_some_and(|min| prompt_n < min) {
+                        } else if placeable {
+                            // A record this request could have used, refused
+                            // by the bank budget rather than by the cache.
+                            // The contract has no reason for that, and an
+                            // absence would be the wrong one.
+                            ReuseMiss::None
+                        } else if write_min.is_some_and(|min| prompt_n < min) {
                             ReuseMiss::BelowThreshold
                         } else {
                             ReuseMiss::NoCheckpoint

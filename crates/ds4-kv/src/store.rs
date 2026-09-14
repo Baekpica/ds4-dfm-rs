@@ -652,6 +652,57 @@ impl Store {
         })
     }
 
+    /// The LCP form of [`Self::has_incompatible_prefix_identity`]: a stored
+    /// record shares the prefix the partial search needs, and only its
+    /// identity keeps that search from taking it. An edited prompt diverges
+    /// from the record, so the exact-prefix question cannot see it.
+    pub fn has_incompatible_lcp_identity(
+        &mut self,
+        prompt: &[u8],
+        model_id: u8,
+        quant_bits: u8,
+        ctx_size: u32,
+        min_lcp: usize,
+        identity_mask: u8,
+        identity_flags: u8,
+    ) -> bool {
+        if min_lcp == 0 || prompt.len() < min_lcp {
+            return false;
+        }
+        self.refresh();
+        let reject_quant = self.reject_different_quant;
+        let min_tokens = self.opt.min_tokens;
+        self.entries.iter().any(|e| {
+            if !is_automatic_exact_replay(e.header.reason, e.header.ext_flags)
+                || e.header.ext_flags & identity_mask != identity_flags & identity_mask
+                || (e.header.tokens as i32) < min_tokens
+                || (e.header.text_bytes as usize) < min_lcp
+                || u64::from(e.header.text_bytes) > 8 * prompt.len() as u64
+            {
+                return false;
+            }
+            let identity_ok = e.header.model_id == model_id
+                && ctx_size >= e.header.ctx_size
+                && (!reject_quant || e.header.quant_bits == quant_bits);
+            if identity_ok {
+                return false;
+            }
+            let want = (e.header.text_bytes as usize).min(prompt.len());
+            let Ok((metadata, text)) = read_text_prefix(&e.path, want) else {
+                return false;
+            };
+            if metadata.header.text_bytes != e.header.text_bytes {
+                return false;
+            }
+            let lcp = text
+                .iter()
+                .zip(prompt)
+                .take_while(|(stored, asked)| stored == asked)
+                .count();
+            lcp >= min_lcp && 8 * (lcp as u64) >= u64::from(e.header.text_bytes)
+        })
+    }
+
     pub fn find_text_lcp(
         &mut self,
         prompt: &[u8],
@@ -1007,6 +1058,30 @@ mod tests {
             EXT_IMAGE_PIXELS_V2,
             0
         ));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_edited_prompt_sees_an_identity_mismatch_through_the_lcp() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-lcp-identity-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut store = Store::open(&dir, 16, false, Options::default()).unwrap();
+        store
+            .write(rec(b"shared opening turn/ORIGINAL", 512))
+            .unwrap();
+        let edited = b"shared opening turn/EDITED CONTINUATION";
+
+        // The stored text diverges from the prompt, so the exact-prefix
+        // question cannot see the record at all.
+        assert!(!store.has_incompatible_prefix_identity(edited, 1, 2, 2048, true, 0, 0));
+        // Through the LCP the partial search would have taken it, and only
+        // the model it was written for rules it out.
+        assert!(store.has_incompatible_lcp_identity(edited, 1, 2, 2048, 8, 0, 0));
+        // The identity it was stored with is not a mismatch.
+        assert!(!store.has_incompatible_lcp_identity(edited, 0, 2, 2048, 8, 0, 0));
+        // Neither is a prompt that shares nothing with it.
+        assert!(!store.has_incompatible_lcp_identity(b"a different opening", 1, 2, 2048, 8, 0, 0));
 
         let _ = fs::remove_dir_all(&dir);
     }
