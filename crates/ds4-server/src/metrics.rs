@@ -122,12 +122,30 @@ pub fn render_stats_json(m: &RouteMetrics, admit: &AdmitState) -> String {
 }
 
 pub fn render_stats_json_ex(m: &RouteMetrics, admit: &AdmitState, rt: &RuntimeMetrics) -> String {
+    render_stats_json_plan(m, admit, rt, None, None)
+}
+
+/// GET /v1/stats body; plan and last_request are omitted when absent.
+pub fn render_stats_json_plan(
+    m: &RouteMetrics,
+    admit: &AdmitState,
+    rt: &RuntimeMetrics,
+    serving: Option<&str>,
+    last_request: Option<&str>,
+) -> String {
     let mut b = render_stats_observation(m, admit);
-    // Drop the closing `}\n` and append the C memory/governor siblings.
     debug_assert!(b.ends_with("}\n"));
     b.truncate(b.len() - 2);
     b.push(',');
     b.push_str(&render_stats_memgov_json(&rt.memgov));
+    if let Some(serving) = serving {
+        b.push_str(",\"serving\":");
+        b.push_str(serving);
+    }
+    if let Some(last_request) = last_request {
+        b.push_str(",\"last_request\":");
+        b.push_str(last_request);
+    }
     b.push_str("}\n");
     b
 }

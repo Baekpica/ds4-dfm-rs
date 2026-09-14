@@ -29,7 +29,7 @@ use crate::http::{
 #[cfg(feature = "native")]
 use crate::metrics::MemCell;
 use crate::metrics::{
-    gov_modes_from_env, render_metrics, render_stats_json_ex, RouteMetrics, RuntimeMetrics,
+    gov_modes_from_env, render_metrics, render_stats_json_plan, RouteMetrics, RuntimeMetrics,
 };
 use crate::models::{model_id_known, model_one_json, models_list_json};
 use crate::parse::{parse_request, ParseEnv};
@@ -83,6 +83,7 @@ pub struct ServerConfig {
     /// C `DS4_SERVER_SERIAL_RIGHTSIZE` (v0.5.2 inc1): false only for the
     /// exact value "0", which restores the fail-at-full-`-c` behavior.
     pub serial_rightsize: bool,
+    pub serving_plan: Option<ds4_core::ResolvedPlan>,
     pub(crate) serial_fit: Option<SerialFitQuote>,
 }
 
@@ -186,6 +187,7 @@ impl Default for ServerConfig {
             serial_rightsize: parse_default_on(
                 std::env::var_os("DS4_SERVER_SERIAL_RIGHTSIZE").as_deref(),
             ),
+            serving_plan: None,
             serial_fit: None,
         }
     }
@@ -197,6 +199,18 @@ fn mem_floor_gb_from_env() -> u64 {
 }
 
 impl ServerConfig {
+    /// Take the resolved plan into the captured config. The config reads its
+    /// own `DS4_SERVER_*` environment before the plan exists, so publishing
+    /// env alone leaves a legacy `DS4_SERVER_CONTINUOUS=0` routing every
+    /// request away from a lane the plan asked for and allocated.
+    pub fn adopt_plan(&mut self, plan: &ds4_core::ResolvedPlan) {
+        self.mem_floor_gb = plan.effective.mem_floor_gb;
+        if plan.wants_bank_lane() {
+            self.continuous = true;
+        }
+        self.serving_plan = Some(plan.clone());
+    }
+
     /// Integration-test fixture. Built inside the crate so `serial_fit` stays
     /// `pub(crate)` and external tests never need functional-update syntax.
     pub fn test_cfg() -> Self {
@@ -218,6 +232,8 @@ pub struct ServerInner {
     pub creg: ContRegistry,
     pub boot_stamp: u64,
     pub have_engine: bool,
+    pub serving_plan: Option<ds4_core::ResolvedPlan>,
+    pub last_request: Option<ds4_core::RequestTrace>,
     disconnect_abort: bool,
     out_agg_cap_bytes: u64,
     out_agg_evict_min_bytes: u64,
@@ -232,6 +248,7 @@ impl ServerInner {
         s.runtime.memgov.gov_modes = gov_modes_from_env();
         s.boot_stamp = unix_now() as u64;
         s.have_engine = cfg.have_engine;
+        s.serving_plan = cfg.serving_plan.clone();
         s.disconnect_abort = cfg.disconnect_abort;
         s.out_agg_cap_bytes = cfg.out_agg_cap_bytes;
         s.out_agg_evict_min_bytes = cfg.out_agg_evict_min_bytes;
@@ -268,6 +285,17 @@ impl ServerInner {
             t.decode_tokens,
             t.decode_steps,
         );
+        let lane = outcome.lane.unwrap_or(if outcome.bank.is_some() {
+            "continuous"
+        } else {
+            "serial"
+        });
+        self.last_request = Some(ds4_core::RequestTrace {
+            effective_lane: lane,
+            reuse_kind: outcome.reuse,
+            speculation_active: outcome.speculation_active,
+            fallback_reason: outcome.fallback_reason.clone(),
+        });
     }
 
     fn record_tokens(&mut self, computed: i32, cached: i32, decoded: i32, steps: i32) {
@@ -1154,7 +1182,21 @@ fn prepare_client(
         let body = {
             let g = lock_inner(inner);
             let rt = g.render_runtime(unix_now() as u64);
-            render_stats_json_ex(&g.metrics, &g.admit, &rt)
+            let serving = g
+                .serving_plan
+                .as_ref()
+                .map(|plan| plan.to_json().to_string());
+            let last = g
+                .last_request
+                .as_ref()
+                .map(|trace| trace.to_json().to_string());
+            render_stats_json_plan(
+                &g.metrics,
+                &g.admit,
+                &rt,
+                serving.as_deref(),
+                last.as_deref(),
+            )
         };
         write_all(
             stream,
@@ -1301,6 +1343,7 @@ fn run_engine<W: TerminalSink>(
     out: &mut W,
     arrived_at: Instant,
 ) -> (u8, Settlement) {
+    let mut serial_fallback = None;
     if dec.lane == LANE_CONTINUOUS {
         if let Some(exec) = cont.as_mut() {
             exec.set_stop_requested(cfg.stop_requested);
@@ -1337,6 +1380,9 @@ fn run_engine<W: TerminalSink>(
                     settle_generation_result(cfg, job, result, out)
                 };
                 return (LANE_CONTINUOUS, settlement);
+            }
+            if let Err(GenerateError::Unsupported(msg)) = result {
+                serial_fallback = Some(msg.to_string());
             }
             // C lane-entry counters (ds4_server.c route_metrics_record):
             // cont_admit success ticks continuous BEFORE the engine's
@@ -1378,7 +1424,7 @@ fn run_engine<W: TerminalSink>(
         if matches!(&result, Err(GenerateError::Engine(msg)) if msg == STATIC_WIDTH_ERR) {
             return (
                 crate::route::LANE_SERIAL,
-                run_serial(cfg, inner, job, id, engine, cont, out, arrived_at),
+                run_serial(cfg, inner, job, id, engine, cont, out, arrived_at, None),
             );
         }
         return (
@@ -1397,7 +1443,17 @@ fn run_engine<W: TerminalSink>(
     }
     (
         crate::route::LANE_SERIAL,
-        run_serial(cfg, inner, job, id, engine, cont, out, arrived_at),
+        run_serial(
+            cfg,
+            inner,
+            job,
+            id,
+            engine,
+            cont,
+            out,
+            arrived_at,
+            serial_fallback,
+        ),
     )
 }
 
@@ -1418,12 +1474,16 @@ fn settle_static_lane<W: TerminalSink>(
                 finish: StaticFinish::Length,
             };
             let row = rows.last().unwrap_or(&empty);
-            lock_inner(inner).record_tokens(
-                prompt_n,
-                0,
-                i32::try_from(row.tokens.len()).unwrap_or(i32::MAX),
-                0,
-            );
+            let decoded = i32::try_from(row.tokens.len()).unwrap_or(i32::MAX);
+            lock_inner(inner).record_generation(&GenerateOutcome {
+                timings: crate::stream::ReqTimings {
+                    prefill_tokens: prompt_n,
+                    decode_tokens: decoded,
+                    ..crate::stream::ReqTimings::default()
+                },
+                lane: Some("static"),
+                ..GenerateOutcome::default()
+            });
             let bytes = write_static_completion(
                 StaticSettle {
                     parsed: &job.parsed,
@@ -1483,6 +1543,7 @@ fn run_serial<W: TerminalSink>(
     mut cont: Option<&mut dyn ContExec>,
     out: &mut W,
     arrived_at: Instant,
+    fallback: Option<String>,
 ) -> Settlement {
     let parsed = &job.parsed;
     let now = monotonic_now();
@@ -1607,6 +1668,8 @@ fn run_serial<W: TerminalSink>(
         Ok(result) => result,
         Err(error) => return settle_generation_result(cfg, job, Err(error), out),
     };
+    let mut generated = generated;
+    generated.fallback_reason = fallback;
     lock_inner(inner).record_generation(&generated);
     let publish = matches!(parsed.api, Api::Anthropic | Api::Responses)
         && !generated.tool_ids.is_empty()
@@ -2583,17 +2646,142 @@ mod owner_tests {
             timings: crate::stream::ReqTimings {
                 prefill_tokens: 18,
                 prefill_cached: 260,
-                decode_tokens: 7,
+                decode_tokens: 4,
                 decode_steps: 4,
                 ..crate::stream::ReqTimings::default()
             },
+            speculation_active: true,
+            reuse: ds4_core::ReuseTaken::Exact,
             ..GenerateOutcome::default()
         });
 
         assert_eq!(inner.runtime.tokens_prefilled_computed, 18);
         assert_eq!(inner.runtime.tokens_prefilled_cached, 260);
-        assert_eq!(inner.runtime.tokens_decoded, 7);
+        assert_eq!(inner.runtime.tokens_decoded, 4);
         assert_eq!(inner.runtime.decode_steps, 4);
+        let last = inner.last_request.as_ref().unwrap();
+        assert_eq!(last.effective_lane, "serial");
+        assert_eq!(last.reuse_kind, ds4_core::ReuseTaken::Exact);
+        assert!(last.speculation_active);
+        assert!(last.fallback_reason.is_none());
+    }
+
+    #[test]
+    fn adopting_a_bank_plan_overrides_a_legacy_serial_config() {
+        let req = ds4_core::ServingRequest {
+            max_seqs: ds4_core::MaxSeqs::Fixed(2),
+            mem_floor_gb: 12,
+            ..ds4_core::ServingRequest::default()
+        };
+        let plan = ds4_core::resolve_plan(
+            &req,
+            Some(ds4_core::serving_caps(
+                ds4_core::ModelFamily::Qwen4Exp,
+                ds4_core::Variant::Qwen38FlashNext,
+            )),
+            &ds4_core::EngineFacts::default(),
+        );
+        // `DS4_SERVER_CONTINUOUS=0` was captured before the plan existed.
+        let mut cfg = ServerConfig::default();
+        cfg.continuous = false;
+        cfg.adopt_plan(&plan);
+        assert!(cfg.continuous);
+        assert_eq!(cfg.mem_floor_gb, 12);
+        assert!(cfg.serving_plan.is_some());
+    }
+
+    #[test]
+    fn adopting_a_serial_plan_leaves_the_lane_flag_alone() {
+        let req = ds4_core::ServingRequest {
+            max_seqs: ds4_core::MaxSeqs::Off,
+            ..ds4_core::ServingRequest::default()
+        };
+        let plan = ds4_core::resolve_plan(
+            &req,
+            Some(ds4_core::serving_caps(
+                ds4_core::ModelFamily::Qwen4Exp,
+                ds4_core::Variant::Qwen38FlashNext,
+            )),
+            &ds4_core::EngineFacts::default(),
+        );
+        let mut cfg = ServerConfig::default();
+        cfg.continuous = false;
+        cfg.adopt_plan(&plan);
+        assert!(!cfg.continuous);
+    }
+
+    #[test]
+    fn static_settlement_records_static_lane() {
+        let mut inner = ServerInner::default();
+        inner.record_generation(&GenerateOutcome {
+            lane: Some("static"),
+            timings: crate::stream::ReqTimings {
+                prefill_tokens: 8,
+                decode_tokens: 3,
+                ..crate::stream::ReqTimings::default()
+            },
+            ..GenerateOutcome::default()
+        });
+        let last = inner.last_request.as_ref().unwrap();
+        assert_eq!(last.effective_lane, "static");
+        assert_eq!(last.reuse_kind, ds4_core::ReuseTaken::Cold);
+        assert!(!last.speculation_active);
+    }
+
+    #[test]
+    fn stats_exposes_serving_and_last_request() {
+        let req = ds4_core::ServingRequest {
+            max_seqs: ds4_core::MaxSeqs::Fixed(2),
+            mem_floor_gb: 12,
+            ..ds4_core::ServingRequest::default()
+        };
+        let plan = ds4_core::resolve_plan(
+            &req,
+            Some(ds4_core::serving_caps(
+                ds4_core::ModelFamily::Qwen4Exp,
+                ds4_core::Variant::Qwen38FlashNext,
+            )),
+            &ds4_core::EngineFacts::default(),
+        );
+        let mut cfg = ServerConfig::default();
+        cfg.serving_plan = Some(plan);
+
+        let inner = Mutex::new(ServerInner::from_cfg(&cfg));
+        lock_inner(&inner).record_generation(&GenerateOutcome {
+            bank: Some(0),
+            timings: crate::stream::ReqTimings {
+                prefill_tokens: 18,
+                prefill_cached: 260,
+                decode_tokens: 7,
+                decode_steps: 4,
+                ..crate::stream::ReqTimings::default()
+            },
+            speculation_active: true,
+            reuse: ds4_core::ReuseTaken::Partial,
+            ..GenerateOutcome::default()
+        });
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        write!(client, "GET /v1/stats HTTP/1.1\r\n\r\n").unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        handle_client_inner(&cfg, &inner, &mut server, None, None);
+        drop(server);
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).unwrap();
+        let text = String::from_utf8(response).unwrap();
+        assert!(text.starts_with("HTTP/1.1 200 OK"), "{text}");
+        let json_start = text.find("{\"routes\"").expect(&text);
+        let body: serde_json::Value =
+            serde_json::from_str(text[json_start..].trim()).expect(&text[json_start..]);
+        assert!(body["serving"]["requested"].is_object(), "{body}");
+        assert!(body["serving"]["effective"].is_object(), "{body}");
+        assert!(body["serving"]["qualified"].is_object(), "{body}");
+        assert_eq!(body["last_request"]["effective_lane"], "continuous");
+        assert_eq!(body["last_request"]["reuse_kind"], "partial");
+        assert_eq!(body["last_request"]["speculation_active"], true);
+        assert!(body["last_request"].get("fallback_reason").is_some());
     }
 
     #[cfg(not(feature = "native"))]
@@ -2819,6 +3007,9 @@ mod owner_tests {
         let g = inner.lock().unwrap();
         assert_eq!(g.metrics.route_requests[0][0], 1);
         assert_eq!(g.metrics.route_requests[0][1], 1);
+        let last = g.last_request.as_ref().unwrap();
+        assert_eq!(last.effective_lane, "serial");
+        assert_eq!(last.fallback_reason.as_deref(), Some("serial fallback"));
     }
 
     #[test]

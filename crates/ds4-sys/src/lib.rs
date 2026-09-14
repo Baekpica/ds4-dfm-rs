@@ -931,6 +931,8 @@ pub struct ds4_bridge_cont_stats {
     pub decode_ms: f64,
     pub decode_tokens: u32,
     pub decode_steps: u32,
+    /// Draft rows this sequence ran; 0 is ordinary decode.
+    pub spec_drafts: u64,
 }
 
 #[repr(C)]

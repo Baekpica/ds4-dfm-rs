@@ -40,3 +40,7 @@ jobs:
         run: make test-ple-formats
       - name: All host targets
         run: cargo check --workspace --all-targets --locked
+      # `native` is off by default, so the production host is otherwise
+      # never type-checked here. Linking still needs the CUDA objects.
+      - name: Native serving host
+        run: cargo check -p ds4-server --lib --bin ds4-server-rs --features native --locked

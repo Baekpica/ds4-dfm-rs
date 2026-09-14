@@ -23,6 +23,7 @@ mod mem;
 mod mem_gov;
 mod payload;
 mod progress;
+mod serving;
 mod session;
 mod shape;
 mod sibling;
@@ -35,7 +36,7 @@ mod validate;
 
 pub use batch::{
     cont_sample_token, qwen_image_pixel_hash, qwen_image_probe, BankSnapshot, BatchCtx, ContAdmit,
-    ContDriver, QwenImageInfo, QwenImageInput, StaticBatchFinish, StaticBatchRequest,
+    ContDone, ContDriver, QwenImageInfo, QwenImageInput, StaticBatchFinish, StaticBatchRequest,
     StaticBatchResult, CONT_SAMPLE_GREEDY, CONT_SAMPLE_NONE,
 };
 pub use bind::{
@@ -72,6 +73,13 @@ pub use payload::{
     MAGIC as PAYLOAD_MAGIC, U32_FIELDS as PAYLOAD_U32_FIELDS, VERSION as PAYLOAD_VERSION,
 };
 pub use progress::PrefillCheckpoint;
+pub use serving::{
+    caps_from_ident, caps_from_shape, host_reuse, parse_disk_space, resolve_plan, serving_caps,
+    ChunkFence, Distribution, EffectiveView, EngineFacts, HostNeed, IssueLevel, LaneMode, MaxSeqs,
+    MtpMode, PlanIssue, PrefixReuse, QualifiedView, RequestTrace, RequestedView, ResolvedPlan,
+    ReuseKind, ReuseTaken, ServingCaps, ServingRequest, SpecLane, Support, DEFAULT_BANK_PERSIST,
+    DEFAULT_MAX_SEQS, DEFAULT_MEM_FLOOR_GB, PREFILL_CHUNK_FENCE,
+};
 pub use session::{
     dump_cmd as session_dump_cmd, RewriteKind, SessionBackend, SessionLedger, SyncPlan,
 };
@@ -81,7 +89,7 @@ pub use shape::{
     SHAPE_GLM53_FLASH, SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_PRO,
     SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B,
 };
-pub use sibling::SiblingAttach;
+pub use sibling::{probe_dspark_sidecar, probe_mtp_sidecar, probe_vision_sidecar, SiblingAttach};
 pub use spec::{snapshot_spec, SpecMetrics};
 pub use step37::{Step37Error, Step37Layer, Step37Plan, Step37Sidecar, Step37SidecarPlan};
 pub use tensors::{
@@ -967,6 +975,55 @@ fn pack_sibling_ffi(attach: &SiblingAttach) -> Result<FfiSupport> {
 //   model_id / routed_quant_bits
 // MOVE later (production already left):
 //   ds4_bridge_model_run_distributed_worker -> assemble_worker (oracle FFI)
+/// Everything `Model::open` checks before it touches the device: identify,
+/// family validation, vocab, chat template, tensor inventory, required
+/// tensors and layouts. `--check-config` runs it so an artifact that cannot
+/// load is refused before listen. Keep it in step with the open's prelude.
+pub fn probe_model_artifact(path: &str) -> Result<()> {
+    let identified = identify_gguf(std::path::Path::new(path)).map_err(|e| Error {
+        code: 1,
+        message: format!("identify failed: {}", e.token()),
+    })?;
+    let g = GgufFile::open(std::path::Path::new(path)).map_err(|e| Error {
+        code: 1,
+        message: format!("validate failed: {}", e.token()),
+    })?;
+    validate_file(&g, &identified.shape).map_err(|e| Error {
+        code: 1,
+        message: format!("validate failed: {}", e.token()),
+    })?;
+    Vocab::load(&g, identified.shape.family).map_err(|e| Error {
+        code: 1,
+        message: format!("vocab failed: {e}"),
+    })?;
+    chat_template::Template::load(std::path::Path::new(path), &g)?;
+    let inventory = TensorInventory::open(std::path::Path::new(path)).map_err(|e| Error {
+        code: 1,
+        message: format!("tensor inventory failed: {}", e.token()),
+    })?;
+    validate_qwen_inventory(&g, &inventory).map_err(|e| Error {
+        code: 1,
+        message: format!("validate failed: {}", e.token()),
+    })?;
+    if identified.shape.family == ModelFamily::Step37 {
+        Step37Plan::validate_inventory(&inventory).map_err(|e| Error {
+            code: 1,
+            message: e.to_string(),
+        })?;
+    }
+    let bind_plan = BindPlan::resolve(identified.shape, &inventory);
+    if let Some(name) = bind_plan.missing_required().first() {
+        return Err(Error {
+            code: 1,
+            message: format!("required tensor is missing: {name}"),
+        });
+    }
+    validate_layouts(&bind_plan).map_err(|e| Error {
+        code: 1,
+        message: format!("layout failed: {}", e.token()),
+    })
+}
+
 impl Model {
     pub fn open(
         path: &str,

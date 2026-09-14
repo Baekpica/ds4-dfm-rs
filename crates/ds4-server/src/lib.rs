@@ -84,10 +84,10 @@ pub use json::{
 pub use metrics::{
     dump_memgov_names, gov_modes_from_env, render_memgov_metrics, render_metrics,
     render_metrics_fragment, render_metrics_prefix, render_metrics_runtime, render_stats_json,
-    render_stats_json_ex, render_stats_memgov_json, MemgovSnap, ReconcileSnap, RouteMetrics,
-    RuntimeMetrics, GOV_CMP_NAMES, GOV_CONSUMER_NAMES, GOV_STATUS_NAMES, MEM_CLASS_NAMES,
-    MEM_DOMAIN_NAMES, RECLAIM_STATUS_NAMES, REJECT_REASON_NAMES, REJLANE_NAMES, ROUTE_LANE_NAMES,
-    ROUTE_SURFACE_NAMES, THINK_MODE_NAMES,
+    render_stats_json_ex, render_stats_json_plan, render_stats_memgov_json, MemgovSnap,
+    ReconcileSnap, RouteMetrics, RuntimeMetrics, GOV_CMP_NAMES, GOV_CONSUMER_NAMES,
+    GOV_STATUS_NAMES, MEM_CLASS_NAMES, MEM_DOMAIN_NAMES, RECLAIM_STATUS_NAMES, REJECT_REASON_NAMES,
+    REJLANE_NAMES, ROUTE_LANE_NAMES, ROUTE_SURFACE_NAMES, THINK_MODE_NAMES,
 };
 pub use models::{
     append_model_json_values, json_models_array_dup, model_alias_disables_thinking,

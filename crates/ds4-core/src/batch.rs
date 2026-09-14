@@ -142,6 +142,17 @@ impl ContAdmit {
     }
 }
 
+/// What the native loop measured for one finished sequence.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ContDone {
+    pub decode_ms: f64,
+    pub decode_tokens: i32,
+    pub decode_steps: i32,
+    /// Draft rows this sequence ran. Resident MTP weights are not proof
+    /// that this request speculated.
+    pub spec_drafts: u64,
+}
+
 /// Host half of `ds4_engine_continuous_generate`. Same contracts as the C
 /// callbacks: `admit` returning `None` plus an empty active set ends the
 /// loop; `on_token(false)` aborts that sequence; `on_admitted(false)`
@@ -149,15 +160,7 @@ impl ContAdmit {
 pub trait ContDriver {
     fn admit(&mut self) -> Option<ContAdmit>;
     fn on_token(&mut self, user: usize, token: i32) -> bool;
-    fn on_done(
-        &mut self,
-        user: usize,
-        tokens: &[i32],
-        finish: i32,
-        decode_ms: f64,
-        decode_tokens: i32,
-        decode_steps: i32,
-    );
+    fn on_done(&mut self, user: usize, tokens: &[i32], finish: i32, stats: ContDone);
     fn sample_override(&mut self, _user: usize) -> i32 {
         CONT_SAMPLE_NONE
     }
@@ -254,9 +257,12 @@ unsafe extern "C" fn tramp_on_done(
             user,
             toks,
             finish,
-            stats.decode_ms,
-            stats.decode_tokens as i32,
-            stats.decode_steps as i32,
+            ContDone {
+                decode_ms: stats.decode_ms,
+                decode_tokens: stats.decode_tokens as i32,
+                decode_steps: stats.decode_steps as i32,
+                spec_drafts: stats.spec_drafts,
+            },
         )
     }));
     t.live.remove(&user);
@@ -926,15 +932,7 @@ mod tests {
                 true
             }
 
-            fn on_done(
-                &mut self,
-                user: usize,
-                _tokens: &[i32],
-                _finish: i32,
-                _decode_ms: f64,
-                _decode_tokens: i32,
-                _decode_steps: i32,
-            ) {
+            fn on_done(&mut self, user: usize, _tokens: &[i32], _finish: i32, _stats: ContDone) {
                 assert_eq!(user, 7);
                 self.done = true;
             }
@@ -973,15 +971,7 @@ mod tests {
                 true
             }
 
-            fn on_done(
-                &mut self,
-                user: usize,
-                _tokens: &[i32],
-                _finish: i32,
-                _decode_ms: f64,
-                _decode_tokens: i32,
-                _decode_steps: i32,
-            ) {
+            fn on_done(&mut self, user: usize, _tokens: &[i32], _finish: i32, _stats: ContDone) {
                 self.done.push(user);
             }
 

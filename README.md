@@ -83,6 +83,12 @@ optimized C/CUDA/Metal backend, Git ancestry and authorship, and the full
 
 ## Status
 
+**v0.1.3 (in progress):** Qwen-parity serving UX. Common option names,
+requested / effective / qualified plans, and honest unsupported errors.
+The [release ledger](docs/releases/v0.1.3.md) covers P0–P4. The
+[serving contract](docs/serving-contract.md) is the operator surface.
+The release is complete only when P0–P4 are all applied.
+
 **v0.1.2:** official model Jinja drives Chat, Messages, Responses and CLI
 input through one Rust adapter. The [release ledger](docs/releases/v0.1.2.md)
 records local artifact and protocol checks, including the

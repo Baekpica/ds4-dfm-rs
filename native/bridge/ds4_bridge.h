@@ -508,6 +508,9 @@ typedef struct {
     double decode_ms;
     uint32_t decode_tokens;
     uint32_t decode_steps;
+    /* Draft rows this sequence ran.  0 means ordinary decode: MTP weights
+     * being resident is not "this request speculated". */
+    uint64_t spec_drafts;
 } ds4_bridge_cont_stats;
 
 int ds4_bridge_continuous_generate(
