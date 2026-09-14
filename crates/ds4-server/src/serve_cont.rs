@@ -3262,8 +3262,11 @@ mod native {
                                     EXT_IMAGE_PIXELS_V2,
                                     identity_flags,
                                 );
+                                // Either search can hold a checkpoint this
+                                // request could have used; the bank budget
+                                // refuses both the same way.
                                 let placeable = !incompatible
-                                    && store
+                                    && (store
                                         .bank_text_prefix_candidate_identity(
                                             request_key,
                                             model_id,
@@ -3273,7 +3276,20 @@ mod native {
                                         )
                                         .ok()
                                         .flatten()
-                                        .is_some();
+                                        .is_some()
+                                        || min_lcp > 0
+                                            && store
+                                                .bank_text_lcp_candidate_identity(
+                                                    request_key,
+                                                    model_id,
+                                                    quant_bits,
+                                                    ctx,
+                                                    min_lcp,
+                                                    identity_flags,
+                                                )
+                                                .ok()
+                                                .flatten()
+                                                .is_some());
                                 (incompatible, placeable)
                             })
                             .unwrap_or((false, false));
