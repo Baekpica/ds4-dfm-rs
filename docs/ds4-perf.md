@@ -78,7 +78,8 @@ disk payloads and opt-in bank checkpoints; see
 [step37-serving-2026-09-13.md](step37-serving-2026-09-13.md). Between sweep
 frontiers a family without a usable snapshot still replays the prompt prefix
 outside both measured ranges. CSV `kvcache_bytes` is zero when no serialized
-snapshot is used, not a KV allocation measurement. `tests/test_inkling_bench.py` compares sweep logits and tokens with
+snapshot is used, not a KV allocation measurement.
+`tests/test_inkling_bench.py` compares sweep logits and tokens with
 independent cold frontiers; run it under the memory guard with the same owner.
 
 `--fit` joins device properties, calibration, workload metadata, and measured
