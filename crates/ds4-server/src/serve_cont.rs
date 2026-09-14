@@ -50,7 +50,9 @@ use crate::stream::{think_end, ChatFormat};
 use crate::tools::{assign_tool_ids, parse_generated_for_response, SemAccum};
 
 #[cfg(any(feature = "native", test))]
-const DEFAULT_BANK_PERSIST_MIN_TOKENS: i32 = 8_192;
+/// One definition with the serving plan, so `/v1/stats` cannot advertise a
+/// threshold retirement does not use.
+const DEFAULT_BANK_PERSIST_MIN_TOKENS: i32 = ds4_core::DEFAULT_BANK_PERSIST;
 
 #[cfg(any(feature = "native", test))]
 fn bank_persist_eligible(committed: i32, persist_min: i32) -> bool {
@@ -1601,7 +1603,7 @@ mod native {
 
     use ds4_core::{
         qwen_image_pixel_hash, qwen_image_probe, BatchCtx, ContAdmit, ContDone, ContDriver,
-        QwenImageInput, ReuseTaken, Vocab, CONT_SAMPLE_GREEDY, CONT_SAMPLE_NONE,
+        QwenImageInput, ReuseKind, ReuseTaken, Vocab, CONT_SAMPLE_GREEDY, CONT_SAMPLE_NONE,
     };
 
     use crate::serve_static::{BatchStatic, CoalesceLimits, StaticExec, StaticJob, StaticRow};
@@ -1632,6 +1634,9 @@ mod native {
         eos: i32,
         warm: Vec<WarmBank>,
         warm_clock: u64,
+        /// Resolved `--prefix-reuse`. `None` skips every warm plan: fork is
+        /// not the only reuse, an in-place bank hit is one too.
+        warm_reuse: ReuseKind,
         warm_fork: bool,
         warm_fork_partial: bool,
         warm_disk_partial: bool,
@@ -2203,6 +2208,13 @@ mod native {
             self
         }
 
+        /// The plan owns reuse. Without this the lane keeps whatever the
+        /// published `DS4_SERVER_FORK` said.
+        pub fn with_prefix_reuse(mut self, reuse: ReuseKind) -> Self {
+            self.host.warm_reuse = reuse;
+            self
+        }
+
         pub fn new(
             batch: BatchCtx<'m>,
             vocab: &'m Vocab,
@@ -2242,6 +2254,11 @@ mod native {
                     eos,
                     warm: (0..max_seq).map(|_| WarmBank::default()).collect(),
                     warm_clock: 0,
+                    warm_reuse: if warm_fork {
+                        ReuseKind::Partial
+                    } else {
+                        ReuseKind::None
+                    },
                     warm_fork,
                     warm_fork_partial,
                     warm_disk_partial,
@@ -3061,7 +3078,7 @@ mod native {
             } else {
                 let (hold, hold_retry) = self.protected_banks(bank_hold_retry);
                 let protected = reserve.protect(&hold);
-                let warm = if capture_done {
+                let warm = if capture_done && self.warm_reuse != ReuseKind::None {
                     self.warm_plan(
                         batch,
                         &stepper.prompt,

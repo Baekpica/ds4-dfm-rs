@@ -19,6 +19,8 @@ pub const DEFAULT_SCHED_CHUNK: u32 = 4096;
 /// advertise a yield the scheduler will not use.
 pub const PREFILL_CHUNK_FENCE: u32 = 8192;
 pub const DEFAULT_SCHED_LIVE: u32 = 512;
+/// C `DS4_SERVER_PERSIST_MIN_TOKENS`: how much a continuous bank must hold
+/// before retirement persists it. Not the disk store's record minimum.
 pub const DEFAULT_BANK_PERSIST: i32 = 8192;
 
 /// User-facing reuse policy. `Auto` is the best qualified path.
@@ -146,7 +148,10 @@ pub struct ServingRequest {
     pub mem_floor_gb: u64,
     pub kv_disk_dir: Option<String>,
     pub kv_disk_space_mb: Option<u64>,
+    /// Disk store record minimum (`--kv-cache-min-tokens`).
     pub kv_min_tokens: Option<i32>,
+    /// Continuous-bank persistence threshold (`DS4_SERVER_PERSIST_MIN_TOKENS`).
+    pub bank_persist_min: Option<i32>,
     pub mtp_path: Option<String>,
     pub mtp_draft: Option<i32>,
     pub sched_chunk: Option<u32>,
@@ -202,6 +207,7 @@ pub struct EffectiveView {
     pub sched_chunk: u32,
     pub sched_chunk_live: u32,
     pub bank_persist_min: i32,
+    pub disk_min_tokens: Option<i32>,
     pub native_chunk: Option<u32>,
 }
 
@@ -289,6 +295,7 @@ impl Default for ServingRequest {
             kv_disk_dir: None,
             kv_disk_space_mb: None,
             kv_min_tokens: None,
+            bank_persist_min: None,
             mtp_path: None,
             mtp_draft: None,
             sched_chunk: None,
@@ -416,6 +423,11 @@ impl ServingRequest {
         req.prefix_reuse = reuse_from_env();
         if std::env::var_os("DS4_MTP_SPEC_DISABLE").is_some() {
             req.mtp_mode = MtpMode::Off;
+        }
+        if let Ok(raw) = std::env::var("DS4_SERVER_PERSIST_MIN_TOKENS") {
+            if let Some(n) = parse_u32_atoi(&raw) {
+                req.bank_persist_min = i32::try_from(n).ok();
+            }
         }
         if let Ok(raw) = std::env::var("DS4_CONT_PREFILL_CHUNK") {
             if let Some(n) = parse_u32_atoi(&raw) {
@@ -817,7 +829,8 @@ pub fn resolve_plan(
             banks_opt_in,
             sched_chunk,
             sched_chunk_live: sched_live,
-            bank_persist_min: req.kv_min_tokens.unwrap_or(DEFAULT_BANK_PERSIST),
+            bank_persist_min: req.bank_persist_min.unwrap_or(DEFAULT_BANK_PERSIST),
+            disk_min_tokens: req.kv_min_tokens,
             native_chunk: req.native_chunk,
         },
         qualified,
@@ -966,6 +979,7 @@ impl ResolvedPlan {
                 "sched_chunk_live": self.effective.sched_chunk_live,
                 "native_chunk": self.effective.native_chunk,
                 "bank_persist_min_tokens": self.effective.bank_persist_min,
+                "disk_min_tokens": self.effective.disk_min_tokens,
                 "disk_is_offload": false
             },
             "qualified": {
@@ -1077,7 +1091,8 @@ fn default_effective(req: &ServingRequest) -> EffectiveView {
         banks_opt_in: false,
         sched_chunk: req.sched_chunk.unwrap_or(DEFAULT_SCHED_CHUNK),
         sched_chunk_live: req.sched_chunk_live.unwrap_or(DEFAULT_SCHED_LIVE),
-        bank_persist_min: req.kv_min_tokens.unwrap_or(DEFAULT_BANK_PERSIST),
+        bank_persist_min: req.bank_persist_min.unwrap_or(DEFAULT_BANK_PERSIST),
+        disk_min_tokens: req.kv_min_tokens,
         native_chunk: req.native_chunk,
     }
 }
@@ -1675,6 +1690,42 @@ mod tests {
         let p = plan(req, ModelFamily::Step37, Variant::Step37Flash);
         assert_eq!(p.effective.mtp_draft, None);
         assert!(p.to_json()["effective"]["mtp_draft"].is_null());
+    }
+
+    #[test]
+    fn the_two_persistence_thresholds_stay_apart() {
+        let mut req = ServingRequest::default();
+        req.kv_min_tokens = Some(512);
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        // The disk store's record minimum is not the bank threshold.
+        assert_eq!(p.effective.disk_min_tokens, Some(512));
+        assert_eq!(p.effective.bank_persist_min, DEFAULT_BANK_PERSIST);
+        assert_eq!(p.to_json()["effective"]["bank_persist_min_tokens"], 8192);
+        assert_eq!(p.to_json()["effective"]["disk_min_tokens"], 512);
+
+        let mut req = ServingRequest::default();
+        req.bank_persist_min = Some(4096);
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert_eq!(p.effective.bank_persist_min, 4096);
+    }
+
+    #[test]
+    fn an_empty_sidecar_path_is_not_weights() {
+        let mut req = ServingRequest::default();
+        req.mtp_mode = MtpMode::On;
+        req.mtp_path = Some(String::new());
+        let facts = EngineFacts {
+            mtp_path_ok: Some(false),
+            ..EngineFacts::default()
+        };
+        let p = resolve_plan(
+            &req,
+            Some(caps(ModelFamily::Step37, Variant::Step37Flash)),
+            &facts,
+        );
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "mtp_sidecar"));
+        assert!(!p.effective.mtp_weights);
     }
 
     #[test]

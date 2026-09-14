@@ -353,6 +353,7 @@ fn main() {
                         cli_error("ds4-server-rs: fitted serving plan rejected");
                     }
                     fitted.apply_env();
+                    let fitted_reuse = fitted.effective.prefix_reuse;
                     cfg.adopt_plan(&fitted);
                     Some(
                         ContLane::new(
@@ -363,7 +364,8 @@ fn main() {
                             cfg.ctx,
                             model.token_eos(),
                         )
-                        .with_template(model.chat_template()),
+                        .with_template(model.chat_template())
+                        .with_prefix_reuse(fitted_reuse),
                     )
                 }
                 Err(e) => {
