@@ -3,9 +3,9 @@
 //! Incremental live DSML tool projection is host-owned.
 
 use ds4_core::{
-    caps_from_ident, identify_gguf, probe_model_artifact, probe_mtp_sidecar, probe_vision_sidecar,
-    resolve_plan, Backend, DistributedConfig, DistributedRole, Distribution, EngineFacts, MaxSeqs,
-    Model, ModelOpenOption, MtpMode, PrefixReuse, ServingRequest,
+    caps_from_ident, identify_gguf, probe_dspark_sidecar, probe_model_artifact, probe_mtp_sidecar,
+    probe_vision_sidecar, resolve_plan, Backend, DistributedConfig, DistributedRole, Distribution,
+    EngineFacts, MaxSeqs, Model, ModelOpenOption, MtpMode, PrefixReuse, ServingRequest,
 };
 use ds4_server::kv_cli::DiskKvArgs;
 use ds4_server::{
@@ -230,6 +230,19 @@ fn main() {
                     }
                 },
             );
+        }
+    }
+    // The open still consumes this fallback, and only DeepSeek accepts a
+    // drafter at all, so the check has to look at it.
+    if let (Some(id), Ok(path)) = (ident.as_ref(), std::env::var("DS4_DSPARK_MODEL")) {
+        if !path.is_empty() {
+            facts.dspark_ok = Some(match probe_dspark_sidecar(id.shape, &path) {
+                Ok(()) => true,
+                Err(error) => {
+                    eprintln!("ds4-server-rs: DS4_DSPARK_MODEL {path}: {error}");
+                    false
+                }
+            });
         }
     }
     if let Some(path) = mtp_path.as_deref() {

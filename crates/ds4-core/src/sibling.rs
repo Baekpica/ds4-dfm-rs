@@ -37,6 +37,27 @@ impl SiblingAttach {
 /// Validate an MTP sidecar the way `Model::open` will: family acceptance,
 /// sidecar metadata, required tensors, and layouts. `--check-config` uses
 /// this so a syntactically valid but incompatible GGUF fails before listen.
+/// Validate a DSpark drafter the way the open will. Only DeepSeek accepts
+/// one; every other single-model family refuses it, including the
+/// `DS4_DSPARK_MODEL` fallback the open still consumes.
+pub fn probe_dspark_sidecar(shape: Shape, path: &str) -> Result<()> {
+    if path.is_empty() {
+        return Err(Error {
+            code: 1,
+            message: "dspark path must not be empty".into(),
+        });
+    }
+    attach_siblings(
+        shape.family,
+        shape,
+        SiblingPaths {
+            mtp: None,
+            dspark: Some(path),
+        },
+    )
+    .map(|_| ())
+}
+
 pub fn probe_mtp_sidecar(shape: Shape, path: &str) -> Result<()> {
     // `attach_siblings` reads an empty path as "no sidecar", but the plan
     // reads `Some("")` as loaded weights, so answer it here.
@@ -62,6 +83,42 @@ pub fn probe_mtp_sidecar(shape: Shape, path: &str) -> Result<()> {
 /// token ids. Tensor shapes stay with the native binder.
 const GLM_VISION_ARCH: &[u8] = b"glm5-next-vision";
 const GLM_VISION_TENSORS: u64 = 347;
+/// Every required tensor, BF16 with these exact ranks and dims — the table
+/// `glm53_vision_weights_bind` asserts before it binds an offset.
+const GLM_VISION_LAYERS: u32 = 24;
+const GLM_VISION_TENSORS_SPEC: [(&str, &[u64]); 11] = [
+    (
+        "model.visual.patch_embed.proj.weight",
+        &[14, 14, 2, 3, 1024],
+    ),
+    ("model.visual.patch_embed.proj.bias", &[1024]),
+    ("model.visual.post_layernorm.weight", &[1024]),
+    ("model.visual.downsample.weight", &[2, 2, 1024, 4096]),
+    ("model.visual.downsample.bias", &[4096]),
+    ("model.visual.merger.proj.weight", &[4096, 4096]),
+    ("model.visual.merger.post_projection_norm.weight", &[4096]),
+    ("model.visual.merger.post_projection_norm.bias", &[4096]),
+    ("model.visual.merger.gate_proj.weight", &[4096, 10240]),
+    ("model.visual.merger.up_proj.weight", &[4096, 10240]),
+    ("model.visual.merger.down_proj.weight", &[10240, 4096]),
+];
+const GLM_VISION_LAYER_SPEC: [(&str, &[u64]); 14] = [
+    ("norm1.weight", &[1024]),
+    ("attn.qkv.weight", &[1024, 3072]),
+    ("attn.qkv.bias", &[3072]),
+    ("attn.q_norm.weight", &[64]),
+    ("attn.k_norm.weight", &[64]),
+    ("attn.proj.weight", &[1024, 1024]),
+    ("attn.proj.bias", &[1024]),
+    ("norm2.weight", &[1024]),
+    ("mlp.gate_proj.weight", &[1024, 4096]),
+    ("mlp.gate_proj.bias", &[4096]),
+    ("mlp.up_proj.weight", &[1024, 4096]),
+    ("mlp.up_proj.bias", &[4096]),
+    ("mlp.down_proj.weight", &[4096, 1024]),
+    ("mlp.down_proj.bias", &[1024]),
+];
+
 const GLM_VISION_CONFIG: [(&str, u32); 12] = [
     ("glm5-next-vision.block_count", 24),
     ("glm5-next-vision.embedding_length", 1024),
@@ -81,6 +138,36 @@ const GLM_VISION_CONFIG: [(&str, u32); 12] = [
 /// full GLM-5.3 or Step CUDA model takes one, and then the artifact itself
 /// is opened. `--check-config` uses this so a process that cannot boot is
 /// not approved.
+fn glm_vision_tensor(inventory: &crate::TensorInventory, name: &str, dims: &[u64]) -> Result<()> {
+    let t = inventory.find(name).ok_or_else(|| Error {
+        code: 1,
+        message: format!("vision tensor {name} is missing"),
+    })?;
+    if crate::tensor_type_name(t.typ) != "bf16" || t.ndim as usize != dims.len() {
+        return Err(Error {
+            code: 1,
+            message: format!(
+                "vision tensor {name} has type {}/rank {}, expected BF16/rank {}",
+                crate::tensor_type_name(t.typ),
+                t.ndim,
+                dims.len()
+            ),
+        });
+    }
+    for (d, want) in dims.iter().enumerate() {
+        if t.dim[d] != *want {
+            return Err(Error {
+                code: 1,
+                message: format!(
+                    "vision tensor {name} has dim[{d}]={}, expected {want}",
+                    t.dim[d]
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub fn probe_vision_sidecar(
     shape: Shape,
     backend: crate::Backend,
@@ -151,6 +238,23 @@ pub fn probe_vision_sidecar(
                     message: format!("vision metadata {key} is missing"),
                 })
             }
+        }
+    }
+    let inventory =
+        crate::TensorInventory::open(std::path::Path::new(path)).map_err(|e| Error {
+            code: 1,
+            message: format!("vision tensor inventory failed: {}", e.token()),
+        })?;
+    for (name, dims) in GLM_VISION_TENSORS_SPEC {
+        glm_vision_tensor(&inventory, name, dims)?;
+    }
+    for il in 0..GLM_VISION_LAYERS {
+        for (suffix, dims) in GLM_VISION_LAYER_SPEC {
+            glm_vision_tensor(
+                &inventory,
+                &format!("model.visual.blocks.{il}.{suffix}"),
+                dims,
+            )?;
         }
     }
     Ok(())

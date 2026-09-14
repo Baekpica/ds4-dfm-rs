@@ -177,6 +177,8 @@ pub struct EngineFacts {
     pub vision_path_ok: Option<bool>,
     /// `Some(false)` when the base artifact cannot load at all.
     pub artifact_ok: Option<bool>,
+    /// `Some(false)` when a DSpark drafter cannot attach to this family.
+    pub dspark_ok: Option<bool>,
     /// `Some(false)` once the native fit refused the continuous lane.
     pub cont_lane: Option<bool>,
     /// `Some(false)` when the opened runtime has no partial checkpoint store.
@@ -775,6 +777,12 @@ pub fn resolve_plan(
         issues.push(error(
             "artifact_invalid",
             format!("{} artifact cannot load", caps.variant_name()),
+        ));
+    }
+    if facts.dspark_ok == Some(false) {
+        issues.push(error(
+            "dspark_artifact",
+            format!("{} cannot attach the DSpark drafter", caps.variant_name()),
         ));
     }
     if facts.vision_path_ok == Some(false) {
@@ -1671,6 +1679,21 @@ mod tests {
         let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
         assert_eq!(p.effective.sched_chunk, 16384);
         assert!(!p.issues.iter().any(|i| i.code == "chunk_fenced"));
+    }
+
+    #[test]
+    fn a_refused_dspark_drafter_is_an_error() {
+        let facts = EngineFacts {
+            dspark_ok: Some(false),
+            ..EngineFacts::default()
+        };
+        let p = resolve_plan(
+            &ServingRequest::default(),
+            Some(caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext)),
+            &facts,
+        );
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "dspark_artifact"));
     }
 
     #[test]
