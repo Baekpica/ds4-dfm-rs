@@ -707,9 +707,12 @@ fn warm_record_has_image(record: Option<&WarmRecord>) -> bool {
 }
 
 #[cfg(any(feature = "native", test))]
-fn solar_stride_cut(cached: usize, ctx: i32) -> bool {
+fn solar_stride_floor(cached: usize, ctx: i32) -> Option<usize> {
     let stride = solar_partial_stride(ctx);
-    stride != 0 && cached >= stride && cached.is_multiple_of(stride)
+    if stride == 0 || cached < stride {
+        return None;
+    }
+    Some((cached / stride) * stride)
 }
 
 fn last_delta(raw: &[u8], emit_limit: usize, piece_len: usize) -> Option<&[u8]> {
@@ -2425,9 +2428,9 @@ mod native {
                 let Some(cached) = cut else {
                     continue;
                 };
-                if !solar_stride_cut(cached, self.ctx) {
+                let Some(cached) = solar_stride_floor(cached, self.ctx) else {
                     continue;
-                }
+                };
                 if best.is_none_or(|(_, current)| cached > current) {
                     best = Some((bank, cached));
                 }
@@ -4243,11 +4246,11 @@ mod bank_tests {
     fn token_fallback_skips_image_records_and_non_stride_cuts() {
         assert_eq!(solar_partial_stride(8192), 4096);
         assert_eq!(solar_partial_stride(131072), 8192);
-        assert!(solar_stride_cut(4096, 8192));
-        assert!(!solar_stride_cut(4096, 131072));
-        assert!(solar_stride_cut(8192, 131072));
-        assert!(!solar_stride_cut(8, 8192));
-        assert!(!solar_stride_cut(4095, 8192));
+        assert_eq!(solar_stride_floor(4096, 8192), Some(4096));
+        assert_eq!(solar_stride_floor(4096, 131072), None);
+        assert_eq!(solar_stride_floor(9000, 131072), Some(8192));
+        assert_eq!(solar_stride_floor(8191, 8192), Some(4096));
+        assert_eq!(solar_stride_floor(8, 8192), None);
         assert!(!warm_record_has_image(None));
         let text = WarmRecord {
             text: b"prefix".to_vec(),
