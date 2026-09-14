@@ -683,11 +683,21 @@ fn qwen_image_cache_token_cap(spans: &[ImageCacheSpan], cache_lcp: usize) -> usi
         .map_or(usize::MAX, |span| span.token_offset as usize)
 }
 
-/// Solar HTTP stride is max(4096, ctx/24) aligned to 4096. Token-only
-/// fallback must not admit a cut with no native checkpoint; that would
-/// also hide a deeper disk restore.
+/// Matches `solar_batch_runtime_create`: max(4096, ceil(ctx/24)) then
+/// aligned up to 4096. Token-only fallback must not admit a cut with no
+/// native checkpoint; that would also hide a deeper disk restore.
 #[cfg(any(feature = "native", test))]
-const SOLAR_PARTIAL_STRIDE: usize = 4096;
+const SOLAR_PARTIAL_ALIGN: usize = 4096;
+
+#[cfg(any(feature = "native", test))]
+const SOLAR_PARTIAL_PERIOD: usize = 24;
+
+#[cfg(any(feature = "native", test))]
+fn solar_partial_stride(ctx: i32) -> usize {
+    let ctx = usize::try_from(ctx.max(0)).unwrap_or(0);
+    let raw = ctx.div_ceil(SOLAR_PARTIAL_PERIOD).max(SOLAR_PARTIAL_ALIGN);
+    raw.div_ceil(SOLAR_PARTIAL_ALIGN) * SOLAR_PARTIAL_ALIGN
+}
 
 #[cfg(any(feature = "native", test))]
 fn warm_record_has_image(record: Option<&WarmRecord>) -> bool {
@@ -697,8 +707,9 @@ fn warm_record_has_image(record: Option<&WarmRecord>) -> bool {
 }
 
 #[cfg(any(feature = "native", test))]
-fn solar_stride_cut(cached: usize) -> bool {
-    cached >= SOLAR_PARTIAL_STRIDE && cached.is_multiple_of(SOLAR_PARTIAL_STRIDE)
+fn solar_stride_cut(cached: usize, ctx: i32) -> bool {
+    let stride = solar_partial_stride(ctx);
+    stride != 0 && cached >= stride && cached.is_multiple_of(stride)
 }
 
 fn last_delta(raw: &[u8], emit_limit: usize, piece_len: usize) -> Option<&[u8]> {
@@ -2414,7 +2425,7 @@ mod native {
                 let Some(cached) = cut else {
                     continue;
                 };
-                if !solar_stride_cut(cached) {
+                if !solar_stride_cut(cached, self.ctx) {
                     continue;
                 }
                 if best.is_none_or(|(_, current)| cached > current) {
@@ -4230,10 +4241,13 @@ mod bank_tests {
 
     #[test]
     fn token_fallback_skips_image_records_and_non_stride_cuts() {
-        assert!(solar_stride_cut(4096));
-        assert!(solar_stride_cut(8192));
-        assert!(!solar_stride_cut(8));
-        assert!(!solar_stride_cut(4095));
+        assert_eq!(solar_partial_stride(8192), 4096);
+        assert_eq!(solar_partial_stride(131072), 8192);
+        assert!(solar_stride_cut(4096, 8192));
+        assert!(!solar_stride_cut(4096, 131072));
+        assert!(solar_stride_cut(8192, 131072));
+        assert!(!solar_stride_cut(8, 8192));
+        assert!(!solar_stride_cut(4095, 8192));
         assert!(!warm_record_has_image(None));
         let text = WarmRecord {
             text: b"prefix".to_vec(),
