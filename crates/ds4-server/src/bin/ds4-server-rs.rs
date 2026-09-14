@@ -4,7 +4,7 @@
 
 use ds4_core::{
     caps_from_ident, identify_gguf, resolve_plan, Backend, DistributedConfig, DistributedRole,
-    EngineFacts, MaxSeqs, Model, ModelOpenOption, MtpMode, PrefixReuse, ServingRequest,
+    EngineFacts, GgufFile, MaxSeqs, Model, ModelOpenOption, MtpMode, PrefixReuse, ServingRequest,
 };
 use ds4_server::kv_cli::DiskKvArgs;
 use ds4_server::{
@@ -218,7 +218,9 @@ fn main() {
         }
     }
     if let Some(path) = mtp_path.as_deref() {
-        facts.mtp_path_ok = Some(std::path::Path::new(path).is_file());
+        // `is_file` accepts any regular file; the sidecar has to parse as a
+        // GGUF or `Model::open_*` fails after `--check-config` exited 0.
+        facts.mtp_path_ok = Some(GgufFile::open(std::path::Path::new(path)).is_ok());
     }
 
     let caps = model_path

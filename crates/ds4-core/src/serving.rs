@@ -760,11 +760,16 @@ impl ResolvedPlan {
         self.issues.iter().any(|i| i.level == IssueLevel::Error)
     }
 
-    /// The plan asks for the bank lane. Hosts must adopt this, not only the
-    /// published env: a config captured before resolution keeps its own
-    /// legacy `DS4_SERVER_CONTINUOUS`.
+    /// The operator asked for the bank lane: an explicit width, or an `auto`
+    /// plan that resolved to more than one bank. Hosts must adopt this, not
+    /// only the published env — a config captured before resolution keeps
+    /// its own legacy `DS4_SERVER_CONTINUOUS`. `auto` landing on a single
+    /// bank expresses no preference and leaves that legacy value alone.
     pub fn wants_bank_lane(&self) -> bool {
-        self.effective.max_seqs > 1
+        if self.requested.backend != Backend::Cuda || self.requested.max_seqs == MaxSeqs::Off {
+            return false;
+        }
+        matches!(self.requested.max_seqs, MaxSeqs::Fixed(_)) || self.effective.max_seqs > 1
     }
 
     pub fn env_overrides(&self) -> Vec<(String, String)> {
@@ -1902,13 +1907,31 @@ mod tests {
     }
 
     #[test]
-    fn a_two_bank_plan_wants_the_lane() {
-        let mut req = ServingRequest::default();
-        req.max_seqs = MaxSeqs::Fixed(2);
-        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
-        assert!(p.wants_bank_lane());
+    fn an_explicit_width_wants_the_lane() {
+        for width in [1, 2] {
+            let mut req = ServingRequest::default();
+            req.max_seqs = MaxSeqs::Fixed(width);
+            let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+            assert!(p.wants_bank_lane(), "width {width}");
+            assert!(p
+                .env_overrides()
+                .iter()
+                .any(|(k, v)| k == "DS4_SERVER_CONTINUOUS" && v == "1"));
+        }
         let mut req = ServingRequest::default();
         req.max_seqs = MaxSeqs::Off;
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(!p.wants_bank_lane());
+        // Auto on a serial family expresses no preference.
+        let p = plan(
+            ServingRequest::default(),
+            ModelFamily::Step37,
+            Variant::Step37Flash,
+        );
+        assert!(!p.wants_bank_lane());
+        let mut req = ServingRequest::default();
+        req.backend = crate::Backend::Cpu;
+        req.max_seqs = MaxSeqs::Fixed(1);
         let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
         assert!(!p.wants_bank_lane());
     }

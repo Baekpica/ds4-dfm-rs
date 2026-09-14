@@ -88,7 +88,11 @@ engine's speculative eval, or a native sequence that ran draft rows.
 
 Restore miss is not "disk broken". Examples:
 
-- `rendered prefix changed` (template dropped an empty thinking block)
+- `rendered prefix changed` (template dropped an empty thinking block).
+  Step's official follow-up render drops the empty `<think>` pair that the
+  stored KV still holds, so the restart is a cold prefill until a
+  checkpoint exists at that history frontier (P1); reusing across it would
+  continue from a token sequence the client never sent.
 - `below minimum token threshold`
 - `payload family/layout mismatch`
 - `no checkpoint at or below LCP`

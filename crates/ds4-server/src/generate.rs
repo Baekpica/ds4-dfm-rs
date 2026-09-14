@@ -642,10 +642,11 @@ fn disk_sync_template(
     quant_bits: i32,
     prompt: &[u8],
     tokens: &[i32],
-    checkpoint: Option<&ThinkingVisibleCheckpoint>,
-    thinking_visible_eligible: bool,
     policy: DiskSyncPolicy,
 ) -> Result<i32, GenerateError> {
+    // Rendered-text identity is not token identity: an official template
+    // that drops a block still held in KV would continue from a sequence
+    // the client never sent. Jinja families reuse on tokens only.
     disk_sync_prompt_impl(
         io,
         store,
@@ -653,8 +654,8 @@ fn disk_sync_template(
         quant_bits,
         prompt,
         tokens,
-        checkpoint,
-        thinking_visible_eligible,
+        None,
+        false,
         policy,
         false,
         PromptReuse::Tokens,
@@ -769,7 +770,7 @@ fn disk_sync_prompt_impl(
         )?;
         return Ok(cached);
     }
-    if thinking_visible_eligible {
+    if reuse == PromptReuse::LegacyText && thinking_visible_eligible {
         if let Some(checkpoint) = checkpoint {
             if !live.is_empty()
                 && usize::try_from(checkpoint.frontier).ok() == Some(live.len())
@@ -897,8 +898,7 @@ fn disk_sync_prompt_impl(
             prefill_checkpoints,
         );
     }
-    let thinking_visible = envelope.header.ext_flags == EXT_THINKING_VISIBLE;
-    if reuse == PromptReuse::Tokens && !thinking_visible && !canonical_tokens.starts_with(&loaded) {
+    if reuse == PromptReuse::Tokens && !canonical_tokens.starts_with(&loaded) {
         io.invalidate();
         return cold_sync_and_store(
             io,
@@ -914,7 +914,7 @@ fn disk_sync_prompt_impl(
     // The candidate's text is a prefix of this prompt, so the restore lands
     // on the frontier and only the appended turn is prefilled.
     io.note_reuse(ReuseTaken::Exact);
-    if reuse == PromptReuse::Tokens && !thinking_visible {
+    if reuse == PromptReuse::Tokens {
         sync_maybe_checkpoint(
             io,
             canonical_tokens,
@@ -1125,33 +1125,6 @@ pub(crate) fn thinking_visible_key(
         ) {
             visible.push(b'\n');
         }
-    }
-    Some(visible)
-}
-
-fn step37_history_checkpoint(
-    parsed: &ParsedRequest,
-    syntax: ModelSyntax,
-    prompt: &[u8],
-    content: &[u8],
-    finish: &str,
-) -> Option<Vec<u8>> {
-    if parsed.kind != ReqKind::Chat
-        || syntax != ModelSyntax::Step37
-        || finish == "error"
-        || finish == "length"
-    {
-        return None;
-    }
-    // Follow-up render drops the empty think pair. Disk keys must match
-    // that history form, not the live generation prompt.
-    let header = prompt
-        .strip_suffix(b"<think>\n</think>\n")
-        .or_else(|| prompt.strip_suffix(b"<think>\n"))?;
-    let mut visible = header.to_vec();
-    visible.extend_from_slice(content.trim_ascii());
-    if !visible.ends_with(b"<|im_end|>\n") {
-        visible.extend_from_slice(b"<|im_end|>\n");
     }
     Some(visible)
 }
@@ -2066,8 +2039,7 @@ pub(crate) fn generate_terminal_prepared(
     }
     .or_else(|| {
         motif3_no_think_visible_checkpoint(&parsed, syntax, &prompt, &parsed_gen.content, finish)
-    })
-    .or_else(|| step37_history_checkpoint(&parsed, syntax, &prompt, &parsed_gen.content, finish));
+    });
     if let Some(visible) = visible {
         engine.remember_thinking_visible_checkpoint(visible);
     }
@@ -2660,8 +2632,6 @@ impl<'a> NativeDecode<'a> {
                 quant_bits,
                 prompt,
                 tokens,
-                checkpoint.as_ref(),
-                thinking_visible_eligible,
                 policy,
             )
         } else if tool_replay {
@@ -3105,10 +3075,10 @@ mod disk_sync_tests {
     use super::{
         continued_decode_allowed, discard_loaded, disk_sync_prompt, disk_sync_tool_replay,
         intermediate_prefill_eligible, ordinary_disk_cache_eligible,
-        settle_thinking_visible_checkpoint, step37_history_checkpoint,
-        thinking_visible_cache_eligible, thinking_visible_key, tool_replay_disk_cache_eligible,
-        tool_replay_producer_eligible, try_store_continued, try_store_live, DiskSyncPolicy,
-        GenerateError, ReuseTaken, SerialKvIo, ThinkingVisibleCheckpoint,
+        settle_thinking_visible_checkpoint, thinking_visible_cache_eligible, thinking_visible_key,
+        tool_replay_disk_cache_eligible, tool_replay_producer_eligible, try_store_continued,
+        try_store_live, DiskSyncPolicy, GenerateError, ReuseTaken, SerialKvIo,
+        ThinkingVisibleCheckpoint,
     };
     use crate::parse::{parse_request, ChatMsg, ParseEnv, ToolCall};
     use crate::render::{render_motif3_chat_ex, ModelSyntax};
@@ -3295,8 +3265,6 @@ mod disk_sync_tests {
             2,
             b"prefix suffix",
             &[1, 3, 4],
-            None,
-            false,
             DiskSyncPolicy {
                 save_current: false,
                 load: false,
@@ -3318,8 +3286,6 @@ mod disk_sync_tests {
             2,
             b"different text",
             &[1, 2, 4],
-            None,
-            false,
             DiskSyncPolicy {
                 save_current: false,
                 load: false,
@@ -3349,8 +3315,6 @@ mod disk_sync_tests {
                 2,
                 b"prefix suffix",
                 &[1, 2, 3],
-                None,
-                false,
                 DiskSyncPolicy {
                     save_current: false,
                     load: true,
@@ -3364,25 +3328,26 @@ mod disk_sync_tests {
         }
     }
 
+    /// Step's official follow-up render drops the empty think pair that the
+    /// stored KV still holds, so a text-prefix hit would continue from a
+    /// token sequence the client never sent. The restart stays a cold
+    /// prefill until a checkpoint exists at that history frontier.
     #[test]
-    fn template_restores_history_checkpoint() {
+    fn template_refuses_a_text_only_history_match() {
         let (dir, mut store) = store("step-history");
-        let checkpoint = ThinkingVisibleCheckpoint {
-            text: b"<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n4<|im_end|>\n"
-                .to_vec(),
-            frontier: 2,
-        };
-        let gen = b"<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n</think>\n";
-        let mut saving = FakeSerial::new(&[41, 42], gen);
-        super::disk_sync_template(
+        let history =
+            b"<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n4<|im_end|>\n".to_vec();
+        let mut saving = FakeSerial::new(&[41, 42], &history);
+        saving.trailer = Some(Vec::new());
+        super::disk_sync_prompt(
             &mut saving,
             Some(&mut store),
             0,
             2,
-            gen,
-            &[90],
-            Some(&checkpoint),
-            true,
+            &history,
+            &[41, 42],
+            None,
+            false,
             DiskSyncPolicy {
                 save_current: true,
                 load: false,
@@ -3393,32 +3358,24 @@ mod disk_sync_tests {
         let follow =
             b"<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n4<|im_end|>\n<|im_start|>user\nAgain<|im_end|>\n<|im_start|>assistant\n<think>\n</think>\n";
         let mut loading = FakeSerial::new(&[], b"");
-        loading.loaded_tokens = vec![41, 42];
-        loading.suffix_tokens = vec![7, 8];
+        // The payload's KV still carries the generation-form think pair.
+        loading.loaded_tokens = vec![41, 42, 90];
         let cached = super::disk_sync_template(
             &mut loading,
             Some(&mut store),
             0,
             2,
             follow,
-            &[1, 2, 3, 4],
-            None,
-            true,
+            &[41, 42, 3, 4],
             DiskSyncPolicy {
                 save_current: false,
                 load: true,
             },
         )
         .unwrap();
-        assert_eq!(cached, 2);
-        assert_eq!(
-            loading.suffixes,
-            [
-                b"<|im_start|>user\nAgain<|im_end|>\n<|im_start|>assistant\n<think>\n</think>\n"
-                    .to_vec()
-            ]
-        );
-        assert_eq!(loading.syncs, [vec![41, 42, 7, 8]]);
+        assert_eq!(cached, 0);
+        assert_eq!(loading.reuse, ReuseTaken::Cold);
+        assert!(loading.syncs.last().unwrap().starts_with(&[41, 42, 3, 4]));
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -3432,8 +3389,6 @@ mod disk_sync_tests {
             2,
             b"prefix suffix",
             &[1, 2, 4],
-            None,
-            false,
             DiskSyncPolicy {
                 save_current: false,
                 load: false,
@@ -3455,8 +3410,6 @@ mod disk_sync_tests {
             2,
             b"prefix suffix",
             &[1, 2, 4],
-            None,
-            false,
             DiskSyncPolicy {
                 save_current: false,
                 load: false,
@@ -4590,31 +4543,6 @@ mod disk_sync_tests {
 
         settle_thinking_visible_checkpoint(&mut checkpoint, true);
         assert!(checkpoint.is_none());
-    }
-
-    #[test]
-    fn step37_empty_think_is_history_form() {
-        let env = ParseEnv {
-            default_model: "ds4".into(),
-            default_tokens: 16,
-            default_effort: ThinkMode::None,
-            default_temp: 0.0,
-            live_ids: Vec::new(),
-        };
-        let parsed = parse_request(
-            WireSurface::OpenaiChat,
-            &env,
-            r#"{"messages":[{"role":"user","content":"Hello"}]}"#,
-        )
-        .unwrap();
-        let prompt =
-            b"<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n</think>\n";
-        let visible =
-            step37_history_checkpoint(&parsed, ModelSyntax::Step37, prompt, b"4", "stop").unwrap();
-        assert_eq!(
-            visible,
-            b"<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n4<|im_end|>\n"
-        );
     }
 
     #[test]
