@@ -15,7 +15,7 @@ use ds4_kv::Store as KvStore;
 #[cfg(feature = "native")]
 use ds4_kv::{bank_checkpoint_due_from_host, HostKvView};
 #[cfg(any(feature = "native", test))]
-use ds4_kv::{bank_persist_ext_flags, Reason as KvReason, EXT_IMAGE_PIXELS_V2};
+use ds4_kv::{bank_persist_ext_flags, PrefixAnswer, Reason as KvReason, EXT_IMAGE_PIXELS_V2};
 
 use crate::dsml::{SampleOverride, SamplePolicy};
 #[cfg(any(feature = "native", test))]
@@ -1603,7 +1603,8 @@ mod native {
 
     use ds4_core::{
         qwen_image_pixel_hash, qwen_image_probe, BatchCtx, ContAdmit, ContDone, ContDriver,
-        QwenImageInput, ReuseKind, ReuseTaken, Vocab, CONT_SAMPLE_GREEDY, CONT_SAMPLE_NONE,
+        QwenImageInput, ReuseKind, ReuseMiss, ReuseTaken, Vocab, CONT_SAMPLE_GREEDY,
+        CONT_SAMPLE_NONE,
     };
 
     use crate::serve_static::{BatchStatic, CoalesceLimits, StaticExec, StaticJob, StaticRow};
@@ -1662,6 +1663,7 @@ mod native {
         stepper: ContStepper,
         capture_done: bool,
         reuse: ReuseTaken,
+        miss: ReuseMiss,
         t_arrive: Instant,
         stop_requested: Option<fn() -> bool>,
     }
@@ -1795,6 +1797,7 @@ mod native {
                 engine_eos: false,
                 capture_done: self.capture_done,
                 reuse: self.reuse,
+                miss: self.miss,
                 speculated: false,
                 stop_requested: self.stop_requested,
                 done_tokens: Vec::new(),
@@ -1827,6 +1830,8 @@ mod native {
         capture_done: bool,
         /// Mechanism chosen at admission; only real once native reports cache.
         reuse: ReuseTaken,
+        /// Why a candidate was refused, when one was.
+        miss: ReuseMiss,
         /// Native ran draft rows for this sequence.
         speculated: bool,
         stop_requested: Option<fn() -> bool>,
@@ -2366,6 +2371,7 @@ mod native {
             cache_prompt: Option<&[u8]>,
             cache_spans: &[ImageCacheSpan],
             prompt_tokens: &[i32],
+            miss: &mut ReuseMiss,
         ) -> Option<WarmAdmitPlan> {
             if !self.warm_fork_partial {
                 return None;
@@ -2392,6 +2398,19 @@ mod native {
                         cached,
                         partial: true,
                     });
+                }
+
+                // The text LCP passed; the tokens it covers can still be
+                // under the partial minimum. Only then is this the threshold
+                // — a stale bank record or a prompt past the sequence is not.
+                let fresh = self.warm.get(source).is_some_and(|warm| {
+                    warm.record
+                        .as_ref()
+                        .is_some_and(|record| record.generation == snapshot.generation)
+                });
+                let fits = i32::try_from(prompt_tokens.len()).is_ok_and(|n| n <= batch.seq_cap());
+                if fresh && fits {
+                    Self::note_miss(miss, ReuseMiss::BelowThreshold);
                 }
             }
             // Host text records can be missing after a one-bank Solar retire
@@ -2456,6 +2475,14 @@ mod native {
             })
         }
 
+        /// The first refusal wins: a later, broader one would mask the
+        /// decision that actually turned the candidate down.
+        fn note_miss(miss: &mut ReuseMiss, reason: ReuseMiss) {
+            if *miss == ReuseMiss::None {
+                *miss = reason;
+            }
+        }
+
         fn warm_plan(
             &mut self,
             batch: &BatchCtx<'_>,
@@ -2463,14 +2490,30 @@ mod native {
             cache_prompt: Option<&[u8]>,
             cache_spans: &[ImageCacheSpan],
             prompt_tokens: &[i32],
+            miss: &mut ReuseMiss,
         ) -> Option<WarmAdmitPlan> {
             // Jinja may rewrite earlier messages. Text prefix keys only pick
             // candidates; the complete rendered token sequence validates reuse.
+            let template = self.template.is_none();
             let full = self
                 .warm_full_plan(batch, prompt, cache_prompt)
-                .filter(|plan| self.template.is_none() || plan.tokens == prompt_tokens);
-            let partial =
-                self.warm_partial_plan(batch, prompt, cache_prompt, cache_spans, prompt_tokens);
+                .filter(|plan| {
+                    let kept = template || plan.tokens == prompt_tokens;
+                    if !kept {
+                        // A live bank held this conversation; the template
+                        // re-rendered it.
+                        Self::note_miss(miss, ReuseMiss::RenderedPrefix);
+                    }
+                    kept
+                });
+            let partial = self.warm_partial_plan(
+                batch,
+                prompt,
+                cache_prompt,
+                cache_spans,
+                prompt_tokens,
+                miss,
+            );
             match (full, partial) {
                 (Some(full), Some(partial)) if partial.cached > full.cached => Some(partial),
                 (Some(full), _) => Some(full),
@@ -2518,6 +2561,7 @@ mod native {
             prompt: &[u8],
             cache_prompt: Option<&[u8]>,
             protected: &[bool],
+            miss: &mut ReuseMiss,
         ) -> Option<WarmAdmitPlan> {
             let identity = self.identity()?;
             let request_key = cache_prompt.unwrap_or(prompt);
@@ -2525,15 +2569,22 @@ mod native {
                 .is_some()
                 .then_some(EXT_IMAGE_PIXELS_V2)
                 .unwrap_or(0);
-            let (path, envelope) = store
-                .bank_text_prefix_candidate_identity(
-                    request_key,
-                    identity.0,
-                    identity.1,
-                    identity.2,
-                    identity_flags,
-                )
-                .ok()??;
+            // An envelope that will not read is a refusal by the record,
+            // not an absence; `Ok(None)` is the absence.
+            let candidate = match store.bank_text_prefix_candidate_identity(
+                request_key,
+                identity.0,
+                identity.1,
+                identity.2,
+                identity_flags,
+            ) {
+                Ok(candidate) => candidate,
+                Err(_) => {
+                    Self::note_miss(miss, ReuseMiss::PayloadMismatch);
+                    return None;
+                }
+            };
+            let (path, envelope) = candidate?;
             let target = self.disk_victim(protected, envelope.header.tokens)?;
             if !disk_restore_target_allowed(
                 &self.warm,
@@ -2543,7 +2594,13 @@ mod native {
             ) {
                 return None;
             }
-            let mut record = restored_record(envelope.text, 0, envelope.header.ext_flags)?;
+            // An image record whose key carries no usable marker cannot be
+            // rebuilt: the record is malformed, not missing.
+            let Some(mut record) = restored_record(envelope.text, 0, envelope.header.ext_flags)
+            else {
+                Self::note_miss(miss, ReuseMiss::PayloadMismatch);
+                return None;
+            };
             let snapshot = match batch.load_bank_payload_range(
                 i32::try_from(target).ok()?,
                 &path,
@@ -2553,10 +2610,15 @@ mod native {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
                     eprintln!("ds4-server-rs: bank restore skipped: {error}");
+                    Self::note_miss(miss, ReuseMiss::PayloadMismatch);
                     return None;
                 }
             };
             if usize::try_from(envelope.header.tokens).ok() != Some(snapshot.tokens.len()) {
+                // The payload disagrees with its own envelope. The record is
+                // discarded, so the next request finds nothing — but this
+                // one was refused by a mismatch, not by an absence.
+                Self::note_miss(miss, ReuseMiss::PayloadMismatch);
                 let _ = store.discard_bank(&path);
                 return None;
             }
@@ -2594,6 +2656,7 @@ mod native {
             cache_spans: &[ImageCacheSpan],
             prompt_tokens: &[i32],
             protected: &[bool],
+            miss: &mut ReuseMiss,
         ) -> Option<WarmAdmitPlan> {
             if !self.warm_disk_partial {
                 return None;
@@ -2605,16 +2668,21 @@ mod native {
                 .is_some()
                 .then_some(EXT_IMAGE_PIXELS_V2)
                 .unwrap_or(0);
-            let (path, envelope, cache_lcp) = store
-                .bank_text_lcp_candidate_identity(
-                    request_key,
-                    identity.0,
-                    identity.1,
-                    identity.2,
-                    min_prefix,
-                    identity_flags,
-                )
-                .ok()??;
+            let candidate = match store.bank_text_lcp_candidate_identity(
+                request_key,
+                identity.0,
+                identity.1,
+                identity.2,
+                min_prefix,
+                identity_flags,
+            ) {
+                Ok(candidate) => candidate,
+                Err(_) => {
+                    Self::note_miss(miss, ReuseMiss::PayloadMismatch);
+                    return None;
+                }
+            };
+            let (path, envelope, cache_lcp) = candidate?;
             let target = self.disk_victim(protected, envelope.header.tokens)?;
             if !disk_restore_target_allowed(
                 &self.warm,
@@ -2624,7 +2692,11 @@ mod native {
             ) {
                 return None;
             }
-            let mut record = restored_record(envelope.text, 0, envelope.header.ext_flags)?;
+            let Some(mut record) = restored_record(envelope.text, 0, envelope.header.ext_flags)
+            else {
+                Self::note_miss(miss, ReuseMiss::PayloadMismatch);
+                return None;
+            };
             let snapshot = match batch.load_bank_payload_range(
                 i32::try_from(target).ok()?,
                 &path,
@@ -2634,10 +2706,12 @@ mod native {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
                     eprintln!("ds4-server-rs: partial bank restore skipped: {error}");
+                    Self::note_miss(miss, ReuseMiss::PayloadMismatch);
                     return None;
                 }
             };
             if usize::try_from(envelope.header.tokens).ok() != Some(snapshot.tokens.len()) {
+                Self::note_miss(miss, ReuseMiss::PayloadMismatch);
                 let _ = store.discard_bank(&path);
                 return None;
             }
@@ -2648,7 +2722,11 @@ mod native {
             self.warm[target].stored_tokens = committed;
             self.note_use(target);
             let _ = store.touch_hit(&path);
-            let (tokens, cached) = warm_partial_admit_tokens(
+            // The store matched on bytes; the tokens those bytes cover can
+            // still fall short of the partial minimum. That is a refusal by
+            // the threshold, not the bank budget that stays quiet.
+            let fits = i32::try_from(prompt_tokens.len()).is_ok_and(|n| n <= batch.seq_cap());
+            let Some((tokens, cached)) = warm_partial_admit_tokens(
                 &self.warm[target],
                 prompt_tokens,
                 &snapshot.tokens,
@@ -2656,7 +2734,12 @@ mod native {
                 self.warm_partial_min,
                 batch.seq_cap(),
                 qwen_image_cache_token_cap(cache_spans, cache_lcp),
-            )?;
+            ) else {
+                if fits {
+                    Self::note_miss(miss, ReuseMiss::BelowThreshold);
+                }
+                return None;
+            };
             Some(WarmAdmitPlan {
                 source: target,
                 tokens,
@@ -2963,6 +3046,7 @@ mod native {
                     (prompt, tokens)
                 }
             };
+            let mut miss = ReuseMiss::None;
             let directed = parsed.directed_bank.filter(|bank| *bank >= 0);
             let (tokens, images, cache_prompt, cache_spans, directed_cached) = if let Some(bank) =
                 directed
@@ -3005,6 +3089,20 @@ mod native {
                     {
                         snapshot.tokens.len() as i32
                     } else {
+                        // A directed continuation never reaches `warm_plan`,
+                        // so this is the only place that can say why its own
+                        // bank was refused: the media it was keyed by, or a
+                        // template that re-rendered the prefix.
+                        if self.warm_reuse != ReuseKind::None {
+                            Self::note_miss(
+                                &mut miss,
+                                if media_match {
+                                    ReuseMiss::RenderedPrefix
+                                } else {
+                                    ReuseMiss::PayloadMismatch
+                                },
+                            );
+                        }
                         0
                     };
                     (
@@ -3093,6 +3191,7 @@ mod native {
                         stepper.cache_prompt.as_deref(),
                         &stepper.image_cache_spans,
                         &tokens,
+                        &mut miss,
                     )
                     .or_else(|| {
                         store.as_deref_mut().and_then(|store| {
@@ -3102,8 +3201,18 @@ mod native {
                                 &stepper.prompt,
                                 stepper.cache_prompt.as_deref(),
                                 &protected,
+                                &mut miss,
                             )
-                            .filter(|plan| self.template.is_none() || plan.tokens == tokens)
+                            .filter(|plan| {
+                                // An official template re-rendered this
+                                // conversation, so the stored tokens are no
+                                // longer this prompt's prefix.
+                                let kept = self.template.is_none() || plan.tokens == tokens;
+                                if !kept {
+                                    Self::note_miss(&mut miss, ReuseMiss::RenderedPrefix);
+                                }
+                                kept
+                            })
                         })
                     })
                     .or_else(|| {
@@ -3116,6 +3225,7 @@ mod native {
                                 &stepper.image_cache_spans,
                                 &tokens,
                                 &protected,
+                                &mut miss,
                             )
                         })
                     })
@@ -3125,6 +3235,9 @@ mod native {
                 let placement = warm.as_ref().and_then(|plan| {
                     self.place_warm(batch, plan, &protected, store.as_deref_mut())
                 });
+                // A plan the lane found but could not place is a bank-budget
+                // refusal, not a cache answer.
+                let planned = warm.is_some();
                 if let (Some(plan), Some(placement)) = (warm, placement) {
                     let mut admit = ContAdmit::cold(1, plan.tokens, stepper.max_tokens.max(1));
                     admit.place_bank = i32::try_from(placement.target + 1).unwrap_or(0);
@@ -3147,6 +3260,82 @@ mod native {
                     let mut admit = ContAdmit::cold(1, tokens, stepper.max_tokens.max(1));
                     admit.place_bank = i32::try_from(target + 1).unwrap_or(0);
                     reuse = ReuseTaken::Cold;
+                    // Only a lookup that ran can report an absence; with
+                    // reuse off nothing was examined. A stored record ruled
+                    // out by identity is a mismatch, not an absence.
+                    if miss == ReuseMiss::None
+                        && !planned
+                        && capture_done
+                        && self.warm_reuse != ReuseKind::None
+                    {
+                        // Ask with the key `disk_plan` searched under: an
+                        // image request is stored by its media-marked cache
+                        // text, and the rendered prompt would match nothing.
+                        let request_key = stepper
+                            .cache_prompt
+                            .as_deref()
+                            .unwrap_or(stepper.prompt.as_slice());
+                        let identity_flags = stepper
+                            .cache_prompt
+                            .is_some()
+                            .then_some(EXT_IMAGE_PIXELS_V2)
+                            .unwrap_or(0);
+                        // `warm_persist_min` is not a floor on what exists:
+                        // `shutdown_banks` persists every live bank at one
+                        // token. The store's own record minimum is, because
+                        // the searches skip anything below it, so only a
+                        // conversation under that could never be found.
+                        let write_min = store.as_deref().map(|store| store.opt.min_tokens);
+                        let min_lcp = usize::try_from(self.warm_partial_min)
+                            .ok()
+                            .filter(|_| self.warm_disk_partial)
+                            .unwrap_or(0);
+                        // Both searches in one pass each: the partial one
+                        // keys on the longest common prefix, so an edited
+                        // prompt needs the question the exact one cannot ask.
+                        let (exact, partial) = self
+                            .identity()
+                            .zip(store.as_deref_mut())
+                            .map(|((model_id, quant_bits, ctx), store)| {
+                                let exact = store.bank_prefix_answer(
+                                    request_key,
+                                    model_id,
+                                    quant_bits,
+                                    ctx,
+                                    identity_flags,
+                                );
+                                let partial = store.bank_lcp_answer(
+                                    request_key,
+                                    model_id,
+                                    quant_bits,
+                                    ctx,
+                                    min_lcp,
+                                    identity_flags,
+                                );
+                                (exact, partial)
+                            })
+                            .unwrap_or((PrefixAnswer::None, PrefixAnswer::None));
+                        let answered = |answer| exact == answer || partial == answer;
+                        // The record this request would have used decides the
+                        // answer. Only when none exists does an incompatible
+                        // one speak, then a conversation too short to have
+                        // been stored, then plain absence.
+                        miss = if answered(PrefixAnswer::Usable) {
+                            // A record this request could have used, refused
+                            // by the bank budget rather than by the cache.
+                            // The contract has no reason for that, and an
+                            // absence would be the wrong one.
+                            ReuseMiss::None
+                        } else if answered(PrefixAnswer::Mismatch) {
+                            ReuseMiss::PayloadMismatch
+                        } else if write_min.is_some_and(|min| prompt_n < min)
+                            || answered(PrefixAnswer::Shallow)
+                        {
+                            ReuseMiss::BelowThreshold
+                        } else {
+                            ReuseMiss::NoCheckpoint
+                        };
+                    }
                     admit
                 }
             };
@@ -3163,6 +3352,7 @@ mod native {
                 stepper,
                 capture_done,
                 reuse,
+                miss,
                 t_arrive: work.t_arrive,
                 stop_requested: self.stop_requested,
             })
@@ -3274,6 +3464,14 @@ mod native {
                 job.reuse
             } else {
                 ReuseTaken::Cold
+            };
+            // One probe can refuse while the next admits — a partial bank
+            // too shallow to fork, then an exact hit. The reason belongs to
+            // a request that took nothing.
+            outcome.reuse_miss = if outcome.reuse == ReuseTaken::Cold {
+                job.miss
+            } else {
+                ReuseMiss::None
             };
             if let Some(bank) = actual_bank {
                 if let Ok(snapshot) = batch.bank_snapshot(bank) {

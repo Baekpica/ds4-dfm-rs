@@ -436,6 +436,25 @@ pub(crate) fn read_metadata(path: &Path) -> Result<Metadata, FormatError> {
     read_metadata_file(&mut f)
 }
 
+/// The header, and as much of the text as the file still holds, without
+/// asking it for the payload behind them. A truncation can take the
+/// payload and leave what says which conversation the record was keyed by.
+pub(crate) fn read_header_text(
+    path: &Path,
+    max_bytes: usize,
+) -> Result<(Header, Vec<u8>), FormatError> {
+    let mut f = fs::File::open(path)?;
+    let mut raw_header = [0u8; FIXED_HEADER];
+    read_exact(&mut f, &mut raw_header)?;
+    let mut raw_text_bytes = [0u8; 4];
+    read_exact(&mut f, &mut raw_text_bytes)?;
+    let header = parse_header(&raw_header, le_get32(&raw_text_bytes))?;
+    let want = (header.text_bytes as usize).min(max_bytes);
+    let mut text = Vec::new();
+    f.take(want as u64).read_to_end(&mut text)?;
+    Ok((header, text))
+}
+
 pub(crate) fn read_text_prefix(
     path: &Path,
     max_bytes: usize,

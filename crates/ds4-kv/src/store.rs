@@ -2,8 +2,9 @@
 
 use crate::format::{
     fill_header, is_automatic_exact_replay, is_bank_replay_v1, path_for_sha, read_envelope,
-    read_metadata, read_path, read_text_prefix, sha_hex_name, stage_stream, text_sha_hex,
-    write_path, Envelope, FormatError, Header, Record, EXT_IMAGE_PIXELS_V2, EXT_TOOL_MAP,
+    read_header_text, read_metadata, read_path, read_text_prefix, sha_hex_name, stage_stream,
+    text_sha_hex, write_path, Envelope, FormatError, Header, Reason, Record, EXT_IMAGE_PIXELS_V2,
+    EXT_TOOL_MAP,
 };
 use crate::policy::{
     eviction_score, file_size_bytes, file_size_fits, EvictionContext, Options, ScoreEntry,
@@ -19,12 +20,47 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static PAYLOAD_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Whether a record must leave something to prefill. The bank lane admits
+/// only records it can extend; the serial lane may replay an exact one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Suffix {
+    Optional,
+    Required,
+}
+
+/// What a search would do with the best record it can see for a key. The
+/// store answers what it holds; the lane turns that into a miss reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrefixAnswer {
+    /// Nothing is keyed by this prompt.
+    None,
+    /// A record the search takes. Only the caller's own budget can refuse
+    /// it now, and the reuse contract has no reason for that.
+    Usable,
+    /// A record ruled out by model, quantization or context.
+    Mismatch,
+    /// A record shallower than the store's current minimum — written
+    /// before the minimum was raised, and skipped by every search since.
+    Shallow,
+}
+
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub sha: String,
     pub path: PathBuf,
     pub header: Header,
     pub file_size: u64,
+}
+
+/// A file the catalog cannot use: its payload no longer holds what its
+/// header describes. The name still says which text it was keyed by.
+#[derive(Clone, Debug)]
+struct Damaged {
+    sha: String,
+    path: PathBuf,
+    reason: Reason,
+    ext_flags: u8,
+    text_bytes: u32,
 }
 
 #[derive(Debug)]
@@ -35,6 +71,7 @@ pub struct Store {
     pub opt: Options,
     pub continued_last_store_tokens: i32,
     entries: Vec<Entry>,
+    damaged: Vec<Damaged>,
 }
 
 #[derive(Debug)]
@@ -81,6 +118,7 @@ impl Store {
             opt,
             continued_last_store_tokens: 0,
             entries: Vec::new(),
+            damaged: Vec::new(),
         };
         store.evict(0, None);
         Ok(store)
@@ -106,6 +144,7 @@ impl Store {
 
     pub fn refresh(&mut self) {
         self.entries.clear();
+        self.damaged.clear();
         let Ok(rd) = fs::read_dir(&self.dir) else {
             return;
         };
@@ -117,6 +156,17 @@ impl Store {
             };
             let path = ent.path();
             let Ok(metadata) = read_metadata(&path) else {
+                // No search can use it, but it can still be the reason a
+                // prompt keyed by its text finds nothing.
+                if let Ok((header, _)) = read_header_text(&path, 0) {
+                    self.damaged.push(Damaged {
+                        sha,
+                        path,
+                        reason: header.reason,
+                        ext_flags: header.ext_flags,
+                        text_bytes: header.text_bytes,
+                    });
+                }
                 continue;
             };
             self.entries.push(Entry {
@@ -386,15 +436,22 @@ impl Store {
             .zip(&envelope.text)
             .take_while(|(left, right)| left == right)
             .count();
+        // Corruption past the shared prefix still leaves the scan's answer
+        // standing, so check the record against its own name here too.
+        if !unchanged || text_sha_hex(&envelope.text) != entry.sha {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "KVC record does not match its name",
+            ));
+        }
+
         if !is_automatic_exact_replay(header.reason, header.ext_flags)
-            || !unchanged
             || header.model_id != model_id
             || (self.reject_different_quant && header.quant_bits != quant_bits)
             || header.ctx_size > ctx_size
             || header.ext_flags & identity_mask != identity_flags & identity_mask
             || lcp < min_lcp
             || 8 * (lcp as u64) < u64::from(header.text_bytes)
-            || text_sha_hex(&envelope.text) != entry.sha
         {
             return Ok(None);
         }
@@ -454,18 +511,30 @@ impl Store {
             && header.ctx_size == entry.header.ctx_size
             && header.tokens == entry.header.tokens
             && header.text_bytes == entry.header.text_bytes;
+        // The record no longer describes itself: its text does not hash to
+        // its own name, it is not this prompt's prefix after all, or the
+        // header moved under the read. The candidate was selected and then
+        // refused by its own contents, which is not an absence.
+        if !unchanged
+            || text_sha_hex(&envelope.text) != entry.sha
+            || !prompt.starts_with(&envelope.text)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "KVC record does not match its name",
+            ));
+        }
+
+        // Sound, but not usable in this shape: nothing left to prefill, or
+        // an identity this search does not take.
         let bank_without_logits = is_bank_replay_v1(header.reason, header.ext_flags)
             && envelope.text.len() == prompt.len();
         let missing_suffix = require_suffix && envelope.text.len() >= prompt.len();
         if !is_automatic_exact_replay(header.reason, header.ext_flags)
-            || !unchanged
             || header.model_id != model_id
             || header.ext_flags & identity_mask != identity_flags & identity_mask
             || bank_without_logits
             || missing_suffix
-            || envelope.text.len() > prompt.len()
-            || text_sha_hex(&envelope.text) != entry.sha
-            || !prompt.starts_with(&envelope.text)
         {
             return Ok(None);
         }
@@ -599,6 +668,214 @@ impl Store {
             }
         }
         best
+    }
+
+    /// What the serial search would do with this prompt: it keys on the
+    /// rendered text and may replay a record of exactly that length.
+    pub fn prefix_answer(
+        &mut self,
+        prompt: &[u8],
+        model_id: u8,
+        quant_bits: u8,
+        ctx_size: u32,
+    ) -> PrefixAnswer {
+        self.prefix_answer_masked(
+            prompt,
+            model_id,
+            quant_bits,
+            ctx_size,
+            Suffix::Optional,
+            0,
+            0,
+        )
+    }
+
+    /// What the bank search would do: it keys an image request by its
+    /// media-marked cache text and admits only records it can extend, so
+    /// asking about the rendered prompt would see nothing at all.
+    pub fn bank_prefix_answer(
+        &mut self,
+        prompt: &[u8],
+        model_id: u8,
+        quant_bits: u8,
+        ctx_size: u32,
+        identity_flags: u8,
+    ) -> PrefixAnswer {
+        self.prefix_answer_masked(
+            prompt,
+            model_id,
+            quant_bits,
+            ctx_size,
+            Suffix::Required,
+            EXT_IMAGE_PIXELS_V2,
+            identity_flags,
+        )
+    }
+
+    fn prefix_answer_masked(
+        &mut self,
+        prompt: &[u8],
+        model_id: u8,
+        quant_bits: u8,
+        ctx_size: u32,
+        suffix: Suffix,
+        identity_mask: u8,
+        identity_flags: u8,
+    ) -> PrefixAnswer {
+        self.refresh();
+        let reject_quant = self.reject_different_quant;
+        let min_tokens = self.opt.min_tokens;
+        let mut answer = PrefixAnswer::None;
+
+        for e in &self.entries {
+            if !is_automatic_exact_replay(e.header.reason, e.header.ext_flags)
+                || e.header.text_bytes as usize > prompt.len()
+            {
+                continue;
+            }
+            let exact_length = e.header.text_bytes as usize == prompt.len();
+            if suffix == Suffix::Required && exact_length {
+                // Nothing left to prefill from it in this shape.
+                continue;
+            }
+            if text_sha_hex(&prompt[..e.header.text_bytes as usize]) != e.sha {
+                continue;
+            }
+
+            // A bank snapshot carries no logits, so an exact replay cannot
+            // use one: the record is there and its layout refuses. The media
+            // flag is identity in the same way — a record keyed by this text
+            // without it is a mismatch, not one about another conversation.
+            let compatible = !(exact_length
+                && is_bank_replay_v1(e.header.reason, e.header.ext_flags))
+                && e.header.model_id == model_id
+                && ctx_size >= e.header.ctx_size
+                && (!reject_quant || e.header.quant_bits == quant_bits)
+                && e.header.ext_flags & identity_mask == identity_flags & identity_mask;
+            if compatible && (e.header.tokens as i32) >= min_tokens {
+                return PrefixAnswer::Usable;
+            }
+            let refused = if compatible {
+                PrefixAnswer::Shallow
+            } else {
+                PrefixAnswer::Mismatch
+            };
+            answer = weaker_answer(answer, refused);
+        }
+
+        // A record whose payload was truncated away is not in the catalog,
+        // but its name still says it was keyed by this text. It is why the
+        // prompt finds nothing, and that is a mismatch.
+        if self.damaged_prefix(prompt, suffix) {
+            answer = weaker_answer(answer, PrefixAnswer::Mismatch);
+        }
+
+        answer
+    }
+
+    /// A file the catalog dropped that still shares this prompt's required
+    /// prefix. Its payload is gone; the text in front of it need not be.
+    fn damaged_lcp(&self, prompt: &[u8], min_lcp: usize) -> bool {
+        self.damaged.iter().any(|d| {
+            if !is_automatic_exact_replay(d.reason, d.ext_flags)
+                || (d.text_bytes as usize) < min_lcp
+                || u64::from(d.text_bytes) > 8 * prompt.len() as u64
+            {
+                return false;
+            }
+            let want = (d.text_bytes as usize).min(prompt.len());
+            let Ok((_, text)) = read_header_text(&d.path, want) else {
+                return false;
+            };
+            let lcp = text
+                .iter()
+                .zip(prompt)
+                .take_while(|(stored, asked)| stored == asked)
+                .count();
+            lcp >= min_lcp && 8 * (lcp as u64) >= u64::from(d.text_bytes)
+        })
+    }
+
+    /// A file the catalog dropped, keyed by a prefix of this prompt.
+    fn damaged_prefix(&self, prompt: &[u8], suffix: Suffix) -> bool {
+        self.damaged.iter().any(|d| {
+            let text_bytes = d.text_bytes as usize;
+            if !is_automatic_exact_replay(d.reason, d.ext_flags)
+                || text_bytes > prompt.len()
+                || (suffix == Suffix::Required && text_bytes == prompt.len())
+            {
+                return false;
+            }
+            text_sha_hex(&prompt[..text_bytes]) == d.sha
+        })
+    }
+
+    /// The LCP form: an edited prompt diverges from the record it shares a
+    /// prefix with, so the exact question cannot see it at all. `min_lcp`
+    /// is the partial minimum the bank search admits from.
+    pub fn bank_lcp_answer(
+        &mut self,
+        prompt: &[u8],
+        model_id: u8,
+        quant_bits: u8,
+        ctx_size: u32,
+        min_lcp: usize,
+        identity_flags: u8,
+    ) -> PrefixAnswer {
+        if min_lcp == 0 || prompt.len() < min_lcp {
+            return PrefixAnswer::None;
+        }
+        self.refresh();
+        let reject_quant = self.reject_different_quant;
+        let min_tokens = self.opt.min_tokens;
+        let mut answer = PrefixAnswer::None;
+
+        for e in &self.entries {
+            if !is_automatic_exact_replay(e.header.reason, e.header.ext_flags)
+                || (e.header.text_bytes as usize) < min_lcp
+                || u64::from(e.header.text_bytes) > 8 * prompt.len() as u64
+            {
+                continue;
+            }
+            let want = (e.header.text_bytes as usize).min(prompt.len());
+            let Ok((metadata, text)) = read_text_prefix(&e.path, want) else {
+                continue;
+            };
+            if metadata.header.text_bytes != e.header.text_bytes {
+                continue;
+            }
+            let lcp = text
+                .iter()
+                .zip(prompt)
+                .take_while(|(stored, asked)| stored == asked)
+                .count();
+            if lcp < min_lcp || 8 * (lcp as u64) < u64::from(e.header.text_bytes) {
+                continue;
+            }
+
+            let compatible = e.header.model_id == model_id
+                && ctx_size >= e.header.ctx_size
+                && (!reject_quant || e.header.quant_bits == quant_bits)
+                && e.header.ext_flags & EXT_IMAGE_PIXELS_V2 == identity_flags & EXT_IMAGE_PIXELS_V2;
+            if compatible && (e.header.tokens as i32) >= min_tokens {
+                return PrefixAnswer::Usable;
+            }
+            let refused = if compatible {
+                PrefixAnswer::Shallow
+            } else {
+                PrefixAnswer::Mismatch
+            };
+            answer = weaker_answer(answer, refused);
+        }
+
+        // An edited prompt diverges from the record, so the damaged list has
+        // to be read through the same shared prefix, not by name. A record
+        // no search would replay from is not a refusal either.
+        if self.damaged_lcp(prompt, min_lcp) {
+            answer = weaker_answer(answer, PrefixAnswer::Mismatch);
+        }
+
+        answer
     }
 
     pub fn find_text_lcp(
@@ -792,6 +1069,16 @@ fn rewrite_compatible_trailer(
     file.flush()
 }
 
+/// Fold in a record the search would not take. A mismatch outranks one
+/// that is only too shallow, the way the lanes report the two, and both
+/// outrank having seen nothing.
+fn weaker_answer(seen: PrefixAnswer, refused: PrefixAnswer) -> PrefixAnswer {
+    if refused == PrefixAnswer::Mismatch || seen == PrefixAnswer::None {
+        return refused;
+    }
+    seen
+}
+
 fn format_io_error(error: FormatError) -> io::Error {
     match error {
         FormatError::Io(error) => error,
@@ -910,6 +1197,219 @@ mod tests {
         assert!(second_path.exists());
         drop(second);
         assert!(!second_path.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lcp_refuses_a_moved_record() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-lcp-candidate-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut store = Store::open(&dir, 16, false, Options::default()).unwrap();
+        let mut record = rec(b"shared opening/stored tail", 512);
+        record.header.reason = Reason::BankShutdown;
+        record.header.ext_flags = crate::format::EXT_BANK_REPLAY_V1;
+        let path = store.write(record).unwrap();
+        let edited = b"shared opening/edited tail";
+
+        let (got, _, lcp) = store
+            .bank_text_lcp_candidate(edited, 0, 2, 8192, 8)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, path);
+        assert_eq!(lcp, 15);
+
+        // Corrupt the text past the shared prefix: the scan still picks the
+        // record, and only the full-text check can see that it moved.
+        let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::Start((FIXED_HEADER + 4 + 20) as u64))
+            .unwrap();
+        file.write_all(b"X").unwrap();
+        file.flush().unwrap();
+        assert_eq!(
+            store
+                .bank_text_lcp_candidate(edited, 0, 2, 8192, 8)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cut_record_keeps_its_key() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-truncated-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut store = Store::open(&dir, 16, false, Options::default()).unwrap();
+        let path = store.write(rec(b"shared prefix", 512)).unwrap();
+
+        // Cut the payload away: the header and text stay, so the catalog
+        // drops the record while its name still says what it was keyed by.
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(FIXED_HEADER as u64 + 4 + 13)
+            .unwrap();
+
+        assert_eq!(
+            store.prefix_answer(b"shared prefix and suffix", 0, 2, 2048),
+            PrefixAnswer::Mismatch
+        );
+        assert_eq!(
+            store.prefix_answer(b"another conversation", 0, 2, 2048),
+            PrefixAnswer::None
+        );
+
+        // A record no search replays from is not a refusal: it was never a
+        // candidate, damaged or not.
+        let mut session = rec(b"agent opening", 512);
+        session.header.reason = Reason::AgentSession;
+        let session_path = store.write(session).unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&session_path)
+            .unwrap()
+            .set_len(FIXED_HEADER as u64 + 4 + 13)
+            .unwrap();
+        assert_eq!(
+            store.prefix_answer(b"agent opening and more", 0, 2, 2048),
+            PrefixAnswer::None
+        );
+        assert_eq!(
+            store.bank_lcp_answer(b"agent openinG edited", 0, 2, 2048, 8, 0),
+            PrefixAnswer::None
+        );
+
+        // An edited prompt diverges from the record, so only the shared
+        // prefix can find it — and the text in front of the payload is
+        // still there to be read.
+        assert_eq!(
+            store.bank_lcp_answer(b"shared prefiX edited", 0, 2, 2048, 8, 0),
+            PrefixAnswer::Mismatch
+        );
+        assert_eq!(
+            store.bank_lcp_answer(b"another opening turn", 0, 2, 2048, 8, 0),
+            PrefixAnswer::None
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_exact_bank_answers_layout() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-exact-bank-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut store = Store::open(&dir, 16, false, Options::default()).unwrap();
+        let mut record = rec(b"exact conversation", 512);
+        record.header.reason = Reason::BankShutdown;
+        record.header.ext_flags = crate::format::EXT_BANK_REPLAY_V1;
+        store.write(record).unwrap();
+
+        // A bank snapshot has no logits to replay from, so an exact serial
+        // prompt is refused by the record's layout, not by its absence.
+        assert_eq!(
+            store.prefix_answer(b"exact conversation", 0, 2, 2048),
+            PrefixAnswer::Mismatch
+        );
+        // With a suffix to prefill, the same record is what the search takes.
+        assert_eq!(
+            store.prefix_answer(b"exact conversation plus a turn", 0, 2, 2048),
+            PrefixAnswer::Usable
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_thin_record_answers_shallow() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-shallow-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut store = Store::open(&dir, 16, false, Options::default()).unwrap();
+        // Written while the minimum was lower; every search skips it now.
+        store.write(rec(b"shared opening", 8)).unwrap();
+
+        assert_eq!(
+            store.prefix_answer(b"shared opening and more", 0, 2, 2048),
+            PrefixAnswer::Shallow
+        );
+        assert_eq!(
+            store.prefix_answer(b"another conversation", 0, 2, 2048),
+            PrefixAnswer::None
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_image_key_owns_its_answer() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-image-key-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut store = Store::open(&dir, 16, true, Options::default()).unwrap();
+        let mut record = rec(b"chat\xffDS4IMG2 turn", 512);
+        record.header.reason = Reason::BankCheckpoint;
+        record.header.ext_flags = crate::format::EXT_BANK_REPLAY_V1 | EXT_IMAGE_PIXELS_V2;
+        store.write(record).unwrap();
+        let key = b"chat\xffDS4IMG2 turn and one more";
+
+        // The identity the record was stored with: the search takes it.
+        assert_eq!(
+            store.bank_prefix_answer(key, 0, 2, 2048, EXT_IMAGE_PIXELS_V2),
+            PrefixAnswer::Usable
+        );
+        // A different quantization rules it out, so the miss is a mismatch.
+        assert_eq!(
+            store.bank_prefix_answer(key, 0, 4, 2048, EXT_IMAGE_PIXELS_V2),
+            PrefixAnswer::Mismatch
+        );
+        // The rendered prompt is not the key it was stored under, so the
+        // text-keyed search sees nothing. Asked under this key without the
+        // media flag, the record is there and its layout rules it out.
+        assert_eq!(
+            store.prefix_answer(b"chat turn and one more", 0, 4, 2048),
+            PrefixAnswer::None
+        );
+        assert_eq!(
+            store.bank_prefix_answer(key, 0, 2, 2048, 0),
+            PrefixAnswer::Mismatch
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_edit_mismatches_by_lcp() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-lcp-identity-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut store = Store::open(&dir, 16, false, Options::default()).unwrap();
+        store
+            .write(rec(b"shared opening turn/ORIGINAL", 512))
+            .unwrap();
+        let edited = b"shared opening turn/EDITED CONTINUATION";
+
+        // The stored text diverges from the prompt, so the exact-prefix
+        // question cannot see the record at all.
+        assert_eq!(
+            store.bank_prefix_answer(edited, 1, 2, 2048, 0),
+            PrefixAnswer::None
+        );
+        // Through the LCP the partial search would have taken it, and only
+        // the model it was written for rules it out.
+        assert_eq!(
+            store.bank_lcp_answer(edited, 1, 2, 2048, 8, 0),
+            PrefixAnswer::Mismatch
+        );
+        // The identity it was stored with is not a mismatch.
+        assert_eq!(
+            store.bank_lcp_answer(edited, 0, 2, 2048, 8, 0),
+            PrefixAnswer::Usable
+        );
+        // Neither is a prompt that shares nothing with it.
+        assert_eq!(
+            store.bank_lcp_answer(b"a different opening", 1, 2, 2048, 8, 0),
+            PrefixAnswer::None
+        );
+
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1452,10 +1952,15 @@ mod tests {
             .unwrap();
         file.write_all(b"X").unwrap();
         file.flush().unwrap();
-        assert!(store
-            .text_prefix_candidate(b"shared prefix and suffix", 0, 2, 8192)
-            .unwrap()
-            .is_none());
+        // The text no longer hashes to its own name: the record is refused
+        // by its contents, which is not the same as not being there.
+        assert_eq!(
+            store
+                .text_prefix_candidate(b"shared prefix and suffix", 0, 2, 8192)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1501,10 +2006,13 @@ mod tests {
             .unwrap();
         file.write_all(b"X").unwrap();
         file.flush().unwrap();
-        assert!(store
-            .bank_text_prefix_candidate(b"shared prefix and suffix", 0, 2, 8192)
-            .unwrap()
-            .is_none());
+        assert_eq!(
+            store
+                .bank_text_prefix_candidate(b"shared prefix and suffix", 0, 2, 8192)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -308,10 +308,36 @@ pub enum ReuseTaken {
     Fork,
 }
 
+/// Why a stored or live candidate was refused. Recorded at the decision, so
+/// an operator reads "the template dropped a block" instead of assuming the
+/// disk store is broken. The strings are the contract's miss reasons.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReuseMiss {
+    #[default]
+    None,
+    NoCheckpoint,
+    RenderedPrefix,
+    BelowThreshold,
+    PayloadMismatch,
+}
+
+impl ReuseMiss {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::NoCheckpoint => "no checkpoint at or below LCP",
+            Self::RenderedPrefix => "rendered prefix changed",
+            Self::BelowThreshold => "below minimum token threshold",
+            Self::PayloadMismatch => "payload family/layout mismatch",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RequestTrace {
     pub effective_lane: &'static str,
     pub reuse_kind: ReuseTaken,
+    pub reuse_miss: ReuseMiss,
     pub speculation_active: bool,
     pub fallback_reason: Option<String>,
 }
@@ -1198,12 +1224,19 @@ impl ReuseTaken {
 
 impl RequestTrace {
     pub fn to_json(&self) -> Value {
-        json!({
+        let mut trace = json!({
             "effective_lane": self.effective_lane,
             "reuse_kind": self.reuse_kind.as_str(),
             "speculation_active": self.speculation_active,
             "fallback_reason": self.fallback_reason
-        })
+        });
+        // Absent when nothing was refused, as the contract says. A null
+        // member would read as "there is a miss, and it has no reason",
+        // and a client testing for the key would believe it.
+        if self.reuse_miss != ReuseMiss::None {
+            trace["reuse_miss"] = json!(self.reuse_miss.as_str());
+        }
+        trace
     }
 }
 
@@ -1669,6 +1702,26 @@ impl fmt::Display for ResolvedPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clean_trace_omits_the_miss() {
+        let mut trace = RequestTrace {
+            effective_lane: "serial",
+            reuse_kind: ReuseTaken::Exact,
+            reuse_miss: ReuseMiss::None,
+            speculation_active: false,
+            fallback_reason: None,
+        };
+        let json = trace.to_json();
+        assert!(json.get("reuse_miss").is_none(), "{json}");
+        assert_eq!(json["reuse_kind"], "exact");
+
+        trace.reuse_miss = ReuseMiss::BelowThreshold;
+        assert_eq!(
+            trace.to_json()["reuse_miss"],
+            "below minimum token threshold"
+        );
+    }
 
     fn caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         serving_caps(family, variant)

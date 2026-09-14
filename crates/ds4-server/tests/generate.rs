@@ -40,6 +40,9 @@ fn user_req() -> ParsedRequest {
 struct PromptSyncDecode {
     template: Option<ds4_core::chat_template::Template>,
     inner: ScriptedDecode,
+    /// What the sync decided, as the real engine would report it.
+    reuse: ds4_core::ReuseTaken,
+    miss: ds4_core::ReuseMiss,
     cached_tokens: i32,
     effective_prompt_pos: i32,
     prompt_sync_calls: usize,
@@ -66,6 +69,8 @@ impl PromptSyncDecode {
         Self {
             template: None,
             inner,
+            reuse: ds4_core::ReuseTaken::Cold,
+            miss: ds4_core::ReuseMiss::None,
             cached_tokens,
             effective_prompt_pos,
             prompt_sync_calls: 0,
@@ -143,6 +148,9 @@ impl DecodeIo for PromptSyncDecode {
     ) -> Result<i32, GenerateError> {
         self.events.push("sync");
         self.prompt_sync_calls += 1;
+        // The real engine reports what its sync decided; the tape carries
+        // whatever the situation under test set.
+
         self.disk_eligible.push(disk_eligible);
         self.thinking_visible_eligible
             .push(thinking_visible_eligible);
@@ -152,6 +160,14 @@ impl DecodeIo for PromptSyncDecode {
         self.inner.live = tokens.to_vec();
         self.inner.pos = self.effective_prompt_pos;
         Ok(self.cached_tokens)
+    }
+
+    fn last_reuse(&self) -> ds4_core::ReuseTaken {
+        self.reuse
+    }
+
+    fn last_miss(&self) -> ds4_core::ReuseMiss {
+        self.miss
     }
 
     fn prompt_sync_elapsed(&self) -> Option<Duration> {
@@ -1030,6 +1046,99 @@ fn motif3_no_think_invalidates_user_stop_and_tool_syntax_cut() {
         assert_eq!(engine.pos(), 0);
         assert!(engine.remembered.iter().all(|(_, frontier)| *frontier == 0));
     }
+}
+
+/// P1 gate: drive one reuse situation through the HTTP door and read the
+/// trace back from `/v1/stats`, the way an operator would.
+fn http_reuse_trace(
+    reuse: ds4_core::ReuseTaken,
+    miss: ds4_core::ReuseMiss,
+    cached: i32,
+) -> serde_json::Value {
+    let mut cfg = ServerConfig::test_cfg();
+    cfg.model_id = "ds4".into();
+    cfg.model_name = "ds4".into();
+    cfg.default_tokens = 16;
+    let inner = Mutex::new(ServerInner::from_cfg(&cfg));
+
+    let mut engine = PromptSyncDecode::new(ScriptedDecode::from_pieces(&[b"ok"]), cached, 1);
+    engine.reuse = reuse;
+    engine.miss = miss;
+    let body = r#"{"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}"#;
+    let request = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let answer = one_shot_inner(&cfg, &inner, Some(&mut engine), request.as_bytes());
+    assert!(
+        answer.starts_with("HTTP/1.1 200 OK"),
+        "generation failed: {answer}"
+    );
+
+    let stats = one_shot_inner(&cfg, &inner, None, b"GET /v1/stats HTTP/1.1\r\n\r\n");
+    let start = stats.find("{\"routes\"").expect(&stats);
+    serde_json::from_str(stats[start..].trim()).expect(&stats[start..])
+}
+
+fn one_shot_inner(
+    cfg: &ServerConfig,
+    inner: &Mutex<ServerInner>,
+    engine: Option<&mut dyn DecodeIo>,
+    request: &[u8],
+) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut out = Vec::new();
+    thread::scope(|scope| {
+        let client = scope.spawn(move || {
+            let mut c = TcpStream::connect(addr).unwrap();
+            c.write_all(request).unwrap();
+            let _ = c.shutdown(std::net::Shutdown::Write);
+            let mut buf = Vec::new();
+            c.read_to_end(&mut buf).unwrap();
+            buf
+        });
+        let (mut server, _) = listener.accept().unwrap();
+        handle_client_inner(cfg, inner, &mut server, engine, None);
+        drop(server);
+        out = client.join().unwrap();
+    });
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The four P1 situations, each read back from the HTTP surface. `fork`
+/// only happens on the native bank lane, so it is covered by the
+/// admission unit tests instead.
+#[test]
+fn http_reports_reuse_situations() {
+    // Same chat, append: reuse at the frontier, suffix prefilled.
+    let body = http_reuse_trace(ds4_core::ReuseTaken::Exact, ds4_core::ReuseMiss::None, 3);
+    assert_eq!(body["last_request"]["reuse_kind"], "exact");
+    assert!(
+        body["last_request"].get("reuse_miss").is_none(),
+        "a request that refused nothing carries no miss member: {body}"
+    );
+
+    // Edit or branch: a checkpoint below the prefix, gap replayed.
+    let body = http_reuse_trace(ds4_core::ReuseTaken::Partial, ds4_core::ReuseMiss::None, 2);
+    assert_eq!(body["last_request"]["reuse_kind"], "partial");
+
+    // Restart with a template that re-rendered: refused, and it says why.
+    let body = http_reuse_trace(
+        ds4_core::ReuseTaken::Cold,
+        ds4_core::ReuseMiss::RenderedPrefix,
+        0,
+    );
+    assert_eq!(body["last_request"]["reuse_kind"], "cold");
+    assert_eq!(
+        body["last_request"]["reuse_miss"],
+        "rendered prefix changed"
+    );
+
+    // Restart that found its payload.
+    let body = http_reuse_trace(ds4_core::ReuseTaken::Exact, ds4_core::ReuseMiss::None, 5);
+    assert_eq!(body["last_request"]["reuse_kind"], "exact");
+    assert_eq!(body["last_request"]["effective_lane"], "serial");
 }
 
 #[test]

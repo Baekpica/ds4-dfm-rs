@@ -24,4 +24,4 @@ pub use policy::{
     store_len, EvictionContext, Options, ScoreEntry,
 };
 pub use sha1::sha1_hex;
-pub use store::{Entry, PayloadTemp, Store};
+pub use store::{Entry, PayloadTemp, PrefixAnswer, Store};
