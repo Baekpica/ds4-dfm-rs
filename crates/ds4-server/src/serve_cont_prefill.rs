@@ -11,7 +11,9 @@ pub(crate) const ENV_PREFILL_CHUNK_LIVE: &str = "DS4_CONT_PREFILL_CHUNK_LIVE";
 
 pub(crate) const DEFAULT_PREFILL_CHUNK: u32 = 4096;
 pub(crate) const DEFAULT_PREFILL_CHUNK_LIVE: u32 = 512;
-const PREFILL_FENCE: u32 = 8192;
+/// One definition with the serving plan, so `--print-plan` cannot advertise
+/// a yield this policy then caps.
+const PREFILL_FENCE: u32 = ds4_core::PREFILL_CHUNK_FENCE;
 
 /// C `bg_prefill_chunk_tokens` / `bg_prefill_chunk_live_tokens`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

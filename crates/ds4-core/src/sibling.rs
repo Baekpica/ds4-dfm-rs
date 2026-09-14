@@ -49,6 +49,33 @@ pub fn probe_mtp_sidecar(shape: Shape, path: &str) -> Result<()> {
     .map(|_| ())
 }
 
+/// Validate an external vision sidecar the way `Model::open` will: families
+/// with embedded media reject one outright (the `inkling_open_check` rule),
+/// and Step inspects the artifact. `--check-config` uses this so a process
+/// that cannot boot is not approved.
+pub fn probe_vision_sidecar(shape: Shape, path: &str) -> Result<()> {
+    if path.is_empty() {
+        return Err(Error {
+            code: 1,
+            message: "vision path must not be empty".into(),
+        });
+    }
+    if shape.family == ModelFamily::Inkling {
+        return Err(Error {
+            code: 1,
+            message: "Inkling uses embedded image/audio weights".into(),
+        });
+    }
+    if shape.family == ModelFamily::Step37 {
+        crate::Step37SidecarPlan::inspect(std::path::Path::new(path), crate::Step37Sidecar::Vision)
+            .map_err(|e| Error {
+                code: 1,
+                message: format!("vision metadata failed: {e}"),
+            })?;
+    }
+    Ok(())
+}
+
 pub(crate) struct SiblingPaths<'a> {
     pub mtp: Option<&'a str>,
     pub dspark: Option<&'a str>,

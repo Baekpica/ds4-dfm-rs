@@ -3,9 +3,9 @@
 //! Incremental live DSML tool projection is host-owned.
 
 use ds4_core::{
-    caps_from_ident, identify_gguf, probe_mtp_sidecar, resolve_plan, Backend, DistributedConfig,
-    DistributedRole, EngineFacts, MaxSeqs, Model, ModelOpenOption, MtpMode, PrefixReuse,
-    ServingRequest,
+    caps_from_ident, identify_gguf, probe_mtp_sidecar, probe_vision_sidecar, resolve_plan, Backend,
+    DistributedConfig, DistributedRole, EngineFacts, MaxSeqs, Model, ModelOpenOption, MtpMode,
+    PrefixReuse, ServingRequest,
 };
 use ds4_server::kv_cli::DiskKvArgs;
 use ds4_server::{
@@ -415,14 +415,21 @@ fn main() {
     }
 }
 
-/// A scheduler yield of zero is not a chunk: it would be published to the
-/// native prefill loop as one.
+/// A scheduler yield of zero is not a chunk, and the engine refuses a
+/// nonpositive MTP draft: either would let `--check-config` approve a boot
+/// failure.
 fn positive_chunk(flag: &str, raw: Option<String>) -> u32 {
-    match raw.and_then(|v| v.parse::<u32>().ok()).filter(|n| *n > 0) {
-        Some(n) => n,
-        None => cli_error(&format!(
+    u32::try_from(positive_count(flag, raw)).unwrap_or_else(|_| {
+        cli_error(&format!(
             "ds4-server-rs: {flag} wants a positive token count"
-        )),
+        ))
+    })
+}
+
+fn positive_count(flag: &str, raw: Option<String>) -> i32 {
+    match raw.and_then(|v| v.parse::<i32>().ok()).filter(|n| *n > 0) {
+        Some(n) => n,
+        None => cli_error(&format!("ds4-server-rs: {flag} wants a positive count")),
     }
 }
 

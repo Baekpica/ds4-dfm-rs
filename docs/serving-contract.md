@@ -19,7 +19,7 @@ the same object plus `last_request`.
 | `--mtp-mode off\|auto\|on` | Speculation policy | `DS4_MTP_SPEC_DISABLE` for off-with-weights |
 | `--mtp PATH`, `--mtp-draft N` | Sidecar and draft length | |
 | `--kv-disk-dir`, `--kv-disk-space-mb` | Persistent checkpoint store | `--kv-disk-space 32G` |
-| `--prefill-chunk`, `--prefill-chunk-live` | Scheduler yield sizes | `DS4_CONT_PREFILL_CHUNK`, `DS4_CONT_PREFILL_CHUNK_LIVE` |
+| `--prefill-chunk`, `--prefill-chunk-live` | Scheduler yield sizes, capped at 8,192 | `DS4_CONT_PREFILL_CHUNK`, `DS4_CONT_PREFILL_CHUNK_LIVE`, `DS4_CONT_PREFILL_NOFENCE=1` lifts the cap |
 | `--mem-floor-gb` | Single host floor | `DS4_MEM_FLOOR_GB` (published for native) |
 | `--print-plan` | Print resolved JSON and continue | |
 | `--check-config` | Print resolved JSON and exit | |

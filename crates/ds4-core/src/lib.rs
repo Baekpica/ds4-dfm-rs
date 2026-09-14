@@ -75,10 +75,10 @@ pub use payload::{
 pub use progress::PrefillCheckpoint;
 pub use serving::{
     caps_from_ident, caps_from_shape, host_reuse, parse_disk_space, resolve_plan, serving_caps,
-    EffectiveView, EngineFacts, IssueLevel, MaxSeqs, MtpMode, PlanIssue, PrefixReuse,
+    ChunkFence, EffectiveView, EngineFacts, IssueLevel, MaxSeqs, MtpMode, PlanIssue, PrefixReuse,
     QualifiedView, RequestTrace, RequestedView, ResolvedPlan, ReuseKind, ReuseTaken, ServingCaps,
     ServingRequest, SpecLane, Support, DEFAULT_BANK_PERSIST, DEFAULT_MAX_SEQS,
-    DEFAULT_MEM_FLOOR_GB,
+    DEFAULT_MEM_FLOOR_GB, PREFILL_CHUNK_FENCE,
 };
 pub use session::{
     dump_cmd as session_dump_cmd, RewriteKind, SessionBackend, SessionLedger, SyncPlan,
@@ -89,7 +89,7 @@ pub use shape::{
     SHAPE_GLM53_FLASH, SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_PRO,
     SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B,
 };
-pub use sibling::{probe_mtp_sidecar, SiblingAttach};
+pub use sibling::{probe_mtp_sidecar, probe_vision_sidecar, SiblingAttach};
 pub use spec::{snapshot_spec, SpecMetrics};
 pub use step37::{Step37Error, Step37Layer, Step37Plan, Step37Sidecar, Step37SidecarPlan};
 pub use tensors::{

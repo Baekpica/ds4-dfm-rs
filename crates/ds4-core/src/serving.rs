@@ -7,12 +7,17 @@ use crate::identify::Identified;
 use crate::shape::{ModelFamily, Shape, Variant};
 use crate::Backend;
 use serde_json::{json, Value};
+use std::ffi::OsStr;
 use std::fmt::{self, Write as _};
 
 pub const DEFAULT_MEM_FLOOR_GB: u64 = 4;
 pub const DEFAULT_MAX_SEQS: u32 = 2;
 pub const DEFAULT_CTX: i32 = 8192;
 pub const DEFAULT_SCHED_CHUNK: u32 = 4096;
+/// C `bg_prefill_chunk_tokens` caps the boot chunk here unless
+/// `DS4_CONT_PREFILL_NOFENCE=1`. The plan resolves the same cap so it cannot
+/// advertise a yield the scheduler will not use.
+pub const PREFILL_CHUNK_FENCE: u32 = 8192;
 pub const DEFAULT_SCHED_LIVE: u32 = 512;
 pub const DEFAULT_BANK_PERSIST: i32 = 8192;
 
@@ -31,6 +36,14 @@ pub enum MtpMode {
     Off,
     Auto,
     On,
+}
+
+/// Whether the native prefill fence applies. `DS4_CONT_PREFILL_NOFENCE=1`
+/// lifts it, so the plan must read the same switch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChunkFence {
+    On,
+    Off,
 }
 
 /// Concurrent banks/sequences, not context length.
@@ -132,6 +145,7 @@ pub struct ServingRequest {
     pub print_plan: bool,
     pub check_config: bool,
     pub backend: Backend,
+    pub chunk_fence: ChunkFence,
 }
 
 /// Facts known only after identify or engine open.
@@ -143,6 +157,8 @@ pub struct EngineFacts {
     pub seq_cap: Option<u32>,
     pub disk_ready: Option<bool>,
     pub mtp_path_ok: Option<bool>,
+    /// `Some(false)` when the named `--vision` artifact cannot attach.
+    pub vision_path_ok: Option<bool>,
     /// `Some(false)` once the native fit refused the continuous lane.
     pub cont_lane: Option<bool>,
     /// `Some(false)` when the opened runtime has no partial checkpoint store.
@@ -166,6 +182,7 @@ pub struct EffectiveView {
     pub prefix_reuse: ReuseKind,
     pub mtp_mode: MtpMode,
     pub mtp_weights: bool,
+    pub mtp_draft: Option<i32>,
     pub max_seqs: u32,
     pub ctx: i32,
     pub mem_floor_gb: u64,
@@ -269,6 +286,7 @@ impl Default for ServingRequest {
             print_plan: false,
             check_config: false,
             backend: Backend::Cuda,
+            chunk_fence: ChunkFence::On,
         }
     }
 }
@@ -379,6 +397,9 @@ impl ServingRequest {
             if let Some(gb) = parse_u64_atoi(&raw) {
                 req.mem_floor_gb = gb;
             }
+        }
+        if std::env::var_os("DS4_CONT_PREFILL_NOFENCE").as_deref() == Some(OsStr::new("1")) {
+            req.chunk_fence = ChunkFence::Off;
         }
         req.prefix_reuse = reuse_from_env();
         if std::env::var_os("DS4_MTP_SPEC_DISABLE").is_some() {
@@ -691,7 +712,21 @@ pub fn resolve_plan(
         ));
     }
 
-    let sched_chunk = req.sched_chunk.unwrap_or(DEFAULT_SCHED_CHUNK);
+    if facts.vision_path_ok == Some(false) {
+        issues.push(error(
+            "vision_artifact",
+            format!("{} cannot open the --vision artifact", caps.variant_name()),
+        ));
+    }
+
+    let mut sched_chunk = req.sched_chunk.unwrap_or(DEFAULT_SCHED_CHUNK);
+    if req.chunk_fence == ChunkFence::On && sched_chunk > PREFILL_CHUNK_FENCE {
+        issues.push(warn(
+            "chunk_fenced",
+            format!("prefill chunk {sched_chunk} is capped at {PREFILL_CHUNK_FENCE}"),
+        ));
+        sched_chunk = PREFILL_CHUNK_FENCE;
+    }
     let mut sched_live = req.sched_chunk_live.unwrap_or(DEFAULT_SCHED_LIVE);
     if sched_live > sched_chunk {
         sched_live = sched_chunk;
@@ -733,6 +768,8 @@ pub fn resolve_plan(
             prefix_reuse: reuse,
             mtp_mode,
             mtp_weights,
+            // A draft length only describes a run that speculates.
+            mtp_draft: (mtp_mode != MtpMode::Off).then(|| req.mtp_draft.unwrap_or(1)),
             max_seqs,
             ctx: req.ctx,
             mem_floor_gb: req.mem_floor_gb,
@@ -879,6 +916,7 @@ impl ResolvedPlan {
                 "prefix_reuse": self.effective.prefix_reuse.as_str(),
                 "mtp_mode": self.effective.mtp_mode.as_str(),
                 "mtp_weights": self.effective.mtp_weights,
+                "mtp_draft": self.effective.mtp_draft,
                 "max_seqs": self.effective.max_seqs,
                 "ctx": self.effective.ctx,
                 "mem_floor_gb": self.effective.mem_floor_gb,
@@ -988,6 +1026,7 @@ fn default_effective(req: &ServingRequest) -> EffectiveView {
         prefix_reuse: ReuseKind::None,
         mtp_mode: req.mtp_mode,
         mtp_weights: req.mtp_path.is_some(),
+        mtp_draft: None,
         max_seqs: match req.max_seqs {
             MaxSeqs::Auto | MaxSeqs::Off => 1,
             MaxSeqs::Fixed(n) => n,
@@ -1540,6 +1579,62 @@ mod tests {
         );
         assert_eq!(p.effective.max_seqs, 1);
         assert!(!p.has_errors());
+    }
+
+    #[test]
+    fn an_oversized_chunk_resolves_to_the_fence() {
+        let mut req = ServingRequest::default();
+        req.sched_chunk = Some(16384);
+        req.sched_chunk_live = Some(16384);
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert_eq!(p.effective.sched_chunk, PREFILL_CHUNK_FENCE);
+        assert_eq!(p.effective.sched_chunk_live, PREFILL_CHUNK_FENCE);
+        assert!(p.issues.iter().any(|i| i.code == "chunk_fenced"));
+        assert!(!p.has_errors());
+        assert!(p
+            .env_overrides()
+            .iter()
+            .any(|(k, v)| k == "DS4_CONT_PREFILL_CHUNK" && v == "8192"));
+
+        // The documented escape lifts the same cap for the plan.
+        let mut req = ServingRequest::default();
+        req.sched_chunk = Some(16384);
+        req.chunk_fence = ChunkFence::Off;
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert_eq!(p.effective.sched_chunk, 16384);
+        assert!(!p.issues.iter().any(|i| i.code == "chunk_fenced"));
+    }
+
+    #[test]
+    fn a_refused_vision_artifact_is_an_error() {
+        let facts = EngineFacts {
+            vision_path_ok: Some(false),
+            ..EngineFacts::default()
+        };
+        let p = resolve_plan(
+            &ServingRequest::default(),
+            Some(caps(ModelFamily::Inkling, Variant::InklingSmall)),
+            &facts,
+        );
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "vision_artifact"));
+    }
+
+    #[test]
+    fn the_draft_length_is_reported_only_when_mtp_runs() {
+        let mut req = ServingRequest::default();
+        req.mtp_draft = Some(3);
+        req.mtp_path = Some("mtp.gguf".into());
+        let p = plan(req, ModelFamily::Step37, Variant::Step37Flash);
+        assert_eq!(p.effective.mtp_draft, Some(3));
+        assert_eq!(p.to_json()["effective"]["mtp_draft"], 3);
+
+        let mut req = ServingRequest::default();
+        req.mtp_draft = Some(3);
+        req.mtp_mode = MtpMode::Off;
+        let p = plan(req, ModelFamily::Step37, Variant::Step37Flash);
+        assert_eq!(p.effective.mtp_draft, None);
+        assert!(p.to_json()["effective"]["mtp_draft"].is_null());
     }
 
     #[test]
