@@ -652,10 +652,11 @@ pub fn resolve_plan(
         };
     };
 
-    let reuse = resolve_reuse(req, caps, facts, &mut issues);
     let (max_seqs, banks_opt_in) =
         resolve_seqs(req.max_seqs, caps, facts, req.backend, &mut issues);
-    let (mtp_mode, mtp_weights) = resolve_mtp(req, caps, facts, &mut issues);
+    let driver = bank_driver(req, caps, max_seqs, facts);
+    let reuse = resolve_reuse(req, caps, driver, facts, &mut issues);
+    let (mtp_mode, mtp_weights) = resolve_mtp(req, caps, facts, driver, &mut issues);
     let disk = resolve_disk(req, caps, facts, &mut issues);
 
     if req.ctx > 0 {
@@ -996,6 +997,7 @@ fn default_effective(req: &ServingRequest) -> EffectiveView {
 fn resolve_reuse(
     req: &ServingRequest,
     caps: ServingCaps,
+    driver: BankDriver,
     facts: &EngineFacts,
     issues: &mut Vec<PlanIssue>,
 ) -> ReuseKind {
@@ -1024,7 +1026,7 @@ fn resolve_reuse(
                 ));
                 return caps.reuse;
             }
-            match partial_block(req, facts) {
+            match partial_block(driver, facts) {
                 Some(block) => {
                     issues.push(error(block.code(), block.message(caps)));
                     ReuseKind::Exact
@@ -1036,7 +1038,7 @@ fn resolve_reuse(
             if caps.reuse != ReuseKind::Partial {
                 return caps.reuse;
             }
-            match partial_block(req, facts) {
+            match partial_block(driver, facts) {
                 Some(block) => {
                     issues.push(warn(block.code(), block.message(caps)));
                     ReuseKind::Exact
@@ -1067,7 +1069,7 @@ impl PartialBlock {
     fn message(self, caps: ServingCaps) -> String {
         match self {
             Self::Lane => format!(
-                "{} partial reuse needs the continuous lane; serial serving extends exact prefixes only",
+                "{} partial reuse runs in the bank lane; this plan has none",
                 caps.variant_name()
             ),
             Self::Runtime => format!(
@@ -1078,8 +1080,8 @@ impl PartialBlock {
     }
 }
 
-fn partial_block(req: &ServingRequest, facts: &EngineFacts) -> Option<PartialBlock> {
-    if bank_lane_off(req, facts) {
+fn partial_block(driver: BankDriver, facts: &EngineFacts) -> Option<PartialBlock> {
+    if driver == BankDriver::Absent {
         return Some(PartialBlock::Lane);
     }
     (facts.partial_reuse == Some(false)).then_some(PartialBlock::Runtime)
@@ -1159,6 +1161,7 @@ fn resolve_mtp(
     req: &ServingRequest,
     caps: ServingCaps,
     facts: &EngineFacts,
+    driver: BankDriver,
     issues: &mut Vec<PlanIssue>,
 ) -> (MtpMode, bool) {
     let has_path = req.mtp_path.is_some();
@@ -1194,7 +1197,7 @@ fn resolve_mtp(
     // Qwen/DeepSeek speculation lives in the bank driver. The legacy zero
     // alias (or a refused fit) routes every request through NativeDecode,
     // which only speculates for Inkling and Step, so MTP would never run.
-    if caps.spec_lane == SpecLane::Bank && bank_lane_off(req, facts) {
+    if caps.spec_lane == SpecLane::Bank && driver == BankDriver::Absent {
         if req.mtp_mode == MtpMode::On {
             issues.push(error(
                 "mtp_lane",
@@ -1259,10 +1262,33 @@ fn resolve_mtp(
     (mode, weights)
 }
 
-/// The bank driver is absent when the operator forced serial through the
-/// legacy zero alias or the native fit refused the lane.
-fn bank_lane_off(req: &ServingRequest, facts: &EngineFacts) -> bool {
-    req.max_seqs == MaxSeqs::Off || facts.cont_lane == Some(false)
+/// Whether this plan will have a bank driver at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BankDriver {
+    Present,
+    Absent,
+}
+
+/// Absent when the operator forced serial through the legacy zero alias, the
+/// backend has no lane, the native fit refused it, the family serves
+/// serially, or an opt-in family stayed at width one — Step publishes
+/// `DS4_STEP37_BATCH=0` there, so its bank machinery never opens.
+fn bank_driver(
+    req: &ServingRequest,
+    caps: ServingCaps,
+    width: u32,
+    facts: &EngineFacts,
+) -> BankDriver {
+    let absent = req.max_seqs == MaxSeqs::Off
+        || req.backend != Backend::Cuda
+        || facts.cont_lane == Some(false)
+        || caps.banks == BankLane::Serial
+        || (caps.banks == BankLane::OptIn && width < 2);
+    if absent {
+        BankDriver::Absent
+    } else {
+        BankDriver::Present
+    }
 }
 
 fn resolve_disk(
@@ -1571,12 +1597,33 @@ mod tests {
         };
         let p = resolve_plan(
             &ServingRequest::default(),
-            Some(caps(ModelFamily::Step37, Variant::Step37Flash)),
+            Some(caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext)),
             &facts,
         );
         assert!(!p.has_errors());
         assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
         assert!(p.issues.iter().any(|i| i.code == "partial_runtime"));
+    }
+
+    #[test]
+    fn opt_in_banks_at_width_one_have_no_partial_lane() {
+        // Step publishes DS4_STEP37_BATCH=0 there, so --check-config has to
+        // predict the same refusal the refit would raise.
+        for width in [MaxSeqs::Auto, MaxSeqs::Fixed(1)] {
+            let mut req = ServingRequest::default();
+            req.prefix_reuse = PrefixReuse::Partial;
+            req.max_seqs = width;
+            let p = plan(req, ModelFamily::Step37, Variant::Step37Flash);
+            assert!(p.has_errors(), "{}", width.as_str());
+            assert!(p.issues.iter().any(|i| i.code == "partial_lane"));
+            assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
+        }
+        let mut req = ServingRequest::default();
+        req.prefix_reuse = PrefixReuse::Partial;
+        req.max_seqs = MaxSeqs::Fixed(2);
+        let p = plan(req, ModelFamily::Step37, Variant::Step37Flash);
+        assert!(!p.has_errors());
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Partial);
     }
 
     #[test]

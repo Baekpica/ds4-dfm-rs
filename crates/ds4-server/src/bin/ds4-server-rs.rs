@@ -3,8 +3,9 @@
 //! Incremental live DSML tool projection is host-owned.
 
 use ds4_core::{
-    caps_from_ident, identify_gguf, resolve_plan, Backend, DistributedConfig, DistributedRole,
-    EngineFacts, GgufFile, MaxSeqs, Model, ModelOpenOption, MtpMode, PrefixReuse, ServingRequest,
+    caps_from_ident, identify_gguf, probe_mtp_sidecar, resolve_plan, Backend, DistributedConfig,
+    DistributedRole, EngineFacts, MaxSeqs, Model, ModelOpenOption, MtpMode, PrefixReuse,
+    ServingRequest,
 };
 use ds4_server::kv_cli::DiskKvArgs;
 use ds4_server::{
@@ -217,16 +218,20 @@ fn main() {
             None => facts.disk_ready = Some(false),
         }
     }
-    if let Some(path) = mtp_path.as_deref() {
-        // `is_file` accepts any regular file; the sidecar has to parse as a
-        // GGUF or `Model::open_*` fails after `--check-config` exited 0.
-        facts.mtp_path_ok = Some(GgufFile::open(std::path::Path::new(path)).is_ok());
-    }
-
-    let caps = model_path
+    let ident = model_path
         .as_deref()
-        .and_then(|path| identify_gguf(std::path::Path::new(path)).ok())
-        .map(|id| caps_from_ident(&id));
+        .and_then(|path| identify_gguf(std::path::Path::new(path)).ok());
+    let caps = ident.as_ref().map(caps_from_ident);
+    if let Some(path) = mtp_path.as_deref() {
+        // The same attach the open performs: family acceptance, sidecar
+        // metadata, required tensors and layouts. A merely readable GGUF
+        // would let `--check-config` exit 0 on an artifact that cannot load.
+        facts.mtp_path_ok = Some(
+            ident
+                .as_ref()
+                .is_some_and(|id| probe_mtp_sidecar(id.shape, path).is_ok()),
+        );
+    }
     let plan = resolve_plan(&serve_req, caps, &facts);
     plan.apply_env();
     cfg.adopt_plan(&plan);

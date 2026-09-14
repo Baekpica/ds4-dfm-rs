@@ -34,6 +34,21 @@ impl SiblingAttach {
     }
 }
 
+/// Validate an MTP sidecar the way `Model::open` will: family acceptance,
+/// sidecar metadata, required tensors, and layouts. `--check-config` uses
+/// this so a syntactically valid but incompatible GGUF fails before listen.
+pub fn probe_mtp_sidecar(shape: Shape, path: &str) -> Result<()> {
+    attach_siblings(
+        shape.family,
+        shape,
+        SiblingPaths {
+            mtp: Some(path),
+            dspark: None,
+        },
+    )
+    .map(|_| ())
+}
+
 pub(crate) struct SiblingPaths<'a> {
     pub mtp: Option<&'a str>,
     pub dspark: Option<&'a str>,

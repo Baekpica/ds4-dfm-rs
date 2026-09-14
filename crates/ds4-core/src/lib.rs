@@ -89,7 +89,7 @@ pub use shape::{
     SHAPE_GLM53_FLASH, SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_PRO,
     SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B,
 };
-pub use sibling::SiblingAttach;
+pub use sibling::{probe_mtp_sidecar, SiblingAttach};
 pub use spec::{snapshot_spec, SpecMetrics};
 pub use step37::{Step37Error, Step37Layer, Step37Plan, Step37Sidecar, Step37SidecarPlan};
 pub use tensors::{
