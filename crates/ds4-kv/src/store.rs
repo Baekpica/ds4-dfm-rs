@@ -19,6 +19,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static PAYLOAD_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Whether a record must leave something to prefill. The bank lane admits
+/// only records it can extend; the serial lane may replay an exact one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Suffix {
+    Optional,
+    Required,
+}
+
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub sha: String,
@@ -611,21 +619,48 @@ impl Store {
         quant_bits: u8,
         ctx_size: u32,
     ) -> bool {
-        self.has_incompatible_prefix_identity(prompt, model_id, quant_bits, ctx_size, false, 0, 0)
+        self.incompatible_prefix(
+            prompt,
+            model_id,
+            quant_bits,
+            ctx_size,
+            Suffix::Optional,
+            0,
+            0,
+        )
     }
 
-    /// The same question asked the way the caller searched: with its own key
-    /// and the record filters that search applied. A bank lane keys an image
-    /// request by its media-marked cache text and needs a suffix to admit, so
-    /// asking about the rendered prompt would match nothing and report an
-    /// absence where the store holds a record only identity ruled out.
-    pub fn has_incompatible_prefix_identity(
+    /// The same question asked the way the bank lane searched: it keys an
+    /// image request by its media-marked cache text and admits only records
+    /// it can extend. Asking about the rendered prompt would match nothing
+    /// and report an absence where the store holds a record only identity
+    /// ruled out.
+    pub fn has_bank_incompatible_prefix(
         &mut self,
         prompt: &[u8],
         model_id: u8,
         quant_bits: u8,
         ctx_size: u32,
-        require_suffix: bool,
+        identity_flags: u8,
+    ) -> bool {
+        self.incompatible_prefix(
+            prompt,
+            model_id,
+            quant_bits,
+            ctx_size,
+            Suffix::Required,
+            EXT_IMAGE_PIXELS_V2,
+            identity_flags,
+        )
+    }
+
+    fn incompatible_prefix(
+        &mut self,
+        prompt: &[u8],
+        model_id: u8,
+        quant_bits: u8,
+        ctx_size: u32,
+        suffix: Suffix,
         identity_mask: u8,
         identity_flags: u8,
     ) -> bool {
@@ -640,7 +675,8 @@ impl Store {
             {
                 return false;
             }
-            if (require_suffix || is_bank_replay_v1(e.header.reason, e.header.ext_flags))
+            if (suffix == Suffix::Required
+                || is_bank_replay_v1(e.header.reason, e.header.ext_flags))
                 && e.header.text_bytes as usize == prompt.len()
             {
                 return false;
@@ -652,20 +688,20 @@ impl Store {
         })
     }
 
-    /// The LCP form of [`Self::has_incompatible_prefix_identity`]: a stored
+    /// The LCP form of [`Self::has_bank_incompatible_prefix`]: a stored
     /// record shares the prefix the partial search needs, and only its
     /// identity keeps that search from taking it. An edited prompt diverges
     /// from the record, so the exact-prefix question cannot see it.
-    pub fn has_incompatible_lcp_identity(
+    pub fn has_bank_incompatible_lcp(
         &mut self,
         prompt: &[u8],
         model_id: u8,
         quant_bits: u8,
         ctx_size: u32,
         min_lcp: usize,
-        identity_mask: u8,
         identity_flags: u8,
     ) -> bool {
+        let identity_mask = EXT_IMAGE_PIXELS_V2;
         if min_lcp == 0 || prompt.len() < min_lcp {
             return false;
         }
@@ -1027,37 +1063,13 @@ mod tests {
         let key = b"chat\xffDS4IMG2 turn and one more";
 
         // The identity the record was stored with: the search takes it.
-        assert!(!store.has_incompatible_prefix_identity(
-            key,
-            0,
-            2,
-            2048,
-            true,
-            EXT_IMAGE_PIXELS_V2,
-            EXT_IMAGE_PIXELS_V2
-        ));
+        assert!(!store.has_bank_incompatible_prefix(key, 0, 2, 2048, EXT_IMAGE_PIXELS_V2));
         // A different quantization rules it out, so the miss is a mismatch.
-        assert!(store.has_incompatible_prefix_identity(
-            key,
-            0,
-            4,
-            2048,
-            true,
-            EXT_IMAGE_PIXELS_V2,
-            EXT_IMAGE_PIXELS_V2
-        ));
+        assert!(store.has_bank_incompatible_prefix(key, 0, 4, 2048, EXT_IMAGE_PIXELS_V2));
         // The rendered prompt is not the key it was stored under, and the
         // text-keyed search cannot see a bank record's image key at all.
         assert!(!store.has_incompatible_prefix(b"chat turn and one more", 0, 4, 2048));
-        assert!(!store.has_incompatible_prefix_identity(
-            key,
-            0,
-            4,
-            2048,
-            true,
-            EXT_IMAGE_PIXELS_V2,
-            0
-        ));
+        assert!(!store.has_bank_incompatible_prefix(key, 0, 4, 2048, 0));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1074,14 +1086,14 @@ mod tests {
 
         // The stored text diverges from the prompt, so the exact-prefix
         // question cannot see the record at all.
-        assert!(!store.has_incompatible_prefix_identity(edited, 1, 2, 2048, true, 0, 0));
+        assert!(!store.has_bank_incompatible_prefix(edited, 1, 2, 2048, 0));
         // Through the LCP the partial search would have taken it, and only
         // the model it was written for rules it out.
-        assert!(store.has_incompatible_lcp_identity(edited, 1, 2, 2048, 8, 0, 0));
+        assert!(store.has_bank_incompatible_lcp(edited, 1, 2, 2048, 8, 0));
         // The identity it was stored with is not a mismatch.
-        assert!(!store.has_incompatible_lcp_identity(edited, 0, 2, 2048, 8, 0, 0));
+        assert!(!store.has_bank_incompatible_lcp(edited, 0, 2, 2048, 8, 0));
         // Neither is a prompt that shares nothing with it.
-        assert!(!store.has_incompatible_lcp_identity(b"a different opening", 1, 2, 2048, 8, 0, 0));
+        assert!(!store.has_bank_incompatible_lcp(b"a different opening", 1, 2, 2048, 8, 0));
 
         let _ = fs::remove_dir_all(&dir);
     }

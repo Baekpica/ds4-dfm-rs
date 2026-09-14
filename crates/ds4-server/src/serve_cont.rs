@@ -2692,7 +2692,11 @@ mod native {
             self.warm[target].stored_tokens = committed;
             self.note_use(target);
             let _ = store.touch_hit(&path);
-            let (tokens, cached) = warm_partial_admit_tokens(
+            // The store matched on bytes; the tokens those bytes cover can
+            // still fall short of the partial minimum. That is a refusal by
+            // the threshold, not the bank budget that stays quiet.
+            let fits = i32::try_from(prompt_tokens.len()).is_ok_and(|n| n <= batch.seq_cap());
+            let Some((tokens, cached)) = warm_partial_admit_tokens(
                 &self.warm[target],
                 prompt_tokens,
                 &snapshot.tokens,
@@ -2700,7 +2704,12 @@ mod native {
                 self.warm_partial_min,
                 batch.seq_cap(),
                 qwen_image_cache_token_cap(cache_spans, cache_lcp),
-            )?;
+            ) else {
+                if fits {
+                    Self::note_miss(miss, ReuseMiss::BelowThreshold);
+                }
+                return None;
+            };
             Some(WarmAdmitPlan {
                 source: target,
                 tokens,
@@ -3258,21 +3267,18 @@ mod native {
                                 // The partial search keys on the longest
                                 // common prefix, so an edited prompt needs
                                 // the LCP question the exact one cannot ask.
-                                let mismatched = store.has_incompatible_prefix_identity(
+                                let mismatched = store.has_bank_incompatible_prefix(
                                     request_key,
                                     model_id,
                                     quant_bits,
                                     ctx,
-                                    true,
-                                    EXT_IMAGE_PIXELS_V2,
                                     identity_flags,
-                                ) || store.has_incompatible_lcp_identity(
+                                ) || store.has_bank_incompatible_lcp(
                                     request_key,
                                     model_id,
                                     quant_bits,
                                     ctx,
                                     min_lcp,
-                                    EXT_IMAGE_PIXELS_V2,
                                     identity_flags,
                                 );
                                 // Either search can hold a checkpoint this
