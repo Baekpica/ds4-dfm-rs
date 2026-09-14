@@ -425,9 +425,14 @@ impl ServingRequest {
             req.mtp_mode = MtpMode::Off;
         }
         if let Ok(raw) = std::env::var("DS4_SERVER_PERSIST_MIN_TOKENS") {
-            if let Some(n) = parse_u32_atoi(&raw) {
-                req.bank_persist_min = i32::try_from(n).ok();
-            }
+            // The lane reads this through `env_i32_bound`, which clamps a
+            // negative to zero and disables persistence; report that, not
+            // the default this parse would otherwise fall back to.
+            req.bank_persist_min = Some(
+                i32::try_from(ds4_sys::libc_atoi(raw.as_bytes()))
+                    .unwrap_or(i32::MAX)
+                    .max(0),
+            );
         }
         if let Ok(raw) = std::env::var("DS4_CONT_PREFILL_CHUNK") {
             if let Some(n) = parse_u32_atoi(&raw) {
@@ -1707,6 +1712,17 @@ mod tests {
         req.bank_persist_min = Some(4096);
         let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
         assert_eq!(p.effective.bank_persist_min, 4096);
+    }
+
+    #[test]
+    fn a_negative_persist_threshold_resolves_to_zero() {
+        // `env_i32_bound` clamps it to zero at runtime, which disables
+        // persistence; the plan must not report 8,192 instead.
+        let mut req = ServingRequest::default();
+        req.bank_persist_min = Some(0);
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert_eq!(p.effective.bank_persist_min, 0);
+        assert_eq!(p.to_json()["effective"]["bank_persist_min_tokens"], 0);
     }
 
     #[test]

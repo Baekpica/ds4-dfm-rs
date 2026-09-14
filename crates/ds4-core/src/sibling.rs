@@ -57,9 +57,21 @@ pub fn probe_mtp_sidecar(shape: Shape, path: &str) -> Result<()> {
     .map(|_| ())
 }
 
-/// GLM binds these three ids from the encoder and aborts on any other
-/// value, so a config check has to read them, not just open the file.
-const GLM_VISION_TOKEN_IDS: [(&str, u32); 3] = [
+/// What `glm53_vision_weights_bind` requires of the encoder before it binds
+/// a tensor: architecture, tensor count, every config value, and the three
+/// token ids. Tensor shapes stay with the native binder.
+const GLM_VISION_ARCH: &[u8] = b"glm5-next-vision";
+const GLM_VISION_TENSORS: u64 = 347;
+const GLM_VISION_CONFIG: [(&str, u32); 12] = [
+    ("glm5-next-vision.block_count", 24),
+    ("glm5-next-vision.embedding_length", 1024),
+    ("glm5-next-vision.feed_forward_length", 4096),
+    ("glm5-next-vision.attention.head_count", 16),
+    ("glm5-next-vision.projection_length", 4096),
+    ("glm5-next-vision.projection.feed_forward_length", 10240),
+    ("glm5-next-vision.patch_size", 14),
+    ("glm5-next-vision.temporal_patch_size", 2),
+    ("glm5-next-vision.spatial_merge_size", 2),
     ("glm5-next-vision.image_token_id", 154854),
     ("glm5-next-vision.image_start_token_id", 154830),
     ("glm5-next-vision.image_end_token_id", 154831),
@@ -109,7 +121,22 @@ pub fn probe_vision_sidecar(
         code: 1,
         message: format!("vision open failed: {e}"),
     })?;
-    for (key, want) in GLM_VISION_TOKEN_IDS {
+    if g.get_string("general.architecture") != Some(GLM_VISION_ARCH) {
+        return Err(Error {
+            code: 1,
+            message: "--vision file is not a GLM-5.3 vision encoder GGUF".into(),
+        });
+    }
+    if g.n_tensors != GLM_VISION_TENSORS {
+        return Err(Error {
+            code: 1,
+            message: format!(
+                "vision GGUF has {} tensors, expected {GLM_VISION_TENSORS}",
+                g.n_tensors
+            ),
+        });
+    }
+    for (key, want) in GLM_VISION_CONFIG {
         match g.get_u32(key) {
             Some(id) if id == want => {}
             Some(id) => {
