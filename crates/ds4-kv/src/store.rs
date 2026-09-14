@@ -2,7 +2,7 @@
 
 use crate::format::{
     fill_header, is_automatic_exact_replay, is_bank_replay_v1, path_for_sha, read_envelope,
-    read_header, read_metadata, read_path, read_text_prefix, sha_hex_name, stage_stream,
+    read_header_text, read_metadata, read_path, read_text_prefix, sha_hex_name, stage_stream,
     text_sha_hex, write_path, Envelope, FormatError, Header, Record, EXT_IMAGE_PIXELS_V2,
     EXT_TOOL_MAP,
 };
@@ -57,6 +57,7 @@ pub struct Entry {
 #[derive(Clone, Debug)]
 struct Damaged {
     sha: String,
+    path: PathBuf,
     text_bytes: u32,
 }
 
@@ -155,9 +156,10 @@ impl Store {
             let Ok(metadata) = read_metadata(&path) else {
                 // No search can use it, but it can still be the reason a
                 // prompt keyed by its text finds nothing.
-                if let Ok(header) = read_header(&path) {
+                if let Ok((header, _)) = read_header_text(&path, 0) {
                     self.damaged.push(Damaged {
                         sha,
+                        path,
                         text_bytes: header.text_bytes,
                     });
                 }
@@ -762,6 +764,28 @@ impl Store {
         answer
     }
 
+    /// A file the catalog dropped that still shares this prompt's required
+    /// prefix. Its payload is gone; the text in front of it need not be.
+    fn damaged_lcp(&self, prompt: &[u8], min_lcp: usize) -> bool {
+        self.damaged.iter().any(|d| {
+            if (d.text_bytes as usize) < min_lcp
+                || u64::from(d.text_bytes) > 8 * prompt.len() as u64
+            {
+                return false;
+            }
+            let want = (d.text_bytes as usize).min(prompt.len());
+            let Ok((_, text)) = read_header_text(&d.path, want) else {
+                return false;
+            };
+            let lcp = text
+                .iter()
+                .zip(prompt)
+                .take_while(|(stored, asked)| stored == asked)
+                .count();
+            lcp >= min_lcp && 8 * (lcp as u64) >= u64::from(d.text_bytes)
+        })
+    }
+
     /// A file the catalog dropped, keyed by a prefix of this prompt.
     fn damaged_prefix(&self, prompt: &[u8], suffix: Suffix) -> bool {
         self.damaged.iter().any(|d| {
@@ -826,6 +850,12 @@ impl Store {
                 return PrefixAnswer::Usable;
             }
             answer = weaker_answer(answer, compatible);
+        }
+
+        // An edited prompt diverges from the record, so the damaged list has
+        // to be read through the same shared prefix, not by name.
+        if self.damaged_lcp(prompt, min_lcp) {
+            answer = weaker_answer(answer, false);
         }
 
         answer
@@ -1213,6 +1243,18 @@ mod tests {
         );
         assert_eq!(
             store.prefix_answer(b"another conversation", 0, 2, 2048),
+            PrefixAnswer::None
+        );
+
+        // An edited prompt diverges from the record, so only the shared
+        // prefix can find it — and the text in front of the payload is
+        // still there to be read.
+        assert_eq!(
+            store.bank_lcp_answer(b"shared prefiX edited", 0, 2, 2048, 8, 0),
+            PrefixAnswer::Mismatch
+        );
+        assert_eq!(
+            store.bank_lcp_answer(b"another opening turn", 0, 2, 2048, 8, 0),
             PrefixAnswer::None
         );
 
