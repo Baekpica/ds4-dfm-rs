@@ -90,17 +90,24 @@ pub fn fill_quote_facts(
     // pass while Qwen still builds 256.
     let ctx_tokens = req.ctx.max(1) as u32;
     let runtime = family_native_chunk(caps, ctx_tokens);
-    let native = host
+    let mut native = host
         .native_chunk
         .or(req.native_chunk)
         .unwrap_or(runtime)
         .min(runtime)
         .max(1);
+    // Step creates predictor state whenever the sidecar is loaded, even
+    // with speculation disabled. Its verify workspace needs draft layers + 1.
+    let step_mtp =
+        caps.family == ModelFamily::Step37 && (req.mtp_path.is_some() || facts.mtp_loaded);
+    if step_mtp {
+        if let Some(s) = shape {
+            native = native.max(ctx_tokens.min(s.n_nextn_predict + 1));
+        }
+    }
     let ctx = u64::from(ctx_tokens);
     let kv = shape.map(|s| bank_kv_bytes(s, ctx, native)).unwrap_or(0);
-    // Sidecar MTP is off until a path/load exists; family capability alone
-    // would charge Step spec graphs that C will not allocate.
-    // A draft below spec_draft_min allocates no speculative runtime.
+    // Other families gate speculative allocations on execution settings.
     // Without a bank driver the host does not publish an auto Qwen draft.
     // Explicit drafts still reach native open; its default is one.
     let default_draft = if caps.mtp == MtpKind::Embedded && !quote_bank_lane(req, caps, facts) {
@@ -140,14 +147,26 @@ pub fn fill_quote_facts(
             (kv.saturating_add(graph).saturating_add(mtp), 0, 0, pool)
         }
         (ModelFamily::Step37, Some(s)) => {
-            let graph = family_graph_scratch(s, native);
-            let spec = if mtp_on { graph } else { 0 };
-            let pool = if partial {
-                step_checkpoint_pool_bytes(s, mtp_on)
+            let graph = step_graph_bytes(s, native);
+            let spec = if step_mtp {
+                step_spec_bytes(s, ctx, native)
             } else {
                 0
             };
-            (kv.saturating_add(graph).saturating_add(spec), 0, 0, pool)
+            let pool = if partial {
+                step_checkpoint_pool_bytes(s, step_mtp)
+            } else {
+                0
+            };
+            let logits = u64::from(s.n_vocab) * SIZEOF_F32;
+            (
+                kv.saturating_add(graph)
+                    .saturating_add(spec)
+                    .saturating_add(logits),
+                0,
+                0,
+                pool,
+            )
         }
         (ModelFamily::SolarOpen2, Some(s)) => {
             let scratch = family_graph_scratch(s, native);
@@ -756,6 +775,39 @@ fn family_graph_scratch(shape: Shape, native: u32) -> u64 {
         .saturating_mul(2)
 }
 
+// C step37_memory: GQA workspace plus Step controls, gates and RoPE tables.
+fn step_graph_bytes(s: Shape, native: u32) -> u64 {
+    let hidden = u64::from(s.n_embd);
+    let heads = u64::from(s.n_head.max(s.n_swa_head));
+    let head_dim = u64::from(s.n_head_dim);
+    let kv = u64::from(s.n_head_kv) * head_dim;
+    let used = u64::from(s.n_expert_used);
+    let ff = u64::from(s.n_ff_exp);
+    let common = 5 * hidden
+        + 2 * heads * head_dim
+        + 2 * kv
+        + 3 * u64::from(s.n_ff_dense)
+        + 3 * ff
+        + u64::from(s.n_expert)
+        + 2 * used
+        + 3 * used * ff
+        + used * hidden;
+    let controls = 2 + heads + head_dim + head_dim / 2;
+    (u64::from(native) * (common + controls) + head_dim * 3 / 4 + u64::from(s.n_vocab)) * SIZEOF_F32
+}
+
+// C step37_draft_bytes + step37_mtp_memory: predictor scratch/windows,
+// combined embeddings, tail and joined verification input.
+fn step_spec_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
+    let cap = u64::from(native);
+    let pred = u64::from(s.n_nextn_predict);
+    let rows = ctx.min(u64::from(s.n_swa) + cap);
+    let row_bytes = 2 * u64::from(s.n_head_kv) * u64::from(s.n_head_dim) * SIZEOF_U16;
+    step_graph_bytes(s, native)
+        + pred * rows * row_bytes
+        + (3 * cap + 2 * pred) * u64::from(s.n_embd) * SIZEOF_F32
+}
+
 // C motif3_graph_memory_estimate, excluding the separately quoted bank caches.
 fn motif_graph_bytes(s: Shape, native: u32) -> u64 {
     let hidden = u64::from(s.n_embd);
@@ -894,9 +946,23 @@ fn bank_kv_bytes(shape: Shape, ctx: u64, native: u32) -> u64 {
     };
     let tokens = match shape.family {
         ModelFamily::ExaoneMoe => exaone_kv_tokens(shape, ctx, native),
+        ModelFamily::Step37 => step_kv_tokens(shape, ctx, native),
         _ => u64::from(shape.n_layer).saturating_mul(ctx),
     };
     tokens.saturating_mul(row)
+}
+
+fn step_kv_tokens(shape: Shape, ctx: u64, native: u32) -> u64 {
+    let sliding = ctx.min(u64::from(shape.n_swa) + u64::from(native));
+    (0..shape.n_layer)
+        .map(|il| {
+            if il.is_multiple_of(shape.n_swa_period.max(1)) {
+                ctx
+            } else {
+                sliding
+            }
+        })
+        .sum()
 }
 
 fn motif_layer_is_full(shape: Shape, il: u32) -> bool {
@@ -1939,6 +2005,96 @@ mod tests {
         let caps = serving_caps(family, variant);
         fill_quote_facts(&mut facts, req, caps, Some(shape), host);
         facts
+    }
+
+    #[test]
+    fn step_quote_matches_native() {
+        let _env = lock_test_env();
+        let caps = serving_caps(ModelFamily::Step37, Variant::Step37Flash);
+        for (ctx, cap, expected) in [
+            (8192, 4096, 3_464_772_992u64),
+            (262144, 2048, 14_451_080_576),
+        ] {
+            let _chunk = EnvGuard::set(STEP_PREFILL_CHUNK_ENV, &cap.to_string());
+            let mut req = ServingRequest::default();
+            req.ctx = ctx;
+            req.max_seqs = MaxSeqs::Fixed(2);
+            let mut facts = fill_family(
+                ModelFamily::Step37,
+                Variant::Step37Flash,
+                SHAPE_STEP37_FLASH,
+                &req,
+                qwen_host(None),
+            );
+            assert_eq!(facts.per_bank_bytes, Some(expected), "ctx={ctx} cap={cap}");
+            facts.host_available_bytes = Some(facts_cost(&facts, &req, 2) - 1);
+            assert!(resolve_plan(&req, Some(caps), &facts).has_errors());
+        }
+    }
+
+    #[test]
+    fn step_loaded_off_keeps_memory() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::set(STEP_PREFILL_CHUNK_ENV, "4096");
+        let caps = serving_caps(ModelFamily::Step37, Variant::Step37Flash);
+        let mut req = ServingRequest::default();
+        req.max_seqs = MaxSeqs::Fixed(2);
+        req.ctx = 8192;
+        req.mtp_path = Some("step-mtp.gguf".into());
+        let on = fill_family(
+            ModelFamily::Step37,
+            Variant::Step37Flash,
+            SHAPE_STEP37_FLASH,
+            &req,
+            qwen_host(None),
+        );
+        assert_eq!(on.per_bank_bytes, Some(6_161_571_072));
+        assert_eq!(
+            on.checkpoint_pool_bytes,
+            Some(32 * (33 * 512 * 4096 + 3 * (512 * 4096 + 4096 * 4)))
+        );
+        for mode in [MtpMode::Off, MtpMode::Auto] {
+            req.mtp_mode = mode;
+            req.mtp_draft = Some(0);
+            let off = fill_family(
+                ModelFamily::Step37,
+                Variant::Step37Flash,
+                SHAPE_STEP37_FLASH,
+                &req,
+                qwen_host(None),
+            );
+            assert_eq!(off.per_bank_bytes, on.per_bank_bytes);
+            assert_eq!(off.checkpoint_pool_bytes, on.checkpoint_pool_bytes);
+            assert_eq!(
+                resolve_plan(&req, Some(caps), &off).effective.mtp_mode,
+                MtpMode::Off
+            );
+        }
+        req.mtp_path = None;
+        let mut loaded = EngineFacts {
+            mtp_loaded: true,
+            ..EngineFacts::default()
+        };
+        fill_quote_facts(
+            &mut loaded,
+            &req,
+            caps,
+            Some(SHAPE_STEP37_FLASH),
+            qwen_host(None),
+        );
+        assert_eq!(loaded.per_bank_bytes, on.per_bank_bytes);
+        assert_eq!(loaded.checkpoint_pool_bytes, on.checkpoint_pool_bytes);
+        req.ctx = 8;
+        req.native_chunk = Some(1);
+        fill_quote_facts(
+            &mut loaded,
+            &req,
+            caps,
+            Some(SHAPE_STEP37_FLASH),
+            qwen_host(None),
+        );
+        assert_eq!(loaded.native_chunk, Some(4));
+        assert_eq!(loaded.per_bank_bytes, Some(8_177_472));
     }
 
     #[test]
