@@ -91,13 +91,17 @@ pub fn fill_quote_facts(
         .min(runtime)
         .max(1);
     let ctx = u64::from(ctx_tokens);
-    let kv = shape.map(|s| bank_kv_bytes(s, ctx)).unwrap_or(0);
+    let kv = shape.map(|s| bank_kv_bytes(s, ctx, native)).unwrap_or(0);
     // Sidecar MTP is off until a path/load exists; family capability alone
     // would charge Step spec graphs that C will not allocate.
+    // A draft below spec_draft_min allocates no speculative runtime.
+    let draft = req.mtp_draft.unwrap_or(caps.spec_draft_min);
     let mtp_on = match caps.mtp {
-        MtpKind::Embedded => req.mtp_mode != MtpMode::Off,
+        MtpKind::Embedded => req.mtp_mode != MtpMode::Off && draft >= caps.spec_draft_min,
         MtpKind::Sidecar | MtpKind::DeepSeek => {
-            req.mtp_mode != MtpMode::Off && (req.mtp_path.is_some() || facts.mtp_loaded)
+            req.mtp_mode != MtpMode::Off
+                && (req.mtp_path.is_some() || facts.mtp_loaded)
+                && draft >= caps.spec_draft_min
         }
         MtpKind::BoundOnly | MtpKind::None => false,
     };
@@ -219,7 +223,7 @@ pub fn attach_host_quote(
         .saturating_add(mtp_bytes)
         .saturating_add(vision_bytes)
         .saturating_add(dspark_bytes);
-    let live = host_available_bytes();
+    let live = host_available_bytes(req.backend);
     let host = QuoteHost {
         weights_bytes: weights_bytes
             .saturating_add(vision_bytes)
@@ -300,8 +304,12 @@ pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
     }
 }
 
-pub fn host_available_bytes() -> u64 {
-    quote_ceiling(meminfo_available(), meminfo_total(), nvidia_fb_bytes())
+pub fn host_available_bytes(backend: Backend) -> u64 {
+    let device = match backend {
+        Backend::Cuda => nvidia_fb_probe(),
+        Backend::Metal | Backend::Cpu => None,
+    };
+    quote_ceiling(meminfo_available(), meminfo_total(), device)
 }
 
 // Discrete CUDA FB is much smaller than host RAM. Unified hosts (GB10)
@@ -317,11 +325,6 @@ fn quote_ceiling(avail: u64, total: u64, device: Option<(u64, u64)>) -> u64 {
         return dev_free;
     }
     avail
-}
-
-fn nvidia_fb_bytes() -> Option<(u64, u64)> {
-    static CACHED: std::sync::OnceLock<Option<(u64, u64)>> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(nvidia_fb_probe)
 }
 
 fn nvidia_fb_probe() -> Option<(u64, u64)> {
@@ -741,7 +744,7 @@ fn credit_resident(facts: &mut EngineFacts, live: u64, mapped: u64) {
     );
 }
 
-fn bank_kv_bytes(shape: Shape, ctx: u64) -> u64 {
+fn bank_kv_bytes(shape: Shape, ctx: u64, native: u32) -> u64 {
     let row = if shape.n_kv_lora > 0 {
         u64::from(shape.n_kv_lora + shape.n_key_mla + shape.n_value_mla).max(1) * 2
     } else {
@@ -749,9 +752,36 @@ fn bank_kv_bytes(shape: Shape, ctx: u64) -> u64 {
             * u64::from(shape.n_head_dim.max(shape.n_value_dim).max(1))
             * 2
     };
-    u64::from(shape.n_layer)
-        .saturating_mul(ctx)
-        .saturating_mul(row)
+    let tokens = match shape.family {
+        ModelFamily::ExaoneMoe => exaone_kv_tokens(shape, ctx, native),
+        _ => u64::from(shape.n_layer).saturating_mul(ctx),
+    };
+    tokens.saturating_mul(row)
+}
+
+// C `exaone_graph_layer_kv_cap`: 12 LLLG global layers own ctx; the other
+// 36 keep the 128-token window plus one prefill chunk.
+fn exaone_kv_tokens(shape: Shape, ctx: u64, native: u32) -> u64 {
+    let ctx_u32 = ctx.min(u64::from(u32::MAX)) as u32;
+    let n_exec = shape.n_layer.saturating_sub(shape.n_nextn_predict);
+    let prefill = native.min(ctx_u32);
+
+    (0..n_exec)
+        .map(|il| u64::from(exaone_layer_kv_cap(il, ctx_u32, prefill, shape)))
+        .sum()
+}
+
+fn exaone_layer_kv_cap(il: u32, ctx: u32, prefill: u32, shape: Shape) -> u32 {
+    if !exaone_layer_is_sliding(il, shape) {
+        return ctx;
+    }
+    (u64::from(shape.n_swa) + u64::from(prefill)).min(u64::from(ctx)) as u32
+}
+
+fn exaone_layer_is_sliding(il: u32, shape: Shape) -> bool {
+    shape.n_swa != 0
+        && shape.n_swa_period != 0
+        && (il % shape.n_swa_period) != shape.n_swa_period - 1
 }
 
 fn ple_cache_bytes(caps: ServingCaps) -> u64 {
@@ -1006,7 +1036,8 @@ mod tests {
 
     #[test]
     fn host_available_bytes_reads_this_host() {
-        assert!(host_available_bytes() > 0);
+        let _env = lock_test_env();
+        assert!(host_available_bytes(Backend::Cuda) > 0);
     }
 
     #[test]
@@ -1194,7 +1225,7 @@ mod tests {
         let mut req = ServingRequest::default();
         req.mem_floor_gb = 0;
         let facts = fill_qwen(&req, qwen_host(None));
-        let kv = bank_kv_bytes(SHAPE_QWEN38_FLASH_NEXT, req.ctx.max(1) as u64);
+        let kv = bank_kv_bytes(SHAPE_QWEN38_FLASH_NEXT, req.ctx.max(1) as u64, 0);
         let per_bank = facts.per_bank_bytes.unwrap();
         assert_eq!(facts.scratch_bytes, Some(0));
         assert_eq!(
@@ -1222,7 +1253,7 @@ mod tests {
         let mut req = ServingRequest::default();
         req.mem_floor_gb = 0;
         let sized = fill_qwen(&req, qwen_host(None));
-        let kv = bank_kv_bytes(SHAPE_QWEN38_FLASH_NEXT, req.ctx.max(1) as u64);
+        let kv = bank_kv_bytes(SHAPE_QWEN38_FLASH_NEXT, req.ctx.max(1) as u64, 0);
         let per_bank = sized.per_bank_bytes.unwrap();
         assert!(per_bank > kv);
         let cost1 = facts_cost(&sized, &req, 1);
@@ -1272,13 +1303,35 @@ mod tests {
     }
 
     #[test]
+    fn qwen_auto_draft_1_skips_mtp_enable() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
+        let mut off = ServingRequest::default();
+        off.mtp_mode = MtpMode::Off;
+        off.mem_floor_gb = 0;
+        let mut draft1 = off.clone();
+        draft1.mtp_mode = MtpMode::Auto;
+        draft1.mtp_draft = Some(1);
+        let mut draft2 = draft1.clone();
+        draft2.mtp_draft = Some(2);
+        let off_facts = fill_qwen(&off, qwen_host(None));
+        let d1 = fill_qwen(&draft1, qwen_host(None));
+        let d2 = fill_qwen(&draft2, qwen_host(None));
+        assert_eq!(d1.per_bank_bytes, off_facts.per_bank_bytes);
+        assert!(
+            d2.per_bank_bytes.unwrap() > d1.per_bank_bytes.unwrap(),
+            "draft 2 must charge per-bank MTP enable"
+        );
+    }
+
+    #[test]
     fn qwen_checkpoint_uses_recurrent_slots() {
         let _env = lock_test_env();
         let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
         let mut req = ServingRequest::default();
         req.mem_floor_gb = 0;
         let facts = fill_qwen(&req, qwen_host(None));
-        let kv = bank_kv_bytes(SHAPE_QWEN38_FLASH_NEXT, req.ctx.max(1) as u64);
+        let kv = bank_kv_bytes(SHAPE_QWEN38_FLASH_NEXT, req.ctx.max(1) as u64, 0);
         let pool = facts.checkpoint_pool_bytes.unwrap();
         assert_ne!(pool, kv, "checkpoint slab is recurrent slots, not one KV");
         assert_eq!(pool % CHECKPOINT_SLOTS, 0);
@@ -1389,7 +1442,7 @@ mod tests {
                 vision: false,
             },
         );
-        let kv = bank_kv_bytes(SHAPE_STEP37_FLASH, req.ctx.max(1) as u64);
+        let kv = bank_kv_bytes(SHAPE_STEP37_FLASH, req.ctx.max(1) as u64, 0);
         let per_bank = facts.per_bank_bytes.unwrap();
         assert_eq!(facts.scratch_bytes, Some(0));
         assert!(per_bank > kv, "each Step bank owns a graph");
@@ -1420,7 +1473,7 @@ mod tests {
                 vision: false,
             },
         );
-        let kv = bank_kv_bytes(SHAPE_STEP37_FLASH, req.ctx.max(1) as u64);
+        let kv = bank_kv_bytes(SHAPE_STEP37_FLASH, req.ctx.max(1) as u64, 0);
         let pool = facts.checkpoint_pool_bytes.unwrap();
         // C step37_ckpt_init: 32 slots of every sliding layer's 512-row
         // window × 2 × kv × 2 bytes. Full-attn layers stay in the bank.
@@ -1458,7 +1511,7 @@ mod tests {
                 vision: false,
             },
         );
-        let kv = bank_kv_bytes(SHAPE_SOLAR_OPEN2_250B, req.ctx.max(1) as u64);
+        let kv = bank_kv_bytes(SHAPE_SOLAR_OPEN2_250B, req.ctx.max(1) as u64, 0);
         let pool = facts.checkpoint_pool_bytes.unwrap();
         assert_eq!(pool, solar_checkpoint_pool_bytes(SHAPE_SOLAR_OPEN2_250B));
         assert_ne!(pool, kv);
@@ -1482,6 +1535,50 @@ mod tests {
             parse_nvidia_csv("24576, 20480\n"),
             Some((24576 * MIB, 20480 * MIB))
         );
+    }
+
+    #[test]
+    fn cpu_quote_uses_ram_not_discrete_fb() {
+        let _env = lock_test_env();
+        let ram = meminfo_available();
+        assert!(ram > 512 * MIB, "need host RAM above the fake FB");
+
+        let dir = std::env::temp_dir().join(format!(
+            "ds4-quote-smi-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let smi = dir.join("nvidia-smi");
+        std::fs::write(&smi, "#!/bin/sh\necho '1024, 512'\n").unwrap();
+        let mut perm = std::fs::metadata(&smi).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            perm.set_mode(0o755);
+        }
+        std::fs::set_permissions(&smi, perm).unwrap();
+
+        let path = format!(
+            "{}:{}",
+            dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let _path = EnvGuard::set("PATH", &path);
+        assert_eq!(host_available_bytes(Backend::Cuda), 512 * MIB);
+        let cpu = host_available_bytes(Backend::Cpu);
+        let metal = host_available_bytes(Backend::Metal);
+        let avail = meminfo_available();
+        assert_eq!(cpu, metal);
+        assert!(
+            cpu.abs_diff(avail) < MIB,
+            "CPU {cpu} vs MemAvailable {avail}"
+        );
+        assert!(cpu > 512 * MIB);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn fill_family(
@@ -1545,6 +1642,56 @@ mod tests {
                 vision: false,
             },
         );
+        assert_eq!(facts.native_chunk, Some(512));
+    }
+
+    #[test]
+    fn exaone_kv_matches_native_layer_caps() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset("DS4_EXAONE_PREFILL_CHUNK");
+        let mut req = ServingRequest::default();
+        req.ctx = 8192;
+        req.native_chunk = Some(512);
+        req.mem_floor_gb = 0;
+        let facts = fill_family(
+            ModelFamily::ExaoneMoe,
+            Variant::Kexaone236B,
+            SHAPE_KEXAONE_236B,
+            &req,
+            QuoteHost {
+                weights_bytes: GIB,
+                mtp_bytes: 0,
+                available_bytes: 100 * GIB,
+                native_chunk: Some(512),
+                vision: false,
+            },
+        );
+        let ctx = 8192u32;
+        let native = 512u32;
+        let n_swa = SHAPE_KEXAONE_236B.n_swa;
+        let period = SHAPE_KEXAONE_236B.n_swa_period;
+        let n_exec = SHAPE_KEXAONE_236B
+            .n_layer
+            .saturating_sub(SHAPE_KEXAONE_236B.n_nextn_predict);
+        let mut tokens = 0u64;
+        for il in 0..n_exec {
+            let cap = if period != 0 && (il % period) == period - 1 {
+                ctx
+            } else {
+                n_swa.saturating_add(native).min(ctx)
+            };
+            tokens = tokens.saturating_add(u64::from(cap));
+        }
+        let row = 2
+            * u64::from(SHAPE_KEXAONE_236B.n_head_kv)
+            * u64::from(SHAPE_KEXAONE_236B.n_head_dim)
+            * SIZEOF_U16;
+        let want = tokens.saturating_mul(row);
+        let full = u64::from(n_exec)
+            .saturating_mul(u64::from(ctx))
+            .saturating_mul(row);
+        assert!(want < full, "sliding rings must shrink past 12 full layers");
+        assert_eq!(facts.per_bank_bytes, Some(want));
         assert_eq!(facts.native_chunk, Some(512));
     }
 
@@ -1755,7 +1902,7 @@ mod tests {
             assert_eq!(facts.shared_weights_bytes, Some(25));
         }
 
-        let live = host_available_bytes();
+        let live = host_available_bytes(Backend::Cuda);
         if live > 0 {
             let _man = EnvGuard::set(WEIGHT_IPC_MANIFEST_ENV, "/tmp/ds4-weights.manifest");
             let _scope = EnvGuard::set(WEIGHT_IPC_SCOPE_ENV, "both");
