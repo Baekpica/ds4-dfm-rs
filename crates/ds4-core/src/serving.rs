@@ -4,7 +4,10 @@
 //! Forced options that a family cannot run become errors, not silent fallback.
 
 use crate::identify::Identified;
-use crate::shape::{ModelFamily, Shape, Variant, SHAPE_INKLING_SMALL, SHAPE_QWEN38_FLASH_NEXT};
+use crate::shape::{
+    ModelFamily, Shape, Variant, SHAPE_INKLING_SMALL, SHAPE_LING30_FLASH_VL,
+    SHAPE_QWEN38_FLASH_NEXT,
+};
 use crate::Backend;
 use serde_json::{json, Value};
 use std::ffi::OsStr;
@@ -667,6 +670,29 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_prompt: Some(6300),
             media_serial: true,
         },
+        // Ling matches the Qwen serving surface it was sized against:
+        // two persistent banks, partial reuse and disk KV. There is no MTP
+        // predictor in this architecture, so no speculative lane exists.
+        ModelFamily::Ling3Vl => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Persistent,
+            bank_support: Support::Qualified,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Qualified,
+            disk: Support::Qualified,
+            snapshot: Support::Qualified,
+            mtp: MtpKind::None,
+            mtp_support: Support::None,
+            spec_lane: SpecLane::None,
+            spec_draft_min: 1,
+            host: HostNeed::Cuda,
+            ctx_max: Some(SHAPE_LING30_FLASH_VL.rope_orig_ctx as u32),
+            qualified_ctx: Some(65536),
+            qualified_banks: Some(2),
+            qualified_prompt: None,
+            media_serial: false,
+        },
         ModelFamily::SolarOpen2 => ServingCaps {
             family,
             variant,
@@ -1104,6 +1130,7 @@ impl ServingCaps {
             Variant::K2Horizon375B => "k2-horizon",
             Variant::InklingSmall => "inkling",
             Variant::Step37Flash => "step35",
+            Variant::Ling30FlashVl => "bailingmoe3",
         }
     }
 }

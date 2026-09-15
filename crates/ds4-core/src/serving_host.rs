@@ -40,6 +40,7 @@ const PLE_CACHE_MB_1024: u64 = 1024;
 const QWEN_PREFILL_CHUNK_ENV: &str = "DS4_QWEN_PREFILL_CHUNK";
 const STEP_PREFILL_CHUNK_ENV: &str = "DS4_STEP37_PREFILL_CHUNK";
 const INKLING_PREFILL_CHUNK_ENV: &str = "DS4_INKLING_PREFILL_CHUNK";
+const LING_PREFILL_CHUNK_ENV: &str = "DS4_LING3VL_PREFILL_CHUNK";
 const QWEN_NATIVE_DEFAULT: u32 = 256;
 const QWEN_NATIVE_MAX: u32 = 16384;
 const QWEN_IMAGE_MAX_PIXELS: u64 = 16_777_216;
@@ -49,6 +50,8 @@ const QWEN_IMAGE_MAX_AXIS: u64 = 65536;
 const QWEN_VISION_PATCH: u64 = 3 * 2 * 16 * 16;
 const QWEN_VISION_HIDDEN: u64 = 1152;
 const QWEN_VISION_FF: u64 = 4304;
+const LING_NATIVE_DEFAULT: u32 = 2048;
+const LING_NATIVE_MAX: u32 = 4096;
 const STEP_NATIVE_DEFAULT: u32 = 4096;
 const STEP_NATIVE_MAX: u32 = 4096;
 const INKLING_NATIVE_DEFAULT: u32 = 1024;
@@ -637,6 +640,7 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
     match caps.family {
         ModelFamily::Qwen4Exp => QWEN_NATIVE_MAX,
         ModelFamily::Step37 => STEP_NATIVE_MAX,
+        ModelFamily::Ling3Vl => LING_NATIVE_MAX,
         ModelFamily::Inkling => INKLING_NATIVE_MAX,
         ModelFamily::Glm53 => GLM_NATIVE_DEFAULT,
         ModelFamily::ExaoneMoe => FAMILY_NATIVE_MAX,
@@ -660,6 +664,12 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             STEP_NATIVE_DEFAULT,
             1,
             STEP_NATIVE_MAX,
+        ),
+        ModelFamily::Ling3Vl => env_u32(
+            LING_PREFILL_CHUNK_ENV,
+            LING_NATIVE_DEFAULT,
+            1,
+            LING_NATIVE_MAX,
         ),
         ModelFamily::Inkling => env_u32(
             INKLING_PREFILL_CHUNK_ENV,

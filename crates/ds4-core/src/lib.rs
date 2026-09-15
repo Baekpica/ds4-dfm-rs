@@ -18,6 +18,7 @@ mod inkling_audio;
 mod inkling_media;
 mod inkling_mtp;
 mod layout;
+mod ling3vl;
 mod mapped;
 mod mem;
 mod mem_gov;
@@ -59,6 +60,7 @@ pub use layout::{
     validate_dspark_layouts, validate_layouts, validate_mtp_layouts, validate_support_layouts,
     LayoutError, LayoutSpec, TypeClass,
 };
+pub use ling3vl::{Ling3VlError, Ling3VlLayer, Ling3VlPlan, Ling3VlVisionPlan};
 pub use mem::{
     snapshot_mem, MemCell as HostMemCell, MemCensus, MemObserve, MemSnap, MEMC_COUNT, MEMD_COUNT,
 };
@@ -1018,6 +1020,12 @@ pub fn probe_model_artifact(path: &str) -> Result<()> {
             message: e.to_string(),
         })?;
     }
+    if identified.shape.family == ModelFamily::Ling3Vl {
+        Ling3VlPlan::validate_inventory(&inventory).map_err(|e| Error {
+            code: 1,
+            message: e.to_string(),
+        })?;
+    }
     let bind_plan = BindPlan::resolve(identified.shape, &inventory);
     if let Some(name) = bind_plan.missing_required().first() {
         return Err(Error {
@@ -1209,6 +1217,18 @@ impl Model {
                         message: e.to_string(),
                     },
                 )?;
+            }
+        }
+        if identified.shape.family == ModelFamily::Ling3Vl {
+            Ling3VlPlan::validate_inventory(&inventory).map_err(|e| Error {
+                code: 1,
+                message: e.to_string(),
+            })?;
+            if let Some(path) = tuning.vision_path.as_deref() {
+                Ling3VlVisionPlan::inspect(Path::new(path)).map_err(|e| Error {
+                    code: 1,
+                    message: e.to_string(),
+                })?;
             }
         }
         let bind_plan = BindPlan::resolve(identified.shape, &inventory);

@@ -3,6 +3,10 @@
 /ds4-bench
 /ds4-eval
 /ds4-agent
+/ds4-c
+/ds4-server-c
+/ds4-bench-c
+/ds4-agent-c
 /ds4-rs
 /ds4-bench-rs
 /ds4-server-rs
