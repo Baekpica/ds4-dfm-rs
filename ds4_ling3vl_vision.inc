@@ -38,7 +38,9 @@ typedef struct {
 typedef struct {
     ds4_gpu_tensor *features;
     ds4_ling3vl_image_span spans[LING3VL_MEDIA_INPUTS];
-    unsigned rows, count;
+    /* `capacity` is the session's feature plane in rows: a prompt whose image
+     * spans exceed it has nowhere to put the projected rows. */
+    unsigned rows, count, capacity;
 } ds4_ling3vl_media;
 
 /* Interleaved M-RoPE coordinates.
@@ -102,7 +104,8 @@ static bool ling3vl_media_apply(const ds4_ling3vl_media *media,
                                 unsigned rows) {
     if (!media || !media->count) { return true; }
     if (!out || !media->features || !rows || media->count > LING3VL_MEDIA_INPUTS ||
-        !media->rows || media->rows > LING3VL_MEDIA_ROWS ||
+        !media->rows || media->rows > media->capacity ||
+        media->capacity > LING3VL_MEDIA_ROWS ||
         position > L3V_CONTEXT || rows > L3V_CONTEXT - position) { return false; }
     unsigned previous_end = 0u;
     for (unsigned i = 0; i < media->count; i++) {
@@ -274,13 +277,6 @@ static void ling3vl_vision_free(ds4_ling3vl_vision *v) {
     memset(v, 0, sizeof(*v));
 }
 
-static uint64_t ling3vl_vision_bytes(uint32_t patches) {
-    const uint64_t p = patches;
-    return (p * (L3V_VIT_PATCH_DIM + 3ull * L3V_VIT_HIDDEN + 3ull * L3V_VIT_HIDDEN +
-                 L3V_VIT_FF + L3V_VIT_HIDDEN) +
-            p / 4ull * L3V_HIDDEN + p * 10ull) * sizeof(float);
-}
-
 static bool ling3vl_vision_alloc(ds4_ling3vl_vision *v, uint32_t patches) {
     memset(v, 0, sizeof(*v));
     if (!patches || patches % 4u || patches > L3V_VIT_MAX_PATCHES) { return false; }
@@ -436,4 +432,111 @@ static bool ling3vl_vision_forward(ds4_ling3vl_vision *v, const ds4_model *m,
                                    v->hidden, merged) &&
         ds4_gpu_qwen4exp_vision_bias_tensor(
             v->projected, m->map, m->size, w->mm2_bias, merged, L3V_HIDDEN);
+}
+
+/* Re-check the placeholder coverage the host claims, then plan the spans.
+ * The prompt must hold exactly token_count image ids at each offset and no
+ * image id anywhere else, or the projected rows would land on text. */
+static bool ling3vl_media_check(const ds4_tokens *prompt,
+                                const ds4_ling3vl_image_input *images,
+                                uint32_t count,
+                                const ds4_ling3vl_image_info *info,
+                                uint32_t capacity,
+                                ds4_ling3vl_media *out) {
+    if (!prompt || !prompt->v || prompt->len <= 0 || prompt->len > (int)L3V_CONTEXT ||
+        !images || !count || count > LING3VL_MEDIA_INPUTS || !info || !out ||
+        !capacity || capacity > LING3VL_MEDIA_ROWS) {
+        return false;
+    }
+    ds4_ling3vl_media media = {0};
+    media.capacity = capacity;
+    unsigned previous = 0u;
+    for (unsigned i = 0; i < count; i++) {
+        const unsigned start = images[i].token_offset;
+        const unsigned n = info[i].token_count;
+        if (!n || n != info[i].grid_h * info[i].grid_w / 4u || start < previous ||
+            start >= (unsigned)prompt->len || n > (unsigned)prompt->len - start ||
+            n > capacity - media.rows) { return false; }
+        for (unsigned pos = previous; pos < start + n; pos++) {
+            const int token = prompt->v[pos];
+            if (token < 0 || (unsigned)token >= DS4_N_VOCAB ||
+                (pos >= start ? (unsigned)token != LING3VL_IMAGE_TOKEN
+                              : (unsigned)token == LING3VL_IMAGE_TOKEN)) {
+                return false;
+            }
+        }
+        media.spans[i] = (ds4_ling3vl_image_span){
+            .position = start, .rows = n, .feature = media.rows,
+            .grid_h = info[i].grid_h, .grid_w = info[i].grid_w};
+        media.rows += n;
+        previous = start + n;
+    }
+    for (unsigned pos = previous; pos < (unsigned)prompt->len; pos++) {
+        const int token = prompt->v[pos];
+        if (token < 0 || (unsigned)token >= DS4_N_VOCAB ||
+            (unsigned)token == LING3VL_IMAGE_TOKEN) { return false; }
+    }
+    media.count = count;
+    *out = media;
+    return true;
+}
+
+/* Decode, resize and encode one image into the shared feature plane. */
+static bool ling3vl_vision_encode_one(ds4_ling3vl_vision *v, const ds4_model *m,
+                                      const ds4_ling3vl_vision_weights *w,
+                                      const ds4_ling3vl_image_input *image,
+                                      const ds4_ling3vl_image_info *info,
+                                      ds4_gpu_tensor *features,
+                                      unsigned feature_row) {
+    const uint32_t patches = info->grid_h * info->grid_w;
+    if (patches > v->capacity) { return false; }
+    int width = 0, height = 0, channels = 0;
+    uint8_t *decoded = stbi_load_from_memory(image->data, (int)image->data_len,
+                                             &width, &height, &channels, 3);
+    if (!decoded || width != (int)info->source_width ||
+        height != (int)info->source_height) {
+        stbi_image_free(decoded);
+        return false;
+    }
+    uint8_t *resized = qwen4exp_resize_rgb_pillow(
+        decoded, info->source_width, info->source_height, info->resized_width,
+        info->resized_height);
+    stbi_image_free(decoded);
+    if (!resized) { return false; }
+
+    float *host_patches = xmalloc((size_t)patches * L3V_VIT_PATCH_DIM * sizeof(float));
+    int32_t *indices = xmalloc((size_t)patches * 4u * sizeof(int32_t));
+    float *weights = xmalloc((size_t)patches * 4u * sizeof(float));
+    int32_t *rows = xmalloc((size_t)patches * sizeof(int32_t));
+    int32_t *cols = xmalloc((size_t)patches * sizeof(int32_t));
+    int32_t *zero = xcalloc(patches, sizeof(int32_t));
+    int32_t *end = xmalloc((size_t)patches * sizeof(int32_t));
+    for (uint32_t i = 0; i < patches; i++) { end[i] = (int32_t)patches; }
+    bool ok = ling3vl_vision_pack(resized, info->resized_width, info->grid_h,
+                                  info->grid_w, host_patches, indices, weights,
+                                  rows, cols);
+    free(resized);
+    ok = ok &&
+        ds4_gpu_tensor_write(v->patches, 0, host_patches,
+                             (uint64_t)patches * L3V_VIT_PATCH_DIM * sizeof(float)) &&
+        ds4_gpu_tensor_write(v->pos_indices, 0, indices,
+                             (uint64_t)patches * 4u * sizeof(int32_t)) &&
+        ds4_gpu_tensor_write(v->pos_weights, 0, weights,
+                             (uint64_t)patches * 4u * sizeof(float)) &&
+        ds4_gpu_tensor_write(v->height, 0, rows, (uint64_t)patches * sizeof(int32_t)) &&
+        ds4_gpu_tensor_write(v->width, 0, cols, (uint64_t)patches * sizeof(int32_t)) &&
+        ds4_gpu_tensor_write(v->seg_start, 0, zero, (uint64_t)patches * sizeof(int32_t)) &&
+        ds4_gpu_tensor_write(v->seg_end, 0, end, (uint64_t)patches * sizeof(int32_t)) &&
+        ling3vl_vision_forward(v, m, w, patches) &&
+        ds4_gpu_tensor_copy(features, (uint64_t)feature_row * L3V_HIDDEN * sizeof(float),
+                            v->projected, 0,
+                            (uint64_t)info->token_count * L3V_HIDDEN * sizeof(float));
+    free(host_patches);
+    free(indices);
+    free(weights);
+    free(rows);
+    free(cols);
+    free(zero);
+    free(end);
+    return ok;
 }
