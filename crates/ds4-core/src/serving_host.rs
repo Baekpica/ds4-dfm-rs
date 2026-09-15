@@ -210,13 +210,26 @@ pub fn fill_quote_facts(
         (ModelFamily::Glm53, Some(s)) => (glm_graph_bytes(s, ctx), 0, 0, 0),
         (ModelFamily::DeepSeek4, Some(s)) => {
             // The shared graph owns its own caches before bank slabs are fitted.
-            let scratch = deepseek_graph_bytes(s, ctx, native);
+            let mut scratch = deepseek_graph_bytes(s, ctx, native);
+            let mut bank = deepseek_bank_bytes(s, ctx, native);
             let mtp = if sidecar_loaded {
+                bank += deepseek_mtp_bank_bytes(s, ctx, native);
                 deepseek_mtp_bytes(s, ctx, native)
             } else {
                 0
             };
-            (kv, scratch, mtp, if partial { kv } else { 0 })
+            // The successful sidecar probe is preserved across engine open.
+            // Loading allocates DSpark state even with DS4_CONT_DSPARK=0.
+            if facts.dspark_ok == Some(true) {
+                let (shared, per_bank) = deepseek_dspark_bytes(s, ctx, native);
+                scratch += shared;
+                bank += per_bank;
+            }
+            if !quote_batch_alloc(req, caps, facts) {
+                bank = 0;
+            }
+            // The slab price already includes every rollback checkpoint depth.
+            (bank, scratch, mtp, 0)
         }
         (_, Some(s)) => {
             let scratch = family_graph_scratch(s, native);
@@ -476,20 +489,20 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             1,
             MOTIF_NATIVE_MAX,
         ),
-        ModelFamily::SolarOpen2 => solar_native_chunk(ctx),
+        ModelFamily::SolarOpen2 => metal_native_chunk(ctx, SOLAR_NATIVE_DEFAULT),
+        ModelFamily::DeepSeek4 => metal_native_chunk(ctx, DEFAULT_SCHED_CHUNK),
         ModelFamily::Dots3Note => env_u32(
             DOTS3_PREFILL_CHUNK_ENV,
             DOTS3_NATIVE_DEFAULT,
             1,
             DOTS3_NATIVE_MAX,
         ),
-        _ => DEFAULT_SCHED_CHUNK,
     };
     cap.min(ctx)
 }
 
-fn solar_native_chunk(ctx: u32) -> u32 {
-    let fallback = ctx.min(SOLAR_NATIVE_DEFAULT).max(1);
+fn metal_native_chunk(ctx: u32, default: u32) -> u32 {
+    let fallback = ctx.min(default).max(1);
     let Ok(raw) = std::env::var(SOLAR_PREFILL_CHUNK_ENV) else {
         return fallback;
     };
@@ -836,8 +849,25 @@ fn deepseek_graph_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
         + 2 * u64::from(s.n_expert)
         + 3 * used * ff
         + used * hidden;
+    let (cache, state) = deepseek_cache_bytes(s, ctx, native);
+    let bytes = cache + 2 * state;
+    bytes
+        + (2 * (ctx / 4 + 2) * pc
+            + u64::from(s.n_indexer_top_k) * pc
+            + 129 * u64::from(s.n_vocab)
+            + pc * row)
+            * SIZEOF_F32
+        + (96 << 20)
+}
+
+// Cache mirrors use the same conservative policy as the shared graph.
+// Return cache bytes and one compressor state plane for slab-depth accounting.
+fn deepseek_cache_bytes(s: Shape, ctx: u64, native: u32) -> (u64, u64) {
+    let dim = u64::from(s.n_head_dim);
+    let index_dim = u64::from(s.n_indexer_head_dim);
     let raw = deepseek_raw_cap(s, ctx, native);
-    let mut bytes = u64::from(s.n_layer) * raw * dim * SIZEOF_F32;
+    let mut cache = u64::from(s.n_layer) * raw * dim * SIZEOF_F32;
+    let mut state = 0;
     let packed = dim - u64::from(s.n_rot)
         + u64::from(s.n_rot) * SIZEOF_F32
         + (dim - u64::from(s.n_rot)) / 64 * SIZEOF_F32;
@@ -848,19 +878,37 @@ fn deepseek_graph_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
         }
         let cap = ctx / ratio + 2;
         let coff = if ratio == 4 { 2 } else { 1 };
-        bytes += cap * (dim * SIZEOF_F32 + packed) + 2 * coff * coff * dim * ratio * SIZEOF_F32;
+        cache += cap * (dim * SIZEOF_F32 + packed);
+        state += coff * coff * dim * ratio * SIZEOF_F32;
         if ratio == 4 {
-            bytes += cap * (index_dim * SIZEOF_F32 + index_dim / 2 + index_dim / 32 * SIZEOF_F32)
-                + 2 * coff * coff * index_dim * ratio * SIZEOF_F32;
+            cache += cap * (index_dim * SIZEOF_F32 + index_dim / 2 + index_dim / 32 * SIZEOF_F32);
+            state += coff * coff * index_dim * ratio * SIZEOF_F32;
         }
     }
-    bytes
-        + (2 * (ctx / 4 + 2) * pc
-            + u64::from(s.n_indexer_top_k) * pc
-            + 129 * u64::from(s.n_vocab)
-            + pc * row)
-            * SIZEOF_F32
-        + (96 << 20)
+    (cache, state)
+}
+
+// C ds4_batch_slabs_bank_bytes, full-depth cache capacity (vmm_comp=false).
+// Four rollback depths are always allocated, independent of MTP/reuse mode.
+fn deepseek_bank_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
+    let (cache, state) = deepseek_cache_bytes(s, ctx, native);
+    cache + (2 + 2 * 4) * state
+}
+
+fn deepseek_mtp_bank_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
+    let raw = deepseek_raw_cap(s, ctx, native) * u64::from(s.n_head_dim);
+    let hc = u64::from(s.n_hc) * u64::from(s.n_embd);
+    (raw + 7 * hc + 3 * u64::from(s.n_embd) + u64::from(s.n_vocab) + 3) * SIZEOF_F32
+}
+
+// C metal_graph_alloc_bytes_estimate(enable_dspark) + ds4_dspark_slabs_alloc.
+fn deepseek_dspark_bytes(s: Shape, ctx: u64, native: u32) -> (u64, u64) {
+    let raw = 3 * deepseek_raw_cap(s, ctx, native) * u64::from(s.n_head_dim);
+    let workspace = u64::from(native) * (4 * u64::from(s.n_embd) + u64::from(s.n_head_dim));
+    (
+        (raw + workspace + 5 * u64::from(s.n_vocab)) * SIZEOF_F32,
+        raw * SIZEOF_F32,
+    )
 }
 
 fn deepseek_comp_ratio(s: Shape, il: u32) -> u64 {
@@ -2299,6 +2347,85 @@ mod tests {
         let caps = serving_caps(family, variant);
         fill_quote_facts(&mut facts, req, caps, Some(shape), host);
         facts
+    }
+
+    #[test]
+    fn deepseek_preserves_chunk_env() {
+        let _env = lock_test_env();
+        let shape = crate::shape::SHAPE_FLASH;
+        let req = ServingRequest::default();
+        let caps = serving_caps(shape.family, shape.variant);
+        for (value, expected) in [("256", 256), ("512", 512), ("0", 8192)] {
+            let _chunk = EnvGuard::set("DS4_METAL_PREFILL_CHUNK", value);
+            let facts = fill_family(shape.family, shape.variant, shape, &req, qwen_host(None));
+            assert_eq!(facts.native_chunk, Some(expected));
+            let plan = resolve_plan(&req, Some(caps), &facts);
+            assert_eq!(plan.batch_max_total_tokens(8192, 2), expected as i32);
+            assert!(plan
+                .env_overrides()
+                .contains(&("DS4_METAL_PREFILL_CHUNK".into(), expected.to_string())));
+        }
+    }
+
+    #[test]
+    fn deepseek_banks_match_native() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset("DS4_METAL_PREFILL_CHUNK");
+        let _raw = EnvGuard::unset("DS4_METAL_GRAPH_RAW_CAP");
+        for (shape, ctx, expected, mtp_bank) in [
+            (crate::shape::SHAPE_FLASH, 8192, 593_119_128, 9_937_932),
+            (crate::shape::SHAPE_PRO, 8192, 850_305_176, 10_318_860),
+            (crate::shape::SHAPE_FLASH, 262144, 5_199_141_784, 9_937_932),
+            (crate::shape::SHAPE_PRO, 262144, 7_443_732_376, 10_318_860),
+        ] {
+            let mut req = ServingRequest {
+                ctx,
+                mtp_mode: MtpMode::Off,
+                ..ServingRequest::default()
+            };
+            let facts = fill_family(shape.family, shape.variant, shape, &req, qwen_host(None));
+            assert_eq!(facts.per_bank_bytes, Some(expected));
+            assert_eq!(facts.checkpoint_pool_bytes, Some(0));
+            req.mtp_path = Some("support.gguf".into());
+            let facts = fill_family(shape.family, shape.variant, shape, &req, qwen_host(None));
+            assert_eq!(facts.per_bank_bytes, Some(expected + mtp_bank));
+            req.max_seqs = MaxSeqs::Off;
+            let facts = fill_family(shape.family, shape.variant, shape, &req, qwen_host(None));
+            assert_eq!(facts.per_bank_bytes, Some(0));
+        }
+    }
+
+    #[test]
+    fn deepseek_dspark_runtime_quoted() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset("DS4_METAL_PREFILL_CHUNK");
+        let _raw = EnvGuard::unset("DS4_METAL_GRAPH_RAW_CAP");
+        let _off = EnvGuard::set("DS4_CONT_DSPARK", "0");
+        for (shape, shared) in [
+            (crate::shape::SHAPE_FLASH, 306_148_352),
+            (crate::shape::SHAPE_PRO, 507_474_944),
+        ] {
+            let mut req = ServingRequest::default();
+            for width in [MaxSeqs::Auto, MaxSeqs::Off] {
+                req.max_seqs = width;
+                let caps = serving_caps(shape.family, shape.variant);
+                let base = fill_family(shape.family, shape.variant, shape, &req, qwen_host(None));
+                let mut loaded = EngineFacts {
+                    dspark_ok: Some(true),
+                    ..EngineFacts::default()
+                };
+                fill_quote_facts(&mut loaded, &req, caps, Some(shape), qwen_host(None));
+                assert_eq!(
+                    loaded.scratch_bytes.unwrap() - base.scratch_bytes.unwrap(),
+                    shared
+                );
+                let bank = if width == MaxSeqs::Off { 0 } else { 26_738_688 };
+                assert_eq!(
+                    loaded.per_bank_bytes.unwrap() - base.per_bank_bytes.unwrap(),
+                    bank
+                );
+            }
+        }
     }
 
     #[test]
