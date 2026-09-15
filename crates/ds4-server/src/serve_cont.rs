@@ -21,8 +21,8 @@ use crate::dsml::{SampleOverride, SamplePolicy};
 #[cfg(any(feature = "native", test))]
 use crate::generate::thinking_visible_key;
 use crate::generate::{
-    prepare_required_prefixes, render_prompt, responses_ids,
-    stream_req_from_parsed, GenerateError, GenerateOutcome,
+    prepare_required_prefixes, render_prompt, responses_ids, stream_req_from_parsed, GenerateError,
+    GenerateOutcome,
 };
 use crate::parse::{ParsedRequest, ToolCall, ToolChoice};
 use crate::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
@@ -1588,11 +1588,9 @@ pub fn cont_prompt_tokens(
     exec: &dyn ContExec,
     parsed: &mut ParsedRequest,
 ) -> Result<(Vec<u8>, Vec<i32>), GenerateError> {
-    prepare_required_prefixes(
-        parsed,
-        syntax_for_model_id(exec.model_id()),
-        |literal| Ok(exec.encode_chat(literal)),
-    )?;
+    prepare_required_prefixes(parsed, syntax_for_model_id(exec.model_id()), |literal| {
+        Ok(exec.encode_chat(literal))
+    })?;
     exec.restore_chat(parsed)?;
     let prompt = exec.render_request(parsed)?;
     let tokens = match parsed.kind {

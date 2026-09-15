@@ -1252,19 +1252,15 @@ mod required_prefix_tests {
             r#"{"messages":[{"role":"user","content":"weather"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}],"tool_choice":"required"}"#,
         )
         .unwrap();
-        prepare_required_prefixes(
-            &mut parsed,
-            ModelSyntax::Ling3Vl,
-            |literal| {
-                Ok(if literal == GLM_TOOL_CALL_START.as_bytes() {
-                    vec![11]
-                } else if literal == DSML_TOOL_CALLS_START.as_bytes() {
-                    vec![99]
-                } else {
-                    vec![1]
-                })
-            },
-        )
+        prepare_required_prefixes(&mut parsed, ModelSyntax::Ling3Vl, |literal| {
+            Ok(if literal == GLM_TOOL_CALL_START.as_bytes() {
+                vec![11]
+            } else if literal == DSML_TOOL_CALLS_START.as_bytes() {
+                vec![99]
+            } else {
+                vec![1]
+            })
+        })
         .unwrap();
         assert_eq!(parsed.required_tool_prefix, [11]);
     }
@@ -1791,11 +1787,9 @@ pub(crate) fn prepare_serial_prompt(
         engine.restore_tool_replay(&mut parsed.messages);
     }
     if engine.tokenizes_control_literals() {
-        prepare_required_prefixes(
-            &mut parsed,
-            syntax,
-            |literal| engine.tokenize_rendered_chat(literal),
-        )?;
+        prepare_required_prefixes(&mut parsed, syntax, |literal| {
+            engine.tokenize_rendered_chat(literal)
+        })?;
     }
 
     let prompt = engine.render_request(&parsed)?;
