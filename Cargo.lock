@@ -340,6 +340,7 @@ dependencies = [
  "hf-chat-template",
  "hound",
  "image",
+ "libloading 0.8.9",
  "regex",
  "rustfft",
  "serde_json",

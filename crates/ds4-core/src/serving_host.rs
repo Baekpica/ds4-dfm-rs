@@ -215,6 +215,10 @@ pub fn fill_quote_facts(
         }
         (ModelFamily::Dots3Note, Some(s)) => (dots3_graph_bytes(s, ctx, native), 0, 0, 0),
         (ModelFamily::Glm53, Some(s)) => (glm_graph_bytes(s, ctx), 0, 0, 0),
+        (ModelFamily::DeepSeek4, Some(s)) if req.backend == Backend::Cpu => {
+            let (cache, scratch) = deepseek_cpu_bytes(s, ctx);
+            (cache, scratch, 0, 0)
+        }
         (ModelFamily::DeepSeek4, Some(s)) => {
             // The shared graph owns its own caches before bank slabs are fitted.
             let mut scratch = deepseek_graph_bytes(s, ctx, native);
@@ -413,73 +417,41 @@ pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
 }
 
 pub fn host_available_bytes(backend: Backend) -> u64 {
-    let device = match backend {
-        Backend::Cuda => nvidia_fb_probe(),
-        Backend::Metal | Backend::Cpu => None,
-    };
-    quote_ceiling(meminfo_available(), meminfo_total(), device)
+    let avail = meminfo_available();
+    match backend {
+        Backend::Cuda => quote_device(avail, crate::serving_cuda::device()),
+        Backend::Metal | Backend::Cpu => avail,
+    }
 }
 
-// Discrete CUDA FB is much smaller than host RAM. Unified hosts (GB10)
-// report N/A or a size matching RAM — keep MemAvailable.
-fn quote_ceiling(avail: u64, total: u64, device: Option<(u64, u64)>) -> u64 {
-    let Some((dev_total, dev_free)) = device else {
+fn quote_device(avail: u64, device: Option<crate::serving_cuda::Device>) -> u64 {
+    let Some(device) = device else {
         return avail;
     };
-    if dev_total == 0 {
+    if device.integrated {
         return avail;
     }
-    if total > 0 && dev_total.saturating_add(GIB) < total {
-        return dev_free;
-    }
-    avail
+    quote_ceiling(avail, nvidia_fb_probe(&device.uuid))
 }
 
-fn nvidia_fb_probe() -> Option<(u64, u64)> {
-    // Native serves on CUDA-visible device 0, the first selected index/UUID.
-    // nvidia-smi itself ignores CUDA_VISIBLE_DEVICES, so filter explicitly.
-    let visible = std::env::var("CUDA_VISIBLE_DEVICES").unwrap_or_else(|_| "0".into());
-    let selected = visible.split(',').next()?.trim();
-    if selected.is_empty() || selected.starts_with('-') {
-        return None;
-    }
-    let selected = nvidia_gpu_id(selected)?;
+// Device identity/topology comes from CUDA, never relative RAM/VRAM capacity.
+fn quote_ceiling(avail: u64, device: Option<(u64, u64)>) -> u64 {
+    device.map(|(_, free)| free).unwrap_or(avail)
+}
+
+fn nvidia_fb_probe(uuid: &str) -> Option<(u64, u64)> {
     let out = std::process::Command::new("nvidia-smi")
         .args([
             "--query-gpu=memory.total,memory.free",
             "--format=csv,noheader,nounits",
         ])
-        .arg(format!("--id={selected}"))
+        .arg(format!("--id={uuid}"))
         .output()
         .ok()?;
     if !out.status.success() {
         return None;
     }
     parse_nvidia_csv(std::str::from_utf8(&out.stdout).ok()?)
-}
-
-// CUDA accepts unique UUID prefixes; nvidia-smi --id requires the full UUID.
-fn nvidia_gpu_id(selected: &str) -> Option<String> {
-    if !selected.starts_with("GPU-") || selected.len() == 40 {
-        return Some(selected.into());
-    }
-    let out = std::process::Command::new("nvidia-smi")
-        .args(["--query-gpu=uuid", "--format=csv,noheader,nounits"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = std::str::from_utf8(&out.stdout).ok()?;
-    let mut matches = text
-        .lines()
-        .map(str::trim)
-        .filter(|uuid| uuid.starts_with(selected));
-    let found = matches.next()?;
-    if matches.next().is_some() {
-        return None;
-    }
-    Some(found.into())
 }
 
 fn parse_nvidia_csv(text: &str) -> Option<(u64, u64)> {
@@ -867,6 +839,46 @@ fn quote_batch_alloc(req: &ServingRequest, caps: ServingCaps, facts: &EngineFact
     let width = facts.banks_fitted.unwrap_or(want).min(want);
 
     caps.banks != BankLane::OptIn || width >= 2
+}
+
+// C kv_cache_init + cpu_decode_scratch_init + the session logits row.
+fn deepseek_cpu_bytes(s: Shape, ctx: u64) -> (u64, u64) {
+    let dim = u64::from(s.n_head_dim);
+    let index = u64::from(s.n_indexer_head_dim);
+    let raw = u64::from(s.n_swa).min(ctx).max(1);
+    let mut cache = u64::from(s.n_layer) * raw * dim * SIZEOF_F32;
+    for il in 0..s.n_layer {
+        let ratio = deepseek_comp_ratio(s, il);
+        if ratio == 0 {
+            continue;
+        }
+        let cap = ctx / ratio + 2;
+        let coff = if ratio == 4 { 2 } else { 1 };
+        let width = dim + if ratio == 4 { index } else { 0 };
+        cache += (cap * width + 2 * coff * coff * width * ratio) * SIZEOF_F32;
+    }
+    let hidden = u64::from(s.n_embd);
+    let hc = u64::from(s.n_hc);
+    let q = u64::from(s.n_head) * dim;
+    let ff = u64::from(s.n_ff_exp);
+    let used = u64::from(s.n_expert_used);
+    let comp = ctx / 4 + 2;
+    let floats = 11 * hidden
+        + 6 * hc * hidden
+        + 2 * q
+        + 2 * u64::from(s.n_lora_q)
+        + 8 * dim
+        + index
+        + u64::from(s.n_out_group) * u64::from(s.n_lora_o)
+        + raw
+        + 2 * comp
+        + u64::from(s.n_indexer_head) * (index + 1)
+        + (3 + used) * ff
+        + 2 * hc
+        + u64::from(s.n_vocab);
+    // block_q8_K is 292 bytes for 256 values; q8_xq uses 32 bytes + F32 scale.
+    let quant = (hidden / 256 + used * (ff / 256)) * 292 + q.div_ceil(32) * 36;
+    (cache, floats * SIZEOF_F32 + comp + quant)
 }
 
 // C metal_graph_alloc_bytes_estimate, including its initial cache set and
@@ -1492,10 +1504,6 @@ fn file_len(path: Option<&Path>) -> u64 {
         .unwrap_or(0)
 }
 
-fn meminfo_total() -> u64 {
-    meminfo_kb("MemTotal:")
-}
-
 fn meminfo_available() -> u64 {
     meminfo_kb("MemAvailable:")
 }
@@ -2067,6 +2075,37 @@ mod tests {
     }
 
     #[test]
+    fn cpu_deepseek_uses_cpu_buffers() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset(SOLAR_PREFILL_CHUNK_ENV);
+        for (shape, ctx, cache, scratch) in [
+            (crate::shape::SHAPE_FLASH, 8192, 136_389_632, 1_591_858),
+            (crate::shape::SHAPE_PRO, 8192, 196_331_520, 2_405_186),
+            (crate::shape::SHAPE_FLASH, 262144, 3_630_769_152, 2_163_250),
+            (crate::shape::SHAPE_PRO, 262144, 5_198_170_112, 2_976_578),
+        ] {
+            for native in [256, 4096] {
+                let req = ServingRequest {
+                    backend: Backend::Cpu,
+                    ctx,
+                    native_chunk: Some(native),
+                    ..ServingRequest::default()
+                };
+                let facts = fill_family(shape.family, shape.variant, shape, &req, qwen_host(None));
+                assert_eq!(facts.per_bank_bytes, Some(cache));
+                assert_eq!(facts.scratch_bytes, Some(scratch));
+                assert_eq!(facts.mtp_state_bytes, Some(0));
+            }
+        }
+    }
+
+    #[test]
+    fn equal_ram_vram_is_discrete() {
+        assert_eq!(quote_ceiling(20 * GIB, Some((24 * GIB, GIB))), GIB);
+        assert_eq!(quote_ceiling(20 * GIB, Some((48 * GIB, GIB))), GIB);
+    }
+
+    #[test]
     fn native_quote_glm_vision() {
         let _env = lock_test_env();
         let req = ServingRequest {
@@ -2548,14 +2587,19 @@ mod tests {
 
     #[test]
     fn discrete_cuda_uses_device_free_not_ram() {
-        let ram = 64 * GIB;
         let avail = 50 * GIB;
         let vram = 24 * GIB;
         let free = 20 * GIB;
-        assert_eq!(quote_ceiling(avail, ram, Some((vram, free))), free);
-        assert_eq!(quote_ceiling(avail, ram, None), avail);
+        assert_eq!(quote_ceiling(avail, Some((vram, free))), free);
+        assert_eq!(quote_ceiling(avail, None), avail);
         assert_eq!(
-            quote_ceiling(avail, ram, Some((120 * GIB, 110 * GIB))),
+            quote_device(
+                avail,
+                Some(crate::serving_cuda::Device {
+                    uuid: String::new(),
+                    integrated: true,
+                })
+            ),
             avail
         );
         assert_eq!(parse_nvidia_csv("[N/A], [N/A]\n"), None);
@@ -2566,57 +2610,83 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn smi_uses_first_visible_gpu() {
-        let _env = lock_test_env();
-        let dir = std::env::temp_dir().join(format!("ds4-visible-smi-{}", std::process::id()));
+        if let Ok(expected) = std::env::var("DS4_TEST_CUDA_FREE") {
+            assert_eq!(
+                host_available_bytes(Backend::Cuda),
+                expected.parse::<u64>().unwrap()
+            );
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("ds4-driver-smi-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("cuda.c");
+        std::fs::write(&source, include_str!("../tests/fixtures/cuda_probe.c")).unwrap();
+        let build = std::process::Command::new("cc")
+            .args(["-shared", "-fPIC"])
+            .arg(&source)
+            .arg("-o")
+            .arg(dir.join("libcuda.so.1"))
+            .output()
+            .unwrap();
+        assert!(
+            build.status.success(),
+            "{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
         let smi = dir.join("nvidia-smi");
-        std::fs::write(
-            &smi,
-            r#"#!/bin/sh
-selected=""
+        std::fs::write(&smi, r#"#!/bin/sh
 for arg in "$@"; do
     case "$arg" in
-        --id=*) selected="${arg#--id=}" ;;
-        --query-gpu=uuid) printf 'GPU-00000000-2222-3333-4444-555555555555\nGPU-11111111-2222-3333-4444-555555555555\n'; exit 0 ;;
+        --id=0|--id=GPU-00000000-0000-0000-0000-000000000000) printf '24576, 20000\n'; exit 0 ;;
+        --id=1|--id=GPU-11111111-1111-1111-1111-111111111111) printf '8192, 2048\n'; exit 0 ;;
+        --query-gpu=uuid) printf 'GPU-00000000-0000-0000-0000-000000000000\nGPU-11111111-1111-1111-1111-111111111111\n'; exit 0 ;;
     esac
 done
-case "$selected" in
-    0) printf '24576, 20000\n' ;;
-    1|GPU-11111111-2222-3333-4444-555555555555) printf '8192, 2048\n' ;;
-    "") printf '24576, 20000\n8192, 2048\n' ;;
-    *) exit 1 ;;
-esac
-"#,
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&smi, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        let path = format!(
-            "{}:{}",
-            dir.display(),
-            std::env::var("PATH").unwrap_or_default()
-        );
-        let _path = EnvGuard::set("PATH", &path);
-        for selected in [
-            "1",
-            "1,0",
-            "GPU-11111111,0",
-            "GPU-11111111-2222-3333-4444-555555555555,0",
+exit 1
+"#).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&smi, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for (visible, order, free) in [
+            ("0", "FASTEST_FIRST", 2048),
+            ("0", "PCI_BUS_ID", 20000),
+            ("1", "FASTEST_FIRST", 20000),
+            ("1,0", "PCI_BUS_ID", 2048),
+            (
+                "GPU-11111111-1111-1111-1111-111111111111",
+                "FASTEST_FIRST",
+                2048,
+            ),
+            ("GPU-11111111", "FASTEST_FIRST", 2048),
         ] {
-            let _visible = EnvGuard::set("CUDA_VISIBLE_DEVICES", selected);
-            assert_eq!(nvidia_fb_probe(), Some((8192 * MIB, 2048 * MIB)));
-            assert_eq!(host_available_bytes(Backend::Cuda), 2048 * MIB);
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "serving_host::tests::smi_uses_first_visible_gpu",
+                    "--nocapture",
+                ])
+                .env("LD_LIBRARY_PATH", &dir)
+                .env(
+                    "PATH",
+                    format!(
+                        "{}:{}",
+                        dir.display(),
+                        std::env::var("PATH").unwrap_or_default()
+                    ),
+                )
+                .env("CUDA_VISIBLE_DEVICES", visible)
+                .env("CUDA_DEVICE_ORDER", order)
+                .env("DS4_TEST_CUDA_FREE", (free * MIB).to_string())
+                .output()
+                .unwrap();
+            assert!(
+                child.status.success(),
+                "{visible} {order}: {} {}",
+                String::from_utf8_lossy(&child.stdout),
+                String::from_utf8_lossy(&child.stderr)
+            );
         }
-        for selected in ["", "-1", "-1,0", "invalid", "GPU-", "GPU-ffff"] {
-            let _visible = EnvGuard::set("CUDA_VISIBLE_DEVICES", selected);
-            assert_eq!(nvidia_fb_probe(), None);
-        }
-        let _visible = EnvGuard::unset("CUDA_VISIBLE_DEVICES");
-        assert_eq!(nvidia_fb_probe(), Some((24576 * MIB, 20000 * MIB)));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -2651,7 +2721,6 @@ esac
             std::env::var("PATH").unwrap_or_default()
         );
         let _path = EnvGuard::set("PATH", &path);
-        assert_eq!(host_available_bytes(Backend::Cuda), 512 * MIB);
         let cpu = host_available_bytes(Backend::Cpu);
         let metal = host_available_bytes(Backend::Metal);
         let avail = meminfo_available();

@@ -24,6 +24,7 @@ mod mem_gov;
 mod payload;
 mod progress;
 mod serving;
+mod serving_cuda;
 mod serving_host;
 mod session;
 mod shape;
