@@ -50,6 +50,9 @@ const STEP_VISION_PATCH: u64 = 14;
 const STEP_VISION_DIM: u64 = 1536;
 const STEP_VISION_FFN: u64 = 8960;
 const STEP_MEDIA_ROWS: u64 = 8192;
+const STEP_RGB_LIMIT: u64 = 128 * MIB;
+const STEP_SOURCE_EDGE: u64 = 3024;
+const STEP_PIXELS_PER_TOKEN: u64 = 56 * 56 * 3;
 const GLM_NATIVE_DEFAULT: u32 = 2048;
 const GLM_ATTENTION_PERIOD: u32 = 4;
 const EXAONE_PREFILL_CHUNK_ENV: &str = "DS4_EXAONE_PREFILL_CHUNK";
@@ -1266,7 +1269,16 @@ fn step_media_bytes(s: Shape, ctx: u64) -> u64 {
             + hidden / 16
             + 2)
         * SIZEOF_F32;
-    workspace + ctx.min(STEP_MEDIA_ROWS) * hidden * SIZEOF_F32
+    let rows = ctx.min(STEP_MEDIA_ROWS);
+    // 728^2/169 and 504^2/81 both equal 56^2 pixels per image token.
+    // Prepared crops remain live through native encoding and prefill.
+    let crops = rows * STEP_PIXELS_PER_TOKEN * SIZEOF_F32;
+    let native = workspace + rows * hidden * SIZEOF_F32;
+    // Decoder/EXIF copies and RGB horizontal resize can hold two 128 MiB
+    // buffers. Two maximum base RGB images also bound crop/resize staging
+    // and filter coefficients; F32 crop normalization fits below this peak.
+    let prepare = 2 * STEP_RGB_LIMIT + 2 * STEP_SOURCE_EDGE.pow(2) * 3;
+    crops + native.max(prepare)
 }
 
 // C inkling_context_memory / inkling_mtp_memory: return base and loaded-MTP
@@ -2498,7 +2510,7 @@ mod tests {
         };
         let caps = serving_caps(ModelFamily::Step37, Variant::Step37Flash);
         let mapped = 10 * GIB;
-        let media = 406_413_184;
+        let media = 714_694_528;
         for (live, can_listen) in [(media - 1, false), (media, true)] {
             let mut facts = EngineFacts {
                 banks_fitted: Some(2),
@@ -3343,9 +3355,9 @@ exit 1
         let _env = lock_test_env();
         let mut req = ServingRequest::default();
         for (ctx, expected) in [
-            (1024, 288_972_672),
-            (8192, 406_413_184),
-            (16384, 406_413_184),
+            (1024, 361_838_080),
+            (8192, 714_694_528),
+            (16384, 714_694_528),
         ] {
             req.ctx = ctx;
             let no_media = fill_family(
