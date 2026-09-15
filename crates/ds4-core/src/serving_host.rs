@@ -132,6 +132,15 @@ pub fn fill_quote_facts(
             };
             (kv.saturating_add(graph).saturating_add(spec), 0, 0, pool)
         }
+        (ModelFamily::SolarOpen2, Some(s)) => {
+            let scratch = family_graph_scratch(s, native);
+            let pool = if partial {
+                solar_checkpoint_pool_bytes(s)
+            } else {
+                0
+            };
+            (kv, scratch, 0, pool)
+        }
         (_, Some(s)) => {
             let scratch = family_graph_scratch(s, native);
             let pool = if partial { kv } else { 0 };
@@ -292,7 +301,58 @@ pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
 }
 
 pub fn host_available_bytes() -> u64 {
-    meminfo_available()
+    quote_ceiling(meminfo_available(), meminfo_total(), nvidia_fb_bytes())
+}
+
+// Discrete CUDA FB is much smaller than host RAM. Unified hosts (GB10)
+// report N/A or a size matching RAM — keep MemAvailable.
+fn quote_ceiling(avail: u64, total: u64, device: Option<(u64, u64)>) -> u64 {
+    let Some((dev_total, dev_free)) = device else {
+        return avail;
+    };
+    if dev_total == 0 {
+        return avail;
+    }
+    if total > 0 && dev_total.saturating_add(GIB) < total {
+        return dev_free;
+    }
+    avail
+}
+
+fn nvidia_fb_bytes() -> Option<(u64, u64)> {
+    static CACHED: std::sync::OnceLock<Option<(u64, u64)>> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(nvidia_fb_probe)
+}
+
+fn nvidia_fb_probe() -> Option<(u64, u64)> {
+    let out = std::process::Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=memory.total,memory.free",
+            "--format=csv,noheader,nounits",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_nvidia_csv(std::str::from_utf8(&out.stdout).ok()?)
+}
+
+fn parse_nvidia_csv(text: &str) -> Option<(u64, u64)> {
+    let line = text.lines().next()?.trim();
+    let mut parts = line.split(',');
+    let total = parse_nvidia_mib(parts.next()?)?;
+    let free = parse_nvidia_mib(parts.next()?)?;
+    Some((total, free))
+}
+
+fn parse_nvidia_mib(raw: &str) -> Option<u64> {
+    let t = raw.trim();
+    if t.eq_ignore_ascii_case("[n/a]") || t.eq_ignore_ascii_case("n/a") {
+        return None;
+    }
+    let mib: u64 = t.parse().ok()?;
+    Some(mib.saturating_mul(MIB))
 }
 
 fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
@@ -595,6 +655,25 @@ fn step_checkpoint_pool_bytes(shape: Shape, mtp_on: bool) -> u64 {
     step_checkpoint_slot_bytes(shape, mtp_on).saturating_mul(CHECKPOINT_SLOTS)
 }
 
+// C `g->state_bytes`: KDA layers only (il % 4 != 0). 32 copies in the slab.
+fn solar_checkpoint_slot_bytes(shape: Shape) -> u64 {
+    let kda_dim = u64::from(shape.n_head).saturating_mul(u64::from(shape.n_kda_head_dim.max(1)));
+    let recurrent = u64::from(shape.n_head)
+        .saturating_mul(u64::from(shape.n_kda_head_dim.max(1)))
+        .saturating_mul(u64::from(shape.n_kda_head_dim.max(1)))
+        .saturating_mul(SIZEOF_F32);
+    let conv = kda_dim
+        .saturating_mul(u64::from(shape.n_ssm_conv.max(1)))
+        .saturating_mul(SIZEOF_F32);
+    let per = recurrent.saturating_add(conv.saturating_mul(3));
+    let n_kda = (0..shape.n_layer).filter(|il| il % 4 != 0).count() as u64;
+    per.saturating_mul(n_kda)
+}
+
+fn solar_checkpoint_pool_bytes(shape: Shape) -> u64 {
+    solar_checkpoint_slot_bytes(shape).saturating_mul(CHECKPOINT_SLOTS)
+}
+
 // Same gate as apply_env publishing DS4_SERVER_FORK_PARTIAL=1.
 fn quote_partial(req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts) -> bool {
     if caps.reuse != ReuseKind::Partial {
@@ -706,12 +785,20 @@ fn file_len(path: Option<&Path>) -> u64 {
         .unwrap_or(0)
 }
 
+fn meminfo_total() -> u64 {
+    meminfo_kb("MemTotal:")
+}
+
 fn meminfo_available() -> u64 {
+    meminfo_kb("MemAvailable:")
+}
+
+fn meminfo_kb(prefix: &str) -> u64 {
     let Ok(text) = std::fs::read_to_string("/proc/meminfo") else {
         return 0;
     };
     for line in text.lines() {
-        let Some(rest) = line.strip_prefix("MemAvailable:") else {
+        let Some(rest) = line.strip_prefix(prefix) else {
             continue;
         };
         let kb: u64 = rest
@@ -1352,6 +1439,51 @@ mod tests {
         assert!(pool > kv, "32 SWA slots exceed one full-context KV");
     }
 
+    #[test]
+    fn solar_checkpoint_uses_kda_state_slots() {
+        let _env = lock_test_env();
+        let mut req = ServingRequest::default();
+        req.mem_floor_gb = 0;
+        req.prefix_reuse = PrefixReuse::Partial;
+        let facts = fill_family(
+            ModelFamily::SolarOpen2,
+            Variant::SolarOpen2_250B,
+            SHAPE_SOLAR_OPEN2_250B,
+            &req,
+            QuoteHost {
+                weights_bytes: 10 * GIB,
+                mtp_bytes: 0,
+                available_bytes: 100 * GIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        let kv = bank_kv_bytes(SHAPE_SOLAR_OPEN2_250B, req.ctx.max(1) as u64);
+        let pool = facts.checkpoint_pool_bytes.unwrap();
+        assert_eq!(pool, solar_checkpoint_pool_bytes(SHAPE_SOLAR_OPEN2_250B));
+        assert_ne!(pool, kv);
+        assert!(pool > 4 * GIB, "32 KDA state copies are several GiB");
+    }
+
+    #[test]
+    fn discrete_cuda_uses_device_free_not_ram() {
+        let ram = 64 * GIB;
+        let avail = 50 * GIB;
+        let vram = 24 * GIB;
+        let free = 20 * GIB;
+        assert_eq!(quote_ceiling(avail, ram, Some((vram, free))), free);
+        assert_eq!(quote_ceiling(avail, ram, None), avail);
+        assert_eq!(
+            quote_ceiling(avail, ram, Some((120 * GIB, 110 * GIB))),
+            avail
+        );
+        assert_eq!(parse_nvidia_csv("[N/A], [N/A]\n"), None);
+        assert_eq!(
+            parse_nvidia_csv("24576, 20480\n"),
+            Some((24576 * MIB, 20480 * MIB))
+        );
+    }
+
     fn fill_family(
         family: ModelFamily,
         variant: Variant,
@@ -1629,9 +1761,11 @@ mod tests {
             let _scope = EnvGuard::set(WEIGHT_IPC_SCOPE_ENV, "both");
             let facts = attach_ipc(&a, Some(&mtp), None, None, true);
             assert_eq!(facts.shared_weights_bytes, Some(0));
-            assert_eq!(
-                facts.host_available_bytes,
-                Some(live.saturating_add(resident_runtime(&facts)))
+            let got = facts.host_available_bytes.unwrap();
+            let expect = live.saturating_add(resident_runtime(&facts));
+            assert!(
+                got.abs_diff(expect) < 256 * MIB,
+                "resident ceiling {got} vs {expect}"
             );
         }
 

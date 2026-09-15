@@ -41795,11 +41795,17 @@ static uint32_t bg_prefill_chunk_live_tokens(void) {
 static uint32_t bg_prefill_yield(
         uint32_t remain, uint32_t cap, int peer_decoding) {
     uint32_t n = remain < cap ? remain : cap;
-    if (!peer_decoding) return n;
+    if (!peer_decoding) {
+        return n;
+    }
     uint32_t live = bg_prefill_chunk_live_tokens();
     uint32_t boot = bg_prefill_chunk_tokens();
-    if (live > boot) live = boot;
-    if (live != 0u && n > live) n = live;
+    if (live > boot) {
+        live = boot;
+    }
+    if (live != 0u && n > live) {
+        n = live;
+    }
     return n;
 }
 
