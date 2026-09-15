@@ -166,6 +166,12 @@ latent caches are append-only, so a fork copies rows `[0, pos)` straight from
 the source bank; only the recurrent state has no rewind and needs the
 checkpoint slab, which reserves 32 slots of 76.6 MiB and maps them on demand.
 
+A fork needs somewhere to land. A held source bank can still be forked, but
+only into a free or evictable one, so with every bank holding a live
+conversation the probe is refused and the turn prefills cold. `--max-seqs` is
+the reuse budget as much as the concurrency budget; this is the shared
+bank-budget refusal, not a family limit.
+
 ## Scope
 
 Qualified on one DGX Spark with CUDA. Not release gates and not implied:
