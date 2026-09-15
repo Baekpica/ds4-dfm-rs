@@ -1221,7 +1221,14 @@ fn qwen_media_bytes(s: Shape, req: &ServingRequest) -> (u64, u64) {
 // The merger reuses these same allocations.
 fn glm_media_bytes() -> u64 {
     let rows = 8000 * 4;
-    rows * (1176 + 6 * 1024 + 3072 + 3 * 4096) * SIZEOF_F32
+    let encoder = rows * (1176 + 6 * 1024 + 3072 + 3 * 4096) * SIZEOF_F32;
+    // Host patches live until GPU encoding returns. The bridge retains all
+    // four images' host embeddings until sync completes, and encodes them
+    // before validating their spans against the prompt, so ctx cannot cap
+    // this allocation. Decode/resize finishes before the larger GPU peak.
+    let host_patches = rows * 1176 * SIZEOF_F32;
+    let embeddings = 4 * 8000 * 4096 * SIZEOF_F32;
+    encoder + host_patches + embeddings
 }
 
 // C step37_memory: GQA workspace plus Step controls, gates and RoPE tables.
@@ -1278,7 +1285,10 @@ fn step_media_bytes(s: Shape, ctx: u64) -> u64 {
     // buffers. Two maximum base RGB images also bound crop/resize staging
     // and filter coefficients; F32 crop normalization fits below this peak.
     let prepare = 2 * STEP_RGB_LIMIT + 2 * STEP_SOURCE_EDGE.pow(2) * 3;
-    crops + native.max(prepare)
+    // Session graph initialization allocates native vision buffers even on
+    // text-only requests and retains them until ds4_session_free. A later
+    // image preparation therefore overlaps that entire native allocation.
+    crops + native + prepare
 }
 
 // C inkling_context_memory / inkling_mtp_memory: return base and loaded-MTP
@@ -2439,7 +2449,7 @@ mod tests {
             assert_eq!(
                 facts.media_reserve_bytes,
                 Some(if host_vision || loaded {
-                    2_903_040_000
+                    3_577_856_000
                 } else {
                     0
                 })
@@ -2510,7 +2520,7 @@ mod tests {
         };
         let caps = serving_caps(ModelFamily::Step37, Variant::Step37Flash);
         let mapped = 10 * GIB;
-        let media = 714_694_528;
+        let media = 1_037_997_440;
         for (live, can_listen) in [(media - 1, false), (media, true)] {
             let mut facts = EngineFacts {
                 banks_fitted: Some(2),
@@ -3351,13 +3361,13 @@ exit 1
     }
 
     #[test]
-    fn step_media_native_buffers() {
+    fn step_media_retained_buffers() {
         let _env = lock_test_env();
         let mut req = ServingRequest::default();
         for (ctx, expected) in [
-            (1024, 361_838_080),
-            (8192, 714_694_528),
-            (16384, 714_694_528),
+            (1024, 650_810_752),
+            (8192, 1_037_997_440),
+            (16384, 1_037_997_440),
         ] {
             req.ctx = ctx;
             let no_media = fill_family(
