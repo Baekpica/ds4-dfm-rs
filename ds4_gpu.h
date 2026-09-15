@@ -4212,6 +4212,149 @@ int ds4_gpu_solar_kda_prefill_tensor(
         uint32_t                conv_kernel,
         float                   gate_lower_bound);
 
+/* Ling-3.0-flash-VL.  The KDA recurrence, the latent MLA attention and the
+ * routed-MoE operators are shared with Solar/GLM/Motif/Step; these entry
+ * points cover what is specific to this family: group-limited sigmoid
+ * routing, the VL M-RoPE and the BF16 MLA absorb pair. */
+int ds4_gpu_ling3vl_kda_decode_tensor(
+        ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *recurrent_state,
+        ds4_gpu_tensor       *q_conv_state,
+        ds4_gpu_tensor       *k_conv_state,
+        ds4_gpu_tensor       *v_conv_state,
+        const ds4_gpu_tensor *q_raw,
+        const ds4_gpu_tensor *k_raw,
+        const ds4_gpu_tensor *v_raw,
+        const ds4_gpu_tensor *g_raw,
+        const ds4_gpu_tensor *beta_logits,
+        const ds4_gpu_tensor *q_conv_weight,
+        const ds4_gpu_tensor *k_conv_weight,
+        const ds4_gpu_tensor *v_conv_weight,
+        const ds4_gpu_tensor *decay_scale,
+        const ds4_gpu_tensor *dt_bias,
+        uint32_t                n_head,
+        uint32_t                head_dim,
+        uint32_t                conv_kernel,
+        float                   gate_lower_bound);
+
+int ds4_gpu_ling3vl_kda_decode_banks_tensor(
+        ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *state_slab,
+        uint64_t                state_bank_stride,
+        uint64_t                recurrent_offset,
+        uint64_t                q_conv_offset,
+        uint64_t                k_conv_offset,
+        uint64_t                v_conv_offset,
+        const ds4_gpu_tensor *bank_ids,
+        uint32_t                n_tokens,
+        uint32_t                max_banks,
+        const ds4_gpu_tensor *q_raw,
+        const ds4_gpu_tensor *k_raw,
+        const ds4_gpu_tensor *v_raw,
+        const ds4_gpu_tensor *g_raw,
+        const ds4_gpu_tensor *beta_logits,
+        const ds4_gpu_tensor *q_conv_weight,
+        const ds4_gpu_tensor *k_conv_weight,
+        const ds4_gpu_tensor *v_conv_weight,
+        const ds4_gpu_tensor *decay_scale,
+        const ds4_gpu_tensor *dt_bias,
+        uint32_t                n_head,
+        uint32_t                head_dim,
+        uint32_t                conv_kernel,
+        float                   gate_lower_bound);
+
+int ds4_gpu_ling3vl_kda_prefill_tensor(
+        ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *scratch,
+        ds4_gpu_tensor       *recurrent_state,
+        ds4_gpu_tensor       *q_conv_state,
+        ds4_gpu_tensor       *k_conv_state,
+        ds4_gpu_tensor       *v_conv_state,
+        const ds4_gpu_tensor *q_raw,
+        const ds4_gpu_tensor *k_raw,
+        const ds4_gpu_tensor *v_raw,
+        const ds4_gpu_tensor *g_raw,
+        const ds4_gpu_tensor *beta_logits,
+        const ds4_gpu_tensor *q_conv_weight,
+        const ds4_gpu_tensor *k_conv_weight,
+        const ds4_gpu_tensor *v_conv_weight,
+        const ds4_gpu_tensor *decay_scale,
+        const ds4_gpu_tensor *dt_bias,
+        uint32_t                n_tokens,
+        uint32_t                n_head,
+        uint32_t                head_dim,
+        uint32_t                conv_kernel,
+        float                   gate_lower_bound);
+
+int ds4_gpu_ling3vl_router(
+        ds4_gpu_tensor       *ids,
+        ds4_gpu_tensor       *weights,
+        const ds4_gpu_tensor *logits,
+        const void             *map,
+        uint64_t                size,
+        uint64_t                offset,
+        uint32_t                rows,
+        float                   weight_scale);
+
+int ds4_gpu_ling3vl_mrope(
+        ds4_gpu_tensor       *x,
+        const ds4_gpu_tensor *positions,
+        const ds4_gpu_tensor *inv_freq,
+        uint32_t                rows,
+        uint32_t                heads,
+        uint32_t                head_stride,
+        uint32_t                offset,
+        uint32_t                rotary,
+        uint32_t                section_t,
+        uint32_t                section_h);
+
+int ds4_gpu_ling3vl_qk_absorb(
+        ds4_gpu_tensor       *out,
+        const ds4_gpu_tensor *q,
+        const void             *map,
+        uint64_t                size,
+        uint64_t                k_b_offset,
+        uint32_t                rows,
+        uint32_t                heads,
+        uint32_t                key_dim,
+        uint32_t                qk_nope,
+        uint32_t                latent_dim);
+
+int ds4_gpu_ling3vl_value_project(
+        ds4_gpu_tensor       *out,
+        const ds4_gpu_tensor *latent,
+        const void             *map,
+        uint64_t                size,
+        uint64_t                v_b_offset,
+        uint32_t                rows,
+        uint32_t                heads,
+        uint32_t                latent_dim,
+        uint32_t                value_dim);
+
+int ds4_gpu_ling3vl_vision_patch_position(
+        ds4_gpu_tensor       *hidden,
+        const void             *map,
+        uint64_t                size,
+        uint64_t                bias_offset,
+        uint64_t                position_offset,
+        const ds4_gpu_tensor *indices,
+        const ds4_gpu_tensor *weights,
+        uint32_t                rows,
+        uint32_t                dim,
+        uint32_t                positions);
+
+int ds4_gpu_ling3vl_store_latent(
+        ds4_gpu_tensor       *latent_cache,
+        ds4_gpu_tensor       *k_pe_cache,
+        const ds4_gpu_tensor *kv_norm,
+        const ds4_gpu_tensor *kv_raw,
+        uint32_t                rows,
+        uint32_t                pos0,
+        uint32_t                cache_cap,
+        uint32_t                kv_raw_dim,
+        uint32_t                latent_dim,
+        uint32_t                rope_dim);
+
 int ds4_gpu_glm53_kda_prefill_tensor(
         ds4_gpu_tensor       *out,
         ds4_gpu_tensor       *scratch,

@@ -44628,15 +44628,24 @@ static __device__ __forceinline__ float solar_kda_silu(float x) {
     return x / (1.0f + expf(-x));
 }
 
+/* KDA control-path variants.  Solar scales a softplus decay and clamps it at
+ * the lower bound, with a 2*sigmoid beta.  GLM 5.3 and Ling-3.0 instead bound
+ * a sigmoid decay by the same constant and use a plain sigmoid beta; they
+ * differ only in how ssm_a reaches the kernel, which is A_log on GLM and
+ * already exponentiated in the Ling artifact. */
+enum { DS4_KDA_SOLAR = 0u, DS4_KDA_GLM53 = 1u, DS4_KDA_LING3VL = 2u };
+
 static __device__ __forceinline__ float kda_delta_beta(
-        float logit, bool glm53) {
-    return (glm53 ? 1.0f : 2.0f) / (1.0f + expf(-logit));
+        float logit, uint32_t variant) {
+    return (variant != DS4_KDA_SOLAR ? 1.0f : 2.0f) / (1.0f + expf(-logit));
 }
 
 static __device__ __forceinline__ float kda_log_decay(
-        float raw, float scale, float lower_bound, bool glm53) {
-    if (glm53)
-        return lower_bound / (1.0f + expf(-expf(scale) * raw));
+        float raw, float scale, float lower_bound, uint32_t variant) {
+    if (variant != DS4_KDA_SOLAR) {
+        const float a = variant == DS4_KDA_LING3VL ? scale : expf(scale);
+        return lower_bound / (1.0f + expf(-a * raw));
+    }
     const float gate = scale * solar_kda_softplus(raw);
     return gate < lower_bound ? lower_bound : gate;
 }
@@ -44662,7 +44671,7 @@ static __global__ void solar_kda_sequence_kernel(
         uint32_t     head_dim,
         uint32_t     conv_kernel,
         float        gate_lower_bound,
-        bool         glm53) {
+        uint32_t         variant) {
     __shared__ float q_vec[256];
     __shared__ float k_vec[256];
     __shared__ float v_vec[256];
@@ -44732,7 +44741,7 @@ static __global__ void solar_kda_sequence_kernel(
 
         if (dim < head_dim) {
             const float beta = kda_delta_beta(
-                beta_logits[(uint64_t)token * n_head + head], glm53);
+                beta_logits[(uint64_t)token * n_head + head], variant);
             const uint64_t token_base = (uint64_t)token * vector_count;
             float memory = 0.0f;
             for (uint32_t key_dim = 0; key_dim < head_dim; key_dim++) {
@@ -44740,7 +44749,7 @@ static __global__ void solar_kda_sequence_kernel(
                     g_raw[token_base +
                           (uint64_t)head * head_dim + key_dim] +
                     dt_bias[(uint64_t)head * head_dim + key_dim],
-                    decay_scale[head], gate_lower_bound, glm53);
+                    decay_scale[head], gate_lower_bound, variant);
                 const uint64_t index =
                     state_head + (uint64_t)key_dim * head_dim + dim;
                 const float decayed = state[index] * expf(gate);
@@ -44795,7 +44804,7 @@ static __global__ void solar_kda_sequence_resident_kernel(
         uint32_t     n_head,
         uint32_t     conv_kernel,
         float        gate_lower_bound,
-        bool         glm53) {
+        uint32_t         variant) {
     extern __shared__ float sh[];
     float *s_state = sh;
     float *q_vec = s_state + SOLAR_KDA_HD * SOLAR_KDA_SSTATE_ROW;
@@ -44873,14 +44882,14 @@ static __global__ void solar_kda_sequence_resident_kernel(
                 g_raw[token_base +
                       (uint64_t)head * SOLAR_KDA_HD + dim] +
                 dt_bias[(uint64_t)head * SOLAR_KDA_HD + dim],
-                decay_scale[head], gate_lower_bound, glm53);
+                decay_scale[head], gate_lower_bound, variant);
             s_exp[dim] = expf(gate);
         }
         __syncthreads();
 
         if (dim < SOLAR_KDA_HD) {
             const float beta = kda_delta_beta(
-                beta_logits[(uint64_t)token * n_head + head], glm53);
+                beta_logits[(uint64_t)token * n_head + head], variant);
             const uint64_t token_base = (uint64_t)token * vector_count;
             float memory = 0.0f;
             for (uint32_t key_dim = 0; key_dim < SOLAR_KDA_HD; key_dim++) {
@@ -44937,7 +44946,7 @@ static __global__ void solar_kda_banks_decode_kernel(
         uint32_t        head_dim,
         uint32_t        conv_kernel,
         float           gate_lower_bound,
-        bool            glm53) {
+        uint32_t            variant) {
     __shared__ float q_vec[256];
     __shared__ float k_vec[256];
     __shared__ float v_vec[256];
@@ -45010,14 +45019,14 @@ static __global__ void solar_kda_banks_decode_kernel(
 
     if (dim < head_dim) {
         const float beta = kda_delta_beta(
-            beta_logits[(uint64_t)token * n_head + head], glm53);
+            beta_logits[(uint64_t)token * n_head + head], variant);
         float memory = 0.0f;
         for (uint32_t key_dim = 0; key_dim < head_dim; key_dim++) {
             const float gate = kda_log_decay(
                 g_raw[token_base +
                       (uint64_t)head * head_dim + key_dim] +
                 dt_bias[(uint64_t)head * head_dim + key_dim],
-                decay_scale[head], gate_lower_bound, glm53);
+                decay_scale[head], gate_lower_bound, variant);
             const uint64_t index =
                 state_head + (uint64_t)key_dim * head_dim + dim;
             const float decayed = state[index] * expf(gate);
@@ -45061,7 +45070,7 @@ static __global__ void solar_kda_banks_decode_resident_kernel(
         uint32_t        n_head,
         uint32_t        conv_kernel,
         float           gate_lower_bound,
-        bool            glm53) {
+        uint32_t            variant) {
     extern __shared__ float sh_bank[];
     float *s_state = sh_bank;
     float *q_vec = s_state + SOLAR_KDA_HD * SOLAR_KDA_SSTATE_ROW;
@@ -45146,14 +45155,14 @@ static __global__ void solar_kda_banks_decode_resident_kernel(
             g_raw[token_base +
                   (uint64_t)head * SOLAR_KDA_HD + dim] +
             dt_bias[(uint64_t)head * SOLAR_KDA_HD + dim],
-            decay_scale[head], gate_lower_bound, glm53);
+            decay_scale[head], gate_lower_bound, variant);
         s_exp[dim] = expf(gate);
     }
     __syncthreads();
 
     if (live && dim < SOLAR_KDA_HD) {
         const float beta = kda_delta_beta(
-            beta_logits[(uint64_t)token * n_head + head], glm53);
+            beta_logits[(uint64_t)token * n_head + head], variant);
         float memory = 0.0f;
         for (uint32_t key_dim = 0; key_dim < SOLAR_KDA_HD; key_dim++) {
             const float decayed =
@@ -45239,7 +45248,7 @@ static __global__ void solar_kda_chunk_prep_kernel(
         uint32_t     n_head,
         uint32_t     conv_kernel,
         float        gate_lower_bound,
-        bool         glm53) {
+        uint32_t         variant) {
     __shared__ float q_sq[SOLAR_KDA_DIM];
     __shared__ float k_sq[SOLAR_KDA_DIM];
     __shared__ float q_norm_scale;
@@ -45308,7 +45317,7 @@ static __global__ void solar_kda_chunk_prep_kernel(
 
         const float gate = kda_log_decay(
             g_raw[(uint64_t)token * vector_count + channel] +
-            dt_bias[channel], decay_scale[head], gate_lower_bound, glm53);
+            dt_bias[channel], decay_scale[head], gate_lower_bound, variant);
 
         /* Workspace planes are head-major [head][token][dim]: the chunk
          * kernels then touch one contiguous 32 KiB span per (chunk, head)
@@ -45388,7 +45397,7 @@ static __global__ void solar_kda_chunk_factor_kernel(
         const float *beta_logits,
         uint32_t     n_tokens,
         uint32_t     n_head,
-        bool         glm53) {
+        uint32_t         variant) {
     extern __shared__ float sh[];
     float *sA = sh + SOLAR_KDA_SH_A;      /* [64][65] A, then T in place */
     float *sBeta = sh + SOLAR_KDA_SH_BETA;
@@ -45418,7 +45427,7 @@ static __global__ void solar_kda_chunk_factor_kernel(
         sBeta[t] = t < n
             ? kda_delta_beta(
                   beta_logits[(uint64_t)(base_token + t) * n_head + head],
-                  glm53)
+                  variant)
             : 0.0f;
     }
     /* __syncthreads() also orders the block's global writes, so the B rows
@@ -46027,7 +46036,7 @@ static int solar_kda_chunk_prefill_launch(
         uint32_t              n_head,
         uint32_t              conv_kernel,
         float                 gate_lower_bound,
-        bool                  glm53,
+        uint32_t                  variant,
         const char           *what) {
     uint64_t plane = 0u;
     uint64_t mq_bytes = 0u;
@@ -46063,7 +46072,7 @@ static int solar_kda_chunk_prefill_launch(
         (const float *)k_conv_weight->ptr,
         (const float *)v_conv_weight->ptr,
         (const float *)decay_scale->ptr, (const float *)dt_bias->ptr,
-        n_tokens, n_head, conv_kernel, gate_lower_bound, glm53);
+        n_tokens, n_head, conv_kernel, gate_lower_bound, variant);
     const uint32_t tail_blocks =
         (uint32_t)((vector_count + 255u) / 256u);
     solar_kda_chunk_conv_tail_kernel<<<tail_blocks, 256, 0, stream>>>(
@@ -46076,7 +46085,7 @@ static int solar_kda_chunk_prefill_launch(
     solar_kda_chunk_factor_kernel
         <<<chunk_grid, 256, SOLAR_KDA_FACTOR_SHARED, stream>>>(
             gl, ul, ww, mq, qn, kn, vv,
-            (const float *)beta_logits->ptr, n_tokens, n_head, glm53);
+            (const float *)beta_logits->ptr, n_tokens, n_head, variant);
     dim3 scan_grid(n_head, 2u, 1u);
     solar_kda_chunk_scan_kernel
         <<<scan_grid, 256, SOLAR_KDA_SCAN_SHARED, stream>>>(
@@ -46111,7 +46120,7 @@ static int solar_kda_sequence_tensor(
         uint32_t                head_dim,
         uint32_t                conv_kernel,
         float                   gate_lower_bound,
-        bool                    glm53,
+        uint32_t                    variant,
         const char             *what) {
     if (!out || !recurrent_state || !q_conv_state || !k_conv_state ||
         !v_conv_state || !q_raw || !k_raw || !v_raw || !g_raw ||
@@ -46157,7 +46166,7 @@ static int solar_kda_sequence_tensor(
             v_conv_state, q_raw, k_raw, v_raw, g_raw, beta_logits,
             q_conv_weight, k_conv_weight, v_conv_weight, decay_scale,
             dt_bias, n_tokens, n_head, conv_kernel, gate_lower_bound,
-            glm53, what);
+            variant, what);
     }
 
     uint32_t threads = 1u;
@@ -46198,7 +46207,7 @@ static int solar_kda_sequence_tensor(
             (const float *)v_conv_weight->ptr,
             (const float *)decay_scale->ptr,
             (const float *)dt_bias->ptr,
-            n_tokens, n_head, conv_kernel, gate_lower_bound, glm53);
+            n_tokens, n_head, conv_kernel, gate_lower_bound, variant);
         return cuda_ok(cudaGetLastError(), what);
     }
     solar_kda_sequence_kernel<<<n_head, threads, 0, ds4_current_stream()>>>(
@@ -46218,7 +46227,7 @@ static int solar_kda_sequence_tensor(
             (const float *)decay_scale->ptr,
             (const float *)dt_bias->ptr,
             n_tokens, n_head, head_dim, conv_kernel, gate_lower_bound,
-            glm53);
+            variant);
     return cuda_ok(cudaGetLastError(), what);
 }
 
@@ -46246,7 +46255,7 @@ extern "C" int ds4_gpu_solar_kda_decode_tensor(
         out, NULL, recurrent_state, q_conv_state, k_conv_state, v_conv_state,
         q_raw, k_raw, v_raw, g_raw, beta_logits,
         q_conv_weight, k_conv_weight, v_conv_weight, decay_scale, dt_bias,
-        1u, n_head, head_dim, conv_kernel, gate_lower_bound, false,
+        1u, n_head, head_dim, conv_kernel, gate_lower_bound, DS4_KDA_SOLAR,
         "solar-open2 KDA decode");
 }
 
@@ -46274,8 +46283,36 @@ extern "C" int ds4_gpu_glm53_kda_decode_tensor(
         out, NULL, recurrent_state, q_conv_state, k_conv_state, v_conv_state,
         q_raw, k_raw, v_raw, g_raw, beta_logits,
         q_conv_weight, k_conv_weight, v_conv_weight, decay_scale, dt_bias,
-        1u, n_head, head_dim, conv_kernel, gate_lower_bound, true,
+        1u, n_head, head_dim, conv_kernel, gate_lower_bound, DS4_KDA_GLM53,
         "GLM 5.3 KDA decode");
+}
+
+extern "C" int ds4_gpu_ling3vl_kda_decode_tensor(
+        ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *recurrent_state,
+        ds4_gpu_tensor       *q_conv_state,
+        ds4_gpu_tensor       *k_conv_state,
+        ds4_gpu_tensor       *v_conv_state,
+        const ds4_gpu_tensor *q_raw,
+        const ds4_gpu_tensor *k_raw,
+        const ds4_gpu_tensor *v_raw,
+        const ds4_gpu_tensor *g_raw,
+        const ds4_gpu_tensor *beta_logits,
+        const ds4_gpu_tensor *q_conv_weight,
+        const ds4_gpu_tensor *k_conv_weight,
+        const ds4_gpu_tensor *v_conv_weight,
+        const ds4_gpu_tensor *decay_scale,
+        const ds4_gpu_tensor *dt_bias,
+        uint32_t                n_head,
+        uint32_t                head_dim,
+        uint32_t                conv_kernel,
+        float                   gate_lower_bound) {
+    return solar_kda_sequence_tensor(
+        out, NULL, recurrent_state, q_conv_state, k_conv_state, v_conv_state,
+        q_raw, k_raw, v_raw, g_raw, beta_logits,
+        q_conv_weight, k_conv_weight, v_conv_weight, decay_scale, dt_bias,
+        1u, n_head, head_dim, conv_kernel, gate_lower_bound, DS4_KDA_LING3VL,
+        "Ling-3.0 KDA decode");
 }
 
 static int kda_decode_banks_tensor(
@@ -46303,7 +46340,7 @@ static int kda_decode_banks_tensor(
         uint32_t                head_dim,
         uint32_t                conv_kernel,
         float                   gate_lower_bound,
-        bool                    glm53,
+        uint32_t                    variant,
         const char             *what) {
     if (!out || !state_slab || !bank_ids || !q_raw || !k_raw || !v_raw ||
         !g_raw || !beta_logits || !q_conv_weight || !k_conv_weight ||
@@ -46377,7 +46414,7 @@ static int kda_decode_banks_tensor(
             (const float *)k_conv_weight->ptr,
             (const float *)v_conv_weight->ptr,
             (const float *)decay_scale->ptr, (const float *)dt_bias->ptr,
-            n_head, conv_kernel, gate_lower_bound, glm53);
+            n_head, conv_kernel, gate_lower_bound, variant);
         return cuda_ok(cudaGetLastError(), what);
     }
     solar_kda_banks_decode_kernel<<<
@@ -46393,7 +46430,7 @@ static int kda_decode_banks_tensor(
         (const float *)k_conv_weight->ptr,
         (const float *)v_conv_weight->ptr,
         (const float *)decay_scale->ptr, (const float *)dt_bias->ptr,
-        n_head, head_dim, conv_kernel, gate_lower_bound, glm53);
+        n_head, head_dim, conv_kernel, gate_lower_bound, variant);
     return cuda_ok(cudaGetLastError(), what);
 }
 
@@ -46427,7 +46464,7 @@ extern "C" int ds4_gpu_solar_kda_decode_banks_tensor(
         k_conv_offset, v_conv_offset, bank_ids, n_tokens, max_banks,
         q_raw, k_raw, v_raw, g_raw, beta_logits,
         q_conv_weight, k_conv_weight, v_conv_weight, decay_scale, dt_bias,
-        n_head, head_dim, conv_kernel, gate_lower_bound, false,
+        n_head, head_dim, conv_kernel, gate_lower_bound, DS4_KDA_SOLAR,
         "solar-open2 banked KDA decode");
 }
 
@@ -46461,8 +46498,42 @@ extern "C" int ds4_gpu_glm53_kda_decode_banks_tensor(
         k_conv_offset, v_conv_offset, bank_ids, n_tokens, max_banks,
         q_raw, k_raw, v_raw, g_raw, beta_logits,
         q_conv_weight, k_conv_weight, v_conv_weight, decay_scale, dt_bias,
-        n_head, head_dim, conv_kernel, gate_lower_bound, true,
+        n_head, head_dim, conv_kernel, gate_lower_bound, DS4_KDA_GLM53,
         "GLM 5.3 banked KDA decode");
+}
+
+extern "C" int ds4_gpu_ling3vl_kda_decode_banks_tensor(
+        ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *state_slab,
+        uint64_t                state_bank_stride,
+        uint64_t                recurrent_offset,
+        uint64_t                q_conv_offset,
+        uint64_t                k_conv_offset,
+        uint64_t                v_conv_offset,
+        const ds4_gpu_tensor *bank_ids,
+        uint32_t                n_tokens,
+        uint32_t                max_banks,
+        const ds4_gpu_tensor *q_raw,
+        const ds4_gpu_tensor *k_raw,
+        const ds4_gpu_tensor *v_raw,
+        const ds4_gpu_tensor *g_raw,
+        const ds4_gpu_tensor *beta_logits,
+        const ds4_gpu_tensor *q_conv_weight,
+        const ds4_gpu_tensor *k_conv_weight,
+        const ds4_gpu_tensor *v_conv_weight,
+        const ds4_gpu_tensor *decay_scale,
+        const ds4_gpu_tensor *dt_bias,
+        uint32_t                n_head,
+        uint32_t                head_dim,
+        uint32_t                conv_kernel,
+        float                   gate_lower_bound) {
+    return kda_decode_banks_tensor(
+        out, state_slab, state_bank_stride, recurrent_offset, q_conv_offset,
+        k_conv_offset, v_conv_offset, bank_ids, n_tokens, max_banks,
+        q_raw, k_raw, v_raw, g_raw, beta_logits,
+        q_conv_weight, k_conv_weight, v_conv_weight, decay_scale, dt_bias,
+        n_head, head_dim, conv_kernel, gate_lower_bound, DS4_KDA_LING3VL,
+        "Ling-3.0 banked KDA decode");
 }
 
 extern "C" int ds4_gpu_solar_kda_prefill_tensor(
@@ -46492,7 +46563,7 @@ extern "C" int ds4_gpu_solar_kda_prefill_tensor(
         v_conv_state,
         q_raw, k_raw, v_raw, g_raw, beta_logits,
         q_conv_weight, k_conv_weight, v_conv_weight, decay_scale, dt_bias,
-        n_tokens, n_head, head_dim, conv_kernel, gate_lower_bound, false,
+        n_tokens, n_head, head_dim, conv_kernel, gate_lower_bound, DS4_KDA_SOLAR,
         "solar-open2 KDA chunked prefill");
 }
 
@@ -46523,8 +46594,39 @@ extern "C" int ds4_gpu_glm53_kda_prefill_tensor(
         v_conv_state,
         q_raw, k_raw, v_raw, g_raw, beta_logits,
         q_conv_weight, k_conv_weight, v_conv_weight, decay_scale, dt_bias,
-        n_tokens, n_head, head_dim, conv_kernel, gate_lower_bound, true,
+        n_tokens, n_head, head_dim, conv_kernel, gate_lower_bound, DS4_KDA_GLM53,
         "GLM 5.3 KDA chunked prefill");
+}
+
+extern "C" int ds4_gpu_ling3vl_kda_prefill_tensor(
+        ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *scratch,
+        ds4_gpu_tensor       *recurrent_state,
+        ds4_gpu_tensor       *q_conv_state,
+        ds4_gpu_tensor       *k_conv_state,
+        ds4_gpu_tensor       *v_conv_state,
+        const ds4_gpu_tensor *q_raw,
+        const ds4_gpu_tensor *k_raw,
+        const ds4_gpu_tensor *v_raw,
+        const ds4_gpu_tensor *g_raw,
+        const ds4_gpu_tensor *beta_logits,
+        const ds4_gpu_tensor *q_conv_weight,
+        const ds4_gpu_tensor *k_conv_weight,
+        const ds4_gpu_tensor *v_conv_weight,
+        const ds4_gpu_tensor *decay_scale,
+        const ds4_gpu_tensor *dt_bias,
+        uint32_t                n_tokens,
+        uint32_t                n_head,
+        uint32_t                head_dim,
+        uint32_t                conv_kernel,
+        float                   gate_lower_bound) {
+    return solar_kda_sequence_tensor(
+        out, scratch, recurrent_state, q_conv_state, k_conv_state,
+        v_conv_state,
+        q_raw, k_raw, v_raw, g_raw, beta_logits,
+        q_conv_weight, k_conv_weight, v_conv_weight, decay_scale, dt_bias,
+        n_tokens, n_head, head_dim, conv_kernel, gate_lower_bound, DS4_KDA_LING3VL,
+        "Ling-3.0 KDA chunked prefill");
 }
 
 /* Ported from antirez/ds4@110afdd for GLM-5.3's transposed per-head K-b
@@ -48097,5 +48199,6 @@ static int ds4_gpu_glm53_matmul_bf16(
 #define DS4_GLM53_VISION_STREAM cuda_decode_stream()
 #include "ds4_glm53_vision_gpu.cuh"
 #include "ds4_inkling_gpu.cuh"
+#include "ds4_ling3vl_gpu.cuh"
 #include "ds4_step37_gpu.cuh"
 #include "ds4_step37_vision_gpu.cuh"

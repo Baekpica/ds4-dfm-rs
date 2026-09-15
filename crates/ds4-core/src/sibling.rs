@@ -209,12 +209,23 @@ pub fn probe_vision_sidecar(
             message: "Inkling uses embedded image/audio weights".into(),
         });
     }
-    let takes_encoder = matches!(shape.family, ModelFamily::Glm53 | ModelFamily::Step37);
+    let takes_encoder = matches!(
+        shape.family,
+        ModelFamily::Glm53 | ModelFamily::Step37 | ModelFamily::Ling3Vl
+    );
     if !takes_encoder || backend != crate::Backend::Cuda || distributed.is_some() {
         return Err(Error {
             code: 1,
-            message: "--vision requires one full GLM-5.3 or Step CUDA model".into(),
+            message: "--vision requires one full GLM-5.3, Step or Ling CUDA model".into(),
         });
+    }
+    if shape.family == ModelFamily::Ling3Vl {
+        return crate::Ling3VlVisionPlan::inspect(std::path::Path::new(path))
+            .map(|_| ())
+            .map_err(|e| Error {
+                code: 1,
+                message: format!("vision metadata failed: {e}"),
+            });
     }
     if shape.family == ModelFamily::Step37 {
         return crate::Step37SidecarPlan::inspect(

@@ -209,7 +209,11 @@ fn uses_distributed_replay(args: &BenchArgs) -> bool {
 fn uses_prefix_replay(args: &BenchArgs, family: ModelFamily) -> bool {
     // These families have live GPU state without serialized checkpoints.
     // Restore the prefix outside both measured phase ranges.
-    uses_distributed_replay(args) || matches!(family, ModelFamily::Inkling | ModelFamily::Step37)
+    uses_distributed_replay(args)
+        || matches!(
+            family,
+            ModelFamily::Inkling | ModelFamily::Step37 | ModelFamily::Ling3Vl
+        )
 }
 
 fn use_mtp_spec(family: ModelFamily, mtp: Option<&str>, draft: i32) -> bool {

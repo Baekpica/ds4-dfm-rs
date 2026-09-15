@@ -283,6 +283,7 @@ typedef enum {
     DS4_MODEL_FAMILY_GLM53       = 6,
     DS4_MODEL_FAMILY_INKLING     = 7,
     DS4_MODEL_FAMILY_STEP37      = 8,
+    DS4_MODEL_FAMILY_LING3VL     = 9,
 } ds4_model_family;
 
 typedef enum {
@@ -297,6 +298,7 @@ typedef enum {
     DS4_VARIANT_K2_HORIZON_375B = 8,
     DS4_VARIANT_INKLING_SMALL   = 9,
     DS4_VARIANT_STEP37_FLASH    = 10,
+    DS4_VARIANT_LING30_FLASH_VL = 11,
 } ds4_variant;
 
 typedef struct {
@@ -418,6 +420,32 @@ static const ds4_shape DS4_SHAPE_STEP37_FLASH = {
     .expert_weight_scale = 3.0f,
     .rope_freq_base = 5000000.0f, .rope_freq_base_swa = 10000.0f,
     .rope_scale_factor = 1.0f, .rope_orig_ctx = UINT64_C(262144),
+};
+
+enum { LING3VL_LAYERS = 42, LING3VL_LAYER_GROUP = 6, LING3VL_MLA_LAYERS = 7 };
+
+/* Hybrid attention: a block closing a group of six is MLA, the other 35 are
+ * recurrent KDA.  n_head_dim is the stored latent row (kv_lora + rope), not a
+ * per-head key width; n_key_mla/n_value_mla carry the MLA head geometry. */
+static const ds4_shape DS4_SHAPE_LING30_FLASH_VL = {
+    .name = "Ling-3.0-flash-VL",
+    .family = DS4_MODEL_FAMILY_LING3VL,
+    .variant = DS4_VARIANT_LING30_FLASH_VL,
+    .n_layer = LING3VL_LAYERS,
+    .n_embd = 2560, .n_vocab = 157184,
+    .n_head = 32, .n_head_kv = 1,
+    .n_head_dim = 576, .n_value_dim = 128, .n_rot = 64,
+    .n_kv_lora = 512, .n_key_mla = 192, .n_value_mla = 128,
+    .n_full_attn_count = LING3VL_MLA_LAYERS,
+    .n_kda_head_dim = 128, .n_ssm_conv = 4,
+    .n_expert = 512, .n_expert_used = 8, .n_expert_shared = 1,
+    .n_ff_exp = 768, .n_ff_dense = 6144, .n_ff_shexp = 768,
+    .n_leading_dense = 2,
+    .use_rope = true, .use_qk_norm = true,
+    .rms_eps = 1e-6f, .kda_l2_eps = 1e-6f, .kda_gate_clamp_min = -5.0f,
+    .expert_weight_scale = 2.5f,
+    .rope_freq_base = 6000000.0f, .rope_scale_factor = 1.0f,
+    .rope_orig_ctx = UINT64_C(131072),
 };
 
 static const ds4_shape DS4_SHAPE_FLASH = {
@@ -2268,6 +2296,9 @@ static void model_apply_host_shape(void) {
         break;
     case DS4_VARIANT_STEP37_FLASH:
         g_ds4_shape = DS4_SHAPE_STEP37_FLASH;
+        break;
+    case DS4_VARIANT_LING30_FLASH_VL:
+        g_ds4_shape = DS4_SHAPE_LING30_FLASH_VL;
         break;
     default:
         ds4_die("unsupported");
@@ -8243,6 +8274,74 @@ static void step37_bind_block(ds4_layer_weights *l, const ds4_model *m, uint32_t
     }
 }
 
+/* The two SwiGLU clamp schedules differ: the shared expert starts one block
+ * earlier and widens again for the last two blocks. */
+static float ling3vl_swiglu_clamp_exp(uint32_t il) {
+    return il >= 35u && il < LING3VL_LAYERS ? 4.0f : 0.0f;
+}
+
+static float ling3vl_swiglu_clamp_shexp(uint32_t il) {
+    if (il >= 40u && il < LING3VL_LAYERS) { return 7.0f; }
+    return il >= 34u ? 5.0f : 0.0f;
+}
+
+static bool ling3vl_bind_is_kda(uint32_t il) {
+    return il < LING3VL_LAYERS && ((il + 1u) % LING3VL_LAYER_GROUP) != 0u;
+}
+
+static void ling3vl_bind_block(ds4_layer_weights *l, const ds4_model *m,
+                               uint32_t il) {
+    memset(l, 0, sizeof(*l));
+    l->attn_norm = required_tensorf(m, "blk.%u.attn_norm.weight", il);
+    l->ffn_norm = required_tensorf(m, "blk.%u.ffn_norm.weight", il);
+    l->attn_q = required_tensorf(m, "blk.%u.attn_q.weight", il);
+    l->attn_output = required_tensorf(m, "blk.%u.attn_output.weight", il);
+    if (ling3vl_bind_is_kda(il)) {
+        l->attn_k = required_tensorf(m, "blk.%u.attn_k.weight", il);
+        l->attn_v = required_tensorf(m, "blk.%u.attn_v.weight", il);
+        l->ssm_q_conv = required_tensorf(m, "blk.%u.ssm_conv1d_q.weight", il);
+        l->ssm_k_conv = required_tensorf(m, "blk.%u.ssm_conv1d_k.weight", il);
+        l->ssm_v_conv = required_tensorf(m, "blk.%u.ssm_conv1d_v.weight", il);
+        /* no_kda_lora: f and g are full rank, so there is no _b factor. */
+        l->ssm_f_a = required_tensorf(m, "blk.%u.ssm_f_a.weight", il);
+        l->ssm_g_a = required_tensorf(m, "blk.%u.ssm_g_a.weight", il);
+        l->ssm_beta = required_tensorf(m, "blk.%u.ssm_beta.weight", il);
+        l->ssm_a = required_tensorf(m, "blk.%u.ssm_a", il);
+        l->ssm_dt_bias = required_tensorf(m, "blk.%u.ssm_dt.bias", il);
+        l->ssm_o_norm = required_tensorf(m, "blk.%u.ssm_norm.weight", il);
+    } else {
+        l->attn_kv_a_mqa = required_tensorf(m, "blk.%u.attn_kv_a_mqa.weight", il);
+        l->attn_kv_a_norm = required_tensorf(m, "blk.%u.attn_kv_a_norm.weight", il);
+        l->attn_k_b = required_tensorf(m, "blk.%u.attn_k_b.weight", il);
+        l->attn_v_b = required_tensorf(m, "blk.%u.attn_v_b.weight", il);
+        l->attn_gate = required_tensorf(m, "blk.%u.attn_gate.weight", il);
+    }
+    if (il < DS4_N_LEADING_DENSE) {
+        l->ffn_gate = required_tensorf(m, "blk.%u.ffn_gate.weight", il);
+        l->ffn_up = required_tensorf(m, "blk.%u.ffn_up.weight", il);
+        l->ffn_down = required_tensorf(m, "blk.%u.ffn_down.weight", il);
+        return;
+    }
+    l->ffn_gate_inp = required_tensorf(m, "blk.%u.ffn_gate_inp.weight", il);
+    l->ffn_exp_probs_b = required_tensorf(m, "blk.%u.exp_probs_b.bias", il);
+    l->ffn_gate_exps = required_tensorf(m, "blk.%u.ffn_gate_exps.weight", il);
+    l->ffn_up_exps = required_tensorf(m, "blk.%u.ffn_up_exps.weight", il);
+    l->ffn_down_exps = required_tensorf(m, "blk.%u.ffn_down_exps.weight", il);
+    l->ffn_gate_shexp = required_tensorf(m, "blk.%u.ffn_gate_shexp.weight", il);
+    l->ffn_up_shexp = required_tensorf(m, "blk.%u.ffn_up_shexp.weight", il);
+    l->ffn_down_shexp = required_tensorf(m, "blk.%u.ffn_down_shexp.weight", il);
+}
+
+static void ling3vl_bind(ds4_weights *w, const ds4_model *m) {
+    memset(w, 0, sizeof(*w));
+    w->token_embd = required_tensor(m, "token_embd.weight");
+    w->output_norm = required_tensor(m, "output_norm.weight");
+    w->output = required_tensor(m, "output.weight");
+    for (uint32_t il = 0; il < LING3VL_LAYERS; il++) {
+        ling3vl_bind_block(&w->layer[il], m, il);
+    }
+}
+
 static void step37_bind_common(ds4_weights *w, const ds4_model *m) {
     memset(w, 0, sizeof(*w));
     w->token_embd = required_tensor(m, "token_embd.weight");
@@ -8281,6 +8380,11 @@ static void weights_bind(
         for (uint32_t i = 0; i < STEP37_LAYERS; i++) {
             step37_bind_block(&w->layer[i], m, i);
         }
+        return;
+    }
+
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL) {
+        ling3vl_bind(w, m);
         return;
     }
 
@@ -34800,6 +34904,8 @@ static bool exaone_graph_batch_memory_estimate(
 
 static ds4_context_memory step37_memory(unsigned ctx, unsigned cap);
 static unsigned step37_prefill_cap(unsigned ctx);
+static ds4_context_memory ling3vl_memory(uint32_t ctx, uint32_t cap);
+static uint32_t ling3vl_prefill_cap(uint32_t ctx);
 
 ds4_context_memory ds4_context_memory_estimate(ds4_backend backend, int ctx_size) {
     ds4_context_memory m = {0};
@@ -34808,6 +34914,10 @@ ds4_context_memory ds4_context_memory_estimate(ds4_backend backend, int ctx_size
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37) {
         return backend == DS4_BACKEND_CUDA && ctx_size > 0
             ? step37_memory(ctx, step37_prefill_cap(ctx)) : m;
+    }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL) {
+        return backend == DS4_BACKEND_CUDA && ctx_size > 0
+            ? ling3vl_memory(ctx, ling3vl_prefill_cap(ctx)) : m;
     }
     if (ds4_backend_uses_graph(backend)) {
         if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
@@ -35257,6 +35367,7 @@ struct ds4_vocab {
 };
 
 #ifndef DS4_NO_GPU
+#include "ds4_ling3vl_vision.inc"
 #include "ds4_step37_vision.inc"
 #endif
 
@@ -43966,6 +44077,7 @@ static bool exaone_graph_decode(ds4_exaone_gpu_graph *g,
     return exaone_graph_output_head(g, m, w, g->cur, 0);
 }
 
+#include "ds4_ling3vl_graph.inc"
 #include "ds4_step37_graph.inc"
 
 /* Shared partial-prefix checkpoint bookkeeping.  A slot is an immutable
@@ -45720,6 +45832,9 @@ struct ds4_session {
     bool motif3_graph_ready;
     ds4_dots3_gpu_graph dots3_graph;
     bool dots3_graph_ready;
+    ds4_ling3vl_graph ling3vl_graph;
+    ds4_ling3vl_media ling3vl_media;
+    bool ling3vl_graph_ready;
     ds4_step37_graph step37_graph;
     ds4_step37_spec step37_spec;
     ds4_step37_vision step37_vision;
@@ -50812,6 +50927,10 @@ static DS4_MAYBE_UNUSED bool ds4_session_is_motif3(const ds4_session *s) {
 
 static bool ds4_session_is_step37(const ds4_session *s) {
     return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37;
+}
+
+static bool ds4_session_is_ling3vl(const ds4_session *s) {
+    return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL;
 }
 
 static bool ds4_session_is_inkling(const ds4_session *s) {
@@ -68136,6 +68255,31 @@ static int ds4_session_alloc_graph(ds4_session *s) {
         ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, s->graph_alloc_bytes, s->graph_alloc_bytes);
         return 0;
     }
+    if (ds4_session_is_ling3vl(s)) {
+        const uint32_t ctx = (uint32_t)s->ctx_size;
+        const uint32_t cap = ling3vl_prefill_cap(ctx);
+        const uint64_t estimate = ling3vl_memory(ctx, cap).total_bytes;
+        ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, estimate, 0);
+        const uint64_t before = session_tensors_census_live();
+        ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
+        const bool ok = ling3vl_graph_alloc(&s->ling3vl_graph, &e->model,
+                                            &e->weights, ctx, cap);
+        ds4_gpu_mem_scope_end();
+        if (!ok) {
+            ling3vl_graph_free(&s->ling3vl_graph);
+            s->ling3vl_graph_ready = false;
+            s->graph_alloc_bytes = 0;
+            ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
+            return 1;
+        }
+        s->ling3vl_graph.media = &s->ling3vl_media;
+        s->ling3vl_graph_ready = true;
+        const uint64_t after = session_tensors_census_live();
+        s->graph_alloc_bytes = after > before ? after - before : estimate;
+        ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, s->graph_alloc_bytes,
+                            s->graph_alloc_bytes);
+        return 0;
+    }
     if (ds4_session_is_inkling(s)) {
         const uint32_t ctx = (uint32_t)s->ctx_size;
         const ds4_context_memory memory = e->mtp_ready ? inkling_mtp_memory(ctx, s->prefill_cap)
@@ -68779,7 +68923,13 @@ void ds4_session_free(ds4_session *s) {
     }
 #ifndef DS4_NO_GPU
     else {
-        if (ds4_session_is_step37(s)) {
+        if (ds4_session_is_ling3vl(s)) {
+            ling3vl_graph_free(&s->ling3vl_graph);
+            ds4_gpu_tensor_free(s->ling3vl_media.features);
+            memset(&s->ling3vl_media, 0, sizeof(s->ling3vl_media));
+            s->ling3vl_graph_ready = false;
+            ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
+        } else if (ds4_session_is_step37(s)) {
             step37_graph_free(&s->step37_graph);
             step37_spec_free(&s->step37_spec);
             step37_vision_free(&s->step37_vision);
@@ -69447,6 +69597,102 @@ static int ds4_session_sync_glm53(
  */
 #ifndef DS4_NO_GPU
 /* A failed enqueue/readback poisons the frontier until explicit reset. */
+/* A KDA block's history IS its recurrent state, so a failed enqueue cannot be
+ * resumed and a rewind cannot be partial: both drop the whole checkpoint. */
+static int ling3vl_session_fail(ds4_session *s, char *err, size_t errlen) {
+    s->ling3vl_graph.failed = true;
+    s->checkpoint_valid = false;
+    s->checkpoint.len = 0;
+    s->mtp_draft_valid = false;
+    s->generation++;
+    payload_set_err(err, errlen, "Ling forward or logits readback failed");
+    return 1;
+}
+
+static bool ling3vl_read_logits(ds4_session *s) {
+    if (!ds4_gpu_tensor_read(s->ling3vl_graph.logits, 0, s->logits,
+                             DS4_N_VOCAB * sizeof(float))) { return false; }
+    for (unsigned i = 0; i < DS4_N_VOCAB; i++) {
+        if (!isfinite(s->logits[i])) { return false; }
+    }
+    return true;
+}
+
+static int ling3vl_session_sync(ds4_session *s, const ds4_tokens *prompt,
+                                const ds4_ling3vl_media *media, char *err,
+                                size_t errlen) {
+    if (!prompt->v) {
+        payload_set_err(err, errlen, "Ling sync needs tokens");
+        return 1;
+    }
+    for (int i = 0; i < prompt->len; i++) {
+        if (prompt->v[i] < 0 || (unsigned)prompt->v[i] >= DS4_N_VOCAB ||
+            (!media && (unsigned)prompt->v[i] == LING3VL_IMAGE_TOKEN)) {
+            payload_set_err(err, errlen,
+                            "Ling prompt has an invalid or unbound image token");
+            return 1;
+        }
+    }
+    if (ds4_session_ensure_graph(s, err, errlen)) { return 1; }
+    ds4_ling3vl_graph *g = &s->ling3vl_graph;
+    if (!s->ling3vl_graph_ready) {
+        payload_set_err(err, errlen, "Ling graph is not initialized");
+        return 1;
+    }
+    unsigned start = 0u;
+    if (!media && !s->ling3vl_media.count && s->checkpoint_valid && !g->failed &&
+        g->position == (unsigned)s->checkpoint.len &&
+        prompt->len >= s->checkpoint.len &&
+        ds4_tokens_starts_with(prompt, &s->checkpoint)) {
+        start = (unsigned)s->checkpoint.len;
+        if (start == (unsigned)prompt->len) { return 0; }
+    } else {
+        ds4_session_invalidate(s);
+        if (media) { s->ling3vl_media = *media; }
+        if (g->failed) {
+            payload_set_err(err, errlen, "Ling graph reset failed");
+            return 1;
+        }
+    }
+    while (start < (unsigned)prompt->len) {
+        unsigned n = (unsigned)prompt->len - start;
+        if (n > g->cap) { n = g->cap; }
+        if (!ling3vl_forward(g, &s->engine->model, &s->engine->weights,
+                             prompt->v + start, n, start)) {
+            return ling3vl_session_fail(s, err, errlen);
+        }
+        start += n;
+        if (s->progress) {
+            s->progress(s->progress_ud, "prefill_chunk", (int)start, prompt->len);
+        }
+    }
+    if (!ling3vl_read_logits(s)) { return ling3vl_session_fail(s, err, errlen); }
+    ds4_tokens_copy(&s->checkpoint, prompt);
+    s->checkpoint_valid = true;
+    s->mtp_draft_valid = false;
+    return 0;
+}
+
+static int ling3vl_session_eval(ds4_session *s, int token, char *err,
+                                size_t errlen) {
+    ds4_ling3vl_graph *g = &s->ling3vl_graph;
+    if (token < 0 || (unsigned)token >= DS4_N_VOCAB || !s->ling3vl_graph_ready ||
+        !s->checkpoint_valid || g->failed || g->position >= g->context ||
+        g->position != (unsigned)s->checkpoint.len) {
+        payload_set_err(err, errlen,
+                        "Ling decode needs a valid token and checkpoint");
+        return 1;
+    }
+    if (!ling3vl_forward(g, &s->engine->model, &s->engine->weights, &token, 1u,
+                         g->position) ||
+        !ling3vl_read_logits(s)) {
+        return ling3vl_session_fail(s, err, errlen);
+    }
+    token_vec_push(&s->checkpoint, token);
+    s->mtp_draft_valid = false;
+    return 0;
+}
+
 static int step37_session_fail(ds4_session *s, char *err, size_t errlen) {
     s->step37_graph.failed = true;
     s->step37_spec.draft.graph.failed = true;
@@ -69850,6 +70096,9 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
         return 1;
     }
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_ling3vl(s)) {
+        return ling3vl_session_sync(s, prompt, NULL, err, errlen);
+    }
     if (ds4_session_is_step37(s)) {
         return step37_session_sync(s, prompt, NULL, err, errlen);
     }
@@ -70726,6 +70975,9 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
         return 1;
     }
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_ling3vl(s)) {
+        return ling3vl_session_eval(s, token, err, errlen);
+    }
     if (ds4_session_is_step37(s)) {
         return step37_session_eval(s, token, err, errlen);
     }
@@ -72645,7 +72897,11 @@ void ds4_session_invalidate(ds4_session *s) {
     s->checkpoint.len = 0;
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_step37(s) && s->step37_graph_ready) {
+    if (ds4_session_is_ling3vl(s) && s->ling3vl_graph_ready) {
+        s->ling3vl_media.count = 0;
+        s->ling3vl_media.rows = 0;
+        (void)ling3vl_graph_reset(&s->ling3vl_graph);
+    } else if (ds4_session_is_step37(s) && s->step37_graph_ready) {
         s->step37_trial_n = 0;
         s->step37_media.count = 0;
         s->step37_media.rows = 0;
@@ -72686,7 +72942,13 @@ void ds4_session_rewind(ds4_session *s, int pos) {
     s->checkpoint.len = pos;
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_step37(s) && (pos != old_pos || s->step37_trial_n)) {
+    if (ds4_session_is_ling3vl(s) && pos != old_pos) {
+        /* The recurrent state cannot be truncated; sync replays the prefix. */
+        s->checkpoint_valid = false;
+        s->ling3vl_media.count = 0;
+        s->ling3vl_media.rows = 0;
+        if (s->ling3vl_graph_ready) { (void)ling3vl_graph_reset(&s->ling3vl_graph); }
+    } else if (ds4_session_is_step37(s) && (pos != old_pos || s->step37_trial_n)) {
         /* The truncated prefix has no matching output logits. Sync must
          * replay it before sampling or extending through the decode API. */
         s->checkpoint_valid = false;
