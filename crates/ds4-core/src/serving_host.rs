@@ -29,6 +29,14 @@ const STEP_NATIVE_DEFAULT: u32 = 4096;
 const STEP_NATIVE_MAX: u32 = 4096;
 const INKLING_NATIVE_DEFAULT: u32 = 1024;
 const INKLING_NATIVE_MAX: u32 = 8192;
+const INKLING_REL_DIM: u64 = 16;
+const INKLING_GLOBAL_ROWS: u64 = 1024;
+const INKLING_DRAFT_GLOBALS: u64 = 2;
+const STEP_VISION_EDGE: u64 = 728;
+const STEP_VISION_PATCH: u64 = 14;
+const STEP_VISION_DIM: u64 = 1536;
+const STEP_VISION_FFN: u64 = 8960;
+const STEP_MEDIA_ROWS: u64 = 8192;
 const GLM_NATIVE_DEFAULT: u32 = 2048;
 const EXAONE_PREFILL_CHUNK_ENV: &str = "DS4_EXAONE_PREFILL_CHUNK";
 const EXAONE_NATIVE_DEFAULT: u32 = 512;
@@ -96,11 +104,11 @@ pub fn fill_quote_facts(
         .unwrap_or(runtime)
         .min(runtime)
         .max(1);
-    // Step creates predictor state whenever the sidecar is loaded, even
+    // Step/Inkling create predictor state whenever the sidecar is loaded, even
     // with speculation disabled. Its verify workspace needs draft layers + 1.
-    let step_mtp =
-        caps.family == ModelFamily::Step37 && (req.mtp_path.is_some() || facts.mtp_loaded);
-    if step_mtp {
+    let sidecar_loaded = req.mtp_path.is_some() || facts.mtp_loaded;
+    let step_mtp = caps.family == ModelFamily::Step37 && sidecar_loaded;
+    if sidecar_loaded && matches!(caps.family, ModelFamily::Step37 | ModelFamily::Inkling) {
         if let Some(s) = shape {
             native = native.max(ctx_tokens.min(s.n_nextn_predict + 1));
         }
@@ -187,6 +195,10 @@ pub fn fill_quote_facts(
             let bank_outputs = (u64::from(s.n_embd) + u64::from(s.n_vocab)) * SIZEOF_F32;
             (kv.saturating_add(bank_outputs), scratch, 0, pool)
         }
+        (ModelFamily::Inkling, Some(s)) => {
+            let (base, with_mtp) = inkling_runtime_bytes(s, ctx, native);
+            (if sidecar_loaded { with_mtp } else { base }, 0, 0, 0)
+        }
         (_, Some(s)) => {
             let scratch = family_graph_scratch(s, native);
             let pool = if partial { kv } else { 0 };
@@ -202,7 +214,13 @@ pub fn fill_quote_facts(
         }
         _ => (kv, 0, 0, 0),
     };
-    let media = if caps.media_serial || host.vision {
+    let media = if caps.family == ModelFamily::Step37 {
+        if host.vision || facts.vision_loaded {
+            shape.map(|s| step_media_bytes(s, ctx)).unwrap_or(GIB)
+        } else {
+            0
+        }
+    } else if caps.media_serial || host.vision {
         shape
             .map(|s| u64::from(s.n_embd).saturating_mul(8192).saturating_mul(2))
             .unwrap_or(GIB)
@@ -808,6 +826,60 @@ fn step_spec_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
         + (3 * cap + 2 * pred) * u64::from(s.n_embd) * SIZEOF_F32
 }
 
+// C step37_vision_bytes(728) plus the serial session's prepared image features.
+fn step_media_bytes(s: Shape, ctx: u64) -> u64 {
+    let grid = STEP_VISION_EDGE / STEP_VISION_PATCH;
+    let hidden = u64::from(s.n_embd);
+    let workspace = grid
+        * grid
+        * (3 * STEP_VISION_PATCH * STEP_VISION_PATCH
+            + 10 * STEP_VISION_DIM
+            + STEP_VISION_FFN
+            + hidden / 16
+            + 2)
+        * SIZEOF_F32;
+    workspace + ctx.min(STEP_MEDIA_ROWS) * hidden * SIZEOF_F32
+}
+
+// C inkling_context_memory / inkling_mtp_memory: return base and loaded-MTP
+// totals. Local KV stays fixed at 512 rows, including for shorter contexts.
+fn inkling_runtime_bytes(s: Shape, ctx: u64, native: u32) -> (u64, u64) {
+    let hidden = u64::from(s.n_embd);
+    let kv = u64::from(s.n_head_kv) * u64::from(s.n_head_dim);
+    let layers = u64::from(s.n_layer);
+    let globals = u64::from(s.n_full_attn_count);
+    let local = u64::from(s.n_swa);
+    let history = u64::from(s.n_ssm_conv.saturating_sub(1));
+    let conv = 2 * kv + 2 * hidden;
+    let kv_row = 2 * kv * SIZEOF_U16;
+    let hidden_row = hidden * SIZEOF_F32;
+    let used = u64::from(s.n_expert_used);
+    let shared = u64::from(s.n_expert_shared);
+    // Sum inkling_width: activations, relative attention, routing and FFN.
+    let width = 7 * hidden
+        + 4 * kv
+        + u64::from(s.n_head) * (INKLING_REL_DIM + INKLING_GLOBAL_ROWS)
+        + u64::from(s.n_expert)
+        + 3 * shared
+        + 2 * used
+        + 3 * u64::from(s.n_ff_dense)
+        + (used + shared) * hidden
+        + 3 * shared * u64::from(s.n_ff_exp)
+        + 2;
+    let cap = u64::from(native);
+    let raw = ((layers - globals) * local + globals * ctx) * kv_row
+        + layers * history * conv * SIZEOF_F32;
+    let scratch = (cap * width + u64::from(s.n_vocab)) * SIZEOF_F32;
+    let pred = u64::from(s.n_nextn_predict);
+    let verify = ctx.min(pred + 1);
+    let draft_raw = ((pred - INKLING_DRAFT_GLOBALS) * local + INKLING_DRAFT_GLOBALS * ctx) * kv_row
+        + pred * history * conv * SIZEOF_F32
+        + pred * hidden_row;
+    let journals = (layers + pred) * (verify * kv_row + (history + verify) * conv * SIZEOF_F32);
+    let mtp = raw + draft_raw + 2 * scratch + (3 * cap + pred) * hidden_row + journals;
+    (raw + scratch, mtp)
+}
+
 // C motif3_graph_memory_estimate, excluding the separately quoted bank caches.
 fn motif_graph_bytes(s: Shape, native: u32) -> u64 {
     let hidden = u64::from(s.n_embd);
@@ -1076,8 +1148,8 @@ mod tests {
         resolve_plan, serving_caps, MaxSeqs, MtpMode, PrefixReuse, ReuseKind, PREFILL_CHUNK_FENCE,
     };
     use crate::shape::{
-        Variant, SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_QWEN38_FLASH_NEXT,
-        SHAPE_SOLAR_OPEN2_250B, SHAPE_STEP37_FLASH,
+        Variant, SHAPE_INKLING_SMALL, SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_MOTIF3,
+        SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B, SHAPE_STEP37_FLASH,
     };
     use std::io::Write;
 
@@ -2005,6 +2077,92 @@ mod tests {
         let caps = serving_caps(family, variant);
         fill_quote_facts(&mut facts, req, caps, Some(shape), host);
         facts
+    }
+
+    #[test]
+    fn inkling_loaded_off_quote() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::set(INKLING_PREFILL_CHUNK_ENV, "1024");
+        let caps = serving_caps(ModelFamily::Inkling, Variant::InklingSmall);
+        let mut req = ServingRequest::default();
+        req.ctx = 1024;
+        req.mtp_mode = MtpMode::Off;
+        for (path, expected) in [
+            (None, 766_264_576u64),
+            (Some("inkling-mtp.gguf".into()), 1_523_575_296),
+        ] {
+            req.mtp_path = path;
+            let mut facts = fill_family(
+                ModelFamily::Inkling,
+                Variant::InklingSmall,
+                SHAPE_INKLING_SMALL,
+                &req,
+                qwen_host(None),
+            );
+            assert_eq!(
+                facts.per_bank_bytes.unwrap()
+                    + facts.scratch_bytes.unwrap()
+                    + facts.mtp_state_bytes.unwrap(),
+                expected
+            );
+            facts.host_available_bytes = Some(facts_cost(&facts, &req, 1) - 1);
+            assert!(resolve_plan(&req, Some(caps), &facts).has_errors());
+        }
+        req.mtp_path = None;
+        let mut loaded = EngineFacts {
+            mtp_loaded: true,
+            ..EngineFacts::default()
+        };
+        fill_quote_facts(
+            &mut loaded,
+            &req,
+            caps,
+            Some(SHAPE_INKLING_SMALL),
+            qwen_host(None),
+        );
+        assert_eq!(loaded.per_bank_bytes, Some(1_523_575_296));
+        req.ctx = 16;
+        req.native_chunk = Some(1);
+        fill_quote_facts(
+            &mut loaded,
+            &req,
+            caps,
+            Some(SHAPE_INKLING_SMALL),
+            qwen_host(None),
+        );
+        assert_eq!(loaded.native_chunk, Some(9));
+        assert_eq!(loaded.per_bank_bytes, Some(133_007_264));
+    }
+
+    #[test]
+    fn step_media_native_buffers() {
+        let _env = lock_test_env();
+        let mut req = ServingRequest::default();
+        for (ctx, expected) in [
+            (1024, 288_972_672),
+            (8192, 406_413_184),
+            (16384, 406_413_184),
+        ] {
+            req.ctx = ctx;
+            let no_media = fill_family(
+                ModelFamily::Step37,
+                Variant::Step37Flash,
+                SHAPE_STEP37_FLASH,
+                &req,
+                qwen_host(None),
+            );
+            assert_eq!(no_media.media_reserve_bytes, Some(0));
+            let mut host = qwen_host(None);
+            host.vision = true;
+            let facts = fill_family(
+                ModelFamily::Step37,
+                Variant::Step37Flash,
+                SHAPE_STEP37_FLASH,
+                &req,
+                host,
+            );
+            assert_eq!(facts.media_reserve_bytes, Some(expected));
+        }
     }
 
     #[test]
