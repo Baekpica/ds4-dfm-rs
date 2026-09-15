@@ -26105,6 +26105,18 @@ extern "C" int ds4_gpu_matmul_bf16_tensor(
 
 /* BF16 GEMM over an activation the caller already holds in BF16 (the
  * hyper-connection normed rows): no per-call conversion pass. */
+extern "C" int ds4_gpu_f32_to_bf16_tensor(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *in, uint64_t n) {
+    if (!out || !in || !n || n > UINT64_MAX / sizeof(float) ||
+        in->bytes < n * sizeof(float) ||
+        out->bytes < n * sizeof(__nv_bfloat16)) {
+        return 0;
+    }
+    f32_to_bf16_kernel<<<(n + 255u) / 256u, 256, 0, cuda_decode_stream()>>>(
+        (__nv_bfloat16 *)out->ptr, (const float *)in->ptr, n);
+    return cuda_ok(cudaGetLastError(), "f32_to_bf16");
+}
+
 extern "C" int ds4_gpu_matmul_bf16_input_tensor(
         ds4_gpu_tensor *out,
         const void *model_map,

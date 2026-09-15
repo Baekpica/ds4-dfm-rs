@@ -35,6 +35,9 @@ pub(crate) const EXPERT_GROUPS: u32 = 8;
 pub(crate) const EXPERT_GROUPS_USED: u32 = 4;
 pub(crate) const EXPERT_WEIGHT_SCALE: f32 = 2.5;
 pub(crate) const CONTEXT: u32 = 131_072;
+/// YaRN factor 2 from the official `original_max_position_embeddings`.
+pub(crate) const YARN_CONTEXT: u32 = CONTEXT * 2;
+const _: () = assert!(YARN_CONTEXT == 262_144);
 pub(crate) const RMS_EPS: f32 = 1e-6;
 pub(crate) const ROPE_FREQ_BASE: f32 = 6_000_000.0;
 pub(crate) const KDA_GATE_LOWER_BOUND: f32 = -5.0;
@@ -648,6 +651,12 @@ fn vision_specs() -> Vec<Spec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn yarn_cap_is_factor_two_on_the_artifact_context() {
+        assert_eq!(CONTEXT, 131_072);
+        assert_eq!(YARN_CONTEXT, 262_144);
+    }
 
     #[test]
     fn hybrid_schedule_matches_the_artifact() {

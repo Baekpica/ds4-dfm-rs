@@ -4,6 +4,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 #include "../cuda/ling3vl_primitives.cuh"
 
 #define CHECK(x) do { if (!(x)) { \
@@ -146,7 +149,8 @@ static void mrope(cudaStream_t stream) {
     int32_t *d_pos = upload(pos, ROWS * 3);
     const uint64_t pairs = (uint64_t)ROWS * HEADS * HALF;
     ling3vl_mrope<<<(pairs + 255u) / 256u, 256, 0, stream>>>(
-        d_x, d_pos, d_inv, HEADS, STRIDE, OFFSET, HALF, 8u, 8u + 12u, pairs);
+        d_x, d_pos, d_inv, HEADS, STRIDE, OFFSET, HALF, 8u, 8u + 12u, pairs,
+        1.0f);
     CUDA(cudaStreamSynchronize(stream));
     CUDA(cudaMemcpy(x.data(), d_x, x.size() * sizeof(float), cudaMemcpyDeviceToHost));
 
@@ -172,6 +176,52 @@ static void mrope(cudaStream_t stream) {
     CUDA(cudaFree(d_inv));
     CUDA(cudaFree(d_x));
     printf("mrope OK\n");
+}
+
+/* Transformers YaRN (factor 2, beta 32/1, orig 131072) at a text position
+ * past the native 128K window. Matches Qwen's host inv_freq table. */
+static void yarn_mrope(cudaStream_t stream) {
+    enum { HEADS = 1u, ROWS = 1u, ROTARY = 64u, HALF = ROTARY / 2u,
+           STRIDE = 192u, OFFSET = 128u, ORIG = 131072u };
+    const float scale = 2.0f, freq_base = 6000000.0f;
+    const float attn = 0.1f * logf(scale) + 1.0f;
+    const float low = fmaxf(0.0f, floorf((float)ROTARY *
+        logf((float)ORIG / (32.0f * 2.0f * (float)M_PI)) /
+        (2.0f * logf(freq_base))));
+    const float high = fminf((float)ROTARY - 1.0f, ceilf((float)ROTARY *
+        logf((float)ORIG / (1.0f * 2.0f * (float)M_PI)) /
+        (2.0f * logf(freq_base))));
+    std::vector<float> inv(HALF);
+    for (unsigned d = 0; d < HALF; d++) {
+        const float base =
+            (float)pow((double)freq_base, -2.0 * (double)d / (double)ROTARY);
+        const float ramp = fminf(1.0f, fmaxf(0.0f,
+            ((float)d - low) / fmaxf(0.001f, high - low)));
+        inv[d] = base * (1.0f - ramp) + base / scale * ramp;
+    }
+    std::vector<float> x(ROWS * HEADS * STRIDE, 0.0f);
+    for (unsigned i = 0; i < x.size(); i++) { x[i] = (float)((i % 5) + 1) * 0.25f; }
+    const int32_t pos[3] = {200000, 200000, 200000};
+    std::vector<float> before = x;
+    float *d_x = upload(x.data(), x.size());
+    float *d_inv = upload(inv.data(), inv.size());
+    int32_t *d_pos = upload(pos, 3);
+    ling3vl_mrope<<<1, 256, 0, stream>>>(
+        d_x, d_pos, d_inv, HEADS, STRIDE, OFFSET, HALF, 8u, 20u,
+        (uint64_t)HALF, attn);
+    CUDA(cudaStreamSynchronize(stream));
+    CUDA(cudaMemcpy(x.data(), d_x, x.size() * sizeof(float), cudaMemcpyDeviceToHost));
+    for (unsigned j = 0; j < HALF; j++) {
+        const double theta = 200000.0 * (double)inv[j];
+        const double c = cos(theta) * (double)attn, s = sin(theta) * (double)attn;
+        const double x0 = before[OFFSET + 2 * j], x1 = before[OFFSET + 2 * j + 1];
+        close(x[OFFSET + 2 * j], x0 * c - x1 * s, 1e-4);
+        close(x[OFFSET + 2 * j + 1], x0 * s + x1 * c, 1e-4);
+    }
+    CUDA(cudaFree(d_pos));
+    CUDA(cudaFree(d_inv));
+    CUDA(cudaFree(d_x));
+    printf("yarn_mrope OK\n");
 }
 
 /* The fused kv_a_mqa row is 576 wide; the latent RMSNorm covers only the
@@ -227,6 +277,7 @@ int main(void) {
     CUDA(cudaStreamCreate(&stream));
     router(stream);
     mrope(stream);
+    yarn_mrope(stream);
     rms_norm_strided(stream);
     CUDA(cudaStreamDestroy(stream));
     printf("Ling primitives OK\n");

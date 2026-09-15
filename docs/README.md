@@ -53,6 +53,7 @@ release candidate or describe live processes.
   64K prefill +26.8%.
 - Partial reuse: [Solar, August 21](solar-partial-reuse-2026-08-21.md) and
   [Motif, August 22](motif3-partial-reuse-2026-08-22.md).
+- Ling: [YaRN 256K and 8K opt, September 16](ling3-yarn-256k-2026-09-16.md).
 
 Completed migration plans, superseded status files and old process handoffs
 were removed from the working tree. Their original contents remain in the

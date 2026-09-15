@@ -45,6 +45,7 @@ typedef struct {
     uint32_t context, cap, position, high_water;
     uint64_t state_bytes, kv_bytes, workspace_bytes, bytes;
     int32_t *host_positions;
+    float rope_attn_factor;
     bool failed, ready;
 } ds4_ling3vl_graph;
 
@@ -67,6 +68,37 @@ static uint32_t ling3vl_prefill_cap(uint32_t ctx) {
         }
     }
     return cap < ctx ? cap : ctx;
+}
+
+/* Official override: yarn factor 2, theta 6e6, betas 32/1, orig 131072. */
+static float ling3vl_yarn_factor_for_context(uint32_t ctx) {
+    if (!ctx || ctx > L3V_CONTEXT) { return 0.0f; }
+    return ctx <= L3V_CONTEXT_ORIG ? 1.0f : (float)L3V_YARN_MAX_FACTOR;
+}
+
+static bool ling3vl_yarn_fill_inv_freq(float *inv, float *attn, float scale) {
+    if (!inv || !attn || !isfinite(scale) || scale < 1.0f) { return false; }
+    *attn = scale > 1.0f ? 0.1f * logf(scale) + 1.0f : 1.0f;
+    const float freq_base = DS4_ROPE_FREQ_BASE;
+    const float rotary = (float)L3V_ROPE;
+    const float orig = (float)L3V_CONTEXT_ORIG;
+    const float low = fmaxf(0.0f, floorf(rotary *
+        logf(orig / (32.0f * 2.0f * (float)M_PI)) / (2.0f * logf(freq_base))));
+    const float high = fminf(rotary - 1.0f, ceilf(rotary *
+        logf(orig / (1.0f * 2.0f * (float)M_PI)) / (2.0f * logf(freq_base))));
+    for (uint32_t d = 0; d < L3V_MROPE_PAIRS; d++) {
+        const float base = (float)pow((double)freq_base,
+                                      -2.0 * (double)d / (double)L3V_ROPE);
+        if (!isfinite(base) || base <= 0.0f) { return false; }
+        if (scale <= 1.0f) {
+            inv[d] = base;
+            continue;
+        }
+        const float ramp = fminf(1.0f, fmaxf(0.0f,
+            ((float)d - low) / fmaxf(0.001f, high - low)));
+        inv[d] = base * (1.0f - ramp) + base / scale * ramp;
+    }
+    return true;
 }
 
 static ds4_context_memory ling3vl_memory(uint32_t ctx, uint32_t cap) {
@@ -133,11 +165,10 @@ static void ling3vl_graph_free(ds4_ling3vl_graph *g) {
  * axis position and reduces the angle in double. */
 static bool ling3vl_upload_inv_freq(ds4_ling3vl_graph *g) {
     float inv[L3V_MROPE_PAIRS];
-    for (uint32_t j = 0; j < L3V_MROPE_PAIRS; j++) {
-        inv[j] = (float)pow((double)DS4_ROPE_FREQ_BASE,
-                            -2.0 * (double)j / (double)L3V_ROPE);
-        if (!isfinite(inv[j]) || inv[j] <= 0.0f) { return false; }
-    }
+    float attn = 1.0f;
+    const float scale = ling3vl_yarn_factor_for_context(g->context);
+    if (!ling3vl_yarn_fill_inv_freq(inv, &attn, scale)) { return false; }
+    g->rope_attn_factor = attn;
     return ds4_gpu_tensor_write(g->inv_freq, 0, inv, sizeof(inv));
 }
 
@@ -300,24 +331,68 @@ static bool ling3vl_graph_alloc(ds4_ling3vl_graph *g, const ds4_model *model,
     return true;
 }
 
+/* Decode n=1: one activation convert, two BF16 rows. Prefill stays on the
+ * single-GEMM path (cuBLAS). Pair miss falls back to two plains. */
+static bool ling3vl_bf16_pair(ds4_gpu_tensor *a, ds4_gpu_tensor *b,
+                              const ds4_model *m, const ds4_tensor *wa,
+                              const ds4_tensor *wb, uint64_t in_dim,
+                              uint64_t out_a, uint64_t out_b,
+                              const ds4_gpu_tensor *x, uint64_t n) {
+    if (n == 1u && wa && wb &&
+        wa->type == DS4_TENSOR_BF16 && wb->type == DS4_TENSOR_BF16 &&
+        ds4_gpu_matmul_bf16_stable_rows_pair_tensor(
+            a, b, m->map, m->size, wa->abs_offset, wb->abs_offset,
+            in_dim, out_a, out_b, x, n)) {
+        return true;
+    }
+    return plain_graph_matmul_tensor(a, m, wa, in_dim, out_a, x, n) &&
+        plain_graph_matmul_tensor(b, m, wb, in_dim, out_b, x, n);
+}
+
+static bool ling3vl_proj_bf16(ds4_gpu_tensor *out, const ds4_model *m,
+                              const ds4_tensor *w, uint64_t out_dim,
+                              const ds4_gpu_tensor *bf16,
+                              const ds4_gpu_tensor *f32, uint64_t n) {
+    if (n > 1u && w && w->type == DS4_TENSOR_BF16 &&
+        ds4_gpu_matmul_bf16_input_tensor(
+            out, m->map, m->size, w->abs_offset, L3V_HIDDEN, out_dim, bf16,
+            n)) {
+        return true;
+    }
+    return plain_graph_matmul_tensor(out, m, w, L3V_HIDDEN, out_dim, f32, n);
+}
+
 static bool ling3vl_layer_kda(ds4_ling3vl_graph *g, const ds4_model *m,
                               const ds4_layer_weights *l, uint32_t il,
                               uint32_t n) {
     ds4_exaone_batch_ws *b = &g->ws;
-    if (!plain_graph_matmul_tensor(b->b_q, m, l->attn_q, L3V_HIDDEN,
-                                   L3V_KDA_DIM, b->b_norm, n) ||
-        !plain_graph_matmul_tensor(b->b_k, m, l->attn_k, L3V_HIDDEN,
-                                   L3V_KDA_DIM, b->b_norm, n) ||
-        !plain_graph_matmul_tensor(b->b_v, m, l->attn_v, L3V_HIDDEN,
-                                   L3V_KDA_DIM, b->b_norm, n) ||
-        /* no_kda_lora: the decay and output gates are full rank, so each is
-         * one projection instead of GLM's low-rank pair. */
-        !plain_graph_matmul_tensor(g->kda_decay, m, l->ssm_f_a, L3V_HIDDEN,
-                                   L3V_KDA_DIM, b->b_norm, n) ||
-        !plain_graph_matmul_tensor(g->kda_gate, m, l->ssm_g_a, L3V_HIDDEN,
-                                   L3V_KDA_DIM, b->b_norm, n) ||
-        !plain_graph_matmul_tensor(g->kda_beta, m, l->ssm_beta, L3V_HIDDEN,
-                                   L3V_HEADS, b->b_norm, n)) {
+    const bool reused = n > 1u &&
+        ds4_gpu_f32_to_bf16_tensor(b->b_dense_gate, b->b_norm,
+                                   (uint64_t)n * L3V_HIDDEN);
+    if (reused) {
+        if (!ling3vl_proj_bf16(b->b_q, m, l->attn_q, L3V_KDA_DIM,
+                               b->b_dense_gate, b->b_norm, n) ||
+            !ling3vl_proj_bf16(b->b_k, m, l->attn_k, L3V_KDA_DIM,
+                               b->b_dense_gate, b->b_norm, n) ||
+            !ling3vl_proj_bf16(b->b_v, m, l->attn_v, L3V_KDA_DIM,
+                               b->b_dense_gate, b->b_norm, n) ||
+            !ling3vl_proj_bf16(g->kda_decay, m, l->ssm_f_a, L3V_KDA_DIM,
+                               b->b_dense_gate, b->b_norm, n) ||
+            !ling3vl_proj_bf16(g->kda_gate, m, l->ssm_g_a, L3V_KDA_DIM,
+                               b->b_dense_gate, b->b_norm, n) ||
+            !ling3vl_proj_bf16(g->kda_beta, m, l->ssm_beta, L3V_HEADS,
+                               b->b_dense_gate, b->b_norm, n)) {
+            return false;
+        }
+    } else if (!ling3vl_bf16_pair(b->b_q, b->b_k, m, l->attn_q, l->attn_k,
+                                  L3V_HIDDEN, L3V_KDA_DIM, L3V_KDA_DIM,
+                                  b->b_norm, n) ||
+               !ling3vl_bf16_pair(b->b_v, g->kda_decay, m, l->attn_v,
+                                  l->ssm_f_a, L3V_HIDDEN, L3V_KDA_DIM,
+                                  L3V_KDA_DIM, b->b_norm, n) ||
+               !ling3vl_bf16_pair(g->kda_gate, g->kda_beta, m, l->ssm_g_a,
+                                  l->ssm_beta, L3V_HIDDEN, L3V_KDA_DIM,
+                                  L3V_HEADS, b->b_norm, n)) {
         return false;
     }
     const bool recurrence = n > 1u
@@ -351,20 +426,19 @@ static bool ling3vl_layer_mla(ds4_ling3vl_graph *g, const ds4_model *m,
                               uint32_t n, uint32_t pos) {
     ds4_exaone_batch_ws *b = &g->ws;
     const float scale = 1.0f / sqrtf((float)L3V_KEY_MLA);
-    if (!plain_graph_matmul_tensor(b->b_q, m, l->attn_q, L3V_HIDDEN, L3V_QDIM,
-                                   b->b_norm, n) ||
-        !plain_graph_matmul_tensor(g->kv_raw, m, l->attn_kv_a_mqa, L3V_HIDDEN,
-                                   L3V_KV_ROW, b->b_norm, n) ||
+    if (!ling3vl_bf16_pair(b->b_q, g->kv_raw, m, l->attn_q, l->attn_kv_a_mqa,
+                           L3V_HIDDEN, L3V_QDIM, L3V_KV_ROW, b->b_norm, n) ||
         !plain_graph_matmul_tensor(g->attn_gate, m, l->attn_gate, L3V_HIDDEN,
                                    L3V_HEADS, b->b_norm, n) ||
         /* Rotate the 64-dim tail of every Q head and of the single shared
          * key row, in place, before either is cached or absorbed. */
         !ds4_gpu_ling3vl_mrope(b->b_q, g->positions, g->inv_freq, n, L3V_HEADS,
                                L3V_KEY_MLA, L3V_NOPE, L3V_ROPE, L3V_SECTION_T,
-                               L3V_SECTION_H) ||
+                               L3V_SECTION_H, g->rope_attn_factor) ||
         !ds4_gpu_ling3vl_mrope(g->kv_raw, g->positions, g->inv_freq, n, 1u,
                                L3V_KV_ROW, L3V_KV_LORA, L3V_ROPE,
-                               L3V_SECTION_T, L3V_SECTION_H) ||
+                               L3V_SECTION_T, L3V_SECTION_H,
+                               g->rope_attn_factor) ||
         /* kv_raw is 576-wide; the norm covers only the 512-value latent. */
         !ds4_gpu_ling3vl_rms_norm(g->kv_norm, g->kv_raw, m->map, m->size,
                                   l->attn_kv_a_norm->abs_offset, L3V_KV_LORA,

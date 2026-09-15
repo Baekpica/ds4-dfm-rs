@@ -23,7 +23,10 @@ three-shard split identity, and the metadata listed below.
 ## Architecture
 
 The GGUF architecture is `bailingmoe3`. 42 blocks, width 2560, vocabulary
-157,184, `rms_norm_eps` 1e-6, native context 131,072.
+157,184, `rms_norm_eps` 1e-6, native context 131,072. Contexts through
+131,072 stay on the factor-1 rotary path. `-c 262144` selects the official
+YaRN recipe (`rope_type=yarn`, factor 2, `rope_theta=6000000`,
+`partial_rotary_factor=0.5`, `original_max_position_embeddings=131072`).
 
 ### Hybrid attention
 
@@ -136,7 +139,7 @@ MODEL_DIR=/path/to/Ling-3.0-flash-VL-Mixed-Quant-GGUF/MQ-Q5-KDA-VIT-BF16
   -m "$MODEL_DIR/Ling-3.0-flash-VL-MQ-Q5-KDA-VIT-BF16-00001-of-00003.gguf" \
   --vision "$MODEL_DIR/mmproj-Ling-3.0-flash-VL-BF16.gguf" \
   --model-id Ling-3.0-flash-VL \
-  -c 65536 --max-seqs 2 \
+  -c 262144 --max-seqs 2 --prefix-reuse partial \
   --kv-disk-dir /var/lib/ds4/ling-kv \
   --host 127.0.0.1 --port 8000
 ```
@@ -148,6 +151,7 @@ The operator surface is the one in the [serving contract](serving-contract.md):
 | `--max-seqs` | persistent banks, no opt-in switch |
 | `--kv-disk-dir` | session and per-bank payloads, `LNG3` layout |
 | prefix reuse | exact fork, and partial fork from the recurrent checkpoint pool |
+| `-c` | 131,072 native; 262,144 YaRN factor 2 |
 | image input | PNG/JPEG data URIs, user messages, at most four per request |
 | MTP | none — this architecture has no NextN predictor |
 
@@ -179,6 +183,11 @@ banks: cold prefill 1,461 tok/s over 1,072 tokens, decode 19.8 tok/s, a
 second turn reusing 1,123 of 1,146 prompt tokens by fork, and a disk record
 restoring 1,153 of 1,173 into an empty bank after a restart.
 
+A later `ds4-bench` 8,192-token pass after YaRN and the decode-pair / KDA
+convert rounds measured 1,147 tok/s prefill and 17.8 tok/s decode; see
+[YaRN 256K and 8K opt, September 16](ling3-yarn-256k-2026-09-16.md). That
+is a different prompt and is not a replacement for the HTTP numbers above.
+
 Not release gates and not implied: Metal, ROCm, CPU inference, distributed
 slices, DSpark sidecars, directional steering, speculative decoding, video
-input, context above what was measured, and the full 131,072-token context.
+input, and a full 262,144-token YaRN prompt.

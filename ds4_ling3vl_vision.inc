@@ -14,7 +14,8 @@ enum { L3V_HIDDEN = 2560, L3V_HEADS = 32, L3V_KDA_HEAD = 128,
        L3V_LATENT = L3V_HEADS * L3V_KV_LORA,
        L3V_VDIM = L3V_HEADS * L3V_VALUE_MLA,
        L3V_DENSE = 6144, L3V_EXPERT_FF = 768, L3V_EXPERTS = 512,
-       L3V_USED = 8, L3V_CONTEXT = 131072,
+       L3V_USED = 8, L3V_CONTEXT_ORIG = 131072, L3V_YARN_MAX_FACTOR = 2,
+       L3V_CONTEXT = L3V_CONTEXT_ORIG * L3V_YARN_MAX_FACTOR,
        L3V_SECTION_T = 8, L3V_SECTION_H = 12 };
 
 /* Contiguous [T, H, W] split of the 32 rotary pairs, adjacent-pair rotation.

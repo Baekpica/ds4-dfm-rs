@@ -1010,6 +1010,11 @@ int ds4_gpu_matmul_bf16_tensor(
 
 /* Native reduction used when recurrent decode must keep N=1 and N=2
  * arithmetic identical. */
+int ds4_gpu_f32_to_bf16_tensor(
+        ds4_gpu_tensor       *out,
+        const ds4_gpu_tensor *in,
+        uint64_t                n);
+
 /* BF16 GEMM over an activation already stored as BF16 (no conversion). */
 int ds4_gpu_matmul_bf16_input_tensor(
         ds4_gpu_tensor       *out,
@@ -4306,7 +4311,8 @@ int ds4_gpu_ling3vl_mrope(
         uint32_t                offset,
         uint32_t                rotary,
         uint32_t                section_t,
-        uint32_t                section_h);
+        uint32_t                section_h,
+        float                   attn_factor);
 
 int ds4_gpu_ling3vl_qk_absorb(
         ds4_gpu_tensor       *out,

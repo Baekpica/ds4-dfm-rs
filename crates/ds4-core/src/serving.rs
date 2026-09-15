@@ -28,6 +28,8 @@ const GIB: u64 = 1 << 30;
 /// C `QWEN4EXP_YARN_MAX_FACTOR`: how far Qwen's RoPE context may stretch
 /// before `ds4_session_create` refuses the context outright.
 pub const QWEN_YARN_MAX_FACTOR: u32 = 4;
+/// Base-model YaRN: factor 2 from `original_max_position_embeddings` 131072.
+pub const LING_YARN_MAX_FACTOR: u32 = 2;
 pub const DEFAULT_SCHED_LIVE: u32 = 512;
 /// C `DS4_SERVER_PERSIST_MIN_TOKENS`: how much a continuous bank must hold
 /// before retirement persists it. Not the disk store's record minimum.
@@ -687,7 +689,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             spec_lane: SpecLane::None,
             spec_draft_min: 1,
             host: HostNeed::Cuda,
-            ctx_max: Some(SHAPE_LING30_FLASH_VL.rope_orig_ctx as u32),
+            ctx_max: Some(SHAPE_LING30_FLASH_VL.rope_orig_ctx as u32 * LING_YARN_MAX_FACTOR),
             qualified_ctx: Some(65536),
             qualified_banks: Some(2),
             qualified_prompt: None,
@@ -2385,6 +2387,20 @@ mod tests {
         let mut req = ServingRequest::default();
         req.ctx = 262_144 * QWEN_YARN_MAX_FACTOR as i32 + 1;
         let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "ctx_unavailable"));
+    }
+
+    #[test]
+    fn the_ling_yarn_cap_is_factor_two() {
+        let mut req = ServingRequest::default();
+        req.ctx = 131_072 * LING_YARN_MAX_FACTOR as i32;
+        let p = plan(req, ModelFamily::Ling3Vl, Variant::Ling30FlashVl);
+        assert!(!p.issues.iter().any(|i| i.code == "ctx_unavailable"));
+
+        let mut req = ServingRequest::default();
+        req.ctx = 131_072 * LING_YARN_MAX_FACTOR as i32 + 1;
+        let p = plan(req, ModelFamily::Ling3Vl, Variant::Ling30FlashVl);
         assert!(p.has_errors());
         assert!(p.issues.iter().any(|i| i.code == "ctx_unavailable"));
     }

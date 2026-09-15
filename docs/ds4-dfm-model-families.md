@@ -56,7 +56,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | K2-Horizon 375B A23B | `general.architecture=k2-horizon` | full-attention GQA KV, partial NeoX RoPE, shared-expert MoE | persistent one-bank (32K gated) |
 | Inkling Small | `general.architecture=inkling` | MQ85GB source-interleaved GQA, four-tap convolution, embedded media encoders, optional eight-layer MTP-BF16 | serial CUDA; [1,024-context checks](inkling-small.md) |
 | Step 3.7 Flash | `general.architecture=step35` | MQ83 full/sliding GQA, post-SiLU expert clamps, optional Q8 MTP and F16 vision | serial default; opt-in text banks with full/partial fork and disk KV ([serving](step37-serving-2026-09-13.md)); images serial; [artifact scope](step37-initial.md) |
-| Ling-3.0-flash-VL | `general.architecture=bailingmoe3` | 35 recurrent KDA blocks and 7 latent MLA blocks, 512 grouped-sigmoid experts, separate Qwen3-VL mmproj | persistent multi-bank with full/partial fork and disk KV; images serial ([family contract](ling3-flash-vl.md)) |
+| Ling-3.0-flash-VL | `general.architecture=bailingmoe3` | 35 recurrent KDA blocks and 7 latent MLA blocks, 512 grouped-sigmoid experts, separate Qwen3-VL mmproj | persistent multi-bank with full/partial fork and disk KV; images serial; YaRN 256K ([family contract](ling3-flash-vl.md)) |
 
 The scheduler implementation may differ because the model states differ, but
 the operator and client contract is the same. Changing `-m` to a GGUF from a
@@ -553,6 +553,9 @@ published metric. 1,048,576-token serving is not claimed.
 - Disk KV reduces repeated prefill across eviction or restart. It does not lower
   the resident KV allocation of a live bank. Select context and bank width
   from the exact artifact, memory policy and measured headroom.
+- Ling-3.0-flash-VL YaRN 256K is a `-c 262144` session allocation plus an
+  8K `ds4-bench` campaign. A full 262,144-token prompt is not claimed.
+  See [the 16 September report](ling3-yarn-256k-2026-09-16.md).
 - Model cards contain only verified behavior and performance. Profiling
   results, failed experiments, and proposed kernels belong in the technical
   reports until a release gate validates them.

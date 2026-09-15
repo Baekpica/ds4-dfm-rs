@@ -12,7 +12,11 @@ for exact provenance. Historical entries retain their original scope.
   three-shard artifact plus its BF16 mmproj, 35 recurrent KDA blocks and 7
   latent MLA blocks over 512 group-limited sigmoid experts, still-image input
   through the Qwen3-VL tower, persistent banks, full and partial fork, and
-  disk KV. See [the family contract](docs/ling3-flash-vl.md).
+  disk KV, and YaRN factor 2 to 262,144 tokens. An 8K `ds4-bench` pass
+  after the decode-pair and KDA convert-once rounds measured 1,147 tok/s
+  prefill and 17.8 tok/s decode; see
+  [YaRN 256K and 8K opt](docs/ling3-yarn-256k-2026-09-16.md) and
+  [the family contract](docs/ling3-flash-vl.md).
 - Solar Open2: disk-KV restart reuse and HTTP partial fork on one-bank
   workers; stride-walk prefill checkpoints so a final wide chunk still
   captures 4,096-token boundaries.

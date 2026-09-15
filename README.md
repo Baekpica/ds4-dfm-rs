@@ -31,7 +31,7 @@ retired when a better model makes it irrelevant.
   image input.
 - Serve K2-Horizon-375B MQ87 with IFM chat/tool syntax on the continuous lane.
 - Serve Ling-3.0-flash-VL MQ-Q5 with image input, two persistent banks,
-  disk KV and partial prefix reuse.
+  disk KV, partial prefix reuse, and YaRN to 262,144 tokens.
 - Profile prefill and decode with [ds4-perf](docs/ds4-perf.md),
   calibrate the GPU, compare proved experiments, and retain raw profiler evidence.
 - Treat the existing family implementations as rails for a new model or a
@@ -229,7 +229,7 @@ tokenizer/chat contract, state lifecycle, and native execution path.
 | K2-Horizon 375B A23B | `k2-horizon` | Four-shard MQ87 GGUF; IFM BPE/XML tools; continuous 32K one-bank serving on one DGX Spark. |
 | Inkling Small | `inkling` | MQ85GB + optional eight-layer MTP-BF16; serial CUDA text/image/audio input and text output. [HTTP checks and limits](docs/inkling-small.md), [GB10 performance](docs/inkling-optimization-2026-09-11.md). |
 | Step 3.7 Flash | `step35` | Nine-shard MQ83, optional three-block Q8 MTP and F16 vision; CUDA text/image serving, opt-in text banks with MTP, partial fork and disk KV. [Serving limits](docs/step37-serving-2026-09-13.md), [capped-clock A/B](docs/step37-optimization-2026-09-13-r3.md). |
-| Ling-3.0-flash-VL | `bailingmoe3` | Three-shard MQ-Q5 plus the BF16 mmproj; hybrid KDA/MLA over 512 grouped-sigmoid experts, still-image input, persistent banks, partial fork and disk KV. [Family contract](docs/ling3-flash-vl.md). |
+| Ling-3.0-flash-VL | `bailingmoe3` | Three-shard MQ-Q5 plus the BF16 mmproj; hybrid KDA/MLA over 512 grouped-sigmoid experts, still-image input, persistent banks, partial fork, disk KV, YaRN 256K. [Family contract](docs/ling3-flash-vl.md). |
 
 The current family contract and measured model-specific limits are documented
 in [`ds4-dfm-model-families.md`](docs/ds4-dfm-model-families.md). Arbitrary
@@ -540,6 +540,15 @@ below its context cap. A complete 1M-token prompt is **not** claimed: its
 53.56 GiB graph plan plus the roughly 80.65 GiB weight owner exceeds the
 machine's 121.63 GiB usable unified-memory budget. Use the native context for
 ordinary short requests because static YaRN can reduce short-context quality.
+
+### Ling YaRN 256K
+
+Ling contexts through 131,072 stay on the factor-1 M-RoPE table. `-c 262144`
+selects the official factor-2 YaRN recipe (`rope_type=yarn`,
+`rope_theta=6000000`, `partial_rotary_factor=0.5`,
+`original_max_position_embeddings=131072`). The host refuses a larger
+context. See [the family contract](docs/ling3-flash-vl.md) and
+[the 16 September measurements](docs/ling3-yarn-256k-2026-09-16.md).
 
 Large GGUFs can exhaust unified or system memory. During validation, load one
 production model at a time, observe accelerator activity and per-process memory
