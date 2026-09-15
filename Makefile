@@ -451,6 +451,7 @@ test-route-parity: tests/parity/route_c_oracle tests/parity/server_c_oracle test
 		cargo test -p ds4-server
 
 test-server-parity: test-route-parity
+	python3 tests/test_prefill_cancel.py
 
 tests/parity/shape_c_oracle: tests/parity/shape_c_oracle.c
 	$(CC) $(CFLAGS) -o $@ tests/parity/shape_c_oracle.c

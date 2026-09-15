@@ -61106,7 +61106,9 @@ static int solar_engine_continuous_generate(
                 family_cont_publish_empty(ctx, bank, pb, on_done, ud);
                 credit_end[pb] = 0u;
             } else {
-                while (ok && sb->prefill_off < sb->prefill_len) {
+                /* A zero yield disables decode interleaving, not cancellation. */
+                while (ok && sb->prefill_off < sb->prefill_len &&
+                       (!sb->alive || sb->alive(ud, sb->user))) {
                     const uint32_t remain = sb->prefill_len - sb->prefill_off;
                     uint32_t decoding = 0u;
                     for (uint32_t b = 0; b < MS; b++) {
@@ -61897,7 +61899,9 @@ static int family_banked_engine_continuous_generate(
             if (cb->alive && !cb->alive(ud, cb->user)) {
                 family_cont_publish_empty(ctx, bank, pb, on_done, ud);
             } else {
-                while (ok && cb->prefill_off < cb->prefill_len) {
+                /* Poll disconnects between native chunks even in drain mode. */
+                while (ok && cb->prefill_off < cb->prefill_len &&
+                       (!cb->alive || cb->alive(ud, cb->user))) {
                     const uint32_t remain = cb->prefill_len - cb->prefill_off;
                     uint32_t decoding = 0u;
                     for (uint32_t b = 0; b < MS; b++) {
