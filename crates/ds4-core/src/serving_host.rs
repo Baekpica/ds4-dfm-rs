@@ -25,6 +25,22 @@ const STEP_NATIVE_MAX: u32 = 4096;
 const INKLING_NATIVE_DEFAULT: u32 = 1024;
 const INKLING_NATIVE_MAX: u32 = 8192;
 const GLM_NATIVE_DEFAULT: u32 = 2048;
+const QWEN_QSA_NO_FUSED_ENV: &str = "DS4_QWEN_QSA_NO_FUSED";
+const WEIGHT_IPC_MANIFEST_ENV: &str = "DS4_CUDA_WEIGHT_IPC_MANIFEST";
+const WEIGHT_IPC_SCOPE_ENV: &str = "DS4_CUDA_WEIGHT_IPC_SCOPE";
+const QWEN_GRAPH_LOWRANK: u64 = 320;
+const QWEN_GRAPH_RATIO: u64 = 4;
+const QWEN_GRAPH_SELECTED_BLOCKS_MAX: u64 = 512;
+const QWEN_GDN_KEY_HEADS: u64 = 16;
+const QWEN_GDN_VALUE_HEADS: u64 = 48;
+const QWEN_GDN_HEAD: u64 = 128;
+const QWEN_QSA_SCORE_ROWS: u32 = 8;
+const QWEN_PLE_HOST_ID_LANES: u64 = 16;
+const SIZEOF_F32: u64 = 4;
+const SIZEOF_I32: u64 = 4;
+const SIZEOF_U16: u64 = 2;
+const SIZEOF_U32: u64 = 4;
+const SIZEOF_U64: u64 = 8;
 
 /// What the host can gather before `Model::open`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,17 +72,25 @@ pub fn fill_quote_facts(
         .min(runtime)
         .max(1);
     let ctx = u64::from(ctx_tokens);
-    let per_bank = shape.map(|s| bank_kv_bytes(s, ctx)).unwrap_or(0);
-    let scratch = shape
-        .map(|s| {
+    let kv = shape.map(|s| bank_kv_bytes(s, ctx)).unwrap_or(0);
+    // Qwen allocates a complete graph per bank (`qwen_batch_runtime_create`).
+    // Shared scratch would let auto approve two banks when only one graph fits.
+    let (per_bank, scratch) = match (caps.family, shape) {
+        (ModelFamily::Qwen4Exp, Some(s)) => {
+            let graph = qwen_graph_bytes(s, ctx_tokens, native);
+            (kv.saturating_add(graph), 0)
+        }
+        (_, Some(s)) => (
+            kv,
             u64::from(native)
                 .saturating_mul(u64::from(s.n_embd))
                 .saturating_mul(u64::from(s.n_layer))
-                .saturating_mul(2)
-        })
-        .unwrap_or(0);
+                .saturating_mul(2),
+        ),
+        _ => (kv, 0),
+    };
     let checkpoint = if caps.reuse == ReuseKind::Partial {
-        per_bank
+        kv
     } else {
         0
     };
@@ -120,12 +144,26 @@ pub fn attach_host_quote(
     vision: bool,
     resident: bool,
 ) {
-    let weights_bytes = model_path
+    let mut weights_bytes = model_path
         .map(|path| gguf_span_bytes(path, split_count))
         .unwrap_or(0);
-    let mtp_bytes = artifact_span_bytes(mtp_path);
+    let mut mtp_bytes = artifact_span_bytes(mtp_path);
     let vision_bytes = artifact_span_bytes(vision_path);
     let dspark_bytes = artifact_span_bytes(dspark_path);
+    // Weight-server already holds imported spans; MemAvailable includes them.
+    match ipc_weight_skip() {
+        IpcSkip::None => {}
+        IpcSkip::Base => {
+            weights_bytes = 0;
+        }
+        IpcSkip::Mtp => {
+            mtp_bytes = 0;
+        }
+        IpcSkip::Both => {
+            weights_bytes = 0;
+            mtp_bytes = 0;
+        }
+    }
     let mapped = weights_bytes
         .saturating_add(mtp_bytes)
         .saturating_add(vision_bytes)
@@ -145,6 +183,26 @@ pub fn attach_host_quote(
         vision,
     };
     fill_quote_facts(facts, req, caps, shape, host);
+}
+
+enum IpcSkip {
+    None,
+    Base,
+    Mtp,
+    Both,
+}
+
+fn ipc_weight_skip() -> IpcSkip {
+    match std::env::var(WEIGHT_IPC_MANIFEST_ENV) {
+        Ok(manifest) if !manifest.is_empty() => {}
+        _ => return IpcSkip::None,
+    }
+    match std::env::var(WEIGHT_IPC_SCOPE_ENV).ok().as_deref() {
+        Some("base") => IpcSkip::Base,
+        Some("mtp") => IpcSkip::Mtp,
+        Some("both") | None | Some("") => IpcSkip::Both,
+        _ => IpcSkip::None,
+    }
 }
 
 fn quote_available(live: u64, mapped: u64, resident: bool) -> u64 {
@@ -233,6 +291,152 @@ fn env_u32(name: &str, fallback: u32, min: u32, max: u32) -> u32 {
     parsed
 }
 
+fn qwen_qsa_score_rows(capacity: u32) -> u32 {
+    if std::env::var_os(QWEN_QSA_NO_FUSED_ENV).is_some() {
+        return capacity;
+    }
+    capacity.min(QWEN_QSA_SCORE_ROWS)
+}
+
+// C `qwen4exp_graph_bytes_estimate`. Each continuous bank owns one copy.
+fn qwen_graph_bytes(shape: Shape, ctx: u32, cap: u32) -> u64 {
+    if ctx < 4 || cap == 0 || cap > ctx {
+        return 0;
+    }
+    let p = u64::from(cap);
+    let ctx = u64::from(ctx);
+    let hidden = u64::from(shape.n_embd);
+    let hc = u64::from(shape.n_hc);
+    let width = hidden.saturating_mul(hc);
+    let blocks = ctx / QWEN_GRAPH_RATIO;
+    let selected_blocks = blocks.min(QWEN_GRAPH_SELECTED_BLOCKS_MAX);
+    let selected_tokens = u64::from(shape.n_indexer_top_k).saturating_add(QWEN_GRAPH_RATIO - 1);
+    let index_q =
+        u64::from(shape.n_indexer_head).saturating_mul(u64::from(shape.n_indexer_head_dim));
+    let index_qk = index_q.saturating_add(u64::from(shape.n_indexer_head_dim));
+    let q = u64::from(shape.n_head).saturating_mul(u64::from(shape.n_head_dim));
+    let kv = u64::from(shape.n_head_kv).saturating_mul(u64::from(shape.n_head_dim));
+    let key_dim = QWEN_GDN_KEY_HEADS.saturating_mul(QWEN_GDN_HEAD);
+    let value_dim = QWEN_GDN_VALUE_HEADS.saturating_mul(QWEN_GDN_HEAD);
+    let conv_dim = key_dim.saturating_mul(2).saturating_add(value_dim);
+    let qsa_layers = u64::from(shape.n_full_attn_count);
+    let gdn_layers = u64::from(shape.n_layer).saturating_sub(qsa_layers);
+    let score_rows = u64::from(qwen_qsa_score_rows(cap));
+
+    let mut bytes = 0u64;
+    bytes = bytes.saturating_add(p.saturating_mul(SIZEOF_I32));
+    bytes = bytes.saturating_add(
+        p.saturating_mul(
+            hidden
+                .saturating_add(width.saturating_mul(2))
+                .saturating_add(hidden),
+        )
+        .saturating_mul(SIZEOF_F32),
+    );
+    bytes = bytes.saturating_add(
+        2u64.saturating_mul(u64::from(shape.n_vocab))
+            .saturating_mul(SIZEOF_F32),
+    );
+    bytes = bytes.saturating_add(
+        p.saturating_mul(
+            width
+                .saturating_mul(2)
+                .saturating_add(QWEN_GRAPH_LOWRANK)
+                .saturating_add(hidden)
+                .saturating_add(hc.saturating_mul(2)),
+        )
+        .saturating_mul(SIZEOF_F32),
+    );
+    bytes = bytes.saturating_add(p.saturating_mul(hidden).saturating_mul(SIZEOF_U16));
+    bytes = bytes.saturating_add(
+        p.saturating_mul(
+            hidden
+                .saturating_mul(2)
+                .saturating_add(width.saturating_mul(6)),
+        )
+        .saturating_mul(SIZEOF_F32),
+    );
+    bytes = bytes.saturating_add(width.saturating_mul(9).saturating_mul(SIZEOF_F32));
+    bytes = bytes.saturating_add(
+        p.saturating_mul(1 + QWEN_PLE_HOST_ID_LANES)
+            .saturating_mul(SIZEOF_U64),
+    );
+    bytes = bytes.saturating_add(
+        p.saturating_mul(
+            conv_dim
+                .saturating_mul(2)
+                .saturating_add(value_dim.saturating_mul(3))
+                .saturating_add(QWEN_GDN_VALUE_HEADS.saturating_mul(4)),
+        )
+        .saturating_mul(SIZEOF_F32),
+    );
+    bytes = bytes.saturating_add(
+        gdn_layers
+            .saturating_mul(
+                conv_dim.saturating_mul(4).saturating_add(
+                    QWEN_GDN_VALUE_HEADS
+                        .saturating_mul(QWEN_GDN_HEAD)
+                        .saturating_mul(QWEN_GDN_HEAD),
+                ),
+            )
+            .saturating_mul(SIZEOF_F32),
+    );
+    bytes = bytes.saturating_add(
+        p.saturating_mul(
+            index_qk
+                .saturating_add(index_q)
+                .saturating_add(q.saturating_mul(5))
+                .saturating_add(kv.saturating_mul(2)),
+        )
+        .saturating_mul(SIZEOF_F32),
+    );
+    bytes = bytes.saturating_add(p.saturating_mul(blocks).saturating_mul(SIZEOF_F32));
+    bytes = bytes.saturating_add(p.saturating_mul(selected_blocks).saturating_mul(SIZEOF_U32));
+    bytes = bytes.saturating_add(p.saturating_mul(selected_tokens).saturating_mul(SIZEOF_I32));
+    bytes = bytes.saturating_add(p.saturating_mul(SIZEOF_U32));
+    bytes = bytes.saturating_add(
+        score_rows
+            .saturating_mul(u64::from(shape.n_head))
+            .saturating_mul(selected_tokens)
+            .saturating_mul(SIZEOF_F32),
+    );
+    bytes = bytes.saturating_add(
+        qsa_layers
+            .saturating_mul(
+                ctx.saturating_mul(u64::from(shape.n_indexer_head_dim))
+                    .saturating_add(blocks.saturating_mul(u64::from(shape.n_indexer_head_dim)))
+                    .saturating_add(ctx.saturating_mul(kv).saturating_mul(2)),
+            )
+            .saturating_mul(SIZEOF_F32),
+    );
+    bytes = bytes.saturating_add(
+        p.saturating_mul(u64::from(shape.n_expert))
+            .saturating_mul(SIZEOF_F32),
+    );
+    bytes = bytes.saturating_add(
+        p.saturating_mul(u64::from(shape.n_expert_used))
+            .saturating_mul(2)
+            .saturating_mul(SIZEOF_F32),
+    );
+    bytes = bytes.saturating_add(
+        p.saturating_mul(u64::from(shape.n_expert_used))
+            .saturating_mul(
+                u64::from(shape.n_ff_exp)
+                    .saturating_mul(3)
+                    .saturating_add(hidden),
+            )
+            .saturating_mul(SIZEOF_F32),
+    );
+    bytes.saturating_add(
+        p.saturating_mul(
+            u64::from(shape.n_ff_shexp)
+                .saturating_mul(3)
+                .saturating_add(hidden),
+        )
+        .saturating_mul(SIZEOF_F32),
+    )
+}
+
 fn bank_kv_bytes(shape: Shape, ctx: u64) -> u64 {
     let row = if shape.n_kv_lora > 0 {
         u64::from(shape.n_kv_lora + shape.n_key_mla + shape.n_value_mla).max(1) * 2
@@ -310,7 +514,7 @@ mod tests {
         assert_eq!(facts.shared_weights_bytes, Some(11 * GIB));
         assert!(facts.per_bank_bytes.unwrap() > 0);
         assert!(facts.mtp_state_bytes.unwrap() > 0);
-        assert!(facts.scratch_bytes.unwrap() > 0);
+        assert_eq!(facts.scratch_bytes, Some(0));
         assert!(facts.checkpoint_pool_bytes.unwrap() > 0);
         assert!(facts.ple_bytes.unwrap() > 0);
         assert_eq!(facts.media_reserve_bytes, Some(0));
@@ -323,7 +527,7 @@ mod tests {
         assert_eq!(quote.available, 100 * GIB);
         assert!(quote.per_bank > 0);
         assert!(quote.mtp_state > 0);
-        assert!(quote.scratch > 0);
+        assert_eq!(quote.scratch, 0);
         assert!(quote.checkpoint_pool > 0);
         assert!(quote.ple > 0);
         assert_eq!(quote.floor, req.mem_floor_gb * GIB);
@@ -599,5 +803,95 @@ mod tests {
             plan.issues
         );
         assert!(!plan.may_listen());
+    }
+
+    fn facts_cost(facts: &EngineFacts, req: &ServingRequest, banks: u32) -> u64 {
+        facts
+            .shared_weights_bytes
+            .unwrap_or(0)
+            .saturating_add(
+                facts
+                    .per_bank_bytes
+                    .unwrap_or(0)
+                    .saturating_mul(u64::from(banks)),
+            )
+            .saturating_add(facts.mtp_state_bytes.unwrap_or(0))
+            .saturating_add(facts.scratch_bytes.unwrap_or(0))
+            .saturating_add(facts.checkpoint_pool_bytes.unwrap_or(0))
+            .saturating_add(facts.ple_bytes.unwrap_or(0))
+            .saturating_add(facts.media_reserve_bytes.unwrap_or(0))
+            .saturating_add(req.mem_floor_gb.saturating_mul(GIB))
+    }
+
+    #[test]
+    fn qwen_two_bank_quote_charges_each_graph() {
+        let _chunk = EnvGuard::set(QWEN_PREFILL_CHUNK_ENV, "8192");
+        let mut req = ServingRequest::default();
+        req.mem_floor_gb = 0;
+        let facts = fill_qwen(&req, qwen_host(None));
+        let kv = bank_kv_bytes(SHAPE_QWEN38_FLASH_NEXT, req.ctx.max(1) as u64);
+        let per_bank = facts.per_bank_bytes.unwrap();
+        assert_eq!(facts.scratch_bytes, Some(0));
+        assert_eq!(facts.checkpoint_pool_bytes, Some(kv));
+        assert!(per_bank > kv, "each bank owns a graph, not only KV");
+        assert_eq!(
+            facts_cost(&facts, &req, 2) - facts_cost(&facts, &req, 1),
+            per_bank
+        );
+
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        let quote = plan.quote.expect("quote");
+        assert_eq!(quote.scratch, 0);
+        assert_eq!(quote.per_bank, per_bank);
+        assert_eq!(quote.total, facts_cost(&facts, &req, quote.banks));
+    }
+
+    #[test]
+    fn qwen_tight_budget_does_not_quote_two_graphs() {
+        let _chunk = EnvGuard::set(QWEN_PREFILL_CHUNK_ENV, "8192");
+        let mut req = ServingRequest::default();
+        req.mem_floor_gb = 0;
+        let sized = fill_qwen(&req, qwen_host(None));
+        let kv = bank_kv_bytes(SHAPE_QWEN38_FLASH_NEXT, req.ctx.max(1) as u64);
+        let per_bank = sized.per_bank_bytes.unwrap();
+        assert!(per_bank > kv);
+        let cost1 = facts_cost(&sized, &req, 1);
+        let cost2 = facts_cost(&sized, &req, 2);
+        assert!(
+            cost2 > cost1 + kv,
+            "second bank must add a graph, not only KV"
+        );
+
+        let mut host = qwen_host(None);
+        host.available_bytes = cost1 + (per_bank - kv) / 2;
+        assert!(host.available_bytes >= cost1);
+        assert!(host.available_bytes < cost2);
+        let facts = fill_qwen(&req, host);
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert_eq!(plan.effective.max_seqs, 1, "{:?}", plan.to_json());
+        assert!(
+            !plan.issues.iter().any(|i| i.code == "quote_overflow"),
+            "{:?}",
+            plan.issues
+        );
+    }
+
+    #[test]
+    fn qwen_env_allows_wider_yield() {
+        let _chunk = EnvGuard::set(QWEN_PREFILL_CHUNK_ENV, "1024");
+        let mut req = ServingRequest::default();
+        req.sched_chunk = Some(512);
+        let facts = fill_qwen(&req, qwen_host(None));
+        assert_eq!(facts.native_chunk, Some(1024));
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert!(
+            !plan.issues.iter().any(|i| i.code == "chunk_past_native"),
+            "{:?}",
+            plan.issues
+        );
+        assert!(plan.may_listen(), "{:?}", plan.issues);
     }
 }
