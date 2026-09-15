@@ -21,6 +21,7 @@ pub const LAYOUT_QWEN4EXP: u32 = 0x334e_5751; /* "QWN3" */
 // Native restore also checks the effective PLE format; the host prefix is shared.
 const LAYOUT_QWEN_FP8: u32 = 0x3346_5751; /* "QWF3" */
 pub const LAYOUT_STEP37: u32 = 0x3350_5453; /* "STP3" */
+pub const LAYOUT_LING3VL: u32 = 0x3347_4e4c; /* "LNG3" */
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PayloadLayout {
@@ -31,6 +32,7 @@ pub enum PayloadLayout {
     Dots3,
     Qwen4Exp,
     Step37,
+    Ling3Vl,
 }
 
 impl PayloadLayout {
@@ -42,6 +44,7 @@ impl PayloadLayout {
             LAYOUT_DOTS3 => Self::Dots3,
             LAYOUT_QWEN4EXP | LAYOUT_QWEN_FP8 => Self::Qwen4Exp,
             LAYOUT_STEP37 => Self::Step37,
+            LAYOUT_LING3VL => Self::Ling3Vl,
             _ => Self::DeepSeek,
         }
     }
@@ -55,6 +58,7 @@ impl PayloadLayout {
             Self::Dots3 => ModelFamily::Dots3Note,
             Self::Qwen4Exp => ModelFamily::Qwen4Exp,
             Self::Step37 => ModelFamily::Step37,
+            Self::Ling3Vl => ModelFamily::Ling3Vl,
         }
     }
 
@@ -236,7 +240,8 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
         | PayloadLayout::Exaone
         | PayloadLayout::Motif3
         | PayloadLayout::Dots3
-        | PayloadLayout::Step37 => {
+        | PayloadLayout::Step37
+        | PayloadLayout::Ling3Vl => {
             if p.fields[12] != p.fields[7] {
                 return Err(err("session payload token count does not match live rows"));
             }

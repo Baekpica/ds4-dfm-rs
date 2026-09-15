@@ -1443,6 +1443,7 @@ impl Model {
         let marker = match self.family {
             ModelFamily::Inkling => INKLING_IMAGE_TOKEN,
             ModelFamily::Glm53 => GLM_IMAGE_TOKEN,
+            ModelFamily::Ling3Vl => ling3vl::IMAGE_TOKEN as i32,
             _ => {
                 return Err(Error {
                     code: 1,
@@ -1698,8 +1699,10 @@ const fn ledger_ctx(configured: i32, native_effective: i32) -> i32 {
 }
 
 impl Session<'_> {
+    /// A failed native step bumps the native generation; the host ledger has
+    /// to follow or a later request could reuse an invalidated checkpoint.
     fn step_failed(&mut self) {
-        if self.host.family != ModelFamily::Step37 {
+        if !matches!(self.host.family, ModelFamily::Step37 | ModelFamily::Ling3Vl) {
             return;
         }
         let generation = self.native_generation();

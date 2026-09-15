@@ -1019,9 +1019,12 @@ pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'sta
         None
     } else {
         match syntax_for_model_id(model_id) {
-            ModelSyntax::Glm53 | ModelSyntax::Inkling | ModelSyntax::Step37 => None,
+            ModelSyntax::Glm53
+            | ModelSyntax::Inkling
+            | ModelSyntax::Step37
+            | ModelSyntax::Ling3Vl => None,
             ModelSyntax::Qwen4Exp => Some("image input requires continuous runtime"),
-            _ => Some("image input is supported only by Qwen4Exp, GLM-5.3, Inkling or Step"),
+            _ => Some("image input is supported only by Qwen4Exp, GLM-5.3, Inkling, Step or Ling"),
         }
     }
 }
@@ -1034,9 +1037,12 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         ModelSyntax::Qwen4Exp | ModelSyntax::Step37 => ChatFormat::Qwen4Exp,
         ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
         ModelSyntax::Inkling => ChatFormat::Inkling,
-        ModelSyntax::DeepSeek | ModelSyntax::Motif3 | ModelSyntax::Dots3 | ModelSyntax::Glm53 => {
-            ChatFormat::DeepSeek
-        }
+        // Ling shares GLM's thinking and tool-call XML.
+        ModelSyntax::DeepSeek
+        | ModelSyntax::Motif3
+        | ModelSyntax::Dots3
+        | ModelSyntax::Glm53
+        | ModelSyntax::Ling3Vl => ChatFormat::DeepSeek,
     }
 }
 
@@ -1115,9 +1121,9 @@ pub(crate) fn thinking_visible_key(
     format: ChatFormat,
     terminal: bool,
 ) -> Option<Vec<u8>> {
-    if syntax == ModelSyntax::Step37 {
-        // Removing reasoning changes Step's history grammar. Re-render its
-        // structured history with Jinja instead of inventing a cached prefix.
+    if matches!(syntax, ModelSyntax::Step37 | ModelSyntax::Ling3Vl) {
+        // Removing reasoning changes these families' history grammar. Re-render
+        // the structured history with Jinja instead of inventing a prefix.
         return None;
     }
     let mut visible = if format == ChatFormat::K2Horizon {
@@ -1634,14 +1640,16 @@ fn prepare_media(
     const GLM_IMAGE_TOKEN: i32 = 154854;
     const INKLING_IMAGE_TOKEN: i32 = 200054;
     const STEP_IMAGE_TOKEN: i32 = 128001;
+    const LING3VL_IMAGE_TOKEN: i32 = 157157;
     const INKLING_AUDIO_TOKEN: i32 = 200053;
     let image_token = match syntax_for_model_id(engine.model_id()) {
         ModelSyntax::Glm53 => GLM_IMAGE_TOKEN,
         ModelSyntax::Inkling => INKLING_IMAGE_TOKEN,
         ModelSyntax::Step37 => STEP_IMAGE_TOKEN,
+        ModelSyntax::Ling3Vl => LING3VL_IMAGE_TOKEN,
         _ => {
             return Err(GenerateError::Unsupported(
-                "serial images require GLM-5.3, Inkling or Step",
+                "serial images require GLM-5.3, Inkling, Step or Ling",
             ))
         }
     };

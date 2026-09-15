@@ -1288,7 +1288,10 @@ pub fn parse_generated_message(
             parse_qwen_generated(text, require_thinking_closed, orders)
         }
         ModelSyntax::K2Horizon => parse_k2_generated(text, require_thinking_closed, orders),
-        ModelSyntax::Glm53 => parse_glm_generated(text, require_thinking_closed),
+        // Ling emits GLM's tool XML, not Qwen's JSON envelope.
+        ModelSyntax::Glm53 | ModelSyntax::Ling3Vl => {
+            parse_glm_generated(text, require_thinking_closed)
+        }
         // Malformed tool envelopes must not become user-visible raw text.
         ModelSyntax::Inkling => return crate::render::inkling::parse(text).unwrap_or_default(),
         ModelSyntax::DeepSeek => {
