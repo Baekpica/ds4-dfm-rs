@@ -8,6 +8,11 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- Adds Ling-3.0-flash-VL (`bailingmoe3`) as the eleventh family: the MQ-Q5
+  three-shard artifact plus its BF16 mmproj, 35 recurrent KDA blocks and 7
+  latent MLA blocks over 512 group-limited sigmoid experts, still-image input
+  through the Qwen3-VL tower, persistent banks, full and partial fork, and
+  disk KV. See [the family contract](docs/ling3-flash-vl.md).
 - Solar Open2: disk-KV restart reuse and HTTP partial fork on one-bank
   workers; stride-walk prefill checkpoints so a final wide chunk still
   captures 4,096-token boundaries.

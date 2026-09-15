@@ -120,6 +120,10 @@ backend small and direct; this is not a generic GGUF runner.
 - `crates/ds4-perf-gpu`: optional profiling-only CUDA calibration/CUPTI helper.
 - `ds4.c`: native engine, GPU state/execution and retained compatibility helpers.
 - `ds4_cli.c`, `ds4_server.c`, `ds4_bench.c`, `ds4_agent.c`: C host oracles.
+- `ds4_ling3vl_*.inc` / `ds4_ling3vl_gpu.cuh`: Ling-3.0-flash-VL graph,
+  bank runtime, image spans and vision tower. Its KDA, latent-attention and
+  routed-MoE stages reuse the Solar/GLM, Motif and Step primitives; only the
+  grouped router, the M-RoPE and the BF16 MLA absorb pair are its own.
 - `ds4_metal.m`: Objective-C Metal runtime and kernel wrappers.
 - `metal/*.metal`: compute kernels.
 - `ds4_cuda.cu`: CUDA backend. Single TU; mirrors `ds4_metal.m`'s role on

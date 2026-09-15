@@ -8,7 +8,8 @@ the inherited C release history and the [release ledger](releases/v0.1.0.md)
 for qualification and workload limits.
 
 The runtime also carries explicit non-DFM family ports, including dots3-note,
-Qwen3.8, GLM 5.3 Flash, K2-Horizon, Inkling Small and Step 3.7 Flash. Inclusion does not classify
+Qwen3.8, GLM 5.3 Flash, K2-Horizon, Inkling Small, Step 3.7 Flash and
+Ling-3.0-flash-VL. Inclusion does not classify
 those source models as Korean DFM. The [repository README](../README.md#supported-model-families)
 defines the exact artifact support scope.
 
@@ -35,6 +36,7 @@ The implementation stays close to upstream's style:
   direct family path;
 - no plugin registry, graph framework, or broad abstraction layer is added;
 - external MTP sidecars require the exact DeepSeek, Inkling or Step family contract;
+  Ling-3.0-flash-VL has no predictor block at all;
   DSpark remains DeepSeek-only. The embedded dots3-note MTP block is bound and
   validated but is not executed yet.
 
@@ -54,6 +56,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | K2-Horizon 375B A23B | `general.architecture=k2-horizon` | full-attention GQA KV, partial NeoX RoPE, shared-expert MoE | persistent one-bank (32K gated) |
 | Inkling Small | `general.architecture=inkling` | MQ85GB source-interleaved GQA, four-tap convolution, embedded media encoders, optional eight-layer MTP-BF16 | serial CUDA; [1,024-context checks](inkling-small.md) |
 | Step 3.7 Flash | `general.architecture=step35` | MQ83 full/sliding GQA, post-SiLU expert clamps, optional Q8 MTP and F16 vision | serial default; opt-in text banks with full/partial fork and disk KV ([serving](step37-serving-2026-09-13.md)); images serial; [artifact scope](step37-initial.md) |
+| Ling-3.0-flash-VL | `general.architecture=bailingmoe3` | 35 recurrent KDA blocks and 7 latent MLA blocks, 512 grouped-sigmoid experts, separate Qwen3-VL mmproj | persistent multi-bank with full/partial fork and disk KV; images serial ([family contract](ling3-flash-vl.md)) |
 
 The scheduler implementation may differ because the model states differ, but
 the operator and client contract is the same. Changing `-m` to a GGUF from a
