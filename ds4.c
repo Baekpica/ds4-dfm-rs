@@ -41803,6 +41803,13 @@ static uint32_t bg_prefill_yield(
     return n;
 }
 
+/* Generic loop: LIVE=0 (or boot 0) drains the admission before decode.
+ * Family loops must do the same, not one native-cap chunk per step. */
+static int bg_prefill_interleave(void) {
+    return bg_prefill_chunk_tokens() != 0u &&
+           bg_prefill_chunk_live_tokens() != 0u;
+}
+
 /* R2 (raw-ring shrink): a chunk of n rows into one bank evicts ring slots
  * [pos-raw_cap] for each written pos; the earliest row's SWA window stays
  * intact iff n + raw_window <= raw_cap.  The ctx sizes raw_cap as
@@ -61093,8 +61100,8 @@ static int solar_engine_continuous_generate(
                 family_cont_publish_empty(ctx, bank, pb, on_done, ud);
                 credit_end[pb] = 0u;
             } else {
-                const uint32_t remain = sb->prefill_len - sb->prefill_off;
-                if (remain != 0u) {
+                while (ok && sb->prefill_off < sb->prefill_len) {
+                    const uint32_t remain = sb->prefill_len - sb->prefill_off;
                     uint32_t decoding = 0u;
                     for (uint32_t b = 0; b < MS; b++) {
                         decoding += bank[b].phase == FAMILY_CONT_DECODE;
@@ -61152,6 +61159,12 @@ static int solar_engine_continuous_generate(
                         (void)solar_batch_runtime_capture_checkpoint(
                             rt, pb, pos + n, false, ctx->serial_reserve);
                     }
+                    if (bg_prefill_interleave()) {
+                        break;
+                    }
+                }
+                if (!ok) {
+                    break;
                 }
 
                 if (sb->prefill_off == sb->prefill_len) {
@@ -61878,8 +61891,8 @@ static int family_banked_engine_continuous_generate(
             if (cb->alive && !cb->alive(ud, cb->user)) {
                 family_cont_publish_empty(ctx, bank, pb, on_done, ud);
             } else {
-                const uint32_t remain = cb->prefill_len - cb->prefill_off;
-                if (remain != 0u) {
+                while (ok && cb->prefill_off < cb->prefill_len) {
+                    const uint32_t remain = cb->prefill_len - cb->prefill_off;
                     uint32_t decoding = 0u;
                     for (uint32_t b = 0; b < MS; b++) {
                         decoding += bank[b].phase == FAMILY_CONT_DECODE;
@@ -61920,6 +61933,12 @@ static int family_banked_engine_continuous_generate(
                         family_banked_checkpoint_due(ctx, pos, pos + n))
                         family_banked_capture_checkpoint(
                             ctx, pb, pos + n, false);
+                    if (bg_prefill_interleave()) {
+                        break;
+                    }
+                }
+                if (!ok) {
+                    break;
                 }
                 if (cb->prefill_off == cb->prefill_len) {
                     if (!family_banked_logits_valid(ctx, pb)) {
