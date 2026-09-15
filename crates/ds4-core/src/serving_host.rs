@@ -41,6 +41,10 @@ const INKLING_NATIVE_MAX: u32 = 8192;
 const INKLING_REL_DIM: u64 = 16;
 const INKLING_GLOBAL_ROWS: u64 = 1024;
 const INKLING_DRAFT_GLOBALS: u64 = 2;
+const INKLING_MEDIA_ROWS: u64 = 8192;
+const INKLING_MEDIA_INPUTS: u64 = 4;
+const INKLING_IMAGE_VALUES: u64 = 2 * 40 * 40 * 3;
+const INKLING_DECODE_LIMIT: u64 = 128 * MIB;
 const STEP_VISION_EDGE: u64 = 728;
 const STEP_VISION_PATCH: u64 = 14;
 const STEP_VISION_DIM: u64 = 1536;
@@ -273,6 +277,12 @@ pub fn fill_quote_facts(
         let (reserve, extra) = shape.map(|s| qwen_media_bytes(s, req)).unwrap_or((GIB, 0));
         media_extra = extra;
         reserve
+    } else if caps.family == ModelFamily::Inkling {
+        if req.backend == Backend::Cuda {
+            shape.map(|s| inkling_media_bytes(s, ctx)).unwrap_or(GIB)
+        } else {
+            0
+        }
     } else if caps.family == ModelFamily::Step37 {
         if host.vision || facts.vision_loaded {
             shape.map(|s| step_media_bytes(s, ctx)).unwrap_or(GIB)
@@ -1162,6 +1172,21 @@ fn solar_split_bytes(s: Shape, ctx: u64, backend: Backend) -> u64 {
             .unwrap_or(64)
     };
     u64::from(s.n_head) * ctx.div_ceil(chunk) * (u64::from(s.n_head_dim) + 2) * SIZEOF_F32
+}
+
+// prepare_media retains all normalized images through synchronous native
+// encoding/prefill. Bound four inputs and the image-or-audio span by context.
+fn inkling_media_bytes(s: Shape, ctx: u64) -> u64 {
+    let rows = ctx.min(INKLING_MEDIA_INPUTS * INKLING_MEDIA_ROWS);
+    let pixels = rows * INKLING_IMAGE_VALUES * SIZEOF_F32;
+    let projected = rows * u64::from(s.n_embd) * SIZEOF_F32;
+    let pointers = ctx * std::mem::size_of::<usize>() as u64;
+    // Two native image buffers, each 16 patches of 2*8*8*128 floats.
+    let encoder = rows.min(16) * 2 * (2 * 8 * 8 * 128) * SIZEOF_F32;
+    // Decoder working/output buffers or EXIF/RGB copies can overlap, each
+    // bounded by 128 MiB. They finish before projected features are created.
+    // Audio's 80 codes/frame, waveform/FFT and encoder fit under these bounds.
+    pixels + (2 * INKLING_DECODE_LIMIT).max(projected + pointers + encoder)
 }
 
 // Embedded vision is always available on Qwen CUDA, with up to four images.
@@ -2202,6 +2227,43 @@ mod tests {
             .env_overrides()
             .iter()
             .any(|(k, v)| k == "DS4_SERVER_FORK_PARTIAL" && v == "1"));
+    }
+
+    #[test]
+    fn inkling_embedded_media_reserve() {
+        let _env = lock_test_env();
+        let _floor = EnvGuard::set(SESSION_FIT_ENV, "0");
+        let caps = serving_caps(ModelFamily::Inkling, Variant::InklingSmall);
+        for (ctx, expected) in [
+            (1024, 307_757_056),
+            (8192, 583_008_256),
+            (16384, 899_809_280),
+            (32768, 1_797_521_408),
+            (65536, 1_797_783_552),
+        ] {
+            let req = ServingRequest {
+                ctx,
+                mem_floor_gb: 0,
+                ..ServingRequest::default()
+            };
+            let mut facts = fill_family(
+                ModelFamily::Inkling,
+                Variant::InklingSmall,
+                SHAPE_INKLING_SMALL,
+                &req,
+                qwen_host(None),
+            );
+            assert!(!caps.media_serial);
+            assert_eq!(facts.media_reserve_bytes, Some(expected));
+            facts.host_available_bytes = Some(facts_cost(&facts, &req, 1) - 1);
+            assert!(resolve_plan(&req, Some(caps), &facts)
+                .issues
+                .iter()
+                .any(|issue| issue.code == "quote_overflow"));
+            let resident = resident_runtime(&facts);
+            facts.media_reserve_bytes = Some(0);
+            assert_eq!(resident_runtime(&facts), resident);
+        }
     }
 
     #[test]
