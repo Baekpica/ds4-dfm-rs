@@ -27,6 +27,13 @@ const STEP_PREFILL_CHUNK_ENV: &str = "DS4_STEP37_PREFILL_CHUNK";
 const INKLING_PREFILL_CHUNK_ENV: &str = "DS4_INKLING_PREFILL_CHUNK";
 const QWEN_NATIVE_DEFAULT: u32 = 256;
 const QWEN_NATIVE_MAX: u32 = 16384;
+const QWEN_IMAGE_MAX_PIXELS: u64 = 16_777_216;
+const QWEN_IMAGE_MAX_COUNT: u64 = 4;
+const QWEN_IMAGE_FACTOR: u64 = 32;
+const QWEN_IMAGE_MAX_AXIS: u64 = 65536;
+const QWEN_VISION_PATCH: u64 = 3 * 2 * 16 * 16;
+const QWEN_VISION_HIDDEN: u64 = 1152;
+const QWEN_VISION_FF: u64 = 4304;
 const STEP_NATIVE_DEFAULT: u32 = 4096;
 const STEP_NATIVE_MAX: u32 = 4096;
 const INKLING_NATIVE_DEFAULT: u32 = 1024;
@@ -261,7 +268,11 @@ pub fn fill_quote_facts(
         }
         _ => (kv, 0, 0, 0),
     };
-    let media = if caps.family == ModelFamily::Step37 {
+    let media = if caps.family == ModelFamily::Qwen4Exp {
+        shape
+            .map(|s| qwen_media_bytes(s, req, caps, facts))
+            .unwrap_or(GIB)
+    } else if caps.family == ModelFamily::Step37 {
         if host.vision || facts.vision_loaded {
             shape.map(|s| step_media_bytes(s, ctx)).unwrap_or(GIB)
         } else {
@@ -1099,6 +1110,40 @@ fn solar_split_bytes(s: Shape, ctx: u64, backend: Backend) -> u64 {
     u64::from(s.n_head) * ctx.div_ceil(chunk) * (u64::from(s.n_head_dim) + 2) * SIZEOF_F32
 }
 
+// Embedded vision is always available on Qwen CUDA, with up to four images.
+// Match qwen4exp_graph_prepare_images, bounding image rows by prompt capacity.
+fn qwen_media_bytes(s: Shape, req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts) -> u64 {
+    let ctx = req.ctx.max(1) as u64;
+    if req.backend != Backend::Cuda || ctx < 64 {
+        return 0;
+    }
+    let tokens_per_image = QWEN_IMAGE_MAX_PIXELS / QWEN_IMAGE_FACTOR.pow(2);
+    let features = ctx.min(QWEN_IMAGE_MAX_COUNT * tokens_per_image);
+    let patches = 4 * features;
+    let row = 2 * QWEN_VISION_PATCH + 5 * QWEN_VISION_HIDDEN + QWEN_VISION_FF + 24;
+    // Pixel/aspect limits bound every axis below 65536. Nearest-32 rounding
+    // can add at most 16 columns to the horizontal resize intermediate.
+    let horizontal = QWEN_IMAGE_MAX_PIXELS + (QWEN_IMAGE_FACTOR / 2) * QWEN_IMAGE_MAX_AXIS;
+    let resize = 9 * QWEN_IMAGE_MAX_PIXELS + 3 * horizontal + 32 * 4 * QWEN_IMAGE_MAX_AXIS;
+    let projected = features * u64::from(s.n_embd) * SIZEOF_F32;
+    let mut banks = 1;
+    if quote_batch_alloc(req, caps, facts) {
+        let want = match req.max_seqs {
+            MaxSeqs::Off => 1,
+            MaxSeqs::Auto => caps.qualified_banks.unwrap_or(DEFAULT_MAX_SEQS),
+            MaxSeqs::Fixed(n) => n.max(1),
+        };
+        banks = facts.banks_fitted.unwrap_or(want).min(want).max(1);
+    }
+    // Vision encoding is synchronous; other banks retain only projected
+    // features and M-RoPE rows. None of this lazy reserve is resident credit.
+    patches * row * SIZEOF_F32
+        + projected
+        + 6 * ctx * SIZEOF_I32
+        + resize
+        + u64::from(banks - 1) * (projected + 3 * ctx * SIZEOF_I32)
+}
+
 // Maximum glm53_vision_smart_resize grid: 8000 merged tokens, four patches
 // each. Encoder buffers: patch; a/b/q/k/v/attention; QKV; gate/up/mid.
 // The merger reuses these same allocations.
@@ -1597,7 +1642,7 @@ mod tests {
         assert_eq!(facts.scratch_bytes, Some(0));
         assert!(facts.checkpoint_pool_bytes.unwrap() > 0);
         assert!(facts.ple_bytes.unwrap() > 0);
-        assert_eq!(facts.media_reserve_bytes, Some(0));
+        assert!(facts.media_reserve_bytes.unwrap() > 0);
         assert_eq!(facts.host_available_bytes, Some(100 * GIB));
         assert_eq!(facts.native_chunk, Some(QWEN_NATIVE_DEFAULT));
 
@@ -2110,6 +2155,36 @@ mod tests {
     }
 
     #[test]
+    fn qwen_embedded_vision_reserve() {
+        let _env = lock_test_env();
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        // Native vision charge plus the bounded decoder/resize peak. Width
+        // two also retains one bank's projected features and M-RoPE rows.
+        for (ctx, serial, two_banks) in [
+            (1024, 438_984_704, 449_482_752),
+            (16384, 3_830_841_344, 3_998_810_112),
+            (65536, 14_684_782_592, 15_356_657_664),
+            (262144, 14_689_501_184, 15_363_735_552),
+        ] {
+            for (max_seqs, expected) in [(MaxSeqs::Off, serial), (MaxSeqs::Auto, two_banks)] {
+                let req = ServingRequest {
+                    ctx,
+                    max_seqs,
+                    ..ServingRequest::default()
+                };
+                let mut facts = fill_qwen(&req, qwen_host(None));
+                assert!(!caps.media_serial);
+                assert_eq!(facts.media_reserve_bytes, Some(expected));
+                facts.host_available_bytes = Some(facts_cost(&facts, &req, 1) - 1);
+                assert!(resolve_plan(&req, Some(caps), &facts).has_errors());
+                let resident = resident_runtime(&facts);
+                facts.media_reserve_bytes = Some(0);
+                assert_eq!(resident_runtime(&facts), resident);
+            }
+        }
+    }
+
+    #[test]
     fn cpu_prefill_reserves_full_rows() {
         let _env = lock_test_env();
         for shape in [crate::shape::SHAPE_FLASH, crate::shape::SHAPE_PRO] {
@@ -2375,6 +2450,11 @@ mod tests {
             },
         );
         credit_resident(&mut facts, leftover, mapped);
+        assert!(resolve_plan(&req, Some(caps), &facts).has_errors());
+        // Open banks do not pay for lazy image workspaces. Supply that
+        // reserve in live memory before checking resident runtime credit.
+        let with_media = leftover + facts.media_reserve_bytes.unwrap();
+        credit_resident(&mut facts, with_media, mapped);
         let plan = resolve_plan(&req, Some(caps), &facts);
         assert!(
             !plan.issues.iter().any(|i| i.code == "quote_overflow"),
