@@ -38,6 +38,7 @@ const STEP_VISION_DIM: u64 = 1536;
 const STEP_VISION_FFN: u64 = 8960;
 const STEP_MEDIA_ROWS: u64 = 8192;
 const GLM_NATIVE_DEFAULT: u32 = 2048;
+const GLM_ATTENTION_PERIOD: u32 = 4;
 const EXAONE_PREFILL_CHUNK_ENV: &str = "DS4_EXAONE_PREFILL_CHUNK";
 const EXAONE_NATIVE_DEFAULT: u32 = 512;
 const K2_NATIVE_DEFAULT: u32 = 1024;
@@ -52,6 +53,9 @@ const FIT_DERIVED_ENV: &str = "DS4_BATCH_FIT_HEADROOM_DERIVED";
 const FIT_BURST_ENV: &str = "DS4_BATCH_FIT_BURST_MB";
 const FIT_STATIC_MB: u64 = 6144;
 const FIT_BURST_MB: u64 = 2048;
+const SESSION_FIT_ENV: &str = "DS4_SESSION_GRAPH_FIT";
+const SESSION_HEADROOM_ENV: &str = "DS4_SESSION_GRAPH_HEADROOM_MB";
+const SESSION_HEADROOM_MB: u64 = 1024;
 const DOTS3_PREFILL_CHUNK_ENV: &str = "DS4_DOTS3_PREFILL_CHUNK";
 const DOTS3_NATIVE_DEFAULT: u32 = 4096;
 const DOTS3_NATIVE_MAX: u32 = 8192;
@@ -203,6 +207,7 @@ pub fn fill_quote_facts(
             (if sidecar_loaded { with_mtp } else { base }, 0, 0, 0)
         }
         (ModelFamily::Dots3Note, Some(s)) => (dots3_graph_bytes(s, ctx, native), 0, 0, 0),
+        (ModelFamily::Glm53, Some(s)) => (glm_graph_bytes(s, ctx), 0, 0, 0),
         (_, Some(s)) => {
             let scratch = family_graph_scratch(s, native);
             let pool = if partial { kv } else { 0 };
@@ -943,6 +948,40 @@ fn dots3_graph_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
         + cap * row_i32 * SIZEOF_I32
 }
 
+// C glm53_graph_bytes_estimate: scalar workspace, KDA state/control tensors,
+// and full DSA KV. The trailing prediction layer is not executed.
+fn glm_graph_bytes(s: Shape, ctx: u64) -> u64 {
+    let hidden = u64::from(s.n_embd);
+    let hc_count = u64::from(s.n_hc);
+    let hc = hc_count * hidden;
+    let heads = u64::from(s.n_head);
+    let qdim = heads * u64::from(s.n_key_mla);
+    let kda_head = u64::from(s.n_kda_head_dim);
+    let kda_dim = heads * kda_head;
+    let used = u64::from(s.n_expert_used);
+    let ff = u64::from(s.n_ff_dense).max(used * u64::from(s.n_ff_exp));
+    let floats = 4 * hidden
+        + 4 * hc
+        + 3 * hc_count * hc_count
+        + hc_count
+        + 2 * u64::from(s.n_lora_q)
+        + 2 * u64::from(s.n_kv_lora)
+        + 4 * qdim
+        + 3 * ff
+        + used * hidden
+        + used
+        + u64::from(s.n_vocab);
+    let workspace = (1 + used) * SIZEOF_I32 + floats * SIZEOF_F32;
+    let conv = kda_dim * u64::from(s.n_ssm_conv) * SIZEOF_F32;
+    let controls = 3 * conv + (heads + kda_dim + kda_head) * SIZEOF_F32;
+    let state = kda_dim * kda_head * SIZEOF_F32 + 3 * conv;
+    let exec = s.n_layer.saturating_sub(s.n_nextn_predict);
+    let dsa = (0..exec)
+        .filter(|il| il % GLM_ATTENTION_PERIOD == GLM_ATTENTION_PERIOD - 1)
+        .count() as u64;
+    workspace + (u64::from(exec) - dsa) * (state + controls) + dsa * ctx * qdim * 2 * SIZEOF_U16
+}
+
 // C motif3_graph_memory_estimate, excluding the separately quoted bank caches.
 fn motif_graph_bytes(s: Shape, native: u32) -> u64 {
     let hidden = u64::from(s.n_embd);
@@ -981,9 +1020,10 @@ fn motif_graph_bytes(s: Shape, native: u32) -> u64 {
     (cap * row_f32 + rot + u64::from(s.n_vocab)) * SIZEOF_F32 + cap * (2 + used) * SIZEOF_I32
 }
 
-// Only these bank allocators call ds4_batch_fit_headroom_bytes. This is a
-// reserve, not resident memory: never credit it back after model open.
+// Preserve both bank-fit and serial-fallback margins. These are reserves,
+// not resident memory: never credit them back after model open.
 fn quote_fit_headroom(req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts) -> u64 {
+    let serial = quote_session_headroom(req);
     if !quote_batch_alloc(req, caps, facts)
         || !matches!(
             caps.family,
@@ -993,18 +1033,28 @@ fn quote_fit_headroom(req: &ServingRequest, caps: ServingCaps, facts: &EngineFac
                 | ModelFamily::DeepSeek4
         )
     {
-        return 0;
+        return serial;
     }
     if let Some(mb) = env_nonnegative_mb(FIT_HEADROOM_ENV) {
-        return mb.saturating_mul(MIB);
+        return mb.saturating_mul(MIB).max(serial);
     }
     if std::env::var(FIT_DERIVED_ENV).as_deref() == Ok("0") {
-        return FIT_STATIC_MB * MIB;
+        return (FIT_STATIC_MB * MIB).max(serial);
     }
     let burst = env_nonnegative_mb(FIT_BURST_ENV).unwrap_or(FIT_BURST_MB);
     req.mem_floor_gb
         .saturating_mul(GIB)
         .saturating_add(burst.saturating_mul(MIB))
+        .max(serial)
+}
+
+fn quote_session_headroom(req: &ServingRequest) -> u64 {
+    if req.backend != Backend::Cuda || std::env::var(SESSION_FIT_ENV).as_deref() == Ok("0") {
+        return 0;
+    }
+    env_nonnegative_mb(SESSION_HEADROOM_ENV)
+        .unwrap_or(SESSION_HEADROOM_MB)
+        .saturating_mul(MIB)
 }
 
 // Native atol accepts a signed decimal prefix and maps nonnumeric text to 0.
@@ -1211,9 +1261,9 @@ mod tests {
         resolve_plan, serving_caps, MaxSeqs, MtpMode, PrefixReuse, ReuseKind, PREFILL_CHUNK_FENCE,
     };
     use crate::shape::{
-        Variant, SHAPE_DOTS3_NOTE_PREV, SHAPE_INKLING_SMALL, SHAPE_K2_HORIZON_375B,
-        SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B,
-        SHAPE_STEP37_FLASH,
+        Variant, SHAPE_DOTS3_NOTE_PREV, SHAPE_GLM53_FLASH, SHAPE_INKLING_SMALL,
+        SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_QWEN38_FLASH_NEXT,
+        SHAPE_SOLAR_OPEN2_250B, SHAPE_STEP37_FLASH,
     };
     use std::io::Write;
 
@@ -2141,6 +2191,59 @@ mod tests {
         let caps = serving_caps(family, variant);
         fill_quote_facts(&mut facts, req, caps, Some(shape), host);
         facts
+    }
+
+    #[test]
+    fn glm_quote_matches_native() {
+        let _env = lock_test_env();
+        let caps = serving_caps(ModelFamily::Glm53, Variant::Glm53Flash);
+        let mut req = ServingRequest::default();
+        req.ctx = 2048;
+        req.mem_floor_gb = 0;
+        let mut facts = fill_family(
+            ModelFamily::Glm53,
+            Variant::Glm53Flash,
+            SHAPE_GLM53_FLASH,
+            &req,
+            qwen_host(None),
+        );
+        assert_eq!(
+            facts.per_bank_bytes.unwrap() + facts.scratch_bytes.unwrap(),
+            1_648_433_940
+        );
+        facts.host_available_bytes = Some(facts_cost(&facts, &req, 1) - 1);
+        assert!(resolve_plan(&req, Some(caps), &facts).has_errors());
+    }
+
+    #[test]
+    fn serial_fit_keeps_headroom() {
+        let _env = lock_test_env();
+        let _fit = EnvGuard::unset("DS4_SESSION_GRAPH_FIT");
+        let _margin = EnvGuard::unset("DS4_SESSION_GRAPH_HEADROOM_MB");
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        let mut req = ServingRequest::default();
+        req.max_seqs = MaxSeqs::Off;
+        req.mem_floor_gb = 0;
+        for (key, value, expected) in [
+            ("DS4_SESSION_GRAPH_FIT", "1", GIB),
+            ("DS4_SESSION_GRAPH_HEADROOM_MB", "2048", 2 * GIB),
+            ("DS4_SESSION_GRAPH_FIT", "0", 0),
+        ] {
+            let _setting = EnvGuard::set(key, value);
+            let mut facts = fill_qwen(&req, qwen_host(None));
+            assert_eq!(
+                resolve_plan(&req, Some(caps), &facts).quote.unwrap().floor,
+                expected
+            );
+            facts.host_available_bytes = Some(facts_cost(&facts, &req, 1) - 1);
+            assert!(resolve_plan(&req, Some(caps), &facts).has_errors());
+        }
+        req.backend = Backend::Cpu;
+        let facts = fill_qwen(&req, qwen_host(None));
+        assert_eq!(
+            resolve_plan(&req, Some(caps), &facts).quote.unwrap().floor,
+            0
+        );
     }
 
     #[test]

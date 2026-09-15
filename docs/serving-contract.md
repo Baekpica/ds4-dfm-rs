@@ -42,6 +42,9 @@ the host floor plus a 2 GiB burst reserve. `DS4_BATCH_FIT_HEADROOM_MB`
 overrides that reserve; `DS4_BATCH_FIT_HEADROOM_DERIVED=0` selects 6 GiB,
 otherwise `DS4_BATCH_FIT_BURST_MB` changes the burst. The quote always
 preserves at least `--mem-floor-gb`.
+CUDA serial graph fitting also reserves 1 GiB by default, configurable
+with `DS4_SESSION_GRAPH_HEADROOM_MB` (disabled by `DS4_SESSION_GRAPH_FIT=0`).
+The quote keeps the larger of the applicable serial and batch reserves.
 
 `--cont-width 0` and `DS4_SERVER_COALESCE_MAX=0` keep the legacy serial
 meaning: no bank lane. `DS4_SERVER_CONTINUOUS=0` is narrower — it forces
