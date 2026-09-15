@@ -1232,6 +1232,7 @@ impl ResolvedPlan {
             if let Some(key) = match self.family {
                 Some(ModelFamily::Qwen4Exp) => Some("DS4_QWEN_PREFILL_CHUNK"),
                 Some(ModelFamily::Step37) => Some("DS4_STEP37_PREFILL_CHUNK"),
+                Some(ModelFamily::Ling3Vl) => Some("DS4_LING3VL_PREFILL_CHUNK"),
                 Some(ModelFamily::Inkling) => Some("DS4_INKLING_PREFILL_CHUNK"),
                 Some(ModelFamily::ExaoneMoe) => Some("DS4_EXAONE_PREFILL_CHUNK"),
                 Some(ModelFamily::Motif3) => Some("DS4_MOTIF3_PREFILL_CHUNK"),

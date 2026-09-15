@@ -2017,6 +2017,37 @@ mod tests {
     }
 
     #[test]
+    fn ling_native_chunk_is_published() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset(LING_PREFILL_CHUNK_ENV);
+        let req = ServingRequest {
+            ctx: 8192,
+            native_chunk: Some(1024),
+            ..ServingRequest::default()
+        };
+        let caps = serving_caps(ModelFamily::Ling3Vl, Variant::Ling30FlashVl);
+        let mut facts = EngineFacts::default();
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            caps,
+            Some(SHAPE_LING30_FLASH_VL),
+            QuoteHost {
+                weights_bytes: 78 * GIB,
+                mtp_bytes: 0,
+                available_bytes: 110 * GIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        assert_eq!(facts.native_chunk, Some(1024));
+        let p = resolve_plan(&req, Some(caps), &facts);
+        assert!(p
+            .env_overrides()
+            .contains(&(LING_PREFILL_CHUNK_ENV.into(), "1024".into())));
+    }
+
+    #[test]
     fn fill_quote_facts_names_every_budget() {
         let _env = lock_test_env();
         let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
