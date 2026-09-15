@@ -17,6 +17,8 @@ use crate::Backend;
 const GIB: u64 = 1 << 30;
 const MIB: u64 = 1 << 20;
 const DEFAULT_PLE_CACHE_MB: u64 = 2048;
+const CPU_MAX_THREADS: u64 = 32;
+const CPU_FFN_BATCH_MAX: u64 = 4095;
 const PLE_CACHE_MB_ENV: &str = "DS4_QWEN_PLE_CACHE_MB";
 const PLE_CACHE_MB_512: u64 = 512;
 const PLE_CACHE_MB_1024: u64 = 1024;
@@ -217,7 +219,7 @@ pub fn fill_quote_facts(
         (ModelFamily::Glm53, Some(s)) => (glm_graph_bytes(s, ctx), 0, 0, 0),
         (ModelFamily::DeepSeek4, Some(s)) if req.backend == Backend::Cpu => {
             let (cache, scratch) = deepseek_cpu_bytes(s, ctx);
-            (cache, scratch, 0, 0)
+            (cache, scratch + deepseek_cpu_prefill(s, ctx, scratch), 0, 0)
         }
         (ModelFamily::DeepSeek4, Some(s)) => {
             // The shared graph owns its own caches before bank slabs are fitted.
@@ -426,17 +428,18 @@ pub fn host_available_bytes(backend: Backend) -> u64 {
 
 fn quote_device(avail: u64, device: Option<crate::serving_cuda::Device>) -> u64 {
     let Some(device) = device else {
-        return avail;
+        return 0;
     };
     if device.integrated {
         return avail;
     }
-    quote_ceiling(avail, nvidia_fb_probe(&device.uuid))
+    quote_ceiling(nvidia_fb_probe(&device.uuid))
 }
 
 // Device identity/topology comes from CUDA, never relative RAM/VRAM capacity.
-fn quote_ceiling(avail: u64, device: Option<(u64, u64)>) -> u64 {
-    device.map(|(_, free)| free).unwrap_or(avail)
+fn quote_ceiling(device: Option<(u64, u64)>) -> u64 {
+    // Zero leaves host_available_bytes unset: RAM cannot price an unknown GPU.
+    device.map(|(_, free)| free).unwrap_or(0)
 }
 
 fn nvidia_fb_probe(uuid: &str) -> Option<(u64, u64)> {
@@ -879,6 +882,35 @@ fn deepseek_cpu_bytes(s: Shape, ctx: u64) -> (u64, u64) {
     // block_q8_K is 292 bytes for 256 values; q8_xq uses 32 bytes + F32 scale.
     let quant = (hidden / 256 + used * (ff / 256)) * 292 + q.div_ceil(32) * 36;
     (cache, floats * SIZEOF_F32 + comp + quant)
+}
+
+// CPU prefill holds full-prompt HC rows, independent of the GPU native cap.
+// Bound the attention and FFN peaks, including optional parallel-prefix masks
+// and all 32 native workers. Per-worker decode scratch conservatively covers
+// the smaller token/compressor/indexer temporaries across CPU debug paths.
+fn deepseek_cpu_prefill(s: Shape, ctx: u64, decode: u64) -> u64 {
+    let hidden = u64::from(s.n_embd);
+    let hc = u64::from(s.n_hc);
+    let dim = u64::from(s.n_head_dim);
+    let q = u64::from(s.n_head) * dim;
+    let rank = u64::from(s.n_lora_q);
+    let ff = u64::from(s.n_ff_exp);
+    let used = u64::from(s.n_expert_used);
+    // layer_grouped_out_batch uses eight groups of rank 1024 on CPU.
+    let low = 8 * 1024;
+    let attn_row = 3 * hidden + hc * hidden + 2 * rank + 2 * q + 2 * dim + hc + hc * hc + low;
+    let attn = ctx
+        * (attn_row * SIZEOF_F32
+            + q.max(hidden).max(rank).max(low).div_ceil(32) * 36
+            + (ctx / 4 + 2).div_ceil(8)
+            + 5);
+    let ffn_rows = ctx * (4 * hidden + hc + hc * hc) * SIZEOF_F32;
+    let shared = ctx * (3 * ff * SIZEOF_F32 + hidden.max(ff).div_ceil(32) * 36);
+    // Routed batch holds selected/weight/pairs/ids, F32 mid and Q8_K mirrors.
+    let routed = ctx.min(CPU_FFN_BATCH_MAX)
+        * (used * (ff * SIZEOF_F32 + 20) + (hidden / 256 + used * (ff / 256)) * 292);
+    let ffn = ffn_rows + shared.max(routed).max(ctx * hidden * SIZEOF_F32);
+    3 * ctx * hc * hidden * SIZEOF_F32 + attn.max(ffn) + CPU_MAX_THREADS * decode
 }
 
 // C metal_graph_alloc_bytes_estimate, including its initial cache set and
@@ -1624,7 +1656,10 @@ mod tests {
         assert_eq!(gguf_span_bytes(&a, 2), 140);
 
         let mut facts = EngineFacts::default();
-        let req = ServingRequest::default();
+        let req = ServingRequest {
+            backend: Backend::Cpu,
+            ..ServingRequest::default()
+        };
         let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
         attach_host_quote(
             &mut facts,
@@ -1723,7 +1758,7 @@ mod tests {
     #[test]
     fn host_available_bytes_reads_this_host() {
         let _env = lock_test_env();
-        assert!(host_available_bytes(Backend::Cuda) > 0);
+        assert!(host_available_bytes(Backend::Cpu) > 0);
     }
 
     #[test]
@@ -2075,6 +2110,48 @@ mod tests {
     }
 
     #[test]
+    fn cpu_prefill_reserves_full_rows() {
+        let _env = lock_test_env();
+        for shape in [crate::shape::SHAPE_FLASH, crate::shape::SHAPE_PRO] {
+            for ctx in [8192, 262144] {
+                let req = ServingRequest {
+                    backend: Backend::Cpu,
+                    ctx,
+                    native_chunk: Some(256),
+                    ..ServingRequest::default()
+                };
+                let mut facts =
+                    fill_family(shape.family, shape.variant, shape, &req, qwen_host(None));
+                // All three outer HC buffers and both full-prompt Q/heads
+                // coexist with the session's decode scratch during prefill.
+                let (_, decode) = deepseek_cpu_bytes(shape, ctx as u64);
+                let minimum = decode
+                    + ctx as u64
+                        * SIZEOF_F32
+                        * (3 * shape.n_hc as u64 * shape.n_embd as u64
+                            + 2 * shape.n_head as u64 * shape.n_head_dim as u64);
+                assert!(facts.scratch_bytes.unwrap() >= minimum);
+                facts.host_available_bytes = Some(facts_cost(&facts, &req, 1) - 1);
+                let plan = resolve_plan(
+                    &req,
+                    Some(serving_caps(shape.family, shape.variant)),
+                    &facts,
+                );
+                assert!(plan
+                    .issues
+                    .iter()
+                    .any(|issue| issue.code == "quote_overflow"));
+            }
+        }
+    }
+
+    #[test]
+    fn missing_cuda_memory_is_unknown() {
+        assert_eq!(quote_ceiling(None), 0);
+        assert_eq!(quote_device(50 * GIB, None), 0);
+    }
+
+    #[test]
     fn cpu_deepseek_uses_cpu_buffers() {
         let _env = lock_test_env();
         let _chunk = EnvGuard::unset(SOLAR_PREFILL_CHUNK_ENV);
@@ -2093,7 +2170,8 @@ mod tests {
                 };
                 let facts = fill_family(shape.family, shape.variant, shape, &req, qwen_host(None));
                 assert_eq!(facts.per_bank_bytes, Some(cache));
-                assert_eq!(facts.scratch_bytes, Some(scratch));
+                assert_eq!(deepseek_cpu_bytes(shape, ctx as u64), (cache, scratch));
+                assert!(facts.scratch_bytes.unwrap() > scratch);
                 assert_eq!(facts.mtp_state_bytes, Some(0));
             }
         }
@@ -2101,8 +2179,8 @@ mod tests {
 
     #[test]
     fn equal_ram_vram_is_discrete() {
-        assert_eq!(quote_ceiling(20 * GIB, Some((24 * GIB, GIB))), GIB);
-        assert_eq!(quote_ceiling(20 * GIB, Some((48 * GIB, GIB))), GIB);
+        assert_eq!(quote_ceiling(Some((24 * GIB, GIB))), GIB);
+        assert_eq!(quote_ceiling(Some((48 * GIB, GIB))), GIB);
     }
 
     #[test]
@@ -2590,8 +2668,8 @@ mod tests {
         let avail = 50 * GIB;
         let vram = 24 * GIB;
         let free = 20 * GIB;
-        assert_eq!(quote_ceiling(avail, Some((vram, free))), free);
-        assert_eq!(quote_ceiling(avail, None), avail);
+        assert_eq!(quote_ceiling(Some((vram, free))), free);
+        assert_eq!(quote_ceiling(None), 0);
         assert_eq!(
             quote_device(
                 avail,
@@ -2637,6 +2715,7 @@ mod tests {
         );
         let smi = dir.join("nvidia-smi");
         std::fs::write(&smi, r#"#!/bin/sh
+if [ "$DS4_TEST_SMI_FAIL" = "1" ]; then exit 1; fi
 for arg in "$@"; do
     case "$arg" in
         --id=0|--id=GPU-00000000-0000-0000-0000-000000000000) printf '24576, 20000\n'; exit 0 ;;
@@ -2659,6 +2738,7 @@ exit 1
                 2048,
             ),
             ("GPU-11111111", "FASTEST_FIRST", 2048),
+            ("0", "FASTEST_FIRST", 0),
         ] {
             let child = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
@@ -2678,6 +2758,7 @@ exit 1
                 .env("CUDA_VISIBLE_DEVICES", visible)
                 .env("CUDA_DEVICE_ORDER", order)
                 .env("DS4_TEST_CUDA_FREE", (free * MIB).to_string())
+                .env("DS4_TEST_SMI_FAIL", if free == 0 { "1" } else { "0" })
                 .output()
                 .unwrap();
             assert!(
