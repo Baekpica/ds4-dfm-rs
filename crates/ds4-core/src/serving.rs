@@ -989,6 +989,7 @@ pub fn resolve_plan(
             format!("prefill chunk {requested_boot} is capped at {PREFILL_CHUNK_FENCE}"),
         ));
     }
+    let requested_live = req.sched_chunk_live.unwrap_or(DEFAULT_SCHED_LIVE);
     if let Some(native) = native {
         if req.sched_chunk.is_some() && requested_boot > native {
             issues.push(error(
@@ -996,9 +997,14 @@ pub fn resolve_plan(
                 format!("prefill chunk {requested_boot} exceeds native capacity {native}"),
             ));
         }
+        if req.sched_chunk_live.is_some() && requested_live > native {
+            issues.push(error(
+                "chunk_past_native",
+                format!("live prefill chunk {requested_live} exceeds native capacity {native}"),
+            ));
+        }
     }
     let sched_chunk = snap_verified_chunk(requested_boot, native, req.chunk_fence);
-    let requested_live = req.sched_chunk_live.unwrap_or(DEFAULT_SCHED_LIVE);
     let mut sched_live = snap_verified_chunk(requested_live, native, req.chunk_fence);
     if sched_live > sched_chunk {
         sched_live = sched_chunk;
@@ -2906,6 +2912,27 @@ mod tests {
             .any(|(k, v)| k == "DS4_CONT_PREFILL_CHUNK_LIVE" && v == "1024"));
         assert!(p.effective.sched_chunk <= 1024);
         assert!(p.effective.sched_chunk_live <= 1024);
+    }
+
+    #[test]
+    fn explicit_live_past_native_errors() {
+        // Boot yield sits at native; only the live flag is the oversize yield.
+        let mut req = ServingRequest::default();
+        req.sched_chunk = Some(1024);
+        req.sched_chunk_live = Some(8192);
+        req.native_chunk = Some(1024);
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "chunk_past_native"));
+        assert!(!p.may_listen());
+        assert!(p.effective.sched_chunk_live <= 1024);
+        let env = p.env_overrides();
+        assert!(env.iter().any(|(k, v)| {
+            k == "DS4_CONT_PREFILL_CHUNK_LIVE" && v.parse::<u32>().unwrap() <= 1024
+        }));
+        assert!(!env.iter().any(|(k, v)| {
+            k == "DS4_CONT_PREFILL_CHUNK_LIVE" && v.parse::<u32>().unwrap() > 1024
+        }));
     }
 
     #[test]
