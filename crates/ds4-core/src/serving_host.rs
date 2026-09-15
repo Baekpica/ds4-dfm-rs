@@ -1013,6 +1013,22 @@ fn ling_kda_layers(s: Shape) -> u64 {
         .count() as u64
 }
 
+// C `ling3vl_graph_alloc` control_pool: conv weights, decay, dt_bias and
+// o_norm for each KDA block. Uploaded once; not part of the checkpoint slab.
+fn ling_control_bytes(s: Shape) -> u64 {
+    let heads = u64::from(s.n_head);
+    let kda_head = u64::from(s.n_kda_head_dim.max(1));
+    let kda_dim = heads.saturating_mul(kda_head);
+    let conv = kda_dim
+        .saturating_mul(u64::from(s.n_ssm_conv.max(1)))
+        .saturating_mul(SIZEOF_F32);
+    (conv.saturating_mul(3)
+        + heads.saturating_mul(SIZEOF_F32)
+        + kda_dim.saturating_mul(SIZEOF_F32)
+        + kda_head.saturating_mul(SIZEOF_F32))
+    .saturating_mul(ling_kda_layers(s))
+}
+
 fn ling_latent_bytes(s: Shape, ctx: u64) -> u64 {
     let row = u64::from(s.n_kv_lora).saturating_add(u64::from(s.n_rot));
     let mla = u64::from(s.n_layer).saturating_sub(ling_kda_layers(s));
@@ -1047,6 +1063,7 @@ fn ling_graph_bytes(s: Shape, native: u32) -> u64 {
     let pairs = u64::from(s.n_rot) / 2;
     (pc * (common + family) + pairs + u64::from(s.n_vocab)) * SIZEOF_F32
         + kda_prefill_scratch_bytes(pc, heads, kda_head)
+        + ling_control_bytes(s)
 }
 
 // C `ling3vl_ckpt_init`: 32 slots of the recurrent state, reserved and mapped
@@ -1963,7 +1980,10 @@ mod tests {
         let s = SHAPE_LING30_FLASH_VL;
         assert_eq!(ling_latent_bytes(s, 8192), 66_060_288);
         assert_eq!(ling_state_bytes(s), 80_281_600);
-        assert_eq!(ling_graph_bytes(s, LING_NATIVE_DEFAULT), 1_329_338_496);
+        // C ling3vl_graph_alloc control_pool: 35 KDA layers, not in the
+        // checkpoint slab (that slab is state_bytes only).
+        assert_eq!(ling_control_bytes(s), 7_477_120);
+        assert_eq!(ling_graph_bytes(s, LING_NATIVE_DEFAULT), 1_336_815_616);
         assert_eq!(ling_checkpoint_pool_bytes(s), 80_281_600 * CHECKPOINT_SLOTS);
 
         let mut facts = EngineFacts::default();
@@ -1986,7 +2006,7 @@ mod tests {
                 vision: true,
             },
         );
-        assert_eq!(facts.per_bank_bytes, Some(1_475_680_384));
+        assert_eq!(facts.per_bank_bytes, Some(1_483_157_504));
         assert_eq!(facts.checkpoint_pool_bytes, Some(2_569_011_200));
         // No predictor block, and the graph is per bank rather than shared.
         assert_eq!(facts.mtp_state_bytes, Some(0));

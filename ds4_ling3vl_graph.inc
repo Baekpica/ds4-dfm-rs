@@ -94,6 +94,15 @@ static ds4_context_memory ling3vl_memory(uint32_t ctx, uint32_t cap) {
         sizeof(float);
     m.scratch_bytes += ds4_gpu_solar_kda_prefill_scratch_bytes(
         cap, L3V_HEADS, L3V_KDA_HEAD);
+    /* control_pool: conv weights, decay, dt_bias, o_norm. Persistent per
+     * graph, not in the checkpoint slab. */
+    const uint64_t conv_bytes =
+        (uint64_t)L3V_KDA_DIM * L3V_CONV * sizeof(float);
+    m.scratch_bytes +=
+        (3ull * conv_bytes + (uint64_t)L3V_HEADS * sizeof(float) +
+         (uint64_t)L3V_KDA_DIM * sizeof(float) +
+         (uint64_t)L3V_KDA_HEAD * sizeof(float)) *
+        kda;
     m.total_bytes = m.raw_bytes + m.scratch_bytes;
     return m;
 }
