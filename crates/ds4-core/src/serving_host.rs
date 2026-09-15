@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use crate::gguf::GgufFile;
 use crate::serving::{
     EngineFacts, MtpKind, MtpMode, ReuseKind, ServingCaps, ServingRequest, DEFAULT_SCHED_CHUNK,
-    PREFILL_CHUNK_FENCE,
 };
 use crate::shape::{ModelFamily, Shape};
 use crate::tensors::model_split_sibling_path;
@@ -16,6 +15,16 @@ use crate::tensors::model_split_sibling_path;
 const GIB: u64 = 1 << 30;
 const MIB: u64 = 1 << 20;
 const DEFAULT_PLE_CACHE_MB: u64 = 2048;
+const QWEN_PREFILL_CHUNK_ENV: &str = "DS4_QWEN_PREFILL_CHUNK";
+const STEP_PREFILL_CHUNK_ENV: &str = "DS4_STEP37_PREFILL_CHUNK";
+const INKLING_PREFILL_CHUNK_ENV: &str = "DS4_INKLING_PREFILL_CHUNK";
+const QWEN_NATIVE_DEFAULT: u32 = 256;
+const QWEN_NATIVE_MAX: u32 = 16384;
+const STEP_NATIVE_DEFAULT: u32 = 4096;
+const STEP_NATIVE_MAX: u32 = 4096;
+const INKLING_NATIVE_DEFAULT: u32 = 1024;
+const INKLING_NATIVE_MAX: u32 = 8192;
+const GLM_NATIVE_DEFAULT: u32 = 2048;
 
 /// What the host can gather before `Model::open`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,12 +44,18 @@ pub fn fill_quote_facts(
     shape: Option<Shape>,
     host: QuoteHost,
 ) {
+    // C honors family env (DS4_QWEN_PREFILL_CHUNK), not --native-chunk.
+    // A quoted cap above the rows C will allocate lets --prefill-chunk 512
+    // pass while Qwen still builds 256.
+    let ctx_tokens = req.ctx.max(1) as u32;
+    let runtime = family_native_chunk(caps, ctx_tokens);
     let native = host
         .native_chunk
-        .or(facts.native_chunk)
         .or(req.native_chunk)
-        .unwrap_or_else(|| family_native_chunk(caps));
-    let ctx = req.ctx.max(1) as u64;
+        .unwrap_or(runtime)
+        .min(runtime)
+        .max(1);
+    let ctx = u64::from(ctx_tokens);
     let per_bank = shape.map(|s| bank_kv_bytes(s, ctx)).unwrap_or(0);
     let scratch = shape
         .map(|s| {
@@ -85,9 +100,7 @@ pub fn fill_quote_facts(
     facts.media_reserve_bytes = Some(media);
     // Zero is an unsupported probe, not a host with no RAM.
     facts.host_available_bytes = (host.available_bytes > 0).then_some(host.available_bytes);
-    if facts.native_chunk.is_none() {
-        facts.native_chunk = Some(native.min(PREFILL_CHUNK_FENCE).max(1));
-    }
+    facts.native_chunk = Some(native);
 }
 
 /// Live host observation + GGUF span. Used by the CLI pre-open and post-fit.
@@ -177,14 +190,47 @@ pub fn host_available_bytes() -> u64 {
     meminfo_available()
 }
 
-fn family_native_chunk(caps: ServingCaps) -> u32 {
-    match caps.family {
-        ModelFamily::Qwen4Exp => PREFILL_CHUNK_FENCE,
-        ModelFamily::Step37 => 4096,
-        ModelFamily::Inkling => 1024,
-        ModelFamily::Glm53 => 2048,
+fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
+    let ctx = ctx.max(1);
+    let cap = match caps.family {
+        ModelFamily::Qwen4Exp => env_u32(
+            QWEN_PREFILL_CHUNK_ENV,
+            QWEN_NATIVE_DEFAULT,
+            1,
+            QWEN_NATIVE_MAX,
+        ),
+        ModelFamily::Step37 => env_u32(
+            STEP_PREFILL_CHUNK_ENV,
+            STEP_NATIVE_DEFAULT,
+            1,
+            STEP_NATIVE_MAX,
+        ),
+        ModelFamily::Inkling => env_u32(
+            INKLING_PREFILL_CHUNK_ENV,
+            INKLING_NATIVE_DEFAULT,
+            1,
+            INKLING_NATIVE_MAX,
+        ),
+        ModelFamily::Glm53 => GLM_NATIVE_DEFAULT,
         _ => DEFAULT_SCHED_CHUNK,
+    };
+    cap.min(ctx)
+}
+
+fn env_u32(name: &str, fallback: u32, min: u32, max: u32) -> u32 {
+    let Ok(raw) = std::env::var(name) else {
+        return fallback;
+    };
+    if raw.is_empty() {
+        return fallback;
     }
+    let Ok(parsed) = raw.parse::<u32>() else {
+        return fallback;
+    };
+    if parsed < min || parsed > max {
+        return fallback;
+    }
+    parsed
 }
 
 fn bank_kv_bytes(shape: Shape, ctx: u64) -> u64 {
@@ -238,12 +284,13 @@ fn meminfo_available() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serving::{resolve_plan, serving_caps};
+    use crate::serving::{resolve_plan, serving_caps, PREFILL_CHUNK_FENCE};
     use crate::shape::{Variant, SHAPE_QWEN38_FLASH_NEXT};
     use std::io::Write;
 
     #[test]
     fn fill_quote_facts_names_every_budget() {
+        let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
         let mut facts = EngineFacts::default();
         let req = ServingRequest::default();
         let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
@@ -268,7 +315,7 @@ mod tests {
         assert!(facts.ple_bytes.unwrap() > 0);
         assert_eq!(facts.media_reserve_bytes, Some(0));
         assert_eq!(facts.host_available_bytes, Some(100 * GIB));
-        assert_eq!(facts.native_chunk, Some(PREFILL_CHUNK_FENCE));
+        assert_eq!(facts.native_chunk, Some(QWEN_NATIVE_DEFAULT));
 
         let plan = resolve_plan(&req, Some(caps), &facts);
         let quote = plan.quote.expect("host adapter must produce a quote");
@@ -456,5 +503,101 @@ mod tests {
         );
         assert!(!hot_plan.has_errors(), "{:?}", hot_plan.issues);
         assert_eq!(hot_plan.effective.max_seqs, 2);
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.prev.as_ref() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn qwen_host(native_chunk: Option<u32>) -> QuoteHost {
+        QuoteHost {
+            weights_bytes: 10 * GIB,
+            mtp_bytes: 0,
+            available_bytes: 100 * GIB,
+            native_chunk,
+            vision: false,
+        }
+    }
+
+    fn fill_qwen(req: &ServingRequest, host: QuoteHost) -> EngineFacts {
+        let mut facts = EngineFacts::default();
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        fill_quote_facts(&mut facts, req, caps, Some(SHAPE_QWEN38_FLASH_NEXT), host);
+        facts
+    }
+
+    #[test]
+    fn qwen_native_defaults_to_runtime_256() {
+        let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
+        let req = ServingRequest::default();
+        let facts = fill_qwen(&req, qwen_host(None));
+        let native = QWEN_NATIVE_DEFAULT.min(req.ctx.max(1) as u32);
+        assert_eq!(facts.native_chunk, Some(native));
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert_eq!(plan.effective.native_chunk, Some(native));
+        assert_ne!(plan.effective.native_chunk, Some(PREFILL_CHUNK_FENCE));
+    }
+
+    #[test]
+    fn qwen_native_reads_prefill_chunk_env() {
+        let _chunk = EnvGuard::set(QWEN_PREFILL_CHUNK_ENV, "512");
+        let req = ServingRequest::default();
+        let facts = fill_qwen(&req, qwen_host(None));
+        assert_eq!(facts.native_chunk, Some(512));
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert_eq!(plan.effective.native_chunk, Some(512));
+    }
+
+    #[test]
+    fn qwen_native_chunk_does_not_raise_past_c() {
+        let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
+        let mut req = ServingRequest::default();
+        req.native_chunk = Some(8192);
+        let facts = fill_qwen(&req, qwen_host(Some(8192)));
+        assert_eq!(facts.native_chunk, Some(QWEN_NATIVE_DEFAULT));
+    }
+
+    #[test]
+    fn qwen_explicit_yield_past_runtime_native_errors() {
+        let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
+        let mut req = ServingRequest::default();
+        req.sched_chunk = Some(512);
+        let facts = fill_qwen(&req, qwen_host(None));
+        assert_eq!(facts.native_chunk, Some(QWEN_NATIVE_DEFAULT));
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert!(plan.has_errors(), "{:?}", plan.issues);
+        assert!(
+            plan.issues.iter().any(|i| i.code == "chunk_past_native"),
+            "{:?}",
+            plan.issues
+        );
+        assert!(!plan.may_listen());
     }
 }
