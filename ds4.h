@@ -1338,10 +1338,12 @@ typedef enum {
  * checkpoint is a prefix, only the suffix is evaluated; otherwise the backend
  * state is refilled from scratch. */
 int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen);
-/* Crop spans cover every image row. Always refills; retains GPU features for MTP. */
+/* Encodes each image inside the session, so the projected rows never leave
+ * the device. Always refills. */
 int ds4_session_sync_ling3vl(ds4_session *s, const ds4_tokens *prompt,
                              const ds4_ling3vl_image_input *images,
                              uint32_t image_count, char *err, size_t errlen);
+/* Crop spans cover every image row. Always refills; retains GPU features for MTP. */
 int ds4_session_sync_step37(ds4_session *s, const ds4_tokens *prompt,
                              const ds4_step37_pixels *crops, uint32_t crop_count,
                              char *err, size_t errlen);
