@@ -55,6 +55,9 @@ const FIT_BURST_MB: u64 = 2048;
 const DOTS3_PREFILL_CHUNK_ENV: &str = "DS4_DOTS3_PREFILL_CHUNK";
 const DOTS3_NATIVE_DEFAULT: u32 = 4096;
 const DOTS3_NATIVE_MAX: u32 = 8192;
+const DOTS3_INDEX_ROWS: u64 = 128;
+const DOTS3_PARTIAL_ROWS: u64 = 2;
+const DOTS3_PARTIAL_SPLITS: u64 = 16;
 const FAMILY_NATIVE_MAX: u32 = 16384;
 const QWEN_QSA_NO_FUSED_ENV: &str = "DS4_QWEN_QSA_NO_FUSED";
 const WEIGHT_IPC_MANIFEST_ENV: &str = "DS4_CUDA_WEIGHT_IPC_MANIFEST";
@@ -199,6 +202,7 @@ pub fn fill_quote_facts(
             let (base, with_mtp) = inkling_runtime_bytes(s, ctx, native);
             (if sidecar_loaded { with_mtp } else { base }, 0, 0, 0)
         }
+        (ModelFamily::Dots3Note, Some(s)) => (dots3_graph_bytes(s, ctx, native), 0, 0, 0),
         (_, Some(s)) => {
             let scratch = family_graph_scratch(s, native);
             let pool = if partial { kv } else { 0 };
@@ -763,11 +767,14 @@ fn quote_partial(req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts) -
 }
 
 fn quote_bank_lane(req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts) -> bool {
-    if req.lane == LaneMode::Serial
-        || req.backend != Backend::Cuda
-        || facts.cont_lane == Some(false)
-        || caps.banks == BankLane::Serial
-    {
+    req.lane != LaneMode::Serial
+        && facts.cont_lane != Some(false)
+        && quote_batch_alloc(req, caps, facts)
+}
+
+// Static coalescing still creates banks when the continuous driver is off.
+fn quote_batch_alloc(req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts) -> bool {
+    if req.backend != Backend::Cuda || caps.banks == BankLane::Serial {
         return false;
     }
 
@@ -880,6 +887,62 @@ fn inkling_runtime_bytes(s: Shape, ctx: u64, native: u32) -> (u64, u64) {
     (raw + scratch, mtp)
 }
 
+// C dots3_graph_memory_estimate, plus the decode partial buffer allocated by
+// dots3_graph_alloc. The trailing bound-only MTP block owns no cache/norms.
+fn dots3_graph_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
+    let hidden = u64::from(s.n_embd);
+    let heads = u64::from(s.n_head);
+    let latent = u64::from(s.n_kv_lora);
+    let sliding_latent = u64::from(s.n_swa_kv_lora);
+    let rot = u64::from(s.n_rot);
+    let q_lora = u64::from(s.n_lora_q);
+    let index = u64::from(s.n_indexer_head_dim);
+    let index_heads = u64::from(s.n_indexer_head);
+    let used = u64::from(s.n_expert_used);
+    let ff = u64::from(s.n_ff_exp);
+    let cap = u64::from(native);
+    let mut cache = 0;
+    let mut norms = 0;
+    for il in 0..s.n_layer.saturating_sub(s.n_nextn_predict) {
+        let full = il == 0 || (s.n_swa_period != 0 && il % s.n_swa_period == 1);
+        let layer_latent = if full { latent } else { sliding_latent };
+        let rows = if full {
+            ctx
+        } else {
+            ctx.min(u64::from(s.n_swa) + cap)
+        };
+        cache += rows * (layer_latent + rot) * SIZEOF_U16;
+        norms += q_lora + layer_latent + rot;
+        if full {
+            cache += rows * index * SIZEOF_F32;
+            norms += 2 * index;
+        }
+    }
+    let row_f32 = 6 * hidden
+        + q_lora
+        + heads * u64::from(s.n_key_mla)
+        + 2 * heads * latent
+        + 2 * sliding_latent
+        + 2 * rot
+        + heads * u64::from(s.n_value_mla)
+        + heads
+        + 3 * u64::from(s.n_ff_dense)
+        + 3 * ff
+        + u64::from(s.n_expert)
+        + used
+        + 3 * used * ff
+        + used * hidden
+        + index
+        + index_heads * index
+        + index_heads;
+    let row_i32 = 2 + used + u64::from(s.n_indexer_top_k);
+    let fixed = rot + hidden + u64::from(s.n_vocab) + norms;
+    let partial = DOTS3_PARTIAL_ROWS * DOTS3_PARTIAL_SPLITS * heads * (sliding_latent + 4);
+    cache
+        + (cap * row_f32 + fixed + cap.min(DOTS3_INDEX_ROWS) * ctx + partial) * SIZEOF_F32
+        + cap * row_i32 * SIZEOF_I32
+}
+
 // C motif3_graph_memory_estimate, excluding the separately quoted bank caches.
 fn motif_graph_bytes(s: Shape, native: u32) -> u64 {
     let hidden = u64::from(s.n_embd);
@@ -921,7 +984,7 @@ fn motif_graph_bytes(s: Shape, native: u32) -> u64 {
 // Only these bank allocators call ds4_batch_fit_headroom_bytes. This is a
 // reserve, not resident memory: never credit it back after model open.
 fn quote_fit_headroom(req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts) -> u64 {
-    if !quote_bank_lane(req, caps, facts)
+    if !quote_batch_alloc(req, caps, facts)
         || !matches!(
             caps.family,
             ModelFamily::Motif3
@@ -1148,8 +1211,9 @@ mod tests {
         resolve_plan, serving_caps, MaxSeqs, MtpMode, PrefixReuse, ReuseKind, PREFILL_CHUNK_FENCE,
     };
     use crate::shape::{
-        Variant, SHAPE_INKLING_SMALL, SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_MOTIF3,
-        SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B, SHAPE_STEP37_FLASH,
+        Variant, SHAPE_DOTS3_NOTE_PREV, SHAPE_INKLING_SMALL, SHAPE_K2_HORIZON_375B,
+        SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B,
+        SHAPE_STEP37_FLASH,
     };
     use std::io::Write;
 
@@ -2077,6 +2141,64 @@ mod tests {
         let caps = serving_caps(family, variant);
         fill_quote_facts(&mut facts, req, caps, Some(shape), host);
         facts
+    }
+
+    #[test]
+    fn static_fit_keeps_headroom() {
+        let _env = lock_test_env();
+        let _headroom = EnvGuard::unset(FIT_HEADROOM_ENV);
+        let _derived = EnvGuard::unset(FIT_DERIVED_ENV);
+        let _burst = EnvGuard::unset(FIT_BURST_ENV);
+        let caps = serving_caps(ModelFamily::Motif3, Variant::Motif3);
+        let mut req = ServingRequest::default();
+        req.mem_floor_gb = 4;
+        for lane in [LaneMode::Auto, LaneMode::Serial] {
+            req.lane = lane;
+            let mut facts = EngineFacts {
+                cont_lane: Some(false),
+                ..EngineFacts::default()
+            };
+            fill_quote_facts(&mut facts, &req, caps, Some(SHAPE_MOTIF3), qwen_host(None));
+            let plan = resolve_plan(&req, Some(caps), &facts);
+            assert_eq!(plan.quote.unwrap().floor, 6 * GIB);
+            facts.host_available_bytes = Some(facts_cost(&facts, &req, 2) - 1);
+            assert_eq!(resolve_plan(&req, Some(caps), &facts).effective.max_seqs, 1);
+        }
+        req.max_seqs = MaxSeqs::Off;
+        let facts = fill_family(
+            ModelFamily::Motif3,
+            Variant::Motif3,
+            SHAPE_MOTIF3,
+            &req,
+            qwen_host(None),
+        );
+        assert_eq!(
+            resolve_plan(&req, Some(caps), &facts).quote.unwrap().floor,
+            4 * GIB
+        );
+    }
+
+    #[test]
+    fn dots3_quote_matches_native() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::set(DOTS3_PREFILL_CHUNK_ENV, "4096");
+        let caps = serving_caps(ModelFamily::Dots3Note, Variant::Dots3NotePrev);
+        for (ctx, expected) in [(8192, 6_112_078_720u64), (262144, 11_735_591_808)] {
+            let mut req = ServingRequest::default();
+            req.ctx = ctx;
+            req.mem_floor_gb = 0;
+            let mut facts = fill_family(
+                ModelFamily::Dots3Note,
+                Variant::Dots3NotePrev,
+                SHAPE_DOTS3_NOTE_PREV,
+                &req,
+                qwen_host(None),
+            );
+            let runtime = facts.per_bank_bytes.unwrap() + facts.scratch_bytes.unwrap();
+            assert_eq!(runtime, expected, "ctx={ctx}");
+            facts.host_available_bytes = Some(facts_cost(&facts, &req, 1) - 1);
+            assert!(resolve_plan(&req, Some(caps), &facts).has_errors());
+        }
     }
 
     #[test]
