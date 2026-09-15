@@ -38,6 +38,7 @@ const MOTIF_NATIVE_DEFAULT: u32 = 4096;
 const MOTIF_NATIVE_MAX: u32 = 8192;
 const SOLAR_PREFILL_CHUNK_ENV: &str = "DS4_METAL_PREFILL_CHUNK";
 const SOLAR_NATIVE_DEFAULT: u32 = 2048;
+const SOLAR_KV_FORMAT_ENV: &str = "DS4_SOLAR_KV_FORMAT";
 const DOTS3_PREFILL_CHUNK_ENV: &str = "DS4_DOTS3_PREFILL_CHUNK";
 const DOTS3_NATIVE_DEFAULT: u32 = 4096;
 const DOTS3_NATIVE_MAX: u32 = 8192;
@@ -95,7 +96,14 @@ pub fn fill_quote_facts(
     // Sidecar MTP is off until a path/load exists; family capability alone
     // would charge Step spec graphs that C will not allocate.
     // A draft below spec_draft_min allocates no speculative runtime.
-    let draft = req.mtp_draft.unwrap_or(caps.spec_draft_min);
+    // Without a bank driver the host does not publish an auto Qwen draft.
+    // Explicit drafts still reach native open; its default is one.
+    let default_draft = if caps.mtp == MtpKind::Embedded && !quote_bank_lane(req, caps, facts) {
+        1
+    } else {
+        caps.spec_draft_min
+    };
+    let draft = req.mtp_draft.unwrap_or(default_draft);
     let mtp_on = match caps.mtp {
         MtpKind::Embedded => req.mtp_mode != MtpMode::Off && draft >= caps.spec_draft_min,
         MtpKind::Sidecar | MtpKind::DeepSeek => {
@@ -140,6 +148,15 @@ pub fn fill_quote_facts(
             let scratch = family_graph_scratch(s, native);
             let pool = if partial {
                 solar_checkpoint_pool_bytes(s)
+            } else {
+                0
+            };
+            (kv, scratch, 0, pool)
+        }
+        (ModelFamily::Motif3, Some(s)) => {
+            let scratch = family_graph_scratch(s, native);
+            let pool = if partial {
+                motif_checkpoint_pool_bytes(s)
             } else {
                 0
             };
@@ -677,6 +694,17 @@ fn solar_checkpoint_pool_bytes(shape: Shape) -> u64 {
     solar_checkpoint_slot_bytes(shape).saturating_mul(CHECKPOINT_SLOTS)
 }
 
+// Native checkpoints contain only SWA windows; full prefixes stay in the bank.
+fn motif_checkpoint_pool_bytes(shape: Shape) -> u64 {
+    let sliding = (0..shape.n_layer)
+        .filter(|&il| !motif_layer_is_full(shape, il))
+        .count() as u64;
+    sliding
+        .saturating_mul(u64::from(shape.n_swa))
+        .saturating_mul(motif_kv_row_bytes(shape))
+        .saturating_mul(CHECKPOINT_SLOTS)
+}
+
 // Same gate as apply_env publishing DS4_SERVER_FORK_PARTIAL=1.
 fn quote_partial(req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts) -> bool {
     if caps.reuse != ReuseKind::Partial {
@@ -745,6 +773,25 @@ fn credit_resident(facts: &mut EngineFacts, live: u64, mapped: u64) {
 }
 
 fn bank_kv_bytes(shape: Shape, ctx: u64, native: u32) -> u64 {
+    if shape.family == ModelFamily::SolarOpen2 {
+        let gqa = (0..shape.n_layer).filter(|il| il % 4 == 0).count() as u64;
+        return gqa
+            .saturating_mul(ctx)
+            .saturating_mul(solar_kv_row_bytes(shape))
+            .saturating_add(solar_checkpoint_slot_bytes(shape));
+    }
+    if shape.family == ModelFamily::Motif3 {
+        // Native reserves an extra MTP window even when speculation is off.
+        let sliding = ctx.min(u64::from(shape.n_swa) + 1 + u64::from(native));
+        let rows = (0..=shape.n_layer).fold(0u64, |rows, il| {
+            rows.saturating_add(if motif_layer_is_full(shape, il) {
+                ctx
+            } else {
+                sliding
+            })
+        });
+        return rows.saturating_mul(motif_kv_row_bytes(shape));
+    }
     let row = if shape.n_kv_lora > 0 {
         u64::from(shape.n_kv_lora + shape.n_key_mla + shape.n_value_mla).max(1) * 2
     } else {
@@ -757,6 +804,28 @@ fn bank_kv_bytes(shape: Shape, ctx: u64, native: u32) -> u64 {
         _ => u64::from(shape.n_layer).saturating_mul(ctx),
     };
     tokens.saturating_mul(row)
+}
+
+fn motif_layer_is_full(shape: Shape, il: u32) -> bool {
+    il < shape.n_layer && shape.n_swa_period != 0 && il.is_multiple_of(shape.n_swa_period)
+}
+
+fn motif_kv_row_bytes(shape: Shape) -> u64 {
+    (u64::from(shape.n_kv_lora) + u64::from(shape.n_rot)) * SIZEOF_U16
+}
+
+// Match solar_kv_row_bytes, including the per-head quantization scales.
+fn solar_kv_row_bytes(shape: Shape) -> u64 {
+    let dim = u64::from(shape.n_head_kv) * u64::from(shape.n_head_dim);
+    let scales = u64::from(shape.n_head_kv) * 2 * SIZEOF_U16;
+    let format = std::env::var(SOLAR_KV_FORMAT_ENV).unwrap_or_default();
+    match format.as_str() {
+        "" | "hybrid" | "kfp8-vfp4" | "k-fp8/v-fp4" => dim + dim / 2 + scales,
+        "fp8" | "e4m3" => dim * 2 + scales,
+        "fp4" | "e2m1" => dim + scales,
+        // Unknown values fail native open; keep their quote conservative.
+        _ => dim * 2 * SIZEOF_U16,
+    }
 }
 
 // C `exaone_graph_layer_kv_cap`: 12 LLLG global layers own ctx; the other
@@ -1490,6 +1559,123 @@ mod tests {
             .saturating_mul(CHECKPOINT_SLOTS);
         assert_eq!(pool, want);
         assert!(pool > kv, "32 SWA slots exceed one full-context KV");
+    }
+
+    #[test]
+    fn solar_bank_uses_gqa_and_kda() {
+        let _env = lock_test_env();
+        // Native Solar: 12 GQA layers and 36 fixed recurrent/conv states.
+        let state = 36 * (64 * 128 * 128 + 3 * 64 * 128 * 4) * 4;
+        for (format, row) in [
+            ("hybrid", 1568),
+            ("bf16", 4096),
+            ("fp8", 2080),
+            ("fp4", 1056),
+        ] {
+            let _format = EnvGuard::set("DS4_SOLAR_KV_FORMAT", format);
+            for ctx in [64, 262144] {
+                assert_eq!(
+                    bank_kv_bytes(SHAPE_SOLAR_OPEN2_250B, ctx, 2048),
+                    12 * ctx * row + state,
+                    "{format} ctx={ctx}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn motif_bank_uses_latent_windows() {
+        // Native includes 14 full layers, 39 SWA layers and one MTP window.
+        for ctx in [64u64, 262144] {
+            for native in [256, 4096] {
+                let rows = 14 * ctx + 40 * ctx.min(128 + 1 + u64::from(native));
+                assert_eq!(
+                    bank_kv_bytes(SHAPE_MOTIF3, ctx, native),
+                    rows * (512 + 64) * 2
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn motif_checkpoint_stays_fixed() {
+        let _env = lock_test_env();
+        for ctx in [4096, 262144] {
+            let mut req = ServingRequest::default();
+            req.ctx = ctx;
+            for reuse in [
+                PrefixReuse::Auto,
+                PrefixReuse::Partial,
+                PrefixReuse::Off,
+                PrefixReuse::Exact,
+            ] {
+                req.prefix_reuse = reuse;
+                let facts = fill_family(
+                    ModelFamily::Motif3,
+                    Variant::Motif3,
+                    SHAPE_MOTIF3,
+                    &req,
+                    qwen_host(None),
+                );
+                let expected = if matches!(reuse, PrefixReuse::Auto | PrefixReuse::Partial) {
+                    32 * 39 * 128 * (512 + 64) * 2
+                } else {
+                    0
+                };
+                assert_eq!(
+                    facts.checkpoint_pool_bytes,
+                    Some(expected),
+                    "ctx={ctx} reuse={reuse:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn qwen_static_skips_auto_mtp() {
+        let _env = lock_test_env();
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        for (max_seqs, cont_lane, lane) in [
+            (MaxSeqs::Auto, Some(false), LaneMode::Auto),
+            (MaxSeqs::Off, None, LaneMode::Auto),
+            (MaxSeqs::Auto, None, LaneMode::Serial),
+        ] {
+            let mut req = ServingRequest::default();
+            req.max_seqs = max_seqs;
+            req.lane = lane;
+            let mut off = EngineFacts {
+                cont_lane,
+                ..EngineFacts::default()
+            };
+            req.mtp_mode = MtpMode::Off;
+            fill_quote_facts(
+                &mut off,
+                &req,
+                caps,
+                Some(SHAPE_QWEN38_FLASH_NEXT),
+                qwen_host(None),
+            );
+            let mut auto = EngineFacts {
+                cont_lane,
+                ..EngineFacts::default()
+            };
+            req.mtp_mode = MtpMode::Auto;
+            fill_quote_facts(
+                &mut auto,
+                &req,
+                caps,
+                Some(SHAPE_QWEN38_FLASH_NEXT),
+                qwen_host(None),
+            );
+            assert_eq!(
+                resolve_plan(&req, Some(caps), &auto).effective.mtp_mode,
+                MtpMode::Off
+            );
+            assert_eq!(auto.per_bank_bytes, off.per_bank_bytes);
+            auto.host_available_bytes = Some(facts_cost(&off, &req, 1));
+            let plan = resolve_plan(&req, Some(caps), &auto);
+            assert!(!plan.has_errors(), "{:?}", plan.issues);
+        }
     }
 
     #[test]
