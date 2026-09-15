@@ -63,11 +63,15 @@ requests keep predictor state and use ordinary decode.
   --kv-disk-dir /tmp/ds4-kv --kv-disk-space 32G --mtp-mode auto
 ```
 
-The JSON has `requested`, `effective`, `qualified`, and `issues`.
+The JSON has `requested`, `effective`, `qualified`, `issues`, and when
+the host supplied a memory ceiling, `quote`. `effective.native_chunk` is
+the allocated workspace/graph max, not the scheduler yield.
 `qualified.prompt` is the verified request length when it is smaller
 than configured `--ctx`. A family's session cap is separate from its
 qualified context: GLM sessions refuse anything above 2,048, so the
-shared default is an error there, not a warning.
+shared default is an error there, not a warning. `--native-chunk` sets
+the allocated native capacity so `--check-config` can refuse a yield
+the process cannot run.
 
 ## Request trace
 

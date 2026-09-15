@@ -124,7 +124,7 @@ pub use route::{
 };
 pub use serve::{
     accept_loop, accept_loop_with_engine, accept_loop_with_engine_cont, handle_client,
-    handle_client_inner, listen, ServerConfig, ServerInner,
+    handle_client_inner, listen, listen_if_allowed, ServerConfig, ServerInner,
 };
 #[cfg(feature = "native")]
 pub use serve_cont::ContLane;

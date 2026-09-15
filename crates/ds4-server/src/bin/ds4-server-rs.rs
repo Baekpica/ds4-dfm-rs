@@ -9,7 +9,7 @@ use ds4_core::{
 };
 use ds4_server::kv_cli::DiskKvArgs;
 use ds4_server::{
-    accept_loop, accept_loop_with_engine, accept_loop_with_engine_cont, listen,
+    accept_loop, accept_loop_with_engine, accept_loop_with_engine_cont, listen_if_allowed,
     model_id_from_gguf_path, run_assembled_worker, server_launch, ContLane, DistArgs, NativeDecode,
     ServerConfig, ServerLaunch, WORKER_REQUIRES_MODEL,
 };
@@ -110,6 +110,9 @@ fn main() {
             }
             "--prefill-chunk-live" => {
                 serve_req.sched_chunk_live = Some(positive_chunk(&arg, args.next()));
+            }
+            "--native-chunk" => {
+                serve_req.native_chunk = Some(positive_chunk(&arg, args.next()));
             }
             "--print-plan" => serve_req.print_plan = true,
             "--check-config" => serve_req.check_config = true,
@@ -282,9 +285,9 @@ fn main() {
     eprint!("{}", plan.report());
     if serve_req.check_config {
         println!("{}", plan.to_json());
-        std::process::exit(if plan.has_errors() { 2 } else { 0 });
+        std::process::exit(if plan.may_listen() { 0 } else { 2 });
     }
-    if plan.has_errors() {
+    if !plan.may_listen() {
         eprint!("{}", plan.report());
         cli_error("ds4-server-rs: serving plan rejected unsupported options");
     }
@@ -386,7 +389,7 @@ fn main() {
                     };
                     let fitted = resolve_plan(&serve_req, caps, &facts);
                     eprint!("{}", fitted.report());
-                    if fitted.has_errors() {
+                    if !fitted.may_listen() {
                         cli_error("ds4-server-rs: fitted serving plan rejected");
                     }
                     fitted.apply_env();
@@ -415,7 +418,7 @@ fn main() {
                     };
                     let serial = resolve_plan(&serve_req, caps, &facts);
                     eprint!("{}", serial.report());
-                    if serial.has_errors() {
+                    if !serial.may_listen() {
                         cli_error("ds4-server-rs: serial fallback plan rejected");
                     }
                     serial.apply_env();
@@ -444,13 +447,18 @@ fn main() {
     }
     cfg.stop_requested = Some(ds4_sys::stop_requested);
 
-    let listener = listen(&cfg).unwrap_or_else(|e| {
-        eprintln!(
-            "ds4-server-rs: listen {}:{}: {e}",
-            cfg.listen_host, cfg.listen_port
-        );
-        std::process::exit(1);
-    });
+    let serving = cfg.serving_plan.as_ref().unwrap_or(&plan);
+    let listener = match listen_if_allowed(&cfg, serving) {
+        Ok(Some(listener)) => listener,
+        Ok(None) => cli_error("ds4-server-rs: serving plan rejected unsupported options"),
+        Err(e) => {
+            eprintln!(
+                "ds4-server-rs: listen {}:{}: {e}",
+                cfg.listen_host, cfg.listen_port
+            );
+            std::process::exit(1);
+        }
+    };
     eprintln!(
         "ds4-server-rs: listening on {}:{} model_id={} engine={} host_vocab={} (host continuation registry + incremental live DSML tool stream + corrective retry)",
         cfg.listen_host,
@@ -525,7 +533,7 @@ fn cli_error(message: &str) -> ! {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--vision GGUF] [--mtp GGUF] [--mtp-mode off|auto|on] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [--max-seqs N|auto] [--prefix-reuse off|exact|partial|auto] [--prefill-chunk N] [--prefill-chunk-live N] [--print-plan] [--check-config] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
+        "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--vision GGUF] [--mtp GGUF] [--mtp-mode off|auto|on] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [--max-seqs N|auto] [--prefix-reuse off|exact|partial|auto] [--prefill-chunk N] [--prefill-chunk-live N] [--native-chunk N] [--print-plan] [--check-config] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
 Disk KV: [--kv-disk-dir DIR] [--kv-disk-space-mb N] [--kv-disk-space 32G] [--kv-cache-min-tokens N]\n\
          [--kv-cache-cold-max-tokens N] [--kv-cache-continued-interval-tokens N]\n\
          [--kv-cache-boundary-trim-tokens N]\n\
