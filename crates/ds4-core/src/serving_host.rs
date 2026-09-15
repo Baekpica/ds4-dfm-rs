@@ -436,17 +436,50 @@ fn quote_ceiling(avail: u64, total: u64, device: Option<(u64, u64)>) -> u64 {
 }
 
 fn nvidia_fb_probe() -> Option<(u64, u64)> {
+    // Native serves on CUDA-visible device 0, the first selected index/UUID.
+    // nvidia-smi itself ignores CUDA_VISIBLE_DEVICES, so filter explicitly.
+    let visible = std::env::var("CUDA_VISIBLE_DEVICES").unwrap_or_else(|_| "0".into());
+    let selected = visible.split(',').next()?.trim();
+    if selected.is_empty() || selected.starts_with('-') {
+        return None;
+    }
+    let selected = nvidia_gpu_id(selected)?;
     let out = std::process::Command::new("nvidia-smi")
         .args([
             "--query-gpu=memory.total,memory.free",
             "--format=csv,noheader,nounits",
         ])
+        .arg(format!("--id={selected}"))
         .output()
         .ok()?;
     if !out.status.success() {
         return None;
     }
     parse_nvidia_csv(std::str::from_utf8(&out.stdout).ok()?)
+}
+
+// CUDA accepts unique UUID prefixes; nvidia-smi --id requires the full UUID.
+fn nvidia_gpu_id(selected: &str) -> Option<String> {
+    if !selected.starts_with("GPU-") || selected.len() == 40 {
+        return Some(selected.into());
+    }
+    let out = std::process::Command::new("nvidia-smi")
+        .args(["--query-gpu=uuid", "--format=csv,noheader,nounits"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = std::str::from_utf8(&out.stdout).ok()?;
+    let mut matches = text
+        .lines()
+        .map(str::trim)
+        .filter(|uuid| uuid.starts_with(selected));
+    let found = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(found.into())
 }
 
 fn parse_nvidia_csv(text: &str) -> Option<(u64, u64)> {
@@ -2530,6 +2563,61 @@ mod tests {
             parse_nvidia_csv("24576, 20480\n"),
             Some((24576 * MIB, 20480 * MIB))
         );
+    }
+
+    #[test]
+    fn smi_uses_first_visible_gpu() {
+        let _env = lock_test_env();
+        let dir = std::env::temp_dir().join(format!("ds4-visible-smi-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let smi = dir.join("nvidia-smi");
+        std::fs::write(
+            &smi,
+            r#"#!/bin/sh
+selected=""
+for arg in "$@"; do
+    case "$arg" in
+        --id=*) selected="${arg#--id=}" ;;
+        --query-gpu=uuid) printf 'GPU-00000000-2222-3333-4444-555555555555\nGPU-11111111-2222-3333-4444-555555555555\n'; exit 0 ;;
+    esac
+done
+case "$selected" in
+    0) printf '24576, 20000\n' ;;
+    1|GPU-11111111-2222-3333-4444-555555555555) printf '8192, 2048\n' ;;
+    "") printf '24576, 20000\n8192, 2048\n' ;;
+    *) exit 1 ;;
+esac
+"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&smi, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = format!(
+            "{}:{}",
+            dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let _path = EnvGuard::set("PATH", &path);
+        for selected in [
+            "1",
+            "1,0",
+            "GPU-11111111,0",
+            "GPU-11111111-2222-3333-4444-555555555555,0",
+        ] {
+            let _visible = EnvGuard::set("CUDA_VISIBLE_DEVICES", selected);
+            assert_eq!(nvidia_fb_probe(), Some((8192 * MIB, 2048 * MIB)));
+            assert_eq!(host_available_bytes(Backend::Cuda), 2048 * MIB);
+        }
+        for selected in ["", "-1", "-1,0", "invalid", "GPU-", "GPU-ffff"] {
+            let _visible = EnvGuard::set("CUDA_VISIBLE_DEVICES", selected);
+            assert_eq!(nvidia_fb_probe(), None);
+        }
+        let _visible = EnvGuard::unset("CUDA_VISIBLE_DEVICES");
+        assert_eq!(nvidia_fb_probe(), Some((24576 * MIB, 20000 * MIB)));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
