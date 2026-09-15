@@ -24,6 +24,7 @@ mod mem_gov;
 mod payload;
 mod progress;
 mod serving;
+mod serving_host;
 mod session;
 mod shape;
 mod sibling;
@@ -80,6 +81,9 @@ pub use serving::{
     ReuseKind, ReuseMiss, ReuseTaken, ServingCaps, ServingQuote, ServingRequest, SpecLane, Support,
     DEFAULT_BANK_PERSIST, DEFAULT_MAX_SEQS, DEFAULT_MEM_FLOOR_GB, PREFILL_CHUNK_FENCE,
     VERIFIED_PREFILL_CHUNKS,
+};
+pub use serving_host::{
+    attach_host_quote, fill_quote_facts, gguf_span_bytes, host_available_bytes, QuoteHost,
 };
 pub use session::{
     dump_cmd as session_dump_cmd, RewriteKind, SessionBackend, SessionLedger, SyncPlan,

@@ -3,9 +3,10 @@
 //! Incremental live DSML tool projection is host-owned.
 
 use ds4_core::{
-    caps_from_ident, identify_gguf, probe_dspark_sidecar, probe_model_artifact, probe_mtp_sidecar,
-    probe_vision_sidecar, resolve_plan, Backend, DistributedConfig, DistributedRole, Distribution,
-    EngineFacts, MaxSeqs, Model, ModelOpenOption, MtpMode, PrefixReuse, ServingRequest,
+    attach_host_quote, caps_from_ident, identify_gguf, probe_dspark_sidecar, probe_model_artifact,
+    probe_mtp_sidecar, probe_vision_sidecar, resolve_plan, Backend, DistributedConfig,
+    DistributedRole, Distribution, EngineFacts, Identified, MaxSeqs, Model, ModelOpenOption,
+    MtpMode, PrefixReuse, ServingCaps, ServingRequest,
 };
 use ds4_server::kv_cli::DiskKvArgs;
 use ds4_server::{
@@ -13,6 +14,7 @@ use ds4_server::{
     model_id_from_gguf_path, run_assembled_worker, server_launch, ContLane, DistArgs, NativeDecode,
     ServerConfig, ServerLaunch, WORKER_REQUIRES_MODEL,
 };
+use std::path::Path;
 
 fn distributed_config(opt: &ds4_dist::Options) -> Option<DistributedConfig> {
     let role = match opt.role {
@@ -279,6 +281,15 @@ fn main() {
             });
         }
     }
+    apply_host_quote(
+        &mut facts,
+        &serve_req,
+        caps,
+        ident.as_ref(),
+        model_path.as_deref(),
+        mtp_path.as_deref(),
+        vision_path.is_some(),
+    );
     let plan = resolve_plan(&serve_req, caps, &facts);
     plan.apply_env();
     cfg.adopt_plan(&plan);
@@ -380,13 +391,23 @@ fn main() {
                         batch.max_seq(),
                         batch.seq_cap()
                     );
-                    let facts = EngineFacts {
+                    let mut facts = EngineFacts {
                         banks_fitted: Some(batch.max_seq() as u32),
                         seq_cap: Some(batch.seq_cap() as u32),
                         cont_lane: Some(true),
                         partial_reuse: Some(batch.supports_partial_reuse()),
                         ..opened
                     };
+                    let vision = vision_path.is_some() || facts.vision_loaded;
+                    apply_host_quote(
+                        &mut facts,
+                        &serve_req,
+                        caps,
+                        ident.as_ref(),
+                        model_path.as_deref(),
+                        mtp_path.as_deref(),
+                        vision,
+                    );
                     let fitted = resolve_plan(&serve_req, caps, &facts);
                     eprint!("{}", fitted.report());
                     if !fitted.may_listen() {
@@ -410,12 +431,22 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("ds4-server-rs: continuous lane unavailable ({e}); serial only");
-                    let facts = EngineFacts {
+                    let mut facts = EngineFacts {
                         banks_fitted: Some(1),
                         cont_lane: Some(false),
                         partial_reuse: Some(false),
                         ..opened
                     };
+                    let vision = vision_path.is_some() || facts.vision_loaded;
+                    apply_host_quote(
+                        &mut facts,
+                        &serve_req,
+                        caps,
+                        ident.as_ref(),
+                        model_path.as_deref(),
+                        mtp_path.as_deref(),
+                        vision,
+                    );
                     let serial = resolve_plan(&serve_req, caps, &facts);
                     eprint!("{}", serial.report());
                     if !serial.may_listen() {
@@ -524,6 +555,30 @@ fn print_plan(cfg: &ServerConfig) {
     if let Some(plan) = cfg.serving_plan.as_ref() {
         println!("{}", plan.to_json());
     }
+}
+
+fn apply_host_quote(
+    facts: &mut EngineFacts,
+    req: &ServingRequest,
+    caps: Option<ServingCaps>,
+    ident: Option<&Identified>,
+    model_path: Option<&str>,
+    mtp_path: Option<&str>,
+    vision: bool,
+) {
+    let Some(caps) = caps else {
+        return;
+    };
+    attach_host_quote(
+        facts,
+        req,
+        caps,
+        ident.map(|id| id.shape),
+        model_path.map(Path::new),
+        mtp_path.map(Path::new),
+        ident.map(|id| id.split_count).unwrap_or(1),
+        vision,
+    );
 }
 
 fn cli_error(message: &str) -> ! {
