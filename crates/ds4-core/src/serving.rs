@@ -1204,6 +1204,16 @@ impl ResolvedPlan {
         out
     }
 
+    /// Solar `solar_graph_alloc` prefers this over env. 0 means env default.
+    pub fn batch_max_total_tokens(&self, ctx: i32, width: i32) -> i32 {
+        match self.family {
+            Some(ModelFamily::SolarOpen2) => {
+                self.effective.native_chunk.map(|n| n as i32).unwrap_or(0)
+            }
+            _ => ctx.saturating_mul(width),
+        }
+    }
+
     pub fn apply_env(&self) {
         if self.effective.mtp_mode != MtpMode::Off {
             std::env::remove_var("DS4_MTP_SPEC_DISABLE");
@@ -2384,6 +2394,25 @@ mod tests {
             Variant::Step37Flash,
         );
         assert!(p.to_json()["effective"]["native_chunk"].is_null());
+    }
+
+    #[test]
+    fn solar_batch_tokens_use_native_cap() {
+        let mut req = ServingRequest::default();
+        req.native_chunk = Some(256);
+        req.ctx = 8192;
+        let p = plan(req, ModelFamily::SolarOpen2, Variant::SolarOpen2_250B);
+        assert!(
+            p.env_overrides()
+                .iter()
+                .any(|(k, v)| k == "DS4_METAL_PREFILL_CHUNK" && v == "256"),
+            "{:?}",
+            p.env_overrides()
+        );
+        let width = p.effective.max_seqs as i32;
+        let arg = p.batch_max_total_tokens(p.effective.ctx, width);
+        assert_eq!(arg, 256);
+        assert_ne!(arg, p.effective.ctx.saturating_mul(width));
     }
 
     #[test]

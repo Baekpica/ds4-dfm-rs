@@ -388,7 +388,11 @@ fn main() {
             ..facts.clone()
         };
         if cont_width > 0 && backend == Backend::Cuda {
-            match model.batch_ctx_fit(cfg.ctx, cont_width, cfg.ctx.saturating_mul(cont_width)) {
+            match model.batch_ctx_fit(
+                cfg.ctx,
+                cont_width,
+                plan.batch_max_total_tokens(cfg.ctx, cont_width),
+            ) {
                 Ok(batch) => {
                     eprintln!(
                         "ds4-server-rs: continuous lane ready (width={} seq_cap={})",
