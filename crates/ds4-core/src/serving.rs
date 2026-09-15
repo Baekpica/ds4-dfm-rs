@@ -223,6 +223,8 @@ pub struct EngineFacts {
     pub checkpoint_pool_bytes: Option<u64>,
     pub ple_bytes: Option<u64>,
     pub media_reserve_bytes: Option<u64>,
+    /// Lazy media retained by each bank beyond the first; never resident credit.
+    pub media_per_extra_bank_bytes: Option<u64>,
     /// Native fit reserve, including its floor and transient burst allowance.
     pub fit_headroom_bytes: Option<u64>,
     /// When set, `max-seqs=auto` must fit the named budgets under this ceiling.
@@ -1542,8 +1544,8 @@ fn apply_quote(
     banks_opt_in: &mut bool,
     issues: &mut Vec<PlanIssue>,
 ) -> Option<ServingQuote> {
-    let mut quote = serving_quote(req, facts, *max_seqs)?;
-    match quoted_width(*max_seqs, quote) {
+    facts.host_available_bytes?;
+    match quoted_width(*max_seqs, req, facts) {
         Some(n) if n < *max_seqs => {
             if matches!(requested, MaxSeqs::Fixed(_)) {
                 issues.push(error(
@@ -1567,9 +1569,7 @@ fn apply_quote(
         }
         Some(_) => {}
     }
-    quote.banks = *max_seqs;
-    quote.total = quote.cost(*max_seqs);
-    Some(quote)
+    serving_quote(req, facts, *max_seqs)
 }
 
 fn serving_quote(req: &ServingRequest, facts: &EngineFacts, banks: u32) -> Option<ServingQuote> {
@@ -1581,7 +1581,12 @@ fn serving_quote(req: &ServingRequest, facts: &EngineFacts, banks: u32) -> Optio
         scratch: facts.scratch_bytes.unwrap_or(0),
         checkpoint_pool: facts.checkpoint_pool_bytes.unwrap_or(0),
         ple: facts.ple_bytes.unwrap_or(0),
-        media_reserve: facts.media_reserve_bytes.unwrap_or(0),
+        media_reserve: facts.media_reserve_bytes.unwrap_or(0).saturating_add(
+            facts
+                .media_per_extra_bank_bytes
+                .unwrap_or(0)
+                .saturating_mul(u64::from(banks.saturating_sub(1))),
+        ),
         floor: req
             .mem_floor_gb
             .saturating_mul(GIB)
@@ -1594,10 +1599,12 @@ fn serving_quote(req: &ServingRequest, facts: &EngineFacts, banks: u32) -> Optio
     Some(quote)
 }
 
-fn quoted_width(want: u32, quote: ServingQuote) -> Option<u32> {
+fn quoted_width(want: u32, req: &ServingRequest, facts: &EngineFacts) -> Option<u32> {
     let mut n = want.max(1);
     while n >= 1 {
-        if quote.cost(n) <= quote.available {
+        // Reprice lazy per-bank reserves for each candidate, including width 1.
+        let quote = serving_quote(req, facts, n)?;
+        if quote.total <= quote.available {
             return Some(n);
         }
         if n == 1 {

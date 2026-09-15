@@ -268,10 +268,11 @@ pub fn fill_quote_facts(
         }
         _ => (kv, 0, 0, 0),
     };
+    let mut media_extra = 0;
     let media = if caps.family == ModelFamily::Qwen4Exp {
-        shape
-            .map(|s| qwen_media_bytes(s, req, caps, facts))
-            .unwrap_or(GIB)
+        let (reserve, extra) = shape.map(|s| qwen_media_bytes(s, req)).unwrap_or((GIB, 0));
+        media_extra = extra;
+        reserve
     } else if caps.family == ModelFamily::Step37 {
         if host.vision || facts.vision_loaded {
             shape.map(|s| step_media_bytes(s, ctx)).unwrap_or(GIB)
@@ -299,6 +300,7 @@ pub fn fill_quote_facts(
     facts.checkpoint_pool_bytes = Some(checkpoint);
     facts.ple_bytes = Some(ple_cache_bytes(caps));
     facts.media_reserve_bytes = Some(media);
+    facts.media_per_extra_bank_bytes = Some(media_extra);
     facts.fit_headroom_bytes = Some(quote_fit_headroom(req, caps, facts));
     // Zero is an unsupported probe, not a host with no RAM.
     facts.host_available_bytes = (host.available_bytes > 0).then_some(host.available_bytes);
@@ -1112,10 +1114,10 @@ fn solar_split_bytes(s: Shape, ctx: u64, backend: Backend) -> u64 {
 
 // Embedded vision is always available on Qwen CUDA, with up to four images.
 // Match qwen4exp_graph_prepare_images, bounding image rows by prompt capacity.
-fn qwen_media_bytes(s: Shape, req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts) -> u64 {
+fn qwen_media_bytes(s: Shape, req: &ServingRequest) -> (u64, u64) {
     let ctx = req.ctx.max(1) as u64;
     if req.backend != Backend::Cuda || ctx < 64 {
-        return 0;
+        return (0, 0);
     }
     let tokens_per_image = QWEN_IMAGE_MAX_PIXELS / QWEN_IMAGE_FACTOR.pow(2);
     let features = ctx.min(QWEN_IMAGE_MAX_COUNT * tokens_per_image);
@@ -1126,22 +1128,12 @@ fn qwen_media_bytes(s: Shape, req: &ServingRequest, caps: ServingCaps, facts: &E
     let horizontal = QWEN_IMAGE_MAX_PIXELS + (QWEN_IMAGE_FACTOR / 2) * QWEN_IMAGE_MAX_AXIS;
     let resize = 9 * QWEN_IMAGE_MAX_PIXELS + 3 * horizontal + 32 * 4 * QWEN_IMAGE_MAX_AXIS;
     let projected = features * u64::from(s.n_embd) * SIZEOF_F32;
-    let mut banks = 1;
-    if quote_batch_alloc(req, caps, facts) {
-        let want = match req.max_seqs {
-            MaxSeqs::Off => 1,
-            MaxSeqs::Auto => caps.qualified_banks.unwrap_or(DEFAULT_MAX_SEQS),
-            MaxSeqs::Fixed(n) => n.max(1),
-        };
-        banks = facts.banks_fitted.unwrap_or(want).min(want).max(1);
-    }
-    // Vision encoding is synchronous; other banks retain only projected
-    // features and M-RoPE rows. None of this lazy reserve is resident credit.
-    patches * row * SIZEOF_F32
-        + projected
-        + 6 * ctx * SIZEOF_I32
-        + resize
-        + u64::from(banks - 1) * (projected + 3 * ctx * SIZEOF_I32)
+    // Encoding is synchronous. The solver scales other banks' retained
+    // features/M-RoPE with each candidate width; neither is resident credit.
+    (
+        patches * row * SIZEOF_F32 + projected + 6 * ctx * SIZEOF_I32 + resize,
+        projected + 3 * ctx * SIZEOF_I32,
+    )
 }
 
 // Maximum glm53_vision_smart_resize grid: 8000 merged tokens, four patches
@@ -1982,6 +1974,12 @@ mod tests {
             .saturating_add(facts.ple_bytes.unwrap_or(0))
             .saturating_add(facts.media_reserve_bytes.unwrap_or(0))
             .saturating_add(
+                facts
+                    .media_per_extra_bank_bytes
+                    .unwrap_or(0)
+                    .saturating_mul(u64::from(banks.saturating_sub(1))),
+            )
+            .saturating_add(
                 req.mem_floor_gb
                     .saturating_mul(GIB)
                     .max(facts.fit_headroom_bytes.unwrap_or(0)),
@@ -2005,7 +2003,7 @@ mod tests {
         assert!(per_bank > kv, "each bank owns a graph, not only KV");
         assert_eq!(
             facts_cost(&facts, &req, 2) - facts_cost(&facts, &req, 1),
-            per_bank
+            per_bank + facts.media_per_extra_bank_bytes.unwrap()
         );
 
         let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
@@ -2155,6 +2153,28 @@ mod tests {
     }
 
     #[test]
+    fn qwen_auto_shrinks_media_cost() {
+        let _env = lock_test_env();
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        let mut req = ServingRequest {
+            ctx: 65536,
+            ..ServingRequest::default()
+        };
+        let mut facts = fill_qwen(&req, qwen_host(None));
+        let serial_media = 14_684_782_592;
+        let one_bank =
+            facts_cost(&facts, &req, 1) - facts.media_reserve_bytes.unwrap() + serial_media;
+        facts.host_available_bytes = Some(one_bank);
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert!(plan.may_listen(), "{:?}", plan.issues);
+        assert_eq!(plan.effective.max_seqs, 1);
+        assert_eq!(plan.quote.unwrap().media_reserve, serial_media);
+        assert_eq!(plan.quote.unwrap().total, one_bank);
+        req.max_seqs = MaxSeqs::Fixed(2);
+        assert!(resolve_plan(&req, Some(caps), &facts).has_errors());
+    }
+
+    #[test]
     fn qwen_embedded_vision_reserve() {
         let _env = lock_test_env();
         let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
@@ -2174,11 +2194,20 @@ mod tests {
                 };
                 let mut facts = fill_qwen(&req, qwen_host(None));
                 assert!(!caps.media_serial);
-                assert_eq!(facts.media_reserve_bytes, Some(expected));
+                assert_eq!(facts.media_reserve_bytes, Some(serial));
+                facts.host_available_bytes = Some(facts_cost(&facts, &req, 2));
+                assert_eq!(
+                    resolve_plan(&req, Some(caps), &facts)
+                        .quote
+                        .unwrap()
+                        .media_reserve,
+                    expected
+                );
                 facts.host_available_bytes = Some(facts_cost(&facts, &req, 1) - 1);
                 assert!(resolve_plan(&req, Some(caps), &facts).has_errors());
                 let resident = resident_runtime(&facts);
                 facts.media_reserve_bytes = Some(0);
+                facts.media_per_extra_bank_bytes = Some(0);
                 assert_eq!(resident_runtime(&facts), resident);
             }
         }
@@ -2453,7 +2482,9 @@ mod tests {
         assert!(resolve_plan(&req, Some(caps), &facts).has_errors());
         // Open banks do not pay for lazy image workspaces. Supply that
         // reserve in live memory before checking resident runtime credit.
-        let with_media = leftover + facts.media_reserve_bytes.unwrap();
+        let with_media = leftover
+            + facts.media_reserve_bytes.unwrap()
+            + facts.media_per_extra_bank_bytes.unwrap();
         credit_resident(&mut facts, with_media, mapped);
         let plan = resolve_plan(&req, Some(caps), &facts);
         assert!(
