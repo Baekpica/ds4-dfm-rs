@@ -1241,6 +1241,8 @@ fn resident_runtime(facts: &EngineFacts) -> u64 {
     if facts.cont_lane == Some(false) {
         return 0;
     }
+    // Media workspaces stay lazy until a serial image session is allocated.
+    // Their reserve must remain available after a successful text-bank fit.
     let banks = facts.banks_fitted.unwrap_or(1);
     facts
         .per_bank_bytes
@@ -1250,7 +1252,6 @@ fn resident_runtime(facts: &EngineFacts) -> u64 {
         .saturating_add(facts.scratch_bytes.unwrap_or(0))
         .saturating_add(facts.checkpoint_pool_bytes.unwrap_or(0))
         .saturating_add(facts.ple_bytes.unwrap_or(0))
-        .saturating_add(facts.media_reserve_bytes.unwrap_or(0))
 }
 
 fn credit_resident(facts: &mut EngineFacts, live: u64, mapped: u64) {
@@ -1961,6 +1962,48 @@ mod tests {
             .env_overrides()
             .iter()
             .any(|(k, v)| k == "DS4_SERVER_FORK_PARTIAL" && v == "1"));
+    }
+
+    #[test]
+    fn fitted_media_stays_reserved() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset(STEP_PREFILL_CHUNK_ENV);
+        let _batch = EnvGuard::set(FIT_HEADROOM_ENV, "0");
+        let _session = EnvGuard::set(SESSION_HEADROOM_ENV, "0");
+        let req = ServingRequest {
+            ctx: 8192,
+            mem_floor_gb: 0,
+            max_seqs: MaxSeqs::Fixed(2),
+            mtp_mode: MtpMode::Off,
+            ..ServingRequest::default()
+        };
+        let caps = serving_caps(ModelFamily::Step37, Variant::Step37Flash);
+        let mapped = 10 * GIB;
+        let media = 406_413_184;
+        for (live, can_listen) in [(media - 1, false), (media, true)] {
+            let mut facts = EngineFacts {
+                banks_fitted: Some(2),
+                cont_lane: Some(true),
+                vision_loaded: true,
+                ..EngineFacts::default()
+            };
+            fill_quote_facts(
+                &mut facts,
+                &req,
+                caps,
+                Some(SHAPE_STEP37_FLASH),
+                QuoteHost {
+                    weights_bytes: mapped,
+                    available_bytes: live,
+                    vision: true,
+                    ..qwen_host(None)
+                },
+            );
+            assert_eq!(facts.media_reserve_bytes, Some(media));
+            credit_resident(&mut facts, live, mapped);
+            let plan = resolve_plan(&req, Some(caps), &facts);
+            assert_eq!(plan.may_listen(), can_listen, "{:?}", plan.issues);
+        }
     }
 
     #[test]
