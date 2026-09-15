@@ -99,6 +99,23 @@ extern "C" int ds4_gpu_ling3vl_value_project(
     return cuda_ok(cudaGetLastError(), "Ling-3.0 MLA value projection");
 }
 
+extern "C" int ds4_gpu_ling3vl_rms_norm(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
+        const void *map, uint64_t size, uint64_t offset,
+        uint32_t dim, uint32_t in_stride, uint32_t rows, float eps) {
+    const uint64_t weight_bytes = (uint64_t)dim * sizeof(float);
+    if (!out || !in || !map || !dim || !rows || in_stride < dim ||
+        offset > size || weight_bytes > size - offset ||
+        out->bytes < (uint64_t)rows * dim * sizeof(float) ||
+        in->bytes < (uint64_t)rows * in_stride * sizeof(float)) { return 0; }
+    const float *w = (const float *)cuda_model_range_ptr(
+        map, offset, weight_bytes, "ling3vl kv_a_norm");
+    if (!w) { return 0; }
+    ling3vl_rms_norm<<<rows, 256, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)in->ptr, w, dim, in_stride, rows, eps);
+    return cuda_ok(cudaGetLastError(), "Ling-3.0 latent RMSNorm");
+}
+
 extern "C" int ds4_gpu_ling3vl_store_latent(
         ds4_gpu_tensor *latent_cache, ds4_gpu_tensor *k_pe_cache,
         const ds4_gpu_tensor *kv_norm, const ds4_gpu_tensor *kv_raw,

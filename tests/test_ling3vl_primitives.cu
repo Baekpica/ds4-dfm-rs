@@ -174,11 +174,60 @@ static void mrope(cudaStream_t stream) {
     printf("mrope OK\n");
 }
 
+/* The fused kv_a_mqa row is 576 wide; the latent RMSNorm covers only the
+ * leading 512.  Advancing the input by 512 mixes the previous row's 64-value
+ * RoPE tail into the next latent. */
+static void rms_norm_strided(cudaStream_t stream) {
+    enum { DIM = 512u, STRIDE = 576u, ROWS = 2u };
+    const float eps = 1e-5f;
+    std::vector<float> in((size_t)ROWS * STRIDE, 0.0f);
+    std::vector<float> weight(DIM);
+    for (unsigned d = 0; d < DIM; d++) { weight[d] = 0.5f + (d % 17) / 16.0f; }
+    for (unsigned r = 0; r < ROWS; r++) {
+        for (unsigned d = 0; d < DIM; d++) {
+            in[(size_t)r * STRIDE + d] = ((int)(r * 64 + d % 31) - 15) / 8.0f;
+        }
+        /* Distinct RoPE tail so a width-as-stride bug cannot hide. */
+        for (unsigned d = DIM; d < STRIDE; d++) {
+            in[(size_t)r * STRIDE + d] = 100.0f + (float)r * 50.0f + (float)(d - DIM);
+        }
+    }
+
+    float *d_in = upload(in.data(), in.size());
+    float *d_w = upload(weight.data(), weight.size());
+    float *d_out;
+    CUDA(cudaMalloc(&d_out, (size_t)ROWS * DIM * sizeof(float)));
+    ling3vl_rms_norm<<<ROWS, 256, 0, stream>>>(
+        d_out, d_in, d_w, DIM, STRIDE, ROWS, eps);
+    CUDA(cudaStreamSynchronize(stream));
+
+    std::vector<float> out((size_t)ROWS * DIM);
+    CUDA(cudaMemcpy(out.data(), d_out, out.size() * sizeof(float),
+                    cudaMemcpyDeviceToHost));
+    for (unsigned r = 0; r < ROWS; r++) {
+        double sumsq = 0.0;
+        for (unsigned d = 0; d < DIM; d++) {
+            const double v = in[(size_t)r * STRIDE + d];
+            sumsq += v * v;
+        }
+        const double inv = 1.0 / sqrt(sumsq / (double)DIM + eps);
+        for (unsigned d = 0; d < DIM; d++) {
+            close(out[(size_t)r * DIM + d],
+                  in[(size_t)r * STRIDE + d] * inv * weight[d], 1e-5);
+        }
+    }
+    CUDA(cudaFree(d_out));
+    CUDA(cudaFree(d_w));
+    CUDA(cudaFree(d_in));
+    printf("rms_norm_strided OK\n");
+}
+
 int main(void) {
     cudaStream_t stream;
     CUDA(cudaStreamCreate(&stream));
     router(stream);
     mrope(stream);
+    rms_norm_strided(stream);
     CUDA(cudaStreamDestroy(stream));
     printf("Ling primitives OK\n");
     return 0;

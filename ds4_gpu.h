@@ -4343,6 +4343,17 @@ int ds4_gpu_ling3vl_vision_patch_position(
         uint32_t                dim,
         uint32_t                positions);
 
+int ds4_gpu_ling3vl_rms_norm(
+        ds4_gpu_tensor       *out,
+        const ds4_gpu_tensor *in,
+        const void             *map,
+        uint64_t                size,
+        uint64_t                offset,
+        uint32_t                dim,
+        uint32_t                in_stride,
+        uint32_t                rows,
+        float                   eps);
+
 int ds4_gpu_ling3vl_store_latent(
         ds4_gpu_tensor       *latent_cache,
         ds4_gpu_tensor       *k_pe_cache,

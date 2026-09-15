@@ -123,7 +123,8 @@ backend small and direct; this is not a generic GGUF runner.
 - `ds4_ling3vl_*.inc` / `ds4_ling3vl_gpu.cuh`: Ling-3.0-flash-VL graph,
   bank runtime, image spans and vision tower. Its KDA, latent-attention and
   routed-MoE stages reuse the Solar/GLM, Motif and Step primitives; only the
-  grouped router, the M-RoPE and the BF16 MLA absorb pair are its own.
+  grouped router, the M-RoPE, the fused-row latent RMSNorm and the BF16 MLA
+  absorb pair are its own.
 - `ds4_metal.m`: Objective-C Metal runtime and kernel wrappers.
 - `metal/*.metal`: compute kernels.
 - `ds4_cuda.cu`: CUDA backend. Single TU; mirrors `ds4_metal.m`'s role on

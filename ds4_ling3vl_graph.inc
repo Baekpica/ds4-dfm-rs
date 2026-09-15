@@ -9,7 +9,8 @@
  *
  * The KDA recurrence, the latent attention and the routed-MoE operators are
  * the Solar/GLM, Motif and Step primitives; only the grouped router, the
- * VL M-RoPE and the BF16 absorb pair are family-specific. */
+ * VL M-RoPE, the fused-row latent RMSNorm and the BF16 absorb pair are
+ * family-specific. */
 
 
 typedef struct {
@@ -355,9 +356,10 @@ static bool ling3vl_layer_mla(ds4_ling3vl_graph *g, const ds4_model *m,
         !ds4_gpu_ling3vl_mrope(g->kv_raw, g->positions, g->inv_freq, n, 1u,
                                L3V_KV_ROW, L3V_KV_LORA, L3V_ROPE,
                                L3V_SECTION_T, L3V_SECTION_H) ||
-        !ds4_gpu_exaone_rms_norm_tensor(g->kv_norm, g->kv_raw, m->map, m->size,
-                                        l->attn_kv_a_norm->abs_offset,
-                                        L3V_KV_LORA, n, DS4_RMS_EPS) ||
+        /* kv_raw is 576-wide; the norm covers only the 512-value latent. */
+        !ds4_gpu_ling3vl_rms_norm(g->kv_norm, g->kv_raw, m->map, m->size,
+                                  l->attn_kv_a_norm->abs_offset, L3V_KV_LORA,
+                                  L3V_KV_ROW, n, DS4_RMS_EPS) ||
         !ds4_gpu_ling3vl_store_latent(g->latent_cache[il], g->k_pe_cache[il],
                                       g->kv_norm, g->kv_raw, n, pos,
                                       g->context, L3V_KV_ROW, L3V_KV_LORA,

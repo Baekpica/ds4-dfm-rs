@@ -3,9 +3,10 @@
 #include <cuda_bf16.h>
 
 /* Ling-3.0-flash-VL numerical primitives that no existing family supplies:
- * group-limited sigmoid routing, the VL M-RoPE, and the BF16 MLA absorb pair.
- * Everything else in the language graph reuses the Solar/GLM KDA recurrence,
- * the Motif latent attention and the Step routed-MoE operators. */
+ * group-limited sigmoid routing, the VL M-RoPE, the fused-row latent RMSNorm,
+ * and the BF16 MLA absorb pair.  Everything else in the language graph
+ * reuses the Solar/GLM KDA recurrence, the Motif latent attention and the
+ * Step routed-MoE operators. */
 
 enum {
     LING_EXPERTS = 512u,
@@ -263,6 +264,35 @@ __global__ static void ling3vl_value_project_bf16(
             sum += __shfl_xor_sync(0xffffffffu, sum, off);
         }
         if (!lane) { dst[v] = sum; }
+    }
+}
+
+/* RMSNorm over the leading `dim` of a fused kv_a_mqa row.  The row is
+ * 576 wide (512 latent + 64 RoPE); `in_stride` is that fused width.  Using
+ * `dim` as the input stride mixes the previous RoPE tail into the next
+ * latent on every prefill with n > 1. */
+__global__ static void ling3vl_rms_norm(
+        float *out, const float *in, const float *weight,
+        unsigned dim, unsigned in_stride, unsigned rows, float eps) {
+    const unsigned row = blockIdx.x;
+    if (row >= rows) { return; }
+    const float *src = in + (uint64_t)row * in_stride;
+    float *dst = out + (uint64_t)row * dim;
+    __shared__ float red[256];
+    float acc = 0.0f;
+    for (unsigned d = threadIdx.x; d < dim; d += blockDim.x) {
+        const float v = src[d];
+        acc += v * v;
+    }
+    red[threadIdx.x] = acc;
+    __syncthreads();
+    for (unsigned off = blockDim.x >> 1u; off; off >>= 1u) {
+        if (threadIdx.x < off) { red[threadIdx.x] += red[threadIdx.x + off]; }
+        __syncthreads();
+    }
+    const float inv = rsqrtf(red[0] / (float)dim + eps);
+    for (unsigned d = threadIdx.x; d < dim; d += blockDim.x) {
+        dst[d] = src[d] * inv * weight[d];
     }
 }
 
