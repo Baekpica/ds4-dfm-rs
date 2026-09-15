@@ -36,6 +36,8 @@ const QWEN_GDN_VALUE_HEADS: u64 = 48;
 const QWEN_GDN_HEAD: u64 = 128;
 const QWEN_QSA_SCORE_ROWS: u32 = 8;
 const QWEN_PLE_HOST_ID_LANES: u64 = 16;
+const QWEN_PLE_CONV_TAPS: u64 = 9;
+const QWEN_CHECKPOINT_SLOTS: u64 = 32;
 const SIZEOF_F32: u64 = 4;
 const SIZEOF_I32: u64 = 4;
 const SIZEOF_U16: u64 = 2;
@@ -73,39 +75,47 @@ pub fn fill_quote_facts(
         .max(1);
     let ctx = u64::from(ctx_tokens);
     let kv = shape.map(|s| bank_kv_bytes(s, ctx)).unwrap_or(0);
-    // Qwen allocates a complete graph per bank (`qwen_batch_runtime_create`).
-    // Shared scratch would let auto approve two banks when only one graph fits.
-    let (per_bank, scratch) = match (caps.family, shape) {
+    let mtp_on = req.mtp_mode != MtpMode::Off && caps.mtp != MtpKind::None;
+    let partial = caps.reuse == ReuseKind::Partial;
+    // Qwen/Step allocate a complete graph per bank. Shared scratch would
+    // let auto approve two banks when only one graph fits.
+    // Example: Qwen MTP enable is another QSA+hidden per graph, not one
+    // shared draft row.
+    let (per_bank, scratch, mtp_state, checkpoint) = match (caps.family, shape) {
         (ModelFamily::Qwen4Exp, Some(s)) => {
             let graph = qwen_graph_bytes(s, ctx_tokens, native);
-            (kv.saturating_add(graph), 0)
+            let mtp = if mtp_on {
+                qwen_mtp_enable_bytes(s, ctx_tokens, native)
+            } else {
+                0
+            };
+            let pool = if partial {
+                qwen_checkpoint_pool_bytes(s)
+            } else {
+                0
+            };
+            (kv.saturating_add(graph).saturating_add(mtp), 0, 0, pool)
         }
-        (_, Some(s)) => (
-            kv,
-            u64::from(native)
-                .saturating_mul(u64::from(s.n_embd))
-                .saturating_mul(u64::from(s.n_layer))
-                .saturating_mul(2),
-        ),
-        _ => (kv, 0),
-    };
-    let checkpoint = if caps.reuse == ReuseKind::Partial {
-        kv
-    } else {
-        0
-    };
-    let mtp_on = req.mtp_mode != MtpMode::Off && caps.mtp != MtpKind::None;
-    let mtp_state = if mtp_on {
-        shape
-            .map(|s| {
+        (ModelFamily::Step37, Some(s)) => {
+            let graph = family_graph_scratch(s, native);
+            let spec = if mtp_on { graph } else { 0 };
+            let pool = if partial { kv } else { 0 };
+            (kv.saturating_add(graph).saturating_add(spec), 0, 0, pool)
+        }
+        (_, Some(s)) => {
+            let scratch = family_graph_scratch(s, native);
+            let pool = if partial { kv } else { 0 };
+            let mtp_state = if mtp_on {
                 u64::from(s.n_embd)
                     .saturating_mul(u64::from(s.n_layer))
                     .saturating_mul(caps.spec_draft_min.max(1) as u64)
                     .saturating_mul(2)
-            })
-            .unwrap_or(0)
-    } else {
-        0
+            } else {
+                0
+            };
+            (kv, scratch, mtp_state, pool)
+        }
+        _ => (kv, 0, 0, 0),
     };
     let media = if caps.media_serial || host.vision {
         shape
@@ -129,8 +139,9 @@ pub fn fill_quote_facts(
 
 /// Live host observation + GGUF span. Used by the CLI pre-open and post-fit.
 ///
-/// After `Model::open`, mapped weights have already left MemAvailable.
-/// `resident` credits that span back so the quote is not charged twice.
+/// After `Model::open` / fit, mapped weights and the fitted runtime have
+/// already left MemAvailable. `resident` credits both so the quote is not
+/// charged twice.
 pub fn attach_host_quote(
     facts: &mut EngineFacts,
     req: &ServingRequest,
@@ -184,6 +195,9 @@ pub fn attach_host_quote(
         vision,
     };
     fill_quote_facts(facts, req, caps, shape, host);
+    if resident {
+        credit_resident(facts, live, mapped);
+    }
 }
 
 enum IpcSkip {
@@ -440,6 +454,83 @@ fn qwen_graph_bytes(shape: Shape, ctx: u32, cap: u32) -> u64 {
     )
 }
 
+// C `qwen4exp_qsa_state_alloc` for one MTP QSA layer (`mtp_qsa_state`).
+fn qwen_qsa_state_bytes(shape: Shape, ctx: u32) -> u64 {
+    let ctx = u64::from(ctx);
+    let index = u64::from(shape.n_indexer_head_dim);
+    let kv = u64::from(shape.n_head_kv).saturating_mul(u64::from(shape.n_head_dim));
+    let blocks = ctx / QWEN_GRAPH_RATIO;
+    ctx.saturating_mul(index)
+        .saturating_add(blocks.saturating_mul(index))
+        .saturating_add(ctx.saturating_mul(kv).saturating_mul(2))
+        .saturating_mul(SIZEOF_F32)
+}
+
+// C `qwen4exp_graph_mtp_enable`: extra QSA + capacity hidden + pending HC.
+fn qwen_mtp_enable_bytes(shape: Shape, ctx: u32, cap: u32) -> u64 {
+    let width = u64::from(shape.n_embd).saturating_mul(u64::from(shape.n_hc));
+    let hidden = u64::from(cap)
+        .saturating_mul(width)
+        .saturating_mul(SIZEOF_F32);
+    let pending = width.saturating_mul(SIZEOF_F32);
+    qwen_qsa_state_bytes(shape, ctx)
+        .saturating_add(hidden)
+        .saturating_add(pending)
+}
+
+fn qwen_checkpoint_slot_bytes(shape: Shape) -> u64 {
+    let width = u64::from(shape.n_embd).saturating_mul(u64::from(shape.n_hc));
+    let ple = width
+        .saturating_mul(QWEN_PLE_CONV_TAPS)
+        .saturating_mul(SIZEOF_F32);
+    let key_dim = QWEN_GDN_KEY_HEADS.saturating_mul(QWEN_GDN_HEAD);
+    let value_dim = QWEN_GDN_VALUE_HEADS.saturating_mul(QWEN_GDN_HEAD);
+    let conv_dim = key_dim.saturating_mul(2).saturating_add(value_dim);
+    let conv = conv_dim
+        .saturating_mul(u64::from(shape.n_ssm_conv.max(1)))
+        .saturating_mul(SIZEOF_F32);
+    let recurrent = QWEN_GDN_VALUE_HEADS
+        .saturating_mul(QWEN_GDN_HEAD)
+        .saturating_mul(QWEN_GDN_HEAD)
+        .saturating_mul(SIZEOF_F32);
+    let gdn_layers = u64::from(shape.n_layer.saturating_sub(shape.n_full_attn_count));
+    ple.saturating_add(gdn_layers.saturating_mul(conv.saturating_add(recurrent)))
+}
+
+fn qwen_checkpoint_pool_bytes(shape: Shape) -> u64 {
+    qwen_checkpoint_slot_bytes(shape).saturating_mul(QWEN_CHECKPOINT_SLOTS)
+}
+
+fn family_graph_scratch(shape: Shape, native: u32) -> u64 {
+    u64::from(native)
+        .saturating_mul(u64::from(shape.n_embd))
+        .saturating_mul(u64::from(shape.n_layer))
+        .saturating_mul(2)
+}
+
+fn resident_runtime(facts: &EngineFacts) -> u64 {
+    let banks = facts.banks_fitted.unwrap_or(1);
+    facts
+        .per_bank_bytes
+        .unwrap_or(0)
+        .saturating_mul(u64::from(banks))
+        .saturating_add(facts.mtp_state_bytes.unwrap_or(0))
+        .saturating_add(facts.scratch_bytes.unwrap_or(0))
+        .saturating_add(facts.checkpoint_pool_bytes.unwrap_or(0))
+        .saturating_add(facts.ple_bytes.unwrap_or(0))
+        .saturating_add(facts.media_reserve_bytes.unwrap_or(0))
+}
+
+fn credit_resident(facts: &mut EngineFacts, live: u64, mapped: u64) {
+    if live == 0 {
+        return;
+    }
+    facts.host_available_bytes = Some(
+        live.saturating_add(mapped)
+            .saturating_add(resident_runtime(facts)),
+    );
+}
+
 fn bank_kv_bytes(shape: Shape, ctx: u64) -> u64 {
     let row = if shape.n_kv_lora > 0 {
         u64::from(shape.n_kv_lora + shape.n_key_mla + shape.n_value_mla).max(1) * 2
@@ -491,8 +582,8 @@ fn meminfo_available() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serving::{resolve_plan, serving_caps, PREFILL_CHUNK_FENCE};
-    use crate::shape::{Variant, SHAPE_QWEN38_FLASH_NEXT};
+    use crate::serving::{resolve_plan, serving_caps, MtpMode, PREFILL_CHUNK_FENCE};
+    use crate::shape::{Variant, SHAPE_QWEN38_FLASH_NEXT, SHAPE_STEP37_FLASH};
     use std::io::Write;
 
     #[test]
@@ -517,7 +608,7 @@ mod tests {
         );
         assert_eq!(facts.shared_weights_bytes, Some(11 * GIB));
         assert!(facts.per_bank_bytes.unwrap() > 0);
-        assert!(facts.mtp_state_bytes.unwrap() > 0);
+        assert_eq!(facts.mtp_state_bytes, Some(0));
         assert_eq!(facts.scratch_bytes, Some(0));
         assert!(facts.checkpoint_pool_bytes.unwrap() > 0);
         assert!(facts.ple_bytes.unwrap() > 0);
@@ -530,7 +621,7 @@ mod tests {
         assert_eq!(quote.shared_weights, 11 * GIB);
         assert_eq!(quote.available, 100 * GIB);
         assert!(quote.per_bank > 0);
-        assert!(quote.mtp_state > 0);
+        assert_eq!(quote.mtp_state, 0);
         assert_eq!(quote.scratch, 0);
         assert!(quote.checkpoint_pool > 0);
         assert!(quote.ple > 0);
@@ -848,7 +939,10 @@ mod tests {
         let kv = bank_kv_bytes(SHAPE_QWEN38_FLASH_NEXT, req.ctx.max(1) as u64);
         let per_bank = facts.per_bank_bytes.unwrap();
         assert_eq!(facts.scratch_bytes, Some(0));
-        assert_eq!(facts.checkpoint_pool_bytes, Some(kv));
+        assert_eq!(
+            facts.checkpoint_pool_bytes,
+            Some(qwen_checkpoint_pool_bytes(SHAPE_QWEN38_FLASH_NEXT))
+        );
         assert!(per_bank > kv, "each bank owns a graph, not only KV");
         assert_eq!(
             facts_cost(&facts, &req, 2) - facts_cost(&facts, &req, 1),
@@ -892,6 +986,131 @@ mod tests {
             !plan.issues.iter().any(|i| i.code == "quote_overflow"),
             "{:?}",
             plan.issues
+        );
+    }
+
+    #[test]
+    fn qwen_mtp_is_charged_per_bank() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
+        let mut off_req = ServingRequest::default();
+        off_req.mtp_mode = MtpMode::Off;
+        off_req.mem_floor_gb = 0;
+        let mut on_req = off_req.clone();
+        on_req.mtp_mode = MtpMode::On;
+        let off = fill_qwen(&off_req, qwen_host(None));
+        let on = fill_qwen(&on_req, qwen_host(None));
+        let mtp = on.per_bank_bytes.unwrap() - off.per_bank_bytes.unwrap();
+        assert!(
+            mtp > 8 * MIB,
+            "MTP QSA+hidden is per bank, not a shared draft row"
+        );
+        assert_eq!(on.mtp_state_bytes, Some(0));
+        assert_eq!(off.mtp_state_bytes, Some(0));
+        assert_eq!(
+            facts_cost(&on, &on_req, 2) - facts_cost(&off, &off_req, 2),
+            2 * mtp
+        );
+    }
+
+    #[test]
+    fn qwen_checkpoint_uses_recurrent_slots() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
+        let mut req = ServingRequest::default();
+        req.mem_floor_gb = 0;
+        let facts = fill_qwen(&req, qwen_host(None));
+        let kv = bank_kv_bytes(SHAPE_QWEN38_FLASH_NEXT, req.ctx.max(1) as u64);
+        let pool = facts.checkpoint_pool_bytes.unwrap();
+        assert_ne!(pool, kv, "checkpoint slab is recurrent slots, not one KV");
+        assert_eq!(pool % QWEN_CHECKPOINT_SLOTS, 0);
+        assert!(pool > 2 * GIB, "32 GDN/PLE slots are several GiB");
+    }
+
+    #[test]
+    fn fitted_runtime_is_credited_after_fit() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
+        let mut req = ServingRequest::default();
+        req.mem_floor_gb = 4;
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        let mut facts = EngineFacts {
+            banks_fitted: Some(2),
+            ..EngineFacts::default()
+        };
+        let leftover = 4 * GIB;
+        let mapped = 10 * GIB;
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            caps,
+            Some(SHAPE_QWEN38_FLASH_NEXT),
+            QuoteHost {
+                weights_bytes: mapped,
+                mtp_bytes: 0,
+                available_bytes: leftover,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        credit_resident(&mut facts, leftover, mapped);
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert!(
+            !plan.issues.iter().any(|i| i.code == "quote_overflow"),
+            "{:?}",
+            plan.issues
+        );
+        assert!(plan.may_listen(), "{:?}", plan.issues);
+        assert_eq!(plan.effective.max_seqs, 2, "{:?}", plan.to_json());
+    }
+
+    #[test]
+    fn step_graph_is_charged_per_bank() {
+        let _env = lock_test_env();
+        let mut req = ServingRequest::default();
+        req.mtp_mode = MtpMode::Off;
+        req.mem_floor_gb = 0;
+        let mut facts = EngineFacts::default();
+        let caps = serving_caps(ModelFamily::Step37, Variant::Step37Flash);
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            caps,
+            Some(SHAPE_STEP37_FLASH),
+            QuoteHost {
+                weights_bytes: 10 * GIB,
+                mtp_bytes: 0,
+                available_bytes: 100 * GIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        let kv = bank_kv_bytes(SHAPE_STEP37_FLASH, req.ctx.max(1) as u64);
+        let per_bank = facts.per_bank_bytes.unwrap();
+        assert_eq!(facts.scratch_bytes, Some(0));
+        assert!(per_bank > kv, "each Step bank owns a graph");
+        assert_eq!(
+            facts_cost(&facts, &req, 2) - facts_cost(&facts, &req, 1),
+            per_bank
+        );
+    }
+
+    #[test]
+    fn qwen_native_is_published_to_c_env() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::set(QWEN_PREFILL_CHUNK_ENV, "8192");
+        let mut req = ServingRequest::default();
+        req.native_chunk = Some(256);
+        let facts = fill_qwen(&req, qwen_host(Some(256)));
+        assert_eq!(facts.native_chunk, Some(256));
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert!(
+            plan.env_overrides()
+                .iter()
+                .any(|(k, v)| k == "DS4_QWEN_PREFILL_CHUNK" && v == "256"),
+            "{:?}",
+            plan.env_overrides()
         );
     }
 
@@ -1007,7 +1226,10 @@ mod tests {
             let _scope = EnvGuard::set(WEIGHT_IPC_SCOPE_ENV, "both");
             let facts = attach_ipc(&a, Some(&mtp), None, None, true);
             assert_eq!(facts.shared_weights_bytes, Some(0));
-            assert_eq!(facts.host_available_bytes, Some(live));
+            assert_eq!(
+                facts.host_available_bytes,
+                Some(live.saturating_add(resident_runtime(&facts)))
+            );
         }
 
         let _ = std::fs::remove_dir_all(&dir);

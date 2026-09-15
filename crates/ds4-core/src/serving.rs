@@ -1186,6 +1186,17 @@ impl ResolvedPlan {
         let live = published_chunk(self.effective.sched_chunk_live, self.effective.native_chunk);
         out.push(("DS4_CONT_PREFILL_CHUNK".into(), boot.to_string()));
         out.push(("DS4_CONT_PREFILL_CHUNK_LIVE".into(), live.to_string()));
+        // C family allocators read DS4_*_PREFILL_CHUNK, not --native-chunk.
+        if let Some(native) = self.effective.native_chunk {
+            if let Some(key) = match self.family {
+                Some(ModelFamily::Qwen4Exp) => Some("DS4_QWEN_PREFILL_CHUNK"),
+                Some(ModelFamily::Step37) => Some("DS4_STEP37_PREFILL_CHUNK"),
+                Some(ModelFamily::Inkling) => Some("DS4_INKLING_PREFILL_CHUNK"),
+                _ => None,
+            } {
+                out.push((key.into(), native.to_string()));
+            }
+        }
         out
     }
 
