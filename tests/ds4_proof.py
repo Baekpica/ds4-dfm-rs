@@ -193,6 +193,13 @@ CANONICAL_PROFILES: dict[str, CanonicalProfile] = {
     "cuda-default": CanonicalProfile("cuda-default"),
     "cuda-eager":   CanonicalProfile("cuda-eager",   env={"DS4_CUDA_LAYER_GRAPHS": "0"}),
     "cuda-capture": CanonicalProfile("cuda-capture", env={"DS4_CUDA_LAYER_GRAPHS": "1"}),
+    "cuda-ling-plain": CanonicalProfile(
+        "cuda-ling-plain",
+        env={
+            "DS4_CUDA_NO_BF16_ROWS_PAIR": "1",
+            "DS4_LING3VL_NO_BF16_REUSE": "1",
+        },
+    ),
 }
 
 
@@ -1353,6 +1360,20 @@ SCENARIOS: dict[str, Scenario] = {
             "catch (parity compares two paths in the same build; a change that "
             "shifts both identically slips through). Refresh the golden with "
             "--write-expected after an intentional output change."
+        ),
+    ),
+    "ling3vl-opt-parity": Scenario(
+        name="ling3vl-opt-parity",
+        canonicals=("cuda-ling-plain", "cuda-default"),
+        overlay_stacks=((),),
+        prompts=("builtin:1",),
+        budget="smoke",
+        contracts=("selected_token_ids_md5",),
+        expected_gen_tokens_min=8,
+        description=(
+            "Ling KDA/MLA decode-pair and KDA prefill convert-once versus the "
+            "plain GEMM fallback (DS4_CUDA_NO_BF16_ROWS_PAIR and "
+            "DS4_LING3VL_NO_BF16_REUSE)."
         ),
     ),
 }

@@ -858,3 +858,10 @@ ceiling drops by ~50% on discrete GPUs in exchange for the parity.
   provides identical VMM ranges and running both would double-allocate
   the model. See `misc/proof-harness/README.md` for the sidecar
   lifecycle.
+
+## Ling-3.0-flash-VL
+
+- `DS4_CUDA_NO_BF16_ROWS_PAIR=1`. Restore two plain BF16 GEMMs for the
+  n=1 KDA/MLA decode pair.
+- `DS4_LING3VL_NO_BF16_REUSE=1`. Restore per-projection F32→BF16 convert
+  on KDA prefill instead of the one-shot convert.

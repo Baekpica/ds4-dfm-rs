@@ -367,6 +367,7 @@ static bool ling3vl_layer_kda(ds4_ling3vl_graph *g, const ds4_model *m,
                               uint32_t n) {
     ds4_exaone_batch_ws *b = &g->ws;
     const bool reused = n > 1u &&
+        getenv("DS4_LING3VL_NO_BF16_REUSE") == NULL &&
         ds4_gpu_f32_to_bf16_tensor(b->b_dense_gate, b->b_norm,
                                    (uint64_t)n * L3V_HIDDEN);
     if (reused) {
