@@ -164,6 +164,7 @@ pub fn attach_host_quote(
             mtp_bytes = 0;
         }
     }
+
     let mapped = weights_bytes
         .saturating_add(mtp_bytes)
         .saturating_add(vision_bytes)
@@ -193,9 +194,11 @@ enum IpcSkip {
 }
 
 fn ipc_weight_skip() -> IpcSkip {
-    match std::env::var(WEIGHT_IPC_MANIFEST_ENV) {
-        Ok(manifest) if !manifest.is_empty() => {}
-        _ => return IpcSkip::None,
+    let Ok(manifest) = std::env::var(WEIGHT_IPC_MANIFEST_ENV) else {
+        return IpcSkip::None;
+    };
+    if manifest.is_empty() {
+        return IpcSkip::None;
     }
     match std::env::var(WEIGHT_IPC_SCOPE_ENV).ok().as_deref() {
         Some("base") => IpcSkip::Base,
@@ -536,6 +539,7 @@ mod tests {
 
     #[test]
     fn attach_host_quote_reads_the_mapped_span() {
+        let _man = EnvGuard::unset(WEIGHT_IPC_MANIFEST_ENV);
         let dir = std::env::temp_dir().join(format!("ds4-quote-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let a = dir.join("model-00001-of-00002.gguf");
@@ -604,6 +608,7 @@ mod tests {
 
     #[test]
     fn quote_includes_sidecar_spans() {
+        let _man = EnvGuard::unset(WEIGHT_IPC_MANIFEST_ENV);
         let dir = std::env::temp_dir().join(format!("ds4-quote-sidecars-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let a = dir.join("model-00001-of-00002.gguf");
@@ -893,5 +898,104 @@ mod tests {
             plan.issues
         );
         assert!(plan.may_listen(), "{:?}", plan.issues);
+    }
+
+    fn attach_ipc(
+        model: &Path,
+        mtp: Option<&Path>,
+        vision: Option<&Path>,
+        dspark: Option<&Path>,
+        resident: bool,
+    ) -> EngineFacts {
+        let mut facts = EngineFacts::default();
+        let req = ServingRequest::default();
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        attach_host_quote(
+            &mut facts,
+            &req,
+            caps,
+            Some(SHAPE_QWEN38_FLASH_NEXT),
+            Some(model),
+            mtp,
+            vision,
+            dspark,
+            2,
+            vision.is_some(),
+            resident,
+        );
+        facts
+    }
+
+    #[test]
+    fn ipc_manifest_skips_imported_spans() {
+        let dir = std::env::temp_dir().join(format!("ds4-quote-ipc-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let a = dir.join("model-00001-of-00002.gguf");
+        let b = dir.join("model-00002-of-00002.gguf");
+        let mtp = dir.join("mtp.gguf");
+        let vision = dir.join("vision.gguf");
+        let dspark = dir.join("dspark.gguf");
+        std::fs::File::create(&a)
+            .unwrap()
+            .write_all(&[0u8; 100])
+            .unwrap();
+        std::fs::File::create(&b)
+            .unwrap()
+            .write_all(&[0u8; 40])
+            .unwrap();
+        std::fs::File::create(&mtp)
+            .unwrap()
+            .write_all(&[0u8; 25])
+            .unwrap();
+        std::fs::File::create(&vision)
+            .unwrap()
+            .write_all(&[0u8; 17])
+            .unwrap();
+        std::fs::File::create(&dspark)
+            .unwrap()
+            .write_all(&[0u8; 11])
+            .unwrap();
+        assert_eq!(gguf_span_bytes(&a, 2), 140);
+
+        {
+            let _man = EnvGuard::unset(WEIGHT_IPC_MANIFEST_ENV);
+            let facts = attach_ipc(&a, Some(&mtp), Some(&vision), Some(&dspark), false);
+            assert_eq!(facts.shared_weights_bytes, Some(140 + 25 + 17 + 11));
+        }
+        {
+            let _man = EnvGuard::set(WEIGHT_IPC_MANIFEST_ENV, "/tmp/ds4-weights.manifest");
+            let _scope = EnvGuard::unset(WEIGHT_IPC_SCOPE_ENV);
+            let facts = attach_ipc(&a, Some(&mtp), Some(&vision), Some(&dspark), false);
+            assert_eq!(facts.shared_weights_bytes, Some(17 + 11));
+        }
+        {
+            let _man = EnvGuard::set(WEIGHT_IPC_MANIFEST_ENV, "/tmp/ds4-weights.manifest");
+            let _scope = EnvGuard::set(WEIGHT_IPC_SCOPE_ENV, "both");
+            let facts = attach_ipc(&a, Some(&mtp), None, None, false);
+            assert_eq!(facts.shared_weights_bytes, Some(0));
+        }
+        {
+            let _man = EnvGuard::set(WEIGHT_IPC_MANIFEST_ENV, "/tmp/ds4-weights.manifest");
+            let _scope = EnvGuard::set(WEIGHT_IPC_SCOPE_ENV, "mtp");
+            let facts = attach_ipc(&a, Some(&mtp), None, None, false);
+            assert_eq!(facts.shared_weights_bytes, Some(140));
+        }
+        {
+            let _man = EnvGuard::set(WEIGHT_IPC_MANIFEST_ENV, "/tmp/ds4-weights.manifest");
+            let _scope = EnvGuard::set(WEIGHT_IPC_SCOPE_ENV, "base");
+            let facts = attach_ipc(&a, Some(&mtp), None, None, false);
+            assert_eq!(facts.shared_weights_bytes, Some(25));
+        }
+
+        let live = host_available_bytes();
+        if live > 0 {
+            let _man = EnvGuard::set(WEIGHT_IPC_MANIFEST_ENV, "/tmp/ds4-weights.manifest");
+            let _scope = EnvGuard::set(WEIGHT_IPC_SCOPE_ENV, "both");
+            let facts = attach_ipc(&a, Some(&mtp), None, None, true);
+            assert_eq!(facts.shared_weights_bytes, Some(0));
+            assert_eq!(facts.host_available_bytes, Some(live));
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
