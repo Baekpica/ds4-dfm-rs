@@ -6,13 +6,13 @@ use ds4_core::{
     attach_host_quote, caps_from_ident, identify_gguf, probe_dspark_sidecar, probe_model_artifact,
     probe_mtp_sidecar, probe_vision_sidecar, resolve_plan, Backend, DistributedConfig,
     DistributedRole, Distribution, EngineFacts, Identified, MaxSeqs, Model, ModelOpenOption,
-    MtpMode, PrefixReuse, ServingCaps, ServingRequest,
+    MtpMode, PrefixReuse, ServingCaps, ServingRequest, WeightSlice,
 };
 use ds4_server::kv_cli::DiskKvArgs;
 use ds4_server::{
-    accept_loop, accept_loop_with_engine, accept_loop_with_engine_cont, listen_if_allowed,
-    model_id_from_gguf_path, run_assembled_worker, server_launch, ContLane, DistArgs, NativeDecode,
-    ServerConfig, ServerLaunch, WORKER_REQUIRES_MODEL,
+    accept_loop, accept_loop_with_engine, accept_loop_with_engine_cont, dist_weight_slice,
+    listen_if_allowed, model_id_from_gguf_path, run_assembled_worker, server_launch, ContLane,
+    DistArgs, NativeDecode, ServerConfig, ServerLaunch, WORKER_REQUIRES_MODEL,
 };
 use std::path::Path;
 
@@ -209,6 +209,9 @@ fn main() {
     let launch = server_launch(dist.opt.role, model_path.is_some())
         .unwrap_or_else(|error| cli_error(&error));
     launch.configure_serving(&mut serve_req);
+    // A sliced boot maps only its own layers, so the quote prices that
+    // interval instead of the whole sharded artifact.
+    let weight_slice = dist_weight_slice(dist.opt.role, &dist.opt.layers);
 
     let mut facts = EngineFacts::default();
     let mut kv_store = None;
@@ -295,6 +298,7 @@ fn main() {
         mtp_path.as_deref(),
         vision_path.as_deref(),
         dspark_path.as_deref(),
+        weight_slice,
         vision_path.is_some(),
         false,
     );
@@ -402,6 +406,7 @@ fn main() {
                         mtp_path.as_deref(),
                         vision_path.as_deref(),
                         dspark_path.as_deref(),
+                        weight_slice,
                         vision,
                         true,
                     );
@@ -446,6 +451,7 @@ fn main() {
                         mtp_path.as_deref(),
                         vision_path.as_deref(),
                         dspark_path.as_deref(),
+                        weight_slice,
                         vision,
                         true,
                     );
@@ -478,6 +484,7 @@ fn main() {
                 mtp_path.as_deref(),
                 vision_path.as_deref(),
                 dspark_path.as_deref(),
+                weight_slice,
                 vision,
                 true,
             );
@@ -613,6 +620,7 @@ fn apply_host_quote(
     mtp_path: Option<&str>,
     vision_path: Option<&str>,
     dspark_path: Option<&str>,
+    slice: Option<WeightSlice>,
     vision: bool,
     resident: bool,
 ) {
@@ -629,6 +637,7 @@ fn apply_host_quote(
         vision_path.map(Path::new),
         dspark_path.map(Path::new),
         ident.map(|id| id.split_count).unwrap_or(1),
+        slice,
         vision,
         resident,
     );

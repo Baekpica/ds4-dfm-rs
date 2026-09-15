@@ -145,6 +145,6 @@ pub use tools::{
     assign_tool_ids, parse_generated_for_model_id, parse_generated_for_response,
     parse_generated_message, ParsedGenerated, SemAccum, SemFeed,
 };
-pub use worker::{server_launch, ServerLaunch, WORKER_REQUIRES_MODEL};
+pub use worker::{dist_weight_slice, server_launch, ServerLaunch, WORKER_REQUIRES_MODEL};
 #[cfg(feature = "native")]
 pub use worker_run::run_assembled_worker;

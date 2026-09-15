@@ -11,11 +11,14 @@ use crate::serving::{
     ServingCaps, ServingRequest, DEFAULT_MAX_SEQS, DEFAULT_SCHED_CHUNK,
 };
 use crate::shape::{ModelFamily, Shape, Variant};
-use crate::tensors::model_split_sibling_path;
+use crate::tensors::{model_split_sibling_path, TensorInventory};
 use crate::Backend;
 
 const GIB: u64 = 1 << 30;
 const MIB: u64 = 1 << 20;
+// GGUF names the per-layer blocks; the rest is embedding or output.
+const LAYER_TENSOR_PREFIX: &str = "blk.";
+const EMBED_TENSOR_PREFIX: &str = "token_embd";
 const DEFAULT_PLE_CACHE_MB: u64 = 2048;
 const CPU_MAX_THREADS: u64 = 32;
 const CPU_FFN_BATCH_MAX: u64 = 4095;
@@ -318,6 +321,18 @@ pub fn fill_quote_facts(
     facts.native_chunk = Some(native);
 }
 
+/// Layer interval a distributed slice keeps resident.
+///
+/// Mirrors the native `weights_model_map_spans` selection: layer 0 pulls the
+/// token embedding in, and `output` adds the final norm/head tensors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WeightSlice {
+    pub start: u32,
+    /// Inclusive last layer; `u32::MAX` runs to the last block.
+    pub end: u32,
+    pub output: bool,
+}
+
 /// Live host observation + GGUF span. Used by the CLI pre-open and post-fit.
 ///
 /// After `Model::open` / fit, mapped weights and the fitted runtime have
@@ -333,11 +348,16 @@ pub fn attach_host_quote(
     vision_path: Option<&Path>,
     dspark_path: Option<&Path>,
     split_count: u32,
+    slice: Option<WeightSlice>,
     vision: bool,
     resident: bool,
 ) {
+    // Only the base weights are sliced; MTP and drafter load whole.
     let mut weights_bytes = model_path
-        .map(|path| gguf_span_bytes(path, split_count))
+        .map(|path| match slice {
+            Some(slice) => gguf_slice_span_bytes(path, split_count, slice),
+            None => gguf_span_bytes(path, split_count),
+        })
         .unwrap_or(0);
     let mut mtp_bytes = artifact_span_bytes(mtp_path);
     let vision_bytes = artifact_span_bytes(vision_path);
@@ -502,6 +522,45 @@ pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
     } else {
         total
     }
+}
+
+/// Bytes one distributed slice keeps resident.
+///
+/// A sliced boot restricts the model map to its own layer interval
+/// (`weights_model_map_spans`), so pricing the whole sharded artifact
+/// rejects a model larger than one GPU even when the slice fits. Spans
+/// never overlap, so the selected tensor bytes are the mapped span.
+/// An unreadable directory falls back to the full artifact.
+pub fn gguf_slice_span_bytes(path: &Path, split_count: u32, slice: WeightSlice) -> u64 {
+    let Ok(inventory) = TensorInventory::open(path) else {
+        return gguf_span_bytes(path, split_count);
+    };
+    let mut span = 0u64;
+    for tensor in &inventory.tensors {
+        if slice_holds(&tensor.name, slice) {
+            span = span.saturating_add(tensor.bytes);
+        }
+    }
+    // An empty selection means the naming assumption missed, not a free slice.
+    if span == 0 {
+        return gguf_span_bytes(path, split_count);
+    }
+    span
+}
+
+/// `blk.N.*` belongs to layer N, `token_embd*` rides with layer 0, and what
+/// is left (final norm, head, input hyper-connections) is the output group.
+fn slice_holds(name: &str, slice: WeightSlice) -> bool {
+    let Some(rest) = name.strip_prefix(LAYER_TENSOR_PREFIX) else {
+        if name.starts_with(EMBED_TENSOR_PREFIX) {
+            return slice.start == 0;
+        }
+        return slice.output;
+    };
+    let Some(layer) = rest.split('.').next().and_then(|n| n.parse::<u32>().ok()) else {
+        return slice.output;
+    };
+    layer >= slice.start && layer <= slice.end
 }
 
 pub fn host_available_bytes(backend: Backend) -> u64 {
@@ -1869,6 +1928,7 @@ mod tests {
             None,
             None,
             2,
+            None,
             false,
             false,
         );
@@ -1876,6 +1936,139 @@ mod tests {
         assert!(facts.host_available_bytes.unwrap() > 0);
         let plan = resolve_plan(&req, Some(caps), &facts);
         assert!(plan.quote.is_some(), "{:?}", plan.to_json());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Minimal GGUF directory: names + dims only, one F32 tensor per entry.
+    fn write_slice_gguf(path: &Path, tensors: &[(&str, u64)]) {
+        fn put_u32(buf: &mut Vec<u8>, v: u32) {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        fn put_u64(buf: &mut Vec<u8>, v: u64) {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        fn put_str(buf: &mut Vec<u8>, s: &str) {
+            put_u64(buf, s.len() as u64);
+            buf.extend_from_slice(s.as_bytes());
+        }
+
+        const GGUF_MAGIC: u32 = 0x4655_4747;
+        const GGUF_VERSION: u32 = 3;
+        const GGUF_TYPE_F32: u32 = 0;
+        const ALIGN: u64 = 32;
+
+        let mut buf = Vec::new();
+        put_u32(&mut buf, GGUF_MAGIC);
+        put_u32(&mut buf, GGUF_VERSION);
+        put_u64(&mut buf, tensors.len() as u64);
+        put_u64(&mut buf, 0);
+        let mut rel = 0u64;
+        for (name, elems) in tensors {
+            put_str(&mut buf, name);
+            put_u32(&mut buf, 1);
+            put_u64(&mut buf, *elems);
+            put_u32(&mut buf, GGUF_TYPE_F32);
+            put_u64(&mut buf, rel);
+            rel += elems * SIZEOF_F32;
+        }
+        let data_pos = (buf.len() as u64).div_ceil(ALIGN) * ALIGN;
+        buf.resize((data_pos + rel) as usize, 0);
+        std::fs::write(path, buf).unwrap();
+    }
+
+    #[test]
+    fn worker_slice_prices_only_its_layers() {
+        let _env = lock_test_env();
+        let _man = EnvGuard::unset(WEIGHT_IPC_MANIFEST_ENV);
+        let _scope = EnvGuard::unset(WEIGHT_IPC_SCOPE_ENV);
+        let dir = std::env::temp_dir().join(format!("ds4-slice-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("sliced.gguf");
+        // 4 blocks of 64 F32 each, plus embedding and output heads.
+        write_slice_gguf(
+            &path,
+            &[
+                ("token_embd.weight", 128),
+                ("blk.0.attn_norm.weight", 64),
+                ("blk.1.attn_norm.weight", 64),
+                ("blk.2.attn_norm.weight", 64),
+                ("blk.3.attn_norm.weight", 64),
+                ("output_norm.weight", 32),
+                ("output.weight", 96),
+            ],
+        );
+        let whole = gguf_span_bytes(&path, 1);
+
+        // Middle worker: two blocks, no embedding, no head.
+        let middle = WeightSlice {
+            start: 1,
+            end: 2,
+            output: false,
+        };
+        assert_eq!(gguf_slice_span_bytes(&path, 1, middle), 2 * 64 * SIZEOF_F32);
+
+        // Tail worker owns the output group; `u32::MAX` runs to the last block.
+        let tail = WeightSlice {
+            start: 3,
+            end: u32::MAX,
+            output: true,
+        };
+        assert_eq!(
+            gguf_slice_span_bytes(&path, 1, tail),
+            (64 + 32 + 96) * SIZEOF_F32
+        );
+
+        // Head worker pulls the token embedding in with layer 0.
+        let head = WeightSlice {
+            start: 0,
+            end: 0,
+            output: false,
+        };
+        assert_eq!(
+            gguf_slice_span_bytes(&path, 1, head),
+            (128 + 64) * SIZEOF_F32
+        );
+
+        let mut facts = EngineFacts::default();
+        let req = ServingRequest {
+            backend: Backend::Cpu,
+            ..ServingRequest::default()
+        };
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        attach_host_quote(
+            &mut facts,
+            &req,
+            caps,
+            Some(SHAPE_QWEN38_FLASH_NEXT),
+            Some(&path),
+            None,
+            None,
+            None,
+            1,
+            Some(middle),
+            false,
+            false,
+        );
+        assert_eq!(facts.shared_weights_bytes, Some(2 * 64 * SIZEOF_F32));
+        assert!(facts.shared_weights_bytes.unwrap() < whole);
+
+        // Undistributed serving still prices the whole artifact.
+        let mut full = EngineFacts::default();
+        attach_host_quote(
+            &mut full,
+            &req,
+            caps,
+            Some(SHAPE_QWEN38_FLASH_NEXT),
+            Some(&path),
+            None,
+            None,
+            None,
+            1,
+            None,
+            false,
+            false,
+        );
+        assert_eq!(full.shared_weights_bytes, Some(whole));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3833,6 +4026,7 @@ exit 1
             vision,
             dspark,
             2,
+            None,
             vision.is_some(),
             resident,
         );
@@ -3887,6 +4081,7 @@ exit 1
                 None,
                 Some(&drafter),
                 1,
+                None,
                 false,
                 resident,
             );
@@ -3929,6 +4124,7 @@ exit 1
             None,
             None,
             1,
+            None,
             false,
             false,
         );

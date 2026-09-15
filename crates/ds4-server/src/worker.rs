@@ -1,6 +1,7 @@
 //! Worker-role launch: assemble path, never HTTP.
 
-use ds4_dist::Role;
+use ds4_core::WeightSlice;
+use ds4_dist::{Layers, Role};
 
 pub const WORKER_REQUIRES_MODEL: &str = "ds4-server-rs: --role worker requires -m/--model";
 
@@ -22,6 +23,27 @@ impl ServerLaunch {
     }
 }
 
+/// Layer interval this process keeps resident, or `None` for a whole model.
+///
+/// Native `ds4_engine_open` slices the model map whenever a distributed role
+/// carries `--layers`, and the coordinator always keeps the output head.
+/// `A:output` runs to the last block, which the quote spells `u32::MAX`.
+pub fn dist_weight_slice(role: Role, layers: &Layers) -> Option<WeightSlice> {
+    if role == Role::None || !layers.set {
+        return None;
+    }
+
+    Some(WeightSlice {
+        start: layers.start,
+        end: if layers.has_output {
+            u32::MAX
+        } else {
+            layers.end
+        },
+        output: layers.has_output || role == Role::Coordinator,
+    })
+}
+
 pub fn server_launch(role: Role, has_model: bool) -> Result<ServerLaunch, String> {
     match role {
         Role::Worker => {
@@ -36,7 +58,7 @@ pub fn server_launch(role: Role, has_model: bool) -> Result<ServerLaunch, String
 
 #[cfg(test)]
 mod tests {
-    use super::{server_launch, ServerLaunch, WORKER_REQUIRES_MODEL};
+    use super::{dist_weight_slice, server_launch, ServerLaunch, WORKER_REQUIRES_MODEL};
     use ds4_dist::{Layers, Role};
 
     #[test]
@@ -81,6 +103,37 @@ mod tests {
         let mut http = ServingRequest::default();
         ServerLaunch::Http.configure_serving(&mut http);
         assert_eq!(http.max_seqs, ServingRequest::default().max_seqs);
+    }
+
+    #[test]
+    fn worker_quote_prices_its_layer_slice() {
+        // Given: a middle worker, a tail worker and a coordinator
+        let middle = Layers {
+            start: 10,
+            end: 19,
+            has_output: false,
+            set: true,
+        };
+        let tail = Layers {
+            start: 20,
+            end: 0,
+            has_output: true,
+            set: true,
+        };
+
+        // When: the launch derives what each one keeps resident
+        let mid = dist_weight_slice(Role::Worker, &middle).unwrap();
+        let end = dist_weight_slice(Role::Worker, &tail).unwrap();
+        let coord = dist_weight_slice(Role::Coordinator, &middle).unwrap();
+
+        // Then: only the slice is priced, and the head keeps the output
+        assert_eq!((mid.start, mid.end, mid.output), (10, 19, false));
+        assert_eq!((end.start, end.end, end.output), (20, u32::MAX, true));
+        assert!(coord.output, "coordinator owns the output head");
+
+        // And: an undistributed or layer-less launch prices the whole model
+        assert!(dist_weight_slice(Role::None, &middle).is_none());
+        assert!(dist_weight_slice(Role::Worker, &Layers::default()).is_none());
     }
 
     #[test]
