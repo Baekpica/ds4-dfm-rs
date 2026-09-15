@@ -223,6 +223,8 @@ pub struct EngineFacts {
     pub checkpoint_pool_bytes: Option<u64>,
     pub ple_bytes: Option<u64>,
     pub media_reserve_bytes: Option<u64>,
+    /// Native fit reserve, including its floor and transient burst allowance.
+    pub fit_headroom_bytes: Option<u64>,
     /// When set, `max-seqs=auto` must fit the named budgets under this ceiling.
     pub host_available_bytes: Option<u64>,
 }
@@ -1573,7 +1575,10 @@ fn serving_quote(req: &ServingRequest, facts: &EngineFacts, banks: u32) -> Optio
         checkpoint_pool: facts.checkpoint_pool_bytes.unwrap_or(0),
         ple: facts.ple_bytes.unwrap_or(0),
         media_reserve: facts.media_reserve_bytes.unwrap_or(0),
-        floor: req.mem_floor_gb.saturating_mul(GIB),
+        floor: req
+            .mem_floor_gb
+            .saturating_mul(GIB)
+            .max(facts.fit_headroom_bytes.unwrap_or(0)),
         available,
         banks,
         total: 0,

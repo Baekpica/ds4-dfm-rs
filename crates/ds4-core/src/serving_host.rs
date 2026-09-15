@@ -39,6 +39,11 @@ const MOTIF_NATIVE_MAX: u32 = 8192;
 const SOLAR_PREFILL_CHUNK_ENV: &str = "DS4_METAL_PREFILL_CHUNK";
 const SOLAR_NATIVE_DEFAULT: u32 = 2048;
 const SOLAR_KV_FORMAT_ENV: &str = "DS4_SOLAR_KV_FORMAT";
+const FIT_HEADROOM_ENV: &str = "DS4_BATCH_FIT_HEADROOM_MB";
+const FIT_DERIVED_ENV: &str = "DS4_BATCH_FIT_HEADROOM_DERIVED";
+const FIT_BURST_ENV: &str = "DS4_BATCH_FIT_BURST_MB";
+const FIT_STATIC_MB: u64 = 6144;
+const FIT_BURST_MB: u64 = 2048;
 const DOTS3_PREFILL_CHUNK_ENV: &str = "DS4_DOTS3_PREFILL_CHUNK";
 const DOTS3_NATIVE_DEFAULT: u32 = 4096;
 const DOTS3_NATIVE_MAX: u32 = 8192;
@@ -154,13 +159,14 @@ pub fn fill_quote_facts(
             (kv, scratch, 0, pool)
         }
         (ModelFamily::Motif3, Some(s)) => {
-            let scratch = family_graph_scratch(s, native);
+            let scratch = motif_graph_bytes(s, native);
             let pool = if partial {
                 motif_checkpoint_pool_bytes(s)
             } else {
                 0
             };
-            (kv, scratch, 0, pool)
+            let bank_outputs = (u64::from(s.n_embd) + u64::from(s.n_vocab)) * SIZEOF_F32;
+            (kv.saturating_add(bank_outputs), scratch, 0, pool)
         }
         (_, Some(s)) => {
             let scratch = family_graph_scratch(s, native);
@@ -192,6 +198,7 @@ pub fn fill_quote_facts(
     facts.checkpoint_pool_bytes = Some(checkpoint);
     facts.ple_bytes = Some(ple_cache_bytes(caps));
     facts.media_reserve_bytes = Some(media);
+    facts.fit_headroom_bytes = Some(quote_fit_headroom(req, caps, facts));
     // Zero is an unsupported probe, not a host with no RAM.
     facts.host_available_bytes = (host.available_bytes > 0).then_some(host.available_bytes);
     facts.native_chunk = Some(native);
@@ -749,6 +756,92 @@ fn family_graph_scratch(shape: Shape, native: u32) -> u64 {
         .saturating_mul(2)
 }
 
+// C motif3_graph_memory_estimate, excluding the separately quoted bank caches.
+fn motif_graph_bytes(s: Shape, native: u32) -> u64 {
+    let hidden = u64::from(s.n_embd);
+    let hc = u64::from(s.n_hc);
+    let heads = u64::from(s.n_head);
+    let kv_heads = u64::from(s.n_head_kv);
+    let head_dim = u64::from(s.n_head_dim);
+    let value_dim = u64::from(s.n_value_dim);
+    let clean_heads = heads - u64::from(s.n_noise_head);
+    let latent = u64::from(s.n_kv_lora);
+    let rot = u64::from(s.n_rot);
+    let used = u64::from(s.n_expert_used);
+    let ff = u64::from(s.n_ff_exp);
+    let row_f32 = 3 * hc * hidden
+        + 4 * hc
+        + 2 * hc * hc
+        + 9 * hidden
+        + 2 * u64::from(s.n_lora_q)
+        + 2 * heads * head_dim
+        + 2 * clean_heads * value_dim
+        + 3 * latent
+        + rot
+        + kv_heads * (head_dim - rot + value_dim)
+        + 2 * heads * latent
+        + kv_heads * (head_dim + value_dim)
+        + clean_heads
+        + 2 * heads * value_dim
+        + 2 * heads
+        + 3 * u64::from(s.n_ff_dense)
+        + 3 * ff
+        + 2 * u64::from(s.n_expert)
+        + used
+        + 3 * used * ff
+        + used * hidden;
+    let cap = u64::from(native);
+    (cap * row_f32 + rot + u64::from(s.n_vocab)) * SIZEOF_F32 + cap * (2 + used) * SIZEOF_I32
+}
+
+// Only these bank allocators call ds4_batch_fit_headroom_bytes. This is a
+// reserve, not resident memory: never credit it back after model open.
+fn quote_fit_headroom(req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts) -> u64 {
+    if !quote_bank_lane(req, caps, facts)
+        || !matches!(
+            caps.family,
+            ModelFamily::Motif3
+                | ModelFamily::ExaoneMoe
+                | ModelFamily::Step37
+                | ModelFamily::DeepSeek4
+        )
+    {
+        return 0;
+    }
+    if let Some(mb) = env_nonnegative_mb(FIT_HEADROOM_ENV) {
+        return mb.saturating_mul(MIB);
+    }
+    if std::env::var(FIT_DERIVED_ENV).as_deref() == Ok("0") {
+        return FIT_STATIC_MB * MIB;
+    }
+    let burst = env_nonnegative_mb(FIT_BURST_ENV).unwrap_or(FIT_BURST_MB);
+    req.mem_floor_gb
+        .saturating_mul(GIB)
+        .saturating_add(burst.saturating_mul(MIB))
+}
+
+// Native atol accepts a signed decimal prefix and maps nonnumeric text to 0.
+fn env_nonnegative_mb(key: &str) -> Option<u64> {
+    let raw = std::env::var(key).ok()?;
+    if raw.is_empty() {
+        return None;
+    }
+    let text = raw.trim_start();
+    let negative = text.starts_with('-');
+    let digits = text
+        .strip_prefix('-')
+        .or_else(|| text.strip_prefix('+'))
+        .unwrap_or(text);
+    let end = digits
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(digits.len());
+    let n = digits[..end].parse::<u64>().unwrap_or(0);
+    if negative && n != 0 {
+        return None;
+    }
+    Some(n)
+}
+
 fn resident_runtime(facts: &EngineFacts) -> u64 {
     let banks = facts.banks_fitted.unwrap_or(1);
     facts
@@ -1284,7 +1377,11 @@ mod tests {
             .saturating_add(facts.checkpoint_pool_bytes.unwrap_or(0))
             .saturating_add(facts.ple_bytes.unwrap_or(0))
             .saturating_add(facts.media_reserve_bytes.unwrap_or(0))
-            .saturating_add(req.mem_floor_gb.saturating_mul(GIB))
+            .saturating_add(
+                req.mem_floor_gb
+                    .saturating_mul(GIB)
+                    .max(facts.fit_headroom_bytes.unwrap_or(0)),
+            )
     }
 
     #[test]
@@ -1559,6 +1656,70 @@ mod tests {
             .saturating_mul(CHECKPOINT_SLOTS);
         assert_eq!(pool, want);
         assert!(pool > kv, "32 SWA slots exceed one full-context KV");
+    }
+
+    #[test]
+    fn motif_graph_matches_native() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::set(MOTIF_PREFILL_CHUNK_ENV, "4096");
+        let mut req = ServingRequest::default();
+        req.ctx = 262144;
+        let facts = fill_family(
+            ModelFamily::Motif3,
+            Variant::Motif3,
+            SHAPE_MOTIF3,
+            &req,
+            qwen_host(None),
+        );
+        // Sum of unconditional M3_ALLOC requests, without bank caches.
+        assert_eq!(facts.scratch_bytes, Some(5_794_820_352));
+        let mut tight = facts.clone();
+        tight.host_available_bytes = Some(facts_cost(&facts, &req, 1) - GIB);
+        assert!(resolve_plan(
+            &req,
+            Some(serving_caps(ModelFamily::Motif3, Variant::Motif3)),
+            &tight
+        )
+        .has_errors());
+    }
+
+    #[test]
+    fn motif_fit_margin_quote() {
+        let _env = lock_test_env();
+        let _headroom = EnvGuard::unset("DS4_BATCH_FIT_HEADROOM_MB");
+        let _derived = EnvGuard::unset("DS4_BATCH_FIT_HEADROOM_DERIVED");
+        let _burst = EnvGuard::unset("DS4_BATCH_FIT_BURST_MB");
+        let caps = serving_caps(ModelFamily::Motif3, Variant::Motif3);
+        let mut req = ServingRequest::default();
+        req.mem_floor_gb = 4;
+        req.ctx = 262144;
+        for (key, value, expected) in [
+            ("DS4_BATCH_FIT_BURST_MB", "2048", 6 * GIB),
+            ("DS4_BATCH_FIT_BURST_MB", "3072", 7 * GIB),
+            ("DS4_BATCH_FIT_HEADROOM_DERIVED", "0", 6 * GIB),
+            ("DS4_BATCH_FIT_HEADROOM_MB", "8192", 8 * GIB),
+            ("DS4_BATCH_FIT_HEADROOM_MB", "1024", 4 * GIB),
+        ] {
+            let _setting = EnvGuard::set(key, value);
+            let mut facts = fill_family(
+                ModelFamily::Motif3,
+                Variant::Motif3,
+                SHAPE_MOTIF3,
+                &req,
+                qwen_host(None),
+            );
+            let quote = resolve_plan(&req, Some(caps), &facts).quote.unwrap();
+            assert_eq!(quote.floor, expected, "{key}={value}");
+            facts.host_available_bytes = Some(
+                quote.total - quote.per_bank * u64::from(quote.banks) + 2 * quote.per_bank - 1,
+            );
+            let plan = resolve_plan(&req, Some(caps), &facts);
+            assert_eq!(plan.effective.max_seqs, 1);
+            assert!(!plan.has_errors(), "{:?}", plan.issues);
+            req.max_seqs = MaxSeqs::Fixed(2);
+            assert!(resolve_plan(&req, Some(caps), &facts).has_errors());
+            req.max_seqs = MaxSeqs::Auto;
+        }
     }
 
     #[test]

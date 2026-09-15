@@ -37,6 +37,12 @@ scratch; more banks are not a linear tok/s gain. `auto` may fit fewer
 banks than it asked for; an explicit `--max-seqs N` the native fit
 cannot honour is an error, not a narrower start.
 
+The quote's `floor` includes native fit headroom where required: normally
+the host floor plus a 2 GiB burst reserve. `DS4_BATCH_FIT_HEADROOM_MB`
+overrides that reserve; `DS4_BATCH_FIT_HEADROOM_DERIVED=0` selects 6 GiB,
+otherwise `DS4_BATCH_FIT_BURST_MB` changes the burst. The quote always
+preserves at least `--mem-floor-gb`.
+
 `--cont-width 0` and `DS4_SERVER_COALESCE_MAX=0` keep the legacy serial
 meaning: no bank lane. `DS4_SERVER_CONTINUOUS=0` is narrower — it forces
 the static/serial route, so the banks stay for the static lane to coalesce
