@@ -1187,7 +1187,10 @@ fn bank_retire_key(
     mut token_text: impl FnMut(i32) -> Vec<u8>,
 ) -> Option<(Vec<u8>, bool)> {
     if !done_tokens.is_empty() {
-        return Some((committed_key(prompt, done_tokens, syntax, token_text), false));
+        return Some((
+            committed_key(prompt, done_tokens, syntax, token_text),
+            false,
+        ));
     }
     let retained = committed_key(&[], snapshot_tokens, syntax, &mut token_text);
     if retained.is_empty() {
@@ -4292,15 +4295,36 @@ mod bank_tests {
     fn bank_retire_key_accepts_a_complete_tool_turn_from_the_snapshot() {
         let token_text = |token| vec![b'0' + token as u8];
         assert_eq!(
-            bank_retire_key(b"12", &[1, 2, 3, 4], &[], false, ModelSyntax::Motif3, token_text),
+            bank_retire_key(
+                b"12",
+                &[1, 2, 3, 4],
+                &[],
+                false,
+                ModelSyntax::Motif3,
+                token_text
+            ),
             None
         );
         assert_eq!(
-            bank_retire_key(b"12", &[1, 2, 3, 4], &[], true, ModelSyntax::Motif3, token_text),
+            bank_retire_key(
+                b"12",
+                &[1, 2, 3, 4],
+                &[],
+                true,
+                ModelSyntax::Motif3,
+                token_text
+            ),
             Some((b"123".to_vec(), false))
         );
         assert_eq!(
-            bank_retire_key(b"1234", &[1, 2, 3, 4], &[], false, ModelSyntax::Motif3, token_text),
+            bank_retire_key(
+                b"1234",
+                &[1, 2, 3, 4],
+                &[],
+                false,
+                ModelSyntax::Motif3,
+                token_text
+            ),
             Some((b"123".to_vec(), true))
         );
         assert_eq!(
@@ -4340,7 +4364,10 @@ mod bank_tests {
                     _ => Vec::new(),
                 }
             ),
-            Some((b"<role>ASSISTANT</role>\n<think></think>LPDDR5X".to_vec(), false))
+            Some((
+                b"<role>ASSISTANT</role>\n<think></think>LPDDR5X".to_vec(),
+                false
+            ))
         );
     }
 
