@@ -121,3 +121,4 @@ __pycache__/
 /tests/test_step37_media
 
 /tests/test_step37_norm
+/tests/libds4ple_test.so

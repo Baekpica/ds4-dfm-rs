@@ -174,7 +174,11 @@ bank-budget refusal, not a family limit.
 
 ## Scope
 
-Qualified on one DGX Spark with CUDA. Not release gates and not implied:
-Metal, ROCm, CPU inference, distributed slices, DSpark sidecars, directional
-steering, speculative decoding, video input, and the full 131,072-token
-context.
+Qualified on one DGX Spark with CUDA, measured at 8,192 context with two
+banks: cold prefill 1,461 tok/s over 1,072 tokens, decode 19.8 tok/s, a
+second turn reusing 1,123 of 1,146 prompt tokens by fork, and a disk record
+restoring 1,153 of 1,173 into an empty bank after a restart.
+
+Not release gates and not implied: Metal, ROCm, CPU inference, distributed
+slices, DSpark sidecars, directional steering, speculative decoding, video
+input, context above what was measured, and the full 131,072-token context.
