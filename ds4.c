@@ -41789,6 +41789,20 @@ static uint32_t bg_prefill_chunk_live_tokens(void) {
     return (uint32_t)v;
 }
 
+/* Family loops used graph capacity as the yield. Cap to LIVE while a
+ * peer is decoding so overlap matches the generic scheduler.
+ * Example: boot 4096, live 512, one decode bank -> n=512. */
+static uint32_t bg_prefill_yield(
+        uint32_t remain, uint32_t cap, int peer_decoding) {
+    uint32_t n = remain < cap ? remain : cap;
+    if (!peer_decoding) return n;
+    uint32_t live = bg_prefill_chunk_live_tokens();
+    uint32_t boot = bg_prefill_chunk_tokens();
+    if (live > boot) live = boot;
+    if (live != 0u && n > live) n = live;
+    return n;
+}
+
 /* R2 (raw-ring shrink): a chunk of n rows into one bank evicts ring slots
  * [pos-raw_cap] for each written pos; the earliest row's SWA window stays
  * intact iff n + raw_window <= raw_cap.  The ctx sizes raw_cap as
@@ -61081,9 +61095,12 @@ static int solar_engine_continuous_generate(
             } else {
                 const uint32_t remain = sb->prefill_len - sb->prefill_off;
                 if (remain != 0u) {
-                    uint32_t n = remain;
-                    if (n > rt->graph.base.prefill_cap)
-                        n = rt->graph.base.prefill_cap;
+                    uint32_t decoding = 0u;
+                    for (uint32_t b = 0; b < MS; b++) {
+                        decoding += bank[b].phase == FAMILY_CONT_DECODE;
+                    }
+                    uint32_t n = bg_prefill_yield(
+                        remain, rt->graph.base.prefill_cap, decoding != 0);
                     const uint32_t pos = sb->prefill_base + sb->prefill_off;
                     /* Capture copies live KDA. A chunk that overshoots a
                      * stride would label later state as an earlier pos.
@@ -61863,12 +61880,16 @@ static int family_banked_engine_continuous_generate(
             } else {
                 const uint32_t remain = cb->prefill_len - cb->prefill_off;
                 if (remain != 0u) {
-                    uint32_t n = remain;
+                    uint32_t decoding = 0u;
+                    for (uint32_t b = 0; b < MS; b++) {
+                        decoding += bank[b].phase == FAMILY_CONT_DECODE;
+                    }
                     const uint32_t cap = family_banked_prefill_cap(ctx);
-                    if (n > cap) n = cap;
+                    uint32_t n = bg_prefill_yield(remain, cap, decoding != 0);
                     if (ctx->qwen) {
                         n = qwen4exp_prefill_rows(
                             remain, cap, cb->prefill_off == 0u);
+                        n = bg_prefill_yield(n, cap, decoding != 0);
                     }
                     const uint32_t pos = cb->prefill_base + cb->prefill_off;
                     const bool final = n == remain;
