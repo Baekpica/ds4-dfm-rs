@@ -184,13 +184,20 @@ pub fn fill_quote_facts(
             )
         }
         (ModelFamily::SolarOpen2, Some(s)) => {
-            let scratch = family_graph_scratch(s, native);
+            let scratch = solar_graph_bytes(s, ctx, native, req.backend);
             let pool = if partial {
                 solar_checkpoint_pool_bytes(s)
             } else {
                 0
             };
-            (kv, scratch, 0, pool)
+            let bank_decode = if quote_batch_alloc(req, caps, facts) {
+                u64::from(s.n_vocab) * SIZEOF_F32
+                    + solar_split_bytes(s, ctx, req.backend)
+                    + 2 * SIZEOF_U32
+            } else {
+                0
+            };
+            (kv + bank_decode, scratch, 0, pool)
         }
         (ModelFamily::Motif3, Some(s)) => {
             let scratch = motif_graph_bytes(s, native);
@@ -231,24 +238,32 @@ pub fn fill_quote_facts(
             // The slab price already includes every rollback checkpoint depth.
             (bank, scratch, mtp, 0)
         }
-        (_, Some(s)) => {
-            let scratch = family_graph_scratch(s, native);
-            let pool = if partial { kv } else { 0 };
-            let mtp_state = if mtp_on {
-                u64::from(s.n_embd)
-                    .saturating_mul(u64::from(s.n_layer))
-                    .saturating_mul(caps.spec_draft_min.max(1) as u64)
-                    .saturating_mul(2)
+        (ModelFamily::ExaoneMoe, Some(s)) => {
+            let row = plain_graph_row_elems(s) * SIZEOF_F32;
+            let logits = u64::from(s.n_vocab) * SIZEOF_F32;
+            let batch_logits = if quote_batch_alloc(req, caps, facts) {
+                logits
             } else {
                 0
             };
-            (kv, scratch, mtp_state, pool)
+            (
+                kv + row + logits + batch_logits,
+                u64::from(native) * row,
+                0,
+                0,
+            )
         }
         _ => (kv, 0, 0, 0),
     };
     let media = if caps.family == ModelFamily::Step37 {
         if host.vision || facts.vision_loaded {
             shape.map(|s| step_media_bytes(s, ctx)).unwrap_or(GIB)
+        } else {
+            0
+        }
+    } else if caps.family == ModelFamily::Glm53 {
+        if host.vision || facts.vision_loaded {
+            glm_media_bytes()
         } else {
             0
         }
@@ -954,11 +969,65 @@ fn deepseek_mtp_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
     floats * SIZEOF_F32
 }
 
-fn family_graph_scratch(shape: Shape, native: u32) -> u64 {
-    u64::from(native)
-        .saturating_mul(u64::from(shape.n_embd))
-        .saturating_mul(u64::from(shape.n_layer))
-        .saturating_mul(2)
+// Shared geometry from the native Solar/EXAONE plain GQA MoE workspace.
+fn plain_graph_row_elems(s: Shape) -> u64 {
+    let hidden = u64::from(s.n_embd);
+    let used = u64::from(s.n_expert_used);
+    5 * hidden
+        + 2 * u64::from(s.n_head) * u64::from(s.n_head_dim)
+        + 2 * u64::from(s.n_head_kv) * u64::from(s.n_head_dim)
+        + 3 * u64::from(s.n_ff_dense)
+        + 3 * u64::from(s.n_ff_shexp)
+        + u64::from(s.n_expert)
+        + 2 * used
+        + 3 * used * u64::from(s.n_ff_exp)
+        + used * hidden
+}
+
+// C solar_graph_context_memory_estimate, excluding bank-owned KV/KDA state.
+fn solar_graph_bytes(s: Shape, ctx: u64, native: u32, backend: Backend) -> u64 {
+    let pc = u64::from(native);
+    let heads = u64::from(s.n_head);
+    let dim = u64::from(s.n_kda_head_dim);
+    let kda = heads * dim;
+    let conv = kda * u64::from(s.n_ssm_conv);
+    let n_kda = (0..s.n_layer).filter(|il| il % 4 != 0).count() as u64;
+    let controls = n_kda * (3 * conv + heads + kda + dim);
+    let row = plain_graph_row_elems(s) + 3 * kda + dim + heads;
+    let chunk_scratch = if pc >= 64 && dim == 128 {
+        let plane = (pc * kda * SIZEOF_F32).div_ceil(256) * 256;
+        let mq = (pc.div_ceil(64) * heads * 64 * 64 * SIZEOF_F32).div_ceil(256) * 256;
+        6 * plane + mq
+    } else {
+        0
+    };
+    ((pc + 1) * row + u64::from(s.n_vocab) + controls) * SIZEOF_F32
+        + solar_split_bytes(s, ctx, backend)
+        + pc * SIZEOF_I32
+        + chunk_scratch
+}
+
+fn solar_split_bytes(s: Shape, ctx: u64, backend: Backend) -> u64 {
+    let baseline = backend != Backend::Cuda
+        || std::env::var("DS4_CUDA_SOLAR_GQA_GROUPED").ok().as_deref() == Some("0");
+    let chunk = if baseline {
+        2048
+    } else {
+        std::env::var("DS4_CUDA_SOLAR_GQA_CHUNK")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| matches!(v, 64 | 128 | 256 | 512 | 1024 | 2048))
+            .unwrap_or(64)
+    };
+    u64::from(s.n_head) * ctx.div_ceil(chunk) * (u64::from(s.n_head_dim) + 2) * SIZEOF_F32
+}
+
+// Maximum glm53_vision_smart_resize grid: 8000 merged tokens, four patches
+// each. Encoder buffers: patch; a/b/q/k/v/attention; QKV; gate/up/mid.
+// The merger reuses these same allocations.
+fn glm_media_bytes() -> u64 {
+    let rows = 8000 * 4;
+    rows * (1176 + 6 * 1024 + 3072 + 3 * 4096) * SIZEOF_F32
 }
 
 // C step37_memory: GQA workspace plus Step controls, gates and RoPE tables.
@@ -1965,6 +2034,88 @@ mod tests {
     }
 
     #[test]
+    fn native_quote_glm_vision() {
+        let _env = lock_test_env();
+        let req = ServingRequest {
+            ctx: 2048,
+            ..ServingRequest::default()
+        };
+        let caps = serving_caps(ModelFamily::Glm53, Variant::Glm53Flash);
+        for (host_vision, loaded) in [(true, false), (false, true), (false, false)] {
+            let mut facts = EngineFacts {
+                vision_loaded: loaded,
+                ..EngineFacts::default()
+            };
+            fill_quote_facts(
+                &mut facts,
+                &req,
+                caps,
+                Some(SHAPE_GLM53_FLASH),
+                QuoteHost {
+                    vision: host_vision,
+                    ..qwen_host(None)
+                },
+            );
+            assert_eq!(
+                facts.media_reserve_bytes,
+                Some(if host_vision || loaded {
+                    2_903_040_000
+                } else {
+                    0
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn native_quote_solar_workspace() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset(SOLAR_PREFILL_CHUNK_ENV);
+        let _group = EnvGuard::unset("DS4_CUDA_SOLAR_GQA_GROUPED");
+        let _split = EnvGuard::unset("DS4_CUDA_SOLAR_GQA_CHUNK");
+        for (ctx, native, scratch, bank_extra) in [
+            (8192, 2048, 1_784_901_696, 5_046_280),
+            (262144, 2048, 1_916_956_736, 137_101_320),
+            (8192, 256, 241_538_112, 5_046_280),
+            (32, 32, 37_575_360, 819_720),
+        ] {
+            let req = ServingRequest {
+                ctx,
+                native_chunk: Some(native),
+                ..ServingRequest::default()
+            };
+            let shape = SHAPE_SOLAR_OPEN2_250B;
+            let facts = fill_family(shape.family, shape.variant, shape, &req, qwen_host(None));
+            assert_eq!(facts.scratch_bytes, Some(scratch));
+            assert_eq!(
+                facts.per_bank_bytes,
+                Some(bank_kv_bytes(shape, ctx as u64, native) + bank_extra)
+            );
+        }
+    }
+
+    #[test]
+    fn native_quote_exaone_workspace() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset(EXAONE_PREFILL_CHUNK_ENV);
+        for (shape, shared, bank) in [
+            (SHAPE_KEXAONE_236B, 428_113_920, 499_089_984),
+            (SHAPE_K2_HORIZON_375B, 786_235_392, 2_049_593_152),
+        ] {
+            let mut req = ServingRequest::default();
+            let facts = fill_family(shape.family, shape.variant, shape, &req, qwen_host(None));
+            assert_eq!(facts.scratch_bytes, Some(shared));
+            assert_eq!(facts.per_bank_bytes, Some(bank));
+            req.max_seqs = MaxSeqs::Off;
+            let facts = fill_family(shape.family, shape.variant, shape, &req, qwen_host(None));
+            assert_eq!(
+                facts.per_bank_bytes,
+                Some(bank - u64::from(shape.n_vocab) * SIZEOF_F32)
+            );
+        }
+    }
+
+    #[test]
     fn fitted_media_stays_reserved() {
         let _env = lock_test_env();
         let _chunk = EnvGuard::unset(STEP_PREFILL_CHUNK_ENV);
@@ -2942,7 +3093,12 @@ mod tests {
             .saturating_mul(u64::from(ctx))
             .saturating_mul(row);
         assert!(want < full, "sliding rings must shrink past 12 full layers");
-        assert_eq!(facts.per_bank_bytes, Some(want));
+        assert_eq!(
+            bank_kv_bytes(SHAPE_KEXAONE_236B, u64::from(ctx), native),
+            want
+        );
+        // The bank also owns its decode workspace and two logits rows.
+        assert_eq!(facts.per_bank_bytes, Some(want + 2_064_960));
         assert_eq!(facts.native_chunk, Some(512));
     }
 
