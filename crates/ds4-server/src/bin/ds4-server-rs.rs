@@ -289,6 +289,7 @@ fn main() {
         model_path.as_deref(),
         mtp_path.as_deref(),
         vision_path.is_some(),
+        false,
     );
     let plan = resolve_plan(&serve_req, caps, &facts);
     plan.apply_env();
@@ -407,6 +408,7 @@ fn main() {
                         model_path.as_deref(),
                         mtp_path.as_deref(),
                         vision,
+                        true,
                     );
                     let fitted = resolve_plan(&serve_req, caps, &facts);
                     eprint!("{}", fitted.report());
@@ -446,6 +448,7 @@ fn main() {
                         model_path.as_deref(),
                         mtp_path.as_deref(),
                         vision,
+                        true,
                     );
                     let serial = resolve_plan(&serve_req, caps, &facts);
                     eprint!("{}", serial.report());
@@ -565,6 +568,7 @@ fn apply_host_quote(
     model_path: Option<&str>,
     mtp_path: Option<&str>,
     vision: bool,
+    resident: bool,
 ) {
     let Some(caps) = caps else {
         return;
@@ -578,6 +582,7 @@ fn apply_host_quote(
         mtp_path.map(Path::new),
         ident.map(|id| id.split_count).unwrap_or(1),
         vision,
+        resident,
     );
 }
 

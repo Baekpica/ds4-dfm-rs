@@ -89,6 +89,9 @@ pub fn fill_quote_facts(
 }
 
 /// Live host observation + GGUF span. Used by the CLI pre-open and post-fit.
+///
+/// After `Model::open`, mapped weights have already left MemAvailable.
+/// `resident` credits that span back so the quote is not charged twice.
 pub fn attach_host_quote(
     facts: &mut EngineFacts,
     req: &ServingRequest,
@@ -98,17 +101,29 @@ pub fn attach_host_quote(
     mtp_path: Option<&Path>,
     split_count: u32,
     vision: bool,
+    resident: bool,
 ) {
+    let weights_bytes = model_path
+        .map(|path| gguf_span_bytes(path, split_count))
+        .unwrap_or(0);
+    let mtp_bytes = file_len(mtp_path);
+    let mapped = weights_bytes.saturating_add(mtp_bytes);
     let host = QuoteHost {
-        weights_bytes: model_path
-            .map(|path| gguf_span_bytes(path, split_count))
-            .unwrap_or(0),
-        mtp_bytes: file_len(mtp_path),
-        available_bytes: host_available_bytes(),
+        weights_bytes,
+        mtp_bytes,
+        available_bytes: quote_available(host_available_bytes(), mapped, resident),
         native_chunk: req.native_chunk,
         vision,
     };
     fill_quote_facts(facts, req, caps, shape, host);
+}
+
+fn quote_available(live: u64, mapped: u64, resident: bool) -> u64 {
+    if resident {
+        live.saturating_add(mapped)
+    } else {
+        live
+    }
 }
 
 pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
@@ -270,6 +285,7 @@ mod tests {
             None,
             2,
             false,
+            false,
         );
         assert_eq!(facts.shared_weights_bytes, Some(140));
         assert!(facts.host_available_bytes.unwrap() > 0);
@@ -281,5 +297,57 @@ mod tests {
     #[test]
     fn host_available_bytes_reads_this_host() {
         assert!(host_available_bytes() > 0);
+    }
+
+    #[test]
+    fn resident_span_is_credited_to_available() {
+        assert_eq!(quote_available(30 * GIB, 80 * GIB, false), 30 * GIB);
+        assert_eq!(quote_available(30 * GIB, 80 * GIB, true), 110 * GIB);
+
+        let mut cold = EngineFacts::default();
+        let mut hot = EngineFacts::default();
+        let req = ServingRequest::default();
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        let leftover = 30 * GIB;
+        let mapped = 80 * GIB;
+        fill_quote_facts(
+            &mut cold,
+            &req,
+            caps,
+            Some(SHAPE_QWEN38_FLASH_NEXT),
+            QuoteHost {
+                weights_bytes: mapped,
+                mtp_bytes: 0,
+                available_bytes: leftover,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        fill_quote_facts(
+            &mut hot,
+            &req,
+            caps,
+            Some(SHAPE_QWEN38_FLASH_NEXT),
+            QuoteHost {
+                weights_bytes: mapped,
+                mtp_bytes: 0,
+                available_bytes: quote_available(leftover, mapped, true),
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        let cold_plan = resolve_plan(&req, Some(caps), &cold);
+        let hot_plan = resolve_plan(&req, Some(caps), &hot);
+        assert!(
+            cold_plan.has_errors(),
+            "leftover without credit must overflow"
+        );
+        assert!(
+            cold_plan.issues.iter().any(|i| i.code == "quote_overflow"),
+            "{:?}",
+            cold_plan.issues
+        );
+        assert!(!hot_plan.has_errors(), "{:?}", hot_plan.issues);
+        assert_eq!(hot_plan.effective.max_seqs, 2);
     }
 }
