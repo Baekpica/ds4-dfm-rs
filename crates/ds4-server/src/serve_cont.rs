@@ -21,7 +21,7 @@ use crate::dsml::{SampleOverride, SamplePolicy};
 #[cfg(any(feature = "native", test))]
 use crate::generate::thinking_visible_key;
 use crate::generate::{
-    chat_format_for_syntax, prepare_required_prefixes, render_prompt, responses_ids,
+    prepare_required_prefixes, render_prompt, responses_ids,
     stream_req_from_parsed, GenerateError, GenerateOutcome,
 };
 use crate::parse::{ParsedRequest, ToolCall, ToolChoice};
@@ -1590,7 +1590,7 @@ pub fn cont_prompt_tokens(
 ) -> Result<(Vec<u8>, Vec<i32>), GenerateError> {
     prepare_required_prefixes(
         parsed,
-        chat_format_for_syntax(syntax_for_model_id(exec.model_id())),
+        syntax_for_model_id(exec.model_id()),
         |literal| Ok(exec.encode_chat(literal)),
     )?;
     exec.restore_chat(parsed)?;
@@ -2027,7 +2027,7 @@ mod native {
         ) -> Result<(Vec<u8>, Vec<i32>), GenerateError> {
             prepare_required_prefixes(
                 parsed,
-                chat_format_for_syntax(syntax_for_model_id(self.host.model_id)),
+                syntax_for_model_id(self.host.model_id),
                 |literal| Ok(self.host.vocab.encode_rendered_bytes(literal)),
             )?;
             self.host.restore_request(self.batch, parsed)?;
