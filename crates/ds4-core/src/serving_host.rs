@@ -325,7 +325,23 @@ pub fn fill_quote_facts(
         }
     } else if caps.family == ModelFamily::Ling3Vl {
         if host.vision || facts.vision_loaded {
-            shape.map(|s| ling_media_bytes(s, ctx)).unwrap_or(GIB)
+            shape
+                .map(|s| {
+                    let vision = ling_media_bytes(s, ctx);
+                    // Persistent banks keep their graphs. The first image
+                    // still calls ling3vl_graph_alloc (C ling3vl_session_bytes).
+                    if quote_bank_lane(req, caps, facts)
+                        && !matches!(req.max_seqs, MaxSeqs::Off | MaxSeqs::Fixed(1))
+                    {
+                        vision
+                            + ling_latent_bytes(s, ctx)
+                            + ling_state_bytes(s)
+                            + ling_graph_bytes(s, native)
+                    } else {
+                        vision
+                    }
+                })
+                .unwrap_or(GIB)
         } else {
             0
         }
@@ -1075,6 +1091,7 @@ fn ling_checkpoint_pool_bytes(s: Shape) -> u64 {
 // C `ling3vl_session_bytes` vision terms: the ViT workspace for a full
 // 16,384-patch budget plus the F32 projected-row plane the session fills.
 // Images run on the serial lane, so this is reserved once, not per bank.
+// When banks stay live, fill_quote_facts adds one language graph on top.
 fn ling_media_bytes(s: Shape, ctx: u64) -> u64 {
     let patches = u64::from(LING_MEDIA_ROWS);
     let tower = patches
@@ -2011,9 +2028,32 @@ mod tests {
         // No predictor block, and the graph is per bank rather than shared.
         assert_eq!(facts.mtp_state_bytes, Some(0));
         assert_eq!(facts.scratch_bytes, Some(0));
-        // C ling3vl_session_bytes: the 16,384-patch ViT workspace plus the
-        // projected-row plane, not the generic n_embd * 8192 * 2 fallback.
-        assert_eq!(facts.media_reserve_bytes, Some(911_867_904));
+        // Banks stay live; the first image allocates an independent
+        // ling3vl_graph_alloc. C ling3vl_session_bytes is that language
+        // memory plus the 16,384-patch ViT workspace and projected rows.
+        assert_eq!(facts.media_reserve_bytes, Some(2_395_025_408));
+
+        let mut serial = EngineFacts::default();
+        let serial_req = ServingRequest {
+            ctx: 8192,
+            max_seqs: MaxSeqs::Fixed(1),
+            ..ServingRequest::default()
+        };
+        fill_quote_facts(
+            &mut serial,
+            &serial_req,
+            caps,
+            Some(s),
+            QuoteHost {
+                weights_bytes: 78 * GIB,
+                mtp_bytes: 0,
+                available_bytes: 110 * GIB,
+                native_chunk: None,
+                vision: true,
+            },
+        );
+        // Width 1 is the serial session itself; do not price a second graph.
+        assert_eq!(serial.media_reserve_bytes, Some(911_867_904));
     }
 
     #[test]
