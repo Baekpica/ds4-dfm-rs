@@ -497,6 +497,7 @@ mod tests {
 
     #[test]
     fn fill_quote_facts_names_every_budget() {
+        let _env = lock_test_env();
         let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
         let mut facts = EngineFacts::default();
         let req = ServingRequest::default();
@@ -539,7 +540,9 @@ mod tests {
 
     #[test]
     fn attach_host_quote_reads_the_mapped_span() {
+        let _env = lock_test_env();
         let _man = EnvGuard::unset(WEIGHT_IPC_MANIFEST_ENV);
+        let _scope = EnvGuard::unset(WEIGHT_IPC_SCOPE_ENV);
         let dir = std::env::temp_dir().join(format!("ds4-quote-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let a = dir.join("model-00001-of-00002.gguf");
@@ -580,6 +583,7 @@ mod tests {
 
     #[test]
     fn missing_host_probe_does_not_quote() {
+        let _env = lock_test_env();
         let mut facts = EngineFacts::default();
         let req = ServingRequest::default();
         let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
@@ -608,7 +612,9 @@ mod tests {
 
     #[test]
     fn quote_includes_sidecar_spans() {
+        let _env = lock_test_env();
         let _man = EnvGuard::unset(WEIGHT_IPC_MANIFEST_ENV);
+        let _scope = EnvGuard::unset(WEIGHT_IPC_SCOPE_ENV);
         let dir = std::env::temp_dir().join(format!("ds4-quote-sidecars-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let a = dir.join("model-00001-of-00002.gguf");
@@ -637,22 +643,14 @@ mod tests {
             .write_all(&[0u8; 11])
             .unwrap();
 
-        let mut facts = EngineFacts::default();
-        let req = ServingRequest::default();
-        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
-        attach_host_quote(
-            &mut facts,
-            &req,
-            caps,
-            Some(SHAPE_QWEN38_FLASH_NEXT),
-            Some(&a),
-            Some(&mtp),
-            Some(&vision),
-            Some(&dspark),
-            2,
-            true,
-            false,
-        );
+        {
+            let _man = EnvGuard::set(WEIGHT_IPC_MANIFEST_ENV, "/tmp/ds4-weights.manifest");
+            let _scope = EnvGuard::set(WEIGHT_IPC_SCOPE_ENV, "mtp");
+            let facts = attach_ipc(&a, Some(&mtp), Some(&vision), Some(&dspark), false);
+            assert_eq!(facts.shared_weights_bytes, Some(168));
+        }
+
+        let facts = attach_ipc(&a, Some(&mtp), Some(&vision), Some(&dspark), false);
         assert_eq!(facts.shared_weights_bytes, Some(193));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -664,6 +662,7 @@ mod tests {
 
     #[test]
     fn resident_span_is_credited_to_available() {
+        let _env = lock_test_env();
         assert_eq!(quote_available(30 * GIB, 80 * GIB, false), 30 * GIB);
         assert_eq!(quote_available(30 * GIB, 80 * GIB, true), 110 * GIB);
 
@@ -714,6 +713,13 @@ mod tests {
         assert_eq!(hot_plan.effective.max_seqs, 2);
     }
 
+    // catalog-parity runs `cargo test -p ds4-core` without --test-threads=1.
+    // Quote helpers read process env, so those tests must not overlap.
+    fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     struct EnvGuard {
         key: &'static str,
         prev: Option<String>,
@@ -761,6 +767,7 @@ mod tests {
 
     #[test]
     fn qwen_native_defaults_to_runtime_256() {
+        let _env = lock_test_env();
         let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
         let req = ServingRequest::default();
         let facts = fill_qwen(&req, qwen_host(None));
@@ -774,6 +781,7 @@ mod tests {
 
     #[test]
     fn qwen_native_reads_prefill_chunk_env() {
+        let _env = lock_test_env();
         let _chunk = EnvGuard::set(QWEN_PREFILL_CHUNK_ENV, "512");
         let req = ServingRequest::default();
         let facts = fill_qwen(&req, qwen_host(None));
@@ -785,6 +793,7 @@ mod tests {
 
     #[test]
     fn qwen_native_chunk_does_not_raise_past_c() {
+        let _env = lock_test_env();
         let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
         let mut req = ServingRequest::default();
         req.native_chunk = Some(8192);
@@ -794,6 +803,7 @@ mod tests {
 
     #[test]
     fn qwen_explicit_yield_past_runtime_native_errors() {
+        let _env = lock_test_env();
         let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
         let mut req = ServingRequest::default();
         req.sched_chunk = Some(512);
@@ -830,6 +840,7 @@ mod tests {
 
     #[test]
     fn qwen_two_bank_quote_charges_each_graph() {
+        let _env = lock_test_env();
         let _chunk = EnvGuard::set(QWEN_PREFILL_CHUNK_ENV, "8192");
         let mut req = ServingRequest::default();
         req.mem_floor_gb = 0;
@@ -854,6 +865,7 @@ mod tests {
 
     #[test]
     fn qwen_tight_budget_does_not_quote_two_graphs() {
+        let _env = lock_test_env();
         let _chunk = EnvGuard::set(QWEN_PREFILL_CHUNK_ENV, "8192");
         let mut req = ServingRequest::default();
         req.mem_floor_gb = 0;
@@ -885,6 +897,7 @@ mod tests {
 
     #[test]
     fn qwen_env_allows_wider_yield() {
+        let _env = lock_test_env();
         let _chunk = EnvGuard::set(QWEN_PREFILL_CHUNK_ENV, "1024");
         let mut req = ServingRequest::default();
         req.sched_chunk = Some(512);
@@ -928,6 +941,7 @@ mod tests {
 
     #[test]
     fn ipc_manifest_skips_imported_spans() {
+        let _env = lock_test_env();
         let dir = std::env::temp_dir().join(format!("ds4-quote-ipc-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let a = dir.join("model-00001-of-00002.gguf");
