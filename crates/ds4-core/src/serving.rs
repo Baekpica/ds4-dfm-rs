@@ -1004,6 +1004,18 @@ pub fn resolve_plan(
             ));
         }
     }
+    if chunk_unverified(requested_boot, native, req.chunk_fence) {
+        issues.push(error(
+            "chunk_unverified",
+            format!("prefill chunk {requested_boot} is below the verified set"),
+        ));
+    }
+    if chunk_unverified(requested_live, native, req.chunk_fence) {
+        issues.push(error(
+            "chunk_unverified",
+            format!("live prefill chunk {requested_live} is below the verified set"),
+        ));
+    }
     let sched_chunk = snap_verified_chunk(requested_boot, native, req.chunk_fence);
     let mut sched_live = snap_verified_chunk(requested_live, native, req.chunk_fence);
     if sched_live > sched_chunk {
@@ -1448,10 +1460,7 @@ fn partial_block(driver: BankDriver, facts: &EngineFacts) -> Option<PartialBlock
     (facts.partial_reuse == Some(false)).then_some(PartialBlock::Runtime)
 }
 
-fn snap_verified_chunk(want: u32, native: Option<u32>, fence: ChunkFence) -> u32 {
-    if want == 0 {
-        return 0;
-    }
+fn chunk_cap(want: u32, native: Option<u32>, fence: ChunkFence) -> u32 {
     let mut cap = want;
     if fence == ChunkFence::On {
         cap = cap.min(PREFILL_CHUNK_FENCE);
@@ -1459,6 +1468,22 @@ fn snap_verified_chunk(want: u32, native: Option<u32>, fence: ChunkFence) -> u32
     if let Some(native) = native {
         cap = cap.min(native);
     }
+    cap
+}
+
+fn chunk_unverified(want: u32, native: Option<u32>, fence: ChunkFence) -> bool {
+    if want == 0 || fence == ChunkFence::Off {
+        return false;
+    }
+    let cap = chunk_cap(want, native, fence);
+    !VERIFIED_PREFILL_CHUNKS.iter().any(|n| *n <= cap)
+}
+
+fn snap_verified_chunk(want: u32, native: Option<u32>, fence: ChunkFence) -> u32 {
+    if want == 0 {
+        return 0;
+    }
+    let cap = chunk_cap(want, native, fence);
     if fence == ChunkFence::Off {
         return cap;
     }
@@ -1467,7 +1492,7 @@ fn snap_verified_chunk(want: u32, native: Option<u32>, fence: ChunkFence) -> u32
         .rev()
         .copied()
         .find(|n| *n <= cap)
-        .unwrap_or(cap)
+        .unwrap_or(VERIFIED_PREFILL_CHUNKS[0])
 }
 
 fn published_chunk(n: u32, native: Option<u32>) -> u32 {
@@ -2932,6 +2957,49 @@ mod tests {
         }));
         assert!(!env.iter().any(|(k, v)| {
             k == "DS4_CONT_PREFILL_CHUNK_LIVE" && v.parse::<u32>().unwrap() > 1024
+        }));
+    }
+
+    #[test]
+    fn a_chunk_below_the_set_is_an_error() {
+        let mut req = ServingRequest::default();
+        req.sched_chunk = Some(128);
+        req.native_chunk = Some(1024);
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "chunk_unverified"));
+        assert!(!p.may_listen());
+        assert_ne!(p.effective.sched_chunk, 128);
+        assert_eq!(p.effective.sched_chunk, VERIFIED_PREFILL_CHUNKS[0]);
+        let env = p.env_overrides();
+        assert!(!env
+            .iter()
+            .any(|(k, v)| k == "DS4_CONT_PREFILL_CHUNK" && v == "128"));
+        assert!(env.iter().any(|(k, v)| {
+            k == "DS4_CONT_PREFILL_CHUNK"
+                && v.parse::<u32>().ok() == Some(VERIFIED_PREFILL_CHUNKS[0])
+        }));
+    }
+
+    #[test]
+    fn a_live_chunk_below_the_set_is_an_error() {
+        let mut req = ServingRequest::default();
+        req.sched_chunk = Some(1024);
+        req.sched_chunk_live = Some(128);
+        req.native_chunk = Some(1024);
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "chunk_unverified"));
+        assert!(!p.may_listen());
+        assert_ne!(p.effective.sched_chunk_live, 128);
+        assert_eq!(p.effective.sched_chunk_live, VERIFIED_PREFILL_CHUNKS[0]);
+        let env = p.env_overrides();
+        assert!(!env
+            .iter()
+            .any(|(k, v)| k == "DS4_CONT_PREFILL_CHUNK_LIVE" && v == "128"));
+        assert!(env.iter().any(|(k, v)| {
+            k == "DS4_CONT_PREFILL_CHUNK_LIVE"
+                && v.parse::<u32>().ok() == Some(VERIFIED_PREFILL_CHUNKS[0])
         }));
     }
 

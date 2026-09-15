@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::gguf::GgufFile;
 use crate::serving::{
     EngineFacts, MtpKind, MtpMode, ReuseKind, ServingCaps, ServingRequest, DEFAULT_SCHED_CHUNK,
     PREFILL_CHUNK_FENCE,
@@ -82,7 +83,8 @@ pub fn fill_quote_facts(
     facts.checkpoint_pool_bytes = Some(checkpoint);
     facts.ple_bytes = Some(ple_cache_bytes(caps));
     facts.media_reserve_bytes = Some(media);
-    facts.host_available_bytes = Some(host.available_bytes);
+    // Zero is an unsupported probe, not a host with no RAM.
+    facts.host_available_bytes = (host.available_bytes > 0).then_some(host.available_bytes);
     if facts.native_chunk.is_none() {
         facts.native_chunk = Some(native.min(PREFILL_CHUNK_FENCE).max(1));
     }
@@ -99,6 +101,8 @@ pub fn attach_host_quote(
     shape: Option<Shape>,
     model_path: Option<&Path>,
     mtp_path: Option<&Path>,
+    vision_path: Option<&Path>,
+    dspark_path: Option<&Path>,
     split_count: u32,
     vision: bool,
     resident: bool,
@@ -106,12 +110,24 @@ pub fn attach_host_quote(
     let weights_bytes = model_path
         .map(|path| gguf_span_bytes(path, split_count))
         .unwrap_or(0);
-    let mtp_bytes = file_len(mtp_path);
-    let mapped = weights_bytes.saturating_add(mtp_bytes);
+    let mtp_bytes = artifact_span_bytes(mtp_path);
+    let vision_bytes = artifact_span_bytes(vision_path);
+    let dspark_bytes = artifact_span_bytes(dspark_path);
+    let mapped = weights_bytes
+        .saturating_add(mtp_bytes)
+        .saturating_add(vision_bytes)
+        .saturating_add(dspark_bytes);
+    let live = host_available_bytes();
     let host = QuoteHost {
-        weights_bytes,
+        weights_bytes: weights_bytes
+            .saturating_add(vision_bytes)
+            .saturating_add(dspark_bytes),
         mtp_bytes,
-        available_bytes: quote_available(host_available_bytes(), mapped, resident),
+        available_bytes: if live == 0 {
+            0
+        } else {
+            quote_available(live, mapped, resident)
+        },
         native_chunk: req.native_chunk,
         vision,
     };
@@ -123,6 +139,17 @@ fn quote_available(live: u64, mapped: u64, resident: bool) -> u64 {
         live.saturating_add(mapped)
     } else {
         live
+    }
+}
+
+// Sidecar GGUF may split independently of the base; unread metadata is one file.
+fn artifact_span_bytes(path: Option<&Path>) -> u64 {
+    let Some(path) = path else {
+        return 0;
+    };
+    match GgufFile::open(path) {
+        Ok(g) => gguf_span_bytes(path, g.split_count()),
+        Err(_) => file_len(Some(path)),
     }
 }
 
@@ -283,6 +310,8 @@ mod tests {
             Some(SHAPE_QWEN38_FLASH_NEXT),
             Some(&a),
             None,
+            None,
+            None,
             2,
             false,
             false,
@@ -291,6 +320,84 @@ mod tests {
         assert!(facts.host_available_bytes.unwrap() > 0);
         let plan = resolve_plan(&req, Some(caps), &facts);
         assert!(plan.quote.is_some(), "{:?}", plan.to_json());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_host_probe_does_not_quote() {
+        let mut facts = EngineFacts::default();
+        let req = ServingRequest::default();
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            caps,
+            Some(SHAPE_QWEN38_FLASH_NEXT),
+            QuoteHost {
+                weights_bytes: 10 * GIB,
+                mtp_bytes: GIB,
+                available_bytes: 0,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        assert_eq!(facts.host_available_bytes, None);
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert!(plan.quote.is_none(), "{:?}", plan.to_json());
+        assert!(
+            !plan.issues.iter().any(|i| i.code == "quote_overflow"),
+            "{:?}",
+            plan.issues
+        );
+    }
+
+    #[test]
+    fn quote_includes_sidecar_spans() {
+        let dir = std::env::temp_dir().join(format!("ds4-quote-sidecars-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let a = dir.join("model-00001-of-00002.gguf");
+        let b = dir.join("model-00002-of-00002.gguf");
+        let mtp = dir.join("mtp.gguf");
+        let vision = dir.join("vision.gguf");
+        let dspark = dir.join("dspark.gguf");
+        std::fs::File::create(&a)
+            .unwrap()
+            .write_all(&[0u8; 100])
+            .unwrap();
+        std::fs::File::create(&b)
+            .unwrap()
+            .write_all(&[0u8; 40])
+            .unwrap();
+        std::fs::File::create(&mtp)
+            .unwrap()
+            .write_all(&[0u8; 25])
+            .unwrap();
+        std::fs::File::create(&vision)
+            .unwrap()
+            .write_all(&[0u8; 17])
+            .unwrap();
+        std::fs::File::create(&dspark)
+            .unwrap()
+            .write_all(&[0u8; 11])
+            .unwrap();
+
+        let mut facts = EngineFacts::default();
+        let req = ServingRequest::default();
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        attach_host_quote(
+            &mut facts,
+            &req,
+            caps,
+            Some(SHAPE_QWEN38_FLASH_NEXT),
+            Some(&a),
+            Some(&mtp),
+            Some(&vision),
+            Some(&dspark),
+            2,
+            true,
+            false,
+        );
+        assert_eq!(facts.shared_weights_bytes, Some(193));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

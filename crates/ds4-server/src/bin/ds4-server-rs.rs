@@ -239,18 +239,19 @@ fn main() {
     }
     // The open still consumes this fallback, and only DeepSeek accepts a
     // drafter at all, so the check has to look at it.
-    if let (Some(id), Ok(path)) = (ident.as_ref(), std::env::var("DS4_DSPARK_MODEL")) {
-        if !path.is_empty() {
-            facts.dspark_ok = Some(
-                match probe_dspark_sidecar(id.shape, dist_probe.as_ref(), &path) {
-                    Ok(()) => true,
-                    Err(error) => {
-                        eprintln!("ds4-server-rs: DS4_DSPARK_MODEL {path}: {error}");
-                        false
-                    }
-                },
-            );
-        }
+    let dspark_path = std::env::var("DS4_DSPARK_MODEL")
+        .ok()
+        .filter(|path| !path.is_empty());
+    if let (Some(id), Some(path)) = (ident.as_ref(), dspark_path.as_deref()) {
+        facts.dspark_ok = Some(
+            match probe_dspark_sidecar(id.shape, dist_probe.as_ref(), path) {
+                Ok(()) => true,
+                Err(error) => {
+                    eprintln!("ds4-server-rs: DS4_DSPARK_MODEL {path}: {error}");
+                    false
+                }
+            },
+        );
     }
     if let Some(path) = mtp_path.as_deref() {
         // The same attach the open performs: family acceptance, sidecar
@@ -288,6 +289,8 @@ fn main() {
         ident.as_ref(),
         model_path.as_deref(),
         mtp_path.as_deref(),
+        vision_path.as_deref(),
+        dspark_path.as_deref(),
         vision_path.is_some(),
         false,
     );
@@ -407,6 +410,8 @@ fn main() {
                         ident.as_ref(),
                         model_path.as_deref(),
                         mtp_path.as_deref(),
+                        vision_path.as_deref(),
+                        dspark_path.as_deref(),
                         vision,
                         true,
                     );
@@ -447,6 +452,8 @@ fn main() {
                         ident.as_ref(),
                         model_path.as_deref(),
                         mtp_path.as_deref(),
+                        vision_path.as_deref(),
+                        dspark_path.as_deref(),
                         vision,
                         true,
                     );
@@ -567,6 +574,8 @@ fn apply_host_quote(
     ident: Option<&Identified>,
     model_path: Option<&str>,
     mtp_path: Option<&str>,
+    vision_path: Option<&str>,
+    dspark_path: Option<&str>,
     vision: bool,
     resident: bool,
 ) {
@@ -580,6 +589,8 @@ fn apply_host_quote(
         ident.map(|id| id.shape),
         model_path.map(Path::new),
         mtp_path.map(Path::new),
+        vision_path.map(Path::new),
+        dspark_path.map(Path::new),
         ident.map(|id| id.split_count).unwrap_or(1),
         vision,
         resident,
