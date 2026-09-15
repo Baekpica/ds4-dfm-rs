@@ -62309,7 +62309,7 @@ static int family_banked_engine_continuous_generate(
                         ctx->bank_hist_len[b] = pos;
                         ctx->bank_hist_valid[b] = 1u;
                         cached = pos;
-                        forked = true;
+                        forked = partial = true;
                     }
                 } else if (source_prefix &&
                            requested_cached < source_frontier && ctx->step37) {
