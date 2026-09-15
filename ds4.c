@@ -54203,6 +54203,16 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
             (void)step37_reset(&s->step37_graph);
             if (s->engine->mtp_ready) { (void)step37_spec_reset(&s->step37_spec); }
         }
+    } else if (ds4_session_is_ling3vl(s)) {
+        s->checkpoint_valid = false;
+        s->checkpoint.len = 0;
+        s->mtp_draft_valid = false;
+        /* A restored payload describes its own rows.  Image spans left from
+         * an earlier request would make the next sync refuse the incremental
+         * path and replay the whole prompt, throwing the restore away. */
+        s->ling3vl_media.count = 0;
+        s->ling3vl_media.rows = 0;
+        if (s->ling3vl_graph_ready) { (void)ling3vl_graph_reset(&s->ling3vl_graph); }
     }
 #endif
     if (s->distributed) {
