@@ -38413,6 +38413,12 @@ static bool vocab_token_is_generation_stop(const ds4_vocab *vocab, int token) {
         return vocab->dots3_endoftext_id >= 0 &&
                token == vocab->dots3_endoftext_id;
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL) {
+        /* Official generation_config also stops on <|endoftext|>.
+         * <|role> opens the next turn and must not leak into content. */
+        return (vocab->eot_id >= 0 && token == vocab->eot_id) ||
+               (vocab->im_start_id >= 0 && token == vocab->im_start_id);
+    }
     return false;
 }
 
