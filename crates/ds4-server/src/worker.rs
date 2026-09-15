@@ -10,6 +10,18 @@ pub enum ServerLaunch {
     Worker,
 }
 
+impl ServerLaunch {
+    /// Apply the allocation policy for the selected launch path before quoting.
+    pub fn configure_serving(self, req: &mut ds4_core::ServingRequest) {
+        if self == Self::Worker {
+            // The assembled worker creates one serial session, with no
+            // HTTP batch slabs or continuous scheduler allocation.
+            req.max_seqs = ds4_core::MaxSeqs::Off;
+            req.lane = ds4_core::LaneMode::Serial;
+        }
+    }
+}
+
 pub fn server_launch(role: Role, has_model: bool) -> Result<ServerLaunch, String> {
     match role {
         Role::Worker => {
@@ -26,6 +38,50 @@ pub fn server_launch(role: Role, has_model: bool) -> Result<ServerLaunch, String
 mod tests {
     use super::{server_launch, ServerLaunch, WORKER_REQUIRES_MODEL};
     use ds4_dist::{Layers, Role};
+
+    #[test]
+    fn worker_quote_has_no_http_banks() {
+        use ds4_core::{
+            fill_quote_facts, resolve_plan, serving_caps, EngineFacts, MaxSeqs, ModelFamily,
+            QuoteHost, ServingRequest, Variant, SHAPE_FLASH,
+        };
+        let caps = serving_caps(ModelFamily::DeepSeek4, Variant::Flash);
+        let mut req = ServingRequest {
+            distribution: ds4_core::Distribution::Sliced,
+            ..ServingRequest::default()
+        };
+        server_launch(Role::Worker, true)
+            .unwrap()
+            .configure_serving(&mut req);
+        let mut facts = EngineFacts::default();
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            caps,
+            Some(SHAPE_FLASH),
+            QuoteHost {
+                weights_bytes: 0,
+                mtp_bytes: 0,
+                available_bytes: u64::MAX,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        assert_eq!(facts.per_bank_bytes, Some(0));
+        assert_eq!(req.max_seqs, MaxSeqs::Off);
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert!(plan.may_listen(), "{:?}", plan.issues);
+        assert_eq!(plan.effective.max_seqs, 1);
+        let budget = plan.quote.unwrap().total;
+        for (available, allowed) in [(budget, true), (budget - 1, false)] {
+            facts.host_available_bytes = Some(available);
+            let plan = resolve_plan(&req, Some(caps), &facts);
+            assert_eq!(plan.may_listen(), allowed, "{:?}", plan.issues);
+        }
+        let mut http = ServingRequest::default();
+        ServerLaunch::Http.configure_serving(&mut http);
+        assert_eq!(http.max_seqs, ServingRequest::default().max_seqs);
+    }
 
     #[test]
     fn worker_without_model_requires_m() {

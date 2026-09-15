@@ -206,6 +206,10 @@ fn main() {
     }
     serve_req.kv_min_tokens = Some(kv.min_tokens());
 
+    let launch = server_launch(dist.opt.role, model_path.is_some())
+        .unwrap_or_else(|error| cli_error(&error));
+    launch.configure_serving(&mut serve_req);
+
     let mut facts = EngineFacts::default();
     let mut kv_store = None;
     if kv.dir().is_some() {
@@ -320,8 +324,6 @@ fn main() {
     };
 
     let native_dist = distributed_config(&dist.opt);
-    let launch = server_launch(dist.opt.role, model_path.is_some())
-        .unwrap_or_else(|error| cli_error(&error));
     let model = match model_path.as_deref() {
         Some(path) => {
             let opened = match native_dist.as_ref() {

@@ -1514,6 +1514,11 @@ fn chunk_unverified(want: u32, native: Option<u32>, fence: ChunkFence) -> bool {
         return false;
     }
     let cap = chunk_cap(want, native, fence);
+    // A native cap below the verified scheduler widths is a short tail.
+    // An explicitly smaller yield still needs the normal verification fence.
+    if native == Some(cap) && cap > 0 && cap < VERIFIED_PREFILL_CHUNKS[0] {
+        return false;
+    }
     !VERIFIED_PREFILL_CHUNKS.iter().any(|n| *n <= cap)
 }
 
@@ -1522,7 +1527,9 @@ fn snap_verified_chunk(want: u32, native: Option<u32>, fence: ChunkFence) -> u32
         return 0;
     }
     let cap = chunk_cap(want, native, fence);
-    if fence == ChunkFence::Off {
+    if fence == ChunkFence::Off
+        || (native == Some(cap) && cap > 0 && cap < VERIFIED_PREFILL_CHUNKS[0])
+    {
         return cap;
     }
     VERIFIED_PREFILL_CHUNKS
@@ -3039,6 +3046,21 @@ mod tests {
         assert!(!env.iter().any(|(k, v)| {
             k == "DS4_CONT_PREFILL_CHUNK_LIVE" && v.parse::<u32>().unwrap() > 1024
         }));
+    }
+
+    #[test]
+    fn short_native_tail_is_valid() {
+        for cap in [64, 128, 255] {
+            let req = ServingRequest {
+                ctx: cap as i32,
+                native_chunk: Some(cap),
+                ..ServingRequest::default()
+            };
+            let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+            assert!(p.may_listen(), "{:?}", p.issues);
+            assert_eq!(p.effective.sched_chunk, cap);
+            assert_eq!(p.effective.sched_chunk_live, cap);
+        }
     }
 
     #[test]

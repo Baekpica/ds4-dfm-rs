@@ -1523,8 +1523,9 @@ fn resident_runtime(facts: &EngineFacts) -> u64 {
     if facts.cont_lane == Some(false) {
         return 0;
     }
-    // Media workspaces stay lazy until a serial image session is allocated.
-    // Their reserve must remain available after a successful text-bank fit.
+    // Media stays lazy until image use. Checkpoint slabs reserve virtual
+    // addresses at fit but map physical pages only on capture. Both costs
+    // must remain available after a successful fit, without resident credit.
     let banks = facts.banks_fitted.unwrap_or(1);
     facts
         .per_bank_bytes
@@ -1532,7 +1533,6 @@ fn resident_runtime(facts: &EngineFacts) -> u64 {
         .saturating_mul(u64::from(banks))
         .saturating_add(facts.mtp_state_bytes.unwrap_or(0))
         .saturating_add(facts.scratch_bytes.unwrap_or(0))
-        .saturating_add(facts.checkpoint_pool_bytes.unwrap_or(0))
         .saturating_add(facts.ple_bytes.unwrap_or(0))
 }
 
@@ -2541,6 +2541,7 @@ mod tests {
                 },
             );
             assert_eq!(facts.media_reserve_bytes, Some(media));
+            let live = live + facts.checkpoint_pool_bytes.unwrap();
             credit_resident(&mut facts, live, mapped);
             let plan = resolve_plan(&req, Some(caps), &facts);
             assert_eq!(plan.may_listen(), can_listen, "{:?}", plan.issues);
@@ -2589,6 +2590,31 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_pages_stay_reserved() {
+        let facts = EngineFacts {
+            banks_fitted: Some(2),
+            cont_lane: Some(true),
+            per_bank_bytes: Some(3 * GIB),
+            scratch_bytes: Some(GIB),
+            checkpoint_pool_bytes: Some(2 * GIB),
+            ..EngineFacts::default()
+        };
+        assert_eq!(resident_runtime(&facts), 7 * GIB);
+        let req = ServingRequest {
+            mem_floor_gb: 0,
+            max_seqs: MaxSeqs::Fixed(2),
+            ..ServingRequest::default()
+        };
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        for (live, allowed) in [(2 * GIB - 1, false), (2 * GIB, true)] {
+            let mut facts = facts.clone();
+            credit_resident(&mut facts, live, 0);
+            let p = resolve_plan(&req, Some(caps), &facts);
+            assert_eq!(p.may_listen(), allowed, "{:?}", p.issues);
+        }
+    }
+
+    #[test]
     fn fitted_runtime_is_credited_after_fit() {
         let _env = lock_test_env();
         let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
@@ -2616,11 +2642,12 @@ mod tests {
         );
         credit_resident(&mut facts, leftover, mapped);
         assert!(resolve_plan(&req, Some(caps), &facts).has_errors());
-        // Open banks do not pay for lazy image workspaces. Supply that
-        // reserve in live memory before checking resident runtime credit.
+        // Open banks leave media and checkpoint pages lazy. Supply these
+        // reserves in live memory before checking resident runtime credit.
         let with_media = leftover
             + facts.media_reserve_bytes.unwrap()
-            + facts.media_per_extra_bank_bytes.unwrap();
+            + facts.media_per_extra_bank_bytes.unwrap()
+            + facts.checkpoint_pool_bytes.unwrap();
         credit_resident(&mut facts, with_media, mapped);
         let plan = resolve_plan(&req, Some(caps), &facts);
         assert!(
