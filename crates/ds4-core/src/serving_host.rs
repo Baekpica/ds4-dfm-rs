@@ -7,9 +7,10 @@ use std::path::{Path, PathBuf};
 
 use crate::gguf::GgufFile;
 use crate::serving::{
-    EngineFacts, MtpKind, MtpMode, ReuseKind, ServingCaps, ServingRequest, DEFAULT_SCHED_CHUNK,
+    EngineFacts, MtpKind, MtpMode, PrefixReuse, ReuseKind, ServingCaps, ServingRequest,
+    DEFAULT_SCHED_CHUNK,
 };
-use crate::shape::{ModelFamily, Shape};
+use crate::shape::{ModelFamily, Shape, Variant};
 use crate::tensors::model_split_sibling_path;
 
 const GIB: u64 = 1 << 30;
@@ -25,6 +26,18 @@ const STEP_NATIVE_MAX: u32 = 4096;
 const INKLING_NATIVE_DEFAULT: u32 = 1024;
 const INKLING_NATIVE_MAX: u32 = 8192;
 const GLM_NATIVE_DEFAULT: u32 = 2048;
+const EXAONE_PREFILL_CHUNK_ENV: &str = "DS4_EXAONE_PREFILL_CHUNK";
+const EXAONE_NATIVE_DEFAULT: u32 = 512;
+const K2_NATIVE_DEFAULT: u32 = 1024;
+const MOTIF_PREFILL_CHUNK_ENV: &str = "DS4_MOTIF3_PREFILL_CHUNK";
+const MOTIF_NATIVE_DEFAULT: u32 = 4096;
+const MOTIF_NATIVE_MAX: u32 = 8192;
+const SOLAR_PREFILL_CHUNK_ENV: &str = "DS4_METAL_PREFILL_CHUNK";
+const SOLAR_NATIVE_DEFAULT: u32 = 2048;
+const DOTS3_PREFILL_CHUNK_ENV: &str = "DS4_DOTS3_PREFILL_CHUNK";
+const DOTS3_NATIVE_DEFAULT: u32 = 4096;
+const DOTS3_NATIVE_MAX: u32 = 8192;
+const FAMILY_NATIVE_MAX: u32 = 16384;
 const QWEN_QSA_NO_FUSED_ENV: &str = "DS4_QWEN_QSA_NO_FUSED";
 const WEIGHT_IPC_MANIFEST_ENV: &str = "DS4_CUDA_WEIGHT_IPC_MANIFEST";
 const WEIGHT_IPC_SCOPE_ENV: &str = "DS4_CUDA_WEIGHT_IPC_SCOPE";
@@ -75,8 +88,20 @@ pub fn fill_quote_facts(
         .max(1);
     let ctx = u64::from(ctx_tokens);
     let kv = shape.map(|s| bank_kv_bytes(s, ctx)).unwrap_or(0);
-    let mtp_on = req.mtp_mode != MtpMode::Off && caps.mtp != MtpKind::None;
-    let partial = caps.reuse == ReuseKind::Partial;
+    // Sidecar MTP is off until a path/load exists; family capability alone
+    // would charge Step spec graphs that C will not allocate.
+    let mtp_on = match caps.mtp {
+        MtpKind::Embedded => req.mtp_mode != MtpMode::Off,
+        MtpKind::Sidecar | MtpKind::DeepSeek => {
+            req.mtp_mode != MtpMode::Off && (req.mtp_path.is_some() || facts.mtp_loaded)
+        }
+        MtpKind::BoundOnly | MtpKind::None => false,
+    };
+    // Native skips the slab when DS4_SERVER_FORK_PARTIAL=0.
+    let partial = match req.prefix_reuse {
+        PrefixReuse::Off | PrefixReuse::Exact => false,
+        PrefixReuse::Partial | PrefixReuse::Auto => caps.reuse == ReuseKind::Partial,
+    };
     // Qwen/Step allocate a complete graph per bank. Shared scratch would
     // let auto approve two banks when only one graph fits.
     // Example: Qwen MTP enable is another QSA+hidden per graph, not one
@@ -287,9 +312,50 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             INKLING_NATIVE_MAX,
         ),
         ModelFamily::Glm53 => GLM_NATIVE_DEFAULT,
+        ModelFamily::ExaoneMoe => env_u32(
+            EXAONE_PREFILL_CHUNK_ENV,
+            if caps.variant == Variant::K2Horizon375B {
+                K2_NATIVE_DEFAULT
+            } else {
+                EXAONE_NATIVE_DEFAULT
+            },
+            1,
+            FAMILY_NATIVE_MAX,
+        ),
+        ModelFamily::Motif3 => env_u32(
+            MOTIF_PREFILL_CHUNK_ENV,
+            MOTIF_NATIVE_DEFAULT,
+            1,
+            MOTIF_NATIVE_MAX,
+        ),
+        ModelFamily::SolarOpen2 => solar_native_chunk(ctx),
+        ModelFamily::Dots3Note => env_u32(
+            DOTS3_PREFILL_CHUNK_ENV,
+            DOTS3_NATIVE_DEFAULT,
+            1,
+            DOTS3_NATIVE_MAX,
+        ),
         _ => DEFAULT_SCHED_CHUNK,
     };
     cap.min(ctx)
+}
+
+fn solar_native_chunk(ctx: u32) -> u32 {
+    let fallback = ctx.min(SOLAR_NATIVE_DEFAULT).max(1);
+    let Ok(raw) = std::env::var(SOLAR_PREFILL_CHUNK_ENV) else {
+        return fallback;
+    };
+    if raw.is_empty() {
+        return fallback;
+    }
+    let Ok(parsed) = raw.parse::<i64>() else {
+        return fallback;
+    };
+    // C: value <= 0 pins the session cap to ctx.
+    if parsed <= 0 {
+        return ctx.max(1);
+    }
+    (parsed as u32).min(ctx).max(1)
 }
 
 fn env_u32(name: &str, fallback: u32, min: u32, max: u32) -> u32 {
@@ -582,8 +648,11 @@ fn meminfo_available() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serving::{resolve_plan, serving_caps, MtpMode, PREFILL_CHUNK_FENCE};
-    use crate::shape::{Variant, SHAPE_QWEN38_FLASH_NEXT, SHAPE_STEP37_FLASH};
+    use crate::serving::{resolve_plan, serving_caps, MtpMode, PrefixReuse, PREFILL_CHUNK_FENCE};
+    use crate::shape::{
+        Variant, SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_QWEN38_FLASH_NEXT,
+        SHAPE_SOLAR_OPEN2_250B, SHAPE_STEP37_FLASH,
+    };
     use std::io::Write;
 
     #[test]
@@ -1028,6 +1097,20 @@ mod tests {
     }
 
     #[test]
+    fn qwen_off_reuse_skips_checkpoint_pool() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
+        let mut req = ServingRequest::default();
+        req.mem_floor_gb = 0;
+        req.prefix_reuse = PrefixReuse::Off;
+        let facts = fill_qwen(&req, qwen_host(None));
+        assert_eq!(facts.checkpoint_pool_bytes, Some(0));
+        req.prefix_reuse = PrefixReuse::Exact;
+        let facts = fill_qwen(&req, qwen_host(None));
+        assert_eq!(facts.checkpoint_pool_bytes, Some(0));
+    }
+
+    #[test]
     fn fitted_runtime_is_credited_after_fit() {
         let _env = lock_test_env();
         let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
@@ -1092,6 +1175,152 @@ mod tests {
         assert_eq!(
             facts_cost(&facts, &req, 2) - facts_cost(&facts, &req, 1),
             per_bank
+        );
+    }
+
+    fn fill_family(
+        family: ModelFamily,
+        variant: Variant,
+        shape: Shape,
+        req: &ServingRequest,
+        host: QuoteHost,
+    ) -> EngineFacts {
+        let mut facts = EngineFacts::default();
+        let caps = serving_caps(family, variant);
+        fill_quote_facts(&mut facts, req, caps, Some(shape), host);
+        facts
+    }
+
+    #[test]
+    fn step_auto_mtp_without_path_skips_spec() {
+        let _env = lock_test_env();
+        let mut auto = ServingRequest::default();
+        auto.mem_floor_gb = 0;
+        let mut off = auto.clone();
+        off.mtp_mode = MtpMode::Off;
+        let host = QuoteHost {
+            weights_bytes: 10 * GIB,
+            mtp_bytes: 0,
+            available_bytes: 100 * GIB,
+            native_chunk: None,
+            vision: false,
+        };
+        let auto_facts = fill_family(
+            ModelFamily::Step37,
+            Variant::Step37Flash,
+            SHAPE_STEP37_FLASH,
+            &auto,
+            host,
+        );
+        let off_facts = fill_family(
+            ModelFamily::Step37,
+            Variant::Step37Flash,
+            SHAPE_STEP37_FLASH,
+            &off,
+            host,
+        );
+        assert_eq!(auto_facts.per_bank_bytes, off_facts.per_bank_bytes);
+    }
+
+    #[test]
+    fn exaone_native_defaults_to_runtime_512() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset("DS4_EXAONE_PREFILL_CHUNK");
+        let facts = fill_family(
+            ModelFamily::ExaoneMoe,
+            Variant::Kexaone236B,
+            SHAPE_KEXAONE_236B,
+            &ServingRequest::default(),
+            QuoteHost {
+                weights_bytes: GIB,
+                mtp_bytes: 0,
+                available_bytes: 100 * GIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        assert_eq!(facts.native_chunk, Some(512));
+    }
+
+    #[test]
+    fn k2_native_defaults_to_runtime_1024() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset("DS4_EXAONE_PREFILL_CHUNK");
+        let facts = fill_family(
+            ModelFamily::ExaoneMoe,
+            Variant::K2Horizon375B,
+            SHAPE_K2_HORIZON_375B,
+            &ServingRequest::default(),
+            QuoteHost {
+                weights_bytes: GIB,
+                mtp_bytes: 0,
+                available_bytes: 100 * GIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        assert_eq!(facts.native_chunk, Some(1024));
+    }
+
+    #[test]
+    fn motif_native_is_published_to_c_env() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset("DS4_MOTIF3_PREFILL_CHUNK");
+        let mut req = ServingRequest::default();
+        req.native_chunk = Some(256);
+        let facts = fill_family(
+            ModelFamily::Motif3,
+            Variant::Motif3,
+            SHAPE_MOTIF3,
+            &req,
+            QuoteHost {
+                weights_bytes: GIB,
+                mtp_bytes: 0,
+                available_bytes: 100 * GIB,
+                native_chunk: Some(256),
+                vision: false,
+            },
+        );
+        assert_eq!(facts.native_chunk, Some(256));
+        let caps = serving_caps(ModelFamily::Motif3, Variant::Motif3);
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert!(
+            plan.env_overrides()
+                .iter()
+                .any(|(k, v)| k == "DS4_MOTIF3_PREFILL_CHUNK" && v == "256"),
+            "{:?}",
+            plan.env_overrides()
+        );
+    }
+
+    #[test]
+    fn solar_native_is_published_to_c_env() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset("DS4_METAL_PREFILL_CHUNK");
+        let mut req = ServingRequest::default();
+        req.native_chunk = Some(256);
+        let facts = fill_family(
+            ModelFamily::SolarOpen2,
+            Variant::SolarOpen2_250B,
+            SHAPE_SOLAR_OPEN2_250B,
+            &req,
+            QuoteHost {
+                weights_bytes: GIB,
+                mtp_bytes: 0,
+                available_bytes: 100 * GIB,
+                native_chunk: Some(256),
+                vision: false,
+            },
+        );
+        assert_eq!(facts.native_chunk, Some(256));
+        let caps = serving_caps(ModelFamily::SolarOpen2, Variant::SolarOpen2_250B);
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert!(
+            plan.env_overrides()
+                .iter()
+                .any(|(k, v)| k == "DS4_METAL_PREFILL_CHUNK" && v == "256"),
+            "{:?}",
+            plan.env_overrides()
         );
     }
 
