@@ -49,7 +49,10 @@ DeepSeek shared graph costs include its initial caches and native workspace;
 packed cache mirrors are conservatively included even when native VMM
 support may disable them. The same native chunk sizes serial and batch graphs.
 DeepSeek bank costs use full-depth compressed-cache capacity plus raw rings
-and rollback states. Loaded DSpark costs count even with `DS4_CONT_DSPARK=0`.
+and rollback states. Loaded DSpark runtime costs count even with `DS4_CONT_DSPARK=0`.
+A manifest with drafter ranges defers the pre-open quote: import can soft-fail.
+After open, a successful import excludes shared drafter weights; fallback
+retains the local weight cost. Runtime allocations remain charged in both cases.
 
 `--cont-width 0` and `DS4_SERVER_COALESCE_MAX=0` keep the legacy serial
 meaning: no bank lane. `DS4_SERVER_CONTINUOUS=0` is narrower — it forces

@@ -210,6 +210,8 @@ pub struct EngineFacts {
     pub artifact_ok: Option<bool>,
     /// `Some(false)` when a DSpark drafter cannot attach to this family.
     pub dspark_ok: Option<bool>,
+    /// Actual native drafter import result after open; overrides manifest intent.
+    pub drafter_shared: Option<bool>,
     /// `Some(false)` once the native fit refused the continuous lane.
     pub cont_lane: Option<bool>,
     /// `Some(false)` when the opened runtime has no partial checkpoint store.

@@ -14,6 +14,49 @@ import unittest
 
 
 class PrefillCancel(unittest.TestCase):
+    def test_idle_yield_obeys_boot(self):
+        source = (Path(__file__).resolve().parents[1] / "ds4.c").read_text()
+        start = source.index("static uint32_t bg_prefill_yield(")
+        function = source[start:source.index("\n}\n", start) + 3]
+        program = r"""#include <stdint.h>
+#include <stdio.h>
+static uint32_t boot, live;
+static uint32_t bg_prefill_chunk_tokens(void) { return boot; }
+static uint32_t bg_prefill_chunk_live_tokens(void) { return live; }
+FUNCTION
+int main(void) {
+    const uint32_t cases[][6] = {
+        {9000, 4096, 512, 256, 0, 512},
+        {9000, 4096, 512, 256, 1, 256},
+        {73, 4096, 512, 256, 0, 73},
+        {9000, 256, 512, 128, 0, 256},
+        {9000, 4096, 0, 512, 1, 4096},
+        {9000, 4096, 512, 0, 1, 512},
+        {9000, 4096, 512, 1024, 1, 512}
+    };
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        const uint32_t *c = cases[i];
+        boot = c[2]; live = c[3];
+        uint32_t got = bg_prefill_yield(c[0], c[1], c[4]);
+        if (got != c[5]) {
+            fprintf(stderr, "case %u: yield=%u expected=%u\n", i, got, c[5]);
+            return 1;
+        }
+    }
+    return 0;
+}
+""".replace("FUNCTION", function)
+        with tempfile.TemporaryDirectory(prefix="ds4-prefill-yield-") as tmp:
+            path = Path(tmp) / "yield.c"
+            path.write_text(program)
+            binary = Path(tmp) / "yield"
+            subprocess.run(
+                [*shlex.split(os.environ.get("CC", "cc")), "-std=c11",
+                 str(path), "-o", str(binary)], check=True
+            )
+            result = subprocess.run([str(binary)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_drain_stops_at_disconnect(self):
         source = (Path(__file__).resolve().parents[1] / "ds4.c").read_text()
         for function, bank in [

@@ -330,7 +330,14 @@ pub fn attach_host_quote(
         .unwrap_or(0);
     let mut mtp_bytes = artifact_span_bytes(mtp_path);
     let vision_bytes = artifact_span_bytes(vision_path);
-    let dspark_bytes = artifact_span_bytes(dspark_path);
+    let mut dspark_bytes = artifact_span_bytes(dspark_path);
+    let drafter_pending = req.backend == Backend::Cuda
+        && !resident
+        && facts.drafter_shared.is_none()
+        && ipc_drafter_planned(dspark_bytes);
+    if req.backend == Backend::Cuda && facts.drafter_shared == Some(true) {
+        dspark_bytes = 0;
+    }
     // Weight-server already holds imported spans; MemAvailable includes them.
     match ipc_weight_skip() {
         IpcSkip::None => {}
@@ -350,7 +357,13 @@ pub fn attach_host_quote(
         .saturating_add(mtp_bytes)
         .saturating_add(vision_bytes)
         .saturating_add(dspark_bytes);
-    let live = host_available_bytes(req.backend);
+    // A drafter import can soft-fail. Defer this quote until native reports
+    // whether the owner or this worker pays; do not guess either outcome.
+    let live = if drafter_pending {
+        0
+    } else {
+        host_available_bytes(req.backend)
+    };
     let host = QuoteHost {
         weights_bytes: weights_bytes
             .saturating_add(vision_bytes)
@@ -390,6 +403,45 @@ fn ipc_weight_skip() -> IpcSkip {
         Some("both") | None | Some("") => IpcSkip::Both,
         _ => IpcSkip::None,
     }
+}
+
+// Detect an unconfirmed pre-open import. Native drafter imports can fail
+// softly, so this suspends the quote rather than claiming shared ownership.
+fn ipc_drafter_planned(model_size: u64) -> bool {
+    if model_size == 0 || std::env::var_os("DS4_CUDA_WEIGHT_IPC_NO_DRAFTER").is_some() {
+        return false;
+    }
+    let Some(text) = std::env::var_os(WEIGHT_IPC_MANIFEST_ENV)
+        .and_then(|path| std::fs::read_to_string(path).ok())
+    else {
+        return false;
+    };
+    let mut lines = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'));
+    let vmm = match lines.next() {
+        Some(
+            "DS4_WEIGHT_SERVER_IPC_V1" | "DS4_WEIGHT_SERVER_IPC_DERIVED_V1" | "DS4_WEIGHTD_IPC_V1",
+        ) => false,
+        Some("DS4_WEIGHT_SERVER_VMM_V1" | "DS4_WEIGHT_SERVER_VMM_DERIVED_V1") => true,
+        _ => return false,
+    };
+    lines.any(|line| {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        let record = if vmm { "alloc" } else { "range" };
+        let id = if vmm { 2 } else { 1 };
+        if fields.len() != id + 5 || fields[0] != record || fields[id] != "drafter" {
+            return false;
+        }
+        let size = fields[id + 1].parse::<u64>().ok();
+        let offset = fields[id + 2].parse::<u64>().ok();
+        let bytes = fields[id + 3].parse::<u64>().ok();
+        size == Some(model_size)
+            && offset.zip(bytes).is_some_and(|(off, len)| {
+                len > 0 && off.checked_add(len).is_some_and(|end| end <= model_size)
+            })
+    })
 }
 
 fn quote_available(live: u64, mapped: u64, resident: bool) -> u64 {
@@ -3594,6 +3646,72 @@ exit 1
             resident,
         );
         facts
+    }
+
+    #[test]
+    fn ipc_drafter_span_is_shared() {
+        let _env = lock_test_env();
+        let dir = std::env::temp_dir().join(format!("ds4-quote-drafter-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("model.gguf");
+        let drafter = dir.join("drafter.gguf");
+        let manifest = dir.join("weights.manifest");
+        std::fs::write(&model, [0u8; 100]).unwrap();
+        std::fs::write(&drafter, [0u8; 11]).unwrap();
+        let _man = EnvGuard::set(WEIGHT_IPC_MANIFEST_ENV, manifest.to_str().unwrap());
+        let _scope = EnvGuard::set(WEIGHT_IPC_SCOPE_ENV, "both");
+        let _disable = EnvGuard::unset("DS4_CUDA_WEIGHT_IPC_NO_DRAFTER");
+        for header in ["DS4_WEIGHT_SERVER_IPC_V1", "DS4_WEIGHT_SERVER_VMM_V1"] {
+            let record = if header.contains("VMM") {
+                "broker /tmp/weights.sock\nalloc 0 drafter 11 0 11 65536".to_owned()
+            } else {
+                format!("range drafter 11 0 11 {}", "00".repeat(64))
+            };
+            std::fs::write(&manifest, format!("{header}\n{record}\n")).unwrap();
+            let facts = attach_ipc(&model, None, None, Some(&drafter), false);
+            assert_eq!(facts.shared_weights_bytes, Some(11));
+            assert_eq!(facts.host_available_bytes, None, "import not yet confirmed");
+        }
+        for (shared, resident, expected) in [
+            (Some(true), true, 0),
+            (Some(false), true, 11),
+            (None, true, 11),
+        ] {
+            let mut facts = EngineFacts {
+                drafter_shared: shared,
+                ..EngineFacts::default()
+            };
+            let req = ServingRequest::default();
+            let caps = serving_caps(ModelFamily::DeepSeek4, Variant::Flash);
+            attach_host_quote(
+                &mut facts,
+                &req,
+                caps,
+                Some(crate::shape::SHAPE_FLASH),
+                Some(&model),
+                None,
+                None,
+                Some(&drafter),
+                1,
+                false,
+                resident,
+            );
+            assert_eq!(facts.shared_weights_bytes, Some(expected));
+        }
+        {
+            let _disable = EnvGuard::set("DS4_CUDA_WEIGHT_IPC_NO_DRAFTER", "");
+            assert!(!ipc_drafter_planned(11));
+        }
+        assert!(!ipc_drafter_planned(12), "mismatched artifact size");
+        std::fs::write(
+            &manifest,
+            "DS4_WEIGHT_SERVER_VMM_V1\nalloc 0 base 11 0 11 65536\n",
+        )
+        .unwrap();
+        assert!(!ipc_drafter_planned(11), "no drafter ranges");
+        std::fs::write(&manifest, "invalid\nalloc 0 drafter 11 0 11 65536\n").unwrap();
+        assert!(!ipc_drafter_planned(11), "invalid manifest header");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

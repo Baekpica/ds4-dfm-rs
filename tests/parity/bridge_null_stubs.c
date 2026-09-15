@@ -20,6 +20,7 @@ int64_t bridge_payload_load_offset;
 uint64_t bridge_payload_load_bytes;
 int bridge_routed_quant_bits;
 unsigned bridge_boot_prewarm_calls;
+int bridge_drafter_shared;
 int bridge_sync_rc;
 unsigned bridge_sync_calls;
 unsigned bridge_progress_sets;
@@ -88,6 +89,9 @@ void ds4_engine_close(ds4_engine *e) {
 void ds4_engine_boot_prewarm(ds4_engine *e) {
     if (!e) STUB("ds4_engine_boot_prewarm");
     bridge_boot_prewarm_calls++;
+}
+bool ds4_engine_drafter_shared(ds4_engine *e) {
+    return e && bridge_drafter_shared;
 }
 int ds4_engine_model_id(ds4_engine *e) { (void)e; STUB("ds4_engine_model_id"); }
 int ds4_engine_routed_quant_bits(ds4_engine *e) {

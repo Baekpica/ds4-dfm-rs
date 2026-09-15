@@ -381,6 +381,7 @@ fn main() {
         // What only the open engine knows. The refit re-resolves so a
         // fitted-down width or a refused lane cannot stay silently claimed.
         let opened = EngineFacts {
+            drafter_shared: Some(model.drafter_shared()),
             mtp_loaded: mtp_path.is_some() || model.mtp().is_some(),
             vision_loaded: model_options
                 .iter()
@@ -473,6 +474,36 @@ fn main() {
                     None
                 }
             }
+        } else if dspark_path.is_some() {
+            // A deferred drafter quote also needs its import result when
+            // no batch fit runs; serial graph allocations are still lazy.
+            let mut facts = EngineFacts {
+                banks_fitted: Some(1),
+                cont_lane: Some(false),
+                partial_reuse: Some(false),
+                ..opened
+            };
+            let vision = vision_path.is_some() || facts.vision_loaded;
+            apply_host_quote(
+                &mut facts,
+                &serve_req,
+                caps,
+                ident.as_ref(),
+                model_path.as_deref(),
+                mtp_path.as_deref(),
+                vision_path.as_deref(),
+                dspark_path.as_deref(),
+                vision,
+                true,
+            );
+            let serial = resolve_plan(&serve_req, caps, &facts);
+            eprint!("{}", serial.report());
+            if !serial.may_listen() {
+                cli_error("ds4-server-rs: opened serial plan rejected");
+            }
+            serial.apply_env();
+            cfg.adopt_plan(&serial);
+            None
         } else {
             None
         }

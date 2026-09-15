@@ -35290,6 +35290,7 @@ struct ds4_engine {
     bool metal_ready;
     bool mtp_ready;
     bool dspark_ready;
+    bool drafter_shared;
     bool vision_ready;
     bool vision_map_ready;
     int vision_image_token;
@@ -41789,17 +41790,19 @@ static uint32_t bg_prefill_chunk_live_tokens(void) {
     return (uint32_t)v;
 }
 
-/* Family loops used graph capacity as the yield. Cap to LIVE while a
- * peer is decoding so overlap matches the generic scheduler.
- * Example: boot 4096, live 512, one decode bank -> n=512. */
+/* Apply the boot yield even while idle; graph capacity can be larger.
+ * A decoding peer may lower it further through the live limit. */
 static uint32_t bg_prefill_yield(
         uint32_t remain, uint32_t cap, int peer_decoding) {
     uint32_t n = remain < cap ? remain : cap;
+    uint32_t boot = bg_prefill_chunk_tokens();
+    if (boot != 0u && n > boot) {
+        n = boot;
+    }
     if (!peer_decoding) {
         return n;
     }
     uint32_t live = bg_prefill_chunk_live_tokens();
-    uint32_t boot = bg_prefill_chunk_tokens();
     if (live > boot) {
         live = boot;
     }
@@ -67380,6 +67383,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     fprintf(stderr, "ds4: CUDA shared drafter weight cache unavailable; "
                                     "DSpark drafter reads stay on the host mmap path\n");
                 } else {
+                    e->drafter_shared = true;
                     model_release_mapping_cache(&e->dspark_model);
                 }
             }
@@ -67583,6 +67587,10 @@ int ds4_engine_set_power(ds4_engine *e, int power_percent) {
     if (!e || power_percent < 1 || power_percent > 100) return 1;
     e->power_percent = power_percent;
     return 0;
+}
+
+bool ds4_engine_drafter_shared(ds4_engine *e) {
+    return e && e->drafter_shared;
 }
 
 bool ds4_engine_has_vision(ds4_engine *e) {

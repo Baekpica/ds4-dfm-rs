@@ -1352,6 +1352,12 @@ impl Model {
         self.dspark.as_ref()
     }
 
+    /// Whether native successfully imported DSpark weight-server ranges.
+    pub fn drafter_shared(&self) -> bool {
+        // SAFETY: the model owns this live bridge handle for the duration.
+        unsafe { ds4_sys::ds4_bridge_drafter_shared(self.raw.as_ptr()) != 0 }
+    }
+
     pub fn vocab(&self) -> &Vocab {
         &self.vocab
     }

@@ -485,6 +485,8 @@ extern "C" {
 
     pub fn ds4_bridge_model_free(m: *mut ds4_bridge_model);
 
+    pub fn ds4_bridge_drafter_shared(m: *mut ds4_bridge_model) -> c_int;
+
     pub fn ds4_bridge_session_create(
         out: *mut *mut ds4_bridge_session,
         m: *mut ds4_bridge_model,
