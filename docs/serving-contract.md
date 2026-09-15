@@ -45,6 +45,9 @@ preserves at least `--mem-floor-gb`.
 CUDA serial graph fitting also reserves 1 GiB by default, configurable
 with `DS4_SESSION_GRAPH_HEADROOM_MB` (disabled by `DS4_SESSION_GRAPH_FIT=0`).
 The quote keeps the larger of the applicable serial and batch reserves.
+DeepSeek shared graph costs include its initial caches and native workspace;
+packed cache mirrors are conservatively included even when native VMM
+support may disable them. The same native chunk sizes serial and batch graphs.
 
 `--cont-width 0` and `DS4_SERVER_COALESCE_MAX=0` keep the legacy serial
 meaning: no bank lane. `DS4_SERVER_CONTINUOUS=0` is narrower — it forces

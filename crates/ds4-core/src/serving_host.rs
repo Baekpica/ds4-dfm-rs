@@ -208,6 +208,16 @@ pub fn fill_quote_facts(
         }
         (ModelFamily::Dots3Note, Some(s)) => (dots3_graph_bytes(s, ctx, native), 0, 0, 0),
         (ModelFamily::Glm53, Some(s)) => (glm_graph_bytes(s, ctx), 0, 0, 0),
+        (ModelFamily::DeepSeek4, Some(s)) => {
+            // The shared graph owns its own caches before bank slabs are fitted.
+            let scratch = deepseek_graph_bytes(s, ctx, native);
+            let mtp = if sidecar_loaded {
+                deepseek_mtp_bytes(s, ctx, native)
+            } else {
+                0
+            };
+            (kv, scratch, mtp, if partial { kv } else { 0 })
+        }
         (_, Some(s)) => {
             let scratch = family_graph_scratch(s, native);
             let pool = if partial { kv } else { 0 };
@@ -796,6 +806,104 @@ fn quote_batch_alloc(req: &ServingRequest, caps: ServingCaps, facts: &EngineFact
     let width = facts.banks_fitted.unwrap_or(want).min(want);
 
     caps.banks != BankLane::OptIn || width >= 2
+}
+
+// C metal_graph_alloc_bytes_estimate, including its initial cache set and
+// 96 MiB allocator slack. Price both CUDA packed mirrors conservatively:
+// native may refuse them when VMM is unavailable. F32 also bounds Metal F16.
+fn deepseek_graph_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
+    let pc = u64::from(native);
+    let dim = u64::from(s.n_head_dim);
+    let index_dim = u64::from(s.n_indexer_head_dim);
+    let hidden = u64::from(s.n_embd);
+    let heads = u64::from(s.n_head);
+    let hc = u64::from(s.n_hc);
+    let groups = u64::from(s.n_out_group);
+    let used = u64::from(s.n_expert_used);
+    let ff = u64::from(s.n_ff_exp);
+    let row = 4 * hc * hidden
+        + 2 * (2 * hc + hc * hc)
+        + 7 * hidden
+        + 2 * u64::from(s.n_lora_q)
+        + 2 * heads * dim
+        + 2 * dim
+        + 4 * dim.max(index_dim)
+        + u64::from(s.n_indexer_head) * (index_dim + 1)
+        + groups * u64::from(s.n_lora_o)
+        + dim * (heads / groups)
+        + u64::from(s.n_lora_o)
+        + 3 * ff
+        + 2 * u64::from(s.n_expert)
+        + 3 * used * ff
+        + used * hidden;
+    let raw = deepseek_raw_cap(s, ctx, native);
+    let mut bytes = u64::from(s.n_layer) * raw * dim * SIZEOF_F32;
+    let packed = dim - u64::from(s.n_rot)
+        + u64::from(s.n_rot) * SIZEOF_F32
+        + (dim - u64::from(s.n_rot)) / 64 * SIZEOF_F32;
+    for il in 0..s.n_layer {
+        let ratio = deepseek_comp_ratio(s, il);
+        if ratio == 0 {
+            continue;
+        }
+        let cap = ctx / ratio + 2;
+        let coff = if ratio == 4 { 2 } else { 1 };
+        bytes += cap * (dim * SIZEOF_F32 + packed) + 2 * coff * coff * dim * ratio * SIZEOF_F32;
+        if ratio == 4 {
+            bytes += cap * (index_dim * SIZEOF_F32 + index_dim / 2 + index_dim / 32 * SIZEOF_F32)
+                + 2 * coff * coff * index_dim * ratio * SIZEOF_F32;
+        }
+    }
+    bytes
+        + (2 * (ctx / 4 + 2) * pc
+            + u64::from(s.n_indexer_top_k) * pc
+            + 129 * u64::from(s.n_vocab)
+            + pc * row)
+            * SIZEOF_F32
+        + (96 << 20)
+}
+
+fn deepseek_comp_ratio(s: Shape, il: u32) -> u64 {
+    if il < 2 {
+        if s.variant == Variant::Flash {
+            0
+        } else {
+            128
+        }
+    } else if il.is_multiple_of(2) {
+        4
+    } else {
+        128
+    }
+}
+
+fn deepseek_raw_cap(s: Shape, ctx: u64, native: u32) -> u64 {
+    let window = u64::from(s.n_swa).min(ctx).max(1);
+    let default = (window + u64::from(native)).min(ctx).div_ceil(256) * 256;
+    let raw = std::env::var("DS4_METAL_GRAPH_RAW_CAP")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(default.min(8192));
+    raw.min(8192).max(window).min(ctx)
+}
+
+// Loaded support graphs allocate rollback states even with speculation off.
+fn deepseek_mtp_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
+    let dim = u64::from(s.n_head_dim);
+    let mut floats = 2 * deepseek_raw_cap(s, ctx, native) * dim + 16 * u64::from(s.n_vocab);
+    for il in 0..s.n_layer {
+        let ratio = deepseek_comp_ratio(s, il);
+        let coff = if ratio == 4 { 2 } else { 1 };
+        let state_dim = dim
+            + if ratio == 4 {
+                u64::from(s.n_indexer_head_dim)
+            } else {
+                0
+            };
+        floats += 6 * coff * coff * state_dim * ratio;
+    }
+    floats * SIZEOF_F32
 }
 
 fn family_graph_scratch(shape: Shape, native: u32) -> u64 {
@@ -2191,6 +2299,47 @@ mod tests {
         let caps = serving_caps(family, variant);
         fill_quote_facts(&mut facts, req, caps, Some(shape), host);
         facts
+    }
+
+    #[test]
+    fn deepseek_quote_native_graph() {
+        let _env = lock_test_env();
+        let _raw = EnvGuard::unset("DS4_METAL_GRAPH_RAW_CAP");
+        for (shape, ctx, native, expected) in [
+            (crate::shape::SHAPE_FLASH, 8192, 4096, 4_958_202_776),
+            (crate::shape::SHAPE_PRO, 8192, 4096, 8_238_630_040),
+            (crate::shape::SHAPE_FLASH, 262144, 4096, 11_644_600_216),
+            (crate::shape::SHAPE_FLASH, 8192, 256, 638_909_336),
+        ] {
+            let req = ServingRequest {
+                ctx,
+                native_chunk: Some(native),
+                mtp_mode: MtpMode::Off,
+                ..ServingRequest::default()
+            };
+            let facts = fill_family(shape.family, shape.variant, shape, &req, qwen_host(None));
+            assert_eq!(facts.scratch_bytes, Some(expected));
+        }
+    }
+
+    #[test]
+    fn deepseek_loaded_mtp_allocated() {
+        let _env = lock_test_env();
+        let _raw = EnvGuard::unset("DS4_METAL_GRAPH_RAW_CAP");
+        for (shape, expected) in [
+            (crate::shape::SHAPE_FLASH, 62_717_952),
+            (crate::shape::SHAPE_PRO, 82_231_296),
+        ] {
+            let req = ServingRequest {
+                ctx: 8192,
+                native_chunk: Some(4096),
+                mtp_mode: MtpMode::Off,
+                mtp_path: Some("support.gguf".into()),
+                ..ServingRequest::default()
+            };
+            let facts = fill_family(shape.family, shape.variant, shape, &req, qwen_host(None));
+            assert_eq!(facts.mtp_state_bytes, Some(expected));
+        }
     }
 
     #[test]

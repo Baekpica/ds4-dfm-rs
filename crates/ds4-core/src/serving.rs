@@ -1196,7 +1196,9 @@ impl ResolvedPlan {
                 Some(ModelFamily::Inkling) => Some("DS4_INKLING_PREFILL_CHUNK"),
                 Some(ModelFamily::ExaoneMoe) => Some("DS4_EXAONE_PREFILL_CHUNK"),
                 Some(ModelFamily::Motif3) => Some("DS4_MOTIF3_PREFILL_CHUNK"),
-                Some(ModelFamily::SolarOpen2) => Some("DS4_METAL_PREFILL_CHUNK"),
+                Some(ModelFamily::SolarOpen2 | ModelFamily::DeepSeek4) => {
+                    Some("DS4_METAL_PREFILL_CHUNK")
+                }
                 Some(ModelFamily::Dots3Note) => Some("DS4_DOTS3_PREFILL_CHUNK"),
                 _ => None,
             } {
@@ -1206,9 +1208,14 @@ impl ResolvedPlan {
         out
     }
 
-    /// Solar `solar_graph_alloc` prefers this over env. 0 means env default.
+    /// Pass the quoted workspace to native allocators that consume this argument.
     pub fn batch_max_total_tokens(&self, ctx: i32, width: i32) -> i32 {
         match self.family {
+            Some(ModelFamily::DeepSeek4) => {
+                self.effective
+                    .native_chunk
+                    .unwrap_or(DEFAULT_SCHED_CHUNK.min(ctx.max(1) as u32)) as i32
+            }
             Some(ModelFamily::SolarOpen2) => {
                 self.effective.native_chunk.map(|n| n as i32).unwrap_or(0)
             }
@@ -2399,6 +2406,22 @@ mod tests {
             Variant::Step37Flash,
         );
         assert!(p.to_json()["effective"]["native_chunk"].is_null());
+    }
+
+    #[test]
+    fn deepseek_batch_uses_native_cap() {
+        for variant in [Variant::Flash, Variant::Pro] {
+            let req = ServingRequest {
+                native_chunk: Some(256),
+                ctx: 8192,
+                ..ServingRequest::default()
+            };
+            let p = plan(req, ModelFamily::DeepSeek4, variant);
+            assert_eq!(p.batch_max_total_tokens(8192, 2), 256);
+            assert!(p
+                .env_overrides()
+                .contains(&("DS4_METAL_PREFILL_CHUNK".into(), "256".into())));
+        }
     }
 
     #[test]
