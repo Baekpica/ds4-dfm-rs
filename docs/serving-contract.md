@@ -37,6 +37,23 @@ scratch; more banks are not a linear tok/s gain. `auto` may fit fewer
 banks than it asked for; an explicit `--max-seqs N` the native fit
 cannot honour is an error, not a narrower start.
 
+The quote's `floor` includes native fit headroom where required: normally
+the host floor plus a 2 GiB burst reserve. `DS4_BATCH_FIT_HEADROOM_MB`
+overrides that reserve; `DS4_BATCH_FIT_HEADROOM_DERIVED=0` selects 6 GiB,
+otherwise `DS4_BATCH_FIT_BURST_MB` changes the burst. The quote always
+preserves at least `--mem-floor-gb`.
+CUDA serial graph fitting also reserves 1 GiB by default, configurable
+with `DS4_SESSION_GRAPH_HEADROOM_MB` (disabled by `DS4_SESSION_GRAPH_FIT=0`).
+The quote keeps the larger of the applicable serial and batch reserves.
+DeepSeek shared graph costs include its initial caches and native workspace;
+packed cache mirrors are conservatively included even when native VMM
+support may disable them. The same native chunk sizes serial and batch graphs.
+DeepSeek bank costs use full-depth compressed-cache capacity plus raw rings
+and rollback states. Loaded DSpark runtime costs count even with `DS4_CONT_DSPARK=0`.
+A manifest with drafter ranges defers the pre-open quote: import can soft-fail.
+After open, a successful import excludes shared drafter weights; fallback
+retains the local weight cost. Runtime allocations remain charged in both cases.
+
 `--cont-width 0` and `DS4_SERVER_COALESCE_MAX=0` keep the legacy serial
 meaning: no bank lane. `DS4_SERVER_CONTINUOUS=0` is narrower — it forces
 the static/serial route, so the banks stay for the static lane to coalesce
@@ -63,11 +80,15 @@ requests keep predictor state and use ordinary decode.
   --kv-disk-dir /tmp/ds4-kv --kv-disk-space 32G --mtp-mode auto
 ```
 
-The JSON has `requested`, `effective`, `qualified`, and `issues`.
+The JSON has `requested`, `effective`, `qualified`, `issues`, and when
+the host supplied a memory ceiling, `quote`. `effective.native_chunk` is
+the allocated workspace/graph max, not the scheduler yield.
 `qualified.prompt` is the verified request length when it is smaller
 than configured `--ctx`. A family's session cap is separate from its
 qualified context: GLM sessions refuse anything above 2,048, so the
-shared default is an error there, not a warning.
+shared default is an error there, not a warning. `--native-chunk` sets
+the allocated native capacity so `--check-config` can refuse a yield
+the process cannot run.
 
 ## Request trace
 

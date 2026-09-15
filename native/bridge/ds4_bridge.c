@@ -323,6 +323,11 @@ int ds4_bridge_model_run_distributed_worker(ds4_bridge_model *m,
     return rc;
 }
 
+int ds4_bridge_drafter_shared(ds4_bridge_model *m)
+{
+    return m && ds4_engine_drafter_shared(m->engine);
+}
+
 void ds4_bridge_model_boot_prewarm(ds4_bridge_model *m)
 {
     if (!m) return;

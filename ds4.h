@@ -254,6 +254,7 @@ int ds4_engine_vocab_size(ds4_engine *e);
 int ds4_engine_power(ds4_engine *e);
 int ds4_engine_set_power(ds4_engine *e, int power_percent);
 bool ds4_engine_has_vision(ds4_engine *e);
+bool ds4_engine_drafter_shared(ds4_engine *e);
 int ds4_engine_vision_probe(ds4_engine *e,
                             const uint8_t *encoded, size_t encoded_len,
                             ds4_vision_image_info *out,

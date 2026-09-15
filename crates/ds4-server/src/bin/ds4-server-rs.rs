@@ -3,16 +3,18 @@
 //! Incremental live DSML tool projection is host-owned.
 
 use ds4_core::{
-    caps_from_ident, identify_gguf, probe_dspark_sidecar, probe_model_artifact, probe_mtp_sidecar,
-    probe_vision_sidecar, resolve_plan, Backend, DistributedConfig, DistributedRole, Distribution,
-    EngineFacts, MaxSeqs, Model, ModelOpenOption, MtpMode, PrefixReuse, ServingRequest,
+    attach_host_quote, caps_from_ident, identify_gguf, probe_dspark_sidecar, probe_model_artifact,
+    probe_mtp_sidecar, probe_vision_sidecar, resolve_plan, Backend, DistributedConfig,
+    DistributedRole, Distribution, EngineFacts, Identified, MaxSeqs, Model, ModelOpenOption,
+    MtpMode, PrefixReuse, ServingCaps, ServingRequest, WeightSlice,
 };
 use ds4_server::kv_cli::DiskKvArgs;
 use ds4_server::{
-    accept_loop, accept_loop_with_engine, accept_loop_with_engine_cont, listen,
-    model_id_from_gguf_path, run_assembled_worker, server_launch, ContLane, DistArgs, NativeDecode,
-    ServerConfig, ServerLaunch, WORKER_REQUIRES_MODEL,
+    accept_loop, accept_loop_with_engine, accept_loop_with_engine_cont, dist_weight_slice,
+    listen_if_allowed, model_id_from_gguf_path, run_assembled_worker, server_launch, ContLane,
+    DistArgs, NativeDecode, ServerConfig, ServerLaunch, WORKER_REQUIRES_MODEL,
 };
+use std::path::Path;
 
 fn distributed_config(opt: &ds4_dist::Options) -> Option<DistributedConfig> {
     let role = match opt.role {
@@ -111,6 +113,9 @@ fn main() {
             "--prefill-chunk-live" => {
                 serve_req.sched_chunk_live = Some(positive_chunk(&arg, args.next()));
             }
+            "--native-chunk" => {
+                serve_req.native_chunk = Some(positive_chunk(&arg, args.next()));
+            }
             "--print-plan" => serve_req.print_plan = true,
             "--check-config" => serve_req.check_config = true,
             "--backend" => {
@@ -201,6 +206,13 @@ fn main() {
     }
     serve_req.kv_min_tokens = Some(kv.min_tokens());
 
+    let launch = server_launch(dist.opt.role, model_path.is_some())
+        .unwrap_or_else(|error| cli_error(&error));
+    launch.configure_serving(&mut serve_req);
+    // A sliced boot maps only its own layers, so the quote prices that
+    // interval instead of the whole sharded artifact.
+    let weight_slice = dist_weight_slice(dist.opt.role, &dist.opt.layers);
+
     let mut facts = EngineFacts::default();
     let mut kv_store = None;
     if kv.dir().is_some() {
@@ -234,18 +246,19 @@ fn main() {
     }
     // The open still consumes this fallback, and only DeepSeek accepts a
     // drafter at all, so the check has to look at it.
-    if let (Some(id), Ok(path)) = (ident.as_ref(), std::env::var("DS4_DSPARK_MODEL")) {
-        if !path.is_empty() {
-            facts.dspark_ok = Some(
-                match probe_dspark_sidecar(id.shape, dist_probe.as_ref(), &path) {
-                    Ok(()) => true,
-                    Err(error) => {
-                        eprintln!("ds4-server-rs: DS4_DSPARK_MODEL {path}: {error}");
-                        false
-                    }
-                },
-            );
-        }
+    let dspark_path = std::env::var("DS4_DSPARK_MODEL")
+        .ok()
+        .filter(|path| !path.is_empty());
+    if let (Some(id), Some(path)) = (ident.as_ref(), dspark_path.as_deref()) {
+        facts.dspark_ok = Some(
+            match probe_dspark_sidecar(id.shape, dist_probe.as_ref(), path) {
+                Ok(()) => true,
+                Err(error) => {
+                    eprintln!("ds4-server-rs: DS4_DSPARK_MODEL {path}: {error}");
+                    false
+                }
+            },
+        );
     }
     if let Some(path) = mtp_path.as_deref() {
         // The same attach the open performs: family acceptance, sidecar
@@ -276,15 +289,28 @@ fn main() {
             });
         }
     }
+    apply_host_quote(
+        &mut facts,
+        &serve_req,
+        caps,
+        ident.as_ref(),
+        model_path.as_deref(),
+        mtp_path.as_deref(),
+        vision_path.as_deref(),
+        dspark_path.as_deref(),
+        weight_slice,
+        vision_path.is_some(),
+        false,
+    );
     let plan = resolve_plan(&serve_req, caps, &facts);
     plan.apply_env();
     cfg.adopt_plan(&plan);
     eprint!("{}", plan.report());
     if serve_req.check_config {
         println!("{}", plan.to_json());
-        std::process::exit(if plan.has_errors() { 2 } else { 0 });
+        std::process::exit(if plan.may_listen() { 0 } else { 2 });
     }
-    if plan.has_errors() {
+    if !plan.may_listen() {
         eprint!("{}", plan.report());
         cli_error("ds4-server-rs: serving plan rejected unsupported options");
     }
@@ -302,8 +328,6 @@ fn main() {
     };
 
     let native_dist = distributed_config(&dist.opt);
-    let launch = server_launch(dist.opt.role, model_path.is_some())
-        .unwrap_or_else(|error| cli_error(&error));
     let model = match model_path.as_deref() {
         Some(path) => {
             let opened = match native_dist.as_ref() {
@@ -340,29 +364,13 @@ fn main() {
         }
         None => None,
     };
-    if launch == ServerLaunch::Worker {
-        let Some(model) = model else {
-            cli_error(WORKER_REQUIRES_MODEL);
-        };
-        if serve_req.print_plan {
-            // A worker never fits a lane, so this is the whole plan it has.
-            print_plan(&cfg);
-        }
-        model.boot_prewarm();
-        match run_assembled_worker(&model, cfg.ctx, &dist.opt) {
-            Ok(rc) => std::process::exit(rc),
-            Err(e) => {
-                eprintln!("ds4-server-rs: {e}");
-                std::process::exit(1);
-            }
-        }
-    }
     let kv_store = if model.is_some() { kv_store } else { None };
 
     let lane = if let Some(ref model) = model {
         // What only the open engine knows. The refit re-resolves so a
         // fitted-down width or a refused lane cannot stay silently claimed.
         let opened = EngineFacts {
+            drafter_shared: Some(model.drafter_shared()),
             mtp_loaded: mtp_path.is_some() || model.mtp().is_some(),
             vision_loaded: model_options
                 .iter()
@@ -370,23 +378,41 @@ fn main() {
             ..facts.clone()
         };
         if cont_width > 0 && backend == Backend::Cuda {
-            match model.batch_ctx_fit(cfg.ctx, cont_width, cfg.ctx.saturating_mul(cont_width)) {
+            match model.batch_ctx_fit(
+                cfg.ctx,
+                cont_width,
+                plan.batch_max_total_tokens(cfg.ctx, cont_width),
+            ) {
                 Ok(batch) => {
                     eprintln!(
                         "ds4-server-rs: continuous lane ready (width={} seq_cap={})",
                         batch.max_seq(),
                         batch.seq_cap()
                     );
-                    let facts = EngineFacts {
+                    let mut facts = EngineFacts {
                         banks_fitted: Some(batch.max_seq() as u32),
                         seq_cap: Some(batch.seq_cap() as u32),
                         cont_lane: Some(true),
                         partial_reuse: Some(batch.supports_partial_reuse()),
                         ..opened
                     };
+                    let vision = vision_path.is_some() || facts.vision_loaded;
+                    apply_host_quote(
+                        &mut facts,
+                        &serve_req,
+                        caps,
+                        ident.as_ref(),
+                        model_path.as_deref(),
+                        mtp_path.as_deref(),
+                        vision_path.as_deref(),
+                        dspark_path.as_deref(),
+                        weight_slice,
+                        vision,
+                        true,
+                    );
                     let fitted = resolve_plan(&serve_req, caps, &facts);
                     eprint!("{}", fitted.report());
-                    if fitted.has_errors() {
+                    if !fitted.may_listen() {
                         cli_error("ds4-server-rs: fitted serving plan rejected");
                     }
                     fitted.apply_env();
@@ -407,15 +433,31 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("ds4-server-rs: continuous lane unavailable ({e}); serial only");
-                    let facts = EngineFacts {
+                    // cont_lane=false also limits resident credit to model
+                    // mappings: the failed batch left no live runtime.
+                    let mut facts = EngineFacts {
                         banks_fitted: Some(1),
                         cont_lane: Some(false),
                         partial_reuse: Some(false),
                         ..opened
                     };
+                    let vision = vision_path.is_some() || facts.vision_loaded;
+                    apply_host_quote(
+                        &mut facts,
+                        &serve_req,
+                        caps,
+                        ident.as_ref(),
+                        model_path.as_deref(),
+                        mtp_path.as_deref(),
+                        vision_path.as_deref(),
+                        dspark_path.as_deref(),
+                        weight_slice,
+                        vision,
+                        true,
+                    );
                     let serial = resolve_plan(&serve_req, caps, &facts);
                     eprint!("{}", serial.report());
-                    if serial.has_errors() {
+                    if !serial.may_listen() {
                         cli_error("ds4-server-rs: serial fallback plan rejected");
                     }
                     serial.apply_env();
@@ -424,11 +466,57 @@ fn main() {
                 }
             }
         } else {
+            // Serial HTTP and distributed workers also need confirmed IPC
+            // ownership after open; their session graphs are still lazy.
+            let mut facts = EngineFacts {
+                banks_fitted: Some(1),
+                cont_lane: Some(false),
+                partial_reuse: Some(false),
+                ..opened
+            };
+            let vision = vision_path.is_some() || facts.vision_loaded;
+            apply_host_quote(
+                &mut facts,
+                &serve_req,
+                caps,
+                ident.as_ref(),
+                model_path.as_deref(),
+                mtp_path.as_deref(),
+                vision_path.as_deref(),
+                dspark_path.as_deref(),
+                weight_slice,
+                vision,
+                true,
+            );
+            let serial = resolve_plan(&serve_req, caps, &facts);
+            eprint!("{}", serial.report());
+            if !serial.may_listen() {
+                cli_error("ds4-server-rs: opened serial plan rejected");
+            }
+            serial.apply_env();
+            cfg.adopt_plan(&serial);
             None
         }
     } else {
         None
     };
+    if launch == ServerLaunch::Worker {
+        let Some(ref model) = model else {
+            cli_error(WORKER_REQUIRES_MODEL);
+        };
+        if serve_req.print_plan {
+            // A worker never fits a lane, so this is the whole plan it has.
+            print_plan(&cfg);
+        }
+        model.boot_prewarm();
+        match run_assembled_worker(model, cfg.ctx, &dist.opt) {
+            Ok(rc) => std::process::exit(rc),
+            Err(e) => {
+                eprintln!("ds4-server-rs: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     // Print what serves, not what was asked: the native fit can still take
     // banks, partial reuse and MTP away from the pre-open plan.
     if serve_req.print_plan {
@@ -444,13 +532,18 @@ fn main() {
     }
     cfg.stop_requested = Some(ds4_sys::stop_requested);
 
-    let listener = listen(&cfg).unwrap_or_else(|e| {
-        eprintln!(
-            "ds4-server-rs: listen {}:{}: {e}",
-            cfg.listen_host, cfg.listen_port
-        );
-        std::process::exit(1);
-    });
+    let serving = cfg.serving_plan.as_ref().unwrap_or(&plan);
+    let listener = match listen_if_allowed(&cfg, serving) {
+        Ok(Some(listener)) => listener,
+        Ok(None) => cli_error("ds4-server-rs: serving plan rejected unsupported options"),
+        Err(e) => {
+            eprintln!(
+                "ds4-server-rs: listen {}:{}: {e}",
+                cfg.listen_host, cfg.listen_port
+            );
+            std::process::exit(1);
+        }
+    };
     eprintln!(
         "ds4-server-rs: listening on {}:{} model_id={} engine={} host_vocab={} (host continuation registry + incremental live DSML tool stream + corrective retry)",
         cfg.listen_host,
@@ -518,6 +611,38 @@ fn print_plan(cfg: &ServerConfig) {
     }
 }
 
+fn apply_host_quote(
+    facts: &mut EngineFacts,
+    req: &ServingRequest,
+    caps: Option<ServingCaps>,
+    ident: Option<&Identified>,
+    model_path: Option<&str>,
+    mtp_path: Option<&str>,
+    vision_path: Option<&str>,
+    dspark_path: Option<&str>,
+    slice: Option<WeightSlice>,
+    vision: bool,
+    resident: bool,
+) {
+    let Some(caps) = caps else {
+        return;
+    };
+    attach_host_quote(
+        facts,
+        req,
+        caps,
+        ident.map(|id| id.shape),
+        model_path.map(Path::new),
+        mtp_path.map(Path::new),
+        vision_path.map(Path::new),
+        dspark_path.map(Path::new),
+        ident.map(|id| id.split_count).unwrap_or(1),
+        slice,
+        vision,
+        resident,
+    );
+}
+
 fn cli_error(message: &str) -> ! {
     eprintln!("{message}");
     std::process::exit(2);
@@ -525,7 +650,7 @@ fn cli_error(message: &str) -> ! {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--vision GGUF] [--mtp GGUF] [--mtp-mode off|auto|on] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [--max-seqs N|auto] [--prefix-reuse off|exact|partial|auto] [--prefill-chunk N] [--prefill-chunk-live N] [--print-plan] [--check-config] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
+        "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--vision GGUF] [--mtp GGUF] [--mtp-mode off|auto|on] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [--max-seqs N|auto] [--prefix-reuse off|exact|partial|auto] [--prefill-chunk N] [--prefill-chunk-live N] [--native-chunk N] [--print-plan] [--check-config] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
 Disk KV: [--kv-disk-dir DIR] [--kv-disk-space-mb N] [--kv-disk-space 32G] [--kv-cache-min-tokens N]\n\
          [--kv-cache-cold-max-tokens N] [--kv-cache-continued-interval-tokens N]\n\
          [--kv-cache-boundary-trim-tokens N]\n\

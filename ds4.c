@@ -35290,6 +35290,7 @@ struct ds4_engine {
     bool metal_ready;
     bool mtp_ready;
     bool dspark_ready;
+    bool drafter_shared;
     bool vision_ready;
     bool vision_map_ready;
     int vision_image_token;
@@ -41787,6 +41788,35 @@ static uint32_t bg_prefill_chunk_live_tokens(void) {
         if (v < 0) v = 0;
     }
     return (uint32_t)v;
+}
+
+/* Apply the boot yield even while idle; graph capacity can be larger.
+ * A decoding peer may lower it further through the live limit. */
+static uint32_t bg_prefill_yield(
+        uint32_t remain, uint32_t cap, int peer_decoding) {
+    uint32_t n = remain < cap ? remain : cap;
+    uint32_t boot = bg_prefill_chunk_tokens();
+    if (boot != 0u && n > boot) {
+        n = boot;
+    }
+    if (!peer_decoding) {
+        return n;
+    }
+    uint32_t live = bg_prefill_chunk_live_tokens();
+    if (live > boot) {
+        live = boot;
+    }
+    if (live != 0u && n > live) {
+        n = live;
+    }
+    return n;
+}
+
+/* Generic loop: LIVE=0 (or boot 0) drains the admission before decode.
+ * Family loops must do the same, not one native-cap chunk per step. */
+static int bg_prefill_interleave(void) {
+    return bg_prefill_chunk_tokens() != 0u &&
+           bg_prefill_chunk_live_tokens() != 0u;
 }
 
 /* R2 (raw-ring shrink): a chunk of n rows into one bank evicts ring slots
@@ -61079,11 +61109,16 @@ static int solar_engine_continuous_generate(
                 family_cont_publish_empty(ctx, bank, pb, on_done, ud);
                 credit_end[pb] = 0u;
             } else {
-                const uint32_t remain = sb->prefill_len - sb->prefill_off;
-                if (remain != 0u) {
-                    uint32_t n = remain;
-                    if (n > rt->graph.base.prefill_cap)
-                        n = rt->graph.base.prefill_cap;
+                /* A zero yield disables decode interleaving, not cancellation. */
+                while (ok && sb->prefill_off < sb->prefill_len &&
+                       (!sb->alive || sb->alive(ud, sb->user))) {
+                    const uint32_t remain = sb->prefill_len - sb->prefill_off;
+                    uint32_t decoding = 0u;
+                    for (uint32_t b = 0; b < MS; b++) {
+                        decoding += bank[b].phase == FAMILY_CONT_DECODE;
+                    }
+                    uint32_t n = bg_prefill_yield(
+                        remain, rt->graph.base.prefill_cap, decoding != 0);
                     const uint32_t pos = sb->prefill_base + sb->prefill_off;
                     /* Capture copies live KDA. A chunk that overshoots a
                      * stride would label later state as an earlier pos.
@@ -61135,6 +61170,12 @@ static int solar_engine_continuous_generate(
                         (void)solar_batch_runtime_capture_checkpoint(
                             rt, pb, pos + n, false, ctx->serial_reserve);
                     }
+                    if (bg_prefill_interleave()) {
+                        break;
+                    }
+                }
+                if (!ok) {
+                    break;
                 }
 
                 if (sb->prefill_off == sb->prefill_len) {
@@ -61861,14 +61902,20 @@ static int family_banked_engine_continuous_generate(
             if (cb->alive && !cb->alive(ud, cb->user)) {
                 family_cont_publish_empty(ctx, bank, pb, on_done, ud);
             } else {
-                const uint32_t remain = cb->prefill_len - cb->prefill_off;
-                if (remain != 0u) {
-                    uint32_t n = remain;
+                /* Poll disconnects between native chunks even in drain mode. */
+                while (ok && cb->prefill_off < cb->prefill_len &&
+                       (!cb->alive || cb->alive(ud, cb->user))) {
+                    const uint32_t remain = cb->prefill_len - cb->prefill_off;
+                    uint32_t decoding = 0u;
+                    for (uint32_t b = 0; b < MS; b++) {
+                        decoding += bank[b].phase == FAMILY_CONT_DECODE;
+                    }
                     const uint32_t cap = family_banked_prefill_cap(ctx);
-                    if (n > cap) n = cap;
+                    uint32_t n = bg_prefill_yield(remain, cap, decoding != 0);
                     if (ctx->qwen) {
                         n = qwen4exp_prefill_rows(
                             remain, cap, cb->prefill_off == 0u);
+                        n = bg_prefill_yield(n, cap, decoding != 0);
                     }
                     const uint32_t pos = cb->prefill_base + cb->prefill_off;
                     const bool final = n == remain;
@@ -61899,6 +61946,12 @@ static int family_banked_engine_continuous_generate(
                         family_banked_checkpoint_due(ctx, pos, pos + n))
                         family_banked_capture_checkpoint(
                             ctx, pb, pos + n, false);
+                    if (bg_prefill_interleave()) {
+                        break;
+                    }
+                }
+                if (!ok) {
+                    break;
                 }
                 if (cb->prefill_off == cb->prefill_len) {
                     if (!family_banked_logits_valid(ctx, pb)) {
@@ -67330,6 +67383,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     fprintf(stderr, "ds4: CUDA shared drafter weight cache unavailable; "
                                     "DSpark drafter reads stay on the host mmap path\n");
                 } else {
+                    e->drafter_shared = true;
                     model_release_mapping_cache(&e->dspark_model);
                 }
             }
@@ -67533,6 +67587,10 @@ int ds4_engine_set_power(ds4_engine *e, int power_percent) {
     if (!e || power_percent < 1 || power_percent > 100) return 1;
     e->power_percent = power_percent;
     return 0;
+}
+
+bool ds4_engine_drafter_shared(ds4_engine *e) {
+    return e && e->drafter_shared;
 }
 
 bool ds4_engine_has_vision(ds4_engine *e) {

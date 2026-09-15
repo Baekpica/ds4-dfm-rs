@@ -24,6 +24,8 @@ mod mem_gov;
 mod payload;
 mod progress;
 mod serving;
+mod serving_cuda;
+mod serving_host;
 mod session;
 mod shape;
 mod sibling;
@@ -77,8 +79,13 @@ pub use serving::{
     caps_from_ident, caps_from_shape, host_reuse, parse_disk_space, resolve_plan, serving_caps,
     ChunkFence, Distribution, EffectiveView, EngineFacts, HostNeed, IssueLevel, LaneMode, MaxSeqs,
     MtpMode, PlanIssue, PrefixReuse, QualifiedView, RequestTrace, RequestedView, ResolvedPlan,
-    ReuseKind, ReuseMiss, ReuseTaken, ServingCaps, ServingRequest, SpecLane, Support,
+    ReuseKind, ReuseMiss, ReuseTaken, ServingCaps, ServingQuote, ServingRequest, SpecLane, Support,
     DEFAULT_BANK_PERSIST, DEFAULT_MAX_SEQS, DEFAULT_MEM_FLOOR_GB, PREFILL_CHUNK_FENCE,
+    VERIFIED_PREFILL_CHUNKS,
+};
+pub use serving_host::{
+    attach_host_quote, fill_quote_facts, gguf_slice_span_bytes, gguf_span_bytes,
+    host_available_bytes, QuoteHost, WeightSlice,
 };
 pub use session::{
     dump_cmd as session_dump_cmd, RewriteKind, SessionBackend, SessionLedger, SyncPlan,
@@ -1344,6 +1351,12 @@ impl Model {
 
     pub fn dspark(&self) -> Option<&SiblingAttach> {
         self.dspark.as_ref()
+    }
+
+    /// Whether native successfully imported DSpark weight-server ranges.
+    pub fn drafter_shared(&self) -> bool {
+        // SAFETY: the model owns this live bridge handle for the duration.
+        unsafe { ds4_sys::ds4_bridge_drafter_shared(self.raw.as_ptr()) != 0 }
     }
 
     pub fn vocab(&self) -> &Vocab {

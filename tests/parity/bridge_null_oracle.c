@@ -16,6 +16,7 @@ extern int64_t bridge_payload_load_offset;
 extern uint64_t bridge_payload_load_bytes;
 extern int bridge_routed_quant_bits;
 extern unsigned bridge_boot_prewarm_calls;
+extern int bridge_drafter_shared;
 extern int bridge_sync_rc;
 extern unsigned bridge_sync_calls;
 extern unsigned bridge_progress_sets;
@@ -192,6 +193,7 @@ int main(void) {
     if (!strstr(err, "NULL")) {
         fail("distributed route NULL err");
     }
+    if (ds4_bridge_drafter_shared(NULL)) fail("drafter_shared NULL");
     bridge_boot_prewarm_calls = 0;
     ds4_bridge_model_boot_prewarm(NULL);
     if (bridge_boot_prewarm_calls != 0) fail("boot_prewarm NULL");
@@ -205,6 +207,12 @@ int main(void) {
         ds4_bridge_model_boot_prewarm(&fake);
         if (bridge_boot_prewarm_calls != 1)
             fail("boot_prewarm delegation");
+        for (int shared = 0; shared <= 1; shared++) {
+            bridge_drafter_shared = shared;
+            if (ds4_bridge_drafter_shared(&fake) != shared) {
+                fail("drafter_shared delegation");
+            }
+        }
         free(fake_native);
     }
     {

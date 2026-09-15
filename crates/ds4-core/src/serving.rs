@@ -18,6 +18,10 @@ pub const DEFAULT_SCHED_CHUNK: u32 = 4096;
 /// `DS4_CONT_PREFILL_NOFENCE=1`. The plan resolves the same cap so it cannot
 /// advertise a yield the scheduler will not use.
 pub const PREFILL_CHUNK_FENCE: u32 = 8192;
+/// Scheduler yields the fence allows. Not native workspace/graph capacity.
+/// 0 is the C one-shot / interleave-off sentinel, not a member of this set.
+pub const VERIFIED_PREFILL_CHUNKS: [u32; 6] = [256, 512, 1024, 2048, 4096, 8192];
+const GIB: u64 = 1 << 30;
 /// C `QWEN4EXP_YARN_MAX_FACTOR`: how far Qwen's RoPE context may stretch
 /// before `ds4_session_create` refuses the context outright.
 pub const QWEN_YARN_MAX_FACTOR: u32 = 4;
@@ -206,10 +210,29 @@ pub struct EngineFacts {
     pub artifact_ok: Option<bool>,
     /// `Some(false)` when a DSpark drafter cannot attach to this family.
     pub dspark_ok: Option<bool>,
+    /// An IPC-dependent quote awaits successful native import during open.
+    pub ipc_pending: bool,
+    /// Actual native drafter import result after open; overrides manifest intent.
+    pub drafter_shared: Option<bool>,
     /// `Some(false)` once the native fit refused the continuous lane.
     pub cont_lane: Option<bool>,
     /// `Some(false)` when the opened runtime has no partial checkpoint store.
     pub partial_reuse: Option<bool>,
+    /// Native workspace/graph max. Distinct from scheduler yield.
+    pub native_chunk: Option<u32>,
+    pub shared_weights_bytes: Option<u64>,
+    pub per_bank_bytes: Option<u64>,
+    pub mtp_state_bytes: Option<u64>,
+    pub scratch_bytes: Option<u64>,
+    pub checkpoint_pool_bytes: Option<u64>,
+    pub ple_bytes: Option<u64>,
+    pub media_reserve_bytes: Option<u64>,
+    /// Lazy media retained by each bank beyond the first; never resident credit.
+    pub media_per_extra_bank_bytes: Option<u64>,
+    /// Native fit reserve, including its floor and transient burst allowance.
+    pub fit_headroom_bytes: Option<u64>,
+    /// When set, `max-seqs=auto` must fit the named budgets under this ceiling.
+    pub host_available_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -255,6 +278,36 @@ pub struct QualifiedView {
     pub note: &'static str,
 }
 
+/// Memory the auto width has to host. Unit tests feed synthetic engine facts
+/// so the arithmetic does not open a GGUF.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServingQuote {
+    pub shared_weights: u64,
+    pub per_bank: u64,
+    pub mtp_state: u64,
+    pub scratch: u64,
+    pub checkpoint_pool: u64,
+    pub ple: u64,
+    pub media_reserve: u64,
+    pub floor: u64,
+    pub available: u64,
+    pub banks: u32,
+    pub total: u64,
+}
+
+impl ServingQuote {
+    fn cost(self, banks: u32) -> u64 {
+        self.shared_weights
+            .saturating_add(self.per_bank.saturating_mul(u64::from(banks)))
+            .saturating_add(self.mtp_state)
+            .saturating_add(self.scratch)
+            .saturating_add(self.checkpoint_pool)
+            .saturating_add(self.ple)
+            .saturating_add(self.media_reserve)
+            .saturating_add(self.floor)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedPlan {
     pub family: Option<ModelFamily>,
@@ -264,6 +317,7 @@ pub struct ResolvedPlan {
     pub requested: RequestedView,
     pub effective: EffectiveView,
     pub qualified: QualifiedView,
+    pub quote: Option<ServingQuote>,
     pub issues: Vec<PlanIssue>,
 }
 
@@ -509,6 +563,11 @@ impl ServingRequest {
         if let Ok(raw) = std::env::var("DS4_CONT_PREFILL_CHUNK_LIVE") {
             if let Some(n) = parse_u32_atoi(&raw) {
                 req.sched_chunk_live = Some(n);
+            }
+        }
+        if let Ok(raw) = std::env::var("DS4_NATIVE_PREFILL_CHUNK") {
+            if let Some(n) = parse_u32_atoi(&raw) {
+                req.native_chunk = Some(n);
             }
         }
         req
@@ -806,11 +865,21 @@ pub fn resolve_plan(
                     "no GGUF identified; capability checks skipped",
                 )
             }],
+            quote: None,
         };
     };
 
-    let (max_seqs, banks_opt_in) =
+    let (mut max_seqs, mut banks_opt_in) =
         resolve_seqs(req.max_seqs, caps, facts, req.backend, &mut issues);
+    let quote = apply_quote(
+        req,
+        caps,
+        facts,
+        req.max_seqs,
+        &mut max_seqs,
+        &mut banks_opt_in,
+        &mut issues,
+    );
     let driver = bank_driver(req, caps, max_seqs, facts);
     let reuse = resolve_reuse(req, caps, driver, facts, &mut issues);
     let (mtp_mode, mtp_weights) = resolve_mtp(req, caps, facts, driver, &mut issues);
@@ -901,6 +970,12 @@ pub fn resolve_plan(
         ));
     }
 
+    if facts.ipc_pending && req.check_config {
+        issues.push(error(
+            "ipc_unverified",
+            "check-config cannot verify IPC owner/import availability without opening the model",
+        ));
+    }
     if facts.artifact_ok == Some(false) {
         issues.push(error(
             "artifact_invalid",
@@ -920,15 +995,43 @@ pub fn resolve_plan(
         ));
     }
 
-    let mut sched_chunk = req.sched_chunk.unwrap_or(DEFAULT_SCHED_CHUNK);
-    if req.chunk_fence == ChunkFence::On && sched_chunk > PREFILL_CHUNK_FENCE {
+    let native = facts.native_chunk.or(req.native_chunk);
+    let requested_boot = req.sched_chunk.unwrap_or(DEFAULT_SCHED_CHUNK);
+    if req.chunk_fence == ChunkFence::On && requested_boot > PREFILL_CHUNK_FENCE {
         issues.push(warn(
             "chunk_fenced",
-            format!("prefill chunk {sched_chunk} is capped at {PREFILL_CHUNK_FENCE}"),
+            format!("prefill chunk {requested_boot} is capped at {PREFILL_CHUNK_FENCE}"),
         ));
-        sched_chunk = PREFILL_CHUNK_FENCE;
     }
-    let mut sched_live = req.sched_chunk_live.unwrap_or(DEFAULT_SCHED_LIVE);
+    let requested_live = req.sched_chunk_live.unwrap_or(DEFAULT_SCHED_LIVE);
+    if let Some(native) = native {
+        if req.sched_chunk.is_some() && requested_boot > native {
+            issues.push(error(
+                "chunk_past_native",
+                format!("prefill chunk {requested_boot} exceeds native capacity {native}"),
+            ));
+        }
+        if req.sched_chunk_live.is_some() && requested_live > native {
+            issues.push(error(
+                "chunk_past_native",
+                format!("live prefill chunk {requested_live} exceeds native capacity {native}"),
+            ));
+        }
+    }
+    if chunk_unverified(requested_boot, native, req.chunk_fence) {
+        issues.push(error(
+            "chunk_unverified",
+            format!("prefill chunk {requested_boot} is below the verified set"),
+        ));
+    }
+    if chunk_unverified(requested_live, native, req.chunk_fence) {
+        issues.push(error(
+            "chunk_unverified",
+            format!("live prefill chunk {requested_live} is below the verified set"),
+        ));
+    }
+    let sched_chunk = snap_verified_chunk(requested_boot, native, req.chunk_fence);
+    let mut sched_live = snap_verified_chunk(requested_live, native, req.chunk_fence);
     if sched_live > sched_chunk {
         sched_live = sched_chunk;
     }
@@ -979,9 +1082,10 @@ pub fn resolve_plan(
             sched_chunk_live: sched_live,
             bank_persist_min: req.bank_persist_min.unwrap_or(DEFAULT_BANK_PERSIST),
             disk_min_tokens: req.kv_min_tokens,
-            native_chunk: req.native_chunk,
+            native_chunk: native,
         },
         qualified,
+        quote,
         issues,
     }
 }
@@ -1007,6 +1111,11 @@ impl ServingCaps {
 impl ResolvedPlan {
     pub fn has_errors(&self) -> bool {
         self.issues.iter().any(|i| i.level == IssueLevel::Error)
+    }
+
+    /// Listen and model-open share this gate so an impossible mix never binds.
+    pub fn may_listen(&self) -> bool {
+        !self.has_errors()
     }
 
     /// The operator asked for the bank lane by naming a width. Hosts must
@@ -1086,15 +1195,44 @@ impl ResolvedPlan {
         if self.effective.mtp_mode == MtpMode::Off {
             out.push(("DS4_MTP_SPEC_DISABLE".into(), "1".into()));
         }
-        out.push((
-            "DS4_CONT_PREFILL_CHUNK".into(),
-            self.effective.sched_chunk.to_string(),
-        ));
-        out.push((
-            "DS4_CONT_PREFILL_CHUNK_LIVE".into(),
-            self.effective.sched_chunk_live.to_string(),
-        ));
+        // Never publish a yield past the allocated native workspace.
+        let boot = published_chunk(self.effective.sched_chunk, self.effective.native_chunk);
+        let live = published_chunk(self.effective.sched_chunk_live, self.effective.native_chunk);
+        out.push(("DS4_CONT_PREFILL_CHUNK".into(), boot.to_string()));
+        out.push(("DS4_CONT_PREFILL_CHUNK_LIVE".into(), live.to_string()));
+        // C family allocators read DS4_*_PREFILL_CHUNK, not --native-chunk.
+        if let Some(native) = self.effective.native_chunk {
+            if let Some(key) = match self.family {
+                Some(ModelFamily::Qwen4Exp) => Some("DS4_QWEN_PREFILL_CHUNK"),
+                Some(ModelFamily::Step37) => Some("DS4_STEP37_PREFILL_CHUNK"),
+                Some(ModelFamily::Inkling) => Some("DS4_INKLING_PREFILL_CHUNK"),
+                Some(ModelFamily::ExaoneMoe) => Some("DS4_EXAONE_PREFILL_CHUNK"),
+                Some(ModelFamily::Motif3) => Some("DS4_MOTIF3_PREFILL_CHUNK"),
+                Some(ModelFamily::SolarOpen2 | ModelFamily::DeepSeek4) => {
+                    Some("DS4_METAL_PREFILL_CHUNK")
+                }
+                Some(ModelFamily::Dots3Note) => Some("DS4_DOTS3_PREFILL_CHUNK"),
+                _ => None,
+            } {
+                out.push((key.into(), native.to_string()));
+            }
+        }
         out
+    }
+
+    /// Pass the quoted workspace to native allocators that consume this argument.
+    pub fn batch_max_total_tokens(&self, ctx: i32, width: i32) -> i32 {
+        match self.family {
+            Some(ModelFamily::DeepSeek4) => {
+                self.effective
+                    .native_chunk
+                    .unwrap_or(DEFAULT_SCHED_CHUNK.min(ctx.max(1) as u32)) as i32
+            }
+            Some(ModelFamily::SolarOpen2) => {
+                self.effective.native_chunk.map(|n| n as i32).unwrap_or(0)
+            }
+            _ => ctx.saturating_mul(width),
+        }
     }
 
     pub fn apply_env(&self) {
@@ -1140,6 +1278,19 @@ impl ResolvedPlan {
                 "disk_min_tokens": self.effective.disk_min_tokens,
                 "disk_is_offload": false
             },
+            "quote": self.quote.map(|q| json!({
+                "shared_weights": q.shared_weights,
+                "per_bank": q.per_bank,
+                "mtp_state": q.mtp_state,
+                "scratch": q.scratch,
+                "checkpoint_pool": q.checkpoint_pool,
+                "ple": q.ple,
+                "media_reserve": q.media_reserve,
+                "floor": q.floor,
+                "available": q.available,
+                "banks": q.banks,
+                "total": q.total
+            })),
             "qualified": {
                 "prefix_reuse": self.qualified.prefix_reuse.as_str(),
                 "disk": self.qualified.disk.as_str(),
@@ -1355,6 +1506,132 @@ fn partial_block(driver: BankDriver, facts: &EngineFacts) -> Option<PartialBlock
     (facts.partial_reuse == Some(false)).then_some(PartialBlock::Runtime)
 }
 
+fn chunk_cap(want: u32, native: Option<u32>, fence: ChunkFence) -> u32 {
+    let mut cap = want;
+    if fence == ChunkFence::On {
+        cap = cap.min(PREFILL_CHUNK_FENCE);
+    }
+    if let Some(native) = native {
+        cap = cap.min(native);
+    }
+    cap
+}
+
+fn chunk_unverified(want: u32, native: Option<u32>, fence: ChunkFence) -> bool {
+    if want == 0 || fence == ChunkFence::Off {
+        return false;
+    }
+    let cap = chunk_cap(want, native, fence);
+    // A native cap below the verified scheduler widths is a short tail.
+    // An explicitly smaller yield still needs the normal verification fence.
+    if native == Some(cap) && cap > 0 && cap < VERIFIED_PREFILL_CHUNKS[0] {
+        return false;
+    }
+    !VERIFIED_PREFILL_CHUNKS.iter().any(|n| *n <= cap)
+}
+
+fn snap_verified_chunk(want: u32, native: Option<u32>, fence: ChunkFence) -> u32 {
+    if want == 0 {
+        return 0;
+    }
+    let cap = chunk_cap(want, native, fence);
+    if fence == ChunkFence::Off
+        || (native == Some(cap) && cap > 0 && cap < VERIFIED_PREFILL_CHUNKS[0])
+    {
+        return cap;
+    }
+    VERIFIED_PREFILL_CHUNKS
+        .iter()
+        .rev()
+        .copied()
+        .find(|n| *n <= cap)
+        .unwrap_or(VERIFIED_PREFILL_CHUNKS[0])
+}
+
+fn published_chunk(n: u32, native: Option<u32>) -> u32 {
+    native.map_or(n, |cap| n.min(cap))
+}
+
+fn apply_quote(
+    req: &ServingRequest,
+    caps: ServingCaps,
+    facts: &EngineFacts,
+    requested: MaxSeqs,
+    max_seqs: &mut u32,
+    banks_opt_in: &mut bool,
+    issues: &mut Vec<PlanIssue>,
+) -> Option<ServingQuote> {
+    facts.host_available_bytes?;
+    match quoted_width(*max_seqs, req, facts) {
+        Some(n) if n < *max_seqs => {
+            if matches!(requested, MaxSeqs::Fixed(_)) {
+                issues.push(error(
+                    "banks_not_quoted",
+                    format!(
+                        "requested {} banks but the memory quote fits {n}",
+                        *max_seqs
+                    ),
+                ));
+            }
+            *max_seqs = n;
+            *banks_opt_in = n > 1 && caps.banks == BankLane::OptIn;
+        }
+        None => {
+            issues.push(error(
+                "quote_overflow",
+                "memory quote cannot host the mix at one bank",
+            ));
+            *max_seqs = 1;
+            *banks_opt_in = false;
+        }
+        Some(_) => {}
+    }
+    serving_quote(req, facts, *max_seqs)
+}
+
+fn serving_quote(req: &ServingRequest, facts: &EngineFacts, banks: u32) -> Option<ServingQuote> {
+    let available = facts.host_available_bytes?;
+    let mut quote = ServingQuote {
+        shared_weights: facts.shared_weights_bytes.unwrap_or(0),
+        per_bank: facts.per_bank_bytes.unwrap_or(0),
+        mtp_state: facts.mtp_state_bytes.unwrap_or(0),
+        scratch: facts.scratch_bytes.unwrap_or(0),
+        checkpoint_pool: facts.checkpoint_pool_bytes.unwrap_or(0),
+        ple: facts.ple_bytes.unwrap_or(0),
+        media_reserve: facts.media_reserve_bytes.unwrap_or(0).saturating_add(
+            facts
+                .media_per_extra_bank_bytes
+                .unwrap_or(0)
+                .saturating_mul(u64::from(banks.saturating_sub(1))),
+        ),
+        floor: req
+            .mem_floor_gb
+            .saturating_mul(GIB)
+            .max(facts.fit_headroom_bytes.unwrap_or(0)),
+        available,
+        banks,
+        total: 0,
+    };
+    quote.total = quote.cost(banks);
+    Some(quote)
+}
+
+fn quoted_width(want: u32, req: &ServingRequest, facts: &EngineFacts) -> Option<u32> {
+    let mut n = want.max(1);
+    while n >= 1 {
+        // Reprice lazy per-bank reserves for each candidate, including width 1.
+        let quote = serving_quote(req, facts, n)?;
+        if quote.total <= quote.available {
+            return Some(n);
+        }
+        if n == 1 {
+            break;
+        }
+        n -= 1;
+    }
+    None
+}
+
 fn resolve_seqs(
     requested: MaxSeqs,
     caps: ServingCaps,
@@ -1364,7 +1641,7 @@ fn resolve_seqs(
 ) -> (u32, bool) {
     // Auto: serial/Step stay 1 so `-m` boots. Persistent uses qualified
     // banks. Only explicit `--max-seqs N>1` errors on serial.
-    let want = match requested {
+    let mut want = match requested {
         MaxSeqs::Off => 1,
         MaxSeqs::Auto => match caps.banks {
             BankLane::Serial | BankLane::OptIn => 1,
@@ -1372,6 +1649,11 @@ fn resolve_seqs(
         },
         MaxSeqs::Fixed(n) => n,
     };
+    // Two text banks that 503 every image request are not a mixed-modal
+    // default. A quoted serial-media reserve can still admit more than one.
+    if requested == MaxSeqs::Auto && caps.media_serial && facts.media_reserve_bytes.is_none() {
+        want = want.min(1);
+    }
     if requested == MaxSeqs::Off {
         return (1, false);
     }
@@ -2151,6 +2433,41 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_batch_uses_native_cap() {
+        for variant in [Variant::Flash, Variant::Pro] {
+            let req = ServingRequest {
+                native_chunk: Some(256),
+                ctx: 8192,
+                ..ServingRequest::default()
+            };
+            let p = plan(req, ModelFamily::DeepSeek4, variant);
+            assert_eq!(p.batch_max_total_tokens(8192, 2), 256);
+            assert!(p
+                .env_overrides()
+                .contains(&("DS4_METAL_PREFILL_CHUNK".into(), "256".into())));
+        }
+    }
+
+    #[test]
+    fn solar_batch_tokens_use_native_cap() {
+        let mut req = ServingRequest::default();
+        req.native_chunk = Some(256);
+        req.ctx = 8192;
+        let p = plan(req, ModelFamily::SolarOpen2, Variant::SolarOpen2_250B);
+        assert!(
+            p.env_overrides()
+                .iter()
+                .any(|(k, v)| k == "DS4_METAL_PREFILL_CHUNK" && v == "256"),
+            "{:?}",
+            p.env_overrides()
+        );
+        let width = p.effective.max_seqs as i32;
+        let arg = p.batch_max_total_tokens(p.effective.ctx, width);
+        assert_eq!(arg, 256);
+        assert_ne!(arg, p.effective.ctx.saturating_mul(width));
+    }
+
+    #[test]
     fn qwen_auto_uses_qualified_partial() {
         let p = plan(
             ServingRequest::default(),
@@ -2678,5 +2995,225 @@ mod tests {
         assert!(p.has_errors());
         assert!(p.issues.iter().any(|i| i.code == "disk_open"));
         assert!(!p.effective.disk);
+    }
+
+    #[test]
+    fn a_chunk_outside_the_set_is_not_yield() {
+        let mut req = ServingRequest::default();
+        req.sched_chunk = Some(3000);
+        req.sched_chunk_live = Some(700);
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert_eq!(p.effective.sched_chunk, 2048);
+        assert_eq!(p.effective.sched_chunk_live, 512);
+        assert!(VERIFIED_PREFILL_CHUNKS.contains(&p.effective.sched_chunk));
+        assert!(VERIFIED_PREFILL_CHUNKS.contains(&p.effective.sched_chunk_live));
+        assert_ne!(p.effective.sched_chunk, 3000);
+        assert!(!p.has_errors());
+    }
+
+    #[test]
+    fn published_chunk_never_exceeds_native() {
+        let mut req = ServingRequest::default();
+        req.sched_chunk = Some(8192);
+        req.sched_chunk_live = Some(8192);
+        req.native_chunk = Some(1024);
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert_eq!(p.effective.native_chunk, Some(1024));
+        assert_eq!(p.effective.sched_chunk, 1024);
+        assert_eq!(p.effective.sched_chunk_live, 1024);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "chunk_past_native"));
+        assert!(!p.may_listen());
+        let env = p.env_overrides();
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "DS4_CONT_PREFILL_CHUNK" && v == "1024"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "DS4_CONT_PREFILL_CHUNK_LIVE" && v == "1024"));
+        assert!(p.effective.sched_chunk <= 1024);
+        assert!(p.effective.sched_chunk_live <= 1024);
+    }
+
+    #[test]
+    fn explicit_live_past_native_errors() {
+        // Boot yield sits at native; only the live flag is the oversize yield.
+        let mut req = ServingRequest::default();
+        req.sched_chunk = Some(1024);
+        req.sched_chunk_live = Some(8192);
+        req.native_chunk = Some(1024);
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "chunk_past_native"));
+        assert!(!p.may_listen());
+        assert!(p.effective.sched_chunk_live <= 1024);
+        let env = p.env_overrides();
+        assert!(env.iter().any(|(k, v)| {
+            k == "DS4_CONT_PREFILL_CHUNK_LIVE" && v.parse::<u32>().unwrap() <= 1024
+        }));
+        assert!(!env.iter().any(|(k, v)| {
+            k == "DS4_CONT_PREFILL_CHUNK_LIVE" && v.parse::<u32>().unwrap() > 1024
+        }));
+    }
+
+    #[test]
+    fn short_native_tail_is_valid() {
+        for cap in [64, 128, 255] {
+            let req = ServingRequest {
+                ctx: cap as i32,
+                native_chunk: Some(cap),
+                ..ServingRequest::default()
+            };
+            let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+            assert!(p.may_listen(), "{:?}", p.issues);
+            assert_eq!(p.effective.sched_chunk, cap);
+            assert_eq!(p.effective.sched_chunk_live, cap);
+        }
+    }
+
+    #[test]
+    fn a_chunk_below_the_set_is_an_error() {
+        let mut req = ServingRequest::default();
+        req.sched_chunk = Some(128);
+        req.native_chunk = Some(1024);
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "chunk_unverified"));
+        assert!(!p.may_listen());
+        assert_ne!(p.effective.sched_chunk, 128);
+        assert_eq!(p.effective.sched_chunk, VERIFIED_PREFILL_CHUNKS[0]);
+        let env = p.env_overrides();
+        assert!(!env
+            .iter()
+            .any(|(k, v)| k == "DS4_CONT_PREFILL_CHUNK" && v == "128"));
+        assert!(env.iter().any(|(k, v)| {
+            k == "DS4_CONT_PREFILL_CHUNK"
+                && v.parse::<u32>().ok() == Some(VERIFIED_PREFILL_CHUNKS[0])
+        }));
+    }
+
+    #[test]
+    fn a_live_chunk_below_the_set_is_an_error() {
+        let mut req = ServingRequest::default();
+        req.sched_chunk = Some(1024);
+        req.sched_chunk_live = Some(128);
+        req.native_chunk = Some(1024);
+        let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "chunk_unverified"));
+        assert!(!p.may_listen());
+        assert_ne!(p.effective.sched_chunk_live, 128);
+        assert_eq!(p.effective.sched_chunk_live, VERIFIED_PREFILL_CHUNKS[0]);
+        let env = p.env_overrides();
+        assert!(!env
+            .iter()
+            .any(|(k, v)| k == "DS4_CONT_PREFILL_CHUNK_LIVE" && v == "128"));
+        assert!(env.iter().any(|(k, v)| {
+            k == "DS4_CONT_PREFILL_CHUNK_LIVE"
+                && v.parse::<u32>().ok() == Some(VERIFIED_PREFILL_CHUNKS[0])
+        }));
+    }
+
+    #[test]
+    fn auto_quote_covers_each_budget() {
+        let mut req = ServingRequest::default();
+        req.mem_floor_gb = 4;
+        let facts = EngineFacts {
+            host_available_bytes: Some(100 * GIB),
+            shared_weights_bytes: Some(10 * GIB),
+            per_bank_bytes: Some(8 * GIB),
+            mtp_state_bytes: Some(2 * GIB),
+            scratch_bytes: Some(1 * GIB),
+            checkpoint_pool_bytes: Some(1 * GIB),
+            ple_bytes: Some(1 * GIB),
+            media_reserve_bytes: Some(4 * GIB),
+            ..EngineFacts::default()
+        };
+        let p = resolve_plan(
+            &req,
+            Some(caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext)),
+            &facts,
+        );
+        let q = p.quote.expect("quote");
+        assert_eq!(q.shared_weights, 10 * GIB);
+        assert_eq!(q.per_bank, 8 * GIB);
+        assert_eq!(q.mtp_state, 2 * GIB);
+        assert_eq!(q.scratch, 1 * GIB);
+        assert_eq!(q.checkpoint_pool, 1 * GIB);
+        assert_eq!(q.ple, 1 * GIB);
+        assert_eq!(q.media_reserve, 4 * GIB);
+        assert_eq!(q.floor, 4 * GIB);
+        assert_eq!(q.available, 100 * GIB);
+        assert_eq!(p.effective.max_seqs, 2);
+        assert_eq!(q.banks, 2);
+        assert_eq!(q.total, q.cost(2));
+        assert!(q.total <= q.available);
+        let json = p.to_json();
+        assert_eq!(json["quote"]["shared_weights"], 10 * GIB);
+        assert_eq!(json["quote"]["per_bank"], 8 * GIB);
+        assert_eq!(json["quote"]["mtp_state"], 2 * GIB);
+        assert_eq!(json["quote"]["scratch"], 1 * GIB);
+        assert_eq!(json["quote"]["checkpoint_pool"], 1 * GIB);
+        assert_eq!(json["quote"]["ple"], 1 * GIB);
+        assert_eq!(json["quote"]["media_reserve"], 4 * GIB);
+        assert_eq!(json["quote"]["floor"], 4 * GIB);
+        assert!(!p.has_errors());
+    }
+
+    #[test]
+    fn media_serial_auto_is_not_two_text_banks() {
+        let mut caps = caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        caps.media_serial = true;
+        let p = resolve_plan(
+            &ServingRequest::default(),
+            Some(caps),
+            &EngineFacts::default(),
+        );
+        assert_eq!(p.effective.max_seqs, 1);
+        assert!(!p.has_errors());
+    }
+
+    #[test]
+    fn auto_quote_keeps_the_media_reserve() {
+        let mut req = ServingRequest::default();
+        req.mem_floor_gb = 0;
+        let facts = EngineFacts {
+            host_available_bytes: Some(40 * GIB),
+            shared_weights_bytes: Some(10 * GIB),
+            per_bank_bytes: Some(10 * GIB),
+            media_reserve_bytes: Some(20 * GIB),
+            ..EngineFacts::default()
+        };
+        let p = resolve_plan(
+            &req,
+            Some(caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext)),
+            &facts,
+        );
+        assert_eq!(p.effective.max_seqs, 1);
+        let q = p.quote.expect("quote");
+        assert_eq!(q.media_reserve, 20 * GIB);
+        assert_eq!(q.banks, 1);
+        assert!(!p.has_errors());
+    }
+
+    #[test]
+    fn auto_quote_that_cannot_host_is_an_error() {
+        let mut req = ServingRequest::default();
+        req.mem_floor_gb = 4;
+        let facts = EngineFacts {
+            host_available_bytes: Some(10 * GIB),
+            shared_weights_bytes: Some(8 * GIB),
+            per_bank_bytes: Some(8 * GIB),
+            ..EngineFacts::default()
+        };
+        let p = resolve_plan(
+            &req,
+            Some(caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext)),
+            &facts,
+        );
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "quote_overflow"));
+        assert!(!p.may_listen());
+        assert_eq!(p.effective.max_seqs, 1);
     }
 }

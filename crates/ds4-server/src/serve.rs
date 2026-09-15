@@ -1973,6 +1973,18 @@ pub fn listen(cfg: &ServerConfig) -> std::io::Result<TcpListener> {
     TcpListener::bind((cfg.listen_host.as_str(), cfg.listen_port))
 }
 
+/// Bind only when the plan may listen. An impossible mix returns `Ok(None)`
+/// and never opens a socket.
+pub fn listen_if_allowed(
+    cfg: &ServerConfig,
+    plan: &ds4_core::ResolvedPlan,
+) -> std::io::Result<Option<TcpListener>> {
+    if !plan.may_listen() {
+        return Ok(None);
+    }
+    listen(cfg).map(Some)
+}
+
 fn accept_error_retryable(_kind: ErrorKind) -> bool {
     true
 }

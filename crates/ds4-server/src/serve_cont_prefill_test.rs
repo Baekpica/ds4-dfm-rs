@@ -112,6 +112,74 @@ fn idle_prefill_keeps_boot_width_when_nobody_is_decoding() {
 }
 
 #[test]
+fn an_impossible_mix_does_not_bind() {
+    let mut req = ds4_core::ServingRequest::default();
+    req.sched_chunk = Some(8192);
+    req.native_chunk = Some(1024);
+    let plan = ds4_core::resolve_plan(
+        &req,
+        Some(ds4_core::serving_caps(
+            ds4_core::ModelFamily::Qwen4Exp,
+            ds4_core::Variant::Qwen38FlashNext,
+        )),
+        &ds4_core::EngineFacts::default(),
+    );
+    assert!(!plan.may_listen());
+    let cfg = crate::ServerConfig::default();
+    assert!(crate::listen_if_allowed(&cfg, &plan)
+        .expect("bind skipped")
+        .is_none());
+}
+
+#[test]
+fn live_decode_uses_a_verified_native_capped_chunk() {
+    let mut req = ds4_core::ServingRequest::default();
+    req.sched_chunk = Some(3000);
+    req.sched_chunk_live = Some(700);
+    req.native_chunk = Some(2048);
+    let plan = ds4_core::resolve_plan(
+        &req,
+        Some(ds4_core::serving_caps(
+            ds4_core::ModelFamily::Qwen4Exp,
+            ds4_core::Variant::Qwen38FlashNext,
+        )),
+        &ds4_core::EngineFacts::default(),
+    );
+    let native = plan.effective.native_chunk.expect("native");
+    assert!(ds4_core::VERIFIED_PREFILL_CHUNKS.contains(&plan.effective.sched_chunk));
+    assert!(ds4_core::VERIFIED_PREFILL_CHUNKS.contains(&plan.effective.sched_chunk_live));
+    assert!(plan.effective.sched_chunk <= native);
+    assert!(plan.effective.sched_chunk_live <= native);
+    assert_ne!(plan.effective.sched_chunk, 3000);
+
+    let policy = PrefillChunkPolicy::from_raw(
+        plan.effective.sched_chunk as i32,
+        plan.effective.sched_chunk_live as i32,
+        false,
+    );
+    assert!(policy.boot <= native);
+    assert!(policy.live <= native);
+    assert!(ds4_core::VERIFIED_PREFILL_CHUNKS.contains(&policy.boot));
+    assert!(ds4_core::VERIFIED_PREFILL_CHUNKS.contains(&policy.live));
+
+    let mut jobs = [
+        (1, RollPhase::Decode { remaining: 4 }),
+        (2, RollPhase::Prefill { remaining: 3000 }),
+    ];
+    let ops = tick_roll_prefill(policy, &mut jobs);
+    assert_eq!(
+        ops,
+        vec![
+            TickOp::Prefill {
+                user: 2,
+                tokens: policy.live
+            },
+            TickOp::Decode { user: 1 },
+        ]
+    );
+}
+
+#[test]
 fn owner_tick_pair_steps_live_decode_while_peer_prefills_live_chunk() {
     reset_owner_tick_call_count();
     let policy = PrefillChunkPolicy::from_raw(4096, 512, false);
