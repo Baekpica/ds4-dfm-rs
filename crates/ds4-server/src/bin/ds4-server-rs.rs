@@ -442,6 +442,8 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("ds4-server-rs: continuous lane unavailable ({e}); serial only");
+                    // cont_lane=false also limits resident credit to model
+                    // mappings: the failed batch left no live runtime.
                     let mut facts = EngineFacts {
                         banks_fitted: Some(1),
                         cont_lane: Some(false),

@@ -1236,6 +1236,11 @@ fn env_nonnegative_mb(key: &str) -> Option<u64> {
 }
 
 fn resident_runtime(facts: &EngineFacts) -> u64 {
+    // A refused batch fit destroys its runtime. The serial graph is still
+    // lazy, so only the model mappings may be credited on that fallback.
+    if facts.cont_lane == Some(false) {
+        return 0;
+    }
     let banks = facts.banks_fitted.unwrap_or(1);
     facts
         .per_bank_bytes
@@ -1956,6 +1961,47 @@ mod tests {
             .env_overrides()
             .iter()
             .any(|(k, v)| k == "DS4_SERVER_FORK_PARTIAL" && v == "1"));
+    }
+
+    #[test]
+    fn failed_fit_credits_only_model() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
+        let req = ServingRequest {
+            mem_floor_gb: 4,
+            ..ServingRequest::default()
+        };
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        let mapped = 10 * GIB;
+        for (live, can_listen) in [(4 * GIB, false), (40 * GIB, true)] {
+            // Same facts as the server's batch_ctx_fit Err fallback.
+            let mut facts = EngineFacts {
+                banks_fitted: Some(1),
+                cont_lane: Some(false),
+                partial_reuse: Some(false),
+                ..EngineFacts::default()
+            };
+            fill_quote_facts(
+                &mut facts,
+                &req,
+                caps,
+                Some(SHAPE_QWEN38_FLASH_NEXT),
+                QuoteHost {
+                    weights_bytes: mapped,
+                    available_bytes: live,
+                    ..qwen_host(None)
+                },
+            );
+            credit_resident(&mut facts, live, mapped);
+            let plan = resolve_plan(&req, Some(caps), &facts);
+            assert_eq!(plan.may_listen(), can_listen, "{:?}", plan.issues);
+            assert_eq!(facts.host_available_bytes, Some(live + mapped));
+            assert_eq!(resident_runtime(&facts), 0);
+            assert_eq!(
+                plan.issues.iter().any(|i| i.code == "quote_overflow"),
+                !can_listen
+            );
+        }
     }
 
     #[test]
