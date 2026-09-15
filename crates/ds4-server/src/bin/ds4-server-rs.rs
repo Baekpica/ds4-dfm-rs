@@ -360,23 +360,6 @@ fn main() {
         }
         None => None,
     };
-    if launch == ServerLaunch::Worker {
-        let Some(model) = model else {
-            cli_error(WORKER_REQUIRES_MODEL);
-        };
-        if serve_req.print_plan {
-            // A worker never fits a lane, so this is the whole plan it has.
-            print_plan(&cfg);
-        }
-        model.boot_prewarm();
-        match run_assembled_worker(&model, cfg.ctx, &dist.opt) {
-            Ok(rc) => std::process::exit(rc),
-            Err(e) => {
-                eprintln!("ds4-server-rs: {e}");
-                std::process::exit(1);
-            }
-        }
-    }
     let kv_store = if model.is_some() { kv_store } else { None };
 
     let lane = if let Some(ref model) = model {
@@ -476,9 +459,9 @@ fn main() {
                     None
                 }
             }
-        } else if dspark_path.is_some() {
-            // A deferred drafter quote also needs its import result when
-            // no batch fit runs; serial graph allocations are still lazy.
+        } else {
+            // Serial HTTP and distributed workers also need confirmed IPC
+            // ownership after open; their session graphs are still lazy.
             let mut facts = EngineFacts {
                 banks_fitted: Some(1),
                 cont_lane: Some(false),
@@ -506,12 +489,27 @@ fn main() {
             serial.apply_env();
             cfg.adopt_plan(&serial);
             None
-        } else {
-            None
         }
     } else {
         None
     };
+    if launch == ServerLaunch::Worker {
+        let Some(ref model) = model else {
+            cli_error(WORKER_REQUIRES_MODEL);
+        };
+        if serve_req.print_plan {
+            // A worker never fits a lane, so this is the whole plan it has.
+            print_plan(&cfg);
+        }
+        model.boot_prewarm();
+        match run_assembled_worker(model, cfg.ctx, &dist.opt) {
+            Ok(rc) => std::process::exit(rc),
+            Err(e) => {
+                eprintln!("ds4-server-rs: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     // Print what serves, not what was asked: the native fit can still take
     // banks, partial reuse and MTP away from the pre-open plan.
     if serve_req.print_plan {

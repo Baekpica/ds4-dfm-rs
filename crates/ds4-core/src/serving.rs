@@ -210,6 +210,8 @@ pub struct EngineFacts {
     pub artifact_ok: Option<bool>,
     /// `Some(false)` when a DSpark drafter cannot attach to this family.
     pub dspark_ok: Option<bool>,
+    /// An IPC-dependent quote awaits successful native import during open.
+    pub ipc_pending: bool,
     /// Actual native drafter import result after open; overrides manifest intent.
     pub drafter_shared: Option<bool>,
     /// `Some(false)` once the native fit refused the continuous lane.
@@ -968,6 +970,12 @@ pub fn resolve_plan(
         ));
     }
 
+    if facts.ipc_pending && req.check_config {
+        issues.push(error(
+            "ipc_unverified",
+            "check-config cannot verify IPC owner/import availability without opening the model",
+        ));
+    }
     if facts.artifact_ok == Some(false) {
         issues.push(error(
             "artifact_invalid",

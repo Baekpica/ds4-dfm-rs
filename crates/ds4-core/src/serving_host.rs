@@ -116,17 +116,15 @@ pub fn fill_quote_facts(
     shape: Option<Shape>,
     host: QuoteHost,
 ) {
-    // C honors family env (DS4_QWEN_PREFILL_CHUNK), not --native-chunk.
-    // A quoted cap above the rows C will allocate lets --prefill-chunk 512
-    // pass while Qwen still builds 256.
+    // The resolved CLI cap is published to the allocator's family env.
+    // Defaults and existing env apply only when no explicit CLI cap is set.
     let ctx_tokens = req.ctx.max(1) as u32;
     let runtime = family_native_chunk(caps, ctx_tokens);
-    let mut native = host
-        .native_chunk
-        .or(req.native_chunk)
-        .unwrap_or(runtime)
-        .min(runtime)
-        .max(1);
+    let mut native = match req.native_chunk {
+        Some(n) => n.min(family_native_limit(caps)).min(ctx_tokens),
+        None => host.native_chunk.unwrap_or(runtime).min(runtime),
+    }
+    .max(1);
     // Step/Inkling create predictor state whenever the sidecar is loaded, even
     // with speculation disabled. Its verify workspace needs draft layers + 1.
     let sidecar_loaded = req.mtp_path.is_some() || facts.mtp_loaded;
@@ -351,8 +349,18 @@ pub fn attach_host_quote(
     if req.backend == Backend::Cuda && facts.drafter_shared == Some(true) {
         dspark_bytes = 0;
     }
-    // Weight-server already holds imported spans; MemAvailable includes them.
-    match ipc_weight_skip() {
+    let ipc_pending = req.backend == Backend::Cuda
+        && !resident
+        && std::env::var_os(WEIGHT_IPC_MANIFEST_ENV).is_some_and(|v| !v.is_empty());
+    facts.ipc_pending = ipc_pending || drafter_pending;
+    // Native aborts on failed base/MTP imports. Only a successful open
+    // proves these requested scopes are shared; a filename is not proof.
+    let skip = if req.backend == Backend::Cuda && resident {
+        ipc_weight_skip()
+    } else {
+        IpcSkip::None
+    };
+    match skip {
         IpcSkip::None => {}
         IpcSkip::Base => {
             weights_bytes = 0;
@@ -370,9 +378,9 @@ pub fn attach_host_quote(
         .saturating_add(mtp_bytes)
         .saturating_add(vision_bytes)
         .saturating_add(dspark_bytes);
-    // A drafter import can soft-fail. Defer this quote until native reports
-    // whether the owner or this worker pays; do not guess either outcome.
-    let live = if drafter_pending {
+    // Defer import-dependent admission until open confirms ownership.
+    // Check-config reports this as unsupported because it cannot import.
+    let live = if facts.ipc_pending {
         0
     } else {
         host_available_bytes(req.backend)
@@ -550,6 +558,19 @@ fn parse_nvidia_mib(raw: &str) -> Option<u64> {
     }
     let mib: u64 = t.parse().ok()?;
     Some(mib.saturating_mul(MIB))
+}
+
+fn family_native_limit(caps: ServingCaps) -> u32 {
+    match caps.family {
+        ModelFamily::Qwen4Exp => QWEN_NATIVE_MAX,
+        ModelFamily::Step37 => STEP_NATIVE_MAX,
+        ModelFamily::Inkling => INKLING_NATIVE_MAX,
+        ModelFamily::Glm53 => GLM_NATIVE_DEFAULT,
+        ModelFamily::ExaoneMoe => FAMILY_NATIVE_MAX,
+        ModelFamily::Motif3 => MOTIF_NATIVE_MAX,
+        ModelFamily::Dots3Note => DOTS3_NATIVE_MAX,
+        ModelFamily::SolarOpen2 | ModelFamily::DeepSeek4 => u32::MAX,
+    }
 }
 
 fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
@@ -1672,10 +1693,51 @@ fn file_len(path: Option<&Path>) -> u64 {
         .unwrap_or(0)
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn parse_vm_stat(text: &str) -> Option<u64> {
+    let page_size = text
+        .lines()
+        .next()?
+        .split_once("page size of ")?
+        .1
+        .split_whitespace()
+        .next()?
+        .parse::<u64>()
+        .ok()?;
+    if page_size == 0 {
+        return None;
+    }
+    let mut pages = 0u64;
+    // vm_stat subtracts speculative pages from its printed free count.
+    // Purgeable pages overlap other queues, so do not add them again.
+    for key in ["Pages free:", "Pages inactive:", "Pages speculative:"] {
+        let value = text.lines().find_map(|line| line.strip_prefix(key))?;
+        let count = value.trim().trim_end_matches('.').parse::<u64>().ok()?;
+        pages = pages.checked_add(count)?;
+    }
+    pages.checked_mul(page_size)
+}
+
+#[cfg(target_os = "macos")]
+fn meminfo_available() -> u64 {
+    let Ok(out) = std::process::Command::new("/usr/bin/vm_stat").output() else {
+        return 0;
+    };
+    if !out.status.success() {
+        return 0;
+    }
+    std::str::from_utf8(&out.stdout)
+        .ok()
+        .and_then(parse_vm_stat)
+        .unwrap_or(0)
+}
+
+#[cfg(not(target_os = "macos"))]
 fn meminfo_available() -> u64 {
     meminfo_kb("MemAvailable:")
 }
 
+#[cfg(not(target_os = "macos"))]
 fn meminfo_kb(prefix: &str) -> u64 {
     let Ok(text) = std::fs::read_to_string("/proc/meminfo") else {
         return 0;
@@ -1883,7 +1945,8 @@ mod tests {
             let _man = EnvGuard::set(WEIGHT_IPC_MANIFEST_ENV, "/tmp/ds4-weights.manifest");
             let _scope = EnvGuard::set(WEIGHT_IPC_SCOPE_ENV, "mtp");
             let facts = attach_ipc(&a, Some(&mtp), Some(&vision), Some(&dspark), false);
-            assert_eq!(facts.shared_weights_bytes, Some(168));
+            assert_eq!(facts.shared_weights_bytes, Some(193));
+            assert!(facts.ipc_pending);
         }
 
         let facts = attach_ipc(&a, Some(&mtp), Some(&vision), Some(&dspark), false);
@@ -2029,13 +2092,30 @@ mod tests {
     }
 
     #[test]
-    fn qwen_native_chunk_does_not_raise_past_c() {
+    fn native_cli_overrides_default() {
         let _env = lock_test_env();
         let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
         let mut req = ServingRequest::default();
-        req.native_chunk = Some(8192);
-        let facts = fill_qwen(&req, qwen_host(Some(8192)));
-        assert_eq!(facts.native_chunk, Some(QWEN_NATIVE_DEFAULT));
+        req.native_chunk = Some(512);
+        req.sched_chunk = Some(512);
+        let facts = fill_qwen(&req, qwen_host(None));
+        assert_eq!(facts.native_chunk, Some(512));
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        let p = resolve_plan(&req, Some(caps), &facts);
+        assert!(p.may_listen(), "{:?}", p.issues);
+        assert!(p
+            .env_overrides()
+            .contains(&(QWEN_PREFILL_CHUNK_ENV.into(), "512".into())));
+        let _small_env = EnvGuard::set(QWEN_PREFILL_CHUNK_ENV, "128");
+        assert_eq!(fill_qwen(&req, qwen_host(None)).native_chunk, Some(512));
+        req.ctx = 32768;
+        req.native_chunk = Some(65536);
+        assert_eq!(
+            fill_qwen(&req, qwen_host(None)).native_chunk,
+            Some(QWEN_NATIVE_MAX)
+        );
+        req.ctx = 128;
+        assert_eq!(fill_qwen(&req, qwen_host(None)).native_chunk, Some(128));
     }
 
     #[test]
@@ -3780,7 +3860,10 @@ exit 1
             };
             std::fs::write(&manifest, format!("{header}\n{record}\n")).unwrap();
             let facts = attach_ipc(&model, None, None, Some(&drafter), false);
-            assert_eq!(facts.shared_weights_bytes, Some(11));
+            assert_eq!(
+                facts.shared_weights_bytes,
+                Some(gguf_span_bytes(&model, 2) + 11)
+            );
             assert_eq!(facts.host_available_bytes, None, "import not yet confirmed");
         }
         for (shared, resident, expected) in [
@@ -3826,6 +3909,50 @@ exit 1
     }
 
     #[test]
+    fn ipc_check_requires_import() {
+        let _env = lock_test_env();
+        let _man = EnvGuard::set(WEIGHT_IPC_MANIFEST_ENV, "/missing/owner.manifest");
+        let _scope = EnvGuard::set(WEIGHT_IPC_SCOPE_ENV, "both");
+        let req = ServingRequest {
+            check_config: true,
+            ..ServingRequest::default()
+        };
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        let mut facts = EngineFacts::default();
+        attach_host_quote(
+            &mut facts,
+            &req,
+            caps,
+            Some(SHAPE_QWEN38_FLASH_NEXT),
+            None,
+            None,
+            None,
+            None,
+            1,
+            false,
+            false,
+        );
+        let p = resolve_plan(&req, Some(caps), &facts);
+        assert!(
+            !p.may_listen(),
+            "unconfirmed import must not pass check-config"
+        );
+    }
+
+    #[test]
+    fn mac_memory_reads_vm_pages() {
+        for page_size in [4096, 16384] {
+            let text = format!("Mach Virtual Memory Statistics: (page size of {page_size} bytes)\nPages free: 10.\nPages inactive: 20.\nPages speculative: 3.\nPages purgeable: 8.\nPages wired down: 1000.\n");
+            assert_eq!(parse_vm_stat(&text), Some(33 * page_size));
+        }
+        assert_eq!(parse_vm_stat(""), None);
+        assert_eq!(
+            parse_vm_stat("Mach Virtual Memory Statistics: (page size of 0 bytes)"),
+            None
+        );
+    }
+
+    #[test]
     fn ipc_manifest_skips_imported_spans() {
         let _env = lock_test_env();
         let dir = std::env::temp_dir().join(format!("ds4-quote-ipc-{}", std::process::id()));
@@ -3865,26 +3992,35 @@ exit 1
         {
             let _man = EnvGuard::set(WEIGHT_IPC_MANIFEST_ENV, "/tmp/ds4-weights.manifest");
             let _scope = EnvGuard::unset(WEIGHT_IPC_SCOPE_ENV);
-            let facts = attach_ipc(&a, Some(&mtp), Some(&vision), Some(&dspark), false);
+            let facts = attach_ipc(&a, Some(&mtp), Some(&vision), Some(&dspark), true);
             assert_eq!(facts.shared_weights_bytes, Some(17 + 11));
         }
         {
             let _man = EnvGuard::set(WEIGHT_IPC_MANIFEST_ENV, "/tmp/ds4-weights.manifest");
             let _scope = EnvGuard::set(WEIGHT_IPC_SCOPE_ENV, "both");
-            let facts = attach_ipc(&a, Some(&mtp), None, None, false);
+            let facts = attach_ipc(&a, Some(&mtp), None, None, true);
             assert_eq!(facts.shared_weights_bytes, Some(0));
         }
         {
             let _man = EnvGuard::set(WEIGHT_IPC_MANIFEST_ENV, "/tmp/ds4-weights.manifest");
             let _scope = EnvGuard::set(WEIGHT_IPC_SCOPE_ENV, "mtp");
-            let facts = attach_ipc(&a, Some(&mtp), None, None, false);
+            let facts = attach_ipc(&a, Some(&mtp), None, None, true);
             assert_eq!(facts.shared_weights_bytes, Some(140));
         }
         {
             let _man = EnvGuard::set(WEIGHT_IPC_MANIFEST_ENV, "/tmp/ds4-weights.manifest");
             let _scope = EnvGuard::set(WEIGHT_IPC_SCOPE_ENV, "base");
-            let facts = attach_ipc(&a, Some(&mtp), None, None, false);
+            let facts = attach_ipc(&a, Some(&mtp), None, None, true);
             assert_eq!(facts.shared_weights_bytes, Some(25));
+        }
+
+        for scope in ["base", "mtp", "both", "invalid"] {
+            let _man = EnvGuard::set(WEIGHT_IPC_MANIFEST_ENV, "/missing/owner.manifest");
+            let _scope = EnvGuard::set(WEIGHT_IPC_SCOPE_ENV, scope);
+            let facts = attach_ipc(&a, Some(&mtp), None, None, false);
+            assert_eq!(facts.shared_weights_bytes, Some(165));
+            assert!(facts.ipc_pending);
+            assert_eq!(facts.host_available_bytes, None);
         }
 
         let live = host_available_bytes(Backend::Cuda);
