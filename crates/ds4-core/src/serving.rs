@@ -670,9 +670,9 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_prompt: Some(6300),
             media_serial: true,
         },
-        // Ling matches the Qwen serving surface it was sized against:
-        // two persistent banks, partial reuse and disk KV. There is no MTP
-        // predictor in this architecture, so no speculative lane exists.
+        // Ling matches the Qwen text-bank surface: two persistent banks,
+        // partial reuse and disk KV. Images stay serial beside those banks
+        // (Step), not on Qwen's bank-image path. No MTP predictor.
         ModelFamily::Ling3Vl => ServingCaps {
             family,
             variant,
@@ -691,7 +691,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_ctx: Some(65536),
             qualified_banks: Some(2),
             qualified_prompt: None,
-            media_serial: false,
+            media_serial: true,
         },
         ModelFamily::SolarOpen2 => ServingCaps {
             family,

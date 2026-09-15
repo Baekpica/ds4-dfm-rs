@@ -63,4 +63,6 @@ fn serving_matches_the_qwen_surface_it_was_sized_against() {
     assert_eq!(caps.qualified_banks, Some(2));
     // This architecture has no NextN predictor, so no draft lane exists.
     assert_eq!(caps.mtp_support, Support::None);
+    // Images stay on the serial lane beside those text banks, like Step.
+    assert!(caps.media_serial);
 }

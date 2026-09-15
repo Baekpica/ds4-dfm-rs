@@ -67493,6 +67493,18 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         *out = NULL;
         return 1;
     }
+    if (!opt->inspect_only && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL &&
+        (e->backend != DS4_BACKEND_CUDA || load_slice ||
+         opt->distributed.role != DS4_DISTRIBUTED_NONE ||
+         (e->directional_steering_file && e->directional_steering_file[0]) ||
+         e->directional_steering_attn_scale != 0.0f ||
+         e->directional_steering_ffn_scale != 0.0f)) {
+        fprintf(stderr, "ds4: Ling requires one full CUDA model "
+                        "without distributed slices or directional steering\n");
+        ds4_engine_close(e);
+        *out = NULL;
+        return 1;
+    }
     if (opt->warm_weights) {
         model_warm_weights(&e->model);
     }
