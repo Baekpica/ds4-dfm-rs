@@ -16,9 +16,21 @@ use crate::Backend;
 
 const GIB: u64 = 1 << 30;
 const MIB: u64 = 1 << 20;
-// GGUF names the per-layer blocks; the rest is embedding or output.
+// The tensors a sliced model map retains, mirroring native
+// `model_map_span_vec_include_layer` / `_include_output`. Every other group
+// the artifact carries — vision, MTP, drafter — stays off a sliced map.
 const LAYER_TENSOR_PREFIX: &str = "blk.";
-const EMBED_TENSOR_PREFIX: &str = "token_embd";
+const EMBED_TENSOR: &str = "token_embd.weight";
+const OUTPUT_TENSORS: [&str; 8] = [
+    "output.weight",
+    "output_norm.weight",
+    "output_hc_base.weight",
+    "output_hc_fn.weight",
+    "output_hc_scale.weight",
+    "hc_input.norm.weight",
+    "hc_input.mix_down.weight",
+    "hc_input.mix_up.weight",
+];
 const DEFAULT_PLE_CACHE_MB: u64 = 2048;
 const CPU_MAX_THREADS: u64 = 32;
 const CPU_FFN_BATCH_MAX: u64 = 4095;
@@ -530,7 +542,8 @@ pub fn gguf_span_bytes(path: &Path, split_count: u32) -> u64 {
 /// (`weights_model_map_spans`), so pricing the whole sharded artifact
 /// rejects a model larger than one GPU even when the slice fits. Spans
 /// never overlap, so the selected tensor bytes are the mapped span.
-/// An unreadable directory falls back to the full artifact.
+/// An unreadable directory, or a selection that matches nothing, falls back
+/// to the full artifact rather than under-pricing the boot.
 pub fn gguf_slice_span_bytes(path: &Path, split_count: u32, slice: WeightSlice) -> u64 {
     let Ok(inventory) = TensorInventory::open(path) else {
         return gguf_span_bytes(path, split_count);
@@ -548,17 +561,18 @@ pub fn gguf_slice_span_bytes(path: &Path, split_count: u32, slice: WeightSlice) 
     span
 }
 
-/// `blk.N.*` belongs to layer N, `token_embd*` rides with layer 0, and what
-/// is left (final norm, head, input hyper-connections) is the output group.
+/// `blk.N.*` belongs to layer N, the token embedding rides with layer 0, and
+/// the output group is the native allowlist — not "whatever is left", which
+/// would charge the vision and MTP groups to whoever owns the head.
 fn slice_holds(name: &str, slice: WeightSlice) -> bool {
     let Some(rest) = name.strip_prefix(LAYER_TENSOR_PREFIX) else {
-        if name.starts_with(EMBED_TENSOR_PREFIX) {
+        if name == EMBED_TENSOR {
             return slice.start == 0;
         }
-        return slice.output;
+        return slice.output && OUTPUT_TENSORS.contains(&name);
     };
     let Some(layer) = rest.split('.').next().and_then(|n| n.parse::<u32>().ok()) else {
-        return slice.output;
+        return false;
     };
     layer >= slice.start && layer <= slice.end
 }
@@ -1995,6 +2009,11 @@ mod tests {
                 ("blk.3.attn_norm.weight", 64),
                 ("output_norm.weight", 32),
                 ("output.weight", 96),
+                ("hc_input.norm.weight", 16),
+                // Groups a sliced map never retains, whoever owns the head.
+                ("token_embd_mtp.weight", 256),
+                ("vblk.0.attn_norm.weight", 512),
+                ("mtp.0.attn_norm.weight", 512),
             ],
         );
         let whole = gguf_span_bytes(&path, 1);
@@ -2007,7 +2026,9 @@ mod tests {
         };
         assert_eq!(gguf_slice_span_bytes(&path, 1, middle), 2 * 64 * SIZEOF_F32);
 
-        // Tail worker owns the output group; `u32::MAX` runs to the last block.
+        // Tail worker owns the output group: the native allowlist only, so
+        // the vision/MTP groups stay off the price. `u32::MAX` runs to the
+        // last block.
         let tail = WeightSlice {
             start: 3,
             end: u32::MAX,
@@ -2015,10 +2036,11 @@ mod tests {
         };
         assert_eq!(
             gguf_slice_span_bytes(&path, 1, tail),
-            (64 + 32 + 96) * SIZEOF_F32
+            (64 + 32 + 96 + 16) * SIZEOF_F32
         );
 
-        // Head worker pulls the token embedding in with layer 0.
+        // Head worker pulls the token embedding in with layer 0, but not the
+        // sidecar embedding that shares its prefix.
         let head = WeightSlice {
             start: 0,
             end: 0,
