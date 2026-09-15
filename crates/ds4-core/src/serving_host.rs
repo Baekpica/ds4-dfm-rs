@@ -7,15 +7,19 @@ use std::path::{Path, PathBuf};
 
 use crate::gguf::GgufFile;
 use crate::serving::{
-    EngineFacts, MtpKind, MtpMode, PrefixReuse, ReuseKind, ServingCaps, ServingRequest,
-    DEFAULT_SCHED_CHUNK,
+    BankLane, EngineFacts, LaneMode, MaxSeqs, MtpKind, MtpMode, PrefixReuse, ReuseKind,
+    ServingCaps, ServingRequest, DEFAULT_MAX_SEQS, DEFAULT_SCHED_CHUNK,
 };
 use crate::shape::{ModelFamily, Shape, Variant};
 use crate::tensors::model_split_sibling_path;
+use crate::Backend;
 
 const GIB: u64 = 1 << 30;
 const MIB: u64 = 1 << 20;
 const DEFAULT_PLE_CACHE_MB: u64 = 2048;
+const PLE_CACHE_MB_ENV: &str = "DS4_QWEN_PLE_CACHE_MB";
+const PLE_CACHE_MB_512: u64 = 512;
+const PLE_CACHE_MB_1024: u64 = 1024;
 const QWEN_PREFILL_CHUNK_ENV: &str = "DS4_QWEN_PREFILL_CHUNK";
 const STEP_PREFILL_CHUNK_ENV: &str = "DS4_STEP37_PREFILL_CHUNK";
 const INKLING_PREFILL_CHUNK_ENV: &str = "DS4_INKLING_PREFILL_CHUNK";
@@ -50,7 +54,7 @@ const QWEN_GDN_HEAD: u64 = 128;
 const QWEN_QSA_SCORE_ROWS: u32 = 8;
 const QWEN_PLE_HOST_ID_LANES: u64 = 16;
 const QWEN_PLE_CONV_TAPS: u64 = 9;
-const QWEN_CHECKPOINT_SLOTS: u64 = 32;
+const CHECKPOINT_SLOTS: u64 = 32;
 const SIZEOF_F32: u64 = 4;
 const SIZEOF_I32: u64 = 4;
 const SIZEOF_U16: u64 = 2;
@@ -98,10 +102,7 @@ pub fn fill_quote_facts(
         MtpKind::BoundOnly | MtpKind::None => false,
     };
     // Native skips the slab when DS4_SERVER_FORK_PARTIAL=0.
-    let partial = match req.prefix_reuse {
-        PrefixReuse::Off | PrefixReuse::Exact => false,
-        PrefixReuse::Partial | PrefixReuse::Auto => caps.reuse == ReuseKind::Partial,
-    };
+    let partial = quote_partial(req, caps, facts);
     // Qwen/Step allocate a complete graph per bank. Shared scratch would
     // let auto approve two banks when only one graph fits.
     // Example: Qwen MTP enable is another QSA+hidden per graph, not one
@@ -124,7 +125,11 @@ pub fn fill_quote_facts(
         (ModelFamily::Step37, Some(s)) => {
             let graph = family_graph_scratch(s, native);
             let spec = if mtp_on { graph } else { 0 };
-            let pool = if partial { kv } else { 0 };
+            let pool = if partial {
+                step_checkpoint_pool_bytes(s, mtp_on)
+            } else {
+                0
+            };
             (kv.saturating_add(graph).saturating_add(spec), 0, 0, pool)
         }
         (_, Some(s)) => {
@@ -564,7 +569,67 @@ fn qwen_checkpoint_slot_bytes(shape: Shape) -> u64 {
 }
 
 fn qwen_checkpoint_pool_bytes(shape: Shape) -> u64 {
-    qwen_checkpoint_slot_bytes(shape).saturating_mul(QWEN_CHECKPOINT_SLOTS)
+    qwen_checkpoint_slot_bytes(shape).saturating_mul(CHECKPOINT_SLOTS)
+}
+
+// C step37_ckpt_init: 32 slots of sliding-window KV, plus MTP windows/state.
+fn step_checkpoint_slot_bytes(shape: Shape, mtp_on: bool) -> u64 {
+    let period = shape.n_swa_period.max(1);
+    let sliding = (0..shape.n_layer)
+        .filter(|il| !il.is_multiple_of(period))
+        .count() as u64;
+    let window = u64::from(shape.n_swa.max(1));
+    let row =
+        2 * u64::from(shape.n_head_kv.max(1)) * u64::from(shape.n_head_dim.max(1)) * SIZEOF_U16;
+    let mut slot = sliding.saturating_mul(window).saturating_mul(row);
+    if mtp_on {
+        let pred = u64::from(shape.n_nextn_predict.max(1));
+        let state = u64::from(shape.n_embd).saturating_mul(SIZEOF_F32);
+        slot = slot
+            .saturating_add(pred.saturating_mul(window.saturating_mul(row).saturating_add(state)));
+    }
+    slot
+}
+
+fn step_checkpoint_pool_bytes(shape: Shape, mtp_on: bool) -> u64 {
+    step_checkpoint_slot_bytes(shape, mtp_on).saturating_mul(CHECKPOINT_SLOTS)
+}
+
+// Same gate as apply_env publishing DS4_SERVER_FORK_PARTIAL=1.
+fn quote_partial(req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts) -> bool {
+    if caps.reuse != ReuseKind::Partial {
+        return false;
+    }
+    match req.prefix_reuse {
+        PrefixReuse::Off | PrefixReuse::Exact => false,
+        PrefixReuse::Partial | PrefixReuse::Auto => {
+            quote_bank_lane(req, caps, facts) && facts.partial_reuse != Some(false)
+        }
+    }
+}
+
+fn quote_bank_lane(req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts) -> bool {
+    if req.lane == LaneMode::Serial
+        || req.backend != Backend::Cuda
+        || facts.cont_lane == Some(false)
+        || caps.banks == BankLane::Serial
+    {
+        return false;
+    }
+
+    let want = match req.max_seqs {
+        MaxSeqs::Off => {
+            return false;
+        }
+        MaxSeqs::Auto => match caps.banks {
+            BankLane::Serial | BankLane::OptIn => 1,
+            BankLane::Persistent => caps.qualified_banks.unwrap_or(DEFAULT_MAX_SEQS),
+        },
+        MaxSeqs::Fixed(n) => n,
+    };
+    let width = facts.banks_fitted.unwrap_or(want).min(want);
+
+    caps.banks != BankLane::OptIn || width >= 2
 }
 
 fn family_graph_scratch(shape: Shape, native: u32) -> u64 {
@@ -614,11 +679,25 @@ fn ple_cache_bytes(caps: ServingCaps) -> u64 {
     if caps.family != ModelFamily::Qwen4Exp {
         return 0;
     }
-    let mb = std::env::var("DS4_QWEN_PLE_CACHE_MB")
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_PLE_CACHE_MB);
-    mb.saturating_mul(MIB)
+    ple_cache_mb().saturating_mul(MIB)
+}
+
+// C qwen4exp_engine_open_ple: only 512/1024/2048, else 2048.
+fn ple_cache_mb() -> u64 {
+    let Ok(raw) = std::env::var(PLE_CACHE_MB_ENV) else {
+        return DEFAULT_PLE_CACHE_MB;
+    };
+    let Ok(mb) = raw.parse::<u64>() else {
+        return DEFAULT_PLE_CACHE_MB;
+    };
+    if !ple_cache_mb_valid(mb) {
+        return DEFAULT_PLE_CACHE_MB;
+    }
+    mb
+}
+
+fn ple_cache_mb_valid(mb: u64) -> bool {
+    mb == PLE_CACHE_MB_512 || mb == PLE_CACHE_MB_1024 || mb == DEFAULT_PLE_CACHE_MB
 }
 
 fn file_len(path: Option<&Path>) -> u64 {
@@ -648,7 +727,9 @@ fn meminfo_available() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serving::{resolve_plan, serving_caps, MtpMode, PrefixReuse, PREFILL_CHUNK_FENCE};
+    use crate::serving::{
+        resolve_plan, serving_caps, MaxSeqs, MtpMode, PrefixReuse, ReuseKind, PREFILL_CHUNK_FENCE,
+    };
     use crate::shape::{
         Variant, SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_QWEN38_FLASH_NEXT,
         SHAPE_SOLAR_OPEN2_250B, SHAPE_STEP37_FLASH,
@@ -696,6 +777,27 @@ mod tests {
         assert!(quote.ple > 0);
         assert_eq!(quote.floor, req.mem_floor_gb * GIB);
         assert!(!plan.to_json()["quote"].is_null());
+    }
+
+    #[test]
+    fn qwen_invalid_ple_mb_falls_back() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
+        let req = ServingRequest::default();
+        {
+            let _ple = EnvGuard::set(PLE_CACHE_MB_ENV, "512");
+            let facts = fill_qwen(&req, qwen_host(None));
+            assert_eq!(facts.ple_bytes, Some(PLE_CACHE_MB_512 * MIB));
+        }
+        for mb in ["0", "1", "768"] {
+            let _ple = EnvGuard::set(PLE_CACHE_MB_ENV, mb);
+            let facts = fill_qwen(&req, qwen_host(None));
+            assert_eq!(
+                facts.ple_bytes,
+                Some(DEFAULT_PLE_CACHE_MB * MIB),
+                "env {mb}"
+            );
+        }
     }
 
     #[test]
@@ -1092,7 +1194,7 @@ mod tests {
         let kv = bank_kv_bytes(SHAPE_QWEN38_FLASH_NEXT, req.ctx.max(1) as u64);
         let pool = facts.checkpoint_pool_bytes.unwrap();
         assert_ne!(pool, kv, "checkpoint slab is recurrent slots, not one KV");
-        assert_eq!(pool % QWEN_CHECKPOINT_SLOTS, 0);
+        assert_eq!(pool % CHECKPOINT_SLOTS, 0);
         assert!(pool > 2 * GIB, "32 GDN/PLE slots are several GiB");
     }
 
@@ -1108,6 +1210,38 @@ mod tests {
         req.prefix_reuse = PrefixReuse::Exact;
         let facts = fill_qwen(&req, qwen_host(None));
         assert_eq!(facts.checkpoint_pool_bytes, Some(0));
+    }
+
+    #[test]
+    fn qwen_auto_reuse_follows_resolved_lane() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset(QWEN_PREFILL_CHUNK_ENV);
+        let caps = serving_caps(ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        let mut req = ServingRequest::default();
+        req.mem_floor_gb = 0;
+        req.prefix_reuse = PrefixReuse::Auto;
+        req.max_seqs = MaxSeqs::Off;
+        let facts = fill_qwen(&req, qwen_host(None));
+        assert_eq!(facts.checkpoint_pool_bytes, Some(0));
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert_eq!(plan.effective.prefix_reuse, ReuseKind::Exact);
+        assert!(plan
+            .env_overrides()
+            .iter()
+            .any(|(k, v)| k == "DS4_SERVER_FORK_PARTIAL" && v == "0"));
+
+        req.max_seqs = MaxSeqs::Fixed(2);
+        let facts = fill_qwen(&req, qwen_host(None));
+        assert_eq!(
+            facts.checkpoint_pool_bytes,
+            Some(qwen_checkpoint_pool_bytes(SHAPE_QWEN38_FLASH_NEXT))
+        );
+        let plan = resolve_plan(&req, Some(caps), &facts);
+        assert_eq!(plan.effective.prefix_reuse, ReuseKind::Partial);
+        assert!(plan
+            .env_overrides()
+            .iter()
+            .any(|(k, v)| k == "DS4_SERVER_FORK_PARTIAL" && v == "1"));
     }
 
     #[test]
@@ -1176,6 +1310,46 @@ mod tests {
             facts_cost(&facts, &req, 2) - facts_cost(&facts, &req, 1),
             per_bank
         );
+    }
+
+    #[test]
+    fn step_checkpoint_uses_sliding_slots() {
+        let _env = lock_test_env();
+        let mut req = ServingRequest::default();
+        req.mtp_mode = MtpMode::Off;
+        req.mem_floor_gb = 0;
+        req.max_seqs = MaxSeqs::Fixed(2);
+        req.prefix_reuse = PrefixReuse::Partial;
+        let facts = fill_family(
+            ModelFamily::Step37,
+            Variant::Step37Flash,
+            SHAPE_STEP37_FLASH,
+            &req,
+            QuoteHost {
+                weights_bytes: 10 * GIB,
+                mtp_bytes: 0,
+                available_bytes: 100 * GIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        let kv = bank_kv_bytes(SHAPE_STEP37_FLASH, req.ctx.max(1) as u64);
+        let pool = facts.checkpoint_pool_bytes.unwrap();
+        // C step37_ckpt_init: 32 slots of every sliding layer's 512-row
+        // window × 2 × kv × 2 bytes. Full-attn layers stay in the bank.
+        let sliding = (0..SHAPE_STEP37_FLASH.n_layer)
+            .filter(|il| !il.is_multiple_of(SHAPE_STEP37_FLASH.n_swa_period))
+            .count() as u64;
+        let row = 2
+            * u64::from(SHAPE_STEP37_FLASH.n_head_kv)
+            * u64::from(SHAPE_STEP37_FLASH.n_head_dim)
+            * SIZEOF_U16;
+        let want = sliding
+            .saturating_mul(u64::from(SHAPE_STEP37_FLASH.n_swa))
+            .saturating_mul(row)
+            .saturating_mul(CHECKPOINT_SLOTS);
+        assert_eq!(pool, want);
+        assert!(pool > kv, "32 SWA slots exceed one full-context KV");
     }
 
     fn fill_family(
