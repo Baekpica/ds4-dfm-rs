@@ -99,6 +99,75 @@ extern "C" int ds4_gpu_ling3vl_value_project(
     return cuda_ok(cudaGetLastError(), "Ling-3.0 MLA value projection");
 }
 
+/* Expanded-MLA prefill operand: one latent-cache segment [slot0, slot0+rows)
+ * becomes per-head K = [latent . k_b[h] | k_pe] (qk_nope + qk_rope wide)
+ * and V = latent . v_b[h]^T (value_dim wide), FP32, [rows][heads][dim].
+ * Two BF16 strided-batched GEMMs (one batch per head) read the cache rows
+ * in place, so nothing is converted or copied except the shared k_pe tail.
+ *
+ * Row-major C_h = latent . W_h is cuBLAS's column-major C_h^T = W_h^T .
+ * latent^T: k_b[h] is stored [latent][qk_nope], already that W_h^T; v_b[h]
+ * is [value][latent] and goes through op T.  The per-batch C offset is
+ * one head's width inside the [rows][heads][dim] row. */
+extern "C" int ds4_gpu_ling3vl_expand_kv(
+        ds4_gpu_tensor *k_full, ds4_gpu_tensor *value,
+        const ds4_gpu_tensor *latent_cache, const ds4_gpu_tensor *k_pe_cache,
+        const void *map, uint64_t size, uint64_t k_b_offset,
+        uint64_t v_b_offset, uint32_t slot0, uint32_t rows, uint32_t heads,
+        uint32_t latent_dim, uint32_t qk_nope, uint32_t qk_rope,
+        uint32_t value_dim) {
+    const uint32_t key_dim = qk_nope + qk_rope;
+    const uint64_t k_b_bytes =
+        (uint64_t)heads * latent_dim * qk_nope * sizeof(__nv_bfloat16);
+    const uint64_t v_b_bytes =
+        (uint64_t)heads * value_dim * latent_dim * sizeof(__nv_bfloat16);
+    const uint64_t end = (uint64_t)slot0 + rows;
+    if (!k_full || !value || !latent_cache || !k_pe_cache || !map || !rows ||
+        !heads || !g_cublas_ready || (qk_rope & 3u) || rows > INT_MAX ||
+        heads * key_dim > INT_MAX ||
+        k_b_offset > size || k_b_bytes > size - k_b_offset ||
+        v_b_offset > size || v_b_bytes > size - v_b_offset ||
+        k_full->bytes < (uint64_t)rows * heads * key_dim * sizeof(float) ||
+        value->bytes < (uint64_t)rows * heads * value_dim * sizeof(float) ||
+        latent_cache->bytes < end * latent_dim * sizeof(__nv_bfloat16) ||
+        k_pe_cache->bytes < end * qk_rope * sizeof(__nv_bfloat16)) { return 0; }
+    const __nv_bfloat16 *k_b = (const __nv_bfloat16 *)cuda_model_range_ptr(
+        map, k_b_offset, k_b_bytes, "ling3vl k_b");
+    const __nv_bfloat16 *v_b = (const __nv_bfloat16 *)cuda_model_range_ptr(
+        map, v_b_offset, v_b_bytes, "ling3vl v_b");
+    if (!k_b || !v_b) { return 0; }
+    const __nv_bfloat16 *latent =
+        (const __nv_bfloat16 *)latent_cache->ptr + (uint64_t)slot0 * latent_dim;
+    const float alpha = 1.0f, beta = 0.0f;
+
+    cublasStatus_t st = cublasGemmStridedBatchedEx(
+        g_cublas, CUBLAS_OP_N, CUBLAS_OP_N, (int)qk_nope, (int)rows,
+        (int)latent_dim, &alpha,
+        k_b, CUDA_R_16BF, (int)qk_nope, (long long)latent_dim * qk_nope,
+        latent, CUDA_R_16BF, (int)latent_dim, 0ll,
+        &beta, k_full->ptr, CUDA_R_32F, (int)(heads * key_dim),
+        (long long)key_dim, (int)heads, CUBLAS_COMPUTE_32F,
+        CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+    if (!cublas_ok(st, "Ling-3.0 MLA expand K")) { return 0; }
+
+    st = cublasGemmStridedBatchedEx(
+        g_cublas, CUBLAS_OP_T, CUBLAS_OP_N, (int)value_dim, (int)rows,
+        (int)latent_dim, &alpha,
+        v_b, CUDA_R_16BF, (int)latent_dim, (long long)value_dim * latent_dim,
+        latent, CUDA_R_16BF, (int)latent_dim, 0ll,
+        &beta, value->ptr, CUDA_R_32F, (int)(heads * value_dim),
+        (long long)value_dim, (int)heads, CUBLAS_COMPUTE_32F,
+        CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+    if (!cublas_ok(st, "Ling-3.0 MLA expand V")) { return 0; }
+
+    const uint64_t quads = (uint64_t)rows * heads * (qk_rope / 4u);
+    ling3vl_expand_k_pe<<<(unsigned)((quads + 255u) / 256u), 256, 0,
+                          ds4_current_stream()>>>(
+        (float *)k_full->ptr, (const __nv_bfloat16 *)k_pe_cache->ptr, slot0,
+        rows, heads, key_dim, qk_nope, qk_rope);
+    return cuda_ok(cudaGetLastError(), "Ling-3.0 MLA expand k_pe");
+}
+
 extern "C" int ds4_gpu_ling3vl_rms_norm(
         ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
         const void *map, uint64_t size, uint64_t offset,

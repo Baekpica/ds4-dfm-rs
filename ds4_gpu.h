@@ -4358,6 +4358,26 @@ int ds4_gpu_ling3vl_value_project(
         uint32_t                latent_dim,
         uint32_t                value_dim);
 
+/* Expanded-MLA prefill: latent cache rows [slot0, slot0+rows) become per-head
+ * FP32 K [rows][heads][qk_nope+qk_rope] and V [rows][heads][value_dim] for
+ * the Motif range attention kernel. */
+int ds4_gpu_ling3vl_expand_kv(
+        ds4_gpu_tensor       *k_full,
+        ds4_gpu_tensor       *value,
+        const ds4_gpu_tensor *latent_cache,
+        const ds4_gpu_tensor *k_pe_cache,
+        const void             *map,
+        uint64_t                size,
+        uint64_t                k_b_offset,
+        uint64_t                v_b_offset,
+        uint32_t                slot0,
+        uint32_t                rows,
+        uint32_t                heads,
+        uint32_t                latent_dim,
+        uint32_t                qk_nope,
+        uint32_t                qk_rope,
+        uint32_t                value_dim);
+
 int ds4_gpu_ling3vl_vision_patch_position(
         ds4_gpu_tensor       *hidden,
         const void             *map,

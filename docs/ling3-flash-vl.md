@@ -96,13 +96,15 @@ Preprocessing is the factor-32 smart resize with CLIP normalization
 
 ## What the runtime reuses
 
-Only four operators are family-specific: the grouped sigmoid router, the
-M-RoPE, and the BF16 MLA absorb pair. Everything else is an existing path.
+Only five operators are family-specific: the grouped sigmoid router, the
+M-RoPE, the BF16 MLA absorb pair and the per-head K/V expansion. Everything
+else is an existing path.
 
 | Stage | Source |
 |---|---|
 | KDA recurrence, chunked prefill and banked decode | Solar/GLM kernels, third variant |
-| Latent MLA attention | Motif-3 `latent_attention_bf16` |
+| MLA prefill (64+ rows): per-segment K/V expansion, 192/128 range attention, LSE merge | Motif-3 full-attention prefill, cuBLAS batched GEMM |
+| MLA decode: absorbed latent attention | Motif-3 `latent_attention_bf16` (head-group split) |
 | Routed expert GEMMs, expert sum, SwiGLU clamp, head-wise gate | Step 3.7 |
 | ViT blocks, merger GELU/bias | Qwen3.8 Flash Next |
 | Batched prefill workspace | shared `exaone_batch_ws` |
@@ -153,7 +155,9 @@ The operator surface is the one in the [serving contract](serving-contract.md):
 
 `DS4_LING3VL_PREFILL_CHUNK` pins the prefill chunk (default 4096, max 4096).
 `2048` restores the previous width.
-`DS4_LING3VL_NO_MLA_HMMA=1` restores Motif HG MLA on prefill.
+`DS4_LING3VL_NO_MLA_EXPAND=1` restores absorbed-MLA prefill (dots3 HMMA).
+`DS4_LING3VL_NO_MLA_HMMA=1` restores Motif HG MLA on absorbed prefill.
+`DS4_MOTIF3_ATTN_HG_FILL=1` restores the fixed 32-way decode attention split.
 `DS4_LING3VL_NO_BF16_REUSE=1` reconverts RMSNorm rows on every BF16 GEMM.
 `DS4_LING3VL_NO_BF16_VEC=1` restores cuBLAS for n=1 BF16.
 `DS4_LING3VL_NO_BF16_PAIR=1` keeps two n=1 BF16 GEMVs.
@@ -186,6 +190,50 @@ plus mmvq; further inner-loop and fused-mmvq attempts did not clear 1%.
 Tests: `tests/test_ling3vl_mla.cu`, `tests/test_ling3vl_matmul.c`,
 `tests/test_ling3vl_q5pair.c`.
 
+### Long-context rounds (2026-09-17)
+
+The absorbed MLA prefill was the term that grew with context: at 64K the
+dots3 HMMA kernel held 52% of a cold prefill's kernel time at 32 TFLOPS,
+because every block scores 32 heads against one shared 576-wide latent row
+(1,088 FLOPs per head-key) and re-streams every key tile per token.  P4
+takes the split Motif-3 runs on its full layers: each 4096-key latent
+segment is expanded to per-head K (192) / V (128) by two BF16 batched
+GEMMs, attended by the Motif 192/128 range kernel (320 FLOPs per head-key)
+and merged through its log-sum-exp.  The 64K cold prefill's attention
+share fell from 32.7 s to 8.7 s plus 0.8 s of merges.  D2 doubles the
+decode head-group attention split until the grid covers GB10 twice: Ling's
+two 16-head groups ran 64 CTAs on 48 SMs.
+
+| Round | Change | Kill | Result |
+|---|---|---|---|
+| P4 | Expanded-MLA prefill, rows >= 64 | `DS4_LING3VL_NO_MLA_EXPAND=1` | 8K +15%, 64K +94% prefill |
+| D2 | Decode HG split 32 -> 64 for two head groups | `DS4_MOTIF3_ATTN_HG_FILL=1` | 64K +4.5% decode, 8K flat |
+
+Same-hour A/B, one warm session per fresh process, 8,192-token incremental
+prefill and 128 greedy tokens per frontier, SM 2190–2197 MHz; `old` is
+both kills set (the #48 path), `new` the median of two runs:
+
+| Frontier | Prefill old → new tok/s | Decode old → new tok/s |
+|---:|---:|---:|
+| 8,192 | 1,884 → **2,176** (+15.5%) | 25.38 → 25.51 |
+| 16,384 | 1,604 → **2,110** (+31.6%) | 25.37 → 25.56 |
+| 32,768 | 1,127 → **1,800** (+59.7%) | 24.06 → 24.65 |
+| 49,152 | 881 → **1,579** (+79.2%) | 22.89 → 23.70 |
+| 65,536 | 723 → **1,401** (+93.7%) | 21.83 → 22.83 (+4.6%) |
+
+Cold 65,536-token prefill: 1,048 → **1,742 tok/s**.  Frontier logits at all
+eight frontiers keep the same argmax and 9–10 of the top 10; rel-RMS vs
+the #48 path is 0.04–0.11, and vs the FP32 absorbed walk 0.114 where the
+#48 FP16 HMMA path sits at 0.093 — the same class P1 was accepted in.  The
+expanded path is deterministic (two runs byte-identical).  Decode still
+loses 11% from 8K to 64K in the absorbed HG walk (1.24 ms per MLA layer at
+64K against a 0.3 ms bandwidth floor); a tensor-core split-K decode kernel
+is the open item.
+
+Tests: `tests/test_ling3vl_mla_expand.cu` (expanded vs absorbed vs a
+double reference across a three-segment merge; rel-RMS 6.4e-3 from the
+BF16 operand rounding, 5e-7 for the absorbed walk).
+
 Chat input runs the official Bailing V3 Jinja template that ships in the GGUF;
 the legacy token builder refuses this family rather than approximating it. The
 generated tool envelope is GLM's `<tool_call>` / `<arg_key>` / `<arg_value>`
@@ -209,8 +257,10 @@ bank-budget refusal, not a family limit.
 Qualified on one DGX Spark with CUDA, measured at 8,192 context with two
 banks: cold prefill 1,461 tok/s over 1,072 tokens, decode 19.8 tok/s, a
 second turn reusing 1,123 of 1,146 prompt tokens by fork, and a disk record
-restoring 1,153 of 1,173 into an empty bank after a restart.
+restoring 1,153 of 1,173 into an empty bank after a restart. `ds4-bench`
+throughput is measured through 65,536 tokens in one warm session (the
+sweep above); HTTP serving above 8,192 context is not.
 
 Not release gates and not implied: Metal, ROCm, CPU inference, distributed
 slices, DSpark sidecars, directional steering, speculative decoding, video
-input, context above what was measured, and the full 131,072-token context.
+input, prompts above 65,536 tokens, and the full 131,072-token context.

@@ -63,7 +63,8 @@ Do not reuse recorded PIDs or assume those services are running.
 
 - [Ling-3.0-flash-VL integration](ling3-flash-vl.md): the bailingmoe3 hybrid
   KDA/MLA stack, grouped sigmoid routing, the Qwen3-VL vision tower and the
-  Qwen-parity serving surface it was sized against.
+  Qwen-parity serving surface it was sized against. GB10 throughput:
+  [8K campaign and long-context rounds](ling3-flash-vl.md#cuda-campaign-gb10).
 
 - [Step 3.7 integration](step37-initial.md): MQ83 text/image serving, MTP,
   numerical and KV verification; measured qualification limits.

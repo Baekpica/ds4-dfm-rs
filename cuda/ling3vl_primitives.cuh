@@ -267,6 +267,24 @@ __global__ static void ling3vl_value_project_bf16(
     }
 }
 
+/* Expanded-MLA prefill: the single rotated key tail is shared by every head,
+ * so broadcast k_pe[slot0 + t] into k_full[t][h][qk_nope..key_dim) for all
+ * heads.  The GEMM that fills the leading qk_nope columns runs beside it. */
+__global__ static void ling3vl_expand_k_pe(
+        float *k_full, const __nv_bfloat16 *k_pe, unsigned slot0,
+        unsigned rows, unsigned heads, unsigned key_dim, unsigned qk_nope,
+        unsigned qk_rope) {
+    const unsigned quads = qk_rope / 4u;
+    const uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= (uint64_t)rows * heads * quads) { return; }
+    const unsigned c = (unsigned)(idx % quads) * 4u;
+    const unsigned h = (unsigned)((idx / quads) % heads);
+    const unsigned t = (unsigned)(idx / quads / heads);
+    const float4 v = ling3vl_bf16x4(k_pe + (uint64_t)(slot0 + t) * qk_rope + c);
+    *reinterpret_cast<float4 *>(
+        k_full + ((uint64_t)t * heads + h) * key_dim + qk_nope + c) = v;
+}
+
 /* RMSNorm over the leading `dim` of a fused kv_a_mqa row.  The row is
  * 576 wide (512 latent + 64 RoPE); `in_stride` is that fused width.  Using
  * `dim` as the input stride mixes the previous RoPE tail into the next

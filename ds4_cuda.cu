@@ -40196,6 +40196,7 @@ __global__ static void motif3_latent_attention_bf16_decode_split_kernel(
 #define M3_ATTN_HG_HEADS 16u
 #define M3_ATTN_HG_WARP_HEADS 2u
 #define M3_ATTN_HG_ROWS  16u
+#define M3_ATTN_HG_MAX_SPLIT 256u
 
 __device__ __forceinline__ static void motif3_hg_issue_tile_async(
         __nv_bfloat16 lat_bf[M3_ATTN_HG_ROWS][512],
@@ -40419,7 +40420,7 @@ __global__ static void motif3_latent_attention_bf16_decode_hg_combine_kernel(
     const uint32_t stride = latent_dim + 2u;
     const float *base =
         partials + (uint64_t)head * split_count * stride;
-    __shared__ float factor[64];
+    __shared__ float factor[M3_ATTN_HG_MAX_SPLIT];
     __shared__ float denom_sm;
     if (threadIdx.x == 0u) {
         float global_m = -INFINITY;
@@ -40445,16 +40446,31 @@ __global__ static void motif3_latent_attention_bf16_decode_hg_combine_kernel(
     }
 }
 
-static uint32_t motif3_attention_decode_hg_split_count(uint32_t visible) {
+static uint32_t motif3_attention_decode_hg_split_count(uint32_t visible,
+                                                       uint32_t head_groups) {
     /* The per-CTA tile walk is a serial barrier chain, so the split count
      * follows depth instead of the SM count: hold roughly 4096 visible
      * tokens per split, floored at 32 so shallow contexts still fill the
-     * machine, capped at 64 (the combine factor array and the shared
-     * partials scratch are sized for 64).  GB10 scan: 32 within 5% of
-     * best at 8K-128K, 64 best at 256K. */
+     * machine.  GB10 scan (Motif, four head groups): 32 within 5% of best
+     * at 8K-128K, 64 best at 256K.  Ling has two head groups, so 32 splits
+     * are 64 CTAs on 48 SMs: double until the grid covers the machine
+     * DS4_MOTIF3_ATTN_HG_FILL times (default 2; Motif's 128 CTAs already
+     * do, so its default is unchanged).  The combine factor array and the
+     * partials scratch bound the split at 256. */
+    static int fill = -1;
+    if (fill < 0) {
+        const char *env = getenv("DS4_MOTIF3_ATTN_HG_FILL");
+        fill = env && *env ? atoi(env) : 2;
+        if (fill < 1) fill = 1;
+    }
+    const uint32_t sm = g_cuda_sm_count > 0 ? (uint32_t)g_cuda_sm_count : 48u;
     uint32_t split_count = visible / 4096u;
     if (split_count < 32u) split_count = 32u;
-    if (split_count > 64u) split_count = 64u;
+    while (split_count < M3_ATTN_HG_MAX_SPLIT &&
+           split_count * head_groups < (uint32_t)fill * sm) {
+        split_count *= 2u;
+    }
+    if (split_count > M3_ATTN_HG_MAX_SPLIT) split_count = M3_ATTN_HG_MAX_SPLIT;
     return split_count;
 }
 
@@ -40498,7 +40514,8 @@ extern "C" int ds4_gpu_motif3_latent_attention_bf16_tensor(
         (q_heads % M3_ATTN_HG_HEADS) == 0u &&
         g_attn_split_partials != NULL) {
         const uint32_t split_count =
-            motif3_attention_decode_hg_split_count(decode_visible);
+            motif3_attention_decode_hg_split_count(
+                decode_visible, q_heads / M3_ATTN_HG_HEADS);
         const uint64_t partial_bytes =
             (uint64_t)q_heads * split_count * (kv_latent_dim + 2u) *
             sizeof(float);
