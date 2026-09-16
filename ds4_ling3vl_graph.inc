@@ -63,6 +63,12 @@ static bool ling3vl_matmul_tensor(
                    out, model->map, model->size, weight->abs_offset,
                    in_dim, out_dim, x, n_tokens) != 0;
     }
+    if (weight && weight->type == DS4_TENSOR_F32 &&
+        ds4_gpu_ling3vl_matmul_f32(
+            out, model->map, model->size, weight->abs_offset, in_dim, out_dim,
+            x, n_tokens) != 0) {
+        return true;
+    }
     return plain_graph_matmul_tensor(
         out, model, weight, in_dim, out_dim, x, n_tokens);
 }

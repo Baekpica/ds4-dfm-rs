@@ -159,7 +159,8 @@ The operator surface is the one in the [serving contract](serving-contract.md):
 `DS4_LING3VL_NO_BF16_PAIR=1` keeps two n=1 BF16 GEMVs.
 `DS4_LING3VL_NO_GEMV_XREG=1` restores the streaming n=1 warp GEMV.
 `DS4_MMQ_Q5_PAIR=0` restores two n=1 Q5_K routed gate/up GEMVs.
-`DS4_MMQ_VEC_SANITIZE=1` keeps the decode mmvq finite-scrub pass.
+`DS4_MMQ_VEC_SANITIZE=1` keeps the Q4_K/Q5_K decode mmvq finite-scrub.
+`DS4_LING3VL_NO_F32_VEC=1` restores the 256-thread n=1 F32 GEMV.
 `DS4_SERVER_FORK_PARTIAL=0` drops the checkpoint pool, leaving exact fork only.
 
 ### CUDA campaign (GB10)

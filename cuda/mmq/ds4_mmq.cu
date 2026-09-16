@@ -495,9 +495,12 @@ static void ds4_mmq_sanitize_f32(float *p, uint64_t n, cudaStream_t stream) {
     ds4_mmq_sanitize_f32_kernel<<<(unsigned)((n + 255u) / 256u), 256, 0, stream>>>(p, n);
 }
 
-/* Decode mmvq writes finite values on finite activations.  Skip the extra
- * pass unless DS4_MMQ_VEC_SANITIZE=1. */
-static bool ds4_mmq_vec_sanitize(void) {
+/* Q4_K/Q5_K decode vec is finite on finite activations (Ling).  Other
+ * quants keep the scrub.  DS4_MMQ_VEC_SANITIZE=1 restores Q4/Q5 scrub. */
+static bool ds4_mmq_keep_vec_sanitize(ggml_type type) {
+    if (type != GGML_TYPE_Q4_K && type != GGML_TYPE_Q5_K) {
+        return true;
+    }
     const char *env = getenv("DS4_MMQ_VEC_SANITIZE");
     return env && env[0] == '1';
 }
@@ -4420,7 +4423,7 @@ int ds4_mmq_moe_vec_impl(
         }
     }
 
-    if (ds4_mmq_vec_sanitize()) {
+    if (ds4_mmq_keep_vec_sanitize(type)) {
         ds4_mmq_sanitize_f32(out_f32, (uint64_t)M * (uint64_t)n_tokens * (uint64_t)n_expert_used, stream);
     }
     return 0;
@@ -4944,7 +4947,7 @@ int ds4_mmq_moe_pair_raw_vec_impl(
     }
 
     const uint64_t out_count = (uint64_t)M * (uint64_t)n_tokens * (uint64_t)n_expert_used;
-    if (ds4_mmq_vec_sanitize()) {
+    if (ds4_mmq_keep_vec_sanitize(type)) {
         ds4_mmq_sanitize_f32(out_a, out_count, stream);
         ds4_mmq_sanitize_f32(out_b, out_count, stream);
     }

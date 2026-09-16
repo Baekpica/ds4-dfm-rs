@@ -102,11 +102,12 @@ The bandwidth figure is informational; we don't tier on it.
   pairs them so the expert map and Q8_1 quantize run once. MTP verify
   (n_tokens>1) stays on two singles.
 
-- `DS4_MMQ_VEC_SANITIZE=1` keeps the decode mmvq finite-scrub pass. Unset
-  skips it; Q5_K/Q4_K vec outputs are finite on finite activations.
+- `DS4_MMQ_VEC_SANITIZE=1` keeps the decode mmvq finite-scrub pass on
+  Q4_K/Q5_K. Unset skips it for those types only; Q2_K/IQ*/Q8_0 still
+  scrub. Q4_K/Q5_K vec outputs are finite on finite activations.
 
 - `DS4_LING3VL_NO_F32_VEC=1` restores the 256-thread F32 n=1 GEMV. Unset
-  uses one warp per output row.
+  uses one warp per output row for Ling F32 projections (router).
 
 - `DS4_STEP37_NO_Q8_REUSE=1` disables exact post-norm Q8 sharing.
   `DS4_STEP37_LEGACY_TRIAL_HEAD=1` restores the redundant trial head;
