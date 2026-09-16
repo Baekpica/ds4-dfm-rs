@@ -495,6 +495,13 @@ static void ds4_mmq_sanitize_f32(float *p, uint64_t n, cudaStream_t stream) {
     ds4_mmq_sanitize_f32_kernel<<<(unsigned)((n + 255u) / 256u), 256, 0, stream>>>(p, n);
 }
 
+/* Decode mmvq writes finite values on finite activations.  Skip the extra
+ * pass unless DS4_MMQ_VEC_SANITIZE=1. */
+static bool ds4_mmq_vec_sanitize(void) {
+    const char *env = getenv("DS4_MMQ_VEC_SANITIZE");
+    return env && env[0] == '1';
+}
+
 ggml_backend_cuda_context * get_ctx_for_device(int device) {
     static ggml_backend_cuda_context * cached[GGML_CUDA_MAX_DEVICES] = {};
     if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) return nullptr;
@@ -4413,7 +4420,9 @@ int ds4_mmq_moe_vec_impl(
         }
     }
 
-    ds4_mmq_sanitize_f32(out_f32, (uint64_t)M * (uint64_t)n_tokens * (uint64_t)n_expert_used, stream);
+    if (ds4_mmq_vec_sanitize()) {
+        ds4_mmq_sanitize_f32(out_f32, (uint64_t)M * (uint64_t)n_tokens * (uint64_t)n_expert_used, stream);
+    }
     return 0;
 }
 
@@ -4935,8 +4944,10 @@ int ds4_mmq_moe_pair_raw_vec_impl(
     }
 
     const uint64_t out_count = (uint64_t)M * (uint64_t)n_tokens * (uint64_t)n_expert_used;
-    ds4_mmq_sanitize_f32(out_a, out_count, stream);
-    ds4_mmq_sanitize_f32(out_b, out_count, stream);
+    if (ds4_mmq_vec_sanitize()) {
+        ds4_mmq_sanitize_f32(out_a, out_count, stream);
+        ds4_mmq_sanitize_f32(out_b, out_count, stream);
+    }
     return 0;
 }
 
@@ -7181,6 +7192,16 @@ extern "C" int ds4_mmq_q4_K_moe_pair_raw_vec(
         cudaStream_t stream) {
     return ds4_mmq_moe_pair_raw_vec_impl<GGML_TYPE_Q4_K>(
         "ds4_mmq_q4_K_moe_pair_raw_vec", W_a, W_b, X, ids, out_a, out_b,
+        M, K, n_tokens, n_experts, n_expert_used, stream);
+}
+
+extern "C" int ds4_mmq_q5_K_moe_pair_raw_vec(
+        const void * W_a, const void * W_b,
+        const float * X, const int32_t * ids, float * out_a, float * out_b,
+        int M, int K, int n_tokens, int n_experts, int n_expert_used,
+        cudaStream_t stream) {
+    return ds4_mmq_moe_pair_raw_vec_impl<GGML_TYPE_Q5_K>(
+        "ds4_mmq_q5_K_moe_pair_raw_vec", W_a, W_b, X, ids, out_a, out_b,
         M, K, n_tokens, n_experts, n_expert_used, stream);
 }
 

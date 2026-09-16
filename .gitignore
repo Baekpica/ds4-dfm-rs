@@ -13,6 +13,10 @@
 /tests/test_ling3vl_media
 /tests/test_ling3vl_vision
 /tests/test_ling3vl_primitives
+/tests/test_ling3vl_matmul
+/tests/test_ling3vl_mla
+/tests/test_ling3vl_q5pair
+/tests/test_ling3vl_moefuse
 /tests/parity/kv_c_oracle
 /tests/parity/web_c_oracle
 /tests/parity/dist_c_oracle

@@ -1010,6 +1010,13 @@ int ds4_gpu_matmul_bf16_tensor(
 
 /* Native reduction used when recurrent decode must keep N=1 and N=2
  * arithmetic identical. */
+/* Round n f32 values into BF16.  Used when several BF16 GEMMs share one
+ * activation so the convert runs once. */
+int ds4_gpu_f32_to_bf16(
+        ds4_gpu_tensor       *out,
+        const ds4_gpu_tensor *in,
+        uint64_t                n);
+
 /* BF16 GEMM over an activation already stored as BF16 (no conversion). */
 int ds4_gpu_matmul_bf16_input_tensor(
         ds4_gpu_tensor       *out,
@@ -2887,6 +2894,26 @@ int ds4_gpu_routed_gate_up_tensor(
         uint32_t                n_tokens,
         uint32_t                n_expert_used);
 
+/* n=1 Q4_K: one fused mmvq writes silu(gate)*up.  Returns 0 if the shape
+ * misses (caller must run gate/up + SwiGLU).  DS4_LING3VL_NO_MOE_FUSE=1
+ * disables it. */
+int ds4_gpu_routed_silu_mid_tensor(
+        ds4_gpu_tensor       *mid,
+        const ds4_gpu_tensor *x,
+        const ds4_gpu_tensor *ids,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                gate_offset,
+        uint64_t                gate_bytes,
+        uint64_t                up_offset,
+        uint64_t                up_bytes,
+        uint32_t                weight_type,
+        uint32_t                in_dim,
+        uint32_t                out_dim,
+        uint32_t                n_expert,
+        uint32_t                n_tokens,
+        uint32_t                n_expert_used);
+
 /* Default-on wide-prefill handoff (n_tokens >= 512) for Solar's IQ2_XXS
  * gate/up + Q3_K down layers. The conservative floor keeps multi-sequence
  * decode batches (currently capped at 128 rows) on the established path.
@@ -4365,6 +4392,61 @@ int ds4_gpu_ling3vl_store_latent(
         uint32_t                kv_raw_dim,
         uint32_t                latent_dim,
         uint32_t                rope_dim);
+
+/* Decode n=1 uses the row-stable warp GEMV instead of cuBLAS.  Prefill
+ * widths keep the existing BF16 GEMM.  DS4_LING3VL_NO_BF16_VEC=1 restores
+ * cuBLAS for n=1.  Unset caches x in registers; kill
+ * DS4_LING3VL_NO_GEMV_XREG=1 restores the streaming warp path. */
+int ds4_gpu_ling3vl_matmul_bf16(
+        ds4_gpu_tensor       *out,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint64_t                in_dim,
+        uint64_t                out_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t                n_tok);
+
+int ds4_gpu_ling3vl_matmul_f32(
+        ds4_gpu_tensor       *out,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight_offset,
+        uint64_t                in_dim,
+        uint64_t                out_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t                n_tok);
+
+int ds4_gpu_ling3vl_gemv_pair(
+        ds4_gpu_tensor       *out0,
+        ds4_gpu_tensor       *out1,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                off0,
+        uint64_t                off1,
+        uint64_t                in_dim,
+        uint64_t                out0_dim,
+        uint64_t                out1_dim,
+        const ds4_gpu_tensor *x);
+
+/* Prefill widths (rows >= 8, 32-head groups, latent 512) use the dots3
+ * tensor-core absorbed-MLA kernel.  Decode and DS4_LING3VL_NO_MLA_HMMA=1
+ * keep Motif.  DS4_LING3VL_MLA_TILE=1 is the rejected shared-KV tile. */
+int ds4_gpu_ling3vl_latent_attn(
+        ds4_gpu_tensor       *latent_out,
+        const ds4_gpu_tensor *q_full,
+        const ds4_gpu_tensor *q_absorbed,
+        const ds4_gpu_tensor *kv_latent_cache,
+        const ds4_gpu_tensor *k_pe_cache,
+        uint32_t                rows,
+        uint32_t                pos0,
+        uint32_t                cache_cap,
+        uint32_t                window,
+        uint32_t                q_heads,
+        uint32_t                kv_latent_dim,
+        uint32_t                qk_nope,
+        uint32_t                qk_rope,
+        float                   scale);
 
 int ds4_gpu_glm53_kda_prefill_tensor(
         ds4_gpu_tensor       *out,
