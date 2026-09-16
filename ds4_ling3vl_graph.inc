@@ -19,6 +19,10 @@ typedef struct {
 
     ds4_gpu_tensor *positions, *tokens, *inv_freq, *logits;
     ds4_gpu_tensor *kv_raw, *kv_norm, *q_absorbed, *latent_out;
+    /* Expanded-MLA prefill scratch: views into q_absorbed (K, then V) and
+     * latent_out (merge operand, both LSE vectors), which that path never
+     * touches otherwise.  Decode keeps the absorbed pair. */
+    ds4_gpu_tensor *k_full, *value, *attn_tmp, *lse, *lse_tmp;
     ds4_gpu_tensor *kda_decay, *kda_gate, *kda_beta, *kda_scratch;
     ds4_gpu_tensor *attn_gate;
     /* Packed RMSNorm activations for the layer's BF16 projections. */
@@ -190,6 +194,7 @@ static void ling3vl_graph_free(ds4_ling3vl_graph *g) {
         g->positions, g->tokens, g->inv_freq, g->logits, g->kv_raw, g->kv_norm,
         g->q_absorbed, g->latent_out, g->kda_decay, g->kda_gate, g->kda_beta,
         g->kda_scratch, g->attn_gate, g->norm_bf16,
+        g->k_full, g->value, g->attn_tmp, g->lse, g->lse_tmp,
     };
     for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
         ds4_gpu_tensor_free(all[i]);
@@ -253,6 +258,21 @@ static bool ling3vl_scratch_alloc(ds4_ling3vl_graph *g, uint32_t ctx,
     L3V_ALLOC(attn_gate, (uint64_t)cap * L3V_HEADS, float);
     L3V_ALLOC(norm_bf16, (uint64_t)cap * L3V_HIDDEN, uint16_t);
 #undef L3V_ALLOC
+    /* q_absorbed and latent_out are cap x 32 x 512 floats; the expanded
+     * prefill needs cap x (6144 + 4096) and cap x (4096 + 2 x 32) of them. */
+    const uint64_t k_bytes = (uint64_t)cap * L3V_QDIM * sizeof(float);
+    const uint64_t v_bytes = (uint64_t)cap * L3V_VDIM * sizeof(float);
+    const uint64_t lse_bytes = (uint64_t)cap * L3V_HEADS * sizeof(float);
+    g->k_full = ds4_gpu_tensor_view(g->q_absorbed, 0, k_bytes);
+    g->value = ds4_gpu_tensor_view(g->q_absorbed, k_bytes, v_bytes);
+    g->attn_tmp = ds4_gpu_tensor_view(g->latent_out, 0, v_bytes);
+    g->lse = ds4_gpu_tensor_view(g->latent_out, v_bytes, lse_bytes);
+    g->lse_tmp = ds4_gpu_tensor_view(g->latent_out, v_bytes + lse_bytes, lse_bytes);
+    if (!g->k_full || !g->value || !g->attn_tmp || !g->lse || !g->lse_tmp) {
+        fprintf(stderr, "ds4: Ling graph allocation failed: expanded MLA views\n");
+        ling3vl_graph_free(g);
+        return false;
+    }
     const uint64_t scratch_bytes = ds4_gpu_solar_kda_prefill_scratch_bytes(
         cap, L3V_HEADS, L3V_KDA_HEAD);
     if (scratch_bytes) {
@@ -432,6 +452,84 @@ static bool ling3vl_layer_kda(ds4_ling3vl_graph *g, const ds4_model *m,
                                   L3V_HIDDEN, b->b_q, n);
 }
 
+static bool ling3vl_mla_expanded(const ds4_model *m,
+                                 const ds4_layer_weights *l, uint32_t n) {
+    /* Below one Motif query tile the expansion GEMMs and the per-segment
+     * merge cost more than the absorbed walk saves; decode is n = 1.  A
+     * host-mapped k_b / v_b keeps the absorbed path too: cuBLAS's TMA
+     * kernels cannot read it. */
+    enum { MIN_ROWS = 64u };
+    static int on = -1;
+    if (on < 0) {
+        const char *env = getenv("DS4_LING3VL_NO_MLA_EXPAND");
+        on = !(env && env[0] == '1');
+    }
+    return on == 1 && n >= MIN_ROWS &&
+        ds4_gpu_ling3vl_expand_ready(m->map, m->size, l->attn_k_b->abs_offset,
+                                     l->attn_v_b->abs_offset, L3V_HEADS,
+                                     L3V_KV_LORA, L3V_NOPE, L3V_VALUE_MLA);
+}
+
+/* Compute-friendly MLA prefill, the split Motif-3 runs on its full layers:
+ * each cap-sized key segment is expanded to per-head K/V and attended at
+ * 192 + 128 dims, and segments merge through their log-sum-exp.  The
+ * absorbed form instead scores all 32 heads against one shared 576-wide
+ * latent row: 3.4x the FLOPs per head-key, and at 64K its tensor-core
+ * kernel held 32 TFLOPS and 52% of a cold prefill.  Prefix segments end at
+ * pos so every segment starts at or before the first query, which the
+ * range kernel requires; the current chunk is the last segment. */
+static bool ling3vl_mla_attend_expanded(ds4_ling3vl_graph *g,
+                                        const ds4_model *m,
+                                        const ds4_layer_weights *l,
+                                        uint32_t il, uint32_t n, uint32_t pos,
+                                        float scale) {
+    ds4_exaone_batch_ws *b = &g->ws;
+    const uint32_t end = pos + n;
+    bool first = true;
+    for (uint32_t seg0 = 0; seg0 < end; ) {
+        const uint32_t limit = seg0 < pos ? pos : end;
+        const uint32_t len = limit - seg0 < g->cap ? limit - seg0 : g->cap;
+        ds4_gpu_tensor *out = first ? b->b_heads : g->attn_tmp;
+        ds4_gpu_tensor *lse = first ? g->lse : g->lse_tmp;
+        if (!ds4_gpu_ling3vl_expand_kv(
+                g->k_full, g->value, g->latent_cache[il], g->k_pe_cache[il],
+                m->map, m->size, l->attn_k_b->abs_offset,
+                l->attn_v_b->abs_offset, seg0, len, L3V_HEADS, L3V_KV_LORA,
+                L3V_NOPE, L3V_ROPE, L3V_VALUE_MLA) ||
+            !ds4_gpu_motif3_expanded_attention_range_tensor(
+                out, lse, b->b_q, g->k_full, g->value, n, pos, len, seg0,
+                L3V_HEADS, L3V_HEADS, L3V_KEY_MLA, L3V_VALUE_MLA, scale, 0u) ||
+            (!first && !ds4_gpu_motif3_merge_attention_states_tensor(
+                b->b_heads, g->lse, g->attn_tmp, g->lse_tmp, n, L3V_HEADS,
+                L3V_VALUE_MLA))) {
+            return false;
+        }
+        first = false;
+        seg0 += len;
+    }
+    return true;
+}
+
+/* Absorbed MLA: k_b folded into Q so scores land on the stored latent, then
+ * v_b expands the latent-basis output.  Decode and the expanded kill run it. */
+static bool ling3vl_mla_attend_absorbed(ds4_ling3vl_graph *g,
+                                        const ds4_model *m,
+                                        const ds4_layer_weights *l,
+                                        uint32_t il, uint32_t n, uint32_t pos,
+                                        float scale) {
+    ds4_exaone_batch_ws *b = &g->ws;
+    return ds4_gpu_ling3vl_qk_absorb(g->q_absorbed, b->b_q, m->map, m->size,
+                                     l->attn_k_b->abs_offset, n, L3V_HEADS,
+                                     L3V_KEY_MLA, L3V_NOPE, L3V_KV_LORA) &&
+        ds4_gpu_ling3vl_latent_attn(
+            g->latent_out, b->b_q, g->q_absorbed, g->latent_cache[il],
+            g->k_pe_cache[il], n, pos, g->context, 0u, L3V_HEADS,
+            L3V_KV_LORA, L3V_NOPE, L3V_ROPE, scale) &&
+        ds4_gpu_ling3vl_value_project(b->b_heads, g->latent_out, m->map,
+                                      m->size, l->attn_v_b->abs_offset, n,
+                                      L3V_HEADS, L3V_KV_LORA, L3V_VALUE_MLA);
+}
+
 static bool ling3vl_layer_mla(ds4_ling3vl_graph *g, const ds4_model *m,
                               const ds4_layer_weights *l, uint32_t il,
                               uint32_t n, uint32_t pos) {
@@ -461,20 +559,13 @@ static bool ling3vl_layer_mla(ds4_ling3vl_graph *g, const ds4_model *m,
         !ds4_gpu_ling3vl_store_latent(g->latent_cache[il], g->k_pe_cache[il],
                                       g->kv_norm, g->kv_raw, n, pos,
                                       g->context, L3V_KV_ROW, L3V_KV_LORA,
-                                      L3V_ROPE) ||
-        /* Absorb k_b into Q so attention scores against the stored latent. */
-        !ds4_gpu_ling3vl_qk_absorb(g->q_absorbed, b->b_q, m->map, m->size,
-                                   l->attn_k_b->abs_offset, n, L3V_HEADS,
-                                   L3V_KEY_MLA, L3V_NOPE, L3V_KV_LORA)) {
+                                      L3V_ROPE)) {
         return false;
     }
-    return ds4_gpu_ling3vl_latent_attn(
-               g->latent_out, b->b_q, g->q_absorbed, g->latent_cache[il],
-               g->k_pe_cache[il], n, pos, g->context, 0u, L3V_HEADS,
-               L3V_KV_LORA, L3V_NOPE, L3V_ROPE, scale) &&
-        ds4_gpu_ling3vl_value_project(b->b_heads, g->latent_out, m->map,
-                                      m->size, l->attn_v_b->abs_offset, n,
-                                      L3V_HEADS, L3V_KV_LORA, L3V_VALUE_MLA) &&
+    const bool attended = ling3vl_mla_expanded(m, l, n)
+        ? ling3vl_mla_attend_expanded(g, m, l, il, n, pos, scale)
+        : ling3vl_mla_attend_absorbed(g, m, l, il, n, pos, scale);
+    return attended &&
         /* head_wise gated attention: one sigmoid per head before the output
          * projection, the same shape Step's 128-wide gate applies. */
         ds4_gpu_step37_gate(b->b_heads, g->attn_gate, L3V_HEADS, n) &&

@@ -82,9 +82,22 @@ The bandwidth figure is informational; we don't tier on it.
 - `DS4_LING3VL_MLA_TILE=1` opts into the rejected shared-KV MLA prefill
   tile.
 
+- `DS4_LING3VL_NO_MLA_EXPAND=1` restores the absorbed-MLA prefill (below).
+  Unset, Ling prefill chunks of 64+ rows expand each 4096-key latent
+  segment to per-head K (192) / V (128) with two BF16 batched GEMMs and
+  run Motif's 192/128 range attention, merging segments through their
+  log-sum-exp. The absorbed form costs 3.4x the attention FLOPs per
+  head-key and fell to 32 TFLOPS at 64K. Decode (n = 1) stays absorbed.
+
 - `DS4_LING3VL_NO_MLA_HMMA=1` restores Motif's SIMT latent attention on
-  Ling prefill. Unset uses the dots3 tensor-core absorbed-MLA kernel
-  (rows >= 8, 32-head groups, latent 512). Decode stays on Motif.
+  absorbed Ling prefill. Unset uses the dots3 tensor-core absorbed-MLA
+  kernel (rows >= 8, 32-head groups, latent 512). Decode stays on Motif.
+
+- `DS4_MOTIF3_ATTN_HG_FILL=N` sets how many times the head-group decode
+  attention grid must cover the SMs before the key split stops doubling
+  (default 2, max split 256). Motif's five 16-head groups already cover
+  GB10 twice at the scanned 32 splits; Ling's two groups did not (64 CTAs
+  on 48 SMs), so they now run 64 splits. `1` restores the fixed 32.
 
 - `DS4_LING3VL_NO_BF16_REUSE=1` reconverts RMSNorm activations on every
   BF16 GEMM. Unset converts the packed row once per RMSNorm (prefill).

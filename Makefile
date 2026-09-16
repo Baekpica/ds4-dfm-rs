@@ -875,6 +875,13 @@ tests/test_ling3vl_mla: tests/test_ling3vl_mla.cu $(DS4_CUDA_CORE_OBJS)
 test-ling3vl-mla: tests/test_ling3vl_mla
 	./tests/test_ling3vl_mla
 
+tests/test_ling3vl_mla_expand: tests/test_ling3vl_mla_expand.cu $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-ling3vl-mla-expand
+test-ling3vl-mla-expand: tests/test_ling3vl_mla_expand
+	./tests/test_ling3vl_mla_expand
+
 tests/test_inkling_kernels: tests/test_inkling_kernels.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
@@ -1526,7 +1533,7 @@ clean:
 	rm -f tests/test_ling3vl_matmul tests/test_ling3vl_matmul.o
 	rm -f tests/test_ling3vl_q5pair tests/test_ling3vl_q5pair.o
 	rm -f tests/test_ling3vl_moefuse tests/test_ling3vl_moefuse.o
-	rm -f tests/test_ling3vl_mla
+	rm -f tests/test_ling3vl_mla tests/test_ling3vl_mla_expand
 	rm -f tests/test_step37_vision_ops tests/test_step37_vision tests/test_step37_vision.o
 	rm -f tests/test_step37_primitives tests/test_step37_loader tests/test_step37_forward tests/test_step37_forward.o
 	rm -f tests/test_step37_session tests/test_step37_session.o tests/test_step37_state
