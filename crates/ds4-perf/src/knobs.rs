@@ -101,11 +101,16 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         "DS4_LING3VL_PREFILL_CHUNK" => {
             (family.starts_with("ling") || family == "bailingmoe3") && (1..=4096).contains(&n)
         }
-        "DS4_LING3VL_NO_BF16_VEC" | "DS4_LING3VL_NO_MLA_TILE"
-        | "DS4_LING3VL_MLA_TILE" | "DS4_LING3VL_NO_MLA_HMMA"
-        | "DS4_LING3VL_NO_BF16_REUSE" | "DS4_LING3VL_NO_BF16_PAIR"
-        | "DS4_LING3VL_NO_GEMV_XREG" | "DS4_LING3VL_NO_F32_VEC"
-        | "DS4_LING3VL_NO_MOE_FUSE" | "DS4_MMQ_VEC_SANITIZE" => {
+        "DS4_LING3VL_NO_BF16_VEC"
+        | "DS4_LING3VL_NO_MLA_TILE"
+        | "DS4_LING3VL_MLA_TILE"
+        | "DS4_LING3VL_NO_MLA_HMMA"
+        | "DS4_LING3VL_NO_BF16_REUSE"
+        | "DS4_LING3VL_NO_BF16_PAIR"
+        | "DS4_LING3VL_NO_GEMV_XREG"
+        | "DS4_LING3VL_NO_F32_VEC"
+        | "DS4_LING3VL_NO_MOE_FUSE"
+        | "DS4_MMQ_VEC_SANITIZE" => {
             (family.starts_with("ling") || family == "bailingmoe3") && value == "1"
         }
         "DS4_MMQ_Q5_PAIR" => {
@@ -237,11 +242,18 @@ mod tests {
             assert!(validate("DS4_LING3VL_PREFILL_CHUNK", value, "ling3vl").is_err());
         }
         assert!(validate("DS4_LING3VL_PREFILL_CHUNK", "2048", "qwen").is_err());
-        for key in ["DS4_LING3VL_NO_BF16_VEC", "DS4_LING3VL_NO_MLA_TILE",
-                    "DS4_LING3VL_MLA_TILE", "DS4_LING3VL_NO_MLA_HMMA",
-                    "DS4_LING3VL_NO_BF16_REUSE", "DS4_LING3VL_NO_BF16_PAIR",
-                    "DS4_LING3VL_NO_GEMV_XREG", "DS4_LING3VL_NO_F32_VEC",
-                    "DS4_LING3VL_NO_MOE_FUSE", "DS4_MMQ_VEC_SANITIZE"] {
+        for key in [
+            "DS4_LING3VL_NO_BF16_VEC",
+            "DS4_LING3VL_NO_MLA_TILE",
+            "DS4_LING3VL_MLA_TILE",
+            "DS4_LING3VL_NO_MLA_HMMA",
+            "DS4_LING3VL_NO_BF16_REUSE",
+            "DS4_LING3VL_NO_BF16_PAIR",
+            "DS4_LING3VL_NO_GEMV_XREG",
+            "DS4_LING3VL_NO_F32_VEC",
+            "DS4_LING3VL_NO_MOE_FUSE",
+            "DS4_MMQ_VEC_SANITIZE",
+        ] {
             assert!(tunable(key));
             assert!(validate(key, "1", "ling3vl").is_ok());
             assert!(validate(key, "0", "ling3vl").is_err());
