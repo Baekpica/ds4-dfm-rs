@@ -29,8 +29,8 @@ use crate::dsml::{SampleOverride, SamplePolicy};
 use crate::parse::{ChatMsg, ParsedRequest, ToolCall, ToolChoice};
 use crate::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 use crate::render::{
-    render_chat_choice, syntax_for_model_id, ModelSyntax, RenderError, DSML_EOS, QWEN_IM_END,
-    SOLAR_IM_END,
+    render_chat_choice, syntax_for_model_id, tool_start_marker, ModelSyntax, RenderError, DSML_EOS,
+    QWEN_IM_END, SOLAR_IM_END,
 };
 use crate::retry::{
     build_recovery_suffix, parse_failure_should_retry, terminal_finish, truncation_outcome,
@@ -1019,9 +1019,12 @@ pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'sta
         None
     } else {
         match syntax_for_model_id(model_id) {
-            ModelSyntax::Glm53 | ModelSyntax::Inkling | ModelSyntax::Step37 => None,
+            ModelSyntax::Glm53
+            | ModelSyntax::Inkling
+            | ModelSyntax::Step37
+            | ModelSyntax::Ling3Vl => None,
             ModelSyntax::Qwen4Exp => Some("image input requires continuous runtime"),
-            _ => Some("image input is supported only by Qwen4Exp, GLM-5.3, Inkling or Step"),
+            _ => Some("image input is supported only by Qwen4Exp, GLM-5.3, Inkling, Step or Ling"),
         }
     }
 }
@@ -1034,9 +1037,12 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         ModelSyntax::Qwen4Exp | ModelSyntax::Step37 => ChatFormat::Qwen4Exp,
         ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
         ModelSyntax::Inkling => ChatFormat::Inkling,
-        ModelSyntax::DeepSeek | ModelSyntax::Motif3 | ModelSyntax::Dots3 | ModelSyntax::Glm53 => {
-            ChatFormat::DeepSeek
-        }
+        // Ling shares GLM's thinking and tool-call XML.
+        ModelSyntax::DeepSeek
+        | ModelSyntax::Motif3
+        | ModelSyntax::Dots3
+        | ModelSyntax::Glm53
+        | ModelSyntax::Ling3Vl => ChatFormat::DeepSeek,
     }
 }
 
@@ -1115,9 +1121,9 @@ pub(crate) fn thinking_visible_key(
     format: ChatFormat,
     terminal: bool,
 ) -> Option<Vec<u8>> {
-    if syntax == ModelSyntax::Step37 {
-        // Removing reasoning changes Step's history grammar. Re-render its
-        // structured history with Jinja instead of inventing a cached prefix.
+    if matches!(syntax, ModelSyntax::Step37 | ModelSyntax::Ling3Vl) {
+        // Removing reasoning changes these families' history grammar. Re-render
+        // the structured history with Jinja instead of inventing a prefix.
         return None;
     }
     let mut visible = if format == ChatFormat::K2Horizon {
@@ -1204,12 +1210,13 @@ fn motif3_no_think_visible_checkpoint(
 
 pub(crate) fn prepare_required_prefixes(
     parsed: &mut ParsedRequest,
-    format: ChatFormat,
+    syntax: ModelSyntax,
     tokenize: impl Fn(&[u8]) -> Result<Vec<i32>, GenerateError>,
 ) -> Result<(), GenerateError> {
     if parsed.tool_choice != ToolChoice::Required && !parsed.has_tool_results {
         return Ok(());
     }
+    let format = chat_format_for_syntax(syntax);
     if parsed.required_think_end_prefix.is_empty() {
         let toks = tokenize(think_end(format).as_bytes())?;
         if toks.is_empty() {
@@ -1220,15 +1227,7 @@ pub(crate) fn prepare_required_prefixes(
         parsed.required_think_end_prefix = toks;
     }
     if parsed.tool_choice == ToolChoice::Required && parsed.required_tool_prefix.is_empty() {
-        let marker = match format {
-            ChatFormat::SolarOpen2 => crate::render::SOLAR_TOOL_CALLS,
-            ChatFormat::Exaone => "<tool_call>",
-            ChatFormat::Qwen4Exp => crate::render::QWEN_TOOL_CALL_START,
-            ChatFormat::K2Horizon => crate::render::K2_TOOL_CALLS_START,
-            ChatFormat::Inkling => crate::render::inkling::INVOKE,
-            ChatFormat::DeepSeek => crate::tools::DSML_TOOL_CALLS_START,
-        };
-        let toks = tokenize(marker.as_bytes())?;
+        let toks = tokenize(tool_start_marker(syntax).as_bytes())?;
         if toks.is_empty() {
             return Err(GenerateError::Engine(
                 "failed to tokenize required tool control prefix".into(),
@@ -1237,6 +1236,34 @@ pub(crate) fn prepare_required_prefixes(
         parsed.required_tool_prefix = toks;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod required_prefix_tests {
+    use super::prepare_required_prefixes;
+    use crate::parse::{parse_chat_request, ParseEnv};
+    use crate::render::{ModelSyntax, GLM_TOOL_CALL_START};
+    use crate::tools::DSML_TOOL_CALLS_START;
+
+    #[test]
+    fn ling_required_tool_prefix_is_glm_marker() {
+        let mut parsed = parse_chat_request(
+            &ParseEnv::default(),
+            r#"{"messages":[{"role":"user","content":"weather"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}],"tool_choice":"required"}"#,
+        )
+        .unwrap();
+        prepare_required_prefixes(&mut parsed, ModelSyntax::Ling3Vl, |literal| {
+            Ok(if literal == GLM_TOOL_CALL_START.as_bytes() {
+                vec![11]
+            } else if literal == DSML_TOOL_CALLS_START.as_bytes() {
+                vec![99]
+            } else {
+                vec![1]
+            })
+        })
+        .unwrap();
+        assert_eq!(parsed.required_tool_prefix, [11]);
+    }
 }
 
 fn find_substr(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -1634,14 +1661,16 @@ fn prepare_media(
     const GLM_IMAGE_TOKEN: i32 = 154854;
     const INKLING_IMAGE_TOKEN: i32 = 200054;
     const STEP_IMAGE_TOKEN: i32 = 128001;
+    const LING3VL_IMAGE_TOKEN: i32 = 157157;
     const INKLING_AUDIO_TOKEN: i32 = 200053;
     let image_token = match syntax_for_model_id(engine.model_id()) {
         ModelSyntax::Glm53 => GLM_IMAGE_TOKEN,
         ModelSyntax::Inkling => INKLING_IMAGE_TOKEN,
         ModelSyntax::Step37 => STEP_IMAGE_TOKEN,
+        ModelSyntax::Ling3Vl => LING3VL_IMAGE_TOKEN,
         _ => {
             return Err(GenerateError::Unsupported(
-                "serial images require GLM-5.3, Inkling or Step",
+                "serial images require GLM-5.3, Inkling, Step or Ling",
             ))
         }
     };
@@ -1758,11 +1787,9 @@ pub(crate) fn prepare_serial_prompt(
         engine.restore_tool_replay(&mut parsed.messages);
     }
     if engine.tokenizes_control_literals() {
-        prepare_required_prefixes(
-            &mut parsed,
-            chat_format_for_syntax(syntax_for_model_id(engine.model_id())),
-            |literal| engine.tokenize_rendered_chat(literal),
-        )?;
+        prepare_required_prefixes(&mut parsed, syntax, |literal| {
+            engine.tokenize_rendered_chat(literal)
+        })?;
     }
 
     let prompt = engine.render_request(&parsed)?;

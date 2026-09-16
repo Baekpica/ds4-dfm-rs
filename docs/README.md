@@ -61,6 +61,10 @@ Do not reuse recorded PIDs or assume those services are running.
 
 ## Design records
 
+- [Ling-3.0-flash-VL integration](ling3-flash-vl.md): the bailingmoe3 hybrid
+  KDA/MLA stack, grouped sigmoid routing, the Qwen3-VL vision tower and the
+  Qwen-parity serving surface it was sized against.
+
 - [Step 3.7 integration](step37-initial.md): MQ83 text/image serving, MTP,
   numerical and KV verification; measured qualification limits.
   GB10 throughput: [BASE artifacts](step37-optimization-2026-09-13.md),

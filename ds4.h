@@ -80,6 +80,37 @@ typedef struct {
     uint32_t grid_w;
 } ds4_qwen_image_input;
 
+/* Ling-3.0-flash-VL shares Qwen3-VL's preprocessing shape but not its pixel
+ * range or its pixel budget, so it carries its own probe and input. */
+typedef struct {
+    uint32_t source_width;
+    uint32_t source_height;
+    uint32_t resized_width;
+    uint32_t resized_height;
+    uint32_t grid_h;
+    uint32_t grid_w;
+    uint32_t token_count;
+} ds4_ling3vl_image_info;
+
+/* The grid is not carried: the probe derives it, and the placeholder-count
+ * check below catches any geometry change since tokenization. */
+typedef struct {
+    const uint8_t *data;
+    size_t data_len;
+    uint32_t token_offset;
+} ds4_ling3vl_image_input;
+
+/* Official Ling-3.0-flash-VL multimodal special-token ids. */
+#define DS4_LING3VL_VISION_START_TOKEN_ID 157158
+#define DS4_LING3VL_VISION_END_TOKEN_ID   157159
+#define DS4_LING3VL_IMAGE_PAD_TOKEN_ID    157157
+/* Catalog variant id, as `ds4_engine_model_id` reports it. */
+#define DS4_MODEL_ID_LING30_FLASH_VL      11
+
+int ds4_ling3vl_image_probe(const uint8_t *data, size_t data_len,
+                            ds4_ling3vl_image_info *info,
+                            char *err, size_t errlen);
+
 /* Official Qwen3.8-Flash-Next multimodal special-token ids. */
 #define DS4_QWEN_VISION_START_TOKEN_ID 248053
 #define DS4_QWEN_VISION_END_TOKEN_ID   248054
@@ -1307,6 +1338,11 @@ typedef enum {
  * checkpoint is a prefix, only the suffix is evaluated; otherwise the backend
  * state is refilled from scratch. */
 int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen);
+/* Encodes each image inside the session, so the projected rows never leave
+ * the device. Always refills. */
+int ds4_session_sync_ling3vl(ds4_session *s, const ds4_tokens *prompt,
+                             const ds4_ling3vl_image_input *images,
+                             uint32_t image_count, char *err, size_t errlen);
 /* Crop spans cover every image row. Always refills; retains GPU features for MTP. */
 int ds4_session_sync_step37(ds4_session *s, const ds4_tokens *prompt,
                              const ds4_step37_pixels *crops, uint32_t crop_count,

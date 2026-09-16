@@ -831,6 +831,13 @@ tests/test_step37_primitives: tests/test_step37_primitives.cu cuda/step37_primit
 test-step37-primitives: tests/test_step37_primitives
 	./tests/test_step37_primitives
 
+tests/test_ling3vl_primitives: tests/test_ling3vl_primitives.cu cuda/ling3vl_primitives.cuh
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+.PHONY: test-ling3vl-primitives
+test-ling3vl-primitives: tests/test_ling3vl_primitives
+	./tests/test_ling3vl_primitives
+
 tests/test_inkling_kernels: tests/test_inkling_kernels.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
@@ -1147,6 +1154,22 @@ tests/test_step37_media.o: tests/test_step37_media.c ds4.c ds4_step37_graph.inc 
 tests/test_step37_media: tests/test_step37_media.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
 
+tests/test_ling3vl_media.o: tests/test_ling3vl_media.c ds4.c ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_batch.inc ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/test_ling3vl_media: tests/test_ling3vl_media.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-ling3vl-media
+test-ling3vl-media: tests/test_ling3vl_media
+	./tests/test_ling3vl_media
+
+tests/test_ling3vl_vision.o: tests/test_ling3vl_vision.c ds4.c ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_batch.inc ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_ling3vl_vision: tests/test_ling3vl_vision.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
 tests/test_step37_vision.o: tests/test_step37_vision.c ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
 
@@ -1460,6 +1483,9 @@ endif
 clean:
 	rm -f tests/test_solar_fattn tests/test_solar_fattn.o
 	rm -f tests/test_step37_media tests/test_step37_media.o
+	rm -f tests/test_ling3vl_media tests/test_ling3vl_media.o
+	rm -f tests/test_ling3vl_vision tests/test_ling3vl_vision.o
+	rm -f tests/test_ling3vl_primitives
 	rm -f tests/test_step37_vision_ops tests/test_step37_vision tests/test_step37_vision.o
 	rm -f tests/test_step37_primitives tests/test_step37_loader tests/test_step37_forward tests/test_step37_forward.o
 	rm -f tests/test_step37_session tests/test_step37_session.o tests/test_step37_state

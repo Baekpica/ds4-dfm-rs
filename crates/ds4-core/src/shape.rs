@@ -27,6 +27,7 @@ pub enum ModelFamily {
     Glm53 = 6,
     Inkling = 7,
     Step37 = 8,
+    Ling3Vl = 9,
 }
 
 impl ModelFamily {
@@ -41,6 +42,7 @@ impl ModelFamily {
             "glm5-next" => Some(Self::Glm53),
             "inkling" => Some(Self::Inkling),
             "step35" => Some(Self::Step37),
+            "bailingmoe3" => Some(Self::Ling3Vl),
             _ => None,
         }
     }
@@ -56,6 +58,7 @@ impl ModelFamily {
             Self::Glm53 => "glm5-next",
             Self::Inkling => "inkling",
             Self::Step37 => "step35",
+            Self::Ling3Vl => "bailingmoe3",
         }
     }
 }
@@ -74,6 +77,7 @@ pub enum Variant {
     K2Horizon375B = 8,
     InklingSmall = 9,
     Step37Flash = 10,
+    Ling30FlashVl = 11,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -318,6 +322,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"k2-horizon") => ArchRoute::Fixed(Variant::K2Horizon375B),
         Some(b"inkling") => ArchRoute::Fixed(Variant::InklingSmall),
         Some(b"step35") => ArchRoute::Fixed(Variant::Step37Flash),
+        Some(b"bailingmoe3") => ArchRoute::Fixed(Variant::Ling30FlashVl),
         Some(_) => ArchRoute::Unsupported,
     }
 }
@@ -335,6 +340,7 @@ pub fn shape_for_variant(v: Variant) -> Shape {
         Variant::K2Horizon375B => SHAPE_K2_HORIZON_375B,
         Variant::InklingSmall => SHAPE_INKLING_SMALL,
         Variant::Step37Flash => SHAPE_STEP37_FLASH,
+        Variant::Ling30FlashVl => SHAPE_LING30_FLASH_VL,
     }
 }
 
@@ -1052,4 +1058,66 @@ pub(crate) const SHAPE_STEP37_FLASH: Shape = Shape {
     rope_yarn_beta_slow: 0.0,
     compress_rope_freq_base: 0.0,
     rope_orig_ctx: 262144,
+};
+
+// Hybrid attention: 35 recurrent KDA blocks and 7 MLA blocks. The MLA
+// geometry is the DeepSeek latent one (kv_lora 512 + 64 rope), so `n_head_dim`
+// is the stored latent row rather than a per-head key width.
+pub(crate) const SHAPE_LING30_FLASH_VL: Shape = Shape {
+    name: "Ling-3.0-flash-VL",
+    family: ModelFamily::Ling3Vl,
+    variant: Variant::Ling30FlashVl,
+    n_layer: 42,
+    n_embd: 2560,
+    n_vocab: 157_184,
+    n_head: 32,
+    n_head_kv: 1,
+    n_noise_head: 0,
+    n_head_dim: 576,
+    n_value_dim: 128,
+    n_rot: 64,
+    n_out_group: 0,
+    n_lora_q: 0,
+    n_lora_o: 0,
+    n_expert: 512,
+    n_expert_used: 8,
+    n_expert_shared: 1,
+    n_ff_exp: 768,
+    n_ff_dense: 6144,
+    n_ff_shexp: 768,
+    n_hash_layer: 0,
+    n_swa: 0,
+    n_swa_period: 0,
+    n_indexer_head: 0,
+    n_indexer_head_dim: 0,
+    n_indexer_top_k: 0,
+    n_hc: 0,
+    n_hc_sinkhorn_iter: 0,
+    n_nextn_predict: 0,
+    n_leading_dense: 2,
+    n_kv_lora: 512,
+    n_key_mla: 192,
+    n_value_mla: 128,
+    n_swa_head: 0,
+    n_swa_kv_lora: 0,
+    n_swa_key_mla: 0,
+    n_full_attn_count: 7,
+    n_kda_head_dim: 128,
+    n_ssm_conv: 4,
+    use_rope: true,
+    use_qk_norm: true,
+    rms_eps: 1.0e-6,
+    kda_l2_eps: 1.0e-6,
+    kda_gate_clamp_min: -5.0,
+    hc_eps: 0.0,
+    expert_weight_scale: 2.5,
+    // Per-block clamps live in the family table; this scalar stays unused.
+    swiglu_clamp_exp: 0.0,
+    rope_freq_base: 6_000_000.0,
+    rope_freq_base_swa: 0.0,
+    rope_scale_factor: 1.0,
+    rope_yarn_beta_fast: 0.0,
+    rope_yarn_beta_slow: 0.0,
+    compress_rope_freq_base: 0.0,
+    rope_orig_ctx: 131_072,
 };

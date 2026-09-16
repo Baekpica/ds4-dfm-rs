@@ -848,6 +848,7 @@ pub fn bind_names(shape: &Shape) -> Vec<BindName> {
         }
         ModelFamily::Inkling => return inkling_names(crate::inkling::main_layouts()),
         ModelFamily::Step37 => return inkling_names(crate::Step37Plan::layouts()),
+        ModelFamily::Ling3Vl => return inkling_names(crate::Ling3VlPlan::layouts()),
     }
     out
 }
@@ -1245,6 +1246,7 @@ pub fn variant_from_bind_name(s: &str) -> Option<Variant> {
         "k2-horizon" => Some(Variant::K2Horizon375B),
         "inkling" => Some(Variant::InklingSmall),
         "step35" => Some(Variant::Step37Flash),
+        "bailingmoe3" => Some(Variant::Ling30FlashVl),
         _ => None,
     }
 }

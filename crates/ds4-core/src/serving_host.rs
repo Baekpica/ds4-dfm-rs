@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::gguf::GgufFile;
+use crate::ling3vl;
 use crate::serving::{
     BankLane, EngineFacts, LaneMode, MaxSeqs, MtpKind, MtpMode, PrefixReuse, ReuseKind,
     ServingCaps, ServingRequest, DEFAULT_MAX_SEQS, DEFAULT_SCHED_CHUNK,
@@ -40,6 +41,7 @@ const PLE_CACHE_MB_1024: u64 = 1024;
 const QWEN_PREFILL_CHUNK_ENV: &str = "DS4_QWEN_PREFILL_CHUNK";
 const STEP_PREFILL_CHUNK_ENV: &str = "DS4_STEP37_PREFILL_CHUNK";
 const INKLING_PREFILL_CHUNK_ENV: &str = "DS4_INKLING_PREFILL_CHUNK";
+const LING_PREFILL_CHUNK_ENV: &str = "DS4_LING3VL_PREFILL_CHUNK";
 const QWEN_NATIVE_DEFAULT: u32 = 256;
 const QWEN_NATIVE_MAX: u32 = 16384;
 const QWEN_IMAGE_MAX_PIXELS: u64 = 16_777_216;
@@ -49,6 +51,8 @@ const QWEN_IMAGE_MAX_AXIS: u64 = 65536;
 const QWEN_VISION_PATCH: u64 = 3 * 2 * 16 * 16;
 const QWEN_VISION_HIDDEN: u64 = 1152;
 const QWEN_VISION_FF: u64 = 4304;
+const LING_NATIVE_DEFAULT: u32 = 2048;
+const LING_NATIVE_MAX: u32 = 4096;
 const STEP_NATIVE_DEFAULT: u32 = 4096;
 const STEP_NATIVE_MAX: u32 = 4096;
 const INKLING_NATIVE_DEFAULT: u32 = 1024;
@@ -107,6 +111,9 @@ const QWEN_QSA_SCORE_ROWS: u32 = 8;
 const QWEN_PLE_HOST_ID_LANES: u64 = 16;
 const QWEN_PLE_CONV_TAPS: u64 = 9;
 const CHECKPOINT_SLOTS: u64 = 32;
+// C LING3VL_MEDIA_ROWS, and L3V_VIT_MAX_PATCHES = 4 * ROWS / INPUTS = the same
+// number for four inputs.
+const LING_MEDIA_ROWS: u32 = 16_384;
 const SIZEOF_F32: u64 = 4;
 const SIZEOF_I32: u64 = 4;
 const SIZEOF_U16: u64 = 2;
@@ -238,6 +245,17 @@ pub fn fill_quote_facts(
             let bank_outputs = (u64::from(s.n_embd) + u64::from(s.n_vocab)) * SIZEOF_F32;
             (kv.saturating_add(bank_outputs), scratch, 0, pool)
         }
+        (ModelFamily::Ling3Vl, Some(s)) => {
+            let pool = if partial {
+                ling_checkpoint_pool_bytes(s)
+            } else {
+                0
+            };
+            let bank = ling_latent_bytes(s, ctx)
+                .saturating_add(ling_state_bytes(s))
+                .saturating_add(ling_graph_bytes(s, native));
+            (bank, 0, 0, pool)
+        }
         (ModelFamily::Inkling, Some(s)) => {
             let (base, with_mtp) = inkling_runtime_bytes(s, ctx, native);
             (if sidecar_loaded { with_mtp } else { base }, 0, 0, 0)
@@ -302,6 +320,28 @@ pub fn fill_quote_facts(
     } else if caps.family == ModelFamily::Step37 {
         if host.vision || facts.vision_loaded {
             shape.map(|s| step_media_bytes(s, ctx)).unwrap_or(GIB)
+        } else {
+            0
+        }
+    } else if caps.family == ModelFamily::Ling3Vl {
+        if host.vision || facts.vision_loaded {
+            shape
+                .map(|s| {
+                    let vision = ling_media_bytes(s, ctx);
+                    // Persistent banks keep their graphs. The first image
+                    // still calls ling3vl_graph_alloc (C ling3vl_session_bytes).
+                    if quote_bank_lane(req, caps, facts)
+                        && !matches!(req.max_seqs, MaxSeqs::Off | MaxSeqs::Fixed(1))
+                    {
+                        vision
+                            + ling_latent_bytes(s, ctx)
+                            + ling_state_bytes(s)
+                            + ling_graph_bytes(s, native)
+                    } else {
+                        vision
+                    }
+                })
+                .unwrap_or(GIB)
         } else {
             0
         }
@@ -637,6 +677,7 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
     match caps.family {
         ModelFamily::Qwen4Exp => QWEN_NATIVE_MAX,
         ModelFamily::Step37 => STEP_NATIVE_MAX,
+        ModelFamily::Ling3Vl => LING_NATIVE_MAX,
         ModelFamily::Inkling => INKLING_NATIVE_MAX,
         ModelFamily::Glm53 => GLM_NATIVE_DEFAULT,
         ModelFamily::ExaoneMoe => FAMILY_NATIVE_MAX,
@@ -660,6 +701,12 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             STEP_NATIVE_DEFAULT,
             1,
             STEP_NATIVE_MAX,
+        ),
+        ModelFamily::Ling3Vl => env_u32(
+            LING_PREFILL_CHUNK_ENV,
+            LING_NATIVE_DEFAULT,
+            1,
+            LING_NATIVE_MAX,
         ),
         ModelFamily::Inkling => env_u32(
             INKLING_PREFILL_CHUNK_ENV,
@@ -965,6 +1012,98 @@ fn solar_checkpoint_pool_bytes(shape: Shape) -> u64 {
     solar_checkpoint_slot_bytes(shape).saturating_mul(CHECKPOINT_SLOTS)
 }
 
+// C `ling3vl_memory` raw_bytes: only the 7 MLA blocks hold a per-token latent
+// cache; the 35 recurrent blocks own a context-free tile and three conv rings.
+fn ling_state_bytes(s: Shape) -> u64 {
+    let kda_dim = u64::from(s.n_head).saturating_mul(u64::from(s.n_kda_head_dim.max(1)));
+    let per = kda_dim
+        .saturating_mul(u64::from(s.n_kda_head_dim.max(1)))
+        .saturating_add(3 * kda_dim * u64::from(s.n_ssm_conv.max(1)))
+        .saturating_mul(SIZEOF_F32);
+    per.saturating_mul(ling_kda_layers(s))
+}
+
+fn ling_kda_layers(s: Shape) -> u64 {
+    (0..s.n_layer)
+        .filter(|il| ling3vl::layer_is_kda(*il))
+        .count() as u64
+}
+
+// C `ling3vl_graph_alloc` control_pool: conv weights, decay, dt_bias and
+// o_norm for each KDA block. Uploaded once; not part of the checkpoint slab.
+fn ling_control_bytes(s: Shape) -> u64 {
+    let heads = u64::from(s.n_head);
+    let kda_head = u64::from(s.n_kda_head_dim.max(1));
+    let kda_dim = heads.saturating_mul(kda_head);
+    let conv = kda_dim
+        .saturating_mul(u64::from(s.n_ssm_conv.max(1)))
+        .saturating_mul(SIZEOF_F32);
+    (conv.saturating_mul(3)
+        + heads.saturating_mul(SIZEOF_F32)
+        + kda_dim.saturating_mul(SIZEOF_F32)
+        + kda_head.saturating_mul(SIZEOF_F32))
+    .saturating_mul(ling_kda_layers(s))
+}
+
+fn ling_latent_bytes(s: Shape, ctx: u64) -> u64 {
+    let row = u64::from(s.n_kv_lora).saturating_add(u64::from(s.n_rot));
+    let mla = u64::from(s.n_layer).saturating_sub(ling_kda_layers(s));
+    mla.saturating_mul(ctx)
+        .saturating_mul(row)
+        .saturating_mul(SIZEOF_U16)
+}
+
+// C `ling3vl_memory` scratch_bytes: one complete graph per bank, so two banks
+// price two workspaces rather than one shared scratch.
+fn ling_graph_bytes(s: Shape, native: u32) -> u64 {
+    let pc = u64::from(native);
+    let hidden = u64::from(s.n_embd);
+    let heads = u64::from(s.n_head);
+    let kda_head = u64::from(s.n_kda_head_dim.max(1));
+    let kda_dim = heads * kda_head;
+    let q_dim = heads * u64::from(s.n_key_mla);
+    let latent = heads * u64::from(s.n_kv_lora);
+    let kv_row = u64::from(s.n_kv_lora) + u64::from(s.n_rot);
+    let used = u64::from(s.n_expert_used);
+    let ff = u64::from(s.n_ff_exp);
+    let common = 5 * hidden
+        + 2 * q_dim
+        + 2 * kda_dim
+        + 3 * u64::from(s.n_ff_dense)
+        + 3 * ff
+        + u64::from(s.n_expert)
+        + 2 * used
+        + 3 * used * ff
+        + used * hidden;
+    let family = kv_row + u64::from(s.n_kv_lora) + 2 * latent + 2 * kda_dim + 2 * heads + 4;
+    let pairs = u64::from(s.n_rot) / 2;
+    (pc * (common + family) + pairs + u64::from(s.n_vocab)) * SIZEOF_F32
+        + kda_prefill_scratch_bytes(pc, heads, kda_head)
+        + ling_control_bytes(s)
+}
+
+// C `ling3vl_ckpt_init`: 32 slots of the recurrent state, reserved and mapped
+// on demand. The latent caches need no slot; they are append-only.
+fn ling_checkpoint_pool_bytes(s: Shape) -> u64 {
+    ling_state_bytes(s).saturating_mul(CHECKPOINT_SLOTS)
+}
+
+// C `ling3vl_session_bytes` vision terms: the ViT workspace for a full
+// 16,384-patch budget plus the F32 projected-row plane the session fills.
+// Images run on the serial lane, so this is reserved once, not per bank.
+// When banks stay live, fill_quote_facts adds one language graph on top.
+fn ling_media_bytes(s: Shape, ctx: u64) -> u64 {
+    let patches = u64::from(LING_MEDIA_ROWS);
+    let tower = patches
+        * (u64::from(3 * ling3vl::VISION_PATCH * ling3vl::VISION_PATCH)
+            + 6 * ling3vl::VISION_EMBED
+            + ling3vl::VISION_FF
+            + 10)
+        + patches / 4 * u64::from(s.n_embd);
+    let rows = ctx.min(u64::from(LING_MEDIA_ROWS));
+    (tower + rows * u64::from(s.n_embd)) * SIZEOF_F32
+}
+
 // Native checkpoints contain only SWA windows; full prefixes stay in the bank.
 fn motif_checkpoint_pool_bytes(shape: Shape) -> u64 {
     let sliding = (0..shape.n_layer)
@@ -1243,17 +1382,22 @@ fn solar_graph_bytes(s: Shape, ctx: u64, native: u32, backend: Backend) -> u64 {
     let n_kda = (0..s.n_layer).filter(|il| il % 4 != 0).count() as u64;
     let controls = n_kda * (3 * conv + heads + kda + dim);
     let row = plain_graph_row_elems(s) + 3 * kda + dim + heads;
-    let chunk_scratch = if pc >= 64 && dim == 128 {
-        let plane = (pc * kda * SIZEOF_F32).div_ceil(256) * 256;
-        let mq = (pc.div_ceil(64) * heads * 64 * 64 * SIZEOF_F32).div_ceil(256) * 256;
-        6 * plane + mq
-    } else {
-        0
-    };
     ((pc + 1) * row + u64::from(s.n_vocab) + controls) * SIZEOF_F32
         + solar_split_bytes(s, ctx, backend)
         + pc * SIZEOF_I32
-        + chunk_scratch
+        + kda_prefill_scratch_bytes(pc, heads, dim)
+}
+
+// C `ds4_gpu_solar_kda_prefill_scratch_bytes`: the chunked delta-rule path
+// owns six 256-aligned planes and one per-chunk score tile. Zero means the
+// shape or a short append falls back to the generic sequence path.
+fn kda_prefill_scratch_bytes(tokens: u64, heads: u64, head_dim: u64) -> u64 {
+    if tokens < 64 || heads == 0 || head_dim != 128 {
+        return 0;
+    }
+    let plane = (tokens * heads * head_dim * SIZEOF_F32).div_ceil(256) * 256;
+    let mq = (tokens.div_ceil(64) * heads * 64 * 64 * SIZEOF_F32).div_ceil(256) * 256;
+    6 * plane + mq
 }
 
 fn solar_split_bytes(s: Shape, ctx: u64, backend: Backend) -> u64 {
@@ -1837,10 +1981,111 @@ mod tests {
     };
     use crate::shape::{
         Variant, SHAPE_DOTS3_NOTE_PREV, SHAPE_GLM53_FLASH, SHAPE_INKLING_SMALL,
-        SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_QWEN38_FLASH_NEXT,
-        SHAPE_SOLAR_OPEN2_250B, SHAPE_STEP37_FLASH,
+        SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_LING30_FLASH_VL, SHAPE_MOTIF3,
+        SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B, SHAPE_STEP37_FLASH,
     };
     use std::io::Write;
+
+    // The native log for `-c 8192` prints KV=0.06 GiB state=76.6 MiB
+    // workspace=1.24 GiB per graph; the quote has to reach the same bytes or
+    // --check-config approves a configuration the allocator cannot fund.
+    #[test]
+    fn ling_quote_prices_the_graph_and_the_checkpoint_pool() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset(LING_PREFILL_CHUNK_ENV);
+        let _partial = EnvGuard::unset("DS4_SERVER_FORK_PARTIAL");
+        let s = SHAPE_LING30_FLASH_VL;
+        assert_eq!(ling_latent_bytes(s, 8192), 66_060_288);
+        assert_eq!(ling_state_bytes(s), 80_281_600);
+        // C ling3vl_graph_alloc control_pool: 35 KDA layers, not in the
+        // checkpoint slab (that slab is state_bytes only).
+        assert_eq!(ling_control_bytes(s), 7_477_120);
+        assert_eq!(ling_graph_bytes(s, LING_NATIVE_DEFAULT), 1_336_815_616);
+        assert_eq!(ling_checkpoint_pool_bytes(s), 80_281_600 * CHECKPOINT_SLOTS);
+
+        let mut facts = EngineFacts::default();
+        let req = ServingRequest {
+            ctx: 8192,
+            max_seqs: MaxSeqs::Fixed(2),
+            ..ServingRequest::default()
+        };
+        let caps = serving_caps(ModelFamily::Ling3Vl, Variant::Ling30FlashVl);
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            caps,
+            Some(s),
+            QuoteHost {
+                weights_bytes: 78 * GIB,
+                mtp_bytes: 0,
+                available_bytes: 110 * GIB,
+                native_chunk: None,
+                vision: true,
+            },
+        );
+        assert_eq!(facts.per_bank_bytes, Some(1_483_157_504));
+        assert_eq!(facts.checkpoint_pool_bytes, Some(2_569_011_200));
+        // No predictor block, and the graph is per bank rather than shared.
+        assert_eq!(facts.mtp_state_bytes, Some(0));
+        assert_eq!(facts.scratch_bytes, Some(0));
+        // Banks stay live; the first image allocates an independent
+        // ling3vl_graph_alloc. C ling3vl_session_bytes is that language
+        // memory plus the 16,384-patch ViT workspace and projected rows.
+        assert_eq!(facts.media_reserve_bytes, Some(2_395_025_408));
+
+        let mut serial = EngineFacts::default();
+        let serial_req = ServingRequest {
+            ctx: 8192,
+            max_seqs: MaxSeqs::Fixed(1),
+            ..ServingRequest::default()
+        };
+        fill_quote_facts(
+            &mut serial,
+            &serial_req,
+            caps,
+            Some(s),
+            QuoteHost {
+                weights_bytes: 78 * GIB,
+                mtp_bytes: 0,
+                available_bytes: 110 * GIB,
+                native_chunk: None,
+                vision: true,
+            },
+        );
+        // Width 1 is the serial session itself; do not price a second graph.
+        assert_eq!(serial.media_reserve_bytes, Some(911_867_904));
+    }
+
+    #[test]
+    fn ling_native_chunk_is_published() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset(LING_PREFILL_CHUNK_ENV);
+        let req = ServingRequest {
+            ctx: 8192,
+            native_chunk: Some(1024),
+            ..ServingRequest::default()
+        };
+        let caps = serving_caps(ModelFamily::Ling3Vl, Variant::Ling30FlashVl);
+        let mut facts = EngineFacts::default();
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            caps,
+            Some(SHAPE_LING30_FLASH_VL),
+            QuoteHost {
+                weights_bytes: 78 * GIB,
+                mtp_bytes: 0,
+                available_bytes: 110 * GIB,
+                native_chunk: None,
+                vision: false,
+            },
+        );
+        assert_eq!(facts.native_chunk, Some(1024));
+        let p = resolve_plan(&req, Some(caps), &facts);
+        assert!(p
+            .env_overrides()
+            .contains(&(LING_PREFILL_CHUNK_ENV.into(), "1024".into())));
+    }
 
     #[test]
     fn fill_quote_facts_names_every_budget() {

@@ -158,6 +158,12 @@ int ds4_session_sync_inkling(ds4_session *s, const ds4_tokens *prompt,
     (void)err; (void)errlen;
     STUB("ds4_session_sync_inkling");
 }
+int ds4_session_sync_ling3vl(ds4_session *s, const ds4_tokens *prompt,
+                             const ds4_ling3vl_image_input *images,
+                             uint32_t image_count, char *err, size_t errlen) {
+    (void)s; (void)prompt; (void)images; (void)image_count; (void)err; (void)errlen;
+    STUB("ds4_session_sync_ling3vl");
+}
 int ds4_session_sync_step37(ds4_session *s, const ds4_tokens *prompt,
                              const ds4_step37_pixels *crops, uint32_t crop_count,
                              char *err, size_t errlen) {

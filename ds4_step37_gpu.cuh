@@ -91,7 +91,7 @@ extern "C" int ds4_gpu_step37_qk(
 extern "C" int ds4_gpu_step37_gate(
         ds4_gpu_tensor *values, const ds4_gpu_tensor *gate, uint32_t heads, uint32_t rows) {
     const uint64_t count = (uint64_t)rows * heads * 128;
-    if (!values || !gate || !rows || count > INT_MAX || (heads != 64 && heads != 96) ||
+    if (!values || !gate || !rows || count > INT_MAX || (heads != 32 && heads != 64 && heads != 96) ||
         values->bytes < count * sizeof(float) ||
         gate->bytes < (uint64_t)rows * heads * sizeof(float)) { return 0; }
     step37_attn_gate<<<(count + 255) / 256, 256, 0, ds4_current_stream()>>>(

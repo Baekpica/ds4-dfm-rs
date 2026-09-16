@@ -3,9 +3,16 @@
 /ds4-bench
 /ds4-eval
 /ds4-agent
+/ds4-c
+/ds4-server-c
+/ds4-bench-c
+/ds4-agent-c
 /ds4-rs
 /ds4-bench-rs
 /ds4-server-rs
+/tests/test_ling3vl_media
+/tests/test_ling3vl_vision
+/tests/test_ling3vl_primitives
 /tests/parity/kv_c_oracle
 /tests/parity/web_c_oracle
 /tests/parity/dist_c_oracle
@@ -114,3 +121,4 @@ __pycache__/
 /tests/test_step37_media
 
 /tests/test_step37_norm
+/tests/libds4ple_test.so

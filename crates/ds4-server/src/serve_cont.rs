@@ -21,8 +21,8 @@ use crate::dsml::{SampleOverride, SamplePolicy};
 #[cfg(any(feature = "native", test))]
 use crate::generate::thinking_visible_key;
 use crate::generate::{
-    chat_format_for_syntax, prepare_required_prefixes, render_prompt, responses_ids,
-    stream_req_from_parsed, GenerateError, GenerateOutcome,
+    prepare_required_prefixes, render_prompt, responses_ids, stream_req_from_parsed, GenerateError,
+    GenerateOutcome,
 };
 use crate::parse::{ParsedRequest, ToolCall, ToolChoice};
 use crate::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
@@ -1031,7 +1031,8 @@ fn warm_placement(
     })
 }
 
-fn motif3_history_retire_prompt(prompt: &[u8]) -> &[u8] {
+#[cfg(any(feature = "native", test))]
+fn motif3_history_retire_prompt(prompt: &[u8], syntax: ModelSyntax) -> &[u8] {
     // Motif none-think generation ends with an empty think pair; official
     // history replay omits it. Bank keys must use the history form or the
     // next tool-result turn diverges at <|assistant|>.
@@ -1039,15 +1040,24 @@ fn motif3_history_retire_prompt(prompt: &[u8]) -> &[u8] {
     // Step is deliberately not here: its bank snapshot holds the pair, so a
     // shortened key would extend KV the key does not describe. Its restart
     // hit needs a checkpoint at that frontier instead.
+    //
+    // Ling writes the same bytes but replays them: Bailing V3 re-emits the
+    // pair before every history assistant turn, so a stripped key is never
+    // the next render's prefix and every exact and disk hit would miss.
+    if syntax == ModelSyntax::Ling3Vl {
+        return prompt;
+    }
     prompt.strip_suffix(b"<think></think>").unwrap_or(prompt)
 }
 
+#[cfg(any(feature = "native", test))]
 fn committed_key(
     prompt: &[u8],
     tokens: &[i32],
+    syntax: ModelSyntax,
     mut token_text: impl FnMut(i32) -> Vec<u8>,
 ) -> Vec<u8> {
-    let mut key = motif3_history_retire_prompt(prompt).to_vec();
+    let mut key = motif3_history_retire_prompt(prompt, syntax).to_vec();
     for &token in tokens.iter().take(tokens.len().saturating_sub(1)) {
         key.extend(token_text(token));
     }
@@ -1173,12 +1183,16 @@ fn bank_retire_key(
     snapshot_tokens: &[i32],
     done_tokens: &[i32],
     allow_generated_snapshot: bool,
+    syntax: ModelSyntax,
     mut token_text: impl FnMut(i32) -> Vec<u8>,
 ) -> Option<(Vec<u8>, bool)> {
     if !done_tokens.is_empty() {
-        return Some((committed_key(prompt, done_tokens, token_text), false));
+        return Some((
+            committed_key(prompt, done_tokens, syntax, token_text),
+            false,
+        ));
     }
-    let retained = committed_key(&[], snapshot_tokens, &mut token_text);
+    let retained = committed_key(&[], snapshot_tokens, syntax, &mut token_text);
     if retained.is_empty() {
         return None;
     }
@@ -1574,11 +1588,9 @@ pub fn cont_prompt_tokens(
     exec: &dyn ContExec,
     parsed: &mut ParsedRequest,
 ) -> Result<(Vec<u8>, Vec<i32>), GenerateError> {
-    prepare_required_prefixes(
-        parsed,
-        chat_format_for_syntax(syntax_for_model_id(exec.model_id())),
-        |literal| Ok(exec.encode_chat(literal)),
-    )?;
+    prepare_required_prefixes(parsed, syntax_for_model_id(exec.model_id()), |literal| {
+        Ok(exec.encode_chat(literal))
+    })?;
     exec.restore_chat(parsed)?;
     let prompt = exec.render_request(parsed)?;
     let tokens = match parsed.kind {
@@ -2013,7 +2025,7 @@ mod native {
         ) -> Result<(Vec<u8>, Vec<i32>), GenerateError> {
             prepare_required_prefixes(
                 parsed,
-                chat_format_for_syntax(syntax_for_model_id(self.host.model_id)),
+                syntax_for_model_id(self.host.model_id),
                 |literal| Ok(self.host.vocab.encode_rendered_bytes(literal)),
             )?;
             self.host.restore_request(self.batch, parsed)?;
@@ -2793,6 +2805,7 @@ mod native {
                     &snapshot.tokens,
                     done_tokens,
                     allow_generated_snapshot,
+                    syntax_for_model_id(stepper.model_id),
                     |token| self.vocab.token_text(token),
                 )
                 .map(|(text, retained_existing)| BankRetireKey {
@@ -4265,11 +4278,13 @@ mod bank_tests {
     #[test]
     fn warm_key_drops_the_uncommitted_last_sample() {
         assert_eq!(
-            committed_key(b"prompt:", &[1, 2, 3], |token| vec![b'0' + token as u8]),
+            committed_key(b"prompt:", &[1, 2, 3], ModelSyntax::Motif3, |token| vec![
+                b'0' + token as u8
+            ]),
             b"prompt:12"
         );
         assert_eq!(
-            committed_key(b"prompt:", &[], |_| unreachable!()),
+            committed_key(b"prompt:", &[], ModelSyntax::Motif3, |_| unreachable!()),
             b"prompt:"
         );
     }
@@ -4278,19 +4293,40 @@ mod bank_tests {
     fn bank_retire_key_accepts_a_complete_tool_turn_from_the_snapshot() {
         let token_text = |token| vec![b'0' + token as u8];
         assert_eq!(
-            bank_retire_key(b"12", &[1, 2, 3, 4], &[], false, token_text),
+            bank_retire_key(
+                b"12",
+                &[1, 2, 3, 4],
+                &[],
+                false,
+                ModelSyntax::Motif3,
+                token_text
+            ),
             None
         );
         assert_eq!(
-            bank_retire_key(b"12", &[1, 2, 3, 4], &[], true, token_text),
+            bank_retire_key(
+                b"12",
+                &[1, 2, 3, 4],
+                &[],
+                true,
+                ModelSyntax::Motif3,
+                token_text
+            ),
             Some((b"123".to_vec(), false))
         );
         assert_eq!(
-            bank_retire_key(b"1234", &[1, 2, 3, 4], &[], false, token_text),
+            bank_retire_key(
+                b"1234",
+                &[1, 2, 3, 4],
+                &[],
+                false,
+                ModelSyntax::Motif3,
+                token_text
+            ),
             Some((b"123".to_vec(), true))
         );
         assert_eq!(
-            bank_retire_key(b"12", &[], &[3, 4], false, token_text),
+            bank_retire_key(b"12", &[], &[3, 4], false, ModelSyntax::Motif3, token_text),
             Some((b"123".to_vec(), false))
         );
         assert_eq!(
@@ -4299,6 +4335,7 @@ mod bank_tests {
                 &[],
                 &[1, 2],
                 false,
+                ModelSyntax::Motif3,
                 |token| match token {
                     1 => b"I need".to_vec(),
                     2 => b" it".to_vec(),
@@ -4306,6 +4343,29 @@ mod bank_tests {
                 }
             ),
             Some((b"<|assistant|>I need".to_vec(), false))
+        );
+    }
+
+    #[test]
+    fn ling_keeps_the_empty_think_pair_its_template_replays() {
+        // Bailing V3 re-emits the pair before every history assistant turn,
+        // so a Motif-style strip would make the key stop being a prefix.
+        assert_eq!(
+            bank_retire_key(
+                b"<role>ASSISTANT</role>\n<think></think>",
+                &[],
+                &[1, 2],
+                false,
+                ModelSyntax::Ling3Vl,
+                |token| match token {
+                    1 => b"LPDDR5X".to_vec(),
+                    _ => Vec::new(),
+                }
+            ),
+            Some((
+                b"<role>ASSISTANT</role>\n<think></think>LPDDR5X".to_vec(),
+                false
+            ))
         );
     }
 

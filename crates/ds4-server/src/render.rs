@@ -87,6 +87,7 @@ pub enum ModelSyntax {
     K2Horizon = 8,
     Inkling = 9,
     Step37 = 10,
+    Ling3Vl = 11,
 }
 
 /// C `server_model_syntax_for_engine`.
@@ -101,6 +102,7 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
         8 => ModelSyntax::K2Horizon,
         9 => ModelSyntax::Inkling,
         10 => ModelSyntax::Step37,
+        11 => ModelSyntax::Ling3Vl,
         _ => ModelSyntax::DeepSeek,
     }
 }
@@ -111,7 +113,7 @@ pub fn tool_start_marker(syntax: ModelSyntax) -> &'static str {
         ModelSyntax::Motif3 | ModelSyntax::Exaone => MOTIF_TOOL_CALLS,
         ModelSyntax::Dots3 => DOTS3_TOOL_CALLS,
         ModelSyntax::Qwen4Exp | ModelSyntax::Step37 => QWEN_TOOL_CALL_START,
-        ModelSyntax::Glm53 => GLM_TOOL_CALL_START,
+        ModelSyntax::Glm53 | ModelSyntax::Ling3Vl => GLM_TOOL_CALL_START,
         ModelSyntax::K2Horizon => K2_TOOL_CALLS_START,
         ModelSyntax::Inkling => inkling::INVOKE,
         ModelSyntax::DeepSeek => DSML_TOOL_CALLS,
@@ -1847,6 +1849,9 @@ pub fn render_chat_choice(
         ModelSyntax::Step37 => Err(RenderError(
             "Step input requires its official Jinja template",
         )),
+        ModelSyntax::Ling3Vl => Err(RenderError(
+            "Ling input requires its official Jinja template",
+        )),
         ModelSyntax::Motif3 => render_motif3_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
         ModelSyntax::Exaone => render_exaone_chat(msgs, tool_schemas, think_mode),
         ModelSyntax::Dots3 => render_dots3_chat(msgs, tool_schemas, think_mode),
@@ -1907,6 +1912,11 @@ pub fn render_live_tool_tail(
         ModelSyntax::Step37 => {
             return Err(RenderError(
                 "Step tool results require retained history and Jinja",
+            ));
+        }
+        ModelSyntax::Ling3Vl => {
+            return Err(RenderError(
+                "Ling tool results require retained history and Jinja",
             ));
         }
         ModelSyntax::Inkling => return inkling::live_tail(tail, msgs),

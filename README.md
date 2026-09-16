@@ -19,7 +19,7 @@ retired when a better model makes it irrelevant.
 
 ## So, what can I do with this software?
 
-- Run one of the ten validated model families on a DGX Spark without pulling
+- Run one of the eleven validated model families on a DGX Spark without pulling
   in a general inference framework.
 - Serve OpenAI-compatible Chat, Completions, and Responses APIs, Anthropic
   Messages, or use the built-in DeepSeek DSML coding agent.
@@ -30,6 +30,8 @@ retired when a better model makes it irrelevant.
 - Serve Qwen3.8 Flash Next Q5 with SSD-PLE sidecars, embedded MTP, and still
   image input.
 - Serve K2-Horizon-375B MQ87 with IFM chat/tool syntax on the continuous lane.
+- Serve Ling-3.0-flash-VL MQ-Q5 with image input, two persistent banks,
+  disk KV and partial prefix reuse.
 - Profile prefill and decode with [ds4-perf](docs/ds4-perf.md),
   calibrate the GPU, compare proved experiments, and retain raw profiler evidence.
 - Treat the existing family implementations as rails for a new model or a
@@ -227,6 +229,7 @@ tokenizer/chat contract, state lifecycle, and native execution path.
 | K2-Horizon 375B A23B | `k2-horizon` | Four-shard MQ87 GGUF; IFM BPE/XML tools; continuous 32K one-bank serving on one DGX Spark. |
 | Inkling Small | `inkling` | MQ85GB + optional eight-layer MTP-BF16; serial CUDA text/image/audio input and text output. [HTTP checks and limits](docs/inkling-small.md), [GB10 performance](docs/inkling-optimization-2026-09-11.md). |
 | Step 3.7 Flash | `step35` | Nine-shard MQ83, optional three-block Q8 MTP and F16 vision; CUDA text/image serving, opt-in text banks with MTP, partial fork and disk KV. [Serving limits](docs/step37-serving-2026-09-13.md), [capped-clock A/B](docs/step37-optimization-2026-09-13-r3.md). |
+| Ling-3.0-flash-VL | `bailingmoe3` | Three-shard MQ-Q5 plus the BF16 mmproj; hybrid KDA/MLA over 512 grouped-sigmoid experts, still-image input, persistent banks, partial fork and disk KV. [Family contract](docs/ling3-flash-vl.md). |
 
 The current family contract and measured model-specific limits are documented
 in [`ds4-dfm-model-families.md`](docs/ds4-dfm-model-families.md). Arbitrary
@@ -250,6 +253,7 @@ collection. Support remains limited to the validated layouts described above.
 | K2-Horizon 375B A23B | [`Baekpica/K2-Horizon-375B-A23B-Mixed-Quant-GGUF`](https://huggingface.co/Baekpica/K2-Horizon-375B-A23B-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
 | Inkling Small | [`MQ85GB`](https://huggingface.co/Baekpica/Inkling-Small-Mixed-Quant-GGUF/tree/main/MQ85GB) + optional [`MTP-BF16`](https://huggingface.co/Baekpica/Inkling-Small-GGUF/tree/main/MTP-BF16) | [`Baekpica`](https://huggingface.co/Baekpica) |
 | Step 3.7 Flash | [`MQ83 + MTP + vision`](https://huggingface.co/Baekpica/Step-3.7-Flash-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
+| Ling-3.0-flash-VL | [`MQ-Q5-KDA-VIT-BF16`](https://huggingface.co/Baekpica/Ling-3.0-flash-VL-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
 
 ### Qwen release scope
 

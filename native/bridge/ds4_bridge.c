@@ -498,6 +498,22 @@ int ds4_bridge_session_sync_vision(ds4_bridge_session *s,
     prompt.v = (int *)(void *)tokens;
     prompt.len = n_tokens;
     prompt.cap = n_tokens;
+    /* Ling encodes inside the session so its projected rows stay on device;
+     * GLM materializes an embedding per image on the host first. */
+    if (ds4_engine_model_id(s->model->engine) == DS4_MODEL_ID_LING30_FLASH_VL) {
+        ds4_ling3vl_image_input native[4] = {0};
+        for (uint32_t i = 0; i < image_count; i++) {
+            if (!images[i].data || images[i].data_len == 0u) {
+                set_err(err, errlen, "invalid Ling image payload");
+                return 1;
+            }
+            native[i].data = images[i].data;
+            native[i].data_len = images[i].data_len;
+            native[i].token_offset = images[i].token_offset;
+        }
+        return ds4_session_sync_ling3vl(s->session, &prompt, native, image_count,
+                                        err, errlen);
+    }
     for (uint32_t i = 0; i < image_count; i++) {
         if (!images[i].data || images[i].data_len == 0u ||
             !ds4_engine_vision_encode_memory(

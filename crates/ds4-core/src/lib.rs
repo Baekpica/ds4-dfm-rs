@@ -18,6 +18,7 @@ mod inkling_audio;
 mod inkling_media;
 mod inkling_mtp;
 mod layout;
+mod ling3vl;
 mod mapped;
 mod mem;
 mod mem_gov;
@@ -59,6 +60,7 @@ pub use layout::{
     validate_dspark_layouts, validate_layouts, validate_mtp_layouts, validate_support_layouts,
     LayoutError, LayoutSpec, TypeClass,
 };
+pub use ling3vl::{Ling3VlError, Ling3VlLayer, Ling3VlPlan, Ling3VlVisionPlan};
 pub use mem::{
     snapshot_mem, MemCell as HostMemCell, MemCensus, MemObserve, MemSnap, MEMC_COUNT, MEMD_COUNT,
 };
@@ -239,6 +241,30 @@ fn inkling_open_check(
         "Inkling does not support DSpark sidecars"
     } else if tuning.vision_path.is_some() {
         "Inkling uses embedded image/audio weights"
+    } else {
+        return Ok(());
+    };
+    Err(Error {
+        code: 1,
+        message: message.into(),
+    })
+}
+
+fn ling_open_check(
+    backend: Backend,
+    tuning: &OpenTuning,
+    dspark: Option<&str>,
+    distributed: Option<&DistributedConfig>,
+) -> Result<()> {
+    let message = if backend != Backend::Cuda || distributed.is_some() {
+        "Ling requires one full CUDA model"
+    } else if tuning.steering_file.is_some()
+        || tuning.steering_attn != 0.0
+        || tuning.steering_ffn != 0.0
+    {
+        "Ling does not support directional steering"
+    } else if dspark.is_some() {
+        "Ling does not support DSpark sidecars"
     } else {
         return Ok(());
     };
@@ -1018,6 +1044,12 @@ pub fn probe_model_artifact(path: &str) -> Result<()> {
             message: e.to_string(),
         })?;
     }
+    if identified.shape.family == ModelFamily::Ling3Vl {
+        Ling3VlPlan::validate_inventory(&inventory).map_err(|e| Error {
+            code: 1,
+            message: e.to_string(),
+        })?;
+    }
     let bind_plan = BindPlan::resolve(identified.shape, &inventory);
     if let Some(name) = bind_plan.missing_required().first() {
         return Err(Error {
@@ -1173,6 +1205,9 @@ impl Model {
         if identified.shape.family == ModelFamily::Inkling {
             inkling_open_check(backend, &tuning, mtp_path, dspark_path, distributed)?;
         }
+        if identified.shape.family == ModelFamily::Ling3Vl {
+            ling_open_check(backend, &tuning, dspark_path, distributed)?;
+        }
         let vocab = Vocab::load(&g, identified.shape.family).map_err(|e| Error {
             code: 1,
             message: format!("vocab failed: {e}"),
@@ -1209,6 +1244,18 @@ impl Model {
                         message: e.to_string(),
                     },
                 )?;
+            }
+        }
+        if identified.shape.family == ModelFamily::Ling3Vl {
+            Ling3VlPlan::validate_inventory(&inventory).map_err(|e| Error {
+                code: 1,
+                message: e.to_string(),
+            })?;
+            if let Some(path) = tuning.vision_path.as_deref() {
+                Ling3VlVisionPlan::inspect(Path::new(path)).map_err(|e| Error {
+                    code: 1,
+                    message: e.to_string(),
+                })?;
             }
         }
         let bind_plan = BindPlan::resolve(identified.shape, &inventory);
@@ -1423,6 +1470,7 @@ impl Model {
         let marker = match self.family {
             ModelFamily::Inkling => INKLING_IMAGE_TOKEN,
             ModelFamily::Glm53 => GLM_IMAGE_TOKEN,
+            ModelFamily::Ling3Vl => ling3vl::IMAGE_TOKEN as i32,
             _ => {
                 return Err(Error {
                     code: 1,
@@ -1678,8 +1726,10 @@ const fn ledger_ctx(configured: i32, native_effective: i32) -> i32 {
 }
 
 impl Session<'_> {
+    /// A failed native step bumps the native generation; the host ledger has
+    /// to follow or a later request could reuse an invalidated checkpoint.
     fn step_failed(&mut self) {
-        if self.host.family != ModelFamily::Step37 {
+        if !matches!(self.host.family, ModelFamily::Step37 | ModelFamily::Ling3Vl) {
             return;
         }
         let generation = self.native_generation();
@@ -2497,6 +2547,42 @@ mod tests {
             },
         ] {
             assert!(inkling_open_check(Backend::Cuda, &configured, None, None, None).is_err());
+        }
+    }
+
+    #[test]
+    fn ling_open_contract() {
+        let tuning = OpenTuning::default();
+        assert!(ling_open_check(Backend::Cuda, &tuning, None, None).is_ok());
+        assert!(ling_open_check(
+            Backend::Cuda,
+            &OpenTuning {
+                vision_path: Some("vision.gguf".into()),
+                ..tuning.clone()
+            },
+            None,
+            None,
+        )
+        .is_ok());
+        for backend in [Backend::Cpu, Backend::Metal] {
+            assert!(ling_open_check(backend, &tuning, None, None).is_err());
+        }
+        assert!(ling_open_check(Backend::Cuda, &tuning, Some("draft.gguf"), None).is_err());
+        for configured in [
+            OpenTuning {
+                steering_file: Some("direction.bin".into()),
+                ..tuning.clone()
+            },
+            OpenTuning {
+                steering_attn: 1.0,
+                ..tuning.clone()
+            },
+            OpenTuning {
+                steering_ffn: 1.0,
+                ..tuning.clone()
+            },
+        ] {
+            assert!(ling_open_check(Backend::Cuda, &configured, None, None).is_err());
         }
     }
 

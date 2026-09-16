@@ -13,6 +13,7 @@ use crate::shape::ModelFamily;
 use crate::TokenBuffer;
 
 mod inkling;
+mod ling3vl;
 mod step37;
 
 const REASONING_EFFORT_HIGH_PREFIX: &str = concat!(
@@ -226,7 +227,9 @@ impl Vocab {
             {
                 if let Ok(ty) = g.array_le_u32s(&types) {
                     for (i, &typ) in ty.iter().enumerate() {
-                        if typ != 4 && !(family == ModelFamily::Step37 && typ == 3) {
+                        let control_split =
+                            matches!(family, ModelFamily::Step37 | ModelFamily::Ling3Vl);
+                        if typ != 4 && !(control_split && typ == 3) {
                             continue;
                         }
                         let token = &tokens[i];
@@ -308,6 +311,7 @@ impl Vocab {
         match self.family {
             ModelFamily::Inkling => inkling::specials(self)?,
             ModelFamily::Step37 => step37::specials(self, g)?,
+            ModelFamily::Ling3Vl => ling3vl::specials(self, g)?,
             ModelFamily::Glm53 => {
                 self.bos_id = g
                     .get_token_id("tokenizer.ggml.bos_token_id")
@@ -571,11 +575,24 @@ impl Vocab {
         out
     }
 
-    pub fn chat_begin(&self, tokens: &mut TokenBuffer) -> Result<(), TokError> {
-        if self.family == ModelFamily::Step37 {
-            return Err(TokError::InvalidTokenizer(
+    /// Families whose input grammar is only the official Jinja template.
+    /// The legacy token builder cannot reproduce it, so it refuses instead of
+    /// emitting an approximation.
+    fn jinja_only(&self) -> Option<TokError> {
+        match self.family {
+            ModelFamily::Step37 => Some(TokError::InvalidTokenizer(
                 "Step 3.7 chat requires official Jinja",
-            ));
+            )),
+            ModelFamily::Ling3Vl => Some(TokError::InvalidTokenizer(
+                "Ling-3.0-flash-VL chat requires official Jinja",
+            )),
+            _ => None,
+        }
+    }
+
+    pub fn chat_begin(&self, tokens: &mut TokenBuffer) -> Result<(), TokError> {
+        if let Some(e) = self.jinja_only() {
+            return Err(e);
         }
         if self.family == ModelFamily::ExaoneMoe {
             self.require_chat_ids(&[(self.bos_id, "[BOS]")])?;
@@ -598,7 +615,7 @@ impl Vocab {
     }
 
     pub fn chat_append_effort_prefix(&self, tokens: &mut TokenBuffer, mode: ChatThinkMode) {
-        if self.family == ModelFamily::Step37 {
+        if self.jinja_only().is_some() {
             return;
         }
         if self.family == ModelFamily::Inkling {
@@ -679,11 +696,7 @@ impl Vocab {
 
         match self.family {
             ModelFamily::Inkling => return inkling::message(self, tokens, role, content),
-            ModelFamily::Step37 => {
-                return Err(TokError::InvalidTokenizer(
-                    "Step 3.7 chat requires official Jinja",
-                ))
-            }
+            ModelFamily::Step37 | ModelFamily::Ling3Vl => return Err(self.jinja_only().unwrap()),
             ModelFamily::Glm53 => {
                 if role == "system" || role == "developer" {
                     self.require_chat_ids(&[(self.system_id, "<|system|>")])?;
@@ -876,11 +889,7 @@ impl Vocab {
         }
         match self.family {
             ModelFamily::Inkling => tokens.push(self.assistant_id),
-            ModelFamily::Step37 => {
-                return Err(TokError::InvalidTokenizer(
-                    "Step 3.7 chat requires official Jinja",
-                ))
-            }
+            ModelFamily::Step37 | ModelFamily::Ling3Vl => return Err(self.jinja_only().unwrap()),
             ModelFamily::Glm53 => {
                 self.require_chat_ids(&[
                     (self.assistant_id, "<|assistant|>"),
@@ -1035,6 +1044,12 @@ impl Vocab {
             }
             ModelFamily::SolarOpen2 | ModelFamily::Qwen4Exp => {
                 self.eot_id >= 0 && token == self.eot_id
+            }
+            // `<|endoftext|>` is the second official end token, and `<role>`
+            // opens the next turn: neither may leak into assistant content.
+            ModelFamily::Ling3Vl => {
+                (self.eot_id >= 0 && token == self.eot_id)
+                    || (self.im_start_id >= 0 && token == self.im_start_id)
             }
             ModelFamily::Motif3 => {
                 (self.user_id >= 0 && token == self.user_id)
@@ -2116,6 +2131,7 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
     match vocab.family {
         ModelFamily::Inkling => inkling::encode(vocab, text, out),
         ModelFamily::Step37 => step37::encode(vocab, text, out),
+        ModelFamily::Ling3Vl => bpe_tokenize_text_solar(vocab, text, out),
         ModelFamily::Glm53 => bpe_tokenize_text_glm4(vocab, text, out),
         ModelFamily::Motif3 => bpe_tokenize_text_motif3(vocab, text, out),
         ModelFamily::SolarOpen2 => bpe_tokenize_text_solar(vocab, text, out),
@@ -2128,7 +2144,10 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
 }
 
 fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
-    if matches!(vocab.family, ModelFamily::Inkling | ModelFamily::Step37) {
+    if matches!(
+        vocab.family,
+        ModelFamily::Inkling | ModelFamily::Step37 | ModelFamily::Ling3Vl
+    ) {
         return user_defined_at(vocab, p, 0);
     }
     let specials: &[(&[u8], i32)] = &[

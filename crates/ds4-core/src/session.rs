@@ -405,7 +405,9 @@ impl SessionLedger {
             self.valid = false;
             self.solar_state_valid = false;
         }
-        if self.family == ModelFamily::Step37 && pos != old {
+        // A recurrent block's history is its state, so a truncation cannot be
+        // partial: the next sync replays the prefix from zero.
+        if matches!(self.family, ModelFamily::Step37 | ModelFamily::Ling3Vl) && pos != old {
             self.valid = false;
         }
         RewindResult {
