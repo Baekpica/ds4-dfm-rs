@@ -71,6 +71,44 @@ The bandwidth figure is informational; we don't tier on it.
   image/bank configuration uses `512`. Invalid values use the default. The SWA
   ring retains an extra chunk, so both scratch and KV grow with it.
 
+- `DS4_LING3VL_PREFILL_CHUNK=N` selects 1–4096 Ling-3.0-flash-VL prompt
+  rows per chunk, capped by context. Default 4096. `2048` restores the
+  previous campaign control. Invalid values use the default. Wider chunks
+  grow routed-MoE scratch and the latent planes.
+
+- `DS4_LING3VL_NO_BF16_VEC=1` restores cuBLAS for Ling n=1 BF16 projections.
+  Unset uses the row-stable warp GEMV.
+
+- `DS4_LING3VL_MLA_TILE=1` opts into the rejected shared-KV MLA prefill
+  tile.
+
+- `DS4_LING3VL_NO_MLA_HMMA=1` restores Motif's SIMT latent attention on
+  Ling prefill. Unset uses the dots3 tensor-core absorbed-MLA kernel
+  (rows >= 8, 32-head groups, latent 512). Decode stays on Motif.
+
+- `DS4_LING3VL_NO_BF16_REUSE=1` reconverts RMSNorm activations on every
+  BF16 GEMM. Unset converts the packed row once per RMSNorm (prefill).
+
+- `DS4_LING3VL_NO_BF16_PAIR=1` keeps two n=1 BF16 GEMVs. Unset pairs
+  projections that share `b_norm` so the convert runs once.
+
+- `DS4_LING3VL_NO_GEMV_XREG=1` restores the streaming warp GEMV. Unset
+  caches the n=1 activation in registers so the K-loop only loads weights.
+
+- `DS4_LING3VL_NO_MOE_FUSE=1` disables the Q4_K fused-silu helper. The
+  Ling graph does not call it (decode A/B was Inconclusive).
+
+- `DS4_MMQ_Q5_PAIR=0` restores two n=1 Q5_K routed gate/up GEMVs. Unset
+  pairs them so the expert map and Q8_1 quantize run once. MTP verify
+  (n_tokens>1) stays on two singles.
+
+- `DS4_MMQ_VEC_SANITIZE=1` keeps the decode mmvq finite-scrub pass on
+  Q4_K/Q5_K. Unset skips it for those types only; Q2_K/IQ*/Q8_0 still
+  scrub. Q4_K/Q5_K vec outputs are finite on finite activations.
+
+- `DS4_LING3VL_NO_F32_VEC=1` restores the 256-thread F32 n=1 GEMV. Unset
+  uses one warp per output row for Ling F32 projections (router).
+
 - `DS4_STEP37_NO_Q8_REUSE=1` disables exact post-norm Q8 sharing.
   `DS4_STEP37_LEGACY_TRIAL_HEAD=1` restores the redundant trial head;
   `DS4_STEP37_LEGACY_COMMIT_HEAD=1` reprojects committed logits. These are

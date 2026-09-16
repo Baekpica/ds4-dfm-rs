@@ -1429,6 +1429,20 @@ int ds4_mmq_q4_K_moe_pair_raw_vec(
     int             n_expert_used,
     cudaStream_t    stream);
 
+int ds4_mmq_q5_K_moe_pair_raw_vec(
+    const void    * W_a,
+    const void    * W_b,
+    const float   * X_f32,
+    const int32_t * ids,
+    float         * out_a,
+    float         * out_b,
+    int             M,
+    int             K,
+    int             n_tokens,
+    int             n_experts,
+    int             n_expert_used,
+    cudaStream_t    stream);
+
 // Dense vector matmul entry (Step 6). Same shape semantics as
 // ds4_mmq_q8_0_dense but routed through mmvq for batch counts that
 // favour the vec path (n_tokens <= 8 on Blackwell).

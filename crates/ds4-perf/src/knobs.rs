@@ -39,6 +39,19 @@ pub fn tunable(key: &str) -> bool {
             | "DS4_STEP37_PREFILL_CHUNK"
             | "DS4_STEP37_NO_SWA_HMMA"
             | "DS4_EXAONE_PREFILL_GQA"
+            | "DS4_LING3VL_PREFILL_CHUNK"
+            | "DS4_LING3VL_NO_BF16_VEC"
+            | "DS4_LING3VL_NO_MLA_TILE"
+            | "DS4_LING3VL_MLA_TILE"
+            | "DS4_LING3VL_NO_MLA_HMMA"
+            | "DS4_LING3VL_NO_BF16_REUSE"
+            | "DS4_LING3VL_NO_BF16_PAIR"
+            | "DS4_LING3VL_NO_GEMV_XREG"
+            | "DS4_LING3VL_NO_F32_VEC"
+            | "DS4_LING3VL_NO_MOE_FUSE"
+            | "DS4_MMQ_Q5_PAIR"
+            | "DS4_MMQ_VEC_SANITIZE"
+            | "DS4_CUDA_LAYER_GRAPHS"
     )
 }
 
@@ -85,6 +98,27 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
             family == "solar-open2" && matches!(value, "0" | "1")
         }
         "DS4_STEP37_PREFILL_CHUNK" => family.starts_with("step") && (1..=4096).contains(&n),
+        "DS4_LING3VL_PREFILL_CHUNK" => {
+            (family.starts_with("ling") || family == "bailingmoe3") && (1..=4096).contains(&n)
+        }
+        "DS4_LING3VL_NO_BF16_VEC"
+        | "DS4_LING3VL_NO_MLA_TILE"
+        | "DS4_LING3VL_MLA_TILE"
+        | "DS4_LING3VL_NO_MLA_HMMA"
+        | "DS4_LING3VL_NO_BF16_REUSE"
+        | "DS4_LING3VL_NO_BF16_PAIR"
+        | "DS4_LING3VL_NO_GEMV_XREG"
+        | "DS4_LING3VL_NO_F32_VEC"
+        | "DS4_LING3VL_NO_MOE_FUSE"
+        | "DS4_MMQ_VEC_SANITIZE" => {
+            (family.starts_with("ling") || family == "bailingmoe3") && value == "1"
+        }
+        "DS4_MMQ_Q5_PAIR" => {
+            (family.starts_with("ling") || family == "bailingmoe3") && value == "0"
+        }
+        "DS4_CUDA_LAYER_GRAPHS" => {
+            (family.starts_with("ling") || family == "bailingmoe3") && matches!(value, "0" | "1")
+        }
         "DS4_STEP37_NO_SWA_HMMA" => family.starts_with("step") && value == "1",
         "DS4_EXAONE_PREFILL_GQA" => {
             (family.starts_with("step") || family.starts_with("exaone") || family.starts_with("k2"))
@@ -195,5 +229,42 @@ mod tests {
         for value in ["0", "2", ""] {
             assert!(validate("DS4_STEP37_NO_SWA_HMMA", value, "step37").is_err());
         }
+    }
+
+    #[test]
+    fn ling3vl_controls() {
+        assert!(tunable("DS4_LING3VL_PREFILL_CHUNK"));
+        for value in ["1", "512", "1024", "2048", "4096"] {
+            assert!(validate("DS4_LING3VL_PREFILL_CHUNK", value, "ling3vl").is_ok());
+            assert!(validate("DS4_LING3VL_PREFILL_CHUNK", value, "ling").is_ok());
+        }
+        for value in ["0", "4097", "x"] {
+            assert!(validate("DS4_LING3VL_PREFILL_CHUNK", value, "ling3vl").is_err());
+        }
+        assert!(validate("DS4_LING3VL_PREFILL_CHUNK", "2048", "qwen").is_err());
+        for key in [
+            "DS4_LING3VL_NO_BF16_VEC",
+            "DS4_LING3VL_NO_MLA_TILE",
+            "DS4_LING3VL_MLA_TILE",
+            "DS4_LING3VL_NO_MLA_HMMA",
+            "DS4_LING3VL_NO_BF16_REUSE",
+            "DS4_LING3VL_NO_BF16_PAIR",
+            "DS4_LING3VL_NO_GEMV_XREG",
+            "DS4_LING3VL_NO_F32_VEC",
+            "DS4_LING3VL_NO_MOE_FUSE",
+            "DS4_MMQ_VEC_SANITIZE",
+        ] {
+            assert!(tunable(key));
+            assert!(validate(key, "1", "ling3vl").is_ok());
+            assert!(validate(key, "0", "ling3vl").is_err());
+            assert!(validate(key, "1", "qwen").is_err());
+        }
+        assert!(tunable("DS4_MMQ_Q5_PAIR"));
+        assert!(validate("DS4_MMQ_Q5_PAIR", "0", "ling3vl").is_ok());
+        assert!(validate("DS4_MMQ_Q5_PAIR", "1", "ling3vl").is_err());
+        assert!(tunable("DS4_CUDA_LAYER_GRAPHS"));
+        assert!(validate("DS4_CUDA_LAYER_GRAPHS", "0", "ling3vl").is_ok());
+        assert!(validate("DS4_CUDA_LAYER_GRAPHS", "1", "ling3vl").is_ok());
+        assert!(validate("DS4_CUDA_LAYER_GRAPHS", "0", "qwen").is_err());
     }
 }

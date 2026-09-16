@@ -26169,6 +26169,18 @@ extern "C" int ds4_gpu_matmul_bf16_input_tensor(
     return cuda_ok(cudaGetLastError(), "matmul_bf16 (bf16 input) launch");
 }
 
+extern "C" int ds4_gpu_f32_to_bf16(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *in, uint64_t n) {
+    if (!out || !in || !n ||
+        in->bytes < n * sizeof(float) ||
+        out->bytes < n * sizeof(__nv_bfloat16)) {
+        return 0;
+    }
+    f32_to_bf16_kernel<<<(n + 255u) / 256u, 256, 0, ds4_current_stream()>>>(
+        (__nv_bfloat16 *)out->ptr, (const float *)in->ptr, n);
+    return cuda_ok(cudaGetLastError(), "f32_to_bf16");
+}
+
 extern "C" int ds4_gpu_matmul_bf16_stable_rows_tensor(
         ds4_gpu_tensor *out,
         const void *model_map,
@@ -33379,15 +33391,17 @@ extern "C" int ds4_gpu_routed_gate_up_tensor(
     }
 
     /* Q4_K appears in Solar's shallow and tail routed layers, Q5_K in Qwen's
-     * edge layers and Q8_0 in its MTP block. Pairing here lets gate/up share
-     * the expert map and activation quantize; prefill then uses the common
-     * compact worklist with the top-k bucket bound. Decode widths (at most
-     * DS4_ROUTED_VEC_MAX_ROWS assignments, which covers the two-row MTP
-     * verify pass) keep the raw vector pair for Q4_K and the generic vec
-     * path for the other two, so every row sees one-row decode arithmetic. */
+     * edge layers and Ling experts, and Q8_0 in Qwen's MTP block. Pairing
+     * lets gate/up share the expert map and Q8_1 quantize. Prefill uses the
+     * compact worklist. Decode n=1 also pairs Q5_K; MTP verify (n_tokens>1)
+     * stays on two singles so each row keeps one-row arithmetic.
+     * DS4_MMQ_Q5_PAIR=0 restores two Q5 decode singles. */
     const char *q4_pair_env = getenv("DS4_MMQ_Q4_PAIR");
     const bool q4_pair_enabled =
         !(q4_pair_env && q4_pair_env[0] == '0');
+    const char *q5_pair_env = getenv("DS4_MMQ_Q5_PAIR");
+    const bool q5_decode_pair = weight_type == 13u && n_tokens == 1u &&
+        !(q5_pair_env && q5_pair_env[0] == '0');
     /* K2 MQ87 IQ1_S / IQ1_M gate/up ran as two single routed calls, each
      * with its own expert map, activation quantize and sanitize pass.
      * DS4_MMQ_IQ1_PAIR=0 restores that. */
@@ -33399,7 +33413,7 @@ extern "C" int ds4_gpu_routed_gate_up_tensor(
     const bool vec_width = assignments <= DS4_ROUTED_VEC_MAX_ROWS;
     if (pair_type && in_dim % 256u == 0u &&
         gate_bytes == up_bytes && ds4_cuda_use_mmq() && q4_pair_enabled &&
-        (weight_type == 12u || !vec_width)) {
+        (weight_type == 12u || q5_decode_pair || !vec_width)) {
         const uint64_t block_width = weight_type == 8u ? 32u : 256u;
         const uint64_t block_bytes =
             weight_type == 8u ? 34u : weight_type == 12u ? 144u
@@ -33431,17 +33445,27 @@ extern "C" int ds4_gpu_routed_gate_up_tensor(
                      * one-row mmvq partition (two-row MTP verify). */
                     rc = 0;
                     for (uint32_t t = 0; t < n_tokens && rc == 0; t++) {
-                        rc = ds4_mmq_q4_K_moe_pair_raw_vec(
-                              gate_raw, up_raw,
-                              (const float *)x->ptr + (size_t)t * in_dim,
-                              (const int32_t *)ids->ptr +
-                                  (size_t)t * n_expert_used,
-                              (float *)gate->ptr +
-                                  (size_t)t * n_expert_used * out_dim,
-                              (float *)up->ptr +
-                                  (size_t)t * n_expert_used * out_dim,
-                              (int)out_dim, (int)in_dim, 1,
-                              (int)n_expert, (int)n_expert_used, stream);
+                        const float *xt = (const float *)x->ptr +
+                            (size_t)t * in_dim;
+                        const int32_t *idst = (const int32_t *)ids->ptr +
+                            (size_t)t * n_expert_used;
+                        float *gt = (float *)gate->ptr +
+                            (size_t)t * n_expert_used * out_dim;
+                        float *ut = (float *)up->ptr +
+                            (size_t)t * n_expert_used * out_dim;
+                        if (weight_type == 12u) {
+                            rc = ds4_mmq_q4_K_moe_pair_raw_vec(
+                                gate_raw, up_raw, xt, idst, gt, ut,
+                                (int)out_dim, (int)in_dim, 1, (int)n_expert,
+                                (int)n_expert_used, stream);
+                        } else if (weight_type == 13u) {
+                            rc = ds4_mmq_q5_K_moe_pair_raw_vec(
+                                gate_raw, up_raw, xt, idst, gt, ut,
+                                (int)out_dim, (int)in_dim, 1, (int)n_expert,
+                                (int)n_expert_used, stream);
+                        } else {
+                            rc = -1;
+                        }
                     }
                 } else if (weight_type == 12u) {
                     rc = ds4_mmq_q4_K_moe_pair_bounded(
@@ -33595,6 +33619,54 @@ extern "C" int ds4_gpu_routed_gate_up_tensor(
             (int)n_expert, (int)n_expert_used, stream);
     return rc == 0 && cuda_ok(cudaGetLastError(),
                               "routed gate/up pair launch");
+}
+
+extern "C" int ds4_gpu_routed_silu_mid_tensor(
+        ds4_gpu_tensor *mid, const ds4_gpu_tensor *x, const ds4_gpu_tensor *ids,
+        const void *model_map, uint64_t model_size, uint64_t gate_offset,
+        uint64_t gate_bytes, uint64_t up_offset, uint64_t up_bytes,
+        uint32_t weight_type, uint32_t in_dim, uint32_t out_dim,
+        uint32_t n_expert, uint32_t n_tokens, uint32_t n_expert_used) {
+    const char *kill = getenv("DS4_LING3VL_NO_MOE_FUSE");
+    if (kill && kill[0] == '1') {
+        return 0;
+    }
+    if (n_tokens != 1u || weight_type != 12u || !mid || !x || !ids ||
+        !model_map || !in_dim || !out_dim || !n_expert || !n_expert_used ||
+        (in_dim % 256u) != 0u || gate_offset > model_size ||
+        up_offset > model_size || gate_bytes > model_size - gate_offset ||
+        up_bytes > model_size - up_offset || !ds4_cuda_use_mmq()) {
+        return 0;
+    }
+    const uint64_t assignments = (uint64_t)n_tokens * n_expert_used;
+    if (assignments > UINT64_MAX / out_dim ||
+        assignments * out_dim > UINT64_MAX / sizeof(float) ||
+        mid->bytes < assignments * out_dim * sizeof(float) ||
+        x->bytes < (uint64_t)n_tokens * in_dim * sizeof(float) ||
+        ids->bytes < assignments * sizeof(int32_t)) {
+        return 0;
+    }
+    const char *gate_raw = cuda_model_range_ptr(
+        model_map, gate_offset, gate_bytes, "routed silu gate");
+    const char *up_raw = cuda_model_range_ptr(
+        model_map, up_offset, up_bytes, "routed silu up");
+    if (!gate_raw || !up_raw) {
+        return 0;
+    }
+    /* W_a = up, W_b = gate so mmvq fusion emits silu(gate)*up. */
+    const int rc = ds4_mmq_q4_K_moe_pair_vec(
+        up_raw, gate_raw, (const float *)x->ptr, (const int32_t *)ids->ptr,
+        (float *)mid->ptr, (int)out_dim, (int)in_dim, (int)n_expert,
+        (int)n_expert_used, ds4_mmq_stream_for_call());
+    if (rc != 0) {
+        return 0;
+    }
+    static int logged = 0;
+    if (!logged) {
+        logged = 1;
+        fprintf(stderr, "ds4: routed Q4_K fused silu mmvq (decode n=1)\n");
+    }
+    return cuda_ok(cudaGetLastError(), "routed silu mid launch");
 }
 
 static unsigned long long g_moe_iq2_q3_handoff_launches = 0;

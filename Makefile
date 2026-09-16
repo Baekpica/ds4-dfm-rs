@@ -303,7 +303,7 @@ proof-rust-cuda-opp-c: ds4 ds4-c
 			--work-dir "$$root/rust" --check-expected "$$expected"
 endif
 
-ds4.o: ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h vendor/stb_image.h
+ds4.o: ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_batch.inc ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h vendor/stb_image.h
 	$(CC) $(CFLAGS) -c -o $@ ds4.c
 
 # Rust FFI seam: wraps ds4.h so crates/ds4-sys never bindgens the engine header.
@@ -712,7 +712,7 @@ ds4_agent_cpu.o: ds4_agent.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_
 ds4_metal.o: ds4_metal.m ds4_gpu.h $(METAL_SRCS)
 	$(CC) $(OBJCFLAGS) -c -o $@ ds4_metal.m
 
-ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
+ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
 	$(NVCC) $(NVCCFLAGS) -c -o $@ ds4_cuda.cu
 
 # Vendored mmq pieces. ds4_mmq.cu transitively pulls in mmq.cuh which has
@@ -837,6 +837,43 @@ tests/test_ling3vl_primitives: tests/test_ling3vl_primitives.cu cuda/ling3vl_pri
 .PHONY: test-ling3vl-primitives
 test-ling3vl-primitives: tests/test_ling3vl_primitives
 	./tests/test_ling3vl_primitives
+
+tests/test_ling3vl_matmul.o: tests/test_ling3vl_matmul.c ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ tests/test_ling3vl_matmul.c
+
+tests/test_ling3vl_matmul: tests/test_ling3vl_matmul.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-ling3vl-matmul
+test-ling3vl-matmul: tests/test_ling3vl_matmul
+	./tests/test_ling3vl_matmul
+
+tests/test_ling3vl_q5pair.o: tests/test_ling3vl_q5pair.c ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ tests/test_ling3vl_q5pair.c
+
+tests/test_ling3vl_q5pair: tests/test_ling3vl_q5pair.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-ling3vl-q5pair
+test-ling3vl-q5pair: tests/test_ling3vl_q5pair
+	./tests/test_ling3vl_q5pair
+
+tests/test_ling3vl_moefuse.o: tests/test_ling3vl_moefuse.c ds4_gpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ tests/test_ling3vl_moefuse.c
+
+tests/test_ling3vl_moefuse: tests/test_ling3vl_moefuse.o $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-ling3vl-moefuse
+test-ling3vl-moefuse: tests/test_ling3vl_moefuse
+	./tests/test_ling3vl_moefuse
+
+tests/test_ling3vl_mla: tests/test_ling3vl_mla.cu $(DS4_CUDA_CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -I. -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-ling3vl-mla
+test-ling3vl-mla: tests/test_ling3vl_mla
+	./tests/test_ling3vl_mla
 
 tests/test_inkling_kernels: tests/test_inkling_kernels.o $(DS4_CUDA_CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
@@ -1486,6 +1523,10 @@ clean:
 	rm -f tests/test_ling3vl_media tests/test_ling3vl_media.o
 	rm -f tests/test_ling3vl_vision tests/test_ling3vl_vision.o
 	rm -f tests/test_ling3vl_primitives
+	rm -f tests/test_ling3vl_matmul tests/test_ling3vl_matmul.o
+	rm -f tests/test_ling3vl_q5pair tests/test_ling3vl_q5pair.o
+	rm -f tests/test_ling3vl_moefuse tests/test_ling3vl_moefuse.o
+	rm -f tests/test_ling3vl_mla
 	rm -f tests/test_step37_vision_ops tests/test_step37_vision tests/test_step37_vision.o
 	rm -f tests/test_step37_primitives tests/test_step37_loader tests/test_step37_forward tests/test_step37_forward.o
 	rm -f tests/test_step37_session tests/test_step37_session.o tests/test_step37_state

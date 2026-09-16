@@ -151,8 +151,40 @@ The operator surface is the one in the [serving contract](serving-contract.md):
 | image input | PNG/JPEG data URIs, user messages, at most four per request |
 | MTP | none — this architecture has no NextN predictor |
 
-`DS4_LING3VL_PREFILL_CHUNK` pins the prefill chunk (default 2048, max 4096).
+`DS4_LING3VL_PREFILL_CHUNK` pins the prefill chunk (default 4096, max 4096).
+`2048` restores the previous width.
+`DS4_LING3VL_NO_MLA_HMMA=1` restores Motif HG MLA on prefill.
+`DS4_LING3VL_NO_BF16_REUSE=1` reconverts RMSNorm rows on every BF16 GEMM.
+`DS4_LING3VL_NO_BF16_VEC=1` restores cuBLAS for n=1 BF16.
+`DS4_LING3VL_NO_BF16_PAIR=1` keeps two n=1 BF16 GEMVs.
+`DS4_LING3VL_NO_GEMV_XREG=1` restores the streaming n=1 warp GEMV.
+`DS4_MMQ_Q5_PAIR=0` restores two n=1 Q5_K routed gate/up GEMVs.
+`DS4_MMQ_VEC_SANITIZE=1` keeps the Q4_K/Q5_K decode mmvq finite-scrub.
+`DS4_LING3VL_NO_F32_VEC=1` restores the 256-thread n=1 F32 GEMV.
 `DS4_SERVER_FORK_PARTIAL=0` drops the checkpoint pool, leaving exact fork only.
+
+### CUDA campaign (GB10)
+
+Workload: 8192+64, `speed-bench/promessi_sposi.txt`, SM 2184–2197 MHz.
+Baseline `ds4-bench`: prefill 1142 tok/s, decode 19.54 tok/s.
+After the counted rounds: prefill 1889 / 1893 tok/s, decode 24.65 tok/s.
+
+Counted `ds4-perf compare --regression` Improved:
+
+| Round | Change | Kill | Result |
+|---|---|---|---|
+| P1 | Prefill MLA dots3 HMMA | `DS4_LING3VL_NO_MLA_HMMA=1` | +50.7% prefill |
+| P2 | Prefill chunk 4096 | env `2048` | +7.8% prefill |
+| P3 | Pack RMSNorm once for BF16 GEMM | `DS4_LING3VL_NO_BF16_REUSE=1` | +2.7% prefill, exact logits |
+| D1 | n=1 BF16 warp GEMV | `DS4_LING3VL_NO_BF16_VEC=1` | +25.3% decode |
+
+Kept, not Improved (extrema envelope missed or flat): pair GEMV,
+register-cached GEMV (`NO_GEMV_XREG`), n=1 Q5_K gate/up pair,
+skip decode mmvq finite-scrub. Decode after D1 is still ~70% BF16 GEMV
+plus mmvq; further inner-loop and fused-mmvq attempts did not clear 1%.
+
+Tests: `tests/test_ling3vl_mla.cu`, `tests/test_ling3vl_matmul.c`,
+`tests/test_ling3vl_q5pair.c`.
 
 Chat input runs the official Bailing V3 Jinja template that ships in the GGUF;
 the legacy token builder refuses this family rather than approximating it. The
