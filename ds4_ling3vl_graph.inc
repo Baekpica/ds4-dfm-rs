@@ -452,16 +452,22 @@ static bool ling3vl_layer_kda(ds4_ling3vl_graph *g, const ds4_model *m,
                                   L3V_HIDDEN, b->b_q, n);
 }
 
-static bool ling3vl_mla_expanded(uint32_t n) {
+static bool ling3vl_mla_expanded(const ds4_model *m,
+                                 const ds4_layer_weights *l, uint32_t n) {
     /* Below one Motif query tile the expansion GEMMs and the per-segment
-     * merge cost more than the absorbed walk saves; decode is n = 1. */
+     * merge cost more than the absorbed walk saves; decode is n = 1.  A
+     * host-mapped k_b / v_b keeps the absorbed path too: cuBLAS's TMA
+     * kernels cannot read it. */
     enum { MIN_ROWS = 64u };
     static int on = -1;
     if (on < 0) {
         const char *env = getenv("DS4_LING3VL_NO_MLA_EXPAND");
         on = !(env && env[0] == '1');
     }
-    return on == 1 && n >= MIN_ROWS;
+    return on == 1 && n >= MIN_ROWS &&
+        ds4_gpu_ling3vl_expand_ready(m->map, m->size, l->attn_k_b->abs_offset,
+                                     l->attn_v_b->abs_offset, L3V_HEADS,
+                                     L3V_KV_LORA, L3V_NOPE, L3V_VALUE_MLA);
 }
 
 /* Compute-friendly MLA prefill, the split Motif-3 runs on its full layers:
@@ -556,7 +562,7 @@ static bool ling3vl_layer_mla(ds4_ling3vl_graph *g, const ds4_model *m,
                                       L3V_ROPE)) {
         return false;
     }
-    const bool attended = ling3vl_mla_expanded(n)
+    const bool attended = ling3vl_mla_expanded(m, l, n)
         ? ling3vl_mla_attend_expanded(g, m, l, il, n, pos, scale)
         : ling3vl_mla_attend_absorbed(g, m, l, il, n, pos, scale);
     return attended &&

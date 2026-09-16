@@ -4358,6 +4358,18 @@ int ds4_gpu_ling3vl_value_project(
         uint32_t                latent_dim,
         uint32_t                value_dim);
 
+/* 1 when both k_b and v_b resolve to device or managed memory; the expansion
+ * GEMMs run cuBLAS TMA kernels, which fault on a mapped host weight. */
+int ds4_gpu_ling3vl_expand_ready(
+        const void             *map,
+        uint64_t                size,
+        uint64_t                k_b_offset,
+        uint64_t                v_b_offset,
+        uint32_t                heads,
+        uint32_t                latent_dim,
+        uint32_t                qk_nope,
+        uint32_t                value_dim);
+
 /* Expanded-MLA prefill: latent cache rows [slot0, slot0+rows) become per-head
  * FP32 K [rows][heads][qk_nope+qk_rope] and V [rows][heads][value_dim] for
  * the Motif range attention kernel. */

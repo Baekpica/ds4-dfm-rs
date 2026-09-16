@@ -117,6 +117,14 @@ int main(void) {
      * the raw host map, so copy this one to the device the same way. */
     CHECK(!setenv("DS4_CUDA_COPY_MODEL", "1", 1));
     CHECK(ds4_gpu_set_model_map(map, map_bytes));
+    CHECK(ds4_gpu_ling3vl_expand_ready(map, map_bytes, 0u, k_b_bytes, HEADS, LAT,
+                                       NOPE, VALUE) == 1);
+    /* An unregistered host buffer resolves to its raw pointer: refused. */
+    void *host_only = NULL;
+    CHECK(!posix_memalign(&host_only, 4096, map_bytes));
+    CHECK(ds4_gpu_ling3vl_expand_ready(host_only, map_bytes, 0u, k_b_bytes, HEADS,
+                                       LAT, NOPE, VALUE) == 0);
+    free(host_only);
 
     std::vector<float> q((size_t)ROWS * HEADS * KEY);
     std::vector<uint16_t> lat((size_t)CTX * LAT), pe((size_t)CTX * ROPE);

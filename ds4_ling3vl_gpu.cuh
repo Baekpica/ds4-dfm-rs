@@ -99,6 +99,54 @@ extern "C" int ds4_gpu_ling3vl_value_project(
     return cuda_ok(cudaGetLastError(), "Ling-3.0 MLA value projection");
 }
 
+/* cuBLAS picks TMA kernels for the expansion GEMMs, and TMA faults on the
+ * raw ATS host pointer that `mapped` base residency serves, so the expanded
+ * path is admitted only when both weights resolve to device or managed
+ * memory.  One probe per (map, offset); seven MLA layers, two weights each. */
+extern "C" int ds4_gpu_ling3vl_expand_ready(
+        const void *map, uint64_t size, uint64_t k_b_offset,
+        uint64_t v_b_offset, uint32_t heads, uint32_t latent_dim,
+        uint32_t qk_nope, uint32_t value_dim) {
+    enum { PROBES = 2 * LING_MLA_LAYERS };
+    struct probe { const void *map; uint64_t offset; int ok; };
+    static struct probe cache[PROBES];
+    static unsigned cached = 0;
+    const uint64_t bytes[2] = {
+        (uint64_t)heads * latent_dim * qk_nope * sizeof(__nv_bfloat16),
+        (uint64_t)heads * value_dim * latent_dim * sizeof(__nv_bfloat16),
+    };
+    const uint64_t offsets[2] = {k_b_offset, v_b_offset};
+    for (int w = 0; w < 2; w++) {
+        int ok = -1;
+        for (unsigned i = 0; i < cached; i++) {
+            if (cache[i].map == map && cache[i].offset == offsets[w]) {
+                ok = cache[i].ok;
+                break;
+            }
+        }
+        if (ok < 0) {
+            if (offsets[w] > size || bytes[w] > size - offsets[w]) { return 0; }
+            const void *ptr = cuda_model_range_ptr(map, offsets[w], bytes[w],
+                                                   "ling3vl expand weight");
+            cudaPointerAttributes attr;
+            ok = ptr && cudaPointerGetAttributes(&attr, ptr) == cudaSuccess &&
+                (attr.type == cudaMemoryTypeDevice ||
+                 attr.type == cudaMemoryTypeManaged);
+            (void)cudaGetLastError();
+            if (!ok) {
+                fprintf(stderr, "ds4: Ling expanded MLA prefill off: weight at "
+                        "%llu is not device-resident; absorbed path\n",
+                        (unsigned long long)offsets[w]);
+            }
+            if (cached < PROBES) {
+                cache[cached++] = (struct probe){map, offsets[w], ok};
+            }
+        }
+        if (!ok) { return 0; }
+    }
+    return 1;
+}
+
 /* Expanded-MLA prefill operand: one latent-cache segment [slot0, slot0+rows)
  * becomes per-head K = [latent . k_b[h] | k_pe] (qk_nope + qk_rope wide)
  * and V = latent . v_b[h]^T (value_dim wide), FP32, [rows][heads][dim].

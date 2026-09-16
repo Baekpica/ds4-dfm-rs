@@ -15,7 +15,8 @@ enum {
     LING_GROUPS_USED = 4u,
     LING_PER_GROUP = LING_EXPERTS / LING_GROUPS,
     LING_ROUTER_LANES = 32u,
-    LING_PER_LANE = LING_EXPERTS / LING_ROUTER_LANES
+    LING_PER_LANE = LING_EXPERTS / LING_ROUTER_LANES,
+    LING_MLA_LAYERS = 7u
 };
 
 /* The shared ds4 rule: a higher score wins, and equal scores resolve to the
