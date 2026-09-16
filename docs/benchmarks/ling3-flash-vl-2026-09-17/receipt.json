@@ -1,0 +1,108 @@
+{
+  "date": "2026-09-17",
+  "artifact": "Baekpica/Ling-3.0-flash-VL-Mixed-Quant-GGUF MQ-Q5-KDA-VIT-BF16",
+  "baseline_commit": "8436382",
+  "candidate_commit": "007f0e4",
+  "protocol": "32 frontiers, 2048-token incremental prefill and 128 greedy decode tokens per frontier in one warm session, fresh process per run. Two runs of main 8436382 (#48, absorbed-MLA prefill; a third was stopped when the campaign was redirected) and three runs of 007f0e4 (expanded-MLA prefill, decode HG split fill), run back to back on the same resident owner. Summary is the median of run means. Plot curves are per-frontier medians with observed min/max bands. Between frontiers ds4-bench restores the prefix by replaying it (the recurrent state has no rewind); that replay is outside both measured phases. Ling has no MTP.",
+  "command": "ds4-bench --cuda -m <shard 00001> --prompt-file speed-bench/promessi_sposi.txt --ctx-start 2048 --ctx-max 65536 --step-incr 2048 --gen-tokens 128 --csv <out>",
+  "environment": {
+    "DS4_CUDA_WEIGHT_IPC_MANIFEST": "resident ds4_weight_server --backend vmm --scope base (same owner for every run)",
+    "DS4_CUDA_WEIGHT_IPC_SCOPE": "base"
+  },
+  "host_memory_guard": "--max-gib 24 --high-gib 21 --reserve-gib 6 --trip-gib 4 --timeout 0",
+  "platform": {
+    "gpu": "NVIDIA GB10, 610.43.02",
+    "cuda": "Build cuda_13.3.r13.3/compiler.38244171_0",
+    "rust": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+    "kernel": "Linux 6.17.0-1032-nvidia aarch64",
+    "sm_clock_policy": "user-managed 300\u20132200 MHz range; observed busy SM clocks recorded per run"
+  },
+  "verified_input_hashes": {
+    "prompt": {
+      "path": "speed-bench/promessi_sposi.txt",
+      "sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f"
+    },
+    "model_shards": {
+      "Ling-3.0-flash-VL-MQ-Q5-KDA-VIT-BF16-00001-of-00003.gguf": "6902566540c981273666d1df30ad88814a4f47e6d4fefbb3e50a4b4c49d84010",
+      "Ling-3.0-flash-VL-MQ-Q5-KDA-VIT-BF16-00002-of-00003.gguf": "5c989b2ebe7af8f1d4c6415145ff659c9717e418d5ff642d94228fef83b8018c",
+      "Ling-3.0-flash-VL-MQ-Q5-KDA-VIT-BF16-00003-of-00003.gguf": "20f983e7c3fa888f9a6f4e4784029bc9bbe23b17b22467cd3ac94d42ae5c2f66"
+    }
+  },
+  "runs": [
+    {
+      "label": "base-1",
+      "binary": "ds4-bench-opt48",
+      "source_commit": "8436382",
+      "executable_sha256": "a0488aac14030febdb3b9da81dc12ecf66070979d32ae6fef0206f905f43a37d",
+      "frontiers": 32,
+      "mean_prefill_tps": 1104.52,
+      "mean_gen_tps": 24.05,
+      "wall_seconds": 1031.7,
+      "sm_mhz_busy_range": [
+        2184,
+        2190
+      ],
+      "min_host_available_gib": 28.65
+    },
+    {
+      "label": "base-2",
+      "binary": "ds4-bench-opt48",
+      "source_commit": "8436382",
+      "executable_sha256": "a0488aac14030febdb3b9da81dc12ecf66070979d32ae6fef0206f905f43a37d",
+      "frontiers": 32,
+      "mean_prefill_tps": 1107.85,
+      "mean_gen_tps": 24.06,
+      "wall_seconds": 1031.5,
+      "sm_mhz_busy_range": [
+        2184,
+        2190
+      ],
+      "min_host_available_gib": 28.65
+    },
+    {
+      "label": "new-1",
+      "binary": "ds4-bench-new",
+      "source_commit": "007f0e4",
+      "executable_sha256": "a510c87ec7754b9faf062c8161a33dd2b15d9f4419d852dca753f78a465161c6",
+      "frontiers": 32,
+      "mean_prefill_tps": 1595.15,
+      "mean_gen_tps": 24.56,
+      "wall_seconds": 747.1,
+      "sm_mhz_busy_range": [
+        2184,
+        2190
+      ],
+      "min_host_available_gib": 27.81
+    },
+    {
+      "label": "new-2",
+      "binary": "ds4-bench-new",
+      "source_commit": "007f0e4",
+      "executable_sha256": "a510c87ec7754b9faf062c8161a33dd2b15d9f4419d852dca753f78a465161c6",
+      "frontiers": 32,
+      "mean_prefill_tps": 1596.59,
+      "mean_gen_tps": 24.5,
+      "wall_seconds": 744.1,
+      "sm_mhz_busy_range": [
+        2184,
+        2190
+      ],
+      "min_host_available_gib": 27.1
+    },
+    {
+      "label": "new-3",
+      "binary": "ds4-bench-new",
+      "source_commit": "007f0e4",
+      "executable_sha256": "a510c87ec7754b9faf062c8161a33dd2b15d9f4419d852dca753f78a465161c6",
+      "frontiers": 32,
+      "mean_prefill_tps": 1602.87,
+      "mean_gen_tps": 24.6,
+      "wall_seconds": 741.9,
+      "sm_mhz_busy_range": [
+        2184,
+        2190
+      ],
+      "min_host_available_gib": 28.45
+    }
+  ]
+}

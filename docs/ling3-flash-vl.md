@@ -234,6 +234,38 @@ Tests: `tests/test_ling3vl_mla_expand.cu` (expanded vs absorbed vs a
 double reference across a three-segment merge; rel-RMS 6.4e-3 from the
 BF16 operand rounding, 5e-7 for the absorbed walk).
 
+### 2K–64K card sweep (2026-09-17)
+
+The Qwen card protocol: one warm session per fresh process, 2,048-token
+incremental prefill and 128 greedy tokens at every frontier from 2,048 to
+65,536, `speed-bench/promessi_sposi.txt`, the same resident VMM weight
+owner, SM 2184–2190 MHz while busy.  Two runs of `main` `8436382` (#48)
+and three of `007f0e4` (P4 + D2).  Between frontiers `ds4-bench` replays
+the prefix (the recurrent state has no rewind); that replay sits outside
+both measured phases.
+
+![Ling-3.0-flash-VL 2K–64K prefill and decode, #48 vs expanded MLA](ling3-flash-vl-2k-64k-throughput.png)
+
+| Binary | Runs | Mean prefill tok/s | Mean decode tok/s |
+|---|---:|---:|---:|
+| `8436382` (#48, absorbed MLA) | 2 | 1,106.2 | 24.05 |
+| `007f0e4` (expanded MLA) | 3 | **1,596.6** (+44.3%) | **24.56** (+2.1%) |
+
+Per-frontier medians, #48 → expanded:
+
+| Frontier | Prefill tok/s | Decode tok/s |
+|---:|---:|---:|
+| 8,192 | 1,670 → **1,991** (+19%) | 26.0 → 26.1 |
+| 32,768 | 1,029 → **1,583** (+54%) | 24.1 → 24.6 |
+| 65,536 | 684 → **1,231** (+80%) | 21.9 → 22.9 |
+
+Prefill still declines 2K → 64K (2,067 → 1,231): the Motif range kernel
+reads its expanded K/V from FP32 and re-stages every key tile per 64-query
+block, so the remaining context term is memory traffic rather than FLOPs.
+Decode declines 26.4 → 22.9 in the absorbed head-group walk.  Raw CSVs,
+`receipt.json` and `summary.json`: `benchmarks/ling3-flash-vl-2026-09-17/`;
+plot: `python3 docs/benchmarks/plot-ling3-flash-vl.py` (matplotlib).
+
 Chat input runs the official Bailing V3 Jinja template that ships in the GGUF;
 the legacy token builder refuses this family rather than approximating it. The
 generated tool envelope is GLM's `<tool_call>` / `<arg_key>` / `<arg_value>`
