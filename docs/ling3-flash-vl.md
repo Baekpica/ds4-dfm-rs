@@ -103,7 +103,7 @@ else is an existing path.
 | Stage | Source |
 |---|---|
 | KDA recurrence, chunked prefill and banked decode | Solar/GLM kernels, third variant |
-| MLA prefill (64+ rows): per-segment K/V expansion, 192/128 range attention, LSE merge | Motif-3 full-attention prefill, cuBLAS batched GEMM |
+| MLA prefill (64+ rows): per-segment BF16 K/V expansion, 192/128 range attention, LSE merge | Motif-3 full-attention split, cuBLAS batched GEMM; Ling range kernel (Motif's with BF16 K/V, 64-key tiles, ldmatrix) |
 | MLA decode: absorbed latent attention | Motif-3 `latent_attention_bf16` (head-group split) |
 | Routed expert GEMMs, expert sum, SwiGLU clamp, head-wise gate | Step 3.7 |
 | ViT blocks, merger GELU/bias | Qwen3.8 Flash Next |
@@ -156,6 +156,7 @@ The operator surface is the one in the [serving contract](serving-contract.md):
 `DS4_LING3VL_PREFILL_CHUNK` pins the prefill chunk (default 4096, max 4096).
 `2048` restores the previous width.
 `DS4_LING3VL_NO_MLA_EXPAND=1` restores absorbed-MLA prefill (dots3 HMMA).
+`DS4_LING3VL_MLA_KV_F32=1` restores FP32 K/V scratch, one-chunk segments and Motif's range kernel.
 `DS4_LING3VL_NO_MLA_HMMA=1` restores Motif HG MLA on absorbed prefill.
 `DS4_MOTIF3_ATTN_HG_FILL=1` restores the fixed 32-way decode attention split.
 `DS4_LING3VL_NO_BF16_REUSE=1` reconverts RMSNorm rows on every BF16 GEMM.
@@ -208,6 +209,7 @@ two 16-head groups ran 64 CTAs on 48 SMs.
 |---|---|---|---|
 | P4 | Expanded-MLA prefill, rows >= 64 | `DS4_LING3VL_NO_MLA_EXPAND=1` | 8K +15%, 64K +94% prefill |
 | D2 | Decode HG split 32 -> 64 for two head groups | `DS4_MOTIF3_ATTN_HG_FILL=1` | 64K +4.5% decode, 8K flat |
+| P5 | BF16 K/V scratch, 64-key tiles, 3-chunk segments | `DS4_LING3VL_MLA_KV_F32=1` | 8K +1.3%, 32K +8.3%, 64K +14.5% prefill |
 
 Same-hour A/B, one warm session per fresh process, 8,192-token incremental
 prefill and 128 greedy tokens per frontier, SM 2190–2197 MHz; `old` is
@@ -230,9 +232,34 @@ loses 11% from 8K to 64K in the absorbed HG walk (1.24 ms per MLA layer at
 64K against a 0.3 ms bandwidth floor); a tensor-core split-K decode kernel
 is the open item.
 
-Tests: `tests/test_ling3vl_mla_expand.cu` (expanded vs absorbed vs a
-double reference across a three-segment merge; rel-RMS 6.4e-3 from the
-BF16 operand rounding, 5e-7 for the absorbed walk).
+**P5** (round 2, on top of the merged #49).  The range kernel was profiled
+against the tensor roof rather than the memory it moves: GB10's dense BF16
+rate with FP32 accumulation is ~54 TFLOPS and the Motif kernel held ~42.
+Model-free A/B on one 4096 x 4096 segment at position 61,440 (ms):
+Motif FP32 9.7; BF16 K/V + ldmatrix at TK=32 9.6 (the staging bytes were
+not the bound); TK=64 8.2; eight warps per block 10.1 (166 registers
+force one CTA per SM); one softmax update per tile 8.4.  What ships:
+BF16 K/V written straight by the expansion GEMMs, the Ling range kernel at
+TK=64 with ldmatrix fragments, and three-chunk key segments (the BF16
+scratch fits 12,288 keys in the same aliased buffer), so the LSE merges
+drop 3x.  Same-hour A/B on 8,192-token frontiers, `old` = `#49` path:
+
+| Frontier | Prefill old → new tok/s | Decode |
+|---:|---:|---:|
+| 8,192 | 2,201 → **2,229** (+1.3%) | 25.6 → 25.5 |
+| 32,768 | 1,812 → **1,963** (+8.3%) | 24.6 → 24.6 |
+| 65,536 | 1,408 → **1,613** (+14.5%) | 22.8 → 22.8 |
+
+Frontier logits keep the same argmax at all eight frontiers (8–10/10
+top-10; rel-RMS 0.04–0.085 vs the #49 path from the segment-boundary
+reorder, bit-identical at 8K where one segment covers the prompt); two
+runs are byte-identical.  Eight-warp query tiles were measured and not
+shipped.
+
+Tests: `tests/test_ling3vl_mla_expand.cu` (FP32 and BF16 expanded scratch
+vs absorbed vs a double reference across a three-segment merge; rel-RMS
+6.4e-3 on both range kernels from the BF16 operand rounding, 5e-7 for the
+absorbed walk).
 
 ### 2K–64K card sweep (2026-09-17)
 

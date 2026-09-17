@@ -1,7 +1,8 @@
-/* Ling expanded-MLA prefill (per-head K/V + Motif range attention, merged
- * across two key segments) against the absorbed path and a double reference.
- * The expanded kernel rounds Q/K/V/P to BF16, so its bound is looser than
- * the FP16 HMMA; a layout or merge bug shows up as O(1), not 1e-2. */
+/* Ling expanded-MLA prefill (per-head K/V + range attention, merged across
+ * three key segments), FP32 scratch on Motif's kernel and BF16 scratch on
+ * the Ling kernel, against the absorbed path and a double reference.  The
+ * range kernels round Q/K/V/P to BF16, so their bound is looser than the
+ * FP16 HMMA; a layout or merge bug shows up as O(1), not 1e-2. */
 #include "ds4_gpu.h"
 #include <cmath>
 #include <cstdint>
@@ -119,12 +120,12 @@ int main(void) {
     CHECK(ds4_gpu_set_model_map(map, map_bytes));
     CHECK(ds4_gpu_ling3vl_expand_ready(map, map_bytes, 0u, k_b_bytes, HEADS, LAT,
                                        NOPE, VALUE) == 1);
-    /* An unregistered host buffer resolves to its raw pointer: refused. */
+    /* A plain host buffer is refused.  The resolver pins it as a side
+     * effect, so it stays allocated until the backend is torn down. */
     void *host_only = NULL;
     CHECK(!posix_memalign(&host_only, 4096, map_bytes));
     CHECK(ds4_gpu_ling3vl_expand_ready(host_only, map_bytes, 0u, k_b_bytes, HEADS,
                                        LAT, NOPE, VALUE) == 0);
-    free(host_only);
 
     std::vector<float> q((size_t)ROWS * HEADS * KEY);
     std::vector<uint16_t> lat((size_t)CTX * LAT), pe((size_t)CTX * ROPE);
@@ -154,21 +155,27 @@ int main(void) {
     CHECK(ds4_gpu_tensor_write(dlat, 0, lat.data(), lat.size() * sizeof(uint16_t)));
     CHECK(ds4_gpu_tensor_write(dpe, 0, pe.data(), pe.size() * sizeof(uint16_t)));
 
-    /* Expanded: prefix segments [0,64) [64,96), then the chunk [96,176). */
+    /* Expanded, FP32 then BF16 scratch: prefix segments [0,64) [64,96),
+     * then the chunk [96,176), merged through the LSE. */
     const uint32_t segs[3][2] = {{0u, SEG}, {SEG, POS0 - SEG}, {POS0, ROWS}};
-    for (int s = 0; s < 3; s++) {
-        ds4_gpu_tensor *out = s == 0 ? out_exp : out_tmp;
-        ds4_gpu_tensor *l = s == 0 ? lse : lse_tmp;
-        CHECK(ds4_gpu_ling3vl_expand_kv(k_full, value, dlat, dpe, map, map_bytes,
-                                        0u, k_b_bytes, segs[s][0], segs[s][1],
-                                        HEADS, LAT, NOPE, ROPE, VALUE));
-        CHECK(ds4_gpu_motif3_expanded_attention_range_tensor(
-            out, l, dq, k_full, value, ROWS, POS0, segs[s][1], segs[s][0],
-            HEADS, HEADS, KEY, VALUE, scale, 0u));
-        if (s) {
-            CHECK(ds4_gpu_motif3_merge_attention_states_tensor(
-                out_exp, lse, out_tmp, lse_tmp, ROWS, HEADS, VALUE));
+    std::vector<float> exp_h[2] = {std::vector<float>(out_bytes / 4),
+                                   std::vector<float>(out_bytes / 4)};
+    for (int bf16 = 0; bf16 < 2; bf16++) {
+        for (int s = 0; s < 3; s++) {
+            ds4_gpu_tensor *out = s == 0 ? out_exp : out_tmp;
+            ds4_gpu_tensor *l = s == 0 ? lse : lse_tmp;
+            CHECK(ds4_gpu_ling3vl_expand_kv(k_full, value, dlat, dpe, map, map_bytes,
+                                            0u, k_b_bytes, segs[s][0], segs[s][1],
+                                            HEADS, LAT, NOPE, ROPE, VALUE, bf16));
+            CHECK(ds4_gpu_ling3vl_expanded_attn(
+                out, l, dq, k_full, value, ROWS, POS0, segs[s][1], segs[s][0],
+                HEADS, KEY, VALUE, scale, bf16));
+            if (s) {
+                CHECK(ds4_gpu_motif3_merge_attention_states_tensor(
+                    out_exp, lse, out_tmp, lse_tmp, ROWS, HEADS, VALUE));
+            }
         }
+        CHECK(ds4_gpu_tensor_read(out_exp, 0, exp_h[bf16].data(), out_bytes));
     }
 
     /* Absorbed, on the Motif FP32 walk (the prefill HMMA kill). */
@@ -180,22 +187,25 @@ int main(void) {
     CHECK(ds4_gpu_ling3vl_value_project(out_abs, latent_out, map, map_bytes,
                                         k_b_bytes, ROWS, HEADS, LAT, VALUE));
 
-    std::vector<float> exp_h(out_bytes / 4), abs_h(out_bytes / 4);
-    CHECK(ds4_gpu_tensor_read(out_exp, 0, exp_h.data(), out_bytes));
+    std::vector<float> abs_h(out_bytes / 4);
     CHECK(ds4_gpu_tensor_read(out_abs, 0, abs_h.data(), out_bytes));
     std::vector<double> ref(out_bytes / 4);
     reference(ref, q, lat, pe, k_b, v_b, scale);
-    const double exp_err = rel_rms(exp_h, ref);
+    const double f32_err = rel_rms(exp_h[0], ref);
+    const double bf16_err = rel_rms(exp_h[1], ref);
     const double abs_err = rel_rms(abs_h, ref);
-    printf("Ling MLA expanded prefill: rel-rms %.3g vs reference (absorbed %.3g)\n",
-           exp_err, abs_err);
-    CHECK(exp_err < kExpandedRelRms);
+    printf("Ling MLA expanded prefill: rel-rms %.3g (FP32 K/V, Motif kernel), "
+           "%.3g (BF16 K/V, Ling kernel) vs reference; absorbed %.3g\n",
+           f32_err, bf16_err, abs_err);
+    CHECK(f32_err < kExpandedRelRms);
+    CHECK(bf16_err < kExpandedRelRms);
     CHECK(abs_err < kAbsorbedRelRms);
 
     ds4_gpu_tensor *all[] = {dq, dlat, dpe, k_full, value, out_exp, out_tmp,
                              lse, lse_tmp, qa, latent_out, out_abs};
     for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++) ds4_gpu_tensor_free(all[i]);
     ds4_gpu_cleanup();
+    free(host_only);
     free(map);
     return 0;
 }

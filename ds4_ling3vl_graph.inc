@@ -23,6 +23,8 @@ typedef struct {
      * latent_out (merge operand, both LSE vectors), which that path never
      * touches otherwise.  Decode keeps the absorbed pair. */
     ds4_gpu_tensor *k_full, *value, *attn_tmp, *lse, *lse_tmp;
+    uint32_t seg_cap;
+    bool kv_bf16;
     ds4_gpu_tensor *kda_decay, *kda_gate, *kda_beta, *kda_scratch;
     ds4_gpu_tensor *attn_gate;
     /* Packed RMSNorm activations for the layer's BF16 projections. */
@@ -147,6 +149,18 @@ static uint32_t ling3vl_prefill_cap(uint32_t ctx) {
     return cap < ctx ? cap : ctx;
 }
 
+/* BF16 K/V scratch feeds the Ling range kernel; DS4_LING3VL_MLA_KV_F32=1
+ * restores FP32 scratch and Motif's kernel.  Read once: the scratch views
+ * are sized for it at graph allocation. */
+static bool ling3vl_mla_kv_bf16(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *env = getenv("DS4_LING3VL_MLA_KV_F32");
+        on = !(env && env[0] == '1');
+    }
+    return on == 1;
+}
+
 static ds4_context_memory ling3vl_memory(uint32_t ctx, uint32_t cap) {
     ds4_context_memory m = {0};
     if (!ctx || !cap || cap > ctx || ctx > L3V_CONTEXT) { return m; }
@@ -258,16 +272,24 @@ static bool ling3vl_scratch_alloc(ds4_ling3vl_graph *g, uint32_t ctx,
     L3V_ALLOC(attn_gate, (uint64_t)cap * L3V_HEADS, float);
     L3V_ALLOC(norm_bf16, (uint64_t)cap * L3V_HIDDEN, uint16_t);
 #undef L3V_ALLOC
-    /* q_absorbed and latent_out are cap x 32 x 512 floats; the expanded
-     * prefill needs cap x (6144 + 4096) and cap x (4096 + 2 x 32) of them. */
-    const uint64_t k_bytes = (uint64_t)cap * L3V_QDIM * sizeof(float);
-    const uint64_t v_bytes = (uint64_t)cap * L3V_VDIM * sizeof(float);
+    /* q_absorbed and latent_out are cap x 32 x 512 floats.  The expanded
+     * prefill's K/V scratch takes q_absorbed: one key segment of seg_cap
+     * rows x (6144 + 4096) values, BF16 (three chunks' worth, so the
+     * per-segment merges drop 3x) or FP32 (one chunk, the Motif kernel).
+     * latent_out holds the merge operand and both LSE vectors, per query
+     * row (n <= cap). */
+    g->kv_bf16 = ling3vl_mla_kv_bf16();
+    const uint64_t kv_elem = g->kv_bf16 ? sizeof(uint16_t) : sizeof(float);
+    g->seg_cap = g->kv_bf16 ? cap * L3V_MLA_SEG_CHUNKS : cap;
+    const uint64_t k_bytes = (uint64_t)g->seg_cap * L3V_QDIM * kv_elem;
+    const uint64_t v_bytes = (uint64_t)g->seg_cap * L3V_VDIM * kv_elem;
+    const uint64_t tmp_bytes = (uint64_t)cap * L3V_VDIM * sizeof(float);
     const uint64_t lse_bytes = (uint64_t)cap * L3V_HEADS * sizeof(float);
     g->k_full = ds4_gpu_tensor_view(g->q_absorbed, 0, k_bytes);
     g->value = ds4_gpu_tensor_view(g->q_absorbed, k_bytes, v_bytes);
-    g->attn_tmp = ds4_gpu_tensor_view(g->latent_out, 0, v_bytes);
-    g->lse = ds4_gpu_tensor_view(g->latent_out, v_bytes, lse_bytes);
-    g->lse_tmp = ds4_gpu_tensor_view(g->latent_out, v_bytes + lse_bytes, lse_bytes);
+    g->attn_tmp = ds4_gpu_tensor_view(g->latent_out, 0, tmp_bytes);
+    g->lse = ds4_gpu_tensor_view(g->latent_out, tmp_bytes, lse_bytes);
+    g->lse_tmp = ds4_gpu_tensor_view(g->latent_out, tmp_bytes + lse_bytes, lse_bytes);
     if (!g->k_full || !g->value || !g->attn_tmp || !g->lse || !g->lse_tmp) {
         fprintf(stderr, "ds4: Ling graph allocation failed: expanded MLA views\n");
         ling3vl_graph_free(g);
@@ -471,8 +493,8 @@ static bool ling3vl_mla_expanded(const ds4_model *m,
 }
 
 /* Compute-friendly MLA prefill, the split Motif-3 runs on its full layers:
- * each cap-sized key segment is expanded to per-head K/V and attended at
- * 192 + 128 dims, and segments merge through their log-sum-exp.  The
+ * each seg_cap-sized key segment is expanded to per-head K/V and attended
+ * at 192 + 128 dims, and segments merge through their log-sum-exp.  The
  * absorbed form instead scores all 32 heads against one shared 576-wide
  * latent row: 3.4x the FLOPs per head-key, and at 64K its tensor-core
  * kernel held 32 TFLOPS and 52% of a cold prefill.  Prefix segments end at
@@ -485,20 +507,21 @@ static bool ling3vl_mla_attend_expanded(ds4_ling3vl_graph *g,
                                         float scale) {
     ds4_exaone_batch_ws *b = &g->ws;
     const uint32_t end = pos + n;
+    const int kv_bf16 = g->kv_bf16 ? 1 : 0;
     bool first = true;
     for (uint32_t seg0 = 0; seg0 < end; ) {
         const uint32_t limit = seg0 < pos ? pos : end;
-        const uint32_t len = limit - seg0 < g->cap ? limit - seg0 : g->cap;
+        const uint32_t len = limit - seg0 < g->seg_cap ? limit - seg0 : g->seg_cap;
         ds4_gpu_tensor *out = first ? b->b_heads : g->attn_tmp;
         ds4_gpu_tensor *lse = first ? g->lse : g->lse_tmp;
         if (!ds4_gpu_ling3vl_expand_kv(
                 g->k_full, g->value, g->latent_cache[il], g->k_pe_cache[il],
                 m->map, m->size, l->attn_k_b->abs_offset,
                 l->attn_v_b->abs_offset, seg0, len, L3V_HEADS, L3V_KV_LORA,
-                L3V_NOPE, L3V_ROPE, L3V_VALUE_MLA) ||
-            !ds4_gpu_motif3_expanded_attention_range_tensor(
+                L3V_NOPE, L3V_ROPE, L3V_VALUE_MLA, kv_bf16) ||
+            !ds4_gpu_ling3vl_expanded_attn(
                 out, lse, b->b_q, g->k_full, g->value, n, pos, len, seg0,
-                L3V_HEADS, L3V_HEADS, L3V_KEY_MLA, L3V_VALUE_MLA, scale, 0u) ||
+                L3V_HEADS, L3V_KEY_MLA, L3V_VALUE_MLA, scale, kv_bf16) ||
             (!first && !ds4_gpu_motif3_merge_attention_states_tensor(
                 b->b_heads, g->lse, g->attn_tmp, g->lse_tmp, n, L3V_HEADS,
                 L3V_VALUE_MLA))) {

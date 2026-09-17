@@ -1786,6 +1786,251 @@ void motif3_fattn_hmma_kernel(
 }
 
 
+/* Ling expanded-MLA prefill attention: the Motif 192/128 range kernel on
+ * the expansion scratch.  K/V arrive BF16 straight from the expansion GEMMs,
+ * so a tile is one uint4 copy per eight elements instead of a float4 load
+ * and a convert, and K/V fragments come from ldmatrix.  Masks, online
+ * softmax, output and LSE are the Motif kernel's, so the expanded path
+ * keeps one numerical contract: BF16 Q/K/V/P operands, FP32 accumulation.
+ *
+ * Measured on GB10 (4096 queries x 4096 keys, 32 heads, position 61440):
+ * Motif FP32 9.7 ms; BF16 + ldmatrix at TK=32 9.6 ms (the staging bytes
+ * were not the bound), TK=64 8.2 ms (half the barriers); eight warps per
+ * block 10.1 ms (166 registers force one CTA per SM); one softmax update
+ * per tile instead of per step 8.4 ms.  The kernel sits at ~45 TFLOPS,
+ * three quarters of GB10's dense BF16 tensor rate with FP32 accumulation,
+ * so TK=64 with four warps is what ships. */
+enum {
+    L3_FA_QK     = 192,
+    L3_FA_V      = 128,
+    L3_FA_WARPS  = 4,
+    L3_FA_TQ     = L3_FA_WARPS * 16,
+    L3_FA_PAD    = 8,
+    L3_FA_QK_ROW = L3_FA_QK + L3_FA_PAD,
+    L3_FA_V_ROW  = L3_FA_V + L3_FA_PAD,
+};
+
+template <int TK>
+__global__ __launch_bounds__(L3_FA_WARPS * 32, TK == 32 ? 3 : 2)
+void ling3vl_fattn_hmma_kernel(
+        float * __restrict__ heads,
+        float * __restrict__ lse,
+        const float * __restrict__ q,
+        const __nv_bfloat16 * __restrict__ k,
+        const __nv_bfloat16 * __restrict__ v,
+        const uint32_t n_query,
+        const uint32_t query_pos0,
+        const uint32_t n_kv,
+        const uint32_t kv_pos0,
+        const uint32_t n_head,
+        const float scale) {
+    constexpr uint32_t K_U4 = L3_FA_QK / 8u;     /* uint4 per staged K row */
+    constexpr uint32_t V_U4 = L3_FA_V / 8u;
+    static_assert(TK % 16 == 0, "tile must be whole MMA k steps");
+    static_assert((L3_FA_QK_ROW * 2) % 16 == 0 && (L3_FA_V_ROW * 2) % 16 == 0,
+                  "ldmatrix rows must stay 16-byte aligned");
+    __shared__ __align__(16) __nv_bfloat16 s_k[TK][L3_FA_QK_ROW];
+    __shared__ __align__(16) __nv_bfloat16 s_v[TK][L3_FA_V_ROW];
+    __shared__ uint32_t shared_last;
+
+    const uint32_t tq0 = blockIdx.x * L3_FA_TQ;
+    const uint32_t h = blockIdx.y;
+    if (tq0 >= n_query || h >= n_head) return;
+    const uint32_t warp = threadIdx.x >> 5;
+    const uint32_t lane = threadIdx.x & 31u;
+
+    const uint32_t qrow[2] = {warp * 16u + lane / 4u, warp * 16u + lane / 4u + 8u};
+    uint32_t qpos[2];
+    bool alive[2];
+    float row_m[2], row_l[2];
+#pragma unroll
+    for (int r = 0; r < 2; r++) {
+        alive[r] = tq0 + qrow[r] < n_query;
+        qpos[r] = alive[r] ? query_pos0 + tq0 + qrow[r] : query_pos0;
+        row_m[r] = -INFINITY;
+        row_l[r] = 0.0f;
+    }
+
+    motif_tile_a qa[L3_FA_QK / 16];
+#pragma unroll
+    for (int kc = 0; kc < L3_FA_QK / 16; kc++) {
+#pragma unroll
+        for (int l = 0; l < motif_tile_a::ne; l++) {
+            const int i = (l % 2) * 8 + (int)(lane / 4);
+            const int j = (l / 2) * 4 + (int)(lane % 4);
+            const uint32_t row = warp * 16u + (uint32_t)i;
+            const uint32_t col = (uint32_t)kc * 16u + 2u * (uint32_t)j;
+            const uint32_t t = tq0 + row < n_query ? tq0 + row : 0u;
+            const float2 xy = *reinterpret_cast<const float2 *>(
+                q + ((size_t)t * n_head + h) * L3_FA_QK + col);
+            qa[kc].x[l] = __floats2bfloat162_rn(xy.x, xy.y);
+        }
+    }
+
+    motif_tile_c output[L3_FA_V / 8];
+    const uint32_t kv_last = kv_pos0 + n_kv - 1u;
+    uint32_t block_last = 0u;
+#pragma unroll
+    for (int r = 0; r < 2; r++) {
+        if (alive[r]) block_last = max(block_last, min(qpos[r], kv_last));
+    }
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1)
+        block_last = max(block_last, __shfl_xor_sync(0xffffffffu, block_last, offset));
+    if (threadIdx.x == 0u) shared_last = 0u;
+    __syncthreads();
+    if (lane == 0u) atomicMax(&shared_last, block_last);
+    __syncthreads();
+    block_last = shared_last;
+
+    /* ldmatrix lane addressing.  K (x4): lanes 8m..8m+7 give the rows of
+     * matrix m = keys nb*8 + (lane % 8) at dims kc*16 + m*8, so one load
+     * covers the kc and kc+1 fragments.  V (x4.trans): matrices 0/1 are
+     * keys 0-7 / 8-15 at dims cb*8, 2/3 the same keys at (cb+1)*8. */
+    const uint32_t k_row = lane & 7u;
+    const uint32_t k_col = (lane >> 3) * 8u;
+    const uint32_t v_row = ((lane >> 3) & 1u) * 8u + (lane & 7u);
+    const uint32_t v_col = (lane >> 4) * 8u;
+
+    for (uint32_t kt0 = kv_pos0; kt0 <= block_last; kt0 += TK) {
+        const uint32_t remaining = block_last - kt0 + 1u;
+        const uint32_t tile_len = remaining < TK ? remaining : TK;
+        for (uint32_t idx = threadIdx.x; idx < TK * K_U4; idx += L3_FA_WARPS * 32u) {
+            const uint32_t r = idx / K_U4;
+            const uint32_t c8 = idx - r * K_U4;
+            const uint32_t local = (r < tile_len ? kt0 + r : kt0) - kv_pos0;
+            *reinterpret_cast<uint4 *>(&s_k[r][c8 * 8u]) =
+                *reinterpret_cast<const uint4 *>(
+                    k + ((size_t)local * n_head + h) * L3_FA_QK + c8 * 8u);
+        }
+        for (uint32_t idx = threadIdx.x; idx < TK * V_U4; idx += L3_FA_WARPS * 32u) {
+            const uint32_t r = idx / V_U4;
+            const uint32_t c8 = idx - r * V_U4;
+            const uint32_t local = (r < tile_len ? kt0 + r : kt0) - kv_pos0;
+            *reinterpret_cast<uint4 *>(&s_v[r][c8 * 8u]) =
+                *reinterpret_cast<const uint4 *>(
+                    v + ((size_t)local * n_head + h) * L3_FA_V + c8 * 8u);
+        }
+        __syncthreads();
+
+#pragma unroll
+        for (int step = 0; step < TK / 16; step++) {
+            const uint32_t kbase = (uint32_t)step * 16u;
+            motif_tile_c scores[2];
+#pragma unroll
+            for (int nb = 0; nb < 2; nb++) {
+                motif_tile_c zero;
+                scores[nb] = zero;
+#pragma unroll
+                for (int kc = 0; kc < L3_FA_QK / 16; kc += 2) {
+                    motif_tile_b keys0, keys1;
+                    uint32_t *k0 = reinterpret_cast<uint32_t *>(keys0.x);
+                    uint32_t *k1 = reinterpret_cast<uint32_t *>(keys1.x);
+                    solar_fattn_ldsm_x4(
+                        k0[0], k0[1], k1[0], k1[1],
+                        reinterpret_cast<const __half *>(
+                            &s_k[kbase + nb * 8u + k_row][kc * 16 + k_col]));
+                    mma(scores[nb], qa[kc], keys0);
+                    mma(scores[nb], qa[kc + 1], keys1);
+                }
+            }
+
+            float tile_max[2] = {-INFINITY, -INFINITY};
+#pragma unroll
+            for (int nb = 0; nb < 2; nb++) {
+#pragma unroll
+                for (int l = 0; l < motif_tile_c::ne; l++) {
+                    const int r = l / 2;
+                    const uint32_t p = kt0 + kbase + nb * 8u + (lane % 4u) * 2u + (l % 2u);
+                    float score = scores[nb].x[l] * scale;
+                    if (!alive[r] || p > qpos[r] || p >= kt0 + tile_len) {
+                        score = -INFINITY;
+                    }
+                    scores[nb].x[l] = score;
+                    tile_max[r] = fmaxf(tile_max[r], score);
+                }
+            }
+#pragma unroll
+            for (int r = 0; r < 2; r++) {
+                tile_max[r] = fmaxf(tile_max[r], __shfl_xor_sync(0xffffffffu, tile_max[r], 1));
+                tile_max[r] = fmaxf(tile_max[r], __shfl_xor_sync(0xffffffffu, tile_max[r], 2));
+            }
+
+            float rescale[2];
+            float tile_sum[2] = {0.0f, 0.0f};
+#pragma unroll
+            for (int r = 0; r < 2; r++) {
+                const float next_max = fmaxf(row_m[r], tile_max[r]);
+                rescale[r] = row_m[r] == -INFINITY ? 0.0f : __expf(row_m[r] - next_max);
+                row_m[r] = next_max;
+            }
+#pragma unroll
+            for (int nb = 0; nb < 2; nb++) {
+#pragma unroll
+                for (int l = 0; l < motif_tile_c::ne; l++) {
+                    const int r = l / 2;
+                    const float weight = scores[nb].x[l] == -INFINITY || row_m[r] == -INFINITY
+                        ? 0.0f : __expf(scores[nb].x[l] - row_m[r]);
+                    scores[nb].x[l] = weight;
+                    tile_sum[r] += weight;
+                }
+            }
+#pragma unroll
+            for (int r = 0; r < 2; r++) {
+                tile_sum[r] += __shfl_xor_sync(0xffffffffu, tile_sum[r], 1);
+                tile_sum[r] += __shfl_xor_sync(0xffffffffu, tile_sum[r], 2);
+                row_l[r] = row_l[r] * rescale[r] + tile_sum[r];
+            }
+
+            motif_tile_a probabilities;
+#pragma unroll
+            for (int l = 0; l < motif_tile_a::ne; l++) {
+                probabilities.x[l] = __floats2bfloat162_rn(
+                    scores[l / 2].x[(l % 2) * 2], scores[l / 2].x[(l % 2) * 2 + 1]);
+            }
+#pragma unroll
+            for (int cb = 0; cb < L3_FA_V / 8; cb += 2) {
+                motif_tile_b values0, values1;
+                uint32_t *v0 = reinterpret_cast<uint32_t *>(values0.x);
+                uint32_t *v1 = reinterpret_cast<uint32_t *>(values1.x);
+                solar_fattn_ldsm_x4_trans(
+                    v0[0], v0[1], v1[0], v1[1],
+                    reinterpret_cast<const __half *>(
+                        &s_v[kbase + v_row][cb * 8 + v_col]));
+#pragma unroll
+                for (int l = 0; l < motif_tile_c::ne; l++) output[cb].x[l] *= rescale[l / 2];
+                mma(output[cb], probabilities, values0);
+#pragma unroll
+                for (int l = 0; l < motif_tile_c::ne; l++) output[cb + 1].x[l] *= rescale[l / 2];
+                mma(output[cb + 1], probabilities, values1);
+            }
+        }
+        __syncthreads();
+    }
+
+#pragma unroll
+    for (int cb = 0; cb < L3_FA_V / 8; cb++) {
+#pragma unroll
+        for (int l = 0; l < motif_tile_c::ne; l++) {
+            const int r = l / 2;
+            if (!alive[r]) continue;
+            const uint32_t token = tq0 + qrow[r];
+            const int col = (int)(lane % 4) * 2 + (l % 2);
+            heads[((size_t)token * n_head + h) * L3_FA_V + cb * 8 + col] =
+                row_l[r] > 0.0f ? output[cb].x[l] / row_l[r] : 0.0f;
+        }
+    }
+    if (lse && (lane & 3u) == 0u) {
+#pragma unroll
+        for (int r = 0; r < 2; r++) {
+            if (!alive[r]) continue;
+            const uint32_t token = tq0 + qrow[r];
+            lse[(size_t)token * n_head + h] =
+                row_l[r] > 0.0f ? row_m[r] + logf(row_l[r]) : -INFINITY;
+        }
+    }
+}
+
 /* dots3-note tensor-core operands are FP16, not BF16: the latent cache is
  * BF16 (every bf16 value inside the fp16 range converts exactly), and fp16
  * keeps three more mantissa bits for the rounded Q, P, activation and
@@ -2696,6 +2941,34 @@ extern "C" int ds4_mmq_motif3_prefill_attn_hmma(
         (uint32_t)n_query, (uint32_t)query_pos0,
         (uint32_t)n_kv, (uint32_t)kv_pos0,
         (uint32_t)n_head, (uint32_t)n_head_kv, scale, (uint32_t)window);
+    return cudaGetLastError() == cudaSuccess ? 0 : -2;
+}
+
+extern "C" int ds4_mmq_ling3vl_prefill_attn_hmma(
+        float *heads, float *lse, const float *q,
+        const void *k, const void *v,
+        int n_query, int query_pos0, int n_kv, int kv_pos0,
+        int n_head, int qk_dim, int v_dim, float scale,
+        int tk, cudaStream_t stream) {
+    if (!heads || !q || !k || !v || n_query <= 0 || query_pos0 < 0 ||
+        n_kv <= 0 || kv_pos0 < 0 || n_head <= 0 || qk_dim != L3_FA_QK ||
+        v_dim != L3_FA_V || kv_pos0 > query_pos0 || (tk != 32 && tk != 64)) {
+        return -1;
+    }
+    const int device = ggml_cuda_get_device();
+    if (ggml_cuda_info().devices[device].cc < GGML_CUDA_CC_AMPERE) return -1;
+    const dim3 grid((n_query + L3_FA_TQ - 1) / L3_FA_TQ, n_head, 1);
+    const __nv_bfloat16 *kb = (const __nv_bfloat16 *)k;
+    const __nv_bfloat16 *vb = (const __nv_bfloat16 *)v;
+    if (tk == 32) {
+        ling3vl_fattn_hmma_kernel<32><<<grid, L3_FA_WARPS * 32, 0, stream>>>(
+            heads, lse, q, kb, vb, (uint32_t)n_query, (uint32_t)query_pos0,
+            (uint32_t)n_kv, (uint32_t)kv_pos0, (uint32_t)n_head, scale);
+    } else {
+        ling3vl_fattn_hmma_kernel<64><<<grid, L3_FA_WARPS * 32, 0, stream>>>(
+            heads, lse, q, kb, vb, (uint32_t)n_query, (uint32_t)query_pos0,
+            (uint32_t)n_kv, (uint32_t)kv_pos0, (uint32_t)n_head, scale);
+    }
     return cudaGetLastError() == cudaSuccess ? 0 : -2;
 }
 

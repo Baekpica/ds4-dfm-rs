@@ -112,6 +112,18 @@ int ds4_mmq_motif3_prefill_attn_hmma(
         int n_head, int n_head_kv, int qk_dim, int v_dim,
         float scale, int window, cudaStream_t stream);
 
+// Ling expanded-MLA prefill attention: the Motif 192/128 range kernel for
+// BF16 K/V written by the expansion GEMMs, 64 query rows per block walking
+// `tk`-key tiles (32 or 64) with ldmatrix fragments.  Same masks, online
+// softmax, output and LSE as the Motif kernel.  Returns 0, -1 when the
+// shape or tile is unsupported, -2 on a launch failure.
+int ds4_mmq_ling3vl_prefill_attn_hmma(
+        float *heads, float *lse, const float *q,
+        const void *k, const void *v,
+        int n_query, int query_pos0, int n_kv, int kv_pos0,
+        int n_head, int qk_dim, int v_dim, float scale,
+        int tk, cudaStream_t stream);
+
 // dots3-note latent (absorbed-MLA) attention for prefill widths: one token's
 // heads against that token's DSA top-k list (selected != NULL, gathered) or
 // its causal / sliding-window range, both geometries (latent 512 / 1024,

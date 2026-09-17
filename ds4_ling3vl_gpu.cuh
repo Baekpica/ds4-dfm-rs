@@ -163,8 +163,10 @@ extern "C" int ds4_gpu_ling3vl_expand_kv(
         const void *map, uint64_t size, uint64_t k_b_offset,
         uint64_t v_b_offset, uint32_t slot0, uint32_t rows, uint32_t heads,
         uint32_t latent_dim, uint32_t qk_nope, uint32_t qk_rope,
-        uint32_t value_dim) {
+        uint32_t value_dim, int kv_bf16) {
     const uint32_t key_dim = qk_nope + qk_rope;
+    const uint64_t elem = kv_bf16 ? sizeof(__nv_bfloat16) : sizeof(float);
+    const cudaDataType_t ctype = kv_bf16 ? CUDA_R_16BF : CUDA_R_32F;
     const uint64_t k_b_bytes =
         (uint64_t)heads * latent_dim * qk_nope * sizeof(__nv_bfloat16);
     const uint64_t v_b_bytes =
@@ -175,8 +177,8 @@ extern "C" int ds4_gpu_ling3vl_expand_kv(
         heads * key_dim > INT_MAX ||
         k_b_offset > size || k_b_bytes > size - k_b_offset ||
         v_b_offset > size || v_b_bytes > size - v_b_offset ||
-        k_full->bytes < (uint64_t)rows * heads * key_dim * sizeof(float) ||
-        value->bytes < (uint64_t)rows * heads * value_dim * sizeof(float) ||
+        k_full->bytes < (uint64_t)rows * heads * key_dim * elem ||
+        value->bytes < (uint64_t)rows * heads * value_dim * elem ||
         latent_cache->bytes < end * latent_dim * sizeof(__nv_bfloat16) ||
         k_pe_cache->bytes < end * qk_rope * sizeof(__nv_bfloat16)) { return 0; }
     const __nv_bfloat16 *k_b = (const __nv_bfloat16 *)cuda_model_range_ptr(
@@ -193,7 +195,7 @@ extern "C" int ds4_gpu_ling3vl_expand_kv(
         (int)latent_dim, &alpha,
         k_b, CUDA_R_16BF, (int)qk_nope, (long long)latent_dim * qk_nope,
         latent, CUDA_R_16BF, (int)latent_dim, 0ll,
-        &beta, k_full->ptr, CUDA_R_32F, (int)(heads * key_dim),
+        &beta, k_full->ptr, ctype, (int)(heads * key_dim),
         (long long)key_dim, (int)heads, CUBLAS_COMPUTE_32F,
         CUBLAS_GEMM_DEFAULT_TENSOR_OP);
     if (!cublas_ok(st, "Ling-3.0 MLA expand K")) { return 0; }
@@ -203,17 +205,66 @@ extern "C" int ds4_gpu_ling3vl_expand_kv(
         (int)latent_dim, &alpha,
         v_b, CUDA_R_16BF, (int)latent_dim, (long long)value_dim * latent_dim,
         latent, CUDA_R_16BF, (int)latent_dim, 0ll,
-        &beta, value->ptr, CUDA_R_32F, (int)(heads * value_dim),
+        &beta, value->ptr, ctype, (int)(heads * value_dim),
         (long long)value_dim, (int)heads, CUBLAS_COMPUTE_32F,
         CUBLAS_GEMM_DEFAULT_TENSOR_OP);
     if (!cublas_ok(st, "Ling-3.0 MLA expand V")) { return 0; }
 
     const uint64_t quads = (uint64_t)rows * heads * (qk_rope / 4u);
-    ling3vl_expand_k_pe<<<(unsigned)((quads + 255u) / 256u), 256, 0,
-                          ds4_current_stream()>>>(
-        (float *)k_full->ptr, (const __nv_bfloat16 *)k_pe_cache->ptr, slot0,
-        rows, heads, key_dim, qk_nope, qk_rope);
+    const unsigned blocks = (unsigned)((quads + 255u) / 256u);
+    const __nv_bfloat16 *k_pe = (const __nv_bfloat16 *)k_pe_cache->ptr;
+    if (kv_bf16) {
+        ling3vl_expand_k_pe<__nv_bfloat16><<<blocks, 256, 0, ds4_current_stream()>>>(
+            (__nv_bfloat16 *)k_full->ptr, k_pe, slot0, rows, heads, key_dim,
+            qk_nope, qk_rope);
+    } else {
+        ling3vl_expand_k_pe<float><<<blocks, 256, 0, ds4_current_stream()>>>(
+            (float *)k_full->ptr, k_pe, slot0, rows, heads, key_dim, qk_nope,
+            qk_rope);
+    }
     return cuda_ok(cudaGetLastError(), "Ling-3.0 MLA expand k_pe");
+}
+
+/* Range attention over one expanded segment.  BF16 K/V take the Ling
+ * kernel (64-key tiles; DS4_LING3VL_MLA_TK=32 restores the Motif tile);
+ * FP32 K/V take Motif's range kernel unchanged. */
+extern "C" int ds4_gpu_ling3vl_expanded_attn(
+        ds4_gpu_tensor *out, ds4_gpu_tensor *lse, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *k_full, const ds4_gpu_tensor *value,
+        uint32_t n_query, uint32_t query_pos0, uint32_t n_kv,
+        uint32_t kv_pos0, uint32_t heads, uint32_t key_dim,
+        uint32_t value_dim, float scale, int kv_bf16) {
+    if (!kv_bf16) {
+        return ds4_gpu_motif3_expanded_attention_range_tensor(
+            out, lse, q, k_full, value, n_query, query_pos0, n_kv, kv_pos0,
+            heads, heads, key_dim, value_dim, scale, 0u);
+    }
+    static int tk = -1;
+    if (tk < 0) {
+        const char *env = getenv("DS4_LING3VL_MLA_TK");
+        tk = env && env[0] == '3' ? 32 : 64;
+    }
+    const uint64_t elem = sizeof(__nv_bfloat16);
+    if (!out || !lse || !q || !k_full || !value || !n_query || !n_kv ||
+        !heads || kv_pos0 > query_pos0 ||
+        out->bytes < (uint64_t)n_query * heads * value_dim * sizeof(float) ||
+        lse->bytes < (uint64_t)n_query * heads * sizeof(float) ||
+        q->bytes < (uint64_t)n_query * heads * key_dim * sizeof(float) ||
+        k_full->bytes < (uint64_t)n_kv * heads * key_dim * elem ||
+        value->bytes < (uint64_t)n_kv * heads * value_dim * elem) { return 0; }
+    const int rc = ds4_mmq_ling3vl_prefill_attn_hmma(
+        (float *)out->ptr, (float *)lse->ptr, (const float *)q->ptr,
+        k_full->ptr, value->ptr, (int)n_query, (int)query_pos0, (int)n_kv,
+        (int)kv_pos0, (int)heads, (int)key_dim, (int)value_dim, scale, tk,
+        ds4_current_stream());
+    /* Launcher already consumed CUDA status: -1 rejected shape, -2 launch
+     * fail. Neither leaves an error for cudaGetLastError() to re-read. */
+    if (rc != 0) {
+        fprintf(stderr, "ds4: Ling-3.0 MLA expanded attention %s\n",
+                rc == -1 ? "rejected the shape" : "launch failed");
+        return 0;
+    }
+    return 1;
 }
 
 extern "C" int ds4_gpu_ling3vl_rms_norm(
