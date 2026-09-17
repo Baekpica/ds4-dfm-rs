@@ -265,33 +265,36 @@ absorbed walk).
 
 The Qwen card protocol: one warm session per fresh process, 2,048-token
 incremental prefill and 128 greedy tokens at every frontier from 2,048 to
-65,536, `speed-bench/promessi_sposi.txt`, the same resident VMM weight
-owner, SM 2184–2190 MHz while busy.  Two runs of `main` `8436382` (#48)
-and three of `007f0e4` (P4 + D2).  Between frontiers `ds4-bench` replays
+65,536, `speed-bench/promessi_sposi.txt`, a resident VMM weight owner,
+SM 2177–2190 MHz while busy.  Two runs of `main` `8436382` (#48), three
+of `007f0e4` (#49) and three of `3d7078b` (#50; merged as `f35dbeb`).
+#48 and #49 shared one owner; #50 used a fresh owner of the same
+artifact later the same morning.  Between frontiers `ds4-bench` replays
 the prefix (the recurrent state has no rewind); that replay sits outside
 both measured phases.
 
-![Ling-3.0-flash-VL 2K–64K prefill and decode, #48 vs expanded MLA](ling3-flash-vl-2k-64k-throughput.png)
+![Ling-3.0-flash-VL 2K–64K prefill and decode, #48 vs #49 vs #50](ling3-flash-vl-2k-64k-throughput.png)
 
 | Binary | Runs | Mean prefill tok/s | Mean decode tok/s |
 |---|---:|---:|---:|
 | `8436382` (#48, absorbed MLA) | 2 | 1,106.2 | 24.05 |
-| `007f0e4` (expanded MLA) | 3 | **1,596.6** (+44.3%) | **24.56** (+2.1%) |
+| `007f0e4` (#49, expanded MLA) | 3 | 1,596.6 (+44.3%) | 24.56 (+2.1%) |
+| `3d7078b` (#50, BF16 K/V, 64-key tiles) | 3 | **1,735.6** (+56.9%) | **24.53** (+2.0%) |
 
-Per-frontier medians, #48 → expanded:
+Per-frontier medians, #48 → #49 → #50 (deltas vs #48 / vs #49):
 
 | Frontier | Prefill tok/s | Decode tok/s |
 |---:|---:|---:|
-| 8,192 | 1,670 → **1,991** (+19%) | 26.0 → 26.1 |
-| 32,768 | 1,029 → **1,583** (+54%) | 24.1 → 24.6 |
-| 65,536 | 684 → **1,231** (+80%) | 21.9 → 22.9 |
+| 8,192 | 1,670 → 1,991 → **2,048** (+23% / +2.8%) | 26.0 → 26.1 → 26.1 |
+| 32,768 | 1,029 → 1,583 → **1,736** (+69% / +9.7%) | 24.1 → 24.6 → 24.6 |
+| 65,536 | 684 → 1,231 → **1,423** (+108% / +16%) | 21.9 → 22.9 → 22.8 |
 
-Prefill still declines 2K → 64K (2,067 → 1,231): the Motif range kernel
-reads its expanded K/V from FP32 and re-stages every key tile per 64-query
-block, so the remaining context term is memory traffic rather than FLOPs.
-Decode declines 26.4 → 22.9 in the absorbed head-group walk.  Raw CSVs,
-`receipt.json` and `summary.json`: `benchmarks/ling3-flash-vl-2026-09-17/`;
-plot: `python3 docs/benchmarks/plot-ling3-flash-vl.py` (matplotlib).
+Prefill still declines 2K → 64K (1,836 → 1,423): the seven MLA layers
+are dense causal full attention, so the leftover slope is key-range
+traffic.  Decode declines 26.0 → 22.8 in the absorbed head-group walk.
+Raw CSVs, `receipt.json` and `summary.json`:
+`benchmarks/ling3-flash-vl-2026-09-17/`; plot:
+`python3 docs/benchmarks/plot-ling3-flash-vl.py` (matplotlib).
 
 Chat input runs the official Bailing V3 Jinja template that ships in the GGUF;
 the legacy token builder refuses this family rather than approximating it. The
