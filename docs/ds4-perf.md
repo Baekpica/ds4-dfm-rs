@@ -295,8 +295,10 @@ reuse expectation. No aggregate averages short/long or text/media cases.
 ```
 
 The example's output and limits are illustrative; set them from the intended
-accuracy and latency contract before collection. Add a `warm_append` case with
-`reuse_kind: "exact"`, or a `partial_branch` with `"partial"`/`"fork"`. `media`
+accuracy and latency contract before collection. `warm_append` describes the
+conversation workload; its declared `reuse_kind` can be `"exact"`, `"partial"`,
+or `"fork"`, matching the actual admission path. `partial_branch` still requires
+`"partial"`/`"fork"`; an append that reports `"cold"` does not pass. `media`
 requires image/audio content in the request; `mtp` requires speculative decode
 in its observed trace. `family` must equal `/v1/stats`'s `serving.family` exactly.
 The full requested/effective/qualified plan is retained from the server, so the

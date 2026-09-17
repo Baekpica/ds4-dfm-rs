@@ -223,7 +223,12 @@ impl Workload {
             }
             let valid = match case.scenario {
                 Scenario::KvColdPrefill => case.expect.reuse_kind == "cold",
-                Scenario::WarmAppend => case.expect.reuse_kind == "exact",
+                Scenario::WarmAppend => {
+                    matches!(
+                        case.expect.reuse_kind.as_str(),
+                        "exact" | "partial" | "fork"
+                    )
+                }
                 Scenario::PartialBranch => {
                     matches!(case.expect.reuse_kind.as_str(), "partial" | "fork")
                 }
@@ -684,6 +689,26 @@ pub fn run(args: &cli::Serving) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warm_append_uses_observed_reuse() {
+        for reuse in ["exact", "partial", "fork", "cold"] {
+            let workload: Workload = serde_json::from_value(serde_json::json!({
+                "protocol":PROTOCOL,"name":"append","family":"qwen4exp",
+                "cases":[{
+                    "name":"append","scenario":"warm_append",
+                    "request":{"stream":true,"stream_options":{"include_usage":true},
+                        "messages":[{"role":"user","content":"Continue"}]},
+                    "expect":{"content":"READY","finish_reason":"stop","reuse_kind":reuse,
+                        "effective_lane":"continuous","speculation_active":true,
+                        "fallback_reason":null,"min_cached_tokens":32},
+                    "limits":{"ttft_ms":1000,"total_ms":2000,"min_host_available_bytes":1}
+                }]
+            }))
+            .unwrap();
+            assert_eq!(workload.validate().is_ok(), reuse != "cold", "{reuse}");
+        }
+    }
 
     #[test]
     fn disk_restore_can_place_a_fork() {
