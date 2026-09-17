@@ -17,6 +17,7 @@ pub const LAYOUT_SOLAR: u32 = 0x3352_4C53; /* "SLR3" */
 pub const LAYOUT_EXAONE: u32 = 0x3341_5845; /* "EXA3" */
 pub const LAYOUT_MOTIF3: u32 = 0x3346_544D; /* "MTF3" */
 pub const LAYOUT_DOTS3: u32 = 0x3353_5444; /* "DTS3" */
+const LAYOUT_DOTS3_MTP: u32 = 0x4d33_5444; /* "DT3M" */
 pub const LAYOUT_QWEN4EXP: u32 = 0x334e_5751; /* "QWN3" */
 // Native restore also checks the effective PLE format; the host prefix is shared.
 const LAYOUT_QWEN_FP8: u32 = 0x3346_5751; /* "QWF3" */
@@ -43,7 +44,7 @@ impl PayloadLayout {
             LAYOUT_SOLAR => Self::Solar,
             LAYOUT_EXAONE => Self::Exaone,
             LAYOUT_MOTIF3 => Self::Motif3,
-            LAYOUT_DOTS3 => Self::Dots3,
+            LAYOUT_DOTS3 | LAYOUT_DOTS3_MTP => Self::Dots3,
             LAYOUT_QWEN4EXP | LAYOUT_QWEN_FP8 => Self::Qwen4Exp,
             LAYOUT_STEP37 => Self::Step37,
             LAYOUT_LING3VL => Self::Ling3Vl,
@@ -255,6 +256,39 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
         PayloadLayout::DeepSeek | PayloadLayout::Qwen4Exp => {}
     }
     Ok(())
+}
+
+#[test]
+fn dots3_mtp_prefix_identity() {
+    let prefix = HostPrefix {
+        fields: [
+            MAGIC,
+            VERSION,
+            1024,
+            64,
+            47,
+            0x4d33_5444,
+            0,
+            3,
+            0,
+            0,
+            0,
+            0,
+            3,
+        ],
+        tokens: vec![10, 20, 30],
+    };
+    let mut file = std::io::Cursor::new(prefix.encode());
+    let restored = read_prefix_range(
+        &mut file,
+        0,
+        prefix.prefix_len() as u64,
+        ModelFamily::Dots3Note,
+        1024,
+    )
+    .unwrap();
+    assert_eq!(restored.layout(), PayloadLayout::Dots3);
+    assert_eq!(restored.tokens, prefix.tokens);
 }
 
 #[test]

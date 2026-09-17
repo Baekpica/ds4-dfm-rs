@@ -37,8 +37,8 @@ The implementation stays close to upstream's style:
 - no plugin registry, graph framework, or broad abstraction layer is added;
 - external MTP sidecars require the exact DeepSeek, Inkling or Step family contract;
   Ling-3.0-flash-VL has no predictor block at all;
-  DSpark remains DeepSeek-only. The embedded dots3-note MTP block is bound and
-  validated but is not executed yet.
+  DSpark remains DeepSeek-only. dots3-note executes its embedded MTP block
+  only on the explicitly enabled serial path described below.
 
 This keeps the changes reviewable for a possible future upstream contribution.
 
@@ -50,7 +50,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | Solar Open2 250B | `general.architecture=solar-open2` | recurrent KDA state plus compressed GQA KV | persistent multi-bank |
 | K-EXAONE 236B A23B | `general.architecture=exaone-moe` | LLLG full/sliding GQA KV | persistent multi-bank; opt-in partial checkpoints |
 | Motif-3 | `general.architecture=motif3` | normalized latent KV, rotated `k_pe`, and SWA rings | persistent multi-bank |
-| dots3-note Preview | `general.architecture=dots3note` (legacy `dots3-note`) | dual-geometry latent KV, DSA keys, and SWA rings | serial |
+| dots3-note Preview | `general.architecture=dots3note` (legacy `dots3-note`) | dual-geometry latent KV, DSA keys, and SWA rings | serial default; opt-in text banks or serial MTP ([limits](#dots3-serving)) |
 | Qwen3.8 Flash Next SSD-PLE | `general.architecture=qwen4exp` | Q5 main + four SSD-PLE sidecars, GDN/QSA state, embedded MTP, still images | configured/native-fitted N-bank scheduler; one/two banks gated |
 | GLM 5.3 Flash | `general.architecture=glm5-next` | exact Q2 main + vision sidecar | serial; 2,048-context cap |
 | K2-Horizon 375B A23B | `general.architecture=k2-horizon` | full-attention GQA KV, partial NeoX RoPE, shared-expert MoE | persistent one-bank (32K gated) |
@@ -158,13 +158,61 @@ not speed measurements. The [scoped evidence](benchmarks/serving-v013-2026-09-17
 predates the required disk identity footer; the integrated restart gate
 remains separate.
 
-dots3-note remains exact-only; forced partial reuse is unsupported. K2's
-full-attention contract also remains exact-only.
+dots3-note partial reuse is also opt-in and marked `present`. It captures
+33 local MLA windows and copies full MLA and DSA prefix rows. K2's
+full-attention contract remains exact-only.
 
 Verified on this host: Solar 6K/10K branches of a 12K source 2.85x/4.62x
 TTFT (`docs/solar-partial-reuse-2026-08-21.md`); Motif-3 7.1K/14.1K
 branches of a 16.8K source 2.18x/6.50x TTFT, byte-identical output, +0.23%
 capture cost (`docs/motif3-partial-reuse-2026-08-22.md`).
+
+## dots3 serving
+
+dots3-note MQ87 is text-only CUDA. Banks, partial reuse and MTP are separate
+`present` capabilities. `--max-seqs auto` keeps the serial default, and
+`--mtp-mode auto` leaves MTP off. Explicit selections report their unqualified
+status in the serving plan.
+
+Choose text banks with ordinary decoding:
+
+```sh
+./ds4-server --cuda -m "$MODEL" --ctx 4096 --max-seqs 2 \
+  --prefix-reuse partial --mtp-mode off
+```
+
+Or enable the embedded predictor on one serial session:
+
+```sh
+./ds4-server --cuda -m "$MODEL" --ctx 4096 --max-seqs 1 \
+  --prefix-reuse exact --mtp-mode on --mtp-draft 3
+```
+
+The MTP draft limit is three tokens. MTP with multiple banks or an external
+`--mtp` file is rejected. Each bank owns its complete runtime workspace;
+weights are shared and the partial-checkpoint pool is priced separately.
+
+Plain and MTP snapshots have distinct layouts and cannot be loaded across
+those modes; bank payloads contain plain target state. Serial MTP extension
+from an unfinished prefill chunk currently replays the prompt from zero.
+An aligned frontier can extend directly. Replayed tokens report zero cached
+tokens. Greedy HTTP checks require `reasoning_effort: "none"` as well as
+`temperature: 0`; the default thinking mode is a different sampling path.
+
+The [September 17 evidence](benchmarks/serving-v013-2026-09-17/dots3.json)
+covers 4K two-bank append/edit/fork/restart and identity rejection, plus
+serial MTP/plain cold parity, restart and disconnect recovery. Native tests
+crossed the local-ring and DSA boundaries, checked all accepted-prefix
+lengths, and clipped trials to a real 32-token context tail. The edited
+arithmetic answer was wrong on both bank paths; counting outputs matched
+but hit their length limit. These are functional checks, not broad quality
+or long-context qualification.
+
+No speedup is claimed: the recorded serial MTP samples were slower than
+plain decoding. The
+[September 6 measurements](dots3-optimization-2026-09-06.md) cover serial
+plain decoding. The [bank](../tests/test_dots3_batch.c) and
+[MTP](../tests/test_dots3_mtp.c) numerical/lifecycle gates are separate.
 
 ## Weight owner and inference worker
 
@@ -207,8 +255,9 @@ For a split model, `MODEL` is its first shard. DeepSeek can place a DSpark
 drafter beside the base model; the standard launch resolver attaches it
 automatically when its expected file name is present. Inkling accepts its exact
 MTP-BF16 sidecar; use the [full base+MTP owner launch](inkling-small.md#serving)
-for the tested configuration. Other families do not accept external MTP or
-DSpark attachments; dots3-note's in-file MTP block is validation-only.
+for the tested configuration. Step accepts its documented Q8 MTP sidecar.
+Other families do not accept external MTP or DSpark attachments; dots3-note
+uses only its [embedded serial predictor](#dots3-serving).
 
 ## DGX Spark memory hygiene
 
@@ -530,9 +579,10 @@ published metric. 1,048,576-token serving is not claimed.
 
 ## Current limits
 
-- dots3-note is text-only and serial. The source 524,288-token metadata is
-  preserved, but the release evidence currently covers a 262,144-context
-  allocation and a short 4K server request, not a 524,288-token prefill.
+- dots3-note is text-only, with serial default and explicit bank/MTP paths
+  described [above](#dots3-serving). The source 524,288-token metadata is
+  preserved. Historical 262,144-context allocation and short 4K server checks
+  do not qualify a 524,288-token prefill or the new bank/MTP paths.
 - dots3-note Spark throughput (2026-09-06, `docs/dots3-optimization-2026-09-06.md`):
   8,192-token cold prefill 278.3 → 604.3 tok/s and greedy decode 11.66 →
   16.78 tok/s on the serial lane after six rounds (tensor-core latent

@@ -684,6 +684,31 @@ int ds4_bridge_step37_commit(ds4_bridge_session *s, int32_t keep, char *err, siz
     return ds4_session_step37_commit(s->session, keep, err, errlen);
 }
 
+int ds4_bridge_dots3_enabled(ds4_bridge_session *s)
+{
+    return s && s->session && ds4_session_dots3_mtp(s->session);
+}
+
+int ds4_bridge_dots3_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
+                              int32_t *tokens, int32_t *target, int32_t cap,
+                              char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return -1;
+    }
+    return ds4_session_dots3_trial(s->session, first, max_tokens, tokens, target, cap, err, errlen);
+}
+
+int ds4_bridge_dots3_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return 1;
+    }
+    return ds4_session_dots3_commit(s->session, keep, err, errlen);
+}
+
 int ds4_bridge_eval_speculative_argmax(ds4_bridge_session *s,
                                        int32_t first_token,
                                        int32_t max_tokens,

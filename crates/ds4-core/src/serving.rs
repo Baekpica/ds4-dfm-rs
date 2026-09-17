@@ -22,6 +22,7 @@ pub const PREFILL_CHUNK_FENCE: u32 = 8192;
 /// 0 is the C one-shot / interleave-off sentinel, not a member of this set.
 pub const VERIFIED_PREFILL_CHUNKS: [u32; 6] = [256, 512, 1024, 2048, 4096, 8192];
 const GIB: u64 = 1 << 30;
+const DOTS3_MAX_DRAFT: i32 = 3;
 /// C `QWEN4EXP_YARN_MAX_FACTOR`: how far Qwen's RoPE context may stretch
 /// before `ds4_session_create` refuses the context outright.
 pub const QWEN_YARN_MAX_FACTOR: u32 = 4;
@@ -134,6 +135,7 @@ pub enum SpecLane {
     None,
     Serial,
     Bank,
+    Both,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -660,7 +662,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             snapshot: Support::Qualified,
             mtp: MtpKind::Sidecar,
             mtp_support: Support::Qualified,
-            spec_lane: SpecLane::Serial,
+            spec_lane: SpecLane::Both,
             spec_draft_min: 1,
             host: HostNeed::Cuda,
             ctx_max: Some(262144),
@@ -755,15 +757,15 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         ModelFamily::Dots3Note => ServingCaps {
             family,
             variant,
-            banks: BankLane::Serial,
-            bank_support: Support::None,
-            reuse: ReuseKind::Exact,
+            banks: BankLane::OptIn,
+            bank_support: Support::Present,
+            reuse: ReuseKind::Partial,
             reuse_support: Support::Present,
-            disk: Support::Qualified,
+            disk: Support::Present,
             snapshot: Support::Qualified,
-            mtp: MtpKind::BoundOnly,
-            mtp_support: Support::None,
-            spec_lane: SpecLane::None,
+            mtp: MtpKind::Embedded,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Serial,
             spec_draft_min: 1,
             host: HostNeed::Cuda,
             ctx_max: Some(524288),
@@ -913,6 +915,13 @@ pub fn resolve_plan(
     let draft = req.mtp_draft.unwrap_or(caps.spec_draft_min);
     let (mtp_mode, mtp_draft) = match mtp_mode {
         MtpMode::Off => (MtpMode::Off, None),
+        _ if caps.family == ModelFamily::Dots3Note && draft > DOTS3_MAX_DRAFT => {
+            issues.push(error(
+                "mtp_draft",
+                "dots3 MTP draft exceeds the three-token trial limit",
+            ));
+            (MtpMode::Off, None)
+        }
         mode if draft >= caps.spec_draft_min => (mode, Some(draft)),
         mode => {
             let message = format!(
@@ -1199,9 +1208,17 @@ impl ResolvedPlan {
         }
         // 0/1 so a later fitted-down plan can retract. Step width 1 is
         // serial MTP; Qwen width 1 is still a bank.
-        if self.family == Some(ModelFamily::Step37) {
+        if matches!(
+            self.family,
+            Some(ModelFamily::Step37 | ModelFamily::Dots3Note)
+        ) {
+            let key = if self.family == Some(ModelFamily::Dots3Note) {
+                "DS4_DOTS3_BATCH"
+            } else {
+                "DS4_STEP37_BATCH"
+            };
             out.push((
-                "DS4_STEP37_BATCH".into(),
+                key.into(),
                 if self.effective.max_seqs > 1 {
                     "1".into()
                 } else {
@@ -1224,6 +1241,17 @@ impl ResolvedPlan {
         }
         if self.effective.mtp_mode == MtpMode::Off {
             out.push(("DS4_MTP_SPEC_DISABLE".into(), "1".into()));
+        }
+        if self.family == Some(ModelFamily::Dots3Note) {
+            out.push((
+                "DS4_DOTS3_MTP".into(),
+                if self.effective.mtp_mode == MtpMode::On {
+                    "1"
+                } else {
+                    "0"
+                }
+                .into(),
+            ));
         }
         // Never publish a yield past the allocated native workspace.
         let boot = published_chunk(self.effective.sched_chunk, self.effective.native_chunk);
@@ -1809,8 +1837,8 @@ fn resolve_mtp(
         }
         return (MtpMode::Off, false);
     }
-    // Only sidecar families take a path: Qwen's MTP is embedded, dots3 binds
-    // without executing, and the rest have no contract at all.
+    // Embedded predictors use the main artifact; only sidecar families
+    // take a separate path.
     if has_path && !matches!(caps.mtp, MtpKind::Sidecar | MtpKind::DeepSeek) {
         issues.push(error(
             "mtp_contract",
@@ -1848,6 +1876,15 @@ fn resolve_mtp(
         }
         return (MtpMode::Off, false);
     }
+    if caps.spec_lane == SpecLane::Serial && driver == BankDriver::Present {
+        if req.mtp_mode == MtpMode::On {
+            issues.push(error(
+                "mtp_lane",
+                format!("{} MTP runs only on the serial lane", caps.variant_name()),
+            ));
+        }
+        return (MtpMode::Off, false);
+    }
     if req.mtp_mode == MtpMode::On && caps.mtp == MtpKind::BoundOnly {
         issues.push(error(
             "mtp_unexecuted",
@@ -1877,7 +1914,10 @@ fn resolve_mtp(
         return (MtpMode::Off, false);
     }
     let weights = match caps.mtp {
-        MtpKind::Embedded => req.mtp_mode != MtpMode::Off,
+        MtpKind::Embedded => {
+            req.mtp_mode == MtpMode::On
+                || (req.mtp_mode == MtpMode::Auto && caps.mtp_support == Support::Qualified)
+        }
         MtpKind::Sidecar | MtpKind::DeepSeek => has_path || facts.mtp_loaded,
         MtpKind::BoundOnly | MtpKind::None => false,
     };
@@ -1885,9 +1925,16 @@ fn resolve_mtp(
         MtpMode::Off => MtpMode::Off,
         MtpMode::On if weights => MtpMode::On,
         MtpMode::On => MtpMode::Off,
+        MtpMode::Auto if caps.mtp_support != Support::Qualified => MtpMode::Off,
         MtpMode::Auto if weights => MtpMode::Auto,
         MtpMode::Auto => MtpMode::Off,
     };
+    if mode == MtpMode::On && caps.mtp_support == Support::Present {
+        issues.push(warn(
+            "mtp_unverified",
+            "MTP execution is present but not qualified",
+        ));
+    }
     (mode, weights)
 }
 
@@ -1902,9 +1949,9 @@ enum BankDriver {
 /// backend has no lane, the native fit refused it, the family serves
 /// serially, or an opt-in family stayed at width one.
 ///
-/// This mirrors the native admission gate: Inkling, dots3 and GLM refuse
-/// banks outright, Qwen and Step require `DS4_QWEN_BATCH` / `DS4_STEP37_BATCH`
-/// to be `1` (which `env_overrides` publishes from the resolved width), and
+/// This mirrors the native admission gate: Inkling and GLM refuse banks
+/// outright; Qwen, Step and dots3 require their batch environment switch to
+/// be `1` (which `env_overrides` publishes from the resolved width), and
 /// the remaining families are persistent.
 fn bank_driver(
     req: &ServingRequest,
@@ -1975,7 +2022,9 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
             "32K one-bank serving is qualified; disk KV and external owner import are not"
         }
         Variant::Glm53Flash => "serial graph is capped at 2,048 tokens; snapshots unsupported",
-        Variant::Dots3NotePrev => "live serving is serial; embedded MTP is bound, not executed",
+        Variant::Dots3NotePrev => {
+            "text banks, local-window partial reuse and serial MTP are present but unqualified"
+        }
         Variant::InklingSmall => "serial text snapshots present; media snapshots unsupported",
         Variant::Kexaone236B => {
             "exact reuse qualified; LLLG partial checkpoints await live qualification"
@@ -2893,14 +2942,95 @@ mod tests {
     }
 
     #[test]
-    fn dots3_banks_and_mtp_on_fail_honestly() {
-        let mut req = ServingRequest::default();
-        req.max_seqs = MaxSeqs::Fixed(2);
-        req.mtp_mode = MtpMode::On;
+    fn dots3_banks_are_present() {
+        let req = ServingRequest {
+            max_seqs: MaxSeqs::Fixed(2),
+            prefix_reuse: PrefixReuse::Partial,
+            mtp_mode: MtpMode::Off,
+            ..ServingRequest::default()
+        };
         let p = plan(req, ModelFamily::Dots3Note, Variant::Dots3NotePrev);
-        assert!(p.has_errors());
-        assert!(p.issues.iter().any(|i| i.code == "banks_unsupported"));
-        assert!(p.issues.iter().any(|i| i.code == "mtp_unexecuted"));
+        assert!(!p.has_errors(), "{:?}", p.issues);
+        assert_eq!(p.effective.max_seqs, 2);
+        assert_eq!(p.qualified.banks, Support::Present);
+        assert_eq!(p.qualified.prefix_reuse, Support::Present);
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Partial);
+        assert!(p
+            .env_overrides()
+            .iter()
+            .any(|(k, v)| k == "DS4_DOTS3_BATCH" && v == "1"));
+    }
+
+    #[test]
+    fn dots3_mtp_is_serial_opt_in() {
+        let req = ServingRequest {
+            mtp_mode: MtpMode::On,
+            ..ServingRequest::default()
+        };
+        let p = plan(req, ModelFamily::Dots3Note, Variant::Dots3NotePrev);
+        assert!(!p.has_errors(), "{:?}", p.issues);
+        assert_eq!(p.effective.mtp_mode, MtpMode::On);
+        assert_eq!(p.qualified.mtp, Support::Present);
+        assert!(p.issues.iter().any(|i| i.code == "mtp_unverified"));
+        assert!(p
+            .env_overrides()
+            .iter()
+            .any(|(k, v)| k == "DS4_DOTS3_MTP" && v == "1"));
+
+        let p = plan(
+            ServingRequest::default(),
+            ModelFamily::Dots3Note,
+            Variant::Dots3NotePrev,
+        );
+        assert_eq!(p.effective.mtp_mode, MtpMode::Off);
+        assert!(p
+            .env_overrides()
+            .iter()
+            .any(|(k, v)| k == "DS4_DOTS3_MTP" && v == "0"));
+    }
+
+    #[test]
+    fn dots3_mtp_refuses_bank_lane() {
+        let req = ServingRequest {
+            max_seqs: MaxSeqs::Fixed(2),
+            mtp_mode: MtpMode::On,
+            ..ServingRequest::default()
+        };
+        let p = plan(req, ModelFamily::Dots3Note, Variant::Dots3NotePrev);
+        assert!(p.issues.iter().any(|i| i.code == "mtp_lane"));
+        assert_eq!(p.effective.mtp_mode, MtpMode::Off);
+        assert!(p
+            .env_overrides()
+            .iter()
+            .any(|(k, v)| k == "DS4_DOTS3_MTP" && v == "0"));
+    }
+
+    #[test]
+    fn dots3_mtp_refuses_long_draft() {
+        let req = ServingRequest {
+            mtp_mode: MtpMode::On,
+            mtp_draft: Some(4),
+            ..ServingRequest::default()
+        };
+        let p = plan(req, ModelFamily::Dots3Note, Variant::Dots3NotePrev);
+        assert!(p.issues.iter().any(|i| i.code == "mtp_draft"));
+        assert_eq!(p.effective.mtp_mode, MtpMode::Off);
+    }
+
+    #[test]
+    fn dots3_partial_needs_bank_lane() {
+        let mut req = ServingRequest::default();
+        req.prefix_reuse = PrefixReuse::Partial;
+        let p = plan(req, ModelFamily::Dots3Note, Variant::Dots3NotePrev);
+        assert!(p.issues.iter().any(|i| i.code == "partial_lane"));
+        let p = plan(
+            ServingRequest::default(),
+            ModelFamily::Dots3Note,
+            Variant::Dots3NotePrev,
+        );
+        assert!(!p.has_errors(), "{:?}", p.issues);
+        assert_eq!(p.effective.max_seqs, 1);
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
     }
 
     #[test]

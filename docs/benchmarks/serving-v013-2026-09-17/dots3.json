@@ -1,0 +1,1480 @@
+{
+  "schema": "v013-live-evidence-v1",
+  "date": "2026-09-17",
+  "family": "dots3-note",
+  "artifact": "dots3-note-prev-MQ87",
+  "source_state": "Uncommitted v0.1.3 work at capture; frozen HTTP executable identities are retained in process receipts. Native logs do not carry per-run executable hashes.",
+  "artifacts": {
+    "schema": "v013-artifacts-v1",
+    "manifest": "/home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/MQ87-SHA256SUMS",
+    "manifest_sha256": "05d9b3ab2eed9e18462e7dd4d3d06033308870bbef1ba884ead93cf0a4dc4bc6",
+    "shards": [
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00001-of-00010.gguf",
+        "bytes": 8501365824,
+        "sha256": "c2b8cbf91218a614e8d70e9b31af83e66029a2aa97b03e7f59f729e649c4c033",
+        "verified": true
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00002-of-00010.gguf",
+        "bytes": 8396868192,
+        "sha256": "7ac365f1c40f416d0add7dcb588b52b758f5a951959d52b81f278038d581a6b7",
+        "verified": true
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00003-of-00010.gguf",
+        "bytes": 8721833600,
+        "sha256": "540501acf61f9a1261ab5a4af751be63be1132c4fdbc6041b2e452c1f8161802",
+        "verified": true
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00004-of-00010.gguf",
+        "bytes": 8665291648,
+        "sha256": "c471a04920031ced7cbf141195e3c12250897eb7c84d35257c5ec90f99821653",
+        "verified": true
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00005-of-00010.gguf",
+        "bytes": 8396868256,
+        "sha256": "94b748edb05c8b58adb4e863b3ce7be74d11878abdff31af36076f1343690853",
+        "verified": true
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00006-of-00010.gguf",
+        "bytes": 8665291648,
+        "sha256": "d87ed8c5782575ecfb34a5051edf58bacd06574618beae146ff6f3239847c958",
+        "verified": true
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00007-of-00010.gguf",
+        "bytes": 8665291648,
+        "sha256": "30a04b6903f212a27af06fe9c6db067bbc03c6f0aa1144a1785b008e0d2ff688",
+        "verified": true
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00008-of-00010.gguf",
+        "bytes": 8396868256,
+        "sha256": "c57959342e9ab664d2c25e50096ea39c22ce203a3e006ba333417a93dc903f43",
+        "verified": true
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00009-of-00010.gguf",
+        "bytes": 8721833600,
+        "sha256": "2fac4fa352e213f21a7d5e241e741e005e96d0c585e2a1274851454a503237de",
+        "verified": true
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00010-of-00010.gguf",
+        "bytes": 8941422752,
+        "sha256": "4d64acd0b4eca1922e413f8496753d0e3fad3fce8810138214f380a9f9244b49",
+        "verified": true
+      }
+    ]
+  },
+  "scope": {
+    "backend": "CUDA",
+    "device": "NVIDIA GB10 (sm_121)",
+    "owner": "shared VMM weight owner; not standalone profile qualification",
+    "clock_limits_mhz": [
+      300,
+      2200
+    ],
+    "banks": {
+      "context": 4096,
+      "banks": 2,
+      "native_chunk": 128,
+      "mtp": "off",
+      "prefix_reuse": "partial",
+      "native_prompt_rows": [
+        2304,
+        3328
+      ],
+      "http_prompt_rows": [
+        2480,
+        2499
+      ]
+    },
+    "mtp": {
+      "lane": "serial",
+      "context": 4096,
+      "banks": 1,
+      "native_chunk": 128,
+      "mtp": "on",
+      "draft": 3,
+      "prefix_reuse": "exact",
+      "http_prompt_rows": [
+        14,
+        17,
+        2492
+      ],
+      "completion_limits": [
+        48,
+        128
+      ],
+      "native": {
+        "native_chunk": 32,
+        "prompt_context_pairs": [
+          [
+            600,
+            1024
+          ],
+          [
+            2304,
+            4096
+          ]
+        ],
+        "physical_context_tail": {
+          "prompt_rows": 29,
+          "context": 32,
+          "requested_trial_rows": 4,
+          "actual_trial_rows": [
+            3,
+            2,
+            1
+          ]
+        }
+      }
+    }
+  },
+  "native": {
+    "checkpoint": {
+      "path": "scratch/v013/dots3-checkpoint.log",
+      "sha256": "209bbdb5a8ca3969a6a3f0e7b4c4470f5c2bd2dbe3cb3978cb10a878926bd0be",
+      "result": [
+        "dots3 checkpoint: local latent/RoPE wrap, full DSA prefix, fork/truncate, logits, lineage, remap PASS"
+      ]
+    },
+    "mtp-guards": {
+      "path": "scratch/v013/dots3-mtp-guards.log",
+      "sha256": "32bb05572f96e88b5973917a3f8323ce2c16358cb27fa4f83ba7c8d202cb49e0",
+      "result": [
+        "dots3 model-free sampling guards and allocation quote PASS"
+      ]
+    },
+    "bank": {
+      "path": "scratch/v013/dots3-bank.log",
+      "sha256": "667884b76d409b8bb1009f0da7bb6c30226c5bb6ce17efa175644c4fa3464df4",
+      "result": [
+        "dots3 banks: DSA/local wrap, full-vocabulary +16 greedy parity, partial/exact fork, truncate, payload, cancel/reuse PASS"
+      ],
+      "full_vocabulary_comparisons": {
+        "count": 35,
+        "maximum_absolute_difference": 0.0
+      }
+    },
+    "mtp-600": {
+      "path": "scratch/v013/dots3-mtp-600.log",
+      "sha256": "b6a1d46b6612cc640fd5035964c9fbfdaa341c0711f992d47ff328e3c5d9aa1c",
+      "result": [
+        "dots3 MTP fixture: rows=600 ctx=1024 native_cap=32",
+        "dots3 MTP independent full-vocab cosine=0.999953863 relative_l2=0.0099115059 top=347/347",
+        "dots3 MTP: independent predictor, full-vocabulary/cache parity, accepts 1/2/3/4, wrapped rollback, snapshot/malformed/cancel PASS"
+      ],
+      "full_vocabulary_comparisons": {
+        "count": 18,
+        "maximum_absolute_difference": 0.0
+      }
+    },
+    "mtp-2304": {
+      "path": "scratch/v013/dots3-mtp-2304.log",
+      "sha256": "ea093a53769ae0247fbdf17429f01a026baae0256bdaea25cc93f3a42574f6b7",
+      "result": [
+        "dots3 MTP fixture: rows=2304 ctx=4096 native_cap=32",
+        "dots3 MTP independent full-vocab cosine=0.999953863 relative_l2=0.0099115059 top=347/347",
+        "dots3 MTP: independent predictor, full-vocabulary/cache parity, accepts 1/2/3/4, wrapped rollback, snapshot/malformed/cancel PASS"
+      ],
+      "full_vocabulary_comparisons": {
+        "count": 18,
+        "maximum_absolute_difference": 0.0
+      }
+    },
+    "mtp-tail": {
+      "path": "scratch/v013/dots3-mtp-tail.log",
+      "sha256": "6c0046db6c962c5e6a83668e7a7c8eab4e8017418a1297f31a7a6162b7580517",
+      "result": [
+        "dots3 MTP fixture: rows=600 ctx=1024 native_cap=32",
+        "dots3 MTP independent full-vocab cosine=0.999953863 relative_l2=0.0099115059 top=347/347",
+        "dots3 MTP short trial: budget=1 rows=1 keep=1 position=601 PASS",
+        "dots3 MTP short trial: budget=2 rows=2 keep=2 position=603 PASS",
+        "dots3 MTP short trial: budget=3 rows=3 keep=3 position=606 PASS",
+        "dots3 MTP short trial: budget=4 rows=3 keep=1 position=30 PASS",
+        "dots3 MTP short trial: budget=4 rows=2 keep=1 position=31 PASS",
+        "dots3 MTP short trial: budget=4 rows=1 keep=1 position=32 PASS",
+        "dots3 MTP real context=32 exhausted without mutation PASS",
+        "dots3 MTP: independent predictor, full-vocabulary/cache parity, accepts 1/2/3/4, short trials, wrapped rollback, snapshot/malformed/cancel PASS"
+      ],
+      "full_vocabulary_comparisons": {
+        "count": 32,
+        "maximum_absolute_difference": 0.0
+      }
+    }
+  },
+  "http": {
+    "banks": {
+      "cold-append": {
+        "seconds": 6.887562963005621,
+        "message": {
+          "role": "assistant",
+          "content": "5"
+        },
+        "usage": {
+          "prompt_tokens": 2499,
+          "completion_tokens": 1,
+          "total_tokens": 2500,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 2499
+          }
+        },
+        "trace": {
+          "effective_lane": "continuous",
+          "reuse_kind": "cold",
+          "speculation_active": false,
+          "fallback_reason": null
+        },
+        "timings": {
+          "ttft_ms": 6826.4,
+          "prefill_tokens": 2499,
+          "prefill_cached_tokens": 0,
+          "prefill_tok_s": 366.4,
+          "decode_tok_s": 17.6,
+          "tok_per_step": 2.0
+        }
+      },
+      "cold-edit": {
+        "seconds": 7.0410426979651675,
+        "message": {
+          "role": "assistant",
+          "content": "4"
+        },
+        "usage": {
+          "prompt_tokens": 2499,
+          "completion_tokens": 1,
+          "total_tokens": 2500,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 2499
+          }
+        },
+        "trace": {
+          "effective_lane": "continuous",
+          "reuse_kind": "cold",
+          "speculation_active": false,
+          "fallback_reason": null
+        },
+        "timings": {
+          "ttft_ms": 6838.8,
+          "prefill_tokens": 2499,
+          "prefill_cached_tokens": 0,
+          "prefill_tok_s": 365.8,
+          "decode_tok_s": 6.3,
+          "tok_per_step": 2.0
+        }
+      },
+      "restored": {
+        "phase": "restored",
+        "seconds": 0.43037733202800155,
+        "cached_tokens": 2481,
+        "prompt_tokens": 2499,
+        "text": "5",
+        "trace": {
+          "effective_lane": "continuous",
+          "reuse_kind": "fork",
+          "speculation_active": false,
+          "fallback_reason": null
+        },
+        "timings": {
+          "ttft_ms": 234.1,
+          "prefill_tokens": 18,
+          "prefill_cached_tokens": 2481,
+          "prefill_tok_s": 87.3,
+          "decode_tok_s": 6.6,
+          "tok_per_step": 2.0
+        }
+      },
+      "seed": {
+        "phase": "seed",
+        "seconds": 6.9861544130253606,
+        "cached_tokens": 0,
+        "prompt_tokens": 2480,
+        "text": "4",
+        "trace": {
+          "effective_lane": "continuous",
+          "reuse_kind": "cold",
+          "speculation_active": false,
+          "fallback_reason": null,
+          "reuse_miss": "no checkpoint at or below LCP"
+        },
+        "timings": {
+          "ttft_ms": 6787.9,
+          "prefill_tokens": 2480,
+          "prefill_cached_tokens": 0,
+          "prefill_tok_s": 365.7,
+          "decode_tok_s": 6.5,
+          "tok_per_step": 2.0
+        }
+      },
+      "warm-append": {
+        "seconds": 0.31328995199874043,
+        "message": {
+          "role": "assistant",
+          "content": "5"
+        },
+        "usage": {
+          "prompt_tokens": 2499,
+          "completion_tokens": 1,
+          "total_tokens": 2500,
+          "prompt_tokens_details": {
+            "cached_tokens": 2481,
+            "cache_write_tokens": 18
+          }
+        },
+        "trace": {
+          "effective_lane": "continuous",
+          "reuse_kind": "fork",
+          "speculation_active": false,
+          "fallback_reason": null
+        },
+        "timings": {
+          "ttft_ms": 213.5,
+          "prefill_tokens": 18,
+          "prefill_cached_tokens": 2481,
+          "prefill_tok_s": 87.8,
+          "decode_tok_s": 17.0,
+          "tok_per_step": 2.0
+        }
+      },
+      "warm-edit": {
+        "seconds": 0.392490308964625,
+        "message": {
+          "role": "assistant",
+          "content": "4"
+        },
+        "usage": {
+          "prompt_tokens": 2499,
+          "completion_tokens": 1,
+          "total_tokens": 2500,
+          "prompt_tokens_details": {
+            "cached_tokens": 2480,
+            "cache_write_tokens": 19
+          }
+        },
+        "trace": {
+          "effective_lane": "continuous",
+          "reuse_kind": "partial",
+          "speculation_active": false,
+          "fallback_reason": null
+        },
+        "timings": {
+          "ttft_ms": 326.2,
+          "prefill_tokens": 19,
+          "prefill_cached_tokens": 2480,
+          "prefill_tok_s": 90.5,
+          "decode_tok_s": 17.0,
+          "tok_per_step": 2.0
+        }
+      },
+      "wrong-identity": {
+        "seconds": 7.025512025982607,
+        "usage": {
+          "prompt_tokens": 2499,
+          "completion_tokens": 1,
+          "total_tokens": 2500,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 2499
+          }
+        },
+        "choice": {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "5"
+          },
+          "finish_reason": "stop"
+        },
+        "trace": {
+          "effective_lane": "continuous",
+          "reuse_kind": "cold",
+          "speculation_active": false,
+          "fallback_reason": null,
+          "reuse_miss": "payload family/layout mismatch"
+        },
+        "timings": {
+          "ttft_ms": 6835.5,
+          "prefill_tokens": 2499,
+          "prefill_cached_tokens": 0,
+          "prefill_tok_s": 366.0,
+          "decode_tok_s": 6.6,
+          "tok_per_step": 2.0
+        }
+      }
+    },
+    "serial_mtp": {
+      "cancel-recover": {
+        "first_content_seconds": 0.7172679690411314,
+        "recovery_seconds": 2.9977714169654064,
+        "choice": {
+          "text": " 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1",
+          "index": 0,
+          "finish_reason": "length"
+        },
+        "usage": {
+          "prompt_tokens": 14,
+          "completion_tokens": 48,
+          "total_tokens": 62,
+          "prompt_tokens_details": {
+            "cached_tokens": 14,
+            "cache_write_tokens": 0
+          }
+        },
+        "trace": {
+          "effective_lane": "serial",
+          "reuse_kind": "exact",
+          "speculation_active": true,
+          "fallback_reason": null
+        },
+        "timings": {
+          "ttft_ms": 451.6,
+          "prefill_tokens": 0,
+          "prefill_cached_tokens": 14,
+          "decode_tok_s": 18.5,
+          "tok_per_step": 4.0
+        }
+      },
+      "cold-append": {
+        "seconds": 2.6404253719956614,
+        "choice": {
+          "text": " 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, ",
+          "index": 0,
+          "finish_reason": "length"
+        },
+        "usage": {
+          "prompt_tokens": 17,
+          "completion_tokens": 48,
+          "total_tokens": 65,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 17
+          }
+        },
+        "trace": {
+          "effective_lane": "serial",
+          "reuse_kind": "cold",
+          "speculation_active": false,
+          "fallback_reason": null
+        },
+        "timings": {
+          "ttft_ms": 233.6,
+          "prefill_tokens": 17,
+          "prefill_cached_tokens": 0,
+          "prefill_tok_s": 92.9,
+          "decode_tok_s": 19.6,
+          "tok_per_step": 1.0
+        }
+      },
+      "cold-count": {
+        "seconds": 14.136514823010657,
+        "choice": {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 3"
+          },
+          "finish_reason": "length"
+        },
+        "usage": {
+          "prompt_tokens": 2492,
+          "completion_tokens": 128,
+          "total_tokens": 2620,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 2492
+          }
+        },
+        "trace": {
+          "effective_lane": "serial",
+          "reuse_kind": "cold",
+          "speculation_active": false,
+          "fallback_reason": null
+        },
+        "timings": {
+          "ttft_ms": 6911.7,
+          "prefill_tokens": 2492,
+          "prefill_cached_tokens": 0,
+          "prefill_tok_s": 364.0,
+          "decode_tok_s": 17.6,
+          "tok_per_step": 1.0
+        }
+      },
+      "cold-raw": {
+        "seconds": 2.7577179599902593,
+        "choice": {
+          "text": " 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1",
+          "index": 0,
+          "finish_reason": "length"
+        },
+        "usage": {
+          "prompt_tokens": 14,
+          "completion_tokens": 48,
+          "total_tokens": 62,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 14
+          }
+        },
+        "trace": {
+          "effective_lane": "serial",
+          "reuse_kind": "cold",
+          "speculation_active": false,
+          "fallback_reason": null
+        },
+        "timings": {
+          "ttft_ms": 337.8,
+          "prefill_tokens": 14,
+          "prefill_cached_tokens": 0,
+          "prefill_tok_s": 72.4,
+          "decode_tok_s": 19.8,
+          "tok_per_step": 1.0
+        }
+      },
+      "restored-append": {
+        "seconds": 2.988663822005037,
+        "choice": {
+          "text": " 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, ",
+          "index": 0,
+          "finish_reason": "length"
+        },
+        "usage": {
+          "prompt_tokens": 17,
+          "completion_tokens": 48,
+          "total_tokens": 65,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 17
+          }
+        },
+        "trace": {
+          "effective_lane": "serial",
+          "reuse_kind": "cold",
+          "speculation_active": true,
+          "fallback_reason": null,
+          "reuse_miss": "session state requires prefix replay"
+        },
+        "timings": {
+          "ttft_ms": 439.8,
+          "prefill_tokens": 17,
+          "prefill_cached_tokens": 0,
+          "prefill_tok_s": 79.8,
+          "decode_tok_s": 18.5,
+          "tok_per_step": 4.0
+        }
+      },
+      "restored-raw": {
+        "seconds": 2.8403241310152225,
+        "choice": {
+          "text": " 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1",
+          "index": 0,
+          "finish_reason": "length"
+        },
+        "usage": {
+          "prompt_tokens": 14,
+          "completion_tokens": 48,
+          "total_tokens": 62,
+          "prompt_tokens_details": {
+            "cached_tokens": 14,
+            "cache_write_tokens": 0
+          }
+        },
+        "trace": {
+          "effective_lane": "serial",
+          "reuse_kind": "exact",
+          "speculation_active": true,
+          "fallback_reason": null
+        },
+        "timings": {
+          "ttft_ms": 256.0,
+          "prefill_tokens": 0,
+          "prefill_cached_tokens": 14,
+          "decode_tok_s": 18.5,
+          "tok_per_step": 4.0
+        }
+      },
+      "seed-count": {
+        "seconds": 19.914583000005223,
+        "choice": {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 3"
+          },
+          "finish_reason": "length"
+        },
+        "usage": {
+          "prompt_tokens": 2492,
+          "completion_tokens": 128,
+          "total_tokens": 2620,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 2492
+          }
+        },
+        "trace": {
+          "effective_lane": "serial",
+          "reuse_kind": "cold",
+          "speculation_active": true,
+          "fallback_reason": null,
+          "reuse_miss": "no checkpoint at or below LCP"
+        },
+        "timings": {
+          "ttft_ms": 12005.8,
+          "prefill_tokens": 2492,
+          "prefill_cached_tokens": 0,
+          "prefill_tok_s": 212.4,
+          "decode_tok_s": 16.1,
+          "tok_per_step": 4.0
+        }
+      },
+      "seed-raw": {
+        "seconds": 3.037969471013639,
+        "choice": {
+          "text": " 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1",
+          "index": 0,
+          "finish_reason": "length"
+        },
+        "usage": {
+          "prompt_tokens": 14,
+          "completion_tokens": 48,
+          "total_tokens": 62,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 14
+          }
+        },
+        "trace": {
+          "effective_lane": "serial",
+          "reuse_kind": "cold",
+          "speculation_active": true,
+          "fallback_reason": null,
+          "reuse_miss": "no checkpoint at or below LCP"
+        },
+        "timings": {
+          "ttft_ms": 454.5,
+          "prefill_tokens": 14,
+          "prefill_cached_tokens": 0,
+          "prefill_tok_s": 63.3,
+          "decode_tok_s": 18.5,
+          "tok_per_step": 4.0
+        }
+      }
+    }
+  },
+  "parity": {
+    "banks": [
+      {
+        "reference": "warm-append",
+        "comparison": "cold-append",
+        "identical_request": true,
+        "identical_choices": true,
+        "identical_completion_tokens": true
+      },
+      {
+        "reference": "warm-edit",
+        "comparison": "cold-edit",
+        "identical_request": true,
+        "identical_choices": true,
+        "identical_completion_tokens": true
+      },
+      {
+        "reference": "restored",
+        "comparison": "cold-append",
+        "identical_request": true,
+        "identical_choices": true,
+        "identical_completion_tokens": true
+      },
+      {
+        "reference": "wrong-identity",
+        "comparison": "cold-append",
+        "identical_request": true,
+        "identical_choices": true,
+        "identical_completion_tokens": true
+      }
+    ],
+    "serial_mtp_vs_plain_cold": [
+      {
+        "reference": "seed-raw",
+        "comparison": "cold-raw",
+        "identical_request": true,
+        "identical_choices": true,
+        "identical_completion_tokens": true
+      },
+      {
+        "reference": "seed-count",
+        "comparison": "cold-count",
+        "identical_request": true,
+        "identical_choices": true,
+        "identical_completion_tokens": true
+      },
+      {
+        "reference": "restored-raw",
+        "comparison": "cold-raw",
+        "identical_request": true,
+        "identical_choices": true,
+        "identical_completion_tokens": true
+      },
+      {
+        "reference": "restored-append",
+        "comparison": "cold-append",
+        "identical_request": true,
+        "identical_choices": true,
+        "identical_completion_tokens": true
+      },
+      {
+        "reference": "cancel-recover",
+        "comparison": "cold-raw",
+        "identical_request": true,
+        "identical_choices": true,
+        "identical_completion_tokens": true
+      }
+    ]
+  },
+  "processes": {
+    "banks": {
+      "cold-append.process.json": {
+        "pid": 837012,
+        "start_ticks": "40633923",
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "command": "./scratch/v013/bin-integrated1/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00001-of-00010.gguf --mtp-mode off --mtp-draft 3 --cont-width 2 -c 4096 -n 64 --native-chunk 128 --prefix-reuse off --model-id dots3-note-mq87 --host 127.0.0.1 --port 18035 ",
+        "executable_sha256": "8a5d50953b7947f271d7dda7dca5c7fe74efeaa771368d38d1f3382560f00e21"
+      },
+      "cold-edit.process.json": {
+        "pid": 837012,
+        "start_ticks": "40633923",
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "command": "./scratch/v013/bin-integrated1/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00001-of-00010.gguf --mtp-mode off --mtp-draft 3 --cont-width 2 -c 4096 -n 64 --native-chunk 128 --prefix-reuse off --model-id dots3-note-mq87 --host 127.0.0.1 --port 18035 ",
+        "executable_sha256": "8a5d50953b7947f271d7dda7dca5c7fe74efeaa771368d38d1f3382560f00e21"
+      },
+      "restored.process.json": {
+        "pid": 835513,
+        "start_ticks": "40628905",
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "command": "./scratch/v013/bin-integrated1/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00001-of-00010.gguf --mtp-mode off --mtp-draft 3 --cont-width 2 -c 4096 -n 64 --native-chunk 128 --prefix-reuse partial --model-id dots3-note-mq87 --host 127.0.0.1 --port 18035 --kv-disk-dir scratch/v013/dots3-kv-bank --kv-disk-space 1G --kv-cache-min-tokens 1 ",
+        "executable_sha256": "8a5d50953b7947f271d7dda7dca5c7fe74efeaa771368d38d1f3382560f00e21"
+      },
+      "seed.process.json": {
+        "pid": 833780,
+        "start_ticks": "40618832",
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "command": "./scratch/v013/bin-integrated1/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00001-of-00010.gguf --mtp-mode off --mtp-draft 3 --cont-width 2 -c 4096 -n 64 --native-chunk 128 --prefix-reuse partial --model-id dots3-note-mq87 --host 127.0.0.1 --port 18035 --kv-disk-dir scratch/v013/dots3-kv-bank --kv-disk-space 1G --kv-cache-min-tokens 1 ",
+        "executable_sha256": "8a5d50953b7947f271d7dda7dca5c7fe74efeaa771368d38d1f3382560f00e21"
+      },
+      "warm-append.process.json": {
+        "pid": 833780,
+        "start_ticks": "40618832",
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "command": "./scratch/v013/bin-integrated1/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00001-of-00010.gguf --mtp-mode off --mtp-draft 3 --cont-width 2 -c 4096 -n 64 --native-chunk 128 --prefix-reuse partial --model-id dots3-note-mq87 --host 127.0.0.1 --port 18035 --kv-disk-dir scratch/v013/dots3-kv-bank --kv-disk-space 1G --kv-cache-min-tokens 1 ",
+        "executable_sha256": "8a5d50953b7947f271d7dda7dca5c7fe74efeaa771368d38d1f3382560f00e21"
+      },
+      "warm-edit.process.json": {
+        "pid": 833780,
+        "start_ticks": "40618832",
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "command": "./scratch/v013/bin-integrated1/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00001-of-00010.gguf --mtp-mode off --mtp-draft 3 --cont-width 2 -c 4096 -n 64 --native-chunk 128 --prefix-reuse partial --model-id dots3-note-mq87 --host 127.0.0.1 --port 18035 --kv-disk-dir scratch/v013/dots3-kv-bank --kv-disk-space 1G --kv-cache-min-tokens 1 ",
+        "executable_sha256": "8a5d50953b7947f271d7dda7dca5c7fe74efeaa771368d38d1f3382560f00e21"
+      },
+      "wrong-identity.process.json": {
+        "pid": 838987,
+        "start_ticks": "40648316",
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "command": "./scratch/v013/bin-integrated1/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00001-of-00010.gguf --mtp-mode off --mtp-draft 3 --cont-width 2 -c 4096 -n 64 --native-chunk 128 --prefix-reuse partial --model-id dots3-note-mq87 --host 127.0.0.1 --port 18035 --kv-disk-dir scratch/v013/dots3-kv-wrong-identity --kv-disk-space 1G --kv-cache-min-tokens 1 ",
+        "executable_sha256": "8a5d50953b7947f271d7dda7dca5c7fe74efeaa771368d38d1f3382560f00e21"
+      }
+    },
+    "serial_mtp": {
+      "cancel.process.json": {
+        "pid": 856727,
+        "start_ticks": "40722278",
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "command": "./scratch/v013/bin-integrated2/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00001-of-00010.gguf --mtp-mode on --mtp-draft 3 --cont-width 0 -c 4096 -n 64 --native-chunk 128 --prefix-reuse exact --model-id dots3-note-mq87 --host 127.0.0.1 --port 18035 --kv-disk-dir scratch/v013/dots3-kv-mtp-fixed --kv-disk-space 1G --kv-cache-min-tokens 1 --kv-cache-boundary-trim-tokens 0 --kv-cache-boundary-align-tokens 0 ",
+        "executable_sha256": "4ef2e1830133d6517ae730dd40c9c5955c6ff5f1f2de368678ad6c1fea79c6ea"
+      },
+      "cold.process.json": {
+        "pid": 859432,
+        "start_ticks": "40738260",
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "command": "./scratch/v013/bin-integrated2/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00001-of-00010.gguf --mtp-mode off --mtp-draft 3 --cont-width 0 -c 4096 -n 64 --native-chunk 128 --prefix-reuse off --model-id dots3-note-mq87 --host 127.0.0.1 --port 18035 ",
+        "executable_sha256": "4ef2e1830133d6517ae730dd40c9c5955c6ff5f1f2de368678ad6c1fea79c6ea"
+      },
+      "restored.process.json": {
+        "pid": 856727,
+        "start_ticks": "40722278",
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "command": "./scratch/v013/bin-integrated2/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00001-of-00010.gguf --mtp-mode on --mtp-draft 3 --cont-width 0 -c 4096 -n 64 --native-chunk 128 --prefix-reuse exact --model-id dots3-note-mq87 --host 127.0.0.1 --port 18035 --kv-disk-dir scratch/v013/dots3-kv-mtp-fixed --kv-disk-space 1G --kv-cache-min-tokens 1 --kv-cache-boundary-trim-tokens 0 --kv-cache-boundary-align-tokens 0 ",
+        "executable_sha256": "4ef2e1830133d6517ae730dd40c9c5955c6ff5f1f2de368678ad6c1fea79c6ea"
+      },
+      "seed.process.json": {
+        "pid": 854209,
+        "start_ticks": "40713658",
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "command": "./scratch/v013/bin-integrated2/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/dots3-note-prev-Mixed-Quant-GGUF/dots3-note-prev-MQ87-00001-of-00010.gguf --mtp-mode on --mtp-draft 3 --cont-width 0 -c 4096 -n 64 --native-chunk 128 --prefix-reuse exact --model-id dots3-note-mq87 --host 127.0.0.1 --port 18035 --kv-disk-dir scratch/v013/dots3-kv-mtp-fixed --kv-disk-space 1G --kv-cache-min-tokens 1 --kv-cache-boundary-trim-tokens 0 --kv-cache-boundary-align-tokens 0 ",
+        "executable_sha256": "4ef2e1830133d6517ae730dd40c9c5955c6ff5f1f2de368678ad6c1fea79c6ea"
+      }
+    }
+  },
+  "serving_plans": {
+    "banks": {
+      "family": "dots3-note",
+      "controls": {
+        "native_prefill_env": "DS4_DOTS3_PREFILL_CHUNK",
+        "scheduler_chunks": [],
+        "prefix_reuse": "partial",
+        "banks": "opt_in",
+        "mtp": "unverified",
+        "disk": "unverified"
+      },
+      "requested": {
+        "prefix_reuse": "partial",
+        "mtp_mode": "off",
+        "max_seqs": "2",
+        "lane": "auto",
+        "ctx": 4096,
+        "mem_floor_gb": 4,
+        "disk": true,
+        "mtp_path": false,
+        "backend": "cuda"
+      },
+      "effective": {
+        "prefix_reuse": "partial",
+        "mtp_mode": "off",
+        "mtp_weights": false,
+        "mtp_draft": null,
+        "max_seqs": 2,
+        "ctx": 4096,
+        "mem_floor_gb": 4,
+        "disk": true,
+        "banks_opt_in": true,
+        "sched_chunk": 128,
+        "sched_chunk_live": 128,
+        "native_chunk": 128,
+        "bank_persist_min_tokens": 1,
+        "disk_min_tokens": 1,
+        "disk_is_offload": false
+      },
+      "quote": {
+        "shared_weights": 0,
+        "per_bank": 329619328,
+        "mtp_state": 0,
+        "scratch": 0,
+        "checkpoint_pool": 1178800128,
+        "ple": 0,
+        "media_reserve": 0,
+        "floor": 4294967296,
+        "available": 23283240704,
+        "banks": 2,
+        "total": 6133006080
+      },
+      "qualified": {
+        "prefix_reuse": "unverified",
+        "disk": "unverified",
+        "mtp": "none",
+        "banks": "unverified",
+        "ctx": null,
+        "banks_n": 1,
+        "prompt": null,
+        "note": "text banks, local-window partial reuse and serial MTP are present but unqualified"
+      },
+      "issues": [
+        {
+          "level": "warn",
+          "code": "banks_unqualified",
+          "message": "max_seqs 2 exceeds qualified banks 1"
+        },
+        {
+          "level": "warn",
+          "code": "disk_unverified",
+          "message": "dots3-note disk KV is present but not qualified"
+        }
+      ]
+    },
+    "serial_mtp": {
+      "family": "dots3-note",
+      "controls": {
+        "native_prefill_env": "DS4_DOTS3_PREFILL_CHUNK",
+        "scheduler_chunks": [],
+        "prefix_reuse": "partial",
+        "banks": "opt_in",
+        "mtp": "unverified",
+        "disk": "unverified"
+      },
+      "requested": {
+        "prefix_reuse": "exact",
+        "mtp_mode": "on",
+        "max_seqs": "off",
+        "lane": "auto",
+        "ctx": 4096,
+        "mem_floor_gb": 4,
+        "disk": true,
+        "mtp_path": false,
+        "backend": "cuda"
+      },
+      "effective": {
+        "prefix_reuse": "exact",
+        "mtp_mode": "on",
+        "mtp_weights": true,
+        "mtp_draft": 3,
+        "max_seqs": 1,
+        "ctx": 4096,
+        "mem_floor_gb": 4,
+        "disk": true,
+        "banks_opt_in": false,
+        "sched_chunk": 128,
+        "sched_chunk_live": 128,
+        "native_chunk": 128,
+        "bank_persist_min_tokens": 1,
+        "disk_min_tokens": 1,
+        "disk_is_offload": false
+      },
+      "quote": {
+        "shared_weights": 0,
+        "per_bank": 329011072,
+        "mtp_state": 26068040,
+        "scratch": 0,
+        "checkpoint_pool": 0,
+        "ple": 0,
+        "media_reserve": 0,
+        "floor": 4294967296,
+        "available": 23875944448,
+        "banks": 1,
+        "total": 4650046408
+      },
+      "qualified": {
+        "prefix_reuse": "unverified",
+        "disk": "unverified",
+        "mtp": "unverified",
+        "banks": "qualified",
+        "ctx": null,
+        "banks_n": 1,
+        "prompt": null,
+        "note": "text banks, local-window partial reuse and serial MTP are present but unqualified"
+      },
+      "issues": [
+        {
+          "level": "warn",
+          "code": "mtp_unverified",
+          "message": "MTP execution is present but not qualified"
+        },
+        {
+          "level": "warn",
+          "code": "disk_unverified",
+          "message": "dots3-note disk KV is present but not qualified"
+        }
+      ]
+    }
+  },
+  "identity_negative": {
+    "method": "Change one byte of the required identity footer in each of three copied disk records; keep the header and payload.",
+    "changes": [
+      {
+        "path": "scratch/v013/dots3-kv-wrong-identity/e9120755cab3829e013a0d15b9f920ece2f20df3.kv",
+        "old_identity": "91a9f54a5a346c58f6d4540c11a4385b5119b22633b6281665648b5470bea936",
+        "new_identity": "90a9f54a5a346c58f6d4540c11a4385b5119b22633b6281665648b5470bea936",
+        "bytes_changed": 1
+      },
+      {
+        "path": "scratch/v013/dots3-kv-wrong-identity/f31ec56e1bc5ccf735e4616512fddeb04b983fb0.kv",
+        "old_identity": "91a9f54a5a346c58f6d4540c11a4385b5119b22633b6281665648b5470bea936",
+        "new_identity": "90a9f54a5a346c58f6d4540c11a4385b5119b22633b6281665648b5470bea936",
+        "bytes_changed": 1
+      },
+      {
+        "path": "scratch/v013/dots3-kv-wrong-identity/058388275016e5c29b44ba92889243cc8968e256.kv",
+        "old_identity": "91a9f54a5a346c58f6d4540c11a4385b5119b22633b6281665648b5470bea936",
+        "new_identity": "90a9f54a5a346c58f6d4540c11a4385b5119b22633b6281665648b5470bea936",
+        "bytes_changed": 1
+      }
+    ],
+    "cached_tokens": 0,
+    "result": "cold response identical to untouched-artifact cold control"
+  },
+  "failed_fixture": {
+    "path": "scratch/v013/dots3-http-mtp-thinking-default",
+    "cause": "Raw completion omitted reasoning_effort; default thinking chose stochastic decoding, so speculation was inactive and the request was ineligible for disk caching.",
+    "classification": "fixture failure, excluded from MTP qualification",
+    "corrected_setting": {
+      "reasoning_effort": "none",
+      "temperature": 0,
+      "seed": 1
+    }
+  },
+  "limitations": [
+    "These are bounded functional gates. Banks, partial reuse, disk KV and embedded MTP remain opt-in/present rather than broadly qualified; MTP Auto remains off.",
+    "Banks use plain target state. Serial MTP is a separate mode and does not support multiple banks or external predictor files; draft limit is three.",
+    "The edited bank arithmetic returned 4 on both warm and cold paths. Cache parity passed; the requested arithmetic answer did not.",
+    "The counting responses ended with finish_reason=length at 48/128 tokens. Byte-identical truncated output does not establish completion or general answer quality.",
+    "No speedup is claimed. Single raw samples were 3.038 seconds with MTP versus 2.758 seconds plain; the 2492-token counting samples were 19.915 versus 14.137 seconds. These are not repeated performance measurements.",
+    "Serial MTP unaligned append replayed all 17 prompt tokens and correctly reported cached_tokens=0 with state-replay miss. Exact restart restored all 14 raw prompt tokens.",
+    "HTTP cancellation was one disconnect after first content, followed by successful exact-cache recovery; it is not a concurrency or disconnect-stress campaign.",
+    "The longest new bank/MTP context here is 4096. Historical plain allocation/throughput evidence does not qualify these modes at 262144 or 524288 tokens.",
+    "All model shard content hashes were verified; native executable hashes were not recorded per run. Raw receipts are local scratch artifacts, and HTTP PID-to-endpoint ownership is an operator assertion."
+  ],
+  "raw_files": [
+    {
+      "path": "scratch/v013/dots3-http-bank/cold-append.process.json",
+      "sha256": "8a8883617282ab19df3c36ff08d6ef3a0f6b90fb85d4045815b49adce6ec28ed"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/cold-append.request.json",
+      "sha256": "86b34d6d9bcb7de949283c76511a8ac9bdcf91a67e3f4f96dd5ce32957ae2d3a"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/cold-append.response.json",
+      "sha256": "1402f261b724892df53763dd3228a77d8df7b787487c15925db4e37cdabdd9dc"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/cold-append.stats.json",
+      "sha256": "017951437cfc32464c2a826ba758576f5f24880c76545e60a58c5d7c999eee14"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/cold-append.summary.json",
+      "sha256": "52265aa0343bd5fe43054310810b8bc629e47b22c45019cfd68b359f7fd71a03"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/cold-edit.process.json",
+      "sha256": "8a8883617282ab19df3c36ff08d6ef3a0f6b90fb85d4045815b49adce6ec28ed"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/cold-edit.request.json",
+      "sha256": "5508b35d5906f8840cf689471644e6de841c4f9f9c1f51c83d0ffb37d23b6f8b"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/cold-edit.response.json",
+      "sha256": "07cb8751421b94cb95ae79cf21de9c107f499a0644170d7451d20554af3fda25"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/cold-edit.stats.json",
+      "sha256": "5bd60db6909b0c26354de8d07ae5875ad8674f9bd2762708427883f08673dc8e"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/cold-edit.summary.json",
+      "sha256": "890163c0a140b3b53c2f3ba9993c5cc204863260a4e00fd552ac315fd35fcfb2"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/follow.request.json",
+      "sha256": "86b34d6d9bcb7de949283c76511a8ac9bdcf91a67e3f4f96dd5ce32957ae2d3a"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/restored.process.json",
+      "sha256": "c4f5f5a7e3ccbd10b8d10a6ad0c61146b00023d0eca4f29803c806f6b57bb8cc"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/restored.request.json",
+      "sha256": "86b34d6d9bcb7de949283c76511a8ac9bdcf91a67e3f4f96dd5ce32957ae2d3a"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/restored.response.json",
+      "sha256": "6e24f1164ce27096ca4d921527288bd76fd72c70ab92b3f307af5728f43902e3"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/restored.stats.json",
+      "sha256": "5818567fa34e59e09b75948f555b6b1eb66f3761e9d9bb44770bf5da9718d163"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/restored.summary.json",
+      "sha256": "81c4b195e7c1a2d2247144ff33b3372d4254211ffd92aeaea635c2cdf356ca70"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/seed.process.json",
+      "sha256": "815dfc9aa2074d3727e834908b232c6439c8f0127594b8c1e1fcd5fe149e311d"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/seed.request.json",
+      "sha256": "8e22ad654d99fd45e157205f5eda229f59b80bd2a77f5caa37714da5fc65fcd9"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/seed.response.json",
+      "sha256": "1aed5f31da61e339742b7d5d0975eb8e911cf2b425c5dad079c4349de5f3a3af"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/seed.stats.json",
+      "sha256": "6b051640ef444bcea13a87c75bcf6f99f30c0804992c02a27a1da01c8f2cbcb5"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/seed.summary.json",
+      "sha256": "df3b50b2bb38e95168f20559a15f309befddfe31001179cc9e0977091d01fa25"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/warm-append.process.json",
+      "sha256": "815dfc9aa2074d3727e834908b232c6439c8f0127594b8c1e1fcd5fe149e311d"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/warm-append.request.json",
+      "sha256": "86b34d6d9bcb7de949283c76511a8ac9bdcf91a67e3f4f96dd5ce32957ae2d3a"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/warm-append.response.json",
+      "sha256": "91a11145b91160022150ca5a805d11f2d06912688931c1526279584a617ed730"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/warm-append.stats.json",
+      "sha256": "0a0f12c441ba3bfa576be368a6bcc394f9df17b7ca7c57b15abbde5f59b2096d"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/warm-append.summary.json",
+      "sha256": "c43b6f7ba0c1604c253ff59a87897bb34ee9284b81840dd38fa43f7e68343e36"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/warm-edit.process.json",
+      "sha256": "815dfc9aa2074d3727e834908b232c6439c8f0127594b8c1e1fcd5fe149e311d"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/warm-edit.request.json",
+      "sha256": "5508b35d5906f8840cf689471644e6de841c4f9f9c1f51c83d0ffb37d23b6f8b"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/warm-edit.response.json",
+      "sha256": "ea1c69aad806acecad61475541aecf6fa99a7377afd25800efd0decbad85743d"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/warm-edit.stats.json",
+      "sha256": "0306a2c3c29dfdae4da557c84590f2297b2a55625443ef7ef97327f168844fee"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/warm-edit.summary.json",
+      "sha256": "f64e481beaf719145a762ab76ce10732db9b034439efecf8fda27945350ab512"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/wrong-identity.process.json",
+      "sha256": "4f9c79dfab56b62a5ce5b90ecb83f98df58e28287b0c4c3925c210da1bd022d6"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/wrong-identity.request.json",
+      "sha256": "86b34d6d9bcb7de949283c76511a8ac9bdcf91a67e3f4f96dd5ce32957ae2d3a"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/wrong-identity.response.json",
+      "sha256": "7965ced4ed9ef5dfede16d9b4eb51cb03ea16feb73a1472259731e7298a39b2b"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/wrong-identity.stats.json",
+      "sha256": "a1061aa29e3f206da26066b9fbba2b8ea383c6601b677174291f251aef7117da"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank/wrong-identity.summary.json",
+      "sha256": "1f663d97ad9e30a7ca1edc3287ed2a3ee7473dfa33cef88415021f29ba694b8c"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cancel-recover.request.json",
+      "sha256": "362ff5132bebd0dc8812da062e56d5831821ccef515736f46faec9fb106a9b5e"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cancel-recover.response.json",
+      "sha256": "8611e517e93215b086b1eaf71d8e571ed03e75f1aac75c4433757071c00b6703"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cancel-recover.stats.json",
+      "sha256": "9abe03bb0061f41f65882840fe7def6653dd3c755c5ba80f6957d5417b7d3e49"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cancel-recover.summary.json",
+      "sha256": "213010ea523ae8bbc97223f83428c6003f4665b2e106feeba73f91db2175a373"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cancel.process.json",
+      "sha256": "fad1d8ceea2a227a4a8c1f3944169e25ab45e91c9cd80b0b286670582a916001"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cancel.request.json",
+      "sha256": "6bf30d268e5d1218582c5a3473ead7c88ff22ea24204d6c7c7b482307e29ea16"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cold-append.request.json",
+      "sha256": "e8c88adb64a0098a5e7db6672e37def9ffe8951edd003159bf5a6eab0a278a4b"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cold-append.response.json",
+      "sha256": "7e4fb20893f0ed47bc5332594dd54167bbd5d338a986f4c3ac8a4f559527ab28"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cold-append.stats.json",
+      "sha256": "ebc165461e75aceb55411a2f7a70c99fa10f144a74d321ac85b8bbde91f2837d"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cold-append.summary.json",
+      "sha256": "3466fab1fc595aa563d9282c8787945868f97b0debe36151285c678fa293c457"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cold-count.request.json",
+      "sha256": "7662d06fd4db4aa198bfebee19581f652efcd7b3954fe77b8ccda6111a5872b4"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cold-count.response.json",
+      "sha256": "ba3a4ce134d6b86f6a7bca7ade19fe319bd44427d8a03b997e0a21f7b5bead01"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cold-count.stats.json",
+      "sha256": "84723e368a79a533836d693d6e86d404de0daf41abb7b6bc4958cd487153a70c"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cold-count.summary.json",
+      "sha256": "1f95145cd5ae776752040174f0a46e5e231d33bd4a1ab95bbd26be0cb54dc504"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cold-raw.request.json",
+      "sha256": "362ff5132bebd0dc8812da062e56d5831821ccef515736f46faec9fb106a9b5e"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cold-raw.response.json",
+      "sha256": "9c8f575f9788ce216b3223942760d9b0ab060fb9a1beb2932b10988dbb3ebc25"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cold-raw.stats.json",
+      "sha256": "d3ab9cf410f4b7c79ca1bef8d90565dbea5f242315c40162c9f59b3114310e04"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cold-raw.summary.json",
+      "sha256": "cd66672eff7bb5ce78fb68b8c26f602e561dcd1c70740a710e1872b054dff546"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cold.process.json",
+      "sha256": "e8640e38554fe5abded569b2d570a154c1bdee0d68d16cda33060d3ba51161e7"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/restored-append.request.json",
+      "sha256": "e8c88adb64a0098a5e7db6672e37def9ffe8951edd003159bf5a6eab0a278a4b"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/restored-append.response.json",
+      "sha256": "5f821d161b64775941b33805f3e67d48d55a9d895917793c3199e11e091539d3"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/restored-append.stats.json",
+      "sha256": "61b25451e591cddc3c64322671adbc058b962b26d2f3d5a0749dd485ef8c734c"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/restored-append.summary.json",
+      "sha256": "a40d4f4861dd0c39f8ffc3ba9a041057154d667ab7452e041cf38747da7b4d66"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/restored-raw.request.json",
+      "sha256": "362ff5132bebd0dc8812da062e56d5831821ccef515736f46faec9fb106a9b5e"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/restored-raw.response.json",
+      "sha256": "64cdf931a9c308184a52ab8a648593ffd1bb3d4f9ccd91ea2bc46104f330a76c"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/restored-raw.stats.json",
+      "sha256": "270ee63aff0fd82ce3714934358b7f0fec2321a6f4b2ccd567f0349bd8e8dd3f"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/restored-raw.summary.json",
+      "sha256": "af0e8d1144d1e73edd781722b8d7024b36d6e165712c1d46c7c7399cc9a19524"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/restored.process.json",
+      "sha256": "fad1d8ceea2a227a4a8c1f3944169e25ab45e91c9cd80b0b286670582a916001"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/seed-count.request.json",
+      "sha256": "7662d06fd4db4aa198bfebee19581f652efcd7b3954fe77b8ccda6111a5872b4"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/seed-count.response.json",
+      "sha256": "efd600a56b5a753d03129df014c9ecc8180525663ab20532ba380e9d87d86587"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/seed-count.stats.json",
+      "sha256": "94e80396b380dc932a1c7733da782266ea42bc0c8490d404935395850428f292"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/seed-count.summary.json",
+      "sha256": "dc4f79f555122e3331474b84a880fe8ddae4139a47926703948a8b2cdeed5a38"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/seed-raw.request.json",
+      "sha256": "362ff5132bebd0dc8812da062e56d5831821ccef515736f46faec9fb106a9b5e"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/seed-raw.response.json",
+      "sha256": "90ce1f70ec0de01baf1531bfdbe5143a840cbe914703c9b6f61eb05d40aabb7e"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/seed-raw.stats.json",
+      "sha256": "7d6cffb036a8cdf1ffe46a9ac00e4410109f3f667642dbcb42e6d35b992b08ba"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/seed-raw.summary.json",
+      "sha256": "e3fa1a101ca5d41c30293b90cbc0c4c868849043a0923145df3144b38b0c7bd0"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/seed.process.json",
+      "sha256": "7cd0661649c1af31db8da11b0b9c568f736dd15445de203607f40ca0fca4943b"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp/cancel.partial.sse",
+      "sha256": "ceb35933b6656c651980955c2c29d0fb17e685630dac9379d0f447ef8898c779"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp-thinking-default/diagnostic-no-think.request.json",
+      "sha256": "296f53bb97414bd79bbf3f062bcf09dff97b9b59d0d08768cd5b9722e3b1b482"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp-thinking-default/diagnostic-no-think.response.json",
+      "sha256": "0cdfff404001a955db8263af9d939fcb4c0e139955a4fccd3773e5e803243214"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp-thinking-default/diagnostic-no-think.stats.json",
+      "sha256": "e8832b821d7dfb40c8ddebc28f9ac660e5d5eab6310c957f12ab1269bd6942b9"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp-thinking-default/seed-raw.request.json",
+      "sha256": "3a3fb0ba3a7182a3db1c905d5b6150b91773d3d9a6ff667088ea46efe0611c93"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp-thinking-default/seed-raw.response.json",
+      "sha256": "4eec2547b6cc0f641fe45f115691863b75004ff01131beadc15813d3dd8be211"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp-thinking-default/seed-raw.stats.json",
+      "sha256": "bfea198f89a606d8f566003c711e5a6f428c0cb3def4ecb61988140568ea65d5"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp-thinking-default/seed-raw.summary.json",
+      "sha256": "fa6d8ac5a016ee3764d3ce2bb77b00cb36d8fd6b2736c7fa935f395f5cdc2c11"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp-thinking-default/seed.process.json",
+      "sha256": "ee6d7320937839d2dc2f0d5cf2476994dcde1f8a623085d21c5ea53acb61d73f"
+    },
+    {
+      "path": "scratch/v013/dots3-artifacts.json",
+      "sha256": "43ee84a4ad3901e9dae4df5f65eebcfdf6b0c0e94d88f87436091c087592084f"
+    },
+    {
+      "path": "scratch/v013/dots3-wrong-identity-manifest.json",
+      "sha256": "a97abdd82e71c8fba3a00bbf69033d0db3ebf0112a669e7b8bb22291eda57e16"
+    },
+    {
+      "path": "scratch/v013/dots3-mtp-http.py",
+      "sha256": "8e422717215d18ae891f46d7ce675f299d7db6445f64483b353273b4c6cf431e"
+    },
+    {
+      "path": "scratch/v013/dots3-mtp-cancel.py",
+      "sha256": "cb80da726ec59aca1ce4a7bfb0df5978b53b509a4166f7c143971dbe85a64e8b"
+    },
+    {
+      "path": "scratch/v013/dots3-http-branch.py",
+      "sha256": "0916aeb0c79075859c1247ce8615df0456c4692f88729e46119a5dab94521568"
+    },
+    {
+      "path": "scratch/v013/start-dots3-server.py",
+      "sha256": "49b530d38fe05cef90587d6e0597f3a17d4a3cf9d6924648b5f7777a6c3f305f"
+    },
+    {
+      "path": "scratch/v013/start-dots3-mtp-server.py",
+      "sha256": "d9bb6a4f29dc86da31be5604e28bc555c468b06cc2ead138f31fa70fd81a8f88"
+    }
+  ],
+  "logs": [
+    {
+      "path": "scratch/v013/dots3-bank.memory.jsonl",
+      "sha256": "71396a8d060060e7b72a099e63c91f7f68e1e95f0d11533cf1acaa8ce6ae4935"
+    },
+    {
+      "path": "scratch/v013/dots3-checkpoint.memory.jsonl",
+      "sha256": "013b5ad86b008d3b989db7cef9a4080e2a7231a6d073d5a4f0b3f72452d5e835"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank-cold.memory.jsonl",
+      "sha256": "edc3e1501929a1ae8300a37a18ff7c8ff82423493dd0687bb0fd045da9974bcf"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank-restored.memory.jsonl",
+      "sha256": "b9a0deb7b26c4523302aaa2e1ea5c2c9e4035db05c43c6dea023f9d0231af0b2"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank-seed.memory.jsonl",
+      "sha256": "61244d4bec91a412d3ee4e740c9599a790dd2d5460ed2def6a4c56fbbaf9a4fe"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp-cold.memory.jsonl",
+      "sha256": "c061fb3af3dea79108e404acdbeb5f53254a64378db32c57c435cb5ccf5bf35b"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp-restored.memory.jsonl",
+      "sha256": "0124f8bc2e1263c2dc6903376aa0b3ff61b163dec723315bcdd884b1904009f1"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp-seed-fixed.memory.jsonl",
+      "sha256": "1f0de95c2b5aeb675c182f3bac72bc83ab8e3f6a7ea9fd4e54442aec5c294b03"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp-seed.memory.jsonl",
+      "sha256": "e5213c04aea499552e72f74a45e21c81850f48c96dd8aa55ab4fbe980774dbd2"
+    },
+    {
+      "path": "scratch/v013/dots3-http-wrong-identity.memory.jsonl",
+      "sha256": "2332d8564a81aa705c3547dcc59f2a780676eee15b64336928a1e5a1c322020b"
+    },
+    {
+      "path": "scratch/v013/dots3-mtp-2304.memory.jsonl",
+      "sha256": "c77ca7d1b9277e242c00981f89a2f97de6b943c9456966bf20a9ae8cb0da4df7"
+    },
+    {
+      "path": "scratch/v013/dots3-mtp-600.memory.jsonl",
+      "sha256": "81cd3cae963ed6c12878023a9e7aeaca4fe8b82fdd538271a955db13c5cfbc88"
+    },
+    {
+      "path": "scratch/v013/dots3-mtp-tail.memory.jsonl",
+      "sha256": "2d7366c7396c642b9a5868cc641dabfcb50f03fc0217f494471638b7d444751f"
+    },
+    {
+      "path": "scratch/v013/dots3-owner.memory.jsonl",
+      "sha256": "8ff6e58700563030c984db8a179de5ae7d233c4ded126eeee192386a5964b15e"
+    },
+    {
+      "path": "scratch/v013/dots3-gpu-running.csv",
+      "sha256": "c613e510c0d045569d5db5b8f654673c52063fef4a9b70449ea437d730645263"
+    },
+    {
+      "path": "scratch/v013/dots3-host-green.log",
+      "sha256": "3692df0c1284fd26f98053b4e08f2f4bc5e4d2b7091cf6e925a6b3dd84d0207f"
+    },
+    {
+      "path": "scratch/v013/dots3-mtp-quote-green.log",
+      "sha256": "9320d771773a25e26a2352893d610560fdc1b0be8c0d3b0663ea367b2a9b8398"
+    },
+    {
+      "path": "scratch/v013/dots3-mtp-plan-green.log",
+      "sha256": "fcd10100ff4849686e7ee8a769bde747da13796b6c3df42a77451bdeb47d75cd"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank-seed.log",
+      "sha256": "4ba575a88f44012a4794c81fdb8d8add7b465512ad172abf9fdae884a14ff176"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank-restored.log",
+      "sha256": "7462c5556e60976803e1b4c2a3d4c7d66098225d75297f1983fd529236971f50"
+    },
+    {
+      "path": "scratch/v013/dots3-http-bank-cold.log",
+      "sha256": "e9596e736c76be2a2b13b6b45e380428270e4b529b59b12bf1a421a6fb696803"
+    },
+    {
+      "path": "scratch/v013/dots3-http-wrong-identity.log",
+      "sha256": "cd3d5775adb34c8b8095ea4d2abd9441da8f057a4381c491ca18a22a1c2ff71d"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp-seed-fixed.log",
+      "sha256": "537ae26925bb3edb8a8ad7e68892040676c75f734b4a397785af785ad36c3d93"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp-restored.log",
+      "sha256": "04e6ec9282ea20cee1ad09fdaaa866371a9a4acbe6975b27ef2f4987e6431dcf"
+    },
+    {
+      "path": "scratch/v013/dots3-http-mtp-cold.log",
+      "sha256": "926cca7d1ea3a7bcf804b888d1d1fd7f1e3c1498e952fc36f6045102183427b9"
+    }
+  ]
+}

@@ -1397,6 +1397,14 @@ int ds4_session_step37_trial(ds4_session *s, int first, int max_tokens,
                               int *tokens, int *target, int cap,
                               char *err, size_t errlen);
 int ds4_session_step37_commit(ds4_session *s, int keep, char *err, size_t errlen);
+/* dots3 uses the same four-row native trial/host acceptance contract.
+ * A failed device operation invalidates the native generation. */
+int ds4_session_dots3_trial(ds4_session *s, int first, int max_tokens,
+                             int *tokens, int *target, int cap,
+                             char *err, size_t errlen);
+int ds4_session_dots3_commit(ds4_session *s, int keep, char *err, size_t errlen);
+/* Allocation intent captured at session creation, including a deferred graph. */
+bool ds4_session_dots3_mtp(ds4_session *s);
 int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                                         int max_tokens, int eos_token,
                                         int *accepted, int accepted_cap,

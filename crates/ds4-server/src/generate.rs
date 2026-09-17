@@ -2702,6 +2702,26 @@ impl SerialKvIo for NativeSerialKvIo<'_, '_, '_, '_> {
     }
 }
 
+#[cfg(any(feature = "native", test))]
+fn serial_mtp_ready(family: ds4_core::ModelFamily, sidecar: bool, dots3: bool) -> bool {
+    match family {
+        ds4_core::ModelFamily::Dots3Note => dots3,
+        ds4_core::ModelFamily::Inkling | ds4_core::ModelFamily::Step37 => sidecar,
+        _ => false,
+    }
+}
+
+#[test]
+fn dots3_embedded_mtp_needs_session_state() {
+    use ds4_core::ModelFamily::{Dots3Note, Inkling, Qwen4Exp, Step37};
+    assert!(serial_mtp_ready(Dots3Note, false, true));
+    assert!(!serial_mtp_ready(Dots3Note, false, false));
+    assert!(!serial_mtp_ready(Dots3Note, true, false));
+    assert!(serial_mtp_ready(Inkling, true, false));
+    assert!(serial_mtp_ready(Step37, true, false));
+    assert!(!serial_mtp_ready(Qwen4Exp, true, false));
+}
+
 #[cfg(feature = "native")]
 pub struct NativeDecode<'a> {
     model: &'a ds4_core::Model,
@@ -3204,10 +3224,9 @@ impl DecodeIo for NativeDecode<'_> {
     }
 
     fn eval_greedy(&mut self, first: i32, budget: i32) -> Result<Vec<i32>, GenerateError> {
-        if !matches!(
-            self.model.family(),
-            ds4_core::ModelFamily::Inkling | ds4_core::ModelFamily::Step37
-        ) || self.model.mtp().is_none()
+        let family = self.model.family();
+        let dots3 = family == ds4_core::ModelFamily::Dots3Note && self.session()?.has_dots3_mtp();
+        if !serial_mtp_ready(family, self.model.mtp().is_some(), dots3)
             || std::env::var_os("DS4_MTP_SPEC_DISABLE").is_some()
         {
             self.speculated = false;

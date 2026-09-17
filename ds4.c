@@ -43380,8 +43380,8 @@ typedef struct {
  * layers additionally through the DSA top-2048 selection; the independent
  * expanded-form reference lives on the CPU (ds4_engine_dots3_reference_*).
  * Scratch is sized for the wide geometry so both layer kinds share buffers.
- * The MTP block (blk.46) is bound and validated but never executed here, so
- * it owns no cache slot. */
+ * The target excludes blk.46. Its optional predictor owns a separate graph
+ * and cache so trials cannot overwrite committed target state. */
 typedef struct {
     bool ready;
     bool cache_ready;
@@ -46108,6 +46108,8 @@ static bool glm53_graph_forward_token(ds4_glm53_gpu_graph *g,
 }
 #endif /* DS4_NO_GPU */
 
+typedef struct ds4_dots3_spec ds4_dots3_spec;
+
 struct ds4_session {
     ds4_engine *engine;
     ds4_dist_session *distributed;
@@ -46116,6 +46118,8 @@ struct ds4_session {
     ds4_motif3_gpu_graph motif3_graph;
     bool motif3_graph_ready;
     ds4_dots3_gpu_graph dots3_graph;
+    ds4_dots3_spec *dots3_spec;
+    bool dots3_mtp_enabled;  /* Captured at create, including deferred allocation. */
     bool dots3_graph_ready;
     ds4_ling3vl_graph ling3vl_graph;
     ds4_ling3vl_media ling3vl_media;
@@ -47295,7 +47299,7 @@ static bool motif3_graph_forward_mtp_diagnostic(
  * once the causal prefix exceeds the top-k.  The headwise sigmoid gate scales
  * the value heads before the output projection.  FFN is the shared
  * sigmoid-router + IQ2_XXS/Q2_K routed pipeline with the official noaux_tc
- * normalization.  blk.46 (MTP) never executes. */
+ * normalization. The separate MTP graph executes blk.46 only. */
 
 static void dots3_graph_free(ds4_dots3_gpu_graph *g) {
     if (!g) return;
@@ -47369,13 +47373,16 @@ static DS4_MAYBE_UNUSED uint64_t dots3_graph_cache_bytes(
     return total;
 }
 
+/* Mirror of DOTS3_ATTN_SPLIT_MAX_ROWS / DOTS3_ATTN_SPLITS in ds4_cuda.cu:
+ * the split-attention entry checks the partial buffer against them. */
+enum { DOTS3_ATTN_PARTIAL_ROWS = 2, DOTS3_ATTN_PARTIAL_SPLITS = 16 };
+
 /* Exact bytes requested by dots3_graph_alloc + its cache/norm allocator. */
-static uint64_t dots3_graph_memory_estimate(uint32_t ctx_cap) {
+static uint64_t dots3_graph_bytes(uint32_t ctx_cap, uint32_t cap) {
     if (ctx_cap == 0u || ctx_cap > 524288u ||
         DS4_N_LAYER < DS4_N_NEXTN_PREDICT) {
         return 0u;
     }
-    const uint32_t cap = dots3_graph_prefill_cap_for_context(ctx_cap);
     const uint64_t cache = dots3_graph_cache_bytes(ctx_cap, cap);
     if (cache == 0u) return 0u;
 
@@ -47404,15 +47411,17 @@ static uint64_t dots3_graph_memory_estimate(uint32_t ctx_cap) {
             norm_f32 += 2u * DS4_N_INDEXER_HEAD_DIM;
     }
     const uint32_t idx_sub = cap < 128u ? cap : 128u;
+    const uint64_t partial = (uint64_t)DOTS3_ATTN_PARTIAL_ROWS * DOTS3_ATTN_PARTIAL_SPLITS *
+        DS4_N_HEAD * (DS4_N_SWA_KV_LORA + 4u);
     return cache +
         ((uint64_t)cap * row_f32 + fixed_f32 + norm_f32 +
-         (uint64_t)idx_sub * ctx_cap) * sizeof(float) +
+         (uint64_t)idx_sub * ctx_cap + partial) * sizeof(float) +
         (uint64_t)cap * row_i32 * sizeof(int32_t);
 }
 
-/* Mirror of DOTS3_ATTN_SPLIT_MAX_ROWS / DOTS3_ATTN_SPLITS in ds4_cuda.cu:
- * the split-attention entry checks the partial buffer against them. */
-enum { DOTS3_ATTN_PARTIAL_ROWS = 2, DOTS3_ATTN_PARTIAL_SPLITS = 16 };
+static uint64_t dots3_graph_memory_estimate(uint32_t ctx_cap) {
+    return dots3_graph_bytes(ctx_cap, dots3_graph_prefill_cap_for_context(ctx_cap));
+}
 
 static bool dots3_graph_alloc(ds4_dots3_gpu_graph *g, uint32_t cap) {
     if (!g || cap == 0 || cap > 8192u) return false;
@@ -47986,6 +47995,9 @@ static bool dots3_graph_forward_chunk(
     g->cache_len = pos0 + rows;
     return true;
 }
+
+#include "ds4_dots3_batch.inc"
+#include "ds4_dots3_mtp.inc"
 
 enum { DS4_MOTIF3_DECODE_BATCH_MAX = DS4_MULTISEQ_MAX_SEQ };
 
@@ -49772,6 +49784,7 @@ int ds4_session_output_head_bench(ds4_session *s, int iters, FILE *fp, char *err
 #define DS4_SESSION_EXAONE_LAYOUT_MAGIC UINT32_C(0x33415845) /* "EXA3" */
 #define DS4_SESSION_MOTIF3_LAYOUT_MAGIC UINT32_C(0x3346544d) /* "MTF3" */
 #define DS4_SESSION_DOTS3_LAYOUT_MAGIC  UINT32_C(0x33535444) /* "DTS3" */
+#define DS4_SESSION_DOTS3_MTP_MAGIC     UINT32_C(0x4d335444) /* "DT3M" */
 #define DS4_SESSION_QWEN4EXP_LAYOUT_MAGIC UINT32_C(0x334e5751) /* "QWN3" */
 #define DS4_SESSION_QWEN_FP8_LAYOUT_MAGIC UINT32_C(0x33465751) /* "QWF3" */
 
@@ -51297,11 +51310,23 @@ static uint64_t dots3_payload_bytes_for_graph(
     return bytes;
 }
 
+static uint64_t dots3_spec_payload_bytes(const ds4_dots3_spec *sp, uint32_t tokens) {
+    if (!sp || !tokens) { return 0; }
+    const uint32_t cap = sp->draft.layer_cache_cap[DS4_N_LAYER - 1];
+    const uint32_t rows = tokens - 1 < cap ? tokens - 1 : cap;
+    return sizeof(uint32_t) + (uint64_t)DS4_N_EMBD * sizeof(float) +
+        (uint64_t)rows * (DS4_N_SWA_KV_LORA + DS4_N_ROT) * sizeof(uint16_t);
+}
+
 static int dots3_payload_save_graph(
-        ds4_dots3_gpu_graph *g, const int *tokens, uint32_t n_tokens,
+        ds4_dots3_gpu_graph *g, ds4_dots3_spec *sp, const int *tokens, uint32_t n_tokens,
         const float *logits, FILE *fp, char *err, size_t errlen) {
     if (!fp || !tokens || dots3_payload_bytes_for_graph(g, n_tokens) == 0u) {
         payload_set_err(err, errlen, "invalid dots3 session payload layout");
+        return 1;
+    }
+    if (sp && (sp->trial_n || sp->target_pos != n_tokens || sp->draft.cache_len != n_tokens - 1)) {
+        payload_set_err(err, errlen, "dots3 snapshot requires a committed MTP frontier");
         return 1;
     }
     for (uint32_t i = 0; i < n_tokens; i++) {
@@ -51322,7 +51347,7 @@ static int dots3_payload_save_graph(
         g->ctx_cap,
         g->cap,
         DS4_N_KV_LORA,
-        DS4_SESSION_DOTS3_LAYOUT_MAGIC,
+        sp ? DS4_SESSION_DOTS3_MTP_MAGIC : DS4_SESSION_DOTS3_LAYOUT_MAGIC,
         DS4_N_SWA_KV_LORA,
         n_tokens,
         DS4_N_LAYER,
@@ -51362,12 +51387,24 @@ static int dots3_payload_save_graph(
                 buf, DS4_SESSION_IO_CHUNK, err, errlen);
         }
     }
+    if (rc == 0 && sp) {
+        const uint32_t il = DS4_N_LAYER - 1;
+        const uint32_t rows = sp->draft.cache_len < sp->draft.layer_cache_cap[il]
+            ? sp->draft.cache_len : sp->draft.layer_cache_cap[il];
+        rc = payload_write_u32(fp, sp->draft.cache_len, err, errlen);
+        if (!rc) { rc = payload_write_tensor_span(fp, sp->carry, 0,
+            (uint64_t)DS4_N_EMBD * sizeof(float), buf, DS4_SESSION_IO_CHUNK, err, errlen); }
+        if (!rc) { rc = payload_write_tensor_span(fp, sp->draft.layer_kv_latent[il], 0,
+            (uint64_t)rows * DS4_N_SWA_KV_LORA * sizeof(uint16_t), buf, DS4_SESSION_IO_CHUNK, err, errlen); }
+        if (!rc) { rc = payload_write_tensor_span(fp, sp->draft.layer_k_pe[il], 0,
+            (uint64_t)rows * DS4_N_ROT * sizeof(uint16_t), buf, DS4_SESSION_IO_CHUNK, err, errlen); }
+    }
     free(buf);
     return rc;
 }
 
 static int dots3_payload_restore_graph(
-        ds4_dots3_gpu_graph *g, FILE *fp, uint64_t *remaining,
+        ds4_dots3_gpu_graph *g, ds4_dots3_spec *sp, FILE *fp, uint64_t *remaining,
         const uint32_t h[DS4_SESSION_PAYLOAD_U32_FIELDS],
         int **tokens_out, float *logits, char *err, size_t errlen) {
     const uint32_t n_tokens = h[7];
@@ -51376,7 +51413,7 @@ static int dots3_payload_restore_graph(
         h[1] != DS4_SESSION_PAYLOAD_VERSION ||
         h[2] != g->ctx_cap || h[3] != g->cap ||
         h[4] != DS4_N_KV_LORA ||
-        h[5] != DS4_SESSION_DOTS3_LAYOUT_MAGIC ||
+        h[5] != (sp ? DS4_SESSION_DOTS3_MTP_MAGIC : DS4_SESSION_DOTS3_LAYOUT_MAGIC) ||
         h[6] != DS4_N_SWA_KV_LORA || h[8] != DS4_N_LAYER ||
         h[9] != DS4_N_ROT || h[10] != DS4_N_INDEXER_HEAD_DIM ||
         h[11] != DS4_N_VOCAB || h[12] != n_tokens) {
@@ -51385,7 +51422,8 @@ static int dots3_payload_restore_graph(
         return 1;
     }
     g->cache_len = n_tokens;
-    const uint64_t total = dots3_payload_bytes_for_graph(g, n_tokens);
+    const uint64_t base = dots3_payload_bytes_for_graph(g, n_tokens);
+    const uint64_t total = base ? base + dots3_spec_payload_bytes(sp, n_tokens) : 0;
     const uint64_t header_bytes =
         (uint64_t)DS4_SESSION_PAYLOAD_U32_FIELDS * sizeof(uint32_t);
     if (total == 0u || *remaining != total - header_bytes) {
@@ -51439,6 +51477,23 @@ static int dots3_payload_restore_graph(
                 buf, DS4_SESSION_IO_CHUNK, remaining, err, errlen);
         }
     }
+    if (rc == 0 && sp) {
+        const uint32_t il = DS4_N_LAYER - 1;
+        const uint32_t rows = n_tokens - 1 < sp->draft.layer_cache_cap[il]
+            ? n_tokens - 1 : sp->draft.layer_cache_cap[il];
+        uint32_t position = 0;
+        rc = payload_read_u32(fp, &position, remaining, err, errlen);
+        if (!rc && position != n_tokens - 1) {
+            payload_set_err(err, errlen, "dots3 MTP payload position mismatch"); rc = 1;
+        }
+        if (!rc) { rc = payload_read_tensor_span(fp, sp->carry, 0,
+            (uint64_t)DS4_N_EMBD * sizeof(float), buf, DS4_SESSION_IO_CHUNK, remaining, err, errlen); }
+        if (!rc) { rc = payload_read_tensor_span(fp, sp->draft.layer_kv_latent[il], 0,
+            (uint64_t)rows * DS4_N_SWA_KV_LORA * sizeof(uint16_t), buf, DS4_SESSION_IO_CHUNK, remaining, err, errlen); }
+        if (!rc) { rc = payload_read_tensor_span(fp, sp->draft.layer_k_pe[il], 0,
+            (uint64_t)rows * DS4_N_ROT * sizeof(uint16_t), buf, DS4_SESSION_IO_CHUNK, remaining, err, errlen); }
+        if (!rc) { sp->draft.cache_len = position; sp->target_pos = n_tokens; sp->trial_n = 0; }
+    }
     free(buf);
     if (rc == 0 && *remaining != 0u) {
         payload_set_err(err, errlen,
@@ -51453,6 +51508,7 @@ static int dots3_payload_restore_graph(
     if (rc != 0) {
         free(tokens);
         g->cache_len = 0u;
+        dots3_spec_reset(sp);
         return rc;
     }
     *tokens_out = tokens;
@@ -52596,6 +52652,11 @@ int ds4_engine_routed_quant_bits(ds4_engine *e) {
 bool ds4_engine_has_mtp(ds4_engine *e) {
     if (!e || e->backend == DS4_BACKEND_CPU ||
         e->distributed.role != DS4_DISTRIBUTED_NONE) return false;
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE) {
+        const char *enable = getenv("DS4_DOTS3_MTP");
+        return e->backend == DS4_BACKEND_CUDA && enable && !strcmp(enable, "1") &&
+            !getenv("DS4_MTP_SPEC_DISABLE");
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP)
         return e->backend == DS4_BACKEND_CUDA && e->mtp_draft_tokens > 1;
     return e->mtp_ready;
@@ -52603,6 +52664,9 @@ bool ds4_engine_has_mtp(ds4_engine *e) {
 
 int ds4_engine_mtp_draft_tokens(ds4_engine *e) {
     if (!ds4_engine_has_mtp(e)) return 0;
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE) {
+        return e->mtp_draft_tokens < 3 ? e->mtp_draft_tokens : 3;
+    }
     return DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP
         ? 2 : e->mtp_draft_tokens;
 }
@@ -53894,8 +53958,12 @@ uint64_t ds4_session_payload_bytes(ds4_session *s) {
             s->dots3_graph.cache_len != (uint32_t)s->checkpoint.len) {
             return 0u;
         }
-        return dots3_payload_bytes_for_graph(
+        if (s->dots3_spec && (s->dots3_spec->trial_n ||
+            s->dots3_spec->target_pos != (uint32_t)s->checkpoint.len ||
+            s->dots3_spec->draft.cache_len + 1 != (uint32_t)s->checkpoint.len)) { return 0; }
+        const uint64_t base = dots3_payload_bytes_for_graph(
             &s->dots3_graph, (uint32_t)s->checkpoint.len);
+        return base ? base + dots3_spec_payload_bytes(s->dots3_spec, (uint32_t)s->checkpoint.len) : 0;
     }
     if (ds4_session_is_exaone(s)) {
         if (!s->exaone_graph_ready) return 0u;
@@ -54115,7 +54183,7 @@ int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen)
             return 1;
         }
         return dots3_payload_save_graph(
-            &s->dots3_graph, s->checkpoint.v,
+            &s->dots3_graph, s->dots3_spec, s->checkpoint.v,
             (uint32_t)s->checkpoint.len, s->logits,
             fp, err, errlen);
     }
@@ -54578,6 +54646,7 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
         if (s->dots3_graph_ready) {
             s->dots3_graph.cache_len = 0u;
         }
+        dots3_spec_reset(s->dots3_spec);
     } else if (ds4_session_is_exaone(s)) {
         s->checkpoint_valid = false;
         s->checkpoint.len = 0;
@@ -54656,7 +54725,7 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
                   &tokens, new_logits, err, errlen)
             : ds4_session_is_dots3(s)
             ? dots3_payload_restore_graph(
-                  &s->dots3_graph, fp, &remaining, h,
+                  &s->dots3_graph, s->dots3_spec, fp, &remaining, h,
                   &tokens, new_logits, err, errlen)
             : exaone_payload_restore_graph(
                   &s->exaone_graph, fp, &remaining, h,
@@ -55384,7 +55453,8 @@ int ds4_engine_batched_generate_ex(
     }
 
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2 ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_EXAONE_MOE) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_EXAONE_MOE ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE) {
         if (n_packed > INT_MAX) {
             BG_API_ERR("batched_generate: packed prompt is too large");
             return 1;
@@ -56325,6 +56395,7 @@ struct ds4_batch_ctx {
     ds4_qwen_batch_runtime *qwen; /* non-NULL selects the Qwen bank dispatch */
     ds4_step37_batch_runtime *step37; /* non-NULL selects the Step bank dispatch */
     ds4_ling3vl_batch_runtime *ling3vl; /* non-NULL selects the Ling bank dispatch */
+    ds4_dots3_batch_runtime *dots3; /* independent latent/DSA text banks */
     bool            supports_partial_reuse; /* explicit runtime capability */
     ds4_gpu_graph   g;
     ds4_batch_slabs sl;            /* allocated for max_seq banks */
@@ -56842,6 +56913,46 @@ static int qwen_cont_bank_restore_payload(
     return 0;
 }
 
+static uint64_t dots3_bank_payload_bytes(ds4_batch_ctx *ctx, uint32_t bank) {
+    if (!ctx || !ctx->dots3 || bank >= ctx->max_seq ||
+        !ctx->bank_hist_valid[bank] || !ctx->dots3->bank_logits_valid[bank]) { return 0; }
+    return dots3_payload_bytes_for_graph(&ctx->dots3->graph[bank], ctx->bank_hist_len[bank]);
+}
+
+static int dots3_bank_save_payload(ds4_batch_ctx *ctx, uint32_t bank, FILE *fp,
+                                    char *err, size_t errlen) {
+    if (!dots3_bank_payload_bytes(ctx, bank)) {
+        payload_set_err(err, errlen, "dots3 bank has no snapshot-ready frontier");
+        return 1;
+    }
+    return dots3_payload_save_graph(&ctx->dots3->graph[bank], NULL,
+        ctx->bank_hist + (size_t)bank * ctx->seq_cap, ctx->bank_hist_len[bank],
+        ctx->dots3->bank_logits + (size_t)bank * DS4_N_VOCAB, fp, err, errlen);
+}
+
+static int dots3_bank_load_payload(ds4_batch_ctx *ctx, uint32_t bank, FILE *fp,
+                                    uint64_t bytes, char *err, size_t errlen) {
+    ds4_dots3_batch_runtime *rt = ctx->dots3;
+    ctx->bank_gen[bank]++;
+    ctx->bank_hist_valid[bank] = 0;
+    ctx->bank_hist_len[bank] = 0;
+    dots3_bank_reset(rt, bank);
+    uint32_t h[DS4_SESSION_PAYLOAD_U32_FIELDS];
+    for (unsigned i = 0; i < DS4_SESSION_PAYLOAD_U32_FIELDS; i++) {
+        if (payload_read_u32(fp, &h[i], &bytes, err, errlen)) { return 1; }
+    }
+    int *tokens = NULL;
+    float *logits = rt->bank_logits + (size_t)bank * DS4_N_VOCAB;
+    if (dots3_payload_restore_graph(&rt->graph[bank], NULL, fp, &bytes, h,
+                                     &tokens, logits, err, errlen)) { return 1; }
+    memcpy(ctx->bank_hist + (size_t)bank * ctx->seq_cap, tokens, (size_t)h[7] * sizeof(int));
+    free(tokens);
+    ctx->bank_hist_len[bank] = h[7];
+    ctx->bank_hist_valid[bank] = 1;
+    rt->bank_logits_valid[bank] = 1;
+    return 0;
+}
+
 static uint64_t exaone_cont_bank_payload_bytes(ds4_batch_ctx *ctx,
                                                uint32_t bank) {
     if (!ctx || !ctx->exaone || bank >= ctx->max_seq ||
@@ -57132,6 +57243,7 @@ static int motif3_cont_bank_restore_payload(
 uint64_t ds4_cont_bank_payload_bytes(ds4_batch_ctx *ctx, uint32_t bank) {
     if (!ctx || bank >= (uint32_t)ctx->max_seq || !ctx->bank_hist_valid[bank] ||
         ctx->bank_hist_len[bank] == 0) return 0;
+    if (ctx->dots3) { return dots3_bank_payload_bytes(ctx, bank); }
     if (ctx->qwen) return qwen_cont_bank_payload_bytes(ctx, bank);
     if (ctx->motif3) return motif3_cont_bank_payload_bytes(ctx, bank);
     if (ctx->exaone) return exaone_cont_bank_payload_bytes(ctx, bank);
@@ -57184,6 +57296,7 @@ int ds4_cont_bank_save_payload(ds4_batch_ctx *ctx, uint32_t bank,
         payload_set_err(err, errlen, "bank has no reuse-trustworthy committed history");
         return 1;
     }
+    if (ctx->dots3) { return dots3_bank_save_payload(ctx, bank, fp, err, errlen); }
     if (ctx->qwen)
         return qwen_cont_bank_save_payload(ctx, bank, fp, err, errlen);
     if (ctx->motif3)
@@ -57275,6 +57388,7 @@ int ds4_cont_bank_restore_payload(ds4_batch_ctx *ctx, uint32_t bank,
         payload_set_err(err, errlen, "invalid bank payload load");
         return 1;
     }
+    if (ctx->dots3) { return dots3_bank_load_payload(ctx, bank, fp, payload_bytes, err, errlen); }
     if (ctx->qwen)
         return qwen_cont_bank_restore_payload(
             ctx, bank, fp, payload_bytes, err, errlen);
@@ -58261,8 +58375,11 @@ uint64_t ds4_engine_session_graph_bytes_estimate(ds4_engine *e, int ctx) {
             (uint32_t)ctx, 0u).total_bytes;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MOTIF3)
         return motif3_graph_memory_estimate((uint32_t)ctx);
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE)
-        return dots3_graph_memory_estimate((uint32_t)ctx);
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE) {
+        const uint32_t cap = dots3_graph_prefill_cap_for_context((uint32_t)ctx);
+        return dots3_graph_memory_estimate((uint32_t)ctx) +
+            (ds4_engine_has_mtp(e) ? dots3_spec_bytes((uint32_t)ctx, cap) : 0);
+    }
     const uint32_t spc = metal_graph_prefill_cap_for_prompt(ctx);
     const uint32_t src = metal_graph_raw_cap_for_context(ctx, spc);
     return metal_graph_alloc_bytes_estimate(&e->weights, &e->weights.layer[0],
@@ -58789,13 +58906,14 @@ static uint64_t solar_trim_bank_cuda(uint32_t b, void *user) {
  * class, nothing more. */
 uint64_t ds4_batch_ctx_trim_free(ds4_batch_ctx *ctx, uint64_t want_bytes) {
     if (!ctx || want_bytes == 0) return 0;
+    if (ctx->dots3) { return dots3_ckpt_trim(ctx->dots3, want_bytes); }
     if (ctx->exaone) { return exaone_ckpt_trim(ctx->exaone, want_bytes); }
     if (ctx->step37) { return step37_ckpt_trim(ctx->step37, want_bytes); }
     if (ctx->ling3vl) { return ling3vl_ckpt_trim(ctx->ling3vl, want_bytes); }
     /* EXAONE and Motif banks use fixed CUDA allocations.  They are fit before
      * allocation and cannot be partially unmapped; never fall through to the
      * unrelated DeepSeek slab trimmer. */
-    if (ctx->exaone || ctx->motif3 || ctx->qwen) return 0;
+    if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen) return 0;
     if (ctx->solar) {
         /* ds4_gpu_tensor_trim unmaps VMM pages.  gen_mu prevents new server
          * launches but does not drain work already queued on the device; match
@@ -59047,7 +59165,7 @@ int ds4_batch_ctx_reclaim_prepare(ds4_batch_ctx *ctx, const uint32_t *ordered_id
     memset(plan, 0, sizeof(*plan));
     plan->want_bytes = want_bytes;
     if (!ctx || !ds4_batch_trim_enabled()) return DS4_RECLAIM_UNSUPPORTED;
-    if (ctx->exaone || ctx->motif3 || ctx->step37 || ctx->ling3vl)
+    if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->step37 || ctx->ling3vl)
         return DS4_RECLAIM_UNSUPPORTED;
     if (ctx->solar) return DS4_RECLAIM_UNSUPPORTED;
     if (ctx->in_pass) return DS4_RECLAIM_BUSY;
@@ -59485,8 +59603,90 @@ static int motif3_batch_ctx_create_impl(
 #undef MBC_ERR
 }
 
-/* Every Ling bank owns a full 42-layer state and its prefill scratch, so the
- * per-bank cost is the serial session cost. */
+/* Each dots3 bank owns the complete scalar graph and its prefill scratch.
+ * Sharing only weights preserves the existing arithmetic and cache lifetime. */
+static int dots3_batch_ctx_create(
+        ds4_engine *e, int ctx_size, int max_seq, bool fit,
+        ds4_batch_ctx **out, char *err, size_t errlen) {
+#define DBC_ERR(...) do { if (err && errlen) snprintf(err, errlen, __VA_ARGS__); } while (0)
+    const uint32_t prefill_cap = dots3_graph_prefill_cap_for_context((uint32_t)ctx_size);
+    const uint64_t graph_bytes = dots3_graph_memory_estimate((uint32_t)ctx_size);
+    const uint64_t per_bank = graph_bytes + (uint64_t)DS4_N_VOCAB * sizeof(float);
+    uint32_t chosen = (uint32_t)max_seq;
+    if (chosen > DS4_MULTISEQ_MAX_SEQ) { chosen = DS4_MULTISEQ_MAX_SEQ; }
+    if (graph_bytes == 0u) {
+        DBC_ERR("batch_ctx_create: dots3 memory plan is invalid (ctx=%d prefill=%u)",
+                ctx_size, prefill_cap);
+        return 1;
+    }
+    uint64_t free_b = 0u, total_b = 0u;
+    if (ds4_gpu_mem_info(&free_b, &total_b) == 0) {
+        const uint64_t outstanding = ds4_gpu_substrate_outstanding();
+        free_b = free_b > outstanding ? free_b - outstanding : 0u;
+        const uint64_t headroom = ds4_batch_fit_headroom_bytes(ctx_size);
+        const uint64_t budget = free_b > headroom ? free_b - headroom : 0u;
+        uint32_t affordable = (uint32_t)(budget / per_bank);
+        if (affordable > chosen) { affordable = chosen; }
+        if (affordable < chosen) {
+            if (!fit || affordable == 0u) {
+                DBC_ERR("batch_ctx_create: dots3 banks need %.2f GiB/bank x %u plus "
+                        "%.2f GiB headroom, only %.2f GiB is free (ctx=%d max_seq=%u)",
+                        (double)per_bank / 1073741824.0, chosen,
+                        (double)headroom / 1073741824.0,
+                        (double)free_b / 1073741824.0, ctx_size, chosen);
+                return 1;
+            }
+            fprintf(stderr,
+                    "ds4: dots3 batch fit: max_seq %u -> %u (%.2f GiB/bank, free %.2f GiB)\n",
+                    chosen, affordable, (double)per_bank / 1073741824.0,
+                    (double)free_b / 1073741824.0);
+            chosen = affordable;
+        }
+    }
+    ds4_batch_ctx *ctx = xcalloc(1, sizeof(*ctx));
+    ctx->e = e;
+    ctx->ctx_size = (uint32_t)ctx_size;
+    ctx->prefill_cap = prefill_cap;
+    ctx->raw_cap = (uint32_t)ctx_size;
+    ctx->seq_cap = (uint32_t)ctx_size;
+    ctx->max_seq = chosen;
+    for (;;) {
+        ctx->dots3 = dots3_batch_create(
+            e, ctx->ctx_size, ctx->max_seq, ctx->prefill_cap);
+        if (ctx->dots3) { break; }
+        if (!fit || ctx->max_seq <= 1u) {
+            DBC_ERR("batch_ctx_create: dots3 runtime allocation failed (max_seq=%u ctx=%u)",
+                    ctx->max_seq, ctx->ctx_size);
+            free(ctx);
+            return 1;
+        }
+        uint32_t next = ctx->max_seq * 3u / 4u;
+        if (next >= ctx->max_seq) { next = ctx->max_seq - 1u; }
+        if (next < 1u) { next = 1u; }
+        fprintf(stderr, "ds4: dots3 batch allocation failed at max_seq=%u, retrying at %u\n",
+                ctx->max_seq, next);
+        ctx->max_seq = next;
+    }
+    if ((uint64_t)ctx->max_seq * ctx->seq_cap > SIZE_MAX / sizeof(*ctx->bank_hist)) {
+        DBC_ERR("batch_ctx_create: dots3 bank history size overflow");
+        dots3_batch_free(ctx->dots3);
+        free(ctx);
+        return 1;
+    }
+    ctx->bank_hist = xmalloc((size_t)ctx->max_seq * ctx->seq_cap * sizeof(*ctx->bank_hist));
+    ctx->bank_hist_len = xcalloc(ctx->max_seq, sizeof(*ctx->bank_hist_len));
+    ctx->bank_hist_valid = xcalloc(ctx->max_seq, sizeof(*ctx->bank_hist_valid));
+    ctx->bank_gen = xmalloc(ctx->max_seq * sizeof(*ctx->bank_gen));
+    for (uint32_t b = 0; b < ctx->max_seq; b++) { ctx->bank_gen[b] = 1u; }
+    ctx->bank_last_use = xcalloc(ctx->max_seq, sizeof(*ctx->bank_last_use));
+    ctx->supports_partial_reuse = ctx->dots3->checkpoint_slab != NULL;
+    ds4_metric_set(&ds4_metrics_get()->banks_total, ctx->max_seq);
+    *out = ctx;
+    return 0;
+#undef DBC_ERR
+}
+
+/* Every Ling bank owns its complete state and prefill scratch. */
 static int ling3vl_batch_ctx_create_impl(
         ds4_engine *e, int ctx_size, int max_seq, bool fit,
         ds4_batch_ctx **out, char *err, size_t errlen) {
@@ -59696,6 +59896,9 @@ static int ds4_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq, i
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37) {
         return step37_batch_ctx_create_impl(
             e, ctx_size, max_seq, fit, out, err, errlen);
+    }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE) {
+        return dots3_batch_ctx_create(e, ctx_size, max_seq, fit, out, err, errlen);
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL) {
         return ling3vl_batch_ctx_create_impl(
@@ -60320,6 +60523,16 @@ void ds4_batch_ctx_destroy(ds4_batch_ctx *ctx) {
         free(ctx);
         return;
     }
+    if (ctx->dots3) {
+        dots3_batch_free(ctx->dots3);
+        free(ctx->bank_hist);
+        free(ctx->bank_hist_len);
+        free(ctx->bank_hist_valid);
+        free(ctx->bank_gen);
+        free(ctx->bank_last_use);
+        free(ctx);
+        return;
+    }
     if (ctx->exaone) {
         exaone_batch_runtime_free(ctx->exaone);
         free(ctx->bank_hist);
@@ -60380,6 +60593,7 @@ static void bank_hist_reset(ds4_batch_ctx *ctx, uint32_t b) {
 static void bank_hist_invalidate_all(ds4_batch_ctx *ctx) {
     for (uint32_t b = 0; b < ctx->max_seq; b++) {
         ctx->bank_gen[b]++;   /* Inc 5a */
+        if (ctx->dots3) { dots3_ckpt_drop(ctx->dots3, b); }
         if (ctx->exaone) { exaone_ckpt_drop(ctx->exaone, b); }
         if (ctx->qwen) qwen_batch_runtime_drop_checkpoints(ctx->qwen, b);
         if (ctx->solar) solar_batch_runtime_drop_checkpoints(ctx->solar, b);
@@ -60885,7 +61099,7 @@ static int ds4_engine_batched_generate_ctx_impl(ds4_batch_ctx *ctx, const ds4_to
     for (int i = 0; i < n; i++) {
         if (prompts[i].len <= 0) { BCG_ERR("batched_generate_ctx: prompt %d is empty", i); return 1; }
         const uint32_t L = (uint32_t)prompts[i].len;
-        if ((ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 ||
+        if ((ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 ||
              ctx->ling3vl) && L > ctx->seq_cap) {
             BCG_ERR("batched_generate_ctx: family prompt %d length %u "
                     "exceeds context %u", i, L, ctx->seq_cap);
@@ -60898,7 +61112,7 @@ static int ds4_engine_batched_generate_ctx_impl(ds4_batch_ctx *ctx, const ds4_to
         }
         n_packed += L;
     }
-    if (ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 || ctx->ling3vl) {
+    if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 || ctx->ling3vl) {
         return family_engine_batched_generate_ctx(
             ctx, prompts, n, max_new_tokens, eos_ids, out, err, errlen);
     }
@@ -62293,6 +62507,7 @@ static int solar_engine_continuous_generate(
  * at reset/copy/prefill/decode/logits; keeping those six operations here makes
  * the public scheduling semantics identical without a generic callback layer. */
 static uint32_t family_banked_prefill_cap(const ds4_batch_ctx *ctx) {
+    if (ctx->dots3) { return ctx->dots3->prefill_cap; }
     if (ctx->qwen) return ctx->qwen->prefill_cap;
     if (ctx->step37) return ctx->step37->prefill_cap;
     if (ctx->ling3vl) return ctx->ling3vl->prefill_cap;
@@ -62314,6 +62529,7 @@ static uint32_t family_banked_graphs_live(const ds4_batch_ctx *ctx) {
 
 static bool family_banked_logits_valid(
         const ds4_batch_ctx *ctx, uint32_t bank) {
+    if (ctx->dots3) { return ctx->dots3->bank_logits_valid[bank] != 0; }
     if (ctx->qwen) return ctx->qwen->bank_logits_valid[bank] != 0u;
     if (ctx->step37) return ctx->step37->bank_logits_valid[bank] != 0u;
     if (ctx->ling3vl) return ctx->ling3vl->bank_logits_valid[bank] != 0u;
@@ -62322,6 +62538,7 @@ static bool family_banked_logits_valid(
 }
 
 static float *family_banked_logits(ds4_batch_ctx *ctx, uint32_t bank) {
+    if (ctx->dots3) { return ctx->dots3->bank_logits + (size_t)bank * DS4_N_VOCAB; }
     if (ctx->qwen)
         return ctx->qwen->bank_logits + (size_t)bank * DS4_N_VOCAB;
     if (ctx->step37)
@@ -62334,6 +62551,7 @@ static float *family_banked_logits(ds4_batch_ctx *ctx, uint32_t bank) {
 }
 
 static void family_banked_reset(ds4_batch_ctx *ctx, uint32_t bank) {
+    if (ctx->dots3) { dots3_bank_reset(ctx->dots3, bank); return; }
     if (ctx->qwen) {
         qwen_batch_runtime_drop_checkpoints(ctx->qwen, bank);
         (void)qwen_batch_runtime_reset_bank(
@@ -62354,6 +62572,7 @@ static void family_banked_reset(ds4_batch_ctx *ctx, uint32_t bank) {
 static bool family_banked_copy(
         ds4_batch_ctx *ctx, uint32_t src, uint32_t dst,
         uint32_t tokens) {
+    if (ctx->dots3) { return dots3_bank_copy(ctx->dots3, src, dst, tokens); }
     if (ctx->qwen) {
         const bool ok =
             qwen_batch_runtime_copy_bank(ctx->qwen, src, dst, tokens);
@@ -62382,6 +62601,9 @@ static bool family_banked_prefill(
         ds4_batch_ctx *ctx, uint32_t bank, const int *tokens,
         uint32_t rows, uint32_t pos, bool final,
         const int *next_tokens, uint32_t next_rows) {
+    if (ctx->dots3) {
+        return dots3_bank_forward(ctx->dots3, ctx->e, bank, tokens, rows, pos, final);
+    }
     if (ctx->qwen) {
         return qwen_batch_runtime_prefill(
             ctx->qwen, ctx->e, bank, tokens, rows, pos, final,
@@ -62418,6 +62640,12 @@ static bool family_banked_prefill(
 static bool family_banked_decode(
         ds4_batch_ctx *ctx, const uint32_t *banks, const int *tokens,
         const uint32_t *positions, uint32_t rows) {
+    if (ctx->dots3) {
+        for (uint32_t i = 0; i < rows; i++) {
+            if (!dots3_bank_forward(ctx->dots3, ctx->e, banks[i], tokens + i, 1, positions[i], true)) { return false; }
+        }
+        return true;
+    }
     if (ctx->qwen)
         return qwen_batch_runtime_decode(
             ctx->qwen, ctx->e, banks, tokens, positions, rows);
@@ -62444,6 +62672,10 @@ static bool family_banked_decode(
 
 static bool family_banked_checkpoint_due(
         const ds4_batch_ctx *ctx, uint32_t before, uint32_t after) {
+    if (ctx->dots3) {
+        const uint32_t stride = ctx->dots3->checkpoint_stride;
+        return stride && after > before && before / stride != after / stride;
+    }
     if (ctx->exaone) {
         const uint32_t stride = ctx->exaone->checkpoint_stride;
         return stride && after > before && before / stride != after / stride;
@@ -62465,7 +62697,9 @@ static bool family_banked_checkpoint_due(
 static void family_banked_capture_checkpoint(
         ds4_batch_ctx *ctx, uint32_t bank, uint32_t pos,
         bool logits_valid) {
-    if (ctx->exaone) {
+    if (ctx->dots3) {
+        (void)dots3_ckpt_capture(ctx->dots3, bank, pos, logits_valid, ctx->serial_reserve);
+    } else if (ctx->exaone) {
         (void)exaone_ckpt_capture(ctx->exaone, bank, pos, logits_valid, ctx->serial_reserve);
     } else if (ctx->step37) {
         (void)step37_ckpt_capture(ctx->step37, bank, pos, logits_valid, ctx->serial_reserve);
@@ -62581,7 +62815,7 @@ static int family_banked_engine_continuous_generate(
     const uint32_t MS = ctx->max_seq;
     ds4_family_cont_bank *bank = xcalloc(MS, sizeof(*bank));
     uint32_t prefill_cursor = 0u;
-    bool ok = ctx->exaone != NULL || ctx->motif3 != NULL ||
+    bool ok = ctx->dots3 != NULL || ctx->exaone != NULL || ctx->motif3 != NULL ||
               ctx->qwen != NULL || ctx->step37 != NULL ||
               ctx->ling3vl != NULL;
     bool rehydrate_blocked = false;
@@ -62710,6 +62944,33 @@ static int family_banked_engine_continuous_generate(
                     }
                     cached = requested_cached;
                     forked = true;
+                } else if (source_prefix &&
+                           requested_cached < source_frontier && ctx->dots3) {
+                    const int checkpoint = dots3_ckpt_find(
+                        ctx->dots3, (uint32_t)src, requested_cached, (uint32_t)req.n);
+                    uint32_t pos = 0;
+                    if (checkpoint < 0) {
+                        ctx->fork_rejects++;
+                    } else if (!dots3_ckpt_restore(ctx->dots3, (uint32_t)src, b,
+                                                     (uint32_t)checkpoint, requested_cached, &pos)) {
+                        ctx->bank_gen[b]++;
+                        ctx->bank_hist_valid[b] = 0;
+                        dots3_ckpt_drop(ctx->dots3, b);
+                        FCG_ERR("continuous_generate: dots3 checkpoint restore failed src=%d dst=%u", src, b);
+                        ok = false;
+                        break;
+                    } else {
+                        if ((uint32_t)src != b) {
+                            memcpy(ctx->bank_hist + (size_t)b * ctx->seq_cap,
+                                   ctx->bank_hist + (size_t)src * ctx->seq_cap,
+                                   (size_t)pos * sizeof(int));
+                        }
+                        ctx->bank_gen[b]++;
+                        ctx->bank_hist_len[b] = pos;
+                        ctx->bank_hist_valid[b] = 1u;
+                        cached = pos;
+                        forked = partial = true;
+                    }
                 } else if (source_prefix &&
                            requested_cached < source_frontier && ctx->exaone) {
                     const int checkpoint = exaone_ckpt_find(
@@ -63289,7 +63550,7 @@ static int family_engine_batched_generate_ctx(
         .out = out,
         .n = n,
     };
-    const int rc = (ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 ||
+    const int rc = (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 ||
                     ctx->ling3vl)
         ? family_banked_engine_continuous_generate(
               ctx, family_static_admit, NULL, family_static_done,
@@ -63351,7 +63612,7 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
         CG_ERR("continuous_generate: this model does not yet implement the multi-sequence graph");
         return 1;
     }
-    if (ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 || ctx->ling3vl) {
+    if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 || ctx->ling3vl) {
         return family_banked_engine_continuous_generate(
             ctx, admit, on_token, on_done, ud, err, errlen);
     }
@@ -68825,13 +69086,14 @@ bool ds4_engine_supports_batching(ds4_engine *e) {
     if (!e || !ds4_backend_uses_graph(e->backend) || !e->metal_ready) {
         return false;
     }
-    /* dots3 serves through serial latent sessions for now; its persistent
-     * multi-bank runtime is future work, and refusing here routes the
-     * server onto the serial lane instead of the DeepSeek bank body. */
+    /* Unimplemented bank families must never enter the DeepSeek slab body. */
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
         return false;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE) return false;
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE) {
+        const char *enabled = getenv("DS4_DOTS3_BATCH");
+        return enabled && strcmp(enabled, "1") == 0;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) return false;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
         const char *enabled = getenv("DS4_QWEN_BATCH");
@@ -69432,6 +69694,10 @@ static int ds4_session_alloc_graph(ds4_session *s) {
             s->dots3_graph_ready = false;
             return 1;
         }
+        if (s->dots3_mtp_enabled) {
+            s->dots3_spec = dots3_spec_alloc(e, (unsigned)s->ctx_size, s->prefill_cap);
+            if (!s->dots3_spec) { dots3_graph_free(&s->dots3_graph); return 1; }
+        }
         s->dots3_graph_ready = true;
         return 0;
     }
@@ -69819,6 +70085,7 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
         s->engine = e;
         s->ctx_size = ctx_size;
         s->generation = 1u;
+        s->dots3_mtp_enabled = ds4_engine_has_mtp(e);
         s->prefill_cap =
             dots3_graph_prefill_cap_for_context((uint32_t)ctx_size);
         s->logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(s->logits[0]));
@@ -70013,6 +70280,8 @@ void ds4_session_free(ds4_session *s) {
             motif3_graph_free(&s->motif3_graph);
             s->motif3_graph_ready = false;
         } else if (ds4_session_is_dots3(s)) {
+            dots3_spec_free(s->dots3_spec);
+            s->dots3_spec = NULL;
             dots3_graph_free(&s->dots3_graph);
             s->dots3_graph_ready = false;
         } else {
@@ -70950,6 +71219,18 @@ static void inkling_trial_failed(ds4_session *s) {
 
 /* Rust owns acceptance. Native retains only the trial's device frontier and
  * raw hidden rows; commit shortens KV without re-running accepted tokens. */
+#ifdef DS4_NO_GPU
+int ds4_session_dots3_trial(ds4_session *s, int first, int max_tokens,
+                             int *tokens, int *target, int cap, char *err, size_t errlen) {
+    (void)s; (void)first; (void)max_tokens; (void)tokens; (void)target; (void)cap;
+    payload_set_err(err, errlen, "dots3 MTP requires CUDA"); return -1;
+}
+int ds4_session_dots3_commit(ds4_session *s, int keep, char *err, size_t errlen) {
+    (void)s; (void)keep;
+    payload_set_err(err, errlen, "dots3 MTP requires CUDA"); return 1;
+}
+#endif
+
 int ds4_session_step37_trial(ds4_session *s, int first, int max_tokens,
                               int *tokens, int *target, int cap,
                               char *err, size_t errlen) {
@@ -71216,6 +71497,10 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             snprintf(err, errlen, "dots3 latent session is not initialized");
             return 1;
         }
+        if (s->dots3_spec && s->dots3_spec->trial_n) {
+            if (err && errlen) { snprintf(err, errlen, "commit dots3 trial before sync"); }
+            return 1;
+        }
         int start = 0;
         if (s->checkpoint_valid &&
             s->dots3_graph.cache_len == (uint32_t)s->checkpoint.len &&
@@ -71228,12 +71513,13 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
             s->checkpoint.len = 0;
             s->dots3_graph.cache_len = 0;
         }
-        /* ponytail: replay at most one partial chunk until MoE tiers are parity-stable. */
+        /* Plain sessions replay a partial chunk; MTP needs matching teacher rows. */
         const uint32_t tail = (uint32_t)start % s->prefill_cap;
         if (tail != 0) {
-            start -= (int)tail;
+            start = s->dots3_spec ? 0 : start - (int)tail;
             s->dots3_graph.cache_len = (uint32_t)start;
         }
+        if (!start) { dots3_spec_reset(s->dots3_spec); }
         while (start < prompt->len) {
             uint32_t rows = (uint32_t)(prompt->len - start);
             if (rows > s->prefill_cap) rows = s->prefill_cap;
@@ -71245,10 +71531,13 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
                 snprintf(err, errlen,
                          "CUDA dots3 latent prefill failed at position %d",
                          start);
-                s->checkpoint_valid = false;
-                s->checkpoint.len = 0;
-                s->dots3_graph.cache_len = 0;
+                ds4_session_invalidate(s);
                 return 1;
+            }
+            if (s->dots3_spec &&
+                (!dots3_hidden_rows(s->dots3_spec, s->engine, &s->dots3_graph, 0, rows) ||
+                 !dots3_spec_extend(s->dots3_spec, s->engine, prompt->v + start, rows))) {
+                (void)dots3_spec_fail(s, err, errlen); return 1;
             }
             start += (int)rows;
             if (s->progress) {
@@ -71952,20 +72241,24 @@ int ds4_session_exaone_rewind_span(ds4_session *s) {
 #endif
 }
 
-static bool step37_logits_unready(const ds4_session *s) {
+static bool session_logits_unready(const ds4_session *s) {
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_dots3(s)) {
+        return !s->checkpoint_valid || s->dots3_graph.cache_len != (unsigned)s->checkpoint.len ||
+            (s->dots3_spec && s->dots3_spec->trial_n);
+    }
     if (ds4_session_is_step37(s) && s->step37_trial_n) { return true; }
 #endif
     return ds4_session_is_step37(s) && !s->checkpoint_valid;
 }
 
 int ds4_session_argmax(ds4_session *s) {
-    if (step37_logits_unready(s)) { return -1; }
+    if (session_logits_unready(s)) { return -1; }
     return sample_argmax(s->logits, DS4_N_VOCAB);
 }
 
 int ds4_session_argmax_excluding(ds4_session *s, int excluded_id) {
-    if (step37_logits_unready(s)) { return -1; }
+    if (session_logits_unready(s)) { return -1; }
     if (!s || !s->logits) return -1;
     int best = -1;
     float best_logit = DS4_NEG_INF;
@@ -71987,12 +72280,12 @@ int ds4_sample_logits(const float *logits, int n_vocab, float temperature,
 }
 
 int ds4_session_sample(ds4_session *s, float temperature, int top_k, float top_p, float min_p, uint64_t *rng) {
-    if (step37_logits_unready(s)) { return -1; }
+    if (session_logits_unready(s)) { return -1; }
     return sample_top_p_min_p(s->logits, DS4_N_VOCAB, temperature, top_k, top_p, min_p, rng);
 }
 
 int ds4_session_top_logprobs(ds4_session *s, ds4_token_score *out, int k) {
-    if (step37_logits_unready(s)) { return 0; }
+    if (session_logits_unready(s)) { return 0; }
     if (!s || !out || k <= 0) return 0;
     if (k > (int)DS4_N_VOCAB) k = (int)DS4_N_VOCAB;
     for (int i = 0; i < k; i++) {
@@ -72030,7 +72323,7 @@ int ds4_session_top_logprobs(ds4_session *s, ds4_token_score *out, int k) {
 }
 
 int ds4_session_token_logprob(ds4_session *s, int token, ds4_token_score *out) {
-    if (step37_logits_unready(s)) { return 0; }
+    if (session_logits_unready(s)) { return 0; }
     if (!s || !out || token < 0 || token >= (int)DS4_N_VOCAB) return 0;
 
     float max_logit = DS4_NEG_INF;
@@ -72053,7 +72346,7 @@ int ds4_session_token_logprob(ds4_session *s, int token, ds4_token_score *out) {
 }
 
 int ds4_session_copy_logits(ds4_session *s, float *out, int cap) {
-    if (step37_logits_unready(s)) { return 0; }
+    if (session_logits_unready(s)) { return 0; }
     const int count = ds4_session_is_inkling(s) ? INKLING_VALID_VOCAB : (int)DS4_N_VOCAB;
     if (!s || !out || cap < count) {
         return 0;
@@ -72234,7 +72527,7 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
                                  "dots3 latent session is not initialized");
             return 1;
         }
-        if (!s->checkpoint_valid ||
+        if ((s->dots3_spec && s->dots3_spec->trial_n) || !s->checkpoint_valid ||
             s->dots3_graph.cache_len != (uint32_t)s->checkpoint.len) {
             if (errlen) snprintf(err, errlen,
                                  "dots3 decode requires a valid latent checkpoint");
@@ -72251,8 +72544,13 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
             if (errlen) snprintf(err, errlen,
                                  "CUDA dots3 latent decode failed at position %d",
                                  s->checkpoint.len);
-            s->checkpoint_valid = false;
+            ds4_session_invalidate(s);
             return 1;
+        }
+        if (s->dots3_spec &&
+            (!dots3_hidden_rows(s->dots3_spec, e, &s->dots3_graph, 0, 1) ||
+             !dots3_spec_extend(s->dots3_spec, e, &token, 1))) {
+            (void)dots3_spec_fail(s, err, errlen); return 1;
         }
         token_vec_push(&s->checkpoint, token);
         s->checkpoint_valid = true;
@@ -74005,7 +74303,10 @@ void ds4_session_invalidate(ds4_session *s) {
     s->checkpoint.len = 0;
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_ling3vl(s) && s->ling3vl_graph_ready) {
+    if (ds4_session_is_dots3(s)) {
+        s->dots3_graph.cache_len = 0;
+        dots3_spec_reset(s->dots3_spec);
+    } else if (ds4_session_is_ling3vl(s) && s->ling3vl_graph_ready) {
         s->ling3vl_media.count = 0;
         s->ling3vl_media.rows = 0;
         (void)ling3vl_graph_reset(&s->ling3vl_graph);
@@ -74050,7 +74351,12 @@ void ds4_session_rewind(ds4_session *s, int pos) {
     s->checkpoint.len = pos;
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_ling3vl(s) && pos != old_pos) {
+    if (ds4_session_is_dots3(s) && (pos != old_pos ||
+        (s->dots3_spec && s->dots3_spec->trial_n))) {
+        s->checkpoint_valid = false;
+        s->dots3_graph.cache_len = 0;
+        dots3_spec_reset(s->dots3_spec);
+    } else if (ds4_session_is_ling3vl(s) && pos != old_pos) {
         /* The recurrent state cannot be truncated; sync replays the prefix. */
         s->checkpoint_valid = false;
         s->ling3vl_media.count = 0;
@@ -74109,6 +74415,15 @@ uint64_t ds4_session_generation(const ds4_session *s) {
 
 int ds4_session_ctx(ds4_session *s) {
     return s->ctx_size;
+}
+
+bool ds4_session_dots3_mtp(ds4_session *s) {
+#ifndef DS4_NO_GPU
+    return ds4_session_is_dots3(s) && s->dots3_mtp_enabled;
+#else
+    (void)s;
+    return false;
+#endif
 }
 
 int ds4_session_prefill_cap(ds4_session *s) {

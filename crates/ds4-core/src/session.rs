@@ -64,6 +64,7 @@ pub struct SessionLedger {
     pub ctx: i32,
     pub prefill_cap: u32,
     tokens: Vec<i32>,
+    dots3_mtp: bool,
     pub valid: bool,
     pub generation: u64,
     pub solar_state_valid: bool,
@@ -82,6 +83,7 @@ impl SessionLedger {
             ctx,
             prefill_cap: if prefill_cap == 0 { 1 } else { prefill_cap },
             tokens: Vec::new(),
+            dots3_mtp: false,
             valid: false,
             generation: 1,
             solar_state_valid: family != ModelFamily::SolarOpen2,
@@ -91,6 +93,14 @@ impl SessionLedger {
             n_layer: 0,
             n_nextn_predict: 0,
         }
+    }
+
+    pub(crate) fn set_dots3_mtp(&mut self, enabled: bool) {
+        self.dots3_mtp = enabled && self.family == ModelFamily::Dots3Note;
+    }
+
+    pub(crate) fn has_dots3_mtp(&self) -> bool {
+        self.dots3_mtp
     }
 
     pub fn set_n_swa(&mut self, n_swa: u32) {
@@ -320,16 +330,16 @@ impl SessionLedger {
         let can_extend = self.starts_with_checkpoint(prompt) && solar_ok;
         if can_extend {
             let mut start = self.pos();
-            if self.family == ModelFamily::Dots3Note && start > 0 && self.prefill_cap > 0 {
+            if self.family == ModelFamily::Dots3Note && start > 0 && start < plen && self.prefill_cap > 0 {
                 let tail = (start as u32) % self.prefill_cap;
                 if tail != 0 {
-                    start -= tail as i32;
+                    start = if self.dots3_mtp { 0 } else { start - tail as i32 };
                 }
             }
             return SyncPlan {
                 err: false,
                 start,
-                rebuild: false,
+                rebuild: start == 0,
                 bump: false,
                 fence: false,
                 bounds: false,
@@ -405,9 +415,9 @@ impl SessionLedger {
             self.valid = false;
             self.solar_state_valid = false;
         }
-        // A recurrent block's history is its state, so a truncation cannot be
-        // partial: the next sync replays the prefix from zero.
-        if matches!(self.family, ModelFamily::Step37 | ModelFamily::Ling3Vl) && pos != old {
+        // Recurrent state and dots3's rolling caches cannot supply logits at
+        // an arbitrary truncated frontier. The next sync replays the prefix.
+        if matches!(self.family, ModelFamily::Step37 | ModelFamily::Ling3Vl | ModelFamily::Dots3Note) && pos != old {
             self.valid = false;
         }
         RewindResult {
@@ -581,6 +591,28 @@ fn split_pair(s: &str) -> (Vec<i32>, Vec<i32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dots3_mtp_replay_matches_native() {
+        let mut host = SessionLedger::new(ModelFamily::Dots3Note, SessionBackend::Cuda, 1024, 32);
+        let prompt = vec![1; 600];
+        host.replace_checkpoint(&prompt);
+        // Exact hits do not rewind even when the final chunk was partial.
+        assert_eq!(host.plan_sync(&prompt, 0).start, 600);
+        let extended = vec![1; 620];
+        assert_eq!(host.plan_sync(&extended, 0).start, 576);
+        host.set_dots3_mtp(true);
+        assert!(host.has_dots3_mtp());
+        let replay = host.plan_sync(&extended, 0);
+        assert_eq!(replay.start, 0);
+        assert!(replay.rebuild && !replay.bump);
+        assert_eq!(host.plan_sync(&prompt, 0).start, 600);
+        // An aligned frontier has matching target/draft rows and can extend.
+        host.replace_checkpoint(&vec![1; 608]);
+        assert_eq!(host.plan_sync(&extended, 0).start, 608);
+        assert!(!host.rewind(607).valid);
+        assert_eq!(host.plan_sync(&extended, 0).start, 0);
+    }
 
     #[test]
     fn step_rewind_requires_logits_replay() {

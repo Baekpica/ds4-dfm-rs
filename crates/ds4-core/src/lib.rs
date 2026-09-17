@@ -11,6 +11,7 @@
 mod batch;
 mod bind;
 pub mod chat_template;
+mod dots3_mtp;
 mod gguf;
 mod identify;
 mod inkling;
@@ -1523,6 +1524,11 @@ impl Model {
             prefill.max(0) as u32,
         );
         host.apply_shape(&self.bind_plan.shape);
+        if self.family == ModelFamily::Dots3Note {
+            // SAFETY: Category 8 FFI. The native session is live and owns this
+            // immutable allocation choice even before its lazy graph exists.
+            host.set_dots3_mtp(unsafe { ds4_sys::ds4_bridge_dots3_enabled(raw.as_ptr()) != 0 });
+        }
         Ok(Session {
             raw,
             host,
@@ -1729,7 +1735,10 @@ impl Session<'_> {
     /// A failed native step bumps the native generation; the host ledger has
     /// to follow or a later request could reuse an invalidated checkpoint.
     fn step_failed(&mut self) {
-        if !matches!(self.host.family, ModelFamily::Step37 | ModelFamily::Ling3Vl) {
+        if !matches!(
+            self.host.family,
+            ModelFamily::Step37 | ModelFamily::Ling3Vl | ModelFamily::Dots3Note
+        ) {
             return;
         }
         let generation = self.native_generation();
@@ -1737,6 +1746,10 @@ impl Session<'_> {
             self.host.clear_checkpoint_keep_generation();
             self.host.generation = generation;
         }
+    }
+
+    pub fn has_dots3_mtp(&self) -> bool {
+        self.host.has_dots3_mtp()
     }
 
     pub fn host(&self) -> &SessionLedger {
@@ -2035,6 +2048,9 @@ impl Session<'_> {
         }
         if self.host.family == ModelFamily::Step37 {
             return self.eval_step37_argmax(first, max_tokens, eos);
+        }
+        if self.host.family == ModelFamily::Dots3Note {
+            return self.eval_dots3_argmax(first, max_tokens, eos);
         }
         let mut accepted = vec![0i32; 17];
         let mut err = [0u8; 512];
@@ -2747,6 +2763,30 @@ mod tests {
     }
 
     #[no_mangle]
+    extern "C" fn ds4_bridge_dots3_trial(
+        s: *mut ds4_bridge_session,
+        first: i32,
+        max: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_trial(s, first, max, tokens, target, cap, err, errlen)
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_dots3_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_commit(s, keep, err, errlen)
+    }
+
+    #[no_mangle]
     extern "C" fn ds4_bridge_eval(
         _s: *mut ds4_bridge_session,
         _token: i32,
@@ -2869,6 +2909,44 @@ mod tests {
                 assert!(session.host.tokens().is_empty());
             }
         }
+    }
+
+    #[test]
+    fn dots3_mtp_errors_follow_native_generation() {
+        for first in [-1, -2, 3] {
+            STEP_GENERATION.with(|g| g.set(1));
+            let mut session = std::mem::ManuallyDrop::new(Session {
+                raw: NonNull::<ds4_bridge_session>::dangling(),
+                host: SessionLedger::new(ModelFamily::Dots3Note, SessionBackend::Cuda, 1024, 64),
+                _model: PhantomData,
+                _not_send: PhantomData,
+            });
+            session.host.replace_checkpoint(&[1, 2, 3]);
+            assert!(session.eval_dots3_argmax(first, 4, 99).is_err());
+            assert_eq!(session.host.valid, first == -1);
+            assert_eq!(session.generation(), session.native_generation());
+            assert_eq!(session.generation(), if first == -1 { 1 } else { 2 });
+            assert_eq!(session.host.tokens(), if first == -1 { &[1, 2, 3][..] } else { &[] });
+        }
+    }
+
+    #[test]
+    fn dots3_sync_errors_follow_native_generation() {
+        STEP_GENERATION.with(|g| g.set(1));
+        let mut session = std::mem::ManuallyDrop::new(Session {
+            raw: NonNull::<ds4_bridge_session>::dangling(),
+            host: SessionLedger::new(ModelFamily::Dots3Note, SessionBackend::Cuda, 1024, 64),
+            _model: PhantomData,
+            _not_send: PhantomData,
+        });
+        session.host.replace_checkpoint(&[1, 2, 3]);
+        assert!(session.sync(&TokenBuffer::from_tokens(vec![-1])).is_err());
+        assert!(session.host.valid);
+        assert_eq!(session.generation(), 1);
+        assert!(session.sync(&TokenBuffer::from_tokens(vec![-2])).is_err());
+        assert!(!session.host.valid);
+        assert!(session.host.tokens().is_empty());
+        assert_eq!(session.generation(), session.native_generation());
     }
 
     #[test]

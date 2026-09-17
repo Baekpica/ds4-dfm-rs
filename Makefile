@@ -303,7 +303,7 @@ proof-rust-cuda-opp-c: ds4 ds4-c
 			--work-dir "$$root/rust" --check-expected "$$expected"
 endif
 
-ds4.o: ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_rope.h ds4_ling3vl_batch.inc ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h vendor/stb_image.h
+ds4.o: ds4.c ds4_dots3_batch.inc ds4_dots3_mtp.inc ds4_step37_graph.inc ds4_step37_vision.inc ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_rope.h ds4_ling3vl_batch.inc ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h vendor/stb_image.h
 	$(CC) $(CFLAGS) -c -o $@ ds4.c
 
 # Rust FFI seam: wraps ds4.h so crates/ds4-sys never bindgens the engine header.
@@ -1157,6 +1157,27 @@ tests/test_exaone_kernels: tests/test_exaone_kernels.o $(DS4_CUDA_SUPPORT_OBJS)
 test-exaone-kernels: tests/test_exaone_kernels
 	./tests/test_exaone_kernels $(DS4_EXAONE_MODEL)
 
+tests/test_dots3_mtp_guards: tests/test_dots3_mtp_guards.c ds4.c ds4_dots3_mtp.inc ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -Wl,--gc-sections -o $@ $< -lm
+
+tests/test_dots3_mtp.o: tests/test_dots3_mtp.c ds4.c ds4_dots3_mtp.inc ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/test_dots3_mtp: tests/test_dots3_mtp.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_dots3_batch.o: tests/test_dots3_batch.c ds4.c ds4_dots3_batch.inc ds4_dots3_mtp.inc ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/test_dots3_batch: tests/test_dots3_batch.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_dots3_checkpoint.o: tests/test_dots3_checkpoint.c ds4.c ds4_dots3_batch.inc ds4_dots3_mtp.inc ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/test_dots3_checkpoint: tests/test_dots3_checkpoint.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
 tests/test_exaone_checkpoint.o: tests/test_exaone_checkpoint.c ds4.c ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
 
@@ -1574,6 +1595,8 @@ clean:
 	rm -f tests/test_step37_mtp tests/test_step37_mtp.o
 	rm -f tests/test_step37_spec tests/test_step37_spec.o
 	rm -f tests/test_step37_cont tests/test_step37_cont.o
+	rm -f tests/test_dots3_mtp tests/test_dots3_mtp.o tests/test_dots3_mtp_guards
+	rm -f tests/test_dots3_checkpoint tests/test_dots3_checkpoint.o tests/test_dots3_batch tests/test_dots3_batch.o
 	rm -f tests/test_exaone_partial tests/test_exaone_partial.o
 	rm -f tests/test_exaone_checkpoint tests/test_exaone_checkpoint.o
 	rm -f tests/test_step37_checkpoint tests/test_step37_checkpoint.o

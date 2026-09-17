@@ -223,7 +223,7 @@ tokenizer/chat contract, state lifecycle, and native execution path.
 | Solar Open2 250B | `solar-open2` | Recurrent KDA state, compressed GQA KV, persistent banks. |
 | K-EXAONE 236B A23B | `exaone-moe` | LLLG full/sliding GQA KV, persistent banks and opt-in [partial checkpoints](docs/ds4-dfm-model-families.md#partial-prefix-reuse). |
 | Motif-3 | `motif3` | Latent KV, rotated `k_pe`, SWA rings, persistent banks. |
-| dots3-note Preview | `dots3note` (`dots3-note` accepted) | Dual-geometry latent state; current live serving path is serial. Tensor-core prefill attention / MLA GEMMs and split-K decode attention since 2026-09-06. |
+| dots3-note Preview | `dots3note` (`dots3-note` accepted) | Dual-geometry latent state; serial default, opt-in text banks and separate serial MTP. New paths are present but unqualified; see [serving limits](docs/ds4-dfm-model-families.md#dots3-serving). |
 | Qwen3.8 Flash Next SSD-PLE | `qwen4exp` | Q5 main GGUF + BF16 or [official FP8 SSD-PLE](docs/qwen38-ple-fp8.md), embedded MTP, N-bank Rust scheduling, still-image input; one- and two-bank live gates. |
 | GLM 5.3 Flash | `glm5-next` | Q2 single-file GGUF plus the explicit vision sidecar; CUDA serial serving on one DGX Spark. |
 | K2-Horizon 375B A23B | `k2-horizon` | Four-shard MQ87 GGUF; IFM BPE/XML tools; continuous 32K one-bank serving on one DGX Spark. |

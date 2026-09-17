@@ -97,6 +97,7 @@ const DOTS3_NATIVE_MAX: u32 = 8192;
 const DOTS3_INDEX_ROWS: u64 = 128;
 const DOTS3_PARTIAL_ROWS: u64 = 2;
 const DOTS3_PARTIAL_SPLITS: u64 = 16;
+const DOTS3_TRIAL_ROWS: u64 = 4;
 const FAMILY_NATIVE_MAX: u32 = 16384;
 const QWEN_QSA_NO_FUSED_ENV: &str = "DS4_QWEN_QSA_NO_FUSED";
 const WEIGHT_IPC_MANIFEST_ENV: &str = "DS4_CUDA_WEIGHT_IPC_MANIFEST";
@@ -260,7 +261,27 @@ pub fn fill_quote_facts(
             let (base, with_mtp) = inkling_runtime_bytes(s, ctx, native);
             (if sidecar_loaded { with_mtp } else { base }, 0, 0, 0)
         }
-        (ModelFamily::Dots3Note, Some(s)) => (dots3_graph_bytes(s, ctx, native), 0, 0, 0),
+        (ModelFamily::Dots3Note, Some(s)) => {
+            let logits = if quote_batch_alloc(req, caps, facts) {
+                u64::from(s.n_vocab) * SIZEOF_F32
+            } else {
+                0
+            };
+            (
+                dots3_graph_bytes(s, ctx, native) + logits,
+                0,
+                if req.mtp_mode == MtpMode::On && !quote_bank_lane(req, caps, facts) {
+                    dots3_mtp_bytes(s, ctx, native)
+                } else {
+                    0
+                },
+                if partial {
+                    dots3_checkpoint_bytes(s, ctx)
+                } else {
+                    0
+                },
+            )
+        }
         (ModelFamily::Glm53, Some(s)) => (glm_graph_bytes(s, ctx), 0, 0, 0),
         (ModelFamily::DeepSeek4, Some(s)) if req.backend == Backend::Cpu => {
             let (cache, scratch) = deepseek_cpu_bytes(s, ctx);
@@ -1139,6 +1160,19 @@ fn exaone_checkpoint_bytes(shape: Shape, ctx: u64) -> u64 {
         * CHECKPOINT_SLOTS
 }
 
+// dots3 snapshots only local MLA latent/RoPE windows. Full MLA and F32
+// indexer keys remain in the source bank; the MTP block owns no state.
+fn dots3_checkpoint_bytes(shape: Shape, ctx: u64) -> u64 {
+    let local = (0..shape.n_layer.saturating_sub(shape.n_nextn_predict))
+        .filter(|il| *il != 0 && (shape.n_swa_period == 0 || il % shape.n_swa_period != 1))
+        .count() as u64;
+    local
+        * ctx.min(u64::from(shape.n_swa))
+        * u64::from(shape.n_swa_kv_lora + shape.n_rot)
+        * SIZEOF_U16
+        * CHECKPOINT_SLOTS
+}
+
 fn quote_partial(req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts) -> bool {
     if caps.reuse != ReuseKind::Partial
         || (req.prefix_reuse == PrefixReuse::Auto && caps.reuse_support != Support::Qualified)
@@ -1593,8 +1627,8 @@ fn inkling_runtime_bytes(s: Shape, ctx: u64, native: u32) -> (u64, u64) {
     (raw + scratch, mtp)
 }
 
-// C dots3_graph_memory_estimate, plus the decode partial buffer allocated by
-// dots3_graph_alloc. The trailing bound-only MTP block owns no cache/norms.
+// C dots3_graph_memory_estimate without the separately priced serial MTP.
+// Each persistent bank owns its complete prefill scratch.
 fn dots3_graph_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
     let hidden = u64::from(s.n_embd);
     let heads = u64::from(s.n_head);
@@ -1647,6 +1681,36 @@ fn dots3_graph_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
     cache
         + (cap * row_f32 + fixed + cap.min(DOTS3_INDEX_ROWS) * ctx + partial) * SIZEOF_F32
         + cap * row_i32 * SIZEOF_I32
+}
+
+// C dots3_spec_bytes: one scalar draft, target hidden rows and four-row undo.
+// Predictor layer46 is local attention and has no DSA score workspace.
+fn dots3_mtp_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
+    let rot = u64::from(s.n_rot);
+    let local = u64::from(s.n_swa_kv_lora);
+    let q_lora = u64::from(s.n_lora_q);
+    let index = u64::from(s.n_indexer_head_dim);
+    let ring = ctx.min(u64::from(s.n_swa) + 1);
+    let mut cache = 0;
+    let mut norms = 0;
+    let mut journal = 0;
+    for il in 0..s.n_layer {
+        let full = il == 0 || (s.n_swa_period != 0 && il % s.n_swa_period == 1);
+        let latent = if full { u64::from(s.n_kv_lora) } else { local };
+        let row = (latent + rot) * SIZEOF_U16 + if full { index * SIZEOF_F32 } else { 0 };
+        journal += DOTS3_TRIAL_ROWS * row;
+        if il < s.n_layer.saturating_sub(s.n_nextn_predict) {
+            cache += if full { ctx } else { ring } * row;
+            norms += q_lora + latent + rot + if full { 2 * index } else { 0 };
+        }
+    }
+    let scratch = dots3_graph_bytes(s, ctx, 1) - cache - (norms + ctx) * SIZEOF_F32;
+    scratch
+        + ring * (local + rot) * SIZEOF_U16
+        + (q_lora + local + rot) * SIZEOF_F32
+        + (u64::from(native).max(DOTS3_TRIAL_ROWS) + 3) * u64::from(s.n_embd) * SIZEOF_F32
+        + journal
+        + (DOTS3_TRIAL_ROWS + 1) * u64::from(s.n_vocab) * SIZEOF_F32
 }
 
 // C glm53_graph_bytes_estimate: scalar workspace, KDA state/control tensors,
@@ -3894,6 +3958,71 @@ exit 1
             assert_eq!(runtime, expected, "ctx={ctx}");
             facts.host_available_bytes = Some(facts_cost(&facts, &req, 1) - 1);
             assert!(resolve_plan(&req, Some(caps), &facts).has_errors());
+        }
+    }
+
+    #[test]
+    fn dots3_mtp_quote_matches_native() {
+        let _env = lock_test_env();
+        for (ctx, native, expected) in [
+            (4096, 128, 26_068_040),
+            (1024, 32, 24_101_960),
+            (262144, 4096, 107_332_680),
+        ] {
+            for mode in [MtpMode::Off, MtpMode::Auto, MtpMode::On] {
+                let req = ServingRequest {
+                    ctx,
+                    native_chunk: Some(native),
+                    mtp_mode: mode,
+                    ..ServingRequest::default()
+                };
+                let facts = fill_family(
+                    ModelFamily::Dots3Note,
+                    Variant::Dots3NotePrev,
+                    SHAPE_DOTS3_NOTE_PREV,
+                    &req,
+                    qwen_host(Some(native)),
+                );
+                assert_eq!(
+                    facts.mtp_state_bytes,
+                    Some(if mode == MtpMode::On { expected } else { 0 }),
+                    "ctx={ctx}, mode={mode:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dots3_bank_quote_has_local_pool() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::set(DOTS3_PREFILL_CHUNK_ENV, "64");
+        for (reuse, expected) in [
+            (PrefixReuse::Partial, 1_178_800_128),
+            (PrefixReuse::Auto, 0),
+            (PrefixReuse::Exact, 0),
+        ] {
+            let req = ServingRequest {
+                ctx: 2048,
+                max_seqs: MaxSeqs::Fixed(2),
+                prefix_reuse: reuse,
+                mtp_mode: MtpMode::Off,
+                ..ServingRequest::default()
+            };
+            let facts = fill_family(
+                ModelFamily::Dots3Note,
+                Variant::Dots3NotePrev,
+                SHAPE_DOTS3_NOTE_PREV,
+                &req,
+                qwen_host(Some(64)),
+            );
+            assert_eq!(facts.checkpoint_pool_bytes, Some(expected));
+            assert_eq!(
+                facts.per_bank_bytes,
+                Some(
+                    dots3_graph_bytes(SHAPE_DOTS3_NOTE_PREV, 2048, 64)
+                        + u64::from(SHAPE_DOTS3_NOTE_PREV.n_vocab) * SIZEOF_F32
+                )
+            );
         }
     }
 

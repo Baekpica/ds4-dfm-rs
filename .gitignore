@@ -90,6 +90,10 @@ __pycache__/
 *.qdrep
 *.qdstrm
 *.ncu-rep
+/tests/test_dots3_checkpoint
+/tests/test_dots3_batch
+/tests/test_dots3_mtp
+/tests/test_dots3_mtp_guards
 /tests/test_exaone_checkpoint
 /tests/test_exaone_partial
 /tests/test_exaone_ref
