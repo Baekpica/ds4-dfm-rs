@@ -117,6 +117,12 @@ class ReuseRunnerTests(unittest.TestCase):
         self.assertTrue(any("sched_chunk_live:" in error for error in errors), errors)
 
     def test_all_four_phases_preserve_fixture_and_compare(self):
+        self.run_four_phases(fork_on_append=True)
+
+    def test_warm_requires_an_observed_bank_fork(self):
+        self.run_four_phases(fork_on_append=False)
+
+    def run_four_phases(self, fork_on_append):
         with TemporaryDirectory() as directory:
             output = Path(directory) / "evidence"
             manifest = Path(directory) / "artifacts.json"
@@ -148,7 +154,9 @@ class ReuseRunnerTests(unittest.TestCase):
                 answer = next(n for expression, n in [("2 + 2", 4), ("4 + 1", 5),
                               ("4 + 2", 6), ("5 + 3", 8), ("8 + 1", 9)] if expression in question)
                 state["kind"] = ("cold" if state["phase"] in ("seed", "cold")
-                                 else "partial" if answer == 6 else "fork")
+                                 else "partial" if answer == 6
+                                 else "fork" if answer == 5 and fork_on_append
+                                 else "exact")
                 cached = 0 if state["kind"] == "cold" else 300
                 return self.response(f" \n{answer}\n", cached)
 
@@ -165,7 +173,13 @@ class ReuseRunnerTests(unittest.TestCase):
                                  "--banks", "2", "--native-chunk", "64", "--mtp-mode", "off",
                                  "--expect-speculation", "off", "--lane", "continuous"]
                     with patch("sys.argv", argv):
-                        self.assertEqual(gate.main(), 0, phase)
+                        status = gate.main()
+                    if phase == "warm" and not fork_on_append:
+                        self.assertEqual(status, 1)
+                        errors = json.loads((output / "warm.result.json").read_text())["errors"]
+                        self.assertTrue(any("no bank fork" in error for error in errors), errors)
+                        return
+                    self.assertEqual(status, 0, phase)
                     self.assertTrue(json.loads((output / f"{phase}.result.json").read_text())["passed"])
             fixture = json.loads((output / "fixture.json").read_text())
             self.assertEqual(fixture["cases"]["append"]["body"]["messages"][1]["content"], " \n4\n")

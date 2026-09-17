@@ -78,8 +78,12 @@ python3 tests/serving_reuse_live.py cold \
 | seed: 2 + 2 | 4 | cold, zero cached |
 | append: 4 + 1 after actual seed reply | 5 | exact/fork, positive proper prefix |
 | edit: replace second user turn with 4 + 2 | 6 | partial for Qwen/Solar/Motif; exact/fork for DeepSeek |
-| fork: extend the retained append branch with 5 + 3 | 8 | fork, positive proper prefix |
+| fork: extend the retained append branch with 5 + 3 | 8 | exact/fork, positive proper prefix |
 | restart: extend actual fork reply with 8 + 1 | 9 | exact/fork as first generation after restart |
+
+The warm phase must observe at least one actual `fork`. A later branch can
+reuse its still-resident parent with `exact`; the scheduler need not copy a
+bank again for that request.
 
 Every cold request uses the identical saved body, requires zero cached tokens
 and `cold` trace, and compares the full assistant message, finish reason and

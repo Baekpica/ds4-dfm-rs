@@ -127,8 +127,6 @@ def inspect_case(config, phase, name, expected_answer, response, stats, referenc
             errors.append(f"cached tokens: expected 0 < {cached} < {prompt}")
         if name == "edit":
             kinds = {"partial"} if PROFILES[config["family"]]["reuse"] == "partial" else {"exact", "fork"}
-        elif name == "fork":
-            kinds = {"fork"}
         else:
             kinds = {"exact", "fork"}
     if trace.get("reuse_kind") not in kinds:
@@ -250,11 +248,14 @@ def main():
     write_json(phase_path, process)
     write_json(fixture_path, fixture)
     all_errors = []
+    warm_kinds = []
     names = {"seed": ["seed"], "warm": ["append", "edit", "fork"],
              "restored": ["restart"], "cold": ["seed", "append", "edit", "fork", "restart"]}[args.phase]
     for name in names:
         response, stats, errors = run_case(args, config, name, cases[name], stats)
         all_errors.extend(f"{name}: {error}" for error in errors)
+        if args.phase == "warm":
+            warm_kinds.append((stats.get("last_request") or {}).get("reuse_kind"))
         if args.phase == "seed":
             for follow in ("append", "edit"):
                 cases[follow] = {"body": follow_body(cases[name]["body"], response, templates[follow]["user"]),
@@ -264,6 +265,11 @@ def main():
             cases[follow] = {"body": follow_body(cases[name]["body"], response, templates[follow]["user"]),
                              "answer": templates[follow]["answer"]}
         write_json(fixture_path, fixture)
+    # A later branch can extend a parent that is still in its original bank.
+    # Require a real bank copy somewhere in this phase, without prescribing
+    # which eligible continuation the scheduler assigns to the other bank.
+    if args.phase == "warm" and "fork" not in warm_kinds:
+        all_errors.append("warm: no bank fork observed")
     require(fingerprint(process_identity(args.pid)) == fingerprint(process), "server changed during phase")
     receipt = {"passed": not all_errors, "errors": all_errors, "fixture_sha256": digest(fixture_path),
                "process": process, "files": []}
