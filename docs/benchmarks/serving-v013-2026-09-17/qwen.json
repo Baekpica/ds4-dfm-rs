@@ -1,0 +1,2266 @@
+{
+  "schema": "v013-live-evidence-v1",
+  "family": "qwen",
+  "scope": {
+    "status": "HTTP reuse lifecycle passed",
+    "standalone": true,
+    "context": 8192,
+    "banks": 2,
+    "native_chunk": 256,
+    "scheduler_chunk": 256,
+    "scheduler_live_chunk": 256,
+    "lane": "continuous",
+    "mtp": "on",
+    "mtp_draft": 2,
+    "ple_format": "FP8",
+    "ple_cache_mib": 1024,
+    "ple_workers": 16,
+    "configured_clock_limits_mhz": [
+      300,
+      2200
+    ],
+    "observed_gpu_clocks": null,
+    "clock_scope": "Configured range preserved by operator; P1 did not sample GPU clocks."
+  },
+  "build": {
+    "base_commit": "c2a816b9cf681709141797fccb9dab9c0c9f3bf4",
+    "server_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+    "runtime_source_sha256": "096bcc24a2ee406eb82646aa5493ace0ce05bbe7306a1be14862208bb50a0263",
+    "build_head": {
+      "path": "scratch/v013/bin-integrated6/build-head.txt",
+      "bytes": 41,
+      "sha256": "4f79a3615163f144705e8384b3413f1560904940f06b6f9ad0bec185c3be2ff9"
+    },
+    "source_patch": {
+      "path": "scratch/v013/bin-integrated6/source.diff",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "artifact": {
+    "inputs": {
+      "model": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+        "sha256": "b8c8633f475351008d68981f4b37b409669b3dabd1620d6ead12584e648fe523"
+      },
+      "model-shard-2": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00002-of-00003.gguf",
+        "sha256": "14a3514bbf080266d501b07aa9da73ee1e0bfcf5ffd6bf0669034ed4b3fd35c9"
+      },
+      "model-shard-3": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00003-of-00003.gguf",
+        "sha256": "92dfbce1fcc6f722ac0ef7ec100bda02fbeb7b1b5cfecd1b57e51e18f82df111"
+      },
+      "ple-manifest": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-manifest.json",
+        "sha256": "507885ac42e4a5f631a12cf95d12755980a4c61f3fc09b17f665be2a4af9312e"
+      },
+      "ple-part-1": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00001-of-00004.bin",
+        "sha256": "3cffb8fcc5f070d34bff3eddc67a721b26f284b0ec71f5da5aecda8b468543a7"
+      },
+      "ple-part-2": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00002-of-00004.bin",
+        "sha256": "f2f63094e120bc207d6ad72117343b911a62b24ad659e99467eddf5f6ba23a36"
+      },
+      "ple-part-3": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00003-of-00004.bin",
+        "sha256": "a4396a17923598c1905820102e0a996f7b8f9032b5edbb30d734bcdef932ce0d"
+      },
+      "ple-part-4": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00004-of-00004.bin",
+        "sha256": "deeaaf2efd5f1983cfd2306a6da5135f4c2731a73d977e09de270ea097a65c16"
+      },
+      "ple-scale": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-weight-scale.bf16.bin",
+        "sha256": "c7c58bd6007672362da2106fdbfaf9f50629e4bdf8598169c598027394ef9791"
+      },
+      "chat-template": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/chat_template.jinja",
+        "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+      }
+    },
+    "identity_method": "prior-full-sha256-plus-current-local-file-stat-v1",
+    "current_input_stamps": {
+      "model": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+        "stat": [
+          66306,
+          174473481,
+          32066883520,
+          1787801275875173137,
+          1787801276075159034
+        ]
+      },
+      "model-shard-2": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00002-of-00003.gguf",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00002-of-00003.gguf",
+        "stat": [
+          66306,
+          174473482,
+          31811595296,
+          1787801316140972257,
+          1787801316270374380
+        ]
+      },
+      "model-shard-3": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00003-of-00003.gguf",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00003-of-00003.gguf",
+        "stat": [
+          66306,
+          174473476,
+          19396505568,
+          1787797899573643124,
+          1787797900131557841
+        ]
+      },
+      "ple-manifest": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-manifest.json",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-manifest.json",
+        "stat": [
+          66306,
+          174479669,
+          83031,
+          1788844243766332470,
+          1788844243767049108
+        ]
+      },
+      "ple-part-1": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00001-of-00004.bin",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00001-of-00004.bin",
+        "stat": [
+          66306,
+          174479664,
+          12800098304,
+          1788845752784600044,
+          1788845753092892771
+        ]
+      },
+      "ple-part-2": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00002-of-00004.bin",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00002-of-00004.bin",
+        "stat": [
+          66306,
+          174479667,
+          12800098304,
+          1788845751663605431,
+          1788845752030173989
+        ]
+      },
+      "ple-part-3": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00003-of-00004.bin",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00003-of-00004.bin",
+        "stat": [
+          66306,
+          174479666,
+          12800098304,
+          1788845752346602149,
+          1788845752468930345
+        ]
+      },
+      "ple-part-4": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00004-of-00004.bin",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00004-of-00004.bin",
+        "stat": [
+          66306,
+          174479662,
+          12800098304,
+          1788845750089612997,
+          1788845750379241653
+        ]
+      },
+      "ple-scale": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-weight-scale.bf16.bin",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-weight-scale.bf16.bin",
+        "stat": [
+          66306,
+          174479665,
+          2,
+          1788844245069329160,
+          1788844245070889461
+        ]
+      },
+      "chat-template": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/chat_template.jinja",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/chat_template.jinja",
+        "stat": [
+          66306,
+          174479982,
+          8952,
+          1788960965459895747,
+          1788960965459895747
+        ]
+      }
+    },
+    "full_hash_receipts": {
+      "path": "scratch/v013/qwen-inputs/full-sha256.jsonl",
+      "bytes": 4992,
+      "sha256": "5be3008fa17e2b3533258faf5963f33afdde6aecc9a8b46a63340601c2fa89c3"
+    },
+    "scope": "All3 GGUF shards, FP8 PLE manifest/4 payloads/BF16 scales and chat template. Tokenizer and MTP embedded. No model contents rehashed by this publisher."
+  },
+  "fixture": {
+    "answer_contract": "literal-arithmetic-v2",
+    "scope": "qwen-equations-mtp-v1",
+    "frozen": {
+      "path": "scratch/v013/qwen-campaign-07/p1/fixture.json",
+      "bytes": 17768,
+      "sha256": "24ec8882a4a5c4af154c053e1072bf7eedd23da164106307244af14710050411"
+    },
+    "equations": {
+      "path": "scratch/v013/qwen-campaign-07/p1-equations.json",
+      "bytes": 1548,
+      "sha256": "f651948b7c517c36d35245d31b9dcd9a8f7795db3b0543befdfba536c2711277"
+    },
+    "wrapper": {
+      "path": "scratch/v013/qwen-campaign-07/p1_equations.py",
+      "bytes": 1464,
+      "sha256": "1de25537fa551f4393a452cb9219b525807be4d3d6a7b6696634462a178a3bf3"
+    },
+    "local_runner": {
+      "path": "scratch/v013/qwen-campaign-07/p1_reuse_local.py",
+      "bytes": 18846,
+      "sha256": "9f9d83f6af51577076b059e7a78842b128a0c320ba9be5b5a1aa7997775f339b"
+    },
+    "restored_reuse_kinds": [
+      "exact",
+      "fork",
+      "partial"
+    ],
+    "runner_bindings": {
+      "scratch/v013/qwen-profile-plan/orchestrate.py": "1ae53a821a8c970d0e34ea9dd58e8a7fff4ecf45afbc5f3f9b4dd0cea31e5666",
+      "tests/serving_reuse_live.py": "dcded42dcf3a95d2446943e0585c03523e2d283b0a3b6b6a16bf1b68a72277f6",
+      "tests/fixtures/serving-reuse.json": "bcdffbd61e07a45dbaa1d2afaaf0937497bdbc75f5544a1f1f898e1933b2ebe8",
+      "tests/step37_history_live.py": "c21277fe60c12ae6a47f635555cc61b98229d9bfe1ecbf7b8e2a5d53d06df519",
+      "scratch/v013/qwen-profile-plan/p1_equations.py": "1de25537fa551f4393a452cb9219b525807be4d3d6a7b6696634462a178a3bf3",
+      "scratch/v013/qwen-profile-plan/p1_reuse_local.py": "9f9d83f6af51577076b059e7a78842b128a0c320ba9be5b5a1aa7997775f339b",
+      "scratch/v013/qwen-profile-plan/p1-equations.json": "f651948b7c517c36d35245d31b9dcd9a8f7795db3b0543befdfba536c2711277"
+    }
+  },
+  "processes": {
+    "seed": {
+      "pid": 1049213,
+      "start_ticks": "41688566",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "command": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf --model-id qwen38-base-q5-fp8-ple --host 127.0.0.1 --port 18038 --ctx 8192 --max-seqs 2 --mem-floor-gb 4 --native-chunk 256 --prefill-chunk 256 --prefill-chunk-live 256 --prefix-reuse partial --mtp-mode on --mtp-draft 2 --kv-disk-dir /home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/qwen-campaign-07/p1-cache --kv-disk-space 2G --kv-cache-min-tokens 1 --kv-cache-boundary-trim-tokens 0 --kv-cache-boundary-align-tokens 0 ",
+      "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+      "artifacts_sha256": "8a8b7a8d8989e35547bc22ce1bb1c86558bad30e23bc42a9c49c25ce57b2d049",
+      "url": "http://127.0.0.1:18038"
+    },
+    "warm": {
+      "pid": 1049213,
+      "start_ticks": "41688566",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "command": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf --model-id qwen38-base-q5-fp8-ple --host 127.0.0.1 --port 18038 --ctx 8192 --max-seqs 2 --mem-floor-gb 4 --native-chunk 256 --prefill-chunk 256 --prefill-chunk-live 256 --prefix-reuse partial --mtp-mode on --mtp-draft 2 --kv-disk-dir /home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/qwen-campaign-07/p1-cache --kv-disk-space 2G --kv-cache-min-tokens 1 --kv-cache-boundary-trim-tokens 0 --kv-cache-boundary-align-tokens 0 ",
+      "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+      "artifacts_sha256": "8a8b7a8d8989e35547bc22ce1bb1c86558bad30e23bc42a9c49c25ce57b2d049",
+      "url": "http://127.0.0.1:18038"
+    },
+    "restored": {
+      "pid": 1050828,
+      "start_ticks": "41699593",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "command": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf --model-id qwen38-base-q5-fp8-ple --host 127.0.0.1 --port 18038 --ctx 8192 --max-seqs 2 --mem-floor-gb 4 --native-chunk 256 --prefill-chunk 256 --prefill-chunk-live 256 --prefix-reuse partial --mtp-mode on --mtp-draft 2 --kv-disk-dir /home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/qwen-campaign-07/p1-cache --kv-disk-space 2G --kv-cache-min-tokens 1 --kv-cache-boundary-trim-tokens 0 --kv-cache-boundary-align-tokens 0 ",
+      "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+      "artifacts_sha256": "8a8b7a8d8989e35547bc22ce1bb1c86558bad30e23bc42a9c49c25ce57b2d049",
+      "url": "http://127.0.0.1:18038"
+    },
+    "cold": {
+      "pid": 1051979,
+      "start_ticks": "41710998",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "command": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf --model-id qwen38-base-q5-fp8-ple --host 127.0.0.1 --port 18038 --ctx 8192 --max-seqs 2 --mem-floor-gb 4 --native-chunk 256 --prefill-chunk 256 --prefill-chunk-live 256 --prefix-reuse off --mtp-mode on --mtp-draft 2 ",
+      "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+      "artifacts_sha256": "8a8b7a8d8989e35547bc22ce1bb1c86558bad30e23bc42a9c49c25ce57b2d049",
+      "url": "http://127.0.0.1:18038"
+    }
+  },
+  "workers": {
+    "warm": {
+      "pid": 1049213,
+      "start_ticks": "41688566",
+      "state": "S",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "argv": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+        "--model-id",
+        "qwen38-base-q5-fp8-ple",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18038",
+        "--ctx",
+        "8192",
+        "--max-seqs",
+        "2",
+        "--mem-floor-gb",
+        "4",
+        "--native-chunk",
+        "256",
+        "--prefill-chunk",
+        "256",
+        "--prefill-chunk-live",
+        "256",
+        "--prefix-reuse",
+        "partial",
+        "--mtp-mode",
+        "on",
+        "--mtp-draft",
+        "2",
+        "--kv-disk-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/qwen-campaign-07/p1-cache",
+        "--kv-disk-space",
+        "2G",
+        "--kv-cache-min-tokens",
+        "1",
+        "--kv-cache-boundary-trim-tokens",
+        "0",
+        "--kv-cache-boundary-align-tokens",
+        "0"
+      ],
+      "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1049211-1789640859698956719.scope\n",
+      "environment": {
+        "PATH": "/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "LD_LIBRARY_PATH": "/usr/local/cuda/lib64",
+        "DS4_SERVER_CONTINUOUS": "1",
+        "DS4_SERVER_PERSIST_MIN_TOKENS": "1",
+        "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+        "DS4_QWEN_PLE_CACHE_MB": "1024",
+        "DS4_QWEN_PLE_WORKERS": "16"
+      },
+      "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+      "cwd": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress"
+    },
+    "restored": {
+      "pid": 1050828,
+      "start_ticks": "41699593",
+      "state": "S",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "argv": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+        "--model-id",
+        "qwen38-base-q5-fp8-ple",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18038",
+        "--ctx",
+        "8192",
+        "--max-seqs",
+        "2",
+        "--mem-floor-gb",
+        "4",
+        "--native-chunk",
+        "256",
+        "--prefill-chunk",
+        "256",
+        "--prefill-chunk-live",
+        "256",
+        "--prefix-reuse",
+        "partial",
+        "--mtp-mode",
+        "on",
+        "--mtp-draft",
+        "2",
+        "--kv-disk-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/qwen-campaign-07/p1-cache",
+        "--kv-disk-space",
+        "2G",
+        "--kv-cache-min-tokens",
+        "1",
+        "--kv-cache-boundary-trim-tokens",
+        "0",
+        "--kv-cache-boundary-align-tokens",
+        "0"
+      ],
+      "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1050826-1789640969961057750.scope\n",
+      "environment": {
+        "PATH": "/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "LD_LIBRARY_PATH": "/usr/local/cuda/lib64",
+        "DS4_SERVER_CONTINUOUS": "1",
+        "DS4_SERVER_PERSIST_MIN_TOKENS": "1",
+        "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+        "DS4_QWEN_PLE_CACHE_MB": "1024",
+        "DS4_QWEN_PLE_WORKERS": "16"
+      },
+      "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+      "cwd": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress"
+    },
+    "cold": {
+      "pid": 1051979,
+      "start_ticks": "41710998",
+      "state": "S",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "argv": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+        "--model-id",
+        "qwen38-base-q5-fp8-ple",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18038",
+        "--ctx",
+        "8192",
+        "--max-seqs",
+        "2",
+        "--mem-floor-gb",
+        "4",
+        "--native-chunk",
+        "256",
+        "--prefill-chunk",
+        "256",
+        "--prefill-chunk-live",
+        "256",
+        "--prefix-reuse",
+        "off",
+        "--mtp-mode",
+        "on",
+        "--mtp-draft",
+        "2"
+      ],
+      "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1051977-1789641084018402362.scope\n",
+      "environment": {
+        "PATH": "/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "LD_LIBRARY_PATH": "/usr/local/cuda/lib64",
+        "DS4_SERVER_CONTINUOUS": "1",
+        "DS4_SERVER_PERSIST_MIN_TOKENS": "1",
+        "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+        "DS4_QWEN_PLE_CACHE_MB": "1024",
+        "DS4_QWEN_PLE_WORKERS": "16"
+      },
+      "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+      "cwd": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress"
+    }
+  },
+  "cases": [
+    {
+      "phase": "seed",
+      "case": "seed",
+      "seconds": 1.2892821219866164,
+      "configured": {
+        "family": "qwen",
+        "model": "qwen38-base-q5-fp8-ple",
+        "context": 8192,
+        "banks": 2,
+        "native_chunk": 256,
+        "mtp_mode": "on",
+        "expect_speculation": true,
+        "lane": "continuous",
+        "mtp_draft": 2,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 4,
+      "accepted_forms": [
+        "2 + 2 = 4",
+        "2 + 2 = 4."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "2 + 2 = 4"
+      },
+      "usage": {
+        "prompt_tokens": 682,
+        "completion_tokens": 7,
+        "total_tokens": 689,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 682
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": true,
+        "fallback_reason": null,
+        "reuse_miss": "no checkpoint at or below LCP"
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "warm",
+      "case": "append",
+      "seconds": 0.5253245410276577,
+      "configured": {
+        "family": "qwen",
+        "model": "qwen38-base-q5-fp8-ple",
+        "context": 8192,
+        "banks": 2,
+        "native_chunk": 256,
+        "mtp_mode": "on",
+        "expect_speculation": true,
+        "lane": "continuous",
+        "mtp_draft": 2,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 5,
+      "accepted_forms": [
+        "4 + 1 = 5",
+        "4 + 1 = 5."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "4 + 1 = 5"
+      },
+      "usage": {
+        "prompt_tokens": 743,
+        "completion_tokens": 7,
+        "total_tokens": 750,
+        "prompt_tokens_details": {
+          "cached_tokens": 689,
+          "cache_write_tokens": 54
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "fork",
+        "speculation_active": true,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "warm",
+      "case": "edit",
+      "seconds": 0.669926818984095,
+      "configured": {
+        "family": "qwen",
+        "model": "qwen38-base-q5-fp8-ple",
+        "context": 8192,
+        "banks": 2,
+        "native_chunk": 256,
+        "mtp_mode": "on",
+        "expect_speculation": true,
+        "lane": "continuous",
+        "mtp_draft": 2,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 6,
+      "accepted_forms": [
+        "4 + 2 = 6",
+        "4 + 2 = 6."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "4 + 2 = 6"
+      },
+      "usage": {
+        "prompt_tokens": 743,
+        "completion_tokens": 7,
+        "total_tokens": 750,
+        "prompt_tokens_details": {
+          "cached_tokens": 682,
+          "cache_write_tokens": 61
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "partial",
+        "speculation_active": true,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "warm",
+      "case": "fork",
+      "seconds": 0.5098607739782892,
+      "configured": {
+        "family": "qwen",
+        "model": "qwen38-base-q5-fp8-ple",
+        "context": 8192,
+        "banks": 2,
+        "native_chunk": 256,
+        "mtp_mode": "on",
+        "expect_speculation": true,
+        "lane": "continuous",
+        "mtp_draft": 2,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 8,
+      "accepted_forms": [
+        "5 + 3 = 8",
+        "5 + 3 = 8."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "5 + 3 = 8"
+      },
+      "usage": {
+        "prompt_tokens": 804,
+        "completion_tokens": 7,
+        "total_tokens": 811,
+        "prompt_tokens_details": {
+          "cached_tokens": 750,
+          "cache_write_tokens": 54
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "exact",
+        "speculation_active": true,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "restored",
+      "case": "restart",
+      "seconds": 0.7608897389727645,
+      "configured": {
+        "family": "qwen",
+        "model": "qwen38-base-q5-fp8-ple",
+        "context": 8192,
+        "banks": 2,
+        "native_chunk": 256,
+        "mtp_mode": "on",
+        "expect_speculation": true,
+        "lane": "continuous",
+        "mtp_draft": 2,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 9,
+      "accepted_forms": [
+        "8 + 1 = 9",
+        "8 + 1 = 9."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "8 + 1 = 9"
+      },
+      "usage": {
+        "prompt_tokens": 865,
+        "completion_tokens": 7,
+        "total_tokens": 872,
+        "prompt_tokens_details": {
+          "cached_tokens": 812,
+          "cache_write_tokens": 53
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "partial",
+        "speculation_active": true,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "cold",
+      "case": "seed",
+      "seconds": 1.2974998420104384,
+      "configured": {
+        "family": "qwen",
+        "model": "qwen38-base-q5-fp8-ple",
+        "context": 8192,
+        "banks": 2,
+        "native_chunk": 256,
+        "mtp_mode": "on",
+        "expect_speculation": true,
+        "lane": "continuous",
+        "mtp_draft": 2,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 4,
+      "accepted_forms": [
+        "2 + 2 = 4",
+        "2 + 2 = 4."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "2 + 2 = 4"
+      },
+      "usage": {
+        "prompt_tokens": 682,
+        "completion_tokens": 7,
+        "total_tokens": 689,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 682
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": true,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "cold",
+      "case": "append",
+      "seconds": 1.340181821025908,
+      "configured": {
+        "family": "qwen",
+        "model": "qwen38-base-q5-fp8-ple",
+        "context": 8192,
+        "banks": 2,
+        "native_chunk": 256,
+        "mtp_mode": "on",
+        "expect_speculation": true,
+        "lane": "continuous",
+        "mtp_draft": 2,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 5,
+      "accepted_forms": [
+        "4 + 1 = 5",
+        "4 + 1 = 5."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "4 + 1 = 5"
+      },
+      "usage": {
+        "prompt_tokens": 743,
+        "completion_tokens": 7,
+        "total_tokens": 750,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 743
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": true,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "cold",
+      "case": "edit",
+      "seconds": 1.3176698749884963,
+      "configured": {
+        "family": "qwen",
+        "model": "qwen38-base-q5-fp8-ple",
+        "context": 8192,
+        "banks": 2,
+        "native_chunk": 256,
+        "mtp_mode": "on",
+        "expect_speculation": true,
+        "lane": "continuous",
+        "mtp_draft": 2,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 6,
+      "accepted_forms": [
+        "4 + 2 = 6",
+        "4 + 2 = 6."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "4 + 2 = 6"
+      },
+      "usage": {
+        "prompt_tokens": 743,
+        "completion_tokens": 7,
+        "total_tokens": 750,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 743
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": true,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "cold",
+      "case": "fork",
+      "seconds": 1.530242717009969,
+      "configured": {
+        "family": "qwen",
+        "model": "qwen38-base-q5-fp8-ple",
+        "context": 8192,
+        "banks": 2,
+        "native_chunk": 256,
+        "mtp_mode": "on",
+        "expect_speculation": true,
+        "lane": "continuous",
+        "mtp_draft": 2,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 8,
+      "accepted_forms": [
+        "5 + 3 = 8",
+        "5 + 3 = 8."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "5 + 3 = 8"
+      },
+      "usage": {
+        "prompt_tokens": 804,
+        "completion_tokens": 7,
+        "total_tokens": 811,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 804
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": true,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "cold",
+      "case": "restart",
+      "seconds": 1.611908830003813,
+      "configured": {
+        "family": "qwen",
+        "model": "qwen38-base-q5-fp8-ple",
+        "context": 8192,
+        "banks": 2,
+        "native_chunk": 256,
+        "mtp_mode": "on",
+        "expect_speculation": true,
+        "lane": "continuous",
+        "mtp_draft": 2,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 9,
+      "accepted_forms": [
+        "8 + 1 = 9",
+        "8 + 1 = 9."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "8 + 1 = 9"
+      },
+      "usage": {
+        "prompt_tokens": 865,
+        "completion_tokens": 7,
+        "total_tokens": 872,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 865
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": true,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    }
+  ],
+  "guards": {
+    "warm": {
+      "minimum_observed_available_gib": 25.253849029541016,
+      "maximum_observed_psi_full_avg10": 4.19,
+      "requested_max_gib": 104,
+      "requested_high_gib": 100,
+      "effective_max_gib": 100.0,
+      "effective_high_gib": 99.0,
+      "reserve_gib": 12,
+      "trip_gib": 8,
+      "exit": {
+        "time": 1789640969.7061837,
+        "event": "exit",
+        "unit": "ds4-hostguard-1049211-1789640859698956719.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "telemetry": {
+        "path": "scratch/v013/qwen-campaign-07/p1-warm-server/guard.jsonl",
+        "bytes": 19913,
+        "sha256": "8961b9435b7cd8b632660b1b6f439e115c5a2c2509fa85989c937b4d6f9c3793"
+      },
+      "stop": {
+        "path": "scratch/v013/qwen-campaign-07/p1-warm-server/stopped.json",
+        "bytes": 72,
+        "sha256": "d651ab65245a09cc9aa3be8723679563244ae9c2fbf9cceb871dc412f766ab8d"
+      }
+    },
+    "restored": {
+      "minimum_observed_available_gib": 25.811172485351562,
+      "maximum_observed_psi_full_avg10": 2.89,
+      "requested_max_gib": 104,
+      "requested_high_gib": 100,
+      "effective_max_gib": 100.0,
+      "effective_high_gib": 99.0,
+      "reserve_gib": 12,
+      "trip_gib": 8,
+      "exit": {
+        "time": 1789641083.734892,
+        "event": "exit",
+        "unit": "ds4-hostguard-1050826-1789640969961057750.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "telemetry": {
+        "path": "scratch/v013/qwen-campaign-07/p1-restored-server/guard.jsonl",
+        "bytes": 20445,
+        "sha256": "433ba40f0eee354e03168fab0e30332ba6cdd7f4a6dd646782993de7e20338f6"
+      },
+      "stop": {
+        "path": "scratch/v013/qwen-campaign-07/p1-restored-server/stopped.json",
+        "bytes": 72,
+        "sha256": "8570f62d7b31f5f5b20d0308a34b25adbef51eaae321a4cb7ec12b94d68230e0"
+      }
+    },
+    "cold": {
+      "minimum_observed_available_gib": 25.762996673583984,
+      "maximum_observed_psi_full_avg10": 2.55,
+      "requested_max_gib": 104,
+      "requested_high_gib": 100,
+      "effective_max_gib": 99.9,
+      "effective_high_gib": 98.9,
+      "reserve_gib": 12,
+      "trip_gib": 8,
+      "exit": {
+        "time": 1789641205.5046902,
+        "event": "exit",
+        "unit": "ds4-hostguard-1051977-1789641084018402362.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "telemetry": {
+        "path": "scratch/v013/qwen-campaign-07/p1-cold-server/guard.jsonl",
+        "bytes": 21523,
+        "sha256": "5c23721f06dd40d5b962f425c70e878792109987b2a9a3edb9ac5f7dade7e4ab"
+      },
+      "stop": {
+        "path": "scratch/v013/qwen-campaign-07/p1-cold-server/stopped.json",
+        "bytes": 72,
+        "sha256": "cc8bc5c6753ee24430c6f187bb845a3611ff64c4acb86b7029cb8ae1a35fd19a"
+      }
+    }
+  },
+  "prior_failed_attempts": [
+    {
+      "run": "scratch/v013/qwen-campaign-04",
+      "passed": false,
+      "cause": "Readiness harness required nonexistent /health; interrupted and cleaned up before P1 generation.",
+      "raw_files": [
+        {
+          "path": "scratch/v013/qwen-campaign-04/artifacts.json",
+          "bytes": 2779,
+          "sha256": "8a8b7a8d8989e35547bc22ce1bb1c86558bad30e23bc42a9c49c25ce57b2d049"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/contract.json",
+          "bytes": 7501,
+          "sha256": "b8a60cc70013f2a7d5c903372ea4f2a70e7796b7baad67da58f8bb12793b761b"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/git.json",
+          "bytes": 73,
+          "sha256": "6de250fb7a02b3e2de8725fab02f0355e39843ce4bfe1c52ef6c657e20dd8ea7"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/orchestrate-before-readiness-fix.py",
+          "bytes": 21591,
+          "sha256": "d18459cad45004b6bea8b753d365c374b7048136da6d851401160ddf77cbe3e9"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/orchestrate-before-readiness-fix.sha256",
+          "bytes": 102,
+          "sha256": "9ef2b5c7ef12e2d33764a76709499ba0666d33d8d6c5433b8a8d4e49640c02fd"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/p1-failed.json",
+          "bytes": 112,
+          "sha256": "22a3802b65992ed916d60804cac6abdf488f4bfb7e2264c52abe0a27333bba79"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/p1-started.json",
+          "bytes": 55,
+          "sha256": "8a92261f875d8f6a48147c6baeefb2f18e2c005db97a59f340d9dd75a3b4d81a"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/p1-warm-server/failure.json",
+          "bytes": 78,
+          "sha256": "6b72f9370d5c3f3f9465f7da0faa9737600b482181fa6259898f69c41a82f0d0"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/p1-warm-server/guard-process.json",
+          "bytes": 50,
+          "sha256": "723a0a5bee9451814dd3f4e5e92f3bba822017b1fcbc97681ef59e81020a5ba4"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/p1-warm-server/guard.jsonl",
+          "bytes": 79331,
+          "sha256": "e742f340e6321cd3e25aba93d952c7611ccea372b6640e93f53b8a0b32b60b2d"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/p1-warm-server/launch.json",
+          "bytes": 3602,
+          "sha256": "0ee69a5afc6520e949045661a99beb795900cd27c80b94cf9e2028eaf718a48e"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/p1-warm-server/payload.pid",
+          "bytes": 8,
+          "sha256": "5716692c6b52ae5def06da6f149a49181d1ad00ce6723373c0d00a97830e9bb0"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/p1-warm-server/server.log",
+          "bytes": 6138,
+          "sha256": "8d578e6fc985f59938ab0b9616119c725506dc93aaf5486c5070b4a1207c2a3c"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/p1-warm-server/stopped.json",
+          "bytes": 72,
+          "sha256": "cf6528445092d38847a03ed3d24e18873a30b62caeda752053d679d60af40f18"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/pilot-workload.json",
+          "bytes": 39636,
+          "sha256": "ec1d274465f5e015f6b354c793e600518e9be06f5856316620f6cfe0776df434"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/readiness-diagnosis.json",
+          "bytes": 315,
+          "sha256": "af2c80c9cbc44d9878ed212203c51ca2c39e4ce64a4f5e184c1cf69a04fe96d5"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/readiness-fix-green.log",
+          "bytes": 112,
+          "sha256": "26f599755db571bd9b1e025f21092acc4379cafd3617fe7b8b69ba0155bf7fdf"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/readiness-fix-red.log",
+          "bytes": 2090,
+          "sha256": "bf227f6f8fa445ee1316fe286955264fb3c3b3dcb6eedd7c28c9cd9efba4c4f3"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/seed.json",
+          "bytes": 6543,
+          "sha256": "43375d086854cb4088921dc390f0b2ea8cb553a27f0d8c253d805b0664b6be0c"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/selection.json",
+          "bytes": 624,
+          "sha256": "05703c32bfe75ff7be61933f61545abb47426188b44e524c1bd27a8d59077b4c"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/source.json",
+          "bytes": 41591,
+          "sha256": "21ce4bc501bba16974005f702e8d7dfd213101cd6b1439d304b252ce626919d0"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-04/workload.json",
+          "bytes": 46365,
+          "sha256": "725b96073990f26db0ac19aecb96d6a20e882268fb14638b4888f050ace38f79"
+        }
+      ]
+    },
+    {
+      "run": "scratch/v013/qwen-campaign-05",
+      "passed": false,
+      "cause": "Correct one-token answer 4 did not draft; the fixture expectation of active speculation failed.",
+      "raw_files": [
+        {
+          "path": "scratch/v013/qwen-campaign-05/artifacts.json",
+          "bytes": 2779,
+          "sha256": "8a8b7a8d8989e35547bc22ce1bb1c86558bad30e23bc42a9c49c25ce57b2d049"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/contract.json",
+          "bytes": 7501,
+          "sha256": "86f7c1a352155c642ead182511a675dbbec045f73618129bf6064ba52b304485"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/equation-fixture-green.log",
+          "bytes": 102,
+          "sha256": "d094b1bd2c8318c96097f80c50da282add5b2972970a77046de8db6c8935f6ca"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/equation-fixture-red.log",
+          "bytes": 1601,
+          "sha256": "1e91f0d0fa021f00604ed156648d32f7748284a69bd24f3d9ddf274c21e2d906"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/equation-orchestrator-green.log",
+          "bytes": 113,
+          "sha256": "591908f8ebbe623a3d3659dcfff3bb80ff781ef8db2ea993f6d24cd4581362b8"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/git.json",
+          "bytes": 439,
+          "sha256": "5d46be4641ac0b9b1db147a5743cecd01d25a204abfede869bbb6d133f0189b7"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/orchestrate-before-equation-fixture.py",
+          "bytes": 21623,
+          "sha256": "9ca023017a36d6cf0ec268c8c28191eea94d21b371f9f54f4ec44e612198d474"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/orchestrate-before-equation-fixture.sha256",
+          "bytes": 105,
+          "sha256": "229094d1570af5c045aa66fe669bc84f48bc066ec4da4b1b07af2c29222e85d0"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1/artifacts.json",
+          "bytes": 2779,
+          "sha256": "8a8b7a8d8989e35547bc22ce1bb1c86558bad30e23bc42a9c49c25ce57b2d049"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1/fixture.json",
+          "bytes": 9766,
+          "sha256": "01aeda41c2e218f3fdac9b67399581c8d98aa1630a762fbb1eb859b5cfe23356"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1/seed.before.json",
+          "bytes": 7682,
+          "sha256": "9928adaa410ad20b5b8e4e844395db29d6d16cd926d2eb3bd9cf5788ab5e9082"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1/seed.command.json",
+          "bytes": 1005,
+          "sha256": "4d6bae23b68be114185339023d5257213264543e1ea8b5bff3ed55ad2a459141"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1/seed.exit.json",
+          "bytes": 36,
+          "sha256": "fcd04e1ea8ed5e712344c5cb25dcdb1d07aa1c9f2a9070fd0330035cf370838c"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1/seed.process.json",
+          "bytes": 1063,
+          "sha256": "df0e2bbea36642eea551dacc8b67614229feb462e9aa8a5d071a7a2c66a22d3d"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1/seed.result.json",
+          "bytes": 2509,
+          "sha256": "7b84c305cbc87df5042c54c707bb17ea194ea7c06638902ad74e9061aef2af46"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1/seed.seed.request.json",
+          "bytes": 2342,
+          "sha256": "c23275d1eea5fe7907beab6991bfeeb87bec6ae812acc394725224e6d9c1bfec"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1/seed.seed.response.json",
+          "bytes": 649,
+          "sha256": "8e7e68db17caee7722d240fe00ff55aef032a181a3c847c8a1c9a475a47cdb48"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1/seed.seed.stats.json",
+          "bytes": 7887,
+          "sha256": "0bacb41d8361c4e97e6de3491f78b7b4a557d7c38e769a2e164ef7c05b0c00b6"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1/seed.seed.summary.json",
+          "bytes": 1040,
+          "sha256": "334c456a50610bc4a7d1d2af4e1c07c382440896f9b2eb1af312f3088bf38b3a"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1/seed.stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1/seed.stdout",
+          "bytes": 862,
+          "sha256": "5ae9ea2e6d823dfed726c054bb7e52fd8c73e55702be231db7d9abf7e2263a27"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1-failed.json",
+          "bytes": 217,
+          "sha256": "a419bd9de11afc80d04789244e6ae15a92c0869f56486516282067a74d53a6aa"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1-started.json",
+          "bytes": 55,
+          "sha256": "5c63f4aa31437990db1a5802348486c0e909f86404b17734edc9da28fc8f5995"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1-warm-server/failure.json",
+          "bytes": 183,
+          "sha256": "19aafa658c4869f6d353e32e43036004fa6ddc173e5b8004d72444b4d7db2fa0"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1-warm-server/guard-process.json",
+          "bytes": 50,
+          "sha256": "29b004efcb99115f69eeac405542e807861684354467a59477b117a6e1bf82aa"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1-warm-server/guard.jsonl",
+          "bytes": 20058,
+          "sha256": "91e347155d8ede4490fe6781610bbe1388e4e954a4386ea7d789a7a321bbc1f7"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1-warm-server/launch.json",
+          "bytes": 3602,
+          "sha256": "bc00adb5aee6b1b72f18429b5b9dfde5012a0c6aeb55572425757483983ae4bb"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1-warm-server/payload.pid",
+          "bytes": 8,
+          "sha256": "61018ea7862448f23769ebc8592a54019bc96732950ad03ab4167cabdf3f2093"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1-warm-server/process.json",
+          "bytes": 1816,
+          "sha256": "bf1c91e948121410a7eeec78868641ae61a3a8dec4fabe3678837cb2ef030d12"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1-warm-server/ready-stats.json",
+          "bytes": 7682,
+          "sha256": "211740c8693ecb3e8f0be612ccef66a3177f21b84f4eefbcafc93630a0b39ba3"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1-warm-server/server.log",
+          "bytes": 6460,
+          "sha256": "cba8b62033d0488da19d9e4a13378383454c418e56dd26618548ea5935dfe84c"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/p1-warm-server/stopped.json",
+          "bytes": 72,
+          "sha256": "0c88b552e39db2a990aff3ae748a33203111c65514844be28600ec3f8c208fdf"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/pilot-workload.json",
+          "bytes": 39636,
+          "sha256": "ec1d274465f5e015f6b354c793e600518e9be06f5856316620f6cfe0776df434"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/seed.json",
+          "bytes": 6543,
+          "sha256": "43375d086854cb4088921dc390f0b2ea8cb553a27f0d8c253d805b0664b6be0c"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/selection.json",
+          "bytes": 624,
+          "sha256": "f349a827f2a9b37bbc3dea1e49111017aa5eac91bf55f81ad9fcc6e785e6b036"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/source.json",
+          "bytes": 41591,
+          "sha256": "21ce4bc501bba16974005f702e8d7dfd213101cd6b1439d304b252ce626919d0"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-05/workload.json",
+          "bytes": 46365,
+          "sha256": "f448e5a433e991555c148a90ccf958632849d857c4dd6acdf054a0d8ac45c570"
+        }
+      ]
+    },
+    {
+      "run": "scratch/v013/qwen-campaign-06",
+      "passed": false,
+      "cause": "Restored request returned the correct equation with 812 cached tokens and active MTP, but partial reuse failed the prior exact/fork-only fixture. This attempt remains failed.",
+      "raw_files": [
+        {
+          "path": "scratch/v013/qwen-campaign-06/artifacts.json",
+          "bytes": 2779,
+          "sha256": "8a8b7a8d8989e35547bc22ce1bb1c86558bad30e23bc42a9c49c25ce57b2d049"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/contract.json",
+          "bytes": 7876,
+          "sha256": "7e69c238083053c90eff8dae939d5e2c14632022122f403fe20b2992b6a481d7"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/equation-local-green.log",
+          "bytes": 103,
+          "sha256": "d03ce458f2a6cd2b4f27522f3aacad03ce1872c028853507c3ad02ca621bdcad"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/git.json",
+          "bytes": 104,
+          "sha256": "610e8f00e93c5ee0ec6325df1f0538021cc5e107636cff27ac8026ae73b3abd3"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/orchestrate-before-restart-fix.py",
+          "bytes": 22138,
+          "sha256": "cfb91b0c8806ca08e93636784e02ac2e311906e733b24fb222a8363304e3b27c"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/orchestrate-before-restart-fix.sha256",
+          "bytes": 100,
+          "sha256": "b9f61fdc45c5858f01499d448ed505dbaad4c69b860e77f30a1ed29b00ac119c"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/artifacts.json",
+          "bytes": 2779,
+          "sha256": "8a8b7a8d8989e35547bc22ce1bb1c86558bad30e23bc42a9c49c25ce57b2d049"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/fixture.json",
+          "bytes": 17768,
+          "sha256": "24ec8882a4a5c4af154c053e1072bf7eedd23da164106307244af14710050411"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/restored.before.json",
+          "bytes": 7677,
+          "sha256": "8ab83ba5b5c6e7c4f65c6b88b1d9300e6c523ef39c87980de752cd547310210c"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/restored.command.json",
+          "bytes": 710,
+          "sha256": "908109da860789a51e9c5d32392f3cc576e58ed06fd82091aa17b35e76b3e718"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/restored.exit.json",
+          "bytes": 36,
+          "sha256": "99aaa72465cc9b66b8c178564773d6a6207efbe4ee1f9735648c890bbf1dc57d"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/restored.process.json",
+          "bytes": 1063,
+          "sha256": "36f9a209b2e55b4004742cf1496d3ab994fc19db2f1f5b1c1e199f2c7287a472"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/restored.restart.request.json",
+          "bytes": 3304,
+          "sha256": "6780846c6edefdfd2b7ed38cd2a10f903177ae32d979b7cb05e549317268b914"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/restored.restart.response.json",
+          "bytes": 659,
+          "sha256": "1f0a443a29b0edd4878a798229d66948f3d6c15556464a56a6f35f66269a8fbc"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/restored.restart.stats.json",
+          "bytes": 7843,
+          "sha256": "ecb85c95c4e740cebc293c8e2d10d22b785505c8c67e77d2f9c9765cad15d928"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/restored.restart.summary.json",
+          "bytes": 1003,
+          "sha256": "f0e01981e74eb438857c9b0f96b5d0248ff3949201ff1cc1b5542c7c42bc5f72"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/restored.result.json",
+          "bytes": 2575,
+          "sha256": "22328e8d5de3dd109bbf7b40be176075898731d08da318a29bdffc02d81d7c47"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/restored.stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/restored.stdout",
+          "bytes": 837,
+          "sha256": "1ff000f221fb3fd12cf17e7fb49db9bfd3dc5bb4522904413d497bd1c14487b5"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/seed.before.json",
+          "bytes": 7677,
+          "sha256": "356a052ca6aed167e0b5267d41a8380e462547d22c4b1689626932cd3b7d59e7"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/seed.command.json",
+          "bytes": 1024,
+          "sha256": "9093118d87e0d7e442ec9fabf8bd09fecafec7d8e84996f91a6bb52f9b4d4617"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/seed.exit.json",
+          "bytes": 36,
+          "sha256": "7940ce5ed844e2accb250681c1457d948c05774e2926198814c867d399877b41"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/seed.process.json",
+          "bytes": 1063,
+          "sha256": "16d9e99e6fa87371bdbdf86c08430935befb3bca4b9eb313777c35753fd7950a"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/seed.result.json",
+          "bytes": 2466,
+          "sha256": "f765f97603bb3c8d05983bf9bc1de8699a4930c7f914b7ada57a05483c0b05fc"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/seed.seed.request.json",
+          "bytes": 2458,
+          "sha256": "6dd2deec4527e8deca540d6be8d8b93577b7c77bc1bf7458fc6e375c58031621"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/seed.seed.response.json",
+          "bytes": 658,
+          "sha256": "63042a375cbcb34427201c5224370c7c74c520953673d4eed4cf0dd76d223eef"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/seed.seed.stats.json",
+          "bytes": 7891,
+          "sha256": "152233ea10e7deb28f37afcacd1aaa4fd6f1e6b7dd622cb9f5711071defb790e"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/seed.seed.summary.json",
+          "bytes": 991,
+          "sha256": "fdf1a9972adb64acd16eb026bb8d77918b5cfedd68119340c6ca14525f57ac5d"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/seed.stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/seed.stdout",
+          "bytes": 829,
+          "sha256": "f1b456ab5a7a077fc29fb00bda25aced5a820f69b843bfc4a41ef5cf5c706504"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.append.request.json",
+          "bytes": 2740,
+          "sha256": "4772a4b4aa58dd6e027f4f4ea002ad63288970ea32f4a18f257cb5f786bb3209"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.append.response.json",
+          "bytes": 659,
+          "sha256": "84087f241a7c68927249e762c7d651f534be25d257e81ccdba885a1358ef7cbb"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.append.stats.json",
+          "bytes": 7840,
+          "sha256": "51390e5a536a03fa092c9eb6de439976b6ef09234a4e8daa07ab49e325a1e04e"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.append.summary.json",
+          "bytes": 943,
+          "sha256": "9f13e10e04d9b1d27b5c09af66f51ea422037783248978b6ec4e1db0af688adf"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.before.json",
+          "bytes": 7891,
+          "sha256": "5940701efe2bbf0827414628103b60902c25a01a7a1bb9c8bc50effe4da76fa2"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.command.json",
+          "bytes": 706,
+          "sha256": "6d222f58df5fb9fd64d7c6ce6cf6afd9fd493d55346710f78d9c5aa881921ef8"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.edit.request.json",
+          "bytes": 2740,
+          "sha256": "e873ef06a5e15f46658313c97e13c0003272eba4c3851cfe7c065d87ddfa75b6"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.edit.response.json",
+          "bytes": 659,
+          "sha256": "b539b9fb036b85b8c89a33821a28bf079475cb1de9c6a44a206f3500bb0f5329"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.edit.stats.json",
+          "bytes": 7843,
+          "sha256": "1b349842ba6215fbe6d2e9dc7130c49603d2442814bc237d82effcdc7811eea0"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.edit.summary.json",
+          "bytes": 944,
+          "sha256": "8a2f1614b9ec253b4a8d8e1a650151d24b8c431e1afa136e757a13a727bf58aa"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.exit.json",
+          "bytes": 36,
+          "sha256": "b7dfab17f99b9e3bc9fbece378bfeeaaddb60fb4979d2baf7e464ac45b322401"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.fork.request.json",
+          "bytes": 3022,
+          "sha256": "0d710bd1194df33a0eb1324650883164a247d9ab2fe2d74cf6e6978617643639"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.fork.response.json",
+          "bytes": 659,
+          "sha256": "c24ff3b912d21e1629f304cb76627e7d5b8498f9e13bde1e03d99361fd2e0da0"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.fork.stats.json",
+          "bytes": 7841,
+          "sha256": "bbf4ca2f1d7af13327a2ecae72ba4fd2c752043d9ceaabdbc75540b437a7e2ea"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.fork.summary.json",
+          "bytes": 942,
+          "sha256": "5d1d825dea74876966e479229324af8c59db60f43b27261aca2e8b93ce545aec"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.process.json",
+          "bytes": 1063,
+          "sha256": "16d9e99e6fa87371bdbdf86c08430935befb3bca4b9eb313777c35753fd7950a"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.result.json",
+          "bytes": 3560,
+          "sha256": "daf2c925bee1f92891c11f95590fd75954046b15cfbd43eeba2a9a53544731d1"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1/warm.stdout",
+          "bytes": 2355,
+          "sha256": "0448db55b9650ccb3272e583fcd55e76322c569ac18fe3ea292c489545fc7238"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-equations.json",
+          "bytes": 1548,
+          "sha256": "f651948b7c517c36d35245d31b9dcd9a8f7795db3b0543befdfba536c2711277"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-failed.json",
+          "bytes": 221,
+          "sha256": "67bbe357fb3b3cc59597aa963fc7e4ea9475e9d96ff6616893458377aeaf21fc"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-restored-server/failure.json",
+          "bytes": 187,
+          "sha256": "21b2dd5bbc1bcc37b39376d3305dfd03f7726fa617638b72c909175e1a59ccce"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-restored-server/guard-process.json",
+          "bytes": 50,
+          "sha256": "41a2d0c1d65483ef16d94dddbb534cc3cb5316c0abc3ff740b6dab1338426e25"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-restored-server/guard.jsonl",
+          "bytes": 19785,
+          "sha256": "638bdab016940e7420557f89c68920653c75c56819759a3700fae866adce2e28"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-restored-server/launch.json",
+          "bytes": 3610,
+          "sha256": "b3e3898dd9d21ac9185216e0b4efdbf57df025c756267ccd8d385bf882002be5"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-restored-server/payload.pid",
+          "bytes": 8,
+          "sha256": "913cb94b1db2cb51c23c6dfc2c42a0b9766cfd4cbd3504c8c633d7c6cf697663"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-restored-server/process.json",
+          "bytes": 1816,
+          "sha256": "e6d842acc3266d4109511fa405221ee034bfb5db2babe29645846630d6e76219"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-restored-server/ready-stats.json",
+          "bytes": 7677,
+          "sha256": "ca8eede731707ce73ebc17606762a9b42517608be8f4ca63d46c76276f4881c7"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-restored-server/server.log",
+          "bytes": 6465,
+          "sha256": "1ef92c35bdad95d47546e2b512468896a29bd8d8532c693e4e31efb29cc495eb"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-restored-server/stopped.json",
+          "bytes": 72,
+          "sha256": "ac497c37ad9f665c0e6f928aa6bd900f1c457a4156e769bbebc823f35bd58808"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-started.json",
+          "bytes": 55,
+          "sha256": "b72165c7760db5e5d1fb74bc7c0b94c3340af1e2bd52ed51f8c896bfc50955b7"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-warm-server/guard-process.json",
+          "bytes": 50,
+          "sha256": "2fb1d916b48fa10be34d87c2492ec4c1acbed1742c0dfab06173065f2df6b594"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-warm-server/guard.jsonl",
+          "bytes": 20387,
+          "sha256": "595079d62562b499f98dcd9cae5c528e80c92162f43ef82fef874411810b3440"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-warm-server/launch.json",
+          "bytes": 3602,
+          "sha256": "33015051ccdad452d659aa6baf4ffe1df8a97742c28e0df8e142dbe8496fd7fe"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-warm-server/payload.pid",
+          "bytes": 8,
+          "sha256": "b42e134a218c60297370b3b07681267870ab63f9caaa85fdeea3683561a9f161"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-warm-server/process.json",
+          "bytes": 1816,
+          "sha256": "cf369d1d7f728f7a6e4fdb73643d337acfb2d6e805e0f106bd864cdff73045ff"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-warm-server/ready-stats.json",
+          "bytes": 7677,
+          "sha256": "c35375e548114e7380e28d8403dfb27c21f3596fb2caf0c4a1f162b678a1d0aa"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-warm-server/server.log",
+          "bytes": 6802,
+          "sha256": "4fd95e817c5bf75201214e2e4d5cc3508dd8f338103584b8b45a5f9d1ee8dd06"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1-warm-server/stopped.json",
+          "bytes": 72,
+          "sha256": "e361a398b4e0370a9b3c2795ed7315f8bd9dda647ddd560ca0961248a4abd218"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/p1_equations.py",
+          "bytes": 1474,
+          "sha256": "0e8a8c3cd41db951a3ccc13a81d6909006505725b3addedf3646569ad0800e4d"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/pilot-workload.json",
+          "bytes": 39636,
+          "sha256": "ec1d274465f5e015f6b354c793e600518e9be06f5856316620f6cfe0776df434"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/restart-pilot-green.log",
+          "bytes": 115,
+          "sha256": "65bdfd7bd329ce1a1332cb4c87debefe340b8a42705cb8843110a73dd70e0b8c"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/restart-pilot-red.log",
+          "bytes": 1457,
+          "sha256": "57108b7cc86fac850f5c8943e4dd197c37c4bdb24f55ec2eb80ee14bf66caa07"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/restore-local-green.log",
+          "bytes": 120,
+          "sha256": "59e4c35705c5de16085f37559587da82702d9fddbdae21e8bce43b3ca36083a6"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/restore-local-red.log",
+          "bytes": 718,
+          "sha256": "4d1a684ee898ac6612dc160f4843020277342d89b83a157a7b38aa48a3be8a77"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/seed.json",
+          "bytes": 6543,
+          "sha256": "43375d086854cb4088921dc390f0b2ea8cb553a27f0d8c253d805b0664b6be0c"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/selection.json",
+          "bytes": 624,
+          "sha256": "04163c8205a67663c5dcaead377cc9e8e625c199180035fadc81d446571e5dc4"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/source.json",
+          "bytes": 41591,
+          "sha256": "21ce4bc501bba16974005f702e8d7dfd213101cd6b1439d304b252ce626919d0"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-06/workload.json",
+          "bytes": 46365,
+          "sha256": "e71288da73bdfd9a10bbdef3e60fe76814d936d416f0e67f44d5d61dce59aa82"
+        }
+      ],
+      "restore_diagnosis": {
+        "path": "scratch/v013/qwen-campaign-06/restore-diagnosis/comparison.json",
+        "bytes": 4392,
+        "sha256": "ca3b25eef3354c109edca276f34fac28b1489f1736dd27ce238cf17f32ba6b26"
+      }
+    }
+  ],
+  "raw_files": [
+    {
+      "path": "scratch/v013/qwen-campaign-07/artifacts.json",
+      "bytes": 2779,
+      "sha256": "8a8b7a8d8989e35547bc22ce1bb1c86558bad30e23bc42a9c49c25ce57b2d049"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/contract.json",
+      "bytes": 8156,
+      "sha256": "6c73c889f990a6542aa2eeb7e6f2d9b59ab1e3488fd5f553d95a79447ed51ac2"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/git.json",
+      "bytes": 104,
+      "sha256": "20ce259895ceae9f6f9655447819bd7d2987f03793ac3c73e414595d12d8acf0"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/artifacts.json",
+      "bytes": 2779,
+      "sha256": "8a8b7a8d8989e35547bc22ce1bb1c86558bad30e23bc42a9c49c25ce57b2d049"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.append.request.json",
+      "bytes": 2740,
+      "sha256": "4772a4b4aa58dd6e027f4f4ea002ad63288970ea32f4a18f257cb5f786bb3209"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.append.response.json",
+      "bytes": 658,
+      "sha256": "a734cc12dc618ee01290254964ae2ab490a6ee284055439c72457ee021518c5e"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.append.stats.json",
+      "bytes": 7816,
+      "sha256": "34b1129c62e9efaf3647b67d2925902d68edd55387ee4fd8c021d3eac40d3667"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.append.summary.json",
+      "bytes": 941,
+      "sha256": "07a28da51e318c72cef390ac14ced5315ec90d37ea334d308f77b586537895bf"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.before.json",
+      "bytes": 7654,
+      "sha256": "b658035c6ad10a70124440f1fc53796411774b6c377a090f690f9c9e958006e7"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.command.json",
+      "bytes": 706,
+      "sha256": "6e066a2fa170a565644bbf483663a5672f3347d949eb021ee7cfa2e847a20903"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.edit.request.json",
+      "bytes": 2740,
+      "sha256": "e873ef06a5e15f46658313c97e13c0003272eba4c3851cfe7c065d87ddfa75b6"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.edit.response.json",
+      "bytes": 658,
+      "sha256": "3fe91080bdc37574bbad1aae68d85a5348c021fa99f378784d0fe73a8ab11e01"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.edit.stats.json",
+      "bytes": 7816,
+      "sha256": "7caa664d4fe2e1da31a87a60a7906e8dae15f4cc23c8e9b7be28159861976ab4"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.edit.summary.json",
+      "bytes": 940,
+      "sha256": "e2e73801b84ed7cf00761fdf093e73d55897bf438e9e0571f7efdadf05ef250a"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.exit.json",
+      "bytes": 36,
+      "sha256": "aeb2e7480c0c5e2294155be02e5ddf4da4236d95e06901b6d6b9bc71274761de"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.fork.request.json",
+      "bytes": 3022,
+      "sha256": "0d710bd1194df33a0eb1324650883164a247d9ab2fe2d74cf6e6978617643639"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.fork.response.json",
+      "bytes": 658,
+      "sha256": "9df66a77a96ca386f01f4cba61942152014361d71a79d328b0305d1eb198cf00"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.fork.stats.json",
+      "bytes": 7816,
+      "sha256": "009d7d972eacc6643aa674dcf29a1d01d5e6d2cddbdc9177c29d97f1daaa2e3f"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.fork.summary.json",
+      "bytes": 939,
+      "sha256": "60f55a1a4821d8cd9ad8e5f0b40820d795682715c166a979be81035e32f84144"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.process.json",
+      "bytes": 830,
+      "sha256": "d8ee6e9fea12db4579e4c98b127dcd73c7942b362227e1ab871dd6c4fba7b5d8"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.restart.request.json",
+      "bytes": 3304,
+      "sha256": "6780846c6edefdfd2b7ed38cd2a10f903177ae32d979b7cb05e549317268b914"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.restart.response.json",
+      "bytes": 658,
+      "sha256": "384f45a9dc0b7e7591478344a801826af739b1cad839a0ff945f0831ee18c4bf"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.restart.stats.json",
+      "bytes": 7816,
+      "sha256": "c28e155a845ff46f0763286c1d7aef24b947a2a35943b1f2e87561eb8b52385d"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.restart.summary.json",
+      "bytes": 942,
+      "sha256": "7ddc105348442a4695bbc0775a919c71f718e0e099bef5ab5c5b2ad8897cbf50"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.result.json",
+      "bytes": 4425,
+      "sha256": "6445af7f465fc98c169c24abeb5a31bf3978ff0d8d675af5ad4232c3aee0cd72"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.seed.request.json",
+      "bytes": 2458,
+      "sha256": "6dd2deec4527e8deca540d6be8d8b93577b7c77bc1bf7458fc6e375c58031621"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.seed.response.json",
+      "bytes": 658,
+      "sha256": "bafcb551b6fe253c71fee369a7f709b60c3dcc281c9a4cb719d088d603d57ec8"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.seed.stats.json",
+      "bytes": 7816,
+      "sha256": "f2e7a3a79b6fe46bb33d43f5f0025d117ff1eb6c069ab9e77c1fdbf41dc7e897"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.seed.summary.json",
+      "bytes": 940,
+      "sha256": "db6381445e9d09605d7abfd0b6af2d1be7b67cca8d92afd730110b1c033ae872"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/cold.stdout",
+      "bytes": 3912,
+      "sha256": "8f6053f1f505873f3ef350645b93d4dea55daf9efba156283c3cfea662485d84"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/fixture.json",
+      "bytes": 17768,
+      "sha256": "24ec8882a4a5c4af154c053e1072bf7eedd23da164106307244af14710050411"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/restored.before.json",
+      "bytes": 7677,
+      "sha256": "fe952d5dbfa76027337951f954332ca382f94012352ae881e1964ab21b2c699b"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/restored.command.json",
+      "bytes": 710,
+      "sha256": "9d0dcd572cab15bde0595fe6073504a4b32495259ad4d96f4573597059a62ae7"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/restored.exit.json",
+      "bytes": 36,
+      "sha256": "9e9d924c6ec42ef794cf08d6e3197a9cef421fa6ea13f42767f670fcd3e1f08d"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/restored.process.json",
+      "bytes": 1063,
+      "sha256": "6a96c9afb8e0f1876a8ed87963375b7930b247a8bf32a4d7861d1efee9b29961"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/restored.restart.request.json",
+      "bytes": 3304,
+      "sha256": "6780846c6edefdfd2b7ed38cd2a10f903177ae32d979b7cb05e549317268b914"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/restored.restart.response.json",
+      "bytes": 659,
+      "sha256": "6f891cc7c828e343dbefab61b5a4b37f6d7e4082b2ad122e1e3527c7da7a3f20"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/restored.restart.stats.json",
+      "bytes": 7843,
+      "sha256": "650c18faa94e50194dc9c921558a158bd39aaef8bbd7680bf6b88eea512e6172"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/restored.restart.summary.json",
+      "bytes": 951,
+      "sha256": "91ba04cf958d59dba304409e716f28a2d6293c01554ee5c4b373815501e495db"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/restored.result.json",
+      "bytes": 2514,
+      "sha256": "6b1e4ac57dfb2c376564330ac1d2d3019d9f5b02e7f9f3129bd57128a5d4632e"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/restored.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/restored.stdout",
+      "bytes": 793,
+      "sha256": "a6625261056c2a1b92cc5e363fc2184ada879277d08fd78099276f3bd8d98d52"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/seed.before.json",
+      "bytes": 7682,
+      "sha256": "f2b0e6851d2ae124981e9610843e77f5bfba3af9f7f81566979a24e8a1c0eeba"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/seed.command.json",
+      "bytes": 1024,
+      "sha256": "99844c2f870e4452ab4c0e410d2bf0e8106ef953c5378adf97120ee7772b7213"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/seed.exit.json",
+      "bytes": 36,
+      "sha256": "74768f65c558651c702dba4d8d48f5bf1d4ef81c95f36ef7f3ea8ed739f86bc8"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/seed.process.json",
+      "bytes": 1063,
+      "sha256": "316a6d0449247095d632ff5d6d863580eba6608a9c4ae6a46b691278986adf48"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/seed.result.json",
+      "bytes": 2466,
+      "sha256": "2f8512c8c8134d81ef36b458addbefcd5255729ded3a66df0fc63f3b83f50ef4"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/seed.seed.request.json",
+      "bytes": 2458,
+      "sha256": "6dd2deec4527e8deca540d6be8d8b93577b7c77bc1bf7458fc6e375c58031621"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/seed.seed.response.json",
+      "bytes": 658,
+      "sha256": "629115dd9f459bd4c859d52e4f3fa8ded022de7e4d44da43e24923cd9f9707b4"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/seed.seed.stats.json",
+      "bytes": 7891,
+      "sha256": "0faddf7c8459346d979ed99d1c74a645e685475a5be1b24fcafe53df142fa3ec"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/seed.seed.summary.json",
+      "bytes": 991,
+      "sha256": "aa9daa1adeba1c37b26b52700665fc8a226cffd82a9776da2da7715f623ee8fc"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/seed.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/seed.stdout",
+      "bytes": 829,
+      "sha256": "367abf22116bb8463bef5ec4ef6ce3b89d389cd068a28cafbc68f958f5c411b0"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.append.request.json",
+      "bytes": 2740,
+      "sha256": "4772a4b4aa58dd6e027f4f4ea002ad63288970ea32f4a18f257cb5f786bb3209"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.append.response.json",
+      "bytes": 659,
+      "sha256": "4141d7aaa0e5e6fbaeeb10ffcb4cdb83fa5ae9dae04a585aeb283dead4e78f14"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.append.stats.json",
+      "bytes": 7840,
+      "sha256": "d6c59d36af6504611de8d9edcaab0466b9990bfc92c6711997492590ea1373a0"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.append.summary.json",
+      "bytes": 943,
+      "sha256": "bad7ccf1233b723b4d2e48c2ed813697597710e6eb593d677c8d6c1652c758d3"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.before.json",
+      "bytes": 7891,
+      "sha256": "b90a9590ee3ea0547f363303aae901d4320f41fab4c54ef3a48ff9c43d993099"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.command.json",
+      "bytes": 706,
+      "sha256": "c1bff76994f57d4aee547f3d1a67e0a8959d9e6b9f3ad94f932b633453fa7c99"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.edit.request.json",
+      "bytes": 2740,
+      "sha256": "e873ef06a5e15f46658313c97e13c0003272eba4c3851cfe7c065d87ddfa75b6"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.edit.response.json",
+      "bytes": 659,
+      "sha256": "0c7456a3874b53ad4b8fef4e5d58069d41b0d1826216524846464627c7f34473"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.edit.stats.json",
+      "bytes": 7843,
+      "sha256": "de58fde9c0b2977286ab05f411ca38e944dea332e57b70dca72e70b173855147"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.edit.summary.json",
+      "bytes": 943,
+      "sha256": "9a09c617732aaf260e74247f6826e4dbd72d6148c00c0c96cf3fd5a5067fb122"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.exit.json",
+      "bytes": 36,
+      "sha256": "136be43969f2d7e1cc6e2a38a1968947334346fdee75376cfbcf152bffedb916"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.fork.request.json",
+      "bytes": 3022,
+      "sha256": "0d710bd1194df33a0eb1324650883164a247d9ab2fe2d74cf6e6978617643639"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.fork.response.json",
+      "bytes": 659,
+      "sha256": "1e66b6d25121f14a7554536e6e71387a8aef9750f2e4a31107d063a3f9247185"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.fork.stats.json",
+      "bytes": 7841,
+      "sha256": "93209588df398d0589a49f8666463c7fe4d9c83a4b93dda5d3650e8ca0579f1c"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.fork.summary.json",
+      "bytes": 942,
+      "sha256": "ea8b22da626d14f955c02bf7cc7f65380c01ed027a8dc6f63af38575b7c03762"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.process.json",
+      "bytes": 1063,
+      "sha256": "316a6d0449247095d632ff5d6d863580eba6608a9c4ae6a46b691278986adf48"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.result.json",
+      "bytes": 3560,
+      "sha256": "01b763d293f9096de0b3afcb9f8d0ff3d07d6cd70cdd958e898d6f15ae2036e2"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1/warm.stdout",
+      "bytes": 2354,
+      "sha256": "a742243aa7adb49ca7d918c67f8d5b66ebfbe5ad558fbf58d5979dcb195cddce"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-cold-server/guard-process.json",
+      "bytes": 50,
+      "sha256": "a2382e5b6b4ab42ccea1fd529a2c8dff68c9d7e76908fa032a825016c1668728"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-cold-server/guard.jsonl",
+      "bytes": 21523,
+      "sha256": "5c23721f06dd40d5b962f425c70e878792109987b2a9a3edb9ac5f7dade7e4ab"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-cold-server/launch.json",
+      "bytes": 2996,
+      "sha256": "f19da07e52228692e57f2db89c064f7f85b83bb15a8df97134c5c1629bd5fbf6"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-cold-server/payload.pid",
+      "bytes": 8,
+      "sha256": "e469d43c18ceb3a27a96b864160ea07be8c5819fe56b9a8dad729eca4b61faad"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-cold-server/process.json",
+      "bytes": 1513,
+      "sha256": "4b2c602417cc36ec22e9445164dd04f528d6c1aae21d590fb3bb5955676c44b9"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-cold-server/ready-stats.json",
+      "bytes": 7654,
+      "sha256": "042fe9bbddf9dbf4b822b6bd2d3781e54035337289e1cac76402ba0861679772"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-cold-server/server.log",
+      "bytes": 6367,
+      "sha256": "9bcf521e56a5277a4a496bc6c11a9be56f7a529eca6612e4f516feb061213216"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-cold-server/stopped.json",
+      "bytes": 72,
+      "sha256": "cc8bc5c6753ee24430c6f187bb845a3611ff64c4acb86b7029cb8ae1a35fd19a"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-complete.json",
+      "bytes": 55,
+      "sha256": "56bcff1892b112d0882e47862266f800be39353d2affe83028dd8cdb54926de9"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-equations.json",
+      "bytes": 1548,
+      "sha256": "f651948b7c517c36d35245d31b9dcd9a8f7795db3b0543befdfba536c2711277"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-restored-server/guard-process.json",
+      "bytes": 50,
+      "sha256": "f764e67b14dfa6ee8da9d2c150c9e984c5b2e11f831fdfe28137da08f3735fe4"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-restored-server/guard.jsonl",
+      "bytes": 20445,
+      "sha256": "433ba40f0eee354e03168fab0e30332ba6cdd7f4a6dd646782993de7e20338f6"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-restored-server/launch.json",
+      "bytes": 3610,
+      "sha256": "761ce1384a77afb6b905aa7e2f02d222b4ecc8e7f80a31b42aaeba6eab2033bb"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-restored-server/payload.pid",
+      "bytes": 8,
+      "sha256": "7229af584ee1240f945b35ee706611927ecd2cc373daf8311677f03f7d8b91e8"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-restored-server/process.json",
+      "bytes": 1816,
+      "sha256": "b3e248b9f92b02f792141ebfeac29680577ca9a561c1053f48828c9e59834975"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-restored-server/ready-stats.json",
+      "bytes": 7677,
+      "sha256": "b3cb63996a316fb0812c706f6f76daa252fee12c45911c25de8c96e744fb5dba"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-restored-server/server.log",
+      "bytes": 6516,
+      "sha256": "9f5846a7f496fb24fc79ff1e2cb36892fd5695e7032d20f6fd146d34720072d9"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-restored-server/stopped.json",
+      "bytes": 72,
+      "sha256": "8570f62d7b31f5f5b20d0308a34b25adbef51eaae321a4cb7ec12b94d68230e0"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-started.json",
+      "bytes": 55,
+      "sha256": "2da232b6552d97b29acf77ce993706a165e9ccc3ef23a3e9244b1c6cceec94e1"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-warm-server/guard-process.json",
+      "bytes": 50,
+      "sha256": "642108fb05b4c6b2c8a6b9948c818565a724f4ed49f46927e78f9bb6748191a9"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-warm-server/guard.jsonl",
+      "bytes": 19913,
+      "sha256": "8961b9435b7cd8b632660b1b6f439e115c5a2c2509fa85989c937b4d6f9c3793"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-warm-server/launch.json",
+      "bytes": 3602,
+      "sha256": "1bcc841847f3f561eb190510af2b7e43a24132c1bd23a7fd59e36bc5976fd5bb"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-warm-server/payload.pid",
+      "bytes": 8,
+      "sha256": "b0b59b45582c5bfa64b786e12fc4fa4d70805abda3811cd57142ca95dec8ce50"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-warm-server/process.json",
+      "bytes": 1816,
+      "sha256": "c48de23e852c72f8f91df5aa08f8b51353e5ffff9035852c7f8962b260f805a2"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-warm-server/ready-stats.json",
+      "bytes": 7682,
+      "sha256": "e0fb1655e4bfdf28a34d335081f326be573ae3c27feb6b829db662f400984bd3"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-warm-server/server.log",
+      "bytes": 6705,
+      "sha256": "3b6176d4b3e6578593f9469a43a7241c86aab6353f1a62325089ac096096fb41"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1-warm-server/stopped.json",
+      "bytes": 72,
+      "sha256": "d651ab65245a09cc9aa3be8723679563244ae9c2fbf9cceb871dc412f766ab8d"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1_equations.py",
+      "bytes": 1464,
+      "sha256": "1de25537fa551f4393a452cb9219b525807be4d3d6a7b6696634462a178a3bf3"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/p1_reuse_local.py",
+      "bytes": 18846,
+      "sha256": "9f9d83f6af51577076b059e7a78842b128a0c320ba9be5b5a1aa7997775f339b"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/pilot-seed.json",
+      "bytes": 3924,
+      "sha256": "5516850148afda236a28fc62cdd4349119cfa6ac2c885199465811fc5fcb6a56"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/pilot-workload.json",
+      "bytes": 43752,
+      "sha256": "503de1fed4ac185cf3b99581e6c279c60d4577a1edd01382969b44ae6ff0550f"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/seed.json",
+      "bytes": 6543,
+      "sha256": "43375d086854cb4088921dc390f0b2ea8cb553a27f0d8c253d805b0664b6be0c"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/selection.json",
+      "bytes": 624,
+      "sha256": "6a70a8725b4882b559d0f0caaa36aa3c0aa6630c2e043d9d740a2fffb7dc598a"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/source.json",
+      "bytes": 41591,
+      "sha256": "21ce4bc501bba16974005f702e8d7dfd213101cd6b1439d304b252ce626919d0"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-07/workload.json",
+      "bytes": 46365,
+      "sha256": "a6e23105132218dfde4da9a41416f40c4ee2fe3ade981aa861572e78a44299e7"
+    }
+  ],
+  "publisher": {
+    "path": "scratch/v013/write-qwen-p1-proof.py",
+    "bytes": 23763,
+    "sha256": "1865af347ca9b2845b0cc30f17aee9d9045fa23bd41d41983c1114ff8ed3e4cb"
+  },
+  "limits": [
+    "Short equation/text reuse correctness only; no full-context or media qualification.",
+    "Every successful equation reports actual MTPOn2; no plain-vs-MTP parity or speedup claim.",
+    "Pilot and P4 profile qualification remain open; this receipt does not qualify a performance profile.",
+    "Cold requests preserve exact bodies, assistant messages, finish reasons and completion counts.",
+    "Three owned workers stopped cleanly. Guard minima include all recorded observations; samples are not continuous peak measurements."
+  ]
+}
