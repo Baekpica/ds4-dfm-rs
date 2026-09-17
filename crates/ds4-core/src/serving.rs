@@ -373,6 +373,7 @@ pub enum ReuseMiss {
     RenderedPrefix,
     BelowThreshold,
     PayloadMismatch,
+    StateReplay,
 }
 
 impl ReuseMiss {
@@ -383,6 +384,7 @@ impl ReuseMiss {
             Self::RenderedPrefix => "rendered prefix changed",
             Self::BelowThreshold => "below minimum token threshold",
             Self::PayloadMismatch => "payload family/layout mismatch",
+            Self::StateReplay => "session state requires prefix replay",
         }
     }
 }

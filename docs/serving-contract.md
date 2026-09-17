@@ -134,6 +134,10 @@ decision that produced it, and is absent when nothing was refused:
   payload cannot be read back — a truncated or corrupt record is refused
   by its payload, whatever wrote it.
 - `no checkpoint at or below LCP`
+- `session state requires prefix replay`. Cached tokens count only the
+  prefix preserved by the native sync plan. Dots3 MTP replays an unaligned
+  append from zero (`cold`); plain Dots3 replays its final partial chunk
+  (`partial`). An identical prompt or aligned append retains its full hit.
 
 ## Capability table
 
