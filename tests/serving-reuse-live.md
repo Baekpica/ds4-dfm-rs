@@ -9,6 +9,23 @@ Arithmetic correctness and byte-exact warm/cold output comparison are separate
 checks. A wrong answer on both paths fails arithmetic even when parity passes.
 Timings are functional observations, not a performance qualification.
 
+The `literal-arithmetic-v2` answer contract declares four accepted strings per
+case in `fixtures/serving-reuse.json`: the plain number, that number with a
+period, and the matching literal equation with or without a final period.
+Only outer whitespace is ignored for arithmetic acceptance. Operators, operands,
+internal spaces and all other characters must match a declared string; there is
+no numeric extraction or substring match. The accepted forms are copied into
+the frozen case and its summary receipt. Reasoning, tool calls and non-`stop`
+completion remain failures.
+
+This gate qualifies these arithmetic answers and cache parity, not number-only
+format following. The prompts still request just the number, so an accepted
+equation can violate that formatting instruction. Earlier number-only runs
+remain failures under their original contract: `2 + 2 = 4.` must not retroactively
+turn such a formatting failure into a pass. Start a new evidence directory;
+v2 refuses to resume an older frozen fixture. Never add answer forms after
+seeing output within a campaign.
+
 | Profile | Artifact scope | Warm reuse | MTP |
 |---|---|---|---|
 | `qwen` | Qwen3.8 Q5 main plus the selected BF16 or FP8 SSD-PLE sidecars | partial | explicitly off, or separately on with draft 2 |
@@ -73,13 +90,13 @@ python3 tests/serving_reuse_live.py cold \
   --url "$URL" --pid "$COLD_PID" --output "$OUT" --artifact-manifest "$ARTIFACTS"
 ```
 
-| Request | Expected answer | Warm trace/cache |
-|---|---:|---|
-| seed: 2 + 2 | 4 | cold, zero cached |
-| append: 4 + 1 after actual seed reply | 5 | exact/fork, positive proper prefix |
-| edit: replace second user turn with 4 + 2 | 6 | partial for Qwen/Solar/Motif; exact/fork for DeepSeek |
-| fork: extend the retained append branch with 5 + 3 | 8 | exact/fork, positive proper prefix |
-| restart: extend actual fork reply with 8 + 1 | 9 | exact/fork as first generation after restart |
+| Request | Accepted literal forms (after outer whitespace trim) | Warm trace/cache |
+|---|---|---|
+| seed: 2 + 2 | `4`, `4.`, `2 + 2 = 4`, `2 + 2 = 4.` | cold, zero cached |
+| append: 4 + 1 after actual seed reply | `5`, `5.`, `4 + 1 = 5`, `4 + 1 = 5.` | exact/fork, positive proper prefix |
+| edit: replace second user turn with 4 + 2 | `6`, `6.`, `4 + 2 = 6`, `4 + 2 = 6.` | partial for Qwen/Solar/Motif; exact/fork for DeepSeek |
+| fork: extend the retained append branch with 5 + 3 | `8`, `8.`, `5 + 3 = 8`, `5 + 3 = 8.` | exact/fork, positive proper prefix |
+| restart: extend actual fork reply with 8 + 1 | `9`, `9.`, `8 + 1 = 9`, `8 + 1 = 9.` | exact/fork as first generation after restart |
 
 The warm phase must observe at least one actual `fork`. A later branch can
 reuse its still-resident parent with `exact`; the scheduler need not copy a
@@ -88,6 +105,7 @@ bank again for that request.
 Every cold request uses the identical saved body, requires zero cached tokens
 and `cold` trace, and compares the full assistant message, finish reason and
 completion-token count against its matching seed/warm/restored response.
+Two different accepted forms still fail this byte-exact comparison.
 The run also checks effective context, bank count, chunk, MTP and disk policy,
 request lane/MTP/reuse settings, actual speculation and absence of fallback.
 Both scheduler chunks must equal the declared native chunk.

@@ -97,13 +97,14 @@ def plan_errors(config, phase, plan):
     return errors
 
 
-def inspect_case(config, phase, name, expected_answer, response, stats, reference=None):
+def inspect_case(config, phase, name, case, response, stats, reference=None):
     errors = []
     choice = response["choices"][0]
     message = choice["message"]
     text = message.get("content")
-    if not isinstance(text, str) or text.strip() != str(expected_answer):
-        errors.append(f"arithmetic: {text!r} != {expected_answer}")
+    # Compare only the frozen literal forms; never extract a number from prose.
+    if not isinstance(text, str) or text.strip() not in case["accepted_forms"]:
+        errors.append(f"arithmetic answer form: {text!r} not in {case['accepted_forms']!r}")
     if message.get("reasoning_content") or message.get("tool_calls"):
         errors.append("fixture requires plain visible output without reasoning/tools")
     if choice.get("finish_reason") != "stop":
@@ -162,12 +163,13 @@ def run_case(args, config, name, case, previous):
     if args.phase == "cold":
         phase = reference_phase(name)
         reference = read_json(args.output / f"{phase}.{name}.response.json")
-    errors = inspect_case(config, args.phase, name, case["answer"], response, stats, reference)
+    errors = inspect_case(config, args.phase, name, case, response, stats, reference)
     errors.extend(plan_errors(config, args.phase, stats.get("serving", {})))
     if route_count(stats) != route_count(previous) + 1:
         errors.append("route count changed by other than one; concurrent traffic invalidates this trace")
     summary = {"phase": args.phase, "case": name, "seconds": elapsed,
                "configured": config, "expected_answer": case["answer"],
+               "accepted_forms": case["accepted_forms"],
                "message": response["choices"][0]["message"], "usage": response["usage"],
                "trace": stats.get("last_request"), "errors": errors,
                "passed": not errors}
@@ -220,8 +222,10 @@ def main():
         body = {"model": args.model, "temperature": 0, "seed": 1, "max_tokens": 32,
                 "reasoning_effort": "none",
                 "messages": [{"role": "user", "content": padding + templates["seed"]["user"]}]}
-        cases = {"seed": {"body": body, "answer": templates["seed"]["answer"]}}
-        fixture = {"schema": "serving-reuse-live-v1", "config": config, "templates": templates,
+        cases = {"seed": {"body": body, "answer": templates["seed"]["answer"],
+                          "accepted_forms": templates["seed"]["accepted_forms"]}}
+        fixture = {"schema": "serving-reuse-live-v2", "answer_contract": templates["answer_contract"],
+                   "config": config, "templates": templates,
                    "source_fixture_sha256": digest(FIXTURE), "cases": cases}
         (args.output / "artifacts.json").write_bytes(args.artifact_manifest.read_bytes())
     else:
@@ -230,6 +234,9 @@ def main():
             "expect_speculation", "lane")), "later phases use the frozen seed configuration")
         verify_fixture(args.output, args.phase)
         fixture = read_json(fixture_path)
+        require(fixture.get("schema") == "serving-reuse-live-v2"
+                and fixture.get("answer_contract") == "literal-arithmetic-v2",
+                "answer-form contract changed; start a new evidence directory")
         config, templates, cases = fixture["config"], fixture["templates"], fixture["cases"]
         seed = read_json(args.output / "seed.process.json")
         require((fingerprint(process) == fingerprint(seed)) == (args.phase == "warm"),
@@ -259,11 +266,13 @@ def main():
         if args.phase == "seed":
             for follow in ("append", "edit"):
                 cases[follow] = {"body": follow_body(cases[name]["body"], response, templates[follow]["user"]),
-                                 "answer": templates[follow]["answer"]}
+                                 "answer": templates[follow]["answer"],
+                                 "accepted_forms": templates[follow]["accepted_forms"]}
         elif args.phase == "warm" and name in ("append", "fork"):
             follow = "fork" if name == "append" else "restart"
             cases[follow] = {"body": follow_body(cases[name]["body"], response, templates[follow]["user"]),
-                             "answer": templates[follow]["answer"]}
+                             "answer": templates[follow]["answer"],
+                             "accepted_forms": templates[follow]["accepted_forms"]}
         write_json(fixture_path, fixture)
     # A later branch can extend a parent that is still in its original bank.
     # Require a real bank copy somewhere in this phase, without prescribing
@@ -272,7 +281,7 @@ def main():
         all_errors.append("warm: no bank fork observed")
     require(fingerprint(process_identity(args.pid)) == fingerprint(process), "server changed during phase")
     receipt = {"passed": not all_errors, "errors": all_errors, "fixture_sha256": digest(fixture_path),
-               "process": process, "files": []}
+               "process": process, "answer_contract": fixture["answer_contract"], "files": []}
     for path in sorted(args.output.glob(f"{args.phase}.*")):
         receipt["files"].append({"path": path.name, "sha256": digest(path)})
     write_json(args.output / f"{args.phase}.result.json", receipt)

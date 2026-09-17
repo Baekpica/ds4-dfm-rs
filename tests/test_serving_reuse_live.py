@@ -17,6 +17,10 @@ class ReuseRunnerTests(unittest.TestCase):
                 "expect_speculation": False, "mtp_draft": None,
                 "lane": "continuous", "padding_lines": 64}
 
+    def case(self, name):
+        template = gate.read_json(gate.FIXTURE)[name]
+        return {key: template[key] for key in ("answer", "accepted_forms")}
+
     def response(self, text="5", cached=300):
         return {"choices": [{"message": {"role": "assistant", "content": text},
                              "finish_reason": "stop"}],
@@ -27,6 +31,73 @@ class ReuseRunnerTests(unittest.TestCase):
         return {"last_request": {"effective_lane": "continuous", "reuse_kind": kind,
                                  "speculation_active": False, "fallback_reason": None}}
 
+    def test_all_declared_literal_answer_forms(self):
+        forms = {
+            "seed": (4, "2 + 2"), "append": (5, "4 + 1"),
+            "edit": (6, "4 + 2"), "fork": (8, "5 + 3"),
+            "restart": (9, "8 + 1"),
+        }
+        for name, (answer, expression) in forms.items():
+            accepted = [str(answer), f"{answer}.", f"{expression} = {answer}",
+                        f"{expression} = {answer}."]
+            case = {"answer": answer, "accepted_forms": accepted}
+            self.assertEqual(self.case(name), case)
+            for text in accepted:
+                with self.subTest(name=name, text=text):
+                    phase = "seed" if name == "seed" else "warm"
+                    kind = "cold" if name == "seed" else "partial" if name == "edit" else "fork"
+                    errors = gate.inspect_case(self.config(), phase, name, case,
+                                               self.response(text, 0 if name == "seed" else 300),
+                                               self.stats(kind))
+                    self.assertEqual(errors, [])
+
+    def test_literal_equation_rejects_wrong_operands_result_and_prose(self):
+        case = {"answer": 4, "accepted_forms": ["4", "4.", "2 + 2 = 4", "2 + 2 = 4."]}
+        for text in ["5", "2 + 2 = 5.", "1 + 3 = 4.", "3 + 1 = 4.",
+                     "The answer is 4.", "2 + 2 = 4. Done.", "2+2=4", "4.0", "4!"]:
+            with self.subTest(text=text):
+                errors = gate.inspect_case(self.config(), "seed", "seed", case,
+                                           self.response(text, 0), self.stats("cold"))
+                self.assertTrue(any("arithmetic" in error for error in errors), errors)
+
+    def test_equivalent_accepted_forms_still_require_cold_byte_parity(self):
+        case = {"answer": 5, "accepted_forms": ["5", "5.", "4 + 1 = 5", "4 + 1 = 5."]}
+        errors = gate.inspect_case(self.config(), "cold", "append", case,
+                                   self.response("4 + 1 = 5.", 0), self.stats("cold"),
+                                   self.response("5"))
+        self.assertFalse(any("arithmetic" in error for error in errors), errors)
+        self.assertTrue(any("cold comparison" in error for error in errors), errors)
+
+    def test_literal_forms_keep_reasoning_tools_and_finish_strict(self):
+        for field, value in [("reasoning_content", "explanation"),
+                             ("tool_calls", [{"id": "tool"}]), ("finish_reason", "length")]:
+            with self.subTest(field=field):
+                response = self.response("2 + 2 = 4.", 0)
+                if field == "finish_reason":
+                    response["choices"][0][field] = value
+                else:
+                    response["choices"][0]["message"][field] = value
+                errors = gate.inspect_case(self.config(), "seed", "seed", self.case("seed"),
+                                           response, self.stats("cold"))
+                self.assertTrue(errors)
+                self.assertFalse(any("arithmetic" in error for error in errors), errors)
+
+    def test_old_answer_contract_is_refused_before_http(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            fixture = output / "fixture.json"
+            gate.write_json(fixture, {"schema": "serving-reuse-live-v1"})
+            gate.write_json(output / "seed.result.json", {"fixture_sha256": gate.digest(fixture)})
+            manifest = output / "artifacts.json"
+            manifest.write_text('{"synthetic": true}')
+            argv = ["runner", "warm", "--url", "http://127.0.0.1:1", "--pid", "200",
+                    "--output", str(output), "--artifact-manifest", str(manifest)]
+            with patch("sys.argv", argv), patch.object(gate, "process_identity", return_value={}), \
+                    patch.object(gate, "request") as request:
+                with self.assertRaisesRegex(RuntimeError, "answer-form contract changed"):
+                    gate.main()
+                request.assert_not_called()
+
     def test_history_keeps_actual_whitespace(self):
         body = {"model": "x", "messages": [{"role": "user", "content": "2+2"}]}
         reply = self.response(" \n4\n")
@@ -36,7 +107,7 @@ class ReuseRunnerTests(unittest.TestCase):
 
     def test_math_failure_is_not_cache_parity(self):
         response = self.response("4")
-        errors = gate.inspect_case(self.config(), "warm", "append", 5,
+        errors = gate.inspect_case(self.config(), "warm", "append", self.case("append"),
                                    response, self.stats(), response)
         self.assertTrue(any("arithmetic" in error for error in errors), errors)
         self.assertFalse(any("cold comparison" in error for error in errors), errors)
@@ -46,25 +117,25 @@ class ReuseRunnerTests(unittest.TestCase):
                                   ("motif", "partial", True), ("deepseek", "fork", True),
                                   ("deepseek", "partial", False)]:
             with self.subTest(family=family, kind=kind):
-                errors = gate.inspect_case(self.config(family), "warm", "edit", 6,
+                errors = gate.inspect_case(self.config(family), "warm", "edit", self.case("edit"),
                                            self.response("6"), self.stats(kind))
                 self.assertEqual(not errors, okay, errors)
 
     def test_cold_requires_zero_cache_and_exact_output(self):
         warm = self.response("5")
         cold = self.response(" 5", 0)
-        errors = gate.inspect_case(self.config(), "cold", "append", 5,
+        errors = gate.inspect_case(self.config(), "cold", "append", self.case("append"),
                                    cold, self.stats("cold"), warm)
         self.assertTrue(any("cold comparison" in error for error in errors), errors)
         cold = self.response("5", 2)
-        errors = gate.inspect_case(self.config(), "cold", "append", 5,
+        errors = gate.inspect_case(self.config(), "cold", "append", self.case("append"),
                                    cold, self.stats("cold"), warm)
         self.assertTrue(any("cached" in error for error in errors), errors)
 
     def test_declared_mtp_activity_is_checked(self):
         config = self.config()
         config.update(mtp_mode="on", expect_speculation=True, mtp_draft=2)
-        errors = gate.inspect_case(config, "warm", "fork", 8,
+        errors = gate.inspect_case(config, "warm", "fork", self.case("fork"),
                                    self.response("8"), self.stats())
         self.assertTrue(any("speculation" in error for error in errors), errors)
 
@@ -119,10 +190,13 @@ class ReuseRunnerTests(unittest.TestCase):
     def test_all_four_phases_preserve_fixture_and_compare(self):
         self.run_four_phases(fork_on_append=True)
 
+    def test_all_phases_record_literal_forms_and_preserve_equation_bytes(self):
+        self.run_four_phases(fork_on_append=True, equations=True)
+
     def test_warm_requires_an_observed_bank_fork(self):
         self.run_four_phases(fork_on_append=False)
 
-    def run_four_phases(self, fork_on_append):
+    def run_four_phases(self, fork_on_append, equations=False):
         with TemporaryDirectory() as directory:
             output = Path(directory) / "evidence"
             manifest = Path(directory) / "artifacts.json"
@@ -151,14 +225,15 @@ class ReuseRunnerTests(unittest.TestCase):
                     return stats()
                 state["count"] += 1
                 question = body["messages"][-1]["content"]
-                answer = next(n for expression, n in [("2 + 2", 4), ("4 + 1", 5),
+                expression, answer = next((expression, n) for expression, n in [("2 + 2", 4), ("4 + 1", 5),
                               ("4 + 2", 6), ("5 + 3", 8), ("8 + 1", 9)] if expression in question)
                 state["kind"] = ("cold" if state["phase"] in ("seed", "cold")
                                  else "partial" if answer == 6
                                  else "fork" if answer == 5 and fork_on_append
                                  else "exact")
                 cached = 0 if state["kind"] == "cold" else 300
-                return self.response(f" \n{answer}\n", cached)
+                text = f"{expression} = {answer}." if equations else str(answer)
+                return self.response(f" \n{text}\n", cached)
 
             common = ["--url", "http://127.0.0.1:1", "--output", str(output),
                       "--artifact-manifest", str(manifest)]
@@ -182,7 +257,14 @@ class ReuseRunnerTests(unittest.TestCase):
                     self.assertEqual(status, 0, phase)
                     self.assertTrue(json.loads((output / f"{phase}.result.json").read_text())["passed"])
             fixture = json.loads((output / "fixture.json").read_text())
-            self.assertEqual(fixture["cases"]["append"]["body"]["messages"][1]["content"], " \n4\n")
+            seed_text = " \n2 + 2 = 4.\n" if equations else " \n4\n"
+            self.assertEqual(fixture["cases"]["append"]["body"]["messages"][1]["content"], seed_text)
+            self.assertEqual(fixture["answer_contract"], "literal-arithmetic-v2")
+            for name, case in fixture["cases"].items():
+                self.assertEqual(case["accepted_forms"], self.case(name)["accepted_forms"])
+                phase = gate.reference_phase(name)
+                receipt = gate.read_json(output / f"{phase}.{name}.summary.json")
+                self.assertEqual(receipt["accepted_forms"], case["accepted_forms"])
             self.assertEqual(len(fixture["cases"]["restart"]["body"]["messages"]), 7)
 
 
