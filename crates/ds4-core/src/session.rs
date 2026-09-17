@@ -330,10 +330,18 @@ impl SessionLedger {
         let can_extend = self.starts_with_checkpoint(prompt) && solar_ok;
         if can_extend {
             let mut start = self.pos();
-            if self.family == ModelFamily::Dots3Note && start > 0 && start < plen && self.prefill_cap > 0 {
+            if self.family == ModelFamily::Dots3Note
+                && start > 0
+                && start < plen
+                && self.prefill_cap > 0
+            {
                 let tail = (start as u32) % self.prefill_cap;
                 if tail != 0 {
-                    start = if self.dots3_mtp { 0 } else { start - tail as i32 };
+                    start = if self.dots3_mtp {
+                        0
+                    } else {
+                        start - tail as i32
+                    };
                 }
             }
             return SyncPlan {
@@ -417,7 +425,11 @@ impl SessionLedger {
         }
         // Recurrent state and dots3's rolling caches cannot supply logits at
         // an arbitrary truncated frontier. The next sync replays the prefix.
-        if matches!(self.family, ModelFamily::Step37 | ModelFamily::Ling3Vl | ModelFamily::Dots3Note) && pos != old {
+        if matches!(
+            self.family,
+            ModelFamily::Step37 | ModelFamily::Ling3Vl | ModelFamily::Dots3Note
+        ) && pos != old
+        {
             self.valid = false;
         }
         RewindResult {

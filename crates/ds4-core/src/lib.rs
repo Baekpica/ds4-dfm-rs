@@ -2926,7 +2926,10 @@ mod tests {
             assert_eq!(session.host.valid, first == -1);
             assert_eq!(session.generation(), session.native_generation());
             assert_eq!(session.generation(), if first == -1 { 1 } else { 2 });
-            assert_eq!(session.host.tokens(), if first == -1 { &[1, 2, 3][..] } else { &[] });
+            assert_eq!(
+                session.host.tokens(),
+                if first == -1 { &[1, 2, 3][..] } else { &[] }
+            );
         }
     }
 
