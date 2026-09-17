@@ -1157,7 +1157,16 @@ impl ResolvedPlan {
         !self.has_errors()
     }
 
-    /// The operator asked for the bank lane by naming a width. Hosts must
+    /// Serial-only speculation must bypass native bank fitting and routing.
+    pub fn uses_serial_mtp(&self) -> bool {
+        self.effective.mtp_mode != MtpMode::Off
+            && self
+                .caps
+                .is_some_and(|caps| caps.spec_lane == SpecLane::Serial)
+    }
+
+    /// The operator asked for the bank lane by naming a width, unless the
+    /// resolved MTP mode requires a serial session. Hosts must
     /// adopt this, not only the published env — a config captured before
     /// resolution keeps its own legacy `DS4_SERVER_CONTINUOUS`. `auto`
     /// expresses no preference, so it leaves that switch alone: the README
@@ -1166,7 +1175,8 @@ impl ResolvedPlan {
         // The legacy switch and the width are orthogonal: `--max-seqs N`
         // sizes the banks the static lane coalesces over, it does not ask
         // for continuous routing the switch turned off.
-        if self.requested.lane == LaneMode::Serial
+        if self.uses_serial_mtp()
+            || self.requested.lane == LaneMode::Serial
             || self.requested.backend != Backend::Cuda
             || self.requested.max_seqs == MaxSeqs::Off
         {
@@ -1203,7 +1213,9 @@ impl ResolvedPlan {
                 out.push(("DS4_SERVER_FORK_PARTIAL".into(), "1".into()));
             }
         }
-        if self.wants_bank_lane() {
+        if self.uses_serial_mtp() {
+            out.push(("DS4_SERVER_CONTINUOUS".into(), "0".into()));
+        } else if self.wants_bank_lane() {
             out.push(("DS4_SERVER_CONTINUOUS".into(), "1".into()));
         }
         // 0/1 so a later fitted-down plan can retract. Step width 1 is
@@ -2987,6 +2999,60 @@ mod tests {
             .env_overrides()
             .iter()
             .any(|(k, v)| k == "DS4_DOTS3_MTP" && v == "0"));
+    }
+
+    #[test]
+    fn dots3_mtp_routes_serial() {
+        for max_seqs in [MaxSeqs::Auto, MaxSeqs::Fixed(1)] {
+            let req = ServingRequest {
+                max_seqs,
+                mtp_mode: MtpMode::On,
+                ..ServingRequest::default()
+            };
+            let p = plan(req, ModelFamily::Dots3Note, Variant::Dots3NotePrev);
+            assert!(!p.has_errors(), "{:?}", p.issues);
+            assert_eq!(p.effective.mtp_mode, MtpMode::On);
+            assert_eq!(p.effective.max_seqs, 1);
+            assert!(p.uses_serial_mtp());
+            assert!(!p.wants_bank_lane(), "{max_seqs:?}");
+            let env = p.env_overrides();
+            assert!(env.iter().any(|(k, v)| k == "DS4_DOTS3_BATCH" && v == "0"));
+            assert!(
+                env.iter()
+                    .any(|(k, v)| k == "DS4_SERVER_CONTINUOUS" && v == "0"),
+                "serial MTP must disable inherited continuous routing: {max_seqs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bank_mtp_keeps_routing() {
+        for (family, variant, width, sidecar) in [
+            (ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext, 1, None),
+            (ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext, 2, None),
+            (
+                ModelFamily::Step37,
+                Variant::Step37Flash,
+                2,
+                Some("step-mtp.gguf"),
+            ),
+        ] {
+            let req = ServingRequest {
+                max_seqs: MaxSeqs::Fixed(width),
+                mtp_mode: MtpMode::On,
+                mtp_path: sidecar.map(str::to_owned),
+                ..ServingRequest::default()
+            };
+            let p = plan(req, family, variant);
+            assert!(!p.has_errors(), "{:?}", p.issues);
+            assert_eq!(p.effective.mtp_mode, MtpMode::On);
+            assert!(!p.uses_serial_mtp());
+            assert!(p.wants_bank_lane());
+            assert!(p
+                .env_overrides()
+                .iter()
+                .any(|(k, v)| k == "DS4_SERVER_CONTINUOUS" && v == "1"));
+        }
     }
 
     #[test]

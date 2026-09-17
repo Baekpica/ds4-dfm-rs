@@ -338,7 +338,7 @@ fn main() {
             model_options.push(ModelOpenOption::MtpDraftTokens(draft));
         }
     }
-    let cont_width = if serve_req.max_seqs == MaxSeqs::Off {
+    let cont_width = if serve_req.max_seqs == MaxSeqs::Off || plan.uses_serial_mtp() {
         0
     } else {
         plan.effective.max_seqs as i32

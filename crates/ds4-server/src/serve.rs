@@ -202,10 +202,13 @@ impl ServerConfig {
     /// Take the resolved plan into the captured config. The config reads its
     /// own `DS4_SERVER_*` environment before the plan exists, so publishing
     /// env alone leaves a legacy `DS4_SERVER_CONTINUOUS=0` routing every
-    /// request away from a lane the plan asked for and allocated.
+    /// request away from a lane the plan asked for and allocated. Serial-only
+    /// speculation must also retract an inherited continuous routing flag.
     pub fn adopt_plan(&mut self, plan: &ds4_core::ResolvedPlan) {
         self.mem_floor_gb = plan.effective.mem_floor_gb;
-        if plan.wants_bank_lane() {
+        if plan.uses_serial_mtp() {
+            self.continuous = false;
+        } else if plan.wants_bank_lane() {
             self.continuous = true;
         }
         self.serving_plan = Some(plan.clone());
@@ -2729,6 +2732,37 @@ mod owner_tests {
         cfg.continuous = false;
         cfg.adopt_plan(&plan);
         assert!(!cfg.continuous);
+    }
+
+    #[test]
+    fn dots3_mtp_retracts_bank_route() {
+        for max_seqs in [ds4_core::MaxSeqs::Auto, ds4_core::MaxSeqs::Fixed(1)] {
+            let req = ds4_core::ServingRequest {
+                max_seqs,
+                mtp_mode: ds4_core::MtpMode::On,
+                ..ds4_core::ServingRequest::default()
+            };
+            let plan = ds4_core::resolve_plan(
+                &req,
+                Some(ds4_core::serving_caps(
+                    ds4_core::ModelFamily::Dots3Note,
+                    ds4_core::Variant::Dots3NotePrev,
+                )),
+                &ds4_core::EngineFacts::default(),
+            );
+            assert!(plan.may_listen());
+            let mut cfg = ServerConfig::default();
+            cfg.continuous = true;
+            cfg.adopt_plan(&plan);
+            assert!(
+                !cfg.continuous,
+                "serial MTP must retract routing: {max_seqs:?}"
+            );
+            assert_eq!(
+                cfg.serving_plan.unwrap().effective.mtp_mode,
+                ds4_core::MtpMode::On
+            );
+        }
     }
 
     #[test]
