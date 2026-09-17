@@ -173,7 +173,7 @@ __global__ static void ling3vl_mrope(
         float *x, const int32_t *positions, const float *inv_freq,
         unsigned heads, unsigned head_stride, unsigned offset,
         unsigned half, unsigned section_t, unsigned section_th,
-        uint64_t pairs) {
+        uint64_t pairs, float attn_factor) {
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= pairs) { return; }
     const unsigned pair = (unsigned)(i % half);
@@ -183,10 +183,10 @@ __global__ static void ling3vl_mrope(
     const double phase =
         (double)positions[(uint64_t)row * 3u + axis] * (double)inv_freq[pair];
     double sine, cosine;
-    // Positions reach the 131072-token context; reduce the angle in double
+    // Positions reach the YaRN 262144-token cap; reduce the angle in double
     // before narrowing, as the other families' RoPE tables do.
     sincos(phase, &sine, &cosine);
-    const float c = (float)cosine, s = (float)sine;
+    const float c = (float)cosine * attn_factor, s = (float)sine * attn_factor;
     const uint64_t base = head_row * head_stride + offset + 2u * pair;
     const float x0 = x[base], x1 = x[base + 1u];
     x[base] = x0 * c - x1 * s;

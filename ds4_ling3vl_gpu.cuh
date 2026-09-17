@@ -28,11 +28,12 @@ extern "C" int ds4_gpu_ling3vl_mrope(
         ds4_gpu_tensor *x, const ds4_gpu_tensor *positions,
         const ds4_gpu_tensor *inv_freq, uint32_t rows, uint32_t heads,
         uint32_t head_stride, uint32_t offset, uint32_t rotary,
-        uint32_t section_t, uint32_t section_h) {
+        uint32_t section_t, uint32_t section_h, float attn_factor) {
     const uint32_t half = rotary / 2u;
     if (!x || !positions || !inv_freq || !rows || !heads || !rotary ||
         (rotary & 1u) || offset + rotary > head_stride ||
         section_t + section_h > half ||
+        !isfinite(attn_factor) || attn_factor <= 0.0f ||
         (uint64_t)rows > UINT64_MAX / heads / head_stride) { return 0; }
     const uint64_t values = (uint64_t)rows * heads * head_stride;
     const uint64_t pairs = (uint64_t)rows * heads * half;
@@ -43,7 +44,7 @@ extern "C" int ds4_gpu_ling3vl_mrope(
     ling3vl_mrope<<<(pairs + 255u) / 256u, 256, 0, ds4_current_stream()>>>(
         (float *)x->ptr, (const int32_t *)positions->ptr,
         (const float *)inv_freq->ptr, heads, head_stride, offset, half,
-        section_t, section_t + section_h, pairs);
+        section_t, section_t + section_h, pairs, attn_factor);
     return cuda_ok(cudaGetLastError(), "Ling-3.0 M-RoPE");
 }
 

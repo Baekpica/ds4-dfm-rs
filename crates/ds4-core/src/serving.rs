@@ -4,10 +4,7 @@
 //! Forced options that a family cannot run become errors, not silent fallback.
 
 use crate::identify::Identified;
-use crate::shape::{
-    ModelFamily, Shape, Variant, SHAPE_INKLING_SMALL, SHAPE_LING30_FLASH_VL,
-    SHAPE_QWEN38_FLASH_NEXT,
-};
+use crate::shape::{ModelFamily, Shape, Variant, SHAPE_INKLING_SMALL, SHAPE_QWEN38_FLASH_NEXT};
 use crate::Backend;
 use serde_json::{json, Value};
 use std::ffi::OsStr;
@@ -687,7 +684,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             spec_lane: SpecLane::None,
             spec_draft_min: 1,
             host: HostNeed::Cuda,
-            ctx_max: Some(SHAPE_LING30_FLASH_VL.rope_orig_ctx as u32),
+            ctx_max: Some(crate::ling3vl::YARN_CONTEXT),
             qualified_ctx: Some(65536),
             qualified_banks: Some(2),
             qualified_prompt: None,
@@ -2385,6 +2382,32 @@ mod tests {
         let mut req = ServingRequest::default();
         req.ctx = 262_144 * QWEN_YARN_MAX_FACTOR as i32 + 1;
         let p = plan(req, ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext);
+        assert!(p.has_errors());
+        assert!(p.issues.iter().any(|i| i.code == "ctx_unavailable"));
+    }
+
+    #[test]
+    fn ling_yarn_two_bank_plan() {
+        for ctx in [131_072, 131_073, 262_144] {
+            let req = ServingRequest {
+                ctx,
+                max_seqs: MaxSeqs::Fixed(2),
+                backend: Backend::Cuda,
+                ..ServingRequest::default()
+            };
+            let p = plan(req, ModelFamily::Ling3Vl, Variant::Ling30FlashVl);
+            assert!(!p.has_errors(), "ctx={ctx}: {:?}", p.issues);
+            assert_eq!(p.effective.max_seqs, 2);
+            // A larger runtime cap does not extend measured qualification.
+            assert_eq!(p.qualified.ctx, Some(65536));
+        }
+
+        let req = ServingRequest {
+            ctx: 262_145,
+            backend: Backend::Cuda,
+            ..ServingRequest::default()
+        };
+        let p = plan(req, ModelFamily::Ling3Vl, Variant::Ling30FlashVl);
         assert!(p.has_errors());
         assert!(p.issues.iter().any(|i| i.code == "ctx_unavailable"));
     }

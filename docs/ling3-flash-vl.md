@@ -124,12 +124,33 @@ The per-layer state is not uniform, and that is the interesting property.
   token: 8,064 bytes per token for the model.
 
 At 65,536 tokens that is 504 MiB of latent cache against 76.6 MiB of recurrent
-state. A full 131,072-token context costs about 1 GiB of KV.
+state. A 131,072-token context costs about 1 GiB of KV; 262,144 costs
+1.97 GiB per bank, plus recurrent state and prefill workspace.
 
 A recurrent block's history *is* its state, so a rewind is not a truncation:
 both hosts drop the whole checkpoint and the next sync replays the prefix.
 
 ## Serving
+
+### YaRN 256K
+
+`-c 262144 --max-seqs 2` selects static YaRN factor 2 for every session and
+bank. Contexts through 131,072 preserve the original M-RoPE table; larger
+contexts through 262,144 use the
+[official Ling recipe](https://huggingface.co/inclusionAI/Ling-3.0-flash-VL#run-inference):
+theta 6,000,000, 64 rotary dimensions, beta 32/1 and original context 131,072.
+The interpolation ramp and `1 + 0.1 * ln(2)` amplitude apply to the rotated
+Q/K tails; the nonrotary MLA dimensions keep their original scale.
+
+The requested context fixes the table, including for short prompts. Serial
+session rightsizing stays above 131,072 on a YaRN boot, so image requests keep
+the same factor as the text banks. Contexts above 262,144 are rejected. Disk
+restores require the same YaRN factor and reject mismatches before reading
+cached tensors.
+The native artifact metadata remains 131,072. Runtime capacity is separate
+from the measured qualification reported by `--print-plan`.
+
+### Launch
 
 ```sh
 MODEL_DIR=/path/to/Ling-3.0-flash-VL-Mixed-Quant-GGUF/MQ-Q5-KDA-VIT-BF16
@@ -138,7 +159,7 @@ MODEL_DIR=/path/to/Ling-3.0-flash-VL-Mixed-Quant-GGUF/MQ-Q5-KDA-VIT-BF16
   -m "$MODEL_DIR/Ling-3.0-flash-VL-MQ-Q5-KDA-VIT-BF16-00001-of-00003.gguf" \
   --vision "$MODEL_DIR/mmproj-Ling-3.0-flash-VL-BF16.gguf" \
   --model-id Ling-3.0-flash-VL \
-  -c 65536 --max-seqs 2 \
+  -c 262144 --max-seqs 2 \
   --kv-disk-dir /var/lib/ds4/ling-kv \
   --host 127.0.0.1 --port 8000
 ```
@@ -321,8 +342,26 @@ banks: cold prefill 1,461 tok/s over 1,072 tokens, decode 19.8 tok/s, a
 second turn reusing 1,123 of 1,146 prompt tokens by fork, and a disk record
 restoring 1,153 of 1,173 into an empty bank after a restart. `ds4-bench`
 throughput is measured through 65,536 tokens in one warm session (the
-sweep above); HTTP serving above 8,192 context is not.
+sweep above).
+
+YaRN checks on GB10 / CUDA 13.3 (2026-09-17), with the artifact above:
+two simultaneous cold HTTP requests at `-c 262144 --max-seqs 2`, each with
+262,016 input tokens and 32 output tokens, completed in 523.6 / 523.9 seconds
+on the continuous lane (`served=2 fallback=0`). Short math and image requests
+returned `5` and `Red`; the image session kept factor 2 after rightsizing.
+At the same serving profile, a separate chat fixture reused 13,160 of 13,186
+tokens by fork, then restored 13,188 of 13,214 from disk after a restart.
+Native payload restore from context 131,073 to 262,144 preserved all 157,184
+logits before and after 16 greedy tokens following a 512-token prefix;
+cross-factor restore and context 262,145 were rejected.
+
+At context allocation 131,072, a fresh-process A/B against `c29dc41` retained
+all 157,184 frontier logits for `promessi_sposi.txt` 8,192+64. A separate CLI
+run retained 64 greedy tokens and their top-8 logits/logprobs. Prefill was
+2209.36 / 2206.30 tok/s and decode 24.83 / 25.04 tok/s (base / YaRN build,
+SM 2184–2197 MHz); this single A/B establishes parity, not a speedup.
 
 Not release gates and not implied: Metal, ROCm, CPU inference, distributed
 slices, DSpark sidecars, directional steering, speculative decoding, video
-input, prompts above 65,536 tokens, and the full 131,072-token context.
+input, or long-context task quality. These checks do not change the 65,536-token
+qualification marker in the serving plan.

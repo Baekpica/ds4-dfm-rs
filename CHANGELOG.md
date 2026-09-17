@@ -8,6 +8,9 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- Ling YaRN: `-c 262144 --max-seqs 2` uses the official factor-2 recipe.
+  Contexts through 131,072 retain their original table; disk KV rejects
+  restores across YaRN factors. See [serving](docs/ling3-flash-vl.md#yarn-256k).
 - Adds Ling-3.0-flash-VL (`bailingmoe3`) as the eleventh family: the MQ-Q5
   three-shard artifact plus its BF16 mmproj, 35 recurrent KDA blocks and 7
   latent MLA blocks over 512 group-limited sigmoid experts, still-image input

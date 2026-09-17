@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <vector>
 #include "../cuda/ling3vl_primitives.cuh"
+#include "../ds4_ling3vl_rope.h"
 
 #define CHECK(x) do { if (!(x)) { \
     fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); exit(1); \
@@ -126,19 +127,52 @@ static void router(cudaStream_t stream) {
     printf("router OK\n");
 }
 
+/* Independent double-precision YaRN values from the Transformers v4.57.1
+ * equations: correction dimensions [13, 21], factor 2, beta 32/1. */
+static void rope_table(void) {
+    const float expected[] = {
+        1.0f, 0.614020362104f, 0.377021005078f, 0.231498574059f,
+        0.142144838270f, 0.0872798250656f, 0.0535915897911f, 0.0329063273693f,
+        0.0202051550468f, 0.0124063766182f, 0.00761776786348f, 0.00467746458196f,
+        0.00287205849634f, 0.00176350239791f, 0.00101514973212f, 0.000581767765701f,
+        0.000331701736002f, 0.000188004572354f, 0.000105818749294f, 5.90680606901e-5f,
+        3.26420928123e-5f, 1.78159196875e-5f, 1.09393374577e-5f, 6.71697594697e-6f,
+        4.12436000320e-6f, 2.53244102261e-6f, 1.55497035371e-6f, 9.54783459645e-7f,
+        5.86256485622e-7f, 3.59973419587e-7f, 2.21031009442e-7f, 1.35717540454e-7f,
+    };
+    float inv[32], attn;
+    for (unsigned ctx : {1u, 65536u, 131072u}) {
+        CHECK(ling3vl_rope_table(inv, &attn, ctx));
+        CHECK(attn == 1.0f);
+        for (unsigned j = 0; j < 32u; j++) {
+            CHECK(inv[j] == (float)pow(6000000.0, -2.0 * j / 64.0));
+        }
+    }
+    for (unsigned ctx : {131073u, 200000u, 262144u}) {
+        CHECK(ling3vl_rope_table(inv, &attn, ctx));
+        close(attn, 1.0693147180559945, 1e-7);
+        for (unsigned j = 0; j < 32u; j++) {
+            CHECK(fabs(inv[j] / expected[j] - 1.0f) < 2e-7f);
+        }
+    }
+    CHECK(!ling3vl_rope_table(inv, &attn, 0u));
+    CHECK(!ling3vl_rope_table(inv, &attn, 262145u));
+    printf("rope_table OK\n");
+}
+
 /* Text rows set all three axes equal, so M-RoPE must equal 1-D RoPE; an image
  * row separates them. Pairs are adjacent, not half-offset. */
-static void mrope(cudaStream_t stream) {
-    enum { HEADS = 2u, ROWS = 2u, ROTARY = 64u, HALF = ROTARY / 2u,
-           STRIDE = 192u, OFFSET = 128u };
+static void mrope(cudaStream_t stream, unsigned ctx, unsigned stride) {
+    enum { HEADS = 2u, ROWS = 4u, ROTARY = 64u, HALF = ROTARY / 2u };
+    const unsigned STRIDE = stride, OFFSET = stride - ROTARY;
     std::vector<float> x(ROWS * HEADS * STRIDE, 0.0f);
     for (unsigned i = 0; i < x.size(); i++) { x[i] = (float)((i % 7) + 1) * 0.125f; }
     std::vector<float> inv(HALF);
-    for (unsigned j = 0; j < HALF; j++) {
-        inv[j] = (float)pow(6000000.0, -2.0 * (double)j / (double)ROTARY);
-    }
-    /* Row 0 is text at 11; row 1 is an image row with distinct axes. */
-    const int32_t pos[ROWS * 3] = {11, 11, 11, 20, 23, 29};
+    float attn;
+    CHECK(ling3vl_rope_table(inv.data(), &attn, ctx));
+    /* Text and distinct image axes, including the native and YaRN edges. */
+    const int32_t pos[ROWS * 3] = {11, 11, 11, 20, 23, 29,
+        131071, 131071, 131071, 262143, 200000, 131073};
     std::vector<float> before = x;
 
     float *d_x = upload(x.data(), x.size());
@@ -146,7 +180,7 @@ static void mrope(cudaStream_t stream) {
     int32_t *d_pos = upload(pos, ROWS * 3);
     const uint64_t pairs = (uint64_t)ROWS * HEADS * HALF;
     ling3vl_mrope<<<(pairs + 255u) / 256u, 256, 0, stream>>>(
-        d_x, d_pos, d_inv, HEADS, STRIDE, OFFSET, HALF, 8u, 8u + 12u, pairs);
+        d_x, d_pos, d_inv, HEADS, STRIDE, OFFSET, HALF, 8u, 8u + 12u, pairs, attn);
     CUDA(cudaStreamSynchronize(stream));
     CUDA(cudaMemcpy(x.data(), d_x, x.size() * sizeof(float), cudaMemcpyDeviceToHost));
 
@@ -156,7 +190,7 @@ static void mrope(cudaStream_t stream) {
             for (unsigned j = 0; j < HALF; j++) {
                 const unsigned axis = j < 8u ? 0u : (j < 20u ? 1u : 2u);
                 const double theta = (double)pos[r * 3 + axis] * (double)inv[j];
-                const double c = cos(theta), s = sin(theta);
+                const double c = cos(theta) * attn, s = sin(theta) * attn;
                 const double x0 = before[base + 2 * j], x1 = before[base + 2 * j + 1];
                 close(x[base + 2 * j], x0 * c - x1 * s, 1e-5);
                 close(x[base + 2 * j + 1], x0 * s + x1 * c, 1e-5);
@@ -171,7 +205,7 @@ static void mrope(cudaStream_t stream) {
     CUDA(cudaFree(d_pos));
     CUDA(cudaFree(d_inv));
     CUDA(cudaFree(d_x));
-    printf("mrope OK\n");
+    printf("mrope ctx=%u stride=%u OK\n", ctx, stride);
 }
 
 /* The fused kv_a_mqa row is 576 wide; the latent RMSNorm covers only the
@@ -226,7 +260,11 @@ int main(void) {
     cudaStream_t stream;
     CUDA(cudaStreamCreate(&stream));
     router(stream);
-    mrope(stream);
+    rope_table();
+    for (unsigned ctx : {131072u, 131073u, 262144u}) {
+        mrope(stream, ctx, 192u);
+        mrope(stream, ctx, 576u);
+    }
     rms_norm_strided(stream);
     CUDA(cudaStreamDestroy(stream));
     printf("Ling primitives OK\n");

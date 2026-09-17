@@ -4333,7 +4333,8 @@ int ds4_gpu_ling3vl_mrope(
         uint32_t                offset,
         uint32_t                rotary,
         uint32_t                section_t,
-        uint32_t                section_h);
+        uint32_t                section_h,
+        float                   attn_factor);
 
 int ds4_gpu_ling3vl_qk_absorb(
         ds4_gpu_tensor       *out,
