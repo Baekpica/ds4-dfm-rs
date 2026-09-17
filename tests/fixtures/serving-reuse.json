@@ -1,0 +1,8 @@
+{
+  "padding": "Inventory item {i}: blue square.\n",
+  "seed": {"user": "What is 2 + 2? Reply with just the number.", "answer": 4},
+  "append": {"user": "What is 4 + 1? Reply with just the number.", "answer": 5},
+  "edit": {"user": "What is 4 + 2? Reply with just the number.", "answer": 6},
+  "fork": {"user": "What is 5 + 3? Reply with just the number.", "answer": 8},
+  "restart": {"user": "What is 8 + 1? Reply with just the number.", "answer": 9}
+}
