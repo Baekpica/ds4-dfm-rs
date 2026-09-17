@@ -101,11 +101,67 @@ static void coverage_is_checked_exactly(void) {
     CHECK(ling3vl_media_check(&prompt, images, 1, info, TOTAL, &media));
 }
 
+/* A short prefix is still tied to its source session's static RoPE table.
+ * Refuse cross-factor disk restores before reading or changing GPU state. */
+static void reject_other_rope_scale(void) {
+    FILE *fp = tmpfile();
+    CHECK(fp);
+    ds4_ling3vl_graph g = {.context = 262144u, .cap = 4096u, .position = 7u};
+    uint32_t h[DS4_SESSION_PAYLOAD_U32_FIELDS] = {
+        DS4_SESSION_PAYLOAD_MAGIC, DS4_SESSION_PAYLOAD_VERSION, 131072u, 4096u,
+        LING3VL_LAYERS, DS4_SESSION_LING3VL_LAYOUT_MAGIC,
+        (L3V_KV_LORA + L3V_ROPE) * sizeof(uint16_t), 1u, 0u, L3V_KV_LORA,
+        L3V_KDA_DIM, DS4_N_VOCAB, 1u,
+    };
+    const uint32_t contexts[][2] = {
+        {131072u, 262144u}, {262144u, 131072u}, {0u, 262144u}, {262145u, 262144u},
+    };
+    for (unsigned i = 0; i < sizeof(contexts) / sizeof(contexts[0]); i++) {
+        h[2] = contexts[i][0];
+        g.context = contexts[i][1];
+        uint64_t remaining = 0;
+        int *tokens = NULL;
+        float logits = 0;
+        char err[128] = {0};
+        CHECK(ling3vl_payload_restore_graph(&g, fp, &remaining, h, &tokens,
+                                            &logits, err, sizeof(err)) != 0);
+        CHECK(strstr(err, "YaRN") != NULL);
+        CHECK(g.position == 7u && tokens == NULL && ftell(fp) == 0);
+    }
+    /* Same-factor contexts reach body validation despite different capacities. */
+    const uint32_t compatible[][2] = {
+        {65536u, 131072u}, {131073u, 262144u}, {262144u, 200000u},
+    };
+    for (unsigned i = 0; i < sizeof(compatible) / sizeof(compatible[0]); i++) {
+        h[2] = compatible[i][0];
+        g.context = compatible[i][1];
+        uint64_t remaining = 0;
+        int *tokens = NULL;
+        float logits = 0;
+        char err[128] = {0};
+        CHECK(ling3vl_payload_restore_graph(&g, fp, &remaining, h, &tokens,
+                                            &logits, err, sizeof(err)) != 0);
+        CHECK(strstr(err, "byte count") != NULL);
+        CHECK(g.position == 7u && tokens == NULL && ftell(fp) == 0);
+    }
+    CHECK(fclose(fp) == 0);
+}
+
+static void reject_oversized_session(void) {
+    ds4_engine engine = {.backend = DS4_BACKEND_CUDA, .metal_ready = true};
+    ds4_session *session = NULL;
+    CHECK(setenv("DS4_SESSION_LAZY_GRAPH", "1", 1) == 0);
+    CHECK(ds4_session_create(&session, &engine, 262145) != 0);
+    CHECK(session == NULL);
+}
+
 int main(void) {
     g_ds4_shape = DS4_SHAPE_LING30_FLASH_VL;
     text_is_one_dimensional();
     image_span_lays_out_a_grid();
     coverage_is_checked_exactly();
+    reject_other_rope_scale();
+    reject_oversized_session();
     printf("Ling media OK\n");
     return 0;
 }

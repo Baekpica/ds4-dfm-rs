@@ -31,7 +31,7 @@ retired when a better model makes it irrelevant.
   image input.
 - Serve K2-Horizon-375B MQ87 with IFM chat/tool syntax on the continuous lane.
 - Serve Ling-3.0-flash-VL MQ-Q5 with image input, two persistent banks,
-  disk KV and partial prefix reuse.
+  disk KV, partial prefix reuse and [YaRN 256K](docs/ling3-flash-vl.md#yarn-256k).
 - Profile prefill and decode with [ds4-perf](docs/ds4-perf.md),
   calibrate the GPU, compare proved experiments, and retain raw profiler evidence.
 - Treat the existing family implementations as rails for a new model or a

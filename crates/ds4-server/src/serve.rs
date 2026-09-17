@@ -1721,7 +1721,15 @@ fn ensure_serial_session_fit<W: Write>(
     // Stub/test engines have no native serial session: pass native and
     // never invent a rightsize or a refuse.
     let probe = engine.serial_session_probe()?;
-    let bounds = serial_fit_bounds(prompt_len, budget, i64::from(cfg.ctx));
+    let mut bounds = serial_fit_bounds(prompt_len, budget, i64::from(cfg.ctx));
+    let ling = ds4_core::shape_for_variant(ds4_core::Variant::Ling30FlashVl);
+    let ling_orig_ctx = ling.rope_orig_ctx as i64;
+    if engine.model_id() == ling.model_id() && i64::from(cfg.ctx) > ling_orig_ctx {
+        // Serial/image requests must retain the boot YaRN factor even when
+        // their graph shrinks beside the banks. Refuse if this floor cannot fit.
+        bounds.need_min = bounds.need_min.max(ling_orig_ctx + 1);
+        bounds.request_cap = bounds.request_cap.max(bounds.need_min);
+    }
     let cur_ctx = i64::from(probe.cur_ctx);
     // C: a mandatory live continuation is never resized — the retained
     // session holds the only copy of the frontier. Preserve and refuse.
@@ -4254,6 +4262,7 @@ mod owner_tests {
     use ds4_kv::Store as KvStore;
 
     struct FitProbeDecode {
+        model_id: i32,
         probe: SerialSessionProbe,
         fits_at_or_below: i32,
         rightsized: Option<i32>,
@@ -4263,6 +4272,7 @@ mod owner_tests {
     impl FitProbeDecode {
         fn new(cur_ctx: i32, graph_pending: bool, fits_at_or_below: i32) -> Self {
             Self {
+                model_id: 0,
                 probe: SerialSessionProbe {
                     cur_ctx,
                     graph_pending,
@@ -4276,7 +4286,7 @@ mod owner_tests {
 
     impl DecodeIo for FitProbeDecode {
         fn model_id(&self) -> i32 {
-            0
+            self.model_id
         }
         fn tokenize_text(&self, _text: &str) -> Result<Vec<i32>, GenerateError> {
             Ok(vec![1])
@@ -4402,6 +4412,61 @@ mod owner_tests {
         let cap = 26 + 384 + 32768;
         assert!(target >= cap - 1024 && target <= cap, "target={target}");
         assert!(out.is_empty(), "no refusal bytes on the resize path");
+    }
+
+    #[test]
+    fn serial_fit_keeps_ling_yarn() {
+        for boot_ctx in [131_072, 131_073, 262_144] {
+            let cfg = serial_fit_cfg(boot_ctx);
+            let inner = Mutex::new(ServerInner::from_cfg(&cfg));
+            let job = queued_completion("hello", 32);
+            let mut engine = FitProbeDecode::new(boot_ctx, true, boot_ctx);
+            engine.model_id = ds4_core::Variant::Ling30FlashVl as i32;
+            let mut cont = NoTrimCont;
+            let mut out = Vec::new();
+
+            assert!(ensure_serial_session_fit(
+                &cfg,
+                &inner,
+                &job,
+                &mut engine,
+                Some(&mut cont),
+                SerialFrameKind::Canonical,
+                26,
+                384,
+                &mut out,
+            )
+            .is_none());
+            let target = engine.probe.cur_ctx;
+            assert_eq!(target > 131_072, boot_ctx > 131_072, "ctx={target}");
+            assert!(target <= boot_ctx);
+        }
+    }
+
+    #[test]
+    fn serial_fit_refuses_yarn_switch() {
+        let cfg = serial_fit_cfg(262_144);
+        let inner = Mutex::new(ServerInner::from_cfg(&cfg));
+        let job = queued_completion("hello", 32);
+        let mut engine = FitProbeDecode::new(cfg.ctx, true, 131_072);
+        engine.model_id = ds4_core::Variant::Ling30FlashVl as i32;
+        let mut cont = NoTrimCont;
+        let mut out = Vec::new();
+
+        assert!(ensure_serial_session_fit(
+            &cfg,
+            &inner,
+            &job,
+            &mut engine,
+            Some(&mut cont),
+            SerialFrameKind::Canonical,
+            26,
+            384,
+            &mut out,
+        )
+        .is_some());
+        assert!(engine.rightsized.is_none());
+        assert!(String::from_utf8_lossy(&out).starts_with("HTTP/1.1 503"));
     }
 
     #[test]

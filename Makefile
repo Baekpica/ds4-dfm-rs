@@ -303,7 +303,7 @@ proof-rust-cuda-opp-c: ds4 ds4-c
 			--work-dir "$$root/rust" --check-expected "$$expected"
 endif
 
-ds4.o: ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_batch.inc ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h vendor/stb_image.h
+ds4.o: ds4.c ds4_step37_graph.inc ds4_step37_vision.inc ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_rope.h ds4_ling3vl_batch.inc ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h vendor/stb_image.h
 	$(CC) $(CFLAGS) -c -o $@ ds4.c
 
 # Rust FFI seam: wraps ds4.h so crates/ds4-sys never bindgens the engine header.
@@ -831,7 +831,7 @@ tests/test_step37_primitives: tests/test_step37_primitives.cu cuda/step37_primit
 test-step37-primitives: tests/test_step37_primitives
 	./tests/test_step37_primitives
 
-tests/test_ling3vl_primitives: tests/test_ling3vl_primitives.cu cuda/ling3vl_primitives.cuh
+tests/test_ling3vl_primitives: tests/test_ling3vl_primitives.cu cuda/ling3vl_primitives.cuh ds4_ling3vl_rope.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 
 .PHONY: test-ling3vl-primitives
@@ -1198,7 +1198,7 @@ tests/test_step37_media.o: tests/test_step37_media.c ds4.c ds4_step37_graph.inc 
 tests/test_step37_media: tests/test_step37_media.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
 
-tests/test_ling3vl_media.o: tests/test_ling3vl_media.c ds4.c ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_batch.inc ds4.h ds4_gpu.h
+tests/test_ling3vl_media.o: tests/test_ling3vl_media.c ds4.c ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_rope.h ds4_ling3vl_batch.inc ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
 
 tests/test_ling3vl_media: tests/test_ling3vl_media.o $(DS4_CUDA_SUPPORT_OBJS)
@@ -1208,7 +1208,7 @@ tests/test_ling3vl_media: tests/test_ling3vl_media.o $(DS4_CUDA_SUPPORT_OBJS)
 test-ling3vl-media: tests/test_ling3vl_media
 	./tests/test_ling3vl_media
 
-tests/test_ling3vl_vision.o: tests/test_ling3vl_vision.c ds4.c ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_batch.inc ds4.h ds4_gpu.h
+tests/test_ling3vl_vision.o: tests/test_ling3vl_vision.c ds4.c ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_rope.h ds4_ling3vl_batch.inc ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
 
 tests/test_ling3vl_vision: tests/test_ling3vl_vision.o $(DS4_CUDA_SUPPORT_OBJS)

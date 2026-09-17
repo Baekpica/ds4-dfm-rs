@@ -53,6 +53,7 @@ typedef struct {
     uint32_t context, cap, position, high_water;
     uint64_t state_bytes, kv_bytes, workspace_bytes, bytes;
     int32_t *host_positions;
+    float rope_attn_factor;
     bool failed, ready;
 } ds4_ling3vl_graph;
 
@@ -224,14 +225,11 @@ static void ling3vl_graph_free(ds4_ling3vl_graph *g) {
     memset(g, 0, sizeof(*g));
 }
 
-/* inv_freq[j] = rope_theta^(-2j/rope_dim); the kernel multiplies by the
- * axis position and reduces the angle in double. */
+/* The session context selects one immutable M-RoPE/YaRN table. */
 static bool ling3vl_upload_inv_freq(ds4_ling3vl_graph *g) {
     float inv[L3V_MROPE_PAIRS];
-    for (uint32_t j = 0; j < L3V_MROPE_PAIRS; j++) {
-        inv[j] = (float)pow((double)DS4_ROPE_FREQ_BASE,
-                            -2.0 * (double)j / (double)L3V_ROPE);
-        if (!isfinite(inv[j]) || inv[j] <= 0.0f) { return false; }
+    if (!ling3vl_rope_table(inv, &g->rope_attn_factor, g->context)) {
+        return false;
     }
     return ds4_gpu_tensor_write(g->inv_freq, 0, inv, sizeof(inv));
 }
@@ -411,9 +409,9 @@ static bool ling3vl_graph_alloc(ds4_ling3vl_graph *g, const ds4_model *model,
     g->ready = true;
     if (!ling3vl_graph_reset(g)) { ling3vl_graph_free(g); return false; }
     ds4_log(stderr, DS4_LOG_TIMING,
-            "ds4: Ling graph ctx=%u chunk=%u KV=%.2f GiB state=%.1f MiB "
+            "ds4: Ling graph ctx=%u chunk=%u yarn=%u KV=%.2f GiB state=%.1f MiB "
             "workspace=%.2f GiB\n",
-            ctx, cap, (double)g->kv_bytes / 1073741824.0,
+            ctx, cap, ling3vl_rope_factor(ctx), (double)g->kv_bytes / 1073741824.0,
             (double)g->state_bytes / 1048576.0,
             (double)g->workspace_bytes / 1073741824.0);
     return true;
@@ -571,10 +569,11 @@ static bool ling3vl_layer_mla(ds4_ling3vl_graph *g, const ds4_model *m,
          * key row, in place, before either is cached or absorbed. */
         !ds4_gpu_ling3vl_mrope(b->b_q, g->positions, g->inv_freq, n, L3V_HEADS,
                                L3V_KEY_MLA, L3V_NOPE, L3V_ROPE, L3V_SECTION_T,
-                               L3V_SECTION_H) ||
+                               L3V_SECTION_H, g->rope_attn_factor) ||
         !ds4_gpu_ling3vl_mrope(g->kv_raw, g->positions, g->inv_freq, n, 1u,
                                L3V_KV_ROW, L3V_KV_LORA, L3V_ROPE,
-                               L3V_SECTION_T, L3V_SECTION_H) ||
+                               L3V_SECTION_T, L3V_SECTION_H,
+                               g->rope_attn_factor) ||
         /* kv_raw is 576-wide; the norm covers only the 512-value latent. */
         !ds4_gpu_ling3vl_rms_norm(g->kv_norm, g->kv_raw, m->map, m->size,
                                   l->attn_kv_a_norm->abs_offset, L3V_KV_LORA,

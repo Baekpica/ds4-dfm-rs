@@ -5,16 +5,18 @@
  * a wrong span silently corrupts both the embedding rows and every later
  * position. */
 
+#include "ds4_ling3vl_rope.h"
+
 enum { L3V_HIDDEN = 2560, L3V_HEADS = 32, L3V_KDA_HEAD = 128,
        L3V_KDA_DIM = L3V_HEADS * L3V_KDA_HEAD,
-       L3V_CONV = 4, L3V_KV_LORA = 512, L3V_ROPE = 64,
+       L3V_CONV = 4, L3V_KV_LORA = 512,
        L3V_KEY_MLA = 192, L3V_NOPE = L3V_KEY_MLA - L3V_ROPE,
        L3V_VALUE_MLA = 128, L3V_KV_ROW = L3V_KV_LORA + L3V_ROPE,
        L3V_QDIM = L3V_HEADS * L3V_KEY_MLA,
        L3V_LATENT = L3V_HEADS * L3V_KV_LORA,
        L3V_VDIM = L3V_HEADS * L3V_VALUE_MLA,
        L3V_DENSE = 6144, L3V_EXPERT_FF = 768, L3V_EXPERTS = 512,
-       L3V_USED = 8, L3V_CONTEXT = 131072,
+       L3V_USED = 8,
        /* BF16 K/V segments: 3 x cap x (6144 + 4096) x 2 B fits the
         * cap x 32 x 512 x 4 B q_absorbed buffer they alias (94%). */
        L3V_MLA_SEG_CHUNKS = 3,

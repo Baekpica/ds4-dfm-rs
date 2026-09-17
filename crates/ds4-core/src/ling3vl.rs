@@ -35,6 +35,8 @@ pub(crate) const EXPERT_GROUPS: u32 = 8;
 pub(crate) const EXPERT_GROUPS_USED: u32 = 4;
 pub(crate) const EXPERT_WEIGHT_SCALE: f32 = 2.5;
 pub(crate) const CONTEXT: u32 = 131_072;
+/// Static YaRN factor 2 from the official 256K serving recipe.
+pub(crate) const YARN_CONTEXT: u32 = CONTEXT * 2;
 pub(crate) const RMS_EPS: f32 = 1e-6;
 pub(crate) const ROPE_FREQ_BASE: f32 = 6_000_000.0;
 pub(crate) const KDA_GATE_LOWER_BOUND: f32 = -5.0;

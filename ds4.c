@@ -50399,6 +50399,13 @@ static int ling3vl_payload_restore_graph(ds4_ling3vl_graph *g, FILE *fp,
         payload_set_err(err, errlen, "session payload was written for a different Ling layout");
         return 1;
     }
+    /* Even a short prefix contains keys rotated with the source context's
+     * static table. Check before reset or readback can change the live bank. */
+    const uint32_t source_factor = ling3vl_rope_factor(h[2]);
+    if (!source_factor || source_factor != ling3vl_rope_factor(g->context)) {
+        payload_set_err(err, errlen, "session payload has a different Ling YaRN factor");
+        return 1;
+    }
     if (*remaining != (uint64_t)n * sizeof(uint32_t) + ling3vl_payload_body_bytes(g, n)) {
         payload_set_err(err, errlen, "Ling session payload byte count does not match its header");
         return 1;
@@ -69219,6 +69226,12 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
 
 int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
     if (!out || !e || ctx_size <= 0) return 1;
+#ifndef DS4_NO_GPU
+    /* A lazy session must reject an unsupported YaRN context before it can
+     * be admitted; waiting for the first graph allocation is too late. */
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL &&
+        !ling3vl_rope_factor((uint32_t)ctx_size)) { return 1; }
+#endif
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37) {
 #ifdef DS4_NO_GPU
         return 1;
