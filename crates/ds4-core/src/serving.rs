@@ -777,8 +777,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             bank_support: Support::None,
             reuse: ReuseKind::Exact,
             reuse_support: Support::Qualified,
-            disk: Support::None,
-            snapshot: Support::None,
+            disk: Support::Present,
+            snapshot: Support::Present,
             mtp: MtpKind::Sidecar,
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Serial,
@@ -1924,7 +1924,7 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
         }
         Variant::Glm53Flash => "serial graph is capped at 2,048 tokens; snapshots unsupported",
         Variant::Dots3NotePrev => "live serving is serial; embedded MTP is bound, not executed",
-        Variant::InklingSmall => "serial exact-prefix reuse; disk snapshot unimplemented",
+        Variant::InklingSmall => "serial text snapshots present; media snapshots unsupported",
         Variant::Kexaone236B => "exact-frontier reuse only; partial checkpoint is a separate task",
         Variant::Qwen38FlashNext => {
             "common UX baseline; configured values and verified combinations differ"
@@ -2772,12 +2772,15 @@ mod tests {
     }
 
     #[test]
-    fn inkling_disk_is_unsupported() {
+    fn inkling_disk_is_present() {
         let mut req = ServingRequest::default();
+        req.ctx = 1024;
         req.kv_disk_dir = Some("/tmp/kv".into());
         let p = plan(req, ModelFamily::Inkling, Variant::InklingSmall);
-        assert!(p.has_errors());
-        assert!(p.issues.iter().any(|i| i.code == "disk_unsupported"));
+        assert!(!p.has_errors(), "{:?}", p.issues);
+        assert!(p.effective.disk);
+        assert_eq!(p.qualified.disk, Support::Present);
+        assert!(p.issues.iter().any(|i| i.code == "disk_unverified"));
     }
 
     #[test]

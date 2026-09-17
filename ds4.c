@@ -49850,6 +49850,188 @@ static uint32_t qwen4exp_full_attention_layers(void) {
     return count;
 }
 
+#define DS4_SESSION_INKLING_LAYOUT UINT32_C(0x334c4b49) /* "IKL3" */
+enum { INKLING_PAYLOAD_MTP = 1u };
+typedef enum { INKLING_PAYLOAD_WRITE, INKLING_PAYLOAD_READ } inkling_payload_dir;
+
+static uint64_t inkling_state_bytes(const ds4_inkling_graph *g, unsigned n) {
+    if (!g->cap || !g->context || n >= g->context ||
+        (g->n_layers != INKLING_LAYERS && g->n_layers != INKLING_DRAFT_LAYERS)) { return 0; }
+    uint64_t bytes = 0;
+    for (unsigned i = 0; i < g->n_layers; i++) {
+        const inkling_layer_state *state = &g->layer[i];
+        if (!state->kv || !state->capacity) { return 0; }
+        const unsigned rows = n < state->capacity ? n : state->capacity;
+        bytes += (uint64_t)rows * 2 * IK_KV * sizeof(uint16_t);
+        for (unsigned j = 0; j < IK_CONV_STREAMS; j++) {
+            if (!state->conv[j]) { return 0; }
+            bytes += (uint64_t)IK_HISTORY * (j < 2 ? IK_KV : IK_HIDDEN) * sizeof(float);
+        }
+    }
+    return bytes;
+}
+
+static uint64_t inkling_body_bytes(const ds4_session *s, unsigned n) {
+    const uint64_t state = inkling_state_bytes(&s->inkling_graph, n);
+    if (!state) { return 0; }
+    uint64_t bytes = (uint64_t)n * sizeof(uint32_t) + DS4_N_VOCAB * sizeof(float) + state;
+    if (s->engine->mtp_ready) {
+        const unsigned tail = n < INKLING_DRAFT_LAYERS ? n : INKLING_DRAFT_LAYERS;
+        const uint64_t draft = inkling_state_bytes(&s->inkling_spec.draft.graph, n - tail);
+        if (!draft || !s->inkling_spec.tail) { return 0; }
+        bytes += draft + (uint64_t)tail * IK_HIDDEN * sizeof(float);
+    }
+    return bytes;
+}
+
+static uint64_t inkling_payload_bytes(const ds4_session *s) {
+    const ds4_inkling_graph *g = &s->inkling_graph;
+    if (!s->checkpoint_valid || !s->inkling_graph_ready || s->inkling_trial_n ||
+        g->failed || s->checkpoint.len <= 0 || g->position != (unsigned)s->checkpoint.len ||
+        g->context != (unsigned)s->ctx_size || g->n_layers != INKLING_LAYERS) { return 0; }
+    if (s->engine->mtp_ready && (!inkling_spec_valid(&s->inkling_spec) ||
+        s->inkling_spec.position != g->position)) { return 0; }
+    /* Tokens alone do not identify media features; text payloads refuse them. */
+    for (int i = 0; i < s->checkpoint.len; i++) {
+        const int token = s->checkpoint.v[i];
+        if (token < 0 || token >= INKLING_VALID_VOCAB ||
+            token == IK_IMAGE_TOKEN || token == IK_AUDIO_TOKEN) { return 0; }
+    }
+    const uint64_t bytes = inkling_body_bytes(s, g->position);
+    return bytes ? DS4_SESSION_PAYLOAD_U32_FIELDS * sizeof(uint32_t) + bytes : 0;
+}
+
+static int inkling_payload_span(inkling_payload_dir dir, FILE *fp, ds4_gpu_tensor *tensor,
+                                uint64_t bytes, uint8_t *buf, uint64_t *left,
+                                char *err, size_t errlen) {
+    return dir == INKLING_PAYLOAD_READ
+        ? payload_read_tensor_span(fp, tensor, 0, bytes, buf, DS4_SESSION_IO_CHUNK, left, err, errlen)
+        : payload_write_tensor_span(fp, tensor, 0, bytes, buf, DS4_SESSION_IO_CHUNK, err, errlen);
+}
+
+static int inkling_state_io(inkling_payload_dir dir, FILE *fp, ds4_inkling_graph *g,
+                            unsigned n, uint8_t *buf, uint64_t *left, char *err, size_t errlen) {
+    /* Local rings have fixed capacity in every context; retain physical slots.
+     * Global KV uses a nonwrapping live prefix. Convolution always needs all
+     * three history rows, including at a short frontier. */
+    for (unsigned i = 0; i < g->n_layers; i++) {
+        inkling_layer_state *state = &g->layer[i];
+        const unsigned rows = n < state->capacity ? n : state->capacity;
+        if (inkling_payload_span(dir, fp, state->kv,
+                (uint64_t)rows * 2 * IK_KV * sizeof(uint16_t), buf, left, err, errlen)) { return 1; }
+        for (unsigned j = 0; j < IK_CONV_STREAMS; j++) {
+            if (inkling_payload_span(dir, fp, state->conv[j],
+                    (uint64_t)IK_HISTORY * (j < 2 ? IK_KV : IK_HIDDEN) * sizeof(float),
+                    buf, left, err, errlen)) { return 1; }
+        }
+    }
+    return 0;
+}
+
+static int inkling_payload_state(inkling_payload_dir dir, FILE *fp, ds4_session *s,
+                                 unsigned n, uint64_t *left, char *err, size_t errlen) {
+    uint8_t *buf = xmalloc(DS4_SESSION_IO_CHUNK);
+    int rc = inkling_state_io(dir, fp, &s->inkling_graph, n, buf, left, err, errlen);
+    if (!rc && s->engine->mtp_ready) {
+        const unsigned tail = n < INKLING_DRAFT_LAYERS ? n : INKLING_DRAFT_LAYERS;
+        rc = inkling_state_io(dir, fp, &s->inkling_spec.draft.graph, n - tail, buf, left, err, errlen);
+        if (!rc) {
+            rc = inkling_payload_span(dir, fp, s->inkling_spec.tail,
+                    (uint64_t)tail * IK_HIDDEN * sizeof(float), buf, left, err, errlen);
+        }
+    }
+    free(buf);
+    return rc;
+}
+
+static int inkling_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen) {
+    if (!fp || !inkling_payload_bytes(s) || !ds4_gpu_synchronize()) {
+        payload_set_err(err, errlen, "Inkling session has no snapshot-ready text frontier");
+        return 1;
+    }
+    const uint32_t n = (uint32_t)s->checkpoint.len;
+    const uint32_t h[DS4_SESSION_PAYLOAD_U32_FIELDS] = {
+        DS4_SESSION_PAYLOAD_MAGIC, DS4_SESSION_PAYLOAD_VERSION, s->ctx_size,
+        s->inkling_graph.cap, INKLING_LAYERS, DS4_SESSION_INKLING_LAYOUT,
+        2u * IK_KV * sizeof(uint16_t), n, s->engine->mtp_ready ? INKLING_PAYLOAD_MTP : 0u,
+        IK_KV, IK_LOCAL, DS4_N_VOCAB, n,
+    };
+    for (unsigned i = 0; i < DS4_SESSION_PAYLOAD_U32_FIELDS; i++) {
+        if (payload_write_u32(fp, h[i], err, errlen)) { return 1; }
+    }
+    for (unsigned i = 0; i < n; i++) {
+        if (payload_write_u32(fp, (uint32_t)s->checkpoint.v[i], err, errlen)) { return 1; }
+    }
+    if (payload_write_bytes(fp, s->logits, DS4_N_VOCAB * sizeof(float), err, errlen)) { return 1; }
+    return inkling_payload_state(INKLING_PAYLOAD_WRITE, fp, s, n, NULL, err, errlen);
+}
+
+static int inkling_load_payload(ds4_session *s, FILE *fp, uint64_t *left,
+                                const uint32_t *h, char *err, size_t errlen) {
+    const unsigned n = h[7];
+    const unsigned flags = s->engine->mtp_ready ? INKLING_PAYLOAD_MTP : 0u;
+    if (h[1] != DS4_SESSION_PAYLOAD_VERSION || h[4] != INKLING_LAYERS ||
+        h[5] != DS4_SESSION_INKLING_LAYOUT || h[6] != 2u * IK_KV * sizeof(uint16_t) ||
+        h[8] != flags || h[9] != IK_KV || h[10] != IK_LOCAL || h[11] != DS4_N_VOCAB ||
+        h[12] != n || !n || n >= (unsigned)s->ctx_size || n >= h[2] || !h[3] || h[3] > h[2]) {
+        payload_set_err(err, errlen, "Inkling payload layout, context or MTP state does not match");
+        return 1;
+    }
+    if (ds4_session_ensure_graph(s, err, errlen)) { return 1; }
+    const uint64_t bytes = inkling_body_bytes(s, n);
+    if (!bytes || *left != bytes) {
+        payload_set_err(err, errlen, "Inkling payload byte count does not match its header");
+        return 1;
+    }
+    ds4_inkling_graph *g = &s->inkling_graph;
+    if (!inkling_graph_reset(g) || (flags && !inkling_spec_reset(&s->inkling_spec))) {
+        payload_set_err(err, errlen, "failed to reset Inkling state before restore");
+        return 1;
+    }
+    token_vec tokens = {0};
+    float *logits = xmalloc(DS4_N_VOCAB * sizeof(float));
+    int rc = 0;
+    for (unsigned i = 0; !rc && i < n; i++) {
+        uint32_t token;
+        rc = payload_read_u32(fp, &token, left, err, errlen);
+        if (rc) { break; }
+        if (token >= INKLING_VALID_VOCAB || token == IK_IMAGE_TOKEN || token == IK_AUDIO_TOKEN) {
+            payload_set_err(err, errlen, "Inkling payload contains an invalid text token");
+            rc = 1;
+            break;
+        }
+        ds4_tokens_push(&tokens, (int)token);
+    }
+    if (!rc) { rc = payload_read_bytes(fp, logits, DS4_N_VOCAB * sizeof(float), left, err, errlen); }
+    if (!rc) { rc = inkling_payload_state(INKLING_PAYLOAD_READ, fp, s, n, left, err, errlen); }
+    if (!rc && (*left || !ds4_gpu_synchronize())) {
+        payload_set_err(err, errlen, "Inkling payload restore did not finish");
+        rc = 1;
+    }
+    if (rc) {
+        token_vec_free(&tokens);
+        free(logits);
+        g->failed = true;
+        if (flags) { s->inkling_spec.draft.graph.failed = true; }
+        return rc;
+    }
+    token_vec_free(&s->checkpoint);
+    s->checkpoint = tokens;
+    memcpy(s->logits, logits, DS4_N_VOCAB * sizeof(float));
+    free(logits);
+    g->position = n;
+    if (flags) {
+        ds4_inkling_spec *spec = &s->inkling_spec;
+        spec->position = n;
+        spec->tail_rows = n < INKLING_DRAFT_LAYERS ? n : INKLING_DRAFT_LAYERS;
+        for (unsigned i = 0; i < INKLING_DRAFT_LAYERS; i++) {
+            spec->draft.positions[i] = n - spec->tail_rows;
+        }
+    }
+    s->checkpoint_valid = true;
+    return 0;
+}
+
 /* Qwen persists only mutable frontier state: PLE convolution, every GDN
  * recurrent pair, and live QSA prefix rows. PLE's two-token hash frontier is
  * reconstructed from the validated token history. */
@@ -52209,7 +52391,9 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
 int ds4_engine_routed_quant_bits(ds4_engine *e) {
     if (!e) return 0;
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
-        const ds4_tensor *gate = e->weights.layer[il].ffn_gate_exps;
+        const ds4_tensor *gate = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING
+            ? (e->weights.inkling.layer[il].gate ? e->weights.inkling.layer[il].w13 : NULL)
+            : e->weights.layer[il].ffn_gate_exps;
         if (gate) return gate->type == DS4_TENSOR_Q4_K ? 4 : 2;
     }
     return 0;
@@ -53481,9 +53665,10 @@ uint64_t ds4_session_payload_bytes(ds4_session *s) {
     if (!s || !s->checkpoint_valid) return 0;
     if (s->distributed) return 0;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_glm53(s) || ds4_session_is_inkling(s)) {
+    if (ds4_session_is_glm53(s)) {
         return 0;
     }
+    if (ds4_session_is_inkling(s)) { return inkling_payload_bytes(s); }
     if (ds4_session_is_step37(s)) {
         if (!s->step37_graph_ready || s->step37_trial_n || s->step37_media.count) { return 0; }
         return step37_payload_bytes_for_graph(&s->step37_graph,
@@ -53670,6 +53855,7 @@ int ds4_session_stage_payload(ds4_session *s, ds4_session_payload_file *out,
 
 int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen) {
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_inkling(s)) { return inkling_save_payload(s, fp, err, errlen); }
     if (ds4_session_is_step37(s)) {
         if (!fp || !ds4_session_payload_bytes(s)) {
             payload_set_err(err, errlen,
@@ -53690,10 +53876,6 @@ int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen)
                 (uint32_t)s->checkpoint.len, s->logits, fp, err, errlen);
     }
 #endif
-    if (ds4_session_is_inkling(s)) {
-        payload_set_err(err, errlen, "Inkling session snapshots are not implemented yet");
-        return 1;
-    }
     if (!s || !fp || !s->checkpoint_valid) {
         payload_set_err(err, errlen, "session has no valid checkpoint to save");
         return 1;
@@ -54153,10 +54335,6 @@ static int session_solar_load_payload(ds4_session *s,
 #endif
 
 int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, char *err, size_t errlen) {
-    if (ds4_session_is_inkling(s)) {
-        payload_set_err(err, errlen, "Inkling session snapshots are not implemented yet");
-        return 1;
-    }
     if (!s || !fp) {
         payload_set_err(err, errlen, "invalid session payload load");
         return 1;
@@ -54164,6 +54342,16 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
     s->generation++;   /* Inc 5a: content replaced from disk (even on failure
                         * the old checkpoint is no longer trustworthy) */
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_inkling(s)) {
+        s->checkpoint_valid = false;
+        s->checkpoint.len = 0;
+        s->mtp_draft_valid = false;
+        s->inkling_trial_n = 0;
+        if (s->inkling_graph_ready) {
+            s->inkling_graph.failed = true;
+            if (s->engine->mtp_ready) { s->inkling_spec.draft.graph.failed = true; }
+        }
+    }
     if (ds4_session_is_glm53(s)) {
         s->checkpoint_valid = false;
         s->checkpoint.len = 0;
@@ -54242,6 +54430,7 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
     }
     const uint32_t payload_version = h[1];
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_inkling(s)) { return inkling_load_payload(s, fp, &remaining, h, err, errlen); }
     if (ds4_session_is_solar(s)) {
         return session_solar_load_payload(
             s, fp, &remaining, h, err, errlen);
@@ -54667,21 +54856,24 @@ int ds4_session_save_snapshot(ds4_session *s, ds4_session_snapshot *snap, char *
         payload_set_err(err, errlen, "session has no valid checkpoint to snapshot");
         return 1;
     }
-    if (bytes > (uint64_t)SIZE_MAX) {
+    if (bytes >= (uint64_t)SIZE_MAX) {
         payload_set_err(err, errlen, "session snapshot is too large for this platform");
         return 1;
     }
-    if (snap->cap < bytes) {
-        uint8_t *p = realloc(snap->ptr, (size_t)bytes);
+    /* fmemopen appends a NUL on flush. Keep it outside the binary payload,
+     * otherwise a full buffer loses the last byte of convolution/MTP state. */
+    const uint64_t capacity = bytes + 1u;
+    if (snap->cap < capacity) {
+        uint8_t *p = realloc(snap->ptr, (size_t)capacity);
         if (!p) {
             payload_set_err(err, errlen, "out of memory while allocating session snapshot");
             return 1;
         }
         snap->ptr = p;
-        snap->cap = bytes;
+        snap->cap = capacity;
     }
 
-    FILE *fp = fmemopen(snap->ptr, (size_t)bytes, "wb");
+    FILE *fp = fmemopen(snap->ptr, (size_t)capacity, "wb");
     if (!fp) {
         payload_set_err(err, errlen, "failed to open memory stream for session snapshot");
         return 1;

@@ -113,8 +113,15 @@ matching its memory quote; host session parity also passed. The default
 prefill cap is 1024 (`DS4_INKLING_PREFILL_CHUNK`, range 1–8192, capped by context).
 Shorter prompts use their actual rows. Larger caps increase graph scratch;
 8192 is an experimental setting, not a measured default improvement.
-Batching, snapshots and distributed execution remain unavailable until their
-Inkling-specific state paths are implemented.
+Serial text snapshots preserve target KV/convolution state and, when loaded,
+the MTP predictor frontier. Media snapshots, batching and distributed
+execution remain unsupported. The [September 17 snapshot gate](benchmarks/serving-v013-2026-09-17/inkling.json)
+passed a 529-token local-ring wrap and 16 full-vocabulary/greedy continuation
+comparisons, with MTP off and on, at context 576. MTP continuation also
+matched carried KV and convolution state. At HTTP context 1024, a fresh
+process restored 287 of a 300-token follow-up and matched an independent
+cold process. These are short text lifecycle checks, not long-context or
+repeated throughput qualification.
 
 Rust CLI startup loaded the actual MQ85GB through the host tensor/vocabulary
 tables and completed a 28-token source-template chat prefill. All 200058
@@ -162,8 +169,9 @@ smokes, not broad ASR or multimodal quality qualification.
 ## Remaining qualification
 
 1. Broaden agent and REPL qualification beyond the [v0.1.2 checks](releases/v0.1.2.md).
-2. Extend generation checks beyond short serial smokes; implement disk
-   snapshots, batching and distributed execution before qualifying those paths.
+2. Broaden text snapshot lifecycle checks beyond the September 17 fixtures;
+   implement media snapshots, batching and distributed execution before
+   qualifying those paths.
 3. Extend full-model chunk/decode parity to long context and qualify
    captured/eager execution. Cover local-ring wrap, global attention and
    convolution history beyond the existing component checks.

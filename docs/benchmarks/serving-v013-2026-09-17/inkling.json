@@ -1,0 +1,100 @@
+{
+  "schema": "v013-live-evidence-v1",
+  "base_commit": "ea580c6394ec30bae7f444d5ae6411f76a996674",
+  "source_state": "uncommitted v0.1.3 work; executable hashes identify tested builds",
+  "device": "NVIDIA GB10",
+  "driver": "610.43.02",
+  "cuda": "13.3",
+  "gpu_clock_limit_mhz": [
+    300,
+    2200
+  ],
+  "family": "inkling",
+  "artifact": "MQ85GB + MTP-BF16",
+  "native_contexts": [
+    32,
+    576
+  ],
+  "long_native_prefix_tokens": 529,
+  "http_context": 1024,
+  "http_prompt_tokens": 300,
+  "files": {
+    "inkling-payload-fixed.log": {
+      "sha256": "5ec48263da503626dc622a53b361e9cda0515b3c6e471f274d128982f8307946",
+      "bytes": 855
+    },
+    "inkling-wrap-base.log": {
+      "sha256": "cc4f0d4e2927e03a3ef76320d96a66c41c14b06ea220aaff0570dd22d345daca",
+      "bytes": 1318
+    },
+    "inkling-wrap-mtp.log": {
+      "sha256": "a3b7957d5377227e5358f9aae44ce459ca2bd74a72113e3503b035082213cd71",
+      "bytes": 1718
+    },
+    "inkling-http-fixed/seed.summary.json": {
+      "sha256": "8cfbb02761f190ccbb9e9325820a0cd50fde6223562aed5d44ee0355500e3e6e",
+      "bytes": 303
+    },
+    "inkling-http-fixed/restored.summary.json": {
+      "sha256": "2bb95c4546580e3a7762eeab29de27b14a63f314c33133da2d344b9dd5893c77",
+      "bytes": 259
+    },
+    "inkling-http-fixed/cold.summary.json": {
+      "sha256": "5e780daeb4639d0e8a07bf1f0afb2c6abf318808251b255daa574ea83531eb74",
+      "bytes": 303
+    }
+  },
+  "http": {
+    "seed": {
+      "phase": "seed",
+      "seconds": 1.7963257260271348,
+      "cached_tokens": 0,
+      "prompt_tokens": 283,
+      "text": "4",
+      "trace": {
+        "effective_lane": "serial",
+        "reuse_kind": "cold",
+        "speculation_active": true,
+        "fallback_reason": null,
+        "reuse_miss": "no checkpoint at or below LCP"
+      }
+    },
+    "restored": {
+      "phase": "restored",
+      "seconds": 0.4162227170309052,
+      "cached_tokens": 287,
+      "prompt_tokens": 300,
+      "text": "5",
+      "trace": {
+        "effective_lane": "serial",
+        "reuse_kind": "exact",
+        "speculation_active": true,
+        "fallback_reason": null
+      }
+    },
+    "cold": {
+      "phase": "cold",
+      "seconds": 1.6565624930080958,
+      "cached_tokens": 0,
+      "prompt_tokens": 300,
+      "text": "5",
+      "trace": {
+        "effective_lane": "serial",
+        "reuse_kind": "cold",
+        "speculation_active": true,
+        "fallback_reason": null,
+        "reuse_miss": "no checkpoint at or below LCP"
+      }
+    }
+  },
+  "binaries": {
+    "scratch/v013/bin/ds4-server": "4aec8938cb85e923a554c030a30aef4adb11c35600dd8d61529cb634617da388",
+    "tests/test_inkling_session": "a57545e9b92bb72c3bde8aaf69812b1b3111de69d7699cb22ee81c7512993421",
+    "tests/test_inkling_payload": "b539beb669c4dab8ebd60f85a8e7d2549d41b471e1c1766bf335668e41c54272"
+  },
+  "limitations": [
+    "single HTTP request per phase; not repeated performance evidence",
+    "text-only persistence; media snapshots explicitly unsupported",
+    "no independent full-model source parity or long-context qualification"
+  ]
+}

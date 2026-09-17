@@ -945,6 +945,13 @@ tests/test_inkling_forward: tests/test_inkling_forward.o $(DS4_CUDA_SUPPORT_OBJS
 tests/test_inkling_session: tests/test_inkling_session.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
 
+tests/test_inkling_payload.o: tests/test_inkling_payload.c ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -fno-fast-math -ffunction-sections -fdata-sections \
+		-Wno-unused-function -I. -c -o $@ $<
+
+tests/test_inkling_payload: tests/test_inkling_payload.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
 tests/test_inkling_encoders: tests/test_inkling_encoders.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
 
