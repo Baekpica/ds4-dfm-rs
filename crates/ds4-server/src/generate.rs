@@ -682,7 +682,7 @@ fn disk_sync_template(
 ) -> Result<i32, GenerateError> {
     let history = policy
         .load
-        .then(|| step_history_frontier(model_id, prompt, tokens, |text| io.tokenize_suffix(text)))
+        .then(|| history_frontier(model_id, prompt, tokens, |text| io.tokenize_suffix(text)))
         .flatten()
         .filter(|(_, prefix)| {
             store
@@ -743,22 +743,25 @@ fn disk_sync_template(
 }
 
 #[cfg(any(feature = "native", test))]
-pub(crate) fn step_history_frontier(
+pub(crate) fn history_frontier(
     model_id: i32,
     prompt: &[u8],
     tokens: &[i32],
     encode: impl FnOnce(&[u8]) -> Result<Vec<i32>, GenerateError>,
 ) -> Option<(Vec<u8>, Vec<i32>)> {
-    if syntax_for_model_id(model_id) != ModelSyntax::Step37 {
-        return None;
-    }
-    let text = prompt.strip_suffix(b"assistant\n<think>\n</think>\n")?;
-    if !text.ends_with(b"<|im_start|>") {
+    let (suffix, boundary): (&[u8], &[u8]) = match syntax_for_model_id(model_id) {
+        ModelSyntax::Step37 => (b"assistant\n<think>\n</think>\n", b"<|im_start|>"),
+        ModelSyntax::Motif3 => (b"<think></think>", b"<|startofturn|><|assistant|>"),
+        _ => return None,
+    };
+    let text = prompt.strip_suffix(suffix)?;
+    if !text.ends_with(boundary) {
         return None;
     }
     let prefix = encode(text).ok()?;
-    // Stop at the control token: a leading content newline can merge with
-    // the role newline on history replay. Validate the full token prefix too.
+    // Both official templates omit the empty think pair on history replay.
+    // Stop at a control token: content whitespace may be trimmed (Motif) or
+    // merge with the role newline (Step). Validate the full token prefix too.
     if prefix.is_empty() || prefix.len() >= tokens.len() || !tokens.starts_with(&prefix) {
         return None;
     }
@@ -3664,15 +3667,111 @@ mod disk_sync_tests {
     }
 
     #[test]
+    fn motif_restart_uses_history_kv() {
+        use ds4_core::chat_template::{ChatOptions, RenderClock, Template};
+        use serde_json::json;
+
+        let template = Template::compile(
+            include_str!("../../../tests/fixtures/chat-template/models/motif/chat_template.jinja"),
+            RenderClock::Fixed(0),
+        )
+        .unwrap();
+        let options = ChatOptions::new(3, ds4_core::ChatThinkMode::None);
+        let first = template
+            .render_chat(
+                &[json!({"role":"user", "content":"What is 2 + 2?"})],
+                &[],
+                options,
+            )
+            .unwrap();
+        let follow = template
+            .render_chat(
+                &[
+                    json!({"role":"user", "content":"What is 2 + 2?"}),
+                    json!({"role":"assistant", "content":" 2 + 2 = 4.\n"}),
+                    json!({"role":"user", "content":"What is 4 + 1?"}),
+                ],
+                &[],
+                options,
+            )
+            .unwrap();
+        let history = first.strip_suffix("<think></think>").unwrap();
+        assert!(follow.starts_with(history));
+        assert!(!follow.starts_with(&first));
+        let tokens = |text: &str| text.bytes().map(i32::from).collect::<Vec<_>>();
+        let (dir, mut store) = store("motif-history-frontier");
+        store.bind_identity([7; 32]);
+        let mut saving = FakeSerial::new(&[], first.as_bytes());
+        saving.suffix_tokens = tokens(history);
+        super::disk_sync_template(
+            &mut saving,
+            Some(&mut store),
+            3,
+            2,
+            first.as_bytes(),
+            &tokens(&first),
+            DiskSyncPolicy {
+                save_current: false,
+                load: true,
+            },
+        )
+        .unwrap();
+        let (_, envelope) = store
+            .text_prefix_candidate(follow.as_bytes(), 3, 2, 4096)
+            .unwrap()
+            .expect("Motif must save the real history frontier");
+        assert_eq!(envelope.text, history.as_bytes());
+        assert_eq!(envelope.header.tokens as usize, history.len());
+        assert!(saving.saved_prefixes.contains(&tokens(history)));
+        assert_eq!(saving.live, tokens(&first));
+
+        let options = store.opt.clone();
+        drop(store);
+        let mut store = Store::open(&dir, 16, true, options).unwrap();
+        store.bind_identity([7; 32]);
+        let mut loading = FakeSerial::new(&[], follow.as_bytes());
+        loading.loaded_tokens = tokens(history);
+        loading.suffix_tokens = tokens(follow.strip_suffix("<think></think>").unwrap());
+        let cached = super::disk_sync_template(
+            &mut loading,
+            Some(&mut store),
+            3,
+            2,
+            follow.as_bytes(),
+            &tokens(&follow),
+            DiskSyncPolicy {
+                save_current: false,
+                load: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(cached as usize, history.len());
+        assert_eq!(loading.reuse, ReuseTaken::Exact);
+        assert_eq!(loading.live, tokens(&follow));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn motif_history_needs_token_cut() {
+        let prompt = b"history<|startofturn|><|assistant|><think></think>";
+        assert!(super::history_frontier(3, prompt, &[1, 2, 11, 12], |_| Ok(vec![1, 2])).is_some());
+        assert!(super::history_frontier(3, prompt, &[1, 2, 11, 12], |_| Ok(vec![1, 9])).is_none());
+        assert!(super::history_frontier(3, prompt, &[1, 2], |_| Ok(vec![1, 2])).is_none());
+        for other in [b"user<think></think>".as_slice(), b"<|assistant|><think>"] {
+            assert!(
+                super::history_frontier(3, other, &[1, 2], |_| panic!("not a history cut"))
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
     fn step_history_needs_token_cut() {
         let prompt = b"history<|im_start|>assistant\n<think>\n</think>\n";
-        assert!(super::step_history_frontier(10, prompt, &[1, 2, 3], |_| Ok(vec![1, 9])).is_none());
+        assert!(super::history_frontier(10, prompt, &[1, 2, 3], |_| Ok(vec![1, 9])).is_none());
+        assert!(super::history_frontier(10, prompt, &[1, 2, 3], |_| Ok(vec![1, 2, 3])).is_none());
         assert!(
-            super::step_history_frontier(10, prompt, &[1, 2, 3], |_| Ok(vec![1, 2, 3])).is_none()
-        );
-        assert!(
-            super::step_history_frontier(6, prompt, &[1, 2, 3], |_| panic!("other family"))
-                .is_none()
+            super::history_frontier(6, prompt, &[1, 2, 3], |_| panic!("other family")).is_none()
         );
     }
 

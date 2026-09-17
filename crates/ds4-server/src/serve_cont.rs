@@ -1032,19 +1032,15 @@ fn warm_placement(
 }
 
 #[cfg(any(feature = "native", test))]
-fn motif3_history_retire_prompt(prompt: &[u8], syntax: ModelSyntax) -> &[u8] {
-    // Motif none-think generation ends with an empty think pair; official
-    // history replay omits it. Bank keys must use the history form or the
-    // next tool-result turn diverges at <|assistant|>.
-    //
-    // Step is deliberately not here: this bank snapshot holds the pair.
-    // Its separate history checkpoint was captured before that suffix;
-    // shortening this retired key would describe different KV.
+fn history_retire_prompt(prompt: &[u8], syntax: ModelSyntax) -> &[u8] {
+    // Motif and Step snapshots retain the generation-only think pair.
+    // Their separate history checkpoints were captured before that suffix;
+    // shortening a retired key would describe different native KV.
     //
     // Ling writes the same bytes but replays them: Bailing V3 re-emits the
     // pair before every history assistant turn, so a stripped key is never
     // the next render's prefix and every exact and disk hit would miss.
-    if syntax == ModelSyntax::Ling3Vl {
+    if matches!(syntax, ModelSyntax::Motif3 | ModelSyntax::Ling3Vl) {
         return prompt;
     }
     prompt.strip_suffix(b"<think></think>").unwrap_or(prompt)
@@ -1057,7 +1053,7 @@ fn committed_key(
     syntax: ModelSyntax,
     mut token_text: impl FnMut(i32) -> Vec<u8>,
 ) -> Vec<u8> {
-    let mut key = motif3_history_retire_prompt(prompt, syntax).to_vec();
+    let mut key = history_retire_prompt(prompt, syntax).to_vec();
     for &token in tokens.iter().take(tokens.len().saturating_sub(1)) {
         key.extend(token_text(token));
     }
@@ -3440,7 +3436,7 @@ mod native {
                 && parsed.audios.is_empty()
                 && crate::generate::ordinary_disk_cache_eligible(parsed))
             .then(|| {
-                crate::generate::step_history_frontier(
+                crate::generate::history_frontier(
                     self.model_id,
                     &stepper.prompt,
                     &admit.tokens,
@@ -4457,7 +4453,7 @@ mod bank_tests {
                     _ => Vec::new(),
                 }
             ),
-            Some((b"<|assistant|>I need".to_vec(), false))
+            Some((b"<|assistant|><think></think>I need".to_vec(), false))
         );
     }
 

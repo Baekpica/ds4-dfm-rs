@@ -128,6 +128,9 @@ typedef struct {
     int cached;
     int place_bank;   /* 0-based target; -1 = engine pick */
     int fork_bank;    /* 0-based source; -1 = none */
+    ds4_batch_ctx *ctx;
+    int checkpoint_at, checkpoints;
+    ds4_session_payload_file history;
     int next;
     int admitted_cached;
     int admitted_computed;
@@ -136,6 +139,22 @@ typedef struct {
     int done;
     int failed;
 } partial_case;
+
+static void partial_checkpoint(void *ud, void *user, int bank, int current) {
+    (void)user;
+    partial_case *test = ud;
+    const int *tokens = NULL;
+    char err[256] = "";
+    if (current != test->checkpoint_at ||
+        ds4_batch_ctx_bank_committed(test->ctx, bank, &tokens) != current ||
+        !tokens || memcmp(tokens, test->prompt->v, (size_t)current * sizeof(int)) ||
+        ds4_cont_bank_stage_payload(test->ctx, (uint32_t)bank,
+                                   &test->history, err, sizeof(err))) {
+        fprintf(stderr, "Motif-3 history capture failed: %s\n", err);
+        test->failed = 1;
+    }
+    test->checkpoints++;
+}
 
 static int partial_admitted(void *ud, void *user, int cached,
                             int computed, int bank) {
@@ -158,6 +177,8 @@ static int partial_admit(void *ud, ds4_cont_request *req) {
     req->n_cached = test->cached;
     req->place_bank = test->place_bank + 1;
     req->fork_bank = test->fork_bank + 1;
+    req->checkpoint_at = test->checkpoint_at;
+    req->on_checkpoint = test->checkpoint_at ? partial_checkpoint : NULL;
     req->on_admitted = partial_admitted;
     req->user = test;
     return 1;
@@ -310,6 +331,80 @@ done:
     return failed;
 }
 
+static int same_payload(const ds4_session_payload_file *a,
+                        const ds4_session_payload_file *b) {
+    if (a->bytes != b->bytes) return 0;
+    FILE *left = fopen(a->path, "rb"), *right = fopen(b->path, "rb");
+    int same = left && right;
+    unsigned char x[4096], y[4096];
+    uint64_t remaining = a->bytes;
+    while (same && remaining) {
+        const size_t n = remaining < sizeof(x) ? (size_t)remaining : sizeof(x);
+        same = fread(x, 1, n, left) == n && fread(y, 1, n, right) == n && !memcmp(x, y, n);
+        remaining -= n;
+    }
+    if (left) fclose(left);
+    if (right) fclose(right);
+    return same;
+}
+
+/* A generation-only suffix needs a checkpoint before it, even when no
+ * periodic checkpoint fits the short prompt. Its callback payload and the
+ * native SWA partial checkpoint must both describe that exact frontier. */
+static int run_history_stage(ds4_engine *engine, const ds4_tokens *seed) {
+    enum { CTX = 128, SOURCE = 64, HISTORY = 29, CUT = 35 };
+    ds4_batch_ctx *ctx = NULL;
+    ds4_tokens source = {0}, branch = {0};
+    ds4_session_payload_file before = {0}, after = {0};
+    partial_case initial = {0}, replay = {0}, cold = {0};
+    char err[256] = "";
+    int failed = 1;
+    if (ds4_batch_ctx_create_fit(engine, CTX, 4, 4 * CTX, &ctx, err, sizeof(err)) || !ctx)
+        goto done;
+    while (source.len < SOURCE)
+        ds4_tokens_push(&source, seed->v[source.len % seed->len]);
+    initial = (partial_case){.prompt = &source, .place_bank = 0, .fork_bank = -1,
+        .ctx = ctx, .checkpoint_at = HISTORY};
+    if (ds4_engine_continuous_generate(ctx, partial_admit, NULL, partial_done,
+                                      &initial, err, sizeof(err)) ||
+        initial.failed || !initial.done || initial.checkpoints != 1 ||
+        initial.admitted_cached != 0 || initial.admitted_computed != SOURCE ||
+        ds4_cont_bank_stage_payload(ctx, 0u, &before, err, sizeof(err)))
+        goto done;
+    for (int i = 0; i < CUT; i++) ds4_tokens_push(&branch, source.v[i]);
+    ds4_tokens_push(&branch, (source.v[CUT] + 1) % ds4_engine_vocab_size(engine));
+    if (expect_motif3_partial(ctx, &branch, 0, SOURCE, CUT, HISTORY, 2, 3,
+                             err, sizeof(err)) ||
+        ds4_cont_bank_stage_payload(ctx, 0u, &after, err, sizeof(err)) ||
+        !same_payload(&before, &after))
+        goto done;
+    FILE *saved = fopen(initial.history.path, "rb");
+    if (!saved) goto done;
+    const int restored = ds4_cont_bank_restore_payload(ctx, 1u, saved,
+        initial.history.bytes, err, sizeof(err));
+    fclose(saved);
+    const int *tokens = NULL;
+    if (restored || ds4_batch_ctx_bank_committed(ctx, 1, &tokens) != HISTORY ||
+        !tokens || memcmp(tokens, source.v, HISTORY * sizeof(int)))
+        goto done;
+    if (run_partial_request(ctx, &branch, HISTORY, 1, -1, &replay, err, sizeof(err)) ||
+        run_partial_request(ctx, &branch, 0, 2, -1, &cold, err, sizeof(err)) ||
+        replay.admitted_cached != HISTORY || replay.token != cold.token)
+        goto done;
+    failed = 0;
+    fprintf(stderr, "Motif-3 history cut: boundary=%d partial=%d source_payload=unchanged "
+                    "disk_tokens=exact cold_token=equal\n", HISTORY, HISTORY);
+done:
+    if (failed) fprintf(stderr, "Motif-3 history frontier gate failed: %s\n", err);
+    ds4_session_payload_file_free(&initial.history);
+    ds4_session_payload_file_free(&before);
+    ds4_session_payload_file_free(&after);
+    ds4_tokens_free(&source);
+    ds4_tokens_free(&branch);
+    ds4_batch_ctx_destroy(ctx);
+    return failed;
+}
+
 static int run_motif3_partial_gate(ds4_engine *engine) {
     ds4_tokens seed = {0};
     int failed = 0;
@@ -320,9 +415,11 @@ static int run_motif3_partial_gate(ds4_engine *engine) {
         return 1;
     }
 
+    failed = run_history_stage(engine, &seed);
+
     /* Stage 1: request-boundary checkpoints inside the linear (unwrapped)
      * window regime; mirrors the Solar 16/24/32 gate. */
-    {
+    if (!failed) {
         const int targets[3] = {16, 24, 32};
         const int cuts[2] = {19, 27};
         const int checkpoints[2] = {16, 24};

@@ -62929,6 +62929,8 @@ static int family_banked_engine_continuous_generate(
                 (req.image_count == 0u || ctx->qwen) &&
                 req.n_cached > 0 && req.n_cached <= req.n
                     ? (uint32_t)req.n_cached : 0u;
+            const uint32_t source_before = src >= 0 && (uint32_t)src < MS &&
+                ctx->bank_hist_valid[src] ? ctx->bank_hist_len[src] : 0u;
             if (src >= 0 && requested_cached != 0u) {
                 const bool source_idle =
                     (uint32_t)src < MS &&
@@ -63145,6 +63147,13 @@ static int family_banked_engine_continuous_generate(
                 forked = false;
                 partial = false;
             }
+            if (forked && ctx->motif3 && getenv("DS4_MOTIF3_BATCH_TRACE")) {
+                fprintf(stderr,
+                        "ds4: Motif-3 bank reuse source=%d target=%u cached=%u "
+                        "partial=%u source_before=%u source_after=%u target_after=%u\n",
+                        src, b, cached, partial ? 1u : 0u, source_before,
+                        ctx->bank_hist_len[src], ctx->bank_hist_len[b]);
+            }
             if (forked) {
                 ctx->fork_admits++;
                 if (partial) {
@@ -63200,7 +63209,7 @@ static int family_banked_engine_continuous_generate(
             cb->sample_override = req.sample_override;
             cb->step_accept = req.step_accept;
             cb->alive = req.alive;
-            cb->checkpoint_at = ctx->step37 && req.checkpoint_at > 0 &&
+            cb->checkpoint_at = (ctx->step37 || ctx->motif3) && req.checkpoint_at > 0 &&
                 (uint32_t)req.checkpoint_at > cached && req.checkpoint_at < req.n
                 ? (uint32_t)req.checkpoint_at : 0u;
             cb->on_checkpoint = req.on_checkpoint;

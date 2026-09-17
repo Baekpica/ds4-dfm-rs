@@ -115,7 +115,8 @@ Each field is recorded where the decision is made, not inferred from
 counters. `exact` reuses a state that ends at this prompt's common
 prefix and prefills only the appended turn, so cached and computed
 tokens are both positive; `partial` restores a checkpoint below that
-prefix and replays the gap; `fork` copies another bank and preserves
+prefix and replays the gap, including a partial copy into another bank;
+`fork` copies a complete retained frontier into another bank and preserves
 the source. `speculation_active` follows the executed path: the serial
 engine's speculative eval, or a native sequence that ran draft rows.
 
@@ -125,10 +126,12 @@ Restore miss is not "disk broken". `reuse_miss` carries the reason from the
 decision that produced it, and is absent when nothing was refused:
 
 - `rendered prefix changed` (template dropped an empty thinking block).
-  Step's official follow-up render drops the empty `<think>` pair that the
-  stored KV still holds, so the restart is a cold prefill until a
-  checkpoint exists at that history frontier (P1); reusing across it would
-  continue from a token sequence the client never sent.
+  Step and Motif official follow-up renders omit a generation-only empty
+  `<think>` pair. Their history checkpoints capture matching native KV,
+  tokens and logits before that suffix; the completed bank retains its
+  original token sequence. A Motif append can therefore require `partial`
+  rollback even when the visible messages only grow. Without a compatible
+  checkpoint, the request stays cold: shortening a text key cannot change KV.
 - `below minimum token threshold`
 - `payload family/layout mismatch`. Also the answer when the chosen
   payload cannot be read back — a truncated or corrupt record is refused

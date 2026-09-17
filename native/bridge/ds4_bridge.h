@@ -509,7 +509,7 @@ typedef struct {
     int32_t n_cached;       /* committed prefix length; 0 = cold */
     int32_t *bank_used;     /* OUT (optional): placed bank id */
     int32_t fork_bank;      /* source bank id + 1; 0 = no fork */
-    int32_t checkpoint_at;  /* Step prefill boundary; 0 disables */
+    int32_t checkpoint_at;  /* canonical history prefill boundary; 0 disables */
     void (*on_checkpoint)(void *ud, void *user, int bank, int current);
 } ds4_bridge_cont_request;
 
