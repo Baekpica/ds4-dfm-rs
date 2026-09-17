@@ -4371,8 +4371,8 @@ int ds4_gpu_ling3vl_expand_ready(
         uint32_t                value_dim);
 
 /* Expanded-MLA prefill: latent cache rows [slot0, slot0+rows) become per-head
- * FP32 K [rows][heads][qk_nope+qk_rope] and V [rows][heads][value_dim] for
- * the Motif range attention kernel. */
+ * K [rows][heads][qk_nope+qk_rope] and V [rows][heads][value_dim], BF16 when
+ * kv_bf16 is set (the Ling range kernel) or FP32 (Motif's). */
 int ds4_gpu_ling3vl_expand_kv(
         ds4_gpu_tensor       *k_full,
         ds4_gpu_tensor       *value,
@@ -4388,7 +4388,27 @@ int ds4_gpu_ling3vl_expand_kv(
         uint32_t                latent_dim,
         uint32_t                qk_nope,
         uint32_t                qk_rope,
-        uint32_t                value_dim);
+        uint32_t                value_dim,
+        int                     kv_bf16);
+
+/* Attention of n_query rows at query_pos0 against one expanded segment of
+ * n_kv keys at kv_pos0 (kv_pos0 <= query_pos0), with per-row/head LSE for
+ * the segment merge.  kv_bf16 selects the matching kernel. */
+int ds4_gpu_ling3vl_expanded_attn(
+        ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *lse,
+        const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *k_full,
+        const ds4_gpu_tensor *value,
+        uint32_t                n_query,
+        uint32_t                query_pos0,
+        uint32_t                n_kv,
+        uint32_t                kv_pos0,
+        uint32_t                heads,
+        uint32_t                key_dim,
+        uint32_t                value_dim,
+        float                   scale,
+        int                     kv_bf16);
 
 int ds4_gpu_ling3vl_vision_patch_position(
         ds4_gpu_tensor       *hidden,

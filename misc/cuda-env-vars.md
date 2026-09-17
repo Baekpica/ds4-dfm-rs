@@ -89,6 +89,13 @@ The bandwidth figure is informational; we don't tier on it.
   log-sum-exp. The absorbed form costs 3.4x the attention FLOPs per
   head-key and fell to 32 TFLOPS at 64K. Decode (n = 1) stays absorbed.
 
+- `DS4_LING3VL_MLA_KV_F32=1` restores FP32 expansion scratch, one-chunk
+  key segments and Motif's range kernel. Unset writes the expanded K/V as
+  BF16 (the GEMM output type), walks three-chunk segments so the LSE
+  merges drop 3x, and runs the Ling range kernel (64-key tiles, ldmatrix
+  fragments). `DS4_LING3VL_MLA_TK=32` keeps the BF16 path on 32-key tiles
+  (slower; measured for the record).
+
 - `DS4_LING3VL_NO_MLA_HMMA=1` restores Motif's SIMT latent attention on
   absorbed Ling prefill. Unset uses the dots3 tensor-core absorbed-MLA
   kernel (rows >= 8, 32-head groups, latent 512). Decode stays on Motif.

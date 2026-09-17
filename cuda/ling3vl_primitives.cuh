@@ -270,9 +270,25 @@ __global__ static void ling3vl_value_project_bf16(
 
 /* Expanded-MLA prefill: the single rotated key tail is shared by every head,
  * so broadcast k_pe[slot0 + t] into k_full[t][h][qk_nope..key_dim) for all
- * heads.  The GEMM that fills the leading qk_nope columns runs beside it. */
+ * heads.  The GEMM that fills the leading qk_nope columns runs beside it.
+ * The scratch is BF16 (a straight copy of the cache row) or FP32. */
+template <typename T>
+__device__ __forceinline__ static void ling3vl_store_bf16x4(
+        T *dst, const __nv_bfloat16 *src);
+template <>
+__device__ __forceinline__ void ling3vl_store_bf16x4<float>(
+        float *dst, const __nv_bfloat16 *src) {
+    *reinterpret_cast<float4 *>(dst) = ling3vl_bf16x4(src);
+}
+template <>
+__device__ __forceinline__ void ling3vl_store_bf16x4<__nv_bfloat16>(
+        __nv_bfloat16 *dst, const __nv_bfloat16 *src) {
+    *reinterpret_cast<uint2 *>(dst) = *reinterpret_cast<const uint2 *>(src);
+}
+
+template <typename T>
 __global__ static void ling3vl_expand_k_pe(
-        float *k_full, const __nv_bfloat16 *k_pe, unsigned slot0,
+        T *k_full, const __nv_bfloat16 *k_pe, unsigned slot0,
         unsigned rows, unsigned heads, unsigned key_dim, unsigned qk_nope,
         unsigned qk_rope) {
     const unsigned quads = qk_rope / 4u;
@@ -281,9 +297,9 @@ __global__ static void ling3vl_expand_k_pe(
     const unsigned c = (unsigned)(idx % quads) * 4u;
     const unsigned h = (unsigned)((idx / quads) % heads);
     const unsigned t = (unsigned)(idx / quads / heads);
-    const float4 v = ling3vl_bf16x4(k_pe + (uint64_t)(slot0 + t) * qk_rope + c);
-    *reinterpret_cast<float4 *>(
-        k_full + ((uint64_t)t * heads + h) * key_dim + qk_nope + c) = v;
+    ling3vl_store_bf16x4<T>(
+        k_full + ((uint64_t)t * heads + h) * key_dim + qk_nope + c,
+        k_pe + (uint64_t)(slot0 + t) * qk_rope + c);
 }
 
 /* RMSNorm over the leading `dim` of a fused kv_a_mqa row.  The row is

@@ -15,6 +15,9 @@ enum { L3V_HIDDEN = 2560, L3V_HEADS = 32, L3V_KDA_HEAD = 128,
        L3V_VDIM = L3V_HEADS * L3V_VALUE_MLA,
        L3V_DENSE = 6144, L3V_EXPERT_FF = 768, L3V_EXPERTS = 512,
        L3V_USED = 8, L3V_CONTEXT = 131072,
+       /* BF16 K/V segments: 3 x cap x (6144 + 4096) x 2 B fits the
+        * cap x 32 x 512 x 4 B q_absorbed buffer they alias (94%). */
+       L3V_MLA_SEG_CHUNKS = 3,
        L3V_SECTION_T = 8, L3V_SECTION_H = 12 };
 
 /* Contiguous [T, H, W] split of the 32 rotary pairs, adjacent-pair rotation.
