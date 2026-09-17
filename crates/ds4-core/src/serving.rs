@@ -735,8 +735,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             variant,
             banks: BankLane::Persistent,
             bank_support: Support::Qualified,
-            reuse: ReuseKind::Exact,
-            reuse_support: Support::Qualified,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Present,
             disk: Support::Qualified,
             snapshot: Support::Qualified,
             mtp: MtpKind::None,
@@ -1065,6 +1065,10 @@ pub fn resolve_plan(
         // downgraded plan keeps the family's verification level.
         prefix_reuse: if reuse == ReuseKind::None {
             Support::None
+        } else if reuse == ReuseKind::Exact && caps.variant == Variant::Kexaone236B {
+            // EXAONE's existing exact path stays qualified while its new
+            // checkpoint/fork path awaits its separate live gates.
+            Support::Qualified
         } else {
             caps.reuse_support
         },
@@ -1481,6 +1485,16 @@ fn resolve_reuse(
         PrefixReuse::Auto => {
             if caps.reuse != ReuseKind::Partial {
                 return caps.reuse;
+            }
+            if caps.reuse_support != Support::Qualified {
+                issues.push(warn(
+                    "partial_unqualified",
+                    format!(
+                        "{} partial reuse is implemented but not qualified",
+                        caps.variant_name()
+                    ),
+                ));
+                return ReuseKind::Exact;
             }
             match partial_block(driver, facts) {
                 Some(block) => {
@@ -1925,7 +1939,9 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
         Variant::Glm53Flash => "serial graph is capped at 2,048 tokens; snapshots unsupported",
         Variant::Dots3NotePrev => "live serving is serial; embedded MTP is bound, not executed",
         Variant::InklingSmall => "serial text snapshots present; media snapshots unsupported",
-        Variant::Kexaone236B => "exact-frontier reuse only; partial checkpoint is a separate task",
+        Variant::Kexaone236B => {
+            "exact reuse qualified; LLLG partial checkpoints await live qualification"
+        }
         Variant::Qwen38FlashNext => {
             "common UX baseline; configured values and verified combinations differ"
         }
@@ -2531,13 +2547,19 @@ mod tests {
     }
 
     #[test]
-    fn exaone_forced_partial_is_an_error() {
+    fn exaone_partial_is_present() {
         let mut req = ServingRequest::default();
         req.prefix_reuse = PrefixReuse::Partial;
+        let p = plan(req.clone(), ModelFamily::ExaoneMoe, Variant::Kexaone236B);
+        assert!(!p.has_errors());
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Partial);
+        assert_eq!(p.qualified.prefix_reuse, Support::Present);
+
+        req.prefix_reuse = PrefixReuse::Auto;
         let p = plan(req, ModelFamily::ExaoneMoe, Variant::Kexaone236B);
-        assert!(p.has_errors());
-        assert!(p.issues.iter().any(|i| i.code == "partial_unsupported"));
+        assert!(!p.has_errors());
         assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
+        assert!(p.issues.iter().any(|i| i.code == "partial_unqualified"));
     }
 
     #[test]

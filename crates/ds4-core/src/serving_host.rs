@@ -9,7 +9,7 @@ use crate::gguf::GgufFile;
 use crate::ling3vl;
 use crate::serving::{
     BankLane, EngineFacts, LaneMode, MaxSeqs, MtpKind, MtpMode, PrefixReuse, ReuseKind,
-    ServingCaps, ServingRequest, DEFAULT_MAX_SEQS, DEFAULT_SCHED_CHUNK,
+    ServingCaps, ServingRequest, Support, DEFAULT_MAX_SEQS, DEFAULT_SCHED_CHUNK,
 };
 use crate::shape::{ModelFamily, Shape, Variant};
 use crate::tensors::{model_split_sibling_path, TensorInventory};
@@ -301,7 +301,11 @@ pub fn fill_quote_facts(
                 kv + row + logits + batch_logits,
                 u64::from(native) * row,
                 0,
-                0,
+                if partial {
+                    exaone_checkpoint_bytes(s, ctx)
+                } else {
+                    0
+                },
             )
         }
         _ => (kv, 0, 0, 0),
@@ -1116,8 +1120,29 @@ fn motif_checkpoint_pool_bytes(shape: Shape) -> u64 {
 }
 
 // Same gate as apply_env publishing DS4_SERVER_FORK_PARTIAL=1.
+// EXAONE LLLG snapshots contain the 36 local GQA windows; global layers
+// stay in the source bank. The appended MTP block is not executed here.
+fn exaone_checkpoint_bytes(shape: Shape, ctx: u64) -> u64 {
+    if shape.variant != Variant::Kexaone236B || shape.n_swa_period == 0 {
+        return 0;
+    }
+    let n_exec = shape.n_layer.saturating_sub(shape.n_nextn_predict);
+    let local = (0..n_exec)
+        .filter(|il| il % shape.n_swa_period != shape.n_swa_period - 1)
+        .count() as u64;
+    local
+        * ctx.min(u64::from(shape.n_swa))
+        * 2
+        * u64::from(shape.n_head_kv)
+        * u64::from(shape.n_head_dim)
+        * SIZEOF_U16
+        * CHECKPOINT_SLOTS
+}
+
 fn quote_partial(req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts) -> bool {
-    if caps.reuse != ReuseKind::Partial {
+    if caps.reuse != ReuseKind::Partial
+        || (req.prefix_reuse == PrefixReuse::Auto && caps.reuse_support != Support::Qualified)
+    {
         return false;
     }
     match req.prefix_reuse {
@@ -4077,6 +4102,39 @@ exit 1
             host,
         );
         assert_eq!(auto_facts.per_bank_bytes, off_facts.per_bank_bytes);
+    }
+
+    #[test]
+    fn exaone_checkpoint_uses_lllg() {
+        let _env = lock_test_env();
+        let _partial = EnvGuard::unset("DS4_SERVER_FORK_PARTIAL");
+        for (reuse, ctx, expected) in [
+            (PrefixReuse::Partial, 512, 603_979_776),
+            (PrefixReuse::Partial, 64, 301_989_888),
+            (PrefixReuse::Auto, 512, 0),
+            (PrefixReuse::Exact, 512, 0),
+            (PrefixReuse::Off, 512, 0),
+        ] {
+            let req = ServingRequest {
+                prefix_reuse: reuse,
+                ctx,
+                ..ServingRequest::default()
+            };
+            let facts = fill_family(
+                ModelFamily::ExaoneMoe,
+                Variant::Kexaone236B,
+                SHAPE_KEXAONE_236B,
+                &req,
+                QuoteHost {
+                    weights_bytes: GIB,
+                    mtp_bytes: 0,
+                    available_bytes: 100 * GIB,
+                    native_chunk: Some(32),
+                    vision: false,
+                },
+            );
+            assert_eq!(facts.checkpoint_pool_bytes, Some(expected));
+        }
     }
 
     #[test]

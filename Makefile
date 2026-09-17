@@ -1157,6 +1157,18 @@ tests/test_exaone_kernels: tests/test_exaone_kernels.o $(DS4_CUDA_SUPPORT_OBJS)
 test-exaone-kernels: tests/test_exaone_kernels
 	./tests/test_exaone_kernels $(DS4_EXAONE_MODEL)
 
+tests/test_exaone_checkpoint.o: tests/test_exaone_checkpoint.c ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/test_exaone_checkpoint: tests/test_exaone_checkpoint.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+tests/test_exaone_partial.o: tests/test_exaone_partial.c ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/test_exaone_partial: tests/test_exaone_partial.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
 tests/test_exaone_batch.o: tests/test_exaone_batch.c ds4.h
 	$(CC) $(CFLAGS) -I. -I$(CUDA_HOME)/include -c -o $@ $<
 
@@ -1547,6 +1559,8 @@ clean:
 	rm -f tests/test_step37_mtp tests/test_step37_mtp.o
 	rm -f tests/test_step37_spec tests/test_step37_spec.o
 	rm -f tests/test_step37_cont tests/test_step37_cont.o
+	rm -f tests/test_exaone_partial tests/test_exaone_partial.o
+	rm -f tests/test_exaone_checkpoint tests/test_exaone_checkpoint.o
 	rm -f tests/test_step37_checkpoint tests/test_step37_checkpoint.o
 	rm -f tests/test_step37_norm tests/test_step37_norm.o
 	rm -f tests/test_cuda_span_lease tests/test_cuda_span_lease.o

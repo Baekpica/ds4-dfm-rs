@@ -88,6 +88,8 @@ __pycache__/
 *.qdrep
 *.qdstrm
 *.ncu-rep
+/tests/test_exaone_checkpoint
+/tests/test_exaone_partial
 /tests/test_exaone_ref
 /tests/test_exaone_kernels
 /tests/test_exaone_forward

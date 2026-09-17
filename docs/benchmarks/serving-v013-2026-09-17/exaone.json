@@ -1,0 +1,348 @@
+{
+  "schema": "v013-live-evidence-v1",
+  "base_commit": "ea580c6394ec30bae7f444d5ae6411f76a996674",
+  "source_state": "uncommitted v0.1.3 work; frozen executable identity in process receipts",
+  "family": "exaone_moe",
+  "artifact": "K-EXAONE-236B-A23B-MXQ-IQ2XXS-Q3K-Q4Edge-Q8Dense-MTPQ8-v1",
+  "owner_fingerprint": {
+    "method": "fnv1a-p16m-v1",
+    "value": "3db229b9bb9aaa36",
+    "full_content_hash": false
+  },
+  "scope": {
+    "context": 1024,
+    "banks": 2,
+    "native_chunk": 64,
+    "mtp": "off",
+    "clock_limits_mhz": [
+      300,
+      2200
+    ]
+  },
+  "native": {
+    "exaone-partial.log": {
+      "path": "scratch/v013/exaone-partial.log",
+      "sha256": "94e48e55521e58cc7b09af5a56c84086c0c1b75e78e008c0df65d0b884c1773c",
+      "result": [
+        "ds4: batch fit headroom: floor 4.00 GiB + boot-burst 2.00 GiB = 6.00 GiB (derived; DS4_BATCH_FIT_HEADROOM_MB pins, DS4_BATCH_FIT_HEADROOM_DERIVED=0 restores static 6144)",
+        "ds4: packed FP8 compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP8_KV=0 restores F32-primary)",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "EXAONE partial full-vocab max_abs=0",
+        "ds4: packed FP4 indexer compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP4_INDEX=0 restores F32-primary)",
+        "EXAONE partial: wrapped LLLG fork/truncate, full-vocabulary logits and 16 greedy tokens PASS"
+      ]
+    },
+    "exaone-public.log": {
+      "path": "scratch/v013/exaone-public.log",
+      "sha256": "f4bbb3e309f697029063d433b88e21dccbe9d2869534e3678893d11494c14684",
+      "result": [
+        "ds4: packed FP8 compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP8_KV=0 restores F32-primary)",
+        "ds4: batch fit headroom: floor 4.00 GiB + boot-burst 2.00 GiB = 6.00 GiB (derived; DS4_BATCH_FIT_HEADROOM_MB pins, DS4_BATCH_FIT_HEADROOM_DERIVED=0 restores static 6144)",
+        "ds4: packed FP4 indexer compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP4_INDEX=0 restores F32-primary)",
+        "all checks passed"
+      ]
+    }
+  },
+  "http": {
+    "seed": {
+      "phase": "seed",
+      "seconds": 2.757974074978847,
+      "cached_tokens": 0,
+      "prompt_tokens": 303,
+      "text": "4",
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null,
+        "reuse_miss": "no checkpoint at or below LCP"
+      }
+    },
+    "warm-append": {
+      "seconds": 0.4748797419597395,
+      "message": {
+        "role": "assistant",
+        "content": "5"
+      },
+      "usage": {
+        "prompt_tokens": 327,
+        "completion_tokens": 1,
+        "total_tokens": 328,
+        "prompt_tokens_details": {
+          "cached_tokens": 304,
+          "cache_write_tokens": 23
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "fork",
+        "speculation_active": false,
+        "fallback_reason": null
+      }
+    },
+    "warm-edit": {
+      "seconds": 0.49128987902076915,
+      "message": {
+        "role": "assistant",
+        "content": "4"
+      },
+      "usage": {
+        "prompt_tokens": 327,
+        "completion_tokens": 1,
+        "total_tokens": 328,
+        "prompt_tokens_details": {
+          "cached_tokens": 303,
+          "cache_write_tokens": 24
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "partial",
+        "speculation_active": false,
+        "fallback_reason": null
+      }
+    },
+    "cold-append": {
+      "seconds": 2.9786257759551518,
+      "message": {
+        "role": "assistant",
+        "content": "5"
+      },
+      "usage": {
+        "prompt_tokens": 327,
+        "completion_tokens": 1,
+        "total_tokens": 328,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 327
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      }
+    },
+    "cold-edit": {
+      "seconds": 2.8484868819941767,
+      "message": {
+        "role": "assistant",
+        "content": "4"
+      },
+      "usage": {
+        "prompt_tokens": 327,
+        "completion_tokens": 1,
+        "total_tokens": 328,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 327
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      }
+    },
+    "restored": {
+      "phase": "restored",
+      "seconds": 0.5888630769914016,
+      "cached_tokens": 304,
+      "prompt_tokens": 327,
+      "text": "5",
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "fork",
+        "speculation_active": false,
+        "fallback_reason": null
+      }
+    }
+  },
+  "limitations": [
+    "HTTP latency is one functional sample, not a speed qualification.",
+    "The edited arithmetic request returned 4 on both warm and cold paths; cache parity does not establish answer accuracy.",
+    "HTTP proof predates required disk identity footer; final integrated restart remains a separate gate.",
+    "Initial edit inside the first user turn had no earlier checkpoint and correctly used cold prefill.",
+    "First run was stopped by memory watchdog during concurrent host builds; causal process RSS was not recorded. Coordinated rerun completed without guard trip."
+  ],
+  "raw_files": [
+    {
+      "path": "scratch/v013/exaone-http2/cold-append.process.json",
+      "sha256": "100c8529218af5b11bebb9a19623fed5e7623a27e2239710d675bb7e4e8eb997"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/cold-append.request.json",
+      "sha256": "04721206dabeee7a0663744ba864159d9c2c4debcc12fe7ad62f6e173728efab"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/cold-append.response.json",
+      "sha256": "f3090d2bb09cebb7c346c68efe80c6f272677eaf36b61a22928da61e2b6f90d6"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/cold-append.stats.json",
+      "sha256": "db3af4032923482f571d7059b614158238df07a75de41398df560b84bbd5a8a9"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/cold-append.summary.json",
+      "sha256": "a3f42210e0a42cbcef242bdcfac09b1e880deda548838aa006cd8a04eab65e38"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/cold-edit.process.json",
+      "sha256": "100c8529218af5b11bebb9a19623fed5e7623a27e2239710d675bb7e4e8eb997"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/cold-edit.request.json",
+      "sha256": "2ee13a3b4f300a674055ed6248e4741256b25d10b59d5df3bc4bd5cbc74b7ac0"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/cold-edit.response.json",
+      "sha256": "be115ca3908b0f1b7e5d7fc571942de58452d3d65bd652b93eaf8b5a0f921ff9"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/cold-edit.stats.json",
+      "sha256": "3b2abca326b63b18e69d1ab3afcaaa6d805724c65fe6653005e107bbfbaeebf1"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/cold-edit.summary.json",
+      "sha256": "ac3c7b96bc78e59d2fa450ded84367cb322d2e2247b6e9458ec8dca22bbd2fd1"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/follow.request.json",
+      "sha256": "04721206dabeee7a0663744ba864159d9c2c4debcc12fe7ad62f6e173728efab"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/restored.process.json",
+      "sha256": "9e4732eda3fede70646c6058aa661c939bee3be2c5bd5fd08c50ddcb9985befa"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/restored.request.json",
+      "sha256": "04721206dabeee7a0663744ba864159d9c2c4debcc12fe7ad62f6e173728efab"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/restored.response.json",
+      "sha256": "7da6bac0e9a1743efffc53f9780f4e86d5e3f213e749e2f60547b8e4c907b495"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/restored.stats.json",
+      "sha256": "910055b4e4583a5f0641a07cc395ce7e43a989278468e3ddf20750ec69120d4b"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/restored.summary.json",
+      "sha256": "c067cec1eb2678f2fdb622a040bd91977d4fad5675cfff2706de9d80e10908d9"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/seed.process.json",
+      "sha256": "807598a6faea436d2e76ae4f5061cf9be2b0022dac823c69b9fb3e20ed550689"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/seed.request.json",
+      "sha256": "7372d13404ba6f09746172eeecd8682a7a0e9e428ff5a1835679717ce7980870"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/seed.response.json",
+      "sha256": "14278ee91906393e3112eaaa60431e42ff4b372b65d8e1f5fd73cd787612b0c0"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/seed.stats.json",
+      "sha256": "caecf2d3f38b7719fda0dc219f67f66224547176feee88d5204124f7f10a82b1"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/seed.summary.json",
+      "sha256": "8980ef19952b776967d5b8d93a3e0f487550746c165f1941eb068d6b9ad0fbbd"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/warm-append.process.json",
+      "sha256": "807598a6faea436d2e76ae4f5061cf9be2b0022dac823c69b9fb3e20ed550689"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/warm-append.request.json",
+      "sha256": "04721206dabeee7a0663744ba864159d9c2c4debcc12fe7ad62f6e173728efab"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/warm-append.response.json",
+      "sha256": "3299b71a872bf3032193a9076bd70ea75cc28d7b0b479262988392ffe3769dbe"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/warm-append.stats.json",
+      "sha256": "188dd547d574310c25695af208e80cf31559ae40aa8f54e949851d282af1d758"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/warm-append.summary.json",
+      "sha256": "2b2b88fc304055b0c67f789f35ccb7b417411d83437aa050085a2d6562d7fff6"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/warm-edit.process.json",
+      "sha256": "807598a6faea436d2e76ae4f5061cf9be2b0022dac823c69b9fb3e20ed550689"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/warm-edit.request.json",
+      "sha256": "2ee13a3b4f300a674055ed6248e4741256b25d10b59d5df3bc4bd5cbc74b7ac0"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/warm-edit.response.json",
+      "sha256": "cdd309992ca67f30d67efb07e9f8100fa7d50216e9759c8f058ff2a80478bfcf"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/warm-edit.stats.json",
+      "sha256": "24383f4ffcb943d094250a26e41aea8d85e38399ad1402a7c41622f9461ea17f"
+    },
+    {
+      "path": "scratch/v013/exaone-http2/warm-edit.summary.json",
+      "sha256": "f917f1bf7f06e766b0135f6356bf8ecc546e91c7bdc667a3df651282936e6bd2"
+    }
+  ],
+  "guard_logs": [
+    {
+      "path": "scratch/v013/exaone-owner.memory.jsonl",
+      "sha256": "0de3ff28fb384e2681cf1fb997b9fbef962058df29b93bd8ade61e5ce8a56d3d"
+    },
+    {
+      "path": "scratch/v013/exaone-http-seed2.memory.jsonl",
+      "sha256": "3b53903a87a48d70294c00a02b164253d4e1e567124322709dc4497452eff2ba"
+    },
+    {
+      "path": "scratch/v013/exaone-owner2.memory.jsonl",
+      "sha256": "ddac861f7c94cc45fcfb60626990075c5bc843b5b4cc84b939ca90556b5e627c"
+    },
+    {
+      "path": "scratch/v013/exaone-http-cold2.memory.jsonl",
+      "sha256": "158d505688673a0e0f17d748f4693dea137671b32141dbb0b80c7cd131624b5b"
+    },
+    {
+      "path": "scratch/v013/exaone-http-restored2.memory.jsonl",
+      "sha256": "f37330583e146aecca5a10e031219171b64e2d424cccb22829dc3d1727dc2eff"
+    }
+  ]
+}

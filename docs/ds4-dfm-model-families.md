@@ -48,7 +48,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 |---|---|---|---|
 | DeepSeek V4 Flash / PRO | `general.architecture=deepseek4` | Entrpi compressed KV and continuous graph | continuous or serial; Flash is the main live oracle |
 | Solar Open2 250B | `general.architecture=solar-open2` | recurrent KDA state plus compressed GQA KV | persistent multi-bank |
-| K-EXAONE 236B A23B | `general.architecture=exaone-moe` | LLLG full/sliding GQA KV | persistent multi-bank |
+| K-EXAONE 236B A23B | `general.architecture=exaone-moe` | LLLG full/sliding GQA KV | persistent multi-bank; opt-in partial checkpoints |
 | Motif-3 | `general.architecture=motif3` | normalized latent KV, rotated `k_pe`, and SWA rings | persistent multi-bank |
 | dots3-note Preview | `general.architecture=dots3note` (legacy `dots3-note`) | dual-geometry latent KV, DSA keys, and SWA rings | serial |
 | Qwen3.8 Flash Next SSD-PLE | `general.architecture=qwen4exp` | Q5 main + four SSD-PLE sidecars, GDN/QSA state, embedded MTP, still images | configured/native-fitted N-bank scheduler; one/two banks gated |
@@ -132,10 +132,10 @@ SSD persistence, not active-bank offload: context length and concurrency must
 still fit unified memory before the worker starts. Its quant identity comes from
 the first populated routed-expert layer, including dense-first model families.
 
-## Partial prefix reuse (Solar, Motif-3)
+## Partial prefix reuse
 
-Live continuous banks additionally reuse prompts that diverge INSIDE a
-retained conversation, not just at its exact frontier. Both families share a
+Solar and Motif-3 continuous banks additionally reuse prompts that diverge
+inside a retained conversation. Both families share a
 32-slot, demand-mapped, LRU checkpoint pool (`ds4_partial_checkpoint`):
 Solar snapshots its 157.5 MiB KDA recurrent state, Motif-3 only each SWA
 layer's 128-row window (39 layers, 5.48 MiB/slot). Request boundaries are
@@ -144,9 +144,20 @@ semantic checkpoints; long prefills and decode add stride-aligned ones
 checkpoint at or below the token LCP, copies the positional rows (Solar GQA,
 Motif-3 full-attention latent) from the source bank, and replays only the
 gap. `DS4_SERVER_FORK_PARTIAL=0` disables capture and even the VA
-reservation. EXAONE and dots3-note banks keep exact-frontier reuse only.
-`--prefix-reuse partial` on those families is an error, not a silent exact
-path. `--prefix-reuse auto` selects exact.
+reservation.
+
+K-EXAONE captures its 36 local LLLG windows and copies the full-attention
+prefix. Enable this `present` capability with `--prefix-reuse partial` on
+the bank lane; `auto` still selects qualified exact reuse. Wrapped native
+fork/truncate checks matched full-vocabulary logits and 16 greedy tokens.
+A two-bank, 1,024-context HTTP check matched cold output after append and
+edit; restart restored 304 of 327 prompt tokens. These are functional checks,
+not speed measurements. The [scoped evidence](benchmarks/serving-v013-2026-09-17/exaone.json)
+predates the required disk identity footer; the integrated restart gate
+remains separate.
+
+dots3-note remains exact-only; forced partial reuse is unsupported. K2's
+full-attention contract also remains exact-only.
 
 Verified on this host: Solar 6K/10K branches of a 12K source 2.85x/4.62x
 TTFT (`docs/solar-partial-reuse-2026-08-21.md`); Motif-3 7.1K/14.1K

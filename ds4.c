@@ -44826,7 +44826,191 @@ typedef struct ds4_exaone_batch_runtime {
     float *decode_logits_host;
     float *bank_logits;
     uint8_t *bank_logits_valid;
+    uint32_t *cache_len;
+    ds4_gpu_tensor *checkpoint_slab;
+    ds4_partial_checkpoint checkpoint[DS4_PARTIAL_CHECKPOINT_SLOTS];
+    float *checkpoint_logits;
+    uint64_t checkpoint_slot_bytes, checkpoint_clock;
+    uint32_t checkpoint_stride;
 } ds4_exaone_batch_runtime;
+
+/* LLLG local layers overwrite a GQA ring; global layers retain their complete
+ * prefix. Save only the local logical windows, using EXAONE's own topology,
+ * row width and window size. No Step predictor or RoPE state is shared. */
+static void exaone_ckpt_init(ds4_exaone_batch_runtime *rt) {
+    const char *off = getenv("DS4_SERVER_FORK_PARTIAL");
+    if ((off && strcmp(off, "0") == 0) ||
+        DS4_MODEL_VARIANT != DS4_VARIANT_KEXAONE_236B) { return; }
+    const ds4_exaone_gpu_graph *g = &rt->graph[0];
+    const uint32_t window = DS4_N_SWA < rt->ctx_size ? DS4_N_SWA : rt->ctx_size;
+    for (uint32_t il = 0; il < DS4_N_LAYER - DS4_N_NEXTN_PREDICT; il++) {
+        if (g->layer_kv[il] && exaone_graph_layer_is_sliding(il)) {
+            rt->checkpoint_slot_bytes += (uint64_t)window * 2u * g->kv_dim * sizeof(uint16_t);
+        }
+    }
+    if (!rt->checkpoint_slot_bytes) { return; }
+    uint64_t bytes = rt->checkpoint_slot_bytes * DS4_PARTIAL_CHECKPOINT_SLOTS;
+    const uint64_t page = ds4_gpu_vmm_demand_page();
+    if (page) { bytes = (bytes + page - 1u) / page * page; }
+    rt->checkpoint_slab = ds4_gpu_tensor_reserve(bytes);
+    if (!rt->checkpoint_slab) { return; }
+    rt->checkpoint_logits = xcalloc(
+        (size_t)DS4_PARTIAL_CHECKPOINT_SLOTS * DS4_N_VOCAB, sizeof(float));
+    enum { CHECKPOINT_ALIGN = 4096 };
+    const uint32_t stride = (rt->ctx_size + DS4_PARTIAL_PERIODIC_TARGET - 1u) / DS4_PARTIAL_PERIODIC_TARGET;
+    rt->checkpoint_stride = ((stride + CHECKPOINT_ALIGN - 1u) / CHECKPOINT_ALIGN) * CHECKPOINT_ALIGN;
+}
+
+static void exaone_ckpt_drop(ds4_exaone_batch_runtime *rt, uint32_t bank) {
+    for (unsigned i = 0; i < DS4_PARTIAL_CHECKPOINT_SLOTS; i++) {
+        if (partial_checkpoint_ref(&rt->checkpoint[i], bank)) {
+            partial_checkpoint_clear_ref(&rt->checkpoint[i], bank);
+        }
+    }
+}
+
+static void exaone_ckpt_inherit(ds4_exaone_batch_runtime *rt, uint32_t src,
+                                 uint32_t dst, uint32_t cut) {
+    if (src != dst) { exaone_ckpt_drop(rt, dst); }
+    for (unsigned i = 0; i < DS4_PARTIAL_CHECKPOINT_SLOTS; i++) {
+        ds4_partial_checkpoint *cp = &rt->checkpoint[i];
+        if (!partial_checkpoint_ref(cp, src)) { continue; }
+        if (cp->pos <= cut) { partial_checkpoint_set_ref(cp, dst); }
+        else if (src == dst) { partial_checkpoint_clear_ref(cp, dst); }
+    }
+}
+
+static int exaone_ckpt_find(ds4_exaone_batch_runtime *rt, uint32_t bank,
+                             uint32_t cut, uint32_t request_len) {
+    int best = -1;
+    for (unsigned i = 0; i < DS4_PARTIAL_CHECKPOINT_SLOTS; i++) {
+        const ds4_partial_checkpoint *cp = &rt->checkpoint[i];
+        if (!cp->pos || cp->pos > cut || !partial_checkpoint_ref(cp, bank) ||
+            (cp->pos == request_len && !cp->logits_valid)) { continue; }
+        if (best < 0 || cp->pos > rt->checkpoint[best].pos) { best = (int)i; }
+    }
+    return best;
+}
+
+typedef enum { EXAONE_CKPT_SAVE, EXAONE_CKPT_LOAD } exaone_ckpt_dir;
+
+static bool exaone_ckpt_window(ds4_exaone_batch_runtime *rt,
+                                ds4_exaone_gpu_graph *g, uint32_t il,
+                                uint64_t off, uint32_t pos, exaone_ckpt_dir dir) {
+    const uint64_t row = 2u * g->kv_dim * sizeof(uint16_t);
+    const uint32_t count = pos < DS4_N_SWA ? pos : DS4_N_SWA;
+    const uint32_t cap = g->layer_kv_cap[il];
+    if (!cap || count > cap) { return false; }
+    for (uint32_t done = 0; done < count;) {
+        const uint32_t slot = (pos - count + done) % cap;
+        uint32_t rows = count - done;
+        if (rows > cap - slot) { rows = cap - slot; }
+        const bool ok = dir == EXAONE_CKPT_SAVE
+            ? ds4_gpu_tensor_copy(rt->checkpoint_slab, off + done * row, g->layer_kv[il], slot * row, rows * row)
+            : ds4_gpu_tensor_copy(g->layer_kv[il], slot * row, rt->checkpoint_slab, off + done * row, rows * row);
+        if (!ok) { return false; }
+        done += rows;
+    }
+    return true;
+}
+
+static bool exaone_ckpt_capture(ds4_exaone_batch_runtime *rt, uint32_t bank,
+                                 uint32_t pos, bool logits_valid, uint64_t reserve) {
+    if (!rt || !rt->checkpoint_slab || bank >= rt->max_seq || !pos ||
+        pos != rt->cache_len[bank]) { return false; }
+    uint32_t slot = 0;
+    for (uint32_t i = 0; i < DS4_PARTIAL_CHECKPOINT_SLOTS; i++) {
+        ds4_partial_checkpoint *cp = &rt->checkpoint[i];
+        if (cp->pos == pos && partial_checkpoint_ref(cp, bank)) {
+            if (logits_valid && rt->bank_logits_valid[bank]) {
+                memcpy(rt->checkpoint_logits + (size_t)i * DS4_N_VOCAB,
+                       rt->bank_logits + (size_t)bank * DS4_N_VOCAB, DS4_N_VOCAB * sizeof(float));
+                cp->logits_valid = 1;
+            }
+            cp->last_use = ++rt->checkpoint_clock;
+            return true;
+        }
+        if (!cp->pos || (rt->checkpoint[slot].pos && cp->last_use < rt->checkpoint[slot].last_use)) {
+            slot = i;
+        }
+    }
+    const uint64_t base = (uint64_t)slot * rt->checkpoint_slot_bytes;
+    const uint64_t need = batch_span_need(rt->checkpoint_slab, base, rt->checkpoint_slot_bytes);
+    if (need > ds4_mem_usable_beyond(reserve) ||
+        !ds4_gpu_tensor_ensure(rt->checkpoint_slab, base, rt->checkpoint_slot_bytes)) { return false; }
+    /* Invalidate before copying so a failed overwrite cannot retain lineage. */
+    ds4_partial_checkpoint *cp = &rt->checkpoint[slot];
+    memset(cp, 0, sizeof(*cp));
+    ds4_exaone_gpu_graph *g = &rt->graph[bank];
+    const uint32_t window = DS4_N_SWA < rt->ctx_size ? DS4_N_SWA : rt->ctx_size;
+    uint64_t off = base;
+    for (uint32_t il = 0; il < DS4_N_LAYER - DS4_N_NEXTN_PREDICT; il++) {
+        if (!g->layer_kv[il] || !exaone_graph_layer_is_sliding(il)) { continue; }
+        if (!exaone_ckpt_window(rt, g, il, off, pos, EXAONE_CKPT_SAVE)) { return false; }
+        off += (uint64_t)window * 2u * g->kv_dim * sizeof(uint16_t);
+    }
+    if (!ds4_gpu_synchronize()) { return false; }
+    cp->pos = pos;
+    cp->last_use = ++rt->checkpoint_clock;
+    partial_checkpoint_set_ref(cp, bank);
+    if (logits_valid && rt->bank_logits_valid[bank]) {
+        memcpy(rt->checkpoint_logits + (size_t)slot * DS4_N_VOCAB,
+               rt->bank_logits + (size_t)bank * DS4_N_VOCAB, DS4_N_VOCAB * sizeof(float));
+        cp->logits_valid = 1;
+    }
+    return true;
+}
+
+static bool exaone_ckpt_restore(ds4_exaone_batch_runtime *rt, uint32_t src,
+                                 uint32_t dst, uint32_t slot, uint32_t cut, uint32_t *out) {
+    if (!rt || src >= rt->max_seq || dst >= rt->max_seq || slot >= DS4_PARTIAL_CHECKPOINT_SLOTS) { return false; }
+    ds4_partial_checkpoint *cp = &rt->checkpoint[slot];
+    const uint32_t pos = cp->pos;
+    if (!pos || pos > cut || pos > rt->cache_len[src] || !partial_checkpoint_ref(cp, src)) { return false; }
+    ds4_exaone_gpu_graph *g = &rt->graph[dst];
+    rt->cache_len[dst] = 0;
+    rt->bank_logits_valid[dst] = 0;
+    const uint64_t row = 2u * g->kv_dim * sizeof(uint16_t);
+    const uint32_t window = DS4_N_SWA < rt->ctx_size ? DS4_N_SWA : rt->ctx_size;
+    uint64_t off = (uint64_t)slot * rt->checkpoint_slot_bytes;
+    for (uint32_t il = 0; il < DS4_N_LAYER - DS4_N_NEXTN_PREDICT; il++) {
+        if (!g->layer_kv[il]) { continue; }
+        if (exaone_graph_layer_is_sliding(il)) {
+            if (!exaone_ckpt_window(rt, g, il, off, pos, EXAONE_CKPT_LOAD)) { return false; }
+            off += window * row;
+        } else if (src != dst && !ds4_gpu_tensor_copy(g->layer_kv[il], 0, rt->graph[src].layer_kv[il], 0, pos * row)) {
+            return false;
+        }
+    }
+    if (!ds4_gpu_synchronize()) { return false; }
+    rt->cache_len[dst] = pos;
+    if (cp->logits_valid) {
+        memcpy(rt->bank_logits + (size_t)dst * DS4_N_VOCAB,
+               rt->checkpoint_logits + (size_t)slot * DS4_N_VOCAB, DS4_N_VOCAB * sizeof(float));
+        rt->bank_logits_valid[dst] = 1;
+    }
+    cp->last_use = ++rt->checkpoint_clock;
+    exaone_ckpt_inherit(rt, src, dst, pos);
+    if (out) { *out = pos; }
+    return true;
+}
+
+static uint64_t exaone_ckpt_trim(ds4_exaone_batch_runtime *rt, uint64_t want) {
+    if (!rt || !rt->checkpoint_slab || !want || !ds4_gpu_synchronize()) { return 0; }
+    uint64_t freed = 0;
+    /* Coalesce unreferenced slots so a shared VMM page is unmapped only when
+     * all adjacent slots using it are dead. The caller holds the bank lock. */
+    for (uint32_t i = 0; i < DS4_PARTIAL_CHECKPOINT_SLOTS && freed < want;) {
+        if (rt->checkpoint[i].pos) { i++; continue; }
+        const uint64_t start = (uint64_t)i * rt->checkpoint_slot_bytes;
+        do { i++; } while (i < DS4_PARTIAL_CHECKPOINT_SLOTS && !rt->checkpoint[i].pos);
+        const uint64_t end = i == DS4_PARTIAL_CHECKPOINT_SLOTS
+            ? ds4_gpu_tensor_bytes(rt->checkpoint_slab)
+            : (uint64_t)i * rt->checkpoint_slot_bytes;
+        freed += ds4_gpu_tensor_trim(rt->checkpoint_slab, start, end - start);
+    }
+    return freed;
+}
 
 static void exaone_batch_runtime_free(ds4_exaone_batch_runtime *rt) {
     if (!rt) return;
@@ -44840,6 +45024,9 @@ static void exaone_batch_runtime_free(ds4_exaone_batch_runtime *rt) {
     free(rt->decode_logits_host);
     free(rt->bank_logits);
     free(rt->bank_logits_valid);
+    free(rt->cache_len);
+    ds4_gpu_tensor_free(rt->checkpoint_slab);
+    free(rt->checkpoint_logits);
     free(rt);
 }
 
@@ -44861,6 +45048,7 @@ static ds4_exaone_batch_runtime *exaone_batch_runtime_create(
         return NULL;
     }
 
+    rt->cache_len = xcalloc(max_seq, sizeof(*rt->cache_len));
     rt->graph = xcalloc(max_seq, sizeof(*rt->graph));
     for (uint32_t b = 0; b < max_seq; b++) {
         if (!exaone_graph_alloc_with_ws(
@@ -44886,6 +45074,7 @@ static ds4_exaone_batch_runtime *exaone_batch_runtime_create(
         exaone_batch_runtime_free(rt);
         return NULL;
     }
+    exaone_ckpt_init(rt);
     ds4_log(stderr, DS4_LOG_TIMING,
             "ds4: EXAONE batch runtime: %u banks, ctx %u, "
             "KV %.2f GiB/bank, shared prefill scratch %.2f GiB\n",
@@ -44899,6 +45088,7 @@ static bool exaone_batch_runtime_copy_bank(
         ds4_exaone_batch_runtime *rt, uint32_t src, uint32_t dst,
         uint32_t tokens) {
     if (!rt || src >= rt->max_seq || dst >= rt->max_seq) return false;
+    if (tokens != rt->cache_len[src]) { return false; }
     if (src == dst) return true;
     ds4_exaone_gpu_graph *sg = &rt->graph[src];
     ds4_exaone_gpu_graph *dg = &rt->graph[dst];
@@ -44917,6 +45107,8 @@ static bool exaone_batch_runtime_copy_bank(
         rt->bank_logits_valid[dst] = 0u;
         return false;
     }
+    rt->cache_len[dst] = tokens;
+    exaone_ckpt_inherit(rt, src, dst, tokens);
     if (rt->bank_logits_valid[src]) {
         memcpy(rt->bank_logits + (size_t)dst * DS4_N_VOCAB,
                rt->bank_logits + (size_t)src * DS4_N_VOCAB,
@@ -44964,6 +45156,7 @@ static bool exaone_batch_runtime_decode(
             rt->graph[bank].logits, 0, dst,
             (uint64_t)DS4_N_VOCAB * sizeof(float)) != 0;
         rt->bank_logits_valid[bank] = ok ? 1u : 0u;
+        rt->cache_len[bank] = ok ? positions[0] + 1u : 0u;
         return ok;
     }
 
@@ -45015,6 +45208,7 @@ static bool exaone_batch_runtime_decode(
                rt->decode_logits_host + (size_t)i * DS4_N_VOCAB,
                (size_t)DS4_N_VOCAB * sizeof(float));
         rt->bank_logits_valid[bank] = 1u;
+        rt->cache_len[bank] = positions[i] + 1u;
     }
     return true;
 }
@@ -56679,6 +56873,8 @@ static int exaone_cont_bank_restore_payload(
     ctx->bank_hist_valid[bank] = 0u;
     ctx->bank_hist_len[bank] = 0u;
     rt->bank_logits_valid[bank] = 0u;
+    rt->cache_len[bank] = 0u;
+    exaone_ckpt_drop(rt, bank);
 
     uint64_t remaining = payload_bytes;
     uint32_t h[DS4_SESSION_PAYLOAD_U32_FIELDS];
@@ -56715,6 +56911,7 @@ static int exaone_cont_bank_restore_payload(
     rt->bank_logits_valid[bank] = logits_valid ? 1u : 0u;
     ctx->bank_hist_len[bank] = h[7];
     ctx->bank_hist_valid[bank] = 1u;
+    rt->cache_len[bank] = h[7];
     return 0;
 }
 
@@ -58592,6 +58789,7 @@ static uint64_t solar_trim_bank_cuda(uint32_t b, void *user) {
  * class, nothing more. */
 uint64_t ds4_batch_ctx_trim_free(ds4_batch_ctx *ctx, uint64_t want_bytes) {
     if (!ctx || want_bytes == 0) return 0;
+    if (ctx->exaone) { return exaone_ckpt_trim(ctx->exaone, want_bytes); }
     if (ctx->step37) { return step37_ckpt_trim(ctx->step37, want_bytes); }
     if (ctx->ling3vl) { return ling3vl_ckpt_trim(ctx->ling3vl, want_bytes); }
     /* EXAONE and Motif banks use fixed CUDA allocations.  They are fit before
@@ -59223,7 +59421,7 @@ static int exaone_batch_ctx_create_impl(
     for (uint32_t b = 0; b < ctx->max_seq; b++) ctx->bank_gen[b] = 1u;
     /* v0.6.2 Inc 3 recency array; see the Solar create note. */
     ctx->bank_last_use = xcalloc(ctx->max_seq, sizeof(*ctx->bank_last_use));
-    ctx->supports_partial_reuse = false;
+    ctx->supports_partial_reuse = ctx->exaone->checkpoint_slab != NULL;
     ds4_metric_set(&ds4_metrics_get()->banks_total, ctx->max_seq);
     *out = ctx;
     return 0;
@@ -60182,6 +60380,7 @@ static void bank_hist_reset(ds4_batch_ctx *ctx, uint32_t b) {
 static void bank_hist_invalidate_all(ds4_batch_ctx *ctx) {
     for (uint32_t b = 0; b < ctx->max_seq; b++) {
         ctx->bank_gen[b]++;   /* Inc 5a */
+        if (ctx->exaone) { exaone_ckpt_drop(ctx->exaone, b); }
         if (ctx->qwen) qwen_batch_runtime_drop_checkpoints(ctx->qwen, b);
         if (ctx->solar) solar_batch_runtime_drop_checkpoints(ctx->solar, b);
         if (ctx->motif3) motif3_batch_runtime_drop_checkpoints(ctx->motif3, b);
@@ -62146,6 +62345,8 @@ static void family_banked_reset(ds4_batch_ctx *ctx, uint32_t bank) {
     } else if (ctx->ling3vl) {
         (void)ling3vl_batch_runtime_reset_bank(ctx->ling3vl, bank);
     } else {
+        exaone_ckpt_drop(ctx->exaone, bank);
+        ctx->exaone->cache_len[bank] = 0u;
         ctx->exaone->bank_logits_valid[bank] = 0u;
     }
 }
@@ -62205,11 +62406,13 @@ static bool family_banked_prefill(
             ctx->ling3vl, ctx->e, bank, tokens, rows, pos, final);
     }
     ctx->exaone->bank_logits_valid[bank] = 0u;
-    return exaone_graph_prefill_chunk(
+    const bool ok = exaone_graph_prefill_chunk(
                &ctx->exaone->graph[bank], &ctx->e->model, &ctx->e->weights,
                tokens, rows, pos, final) &&
            (!final || exaone_batch_runtime_read_prefill_logits(
                ctx->exaone, bank));
+    ctx->exaone->cache_len[bank] = ok ? pos + rows : 0u;
+    return ok;
 }
 
 static bool family_banked_decode(
@@ -62241,6 +62444,10 @@ static bool family_banked_decode(
 
 static bool family_banked_checkpoint_due(
         const ds4_batch_ctx *ctx, uint32_t before, uint32_t after) {
+    if (ctx->exaone) {
+        const uint32_t stride = ctx->exaone->checkpoint_stride;
+        return stride && after > before && before / stride != after / stride;
+    }
     if (ctx->step37) {
         const uint32_t stride = ctx->step37->checkpoint_stride;
         return stride && after > before && before / stride != after / stride;
@@ -62258,7 +62465,9 @@ static bool family_banked_checkpoint_due(
 static void family_banked_capture_checkpoint(
         ds4_batch_ctx *ctx, uint32_t bank, uint32_t pos,
         bool logits_valid) {
-    if (ctx->step37) {
+    if (ctx->exaone) {
+        (void)exaone_ckpt_capture(ctx->exaone, bank, pos, logits_valid, ctx->serial_reserve);
+    } else if (ctx->step37) {
         (void)step37_ckpt_capture(ctx->step37, bank, pos, logits_valid, ctx->serial_reserve);
     } else if (ctx->ling3vl) {
         (void)ling3vl_ckpt_capture(ctx->ling3vl, bank, pos, logits_valid, ctx->serial_reserve);
@@ -62501,6 +62710,33 @@ static int family_banked_engine_continuous_generate(
                     }
                     cached = requested_cached;
                     forked = true;
+                } else if (source_prefix &&
+                           requested_cached < source_frontier && ctx->exaone) {
+                    const int checkpoint = exaone_ckpt_find(
+                        ctx->exaone, (uint32_t)src, requested_cached, (uint32_t)req.n);
+                    uint32_t pos = 0;
+                    if (checkpoint < 0) {
+                        ctx->fork_rejects++;
+                    } else if (!exaone_ckpt_restore(ctx->exaone, (uint32_t)src, b,
+                                                     (uint32_t)checkpoint, requested_cached, &pos)) {
+                        ctx->bank_gen[b]++;
+                        ctx->bank_hist_valid[b] = 0;
+                        exaone_ckpt_drop(ctx->exaone, b);
+                        FCG_ERR("continuous_generate: EXAONE checkpoint restore failed src=%d dst=%u", src, b);
+                        ok = false;
+                        break;
+                    } else {
+                        if ((uint32_t)src != b) {
+                            memcpy(ctx->bank_hist + (size_t)b * ctx->seq_cap,
+                                   ctx->bank_hist + (size_t)src * ctx->seq_cap,
+                                   (size_t)pos * sizeof(int));
+                        }
+                        ctx->bank_gen[b]++;
+                        ctx->bank_hist_len[b] = pos;
+                        ctx->bank_hist_valid[b] = 1u;
+                        cached = pos;
+                        forked = partial = true;
+                    }
                 } else if (source_prefix &&
                            requested_cached < source_frontier && ctx->ling3vl) {
                     const int checkpoint = ling3vl_ckpt_find(
