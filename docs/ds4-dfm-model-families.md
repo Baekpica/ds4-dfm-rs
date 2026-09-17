@@ -37,33 +37,35 @@ The implementation stays close to upstream's style:
 - no plugin registry, graph framework, or broad abstraction layer is added;
 - external MTP sidecars require the exact DeepSeek, Inkling or Step family contract;
   Ling-3.0-flash-VL has no predictor block at all;
-  DSpark remains DeepSeek-only. The embedded dots3-note MTP block is bound and
-  validated but is not executed yet.
+  DSpark remains DeepSeek-only. dots3-note executes its embedded MTP block
+  only on the explicitly enabled serial path described below.
 
 This keeps the changes reviewable for a possible future upstream contribution.
 
 ## Integrated families
 
-| Family | Shape selected from | Native state/runtime | Current server lane |
-|---|---|---|---|
-| DeepSeek V4 Flash / PRO | `general.architecture=deepseek4` | Entrpi compressed KV and continuous graph | continuous or serial; Flash is the main live oracle |
-| Solar Open2 250B | `general.architecture=solar-open2` | recurrent KDA state plus compressed GQA KV | persistent multi-bank |
-| K-EXAONE 236B A23B | `general.architecture=exaone-moe` | LLLG full/sliding GQA KV | persistent multi-bank |
-| Motif-3 | `general.architecture=motif3` | normalized latent KV, rotated `k_pe`, and SWA rings | persistent multi-bank |
-| dots3-note Preview | `general.architecture=dots3note` (legacy `dots3-note`) | dual-geometry latent KV, DSA keys, and SWA rings | serial |
-| Qwen3.8 Flash Next SSD-PLE | `general.architecture=qwen4exp` | Q5 main + four SSD-PLE sidecars, GDN/QSA state, embedded MTP, still images | configured/native-fitted N-bank scheduler; one/two banks gated |
-| GLM 5.3 Flash | `general.architecture=glm5-next` | exact Q2 main + vision sidecar | serial; 2,048-context cap |
-| K2-Horizon 375B A23B | `general.architecture=k2-horizon` | full-attention GQA KV, partial NeoX RoPE, shared-expert MoE | persistent one-bank (32K gated) |
-| Inkling Small | `general.architecture=inkling` | MQ85GB source-interleaved GQA, four-tap convolution, embedded media encoders, optional eight-layer MTP-BF16 | serial CUDA; [1,024-context checks](inkling-small.md) |
-| Step 3.7 Flash | `general.architecture=step35` | MQ83 full/sliding GQA, post-SiLU expert clamps, optional Q8 MTP and F16 vision | serial default; opt-in text banks with full/partial fork and disk KV ([serving](step37-serving-2026-09-13.md)); images serial; [artifact scope](step37-initial.md) |
-| Ling-3.0-flash-VL | `general.architecture=bailingmoe3` | 35 recurrent KDA blocks and 7 latent MLA blocks, 512 grouped-sigmoid experts, separate Qwen3-VL mmproj | persistent multi-bank with full/partial fork and disk KV; images serial ([family contract](ling3-flash-vl.md)) |
+| Family | Shape selected from | Native state/runtime |
+|---|---|---|
+| DeepSeek V4 Flash / PRO | `general.architecture=deepseek4` | Entrpi compressed KV and continuous graph |
+| Solar Open2 250B | `general.architecture=solar-open2` | recurrent KDA state plus compressed GQA KV |
+| K-EXAONE 236B A23B | `general.architecture=exaone-moe` | LLLG full/sliding GQA KV |
+| Motif-3 | `general.architecture=motif3` | normalized latent KV, rotated `k_pe`, and SWA rings |
+| [dots3-note Preview](#dots3-serving) | `general.architecture=dots3note` (legacy `dots3-note`) | dual-geometry latent KV, DSA keys, and SWA rings |
+| Qwen3.8 Flash Next SSD-PLE | `general.architecture=qwen4exp` | Q5 main + four SSD-PLE sidecars, GDN/QSA state, embedded MTP, still images |
+| GLM 5.3 Flash | `general.architecture=glm5-next` | exact Q2 main + vision sidecar |
+| K2-Horizon 375B A23B | `general.architecture=k2-horizon` | full-attention GQA KV, partial NeoX RoPE, shared-expert MoE |
+| [Inkling Small](inkling-small.md) | `general.architecture=inkling` | MQ85GB source-interleaved GQA, four-tap convolution, embedded media encoders, optional eight-layer MTP-BF16 |
+| [Step 3.7 Flash](step37-initial.md) ([serving](step37-serving-2026-09-13.md)) | `general.architecture=step35` | MQ83 full/sliding GQA, post-SiLU expert clamps, optional Q8 MTP and F16 vision |
+| [Ling-3.0-flash-VL](ling3-flash-vl.md) | `general.architecture=bailingmoe3` | 35 recurrent KDA blocks and 7 latent MLA blocks, 512 grouped-sigmoid experts, separate Qwen3-VL mmproj |
 
 The scheduler implementation may differ because the model states differ, but
 the operator and client contract is the same. Changing `-m` to a GGUF from a
 different supported family selects the corresponding runtime in the same
 binary. Shared flag names and the requested / effective / qualified plan
-live in the [serving contract](serving-contract.md). Capability rows come
-from `ds4_core::serving_caps`, not from dated campaign prose.
+live in the [serving contract](serving-contract.md). The
+[generated capability table](serving-capabilities.md) records server lanes,
+reuse, disk, MTP and bounds directly from `ds4_core::serving_caps`; the core
+tests reject documentation drift. Dated campaign reports retain their scope.
 
 ## Common serving surface
 
@@ -114,10 +116,12 @@ also restored all frontier logits exactly through both load paths. A fresh
 21-token suffix. See the [release ledger](releases/v0.1.0.md) and the
 [historical bank gates](rust-migration/QWEN_V065_RESTAMP_2026-08-31.md).
 
-GLM 5.3 session snapshots explicitly return unsupported. K2's qualified
-32K serving path uses in-process VMM; external weight-owner import and disk-KV
-are not qualified. Do not infer disk-KV support from shared CLI flags or a
-successful generation request.
+GLM 5.3 rejects snapshots and disk KV; its serial context cap is 2,048,
+including lazy graph creation. K2's qualified scope remains one bank at 32K
+with in-process VMM and no MTP. K2 snapshots and disk KV are implemented but
+marked `present`; their lifecycle and external weight-owner import are not
+qualified. The [K2/GLM gates](releases/v0.1.3-k2-glm-gates.md) distinguish
+short native checks, restart reuse and context-boundary checks.
 
 Example for a validated payload family, within its measured context limit:
 
@@ -132,10 +136,10 @@ SSD persistence, not active-bank offload: context length and concurrency must
 still fit unified memory before the worker starts. Its quant identity comes from
 the first populated routed-expert layer, including dense-first model families.
 
-## Partial prefix reuse (Solar, Motif-3)
+## Partial prefix reuse
 
-Live continuous banks additionally reuse prompts that diverge INSIDE a
-retained conversation, not just at its exact frontier. Both families share a
+Solar and Motif-3 continuous banks additionally reuse prompts that diverge
+inside a retained conversation. Both families share a
 32-slot, demand-mapped, LRU checkpoint pool (`ds4_partial_checkpoint`):
 Solar snapshots its 157.5 MiB KDA recurrent state, Motif-3 only each SWA
 layer's 128-row window (39 layers, 5.48 MiB/slot). Request boundaries are
@@ -144,14 +148,73 @@ semantic checkpoints; long prefills and decode add stride-aligned ones
 checkpoint at or below the token LCP, copies the positional rows (Solar GQA,
 Motif-3 full-attention latent) from the source bank, and replays only the
 gap. `DS4_SERVER_FORK_PARTIAL=0` disables capture and even the VA
-reservation. EXAONE and dots3-note banks keep exact-frontier reuse only.
-`--prefix-reuse partial` on those families is an error, not a silent exact
-path. `--prefix-reuse auto` selects exact.
+reservation.
+
+K-EXAONE captures its 36 local LLLG windows and copies the full-attention
+prefix. Enable this `present` capability with `--prefix-reuse partial` on
+the bank lane; `auto` still selects qualified exact reuse. Wrapped native
+fork/truncate checks matched full-vocabulary logits and 16 greedy tokens.
+A two-bank, 1,024-context HTTP check matched cold output after append and
+edit; restart restored 304 of 327 prompt tokens. These are functional checks,
+not speed measurements. The [scoped evidence](benchmarks/serving-v013-2026-09-17/exaone.json)
+predates the required disk identity footer; the integrated restart gate
+remains separate.
+
+dots3-note partial reuse is also opt-in and marked `present`. It captures
+33 local MLA windows and copies full MLA and DSA prefix rows. K2's
+full-attention contract remains exact-only.
 
 Verified on this host: Solar 6K/10K branches of a 12K source 2.85x/4.62x
 TTFT (`docs/solar-partial-reuse-2026-08-21.md`); Motif-3 7.1K/14.1K
 branches of a 16.8K source 2.18x/6.50x TTFT, byte-identical output, +0.23%
 capture cost (`docs/motif3-partial-reuse-2026-08-22.md`).
+
+## dots3 serving
+
+dots3-note MQ87 is text-only CUDA. Banks, partial reuse and MTP are separate
+`present` capabilities. `--max-seqs auto` keeps the serial default, and
+`--mtp-mode auto` leaves MTP off. Explicit selections report their unqualified
+status in the serving plan.
+
+Choose text banks with ordinary decoding:
+
+```sh
+./ds4-server --cuda -m "$MODEL" --ctx 4096 --max-seqs 2 \
+  --prefix-reuse partial --mtp-mode off
+```
+
+Or enable the embedded predictor on one serial session:
+
+```sh
+./ds4-server --cuda -m "$MODEL" --ctx 4096 --max-seqs 1 \
+  --prefix-reuse exact --mtp-mode on --mtp-draft 3
+```
+
+The MTP draft limit is three tokens. MTP with multiple banks or an external
+`--mtp` file is rejected. Each bank owns its complete runtime workspace;
+weights are shared and the partial-checkpoint pool is priced separately.
+
+Plain and MTP snapshots have distinct layouts and cannot be loaded across
+those modes; bank payloads contain plain target state. Serial MTP extension
+from an unfinished prefill chunk currently replays the prompt from zero.
+An aligned frontier can extend directly. Replayed tokens report zero cached
+tokens. Greedy HTTP checks require `reasoning_effort: "none"` as well as
+`temperature: 0`; the default thinking mode is a different sampling path.
+
+The [September 17 evidence](benchmarks/serving-v013-2026-09-17/dots3.json)
+covers 4K two-bank append/edit/fork/restart and identity rejection, plus
+serial MTP/plain cold parity, restart and disconnect recovery. Native tests
+crossed the local-ring and DSA boundaries, checked all accepted-prefix
+lengths, and clipped trials to a real 32-token context tail. The edited
+arithmetic answer was wrong on both bank paths; counting outputs matched
+but hit their length limit. These are functional checks, not broad quality
+or long-context qualification.
+
+No speedup is claimed: the recorded serial MTP samples were slower than
+plain decoding. The
+[September 6 measurements](dots3-optimization-2026-09-06.md) cover serial
+plain decoding. The [bank](../tests/test_dots3_batch.c) and
+[MTP](../tests/test_dots3_mtp.c) numerical/lifecycle gates are separate.
 
 ## Weight owner and inference worker
 
@@ -194,8 +257,9 @@ For a split model, `MODEL` is its first shard. DeepSeek can place a DSpark
 drafter beside the base model; the standard launch resolver attaches it
 automatically when its expected file name is present. Inkling accepts its exact
 MTP-BF16 sidecar; use the [full base+MTP owner launch](inkling-small.md#serving)
-for the tested configuration. Other families do not accept external MTP or
-DSpark attachments; dots3-note's in-file MTP block is validation-only.
+for the tested configuration. Step accepts its documented Q8 MTP sidecar.
+Other families do not accept external MTP or DSpark attachments; dots3-note
+uses only its [embedded serial predictor](#dots3-serving).
 
 ## DGX Spark memory hygiene
 
@@ -517,9 +581,10 @@ published metric. 1,048,576-token serving is not claimed.
 
 ## Current limits
 
-- dots3-note is text-only and serial. The source 524,288-token metadata is
-  preserved, but the release evidence currently covers a 262,144-context
-  allocation and a short 4K server request, not a 524,288-token prefill.
+- dots3-note is text-only, with serial default and explicit bank/MTP paths
+  described [above](#dots3-serving). The source 524,288-token metadata is
+  preserved. Historical 262,144-context allocation and short 4K server checks
+  do not qualify a 524,288-token prefill or the new bank/MTP paths.
 - dots3-note Spark throughput (2026-09-06, `docs/dots3-optimization-2026-09-06.md`):
   8,192-token cold prefill 278.3 → 604.3 tok/s and greedy decode 11.66 →
   16.78 tok/s on the serial lane after six rounds (tensor-core latent

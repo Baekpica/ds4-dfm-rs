@@ -308,6 +308,10 @@ trait SerialKvIo {
     }
     fn live_len(&self) -> i32;
     fn live_tokens(&self) -> Vec<i32>;
+    /// The native plan may replay part or all of a matching token prefix.
+    fn sync_start(&self, _tokens: &[i32]) -> i32 {
+        self.live_len()
+    }
     fn render_tokens(&self, tokens: &[i32]) -> Result<Vec<u8>, GenerateError>;
     fn checkpoint_trailer(&self, _text: &[u8]) -> Option<Vec<u8>> {
         Some(Vec::new())
@@ -539,6 +543,23 @@ fn cold_sync(io: &mut impl SerialKvIo, tokens: &[i32]) -> Result<i32, GenerateEr
 }
 
 #[cfg(any(feature = "native", test))]
+fn record_prefix_reuse(io: &mut impl SerialKvIo, tokens: &[i32], prefix: usize) -> i32 {
+    let prefix = i32::try_from(prefix.min(tokens.len())).unwrap_or(0);
+    let cached = io.sync_start(tokens).clamp(0, prefix);
+    if cached < prefix {
+        io.note_miss(ReuseMiss::StateReplay);
+    }
+    io.note_reuse(if cached == 0 {
+        ReuseTaken::Cold
+    } else if cached < prefix {
+        ReuseTaken::Partial
+    } else {
+        ReuseTaken::Exact
+    });
+    cached
+}
+
+#[cfg(any(feature = "native", test))]
 fn cold_sync_and_store(
     io: &mut impl SerialKvIo,
     store: &mut KvStore,
@@ -652,13 +673,57 @@ fn discard_loaded(store: &mut KvStore, io: &mut impl SerialKvIo, path: &Path) {
 #[cfg(any(feature = "native", test))]
 fn disk_sync_template(
     io: &mut impl SerialKvIo,
-    store: Option<&mut KvStore>,
+    mut store: Option<&mut KvStore>,
     model_id: i32,
     quant_bits: i32,
     prompt: &[u8],
     tokens: &[i32],
     policy: DiskSyncPolicy,
 ) -> Result<i32, GenerateError> {
+    let history = policy
+        .load
+        .then(|| history_frontier(model_id, prompt, tokens, |text| io.tokenize_suffix(text)))
+        .flatten()
+        .filter(|(_, prefix)| {
+            store
+                .as_ref()
+                .is_some_and(|store| prefix.len() >= store.opt.min_tokens.max(1) as usize)
+        });
+    if let Some((text, prefix)) = history {
+        // Keep an already deeper, matching live frontier. Otherwise sync to
+        // the history boundary before the generation-only think pair: both
+        // the saved token ledger and the native KV now describe that prefix.
+        let live = io.live_tokens();
+        if live.len() <= prefix.len() || !tokens.starts_with(&live) {
+            let cached = disk_sync_prompt_impl(
+                io,
+                store.as_deref_mut(),
+                model_id,
+                quant_bits,
+                &text,
+                &prefix,
+                None,
+                false,
+                policy,
+                false,
+                PromptReuse::Tokens,
+            )?;
+            if let (Some(store), Some((model_id, quant_bits, ctx)), Some(trailer)) = (
+                store,
+                kv_identity(model_id, quant_bits, io.ctx()),
+                io.checkpoint_trailer(&text),
+            ) {
+                let header = kv_header(model_id, quant_bits, ctx, prefix.len() as u32);
+                if let Err(error) =
+                    write_checkpoint(store, header, &text, &trailer, |path| io.save_payload(path))
+                {
+                    eprintln!("ds4-server-rs: history KV checkpoint failed: {error}");
+                }
+            }
+            io.sync(tokens)?;
+            return Ok(cached);
+        }
+    }
     // Rendered-text identity is not token identity: an official template
     // that drops a block still held in KV would continue from a sequence
     // the client never sent. Jinja families reuse on tokens only.
@@ -675,6 +740,32 @@ fn disk_sync_template(
         false,
         PromptReuse::Tokens,
     )
+}
+
+#[cfg(any(feature = "native", test))]
+pub(crate) fn history_frontier(
+    model_id: i32,
+    prompt: &[u8],
+    tokens: &[i32],
+    encode: impl FnOnce(&[u8]) -> Result<Vec<i32>, GenerateError>,
+) -> Option<(Vec<u8>, Vec<i32>)> {
+    let (suffix, boundary): (&[u8], &[u8]) = match syntax_for_model_id(model_id) {
+        ModelSyntax::Step37 => (b"assistant\n<think>\n</think>\n", b"<|im_start|>"),
+        ModelSyntax::Motif3 => (b"<think></think>", b"<|startofturn|><|assistant|>"),
+        _ => return None,
+    };
+    let text = prompt.strip_suffix(suffix)?;
+    if !text.ends_with(boundary) {
+        return None;
+    }
+    let prefix = encode(text).ok()?;
+    // Both official templates omit the empty think pair on history replay.
+    // Stop at a control token: content whitespace may be trimmed (Motif) or
+    // merge with the role newline (Step). Validate the full token prefix too.
+    if prefix.is_empty() || prefix.len() >= tokens.len() || !tokens.starts_with(&prefix) {
+        return None;
+    }
+    Some((text.to_vec(), prefix))
 }
 
 #[cfg(any(feature = "native", test))]
@@ -773,8 +864,7 @@ fn disk_sync_prompt_impl(
     }
     let live = io.live_tokens();
     if !live.is_empty() && canonical_tokens.starts_with(&live) {
-        let cached = live.len() as i32;
-        io.note_reuse(ReuseTaken::Exact);
+        let cached = record_prefix_reuse(io, canonical_tokens, live.len());
         sync_maybe_checkpoint(
             io,
             canonical_tokens,
@@ -792,10 +882,10 @@ fn disk_sync_prompt_impl(
                 && checkpoint.text.len() < prompt.len()
                 && prompt.starts_with(&checkpoint.text)
             {
-                let cached = live.len() as i32;
-                io.note_reuse(ReuseTaken::Exact);
+                let prefix = live.len();
                 let mut effective = live;
                 effective.extend(io.tokenize_suffix(&prompt[checkpoint.text.len()..])?);
+                let cached = record_prefix_reuse(io, &effective, prefix);
                 sync_maybe_checkpoint(
                     io,
                     &effective,
@@ -811,10 +901,10 @@ fn disk_sync_prompt_impl(
     if reuse == PromptReuse::LegacyText && !live.is_empty() {
         let rendered = io.render_tokens(&live)?;
         if prompt.starts_with(&rendered) {
-            let cached = live.len() as i32;
-            io.note_reuse(ReuseTaken::Exact);
+            let prefix = live.len();
             let mut effective = live;
             effective.extend(io.tokenize_suffix(&prompt[rendered.len()..])?);
+            let cached = record_prefix_reuse(io, &effective, prefix);
             sync_maybe_checkpoint(
                 io,
                 &effective,
@@ -909,12 +999,16 @@ fn disk_sync_prompt_impl(
             prefill_checkpoints,
         );
     }
-    if io
-        .load_payload_range(
-            &path,
-            envelope.payload_offset,
-            envelope.header.payload_bytes,
-        )
+    if store
+        .open_payload(&path, &envelope)
+        .map_err(|error| GenerateError::Engine(error.to_string()))
+        .and_then(|payload| {
+            io.load_payload_range(
+                payload.path(),
+                envelope.payload_offset,
+                envelope.header.payload_bytes,
+            )
+        })
         .is_err()
     {
         // The candidate was chosen and then could not be read. That is a
@@ -955,13 +1049,15 @@ fn disk_sync_prompt_impl(
             prefill_checkpoints,
         );
     }
-    let cached = loaded.len() as i32;
-    store.continued_last_store_tokens = cached;
-    let _ = store.touch_hit(&path);
-    // The candidate's text is a prefix of this prompt, so the restore lands
-    // on the frontier and only the appended turn is prefilled.
-    io.note_reuse(ReuseTaken::Exact);
+    let prefix = loaded.len();
+    store.continued_last_store_tokens = prefix as i32;
+    // Token identity permits restore, but native state may require replay
+    // below that frontier (e.g. an unaligned Dots3 MTP append).
     if reuse == PromptReuse::Tokens {
+        let cached = record_prefix_reuse(io, canonical_tokens, prefix);
+        if cached > 0 {
+            let _ = store.touch_hit(&path);
+        }
         sync_maybe_checkpoint(
             io,
             canonical_tokens,
@@ -982,6 +1078,10 @@ fn disk_sync_prompt_impl(
         }
     };
     effective.extend(suffix_tokens);
+    let cached = record_prefix_reuse(io, &effective, prefix);
+    if cached > 0 {
+        let _ = store.touch_hit(&path);
+    }
     if let Err(error) = sync_maybe_checkpoint(
         io,
         &effective,
@@ -2485,6 +2585,10 @@ impl SerialKvIo for NativeSerialKvIo<'_, '_, '_, '_> {
         self.session.host().live_len()
     }
 
+    fn sync_start(&self, tokens: &[i32]) -> i32 {
+        self.session.last_plan(tokens).start
+    }
+
     fn live_tokens(&self) -> Vec<i32> {
         if self.session.host().valid {
             self.session.host().tokens().to_vec()
@@ -2599,6 +2703,26 @@ impl SerialKvIo for NativeSerialKvIo<'_, '_, '_, '_> {
     fn invalidate(&mut self) {
         self.session.invalidate();
     }
+}
+
+#[cfg(any(feature = "native", test))]
+fn serial_mtp_ready(family: ds4_core::ModelFamily, sidecar: bool, dots3: bool) -> bool {
+    match family {
+        ds4_core::ModelFamily::Dots3Note => dots3,
+        ds4_core::ModelFamily::Inkling | ds4_core::ModelFamily::Step37 => sidecar,
+        _ => false,
+    }
+}
+
+#[test]
+fn dots3_embedded_mtp_needs_session_state() {
+    use ds4_core::ModelFamily::{Dots3Note, Inkling, Qwen4Exp, Step37};
+    assert!(serial_mtp_ready(Dots3Note, false, true));
+    assert!(!serial_mtp_ready(Dots3Note, false, false));
+    assert!(!serial_mtp_ready(Dots3Note, true, false));
+    assert!(serial_mtp_ready(Inkling, true, false));
+    assert!(serial_mtp_ready(Step37, true, false));
+    assert!(!serial_mtp_ready(Qwen4Exp, true, false));
 }
 
 #[cfg(feature = "native")]
@@ -3103,10 +3227,9 @@ impl DecodeIo for NativeDecode<'_> {
     }
 
     fn eval_greedy(&mut self, first: i32, budget: i32) -> Result<Vec<i32>, GenerateError> {
-        if !matches!(
-            self.model.family(),
-            ds4_core::ModelFamily::Inkling | ds4_core::ModelFamily::Step37
-        ) || self.model.mtp().is_none()
+        let family = self.model.family();
+        let dots3 = family == ds4_core::ModelFamily::Dots3Note && self.session()?.has_dots3_mtp();
+        if !serial_mtp_ready(family, self.model.mtp().is_some(), dots3)
             || std::env::var_os("DS4_MTP_SPEC_DISABLE").is_some()
         {
             self.speculated = false;
@@ -3215,6 +3338,7 @@ mod disk_sync_tests {
         fail_save: bool,
         fail_save_at: Option<usize>,
         save_calls: usize,
+        saved_prefixes: Vec<Vec<i32>>,
         progress_frontiers: Vec<usize>,
         invalidations: usize,
         syncs: Vec<Vec<i32>>,
@@ -3224,6 +3348,7 @@ mod disk_sync_tests {
         user_token_id: i32,
         assistant_token_id: i32,
         live_token_reads: Cell<usize>,
+        planned_start: Option<i32>,
         reuse: ReuseTaken,
         miss: ReuseMiss,
     }
@@ -3243,6 +3368,7 @@ mod disk_sync_tests {
                 fail_save: false,
                 fail_save_at: None,
                 save_calls: 0,
+                saved_prefixes: Vec::new(),
                 progress_frontiers: Vec::new(),
                 invalidations: 0,
                 syncs: Vec::new(),
@@ -3252,6 +3378,7 @@ mod disk_sync_tests {
                 user_token_id: -1,
                 assistant_token_id: -1,
                 live_token_reads: Cell::new(0),
+                planned_start: None,
                 reuse: ReuseTaken::Cold,
                 miss: ReuseMiss::None,
             }
@@ -3284,6 +3411,10 @@ mod disk_sync_tests {
         fn live_tokens(&self) -> Vec<i32> {
             self.live_token_reads.set(self.live_token_reads.get() + 1);
             self.live.clone()
+        }
+
+        fn sync_start(&self, _tokens: &[i32]) -> i32 {
+            self.planned_start.unwrap_or_else(|| self.live_len())
         }
 
         fn render_tokens(&self, _tokens: &[i32]) -> Result<Vec<u8>, GenerateError> {
@@ -3337,6 +3468,7 @@ mod disk_sync_tests {
         fn save_payload(&mut self, path: &Path) -> Result<(), GenerateError> {
             self.events.push("save");
             self.save_calls += 1;
+            self.saved_prefixes.push(self.live.clone());
             if self.fail_save || self.fail_save_at == Some(self.save_calls) {
                 return Err(GenerateError::Engine(
                     "injected payload save failure".into(),
@@ -3352,7 +3484,11 @@ mod disk_sync_tests {
             length: u64,
         ) -> Result<(), GenerateError> {
             self.events.push("load");
-            self.loads.push((path.to_path_buf(), offset, length));
+            self.loads.push((
+                path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+                offset,
+                length,
+            ));
             if self.fail_load {
                 return Err(GenerateError::Engine(
                     "injected payload load failure".into(),
@@ -3445,10 +3581,231 @@ mod disk_sync_tests {
         }
     }
 
+    #[test]
+    fn step_restart_uses_history_kv() {
+        use ds4_core::chat_template::{ChatOptions, RenderClock, Template};
+        use serde_json::json;
+
+        let template = Template::compile(
+            include_str!("../../../tests/fixtures/step37/chat_template.jinja"),
+            RenderClock::Fixed(0),
+        )
+        .unwrap();
+        let options = ChatOptions::new(10, ds4_core::ChatThinkMode::None);
+        let first = template
+            .render_chat(&[json!({"role":"user", "content":"Hello"})], &[], options)
+            .unwrap();
+        let follow = template
+            .render_chat(
+                &[
+                    json!({"role":"user", "content":"Hello"}),
+                    json!({"role":"assistant", "content":"4"}),
+                    json!({"role":"user", "content":"Again"}),
+                ],
+                &[],
+                options,
+            )
+            .unwrap();
+        let history = first
+            .strip_suffix("assistant\n<think>\n</think>\n")
+            .unwrap();
+        let tokens = |text: &str| text.bytes().map(i32::from).collect::<Vec<_>>();
+        let (dir, mut store) = store("step-history-frontier");
+        store.bind_identity([7; 32]);
+        let mut saving = FakeSerial::new(&[], first.as_bytes());
+        saving.suffix_tokens = tokens(history);
+        super::disk_sync_template(
+            &mut saving,
+            Some(&mut store),
+            10,
+            2,
+            first.as_bytes(),
+            &tokens(&first),
+            DiskSyncPolicy {
+                save_current: false,
+                load: true,
+            },
+        )
+        .unwrap();
+        let (_, envelope) = store
+            .text_prefix_candidate(follow.as_bytes(), 10, 2, 4096)
+            .unwrap()
+            .expect("next official render must find a saved history frontier");
+        assert_eq!(envelope.text, history.as_bytes());
+        assert_eq!(envelope.header.tokens as usize, history.len());
+        assert!(saving.saved_prefixes.contains(&tokens(history)));
+        assert_eq!(saving.live, tokens(&first));
+
+        let options = store.opt.clone();
+        drop(store);
+        let mut store = Store::open(&dir, 16, true, options).unwrap();
+        store.bind_identity([7; 32]);
+        let mut loading = FakeSerial::new(&[], follow.as_bytes());
+        loading.loaded_tokens = tokens(history);
+        loading.suffix_tokens = tokens(
+            follow
+                .strip_suffix("assistant\n<think>\n</think>\n")
+                .unwrap(),
+        );
+        let cached = super::disk_sync_template(
+            &mut loading,
+            Some(&mut store),
+            10,
+            2,
+            follow.as_bytes(),
+            &tokens(&follow),
+            DiskSyncPolicy {
+                save_current: false,
+                load: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(cached as usize, history.len());
+        assert_eq!(loading.reuse, ReuseTaken::Exact);
+        assert_eq!(loading.live, tokens(&follow));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn motif_restart_uses_history_kv() {
+        use ds4_core::chat_template::{ChatOptions, RenderClock, Template};
+        use serde_json::json;
+
+        let template = Template::compile(
+            include_str!("../../../tests/fixtures/chat-template/models/motif/chat_template.jinja"),
+            RenderClock::Fixed(0),
+        )
+        .unwrap();
+        let options = ChatOptions::new(3, ds4_core::ChatThinkMode::None);
+        let first = template
+            .render_chat(
+                &[json!({"role":"user", "content":"What is 2 + 2?"})],
+                &[],
+                options,
+            )
+            .unwrap();
+        let follow = template
+            .render_chat(
+                &[
+                    json!({"role":"user", "content":"What is 2 + 2?"}),
+                    json!({"role":"assistant", "content":" 2 + 2 = 4.\n"}),
+                    json!({"role":"user", "content":"What is 4 + 1?"}),
+                ],
+                &[],
+                options,
+            )
+            .unwrap();
+        let history = first.strip_suffix("<think></think>").unwrap();
+        assert!(follow.starts_with(history));
+        assert!(!follow.starts_with(&first));
+        let tokens = |text: &str| text.bytes().map(i32::from).collect::<Vec<_>>();
+        let (dir, mut store) = store("motif-history-frontier");
+        store.bind_identity([7; 32]);
+        let mut saving = FakeSerial::new(&[], first.as_bytes());
+        saving.suffix_tokens = tokens(history);
+        super::disk_sync_template(
+            &mut saving,
+            Some(&mut store),
+            3,
+            2,
+            first.as_bytes(),
+            &tokens(&first),
+            DiskSyncPolicy {
+                save_current: false,
+                load: true,
+            },
+        )
+        .unwrap();
+        let (_, envelope) = store
+            .text_prefix_candidate(follow.as_bytes(), 3, 2, 4096)
+            .unwrap()
+            .expect("Motif must save the real history frontier");
+        assert_eq!(envelope.text, history.as_bytes());
+        assert_eq!(envelope.header.tokens as usize, history.len());
+        assert!(saving.saved_prefixes.contains(&tokens(history)));
+        assert_eq!(saving.live, tokens(&first));
+
+        let options = store.opt.clone();
+        drop(store);
+        let mut store = Store::open(&dir, 16, true, options).unwrap();
+        store.bind_identity([7; 32]);
+        let mut loading = FakeSerial::new(&[], follow.as_bytes());
+        loading.loaded_tokens = tokens(history);
+        loading.suffix_tokens = tokens(follow.strip_suffix("<think></think>").unwrap());
+        let cached = super::disk_sync_template(
+            &mut loading,
+            Some(&mut store),
+            3,
+            2,
+            follow.as_bytes(),
+            &tokens(&follow),
+            DiskSyncPolicy {
+                save_current: false,
+                load: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(cached as usize, history.len());
+        assert_eq!(loading.reuse, ReuseTaken::Exact);
+        assert_eq!(loading.live, tokens(&follow));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn motif_history_needs_token_cut() {
+        let prompt = b"history<|startofturn|><|assistant|><think></think>";
+        assert!(super::history_frontier(3, prompt, &[1, 2, 11, 12], |_| Ok(vec![1, 2])).is_some());
+        assert!(super::history_frontier(3, prompt, &[1, 2, 11, 12], |_| Ok(vec![1, 9])).is_none());
+        assert!(super::history_frontier(3, prompt, &[1, 2], |_| Ok(vec![1, 2])).is_none());
+        for other in [b"user<think></think>".as_slice(), b"<|assistant|><think>"] {
+            assert!(
+                super::history_frontier(3, other, &[1, 2], |_| panic!("not a history cut"))
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn step_history_needs_token_cut() {
+        let prompt = b"history<|im_start|>assistant\n<think>\n</think>\n";
+        assert!(super::history_frontier(10, prompt, &[1, 2, 3], |_| Ok(vec![1, 9])).is_none());
+        assert!(super::history_frontier(10, prompt, &[1, 2, 3], |_| Ok(vec![1, 2, 3])).is_none());
+        assert!(
+            super::history_frontier(6, prompt, &[1, 2, 3], |_| panic!("other family")).is_none()
+        );
+    }
+
+    #[test]
+    fn step_keeps_live_frontier() {
+        let (dir, mut store) = store("step-history-live");
+        let mut io = FakeSerial::new(
+            &[1, 2, 3],
+            b"history<|im_start|>assistant\n<think>\n</think>\n",
+        );
+        io.suffix_tokens = vec![1, 2];
+        let cached = super::disk_sync_template(
+            &mut io,
+            Some(&mut store),
+            10,
+            2,
+            b"history<|im_start|>assistant\n<think>\n</think>\n",
+            &[1, 2, 3],
+            DiskSyncPolicy {
+                save_current: false,
+                load: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(cached, 3);
+        assert_eq!(io.syncs, [vec![1, 2, 3]]);
+        assert!(io.saved_prefixes.is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
     /// Step's official follow-up render drops the empty think pair that the
     /// stored KV still holds, so a text-prefix hit would continue from a
-    /// token sequence the client never sent. The restart stays a cold
-    /// prefill until a checkpoint exists at that history frontier.
+    /// token sequence the client never sent. A record without a real
+    /// history-frontier payload must still fall back to a cold prefill.
     #[test]
     fn template_refuses_a_text_only_history_match() {
         let (dir, mut store) = store("step-history");
@@ -3517,7 +3874,7 @@ mod disk_sync_tests {
         assert_eq!(io.reuse, ReuseTaken::Exact);
     }
 
-    /// The four reasons `docs/serving-contract.md` names, each from the
+    /// Candidate refusal reasons from `docs/serving-contract.md`, each from the
     /// decision that produced it.
     #[test]
     fn a_refused_candidate_says_why() {
@@ -3776,6 +4133,97 @@ mod disk_sync_tests {
                 trailer: Vec::new(),
             })
             .unwrap()
+    }
+
+    #[test]
+    fn live_reuse_counts_actual_start() {
+        // Dots3 MTP replays an unaligned append from zero; plain Dots3
+        // replays its last partial chunk. Exact and aligned hits remain hits.
+        for (live_len, prompt_len, start, cached, taken) in [
+            (600, 620, 0, 0, ReuseTaken::Cold),
+            (600, 620, 576, 576, ReuseTaken::Partial),
+            (600, 600, 600, 600, ReuseTaken::Exact),
+            (608, 620, 608, 608, ReuseTaken::Exact),
+            (600, 620, 620, 600, ReuseTaken::Exact),
+            (600, 620, -1, 0, ReuseTaken::Cold),
+        ] {
+            let tokens = vec![1; prompt_len];
+            let mut io = FakeSerial::new(&tokens[..live_len], b"prefix");
+            io.planned_start = Some(start);
+            let actual = super::disk_sync_template(
+                &mut io,
+                None,
+                0,
+                2,
+                b"prefix append",
+                &tokens,
+                DiskSyncPolicy {
+                    save_current: false,
+                    load: true,
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                actual, cached,
+                "live={live_len}, prompt={prompt_len}, start={start}"
+            );
+            assert_eq!(io.reuse, taken);
+            assert_eq!(
+                io.miss.as_str(),
+                if cached < live_len as i32 {
+                    "session state requires prefix replay"
+                } else {
+                    "none"
+                }
+            );
+            assert_eq!(io.syncs, [tokens]);
+        }
+    }
+
+    #[test]
+    fn disk_reuse_counts_actual_start() {
+        for (live_len, prompt_len, start, cached, taken) in [
+            (600, 620, 0, 0, ReuseTaken::Cold),
+            (600, 620, 576, 576, ReuseTaken::Partial),
+            (600, 600, 600, 600, ReuseTaken::Exact),
+            (608, 620, 608, 608, ReuseTaken::Exact),
+        ] {
+            let (dir, mut store) = store("actual-start");
+            candidate(&mut store, b"prefix", live_len as u32);
+            let tokens = vec![1; prompt_len];
+            let mut io = FakeSerial::new(&[], b"");
+            io.loaded_tokens = tokens[..live_len].to_vec();
+            io.planned_start = Some(start);
+            let actual = super::disk_sync_template(
+                &mut io,
+                Some(&mut store),
+                0,
+                2,
+                b"prefix append",
+                &tokens,
+                DiskSyncPolicy {
+                    save_current: false,
+                    load: true,
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                actual, cached,
+                "loaded={live_len}, prompt={prompt_len}, start={start}"
+            );
+            assert_eq!(io.reuse, taken);
+            assert_eq!(
+                io.miss.as_str(),
+                if cached < live_len as i32 {
+                    "session state requires prefix replay"
+                } else {
+                    "none"
+                }
+            );
+            assert_eq!(io.loads.len(), 1);
+            assert_eq!(io.syncs, [tokens]);
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 
     #[test]

@@ -42,7 +42,11 @@ int main(int argc, char **argv) {
         fprintf(stderr, "GLM-5.3 engine contract failed\n");
         goto cleanup;
     }
-    if (ds4_session_create(&session, engine, argc == 3 ? 32 : 8) != 0 ||
+    if (ds4_session_create(&session, engine, 2049) == 0 || session) {
+        fprintf(stderr, "GLM-5.3 accepted unsupported ctx=2049\n");
+        goto cleanup;
+    }
+    if (ds4_session_create(&session, engine, 2048) != 0 ||
         !ds4_session_graph_pending(session) ||
         ds4_session_prefill_cap(session) != 1) {
         fprintf(stderr, "GLM-5.3 session creation failed\n");
@@ -104,7 +108,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "GLM-5.3 Q2 multimodal session: 16 image tokens and finite logits\n");
     }
     failed = 0;
-    fprintf(stderr, "GLM-5.3 Q2 session: finite prefill and decode logits\n");
+    fprintf(stderr, "GLM-5.3 Q2 session: ctx=2048 accepted, ctx=2049 rejected; finite two-token logits\n");
 
 cleanup:
     free(logits);

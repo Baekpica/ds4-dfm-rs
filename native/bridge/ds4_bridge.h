@@ -229,6 +229,11 @@ int ds4_bridge_step37_trial(ds4_bridge_session *s, int32_t first, int32_t max_to
                               int32_t *tokens, int32_t *target, int32_t cap,
                               char *err, size_t errlen);
 int ds4_bridge_step37_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);
+int ds4_bridge_dots3_enabled(ds4_bridge_session *s);
+int ds4_bridge_dots3_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
+                              int32_t *tokens, int32_t *target, int32_t cap,
+                              char *err, size_t errlen);
+int ds4_bridge_dots3_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen);
 int ds4_bridge_eval_speculative_argmax(ds4_bridge_session *s,
                                        int32_t first_token,
                                        int32_t max_tokens,
@@ -504,6 +509,8 @@ typedef struct {
     int32_t n_cached;       /* committed prefix length; 0 = cold */
     int32_t *bank_used;     /* OUT (optional): placed bank id */
     int32_t fork_bank;      /* source bank id + 1; 0 = no fork */
+    int32_t checkpoint_at;  /* canonical history prefill boundary; 0 disables */
+    void (*on_checkpoint)(void *ud, void *user, int bank, int current);
 } ds4_bridge_cont_request;
 
 typedef struct {

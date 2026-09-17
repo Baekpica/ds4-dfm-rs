@@ -27,6 +27,62 @@ pub enum Command {
     Compare(Compare),
     /// Choose experiments from evidence; --auto executes a bounded loop.
     Optimize(Optimize),
+    /// Measure ordered HTTP conversation workloads and check their contracts.
+    Serving(Serving),
+    /// Propose one-control experiments from the server's capability report.
+    ServingControls(ServingControls),
+    /// Select a profile only from complete, repeated serving contracts.
+    ServingProfile(ServingProfile),
+    /// Check or execute a pinned serving profile; additional options are forbidden.
+    ApplyProfile(ApplyProfile),
+}
+
+#[derive(Args, Debug)]
+pub struct ServingControls {
+    #[arg(long)]
+    pub plan: PathBuf,
+    #[arg(long)]
+    pub out: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct ServingProfile {
+    #[arg(long)]
+    pub plan: PathBuf,
+    #[arg(long)]
+    pub out: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct ApplyProfile {
+    #[arg(long)]
+    pub profile: PathBuf,
+    #[arg(long)]
+    pub out: PathBuf,
+    #[arg(long)]
+    pub execute: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct Serving {
+    #[command(flatten)]
+    pub budget: Budget,
+    /// Local server origin, e.g. http://127.0.0.1:8002.
+    #[arg(long)]
+    pub url: String,
+    #[arg(long)]
+    pub workload: PathBuf,
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Replay the ordered workload; KV is deliberately preserved between repeats.
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=100))]
+    pub repeats: u32,
+    /// Pin the local server executable, start time and command line.
+    #[arg(long)]
+    pub server_pid: Option<u32>,
+    /// Physical NVIDIA device ordinal used for clock/temperature snapshots.
+    #[arg(long, default_value_t = 0)]
+    pub device: usize,
 }
 
 #[derive(Args, Debug)]

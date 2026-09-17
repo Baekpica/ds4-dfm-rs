@@ -34007,6 +34007,48 @@ static void test_credit_union_sums_per_run_need(void) {
     TEST_ASSERT(need == 2 * page);   /* only the second run still charges */
 }
 
+static void test_credit_union_short_plan(void) {
+    const uint64_t page = 2u << 20;
+    uint64_t virtual_bytes = 0, full_pages = 0, first_pages = 0;
+    uint64_t credit[2] = {0, 0};
+    /* Flash ctx2048, two banks: each layer/family has a separate VMM
+     * reservation; banks share pages only within that reservation. */
+    for (uint32_t il = 2; il < 43; il++) {
+        const uint32_t ratio = il % 2 == 0 ? 4 : 128;
+        const uint64_t cap = 2048 / ratio + 2;
+        const uint64_t rows[] = {704, 64};
+        const uint32_t families = ratio == 4 ? 2 : 1;
+        virtual_bytes += 2 * cap * (2048 + 704 + (ratio == 4 ? 512 + 64 : 0));
+        for (uint32_t f = 0; f < families; f++) {
+            cu_test_runs run = {0};
+            const uint64_t stride = cap * rows[f];
+            const uint64_t slab_pages = (2 * stride + page - 1) / page * page;
+            full_pages += slab_pages;
+            first_pages += ds4_credit_union_runs(stride, rows[f], cap, ratio,
+                page, credit, 2, 0, 562, test_cu_record_run, &run);
+            uint64_t all[2] = {2048, 2048};
+            memset(&run, 0, sizeof(run));
+            TEST_ASSERT(ds4_credit_union_runs(stride, rows[f], cap, ratio,
+                page, all, 2, 2, 0, test_cu_record_run, &run) == slab_pages);
+        }
+    }
+    TEST_ASSERT(full_pages == 124u * 1024 * 1024);
+    TEST_ASSERT(first_pages == full_pages);
+    const uint64_t projected = ds4_cont_admit_band_apply(first_pages, 1045);
+    TEST_ASSERT(virtual_bytes < projected); /* observed 70.4 vs 126.5 MiB */
+    const uint64_t plan = ds4_batch_cache_allow(virtual_bytes, full_pages, 1045);
+    fprintf(stderr, "short cache plan: virtual=%llu pages=%llu projected=%llu allowance=%llu\n",
+        (unsigned long long)virtual_bytes, (unsigned long long)full_pages,
+        (unsigned long long)projected, (unsigned long long)plan);
+    TEST_ASSERT(plan >= projected);
+    TEST_ASSERT(ds4_batch_cache_allow(virtual_bytes, full_pages, 1024) == full_pages);
+    TEST_ASSERT(ds4_batch_cache_allow(virtual_bytes, full_pages, 2048) == 2 * full_pages);
+    TEST_ASSERT(ds4_batch_cache_allow(4 * full_pages, full_pages, 1045) == 4 * full_pages);
+    /* A capacity smaller than the class plan remains the upper clamp. */
+    const uint64_t capacity = page;
+    TEST_ASSERT((plan < capacity ? plan : capacity) < projected);
+}
+
 /* MT-1b (v0.6.1 memory truth): pure tranche-extension arithmetic (ds4.h
  * inlines).  Pins the margin trigger (due exactly when pos + margin
  * reaches the credited end), the tranche walk with its true-target clamp,
@@ -36934,6 +36976,7 @@ static void ds4_server_unit_tests_run(void) {
     test_request_decode_budget_three_states();
     test_credit_union_merge_shapes();
     test_credit_union_sums_per_run_need();
+    test_credit_union_short_plan();
     test_cont_credit_ext_due_shapes();
     test_cont_credit_refuse_bmax_clamp();
     test_coalesce_max_default_tiers();

@@ -8,6 +8,8 @@ use ds4_core::{
     DistributedRole, Distribution, EngineFacts, Identified, MaxSeqs, Model, ModelOpenOption,
     MtpMode, PrefixReuse, ServingCaps, ServingRequest, WeightSlice,
 };
+use ds4_server::cache_identity::CacheIdentity;
+use ds4_server::expected_plan::ExpectedPlan;
 use ds4_server::kv_cli::DiskKvArgs;
 use ds4_server::{
     accept_loop, accept_loop_with_engine, accept_loop_with_engine_cont, dist_weight_slice,
@@ -49,6 +51,7 @@ fn main() {
     let mut model_options = Vec::new();
     let mut vision_path: Option<String> = None;
     let mut kv = DiskKvArgs::default();
+    let mut expected_plan: Option<ExpectedPlan> = None;
     let mut dist = DistArgs::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -118,6 +121,15 @@ fn main() {
             }
             "--print-plan" => serve_req.print_plan = true,
             "--check-config" => serve_req.check_config = true,
+            "--expect-plan" => {
+                if expected_plan.is_some() {
+                    cli_error("--expect-plan may be supplied only once");
+                }
+                let path = args.next().unwrap_or_else(|| usage());
+                expected_plan = Some(
+                    ExpectedPlan::load(Path::new(&path)).unwrap_or_else(|error| cli_error(&error)),
+                );
+            }
             "--backend" => {
                 backend = match args.next().unwrap_or_else(|| usage()).as_str() {
                     "cuda" => Backend::Cuda,
@@ -307,6 +319,11 @@ fn main() {
     cfg.adopt_plan(&plan);
     eprint!("{}", plan.report());
     if serve_req.check_config {
+        if let Some(expected) = &expected_plan {
+            expected
+                .check_preflight(&plan)
+                .unwrap_or_else(|error| cli_error(&error));
+        }
         println!("{}", plan.to_json());
         std::process::exit(if plan.may_listen() { 0 } else { 2 });
     }
@@ -321,13 +338,22 @@ fn main() {
             model_options.push(ModelOpenOption::MtpDraftTokens(draft));
         }
     }
-    let cont_width = if serve_req.max_seqs == MaxSeqs::Off {
+    let cont_width = if serve_req.max_seqs == MaxSeqs::Off || plan.uses_serial_mtp() {
         0
     } else {
         plan.effective.max_seqs as i32
     };
 
     let native_dist = distributed_config(&dist.opt);
+    // Snapshot every artifact before native open, then recheck before enabling
+    // disk reads. Equal prompt tokens alone do not establish equal model state.
+    let cache_identity = model_path.as_deref().filter(|_| kv_store.is_some()).map(|path| {
+        let sidecars: Vec<_> = [mtp_path.as_deref(), vision_path.as_deref(), dspark_path.as_deref()]
+            .into_iter().flatten().map(Path::new).collect();
+        let settings = format!("backend={backend:?};threads={n_threads};options={model_options:?};dist={native_dist:?}");
+        CacheIdentity::capture(Path::new(path), &sidecars, &settings)
+            .unwrap_or_else(|error| cli_error(&format!("disk KV identity: {error}")))
+    });
     let model = match model_path.as_deref() {
         Some(path) => {
             let opened = match native_dist.as_ref() {
@@ -364,7 +390,7 @@ fn main() {
         }
         None => None,
     };
-    let kv_store = if model.is_some() { kv_store } else { None };
+    let mut kv_store = if model.is_some() { kv_store } else { None };
 
     let lane = if let Some(ref model) = model {
         // What only the open engine knows. The refit re-resolves so a
@@ -500,6 +526,11 @@ fn main() {
     } else {
         None
     };
+    if let Some(expected) = &expected_plan {
+        expected
+            .check(cfg.serving_plan.as_ref().unwrap_or(&plan))
+            .unwrap_or_else(|error| cli_error(&error));
+    }
     if launch == ServerLaunch::Worker {
         let Some(ref model) = model else {
             cli_error(WORKER_REQUIRES_MODEL);
@@ -524,6 +555,26 @@ fn main() {
     }
     if let Some(ref model) = model {
         model.boot_prewarm();
+    }
+    if let (Some(identity), Some(store)) = (cache_identity, kv_store.as_mut()) {
+        let effective = &cfg.serving_plan.as_ref().unwrap_or(&plan).effective;
+        let settings = format!(
+            "ctx={};banks={};native={:?};schedule={}/{};mtp={:?}/{}/{:?}",
+            effective.ctx,
+            effective.max_seqs,
+            effective.native_chunk,
+            effective.sched_chunk,
+            effective.sched_chunk_live,
+            effective.mtp_mode,
+            effective.mtp_weights,
+            effective.mtp_draft
+        );
+        let digest = identity
+            .finish(&settings)
+            .unwrap_or_else(|error| cli_error(&format!("disk KV identity: {error}")));
+        store.bind_identity(digest);
+        let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+        eprintln!("disk KV identity: local-file-stat-v1 {hex} (file metadata, not full-content attestation)");
     }
 
     if !ds4_sys::install_stop_handlers() {

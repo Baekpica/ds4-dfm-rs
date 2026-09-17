@@ -41,6 +41,7 @@ fn four_command_help() {
         ("scout", vec!["--fit", "--ncu", "--collector"]),
         ("compare", vec!["--baseline", "--regression"]),
         ("optimize", vec!["--auto"]),
+        ("serving", vec!["--url", "--workload", "--timeout-seconds"]),
     ] {
         let result = Command::new(env!("CARGO_BIN_EXE_ds4-perf"))
             .args([command, "--help"])

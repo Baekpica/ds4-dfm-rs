@@ -958,15 +958,21 @@ impl BindPlan {
         }
     }
 
-    /// C `ds4_engine_routed_quant_bits`: first base `ffn_gate_exps` wins.
-    /// Q4_K → 4, any other present type → 2, none → 0.
+    /// Legacy KVC quant class: first routed gate/w13, Q4_K → 4, else 2.
+    /// Inkling keeps source tensor names rather than `ffn_gate_exps` aliases.
     pub fn routed_quant_bits(&self) -> i32 {
         const T_Q4_K: u32 = 12;
         for slot in &self.slots {
             if slot.name.starts_with("mtp.") || slot.name.starts_with("dspark.") {
                 continue;
             }
-            if !slot.name.contains("ffn_gate_exps") {
+            let routed = if self.shape.family == ModelFamily::Inkling {
+                slot.name.starts_with("model.llm.layers.")
+                    && slot.name.ends_with(".mlp.experts.w13_weight")
+            } else {
+                slot.name.contains("ffn_gate_exps")
+            };
+            if !routed {
                 continue;
             }
             if let Some(tensor) = &slot.tensor {
@@ -1438,6 +1444,20 @@ mod tests {
             alignment: 32,
             page: 4096,
         }
+    }
+
+    #[test]
+    fn inkling_kv_quant_identity() {
+        let mut p = plan(vec![
+            gate(
+                "model.mtp.layers.0.transformer_block.mlp.experts.w13_weight",
+                12,
+            ),
+            gate("model.llm.layers.0.mlp.w13_dn.weight", 30),
+            gate("model.llm.layers.2.mlp.experts.w13_weight", 8),
+        ]);
+        p.shape = crate::shape::SHAPE_INKLING_SMALL;
+        assert_eq!(p.routed_quant_bits(), 2);
     }
 
     #[test]

@@ -146,6 +146,10 @@ static void check_mtp(ds4_session *s, const ds4_tokens *prompt) {
     ds4_tokens_copy(&transcript, prompt);
     unsigned cycles = 0, generated = 0;
     while (generated < CHECK_TOKENS) {
+        ds4_session_snapshot saved = {0};
+        check(ds4_session_save_snapshot(s, &saved, err, sizeof(err)) == 0 &&
+              ds4_session_load_snapshot(s, &saved, err, sizeof(err)) == 0, err);
+        ds4_session_snapshot_free(&saved);
         int tokens[IK_VERIFY_ROWS], target[IK_VERIFY_ROWS];
         const int first = ds4_session_argmax(s), before = ds4_session_pos(s);
         check(first == ds4_session_argmax(base), "Inkling MTP first token differs");
@@ -204,6 +208,42 @@ static void check_mtp(ds4_session *s, const ds4_tokens *prompt) {
     printf("Inkling native MTP: %u cycles, %u greedy tokens, all target logits/KV/convolution exact\n", cycles, generated);
     ds4_session_free(base);
     ds4_tokens_free(&transcript);
+}
+
+static void check_wrap_snapshot(ds4_session *s) {
+    enum { PREFIX = IK_LOCAL + 17, DECODE = 16 };
+    if (s->ctx_size <= PREFIX + DECODE + IK_VERIFY_ROWS) { return; }
+    const int fixture[] = {976, 9029, 328, 10128, 382};
+    ds4_tokens prompt = {0};
+    for (unsigned i = 0; i < PREFIX; i++) {
+        ds4_tokens_push(&prompt, fixture[i % (sizeof(fixture) / sizeof(fixture[0]))]);
+    }
+    char err[256] = {0};
+    check(ds4_session_sync(s, &prompt, err, sizeof(err)) == 0, err);
+    ds4_session_snapshot saved = {0};
+    check(ds4_session_save_snapshot(s, &saved, err, sizeof(err)) == 0, err);
+    const size_t bytes = INKLING_VALID_VOCAB * sizeof(float);
+    float *reference = xmalloc(DECODE * bytes);
+    int tokens[DECODE];
+    for (unsigned pass = 0; pass < 2; pass++) {
+        if (pass) { check(ds4_session_load_snapshot(s, &saved, err, sizeof(err)) == 0, err); }
+        for (unsigned i = 0; i < DECODE; i++) {
+            if (!pass) {
+                memcpy(reference + i * INKLING_VALID_VOCAB, s->logits, bytes);
+                tokens[i] = ds4_session_argmax(s);
+            } else {
+                check(memcmp(reference + i * INKLING_VALID_VOCAB, s->logits, bytes) == 0 &&
+                      ds4_session_argmax(s) == tokens[i], "Inkling wrapped snapshot continuation differs");
+            }
+            check(ds4_session_eval(s, tokens[i], err, sizeof(err)) == 0, err);
+        }
+    }
+    printf("Inkling wrapped snapshot: %u-prefix, %u full-vocabulary logits/greedy tokens exact; mtp=%d\n",
+           PREFIX, DECODE, s->engine->mtp_ready);
+    check_mtp(s, &prompt);
+    ds4_session_snapshot_free(&saved);
+    ds4_tokens_free(&prompt);
+    free(reference);
 }
 
 /* Check sizing and context clamping without importing weights or allocating
@@ -274,6 +314,7 @@ int main(int argc, char **argv) {
 
     model_open(&e.model, argv[1], false, false);
     weights_bind(&e.weights, &e.model, false, 0, UINT32_MAX, true, false);
+    check(ds4_engine_routed_quant_bits(&e) == 2, "Inkling KV quant identity is absent");
     e.vocab.n_vocab = INKLING_VALID_VOCAB;
     check(ds4_gpu_init() && ds4_gpu_set_model_map(e.model.map, e.model.size),
           "Inkling GPU/map initialization failed");
@@ -368,16 +409,28 @@ int main(int argc, char **argv) {
           ds4_session_copy_logits(s, got, INKLING_VALID_VOCAB) == INKLING_VALID_VOCAB &&
           memcmp(got, base, bytes) == 0, "prefix extension differs from cold sync");
 
-    FILE *fp = tmpfile();
-    check(fp && !ds4_session_payload_bytes(s) &&
-          ds4_session_save_payload(s, fp, err, sizeof(err)) != 0,
-          "Inkling entered DeepSeek payload format");
-    fclose(fp);
+    /* Replacing the live frontier must restore both the exact logits and
+     * the convolution/KV state consumed by the next decode. */
+    ds4_session_snapshot saved = {0};
+    check(ds4_session_payload_bytes(s) &&
+          ds4_session_save_snapshot(s, &saved, err, sizeof(err)) == 0, err);
+    const int restored_next = ds4_session_argmax(s);
+    check(ds4_session_eval(s, restored_next, err, sizeof(err)) == 0, err);
+    memcpy(extended, s->logits, bytes);
+    check(ds4_session_load_snapshot(s, &saved, err, sizeof(err)) == 0 &&
+          ds4_session_pos(s) == prompt.len && memcmp(s->logits, base, bytes) == 0,
+          "Inkling restored frontier differs");
+    check(ds4_session_eval(s, restored_next, err, sizeof(err)) == 0 &&
+          memcmp(s->logits, extended, bytes) == 0,
+          "Inkling restored continuation differs");
+    ds4_session_snapshot_free(&saved);
+    check(ds4_session_sync(s, &prompt, err, sizeof(err)) == 0, err);
     printf("Inkling session: lazy alloc, no-op/extend/decode/reset/rewind parity; "
            "context=%d cap=%u estimate=%llu measured=%llu\n", context, s->prefill_cap,
            (unsigned long long)estimate,
            (unsigned long long)measured);
     check_mtp(s, &prompt);
+    check_wrap_snapshot(s);
     check_image_sync(s);
     check_audio_sync(s);
     ds4_session_free(s);

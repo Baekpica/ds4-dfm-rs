@@ -22,6 +22,7 @@ pub const PREFILL_CHUNK_FENCE: u32 = 8192;
 /// 0 is the C one-shot / interleave-off sentinel, not a member of this set.
 pub const VERIFIED_PREFILL_CHUNKS: [u32; 6] = [256, 512, 1024, 2048, 4096, 8192];
 const GIB: u64 = 1 << 30;
+const DOTS3_MAX_DRAFT: i32 = 3;
 /// C `QWEN4EXP_YARN_MAX_FACTOR`: how far Qwen's RoPE context may stretch
 /// before `ds4_session_create` refuses the context outright.
 pub const QWEN_YARN_MAX_FACTOR: u32 = 4;
@@ -134,6 +135,7 @@ pub enum SpecLane {
     None,
     Serial,
     Bank,
+    Both,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -373,6 +375,7 @@ pub enum ReuseMiss {
     RenderedPrefix,
     BelowThreshold,
     PayloadMismatch,
+    StateReplay,
 }
 
 impl ReuseMiss {
@@ -383,6 +386,7 @@ impl ReuseMiss {
             Self::RenderedPrefix => "rendered prefix changed",
             Self::BelowThreshold => "below minimum token threshold",
             Self::PayloadMismatch => "payload family/layout mismatch",
+            Self::StateReplay => "session state requires prefix replay",
         }
     }
 }
@@ -658,7 +662,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             snapshot: Support::Qualified,
             mtp: MtpKind::Sidecar,
             mtp_support: Support::Qualified,
-            spec_lane: SpecLane::Serial,
+            spec_lane: SpecLane::Both,
             spec_draft_min: 1,
             host: HostNeed::Cuda,
             ctx_max: Some(262144),
@@ -735,8 +739,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             variant,
             banks: BankLane::Persistent,
             bank_support: Support::Qualified,
-            reuse: ReuseKind::Exact,
-            reuse_support: Support::Qualified,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Present,
             disk: Support::Qualified,
             snapshot: Support::Qualified,
             mtp: MtpKind::None,
@@ -753,15 +757,15 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         ModelFamily::Dots3Note => ServingCaps {
             family,
             variant,
-            banks: BankLane::Serial,
-            bank_support: Support::None,
-            reuse: ReuseKind::Exact,
+            banks: BankLane::OptIn,
+            bank_support: Support::Present,
+            reuse: ReuseKind::Partial,
             reuse_support: Support::Present,
-            disk: Support::Qualified,
+            disk: Support::Present,
             snapshot: Support::Qualified,
-            mtp: MtpKind::BoundOnly,
-            mtp_support: Support::None,
-            spec_lane: SpecLane::None,
+            mtp: MtpKind::Embedded,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Serial,
             spec_draft_min: 1,
             host: HostNeed::Cuda,
             ctx_max: Some(524288),
@@ -777,8 +781,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             bank_support: Support::None,
             reuse: ReuseKind::Exact,
             reuse_support: Support::Qualified,
-            disk: Support::None,
-            snapshot: Support::None,
+            disk: Support::Present,
+            snapshot: Support::Present,
             mtp: MtpKind::Sidecar,
             mtp_support: Support::Qualified,
             spec_lane: SpecLane::Serial,
@@ -911,6 +915,13 @@ pub fn resolve_plan(
     let draft = req.mtp_draft.unwrap_or(caps.spec_draft_min);
     let (mtp_mode, mtp_draft) = match mtp_mode {
         MtpMode::Off => (MtpMode::Off, None),
+        _ if caps.family == ModelFamily::Dots3Note && draft > DOTS3_MAX_DRAFT => {
+            issues.push(error(
+                "mtp_draft",
+                "dots3 MTP draft exceeds the three-token trial limit",
+            ));
+            (MtpMode::Off, None)
+        }
         mode if draft >= caps.spec_draft_min => (mode, Some(draft)),
         mode => {
             let message = format!(
@@ -1065,6 +1076,10 @@ pub fn resolve_plan(
         // downgraded plan keeps the family's verification level.
         prefix_reuse: if reuse == ReuseKind::None {
             Support::None
+        } else if reuse == ReuseKind::Exact && caps.variant == Variant::Kexaone236B {
+            // EXAONE's existing exact path stays qualified while its new
+            // checkpoint/fork path awaits its separate live gates.
+            Support::Qualified
         } else {
             caps.reuse_support
         },
@@ -1142,7 +1157,16 @@ impl ResolvedPlan {
         !self.has_errors()
     }
 
-    /// The operator asked for the bank lane by naming a width. Hosts must
+    /// Serial-only speculation must bypass native bank fitting and routing.
+    pub fn uses_serial_mtp(&self) -> bool {
+        self.effective.mtp_mode != MtpMode::Off
+            && self
+                .caps
+                .is_some_and(|caps| caps.spec_lane == SpecLane::Serial)
+    }
+
+    /// The operator asked for the bank lane by naming a width, unless the
+    /// resolved MTP mode requires a serial session. Hosts must
     /// adopt this, not only the published env — a config captured before
     /// resolution keeps its own legacy `DS4_SERVER_CONTINUOUS`. `auto`
     /// expresses no preference, so it leaves that switch alone: the README
@@ -1151,7 +1175,8 @@ impl ResolvedPlan {
         // The legacy switch and the width are orthogonal: `--max-seqs N`
         // sizes the banks the static lane coalesces over, it does not ask
         // for continuous routing the switch turned off.
-        if self.requested.lane == LaneMode::Serial
+        if self.uses_serial_mtp()
+            || self.requested.lane == LaneMode::Serial
             || self.requested.backend != Backend::Cuda
             || self.requested.max_seqs == MaxSeqs::Off
         {
@@ -1188,14 +1213,24 @@ impl ResolvedPlan {
                 out.push(("DS4_SERVER_FORK_PARTIAL".into(), "1".into()));
             }
         }
-        if self.wants_bank_lane() {
+        if self.uses_serial_mtp() {
+            out.push(("DS4_SERVER_CONTINUOUS".into(), "0".into()));
+        } else if self.wants_bank_lane() {
             out.push(("DS4_SERVER_CONTINUOUS".into(), "1".into()));
         }
         // 0/1 so a later fitted-down plan can retract. Step width 1 is
         // serial MTP; Qwen width 1 is still a bank.
-        if self.family == Some(ModelFamily::Step37) {
+        if matches!(
+            self.family,
+            Some(ModelFamily::Step37 | ModelFamily::Dots3Note)
+        ) {
+            let key = if self.family == Some(ModelFamily::Dots3Note) {
+                "DS4_DOTS3_BATCH"
+            } else {
+                "DS4_STEP37_BATCH"
+            };
             out.push((
-                "DS4_STEP37_BATCH".into(),
+                key.into(),
                 if self.effective.max_seqs > 1 {
                     "1".into()
                 } else {
@@ -1219,6 +1254,17 @@ impl ResolvedPlan {
         if self.effective.mtp_mode == MtpMode::Off {
             out.push(("DS4_MTP_SPEC_DISABLE".into(), "1".into()));
         }
+        if self.family == Some(ModelFamily::Dots3Note) {
+            out.push((
+                "DS4_DOTS3_MTP".into(),
+                if self.effective.mtp_mode == MtpMode::On {
+                    "1"
+                } else {
+                    "0"
+                }
+                .into(),
+            ));
+        }
         // Never publish a yield past the allocated native workspace.
         let boot = published_chunk(self.effective.sched_chunk, self.effective.native_chunk);
         let live = published_chunk(self.effective.sched_chunk_live, self.effective.native_chunk);
@@ -1226,23 +1272,58 @@ impl ResolvedPlan {
         out.push(("DS4_CONT_PREFILL_CHUNK_LIVE".into(), live.to_string()));
         // C family allocators read DS4_*_PREFILL_CHUNK, not --native-chunk.
         if let Some(native) = self.effective.native_chunk {
-            if let Some(key) = match self.family {
-                Some(ModelFamily::Qwen4Exp) => Some("DS4_QWEN_PREFILL_CHUNK"),
-                Some(ModelFamily::Step37) => Some("DS4_STEP37_PREFILL_CHUNK"),
-                Some(ModelFamily::Ling3Vl) => Some("DS4_LING3VL_PREFILL_CHUNK"),
-                Some(ModelFamily::Inkling) => Some("DS4_INKLING_PREFILL_CHUNK"),
-                Some(ModelFamily::ExaoneMoe) => Some("DS4_EXAONE_PREFILL_CHUNK"),
-                Some(ModelFamily::Motif3) => Some("DS4_MOTIF3_PREFILL_CHUNK"),
-                Some(ModelFamily::SolarOpen2 | ModelFamily::DeepSeek4) => {
-                    Some("DS4_METAL_PREFILL_CHUNK")
-                }
-                Some(ModelFamily::Dots3Note) => Some("DS4_DOTS3_PREFILL_CHUNK"),
-                _ => None,
-            } {
+            if let Some(key) = self.native_prefill_env() {
                 out.push((key.into(), native.to_string()));
             }
         }
         out
+    }
+
+    fn native_prefill_env(&self) -> Option<&'static str> {
+        match self.family {
+            Some(ModelFamily::Qwen4Exp) => Some("DS4_QWEN_PREFILL_CHUNK"),
+            Some(ModelFamily::Step37) => Some("DS4_STEP37_PREFILL_CHUNK"),
+            Some(ModelFamily::Ling3Vl) => Some("DS4_LING3VL_PREFILL_CHUNK"),
+            Some(ModelFamily::Inkling) => Some("DS4_INKLING_PREFILL_CHUNK"),
+            Some(ModelFamily::ExaoneMoe) => Some("DS4_EXAONE_PREFILL_CHUNK"),
+            Some(ModelFamily::Motif3) => Some("DS4_MOTIF3_PREFILL_CHUNK"),
+            Some(ModelFamily::SolarOpen2 | ModelFamily::DeepSeek4) => {
+                Some("DS4_METAL_PREFILL_CHUNK")
+            }
+            Some(ModelFamily::Dots3Note) => Some("DS4_DOTS3_PREFILL_CHUNK"),
+            _ => None,
+        }
+    }
+
+    fn controls_json(&self) -> Value {
+        // Proposals use the same allocator mapping and capability table as
+        // admission. An unidentified model or workspace offers no chunk choices.
+        let scheduler_chunks: Vec<_> = self
+            .caps
+            .and(self.effective.native_chunk)
+            .map(|cap| {
+                VERIFIED_PREFILL_CHUNKS
+                    .into_iter()
+                    .filter(|n| *n <= cap)
+                    .collect()
+            })
+            .unwrap_or_default();
+        json!({
+            "native_prefill_env": self.caps.and_then(|_| self.native_prefill_env()),
+            "scheduler_chunks": scheduler_chunks,
+            "prefix_reuse": self.caps.map(|caps| match caps.reuse {
+                ReuseKind::None => "none",
+                ReuseKind::Exact => "exact",
+                ReuseKind::Partial => "partial",
+            }),
+            "banks": self.caps.map(|caps| match caps.banks {
+                BankLane::Serial => "serial",
+                BankLane::OptIn => "opt_in",
+                BankLane::Persistent => "persistent",
+            }),
+            "mtp": self.caps.map(|caps| caps.mtp_support.as_str()),
+            "disk": self.caps.map(|caps| caps.disk.as_str()),
+        })
     }
 
     /// Pass the quoted workspace to native allocators that consume this argument.
@@ -1272,6 +1353,7 @@ impl ResolvedPlan {
     pub fn to_json(&self) -> Value {
         json!({
             "family": self.family_name,
+            "controls": self.controls_json(),
             "requested": {
                 "prefix_reuse": self.requested.prefix_reuse.as_str(),
                 "mtp_mode": self.requested.mtp_mode.as_str(),
@@ -1481,6 +1563,16 @@ fn resolve_reuse(
         PrefixReuse::Auto => {
             if caps.reuse != ReuseKind::Partial {
                 return caps.reuse;
+            }
+            if caps.reuse_support != Support::Qualified {
+                issues.push(warn(
+                    "partial_unqualified",
+                    format!(
+                        "{} partial reuse is implemented but not qualified",
+                        caps.variant_name()
+                    ),
+                ));
+                return ReuseKind::Exact;
             }
             match partial_block(driver, facts) {
                 Some(block) => {
@@ -1757,8 +1849,8 @@ fn resolve_mtp(
         }
         return (MtpMode::Off, false);
     }
-    // Only sidecar families take a path: Qwen's MTP is embedded, dots3 binds
-    // without executing, and the rest have no contract at all.
+    // Embedded predictors use the main artifact; only sidecar families
+    // take a separate path.
     if has_path && !matches!(caps.mtp, MtpKind::Sidecar | MtpKind::DeepSeek) {
         issues.push(error(
             "mtp_contract",
@@ -1796,6 +1888,15 @@ fn resolve_mtp(
         }
         return (MtpMode::Off, false);
     }
+    if caps.spec_lane == SpecLane::Serial && driver == BankDriver::Present {
+        if req.mtp_mode == MtpMode::On {
+            issues.push(error(
+                "mtp_lane",
+                format!("{} MTP runs only on the serial lane", caps.variant_name()),
+            ));
+        }
+        return (MtpMode::Off, false);
+    }
     if req.mtp_mode == MtpMode::On && caps.mtp == MtpKind::BoundOnly {
         issues.push(error(
             "mtp_unexecuted",
@@ -1825,7 +1926,10 @@ fn resolve_mtp(
         return (MtpMode::Off, false);
     }
     let weights = match caps.mtp {
-        MtpKind::Embedded => req.mtp_mode != MtpMode::Off,
+        MtpKind::Embedded => {
+            req.mtp_mode == MtpMode::On
+                || (req.mtp_mode == MtpMode::Auto && caps.mtp_support == Support::Qualified)
+        }
         MtpKind::Sidecar | MtpKind::DeepSeek => has_path || facts.mtp_loaded,
         MtpKind::BoundOnly | MtpKind::None => false,
     };
@@ -1833,9 +1937,16 @@ fn resolve_mtp(
         MtpMode::Off => MtpMode::Off,
         MtpMode::On if weights => MtpMode::On,
         MtpMode::On => MtpMode::Off,
+        MtpMode::Auto if caps.mtp_support != Support::Qualified => MtpMode::Off,
         MtpMode::Auto if weights => MtpMode::Auto,
         MtpMode::Auto => MtpMode::Off,
     };
+    if mode == MtpMode::On && caps.mtp_support == Support::Present {
+        issues.push(warn(
+            "mtp_unverified",
+            "MTP execution is present but not qualified",
+        ));
+    }
     (mode, weights)
 }
 
@@ -1850,9 +1961,9 @@ enum BankDriver {
 /// backend has no lane, the native fit refused it, the family serves
 /// serially, or an opt-in family stayed at width one.
 ///
-/// This mirrors the native admission gate: Inkling, dots3 and GLM refuse
-/// banks outright, Qwen and Step require `DS4_QWEN_BATCH` / `DS4_STEP37_BATCH`
-/// to be `1` (which `env_overrides` publishes from the resolved width), and
+/// This mirrors the native admission gate: Inkling and GLM refuse banks
+/// outright; Qwen, Step and dots3 require their batch environment switch to
+/// be `1` (which `env_overrides` publishes from the resolved width), and
 /// the remaining families are persistent.
 fn bank_driver(
     req: &ServingRequest,
@@ -1923,9 +2034,13 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
             "32K one-bank serving is qualified; disk KV and external owner import are not"
         }
         Variant::Glm53Flash => "serial graph is capped at 2,048 tokens; snapshots unsupported",
-        Variant::Dots3NotePrev => "live serving is serial; embedded MTP is bound, not executed",
-        Variant::InklingSmall => "serial exact-prefix reuse; disk snapshot unimplemented",
-        Variant::Kexaone236B => "exact-frontier reuse only; partial checkpoint is a separate task",
+        Variant::Dots3NotePrev => {
+            "text banks, local-window partial reuse and serial MTP are present but unqualified"
+        }
+        Variant::InklingSmall => "serial text snapshots present; media snapshots unsupported",
+        Variant::Kexaone236B => {
+            "exact reuse qualified; LLLG partial checkpoints await live qualification"
+        }
         Variant::Qwen38FlashNext => {
             "common UX baseline; configured values and verified combinations differ"
         }
@@ -2046,6 +2161,58 @@ mod tests {
         };
         let p = resolve_plan(&req, None, &EngineFacts::default());
         assert!(p.has_errors());
+    }
+
+    #[test]
+    fn controls_follow_family_caps() {
+        let req = ServingRequest {
+            native_chunk: Some(1280),
+            ..ServingRequest::default()
+        };
+        let p = plan(req, ModelFamily::ExaoneMoe, Variant::K2Horizon375B);
+        let controls = p.to_json()["controls"].clone();
+        assert_eq!(controls["native_prefill_env"], "DS4_EXAONE_PREFILL_CHUNK");
+        assert_eq!(controls["scheduler_chunks"], json!([256, 512, 1024]));
+        assert_eq!(controls["prefix_reuse"], "exact");
+        assert_eq!(controls["banks"], "persistent");
+        assert_eq!(controls["mtp"], "none");
+        assert_eq!(controls["disk"], "unverified");
+        assert!(p.env_overrides().iter().any(|(key, value)| {
+            key == controls["native_prefill_env"].as_str().unwrap() && value == "1280"
+        }));
+
+        let req = ServingRequest {
+            ctx: 2048,
+            ..ServingRequest::default()
+        };
+        let glm = plan(req, ModelFamily::Glm53, Variant::Glm53Flash).to_json();
+        assert!(glm["controls"]["native_prefill_env"].is_null());
+        assert_eq!(glm["controls"]["prefix_reuse"], "none");
+        assert_eq!(glm["controls"]["banks"], "serial");
+        assert_eq!(glm["controls"]["disk"], "none");
+    }
+
+    #[test]
+    fn controls_need_known_capacity() {
+        let p = plan(
+            ServingRequest::default(),
+            ModelFamily::ExaoneMoe,
+            Variant::K2Horizon375B,
+        );
+        assert_eq!(p.to_json()["controls"]["scheduler_chunks"], json!([]));
+        let unknown = resolve_plan(
+            &ServingRequest {
+                native_chunk: Some(2048),
+                ..ServingRequest::default()
+            },
+            None,
+            &EngineFacts::default(),
+        );
+        let controls = unknown.to_json()["controls"].clone();
+        assert_eq!(controls["scheduler_chunks"], json!([]));
+        for key in ["native_prefill_env", "prefix_reuse", "banks", "mtp", "disk"] {
+            assert!(controls[key].is_null(), "{key}: {controls}");
+        }
     }
 
     #[test]
@@ -2466,6 +2633,23 @@ mod tests {
     }
 
     #[test]
+    fn glm_exact_context_boundary() {
+        for ctx in [1, 2048, 2049, i32::MAX] {
+            let req = ServingRequest {
+                ctx,
+                ..ServingRequest::default()
+            };
+            let p = plan(req, ModelFamily::Glm53, Variant::Glm53Flash);
+            assert_eq!(p.has_errors(), ctx > 2048, "ctx={ctx}: {:?}", p.issues);
+            assert_eq!(
+                p.issues.iter().any(|i| i.code == "ctx_unavailable"),
+                ctx > 2048
+            );
+            assert_eq!(p.qualified.ctx, Some(2048));
+        }
+    }
+
+    #[test]
     fn native_capacity_is_not_yield() {
         let req = ServingRequest {
             sched_chunk: Some(512),
@@ -2531,13 +2715,19 @@ mod tests {
     }
 
     #[test]
-    fn exaone_forced_partial_is_an_error() {
+    fn exaone_partial_is_present() {
         let mut req = ServingRequest::default();
         req.prefix_reuse = PrefixReuse::Partial;
+        let p = plan(req.clone(), ModelFamily::ExaoneMoe, Variant::Kexaone236B);
+        assert!(!p.has_errors());
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Partial);
+        assert_eq!(p.qualified.prefix_reuse, Support::Present);
+
+        req.prefix_reuse = PrefixReuse::Auto;
         let p = plan(req, ModelFamily::ExaoneMoe, Variant::Kexaone236B);
-        assert!(p.has_errors());
-        assert!(p.issues.iter().any(|i| i.code == "partial_unsupported"));
+        assert!(!p.has_errors());
         assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
+        assert!(p.issues.iter().any(|i| i.code == "partial_unqualified"));
     }
 
     #[test]
@@ -2639,10 +2829,13 @@ mod tests {
     #[test]
     fn glm_disk_is_an_error() {
         let mut req = ServingRequest::default();
+        req.ctx = 2048;
         req.kv_disk_dir = Some("/tmp/kv".into());
         let p = plan(req, ModelFamily::Glm53, Variant::Glm53Flash);
         assert!(p.has_errors());
         assert!(!p.effective.disk);
+        assert!(p.issues.iter().any(|i| i.code == "disk_unsupported"));
+        assert!(!p.issues.iter().any(|i| i.code == "ctx_unavailable"));
     }
 
     #[test]
@@ -2761,23 +2954,161 @@ mod tests {
     }
 
     #[test]
-    fn dots3_banks_and_mtp_on_fail_honestly() {
-        let mut req = ServingRequest::default();
-        req.max_seqs = MaxSeqs::Fixed(2);
-        req.mtp_mode = MtpMode::On;
+    fn dots3_banks_are_present() {
+        let req = ServingRequest {
+            max_seqs: MaxSeqs::Fixed(2),
+            prefix_reuse: PrefixReuse::Partial,
+            mtp_mode: MtpMode::Off,
+            ..ServingRequest::default()
+        };
         let p = plan(req, ModelFamily::Dots3Note, Variant::Dots3NotePrev);
-        assert!(p.has_errors());
-        assert!(p.issues.iter().any(|i| i.code == "banks_unsupported"));
-        assert!(p.issues.iter().any(|i| i.code == "mtp_unexecuted"));
+        assert!(!p.has_errors(), "{:?}", p.issues);
+        assert_eq!(p.effective.max_seqs, 2);
+        assert_eq!(p.qualified.banks, Support::Present);
+        assert_eq!(p.qualified.prefix_reuse, Support::Present);
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Partial);
+        assert!(p
+            .env_overrides()
+            .iter()
+            .any(|(k, v)| k == "DS4_DOTS3_BATCH" && v == "1"));
     }
 
     #[test]
-    fn inkling_disk_is_unsupported() {
+    fn dots3_mtp_is_serial_opt_in() {
+        let req = ServingRequest {
+            mtp_mode: MtpMode::On,
+            ..ServingRequest::default()
+        };
+        let p = plan(req, ModelFamily::Dots3Note, Variant::Dots3NotePrev);
+        assert!(!p.has_errors(), "{:?}", p.issues);
+        assert_eq!(p.effective.mtp_mode, MtpMode::On);
+        assert_eq!(p.qualified.mtp, Support::Present);
+        assert!(p.issues.iter().any(|i| i.code == "mtp_unverified"));
+        assert!(p
+            .env_overrides()
+            .iter()
+            .any(|(k, v)| k == "DS4_DOTS3_MTP" && v == "1"));
+
+        let p = plan(
+            ServingRequest::default(),
+            ModelFamily::Dots3Note,
+            Variant::Dots3NotePrev,
+        );
+        assert_eq!(p.effective.mtp_mode, MtpMode::Off);
+        assert!(p
+            .env_overrides()
+            .iter()
+            .any(|(k, v)| k == "DS4_DOTS3_MTP" && v == "0"));
+    }
+
+    #[test]
+    fn dots3_mtp_routes_serial() {
+        for max_seqs in [MaxSeqs::Auto, MaxSeqs::Fixed(1)] {
+            let req = ServingRequest {
+                max_seqs,
+                mtp_mode: MtpMode::On,
+                ..ServingRequest::default()
+            };
+            let p = plan(req, ModelFamily::Dots3Note, Variant::Dots3NotePrev);
+            assert!(!p.has_errors(), "{:?}", p.issues);
+            assert_eq!(p.effective.mtp_mode, MtpMode::On);
+            assert_eq!(p.effective.max_seqs, 1);
+            assert!(p.uses_serial_mtp());
+            assert!(!p.wants_bank_lane(), "{max_seqs:?}");
+            let env = p.env_overrides();
+            assert!(env.iter().any(|(k, v)| k == "DS4_DOTS3_BATCH" && v == "0"));
+            assert!(
+                env.iter()
+                    .any(|(k, v)| k == "DS4_SERVER_CONTINUOUS" && v == "0"),
+                "serial MTP must disable inherited continuous routing: {max_seqs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bank_mtp_keeps_routing() {
+        for (family, variant, width, sidecar) in [
+            (ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext, 1, None),
+            (ModelFamily::Qwen4Exp, Variant::Qwen38FlashNext, 2, None),
+            (
+                ModelFamily::Step37,
+                Variant::Step37Flash,
+                2,
+                Some("step-mtp.gguf"),
+            ),
+        ] {
+            let req = ServingRequest {
+                max_seqs: MaxSeqs::Fixed(width),
+                mtp_mode: MtpMode::On,
+                mtp_path: sidecar.map(str::to_owned),
+                ..ServingRequest::default()
+            };
+            let p = plan(req, family, variant);
+            assert!(!p.has_errors(), "{:?}", p.issues);
+            assert_eq!(p.effective.mtp_mode, MtpMode::On);
+            assert!(!p.uses_serial_mtp());
+            assert!(p.wants_bank_lane());
+            assert!(p
+                .env_overrides()
+                .iter()
+                .any(|(k, v)| k == "DS4_SERVER_CONTINUOUS" && v == "1"));
+        }
+    }
+
+    #[test]
+    fn dots3_mtp_refuses_bank_lane() {
+        let req = ServingRequest {
+            max_seqs: MaxSeqs::Fixed(2),
+            mtp_mode: MtpMode::On,
+            ..ServingRequest::default()
+        };
+        let p = plan(req, ModelFamily::Dots3Note, Variant::Dots3NotePrev);
+        assert!(p.issues.iter().any(|i| i.code == "mtp_lane"));
+        assert_eq!(p.effective.mtp_mode, MtpMode::Off);
+        assert!(p
+            .env_overrides()
+            .iter()
+            .any(|(k, v)| k == "DS4_DOTS3_MTP" && v == "0"));
+    }
+
+    #[test]
+    fn dots3_mtp_refuses_long_draft() {
+        let req = ServingRequest {
+            mtp_mode: MtpMode::On,
+            mtp_draft: Some(4),
+            ..ServingRequest::default()
+        };
+        let p = plan(req, ModelFamily::Dots3Note, Variant::Dots3NotePrev);
+        assert!(p.issues.iter().any(|i| i.code == "mtp_draft"));
+        assert_eq!(p.effective.mtp_mode, MtpMode::Off);
+    }
+
+    #[test]
+    fn dots3_partial_needs_bank_lane() {
         let mut req = ServingRequest::default();
+        req.prefix_reuse = PrefixReuse::Partial;
+        let p = plan(req, ModelFamily::Dots3Note, Variant::Dots3NotePrev);
+        assert!(p.issues.iter().any(|i| i.code == "partial_lane"));
+        let p = plan(
+            ServingRequest::default(),
+            ModelFamily::Dots3Note,
+            Variant::Dots3NotePrev,
+        );
+        assert!(!p.has_errors(), "{:?}", p.issues);
+        assert_eq!(p.effective.max_seqs, 1);
+        assert_eq!(p.effective.prefix_reuse, ReuseKind::Exact);
+    }
+
+    #[test]
+    fn inkling_disk_is_present() {
+        let mut req = ServingRequest::default();
+        req.ctx = 1024;
         req.kv_disk_dir = Some("/tmp/kv".into());
         let p = plan(req, ModelFamily::Inkling, Variant::InklingSmall);
-        assert!(p.has_errors());
-        assert!(p.issues.iter().any(|i| i.code == "disk_unsupported"));
+        assert!(!p.has_errors(), "{:?}", p.issues);
+        assert!(p.effective.disk);
+        assert_eq!(p.qualified.disk, Support::Present);
+        assert!(p.issues.iter().any(|i| i.code == "disk_unverified"));
     }
 
     #[test]

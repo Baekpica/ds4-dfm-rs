@@ -17,11 +17,13 @@ pub const LAYOUT_SOLAR: u32 = 0x3352_4C53; /* "SLR3" */
 pub const LAYOUT_EXAONE: u32 = 0x3341_5845; /* "EXA3" */
 pub const LAYOUT_MOTIF3: u32 = 0x3346_544D; /* "MTF3" */
 pub const LAYOUT_DOTS3: u32 = 0x3353_5444; /* "DTS3" */
+const LAYOUT_DOTS3_MTP: u32 = 0x4d33_5444; /* "DT3M" */
 pub const LAYOUT_QWEN4EXP: u32 = 0x334e_5751; /* "QWN3" */
 // Native restore also checks the effective PLE format; the host prefix is shared.
 const LAYOUT_QWEN_FP8: u32 = 0x3346_5751; /* "QWF3" */
 pub const LAYOUT_STEP37: u32 = 0x3350_5453; /* "STP3" */
 pub const LAYOUT_LING3VL: u32 = 0x3347_4e4c; /* "LNG3" */
+const LAYOUT_INKLING: u32 = 0x334c_4b49; /* "IKL3" */
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PayloadLayout {
@@ -33,6 +35,7 @@ pub enum PayloadLayout {
     Qwen4Exp,
     Step37,
     Ling3Vl,
+    Inkling,
 }
 
 impl PayloadLayout {
@@ -41,10 +44,11 @@ impl PayloadLayout {
             LAYOUT_SOLAR => Self::Solar,
             LAYOUT_EXAONE => Self::Exaone,
             LAYOUT_MOTIF3 => Self::Motif3,
-            LAYOUT_DOTS3 => Self::Dots3,
+            LAYOUT_DOTS3 | LAYOUT_DOTS3_MTP => Self::Dots3,
             LAYOUT_QWEN4EXP | LAYOUT_QWEN_FP8 => Self::Qwen4Exp,
             LAYOUT_STEP37 => Self::Step37,
             LAYOUT_LING3VL => Self::Ling3Vl,
+            LAYOUT_INKLING => Self::Inkling,
             _ => Self::DeepSeek,
         }
     }
@@ -59,6 +63,7 @@ impl PayloadLayout {
             Self::Qwen4Exp => ModelFamily::Qwen4Exp,
             Self::Step37 => ModelFamily::Step37,
             Self::Ling3Vl => ModelFamily::Ling3Vl,
+            Self::Inkling => ModelFamily::Inkling,
         }
     }
 
@@ -241,7 +246,8 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
         | PayloadLayout::Motif3
         | PayloadLayout::Dots3
         | PayloadLayout::Step37
-        | PayloadLayout::Ling3Vl => {
+        | PayloadLayout::Ling3Vl
+        | PayloadLayout::Inkling => {
             if p.fields[12] != p.fields[7] {
                 return Err(err("session payload token count does not match live rows"));
             }
@@ -250,6 +256,72 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
         PayloadLayout::DeepSeek | PayloadLayout::Qwen4Exp => {}
     }
     Ok(())
+}
+
+#[test]
+fn dots3_mtp_prefix_identity() {
+    let prefix = HostPrefix {
+        fields: [
+            MAGIC,
+            VERSION,
+            1024,
+            64,
+            47,
+            0x4d33_5444,
+            0,
+            3,
+            0,
+            0,
+            0,
+            0,
+            3,
+        ],
+        tokens: vec![10, 20, 30],
+    };
+    let mut file = std::io::Cursor::new(prefix.encode());
+    let restored = read_prefix_range(
+        &mut file,
+        0,
+        prefix.prefix_len() as u64,
+        ModelFamily::Dots3Note,
+        1024,
+    )
+    .unwrap();
+    assert_eq!(restored.layout(), PayloadLayout::Dots3);
+    assert_eq!(restored.tokens, prefix.tokens);
+}
+
+#[test]
+fn inkling_prefix_identity() {
+    let prefix = HostPrefix {
+        fields: [
+            MAGIC,
+            VERSION,
+            1024,
+            64,
+            42,
+            0x334c_4b49,
+            4096,
+            3,
+            0,
+            1024,
+            512,
+            200058,
+            3,
+        ],
+        tokens: vec![10, 20, 30],
+    };
+    let mut file = std::io::Cursor::new(prefix.encode());
+    let restored = read_prefix_range(
+        &mut file,
+        0,
+        prefix.prefix_len() as u64,
+        ModelFamily::Inkling,
+        1024,
+    )
+    .unwrap();
+    assert_eq!(restored.layout().family(), ModelFamily::Inkling);
+    assert_eq!(restored.tokens, prefix.tokens);
 }
 
 pub fn tail(bytes: &[u8]) -> Result<&[u8], PayloadError> {

@@ -31,12 +31,28 @@ typedef struct {
     int force_after, force_token;
     int eos;
     bool stop_eos;
+    int checkpoint_at, checkpoints;
+    FILE *history_payload;
 } cont_req;
 
 typedef struct {
     cont_req *reqs;
     int count, next;
+    ds4_batch_ctx *batch;
 } driver;
+
+static void checkpoint_cb(void *ud, void *user, int bank, int current) {
+    driver *d = ud;
+    cont_req *r = user;
+    CHECK(d->batch && current == r->checkpoint_at && r->history_payload);
+    const int *tokens = NULL;
+    CHECK(ds4_batch_ctx_bank_committed(d->batch, bank, &tokens) == current);
+    CHECK(tokens && !memcmp(tokens, r->tokens, (size_t)current * sizeof(int)));
+    CHECK(d->batch->step37->bank_logits_valid[bank]);
+    CHECK(!ds4_cont_bank_save_payload(d->batch, (uint32_t)bank,
+                                      r->history_payload, err, sizeof(err)));
+    r->checkpoints++;
+}
 
 static int override_cb(void *ud, void *user) {
     (void)ud;
@@ -61,6 +77,8 @@ static int admit_cb(void *ud, ds4_cont_request *req) {
     req->bank_used = &r->placed_bank;
     req->fork_bank = r->fork_bank;
     req->n_cached = r->n_cached;
+    req->checkpoint_at = r->checkpoint_at;
+    req->on_checkpoint = checkpoint_cb;
     return 1;
 }
 
@@ -167,6 +185,16 @@ int main(int argc, char **argv) {
     e.vocab.n_vocab = DS4_N_VOCAB;
     e.vocab.eos_id = -1;
     CHECK(ds4_gpu_init() && ds4_gpu_set_model_map(e.model.map, e.model.size));
+    const char *manifest = getenv("DS4_CUDA_WEIGHT_IPC_MANIFEST");
+    if (!manifest && argc == 5) { manifest = argv[4]; }
+    if (manifest) {
+        /* Match production: resolve the base mapping before importing MTP.
+         * A second artifact import must not leave the base's first embedding
+         * pointing at an unimported, unregistered host mapping. */
+        CHECK(manifest[0] && ds4_gpu_import_model_ipc_manifest(
+                e.model.map, e.model.size, manifest, "base"));
+        model_release_mapping_cache(&e.model);
+    }
     if (argc == 5) {
         model_open(&e.mtp_model, argv[3], false, false);
         step37_bind_draft(&e.step37_mtp, &e.mtp_model);
@@ -385,6 +413,36 @@ int main(int argc, char **argv) {
         CHECK(ctx_b->bank_hist_len[stopped.placed_bank] <= (unsigned)len_a + stop_n);
         puts("Step cont: forced protocol token and EOS stop speculative emission");
     }
+
+    /* The history cut is deliberately inside a native chunk. Persist there,
+     * advance through the generation suffix, then restore and replay it.
+     * This checks token identity, live logits, and target/predictor payloads. */
+    FILE *history = tmpfile();
+    CHECK(history);
+    cont_req history_req = {.tokens = prompt.v, .n = len_b,
+        .checkpoint_at = len_a - 3, .history_payload = history};
+    driver hd = {.reqs = &history_req, .count = 1, .batch = ctx_b};
+    CHECK(!ds4_engine_continuous_generate(ctx_b, admit_cb, token_cb, done_cb,
+                                          &hd, err, sizeof(err)));
+    CHECK(history_req.checkpoints == 1 && history_req.out_n == GEN);
+    const uint64_t history_bytes = (uint64_t)ftell(history);
+    CHECK(history_bytes > 0);
+    rewind(history);
+    CHECK(!ds4_cont_bank_restore_payload(ctx_b, (uint32_t)history_req.placed_bank,
+                                         history, history_bytes, err, sizeof(err)));
+    const int *history_tokens = NULL;
+    CHECK(ds4_batch_ctx_bank_committed(ctx_b, history_req.placed_bank,
+                                      &history_tokens) == history_req.checkpoint_at);
+    CHECK(!memcmp(history_tokens, prompt.v, (size_t)history_req.checkpoint_at * sizeof(int)));
+    cont_req history_follow = {.tokens = prompt.v, .n = len_b,
+        .fork_bank = history_req.placed_bank + 1, .n_cached = history_req.checkpoint_at};
+    driver hfd = {.reqs = &history_follow, .count = 1};
+    CHECK(!ds4_engine_continuous_generate(ctx_b, admit_cb, token_cb, done_cb,
+                                          &hfd, err, sizeof(err)));
+    CHECK(history_follow.out_n == GEN &&
+          !memcmp(history_req.out, history_follow.out, GEN * sizeof(int)));
+    fclose(history);
+    puts("Step cont: history frontier payload restores exact tokens and greedy continuation");
 
     ds4_batch_ctx_destroy(ctx_b);
     CHECK(!session_tensors_census_live());

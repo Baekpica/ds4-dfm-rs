@@ -11,7 +11,9 @@ use crate::policy::{
     DEFAULT_MB,
 };
 use std::fs;
-use std::io::{self, Seek as _, SeekFrom, Write as _};
+use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
+#[cfg(unix)]
+use std::os::fd::AsRawFd as _;
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
@@ -26,6 +28,12 @@ static PAYLOAD_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 enum Suffix {
     Optional,
     Required,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FileAccess {
+    ReadOnly,
+    ReadWrite,
 }
 
 /// What a search would do with the best record it can see for a key. The
@@ -50,6 +58,7 @@ pub struct Entry {
     pub path: PathBuf,
     pub header: Header,
     pub file_size: u64,
+    identity: Option<[u8; 32]>,
 }
 
 /// A file the catalog cannot use: its payload no longer holds what its
@@ -72,11 +81,26 @@ pub struct Store {
     pub continued_last_store_tokens: i32,
     entries: Vec<Entry>,
     damaged: Vec<Damaged>,
+    identity: Option<[u8; 32]>,
 }
 
 #[derive(Debug)]
 pub struct PayloadTemp {
     path: PathBuf,
+}
+
+/// Holds the validated inode while a native loader reopens its descriptor path.
+/// An atomic replacement at the catalog path cannot swap the loaded artifact.
+#[derive(Debug)]
+pub struct PayloadGuard {
+    _file: fs::File,
+    path: PathBuf,
+}
+
+impl PayloadGuard {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 impl PayloadTemp {
@@ -119,9 +143,61 @@ impl Store {
             continued_last_store_tokens: 0,
             entries: Vec::new(),
             damaged: Vec::new(),
+            identity: None,
         };
         store.evict(0, None);
         Ok(store)
+    }
+
+    /// Require this artifact/runtime identity for all subsequent reads and
+    /// writes. Legacy entries remain in the shared budget, but cannot be reused.
+    pub fn bind_identity(&mut self, identity: [u8; 32]) {
+        self.identity = Some(identity);
+        self.continued_last_store_tokens = 0;
+        self.refresh();
+    }
+
+    fn matches_identity(&self, flags: u8, identity: Option<[u8; 32]>) -> bool {
+        match self.identity {
+            Some(expected) => flags & crate::identity::FLAG != 0 && identity == Some(expected),
+            None => flags & crate::identity::FLAG == 0,
+        }
+    }
+
+    fn envelope_identity(&self, path: &Path, e: &Envelope) -> bool {
+        self.matches_identity(
+            e.header.ext_flags,
+            crate::identity::read(path, e.file_size, e.trailer_bytes, e.header.ext_flags),
+        )
+    }
+
+    fn check_identity(&self, path: &Path, e: &Envelope) -> io::Result<()> {
+        if self.envelope_identity(path, e) {
+            return Ok(());
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "KVC artifact/runtime identity mismatch",
+        ))
+    }
+
+    fn scoped_trailer(&self, header: &mut Header, trailer: &[u8]) -> Vec<u8> {
+        let mut out = trailer.to_vec();
+        if let Some(identity) = self.identity {
+            header.ext_flags |= crate::identity::FLAG;
+            crate::identity::append(&mut out, &identity);
+        }
+        out
+    }
+
+    fn visible_envelope(&self, mut envelope: Envelope) -> Envelope {
+        // Callers validate protocol extensions independently. Identity has
+        // already been checked; it is neither a tool map nor payload content.
+        if self.identity.is_some() {
+            envelope.header.ext_flags &= !crate::identity::FLAG;
+            envelope.trailer_bytes -= crate::identity::BYTES as u64;
+        }
+        envelope
     }
 
     pub fn payload_temp(&self) -> io::Result<PayloadTemp> {
@@ -169,11 +245,18 @@ impl Store {
                 }
                 continue;
             };
+            let identity = crate::identity::read(
+                &path,
+                metadata.file_size,
+                metadata.trailer_bytes,
+                metadata.header.ext_flags,
+            );
             self.entries.push(Entry {
                 sha,
                 path,
                 header: metadata.header,
                 file_size: metadata.file_size,
+                identity,
             });
         }
     }
@@ -183,6 +266,7 @@ impl Store {
     }
 
     pub fn write(&mut self, mut record: Record) -> io::Result<PathBuf> {
+        record.trailer = self.scoped_trailer(&mut record.header, &record.trailer);
         if !file_size_fits(
             self.budget_bytes,
             record.text.len() as u64,
@@ -232,7 +316,8 @@ impl Store {
         let Ok(existing) = read_envelope(&path) else {
             return Ok(None);
         };
-        let compatible = existing.header.model_id == header.model_id
+        let compatible = self.envelope_identity(&path, &existing)
+            && existing.header.model_id == header.model_id
             && (!self.reject_different_quant || existing.header.quant_bits == header.quant_bits)
             && existing.header.ctx_size <= header.ctx_size
             && is_automatic_exact_replay(existing.header.reason, existing.header.ext_flags)
@@ -242,8 +327,15 @@ impl Store {
         if !compatible {
             return Ok(None);
         }
-        if !trailer.is_empty() {
-            rewrite_compatible_trailer(&path, &existing, header.ext_flags, trailer)?;
+        let visible = self.visible_envelope(existing.clone());
+        if trailer.is_empty() {
+            // Revalidate header and footer through one descriptor on the
+            // no-write fast path too; catalog paths may be atomically replaced.
+            self.payload_file(&path, &visible, FileAccess::ReadOnly)?;
+        } else {
+            let trailer = self.scoped_trailer(&mut header, trailer);
+            let mut file = self.payload_file(&path, &visible, FileAccess::ReadWrite)?;
+            rewrite_compatible_trailer(&mut file, &existing, header.ext_flags, &trailer)?;
         }
         Ok(Some(path))
     }
@@ -269,6 +361,7 @@ impl Store {
         if let Some(path) = self.reuse_compatible(header.clone(), text, trailer)? {
             return Ok(path);
         }
+        let trailer = self.scoped_trailer(&mut header, trailer);
         let sha = text_sha_hex(text);
         let path = path_for_sha(&self.dir, &sha);
         if payload_path == path {
@@ -303,7 +396,7 @@ impl Store {
             ctx_size: header.ctx_size,
             reject_different_quant: self.reject_different_quant,
         };
-        let staged = stage_stream(&path, &header, text, &mut payload, payload_bytes, trailer)
+        let staged = stage_stream(&path, &header, text, &mut payload, payload_bytes, &trailer)
             .map_err(format_io_error)?;
         self.evict_excluding(extra, Some(&incoming), Some(&path));
         if let Err(error) = fs::rename(&staged, &path) {
@@ -315,7 +408,124 @@ impl Store {
     }
 
     pub fn read(&self, path: &Path) -> io::Result<Record> {
-        read_path(path).map_err(|e| io::Error::other(e))
+        let envelope = read_envelope(path).map_err(format_io_error)?;
+        self.check_identity(path, &envelope)?;
+        let mut record = read_path(path).map_err(io::Error::other)?;
+        self.check_trailer(record.header.ext_flags, &record.trailer)?;
+        if self.identity.is_some() {
+            record
+                .trailer
+                .truncate(record.trailer.len().saturating_sub(crate::identity::BYTES));
+            record.header.ext_flags &= !crate::identity::FLAG;
+        }
+        Ok(record)
+    }
+
+    pub fn open_payload(&self, path: &Path, expected: &Envelope) -> io::Result<PayloadGuard> {
+        let file = self.payload_file(path, expected, FileAccess::ReadOnly)?;
+        #[cfg(target_os = "linux")]
+        let held_path = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
+        #[cfg(all(unix, not(target_os = "linux")))]
+        let held_path = PathBuf::from(format!("/dev/fd/{}", file.as_raw_fd()));
+        #[cfg(not(unix))]
+        let held_path = {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "held KVC payloads need Unix descriptors",
+            ));
+        };
+        Ok(PayloadGuard {
+            _file: file,
+            path: held_path,
+        })
+    }
+
+    fn payload_file(
+        &self,
+        path: &Path,
+        expected: &Envelope,
+        access: FileAccess,
+    ) -> io::Result<fs::File> {
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(access == FileAccess::ReadWrite)
+            .open(path)?;
+        let mut raw = [0; crate::format::FIXED_HEADER];
+        file.read_exact(&mut raw)?;
+        let mut text_len = [0; 4];
+        file.read_exact(&mut text_len)?;
+        let header = crate::format::parse_header(&raw, u32::from_le_bytes(text_len))
+            .map_err(format_io_error)?;
+        let payload_offset =
+            (crate::format::FIXED_HEADER + 4) as u64 + u64::from(header.text_bytes);
+        let file_size = file.metadata()?.len();
+        let payload_end = payload_offset
+            .checked_add(header.payload_bytes)
+            .filter(|end| *end <= file_size)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "truncated KVC payload"))?;
+        let trailer_bytes = file_size - payload_end;
+        let mut footer = [0; crate::identity::BYTES];
+        let identity = if header.ext_flags & crate::identity::FLAG != 0
+            && trailer_bytes >= footer.len() as u64
+        {
+            file.seek(SeekFrom::Start(file_size - footer.len() as u64))?;
+            file.read_exact(&mut footer)?;
+            crate::identity::decode(header.ext_flags, &footer)
+        } else {
+            None
+        };
+        let wanted = &expected.header;
+        if !self.matches_identity(header.ext_flags, identity)
+            || payload_offset != expected.payload_offset
+            || header.payload_bytes != wanted.payload_bytes
+            || header.model_id != wanted.model_id
+            || header.quant_bits != wanted.quant_bits
+            || header.ctx_size != wanted.ctx_size
+            || header.tokens != wanted.tokens
+            || header.reason != wanted.reason
+            || header.ext_flags & !crate::identity::FLAG != wanted.ext_flags
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "KVC payload identity changed",
+            ));
+        }
+        // Match the selected text on this same descriptor, in bounded chunks.
+        file.seek(SeekFrom::Start((crate::format::FIXED_HEADER + 4) as u64))?;
+        let mut buffer = [0; 4096];
+        for bytes in expected.text.chunks(buffer.len()) {
+            file.read_exact(&mut buffer[..bytes.len()])?;
+            if &buffer[..bytes.len()] != bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "KVC payload text changed",
+                ));
+            }
+        }
+        Ok(file)
+    }
+
+    /// Read tool metadata with the same required identity as payload candidates.
+    /// The identity footer is never exposed as a tool-map record.
+    pub fn read_trailer(&self, path: &Path, max_bytes: u64) -> io::Result<(Header, Vec<u8>)> {
+        let (mut header, mut trailer) =
+            crate::format::read_trailer(path, max_bytes).map_err(format_io_error)?;
+        self.check_trailer(header.ext_flags, &trailer)?;
+        if self.identity.is_some() {
+            trailer.truncate(trailer.len() - crate::identity::BYTES);
+            header.ext_flags &= !crate::identity::FLAG;
+        }
+        Ok((header, trailer))
+    }
+
+    fn check_trailer(&self, flags: u8, trailer: &[u8]) -> io::Result<()> {
+        if self.matches_identity(flags, crate::identity::decode(flags, trailer)) {
+            return Ok(());
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "KVC artifact/runtime identity mismatch",
+        ))
     }
 
     pub fn find_text_prefix(
@@ -445,7 +655,8 @@ impl Store {
             ));
         }
 
-        if !is_automatic_exact_replay(header.reason, header.ext_flags)
+        if !self.envelope_identity(&entry.path, &envelope)
+            || !is_automatic_exact_replay(header.reason, header.ext_flags)
             || header.model_id != model_id
             || (self.reject_different_quant && header.quant_bits != quant_bits)
             || header.ctx_size > ctx_size
@@ -455,7 +666,7 @@ impl Store {
         {
             return Ok(None);
         }
-        Ok(Some((entry.path, envelope, lcp)))
+        Ok(Some((entry.path, self.visible_envelope(envelope), lcp)))
     }
 
     fn prefix_candidate(
@@ -530,7 +741,8 @@ impl Store {
         let bank_without_logits = is_bank_replay_v1(header.reason, header.ext_flags)
             && envelope.text.len() == prompt.len();
         let missing_suffix = require_suffix && envelope.text.len() >= prompt.len();
-        if !is_automatic_exact_replay(header.reason, header.ext_flags)
+        if !self.envelope_identity(&entry.path, &envelope)
+            || !is_automatic_exact_replay(header.reason, header.ext_flags)
             || header.model_id != model_id
             || header.ext_flags & identity_mask != identity_flags & identity_mask
             || bank_without_logits
@@ -538,11 +750,17 @@ impl Store {
         {
             return Ok(None);
         }
-        Ok(Some((entry.path, envelope)))
+        Ok(Some((entry.path, self.visible_envelope(envelope))))
     }
 
     pub fn touch_hit(&mut self, path: &Path) -> io::Result<()> {
         let envelope = read_envelope(path).map_err(format_io_error)?;
+        self.check_identity(path, &envelope)?;
+        let mut file = self.payload_file(
+            path,
+            &self.visible_envelope(envelope.clone()),
+            FileAccess::ReadWrite,
+        )?;
         let header = envelope.header;
         let raw = fill_header(
             header.model_id,
@@ -556,7 +774,7 @@ impl Store {
             now_secs(),
             header.payload_bytes,
         );
-        let mut file = fs::OpenOptions::new().read(true).write(true).open(path)?;
+        file.seek(SeekFrom::Start(0))?;
         file.write_all(&raw)?;
         file.flush()?;
         self.refresh();
@@ -625,7 +843,9 @@ impl Store {
         let prompt_bytes = prompt.len();
         let mut best: Option<usize> = None;
         for (i, e) in self.entries.iter().enumerate() {
-            if !is_automatic_exact_replay(e.header.reason, e.header.ext_flags) {
+            if !self.matches_identity(e.header.ext_flags, e.identity)
+                || !is_automatic_exact_replay(e.header.reason, e.header.ext_flags)
+            {
                 continue;
             }
             if e.header.ext_flags & identity_mask != identity_flags & identity_mask {
@@ -748,6 +968,7 @@ impl Store {
             // without it is a mismatch, not one about another conversation.
             let compatible = !(exact_length
                 && is_bank_replay_v1(e.header.reason, e.header.ext_flags))
+                && self.matches_identity(e.header.ext_flags, e.identity)
                 && e.header.model_id == model_id
                 && ctx_size >= e.header.ctx_size
                 && (!reject_quant || e.header.quant_bits == quant_bits)
@@ -853,7 +1074,8 @@ impl Store {
                 continue;
             }
 
-            let compatible = e.header.model_id == model_id
+            let compatible = self.matches_identity(e.header.ext_flags, e.identity)
+                && e.header.model_id == model_id
                 && ctx_size >= e.header.ctx_size
                 && (!reject_quant || e.header.quant_bits == quant_bits)
                 && e.header.ext_flags & EXT_IMAGE_PIXELS_V2 == identity_flags & EXT_IMAGE_PIXELS_V2;
@@ -905,7 +1127,9 @@ impl Store {
         self.refresh();
         let mut best: Option<(usize, usize, u64)> = None;
         for (i, e) in self.entries.iter().enumerate() {
-            if !is_automatic_exact_replay(e.header.reason, e.header.ext_flags) {
+            if !self.matches_identity(e.header.ext_flags, e.identity)
+                || !is_automatic_exact_replay(e.header.reason, e.header.ext_flags)
+            {
                 continue;
             }
             if e.header.ext_flags & identity_mask != identity_flags & identity_mask {
@@ -1032,7 +1256,7 @@ impl Store {
 }
 
 fn rewrite_compatible_trailer(
-    path: &Path,
+    file: &mut fs::File,
     existing: &Envelope,
     incoming_ext_flags: u8,
     trailer: &[u8],
@@ -1043,7 +1267,6 @@ fn rewrite_compatible_trailer(
         .payload_offset
         .checked_add(existing.header.payload_bytes)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "KVC payload end overflows"))?;
-    let mut file = fs::OpenOptions::new().read(true).write(true).open(path)?;
     file.seek(SeekFrom::Start(payload_end))?;
     file.set_len(payload_end)?;
     file.write_all(trailer)?;
@@ -1124,6 +1347,145 @@ mod tests {
             payload: vec![0xAA],
             trailer: Vec::new(),
         }
+    }
+
+    #[test]
+    fn identity_required_for_reuse() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-identity-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let options = Options {
+            min_tokens: 1,
+            ..Options::default()
+        };
+        let mut store = Store::open(&dir, 16, false, options).unwrap();
+        let row = rec(b"same prompt", 8);
+        let path = store.write(row.clone()).unwrap();
+        store.bind_identity([1; 32]);
+        assert!(store
+            .text_prefix_candidate(b"same prompt plus", 0, 2, 2048)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store.prefix_answer(b"same prompt plus", 0, 2, 2048),
+            PrefixAnswer::Mismatch
+        );
+        assert!(store.read(&path).is_err());
+        assert!(store
+            .reuse_compatible(row.header.clone(), &row.text, &[])
+            .unwrap()
+            .is_none());
+        store.write(row.clone()).unwrap();
+        assert!(store
+            .text_prefix_candidate(b"same prompt plus", 0, 2, 2048)
+            .unwrap()
+            .is_some());
+        assert!(store
+            .bank_text_lcp_candidate(b"same prompt edit", 0, 2, 2048, 4)
+            .unwrap()
+            .is_some());
+        assert_eq!(store.read(&path).unwrap(), row);
+        let mut other = Store::open(&dir, 16, false, options).unwrap();
+        other.bind_identity([2; 32]);
+        assert!(other
+            .text_prefix_candidate(b"same prompt plus", 0, 2, 2048)
+            .unwrap()
+            .is_none());
+        assert!(other
+            .bank_text_lcp_candidate(b"same prompt edit", 0, 2, 2048, 4)
+            .unwrap()
+            .is_none());
+        assert!(other
+            .reuse_compatible(row.header.clone(), &row.text, &[])
+            .unwrap()
+            .is_none());
+        assert!(other.read(&path).is_err());
+        assert!(other.touch_hit(&path).is_err());
+        let (_, envelope) = store
+            .text_prefix_candidate(b"same prompt plus", 0, 2, 2048)
+            .unwrap()
+            .unwrap();
+        let held = store.open_payload(&path, &envelope).unwrap();
+        let mut replacement = row.clone();
+        replacement.payload = vec![0xBB];
+        other.write(replacement).unwrap();
+        assert_eq!(read_path(held.path()).unwrap().payload, row.payload);
+        assert!(store.open_payload(&path, &envelope).is_err());
+        assert!(store.read(&path).is_err());
+        assert_eq!(other.entries().len(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn identity_keeps_tool_trailer() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-id-tools-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut store = Store::open(
+            &dir,
+            16,
+            false,
+            Options {
+                min_tokens: 1,
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        store.bind_identity([3; 32]);
+        let mut row = rec(b"tool prompt", 8);
+        let tools = vec![crate::ExtensionRecord {
+            id: b"tool-1".to_vec(),
+            body: b"call()".to_vec(),
+        }];
+        row.header.ext_flags = EXT_TOOL_MAP;
+        row.trailer = crate::encode_ktm(&tools);
+        let path = store.write(row.clone()).unwrap();
+        assert_eq!(store.read(&path).unwrap(), row);
+        let raw = read_path(&path).unwrap();
+        assert_eq!(crate::decode_ktm(&raw.trailer), tools);
+        assert!(store
+            .reuse_compatible(row.header.clone(), &row.text, &row.trailer)
+            .unwrap()
+            .is_some());
+        let loaded = store.read(&path).unwrap();
+        assert_eq!(loaded.trailer, row.trailer);
+        assert_eq!(loaded.payload, row.payload);
+        assert_eq!(store.read_trailer(&path, 4096).unwrap().1, row.trailer);
+        store.bind_identity([4; 32]);
+        assert!(store.read_trailer(&path, 4096).is_err());
+        store.bind_identity([3; 32]);
+        let bytes = fs::read(&path).unwrap();
+        fs::write(&path, &bytes[..bytes.len() - 1]).unwrap();
+        assert!(store
+            .text_prefix_candidate(b"tool prompt suffix", 0, 2, 2048)
+            .unwrap()
+            .is_none());
+        assert!(store.read(&path).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn identities_share_one_budget() {
+        let dir = std::env::temp_dir().join(format!("ds4-kv-id-budget-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut store = Store::open(
+            &dir,
+            16,
+            false,
+            Options {
+                min_tokens: 1,
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        store.bind_identity([1; 32]);
+        let first = store.write(rec(b"old artifact", 8)).unwrap();
+        let bytes = fs::metadata(&first).unwrap().len();
+        store.budget_bytes = bytes + 16; // Includes the policy's one-percent reserve.
+        store.bind_identity([2; 32]);
+        let second = store.write(rec(b"new artifact", 8)).unwrap();
+        assert!(!first.exists() && second.exists());
+        assert_eq!(store.entries().len(), 1);
+        assert_eq!(fs::metadata(second).unwrap().len(), bytes);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(unix)]

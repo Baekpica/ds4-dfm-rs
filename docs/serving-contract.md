@@ -69,6 +69,13 @@ tokens on the continuous lane, `DS4_SERVER_PERSIST_MIN_TOKENS`). That is a
 different number from the disk store's record minimum
 (`--kv-cache-min-tokens`, default 512); the plan reports both.
 
+HTTP disk records require a matching `local-file-stat-v1` identity: all
+GGUF/sidecar file metadata, template contents, runtime files and effective
+inference settings. This is local file identity, not full weight-content
+attestation. Inputs must remain unchanged during model open. Legacy records
+without this identity miss safely; all identities share the directory budget.
+Native restore holds the validated file open through the payload read.
+
 MTP weights loaded is not "this request speculated". Sampled Step
 requests keep predictor state and use ordinary decode.
 
@@ -108,7 +115,8 @@ Each field is recorded where the decision is made, not inferred from
 counters. `exact` reuses a state that ends at this prompt's common
 prefix and prefills only the appended turn, so cached and computed
 tokens are both positive; `partial` restores a checkpoint below that
-prefix and replays the gap; `fork` copies another bank and preserves
+prefix and replays the gap, including a partial copy into another bank;
+`fork` copies a complete retained frontier into another bank and preserves
 the source. `speculation_active` follows the executed path: the serial
 engine's speculative eval, or a native sequence that ran draft rows.
 
@@ -118,17 +126,25 @@ Restore miss is not "disk broken". `reuse_miss` carries the reason from the
 decision that produced it, and is absent when nothing was refused:
 
 - `rendered prefix changed` (template dropped an empty thinking block).
-  Step's official follow-up render drops the empty `<think>` pair that the
-  stored KV still holds, so the restart is a cold prefill until a
-  checkpoint exists at that history frontier (P1); reusing across it would
-  continue from a token sequence the client never sent.
+  Step and Motif official follow-up renders omit a generation-only empty
+  `<think>` pair. Their history checkpoints capture matching native KV,
+  tokens and logits before that suffix; the completed bank retains its
+  original token sequence. A Motif append can therefore require `partial`
+  rollback even when the visible messages only grow. Without a compatible
+  checkpoint, the request stays cold: shortening a text key cannot change KV.
 - `below minimum token threshold`
 - `payload family/layout mismatch`. Also the answer when the chosen
   payload cannot be read back — a truncated or corrupt record is refused
   by its payload, whatever wrote it.
 - `no checkpoint at or below LCP`
+- `session state requires prefix replay`. Cached tokens count only the
+  prefix preserved by the native sync plan. Dots3 MTP replays an unaligned
+  append from zero (`cold`); plain Dots3 replays its final partial chunk
+  (`partial`). An identical prompt or aligned append retains its full hit.
 
 ## Capability table
 
-`ds4_core::serving_caps` is the living table. Family docs and this page
-must not contradict it. Dated reports stay historical.
+The [generated capability table](serving-capabilities.md) reads
+`ds4_core::serving_caps` and the same resolved controls consumed by
+`ds4-perf serving-controls`. Its model-free check runs with the core tests;
+the page includes the regeneration command. Dated reports stay historical.

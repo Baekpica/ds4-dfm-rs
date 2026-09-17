@@ -320,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "ds4-cli"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ds4-core",
  "ds4-dist",
@@ -334,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "ds4-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ds4-sys",
  "hf-chat-template",
@@ -348,15 +348,15 @@ dependencies = [
 
 [[package]]
 name = "ds4-dist"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "ds4-kv"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "ds4-perf"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "clap",
  "ctrlc",
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "ds4-perf-gpu"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "cudarc",
  "ds4-perf",
@@ -378,25 +378,26 @@ dependencies = [
 
 [[package]]
 name = "ds4-server"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ds4-core",
  "ds4-dist",
  "ds4-kv",
  "ds4-sys",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
 name = "ds4-sys"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "ds4-web"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "either"

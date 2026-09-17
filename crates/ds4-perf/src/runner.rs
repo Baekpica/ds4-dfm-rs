@@ -281,6 +281,10 @@ const PERF_ENV: &[&str] = &[
     "DS4_CONT_MTP_MODE",
 ];
 
+pub fn reviewed_control(name: &str) -> bool {
+    PERF_ENV.contains(&name)
+}
+
 pub fn controls(
     overrides: &[String],
 ) -> Result<std::collections::BTreeMap<OsString, OsString>, String> {

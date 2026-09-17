@@ -567,6 +567,14 @@ static inline uint64_t ds4_cont_admit_band_apply(uint64_t need,
     if (b > 2048u) b = 2048u;
     return (need * b + 1023u) / 1024u;
 }
+/* Short-context slabs can occupy less than one page each. Keep the legacy
+ * virtual cap, but fund at least the physical envelope admission charges. */
+static inline uint64_t ds4_batch_cache_allow(uint64_t virtual_bytes,
+                                             uint64_t page_bytes,
+                                             uint32_t band_x1024) {
+    const uint64_t physical = ds4_cont_admit_band_apply(page_bytes, band_x1024);
+    return virtual_bytes > physical ? virtual_bytes : physical;
+}
 /* MT-7: the live commit-rate tripwire (zero-headroom law: no unexplained
  * gaps).  Anomalous when the OBSERVED slab bytes per committed token exceed
  * 2x the shape-derived packed rate with a meaningful sample -- the tell for
@@ -770,6 +778,12 @@ typedef struct {
      * actual cached count.  src == target is an in-place truncate-reuse.
      * A cut with no safe base degrades to cold. */
     int        fork_bank;   /* source bank id + 1; 0 = no fork                */
+    /* Step/Motif durable history boundary. For 0 < checkpoint_at < n, a
+     * forward ends exactly there and publishes valid KV, tokens and logits
+     * before any suffix runs. A boundary at or below n_cached is skipped.
+     * The callback may snapshot this bank; it must not mutate bank state. */
+    int        checkpoint_at;
+    void     (*on_checkpoint)(void *ud, void *user, int bank, int current);
 } ds4_cont_request;
 /* A2a: a bank's committed token history (engine-authoritative bookkeeping for
  * warm start).  *toks points at ctx-owned storage, valid until the next admit
@@ -1362,8 +1376,8 @@ ds4_session_rewrite_result ds4_session_rewrite_from_common(
         ds4_session *s, const ds4_tokens *prompt, int common,
         char *err, size_t errlen);
 int ds4_session_common_prefix(ds4_session *s, const ds4_tokens *prompt);
-/* Largest live_pos-resume_pos span whose sliding-window KV is still resident.
- * Returns 0 for non-EXAONE or unavailable graph sessions. */
+/* Largest permitted live_pos-resume_pos span with resident sliding-window KV.
+ * K2's exact-only contract, non-EXAONE and unavailable graphs return 0. */
 int ds4_session_exaone_rewind_span(ds4_session *s);
 int ds4_session_argmax(ds4_session *s);
 int ds4_session_argmax_excluding(ds4_session *s, int excluded_id);
@@ -1391,6 +1405,14 @@ int ds4_session_step37_trial(ds4_session *s, int first, int max_tokens,
                               int *tokens, int *target, int cap,
                               char *err, size_t errlen);
 int ds4_session_step37_commit(ds4_session *s, int keep, char *err, size_t errlen);
+/* dots3 uses the same four-row native trial/host acceptance contract.
+ * A failed device operation invalidates the native generation. */
+int ds4_session_dots3_trial(ds4_session *s, int first, int max_tokens,
+                             int *tokens, int *target, int cap,
+                             char *err, size_t errlen);
+int ds4_session_dots3_commit(ds4_session *s, int keep, char *err, size_t errlen);
+/* Allocation intent captured at session creation, including a deferred graph. */
+bool ds4_session_dots3_mtp(ds4_session *s);
 int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                                         int max_tokens, int eos_token,
                                         int *accepted, int accepted_cap,

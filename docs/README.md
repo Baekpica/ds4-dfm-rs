@@ -21,6 +21,7 @@ release candidate or describe live processes.
 | [Chat templates](chat-templates.md) | Official input grammar, local assets and continuation |
 | [API surface matrix](ds4-api-surface-matrix.md) | Wire contracts, routing and unsupported behavior |
 | [Model families](ds4-dfm-model-families.md) | Family contracts and dated Spark evidence |
+| [dots3 serving](ds4-dfm-model-families.md#dots3-serving) | Separate opt-in text banks and serial MTP; snapshot and qualification limits |
 | [Qwen FP8 PLE](qwen38-ple-fp8.md) | Sidecar selection, KV compatibility and paired card sweeps |
 | [Qwen performance, September 14](qwen38-perf-2026-09-14.md) | Draft/prefix A/B, rejected QSA PV / pair-reuse / HC, serving limits |
 | [Memory guard](host-memory-guard.md) | Admission policy and operational limits |

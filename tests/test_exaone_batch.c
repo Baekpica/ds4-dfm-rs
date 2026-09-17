@@ -3,7 +3,7 @@
  *   ./tests/test_exaone_batch <first-model-shard.gguf>
  *
  * It compares two-row persistent generation with the scalar session path,
- * then proves exact-frontier fork reuse on the common continuous contract.
+ * then proves exact-frontier and partial fork reuse on the common continuous contract.
  */
 #include "../ds4.h"
 
@@ -183,7 +183,7 @@ int main(int argc, char **argv) {
     if (ds4_batch_ctx_create_fit(
             engine, 256, 2, 16, &ctx, err, sizeof(err)) != 0 ||
         !ctx || ds4_batch_ctx_max_seq(ctx) != 2 ||
-        ds4_batch_ctx_supports_partial_reuse(ctx)) {
+        !ds4_batch_ctx_supports_partial_reuse(ctx)) {
         fprintf(stderr, "EXAONE batch context failed: %s\n", err);
         failed = 1;
         goto cleanup;
@@ -320,6 +320,33 @@ int main(int argc, char **argv) {
                 restored.admitted_cached, restored.admitted_computed,
                 restored.admitted_bank);
         failed = 1;
+    }
+    /* Bank 1 inherited the prompt checkpoint during the exact fork. Restore
+     * below its current frontier, then truncate the source in place. */
+    for (int target = 0; !failed && target < 2; target++) {
+        fork_case partial = {
+            .prompt = &prompt[0], .cached = prompt[0].len,
+            .source_bank = 1, .target_bank = target,
+            .admitted_cached = -1, .admitted_computed = -1,
+            .admitted_bank = -1,
+        };
+        if (ds4_engine_continuous_generate(ctx, fork_admit, NULL, fork_done,
+                &partial, err, sizeof(err)) != 0 || partial.failed ||
+            partial.n != 1 || partial.token != oracle[0][0] ||
+            partial.admitted_cached != prompt[0].len ||
+            partial.admitted_computed != 0 || partial.admitted_bank != target) {
+            fprintf(stderr, "EXAONE partial fork/truncate failed: %s split=%d+%d bank=%d\n",
+                    err, partial.admitted_cached, partial.admitted_computed,
+                    partial.admitted_bank);
+            failed = 1;
+        }
+        const int *source = NULL;
+        int source_n = ds4_batch_ctx_bank_committed(ctx, 1, &source);
+        int expected_n = target == 0 ? fork_prompt.len : prompt[0].len;
+        if (source_n != expected_n || memcmp(source, fork_prompt.v, (size_t)expected_n * sizeof(int))) {
+            fprintf(stderr, "EXAONE partial source history mismatch\n");
+            failed = 1;
+        }
     }
     ds4_tokens_free(&fork_prompt);
 

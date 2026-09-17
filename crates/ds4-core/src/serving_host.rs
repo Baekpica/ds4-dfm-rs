@@ -9,7 +9,7 @@ use crate::gguf::GgufFile;
 use crate::ling3vl;
 use crate::serving::{
     BankLane, EngineFacts, LaneMode, MaxSeqs, MtpKind, MtpMode, PrefixReuse, ReuseKind,
-    ServingCaps, ServingRequest, DEFAULT_MAX_SEQS, DEFAULT_SCHED_CHUNK,
+    ServingCaps, ServingRequest, Support, DEFAULT_MAX_SEQS, DEFAULT_SCHED_CHUNK,
 };
 use crate::shape::{ModelFamily, Shape, Variant};
 use crate::tensors::{model_split_sibling_path, TensorInventory};
@@ -97,6 +97,7 @@ const DOTS3_NATIVE_MAX: u32 = 8192;
 const DOTS3_INDEX_ROWS: u64 = 128;
 const DOTS3_PARTIAL_ROWS: u64 = 2;
 const DOTS3_PARTIAL_SPLITS: u64 = 16;
+const DOTS3_TRIAL_ROWS: u64 = 4;
 const FAMILY_NATIVE_MAX: u32 = 16384;
 const QWEN_QSA_NO_FUSED_ENV: &str = "DS4_QWEN_QSA_NO_FUSED";
 const WEIGHT_IPC_MANIFEST_ENV: &str = "DS4_CUDA_WEIGHT_IPC_MANIFEST";
@@ -260,7 +261,27 @@ pub fn fill_quote_facts(
             let (base, with_mtp) = inkling_runtime_bytes(s, ctx, native);
             (if sidecar_loaded { with_mtp } else { base }, 0, 0, 0)
         }
-        (ModelFamily::Dots3Note, Some(s)) => (dots3_graph_bytes(s, ctx, native), 0, 0, 0),
+        (ModelFamily::Dots3Note, Some(s)) => {
+            let logits = if quote_batch_alloc(req, caps, facts) {
+                u64::from(s.n_vocab) * SIZEOF_F32
+            } else {
+                0
+            };
+            (
+                dots3_graph_bytes(s, ctx, native) + logits,
+                0,
+                if req.mtp_mode == MtpMode::On && !quote_bank_lane(req, caps, facts) {
+                    dots3_mtp_bytes(s, ctx, native)
+                } else {
+                    0
+                },
+                if partial {
+                    dots3_checkpoint_bytes(s, ctx)
+                } else {
+                    0
+                },
+            )
+        }
         (ModelFamily::Glm53, Some(s)) => (glm_graph_bytes(s, ctx), 0, 0, 0),
         (ModelFamily::DeepSeek4, Some(s)) if req.backend == Backend::Cpu => {
             let (cache, scratch) = deepseek_cpu_bytes(s, ctx);
@@ -270,6 +291,12 @@ pub fn fill_quote_facts(
             // The shared graph owns its own caches before bank slabs are fitted.
             let mut scratch = deepseek_graph_bytes(s, ctx, native);
             let mut bank = deepseek_bank_bytes(s, ctx, native);
+            let wanted = match req.max_seqs {
+                MaxSeqs::Fixed(n) => n,
+                _ => caps.qualified_banks.unwrap_or(DEFAULT_MAX_SEQS),
+            };
+            let banks = u64::from(facts.banks_fitted.unwrap_or(wanted).min(wanted).max(1));
+            bank += deepseek_page_extra(s, ctx, banks).div_ceil(banks);
             let mtp = if sidecar_loaded {
                 bank += deepseek_mtp_bank_bytes(s, ctx, native);
                 deepseek_mtp_bytes(s, ctx, native)
@@ -301,7 +328,11 @@ pub fn fill_quote_facts(
                 kv + row + logits + batch_logits,
                 u64::from(native) * row,
                 0,
-                0,
+                if partial {
+                    exaone_checkpoint_bytes(s, ctx)
+                } else {
+                    0
+                },
             )
         }
         _ => (kv, 0, 0, 0),
@@ -1116,8 +1147,42 @@ fn motif_checkpoint_pool_bytes(shape: Shape) -> u64 {
 }
 
 // Same gate as apply_env publishing DS4_SERVER_FORK_PARTIAL=1.
+// EXAONE LLLG snapshots contain the 36 local GQA windows; global layers
+// stay in the source bank. The appended MTP block is not executed here.
+fn exaone_checkpoint_bytes(shape: Shape, ctx: u64) -> u64 {
+    if shape.variant != Variant::Kexaone236B || shape.n_swa_period == 0 {
+        return 0;
+    }
+    let n_exec = shape.n_layer.saturating_sub(shape.n_nextn_predict);
+    let local = (0..n_exec)
+        .filter(|il| il % shape.n_swa_period != shape.n_swa_period - 1)
+        .count() as u64;
+    local
+        * ctx.min(u64::from(shape.n_swa))
+        * 2
+        * u64::from(shape.n_head_kv)
+        * u64::from(shape.n_head_dim)
+        * SIZEOF_U16
+        * CHECKPOINT_SLOTS
+}
+
+// dots3 snapshots only local MLA latent/RoPE windows. Full MLA and F32
+// indexer keys remain in the source bank; the MTP block owns no state.
+fn dots3_checkpoint_bytes(shape: Shape, ctx: u64) -> u64 {
+    let local = (0..shape.n_layer.saturating_sub(shape.n_nextn_predict))
+        .filter(|il| *il != 0 && (shape.n_swa_period == 0 || il % shape.n_swa_period != 1))
+        .count() as u64;
+    local
+        * ctx.min(u64::from(shape.n_swa))
+        * u64::from(shape.n_swa_kv_lora + shape.n_rot)
+        * SIZEOF_U16
+        * CHECKPOINT_SLOTS
+}
+
 fn quote_partial(req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts) -> bool {
-    if caps.reuse != ReuseKind::Partial {
+    if caps.reuse != ReuseKind::Partial
+        || (req.prefix_reuse == PrefixReuse::Auto && caps.reuse_support != Support::Qualified)
+    {
         return false;
     }
     match req.prefix_reuse {
@@ -1296,6 +1361,61 @@ fn deepseek_cache_bytes(s: Shape, ctx: u64, native: u32) -> (u64, u64) {
 fn deepseek_bank_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
     let (cache, state) = deepseek_cache_bytes(s, ctx, native);
     cache + (2 + 2 * 4) * state
+}
+
+// Match native's max(virtual capacity, banded active-page envelope). CUDA
+// uses separate slab reservations; only banks inside one slab share pages.
+// Spark's 2 MiB pages conservatively cover devices with smaller VMM pages.
+fn deepseek_page_extra(s: Shape, ctx: u64, banks: u64) -> u64 {
+    if std::env::var("DS4_BATCH_VMM_COMP").as_deref() == Ok("0")
+        || env_nonnegative_mb("DS4_BATCH_SLAB_POISON").unwrap_or(0) >= 1
+    {
+        return 0;
+    }
+    let packed_on = |key| {
+        let value = std::env::var(key).unwrap_or_default();
+        !(value.starts_with('0')
+            || matches!(
+                value.as_str(),
+                "off" | "OFF" | "no" | "NO" | "false" | "FALSE"
+            ))
+    };
+    let dim = u64::from(s.n_head_dim);
+    let index = u64::from(s.n_indexer_head_dim);
+    let packed = dim - u64::from(s.n_rot) + u64::from(s.n_rot) * SIZEOF_F32;
+    let comp_row = if packed_on("DS4_CUDA_FP8_KV") {
+        packed
+    } else {
+        dim * SIZEOF_F32
+    };
+    let index_row = if packed_on("DS4_CUDA_FP4_INDEX") {
+        index / 2
+    } else {
+        index * SIZEOF_F32
+    };
+    let page = 2 * MIB;
+    let mut virtual_bytes = 0;
+    let mut page_bytes = 0;
+    for il in 0..s.n_layer {
+        let ratio = deepseek_comp_ratio(s, il);
+        if ratio == 0 {
+            continue;
+        }
+        let rows = banks * (ctx / ratio + 2);
+        virtual_bytes += rows * (dim * SIZEOF_F32 + packed);
+        page_bytes += (rows * comp_row).div_ceil(page) * page;
+        if ratio == 4 {
+            virtual_bytes += rows * (index * SIZEOF_F32 + index / 2);
+            page_bytes += (rows * index_row).div_ceil(page) * page;
+        }
+    }
+    let band = env_nonnegative_mb("DS4_CONT_ADMIT_BAND_X1024")
+        .filter(|n| *n > 0)
+        .unwrap_or(1045)
+        .clamp(1024, 2048);
+    (page_bytes * band)
+        .div_ceil(1024)
+        .saturating_sub(virtual_bytes)
 }
 
 fn deepseek_mtp_bank_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
@@ -1568,8 +1688,8 @@ fn inkling_runtime_bytes(s: Shape, ctx: u64, native: u32) -> (u64, u64) {
     (raw + scratch, mtp)
 }
 
-// C dots3_graph_memory_estimate, plus the decode partial buffer allocated by
-// dots3_graph_alloc. The trailing bound-only MTP block owns no cache/norms.
+// C dots3_graph_memory_estimate without the separately priced serial MTP.
+// Each persistent bank owns its complete prefill scratch.
 fn dots3_graph_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
     let hidden = u64::from(s.n_embd);
     let heads = u64::from(s.n_head);
@@ -1622,6 +1742,36 @@ fn dots3_graph_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
     cache
         + (cap * row_f32 + fixed + cap.min(DOTS3_INDEX_ROWS) * ctx + partial) * SIZEOF_F32
         + cap * row_i32 * SIZEOF_I32
+}
+
+// C dots3_spec_bytes: one scalar draft, target hidden rows and four-row undo.
+// Predictor layer46 is local attention and has no DSA score workspace.
+fn dots3_mtp_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
+    let rot = u64::from(s.n_rot);
+    let local = u64::from(s.n_swa_kv_lora);
+    let q_lora = u64::from(s.n_lora_q);
+    let index = u64::from(s.n_indexer_head_dim);
+    let ring = ctx.min(u64::from(s.n_swa) + 1);
+    let mut cache = 0;
+    let mut norms = 0;
+    let mut journal = 0;
+    for il in 0..s.n_layer {
+        let full = il == 0 || (s.n_swa_period != 0 && il % s.n_swa_period == 1);
+        let latent = if full { u64::from(s.n_kv_lora) } else { local };
+        let row = (latent + rot) * SIZEOF_U16 + if full { index * SIZEOF_F32 } else { 0 };
+        journal += DOTS3_TRIAL_ROWS * row;
+        if il < s.n_layer.saturating_sub(s.n_nextn_predict) {
+            cache += if full { ctx } else { ring } * row;
+            norms += q_lora + latent + rot + if full { 2 * index } else { 0 };
+        }
+    }
+    let scratch = dots3_graph_bytes(s, ctx, 1) - cache - (norms + ctx) * SIZEOF_F32;
+    scratch
+        + ring * (local + rot) * SIZEOF_U16
+        + (q_lora + local + rot) * SIZEOF_F32
+        + (u64::from(native).max(DOTS3_TRIAL_ROWS) + 3) * u64::from(s.n_embd) * SIZEOF_F32
+        + journal
+        + (DOTS3_TRIAL_ROWS + 1) * u64::from(s.n_vocab) * SIZEOF_F32
 }
 
 // C glm53_graph_bytes_estimate: scalar workspace, KDA state/control tensors,
@@ -3660,6 +3810,63 @@ exit 1
     }
 
     #[test]
+    fn deepseek_short_page_quote() {
+        let _env = lock_test_env();
+        let _raw = EnvGuard::unset("DS4_METAL_GRAPH_RAW_CAP");
+        let _vmm = EnvGuard::unset("DS4_BATCH_VMM_COMP");
+        let _poison = EnvGuard::unset("DS4_BATCH_SLAB_POISON");
+        let _fp8 = EnvGuard::unset("DS4_CUDA_FP8_KV");
+        let _fp4 = EnvGuard::unset("DS4_CUDA_FP4_INDEX");
+        let _band = EnvGuard::unset("DS4_CONT_ADMIT_BAND_X1024");
+        let shape = crate::shape::SHAPE_FLASH;
+        let req = ServingRequest {
+            ctx: 2048,
+            max_seqs: MaxSeqs::Fixed(2),
+            native_chunk: Some(64),
+            mtp_mode: MtpMode::Off,
+            ..ServingRequest::default()
+        };
+        let facts = fill_family(shape.family, shape.variant, shape, &req, qwen_host(None));
+        // 62 separate packed slabs round to 124 MiB total, shared by both
+        // banks. Banded admission costs 132689920 B, versus 73826304 B
+        // of unrounded F32+packed cache capacity in the old two-bank quote.
+        let extra = (132_689_920u64 - 73_826_304) / 2;
+        assert_eq!(facts.per_bank_bytes, Some(120_972_952 + extra));
+        assert_eq!(
+            deepseek_page_extra(shape, 2048, 1),
+            132_689_920 - 36_913_152
+        );
+        assert_eq!(deepseek_page_extra(shape, 2048, 4), 0);
+        {
+            let _fp8 = EnvGuard::set("DS4_CUDA_FP8_KV", "off");
+            // F32 primary's 21 ratio-4 slabs need two pages each at width2.
+            assert_eq!(
+                deepseek_page_extra(shape, 2048, 2),
+                177_633_280 - 73_826_304
+            );
+        }
+        {
+            let _vmm = EnvGuard::set("DS4_BATCH_VMM_COMP", "0");
+            assert_eq!(deepseek_page_extra(shape, 2048, 2), 0);
+        }
+        let mut fitted = EngineFacts {
+            banks_fitted: Some(1),
+            ..EngineFacts::default()
+        };
+        fill_quote_facts(
+            &mut fitted,
+            &req,
+            serving_caps(shape.family, shape.variant),
+            Some(shape),
+            qwen_host(None),
+        );
+        assert_eq!(
+            fitted.per_bank_bytes,
+            Some(120_972_952 + 132_689_920 - 36_913_152)
+        );
+    }
+
+    #[test]
     fn deepseek_banks_match_native() {
         let _env = lock_test_env();
         let _chunk = EnvGuard::unset("DS4_METAL_PREFILL_CHUNK");
@@ -3873,6 +4080,71 @@ exit 1
     }
 
     #[test]
+    fn dots3_mtp_quote_matches_native() {
+        let _env = lock_test_env();
+        for (ctx, native, expected) in [
+            (4096, 128, 26_068_040),
+            (1024, 32, 24_101_960),
+            (262144, 4096, 107_332_680),
+        ] {
+            for mode in [MtpMode::Off, MtpMode::Auto, MtpMode::On] {
+                let req = ServingRequest {
+                    ctx,
+                    native_chunk: Some(native),
+                    mtp_mode: mode,
+                    ..ServingRequest::default()
+                };
+                let facts = fill_family(
+                    ModelFamily::Dots3Note,
+                    Variant::Dots3NotePrev,
+                    SHAPE_DOTS3_NOTE_PREV,
+                    &req,
+                    qwen_host(Some(native)),
+                );
+                assert_eq!(
+                    facts.mtp_state_bytes,
+                    Some(if mode == MtpMode::On { expected } else { 0 }),
+                    "ctx={ctx}, mode={mode:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dots3_bank_quote_has_local_pool() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::set(DOTS3_PREFILL_CHUNK_ENV, "64");
+        for (reuse, expected) in [
+            (PrefixReuse::Partial, 1_178_800_128),
+            (PrefixReuse::Auto, 0),
+            (PrefixReuse::Exact, 0),
+        ] {
+            let req = ServingRequest {
+                ctx: 2048,
+                max_seqs: MaxSeqs::Fixed(2),
+                prefix_reuse: reuse,
+                mtp_mode: MtpMode::Off,
+                ..ServingRequest::default()
+            };
+            let facts = fill_family(
+                ModelFamily::Dots3Note,
+                Variant::Dots3NotePrev,
+                SHAPE_DOTS3_NOTE_PREV,
+                &req,
+                qwen_host(Some(64)),
+            );
+            assert_eq!(facts.checkpoint_pool_bytes, Some(expected));
+            assert_eq!(
+                facts.per_bank_bytes,
+                Some(
+                    dots3_graph_bytes(SHAPE_DOTS3_NOTE_PREV, 2048, 64)
+                        + u64::from(SHAPE_DOTS3_NOTE_PREV.n_vocab) * SIZEOF_F32
+                )
+            );
+        }
+    }
+
+    #[test]
     fn inkling_loaded_off_quote() {
         let _env = lock_test_env();
         let _chunk = EnvGuard::set(INKLING_PREFILL_CHUNK_ENV, "1024");
@@ -4077,6 +4349,39 @@ exit 1
             host,
         );
         assert_eq!(auto_facts.per_bank_bytes, off_facts.per_bank_bytes);
+    }
+
+    #[test]
+    fn exaone_checkpoint_uses_lllg() {
+        let _env = lock_test_env();
+        let _partial = EnvGuard::unset("DS4_SERVER_FORK_PARTIAL");
+        for (reuse, ctx, expected) in [
+            (PrefixReuse::Partial, 512, 603_979_776),
+            (PrefixReuse::Partial, 64, 301_989_888),
+            (PrefixReuse::Auto, 512, 0),
+            (PrefixReuse::Exact, 512, 0),
+            (PrefixReuse::Off, 512, 0),
+        ] {
+            let req = ServingRequest {
+                prefix_reuse: reuse,
+                ctx,
+                ..ServingRequest::default()
+            };
+            let facts = fill_family(
+                ModelFamily::ExaoneMoe,
+                Variant::Kexaone236B,
+                SHAPE_KEXAONE_236B,
+                &req,
+                QuoteHost {
+                    weights_bytes: GIB,
+                    mtp_bytes: 0,
+                    available_bytes: 100 * GIB,
+                    native_chunk: Some(32),
+                    vision: false,
+                },
+            );
+            assert_eq!(facts.checkpoint_pool_bytes, Some(expected));
+        }
     }
 
     #[test]

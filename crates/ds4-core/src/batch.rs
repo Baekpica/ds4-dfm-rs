@@ -120,6 +120,8 @@ pub struct ContAdmit {
     pub n_cached: i32,
     /// Source bank id + 1 for fork-by-copy; 0 = no fork.
     pub fork_bank: i32,
+    /// Step history boundary to capture during prefill; 0 disables it.
+    pub checkpoint_at: i32,
 }
 
 impl ContAdmit {
@@ -138,6 +140,7 @@ impl ContAdmit {
             place_bank: 0,
             n_cached: 0,
             fork_bank: 0,
+            checkpoint_at: 0,
         }
     }
 }
@@ -170,6 +173,8 @@ pub trait ContDriver {
     fn on_admitted(&mut self, _user: usize, _n_cached: i32, _n_computed: i32, _bank: i32) -> bool {
         true
     }
+    /// Native KV and logits describe exactly this request token prefix.
+    fn on_checkpoint(&mut self, _user: usize, _bank: i32, _tokens: &[i32]) {}
 }
 
 struct LiveAdmit {
@@ -226,7 +231,29 @@ unsafe extern "C" fn tramp_admit(ud: *mut c_void, req: *mut ds4_bridge_cont_requ
     r.n_cached = a.n_cached;
     r.bank_used = ptr::null_mut();
     r.fork_bank = a.fork_bank;
+    r.checkpoint_at = a.checkpoint_at;
+    r.on_checkpoint = Some(tramp_on_checkpoint);
     1
+}
+
+unsafe extern "C" fn tramp_on_checkpoint(
+    ud: *mut c_void,
+    user: *mut c_void,
+    bank: i32,
+    current: i32,
+) {
+    let t = &mut *(ud as *mut TrampCtx);
+    let user = user as usize;
+    let Some(tokens) = t.live.get(&user).and_then(|entry| {
+        usize::try_from(current)
+            .ok()
+            .and_then(|n| entry.tokens.get(..n))
+    }) else {
+        return;
+    };
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        t.driver.on_checkpoint(user, bank, tokens)
+    }));
 }
 
 unsafe extern "C" fn tramp_on_token(ud: *mut c_void, user: *mut c_void, token: i32) -> c_int {
@@ -770,6 +797,11 @@ mod tests {
             if let Some(on_admitted) = req.on_admitted {
                 on_admitted(ud, req.user, req.n_cached, req.n - req.n_cached, 0);
             }
+            if req.checkpoint_at > req.n_cached && req.checkpoint_at < req.n {
+                if let Some(checkpoint) = req.on_checkpoint {
+                    checkpoint(ud, req.user, 0, req.checkpoint_at);
+                }
+            }
             if let Some(on_done) = on_done {
                 on_done(
                     ud,
@@ -949,6 +981,36 @@ mod tests {
             CONT_INPUT.with(|input| input.borrow().clone()).unwrap(),
             (vec![10, 20], vec![1, 2, 3], 11, 32, 16)
         );
+    }
+
+    #[test]
+    fn history_checkpoint_tokens() {
+        struct Driver {
+            request: Option<ContAdmit>,
+            captured: Vec<i32>,
+        }
+        impl ContDriver for Driver {
+            fn admit(&mut self) -> Option<ContAdmit> {
+                self.request.take()
+            }
+            fn on_token(&mut self, _: usize, _: i32) -> bool {
+                true
+            }
+            fn on_done(&mut self, _: usize, _: &[i32], _: i32, _: ContDone) {}
+            fn on_checkpoint(&mut self, user: usize, bank: i32, tokens: &[i32]) {
+                assert_eq!((user, bank), (9, 0));
+                self.captured = tokens.to_vec();
+            }
+        }
+        let mut request = ContAdmit::cold(9, vec![10, 20, 30, 40], 1);
+        request.checkpoint_at = 2;
+        let mut driver = Driver {
+            request: Some(request),
+            captured: Vec::new(),
+        };
+        let batch = fake_batch();
+        batch.continuous_generate(&mut driver).unwrap();
+        assert_eq!(driver.captured, [10, 20]);
     }
 
     #[test]

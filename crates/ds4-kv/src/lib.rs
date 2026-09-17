@@ -4,6 +4,7 @@
 mod extensions;
 mod format;
 mod host;
+mod identity;
 mod policy;
 mod sha1;
 mod store;
@@ -24,4 +25,4 @@ pub use policy::{
     store_len, EvictionContext, Options, ScoreEntry,
 };
 pub use sha1::sha1_hex;
-pub use store::{Entry, PayloadTemp, PrefixAnswer, Store};
+pub use store::{Entry, PayloadGuard, PayloadTemp, PrefixAnswer, Store};

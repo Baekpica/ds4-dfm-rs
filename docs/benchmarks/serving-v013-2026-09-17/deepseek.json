@@ -1,0 +1,1175 @@
+{
+  "schema": "v013-live-evidence-v1",
+  "family": "deepseek",
+  "scope": {
+    "status": "HTTP reuse lifecycle passed",
+    "standalone": false,
+    "context": 2048,
+    "banks": 2,
+    "native_chunk": 64,
+    "lane": "continuous",
+    "mtp": "off",
+    "clock_limits_mhz": [
+      300,
+      2200
+    ]
+  },
+  "build": {
+    "base_commit": "c2a816b9cf681709141797fccb9dab9c0c9f3bf4",
+    "server_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+    "source_patch": "scratch/v013/bin-integrated6/source.diff"
+  },
+  "artifact": {
+    "schema": "v013-artifacts-v1",
+    "manifest": null,
+    "files": [
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/DeepSeek-GGUF/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf",
+        "bytes": 86720111488,
+        "sha256": "ca22ae2f838e14077c22bc1c1417b71b45b5e5a3687bd96c2ac6e17fdb6261c0",
+        "published_hash_verified": false,
+        "stat": [
+          66306,
+          174085644,
+          86720111488,
+          1786006838307556314,
+          1786679824809802774
+        ],
+        "seconds": 164.61248692701338
+      }
+    ]
+  },
+  "processes": {
+    "seed": {
+      "pid": 1009033,
+      "start_ticks": "41413882",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "command": "./scratch/v013/bin-integrated6/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/DeepSeek-GGUF/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf --mtp-mode off --max-seqs 2 --ctx 2048 -n 64 --native-chunk 64 --prefill-chunk 64 --prefill-chunk-live 64 --prefix-reuse exact --model-id deepseek-v013 --host 127.0.0.1 --port 18040 --kv-disk-dir /home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/deepseek-v6/cache --kv-disk-space 2G --kv-cache-min-tokens 1 ",
+      "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+      "artifacts_sha256": "aa2e31d334dce0345d76893765ac45894deac24d06bbfbe0d32766b873ede642",
+      "url": "http://127.0.0.1:18040"
+    },
+    "warm": {
+      "pid": 1009033,
+      "start_ticks": "41413882",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "command": "./scratch/v013/bin-integrated6/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/DeepSeek-GGUF/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf --mtp-mode off --max-seqs 2 --ctx 2048 -n 64 --native-chunk 64 --prefill-chunk 64 --prefill-chunk-live 64 --prefix-reuse exact --model-id deepseek-v013 --host 127.0.0.1 --port 18040 --kv-disk-dir /home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/deepseek-v6/cache --kv-disk-space 2G --kv-cache-min-tokens 1 ",
+      "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+      "artifacts_sha256": "aa2e31d334dce0345d76893765ac45894deac24d06bbfbe0d32766b873ede642",
+      "url": "http://127.0.0.1:18040"
+    },
+    "restored": {
+      "pid": 1009286,
+      "start_ticks": "41415574",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "command": "./scratch/v013/bin-integrated6/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/DeepSeek-GGUF/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf --mtp-mode off --max-seqs 2 --ctx 2048 -n 64 --native-chunk 64 --prefill-chunk 64 --prefill-chunk-live 64 --prefix-reuse exact --model-id deepseek-v013 --host 127.0.0.1 --port 18040 --kv-disk-dir /home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/deepseek-v6/cache --kv-disk-space 2G --kv-cache-min-tokens 1 ",
+      "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+      "artifacts_sha256": "aa2e31d334dce0345d76893765ac45894deac24d06bbfbe0d32766b873ede642",
+      "url": "http://127.0.0.1:18040"
+    },
+    "cold": {
+      "pid": 1009713,
+      "start_ticks": "41417009",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "command": "./scratch/v013/bin-integrated6/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/DeepSeek-GGUF/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf --mtp-mode off --max-seqs 2 --ctx 2048 -n 64 --native-chunk 64 --prefill-chunk 64 --prefill-chunk-live 64 --prefix-reuse off --model-id deepseek-v013 --host 127.0.0.1 --port 18040 ",
+      "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+      "artifacts_sha256": "aa2e31d334dce0345d76893765ac45894deac24d06bbfbe0d32766b873ede642",
+      "url": "http://127.0.0.1:18040"
+    }
+  },
+  "cases": [
+    {
+      "phase": "cold",
+      "case": "append",
+      "seconds": 3.060154543025419,
+      "configured": {
+        "family": "deepseek",
+        "model": "deepseek-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 5,
+      "accepted_forms": [
+        "5",
+        "5.",
+        "4 + 1 = 5",
+        "4 + 1 = 5."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "5"
+      },
+      "usage": {
+        "prompt_tokens": 549,
+        "completion_tokens": 1,
+        "total_tokens": 550,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 549
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "cold",
+      "case": "edit",
+      "seconds": 3.0562023679958656,
+      "configured": {
+        "family": "deepseek",
+        "model": "deepseek-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 6,
+      "accepted_forms": [
+        "6",
+        "6.",
+        "4 + 2 = 6",
+        "4 + 2 = 6."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "6"
+      },
+      "usage": {
+        "prompt_tokens": 549,
+        "completion_tokens": 1,
+        "total_tokens": 550,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 549
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "cold",
+      "case": "fork",
+      "seconds": 3.142317184014246,
+      "configured": {
+        "family": "deepseek",
+        "model": "deepseek-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 8,
+      "accepted_forms": [
+        "8",
+        "8.",
+        "5 + 3 = 8",
+        "5 + 3 = 8."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "8"
+      },
+      "usage": {
+        "prompt_tokens": 568,
+        "completion_tokens": 1,
+        "total_tokens": 569,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 568
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "cold",
+      "case": "restart",
+      "seconds": 3.322967836051248,
+      "configured": {
+        "family": "deepseek",
+        "model": "deepseek-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 9,
+      "accepted_forms": [
+        "9",
+        "9.",
+        "8 + 1 = 9",
+        "8 + 1 = 9."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "9"
+      },
+      "usage": {
+        "prompt_tokens": 587,
+        "completion_tokens": 1,
+        "total_tokens": 588,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 587
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "cold",
+      "case": "seed",
+      "seconds": 2.9844049300299957,
+      "configured": {
+        "family": "deepseek",
+        "model": "deepseek-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 4,
+      "accepted_forms": [
+        "4",
+        "4.",
+        "2 + 2 = 4",
+        "2 + 2 = 4."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "4"
+      },
+      "usage": {
+        "prompt_tokens": 530,
+        "completion_tokens": 1,
+        "total_tokens": 531,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 530
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "restored",
+      "case": "restart",
+      "seconds": 0.310561632970348,
+      "configured": {
+        "family": "deepseek",
+        "model": "deepseek-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 9,
+      "accepted_forms": [
+        "9",
+        "9.",
+        "8 + 1 = 9",
+        "8 + 1 = 9."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "9"
+      },
+      "usage": {
+        "prompt_tokens": 587,
+        "completion_tokens": 1,
+        "total_tokens": 588,
+        "prompt_tokens_details": {
+          "cached_tokens": 569,
+          "cache_write_tokens": 18
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "fork",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "seed",
+      "case": "seed",
+      "seconds": 2.9851049309945665,
+      "configured": {
+        "family": "deepseek",
+        "model": "deepseek-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 4,
+      "accepted_forms": [
+        "4",
+        "4.",
+        "2 + 2 = 4",
+        "2 + 2 = 4."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "4"
+      },
+      "usage": {
+        "prompt_tokens": 530,
+        "completion_tokens": 1,
+        "total_tokens": 531,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 530
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null,
+        "reuse_miss": "no checkpoint at or below LCP"
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "warm",
+      "case": "append",
+      "seconds": 0.2526465469854884,
+      "configured": {
+        "family": "deepseek",
+        "model": "deepseek-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 5,
+      "accepted_forms": [
+        "5",
+        "5.",
+        "4 + 1 = 5",
+        "4 + 1 = 5."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "5"
+      },
+      "usage": {
+        "prompt_tokens": 549,
+        "completion_tokens": 1,
+        "total_tokens": 550,
+        "prompt_tokens_details": {
+          "cached_tokens": 531,
+          "cache_write_tokens": 18
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "fork",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "warm",
+      "case": "edit",
+      "seconds": 0.24683958501555026,
+      "configured": {
+        "family": "deepseek",
+        "model": "deepseek-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 6,
+      "accepted_forms": [
+        "6",
+        "6.",
+        "4 + 2 = 6",
+        "4 + 2 = 6."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "6"
+      },
+      "usage": {
+        "prompt_tokens": 549,
+        "completion_tokens": 1,
+        "total_tokens": 550,
+        "prompt_tokens_details": {
+          "cached_tokens": 531,
+          "cache_write_tokens": 18
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "exact",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "warm",
+      "case": "fork",
+      "seconds": 0.2505623120232485,
+      "configured": {
+        "family": "deepseek",
+        "model": "deepseek-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 8,
+      "accepted_forms": [
+        "8",
+        "8.",
+        "5 + 3 = 8",
+        "5 + 3 = 8."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "8"
+      },
+      "usage": {
+        "prompt_tokens": 568,
+        "completion_tokens": 1,
+        "total_tokens": 569,
+        "prompt_tokens_details": {
+          "cached_tokens": 550,
+          "cache_write_tokens": 18
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "exact",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": null,
+      "errors": [],
+      "passed": true
+    }
+  ],
+  "guards": [
+    {
+      "path": "scratch/v013/deepseek-v6/owner-owner.memory.jsonl",
+      "minimum_available_gib": 21.074172973632812,
+      "maximum_psi_full_avg10": 0.0,
+      "exit": {
+        "time": 1789638169.5889828,
+        "event": "exit",
+        "unit": "ds4-hostguard-1008636-1789638081256472286.scope",
+        "status": 75,
+        "payload_status": 0
+      },
+      "stop": "task orchestrator requested shutdown after each successful phase"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/worker-cold.memory.jsonl",
+      "minimum_available_gib": 21.074172973632812,
+      "maximum_psi_full_avg10": 0.0,
+      "exit": {
+        "time": 1789638168.4535124,
+        "event": "exit",
+        "unit": "ds4-hostguard-1009711-1789638144124715487.scope",
+        "status": 75,
+        "payload_status": 0
+      },
+      "stop": "task orchestrator requested shutdown after each successful phase"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/worker-restored.memory.jsonl",
+      "minimum_available_gib": 21.668346405029297,
+      "maximum_psi_full_avg10": 0.0,
+      "exit": {
+        "time": 1789638138.9051464,
+        "event": "exit",
+        "unit": "ds4-hostguard-1009284-1789638129776595201.scope",
+        "status": 75,
+        "payload_status": 0
+      },
+      "stop": "task orchestrator requested shutdown after each successful phase"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/worker-seed.memory.jsonl",
+      "minimum_available_gib": 21.508895874023438,
+      "maximum_psi_full_avg10": 0.0,
+      "exit": {
+        "time": 1789638124.5859523,
+        "event": "exit",
+        "unit": "ds4-hostguard-1009015-1789638112852216136.scope",
+        "status": 75,
+        "payload_status": 0
+      },
+      "stop": "task orchestrator requested shutdown after each successful phase"
+    }
+  ],
+  "limits": [
+    "Short text fixtures only; no full-context, media or speedup claim.",
+    "Frozen executable and build-head/source-patch identify this gate; subsequent documentation commits do not expand its scope."
+  ],
+  "raw_files": [
+    {
+      "path": "scratch/v013/deepseek-v6/artifacts.json",
+      "bytes": 563,
+      "sha256": "aa2e31d334dce0345d76893765ac45894deac24d06bbfbe0d32766b873ede642"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/cold.runner.log",
+      "bytes": 3927,
+      "sha256": "ff27dab2772c57a9934e5c7342bfddbd26ef8deb265bb1ed9fd0d6dde2512c2f"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/artifacts.json",
+      "bytes": 563,
+      "sha256": "aa2e31d334dce0345d76893765ac45894deac24d06bbfbe0d32766b873ede642"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.append.request.json",
+      "bytes": 2491,
+      "sha256": "5378d777ea3d855a7564028ed6dc51e9461bb0b96d8bd44f7ee9c4d3b30b795c"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.append.response.json",
+      "bytes": 641,
+      "sha256": "66ed89c4e50d866bf1dbe2db5c071e1cca0321f0c31b123cc4af2496931cc0fd"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.append.stats.json",
+      "bytes": 7721,
+      "sha256": "ae3379055bc70df77343701f11c74639d13fc2b99000c22bfda8d68b7ecb65df"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.append.summary.json",
+      "bytes": 952,
+      "sha256": "7b3bb0cb620c0d30ed86463d6f0326d42a2ed7e81928f47719e79f19925b55a7"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.before.json",
+      "bytes": 7556,
+      "sha256": "417c9bf17ebb36c02c46884156c43c44caf6cd7a21660b80640a87104305b152"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.edit.request.json",
+      "bytes": 2491,
+      "sha256": "24df606114d01d997fb1b0e4185f3e083f4f6a51eca09b9f3b8c485be72bb413"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.edit.response.json",
+      "bytes": 641,
+      "sha256": "56d10fbd0bfffdbf2e1027e0ffd04519b8e96cef95a21d1b109cde5e2b15e1f5"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.edit.stats.json",
+      "bytes": 7721,
+      "sha256": "e5b829d2611979437a6456edf03eb44573c4f3e5d49827bd233af5e203c43316"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.edit.summary.json",
+      "bytes": 951,
+      "sha256": "3f52aad105c563d8f317de85cd33f6b6e8156d3697770885658c538c265d49e1"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.fork.request.json",
+      "bytes": 2649,
+      "sha256": "9647985b18fc2dbb0b01f33d0e929e6754b27a2a2ed264ec8fee9625416021cd"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.fork.response.json",
+      "bytes": 641,
+      "sha256": "4aac9ccd97b6cf2b2663d2c3cf04a85691e109cea71806c5e31b3d359a729701"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.fork.stats.json",
+      "bytes": 7721,
+      "sha256": "f31f80ff5cc156701ed764d0fe13f6e495df5f084b9028e398b9a0b89ff29de3"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.fork.summary.json",
+      "bytes": 950,
+      "sha256": "c8d4a3a99aadf3d80f8d63dbac8b55fb88dda9d279d205c3e9887d963d8ab01c"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.process.json",
+      "bytes": 703,
+      "sha256": "8ec2d82dffa2371b40693179806605fc8c53af93b6f7e197b6d0f0891c131e48"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.restart.request.json",
+      "bytes": 2807,
+      "sha256": "7e29bbc2db812797e2efc8545a0c45f18b7a2ad5ce5a9240a675e2b5cdd053b7"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.restart.response.json",
+      "bytes": 641,
+      "sha256": "f322219acd2d1bd29350955bcbe822fe4b003b4a63592c59cdbac9559aa52fc1"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.restart.stats.json",
+      "bytes": 7721,
+      "sha256": "89250446728613101e5846a4d15da83a1d460322471e27f678d1aaa4767332d1"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.restart.summary.json",
+      "bytes": 953,
+      "sha256": "8b064843057d58f1b68e0a51bf33d2e690885ed414a80ec98fc5df2c03ad857a"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.result.json",
+      "bytes": 3917,
+      "sha256": "652c8873825b9e3ee319606398719c81a38e6fee5794572691e8e0d5f5ad67d4"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.seed.request.json",
+      "bytes": 2333,
+      "sha256": "f6152bb9caa55df0be4d7323d5501bd00460909600aa8fbc74b60430f5bfe552"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.seed.response.json",
+      "bytes": 641,
+      "sha256": "77988f91f6c01d7f556e6005cb129b232ff2b9ad6762bec900151ed1fa7e7c93"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.seed.stats.json",
+      "bytes": 7714,
+      "sha256": "14802ea93889fa1d2f807135d256193529eca16e5fda1dba56a59a739addd813"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/cold.seed.summary.json",
+      "bytes": 951,
+      "sha256": "6b9c536567b2e17f42731bd1b34bc6db8f10350fb299c169f887b8acd1cb55c3"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/fixture.json",
+      "bytes": 15897,
+      "sha256": "571a6d7c6543330e4870894ee423d4f702be573c18ec4eea67258077196ce3e8"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/restored.before.json",
+      "bytes": 7566,
+      "sha256": "50f3210bd79f6b378546a0585d6072f5a4dd623eae62979bdb56bb2238423527"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/restored.process.json",
+      "bytes": 857,
+      "sha256": "bbb0ba4fc74ade8edfa2db4a9269fdc338336f99fb9c5bd6e528b09794791106"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/restored.restart.request.json",
+      "bytes": 2807,
+      "sha256": "7e29bbc2db812797e2efc8545a0c45f18b7a2ad5ce5a9240a675e2b5cdd053b7"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/restored.restart.response.json",
+      "bytes": 641,
+      "sha256": "ca0a730f87d5952a9e601f3e987e5f939058d4c6c9e829bd10b77833fd3ab302"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/restored.restart.stats.json",
+      "bytes": 7724,
+      "sha256": "012d04668c5e25032fea19d35de774a02d579b7b2aebc46a7896e63b47ee3bae"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/restored.restart.summary.json",
+      "bytes": 958,
+      "sha256": "080cc152038f3173ea316815e584f2ae4283833918b27ed16ea56b30ef84a7c5"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/restored.result.json",
+      "bytes": 1915,
+      "sha256": "c758a2e688808ca24acfe58453aa307081886e5c1e6f2f4aaa75f1ae5f633597"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/seed.before.json",
+      "bytes": 7566,
+      "sha256": "b740a289f4b498e0d0cc5f0b519b632eb5a018737889013e6ff254ab7fa002b5"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/seed.process.json",
+      "bytes": 857,
+      "sha256": "c098aba739724bb0e38b92149c2c2cf81bdfed654803e862b38ec15593d0bf46"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/seed.result.json",
+      "bytes": 1879,
+      "sha256": "481e38896243e134a9ce10266fb693a6e3d1da7570b2ef282d9b27dc4cbf4784"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/seed.seed.request.json",
+      "bytes": 2333,
+      "sha256": "f6152bb9caa55df0be4d7323d5501bd00460909600aa8fbc74b60430f5bfe552"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/seed.seed.response.json",
+      "bytes": 641,
+      "sha256": "6fbd88145f50115f12a7f11d46439dd9b09739123e51e7c461d7359cd6aed9f8"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/seed.seed.stats.json",
+      "bytes": 7775,
+      "sha256": "83217a3d0025b23b84f70083cca0fe6309c1bdcbc3644609c300fca060504941"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/seed.seed.summary.json",
+      "bytes": 1002,
+      "sha256": "c6b5e2663626e032a06a517aced1470026ce0ca874678c11dffc442230554959"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/warm.append.request.json",
+      "bytes": 2491,
+      "sha256": "5378d777ea3d855a7564028ed6dc51e9461bb0b96d8bd44f7ee9c4d3b30b795c"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/warm.append.response.json",
+      "bytes": 641,
+      "sha256": "6fb5597d0167ad3e7af99d374ddc4d08c8b7676ccb881b29eb2890bdfa1acbf0"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/warm.append.stats.json",
+      "bytes": 7731,
+      "sha256": "256b6955f6d1f606afd1db36d2b70bb6b976459ba6790c07f4a678053a6c7661"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/warm.append.summary.json",
+      "bytes": 954,
+      "sha256": "61763feff58278736fdbf268c0f8d6def9b586ef95a7a69a3d6592e14b4deec4"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/warm.before.json",
+      "bytes": 7775,
+      "sha256": "c67e4f448797c68a91d6edd7167f9ff19c36b779508cb9e5788ef7aacc5d54ec"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/warm.edit.request.json",
+      "bytes": 2491,
+      "sha256": "24df606114d01d997fb1b0e4185f3e083f4f6a51eca09b9f3b8c485be72bb413"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/warm.edit.response.json",
+      "bytes": 641,
+      "sha256": "35d06661c3ffc6b298928c4e88bba3b9b63c3d3b7a50ca161d0850a4db195d7d"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/warm.edit.stats.json",
+      "bytes": 7732,
+      "sha256": "eb7f9ade19b788cefe70ec2249c517c4a46c4048c5476694a0e1fae8e2f31669"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/warm.edit.summary.json",
+      "bytes": 954,
+      "sha256": "a5cd621e9b4435f7884db699ef53855c2e179d2b71725d0a6482381cbca96a5b"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/warm.fork.request.json",
+      "bytes": 2649,
+      "sha256": "9647985b18fc2dbb0b01f33d0e929e6754b27a2a2ed264ec8fee9625416021cd"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/warm.fork.response.json",
+      "bytes": 641,
+      "sha256": "94ada76687f8361752f71a60b2e63f7113c6ee7e23407bc3b37ff39619333de2"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/warm.fork.stats.json",
+      "bytes": 7732,
+      "sha256": "58654114e22a2a4bc8ba48b1b92039ad9e4511a79397c6bb9730ae4503610b71"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/warm.fork.summary.json",
+      "bytes": 953,
+      "sha256": "60e0461de21a4a0411da6bc1f4a84806290ec8a62434283f57410a263ddb50e8"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/warm.process.json",
+      "bytes": 857,
+      "sha256": "c098aba739724bb0e38b92149c2c2cf81bdfed654803e862b38ec15593d0bf46"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/evidence/warm.result.json",
+      "bytes": 2973,
+      "sha256": "da696c4dcfa9f4aee00e73de4dbc462a357026e9194b75456b3e8313376f419d"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/gpu-observed.csv",
+      "bytes": 190,
+      "sha256": "e8f33f4c4e557deda2c208560fa7cc4bb19dc9d630888b157d70cb9220d2f2a7"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/orchestrator.jsonl",
+      "bytes": 6767,
+      "sha256": "4b6d9ba905d42f061036dc02f6f4bb8c1b5699fb33b2e003d3e8ac06b4f9ef15"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/owner-owner.command.json",
+      "bytes": 796,
+      "sha256": "64e4dc24f82182849aeaeec0bfce1fe8eb0d53f14b142451ecbff9a7d4d2a66c"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/owner-owner.launcher.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/owner-owner.log",
+      "bytes": 5586,
+      "sha256": "1f8e85dc27f0dc219e28701315086591d1a68c3f88d659b05a3243419993b6c5"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/owner-owner.memory.jsonl",
+      "bytes": 15704,
+      "sha256": "73aef2ea47d761f200c210c4f84ffe2d0366c2578200f3a2e5251839de6b6409"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/owner.ipc",
+      "bytes": 55422,
+      "sha256": "77732ea399431e60efbec190e85a1dbe240f7d072b43770c7b6c2076719f41ca"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/owner.lock",
+      "bytes": 8,
+      "sha256": "a742761420fe7497c768a34ebb4b75d8a0bbd35fd05a4bbc3458b96c34d4f3cb"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/owner.process.json",
+      "bytes": 1154,
+      "sha256": "3b9dd3c14888dd8ecfcee945066305deb83998f98d8d07c728f8bf847fb5824a"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/restored.runner.log",
+      "bytes": 792,
+      "sha256": "7ec90a68809e05857d134e37966de056f8ceeee05960e07ce56e063c7bdf8630"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/seed.runner.log",
+      "bytes": 832,
+      "sha256": "e617a0e70ad13d47a3dcd301858107a3b07ee1d0a3644e1d9606048be1e567e9"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/warm.runner.log",
+      "bytes": 2363,
+      "sha256": "3b36214ee1b10dbc7de58b172e7f0cbc308ef963cd97873ad05448d0c615d249"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/worker-cold.command.json",
+      "bytes": 952,
+      "sha256": "0179fc47e6353cf82603dc79bc77fcc1d4d3d75dd4ba99f038f6a40be2d5aca6"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/worker-cold.launcher.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/worker-cold.log",
+      "bytes": 5466,
+      "sha256": "8bc50070b3380355067e7b6d179e5649ceb29b62b4b9044b5225be52e5f3e7d0"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/worker-cold.memory.jsonl",
+      "bytes": 5022,
+      "sha256": "934abaaa23490d89c7aae06c8dfc505e3146dd04fb90601511d742a9812d9214"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/worker-cold.ready.json",
+      "bytes": 10135,
+      "sha256": "1aef1fce6ff512b0babbf072d4fd8a94059c7cdce1774bef2ca3ddabae893cc4"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/worker-restored.command.json",
+      "bytes": 1148,
+      "sha256": "301f37dd44381bb7230f0db5d1f090748870e09316730cbb302fac50721eefe3"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/worker-restored.launcher.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/worker-restored.log",
+      "bytes": 5496,
+      "sha256": "4f70a68183f892cff50943951c310f4b670b5c167b70c8a0406abe993005a0cc"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/worker-restored.memory.jsonl",
+      "bytes": 2538,
+      "sha256": "659b135b96b51f9fec7a7bdbfc9a9d297b3a562c35e6738a997cee6dac79d330"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/worker-restored.ready.json",
+      "bytes": 10353,
+      "sha256": "da6335810af03790cae183aea9eb1d6b7483f1f96c8e622f9d0b83443a5f53e5"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/worker-seed.command.json",
+      "bytes": 1148,
+      "sha256": "301f37dd44381bb7230f0db5d1f090748870e09316730cbb302fac50721eefe3"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/worker-seed.launcher.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/worker-seed.log",
+      "bytes": 5840,
+      "sha256": "10691e491fd096bd487bf3234c03e37dfce9f139e7db30eecf92cde84f507ebe"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/worker-seed.memory.jsonl",
+      "bytes": 3036,
+      "sha256": "a0775d8bf9bc72d90bac30aacfcc99b81c4a28571f7fe015612e94ec33cef7c9"
+    },
+    {
+      "path": "scratch/v013/deepseek-v6/worker-seed.ready.json",
+      "bytes": 10353,
+      "sha256": "3308acb32ae44737449d1a7bea932609cd3554af679ce4dba26207b68a310c60"
+    }
+  ],
+  "prior_failed_attempt": {
+    "cause": "Short-context cache class allowance used virtual bytes while admission charged page-rounded active slabs. Seed answered correctly through serial fallback; requested continuous gate failed.",
+    "build": "integrated5",
+    "fix_commit": "0563091",
+    "virtual_bytes": 73826304,
+    "page_banded_bytes": 132689920,
+    "passed": false,
+    "cleanup_errors": [],
+    "raw_files": [
+      {
+        "path": "scratch/v013/deepseek-v5/artifacts.json",
+        "bytes": 563,
+        "sha256": "aa2e31d334dce0345d76893765ac45894deac24d06bbfbe0d32766b873ede642"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/evidence/artifacts.json",
+        "bytes": 563,
+        "sha256": "aa2e31d334dce0345d76893765ac45894deac24d06bbfbe0d32766b873ede642"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/evidence/fixture.json",
+        "bytes": 9738,
+        "sha256": "305ad2d4894435d62b34c984a94593349e874e1210cdad4ca41ca52b74a1b25c"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/evidence/seed.before.json",
+        "bytes": 7566,
+        "sha256": "71bd641a8aea0d083a972b9836729452145e33b9b58e70662f321c92a0c4529f"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/evidence/seed.process.json",
+        "bytes": 856,
+        "sha256": "5bf229c449d07fca7129ab987574606fd0eda869f2ea50ddc5356b214bd12d59"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/evidence/seed.result.json",
+        "bytes": 1993,
+        "sha256": "53ad9393ed6567527566a38476c547648ef4b48b117f2cc2beb9fee154d943c9"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/evidence/seed.seed.request.json",
+        "bytes": 2333,
+        "sha256": "f6152bb9caa55df0be4d7323d5501bd00460909600aa8fbc74b60430f5bfe552"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/evidence/seed.seed.response.json",
+        "bytes": 615,
+        "sha256": "9390790759698875fd1ef686553bdeec3db7bf318ca7ae420f860e4df0a43f52"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/evidence/seed.seed.stats.json",
+        "bytes": 7815,
+        "sha256": "8a081b5fa0037956b96ed69e94c18d14394d1c402bc9f3ce3d02ac4b52f08d37"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/evidence/seed.seed.summary.json",
+        "bytes": 1100,
+        "sha256": "fb504da001f879b7c8276ac4bfc569f00963fb737677db51725bc7e588f12bef"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/orchestrator.jsonl",
+        "bytes": 3240,
+        "sha256": "2c6c2e33706440e1a372b4f2016c833e57c12d7767b49c256fcd588c0425c247"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/owner-owner.command.json",
+        "bytes": 796,
+        "sha256": "a22f8ce20c5d86cc7c57ea877e0b776be650c0b6e0e88540d05b2eef88961bbd"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/owner-owner.launcher.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/owner-owner.log",
+        "bytes": 4372,
+        "sha256": "169a2eff099891a2c8460b566d8dbc049fd948b20211d66473e6024fc1e3f73d"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/owner-owner.memory.jsonl",
+        "bytes": 8335,
+        "sha256": "308ed865eb1885eb2937e94c1e8df17d443546309eadcb014f2ca1e9f373a18c"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/owner.ipc",
+        "bytes": 55421,
+        "sha256": "39e787fa075587b56e4f44bb1fd5821f9e33596cae395527695ee6033381c011"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/owner.lock",
+        "bytes": 7,
+        "sha256": "546e359ad03dad355c9ad54706a63ef79caac2752da2ec3a35e02fd363330c02"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/owner.process.json",
+        "bytes": 1152,
+        "sha256": "2c65349b257ecb6fbe305ca9aeda8624c508104ab35f873b6f69feac17042d1e"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/seed.runner.log",
+        "bytes": 922,
+        "sha256": "d76ea9de9aff216b72ec88e0baeeefab8e407a2613e6839790e72d835e07bc2d"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/worker-seed.command.json",
+        "bytes": 1148,
+        "sha256": "bff62974c609d046df36f4cad55a88447fa6ca23dacac1e4858ef26cda8a7a6b"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/worker-seed.launcher.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/worker-seed.log",
+        "bytes": 5897,
+        "sha256": "5ac0200e6bc98067b78221cb07366bf74ce8444bae5f7a3865020c02963bf17d"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/worker-seed.memory.jsonl",
+        "bytes": 2856,
+        "sha256": "99ecb123c86db985e73e4342584b256445dca324aab8c981b83c4c576766e19d"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/worker-seed.ready.json",
+        "bytes": 10351,
+        "sha256": "84f16f9e81574d6209fb5f2a7d91f614339e95c9d8e12dfe4e3a0c75d522ea6d"
+      },
+      {
+        "path": "scratch/v013/deepseek-v5/result.json",
+        "bytes": 3878,
+        "sha256": "348a9cc824bebe28f8d8da18c352d3ad6c7bb25075711d931c8c255d53279af2"
+      }
+    ]
+  },
+  "observed_gpu": "timestamp, name, driver_version, clocks.current.graphics [MHz], clocks.current.memory [MHz], temperature.gpu, pstate\n2026/09/17 18:42:21.932, NVIDIA GB10, 610.43.02, 2197 MHz, [N/A], 44, P0"
+}

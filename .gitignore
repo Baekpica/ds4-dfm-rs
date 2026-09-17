@@ -58,6 +58,10 @@
 /tests/test_glm53_vision
 /tests/test_glm53_dsa
 /tests/test_glm53_session
+/tests/test_glm53_bounds
+/tests/test_k2_lifecycle
+/tests/test_k2_rewind
+/tests/test_deepseek_budget
 /tests/test_solar_kda
 /tests/test_solar_kda_prefill
 /tests/test_solar_kda_chunk
@@ -88,6 +92,12 @@ __pycache__/
 *.qdrep
 *.qdstrm
 *.ncu-rep
+/tests/test_dots3_checkpoint
+/tests/test_dots3_batch
+/tests/test_dots3_mtp
+/tests/test_dots3_mtp_guards
+/tests/test_exaone_checkpoint
+/tests/test_exaone_partial
 /tests/test_exaone_ref
 /tests/test_exaone_kernels
 /tests/test_exaone_forward
@@ -109,6 +119,7 @@ __pycache__/
 /tests/test_inkling_loader
 /tests/test_inkling_forward
 /tests/test_inkling_session
+/tests/test_inkling_payload
 /tests/test_inkling_encoders
 
 /tests/test_step37_session
@@ -127,3 +138,4 @@ __pycache__/
 /tests/test_step37_norm
 /tests/libds4ple_test.so
 /tests/test_ling3vl_mla_expand
+/tests/test_exaone_batch

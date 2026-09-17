@@ -599,6 +599,26 @@ extern "C" {
         errlen: usize,
     ) -> c_int;
 
+    pub fn ds4_bridge_dots3_enabled(s: *mut ds4_bridge_session) -> c_int;
+
+    pub fn ds4_bridge_dots3_trial(
+        s: *mut ds4_bridge_session,
+        first: i32,
+        max_tokens: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_dots3_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
     pub fn ds4_bridge_eval_speculative_argmax(
         s: *mut ds4_bridge_session,
         first_token: i32,
@@ -961,6 +981,8 @@ pub struct ds4_bridge_cont_request {
     pub n_cached: i32,
     pub bank_used: *mut i32,
     pub fork_bank: i32,
+    pub checkpoint_at: i32,
+    pub on_checkpoint: Option<unsafe extern "C" fn(*mut c_void, *mut c_void, c_int, c_int)>,
 }
 
 #[cfg(all(test, unix))]

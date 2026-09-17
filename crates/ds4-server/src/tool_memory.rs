@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
-use ds4_kv::{read_trailer, Store as KvStore, EXT_TOOL_MAP};
+use ds4_kv::{Store as KvStore, EXT_TOOL_MAP};
 
 use crate::parse::{ChatMsg, ToolCall};
 use crate::render::{MOTIF_TOOL_CALLS, SOLAR_TOOL_CALLS, SOLAR_TOOL_CALL_END};
@@ -393,7 +393,7 @@ impl ToolMemory {
             .collect();
         let mut loaded = 0;
         for path in paths {
-            let Ok((header, trailer)) = read_trailer(&path, MAX_DSML_BYTES as u64) else {
+            let Ok((header, trailer)) = store.read_trailer(&path, MAX_DSML_BYTES as u64) else {
                 continue;
             };
             if header.model_id == model_id && header.ext_flags & EXT_TOOL_MAP != 0 {

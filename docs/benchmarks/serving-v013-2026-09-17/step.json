@@ -1,0 +1,1411 @@
+{
+  "schema": "v013-live-evidence-v1",
+  "base_commit": "ea580c6394ec30bae7f444d5ae6411f76a996674",
+  "source_state": "uncommitted v0.1.3 work; tested executable hashes below",
+  "family": "step35",
+  "artifact": "MQ83 + MTP-Q8_0",
+  "fixture_sha256": "3b9f8d53173bf1eb34381f21e069b4539745957a6277954b972b45b531a0b72e",
+  "native_log": {
+    "path": "scratch/v013/step-cont-mtp-fixed.log",
+    "sha256": "35f7a644f5313121b03a1f0a3dfcb1653f7f3bf07fdb5fd70ab9f32f4d6b7cf0",
+    "result": [
+      " two banks match two serial sessions byte-for-byte (16 tokens each)\n",
+      " full-frontier fork clones 175 committed rows and matches serial\n",
+      " bank disk KV round-trips 190 committed tokens; frontier logits live\n",
+      " partial fork restores 160-row prompt checkpoint, 16 tokens exact\n",
+      " two-bank MTP matches serial tokens, full logits, target and predictor KV\n",
+      " MTP full and partial fork preserve target/predictor state exactly\n",
+      " cancellation commits no unreported speculative tokens\n",
+      " forced protocol token and EOS stop speculative emission\n",
+      " history frontier payload restores exact tokens and greedy continuation\n",
+      " two-bank parity, fork, and bank disk KV PASS\n"
+    ]
+  },
+  "http": {
+    "serial": {
+      "seed": {
+        "phase": "seed",
+        "seconds": 1.919791784021072,
+        "cached_tokens": 0,
+        "prompt_tokens": 294,
+        "text": "4",
+        "trace": {
+          "effective_lane": "serial",
+          "reuse_kind": "cold",
+          "speculation_active": true,
+          "fallback_reason": null,
+          "reuse_miss": "no checkpoint at or below LCP"
+        }
+      },
+      "restored": {
+        "phase": "restored",
+        "seconds": 0.6606824970222078,
+        "cached_tokens": 287,
+        "prompt_tokens": 315,
+        "text": "5",
+        "trace": {
+          "effective_lane": "serial",
+          "reuse_kind": "exact",
+          "speculation_active": true,
+          "fallback_reason": null
+        }
+      },
+      "cold": {
+        "phase": "cold",
+        "seconds": 1.97030048398301,
+        "cached_tokens": 0,
+        "prompt_tokens": 315,
+        "text": "5",
+        "trace": {
+          "effective_lane": "serial",
+          "reuse_kind": "cold",
+          "speculation_active": true,
+          "fallback_reason": null,
+          "reuse_miss": "no checkpoint at or below LCP"
+        }
+      }
+    },
+    "bank": {
+      "seed": {
+        "phase": "seed",
+        "seconds": 1.917403027007822,
+        "cached_tokens": 0,
+        "prompt_tokens": 294,
+        "text": "4",
+        "trace": {
+          "effective_lane": "continuous",
+          "reuse_kind": "cold",
+          "speculation_active": true,
+          "fallback_reason": null,
+          "reuse_miss": "no checkpoint at or below LCP"
+        }
+      },
+      "restored": {
+        "phase": "restored",
+        "seconds": 0.6355403430061415,
+        "cached_tokens": 287,
+        "prompt_tokens": 315,
+        "text": "5",
+        "trace": {
+          "effective_lane": "continuous",
+          "reuse_kind": "fork",
+          "speculation_active": true,
+          "fallback_reason": null
+        }
+      },
+      "cold": {
+        "phase": "cold",
+        "seconds": 1.963124129048083,
+        "cached_tokens": 0,
+        "prompt_tokens": 315,
+        "text": "5",
+        "trace": {
+          "effective_lane": "continuous",
+          "reuse_kind": "cold",
+          "speculation_active": true,
+          "fallback_reason": null,
+          "reuse_miss": "no checkpoint at or below LCP"
+        }
+      }
+    }
+  },
+  "overlap": {
+    "protocol": "ds4-serving-v1",
+    "name": "step-decode-long-prefill",
+    "family": "step35",
+    "serving_plan": {
+      "effective": {
+        "bank_persist_min_tokens": 1,
+        "banks_opt_in": true,
+        "ctx": 8192,
+        "disk": false,
+        "disk_is_offload": false,
+        "disk_min_tokens": 512,
+        "max_seqs": 2,
+        "mem_floor_gb": 4,
+        "mtp_draft": 3,
+        "mtp_mode": "on",
+        "mtp_weights": true,
+        "native_chunk": 512,
+        "prefix_reuse": "off",
+        "sched_chunk": 256,
+        "sched_chunk_live": 256
+      },
+      "family": "step35",
+      "issues": [
+        {
+          "code": "prompt_bound",
+          "level": "warn",
+          "message": "configured ctx is not a full-length request proof"
+        },
+        {
+          "code": "media_serial",
+          "level": "warn",
+          "message": "image requests use the serial lane beside text banks"
+        }
+      ],
+      "qualified": {
+        "banks": "qualified",
+        "banks_n": 2,
+        "ctx": 65536,
+        "disk": "none",
+        "mtp": "qualified",
+        "note": "text banks are opt-in; Chat restart hits need history-stable identity; images serial",
+        "prefix_reuse": "none",
+        "prompt": 6300
+      },
+      "quote": {
+        "available": 23726258688,
+        "banks": 2,
+        "checkpoint_pool": 0,
+        "floor": 6442450944,
+        "media_reserve": 0,
+        "mtp_state": 0,
+        "per_bank": 1190018304,
+        "ple": 0,
+        "scratch": 0,
+        "shared_weights": 0,
+        "total": 8822487552
+      },
+      "requested": {
+        "backend": "cuda",
+        "ctx": 8192,
+        "disk": false,
+        "lane": "auto",
+        "max_seqs": "2",
+        "mem_floor_gb": 4,
+        "mtp_mode": "on",
+        "mtp_path": true,
+        "prefix_reuse": "off"
+      }
+    },
+    "cases": [],
+    "overlaps": [
+      {
+        "name": "decode-during-prefill",
+        "repeat": 0,
+        "decode_ttft_ms": 316.66537700000003,
+        "decode_total_ms": 21734.138089,
+        "prefill_dispatch_ms": 316.95464,
+        "prefill_ttft_ms": 10625.446359,
+        "prefill_total_ms": 10734.417664999999,
+        "decode_events_during_prefill": 82,
+        "prefill_computed_tokens": 5313,
+        "decode_committed_tokens": 512,
+        "max_decode_gap_ms": 532.1699349999999,
+        "host_available_before_bytes": 20522246144,
+        "host_available_after_bytes": 20423032832,
+        "host_min_available_bytes": 19867807744,
+        "failures": []
+      },
+      {
+        "name": "decode-during-prefill",
+        "repeat": 1,
+        "decode_ttft_ms": 318.046166,
+        "decode_total_ms": 21763.398568,
+        "prefill_dispatch_ms": 318.210261,
+        "prefill_ttft_ms": 10655.592403,
+        "prefill_total_ms": 10863.819615999999,
+        "decode_events_during_prefill": 82,
+        "prefill_computed_tokens": 5313,
+        "decode_committed_tokens": 512,
+        "max_decode_gap_ms": 535.3663449999999,
+        "host_available_before_bytes": 20398411776,
+        "host_available_after_bytes": 20977885184,
+        "host_min_available_bytes": 20114489344,
+        "failures": []
+      },
+      {
+        "name": "decode-during-prefill",
+        "repeat": 2,
+        "decode_ttft_ms": 316.58000400000003,
+        "decode_total_ms": 21642.905232,
+        "prefill_dispatch_ms": 316.864563,
+        "prefill_ttft_ms": 10540.05424,
+        "prefill_total_ms": 10650.428001,
+        "decode_events_during_prefill": 82,
+        "prefill_computed_tokens": 5313,
+        "decode_committed_tokens": 512,
+        "max_decode_gap_ms": 524.598239,
+        "host_available_before_bytes": 20980195328,
+        "host_available_after_bytes": 21301587968,
+        "host_min_available_bytes": 20980047872,
+        "failures": []
+      }
+    ],
+    "requested_repeats": 3,
+    "identity": {
+      "server": {
+        "pid": 762838,
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "start_ticks": 40394780,
+        "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin/ds4-server",
+        "executable_sha256": "4aec8938cb85e923a554c030a30aef4adb11c35600dd8d61529cb634617da388",
+        "argv_sha256": "883216af78853d71daf57e7d9db8a9462414ecc56596390ceb80841e57df7e97",
+        "cwd": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress",
+        "environment": {
+          "DS4_CUDA_WEIGHT_IPC_MANIFEST": "scratch/v013/step.ipc",
+          "DS4_CUDA_WEIGHT_IPC_SCOPE": "both",
+          "DS4_SERVER_PERSIST_MIN_TOKENS": "1",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:/usr/local/cuda-13.3/lib64:"
+        },
+        "unreviewed_environment": []
+      },
+      "inputs": {},
+      "expected_clock_range_mhz": {
+        "min": 300,
+        "max": 2200
+      },
+      "limitations": [
+        "model/template/sidecar input hashes were not supplied",
+        "input manifest coverage is operator-declared; loaded model tensors are not introspected"
+      ]
+    },
+    "gpu_samples": [
+      {
+        "label": "gpu-before",
+        "unix_ms": 1789628098051,
+        "device_ordinal": 0,
+        "uuid": "GPU-012cd6bb-43ae-b629-e226-4496d1243471",
+        "name": "NVIDIA GB10",
+        "driver": "610.43.02",
+        "sm_clock_mhz": 2190,
+        "temperature_c": 45,
+        "unavailable_reason": null
+      },
+      {
+        "label": "gpu-after",
+        "unix_ms": 1789628119970,
+        "device_ordinal": 0,
+        "uuid": "GPU-012cd6bb-43ae-b629-e226-4496d1243471",
+        "name": "NVIDIA GB10",
+        "driver": "610.43.02",
+        "sm_clock_mhz": 2190,
+        "temperature_c": 52,
+        "unavailable_reason": null
+      },
+      {
+        "label": "gpu-before",
+        "unix_ms": 1789628120021,
+        "device_ordinal": 0,
+        "uuid": "GPU-012cd6bb-43ae-b629-e226-4496d1243471",
+        "name": "NVIDIA GB10",
+        "driver": "610.43.02",
+        "sm_clock_mhz": 2190,
+        "temperature_c": 52,
+        "unavailable_reason": null
+      },
+      {
+        "label": "gpu-after",
+        "unix_ms": 1789628141998,
+        "device_ordinal": 0,
+        "uuid": "GPU-012cd6bb-43ae-b629-e226-4496d1243471",
+        "name": "NVIDIA GB10",
+        "driver": "610.43.02",
+        "sm_clock_mhz": 2190,
+        "temperature_c": 54,
+        "unavailable_reason": null
+      },
+      {
+        "label": "gpu-before",
+        "unix_ms": 1789628142050,
+        "device_ordinal": 0,
+        "uuid": "GPU-012cd6bb-43ae-b629-e226-4496d1243471",
+        "name": "NVIDIA GB10",
+        "driver": "610.43.02",
+        "sm_clock_mhz": 2190,
+        "temperature_c": 54,
+        "unavailable_reason": null
+      },
+      {
+        "label": "gpu-after",
+        "unix_ms": 1789628163918,
+        "device_ordinal": 0,
+        "uuid": "GPU-012cd6bb-43ae-b629-e226-4496d1243471",
+        "name": "NVIDIA GB10",
+        "driver": "610.43.02",
+        "sm_clock_mhz": 2190,
+        "temperature_c": 59,
+        "unavailable_reason": null
+      }
+    ],
+    "context_failures": [],
+    "passed": true,
+    "timing_method": "client dispatch through complete SSE event; curl --no-buffer; 1 ms file observer; includes curl startup; no profiler"
+  },
+  "overlap_receipt_sha256": "301387f8fb93d93840ce5f166ca8bd2d5c6eab91d9a171cb03dd8588beb53a18",
+  "binaries": {
+    "scratch/v013/bin/ds4-server": "4aec8938cb85e923a554c030a30aef4adb11c35600dd8d61529cb634617da388",
+    "scratch/v013/bin/ds4-perf": "c80ac72a0335854537cbd40746c08cea04861ff2db530a9b4b8f837bbb4dc747",
+    "tests/test_step37_cont": "c28b15174c19ce11e92baa34b8bff04f2d8a74a2958eaa4cc9ee6322e1dd398b"
+  },
+  "limitations": [
+    "profile not qualified: no complete input hash manifest",
+    "HTTP restart is one short request per phase",
+    "overlap max gap 1s, context8192, native512/yield256 only"
+  ],
+  "integrated_restart": {
+    "schema": "v013-integrated-restart-v1",
+    "passed": true,
+    "build_commit": "c2a816b9cf681709141797fccb9dab9c0c9f3bf4",
+    "server_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+    "artifact_identity_method": "local-file-stat-v1",
+    "campaign": {
+      "path": "scratch/v013/ir6",
+      "result_sha256": "84abe01fa78d5b2f8bd57c6ad02cd0de4badf81cc93c4e2c87df223ccf367c84",
+      "inputs": {
+        "path": "scratch/v013/ir6/inputs.json",
+        "sha256": "9e7d6f97567fec9ef43f4914b3ef03a6fbfbe4e98df12170780a025be0766b5f",
+        "bytes": 21626
+      },
+      "orchestration": {
+        "path": "scratch/v013/ir6/orchestrator.jsonl",
+        "sha256": "03f755f828fe2fce58112ab00eb8d0d0880b7496acdc46b0817ce8fca82e5388",
+        "bytes": 16218
+      }
+    },
+    "limitations": [
+      "One short text request per phase; context1024/native64 only.",
+      "Cold control uses a fresh empty disk cache with identical reuse configuration.",
+      "Local file metadata identity; this campaign does not full-hash model contents.",
+      "Guard minima are sampled; no new native, media, long-context or performance qualification."
+    ],
+    "profiles": {
+      "step-serial": {
+        "phases": {
+          "seed": {
+            "summary": {
+              "phase": "seed",
+              "seconds": 1.9122052969760261,
+              "cached_tokens": 0,
+              "prompt_tokens": 294,
+              "text": "4",
+              "trace": {
+                "effective_lane": "serial",
+                "reuse_kind": "cold",
+                "speculation_active": true,
+                "fallback_reason": null,
+                "reuse_miss": "no checkpoint at or below LCP"
+              }
+            },
+            "process": {
+              "pid": 1011393,
+              "start_ticks": "41426912",
+              "argv": [
+                "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+                "--cuda",
+                "-m",
+                "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf",
+                "--mtp",
+                "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MTP/Step3.7-flash-mtp-Q8_0.gguf",
+                "--mtp-draft",
+                "3",
+                "--mtp-mode",
+                "on",
+                "--cont-width",
+                "0",
+                "-c",
+                "1024",
+                "-n",
+                "64",
+                "--native-chunk",
+                "64",
+                "--prefix-reuse",
+                "exact",
+                "--kv-disk-dir",
+                "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/step-serial/cache",
+                "--kv-disk-space",
+                "1G",
+                "--kv-cache-min-tokens",
+                "1",
+                "--model-id",
+                "step-3.7-flash-mq83",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "18037"
+              ],
+              "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+              "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+              "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1011370-1789638243152495476.scope\n",
+              "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+            },
+            "effective": {
+              "ctx": 1024,
+              "max_seqs": 1,
+              "prefix_reuse": "exact",
+              "mtp_mode": "on",
+              "mtp_draft": 3,
+              "mtp_weights": true,
+              "native_chunk": 64,
+              "sched_chunk": 64,
+              "sched_chunk_live": 64,
+              "disk": true,
+              "disk_min_tokens": 1,
+              "bank_persist_min_tokens": 8192
+            },
+            "disk_identity": "a0f0bf43738b11f511705bb3b4bea3e4d011293dd9300f83d443f79fe599d7b3",
+            "files": [
+              {
+                "path": "scratch/v013/ir6/step-serial/http/seed.request.json",
+                "sha256": "46fdee9c5eacd5e57b4735acc7e30d5534eeea34898e8e15e616d7dc8ee5e55e",
+                "bytes": 1283
+              },
+              {
+                "path": "scratch/v013/ir6/step-serial/http/seed.response.json",
+                "sha256": "d7488025665c2783176c32acca9b7017a9b7f5acfece2bee5965eab3e254b25e",
+                "bytes": 621
+              },
+              {
+                "path": "scratch/v013/ir6/step-serial/http/seed.stats.json",
+                "sha256": "c31cab950ea9347e654255f5cb871cc4c1b7a7aefffdec7fedb126ed84f94b7a",
+                "bytes": 7969
+              },
+              {
+                "path": "scratch/v013/ir6/step-serial/http/seed.preflight-stats.json",
+                "sha256": "581ad0ac68fdd2ab7f4dc58cb730701de5c43fdf103e708d834e0a3d47327e82",
+                "bytes": 7759
+              },
+              {
+                "path": "scratch/v013/ir6/step-serial/http/seed.process.json",
+                "sha256": "7a263862d6d82fd46fd8f187a2b5eb443262c727c993f63c2a38284e8ed58a8f",
+                "bytes": 871
+              },
+              {
+                "path": "scratch/v013/ir6/step-serial/http/seed.verified.json",
+                "sha256": "d475cf334c4a9d1aee528dccceade7ecfadc2de1bc312c71809f9948961370be",
+                "bytes": 626
+              }
+            ]
+          },
+          "restored": {
+            "summary": {
+              "phase": "restored",
+              "seconds": 0.6386594459763728,
+              "cached_tokens": 287,
+              "prompt_tokens": 315,
+              "text": "5",
+              "trace": {
+                "effective_lane": "serial",
+                "reuse_kind": "exact",
+                "speculation_active": true,
+                "fallback_reason": null
+              }
+            },
+            "process": {
+              "pid": 1011559,
+              "start_ticks": "41427823",
+              "argv": [
+                "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+                "--cuda",
+                "-m",
+                "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf",
+                "--mtp",
+                "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MTP/Step3.7-flash-mtp-Q8_0.gguf",
+                "--mtp-draft",
+                "3",
+                "--mtp-mode",
+                "on",
+                "--cont-width",
+                "0",
+                "-c",
+                "1024",
+                "-n",
+                "64",
+                "--native-chunk",
+                "64",
+                "--prefix-reuse",
+                "exact",
+                "--kv-disk-dir",
+                "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/step-serial/cache",
+                "--kv-disk-space",
+                "1G",
+                "--kv-cache-min-tokens",
+                "1",
+                "--model-id",
+                "step-3.7-flash-mq83",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "18037"
+              ],
+              "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+              "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+              "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1011537-1789638252261404688.scope\n",
+              "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+            },
+            "effective": {
+              "ctx": 1024,
+              "max_seqs": 1,
+              "prefix_reuse": "exact",
+              "mtp_mode": "on",
+              "mtp_draft": 3,
+              "mtp_weights": true,
+              "native_chunk": 64,
+              "sched_chunk": 64,
+              "sched_chunk_live": 64,
+              "disk": true,
+              "disk_min_tokens": 1,
+              "bank_persist_min_tokens": 8192
+            },
+            "disk_identity": "a0f0bf43738b11f511705bb3b4bea3e4d011293dd9300f83d443f79fe599d7b3",
+            "files": [
+              {
+                "path": "scratch/v013/ir6/step-serial/http/restored.request.json",
+                "sha256": "159e562bf81f8f821db3a7b9e77840e90ed4aa29c5196cef323f04b885118426",
+                "bytes": 1435
+              },
+              {
+                "path": "scratch/v013/ir6/step-serial/http/restored.response.json",
+                "sha256": "7bc723b7d732081b6254de91f198c6a89888c0adec145c73cc4ebfb9317ba9c9",
+                "bytes": 621
+              },
+              {
+                "path": "scratch/v013/ir6/step-serial/http/restored.stats.json",
+                "sha256": "b2a9d3bfdfdea10667c668b50019a996ef03e6bc5b45262a30a9dffdacf69ab6",
+                "bytes": 7919
+              },
+              {
+                "path": "scratch/v013/ir6/step-serial/http/restored.preflight-stats.json",
+                "sha256": "722ab1db6013373875e00609bb55cc194a49f2c0c3a8c5008268d2d72e0de947",
+                "bytes": 7759
+              },
+              {
+                "path": "scratch/v013/ir6/step-serial/http/restored.process.json",
+                "sha256": "bcbefaa80449bba35a1065522b5084f22d0c524d4ab95ff4ecef63fa2fa0a0da",
+                "bytes": 871
+              },
+              {
+                "path": "scratch/v013/ir6/step-serial/http/restored.verified.json",
+                "sha256": "1e4efc2f4692f37501294f9996ca68c2513cbfaa83050a44b6034602f1b1d326",
+                "bytes": 580
+              }
+            ]
+          },
+          "cold": {
+            "summary": {
+              "phase": "cold",
+              "seconds": 1.9450054480112158,
+              "cached_tokens": 0,
+              "prompt_tokens": 315,
+              "text": "5",
+              "trace": {
+                "effective_lane": "serial",
+                "reuse_kind": "cold",
+                "speculation_active": true,
+                "fallback_reason": null,
+                "reuse_miss": "no checkpoint at or below LCP"
+              }
+            },
+            "process": {
+              "pid": 1011651,
+              "start_ticks": "41428713",
+              "argv": [
+                "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+                "--cuda",
+                "-m",
+                "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf",
+                "--mtp",
+                "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MTP/Step3.7-flash-mtp-Q8_0.gguf",
+                "--mtp-draft",
+                "3",
+                "--mtp-mode",
+                "on",
+                "--cont-width",
+                "0",
+                "-c",
+                "1024",
+                "-n",
+                "64",
+                "--native-chunk",
+                "64",
+                "--prefix-reuse",
+                "exact",
+                "--kv-disk-dir",
+                "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/step-serial/cold-cache",
+                "--kv-disk-space",
+                "1G",
+                "--kv-cache-min-tokens",
+                "1",
+                "--model-id",
+                "step-3.7-flash-mq83",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "18037"
+              ],
+              "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+              "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+              "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1011644-1789638261167155504.scope\n",
+              "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+            },
+            "effective": {
+              "ctx": 1024,
+              "max_seqs": 1,
+              "prefix_reuse": "exact",
+              "mtp_mode": "on",
+              "mtp_draft": 3,
+              "mtp_weights": true,
+              "native_chunk": 64,
+              "sched_chunk": 64,
+              "sched_chunk_live": 64,
+              "disk": true,
+              "disk_min_tokens": 1,
+              "bank_persist_min_tokens": 8192
+            },
+            "disk_identity": "a0f0bf43738b11f511705bb3b4bea3e4d011293dd9300f83d443f79fe599d7b3",
+            "files": [
+              {
+                "path": "scratch/v013/ir6/step-serial/http/cold.request.json",
+                "sha256": "159e562bf81f8f821db3a7b9e77840e90ed4aa29c5196cef323f04b885118426",
+                "bytes": 1435
+              },
+              {
+                "path": "scratch/v013/ir6/step-serial/http/cold.response.json",
+                "sha256": "91028a236773589e3364e99a9f1e46ae3b1a563c04335b618539b4d0373cf350",
+                "bytes": 621
+              },
+              {
+                "path": "scratch/v013/ir6/step-serial/http/cold.stats.json",
+                "sha256": "5307f99413fa82dc0aed5f5de57b1a49906add6874513ac0193bb691c3a3e90b",
+                "bytes": 7969
+              },
+              {
+                "path": "scratch/v013/ir6/step-serial/http/cold.preflight-stats.json",
+                "sha256": "c0c3c48c632fc6ceb190c8e1f73a2353ffb1e4e39113e7da031501b0652d2f67",
+                "bytes": 7759
+              },
+              {
+                "path": "scratch/v013/ir6/step-serial/http/cold.process.json",
+                "sha256": "932f11480269cb4ac126787bef1887ca4985fca884bdc7bcb09646aea4cf460c",
+                "bytes": 876
+              },
+              {
+                "path": "scratch/v013/ir6/step-serial/http/cold.verified.json",
+                "sha256": "0d14f53eabeeebf375046508d786342740407aa812bdf23137de07f46b9ea584",
+                "bytes": 626
+              }
+            ]
+          }
+        },
+        "cold_comparison": "identical assistant message, finish, completion count"
+      },
+      "step-bank": {
+        "phases": {
+          "seed": {
+            "summary": {
+              "phase": "seed",
+              "seconds": 1.911874077981338,
+              "cached_tokens": 0,
+              "prompt_tokens": 294,
+              "text": "4",
+              "trace": {
+                "effective_lane": "continuous",
+                "reuse_kind": "cold",
+                "speculation_active": true,
+                "fallback_reason": null,
+                "reuse_miss": "no checkpoint at or below LCP"
+              }
+            },
+            "process": {
+              "pid": 1012003,
+              "start_ticks": "41429729",
+              "argv": [
+                "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+                "--cuda",
+                "-m",
+                "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf",
+                "--mtp",
+                "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MTP/Step3.7-flash-mtp-Q8_0.gguf",
+                "--mtp-draft",
+                "3",
+                "--mtp-mode",
+                "on",
+                "--max-seqs",
+                "2",
+                "-c",
+                "1024",
+                "-n",
+                "64",
+                "--native-chunk",
+                "64",
+                "--prefix-reuse",
+                "partial",
+                "--kv-disk-dir",
+                "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/step-bank/cache",
+                "--kv-disk-space",
+                "1G",
+                "--kv-cache-min-tokens",
+                "1",
+                "--model-id",
+                "step-3.7-flash-mq83",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "18037"
+              ],
+              "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+              "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+              "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1011996-1789638271321865582.scope\n",
+              "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+            },
+            "effective": {
+              "ctx": 1024,
+              "max_seqs": 2,
+              "prefix_reuse": "partial",
+              "mtp_mode": "on",
+              "mtp_draft": 3,
+              "mtp_weights": true,
+              "native_chunk": 64,
+              "sched_chunk": 64,
+              "sched_chunk_live": 64,
+              "disk": true,
+              "disk_min_tokens": 1,
+              "bank_persist_min_tokens": 1
+            },
+            "disk_identity": "b7b2a70fbd1ec3aecc7306c2377cda31033d59dd8109558557e2fb48763bd666",
+            "files": [
+              {
+                "path": "scratch/v013/ir6/step-bank/http/seed.request.json",
+                "sha256": "46fdee9c5eacd5e57b4735acc7e30d5534eeea34898e8e15e616d7dc8ee5e55e",
+                "bytes": 1283
+              },
+              {
+                "path": "scratch/v013/ir6/step-bank/http/seed.response.json",
+                "sha256": "9bdbbf72368840ae81569bc60f1d60644c4e9fe4b46fbcc31f3eb3f9123df465",
+                "bytes": 646
+              },
+              {
+                "path": "scratch/v013/ir6/step-bank/http/seed.stats.json",
+                "sha256": "e14184d0dbd08386abe8f7238d09840abba2256e2e1c58544a4a2afabab35fcc",
+                "bytes": 8128
+              },
+              {
+                "path": "scratch/v013/ir6/step-bank/http/seed.preflight-stats.json",
+                "sha256": "a13ecd322aa3544d1a82027ca68665d5ac7ab5ba59460fc9ff9ebd9910932a8a",
+                "bytes": 7922
+              },
+              {
+                "path": "scratch/v013/ir6/step-bank/http/seed.process.json",
+                "sha256": "827df489ae9e7c0dddab64e8af03d9c6d2d725c56e373965c67752913e5d6719",
+                "bytes": 869
+              },
+              {
+                "path": "scratch/v013/ir6/step-bank/http/seed.verified.json",
+                "sha256": "7c5ba234401fcd08b7adf46589ffc65fe6f7d594a32fbdf5c8da91d4ae994367",
+                "bytes": 627
+              }
+            ]
+          },
+          "restored": {
+            "summary": {
+              "phase": "restored",
+              "seconds": 0.6640556289930828,
+              "cached_tokens": 287,
+              "prompt_tokens": 315,
+              "text": "5",
+              "trace": {
+                "effective_lane": "continuous",
+                "reuse_kind": "fork",
+                "speculation_active": true,
+                "fallback_reason": null
+              }
+            },
+            "process": {
+              "pid": 1012100,
+              "start_ticks": "41430798",
+              "argv": [
+                "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+                "--cuda",
+                "-m",
+                "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf",
+                "--mtp",
+                "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MTP/Step3.7-flash-mtp-Q8_0.gguf",
+                "--mtp-draft",
+                "3",
+                "--mtp-mode",
+                "on",
+                "--max-seqs",
+                "2",
+                "-c",
+                "1024",
+                "-n",
+                "64",
+                "--native-chunk",
+                "64",
+                "--prefix-reuse",
+                "partial",
+                "--kv-disk-dir",
+                "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/step-bank/cache",
+                "--kv-disk-space",
+                "1G",
+                "--kv-cache-min-tokens",
+                "1",
+                "--model-id",
+                "step-3.7-flash-mq83",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "18037"
+              ],
+              "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+              "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+              "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1012094-1789638282013719659.scope\n",
+              "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+            },
+            "effective": {
+              "ctx": 1024,
+              "max_seqs": 2,
+              "prefix_reuse": "partial",
+              "mtp_mode": "on",
+              "mtp_draft": 3,
+              "mtp_weights": true,
+              "native_chunk": 64,
+              "sched_chunk": 64,
+              "sched_chunk_live": 64,
+              "disk": true,
+              "disk_min_tokens": 1,
+              "bank_persist_min_tokens": 1
+            },
+            "disk_identity": "b7b2a70fbd1ec3aecc7306c2377cda31033d59dd8109558557e2fb48763bd666",
+            "files": [
+              {
+                "path": "scratch/v013/ir6/step-bank/http/restored.request.json",
+                "sha256": "159e562bf81f8f821db3a7b9e77840e90ed4aa29c5196cef323f04b885118426",
+                "bytes": 1435
+              },
+              {
+                "path": "scratch/v013/ir6/step-bank/http/restored.response.json",
+                "sha256": "2564aa8450b348cb7886e29dfd6a586845ee7fbb56fcd0c1bbd9db261e759ddc",
+                "bytes": 646
+              },
+              {
+                "path": "scratch/v013/ir6/step-bank/http/restored.stats.json",
+                "sha256": "fa61f3f070e86190da485aa448582695fcbb72c2b26569b2517a2040a8748264",
+                "bytes": 8077
+              },
+              {
+                "path": "scratch/v013/ir6/step-bank/http/restored.preflight-stats.json",
+                "sha256": "39b73660d37b5048f382b2e8ad7e10250cfdedb4caea3ec9793ab6346a34ada7",
+                "bytes": 7922
+              },
+              {
+                "path": "scratch/v013/ir6/step-bank/http/restored.process.json",
+                "sha256": "bc6f3ff42becfcec3b0f9699189ddf21b064a8f8830d21f0e8973d8874de636f",
+                "bytes": 869
+              },
+              {
+                "path": "scratch/v013/ir6/step-bank/http/restored.verified.json",
+                "sha256": "3d2e426ee4b8b1241cd20a23361d8e435c95dd26193ced1bbf682b34fad03f20",
+                "bytes": 580
+              }
+            ]
+          },
+          "cold": {
+            "summary": {
+              "phase": "cold",
+              "seconds": 1.9580013459781185,
+              "cached_tokens": 0,
+              "prompt_tokens": 315,
+              "text": "5",
+              "trace": {
+                "effective_lane": "continuous",
+                "reuse_kind": "cold",
+                "speculation_active": true,
+                "fallback_reason": null,
+                "reuse_miss": "no checkpoint at or below LCP"
+              }
+            },
+            "process": {
+              "pid": 1012151,
+              "start_ticks": "41431738",
+              "argv": [
+                "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+                "--cuda",
+                "-m",
+                "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf",
+                "--mtp",
+                "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MTP/Step3.7-flash-mtp-Q8_0.gguf",
+                "--mtp-draft",
+                "3",
+                "--mtp-mode",
+                "on",
+                "--max-seqs",
+                "2",
+                "-c",
+                "1024",
+                "-n",
+                "64",
+                "--native-chunk",
+                "64",
+                "--prefix-reuse",
+                "partial",
+                "--kv-disk-dir",
+                "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/step-bank/cold-cache",
+                "--kv-disk-space",
+                "1G",
+                "--kv-cache-min-tokens",
+                "1",
+                "--model-id",
+                "step-3.7-flash-mq83",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "18037"
+              ],
+              "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+              "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+              "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1012144-1789638291413613208.scope\n",
+              "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+            },
+            "effective": {
+              "ctx": 1024,
+              "max_seqs": 2,
+              "prefix_reuse": "partial",
+              "mtp_mode": "on",
+              "mtp_draft": 3,
+              "mtp_weights": true,
+              "native_chunk": 64,
+              "sched_chunk": 64,
+              "sched_chunk_live": 64,
+              "disk": true,
+              "disk_min_tokens": 1,
+              "bank_persist_min_tokens": 1
+            },
+            "disk_identity": "b7b2a70fbd1ec3aecc7306c2377cda31033d59dd8109558557e2fb48763bd666",
+            "files": [
+              {
+                "path": "scratch/v013/ir6/step-bank/http/cold.request.json",
+                "sha256": "159e562bf81f8f821db3a7b9e77840e90ed4aa29c5196cef323f04b885118426",
+                "bytes": 1435
+              },
+              {
+                "path": "scratch/v013/ir6/step-bank/http/cold.response.json",
+                "sha256": "781906b081afd3038abe4f05e05010fb08e6d4fa00a44a89730a3bcf2383de99",
+                "bytes": 646
+              },
+              {
+                "path": "scratch/v013/ir6/step-bank/http/cold.stats.json",
+                "sha256": "a31b74ca399008abc5e9432a38d2650b7849e931e39995b4da37c5f1d030bf03",
+                "bytes": 8128
+              },
+              {
+                "path": "scratch/v013/ir6/step-bank/http/cold.preflight-stats.json",
+                "sha256": "5d83d7261c2c0a4bed1751fd99d98984e7e66c2b9629fa377105c4c85d0103f7",
+                "bytes": 7922
+              },
+              {
+                "path": "scratch/v013/ir6/step-bank/http/cold.process.json",
+                "sha256": "186c6005e75801a181ea82d8e2d8b1adbb4e3e1a8965dbbaeefb2cec36864b22",
+                "bytes": 874
+              },
+              {
+                "path": "scratch/v013/ir6/step-bank/http/cold.verified.json",
+                "sha256": "1ac4f7cdbcd5b7f43f12272b85af4c75c23aa25aa921fcf4a2c27d3d163eb39d",
+                "bytes": 627
+              }
+            ]
+          }
+        },
+        "cold_comparison": "identical assistant message, finish, completion count"
+      }
+    },
+    "guards": {
+      "step-bank-cold": {
+        "reserve_gib": 12,
+        "trip_gib": 12,
+        "max_gib": 10.8,
+        "high_gib": 9.8,
+        "minimum_sampled_available_gib": 20.828052520751953,
+        "guard_exit": 75,
+        "payload_exit": 0,
+        "started_unix": 1789638291.4221468,
+        "finished_unix": 1789638301.3520448,
+        "raw": {
+          "path": "scratch/v013/ir6/step-bank/cold-launch/memory.jsonl",
+          "sha256": "9710de1f0ecacf734d80ab66863c91ae4e2650c21f017c5aaa030bb3806829ae",
+          "bytes": 2857
+        },
+        "process": {
+          "pid": 1012151,
+          "start_ticks": "41431738",
+          "argv": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf",
+            "--mtp",
+            "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MTP/Step3.7-flash-mtp-Q8_0.gguf",
+            "--mtp-draft",
+            "3",
+            "--mtp-mode",
+            "on",
+            "--max-seqs",
+            "2",
+            "-c",
+            "1024",
+            "-n",
+            "64",
+            "--native-chunk",
+            "64",
+            "--prefix-reuse",
+            "partial",
+            "--kv-disk-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/step-bank/cold-cache",
+            "--kv-disk-space",
+            "1G",
+            "--kv-cache-min-tokens",
+            "1",
+            "--model-id",
+            "step-3.7-flash-mq83",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "18037"
+          ],
+          "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+          "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1012144-1789638291413613208.scope\n",
+          "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+        }
+      },
+      "step-bank-restored": {
+        "reserve_gib": 12,
+        "trip_gib": 12,
+        "max_gib": 11.2,
+        "high_gib": 10.0,
+        "minimum_sampled_available_gib": 20.68109130859375,
+        "guard_exit": 75,
+        "payload_exit": 0,
+        "started_unix": 1789638282.023999,
+        "finished_unix": 1789638291.1531785,
+        "raw": {
+          "path": "scratch/v013/ir6/step-bank/restored-launch/memory.jsonl",
+          "sha256": "9c0d135ef1f871c0486b120afeb1fdbf67d47118161823c3dda102c62b9cba6e",
+          "bytes": 2683
+        },
+        "process": {
+          "pid": 1012100,
+          "start_ticks": "41430798",
+          "argv": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf",
+            "--mtp",
+            "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MTP/Step3.7-flash-mtp-Q8_0.gguf",
+            "--mtp-draft",
+            "3",
+            "--mtp-mode",
+            "on",
+            "--max-seqs",
+            "2",
+            "-c",
+            "1024",
+            "-n",
+            "64",
+            "--native-chunk",
+            "64",
+            "--prefix-reuse",
+            "partial",
+            "--kv-disk-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/step-bank/cache",
+            "--kv-disk-space",
+            "1G",
+            "--kv-cache-min-tokens",
+            "1",
+            "--model-id",
+            "step-3.7-flash-mq83",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "18037"
+          ],
+          "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+          "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1012094-1789638282013719659.scope\n",
+          "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+        }
+      },
+      "step-bank-seed": {
+        "reserve_gib": 12,
+        "trip_gib": 12,
+        "max_gib": 11.5,
+        "high_gib": 10.0,
+        "minimum_sampled_available_gib": 21.094356536865234,
+        "guard_exit": 75,
+        "payload_exit": 0,
+        "started_unix": 1789638271.3293722,
+        "finished_unix": 1789638281.7457826,
+        "raw": {
+          "path": "scratch/v013/ir6/step-bank/seed-launch/memory.jsonl",
+          "sha256": "d1131eca8f1e71d5b3280a48e7030d446e91ee4d399cbf55d42c56bef3522746",
+          "bytes": 3019
+        },
+        "process": {
+          "pid": 1012003,
+          "start_ticks": "41429729",
+          "argv": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf",
+            "--mtp",
+            "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MTP/Step3.7-flash-mtp-Q8_0.gguf",
+            "--mtp-draft",
+            "3",
+            "--mtp-mode",
+            "on",
+            "--max-seqs",
+            "2",
+            "-c",
+            "1024",
+            "-n",
+            "64",
+            "--native-chunk",
+            "64",
+            "--prefix-reuse",
+            "partial",
+            "--kv-disk-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/step-bank/cache",
+            "--kv-disk-space",
+            "1G",
+            "--kv-cache-min-tokens",
+            "1",
+            "--model-id",
+            "step-3.7-flash-mq83",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "18037"
+          ],
+          "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+          "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1011996-1789638271321865582.scope\n",
+          "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+        }
+      },
+      "step-owner": {
+        "reserve_gib": 12,
+        "trip_gib": 8,
+        "max_gib": 99.8,
+        "high_gib": 98.8,
+        "minimum_sampled_available_gib": 20.769474029541016,
+        "guard_exit": 75,
+        "payload_exit": 0,
+        "started_unix": 1789638181.415286,
+        "finished_unix": 1789638302.5198102,
+        "raw": {
+          "path": "scratch/v013/ir6/step/owner.memory.jsonl",
+          "sha256": "52adefac2de2ebd971e1b0fd6899ddae4cd8f82846c0726281a6da2da11db430",
+          "bytes": 21218
+        },
+        "process": {
+          "pid": 1010525,
+          "start_ticks": "41420738",
+          "argv": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/ds4_weight_server",
+            "--base",
+            "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf",
+            "--mtp",
+            "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MTP/Step3.7-flash-mtp-Q8_0.gguf",
+            "--scope",
+            "both",
+            "--backend",
+            "vmm",
+            "--reserve-gb",
+            "20",
+            "--repack-threads",
+            "1",
+            "--copy-chunk-mb",
+            "64",
+            "--manifest",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/step/weights.ipc",
+            "--lock-file",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/step/weights.lock",
+            "--broker-socket",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/step/weights.sock"
+          ],
+          "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/ds4_weight_server",
+          "executable_sha256": "0321a76ebeb6a8fcd62f8a215cd4806e26367d8108611c9c99a9bc429f395cda",
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1010522-1789638181406022897.scope\n",
+          "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+        }
+      },
+      "step-serial-cold": {
+        "reserve_gib": 12,
+        "trip_gib": 12,
+        "max_gib": 11.6,
+        "high_gib": 10.0,
+        "minimum_sampled_available_gib": 21.83814239501953,
+        "guard_exit": 75,
+        "payload_exit": 0,
+        "started_unix": 1789638261.1757288,
+        "finished_unix": 1789638271.080041,
+        "raw": {
+          "path": "scratch/v013/ir6/step-serial/cold-launch/memory.jsonl",
+          "sha256": "97c0dbbdd4bd22e7169a720beb193298fa042e6907e41df1779c8c0be68bc1b7",
+          "bytes": 2856
+        },
+        "process": {
+          "pid": 1011651,
+          "start_ticks": "41428713",
+          "argv": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf",
+            "--mtp",
+            "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MTP/Step3.7-flash-mtp-Q8_0.gguf",
+            "--mtp-draft",
+            "3",
+            "--mtp-mode",
+            "on",
+            "--cont-width",
+            "0",
+            "-c",
+            "1024",
+            "-n",
+            "64",
+            "--native-chunk",
+            "64",
+            "--prefix-reuse",
+            "exact",
+            "--kv-disk-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/step-serial/cold-cache",
+            "--kv-disk-space",
+            "1G",
+            "--kv-cache-min-tokens",
+            "1",
+            "--model-id",
+            "step-3.7-flash-mq83",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "18037"
+          ],
+          "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+          "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1011644-1789638261167155504.scope\n",
+          "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+        }
+      },
+      "step-serial-restored": {
+        "reserve_gib": 12,
+        "trip_gib": 12,
+        "max_gib": 11.6,
+        "high_gib": 10.0,
+        "minimum_sampled_available_gib": 21.934162139892578,
+        "guard_exit": 75,
+        "payload_exit": 0,
+        "started_unix": 1789638252.2683094,
+        "finished_unix": 1789638260.8755925,
+        "raw": {
+          "path": "scratch/v013/ir6/step-serial/restored-launch/memory.jsonl",
+          "sha256": "7342b6b0338f365dfbd48311bed7dbdcc702c9d7e162b8a91f2670ecc5770283",
+          "bytes": 2684
+        },
+        "process": {
+          "pid": 1011559,
+          "start_ticks": "41427823",
+          "argv": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf",
+            "--mtp",
+            "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MTP/Step3.7-flash-mtp-Q8_0.gguf",
+            "--mtp-draft",
+            "3",
+            "--mtp-mode",
+            "on",
+            "--cont-width",
+            "0",
+            "-c",
+            "1024",
+            "-n",
+            "64",
+            "--native-chunk",
+            "64",
+            "--prefix-reuse",
+            "exact",
+            "--kv-disk-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/step-serial/cache",
+            "--kv-disk-space",
+            "1G",
+            "--kv-cache-min-tokens",
+            "1",
+            "--model-id",
+            "step-3.7-flash-mq83",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "18037"
+          ],
+          "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+          "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1011537-1789638252261404688.scope\n",
+          "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+        }
+      },
+      "step-serial-seed": {
+        "reserve_gib": 12,
+        "trip_gib": 12,
+        "max_gib": 11.7,
+        "high_gib": 10.0,
+        "minimum_sampled_available_gib": 21.95553970336914,
+        "guard_exit": 75,
+        "payload_exit": 0,
+        "started_unix": 1789638243.1613865,
+        "finished_unix": 1789638251.9731786,
+        "raw": {
+          "path": "scratch/v013/ir6/step-serial/seed-launch/memory.jsonl",
+          "sha256": "33f7535ca1a64e96ae1ce49da7789e54b25111dbe4736256cadd2a9c92f507a9",
+          "bytes": 2684
+        },
+        "process": {
+          "pid": 1011393,
+          "start_ticks": "41426912",
+          "argv": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MQ83/Step-3.7-Flash-MQ83-00001-of-00009.gguf",
+            "--mtp",
+            "/home/sunghoon/workspace/ds4-exaone/models/Step-3.7-Flash-Mixed-Quant-GGUF/MTP/Step3.7-flash-mtp-Q8_0.gguf",
+            "--mtp-draft",
+            "3",
+            "--mtp-mode",
+            "on",
+            "--cont-width",
+            "0",
+            "-c",
+            "1024",
+            "-n",
+            "64",
+            "--native-chunk",
+            "64",
+            "--prefix-reuse",
+            "exact",
+            "--kv-disk-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/step-serial/cache",
+            "--kv-disk-space",
+            "1G",
+            "--kv-cache-min-tokens",
+            "1",
+            "--model-id",
+            "step-3.7-flash-mq83",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "18037"
+          ],
+          "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+          "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1011370-1789638243152495476.scope\n",
+          "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+        }
+      }
+    }
+  }
+}
