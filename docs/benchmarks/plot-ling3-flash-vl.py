@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot the Ling-3.0-flash-VL 2K–64K card sweep, #48 vs expanded-MLA prefill; requires matplotlib."""
+"""Plot the Ling-3.0-flash-VL 2K–64K card sweep, #48 vs #49 vs #50; requires matplotlib."""
 import csv
 import json
 from pathlib import Path
@@ -13,10 +13,13 @@ import matplotlib.pyplot as plt
 
 DATA = Path(__file__).with_name("ling3-flash-vl-2026-09-17")
 OUT = DATA.parent.parent / "ling3-flash-vl-2k-64k-throughput.png"
-# Two #48 runs (a third was cut short); three expanded-MLA runs.
-REPEATS = {"base": 2, "new": 3}
-COLORS = {"base": "#687789", "new": "#b4532a"}
-LABELS = {"base": "main 8436382 (#48, absorbed MLA)", "new": "007f0e4 (expanded MLA)"}
+# Two #48 runs (a third was cut short); three runs each of #49 and #50.
+REPEATS = {"base": 2, "new": 3, "r2": 3}
+COLORS = {"base": "#687789", "new": "#b4532a", "r2": "#087f8c"}
+LABELS = {"base": "8436382 (#48, absorbed MLA)",
+          "new": "007f0e4 (#49, expanded MLA)",
+          "r2": "3d7078b (#50, BF16 K/V, 64-key tiles)"}
+FINAL = "r2"
 METRICS = (("prefill_tps", "Incremental prefill"), ("gen_tps", "Greedy decode"))
 FRONTIERS = list(range(2048, 65537, 2048))
 
@@ -61,10 +64,10 @@ def plot():
             runs_note = f"{len(samples)} run" + ("s" if len(samples) > 1 else "")
             ax.plot(x, [median(c) for c in columns], color=COLORS[tag], linewidth=2,
                     label=f"{LABELS[tag]} · {center:,.1f} tok/s · {runs_note}")
-        change = 100 * (summary[metric]["new"]["median_run_mean"] /
+        change = 100 * (summary[metric][FINAL]["median_run_mean"] /
                         summary[metric]["base"]["median_run_mean"] - 1)
         summary[metric]["change_percent"] = change
-        ax.set_title(f"{heading} · expanded MLA {change:+.1f}%", loc="left", fontsize=13, pad=10)
+        ax.set_title(f"{heading} · #50 vs #48 {change:+.1f}%", loc="left", fontsize=13, pad=10)
         ax.set_ylabel("Tokens / second")
         ax.grid(alpha=0.2)
         ax.legend(loc="best", framealpha=0.92)

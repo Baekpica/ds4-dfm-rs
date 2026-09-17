@@ -3,7 +3,8 @@
   "artifact": "Baekpica/Ling-3.0-flash-VL-Mixed-Quant-GGUF MQ-Q5-KDA-VIT-BF16",
   "baseline_commit": "8436382",
   "candidate_commit": "007f0e4",
-  "protocol": "32 frontiers, 2048-token incremental prefill and 128 greedy decode tokens per frontier in one warm session, fresh process per run. Two runs of main 8436382 (#48, absorbed-MLA prefill; a third was stopped when the campaign was redirected) and three runs of 007f0e4 (expanded-MLA prefill, decode HG split fill), run back to back on the same resident owner. Summary is the median of run means. Plot curves are per-frontier medians with observed min/max bands. Between frontiers ds4-bench restores the prefix by replaying it (the recurrent state has no rewind); that replay is outside both measured phases. Ling has no MTP.",
+  "round2_commit": "3d7078b",
+  "protocol": "32 frontiers, 2048-token incremental prefill and 128 greedy decode tokens per frontier in one warm session, fresh process per run. Two runs of main 8436382 (#48, absorbed-MLA prefill; a third was stopped when the campaign was redirected), three runs of 007f0e4 (#49: expanded-MLA prefill, decode HG split fill) on the same resident owner, and three runs of the PR #50 binary (BF16 K/V scratch, 64-key tiles, three-chunk segments) on a fresh owner of the same artifact later the same morning. Summary is the median of run means. Plot curves are per-frontier medians with observed min/max bands. Between frontiers ds4-bench restores the prefix by replaying it (the recurrent state has no rewind); that replay is outside both measured phases. Ling has no MTP.",
   "command": "ds4-bench --cuda -m <shard 00001> --prompt-file speed-bench/promessi_sposi.txt --ctx-start 2048 --ctx-max 65536 --step-incr 2048 --gen-tokens 128 --csv <out>",
   "environment": {
     "DS4_CUDA_WEIGHT_IPC_MANIFEST": "resident ds4_weight_server --backend vmm --scope base (same owner for every run)",
@@ -103,6 +104,51 @@
         2190
       ],
       "min_host_available_gib": 28.45
+    },
+    {
+      "label": "r2-1",
+      "binary": "r2/ds4-bench-r2",
+      "source_commit": "3d7078b",
+      "executable_sha256": "831e3d7c5be5521fd79f4fbeafb4bb5b7bc594078cd5a3967287c9354cb36553",
+      "frontiers": 32,
+      "mean_prefill_tps": 1735.6,
+      "mean_gen_tps": 24.47,
+      "wall_seconds": 709.2,
+      "sm_mhz_busy_range": [
+        2177,
+        2190
+      ],
+      "min_host_available_gib": 27.8
+    },
+    {
+      "label": "r2-2",
+      "binary": "r2/ds4-bench-r2",
+      "source_commit": "3d7078b",
+      "executable_sha256": "831e3d7c5be5521fd79f4fbeafb4bb5b7bc594078cd5a3967287c9354cb36553",
+      "frontiers": 32,
+      "mean_prefill_tps": 1730.83,
+      "mean_gen_tps": 24.58,
+      "wall_seconds": 708.4,
+      "sm_mhz_busy_range": [
+        2177,
+        2190
+      ],
+      "min_host_available_gib": 27.89
+    },
+    {
+      "label": "r2-3",
+      "binary": "r2/ds4-bench-r2",
+      "source_commit": "3d7078b",
+      "executable_sha256": "831e3d7c5be5521fd79f4fbeafb4bb5b7bc594078cd5a3967287c9354cb36553",
+      "frontiers": 32,
+      "mean_prefill_tps": 1735.94,
+      "mean_gen_tps": 24.53,
+      "wall_seconds": 707.5,
+      "sm_mhz_busy_range": [
+        2177,
+        2190
+      ],
+      "min_host_available_gib": 27.92
     }
   ]
 }

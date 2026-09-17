@@ -679,13 +679,13 @@ The original split gate claims parity class, not a universal speedup.
 | K2-Horizon-375B MQ87 | Four-shard 86.70 GiB MQ87: CLI 32K raw-token `33785`; default memgov 95/95 VMM promote; HTTP Chat/tool/stream/concurrent on one 32K bank. |
 | dots3-note MQ87 (2026-09-06 rounds) | 8,192-token cold prefill 278.3 → 604.3 tok/s (+117 %), greedy decode 11.66 → 16.78 tok/s (+44 %) on one DGX Spark, serial lane, same-binary kill-switch A/B; frontier logits same argmax / top-10 10/10, 64 greedy IDs identical; resident CPU-reference gate passed (`docs/dots3-optimization-2026-09-06.md`). |
 | Step 3.7 Flash MQ83 (300–2200 MHz cap) | Fresh matched 3-pair A/B: 2048+64 Prefill **1194.64 tok/s** (+0.72%), MTP draft-3 Decode **22.77 tok/s** (+4.02%), exact logits/tokens. Separate 16384+64: Prefill **1290.01** (+7.22%), MTP Decode **16.34** (+14.59%, changed trajectory/acceptance). Default chunk 4096; smaller overrides for bank/image memory. Two Prefill and two Decode rounds, raw samples and limits: [capped campaign](docs/step37-optimization-2026-09-13-r3.md). Earlier uncapped results are historical. |
-| Ling-3.0-flash-VL MQ-Q5 (SM 2184–2197 MHz) | 8192+64 `ds4-bench`, #46 → #48: prefill **1,142 → 1,889 tok/s** (+65%), decode **19.54 → 24.65 tok/s** (+26%). Expanded-MLA prefill on top of #48, 2K–64K card sweep (2,048-token incremental prefill + 128 greedy tokens per frontier): mean prefill **1,106 → 1,597 tok/s** (+44%), at 65,536 tokens **684 → 1,231 tok/s** (+80%); mean decode 24.05 → 24.56. Cold 64K prefill 1,048 → **1,742 tok/s**. Same argmax at every frontier; logit rel-RMS vs the FP32 walk 0.114, where the #48 FP16 path sits at 0.093. Each round behind a kill switch. [Campaign, long-context rounds and sweep](docs/ling3-flash-vl.md#cuda-campaign-gb10). |
+| Ling-3.0-flash-VL MQ-Q5 (SM 2177–2197 MHz) | 8192+64 `ds4-bench`, #46 → #48: prefill **1,142 → 1,889 tok/s** (+65%), decode **19.54 → 24.65 tok/s** (+26%). 2K–64K card sweep through #50 (BF16 K/V, 64-key tiles): mean prefill **1,106 → 1,736 tok/s** (+57%), at 65,536 tokens **684 → 1,423 tok/s** (+108%); mean decode 24.05 → 24.53. Versus #49 the same sweep is +8.7% mean prefill and +16% at 64K. Cold 64K prefill 1,048 → **1,742 tok/s**. Same argmax at every frontier. Each round behind a kill switch. [Campaign, long-context rounds and sweep](docs/ling3-flash-vl.md#cuda-campaign-gb10). |
 
-![Ling-3.0-flash-VL MQ-Q5 2K–64K throughput, #48 vs expanded MLA](docs/ling3-flash-vl-2k-64k-throughput.png)
+![Ling-3.0-flash-VL MQ-Q5 2K–64K throughput, #48 vs #49 vs #50](docs/ling3-flash-vl-2k-64k-throughput.png)
 
-*One DGX Spark / GB10, one warm session per fresh process, same resident
-weight owner and prompt. Curves: per-frontier medians; bands: min–max over
-two #48 runs and three expanded-MLA runs. No MTP: the family has none.
+*One DGX Spark / GB10, one warm session per fresh process. Curves:
+per-frontier medians; bands: min–max over two #48 runs and three runs
+each of #49 and #50. No MTP: the family has none.
 [Raw CSVs and receipt](docs/benchmarks/ling3-flash-vl-2026-09-17/);
 `python3 docs/benchmarks/plot-ling3-flash-vl.py`.*
 
