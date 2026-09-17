@@ -291,6 +291,12 @@ pub fn fill_quote_facts(
             // The shared graph owns its own caches before bank slabs are fitted.
             let mut scratch = deepseek_graph_bytes(s, ctx, native);
             let mut bank = deepseek_bank_bytes(s, ctx, native);
+            let wanted = match req.max_seqs {
+                MaxSeqs::Fixed(n) => n,
+                _ => caps.qualified_banks.unwrap_or(DEFAULT_MAX_SEQS),
+            };
+            let banks = u64::from(facts.banks_fitted.unwrap_or(wanted).min(wanted).max(1));
+            bank += deepseek_page_extra(s, ctx, banks).div_ceil(banks);
             let mtp = if sidecar_loaded {
                 bank += deepseek_mtp_bank_bytes(s, ctx, native);
                 deepseek_mtp_bytes(s, ctx, native)
@@ -1355,6 +1361,61 @@ fn deepseek_cache_bytes(s: Shape, ctx: u64, native: u32) -> (u64, u64) {
 fn deepseek_bank_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
     let (cache, state) = deepseek_cache_bytes(s, ctx, native);
     cache + (2 + 2 * 4) * state
+}
+
+// Match native's max(virtual capacity, banded active-page envelope). CUDA
+// uses separate slab reservations; only banks inside one slab share pages.
+// Spark's 2 MiB pages conservatively cover devices with smaller VMM pages.
+fn deepseek_page_extra(s: Shape, ctx: u64, banks: u64) -> u64 {
+    if std::env::var("DS4_BATCH_VMM_COMP").as_deref() == Ok("0")
+        || env_nonnegative_mb("DS4_BATCH_SLAB_POISON").unwrap_or(0) >= 1
+    {
+        return 0;
+    }
+    let packed_on = |key| {
+        let value = std::env::var(key).unwrap_or_default();
+        !(value.starts_with('0')
+            || matches!(
+                value.as_str(),
+                "off" | "OFF" | "no" | "NO" | "false" | "FALSE"
+            ))
+    };
+    let dim = u64::from(s.n_head_dim);
+    let index = u64::from(s.n_indexer_head_dim);
+    let packed = dim - u64::from(s.n_rot) + u64::from(s.n_rot) * SIZEOF_F32;
+    let comp_row = if packed_on("DS4_CUDA_FP8_KV") {
+        packed
+    } else {
+        dim * SIZEOF_F32
+    };
+    let index_row = if packed_on("DS4_CUDA_FP4_INDEX") {
+        index / 2
+    } else {
+        index * SIZEOF_F32
+    };
+    let page = 2 * MIB;
+    let mut virtual_bytes = 0;
+    let mut page_bytes = 0;
+    for il in 0..s.n_layer {
+        let ratio = deepseek_comp_ratio(s, il);
+        if ratio == 0 {
+            continue;
+        }
+        let rows = banks * (ctx / ratio + 2);
+        virtual_bytes += rows * (dim * SIZEOF_F32 + packed);
+        page_bytes += (rows * comp_row).div_ceil(page) * page;
+        if ratio == 4 {
+            virtual_bytes += rows * (index * SIZEOF_F32 + index / 2);
+            page_bytes += (rows * index_row).div_ceil(page) * page;
+        }
+    }
+    let band = env_nonnegative_mb("DS4_CONT_ADMIT_BAND_X1024")
+        .filter(|n| *n > 0)
+        .unwrap_or(1045)
+        .clamp(1024, 2048);
+    (page_bytes * band)
+        .div_ceil(1024)
+        .saturating_sub(virtual_bytes)
 }
 
 fn deepseek_mtp_bank_bytes(s: Shape, ctx: u64, native: u32) -> u64 {
@@ -3746,6 +3807,63 @@ exit 1
                 .env_overrides()
                 .contains(&("DS4_METAL_PREFILL_CHUNK".into(), expected.to_string())));
         }
+    }
+
+    #[test]
+    fn deepseek_short_page_quote() {
+        let _env = lock_test_env();
+        let _raw = EnvGuard::unset("DS4_METAL_GRAPH_RAW_CAP");
+        let _vmm = EnvGuard::unset("DS4_BATCH_VMM_COMP");
+        let _poison = EnvGuard::unset("DS4_BATCH_SLAB_POISON");
+        let _fp8 = EnvGuard::unset("DS4_CUDA_FP8_KV");
+        let _fp4 = EnvGuard::unset("DS4_CUDA_FP4_INDEX");
+        let _band = EnvGuard::unset("DS4_CONT_ADMIT_BAND_X1024");
+        let shape = crate::shape::SHAPE_FLASH;
+        let req = ServingRequest {
+            ctx: 2048,
+            max_seqs: MaxSeqs::Fixed(2),
+            native_chunk: Some(64),
+            mtp_mode: MtpMode::Off,
+            ..ServingRequest::default()
+        };
+        let facts = fill_family(shape.family, shape.variant, shape, &req, qwen_host(None));
+        // 62 separate packed slabs round to 124 MiB total, shared by both
+        // banks. Banded admission costs 132689920 B, versus 73826304 B
+        // of unrounded F32+packed cache capacity in the old two-bank quote.
+        let extra = (132_689_920u64 - 73_826_304) / 2;
+        assert_eq!(facts.per_bank_bytes, Some(120_972_952 + extra));
+        assert_eq!(
+            deepseek_page_extra(shape, 2048, 1),
+            132_689_920 - 36_913_152
+        );
+        assert_eq!(deepseek_page_extra(shape, 2048, 4), 0);
+        {
+            let _fp8 = EnvGuard::set("DS4_CUDA_FP8_KV", "off");
+            // F32 primary's 21 ratio-4 slabs need two pages each at width2.
+            assert_eq!(
+                deepseek_page_extra(shape, 2048, 2),
+                177_633_280 - 73_826_304
+            );
+        }
+        {
+            let _vmm = EnvGuard::set("DS4_BATCH_VMM_COMP", "0");
+            assert_eq!(deepseek_page_extra(shape, 2048, 2), 0);
+        }
+        let mut fitted = EngineFacts {
+            banks_fitted: Some(1),
+            ..EngineFacts::default()
+        };
+        fill_quote_facts(
+            &mut fitted,
+            &req,
+            serving_caps(shape.family, shape.variant),
+            Some(shape),
+            qwen_host(None),
+        );
+        assert_eq!(
+            fitted.per_bank_bytes,
+            Some(120_972_952 + 132_689_920 - 36_913_152)
+        );
     }
 
     #[test]

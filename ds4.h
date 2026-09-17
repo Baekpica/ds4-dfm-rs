@@ -567,6 +567,14 @@ static inline uint64_t ds4_cont_admit_band_apply(uint64_t need,
     if (b > 2048u) b = 2048u;
     return (need * b + 1023u) / 1024u;
 }
+/* Short-context slabs can occupy less than one page each. Keep the legacy
+ * virtual cap, but fund at least the physical envelope admission charges. */
+static inline uint64_t ds4_batch_cache_allow(uint64_t virtual_bytes,
+                                             uint64_t page_bytes,
+                                             uint32_t band_x1024) {
+    const uint64_t physical = ds4_cont_admit_band_apply(page_bytes, band_x1024);
+    return virtual_bytes > physical ? virtual_bytes : physical;
+}
 /* MT-7: the live commit-rate tripwire (zero-headroom law: no unexplained
  * gaps).  Anomalous when the OBSERVED slab bytes per committed token exceed
  * 2x the shape-derived packed rate with a meaningful sample -- the tell for

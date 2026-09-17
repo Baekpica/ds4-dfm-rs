@@ -60300,9 +60300,9 @@ static int ds4_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq, i
                                         ds4_batch_slabs_bank_bytes(&ctx->g, false, true, false) + floor_pb;
         /* #15 governance (2026-08-04, resolves the Inc0 adjudication): the
          * budget's UPPER bound is the FIT PLAN's own allowance -- max_seq
-         * banks at their full per-bank cache extent.  Resident cache pages
-         * can never exceed the plan allowance, so this class gate is exact
-         * by construction; the LIVE spend question -- has the box lost
+         * banks at their full cache extent, including physical page rounding
+         * when separate short slabs cost more than their virtual byte spans.
+         * The LIVE spend question -- has the box lost
          * memory since boot -- is the mem-floor verdict's job (inc1 + the
          * inc2 serial reserve + Inc0 outstanding projections), which runs
          * in the same admission block.
@@ -60326,7 +60326,25 @@ static int ds4_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq, i
          * budget split the same memory.  DS4_BATCH_VMM_BUDGET_MB survives
          * as the explicit ops/gate override (pinned budgets are how gates
          * force deterministic rejects). */
-        const uint64_t plan_allow = (uint64_t)ctx->max_seq * cache_per_bank;
+        uint64_t page_bytes = 0;
+        const uint64_t page = ds4_gpu_vmm_demand_page();
+        for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+            /* Match credit projection: packed primaries replace write-dead
+             * F32 shadows. Banks share pages within each separate slab. */
+            const ds4_gpu_tensor *active[] = {
+                ctx->sl.multi_comp_fp8[il] ? ctx->sl.multi_comp_fp8[il] : ctx->sl.multi_comp[il],
+                ctx->sl.multi_index_fp4[il] ? ctx->sl.multi_index_fp4[il] : ctx->sl.multi_index[il],
+            };
+            for (uint32_t f = 0; f < 2; f++) {
+                if (active[f]) {
+                    const uint64_t bytes = ds4_gpu_tensor_bytes(active[f]);
+                    page_bytes += (bytes + page - 1) / page * page;
+                }
+            }
+        }
+        const uint64_t plan_allow = ds4_batch_cache_allow(
+            (uint64_t)ctx->max_seq * cache_per_bank, page_bytes,
+            ds4_cont_admit_band_x1024());
         uint64_t capacity_allow = plan_allow;   /* no memory answer: plan-only */
         uint64_t floor_work = 0, raw_capacity = 0;
         int floor_packed = 0, floor_bound = 0;
