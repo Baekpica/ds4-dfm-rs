@@ -8,6 +8,27 @@ for exact provenance. Historical entries retain their original scope.
 
 ## Unreleased
 
+- Common serving controls expose requested, effective and qualified behavior
+  through `--print-plan`, `--check-config`, `/v1/stats` and request traces.
+  Memory admission covers bank, MTP, checkpoint and media state; scheduler
+  chunks stay within native capacity. See the [serving contract](docs/serving-contract.md).
+- Adds Step/Motif history-frontier checkpoints, EXAONE partial checkpoints,
+  Inkling text snapshots and dots3 text banks plus separate serial MTP.
+  Disk KV requires artifact/runtime identity; K2 edits replay from zero,
+  and cached-token counts reflect actual reuse. DeepSeek cache admission
+  accounts for page-rounded allocations.
+- Adds `ds4-perf` HTTP/SSE workload capture and profile selection/application
+  against correctness, latency, memory and process/artifact/plan identity.
+  Append workloads may declare exact, partial or fork reuse; observations
+  must match that declaration. The Qwen Base Q5 / FP8-PLE text/tool profile
+  passed three fresh 8K/two-bank/MTP2 captures and selected-plan launch.
+  See the [scoped P4 proof](docs/benchmarks/serving-v013-2026-09-17/qwen-p4.json)
+  and [release ledger](docs/releases/v0.1.3.md).
+- Adds Step 3.7 Flash MQ83 with image input, Q8 MTP, disk KV and opt-in
+  text banks. See the [artifact and serving scope](docs/step37-serving-2026-09-13.md).
+- Includes measured Inkling/Step prefill and Qwen MTP changes with their
+  recorded numerical and workload limits; rejected candidates stay excluded.
+  See the [recorded evidence](docs/README.md#recorded-evidence).
 - Ling YaRN: `-c 262144 --max-seqs 2` uses the official factor-2 recipe.
   Contexts through 131,072 retain their original table; disk KV rejects
   restores across YaRN factors. See [serving](docs/ling3-flash-vl.md#yarn-256k).

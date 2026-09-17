@@ -1,0 +1,2513 @@
+{
+  "schema": "v013-qwen-serving-profile-v1",
+  "family": "qwen4exp",
+  "qualified": true,
+  "scope": "declared-serving-workload-only",
+  "campaign": "scratch/v013/qwen-campaign-08",
+  "shape": {
+    "context": 8192,
+    "banks": 2,
+    "native_chunk": 256,
+    "scheduler_chunks": [
+      256,
+      256
+    ],
+    "mtp": "on",
+    "mtp_draft": 2,
+    "ple": "FP8",
+    "ple_cache_mib": 1024,
+    "ple_workers": 16
+  },
+  "provenance": {
+    "contract": {
+      "path": "scratch/v013/qwen-campaign-08/contract.json",
+      "bytes": 8164,
+      "sha256": "a37d66421ee0a0c9d3b3a90fbc1a60f8901adfe42f9597201e106a9b24cad725"
+    },
+    "runtime_source": {
+      "path": "scratch/v013/qwen-campaign-08/source.json",
+      "bytes": 41591,
+      "sha256": "21ce4bc501bba16974005f702e8d7dfd213101cd6b1439d304b252ce626919d0"
+    },
+    "runtime_source_sha256": "096bcc24a2ee406eb82646aa5493ace0ce05bbe7306a1be14862208bb50a0263",
+    "server_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+    "collector_sha256": "009e51e949b41287fdee5a7aa7f3522d3fc9e133f8f87d2ec60f7b42b97adf10",
+    "server_build": [
+      {
+        "path": "scratch/v013/bin-integrated6/build-head.txt",
+        "bytes": 41,
+        "sha256": "4f79a3615163f144705e8384b3413f1560904940f06b6f9ad0bec185c3be2ff9"
+      },
+      {
+        "path": "scratch/v013/bin-integrated6/source.diff",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "collector_build": [
+      {
+        "path": "scratch/v013/bin-perf8/build-head.txt",
+        "bytes": 41,
+        "sha256": "cd406cb60121e32ce7c59c737fc2ed2e5c5dbd8819e6f051d0409237dbff9c32"
+      },
+      {
+        "path": "scratch/v013/bin-perf8/source.diff",
+        "bytes": 3112,
+        "sha256": "d57e87dd2c80e24725e88448dcf4b5701fd27dcc248d4fbd6211b778946ca3c8"
+      }
+    ],
+    "inputs": {
+      "model": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+        "sha256": "b8c8633f475351008d68981f4b37b409669b3dabd1620d6ead12584e648fe523"
+      },
+      "model-shard-2": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00002-of-00003.gguf",
+        "sha256": "14a3514bbf080266d501b07aa9da73ee1e0bfcf5ffd6bf0669034ed4b3fd35c9"
+      },
+      "model-shard-3": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00003-of-00003.gguf",
+        "sha256": "92dfbce1fcc6f722ac0ef7ec100bda02fbeb7b1b5cfecd1b57e51e18f82df111"
+      },
+      "ple-manifest": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-manifest.json",
+        "sha256": "507885ac42e4a5f631a12cf95d12755980a4c61f3fc09b17f665be2a4af9312e"
+      },
+      "ple-part-1": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00001-of-00004.bin",
+        "sha256": "3cffb8fcc5f070d34bff3eddc67a721b26f284b0ec71f5da5aecda8b468543a7"
+      },
+      "ple-part-2": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00002-of-00004.bin",
+        "sha256": "f2f63094e120bc207d6ad72117343b911a62b24ad659e99467eddf5f6ba23a36"
+      },
+      "ple-part-3": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00003-of-00004.bin",
+        "sha256": "a4396a17923598c1905820102e0a996f7b8f9032b5edbb30d734bcdef932ce0d"
+      },
+      "ple-part-4": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00004-of-00004.bin",
+        "sha256": "deeaaf2efd5f1983cfd2306a6da5135f4c2731a73d977e09de270ea097a65c16"
+      },
+      "ple-scale": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-weight-scale.bf16.bin",
+        "sha256": "c7c58bd6007672362da2106fdbfaf9f50629e4bdf8598169c598027394ef9791"
+      },
+      "chat-template": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/chat_template.jinja",
+        "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+      }
+    },
+    "input_stamps": {
+      "model": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+        "stat": [
+          66306,
+          174473481,
+          32066883520,
+          1787801275875173137,
+          1787801276075159034
+        ]
+      },
+      "model-shard-2": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00002-of-00003.gguf",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00002-of-00003.gguf",
+        "stat": [
+          66306,
+          174473482,
+          31811595296,
+          1787801316140972257,
+          1787801316270374380
+        ]
+      },
+      "model-shard-3": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00003-of-00003.gguf",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00003-of-00003.gguf",
+        "stat": [
+          66306,
+          174473476,
+          19396505568,
+          1787797899573643124,
+          1787797900131557841
+        ]
+      },
+      "ple-manifest": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-manifest.json",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-manifest.json",
+        "stat": [
+          66306,
+          174479669,
+          83031,
+          1788844243766332470,
+          1788844243767049108
+        ]
+      },
+      "ple-part-1": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00001-of-00004.bin",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00001-of-00004.bin",
+        "stat": [
+          66306,
+          174479664,
+          12800098304,
+          1788845752784600044,
+          1788845753092892771
+        ]
+      },
+      "ple-part-2": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00002-of-00004.bin",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00002-of-00004.bin",
+        "stat": [
+          66306,
+          174479667,
+          12800098304,
+          1788845751663605431,
+          1788845752030173989
+        ]
+      },
+      "ple-part-3": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00003-of-00004.bin",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00003-of-00004.bin",
+        "stat": [
+          66306,
+          174479666,
+          12800098304,
+          1788845752346602149,
+          1788845752468930345
+        ]
+      },
+      "ple-part-4": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00004-of-00004.bin",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-00004-of-00004.bin",
+        "stat": [
+          66306,
+          174479662,
+          12800098304,
+          1788845750089612997,
+          1788845750379241653
+        ]
+      },
+      "ple-scale": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-weight-scale.bf16.bin",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8/ple-fp8-weight-scale.bf16.bin",
+        "stat": [
+          66306,
+          174479665,
+          2,
+          1788844245069329160,
+          1788844245070889461
+        ]
+      },
+      "chat-template": {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/chat_template.jinja",
+        "canonical": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/chat_template.jinja",
+        "stat": [
+          66306,
+          174479982,
+          8952,
+          1788960965459895747,
+          1788960965459895747
+        ]
+      }
+    },
+    "model_contents_rehashed_by_publisher": false
+  },
+  "declared_workload": {
+    "path": "scratch/v013/qwen-campaign-08/workload.json",
+    "bytes": 46492,
+    "sha256": "cafda7aab15dd608759d62251c43c658e2fe7f23bd0d31dce328fa8e4391cb1f"
+  },
+  "configured_clock_limits_mhz": [
+    300,
+    2200
+  ],
+  "observed_clock_acceptance_mhz": {
+    "min": 208,
+    "max": 2200
+  },
+  "seed": {
+    "artifact": {
+      "path": "scratch/v013/qwen-campaign-08/seed/serving.json",
+      "bytes": 16718,
+      "sha256": "76bbdbcceac0f8b921a101074bd121fd2f4484ead7800ae8ca73078447778668"
+    },
+    "process": {
+      "pid": 1082503,
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "start_ticks": 41907137,
+      "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+      "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+      "argv_sha256": "c17d176f91ff8885bfd1c76786d4e0ecab11dbef0e0451e86f6e5cbc47b41d14",
+      "cwd": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress",
+      "environment": {
+        "DS4_QWEN_PLE_CACHE_MB": "1024",
+        "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+        "DS4_QWEN_PLE_WORKERS": "16",
+        "DS4_SERVER_CONTINUOUS": "1",
+        "DS4_SERVER_PERSIST_MIN_TOKENS": "1",
+        "LD_LIBRARY_PATH": "/usr/local/cuda/lib64"
+      },
+      "unreviewed_environment": [],
+      "source": {
+        "root": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress",
+        "sha256": "096bcc24a2ee406eb82646aa5493ace0ce05bbe7306a1be14862208bb50a0263"
+      }
+    },
+    "collector_receipts": [
+      {
+        "path": "scratch/v013/qwen-campaign-08/seed-collector/collect.command.json",
+        "bytes": 786,
+        "sha256": "72f1b5688ae38b341700d0fc3c66f988ceb9f573545e5d5ee5df11b060dc61fd"
+      },
+      {
+        "path": "scratch/v013/qwen-campaign-08/seed-collector/collect.exit.json",
+        "bytes": 36,
+        "sha256": "ca890f13f3b4f62bc89afa8e62ce6ad82c41eac333e5d11d7ecc44d10051bd7f"
+      }
+    ],
+    "cases": [
+      {
+        "name": "seed-cold",
+        "repeat": 0,
+        "scenario": "kv_cold_prefill",
+        "ttft_ms": 1299.7655770000001,
+        "first_content_ms": 1299.7655770000001,
+        "total_ms": 1515.219479,
+        "content": "P4_SEED_READY",
+        "finish_reason": "stop",
+        "cached_tokens": 0,
+        "host_available_before_bytes": 28138434560,
+        "host_available_after_bytes": 27728691200,
+        "host_min_available_bytes": 27713462272,
+        "trace": {
+          "effective_lane": "continuous",
+          "fallback_reason": null,
+          "reuse_kind": "cold",
+          "reuse_miss": "no checkpoint at or below LCP",
+          "speculation_active": true
+        },
+        "failures": [],
+        "declared_limits": {
+          "ttft_ms": 30000,
+          "total_ms": 90000,
+          "min_host_available_bytes": 8589934592
+        }
+      }
+    ],
+    "overlaps": [],
+    "gpu": {
+      "expected_observed_clock_range_mhz": {
+        "min": 208,
+        "max": 2200
+      },
+      "sample_count": 6,
+      "observed_sm_clock_mhz": [
+        2190,
+        2197
+      ],
+      "observed_temperature_c": [
+        42,
+        48
+      ],
+      "window_started_unix_ms": 1789643360496,
+      "window_finished_unix_ms": 1789643362076,
+      "device": {
+        "uuid": "GPU-012cd6bb-43ae-b629-e226-4496d1243471",
+        "name": "NVIDIA GB10",
+        "driver": "610.43.02",
+        "device_ordinal": 0
+      }
+    },
+    "timing_method": "client dispatch through complete SSE event; curl --no-buffer; 1 ms file observer; includes curl startup; no profiler",
+    "serving_plan": {
+      "controls": {
+        "banks": "persistent",
+        "disk": "qualified",
+        "mtp": "qualified",
+        "native_prefill_env": "DS4_QWEN_PREFILL_CHUNK",
+        "prefix_reuse": "partial",
+        "scheduler_chunks": [
+          256
+        ]
+      },
+      "effective": {
+        "bank_persist_min_tokens": 1,
+        "banks_opt_in": false,
+        "ctx": 8192,
+        "disk": true,
+        "disk_is_offload": false,
+        "disk_min_tokens": 1,
+        "max_seqs": 2,
+        "mem_floor_gb": 4,
+        "mtp_draft": 2,
+        "mtp_mode": "on",
+        "mtp_weights": true,
+        "native_chunk": 256,
+        "prefix_reuse": "partial",
+        "sched_chunk": 256,
+        "sched_chunk_live": 256
+      },
+      "family": "qwen4exp",
+      "issues": [],
+      "qualified": {
+        "banks": "qualified",
+        "banks_n": 2,
+        "ctx": 262144,
+        "disk": "qualified",
+        "mtp": "qualified",
+        "note": "common UX baseline; configured values and verified combinations differ",
+        "prefix_reuse": "qualified",
+        "prompt": null
+      },
+      "quote": {
+        "available": 116898624960,
+        "banks": 2,
+        "checkpoint_pool": 3824418816,
+        "floor": 4294967296,
+        "media_reserve": 2105835520,
+        "mtp_state": 0,
+        "per_bank": 1692378368,
+        "ple": 1073741824,
+        "scratch": 0,
+        "shared_weights": 83274984384,
+        "total": 97958704576
+      },
+      "requested": {
+        "backend": "cuda",
+        "ctx": 8192,
+        "disk": true,
+        "lane": "auto",
+        "max_seqs": "2",
+        "mem_floor_gb": 4,
+        "mtp_mode": "on",
+        "mtp_path": false,
+        "prefix_reuse": "partial"
+      }
+    }
+  },
+  "captures": [
+    {
+      "artifact": {
+        "path": "scratch/v013/qwen-campaign-08/final-r1/serving.json",
+        "bytes": 138681,
+        "sha256": "91faeff3c25f1ceaea9cb3021562affb38078837e3ef1a0b34bfd1fb05b0e9f1"
+      },
+      "process": {
+        "pid": 1088037,
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "start_ticks": 41958863,
+        "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+        "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+        "argv_sha256": "c17d176f91ff8885bfd1c76786d4e0ecab11dbef0e0451e86f6e5cbc47b41d14",
+        "cwd": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress",
+        "environment": {
+          "DS4_QWEN_PLE_CACHE_MB": "1024",
+          "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+          "DS4_QWEN_PLE_WORKERS": "16",
+          "DS4_SERVER_CONTINUOUS": "1",
+          "DS4_SERVER_PERSIST_MIN_TOKENS": "1",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64"
+        },
+        "unreviewed_environment": [],
+        "source": {
+          "root": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress",
+          "sha256": "096bcc24a2ee406eb82646aa5493ace0ce05bbe7306a1be14862208bb50a0263"
+        }
+      },
+      "collector_receipts": [
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r1-collector/collect.command.json",
+          "bytes": 794,
+          "sha256": "bae231b0f43758c83597d9943acc4a9a59977897676c82df8aa1cbe5973b81eb"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r1-collector/collect.exit.json",
+          "bytes": 36,
+          "sha256": "78e20b0a3a48b07e85bc2aefa58bb66ab9a7d432134197835cc2cd9b01c756e7"
+        }
+      ],
+      "cases": [
+        {
+          "name": "restart-first",
+          "repeat": 0,
+          "scenario": "restart_restore",
+          "ttft_ms": 305.860349,
+          "first_content_ms": 305.860349,
+          "total_ms": 593.277791,
+          "content": "P4_RESTORED_READY",
+          "finish_reason": "stop",
+          "cached_tokens": 805,
+          "host_available_before_bytes": 28117106688,
+          "host_available_after_bytes": 27578556416,
+          "host_min_available_bytes": 27576528896,
+          "trace": {
+            "effective_lane": "continuous",
+            "fallback_reason": null,
+            "reuse_kind": "fork",
+            "speculation_active": true
+          },
+          "failures": [],
+          "declared_limits": {
+            "ttft_ms": 30000,
+            "total_ms": 90000,
+            "min_host_available_bytes": 8589934592
+          }
+        },
+        {
+          "name": "history-cold",
+          "repeat": 0,
+          "scenario": "kv_cold_prefill",
+          "ttft_ms": 1394.242834,
+          "first_content_ms": 1394.242834,
+          "total_ms": 1599.180977,
+          "content": "P4_ALPHA_READY",
+          "finish_reason": "stop",
+          "cached_tokens": 0,
+          "host_available_before_bytes": 27575750656,
+          "host_available_after_bytes": 27234729984,
+          "host_min_available_bytes": 27234729984,
+          "trace": {
+            "effective_lane": "continuous",
+            "fallback_reason": null,
+            "reuse_kind": "cold",
+            "reuse_miss": "no checkpoint at or below LCP",
+            "speculation_active": true
+          },
+          "failures": [],
+          "declared_limits": {
+            "ttft_ms": 30000,
+            "total_ms": 90000,
+            "min_host_available_bytes": 8589934592
+          }
+        },
+        {
+          "name": "history-append",
+          "repeat": 0,
+          "scenario": "warm_append",
+          "ttft_ms": 190.663249,
+          "first_content_ms": 190.663249,
+          "total_ms": 401.359957,
+          "content": "P4_BETA_READY",
+          "finish_reason": "stop",
+          "cached_tokens": 806,
+          "host_available_before_bytes": 27231219712,
+          "host_available_after_bytes": 27145469952,
+          "host_min_available_bytes": 27145469952,
+          "trace": {
+            "effective_lane": "continuous",
+            "fallback_reason": null,
+            "reuse_kind": "partial",
+            "speculation_active": true
+          },
+          "failures": [],
+          "declared_limits": {
+            "ttft_ms": 30000,
+            "total_ms": 90000,
+            "min_host_available_bytes": 8589934592
+          }
+        },
+        {
+          "name": "history-branch",
+          "repeat": 0,
+          "scenario": "partial_branch",
+          "ttft_ms": 183.234163,
+          "first_content_ms": 183.234163,
+          "total_ms": 374.55051299999997,
+          "content": "P4_BRANCH_READY",
+          "finish_reason": "stop",
+          "cached_tokens": 801,
+          "host_available_before_bytes": 27139911680,
+          "host_available_after_bytes": 27114049536,
+          "host_min_available_bytes": 27113975808,
+          "trace": {
+            "effective_lane": "continuous",
+            "fallback_reason": null,
+            "reuse_kind": "partial",
+            "speculation_active": true
+          },
+          "failures": [],
+          "declared_limits": {
+            "ttft_ms": 30000,
+            "total_ms": 90000,
+            "min_host_available_bytes": 8589934592
+          }
+        },
+        {
+          "name": "mtp-sequence",
+          "repeat": 0,
+          "scenario": "mtp",
+          "ttft_ms": 368.914476,
+          "first_content_ms": 368.914476,
+          "total_ms": 1358.7096270000002,
+          "content": "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16",
+          "finish_reason": "stop",
+          "cached_tokens": 0,
+          "host_available_before_bytes": 27082571776,
+          "host_available_after_bytes": 27032662016,
+          "host_min_available_bytes": 27019669504,
+          "trace": {
+            "effective_lane": "continuous",
+            "fallback_reason": null,
+            "reuse_kind": "cold",
+            "reuse_miss": "no checkpoint at or below LCP",
+            "speculation_active": true
+          },
+          "failures": [],
+          "declared_limits": {
+            "ttft_ms": 30000,
+            "total_ms": 90000,
+            "min_host_available_bytes": 8589934592
+          }
+        },
+        {
+          "name": "generated-tool",
+          "repeat": 0,
+          "scenario": "tool",
+          "ttft_ms": 1998.7110179999997,
+          "first_content_ms": null,
+          "total_ms": 1998.7149220000001,
+          "content": "",
+          "finish_reason": "tool_calls",
+          "tool_calls": [
+            {
+              "name": "record_result",
+              "arguments": {
+                "count": 3,
+                "status": "ok"
+              }
+            }
+          ],
+          "cached_tokens": 0,
+          "host_available_before_bytes": 27032662016,
+          "host_available_after_bytes": 27058106368,
+          "host_min_available_bytes": 26983718912,
+          "trace": {
+            "effective_lane": "continuous",
+            "fallback_reason": null,
+            "reuse_kind": "cold",
+            "reuse_miss": "no checkpoint at or below LCP",
+            "speculation_active": true
+          },
+          "failures": [],
+          "declared_limits": {
+            "ttft_ms": 30000,
+            "total_ms": 90000,
+            "min_host_available_bytes": 8589934592
+          }
+        }
+      ],
+      "overlaps": [
+        {
+          "name": "decode-during-long-prefill",
+          "repeat": 0,
+          "decode_ttft_ms": 344.321551,
+          "decode_total_ms": 63570.910380999994,
+          "prefill_dispatch_ms": 344.365886,
+          "prefill_ttft_ms": 11090.684092000001,
+          "prefill_total_ms": 11144.778964000001,
+          "decode_events_during_prefill": 51,
+          "prefill_computed_tokens": 6510,
+          "decode_committed_tokens": 1491,
+          "max_decode_gap_ms": 503.81973000000016,
+          "host_available_before_bytes": 27057197056,
+          "host_available_after_bytes": 26229768192,
+          "host_min_available_bytes": 25987403776,
+          "failures": [],
+          "declared_limits": {
+            "min_prefill_tokens": 4096,
+            "min_decode_events_during_prefill": 2,
+            "max_decode_gap_ms": 1500,
+            "decode": {
+              "ttft_ms": 45000,
+              "total_ms": 120000,
+              "min_host_available_bytes": 8589934592
+            },
+            "prefill": {
+              "ttft_ms": 45000,
+              "total_ms": 120000,
+              "min_host_available_bytes": 8589934592
+            }
+          }
+        }
+      ],
+      "gpu": {
+        "expected_observed_clock_range_mhz": {
+          "min": 208,
+          "max": 2200
+        },
+        "sample_count": 142,
+        "observed_sm_clock_mhz": [
+          2190,
+          2197
+        ],
+        "observed_temperature_c": [
+          42,
+          52
+        ],
+        "window_started_unix_ms": 1789643873370,
+        "window_finished_unix_ms": 1789643943847,
+        "device": {
+          "uuid": "GPU-012cd6bb-43ae-b629-e226-4496d1243471",
+          "name": "NVIDIA GB10",
+          "driver": "610.43.02",
+          "device_ordinal": 0
+        }
+      },
+      "timing_method": "client dispatch through complete SSE event; curl --no-buffer; 1 ms file observer; includes curl startup; no profiler",
+      "serving_plan": {
+        "controls": {
+          "banks": "persistent",
+          "disk": "qualified",
+          "mtp": "qualified",
+          "native_prefill_env": "DS4_QWEN_PREFILL_CHUNK",
+          "prefix_reuse": "partial",
+          "scheduler_chunks": [
+            256
+          ]
+        },
+        "effective": {
+          "bank_persist_min_tokens": 1,
+          "banks_opt_in": false,
+          "ctx": 8192,
+          "disk": true,
+          "disk_is_offload": false,
+          "disk_min_tokens": 1,
+          "max_seqs": 2,
+          "mem_floor_gb": 4,
+          "mtp_draft": 2,
+          "mtp_mode": "on",
+          "mtp_weights": true,
+          "native_chunk": 256,
+          "prefix_reuse": "partial",
+          "sched_chunk": 256,
+          "sched_chunk_live": 256
+        },
+        "family": "qwen4exp",
+        "issues": [],
+        "qualified": {
+          "banks": "qualified",
+          "banks_n": 2,
+          "ctx": 262144,
+          "disk": "qualified",
+          "mtp": "qualified",
+          "note": "common UX baseline; configured values and verified combinations differ",
+          "prefix_reuse": "qualified",
+          "prompt": null
+        },
+        "quote": {
+          "available": 116827948480,
+          "banks": 2,
+          "checkpoint_pool": 3824418816,
+          "floor": 4294967296,
+          "media_reserve": 2105835520,
+          "mtp_state": 0,
+          "per_bank": 1692378368,
+          "ple": 1073741824,
+          "scratch": 0,
+          "shared_weights": 83274984384,
+          "total": 97958704576
+        },
+        "requested": {
+          "backend": "cuda",
+          "ctx": 8192,
+          "disk": true,
+          "lane": "auto",
+          "max_seqs": "2",
+          "mem_floor_gb": 4,
+          "mtp_mode": "on",
+          "mtp_path": false,
+          "prefix_reuse": "partial"
+        }
+      }
+    },
+    {
+      "artifact": {
+        "path": "scratch/v013/qwen-campaign-08/final-r2/serving.json",
+        "bytes": 138695,
+        "sha256": "b8d17be9a845726740169c967f8efe8d089bfa387e8d831d6dc072bd6bf2882e"
+      },
+      "process": {
+        "pid": 1094630,
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "start_ticks": 42017106,
+        "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+        "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+        "argv_sha256": "c17d176f91ff8885bfd1c76786d4e0ecab11dbef0e0451e86f6e5cbc47b41d14",
+        "cwd": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress",
+        "environment": {
+          "DS4_QWEN_PLE_CACHE_MB": "1024",
+          "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+          "DS4_QWEN_PLE_WORKERS": "16",
+          "DS4_SERVER_CONTINUOUS": "1",
+          "DS4_SERVER_PERSIST_MIN_TOKENS": "1",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64"
+        },
+        "unreviewed_environment": [],
+        "source": {
+          "root": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress",
+          "sha256": "096bcc24a2ee406eb82646aa5493ace0ce05bbe7306a1be14862208bb50a0263"
+        }
+      },
+      "collector_receipts": [
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r2-collector/collect.command.json",
+          "bytes": 794,
+          "sha256": "87314ade2407ae52c5266dbb5826603469431b635f9d81415d06ecb61a509b8b"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r2-collector/collect.exit.json",
+          "bytes": 36,
+          "sha256": "013b97141e17d41d2a31ff00bc4f2b4ec1840530c698d80c12cea8130ab72d58"
+        }
+      ],
+      "cases": [
+        {
+          "name": "restart-first",
+          "repeat": 0,
+          "scenario": "restart_restore",
+          "ttft_ms": 287.80531199999996,
+          "first_content_ms": 287.80531199999996,
+          "total_ms": 573.1120090000001,
+          "content": "P4_RESTORED_READY",
+          "finish_reason": "stop",
+          "cached_tokens": 805,
+          "host_available_before_bytes": 28013346816,
+          "host_available_after_bytes": 27432140800,
+          "host_min_available_bytes": 27412754432,
+          "trace": {
+            "effective_lane": "continuous",
+            "fallback_reason": null,
+            "reuse_kind": "fork",
+            "speculation_active": true
+          },
+          "failures": [],
+          "declared_limits": {
+            "ttft_ms": 30000,
+            "total_ms": 90000,
+            "min_host_available_bytes": 8589934592
+          }
+        },
+        {
+          "name": "history-cold",
+          "repeat": 0,
+          "scenario": "kv_cold_prefill",
+          "ttft_ms": 1397.173001,
+          "first_content_ms": 1397.173001,
+          "total_ms": 1603.341732,
+          "content": "P4_ALPHA_READY",
+          "finish_reason": "stop",
+          "cached_tokens": 0,
+          "host_available_before_bytes": 27431624704,
+          "host_available_after_bytes": 27098845184,
+          "host_min_available_bytes": 27098632192,
+          "trace": {
+            "effective_lane": "continuous",
+            "fallback_reason": null,
+            "reuse_kind": "cold",
+            "reuse_miss": "no checkpoint at or below LCP",
+            "speculation_active": true
+          },
+          "failures": [],
+          "declared_limits": {
+            "ttft_ms": 30000,
+            "total_ms": 90000,
+            "min_host_available_bytes": 8589934592
+          }
+        },
+        {
+          "name": "history-append",
+          "repeat": 0,
+          "scenario": "warm_append",
+          "ttft_ms": 186.38888400000002,
+          "first_content_ms": 186.38888400000002,
+          "total_ms": 396.203458,
+          "content": "P4_BETA_READY",
+          "finish_reason": "stop",
+          "cached_tokens": 806,
+          "host_available_before_bytes": 27097006080,
+          "host_available_after_bytes": 26955460608,
+          "host_min_available_bytes": 26955456512,
+          "trace": {
+            "effective_lane": "continuous",
+            "fallback_reason": null,
+            "reuse_kind": "partial",
+            "speculation_active": true
+          },
+          "failures": [],
+          "declared_limits": {
+            "ttft_ms": 30000,
+            "total_ms": 90000,
+            "min_host_available_bytes": 8589934592
+          }
+        },
+        {
+          "name": "history-branch",
+          "repeat": 0,
+          "scenario": "partial_branch",
+          "ttft_ms": 191.77091199999998,
+          "first_content_ms": 191.77091199999998,
+          "total_ms": 383.361169,
+          "content": "P4_BRANCH_READY",
+          "finish_reason": "stop",
+          "cached_tokens": 801,
+          "host_available_before_bytes": 26954170368,
+          "host_available_after_bytes": 26941169664,
+          "host_min_available_bytes": 26933874688,
+          "trace": {
+            "effective_lane": "continuous",
+            "fallback_reason": null,
+            "reuse_kind": "partial",
+            "speculation_active": true
+          },
+          "failures": [],
+          "declared_limits": {
+            "ttft_ms": 30000,
+            "total_ms": 90000,
+            "min_host_available_bytes": 8589934592
+          }
+        },
+        {
+          "name": "mtp-sequence",
+          "repeat": 0,
+          "scenario": "mtp",
+          "ttft_ms": 363.092939,
+          "first_content_ms": 363.092939,
+          "total_ms": 1344.941927,
+          "content": "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16",
+          "finish_reason": "stop",
+          "cached_tokens": 0,
+          "host_available_before_bytes": 26939555840,
+          "host_available_after_bytes": 26928226304,
+          "host_min_available_bytes": 26897027072,
+          "trace": {
+            "effective_lane": "continuous",
+            "fallback_reason": null,
+            "reuse_kind": "cold",
+            "reuse_miss": "no checkpoint at or below LCP",
+            "speculation_active": true
+          },
+          "failures": [],
+          "declared_limits": {
+            "ttft_ms": 30000,
+            "total_ms": 90000,
+            "min_host_available_bytes": 8589934592
+          }
+        },
+        {
+          "name": "generated-tool",
+          "repeat": 0,
+          "scenario": "tool",
+          "ttft_ms": 2010.1430520000001,
+          "first_content_ms": null,
+          "total_ms": 2010.145916,
+          "content": "",
+          "finish_reason": "tool_calls",
+          "tool_calls": [
+            {
+              "name": "record_result",
+              "arguments": {
+                "count": 3,
+                "status": "ok"
+              }
+            }
+          ],
+          "cached_tokens": 0,
+          "host_available_before_bytes": 26926862336,
+          "host_available_after_bytes": 26932301824,
+          "host_min_available_bytes": 26879045632,
+          "trace": {
+            "effective_lane": "continuous",
+            "fallback_reason": null,
+            "reuse_kind": "cold",
+            "reuse_miss": "no checkpoint at or below LCP",
+            "speculation_active": true
+          },
+          "failures": [],
+          "declared_limits": {
+            "ttft_ms": 30000,
+            "total_ms": 90000,
+            "min_host_available_bytes": 8589934592
+          }
+        }
+      ],
+      "overlaps": [
+        {
+          "name": "decode-during-long-prefill",
+          "repeat": 0,
+          "decode_ttft_ms": 339.701105,
+          "decode_total_ms": 63364.028728,
+          "prefill_dispatch_ms": 339.857569,
+          "prefill_ttft_ms": 11099.314972,
+          "prefill_total_ms": 11154.482434,
+          "decode_events_during_prefill": 51,
+          "prefill_computed_tokens": 6510,
+          "decode_committed_tokens": 1491,
+          "max_decode_gap_ms": 504.1193330000001,
+          "host_available_before_bytes": 26931343360,
+          "host_available_after_bytes": 26464190464,
+          "host_min_available_bytes": 26388078592,
+          "failures": [],
+          "declared_limits": {
+            "min_prefill_tokens": 4096,
+            "min_decode_events_during_prefill": 2,
+            "max_decode_gap_ms": 1500,
+            "decode": {
+              "ttft_ms": 45000,
+              "total_ms": 120000,
+              "min_host_available_bytes": 8589934592
+            },
+            "prefill": {
+              "ttft_ms": 45000,
+              "total_ms": 120000,
+              "min_host_available_bytes": 8589934592
+            }
+          }
+        }
+      ],
+      "gpu": {
+        "expected_observed_clock_range_mhz": {
+          "min": 208,
+          "max": 2200
+        },
+        "sample_count": 142,
+        "observed_sm_clock_mhz": [
+          2190,
+          2197
+        ],
+        "observed_temperature_c": [
+          42,
+          53
+        ],
+        "window_started_unix_ms": 1789644448189,
+        "window_finished_unix_ms": 1789644518473,
+        "device": {
+          "uuid": "GPU-012cd6bb-43ae-b629-e226-4496d1243471",
+          "name": "NVIDIA GB10",
+          "driver": "610.43.02",
+          "device_ordinal": 0
+        }
+      },
+      "timing_method": "client dispatch through complete SSE event; curl --no-buffer; 1 ms file observer; includes curl startup; no profiler",
+      "serving_plan": {
+        "controls": {
+          "banks": "persistent",
+          "disk": "qualified",
+          "mtp": "qualified",
+          "native_prefill_env": "DS4_QWEN_PREFILL_CHUNK",
+          "prefix_reuse": "partial",
+          "scheduler_chunks": [
+            256
+          ]
+        },
+        "effective": {
+          "bank_persist_min_tokens": 1,
+          "banks_opt_in": false,
+          "ctx": 8192,
+          "disk": true,
+          "disk_is_offload": false,
+          "disk_min_tokens": 1,
+          "max_seqs": 2,
+          "mem_floor_gb": 4,
+          "mtp_draft": 2,
+          "mtp_mode": "on",
+          "mtp_weights": true,
+          "native_chunk": 256,
+          "prefix_reuse": "partial",
+          "sched_chunk": 256,
+          "sched_chunk_live": 256
+        },
+        "family": "qwen4exp",
+        "issues": [],
+        "qualified": {
+          "banks": "qualified",
+          "banks_n": 2,
+          "ctx": 262144,
+          "disk": "qualified",
+          "mtp": "qualified",
+          "note": "common UX baseline; configured values and verified combinations differ",
+          "prefix_reuse": "qualified",
+          "prompt": null
+        },
+        "quote": {
+          "available": 116851529152,
+          "banks": 2,
+          "checkpoint_pool": 3824418816,
+          "floor": 4294967296,
+          "media_reserve": 2105835520,
+          "mtp_state": 0,
+          "per_bank": 1692378368,
+          "ple": 1073741824,
+          "scratch": 0,
+          "shared_weights": 83274984384,
+          "total": 97958704576
+        },
+        "requested": {
+          "backend": "cuda",
+          "ctx": 8192,
+          "disk": true,
+          "lane": "auto",
+          "max_seqs": "2",
+          "mem_floor_gb": 4,
+          "mtp_mode": "on",
+          "mtp_path": false,
+          "prefix_reuse": "partial"
+        }
+      }
+    },
+    {
+      "artifact": {
+        "path": "scratch/v013/qwen-campaign-08/final-r3/serving.json",
+        "bytes": 139454,
+        "sha256": "4212cdb9dcd7717dda0966bc2aa0f794046744d42e2bbec9e6114b19c8e48934"
+      },
+      "process": {
+        "pid": 1099309,
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "start_ticks": 42074494,
+        "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+        "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+        "argv_sha256": "c17d176f91ff8885bfd1c76786d4e0ecab11dbef0e0451e86f6e5cbc47b41d14",
+        "cwd": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress",
+        "environment": {
+          "DS4_QWEN_PLE_CACHE_MB": "1024",
+          "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+          "DS4_QWEN_PLE_WORKERS": "16",
+          "DS4_SERVER_CONTINUOUS": "1",
+          "DS4_SERVER_PERSIST_MIN_TOKENS": "1",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64"
+        },
+        "unreviewed_environment": [],
+        "source": {
+          "root": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress",
+          "sha256": "096bcc24a2ee406eb82646aa5493ace0ce05bbe7306a1be14862208bb50a0263"
+        }
+      },
+      "collector_receipts": [
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r3-collector/collect.command.json",
+          "bytes": 794,
+          "sha256": "fd282e2032f2d27ec32af2540b205b02d31c9a0d98b738ce4f5a5bcd4dc5c534"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r3-collector/collect.exit.json",
+          "bytes": 36,
+          "sha256": "5fc7f3a92561da8ebfdda24919e0859d93f36b26b78a0d80bdd4065a7742efa6"
+        }
+      ],
+      "cases": [
+        {
+          "name": "restart-first",
+          "repeat": 0,
+          "scenario": "restart_restore",
+          "ttft_ms": 305.180813,
+          "first_content_ms": 305.180813,
+          "total_ms": 596.127153,
+          "content": "P4_RESTORED_READY",
+          "finish_reason": "stop",
+          "cached_tokens": 805,
+          "host_available_before_bytes": 28139868160,
+          "host_available_after_bytes": 27558293504,
+          "host_min_available_bytes": 27558293504,
+          "trace": {
+            "effective_lane": "continuous",
+            "fallback_reason": null,
+            "reuse_kind": "fork",
+            "speculation_active": true
+          },
+          "failures": [],
+          "declared_limits": {
+            "ttft_ms": 30000,
+            "total_ms": 90000,
+            "min_host_available_bytes": 8589934592
+          }
+        },
+        {
+          "name": "history-cold",
+          "repeat": 0,
+          "scenario": "kv_cold_prefill",
+          "ttft_ms": 1411.5188210000001,
+          "first_content_ms": 1411.5188210000001,
+          "total_ms": 1618.419015,
+          "content": "P4_ALPHA_READY",
+          "finish_reason": "stop",
+          "cached_tokens": 0,
+          "host_available_before_bytes": 27556900864,
+          "host_available_after_bytes": 27211476992,
+          "host_min_available_bytes": 27211476992,
+          "trace": {
+            "effective_lane": "continuous",
+            "fallback_reason": null,
+            "reuse_kind": "cold",
+            "reuse_miss": "no checkpoint at or below LCP",
+            "speculation_active": true
+          },
+          "failures": [],
+          "declared_limits": {
+            "ttft_ms": 30000,
+            "total_ms": 90000,
+            "min_host_available_bytes": 8589934592
+          }
+        },
+        {
+          "name": "history-append",
+          "repeat": 0,
+          "scenario": "warm_append",
+          "ttft_ms": 182.510157,
+          "first_content_ms": 182.510157,
+          "total_ms": 393.722206,
+          "content": "P4_BETA_READY",
+          "finish_reason": "stop",
+          "cached_tokens": 806,
+          "host_available_before_bytes": 27210768384,
+          "host_available_after_bytes": 27080511488,
+          "host_min_available_bytes": 27080511488,
+          "trace": {
+            "effective_lane": "continuous",
+            "fallback_reason": null,
+            "reuse_kind": "partial",
+            "speculation_active": true
+          },
+          "failures": [],
+          "declared_limits": {
+            "ttft_ms": 30000,
+            "total_ms": 90000,
+            "min_host_available_bytes": 8589934592
+          }
+        },
+        {
+          "name": "history-branch",
+          "repeat": 0,
+          "scenario": "partial_branch",
+          "ttft_ms": 187.947577,
+          "first_content_ms": 187.947577,
+          "total_ms": 385.339903,
+          "content": "P4_BRANCH_READY",
+          "finish_reason": "stop",
+          "cached_tokens": 801,
+          "host_available_before_bytes": 27080261632,
+          "host_available_after_bytes": 27056791552,
+          "host_min_available_bytes": 27047710720,
+          "trace": {
+            "effective_lane": "continuous",
+            "fallback_reason": null,
+            "reuse_kind": "partial",
+            "speculation_active": true
+          },
+          "failures": [],
+          "declared_limits": {
+            "ttft_ms": 30000,
+            "total_ms": 90000,
+            "min_host_available_bytes": 8589934592
+          }
+        },
+        {
+          "name": "mtp-sequence",
+          "repeat": 0,
+          "scenario": "mtp",
+          "ttft_ms": 377.59444399999995,
+          "first_content_ms": 377.59444399999995,
+          "total_ms": 1363.5130499999998,
+          "content": "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16",
+          "finish_reason": "stop",
+          "cached_tokens": 0,
+          "host_available_before_bytes": 27055427584,
+          "host_available_after_bytes": 27025444864,
+          "host_min_available_bytes": 27006083072,
+          "trace": {
+            "effective_lane": "continuous",
+            "fallback_reason": null,
+            "reuse_kind": "cold",
+            "reuse_miss": "no checkpoint at or below LCP",
+            "speculation_active": true
+          },
+          "failures": [],
+          "declared_limits": {
+            "ttft_ms": 30000,
+            "total_ms": 90000,
+            "min_host_available_bytes": 8589934592
+          }
+        },
+        {
+          "name": "generated-tool",
+          "repeat": 0,
+          "scenario": "tool",
+          "ttft_ms": 2180.549192,
+          "first_content_ms": null,
+          "total_ms": 2180.553239,
+          "content": "",
+          "finish_reason": "tool_calls",
+          "tool_calls": [
+            {
+              "name": "record_result",
+              "arguments": {
+                "count": 3,
+                "status": "ok"
+              }
+            }
+          ],
+          "cached_tokens": 0,
+          "host_available_before_bytes": 27023015936,
+          "host_available_after_bytes": 27057602560,
+          "host_min_available_bytes": 26981928960,
+          "trace": {
+            "effective_lane": "continuous",
+            "fallback_reason": null,
+            "reuse_kind": "cold",
+            "reuse_miss": "no checkpoint at or below LCP",
+            "speculation_active": true
+          },
+          "failures": [],
+          "declared_limits": {
+            "ttft_ms": 30000,
+            "total_ms": 90000,
+            "min_host_available_bytes": 8589934592
+          }
+        }
+      ],
+      "overlaps": [
+        {
+          "name": "decode-during-long-prefill",
+          "repeat": 0,
+          "decode_ttft_ms": 484.625447,
+          "decode_total_ms": 63885.546016,
+          "prefill_dispatch_ms": 484.844646,
+          "prefill_ttft_ms": 11259.244505,
+          "prefill_total_ms": 11313.167469000002,
+          "decode_events_during_prefill": 51,
+          "prefill_computed_tokens": 6510,
+          "decode_committed_tokens": 1491,
+          "max_decode_gap_ms": 651.0608329999999,
+          "host_available_before_bytes": 27042959360,
+          "host_available_after_bytes": 26474942464,
+          "host_min_available_bytes": 26424221696,
+          "failures": [],
+          "declared_limits": {
+            "min_prefill_tokens": 4096,
+            "min_decode_events_during_prefill": 2,
+            "max_decode_gap_ms": 1500,
+            "decode": {
+              "ttft_ms": 45000,
+              "total_ms": 120000,
+              "min_host_available_bytes": 8589934592
+            },
+            "prefill": {
+              "ttft_ms": 45000,
+              "total_ms": 120000,
+              "min_host_available_bytes": 8589934592
+            }
+          }
+        }
+      ],
+      "gpu": {
+        "expected_observed_clock_range_mhz": {
+          "min": 208,
+          "max": 2200
+        },
+        "sample_count": 143,
+        "observed_sm_clock_mhz": [
+          2190,
+          2197
+        ],
+        "observed_temperature_c": [
+          42,
+          53
+        ],
+        "window_started_unix_ms": 1789645027167,
+        "window_finished_unix_ms": 1789645098212,
+        "device": {
+          "uuid": "GPU-012cd6bb-43ae-b629-e226-4496d1243471",
+          "name": "NVIDIA GB10",
+          "driver": "610.43.02",
+          "device_ordinal": 0
+        }
+      },
+      "timing_method": "client dispatch through complete SSE event; curl --no-buffer; 1 ms file observer; includes curl startup; no profiler",
+      "serving_plan": {
+        "controls": {
+          "banks": "persistent",
+          "disk": "qualified",
+          "mtp": "qualified",
+          "native_prefill_env": "DS4_QWEN_PREFILL_CHUNK",
+          "prefix_reuse": "partial",
+          "scheduler_chunks": [
+            256
+          ]
+        },
+        "effective": {
+          "bank_persist_min_tokens": 1,
+          "banks_opt_in": false,
+          "ctx": 8192,
+          "disk": true,
+          "disk_is_offload": false,
+          "disk_min_tokens": 1,
+          "max_seqs": 2,
+          "mem_floor_gb": 4,
+          "mtp_draft": 2,
+          "mtp_mode": "on",
+          "mtp_weights": true,
+          "native_chunk": 256,
+          "prefix_reuse": "partial",
+          "sched_chunk": 256,
+          "sched_chunk_live": 256
+        },
+        "family": "qwen4exp",
+        "issues": [],
+        "qualified": {
+          "banks": "qualified",
+          "banks_n": 2,
+          "ctx": 262144,
+          "disk": "qualified",
+          "mtp": "qualified",
+          "note": "common UX baseline; configured values and verified combinations differ",
+          "prefix_reuse": "qualified",
+          "prompt": null
+        },
+        "quote": {
+          "available": 116813362624,
+          "banks": 2,
+          "checkpoint_pool": 3824418816,
+          "floor": 4294967296,
+          "media_reserve": 2105835520,
+          "mtp_state": 0,
+          "per_bank": 1692378368,
+          "ple": 1073741824,
+          "scratch": 0,
+          "shared_weights": 83274984384,
+          "total": 97958704576
+        },
+        "requested": {
+          "backend": "cuda",
+          "ctx": 8192,
+          "disk": true,
+          "lane": "auto",
+          "max_seqs": "2",
+          "mem_floor_gb": 4,
+          "mtp_mode": "on",
+          "mtp_path": false,
+          "prefix_reuse": "partial"
+        }
+      }
+    }
+  ],
+  "selection": {
+    "name": "qwen-base-q5-fp8-8192-b2-native256-mtp2",
+    "worst_latency_fraction": 0.5323795501333334,
+    "samples_per_workload": 3,
+    "launch": {
+      "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+      "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+      "arguments": [
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+        "--model-id",
+        "qwen38-base-q5-fp8-ple",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18038",
+        "--ctx",
+        "8192",
+        "--max-seqs",
+        "2",
+        "--mem-floor-gb",
+        "4",
+        "--native-chunk",
+        "256",
+        "--prefill-chunk",
+        "256",
+        "--prefill-chunk-live",
+        "256",
+        "--prefix-reuse",
+        "partial",
+        "--mtp-mode",
+        "on",
+        "--mtp-draft",
+        "2",
+        "--kv-disk-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/qwen-campaign-08/cache",
+        "--kv-disk-space",
+        "2G",
+        "--kv-cache-min-tokens",
+        "1",
+        "--kv-cache-boundary-trim-tokens",
+        "0",
+        "--kv-cache-boundary-align-tokens",
+        "0"
+      ],
+      "cwd": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress",
+      "environment": {
+        "DS4_QWEN_PLE_CACHE_MB": "1024",
+        "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+        "DS4_QWEN_PLE_WORKERS": "16",
+        "DS4_SERVER_CONTINUOUS": "1",
+        "DS4_SERVER_PERSIST_MIN_TOKENS": "1",
+        "LD_LIBRARY_PATH": "/usr/local/cuda/lib64"
+      },
+      "source": {
+        "root": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress",
+        "sha256": "096bcc24a2ee406eb82646aa5493ace0ce05bbe7306a1be14862208bb50a0263"
+      },
+      "device": {
+        "device_ordinal": 0,
+        "driver": "610.43.02",
+        "name": "NVIDIA GB10",
+        "uuid": "GPU-012cd6bb-43ae-b629-e226-4496d1243471"
+      },
+      "expected_clock_range_mhz": {
+        "max": 2200,
+        "min": 208
+      },
+      "serving_plan": {
+        "controls": {
+          "banks": "persistent",
+          "disk": "qualified",
+          "mtp": "qualified",
+          "native_prefill_env": "DS4_QWEN_PREFILL_CHUNK",
+          "prefix_reuse": "partial",
+          "scheduler_chunks": [
+            256
+          ]
+        },
+        "effective": {
+          "bank_persist_min_tokens": 1,
+          "banks_opt_in": false,
+          "ctx": 8192,
+          "disk": true,
+          "disk_is_offload": false,
+          "disk_min_tokens": 1,
+          "max_seqs": 2,
+          "mem_floor_gb": 4,
+          "mtp_draft": 2,
+          "mtp_mode": "on",
+          "mtp_weights": true,
+          "native_chunk": 256,
+          "prefix_reuse": "partial",
+          "sched_chunk": 256,
+          "sched_chunk_live": 256
+        },
+        "family": "qwen4exp",
+        "qualified": {
+          "banks": "qualified",
+          "banks_n": 2,
+          "ctx": 262144,
+          "disk": "qualified",
+          "mtp": "qualified",
+          "note": "common UX baseline; configured values and verified combinations differ",
+          "prefix_reuse": "qualified",
+          "prompt": null
+        },
+        "quote": {
+          "banks": 2,
+          "checkpoint_pool": 3824418816,
+          "floor": 4294967296,
+          "media_reserve": 2105835520,
+          "mtp_state": 0,
+          "per_bank": 1692378368,
+          "ple": 1073741824,
+          "scratch": 0,
+          "shared_weights": 83274984384,
+          "total": 97958704576
+        },
+        "requested": {
+          "backend": "cuda",
+          "ctx": 8192,
+          "disk": true,
+          "lane": "auto",
+          "max_seqs": "2",
+          "mem_floor_gb": 4,
+          "mtp_mode": "on",
+          "mtp_path": false,
+          "prefix_reuse": "partial"
+        }
+      }
+    }
+  },
+  "seed_cache_inventory": {
+    "path": "scratch/v013/qwen-campaign-08/seed-cache-inventory.json",
+    "bytes": 164,
+    "sha256": "b87f1b4f66f713b2d03fd5d1c92c4ccd75a7f4ca4060a952361899af497b7f0f"
+  },
+  "selection_artifact": {
+    "path": "scratch/v013/qwen-campaign-08/selected/profile.json",
+    "bytes": 6720,
+    "sha256": "c305d72d9ceec91727979c89cda0df99c8e16681c8050872fd328d7857b81d7a"
+  },
+  "application": {
+    "listened": {
+      "pid": 1104831,
+      "expected_plan": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/qwen-campaign-08/applied/expected-plan.json",
+      "note": "selected guarded server reached healthy listen; no generation requested"
+    },
+    "expected_plan": {
+      "backend": "cuda",
+      "controls": {
+        "banks": "persistent",
+        "disk": "qualified",
+        "mtp": "qualified",
+        "native_prefill_env": "DS4_QWEN_PREFILL_CHUNK",
+        "prefix_reuse": "partial",
+        "scheduler_chunks": [
+          256
+        ]
+      },
+      "effective": {
+        "bank_persist_min_tokens": 1,
+        "banks_opt_in": false,
+        "ctx": 8192,
+        "disk": true,
+        "disk_is_offload": false,
+        "disk_min_tokens": 1,
+        "max_seqs": 2,
+        "mem_floor_gb": 4,
+        "mtp_draft": 2,
+        "mtp_mode": "on",
+        "mtp_weights": true,
+        "native_chunk": 256,
+        "prefix_reuse": "partial",
+        "sched_chunk": 256,
+        "sched_chunk_live": 256
+      },
+      "family": "qwen4exp",
+      "post_open_quote": {
+        "banks": 2,
+        "checkpoint_pool": 3824418816,
+        "floor": 4294967296,
+        "media_reserve": 2105835520,
+        "mtp_state": 0,
+        "per_bank": 1692378368,
+        "ple": 1073741824,
+        "scratch": 0,
+        "shared_weights": 83274984384,
+        "total": 97958704576
+      },
+      "qualified": {
+        "banks": "qualified",
+        "banks_n": 2,
+        "ctx": 262144,
+        "disk": "qualified",
+        "mtp": "qualified",
+        "note": "common UX baseline; configured values and verified combinations differ",
+        "prefix_reuse": "qualified",
+        "prompt": null
+      }
+    },
+    "executed_generation": false,
+    "receipts": [
+      {
+        "path": "scratch/v013/qwen-campaign-08/applied/launch.json",
+        "bytes": 3483,
+        "sha256": "660404db99ef8c7f61553b73b44e1d0d5daf63d7c1aefc729314376cc40f81fa"
+      },
+      {
+        "path": "scratch/v013/qwen-campaign-08/applied/expected-plan.json",
+        "bytes": 1218,
+        "sha256": "9eab087f635fd85211bd6a8ae65e10dedfc6ba8376c86bdd5eae50804aa310bd"
+      },
+      {
+        "path": "scratch/v013/qwen-campaign-08/applied/check.json",
+        "bytes": 1104,
+        "sha256": "0c2afa697382d8bff6a11ece29327c00e919b719cf421e47a072d991df314729"
+      },
+      {
+        "path": "scratch/v013/qwen-campaign-08/applied/gpu-apply.json",
+        "bytes": 257,
+        "sha256": "63d3e6d43ae14602032d0fe3faad880d3c2f2182b743754cac673d85dc85037d"
+      }
+    ]
+  },
+  "workers": {
+    "pilot-seed-server": {
+      "process": {
+        "pid": 1071078,
+        "start_ticks": "41854886",
+        "state": "S",
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "argv": [
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+          "--cuda",
+          "-m",
+          "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+          "--model-id",
+          "qwen38-base-q5-fp8-ple",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "18038",
+          "--ctx",
+          "8192",
+          "--max-seqs",
+          "2",
+          "--mem-floor-gb",
+          "4",
+          "--native-chunk",
+          "256",
+          "--prefill-chunk",
+          "256",
+          "--prefill-chunk-live",
+          "256",
+          "--prefix-reuse",
+          "partial",
+          "--mtp-mode",
+          "on",
+          "--mtp-draft",
+          "2",
+          "--kv-disk-dir",
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/qwen-campaign-08/pilot-cache",
+          "--kv-disk-space",
+          "2G",
+          "--kv-cache-min-tokens",
+          "1",
+          "--kv-cache-boundary-trim-tokens",
+          "0",
+          "--kv-cache-boundary-align-tokens",
+          "0"
+        ],
+        "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1071076-1789642522895337248.scope\n",
+        "environment": {
+          "PATH": "/usr/bin:/bin",
+          "LANG": "C.UTF-8",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64",
+          "DS4_SERVER_CONTINUOUS": "1",
+          "DS4_SERVER_PERSIST_MIN_TOKENS": "1",
+          "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+          "DS4_QWEN_PLE_CACHE_MB": "1024",
+          "DS4_QWEN_PLE_WORKERS": "16"
+        },
+        "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+        "cwd": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress"
+      },
+      "guard": {
+        "minimum_observed_available_gib": 25.835948944091797,
+        "maximum_observed_psi_full_avg10": 1.95,
+        "requested_max_gib": 104,
+        "requested_high_gib": 100,
+        "effective_max_gib": 100.0,
+        "effective_high_gib": 99.0,
+        "reserve_gib": 12,
+        "trip_gib": 8,
+        "exit": {
+          "time": 1789642636.132044,
+          "event": "exit",
+          "unit": "ds4-hostguard-1071076-1789642522895337248.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "receipts": [
+        {
+          "path": "scratch/v013/qwen-campaign-08/pilot-seed-server/process.json",
+          "bytes": 1819,
+          "sha256": "9c4b1f4ebf3ac5836f718a6647fa2f9154647c076994ecee4338567b17256342"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/pilot-seed-server/guard-process.json",
+          "bytes": 50,
+          "sha256": "7b2f6563783c4c9bc5df7c27a42cfa72d1ca8ac4012f2c90f0a486b3f7d41edf"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/pilot-seed-server/launch.json",
+          "bytes": 3614,
+          "sha256": "247dea40c7cd1ecea4b992b5dc2243c13f2689b4f8d71ecf7a02c7bd2acb80a5"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/pilot-seed-server/ready-stats.json",
+          "bytes": 7677,
+          "sha256": "b2c52a1da598609e7cdb8ab36ada2ad87fe3ef5a440b150816974605f9334d9c"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/pilot-seed-server/guard.jsonl",
+          "bytes": 20408,
+          "sha256": "2ed2818f881dd89adaa6a69e2780081a610b954a93c6302c86af6d6c85812bfe"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/pilot-seed-server/stopped.json",
+          "bytes": 72,
+          "sha256": "87c58eaf0624c1fb05da2006d20302a44d2918c396e6512a7030d61ba7a1118f"
+        }
+      ]
+    },
+    "pilot-server": {
+      "process": {
+        "pid": 1073607,
+        "start_ticks": "41866251",
+        "state": "S",
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "argv": [
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+          "--cuda",
+          "-m",
+          "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+          "--model-id",
+          "qwen38-base-q5-fp8-ple",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "18038",
+          "--ctx",
+          "8192",
+          "--max-seqs",
+          "2",
+          "--mem-floor-gb",
+          "4",
+          "--native-chunk",
+          "256",
+          "--prefill-chunk",
+          "256",
+          "--prefill-chunk-live",
+          "256",
+          "--prefix-reuse",
+          "partial",
+          "--mtp-mode",
+          "on",
+          "--mtp-draft",
+          "2",
+          "--kv-disk-dir",
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/qwen-campaign-08/pilot-cache",
+          "--kv-disk-space",
+          "2G",
+          "--kv-cache-min-tokens",
+          "1",
+          "--kv-cache-boundary-trim-tokens",
+          "0",
+          "--kv-cache-boundary-align-tokens",
+          "0"
+        ],
+        "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1073605-1789642636539631669.scope\n",
+        "environment": {
+          "PATH": "/usr/bin:/bin",
+          "LANG": "C.UTF-8",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64",
+          "DS4_SERVER_CONTINUOUS": "1",
+          "DS4_SERVER_PERSIST_MIN_TOKENS": "1",
+          "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+          "DS4_QWEN_PLE_CACHE_MB": "1024",
+          "DS4_QWEN_PLE_WORKERS": "16"
+        },
+        "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+        "cwd": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress"
+      },
+      "guard": {
+        "minimum_observed_available_gib": 24.772106170654297,
+        "maximum_observed_psi_full_avg10": 3.05,
+        "requested_max_gib": 104,
+        "requested_high_gib": 100,
+        "effective_max_gib": 99.9,
+        "effective_high_gib": 98.9,
+        "reserve_gib": 12,
+        "trip_gib": 8,
+        "exit": {
+          "time": 1789642809.5769584,
+          "event": "exit",
+          "unit": "ds4-hostguard-1073605-1789642636539631669.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "receipts": [
+        {
+          "path": "scratch/v013/qwen-campaign-08/pilot-server/process.json",
+          "bytes": 1819,
+          "sha256": "94c4fd245e7174b3ea39073ed7b250d7cc55b37f23329d77f38ed6fc2f02de88"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/pilot-server/guard-process.json",
+          "bytes": 50,
+          "sha256": "6b81758f9a96054a2a207ec24203e7bdaabc7ceaab46d56579fc272fda797abd"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/pilot-server/launch.json",
+          "bytes": 3604,
+          "sha256": "9ab37220393f0d6bc9920e588cbd93b81f47f7f296f07b324dd6d6ab77a837f8"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/pilot-server/ready-stats.json",
+          "bytes": 7682,
+          "sha256": "f03ecf1a02f653149b21fea6a0fcf825a040f612a11defb047dd7e472c61fcec"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/pilot-server/guard.jsonl",
+          "bytes": 30291,
+          "sha256": "a52bc5d59eb5cbdeffa40e61543b29f7ff191172724ae724a8608172a1caf461"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/pilot-server/stopped.json",
+          "bytes": 72,
+          "sha256": "afecfd9c11b4a7d4ff935ba71133413fb4c3ef4282b8ec2ee480376455016abf"
+        }
+      ]
+    },
+    "seed-server": {
+      "process": {
+        "pid": 1082503,
+        "start_ticks": "41907137",
+        "state": "S",
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "argv": [
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+          "--cuda",
+          "-m",
+          "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+          "--model-id",
+          "qwen38-base-q5-fp8-ple",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "18038",
+          "--ctx",
+          "8192",
+          "--max-seqs",
+          "2",
+          "--mem-floor-gb",
+          "4",
+          "--native-chunk",
+          "256",
+          "--prefill-chunk",
+          "256",
+          "--prefill-chunk-live",
+          "256",
+          "--prefix-reuse",
+          "partial",
+          "--mtp-mode",
+          "on",
+          "--mtp-draft",
+          "2",
+          "--kv-disk-dir",
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/qwen-campaign-08/cache",
+          "--kv-disk-space",
+          "2G",
+          "--kv-cache-min-tokens",
+          "1",
+          "--kv-cache-boundary-trim-tokens",
+          "0",
+          "--kv-cache-boundary-align-tokens",
+          "0"
+        ],
+        "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1082501-1789643045403809836.scope\n",
+        "environment": {
+          "PATH": "/usr/bin:/bin",
+          "LANG": "C.UTF-8",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64",
+          "DS4_SERVER_CONTINUOUS": "1",
+          "DS4_SERVER_PERSIST_MIN_TOKENS": "1",
+          "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+          "DS4_QWEN_PLE_CACHE_MB": "1024",
+          "DS4_QWEN_PLE_WORKERS": "16"
+        },
+        "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+        "cwd": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress"
+      },
+      "guard": {
+        "minimum_observed_available_gib": 25.646038055419922,
+        "maximum_observed_psi_full_avg10": 3.42,
+        "requested_max_gib": 104,
+        "requested_high_gib": 100,
+        "effective_max_gib": 99.7,
+        "effective_high_gib": 98.7,
+        "reserve_gib": 12,
+        "trip_gib": 8,
+        "exit": {
+          "time": 1789643561.45403,
+          "event": "exit",
+          "unit": "ds4-hostguard-1082501-1789643045403809836.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "receipts": [
+        {
+          "path": "scratch/v013/qwen-campaign-08/seed-server/process.json",
+          "bytes": 1813,
+          "sha256": "6ce6050bde395cc38ba26d5f0f2d9d426bf257fcdca4e5f55694a7dc3e17bb6e"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/seed-server/guard-process.json",
+          "bytes": 50,
+          "sha256": "6e3eb7e4cffaa26e39c4dd26480489a725a51a2a04b560af95c0681eef92b0d6"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/seed-server/launch.json",
+          "bytes": 3590,
+          "sha256": "89fddf98ac3119b4fb2d750a76e3dd33c20d157e796583eac654e04b140bb95c"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/seed-server/ready-stats.json",
+          "bytes": 7677,
+          "sha256": "55cb70fbabeee6c3df7a3b77a1f74feeac8ed772253c184cb3387c4035953c25"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/seed-server/guard.jsonl",
+          "bytes": 86634,
+          "sha256": "12cd2b6991c119852f6a52e48aca1c079fb49906979bd9552b893ee8370397b9"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/seed-server/stopped.json",
+          "bytes": 72,
+          "sha256": "1c74305c3e9f3329ca6069147b721cf10bd4bb8eb2eb02f57e186d4c2af296d5"
+        }
+      ]
+    },
+    "final-r1-server": {
+      "process": {
+        "pid": 1088037,
+        "start_ticks": "41958863",
+        "state": "S",
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "argv": [
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+          "--cuda",
+          "-m",
+          "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+          "--model-id",
+          "qwen38-base-q5-fp8-ple",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "18038",
+          "--ctx",
+          "8192",
+          "--max-seqs",
+          "2",
+          "--mem-floor-gb",
+          "4",
+          "--native-chunk",
+          "256",
+          "--prefill-chunk",
+          "256",
+          "--prefill-chunk-live",
+          "256",
+          "--prefix-reuse",
+          "partial",
+          "--mtp-mode",
+          "on",
+          "--mtp-draft",
+          "2",
+          "--kv-disk-dir",
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/qwen-campaign-08/cache",
+          "--kv-disk-space",
+          "2G",
+          "--kv-cache-min-tokens",
+          "1",
+          "--kv-cache-boundary-trim-tokens",
+          "0",
+          "--kv-cache-boundary-align-tokens",
+          "0"
+        ],
+        "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1088035-1789643562666217827.scope\n",
+        "environment": {
+          "PATH": "/usr/bin:/bin",
+          "LANG": "C.UTF-8",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64",
+          "DS4_SERVER_CONTINUOUS": "1",
+          "DS4_SERVER_PERSIST_MIN_TOKENS": "1",
+          "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+          "DS4_QWEN_PLE_CACHE_MB": "1024",
+          "DS4_QWEN_PLE_WORKERS": "16"
+        },
+        "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+        "cwd": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress"
+      },
+      "guard": {
+        "minimum_observed_available_gib": 24.218311309814453,
+        "maximum_observed_psi_full_avg10": 4.02,
+        "requested_max_gib": 104,
+        "requested_high_gib": 100,
+        "effective_max_gib": 99.8,
+        "effective_high_gib": 98.8,
+        "reserve_gib": 12,
+        "trip_gib": 8,
+        "exit": {
+          "time": 1789644144.353053,
+          "event": "exit",
+          "unit": "ds4-hostguard-1088035-1789643562666217827.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "receipts": [
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r1-server/process.json",
+          "bytes": 1813,
+          "sha256": "150c0b4cb48c07b656d0581881911c192255f4c7be16be1d579fb7a6ba6a8705"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r1-server/guard-process.json",
+          "bytes": 50,
+          "sha256": "ef1d87a5ebc240b878bd02ab18ad5b13f20e50a7d4f8c31a39e11d72932c8753"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r1-server/launch.json",
+          "bytes": 3598,
+          "sha256": "81fc940209101ceecf84b7194782aab6a03f01649e45dc387cb1f782eba4ebad"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r1-server/ready-stats.json",
+          "bytes": 7677,
+          "sha256": "5c51d2a9424a0663aa3a24850b0d7e8fd833f681c83b7fc30e5b3f2531e55580"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r1-server/guard.jsonl",
+          "bytes": 97638,
+          "sha256": "67f0714e2b13b7d75fb122dfe848f0662ab8e3e3ebb9e37db1707f4e33024af9"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r1-server/stopped.json",
+          "bytes": 72,
+          "sha256": "6fa19377ac97ce2b66ef3c351f8c48b52cfc992418c6a6d8fa87554b9aaaa860"
+        }
+      ]
+    },
+    "final-r2-server": {
+      "process": {
+        "pid": 1094630,
+        "start_ticks": "42017106",
+        "state": "S",
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "argv": [
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+          "--cuda",
+          "-m",
+          "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+          "--model-id",
+          "qwen38-base-q5-fp8-ple",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "18038",
+          "--ctx",
+          "8192",
+          "--max-seqs",
+          "2",
+          "--mem-floor-gb",
+          "4",
+          "--native-chunk",
+          "256",
+          "--prefill-chunk",
+          "256",
+          "--prefill-chunk-live",
+          "256",
+          "--prefix-reuse",
+          "partial",
+          "--mtp-mode",
+          "on",
+          "--mtp-draft",
+          "2",
+          "--kv-disk-dir",
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/qwen-campaign-08/cache",
+          "--kv-disk-space",
+          "2G",
+          "--kv-cache-min-tokens",
+          "1",
+          "--kv-cache-boundary-trim-tokens",
+          "0",
+          "--kv-cache-boundary-align-tokens",
+          "0"
+        ],
+        "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1094628-1789644145090852594.scope\n",
+        "environment": {
+          "PATH": "/usr/bin:/bin",
+          "LANG": "C.UTF-8",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64",
+          "DS4_SERVER_CONTINUOUS": "1",
+          "DS4_SERVER_PERSIST_MIN_TOKENS": "1",
+          "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+          "DS4_QWEN_PLE_CACHE_MB": "1024",
+          "DS4_QWEN_PLE_WORKERS": "16"
+        },
+        "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+        "cwd": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress"
+      },
+      "guard": {
+        "minimum_observed_available_gib": 24.598255157470703,
+        "maximum_observed_psi_full_avg10": 6.68,
+        "requested_max_gib": 104,
+        "requested_high_gib": 100,
+        "effective_max_gib": 99.7,
+        "effective_high_gib": 98.7,
+        "reserve_gib": 12,
+        "trip_gib": 8,
+        "exit": {
+          "time": 1789644718.2135055,
+          "event": "exit",
+          "unit": "ds4-hostguard-1094628-1789644145090852594.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "receipts": [
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r2-server/process.json",
+          "bytes": 1813,
+          "sha256": "6946342081354fedf0dc2b71b5e7ba78877082d1d9bdd17f3967f1ee01f96769"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r2-server/guard-process.json",
+          "bytes": 50,
+          "sha256": "47200f61c8eb0632116d9d2744e346d82dc07547e08dc565d3f1bd97b15b23fa"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r2-server/launch.json",
+          "bytes": 3598,
+          "sha256": "408d4aa68ba49c652b19e9fc39341035c96429c955bf49e0d6230d15dc4e63f5"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r2-server/ready-stats.json",
+          "bytes": 7677,
+          "sha256": "c26c39ed1aba1003d9d7d22960b62a0baf62da2fd2e8e52573b30d4ca81cbd47"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r2-server/guard.jsonl",
+          "bytes": 96175,
+          "sha256": "b491f22da777833cc4e802abc712fa7a1783c3e266a4065992cbe73316287a94"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r2-server/stopped.json",
+          "bytes": 72,
+          "sha256": "becb1fa5c00920986bb8b2ac5e1ab4a66146ce435b1a39bd3d3b192bb34b1aa2"
+        }
+      ]
+    },
+    "final-r3-server": {
+      "process": {
+        "pid": 1099309,
+        "start_ticks": "42074494",
+        "state": "S",
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "argv": [
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+          "--cuda",
+          "-m",
+          "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+          "--model-id",
+          "qwen38-base-q5-fp8-ple",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "18038",
+          "--ctx",
+          "8192",
+          "--max-seqs",
+          "2",
+          "--mem-floor-gb",
+          "4",
+          "--native-chunk",
+          "256",
+          "--prefill-chunk",
+          "256",
+          "--prefill-chunk-live",
+          "256",
+          "--prefix-reuse",
+          "partial",
+          "--mtp-mode",
+          "on",
+          "--mtp-draft",
+          "2",
+          "--kv-disk-dir",
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/qwen-campaign-08/cache",
+          "--kv-disk-space",
+          "2G",
+          "--kv-cache-min-tokens",
+          "1",
+          "--kv-cache-boundary-trim-tokens",
+          "0",
+          "--kv-cache-boundary-align-tokens",
+          "0"
+        ],
+        "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1099307-1789644718967407762.scope\n",
+        "environment": {
+          "PATH": "/usr/bin:/bin",
+          "LANG": "C.UTF-8",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64",
+          "DS4_SERVER_CONTINUOUS": "1",
+          "DS4_SERVER_PERSIST_MIN_TOKENS": "1",
+          "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+          "DS4_QWEN_PLE_CACHE_MB": "1024",
+          "DS4_QWEN_PLE_WORKERS": "16"
+        },
+        "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+        "cwd": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress"
+      },
+      "guard": {
+        "minimum_observed_available_gib": 24.617454528808594,
+        "maximum_observed_psi_full_avg10": 8.66,
+        "requested_max_gib": 104,
+        "requested_high_gib": 100,
+        "effective_max_gib": 99.7,
+        "effective_high_gib": 98.7,
+        "reserve_gib": 12,
+        "trip_gib": 8,
+        "exit": {
+          "time": 1789645298.6609724,
+          "event": "exit",
+          "unit": "ds4-hostguard-1099307-1789644718967407762.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "receipts": [
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r3-server/process.json",
+          "bytes": 1813,
+          "sha256": "faf72c73e80fb2ade61a03cde4ab697898d8d20cfdc6387968737f5e17cee61f"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r3-server/guard-process.json",
+          "bytes": 50,
+          "sha256": "06cd4854d21fe47aa7f7e8fd1d4966ba4bc38c2ed59d08d9828fd400c1435ae8"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r3-server/launch.json",
+          "bytes": 3598,
+          "sha256": "0ad3fcb0a6e9a6489d5300b4a914a19a78a4219f947be80e85ebe662a75e0ad6"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r3-server/ready-stats.json",
+          "bytes": 7677,
+          "sha256": "eb73341890b6c57eb0f3ab413d99c83513b115cfddfff694b785bafe00b640ff"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r3-server/guard.jsonl",
+          "bytes": 97403,
+          "sha256": "5f466770079ba8dba57f7146746daa2a1e5191ec6dc2fe3226303f862bff4661"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/final-r3-server/stopped.json",
+          "bytes": 72,
+          "sha256": "5c5019cabf664a5d14ef306fb140bb547cf34e44472b3b3bce2eec9566c69a85"
+        }
+      ]
+    },
+    "apply-server": {
+      "process": {
+        "pid": 1104831,
+        "start_ticks": "42158646",
+        "state": "S",
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "argv": [
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+          "--cuda",
+          "-m",
+          "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/MQ-Q5-SSD-PLE-BF16/Qwen3.8-Flash-Next-MQ-Q5-SSD-PLE-BF16-00001-of-00003.gguf",
+          "--model-id",
+          "qwen38-base-q5-fp8-ple",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "18038",
+          "--ctx",
+          "8192",
+          "--max-seqs",
+          "2",
+          "--mem-floor-gb",
+          "4",
+          "--native-chunk",
+          "256",
+          "--prefill-chunk",
+          "256",
+          "--prefill-chunk-live",
+          "256",
+          "--prefix-reuse",
+          "partial",
+          "--mtp-mode",
+          "on",
+          "--mtp-draft",
+          "2",
+          "--kv-disk-dir",
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/qwen-campaign-08/cache",
+          "--kv-disk-space",
+          "2G",
+          "--kv-cache-min-tokens",
+          "1",
+          "--kv-cache-boundary-trim-tokens",
+          "0",
+          "--kv-cache-boundary-align-tokens",
+          "0",
+          "--expect-plan",
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/qwen-campaign-08/applied/expected-plan.json"
+        ],
+        "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1104829-1789645560491128293.scope\n",
+        "environment": {
+          "DS4_QWEN_PLE_CACHE_MB": "1024",
+          "DS4_QWEN_PLE_DIR": "/home/sunghoon/workspace/ds4-exaone/models/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF/PLE-FP8",
+          "DS4_QWEN_PLE_WORKERS": "16",
+          "DS4_SERVER_CONTINUOUS": "1",
+          "DS4_SERVER_PERSIST_MIN_TOKENS": "1",
+          "LANG": "C.UTF-8",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64",
+          "PATH": "/usr/bin:/bin"
+        },
+        "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+        "cwd": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress"
+      },
+      "guard": {
+        "minimum_observed_available_gib": 26.22415542602539,
+        "maximum_observed_psi_full_avg10": 6.3,
+        "requested_max_gib": 104,
+        "requested_high_gib": 100,
+        "effective_max_gib": 99.6,
+        "effective_high_gib": 98.6,
+        "reserve_gib": 12,
+        "trip_gib": 8,
+        "exit": {
+          "time": 1789645879.8850493,
+          "event": "exit",
+          "unit": "ds4-hostguard-1104829-1789645560491128293.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "receipts": [
+        {
+          "path": "scratch/v013/qwen-campaign-08/apply-server/process.json",
+          "bytes": 1962,
+          "sha256": "f9d72340c2ed8bbcc187f166acd9d7f1a1c3433941107344ee2d01f94e46abee"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/apply-server/guard-process.json",
+          "bytes": 50,
+          "sha256": "fcea41fbb8499f349fe69c207b0bb388ddc1839faca351ff3fa9ca080f2de878"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/apply-server/launch.json",
+          "bytes": 1895,
+          "sha256": "2998c5ca909364205e2b3b84eb6ea3751e298e7fccab5cd77fbcf352539e63f5"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/apply-server/ready-stats.json",
+          "bytes": 7677,
+          "sha256": "1086046e100be180cb523884c5bbc407a4e95e3b403e4da73ff34bc733a8bdcd"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/apply-server/guard.jsonl",
+          "bytes": 53743,
+          "sha256": "b574fe8a112f4d6afe1622e72856504f8bc369d937489dd0a22d409629d493a9"
+        },
+        {
+          "path": "scratch/v013/qwen-campaign-08/apply-server/stopped.json",
+          "bytes": 72,
+          "sha256": "7e0c03d9734197896c8b0b2b88516abde40f3839a66b453a4f8e8a81621eb3dc"
+        }
+      ]
+    }
+  },
+  "stage_completion": {
+    "pilot": {
+      "passed": true,
+      "unix_ns": 1789642809787341111
+    },
+    "final": {
+      "passed": true,
+      "unix_ns": 1789645298880517423
+    },
+    "select": {
+      "passed": true,
+      "unix_ns": 1789645554032453841
+    },
+    "apply": {
+      "passed": true,
+      "unix_ns": 1789645880095700244
+    }
+  },
+  "stage_receipts": [
+    {
+      "path": "scratch/v013/qwen-campaign-08/pilot-started.json",
+      "bytes": 55,
+      "sha256": "daf01689d006f777a6322174a8dbe0efbf0dc9204cbe8678c7341cd2aa60e96e"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-08/pilot-complete.json",
+      "bytes": 55,
+      "sha256": "6d0c17e80e6b0c283a2b66efad18a34ed415e12bfaef1c583c9aee766808d25f"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-08/final-started.json",
+      "bytes": 55,
+      "sha256": "167f901a22f12e065e192edede251b7cbd8ca1bb8d7571c3df5f6423dad093b9"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-08/final-complete.json",
+      "bytes": 55,
+      "sha256": "8562ad5480b33bcc8b62f3c60107cb3e5e4a2d04783cf75c3cf931388e0b3dc6"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-08/select-started.json",
+      "bytes": 55,
+      "sha256": "b69e9210f6829118078961a41560b314fb0b8db4e19c81b34bfb850dac9b2997"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-08/select-complete.json",
+      "bytes": 55,
+      "sha256": "8975da9dc441ffe9cda225d19afd3759a78ab69138855619d34255ae3a21d62b"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-08/apply-started.json",
+      "bytes": 55,
+      "sha256": "60e02977ea92b0ff7f14f9ed87f1a549aede12a80d838165167b79a34ea8fdeb"
+    },
+    {
+      "path": "scratch/v013/qwen-campaign-08/apply-complete.json",
+      "bytes": 55,
+      "sha256": "3c01ea9ee88fedea8d6c9fbb8bda0a5dc15165a4fa558d5d1a8e86e138fbf996"
+    }
+  ],
+  "pilot": {
+    "qualified_sample": false,
+    "scope": "Inputs omitted deliberately; preflight only.",
+    "seed_artifact": {
+      "path": "scratch/v013/qwen-campaign-08/pilot-seed/serving.json",
+      "bytes": 11528,
+      "sha256": "e8d69e45bba7ccba27470d31df795bd8afc446485748c0f89bf98b12b832c250"
+    },
+    "artifact": {
+      "path": "scratch/v013/qwen-campaign-08/pilot/serving.json",
+      "bytes": 132741,
+      "sha256": "e9390a7c1a484cfa3400bfa23ced58ad68081a18d0e71eb0f539be01700b8bd2"
+    }
+  },
+  "historical": {
+    "campaign07_pilot": {
+      "passed": false,
+      "failure": {
+        "path": "scratch/v013/qwen-campaign-07/pilot-failed.json",
+        "bytes": 233,
+        "sha256": "474e3b36a0acfeef0bd656ed4a0a4f10332fad595e1ade9a48305d6c31a2747c"
+      },
+      "artifact": {
+        "path": "scratch/v013/qwen-campaign-07/pilot/serving.json",
+        "bytes": 16116,
+        "sha256": "52d96250575eea10091a05ae5f5eda852b4df779212da39dfb6af1cec3a1ca8d"
+      },
+      "scope": "Failed pilot is not one of the three qualifying captures."
+    },
+    "prior_p1_attempts": {
+      "receipt": {
+        "path": "docs/benchmarks/serving-v013-2026-09-17/qwen.json",
+        "bytes": 85961,
+        "sha256": "4d976986bed8ee4b8799f67987421d65446b4428c102d030285cbc07736cd4c5"
+      },
+      "scope": "P1 campaign07 passed; its recorded04/05/06 failures remain failed. P1 is not a P4 sample."
+    }
+  },
+  "validation": {
+    "small_raw_files_rehashed": 2661,
+    "historical_pilot_raw_files_rehashed": 117,
+    "artifact_envelopes_revalidated": 7,
+    "publisher": {
+      "path": "scratch/v013/write-qwen-p4-proof.py",
+      "bytes": 24759,
+      "sha256": "e7bd0aaf633253df0956e9b6c904e39cd0bfdfff6efa4fe2015a75381a1193fd"
+    },
+    "helper": {
+      "path": "scratch/v013/write-qwen-p1-proof.py",
+      "bytes": 23763,
+      "sha256": "1865af347ca9b2845b0cc30f17aee9d9045fa23bd41d41983c1114ff8ed3e4cb"
+    }
+  },
+  "limits": [
+    "One predeclared candidate; passing limits is not a speedup against another configuration.",
+    "Only declared text/tool/restart/overlap workloads at8192 allocation; no media or filled-context quality qualification.",
+    "Configured300–2200MHz preserved; declared observed-clock range208–2200MHz includes idle observations.",
+    "Memory/clocks are samples with collector coverage checks, not continuous peak guarantees.",
+    "Application proves ExpectedPlan and healthy listen plus owned cleanup; no application-generation test."
+  ]
+}
