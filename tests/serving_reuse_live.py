@@ -10,7 +10,10 @@ import argparse
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
+import stat
 import sys
 import time
 import urllib.error
@@ -24,6 +27,10 @@ PROFILES = {
     "deepseek": {"names": ["deepseek4-flash", "deepseek4-pro"], "reuse": "exact"},
 }
 FIXTURE = Path(__file__).parent / "fixtures" / "serving-reuse.json"
+NATIVE_REUSE = re.compile(
+    r"ds4: Motif-3 bank reuse source=(\d+) target=(\d+) cached=(\d+) partial=([01]) "
+    r"source_before=(\d+) source_after=(\d+) target_after=(\d+)")
+MAX_NATIVE_LOG_BYTES = 1024 * 1024
 
 
 def read_json(path):
@@ -37,6 +44,49 @@ def digest(path):
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
+
+
+def native_forks(text, cached, banks):
+    """Only a successful, source-preserving copy can prove a partial fork."""
+    found = []
+    for line in text.splitlines():
+        match = NATIVE_REUSE.fullmatch(line)
+        if match is None:
+            continue
+        source, target, kept, partial, before, after, target_after = map(int, match.groups())
+        if (source != target and source < banks and target < banks and kept == cached > 0
+                and target_after == kept and before == after >= kept):
+            found.append(dict(zip(
+                ("source", "target", "cached", "partial", "source_before", "source_after", "target_after"),
+                (source, target, kept, partial, before, after, target_after))))
+    return found
+
+
+def native_log_start(pid):
+    # Read only the actual server's stderr file, never a caller-supplied log.
+    path = Path(f"/proc/{pid}/fd/2")
+    info = path.stat()
+    require(stat.S_ISREG(info.st_mode), "Motif fork evidence needs stderr redirected to a regular file")
+    env = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+    require(b"DS4_MOTIF3_BATCH_TRACE=1" in env, "Motif fork evidence requires DS4_MOTIF3_BATCH_TRACE=1")
+    return path, (info.st_dev, info.st_ino), info.st_size
+
+
+def native_log_read(mark):
+    path, identity, offset = mark
+    with path.open("rb") as handle:
+        info = os.fstat(handle.fileno())
+        require((info.st_dev, info.st_ino) == identity, "server stderr file changed")
+        size = info.st_size - offset
+        require(0 <= size <= MAX_NATIVE_LOG_BYTES, "server stderr truncated or native trace too large")
+        handle.seek(offset)
+        data = handle.read(size)
+    require(len(data) == size, "server stderr truncated during read")
+    return data
+
+
+def has_warm_fork(family, kinds, native):
+    return bool(native) if family == "motif" else "fork" in kinds
 
 
 def reference_phase(name):
@@ -128,6 +178,9 @@ def inspect_case(config, phase, name, case, response, stats, reference=None):
             errors.append(f"cached tokens: expected 0 < {cached} < {prompt}")
         if name == "edit":
             kinds = {"partial"} if PROFILES[config["family"]]["reuse"] == "partial" else {"exact", "fork"}
+        elif config["family"] == "motif" and phase == "warm":
+            # The official history removes generation-only empty thinking.
+            kinds = {"exact", "fork", "partial"}
         else:
             kinds = {"exact", "fork"}
     if trace.get("reuse_kind") not in kinds:
@@ -149,6 +202,7 @@ def run_case(args, config, name, case, previous):
     if args.phase == "cold":
         verify_cold_body(args.output, name, case["body"])
     write_json(args.output / f"{key}.request.json", case["body"])
+    native_mark = native_log_start(args.pid) if config["family"] == "motif" else None
     start = time.monotonic()
     try:
         response = request(args.url, "/v1/chat/completions", case["body"])
@@ -167,11 +221,22 @@ def run_case(args, config, name, case, previous):
     errors.extend(plan_errors(config, args.phase, stats.get("serving", {})))
     if route_count(stats) != route_count(previous) + 1:
         errors.append("route count changed by other than one; concurrent traffic invalidates this trace")
+    native = []
+    native_log = None
+    if native_mark is not None:
+        data = native_log_read(native_mark)
+        (args.output / f"{key}.native.log").write_bytes(data)
+        native = native_forks(data.decode("utf-8", errors="replace"),
+                              response["usage"]["prompt_tokens_details"]["cached_tokens"], config["banks"])
+        native_log = {"pid": args.pid, "fd": 2, "device_inode": native_mark[1],
+                      "start": native_mark[2], "end": native_mark[2] + len(data),
+                      "sha256": hashlib.sha256(data).hexdigest()}
     summary = {"phase": args.phase, "case": name, "seconds": elapsed,
                "configured": config, "expected_answer": case["answer"],
                "accepted_forms": case["accepted_forms"],
                "message": response["choices"][0]["message"], "usage": response["usage"],
-               "trace": stats.get("last_request"), "errors": errors,
+               "trace": stats.get("last_request"), "native_forks": native,
+               "native_log": native_log, "errors": errors,
                "passed": not errors}
     write_json(args.output / f"{key}.summary.json", summary)
     print(json.dumps(summary, ensure_ascii=False), flush=True)
@@ -224,7 +289,7 @@ def main():
                 "messages": [{"role": "user", "content": padding + templates["seed"]["user"]}]}
         cases = {"seed": {"body": body, "answer": templates["seed"]["answer"],
                           "accepted_forms": templates["seed"]["accepted_forms"]}}
-        fixture = {"schema": "serving-reuse-live-v2", "answer_contract": templates["answer_contract"],
+        fixture = {"schema": "serving-reuse-live-v3", "answer_contract": templates["answer_contract"],
                    "config": config, "templates": templates,
                    "source_fixture_sha256": digest(FIXTURE), "cases": cases}
         (args.output / "artifacts.json").write_bytes(args.artifact_manifest.read_bytes())
@@ -234,7 +299,7 @@ def main():
             "expect_speculation", "lane")), "later phases use the frozen seed configuration")
         verify_fixture(args.output, args.phase)
         fixture = read_json(fixture_path)
-        require(fixture.get("schema") == "serving-reuse-live-v2"
+        require(fixture.get("schema") == "serving-reuse-live-v3"
                 and fixture.get("answer_contract") == "literal-arithmetic-v2",
                 "answer-form contract changed; start a new evidence directory")
         config, templates, cases = fixture["config"], fixture["templates"], fixture["cases"]
@@ -256,6 +321,7 @@ def main():
     write_json(fixture_path, fixture)
     all_errors = []
     warm_kinds = []
+    warm_native = []
     names = {"seed": ["seed"], "warm": ["append", "edit", "fork"],
              "restored": ["restart"], "cold": ["seed", "append", "edit", "fork", "restart"]}[args.phase]
     for name in names:
@@ -263,6 +329,7 @@ def main():
         all_errors.extend(f"{name}: {error}" for error in errors)
         if args.phase == "warm":
             warm_kinds.append((stats.get("last_request") or {}).get("reuse_kind"))
+            warm_native.extend(read_json(args.output / f"{args.phase}.{name}.summary.json")["native_forks"])
         if args.phase == "seed":
             for follow in ("append", "edit"):
                 cases[follow] = {"body": follow_body(cases[name]["body"], response, templates[follow]["user"]),
@@ -277,7 +344,7 @@ def main():
     # A later branch can extend a parent that is still in its original bank.
     # Require a real bank copy somewhere in this phase, without prescribing
     # which eligible continuation the scheduler assigns to the other bank.
-    if args.phase == "warm" and "fork" not in warm_kinds:
+    if args.phase == "warm" and not has_warm_fork(config["family"], warm_kinds, warm_native):
         all_errors.append("warm: no bank fork observed")
     require(fingerprint(process_identity(args.pid)) == fingerprint(process), "server changed during phase")
     receipt = {"passed": not all_errors, "errors": all_errors, "fixture_sha256": digest(fixture_path),

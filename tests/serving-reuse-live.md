@@ -23,7 +23,7 @@ format following. The prompts still request just the number, so an accepted
 equation can violate that formatting instruction. Earlier number-only runs
 remain failures under their original contract: `2 + 2 = 4.` must not retroactively
 turn such a formatting failure into a pass. Start a new evidence directory;
-v2 refuses to resume an older frozen fixture. Never add answer forms after
+v3 refuses to resume an older frozen fixture. Never add answer forms after
 seeing output within a campaign.
 
 | Profile | Artifact scope | Warm reuse | MTP |
@@ -58,6 +58,14 @@ the runner's explicit `--lane continuous` checks the actual route. There is
 no server `--lane continuous` option. Do not set `DS4_SERVER_CONTINUOUS=0`.
 For an additional MTP-on run, pass `--mtp-mode on --mtp-draft 2` to the server
 and runner, and `--expect-speculation on` to the runner. Solar/Motif reject on.
+
+For Motif, also set `DS4_MOTIF3_BATCH_TRACE=1` and redirect the server's stderr
+to a regular file. The runner reads only the new bytes from that PID's stderr
+for each request; it records the file identity, byte range and raw trace hash.
+Its official template removes the generation-only empty thinking pair, so
+append/branch may restore a partial checkpoint at the canonical history
+frontier. This is reported as `partial`, including when native code copies
+that checkpoint to another bank.
 
 Start with an empty, dedicated disk cache and evidence directory. `$PID` is
 the inference server PID, not its owner, shell or watchdog. Record clocks and
@@ -98,7 +106,13 @@ python3 tests/serving_reuse_live.py cold \
 | fork: extend the retained append branch with 5 + 3 | `8`, `8.`, `5 + 3 = 8`, `5 + 3 = 8.` | exact/fork, positive proper prefix |
 | restart: extend actual fork reply with 8 + 1 | `9`, `9.`, `8 + 1 = 9`, `8 + 1 = 9.` | exact/fork as first generation after restart |
 
-The warm phase must observe at least one actual `fork`. A later branch can
+The warm phase must observe at least one actual bank fork. For Motif, append
+and retained-branch continuation additionally accept `partial`, and the native
+trace must confirm a successful copy to a different bank, with the reported
+cached count, unchanged source frontier and matching target frontier. A
+`partial`/`fork` label alone cannot satisfy this Motif check. This demonstrates
+the copy and frontier; tensor/source-content preservation is a separate native
+gate. Other families require at least one `fork` request trace. A later branch can
 reuse its still-resident parent with `exact`; the scheduler need not copy a
 bank again for that request.
 

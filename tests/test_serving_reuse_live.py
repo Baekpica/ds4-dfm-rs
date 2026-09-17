@@ -121,6 +121,47 @@ class ReuseRunnerTests(unittest.TestCase):
                                            self.response("6"), self.stats(kind))
                 self.assertEqual(not errors, okay, errors)
 
+    def test_motif_history_continuation_accepts_partial(self):
+        for name, answer in [("append", "5"), ("fork", "8")]:
+            for family, okay in [("motif", True), ("qwen", False)]:
+                with self.subTest(name=name, family=family):
+                    errors = gate.inspect_case(self.config(family), "warm", name, self.case(name),
+                                               self.response(answer), self.stats("partial"))
+                    self.assertEqual(not errors, okay, errors)
+
+    def test_partial_fork_requires_preserved_native_frontiers(self):
+        line = ("ds4: Motif-3 bank reuse source=0 target=1 cached=300 partial=1 "
+                "source_before=320 source_after=320 target_after=300")
+        events = gate.native_forks(line, 300, 2)
+        self.assertEqual(len(events), 1)
+        self.assertTrue(gate.has_warm_fork("motif", ["partial"], events))
+        self.assertFalse(gate.has_warm_fork("motif", ["fork"], []))
+        self.assertFalse(gate.has_warm_fork("qwen", ["partial"], events))
+        for bad in [line.replace("target=1", "target=0"),
+                    line.replace("target=1", "target=2"),
+                    line.replace("source_after=320", "source_after=300"),
+                    line.replace("target_after=300", "target_after=299"),
+                    line.replace("cached=300", "cached=299"), "noise " + line]:
+            with self.subTest(line=bad):
+                self.assertEqual(gate.native_forks(bad, 300, 2), [])
+
+    def test_native_log_rejects_stale_or_replaced_evidence(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "server.log"
+            path.write_bytes(b"old request\n")
+            info = path.stat()
+            mark = path, (info.st_dev, info.st_ino), info.st_size
+            with path.open("ab") as handle:
+                handle.write(b"new request\n")
+            self.assertEqual(gate.native_log_read(mark), b"new request\n")
+            path.write_bytes(b"")
+            with self.assertRaisesRegex(RuntimeError, "truncated"):
+                gate.native_log_read(mark)
+            path.rename(path.with_suffix(".old"))
+            path.write_bytes(b"replacement\n")
+            with self.assertRaisesRegex(RuntimeError, "file changed"):
+                gate.native_log_read(mark)
+
     def test_cold_requires_zero_cache_and_exact_output(self):
         warm = self.response("5")
         cold = self.response(" 5", 0)
