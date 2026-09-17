@@ -322,13 +322,15 @@ MODEL_DIR=/path/to/GLM-5.3-Flash-Mixed-Quant-GGUF
   --host 127.0.0.1 --port 8000
 ```
 
-The current GLM graph is serial and has an explicit 2,048-token context cap.
+The current GLM graph is serial and has an explicit 2,048-token context cap,
+enforced by host admission and native session creation, including lazy graphs.
+Snapshots, disk KV, continuous banks and MTP are unsupported.
 OpenAI Chat text and inline PNG image requests were served live on one DGX
 Spark; model-free parsing gates also cover the equivalent Responses and
 Anthropic inline-image forms. PNG and JPEG are accepted, with at most four
-images per request. Q4, FP8, full GLM 5.3, Metal, ROCm, distributed serving,
-SSD streaming, continuous batching, and speculative MTP were not RC.4 gates
-and are not implied by this support entry.
+images per request. Q4, FP8, full GLM 5.3, Metal, ROCm, distributed serving
+and SSD streaming were not RC.4 gates and are not implied by this support entry.
+Current boundary checks are listed in the [K2/GLM gates](docs/releases/v0.1.3-k2-glm-gates.md).
 
 ### K2-Horizon-375B release scope
 
@@ -357,8 +359,10 @@ graphs never capture the unregistered mmap. Default `DS4_MEMGOV=enforce`
 accepted the 32K first boot on this host.
 
 The following command reproduces the live serving shape with in-process VMM.
-External weight-owner import is not qualified for this artifact; see the
-[release ledger](docs/releases/v0.1.0.md).
+External weight-owner import remains unqualified. Snapshot and disk-KV paths
+are implemented but marked `present`, pending their separate
+[lifecycle gates](docs/releases/v0.1.3-k2-glm-gates.md). The qualified context
+and concurrency remain 32K and one bank; K2 has no MTP contract.
 
 ```sh
 MODEL=/path/to/K2-Horizon-375B-A23B-Mixed-Quant-GGUF/K2-Horizon-375B-A23B-MQ87-00001-of-00004.gguf

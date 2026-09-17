@@ -114,10 +114,12 @@ also restored all frontier logits exactly through both load paths. A fresh
 21-token suffix. See the [release ledger](releases/v0.1.0.md) and the
 [historical bank gates](rust-migration/QWEN_V065_RESTAMP_2026-08-31.md).
 
-GLM 5.3 session snapshots explicitly return unsupported. K2's qualified
-32K serving path uses in-process VMM; external weight-owner import and disk-KV
-are not qualified. Do not infer disk-KV support from shared CLI flags or a
-successful generation request.
+GLM 5.3 rejects snapshots and disk KV; its serial context cap is 2,048,
+including lazy graph creation. K2's qualified scope remains one bank at 32K
+with in-process VMM and no MTP. K2 snapshots and disk KV are implemented but
+marked `present`; their lifecycle and external weight-owner import are not
+qualified. The [K2/GLM gates](releases/v0.1.3-k2-glm-gates.md) distinguish
+short native checks, restart reuse and context-boundary checks.
 
 Example for a validated payload family, within its measured context limit:
 

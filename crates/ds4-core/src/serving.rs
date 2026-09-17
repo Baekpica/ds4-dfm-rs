@@ -2482,6 +2482,23 @@ mod tests {
     }
 
     #[test]
+    fn glm_exact_context_boundary() {
+        for ctx in [1, 2048, 2049, i32::MAX] {
+            let req = ServingRequest {
+                ctx,
+                ..ServingRequest::default()
+            };
+            let p = plan(req, ModelFamily::Glm53, Variant::Glm53Flash);
+            assert_eq!(p.has_errors(), ctx > 2048, "ctx={ctx}: {:?}", p.issues);
+            assert_eq!(
+                p.issues.iter().any(|i| i.code == "ctx_unavailable"),
+                ctx > 2048
+            );
+            assert_eq!(p.qualified.ctx, Some(2048));
+        }
+    }
+
+    #[test]
     fn native_capacity_is_not_yield() {
         let req = ServingRequest {
             sched_chunk: Some(512),
@@ -2661,10 +2678,13 @@ mod tests {
     #[test]
     fn glm_disk_is_an_error() {
         let mut req = ServingRequest::default();
+        req.ctx = 2048;
         req.kv_disk_dir = Some("/tmp/kv".into());
         let p = plan(req, ModelFamily::Glm53, Variant::Glm53Flash);
         assert!(p.has_errors());
         assert!(!p.effective.disk);
+        assert!(p.issues.iter().any(|i| i.code == "disk_unsupported"));
+        assert!(!p.issues.iter().any(|i| i.code == "ctx_unavailable"));
     }
 
     #[test]
