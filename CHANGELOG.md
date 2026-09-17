@@ -6,7 +6,7 @@ through [Entrpi/ds4](https://github.com/Entrpi/ds4) and Baekpica DFM; the
 Entrpi fork point was `e16ead1` (2026-05-29). See [LINEAGE.md](docs/LINEAGE.md)
 for exact provenance. Historical entries retain their original scope.
 
-## Unreleased
+## v0.1.3 — 2026-09-17
 
 - Common serving controls expose requested, effective and qualified behavior
   through `--print-plan`, `--check-config`, `/v1/stats` and request traces.
@@ -17,6 +17,9 @@ for exact provenance. Historical entries retain their original scope.
   Disk KV requires artifact/runtime identity; K2 edits replay from zero,
   and cached-token counts reflect actual reuse. DeepSeek cache admission
   accounts for page-rounded allocations.
+- K2 serial raw disk extensions passed fresh-process restore and cold parity
+  at a 32K allocation with a 4 GiB / PSI30 guard. Identical whole prompts
+  still replay cold; disk reuse through Chat or the continuous lane remains unqualified.
 - Adds `ds4-perf` HTTP/SSE workload capture and profile selection/application
   against correctness, latency, memory and process/artifact/plan identity.
   Append workloads may declare exact, partial or fork reuse; observations

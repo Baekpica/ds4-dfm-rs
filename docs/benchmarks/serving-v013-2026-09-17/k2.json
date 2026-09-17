@@ -961,5 +961,967 @@
         "bytes": 920
       }
     ]
+  },
+  "serial_lifecycle_32k_psi30_settled4": {
+    "schema": "v013-k2-32k-psi30-serial-settled-v4",
+    "passed": true,
+    "status": "passed",
+    "build_commit": "c2a816b9cf681709141797fccb9dab9c0c9f3bf4",
+    "server_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+    "run": "scratch/v013/k2-serial32-settled4-psi30-integrated6",
+    "result": {
+      "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/result.json",
+      "sha256": "814077438bd08e8c8651c6192171a8f20af778fa6a046c67cdc5495e31b671e0"
+    },
+    "source": {
+      "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/source.json",
+      "sha256": "fc305293424d22e2590def6689237a7a3514edecf992fbe990a65866a2a445c3",
+      "bytes": 2718
+    },
+    "orchestration": {
+      "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/orchestrator.jsonl",
+      "sha256": "e8e6a50f9736b7046145b74939dc7698bc5e1eafa4a90e2050a39df84c99ce01",
+      "bytes": 10078
+    },
+    "artifacts": {
+      "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/artifacts.json",
+      "sha256": "9e2ec5c2075a1ed8c11076ff9e2c8da63b54c62c12414aaf30076ae1318ee4fe",
+      "bytes": 1424
+    },
+    "batch_fit_headroom_mb": 4096,
+    "session_graph_headroom_mb": 4096,
+    "guard_policy": {
+      "requested_max_gib": 104,
+      "requested_high_gib": 100,
+      "reserve_gib": 12,
+      "trip_gib": 4,
+      "psi_full_avg10_threshold": 30,
+      "psi_available_lt_gib": 8,
+      "implementation": "task-local host-memory-guard-k2-psi30.py; shared guard unchanged"
+    },
+    "checks": {
+      "raw_files": 86,
+      "model_contents_rehashed_by_publisher": false,
+      "source_and_executable_revalidated": true,
+      "full_shard_hashes_verified_by_campaign": 4
+    },
+    "local_guard_sha256": "6c6994ede44ce4a7419b71b7e4ec0d07ccc58a215bdb904043ee2f048bb75aeb",
+    "prior_failures": {
+      "manifest": {
+        "path": "scratch/v013/k2-serial-prior-failures.json",
+        "sha256": "2f0f07581e02fb9bd572070c21669f49fa1b61a75795d223e18ae30f427a83b7"
+      },
+      "attempts": [
+        {
+          "run": "scratch/v013/k2-http-integrated5",
+          "result_sha256": "4d56866d4dd21bdc4a0f0b6c5aa46d0c20cfffc2700aff27508e49fde1a9e0b3",
+          "passed": false,
+          "error": "RuntimeError: server guard exited before its requested stop",
+          "failure_events": [
+            {
+              "time": 1789636506.1988156,
+              "event": "terminate",
+              "unit": "ds4-hostguard-975598-1789636387985700489.scope",
+              "reason": "host memory watchdog floor crossed",
+              "available_gib": 7.681774139404297,
+              "psi_full_avg10": 17.44
+            },
+            {
+              "time": 1789636507.3124788,
+              "event": "kill",
+              "unit": "ds4-hostguard-975598-1789636387985700489.scope",
+              "reason": "host memory watchdog floor crossed"
+            },
+            {
+              "time": 1789636507.3461885,
+              "event": "exit",
+              "unit": "ds4-hostguard-975598-1789636387985700489.scope",
+              "status": 75,
+              "payload_status": -15
+            }
+          ],
+          "minimum_sampled_available_gib": 7.681774139404297,
+          "raw_files_verified": 12
+        },
+        {
+          "run": "scratch/v013/k2-http32-trip4-integrated6",
+          "result_sha256": "1653f0414fa86c5a580b7848aade96f260188346f7f63debbfa020ee1d9daed2",
+          "passed": false,
+          "error": "RuntimeError: server guard exited before its requested stop",
+          "failure_events": [
+            {
+              "time": 1789640808.6173751,
+              "event": "exit",
+              "unit": "ds4-hostguard-1047249-1789640696314642517.scope",
+              "status": 2,
+              "payload_status": 2
+            }
+          ],
+          "minimum_sampled_available_gib": 13.082927703857422,
+          "raw_files_verified": 12
+        },
+        {
+          "run": "scratch/v013/k2-http32-trip4-fit4-integrated6",
+          "result_sha256": "5932aa6cc425ece9b42e0cfe57d72d5622521cd6446c6ce8bf8a5fe14724e639",
+          "passed": false,
+          "error": "RuntimeError: server guard exited before its requested stop",
+          "failure_events": [
+            {
+              "time": 1789641505.1356473,
+              "event": "terminate",
+              "unit": "ds4-hostguard-1054846-1789641375918830261.scope",
+              "reason": "sustained host memory stalls near reserve",
+              "available_gib": 7.086345672607422,
+              "psi_full_avg10": 21.79
+            },
+            {
+              "time": 1789641506.287695,
+              "event": "kill",
+              "unit": "ds4-hostguard-1054846-1789641375918830261.scope",
+              "reason": "sustained host memory stalls near reserve"
+            },
+            {
+              "time": 1789641506.3784063,
+              "event": "exit",
+              "unit": "ds4-hostguard-1054846-1789641375918830261.scope",
+              "status": 75,
+              "payload_status": -15
+            }
+          ],
+          "minimum_sampled_available_gib": 7.086345672607422,
+          "raw_files_verified": 12
+        },
+        {
+          "run": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6",
+          "result_sha256": "f915ac5cde9b8254f828c982ad7a8a644b6f97d674dcf5d74f0f25438e983ce6",
+          "passed": false,
+          "error": "RuntimeError: restored failed: see restored.runner.log",
+          "raw_files_verified": 36,
+          "scope_error": "Raw /v1/completions is excluded by continuous bank_scope; no checkpoint was written or loaded. Both guards stopped intentionally.",
+          "seed_prompt_tokens": 545,
+          "restored_cached_tokens": 0,
+          "cache_files": []
+        },
+        {
+          "run": "scratch/v013/k2-serial32-psi30-integrated6",
+          "result_sha256": "7f154b93863a1c3f5c7fbccd680d8d9922186bd59126da0fd90e023e686e51c1",
+          "passed": false,
+          "error": "RuntimeError: guard termination/kill reason differs from requested stop",
+          "raw_files_verified": 19,
+          "validated_preview": {
+            "path": "scratch/v013/k2-serial-publication.json",
+            "sha256": "da15a9f7abe52368909bef605bbc839a33e3dc60d07b4b89bec09459c5a30dbd"
+          },
+          "guard_failures": {
+            "worker-seed.memory.jsonl": [
+              {
+                "time": 1789646231.9867609,
+                "event": "terminate",
+                "unit": "ds4-hostguard-1109762-1789646089576383369.scope",
+                "reason": "sustained host memory stalls near reserve",
+                "available_gib": 7.817554473876953,
+                "psi_full_avg10": 32.68
+              },
+              {
+                "time": 1789646233.084999,
+                "event": "kill",
+                "unit": "ds4-hostguard-1109762-1789646089576383369.scope",
+                "reason": "sustained host memory stalls near reserve"
+              },
+              {
+                "time": 1789646233.7657616,
+                "event": "exit",
+                "unit": "ds4-hostguard-1109762-1789646089576383369.scope",
+                "status": 75,
+                "payload_status": -9
+              }
+            ]
+          },
+          "sampled_memory": {
+            "worker-seed.memory.jsonl": {
+              "minimum_available_gib": 7.817554473876953,
+              "maximum_psi_full_avg10": 45.69
+            }
+          }
+        },
+        {
+          "run": "scratch/v013/k2-serial32-settled-psi30-integrated6",
+          "result_sha256": "f594e2b8456d4749d4e6d2538508719bf7c6d21775002f54ab0a77b1486c509d",
+          "passed": false,
+          "error": "InterruptedError: signal 15",
+          "raw_files_verified": 15,
+          "validated_preview": {
+            "path": "scratch/v013/k2-serial-settled-publication.json",
+            "sha256": "a1f6342b5c5a559179671e79299099c594fc127b5bd9494dc3c0cec9e63c3a18"
+          },
+          "scope": "Aborted before first request: min(raw CUDA) admission did not match native GB10 reclaimable-memory authority.",
+          "guard_failures": {
+            "worker-seed.memory.jsonl": [
+              {
+                "time": 1789647203.4455714,
+                "event": "terminate",
+                "unit": "ds4-hostguard-1122487-1789647009454707073.scope",
+                "reason": "watchdog received a stop signal",
+                "available_gib": 12.44149398803711,
+                "psi_full_avg10": 0.0
+              },
+              {
+                "time": 1789647204.4729974,
+                "event": "kill",
+                "unit": "ds4-hostguard-1122487-1789647009454707073.scope",
+                "reason": "watchdog received a stop signal"
+              },
+              {
+                "time": 1789647204.5126836,
+                "event": "exit",
+                "unit": "ds4-hostguard-1122487-1789647009454707073.scope",
+                "status": 75,
+                "payload_status": 0
+              }
+            ]
+          },
+          "sampled_memory": {
+            "worker-seed.memory.jsonl": {
+              "minimum_available_gib": 12.422920227050781,
+              "maximum_psi_full_avg10": 5.62
+            }
+          }
+        },
+        {
+          "run": "scratch/v013/k2-serial32-settled2-psi30-integrated6",
+          "result_sha256": "ac7ce17b4844b349b687d4289b42513fc47e1d25ae76136176f0fe548899b6c7",
+          "passed": false,
+          "error": "InterruptedError: signal 15",
+          "raw_files_verified": 13,
+          "validated_preview": {
+            "path": "scratch/v013/k2-serial-settled2-publication.json",
+            "sha256": "f1f4660a6811752de508ff75bcd0fbfb49ae2682b798274a7a6cb5c72ba9b127"
+          },
+          "scope": "Aborted before first request after source confirmed identical K2 prompts replay cold; no positive identical-request disk hit was measured.",
+          "guard_failures": {
+            "worker-seed.memory.jsonl": [
+              {
+                "time": 1789647563.766785,
+                "event": "terminate",
+                "unit": "ds4-hostguard-1131524-1789647518405553859.scope",
+                "reason": "watchdog received a stop signal",
+                "available_gib": 66.78892517089844,
+                "psi_full_avg10": 0.0
+              },
+              {
+                "time": 1789647564.777171,
+                "event": "kill",
+                "unit": "ds4-hostguard-1131524-1789647518405553859.scope",
+                "reason": "watchdog received a stop signal"
+              },
+              {
+                "time": 1789647564.7993708,
+                "event": "exit",
+                "unit": "ds4-hostguard-1131524-1789647518405553859.scope",
+                "status": 75,
+                "payload_status": -15
+              }
+            ]
+          },
+          "sampled_memory": {
+            "worker-seed.memory.jsonl": {
+              "minimum_available_gib": 66.78892517089844,
+              "maximum_psi_full_avg10": 0.0
+            }
+          }
+        },
+        {
+          "run": "scratch/v013/k2-serial32-settled3-psi30-integrated6",
+          "result_sha256": "ab2c5bf71969441882cd6113b445d881cee38361c5615edcf921a1fac525f14d",
+          "passed": false,
+          "error": "RuntimeError: seed has no persisted exact native KVC before teardown",
+          "raw_files_verified": 24,
+          "validated_preview": {
+            "path": "scratch/v013/k2-serial-settled3-publication.json",
+            "sha256": "c634aeaeae0dc0efc974d168e84fded18cab43316a9c22719a33790b75eb31f2"
+          },
+          "scope": "Seed HTTP completed at configured32K, but the cache checker searched .kvc instead of actual .kv. Missing pre-stop snapshot proof remains missing; no restart or cold-parity qualification.",
+          "seed_http_observation": {
+            "prompt_tokens": 546,
+            "cached_tokens": 0,
+            "completion_tokens": 1,
+            "text": "<|",
+            "finish_reason": "length",
+            "trace": {
+              "effective_lane": "serial",
+              "reuse_kind": "cold",
+              "speculation_active": false,
+              "fallback_reason": null,
+              "reuse_miss": "no checkpoint at or below LCP"
+            },
+            "raw": [
+              {
+                "path": "scratch/v013/k2-serial32-settled3-psi30-integrated6/evidence/seed.exact.response.json",
+                "sha256": "b8490f772741cd437f475bed444357e8c1d2a99538914b3311b9d055f027f4cd",
+                "bytes": 549
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled3-psi30-integrated6/evidence/seed.exact.stats.json",
+                "sha256": "7f768093a4503c63845d69d0e2a9561fc19c96fe4e8cc8e6751daeabe659dc3d",
+                "bytes": 7972
+              }
+            ]
+          },
+          "guard_failures": {
+            "worker-seed.memory.jsonl": [
+              {
+                "time": 1789648163.2402425,
+                "event": "terminate",
+                "unit": "ds4-hostguard-1140174-1789648032092133365.scope",
+                "reason": "watchdog received a stop signal",
+                "available_gib": 5.023326873779297,
+                "psi_full_avg10": 13.03
+              },
+              {
+                "time": 1789648164.2966568,
+                "event": "kill",
+                "unit": "ds4-hostguard-1140174-1789648032092133365.scope",
+                "reason": "watchdog received a stop signal"
+              },
+              {
+                "time": 1789648164.3230994,
+                "event": "exit",
+                "unit": "ds4-hostguard-1140174-1789648032092133365.scope",
+                "status": 75,
+                "payload_status": 0
+              }
+            ]
+          },
+          "sampled_memory": {
+            "worker-seed.memory.jsonl": {
+              "minimum_available_gib": 5.023326873779297,
+              "maximum_psi_full_avg10": 18.11
+            }
+          }
+        }
+      ]
+    },
+    "authorization_scope": "User explicitly approved PSI30 after the PSI20 attempt failed; --authorized-psi30 is recorded in every launched worker command.",
+    "limitations": [
+      "Short explicit-serial raw HTTP lifecycle at a32768 allocation; no continuous-disk, filled32K prompt, arithmetic/Chat quality or speed claim.",
+      "Fixturev3 preserves the newline request bytes; restored order is append/fork/exact/edit. First append proves a disk prefix containing all546 seed tokens, and a valid longer shutdown frontier is allowed. Identical request and early edit are cold replay controls, not full-hit qualification.",
+      "Serial cold-prefill writes the complete native prompt checkpoint before sampling; trim/alignment0 and default continued interval10000 are preserved.",
+      "Zero-token stop outputs are recorded as such; exact equality alone is not a quality claim.",
+      "User authorized lowering the hard floor from8 to4GiB; the user separately authorized PSI30 using the existing trip+4 boundary, now8GiB.",
+      "Cgroup max/high104/100 and reserve12 were unchanged; actual admission-clamped limits and sampled minima are recorded.",
+      "Serial session graph headroom is explicitly4096MiB instead of default1GiB; native/serverfloor4 and externaltrip4 remain unchanged. Existing batch pin4096 is retained but no batch context is allocated.",
+      "Original native proof and all four failed attempts (8GiB guard, fit6 rejection, PSI20 termination, raw-Completion cache-scope mismatch) remain separate and unchanged.",
+      "This retry uses the native GB10 chosen-free authority and current host MemAvailable; raw CUDA free remains telemetry. Five one-second samples below PSI10 must cover quoted runtime plus4GiB floor and0.25GiB margin within180seconds. Cache inspection now uses the actual .kv suffix. All eight previous failed or aborted attempts remain unqualified."
+    ],
+    "phases": {
+      "seed": {
+        "process": {
+          "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/worker-seed.ready.json",
+          "sha256": "4cda84287af7c13aa82277f699292f531c9b75de6cafd32e53ff29751faf6417",
+          "bytes": 10895
+        },
+        "pid": 1144533,
+        "start_ticks": "42453648",
+        "effective": {
+          "prefix_reuse": "exact",
+          "mtp_mode": "off",
+          "mtp_weights": false,
+          "mtp_draft": null,
+          "max_seqs": 1,
+          "ctx": 32768,
+          "mem_floor_gb": 4,
+          "disk": true,
+          "banks_opt_in": false,
+          "sched_chunk": 64,
+          "sched_chunk_live": 64,
+          "native_chunk": 64,
+          "bank_persist_min_tokens": 1,
+          "disk_min_tokens": 1,
+          "disk_is_offload": false
+        },
+        "cases": {
+          "exact": {
+            "prompt_tokens": 546,
+            "cached_tokens": 0,
+            "completion_tokens": 1,
+            "text": "<|",
+            "finish_reason": "length",
+            "trace": {
+              "effective_lane": "serial",
+              "reuse_kind": "cold",
+              "speculation_active": false,
+              "fallback_reason": null,
+              "reuse_miss": "no checkpoint at or below LCP"
+            },
+            "raw": [
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/seed.exact.request.json",
+                "sha256": "dd8ae429645e77040a759b92099b28cc55cedcd263ee2f60ca925fc376fa5651",
+                "bytes": 2301
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/seed.exact.response.json",
+                "sha256": "854a7b0745a6ab3c9e74cfc3a5cc04b3c8bc4e1105b2835f2913d6e74a13dc96",
+                "bytes": 549
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/seed.exact.stats.json",
+                "sha256": "d7c39c4838961e21a6510daac2724f1fb58dcfe25a035639231d5e8adf56b2f8",
+                "bytes": 7972
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/seed.exact.summary.json",
+                "sha256": "a6bb9ecd3caad1112a9870110d43e2466cd14558140b24dbdd7e475b6dbccdf6",
+                "bytes": 539
+              }
+            ]
+          }
+        },
+        "guard": {
+          "requested_max_gib": 104,
+          "requested_high_gib": 100,
+          "actual_max_gib": 99.7,
+          "actual_high_gib": 98.7,
+          "reserve_gib": 12,
+          "trip_gib": 4,
+          "psi_full_avg10_threshold": 30,
+          "psi_available_lt_gib": 8,
+          "minimum_sampled_available_gib": 4.830524444580078,
+          "maximum_sampled_psi_full_avg10": 15.17,
+          "started_unix": 1789648510.5211542,
+          "finished_unix": 1789648645.0835888,
+          "guard_status": 75,
+          "payload_status": 0,
+          "raw": {
+            "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/worker-seed.memory.jsonl",
+            "sha256": "732d809c8f6cf49d7b103d3175c074a9febef29c910cc2c712e91c313277d220",
+            "bytes": 23440
+          }
+        }
+      },
+      "restored": {
+        "process": {
+          "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/worker-restored.ready.json",
+          "sha256": "fc81808c38f11a9fa6c569aa97d5b3dba5f1b8b55037b71cdcdd7bdb72577ed5",
+          "bytes": 10895
+        },
+        "pid": 1146551,
+        "start_ticks": "42467256",
+        "effective": {
+          "prefix_reuse": "exact",
+          "mtp_mode": "off",
+          "mtp_weights": false,
+          "mtp_draft": null,
+          "max_seqs": 1,
+          "ctx": 32768,
+          "mem_floor_gb": 4,
+          "disk": true,
+          "banks_opt_in": false,
+          "sched_chunk": 64,
+          "sched_chunk_live": 64,
+          "native_chunk": 64,
+          "bank_persist_min_tokens": 1,
+          "disk_min_tokens": 1,
+          "disk_is_offload": false
+        },
+        "cases": {
+          "append": {
+            "prompt_tokens": 561,
+            "cached_tokens": 547,
+            "completion_tokens": 3,
+            "text": " 4.",
+            "finish_reason": "stop",
+            "trace": {
+              "effective_lane": "serial",
+              "reuse_kind": "exact",
+              "speculation_active": false,
+              "fallback_reason": null
+            },
+            "raw": [
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/restored.append.request.json",
+                "sha256": "f171ab78bf8b1f305173d83823a4e4a5b2841c88779d498360ff4293b797261d",
+                "bytes": 2380
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/restored.append.response.json",
+                "sha256": "065539b425e5f848b565bb05d3c844916cc1e407c3b2d3761c0bdf8bc05c3569",
+                "bytes": 576
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/restored.append.stats.json",
+                "sha256": "3c7183bb8785bf14e2e1c6f1882a5dc111204f70116de588d37d33caa9453946",
+                "bytes": 7922
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/restored.append.summary.json",
+                "sha256": "6a6067fb18218e8d08372c84ee2b0a1afeaafb410b651cdd65c8c6f41598b537",
+                "bytes": 493
+              }
+            ]
+          },
+          "fork": {
+            "prompt_tokens": 564,
+            "cached_tokens": 547,
+            "completion_tokens": 3,
+            "text": " 5.",
+            "finish_reason": "stop",
+            "trace": {
+              "effective_lane": "serial",
+              "reuse_kind": "exact",
+              "speculation_active": false,
+              "fallback_reason": null
+            },
+            "raw": [
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/restored.fork.request.json",
+                "sha256": "d0bca087b6c30c72c12c2a00d7cd5278c59b03eb4996aa680b8e3f8063acccf2",
+                "bytes": 2384
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/restored.fork.response.json",
+                "sha256": "1fdca26b9317450374247fb3f574ca354a4d546a13c94787cc3691a1eccdc7f6",
+                "bytes": 575
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/restored.fork.stats.json",
+                "sha256": "b3af81dd5b847d9c444bff5b5d5cba38dec2dfef5e5902999fb0e94db387ee53",
+                "bytes": 7922
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/restored.fork.summary.json",
+                "sha256": "ed1b9710540a9d0a29d56dbeee63b35dd934e4eaf4c5c7616e71f1b81341caa3",
+                "bytes": 491
+              }
+            ]
+          },
+          "exact": {
+            "prompt_tokens": 546,
+            "cached_tokens": 0,
+            "completion_tokens": 1,
+            "text": "<|",
+            "finish_reason": "length",
+            "trace": {
+              "effective_lane": "serial",
+              "reuse_kind": "cold",
+              "speculation_active": false,
+              "fallback_reason": null,
+              "reuse_miss": "session state requires prefix replay"
+            },
+            "raw": [
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/restored.exact.request.json",
+                "sha256": "dd8ae429645e77040a759b92099b28cc55cedcd263ee2f60ca925fc376fa5651",
+                "bytes": 2301
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/restored.exact.response.json",
+                "sha256": "f99887be9318dfa66dc652cc8b53d8e2f99597d0817a67de371978528088f23a",
+                "bytes": 550
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/restored.exact.stats.json",
+                "sha256": "ca328d39f52ce2b840e735548259f6a0cf1dc4cc3ed2d90bcc34a8866a58042d",
+                "bytes": 7979
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/restored.exact.summary.json",
+                "sha256": "650868f6b6646df5e940aa92b785a93fe76fd1a391713ef897e7e554128ea0b3",
+                "bytes": 547
+              }
+            ]
+          },
+          "edit": {
+            "prompt_tokens": 561,
+            "cached_tokens": 0,
+            "completion_tokens": 3,
+            "text": " 4.",
+            "finish_reason": "stop",
+            "trace": {
+              "effective_lane": "serial",
+              "reuse_kind": "cold",
+              "speculation_active": false,
+              "fallback_reason": null,
+              "reuse_miss": "no checkpoint at or below LCP"
+            },
+            "raw": [
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/restored.edit.request.json",
+                "sha256": "b598b70c6abd5c7816c2065f99bdc228f71fc23149b36ff79c0254d7005c4cb3",
+                "bytes": 2379
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/restored.edit.response.json",
+                "sha256": "ff0c074537a18d5e79e319f9431083821f7e316981b1b89d93c9a0adad791217",
+                "bytes": 575
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/restored.edit.stats.json",
+                "sha256": "c6d7077a1e5d8586b18a07e6af54407c6808e1795a1e2567dc377d15ef7c209d",
+                "bytes": 7972
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/restored.edit.summary.json",
+                "sha256": "dfee43b4453c57e6329c0418eeb4d6ab38e966db1398a342ae09622ea390b4db",
+                "bytes": 538
+              }
+            ]
+          }
+        },
+        "guard": {
+          "requested_max_gib": 104,
+          "requested_high_gib": 100,
+          "actual_max_gib": 99.7,
+          "actual_high_gib": 98.7,
+          "reserve_gib": 12,
+          "trip_gib": 4,
+          "psi_full_avg10_threshold": 30,
+          "psi_available_lt_gib": 8,
+          "minimum_sampled_available_gib": 4.98553466796875,
+          "maximum_sampled_psi_full_avg10": 9.26,
+          "started_unix": 1789648646.6002457,
+          "finished_unix": 1789648802.6153076,
+          "guard_status": 75,
+          "payload_status": 0,
+          "raw": {
+            "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/worker-restored.memory.jsonl",
+            "sha256": "245f99c596c1a523f74aff6d283c9d698ae4e4bdf2435a9fe5e3da36c765161a",
+            "bytes": 26982
+          }
+        }
+      },
+      "cold": {
+        "process": {
+          "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/worker-cold.ready.json",
+          "sha256": "4c6c3e7b52324c8c329a29dcabbbea30685a49ea8661dd7521eb435d2e00dff4",
+          "bytes": 10382
+        },
+        "pid": 1147883,
+        "start_ticks": "42482963",
+        "effective": {
+          "prefix_reuse": "off",
+          "mtp_mode": "off",
+          "mtp_weights": false,
+          "mtp_draft": null,
+          "max_seqs": 1,
+          "ctx": 32768,
+          "mem_floor_gb": 4,
+          "disk": false,
+          "banks_opt_in": false,
+          "sched_chunk": 64,
+          "sched_chunk_live": 64,
+          "native_chunk": 64,
+          "bank_persist_min_tokens": 1,
+          "disk_min_tokens": 512,
+          "disk_is_offload": false
+        },
+        "cases": {
+          "append": {
+            "prompt_tokens": 561,
+            "cached_tokens": 0,
+            "completion_tokens": 3,
+            "text": " 4.",
+            "finish_reason": "stop",
+            "trace": {
+              "effective_lane": "serial",
+              "reuse_kind": "cold",
+              "speculation_active": false,
+              "fallback_reason": null
+            },
+            "raw": [
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/cold.append.request.json",
+                "sha256": "f171ab78bf8b1f305173d83823a4e4a5b2841c88779d498360ff4293b797261d",
+                "bytes": 2380
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/cold.append.response.json",
+                "sha256": "c4251a289262b45b91e347903eaa2d8c3453bfb35b319ff84d254d0c277a6fa9",
+                "bytes": 574
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/cold.append.stats.json",
+                "sha256": "bbc12c537669b33bdfe27b38f6e7a0aec963661a206d95b189302fe22fd7d187",
+                "bytes": 7760
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/cold.append.summary.json",
+                "sha256": "85a32328455539e246c8acec5a9262cb156b8780091d5e8a8647e07eeda33a71",
+                "bytes": 488
+              }
+            ]
+          },
+          "fork": {
+            "prompt_tokens": 564,
+            "cached_tokens": 0,
+            "completion_tokens": 3,
+            "text": " 5.",
+            "finish_reason": "stop",
+            "trace": {
+              "effective_lane": "serial",
+              "reuse_kind": "cold",
+              "speculation_active": false,
+              "fallback_reason": null
+            },
+            "raw": [
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/cold.fork.request.json",
+                "sha256": "d0bca087b6c30c72c12c2a00d7cd5278c59b03eb4996aa680b8e3f8063acccf2",
+                "bytes": 2384
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/cold.fork.response.json",
+                "sha256": "268a19bc3a84dac2ec330a3ab4e468c1760b817bbc3e61318265eeee9866542d",
+                "bytes": 575
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/cold.fork.stats.json",
+                "sha256": "4fe8677caecbeba893b2f7b1596daaeb05f30ed57f56f54a6e360176ba2e53d6",
+                "bytes": 7760
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/cold.fork.summary.json",
+                "sha256": "7242092b3842e1297b44ddc8a0354277bb51249e930d08d8df1ae88243c449e4",
+                "bytes": 486
+              }
+            ]
+          },
+          "exact": {
+            "prompt_tokens": 546,
+            "cached_tokens": 0,
+            "completion_tokens": 1,
+            "text": "<|",
+            "finish_reason": "length",
+            "trace": {
+              "effective_lane": "serial",
+              "reuse_kind": "cold",
+              "speculation_active": false,
+              "fallback_reason": null
+            },
+            "raw": [
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/cold.exact.request.json",
+                "sha256": "dd8ae429645e77040a759b92099b28cc55cedcd263ee2f60ca925fc376fa5651",
+                "bytes": 2301
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/cold.exact.response.json",
+                "sha256": "3d53b2677402bae4713c1c99bcdea4a97aa60a021c10172e14cdabd0e140c5b4",
+                "bytes": 550
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/cold.exact.stats.json",
+                "sha256": "7a3b7b761e78dc662d17fdedc6214eaa8cbeb31a86f07453476a2faf6b515c0a",
+                "bytes": 7760
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/cold.exact.summary.json",
+                "sha256": "850b69caf5e72a4b9a495f08dad2fa0f80d4b7ed5fa14e7e980c053befc9e89a",
+                "bytes": 489
+              }
+            ]
+          },
+          "edit": {
+            "prompt_tokens": 561,
+            "cached_tokens": 0,
+            "completion_tokens": 3,
+            "text": " 4.",
+            "finish_reason": "stop",
+            "trace": {
+              "effective_lane": "serial",
+              "reuse_kind": "cold",
+              "speculation_active": false,
+              "fallback_reason": null
+            },
+            "raw": [
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/cold.edit.request.json",
+                "sha256": "b598b70c6abd5c7816c2065f99bdc228f71fc23149b36ff79c0254d7005c4cb3",
+                "bytes": 2379
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/cold.edit.response.json",
+                "sha256": "87d0d0872c6ed7e5a6ebf30c84a5e2d2961c4ffe52b776224f88853a79514273",
+                "bytes": 575
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/cold.edit.stats.json",
+                "sha256": "71ba0a59227077bbb4e25af47e83eca0c4ee00cd65a491918d0034da9e7526d4",
+                "bytes": 7760
+              },
+              {
+                "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/cold.edit.summary.json",
+                "sha256": "4da09f344257c615a811966600cf06d2023f18327816f7a18eb0f3389299747e",
+                "bytes": 486
+              }
+            ]
+          }
+        },
+        "guard": {
+          "requested_max_gib": 104,
+          "requested_high_gib": 100,
+          "actual_max_gib": 100.0,
+          "actual_high_gib": 99.0,
+          "reserve_gib": 12,
+          "trip_gib": 4,
+          "psi_full_avg10_threshold": 30,
+          "psi_available_lt_gib": 8,
+          "minimum_sampled_available_gib": 4.879436492919922,
+          "maximum_sampled_psi_full_avg10": 12.6,
+          "started_unix": 1789648803.6733384,
+          "finished_unix": 1789648953.9730523,
+          "guard_status": 75,
+          "payload_status": 0,
+          "raw": {
+            "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/worker-cold.memory.jsonl",
+            "sha256": "01557ea1080a6eb3bbce58d1b7f7b82634914c557dbe562be50e57dc0456c0fd",
+            "bytes": 25707
+          }
+        }
+      }
+    },
+    "seed_cache": {
+      "receipt": {
+        "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/seed.cache.json",
+        "sha256": "7a82e1a32d7463270ea913c3e9f16d2c0fe16d438523667d3f78c3c5da0c1973",
+        "bytes": 860
+      },
+      "files": [
+        {
+          "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/seed-cache/9cc1d386bbf9331be18cb7ef2691d2204f2a04b0.kv",
+          "sha256": "db09b10f81b05a07f4f5c6d46340eac0c6c1d0a6c77ff0f7449df1da80537ab2",
+          "bytes": 137428309
+        }
+      ],
+      "tokens": 546,
+      "checkpoint_reason": 1,
+      "captured_before_teardown": true,
+      "exact_prompt": {
+        "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/seed.exact.request.json",
+        "sha256": "dd8ae429645e77040a759b92099b28cc55cedcd263ee2f60ca925fc376fa5651",
+        "bytes": 2301
+      }
+    },
+    "seed_poststop_cache": {
+      "receipt": {
+        "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/seed.poststop-cache.json",
+        "sha256": "31c97ffc3470c82fc2351c856fd20de3e19a8a3b4031722349b8f3d261eaafdf",
+        "bytes": 710
+      },
+      "files": [
+        {
+          "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/k2-serial32-settled4-psi30-integrated6/cache/757cd7e261cf90b5b26e199848e0e032faf55ad2.kv",
+          "bytes": 137678171,
+          "sha256": "ba1e64bf10df775e959f68fe369af35a44eee0e8f637f5931cd4e66c6f98e7d8",
+          "tokens": 547,
+          "reason": 4
+        },
+        {
+          "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/k2-serial32-settled4-psi30-integrated6/cache/9cc1d386bbf9331be18cb7ef2691d2204f2a04b0.kv",
+          "bytes": 137428309,
+          "sha256": "db09b10f81b05a07f4f5c6d46340eac0c6c1d0a6c77ff0f7449df1da80537ab2",
+          "tokens": 546,
+          "reason": 1
+        }
+      ],
+      "scope": "Inventory recorded after seed shutdown and before fresh append; mutable live-cache contents are not rehashed by publisher."
+    },
+    "tokenizer_proof": {
+      "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/token-proof.json",
+      "sha256": "d155879e68e1e734f1881bff63784ca824c5f0b779a534fd4ae4467a74c5df24",
+      "bytes": 32661
+    },
+    "fixture": {
+      "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/evidence/fixture.json",
+      "sha256": "c7d407e330e19e63d79ba49e9c8eae8341f780b104ed2f7ce3df4242d12aee89",
+      "bytes": 9550
+    },
+    "full_artifacts": {
+      "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/full-artifacts.json",
+      "sha256": "a6eb03814dda6c5d090bac2098476360575ad36a25c95f5cd50572e1cedc09c1",
+      "bytes": 1878
+    },
+    "finished_unix": 1789648954.2801962,
+    "parity": "Exact raw text bytes, finish reason and completion-token count match restored/cold; exact also matches seed.",
+    "cooldown": {
+      "policy": {
+        "psi_below": 10,
+        "floor_gib": 4,
+        "margin_gib": 0.25,
+        "consecutive": 5,
+        "interval_seconds": 1,
+        "timeout_seconds": 180
+      },
+      "native_free_authority": "max(cuda_free_bytes, meminfo_available_bytes), ties select cuda_free; admission min(current host, chosen native free)",
+      "runner": {
+        "path": "scratch/v013/run-k2-serial-settled4.py",
+        "sha256": "934bde41ec718733da7e0abf2cfb0c166e0973a53e1a8e1a60d0a59189b4d7f7"
+      },
+      "phases": {
+        "seed": {
+          "accepted_samples": 5,
+          "sample_count": 5,
+          "required_available_gib": 11.922413647174835,
+          "runtime_bytes": 8238191424,
+          "elapsed_seconds": 4.093262870970648,
+          "final_conservative_available_gib": 12.423892974853516,
+          "final_psi_full_avg10": 2.33,
+          "raw": [
+            {
+              "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/worker-seed.cooldown.jsonl",
+              "sha256": "c24dae3bf3300845ff3ea1ce9921702d5079b0549967a90d5101fb081ac8ce36",
+              "bytes": 3203
+            },
+            {
+              "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/worker-seed.settled.json",
+              "sha256": "34e33abe59159fd2b6cc904817d525651141c5035dd8e069781cf1b8a22f78ff",
+              "bytes": 11255
+            }
+          ]
+        },
+        "restored": {
+          "accepted_samples": 5,
+          "sample_count": 5,
+          "required_available_gib": 11.922413647174835,
+          "runtime_bytes": 8238191424,
+          "elapsed_seconds": 4.103588334983215,
+          "final_conservative_available_gib": 12.640983581542969,
+          "final_psi_full_avg10": 1.55,
+          "raw": [
+            {
+              "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/worker-restored.cooldown.jsonl",
+              "sha256": "74e1d76ea3452a3f51c2e48725c50f566c9c08f299514a5a8bf1715198e708eb",
+              "bytes": 3198
+            },
+            {
+              "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/worker-restored.settled.json",
+              "sha256": "285deeba29c04df09179f686869f6fc896145db42fcf04bbbb17d75be4638ed8",
+              "bytes": 11254
+            }
+          ]
+        },
+        "cold": {
+          "accepted_samples": 5,
+          "sample_count": 5,
+          "required_available_gib": 11.922413647174835,
+          "runtime_bytes": 8238191424,
+          "elapsed_seconds": 4.107996007951442,
+          "final_conservative_available_gib": 12.600112915039062,
+          "final_psi_full_avg10": 1.36,
+          "raw": [
+            {
+              "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/worker-cold.cooldown.jsonl",
+              "sha256": "8770a6f6711f84175ad27ffd243d6b63251dea2f25bc8b46e5e50072373943f2",
+              "bytes": 3193
+            },
+            {
+              "path": "scratch/v013/k2-serial32-settled4-psi30-integrated6/worker-cold.settled.json",
+              "sha256": "2026e0ac162f4ae5e409a7829e5243f0a7be774ced285a0d22cbe61a213b3367",
+              "bytes": 10741
+            }
+          ]
+        }
+      }
+    }
   }
 }

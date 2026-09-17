@@ -5,6 +5,8 @@ Run seed on an empty-cache server, restart with that cache, run restored,
 then run cold on a third process with --prefix-reuse off and no disk cache.
 The newline after the seed's IFM delimiter keeps suffixes token-prefix stable.
 Raw completions use the serial disk-cache path.
+Strict append and sibling requests reuse a stored prefix; identical requests
+and early edits currently replay cold under K2's zero-rewind policy.
 This exercises /v1/completions; it does not qualify Chat thinking/history.
 """
 
@@ -28,9 +30,9 @@ def fixture(model, lines):
         return {"model": model, "prompt": prompt, "max_tokens": budget,
                 "temperature": 0, "seed": 1, "reasoning_effort": "none"}
 
-    return {"exact": body(base, 1),
-            "append": body(base + suffix + "The answer is"),
+    return {"append": body(base + suffix + "The answer is"),
             "fork": body(base + suffix + "4. Add one to get"),
+            "exact": body(base, 1),
             "edit": body(base.replace("blue square", "red circle", 1) + suffix + "The answer is")}
 
 
@@ -65,12 +67,9 @@ def run_case(args, name, body):
     summary = {"case": name, "seconds": seconds, "cached_tokens": cached,
                "usage": response["usage"], "choice": response["choices"][0], "trace": trace}
     write_json(args.output / f"{key}.summary.json", summary)
-    if args.phase == "restored" and name != "edit":
+    if args.phase == "restored" and name in ("append", "fork"):
         assert cached > 0 and trace["reuse_kind"] in ("exact", "fork"), summary
-        if name == "exact":
-            assert cached == response["usage"]["prompt_tokens"], summary
-        else:
-            assert cached < response["usage"]["prompt_tokens"], summary
+        assert cached < response["usage"]["prompt_tokens"], summary
     else:
         assert cached == 0 and trace["reuse_kind"] == "cold", summary
     if args.phase == "cold":

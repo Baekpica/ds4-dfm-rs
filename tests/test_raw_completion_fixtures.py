@@ -46,6 +46,33 @@ class RawFixtureTests(unittest.TestCase):
                 mock.assert_not_called()
         self.assertIn("invalid choice: 'continuous'", stderr.getvalue())
 
+    def test_k2_serial_reuse_contract(self):
+        cases = k2_lifecycle_live.fixture("k2", 64)
+        with self.subTest(order="fresh restart exercises append first"):
+            self.assertEqual(list(cases), ["append", "fork", "exact", "edit"])
+        for name, cached, kind, accepted in [
+                ("append", 546, "exact", True), ("fork", 546, "exact", True),
+                ("exact", 0, "cold", True), ("edit", 0, "cold", True),
+                ("append", 0, "cold", False), ("exact", 546, "exact", False)]:
+            with self.subTest(case=name, cached=cached), TemporaryDirectory() as directory:
+                args = SimpleNamespace(phase="restored", output=Path(directory),
+                                       url="http://127.0.0.1:1", lane="serial", context=32768)
+                response = {"choices": [{"text": "", "finish_reason": "stop"}],
+                            "usage": {"prompt_tokens": 546 if name == "exact" else 561,
+                                      "completion_tokens": 0,
+                                      "prompt_tokens_details": {"cached_tokens": cached}}}
+                stats = {"last_request": {"effective_lane": "serial", "speculation_active": False,
+                                         "fallback_reason": None, "reuse_kind": kind},
+                         "serving": {"effective": {"ctx": 32768, "max_seqs": 1, "mtp_mode": "off",
+                                                   "disk": True, "prefix_reuse": "exact"}}}
+                with patch.object(k2_lifecycle_live, "request", side_effect=[response, stats]), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    if accepted:
+                        k2_lifecycle_live.run_case(args, name, cases[name])
+                    else:
+                        with self.assertRaises(AssertionError):
+                            k2_lifecycle_live.run_case(args, name, cases[name])
+
     def test_glm_short_and_overcap_requests_disable_thinking(self):
         bodies = []
         def request(url, path, body=None):
