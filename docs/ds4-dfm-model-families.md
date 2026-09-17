@@ -44,26 +44,28 @@ This keeps the changes reviewable for a possible future upstream contribution.
 
 ## Integrated families
 
-| Family | Shape selected from | Native state/runtime | Current server lane |
-|---|---|---|---|
-| DeepSeek V4 Flash / PRO | `general.architecture=deepseek4` | Entrpi compressed KV and continuous graph | continuous or serial; Flash is the main live oracle |
-| Solar Open2 250B | `general.architecture=solar-open2` | recurrent KDA state plus compressed GQA KV | persistent multi-bank |
-| K-EXAONE 236B A23B | `general.architecture=exaone-moe` | LLLG full/sliding GQA KV | persistent multi-bank; opt-in partial checkpoints |
-| Motif-3 | `general.architecture=motif3` | normalized latent KV, rotated `k_pe`, and SWA rings | persistent multi-bank |
-| dots3-note Preview | `general.architecture=dots3note` (legacy `dots3-note`) | dual-geometry latent KV, DSA keys, and SWA rings | serial default; opt-in text banks or serial MTP ([limits](#dots3-serving)) |
-| Qwen3.8 Flash Next SSD-PLE | `general.architecture=qwen4exp` | Q5 main + four SSD-PLE sidecars, GDN/QSA state, embedded MTP, still images | configured/native-fitted N-bank scheduler; one/two banks gated |
-| GLM 5.3 Flash | `general.architecture=glm5-next` | exact Q2 main + vision sidecar | serial; 2,048-context cap |
-| K2-Horizon 375B A23B | `general.architecture=k2-horizon` | full-attention GQA KV, partial NeoX RoPE, shared-expert MoE | persistent one-bank (32K gated) |
-| Inkling Small | `general.architecture=inkling` | MQ85GB source-interleaved GQA, four-tap convolution, embedded media encoders, optional eight-layer MTP-BF16 | serial CUDA; [1,024-context checks](inkling-small.md) |
-| Step 3.7 Flash | `general.architecture=step35` | MQ83 full/sliding GQA, post-SiLU expert clamps, optional Q8 MTP and F16 vision | serial default; opt-in text banks with full/partial fork and disk KV ([serving](step37-serving-2026-09-13.md)); images serial; [artifact scope](step37-initial.md) |
-| Ling-3.0-flash-VL | `general.architecture=bailingmoe3` | 35 recurrent KDA blocks and 7 latent MLA blocks, 512 grouped-sigmoid experts, separate Qwen3-VL mmproj | persistent multi-bank with full/partial fork and disk KV; images serial ([family contract](ling3-flash-vl.md)) |
+| Family | Shape selected from | Native state/runtime |
+|---|---|---|
+| DeepSeek V4 Flash / PRO | `general.architecture=deepseek4` | Entrpi compressed KV and continuous graph |
+| Solar Open2 250B | `general.architecture=solar-open2` | recurrent KDA state plus compressed GQA KV |
+| K-EXAONE 236B A23B | `general.architecture=exaone-moe` | LLLG full/sliding GQA KV |
+| Motif-3 | `general.architecture=motif3` | normalized latent KV, rotated `k_pe`, and SWA rings |
+| [dots3-note Preview](#dots3-serving) | `general.architecture=dots3note` (legacy `dots3-note`) | dual-geometry latent KV, DSA keys, and SWA rings |
+| Qwen3.8 Flash Next SSD-PLE | `general.architecture=qwen4exp` | Q5 main + four SSD-PLE sidecars, GDN/QSA state, embedded MTP, still images |
+| GLM 5.3 Flash | `general.architecture=glm5-next` | exact Q2 main + vision sidecar |
+| K2-Horizon 375B A23B | `general.architecture=k2-horizon` | full-attention GQA KV, partial NeoX RoPE, shared-expert MoE |
+| [Inkling Small](inkling-small.md) | `general.architecture=inkling` | MQ85GB source-interleaved GQA, four-tap convolution, embedded media encoders, optional eight-layer MTP-BF16 |
+| [Step 3.7 Flash](step37-initial.md) ([serving](step37-serving-2026-09-13.md)) | `general.architecture=step35` | MQ83 full/sliding GQA, post-SiLU expert clamps, optional Q8 MTP and F16 vision |
+| [Ling-3.0-flash-VL](ling3-flash-vl.md) | `general.architecture=bailingmoe3` | 35 recurrent KDA blocks and 7 latent MLA blocks, 512 grouped-sigmoid experts, separate Qwen3-VL mmproj |
 
 The scheduler implementation may differ because the model states differ, but
 the operator and client contract is the same. Changing `-m` to a GGUF from a
 different supported family selects the corresponding runtime in the same
 binary. Shared flag names and the requested / effective / qualified plan
-live in the [serving contract](serving-contract.md). Capability rows come
-from `ds4_core::serving_caps`, not from dated campaign prose.
+live in the [serving contract](serving-contract.md). The
+[generated capability table](serving-capabilities.md) records server lanes,
+reuse, disk, MTP and bounds directly from `ds4_core::serving_caps`; the core
+tests reject documentation drift. Dated campaign reports retain their scope.
 
 ## Common serving surface
 

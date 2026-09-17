@@ -141,5 +141,7 @@ decision that produced it, and is absent when nothing was refused:
 
 ## Capability table
 
-`ds4_core::serving_caps` is the living table. Family docs and this page
-must not contradict it. Dated reports stay historical.
+The [generated capability table](serving-capabilities.md) reads
+`ds4_core::serving_caps` and the same resolved controls consumed by
+`ds4-perf serving-controls`. Its model-free check runs with the core tests;
+the page includes the regeneration command. Dated reports stay historical.
