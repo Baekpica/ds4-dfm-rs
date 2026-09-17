@@ -60,6 +60,7 @@
 /tests/test_glm53_session
 /tests/test_glm53_bounds
 /tests/test_k2_lifecycle
+/tests/test_k2_rewind
 /tests/test_solar_kda
 /tests/test_solar_kda_prefill
 /tests/test_solar_kda_chunk

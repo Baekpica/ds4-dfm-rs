@@ -1,0 +1,180 @@
+{
+  "schema": "v013-live-evidence-v1",
+  "family": "k2-horizon",
+  "scope": {
+    "status": "native lifecycle passed; 32K HTTP pending",
+    "native_context": 1024,
+    "native_prefill_cap": 1024,
+    "serial_sessions": 1,
+    "bank_copy_banks": 2,
+    "mtp": "off",
+    "reuse": "exact-only; edited/truncated serial prompts replay from zero",
+    "clock_limits_mhz": [
+      300,
+      2200
+    ]
+  },
+  "build": {
+    "base_commit": "679fb4ccb4e4fdce909eab305ef12170d84e462f",
+    "source_patch": {
+      "path": "scratch/v013/bin-integrated4/source.diff",
+      "bytes": 15191,
+      "sha256": "5540a378f26120c3e728b6b72f35ecc78f3dbf32b92af07f5ecf335a0d386b4b"
+    },
+    "server": {
+      "path": "scratch/v013/bin-integrated4/ds4-server",
+      "bytes": 58206128,
+      "sha256": "a3eda984f875b398a884f62fb1a95b5d526710709f761dc9115b14f5241241e9"
+    },
+    "native_test": {
+      "path": "tests/test_k2_lifecycle",
+      "bytes": 75810576,
+      "sha256": "22d819054244f1638acc000b55fd6179be963ae7123e63ee23dbf8ed376de7b8"
+    }
+  },
+  "artifact": {
+    "schema": "v013-artifacts-v1",
+    "manifest": "/home/sunghoon/workspace/ds4-exaone/models/K2-Horizon-375B-A23B-Mixed-Quant-GGUF/MQ87-SHA256SUMS",
+    "manifest_sha256": "f8973d7a938af06bf4a1158f78dd3d4ea45ca810f83922ca0c864c03773beb3d",
+    "shards": [
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/K2-Horizon-375B-A23B-Mixed-Quant-GGUF/K2-Horizon-375B-A23B-MQ87-00001-of-00004.gguf",
+        "bytes": 29905225504,
+        "sha256": "7e5b9cfe1dd970fdaab8a12d8af813cfff1a33e82fa6073b174ccaaf580b1154",
+        "verified": true
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/K2-Horizon-375B-A23B-Mixed-Quant-GGUF/K2-Horizon-375B-A23B-MQ87-00002-of-00004.gguf",
+        "bytes": 29527310912,
+        "sha256": "5006f867ce371a1f1925bdaa0b4b68012ea4ea8dbba82ec1a84000d0bc87007b",
+        "verified": true
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/K2-Horizon-375B-A23B-Mixed-Quant-GGUF/K2-Horizon-375B-A23B-MQ87-00003-of-00004.gguf",
+        "bytes": 29846576608,
+        "sha256": "e5818a26033a0f670306b9a45b6706414598d8ee4d88ed625d5026fac74798c5",
+        "verified": true
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/K2-Horizon-375B-A23B-Mixed-Quant-GGUF/K2-Horizon-375B-A23B-MQ87-00004-of-00004.gguf",
+        "bytes": 3812822528,
+        "sha256": "c88d39ebf243d0eca2e937ec1fbad04b1805f5493ec0cbe771e32faf4f70fd1f",
+        "verified": true
+      }
+    ]
+  },
+  "fixture": {
+    "path": "tests/test_k2_lifecycle.c",
+    "bytes": 11821,
+    "sha256": "a21aa9342068a084165974b8dab90e48c106ad99acb503030d54fb3f3d767dab"
+  },
+  "regression": {
+    "before": {
+      "edited_live": 28,
+      "prompt_tokens": 12,
+      "lcp": 3,
+      "native_rewind_span": 1024,
+      "host_rewind_span": 0,
+      "native_start": 3,
+      "first_greedy_difference": 10,
+      "warm_token": 27438,
+      "cold_token": 293,
+      "prefill_max_abs": 0.602869987,
+      "prefill_rel_rms": 0.0102285669,
+      "first_difference_max_abs": 0.970757961,
+      "first_difference_rel_rms": 0.033019932,
+      "repeated_cold_full_logits_bit_exact": true,
+      "repeated_cold_greedy_equal": 16
+    },
+    "after": {
+      "native_rewind_span": 0,
+      "edited_start": 0,
+      "edited_prefill_max_abs": 0.0,
+      "edited_prefill_rel_rms": 0.0,
+      "edited_greedy_equal": 16,
+      "append_start": 12,
+      "append_prefill_max_abs": 0.651594162,
+      "append_prefill_rel_rms": 0.00731568547,
+      "append_greedy_equal": 16
+    },
+    "other_native_checks": [
+      "exact disk-restored full-vocabulary logits bit identity",
+      "corrupt payload invalidation",
+      "two-bank exact fork preserving source",
+      "bank snapshot across context recreation"
+    ]
+  },
+  "model_free": {
+    "native": "RED on old K2 span 1024; GREEN on span 0 at contexts 1024 and 32768; K-EXAONE LLLG span 513 unchanged",
+    "host": "session::tests::k2_sync_extends_or_rebuilds: 1 passed; append retains 28, edited/truncated prompts start at 0",
+    "commands": [
+      "make -j1 tests/test_k2_rewind",
+      "./tests/test_k2_rewind",
+      "CARGO_BUILD_JOBS=1 cargo test -p ds4-core --lib --locked k2_sync_extends_or_rebuilds -- --test-threads=1"
+    ]
+  },
+  "guard": {
+    "exit_status": 0,
+    "payload_status": 0,
+    "minimum_available_gib": 11.995460510253906,
+    "start": {
+      "time": 1789634551.4541557,
+      "event": "start",
+      "unit": "ds4-hostguard-944131-1789634551446109553.scope",
+      "available_gib": 112.07230758666992,
+      "psi_full_avg10": 0.0,
+      "max_gib": 100.0,
+      "high_gib": 99.0,
+      "reserve_gib": 12.0,
+      "trip_gib": 8.0,
+      "command": [
+        "./tests/test_k2_lifecycle",
+        "/home/sunghoon/workspace/ds4-exaone/models/K2-Horizon-375B-A23B-Mixed-Quant-GGUF/K2-Horizon-375B-A23B-MQ87-00001-of-00004.gguf",
+        "1024"
+      ]
+    }
+  },
+  "receipts": [
+    {
+      "path": "scratch/v013/k2-native-diagnostic.log",
+      "bytes": 5283,
+      "sha256": "8f3e0f2a081960ea6dfd9fb34c64a041760c203595163b4d18f6dcded82c865b"
+    },
+    {
+      "path": "scratch/v013/k2-native-fixed.log",
+      "bytes": 5277,
+      "sha256": "3c5d58ee11cafea70648e7ab9c97c644b4d2516c7cfc5fead20a8f9c76b09ecd"
+    },
+    {
+      "path": "scratch/v013/k2-native-fixed.memory.jsonl",
+      "bytes": 22709,
+      "sha256": "32e6b18d8d12ad9adb7d75653aad3f0302885f0916484d3fb98fe58560d41f74"
+    },
+    {
+      "path": "scratch/v013/k2-rewind-red.log",
+      "bytes": 65,
+      "sha256": "692a6486c2d1316e921ef38d490651561891809a6c67410e92feee812889a6b4"
+    },
+    {
+      "path": "scratch/v013/k2-rewind-green.log",
+      "bytes": 57,
+      "sha256": "14bb7ce20f0f1ea8f5476f60ca23ae8529fcd52a2c34e4a15be0f947a6db2015"
+    },
+    {
+      "path": "scratch/v013/k2-host-green.log",
+      "bytes": 527,
+      "sha256": "d77f881807a14ce17305ccddbec68f64a5fff71fcb31006c867bda8e37a0007f"
+    },
+    {
+      "path": "scratch/v013/k2-host-green.memory.jsonl",
+      "bytes": 1685,
+      "sha256": "4fa2492a91ff03d9cba5fa2ad45b5ad427b734ccddc55d363b2864f6c96ea79a"
+    }
+  ],
+  "limitations": [
+    "Native lifecycle used context 1024 and short prompts, not a 32K filled context.",
+    "32K one-bank fresh-process HTTP seed/restore/cold remains pending.",
+    "Exact append retains measured cross-prefill-width logit drift despite matching this 16-token greedy fixture; this is not a broad numerical or quality qualification.",
+    "No partial reuse, MTP, external owner import, or speedup is qualified by this receipt."
+  ]
+}

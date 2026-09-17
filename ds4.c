@@ -72222,6 +72222,12 @@ int ds4_session_exaone_rewind_span(ds4_session *s) {
     return 0;
 #else
     if (!s || !ds4_session_is_exaone(s) || !s->exaone_graph_ready) return 0;
+    /* Full-attention storage does not qualify edited-prefix reuse for K2.
+     * Match the host's exact-only policy; an exact extension still has
+     * live_pos - resume_pos == 0 and keeps its existing prefix. */
+    if (DS4_MODEL_VARIANT == DS4_VARIANT_K2_HORIZON_375B) {
+        return 0;
+    }
     const ds4_exaone_gpu_graph *g = &s->exaone_graph;
     const uint32_t n_exec = DS4_N_LAYER - DS4_N_NEXTN_PREDICT;
     uint32_t narrowest = 0u;

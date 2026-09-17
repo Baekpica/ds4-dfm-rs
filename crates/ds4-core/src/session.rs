@@ -762,4 +762,32 @@ mod tests {
         host.backend = SessionBackend::Cpu;
         assert_eq!(host.planned_exaone_rewind_span(), 0);
     }
+
+    #[test]
+    fn k2_sync_extends_or_rebuilds() {
+        use crate::shape::SHAPE_K2_HORIZON_375B;
+        let mut host = SessionLedger::new(ModelFamily::ExaoneMoe, SessionBackend::Cuda, 1024, 1024);
+        host.apply_shape(&SHAPE_K2_HORIZON_375B);
+        host.tokens = (0..28).collect();
+        host.valid = true;
+        let span = host.planned_exaone_rewind_span();
+        assert_eq!(span, 0);
+
+        let mut append = host.tokens.clone();
+        append.push(28);
+        let plan = host.plan_sync(&append, span);
+        assert_eq!(plan.start, 28);
+        assert!(!plan.err && !plan.rebuild && !plan.bump);
+
+        // Match the failing native fixture: live 28, edited 12, LCP 3.
+        let mut edited = host.tokens[..12].to_vec();
+        edited[3] = 99;
+        let plan = host.plan_sync(&edited, span);
+        assert_eq!(plan.start, 0);
+        assert!(!plan.err && plan.rebuild && plan.bump);
+
+        let plan = host.plan_sync(&host.tokens[..12], span);
+        assert_eq!(plan.start, 0);
+        assert!(!plan.err && plan.rebuild && plan.bump);
+    }
 }

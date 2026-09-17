@@ -14,8 +14,12 @@ static char error[256];
 } } while (0)
 enum { K2_MODEL_ID = 8, DECODE = 16 };
 
-static void greedy(ds4_session *session, int out[DECODE]) {
+static void greedy_trace(ds4_session *session, int out[DECODE],
+                         float *rows, int vocab) {
     for (int i = 0; i < DECODE; i++) {
+        if (rows) {
+            CHECK(ds4_session_copy_logits(session, rows + (size_t)i * vocab, vocab) == vocab);
+        }
         out[i] = ds4_session_argmax(session);
         CHECK(out[i] >= 0);
         if (i + 1 < DECODE) {
@@ -24,33 +28,90 @@ static void greedy(ds4_session *session, int out[DECODE]) {
     }
 }
 
-static void cold_compare(ds4_engine *engine, int context,
-                         ds4_session *warm, const ds4_tokens *prompt) {
-    const int vocab = ds4_engine_vocab_size(engine);
-    float *a = malloc((size_t)vocab * sizeof(*a));
-    float *b = malloc((size_t)vocab * sizeof(*b));
-    CHECK(a && b);
-    CHECK(ds4_session_copy_logits(warm, a, vocab) == vocab);
-    int actual[DECODE], expected[DECODE];
-    greedy(warm, actual);
-    /* Reuse one allocation; reset forces a complete cold prefill. */
-    ds4_session_invalidate(warm);
-    CHECK(ds4_session_sync(warm, prompt, error, sizeof(error)) == 0);
-    CHECK(ds4_session_copy_logits(warm, b, vocab) == vocab);
+static void greedy(ds4_session *session, int out[DECODE]) {
+    greedy_trace(session, out, NULL, 0);
+}
+
+static void sync_trace(ds4_session *session, const ds4_tokens *prompt,
+                       const char *label) {
+    const int live = ds4_session_pos(session);
+    const int common = ds4_session_common_prefix(session, prompt);
+    const int span = ds4_session_exaone_rewind_span(session);
+    CHECK(span == 0); /* K2 keeps exact extensions, never an edited LCP. */
+    int start = common;
+    if (start > 0 && start == prompt->len) { start--; }
+    if (live - start > span) { start = 0; }
+    const uint64_t before = ds4_session_generation(session);
+    CHECK(ds4_session_sync(session, prompt, error, sizeof(error)) == 0);
+    /* C has no host last_plan accessor. This is the native EXAONE rule
+     * derived from public state, not a measured count of GPU rows. */
+    fprintf(stderr, "K2 sync %s live=%d prompt=%d lcp=%d span=%d derived_start=%d cap=%d generation=%llu/%llu\n",
+            label, live, prompt->len, common, span, start,
+            ds4_session_prefill_cap(session), (unsigned long long)before,
+            (unsigned long long)ds4_session_generation(session));
+}
+
+static void logits_report(const char *label, const float *a, const float *b,
+                          int vocab, int actual, int expected) {
     double sq = 0, scale = 0, max_abs = 0;
+    float next_a = -INFINITY, next_b = -INFINITY;
     for (int i = 0; i < vocab; i++) {
         CHECK(isfinite(a[i]) && isfinite(b[i]));
         const double d = (double)a[i] - b[i];
         sq += d * d;
         scale += (double)b[i] * b[i];
         if (fabs(d) > max_abs) { max_abs = fabs(d); }
+        if (i != actual && a[i] > next_a) { next_a = a[i]; }
+        if (i != expected && b[i] > next_b) { next_b = b[i]; }
     }
-    greedy(warm, expected);
+    fprintf(stderr, "K2 logits %s max_abs=%.9g rel_rms=%.9g top=%d/%d margin=%.9g/%.9g warm_pair=%.9g/%.9g cold_pair=%.9g/%.9g\n",
+            label, max_abs, sqrt(sq / (scale + 1e-30)), actual, expected,
+            a[actual] - next_a, b[expected] - next_b,
+            a[actual], a[expected], b[actual], b[expected]);
+}
+
+static void cold_compare(ds4_engine *engine, int context,
+                         ds4_session *warm, const ds4_tokens *prompt,
+                         const char *label) {
+    const int vocab = ds4_engine_vocab_size(engine);
+    float *a = malloc((size_t)DECODE * vocab * sizeof(*a));
+    float *b = malloc((size_t)DECODE * vocab * sizeof(*b));
+    CHECK(a && b);
+    int actual[DECODE], expected[DECODE];
+    greedy_trace(warm, actual, a, vocab);
+    /* Reuse one allocation; reset forces a complete cold prefill. */
+    ds4_session_invalidate(warm);
+    sync_trace(warm, prompt, "cold-control");
+    greedy_trace(warm, expected, b, vocab);
+    int first = -1;
+    for (int i = 0; i < DECODE; i++) {
+        if (actual[i] != expected[i]) { first = i; break; }
+    }
+    fprintf(stderr, "K2 suffix %s ctx=%d prompt=%d greedy=%d first_diff=%d\n",
+            label, context, prompt->len, DECODE, first);
+    logits_report("prefill", a, b, vocab, actual[0], expected[0]);
+    if (first >= 0) {
+        /* Up to this first flip both decode histories are identical. Later
+         * rows are conditional on different tokens and cannot diagnose it. */
+        logits_report("first-diff", a + (size_t)first * vocab,
+                      b + (size_t)first * vocab, vocab, actual[first], expected[first]);
+        for (int i = 0; i <= first; i++) {
+            fprintf(stderr, "K2 greedy step=%d warm=%d cold=%d\n", i, actual[i], expected[i]);
+        }
+        ds4_session_invalidate(warm);
+        sync_trace(warm, prompt, "cold-repeat");
+        CHECK(ds4_session_copy_logits(warm, a, vocab) == vocab);
+        int repeated[DECODE];
+        greedy(warm, repeated);
+        const int same_logits = memcmp(a, b, (size_t)vocab * sizeof(*a)) == 0;
+        const int same_tokens = memcmp(repeated, expected, sizeof(repeated)) == 0;
+        logits_report("cold-repeat", a, b, vocab, repeated[0], expected[0]);
+        fprintf(stderr, "K2 cold-repeat exact_logits=%d greedy_equal=%d\n", same_logits, same_tokens);
+        CHECK(same_logits && same_tokens);
+    }
     CHECK(memcmp(actual, expected, sizeof(actual)) == 0);
-    printf("K2 suffix ctx=%d prompt=%d greedy=%d max_abs=%.9g rel_rms=%.9g\n",
-           context, prompt->len, DECODE, max_abs, sqrt(sq / (scale + 1e-30)));
     /* Cross-prefill-width arithmetic is reported for review. Exact payload
-     * restoration below has its own bit-identical full-logit assertion. */
+     * restoration has its own bit-identical full-logit assertion. */
     free(a);
     free(b);
 }
@@ -137,10 +198,10 @@ int main(int argc, char **argv) {
     CHECK(ds4_session_pos(session) == base.len);
     CHECK(ds4_session_copy_logits(session, restored, vocab) == vocab);
     CHECK(memcmp(logits, restored, (size_t)vocab * sizeof(*logits)) == 0);
-    CHECK(ds4_session_sync(session, &append, error, sizeof(error)) == 0);
-    cold_compare(engine, context, session, &append);
-    CHECK(ds4_session_sync(session, &edited, error, sizeof(error)) == 0);
-    cold_compare(engine, context, session, &edited);
+    sync_trace(session, &append, "append");
+    cold_compare(engine, context, session, &append, "append");
+    sync_trace(session, &edited, "edited");
+    cold_compare(engine, context, session, &edited, "edited");
     bad.ptr = malloc((size_t)saved.len);
     CHECK(bad.ptr);
     memcpy(bad.ptr, saved.ptr, (size_t)saved.len);
