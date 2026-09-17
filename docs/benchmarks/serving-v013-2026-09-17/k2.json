@@ -2,7 +2,7 @@
   "schema": "v013-live-evidence-v1",
   "family": "k2-horizon",
   "scope": {
-    "status": "native lifecycle passed; 32K HTTP pending",
+    "status": "native lifecycle passed; integrated5 32K HTTP startup stopped by unchanged memory guard",
     "native_context": 1024,
     "native_prefill_cap": 1024,
     "serial_sessions": 1,
@@ -173,8 +173,264 @@
   ],
   "limitations": [
     "Native lifecycle used context 1024 and short prompts, not a 32K filled context.",
-    "32K one-bank fresh-process HTTP seed/restore/cold remains pending.",
+    "Integrated5 32K one-bank HTTP failed before listen on this host memory baseline: unchanged 8 GiB floor crossed at 7.681774139404297 GiB. No HTTP reuse/cold parity result was produced.",
     "Exact append retains measured cross-prefill-width logit drift despite matching this 16-token greedy fixture; this is not a broad numerical or quality qualification.",
     "No partial reuse, MTP, external owner import, or speedup is qualified by this receipt."
-  ]
+  ],
+  "http_attempt": {
+    "passed": false,
+    "stage": "seed startup, before listener readiness and before any HTTP generation",
+    "remaining_phases": [
+      "seed generation",
+      "fresh-process restore",
+      "fresh-process cold controls"
+    ],
+    "build": {
+      "base_commit": "8ae8aa51109436d5af0a9108bfc7c45483772c40",
+      "source_diff_empty": true,
+      "server_sha256": "a718832efbdfe773b849924aff66cf5a6294f8d13198947fe92b127258cafac3",
+      "binary_identity_scope": "prelaunch file hash verified; listener-stage running PID/executable receipt was never reached"
+    },
+    "shape": {
+      "context": 32768,
+      "banks": 1,
+      "native_chunk": 64,
+      "sched_chunk": 64,
+      "sched_chunk_live": 64,
+      "mtp": "off",
+      "prefix_reuse": "exact",
+      "disk": true,
+      "standalone": true
+    },
+    "artifact_verification": {
+      "files": [
+        {
+          "path": "/home/sunghoon/workspace/ds4-exaone/models/K2-Horizon-375B-A23B-Mixed-Quant-GGUF/K2-Horizon-375B-A23B-MQ87-00001-of-00004.gguf",
+          "bytes": 29905225504,
+          "sha256": "7e5b9cfe1dd970fdaab8a12d8af813cfff1a33e82fa6073b174ccaaf580b1154",
+          "verified": true,
+          "stat": [
+            66306,
+            175243746,
+            29905225504,
+            1788531399062849158,
+            1788531399434419813
+          ],
+          "verified_now": true
+        },
+        {
+          "path": "/home/sunghoon/workspace/ds4-exaone/models/K2-Horizon-375B-A23B-Mixed-Quant-GGUF/K2-Horizon-375B-A23B-MQ87-00002-of-00004.gguf",
+          "bytes": 29527310912,
+          "sha256": "5006f867ce371a1f1925bdaa0b4b68012ea4ea8dbba82ec1a84000d0bc87007b",
+          "verified": true,
+          "stat": [
+            66306,
+            175243742,
+            29527310912,
+            1788531394888853103,
+            1788531395055056435
+          ],
+          "verified_now": true
+        },
+        {
+          "path": "/home/sunghoon/workspace/ds4-exaone/models/K2-Horizon-375B-A23B-Mixed-Quant-GGUF/K2-Horizon-375B-A23B-MQ87-00003-of-00004.gguf",
+          "bytes": 29846576608,
+          "sha256": "e5818a26033a0f670306b9a45b6706414598d8ee4d88ed625d5026fac74798c5",
+          "verified": true,
+          "stat": [
+            66306,
+            175243740,
+            29846576608,
+            1788531398700849502,
+            1788531399330385912
+          ],
+          "verified_now": true
+        },
+        {
+          "path": "/home/sunghoon/workspace/ds4-exaone/models/K2-Horizon-375B-A23B-Mixed-Quant-GGUF/K2-Horizon-375B-A23B-MQ87-00004-of-00004.gguf",
+          "bytes": 3812822528,
+          "sha256": "c88d39ebf243d0eca2e937ec1fbad04b1805f5493ec0cbe771e32faf4f70fd1f",
+          "verified": true,
+          "stat": [
+            66306,
+            175243748,
+            3812822528,
+            1788529122350499193,
+            1788529122494279099
+          ],
+          "verified_now": true
+        }
+      ],
+      "hash_buffer_bytes": 1048576
+    },
+    "memory": {
+      "preflight": {
+        "observed_weights_gib_rounded_up": 96.42,
+        "quote_weights_gib": 86.69862109422684,
+        "runtime_gib": 7.673347294330597,
+        "predicted_physical_gib": 104.0933472943306,
+        "predicted_available_gib": 8.18902041196823,
+        "host": {
+          "available_gib": 112.28236770629883,
+          "psi_full_avg10": 0.0
+        },
+        "trip_gib": 8,
+        "reserve_gib": 12,
+        "admitted": true,
+        "limitation": "Estimate only; unchanged guard also enforces dynamic PSI and cgroup limits. CUDA bytes need not all be cgroup charged.",
+        "guard_max_gib": 100.2,
+        "guard_high_gib": 99.2
+      },
+      "guard_start": {
+        "time": 1789636387.993106,
+        "event": "start",
+        "unit": "ds4-hostguard-975598-1789636387985700489.scope",
+        "available_gib": 112.2751693725586,
+        "psi_full_avg10": 0.0,
+        "max_gib": 100.2,
+        "high_gib": 99.2,
+        "reserve_gib": 12.0,
+        "trip_gib": 8.0,
+        "command": [
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated5/ds4-server",
+          "--cuda",
+          "-m",
+          "/home/sunghoon/workspace/ds4-exaone/models/K2-Horizon-375B-A23B-Mixed-Quant-GGUF/K2-Horizon-375B-A23B-MQ87-00001-of-00004.gguf",
+          "--mtp-mode",
+          "off",
+          "--cont-width",
+          "1",
+          "--ctx",
+          "32768",
+          "-n",
+          "64",
+          "--native-chunk",
+          "64",
+          "--prefix-reuse",
+          "exact",
+          "--model-id",
+          "k2-horizon",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "18038",
+          "--kv-disk-dir",
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/k2-http-integrated5/cache",
+          "--kv-disk-space",
+          "4G",
+          "--kv-cache-min-tokens",
+          "1",
+          "--kv-cache-boundary-trim-tokens",
+          "0",
+          "--kv-cache-boundary-align-tokens",
+          "0"
+        ]
+      },
+      "termination": {
+        "time": 1789636506.1988156,
+        "event": "terminate",
+        "unit": "ds4-hostguard-975598-1789636387985700489.scope",
+        "reason": "host memory watchdog floor crossed",
+        "available_gib": 7.681774139404297,
+        "psi_full_avg10": 17.44
+      },
+      "exit": {
+        "time": 1789636507.3461885,
+        "event": "exit",
+        "unit": "ds4-hostguard-975598-1789636387985700489.scope",
+        "status": 75,
+        "payload_status": -15
+      },
+      "observed_minimum_available_gib": 7.681774139404297,
+      "prediction_minus_observed_available_gib": 0.5072462725639326,
+      "weight_log": "95/95 base units funded; device weights 96.41 GiB including 428 additive Q8 artifacts (9.63 GiB)",
+      "allocation_scope": "61 full-attention K2 layers allocate the full 32768-row bank via cudaMalloc; KV alone 7.625 GiB",
+      "limitation": "Guard interrupted allocation before graph-ready. The estimate delta is not a measurement of final steady-state overhead."
+    },
+    "cleanup": {
+      "errors": [],
+      "owned_scope_drained": true,
+      "qualification": "guard failure retained even though cleanup succeeded"
+    },
+    "transient_control_review": [
+      "Boot prewarm runs after bank placement, so disabling it cannot repair this pre-graph allocation failure.",
+      "Repack worker scratch/pinned staging/streams are freed and joined before the completed Q8 repack log; fewer threads can lower the earlier transient peak but do not establish later bank savings.",
+      "Model mapping-cache release is already enabled by default; the clean launcher did not set KEEP_MODEL_PAGES.",
+      "Boot/own trim releases unused captured-graph pools; this fresh pre-graph process has not accumulated session graph reserve.",
+      "Changing the 32 MiB cuBLAS workspace is too small for the observed gap and changes algorithm selection; it is not treated as a transparent memory fix.",
+      "No floor/context reduction, Q8 artifact disabling, retry, or production memory-path change was performed by this review."
+    ],
+    "receipts": [
+      {
+        "path": "scratch/v013/k2-http-integrated5/artifacts.json",
+        "bytes": 1424,
+        "sha256": "9e2ec5c2075a1ed8c11076ff9e2c8da63b54c62c12414aaf30076ae1318ee4fe"
+      },
+      {
+        "path": "scratch/v013/k2-http-integrated5/build-source.diff",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "scratch/v013/k2-http-integrated5/full-artifacts.json",
+        "bytes": 1878,
+        "sha256": "a6eb03814dda6c5d090bac2098476360575ad36a25c95f5cd50572e1cedc09c1"
+      },
+      {
+        "path": "scratch/v013/k2-http-integrated5/orchestrator.jsonl",
+        "bytes": 3450,
+        "sha256": "5938929e3ca6f2897dca97d9ccc681a27bc46abac971a80a31bf43fae0398bd4"
+      },
+      {
+        "path": "scratch/v013/k2-http-integrated5/seed.check-config.stderr",
+        "bytes": 696,
+        "sha256": "e1a50acfefe8c01c8f2617c658df44b81746e269e12e80cc325cf6daf4d9e202"
+      },
+      {
+        "path": "scratch/v013/k2-http-integrated5/seed.check-config.stdout",
+        "bytes": 1183,
+        "sha256": "ad6768fe579f2bbf9c56660308e05f4a207de8e86b13a7215316f4a8ba7f7d02"
+      },
+      {
+        "path": "scratch/v013/k2-http-integrated5/seed.preflight.json",
+        "bytes": 3153,
+        "sha256": "ab2bcd4b89ba7da9c45fe85388b006271cf3ec81c2ae01ae6d2505e17f2012bb"
+      },
+      {
+        "path": "scratch/v013/k2-http-integrated5/source.json",
+        "bytes": 1625,
+        "sha256": "27e4db8543a5c8ed45e935cbbbc19c0e6a83bce8884894493e6cd692b02d7dfb"
+      },
+      {
+        "path": "scratch/v013/k2-http-integrated5/worker-seed.command.json",
+        "bytes": 957,
+        "sha256": "409ae702e11c69e7ac0f60f733362e978ebda60a20e9dec2e6659303e81fb7fa"
+      },
+      {
+        "path": "scratch/v013/k2-http-integrated5/worker-seed.launcher.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "scratch/v013/k2-http-integrated5/worker-seed.log",
+        "bytes": 3595,
+        "sha256": "be0a947ac0f3d1f3042e3905831e2d3d16b11c68a299f57bab22ff3b5e983fee"
+      },
+      {
+        "path": "scratch/v013/k2-http-integrated5/worker-seed.memory.jsonl",
+        "bytes": 20632,
+        "sha256": "0175035bded096c4ef8c38e5f4bf6a49014f0398dc2368880ba969a6873db3b7"
+      },
+      {
+        "path": "scratch/v013/k2-http-integrated5/result.json",
+        "bytes": 2114,
+        "sha256": "4d56866d4dd21bdc4a0f0b6c5aa46d0c20cfffc2700aff27508e49fde1a9e0b3"
+      },
+      {
+        "path": "scratch/v013/k2-host-memory-reclaim.json",
+        "bytes": 3736,
+        "sha256": "017cb7e61151f317dbe651b92698a06d136acad51937c44b823d0429e171ea48"
+      }
+    ]
+  }
 }
