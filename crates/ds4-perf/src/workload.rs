@@ -83,30 +83,59 @@ impl Workload {
         command: &[OsString],
         env: &BTreeMap<OsString, OsString>,
     ) -> Result<(), String> {
+        self.check_scope(command, env, None)
+    }
+
+    pub fn verify_scope_checked(
+        &self,
+        command: &[OsString],
+        env: &BTreeMap<OsString, OsString>,
+        checked: &mut ds4_perf::artifact::Verification,
+    ) -> Result<(), String> {
+        self.check_scope(command, env, Some(checked))
+    }
+
+    fn check_scope(
+        &self,
+        command: &[OsString],
+        env: &BTreeMap<OsString, OsString>,
+        mut checked: Option<&mut ds4_perf::artifact::Verification>,
+    ) -> Result<(), String> {
         if self.protocol != "ds4-bench-v1" {
             return Err("unsupported workload protocol; use ds4-bench-v1".into());
         }
         let declared: BTreeSet<_> = self.files.values().map(|v| v.path.clone()).collect();
-        let require = |path: &Path| -> Result<(), String> {
-            let path = path
+        let mut require = |path: &Path| -> Result<(), String> {
+            let canonical = path
                 .canonicalize()
                 .map_err(|e| format!("{}: {e}", path.display()))?;
-            if !declared.contains(&path) {
+            if !declared.contains(&canonical) {
                 return Err(format!("workload lacks consumed input: {}", path.display()));
+            }
+            if let Some(checked) = checked.as_deref_mut() {
+                let input = self
+                    .files
+                    .values()
+                    .find(|input| input.path == canonical)
+                    .ok_or("consumed input missing")?;
+                checked.verify(path, &input.sha256)?;
             }
             Ok(())
         };
         let arguments = arguments(command)?;
         for (key, path) in &arguments {
-            let path = path.canonicalize().map_err(|e| e.to_string())?;
+            require(path)?;
+            let canonical = path.canonicalize().map_err(|e| e.to_string())?;
             if let Some(file) = self.files.get(key) {
-                if file.path != path {
+                if file.path != canonical {
                     return Err(format!("workload {key} differs from benchmark argument"));
                 }
             } else {
                 return Err(format!("workload lacks {key} input"));
             }
-            for shard in shards(&path)? {
+            // Native split and sidecar lookup starts beside the consumed argv
+            // path. Canonicalizing the first shard must not change that root.
+            for shard in shards(path)? {
                 require(&shard)?;
             }
             if key != "model" {
@@ -165,6 +194,60 @@ impl Workload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn split_model_uses_consumed_alias_directory() {
+        use crate::experiment::InputFile;
+        let root = std::env::temp_dir().join(format!("ds4-split-alias-{}", std::process::id()));
+        let real = root.join("real");
+        let alias = root.join("alias");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::create_dir_all(&alias).unwrap();
+        let first = "model-00001-of-00002.gguf";
+        let second = "model-00002-of-00002.gguf";
+        for path in [
+            real.join(first),
+            real.join(second),
+            alias.join(second),
+            root.join("prompt"),
+        ] {
+            std::fs::write(path, b"fixture").unwrap();
+        }
+        std::os::unix::fs::symlink(real.join(first), alias.join(first)).unwrap();
+        let workload = Workload {
+            protocol: "ds4-bench-v1".into(),
+            name: "alias".into(),
+            family: "fixture".into(),
+            files: [
+                ("model", real.join(first)),
+                ("shard", real.join(second)),
+                ("prompt", root.join("prompt")),
+            ]
+            .into_iter()
+            .map(|(key, path)| {
+                (
+                    key.into(),
+                    InputFile {
+                        path,
+                        sha256: ds4_perf::artifact::hash_bytes(b"fixture"),
+                    },
+                )
+            })
+            .collect(),
+            shape: BTreeMap::new(),
+            cache_state: "cold".into(),
+        };
+        let command = vec![
+            "ds4-bench".into(),
+            "-m".into(),
+            alias.join(first).into(),
+            "--prompt-file".into(),
+            root.join("prompt").into(),
+        ];
+        let result = workload.verify_scope(&command, &BTreeMap::new());
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(result.is_err_and(|error| error.contains("lacks consumed input")));
+    }
     #[test]
     fn sidecar_override_is_pinned() {
         use crate::experiment::InputFile;

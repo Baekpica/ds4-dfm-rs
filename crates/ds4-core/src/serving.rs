@@ -1232,23 +1232,58 @@ impl ResolvedPlan {
         out.push(("DS4_CONT_PREFILL_CHUNK_LIVE".into(), live.to_string()));
         // C family allocators read DS4_*_PREFILL_CHUNK, not --native-chunk.
         if let Some(native) = self.effective.native_chunk {
-            if let Some(key) = match self.family {
-                Some(ModelFamily::Qwen4Exp) => Some("DS4_QWEN_PREFILL_CHUNK"),
-                Some(ModelFamily::Step37) => Some("DS4_STEP37_PREFILL_CHUNK"),
-                Some(ModelFamily::Ling3Vl) => Some("DS4_LING3VL_PREFILL_CHUNK"),
-                Some(ModelFamily::Inkling) => Some("DS4_INKLING_PREFILL_CHUNK"),
-                Some(ModelFamily::ExaoneMoe) => Some("DS4_EXAONE_PREFILL_CHUNK"),
-                Some(ModelFamily::Motif3) => Some("DS4_MOTIF3_PREFILL_CHUNK"),
-                Some(ModelFamily::SolarOpen2 | ModelFamily::DeepSeek4) => {
-                    Some("DS4_METAL_PREFILL_CHUNK")
-                }
-                Some(ModelFamily::Dots3Note) => Some("DS4_DOTS3_PREFILL_CHUNK"),
-                _ => None,
-            } {
+            if let Some(key) = self.native_prefill_env() {
                 out.push((key.into(), native.to_string()));
             }
         }
         out
+    }
+
+    fn native_prefill_env(&self) -> Option<&'static str> {
+        match self.family {
+            Some(ModelFamily::Qwen4Exp) => Some("DS4_QWEN_PREFILL_CHUNK"),
+            Some(ModelFamily::Step37) => Some("DS4_STEP37_PREFILL_CHUNK"),
+            Some(ModelFamily::Ling3Vl) => Some("DS4_LING3VL_PREFILL_CHUNK"),
+            Some(ModelFamily::Inkling) => Some("DS4_INKLING_PREFILL_CHUNK"),
+            Some(ModelFamily::ExaoneMoe) => Some("DS4_EXAONE_PREFILL_CHUNK"),
+            Some(ModelFamily::Motif3) => Some("DS4_MOTIF3_PREFILL_CHUNK"),
+            Some(ModelFamily::SolarOpen2 | ModelFamily::DeepSeek4) => {
+                Some("DS4_METAL_PREFILL_CHUNK")
+            }
+            Some(ModelFamily::Dots3Note) => Some("DS4_DOTS3_PREFILL_CHUNK"),
+            _ => None,
+        }
+    }
+
+    fn controls_json(&self) -> Value {
+        // Proposals use the same allocator mapping and capability table as
+        // admission. An unidentified model or workspace offers no chunk choices.
+        let scheduler_chunks: Vec<_> = self
+            .caps
+            .and(self.effective.native_chunk)
+            .map(|cap| {
+                VERIFIED_PREFILL_CHUNKS
+                    .into_iter()
+                    .filter(|n| *n <= cap)
+                    .collect()
+            })
+            .unwrap_or_default();
+        json!({
+            "native_prefill_env": self.caps.and_then(|_| self.native_prefill_env()),
+            "scheduler_chunks": scheduler_chunks,
+            "prefix_reuse": self.caps.map(|caps| match caps.reuse {
+                ReuseKind::None => "none",
+                ReuseKind::Exact => "exact",
+                ReuseKind::Partial => "partial",
+            }),
+            "banks": self.caps.map(|caps| match caps.banks {
+                BankLane::Serial => "serial",
+                BankLane::OptIn => "opt_in",
+                BankLane::Persistent => "persistent",
+            }),
+            "mtp": self.caps.map(|caps| caps.mtp_support.as_str()),
+            "disk": self.caps.map(|caps| caps.disk.as_str()),
+        })
     }
 
     /// Pass the quoted workspace to native allocators that consume this argument.
@@ -1278,6 +1313,7 @@ impl ResolvedPlan {
     pub fn to_json(&self) -> Value {
         json!({
             "family": self.family_name,
+            "controls": self.controls_json(),
             "requested": {
                 "prefix_reuse": self.requested.prefix_reuse.as_str(),
                 "mtp_mode": self.requested.mtp_mode.as_str(),
@@ -2064,6 +2100,58 @@ mod tests {
         };
         let p = resolve_plan(&req, None, &EngineFacts::default());
         assert!(p.has_errors());
+    }
+
+    #[test]
+    fn controls_follow_family_caps() {
+        let req = ServingRequest {
+            native_chunk: Some(1280),
+            ..ServingRequest::default()
+        };
+        let p = plan(req, ModelFamily::ExaoneMoe, Variant::K2Horizon375B);
+        let controls = p.to_json()["controls"].clone();
+        assert_eq!(controls["native_prefill_env"], "DS4_EXAONE_PREFILL_CHUNK");
+        assert_eq!(controls["scheduler_chunks"], json!([256, 512, 1024]));
+        assert_eq!(controls["prefix_reuse"], "exact");
+        assert_eq!(controls["banks"], "persistent");
+        assert_eq!(controls["mtp"], "none");
+        assert_eq!(controls["disk"], "unverified");
+        assert!(p.env_overrides().iter().any(|(key, value)| {
+            key == controls["native_prefill_env"].as_str().unwrap() && value == "1280"
+        }));
+
+        let req = ServingRequest {
+            ctx: 2048,
+            ..ServingRequest::default()
+        };
+        let glm = plan(req, ModelFamily::Glm53, Variant::Glm53Flash).to_json();
+        assert!(glm["controls"]["native_prefill_env"].is_null());
+        assert_eq!(glm["controls"]["prefix_reuse"], "none");
+        assert_eq!(glm["controls"]["banks"], "serial");
+        assert_eq!(glm["controls"]["disk"], "none");
+    }
+
+    #[test]
+    fn controls_need_known_capacity() {
+        let p = plan(
+            ServingRequest::default(),
+            ModelFamily::ExaoneMoe,
+            Variant::K2Horizon375B,
+        );
+        assert_eq!(p.to_json()["controls"]["scheduler_chunks"], json!([]));
+        let unknown = resolve_plan(
+            &ServingRequest {
+                native_chunk: Some(2048),
+                ..ServingRequest::default()
+            },
+            None,
+            &EngineFacts::default(),
+        );
+        let controls = unknown.to_json()["controls"].clone();
+        assert_eq!(controls["scheduler_chunks"], json!([]));
+        for key in ["native_prefill_env", "prefix_reuse", "banks", "mtp", "disk"] {
+            assert!(controls[key].is_null(), "{key}: {controls}");
+        }
     }
 
     #[test]

@@ -7,6 +7,7 @@ pub mod cont;
 pub mod dist_cli;
 pub mod dsml;
 pub mod error;
+pub mod expected_plan;
 pub mod format;
 pub mod generate;
 pub mod http;

@@ -16,6 +16,8 @@ mod optimize;
 mod process;
 mod report;
 mod runner;
+mod serving;
+mod serving_http;
 mod timeline;
 mod workload;
 
@@ -44,6 +46,10 @@ fn main() {
         cli::Command::Scout(args) => runner::scout(&args),
         cli::Command::Compare(args) => compare::run(&args),
         cli::Command::Optimize(args) => optimize::run(&args),
+        cli::Command::Serving(args) => serving::run(&args),
+        cli::Command::ServingControls(args) => serving::controls(&args),
+        cli::Command::ServingProfile(args) => serving::profile(&args),
+        cli::Command::ApplyProfile(args) => serving::apply(&args),
     };
     if let Err(error) = result {
         eprintln!("ds4-perf: {error}");

@@ -9,6 +9,7 @@ use ds4_core::{
     MtpMode, PrefixReuse, ServingCaps, ServingRequest, WeightSlice,
 };
 use ds4_server::cache_identity::CacheIdentity;
+use ds4_server::expected_plan::ExpectedPlan;
 use ds4_server::kv_cli::DiskKvArgs;
 use ds4_server::{
     accept_loop, accept_loop_with_engine, accept_loop_with_engine_cont, dist_weight_slice,
@@ -50,6 +51,7 @@ fn main() {
     let mut model_options = Vec::new();
     let mut vision_path: Option<String> = None;
     let mut kv = DiskKvArgs::default();
+    let mut expected_plan: Option<ExpectedPlan> = None;
     let mut dist = DistArgs::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -119,6 +121,15 @@ fn main() {
             }
             "--print-plan" => serve_req.print_plan = true,
             "--check-config" => serve_req.check_config = true,
+            "--expect-plan" => {
+                if expected_plan.is_some() {
+                    cli_error("--expect-plan may be supplied only once");
+                }
+                let path = args.next().unwrap_or_else(|| usage());
+                expected_plan = Some(
+                    ExpectedPlan::load(Path::new(&path)).unwrap_or_else(|error| cli_error(&error)),
+                );
+            }
             "--backend" => {
                 backend = match args.next().unwrap_or_else(|| usage()).as_str() {
                     "cuda" => Backend::Cuda,
@@ -308,6 +319,11 @@ fn main() {
     cfg.adopt_plan(&plan);
     eprint!("{}", plan.report());
     if serve_req.check_config {
+        if let Some(expected) = &expected_plan {
+            expected
+                .check_preflight(&plan)
+                .unwrap_or_else(|error| cli_error(&error));
+        }
         println!("{}", plan.to_json());
         std::process::exit(if plan.may_listen() { 0 } else { 2 });
     }
@@ -510,6 +526,11 @@ fn main() {
     } else {
         None
     };
+    if let Some(expected) = &expected_plan {
+        expected
+            .check(cfg.serving_plan.as_ref().unwrap_or(&plan))
+            .unwrap_or_else(|error| cli_error(&error));
+    }
     if launch == ServerLaunch::Worker {
         let Some(ref model) = model else {
             cli_error(WORKER_REQUIRES_MODEL);

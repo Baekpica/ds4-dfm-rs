@@ -1,6 +1,7 @@
 # ds4-perf
 
 `inspect`, `scout`, `compare`, and `optimize` form the Rust performance workflow.
+`serving` collects ordered HTTP conversation workloads against a local server.
 The inference ABI remains `ds4-cli → ds4-core → ds4-sys → native CUDA/MMQ/VMM`.
 NVIDIA's optional Rust `nvtx` SDK annotates the measured host operations.
 CUDA calibration and CUPTI bindings live in the separate, optional
@@ -247,6 +248,241 @@ confidence interval. The default slowdown limit is 3%; overlapping evidence is
 inconclusive. `--regression` fails for regression, incorrectness, inconclusive
 results, or incomparable inputs. This gate does not replace model/state,
 capture/eager, long-context, or serving correctness gates.
+
+## Serving workloads
+
+```sh
+./ds4-perf serving --url http://127.0.0.1:8002 \
+  --workload serving-workload.json --out scratch/perf/conversation \
+  --timeout-seconds 1800 --max-output-mib 2048
+```
+
+This Linux collector sends the listed streaming Chat requests in order. Run it
+against an idle server with the intended model, banks and cache policy. It
+requires `curl` and a loopback HTTP origin. It does not start or restart a server,
+change a serving option, clear KV, or invent conversation history. A cold case
+must encounter cold KV; otherwise its trace check fails. Each append/branch
+request must contain the complete intended conversation, including the earlier
+assistant output. Use separate cases for short/long prompts, media, and sampler
+settings; their timings remain separate.
+`--repeats N` replays the whole workload with KV preserved and retains every
+sample. A cold-only fixture therefore needs an externally reset server and a
+separate output directory for each cold sample; replaying it as warm fails its
+reuse expectation. No aggregate averages short/long or text/media cases.
+
+```json
+{
+  "protocol": "ds4-serving-v1",
+  "name": "qwen-cold-append-branch",
+  "family": "qwen4exp",
+  "cases": [{
+    "name": "cold",
+    "scenario": "kv_cold_prefill",
+    "request": {
+      "model": "qwen", "stream": true, "temperature": 0, "max_tokens": 32,
+      "messages": [{"role": "user", "content": "Reply with exactly OK"}]
+    },
+    "expect": {
+      "content": "OK", "finish_reason": "stop", "reuse_kind": "cold", "effective_lane": "continuous",
+      "speculation_active": false, "fallback_reason": null
+    },
+    "limits": {
+      "ttft_ms": 10000, "total_ms": 20000,
+      "min_host_available_bytes": 4294967296
+    }
+  }]
+}
+```
+
+The example's output and limits are illustrative; set them from the intended
+accuracy and latency contract before collection. Add a `warm_append` case with
+`reuse_kind: "exact"`, or a `partial_branch` with `"partial"`/`"fork"`. `media`
+requires image/audio content in the request; `mtp` requires speculative decode
+in its observed trace. `family` must equal `/v1/stats`'s `serving.family` exactly.
+The full requested/effective/qualified plan is retained from the server, so the
+collector does not maintain a separate family capability table.
+
+Optional `--server-pid PID` checks ownership of the listening socket and pins
+the process start time, boot ID, executable SHA-256, raw argv, working directory,
+reviewed runtime environment and source checkout digest before/after collection.
+Unknown runtime environment keys are recorded by name and cannot qualify a
+profile. `localhost` resolves to IPv4; use `[::1]` for an IPv6 listener.
+Optional workload `inputs` use named `{ "path": "...", "sha256": "..." }`
+entries, relative to the workload file. Hashes are checked before and after the
+whole run, outside HTTP timing; declare every model shard, template, sidecar and
+owner manifest used. The collector records that manifest coverage is supplied
+by the operator, and does not identify loaded tensors from a server PID.
+
+`nvidia-smi` records GPU UUID, driver, SM clock and temperature before/after
+each repeat and on a concurrent 500 ms polling loop during the workload
+(`gpu-window.json`; `--device` selects its physical ordinal). Each sample keeps
+raw stdout/stderr. Unavailable telemetry
+stays explicit. Workload `expected_clock_range_mhz: {"min":300,"max":2200}`
+additionally requires observed clocks within that range. This declared range
+does not prove the driver's configured lock. Polling includes metadata-query
+overhead and can miss short peaks. Qualification requires chronological query
+timestamps, gaps and boundary slack at most 1500 ms, and a recorded workload
+window covering the measured requests. Short workloads may have only a sample
+near their boundaries. These checks bound missing observations; they do not
+prove continuous clock compliance. No clock setting is changed.
+
+`ttft_ms` measures client dispatch to the first nonempty content or reasoning
+delta; `first_content_ms` separately measures visible answer content. Role-only
+events are excluded. `total_ms` ends at `[DONE]`. These times include curl
+startup and use a 1 ms polling observer of unbuffered SSE output. NVIDIA metadata
+queries run concurrently; no GPU profiler is attached. These are HTTP
+measurements, separate from ds4-bench's post-prefill `first_token_sec`. They do
+not measure exact server queue residence or token-level decode throughput.
+
+Each case retains its request, raw SSE, timestamped data events, headers,
+stderr, result, and before/after `/v1/stats`. `serving.json` hashes these inputs.
+The resolved plan must stay identical, route counters must advance by exactly
+one, and the queue/other clients must be idle at the boundaries. The collector
+checks exact visible output and finish reason, reuse/lane/speculation/fallback expectations,
+latency limits, and host `MemAvailable` at both boundaries and through a 10 ms
+sampler (`memory.json`). Qualification rejects sampling gaps or uncovered
+request boundaries over 100 ms, allowing scheduling jitter. Sampling can miss
+shorter memory peaks. Invalid or interrupted streams produce
+incomplete evidence; collected contract failures produce `passed: false` and a
+nonzero exit. An existing output directory is never overwritten.
+
+For decode-vs-long-prefill, provide `overlaps` alongside `cases` (either array
+may be empty). Each overlap has a unique `name`, `decode` and `prefill` request
+objects, `min_prefill_tokens`, `min_decode_events_during_prefill`, and
+`max_decode_gap_ms`. Both request objects contain `request`, `limits` as above,
+and `expect` with only exact `content` and `finish_reason`. Both requests must
+set `stream_options: {"include_usage":true}`. For example, require 4,096
+computed peer prefill tokens, at least two decoder output events and a 1,000 ms
+maximum observed gap; set these bounds from the release workload contract.
+
+The collector starts the peer after the decoder's first generated output and
+checks decoder progress until the peer's first generated output. The decoder
+must remain live across that entire interval; increase its output length if it
+finishes too early. Peer usage must prove `prompt_tokens - cached_tokens`
+meets `min_prefill_tokens`; a hot or short prompt cannot pass that gate. Exact
+responses, committed decode-token usage, both HTTP latencies and sampled
+memory remain separate. Gap limits apply to received SSE output events, which
+may contain multiple tokens. The interval includes peer queue/render time as
+well as prefill and does not isolate GPU execution.
+
+Overlap requires at least two effective banks, stable resolved plans, and
+exactly two new route counts. Raw request/SSE/events and group boundary stats
+are retained. `/v1/stats` supplies only `last_request`, so overlap deliberately
+makes no per-request lane/reuse/speculation claim from that shared field.
+
+For generated tool calls, use `scenario: "tool"`, declare the functions in
+`request.tools`, and set `expect.finish_reason: "tool_calls"` with
+`expect.tool_calls: [{"name":"weather","arguments":{"city":"Seoul"}}]`.
+`expect.content` may be empty. The collector reconstructs fragmented arguments,
+checks ordered names and JSON-object arguments, and rejects missing/duplicate
+call IDs, invalid indexes and incomplete arguments. TTFT includes the first
+function-name or argument output; ID-only metadata does not count. Functions
+are not executed. Exact text still applies when a response contains both text
+and tool calls.
+
+For restart restore, add workload `restart_from: "seed/serving.json"` and make
+the first case `scenario: "restart_restore"`. Set positive
+`expect.min_cached_tokens` and `request.stream_options.include_usage: true`,
+with expected `reuse_kind: "exact"` or `"partial"`. The seed must have passed
+with disk enabled; the restored conversation must extend a seeded request.
+Stop the seed process and restart the same argv/environment/binary/inputs
+before collecting with the new `--server-pid`. The collector requires a newer
+process, confirms the seed process stopped, compares plans, and requires zero
+previous route requests plus actual cached-token usage on the first request.
+Use `--repeats 1`; three fresh restart captures supply profile repetition.
+The previous evidence is pinned transitively. Lifecycle orchestration remains
+external so the collector cannot stop an unrelated service.
+The seed path is part of the exact workload. A seed also binds its serving
+plan, so different native settings need separate restart profiles. Compare
+candidate settings on the same non-restart workload, then qualify restart on
+the selected setting. Preserve or restore the intended task-owned disk-cache
+state between fresh captures; a declared cold case must remain cold.
+
+This collector establishes the recorded cases only. A `serving.json` pass is not
+a deployment profile or a replacement for numerical/state gates. Sampling
+cannot prove instantaneous clock or memory extrema. Live release gates remain in the
+[v0.1.3 ledger](releases/v0.1.3.md).
+
+## Serving controls and profiles
+
+```sh
+./ds4-perf serving-controls --plan server-plan.json --out scratch/controls
+./ds4-perf serving-profile --plan selection.json --out scratch/profile
+./ds4-perf apply-profile --profile scratch/profile/profile.json --out scratch/check
+# Start only after reviewing launch.json; this replaces the ds4-perf process.
+./ds4-perf apply-profile --profile scratch/profile/profile.json --out scratch/start --execute
+```
+
+`serving-controls` consumes the resolved plan JSON (or `/v1/stats` JSON). Its
+`controls` come from `ds4_core::serving_caps`; ds4-perf has no serving family
+table. It proposes one common scheduler option per candidate, excluding the
+current width and respecting the native cap. Reuse, bank, MTP and disk support
+remain visible capability fields. Every proposal is explicitly unqualified;
+capability presence alone cannot justify changing correctness or memory policy.
+
+The selection file names one exact workload and its candidate captures. Paths
+are relative to this file:
+
+```json
+{"workload":"serving-workload.json","candidates":[
+  {"name":"baseline","runs":["baseline/serving.json"]},
+  {"name":"chunk-512","runs":["chunk-512/serving.json"]}
+]}
+```
+
+Every named case and overlap needs at least three measured samples per
+candidate, either `--repeats 3` or separate complete captures. Duplicate evidence
+cannot count as additional repeats: each named request stream must have distinct
+timestamped SSE observations, even if artifact metadata was repackaged. KV state still follows each declared
+scenario: use fresh server processes for repeated cold captures. The selector
+rechecks hashed requests, raw SSE and event times, output/finish reason, route
+counters and traces, sampled memory, and boundary/in-workload raw GPU
+clock/temperature records.
+Incomplete, incorrect, slower-than-contract or memory-violating candidates are
+rejected before ranking. Ranking minimizes the worst latency fraction of its
+declared bound across all cases and overlaps; workload times are never averaged.
+Different device/driver identities cannot compete in one campaign.
+
+Qualification requires `--server-pid`, complete input hashes, an observed clock
+range contract and a source checkout. It checks all model/MTP/vision GGUF shards,
+adjacent tokenizer/template files, and automatically selected PLE manifests,
+payloads and FP8 scales against the manifest. Media must be embedded in the
+hashed request. The direct server argv must use explicit `--max-seqs` matching
+the effective count; unknown/duplicate options, unreviewed environment controls,
+preloaded libraries and external weight-owner launches fail closed. Old captures
+without these records remain measurements and cannot acquire qualification.
+
+Selection and application each hash every distinct input once per invocation.
+Repeated references within that operation reuse the computed digest only while
+device, inode, size, modification time and change time remain unchanged.
+The verifier compares the opened file and its path before/after reading,
+checks every reuse against the expected digest, and rechecks all inputs before
+publication or launch. It also pins parsed root evidence and tracks consumed
+path aliases; symlink retargeting, replacement or mutation fails the operation. No hash
+cache survives between commands; collection still hashes inputs before and
+after the HTTP workload.
+
+The profile binds the selected argv, runtime environment, working directory,
+executable, source digest, inputs, device and effective plan. Source digests
+include untracked runtime files; changing a native include or Rust module
+invalidates the profile even before it is committed. `apply-profile` rechecks
+the complete evidence and current source/binary/input identities, then
+writes `launch.json` and `expected-plan.json`. This default check starts no server and does not establish
+current GPU availability. `--execute` additionally invokes the pinned server's
+model-free `--check-config`, checks its effective/qualified plan and current GPU
+identity/clock, then executes the recorded launch with a controlled
+`--expect-plan` argument. The server compares family, backend, effective options,
+qualification and controls again after native initialization; any change fails
+before listening. Captured candidates and the final post-open plan also compare
+the memory quote with only transient `available` excluded. Preflight skips quote
+comparison because pre-open and post-open residency credits differ; this
+exclusion is recorded in the profile. A prior recorded
+guard must itself be hashed in the workload and match the measured plan; the
+wrapper replaces its path for the new launch. Extra CLI options are rejected;
+runtime environment overrides are cleared. It does not stop an
+existing server. A profile qualifies only the named workload on the recorded
+configuration; it does not qualify unmeasured restart, tool, media or MTP paths,
+nor mark P4 or the release complete.
 
 ## Bounded optimization
 
