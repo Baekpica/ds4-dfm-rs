@@ -184,12 +184,14 @@ fn state_env() -> BTreeMap<String, Vec<u8>> {
         Some((key.into_string().ok()?, value.as_encoded_bytes().to_vec()))
     }).filter(|(key, _)| {
         (key.starts_with("DS4_") || key == "CUDA_VISIBLE_DEVICES" || key == "NVIDIA_TF32_OVERRIDE")
-            // IPC ownership, scheduling and memory admission change placement,
-            // not the weights/state contract. Keep compute/KV/RoPE switches.
+            // Keep native compute/KV/RoPE controls, including DS4_CONT_MTP_*
+            // and DS4_CONT_DSPARK. Only these two continuous scheduling keys
+            // are redundant with the normalized effective schedule in finish.
             && !key.starts_with("DS4_CUDA_WEIGHT_IPC")
-            && !key.starts_with("DS4_SERVER_") && !key.starts_with("DS4_CONT_")
+            && !key.starts_with("DS4_SERVER_")
             && !key.starts_with("DS4_MEM")
-            && !matches!(key.as_str(), "DS4_SESSION_LAZY_GRAPH" | "DS4_SESSION_GRAPH_FIT"
+            && !matches!(key.as_str(), "DS4_CONT_PREFILL_CHUNK" | "DS4_CONT_PREFILL_CHUNK_LIVE"
+                | "DS4_SESSION_LAZY_GRAPH" | "DS4_SESSION_GRAPH_FIT"
                 | "DS4_NO_BOOT_PREWARM" | "DS4_BOOT_PREWARM" | "DS4_GOV_TRACE")
     }).collect()
 }
@@ -279,6 +281,33 @@ fn ple_inputs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continuous_inference_controls_change_identity() {
+        for (key, before, after) in [
+            ("DS4_CONT_MTP_DEPTH", Some("1"), Some("2")),
+            ("DS4_CONT_MTP_MODE", Some("0"), Some("2")),
+            ("DS4_CONT_MTP_BATCH_DRAFT", None, Some("1")),
+            ("DS4_CONT_DSPARK", Some("0"), Some("1")),
+            ("DS4_CONT_MTP_DRAFT_PROBE", None, Some("1")),
+        ] {
+            let old = std::env::var_os(key);
+            let fingerprint = |value: Option<&str>| {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+                digest(&Value::Null, &format!("env={:?}", state_env()))
+            };
+            let before = fingerprint(before);
+            let after = fingerprint(after);
+            match old {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+            assert_ne!(before, after, "native compute control was omitted: {key}");
+        }
+    }
 
     #[test]
     #[cfg(unix)]
