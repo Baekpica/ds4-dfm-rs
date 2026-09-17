@@ -40,3 +40,62 @@ fn source_tokenizer_vectors() {
         assert!(!v.is_stop(id), "unexpected stop {id}");
     }
 }
+
+#[test]
+#[ignore = "requires STEP37_MODEL_PATH pointing to the first MQ83 shard"]
+fn history_token_frontier() {
+    use ds4_core::chat_template::{ChatOptions, RenderClock, Template};
+    use serde_json::json;
+
+    let path = std::env::var("STEP37_MODEL_PATH").expect("set STEP37_MODEL_PATH");
+    let gguf = GgufFile::open(Path::new(&path)).unwrap();
+    let vocab = Vocab::load(&gguf, ModelFamily::Step37).unwrap();
+    let template = Template::compile(
+        include_str!("../../../tests/fixtures/step37/chat_template.jinja"),
+        RenderClock::Fixed(0),
+    )
+    .unwrap();
+    let options = ChatOptions::new(10, ds4_core::ChatThinkMode::None);
+    for content in [
+        "4",
+        "Hello",
+        "안녕하세요",
+        "\nA code example:",
+        "{\"ok\":true}",
+    ] {
+        let first = template
+            .render_chat(
+                &[json!({"role":"user", "content":"Reply briefly."})],
+                &[],
+                options,
+            )
+            .unwrap();
+        let history = first
+            .strip_suffix("assistant\n<think>\n</think>\n")
+            .unwrap();
+        let follow = template
+            .render_chat(
+                &[
+                    json!({"role":"user", "content":"Reply briefly."}),
+                    json!({"role":"assistant", "content":content}),
+                    json!({"role":"user", "content":"Continue."}),
+                ],
+                &[],
+                options,
+            )
+            .unwrap();
+        let prefix = vocab.encode_rendered_chat(history);
+        assert!(vocab.encode_rendered_chat(&first).starts_with(&prefix));
+        assert!(
+            vocab.encode_rendered_chat(&follow).starts_with(&prefix),
+            "{content:?}"
+        );
+        assert_eq!(
+            prefix
+                .iter()
+                .flat_map(|&id| vocab.token_text(id))
+                .collect::<Vec<_>>(),
+            history.as_bytes()
+        );
+    }
+}

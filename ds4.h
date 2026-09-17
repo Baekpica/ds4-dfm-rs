@@ -770,6 +770,12 @@ typedef struct {
      * actual cached count.  src == target is an in-place truncate-reuse.
      * A cut with no safe base degrades to cold. */
     int        fork_bank;   /* source bank id + 1; 0 = no fork                */
+    /* Step-only durable prefill boundary. For 0 < checkpoint_at < n, a
+     * forward ends exactly there and publishes valid KV, tokens and logits
+     * before any suffix runs. A boundary at or below n_cached is skipped.
+     * The callback may snapshot this bank; it must not mutate bank state. */
+    int        checkpoint_at;
+    void     (*on_checkpoint)(void *ud, void *user, int bank, int current);
 } ds4_cont_request;
 /* A2a: a bank's committed token history (engine-authoritative bookkeeping for
  * warm start).  *toks points at ctx-owned storage, valid until the next admit

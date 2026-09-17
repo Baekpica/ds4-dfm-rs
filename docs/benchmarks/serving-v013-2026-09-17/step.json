@@ -1,0 +1,347 @@
+{
+  "schema": "v013-live-evidence-v1",
+  "base_commit": "ea580c6394ec30bae7f444d5ae6411f76a996674",
+  "source_state": "uncommitted v0.1.3 work; tested executable hashes below",
+  "family": "step35",
+  "artifact": "MQ83 + MTP-Q8_0",
+  "fixture_sha256": "3b9f8d53173bf1eb34381f21e069b4539745957a6277954b972b45b531a0b72e",
+  "native_log": {
+    "path": "scratch/v013/step-cont-mtp-fixed.log",
+    "sha256": "35f7a644f5313121b03a1f0a3dfcb1653f7f3bf07fdb5fd70ab9f32f4d6b7cf0",
+    "result": [
+      " two banks match two serial sessions byte-for-byte (16 tokens each)\n",
+      " full-frontier fork clones 175 committed rows and matches serial\n",
+      " bank disk KV round-trips 190 committed tokens; frontier logits live\n",
+      " partial fork restores 160-row prompt checkpoint, 16 tokens exact\n",
+      " two-bank MTP matches serial tokens, full logits, target and predictor KV\n",
+      " MTP full and partial fork preserve target/predictor state exactly\n",
+      " cancellation commits no unreported speculative tokens\n",
+      " forced protocol token and EOS stop speculative emission\n",
+      " history frontier payload restores exact tokens and greedy continuation\n",
+      " two-bank parity, fork, and bank disk KV PASS\n"
+    ]
+  },
+  "http": {
+    "serial": {
+      "seed": {
+        "phase": "seed",
+        "seconds": 1.919791784021072,
+        "cached_tokens": 0,
+        "prompt_tokens": 294,
+        "text": "4",
+        "trace": {
+          "effective_lane": "serial",
+          "reuse_kind": "cold",
+          "speculation_active": true,
+          "fallback_reason": null,
+          "reuse_miss": "no checkpoint at or below LCP"
+        }
+      },
+      "restored": {
+        "phase": "restored",
+        "seconds": 0.6606824970222078,
+        "cached_tokens": 287,
+        "prompt_tokens": 315,
+        "text": "5",
+        "trace": {
+          "effective_lane": "serial",
+          "reuse_kind": "exact",
+          "speculation_active": true,
+          "fallback_reason": null
+        }
+      },
+      "cold": {
+        "phase": "cold",
+        "seconds": 1.97030048398301,
+        "cached_tokens": 0,
+        "prompt_tokens": 315,
+        "text": "5",
+        "trace": {
+          "effective_lane": "serial",
+          "reuse_kind": "cold",
+          "speculation_active": true,
+          "fallback_reason": null,
+          "reuse_miss": "no checkpoint at or below LCP"
+        }
+      }
+    },
+    "bank": {
+      "seed": {
+        "phase": "seed",
+        "seconds": 1.917403027007822,
+        "cached_tokens": 0,
+        "prompt_tokens": 294,
+        "text": "4",
+        "trace": {
+          "effective_lane": "continuous",
+          "reuse_kind": "cold",
+          "speculation_active": true,
+          "fallback_reason": null,
+          "reuse_miss": "no checkpoint at or below LCP"
+        }
+      },
+      "restored": {
+        "phase": "restored",
+        "seconds": 0.6355403430061415,
+        "cached_tokens": 287,
+        "prompt_tokens": 315,
+        "text": "5",
+        "trace": {
+          "effective_lane": "continuous",
+          "reuse_kind": "fork",
+          "speculation_active": true,
+          "fallback_reason": null
+        }
+      },
+      "cold": {
+        "phase": "cold",
+        "seconds": 1.963124129048083,
+        "cached_tokens": 0,
+        "prompt_tokens": 315,
+        "text": "5",
+        "trace": {
+          "effective_lane": "continuous",
+          "reuse_kind": "cold",
+          "speculation_active": true,
+          "fallback_reason": null,
+          "reuse_miss": "no checkpoint at or below LCP"
+        }
+      }
+    }
+  },
+  "overlap": {
+    "protocol": "ds4-serving-v1",
+    "name": "step-decode-long-prefill",
+    "family": "step35",
+    "serving_plan": {
+      "effective": {
+        "bank_persist_min_tokens": 1,
+        "banks_opt_in": true,
+        "ctx": 8192,
+        "disk": false,
+        "disk_is_offload": false,
+        "disk_min_tokens": 512,
+        "max_seqs": 2,
+        "mem_floor_gb": 4,
+        "mtp_draft": 3,
+        "mtp_mode": "on",
+        "mtp_weights": true,
+        "native_chunk": 512,
+        "prefix_reuse": "off",
+        "sched_chunk": 256,
+        "sched_chunk_live": 256
+      },
+      "family": "step35",
+      "issues": [
+        {
+          "code": "prompt_bound",
+          "level": "warn",
+          "message": "configured ctx is not a full-length request proof"
+        },
+        {
+          "code": "media_serial",
+          "level": "warn",
+          "message": "image requests use the serial lane beside text banks"
+        }
+      ],
+      "qualified": {
+        "banks": "qualified",
+        "banks_n": 2,
+        "ctx": 65536,
+        "disk": "none",
+        "mtp": "qualified",
+        "note": "text banks are opt-in; Chat restart hits need history-stable identity; images serial",
+        "prefix_reuse": "none",
+        "prompt": 6300
+      },
+      "quote": {
+        "available": 23726258688,
+        "banks": 2,
+        "checkpoint_pool": 0,
+        "floor": 6442450944,
+        "media_reserve": 0,
+        "mtp_state": 0,
+        "per_bank": 1190018304,
+        "ple": 0,
+        "scratch": 0,
+        "shared_weights": 0,
+        "total": 8822487552
+      },
+      "requested": {
+        "backend": "cuda",
+        "ctx": 8192,
+        "disk": false,
+        "lane": "auto",
+        "max_seqs": "2",
+        "mem_floor_gb": 4,
+        "mtp_mode": "on",
+        "mtp_path": true,
+        "prefix_reuse": "off"
+      }
+    },
+    "cases": [],
+    "overlaps": [
+      {
+        "name": "decode-during-prefill",
+        "repeat": 0,
+        "decode_ttft_ms": 316.66537700000003,
+        "decode_total_ms": 21734.138089,
+        "prefill_dispatch_ms": 316.95464,
+        "prefill_ttft_ms": 10625.446359,
+        "prefill_total_ms": 10734.417664999999,
+        "decode_events_during_prefill": 82,
+        "prefill_computed_tokens": 5313,
+        "decode_committed_tokens": 512,
+        "max_decode_gap_ms": 532.1699349999999,
+        "host_available_before_bytes": 20522246144,
+        "host_available_after_bytes": 20423032832,
+        "host_min_available_bytes": 19867807744,
+        "failures": []
+      },
+      {
+        "name": "decode-during-prefill",
+        "repeat": 1,
+        "decode_ttft_ms": 318.046166,
+        "decode_total_ms": 21763.398568,
+        "prefill_dispatch_ms": 318.210261,
+        "prefill_ttft_ms": 10655.592403,
+        "prefill_total_ms": 10863.819615999999,
+        "decode_events_during_prefill": 82,
+        "prefill_computed_tokens": 5313,
+        "decode_committed_tokens": 512,
+        "max_decode_gap_ms": 535.3663449999999,
+        "host_available_before_bytes": 20398411776,
+        "host_available_after_bytes": 20977885184,
+        "host_min_available_bytes": 20114489344,
+        "failures": []
+      },
+      {
+        "name": "decode-during-prefill",
+        "repeat": 2,
+        "decode_ttft_ms": 316.58000400000003,
+        "decode_total_ms": 21642.905232,
+        "prefill_dispatch_ms": 316.864563,
+        "prefill_ttft_ms": 10540.05424,
+        "prefill_total_ms": 10650.428001,
+        "decode_events_during_prefill": 82,
+        "prefill_computed_tokens": 5313,
+        "decode_committed_tokens": 512,
+        "max_decode_gap_ms": 524.598239,
+        "host_available_before_bytes": 20980195328,
+        "host_available_after_bytes": 21301587968,
+        "host_min_available_bytes": 20980047872,
+        "failures": []
+      }
+    ],
+    "requested_repeats": 3,
+    "identity": {
+      "server": {
+        "pid": 762838,
+        "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+        "start_ticks": 40394780,
+        "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin/ds4-server",
+        "executable_sha256": "4aec8938cb85e923a554c030a30aef4adb11c35600dd8d61529cb634617da388",
+        "argv_sha256": "883216af78853d71daf57e7d9db8a9462414ecc56596390ceb80841e57df7e97",
+        "cwd": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress",
+        "environment": {
+          "DS4_CUDA_WEIGHT_IPC_MANIFEST": "scratch/v013/step.ipc",
+          "DS4_CUDA_WEIGHT_IPC_SCOPE": "both",
+          "DS4_SERVER_PERSIST_MIN_TOKENS": "1",
+          "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:/usr/local/cuda-13.3/lib64:"
+        },
+        "unreviewed_environment": []
+      },
+      "inputs": {},
+      "expected_clock_range_mhz": {
+        "min": 300,
+        "max": 2200
+      },
+      "limitations": [
+        "model/template/sidecar input hashes were not supplied",
+        "input manifest coverage is operator-declared; loaded model tensors are not introspected"
+      ]
+    },
+    "gpu_samples": [
+      {
+        "label": "gpu-before",
+        "unix_ms": 1789628098051,
+        "device_ordinal": 0,
+        "uuid": "GPU-012cd6bb-43ae-b629-e226-4496d1243471",
+        "name": "NVIDIA GB10",
+        "driver": "610.43.02",
+        "sm_clock_mhz": 2190,
+        "temperature_c": 45,
+        "unavailable_reason": null
+      },
+      {
+        "label": "gpu-after",
+        "unix_ms": 1789628119970,
+        "device_ordinal": 0,
+        "uuid": "GPU-012cd6bb-43ae-b629-e226-4496d1243471",
+        "name": "NVIDIA GB10",
+        "driver": "610.43.02",
+        "sm_clock_mhz": 2190,
+        "temperature_c": 52,
+        "unavailable_reason": null
+      },
+      {
+        "label": "gpu-before",
+        "unix_ms": 1789628120021,
+        "device_ordinal": 0,
+        "uuid": "GPU-012cd6bb-43ae-b629-e226-4496d1243471",
+        "name": "NVIDIA GB10",
+        "driver": "610.43.02",
+        "sm_clock_mhz": 2190,
+        "temperature_c": 52,
+        "unavailable_reason": null
+      },
+      {
+        "label": "gpu-after",
+        "unix_ms": 1789628141998,
+        "device_ordinal": 0,
+        "uuid": "GPU-012cd6bb-43ae-b629-e226-4496d1243471",
+        "name": "NVIDIA GB10",
+        "driver": "610.43.02",
+        "sm_clock_mhz": 2190,
+        "temperature_c": 54,
+        "unavailable_reason": null
+      },
+      {
+        "label": "gpu-before",
+        "unix_ms": 1789628142050,
+        "device_ordinal": 0,
+        "uuid": "GPU-012cd6bb-43ae-b629-e226-4496d1243471",
+        "name": "NVIDIA GB10",
+        "driver": "610.43.02",
+        "sm_clock_mhz": 2190,
+        "temperature_c": 54,
+        "unavailable_reason": null
+      },
+      {
+        "label": "gpu-after",
+        "unix_ms": 1789628163918,
+        "device_ordinal": 0,
+        "uuid": "GPU-012cd6bb-43ae-b629-e226-4496d1243471",
+        "name": "NVIDIA GB10",
+        "driver": "610.43.02",
+        "sm_clock_mhz": 2190,
+        "temperature_c": 59,
+        "unavailable_reason": null
+      }
+    ],
+    "context_failures": [],
+    "passed": true,
+    "timing_method": "client dispatch through complete SSE event; curl --no-buffer; 1 ms file observer; includes curl startup; no profiler"
+  },
+  "overlap_receipt_sha256": "301387f8fb93d93840ce5f166ca8bd2d5c6eab91d9a171cb03dd8588beb53a18",
+  "binaries": {
+    "scratch/v013/bin/ds4-server": "4aec8938cb85e923a554c030a30aef4adb11c35600dd8d61529cb634617da388",
+    "scratch/v013/bin/ds4-perf": "c80ac72a0335854537cbd40746c08cea04861ff2db530a9b4b8f837bbb4dc747",
+    "tests/test_step37_cont": "c28b15174c19ce11e92baa34b8bff04f2d8a74a2958eaa4cc9ee6322e1dd398b"
+  },
+  "limitations": [
+    "profile not qualified: no complete input hash manifest",
+    "HTTP restart is one short request per phase",
+    "overlap max gap 1s, context8192, native512/yield256 only"
+  ]
+}

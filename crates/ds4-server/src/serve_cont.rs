@@ -1037,9 +1037,9 @@ fn motif3_history_retire_prompt(prompt: &[u8], syntax: ModelSyntax) -> &[u8] {
     // history replay omits it. Bank keys must use the history form or the
     // next tool-result turn diverges at <|assistant|>.
     //
-    // Step is deliberately not here: its bank snapshot holds the pair, so a
-    // shortened key would extend KV the key does not describe. Its restart
-    // hit needs a checkpoint at that frontier instead.
+    // Step is deliberately not here: this bank snapshot holds the pair.
+    // Its separate history checkpoint was captured before that suffix;
+    // shortening this retired key would describe different KV.
     //
     // Ling writes the same bytes but replays them: Bailing V3 re-emits the
     // pair before every history assistant turn, so a stripped key is never
@@ -1678,6 +1678,42 @@ mod native {
         miss: ReuseMiss,
         t_arrive: Instant,
         stop_requested: Option<fn() -> bool>,
+        history: Option<HistoryCheckpoint>,
+    }
+
+    struct HistoryCheckpoint {
+        text: Vec<u8>,
+        tokens: Vec<i32>,
+        payload: ds4_kv::PayloadTemp,
+        captured: bool,
+    }
+
+    impl HistoryCheckpoint {
+        fn capture(&mut self, batch: &BatchCtx<'_>, bank: i32, tokens: &[i32]) {
+            if tokens != self.tokens || self.captured {
+                return;
+            }
+            match batch.save_bank_payload(bank, self.payload.path()) {
+                Ok(()) => self.captured = true,
+                Err(error) => eprintln!("ds4-server-rs: history bank capture failed: {error}"),
+            }
+        }
+
+        fn persist(self, store: &mut KvStore, identity: (u8, u8, u32)) {
+            if !self.captured {
+                return;
+            }
+            let (model_id, quant_bits, ctx) = identity;
+            let mut header =
+                crate::generate::kv_header(model_id, quant_bits, ctx, self.tokens.len() as u32);
+            header.reason = KvReason::BankCheckpoint;
+            header.ext_flags = bank_persist_ext_flags(0, false, false);
+            if let Err(error) =
+                store.write_payload_file(header, &self.text, self.payload.path(), &[])
+            {
+                eprintln!("ds4-server-rs: history bank checkpoint failed: {error}");
+            }
+        }
     }
 
     struct PreparedImages {
@@ -1822,6 +1858,7 @@ mod native {
                 decode_ms: 0.0,
                 decode_tokens: 0,
                 decode_steps: 0,
+                history: self.history,
             }
         }
     }
@@ -1857,6 +1894,7 @@ mod native {
         decode_ms: f64,
         decode_tokens: i32,
         decode_steps: i32,
+        history: Option<HistoryCheckpoint>,
     }
 
     impl JobSlot<'_> {
@@ -1942,20 +1980,22 @@ mod native {
         }
     }
 
-    struct RollDriver<'a> {
+    struct RollDriver<'a, 'm> {
         roll: crate::serve_cont_roll::ContRoll,
         slots: std::collections::HashMap<usize, JobSlot<'a>>,
         vocab: &'a Vocab,
         next_user: usize,
+        batch: &'a BatchCtx<'m>,
     }
 
-    impl<'a> RollDriver<'a> {
-        fn new(vocab: &'a Vocab) -> Self {
+    impl<'a, 'm> RollDriver<'a, 'm> {
+        fn new(vocab: &'a Vocab, batch: &'a BatchCtx<'m>) -> Self {
             Self {
                 roll: crate::serve_cont_roll::ContRoll::new(),
                 slots: std::collections::HashMap::new(),
                 vocab,
                 next_user: 1,
+                batch,
             }
         }
 
@@ -1971,7 +2011,7 @@ mod native {
         }
     }
 
-    impl ContDriver for RollDriver<'_> {
+    impl ContDriver for RollDriver<'_, '_> {
         fn admit(&mut self) -> Option<ContAdmit> {
             let user = self.roll.admit()?;
             self.slots.get_mut(&user)?.admit.take()
@@ -2010,6 +2050,16 @@ mod native {
                 return false;
             };
             slot.admitted(n_cached, n_computed, bank)
+        }
+
+        fn on_checkpoint(&mut self, user: usize, bank: i32, tokens: &[i32]) {
+            if let Some(history) = self
+                .slots
+                .get_mut(&user)
+                .and_then(|slot| slot.history.as_mut())
+            {
+                history.capture(self.batch, bank, tokens);
+            }
         }
     }
 
@@ -2213,6 +2263,16 @@ mod native {
             self.slots
                 .get_mut(&user)
                 .is_some_and(|slot| slot.job.admitted(n_cached, n_computed, bank))
+        }
+
+        fn on_checkpoint(&mut self, user: usize, bank: i32, tokens: &[i32]) {
+            if let Some(history) = self
+                .slots
+                .get_mut(&user)
+                .and_then(|slot| slot.job.history.as_mut())
+            {
+                history.capture(self.batch, bank, tokens);
+            }
         }
     }
 
@@ -3359,6 +3419,41 @@ mod native {
             admit.min_p = min_p;
             admit.seed = parsed.seed;
             admit.images = images;
+            let frontier = (self.template.is_some()
+                && self.warm_reuse != ReuseKind::None
+                && parsed.kind == ReqKind::Chat
+                && parsed.images.is_empty()
+                && parsed.audios.is_empty()
+                && crate::generate::ordinary_disk_cache_eligible(parsed))
+            .then(|| {
+                crate::generate::step_history_frontier(
+                    self.model_id,
+                    &stepper.prompt,
+                    &admit.tokens,
+                    |text| Ok(self.vocab.encode_rendered_bytes(text)),
+                )
+            })
+            .flatten();
+            // Capture the native prefix while it is live. Disk persistence
+            // follows at retirement; the advancing bank keeps its own state.
+            let history = frontier.and_then(|(text, tokens)| {
+                let checkpoint_at = tokens.len() as i32;
+                let store = store.as_deref()?;
+                if !self.warm_checkpoint
+                    || !bank_persist_eligible(checkpoint_at, self.warm_persist_min)
+                    || checkpoint_at < store.opt.min_tokens
+                {
+                    return None;
+                }
+                let payload = store.payload_temp().ok()?;
+                admit.checkpoint_at = checkpoint_at;
+                Some(HistoryCheckpoint {
+                    text,
+                    tokens,
+                    payload,
+                    captured: false,
+                })
+            });
             Ok(PreparedSlot {
                 admit,
                 head,
@@ -3368,6 +3463,7 @@ mod native {
                 miss,
                 t_arrive: work.t_arrive,
                 stop_requested: self.stop_requested,
+                history,
             })
         }
 
@@ -3380,6 +3476,11 @@ mod native {
             cors: bool,
             publish: Option<&mut dyn FnMut(&GenerateOutcome)>,
         ) -> Result<GenerateOutcome, GenerateError> {
+            if let (Some(history), Some(store), Some(identity)) =
+                (job.history.take(), store.as_deref_mut(), self.identity())
+            {
+                history.persist(store, identity);
+            }
             let timings = {
                 let completion = job.stepper.completion();
                 let mut timings = ReqTimings {
@@ -3675,7 +3776,7 @@ mod native {
                 store.as_deref_mut(),
                 &crate::serve_cont_roll::RollReserve::new(),
             )?;
-            let mut driver = RollDriver::new(self.host.vocab);
+            let mut driver = RollDriver::new(self.host.vocab, &self.batch);
             let user = driver.push(prepared.into_slot(Box::new(work.out)));
             let native_err = self
                 .batch
@@ -3716,7 +3817,7 @@ mod native {
                     Err(error) => results[index] = Some(Err(error)),
                 }
             }
-            let mut driver = RollDriver::new(self.host.vocab);
+            let mut driver = RollDriver::new(self.host.vocab, &self.batch);
             let order: Vec<_> = prepared
                 .into_iter()
                 .map(|(index, cors, slot, out)| {

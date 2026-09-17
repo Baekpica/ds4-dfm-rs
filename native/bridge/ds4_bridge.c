@@ -1764,6 +1764,7 @@ typedef struct {
     int (*alive)(void *ud, void *user);
     int (*on_admitted)(void *ud, void *user, int n_cached, int n_computed,
                        int bank);
+    void (*on_checkpoint)(void *ud, void *user, int bank, int current);
     ds4_batch_ctx *ctx;
     void *ud;
 } cont_tramp;
@@ -1787,6 +1788,12 @@ static int cont_tramp_on_admitted(void *ud, void *user, int n_cached,
     return t->on_admitted ? t->on_admitted(t->ud, user, n_cached,
                                            n_computed, bank)
                           : 1;
+}
+
+static void cont_tramp_checkpoint(void *ud, void *user, int bank, int current)
+{
+    cont_tramp *t = ud;
+    if (t->on_checkpoint) { t->on_checkpoint(t->ud, user, bank, current); }
 }
 
 static int cont_tramp_admit(void *ud, ds4_cont_request *req)
@@ -1822,6 +1829,7 @@ static int cont_tramp_admit(void *ud, ds4_cont_request *req)
     t->sample_override = br.sample_override;
     t->alive = br.alive;
     t->on_admitted = br.on_admitted;
+    t->on_checkpoint = br.on_checkpoint;
     if (br.sample_override) req->sample_override = cont_tramp_sample_override;
     if (br.alive) req->alive = cont_tramp_alive;
     if (br.on_admitted) req->on_admitted = cont_tramp_on_admitted;
@@ -1829,6 +1837,8 @@ static int cont_tramp_admit(void *ud, ds4_cont_request *req)
     req->n_cached = br.n_cached;
     req->bank_used = br.bank_used;
     req->fork_bank = br.fork_bank;
+    req->checkpoint_at = br.checkpoint_at;
+    if (br.on_checkpoint) { req->on_checkpoint = cont_tramp_checkpoint; }
     return 1;
 }
 

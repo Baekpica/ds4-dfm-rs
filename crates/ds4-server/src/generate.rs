@@ -652,13 +652,57 @@ fn discard_loaded(store: &mut KvStore, io: &mut impl SerialKvIo, path: &Path) {
 #[cfg(any(feature = "native", test))]
 fn disk_sync_template(
     io: &mut impl SerialKvIo,
-    store: Option<&mut KvStore>,
+    mut store: Option<&mut KvStore>,
     model_id: i32,
     quant_bits: i32,
     prompt: &[u8],
     tokens: &[i32],
     policy: DiskSyncPolicy,
 ) -> Result<i32, GenerateError> {
+    let history = policy
+        .load
+        .then(|| step_history_frontier(model_id, prompt, tokens, |text| io.tokenize_suffix(text)))
+        .flatten()
+        .filter(|(_, prefix)| {
+            store
+                .as_ref()
+                .is_some_and(|store| prefix.len() >= store.opt.min_tokens.max(1) as usize)
+        });
+    if let Some((text, prefix)) = history {
+        // Keep an already deeper, matching live frontier. Otherwise sync to
+        // the history boundary before the generation-only think pair: both
+        // the saved token ledger and the native KV now describe that prefix.
+        let live = io.live_tokens();
+        if live.len() <= prefix.len() || !tokens.starts_with(&live) {
+            let cached = disk_sync_prompt_impl(
+                io,
+                store.as_deref_mut(),
+                model_id,
+                quant_bits,
+                &text,
+                &prefix,
+                None,
+                false,
+                policy,
+                false,
+                PromptReuse::Tokens,
+            )?;
+            if let (Some(store), Some((model_id, quant_bits, ctx)), Some(trailer)) = (
+                store,
+                kv_identity(model_id, quant_bits, io.ctx()),
+                io.checkpoint_trailer(&text),
+            ) {
+                let header = kv_header(model_id, quant_bits, ctx, prefix.len() as u32);
+                if let Err(error) =
+                    write_checkpoint(store, header, &text, &trailer, |path| io.save_payload(path))
+                {
+                    eprintln!("ds4-server-rs: history KV checkpoint failed: {error}");
+                }
+            }
+            io.sync(tokens)?;
+            return Ok(cached);
+        }
+    }
     // Rendered-text identity is not token identity: an official template
     // that drops a block still held in KV would continue from a sequence
     // the client never sent. Jinja families reuse on tokens only.
@@ -675,6 +719,29 @@ fn disk_sync_template(
         false,
         PromptReuse::Tokens,
     )
+}
+
+#[cfg(any(feature = "native", test))]
+pub(crate) fn step_history_frontier(
+    model_id: i32,
+    prompt: &[u8],
+    tokens: &[i32],
+    encode: impl FnOnce(&[u8]) -> Result<Vec<i32>, GenerateError>,
+) -> Option<(Vec<u8>, Vec<i32>)> {
+    if syntax_for_model_id(model_id) != ModelSyntax::Step37 {
+        return None;
+    }
+    let text = prompt.strip_suffix(b"assistant\n<think>\n</think>\n")?;
+    if !text.ends_with(b"<|im_start|>") {
+        return None;
+    }
+    let prefix = encode(text).ok()?;
+    // Stop at the control token: a leading content newline can merge with
+    // the role newline on history replay. Validate the full token prefix too.
+    if prefix.is_empty() || prefix.len() >= tokens.len() || !tokens.starts_with(&prefix) {
+        return None;
+    }
+    Some((text.to_vec(), prefix))
 }
 
 #[cfg(any(feature = "native", test))]
@@ -3215,6 +3282,7 @@ mod disk_sync_tests {
         fail_save: bool,
         fail_save_at: Option<usize>,
         save_calls: usize,
+        saved_prefixes: Vec<Vec<i32>>,
         progress_frontiers: Vec<usize>,
         invalidations: usize,
         syncs: Vec<Vec<i32>>,
@@ -3243,6 +3311,7 @@ mod disk_sync_tests {
                 fail_save: false,
                 fail_save_at: None,
                 save_calls: 0,
+                saved_prefixes: Vec::new(),
                 progress_frontiers: Vec::new(),
                 invalidations: 0,
                 syncs: Vec::new(),
@@ -3337,6 +3406,7 @@ mod disk_sync_tests {
         fn save_payload(&mut self, path: &Path) -> Result<(), GenerateError> {
             self.events.push("save");
             self.save_calls += 1;
+            self.saved_prefixes.push(self.live.clone());
             if self.fail_save || self.fail_save_at == Some(self.save_calls) {
                 return Err(GenerateError::Engine(
                     "injected payload save failure".into(),
@@ -3445,10 +3515,133 @@ mod disk_sync_tests {
         }
     }
 
+    #[test]
+    fn step_restart_uses_history_kv() {
+        use ds4_core::chat_template::{ChatOptions, RenderClock, Template};
+        use serde_json::json;
+
+        let template = Template::compile(
+            include_str!("../../../tests/fixtures/step37/chat_template.jinja"),
+            RenderClock::Fixed(0),
+        )
+        .unwrap();
+        let options = ChatOptions::new(10, ds4_core::ChatThinkMode::None);
+        let first = template
+            .render_chat(&[json!({"role":"user", "content":"Hello"})], &[], options)
+            .unwrap();
+        let follow = template
+            .render_chat(
+                &[
+                    json!({"role":"user", "content":"Hello"}),
+                    json!({"role":"assistant", "content":"4"}),
+                    json!({"role":"user", "content":"Again"}),
+                ],
+                &[],
+                options,
+            )
+            .unwrap();
+        let history = first
+            .strip_suffix("assistant\n<think>\n</think>\n")
+            .unwrap();
+        let tokens = |text: &str| text.bytes().map(i32::from).collect::<Vec<_>>();
+        let (dir, mut store) = store("step-history-frontier");
+        let mut saving = FakeSerial::new(&[], first.as_bytes());
+        saving.suffix_tokens = tokens(history);
+        super::disk_sync_template(
+            &mut saving,
+            Some(&mut store),
+            10,
+            2,
+            first.as_bytes(),
+            &tokens(&first),
+            DiskSyncPolicy {
+                save_current: false,
+                load: true,
+            },
+        )
+        .unwrap();
+        let (_, envelope) = store
+            .text_prefix_candidate(follow.as_bytes(), 10, 2, 4096)
+            .unwrap()
+            .expect("next official render must find a saved history frontier");
+        assert_eq!(envelope.text, history.as_bytes());
+        assert_eq!(envelope.header.tokens as usize, history.len());
+        assert!(saving.saved_prefixes.contains(&tokens(history)));
+        assert_eq!(saving.live, tokens(&first));
+
+        let options = store.opt.clone();
+        drop(store);
+        let mut store = Store::open(&dir, 16, true, options).unwrap();
+        let mut loading = FakeSerial::new(&[], follow.as_bytes());
+        loading.loaded_tokens = tokens(history);
+        loading.suffix_tokens = tokens(
+            follow
+                .strip_suffix("assistant\n<think>\n</think>\n")
+                .unwrap(),
+        );
+        let cached = super::disk_sync_template(
+            &mut loading,
+            Some(&mut store),
+            10,
+            2,
+            follow.as_bytes(),
+            &tokens(&follow),
+            DiskSyncPolicy {
+                save_current: false,
+                load: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(cached as usize, history.len());
+        assert_eq!(loading.reuse, ReuseTaken::Exact);
+        assert_eq!(loading.live, tokens(&follow));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn step_history_needs_token_cut() {
+        let prompt = b"history<|im_start|>assistant\n<think>\n</think>\n";
+        assert!(super::step_history_frontier(10, prompt, &[1, 2, 3], |_| Ok(vec![1, 9])).is_none());
+        assert!(
+            super::step_history_frontier(10, prompt, &[1, 2, 3], |_| Ok(vec![1, 2, 3])).is_none()
+        );
+        assert!(
+            super::step_history_frontier(6, prompt, &[1, 2, 3], |_| panic!("other family"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn step_keeps_live_frontier() {
+        let (dir, mut store) = store("step-history-live");
+        let mut io = FakeSerial::new(
+            &[1, 2, 3],
+            b"history<|im_start|>assistant\n<think>\n</think>\n",
+        );
+        io.suffix_tokens = vec![1, 2];
+        let cached = super::disk_sync_template(
+            &mut io,
+            Some(&mut store),
+            10,
+            2,
+            b"history<|im_start|>assistant\n<think>\n</think>\n",
+            &[1, 2, 3],
+            DiskSyncPolicy {
+                save_current: false,
+                load: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(cached, 3);
+        assert_eq!(io.syncs, [vec![1, 2, 3]]);
+        assert!(io.saved_prefixes.is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
     /// Step's official follow-up render drops the empty think pair that the
     /// stored KV still holds, so a text-prefix hit would continue from a
-    /// token sequence the client never sent. The restart stays a cold
-    /// prefill until a checkpoint exists at that history frontier.
+    /// token sequence the client never sent. A record without a real
+    /// history-frontier payload must still fall back to a cold prefill.
     #[test]
     fn template_refuses_a_text_only_history_match() {
         let (dir, mut store) = store("step-history");

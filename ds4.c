@@ -61520,6 +61520,8 @@ typedef struct {
     int (*sample_override)(void *ud, void *user);
     int (*step_accept)(const int *, const int *, int, int);
     int (*alive)(void *ud, void *user);
+    uint32_t checkpoint_at;
+    void (*on_checkpoint)(void *ud, void *user, int bank, int current);
     ds4_cont_seq_stats stats;
 } ds4_family_cont_bank;
 
@@ -62683,6 +62685,10 @@ static int family_banked_engine_continuous_generate(
             cb->sample_override = req.sample_override;
             cb->step_accept = req.step_accept;
             cb->alive = req.alive;
+            cb->checkpoint_at = ctx->step37 && req.checkpoint_at > 0 &&
+                (uint32_t)req.checkpoint_at > cached && req.checkpoint_at < req.n
+                ? (uint32_t)req.checkpoint_at : 0u;
+            cb->on_checkpoint = req.on_checkpoint;
             memset(&cb->stats, 0, sizeof(cb->stats));
             cb->stats.admit_sec = now_sec();
             cb->stats.prefill_cached = cached;
@@ -62727,12 +62733,19 @@ static int family_banked_engine_continuous_generate(
                         n = bg_prefill_yield(n, cap, decoding != 0);
                     }
                     const uint32_t pos = cb->prefill_base + cb->prefill_off;
+                    /* History identity must name the actual KV prefix. End
+                     * this forward before the generation-only suffix and
+                     * materialize logits so its ordinary payload is valid. */
+                    if (cb->checkpoint_at > pos && cb->checkpoint_at - pos < n) {
+                        n = cb->checkpoint_at - pos;
+                    }
+                    const bool history_end = cb->checkpoint_at && pos + n == cb->checkpoint_at;
                     const bool final = n == remain;
                     uint32_t next_n = remain - n;
                     if (next_n > cap) next_n = cap;
                     if (!family_banked_prefill(
                             ctx, pb, cb->prefill + cb->prefill_off,
-                            n, pos, final,
+                            n, pos, final || history_end,
                             next_n ? cb->prefill + cb->prefill_off + n
                                    : NULL,
                             next_n)) {
@@ -62746,12 +62759,19 @@ static int family_banked_engine_continuous_generate(
                     bank_hist_append_n(
                         ctx, pb, cb->prefill + cb->prefill_off, n);
                     cb->prefill_off += n;
+                    if (history_end) {
+                        family_banked_capture_checkpoint(ctx, pb, pos + n, true);
+                        if (cb->on_checkpoint) {
+                            cb->on_checkpoint(ud, cb->user, (int)pb, (int)(pos + n));
+                        }
+                        cb->checkpoint_at = 0u;
+                    }
                     ds4_metric_add(
                         &ds4_metrics_get()->tokens_prefilled_computed, n);
                     ds4_metrics_window_add(0u, 0u, n);
                     /* Long-prefill periodic snapshot.  No logits exist at a
                      * mid-prompt frontier. */
-                    if (!final &&
+                    if (!final && !history_end &&
                         family_banked_checkpoint_due(ctx, pos, pos + n))
                         family_banked_capture_checkpoint(
                             ctx, pb, pos + n, false);

@@ -961,6 +961,8 @@ pub struct ds4_bridge_cont_request {
     pub n_cached: i32,
     pub bank_used: *mut i32,
     pub fork_bank: i32,
+    pub checkpoint_at: i32,
+    pub on_checkpoint: Option<unsafe extern "C" fn(*mut c_void, *mut c_void, c_int, c_int)>,
 }
 
 #[cfg(all(test, unix))]
