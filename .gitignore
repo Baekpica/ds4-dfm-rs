@@ -136,3 +136,4 @@ __pycache__/
 /tests/test_step37_norm
 /tests/libds4ple_test.so
 /tests/test_ling3vl_mla_expand
+/tests/test_exaone_batch

@@ -1,0 +1,259 @@
+{
+  "schema": "v013-live-evidence-v1",
+  "family": "glm5-next",
+  "artifact": "GLM-5.3-Flash-Q2.gguf",
+  "source_state": "integrated2 frozen server, native test built from v0.1.3 working tree; exact executable hashes below",
+  "scope": {
+    "context": 2048,
+    "lane": "serial",
+    "mtp": "off",
+    "disk": false,
+    "snapshot": "unsupported",
+    "clock_limits_mhz": [
+      300,
+      2200
+    ],
+    "observed_sm_mhz": 2190,
+    "hardware": "NVIDIA GB10",
+    "driver": "610.43.02",
+    "cuda": "13.3"
+  },
+  "gates": {
+    "model_free": "2048 lazy accepted, 2049 rejected; unsupported sidecars/backends/snapshot rejected",
+    "metadata_config": "2048 accepted, 2049 explicit ctx_unavailable refusal",
+    "native_model": "ctx2048 allocated; finite one-token prefill and one decode; ctx2049 refused",
+    "http_short": {
+      "id": "cmpl-1",
+      "object": "text_completion",
+      "created": 1789632124,
+      "model": "glm-5.3-flash",
+      "choices": [
+        {
+          "text": " Paris.",
+          "index": 0,
+          "finish_reason": "length"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 5,
+        "completion_tokens": 2,
+        "total_tokens": 7,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 5
+        }
+      },
+      "timings": {
+        "ttft_ms": 391.7,
+        "prefill_tokens": 5,
+        "prefill_cached_tokens": 0,
+        "prefill_tok_s": 14.8,
+        "decode_tok_s": 18.4,
+        "tok_per_step": 1.0
+      }
+    },
+    "http_overcap": {
+      "status": 500,
+      "error": "ds4 bridge error 1: prompt exceeds context"
+    }
+  },
+  "executables": [
+    {
+      "path": "tests/test_glm53_bounds",
+      "sha256": "c57fc83c06cd9d403c500a1a5cca7637c69da2bc2ca026bbbdb4e729091277a8",
+      "bytes": 69921136
+    },
+    {
+      "path": "tests/test_glm53_session",
+      "sha256": "e726c5c00e977206d2762c91669c82f189d8c4733ec128cc572840aa9b3fc457",
+      "bytes": 75785480
+    },
+    {
+      "path": "scratch/v013/bin-integrated2/ds4-server",
+      "sha256": "4ef2e1830133d6517ae730dd40c9c5955c6ff5f1f2de368678ad6c1fea79c6ea",
+      "bytes": 58206256
+    }
+  ],
+  "limitations": [
+    "Context allocation and short finite-logit smoke do not qualify a full 2048-token prompt or long-context quality.",
+    "HTTP over-cap input currently returns 500, not a 400 client error.",
+    "Snapshot support remains absent; no disk restart or multi-bank qualification.",
+    "No vision encoder was loaded or tested.",
+    "Functional timings are not a performance qualification."
+  ],
+  "raw_files": [
+    {
+      "path": "scratch/v013/glm-bounds/config-2048.command.json",
+      "sha256": "29d979da5c902bd5cb9ea7adae569da8ca1a8f2987b9bc0deb248a0be499b4fd",
+      "bytes": 351
+    },
+    {
+      "path": "scratch/v013/glm-bounds/config-2048.json",
+      "sha256": "dca39e6b31da2bcbfe7fb3c7594b84a910edf5604dfd2faf815c7754dacacf43",
+      "bytes": 1408
+    },
+    {
+      "path": "scratch/v013/glm-bounds/config-2048.stderr",
+      "sha256": "4a30529593838d080f4091655804673cfcf6e4cc0ba0400e23ef1fbf65119c37",
+      "bytes": 322
+    },
+    {
+      "path": "scratch/v013/glm-bounds/config-2048.stdout",
+      "sha256": "a8d707cfadfe85e4e4a9acbd887be03bafa85f459fa8823db8a965ddab0a1779",
+      "bytes": 1037
+    },
+    {
+      "path": "scratch/v013/glm-bounds/config-2049.command.json",
+      "sha256": "90d092c7005dc074dcff80759abfb25f12a27043e6d4d238b78ed3f7b6e3892f",
+      "bytes": 351
+    },
+    {
+      "path": "scratch/v013/glm-bounds/config-2049.json",
+      "sha256": "1c3ce4776533c23e5f11d64cd8952ac633766b1b7d5f8877827b56fe3aa30619",
+      "bytes": 1534
+    },
+    {
+      "path": "scratch/v013/glm-bounds/config-2049.stderr",
+      "sha256": "cf60701f336d0e8cbc523cf98aa6d5677fd5e21be13b697aa0bc7c993aa31479",
+      "bytes": 382
+    },
+    {
+      "path": "scratch/v013/glm-bounds/config-2049.stdout",
+      "sha256": "1331cb09786efdc131b3a6841205436d4f70ef2d5cc81648cd0cc9e6bfed9fc7",
+      "bytes": 1126
+    },
+    {
+      "path": "scratch/v013/glm-bounds/config.identity.json",
+      "sha256": "5b85072458d4d29fc8760827776e3f17f447955d13e2d9d19af6d04163fc563f",
+      "bytes": 349
+    },
+    {
+      "path": "scratch/v013/glm-bounds/http-overcap.error.json",
+      "sha256": "5547f0d7f39bc31036b8b0ba3ab43b7139c3cf45cba1b5bed6a13c6f9ba98458",
+      "bytes": 89
+    },
+    {
+      "path": "scratch/v013/glm-bounds/http-overcap.request.json",
+      "sha256": "fb2fbc3ee88ecc2932cc102f2f5e8c41dd21a792eea4a72f641c9dee20934f6c",
+      "bytes": 69761
+    },
+    {
+      "path": "scratch/v013/glm-bounds/http-overcap.status.json",
+      "sha256": "c5cfd88dc9493821ae2dc830a9a79980159bd7c994bd48cecd63a659205a66e0",
+      "bytes": 20
+    },
+    {
+      "path": "scratch/v013/glm-bounds/http-short.request.json",
+      "sha256": "69cb8e3862e6ae5cedaafa2d03d27b4fab474d1fb05d8c8cb68de6a9a87e6fab",
+      "bytes": 153
+    },
+    {
+      "path": "scratch/v013/glm-bounds/http-short.response.json",
+      "sha256": "4f36c01a0acde02367878696349908690e6c2d875075df5dcd4294dd29afc19b",
+      "bytes": 574
+    },
+    {
+      "path": "scratch/v013/glm-bounds/http-short.stats.json",
+      "sha256": "584db92dac87cbc4ecb3385cf2be62010d2651c2e168c3a434f3fdfaa542fd7e",
+      "bytes": 7701
+    },
+    {
+      "path": "scratch/v013/glm-bounds/http.process.json",
+      "sha256": "3cdc0658b025b20baa0ff687ffd08e5b32b7eb861343a67ac7aa98b8abc85784",
+      "bytes": 497
+    },
+    {
+      "path": "scratch/v013/glm-gpu-running.csv",
+      "sha256": "764e1d9eebec4b75c84937a5a8dfa1254f19959507670a0e2ffc3d1eb2be48d7",
+      "bytes": 161
+    },
+    {
+      "path": "scratch/v013/glm-http-smoke.command.json",
+      "sha256": "4f9af15615cf0aca02835e4775dd0d6cebe124e17bd57b18b4082f4bb19165a3",
+      "bytes": 565
+    },
+    {
+      "path": "scratch/v013/glm-http-smoke.log",
+      "sha256": "54d71152c30f6282c91d462baa2aceb1148356bb37ebf31100ed82ef9aa63b69",
+      "bytes": 4392
+    },
+    {
+      "path": "scratch/v013/glm-http-smoke.memory.jsonl",
+      "sha256": "9c54434a65b33ae44332cd98db329b9b742b218378089b4a06f9eaeee68772c2",
+      "bytes": 14011
+    },
+    {
+      "path": "scratch/v013/glm-http-test.log",
+      "sha256": "b30a5b080d3dbd48f9c27cdd5a727abbb8f2ddd3ad31cbc5d7ef51eb35f553b5",
+      "bytes": 75
+    },
+    {
+      "path": "scratch/v013/glm-native.log",
+      "sha256": "777513a3cf9f9355cd0385b0d388a98391c8f2addc525c7df808e0542a29d34b",
+      "bytes": 3423
+    },
+    {
+      "path": "scratch/v013/glm-native.memory.jsonl",
+      "sha256": "07ecb52acd139d21fb26e3e6a44591380c2f719176354e09a4c9a11438598964",
+      "bytes": 7136
+    },
+    {
+      "path": "scratch/v013/glm53-bounds.log",
+      "sha256": "e8d5b87a377e2df4572996538c74d78dd206a874dc18646517bfd1c2c4be7350",
+      "bytes": 647
+    },
+    {
+      "path": "scratch/v013/glm-artifacts.json",
+      "sha256": "854c214ee1bef82d89bdbdd3397dd2fde7edb93323f51ce17ccbfc9d8fb28d2f",
+      "bytes": 1410
+    }
+  ],
+  "artifact_identity": {
+    "schema": "v013-artifacts-v1",
+    "manifest": null,
+    "files": [
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-Mixed-Quant-GGUF/GLM-5.3-Flash-Q2.gguf",
+        "bytes": 96505816384,
+        "sha256": "e81fd6241c6e55a64e1e14e47a3eab61a173fa8d7e4b5c1d1848827119705b32",
+        "published_hash_verified": false,
+        "stat": [
+          66306,
+          174987825,
+          96505816384,
+          1788407517053189615,
+          1788407518291102505
+        ],
+        "seconds": 186.07394450798165
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-Mixed-Quant-GGUF/chat_template.jinja",
+        "bytes": 8617,
+        "sha256": "41cff9af7b3a86c96751b107a8444f245fbda0bd5320b636a5bb1f7f4ba1a5c3",
+        "published_hash_verified": false,
+        "stat": [
+          66306,
+          175009603,
+          8617,
+          1788960965457876113,
+          1788960965457876113
+        ],
+        "seconds": 0.00010201503755524755
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/GLM-5.3-Flash-Mixed-Quant-GGUF/chat_template.provenance.json",
+        "bytes": 478,
+        "sha256": "cca27561fd3bfaf5a558f263de865c03986bc0cb8acf9a1a4e34108b27c87ddf",
+        "published_hash_verified": false,
+        "stat": [
+          66306,
+          175009604,
+          478,
+          1788960965458000272,
+          1788960965458000272
+        ],
+        "seconds": 0.00013919896446168423
+      }
+    ]
+  }
+}
