@@ -1,0 +1,1115 @@
+{
+  "schema": "v013-live-evidence-v1",
+  "family": "solar",
+  "scope": {
+    "status": "HTTP reuse lifecycle passed",
+    "standalone": true,
+    "context": 2048,
+    "banks": 2,
+    "native_chunk": 64,
+    "lane": "continuous",
+    "mtp": "off",
+    "clock_limits_mhz": [
+      300,
+      2200
+    ]
+  },
+  "build": {
+    "source_commit": "5edda1a452c71ecea4a48ace23a3b101a1cee0c2",
+    "server_sha256": "a3eda984f875b398a884f62fb1a95b5d526710709f761dc9115b14f5241241e9",
+    "source_patch": "scratch/v013/bin-integrated4/source.diff"
+  },
+  "artifact": {
+    "schema": "v013-artifacts-v1",
+    "manifest": "/home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/MXQ-v1-SHA256SUMS",
+    "files": [
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/Solar-Open2-250B-MXQ-v1-00001-of-00011.gguf",
+        "bytes": 11624740128,
+        "sha256": "5c75c000e0bdf7a597e37a9754440591a4494e4ef74b9da228e08703fcf2e0d5",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173940795,
+          11624740128,
+          1786313947079405035,
+          1786313947747023683
+        ],
+        "seconds": 21.938400548999198
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/Solar-Open2-250B-MXQ-v1-00002-of-00011.gguf",
+        "bytes": 10071557760,
+        "sha256": "fc39348c8cf680b6abb73ac0bbbd4f0041e1f1b5914f0dc3b3d0d0ed0b6a4b42",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173940792,
+          10071557760,
+          1786313344241846097,
+          1786313344782831947
+        ],
+        "seconds": 18.564965682977345
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/Solar-Open2-250B-MXQ-v1-00003-of-00011.gguf",
+        "bytes": 7244612800,
+        "sha256": "432c098bf09f5e530bd1332cd29f06f8aafd29148c410faae5ed2c2279c59474",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173940810,
+          7244612800,
+          1786313053739199413,
+          1786313054352025949
+        ],
+        "seconds": 13.268140252970625
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/Solar-Open2-250B-MXQ-v1-00004-of-00011.gguf",
+        "bytes": 8231322752,
+        "sha256": "90d45f9bec923d2686719aebc10b62dee1c7e0ba7379bc74a0eeaac3ed653677",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173940806,
+          8231322752,
+          1786312772022342187,
+          1786312772223341860
+        ],
+        "seconds": 19.49674781196518
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/Solar-Open2-250B-MXQ-v1-00005-of-00011.gguf",
+        "bytes": 8083981920,
+        "sha256": "22c68c5777ba51917e2d91b0d990868a384e21a1bd41f147b0727e901b7d6f30",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173940808,
+          8083981920,
+          1786313052844234771,
+          1786313053498290528
+        ],
+        "seconds": 23.111988143995404
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/Solar-Open2-250B-MXQ-v1-00006-of-00011.gguf",
+        "bytes": 7311459968,
+        "sha256": "2b707f2284978b5910c5342ef11dcc83b0fbef8a5b50016063f82399fefc9917",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173940814,
+          7311459968,
+          1786312176626338849,
+          1786312177903982525
+        ],
+        "seconds": 13.43999615299981
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/Solar-Open2-250B-MXQ-v1-00007-of-00011.gguf",
+        "bytes": 7525959200,
+        "sha256": "28aa77df046bd5132de2f540759fa0aaeddd8e421af3e72d9911075fab1e6eb5",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173940816,
+          7525959200,
+          1786313052797236630,
+          1786313053253218608
+        ],
+        "seconds": 21.647667673998512
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/Solar-Open2-250B-MXQ-v1-00008-of-00011.gguf",
+        "bytes": 8640483424,
+        "sha256": "7198f53566a53add77f759d6e25d49aa983cc7c76959cf5ca1349ecf74e77f58",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173940819,
+          8640483424,
+          1786313282385532423,
+          1786313282596600269
+        ],
+        "seconds": 20.34914268704597
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/Solar-Open2-250B-MXQ-v1-00009-of-00011.gguf",
+        "bytes": 7510083008,
+        "sha256": "54c891cbebb858dba3249a0af1912bcdc41d0f1d3de65e8ffb58ce5a47d84bfd",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173941177,
+          7510083008,
+          1786313941655481708,
+          1786313942095339366
+        ],
+        "seconds": 14.018998574989382
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/Solar-Open2-250B-MXQ-v1-00010-of-00011.gguf",
+        "bytes": 10258548192,
+        "sha256": "af8c2b784291d270142e91ef1141bc6e2afdd04322e75bd06d8b29e0bd8f6411",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173942428,
+          10258548192,
+          1786314180960352975,
+          1786314182199019862
+        ],
+        "seconds": 19.956714541011024
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/Solar-Open2-250B-MXQ-v1-00011-of-00011.gguf",
+        "bytes": 9030783008,
+        "sha256": "065698a007d7b49268cc775d7c3cbd44fcf2372a9373d7e587d025ac9cf0c206",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173942450,
+          9030783008,
+          1786314303773908157,
+          1786314304598159916
+        ],
+        "seconds": 16.943456991983112
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/chat_template.jinja",
+        "bytes": 11721,
+        "sha256": "5da6ffcd2d06aacce4d9f1be10078ff57e0d8ddd589c97cc8f0001e9fbf33f3a",
+        "published_hash_verified": false,
+        "stat": [
+          66306,
+          173944353,
+          11721,
+          1788960965460610574,
+          1788960965460610574
+        ],
+        "seconds": 0.00029742001788690686
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/chat_template.provenance.json",
+        "bytes": 484,
+        "sha256": "b8e803bebb31dba30cec9594347b1c90e1ffb9c807f902395c3464e15e985ef4",
+        "published_hash_verified": false,
+        "stat": [
+          66306,
+          173944354,
+          484,
+          1788960965460673261,
+          1788960965460673261
+        ],
+        "seconds": 0.00012977398000657558
+      }
+    ],
+    "manifest_sha256": "be15636ed4f9ef9b6edc5cd3ac2fccfdeed8245658afe05c0b6d3829894f2ed0"
+  },
+  "processes": {
+    "seed": {
+      "pid": 954498,
+      "start_ticks": "41117801",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "command": "./scratch/v013/bin-integrated4/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/Solar-Open2-250B-MXQ-v1-00001-of-00011.gguf --mtp-mode off --max-seqs 2 --ctx 2048 -n 64 --native-chunk 64 --prefill-chunk 64 --prefill-chunk-live 64 --prefix-reuse partial --model-id solar-v013 --host 127.0.0.1 --port 18040 --kv-disk-dir /home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/solar-s5/cache --kv-disk-space 2G --kv-cache-min-tokens 1 ",
+      "executable_sha256": "a3eda984f875b398a884f62fb1a95b5d526710709f761dc9115b14f5241241e9",
+      "artifacts_sha256": "7a2ec75206df5b0fcf7f174df06df699ff5b62cce05c146b9d53a12321563797",
+      "url": "http://127.0.0.1:18040"
+    },
+    "warm": {
+      "pid": 954498,
+      "start_ticks": "41117801",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "command": "./scratch/v013/bin-integrated4/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/Solar-Open2-250B-MXQ-v1-00001-of-00011.gguf --mtp-mode off --max-seqs 2 --ctx 2048 -n 64 --native-chunk 64 --prefill-chunk 64 --prefill-chunk-live 64 --prefix-reuse partial --model-id solar-v013 --host 127.0.0.1 --port 18040 --kv-disk-dir /home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/solar-s5/cache --kv-disk-space 2G --kv-cache-min-tokens 1 ",
+      "executable_sha256": "a3eda984f875b398a884f62fb1a95b5d526710709f761dc9115b14f5241241e9",
+      "artifacts_sha256": "7a2ec75206df5b0fcf7f174df06df699ff5b62cce05c146b9d53a12321563797",
+      "url": "http://127.0.0.1:18040"
+    },
+    "restored": {
+      "pid": 957430,
+      "start_ticks": "41133405",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "command": "./scratch/v013/bin-integrated4/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/Solar-Open2-250B-MXQ-v1-00001-of-00011.gguf --mtp-mode off --max-seqs 2 --ctx 2048 -n 64 --native-chunk 64 --prefill-chunk 64 --prefill-chunk-live 64 --prefix-reuse partial --model-id solar-v013 --host 127.0.0.1 --port 18040 --kv-disk-dir /home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/solar-s5/cache --kv-disk-space 2G --kv-cache-min-tokens 1 ",
+      "executable_sha256": "a3eda984f875b398a884f62fb1a95b5d526710709f761dc9115b14f5241241e9",
+      "artifacts_sha256": "7a2ec75206df5b0fcf7f174df06df699ff5b62cce05c146b9d53a12321563797",
+      "url": "http://127.0.0.1:18040"
+    },
+    "cold": {
+      "pid": 960525,
+      "start_ticks": "41147079",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "command": "./scratch/v013/bin-integrated4/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/Solar-Open2-250B-Mixed-Quant-GGUF/Solar-Open2-250B-MXQ-v1-00001-of-00011.gguf --mtp-mode off --max-seqs 2 --ctx 2048 -n 64 --native-chunk 64 --prefill-chunk 64 --prefill-chunk-live 64 --prefix-reuse off --model-id solar-v013 --host 127.0.0.1 --port 18040 ",
+      "executable_sha256": "a3eda984f875b398a884f62fb1a95b5d526710709f761dc9115b14f5241241e9",
+      "artifacts_sha256": "7a2ec75206df5b0fcf7f174df06df699ff5b62cce05c146b9d53a12321563797",
+      "url": "http://127.0.0.1:18040"
+    }
+  },
+  "cases": [
+    {
+      "phase": "cold",
+      "case": "append",
+      "seconds": 3.4856268250150606,
+      "configured": {
+        "family": "solar",
+        "model": "solar-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 5,
+      "message": {
+        "role": "assistant",
+        "content": "5"
+      },
+      "usage": {
+        "prompt_tokens": 617,
+        "completion_tokens": 1,
+        "total_tokens": 618,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 617
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "cold",
+      "case": "edit",
+      "seconds": 3.47368772898335,
+      "configured": {
+        "family": "solar",
+        "model": "solar-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 6,
+      "message": {
+        "role": "assistant",
+        "content": "6"
+      },
+      "usage": {
+        "prompt_tokens": 617,
+        "completion_tokens": 1,
+        "total_tokens": 618,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 617
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "cold",
+      "case": "fork",
+      "seconds": 3.6281590120051987,
+      "configured": {
+        "family": "solar",
+        "model": "solar-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 8,
+      "message": {
+        "role": "assistant",
+        "content": "8"
+      },
+      "usage": {
+        "prompt_tokens": 644,
+        "completion_tokens": 1,
+        "total_tokens": 645,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 644
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "cold",
+      "case": "restart",
+      "seconds": 3.8105941779795103,
+      "configured": {
+        "family": "solar",
+        "model": "solar-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 9,
+      "message": {
+        "role": "assistant",
+        "content": "9"
+      },
+      "usage": {
+        "prompt_tokens": 671,
+        "completion_tokens": 1,
+        "total_tokens": 672,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 671
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "cold",
+      "case": "seed",
+      "seconds": 3.4597449749708176,
+      "configured": {
+        "family": "solar",
+        "model": "solar-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 4,
+      "message": {
+        "role": "assistant",
+        "content": "4"
+      },
+      "usage": {
+        "prompt_tokens": 590,
+        "completion_tokens": 1,
+        "total_tokens": 591,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 590
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "restored",
+      "case": "restart",
+      "seconds": 0.6008854579995386,
+      "configured": {
+        "family": "solar",
+        "model": "solar-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 9,
+      "message": {
+        "role": "assistant",
+        "content": "9"
+      },
+      "usage": {
+        "prompt_tokens": 671,
+        "completion_tokens": 1,
+        "total_tokens": 672,
+        "prompt_tokens_details": {
+          "cached_tokens": 645,
+          "cache_write_tokens": 26
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "fork",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "seed",
+      "case": "seed",
+      "seconds": 3.469679285015445,
+      "configured": {
+        "family": "solar",
+        "model": "solar-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 4,
+      "message": {
+        "role": "assistant",
+        "content": "4"
+      },
+      "usage": {
+        "prompt_tokens": 590,
+        "completion_tokens": 1,
+        "total_tokens": 591,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 590
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null,
+        "reuse_miss": "no checkpoint at or below LCP"
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "warm",
+      "case": "append",
+      "seconds": 0.37043869198532775,
+      "configured": {
+        "family": "solar",
+        "model": "solar-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 5,
+      "message": {
+        "role": "assistant",
+        "content": "5"
+      },
+      "usage": {
+        "prompt_tokens": 617,
+        "completion_tokens": 1,
+        "total_tokens": 618,
+        "prompt_tokens_details": {
+          "cached_tokens": 591,
+          "cache_write_tokens": 26
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "fork",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "warm",
+      "case": "edit",
+      "seconds": 0.5625112199923024,
+      "configured": {
+        "family": "solar",
+        "model": "solar-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 6,
+      "message": {
+        "role": "assistant",
+        "content": "6"
+      },
+      "usage": {
+        "prompt_tokens": 617,
+        "completion_tokens": 1,
+        "total_tokens": 618,
+        "prompt_tokens_details": {
+          "cached_tokens": 590,
+          "cache_write_tokens": 27
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "partial",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "warm",
+      "case": "fork",
+      "seconds": 0.3606305890134536,
+      "configured": {
+        "family": "solar",
+        "model": "solar-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 8,
+      "message": {
+        "role": "assistant",
+        "content": "8"
+      },
+      "usage": {
+        "prompt_tokens": 644,
+        "completion_tokens": 1,
+        "total_tokens": 645,
+        "prompt_tokens_details": {
+          "cached_tokens": 618,
+          "cache_write_tokens": 26
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "exact",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "errors": [],
+      "passed": true
+    }
+  ],
+  "guards": [
+    {
+      "path": "scratch/v013/solar-s5/worker-cold.memory.jsonl",
+      "minimum_available_gib": 12.355941772460938,
+      "maximum_psi_full_avg10": 28.54,
+      "exit": {
+        "time": 1789635597.3285937,
+        "event": "exit",
+        "unit": "ds4-hostguard-960523-1789635444825209313.scope",
+        "status": 75,
+        "payload_status": 0
+      },
+      "stop": "task orchestrator requested shutdown after each successful phase"
+    },
+    {
+      "path": "scratch/v013/solar-s5/worker-restored.memory.jsonl",
+      "minimum_available_gib": 12.42904281616211,
+      "maximum_psi_full_avg10": 22.84,
+      "exit": {
+        "time": 1789635444.5836997,
+        "event": "exit",
+        "unit": "ds4-hostguard-957412-1789635308082792284.scope",
+        "status": 75,
+        "payload_status": 0
+      },
+      "stop": "task orchestrator requested shutdown after each successful phase"
+    },
+    {
+      "path": "scratch/v013/solar-s5/worker-seed.memory.jsonl",
+      "minimum_available_gib": 12.156761169433594,
+      "maximum_psi_full_avg10": 25.14,
+      "exit": {
+        "time": 1789635307.7564824,
+        "event": "exit",
+        "unit": "ds4-hostguard-954496-1789635152042420215.scope",
+        "status": 75,
+        "payload_status": 0
+      },
+      "stop": "task orchestrator requested shutdown after each successful phase"
+    }
+  ],
+  "limits": [
+    "Short text fixtures only; no full-context, media or speedup claim.",
+    "Source is the frozen integrated4 production build; its build-time patch precedes test-only formatting."
+  ],
+  "raw_files": [
+    {
+      "path": "scratch/v013/solar-s5/artifacts.json",
+      "bytes": 6354,
+      "sha256": "7a2ec75206df5b0fcf7f174df06df699ff5b62cce05c146b9d53a12321563797"
+    },
+    {
+      "path": "scratch/v013/solar-s5/cold.runner.log",
+      "bytes": 3408,
+      "sha256": "9cb80a280d3f5bc7c3ef1774a2086b8dcad9a6aee629a81233a0bbe16ead3b45"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/artifacts.json",
+      "bytes": 6354,
+      "sha256": "7a2ec75206df5b0fcf7f174df06df699ff5b62cce05c146b9d53a12321563797"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.append.request.json",
+      "bytes": 2488,
+      "sha256": "f1c9d8b8388f97a3f8d730274a1776e78b6fcf1e3139ff3608f1c2b8b36f19a3"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.append.response.json",
+      "bytes": 638,
+      "sha256": "f5a19487813b49fa443b70b29d1fe5329eda065c09206bc99b9e6f19548532cc"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.append.stats.json",
+      "bytes": 7681,
+      "sha256": "4e3fc08a1742c0ef6fcaa35c74c7576cd02048b3a41223cbfe8598ec78015cb2"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.append.summary.json",
+      "bytes": 823,
+      "sha256": "ee9379f0b7bc73fd4bd65e0440abd0fe4bc5a773455da42c15fa2ecb13f04318"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.before.json",
+      "bytes": 7532,
+      "sha256": "211b90c1f834043fa699221eebeb9612875af4bbd86b5adfecba7979c53f722c"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.edit.request.json",
+      "bytes": 2488,
+      "sha256": "e89e52760f77f4fdfa32563f685f4faf040d544c56b47e9c0e2986b4a022434c"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.edit.response.json",
+      "bytes": 638,
+      "sha256": "9dd21bcf955708e8d844c5cab7ef128a0a90c04c5ad12a9fcd2b27d969f102b6"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.edit.stats.json",
+      "bytes": 7681,
+      "sha256": "3cd1d189d31fe6306c519475a9cca208cc3de4b4d3251796350a07ff7961cb20"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.edit.summary.json",
+      "bytes": 819,
+      "sha256": "52533195830e2bcb5ef4c0ba61c8e6fb82d7b7f263ecb71dd776b7b6c211f296"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.fork.request.json",
+      "bytes": 2646,
+      "sha256": "cc17efbaf9a7a6d53fd5ccffc1687c3b45aadfb73bbf5e8ded78f87efb895c09"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.fork.response.json",
+      "bytes": 638,
+      "sha256": "6430a8a60156c9403c2a78bdd790c499bf59dbed6ca81998967b04f04052853a"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.fork.stats.json",
+      "bytes": 7689,
+      "sha256": "8724a4f2a6bcfa7f5477313a38f76ad6e8acf2c5cbf55cd902c5e58b0bb7ee63"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.fork.summary.json",
+      "bytes": 821,
+      "sha256": "e3df9a6e6996c2f57f83ed5288b879cca7dc9682b0d7ccc806fc302d6aa0803b"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.process.json",
+      "bytes": 685,
+      "sha256": "a9c4e6f97cd0f99e10d1e32b1904dd5a470fcd4ebdab3f5d9f7ebba5b70987f5"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.restart.request.json",
+      "bytes": 2804,
+      "sha256": "a1cc83ad5981900ae43e0762d046c7d76c6500408b6eeb23c6fb283228e551e0"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.restart.response.json",
+      "bytes": 638,
+      "sha256": "4827965e5ad38b1088082f6e3d410f8f5f89f58a58f980b17b538167abefd164"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.restart.stats.json",
+      "bytes": 7689,
+      "sha256": "1b48fdfdc62575cc694289de13980cd9de2a0947a6a8392a0ff9e4c5fefd61c6"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.restart.summary.json",
+      "bytes": 824,
+      "sha256": "4d99652f46ea3bc5673ddb420a4e6aa5a842e22e9e6a1bc3f5a35f29f9e3f60a"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.result.json",
+      "bytes": 3853,
+      "sha256": "8b91a83602ddd247b8de0395d933392cc14d4abf2b2ffd34bfbefdc73ebf0c55"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.seed.request.json",
+      "bytes": 2330,
+      "sha256": "be2f65e98249a00ae605a18c903c5cbeffce722dc0d03a5d22d34e9ba4fae486"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.seed.response.json",
+      "bytes": 637,
+      "sha256": "9e921ed28071d1cc1e1068a8173ac07f32c0ab7c864c80d6b363cc7a7d4daeb0"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.seed.stats.json",
+      "bytes": 7681,
+      "sha256": "73ef167fcf06fe073a9a272c45a3b147b20b5a304d5aea7bc3b3abbfc61ba4d3"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/cold.seed.summary.json",
+      "bytes": 821,
+      "sha256": "9bad3a8d89511d1edbaae74416c9d04d12eaaea65d53b479827469fa54df9676"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/fixture.json",
+      "bytes": 14742,
+      "sha256": "5501af05c554e65bff87630c8263477ae003888c273b4fd64661949566dc624a"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/restored.before.json",
+      "bytes": 7555,
+      "sha256": "43e21f4f348d5fdbb3fa0f420a4a83729f5b920416dc6515624d9ff57c024d62"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/restored.process.json",
+      "bytes": 838,
+      "sha256": "ab3c2f49654f95795d8b89adf32f64dfabb06136b552d8bd57471f3874b1ed4a"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/restored.restart.request.json",
+      "bytes": 2804,
+      "sha256": "a1cc83ad5981900ae43e0762d046c7d76c6500408b6eeb23c6fb283228e551e0"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/restored.restart.response.json",
+      "bytes": 637,
+      "sha256": "44832074481454d06ed2c52a2a5e1799674d3673a5c4df5a4b979280ac4c10cb"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/restored.restart.stats.json",
+      "bytes": 7704,
+      "sha256": "1e178c4921372c314cb44ebdc54cb58ada730040d03c3dbefd3afbd7f629e669"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/restored.restart.summary.json",
+      "bytes": 829,
+      "sha256": "675347b8414c9d4774fe9844012552479fdde1a348977fd22e2357eb18f42582"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/restored.result.json",
+      "bytes": 1850,
+      "sha256": "88a75c69c20f5406eafa84f1b498e8d72509f95dd521f8bd3752a8e50f639004"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/seed.before.json",
+      "bytes": 7555,
+      "sha256": "0d179962e7f6ca35ed55765f916425dbe55eff97d0c803e0bb2c5a2d88b40ea9"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/seed.process.json",
+      "bytes": 838,
+      "sha256": "06ca643421220a65aa61e28ad55309ef6bc613bacdb7b83da3dad962b75819a5"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/seed.result.json",
+      "bytes": 1814,
+      "sha256": "2de960beaf23ed6a68483cbf2d5fefd9cb7f9dae24fdffc8f813d4612ca0b578"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/seed.seed.request.json",
+      "bytes": 2330,
+      "sha256": "be2f65e98249a00ae605a18c903c5cbeffce722dc0d03a5d22d34e9ba4fae486"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/seed.seed.response.json",
+      "bytes": 637,
+      "sha256": "2278c3080f8074e025a6ca9aab77795004b93660d8241c5e43c0e6de65f7b98a"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/seed.seed.stats.json",
+      "bytes": 7755,
+      "sha256": "fac8d6b6de3bc06fdfdd785c36847ed72b27be56a4d0336a7bb7692ad4882836"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/seed.seed.summary.json",
+      "bytes": 871,
+      "sha256": "4cd9ccb5755df9664c545e91c0a5b306703a0deda4c48092ffb3f227776c3942"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/warm.append.request.json",
+      "bytes": 2488,
+      "sha256": "f1c9d8b8388f97a3f8d730274a1776e78b6fcf1e3139ff3608f1c2b8b36f19a3"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/warm.append.response.json",
+      "bytes": 638,
+      "sha256": "c5b00e829b92feba9ba9fa03af36479303563a85e330de6c5107b7edb6358e5b"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/warm.append.stats.json",
+      "bytes": 7704,
+      "sha256": "897f4551cb69c5535a4dab1b06ae6b1f122fd68bfcf3143e18c44b7db3e93d36"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/warm.append.summary.json",
+      "bytes": 825,
+      "sha256": "26cb9c74f9049f17ee7f10657001f4abc72036172d61473273aa9bad52b17ed0"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/warm.before.json",
+      "bytes": 7755,
+      "sha256": "3b2e5e6b61a44bf85121b461a15f006059361ea17b3aaaef3dc91f520ad895d5"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/warm.edit.request.json",
+      "bytes": 2488,
+      "sha256": "e89e52760f77f4fdfa32563f685f4faf040d544c56b47e9c0e2986b4a022434c"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/warm.edit.response.json",
+      "bytes": 638,
+      "sha256": "d70c998d803b6d3a0155ddee65fb6f789786b5c75a525c351b53217c41011335"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/warm.edit.stats.json",
+      "bytes": 7707,
+      "sha256": "58a1a2d7ade99e009b8f89f116641663a5d84a42a52a426866bbbb1be70096a5"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/warm.edit.summary.json",
+      "bytes": 825,
+      "sha256": "ce1889abda21697a120acfe052bb8cdc9d563cae49f3896ea609d185c55943e6"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/warm.fork.request.json",
+      "bytes": 2646,
+      "sha256": "cc17efbaf9a7a6d53fd5ccffc1687c3b45aadfb73bbf5e8ded78f87efb895c09"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/warm.fork.response.json",
+      "bytes": 638,
+      "sha256": "f69a157afb7ffe26177806fa9d0548152cf06df3ca1101a4c129eaa938842e05"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/warm.fork.stats.json",
+      "bytes": 7706,
+      "sha256": "f7379a91cc5e1d1d718aa60cebbfd381d88e278530793a209694550b1e05d5e4"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/warm.fork.summary.json",
+      "bytes": 823,
+      "sha256": "8262f626d2ec0a0f7dfa55355805a195f9ca6bfdf5b5d30ef3f636a416c7bb80"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/warm.process.json",
+      "bytes": 838,
+      "sha256": "06ca643421220a65aa61e28ad55309ef6bc613bacdb7b83da3dad962b75819a5"
+    },
+    {
+      "path": "scratch/v013/solar-s5/evidence/warm.result.json",
+      "bytes": 2908,
+      "sha256": "c30b7204a7addb111ec2452b40d98bf8f4da2902e66518471ab82ccb4e9b47c7"
+    },
+    {
+      "path": "scratch/v013/solar-s5/gpu-cold.csv",
+      "bytes": 197,
+      "sha256": "e2576b10cbc941176a4ea33a09fb3f9074ae414fe377fd125da6947cf6c5d6a1"
+    },
+    {
+      "path": "scratch/v013/solar-s5/gpu-seed.csv",
+      "bytes": 196,
+      "sha256": "ef6dd4284ba1e7580a558ea703371de913530357808dd646562da83056128cc0"
+    },
+    {
+      "path": "scratch/v013/solar-s5/orchestrator.jsonl",
+      "bytes": 5465,
+      "sha256": "b97e2d0f1c6d85ff42669fa4f92d9c872247bbbfd2acf05349add61b8e332580"
+    },
+    {
+      "path": "scratch/v013/solar-s5/restored.runner.log",
+      "bytes": 689,
+      "sha256": "937808ce3edb0e92022c2fe60d3725a9dd6c0ec5941e904efbeb77c60fb0d0fc"
+    },
+    {
+      "path": "scratch/v013/solar-s5/seed.runner.log",
+      "bytes": 727,
+      "sha256": "4fd2b77113109fb00010d5a603a1843e5235ed450da4b3fd83aabaf6780608ce"
+    },
+    {
+      "path": "scratch/v013/solar-s5/warm.runner.log",
+      "bytes": 2053,
+      "sha256": "909474cd33a24b9258a1f87f4ecdaa694f5b5860a4f81f1d845935e5e3c14bed"
+    },
+    {
+      "path": "scratch/v013/solar-s5/worker-cold.command.json",
+      "bytes": 790,
+      "sha256": "a3a13c65f4f6380b53dc9d0ea3d0e22438d0932d4548fe64f5bd95ad6e8853cc"
+    },
+    {
+      "path": "scratch/v013/solar-s5/worker-cold.launcher.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "scratch/v013/solar-s5/worker-cold.log",
+      "bytes": 5307,
+      "sha256": "374f25f606049c4ec0dbb3356ee45116d60a5323b64ade01740769c70bd6621c"
+    },
+    {
+      "path": "scratch/v013/solar-s5/worker-cold.memory.jsonl",
+      "bytes": 26079,
+      "sha256": "451819b172675be0455e868e70c5c7f72d34aa294143e4fab6f1e794e88a5f9b"
+    },
+    {
+      "path": "scratch/v013/solar-s5/worker-cold.ready.json",
+      "bytes": 10086,
+      "sha256": "55d77e44776a91ebe713484fd6d7766c572bc2b3fe6243f689c856a4a797592e"
+    },
+    {
+      "path": "scratch/v013/solar-s5/worker-restored.command.json",
+      "bytes": 985,
+      "sha256": "e526d681032c88cefa6fc09847ef8f9f6fea3fa6d8535813c2d9717c6109843c"
+    },
+    {
+      "path": "scratch/v013/solar-s5/worker-restored.launcher.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "scratch/v013/solar-s5/worker-restored.log",
+      "bytes": 5400,
+      "sha256": "fbf1a896ee9af016f615c51481be7aac0c98a4785426a118d044072c0a4a8438"
+    },
+    {
+      "path": "scratch/v013/solar-s5/worker-restored.memory.jsonl",
+      "bytes": 23559,
+      "sha256": "f32dd4744cafe53107838464485c648b76e4b23bd46ccecfca1bf43e5974252e"
+    },
+    {
+      "path": "scratch/v013/solar-s5/worker-restored.ready.json",
+      "bytes": 10316,
+      "sha256": "f12d7684e2f8258fb9daadd3b5f74b260e475e381c19db395291a2f1d5fc9516"
+    },
+    {
+      "path": "scratch/v013/solar-s5/worker-seed.command.json",
+      "bytes": 985,
+      "sha256": "e526d681032c88cefa6fc09847ef8f9f6fea3fa6d8535813c2d9717c6109843c"
+    },
+    {
+      "path": "scratch/v013/solar-s5/worker-seed.launcher.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "scratch/v013/solar-s5/worker-seed.log",
+      "bytes": 5592,
+      "sha256": "d86e5394fecd0a55bc755d08603296047b7a3822def318cddc30bc40c3e58bb6"
+    },
+    {
+      "path": "scratch/v013/solar-s5/worker-seed.memory.jsonl",
+      "bytes": 26511,
+      "sha256": "55fada298bef8b73eefc464801d68091a39ab24e387aa5be9218730b49898f18"
+    },
+    {
+      "path": "scratch/v013/solar-s5/worker-seed.ready.json",
+      "bytes": 10316,
+      "sha256": "47078e24dba3084050b457b787d0d82a2648d7a686faa6953ee65ddc3d19d059"
+    }
+  ],
+  "prior_attempts": [
+    {
+      "path": "scratch/v013/solar-httpv3/result.json",
+      "sha256": "de57c6f59867a4addbc2c0793db4a6942853af51710049d8d16dd5b9e6ec90a3",
+      "reason": "Owner repack scratch triggered near-reserve PSI guard; no qualification."
+    },
+    {
+      "path": "scratch/v013/solar-v4/result.json",
+      "sha256": "4a85addba9b39c491d5d836eaa216cb62ec19876177e747315f907a5f81077c5",
+      "reason": "Bounded owner repack passed, but separate worker floor12GiB stopped append at11.946GiB."
+    },
+    {
+      "path": "scratch/v013/solar-s4/result.json",
+      "sha256": "4dd5317404c99ca76ddaa130f63174e7fbcbaa006e9ac6a8fd0dcc79b3bfa79e",
+      "reason": "Standalone guard stayed healthy; fixture incorrectly required the later continuation to fork again despite an earlier observed fork. Corrected by5edda1a and rerun from scratch."
+    }
+  ],
+  "guard_policy": {
+    "standalone": {
+      "max_gib": 104,
+      "high_gib": 100,
+      "reserve_gib": 12,
+      "trip_gib": 8
+    },
+    "transient_repack": "DS4_WS_REPACK_THREADS=1; unchanged aligned conversion/layout and permanent weights",
+    "notes": "One standalone model process per phase. The failed IPC worker12GiB floor was preserved; separate owner/worker operation is not qualified by this receipt."
+  },
+  "observed_gpu_samples": {
+    "gpu-seed.csv": "timestamp, name, driver_version, clocks.current.sm [MHz], clocks.current.memory [MHz], temperature.gpu, power.draw [W]\n2026/09/17 17:55:08.926, NVIDIA GB10, 610.43.02, 2190 MHz, [N/A], 45, 8.62 W\n",
+    "gpu-cold.csv": "timestamp, name, driver_version, clocks.current.sm [MHz], clocks.current.memory [MHz], temperature.gpu, power.draw [W]\n2026/09/17 17:59:52.293, NVIDIA GB10, 610.43.02, 2190 MHz, [N/A], 57, 44.76 W\n"
+  }
+}
