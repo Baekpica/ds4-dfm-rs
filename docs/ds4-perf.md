@@ -383,7 +383,8 @@ and tool calls.
 For restart restore, add workload `restart_from: "seed/serving.json"` and make
 the first case `scenario: "restart_restore"`. Set positive
 `expect.min_cached_tokens` and `request.stream_options.include_usage: true`,
-with expected `reuse_kind: "exact"` or `"partial"`. The seed must have passed
+with expected `reuse_kind: "exact"`, `"partial"` or `"fork"` (a restored prefix
+placed into a free bank). The seed must have passed
 with disk enabled; the restored conversation must extend a seeded request.
 Stop the seed process and restart the same argv/environment/binary/inputs
 before collecting with the new `--server-pid`. The collector requires a newer

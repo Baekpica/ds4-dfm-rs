@@ -232,7 +232,10 @@ impl Workload {
                 Scenario::RestartRestore => {
                     self.restart_from.is_some()
                         && case.expect.min_cached_tokens.is_some()
-                        && matches!(case.expect.reuse_kind.as_str(), "exact" | "partial")
+                        && matches!(
+                            case.expect.reuse_kind.as_str(),
+                            "exact" | "partial" | "fork"
+                        )
                 }
                 Scenario::Media => case.request["messages"].as_array().is_some_and(|messages| {
                     messages.iter().any(|message| {
@@ -681,6 +684,27 @@ pub fn run(args: &cli::Serving) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disk_restore_can_place_a_fork() {
+        let workload: Workload = serde_json::from_value(serde_json::json!({
+            "protocol":PROTOCOL,"name":"restore-fork","family":"qwen4exp",
+            "restart_from":"seed/serving.json","cases":[{
+                "name":"restored","scenario":"restart_restore",
+                "request":{"stream":true,"stream_options":{"include_usage":true},
+                    "messages":[{"role":"user","content":"Continue"}]},
+                "expect":{"content":"READY","finish_reason":"stop","reuse_kind":"fork",
+                    "effective_lane":"continuous","speculation_active":true,
+                    "fallback_reason":null,"min_cached_tokens":32},
+                "limits":{"ttft_ms":1000,"total_ms":2000,"min_host_available_bytes":1}
+            }]
+        }))
+        .unwrap();
+        assert!(
+            workload.validate().is_ok(),
+            "a restored full prefix may fork into a free bank"
+        );
+    }
 
     fn event(elapsed_ms: f64, data: &str) -> Event {
         Event {
