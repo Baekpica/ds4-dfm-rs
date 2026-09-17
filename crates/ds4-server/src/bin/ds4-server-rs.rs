@@ -8,6 +8,7 @@ use ds4_core::{
     DistributedRole, Distribution, EngineFacts, Identified, MaxSeqs, Model, ModelOpenOption,
     MtpMode, PrefixReuse, ServingCaps, ServingRequest, WeightSlice,
 };
+use ds4_server::cache_identity::CacheIdentity;
 use ds4_server::kv_cli::DiskKvArgs;
 use ds4_server::{
     accept_loop, accept_loop_with_engine, accept_loop_with_engine_cont, dist_weight_slice,
@@ -328,6 +329,15 @@ fn main() {
     };
 
     let native_dist = distributed_config(&dist.opt);
+    // Snapshot every artifact before native open, then recheck before enabling
+    // disk reads. Equal prompt tokens alone do not establish equal model state.
+    let cache_identity = model_path.as_deref().filter(|_| kv_store.is_some()).map(|path| {
+        let sidecars: Vec<_> = [mtp_path.as_deref(), vision_path.as_deref(), dspark_path.as_deref()]
+            .into_iter().flatten().map(Path::new).collect();
+        let settings = format!("backend={backend:?};threads={n_threads};options={model_options:?};dist={native_dist:?}");
+        CacheIdentity::capture(Path::new(path), &sidecars, &settings)
+            .unwrap_or_else(|error| cli_error(&format!("disk KV identity: {error}")))
+    });
     let model = match model_path.as_deref() {
         Some(path) => {
             let opened = match native_dist.as_ref() {
@@ -364,7 +374,7 @@ fn main() {
         }
         None => None,
     };
-    let kv_store = if model.is_some() { kv_store } else { None };
+    let mut kv_store = if model.is_some() { kv_store } else { None };
 
     let lane = if let Some(ref model) = model {
         // What only the open engine knows. The refit re-resolves so a
@@ -524,6 +534,26 @@ fn main() {
     }
     if let Some(ref model) = model {
         model.boot_prewarm();
+    }
+    if let (Some(identity), Some(store)) = (cache_identity, kv_store.as_mut()) {
+        let effective = &cfg.serving_plan.as_ref().unwrap_or(&plan).effective;
+        let settings = format!(
+            "ctx={};banks={};native={:?};schedule={}/{};mtp={:?}/{}/{:?}",
+            effective.ctx,
+            effective.max_seqs,
+            effective.native_chunk,
+            effective.sched_chunk,
+            effective.sched_chunk_live,
+            effective.mtp_mode,
+            effective.mtp_weights,
+            effective.mtp_draft
+        );
+        let digest = identity
+            .finish(&settings)
+            .unwrap_or_else(|error| cli_error(&format!("disk KV identity: {error}")));
+        store.bind_identity(digest);
+        let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+        eprintln!("disk KV identity: local-file-stat-v1 {hex} (file metadata, not full-content attestation)");
     }
 
     if !ds4_sys::install_stop_handlers() {

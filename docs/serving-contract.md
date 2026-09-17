@@ -69,6 +69,13 @@ tokens on the continuous lane, `DS4_SERVER_PERSIST_MIN_TOKENS`). That is a
 different number from the disk store's record minimum
 (`--kv-cache-min-tokens`, default 512); the plan reports both.
 
+HTTP disk records require a matching `local-file-stat-v1` identity: all
+GGUF/sidecar file metadata, template contents, runtime files and effective
+inference settings. This is local file identity, not full weight-content
+attestation. Inputs must remain unchanged during model open. Legacy records
+without this identity miss safely; all identities share the directory budget.
+Native restore holds the validated file open through the payload read.
+
 MTP weights loaded is not "this request speculated". Sampled Step
 requests keep predictor state and use ordinary decode.
 

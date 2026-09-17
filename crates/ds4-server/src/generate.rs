@@ -976,12 +976,16 @@ fn disk_sync_prompt_impl(
             prefill_checkpoints,
         );
     }
-    if io
-        .load_payload_range(
-            &path,
-            envelope.payload_offset,
-            envelope.header.payload_bytes,
-        )
+    if store
+        .open_payload(&path, &envelope)
+        .map_err(|error| GenerateError::Engine(error.to_string()))
+        .and_then(|payload| {
+            io.load_payload_range(
+                payload.path(),
+                envelope.payload_offset,
+                envelope.header.payload_bytes,
+            )
+        })
         .is_err()
     {
         // The candidate was chosen and then could not be read. That is a
@@ -3422,7 +3426,11 @@ mod disk_sync_tests {
             length: u64,
         ) -> Result<(), GenerateError> {
             self.events.push("load");
-            self.loads.push((path.to_path_buf(), offset, length));
+            self.loads.push((
+                path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+                offset,
+                length,
+            ));
             if self.fail_load {
                 return Err(GenerateError::Engine(
                     "injected payload load failure".into(),
@@ -3545,6 +3553,7 @@ mod disk_sync_tests {
             .unwrap();
         let tokens = |text: &str| text.bytes().map(i32::from).collect::<Vec<_>>();
         let (dir, mut store) = store("step-history-frontier");
+        store.bind_identity([7; 32]);
         let mut saving = FakeSerial::new(&[], first.as_bytes());
         saving.suffix_tokens = tokens(history);
         super::disk_sync_template(
@@ -3572,6 +3581,7 @@ mod disk_sync_tests {
         let options = store.opt.clone();
         drop(store);
         let mut store = Store::open(&dir, 16, true, options).unwrap();
+        store.bind_identity([7; 32]);
         let mut loading = FakeSerial::new(&[], follow.as_bytes());
         loading.loaded_tokens = tokens(history);
         loading.suffix_tokens = tokens(

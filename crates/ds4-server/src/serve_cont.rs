@@ -2668,6 +2668,13 @@ mod native {
             }
             // An image record whose key carries no usable marker cannot be
             // rebuilt: the record is malformed, not missing.
+            let payload = match store.open_payload(&path, &envelope) {
+                Ok(payload) => payload,
+                Err(_) => {
+                    Self::note_miss(miss, ReuseMiss::PayloadMismatch);
+                    return None;
+                }
+            };
             let Some(mut record) = restored_record(envelope.text, 0, envelope.header.ext_flags)
             else {
                 Self::note_miss(miss, ReuseMiss::PayloadMismatch);
@@ -2675,7 +2682,7 @@ mod native {
             };
             let snapshot = match batch.load_bank_payload_range(
                 i32::try_from(target).ok()?,
-                &path,
+                payload.path(),
                 envelope.payload_offset,
                 envelope.header.payload_bytes,
             ) {
@@ -2764,6 +2771,13 @@ mod native {
             ) {
                 return None;
             }
+            let payload = match store.open_payload(&path, &envelope) {
+                Ok(payload) => payload,
+                Err(_) => {
+                    Self::note_miss(miss, ReuseMiss::PayloadMismatch);
+                    return None;
+                }
+            };
             let Some(mut record) = restored_record(envelope.text, 0, envelope.header.ext_flags)
             else {
                 Self::note_miss(miss, ReuseMiss::PayloadMismatch);
@@ -2771,7 +2785,7 @@ mod native {
             };
             let snapshot = match batch.load_bank_payload_range(
                 i32::try_from(target).ok()?,
-                &path,
+                payload.path(),
                 envelope.payload_offset,
                 envelope.header.payload_bytes,
             ) {
