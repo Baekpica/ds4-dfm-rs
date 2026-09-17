@@ -257,11 +257,14 @@ extern "C" int ds4_gpu_ling3vl_expanded_attn(
         k_full->ptr, value->ptr, (int)n_query, (int)query_pos0, (int)n_kv,
         (int)kv_pos0, (int)heads, (int)key_dim, (int)value_dim, scale, tk,
         ds4_current_stream());
-    if (rc == -1) {
-        fprintf(stderr, "ds4: Ling expanded attention rejected shape\n");
+    /* Launcher already consumed CUDA status: -1 rejected shape, -2 launch
+     * fail. Neither leaves an error for cudaGetLastError() to re-read. */
+    if (rc != 0) {
+        fprintf(stderr, "ds4: Ling-3.0 MLA expanded attention %s\n",
+                rc == -1 ? "rejected the shape" : "launch failed");
         return 0;
     }
-    return cuda_ok(cudaGetLastError(), "Ling-3.0 MLA expanded attention");
+    return 1;
 }
 
 extern "C" int ds4_gpu_ling3vl_rms_norm(
