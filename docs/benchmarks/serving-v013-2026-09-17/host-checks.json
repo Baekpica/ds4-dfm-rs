@@ -508,5 +508,194 @@
       "sha256": "60ef719839cd4ecb514e347cd2e23241b03ecb5bfdb76d7c79071832735640a8",
       "bytes": 2885
     }
-  ]
+  ],
+  "integrated6_validation": {
+    "source_commit": "c2a816b9cf681709141797fccb9dab9c0c9f3bf4",
+    "ci": {
+      "url": "https://github.com/Baekpica/ds4-dfm-rs/actions/runs/35206244630",
+      "conclusion": "success",
+      "steps": [
+        {
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "Run actions/checkout@v4",
+          "number": 2,
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "Install pinned Rust toolchain",
+          "number": 3,
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "Format",
+          "number": 4,
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "Clippy",
+          "number": 5,
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "C and Rust host parity",
+          "number": 6,
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "Serialized workspace tests",
+          "number": 7,
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "PLE storage formats",
+          "number": 8,
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "All host targets",
+          "number": 9,
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "Native serving host",
+          "number": 10,
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v4",
+          "number": 20,
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 21,
+          "status": "completed"
+        }
+      ]
+    },
+    "native_build": {
+      "result": "pass",
+      "command": "make -j1 ds4-server tests/test_motif3_batch",
+      "source_diff": "empty",
+      "server_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+      "build_head": "c2a816b9cf681709141797fccb9dab9c0c9f3bf4"
+    },
+    "focused_checks": {
+      "core_serving": 82,
+      "server_owner": 62,
+      "server_library": 303,
+      "server_library_ignored": 1,
+      "deepseek_host": 6,
+      "http_fixture": 20,
+      "native_boundary_sequence": "pass with GPU calls stubbed; actual tensor qualification separate",
+      "deepseek_page_budget": "pass"
+    },
+    "raw_files": [
+      {
+        "path": "scratch/v013/ci-c2a816b.json",
+        "bytes": 1537,
+        "sha256": "184a46f9f659d05b1db9a0da6dcb787eb87bcee22a2188f2d61746791b888a0c"
+      },
+      {
+        "path": "scratch/v013/integrated-build-7.log",
+        "bytes": 8730,
+        "sha256": "cfa635482d24df81bdb1bd3f84d8acee3938c7787260e93c0fa88cfa23b1484d"
+      },
+      {
+        "path": "scratch/v013/integrated-build-7.memory.jsonl",
+        "bytes": 17614,
+        "sha256": "a1f59f160d3b4d8ae254bcb1aaa562f58b8e41d34f79195b8f3216862f9fc080"
+      },
+      {
+        "path": "scratch/v013/perf-build-integrated6.log",
+        "bytes": 154,
+        "sha256": "3df65b21dc840000597be6a59a9ed61e69c61615ee8d0ace5114a4ef32438639"
+      },
+      {
+        "path": "scratch/v013/perf-build-integrated6.memory.jsonl",
+        "bytes": 451,
+        "sha256": "1b2bda9933a2c486e12913061b5fe0890f9391f84756a286451353c3b7578936"
+      },
+      {
+        "path": "scratch/v013/bin-integrated6/build-head.txt",
+        "bytes": 41,
+        "sha256": "4f79a3615163f144705e8384b3413f1560904940f06b6f9ad0bec185c3be2ff9"
+      },
+      {
+        "path": "scratch/v013/bin-integrated6/source.diff",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "scratch/v013/bin-integrated6/SHA256SUMS",
+        "bytes": 219,
+        "sha256": "716206a0c25112014e4fd3d81a4f27cf6be5949c71f79fd4456e6c0aa443c832"
+      },
+      {
+        "path": "scratch/v013/dots3-review-core-green.log",
+        "bytes": 5571,
+        "sha256": "b55de8c6ea0ed9c4d10fd4bce46a33be8d3ddf6f2192a3d9468542bc7fb8b1e1"
+      },
+      {
+        "path": "scratch/v013/dots3-review-server-green.log",
+        "bytes": 7430,
+        "sha256": "279da9d68b98170aeb21caaaf853aa3c6413ae11e2febbddd55c77be8dd3868f"
+      },
+      {
+        "path": "scratch/v013/dots3-review-bin-check.log",
+        "bytes": 4588,
+        "sha256": "de5c21cf8983912011e3d7eb312ff6e5bebee72287159c59ecad7a47ea9df3e4"
+      },
+      {
+        "path": "scratch/v013/motif-history-host-green.log",
+        "bytes": 27460,
+        "sha256": "c7eafcbb3638e5d1f6f4cb31d0290b187fa15dfa7092d47ffc7d4a51998022a2"
+      },
+      {
+        "path": "scratch/v013/motif-history-native-green.log",
+        "bytes": 98,
+        "sha256": "31362b3fba0b5ad5fa246a0489bd61d0bf3fe8e9d2095ee1161485061ff1aa51"
+      },
+      {
+        "path": "scratch/v013/motif-history-native-check.log",
+        "bytes": 4478,
+        "sha256": "d0c4fc3b8bce16a18c444fbe35e758e4dbf90cc6cf9cc8d4114b60c654f68969"
+      },
+      {
+        "path": "scratch/v013/deepseek-budget-green.log",
+        "bytes": 159,
+        "sha256": "b952eea5c573c518433b93e968cbeae3d46f4497ede50e12952c618ab4fe35ee"
+      },
+      {
+        "path": "scratch/v013/deepseek-quote-green.log",
+        "bytes": 842,
+        "sha256": "5a720402dd34d15ecff5a67a4b82185df17de58e9550a15cb50e1f44e9314b70"
+      },
+      {
+        "path": "scratch/v013/motif-reuse-contract-green.log",
+        "bytes": 119,
+        "sha256": "418f7496d10ef1b0ddbbf6e64a181c10200954bdfda2e8c01ada473210e842aa"
+      }
+    ],
+    "limits": [
+      "Original workspace count and ExpectedPlan CLI receipt above retain their 8a1025c scope.",
+      "Current full host validation comes from the linked CI; native live gates have separate family receipts."
+    ]
+  }
 }

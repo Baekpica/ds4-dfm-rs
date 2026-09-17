@@ -96,5 +96,576 @@
     "single HTTP request per phase; not repeated performance evidence",
     "text-only persistence; media snapshots explicitly unsupported",
     "no independent full-model source parity or long-context qualification"
-  ]
+  ],
+  "integrated_restart": {
+    "schema": "v013-integrated-restart-v1",
+    "passed": true,
+    "build_commit": "c2a816b9cf681709141797fccb9dab9c0c9f3bf4",
+    "server_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+    "artifact_identity_method": "local-file-stat-v1",
+    "campaign": {
+      "path": "scratch/v013/ir6",
+      "result_sha256": "84abe01fa78d5b2f8bd57c6ad02cd0de4badf81cc93c4e2c87df223ccf367c84",
+      "inputs": {
+        "path": "scratch/v013/ir6/inputs.json",
+        "sha256": "9e7d6f97567fec9ef43f4914b3ef03a6fbfbe4e98df12170780a025be0766b5f",
+        "bytes": 21626
+      },
+      "orchestration": {
+        "path": "scratch/v013/ir6/orchestrator.jsonl",
+        "sha256": "03f755f828fe2fce58112ab00eb8d0d0880b7496acdc46b0817ce8fca82e5388",
+        "bytes": 16218
+      }
+    },
+    "limitations": [
+      "One short text request per phase; context1024/native64 only.",
+      "Cold control uses a fresh empty disk cache with identical reuse configuration.",
+      "Local file metadata identity; this campaign does not full-hash model contents.",
+      "Guard minima are sampled; no new native, media, long-context or performance qualification."
+    ],
+    "profiles": {
+      "inkling": {
+        "phases": {
+          "seed": {
+            "summary": {
+              "phase": "seed",
+              "seconds": 1.7841647960012779,
+              "cached_tokens": 0,
+              "prompt_tokens": 283,
+              "text": "4",
+              "trace": {
+                "effective_lane": "serial",
+                "reuse_kind": "cold",
+                "speculation_active": true,
+                "fallback_reason": null,
+                "reuse_miss": "no checkpoint at or below LCP"
+              }
+            },
+            "process": {
+              "pid": 1013632,
+              "start_ticks": "41439641",
+              "argv": [
+                "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+                "--cuda",
+                "-m",
+                "/home/sunghoon/workspace/ds4-exaone/models/Inkling-Small-Mixed-Quant-GGUF/MQ85GB/Inkling-Small-MQ85GB-00001-of-00006.gguf",
+                "--mtp",
+                "/home/sunghoon/workspace/ds4-exaone/models/Inkling-Small-Mixed-Quant-GGUF/MTP-BF16/Inkling-Small-MTP-BF16.gguf",
+                "--mtp-draft",
+                "8",
+                "--mtp-mode",
+                "on",
+                "--cont-width",
+                "0",
+                "-c",
+                "1024",
+                "-n",
+                "64",
+                "--native-chunk",
+                "64",
+                "--prefix-reuse",
+                "exact",
+                "--kv-disk-dir",
+                "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/inkling/cache",
+                "--kv-disk-space",
+                "1G",
+                "--kv-cache-min-tokens",
+                "1",
+                "--model-id",
+                "inkling-small-mq85gb",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "18013"
+              ],
+              "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+              "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+              "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1013625-1789638370445109346.scope\n",
+              "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+            },
+            "effective": {
+              "ctx": 1024,
+              "max_seqs": 1,
+              "prefix_reuse": "exact",
+              "mtp_mode": "on",
+              "mtp_draft": 8,
+              "mtp_weights": true,
+              "native_chunk": 64,
+              "sched_chunk": 64,
+              "sched_chunk_live": 64,
+              "disk": true,
+              "disk_min_tokens": 1,
+              "bank_persist_min_tokens": 8192
+            },
+            "disk_identity": "985461a5394f9017bdd1b1e5bcefd5d8578b88fdd453227a95d337bb13c56768",
+            "files": [
+              {
+                "path": "scratch/v013/ir6/inkling/http/seed.request.json",
+                "sha256": "04f552b19151de69a27e3ced4d632bc7f2f88cf398deb9c1ce429e54e316fba4",
+                "bytes": 1284
+              },
+              {
+                "path": "scratch/v013/ir6/inkling/http/seed.response.json",
+                "sha256": "3c8925ea41b353b6483efebf0384890636a8e1a87873adcd11db6b49f6a024dc",
+                "bytes": 648
+              },
+              {
+                "path": "scratch/v013/ir6/inkling/http/seed.stats.json",
+                "sha256": "4556b56568d7fd18f226480d46bb30dcb5831fbc3bc3fce59ee259951cf2f772",
+                "bytes": 7939
+              },
+              {
+                "path": "scratch/v013/ir6/inkling/http/seed.preflight-stats.json",
+                "sha256": "843ff419121927c83ccd6cb782393491b518c7d4e039c76d95f478d3d7cd2ec5",
+                "bytes": 7737
+              },
+              {
+                "path": "scratch/v013/ir6/inkling/http/seed.process.json",
+                "sha256": "c94cead585b759b669476cb05895a1b28f9d5564945a0dc17087d39a0450e2b3",
+                "bytes": 874
+              },
+              {
+                "path": "scratch/v013/ir6/inkling/http/seed.verified.json",
+                "sha256": "0f1dda66985f34fe59716ab5e5c4955705c47375e192beaabcdb775972092473",
+                "bytes": 622
+              }
+            ]
+          },
+          "restored": {
+            "summary": {
+              "phase": "restored",
+              "seconds": 0.4185717620421201,
+              "cached_tokens": 287,
+              "prompt_tokens": 300,
+              "text": "5",
+              "trace": {
+                "effective_lane": "serial",
+                "reuse_kind": "exact",
+                "speculation_active": true,
+                "fallback_reason": null
+              }
+            },
+            "process": {
+              "pid": 1013987,
+              "start_ticks": "41440563",
+              "argv": [
+                "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+                "--cuda",
+                "-m",
+                "/home/sunghoon/workspace/ds4-exaone/models/Inkling-Small-Mixed-Quant-GGUF/MQ85GB/Inkling-Small-MQ85GB-00001-of-00006.gguf",
+                "--mtp",
+                "/home/sunghoon/workspace/ds4-exaone/models/Inkling-Small-Mixed-Quant-GGUF/MTP-BF16/Inkling-Small-MTP-BF16.gguf",
+                "--mtp-draft",
+                "8",
+                "--mtp-mode",
+                "on",
+                "--cont-width",
+                "0",
+                "-c",
+                "1024",
+                "-n",
+                "64",
+                "--native-chunk",
+                "64",
+                "--prefix-reuse",
+                "exact",
+                "--kv-disk-dir",
+                "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/inkling/cache",
+                "--kv-disk-space",
+                "1G",
+                "--kv-cache-min-tokens",
+                "1",
+                "--model-id",
+                "inkling-small-mq85gb",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "18013"
+              ],
+              "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+              "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+              "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1013981-1789638379660063359.scope\n",
+              "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+            },
+            "effective": {
+              "ctx": 1024,
+              "max_seqs": 1,
+              "prefix_reuse": "exact",
+              "mtp_mode": "on",
+              "mtp_draft": 8,
+              "mtp_weights": true,
+              "native_chunk": 64,
+              "sched_chunk": 64,
+              "sched_chunk_live": 64,
+              "disk": true,
+              "disk_min_tokens": 1,
+              "bank_persist_min_tokens": 8192
+            },
+            "disk_identity": "985461a5394f9017bdd1b1e5bcefd5d8578b88fdd453227a95d337bb13c56768",
+            "files": [
+              {
+                "path": "scratch/v013/ir6/inkling/http/restored.request.json",
+                "sha256": "090c80ee91e1e08ffd549540b740aad0bfae3b7797c29182b5183af03029efc7",
+                "bytes": 1436
+              },
+              {
+                "path": "scratch/v013/ir6/inkling/http/restored.response.json",
+                "sha256": "dd41e630223a2ce05b839a515974ee91d41d4a28bf16b52aa652f596cbc46cf7",
+                "bytes": 652
+              },
+              {
+                "path": "scratch/v013/ir6/inkling/http/restored.stats.json",
+                "sha256": "fe828eb5757309de40ba4f94bb2846bdf34837616b021893d5fa9832902e878b",
+                "bytes": 7889
+              },
+              {
+                "path": "scratch/v013/ir6/inkling/http/restored.preflight-stats.json",
+                "sha256": "aaef92916c84b2f246decf63038f0633a1ef9ed122e1c4fa779c50b29fb36298",
+                "bytes": 7737
+              },
+              {
+                "path": "scratch/v013/ir6/inkling/http/restored.process.json",
+                "sha256": "247810c0d24da8eca51b14f1739f8f7aad0e8a1be0b721c258eff8c88cc7e819",
+                "bytes": 874
+              },
+              {
+                "path": "scratch/v013/ir6/inkling/http/restored.verified.json",
+                "sha256": "b463b8082925af4e51662895fa063bf72e9b1ecf7a40774dd74c723c6b37e6a2",
+                "bytes": 576
+              }
+            ]
+          },
+          "cold": {
+            "summary": {
+              "phase": "cold",
+              "seconds": 1.6547718950314447,
+              "cached_tokens": 0,
+              "prompt_tokens": 300,
+              "text": "5",
+              "trace": {
+                "effective_lane": "serial",
+                "reuse_kind": "cold",
+                "speculation_active": true,
+                "fallback_reason": null,
+                "reuse_miss": "no checkpoint at or below LCP"
+              }
+            },
+            "process": {
+              "pid": 1014009,
+              "start_ticks": "41441485",
+              "argv": [
+                "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+                "--cuda",
+                "-m",
+                "/home/sunghoon/workspace/ds4-exaone/models/Inkling-Small-Mixed-Quant-GGUF/MQ85GB/Inkling-Small-MQ85GB-00001-of-00006.gguf",
+                "--mtp",
+                "/home/sunghoon/workspace/ds4-exaone/models/Inkling-Small-Mixed-Quant-GGUF/MTP-BF16/Inkling-Small-MTP-BF16.gguf",
+                "--mtp-draft",
+                "8",
+                "--mtp-mode",
+                "on",
+                "--cont-width",
+                "0",
+                "-c",
+                "1024",
+                "-n",
+                "64",
+                "--native-chunk",
+                "64",
+                "--prefix-reuse",
+                "exact",
+                "--kv-disk-dir",
+                "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/inkling/cold-cache",
+                "--kv-disk-space",
+                "1G",
+                "--kv-cache-min-tokens",
+                "1",
+                "--model-id",
+                "inkling-small-mq85gb",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "18013"
+              ],
+              "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+              "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+              "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1014002-1789638388880326730.scope\n",
+              "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+            },
+            "effective": {
+              "ctx": 1024,
+              "max_seqs": 1,
+              "prefix_reuse": "exact",
+              "mtp_mode": "on",
+              "mtp_draft": 8,
+              "mtp_weights": true,
+              "native_chunk": 64,
+              "sched_chunk": 64,
+              "sched_chunk_live": 64,
+              "disk": true,
+              "disk_min_tokens": 1,
+              "bank_persist_min_tokens": 8192
+            },
+            "disk_identity": "985461a5394f9017bdd1b1e5bcefd5d8578b88fdd453227a95d337bb13c56768",
+            "files": [
+              {
+                "path": "scratch/v013/ir6/inkling/http/cold.request.json",
+                "sha256": "090c80ee91e1e08ffd549540b740aad0bfae3b7797c29182b5183af03029efc7",
+                "bytes": 1436
+              },
+              {
+                "path": "scratch/v013/ir6/inkling/http/cold.response.json",
+                "sha256": "e876033e92e167dc9072a6f34bdbe27b5a56a93a5e7418cb0dacc4aca965bca4",
+                "bytes": 652
+              },
+              {
+                "path": "scratch/v013/ir6/inkling/http/cold.stats.json",
+                "sha256": "7a8fce0fb1984470f2c25bd90e6b1d264dadacc8caa377dc730156caa0e8baed",
+                "bytes": 7939
+              },
+              {
+                "path": "scratch/v013/ir6/inkling/http/cold.preflight-stats.json",
+                "sha256": "d61c185905c08f2f63482f69b2911cb7979eab64657bca40584b3c574b489430",
+                "bytes": 7737
+              },
+              {
+                "path": "scratch/v013/ir6/inkling/http/cold.process.json",
+                "sha256": "fdbd6066a356f2a5e9ec79636fd0becd30f30bbbc609b9e0f929cf588c7cbf89",
+                "bytes": 879
+              },
+              {
+                "path": "scratch/v013/ir6/inkling/http/cold.verified.json",
+                "sha256": "d9bca6311faa947f6cc01d6986539416c4f75b9122422dba37025f26f896ed8a",
+                "bytes": 622
+              }
+            ]
+          }
+        },
+        "cold_comparison": "identical assistant message, finish, completion count"
+      }
+    },
+    "guards": {
+      "inkling-cold": {
+        "reserve_gib": 12,
+        "trip_gib": 12,
+        "max_gib": 12.0,
+        "high_gib": 10.0,
+        "minimum_sampled_available_gib": 23.08283233642578,
+        "guard_exit": 75,
+        "payload_exit": 0,
+        "started_unix": 1789638388.8897486,
+        "finished_unix": 1789638399.0136802,
+        "raw": {
+          "path": "scratch/v013/ir6/inkling/cold-launch/memory.jsonl",
+          "sha256": "ec24cfbbb334cade6036249d3deab199911e9983554fb9fe2578dfca0abdebdd",
+          "bytes": 2863
+        },
+        "process": {
+          "pid": 1014009,
+          "start_ticks": "41441485",
+          "argv": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/Inkling-Small-Mixed-Quant-GGUF/MQ85GB/Inkling-Small-MQ85GB-00001-of-00006.gguf",
+            "--mtp",
+            "/home/sunghoon/workspace/ds4-exaone/models/Inkling-Small-Mixed-Quant-GGUF/MTP-BF16/Inkling-Small-MTP-BF16.gguf",
+            "--mtp-draft",
+            "8",
+            "--mtp-mode",
+            "on",
+            "--cont-width",
+            "0",
+            "-c",
+            "1024",
+            "-n",
+            "64",
+            "--native-chunk",
+            "64",
+            "--prefix-reuse",
+            "exact",
+            "--kv-disk-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/inkling/cold-cache",
+            "--kv-disk-space",
+            "1G",
+            "--kv-cache-min-tokens",
+            "1",
+            "--model-id",
+            "inkling-small-mq85gb",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "18013"
+          ],
+          "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+          "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1014002-1789638388880326730.scope\n",
+          "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+        }
+      },
+      "inkling-owner": {
+        "reserve_gib": 12,
+        "trip_gib": 8,
+        "max_gib": 99.4,
+        "high_gib": 98.4,
+        "minimum_sampled_available_gib": 22.979259490966797,
+        "guard_exit": 75,
+        "payload_exit": 0,
+        "started_unix": 1789638302.7080185,
+        "finished_unix": 1789638400.1699367,
+        "raw": {
+          "path": "scratch/v013/ir6/inkling/owner.memory.jsonl",
+          "sha256": "28195cb94ed1f90f64017c93ae8a817b073a1e1bb0ce5200d907f6e71fc767f8",
+          "bytes": 17425
+        },
+        "process": {
+          "pid": 1012353,
+          "start_ticks": "41432867",
+          "argv": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/ds4_weight_server",
+            "--base",
+            "/home/sunghoon/workspace/ds4-exaone/models/Inkling-Small-Mixed-Quant-GGUF/MQ85GB/Inkling-Small-MQ85GB-00001-of-00006.gguf",
+            "--mtp",
+            "/home/sunghoon/workspace/ds4-exaone/models/Inkling-Small-Mixed-Quant-GGUF/MTP-BF16/Inkling-Small-MTP-BF16.gguf",
+            "--scope",
+            "both",
+            "--backend",
+            "vmm",
+            "--reserve-gb",
+            "20",
+            "--repack-threads",
+            "1",
+            "--copy-chunk-mb",
+            "64",
+            "--manifest",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/inkling/weights.ipc",
+            "--lock-file",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/inkling/weights.lock",
+            "--broker-socket",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/inkling/weights.sock"
+          ],
+          "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/ds4_weight_server",
+          "executable_sha256": "0321a76ebeb6a8fcd62f8a215cd4806e26367d8108611c9c99a9bc429f395cda",
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1012350-1789638302698943209.scope\n",
+          "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+        }
+      },
+      "inkling-restored": {
+        "reserve_gib": 12,
+        "trip_gib": 12,
+        "max_gib": 12.0,
+        "high_gib": 10.0,
+        "minimum_sampled_available_gib": 22.97927474975586,
+        "guard_exit": 75,
+        "payload_exit": 0,
+        "started_unix": 1789638379.668029,
+        "finished_unix": 1789638388.5710988,
+        "raw": {
+          "path": "scratch/v013/ir6/inkling/restored-launch/memory.jsonl",
+          "sha256": "1adf97af631f43ea763235c651f712400f6ec5ec9c3de529602c65856d9f9dc5",
+          "bytes": 2685
+        },
+        "process": {
+          "pid": 1013987,
+          "start_ticks": "41440563",
+          "argv": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/Inkling-Small-Mixed-Quant-GGUF/MQ85GB/Inkling-Small-MQ85GB-00001-of-00006.gguf",
+            "--mtp",
+            "/home/sunghoon/workspace/ds4-exaone/models/Inkling-Small-Mixed-Quant-GGUF/MTP-BF16/Inkling-Small-MTP-BF16.gguf",
+            "--mtp-draft",
+            "8",
+            "--mtp-mode",
+            "on",
+            "--cont-width",
+            "0",
+            "-c",
+            "1024",
+            "-n",
+            "64",
+            "--native-chunk",
+            "64",
+            "--prefix-reuse",
+            "exact",
+            "--kv-disk-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/inkling/cache",
+            "--kv-disk-space",
+            "1G",
+            "--kv-cache-min-tokens",
+            "1",
+            "--model-id",
+            "inkling-small-mq85gb",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "18013"
+          ],
+          "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+          "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1013981-1789638379660063359.scope\n",
+          "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+        }
+      },
+      "inkling-seed": {
+        "reserve_gib": 12,
+        "trip_gib": 12,
+        "max_gib": 12.0,
+        "high_gib": 10.0,
+        "minimum_sampled_available_gib": 23.18564224243164,
+        "guard_exit": 75,
+        "payload_exit": 0,
+        "started_unix": 1789638370.4523237,
+        "finished_unix": 1789638379.352207,
+        "raw": {
+          "path": "scratch/v013/ir6/inkling/seed-launch/memory.jsonl",
+          "sha256": "ca91d3843bae272932cabd345bf4a334c90b49dde920d205b1fb96daf8e5e6be",
+          "bytes": 2689
+        },
+        "process": {
+          "pid": 1013632,
+          "start_ticks": "41439641",
+          "argv": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/Inkling-Small-Mixed-Quant-GGUF/MQ85GB/Inkling-Small-MQ85GB-00001-of-00006.gguf",
+            "--mtp",
+            "/home/sunghoon/workspace/ds4-exaone/models/Inkling-Small-Mixed-Quant-GGUF/MTP-BF16/Inkling-Small-MTP-BF16.gguf",
+            "--mtp-draft",
+            "8",
+            "--mtp-mode",
+            "on",
+            "--cont-width",
+            "0",
+            "-c",
+            "1024",
+            "-n",
+            "64",
+            "--native-chunk",
+            "64",
+            "--prefix-reuse",
+            "exact",
+            "--kv-disk-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/ir6/inkling/cache",
+            "--kv-disk-space",
+            "1G",
+            "--kv-cache-min-tokens",
+            "1",
+            "--model-id",
+            "inkling-small-mq85gb",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "18013"
+          ],
+          "executable": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated6/ds4-server",
+          "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+          "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/ds4guard.slice/ds4-hostguard-1013625-1789638370445109346.scope\n",
+          "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13"
+        }
+      }
+    }
+  }
 }

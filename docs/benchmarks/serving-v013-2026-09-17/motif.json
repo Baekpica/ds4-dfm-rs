@@ -1,0 +1,1894 @@
+{
+  "schema": "v013-live-evidence-v1",
+  "family": "motif",
+  "scope": {
+    "status": "HTTP reuse lifecycle passed",
+    "standalone": false,
+    "context": 2048,
+    "banks": 2,
+    "native_chunk": 64,
+    "lane": "continuous",
+    "mtp": "off",
+    "clock_limits_mhz": [
+      300,
+      2200
+    ]
+  },
+  "build": {
+    "base_commit": "c2a816b9cf681709141797fccb9dab9c0c9f3bf4",
+    "server_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+    "source_patch": "scratch/v013/bin-integrated6/source.diff"
+  },
+  "artifact": {
+    "schema": "v013-artifacts-v1",
+    "manifest": "/home/sunghoon/workspace/ds4-exaone/models/Motif-3-Mixed-Quant-GGUF/MQ87-88-FIT-SHA256SUMS",
+    "files": [
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Motif-3-Mixed-Quant-GGUF/Motif-3-MQ87-88-FIT-00001-of-00011.gguf",
+        "bytes": 8955586336,
+        "sha256": "63a0216953e6fc31156c5d1d59d02be3fab7c27e27880a87e38cfde797307142",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173944155,
+          8955586336,
+          1786660199783603924,
+          1786660201210589944
+        ],
+        "seconds": 16.83717426797375
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Motif-3-Mixed-Quant-GGUF/Motif-3-MQ87-88-FIT-00002-of-00011.gguf",
+        "bytes": 8970980800,
+        "sha256": "7c80ecd219b10ce75f4a84db373cee8e1f15a4c32dc35b89d9ff67dbbf6bd8fd",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173944170,
+          8970980800,
+          1786661703023194700,
+          1786661703632064809
+        ],
+        "seconds": 16.55840422300389
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Motif-3-Mixed-Quant-GGUF/Motif-3-MQ87-88-FIT-00003-of-00011.gguf",
+        "bytes": 8970980768,
+        "sha256": "583806c37e55f8555fe61c8a0a0888671a733fae4de4fc97de3466c66f2c5db8",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173944174,
+          8970980768,
+          1786661705061200351,
+          1786661705672887522
+        ],
+        "seconds": 16.826236264023464
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Motif-3-Mixed-Quant-GGUF/Motif-3-MQ87-88-FIT-00004-of-00011.gguf",
+        "bytes": 8970980800,
+        "sha256": "8e8dddeb4f236b301c4b6c76c16562da5638b6bc5ceb0b9775421b2d483effc4",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173944176,
+          8970980800,
+          1786661703893197119,
+          1786661704677771707
+        ],
+        "seconds": 16.751928798039444
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Motif-3-Mixed-Quant-GGUF/Motif-3-MQ87-88-FIT-00005-of-00011.gguf",
+        "bytes": 8970980768,
+        "sha256": "4c50cd4b31b0d1d8ef35ed42a7eafae42ed64852fb5fdf522da2142e2c8fe259",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173944179,
+          8970980768,
+          1786661704124197760,
+          1786661704751199494
+        ],
+        "seconds": 16.453583742957562
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Motif-3-Mixed-Quant-GGUF/Motif-3-MQ87-88-FIT-00006-of-00011.gguf",
+        "bytes": 8970980800,
+        "sha256": "fd6d2040788ecd08a03b8b5e563a7336b1f77e2523341ad755d16ad06d735908",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173944186,
+          8970980800,
+          1786661374126012455,
+          1786661374241397924
+        ],
+        "seconds": 16.09008112200536
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Motif-3-Mixed-Quant-GGUF/Motif-3-MQ87-88-FIT-00007-of-00011.gguf",
+        "bytes": 8970980768,
+        "sha256": "c74f5b18c48c92d45b379b030460bb39bec1f990daa730bbcfe9a1c162f11b15",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173944188,
+          8970980768,
+          1786661703705196597,
+          1786661704589020806
+        ],
+        "seconds": 16.10188181902049
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Motif-3-Mixed-Quant-GGUF/Motif-3-MQ87-88-FIT-00008-of-00011.gguf",
+        "bytes": 8970980800,
+        "sha256": "91dc2e9121ed107b149ca74ba74116e29e2953888e8b5e0ce9da5c6a34428a39",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173944187,
+          8970980800,
+          1786661701890191533,
+          1786661702684808731
+        ],
+        "seconds": 15.829518695012666
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Motif-3-Mixed-Quant-GGUF/Motif-3-MQ87-88-FIT-00009-of-00011.gguf",
+        "bytes": 8970980768,
+        "sha256": "80c82c25f1846fc5ef189f6b9671fb49690f2e11cba79007e14f318d14c37f00",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173944594,
+          8970980768,
+          1786662012095489989,
+          1786662013485489226
+        ],
+        "seconds": 15.911625423992518
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Motif-3-Mixed-Quant-GGUF/Motif-3-MQ87-88-FIT-00010-of-00011.gguf",
+        "bytes": 8970980704,
+        "sha256": "c5824109f267ce66a323cec2016a3094e59dae3fdd0b4fd7312efae07ee350a3",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173949918,
+          8970980704,
+          1786662321002013236,
+          1786662321910667696
+        ],
+        "seconds": 16.607942164991982
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Motif-3-Mixed-Quant-GGUF/Motif-3-MQ87-88-FIT-00011-of-00011.gguf",
+        "bytes": 4468129504,
+        "sha256": "f4287c1adedb4166f1fa1208b3089c64bbc1bf151e206949971b09902f689d43",
+        "published_hash_verified": true,
+        "stat": [
+          66306,
+          173949923,
+          4468129504,
+          1786662326237000812,
+          1786662326505290172
+        ],
+        "seconds": 8.466240248002578
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Motif-3-Mixed-Quant-GGUF/chat_template.jinja",
+        "bytes": 6788,
+        "sha256": "998a066fd57a07187040a896e7fc455b2aa21dd490d156e82b63518be0a49297",
+        "published_hash_verified": false,
+        "stat": [
+          66306,
+          173944351,
+          6788,
+          1788960965459654309,
+          1788960965459654309
+        ],
+        "seconds": 0.0002304619993083179
+      },
+      {
+        "path": "/home/sunghoon/workspace/ds4-exaone/models/Motif-3-Mixed-Quant-GGUF/chat_template.provenance.json",
+        "bytes": 488,
+        "sha256": "e5677340d06dc781dcb66cee2fdf654b23cfa7bc91f18e5ff7c871d0b0c8a11c",
+        "published_hash_verified": false,
+        "stat": [
+          66306,
+          173944352,
+          488,
+          1788960965459732900,
+          1788960965459732900
+        ],
+        "seconds": 0.00010318297427147627
+      }
+    ],
+    "manifest_sha256": "4df1c7f99f9528aa11b90c3213b05ffb12e0b821556f452270e9bf9c98b6bac8"
+  },
+  "processes": {
+    "seed": {
+      "pid": 1020050,
+      "start_ticks": "41479775",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "command": "./scratch/v013/bin-integrated6/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/Motif-3-Mixed-Quant-GGUF/Motif-3-MQ87-88-FIT-00001-of-00011.gguf --mtp-mode off --max-seqs 2 --ctx 2048 -n 64 --native-chunk 64 --prefill-chunk 64 --prefill-chunk-live 64 --prefix-reuse partial --model-id motif-v013 --host 127.0.0.1 --port 18040 --kv-disk-dir /home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/motif-v6/cache --kv-disk-space 2G --kv-cache-min-tokens 1 ",
+      "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+      "artifacts_sha256": "ebaa2d1a16956d8cf2aa5262e67403c340e6e24229b946733bdf158dab0a568d",
+      "url": "http://127.0.0.1:18040"
+    },
+    "warm": {
+      "pid": 1020050,
+      "start_ticks": "41479775",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "command": "./scratch/v013/bin-integrated6/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/Motif-3-Mixed-Quant-GGUF/Motif-3-MQ87-88-FIT-00001-of-00011.gguf --mtp-mode off --max-seqs 2 --ctx 2048 -n 64 --native-chunk 64 --prefill-chunk 64 --prefill-chunk-live 64 --prefix-reuse partial --model-id motif-v013 --host 127.0.0.1 --port 18040 --kv-disk-dir /home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/motif-v6/cache --kv-disk-space 2G --kv-cache-min-tokens 1 ",
+      "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+      "artifacts_sha256": "ebaa2d1a16956d8cf2aa5262e67403c340e6e24229b946733bdf158dab0a568d",
+      "url": "http://127.0.0.1:18040"
+    },
+    "restored": {
+      "pid": 1020387,
+      "start_ticks": "41482123",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "command": "./scratch/v013/bin-integrated6/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/Motif-3-Mixed-Quant-GGUF/Motif-3-MQ87-88-FIT-00001-of-00011.gguf --mtp-mode off --max-seqs 2 --ctx 2048 -n 64 --native-chunk 64 --prefill-chunk 64 --prefill-chunk-live 64 --prefix-reuse partial --model-id motif-v013 --host 127.0.0.1 --port 18040 --kv-disk-dir /home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/motif-v6/cache --kv-disk-space 2G --kv-cache-min-tokens 1 ",
+      "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+      "artifacts_sha256": "ebaa2d1a16956d8cf2aa5262e67403c340e6e24229b946733bdf158dab0a568d",
+      "url": "http://127.0.0.1:18040"
+    },
+    "cold": {
+      "pid": 1020546,
+      "start_ticks": "41483786",
+      "boot_id": "6f6c93e7-1ada-47a3-9873-4099f9268b13",
+      "command": "./scratch/v013/bin-integrated6/ds4-server --cuda -m /home/sunghoon/workspace/ds4-exaone/models/Motif-3-Mixed-Quant-GGUF/Motif-3-MQ87-88-FIT-00001-of-00011.gguf --mtp-mode off --max-seqs 2 --ctx 2048 -n 64 --native-chunk 64 --prefill-chunk 64 --prefill-chunk-live 64 --prefix-reuse off --model-id motif-v013 --host 127.0.0.1 --port 18040 ",
+      "executable_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+      "artifacts_sha256": "ebaa2d1a16956d8cf2aa5262e67403c340e6e24229b946733bdf158dab0a568d",
+      "url": "http://127.0.0.1:18040"
+    }
+  },
+  "cases": [
+    {
+      "phase": "cold",
+      "case": "append",
+      "seconds": 5.012608383956831,
+      "configured": {
+        "family": "motif",
+        "model": "motif-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 5,
+      "accepted_forms": [
+        "5",
+        "5.",
+        "4 + 1 = 5",
+        "4 + 1 = 5."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "4 + 1 = 5."
+      },
+      "usage": {
+        "prompt_tokens": 620,
+        "completion_tokens": 8,
+        "total_tokens": 628,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 620
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": {
+        "pid": 1020546,
+        "fd": 2,
+        "device_inode": [
+          66306,
+          156637074
+        ],
+        "start": 3653,
+        "end": 3989,
+        "sha256": "e627c4926aec519ffbec19e09c740fd92b6894e88a755e41d3b8b68743cd908f"
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "cold",
+      "case": "edit",
+      "seconds": 5.008153863018379,
+      "configured": {
+        "family": "motif",
+        "model": "motif-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 6,
+      "accepted_forms": [
+        "6",
+        "6.",
+        "4 + 2 = 6",
+        "4 + 2 = 6."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "4 + 2 = 6."
+      },
+      "usage": {
+        "prompt_tokens": 620,
+        "completion_tokens": 8,
+        "total_tokens": 628,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 620
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": {
+        "pid": 1020546,
+        "fd": 2,
+        "device_inode": [
+          66306,
+          156637074
+        ],
+        "start": 3989,
+        "end": 4325,
+        "sha256": "e627c4926aec519ffbec19e09c740fd92b6894e88a755e41d3b8b68743cd908f"
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "cold",
+      "case": "fork",
+      "seconds": 5.182256693951786,
+      "configured": {
+        "family": "motif",
+        "model": "motif-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 8,
+      "accepted_forms": [
+        "8",
+        "8.",
+        "5 + 3 = 8",
+        "5 + 3 = 8."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "5 + 3 = 8."
+      },
+      "usage": {
+        "prompt_tokens": 645,
+        "completion_tokens": 8,
+        "total_tokens": 653,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 645
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": {
+        "pid": 1020546,
+        "fd": 2,
+        "device_inode": [
+          66306,
+          156637074
+        ],
+        "start": 4325,
+        "end": 4661,
+        "sha256": "e627c4926aec519ffbec19e09c740fd92b6894e88a755e41d3b8b68743cd908f"
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "cold",
+      "case": "restart",
+      "seconds": 5.437261607032269,
+      "configured": {
+        "family": "motif",
+        "model": "motif-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 9,
+      "accepted_forms": [
+        "9",
+        "9.",
+        "8 + 1 = 9",
+        "8 + 1 = 9."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "8 + 1 = 9."
+      },
+      "usage": {
+        "prompt_tokens": 670,
+        "completion_tokens": 8,
+        "total_tokens": 678,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 670
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": {
+        "pid": 1020546,
+        "fd": 2,
+        "device_inode": [
+          66306,
+          156637074
+        ],
+        "start": 4661,
+        "end": 4997,
+        "sha256": "e627c4926aec519ffbec19e09c740fd92b6894e88a755e41d3b8b68743cd908f"
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "cold",
+      "case": "seed",
+      "seconds": 4.814707378973253,
+      "configured": {
+        "family": "motif",
+        "model": "motif-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 4,
+      "accepted_forms": [
+        "4",
+        "4.",
+        "2 + 2 = 4",
+        "2 + 2 = 4."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "2 + 2 = 4."
+      },
+      "usage": {
+        "prompt_tokens": 595,
+        "completion_tokens": 8,
+        "total_tokens": 603,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 595
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": {
+        "pid": 1020546,
+        "fd": 2,
+        "device_inode": [
+          66306,
+          156637074
+        ],
+        "start": 3258,
+        "end": 3653,
+        "sha256": "125ba61b30a34a49f94b40a0cd8ccad48f06a31db50cef0bcfcd0bd42cb8262f"
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "restored",
+      "case": "restart",
+      "seconds": 1.0958823249675333,
+      "configured": {
+        "family": "motif",
+        "model": "motif-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 9,
+      "accepted_forms": [
+        "9",
+        "9.",
+        "8 + 1 = 9",
+        "8 + 1 = 9."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "8 + 1 = 9."
+      },
+      "usage": {
+        "prompt_tokens": 670,
+        "completion_tokens": 8,
+        "total_tokens": 678,
+        "prompt_tokens_details": {
+          "cached_tokens": 643,
+          "cache_write_tokens": 27
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "fork",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "native_forks": [
+        {
+          "source": 0,
+          "target": 1,
+          "cached": 643,
+          "partial": 0,
+          "source_before": 643,
+          "source_after": 643,
+          "target_after": 643
+        }
+      ],
+      "native_log": {
+        "pid": 1020387,
+        "fd": 2,
+        "device_inode": [
+          66306,
+          156637057
+        ],
+        "start": 3705,
+        "end": 4261,
+        "sha256": "93174252befe930ef9e12cb360485719506a30e30823447e957445b82fca67f7"
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "seed",
+      "case": "seed",
+      "seconds": 4.953391221002676,
+      "configured": {
+        "family": "motif",
+        "model": "motif-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 4,
+      "accepted_forms": [
+        "4",
+        "4.",
+        "2 + 2 = 4",
+        "2 + 2 = 4."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "2 + 2 = 4."
+      },
+      "usage": {
+        "prompt_tokens": 595,
+        "completion_tokens": 8,
+        "total_tokens": 603,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 595
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null,
+        "reuse_miss": "no checkpoint at or below LCP"
+      },
+      "native_forks": [],
+      "native_log": {
+        "pid": 1020050,
+        "fd": 2,
+        "device_inode": [
+          66306,
+          156637015
+        ],
+        "start": 3705,
+        "end": 4146,
+        "sha256": "dae6486f95c43ee1761165fcdb094d50c1af5b96b1e6180204a12ecbc1fc9afd"
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "warm",
+      "case": "append",
+      "seconds": 1.0244628979708068,
+      "configured": {
+        "family": "motif",
+        "model": "motif-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 5,
+      "accepted_forms": [
+        "5",
+        "5.",
+        "4 + 1 = 5",
+        "4 + 1 = 5."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "4 + 1 = 5."
+      },
+      "usage": {
+        "prompt_tokens": 620,
+        "completion_tokens": 8,
+        "total_tokens": 628,
+        "prompt_tokens_details": {
+          "cached_tokens": 593,
+          "cache_write_tokens": 27
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "partial",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "native_forks": [
+        {
+          "source": 0,
+          "target": 1,
+          "cached": 593,
+          "partial": 1,
+          "source_before": 603,
+          "source_after": 603,
+          "target_after": 593
+        }
+      ],
+      "native_log": {
+        "pid": 1020050,
+        "fd": 2,
+        "device_inode": [
+          66306,
+          156637015
+        ],
+        "start": 4146,
+        "end": 4597,
+        "sha256": "6475bdb50ffb8705805fd0ce9e1e9e96116e7464c1ad0cba7c5830132f7e73a3"
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "warm",
+      "case": "edit",
+      "seconds": 1.013522146968171,
+      "configured": {
+        "family": "motif",
+        "model": "motif-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 6,
+      "accepted_forms": [
+        "6",
+        "6.",
+        "4 + 2 = 6",
+        "4 + 2 = 6."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "4 + 2 = 6."
+      },
+      "usage": {
+        "prompt_tokens": 620,
+        "completion_tokens": 8,
+        "total_tokens": 628,
+        "prompt_tokens_details": {
+          "cached_tokens": 593,
+          "cache_write_tokens": 27
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "partial",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": {
+        "pid": 1020050,
+        "fd": 2,
+        "device_inode": [
+          66306,
+          156637015
+        ],
+        "start": 4597,
+        "end": 5048,
+        "sha256": "219dc5a4cc75d9a81519524e733c0a2c4935701625c4e36d40e3976c639e09c2"
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "phase": "warm",
+      "case": "fork",
+      "seconds": 1.1498508380027488,
+      "configured": {
+        "family": "motif",
+        "model": "motif-v013",
+        "context": 2048,
+        "banks": 2,
+        "native_chunk": 64,
+        "mtp_mode": "off",
+        "expect_speculation": false,
+        "lane": "continuous",
+        "mtp_draft": null,
+        "padding_lines": 64,
+        "requested_lane": "auto"
+      },
+      "expected_answer": 8,
+      "accepted_forms": [
+        "8",
+        "8.",
+        "5 + 3 = 8",
+        "5 + 3 = 8."
+      ],
+      "message": {
+        "role": "assistant",
+        "content": "5 + 3 = 8."
+      },
+      "usage": {
+        "prompt_tokens": 645,
+        "completion_tokens": 8,
+        "total_tokens": 653,
+        "prompt_tokens_details": {
+          "cached_tokens": 593,
+          "cache_write_tokens": 52
+        }
+      },
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "partial",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "native_forks": [],
+      "native_log": {
+        "pid": 1020050,
+        "fd": 2,
+        "device_inode": [
+          66306,
+          156637015
+        ],
+        "start": 5048,
+        "end": 5499,
+        "sha256": "219dc5a4cc75d9a81519524e733c0a2c4935701625c4e36d40e3976c639e09c2"
+      },
+      "errors": [],
+      "passed": true
+    }
+  ],
+  "guards": [
+    {
+      "path": "scratch/v013/motif-v6/owner-owner.memory.jsonl",
+      "minimum_available_gib": 14.671310424804688,
+      "maximum_psi_full_avg10": 1.14,
+      "exit": {
+        "time": 1789638849.0437121,
+        "event": "exit",
+        "unit": "ds4-hostguard-1018598-1789638697153182261.scope",
+        "status": 75,
+        "payload_status": 0
+      },
+      "stop": "task orchestrator requested shutdown after each successful phase"
+    },
+    {
+      "path": "scratch/v013/motif-v6/worker-cold.memory.jsonl",
+      "minimum_available_gib": 14.715522766113281,
+      "maximum_psi_full_avg10": 0.0,
+      "exit": {
+        "time": 1789638847.8422172,
+        "event": "exit",
+        "unit": "ds4-hostguard-1020544-1789638811894009448.scope",
+        "status": 75,
+        "payload_status": 0
+      },
+      "stop": "task orchestrator requested shutdown after each successful phase"
+    },
+    {
+      "path": "scratch/v013/motif-v6/worker-restored.memory.jsonl",
+      "minimum_available_gib": 14.746307373046875,
+      "maximum_psi_full_avg10": 0.01,
+      "exit": {
+        "time": 1789638806.691065,
+        "event": "exit",
+        "unit": "ds4-hostguard-1020385-1789638795264483048.scope",
+        "status": 75,
+        "payload_status": 0
+      },
+      "stop": "task orchestrator requested shutdown after each successful phase"
+    },
+    {
+      "path": "scratch/v013/motif-v6/worker-seed.memory.jsonl",
+      "minimum_available_gib": 14.671310424804688,
+      "maximum_psi_full_avg10": 0.18,
+      "exit": {
+        "time": 1789638790.0458481,
+        "event": "exit",
+        "unit": "ds4-hostguard-1020048-1789638771781988788.scope",
+        "status": 75,
+        "payload_status": 0
+      },
+      "stop": "task orchestrator requested shutdown after each successful phase"
+    }
+  ],
+  "limits": [
+    "Short text fixtures only; no full-context, media or speedup claim.",
+    "Frozen executable and build-head/source-patch identify this gate; subsequent documentation commits do not expand its scope."
+  ],
+  "raw_files": [
+    {
+      "path": "scratch/v013/motif-v6/artifacts.json",
+      "bytes": 6178,
+      "sha256": "ebaa2d1a16956d8cf2aa5262e67403c340e6e24229b946733bdf158dab0a568d"
+    },
+    {
+      "path": "scratch/v013/motif-v6/cold.runner.log",
+      "bytes": 4755,
+      "sha256": "ce90e3091547c92f6623354ef1f05d26d13c2e37700875eecda41fe34c706bb4"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/artifacts.json",
+      "bytes": 6178,
+      "sha256": "ebaa2d1a16956d8cf2aa5262e67403c340e6e24229b946733bdf158dab0a568d"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.append.native.log",
+      "bytes": 336,
+      "sha256": "e627c4926aec519ffbec19e09c740fd92b6894e88a755e41d3b8b68743cd908f"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.append.request.json",
+      "bytes": 2497,
+      "sha256": "2f238f6925613f13b91d3951b7ab36e1077b09e95b6b4bbc9eea629fddf5a916"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.append.response.json",
+      "bytes": 648,
+      "sha256": "35f5dfe47730c3274f6ad55ca3c01bdff35f1f4353f2aa228c023b7425fcd6f7"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.append.stats.json",
+      "bytes": 7684,
+      "sha256": "d363efd123c699b52e4656885ea3e0caea80fa3098b05654b6ee5f154c33efd0"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.append.summary.json",
+      "bytes": 1164,
+      "sha256": "506a46f6c561dbe35e5cca0586fcb718670b5370b68976c06fafec5f17ad7b01"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.before.json",
+      "bytes": 7536,
+      "sha256": "4d93fced9670072bc9242f95c1f5e2479dad7e717cf507d857f2d02df11a5bc4"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.edit.native.log",
+      "bytes": 336,
+      "sha256": "e627c4926aec519ffbec19e09c740fd92b6894e88a755e41d3b8b68743cd908f"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.edit.request.json",
+      "bytes": 2497,
+      "sha256": "696e418d337a1c723d3537458b0782643f199aa7b94650ec65131e7901ba0aff"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.edit.response.json",
+      "bytes": 648,
+      "sha256": "a327830c33861e6ac00e937a35c45dd839c31e949b2aecf92c11f858b5729daa"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.edit.stats.json",
+      "bytes": 7684,
+      "sha256": "2312c79692248a54d56c294a177339b8c7cedf52d56c1644731bbfd54bd3fbe1"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.edit.summary.json",
+      "bytes": 1162,
+      "sha256": "b22a56e61e0cb635aa373bcebd91295067a06be28cc6dd500cba4b5235d1f74b"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.fork.native.log",
+      "bytes": 336,
+      "sha256": "e627c4926aec519ffbec19e09c740fd92b6894e88a755e41d3b8b68743cd908f"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.fork.request.json",
+      "bytes": 2664,
+      "sha256": "59408c7aa49692ea5baefb3ce382c7489bdbf326c841d18d4f384d27bc358977"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.fork.response.json",
+      "bytes": 648,
+      "sha256": "fa7e6f48f2ece7e27584d49d96a6610a5f212c82b03c930ca664638adebfc4b5"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.fork.stats.json",
+      "bytes": 7685,
+      "sha256": "b2c02ce60263b9b58499a869350fb1c6a193466f99bb63f54f832d2b7123aaf6"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.fork.summary.json",
+      "bytes": 1162,
+      "sha256": "2c8eac704e1ee909a210a2d7d74dede6a15c170dbf780f1968144f6df8c7dde5"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.process.json",
+      "bytes": 673,
+      "sha256": "beee3bb3de112940071350d4d9561e83ed9be04a325329fe5a18c0f6736e5d97"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.restart.native.log",
+      "bytes": 336,
+      "sha256": "e627c4926aec519ffbec19e09c740fd92b6894e88a755e41d3b8b68743cd908f"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.restart.request.json",
+      "bytes": 2831,
+      "sha256": "2230973953432ba8b7dd59ce8a402e73d192acb443465c3df2de0a4c14c379d1"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.restart.response.json",
+      "bytes": 648,
+      "sha256": "ebdffe8eac266b500765059b9ac528aab768549bc090f86805a95b9ba08160cb"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.restart.stats.json",
+      "bytes": 7685,
+      "sha256": "62e17f668a0abc150de25db64d5606a00a67f85199ba5ab8bfd068f695b6b3c3"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.restart.summary.json",
+      "bytes": 1165,
+      "sha256": "9551adcc6d70ce9ad6821596403285297a5e1789359d3ce2e8e1599b02bd5bfd"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.result.json",
+      "bytes": 4562,
+      "sha256": "b883f39b213e2ea89eb565c6d5135fc319197ea290ee24be22f9db2309d73be9"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.seed.native.log",
+      "bytes": 395,
+      "sha256": "125ba61b30a34a49f94b40a0cd8ccad48f06a31db50cef0bcfcd0bd42cb8262f"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.seed.request.json",
+      "bytes": 2330,
+      "sha256": "2e090bd073a8af3b334e220c7acc2068390e75ae7252c7e8ab567d58baf8738f"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.seed.response.json",
+      "bytes": 648,
+      "sha256": "5f258ce7c5aa953ae7d4e3dcf6c258b394adec71a33974e887e0fd72099c0ba9"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.seed.stats.json",
+      "bytes": 7684,
+      "sha256": "4bb9b8a993802020e32657e744543ddd7d77a78bcece1c2ee0a6010333f73bf8"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/cold.seed.summary.json",
+      "bytes": 1162,
+      "sha256": "e65b637bf0df76118c735d6d210e8c0eae3220ea8a3604fc0bf7d5ee21de0d5d"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/fixture.json",
+      "bytes": 15939,
+      "sha256": "9db60b29a402234729b363b53a6aa8e1a0111f5a4ef0cbd7ebb6d6be4dd6471b"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/restored.before.json",
+      "bytes": 7558,
+      "sha256": "243ddcf9f5ebfe730d087e8120ef0456ac222d947b6f6bbfcedefeaead986702"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/restored.process.json",
+      "bytes": 826,
+      "sha256": "cbfc99f84685dcb5e1cacc8a463aa0051df8af5604ea4e110acbfb79ca6d557a"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/restored.restart.native.log",
+      "bytes": 556,
+      "sha256": "93174252befe930ef9e12cb360485719506a30e30823447e957445b82fca67f7"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/restored.restart.request.json",
+      "bytes": 2831,
+      "sha256": "2230973953432ba8b7dd59ce8a402e73d192acb443465c3df2de0a4c14c379d1"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/restored.restart.response.json",
+      "bytes": 648,
+      "sha256": "67eb4499c4b675015c27e52e826cd34322c9beb3da6a3a823c44a5b4de02fba7"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/restored.restart.stats.json",
+      "bytes": 7707,
+      "sha256": "a0af06f77c489f2cc6a02b32e4ab01a820085cc0a7a4b49ec4d5d12387be3cb1"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/restored.restart.summary.json",
+      "bytes": 1346,
+      "sha256": "81500a2b21a20c8135667d1d07696d4e6baca8b2bf6a090b2f09b02deb897707"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/restored.result.json",
+      "bytes": 2025,
+      "sha256": "5813dfe896ec61f4444338e1b3d12d8e43160f587dad1bcb092dd1f752d6569a"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/seed.before.json",
+      "bytes": 7558,
+      "sha256": "cb9b5aa6600579ca8f91173b55721f82d81192a93af91bde2139f7ce1952cb70"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/seed.process.json",
+      "bytes": 826,
+      "sha256": "af355e6c0862401741f394640738fd4810c2b755a4fffe766a61102d0ad7bbfb"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/seed.result.json",
+      "bytes": 1982,
+      "sha256": "fb9456c61e951468c333b55a8512b4ffcb4991cd8a50cca9294f8c2737ad7daf"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/seed.seed.native.log",
+      "bytes": 441,
+      "sha256": "dae6486f95c43ee1761165fcdb094d50c1af5b96b1e6180204a12ecbc1fc9afd"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/seed.seed.request.json",
+      "bytes": 2330,
+      "sha256": "2e090bd073a8af3b334e220c7acc2068390e75ae7252c7e8ab567d58baf8738f"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/seed.seed.response.json",
+      "bytes": 648,
+      "sha256": "18d0fa56de4e3a97df4a598991d14642f119ba77803b44e7cd1645cdcbf96687"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/seed.seed.stats.json",
+      "bytes": 7758,
+      "sha256": "f771c9131e10346448ff09fd0c37265c904c73dc582fbefac7463a25f0091d31"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/seed.seed.summary.json",
+      "bytes": 1213,
+      "sha256": "9dc0bca7f041270c30106af885740b17143957d8532ff063503f893b7461a1fd"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/warm.append.native.log",
+      "bytes": 451,
+      "sha256": "6475bdb50ffb8705805fd0ce9e1e9e96116e7464c1ad0cba7c5830132f7e73a3"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/warm.append.request.json",
+      "bytes": 2497,
+      "sha256": "2f238f6925613f13b91d3951b7ab36e1077b09e95b6b4bbc9eea629fddf5a916"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/warm.append.response.json",
+      "bytes": 648,
+      "sha256": "6975d5a9c345416c9fb95774f1b9e44ad1c2d4d97ab64a4d45579f042885cf73"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/warm.append.stats.json",
+      "bytes": 7710,
+      "sha256": "986575f43e08e9c802de58f017c89b2b2b11feaff213f560d36de65e1b4bfdc8"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/warm.append.summary.json",
+      "bytes": 1344,
+      "sha256": "cced12ececc9bb4db64febd6b371ace2aad8ba1f87163153eff8acf75a7aebc5"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/warm.before.json",
+      "bytes": 7758,
+      "sha256": "1d4884104fe637110314e60839cdd76490f07aab9b92f2b13f770ca301a6807a"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/warm.edit.native.log",
+      "bytes": 451,
+      "sha256": "219dc5a4cc75d9a81519524e733c0a2c4935701625c4e36d40e3976c639e09c2"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/warm.edit.request.json",
+      "bytes": 2497,
+      "sha256": "696e418d337a1c723d3537458b0782643f199aa7b94650ec65131e7901ba0aff"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/warm.edit.response.json",
+      "bytes": 648,
+      "sha256": "91c9255a1994794c06b5a9874cb66c27a51f4ae8935deff598b52c08fe20be24"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/warm.edit.stats.json",
+      "bytes": 7710,
+      "sha256": "d3776523838fc14fbea6ecf99784e45ffd422f691361186296f024a9a975f005"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/warm.edit.summary.json",
+      "bytes": 1166,
+      "sha256": "8932e051cb8870c0d57f7cd5c516b8c3680cadf404d24056f0bf2d6bc5f069f6"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/warm.fork.native.log",
+      "bytes": 451,
+      "sha256": "219dc5a4cc75d9a81519524e733c0a2c4935701625c4e36d40e3976c639e09c2"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/warm.fork.request.json",
+      "bytes": 2664,
+      "sha256": "59408c7aa49692ea5baefb3ce382c7489bdbf326c841d18d4f384d27bc358977"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/warm.fork.response.json",
+      "bytes": 648,
+      "sha256": "f6c50f07c6daacb0381a6090cc0d25186432fb17bfca90fb804bd358c1b3e5aa"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/warm.fork.stats.json",
+      "bytes": 7710,
+      "sha256": "6c25d2adc63c1c0138450e2e2ac4a99e81ab54c42cb8402ff448ca89c3116e9b"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/warm.fork.summary.json",
+      "bytes": 1167,
+      "sha256": "99b8e7dc097a632903116fe7d63f345a3d3db09ce44e53eb15f8a2432a9399bf"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/warm.process.json",
+      "bytes": 826,
+      "sha256": "af355e6c0862401741f394640738fd4810c2b755a4fffe766a61102d0ad7bbfb"
+    },
+    {
+      "path": "scratch/v013/motif-v6/evidence/warm.result.json",
+      "bytes": 3346,
+      "sha256": "c6e94cf52c845581535aaab4272965ee7d31c94bcd1c88f24fdbe580fb354dc8"
+    },
+    {
+      "path": "scratch/v013/motif-v6/gpu-observed.csv",
+      "bytes": 190,
+      "sha256": "a5e3ed871585b10dc768ef65d7be5e49be9ec5a1461b6fdf985408a45cf2a39c"
+    },
+    {
+      "path": "scratch/v013/motif-v6/orchestrator.jsonl",
+      "bytes": 6674,
+      "sha256": "f2e57d7088d0e843b3a5c32bae382fc99c23b05865637f34449de86d5ae821d8"
+    },
+    {
+      "path": "scratch/v013/motif-v6/owner-owner.command.json",
+      "bytes": 760,
+      "sha256": "d56371d1e8073c876ba844d10532fcef5eb8e3b4bfb22f24ffcc2804a0ee1957"
+    },
+    {
+      "path": "scratch/v013/motif-v6/owner-owner.launcher.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "scratch/v013/motif-v6/owner-owner.log",
+      "bytes": 5694,
+      "sha256": "3356be4f4a9533753b14407bdc2685b25d3fc667735ad653067a4e81da188263"
+    },
+    {
+      "path": "scratch/v013/motif-v6/owner-owner.memory.jsonl",
+      "bytes": 26194,
+      "sha256": "d512b44ea7bf1547cec57f69b16501c082a2c26deb332472c049c89bb2e8014b"
+    },
+    {
+      "path": "scratch/v013/motif-v6/owner.ipc",
+      "bytes": 81994,
+      "sha256": "2616eb58dfc7d4d1fe8e57056fed6ff7c82649430b620884c8a0c389dd9b54e1"
+    },
+    {
+      "path": "scratch/v013/motif-v6/owner.lock",
+      "bytes": 8,
+      "sha256": "17280114f05563dd77b664f6c1b62b697595c67b5f32ccb4234465cdff4c3af7"
+    },
+    {
+      "path": "scratch/v013/motif-v6/owner.process.json",
+      "bytes": 1118,
+      "sha256": "ea0394c224009a5b127ea7da216133e8abbdffaf2fbc56218d3c1b913a285e90"
+    },
+    {
+      "path": "scratch/v013/motif-v6/restored.runner.log",
+      "bytes": 1078,
+      "sha256": "8a16525cd00f7fa64992d8d7f72382fdbfabf0010cdcc5f7f90efe92073b439c"
+    },
+    {
+      "path": "scratch/v013/motif-v6/seed.runner.log",
+      "bytes": 997,
+      "sha256": "1e7e181fd3ce023122c6ba06d82ca1c3723dcd462fb2f4584ffcfdafd690411a"
+    },
+    {
+      "path": "scratch/v013/motif-v6/warm.runner.log",
+      "bytes": 2985,
+      "sha256": "a5e6c011c79e4a50b2703a3a87b3871ea7ccc79d46a6f03c5ef9a836b4619be2"
+    },
+    {
+      "path": "scratch/v013/motif-v6/worker-cold.command.json",
+      "bytes": 954,
+      "sha256": "07539ef13fca636af8c22c1851f4705e1be8abdbcd9068c3b64f82b36a4b0474"
+    },
+    {
+      "path": "scratch/v013/motif-v6/worker-cold.launcher.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "scratch/v013/motif-v6/worker-cold.log",
+      "bytes": 5280,
+      "sha256": "dbebe6dd3040938f9d1d9de9d82025c2cd7acd6ac563d461ea8e20795aad190a"
+    },
+    {
+      "path": "scratch/v013/motif-v6/worker-cold.memory.jsonl",
+      "bytes": 6841,
+      "sha256": "db98a525ca7c142bdfbc2099979ecd93c8e6ee22dbb57b15dbe6aabb2574e5ce"
+    },
+    {
+      "path": "scratch/v013/motif-v6/worker-cold.ready.json",
+      "bytes": 10079,
+      "sha256": "cf2b6b0061f4a9c6a86d718242cc48a3fde13aa26cb3e64ebf6e8d90b7efc789"
+    },
+    {
+      "path": "scratch/v013/motif-v6/worker-restored.command.json",
+      "bytes": 1149,
+      "sha256": "a95dad00ae7078aca80f4e04fc2f0bdf996ef5a71a17e5be965129333da14e99"
+    },
+    {
+      "path": "scratch/v013/motif-v6/worker-restored.launcher.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "scratch/v013/motif-v6/worker-restored.log",
+      "bytes": 4544,
+      "sha256": "c5e3fd1b4117b1e12aa41a44e706f895a3e0d21648aaa245dd4be4d20e44669e"
+    },
+    {
+      "path": "scratch/v013/motif-v6/worker-restored.memory.jsonl",
+      "bytes": 3029,
+      "sha256": "da510fbd7c45729f8dea780513a6923c3a524e318821b0a85b0c7aecf6686657"
+    },
+    {
+      "path": "scratch/v013/motif-v6/worker-restored.ready.json",
+      "bytes": 10308,
+      "sha256": "d9c961e94ee07de45ec1bbd50306ac7fc20133ada57a644129572b07c8e2958c"
+    },
+    {
+      "path": "scratch/v013/motif-v6/worker-seed.command.json",
+      "bytes": 1149,
+      "sha256": "a95dad00ae7078aca80f4e04fc2f0bdf996ef5a71a17e5be965129333da14e99"
+    },
+    {
+      "path": "scratch/v013/motif-v6/worker-seed.launcher.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "scratch/v013/motif-v6/worker-seed.log",
+      "bytes": 5782,
+      "sha256": "05d2493e3ed4e18e09fc7386c8141b313865d3d4a3ee6f0062a9c18baab66b68"
+    },
+    {
+      "path": "scratch/v013/motif-v6/worker-seed.memory.jsonl",
+      "bytes": 4192,
+      "sha256": "d0b8726cd11d6c03821cc46efc06bf762ad8b662a831db2f4e8f4f30d6743b72"
+    },
+    {
+      "path": "scratch/v013/motif-v6/worker-seed.ready.json",
+      "bytes": 10308,
+      "sha256": "f04521680f240b091621923dd52ab9dec3371ca5d2660f81469d5d18b0993a2c"
+    }
+  ],
+  "prior_failed_attempts": [
+    {
+      "run": "motif-v5",
+      "cause": "Correct equation did not satisfy the earlier number-only answer contract.",
+      "passed": false,
+      "raw_files": [
+        {
+          "path": "scratch/v013/motif-v5/artifacts.json",
+          "bytes": 6178,
+          "sha256": "ebaa2d1a16956d8cf2aa5262e67403c340e6e24229b946733bdf158dab0a568d"
+        },
+        {
+          "path": "scratch/v013/motif-v5/evidence/artifacts.json",
+          "bytes": 6178,
+          "sha256": "ebaa2d1a16956d8cf2aa5262e67403c340e6e24229b946733bdf158dab0a568d"
+        },
+        {
+          "path": "scratch/v013/motif-v5/evidence/fixture.json",
+          "bytes": 8815,
+          "sha256": "13903ca04d12a2454452e6f81f11326040e5bbb553030b0afd5f063e0bd2323d"
+        },
+        {
+          "path": "scratch/v013/motif-v5/evidence/seed.before.json",
+          "bytes": 7558,
+          "sha256": "8d787c5b0dd44700d99c35f21f144456398f1eaec65500e8eeac5d71c741009d"
+        },
+        {
+          "path": "scratch/v013/motif-v5/evidence/seed.process.json",
+          "bytes": 825,
+          "sha256": "4f9a0c1b9ce60c4fddb069a89f94a520ae87046cf3690b88f7c108b40e68b387"
+        },
+        {
+          "path": "scratch/v013/motif-v5/evidence/seed.result.json",
+          "bytes": 1847,
+          "sha256": "ec09bf75b13f59f17cb997d534c25b59c2e42cb67b05e93accece96366108847"
+        },
+        {
+          "path": "scratch/v013/motif-v5/evidence/seed.seed.request.json",
+          "bytes": 2330,
+          "sha256": "2e090bd073a8af3b334e220c7acc2068390e75ae7252c7e8ab567d58baf8738f"
+        },
+        {
+          "path": "scratch/v013/motif-v5/evidence/seed.seed.response.json",
+          "bytes": 648,
+          "sha256": "29e8e324900e6e4c95e95cb7a0ea958f579dbdc6e2fd83289cf610ed97cc5e30"
+        },
+        {
+          "path": "scratch/v013/motif-v5/evidence/seed.seed.stats.json",
+          "bytes": 7757,
+          "sha256": "9aa51cd1b103fac946909e9309a69d85a510e4b0d509c31bae54f2545635a2da"
+        },
+        {
+          "path": "scratch/v013/motif-v5/evidence/seed.seed.summary.json",
+          "bytes": 920,
+          "sha256": "2a06808c64dca799e8605cb18f6772ad86ee1818405830e378aad93130b2f280"
+        },
+        {
+          "path": "scratch/v013/motif-v5/orchestrator.jsonl",
+          "bytes": 3186,
+          "sha256": "8773aef2475962bfc34f82a6bd44bc11e02bcb773763e817c6f93d66cfb57c78"
+        },
+        {
+          "path": "scratch/v013/motif-v5/owner-owner.command.json",
+          "bytes": 760,
+          "sha256": "f6b27c8d329f50651082dcc80c023ac3df5a405c64e4caca678f9f695e7c1dfe"
+        },
+        {
+          "path": "scratch/v013/motif-v5/owner-owner.launcher.log",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "scratch/v013/motif-v5/owner-owner.log",
+          "bytes": 3837,
+          "sha256": "f792195def4f8a9e6f885f3344d5600c47170bedefc32f0cfbd44f816636aba2"
+        },
+        {
+          "path": "scratch/v013/motif-v5/owner-owner.memory.jsonl",
+          "bytes": 15950,
+          "sha256": "5d804d6687ada3728c6d8e66a6cd15ea37172525d5278603181735755729d53f"
+        },
+        {
+          "path": "scratch/v013/motif-v5/owner.ipc",
+          "bytes": 81993,
+          "sha256": "3131dec1eb1647c7e716fb1a4413b42c3d47b31ba194f65b421dd06cf42c29f2"
+        },
+        {
+          "path": "scratch/v013/motif-v5/owner.lock",
+          "bytes": 7,
+          "sha256": "c53188b7e4e0f8478fdff5eb6e978c366af335b479d13c0c1a2b2d573a1948d4"
+        },
+        {
+          "path": "scratch/v013/motif-v5/owner.process.json",
+          "bytes": 1116,
+          "sha256": "f73b01300a7f75de8f9ba59c9947c3b4f9b4d27a4ae6ad27187019d1c998a1db"
+        },
+        {
+          "path": "scratch/v013/motif-v5/seed.runner.log",
+          "bytes": 768,
+          "sha256": "2539cd6597f6f0b017110050232d580ea525017b39c8d23c3ea92ee8d28198c5"
+        },
+        {
+          "path": "scratch/v013/motif-v5/worker-seed.command.json",
+          "bytes": 1114,
+          "sha256": "ddbea5bed849c8e9e062ba38f4ecb8a38353b8c07871c7bc322afc0554e0f6a7"
+        },
+        {
+          "path": "scratch/v013/motif-v5/worker-seed.launcher.log",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "scratch/v013/motif-v5/worker-seed.log",
+          "bytes": 4155,
+          "sha256": "3b603db338df2669771baf21946543612542fbeb68f2a0442e73f74f0f5da525"
+        },
+        {
+          "path": "scratch/v013/motif-v5/worker-seed.memory.jsonl",
+          "bytes": 3336,
+          "sha256": "5990bd08ac27c3695ea41c70b6fd78f99626388a81123ffee6cfe34e12791544"
+        },
+        {
+          "path": "scratch/v013/motif-v5/worker-seed.ready.json",
+          "bytes": 10306,
+          "sha256": "7ad721f4bac57d67b8cd38845ea8cd53dcae16f030f43111e39ad46e07bb93a0"
+        },
+        {
+          "path": "scratch/v013/motif-v5/result.json",
+          "bytes": 3880,
+          "sha256": "ce2d6d351e98f81f09b7f26c55b5b9cd0fc049b70ff7d349d02c85ad2a2be5a1"
+        }
+      ]
+    },
+    {
+      "run": "motif-v5b",
+      "cause": "All warm requests were cold because the completed KV retained generation-only empty thinking omitted by the official follow-up render.",
+      "passed": false,
+      "raw_files": [
+        {
+          "path": "scratch/v013/motif-v5b/artifacts.json",
+          "bytes": 6178,
+          "sha256": "ebaa2d1a16956d8cf2aa5262e67403c340e6e24229b946733bdf158dab0a568d"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/artifacts.json",
+          "bytes": 6178,
+          "sha256": "ebaa2d1a16956d8cf2aa5262e67403c340e6e24229b946733bdf158dab0a568d"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/fixture.json",
+          "bytes": 15939,
+          "sha256": "5ca3e3e98f0951ee48eb27d6d89757d132afa0cb1926465379a4245ee998e09f"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/seed.before.json",
+          "bytes": 7550,
+          "sha256": "39a126547c727f2086f30dc62e2f25daf42d96275cd9285142a94ed235e271df"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/seed.process.json",
+          "bytes": 826,
+          "sha256": "78c4f989a7b9c980151463ff7a84bce08418e9eeab7217993a4ea2c240ddf797"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/seed.result.json",
+          "bytes": 1848,
+          "sha256": "0310f58147144145269e5ec32f655c90ed9d87f6d1254f46871e7c46d3fbf803"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/seed.seed.request.json",
+          "bytes": 2330,
+          "sha256": "2e090bd073a8af3b334e220c7acc2068390e75ae7252c7e8ab567d58baf8738f"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/seed.seed.response.json",
+          "bytes": 648,
+          "sha256": "5edd4570e22cac36bd73def491e963638284c20891e8b0059eb60d22819a66ee"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/seed.seed.stats.json",
+          "bytes": 7749,
+          "sha256": "f6423c8cafa35ddcec45ab2bdf863b1b1a3a61552bc74b42168c65e91273ef67"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/seed.seed.summary.json",
+          "bytes": 959,
+          "sha256": "26268f7af8f4c7d43f7efde494b7328f3edf311f4c0c08fd8340484ccb4d5777"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/warm.append.request.json",
+          "bytes": 2497,
+          "sha256": "2f238f6925613f13b91d3951b7ab36e1077b09e95b6b4bbc9eea629fddf5a916"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/warm.append.response.json",
+          "bytes": 648,
+          "sha256": "229c0eb007ebd342f65f0bc2c99b51b146cf5a821e38733b7e6e7e208e840c60"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/warm.append.stats.json",
+          "bytes": 7743,
+          "sha256": "79a7bccce4fcf26e01b308d5103c011064aa99dbbbf174e130a17c19b61af304"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/warm.append.summary.json",
+          "bytes": 1048,
+          "sha256": "1fc78407f6899374071559efd4675f743f65c69d5beebacef359a0f8baebf673"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/warm.before.json",
+          "bytes": 7749,
+          "sha256": "cc5ae4b1c263c1fcdf6ac6999da45d80d6441871a9ec56cf00638515337f9812"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/warm.edit.request.json",
+          "bytes": 2497,
+          "sha256": "696e418d337a1c723d3537458b0782643f199aa7b94650ec65131e7901ba0aff"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/warm.edit.response.json",
+          "bytes": 648,
+          "sha256": "6df5dbb7a451611caff7dadf9fca0c9da09f0743522d80ee227eb4332c747426"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/warm.edit.stats.json",
+          "bytes": 7743,
+          "sha256": "0c46e45087d4098ddb6313bbe7fdb26c47269333c3ae5cf1ad5e4882ec137006"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/warm.edit.summary.json",
+          "bytes": 1040,
+          "sha256": "ae5dba80eaaf886b6c0665605dc03c52499e0918f3f858159c4022a16646b735"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/warm.fork.request.json",
+          "bytes": 2664,
+          "sha256": "59408c7aa49692ea5baefb3ce382c7489bdbf326c841d18d4f384d27bc358977"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/warm.fork.response.json",
+          "bytes": 648,
+          "sha256": "7e954adf94a6aee5d2ca60018a1b1b5958b4e745015badfec9ff5f892c89ba8a"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/warm.fork.stats.json",
+          "bytes": 7744,
+          "sha256": "5331531dac84c14a8384be1e94f4ad82428d2e13e0455beb487c5f6f4c5d6fbe"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/warm.fork.summary.json",
+          "bytes": 1045,
+          "sha256": "10772aef2e2891cd75f79def7371485c6bedc800c7ea51495b6c016ef111d696"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/warm.process.json",
+          "bytes": 826,
+          "sha256": "78c4f989a7b9c980151463ff7a84bce08418e9eeab7217993a4ea2c240ddf797"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/evidence/warm.result.json",
+          "bytes": 3281,
+          "sha256": "e88e5613326b446db1939cc35261720b714fda1c8f7824fe152d6eb9d5185783"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/orchestrator.jsonl",
+          "bytes": 3768,
+          "sha256": "2babe823b7f513ed777f129a2514547c83ceaeca3982e5802aba1ad3efdf310c"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/owner-owner.command.json",
+          "bytes": 763,
+          "sha256": "462cc12eae9f5279c7cce592f7626d416bb22adc98132ca1593697c6104d1f3e"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/owner-owner.launcher.log",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/owner-owner.log",
+          "bytes": 3840,
+          "sha256": "f70e3a02f3c8fbf07a2f7118c431dc37964858d54d1722d72d075ce70724dfa3"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/owner-owner.memory.jsonl",
+          "bytes": 18442,
+          "sha256": "61973f055dabf8da83730ec8f4e05cfb9a3d88496cb5a36b3c4ee7270a20a49e"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/owner.ipc",
+          "bytes": 81995,
+          "sha256": "469948dea53d0ed429e9af49234e0b06a177ba30e1ddffe586f6f6cb4fbfc22d"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/owner.lock",
+          "bytes": 7,
+          "sha256": "22f6f937c0fffb368d3d190a2fc07224991b9df123edc268e69aceb0ac5891bc"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/owner.process.json",
+          "bytes": 1119,
+          "sha256": "0dfbae5a915632481b6d08061e7e3ea1d7b840caf69251caabe6254678910f98"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/seed.runner.log",
+          "bytes": 793,
+          "sha256": "42f1598ddb74b800603a96c97a103a1187302dd144e099d047b2cd191418f6a3"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/warm.runner.log",
+          "bytes": 2599,
+          "sha256": "2f8fadbcb78bbeb74be3e23c0d95071828411cf7ee3cb4c2d5e9500d1e43dcdb"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/worker-seed.command.json",
+          "bytes": 1116,
+          "sha256": "f79916fff9e2dd7f20525614c50a31a9f2402d60596cefb9bb6994bf99961264"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/worker-seed.launcher.log",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/worker-seed.log",
+          "bytes": 4341,
+          "sha256": "7f16ae3cf93548130a9ceba659bd405453a4394139d179c5024d77ad60710582"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/worker-seed.memory.jsonl",
+          "bytes": 5999,
+          "sha256": "b16090eceb4700f7d87cf1963ea0e3f71bbfcdaee15bce694cfca13bb453edb8"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/worker-seed.ready.json",
+          "bytes": 10299,
+          "sha256": "142595a9a924a26d9a0c48a470d486d5088f80d215aaef526a6789dec856631c"
+        },
+        {
+          "path": "scratch/v013/motif-v5b/result.json",
+          "bytes": 6505,
+          "sha256": "12cecd7737a4b4617484992cf6d8f7d506d5f639615fa9ac8b269933c47fe7ec"
+        }
+      ]
+    }
+  ],
+  "native_history_boundary": {
+    "scope": "New Motif canonical history boundary only; not the full partial-only suite",
+    "passed": true,
+    "build": {
+      "scope": "new history stage only",
+      "native_build_head": "c2a816b9cf681709141797fccb9dab9c0c9f3bf4",
+      "native_build_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "current_head": "c2a816b9cf681709141797fccb9dab9c0c9f3bf4",
+      "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/motif-history-only/history-only",
+      "binary_sha256": "14d275020ade6a1bf7115489cb2822e32eb68a82f17e6743422bf70b3a3b3297",
+      "source_sha256": {
+        "scratch/v013/motif-history-only/main.c": "fc5c6b9da26b0455371f34ab34cba2e30f22d60cb1183dd4900fa5414322b005",
+        "tests/test_motif3_batch.c": "84d916dcff12cddd7a9384ee7813e59a6a07294d795c894bc044925c73d305d9",
+        "ds4.c": "4041cc8a53e7810bdfa68b3ac5f50f21cb6b8a39c262b9e1bc00a1c31c8ecb78",
+        "ds4.h": "0642f1d248536715c874c186d72e3f2b9f305e6823defd2df4ea47a9112acdda"
+      },
+      "linked_object_sha256": {
+        "ds4_kvstore.o": "6d7412eeae4d1f42488deb4ea032c3301933b0d1d1f57acbc8f993978d9d0934",
+        "rax.o": "f8aa17a13f3f87c4a86a777619aa6bd3a6361c0a6c0b260de7ec291db5966caa",
+        "ds4.o": "ca6d1aa79c6af3b93cf00a94e6f230e48e856bcbfe8ea8bc8743a17e00f24236",
+        "ds4_ple.o": "42513fe7a0db64a971da7e902c2695fd50b04d1ea42b5a99cd79317e91ed0642",
+        "ds4_distributed.o": "a49940b3e87d72b2bc8c75cedc377a6e28f4571b301018fadd0486be826e241d",
+        "ds4_cuda.o": "1ffb3fe77ed4bede58d6b05cecc6a371f97845a5f56a75f7fdf0a018276adc1e",
+        "cuda/mmq/ds4_ggml_stubs.o": "748db41867f0954b21fa0e95d24cda304148281f10f69cee5b55ce62650ecdae",
+        "cuda/mmq/ds4_mmq.o": "694d2a9bb7705974cdf6f111eda0c3b6b148564ff19a0783b7e5245992a83cd2",
+        "cuda/mmq/ds4_mmq_d2r.o": "491d32bff440163ae8338bcd8439e0a9af9c6efc8a97a902af4e4186f9cfeee1",
+        "cuda/mmq/quantize.o": "bc638c5e4570896b55f0acee1c897ac96fbb189ac7a9ab86f5bc9e2d5d29d851",
+        "cuda/mmq/mmid.o": "100e7d524380acf469a3bbb5ec3deba75c6943e5b9f61c69024847b7cb9b45f1",
+        "cuda/mmq/mmvq.o": "56fa00bb1b778c74bbf8990fbbd52b0bf1481c24c197c11a4512346a92a03099",
+        "cuda/mmq/ds4_repack.o": "88fd5e23ff81bf020a7102e2c07b9a673cc2624df715441cb7891370793c9d23",
+        "cuda/mmq/ds4_fattn.o": "e4e7c37a7af1f271f34c6dbbaeebd9f07c506aaf10db86c3e2b8d1087387248c",
+        "cuda/qwen38_ple.o": "6131c3d2e3292f2bdfb3b414326cb0e8f6ac8b9b777b87cd9eda02bbd3e006e3"
+      },
+      "compile_link_log_sha256": "09970895461759f28eeef2383f6605be04dc9ce2d88da894653de654f861d174"
+    },
+    "shape": {
+      "context": 128,
+      "banks": 4,
+      "native_chunk": 16,
+      "source_tokens": 64,
+      "history_boundary": 29,
+      "branch_cut": 35,
+      "restored_checkpoint": 29
+    },
+    "checks": [
+      "source payload byte-identical after cross-bank copy",
+      "saved payload token ledger equals exact 29-token prefix",
+      "restored branch greedy token equals cold control"
+    ],
+    "process_evidence": "Guard argv, launcher-verified binary SHA and owner identity, pre-exec payload PID, successful native output and zero guard/payload exit. Independent /proc snapshot missed the short worker lifetime.",
+    "raw_files": [
+      {
+        "path": "scratch/v013/motif-n6/admission.json",
+        "bytes": 201,
+        "sha256": "4703a97c6ee59f4baaa1cee99c02633c54c907240a73827990a79192eb7ee061"
+      },
+      {
+        "path": "scratch/v013/motif-n6/cleanup.json",
+        "bytes": 115,
+        "sha256": "e03747a7d332a08e69fef5c49a7ed4270886480b33607f50fcaf220b8ea750f5"
+      },
+      {
+        "path": "scratch/v013/motif-n6/controller.pid",
+        "bytes": 7,
+        "sha256": "70a87ab124b5ea349c22b485782ff71079861e81f3fdbdce46b2bf04aff60a9a"
+      },
+      {
+        "path": "scratch/v013/motif-n6/owner-owner.command.json",
+        "bytes": 760,
+        "sha256": "dadefd153f1f637651975285493861b7db9864d958e658d58b81dea20ad187dd"
+      },
+      {
+        "path": "scratch/v013/motif-n6/owner-owner.log",
+        "bytes": 3837,
+        "sha256": "0517930a8d3ce50561058ce4f7551074803b09bc56ede8d62d96f7a4afcf4f64"
+      },
+      {
+        "path": "scratch/v013/motif-n6/owner-owner.memory.jsonl",
+        "bytes": 24024,
+        "sha256": "05cf51979bfee4db2607078b27683c8c571ddcaea0d05791b1ff44a475a64dcd"
+      },
+      {
+        "path": "scratch/v013/motif-n6/owner.ipc",
+        "bytes": 81994,
+        "sha256": "908da50f6b199aa8a6ba65dcdb5242cb8668b3923c780cda750688a3b8a19f2a"
+      },
+      {
+        "path": "scratch/v013/motif-n6/owner.lock",
+        "bytes": 8,
+        "sha256": "453d0c592a28d735ae071cbc4422aed01180a6c2ba7459ccc6078c14247bab3f"
+      },
+      {
+        "path": "scratch/v013/motif-n6/owner.process.json",
+        "bytes": 1118,
+        "sha256": "83e5994d853c80ecc4fa13ad8694f31463078370e8fefad4f6a412d162b48e25"
+      },
+      {
+        "path": "scratch/v013/motif-history-v6/command.json",
+        "bytes": 5376,
+        "sha256": "0827a47774ddb9bd74dbc1f1815ab7a252035fa6ce6e95e7d21e1f7def5c81ab"
+      },
+      {
+        "path": "scratch/v013/motif-history-v6/memory.jsonl",
+        "bytes": 1849,
+        "sha256": "de09feeb24a8657648832b806c8193923ce9c4906a3e3eaa18d2674b417d82ce"
+      },
+      {
+        "path": "scratch/v013/motif-history-v6/payload.log",
+        "bytes": 2812,
+        "sha256": "5ed0b81315dc96c90753ef117cb0ea2f3deba812be6f61abcede5047b5319838"
+      },
+      {
+        "path": "scratch/v013/motif-history-v6/payload.pid",
+        "bytes": 8,
+        "sha256": "3ba77428bb2d79b3fac7df9fd8dbc99a23bdeb8cb142b45ae3985623ca0e6dcc"
+      },
+      {
+        "path": "scratch/v013/motif-history-only/README.md",
+        "bytes": 3624,
+        "sha256": "972f57edf2e13b258135f6d455864cdd84f0ec5dca9d3f7f73aa50227bbb23be"
+      },
+      {
+        "path": "scratch/v013/motif-history-only/build.json",
+        "bytes": 2380,
+        "sha256": "d857e14c24b5521a138e128c9673e1a4c8be62a5fad3d194edf37a828e6887b1"
+      },
+      {
+        "path": "scratch/v013/motif-history-only/build.log",
+        "bytes": 863,
+        "sha256": "09970895461759f28eeef2383f6605be04dc9ce2d88da894653de654f861d174"
+      },
+      {
+        "path": "scratch/v013/motif-history-only/build.memory.jsonl",
+        "bytes": 661,
+        "sha256": "d379408f950929dd2feb7ffbe3380d84560f416299fe963179a3f038bb8c37c9"
+      },
+      {
+        "path": "scratch/v013/motif-history-only/build.mk",
+        "bytes": 574,
+        "sha256": "5b1a4fd4a19e1018844252453d52149f27b2e91163be550e850a31abd8a46386"
+      },
+      {
+        "path": "scratch/v013/motif-history-only/exec_payload.py",
+        "bytes": 247,
+        "sha256": "fae4b493ad3cbc9baec648889236c9f312776dcb321d848d2d0a78ca1bac1ebe"
+      },
+      {
+        "path": "scratch/v013/motif-history-only/launch.py",
+        "bytes": 3214,
+        "sha256": "3312ec5dd6c0321df40f9356bbf1c158b45039b70ec01e9824b69dad4cd77723"
+      },
+      {
+        "path": "scratch/v013/motif-history-only/main.c",
+        "bytes": 1335,
+        "sha256": "fc5c6b9da26b0455371f34ab34cba2e30f22d60cb1183dd4900fa5414322b005"
+      },
+      {
+        "path": "scratch/v013/motif-history-only/main.o",
+        "bytes": 107336,
+        "sha256": "7e6e253d6941a238448232a35ca3bb8b8a426fc71714c7982a7645e2e3e19b14"
+      },
+      {
+        "path": "scratch/v013/motif-history-only/usage.log",
+        "bytes": 72,
+        "sha256": "5fe1df2aa8a88d063a7630aaa61af95abd52a3368a6f4ce068f7ecda665429ad"
+      }
+    ]
+  },
+  "answer_contract": "literal-arithmetic-v2; fixture schema v3 requires native fork evidence for Motif partial rollback",
+  "reuse_contract": "Motif canonical history rollback may be partial on append or branch; warm native trace confirms a distinct-bank copy, cached count and preserved source frontier. Separate native gate checks complete source payload preservation.",
+  "observed_gpu": "timestamp, name, driver_version, clocks.current.graphics [MHz], clocks.current.memory [MHz], temperature.gpu, pstate\n2026/09/17 18:53:53.316, NVIDIA GB10, 610.43.02, 2190 MHz, [N/A], 63, P0"
+}

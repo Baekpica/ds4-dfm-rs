@@ -1476,5 +1476,324 @@
       "path": "scratch/v013/dots3-http-mtp-cold.log",
       "sha256": "926cca7d1ea3a7bcf804b888d1d1fd7f1e3c1498e952fc36f6045102183427b9"
     }
-  ]
+  ],
+  "default_width_mtp": {
+    "schema": "v013-dots3-default-width-mtp-v1",
+    "passed": true,
+    "build_commit": "c2a816b9cf681709141797fccb9dab9c0c9f3bf4",
+    "server_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+    "routing_fix_commit": "6f6fcdb",
+    "run": "scratch/v013/dr6",
+    "result": {
+      "path": "scratch/v013/dr6/result.json",
+      "sha256": "a22707cafc16a276a2ba86e5dc19e121e8082be5e75ceb2ab6ebcd67cf823de0"
+    },
+    "inputs": {
+      "path": "scratch/v013/dr6/inputs.json",
+      "sha256": "637fff4e4691dfc74db5141567905f02c44c6e5fe7465b5234090965496d5651"
+    },
+    "orchestration": {
+      "path": "scratch/v013/dr6/orchestrator.jsonl",
+      "sha256": "d674751274a491ee6d201dbf5a75b854da2aaaa467fcb91a14eb4041dd1b990a"
+    },
+    "artifact_identity_method": "local-file-stat-v1",
+    "artifact_shards": 10,
+    "scope": "One shared base VMM owner; two sequential fresh workers; context4096/native128; MTP on draft3; reuse/disk off.",
+    "request": {
+      "model": "dots3-note-mq87",
+      "prompt": "The next integers are: 1, 2, 3,",
+      "temperature": 0,
+      "seed": 1,
+      "max_tokens": 48,
+      "reasoning_effort": "none"
+    },
+    "workers": {
+      "default": {
+        "requested": {
+          "prefix_reuse": "off",
+          "mtp_mode": "on",
+          "max_seqs": "auto",
+          "lane": "auto",
+          "ctx": 4096,
+          "mem_floor_gb": 4,
+          "disk": false,
+          "mtp_path": false,
+          "backend": "cuda"
+        },
+        "effective": {
+          "prefix_reuse": "off",
+          "mtp_mode": "on",
+          "mtp_weights": true,
+          "mtp_draft": 3,
+          "max_seqs": 1,
+          "ctx": 4096,
+          "mem_floor_gb": 4,
+          "disk": false,
+          "banks_opt_in": false,
+          "sched_chunk": 128,
+          "sched_chunk_live": 128,
+          "native_chunk": 128,
+          "bank_persist_min_tokens": 8192,
+          "disk_min_tokens": 512,
+          "disk_is_offload": false
+        },
+        "trace": {
+          "effective_lane": "serial",
+          "reuse_kind": "cold",
+          "speculation_active": true,
+          "fallback_reason": null
+        },
+        "prompt_tokens": 14,
+        "completion_tokens": 48,
+        "cached_tokens": 0,
+        "routes_before": 0,
+        "routes_after": {
+          "openai_chat_serial": 0,
+          "openai_chat_continuous": 0,
+          "openai_chat_static": 0,
+          "openai_completion_serial": 1,
+          "openai_completion_continuous": 0,
+          "openai_completion_static": 0,
+          "anthropic_messages_serial": 0,
+          "anthropic_messages_continuous": 0,
+          "anthropic_messages_static": 0,
+          "openai_responses_serial": 0,
+          "openai_responses_continuous": 0,
+          "openai_responses_static": 0
+        },
+        "native_counters_before": {
+          "ds4_tokens_decoded_total": 0,
+          "ds4_decode_steps_total": 0,
+          "ds4_spec_drafts_total": 0,
+          "ds4_spec_hits_total": 0,
+          "ds4_spec_quench_total": 0
+        },
+        "native_counter_deltas": {
+          "ds4_spec_drafts_total": 36,
+          "ds4_spec_hits_total": 36,
+          "ds4_spec_quench_total": 0,
+          "ds4_tokens_decoded_total": 48,
+          "ds4_decode_steps_total": 12
+        },
+        "process_pid": 1022301,
+        "start_ticks": "41494996",
+        "raw": [
+          {
+            "path": "scratch/v013/dr6/default/request.json",
+            "sha256": "362ff5132bebd0dc8812da062e56d5831821ccef515736f46faec9fb106a9b5e"
+          },
+          {
+            "path": "scratch/v013/dr6/default/response.json",
+            "sha256": "5c5e5da2c83792d509056d2a004606c0564ad7f5d7c094a5d5eb06ca67d2679f"
+          },
+          {
+            "path": "scratch/v013/dr6/default/before.stats.json",
+            "sha256": "0b45f66727ef9b08a8e222574833a8843da904937caa47b7a0a79ff94fb053b3"
+          },
+          {
+            "path": "scratch/v013/dr6/default/after.stats.json",
+            "sha256": "6af587c8b51eba67f2db45bdf97cafb9b8b2f824fbeef3ae7657764cdf431ccf"
+          },
+          {
+            "path": "scratch/v013/dr6/default/before.metrics.txt",
+            "sha256": "7b54b2cf4a7298a6cff62832dfd273ca8c83b3769aff9226a63de412b13d07a5"
+          },
+          {
+            "path": "scratch/v013/dr6/default/after.metrics.txt",
+            "sha256": "c6020196b1a150678aa99e7b1267df103318395686e7a317ee1c2d49cd0f7917"
+          }
+        ]
+      },
+      "fixed1": {
+        "requested": {
+          "prefix_reuse": "off",
+          "mtp_mode": "on",
+          "max_seqs": "1",
+          "lane": "auto",
+          "ctx": 4096,
+          "mem_floor_gb": 4,
+          "disk": false,
+          "mtp_path": false,
+          "backend": "cuda"
+        },
+        "effective": {
+          "prefix_reuse": "off",
+          "mtp_mode": "on",
+          "mtp_weights": true,
+          "mtp_draft": 3,
+          "max_seqs": 1,
+          "ctx": 4096,
+          "mem_floor_gb": 4,
+          "disk": false,
+          "banks_opt_in": false,
+          "sched_chunk": 128,
+          "sched_chunk_live": 128,
+          "native_chunk": 128,
+          "bank_persist_min_tokens": 8192,
+          "disk_min_tokens": 512,
+          "disk_is_offload": false
+        },
+        "trace": {
+          "effective_lane": "serial",
+          "reuse_kind": "cold",
+          "speculation_active": true,
+          "fallback_reason": null
+        },
+        "prompt_tokens": 14,
+        "completion_tokens": 48,
+        "cached_tokens": 0,
+        "routes_before": 0,
+        "routes_after": {
+          "openai_chat_serial": 0,
+          "openai_chat_continuous": 0,
+          "openai_chat_static": 0,
+          "openai_completion_serial": 1,
+          "openai_completion_continuous": 0,
+          "openai_completion_static": 0,
+          "anthropic_messages_serial": 0,
+          "anthropic_messages_continuous": 0,
+          "anthropic_messages_static": 0,
+          "openai_responses_serial": 0,
+          "openai_responses_continuous": 0,
+          "openai_responses_static": 0
+        },
+        "native_counters_before": {
+          "ds4_tokens_decoded_total": 0,
+          "ds4_decode_steps_total": 0,
+          "ds4_spec_drafts_total": 0,
+          "ds4_spec_hits_total": 0,
+          "ds4_spec_quench_total": 0
+        },
+        "native_counter_deltas": {
+          "ds4_spec_drafts_total": 36,
+          "ds4_spec_hits_total": 36,
+          "ds4_spec_quench_total": 0,
+          "ds4_tokens_decoded_total": 48,
+          "ds4_decode_steps_total": 12
+        },
+        "process_pid": 1022335,
+        "start_ticks": "41495958",
+        "raw": [
+          {
+            "path": "scratch/v013/dr6/fixed1/request.json",
+            "sha256": "362ff5132bebd0dc8812da062e56d5831821ccef515736f46faec9fb106a9b5e"
+          },
+          {
+            "path": "scratch/v013/dr6/fixed1/response.json",
+            "sha256": "b00070dcdcbb5557e02e8dd0a55ce3f445b8f7dda2b1a4fb61dde03e836ab2e9"
+          },
+          {
+            "path": "scratch/v013/dr6/fixed1/before.stats.json",
+            "sha256": "cd65d42e58d66cc90adcd2f481464ae4bb1b5ca1f240f4f75ce7ab9208c8b12f"
+          },
+          {
+            "path": "scratch/v013/dr6/fixed1/after.stats.json",
+            "sha256": "1500c8853e6bb8eefc8796caa8f46944cf99384219872e27535d5030c4dff8d8"
+          },
+          {
+            "path": "scratch/v013/dr6/fixed1/before.metrics.txt",
+            "sha256": "5b42f3b4d81495e2f98887f845d140499d6e15ed151d8e9fc893351907eed48d"
+          },
+          {
+            "path": "scratch/v013/dr6/fixed1/after.metrics.txt",
+            "sha256": "568fc438e19cd917584c5aa07a6c2e17dbdf1fa3d75c8a23d78147daee18bdb4"
+          }
+        ]
+      }
+    },
+    "comparison": {
+      "identical_choices_finish_and_completion_count": true,
+      "choices": [
+        {
+          "text": " 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 1",
+          "index": 0,
+          "finish_reason": "length"
+        }
+      ],
+      "completion_tokens": 48
+    },
+    "guards": {
+      "owner": {
+        "reserve_gib": 12,
+        "trip_gib": 8,
+        "max_gib": 99.8,
+        "high_gib": 98.8,
+        "minimum_sampled_available_gib": 21.090797424316406,
+        "guard_exit": 75,
+        "payload_exit": 0,
+        "started_unix": 1789638857.8697367,
+        "finished_unix": 1789638945.656613,
+        "requested_max_gib": 104,
+        "requested_high_gib": 100,
+        "maximum_sampled_psi_full_avg10": 0.92,
+        "process": {
+          "path": "scratch/v013/dr6/owner.process.json",
+          "sha256": "5e87cd1108c499930afefa5bac12c537d06cf19ad62525da31e5d28da5d392e4"
+        },
+        "telemetry": {
+          "path": "scratch/v013/dr6/owner.memory.jsonl",
+          "sha256": "9e1b68cec53d9d304d6fa2fcce257809ebcdf9dc4a8427f0649e50f59b3add1d"
+        }
+      },
+      "default": {
+        "reserve_gib": 12,
+        "trip_gib": 12,
+        "max_gib": 10.6,
+        "high_gib": 9.6,
+        "minimum_sampled_available_gib": 21.114166259765625,
+        "guard_exit": 75,
+        "payload_exit": 0,
+        "started_unix": 1789638923.9955692,
+        "finished_unix": 1789638933.422908,
+        "requested_max_gib": 16,
+        "requested_high_gib": 14,
+        "maximum_sampled_psi_full_avg10": 0.46,
+        "process": {
+          "path": "scratch/v013/dr6/default.process.json",
+          "sha256": "8a1159fd993502316ffb91b4cf7dc2c18ea68ed6c8c3d7c0225d15c2cccb2c10"
+        },
+        "telemetry": {
+          "path": "scratch/v013/dr6/default.memory.jsonl",
+          "sha256": "100663376010c9f98cb2a3408b8d3c2af386ca374d8ec0ca93b8a5f16133447a"
+        }
+      },
+      "fixed1": {
+        "reserve_gib": 12,
+        "trip_gib": 12,
+        "max_gib": 10.6,
+        "high_gib": 9.6,
+        "minimum_sampled_available_gib": 21.08938217163086,
+        "guard_exit": 75,
+        "payload_exit": 0,
+        "started_unix": 1789638933.6175802,
+        "finished_unix": 1789638944.4527411,
+        "requested_max_gib": 16,
+        "requested_high_gib": 14,
+        "maximum_sampled_psi_full_avg10": 0.2,
+        "process": {
+          "path": "scratch/v013/dr6/fixed1.process.json",
+          "sha256": "cc8a5c664a8ee7e15a564fa8518ce3bd62e3554446bc5c735b4805877d1cecfb"
+        },
+        "telemetry": {
+          "path": "scratch/v013/dr6/fixed1.memory.jsonl",
+          "sha256": "4fcdb599f8fb9cb8c22b811ac60a406200ec699bd38ac2efdd3b66e3f6b6c4ca"
+        }
+      }
+    },
+    "finished_unix": 1789638945.6742785,
+    "verification": {
+      "raw_files_verified": 37,
+      "all_recorded_processes_stopped": true,
+      "owned_scopes_empty": true,
+      "continuous_fit_attempted": false,
+      "meaningful_host_routing_regressions": "6f6fcdb core/server RED then GREEN; the wrapper has 9 model-free harness checks."
+    },
+    "limitations": [
+      "One 14-token raw prompt and 48-token completion per worker; no new Chat, disk, long-context, numerical or performance qualification.",
+      "The two outputs match; this is not a plain-versus-MTP numerical comparison or a speed claim.",
+      "The plan retains mtp=unverified; this receipt qualifies only the captured artifact and short routing workload.",
+      "All shard identities were rechecked by local file metadata; this smoke does not rehash model contents.",
+      "Guard limits were admission-clamped below requested maxima; memory and PSI values are sampled observations."
+    ]
+  }
 }
