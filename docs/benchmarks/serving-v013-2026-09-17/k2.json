@@ -731,5 +731,235 @@
         "bytes": 929
       }
     ]
+  },
+  "serial_lifecycle_32k_psi30": {
+    "schema": "v013-k2-32k-psi30-serial-raw-v2",
+    "passed": false,
+    "status": "failed",
+    "build_commit": "c2a816b9cf681709141797fccb9dab9c0c9f3bf4",
+    "server_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+    "run": "scratch/v013/k2-serial32-psi30-integrated6",
+    "result": {
+      "path": "scratch/v013/k2-serial32-psi30-integrated6/result.json",
+      "sha256": "7f154b93863a1c3f5c7fbccd680d8d9922186bd59126da0fd90e023e686e51c1"
+    },
+    "source": {
+      "path": "scratch/v013/k2-serial32-psi30-integrated6/source.json",
+      "sha256": "1299f734c26a6dc0208d54ee9442440b289071ef70bf5a7dfe6fcc5d76d2db17",
+      "bytes": 2368
+    },
+    "orchestration": {
+      "path": "scratch/v013/k2-serial32-psi30-integrated6/orchestrator.jsonl",
+      "sha256": "1e76fed42e8534b0cc14bd9d02f1ed2b0000ee0e6db4b150c6d5e30b2c23f966",
+      "bytes": 4152
+    },
+    "artifacts": {
+      "path": "scratch/v013/k2-serial32-psi30-integrated6/artifacts.json",
+      "sha256": "9e2ec5c2075a1ed8c11076ff9e2c8da63b54c62c12414aaf30076ae1318ee4fe",
+      "bytes": 1424
+    },
+    "batch_fit_headroom_mb": 4096,
+    "session_graph_headroom_mb": 4096,
+    "guard_policy": {
+      "requested_max_gib": 104,
+      "requested_high_gib": 100,
+      "reserve_gib": 12,
+      "trip_gib": 4,
+      "psi_full_avg10_threshold": 30,
+      "psi_available_lt_gib": 8,
+      "implementation": "task-local host-memory-guard-k2-psi30.py; shared guard unchanged"
+    },
+    "checks": {
+      "raw_files": 19,
+      "model_contents_rehashed_by_publisher": false,
+      "source_and_executable_revalidated": true,
+      "full_shard_hashes_verified_by_campaign": 4
+    },
+    "local_guard_sha256": "6c6994ede44ce4a7419b71b7e4ec0d07ccc58a215bdb904043ee2f048bb75aeb",
+    "prior_failures": {
+      "manifest": {
+        "path": "scratch/v013/k2-serial-prior-failures.json",
+        "sha256": "2f0f07581e02fb9bd572070c21669f49fa1b61a75795d223e18ae30f427a83b7"
+      },
+      "attempts": [
+        {
+          "run": "scratch/v013/k2-http-integrated5",
+          "result_sha256": "4d56866d4dd21bdc4a0f0b6c5aa46d0c20cfffc2700aff27508e49fde1a9e0b3",
+          "passed": false,
+          "error": "RuntimeError: server guard exited before its requested stop",
+          "failure_events": [
+            {
+              "time": 1789636506.1988156,
+              "event": "terminate",
+              "unit": "ds4-hostguard-975598-1789636387985700489.scope",
+              "reason": "host memory watchdog floor crossed",
+              "available_gib": 7.681774139404297,
+              "psi_full_avg10": 17.44
+            },
+            {
+              "time": 1789636507.3124788,
+              "event": "kill",
+              "unit": "ds4-hostguard-975598-1789636387985700489.scope",
+              "reason": "host memory watchdog floor crossed"
+            },
+            {
+              "time": 1789636507.3461885,
+              "event": "exit",
+              "unit": "ds4-hostguard-975598-1789636387985700489.scope",
+              "status": 75,
+              "payload_status": -15
+            }
+          ],
+          "minimum_sampled_available_gib": 7.681774139404297,
+          "raw_files_verified": 12
+        },
+        {
+          "run": "scratch/v013/k2-http32-trip4-integrated6",
+          "result_sha256": "1653f0414fa86c5a580b7848aade96f260188346f7f63debbfa020ee1d9daed2",
+          "passed": false,
+          "error": "RuntimeError: server guard exited before its requested stop",
+          "failure_events": [
+            {
+              "time": 1789640808.6173751,
+              "event": "exit",
+              "unit": "ds4-hostguard-1047249-1789640696314642517.scope",
+              "status": 2,
+              "payload_status": 2
+            }
+          ],
+          "minimum_sampled_available_gib": 13.082927703857422,
+          "raw_files_verified": 12
+        },
+        {
+          "run": "scratch/v013/k2-http32-trip4-fit4-integrated6",
+          "result_sha256": "5932aa6cc425ece9b42e0cfe57d72d5622521cd6446c6ce8bf8a5fe14724e639",
+          "passed": false,
+          "error": "RuntimeError: server guard exited before its requested stop",
+          "failure_events": [
+            {
+              "time": 1789641505.1356473,
+              "event": "terminate",
+              "unit": "ds4-hostguard-1054846-1789641375918830261.scope",
+              "reason": "sustained host memory stalls near reserve",
+              "available_gib": 7.086345672607422,
+              "psi_full_avg10": 21.79
+            },
+            {
+              "time": 1789641506.287695,
+              "event": "kill",
+              "unit": "ds4-hostguard-1054846-1789641375918830261.scope",
+              "reason": "sustained host memory stalls near reserve"
+            },
+            {
+              "time": 1789641506.3784063,
+              "event": "exit",
+              "unit": "ds4-hostguard-1054846-1789641375918830261.scope",
+              "status": 75,
+              "payload_status": -15
+            }
+          ],
+          "minimum_sampled_available_gib": 7.086345672607422,
+          "raw_files_verified": 12
+        },
+        {
+          "run": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6",
+          "result_sha256": "f915ac5cde9b8254f828c982ad7a8a644b6f97d674dcf5d74f0f25438e983ce6",
+          "passed": false,
+          "error": "RuntimeError: restored failed: see restored.runner.log",
+          "raw_files_verified": 36,
+          "scope_error": "Raw /v1/completions is excluded by continuous bank_scope; no checkpoint was written or loaded. Both guards stopped intentionally.",
+          "seed_prompt_tokens": 545,
+          "restored_cached_tokens": 0,
+          "cache_files": []
+        }
+      ]
+    },
+    "authorization_scope": "User explicitly approved PSI30 after the PSI20 attempt failed; --authorized-psi30 is recorded in every launched worker command.",
+    "limitations": [
+      "Short explicit-serial raw HTTP lifecycle at a32768 allocation; no continuous-disk, filled32K prompt, arithmetic/Chat quality or speed claim.",
+      "Fixturev2 adds one ordinary newline after the seed IFM literal; metadata-only actual-GGUF encoding verifies the full546-token seed prefix in append/fork. Originalv1 failure is preserved.",
+      "Serial cold-prefill writes the complete native prompt checkpoint before sampling; trim/alignment0 and default continued interval10000 are preserved.",
+      "Zero-token stop outputs are recorded as such; exact equality alone is not a quality claim.",
+      "User authorized lowering the hard floor from8 to4GiB; the user separately authorized PSI30 using the existing trip+4 boundary, now8GiB.",
+      "Cgroup max/high104/100 and reserve12 were unchanged; actual admission-clamped limits and sampled minima are recorded.",
+      "Serial session graph headroom is explicitly4096MiB instead of default1GiB; native/serverfloor4 and externaltrip4 remain unchanged. Existing batch pin4096 is retained but no batch context is allocated.",
+      "Original native proof and all four failed attempts (8GiB guard, fit6 rejection, PSI20 termination, raw-Completion cache-scope mismatch) remain separate and unchanged."
+    ],
+    "error": "RuntimeError: guard termination/kill reason differs from requested stop",
+    "cleanup_errors": [],
+    "qualification": "none",
+    "guard_failures": {
+      "worker-seed.memory.jsonl": [
+        {
+          "time": 1789646231.9867609,
+          "event": "terminate",
+          "unit": "ds4-hostguard-1109762-1789646089576383369.scope",
+          "reason": "sustained host memory stalls near reserve",
+          "available_gib": 7.817554473876953,
+          "psi_full_avg10": 32.68
+        },
+        {
+          "time": 1789646233.084999,
+          "event": "kill",
+          "unit": "ds4-hostguard-1109762-1789646089576383369.scope",
+          "reason": "sustained host memory stalls near reserve"
+        },
+        {
+          "time": 1789646233.7657616,
+          "event": "exit",
+          "unit": "ds4-hostguard-1109762-1789646089576383369.scope",
+          "status": 75,
+          "payload_status": -9
+        }
+      ]
+    },
+    "sampled_memory": {
+      "worker-seed.memory.jsonl": {
+        "minimum_available_gib": 7.817554473876953,
+        "maximum_psi_full_avg10": 45.69
+      }
+    },
+    "server_logs": [
+      {
+        "path": "scratch/v013/k2-serial32-psi30-integrated6/seed.runner.log",
+        "sha256": "932c42408c60efffbbbbece76609b8818de9f5be6a6af7f74ddcfc4adeb88dd9",
+        "bytes": 2233
+      },
+      {
+        "path": "scratch/v013/k2-serial32-psi30-integrated6/worker-seed.launcher.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      {
+        "path": "scratch/v013/k2-serial32-psi30-integrated6/worker-seed.log",
+        "sha256": "eef8e982755101f58cff07bc8bba10ee13c69271a5eadb753c7c66a20f3faef9",
+        "bytes": 5322
+      }
+    ],
+    "owned_scopes_empty": {
+      "worker-seed": true
+    },
+    "available_http_files": [
+      {
+        "path": "scratch/v013/k2-serial32-psi30-integrated6/evidence/artifacts.json",
+        "sha256": "9e2ec5c2075a1ed8c11076ff9e2c8da63b54c62c12414aaf30076ae1318ee4fe",
+        "bytes": 1424
+      },
+      {
+        "path": "scratch/v013/k2-serial32-psi30-integrated6/evidence/fixture.json",
+        "sha256": "f5fd20b66780759ab5072f4c21b1707e98d02b675931f458649c992951a55cd0",
+        "bytes": 9550
+      },
+      {
+        "path": "scratch/v013/k2-serial32-psi30-integrated6/evidence/seed.exact.request.json",
+        "sha256": "dd8ae429645e77040a759b92099b28cc55cedcd263ee2f60ca925fc376fa5651",
+        "bytes": 2301
+      },
+      {
+        "path": "scratch/v013/k2-serial32-psi30-integrated6/evidence/seed.process.json",
+        "sha256": "bd085eae1bb2e4a57972cff07cae85b5278afca1621dde5e073e5ca1197155eb",
+        "bytes": 920
+      }
+    ]
   }
 }

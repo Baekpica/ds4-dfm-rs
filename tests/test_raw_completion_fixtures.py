@@ -24,6 +24,28 @@ class RawFixtureTests(unittest.TestCase):
             with self.subTest(case=name):
                 self.assert_greedy(body)
 
+    def test_k2_rejects_cont_before_io(self):
+        argv = ["k2_lifecycle_live.py", "seed", "--pid", "123",
+                "--output", "/unused", "--artifact-manifest", "/unused.json",
+                "--lane", "continuous"]
+        stderr = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch("sys.argv", argv))
+            stack.enter_context(contextlib.redirect_stderr(stderr))
+            boundaries = [(Path, "mkdir"), (Path, "open"),
+                          (k2_lifecycle_live, "process_identity"),
+                          (k2_lifecycle_live, "request"),
+                          (k2_lifecycle_live, "write_json")]
+            mocks = [stack.enter_context(patch.object(
+                target, name, side_effect=AssertionError(f"unexpected {name} access")))
+                for target, name in boundaries]
+            with self.assertRaises(SystemExit) as error:
+                k2_lifecycle_live.main()
+            self.assertEqual(error.exception.code, 2)
+            for mock in mocks:
+                mock.assert_not_called()
+        self.assertIn("invalid choice: 'continuous'", stderr.getvalue())
+
     def test_glm_short_and_overcap_requests_disable_thinking(self):
         bodies = []
         def request(url, path, body=None):

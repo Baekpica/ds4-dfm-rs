@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""K2 raw-completion disk lifecycle; never starts or stops a server.
+"""K2 serial raw-completion disk lifecycle; never starts or stops a server.
 
 Run seed on an empty-cache server, restart with that cache, run restored,
 then run cold on a third process with --prefix-reuse off and no disk cache.
-The seed ends at an IFM control token, so suffixes have a token-exact prefix.
+The newline after the seed's IFM delimiter keeps suffixes token-prefix stable.
+Raw completions use the serial disk-cache path.
 This exercises /v1/completions; it does not qualify Chat thinking/history.
 """
 
@@ -20,7 +21,7 @@ from step37_history_live import fingerprint, process_identity, request, write_js
 def fixture(model, lines):
     padding = "".join(f"Inventory item {i}: blue square.\n" for i in range(lines))
     base = ("<|ifm|begin_of_text|><|ifm|im_start|>user\n" + padding
-            + "What is 2 + 2?<|ifm|im_end|>")
+            + "What is 2 + 2?<|ifm|im_end|>\n")
     suffix = "<|ifm|im_start|>assistant\n<ifm|think_faster>\n</ifm|think_faster>"
 
     def body(prompt, budget=8):
@@ -89,7 +90,7 @@ def main():
     parser.add_argument("--artifact-manifest", type=Path, required=True)
     parser.add_argument("--model", default="k2-horizon")
     parser.add_argument("--context", type=int, default=32768)
-    parser.add_argument("--lane", choices=["serial", "continuous"], default="continuous")
+    parser.add_argument("--lane", choices=["serial"], default="serial")
     parser.add_argument("--padding-lines", type=int, default=64)
     args = parser.parse_args()
     assert args.padding_lines > 0
