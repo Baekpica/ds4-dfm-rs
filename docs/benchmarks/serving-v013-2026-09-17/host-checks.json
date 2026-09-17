@@ -1,0 +1,512 @@
+{
+  "schema": "v013-host-checks-v1",
+  "date": "2026-09-17",
+  "result": "pass",
+  "scope": "CONTRIBUTING model-free host checks, CPU metadata-only ExpectedPlan CLI guard, and optimized ds4-perf build",
+  "source": {
+    "final_head": "8a1025cae37f34e747cb20d2aa7f3e62f2e4e103",
+    "format_and_parity_fix": "92766551e019e7af019233017fdeafc85135d219",
+    "restart_fork_fix": "8a1025cae37f34e747cb20d2aa7f3e62f2e4e103",
+    "qualification": "Check records retain their actual HEAD. Final fmt/clippy ran with the restart-fork patch before it was committed as 8a1025c; final workspace test/check and CLI gate ran at 8a1025c. Formatting and bridge-stub fixes were uncommitted during their successful reruns and later landed in 9276655.",
+    "uncommitted": [
+      "tests/test_k2_lifecycle.c"
+    ],
+    "uncommitted_scope": "K2 native diagnostic test only; not executed by this model-free suite.",
+    "uncommitted_patch": {
+      "path": "scratch/v013/final-host-checks-uncommitted.patch",
+      "sha256": "65fb8c5a850db272b36b7778317a4776759b58a3e1dff2e524ff652636a5ceaf",
+      "bytes": 6928
+    }
+  },
+  "execution": {
+    "rust_toolchain": "1.98.0",
+    "CARGO_BUILD_JOBS": "1",
+    "RUST_TEST_THREADS": "1",
+    "memory_guard": {
+      "max_gib": 8,
+      "high_gib": 6,
+      "reserve_gib": 12,
+      "minimum_host_available_gib": 108.89231872558594,
+      "maximum_psi_full_avg10": 0.49,
+      "tripped": false
+    },
+    "gpu_jobs_started": false,
+    "note": "Host available memory is not a process peak measurement. ExpectedPlan variables were scoped only to its CLI subprocess in the final run."
+  },
+  "checks": [
+    {
+      "check": "final-fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "head": "92766551e019e7af019233017fdeafc85135d219",
+      "started_utc": "2026-09-17T08:22:38.682737+00:00",
+      "exit_code": 0,
+      "finished_utc": "2026-09-17T08:22:40.348354+00:00",
+      "result": "pass",
+      "log": "scratch/v013/final-host-checks-final-fmt.log"
+    },
+    {
+      "check": "final-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked"
+      ],
+      "head": "92766551e019e7af019233017fdeafc85135d219",
+      "started_utc": "2026-09-17T08:22:40.348719+00:00",
+      "exit_code": 0,
+      "finished_utc": "2026-09-17T08:22:42.875384+00:00",
+      "result": "pass",
+      "log": "scratch/v013/final-host-checks-final-clippy.log"
+    },
+    {
+      "check": "kv",
+      "command": [
+        "make",
+        "-j1",
+        "test-kv-parity"
+      ],
+      "head": "921cdb64108ec95b74dc8f2db395b0a905dff3e8",
+      "started_utc": "2026-09-17T08:10:40.035206+00:00",
+      "exit_code": 0,
+      "finished_utc": "2026-09-17T08:10:47.334795+00:00",
+      "result": "pass",
+      "log": "scratch/v013/final-host-checks-kv.log"
+    },
+    {
+      "check": "web",
+      "command": [
+        "make",
+        "-j1",
+        "test-web-parity"
+      ],
+      "head": "921cdb64108ec95b74dc8f2db395b0a905dff3e8",
+      "started_utc": "2026-09-17T08:10:47.335016+00:00",
+      "exit_code": 0,
+      "finished_utc": "2026-09-17T08:10:56.154326+00:00",
+      "result": "pass",
+      "log": "scratch/v013/final-host-checks-web.log"
+    },
+    {
+      "check": "dist",
+      "command": [
+        "make",
+        "-j1",
+        "test-dist-parity"
+      ],
+      "head": "921cdb64108ec95b74dc8f2db395b0a905dff3e8",
+      "started_utc": "2026-09-17T08:10:56.154583+00:00",
+      "exit_code": 0,
+      "finished_utc": "2026-09-17T08:11:12.460735+00:00",
+      "result": "pass",
+      "log": "scratch/v013/final-host-checks-dist.log"
+    },
+    {
+      "check": "server",
+      "command": [
+        "make",
+        "-j1",
+        "test-server-parity"
+      ],
+      "head": "921cdb64108ec95b74dc8f2db395b0a905dff3e8",
+      "started_utc": "2026-09-17T08:12:32.567734+00:00",
+      "exit_code": 0,
+      "finished_utc": "2026-09-17T08:13:55.672757+00:00",
+      "result": "pass",
+      "log": "scratch/v013/final-host-checks-server.log"
+    },
+    {
+      "check": "catalog",
+      "command": [
+        "make",
+        "-j1",
+        "test-catalog-parity"
+      ],
+      "head": "921cdb64108ec95b74dc8f2db395b0a905dff3e8",
+      "started_utc": "2026-09-17T08:13:55.673032+00:00",
+      "exit_code": 0,
+      "finished_utc": "2026-09-17T08:15:34.485346+00:00",
+      "result": "pass",
+      "log": "scratch/v013/final-host-checks-catalog.log"
+    },
+    {
+      "check": "tokenizer",
+      "command": [
+        "make",
+        "-j1",
+        "test-tokenizer-parity"
+      ],
+      "head": "921cdb64108ec95b74dc8f2db395b0a905dff3e8",
+      "started_utc": "2026-09-17T08:15:34.485708+00:00",
+      "exit_code": 0,
+      "finished_utc": "2026-09-17T08:15:35.069776+00:00",
+      "result": "pass",
+      "log": "scratch/v013/final-host-checks-tokenizer.log"
+    },
+    {
+      "check": "session",
+      "command": [
+        "make",
+        "-j1",
+        "test-session-parity"
+      ],
+      "head": "921cdb64108ec95b74dc8f2db395b0a905dff3e8",
+      "started_utc": "2026-09-17T08:15:35.070038+00:00",
+      "exit_code": 0,
+      "finished_utc": "2026-09-17T08:15:35.277550+00:00",
+      "result": "pass",
+      "log": "scratch/v013/final-host-checks-session.log"
+    },
+    {
+      "check": "agent",
+      "command": [
+        "make",
+        "-j1",
+        "test-agent-parity"
+      ],
+      "head": "921cdb64108ec95b74dc8f2db395b0a905dff3e8",
+      "started_utc": "2026-09-17T08:15:35.277819+00:00",
+      "exit_code": 0,
+      "finished_utc": "2026-09-17T08:15:47.292521+00:00",
+      "result": "pass",
+      "log": "scratch/v013/final-host-checks-agent.log"
+    },
+    {
+      "check": "workspace-test",
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--locked",
+        "--",
+        "--test-threads=1"
+      ],
+      "head": "8a1025cae37f34e747cb20d2aa7f3e62f2e4e103",
+      "started_utc": "2026-09-17T08:24:21.227418+00:00",
+      "exit_code": 0,
+      "finished_utc": "2026-09-17T08:25:56.712794+00:00",
+      "result": "pass",
+      "log": "scratch/v013/final-host-checks-workspace-test.log"
+    },
+    {
+      "check": "workspace-check",
+      "command": [
+        "cargo",
+        "check",
+        "--workspace",
+        "--all-targets",
+        "--locked"
+      ],
+      "head": "8a1025cae37f34e747cb20d2aa7f3e62f2e4e103",
+      "started_utc": "2026-09-17T08:25:56.713027+00:00",
+      "exit_code": 0,
+      "finished_utc": "2026-09-17T08:26:27.346228+00:00",
+      "result": "pass",
+      "log": "scratch/v013/final-host-checks-workspace-check.log"
+    },
+    {
+      "check": "expected-plan-cli",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ds4-server",
+        "--locked",
+        "--test",
+        "expected_plan",
+        "--",
+        "--ignored",
+        "--test-threads=1"
+      ],
+      "head": "8a1025cae37f34e747cb20d2aa7f3e62f2e4e103",
+      "started_utc": "2026-09-17T08:26:27.346466+00:00",
+      "server": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-v013-in-progress/scratch/v013/bin-integrated3/ds4-server",
+      "server_sha256": "09c9c9bac8c6ed8736c8aec9e7ce957f27a263be8aa567d3bf52f21a74c5f985",
+      "model": "/home/sunghoon/workspace/ds4-exaone/models/DeepSeek-GGUF/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf",
+      "exit_code": 0,
+      "finished_utc": "2026-09-17T08:26:28.268230+00:00",
+      "result": "pass",
+      "log": "scratch/v013/final-host-checks-expected-plan-cli.log"
+    },
+    {
+      "check": "perf-release",
+      "command": [
+        "cargo",
+        "build",
+        "-j1",
+        "-p",
+        "ds4-perf",
+        "--release",
+        "--locked"
+      ],
+      "head": "8a1025cae37f34e747cb20d2aa7f3e62f2e4e103",
+      "started_utc": "2026-09-17T08:26:28.268457+00:00",
+      "exit_code": 0,
+      "finished_utc": "2026-09-17T08:28:00.115490+00:00",
+      "result": "pass",
+      "log": "scratch/v013/final-host-checks-perf-release.log"
+    },
+    {
+      "check": "perf-restart-focused",
+      "command": [
+        "cargo",
+        "test",
+        "-j1",
+        "-p",
+        "ds4-perf",
+        "--bin",
+        "ds4-perf",
+        "disk_restore_can_place_a_fork",
+        "--locked"
+      ],
+      "head": "92766551e019e7af019233017fdeafc85135d219",
+      "started_utc": "2026-09-17T08:22:34.665707+00:00",
+      "exit_code": 0,
+      "finished_utc": "2026-09-17T08:22:38.682380+00:00",
+      "result": "pass",
+      "log": "scratch/v013/final-host-checks-perf-restart-focused.log"
+    }
+  ],
+  "workspace_tests": {
+    "test_summaries": 75,
+    "passed": 1322,
+    "failed": 0,
+    "ignored": 11
+  },
+  "expected_plan_cli": {
+    "result": "pass",
+    "tests": 1,
+    "server": {
+      "path": "scratch/v013/bin-integrated3/ds4-server",
+      "sha256": "09c9c9bac8c6ed8736c8aec9e7ce957f27a263be8aa567d3bf52f21a74c5f985",
+      "bytes": 58206104
+    },
+    "server_build_head": "553514395654ea702d16c75ff34b5f008ab93728",
+    "model": "/home/sunghoon/workspace/ds4-exaone/models/DeepSeek-GGUF/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf",
+    "model_use": "Previously validated local DeepSeek GGUF, CPU metadata/preflight only; this gate did not load model weights or independently hash them.",
+    "assertions": [
+      "baseline preflight succeeds",
+      "preflight accepts differing post-open quote with identical policy",
+      "preflight rejects changed effective context with mismatch: effective"
+    ],
+    "log": "scratch/v013/final-host-checks-expected-plan-cli.log"
+  },
+  "optimized_perf": {
+    "path": "target/release/ds4-perf",
+    "sha256": "9bec3c70382d3f52ce62970c0581c74534fd7aabc864370e9c0e25b6127ee42f",
+    "bytes": 4352640
+  },
+  "preceding_failures": [
+    {
+      "check": "fmt",
+      "reason": "New Dots session expressions and regression assertion did not match rustfmt.",
+      "remediation": "Whitespace-only formatting in core/lib.rs and core/session.rs; committed in 9276655.",
+      "log": "scratch/v013/final-host-checks-fmt-red.log"
+    },
+    {
+      "check": "server parity",
+      "reason": "Null-bridge oracle lacked ds4_session_dots3_mtp/trial/commit stubs, so linking failed.",
+      "remediation": "Added three test-only ABI stubs; committed in 9276655. All eight parity targets then passed.",
+      "log": "scratch/v013/final-host-checks-server-red.log"
+    },
+    {
+      "check": "workspace tests",
+      "reason": "Intentional RED regression: restart_restore rejected a valid fork trace after disk restore.",
+      "remediation": "Accept exact/partial/fork while retaining seed and positive cached-token requirements; committed in 8a1025c. Focused and full tests passed.",
+      "log": "scratch/v013/final-host-checks-workspace-test-red.log"
+    },
+    {
+      "check": "workspace tests",
+      "reason": "The initial orchestration script exported DS4_EXPECT_PLAN_SERVER/MODEL to all tests; scout correctly rejected these unreviewed controls.",
+      "remediation": "Scope those variables only to the ExpectedPlan CLI subprocess. No production guard was weakened; full workspace tests then passed.",
+      "log": "scratch/v013/final-host-checks-workspace-test-env-red.log"
+    }
+  ],
+  "warnings": {
+    "status": "Non-fatal source warnings remain; the required clippy command does not enable -D warnings.",
+    "examples": [
+      "unused Step ImagePlan.window",
+      "unused host/server fields, variants and PrefixAnswer import",
+      "field_reassign_with_default",
+      "too_many_arguments",
+      "type_complexity"
+    ],
+    "details": "scratch/v013/final-host-checks-warnings.json"
+  },
+  "limitations": [
+    "These results do not qualify model-backed accuracy, KV lifecycle, long context, GPU memory peaks or throughput.",
+    "The default workspace run leaves 11 tests ignored; the separate ExpectedPlan command executes its one ignored CLI test.",
+    "K2 native diagnosis and any resulting runtime fix require their own focused requalification; they remain open here.",
+    "Real family HTTP and P4 profile qualification are separate release gates. This receipt does not declare the release complete.",
+    "Raw scratch logs are local evidence referenced by SHA256; they are not included in the repository."
+  ],
+  "raw_files": [
+    {
+      "path": "scratch/v013/final-host-checks-agent.log",
+      "sha256": "d17524764d2b2e682762c43335cb727b6c4616917c4782a6ce8eb672f5ddd051",
+      "bytes": 16906
+    },
+    {
+      "path": "scratch/v013/final-host-checks-catalog.log",
+      "sha256": "afeb7fa418076382a5716c08ce21e72f190d0e14e0f37690adc617c4f033c6d4",
+      "bytes": 30869
+    },
+    {
+      "path": "scratch/v013/final-host-checks-clippy.log",
+      "sha256": "966753f3ac965db3c0538feea273cdab32caf7eee5197e85410abaa43a750772",
+      "bytes": 188030
+    },
+    {
+      "path": "scratch/v013/final-host-checks-dist.log",
+      "sha256": "155122a53ab8c52dfd9f620420d3cc6819bc6d86cc858bf4de179714877a4ef4",
+      "bytes": 7242
+    },
+    {
+      "path": "scratch/v013/final-host-checks-expected-plan-cli.log",
+      "sha256": "8122240c96060d0476984bb6a6c52db4d2c0ffd208770d0043cbd93ad5c30904",
+      "bytes": 7825
+    },
+    {
+      "path": "scratch/v013/final-host-checks-final-clippy.log",
+      "sha256": "70c174e955c0322426aa4bb9c2af439181a7e79384acc8ef6d6f99bd74cca251",
+      "bytes": 186949
+    },
+    {
+      "path": "scratch/v013/final-host-checks-final-fmt.log",
+      "sha256": "915bff130dedd086c5343dce6db03889621ec65b335284d3a623f3d6429691c1",
+      "bytes": 181
+    },
+    {
+      "path": "scratch/v013/final-host-checks-fmt-red.log",
+      "sha256": "39a285b67034c5a23fe60f09de87d1cb0cfa0cf6fcd9f5b570f6f780c19a043e",
+      "bytes": 2586
+    },
+    {
+      "path": "scratch/v013/final-host-checks-fmt.log",
+      "sha256": "9914cd30fcbf8f5a9a610d972c30bfc9548dd9da7cfc16a37ae21f893e252c7f",
+      "bytes": 175
+    },
+    {
+      "path": "scratch/v013/final-host-checks-kv.log",
+      "sha256": "8853e72b3c695df52bc6afef371f2f4ecbb61fc7abf9c7a4d79c24b601ad38d4",
+      "bytes": 6183
+    },
+    {
+      "path": "scratch/v013/final-host-checks-memory.json",
+      "sha256": "c213b07e5e5021ca3077ea9f69bfe8da86af76ce7948b913691297b1c4b18539",
+      "bytes": 598
+    },
+    {
+      "path": "scratch/v013/final-host-checks-memory2.json",
+      "sha256": "9a25d1e807c735fa57fa148fcee69ff85cd772984cceae0cc85b25b641ee40bc",
+      "bytes": 13522
+    },
+    {
+      "path": "scratch/v013/final-host-checks-memory3.json",
+      "sha256": "33ddf5cbcfc54dd92c0b5dad23361b74b5d937c756854a255f15c65dd3e1d8f3",
+      "bytes": 70610
+    },
+    {
+      "path": "scratch/v013/final-host-checks-memory4.json",
+      "sha256": "0c04698ef0bedace5e72e0b268b5be9000bacb655c4ec1fdb53232ddb2ed5269",
+      "bytes": 10248
+    },
+    {
+      "path": "scratch/v013/final-host-checks-memory5.json",
+      "sha256": "569ffd5c3a34b21e4c4acb7907c916be0a5b5c4e59ee28e47071ff0165adae3c",
+      "bytes": 36224
+    },
+    {
+      "path": "scratch/v013/final-host-checks-perf-release.log",
+      "sha256": "34c1055ad60ff7ae1226f973b8b6aa545b25bddccb4a27f3116834be02e9ba52",
+      "bytes": 1135
+    },
+    {
+      "path": "scratch/v013/final-host-checks-perf-restart-focused.log",
+      "sha256": "dd74ac7688e24edaddaa4f3435e93238ecf1435c74ff7c1c5cc60257f381cf1a",
+      "bytes": 694
+    },
+    {
+      "path": "scratch/v013/final-host-checks-pipeline.log",
+      "sha256": "257b351a12e7b74e537e4ebec7d63c581c7d3d23397ce3d22fe32181ebe7c5a4",
+      "bytes": 763
+    },
+    {
+      "path": "scratch/v013/final-host-checks-results.jsonl",
+      "sha256": "65af726100703fe6538aff611a1478ef5acaf88de90d6d1c76e686652acfea1a",
+      "bytes": 5842
+    },
+    {
+      "path": "scratch/v013/final-host-checks-server-red.log",
+      "sha256": "110dac5396798ce9c081376b5bdffa3063df1a0d213cbc7f2e17777acdaf3067",
+      "bytes": 2629
+    },
+    {
+      "path": "scratch/v013/final-host-checks-server.log",
+      "sha256": "e99c1b457d9e436d57a892e7509d2afc3d6423c19ae2f2ddfda64f087f07bc27",
+      "bytes": 46990
+    },
+    {
+      "path": "scratch/v013/final-host-checks-session.log",
+      "sha256": "46df49f5e8e16b4c8a48ee9939cc4fd199760a553725c0184f30eeb60e2ded84",
+      "bytes": 1724
+    },
+    {
+      "path": "scratch/v013/final-host-checks-test-summary.json",
+      "sha256": "52f7ad4f603b9da798d79d2c23b00c87a4c2757c2c4a439fc1ae8afe2fb61f03",
+      "bytes": 77
+    },
+    {
+      "path": "scratch/v013/final-host-checks-tokenizer.log",
+      "sha256": "4b1b9f72f2e0a09d7dc792bd4657dd9827dee504afeb78dbc4b68dff70272a51",
+      "bytes": 1394
+    },
+    {
+      "path": "scratch/v013/final-host-checks-uncommitted.patch",
+      "sha256": "65fb8c5a850db272b36b7778317a4776759b58a3e1dff2e524ff652636a5ceaf",
+      "bytes": 6928
+    },
+    {
+      "path": "scratch/v013/final-host-checks-warnings.json",
+      "sha256": "4a92279b1d9b638e667b9dc36abacea2d52136c6e095e78c2259330794502375",
+      "bytes": 5545
+    },
+    {
+      "path": "scratch/v013/final-host-checks-web.log",
+      "sha256": "f34412a10fd4850a87df6aa533652322174107b9085d103e5b7326c29fdf4188",
+      "bytes": 2592
+    },
+    {
+      "path": "scratch/v013/final-host-checks-workspace-check.log",
+      "sha256": "e2bdb61db947a6a68a7cfc8fa33d9493327e30f94498853bc723309b432b0917",
+      "bytes": 10963
+    },
+    {
+      "path": "scratch/v013/final-host-checks-workspace-test-env-red.log",
+      "sha256": "b4f82feceaca0b3585d48ed9f376a46cbb9002e9fac8dc0f5e2cd226d6b52d39",
+      "bytes": 66186
+    },
+    {
+      "path": "scratch/v013/final-host-checks-workspace-test-red.log",
+      "sha256": "0db2df7868c63f7f255aeb731cf7b34fe8866aaedff8900850530c3c02b03b1e",
+      "bytes": 65211
+    },
+    {
+      "path": "scratch/v013/final-host-checks-workspace-test.log",
+      "sha256": "b15a9df224f5135ea80ecc0427e97c302abecbbe217e5cf355a0230f7781cfd6",
+      "bytes": 106233
+    },
+    {
+      "path": "scratch/v013/final-host-checks.py",
+      "sha256": "60ef719839cd4ecb514e347cd2e23241b03ecb5bfdb76d7c79071832735640a8",
+      "bytes": 2885
+    }
+  ]
+}
