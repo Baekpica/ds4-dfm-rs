@@ -697,5 +697,98 @@
       "Original workspace count and ExpectedPlan CLI receipt above retain their 8a1025c scope.",
       "Current full host validation comes from the linked CI; native live gates have separate family receipts."
     ]
+  },
+  "post_merge_append_profile_fix": {
+    "commit": "1ffc8bc61094b057abe43d5df8fbba1613fb91b8",
+    "scope": "ds4-perf workload schema only; no inference source changes",
+    "result": "pass",
+    "tests_passed": 93,
+    "checks": [
+      "observed RED regression for partial append",
+      "cargo test -p ds4-perf --locked",
+      "cargo fmt --all -- --check",
+      "cargo clippy -p ds4-perf --all-targets --locked",
+      "cargo build -p ds4-perf --release --locked -j1",
+      "independent scoped code review"
+    ],
+    "behavior": "Warm append may declare exact, partial or fork. Observed reuse must still equal that single declaration and satisfy positive cached-token limits; cold remains invalid.",
+    "build_head": "d1d9fbf420931ede9c857ef3f0090860fab542a6",
+    "build_diff": "scratch/v013/bin-perf8/source.diff",
+    "frozen_perf": {
+      "path": "scratch/v013/bin-perf8/ds4-perf",
+      "sha256": "009e51e949b41287fdee5a7aa7f3522d3fc9e133f8f87d2ec60f7b42b97adf10"
+    },
+    "prior_perf_archive": {
+      "path": "scratch/v013/bin-integrated6/ds4-perf",
+      "sha256": "9bec3c70382d3f52ce62970c0581c74534fd7aabc864370e9c0e25b6127ee42f"
+    },
+    "raw_files": [
+      {
+        "path": "scratch/v013/perf-append-schema-clippy.log",
+        "bytes": 275,
+        "sha256": "7c59e712ff16344767a9cc2949a29b2339267211cb2f1b53cc956ce8de0cc5e1"
+      },
+      {
+        "path": "scratch/v013/perf-append-schema-clippy.memory.jsonl",
+        "bytes": 861,
+        "sha256": "5b38e2924ff04c1611a4ee65f5c032059e9faba51843d97b1c9bec5ea7cb3d1e"
+      },
+      {
+        "path": "scratch/v013/perf-append-schema-fmt.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "scratch/v013/perf-append-schema-green.log",
+        "bytes": 6509,
+        "sha256": "d1e7c27dcae393527ab990a5ce3c15a120ec5cbc562563a3280ff7926f53bd22"
+      },
+      {
+        "path": "scratch/v013/perf-append-schema-green.memory.jsonl",
+        "bytes": 4647,
+        "sha256": "358851699599dda82375a75009dc53f6f84bd08616eba536ba9c88ae0f7fa2e4"
+      },
+      {
+        "path": "scratch/v013/perf-append-schema-red.log",
+        "bytes": 1008,
+        "sha256": "f8d9fac506540c360ee229d3a91af5658c20107d7ee627144659f1930b94d591"
+      },
+      {
+        "path": "scratch/v013/perf-append-schema-red.memory.jsonl",
+        "bytes": 1226,
+        "sha256": "9fa154c6023c9b1d10a56c3c2c14bc969090d2040571e7539328d95c16770f7a"
+      },
+      {
+        "path": "scratch/v013/perf-append-schema-release.log",
+        "bytes": 266,
+        "sha256": "2eff9a15bbfec56d6629224fc11c68877dc58a14b58ade3511c5a760f71b7d11"
+      },
+      {
+        "path": "scratch/v013/perf-append-schema-release.memory.jsonl",
+        "bytes": 9654,
+        "sha256": "b6fba3d2351b1b2b21c5832a8f752fd73fe31c37f9d3c24ecfe6e0fcf3e72f1e"
+      },
+      {
+        "path": "scratch/v013/bin-perf8/SHA256SUMS",
+        "bytes": 75,
+        "sha256": "3e43579585b5ccdcead648dab1d6e8e5f32fae4de66e954451b7e4eab6986ac2"
+      },
+      {
+        "path": "scratch/v013/bin-perf8/build-head.txt",
+        "bytes": 41,
+        "sha256": "cd406cb60121e32ce7c59c737fc2ed2e5c5dbd8819e6f051d0409237dbff9c32"
+      },
+      {
+        "path": "scratch/v013/bin-perf8/source.diff",
+        "bytes": 3112,
+        "sha256": "d57e87dd2c80e24725e88448dcf4b5701fd27dcc248d4fbd6211b778946ca3c8"
+      }
+    ]
+  },
+  "merged_pr53_ci": {
+    "sha": "a48bea849dab7feb8ae4d970bea438a1864b3208",
+    "url": "https://github.com/Baekpica/ds4-dfm-rs/actions/runs/35209787677",
+    "result": "success",
+    "scope": "Merged PR53 Host parity workflow; precedes ds4-perf append schema fix."
   }
 }

@@ -432,5 +432,304 @@
         "sha256": "017cb7e61151f317dbe651b92698a06d136acad51937c44b823d0429e171ea48"
       }
     ]
+  },
+  "lifecycle_32k_psi30": {
+    "schema": "v013-k2-32k-psi30-http-v1",
+    "passed": false,
+    "status": "failed",
+    "build_commit": "c2a816b9cf681709141797fccb9dab9c0c9f3bf4",
+    "server_sha256": "487de87425bd3c279150204fab88da4a9b91cdbc344cb50fd7832d4de1856341",
+    "run": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6",
+    "result": {
+      "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/result.json",
+      "sha256": "f915ac5cde9b8254f828c982ad7a8a644b6f97d674dcf5d74f0f25438e983ce6"
+    },
+    "source": {
+      "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/source.json",
+      "sha256": "75905cfe8aee98493d9ceaae9474d0c62aa1f0cb9ade2200ba5fd32bd652f23a",
+      "bytes": 1815
+    },
+    "orchestration": {
+      "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/orchestrator.jsonl",
+      "sha256": "51315949400527a8d5aa4305aefe8adcb690cd4c0724c376e0a8be22c75e4067",
+      "bytes": 7009
+    },
+    "artifacts": {
+      "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/artifacts.json",
+      "sha256": "9e2ec5c2075a1ed8c11076ff9e2c8da63b54c62c12414aaf30076ae1318ee4fe",
+      "bytes": 1424
+    },
+    "fit_headroom_mb": 4096,
+    "guard_policy": {
+      "requested_max_gib": 104,
+      "requested_high_gib": 100,
+      "reserve_gib": 12,
+      "trip_gib": 4,
+      "psi_full_avg10_threshold": 30,
+      "psi_available_lt_gib": 8,
+      "implementation": "task-local host-memory-guard-k2-psi30.py; shared guard unchanged"
+    },
+    "checks": {
+      "raw_files": 36,
+      "model_contents_rehashed_by_publisher": false,
+      "source_and_executable_revalidated": true,
+      "full_shard_hashes_verified_by_campaign": 4
+    },
+    "local_guard_sha256": "6c6994ede44ce4a7419b71b7e4ec0d07ccc58a215bdb904043ee2f048bb75aeb",
+    "prior_failures": {
+      "manifest": {
+        "path": "scratch/v013/k2-psi30-prior-failures.json",
+        "sha256": "64df1a863846511ab4f164852e61c231b93a7c0b15683c70a89d7cb7353be88e"
+      },
+      "attempts": [
+        {
+          "run": "scratch/v013/k2-http-integrated5",
+          "result_sha256": "4d56866d4dd21bdc4a0f0b6c5aa46d0c20cfffc2700aff27508e49fde1a9e0b3",
+          "passed": false,
+          "error": "RuntimeError: server guard exited before its requested stop",
+          "failure_events": [
+            {
+              "time": 1789636506.1988156,
+              "event": "terminate",
+              "unit": "ds4-hostguard-975598-1789636387985700489.scope",
+              "reason": "host memory watchdog floor crossed",
+              "available_gib": 7.681774139404297,
+              "psi_full_avg10": 17.44
+            },
+            {
+              "time": 1789636507.3124788,
+              "event": "kill",
+              "unit": "ds4-hostguard-975598-1789636387985700489.scope",
+              "reason": "host memory watchdog floor crossed"
+            },
+            {
+              "time": 1789636507.3461885,
+              "event": "exit",
+              "unit": "ds4-hostguard-975598-1789636387985700489.scope",
+              "status": 75,
+              "payload_status": -15
+            }
+          ],
+          "minimum_sampled_available_gib": 7.681774139404297,
+          "raw_files_verified": 12
+        },
+        {
+          "run": "scratch/v013/k2-http32-trip4-integrated6",
+          "result_sha256": "1653f0414fa86c5a580b7848aade96f260188346f7f63debbfa020ee1d9daed2",
+          "passed": false,
+          "error": "RuntimeError: server guard exited before its requested stop",
+          "failure_events": [
+            {
+              "time": 1789640808.6173751,
+              "event": "exit",
+              "unit": "ds4-hostguard-1047249-1789640696314642517.scope",
+              "status": 2,
+              "payload_status": 2
+            }
+          ],
+          "minimum_sampled_available_gib": 13.082927703857422,
+          "raw_files_verified": 12
+        },
+        {
+          "run": "scratch/v013/k2-http32-trip4-fit4-integrated6",
+          "result_sha256": "5932aa6cc425ece9b42e0cfe57d72d5622521cd6446c6ce8bf8a5fe14724e639",
+          "passed": false,
+          "error": "RuntimeError: server guard exited before its requested stop",
+          "failure_events": [
+            {
+              "time": 1789641505.1356473,
+              "event": "terminate",
+              "unit": "ds4-hostguard-1054846-1789641375918830261.scope",
+              "reason": "sustained host memory stalls near reserve",
+              "available_gib": 7.086345672607422,
+              "psi_full_avg10": 21.79
+            },
+            {
+              "time": 1789641506.287695,
+              "event": "kill",
+              "unit": "ds4-hostguard-1054846-1789641375918830261.scope",
+              "reason": "sustained host memory stalls near reserve"
+            },
+            {
+              "time": 1789641506.3784063,
+              "event": "exit",
+              "unit": "ds4-hostguard-1054846-1789641375918830261.scope",
+              "status": 75,
+              "payload_status": -15
+            }
+          ],
+          "minimum_sampled_available_gib": 7.086345672607422,
+          "raw_files_verified": 12
+        }
+      ]
+    },
+    "authorization_scope": "User explicitly approved PSI30 after the PSI20 attempt failed; --authorized-psi30 is recorded in every launched worker command.",
+    "limitations": [
+      "Short raw HTTP lifecycle at a 32768 allocation; no filled-32K prompt, Chat, arithmetic quality or speed claim.",
+      "Zero-token stop outputs are recorded as such; exact equality alone is not a quality claim.",
+      "User authorized lowering the hard floor from8 to4GiB; the user separately authorized PSI30 using the existing trip+4 boundary, now8GiB.",
+      "Cgroup max/high104/100 and reserve12 were unchanged; actual admission-clamped limits and sampled minima are recorded.",
+      "Native batch-fit headroom is pinned4096MiB instead of derived6GiB, removing the2GiB boot-burst allowance; native/serverfloor4 and externaltrip4 remain unchanged.",
+      "Original native proof and all three failed attempts (8GiB guard, trip4/default6GiB-fit rejection, trip4/fit4/PSI20) remain separate and unchanged."
+    ],
+    "error": "RuntimeError: restored failed: see restored.runner.log",
+    "cleanup_errors": [],
+    "qualification": "none",
+    "guard_failures": {
+      "worker-restored.memory.jsonl": [
+        {
+          "time": 1789642480.1316266,
+          "event": "terminate",
+          "unit": "ds4-hostguard-1066958-1789642346005929783.scope",
+          "reason": "watchdog received a stop signal",
+          "available_gib": 5.0964508056640625,
+          "psi_full_avg10": 6.33
+        },
+        {
+          "time": 1789642481.1772141,
+          "event": "kill",
+          "unit": "ds4-hostguard-1066958-1789642346005929783.scope",
+          "reason": "watchdog received a stop signal"
+        },
+        {
+          "time": 1789642481.198207,
+          "event": "exit",
+          "unit": "ds4-hostguard-1066958-1789642346005929783.scope",
+          "status": 75,
+          "payload_status": 0
+        }
+      ],
+      "worker-seed.memory.jsonl": [
+        {
+          "time": 1789642343.9707103,
+          "event": "terminate",
+          "unit": "ds4-hostguard-1066302-1789642200611927334.scope",
+          "reason": "watchdog received a stop signal",
+          "available_gib": 5.1440277099609375,
+          "psi_full_avg10": 9.96
+        },
+        {
+          "time": 1789642345.025397,
+          "event": "kill",
+          "unit": "ds4-hostguard-1066302-1789642200611927334.scope",
+          "reason": "watchdog received a stop signal"
+        },
+        {
+          "time": 1789642345.0645287,
+          "event": "exit",
+          "unit": "ds4-hostguard-1066302-1789642200611927334.scope",
+          "status": 75,
+          "payload_status": 0
+        }
+      ]
+    },
+    "sampled_memory": {
+      "worker-restored.memory.jsonl": {
+        "minimum_available_gib": 4.9854583740234375,
+        "maximum_psi_full_avg10": 13.86
+      },
+      "worker-seed.memory.jsonl": {
+        "minimum_available_gib": 5.062618255615234,
+        "maximum_psi_full_avg10": 22.17
+      }
+    },
+    "server_logs": [
+      {
+        "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/restored.runner.log",
+        "sha256": "fa8fbfed70e17ea38d2dceb1f5be174abfc92b410e7e82c8dff6f2970b2c8a5a",
+        "bytes": 1005
+      },
+      {
+        "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/seed.runner.log",
+        "sha256": "e86880c51c5ad578178e82e8aaaac7bc6550c595eb58e302e851585646b90895",
+        "bytes": 405
+      },
+      {
+        "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/worker-restored.launcher.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      {
+        "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/worker-restored.log",
+        "sha256": "c1ee41a83c2f834f88531b730a88963ffb56b83bd1b261653d3d8debbd0d7ee1",
+        "bytes": 5615
+      },
+      {
+        "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/worker-seed.launcher.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      {
+        "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/worker-seed.log",
+        "sha256": "e8f5b47e6df04d201c4457d6ecd08f8001029bfd22b9fb2173f819aa92620a4c",
+        "bytes": 5808
+      }
+    ],
+    "owned_scopes_empty": {
+      "worker-seed": true,
+      "worker-restored": true
+    },
+    "available_http_files": [
+      {
+        "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/evidence/artifacts.json",
+        "sha256": "9e2ec5c2075a1ed8c11076ff9e2c8da63b54c62c12414aaf30076ae1318ee4fe",
+        "bytes": 1424
+      },
+      {
+        "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/evidence/fixture.json",
+        "sha256": "8028b1f7b676465cf90579a2c925d59ef97b7c24fff57d0a6ae287af0fde1ae2",
+        "bytes": 9542
+      },
+      {
+        "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/evidence/restored.exact.request.json",
+        "sha256": "f11e7ec17e9b53b5b987effbc085ff69fd599a5d0ad0c544417f4a57fd2a65c3",
+        "bytes": 2299
+      },
+      {
+        "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/evidence/restored.exact.response.json",
+        "sha256": "3050489669a520f0111f4f4872b9f33fc46fb44edd42a0e810850fbef0cffbb2",
+        "bytes": 525
+      },
+      {
+        "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/evidence/restored.exact.stats.json",
+        "sha256": "0b63621db644b48f0e3dcfd2bcbfeba05350771af3366b98f12f4b2412e81c03",
+        "bytes": 7927
+      },
+      {
+        "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/evidence/restored.exact.summary.json",
+        "sha256": "10596b94325144686861b08eb8dd65eb5c32ab98d52b2b6907617787bc7c628e",
+        "bytes": 493
+      },
+      {
+        "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/evidence/restored.process.json",
+        "sha256": "8237ad3f593986274faeb591cff03d098b50f2560e8b75104ac03161e5116b7f",
+        "bytes": 929
+      },
+      {
+        "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/evidence/seed.exact.request.json",
+        "sha256": "f11e7ec17e9b53b5b987effbc085ff69fd599a5d0ad0c544417f4a57fd2a65c3",
+        "bytes": 2299
+      },
+      {
+        "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/evidence/seed.exact.response.json",
+        "sha256": "5f13b70c5ba484688e149baaf8cc60f279768454fb5b42986f920a9da9ea8cfa",
+        "bytes": 525
+      },
+      {
+        "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/evidence/seed.exact.stats.json",
+        "sha256": "54a9af7aae6cfef4438d9bb97eaffb032155948948d3b0fcd8b4aaa9aeb9e119",
+        "bytes": 7927
+      },
+      {
+        "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/evidence/seed.exact.summary.json",
+        "sha256": "41e651f9870291f4cf47872b6dd7ebf1cbc12a00283276e487874ef23f89e076",
+        "bytes": 493
+      },
+      {
+        "path": "scratch/v013/k2-http32-trip4-fit4-psi30-integrated6/evidence/seed.process.json",
+        "sha256": "45c44da2b8139204df6b621e5fc1e6b5b2ffb6dc6c2be6dcf9bd440c195b548e",
+        "bytes": 929
+      }
+    ]
   }
 }

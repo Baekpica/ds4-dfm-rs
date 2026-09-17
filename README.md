@@ -355,8 +355,14 @@ runtime input.
 
 On GB10, whole-map `cudaHostRegister` of the 86.70 GiB mmap fails. The
 existing VMM materializer then promotes every unit (95/95, 0 cold) so CUDA
-graphs never capture the unregistered mmap. Default `DS4_MEMGOV=enforce`
-accepted the 32K first boot on this host.
+graphs never capture the unregistered mmap. The v0.1.0 gate accepted a 32K
+first boot with `DS4_MEMGOV=enforce`. The first 2026-09-17 v0.1.3 attempt
+stopped before listen at the external 8 GiB host-memory guard. A later,
+user-authorized 4 GiB floor / PSI30 run with 4 GiB native fit headroom booted
+both fresh processes, but restart reused zero of 545 prompt tokens and failed
+the disk lifecycle gate. Native lifecycle checks passed; current 32K HTTP
+disk reuse remains unqualified while that miss is investigated. See the
+[current evidence](docs/benchmarks/serving-v013-2026-09-17/k2.json).
 
 The following command reproduces the live serving shape with in-process VMM.
 External weight-owner import remains unqualified. Snapshot and disk-KV paths
