@@ -3548,9 +3548,13 @@ static bool accelerator_cache_model_tensor_spans(const ds4_model *m, uint64_t *c
             if (spans[i].end > end) end = spans[i].end;
             i++;
         }
+        /* A single tensor bigger than the merge cap is still one device
+         * pointer. Chopping it makes the whole-tensor resolve overlap the
+         * first chunk and the forward fails (L2 Q8 w13 is 4352 MiB). */
+        const int one_tensor = end - off > max_span;
         while (off < end) {
             uint64_t chunk_end = end;
-            if (chunk_end - off > max_span) chunk_end = off + max_span;
+            if (!one_tensor && chunk_end - off > max_span) chunk_end = off + max_span;
             char label[96];
             snprintf(label, sizeof(label), "tensor-span:%" PRIu64, merged);
             const int rc = ds4_gpu_cache_model_range(m->map, m->size, off,
