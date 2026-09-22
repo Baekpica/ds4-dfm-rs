@@ -2078,7 +2078,7 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
             "common UX baseline; configured values and verified combinations differ"
         }
         Variant::Mimo26Flash => {
-            "512k serial text is the qualified context. Embedded MTP is qualified when no DFlash file is loaded. DFlash is the external five-layer draft. Image, audio, and video are qualified. Prefill chunk 4096. max_seqs 2 is omitted because the graph is serial. 1M is not qualified"
+            "512k serial text is the qualified context. Embedded MTP is qualified when no DFlash file is loaded. DFlash, the projector, image, audio, and video are qualified together at context 262144 and prefill chunk 4096. 512k with the projector and DFlash was not measured. max_seqs 2 is omitted because the graph is serial. 1M is not qualified"
         }
         _ => "",
     }

@@ -416,7 +416,7 @@ pub fn inspect_dflash(path: &Path) -> Result<(), Mimo2Error> {
 }
 
 /// Admit `requested` tokens. Values through the source limit stay intact.
-/// 512k and 1M are not qualified contexts.
+/// 524288 is the qualified context. 1048576 is admitted and not qualified.
 pub fn admit_context(requested: u32) -> Result<Mimo2Admission, Mimo2Error> {
     if requested == 0 || requested > INDEX_LIMIT {
         return Err(mismatch("context"));

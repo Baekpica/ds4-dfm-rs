@@ -67,7 +67,7 @@ candidate. These are scheduler controls, not measurements or speed claims.
 - **K2-Horizon 375B A23B:** 32K one-bank serving is qualified; disk KV and external owner import are not.
 - **Inkling Small:** serial text snapshots present; media snapshots unsupported.
 - **Step-3.7-Flash:** text banks are opt-in; Chat restart hits need history-stable identity; images serial.
-- **MiMo-V2.6-Flash-RL:** 512k serial text is the qualified context. Embedded MTP is qualified when no DFlash file is loaded. DFlash is the external five-layer draft. Image, audio, and video are qualified. Prefill chunk 4096. max_seqs 2 is omitted because the graph is serial. 1M is not qualified.
+- **MiMo-V2.6-Flash-RL:** 512k serial text is the qualified context. Embedded MTP is qualified when no DFlash file is loaded. DFlash, the projector, image, audio, and video are qualified together at context 262144 and prefill chunk 4096. 512k with the projector and DFlash was not measured. max_seqs 2 is omitted because the graph is serial. 1M is not qualified.
 
 Regenerate without loading a model:
 
