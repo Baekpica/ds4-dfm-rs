@@ -38,6 +38,32 @@ Context 8257 scratch, MTP off: 973,649,152 bytes at cap 1024 and
 1,631,188,224 bytes at cap 2048. `tests/test_inkling_session --memory-quotes`
 accepts the new default.
 
+## Round 29: router logit tile
+
+The MoE gate is a 4096-by-258 BF16 GEMM. 258 is not a multiple of
+the 16-row tile, so prefill kept the one-warp-per-output kernel
+(about 2.3 ms, 160 launches on the chunk-2048 8K trace). The tile
+now covers the first 256 rows and stores the raw FP32 sum; the last
+two rows use the same warp reduction. Decode is one token, below
+the tile width, and stays on the warp kernel.
+`DS4_INKLING_NO_LOGIT_TILE` restores that kernel for every width.
+
+Cold 8192-token prefill, 64 greedy tokens, three interleaved pairs.
+Medians:
+
+| Path | Prefill tok/s | Decode tok/s |
+|---|---:|---:|
+| warp | 479.16 | 13.55 |
+| tile | 486.39 | 13.55 |
+
+Samples: warp = 480.86 / 479.16 / 477.81;
+tile = 487.04 / 486.39 / 486.23.
+Gain +1.51%. Decode stays inside 0.07 tok/s.
+
+The 8192-token frontier (200058 logits) is identical (`max_abs=0`,
+same argmax 298). The eight greedy tokens match:
+`298 11 2415 7898 6510 11 537 12102`.
+
 ## Rejected on the way
 
 Same binary, interleaved, cold 8192 unless noted.

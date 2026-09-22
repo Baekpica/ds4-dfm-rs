@@ -102,6 +102,49 @@ static void linear_case(const void *map, unsigned k, unsigned m, unsigned rows) 
     free(x); free(got); free(want);
 }
 
+static void router_case(const void *map, unsigned k, unsigned m, unsigned rows) {
+    const size_t in_bytes = (size_t)k * rows * sizeof(float);
+    const size_t out_bytes = (size_t)m * rows * sizeof(float);
+    float *x = malloc(in_bytes), *got = malloc(out_bytes), *want = malloc(out_bytes);
+    CHECK(x && got && want);
+    for (size_t i = 0; i < in_bytes / sizeof(float); i++) {
+        x[i] = ((int)(i * 37 % 251) - 125) / 53.0f + 0.000031f;
+    }
+    ds4_gpu_tensor *dx = upload(x, in_bytes), *out = upload(NULL, out_bytes);
+    CHECK(ds4_gpu_matmul_bf16_stable_rows_tensor(out, map, MAP_BYTES, OFFSET, k, m, dx, rows));
+    CHECK(ds4_gpu_tensor_read(out, 0, want, out_bytes));
+    CHECK(ds4_gpu_tensor_fill_f32(out, NAN, (uint64_t)m * rows));
+    CHECK(ds4_gpu_inkling_logits(out, dx, map, MAP_BYTES, OFFSET, k, m, rows) == 1);
+    CHECK(ds4_gpu_tensor_read(out, 0, got, out_bytes));
+    if (memcmp(got, want, out_bytes) != 0) {
+        double max_abs = 0;
+        size_t at = 0;
+        for (size_t i = 0; i < out_bytes / sizeof(float); i++) {
+            double d = fabs((double)got[i] - (double)want[i]);
+            if (d > max_abs) { max_abs = d; at = i; }
+        }
+        fprintf(stderr, "router mismatch k=%u m=%u rows=%u max_abs=%g at %zu got=%g want=%g\n",
+                k, m, rows, max_abs, at, got[at], want[at]);
+        exit(1);
+    }
+    CHECK(ds4_gpu_synchronize());
+    const double start = now();
+    for (unsigned i = 0; i < REPEATS; i++) {
+        CHECK(ds4_gpu_inkling_logits(out, dx, map, MAP_BYTES, OFFSET, k, m, rows) == 1);
+    }
+    CHECK(ds4_gpu_synchronize());
+    const double fast = (now() - start) / REPEATS;
+    const double ref0 = now();
+    for (unsigned i = 0; i < REPEATS; i++) {
+        CHECK(ds4_gpu_matmul_bf16_stable_rows_tensor(out, map, MAP_BYTES, OFFSET, k, m, dx, rows));
+    }
+    CHECK(ds4_gpu_synchronize());
+    printf("router k=%u m=%u rows=%u exact; warp=%.3f us tile=%.3f us\n",
+           k, m, rows, (now() - ref0) / REPEATS * 1e6, fast * 1e6);
+    ds4_gpu_tensor_free(dx); ds4_gpu_tensor_free(out);
+    free(x); free(got); free(want);
+}
+
 static void unsupported(const void *map) {
     float x[WIDTH] = {0}, got[WIDTH];
     for (unsigned i = 0; i < WIDTH; i++) { x[i] = -123.25f; }
@@ -125,8 +168,9 @@ static void unsupported(const void *map) {
     puts("unsupported/invalid/disabled paths leave output untouched");
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     CHECK(unsetenv("DS4_INKLING_NO_LINEAR_PANEL") == 0);
+    CHECK(unsetenv("DS4_INKLING_NO_LOGIT_TILE") == 0);
     CHECK(unsetenv("DS4_INKLING_NO_LINEAR") == 0);
     CHECK(unsetenv("DS4_INKLING_NO_LINEAR_TILE") == 0);
     CHECK(unsetenv("DS4_CUDA_NO_BF16_ROWS_WARP") == 0);
@@ -138,6 +182,34 @@ int main(void) {
         weight[i] = bits(((int)(i * 17 % 257) - 128) / 127.0f);
     }
     CHECK(ds4_gpu_set_model_map(map, MAP_BYTES));
+    router_case(map, WIDTH, 258, 16);
+    router_case(map, WIDTH, 258, 17);
+    router_case(map, WIDTH, 258, 2048);
+    router_case(map, WIDTH, 256, 64);
+    router_case(map, WIDTH, 17, 32);
+    {
+        const unsigned skip_rows = 64;
+        const size_t in_bytes = (size_t)WIDTH * skip_rows * sizeof(float);
+        const size_t out_bytes = (size_t)258 * skip_rows * sizeof(float);
+        float *x = calloc(1, in_bytes), *sentinel = malloc(out_bytes), *got = malloc(out_bytes);
+        CHECK(x && sentinel && got);
+        for (size_t i = 0; i < out_bytes / sizeof(float); i++) { sentinel[i] = -7.0f; }
+        ds4_gpu_tensor *dx = upload(x, in_bytes);
+        ds4_gpu_tensor *out = upload(sentinel, out_bytes);
+        CHECK(ds4_gpu_inkling_logits(out, dx, map, MAP_BYTES, OFFSET, WIDTH, 258, 8) == 0);
+        CHECK(setenv("DS4_INKLING_NO_LOGIT_TILE", "1", 1) == 0);
+        CHECK(ds4_gpu_inkling_logits(out, dx, map, MAP_BYTES, OFFSET, WIDTH, 258, skip_rows) == 0);
+        CHECK(unsetenv("DS4_INKLING_NO_LOGIT_TILE") == 0);
+        CHECK(ds4_gpu_tensor_read(out, 0, got, out_bytes));
+        CHECK(memcmp(got, sentinel, out_bytes) == 0);
+        ds4_gpu_tensor_free(dx); ds4_gpu_tensor_free(out);
+        free(x); free(sentinel); free(got);
+        puts("router skip/kill leave output untouched");
+    }
+    if (argc > 1 && strcmp(argv[1], "router") == 0) {
+        ds4_gpu_cleanup(); free(map);
+        puts("Inkling router checks passed"); return 0;
+    }
     const unsigned rows[] = {1, 2, 3, 7, 15, 16, 17, 31, 32, 33, 64, 65, 129};
     for (unsigned i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
         linear_case(map, WIDTH, WIDTH, rows[i]);

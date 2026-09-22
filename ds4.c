@@ -21530,8 +21530,18 @@ static bool inkling_mlp(ds4_inkling_graph *g, const ds4_model *m,
                                       g->dense_scale[il], (uint64_t)n * IK_HIDDEN);
     }
     /* Router logits retain FP32, unlike the BF16 ordinary projections. */
-    return inkling_projection(b[IK_GATE], m, w->gate, b[IK_NORM], n) &&
-        ds4_gpu_inkling_route(b[IK_IDS], b[IK_GAMMA], b[IK_SHARED_GAMMA], b[IK_GATE],
+    bool gate_ok = false;
+    if (w->gate->type == DS4_TENSOR_BF16 &&
+        w->gate->dim[0] <= UINT32_MAX && w->gate->dim[1] <= UINT32_MAX) {
+        const int fast = ds4_gpu_inkling_logits(b[IK_GATE], b[IK_NORM], m->map, m->size,
+            w->gate->abs_offset, (uint32_t)w->gate->dim[0], (uint32_t)w->gate->dim[1], n);
+        if (fast < 0) { return false; }
+        gate_ok = fast > 0;
+    }
+    if (!gate_ok && !inkling_projection(b[IK_GATE], m, w->gate, b[IK_NORM], n)) {
+        return false;
+    }
+    return ds4_gpu_inkling_route(b[IK_IDS], b[IK_GAMMA], b[IK_SHARED_GAMMA], b[IK_GATE],
             m->map, m->size, w->bias->abs_offset, w->scale->abs_offset, n,
             IK_EXPERTS + IK_SHARED) &&
         inkling_routed(b[IK_PAIRS], m, w->w13, b[IK_NORM], b[IK_IDS], n, IK_USED) &&
