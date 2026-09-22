@@ -96,6 +96,12 @@ static void mimo2_payload_drop_draft(ds4_mimo2_graph *g) {
         g->draft_pos[depth] = 0;
         g->draft_saved[depth] = 0;
     }
+    /* The tap ring is not in the snapshot. A reused graph must not
+     * speculate from positions that belong to another prefix. */
+    if (g->dflash_pos) {
+        for (unsigned i = 0; i < 1024; i++) { g->dflash_pos[i] = UINT_MAX; }
+    }
+    g->dflash_saved_n = 0;
 }
 
 static int mimo2_payload_restore(ds4_mimo2_graph *g, FILE *fp, uint64_t *left,

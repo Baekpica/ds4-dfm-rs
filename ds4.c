@@ -35497,6 +35497,13 @@ struct ds4_vocab {
 #include "ds4_ling3vl_vision.inc"
 #include "ds4_step37_vision.inc"
 #include "ds4_mimo2_media.inc"
+typedef struct {
+    const ds4_model *model;
+    const ds4_tensor *fc, *hidden_norm, *output_norm;
+    const ds4_tensor *attn_norm[5], *q[5], *k[5], *v[5], *o[5];
+    const ds4_tensor *q_norm[5], *k_norm[5], *sinks[5];
+    const ds4_tensor *ffn_norm[5], *gate[5], *up[5], *down[5];
+} ds4_mimo2_dflash;
 #endif
 
 struct ds4_engine {
@@ -35509,6 +35516,7 @@ struct ds4_engine {
     ds4_step37_vision_weights step37_vision_weights;
     ds4_ling3vl_vision_weights ling3vl_vision_weights;
     ds4_mimo2_media mimo2_media;
+    ds4_mimo2_dflash dflash;
 #endif
     ds4_vocab vocab;
     ds4_weights weights;
@@ -35530,6 +35538,7 @@ struct ds4_engine {
     ds4_distributed_options distributed;
     bool metal_ready;
     bool mtp_ready;
+    bool mimo2_dflash;
     bool dspark_ready;
     bool drafter_shared;
     bool vision_ready;
@@ -44221,6 +44230,7 @@ static bool exaone_graph_decode(ds4_exaone_gpu_graph *g,
 #include "ds4_ling3vl_graph.inc"
 #include "ds4_step37_graph.inc"
 #include "ds4_mimo2_graph.inc"
+#include "ds4_mimo2_dflash.inc"
 
 /* Shared partial-prefix checkpoint bookkeeping.  A slot is an immutable
  * snapshot of one bank's non-rewindable state at a committed position;
@@ -68311,8 +68321,13 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     if (g_host_shape) model_apply_host_shape();
     else config_validate_model(&e->model);
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2 &&
+        !(opt->mtp_path && opt->mtp_path[0]) &&
         e->mtp_draft_tokens > MIMO2_DRAFT_LAYERS) {
         e->mtp_draft_tokens = MIMO2_DRAFT_LAYERS;
+    }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2 &&
+        opt->mtp_path && opt->mtp_path[0]) {
+        if (e->mtp_draft_tokens < 2 || e->mtp_draft_tokens > 8) { e->mtp_draft_tokens = 8; }
     }
     if (!opt->inspect_only && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37 &&
         (e->backend != DS4_BACKEND_CUDA || load_slice ||
@@ -68450,7 +68465,8 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         if (!dspark_path || !dspark_path[0])
             dspark_path = getenv("DS4_DSPARK_MODEL");
         if ((opt->mtp_path && opt->mtp_path[0] && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_INKLING &&
-             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_STEP37) ||
+             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_STEP37 &&
+             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MIMO2) ||
             (dspark_path && dspark_path[0])) {
             fprintf(stderr,
                     "ds4: this model family does not accept the requested "
@@ -68477,6 +68493,21 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             if (e->mtp_draft_tokens > STEP37_DRAFT_LAYERS) {
                 e->mtp_draft_tokens = STEP37_DRAFT_LAYERS;
             }
+        } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
+#ifndef DS4_NO_GPU
+            if (!mimo2_dflash_bind(&e->dflash, &e->mtp_model)) {
+                fprintf(stderr, "ds4: DFlash file is not the five-layer draft\n");
+                ds4_engine_close(e);
+                *out = NULL;
+                return 1;
+            }
+            e->mimo2_dflash = true;
+#else
+            fprintf(stderr, "ds4: DFlash requires CUDA\n");
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+#endif
         } else {
             mtp_weights_bind(&e->mtp_weights, &e->mtp_model);
         }
@@ -69677,7 +69708,7 @@ static int ds4_session_alloc_graph(ds4_session *s) {
         const uint64_t before = session_tensors_census_live();
         ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
         const bool ok = mimo2_session_fit(e, ctx, s->prefill_cap, NULL) &&
-            mimo2_graph_alloc(&s->mimo2_graph, ctx, s->prefill_cap);
+            mimo2_graph_alloc(&s->mimo2_graph, ctx, s->prefill_cap, s->engine->mimo2_dflash);
         ds4_gpu_mem_scope_end();
         if (!ok) {
             mimo2_graph_free(&s->mimo2_graph);
@@ -70126,7 +70157,7 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
 #else
         if ((unsigned)ctx_size > M2_CONTEXT || e->backend != DS4_BACKEND_CUDA ||
             !e->metal_ready || e->distributed.role != DS4_DISTRIBUTED_NONE ||
-            e->dspark_ready || e->mtp_ready) { return 1; }
+            e->dspark_ready || (e->mtp_ready && !e->mimo2_dflash)) { return 1; }
         ds4_session *s = xcalloc(1, sizeof(*s));
         s->engine = e;
         s->ctx_size = ctx_size;
@@ -71225,6 +71256,9 @@ static int ling3vl_session_eval(ds4_session *s, int token, char *err,
 }
 
 #include "ds4_mimo2_session.inc"
+#define MIMO2_DFLASH_TRIAL
+#include "ds4_mimo2_dflash.inc"
+#undef MIMO2_DFLASH_TRIAL
 #include "ds4_mimo2_mtp.inc"
 
 static int step37_session_fail(ds4_session *s, char *err, size_t errlen) {

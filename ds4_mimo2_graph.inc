@@ -4,7 +4,7 @@
  * frame is 32x256. Each pair can carry a video span and an audio span,
  * and a request may hold four clips. 8 spans was about 8 seconds. */
 enum {
-    M2_TRIAL = 4,
+    M2_TRIAL = 8,
     M2_VIDEO_RAW_CAP = 64 * 1024 * 1024,
     M2_MIN_FRAME_BYTES = 32 * 256 * 3,
     M2_MEDIA_INPUTS = 4,
@@ -37,6 +37,14 @@ typedef struct {
     /* Grown up to M2_SPAN_MAX on sync. Not part of the KV snapshot. */
     mimo2_media_span *spans;
     unsigned span_cap, span_n;
+    /* Last 1024 positions, five target layers, when DFlash is loaded. */
+    ds4_gpu_tensor *dflash_tap;
+    unsigned *dflash_pos;
+    /* Trial rows about to be overwritten. Rejected slots are copied back. */
+    float *dflash_saved;
+    unsigned dflash_saved_pos[M2_TRIAL];
+    unsigned dflash_saved_n;
+    bool dflash_on;
 } ds4_mimo2_graph;
 
 static void mimo2_graph_free(ds4_mimo2_graph *g) {
@@ -49,12 +57,19 @@ static void mimo2_graph_free(ds4_mimo2_graph *g) {
     free(g->host_positions);
     free(g->verify_logits);
     free(g->spans);
+    free(g->dflash_pos);
+    free(g->dflash_saved);
+    ds4_gpu_tensor_free(g->dflash_tap);
     memset(g, 0, sizeof(*g));
 }
 
-static bool mimo2_graph_alloc(ds4_mimo2_graph *g, unsigned ctx, unsigned cap) {
+static bool mimo2_graph_alloc(ds4_mimo2_graph *g, unsigned ctx, unsigned cap, bool dflash) {
     free(g->spans);
+    free(g->dflash_pos);
+    free(g->dflash_saved);
+    ds4_gpu_tensor_free(g->dflash_tap);
     memset(g, 0, sizeof(*g));
+    g->dflash_on = dflash;
     const ds4_context_memory estimate = mimo2_memory(ctx, cap);
     if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MIMO2 || !estimate.total_bytes) { return false; }
     g->context = ctx;
@@ -128,6 +143,16 @@ static bool mimo2_graph_alloc(ds4_mimo2_graph *g, unsigned ctx, unsigned cap) {
     if (!g->hidden || !g->joined || !g->journal || !g->verify_logits) {
         mimo2_graph_free(g);
         return false;
+    }
+    if (dflash) {
+        g->dflash_tap = ds4_gpu_tensor_alloc(1024ull * 5 * 4096 * sizeof(float));
+        g->dflash_pos = xmalloc(1024 * sizeof(unsigned));
+        g->dflash_saved = xmalloc((size_t)M2_TRIAL * 5 * 4096 * sizeof(float));
+        if (!g->dflash_tap || !g->dflash_pos || !g->dflash_saved) {
+            mimo2_graph_free(g);
+            return false;
+        }
+        for (unsigned i = 0; i < 1024; i++) { g->dflash_pos[i] = UINT_MAX; }
     }
     return true;
 }
@@ -226,6 +251,18 @@ static bool mimo2_forward(ds4_mimo2_graph *g, const ds4_model *m, const ds4_weig
         !mimo2_apply_spans(g, n, pos)) { return false; }
     for (unsigned il = 0; il < MIMO2_LAYERS; il++) {
         if (!mimo2_layer(g, m, w, il, n)) { return false; }
+        if (g->dflash_tap && (il == 0 || il == 11 || il == 23 || il == 35 || il == 47)) {
+            const unsigned which = il == 0 ? 0 : il == 11 ? 1 : il == 23 ? 2 : il == 35 ? 3 : 4;
+            for (unsigned i = 0; i < n; i++) {
+                const unsigned p = pos + i;
+                const unsigned slot = p % 1024u;
+                const uint64_t dst = ((uint64_t)slot * 5u + which) * 4096u * sizeof(float);
+                const uint64_t src = (uint64_t)i * 4096u * sizeof(float);
+                if (!ds4_gpu_tensor_copy(g->dflash_tap, dst, g->ws.b_cur, src,
+                        4096u * sizeof(float))) { return false; }
+                g->dflash_pos[slot] = p;
+            }
+        }
     }
     if (!mimo2_head(g, m, w, n - 1)) { return false; }
     if (!ds4_gpu_tensor_copy(g->hidden, 0, g->ws.b_cur,

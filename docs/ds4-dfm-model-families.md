@@ -57,7 +57,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | [Inkling Small](inkling-small.md) | `general.architecture=inkling` | MQ85GB source-interleaved GQA, four-tap convolution, embedded media encoders, optional eight-layer MTP-BF16 |
 | [Step 3.7 Flash](step37-initial.md) ([serving](step37-serving-2026-09-13.md)) | `general.architecture=step35` | MQ83 full/sliding GQA, post-SiLU expert clamps, optional Q8 MTP and F16 vision |
 | [Ling-3.0-flash-VL](ling3-flash-vl.md) | `general.architecture=bailingmoe3` | 35 recurrent KDA blocks and 7 latent MLA blocks, 512 grouped-sigmoid experts, separate Qwen3-VL mmproj |
-| MiMo-V2.6-Flash-RL | `general.architecture=mimo2` | 48 trunk layers, 9 full-attention and 39 SWA-128, 256 experts top-8, three embedded dense MTP blocks. Embedded MTP is qualified. Image, audio, and video projector execution is qualified. Qualified context 262144. Media spans follow the 64MiB decode cap, not an 8-span ceiling. DFlash, 512k, and 1M are not qualified. |
+| MiMo-V2.6-Flash-RL | `general.architecture=mimo2` | 48 trunk layers, 9 full-attention and 39 SWA-128, 256 experts top-8, three embedded dense MTP blocks. 512k serial text is the qualified context. Embedded MTP is qualified when no DFlash file is loaded. DFlash, the projector, image, audio, and video are qualified together at context 262144 and prefill chunk 4096. 512k with the projector and DFlash was not measured. max_seqs 2 is omitted because the graph is serial. Media spans follow the 64MiB decode cap. 1M is not qualified. |
 
 The scheduler implementation may differ because the model states differ, but
 the operator and client contract is the same. Changing `-m` to a GGUF from a

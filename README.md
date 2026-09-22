@@ -230,7 +230,7 @@ tokenizer/chat contract, state lifecycle, and native execution path.
 | Inkling Small | `inkling` | MQ85GB + optional eight-layer MTP-BF16; serial CUDA text/image/audio input and text output. [HTTP checks and limits](docs/inkling-small.md), [GB10 performance](docs/inkling-optimization-2026-09-11.md). |
 | Step 3.7 Flash | `step35` | Nine-shard MQ83, optional three-block Q8 MTP and F16 vision; CUDA text/image serving, opt-in text banks with MTP, partial fork and disk KV. [Serving limits](docs/step37-serving-2026-09-13.md), [capped-clock A/B](docs/step37-optimization-2026-09-13-r3.md). |
 | Ling-3.0-flash-VL | `bailingmoe3` | Three-shard MQ-Q5 plus the BF16 mmproj; hybrid KDA/MLA over 512 grouped-sigmoid experts, still-image input, persistent banks, partial fork and disk KV. [Family contract](docs/ling3-flash-vl.md). |
-| MiMo-V2.6-Flash-RL | `mimo2` | Four-shard mixed GGUF. Serial CUDA text and qualified embedded MTP. Image, audio, and video projector execution is qualified. Qualified context 262144. DFlash, 512k, and 1M are not qualified. |
+| MiMo-V2.6-Flash-RL | `mimo2` | Four-shard mixed GGUF. 512k serial text is the qualified context. Embedded MTP is qualified when no DFlash file is loaded. DFlash, the projector, image, audio, and video are qualified together at context 262144 and prefill chunk 4096. 512k with the projector and DFlash was not measured. max_seqs 2 is omitted because the graph is serial. 1M is not qualified. |
 
 The current family contract and measured model-specific limits are documented
 in [`ds4-dfm-model-families.md`](docs/ds4-dfm-model-families.md). Arbitrary

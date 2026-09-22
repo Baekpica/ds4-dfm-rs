@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <limits.h>
 #ifdef MIMO2_TEST_CUDA
 #include <cuda_runtime_api.h>
 #endif
@@ -25,6 +26,8 @@ typedef struct {
     unsigned trial_n, verify_rows, span_n;
     uint64_t media_tag, checkpoint_tag;
     bool failed, hidden_valid;
+    unsigned *dflash_pos;
+    unsigned dflash_saved_n;
 } ds4_mimo2_graph;
 static bool fail_sync, fail_write;
 static int ds4_gpu_synchronize(void) {
@@ -138,9 +141,14 @@ static void trial(unsigned n,unsigned source_cap,unsigned dest_cap) {
     const uint64_t size=(uint64_t)ftell(f);assert(size==mimo2_payload_bytes(&a,n));
     b.hidden_valid=true; b.trial_n=3; b.verify_rows=3; b.span_n=2;
     b.media_tag=9; b.checkpoint_tag=9; b.draft_pos[0]=4; b.draft_saved[1]=1;
+    unsigned *ring=malloc(1024*sizeof(unsigned));assert(ring);
+    for(unsigned i=0;i<1024;i++) { ring[i]=7; }
+    b.dflash_pos=ring; b.dflash_saved_n=3;
     assert(!restore(&b,f,size,&got,out));assert(!b.failed && b.position==n);
     assert(!b.hidden_valid && !b.trial_n && !b.verify_rows && !b.span_n);
     assert(!b.media_tag && !b.checkpoint_tag && !b.draft_pos[0] && !b.draft_saved[1]);
+    assert(!b.dflash_saved_n);
+    for(unsigned i=0;i<1024;i++) { assert(ring[i]==UINT_MAX); }
     assert(!memcmp(tokens,got,n*4) && !memcmp(logits,out,DS4_N_VOCAB*4));free(got);got=NULL;
     assert(tensor_read(b.logits,0,out,DS4_N_VOCAB*4));assert(!memcmp(logits,out,DS4_N_VOCAB*4));
     for(unsigned il=0;il<48;il++) {
@@ -173,7 +181,7 @@ static void trial(unsigned n,unsigned source_cap,unsigned dest_cap) {
     assert(!restore(&b,f,size,&got,out));free(got);got=NULL;
     assert(!fflush(f));assert(!ftruncate(fileno(f),(off_t)size-1));
     assert(restore(&b,f,size,&got,out));assert(b.failed && !got);
-    fclose(f);free(tokens);free(logits);free(out);destroy(&a);destroy(&b);
+    fclose(f);free(tokens);free(logits);free(out);free(ring);destroy(&a);destroy(&b);
 }
 int main(void) {
 #ifdef MIMO2_TEST_CUDA

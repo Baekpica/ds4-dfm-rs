@@ -631,9 +631,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         };
     }
     match family {
-        // P1: serial CUDA text, image, audio, video, and the three embedded
-        // MTP blocks. The embedded predictor is qualified. DFlash, 512k, and
-        // 1M stay unqualified.
+        // Embedded MTP when no file is passed. A DFlash path is the external
+        // draft, not those three blocks. The graph stays serial.
         ModelFamily::Mimo2 => ServingCaps {
             family,
             variant,
@@ -649,7 +648,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             spec_draft_min: 2,
             host: HostNeed::Cuda,
             ctx_max: Some(crate::mimo2::INDEX_LIMIT),
-            qualified_ctx: Some(crate::mimo2::QUALIFIED_CONTEXT),
+            qualified_ctx: Some(crate::mimo2::QUALIFIED_LONG),
             qualified_banks: Some(1),
             qualified_prompt: None,
             media_serial: true,
@@ -1006,7 +1005,7 @@ pub fn resolve_plan(
                 caps.ctx_max.unwrap_or_default()
             ),
         ));
-    } else if let Some(qctx) = caps.qualified_ctx {
+    } else if let Some(qctx) = measured_ctx(caps, req, facts) {
         if req.ctx as u32 > qctx {
             issues.push(warn(
                 "ctx_unqualified",
@@ -1117,7 +1116,7 @@ pub fn resolve_plan(
         } else {
             Support::Qualified
         },
-        ctx: caps.qualified_ctx,
+        ctx: measured_ctx(caps, req, facts),
         banks_n: caps.qualified_banks,
         prompt: caps.qualified_prompt,
         note: qualified_note(caps),
@@ -1845,6 +1844,12 @@ fn resolve_seqs(
             ));
         }
     }
+    if caps.family == ModelFamily::Mimo2 {
+        issues.push(warn(
+            "seqs_omitted",
+            "max_seqs 2 is omitted; the MiMo graph is serial",
+        ));
+    }
     let opt_in = n > 1 && caps.banks == BankLane::OptIn;
     (n, opt_in)
 }
@@ -1857,6 +1862,7 @@ fn resolve_mtp(
     issues: &mut Vec<PlanIssue>,
 ) -> (MtpMode, bool) {
     let has_path = req.mtp_path.is_some();
+    let mimo_dflash = caps.family == ModelFamily::Mimo2 && has_path;
     let can = match caps.mtp {
         MtpKind::None | MtpKind::BoundOnly => false,
         MtpKind::Embedded | MtpKind::Sidecar | MtpKind::DeepSeek => true,
@@ -1876,7 +1882,7 @@ fn resolve_mtp(
     }
     // Embedded predictors use the main artifact; only sidecar families
     // take a separate path.
-    if has_path && !matches!(caps.mtp, MtpKind::Sidecar | MtpKind::DeepSeek) {
+    if has_path && !mimo_dflash && !matches!(caps.mtp, MtpKind::Sidecar | MtpKind::DeepSeek) {
         issues.push(error(
             "mtp_contract",
             format!(
@@ -1952,8 +1958,10 @@ fn resolve_mtp(
     }
     let weights = match caps.mtp {
         MtpKind::Embedded => {
-            req.mtp_mode == MtpMode::On
-                || (req.mtp_mode == MtpMode::Auto && caps.mtp_support == Support::Qualified)
+            req.mtp_mode != MtpMode::Off
+                && (mimo_dflash
+                    || req.mtp_mode == MtpMode::On
+                    || (req.mtp_mode == MtpMode::Auto && caps.mtp_support == Support::Qualified))
         }
         MtpKind::Sidecar | MtpKind::DeepSeek => has_path || facts.mtp_loaded,
         MtpKind::BoundOnly | MtpKind::None => false,
@@ -2050,6 +2058,32 @@ fn backend_name(backend: Backend) -> &'static str {
     }
 }
 
+/// 512k text was measured without the projector and without DFlash.
+/// The two together were measured at 262144, so that plan must not
+/// publish 524288 as the qualified context.
+/// `--mtp-mode off` must not open a draft width. MiMo speculation turns on
+/// from that width alone, so a leftover `--mtp-draft` would ignore the mode.
+pub fn open_draft_tokens(
+    mode: MtpMode,
+    requested: Option<i32>,
+    planned: Option<i32>,
+) -> Option<i32> {
+    if mode == MtpMode::Off {
+        return None;
+    }
+    requested.filter(|n| *n > 0).or(planned.filter(|n| *n > 0))
+}
+
+fn measured_ctx(caps: ServingCaps, req: &ServingRequest, facts: &EngineFacts) -> Option<u32> {
+    if caps.family == ModelFamily::Mimo2
+        && req.mtp_path.is_some()
+        && (facts.vision_loaded || facts.vision_path_ok == Some(true))
+    {
+        return Some(crate::mimo2::QUALIFIED_CONTEXT);
+    }
+    caps.qualified_ctx
+}
+
 fn qualified_note(caps: ServingCaps) -> &'static str {
     match caps.variant {
         Variant::Step37Flash => {
@@ -2070,7 +2104,7 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
             "common UX baseline; configured values and verified combinations differ"
         }
         Variant::Mimo26Flash => {
-            "256k serial text is the qualified context. Embedded MTP is qualified. Image, audio, and video projector execution is qualified. DFlash, 512k, and 1M are not qualified"
+            "512k serial text is the qualified context. Embedded MTP is qualified when no DFlash file is loaded. DFlash, the projector, image, audio, and video are qualified together at context 262144 and prefill chunk 4096. 512k with the projector and DFlash was not measured. max_seqs 2 is omitted because the graph is serial. 1M is not qualified"
         }
         _ => "",
     }
@@ -2241,6 +2275,13 @@ mod tests {
         for key in ["native_prefill_env", "prefix_reuse", "banks", "mtp", "disk"] {
             assert!(controls[key].is_null(), "{key}: {controls}");
         }
+    }
+
+    #[test]
+    fn off_mode_drops_a_requested_draft_width() {
+        assert_eq!(open_draft_tokens(MtpMode::Off, Some(8), Some(2)), None);
+        assert_eq!(open_draft_tokens(MtpMode::On, Some(8), Some(2)), Some(8));
+        assert_eq!(open_draft_tokens(MtpMode::Auto, None, Some(2)), Some(2));
     }
 
     #[test]

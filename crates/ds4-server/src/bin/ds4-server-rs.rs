@@ -149,9 +149,7 @@ fn main() {
                     .unwrap_or_else(|| usage());
             }
             "--mtp-draft" => {
-                let n = positive_count(&arg, args.next());
-                serve_req.mtp_draft = Some(n);
-                model_options.push(ModelOpenOption::MtpDraftTokens(n));
+                serve_req.mtp_draft = Some(positive_count(&arg, args.next()));
             }
             "--mtp-margin" => {
                 model_options.push(ModelOpenOption::MtpMargin(margin(&arg, args.next())))
@@ -333,10 +331,12 @@ fn main() {
     }
     // The engine allocates a speculative runtime only above the family's
     // draft minimum, so an unspecified draft takes the resolved one.
-    if serve_req.mtp_draft.is_none() {
-        if let Some(draft) = plan.effective.mtp_draft {
-            model_options.push(ModelOpenOption::MtpDraftTokens(draft));
-        }
+    if let Some(draft) = ds4_core::open_draft_tokens(
+        plan.effective.mtp_mode,
+        serve_req.mtp_draft,
+        plan.effective.mtp_draft,
+    ) {
+        model_options.push(ModelOpenOption::MtpDraftTokens(draft));
     }
     let cont_width = if serve_req.max_seqs == MaxSeqs::Off || plan.uses_serial_mtp() {
         0

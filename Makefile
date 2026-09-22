@@ -307,7 +307,7 @@ proof-rust-cuda-opp-c: ds4 ds4-c
 			--work-dir "$$root/rust" --check-expected "$$expected"
 endif
 
-ds4.o: ds4.c ds4_mimo2_bind.inc ds4_mimo2_plan.h ds4_mimo2_graph.inc ds4_mimo2_session.inc ds4_mimo2_mtp.inc ds4_mimo2_media.inc ds4_mimo2_payload.inc ds4_dots3_batch.inc ds4_dots3_mtp.inc ds4_step37_graph.inc ds4_step37_vision.inc ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_rope.h ds4_ling3vl_batch.inc ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h vendor/stb_image.h
+ds4.o: ds4.c ds4_mimo2_bind.inc ds4_mimo2_plan.h ds4_mimo2_graph.inc ds4_mimo2_session.inc ds4_mimo2_mtp.inc ds4_mimo2_media.inc ds4_mimo2_payload.inc ds4_mimo2_dflash.inc ds4_dots3_batch.inc ds4_dots3_mtp.inc ds4_step37_graph.inc ds4_step37_vision.inc ds4_ling3vl_graph.inc ds4_ling3vl_vision.inc ds4_ling3vl_rope.h ds4_ling3vl_batch.inc ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_distributed.h ds4_gpu.h vendor/stb_image.h
 	$(CC) $(CFLAGS) -c -o $@ ds4.c
 
 # Rust FFI seam: wraps ds4.h so crates/ds4-sys never bindgens the engine header.

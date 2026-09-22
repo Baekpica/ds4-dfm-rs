@@ -90,6 +90,15 @@ pub fn probe_mtp_sidecar(
             message: "a distributed launch does not attach an MTP sidecar".into(),
         });
     }
+    // MiMo's external draft is the five-layer DFlash file, not a DeepSeek
+    // nextn sidecar. The open validates it with inspect_dflash and passes a
+    // null bind map, so the preflight has to use that same check.
+    if shape.family == ModelFamily::Mimo2 {
+        return crate::mimo2::inspect_dflash(std::path::Path::new(path)).map_err(|error| Error {
+            code: 1,
+            message: error.to_string(),
+        });
+    }
     attach_siblings(
         shape.family,
         shape,
@@ -220,20 +229,12 @@ pub fn probe_vision_sidecar(
         });
     }
     if shape.family == ModelFamily::Mimo2 {
-        let g = crate::GgufFile::open(std::path::Path::new(path)).map_err(|e| Error {
-            code: 1,
-            message: format!("vision open failed: {e}"),
-        })?;
-        if g.get_string("general.architecture") != Some(b"clip".as_slice())
-            || g.get_string("clip.vision.projector_type") != Some(b"mimovl".as_slice())
-            || g.get_string("clip.audio.projector_type") != Some(b"mimo_audio".as_slice())
-        {
-            return Err(Error {
+        return crate::mimo2::inspect_projector(std::path::Path::new(path)).map_err(|error| {
+            Error {
                 code: 1,
-                message: "MiMo projector metadata does not match V2.6".into(),
-            });
-        }
-        return Ok(());
+                message: error.to_string(),
+            }
+        });
     }
     if shape.family == ModelFamily::Ling3Vl {
         return crate::Ling3VlVisionPlan::inspect(std::path::Path::new(path))

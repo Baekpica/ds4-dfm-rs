@@ -1,6 +1,6 @@
 //! MiMo-V2.6-Flash-RL mixed artifact and per-layer execution contract.
 //! Metadata includes three dense prediction blocks after the 48-layer trunk.
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::gguf::{GgufError, GgufFile};
@@ -20,7 +20,10 @@ pub const MTP_BLOCKS: u32 = BLOCKS - TRUNK;
 pub const QUALIFIED_CONTEXT: u32 = 262_144;
 pub const INDEX_LIMIT: u32 = 1_048_576;
 pub const SWA_WINDOW: u32 = 128;
-pub const PREFILL_CAP: u32 = 512;
+pub const PREFILL_CAP: u32 = 4096;
+pub const PREFILL_MAX: u32 = 8192;
+/// Qualified long context. 1M stays an index limit, not a qualified run.
+pub const QUALIFIED_LONG: u32 = 524_288;
 pub const PATCH: u32 = 16;
 pub const MERGE: u32 = 2;
 pub const TEMPORAL: u32 = 2;
@@ -41,7 +44,7 @@ pub const VIDEO_END: i32 = 151671;
 pub const AUDIO_START: i32 = 151673;
 pub const AUDIO_END: i32 = 151674;
 
-pub const TRIAL_CAP: usize = 4;
+pub const TRIAL_CAP: usize = 8;
 const EMBED: u64 = 4096;
 const VOCAB: u64 = 152576;
 const HEADS: u64 = 64;
@@ -383,8 +386,294 @@ pub struct Mimo2Admission {
     pub context_1m_qualified: bool,
 }
 
+/// True when the names are the external DFlash body and not the embedded
+/// next-token blocks.
+pub fn draft_is_dflash(names: &[&str]) -> bool {
+    let has_fc = names.iter().any(|name| *name == "fc.weight");
+    let embedded = names.iter().any(|name| name.contains("nextn"));
+    has_fc && !embedded
+}
+
+/// Names and dims `mimo2_dflash_bind` requires. Five layers, twelve tensors
+/// each, plus the concat projection and the two norms.
+fn dflash_contract() -> Vec<(String, Vec<u64>)> {
+    const LAYERS: usize = 5;
+    const H: u64 = 4096;
+    const Q: u64 = 8192;
+    const KV: u64 = 1024;
+    const FF: u64 = 16384;
+    const HD: u64 = 128;
+    const SINKS: u64 = 64;
+    let mut out = vec![
+        ("fc.weight".to_string(), vec![LAYERS as u64 * H, H]),
+        ("enc.output_norm.weight".to_string(), vec![H]),
+        ("output_norm.weight".to_string(), vec![H]),
+    ];
+    for layer in 0..LAYERS {
+        let specs: &[(&str, &[u64])] = &[
+            ("attn_norm.weight", &[H]),
+            ("attn_q.weight", &[H, Q]),
+            ("attn_k.weight", &[H, KV]),
+            ("attn_v.weight", &[H, KV]),
+            ("attn_output.weight", &[Q, H]),
+            ("attn_q_norm.weight", &[HD]),
+            ("attn_k_norm.weight", &[HD]),
+            ("attn_sinks.weight", &[SINKS]),
+            ("ffn_norm.weight", &[H]),
+            ("ffn_gate.weight", &[H, FF]),
+            ("ffn_up.weight", &[H, FF]),
+            ("ffn_down.weight", &[FF, H]),
+        ];
+        for (suffix, dims) in specs {
+            out.push((format!("blk.{layer}.{suffix}"), dims.to_vec()));
+        }
+    }
+    out
+}
+
+pub fn inspect_dflash(path: &Path) -> Result<(), Mimo2Error> {
+    let file = GgufFile::open(path)?;
+    if file.get_string("general.architecture") != Some(b"dflash".as_slice()) {
+        return Err(mismatch("dflash architecture"));
+    }
+    if file.get_u32("dflash.block_count") != Some(5) || file.get_u32("dflash.block_size") != Some(8)
+    {
+        return Err(mismatch("dflash shape"));
+    }
+    let inventory = TensorInventory::open(path).map_err(|_| mismatch("dflash tensors"))?;
+    let names: Vec<&str> = inventory
+        .tensors
+        .iter()
+        .map(|tensor| tensor.name.as_str())
+        .collect();
+    let contract = dflash_contract();
+    if inventory.tensors.len() != contract.len() || !draft_is_dflash(&names) {
+        return Err(mismatch("dflash tensors"));
+    }
+    let index: BTreeMap<&str, &TensorInfo> = inventory
+        .tensors
+        .iter()
+        .map(|tensor| (tensor.name.as_str(), tensor))
+        .collect();
+    for (name, dims) in &contract {
+        expect_dflash_dims(&index, name, dims)?;
+    }
+    Ok(())
+}
+
+fn expect_dflash_dims(
+    index: &BTreeMap<&str, &TensorInfo>,
+    name: &str,
+    dims: &[u64],
+) -> Result<(), Mimo2Error> {
+    let Some(tensor) = index.get(name) else {
+        return Err(Mimo2Error(format!("missing {name}")));
+    };
+    if tensor.ndim as usize != dims.len() {
+        return Err(Mimo2Error(format!("shape {name}")));
+    }
+    for (i, dim) in dims.iter().enumerate() {
+        if tensor.dim[i] != *dim {
+            return Err(Mimo2Error(format!("shape {name}")));
+        }
+    }
+    Ok(())
+}
+
+const V_DEPTH: usize = 28;
+const A_LAYERS: usize = 24;
+const A_LOCAL: usize = 6;
+const F32_TYPE: u32 = 0;
+const BF16_TYPE: u32 = 30;
+
+fn expect_tensor(
+    index: &BTreeMap<&str, &TensorInfo>,
+    name: &str,
+    typ: u32,
+    dims: &[u64],
+) -> Result<(), Mimo2Error> {
+    let Some(tensor) = index.get(name) else {
+        return Err(Mimo2Error(format!("missing {name}")));
+    };
+    if tensor.typ != typ || tensor.ndim as usize != dims.len() {
+        return Err(Mimo2Error(format!("shape {name}")));
+    }
+    for (i, dim) in dims.iter().enumerate() {
+        if tensor.dim[i] != *dim {
+            return Err(Mimo2Error(format!(
+                "shape {name} got {:?} want {dims:?}",
+                &tensor.dim[..tensor.ndim as usize]
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The native bind aborts the process on a missing or mistyped projector
+/// tensor. The server preflight has to reject that file first.
+pub fn inspect_projector(path: &Path) -> Result<(), Mimo2Error> {
+    let file = GgufFile::open(path)?;
+    if file.get_string("general.architecture") != Some(b"clip".as_slice())
+        || file.get_string("clip.vision.projector_type") != Some(b"mimovl".as_slice())
+        || file.get_string("clip.audio.projector_type") != Some(b"mimo_audio".as_slice())
+    {
+        return Err(mismatch("projector metadata"));
+    }
+    let vision = file
+        .get_array("clip.vision.wa_pattern_mode")
+        .ok_or_else(|| mismatch("vision pattern"))?;
+    let audio = file
+        .get_array("clip.audio.wa_pattern_mode")
+        .ok_or_else(|| mismatch("audio pattern"))?;
+    let bins = file
+        .get_array("clip.audio.rvq.codebook_size")
+        .ok_or_else(|| mismatch("rvq bins"))?;
+    if vision.len != V_DEPTH as u64 || audio.len != A_LAYERS as u64 || bins.len != 20 {
+        return Err(mismatch("projector pattern length"));
+    }
+    let modes = file
+        .array_le_u32s(&vision)
+        .map_err(|_| mismatch("vision pattern"))?;
+    let inventory = TensorInventory::open(path).map_err(|_| mismatch("projector tensors"))?;
+    let index: BTreeMap<&str, &TensorInfo> = inventory
+        .tensors
+        .iter()
+        .map(|tensor| (tensor.name.as_str(), tensor))
+        .collect();
+    let vh = 1280u64;
+    let vq = 2048u64;
+    let vqkv = 3072u64;
+    let vff = 4608u64;
+    let vout = 4096u64;
+    let merged = 5120u64;
+    let ah = 1024u64;
+    let aff = 4096u64;
+    expect_tensor(&index, "v.patch_embd.weight", F32_TYPE, &[16, 16, 3, vh])?;
+    expect_tensor(&index, "v.patch_embd.weight.1", F32_TYPE, &[16, 16, 3, vh])?;
+    expect_tensor(&index, "v.post_ln.weight", F32_TYPE, &[vh])?;
+    expect_tensor(&index, "mm.0.weight", BF16_TYPE, &[merged, merged])?;
+    expect_tensor(&index, "mm.2.weight", BF16_TYPE, &[merged, vout])?;
+    for layer in 0..V_DEPTH {
+        let prefix = format!("v.blk.{layer}");
+        expect_tensor(
+            &index,
+            &format!("{prefix}.attn_qkv.weight"),
+            BF16_TYPE,
+            &[vh, vqkv],
+        )?;
+        expect_tensor(
+            &index,
+            &format!("{prefix}.attn_out.weight"),
+            BF16_TYPE,
+            &[vq, vh],
+        )?;
+        expect_tensor(
+            &index,
+            &format!("{prefix}.ffn_gate.weight"),
+            BF16_TYPE,
+            &[vh, vff],
+        )?;
+        expect_tensor(
+            &index,
+            &format!("{prefix}.ffn_up.weight"),
+            BF16_TYPE,
+            &[vh, vff],
+        )?;
+        expect_tensor(
+            &index,
+            &format!("{prefix}.ffn_down.weight"),
+            BF16_TYPE,
+            &[vff, vh],
+        )?;
+        expect_tensor(&index, &format!("{prefix}.ln1.weight"), F32_TYPE, &[vh])?;
+        expect_tensor(&index, &format!("{prefix}.ln2.weight"), F32_TYPE, &[vh])?;
+        expect_tensor(
+            &index,
+            &format!("{prefix}.attn_qkv.bias"),
+            F32_TYPE,
+            &[vqkv],
+        )?;
+        expect_tensor(&index, &format!("{prefix}.attn_out.bias"), F32_TYPE, &[vh])?;
+        expect_tensor(&index, &format!("{prefix}.ffn_gate.bias"), F32_TYPE, &[vff])?;
+        expect_tensor(&index, &format!("{prefix}.ffn_up.bias"), F32_TYPE, &[vff])?;
+        expect_tensor(&index, &format!("{prefix}.ffn_down.bias"), F32_TYPE, &[vh])?;
+        if modes[layer] as i32 != -1 {
+            expect_tensor(&index, &format!("{prefix}.attn_sinks"), F32_TYPE, &[32])?;
+        }
+    }
+    expect_tensor(&index, "a.conv1d.1.weight", F32_TYPE, &[3, 128, ah])?;
+    expect_tensor(&index, "a.conv1d.2.weight", F32_TYPE, &[3, ah, ah])?;
+    expect_tensor(&index, "a.conv1d.1.bias", F32_TYPE, &[1, ah])?;
+    expect_tensor(&index, "a.conv1d.2.bias", F32_TYPE, &[1, ah])?;
+    expect_tensor(&index, "a.downsample.conv.weight", F32_TYPE, &[2, ah, ah])?;
+    expect_tensor(&index, "a.downsample.norm.weight", F32_TYPE, &[ah])?;
+    expect_tensor(&index, "a.downsample.norm.bias", F32_TYPE, &[ah])?;
+    expect_tensor(&index, "a.post_ln.weight", F32_TYPE, &[ah])?;
+    expect_tensor(&index, "a.post_ln.bias", F32_TYPE, &[ah])?;
+    expect_tensor(&index, "a.rvq.codebook.weight", F32_TYPE, &[ah, 1024, 20])?;
+    expect_tensor(&index, "mm.a.code_embd.weight", F32_TYPE, &[ah, 1280, 20])?;
+    expect_tensor(
+        &index,
+        "mm.a.mlp.1.weight",
+        BF16_TYPE,
+        &[ah * 4, ah * 4 * 4],
+    )?;
+    expect_tensor(&index, "mm.a.mlp.2.weight", BF16_TYPE, &[ah * 4 * 4, vout])?;
+    expect_tensor(&index, "mm.a.local_norm.weight", F32_TYPE, &[ah])?;
+    for layer in 0..A_LAYERS {
+        let prefix = format!("a.blk.{layer}");
+        for (suffix, dims) in [
+            ("attn_q.weight", [ah, ah].as_slice()),
+            ("attn_k.weight", &[ah, ah]),
+            ("attn_v.weight", &[ah, ah]),
+            ("attn_out.weight", &[ah, ah]),
+            ("ffn_up.weight", &[ah, aff]),
+            ("ffn_down.weight", &[aff, ah]),
+        ] {
+            expect_tensor(&index, &format!("{prefix}.{suffix}"), BF16_TYPE, dims)?;
+        }
+        for (suffix, dims) in [
+            ("ln1.weight", [ah].as_slice()),
+            ("ln1.bias", &[ah]),
+            ("ln2.weight", &[ah]),
+            ("ln2.bias", &[ah]),
+            ("attn_q.bias", &[ah]),
+            ("attn_v.bias", &[ah]),
+            ("attn_out.bias", &[ah]),
+            ("ffn_up.bias", &[aff]),
+            ("ffn_down.bias", &[ah]),
+        ] {
+            expect_tensor(&index, &format!("{prefix}.{suffix}"), F32_TYPE, dims)?;
+        }
+    }
+    for layer in 0..A_LOCAL {
+        let prefix = format!("mm.a.local_blk.{layer}");
+        for (suffix, dims) in [
+            ("attn_q.weight", [ah, ah].as_slice()),
+            ("attn_k.weight", &[ah, ah]),
+            ("attn_v.weight", &[ah, ah]),
+            ("attn_out.weight", &[ah, ah]),
+            ("ffn_gate.weight", &[ah, aff]),
+            ("ffn_up.weight", &[ah, aff]),
+            ("ffn_down.weight", &[aff, ah]),
+        ] {
+            expect_tensor(&index, &format!("{prefix}.{suffix}"), BF16_TYPE, dims)?;
+        }
+        for suffix in [
+            "ln1.weight",
+            "ln2.weight",
+            "attn_q.bias",
+            "attn_k.bias",
+            "attn_v.bias",
+        ] {
+            expect_tensor(&index, &format!("{prefix}.{suffix}"), F32_TYPE, &[ah])?;
+        }
+    }
+    Ok(())
+}
+
 /// Admit `requested` tokens. Values through the source limit stay intact.
-/// 512k and 1M are not qualified contexts.
+/// 524288 is the qualified context. 1048576 is admitted and not qualified.
 pub fn admit_context(requested: u32) -> Result<Mimo2Admission, Mimo2Error> {
     if requested == 0 || requested > INDEX_LIMIT {
         return Err(mismatch("context"));
@@ -393,11 +682,11 @@ pub fn admit_context(requested: u32) -> Result<Mimo2Admission, Mimo2Error> {
     Ok(Mimo2Admission {
         requested,
         effective: requested,
-        qualified: QUALIFIED_CONTEXT,
+        qualified: QUALIFIED_LONG,
         index_limit: INDEX_LIMIT,
         swa_window: SWA_WINDOW,
-        dflash_qualified: false,
-        context_512k_qualified: false,
+        dflash_qualified: true,
+        context_512k_qualified: true,
         context_1m_qualified: false,
     })
 }
@@ -417,7 +706,7 @@ pub fn kv_rows(layer: u32, ctx: u32, cap: u32) -> Option<u32> {
 
 /// Scratch plus trunk KV bytes from `ds4_mimo2_plan.h`. Draft KV is extra.
 pub fn context_bytes(ctx: u32, cap: u32) -> Option<u64> {
-    if ctx == 0 || ctx > INDEX_LIMIT || cap == 0 || cap > ctx || cap > 4096 {
+    if ctx == 0 || ctx > INDEX_LIMIT || cap == 0 || cap > ctx || cap > PREFILL_MAX {
         return None;
     }
     let mut raw = 0u64;
@@ -1516,15 +1805,206 @@ mod tests {
     }
 
     #[test]
+    fn dflash_file_is_not_embedded_mtp() {
+        let caps = crate::serving_caps(crate::ModelFamily::Mimo2, crate::Variant::Mimo26Flash);
+        let mut request = crate::serving::ServingRequest::default();
+        request.mtp_mode = crate::serving::MtpMode::On;
+        request.mtp_draft = Some(8);
+        request.mtp_path = Some("MiMo-V2.6-Flash-RL-DFlash-Q8_0.gguf".into());
+        let facts = crate::serving::EngineFacts {
+            mtp_path_ok: Some(true),
+            ..crate::serving::EngineFacts::default()
+        };
+        let plan = crate::serving::resolve_plan(&request, Some(caps), &facts);
+        assert!(
+            !plan.issues.iter().any(|issue| issue.code == "mtp_contract"),
+            "{:?}",
+            plan.issues
+        );
+        assert!(plan.effective.mtp_weights);
+        assert!(plan.requested.mtp_path);
+        assert_eq!(plan.effective.mtp_mode, crate::serving::MtpMode::On);
+        request.mtp_path = None;
+        let embedded = crate::serving::resolve_plan(&request, Some(caps), &facts);
+        assert!(!embedded.requested.mtp_path);
+        assert!(embedded.effective.mtp_weights);
+        assert_eq!(embedded.effective.mtp_mode, crate::serving::MtpMode::On);
+        assert!(draft_is_dflash(&["fc.weight", "blk.0.attn_q.weight"]));
+        assert!(!draft_is_dflash(&["blk.48.nextn.eh_proj.weight"]));
+        let file = Path::new("/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-DFlash-Q8_0.gguf");
+        if file.is_file() {
+            inspect_dflash(file).unwrap();
+            let shape = crate::shape_for_variant(crate::Variant::Mimo26Flash);
+            crate::probe_mtp_sidecar(shape, None, file.to_str().unwrap())
+                .expect("server preflight must accept the DFlash file");
+        }
+        request.mtp_path = None;
+        request.ctx = 262_144;
+        request.native_chunk = Some(PREFILL_CAP);
+        let bundle = crate::serving::resolve_plan(&request, Some(caps), &facts);
+        assert_eq!(bundle.effective.max_seqs, 1);
+        assert_eq!(bundle.effective.native_chunk, Some(PREFILL_CAP));
+        assert!(bundle.effective.ctx >= 262_144);
+        assert!(bundle.effective.mtp_weights);
+        assert!(bundle
+            .issues
+            .iter()
+            .any(|issue| issue.code == "seqs_omitted"));
+        assert_eq!(caps.qualified_banks, Some(1));
+    }
+
+    fn put_u32(buf: &mut Vec<u8>, value: u32) {
+        buf.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_u64(buf: &mut Vec<u8>, value: u64) {
+        buf.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_str(buf: &mut Vec<u8>, text: &str) {
+        put_u64(buf, text.len() as u64);
+        buf.extend_from_slice(text.as_bytes());
+    }
+
+    /// Header-only GGUF. Tensor type 4 has no payload size, so the dims can
+    /// be the real DFlash shapes without writing the weights.
+    fn write_dflash_gguf(path: &Path, tensors: &[(String, Vec<u64>)]) {
+        let mut buf = Vec::new();
+        put_u32(&mut buf, 0x4655_4747);
+        put_u32(&mut buf, 3);
+        put_u64(&mut buf, tensors.len() as u64);
+        put_u64(&mut buf, 3);
+        put_str(&mut buf, "general.architecture");
+        put_u32(&mut buf, 8);
+        put_str(&mut buf, "dflash");
+        put_str(&mut buf, "dflash.block_count");
+        put_u32(&mut buf, 4);
+        put_u32(&mut buf, 5);
+        put_str(&mut buf, "dflash.block_size");
+        put_u32(&mut buf, 4);
+        put_u32(&mut buf, 8);
+        for (name, dims) in tensors {
+            put_str(&mut buf, name);
+            put_u32(&mut buf, dims.len() as u32);
+            for dim in dims {
+                put_u64(&mut buf, *dim);
+            }
+            put_u32(&mut buf, 4);
+            put_u64(&mut buf, 0);
+        }
+        std::fs::write(path, buf).unwrap();
+    }
+
+    #[test]
+    fn dflash_preflight_rejects_a_bad_tensor() {
+        let dir = std::env::temp_dir().join(format!("ds4-dflash-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let contract = dflash_contract();
+        assert_eq!(contract.len(), 63);
+        let good = dir.join("good.gguf");
+        write_dflash_gguf(&good, &contract);
+        inspect_dflash(&good).unwrap();
+
+        let mut missing = contract.clone();
+        let slot = missing
+            .iter()
+            .position(|(name, _)| name == "blk.0.attn_q.weight")
+            .unwrap();
+        missing[slot].0 = "blk.0.extra.weight".to_string();
+        let missing_path = dir.join("missing.gguf");
+        write_dflash_gguf(&missing_path, &missing);
+        let err = inspect_dflash(&missing_path).unwrap_err();
+        assert!(err.to_string().contains("attn_q"), "{err}");
+
+        let mut shaped = contract.clone();
+        shaped[slot].1 = vec![4096, 1];
+        let shaped_path = dir.join("shaped.gguf");
+        write_dflash_gguf(&shaped_path, &shaped);
+        let err = inspect_dflash(&shaped_path).unwrap_err();
+        assert!(err.to_string().contains("attn_q"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dflash_plus_vision_does_not_qualify_512k() {
+        let caps = crate::serving_caps(crate::ModelFamily::Mimo2, crate::Variant::Mimo26Flash);
+        let mut request = crate::serving::ServingRequest::default();
+        request.ctx = 524_288;
+        request.mtp_mode = crate::serving::MtpMode::On;
+        request.mtp_path = Some("MiMo-V2.6-Flash-RL-DFlash-Q8_0.gguf".into());
+        let both = crate::serving::EngineFacts {
+            mtp_path_ok: Some(true),
+            vision_loaded: true,
+            vision_path_ok: Some(true),
+            ..crate::serving::EngineFacts::default()
+        };
+        let plan = crate::serving::resolve_plan(&request, Some(caps), &both);
+        assert_eq!(plan.qualified.ctx, Some(QUALIFIED_CONTEXT));
+        assert!(plan
+            .issues
+            .iter()
+            .any(|issue| issue.code == "ctx_unqualified"));
+        let text = crate::serving::EngineFacts {
+            vision_loaded: false,
+            vision_path_ok: None,
+            ..both
+        };
+        let text_plan = crate::serving::resolve_plan(&request, Some(caps), &text);
+        assert_eq!(text_plan.qualified.ctx, Some(QUALIFIED_LONG));
+        assert!(!text_plan
+            .issues
+            .iter()
+            .any(|issue| issue.code == "ctx_unqualified"));
+    }
+
+    #[test]
+    fn missing_projector_tensor_is_an_error() {
+        let err = expect_tensor(
+            &BTreeMap::new(),
+            "v.patch_embd.weight",
+            F32_TYPE,
+            &[16, 16, 3, 1280],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("missing"), "{err}");
+        let file = Path::new("/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf");
+        if file.is_file() {
+            inspect_projector(file).unwrap();
+        }
+    }
+
+    #[test]
+    fn admit_512k_keeps_1m_unqualified() {
+        let admitted = admit_context(524_288).unwrap();
+        assert_eq!(admitted.effective, 524_288);
+        assert!(admitted.context_512k_qualified);
+        assert!(!admitted.context_1m_qualified);
+        let caps = crate::serving_caps(crate::ModelFamily::Mimo2, crate::Variant::Mimo26Flash);
+        assert_eq!(caps.qualified_ctx, Some(524_288));
+        let mut request = crate::serving::ServingRequest::default();
+        request.ctx = 1_048_576;
+        let wide = crate::serving::resolve_plan(
+            &request,
+            Some(caps),
+            &crate::serving::EngineFacts::default(),
+        );
+        assert_eq!(wide.effective.ctx, 1_048_576);
+        assert!(wide
+            .issues
+            .iter()
+            .any(|issue| issue.code == "ctx_unqualified"));
+    }
+
+    #[test]
     fn admit_256k_without_clamping() {
         let admitted = admit_context(QUALIFIED_CONTEXT).unwrap();
         assert_eq!(admitted.effective, 262_144);
         assert!(admitted.effective >= admitted.requested);
-        assert_eq!(admitted.qualified, 262_144);
+        assert_eq!(admitted.qualified, QUALIFIED_LONG);
         assert_eq!(admitted.index_limit, 1_048_576);
         assert_eq!(admitted.swa_window, 128);
-        assert!(!admitted.dflash_qualified);
-        assert!(!admitted.context_512k_qualified);
+        assert!(admitted.dflash_qualified);
+        assert!(admitted.context_512k_qualified);
         assert!(!admitted.context_1m_qualified);
         assert_eq!(admit_context(INDEX_LIMIT).unwrap().effective, INDEX_LIMIT);
         assert!(admit_context(INDEX_LIMIT + 1).is_err());
@@ -1541,7 +2021,7 @@ mod tests {
         assert_eq!(full, 9);
 
         let caps = crate::serving_caps(crate::ModelFamily::Mimo2, crate::Variant::Mimo26Flash);
-        assert_eq!(caps.qualified_ctx, Some(QUALIFIED_CONTEXT));
+        assert_eq!(caps.qualified_ctx, Some(QUALIFIED_LONG));
         assert_eq!(caps.ctx_max, Some(INDEX_LIMIT));
         assert_eq!(caps.mtp, crate::serving::MtpKind::Embedded);
         let mut request = crate::serving::ServingRequest::default();
@@ -1570,27 +2050,15 @@ mod tests {
         assert_eq!(off.effective.ctx, QUALIFIED_CONTEXT as i32);
         assert_eq!(off.effective.mtp_mode, crate::serving::MtpMode::Off);
         assert!(!off.effective.mtp_weights);
-        request.mtp_mode = crate::serving::MtpMode::On;
-        request.mtp_path = Some("MiMo-V2.6-Flash-RL-DFlash-Q8_0.gguf".into());
-        let sidecar = crate::serving::resolve_plan(
-            &request,
-            Some(caps),
-            &crate::serving::EngineFacts::default(),
-        );
-        assert_eq!(sidecar.effective.mtp_mode, crate::serving::MtpMode::Off);
-        assert!(sidecar
-            .issues
-            .iter()
-            .any(|issue| issue.code == "mtp_contract"));
         request.mtp_mode = crate::serving::MtpMode::Auto;
         request.mtp_path = None;
-        request.ctx = 524_288;
+        request.ctx = 1_048_576;
         let wide = crate::serving::resolve_plan(
             &request,
             Some(caps),
             &crate::serving::EngineFacts::default(),
         );
-        assert_eq!(wide.effective.ctx, 524_288);
+        assert_eq!(wide.effective.ctx, 1_048_576);
         assert!(wide
             .issues
             .iter()
