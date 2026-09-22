@@ -1866,6 +1866,7 @@ impl Session<'_> {
         images: &[VisionInput<'_>],
         audios: &[AudioInput<'_>],
         videos: &[VisionInput<'_>],
+        packed: &[&[crate::mimo2::PackedVisual]],
     ) -> Result<()> {
         self.check_sync(tokens)?;
         let ids = tokens.as_slice();
@@ -1933,14 +1934,24 @@ impl Session<'_> {
                             message: "MiMo video span has no bytes".into(),
                         })?;
                         video_at += 1;
-                        let (_duration, packed) =
-                            crate::mimo2::load_video(video.data).map_err(|error| Error {
-                                code: 1,
-                                message: error.to_string(),
-                            })?;
+                        let decoded;
+                        let visuals: &[crate::mimo2::PackedVisual] = if packed
+                            .get(video_at - 1)
+                            .is_some_and(|frames| !frames.is_empty())
+                        {
+                            packed[video_at - 1]
+                        } else {
+                            decoded = crate::mimo2::load_video(video.data)
+                                .map_err(|error| Error {
+                                    code: 1,
+                                    message: error.to_string(),
+                                })?
+                                .1;
+                            decoded.as_slice()
+                        };
                         pairs.clear();
                         pair_at = 0;
-                        for visual in packed {
+                        for visual in visuals {
                             pairs.push(self.encode_mimo_vision(
                                 &visual.patches,
                                 visual.grid_h,
@@ -2112,7 +2123,7 @@ impl Session<'_> {
     pub fn sync_vision(&mut self, tokens: &TokenBuffer, images: &[VisionInput<'_>]) -> Result<()> {
         self.check_sync(tokens)?;
         if self.host.family == ModelFamily::Mimo2 {
-            return self.sync_mimo(tokens, images, &[], &[]);
+            return self.sync_mimo(tokens, images, &[], &[], &[]);
         }
         if self.host.family == ModelFamily::Step37 {
             return self.sync_step37_media(tokens, images);
@@ -2165,7 +2176,7 @@ impl Session<'_> {
         }
         self.check_sync(tokens)?;
         if self.host.family == ModelFamily::Mimo2 {
-            return self.sync_mimo(tokens, images, audios, &[]);
+            return self.sync_mimo(tokens, images, audios, &[], &[]);
         }
         if self.host.family != ModelFamily::Inkling {
             return Err(Error {

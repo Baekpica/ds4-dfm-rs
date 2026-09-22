@@ -100,6 +100,9 @@ pub struct VisionProbe {
 pub struct VisionPromptInput {
     pub data: Arc<[u8]>,
     pub token_offset: u32,
+    /// Packed MiMo frames from the prepare pass. Empty for still images
+    /// and for a video the sync path still has to decode itself.
+    pub frames: Vec<ds4_core::PackedVisual>,
 }
 
 #[derive(Clone, Debug)]
@@ -1888,6 +1891,7 @@ fn prepare_media(
         images.push(VisionPromptInput {
             data: image.data.clone(),
             token_offset,
+            frames: Vec::new(),
         });
         image_index += 1;
     }
@@ -1921,129 +1925,129 @@ fn prepare_mimo(
         ));
     }
 
-    let parts: Vec<&ChatPart> = parsed
-        .messages
-        .iter()
-        .flat_map(|msg| msg.parts.iter())
-        .collect();
     let mut pieces = Vec::new();
     let mut vision = Vec::new();
     let mut audios = Vec::new();
     let mut videos = Vec::new();
-    let mut index = 0usize;
-    while index < parts.len() {
-        match parts[index] {
-            ChatPart::Text(_) | ChatPart::ToolResult { .. } => index += 1,
-            ChatPart::Image(slot) => {
-                let image = parsed
-                    .images
-                    .get(*slot)
-                    .ok_or_else(|| GenerateError::Engine("image reference is missing".into()))?;
-                let span = engine.vision_tokens(&image.data)?;
-                if span.is_empty() {
-                    return Err(GenerateError::Engine(
-                        "image probe returned zero tokens".into(),
-                    ));
+    // Pair a video only with the audio part that follows it in the same
+    // message. The next message's audio is a separate clip; the rendered
+    // tokens have a boundary between the two stubs.
+    for message in &parsed.messages {
+        let parts = &message.parts;
+        let mut index = 0usize;
+        while index < parts.len() {
+            match &parts[index] {
+                ChatPart::Text(_) | ChatPart::ToolResult { .. } => index += 1,
+                ChatPart::Image(slot) => {
+                    let image = parsed.images.get(*slot).ok_or_else(|| {
+                        GenerateError::Engine("image reference is missing".into())
+                    })?;
+                    let span = engine.vision_tokens(&image.data)?;
+                    if span.is_empty() {
+                        return Err(GenerateError::Engine(
+                            "image probe returned zero tokens".into(),
+                        ));
+                    }
+                    pieces.push(ds4_core::MediaPiece::Image {
+                        count: span.len() as u32,
+                    });
+                    vision.push(VisionPromptInput {
+                        data: image.data.clone(),
+                        token_offset: 0,
+                        frames: Vec::new(),
+                    });
+                    index += 1;
                 }
-                pieces.push(ds4_core::MediaPiece::Image {
-                    count: span.len() as u32,
-                });
-                vision.push(VisionPromptInput {
-                    data: image.data.clone(),
-                    token_offset: 0,
-                });
-                index += 1;
-            }
-            ChatPart::Audio(slot) => {
-                let audio = parsed
-                    .audios
-                    .get(*slot)
-                    .ok_or_else(|| GenerateError::Engine("audio reference is missing".into()))?;
-                let count = engine.audio_probe(&audio.data)?;
-                if count == 0 {
-                    return Err(GenerateError::Engine(
-                        "audio probe returned zero tokens".into(),
-                    ));
+                ChatPart::Audio(slot) => {
+                    let audio = parsed.audios.get(*slot).ok_or_else(|| {
+                        GenerateError::Engine("audio reference is missing".into())
+                    })?;
+                    let count = engine.audio_probe(&audio.data)?;
+                    if count == 0 {
+                        return Err(GenerateError::Engine(
+                            "audio probe returned zero tokens".into(),
+                        ));
+                    }
+                    pieces.push(ds4_core::MediaPiece::Audio { count });
+                    audios.push(AudioPromptInput {
+                        data: audio.data.clone(),
+                        token_offset: 0,
+                    });
+                    index += 1;
                 }
-                pieces.push(ds4_core::MediaPiece::Audio { count });
-                audios.push(AudioPromptInput {
-                    data: audio.data.clone(),
-                    token_offset: 0,
-                });
-                index += 1;
-            }
-            ChatPart::Video(slot) => {
-                let video = parsed
-                    .videos
-                    .get(*slot)
-                    .ok_or_else(|| GenerateError::Engine("video reference is missing".into()))?;
-                let (_duration, packed) = ds4_core::load_video(&video.data)
-                    .map_err(|error| GenerateError::Engine(error.to_string()))?;
-                if packed.is_empty() {
-                    return Err(GenerateError::Engine("video produced no frames".into()));
-                }
+                ChatPart::Video(slot) => {
+                    let video = parsed.videos.get(*slot).ok_or_else(|| {
+                        GenerateError::Engine("video reference is missing".into())
+                    })?;
+                    let (_duration, packed) = ds4_core::load_video(&video.data)
+                        .map_err(|error| GenerateError::Engine(error.to_string()))?;
+                    if packed.is_empty() {
+                        return Err(GenerateError::Engine("video produced no frames".into()));
+                    }
 
-                // The audio that follows a video is that video's track. Text
-                // between them leaves a separate audio part.
-                let audio_len = match parts.get(index + 1) {
-                    Some(ChatPart::Audio(audio_slot)) => {
-                        let audio = parsed.audios.get(*audio_slot).ok_or_else(|| {
-                            GenerateError::Engine("audio reference is missing".into())
-                        })?;
-                        let count = engine.audio_probe(&audio.data)?;
-                        if count == 0 {
-                            return Err(GenerateError::Engine(
-                                "audio probe returned zero tokens".into(),
-                            ));
+                    // The audio that follows a video is that video's track. Text
+                    // between them leaves a separate audio part.
+                    let audio_len = match parts.get(index + 1) {
+                        Some(ChatPart::Audio(audio_slot)) => {
+                            let audio = parsed.audios.get(*audio_slot).ok_or_else(|| {
+                                GenerateError::Engine("audio reference is missing".into())
+                            })?;
+                            let count = engine.audio_probe(&audio.data)?;
+                            if count == 0 {
+                                return Err(GenerateError::Engine(
+                                    "audio probe returned zero tokens".into(),
+                                ));
+                            }
+                            audios.push(AudioPromptInput {
+                                data: audio.data.clone(),
+                                token_offset: 0,
+                            });
+                            count
                         }
-                        audios.push(AudioPromptInput {
-                            data: audio.data.clone(),
-                            token_offset: 0,
-                        });
-                        count
-                    }
-                    _ => 0,
-                };
-                let mut pairs = Vec::with_capacity(packed.len());
-                for (pair_index, visual) in packed.iter().enumerate() {
-                    let start_s = pair_index as f32 * MIMO_SECONDS_PER_PAIR;
-                    let timestamp_ids =
-                        engine.tokenize_text(&ds4_core::format_timestamp(start_s))?;
-                    if timestamp_ids.is_empty() {
-                        return Err(GenerateError::Engine("video timestamp is empty".into()));
-                    }
-                    let audio_tokens = if audio_len == 0 {
-                        0
-                    } else {
-                        // The last pair keeps the remaining codec rows. Duration
-                        // times 6.25 Hz is not the feature length.
-                        let end_s = if pair_index + 1 == packed.len() {
-                            start_s + audio_len as f32
-                        } else {
-                            (pair_index as f32 + 1.0) * MIMO_SECONDS_PER_PAIR
-                        };
-                        ds4_core::audio_interval(start_s, end_s, audio_len)
-                            .map_err(|error| GenerateError::Engine(error.to_string()))?
+                        _ => 0,
                     };
-                    pairs.push(ds4_core::VideoPair {
-                        timestamp_s: start_s,
-                        timestamp_ids,
-                        height: visual.height(),
-                        width: visual.width(),
-                        audio_tokens,
+                    let mut pairs = Vec::with_capacity(packed.len());
+                    for (pair_index, visual) in packed.iter().enumerate() {
+                        let start_s = pair_index as f32 * MIMO_SECONDS_PER_PAIR;
+                        let timestamp_ids =
+                            engine.tokenize_text(&ds4_core::format_timestamp(start_s))?;
+                        if timestamp_ids.is_empty() {
+                            return Err(GenerateError::Engine("video timestamp is empty".into()));
+                        }
+                        let audio_tokens = if audio_len == 0 {
+                            0
+                        } else {
+                            // The last pair keeps the remaining codec rows. Duration
+                            // times 6.25 Hz is not the feature length.
+                            let end_s = if pair_index + 1 == packed.len() {
+                                start_s + audio_len as f32
+                            } else {
+                                (pair_index as f32 + 1.0) * MIMO_SECONDS_PER_PAIR
+                            };
+                            ds4_core::audio_interval(start_s, end_s, audio_len)
+                                .map_err(|error| GenerateError::Engine(error.to_string()))?
+                        };
+                        pairs.push(ds4_core::VideoPair {
+                            timestamp_s: start_s,
+                            timestamp_ids,
+                            height: visual.height(),
+                            width: visual.width(),
+                            audio_tokens,
+                        });
+                    }
+                    if audio_len == 0 {
+                        pieces.push(ds4_core::MediaPiece::Video { pairs });
+                        index += 1;
+                    } else {
+                        pieces.push(ds4_core::MediaPiece::Joint { pairs });
+                        index += 2;
+                    }
+                    videos.push(VisionPromptInput {
+                        data: video.data.clone(),
+                        token_offset: 0,
+                        frames: packed,
                     });
                 }
-                if audio_len == 0 {
-                    pieces.push(ds4_core::MediaPiece::Video { pairs });
-                    index += 1;
-                } else {
-                    pieces.push(ds4_core::MediaPiece::Joint { pairs });
-                    index += 2;
-                }
-                videos.push(VisionPromptInput {
-                    data: video.data.clone(),
-                    token_offset: 0,
-                });
             }
         }
     }
@@ -3260,19 +3264,23 @@ impl DecodeIo for NativeDecode<'_> {
                 token_offset: audio.token_offset,
             })
             .collect::<Vec<_>>();
-        let videos = videos
+        let videos_in = videos
             .iter()
             .map(|video| ds4_core::VisionInput {
                 data: &video.data,
                 token_offset: video.token_offset,
             })
             .collect::<Vec<_>>();
+        let packed = videos
+            .iter()
+            .map(|video| video.frames.as_slice())
+            .collect::<Vec<_>>();
         let started = Instant::now();
         let session = self.session()?;
-        let result = if videos.is_empty() {
+        let result = if videos_in.is_empty() {
             session.sync_media(&tokens, &images, &audios)
         } else {
-            session.sync_mimo(&tokens, &images, &audios, &videos)
+            session.sync_mimo(&tokens, &images, &audios, &videos_in, &packed)
         }
         .map_err(|error| GenerateError::Engine(error.to_string()));
         if result.is_ok() {
@@ -5828,6 +5836,7 @@ mod mimo_prepare {
         assert_eq!(pads(&media.tokens, ds4_core::VIDEO_PAD), visual as usize);
         assert_eq!(pads(&media.tokens, 77), packed.len());
         assert_eq!(media.videos.len(), 1);
+        assert!(!media.videos[0].frames.is_empty());
         assert!(media.audios.is_empty());
 
         let wav = wav_silence(24_000);
@@ -5869,5 +5878,25 @@ mod mimo_prepare {
             Ok(_) => panic!("second audio was accepted"),
         };
         assert!(err.to_string().contains("second audio"), "{err}");
+
+        let split = format!(
+            r#"{{"messages":[{{"role":"user","content":[{{"type":"video_url","video_url":{{"url":"data:video/mp4;base64,{}"}}}}]}},{{"role":"user","content":[{{"type":"input_audio","input_audio":{{"format":"wav","data":"{}"}}}}]}}]}}"#,
+            b64(&mp4),
+            b64(&wav)
+        );
+        let split = parse_chat_request(&ParseEnv::default(), &split).unwrap();
+        let split_stub = vec![
+            ds4_core::VISION_START,
+            ds4_core::VIDEO_PAD,
+            ds4_core::VISION_END,
+            198,
+            ds4_core::AUDIO_START,
+            ds4_core::AUDIO_PAD,
+            ds4_core::AUDIO_END,
+        ];
+        let split_media = prepare_media(&engine(), &split, split_stub).unwrap();
+        assert_eq!(split_media.videos.len(), 1);
+        assert_eq!(split_media.audios.len(), 1);
+        assert_eq!(pads(&split_media.tokens, ds4_core::AUDIO_PAD), audio_len);
     }
 }

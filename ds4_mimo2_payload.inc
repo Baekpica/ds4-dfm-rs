@@ -1,5 +1,7 @@
 /* Persist logical KV rows, not ring capacity. A different prefill width may
- * restore the same prefix into different physical slots. MTP is not encoded. */
+ * restore the same prefix into different physical slots. MTP is not encoded.
+ * Restore clears draft cursors so a reused graph cannot trial on a stale
+ * hidden row; the next step is ordinary decode and rebuilds that row. */
 enum { M2_PAYLOAD_MAGIC = 0x324f4d49, M2_KV_WIDTH = 192 + 128 };
 typedef enum { M2_PAYLOAD_SAVE, M2_PAYLOAD_LOAD } mimo2_payload_dir;
 
@@ -83,6 +85,19 @@ static int mimo2_payload_save(ds4_mimo2_graph *g, const int *tokens, unsigned n,
     return rc;
 }
 
+static void mimo2_payload_drop_draft(ds4_mimo2_graph *g) {
+    g->hidden_valid = false;
+    g->trial_n = 0;
+    g->verify_rows = 0;
+    g->span_n = 0;
+    g->media_tag = 0;
+    g->checkpoint_tag = 0;
+    for (unsigned depth = 0; depth < MIMO2_DRAFT_LAYERS; depth++) {
+        g->draft_pos[depth] = 0;
+        g->draft_saved[depth] = 0;
+    }
+}
+
 static int mimo2_payload_restore(ds4_mimo2_graph *g, FILE *fp, uint64_t *left,
                                  const uint32_t *h, int **tokens_out, float *logits,
                                  char *err, size_t errlen) {
@@ -90,6 +105,7 @@ static int mimo2_payload_restore(ds4_mimo2_graph *g, FILE *fp, uint64_t *left,
     /* A failed/partial restore can never be reused as a committed prefix. */
     g->failed = true;
     g->position = 0;
+    mimo2_payload_drop_draft(g);
     *tokens_out = NULL;
     const unsigned n = h[7];
     if (!mimo2_payload_layout(g, n) || h[0] != DS4_SESSION_PAYLOAD_MAGIC ||

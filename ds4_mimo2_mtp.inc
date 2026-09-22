@@ -221,11 +221,14 @@ int ds4_session_mimo2_trial(ds4_session *s, int first, int max_tokens,
     if (max_tokens <= 0 || !s->engine || s->engine->mtp_draft_tokens <= 1) { return 0; }
     ds4_mimo2_graph *g = &s->mimo2_graph;
     if (!s->mimo2_graph_ready || !s->checkpoint_valid || g->trial_n || g->failed ||
-        !g->hidden_valid || g->position != (unsigned)s->checkpoint.len ||
+        g->position != (unsigned)s->checkpoint.len ||
         g->position >= g->context || first < 0 || (unsigned)first >= DS4_N_VOCAB) {
         payload_set_err(err, errlen, "MiMo trial needs a committed checkpoint");
         return -1;
     }
+    /* Snapshot restore keeps KV and logits, not the MTP hidden row.
+     * Zero selects one ordinary step; that forward rebuilds the row. */
+    if (!g->hidden_valid) { return 0; }
     unsigned n = (unsigned)max_tokens;
     if (n > (unsigned)cap) { n = (unsigned)cap; }
     if (n > M2_TRIAL) { n = M2_TRIAL; }

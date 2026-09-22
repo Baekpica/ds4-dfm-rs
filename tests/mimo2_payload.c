@@ -12,13 +12,20 @@
 #ifdef MIMO2_TEST_CUDA
 #include <cuda_runtime_api.h>
 #endif
-enum { MIMO2_LAYERS = 48, DS4_N_VOCAB = 152576,
+enum { MIMO2_LAYERS = 48, MIMO2_DRAFT_LAYERS = 3, DS4_N_VOCAB = 152576,
        DS4_SESSION_PAYLOAD_U32_FIELDS = 13, DS4_SESSION_IO_CHUNK = 65536,
        DS4_SESSION_PAYLOAD_MAGIC = 0x44533450, DS4_SESSION_PAYLOAD_VERSION = 3 };
 typedef struct { uint64_t raw_bytes, scratch_bytes, total_bytes; unsigned raw_cap, prefill_cap; } ds4_context_memory;
 #include "../ds4_mimo2_plan.h"
 typedef struct { uint8_t *p; uint64_t size; } ds4_gpu_tensor;
-typedef struct { ds4_gpu_tensor *kv[48], *logits; unsigned kv_cap[48], context, cap, position; bool failed; } ds4_mimo2_graph;
+typedef struct {
+    ds4_gpu_tensor *kv[48], *logits;
+    unsigned kv_cap[48], context, cap, position;
+    unsigned draft_pos[MIMO2_DRAFT_LAYERS], draft_saved[MIMO2_DRAFT_LAYERS];
+    unsigned trial_n, verify_rows, span_n;
+    uint64_t media_tag, checkpoint_tag;
+    bool failed, hidden_valid;
+} ds4_mimo2_graph;
 static bool fail_sync, fail_write;
 static int ds4_gpu_synchronize(void) {
 #ifdef MIMO2_TEST_CUDA
@@ -129,7 +136,11 @@ static void trial(unsigned n,unsigned source_cap,unsigned dest_cap) {
     }
     FILE *f=tmpfile();assert(f);char err[128];assert(!mimo2_payload_save(&a,tokens,n,logits,f,err,sizeof(err)));
     const uint64_t size=(uint64_t)ftell(f);assert(size==mimo2_payload_bytes(&a,n));
+    b.hidden_valid=true; b.trial_n=3; b.verify_rows=3; b.span_n=2;
+    b.media_tag=9; b.checkpoint_tag=9; b.draft_pos[0]=4; b.draft_saved[1]=1;
     assert(!restore(&b,f,size,&got,out));assert(!b.failed && b.position==n);
+    assert(!b.hidden_valid && !b.trial_n && !b.verify_rows && !b.span_n);
+    assert(!b.media_tag && !b.checkpoint_tag && !b.draft_pos[0] && !b.draft_saved[1]);
     assert(!memcmp(tokens,got,n*4) && !memcmp(logits,out,DS4_N_VOCAB*4));free(got);got=NULL;
     assert(tensor_read(b.logits,0,out,DS4_N_VOCAB*4));assert(!memcmp(logits,out,DS4_N_VOCAB*4));
     for(unsigned il=0;il<48;il++) {

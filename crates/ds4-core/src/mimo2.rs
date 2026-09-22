@@ -893,6 +893,45 @@ fn normalize_rgb(rgb: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+/// Raw RGB ceiling for one clip. A 640×480 hour at 2 fps is several
+/// gigabytes; the pipe stops before that buffer exists.
+const VIDEO_RAW_CAP: usize = 64 * 1024 * 1024;
+
+fn video_frame_cap(width: u32, height: u32) -> Result<usize, Mimo2Error> {
+    let frame = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(3))
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| mismatch("video"))?;
+    if frame > VIDEO_RAW_CAP {
+        return Err(mismatch("video budget"));
+    }
+    Ok(VIDEO_RAW_CAP / frame)
+}
+
+fn video_duration_fits(width: u32, height: u32, duration: f32) -> Result<(), Mimo2Error> {
+    let cap = video_frame_cap(width, height)?;
+    if duration.is_finite() && duration > 0.0 && (duration * 2.0).ceil() as usize > cap {
+        return Err(mismatch("video budget"));
+    }
+    Ok(())
+}
+
+fn read_bounded(reader: &mut impl std::io::Read, cap: usize) -> Result<Vec<u8>, Mimo2Error> {
+    let mut out = Vec::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut buf).map_err(|_| mismatch("video"))?;
+        if n == 0 {
+            return Ok(out);
+        }
+        if out.len().saturating_add(n) > cap {
+            return Err(mismatch("video budget"));
+        }
+        out.extend_from_slice(&buf[..n]);
+    }
+}
+
 /// Sampled at 2 fps and resized with the source factor. Odd frame counts repeat the last frame.
 pub fn load_video(data: &[u8]) -> Result<(f32, Vec<PackedVisual>), Mimo2Error> {
     let path = std::env::temp_dir().join(format!(
@@ -940,7 +979,15 @@ pub fn load_video(data: &[u8]) -> Result<(f32, Vec<PackedVisual>), Mimo2Error> {
             return Err(error);
         }
     };
-    let raw = std::process::Command::new("ffmpeg")
+    if let Err(error) = video_duration_fits(width, height, duration) {
+        let _ = std::fs::remove_file(&path);
+        return Err(error);
+    }
+    let frame_bytes = (width as usize)
+        .saturating_mul(height as usize)
+        .saturating_mul(3);
+    let byte_cap = frame_bytes.saturating_mul(video_frame_cap(width, height)?);
+    let mut child = match std::process::Command::new("ffmpeg")
         .args(["-v", "error", "-i"])
         .arg(&path)
         .args([
@@ -952,17 +999,48 @@ pub fn load_video(data: &[u8]) -> Result<(f32, Vec<PackedVisual>), Mimo2Error> {
             "rgb24",
             "pipe:1",
         ])
-        .output();
-    let _ = std::fs::remove_file(&path);
-    let raw = raw.map_err(|_| mismatch("video"))?;
-    if !raw.status.success() {
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => {
+            let _ = std::fs::remove_file(&path);
+            return Err(mismatch("video"));
+        }
+    };
+    let mut stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_file(&path);
+            return Err(mismatch("video"));
+        }
+    };
+    let read = read_bounded(&mut stdout, byte_cap);
+    drop(stdout);
+    let raw = match read {
+        Ok(raw) => {
+            let status = child.wait();
+            let _ = std::fs::remove_file(&path);
+            if status.map(|code| code.success()).unwrap_or(false) {
+                raw
+            } else {
+                return Err(mismatch("video"));
+            }
+        }
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_file(&path);
+            return Err(error);
+        }
+    };
+    if frame_bytes == 0 || raw.is_empty() || raw.len() % frame_bytes != 0 {
         return Err(mismatch("video"));
     }
-    let frame_bytes = (width * height * 3) as usize;
-    if frame_bytes == 0 || raw.stdout.is_empty() || raw.stdout.len() % frame_bytes != 0 {
-        return Err(mismatch("video"));
-    }
-    let mut frames: Vec<Vec<f32>> = raw.stdout.chunks(frame_bytes).map(normalize_rgb).collect();
+    let mut frames: Vec<Vec<f32>> = raw.chunks(frame_bytes).map(normalize_rgb).collect();
     if frames.len() % 2 == 1 {
         frames.push(frames.last().cloned().unwrap());
     }
@@ -1361,6 +1439,18 @@ mod tests {
             assert!(layer.is_prediction());
             assert!(!layer.is_routed());
         }
+    }
+
+    #[test]
+    fn long_video_exceeds_the_decode_budget() {
+        assert!(video_duration_fits(64, 64, 1.0).is_ok());
+        let err = video_duration_fits(640, 480, 3600.0).unwrap_err();
+        assert!(err.to_string().contains("video budget"), "{err}");
+        assert!(video_frame_cap(5000, 5000).is_err());
+        let mut big = std::io::Cursor::new(vec![1u8; 128]);
+        assert!(read_bounded(&mut big, 64).is_err());
+        let mut small = std::io::Cursor::new(vec![1u8; 32]);
+        assert_eq!(read_bounded(&mut small, 64).unwrap().len(), 32);
     }
 
     #[test]
