@@ -75,3 +75,7 @@ Same binary, interleaved, cold 8192 unless noted.
   for the old order. The panel still wins at 4096 and 8192 rows.
 - IQ2 slab L2 prefetch of the next row-group: 8K prefill
   480.19/479.05 vs 479.81/478.01. Decode flat, slightly slower.
+- BF16 linear two-stage `cp.async` at the same 32 KB footprint,
+  measured after the 2048 chunk: 2048-row k=m=4096 was 14.13 ms vs
+  13.98 ms, and the 4097-row panel was 31.3 ms vs 28.3 ms. Exact,
+  slower on the shapes prefill actually launches.
