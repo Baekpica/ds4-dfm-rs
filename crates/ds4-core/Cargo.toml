@@ -17,6 +17,7 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 rustfft = "6.4.1"
 hound = "3.5.1"
 hf-chat-template = { version = "=1.0.0", default-features = false, features = ["pycompat", "strftime"] }
+unicode-normalization = "0.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading = "=0.8.9"

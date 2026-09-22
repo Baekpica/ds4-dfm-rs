@@ -84,6 +84,11 @@ Qwen and Inkling templates render their media placeholders. GLM's official
 text template does not accept media arrays, so its image processor supplies
 placeholder text before rendering. Native processing expands placeholders
 into feature spans afterward. Existing modality and lane limits still apply.
+MiMo uses its official Jinja the same way: one `<|image_pad|>`, `<|audio_pad|>`,
+or `<|video_pad|>` per part. The host expands those pads. A still image
+duplicates its temporal frame. Video uses two-frame groups and `MM:SS`
+timestamps. Joint video and audio interleaves each pair with its audio
+interval once, on ordinary 1-D positions.
 
 Messages/Responses tool-only continuation restores the retained structured
 conversation before rendering. Chat Completions clients replay full history.

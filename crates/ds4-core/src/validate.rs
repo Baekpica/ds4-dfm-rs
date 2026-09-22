@@ -1766,6 +1766,7 @@ pub fn validate_file(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
         ModelFamily::Inkling => crate::inkling::validate_main(g),
         ModelFamily::Step37 => crate::Step37Plan::validate(g),
         ModelFamily::Ling3Vl => crate::Ling3VlPlan::validate(g),
+        ModelFamily::Mimo2 => crate::Mimo2Plan::validate(g),
         ModelFamily::Glm53 => validate_glm53(g, shape),
         ModelFamily::Qwen4Exp => validate_qwen4exp(g, shape),
         ModelFamily::DeepSeek4 => validate_deepseek(g, shape),
@@ -1825,6 +1826,7 @@ pub fn dump_validate(path: &std::path::Path) -> String {
                         Variant::InklingSmall => crate::shape::SHAPE_INKLING_SMALL,
                         Variant::Step37Flash => crate::shape::SHAPE_STEP37_FLASH,
                         Variant::Ling30FlashVl => crate::shape::SHAPE_LING30_FLASH_VL,
+                        Variant::Mimo26Flash => crate::shape::SHAPE_MIMO26_FLASH,
                         Variant::Flash => SHAPE_FLASH,
                         Variant::Pro => SHAPE_PRO,
                     };

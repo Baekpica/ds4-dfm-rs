@@ -14,6 +14,7 @@ use crate::TokenBuffer;
 
 mod inkling;
 mod ling3vl;
+mod mimo2;
 mod step37;
 
 const REASONING_EFFORT_HIGH_PREFIX: &str = concat!(
@@ -227,8 +228,10 @@ impl Vocab {
             {
                 if let Ok(ty) = g.array_le_u32s(&types) {
                     for (i, &typ) in ty.iter().enumerate() {
-                        let control_split =
-                            matches!(family, ModelFamily::Step37 | ModelFamily::Ling3Vl);
+                        let control_split = matches!(
+                            family,
+                            ModelFamily::Step37 | ModelFamily::Ling3Vl | ModelFamily::Mimo2
+                        );
                         if typ != 4 && !(control_split && typ == 3) {
                             continue;
                         }
@@ -312,6 +315,7 @@ impl Vocab {
             ModelFamily::Inkling => inkling::specials(self)?,
             ModelFamily::Step37 => step37::specials(self, g)?,
             ModelFamily::Ling3Vl => ling3vl::specials(self, g)?,
+            ModelFamily::Mimo2 => mimo2::specials(self, g)?,
             ModelFamily::Glm53 => {
                 self.bos_id = g
                     .get_token_id("tokenizer.ggml.bos_token_id")
@@ -580,6 +584,9 @@ impl Vocab {
     /// emitting an approximation.
     fn jinja_only(&self) -> Option<TokError> {
         match self.family {
+            ModelFamily::Mimo2 => Some(TokError::InvalidTokenizer(
+                "MiMo chat requires official Jinja",
+            )),
             ModelFamily::Step37 => Some(TokError::InvalidTokenizer(
                 "Step 3.7 chat requires official Jinja",
             )),
@@ -696,7 +703,9 @@ impl Vocab {
 
         match self.family {
             ModelFamily::Inkling => return inkling::message(self, tokens, role, content),
-            ModelFamily::Step37 | ModelFamily::Ling3Vl => return Err(self.jinja_only().unwrap()),
+            ModelFamily::Step37 | ModelFamily::Ling3Vl | ModelFamily::Mimo2 => {
+                return Err(self.jinja_only().unwrap());
+            }
             ModelFamily::Glm53 => {
                 if role == "system" || role == "developer" {
                     self.require_chat_ids(&[(self.system_id, "<|system|>")])?;
@@ -889,7 +898,9 @@ impl Vocab {
         }
         match self.family {
             ModelFamily::Inkling => tokens.push(self.assistant_id),
-            ModelFamily::Step37 | ModelFamily::Ling3Vl => return Err(self.jinja_only().unwrap()),
+            ModelFamily::Step37 | ModelFamily::Ling3Vl | ModelFamily::Mimo2 => {
+                return Err(self.jinja_only().unwrap());
+            }
             ModelFamily::Glm53 => {
                 self.require_chat_ids(&[
                     (self.assistant_id, "<|assistant|>"),
@@ -1042,6 +1053,7 @@ impl Vocab {
                 (self.user_id >= 0 && token == self.user_id)
                     || (self.observation_id >= 0 && token == self.observation_id)
             }
+            ModelFamily::Mimo2 => token == self.eot_id || token == self.end_of_turn_id,
             ModelFamily::SolarOpen2 | ModelFamily::Qwen4Exp => {
                 self.eot_id >= 0 && token == self.eot_id
             }
@@ -2132,6 +2144,7 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
         ModelFamily::Inkling => inkling::encode(vocab, text, out),
         ModelFamily::Step37 => step37::encode(vocab, text, out),
         ModelFamily::Ling3Vl => bpe_tokenize_text_solar(vocab, text, out),
+        ModelFamily::Mimo2 => mimo2::encode(vocab, text, out),
         ModelFamily::Glm53 => bpe_tokenize_text_glm4(vocab, text, out),
         ModelFamily::Motif3 => bpe_tokenize_text_motif3(vocab, text, out),
         ModelFamily::SolarOpen2 => bpe_tokenize_text_solar(vocab, text, out),
@@ -2146,7 +2159,7 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
 fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
     if matches!(
         vocab.family,
-        ModelFamily::Inkling | ModelFamily::Step37 | ModelFamily::Ling3Vl
+        ModelFamily::Inkling | ModelFamily::Step37 | ModelFamily::Ling3Vl | ModelFamily::Mimo2
     ) {
         return user_defined_at(vocab, p, 0);
     }

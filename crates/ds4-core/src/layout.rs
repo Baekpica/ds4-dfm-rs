@@ -2876,6 +2876,7 @@ pub fn expected_layouts(shape: &Shape) -> Vec<LayoutSpec> {
         ModelFamily::Inkling => crate::inkling::main_layouts(),
         ModelFamily::Step37 => crate::Step37Plan::layouts(),
         ModelFamily::Ling3Vl => crate::Ling3VlPlan::layouts(),
+        ModelFamily::Mimo2 => crate::Mimo2Plan::layouts(),
         ModelFamily::Glm53 => expected_glm53(shape),
         ModelFamily::Qwen4Exp => expected_qwen4exp(shape),
         ModelFamily::Motif3 => expected_motif3(shape),

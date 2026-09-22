@@ -599,6 +599,59 @@ extern "C" {
         errlen: usize,
     ) -> c_int;
 
+    pub fn ds4_bridge_mimo2_trial(
+        s: *mut ds4_bridge_session,
+        first: i32,
+        max_tokens: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_mimo2_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_mimo2_encode_vision(
+        s: *mut ds4_bridge_session,
+        patches: *const f32,
+        n_patches: u32,
+        grid_h: u32,
+        grid_w: u32,
+        out: *mut f32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_mimo2_encode_audio(
+        s: *mut ds4_bridge_session,
+        mel: *const f32,
+        frames: u32,
+        out: *mut f32,
+        cap: u32,
+        rows: *mut u32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
+    pub fn ds4_bridge_mimo2_sync_media(
+        s: *mut ds4_bridge_session,
+        tokens: *const i32,
+        n_tokens: i32,
+        starts: *const u32,
+        counts: *const u32,
+        rows: *const *const f32,
+        nspans: u32,
+        tag: u64,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
+
     pub fn ds4_bridge_dots3_enabled(s: *mut ds4_bridge_session) -> c_int;
 
     pub fn ds4_bridge_dots3_trial(

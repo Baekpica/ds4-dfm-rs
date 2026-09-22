@@ -1,0 +1,487 @@
+{
+  "source_revision": "3b38d063180c3e4aed9691fdc735f3d10b266ee4",
+  "cases": [
+    {
+      "id": "0-False",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "한국어와中文 1234567890 café\nWhat's 17+25?"
+          }
+        ],
+        "enable_thinking": false,
+        "add_generation_prompt": true
+      },
+      "prompt": "<|im_start|>user\n한국어와中文 1234567890 café\nWhat's 17+25?<|im_end|><|im_start|>assistant\n<think></think>",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        23573,
+        124785,
+        31079,
+        80573,
+        104811,
+        220,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        15,
+        51950,
+        198,
+        3838,
+        594,
+        220,
+        16,
+        22,
+        10,
+        17,
+        20,
+        30,
+        151645,
+        151644,
+        77091,
+        198,
+        151667,
+        151668
+      ]
+    },
+    {
+      "id": "0-True",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "한국어와中文 1234567890 café\nWhat's 17+25?"
+          }
+        ],
+        "enable_thinking": true,
+        "add_generation_prompt": true
+      },
+      "prompt": "<|im_start|>user\n한국어와中文 1234567890 café\nWhat's 17+25?<|im_end|><|im_start|>assistant\n",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        23573,
+        124785,
+        31079,
+        80573,
+        104811,
+        220,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        15,
+        51950,
+        198,
+        3838,
+        594,
+        220,
+        16,
+        22,
+        10,
+        17,
+        20,
+        30,
+        151645,
+        151644,
+        77091,
+        198
+      ]
+    },
+    {
+      "id": "1-False",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "١٢٣٤５６７ १२३\t\n  "
+          }
+        ],
+        "enable_thinking": false,
+        "add_generation_prompt": true
+      },
+      "prompt": "<|im_start|>user\n١٢٣٤５６７ १२३\t\n  <|im_end|><|im_start|>assistant\n<think></think>",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        149,
+        94,
+        149,
+        95,
+        149,
+        96,
+        149,
+        97,
+        43497,
+        59496,
+        65124,
+        220,
+        12619,
+        100,
+        12619,
+        101,
+        12619,
+        102,
+        1572,
+        256,
+        151645,
+        151644,
+        77091,
+        198,
+        151667,
+        151668
+      ]
+    },
+    {
+      "id": "1-True",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "١٢٣٤５６７ १२३\t\n  "
+          }
+        ],
+        "enable_thinking": true,
+        "add_generation_prompt": true
+      },
+      "prompt": "<|im_start|>user\n١٢٣٤５６７ १२३\t\n  <|im_end|><|im_start|>assistant\n",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        149,
+        94,
+        149,
+        95,
+        149,
+        96,
+        149,
+        97,
+        43497,
+        59496,
+        65124,
+        220,
+        12619,
+        100,
+        12619,
+        101,
+        12619,
+        102,
+        1572,
+        256,
+        151645,
+        151644,
+        77091,
+        198
+      ]
+    },
+    {
+      "id": "2-False",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "hello\r\n\n world  "
+          }
+        ],
+        "enable_thinking": false,
+        "add_generation_prompt": true
+      },
+      "prompt": "<|im_start|>user\nhello\r\n\n world  <|im_end|><|im_start|>assistant\n<think></think>",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        14990,
+        80823,
+        1879,
+        256,
+        151645,
+        151644,
+        77091,
+        198,
+        151667,
+        151668
+      ]
+    },
+    {
+      "id": "2-True",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "hello\r\n\n world  "
+          }
+        ],
+        "enable_thinking": true,
+        "add_generation_prompt": true
+      },
+      "prompt": "<|im_start|>user\nhello\r\n\n world  <|im_end|><|im_start|>assistant\n",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        14990,
+        80823,
+        1879,
+        256,
+        151645,
+        151644,
+        77091,
+        198
+      ]
+    },
+    {
+      "id": "3-False",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "👩‍💻 café é 你好"
+          }
+        ],
+        "enable_thinking": false,
+        "add_generation_prompt": true
+      },
+      "prompt": "<|im_start|>user\n👩‍💻 café é 你好<|im_end|><|im_start|>assistant\n<think></think>",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        145233,
+        378,
+        235,
+        145851,
+        51950,
+        3958,
+        220,
+        108386,
+        151645,
+        151644,
+        77091,
+        198,
+        151667,
+        151668
+      ]
+    },
+    {
+      "id": "3-True",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "👩‍💻 café é 你好"
+          }
+        ],
+        "enable_thinking": true,
+        "add_generation_prompt": true
+      },
+      "prompt": "<|im_start|>user\n👩‍💻 café é 你好<|im_end|><|im_start|>assistant\n",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        145233,
+        378,
+        235,
+        145851,
+        51950,
+        3958,
+        220,
+        108386,
+        151645,
+        151644,
+        77091,
+        198
+      ]
+    },
+    {
+      "id": "4-False",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "<|vision_start|><|image_pad|><|vision_end|>"
+          }
+        ],
+        "enable_thinking": false,
+        "add_generation_prompt": true
+      },
+      "prompt": "<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|><|im_end|><|im_start|>assistant\n<think></think>",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        151652,
+        151655,
+        151653,
+        151645,
+        151644,
+        77091,
+        198,
+        151667,
+        151668
+      ]
+    },
+    {
+      "id": "4-True",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "<|vision_start|><|image_pad|><|vision_end|>"
+          }
+        ],
+        "enable_thinking": true,
+        "add_generation_prompt": true
+      },
+      "prompt": "<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|><|im_end|><|im_start|>assistant\n",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        151652,
+        151655,
+        151653,
+        151645,
+        151644,
+        77091,
+        198
+      ]
+    },
+    {
+      "id": "5-False",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "<|mimo_video_start|>00:02<|video_pad|><|mimo_video_end|>"
+          }
+        ],
+        "enable_thinking": false,
+        "add_generation_prompt": true
+      },
+      "prompt": "<|im_start|>user\n<|mimo_video_start|>00:02<|video_pad|><|mimo_video_end|><|im_end|><|im_start|>assistant\n<think></think>",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        151670,
+        15,
+        15,
+        25,
+        15,
+        17,
+        151656,
+        151671,
+        151645,
+        151644,
+        77091,
+        198,
+        151667,
+        151668
+      ]
+    },
+    {
+      "id": "5-True",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "<|mimo_video_start|>00:02<|video_pad|><|mimo_video_end|>"
+          }
+        ],
+        "enable_thinking": true,
+        "add_generation_prompt": true
+      },
+      "prompt": "<|im_start|>user\n<|mimo_video_start|>00:02<|video_pad|><|mimo_video_end|><|im_end|><|im_start|>assistant\n",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        151670,
+        15,
+        15,
+        25,
+        15,
+        17,
+        151656,
+        151671,
+        151645,
+        151644,
+        77091,
+        198
+      ]
+    },
+    {
+      "id": "6-False",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "<|mimo_audio_start|><|audio_pad|><|mimo_audio_end|>"
+          }
+        ],
+        "enable_thinking": false,
+        "add_generation_prompt": true
+      },
+      "prompt": "<|im_start|>user\n<|mimo_audio_start|><|audio_pad|><|mimo_audio_end|><|im_end|><|im_start|>assistant\n<think></think>",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        151673,
+        151669,
+        151674,
+        151645,
+        151644,
+        77091,
+        198,
+        151667,
+        151668
+      ]
+    },
+    {
+      "id": "6-True",
+      "context": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "<|mimo_audio_start|><|audio_pad|><|mimo_audio_end|>"
+          }
+        ],
+        "enable_thinking": true,
+        "add_generation_prompt": true
+      },
+      "prompt": "<|im_start|>user\n<|mimo_audio_start|><|audio_pad|><|mimo_audio_end|><|im_end|><|im_start|>assistant\n",
+      "token_ids": [
+        151644,
+        872,
+        198,
+        151673,
+        151669,
+        151674,
+        151645,
+        151644,
+        77091,
+        198
+      ]
+    }
+  ]
+}

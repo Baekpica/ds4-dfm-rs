@@ -631,6 +631,28 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         };
     }
     match family {
+        // P1: serial CUDA text, image, audio, video, and the three embedded
+        // MTP blocks. DFlash, 512k, and 1M stay unqualified.
+        ModelFamily::Mimo2 => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Serial,
+            bank_support: Support::Present,
+            reuse: ReuseKind::Exact,
+            reuse_support: Support::Present,
+            disk: Support::Present,
+            snapshot: Support::Present,
+            mtp: MtpKind::Embedded,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Serial,
+            spec_draft_min: 2,
+            host: HostNeed::Cuda,
+            ctx_max: Some(crate::mimo2::INDEX_LIMIT),
+            qualified_ctx: Some(crate::mimo2::QUALIFIED_CONTEXT),
+            qualified_banks: Some(1),
+            qualified_prompt: None,
+            media_serial: true,
+        },
         ModelFamily::Qwen4Exp => ServingCaps {
             family,
             variant,
@@ -1143,6 +1165,7 @@ impl ServingCaps {
             Variant::InklingSmall => "inkling",
             Variant::Step37Flash => "step35",
             Variant::Ling30FlashVl => "bailingmoe3",
+            Variant::Mimo26Flash => "mimo2",
         }
     }
 }
@@ -1291,6 +1314,7 @@ impl ResolvedPlan {
                 Some("DS4_METAL_PREFILL_CHUNK")
             }
             Some(ModelFamily::Dots3Note) => Some("DS4_DOTS3_PREFILL_CHUNK"),
+            Some(ModelFamily::Mimo2) => Some("DS4_MIMO2_PREFILL_CHUNK"),
             _ => None,
         }
     }
@@ -2043,6 +2067,9 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
         }
         Variant::Qwen38FlashNext => {
             "common UX baseline; configured values and verified combinations differ"
+        }
+        Variant::Mimo26Flash => {
+            "256k serial text is the qualified context. Embedded MTP is present. Image, audio, and video projector execution is qualified. DFlash, 512k, and 1M are not qualified"
         }
         _ => "",
     }
