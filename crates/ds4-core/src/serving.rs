@@ -1005,7 +1005,7 @@ pub fn resolve_plan(
                 caps.ctx_max.unwrap_or_default()
             ),
         ));
-    } else if let Some(qctx) = caps.qualified_ctx {
+    } else if let Some(qctx) = measured_ctx(caps, req, facts) {
         if req.ctx as u32 > qctx {
             issues.push(warn(
                 "ctx_unqualified",
@@ -1116,7 +1116,7 @@ pub fn resolve_plan(
         } else {
             Support::Qualified
         },
-        ctx: caps.qualified_ctx,
+        ctx: measured_ctx(caps, req, facts),
         banks_n: caps.qualified_banks,
         prompt: caps.qualified_prompt,
         note: qualified_note(caps),
@@ -2058,6 +2058,32 @@ fn backend_name(backend: Backend) -> &'static str {
     }
 }
 
+/// 512k text was measured without the projector and without DFlash.
+/// The two together were measured at 262144, so that plan must not
+/// publish 524288 as the qualified context.
+/// `--mtp-mode off` must not open a draft width. MiMo speculation turns on
+/// from that width alone, so a leftover `--mtp-draft` would ignore the mode.
+pub fn open_draft_tokens(
+    mode: MtpMode,
+    requested: Option<i32>,
+    planned: Option<i32>,
+) -> Option<i32> {
+    if mode == MtpMode::Off {
+        return None;
+    }
+    requested.filter(|n| *n > 0).or(planned.filter(|n| *n > 0))
+}
+
+fn measured_ctx(caps: ServingCaps, req: &ServingRequest, facts: &EngineFacts) -> Option<u32> {
+    if caps.family == ModelFamily::Mimo2
+        && req.mtp_path.is_some()
+        && (facts.vision_loaded || facts.vision_path_ok == Some(true))
+    {
+        return Some(crate::mimo2::QUALIFIED_CONTEXT);
+    }
+    caps.qualified_ctx
+}
+
 fn qualified_note(caps: ServingCaps) -> &'static str {
     match caps.variant {
         Variant::Step37Flash => {
@@ -2249,6 +2275,13 @@ mod tests {
         for key in ["native_prefill_env", "prefix_reuse", "banks", "mtp", "disk"] {
             assert!(controls[key].is_null(), "{key}: {controls}");
         }
+    }
+
+    #[test]
+    fn off_mode_drops_a_requested_draft_width() {
+        assert_eq!(open_draft_tokens(MtpMode::Off, Some(8), Some(2)), None);
+        assert_eq!(open_draft_tokens(MtpMode::On, Some(8), Some(2)), Some(8));
+        assert_eq!(open_draft_tokens(MtpMode::Auto, None, Some(2)), Some(2));
     }
 
     #[test]

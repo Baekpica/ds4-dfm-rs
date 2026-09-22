@@ -1597,6 +1597,38 @@ mod tests {
     }
 
     #[test]
+    fn dflash_plus_vision_does_not_qualify_512k() {
+        let caps = crate::serving_caps(crate::ModelFamily::Mimo2, crate::Variant::Mimo26Flash);
+        let mut request = crate::serving::ServingRequest::default();
+        request.ctx = 524_288;
+        request.mtp_mode = crate::serving::MtpMode::On;
+        request.mtp_path = Some("MiMo-V2.6-Flash-RL-DFlash-Q8_0.gguf".into());
+        let both = crate::serving::EngineFacts {
+            mtp_path_ok: Some(true),
+            vision_loaded: true,
+            vision_path_ok: Some(true),
+            ..crate::serving::EngineFacts::default()
+        };
+        let plan = crate::serving::resolve_plan(&request, Some(caps), &both);
+        assert_eq!(plan.qualified.ctx, Some(QUALIFIED_CONTEXT));
+        assert!(plan
+            .issues
+            .iter()
+            .any(|issue| issue.code == "ctx_unqualified"));
+        let text = crate::serving::EngineFacts {
+            vision_loaded: false,
+            vision_path_ok: None,
+            ..both
+        };
+        let text_plan = crate::serving::resolve_plan(&request, Some(caps), &text);
+        assert_eq!(text_plan.qualified.ctx, Some(QUALIFIED_LONG));
+        assert!(!text_plan
+            .issues
+            .iter()
+            .any(|issue| issue.code == "ctx_unqualified"));
+    }
+
+    #[test]
     fn admit_512k_keeps_1m_unqualified() {
         let admitted = admit_context(524_288).unwrap();
         assert_eq!(admitted.effective, 524_288);

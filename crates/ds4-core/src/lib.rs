@@ -90,12 +90,12 @@ pub use payload::{
 };
 pub use progress::PrefillCheckpoint;
 pub use serving::{
-    caps_from_ident, caps_from_shape, host_reuse, parse_disk_space, resolve_plan, serving_caps,
-    ChunkFence, Distribution, EffectiveView, EngineFacts, HostNeed, IssueLevel, LaneMode, MaxSeqs,
-    MtpMode, PlanIssue, PrefixReuse, QualifiedView, RequestTrace, RequestedView, ResolvedPlan,
-    ReuseKind, ReuseMiss, ReuseTaken, ServingCaps, ServingQuote, ServingRequest, SpecLane, Support,
-    DEFAULT_BANK_PERSIST, DEFAULT_MAX_SEQS, DEFAULT_MEM_FLOOR_GB, PREFILL_CHUNK_FENCE,
-    VERIFIED_PREFILL_CHUNKS,
+    caps_from_ident, caps_from_shape, host_reuse, open_draft_tokens, parse_disk_space,
+    resolve_plan, serving_caps, ChunkFence, Distribution, EffectiveView, EngineFacts, HostNeed,
+    IssueLevel, LaneMode, MaxSeqs, MtpMode, PlanIssue, PrefixReuse, QualifiedView, RequestTrace,
+    RequestedView, ResolvedPlan, ReuseKind, ReuseMiss, ReuseTaken, ServingCaps, ServingQuote,
+    ServingRequest, SpecLane, Support, DEFAULT_BANK_PERSIST, DEFAULT_MAX_SEQS,
+    DEFAULT_MEM_FLOOR_GB, PREFILL_CHUNK_FENCE, VERIFIED_PREFILL_CHUNKS,
 };
 pub use serving_host::{
     attach_host_quote, fill_quote_facts, gguf_slice_span_bytes, gguf_span_bytes,
