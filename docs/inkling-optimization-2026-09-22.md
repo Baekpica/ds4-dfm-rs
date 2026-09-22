@@ -6,6 +6,13 @@ DGX Spark / GB10. `nvidia-smi -lgc` needs root here, so the SM clock was
 observed rather than locked: about 2411–2418 MHz while a prefill was
 running. Comparisons below are same-hour, same binary, interleaved.
 
+Adopted here: prefill chunk 2048, then the router logit tile. On the
+final binary, cold 8192-token prefill is 486.39 tok/s and 64-token
+decode is 13.55 tok/s (three fresh processes: 487.04 / 486.39 / 486.23
+prefill). The two rounds were separate A/Bs, so those medians are not
+one ratio against the 1024-chunk start. Contexts above 8192, including
+64K, were not measured.
+
 ## Round 28: prefill chunk 2048
 
 The 2K trace's largest kernels are still the IQ2 slabs, the BF16 linear
