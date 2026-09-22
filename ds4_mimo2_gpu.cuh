@@ -1,0 +1,277 @@
+/* Included by the CUDA backend. MiMo's model geometry is explicit here. */
+#include "cuda/mimo2_primitives.cuh"
+#include "cuda/mimo2_media.cuh"
+
+extern "C" int ds4_gpu_mimo2_qkv(
+        ds4_gpu_tensor *q, ds4_gpu_tensor *k, ds4_gpu_tensor *v,
+        const ds4_gpu_tensor *qkv, const ds4_gpu_tensor *table,
+        uint32_t kv_heads, uint32_t rows) {
+    enum { Q_WIDTH = 64 * 192, KEY = 192, VALUE = 128, ROTARY = 64 };
+    const uint64_t kw = (uint64_t)kv_heads * KEY, vw = (uint64_t)kv_heads * VALUE;
+    const uint64_t count = (uint64_t)rows * (Q_WIDTH + kw + vw);
+    if (!q || !k || !v || !qkv || !table || !rows || count > INT_MAX ||
+        (kv_heads != 4 && kv_heads != 8) ||
+        q->bytes < (uint64_t)rows * Q_WIDTH * sizeof(float) ||
+        k->bytes < (uint64_t)rows * kw * sizeof(float) ||
+        v->bytes < (uint64_t)rows * vw * sizeof(float) ||
+        qkv->bytes < count * sizeof(float) ||
+        table->bytes < (uint64_t)rows * ROTARY * sizeof(float)) { return 0; }
+    mimo2_split_rope<<<(count + 255) / 256, 256, 0, ds4_current_stream()>>>(
+        (float *)q->ptr, (float *)k->ptr, (float *)v->ptr,
+        (const float *)qkv->ptr, (const float2 *)table->ptr, kv_heads, rows);
+    return cuda_ok(cudaGetLastError(), "MiMo QKV/RoPE");
+}
+
+extern "C" int ds4_gpu_mimo2_router(
+        ds4_gpu_tensor *ids, ds4_gpu_tensor *weights, const ds4_gpu_tensor *logits,
+        const void *map, uint64_t size, uint64_t offset, uint32_t rows) {
+    enum { EXPERTS = 256, USED = 8 };
+    const uint64_t bias_bytes = EXPERTS * sizeof(float);
+    if (!ids || !weights || !logits || !map || !rows || rows > INT_MAX ||
+        offset > size || bias_bytes > size - offset ||
+        ids->bytes < (uint64_t)rows * USED * sizeof(int) ||
+        weights->bytes < (uint64_t)rows * USED * sizeof(float) ||
+        logits->bytes < (uint64_t)rows * EXPERTS * sizeof(float)) { return 0; }
+    const float *bias = (const float *)cuda_model_range_ptr(map, offset, bias_bytes, "MiMo bias");
+    if (!bias) { return 0; }
+    mimo2_router<<<rows, 128, 0, ds4_current_stream()>>>(
+        (int *)ids->ptr, (float *)weights->ptr, (const float *)logits->ptr, bias);
+    return cuda_ok(cudaGetLastError(), "MiMo router");
+}
+
+extern "C" int ds4_gpu_mimo2_kv_store(
+        ds4_gpu_tensor *cache, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        const ds4_gpu_tensor *positions, uint32_t kv_heads, uint32_t rows, uint32_t capacity) {
+    const uint64_t kw = (uint64_t)kv_heads * 192, vw = (uint64_t)kv_heads * 128;
+    const uint64_t count = (uint64_t)rows * (kw + vw);
+    if (!cache || !k || !v || !positions || (kv_heads != 4 && kv_heads != 8) ||
+        !rows || !capacity || rows > capacity ||
+        positions->bytes < (uint64_t)rows * sizeof(uint32_t) ||
+        count > INT_MAX || cache->bytes < (uint64_t)capacity * (kw + vw) * sizeof(__half) ||
+        k->bytes < (uint64_t)rows * kw * sizeof(float) ||
+        v->bytes < (uint64_t)rows * vw * sizeof(float)) { return 0; }
+    mimo2_kv_store<<<(count + 255) / 256, 256, 0, ds4_current_stream()>>>(
+        (__half *)cache->ptr, (const float *)k->ptr, (const float *)v->ptr,
+        kv_heads, rows, (const unsigned *)positions->ptr, capacity);
+    return cuda_ok(cudaGetLastError(), "MiMo KV store");
+}
+
+extern "C" int ds4_gpu_mimo2_attention(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *q, const ds4_gpu_tensor *cache,
+        const ds4_gpu_tensor *positions, const void *map, uint64_t size,
+        uint64_t sink_offset, uint32_t kv_heads, uint32_t capacity,
+        uint32_t rows, uint32_t window) {
+    enum { HEADS = 64, KEY = 192, VALUE = 128, CONTEXT = 1048576, MAX_ROWS = 65535 };
+    const uint64_t cache_bytes = (uint64_t)capacity * kv_heads * (KEY + VALUE) * sizeof(__half);
+    if (!out || !q || !cache || !positions || !rows || rows > MAX_ROWS ||
+        !capacity || capacity > CONTEXT || rows > capacity ||
+        !((kv_heads == 4 && window == 0) || (kv_heads == 8 && window == 128)) ||
+        out->bytes < (uint64_t)rows * HEADS * VALUE * sizeof(float) ||
+        q->bytes < (uint64_t)rows * HEADS * KEY * sizeof(float) ||
+        positions->bytes < (uint64_t)rows * sizeof(uint32_t) || cache->bytes < cache_bytes) { return 0; }
+    const float *sinks = nullptr;
+    if (map) {
+        const uint64_t bytes = HEADS * sizeof(float);
+        if (sink_offset > size || bytes > size - sink_offset) { return 0; }
+        sinks = (const float *)cuda_model_range_ptr(map, sink_offset, bytes, "MiMo sinks");
+        if (!sinks) { return 0; }
+    }
+    /* Session admission owns position bounds, contiguous rows and ring retention.
+     * No scalar position is baked into capture; all queries read live state. */
+    mimo2_attention<<<dim3(HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
+        sinks, (const unsigned *)positions->ptr, kv_heads, capacity, window);
+    return cuda_ok(cudaGetLastError(), "MiMo asymmetric attention");
+}
+
+static const float *m2_f32(const void *map, uint64_t size, uint64_t offset, uint64_t n, const char *what) {
+    const uint64_t bytes = n * sizeof(float);
+    if (!map || !n || offset > size || bytes > size - offset) { return nullptr; }
+    return (const float *)cuda_model_range_ptr(map, offset, bytes, what);
+}
+
+extern "C" int ds4_gpu_mimo2_patch(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *in, const void *map, uint64_t size,
+        uint64_t w0, uint64_t w1, uint32_t n, uint32_t oc, uint32_t ic, uint32_t kt, uint32_t patch) {
+    const uint64_t width = (uint64_t)ic * kt * patch * patch;
+    const uint64_t count = (uint64_t)n * oc;
+    if (!out || !in || !n || !oc || !ic || !kt || !patch || count > INT_MAX ||
+        in->bytes < (uint64_t)n * width * sizeof(float) ||
+        out->bytes < count * sizeof(float)) { return 0; }
+    const float *a = m2_f32(map, size, w0, (uint64_t)oc * ic * patch * patch, "MiMo patch0");
+    const float *b = m2_f32(map, size, w1, (uint64_t)oc * ic * patch * patch, "MiMo patch1");
+    if (!a || !b) { return 0; }
+    mimo2_patch<<<(unsigned)((count + 255) / 256), 256, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)in->ptr, a, b, (int)n, (int)oc, (int)ic, (int)kt, (int)patch);
+    return cuda_ok(cudaGetLastError(), "MiMo patch");
+}
+
+extern "C" int ds4_gpu_mimo2_rope(
+        ds4_gpu_tensor *base, const ds4_gpu_tensor *cos, const ds4_gpu_tensor *sin,
+        uint32_t n, uint32_t heads, uint32_t hd, uint32_t stride, uint32_t off) {
+    const uint64_t count = (uint64_t)n * heads;
+    if (!base || !cos || !sin || !n || !heads || !hd || hd > 128 || (hd & 1) ||
+        count > INT_MAX || stride < off + heads * hd ||
+        base->bytes < (uint64_t)n * stride * sizeof(float) ||
+        cos->bytes < (uint64_t)n * hd * sizeof(float) ||
+        sin->bytes < (uint64_t)n * hd * sizeof(float)) { return 0; }
+    mimo2_rope<<<(unsigned)((count + 255) / 256), 256, 0, ds4_current_stream()>>>(
+        (float *)base->ptr, (const float *)cos->ptr, (const float *)sin->ptr,
+        (int)n, (int)heads, (int)hd, (int)stride, (int)off);
+    return cuda_ok(cudaGetLastError(), "MiMo media rope");
+}
+
+extern "C" int ds4_gpu_mimo2_attn(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *q, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        const void *map, uint64_t size, uint64_t sink_off, int have_sink,
+        uint32_t n, uint32_t q_heads, uint32_t kv_heads, uint32_t hd,
+        uint32_t q_stride, uint32_t k_stride, uint32_t v_stride,
+        uint32_t q_off, uint32_t k_off, uint32_t v_off,
+        int window, int causal, int group) {
+    const uint64_t count = (uint64_t)n * q_heads;
+    if (!out || !q || !k || !v || !n || !q_heads || !kv_heads || !hd ||
+        q_heads % kv_heads || count > INT_MAX ||
+        q_stride < q_off + q_heads * hd || k_stride < k_off + kv_heads * hd ||
+        v_stride < v_off + kv_heads * hd ||
+        q->bytes < (uint64_t)n * q_stride * sizeof(float) ||
+        k->bytes < (uint64_t)n * k_stride * sizeof(float) ||
+        v->bytes < (uint64_t)n * v_stride * sizeof(float) ||
+        out->bytes < count * hd * sizeof(float)) { return 0; }
+    const float *sinks = nullptr;
+    if (have_sink) {
+        sinks = m2_f32(map, size, sink_off, q_heads, "MiMo vision sinks");
+        if (!sinks) { return 0; }
+    }
+    mimo2_attn<<<(unsigned)((count + 255) / 256), 256, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)q->ptr, (const float *)k->ptr, (const float *)v->ptr, sinks,
+        (int)n, (int)q_heads, (int)kv_heads, (int)hd,
+        (int)q_stride, (int)k_stride, (int)v_stride, (int)q_off, (int)k_off, (int)v_off,
+        window, causal, group);
+    return cuda_ok(cudaGetLastError(), "MiMo media attention");
+}
+
+extern "C" int ds4_gpu_mimo2_bias(
+        ds4_gpu_tensor *x, const void *map, uint64_t size, uint64_t offset,
+        uint32_t n, uint32_t dim) {
+    const uint64_t count = (uint64_t)n * dim;
+    if (!x || !n || !dim || count > INT_MAX || x->bytes < count * sizeof(float)) { return 0; }
+    const float *bias = m2_f32(map, size, offset, dim, "MiMo bias");
+    if (!bias) { return 0; }
+    mimo2_bias<<<(unsigned)((count + 255) / 256), 256, 0, ds4_current_stream()>>>(
+        (float *)x->ptr, bias, (int)n, (int)dim);
+    return cuda_ok(cudaGetLastError(), "MiMo bias");
+}
+
+extern "C" int ds4_gpu_mimo2_swiglu(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *gate, const ds4_gpu_tensor *up,
+        const void *map, uint64_t size, uint64_t gate_b, uint64_t up_b, int have_bias,
+        uint32_t n, uint32_t dim) {
+    const uint64_t count = (uint64_t)n * dim;
+    if (!out || !gate || !up || !n || !dim || count > INT_MAX ||
+        out->bytes < count * sizeof(float) || gate->bytes < count * sizeof(float) ||
+        up->bytes < count * sizeof(float)) { return 0; }
+    const float *gb = nullptr, *ub = nullptr;
+    if (have_bias) {
+        gb = m2_f32(map, size, gate_b, dim, "MiMo gate bias");
+        ub = m2_f32(map, size, up_b, dim, "MiMo up bias");
+        if (!gb || !ub) { return 0; }
+    }
+    mimo2_swiglu<<<(unsigned)((count + 255) / 256), 256, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)gate->ptr, (const float *)up->ptr, gb, ub, (int)n, (int)dim);
+    return cuda_ok(cudaGetLastError(), "MiMo swiglu");
+}
+
+extern "C" int ds4_gpu_mimo2_gelu(ds4_gpu_tensor *x, uint32_t n) {
+    if (!x || !n || (uint64_t)n > INT_MAX || x->bytes < (uint64_t)n * sizeof(float)) { return 0; }
+    mimo2_gelu<<<(n + 255) / 256, 256, 0, ds4_current_stream()>>>((float *)x->ptr, (int)n);
+    return cuda_ok(cudaGetLastError(), "MiMo gelu");
+}
+
+extern "C" int ds4_gpu_mimo2_ln(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x, const void *map, uint64_t size,
+        uint64_t weight, uint64_t bias, int have_bias, uint32_t rows, uint32_t dim, float eps) {
+    const uint64_t count = (uint64_t)rows * dim;
+    if (!out || !x || !rows || !dim || count > INT_MAX || !(eps > 0.f) ||
+        out->bytes < count * sizeof(float) || x->bytes < count * sizeof(float)) { return 0; }
+    const float *w = m2_f32(map, size, weight, dim, "MiMo layernorm");
+    const float *b = nullptr;
+    if (!w) { return 0; }
+    if (have_bias) {
+        b = m2_f32(map, size, bias, dim, "MiMo layernorm bias");
+        if (!b) { return 0; }
+    }
+    mimo2_layernorm<<<rows, 256, 256 * sizeof(float), ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)x->ptr, w, b, (int)dim, eps);
+    return cuda_ok(cudaGetLastError(), "MiMo layernorm");
+}
+
+extern "C" int ds4_gpu_mimo2_gather(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *in, const ds4_gpu_tensor *index,
+        uint32_t units, uint32_t width) {
+    const uint64_t count = (uint64_t)units * width;
+    if (!out || !in || !index || !units || !width || count > INT_MAX ||
+        out->bytes < count * sizeof(float) || in->bytes < count * sizeof(float) ||
+        index->bytes < (uint64_t)units * sizeof(int)) { return 0; }
+    mimo2_gather<<<(unsigned)((count + 255) / 256), 256, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)in->ptr, (const int *)index->ptr, (int)units, (int)width);
+    return cuda_ok(cudaGetLastError(), "MiMo gather");
+}
+
+extern "C" int ds4_gpu_mimo2_conv1d(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *in, const void *map, uint64_t size,
+        uint64_t weight, uint64_t bias, int have_bias,
+        uint32_t n_in, uint32_t n_out, uint32_t cin, uint32_t cout,
+        uint32_t k, uint32_t stride, uint32_t pad) {
+    const uint64_t count = (uint64_t)n_out * cout;
+    if (!out || !in || !n_in || !n_out || !cin || !cout || !k || !stride || count > INT_MAX ||
+        in->bytes < (uint64_t)cin * n_in * sizeof(float) ||
+        out->bytes < count * sizeof(float)) { return 0; }
+    const float *w = m2_f32(map, size, weight, (uint64_t)cout * cin * k, "MiMo conv");
+    const float *b = nullptr;
+    if (!w) { return 0; }
+    if (have_bias) {
+        b = m2_f32(map, size, bias, cout, "MiMo conv bias");
+        if (!b) { return 0; }
+    }
+    mimo2_conv1d<<<(unsigned)((count + 255) / 256), 256, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)in->ptr, w, b,
+        (int)n_in, (int)n_out, (int)cin, (int)cout, (int)k, (int)stride, (int)pad);
+    return cuda_ok(cudaGetLastError(), "MiMo conv1d");
+}
+
+extern "C" int ds4_gpu_mimo2_rvq(
+        ds4_gpu_tensor *ids, ds4_gpu_tensor *residual, const void *map, uint64_t size,
+        uint64_t offset, uint32_t n, uint32_t dim, uint32_t bins) {
+    if (!ids || !residual || !n || !dim || !bins || n > INT_MAX ||
+        ids->bytes < (uint64_t)n * sizeof(int) ||
+        residual->bytes < (uint64_t)n * dim * sizeof(float)) { return 0; }
+    const float *book = m2_f32(map, size, offset, (uint64_t)bins * dim, "MiMo rvq");
+    if (!book) { return 0; }
+    mimo2_rvq<<<n, 256, 0, ds4_current_stream()>>>(
+        (int *)ids->ptr, (float *)residual->ptr, book, (int)dim, (int)bins);
+    return cuda_ok(cudaGetLastError(), "MiMo rvq");
+}
+
+extern "C" int ds4_gpu_mimo2_to_ctime(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *in, uint32_t rows, uint32_t cols) {
+    const uint64_t count = (uint64_t)rows * cols;
+    if (!out || !in || !rows || !cols || count > INT_MAX ||
+        out->bytes < count * sizeof(float) || in->bytes < count * sizeof(float)) { return 0; }
+    mimo2_to_ctime<<<(unsigned)((count + 255) / 256), 256, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const float *)in->ptr, (int)rows, (int)cols);
+    return cuda_ok(cudaGetLastError(), "MiMo transpose");
+}
+
+extern "C" int ds4_gpu_mimo2_code_sum(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *ids, const void *map, uint64_t size,
+        uint64_t offset, uint32_t n, uint32_t dim, uint32_t vocab, uint32_t channels) {
+    const uint64_t count = (uint64_t)n * dim;
+    if (!out || !ids || !n || !dim || !vocab || !channels || count > INT_MAX ||
+        out->bytes < count * sizeof(float) ||
+        ids->bytes < (uint64_t)n * channels * sizeof(int)) { return 0; }
+    const float *table = m2_f32(map, size, offset, (uint64_t)dim * vocab * channels, "MiMo codes");
+    if (!table) { return 0; }
+    mimo2_code_sum<<<(unsigned)((count + 255) / 256), 256, 0, ds4_current_stream()>>>(
+        (float *)out->ptr, (const int *)ids->ptr, table, (int)n, (int)dim, (int)vocab, (int)channels);
+    return cuda_ok(cudaGetLastError(), "MiMo code sum");
+}

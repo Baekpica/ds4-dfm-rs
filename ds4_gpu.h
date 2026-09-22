@@ -4823,6 +4823,56 @@ int ds4_gpu_step37_vgelu(ds4_gpu_tensor *x,
 int ds4_gpu_step37_vresidual(ds4_gpu_tensor *residual, const ds4_gpu_tensor *x,
         const void *map, uint64_t size, uint64_t bias, uint64_t scale, uint32_t rows);
 
+int ds4_gpu_mimo2_qkv(ds4_gpu_tensor *q, ds4_gpu_tensor *k, ds4_gpu_tensor *v,
+        const ds4_gpu_tensor *qkv, const ds4_gpu_tensor *table,
+        uint32_t kv_heads, uint32_t rows);
+int ds4_gpu_mimo2_kv_store(ds4_gpu_tensor *cache,
+        const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        const ds4_gpu_tensor *positions, uint32_t kv_heads, uint32_t rows, uint32_t capacity);
+int ds4_gpu_mimo2_attention(ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *cache, const ds4_gpu_tensor *positions,
+        const void *map, uint64_t size, uint64_t sink_offset,
+        uint32_t kv_heads, uint32_t capacity, uint32_t rows, uint32_t window);
+int ds4_gpu_mimo2_router(ds4_gpu_tensor *ids, ds4_gpu_tensor *weights,
+        const ds4_gpu_tensor *logits, const void *map, uint64_t size,
+        uint64_t offset, uint32_t rows);
+int ds4_gpu_mimo2_patch(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
+        const void *map, uint64_t size, uint64_t w0, uint64_t w1,
+        uint32_t n, uint32_t oc, uint32_t ic, uint32_t kt, uint32_t patch);
+int ds4_gpu_mimo2_rope(ds4_gpu_tensor *base, const ds4_gpu_tensor *cos,
+        const ds4_gpu_tensor *sin, uint32_t n, uint32_t heads, uint32_t hd,
+        uint32_t stride, uint32_t off);
+int ds4_gpu_mimo2_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        const void *map, uint64_t size, uint64_t sink_off, int have_sink,
+        uint32_t n, uint32_t q_heads, uint32_t kv_heads, uint32_t hd,
+        uint32_t q_stride, uint32_t k_stride, uint32_t v_stride,
+        uint32_t q_off, uint32_t k_off, uint32_t v_off,
+        int window, int causal, int group);
+int ds4_gpu_mimo2_bias(ds4_gpu_tensor *x, const void *map, uint64_t size,
+        uint64_t offset, uint32_t n, uint32_t dim);
+int ds4_gpu_mimo2_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *up, const void *map, uint64_t size,
+        uint64_t gate_b, uint64_t up_b, int have_bias, uint32_t n, uint32_t dim);
+int ds4_gpu_mimo2_gelu(ds4_gpu_tensor *x, uint32_t n);
+int ds4_gpu_mimo2_ln(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *map, uint64_t size, uint64_t weight, uint64_t bias,
+        int have_bias, uint32_t rows, uint32_t dim, float eps);
+int ds4_gpu_mimo2_gather(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
+        const ds4_gpu_tensor *index, uint32_t units, uint32_t width);
+int ds4_gpu_mimo2_conv1d(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
+        const void *map, uint64_t size, uint64_t weight, uint64_t bias, int have_bias,
+        uint32_t n_in, uint32_t n_out, uint32_t cin, uint32_t cout,
+        uint32_t k, uint32_t stride, uint32_t pad);
+int ds4_gpu_mimo2_rvq(ds4_gpu_tensor *ids, ds4_gpu_tensor *residual,
+        const void *map, uint64_t size, uint64_t offset,
+        uint32_t n, uint32_t dim, uint32_t bins);
+int ds4_gpu_mimo2_to_ctime(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
+        uint32_t rows, uint32_t cols);
+int ds4_gpu_mimo2_code_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *ids,
+        const void *map, uint64_t size, uint64_t offset,
+        uint32_t n, uint32_t dim, uint32_t vocab, uint32_t channels);
+
 int ds4_gpu_step37_norm(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
         const void *map, uint64_t size, uint64_t offset,
         uint32_t width, uint32_t rows, float eps);

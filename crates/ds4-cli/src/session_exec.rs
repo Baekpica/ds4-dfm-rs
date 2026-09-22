@@ -13,6 +13,7 @@ pub fn hidden_values(shape: &Shape) -> u64 {
         | ModelFamily::Qwen4Exp
         | ModelFamily::Step37
         | ModelFamily::Ling3Vl
+        | ModelFamily::Mimo2
         | ModelFamily::Inkling => u64::from(shape.n_embd),
         ModelFamily::DeepSeek4
         | ModelFamily::Motif3

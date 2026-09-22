@@ -60,6 +60,7 @@ pub fn write_static_completion(
             spec.created,
             spec.cors,
             &[],
+            &[],
         ),
         ReqKind::Chat => write_static_chat(spec, &req, &text, finish, emitted),
     }
@@ -126,6 +127,7 @@ fn write_static_chat(
             spec.created,
             spec.cors,
             &parsed_gen.calls,
+            &[],
         ),
     }
 }

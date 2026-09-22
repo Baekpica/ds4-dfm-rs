@@ -88,6 +88,7 @@ pub enum ModelSyntax {
     Inkling = 9,
     Step37 = 10,
     Ling3Vl = 11,
+    Mimo2 = 12,
 }
 
 /// C `server_model_syntax_for_engine`.
@@ -103,6 +104,7 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
         9 => ModelSyntax::Inkling,
         10 => ModelSyntax::Step37,
         11 => ModelSyntax::Ling3Vl,
+        12 => ModelSyntax::Mimo2,
         _ => ModelSyntax::DeepSeek,
     }
 }
@@ -112,7 +114,7 @@ pub fn tool_start_marker(syntax: ModelSyntax) -> &'static str {
         ModelSyntax::SolarOpen2 => SOLAR_TOOL_CALLS,
         ModelSyntax::Motif3 | ModelSyntax::Exaone => MOTIF_TOOL_CALLS,
         ModelSyntax::Dots3 => DOTS3_TOOL_CALLS,
-        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 => QWEN_TOOL_CALL_START,
+        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 | ModelSyntax::Mimo2 => QWEN_TOOL_CALL_START,
         ModelSyntax::Glm53 | ModelSyntax::Ling3Vl => GLM_TOOL_CALL_START,
         ModelSyntax::K2Horizon => K2_TOOL_CALLS_START,
         ModelSyntax::Inkling => inkling::INVOKE,
@@ -662,6 +664,7 @@ fn append_glm_message_content(out: &mut Vec<u8>, m: &ChatMsg) -> Result<(), Rend
                 put(out, GLM_VISION_END);
             }
             ChatPart::Audio(_) => return Err(RenderError("audio input requires Inkling")),
+            ChatPart::Video(_) => return Err(RenderError("video input requires MiMo")),
             ChatPart::ToolResult { .. } => {}
         }
     }
@@ -1756,6 +1759,7 @@ pub fn render_qwen_chat_ex(
                         ChatPart::Audio(_) => {
                             return Err(RenderError("audio input requires Inkling"))
                         }
+                        ChatPart::Video(_) => return Err(RenderError("video input requires MiMo")),
                         ChatPart::ToolResult { .. } => {}
                     }
                 }
@@ -1838,12 +1842,13 @@ pub fn render_chat_choice(
     tool_choice: ToolChoice,
 ) -> Result<Vec<u8>, RenderError> {
     if syntax != ModelSyntax::Inkling
+        && syntax != ModelSyntax::Mimo2
         && msgs
             .iter()
             .flat_map(|m| &m.parts)
             .any(|p| matches!(p, ChatPart::Audio(_)))
     {
-        return Err(RenderError("audio input requires Inkling"));
+        return Err(RenderError("audio input requires Inkling or MiMo"));
     }
     match syntax {
         ModelSyntax::Step37 => Err(RenderError(
@@ -1851,6 +1856,9 @@ pub fn render_chat_choice(
         )),
         ModelSyntax::Ling3Vl => Err(RenderError(
             "Ling input requires its official Jinja template",
+        )),
+        ModelSyntax::Mimo2 => Err(RenderError(
+            "MiMo input requires its official Jinja template",
         )),
         ModelSyntax::Motif3 => render_motif3_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
         ModelSyntax::Exaone => render_exaone_chat(msgs, tool_schemas, think_mode),
@@ -1917,6 +1925,11 @@ pub fn render_live_tool_tail(
         ModelSyntax::Ling3Vl => {
             return Err(RenderError(
                 "Ling tool results require retained history and Jinja",
+            ));
+        }
+        ModelSyntax::Mimo2 => {
+            return Err(RenderError(
+                "MiMo tool results require retained history and Jinja",
             ));
         }
         ModelSyntax::Inkling => return inkling::live_tail(tail, msgs),

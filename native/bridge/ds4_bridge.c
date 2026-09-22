@@ -684,6 +684,62 @@ int ds4_bridge_step37_commit(ds4_bridge_session *s, int32_t keep, char *err, siz
     return ds4_session_step37_commit(s->session, keep, err, errlen);
 }
 
+int ds4_bridge_mimo2_trial(ds4_bridge_session *s, int32_t first, int32_t max_tokens,
+                           int32_t *tokens, int32_t *target, int32_t cap,
+                           char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return -1;
+    }
+    return ds4_session_mimo2_trial(s->session, first, max_tokens, tokens, target, cap, err, errlen);
+}
+
+int ds4_bridge_mimo2_commit(ds4_bridge_session *s, int32_t keep, char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return 1;
+    }
+    return ds4_session_mimo2_commit(s->session, keep, err, errlen);
+}
+
+int ds4_bridge_mimo2_encode_vision(ds4_bridge_session *s, const float *patches,
+                                   uint32_t n_patches, uint32_t grid_h, uint32_t grid_w,
+                                   float *out, char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return 1;
+    }
+    return ds4_session_mimo2_encode_vision(s->session, patches, n_patches, grid_h, grid_w,
+                                           out, err, errlen);
+}
+
+int ds4_bridge_mimo2_encode_audio(ds4_bridge_session *s, const float *mel, uint32_t frames,
+                                  float *out, uint32_t cap, uint32_t *rows,
+                                  char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return 1;
+    }
+    return ds4_session_mimo2_encode_audio(s->session, mel, frames, out, cap, rows, err, errlen);
+}
+
+int ds4_bridge_mimo2_sync_media(ds4_bridge_session *s, const int32_t *tokens, int n_tokens,
+                                const uint32_t *starts, const uint32_t *counts,
+                                const float *const *rows, uint32_t nspans, uint64_t tag,
+                                char *err, size_t errlen)
+{
+    if (!s || !s->session) {
+        set_err(err, errlen, "session is NULL");
+        return 1;
+    }
+    return ds4_session_mimo2_sync_media(s->session, tokens, n_tokens, starts, counts, rows,
+                                        nspans, tag, err, errlen);
+}
+
 int ds4_bridge_dots3_enabled(ds4_bridge_session *s)
 {
     return s && s->session && ds4_session_dots3_mtp(s->session);

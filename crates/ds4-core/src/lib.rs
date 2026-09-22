@@ -23,6 +23,7 @@ mod ling3vl;
 mod mapped;
 mod mem;
 mod mem_gov;
+mod mimo2;
 mod payload;
 mod progress;
 mod serving;
@@ -70,6 +71,16 @@ pub use mem_gov::{
     gov_epoch_write_end, gov_evaluate, gov_lease_publish, gov_mode_name, gov_mode_parse, GovClaim,
     GovCmp, GovConsumer, GovLease, GovLedger, GovMode, GovQuote, GovStatus, MemObsSource,
     MemObsStatus, MemObservation, GOVC_COUNT,
+};
+pub use mimo2::{
+    admit_context, audio_feat_len, audio_interval, audio_pad_count, audio_plan, check_joint,
+    check_span_budget, check_spans, committed_frontier, context_bytes, expand_pieces,
+    format_timestamp, image_pad_count, image_plan, joint_plan, kv_rows, load_video, media_tag, nfc,
+    pack_still, reuse_media, smart_resize, video_plan, visual_tokens, wav_mel, MediaPiece,
+    MediaPlan, MediaSpan, Mimo2Admission, Mimo2Error, Mimo2Layer, Mimo2Plan, PackedVisual, PadKind,
+    VideoPair, AUDIO_END, AUDIO_PAD, AUDIO_START, IMAGE_PAD, INDEX_LIMIT, LANGUAGE_TENSORS,
+    MIXED_SHARDS, MTP_BLOCKS, QUALIFIED_CONTEXT, TRUNK_LAYERS, VIDEO_END, VIDEO_PAD, VIDEO_START,
+    VISION_END, VISION_START,
 };
 pub use payload::{
     dump_cmd as payload_dump_cmd, dump_script as payload_dump_script, encode_fields, parse_prefix,
@@ -526,6 +537,7 @@ pub struct Model {
     vocab: Vocab,
     chat_template: Option<chat_template::Template>,
     vision_ready: bool,
+    mtp_draft_tokens: i32,
     _distributed: Option<FfiDistributed>,
     _not_send: PhantomData<*const ()>,
 }
@@ -1039,6 +1051,12 @@ pub fn probe_model_artifact(path: &str) -> Result<()> {
         code: 1,
         message: format!("validate failed: {}", e.token()),
     })?;
+    if identified.shape.family == ModelFamily::Mimo2 {
+        Mimo2Plan::validate_inventory(&inventory).map_err(|e| Error {
+            code: 1,
+            message: e.to_string(),
+        })?;
+    }
     if identified.shape.family == ModelFamily::Step37 {
         Step37Plan::validate_inventory(&inventory).map_err(|e| Error {
             code: 1,
@@ -1195,6 +1213,18 @@ impl Model {
             code: 1,
             message: format!("identify failed: {}", e.token()),
         })?;
+        if identified.shape.family == ModelFamily::Mimo2
+            && (backend != Backend::Cuda
+                || distributed.is_some()
+                || mtp_path.is_some()
+                || dspark_path.is_some())
+        {
+            return Err(Error {
+                code: 1,
+                message: "MiMo requires one full CUDA model without DFlash or DSpark sidecars"
+                    .into(),
+            });
+        }
         let g = GgufFile::open(std::path::Path::new(path)).map_err(|e| Error {
             code: 1,
             message: format!("validate failed: {}", e.token()),
@@ -1376,6 +1406,7 @@ impl Model {
             vocab,
             chat_template,
             vision_ready: tuning.vision_path.is_some(),
+            mtp_draft_tokens: tuning.mtp_draft_tokens,
             _distributed: ffi_distributed,
             _not_send: PhantomData,
         })
@@ -1395,6 +1426,11 @@ impl Model {
 
     pub fn mtp(&self) -> Option<&SiblingAttach> {
         self.mtp.as_ref()
+    }
+
+    /// Draft width requested at open. Embedded MiMo MTP runs only above 1.
+    pub fn mtp_draft_tokens(&self) -> i32 {
+        self.mtp_draft_tokens
     }
 
     pub fn dspark(&self) -> Option<&SiblingAttach> {
@@ -1465,6 +1501,13 @@ impl Model {
         if self.family == ModelFamily::Step37 && self.vision_ready {
             return step37::Step37Media::tokens(data);
         }
+        if self.family == ModelFamily::Mimo2 {
+            let count = crate::mimo2::image_pad_count(data).map_err(|error| Error {
+                code: 1,
+                message: error.to_string(),
+            })?;
+            return Ok(vec![crate::mimo2::IMAGE_PAD; count as usize]);
+        }
         let info = self.vision_probe(data)?;
         const INKLING_IMAGE_TOKEN: i32 = 200054;
         const GLM_IMAGE_TOKEN: i32 = 154854;
@@ -1483,10 +1526,16 @@ impl Model {
     }
 
     pub fn audio_probe(&self, data: &[u8]) -> Result<u32> {
+        if self.family == ModelFamily::Mimo2 {
+            return crate::mimo2::audio_pad_count(data).map_err(|error| Error {
+                code: 1,
+                message: error.to_string(),
+            });
+        }
         if self.family != ModelFamily::Inkling {
             return Err(Error {
                 code: 1,
-                message: "audio input requires Inkling".into(),
+                message: "audio input requires Inkling or MiMo".into(),
             });
         }
         inkling_audio::probe_audio(data, u32::MAX)
@@ -1737,7 +1786,10 @@ impl Session<'_> {
     fn step_failed(&mut self) {
         if !matches!(
             self.host.family,
-            ModelFamily::Step37 | ModelFamily::Ling3Vl | ModelFamily::Dots3Note
+            ModelFamily::Step37
+                | ModelFamily::Ling3Vl
+                | ModelFamily::Dots3Note
+                | ModelFamily::Mimo2
         ) {
             return;
         }
@@ -1808,8 +1860,276 @@ impl Session<'_> {
         Ok(())
     }
 
+    pub fn sync_mimo(
+        &mut self,
+        tokens: &TokenBuffer,
+        images: &[VisionInput<'_>],
+        audios: &[AudioInput<'_>],
+        videos: &[VisionInput<'_>],
+        packed: &[&[crate::mimo2::PackedVisual]],
+    ) -> Result<()> {
+        self.check_sync(tokens)?;
+        let ids = tokens.as_slice();
+        let runs = crate::mimo2::media_span_count(ids);
+        crate::mimo2::check_span_budget(runs).map_err(|error| Error {
+            code: 1,
+            message: error.to_string(),
+        })?;
+        let mut spans = Vec::new();
+        let mut rows = Vec::<Vec<f32>>::new();
+        let mut image_at = 0usize;
+        let mut audio_at = 0usize;
+        let mut video_at = 0usize;
+        let mut pairs: Vec<Vec<f32>> = Vec::new();
+        let mut pair_at = 0usize;
+        let mut audio_rows: Vec<f32> = Vec::new();
+        let mut audio_used = 0u32;
+        let mut index = 0usize;
+        while index < ids.len() {
+            let kind = match ids[index] {
+                crate::mimo2::IMAGE_PAD => crate::mimo2::PadKind::Image,
+                crate::mimo2::VIDEO_PAD => crate::mimo2::PadKind::Video,
+                crate::mimo2::AUDIO_PAD => crate::mimo2::PadKind::Audio,
+                _ => {
+                    index += 1;
+                    continue;
+                }
+            };
+            let start = index as u32;
+            while index < ids.len() && ids[index] == kind.token() {
+                index += 1;
+            }
+            let count = index as u32 - start;
+            let row = match kind {
+                crate::mimo2::PadKind::Image => {
+                    let image = images.get(image_at).ok_or_else(|| Error {
+                        code: 1,
+                        message: "MiMo image span has no bytes".into(),
+                    })?;
+                    image_at += 1;
+                    let packed = crate::mimo2::pack_still(image.data).map_err(|error| Error {
+                        code: 1,
+                        message: error.to_string(),
+                    })?;
+                    if packed.tokens != count {
+                        return Err(Error {
+                            code: 1,
+                            message: "MiMo image token count does not match the pixels".into(),
+                        });
+                    }
+                    let rows = self.encode_mimo_vision(
+                        &packed.patches,
+                        packed.grid_h,
+                        packed.grid_w,
+                        count,
+                    )?;
+                    if std::env::var_os("DS4_MIMO2_VISION_TRACE").is_some() {
+                        let mean = rows.iter().map(|v| v.abs()).sum::<f32>() / rows.len() as f32;
+                        eprintln!(
+                            "mimo-host tokens={count} mean_abs={mean:.8} first={:.8}",
+                            rows[0]
+                        );
+                    }
+                    rows
+                }
+                crate::mimo2::PadKind::Video => {
+                    if pair_at == pairs.len() {
+                        let video = videos.get(video_at).ok_or_else(|| Error {
+                            code: 1,
+                            message: "MiMo video span has no bytes".into(),
+                        })?;
+                        video_at += 1;
+                        let decoded;
+                        let visuals: &[crate::mimo2::PackedVisual] = if packed
+                            .get(video_at - 1)
+                            .is_some_and(|frames| !frames.is_empty())
+                        {
+                            packed[video_at - 1]
+                        } else {
+                            decoded = crate::mimo2::load_video(video.data)
+                                .map_err(|error| Error {
+                                    code: 1,
+                                    message: error.to_string(),
+                                })?
+                                .1;
+                            decoded.as_slice()
+                        };
+                        pairs.clear();
+                        pair_at = 0;
+                        for visual in visuals {
+                            pairs.push(self.encode_mimo_vision(
+                                &visual.patches,
+                                visual.grid_h,
+                                visual.grid_w,
+                                visual.tokens,
+                            )?);
+                        }
+                    }
+                    let features = pairs.get(pair_at).ok_or_else(|| Error {
+                        code: 1,
+                        message: "MiMo video pair is missing".into(),
+                    })?;
+                    if features.len() != count as usize * crate::mimo2::VISION_WIDTH {
+                        return Err(Error {
+                            code: 1,
+                            message: "MiMo video token count does not match the frames".into(),
+                        });
+                    }
+                    pair_at += 1;
+                    features.clone()
+                }
+                crate::mimo2::PadKind::Audio => {
+                    if audio_rows.is_empty() {
+                        let audio = audios.get(audio_at).ok_or_else(|| Error {
+                            code: 1,
+                            message: "MiMo audio span has no bytes".into(),
+                        })?;
+                        audio_at += 1;
+                        let mel = crate::mimo2::wav_mel(audio.data).map_err(|error| Error {
+                            code: 1,
+                            message: error.to_string(),
+                        })?;
+                        audio_rows = self.encode_mimo_audio(&mel.bins, mel.frames)?;
+                        audio_used = 0;
+                    }
+                    let width = crate::mimo2::VISION_WIDTH;
+                    let end = audio_used.checked_add(count).ok_or_else(|| Error {
+                        code: 1,
+                        message: "MiMo audio span is too large".into(),
+                    })?;
+                    if end as usize * width > audio_rows.len() {
+                        return Err(Error {
+                            code: 1,
+                            message: "MiMo audio token count does not match the waveform".into(),
+                        });
+                    }
+                    let slice =
+                        audio_rows[audio_used as usize * width..end as usize * width].to_vec();
+                    audio_used = end;
+                    if audio_used as usize * width == audio_rows.len() {
+                        audio_rows.clear();
+                        audio_used = 0;
+                    }
+                    slice
+                }
+            };
+            spans.push(crate::mimo2::MediaSpan { start, count, kind });
+            rows.push(row);
+        }
+        if image_at != images.len()
+            || audio_at != audios.len()
+            || video_at != videos.len()
+            || pair_at != pairs.len()
+            || !audio_rows.is_empty()
+        {
+            return Err(Error {
+                code: 1,
+                message: "MiMo media payloads do not match the prompt".into(),
+            });
+        }
+        crate::mimo2::check_spans(ids, &spans).map_err(|error| Error {
+            code: 1,
+            message: error.to_string(),
+        })?;
+        let mut parts = Vec::new();
+        for image in images {
+            parts.push(image.data);
+        }
+        for audio in audios {
+            parts.push(audio.data);
+        }
+        for video in videos {
+            parts.push(video.data);
+        }
+        let tag = crate::mimo2::media_tag(&parts);
+        let starts: Vec<u32> = spans.iter().map(|span| span.start).collect();
+        let counts: Vec<u32> = spans.iter().map(|span| span.count).collect();
+        let ptrs: Vec<*const f32> = rows.iter().map(|row| row.as_ptr()).collect();
+        let mut err = [0u8; 512];
+        let rc = unsafe {
+            ds4_sys::ds4_bridge_mimo2_sync_media(
+                self.raw.as_ptr(),
+                ids.as_ptr(),
+                ids.len() as i32,
+                starts.as_ptr(),
+                counts.as_ptr(),
+                ptrs.as_ptr(),
+                spans.len() as u32,
+                tag,
+                err.as_mut_ptr().cast(),
+                err.len(),
+            )
+        };
+        self.host.invalidate();
+        if rc != 0 {
+            return Err(fail(rc, &err));
+        }
+        self.host.replace_checkpoint(ids);
+        Ok(())
+    }
+
+    fn encode_mimo_vision(
+        &self,
+        patches: &[f32],
+        grid_h: u32,
+        grid_w: u32,
+        tokens: u32,
+    ) -> Result<Vec<f32>> {
+        let mut out = vec![0.0f32; tokens as usize * crate::mimo2::VISION_WIDTH];
+        let mut err = [0u8; 512];
+        let rc = unsafe {
+            ds4_sys::ds4_bridge_mimo2_encode_vision(
+                self.raw.as_ptr(),
+                patches.as_ptr(),
+                grid_h * grid_w,
+                grid_h,
+                grid_w,
+                out.as_mut_ptr(),
+                err.as_mut_ptr().cast(),
+                err.len(),
+            )
+        };
+        if rc != 0 {
+            return Err(fail(rc, &err));
+        }
+        Ok(out)
+    }
+
+    fn encode_mimo_audio(&self, bins: &[f32], frames: u32) -> Result<Vec<f32>> {
+        let cap = crate::mimo2::audio_feat_len(frames).max(1);
+        let mut out = vec![0.0f32; cap as usize * crate::mimo2::VISION_WIDTH];
+        let mut rows = 0u32;
+        let mut err = [0u8; 512];
+        let rc = unsafe {
+            ds4_sys::ds4_bridge_mimo2_encode_audio(
+                self.raw.as_ptr(),
+                bins.as_ptr(),
+                frames,
+                out.as_mut_ptr(),
+                cap,
+                &mut rows,
+                err.as_mut_ptr().cast(),
+                err.len(),
+            )
+        };
+        if rc != 0 {
+            return Err(fail(rc, &err));
+        }
+        if rows == 0 || rows > cap {
+            return Err(Error {
+                code: 1,
+                message: "MiMo audio encoder returned no rows".into(),
+            });
+        }
+        out.truncate(rows as usize * crate::mimo2::VISION_WIDTH);
+        Ok(out)
+    }
+
     pub fn sync_vision(&mut self, tokens: &TokenBuffer, images: &[VisionInput<'_>]) -> Result<()> {
         self.check_sync(tokens)?;
+        if self.host.family == ModelFamily::Mimo2 {
+            return self.sync_mimo(tokens, images, &[], &[], &[]);
+        }
         if self.host.family == ModelFamily::Step37 {
             return self.sync_step37_media(tokens, images);
         }
@@ -1860,10 +2180,13 @@ impl Session<'_> {
             return self.sync_vision(tokens, images);
         }
         self.check_sync(tokens)?;
+        if self.host.family == ModelFamily::Mimo2 {
+            return self.sync_mimo(tokens, images, audios, &[], &[]);
+        }
         if self.host.family != ModelFamily::Inkling {
             return Err(Error {
                 code: 1,
-                message: "audio input requires Inkling".into(),
+                message: "audio input requires Inkling or MiMo".into(),
             });
         }
         self.sync_inkling(tokens, images, audios)
@@ -2051,6 +2374,9 @@ impl Session<'_> {
         }
         if self.host.family == ModelFamily::Dots3Note {
             return self.eval_dots3_argmax(first, max_tokens, eos);
+        }
+        if self.host.family == ModelFamily::Mimo2 {
+            return self.eval_mimo2_argmax(first, max_tokens, eos);
         }
         let mut accepted = vec![0i32; 17];
         let mut err = [0u8; 512];
@@ -2759,6 +3085,74 @@ mod tests {
         _errlen: usize,
     ) -> i32 {
         STEP_GENERATION.with(|g| g.set(g.get() + 1));
+        1
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_mimo2_trial(
+        s: *mut ds4_bridge_session,
+        first: i32,
+        max: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_trial(s, first, max, tokens, target, cap, err, errlen)
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_mimo2_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_commit(s, keep, err, errlen)
+    }
+
+    #[no_mangle]
+    unsafe extern "C" fn ds4_bridge_mimo2_encode_vision(
+        _s: *mut ds4_bridge_session,
+        _patches: *const f32,
+        _n: u32,
+        _gh: u32,
+        _gw: u32,
+        _out: *mut f32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        1
+    }
+
+    #[no_mangle]
+    unsafe extern "C" fn ds4_bridge_mimo2_encode_audio(
+        _s: *mut ds4_bridge_session,
+        _mel: *const f32,
+        _frames: u32,
+        _out: *mut f32,
+        _cap: u32,
+        _rows: *mut u32,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
+        1
+    }
+
+    #[no_mangle]
+    unsafe extern "C" fn ds4_bridge_mimo2_sync_media(
+        _s: *mut ds4_bridge_session,
+        _tokens: *const i32,
+        _n: i32,
+        _starts: *const u32,
+        _counts: *const u32,
+        _rows: *const *const f32,
+        _spans: u32,
+        _tag: u64,
+        _err: *mut c_char,
+        _errlen: usize,
+    ) -> i32 {
         1
     }
 

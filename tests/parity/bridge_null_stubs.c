@@ -210,6 +210,39 @@ bool ds4_session_dots3_mtp(ds4_session *s) {
     (void)s;
     STUB("ds4_session_dots3_mtp");
 }
+int ds4_session_mimo2_trial(ds4_session *s, int first, int max_tokens,
+                           int *tokens, int *target, int cap,
+                           char *err, size_t errlen) {
+    (void)s; (void)first; (void)max_tokens; (void)tokens; (void)target;
+    (void)cap; (void)err; (void)errlen;
+    STUB("ds4_session_mimo2_trial");
+}
+int ds4_session_mimo2_commit(ds4_session *s, int keep, char *err, size_t errlen) {
+    (void)s; (void)keep; (void)err; (void)errlen;
+    STUB("ds4_session_mimo2_commit");
+}
+int ds4_session_mimo2_encode_vision(ds4_session *s, const float *patches,
+                                    unsigned n_patches, unsigned grid_h, unsigned grid_w,
+                                    float *out, char *err, size_t errlen) {
+    (void)s; (void)patches; (void)n_patches; (void)grid_h; (void)grid_w; (void)out;
+    (void)err; (void)errlen;
+    STUB("ds4_session_mimo2_encode_vision");
+}
+int ds4_session_mimo2_encode_audio(ds4_session *s, const float *mel, unsigned frames,
+                                   float *out, unsigned cap, unsigned *rows,
+                                   char *err, size_t errlen) {
+    (void)s; (void)mel; (void)frames; (void)out; (void)cap; (void)rows;
+    (void)err; (void)errlen;
+    STUB("ds4_session_mimo2_encode_audio");
+}
+int ds4_session_mimo2_sync_media(ds4_session *s, const int *tokens, int n_tokens,
+                                 const unsigned *starts, const unsigned *counts,
+                                 const float *const *rows, unsigned nspans,
+                                 uint64_t tag, char *err, size_t errlen) {
+    (void)s; (void)tokens; (void)n_tokens; (void)starts; (void)counts;
+    (void)rows; (void)nspans; (void)tag; (void)err; (void)errlen;
+    STUB("ds4_session_mimo2_sync_media");
+}
 int ds4_session_dots3_trial(ds4_session *s, int first, int max_tokens,
                            int *tokens, int *target, int cap,
                            char *err, size_t errlen) {

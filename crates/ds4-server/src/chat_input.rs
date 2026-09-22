@@ -179,10 +179,12 @@ fn content(parts: &[ChatPart], fallback: &str) -> Value {
     if parts.is_empty() {
         return fallback.into();
     }
-    if !parts
-        .iter()
-        .any(|p| matches!(p, ChatPart::Image(_) | ChatPart::Audio(_)))
-    {
+    if !parts.iter().any(|p| {
+        matches!(
+            p,
+            ChatPart::Image(_) | ChatPart::Audio(_) | ChatPart::Video(_)
+        )
+    }) {
         return parts
             .iter()
             .filter_map(|part| match part {
@@ -198,6 +200,7 @@ fn content(parts: &[ChatPart], fallback: &str) -> Value {
             ChatPart::Text(text) => Some(json!({"type":"text", "text":text})),
             ChatPart::Image(_) => Some(json!({"type":"image"})),
             ChatPart::Audio(_) => Some(json!({"type":"audio"})),
+            ChatPart::Video(_) => Some(json!({"type":"video"})),
             ChatPart::ToolResult { .. } => None,
         })
         .collect::<Vec<_>>()
@@ -211,6 +214,21 @@ fn input_error(error: impl std::fmt::Display) -> GenerateError {
 #[cfg(test)]
 #[path = "chat_history_test.rs"]
 mod history_tests;
+
+#[cfg(test)]
+mod video_input {
+    use super::messages;
+    use crate::parse::{parse_chat_request, ParseEnv};
+
+    #[test]
+    fn video_part_is_a_video_block() {
+        let body = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"look"},{"type":"video_url","video_url":{"url":"data:video/mp4;base64,AAAAAGZ0eXAAAAAAAAAAAA=="}}]}]}"#;
+        let parsed = parse_chat_request(&ParseEnv::default(), body).unwrap();
+        let rendered = messages(&parsed).unwrap();
+        assert_eq!(rendered[0]["content"][0]["type"], "text");
+        assert_eq!(rendered[0]["content"][1]["type"], "video");
+    }
+}
 
 /// One retained tool frontier. The registry owns liveness/TTL; this owns the
 /// structured context needed when a client sends only tool results.
@@ -290,6 +308,7 @@ impl History {
                     match part {
                         ChatPart::Image(index) => *index += self.request.images.len(),
                         ChatPart::Audio(index) => *index += self.request.audios.len(),
+                        ChatPart::Video(index) => *index += self.request.videos.len(),
                         _ => {}
                     }
                 }
@@ -302,6 +321,9 @@ impl History {
             parsed
                 .audios
                 .splice(0..0, self.request.audios.iter().cloned());
+            parsed
+                .videos
+                .splice(0..0, self.request.videos.iter().cloned());
         }
         if parsed.tool_schemas.is_empty() && parsed.tool_choice != crate::parse::ToolChoice::None {
             parsed.tool_schemas.clone_from(&self.request.tool_schemas);

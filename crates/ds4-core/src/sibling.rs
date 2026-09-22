@@ -211,13 +211,29 @@ pub fn probe_vision_sidecar(
     }
     let takes_encoder = matches!(
         shape.family,
-        ModelFamily::Glm53 | ModelFamily::Step37 | ModelFamily::Ling3Vl
+        ModelFamily::Glm53 | ModelFamily::Step37 | ModelFamily::Ling3Vl | ModelFamily::Mimo2
     );
     if !takes_encoder || backend != crate::Backend::Cuda || distributed.is_some() {
         return Err(Error {
             code: 1,
-            message: "--vision requires one full GLM-5.3, Step or Ling CUDA model".into(),
+            message: "--vision requires one full GLM-5.3, Step, Ling or MiMo CUDA model".into(),
         });
+    }
+    if shape.family == ModelFamily::Mimo2 {
+        let g = crate::GgufFile::open(std::path::Path::new(path)).map_err(|e| Error {
+            code: 1,
+            message: format!("vision open failed: {e}"),
+        })?;
+        if g.get_string("general.architecture") != Some(b"clip".as_slice())
+            || g.get_string("clip.vision.projector_type") != Some(b"mimovl".as_slice())
+            || g.get_string("clip.audio.projector_type") != Some(b"mimo_audio".as_slice())
+        {
+            return Err(Error {
+                code: 1,
+                message: "MiMo projector metadata does not match V2.6".into(),
+            });
+        }
+        return Ok(());
     }
     if shape.family == ModelFamily::Ling3Vl {
         return crate::Ling3VlVisionPlan::inspect(std::path::Path::new(path))

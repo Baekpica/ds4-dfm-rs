@@ -94,6 +94,9 @@ const SESSION_HEADROOM_MB: u64 = 1024;
 const DOTS3_PREFILL_CHUNK_ENV: &str = "DS4_DOTS3_PREFILL_CHUNK";
 const DOTS3_NATIVE_DEFAULT: u32 = 4096;
 const DOTS3_NATIVE_MAX: u32 = 8192;
+const MIMO_PREFILL_CHUNK_ENV: &str = "DS4_MIMO2_PREFILL_CHUNK";
+const MIMO_NATIVE_DEFAULT: u32 = crate::mimo2::PREFILL_CAP;
+const MIMO_NATIVE_MAX: u32 = crate::mimo2::PREFILL_CAP;
 const DOTS3_INDEX_ROWS: u64 = 128;
 const DOTS3_PARTIAL_ROWS: u64 = 2;
 const DOTS3_PARTIAL_SPLITS: u64 = 16;
@@ -283,6 +286,11 @@ pub fn fill_quote_facts(
             )
         }
         (ModelFamily::Glm53, Some(s)) => (glm_graph_bytes(s, ctx), 0, 0, 0),
+        (ModelFamily::Mimo2, Some(_)) => {
+            let cap = native.min(ctx_tokens).max(1);
+            let bytes = crate::mimo2::context_bytes(ctx_tokens, cap).unwrap_or(0);
+            (bytes, 0, 0, 0)
+        }
         (ModelFamily::DeepSeek4, Some(s)) if req.backend == Backend::Cpu => {
             let (cache, scratch) = deepseek_cpu_bytes(s, ctx);
             (cache, scratch + deepseek_cpu_prefill(s, ctx, scratch), 0, 0)
@@ -706,6 +714,7 @@ fn parse_nvidia_mib(raw: &str) -> Option<u64> {
 
 fn family_native_limit(caps: ServingCaps) -> u32 {
     match caps.family {
+        ModelFamily::Mimo2 => MIMO_NATIVE_MAX,
         ModelFamily::Qwen4Exp => QWEN_NATIVE_MAX,
         ModelFamily::Step37 => STEP_NATIVE_MAX,
         ModelFamily::Ling3Vl => LING_NATIVE_MAX,
@@ -721,6 +730,12 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
 fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
     let ctx = ctx.max(1);
     let cap = match caps.family {
+        ModelFamily::Mimo2 => env_u32(
+            MIMO_PREFILL_CHUNK_ENV,
+            MIMO_NATIVE_DEFAULT,
+            1,
+            MIMO_NATIVE_MAX,
+        ),
         ModelFamily::Qwen4Exp => env_u32(
             QWEN_PREFILL_CHUNK_ENV,
             QWEN_NATIVE_DEFAULT,

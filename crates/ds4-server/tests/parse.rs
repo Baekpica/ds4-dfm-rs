@@ -409,7 +409,7 @@ fn qwen_image_inputs_normalize_across_all_three_surfaces() {
         assert_ne!(request.needs & NEED_IMAGE, 0);
         assert_eq!(
             generation_blocked(request, 0),
-            Some("image input is supported only by Qwen4Exp, GLM-5.3, Inkling, Step or Ling")
+            Some("image input is supported only by Qwen4Exp, GLM-5.3, Inkling, Step, Ling or MiMo")
         );
         assert_eq!(
             generation_blocked(request, 6),
@@ -418,6 +418,7 @@ fn qwen_image_inputs_normalize_across_all_three_surfaces() {
         assert_eq!(generation_blocked(request, 7), None);
         assert_eq!(generation_blocked(request, 10), None);
         assert_eq!(generation_blocked(request, 11), None);
+        assert_eq!(generation_blocked(request, 12), None);
     }
     assert_eq!(parsed[0].images[0].data, parsed[1].images[0].data);
     assert_eq!(parsed[0].images[0].data, parsed[2].images[0].data);
@@ -484,7 +485,7 @@ fn inkling_audio_chat_input() {
     assert_eq!(generation_blocked(&parsed, 9), None);
     assert_eq!(
         generation_blocked(&parsed, 6),
-        Some("audio input requires Inkling")
+        Some("audio input requires Inkling or MiMo")
     );
     let prompt = ds4_server::render_prompt(&parsed, 9).unwrap();
     assert!(String::from_utf8(prompt)
@@ -499,6 +500,46 @@ fn inkling_audio_chat_input() {
     ] {
         assert!(rust_parse("chat", &bad).is_err(), "{bad}");
     }
+}
+
+#[test]
+fn mimo_video_stays_on_the_serial_lane() {
+    const MP4: &str = "AAAAAGZ0eXAAAAAAAAAAAA==";
+    let body = format!(
+        r#"{{"messages":[{{"role":"user","content":[{{"type":"video_url","video_url":{{"url":"data:video/mp4;base64,{MP4}"}}}}]}}]}}"#
+    );
+    let parsed = rust_parse("chat", &body).unwrap();
+    assert_eq!(parsed.videos.len(), 1);
+    assert_eq!(parsed.messages[0].parts, [ChatPart::Video(0)]);
+    assert_ne!(parsed.needs & ds4_server::route::NEED_AUDIO, 0);
+    let route = ds4_server::route_decide(
+        parsed.needs,
+        WireSurface::OpenaiChat,
+        &ds4_server::RouteEnv {
+            have_cont: true,
+            coalesce: true,
+            prompt_len: 128,
+            seq_cap: 1024,
+            cont_anthropic: true,
+            cont_responses: true,
+            cont_tools_anthropic: true,
+            cont_tools_responses: true,
+        },
+    );
+    assert_eq!(route.lane, ds4_server::LANE_SERIAL);
+    assert_eq!(
+        generation_blocked(&parsed, 6),
+        Some("video input requires MiMo")
+    );
+    assert_eq!(generation_blocked(&parsed, 12), None);
+    assert_eq!(
+        rust_parse("chat", &body.replace("video/mp4", "video/webm")).unwrap_err(),
+        "video input currently requires video/mp4"
+    );
+    assert_eq!(
+        rust_parse("chat", &body.replace("\"user\"", "\"assistant\"")).unwrap_err(),
+        "video is allowed only in user messages"
+    );
 }
 
 #[test]

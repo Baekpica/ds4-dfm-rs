@@ -1284,7 +1284,7 @@ pub fn parse_generated_message(
         ModelSyntax::Dots3 => parse_dots3_generated(text, require_thinking_closed),
         ModelSyntax::SolarOpen2 => parse_solar_generated(text, require_thinking_closed, orders),
         // Step shares this output XML, but renders input through its own Jinja.
-        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 => {
+        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 | ModelSyntax::Mimo2 => {
             parse_qwen_generated(text, require_thinking_closed, orders)
         }
         ModelSyntax::K2Horizon => parse_k2_generated(text, require_thinking_closed, orders),

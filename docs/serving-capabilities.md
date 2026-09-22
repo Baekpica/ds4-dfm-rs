@@ -30,6 +30,7 @@ The request's effective and qualified plan remains authoritative.
 | Inkling Small | serial / none | exact / qualified | unverified | unverified | Sidecar / serial / qualified |
 | Step-3.7-Flash | opt_in / qualified | partial / qualified | qualified | qualified | Sidecar / serial + bank / qualified |
 | Ling-3.0-flash-VL | persistent / qualified | partial / qualified | qualified | qualified | None / none / none |
+| MiMo-V2.6-Flash-RL | serial / unverified | exact / unverified | unverified | unverified | Embedded / serial / qualified |
 
 ## Bounds and allocator controls
 
@@ -51,6 +52,7 @@ not mean unlimited capacity. Qualified columns retain their workload scope.
 | Inkling Small | 1048576 | 1024 | 1 | — | `DS4_INKLING_PREFILL_CHUNK` |
 | Step-3.7-Flash | 262144 | 65536 | 2 | 6300 | `DS4_STEP37_PREFILL_CHUNK` |
 | Ling-3.0-flash-VL | 262144 | 65536 | 2 | — | `DS4_LING3VL_PREFILL_CHUNK` |
+| MiMo-V2.6-Flash-RL | 1048576 | 262144 | 1 | — | `DS4_MIMO2_PREFILL_CHUNK` |
 
 Scheduler chunk candidates: 256, 512, 1024, 2048, 4096, 8192. The resolved plan only offers
 values at or below its known native capacity. Unknown capacity offers no
@@ -65,6 +67,7 @@ candidate. These are scheduler controls, not measurements or speed claims.
 - **K2-Horizon 375B A23B:** 32K one-bank serving is qualified; disk KV and external owner import are not.
 - **Inkling Small:** serial text snapshots present; media snapshots unsupported.
 - **Step-3.7-Flash:** text banks are opt-in; Chat restart hits need history-stable identity; images serial.
+- **MiMo-V2.6-Flash-RL:** 256k serial text is the qualified context. Embedded MTP is qualified. Image, audio, and video projector execution is qualified. DFlash, 512k, and 1M are not qualified.
 
 Regenerate without loading a model:
 

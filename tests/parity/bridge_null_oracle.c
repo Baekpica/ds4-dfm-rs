@@ -281,6 +281,15 @@ int main(void) {
     if (ds4_bridge_step37_commit(NULL, 1, err, sizeof(err)) == 0) {
         fail("Step commit NULL session");
     }
+    if (ds4_bridge_mimo2_trial(NULL, 1, 4, NULL, NULL, 4, err, sizeof(err)) != -1) {
+        fail("MiMo trial NULL session");
+    }
+    if (ds4_bridge_mimo2_commit(NULL, 1, err, sizeof(err)) == 0) {
+        fail("MiMo commit NULL session");
+    }
+    if (ds4_bridge_mimo2_sync_media(NULL, NULL, 0, NULL, NULL, NULL, 0, 0, err, sizeof(err)) == 0) {
+        fail("MiMo media NULL session");
+    }
     if (ds4_bridge_session_argmax_excluding(NULL, 7) != -1)
         fail("argmax_excluding");
     if (ds4_bridge_session_pos(NULL) != -1) fail("pos");
