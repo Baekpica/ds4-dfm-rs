@@ -631,9 +631,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         };
     }
     match family {
-        // P1: serial CUDA text, image, audio, video, and the three embedded
-        // MTP blocks. The embedded predictor is qualified. DFlash, 512k, and
-        // 1M stay unqualified.
+        // Embedded MTP when no file is passed. A DFlash path is the external
+        // draft, not those three blocks. The graph stays serial.
         ModelFamily::Mimo2 => ServingCaps {
             family,
             variant,
@@ -649,7 +648,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             spec_draft_min: 2,
             host: HostNeed::Cuda,
             ctx_max: Some(crate::mimo2::INDEX_LIMIT),
-            qualified_ctx: Some(crate::mimo2::QUALIFIED_CONTEXT),
+            qualified_ctx: Some(crate::mimo2::QUALIFIED_LONG),
             qualified_banks: Some(1),
             qualified_prompt: None,
             media_serial: true,
@@ -1845,6 +1844,12 @@ fn resolve_seqs(
             ));
         }
     }
+    if caps.family == ModelFamily::Mimo2 {
+        issues.push(warn(
+            "seqs_omitted",
+            "max_seqs 2 is omitted; the MiMo graph is serial",
+        ));
+    }
     let opt_in = n > 1 && caps.banks == BankLane::OptIn;
     (n, opt_in)
 }
@@ -1857,6 +1862,7 @@ fn resolve_mtp(
     issues: &mut Vec<PlanIssue>,
 ) -> (MtpMode, bool) {
     let has_path = req.mtp_path.is_some();
+    let mimo_dflash = caps.family == ModelFamily::Mimo2 && has_path;
     let can = match caps.mtp {
         MtpKind::None | MtpKind::BoundOnly => false,
         MtpKind::Embedded | MtpKind::Sidecar | MtpKind::DeepSeek => true,
@@ -1876,7 +1882,7 @@ fn resolve_mtp(
     }
     // Embedded predictors use the main artifact; only sidecar families
     // take a separate path.
-    if has_path && !matches!(caps.mtp, MtpKind::Sidecar | MtpKind::DeepSeek) {
+    if has_path && !mimo_dflash && !matches!(caps.mtp, MtpKind::Sidecar | MtpKind::DeepSeek) {
         issues.push(error(
             "mtp_contract",
             format!(
@@ -1952,8 +1958,10 @@ fn resolve_mtp(
     }
     let weights = match caps.mtp {
         MtpKind::Embedded => {
-            req.mtp_mode == MtpMode::On
-                || (req.mtp_mode == MtpMode::Auto && caps.mtp_support == Support::Qualified)
+            req.mtp_mode != MtpMode::Off
+                && (mimo_dflash
+                    || req.mtp_mode == MtpMode::On
+                    || (req.mtp_mode == MtpMode::Auto && caps.mtp_support == Support::Qualified))
         }
         MtpKind::Sidecar | MtpKind::DeepSeek => has_path || facts.mtp_loaded,
         MtpKind::BoundOnly | MtpKind::None => false,
@@ -2070,7 +2078,7 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
             "common UX baseline; configured values and verified combinations differ"
         }
         Variant::Mimo26Flash => {
-            "256k serial text is the qualified context. Embedded MTP is qualified. Image, audio, and video projector execution is qualified. DFlash, 512k, and 1M are not qualified"
+            "512k serial text is the qualified context. Embedded MTP is qualified when no DFlash file is loaded. DFlash is the external five-layer draft. Image, audio, and video are qualified. Prefill chunk 4096. max_seqs 2 is omitted because the graph is serial. 1M is not qualified"
         }
         _ => "",
     }

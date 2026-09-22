@@ -20,7 +20,10 @@ pub const MTP_BLOCKS: u32 = BLOCKS - TRUNK;
 pub const QUALIFIED_CONTEXT: u32 = 262_144;
 pub const INDEX_LIMIT: u32 = 1_048_576;
 pub const SWA_WINDOW: u32 = 128;
-pub const PREFILL_CAP: u32 = 512;
+pub const PREFILL_CAP: u32 = 4096;
+pub const PREFILL_MAX: u32 = 8192;
+/// Qualified long context. 1M stays an index limit, not a qualified run.
+pub const QUALIFIED_LONG: u32 = 524_288;
 pub const PATCH: u32 = 16;
 pub const MERGE: u32 = 2;
 pub const TEMPORAL: u32 = 2;
@@ -41,7 +44,7 @@ pub const VIDEO_END: i32 = 151671;
 pub const AUDIO_START: i32 = 151673;
 pub const AUDIO_END: i32 = 151674;
 
-pub const TRIAL_CAP: usize = 4;
+pub const TRIAL_CAP: usize = 8;
 const EMBED: u64 = 4096;
 const VOCAB: u64 = 152576;
 const HEADS: u64 = 64;
@@ -383,6 +386,35 @@ pub struct Mimo2Admission {
     pub context_1m_qualified: bool,
 }
 
+/// True when the names are the external DFlash body and not the embedded
+/// next-token blocks.
+pub fn draft_is_dflash(names: &[&str]) -> bool {
+    let has_fc = names.iter().any(|name| *name == "fc.weight");
+    let embedded = names.iter().any(|name| name.contains("nextn"));
+    has_fc && !embedded
+}
+
+pub fn inspect_dflash(path: &Path) -> Result<(), Mimo2Error> {
+    let file = GgufFile::open(path)?;
+    if file.get_string("general.architecture") != Some(b"dflash".as_slice()) {
+        return Err(mismatch("dflash architecture"));
+    }
+    if file.get_u32("dflash.block_count") != Some(5) || file.get_u32("dflash.block_size") != Some(8)
+    {
+        return Err(mismatch("dflash shape"));
+    }
+    let inventory = TensorInventory::open(path).map_err(|_| mismatch("dflash tensors"))?;
+    let names: Vec<&str> = inventory
+        .tensors
+        .iter()
+        .map(|tensor| tensor.name.as_str())
+        .collect();
+    if inventory.tensors.len() != 63 || !draft_is_dflash(&names) {
+        return Err(mismatch("dflash tensors"));
+    }
+    Ok(())
+}
+
 /// Admit `requested` tokens. Values through the source limit stay intact.
 /// 512k and 1M are not qualified contexts.
 pub fn admit_context(requested: u32) -> Result<Mimo2Admission, Mimo2Error> {
@@ -393,11 +425,11 @@ pub fn admit_context(requested: u32) -> Result<Mimo2Admission, Mimo2Error> {
     Ok(Mimo2Admission {
         requested,
         effective: requested,
-        qualified: QUALIFIED_CONTEXT,
+        qualified: QUALIFIED_LONG,
         index_limit: INDEX_LIMIT,
         swa_window: SWA_WINDOW,
-        dflash_qualified: false,
-        context_512k_qualified: false,
+        dflash_qualified: true,
+        context_512k_qualified: true,
         context_1m_qualified: false,
     })
 }
@@ -417,7 +449,7 @@ pub fn kv_rows(layer: u32, ctx: u32, cap: u32) -> Option<u32> {
 
 /// Scratch plus trunk KV bytes from `ds4_mimo2_plan.h`. Draft KV is extra.
 pub fn context_bytes(ctx: u32, cap: u32) -> Option<u64> {
-    if ctx == 0 || ctx > INDEX_LIMIT || cap == 0 || cap > ctx || cap > 4096 {
+    if ctx == 0 || ctx > INDEX_LIMIT || cap == 0 || cap > ctx || cap > PREFILL_MAX {
         return None;
     }
     let mut raw = 0u64;
@@ -1516,15 +1548,83 @@ mod tests {
     }
 
     #[test]
+    fn dflash_file_is_not_embedded_mtp() {
+        let caps = crate::serving_caps(crate::ModelFamily::Mimo2, crate::Variant::Mimo26Flash);
+        let mut request = crate::serving::ServingRequest::default();
+        request.mtp_mode = crate::serving::MtpMode::On;
+        request.mtp_draft = Some(8);
+        request.mtp_path = Some("MiMo-V2.6-Flash-RL-DFlash-Q8_0.gguf".into());
+        let facts = crate::serving::EngineFacts {
+            mtp_path_ok: Some(true),
+            ..crate::serving::EngineFacts::default()
+        };
+        let plan = crate::serving::resolve_plan(&request, Some(caps), &facts);
+        assert!(
+            !plan.issues.iter().any(|issue| issue.code == "mtp_contract"),
+            "{:?}",
+            plan.issues
+        );
+        assert!(plan.effective.mtp_weights);
+        assert!(plan.requested.mtp_path);
+        assert_eq!(plan.effective.mtp_mode, crate::serving::MtpMode::On);
+        request.mtp_path = None;
+        let embedded = crate::serving::resolve_plan(&request, Some(caps), &facts);
+        assert!(!embedded.requested.mtp_path);
+        assert!(embedded.effective.mtp_weights);
+        assert_eq!(embedded.effective.mtp_mode, crate::serving::MtpMode::On);
+        assert!(draft_is_dflash(&["fc.weight", "blk.0.attn_q.weight"]));
+        assert!(!draft_is_dflash(&["blk.48.nextn.eh_proj.weight"]));
+        let file = Path::new("/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-DFlash-Q8_0.gguf");
+        if file.is_file() {
+            inspect_dflash(file).unwrap();
+        }
+        request.mtp_path = None;
+        request.ctx = 262_144;
+        request.native_chunk = Some(PREFILL_CAP);
+        let bundle = crate::serving::resolve_plan(&request, Some(caps), &facts);
+        assert_eq!(bundle.effective.max_seqs, 1);
+        assert_eq!(bundle.effective.native_chunk, Some(PREFILL_CAP));
+        assert!(bundle.effective.ctx >= 262_144);
+        assert!(bundle.effective.mtp_weights);
+        assert!(bundle
+            .issues
+            .iter()
+            .any(|issue| issue.code == "seqs_omitted"));
+        assert_eq!(caps.qualified_banks, Some(1));
+    }
+
+    #[test]
+    fn admit_512k_keeps_1m_unqualified() {
+        let admitted = admit_context(524_288).unwrap();
+        assert_eq!(admitted.effective, 524_288);
+        assert!(admitted.context_512k_qualified);
+        assert!(!admitted.context_1m_qualified);
+        let caps = crate::serving_caps(crate::ModelFamily::Mimo2, crate::Variant::Mimo26Flash);
+        assert_eq!(caps.qualified_ctx, Some(524_288));
+        let mut request = crate::serving::ServingRequest::default();
+        request.ctx = 1_048_576;
+        let wide = crate::serving::resolve_plan(
+            &request,
+            Some(caps),
+            &crate::serving::EngineFacts::default(),
+        );
+        assert_eq!(wide.effective.ctx, 1_048_576);
+        assert!(wide
+            .issues
+            .iter()
+            .any(|issue| issue.code == "ctx_unqualified"));
+    }
+
+    #[test]
     fn admit_256k_without_clamping() {
         let admitted = admit_context(QUALIFIED_CONTEXT).unwrap();
         assert_eq!(admitted.effective, 262_144);
         assert!(admitted.effective >= admitted.requested);
-        assert_eq!(admitted.qualified, 262_144);
+        assert_eq!(admitted.qualified, QUALIFIED_LONG);
         assert_eq!(admitted.index_limit, 1_048_576);
         assert_eq!(admitted.swa_window, 128);
-        assert!(!admitted.dflash_qualified);
-        assert!(!admitted.context_512k_qualified);
+        assert!(admitted.dflash_qualified);
+        assert!(admitted.context_512k_qualified);
         assert!(!admitted.context_1m_qualified);
         assert_eq!(admit_context(INDEX_LIMIT).unwrap().effective, INDEX_LIMIT);
         assert!(admit_context(INDEX_LIMIT + 1).is_err());
@@ -1541,7 +1641,7 @@ mod tests {
         assert_eq!(full, 9);
 
         let caps = crate::serving_caps(crate::ModelFamily::Mimo2, crate::Variant::Mimo26Flash);
-        assert_eq!(caps.qualified_ctx, Some(QUALIFIED_CONTEXT));
+        assert_eq!(caps.qualified_ctx, Some(QUALIFIED_LONG));
         assert_eq!(caps.ctx_max, Some(INDEX_LIMIT));
         assert_eq!(caps.mtp, crate::serving::MtpKind::Embedded);
         let mut request = crate::serving::ServingRequest::default();
@@ -1570,27 +1670,15 @@ mod tests {
         assert_eq!(off.effective.ctx, QUALIFIED_CONTEXT as i32);
         assert_eq!(off.effective.mtp_mode, crate::serving::MtpMode::Off);
         assert!(!off.effective.mtp_weights);
-        request.mtp_mode = crate::serving::MtpMode::On;
-        request.mtp_path = Some("MiMo-V2.6-Flash-RL-DFlash-Q8_0.gguf".into());
-        let sidecar = crate::serving::resolve_plan(
-            &request,
-            Some(caps),
-            &crate::serving::EngineFacts::default(),
-        );
-        assert_eq!(sidecar.effective.mtp_mode, crate::serving::MtpMode::Off);
-        assert!(sidecar
-            .issues
-            .iter()
-            .any(|issue| issue.code == "mtp_contract"));
         request.mtp_mode = crate::serving::MtpMode::Auto;
         request.mtp_path = None;
-        request.ctx = 524_288;
+        request.ctx = 1_048_576;
         let wide = crate::serving::resolve_plan(
             &request,
             Some(caps),
             &crate::serving::EngineFacts::default(),
         );
-        assert_eq!(wide.effective.ctx, 524_288);
+        assert_eq!(wide.effective.ctx, 1_048_576);
         assert!(wide
             .issues
             .iter()

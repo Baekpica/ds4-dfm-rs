@@ -251,7 +251,9 @@ int ds4_session_mimo2_trial(ds4_session *s, int first, int max_tokens,
     if (n > g->context - g->position) { n = g->context - g->position; }
     if (!n) { return 0; }
     g->trial[0] = first;
-    for (unsigned depth = 0; depth + 1 < n; depth++) {
+    if (s->engine->mimo2_dflash) {
+        if (!mimo2_dflash_fill(s, first, n)) { return mimo2_session_fail(s, err, errlen) ? -1 : -1; }
+    } else for (unsigned depth = 0; depth + 1 < n; depth++) {
         const int next = mimo2_draft_step(g, &s->engine->model, &s->engine->weights,
                                            depth, g->trial[depth], s->logits);
         if (next < 0) { return mimo2_session_fail(s, err, errlen) ? -1 : -1; }

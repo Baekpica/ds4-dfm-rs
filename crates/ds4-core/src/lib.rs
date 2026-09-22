@@ -1213,17 +1213,22 @@ impl Model {
             code: 1,
             message: format!("identify failed: {}", e.token()),
         })?;
+        let dflash = identified.shape.family == ModelFamily::Mimo2 && mtp_path.is_some();
         if identified.shape.family == ModelFamily::Mimo2
-            && (backend != Backend::Cuda
-                || distributed.is_some()
-                || mtp_path.is_some()
-                || dspark_path.is_some())
+            && (backend != Backend::Cuda || distributed.is_some() || dspark_path.is_some())
         {
             return Err(Error {
                 code: 1,
-                message: "MiMo requires one full CUDA model without DFlash or DSpark sidecars"
-                    .into(),
+                message: "MiMo requires one full CUDA model without a DSpark sidecar".into(),
             });
+        }
+        if dflash {
+            crate::mimo2::inspect_dflash(std::path::Path::new(mtp_path.unwrap())).map_err(
+                |error| Error {
+                    code: 1,
+                    message: error.to_string(),
+                },
+            )?;
         }
         let g = GgufFile::open(std::path::Path::new(path)).map_err(|e| Error {
             code: 1,
@@ -1307,10 +1312,15 @@ impl Model {
             identified.shape.family,
             identified.shape,
             sibling::SiblingPaths {
-                mtp: mtp_path,
+                mtp: if dflash { None } else { mtp_path },
                 dspark: dspark_path,
             },
         )?;
+        let dflash_path = if dflash {
+            Some(cstring_path(mtp_path.unwrap())?)
+        } else {
+            None
+        };
         let mut mtp_support = mtp.as_ref().map(pack_sibling_ffi).transpose()?;
         let mut dspark_support = dspark.as_ref().map(pack_sibling_ffi).transpose()?;
         let mut err = [0u8; 512];
@@ -1356,7 +1366,10 @@ impl Model {
             shape: &ffi_shape,
             vocab: ffi_vocab.as_c(),
             bind: ffi_bind.as_c(),
-            mtp_path: mtp_path_ptr,
+            mtp_path: dflash_path
+                .as_ref()
+                .map(|path| path.as_ptr())
+                .unwrap_or(mtp_path_ptr),
             dspark_path: dspark_path_ptr,
             mtp_bind: mtp_bind_ptr,
             dspark_bind: dspark_bind_ptr,
