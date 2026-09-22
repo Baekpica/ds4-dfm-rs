@@ -240,8 +240,11 @@ int ds4_session_mimo2_trial(ds4_session *s, int first, int max_tokens,
         return -1;
     }
     /* Snapshot restore keeps KV and logits, not the MTP hidden row.
-     * Zero selects one ordinary step; that forward rebuilds the row. */
+     * Zero selects one ordinary step; that forward rebuilds the row.
+     * The DFlash ring is also absent after a disk restore. Ordinary
+     * steps keep writing the new position until that window is whole. */
     if (!g->hidden_valid) { return 0; }
+    if (s->engine->mimo2_dflash && !mimo2_dflash_window_ready(g, g->position)) { return 0; }
     unsigned n = (unsigned)max_tokens;
     if (n > (unsigned)cap) { n = (unsigned)cap; }
     if (n > M2_TRIAL) { n = M2_TRIAL; }

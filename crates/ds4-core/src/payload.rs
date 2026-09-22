@@ -24,6 +24,7 @@ const LAYOUT_QWEN_FP8: u32 = 0x3346_5751; /* "QWF3" */
 pub const LAYOUT_STEP37: u32 = 0x3350_5453; /* "STP3" */
 pub const LAYOUT_LING3VL: u32 = 0x3347_4e4c; /* "LNG3" */
 const LAYOUT_INKLING: u32 = 0x334c_4b49; /* "IKL3" */
+const LAYOUT_MIMO2: u32 = 0x324f_4d49; /* "IMO2" */
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PayloadLayout {
@@ -36,6 +37,7 @@ pub enum PayloadLayout {
     Step37,
     Ling3Vl,
     Inkling,
+    Mimo2,
 }
 
 impl PayloadLayout {
@@ -49,6 +51,7 @@ impl PayloadLayout {
             LAYOUT_STEP37 => Self::Step37,
             LAYOUT_LING3VL => Self::Ling3Vl,
             LAYOUT_INKLING => Self::Inkling,
+            LAYOUT_MIMO2 => Self::Mimo2,
             _ => Self::DeepSeek,
         }
     }
@@ -64,6 +67,7 @@ impl PayloadLayout {
             Self::Step37 => ModelFamily::Step37,
             Self::Ling3Vl => ModelFamily::Ling3Vl,
             Self::Inkling => ModelFamily::Inkling,
+            Self::Mimo2 => ModelFamily::Mimo2,
         }
     }
 
@@ -247,7 +251,8 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
         | PayloadLayout::Dots3
         | PayloadLayout::Step37
         | PayloadLayout::Ling3Vl
-        | PayloadLayout::Inkling => {
+        | PayloadLayout::Inkling
+        | PayloadLayout::Mimo2 => {
             if p.fields[12] != p.fields[7] {
                 return Err(err("session payload token count does not match live rows"));
             }
@@ -256,6 +261,14 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
         PayloadLayout::DeepSeek | PayloadLayout::Qwen4Exp => {}
     }
     Ok(())
+}
+
+#[test]
+fn mimo_payload_magic_is_mimo() {
+    let mut fields = [0u32; U32_FIELDS];
+    fields[5] = LAYOUT_MIMO2;
+    assert_eq!(PayloadLayout::from_fields(&fields), PayloadLayout::Mimo2);
+    assert_eq!(PayloadLayout::Mimo2.family(), ModelFamily::Mimo2);
 }
 
 #[test]

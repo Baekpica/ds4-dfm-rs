@@ -190,6 +190,17 @@ static bool mimo2_dflash_restore(ds4_mimo2_graph *g, unsigned base, unsigned kee
     return true;
 }
 
+/* Disk restore keeps trunk KV, not this ring. A hole means the next
+ * speculative step must not fail the request. */
+static bool mimo2_dflash_window_ready(const ds4_mimo2_graph *g, unsigned start) {
+    if (!g->dflash_on || !g->dflash_pos || !start) { return false; }
+    const unsigned begin = start > DF_WIN ? start - DF_WIN : 0;
+    for (unsigned p = begin; p < start; p++) {
+        if (g->dflash_pos[p % DF_WIN] != p) { return false; }
+    }
+    return true;
+}
+
 static bool mimo2_dflash_fill(ds4_session *s, int first, unsigned n) {
     ds4_mimo2_graph *g = &s->mimo2_graph;
     const ds4_mimo2_dflash *d = &s->engine->dflash;
