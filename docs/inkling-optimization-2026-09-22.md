@@ -2,18 +2,24 @@
 
 Continuation of [rounds 25–27](inkling-optimization-2026-09-12-r25.md).
 MTP is off. Prompt is `speed-bench/promessi_sposi.txt`. The host is one
-DGX Spark / GB10. `nvidia-smi -lgc` needs root here, so the SM clock was
-observed rather than locked: about 2411–2418 MHz while a prefill was
-running, above the 300–2200 MHz reference. `nvidia-smi -lgc 300,2200`
-needs a password on this host, so these medians are not that
-qualification. Comparisons below are same-hour, same binary, interleaved.
+DGX Spark / GB10. The round tables below were first measured with the
+SM clock unlocked (about 2411–2418 MHz). After `nvidia-smi -lgc 300,2200`,
+the final binary was remeasured with SM at 2190–2197 MHz and no sample
+above 2200.
 
-Adopted here: prefill chunk 2048, then the router logit tile. On the
-final binary, cold 8192-token prefill is 486.39 tok/s and 64-token
-decode is 13.55 tok/s (three fresh processes: 487.04 / 486.39 / 486.23
-prefill). The two rounds were separate A/Bs, so those medians are not
-one ratio against the 1024-chunk start. Contexts above 8192, including
-64K, were not measured.
+Adopted here: prefill chunk 2048, then the router logit tile. Locked-clock
+cold 8192-token prefill, 64 greedy tokens, three interleaved pairs:
+
+| Path | Prefill tok/s | Decode tok/s |
+|---|---:|---:|
+| warp | 445.01 | 13.06 |
+| tile | 452.58 | 13.07 |
+
+Samples: warp = 445.01 / 444.93 / 445.19;
+tile = 453.50 / 452.58 / 452.56.
+Gain +1.70%. Decode stays inside 0.08 tok/s. The earlier unlocked
+medians (486.39 prefill, 13.55 decode) are not this qualification.
+Contexts above 8192, including 64K, were not measured.
 
 ## Round 28: prefill chunk 2048
 

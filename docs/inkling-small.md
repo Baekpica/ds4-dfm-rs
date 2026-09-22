@@ -12,8 +12,9 @@ The [GB10 performance report](inkling-optimization-2026-09-11.md),
 [2026-09-22](inkling-optimization-2026-09-22.md) measure
 8192- and 2048-token prefill and 64-token decode with MTP off. The adopted
 path (chunk 2048 and the router logit tile) measured cold 8192-token
-prefill at 486.39 tok/s and 64-token decode at 13.55 tok/s, three fresh
-processes, MTP off. Contexts above 8192 were not remeasured. Long-context
+prefill at 452.58 tok/s and 64-token decode at 13.07 tok/s, three fresh
+processes, MTP off, SM locked to 300–2200 MHz (observed 2190–2197).
+Contexts above 8192 were not remeasured. Long-context
 serving and independent full-model source parity remain unqualified. These
 checks apply to MQ85GB, not MQ89 or Q8_0 main.
 
