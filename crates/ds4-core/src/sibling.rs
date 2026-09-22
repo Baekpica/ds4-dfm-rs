@@ -90,6 +90,15 @@ pub fn probe_mtp_sidecar(
             message: "a distributed launch does not attach an MTP sidecar".into(),
         });
     }
+    // MiMo's external draft is the five-layer DFlash file, not a DeepSeek
+    // nextn sidecar. The open validates it with inspect_dflash and passes a
+    // null bind map, so the preflight has to use that same check.
+    if shape.family == ModelFamily::Mimo2 {
+        return crate::mimo2::inspect_dflash(std::path::Path::new(path)).map_err(|error| Error {
+            code: 1,
+            message: error.to_string(),
+        });
+    }
     attach_siblings(
         shape.family,
         shape,

@@ -1577,6 +1577,9 @@ mod tests {
         let file = Path::new("/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-DFlash-Q8_0.gguf");
         if file.is_file() {
             inspect_dflash(file).unwrap();
+            let shape = crate::shape_for_variant(crate::Variant::Mimo26Flash);
+            crate::probe_mtp_sidecar(shape, None, file.to_str().unwrap())
+                .expect("server preflight must accept the DFlash file");
         }
         request.mtp_path = None;
         request.ctx = 262_144;
