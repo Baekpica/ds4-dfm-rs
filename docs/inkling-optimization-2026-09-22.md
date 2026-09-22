@@ -20,6 +20,11 @@ tile = 453.50 / 452.58 / 452.56.
 Gain +1.70%. Decode stays inside 0.08 tok/s. The earlier unlocked
 medians (486.39 prefill, 13.55 decode) are not this qualification.
 Contexts above 8192, including 64K, were not measured.
+`tests/ds4_proof.py --scenario inkling-adopted-rollback` continued 64
+greedy tokens on one short prompt. The adopted path, the router-tile
+rollback, and chunk 1024 produced the same token-id MD5
+`2538e9f703cad6b168022d0ef15b5258`. That continuation is what reads the
+committed KV.
 
 ## Round 28: prefill chunk 2048
 

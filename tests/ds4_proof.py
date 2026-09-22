@@ -193,6 +193,15 @@ CANONICAL_PROFILES: dict[str, CanonicalProfile] = {
     "cuda-default": CanonicalProfile("cuda-default"),
     "cuda-eager":   CanonicalProfile("cuda-eager",   env={"DS4_CUDA_LAYER_GRAPHS": "0"}),
     "cuda-capture": CanonicalProfile("cuda-capture", env={"DS4_CUDA_LAYER_GRAPHS": "1"}),
+    # Inkling rollback cells. The adopted path is cuda-default.
+    "cuda-inkling-no-logit-tile": CanonicalProfile(
+        "cuda-inkling-no-logit-tile",
+        env={"DS4_INKLING_NO_LOGIT_TILE": "1"},
+    ),
+    "cuda-inkling-chunk-1024": CanonicalProfile(
+        "cuda-inkling-chunk-1024",
+        env={"DS4_INKLING_PREFILL_CHUNK": "1024"},
+    ),
 }
 
 
@@ -1353,6 +1362,25 @@ SCENARIOS: dict[str, Scenario] = {
             "catch (parity compares two paths in the same build; a change that "
             "shifts both identically slips through). Refresh the golden with "
             "--write-expected after an intentional output change."
+        ),
+    ),
+    "inkling-adopted-rollback": Scenario(
+        name="inkling-adopted-rollback",
+        canonicals=(
+            "cuda-default",
+            "cuda-inkling-no-logit-tile",
+            "cuda-inkling-chunk-1024",
+        ),
+        overlay_stacks=((),),
+        prompts=("builtin:1",),
+        budget="smoke",
+        contracts=("selected_token_ids_md5",),
+        expected_gen_tokens_min=8,
+        description=(
+            "MQ85GB adopted defaults versus the router-tile rollback and the "
+            "1024-token prefill chunk. Smoke budget continues 64 greedy tokens. "
+            "Those tokens are the decode that reads the committed KV, so a "
+            "mismatch is a continuation/cache-path failure. MTP stays off."
         ),
     ),
 }

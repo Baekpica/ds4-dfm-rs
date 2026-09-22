@@ -81,7 +81,7 @@ endif
 
 .PHONY: all help clean test cpu cuda cuda-spark cuda-generic cuda-regression \
         proof-cuda-smoke proof-cuda-long proof-cuda-opp-c \
-        proof-rust-cuda-opp-c print-version \
+        proof-rust-cuda-opp-c proof-inkling-adopted print-version \
         test-motif3-loader test-motif3-reference test-motif3-tokenizer \
         test-motif3-cuda test-motif3-resident test-motif3-batch \
         test-dots3-loader test-dots3-tokenizer \
@@ -156,7 +156,7 @@ cpu: ds4_cli_cpu.o ds4_server_cpu.o ds4_bench_cpu.o ds4_eval_cpu.o ds4_agent_cpu
 cuda-regression:
 	@echo "cuda-regression requires a CUDA build"
 
-proof-cuda-smoke proof-cuda-long proof-cuda-opp-c proof-rust-cuda-opp-c:
+proof-cuda-smoke proof-cuda-long proof-cuda-opp-c proof-rust-cuda-opp-c proof-inkling-adopted:
 	@echo "$@ requires a CUDA build"
 else
 all: help
@@ -264,6 +264,10 @@ DS4_PROOF_OPPC_RUNNER := /tmp/ds4_proof/proof-cuda-opp-c-bin
 proof-cuda-smoke: ds4
 	$(DS4_PROOF_REQUIRE_BASE)
 	tests/ds4_proof.py --scenario cuda-capture-smoke --work-dir /tmp/ds4_proof/$@
+
+proof-inkling-adopted: ds4
+	$(DS4_PROOF_REQUIRE_BASE)
+	tests/ds4_proof.py --scenario inkling-adopted-rollback --work-dir /tmp/ds4_proof/$@
 
 proof-cuda-long: ds4
 	$(DS4_PROOF_REQUIRE_BASE)
