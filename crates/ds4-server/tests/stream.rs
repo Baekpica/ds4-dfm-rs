@@ -267,6 +267,7 @@ fn buffered_finals_match_c() {
         CREATED_TEST,
         false,
         &[],
+        &[],
     );
     let c = c_bytes(&["final", "openai-chat", "Hello world.", "stop"]);
     assert_bytes_eq("final-openai-chat", &rust, &c);
@@ -288,6 +289,7 @@ fn buffered_finals_match_c() {
         4,
         CREATED_TEST,
         false,
+        &[],
         &[],
     );
     let c = c_bytes(&["final", "openai-completion", "Hello world.", "length"]);

@@ -1,5 +1,7 @@
 use super::*;
-use crate::parse::{ImageMime, ParseEnv, RequestAudio, RequestImage, ToolCall, ToolChoice};
+use crate::parse::{
+    ImageMime, ParseEnv, RequestAudio, RequestImage, RequestVideo, ToolCall, ToolChoice,
+};
 use crate::tools::ParsedGenerated;
 use crate::{parse_anthropic_request, parse_responses_request};
 use std::sync::Arc;
@@ -235,12 +237,24 @@ fn audio(data: &[u8]) -> RequestAudio {
     }
 }
 
+fn video(data: &[u8]) -> RequestVideo {
+    RequestVideo {
+        data: Arc::from(data),
+    }
+}
+
 #[test]
 fn prepend_media_indices() {
     let mut captured = original(Api::Anthropic);
     captured.images = vec![image(b"old-image-a"), image(b"old-image-b")];
     captured.audios = vec![audio(b"old-audio")];
-    let old_parts = vec![ChatPart::Image(1), ChatPart::Audio(0), ChatPart::Image(0)];
+    captured.videos = vec![video(b"old-video")];
+    let old_parts = vec![
+        ChatPart::Image(1),
+        ChatPart::Audio(0),
+        ChatPart::Image(0),
+        ChatPart::Video(0),
+    ];
     captured
         .messages
         .iter_mut()
@@ -251,11 +265,13 @@ fn prepend_media_indices() {
     let mut next = anthropic_tail();
     next.images = vec![image(b"new-image-a"), image(b"new-image-b")];
     next.audios = vec![audio(b"new-audio")];
+    next.videos = vec![video(b"new-video")];
     next.messages[0].parts.extend([
         ChatPart::Text("새 미디어".into()),
         ChatPart::Image(0),
         ChatPart::Audio(0),
         ChatPart::Image(1),
+        ChatPart::Video(0),
     ]);
 
     assert!(history.restore(&mut next).unwrap());
@@ -270,6 +286,7 @@ fn prepend_media_indices() {
         ]
     );
     assert_eq!(next.audios, vec![audio(b"old-audio"), audio(b"new-audio")]);
+    assert_eq!(next.videos, vec![video(b"old-video"), video(b"new-video")]);
     let old = next
         .messages
         .iter()
@@ -292,6 +309,7 @@ fn prepend_media_indices() {
             ChatPart::Image(2),
             ChatPart::Audio(1),
             ChatPart::Image(3),
+            ChatPart::Video(1),
         ]
     );
 }

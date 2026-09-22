@@ -18,7 +18,8 @@ pub const NEED_DURABLE_RESPONSE: u32 = 1 << 9;
 pub const NEED_PREFILL_ONLY: u32 = 1 << 10;
 pub const NEED_BANK_FRONTIER: u32 = 1 << 11;
 pub const NEED_IMAGE: u32 = 1 << 12;
-// Audio currently uses the serial Inkling media path only.
+// Audio and MiMo video stay on the serial session. This bit is outside
+// ROUTE_CONT_MASK, so those requests cannot land on the continuous lane.
 pub const NEED_AUDIO: u32 = 1 << 13;
 
 pub const ROUTE_CONT_MASK: u32 = NEED_STREAMING

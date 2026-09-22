@@ -532,6 +532,7 @@ impl ContStepper {
                     self.w.created,
                     cors,
                     &parsed_gen.calls,
+                    &[],
                 ),
             };
             self.w.out.extend_from_slice(&bytes);
@@ -3434,6 +3435,7 @@ mod native {
                 && parsed.kind == ReqKind::Chat
                 && parsed.images.is_empty()
                 && parsed.audios.is_empty()
+                && parsed.videos.is_empty()
                 && crate::generate::ordinary_disk_cache_eligible(parsed))
             .then(|| {
                 crate::generate::history_frontier(

@@ -26,7 +26,7 @@ use ds4_kv::{
 };
 
 use crate::dsml::{SampleOverride, SamplePolicy};
-use crate::parse::{ChatMsg, ParsedRequest, ToolCall, ToolChoice};
+use crate::parse::{ChatMsg, ChatPart, ParsedRequest, ToolCall, ToolChoice};
 use crate::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 use crate::render::{
     render_chat_choice, syntax_for_model_id, tool_start_marker, ModelSyntax, RenderError, DSML_EOS,
@@ -189,6 +189,18 @@ pub trait DecodeIo {
             return self.sync_vision_prompt(tokens, images);
         }
         Err(GenerateError::Unsupported("audio encoder is not loaded"))
+    }
+    fn sync_mimo_prompt(
+        &mut self,
+        tokens: &[i32],
+        images: &[VisionPromptInput],
+        audios: &[AudioPromptInput],
+        videos: &[VisionPromptInput],
+    ) -> Result<(), GenerateError> {
+        if !videos.is_empty() {
+            return Err(GenerateError::Unsupported("video input requires MiMo"));
+        }
+        self.sync_media_prompt(tokens, images, audios)
     }
     fn sync(&mut self, tokens: &[i32]) -> Result<(), GenerateError>;
     /// Start this request's reuse trace. A corrective retry re-syncs inside
@@ -1112,19 +1124,26 @@ pub struct GenerateOutcome {
 }
 
 pub fn generation_blocked(parsed: &ParsedRequest, model_id: i32) -> Option<&'static str> {
-    if !parsed.audios.is_empty() && syntax_for_model_id(model_id) != ModelSyntax::Inkling {
-        return Some("audio input requires Inkling");
+    let syntax = syntax_for_model_id(model_id);
+    if !parsed.videos.is_empty() && syntax != ModelSyntax::Mimo2 {
+        return Some("video input requires MiMo");
+    }
+    if !parsed.audios.is_empty() && !matches!(syntax, ModelSyntax::Inkling | ModelSyntax::Mimo2) {
+        return Some("audio input requires Inkling or MiMo");
     }
     if parsed.images.is_empty() {
         None
     } else {
-        match syntax_for_model_id(model_id) {
+        match syntax {
             ModelSyntax::Glm53
             | ModelSyntax::Inkling
             | ModelSyntax::Step37
-            | ModelSyntax::Ling3Vl => None,
+            | ModelSyntax::Ling3Vl
+            | ModelSyntax::Mimo2 => None,
             ModelSyntax::Qwen4Exp => Some("image input requires continuous runtime"),
-            _ => Some("image input is supported only by Qwen4Exp, GLM-5.3, Inkling, Step or Ling"),
+            _ => Some(
+                "image input is supported only by Qwen4Exp, GLM-5.3, Inkling, Step, Ling or MiMo",
+            ),
         }
     }
 }
@@ -1134,7 +1153,7 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         ModelSyntax::SolarOpen2 => ChatFormat::SolarOpen2,
         ModelSyntax::Exaone => ChatFormat::Exaone,
         // Only the generated thinking/tool envelope is shared with Qwen.
-        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 => ChatFormat::Qwen4Exp,
+        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 | ModelSyntax::Mimo2 => ChatFormat::Qwen4Exp,
         ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
         ModelSyntax::Inkling => ChatFormat::Inkling,
         // Ling shares GLM's thinking and tool-call XML.
@@ -1498,10 +1517,10 @@ fn retry_chat(
     let tokens = engine.tokenize_rendered_chat(&rendered)?;
     let media = prepare_media(engine, &retry, tokens)?;
     engine.invalidate();
-    if media.vision.is_empty() && media.audios.is_empty() {
+    if media.vision.is_empty() && media.audios.is_empty() && media.videos.is_empty() {
         engine.sync(&media.tokens)?;
     } else {
-        engine.sync_media_prompt(&media.tokens, &media.vision, &media.audios)?;
+        engine.sync_mimo_prompt(&media.tokens, &media.vision, &media.audios, &media.videos)?;
     }
     *parsed = retry;
     *prompt = rendered;
@@ -1526,6 +1545,7 @@ fn decode_pass(
     decode_steps: &mut i32,
     speculation: &mut bool,
     stop_requested: Option<fn() -> bool>,
+    token_ids: &mut Vec<i32>,
 ) -> Result<(), GenerateError> {
     let mut last_heartbeat = Instant::now();
     'decode: while acc.completion < max_tokens && engine.pos() < engine.ctx() {
@@ -1606,6 +1626,9 @@ fn decode_pass(
                     engine.invalidate();
                 }
                 break 'decode;
+            }
+            if parsed.return_token_ids {
+                token_ids.push(token);
             }
             // A speculative prefix advances multiple tokens in one decode step.
             if index == 0 {
@@ -1738,12 +1761,14 @@ pub(crate) struct PreparedSerialPrompt {
     pub(crate) tokens: Vec<i32>,
     pub(crate) vision: Vec<VisionPromptInput>,
     audios: Vec<AudioPromptInput>,
+    videos: Vec<VisionPromptInput>,
 }
 
 struct MediaPrompt {
     tokens: Vec<i32>,
     vision: Vec<VisionPromptInput>,
     audios: Vec<AudioPromptInput>,
+    videos: Vec<VisionPromptInput>,
 }
 
 fn prepare_media(
@@ -1751,30 +1776,40 @@ fn prepare_media(
     parsed: &ParsedRequest,
     tokens: Vec<i32>,
 ) -> Result<MediaPrompt, GenerateError> {
-    if parsed.images.is_empty() && parsed.audios.is_empty() {
+    if parsed.images.is_empty() && parsed.audios.is_empty() && parsed.videos.is_empty() {
         return Ok(MediaPrompt {
             tokens,
             vision: Vec::new(),
             audios: Vec::new(),
+            videos: Vec::new(),
         });
+    }
+    if syntax_for_model_id(engine.model_id()) == ModelSyntax::Mimo2 {
+        return prepare_mimo(engine, parsed, tokens);
+    }
+    if !parsed.videos.is_empty() {
+        return Err(GenerateError::Unsupported("video input requires MiMo"));
     }
     const GLM_IMAGE_TOKEN: i32 = 154854;
     const INKLING_IMAGE_TOKEN: i32 = 200054;
     const STEP_IMAGE_TOKEN: i32 = 128001;
     const LING3VL_IMAGE_TOKEN: i32 = 157157;
+    const MIMO_IMAGE_TOKEN: i32 = 151655;
     const INKLING_AUDIO_TOKEN: i32 = 200053;
+    const MIMO_AUDIO_TOKEN: i32 = 151669;
     let image_token = match syntax_for_model_id(engine.model_id()) {
         ModelSyntax::Glm53 => GLM_IMAGE_TOKEN,
         ModelSyntax::Inkling => INKLING_IMAGE_TOKEN,
         ModelSyntax::Step37 => STEP_IMAGE_TOKEN,
         ModelSyntax::Ling3Vl => LING3VL_IMAGE_TOKEN,
+        ModelSyntax::Mimo2 => MIMO_IMAGE_TOKEN,
         _ => {
             return Err(GenerateError::Unsupported(
                 "serial images require GLM-5.3, Inkling, Step or Ling",
             ))
         }
     };
-    if parsed.images.len() + parsed.audios.len() > 4 {
+    if parsed.images.len() + parsed.audios.len() + parsed.videos.len() > 4 {
         return Err(GenerateError::Unsupported(
             "serial media supports 1 to 4 inputs",
         ));
@@ -1812,7 +1847,9 @@ fn prepare_media(
     let mut audios = Vec::with_capacity(parsed.audios.len());
     let mut audio_index = 0usize;
     for token in tokens {
-        if image_token == INKLING_IMAGE_TOKEN && token == INKLING_AUDIO_TOKEN {
+        if (image_token == INKLING_IMAGE_TOKEN && token == INKLING_AUDIO_TOKEN)
+            || (image_token == MIMO_IMAGE_TOKEN && token == MIMO_AUDIO_TOKEN)
+        {
             let Some((audio, count)) = parsed
                 .audios
                 .get(audio_index)
@@ -1866,6 +1903,158 @@ fn prepare_media(
         tokens: expanded,
         vision: images,
         audios,
+        videos: Vec::new(),
+    })
+}
+
+/// 2 fps frames and a temporal patch of 2, so each pair is one second.
+const MIMO_SECONDS_PER_PAIR: f32 = 1.0;
+
+fn prepare_mimo(
+    engine: &dyn DecodeIo,
+    parsed: &ParsedRequest,
+    tokens: Vec<i32>,
+) -> Result<MediaPrompt, GenerateError> {
+    if parsed.images.len() + parsed.audios.len() + parsed.videos.len() > 4 {
+        return Err(GenerateError::Unsupported(
+            "serial media supports 1 to 4 inputs",
+        ));
+    }
+
+    let parts: Vec<&ChatPart> = parsed
+        .messages
+        .iter()
+        .flat_map(|msg| msg.parts.iter())
+        .collect();
+    let mut pieces = Vec::new();
+    let mut vision = Vec::new();
+    let mut audios = Vec::new();
+    let mut videos = Vec::new();
+    let mut index = 0usize;
+    while index < parts.len() {
+        match parts[index] {
+            ChatPart::Text(_) | ChatPart::ToolResult { .. } => index += 1,
+            ChatPart::Image(slot) => {
+                let image = parsed
+                    .images
+                    .get(*slot)
+                    .ok_or_else(|| GenerateError::Engine("image reference is missing".into()))?;
+                let span = engine.vision_tokens(&image.data)?;
+                if span.is_empty() {
+                    return Err(GenerateError::Engine(
+                        "image probe returned zero tokens".into(),
+                    ));
+                }
+                pieces.push(ds4_core::MediaPiece::Image {
+                    count: span.len() as u32,
+                });
+                vision.push(VisionPromptInput {
+                    data: image.data.clone(),
+                    token_offset: 0,
+                });
+                index += 1;
+            }
+            ChatPart::Audio(slot) => {
+                let audio = parsed
+                    .audios
+                    .get(*slot)
+                    .ok_or_else(|| GenerateError::Engine("audio reference is missing".into()))?;
+                let count = engine.audio_probe(&audio.data)?;
+                if count == 0 {
+                    return Err(GenerateError::Engine(
+                        "audio probe returned zero tokens".into(),
+                    ));
+                }
+                pieces.push(ds4_core::MediaPiece::Audio { count });
+                audios.push(AudioPromptInput {
+                    data: audio.data.clone(),
+                    token_offset: 0,
+                });
+                index += 1;
+            }
+            ChatPart::Video(slot) => {
+                let video = parsed
+                    .videos
+                    .get(*slot)
+                    .ok_or_else(|| GenerateError::Engine("video reference is missing".into()))?;
+                let (_duration, packed) = ds4_core::load_video(&video.data)
+                    .map_err(|error| GenerateError::Engine(error.to_string()))?;
+                if packed.is_empty() {
+                    return Err(GenerateError::Engine("video produced no frames".into()));
+                }
+
+                // The audio that follows a video is that video's track. Text
+                // between them leaves a separate audio part.
+                let audio_len = match parts.get(index + 1) {
+                    Some(ChatPart::Audio(audio_slot)) => {
+                        let audio = parsed.audios.get(*audio_slot).ok_or_else(|| {
+                            GenerateError::Engine("audio reference is missing".into())
+                        })?;
+                        let count = engine.audio_probe(&audio.data)?;
+                        if count == 0 {
+                            return Err(GenerateError::Engine(
+                                "audio probe returned zero tokens".into(),
+                            ));
+                        }
+                        audios.push(AudioPromptInput {
+                            data: audio.data.clone(),
+                            token_offset: 0,
+                        });
+                        count
+                    }
+                    _ => 0,
+                };
+                let mut pairs = Vec::with_capacity(packed.len());
+                for (pair_index, visual) in packed.iter().enumerate() {
+                    let start_s = pair_index as f32 * MIMO_SECONDS_PER_PAIR;
+                    let timestamp_ids =
+                        engine.tokenize_text(&ds4_core::format_timestamp(start_s))?;
+                    if timestamp_ids.is_empty() {
+                        return Err(GenerateError::Engine("video timestamp is empty".into()));
+                    }
+                    let audio_tokens = if audio_len == 0 {
+                        0
+                    } else {
+                        // The last pair keeps the remaining codec rows. Duration
+                        // times 6.25 Hz is not the feature length.
+                        let end_s = if pair_index + 1 == packed.len() {
+                            start_s + audio_len as f32
+                        } else {
+                            (pair_index as f32 + 1.0) * MIMO_SECONDS_PER_PAIR
+                        };
+                        ds4_core::audio_interval(start_s, end_s, audio_len)
+                            .map_err(|error| GenerateError::Engine(error.to_string()))?
+                    };
+                    pairs.push(ds4_core::VideoPair {
+                        timestamp_s: start_s,
+                        timestamp_ids,
+                        height: visual.height(),
+                        width: visual.width(),
+                        audio_tokens,
+                    });
+                }
+                if audio_len == 0 {
+                    pieces.push(ds4_core::MediaPiece::Video { pairs });
+                    index += 1;
+                } else {
+                    pieces.push(ds4_core::MediaPiece::Joint { pairs });
+                    index += 2;
+                }
+                videos.push(VisionPromptInput {
+                    data: video.data.clone(),
+                    token_offset: 0,
+                });
+            }
+        }
+    }
+
+    let (expanded, _spans) = ds4_core::expand_pieces(&tokens, &pieces)
+        .map_err(|error| GenerateError::Engine(error.to_string()))?;
+    Ok(MediaPrompt {
+        tokens: expanded,
+        vision,
+        audios,
+        videos,
     })
 }
 
@@ -1882,6 +2071,7 @@ pub(crate) fn prepare_serial_prompt(
     let syntax = syntax_for_model_id(engine.model_id());
     let tool_replay = parsed.images.is_empty()
         && parsed.audios.is_empty()
+        && parsed.videos.is_empty()
         && tool_replay_disk_cache_eligible(&parsed, syntax);
     if tool_replay {
         engine.restore_tool_replay(&mut parsed.messages);
@@ -1904,6 +2094,7 @@ pub(crate) fn prepare_serial_prompt(
         tokens,
         vision,
         audios,
+        videos,
     } = prepare_media(engine, &parsed, tokens)?;
     Ok(PreparedSerialPrompt {
         parsed,
@@ -1912,6 +2103,7 @@ pub(crate) fn prepare_serial_prompt(
         tokens,
         vision,
         audios,
+        videos,
     })
 }
 
@@ -1960,6 +2152,7 @@ pub(crate) fn generate_terminal_prepared(
         tokens,
         vision,
         audios,
+        videos,
     } = prep;
     let syntax = syntax_for_model_id(engine.model_id());
     let mut req = stream_req_from_parsed(&parsed, engine.model_id());
@@ -1970,9 +2163,9 @@ pub(crate) fn generate_terminal_prepared(
     }
     engine.begin_trace();
     let t_prefill = Instant::now();
-    let sync_result = if !vision.is_empty() || !audios.is_empty() {
+    let sync_result = if !vision.is_empty() || !audios.is_empty() || !videos.is_empty() {
         engine
-            .sync_media_prompt(&tokens, &vision, &audios)
+            .sync_mimo_prompt(&tokens, &vision, &audios, &videos)
             .map(|()| 0)
     } else if tool_replay {
         engine.sync_tool_replay_prompt(&prompt, &tokens)
@@ -2002,6 +2195,7 @@ pub(crate) fn generate_terminal_prepared(
     let mut first_tok = None;
     let mut decode_steps = 0i32;
     let mut speculation = false;
+    let mut token_ids = Vec::new();
 
     let prompt_n = engine.pos();
     let mut rng = parsed.seed;
@@ -2057,6 +2251,7 @@ pub(crate) fn generate_terminal_prepared(
             &prompt,
         );
         finish = "length";
+        token_ids.clear();
 
         let decoded = decode_pass(
             engine,
@@ -2076,6 +2271,7 @@ pub(crate) fn generate_terminal_prepared(
             &mut decode_steps,
             &mut speculation,
             stop_requested,
+            &mut token_ids,
         );
         if let Err(error) = decoded {
             if !req.stream || matches!(&error, GenerateError::Io) {
@@ -2323,6 +2519,11 @@ pub(crate) fn generate_terminal_prepared(
                 created,
                 cors,
                 &parsed_gen.calls,
+                if parsed.return_token_ids {
+                    &token_ids
+                } else {
+                    &[]
+                },
             ),
         };
         bytes
@@ -2465,6 +2666,11 @@ impl DecodeIo for ScriptedDecode {
         if syntax_for_model_id(self.model_id) == ModelSyntax::Step37 {
             return Ok([vec![128000], vec![128001; 169], vec![128002]].concat());
         }
+        if syntax_for_model_id(self.model_id) == ModelSyntax::Mimo2 {
+            let count = ds4_core::image_pad_count(data)
+                .map_err(|error| GenerateError::Engine(error.to_string()))?;
+            return Ok(vec![ds4_core::IMAGE_PAD; count as usize]);
+        }
         let marker = if syntax_for_model_id(self.model_id) == ModelSyntax::Inkling {
             200054
         } else {
@@ -2481,9 +2687,13 @@ impl DecodeIo for ScriptedDecode {
         self.sync(tokens)
     }
 
-    fn audio_probe(&self, _data: &[u8]) -> Result<u32, GenerateError> {
+    fn audio_probe(&self, data: &[u8]) -> Result<u32, GenerateError> {
         if syntax_for_model_id(self.model_id) == ModelSyntax::Inkling {
             return Ok(2);
+        }
+        if syntax_for_model_id(self.model_id) == ModelSyntax::Mimo2 {
+            return ds4_core::audio_pad_count(data)
+                .map_err(|error| GenerateError::Engine(error.to_string()));
         }
         Err(GenerateError::Unsupported("audio encoder is not loaded"))
     }
@@ -2706,23 +2916,31 @@ impl SerialKvIo for NativeSerialKvIo<'_, '_, '_, '_> {
 }
 
 #[cfg(any(feature = "native", test))]
-fn serial_mtp_ready(family: ds4_core::ModelFamily, sidecar: bool, dots3: bool) -> bool {
+fn serial_mtp_ready(
+    family: ds4_core::ModelFamily,
+    sidecar: bool,
+    dots3: bool,
+    draft: i32,
+) -> bool {
     match family {
         ds4_core::ModelFamily::Dots3Note => dots3,
         ds4_core::ModelFamily::Inkling | ds4_core::ModelFamily::Step37 => sidecar,
+        ds4_core::ModelFamily::Mimo2 => draft > 1,
         _ => false,
     }
 }
 
 #[test]
 fn dots3_embedded_mtp_needs_session_state() {
-    use ds4_core::ModelFamily::{Dots3Note, Inkling, Qwen4Exp, Step37};
-    assert!(serial_mtp_ready(Dots3Note, false, true));
-    assert!(!serial_mtp_ready(Dots3Note, false, false));
-    assert!(!serial_mtp_ready(Dots3Note, true, false));
-    assert!(serial_mtp_ready(Inkling, true, false));
-    assert!(serial_mtp_ready(Step37, true, false));
-    assert!(!serial_mtp_ready(Qwen4Exp, true, false));
+    use ds4_core::ModelFamily::{Dots3Note, Inkling, Mimo2, Qwen4Exp, Step37};
+    assert!(serial_mtp_ready(Dots3Note, false, true, 1));
+    assert!(!serial_mtp_ready(Dots3Note, false, false, 1));
+    assert!(!serial_mtp_ready(Dots3Note, true, false, 1));
+    assert!(serial_mtp_ready(Inkling, true, false, 1));
+    assert!(serial_mtp_ready(Step37, true, false, 1));
+    assert!(!serial_mtp_ready(Qwen4Exp, true, false, 1));
+    assert!(serial_mtp_ready(Mimo2, false, false, 3));
+    assert!(!serial_mtp_ready(Mimo2, true, false, 1));
 }
 
 #[cfg(feature = "native")]
@@ -3015,6 +3233,19 @@ impl DecodeIo for NativeDecode<'_> {
         images: &[VisionPromptInput],
         audios: &[AudioPromptInput],
     ) -> Result<(), GenerateError> {
+        self.sync_mimo_prompt(tokens, images, audios, &[])
+    }
+
+    fn sync_mimo_prompt(
+        &mut self,
+        tokens: &[i32],
+        images: &[VisionPromptInput],
+        audios: &[AudioPromptInput],
+        videos: &[VisionPromptInput],
+    ) -> Result<(), GenerateError> {
+        if !videos.is_empty() && syntax_for_model_id(self.model_id()) != ModelSyntax::Mimo2 {
+            return Err(GenerateError::Unsupported("video input requires MiMo"));
+        }
         self.prompt_sync_elapsed = None;
         self.session_disk_storable = false;
         self.thinking_visible = None;
@@ -3034,11 +3265,21 @@ impl DecodeIo for NativeDecode<'_> {
                 token_offset: audio.token_offset,
             })
             .collect::<Vec<_>>();
+        let videos = videos
+            .iter()
+            .map(|video| ds4_core::VisionInput {
+                data: &video.data,
+                token_offset: video.token_offset,
+            })
+            .collect::<Vec<_>>();
         let started = Instant::now();
-        let result = self
-            .session()?
-            .sync_media(&tokens, &images, &audios)
-            .map_err(|error| GenerateError::Engine(error.to_string()));
+        let session = self.session()?;
+        let result = if videos.is_empty() {
+            session.sync_media(&tokens, &images, &audios)
+        } else {
+            session.sync_mimo(&tokens, &images, &audios, &videos)
+        }
+        .map_err(|error| GenerateError::Engine(error.to_string()));
         if result.is_ok() {
             self.prompt_sync_elapsed = Some(started.elapsed());
         }
@@ -3229,8 +3470,12 @@ impl DecodeIo for NativeDecode<'_> {
     fn eval_greedy(&mut self, first: i32, budget: i32) -> Result<Vec<i32>, GenerateError> {
         let family = self.model.family();
         let dots3 = family == ds4_core::ModelFamily::Dots3Note && self.session()?.has_dots3_mtp();
-        if !serial_mtp_ready(family, self.model.mtp().is_some(), dots3)
-            || std::env::var_os("DS4_MTP_SPEC_DISABLE").is_some()
+        if !serial_mtp_ready(
+            family,
+            self.model.mtp().is_some(),
+            dots3,
+            self.model.mtp_draft_tokens(),
+        ) || std::env::var_os("DS4_MTP_SPEC_DISABLE").is_some()
         {
             self.speculated = false;
             self.eval(first)?;
@@ -5417,5 +5662,217 @@ mod disk_sync_tests {
                 ModelSyntax::DeepSeek
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod mimo_prepare {
+    use super::{prepare_media, ScriptedDecode};
+    use crate::parse::{parse_chat_request, ParseEnv};
+
+    fn engine() -> ScriptedDecode {
+        ScriptedDecode {
+            model_id: 12,
+            prompt_tokens: vec![77],
+            steps: Vec::new(),
+            idx: 0,
+            pos: 0,
+            ctx: 8192,
+            generation: 1,
+            live: Vec::new(),
+            suffix_tokens: Vec::new(),
+        }
+    }
+
+    fn pads(tokens: &[i32], pad: i32) -> usize {
+        tokens.iter().filter(|token| **token == pad).count()
+    }
+
+    fn tiny_png() -> Vec<u8> {
+        let path = std::env::temp_dir().join(format!("ds4-mimo-prep-{}.png", std::process::id()));
+        let status = std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=64x64",
+                "-frames:v",
+                "1",
+            ])
+            .arg(&path)
+            .status()
+            .expect("ffmpeg");
+        assert!(status.success());
+        let bytes = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        bytes
+    }
+
+    #[test]
+    fn still_image_expands_the_single_pad() {
+        let png = tiny_png();
+        let body = format!(
+            r#"{{"messages":[{{"role":"user","content":[{{"type":"image_url","image_url":{{"url":"data:image/png;base64,{}"}}}}]}}]}}"#,
+            b64(&png)
+        );
+        let parsed = parse_chat_request(&ParseEnv::default(), &body).unwrap();
+        let count = ds4_core::image_pad_count(&parsed.images[0].data).unwrap() as usize;
+        let stub = vec![
+            ds4_core::VISION_START,
+            ds4_core::IMAGE_PAD,
+            ds4_core::VISION_END,
+        ];
+        let media = prepare_media(&engine(), &parsed, stub).unwrap();
+        assert_eq!(pads(&media.tokens, ds4_core::IMAGE_PAD), count);
+        assert!(count > 1);
+        assert_eq!(media.vision.len(), 1);
+        assert!(media.videos.is_empty());
+    }
+
+    fn tiny_mp4() -> Vec<u8> {
+        let path = std::env::temp_dir().join(format!("ds4-mimo-prep-{}.mp4", std::process::id()));
+        let status = std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=64x64:d=0.4",
+                "-r",
+                "2",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .arg(&path)
+            .status()
+            .expect("ffmpeg");
+        assert!(status.success());
+        let bytes = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        bytes
+    }
+
+    fn b64(data: &[u8]) -> String {
+        const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        let mut index = 0;
+        while index < data.len() {
+            let b0 = data[index];
+            let b1 = if index + 1 < data.len() {
+                data[index + 1]
+            } else {
+                0
+            };
+            let b2 = if index + 2 < data.len() {
+                data[index + 2]
+            } else {
+                0
+            };
+            let n = ((b0 as u32) << 16) | ((b1 as u32) << 8) | b2 as u32;
+            out.push(TABLE[((n >> 18) & 63) as usize] as char);
+            out.push(TABLE[((n >> 12) & 63) as usize] as char);
+            if index + 1 < data.len() {
+                out.push(TABLE[((n >> 6) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+            if index + 2 < data.len() {
+                out.push(TABLE[(n & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+            index += 3;
+        }
+        out
+    }
+
+    fn wav_silence(samples: usize) -> Vec<u8> {
+        let data_bytes = samples * 2;
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&((36 + data_bytes) as u32).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&24_000u32.to_le_bytes());
+        out.extend_from_slice(&(48_000u32).to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&(data_bytes as u32).to_le_bytes());
+        out.extend(std::iter::repeat(0).take(data_bytes));
+        out
+    }
+
+    #[test]
+    fn video_and_joint_audio_replace_the_jinja_stubs() {
+        let mp4 = tiny_mp4();
+        let (_duration, packed) = ds4_core::load_video(&mp4).unwrap();
+        let visual: u32 = packed.iter().map(|pair| pair.tokens).sum();
+        let body = format!(
+            r#"{{"messages":[{{"role":"user","content":[{{"type":"video_url","video_url":{{"url":"data:video/mp4;base64,{}"}}}}]}}]}}"#,
+            b64(&mp4)
+        );
+        let parsed = parse_chat_request(&ParseEnv::default(), &body).unwrap();
+        let stub = vec![
+            ds4_core::VISION_START,
+            ds4_core::VIDEO_PAD,
+            ds4_core::VISION_END,
+        ];
+        let media = prepare_media(&engine(), &parsed, stub).unwrap();
+        assert_eq!(media.tokens.first().copied(), Some(ds4_core::VIDEO_START));
+        assert_eq!(media.tokens.last().copied(), Some(ds4_core::VIDEO_END));
+        assert_eq!(pads(&media.tokens, ds4_core::VIDEO_PAD), visual as usize);
+        assert_eq!(pads(&media.tokens, 77), packed.len());
+        assert_eq!(media.videos.len(), 1);
+        assert!(media.audios.is_empty());
+
+        let wav = wav_silence(24_000);
+        let audio_len = ds4_core::audio_pad_count(&wav).unwrap() as usize;
+        let joint_body = format!(
+            r#"{{"messages":[{{"role":"user","content":[{{"type":"video_url","video_url":{{"url":"data:video/mp4;base64,{}"}}}},{{"type":"input_audio","input_audio":{{"format":"wav","data":"{}"}}}}]}}]}}"#,
+            b64(&mp4),
+            b64(&wav)
+        );
+        let joint = parse_chat_request(&ParseEnv::default(), &joint_body).unwrap();
+        let joint_stub = vec![
+            ds4_core::VISION_START,
+            ds4_core::VIDEO_PAD,
+            ds4_core::VISION_END,
+            ds4_core::AUDIO_START,
+            ds4_core::AUDIO_PAD,
+            ds4_core::AUDIO_END,
+        ];
+        let joint_media = prepare_media(&engine(), &joint, joint_stub.clone()).unwrap();
+        assert_eq!(pads(&joint_media.tokens, ds4_core::AUDIO_PAD), audio_len);
+        assert_eq!(joint_media.audios.len(), 1);
+        assert_eq!(joint_media.videos.len(), 1);
+
+        let doubled = format!(
+            r#"{{"messages":[{{"role":"user","content":[{{"type":"video_url","video_url":{{"url":"data:video/mp4;base64,{}"}}}},{{"type":"input_audio","input_audio":{{"format":"wav","data":"{}"}}}},{{"type":"input_audio","input_audio":{{"format":"wav","data":"{}"}}}}]}}]}}"#,
+            b64(&mp4),
+            b64(&wav),
+            b64(&wav)
+        );
+        let doubled = parse_chat_request(&ParseEnv::default(), &doubled).unwrap();
+        let mut doubled_stub = joint_stub;
+        doubled_stub.extend_from_slice(&[
+            ds4_core::AUDIO_START,
+            ds4_core::AUDIO_PAD,
+            ds4_core::AUDIO_END,
+        ]);
+        let err = match prepare_media(&engine(), &doubled, doubled_stub) {
+            Err(err) => err,
+            Ok(_) => panic!("second audio was accepted"),
+        };
+        assert!(err.to_string().contains("second audio"), "{err}");
     }
 }

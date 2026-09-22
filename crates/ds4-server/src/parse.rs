@@ -37,6 +37,7 @@ pub enum ChatPart {
     Text(String),
     Image(usize),
     Audio(usize),
+    Video(usize),
     ToolResult { id: String, content: String },
 }
 
@@ -54,6 +55,11 @@ pub struct RequestImage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestAudio {
+    pub data: Arc<[u8]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestVideo {
     pub data: Arc<[u8]>,
 }
 
@@ -144,6 +150,7 @@ pub struct ParsedRequest {
     pub messages: Vec<ChatMsg>,
     pub images: Vec<RequestImage>,
     pub audios: Vec<RequestAudio>,
+    pub videos: Vec<RequestVideo>,
     pub tool_schemas: String,
     pub tool_orders: Vec<ToolSchemaOrder>,
     pub prompt_text: Option<String>,
@@ -184,6 +191,7 @@ impl ParsedRequest {
             messages: Vec::new(),
             images: Vec::new(),
             audios: Vec::new(),
+            videos: Vec::new(),
             tool_schemas: String::new(),
             tool_orders: Vec::new(),
             prompt_text: None,
@@ -209,7 +217,7 @@ impl ParsedRequest {
             max_tokens: self.max_tokens,
             has_images: !self.images.is_empty(),
         });
-        if !self.audios.is_empty() {
+        if !self.audios.is_empty() || !self.videos.is_empty() {
             self.needs |= crate::route::NEED_AUDIO;
         }
     }
@@ -278,26 +286,32 @@ fn decode_media_base64(src: &str, request_remaining: usize) -> Result<Vec<u8>, S
     Ok(out)
 }
 
+fn media_count(images: &[RequestImage], audios: &[RequestAudio], videos: &[RequestVideo]) -> usize {
+    images.len() + audios.len() + videos.len()
+}
+
+fn media_bytes(images: &[RequestImage], audios: &[RequestAudio], videos: &[RequestVideo]) -> usize {
+    images.iter().map(|v| v.data.len()).sum::<usize>()
+        + audios.iter().map(|v| v.data.len()).sum::<usize>()
+        + videos.iter().map(|v| v.data.len()).sum::<usize>()
+}
+
 fn add_image_base64(
     images: &mut Vec<RequestImage>,
+    audios: &[RequestAudio],
+    videos: &[RequestVideo],
     mime_type: &str,
     payload: &str,
-    audio_count: usize,
-    audio_bytes: usize,
 ) -> Result<usize, String> {
     let mime = match mime_type {
         "image/png" => ImageMime::Png,
         "image/jpeg" => ImageMime::Jpeg,
         _ => return Err(format!("unsupported image media type: {mime_type}")),
     };
-    if images.len().saturating_add(audio_count) >= CHAT_IMAGE_MAX_COUNT {
+    if media_count(images, audios, videos) >= CHAT_IMAGE_MAX_COUNT {
         return Err("at most 4 media inputs are supported".into());
     }
-    let total = images
-        .iter()
-        .map(|image| image.data.len())
-        .sum::<usize>()
-        .saturating_add(audio_bytes);
+    let total = media_bytes(images, audios, videos);
     if total > CHAT_IMAGE_TOTAL_MAX {
         return Err("media exceeds 20 MiB request limit".into());
     }
@@ -319,9 +333,9 @@ fn add_image_base64(
 
 fn add_image_data_uri(
     images: &mut Vec<RequestImage>,
+    audios: &[RequestAudio],
+    videos: &[RequestVideo],
     uri: &str,
-    audio_count: usize,
-    audio_bytes: usize,
 ) -> Result<usize, String> {
     let Some(rest) = uri.strip_prefix("data:") else {
         return Err("image_url must be a base64 data URI".into());
@@ -332,23 +346,46 @@ fn add_image_data_uri(
     if mime.is_empty() {
         return Err("image_url must be a base64 data URI".into());
     }
-    add_image_base64(images, mime, payload, audio_count, audio_bytes)
+    add_image_base64(images, audios, videos, mime, payload)
+}
+
+fn add_video(
+    videos: &mut Vec<RequestVideo>,
+    images: &[RequestImage],
+    audios: &[RequestAudio],
+    payload: &str,
+) -> Result<usize, String> {
+    if media_count(images, audios, videos) >= CHAT_IMAGE_MAX_COUNT {
+        return Err("at most 4 media inputs are supported".into());
+    }
+    let total = media_bytes(images, audios, videos);
+    if total > CHAT_IMAGE_TOTAL_MAX {
+        return Err("media exceeds 20 MiB request limit".into());
+    }
+    let data = decode_media_base64(payload, CHAT_IMAGE_TOTAL_MAX - total)?;
+    let ftyp = data.len() >= 12 && data[4..8] == *b"ftyp";
+    if !ftyp {
+        return Err("video bytes do not match MP4".into());
+    }
+    let index = videos.len();
+    videos.push(RequestVideo { data: data.into() });
+    Ok(index)
 }
 
 fn add_audio(
     audios: &mut Vec<RequestAudio>,
     images: &[RequestImage],
+    videos: &[RequestVideo],
     format: &str,
     payload: &str,
 ) -> Result<usize, String> {
     if format != "wav" {
         return Err("audio input currently requires WAV format".into());
     }
-    if images.len() + audios.len() >= CHAT_IMAGE_MAX_COUNT {
+    if media_count(images, audios, videos) >= CHAT_IMAGE_MAX_COUNT {
         return Err("at most 4 media inputs are supported".into());
     }
-    let total = images.iter().map(|v| v.data.len()).sum::<usize>()
-        + audios.iter().map(|v| v.data.len()).sum::<usize>();
+    let total = media_bytes(images, audios, videos);
     if total > CHAT_IMAGE_TOTAL_MAX {
         return Err("media exceeds 20 MiB request limit".into());
     }
@@ -365,10 +402,11 @@ fn validate_audio_refs(
     msgs: &[ChatMsg],
     images: &[RequestImage],
     audios: &[RequestAudio],
+    videos: &[RequestVideo],
 ) -> Result<(), String> {
-    let total = images.iter().map(|v| v.data.len()).sum::<usize>()
-        + audios.iter().map(|v| v.data.len()).sum::<usize>();
-    if images.len() + audios.len() > CHAT_IMAGE_MAX_COUNT || total > CHAT_IMAGE_TOTAL_MAX {
+    if media_count(images, audios, videos) > CHAT_IMAGE_MAX_COUNT
+        || media_bytes(images, audios, videos) > CHAT_IMAGE_TOTAL_MAX
+    {
         return Err("media exceeds the 4 input or 20 MiB request limit".into());
     }
     let mut seen = vec![false; audios.len()];
@@ -421,6 +459,34 @@ fn validate_image_references(msgs: &[ChatMsg], images: &[RequestImage]) -> Resul
     }
     if seen.iter().any(|seen| !seen) {
         return Err("unreferenced image payload".into());
+    }
+    Ok(())
+}
+
+fn validate_video_refs(msgs: &[ChatMsg], videos: &[RequestVideo]) -> Result<(), String> {
+    if videos.is_empty() {
+        return Ok(());
+    }
+    let mut seen = vec![false; videos.len()];
+    for msg in msgs {
+        for part in &msg.parts {
+            let ChatPart::Video(index) = part else {
+                continue;
+            };
+            if msg.role != "user" {
+                return Err("video is allowed only in user messages".into());
+            }
+            let Some(slot) = seen.get_mut(*index) else {
+                return Err("invalid video reference".into());
+            };
+            if *slot {
+                return Err("duplicate video reference".into());
+            }
+            *slot = true;
+        }
+    }
+    if seen.iter().any(|seen| !seen) {
+        return Err("unreferenced video payload".into());
     }
     Ok(())
 }
@@ -810,6 +876,7 @@ fn parse_openai_message_content(
     msg: &mut ChatMsg,
     images: &mut Vec<RequestImage>,
     audios: &mut Vec<RequestAudio>,
+    videos: &mut Vec<RequestVideo>,
     err: &mut String,
 ) -> bool {
     p.ws();
@@ -835,6 +902,7 @@ fn parse_openai_message_content(
             let mut text = None;
             let mut image_url = None;
             let mut input_audio = None;
+            let mut video_url = None;
             p.ws();
             while p.peek().is_some() && p.peek() != Some(b'}') {
                 let Some(key) = json_string(p) else {
@@ -864,6 +932,11 @@ fn parse_openai_message_content(
                     if image_url.is_none() {
                         return false;
                     }
+                } else if key == "video_url" {
+                    video_url = parse_chat_image_url(p);
+                    if video_url.is_none() {
+                        return false;
+                    }
                 } else if !json_skip_value(p) {
                     return false;
                 }
@@ -878,18 +951,40 @@ fn parse_openai_message_content(
             }
             match (typ.as_deref(), text, image_url) {
                 (Some("text"), Some(text), _) => append_text_part(msg, text),
-                (Some("image_url"), _, Some(url)) => match add_image_data_uri(
-                    images,
-                    &url,
-                    audios.len(),
-                    audios.iter().map(|v| v.data.len()).sum(),
-                ) {
-                    Ok(index) => msg.parts.push(ChatPart::Image(index)),
-                    Err(error) => {
-                        *err = error;
+                (Some("image_url"), _, Some(url)) => {
+                    match add_image_data_uri(images, audios, videos, &url) {
+                        Ok(index) => msg.parts.push(ChatPart::Image(index)),
+                        Err(error) => {
+                            *err = error;
+                            return false;
+                        }
+                    }
+                }
+                (Some("video_url") | Some("video"), _, _) => {
+                    let Some(url) = video_url.as_deref() else {
+                        *err = "video_url must be a base64 data URI".into();
+                        return false;
+                    };
+                    let Some(rest) = url.strip_prefix("data:") else {
+                        *err = "video_url must be a base64 data URI".into();
+                        return false;
+                    };
+                    let Some((mime, payload)) = rest.split_once(";base64,") else {
+                        *err = "video_url must be a base64 data URI".into();
+                        return false;
+                    };
+                    if mime != "video/mp4" {
+                        *err = "video input currently requires video/mp4".into();
                         return false;
                     }
-                },
+                    match add_video(videos, images, audios, payload) {
+                        Ok(index) => msg.parts.push(ChatPart::Video(index)),
+                        Err(error) => {
+                            *err = error;
+                            return false;
+                        }
+                    }
+                }
                 (Some("input_audio"), _, _) => {
                     let value = input_audio
                         .as_deref()
@@ -900,7 +995,7 @@ fn parse_openai_message_content(
                         *err = "input_audio requires format and base64 data".into();
                         return false;
                     };
-                    match add_audio(audios, images, format, data) {
+                    match add_audio(audios, images, videos, format, data) {
                         Ok(index) => msg.parts.push(ChatPart::Audio(index)),
                         Err(error) => {
                             *err = error;
@@ -929,6 +1024,7 @@ fn parse_messages(
     p: &mut Json<'_>,
     images: &mut Vec<RequestImage>,
     audios: &mut Vec<RequestAudio>,
+    videos: &mut Vec<RequestVideo>,
     err: &mut String,
 ) -> Option<Vec<ChatMsg>> {
     p.ws();
@@ -956,7 +1052,7 @@ fn parse_messages(
             } else if key == "content" {
                 msg.content.clear();
                 msg.parts.clear();
-                if !parse_openai_message_content(p, &mut msg, images, audios, err) {
+                if !parse_openai_message_content(p, &mut msg, images, audios, videos, err) {
                     if err.is_empty() {
                         *err = "invalid chat content".into();
                     }
@@ -1140,7 +1236,7 @@ fn parse_anthropic_content_block(
                 *err = "Anthropic image source must use base64 data".into();
                 return false;
             }
-            match add_image_base64(images, &media_type, &data, 0, 0) {
+            match add_image_base64(images, &[], &[], &media_type, &data) {
                 Ok(index) => msg.parts.push(ChatPart::Image(index)),
                 Err(error) => {
                     *err = error;
@@ -2000,7 +2096,7 @@ fn parse_responses_content_array_mm(
                     *err = "unsupported Responses content block".into();
                     return None;
                 };
-                match add_image_data_uri(images, &image_url, 0, 0) {
+                match add_image_data_uri(images, &[], &[], &image_url) {
                     Ok(index) => parts.push(ChatPart::Image(index)),
                     Err(error) => {
                         *err = error;
@@ -2399,6 +2495,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
     let mut msgs = Vec::new();
     let mut images = Vec::new();
     let mut audios = Vec::new();
+    let mut videos = Vec::new();
     let mut tool_schemas = String::new();
     let mut orders = Vec::new();
 
@@ -2416,7 +2513,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
             return bad(&mut err, "invalid JSON request");
         }
         let ok = if key == "messages" {
-            match parse_messages(&mut p, &mut images, &mut audios, &mut err) {
+            match parse_messages(&mut p, &mut images, &mut audios, &mut videos, &mut err) {
                 Some(m) => {
                     msgs = m;
                     got_messages = true;
@@ -2536,7 +2633,11 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
         return Err("missing messages".into());
     }
     validate_image_references(&msgs, &images)?;
-    validate_audio_refs(&msgs, &images, &audios)?;
+    validate_audio_refs(&msgs, &images, &audios, &videos)?;
+    validate_video_refs(&msgs, &videos)?;
+    if images.len() + audios.len() + videos.len() > CHAT_IMAGE_MAX_COUNT {
+        return Err("at most 4 media inputs are supported".into());
+    }
     r.has_tool_results = chat_history_has_pending_tool_results(&msgs);
     if !prepare_tool_choice(&mut r, &mut tool_schemas, &mut orders, &mut err) {
         return Err(err);
@@ -2545,6 +2646,7 @@ pub fn parse_chat_request(env: &ParseEnv, body: &str) -> Result<ParsedRequest, S
     r.messages = msgs;
     r.images = images;
     r.audios = audios;
+    r.videos = videos;
     r.tool_schemas = tool_schemas;
     r.tool_orders = orders;
     r.finish_needs();

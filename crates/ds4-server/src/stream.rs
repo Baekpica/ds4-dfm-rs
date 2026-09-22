@@ -2065,6 +2065,20 @@ fn append_anthropic_content(
     out.push(b']');
 }
 
+fn append_token_ids(out: &mut Vec<u8>, ids: &[i32]) {
+    if ids.is_empty() {
+        return;
+    }
+    out.extend_from_slice(b",\"token_ids\":[");
+    for (index, id) in ids.iter().enumerate() {
+        if index > 0 {
+            out.push(b',');
+        }
+        out.extend(id.to_string().as_bytes());
+    }
+    out.push(b']');
+}
+
 pub fn final_response(
     r: &StreamReq,
     id: &str,
@@ -2076,6 +2090,7 @@ pub fn final_response(
     created: i64,
     cors: bool,
     calls: &[ToolCall],
+    token_ids: &[i32],
 ) -> Vec<u8> {
     let text = utf8_trim_tail(text);
     let reasoning = reasoning.map(utf8_trim_tail).unwrap_or(b"");
@@ -2102,7 +2117,9 @@ pub fn final_response(
         }
         b.extend_from_slice(b"},\"finish_reason\":");
         b.extend(json_escape_bytes(finish.as_bytes()));
-        b.extend_from_slice(b"}],\"usage\":");
+        b.extend_from_slice(b"}]");
+        append_token_ids(&mut b, token_ids);
+        b.extend_from_slice(b",\"usage\":");
     } else {
         b.extend(
             format!(
@@ -2115,7 +2132,9 @@ pub fn final_response(
         b.extend(json_escape_bytes(text));
         b.extend_from_slice(b",\"index\":0,\"finish_reason\":");
         b.extend(json_escape_bytes(finish.as_bytes()));
-        b.extend_from_slice(b"}],\"usage\":");
+        b.extend_from_slice(b"}]");
+        append_token_ids(&mut b, token_ids);
+        b.extend_from_slice(b",\"usage\":");
     }
     b.extend_from_slice(openai_usage(r, prompt, completion).as_bytes());
     b.extend_from_slice(r.timings.json_suffix().as_bytes());
