@@ -16,6 +16,15 @@ static void check(cudaError_t status) {
 }
 
 int main() {
+    // Same predicate the host launch uses. 2048-row steps tile from 10240.
+    // 4096-row prefill chunks tile from 8192. Decode and SWA stay on the walk.
+    if (m2_use_tile(0, 4, 2048, 8192) != 0) { return 20; }
+    if (m2_use_tile(0, 4, 2048, 10240) != 1) { return 20; }
+    if (m2_use_tile(0, 4, 4096, 6144) != 0) { return 20; }
+    if (m2_use_tile(0, 4, 4096, 8192) != 1) { return 20; }
+    if (m2_use_tile(0, 4, 1, 65536) != 0) { return 20; }
+    if (m2_use_tile(128, 8, 4096, 65536) != 0) { return 20; }
+    puts("tile_gate=2048@10240,4096@8192");
     enum { HEADS = 64, KEY = 192, VALUE = 128, ROWS = 3 };
     for (unsigned kv : {4u, 8u}) {
         for (unsigned start : {5u, 129u, 4095u, 262144u}) {

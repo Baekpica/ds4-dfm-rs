@@ -137,8 +137,24 @@ __global__ static void mimo2_attention(
  * One block owns one query row and one KV head. The 16 warps load that
  * head's K/V tile once and reuse it; the walking kernel reloads it per head.
  * Dot order matches the walking kernel, so the same halves stay bit-exact.
- * Positions stay device reads. Launch is host-side, so capture does not bake pos. */
-enum { M2_ATTN_TILE = 32, M2_FATTN_MIN_ROWS = 32, M2_FATTN_MIN_POS = 16384 };
+ * Positions stay device reads. Launch is host-side, so capture does not bake pos.
+ *
+ * The tile's sync is not paid back on a short KV. sm_121, 2048-row chunks:
+ * slower at pos0<=8192, faster at pos0>=10240 (~0.79x the walk). A 4096-row
+ * chunk, the prefill cap, is already faster at pos0>=8192. */
+enum {
+    M2_ATTN_TILE = 32,
+    M2_FATTN_MIN_ROWS = 32,
+    M2_FATTN_NARROW_POS = 10240,
+    M2_FATTN_WIDE_ROWS = 4096,
+    M2_FATTN_WIDE_POS = 8192
+};
+
+static int m2_use_tile(unsigned window, unsigned kv_heads, unsigned rows, unsigned pos0) {
+    if (window != 0 || kv_heads != 4 || rows < (unsigned)M2_FATTN_MIN_ROWS) { return 0; }
+    if (pos0 >= (unsigned)M2_FATTN_NARROW_POS) { return 1; }
+    return rows >= (unsigned)M2_FATTN_WIDE_ROWS && pos0 >= (unsigned)M2_FATTN_WIDE_POS;
+}
 
 __global__ static void mimo2_attn_tile(
         float *out, const float *q, const __half *cache, const float *sinks,

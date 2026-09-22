@@ -78,13 +78,11 @@ extern "C" int ds4_gpu_mimo2_attention(
     }
     /* Session admission owns position bounds, contiguous rows and ring retention.
      * No scalar position is baked into capture; all queries read live state.
-     * Past 16K the full-attention KV no longer stays hot, so wide rows share
-     * one KV-head tile. DS4_MIMO2_FATTN=0 keeps the walking kernel.
+     * m2_use_tile is the measured crossover. DS4_MIMO2_FATTN=0 keeps the walk.
      * Decode (one row) and SWA stay there too. */
     const char *fattn = getenv("DS4_MIMO2_FATTN");
     const int tile = !(fattn && fattn[0] == '0' && fattn[1] == '\0') &&
-        window == 0 && kv_heads == 4 && rows >= M2_FATTN_MIN_ROWS &&
-        (uint64_t)pos0 + rows > M2_FATTN_MIN_POS;
+        m2_use_tile(window, kv_heads, rows, pos0);
     if (tile) {
         mimo2_attn_tile<<<dim3(rows, kv_heads), 512, 0, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
