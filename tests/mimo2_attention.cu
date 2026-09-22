@@ -205,6 +205,13 @@ int main() {
             printf("tile start=%u sink=%u cap=%u walk_error=%.9g oracle_error=%.9g\n",
                 start, use_sink, capacity, walk_error, oracle_error);
             if (walk_error != 0 || oracle_error > 2e-5) { return 6; }
+            // 32-byte L2 loads must reproduce the scalar tile bit for bit.
+            // DS4_MIMO2_FATTN_L2=0 keeps that scalar launch.
+            mimo2_attn_l2<<<dim3(ROWS_T, KV), 512>>>(
+                dout, dq, dc, use_sink ? ds : nullptr, dp, KV, capacity);
+            check(cudaGetLastError());
+            check(cudaMemcpy(walk.data(), dout, walk.size() * sizeof(float), cudaMemcpyDeviceToHost));
+            if (walk != tiled) { return 8; }
             cudaStream_t stream;
             cudaGraph_t graph;
             cudaGraphExec_t replay;

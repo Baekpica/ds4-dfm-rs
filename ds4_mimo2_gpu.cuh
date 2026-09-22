@@ -78,12 +78,19 @@ extern "C" int ds4_gpu_mimo2_attention(
     }
     /* Session admission owns position bounds, contiguous rows and ring retention.
      * No scalar position is baked into capture; all queries read live state.
-     * m2_use_tile is the measured crossover. DS4_MIMO2_FATTN=0 keeps the walk.
-     * Decode (one row) and SWA stay there too. */
+     * m2_use_tile is the measured crossover. The L2 load keeps the KV head
+     * resident across query rows. DS4_MIMO2_FATTN_L2=0 keeps the scalar tile.
+     * DS4_MIMO2_FATTN=0 keeps the walk. Decode and SWA stay on the walk. */
     const char *fattn = getenv("DS4_MIMO2_FATTN");
+    const char *l2 = getenv("DS4_MIMO2_FATTN_L2");
     const int tile = !(fattn && fattn[0] == '0' && fattn[1] == '\0') &&
         m2_use_tile(window, kv_heads, rows, pos0);
-    if (tile) {
+    const int hinted = tile && !(l2 && l2[0] == '0' && l2[1] == '\0');
+    if (hinted) {
+        mimo2_attn_l2<<<dim3(rows, kv_heads), 512, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
+            sinks, (const unsigned *)positions->ptr, kv_heads, capacity);
+    } else if (tile) {
         mimo2_attn_tile<<<dim3(rows, kv_heads), 512, 0, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
             sinks, (const unsigned *)positions->ptr, kv_heads, capacity);

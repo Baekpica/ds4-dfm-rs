@@ -216,3 +216,82 @@ __global__ static void mimo2_attn_tile(
         out[((uint64_t)row * HEADS + head) * VALUE + lane + d * WARP] = acc[d] / denominator;
     }
 }
+
+/* Same dot order as mimo2_attn_tile. sm_121 only honors an L2 eviction
+ * hint on a 32-byte vector. KV is re-read by every query row, so those
+ * loads stay resident; a narrower hint is rejected by ptxas. */
+__device__ __forceinline__ void m2_ld32(void *dst, const void *src) {
+    unsigned long long r0, r1, r2, r3;
+    asm volatile("ld.global.L2::evict_last.v4.b64 {%0, %1, %2, %3}, [%4];"
+                 : "=l"(r0), "=l"(r1), "=l"(r2), "=l"(r3) : "l"(src));
+    unsigned long long *out = (unsigned long long *)dst;
+    out[0] = r0;
+    out[1] = r1;
+    out[2] = r2;
+    out[3] = r3;
+}
+
+__global__ static void mimo2_attn_l2(
+        float *out, const float *q, const __half *cache, const float *sinks,
+        const unsigned *positions, unsigned kv_heads, unsigned capacity) {
+    enum { HEADS = 64, KEY = 192, VALUE = 128, WARP = 32, GROUP = 16 };
+    const unsigned lane = threadIdx.x % WARP;
+    const unsigned warp = threadIdx.x / WARP;
+    const unsigned row = blockIdx.x;
+    const unsigned kv_head = blockIdx.y;
+    const unsigned head = kv_head * GROUP + warp;
+    const unsigned pos = positions[row];
+    const unsigned stride = kv_heads * (KEY + VALUE);
+    float query[KEY / WARP], acc[VALUE / WARP] = {};
+    for (unsigned d = 0; d < KEY / WARP; d++) {
+        query[d] = q[((uint64_t)row * HEADS + head) * KEY + lane + d * WARP];
+    }
+    float maximum = sinks ? sinks[head] : -INFINITY;
+    float denominator = sinks ? 1.0f : 0.0f;
+    __shared__ __align__(32) __half smk[M2_ATTN_TILE * KEY];
+    __shared__ __align__(32) __half smv[M2_ATTN_TILE * VALUE];
+    for (unsigned base = 0; base <= pos; base += M2_ATTN_TILE) {
+        const unsigned nkeys = pos - base + 1 < M2_ATTN_TILE ? pos - base + 1 : M2_ATTN_TILE;
+        const unsigned k_groups = nkeys * (KEY / 16);
+        const unsigned v_groups = nkeys * (VALUE / 16);
+        for (unsigned i = threadIdx.x; i < k_groups; i += blockDim.x) {
+            const unsigned local = i / (KEY / 16);
+            const unsigned col = (i % (KEY / 16)) * 16;
+            const unsigned slot = (base + local) % capacity;
+            m2_ld32(smk + local * KEY + col,
+                    cache + (uint64_t)slot * stride + kv_head * KEY + col);
+        }
+        for (unsigned i = threadIdx.x; i < v_groups; i += blockDim.x) {
+            const unsigned local = i / (VALUE / 16);
+            const unsigned col = (i % (VALUE / 16)) * 16;
+            const unsigned slot = (base + local) % capacity;
+            m2_ld32(smv + local * VALUE + col,
+                    cache + (uint64_t)slot * stride + kv_heads * KEY + kv_head * VALUE + col);
+        }
+        __syncthreads();
+        for (unsigned local = 0; local < nkeys; local++) {
+            const __half *kslot = smk + local * KEY;
+            const __half *vslot = smv + local * VALUE;
+            float dot = 0;
+            for (unsigned d = 0; d < KEY / WARP; d++) {
+                dot += query[d] * __half2float(kslot[lane + d * WARP]);
+            }
+            for (unsigned step = WARP / 2; step; step /= 2) {
+                dot += __shfl_xor_sync(0xffffffff, dot, step);
+            }
+            const float score = dot * 0.07216878364870322f; // 1/sqrt(192)
+            const float next = fmaxf(maximum, score);
+            const float old_weight = expf(maximum - next), weight = expf(score - next);
+            denominator = denominator * old_weight + weight;
+            for (unsigned d = 0; d < VALUE / WARP; d++) {
+                const float value = __half2float(vslot[lane + d * WARP]);
+                acc[d] = acc[d] * old_weight + weight * value;
+            }
+            maximum = next;
+        }
+        __syncthreads();
+    }
+    for (unsigned d = 0; d < VALUE / WARP; d++) {
+        out[((uint64_t)row * HEADS + head) * VALUE + lane + d * WARP] = acc[d] / denominator;
+    }
+}
