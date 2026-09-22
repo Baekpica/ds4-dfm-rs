@@ -30,7 +30,7 @@ The request's effective and qualified plan remains authoritative.
 | Inkling Small | serial / none | exact / qualified | unverified | unverified | Sidecar / serial / qualified |
 | Step-3.7-Flash | opt_in / qualified | partial / qualified | qualified | qualified | Sidecar / serial + bank / qualified |
 | Ling-3.0-flash-VL | persistent / qualified | partial / qualified | qualified | qualified | None / none / none |
-| MiMo-V2.6-Flash-RL | serial / unverified | exact / unverified | unverified | unverified | Embedded / serial / unverified |
+| MiMo-V2.6-Flash-RL | serial / unverified | exact / unverified | unverified | unverified | Embedded / serial / qualified |
 
 ## Bounds and allocator controls
 
@@ -67,7 +67,7 @@ candidate. These are scheduler controls, not measurements or speed claims.
 - **K2-Horizon 375B A23B:** 32K one-bank serving is qualified; disk KV and external owner import are not.
 - **Inkling Small:** serial text snapshots present; media snapshots unsupported.
 - **Step-3.7-Flash:** text banks are opt-in; Chat restart hits need history-stable identity; images serial.
-- **MiMo-V2.6-Flash-RL:** 256k serial text is the qualified context. Embedded MTP is present. Image, audio, and video projector execution is qualified. DFlash, 512k, and 1M are not qualified.
+- **MiMo-V2.6-Flash-RL:** 256k serial text is the qualified context. Embedded MTP is qualified. Image, audio, and video projector execution is qualified. DFlash, 512k, and 1M are not qualified.
 
 Regenerate without loading a model:
 

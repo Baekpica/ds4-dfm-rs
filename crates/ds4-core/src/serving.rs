@@ -632,7 +632,8 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
     }
     match family {
         // P1: serial CUDA text, image, audio, video, and the three embedded
-        // MTP blocks. DFlash, 512k, and 1M stay unqualified.
+        // MTP blocks. The embedded predictor is qualified. DFlash, 512k, and
+        // 1M stay unqualified.
         ModelFamily::Mimo2 => ServingCaps {
             family,
             variant,
@@ -643,7 +644,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             disk: Support::Present,
             snapshot: Support::Present,
             mtp: MtpKind::Embedded,
-            mtp_support: Support::Present,
+            mtp_support: Support::Qualified,
             spec_lane: SpecLane::Serial,
             spec_draft_min: 2,
             host: HostNeed::Cuda,
@@ -2069,7 +2070,7 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
             "common UX baseline; configured values and verified combinations differ"
         }
         Variant::Mimo26Flash => {
-            "256k serial text is the qualified context. Embedded MTP is present. Image, audio, and video projector execution is qualified. DFlash, 512k, and 1M are not qualified"
+            "256k serial text is the qualified context. Embedded MTP is qualified. Image, audio, and video projector execution is qualified. DFlash, 512k, and 1M are not qualified"
         }
         _ => "",
     }

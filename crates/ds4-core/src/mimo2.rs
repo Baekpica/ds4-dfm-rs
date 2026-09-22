@@ -1400,10 +1400,38 @@ mod tests {
             &crate::serving::EngineFacts::default(),
         );
         assert_eq!(plan.effective.ctx, QUALIFIED_CONTEXT as i32);
+        assert_ne!(plan.effective.ctx, 8192);
+        assert_eq!(caps.mtp_support, crate::serving::Support::Qualified);
+        assert_eq!(plan.qualified.mtp, crate::serving::Support::Qualified);
+        assert_eq!(plan.effective.mtp_mode, crate::serving::MtpMode::Auto);
+        assert!(plan.effective.mtp_weights);
         assert!(!plan
             .issues
             .iter()
-            .any(|issue| issue.code == "ctx_unavailable"));
+            .any(|issue| issue.code == "mtp_unverified" || issue.code == "ctx_unavailable"));
+        request.mtp_mode = crate::serving::MtpMode::Off;
+        let off = crate::serving::resolve_plan(
+            &request,
+            Some(caps),
+            &crate::serving::EngineFacts::default(),
+        );
+        assert_eq!(off.effective.ctx, QUALIFIED_CONTEXT as i32);
+        assert_eq!(off.effective.mtp_mode, crate::serving::MtpMode::Off);
+        assert!(!off.effective.mtp_weights);
+        request.mtp_mode = crate::serving::MtpMode::On;
+        request.mtp_path = Some("MiMo-V2.6-Flash-RL-DFlash-Q8_0.gguf".into());
+        let sidecar = crate::serving::resolve_plan(
+            &request,
+            Some(caps),
+            &crate::serving::EngineFacts::default(),
+        );
+        assert_eq!(sidecar.effective.mtp_mode, crate::serving::MtpMode::Off);
+        assert!(sidecar
+            .issues
+            .iter()
+            .any(|issue| issue.code == "mtp_contract"));
+        request.mtp_mode = crate::serving::MtpMode::Auto;
+        request.mtp_path = None;
         request.ctx = 524_288;
         let wide = crate::serving::resolve_plan(
             &request,
