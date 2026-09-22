@@ -72,16 +72,25 @@ static void df_rms(float *row, const float *weight, unsigned width) {
     for (unsigned i = 0; i < width; i++) { row[i] *= scale * weight[i]; }
 }
 
+/* Qwen3 neoX partial RoPE. The first 64 dims rotate as two halves that
+ * share one frequency; the remaining 64 stay put. Adjacent-pair rotation
+ * makes every mask row predict the same token. */
 static void df_rope(float *row, unsigned heads, unsigned pos) {
+    float c[32], s[32];
+    for (unsigned i = 0; i < 32; i++) {
+        const float freq = (float)pos / powf(10000.0f, (2.0f * (float)i) / 64.0f);
+        c[i] = cosf(freq);
+        s[i] = sinf(freq);
+    }
     for (unsigned h = 0; h < heads; h++) {
-        float *x = row + h * DF_HD;
+        float *x = row + (size_t)h * DF_HD;
+        float rot[64];
         for (unsigned i = 0; i < 32; i++) {
-            const float freq = (float)pos / powf(10000.0f, (2.0f * (float)i) / 64.0f);
-            const float c = cosf(freq), s = sinf(freq);
-            const float a = x[2 * i], b = x[2 * i + 1];
-            x[2 * i] = a * c - b * s;
-            x[2 * i + 1] = a * s + b * c;
+            const float a = x[i], b = x[32 + i];
+            rot[i] = a * c[i] - b * s[i];
+            rot[32 + i] = b * c[i] + a * s[i];
         }
+        memcpy(x, rot, sizeof(rot));
     }
 }
 
