@@ -37,3 +37,15 @@ The 8192-token frontier (200058 logits) is identical across the two caps
 Context 8257 scratch, MTP off: 973,649,152 bytes at cap 1024 and
 1,631,188,224 bytes at cap 2048. `tests/test_inkling_session --memory-quotes`
 accepts the new default.
+
+## Rejected on the way
+
+Same binary, interleaved, cold 8192 unless noted.
+
+- BF16 linear `cp.async` ring at the 1024-row chunk: 2K prefill
+  490.75/490.58/490.65 vs 490.28/489.76. The 2048-row probe was faster
+  and the production chunk was not.
+- Linear panel schedule at 2048 rows (k=m=4096): 13.47 ms vs 14.37 ms
+  for the old order. The panel still wins at 4096 and 8192 rows.
+- IQ2 slab L2 prefetch of the next row-group: 8K prefill
+  480.19/479.05 vs 479.81/478.01. Decode flat, slightly slower.
