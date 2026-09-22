@@ -115,5 +115,113 @@ int main() {
             }
         }
     }
+    // Wide full-attention rows. The tile kernel must match the walking kernel
+    // and the scalar oracle. DS4_MIMO2_FATTN=0 keeps the walking launch.
+    for (unsigned start : {0u, 1000u, 4096u, 32768u}) {
+        for (unsigned use_sink : {0u, 1u}) {
+            enum { ROWS_T = 32, KV = 4 };
+            const unsigned window = 0;
+            const unsigned capacity = start > 30000u ? 512u : start + ROWS_T;
+            const unsigned stride = KV * (KEY + VALUE);
+            std::vector<__half> cache(capacity * stride);
+            std::vector<float> q(ROWS_T * HEADS * KEY), walk(ROWS_T * HEADS * VALUE);
+            std::vector<float> tiled(ROWS_T * HEADS * VALUE), sinks(HEADS);
+            std::vector<unsigned> positions(ROWS_T);
+            for (unsigned row = 0; row < ROWS_T; row++) { positions[row] = start + row; }
+            for (unsigned i = 0; i < q.size(); i++) { q[i] = sinf(i * 0.013f); }
+            for (unsigned h = 0; h < HEADS; h++) { sinks[h] = h % 3 == 0 ? 12 : h * 0.03f; }
+            for (unsigned p = 0; p < capacity; p++) {
+                for (unsigned d = 0; d < stride; d++) {
+                    cache[p * stride + d] = __float2half_rn(sinf(p * 0.047f + d * 0.017f));
+                }
+            }
+            float *dq, *ds, *dout;
+            __half *dc;
+            unsigned *dp;
+            check(cudaMalloc(&dq, q.size() * sizeof(float)));
+            check(cudaMalloc(&ds, sinks.size() * sizeof(float)));
+            check(cudaMalloc(&dout, tiled.size() * sizeof(float)));
+            check(cudaMalloc(&dc, cache.size() * sizeof(__half)));
+            check(cudaMalloc(&dp, positions.size() * sizeof(unsigned)));
+            check(cudaMemcpy(dq, q.data(), q.size() * sizeof(float), cudaMemcpyHostToDevice));
+            check(cudaMemcpy(ds, sinks.data(), sinks.size() * sizeof(float), cudaMemcpyHostToDevice));
+            check(cudaMemcpy(dc, cache.data(), cache.size() * sizeof(__half), cudaMemcpyHostToDevice));
+            check(cudaMemcpy(dp, positions.data(), positions.size() * sizeof(unsigned), cudaMemcpyHostToDevice));
+            mimo2_attention<<<dim3(HEADS / 4, ROWS_T), 128>>>(
+                dout, dq, dc, use_sink ? ds : nullptr, dp, KV, capacity, window);
+            check(cudaGetLastError());
+            check(cudaMemcpy(walk.data(), dout, walk.size() * sizeof(float), cudaMemcpyDeviceToHost));
+            mimo2_attn_tile<<<dim3(ROWS_T, KV), 512>>>(
+                dout, dq, dc, use_sink ? ds : nullptr, dp, KV, capacity);
+            check(cudaGetLastError());
+            check(cudaMemcpy(tiled.data(), dout, tiled.size() * sizeof(float), cudaMemcpyDeviceToHost));
+            double walk_error = 0;
+            for (unsigned i = 0; i < tiled.size(); i++) {
+                if (!std::isfinite(tiled[i])) { return 5; }
+                if (tiled[i] != walk[i]) {
+                    walk_error = std::max(walk_error, (double)fabsf(tiled[i] - walk[i]));
+                }
+            }
+            // Oracle on the first query row. Long walks drift in fp32 the same
+            // way the walking kernel does, so the gate there is the walk match.
+            double oracle_error = 0;
+            const unsigned row = 0, pos = positions[row];
+            if (pos <= 4096) {
+                for (unsigned h = 0; h < HEADS; h++) {
+                    const unsigned kh = h / (HEADS / KV);
+                    std::vector<double> score(pos + 1);
+                    double maximum = use_sink ? sinks[h] : -INFINITY;
+                    for (unsigned p = 0; p <= pos; p++) {
+                        double dot = 0;
+                        for (unsigned d = 0; d < KEY; d++) {
+                            dot += (double)q[(row * HEADS + h) * KEY + d] *
+                                __half2float(cache[(p % capacity) * stride + kh * KEY + d]);
+                        }
+                        score[p] = dot / sqrt((double)KEY);
+                        maximum = std::max(maximum, score[p]);
+                    }
+                    double denominator = use_sink ? exp(sinks[h] - maximum) : 0;
+                    for (double &s : score) { s = exp(s - maximum); denominator += s; }
+                    for (unsigned d = 0; d < VALUE; d++) {
+                        double value = 0;
+                        for (unsigned p = 0; p <= pos; p++) {
+                            value += score[p] * __half2float(
+                                cache[(p % capacity) * stride + KV * KEY + kh * VALUE + d]);
+                        }
+                        oracle_error = std::max(oracle_error, fabs(
+                            (double)tiled[(row * HEADS + h) * VALUE + d] - value / denominator));
+                    }
+                }
+            }
+            printf("tile start=%u sink=%u cap=%u walk_error=%.9g oracle_error=%.9g\n",
+                start, use_sink, capacity, walk_error, oracle_error);
+            if (walk_error != 0 || oracle_error > 2e-5) { return 6; }
+            cudaStream_t stream;
+            cudaGraph_t graph;
+            cudaGraphExec_t replay;
+            check(cudaStreamCreate(&stream));
+            check(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
+            mimo2_attn_tile<<<dim3(ROWS_T, KV), 512, 0, stream>>>(
+                dout, dq, dc, use_sink ? ds : nullptr, dp, KV, capacity);
+            check(cudaStreamEndCapture(stream, &graph));
+            check(cudaGraphInstantiate(&replay, graph, nullptr, nullptr, 0));
+            for (unsigned &p : positions) { p += 3; }
+            check(cudaMemcpy(dp, positions.data(), positions.size() * sizeof(unsigned), cudaMemcpyHostToDevice));
+            mimo2_attn_tile<<<dim3(ROWS_T, KV), 512>>>(
+                dout, dq, dc, use_sink ? ds : nullptr, dp, KV, capacity);
+            check(cudaGetLastError());
+            check(cudaMemcpy(walk.data(), dout, walk.size() * sizeof(float), cudaMemcpyDeviceToHost));
+            std::vector<float> replayed(walk.size());
+            check(cudaGraphLaunch(replay, stream));
+            check(cudaStreamSynchronize(stream));
+            check(cudaMemcpy(replayed.data(), dout, replayed.size() * sizeof(float), cudaMemcpyDeviceToHost));
+            if (walk != replayed) { return 7; }
+            check(cudaGraphExecDestroy(replay)); check(cudaGraphDestroy(graph));
+            check(cudaStreamDestroy(stream));
+            puts("tile_changed_position_capture=eager_exact");
+            check(cudaFree(dq)); check(cudaFree(ds)); check(cudaFree(dout));
+            check(cudaFree(dc)); check(cudaFree(dp));
+        }
+    }
     return 0;
 }

@@ -132,3 +132,71 @@ __global__ static void mimo2_attention(
         out[((uint64_t)row * HEADS + head) * VALUE + lane + d * WARP] = acc[d] / denominator;
     }
 }
+
+/* Full attention only (4 KV heads, 16 query heads, no window).
+ * One block owns one query row and one KV head. The 16 warps load that
+ * head's K/V tile once and reuse it; the walking kernel reloads it per head.
+ * Dot order matches the walking kernel, so the same halves stay bit-exact.
+ * Positions stay device reads. Launch is host-side, so capture does not bake pos. */
+enum { M2_ATTN_TILE = 32, M2_FATTN_MIN_ROWS = 32, M2_FATTN_MIN_POS = 16384 };
+
+__global__ static void mimo2_attn_tile(
+        float *out, const float *q, const __half *cache, const float *sinks,
+        const unsigned *positions, unsigned kv_heads, unsigned capacity) {
+    enum { HEADS = 64, KEY = 192, VALUE = 128, WARP = 32, GROUP = 16 };
+    const unsigned lane = threadIdx.x % WARP;
+    const unsigned warp = threadIdx.x / WARP;
+    const unsigned row = blockIdx.x;
+    const unsigned kv_head = blockIdx.y;
+    const unsigned head = kv_head * GROUP + warp;
+    const unsigned pos = positions[row];
+    const unsigned stride = kv_heads * (KEY + VALUE);
+    float query[KEY / WARP], acc[VALUE / WARP] = {};
+    for (unsigned d = 0; d < KEY / WARP; d++) {
+        query[d] = q[((uint64_t)row * HEADS + head) * KEY + lane + d * WARP];
+    }
+    float maximum = sinks ? sinks[head] : -INFINITY;
+    float denominator = sinks ? 1.0f : 0.0f;
+    __shared__ __half smk[M2_ATTN_TILE * KEY];
+    __shared__ __half smv[M2_ATTN_TILE * VALUE];
+    for (unsigned base = 0; base <= pos; base += M2_ATTN_TILE) {
+        const unsigned nkeys = pos - base + 1 < M2_ATTN_TILE ? pos - base + 1 : M2_ATTN_TILE;
+        const unsigned k_count = nkeys * KEY;
+        const unsigned v_count = nkeys * VALUE;
+        for (unsigned i = threadIdx.x; i < k_count; i += blockDim.x) {
+            const unsigned local = i / KEY, col = i % KEY;
+            const unsigned slot = (base + local) % capacity;
+            smk[i] = cache[(uint64_t)slot * stride + kv_head * KEY + col];
+        }
+        for (unsigned i = threadIdx.x; i < v_count; i += blockDim.x) {
+            const unsigned local = i / VALUE, col = i % VALUE;
+            const unsigned slot = (base + local) % capacity;
+            smv[i] = cache[(uint64_t)slot * stride + kv_heads * KEY + kv_head * VALUE + col];
+        }
+        __syncthreads();
+        for (unsigned local = 0; local < nkeys; local++) {
+            const __half *kslot = smk + local * KEY;
+            const __half *vslot = smv + local * VALUE;
+            float dot = 0;
+            for (unsigned d = 0; d < KEY / WARP; d++) {
+                dot += query[d] * __half2float(kslot[lane + d * WARP]);
+            }
+            for (unsigned step = WARP / 2; step; step /= 2) {
+                dot += __shfl_xor_sync(0xffffffff, dot, step);
+            }
+            const float score = dot * 0.07216878364870322f; // 1/sqrt(192)
+            const float next = fmaxf(maximum, score);
+            const float old_weight = expf(maximum - next), weight = expf(score - next);
+            denominator = denominator * old_weight + weight;
+            for (unsigned d = 0; d < VALUE / WARP; d++) {
+                const float value = __half2float(vslot[lane + d * WARP]);
+                acc[d] = acc[d] * old_weight + weight * value;
+            }
+            maximum = next;
+        }
+        __syncthreads();
+    }
+    for (unsigned d = 0; d < VALUE / WARP; d++) {
+        out[((uint64_t)row * HEADS + head) * VALUE + lane + d * WARP] = acc[d] / denominator;
+    }
+}

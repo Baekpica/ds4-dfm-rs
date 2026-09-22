@@ -60,7 +60,7 @@ extern "C" int ds4_gpu_mimo2_attention(
         ds4_gpu_tensor *out, const ds4_gpu_tensor *q, const ds4_gpu_tensor *cache,
         const ds4_gpu_tensor *positions, const void *map, uint64_t size,
         uint64_t sink_offset, uint32_t kv_heads, uint32_t capacity,
-        uint32_t rows, uint32_t window) {
+        uint32_t rows, uint32_t window, uint32_t pos0) {
     enum { HEADS = 64, KEY = 192, VALUE = 128, CONTEXT = 1048576, MAX_ROWS = 65535 };
     const uint64_t cache_bytes = (uint64_t)capacity * kv_heads * (KEY + VALUE) * sizeof(__half);
     if (!out || !q || !cache || !positions || !rows || rows > MAX_ROWS ||
@@ -77,10 +77,23 @@ extern "C" int ds4_gpu_mimo2_attention(
         if (!sinks) { return 0; }
     }
     /* Session admission owns position bounds, contiguous rows and ring retention.
-     * No scalar position is baked into capture; all queries read live state. */
-    mimo2_attention<<<dim3(HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
-        (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
-        sinks, (const unsigned *)positions->ptr, kv_heads, capacity, window);
+     * No scalar position is baked into capture; all queries read live state.
+     * Past 16K the full-attention KV no longer stays hot, so wide rows share
+     * one KV-head tile. DS4_MIMO2_FATTN=0 keeps the walking kernel.
+     * Decode (one row) and SWA stay there too. */
+    const char *fattn = getenv("DS4_MIMO2_FATTN");
+    const int tile = !(fattn && fattn[0] == '0' && fattn[1] == '\0') &&
+        window == 0 && kv_heads == 4 && rows >= M2_FATTN_MIN_ROWS &&
+        (uint64_t)pos0 + rows > M2_FATTN_MIN_POS;
+    if (tile) {
+        mimo2_attn_tile<<<dim3(rows, kv_heads), 512, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
+            sinks, (const unsigned *)positions->ptr, kv_heads, capacity);
+    } else {
+        mimo2_attention<<<dim3(HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
+            sinks, (const unsigned *)positions->ptr, kv_heads, capacity, window);
+    }
     return cuda_ok(cudaGetLastError(), "MiMo asymmetric attention");
 }
 

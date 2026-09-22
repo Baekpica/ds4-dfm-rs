@@ -194,7 +194,7 @@ static bool mimo2_layer(ds4_mimo2_graph *g, const ds4_model *m,
         !ds4_gpu_mimo2_kv_store(g->kv[il], b->b_k, b->b_v, g->positions, heads, n, g->kv_cap[il]) ||
         !ds4_gpu_mimo2_attention(b->b_heads, b->b_q, g->kv[il], g->positions,
             l->attn_sinks ? m->map : NULL, m->size, l->attn_sinks ? l->attn_sinks->abs_offset : 0,
-            heads, g->kv_cap[il], n, full ? 0 : M2_WINDOW) ||
+            heads, g->kv_cap[il], n, full ? 0 : M2_WINDOW, g->position) ||
         !plain_graph_matmul_tensor(b->b_attn_out, m, l->attn_output, M2_HEADS, M2_EMBED, b->b_heads, n) ||
         !ds4_gpu_dots3_scale_tensor(b->b_attn_out, 0.707f, (uint64_t)n * M2_EMBED) ||
         !ds4_gpu_exaone_add_tensor(b->b_cur, b->b_attn_out, (uint64_t)n * M2_EMBED) ||

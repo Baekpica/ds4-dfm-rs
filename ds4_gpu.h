@@ -4832,7 +4832,8 @@ int ds4_gpu_mimo2_kv_store(ds4_gpu_tensor *cache,
 int ds4_gpu_mimo2_attention(ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
         const ds4_gpu_tensor *cache, const ds4_gpu_tensor *positions,
         const void *map, uint64_t size, uint64_t sink_offset,
-        uint32_t kv_heads, uint32_t capacity, uint32_t rows, uint32_t window);
+        uint32_t kv_heads, uint32_t capacity, uint32_t rows, uint32_t window,
+        uint32_t pos0);
 int ds4_gpu_mimo2_router(ds4_gpu_tensor *ids, ds4_gpu_tensor *weights,
         const ds4_gpu_tensor *logits, const void *map, uint64_t size,
         uint64_t offset, uint32_t rows);
