@@ -7,7 +7,7 @@ and audio input with text output, matching the modalities of the
 The [GB10 performance report](inkling-optimization-2026-09-11.md),
 [rounds 16–18](inkling-optimization-2026-09-11-r16.md),
 [rounds 19–21](inkling-optimization-2026-09-12.md),
-[rounds 22–24](inkling-optimization-2026-09-12-r22.md) and
+[rounds 22–24](inkling-optimization-2026-09-12-r22.md),
 [rounds 25–27](inkling-optimization-2026-09-12-r25.md) and
 [2026-09-22](inkling-optimization-2026-09-22.md) measure
 8192- and 2048-token prefill and 64-token decode with MTP off. The adopted
