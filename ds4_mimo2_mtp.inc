@@ -252,7 +252,10 @@ int ds4_session_mimo2_trial(ds4_session *s, int first, int max_tokens,
     if (!n) { return 0; }
     g->trial[0] = first;
     if (s->engine->mimo2_dflash) {
-        if (!mimo2_dflash_fill(s, first, n)) { return mimo2_session_fail(s, err, errlen) ? -1 : -1; }
+        /* One leftover token has no mask block. Fill rejects n < 2. */
+        if (n >= 2 && !mimo2_dflash_fill(s, first, n)) {
+            return mimo2_session_fail(s, err, errlen) ? -1 : -1;
+        }
     } else for (unsigned depth = 0; depth + 1 < n; depth++) {
         const int next = mimo2_draft_step(g, &s->engine->model, &s->engine->weights,
                                            depth, g->trial[depth], s->logits);
@@ -260,7 +263,8 @@ int ds4_session_mimo2_trial(ds4_session *s, int first, int max_tokens,
         g->trial[depth + 1] = next;
     }
     const unsigned base = g->position;
-    if (!mimo2_forward(g, &s->engine->model, &s->engine->weights, g->trial, n, base)) {
+    if (!mimo2_dflash_save_ring(g, base, n) ||
+        !mimo2_forward(g, &s->engine->model, &s->engine->weights, g->trial, n, base)) {
         return mimo2_session_fail(s, err, errlen) ? -1 : -1;
     }
     for (unsigned row = 0; row < n; row++) {
@@ -289,6 +293,9 @@ int ds4_session_mimo2_commit(ds4_session *s, int keep, char *err, size_t errlen)
     const unsigned base = (unsigned)s->checkpoint.len;
     const unsigned end = base + (unsigned)keep;
     if (g->position != base + g->trial_n) { return mimo2_session_fail(s, err, errlen); }
+    if (!mimo2_dflash_restore(g, base, (unsigned)keep)) {
+        return mimo2_session_fail(s, err, errlen);
+    }
     g->position = end;
     for (unsigned depth = 0; depth < MIMO2_DRAFT_LAYERS; depth++) {
         if (g->draft_saved[depth] && depth >= (unsigned)keep) {

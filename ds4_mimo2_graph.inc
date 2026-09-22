@@ -40,6 +40,10 @@ typedef struct {
     /* Last 1024 positions, five target layers, when DFlash is loaded. */
     ds4_gpu_tensor *dflash_tap;
     unsigned *dflash_pos;
+    /* Trial rows about to be overwritten. Rejected slots are copied back. */
+    float *dflash_saved;
+    unsigned dflash_saved_pos[M2_TRIAL];
+    unsigned dflash_saved_n;
     bool dflash_on;
 } ds4_mimo2_graph;
 
@@ -54,6 +58,7 @@ static void mimo2_graph_free(ds4_mimo2_graph *g) {
     free(g->verify_logits);
     free(g->spans);
     free(g->dflash_pos);
+    free(g->dflash_saved);
     ds4_gpu_tensor_free(g->dflash_tap);
     memset(g, 0, sizeof(*g));
 }
@@ -61,6 +66,7 @@ static void mimo2_graph_free(ds4_mimo2_graph *g) {
 static bool mimo2_graph_alloc(ds4_mimo2_graph *g, unsigned ctx, unsigned cap, bool dflash) {
     free(g->spans);
     free(g->dflash_pos);
+    free(g->dflash_saved);
     ds4_gpu_tensor_free(g->dflash_tap);
     memset(g, 0, sizeof(*g));
     g->dflash_on = dflash;
@@ -141,7 +147,11 @@ static bool mimo2_graph_alloc(ds4_mimo2_graph *g, unsigned ctx, unsigned cap, bo
     if (dflash) {
         g->dflash_tap = ds4_gpu_tensor_alloc(1024ull * 5 * 4096 * sizeof(float));
         g->dflash_pos = xmalloc(1024 * sizeof(unsigned));
-        if (!g->dflash_tap || !g->dflash_pos) { mimo2_graph_free(g); return false; }
+        g->dflash_saved = xmalloc((size_t)M2_TRIAL * 5 * 4096 * sizeof(float));
+        if (!g->dflash_tap || !g->dflash_pos || !g->dflash_saved) {
+            mimo2_graph_free(g);
+            return false;
+        }
         for (unsigned i = 0; i < 1024; i++) { g->dflash_pos[i] = UINT_MAX; }
     }
     return true;

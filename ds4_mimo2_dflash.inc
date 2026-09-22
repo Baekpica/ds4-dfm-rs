@@ -152,6 +152,44 @@ static int df_argmax(const float *logits) {
     return (int)best;
 }
 
+/* One ring slot is the five target hiddens for a single position. */
+enum { DF_SLOT = 5 * DF_H };
+
+/* Verify writes the whole trial into the ring. A rejected row lands on a
+ * context position the next 1024-wide window still reads. Keep the bytes
+ * from before that write and put the rejected slots back on commit. */
+static bool mimo2_dflash_save_ring(ds4_mimo2_graph *g, unsigned base, unsigned n) {
+    if (!g->dflash_on) { return true; }
+    if (!g->dflash_tap || !g->dflash_saved || !g->dflash_pos || n > M2_TRIAL) { return false; }
+    const uint64_t bytes = (uint64_t)DF_SLOT * sizeof(float);
+    for (unsigned i = 0; i < n; i++) {
+        const unsigned slot = (base + i) % 1024u;
+        g->dflash_saved_pos[i] = g->dflash_pos[slot];
+        if (!ds4_gpu_tensor_read(g->dflash_tap, (uint64_t)slot * bytes,
+                g->dflash_saved + (size_t)i * DF_SLOT, bytes)) {
+            return false;
+        }
+    }
+    g->dflash_saved_n = n;
+    return true;
+}
+
+static bool mimo2_dflash_restore(ds4_mimo2_graph *g, unsigned base, unsigned keep) {
+    if (!g->dflash_on || !g->dflash_saved_n) { return true; }
+    if (keep > g->dflash_saved_n) { return false; }
+    const uint64_t bytes = (uint64_t)DF_SLOT * sizeof(float);
+    for (unsigned i = keep; i < g->dflash_saved_n; i++) {
+        const unsigned slot = (base + i) % 1024u;
+        if (!ds4_gpu_tensor_write(g->dflash_tap, (uint64_t)slot * bytes,
+                g->dflash_saved + (size_t)i * DF_SLOT, bytes)) {
+            return false;
+        }
+        g->dflash_pos[slot] = g->dflash_saved_pos[i];
+    }
+    g->dflash_saved_n = 0;
+    return true;
+}
+
 static bool mimo2_dflash_fill(ds4_session *s, int first, unsigned n) {
     ds4_mimo2_graph *g = &s->mimo2_graph;
     const ds4_mimo2_dflash *d = &s->engine->dflash;
