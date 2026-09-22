@@ -156,6 +156,9 @@ the optimized path uses existing aligned-Q8 column tiles with identical reductio
 the optimized path decodes each weight fragment once for a warp-owned tile.
 `DS4_INKLING_NO_LINEAR_TILE=1` restores the token-grouped BF16 projection;
 the optimized path shares a shared-memory token slab across a row tile.
+`DS4_INKLING_NO_LOGIT_TILE=1` restores the one-warp FP32 router GEMM;
+the optimized path covers the aligned output rows with that slab and the
+raw warp sum, then the same reduction for the leftover rows.
 `DS4_INKLING_NO_LINEAR_PANEL=1` restores the original BF16 tile job order;
 above 4096 rows, the candidate reuses inputs within internal 512-token panels
 for 4096-input q/k/v/r/o shapes. The configured prefill chunk is unchanged.
@@ -218,8 +221,8 @@ the optimized path reads owner SoA artifacts with the same MMVQ reduction.
 from 3072 routed assignments, eight-column tiles reuse payload loads and
 unpacked scales with the same MMVQ partial sums and skip the unused relayout.
 `DS4_INKLING_PREFILL_CHUNK=N` (1–8192) sets the maximum Inkling prefill chunk width;
-shorter prompts remain valid. The default is 1024, capped by context.
-`DS4_INKLING_PREFILL_CHUNK=512` restores the previous cap.
+shorter prompts remain valid. The default is 2048, capped by context.
+`DS4_INKLING_PREFILL_CHUNK=1024` restores the previous cap.
 Scout consumers also reparse each referenced unprofiled benchmark CSV and
 require its rows to match the serialized samples. Hashing and parsing use the
 same bytes; benchmark stdout is limited to 64 MiB per sample on load.

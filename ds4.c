@@ -3548,9 +3548,13 @@ static bool accelerator_cache_model_tensor_spans(const ds4_model *m, uint64_t *c
             if (spans[i].end > end) end = spans[i].end;
             i++;
         }
+        /* A single tensor bigger than the merge cap is still one device
+         * pointer. Chopping it makes the whole-tensor resolve overlap the
+         * first chunk and the forward fails (L2 Q8 w13 is 4352 MiB). */
+        const int one_tensor = end - off > max_span;
         while (off < end) {
             uint64_t chunk_end = end;
-            if (chunk_end - off > max_span) chunk_end = off + max_span;
+            if (!one_tensor && chunk_end - off > max_span) chunk_end = off + max_span;
             char label[96];
             snprintf(label, sizeof(label), "tensor-span:%" PRIu64, merged);
             const int rc = ds4_gpu_cache_model_range(m->map, m->size, off,
@@ -21051,9 +21055,9 @@ static const uint32_t inkling_width[IK_BUFFERS] = {
 static uint32_t inkling_prefill_cap(uint32_t ctx) {
     /* Chunk width trades expert-tile fill against activation working set.
      * Arithmetic stays chunk-invariant; graph scratch grows with cap.
-     * 1024 vs 512 doubles assignments per expert and linear/attn rows on
-     * the 8K campaign shape; 8192 alone previously regressed. */
-    enum { DEFAULT_CAP = 1024, MAX_CAP = 8192 };
+     * 2048 vs 1024 is +1.6% cold 8K prefill on GB10 (2026-09-22, three
+     * pairs, decode flat). 4096 on that shape fell to 374 tok/s. */
+    enum { DEFAULT_CAP = 2048, MAX_CAP = 8192 };
     uint32_t cap = DEFAULT_CAP;
     const char *env = getenv("DS4_INKLING_PREFILL_CHUNK");
     if (env && env[0]) {
@@ -21526,8 +21530,18 @@ static bool inkling_mlp(ds4_inkling_graph *g, const ds4_model *m,
                                       g->dense_scale[il], (uint64_t)n * IK_HIDDEN);
     }
     /* Router logits retain FP32, unlike the BF16 ordinary projections. */
-    return inkling_projection(b[IK_GATE], m, w->gate, b[IK_NORM], n) &&
-        ds4_gpu_inkling_route(b[IK_IDS], b[IK_GAMMA], b[IK_SHARED_GAMMA], b[IK_GATE],
+    bool gate_ok = false;
+    if (w->gate->type == DS4_TENSOR_BF16 &&
+        w->gate->dim[0] <= UINT32_MAX && w->gate->dim[1] <= UINT32_MAX) {
+        const int fast = ds4_gpu_inkling_logits(b[IK_GATE], b[IK_NORM], m->map, m->size,
+            w->gate->abs_offset, (uint32_t)w->gate->dim[0], (uint32_t)w->gate->dim[1], n);
+        if (fast < 0) { return false; }
+        gate_ok = fast > 0;
+    }
+    if (!gate_ok && !inkling_projection(b[IK_GATE], m, w->gate, b[IK_NORM], n)) {
+        return false;
+    }
+    return ds4_gpu_inkling_route(b[IK_IDS], b[IK_GAMMA], b[IK_SHARED_GAMMA], b[IK_GATE],
             m->map, m->size, w->bias->abs_offset, w->scale->abs_offset, n,
             IK_EXPERTS + IK_SHARED) &&
         inkling_routed(b[IK_PAIRS], m, w->w13, b[IK_NORM], b[IK_IDS], n, IK_USED) &&

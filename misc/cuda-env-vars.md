@@ -144,9 +144,10 @@ The bandwidth figure is informational; we don't tier on it.
   unchanged.
 
 - `DS4_INKLING_PREFILL_CHUNK=N` selects 1–8192 prompt rows per chunk,
-  capped by context. Default 512 is retained after the 8192 candidate regressed
-  the matched 8K workload. Shorter prompts use only their actual rows;
-  larger caps increase graph scratch.
+  capped by context. The default is 2048.
+  `DS4_INKLING_PREFILL_CHUNK=1024` restores the previous cap. Shorter prompts
+  use only their actual rows; larger caps increase graph scratch. 4096 and
+  8192 were slower than 2048 on the cold 8K MQ85GB shape.
 
 - `DS4_INKLING_NO_LINEAR=1` restores the separate stable BF16 projection and
   output-rounding kernels. Unset it to enable Inkling's token-grouped ordinary
@@ -278,6 +279,12 @@ The bandwidth figure is informational; we don't tier on it.
   the token slab in shared memory; every output keeps the same lane stripe,
   FMA chains and XOR tree. Widths below 16 and K not divisible by 256 keep
   the grouped kernel. Decode is unchanged.
+
+- `DS4_INKLING_NO_LOGIT_TILE=1` restores the one-warp FP32 router GEMM.
+  Unset it to cover the aligned output rows with the BF16 tile's raw sum
+  and the same warp reduction for the leftover rows. The switch tests
+  presence. Widths below 16 rows, an unaligned K, or a weight that is not
+  BF16 keep the warp kernel. Decode is one token and stays on that kernel.
 
 - `DS4_INKLING_NO_LINEAR_PANEL=1` restores the original BF16 tile job order.
   Above 4096 prompt rows, the candidate schedules q/k/v/r/o output rows

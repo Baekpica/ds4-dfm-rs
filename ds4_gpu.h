@@ -2522,6 +2522,14 @@ int ds4_gpu_inkling_linear(
         const void *model_map, uint64_t model_size, uint64_t weight_offset,
         uint32_t in_dim, uint32_t out_dim, uint32_t rows);
 
+/* FP32 router logits. Aligned output rows use the linear tile's raw sum;
+ * the remainder uses the stable warp reduction. Same codes as
+ * ds4_gpu_inkling_linear. DS4_INKLING_NO_LOGIT_TILE returns 0. */
+int ds4_gpu_inkling_logits(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *model_map, uint64_t model_size, uint64_t weight_offset,
+        uint32_t in_dim, uint32_t out_dim, uint32_t rows);
+
 /* Inkling expert batching with decode-equivalent MMVQ reductions. Up uses
  * rows source tokens; down uses rows flattened assignments (used == 1).
  * Tensor spans must be disjoint. Returns 1 on success, 0 for an unsupported

@@ -11,6 +11,7 @@ pub fn tunable(key: &str) -> bool {
             | "DS4_INKLING_NO_Q8_BATCH"
             | "DS4_INKLING_NO_MOE_TILE"
             | "DS4_INKLING_NO_LINEAR_TILE"
+            | "DS4_INKLING_NO_LOGIT_TILE"
             | "DS4_INKLING_NO_LINEAR_PANEL"
             | "DS4_INKLING_NO_ATTN_GROUP"
             | "DS4_INKLING_NO_Q8_TILE"
@@ -70,6 +71,7 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         | "DS4_INKLING_NO_Q8_BATCH"
         | "DS4_INKLING_NO_MOE_TILE"
         | "DS4_INKLING_NO_LINEAR_TILE"
+        | "DS4_INKLING_NO_LOGIT_TILE"
         | "DS4_INKLING_NO_LINEAR_PANEL"
         | "DS4_INKLING_NO_ATTN_GROUP"
         | "DS4_INKLING_NO_Q8_TILE"
@@ -166,6 +168,7 @@ mod tests {
             "DS4_INKLING_NO_Q8_BATCH",
             "DS4_INKLING_NO_MOE_TILE",
             "DS4_INKLING_NO_LINEAR_TILE",
+            "DS4_INKLING_NO_LOGIT_TILE",
             "DS4_INKLING_NO_LINEAR_PANEL",
             "DS4_INKLING_NO_ATTN_GROUP",
             "DS4_INKLING_NO_Q8_TILE",

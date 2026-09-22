@@ -102,11 +102,11 @@ static __global__ void inkling_linear_kernel(
  *   xs[t][s][lane]   uint4 (8 BF16) of token t at K step s0+s, lane stripe
  *   acc[r][t]        one accumulator per (row, token), same order as before
  */
-template<unsigned TOKENS, unsigned ROWS, unsigned WARPS, unsigned SLAB, unsigned PANEL_GROUPS = 0>
+template<unsigned TOKENS, unsigned ROWS, unsigned WARPS, unsigned SLAB, unsigned PANEL_GROUPS = 0, bool ROUND = true>
 __launch_bounds__(WARPS * INKLING_WARP, INKLING_LT_MIN_BLOCKS)
 static __global__ void inkling_linear_tile_kernel(
         float *out, const __nv_bfloat16 *w, const __nv_bfloat16 *x,
-        uint32_t in_dim, uint32_t out_dim, uint32_t rows) {
+        uint32_t in_dim, uint32_t out_dim, uint32_t rows, uint32_t stride) {
     __shared__ uint4 xs[TOKENS][SLAB][INKLING_WARP];
     const unsigned warp = threadIdx.x / INKLING_WARP, lane = threadIdx.x % INKLING_WARP;
     const uint32_t groups = (rows + TOKENS - 1) / TOKENS;
@@ -168,8 +168,12 @@ static __global__ void inkling_linear_tile_kernel(
                     sum += __shfl_xor_sync(0xffffffffu, sum, off);
                 }
                 if (lane == 0 && tok0 + t < rows) {
-                    out[(uint64_t)(tok0 + t) * out_dim + row0 + r] =
-                        inkling_bf16(__fmul_rn(inkling_bf16(sum), 1.0f));
+                    float *dst = out + (uint64_t)(tok0 + t) * stride + row0 + r;
+                    if constexpr (ROUND) {
+                        *dst = inkling_bf16(__fmul_rn(inkling_bf16(sum), 1.0f));
+                    } else {
+                        *dst = sum;
+                    }
                 }
             }
         }
@@ -223,11 +227,11 @@ extern "C" int ds4_gpu_inkling_linear(
             inkling_linear_tile_kernel<INKLING_LT_TOKENS, INKLING_LT_ROWS, INKLING_LT_WARPS,
                 INKLING_LT_SLAB, INKLING_LT_PANEL_TOKENS / INKLING_LT_TOKENS>
                 <<<blocks, INKLING_LT_WARPS * INKLING_WARP, 0, stream>>>(
-                (float *)out->ptr, w, xb, in_dim, out_dim, rows);
+                (float *)out->ptr, w, xb, in_dim, out_dim, rows, out_dim);
         } else {
             inkling_linear_tile_kernel<INKLING_LT_TOKENS, INKLING_LT_ROWS, INKLING_LT_WARPS, INKLING_LT_SLAB>
                 <<<blocks, INKLING_LT_WARPS * INKLING_WARP, 0, stream>>>(
-                (float *)out->ptr, w, xb, in_dim, out_dim, rows);
+                (float *)out->ptr, w, xb, in_dim, out_dim, rows, out_dim);
         }
         return cuda_ok(cudaGetLastError(), "Inkling BF16 tile launch") ? 1 : -1;
     }
@@ -247,6 +251,91 @@ extern "C" int ds4_gpu_inkling_linear(
     }
     #undef IK_LINEAR_LAUNCH
     return cuda_ok(cudaGetLastError(), "Inkling BF16 projection launch") ? 1 : -1;
+}
+
+/* Router rows past the 16-row tile. Same K stripe and XOR tree as the
+ * stable BF16 warp kernel, raw FP32 store. */
+static __global__ void inkling_logit_tail_kernel(
+        float *out, const __nv_bfloat16 *w, const __nv_bfloat16 *x,
+        uint32_t in_dim, uint32_t stride, uint32_t row0, uint32_t tail,
+        uint32_t rows) {
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint64_t total = (uint64_t)tail * rows;
+    const uint64_t step = (uint64_t)gridDim.x * blockDim.x / INKLING_WARP;
+    for (uint64_t warp = ((uint64_t)blockIdx.x * blockDim.x + threadIdx.x) / INKLING_WARP;
+         warp < total; warp += step) {
+        const uint32_t row = (uint32_t)(warp % tail);
+        const uint32_t tok = (uint32_t)(warp / tail);
+        const uint4 *wr = (const uint4 *)(w + (uint64_t)(row0 + row) * in_dim);
+        const uint4 *xr = (const uint4 *)(x + (uint64_t)tok * in_dim);
+        float sum = 0.0f;
+        for (uint32_t i = lane; i < in_dim / 8u; i += INKLING_WARP) {
+            sum += bf16x8_dot(wr[i], xr[i]);
+        }
+        #pragma unroll
+        for (unsigned off = INKLING_WARP / 2; off; off /= 2) {
+            sum += __shfl_xor_sync(0xffffffffu, sum, off);
+        }
+        if (lane == 0) { out[(uint64_t)tok * stride + row0 + row] = sum; }
+    }
+}
+
+/* FP32 router logits. The 16-row tile covers the aligned prefix and keeps
+ * the warp kernel's raw sum; the tail is the same reduction. Returns 0
+ * with out untouched when the tile does not apply. */
+extern "C" int ds4_gpu_inkling_logits(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *model_map, uint64_t model_size, uint64_t weight_offset,
+        uint32_t in_dim, uint32_t out_dim, uint32_t rows) {
+    const uint32_t tile_rows = INKLING_LT_WARPS * INKLING_LT_ROWS;
+    const uint32_t covered = out_dim & ~(tile_rows - 1u);
+    if (!out || !x || !model_map || !in_dim || !out_dim || !rows ||
+        out_dim > UINT64_MAX / sizeof(uint16_t) / in_dim ||
+        x->bytes / sizeof(float) / in_dim < rows ||
+        out->bytes / sizeof(float) / out_dim < rows ||
+        weight_offset > model_size ||
+        ds4_tensor_device_idx(out) != ds4_tensor_device_idx(x)) {
+        return -1;
+    }
+    const uint64_t weight_bytes = (uint64_t)out_dim * in_dim * sizeof(uint16_t);
+    if (weight_bytes > model_size - weight_offset) { return -1; }
+    if (rows < INKLING_LT_TOKENS || covered < tile_rows ||
+        in_dim % (8 * INKLING_WARP) || getenv("DS4_INKLING_NO_LOGIT_TILE") ||
+        (uint64_t)rows * in_dim > (uint64_t)INT_MAX * INKLING_THREADS) {
+        return 0;
+    }
+    const int tier = ds4_tensor_device_idx(out);
+    const __nv_bfloat16 *w = (const __nv_bfloat16 *)cuda_resolve_weight_ptr(
+        model_map, weight_offset, weight_bytes, tier, "inkling router logits");
+    if (!w) { return -1; }
+    if ((uintptr_t)w & 15u) { return 0; }
+    __nv_bfloat16 *xb = (__nv_bfloat16 *)cuda_tmp_alloc_on(
+        tier, (uint64_t)rows * in_dim * sizeof(__nv_bfloat16), "inkling router input");
+    if (!xb) { return -1; }
+    const uint64_t count = (uint64_t)rows * in_dim;
+    const cudaStream_t stream = cuda_decode_stream();
+    f32_to_bf16_kernel<<<(count + INKLING_THREADS - 1) / INKLING_THREADS,
+                         INKLING_THREADS, 0, stream>>>(xb, (const float *)x->ptr, count);
+    if (!cuda_ok(cudaGetLastError(), "Inkling router input launch")) { return -1; }
+    cuda_norm_q8_invalidate(out->ptr);
+    const uint64_t jobs = (((uint64_t)rows + INKLING_LT_TOKENS - 1) / INKLING_LT_TOKENS) *
+        (covered / tile_rows);
+    const unsigned blocks = jobs < INKLING_MAX_BLOCKS ? jobs : INKLING_MAX_BLOCKS;
+    inkling_linear_tile_kernel<INKLING_LT_TOKENS, INKLING_LT_ROWS, INKLING_LT_WARPS,
+        INKLING_LT_SLAB, 0, false>
+        <<<blocks, INKLING_LT_WARPS * INKLING_WARP, 0, stream>>>(
+        (float *)out->ptr, w, xb, in_dim, covered, rows, out_dim);
+    if (!cuda_ok(cudaGetLastError(), "Inkling router tile launch")) { return -1; }
+    const uint32_t tail = out_dim - covered;
+    if (tail) {
+        const uint64_t warps = (uint64_t)tail * rows;
+        const uint64_t grid = (warps + INKLING_LINEAR_WARPS - 1) / INKLING_LINEAR_WARPS;
+        const unsigned tail_blocks = grid < INKLING_MAX_BLOCKS ? grid : INKLING_MAX_BLOCKS;
+        inkling_logit_tail_kernel<<<tail_blocks, INKLING_LINEAR_WARPS * INKLING_WARP, 0, stream>>>(
+            (float *)out->ptr, w, xb, in_dim, out_dim, covered, tail, rows);
+        if (!cuda_ok(cudaGetLastError(), "Inkling router tail launch")) { return -1; }
+    }
+    return 1;
 }
 
 static __global__ void inkling_sconv_kernel(
