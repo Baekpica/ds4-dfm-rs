@@ -394,6 +394,43 @@ pub fn draft_is_dflash(names: &[&str]) -> bool {
     has_fc && !embedded
 }
 
+/// Names and dims `mimo2_dflash_bind` requires. Five layers, twelve tensors
+/// each, plus the concat projection and the two norms.
+fn dflash_contract() -> Vec<(String, Vec<u64>)> {
+    const LAYERS: usize = 5;
+    const H: u64 = 4096;
+    const Q: u64 = 8192;
+    const KV: u64 = 1024;
+    const FF: u64 = 16384;
+    const HD: u64 = 128;
+    const SINKS: u64 = 64;
+    let mut out = vec![
+        ("fc.weight".to_string(), vec![LAYERS as u64 * H, H]),
+        ("enc.output_norm.weight".to_string(), vec![H]),
+        ("output_norm.weight".to_string(), vec![H]),
+    ];
+    for layer in 0..LAYERS {
+        let specs: &[(&str, &[u64])] = &[
+            ("attn_norm.weight", &[H]),
+            ("attn_q.weight", &[H, Q]),
+            ("attn_k.weight", &[H, KV]),
+            ("attn_v.weight", &[H, KV]),
+            ("attn_output.weight", &[Q, H]),
+            ("attn_q_norm.weight", &[HD]),
+            ("attn_k_norm.weight", &[HD]),
+            ("attn_sinks.weight", &[SINKS]),
+            ("ffn_norm.weight", &[H]),
+            ("ffn_gate.weight", &[H, FF]),
+            ("ffn_up.weight", &[H, FF]),
+            ("ffn_down.weight", &[FF, H]),
+        ];
+        for (suffix, dims) in specs {
+            out.push((format!("blk.{layer}.{suffix}"), dims.to_vec()));
+        }
+    }
+    out
+}
+
 pub fn inspect_dflash(path: &Path) -> Result<(), Mimo2Error> {
     let file = GgufFile::open(path)?;
     if file.get_string("general.architecture") != Some(b"dflash".as_slice()) {
@@ -409,8 +446,36 @@ pub fn inspect_dflash(path: &Path) -> Result<(), Mimo2Error> {
         .iter()
         .map(|tensor| tensor.name.as_str())
         .collect();
-    if inventory.tensors.len() != 63 || !draft_is_dflash(&names) {
+    let contract = dflash_contract();
+    if inventory.tensors.len() != contract.len() || !draft_is_dflash(&names) {
         return Err(mismatch("dflash tensors"));
+    }
+    let index: BTreeMap<&str, &TensorInfo> = inventory
+        .tensors
+        .iter()
+        .map(|tensor| (tensor.name.as_str(), tensor))
+        .collect();
+    for (name, dims) in &contract {
+        expect_dflash_dims(&index, name, dims)?;
+    }
+    Ok(())
+}
+
+fn expect_dflash_dims(
+    index: &BTreeMap<&str, &TensorInfo>,
+    name: &str,
+    dims: &[u64],
+) -> Result<(), Mimo2Error> {
+    let Some(tensor) = index.get(name) else {
+        return Err(Mimo2Error(format!("missing {name}")));
+    };
+    if tensor.ndim as usize != dims.len() {
+        return Err(Mimo2Error(format!("shape {name}")));
+    }
+    for (i, dim) in dims.iter().enumerate() {
+        if tensor.dim[i] != *dim {
+            return Err(Mimo2Error(format!("shape {name}")));
+        }
     }
     Ok(())
 }
@@ -1786,6 +1851,78 @@ mod tests {
             .iter()
             .any(|issue| issue.code == "seqs_omitted"));
         assert_eq!(caps.qualified_banks, Some(1));
+    }
+
+    fn put_u32(buf: &mut Vec<u8>, value: u32) {
+        buf.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_u64(buf: &mut Vec<u8>, value: u64) {
+        buf.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_str(buf: &mut Vec<u8>, text: &str) {
+        put_u64(buf, text.len() as u64);
+        buf.extend_from_slice(text.as_bytes());
+    }
+
+    /// Header-only GGUF. Tensor type 4 has no payload size, so the dims can
+    /// be the real DFlash shapes without writing the weights.
+    fn write_dflash_gguf(path: &Path, tensors: &[(String, Vec<u64>)]) {
+        let mut buf = Vec::new();
+        put_u32(&mut buf, 0x4655_4747);
+        put_u32(&mut buf, 3);
+        put_u64(&mut buf, tensors.len() as u64);
+        put_u64(&mut buf, 3);
+        put_str(&mut buf, "general.architecture");
+        put_u32(&mut buf, 8);
+        put_str(&mut buf, "dflash");
+        put_str(&mut buf, "dflash.block_count");
+        put_u32(&mut buf, 4);
+        put_u32(&mut buf, 5);
+        put_str(&mut buf, "dflash.block_size");
+        put_u32(&mut buf, 4);
+        put_u32(&mut buf, 8);
+        for (name, dims) in tensors {
+            put_str(&mut buf, name);
+            put_u32(&mut buf, dims.len() as u32);
+            for dim in dims {
+                put_u64(&mut buf, *dim);
+            }
+            put_u32(&mut buf, 4);
+            put_u64(&mut buf, 0);
+        }
+        std::fs::write(path, buf).unwrap();
+    }
+
+    #[test]
+    fn dflash_preflight_rejects_a_bad_tensor() {
+        let dir = std::env::temp_dir().join(format!("ds4-dflash-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let contract = dflash_contract();
+        assert_eq!(contract.len(), 63);
+        let good = dir.join("good.gguf");
+        write_dflash_gguf(&good, &contract);
+        inspect_dflash(&good).unwrap();
+
+        let mut missing = contract.clone();
+        let slot = missing
+            .iter()
+            .position(|(name, _)| name == "blk.0.attn_q.weight")
+            .unwrap();
+        missing[slot].0 = "blk.0.extra.weight".to_string();
+        let missing_path = dir.join("missing.gguf");
+        write_dflash_gguf(&missing_path, &missing);
+        let err = inspect_dflash(&missing_path).unwrap_err();
+        assert!(err.to_string().contains("attn_q"), "{err}");
+
+        let mut shaped = contract.clone();
+        shaped[slot].1 = vec![4096, 1];
+        let shaped_path = dir.join("shaped.gguf");
+        write_dflash_gguf(&shaped_path, &shaped);
+        let err = inspect_dflash(&shaped_path).unwrap_err();
+        assert!(err.to_string().contains("attn_q"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
