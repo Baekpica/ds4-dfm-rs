@@ -6,7 +6,13 @@ const DEFAULT_GGUF: &str = "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6
 
 #[test]
 fn original_tokenizer_goldens() {
-    let path = std::env::var("MIMO2_GGUF").unwrap_or_else(|_| DEFAULT_GGUF.to_string());
+    // CI has no weights. A set MIMO2_GGUF is required to exist; the local
+    // shard is used only when that file is actually on this machine.
+    let path = match std::env::var("MIMO2_GGUF") {
+        Ok(path) => path,
+        Err(_) if Path::new(DEFAULT_GGUF).is_file() => DEFAULT_GGUF.to_string(),
+        Err(_) => return,
+    };
     let path = Path::new(&path);
     let id = identify_gguf(path).unwrap();
     assert_eq!(id.shape.family, ModelFamily::Mimo2);
