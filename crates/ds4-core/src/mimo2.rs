@@ -1,6 +1,6 @@
 //! MiMo-V2.6-Flash-RL mixed artifact and per-layer execution contract.
 //! Metadata includes three dense prediction blocks after the 48-layer trunk.
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::gguf::{GgufError, GgufFile};
@@ -411,6 +411,198 @@ pub fn inspect_dflash(path: &Path) -> Result<(), Mimo2Error> {
         .collect();
     if inventory.tensors.len() != 63 || !draft_is_dflash(&names) {
         return Err(mismatch("dflash tensors"));
+    }
+    Ok(())
+}
+
+const V_DEPTH: usize = 28;
+const A_LAYERS: usize = 24;
+const A_LOCAL: usize = 6;
+const F32_TYPE: u32 = 0;
+const BF16_TYPE: u32 = 30;
+
+fn expect_tensor(
+    index: &BTreeMap<&str, &TensorInfo>,
+    name: &str,
+    typ: u32,
+    dims: &[u64],
+) -> Result<(), Mimo2Error> {
+    let Some(tensor) = index.get(name) else {
+        return Err(Mimo2Error(format!("missing {name}")));
+    };
+    if tensor.typ != typ || tensor.ndim as usize != dims.len() {
+        return Err(Mimo2Error(format!("shape {name}")));
+    }
+    for (i, dim) in dims.iter().enumerate() {
+        if tensor.dim[i] != *dim {
+            return Err(Mimo2Error(format!(
+                "shape {name} got {:?} want {dims:?}",
+                &tensor.dim[..tensor.ndim as usize]
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The native bind aborts the process on a missing or mistyped projector
+/// tensor. The server preflight has to reject that file first.
+pub fn inspect_projector(path: &Path) -> Result<(), Mimo2Error> {
+    let file = GgufFile::open(path)?;
+    if file.get_string("general.architecture") != Some(b"clip".as_slice())
+        || file.get_string("clip.vision.projector_type") != Some(b"mimovl".as_slice())
+        || file.get_string("clip.audio.projector_type") != Some(b"mimo_audio".as_slice())
+    {
+        return Err(mismatch("projector metadata"));
+    }
+    let vision = file
+        .get_array("clip.vision.wa_pattern_mode")
+        .ok_or_else(|| mismatch("vision pattern"))?;
+    let audio = file
+        .get_array("clip.audio.wa_pattern_mode")
+        .ok_or_else(|| mismatch("audio pattern"))?;
+    let bins = file
+        .get_array("clip.audio.rvq.codebook_size")
+        .ok_or_else(|| mismatch("rvq bins"))?;
+    if vision.len != V_DEPTH as u64 || audio.len != A_LAYERS as u64 || bins.len != 20 {
+        return Err(mismatch("projector pattern length"));
+    }
+    let modes = file
+        .array_le_u32s(&vision)
+        .map_err(|_| mismatch("vision pattern"))?;
+    let inventory = TensorInventory::open(path).map_err(|_| mismatch("projector tensors"))?;
+    let index: BTreeMap<&str, &TensorInfo> = inventory
+        .tensors
+        .iter()
+        .map(|tensor| (tensor.name.as_str(), tensor))
+        .collect();
+    let vh = 1280u64;
+    let vq = 2048u64;
+    let vqkv = 3072u64;
+    let vff = 4608u64;
+    let vout = 4096u64;
+    let merged = 5120u64;
+    let ah = 1024u64;
+    let aff = 4096u64;
+    expect_tensor(&index, "v.patch_embd.weight", F32_TYPE, &[16, 16, 3, vh])?;
+    expect_tensor(&index, "v.patch_embd.weight.1", F32_TYPE, &[16, 16, 3, vh])?;
+    expect_tensor(&index, "v.post_ln.weight", F32_TYPE, &[vh])?;
+    expect_tensor(&index, "mm.0.weight", BF16_TYPE, &[merged, merged])?;
+    expect_tensor(&index, "mm.2.weight", BF16_TYPE, &[merged, vout])?;
+    for layer in 0..V_DEPTH {
+        let prefix = format!("v.blk.{layer}");
+        expect_tensor(
+            &index,
+            &format!("{prefix}.attn_qkv.weight"),
+            BF16_TYPE,
+            &[vh, vqkv],
+        )?;
+        expect_tensor(
+            &index,
+            &format!("{prefix}.attn_out.weight"),
+            BF16_TYPE,
+            &[vq, vh],
+        )?;
+        expect_tensor(
+            &index,
+            &format!("{prefix}.ffn_gate.weight"),
+            BF16_TYPE,
+            &[vh, vff],
+        )?;
+        expect_tensor(
+            &index,
+            &format!("{prefix}.ffn_up.weight"),
+            BF16_TYPE,
+            &[vh, vff],
+        )?;
+        expect_tensor(
+            &index,
+            &format!("{prefix}.ffn_down.weight"),
+            BF16_TYPE,
+            &[vff, vh],
+        )?;
+        expect_tensor(&index, &format!("{prefix}.ln1.weight"), F32_TYPE, &[vh])?;
+        expect_tensor(&index, &format!("{prefix}.ln2.weight"), F32_TYPE, &[vh])?;
+        expect_tensor(
+            &index,
+            &format!("{prefix}.attn_qkv.bias"),
+            F32_TYPE,
+            &[vqkv],
+        )?;
+        expect_tensor(&index, &format!("{prefix}.attn_out.bias"), F32_TYPE, &[vh])?;
+        expect_tensor(&index, &format!("{prefix}.ffn_gate.bias"), F32_TYPE, &[vff])?;
+        expect_tensor(&index, &format!("{prefix}.ffn_up.bias"), F32_TYPE, &[vff])?;
+        expect_tensor(&index, &format!("{prefix}.ffn_down.bias"), F32_TYPE, &[vh])?;
+        if modes[layer] as i32 != -1 {
+            expect_tensor(&index, &format!("{prefix}.attn_sinks"), F32_TYPE, &[32])?;
+        }
+    }
+    expect_tensor(&index, "a.conv1d.1.weight", F32_TYPE, &[3, 128, ah])?;
+    expect_tensor(&index, "a.conv1d.2.weight", F32_TYPE, &[3, ah, ah])?;
+    expect_tensor(&index, "a.conv1d.1.bias", F32_TYPE, &[1, ah])?;
+    expect_tensor(&index, "a.conv1d.2.bias", F32_TYPE, &[1, ah])?;
+    expect_tensor(&index, "a.downsample.conv.weight", F32_TYPE, &[2, ah, ah])?;
+    expect_tensor(&index, "a.downsample.norm.weight", F32_TYPE, &[ah])?;
+    expect_tensor(&index, "a.downsample.norm.bias", F32_TYPE, &[ah])?;
+    expect_tensor(&index, "a.post_ln.weight", F32_TYPE, &[ah])?;
+    expect_tensor(&index, "a.post_ln.bias", F32_TYPE, &[ah])?;
+    expect_tensor(&index, "a.rvq.codebook.weight", F32_TYPE, &[ah, 1024, 20])?;
+    expect_tensor(&index, "mm.a.code_embd.weight", F32_TYPE, &[ah, 1280, 20])?;
+    expect_tensor(
+        &index,
+        "mm.a.mlp.1.weight",
+        BF16_TYPE,
+        &[ah * 4, ah * 4 * 4],
+    )?;
+    expect_tensor(&index, "mm.a.mlp.2.weight", BF16_TYPE, &[ah * 4 * 4, vout])?;
+    expect_tensor(&index, "mm.a.local_norm.weight", F32_TYPE, &[ah])?;
+    for layer in 0..A_LAYERS {
+        let prefix = format!("a.blk.{layer}");
+        for (suffix, dims) in [
+            ("attn_q.weight", [ah, ah].as_slice()),
+            ("attn_k.weight", &[ah, ah]),
+            ("attn_v.weight", &[ah, ah]),
+            ("attn_out.weight", &[ah, ah]),
+            ("ffn_up.weight", &[ah, aff]),
+            ("ffn_down.weight", &[aff, ah]),
+        ] {
+            expect_tensor(&index, &format!("{prefix}.{suffix}"), BF16_TYPE, dims)?;
+        }
+        for (suffix, dims) in [
+            ("ln1.weight", [ah].as_slice()),
+            ("ln1.bias", &[ah]),
+            ("ln2.weight", &[ah]),
+            ("ln2.bias", &[ah]),
+            ("attn_q.bias", &[ah]),
+            ("attn_v.bias", &[ah]),
+            ("attn_out.bias", &[ah]),
+            ("ffn_up.bias", &[aff]),
+            ("ffn_down.bias", &[ah]),
+        ] {
+            expect_tensor(&index, &format!("{prefix}.{suffix}"), F32_TYPE, dims)?;
+        }
+    }
+    for layer in 0..A_LOCAL {
+        let prefix = format!("mm.a.local_blk.{layer}");
+        for (suffix, dims) in [
+            ("attn_q.weight", [ah, ah].as_slice()),
+            ("attn_k.weight", &[ah, ah]),
+            ("attn_v.weight", &[ah, ah]),
+            ("attn_out.weight", &[ah, ah]),
+            ("ffn_gate.weight", &[ah, aff]),
+            ("ffn_up.weight", &[ah, aff]),
+            ("ffn_down.weight", &[aff, ah]),
+        ] {
+            expect_tensor(&index, &format!("{prefix}.{suffix}"), BF16_TYPE, dims)?;
+        }
+        for suffix in [
+            "ln1.weight",
+            "ln2.weight",
+            "attn_q.bias",
+            "attn_k.bias",
+            "attn_v.bias",
+        ] {
+            expect_tensor(&index, &format!("{prefix}.{suffix}"), F32_TYPE, &[ah])?;
+        }
     }
     Ok(())
 }
@@ -1626,6 +1818,22 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == "ctx_unqualified"));
+    }
+
+    #[test]
+    fn missing_projector_tensor_is_an_error() {
+        let err = expect_tensor(
+            &BTreeMap::new(),
+            "v.patch_embd.weight",
+            F32_TYPE,
+            &[16, 16, 3, 1280],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("missing"), "{err}");
+        let file = Path::new("/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf");
+        if file.is_file() {
+            inspect_projector(file).unwrap();
+        }
     }
 
     #[test]
