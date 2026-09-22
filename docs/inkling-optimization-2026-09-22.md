@@ -4,7 +4,9 @@ Continuation of [rounds 25–27](inkling-optimization-2026-09-12-r25.md).
 MTP is off. Prompt is `speed-bench/promessi_sposi.txt`. The host is one
 DGX Spark / GB10. `nvidia-smi -lgc` needs root here, so the SM clock was
 observed rather than locked: about 2411–2418 MHz while a prefill was
-running. Comparisons below are same-hour, same binary, interleaved.
+running, above the 300–2200 MHz reference. `nvidia-smi -lgc 300,2200`
+needs a password on this host, so these medians are not that
+qualification. Comparisons below are same-hour, same binary, interleaved.
 
 Adopted here: prefill chunk 2048, then the router logit tile. On the
 final binary, cold 8192-token prefill is 486.39 tok/s and 64-token
