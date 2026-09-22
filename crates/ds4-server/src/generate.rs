@@ -2916,12 +2916,7 @@ impl SerialKvIo for NativeSerialKvIo<'_, '_, '_, '_> {
 }
 
 #[cfg(any(feature = "native", test))]
-fn serial_mtp_ready(
-    family: ds4_core::ModelFamily,
-    sidecar: bool,
-    dots3: bool,
-    draft: i32,
-) -> bool {
+fn serial_mtp_ready(family: ds4_core::ModelFamily, sidecar: bool, dots3: bool, draft: i32) -> bool {
     match family {
         ds4_core::ModelFamily::Dots3Note => dots3,
         ds4_core::ModelFamily::Inkling | ds4_core::ModelFamily::Step37 => sidecar,
