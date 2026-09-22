@@ -82,7 +82,8 @@ Do not reuse recorded PIDs or assume those services are running.
   [rounds 16–18](inkling-optimization-2026-09-11-r16.md),
   [rounds 19–21](inkling-optimization-2026-09-12.md),
   [rounds 22–24](inkling-optimization-2026-09-12-r22.md), and
-  [rounds 25–27](inkling-optimization-2026-09-12-r25.md), GB10 prefill/decode
+  [rounds 25–27](inkling-optimization-2026-09-12-r25.md), and
+  [2026-09-22](inkling-optimization-2026-09-22.md), GB10 prefill/decode
   measurements and numerical controls.
 - [Qwen image input contract](qwen38-image-input-spec.md): original design;
   use the current README and dated image evidence for implemented scope.

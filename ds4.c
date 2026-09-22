@@ -21055,9 +21055,9 @@ static const uint32_t inkling_width[IK_BUFFERS] = {
 static uint32_t inkling_prefill_cap(uint32_t ctx) {
     /* Chunk width trades expert-tile fill against activation working set.
      * Arithmetic stays chunk-invariant; graph scratch grows with cap.
-     * 1024 vs 512 doubles assignments per expert and linear/attn rows on
-     * the 8K campaign shape; 8192 alone previously regressed. */
-    enum { DEFAULT_CAP = 1024, MAX_CAP = 8192 };
+     * 2048 vs 1024 is +1.6% cold 8K prefill on GB10 (2026-09-22, three
+     * pairs, decode flat). 4096 on that shape fell to 374 tok/s. */
+    enum { DEFAULT_CAP = 2048, MAX_CAP = 8192 };
     uint32_t cap = DEFAULT_CAP;
     const char *env = getenv("DS4_INKLING_PREFILL_CHUNK");
     if (env && env[0]) {

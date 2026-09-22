@@ -281,7 +281,7 @@ static void memory_quotes(ds4_engine *e) {
           "1024-cap campaign scratch not larger than 512");
     check(unsetenv("DS4_INKLING_PREFILL_CHUNK") == 0, "clear chunk");
     const unsigned fallback = inkling_prefill_cap(contexts[3]);
-    check(fallback == 1024, "Inkling default chunk changed");
+    check(fallback == 2048, "Inkling default chunk changed");
     check(setenv("DS4_INKLING_PREFILL_CHUNK", "8193", 1) == 0, "set invalid chunk");
     check(inkling_prefill_cap(contexts[3]) == fallback, "out-of-range chunk accepted");
 }

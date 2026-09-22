@@ -8,7 +8,8 @@ The [GB10 performance report](inkling-optimization-2026-09-11.md),
 [rounds 16–18](inkling-optimization-2026-09-11-r16.md),
 [rounds 19–21](inkling-optimization-2026-09-12.md),
 [rounds 22–24](inkling-optimization-2026-09-12-r22.md) and
-[rounds 25–27](inkling-optimization-2026-09-12-r25.md) measure
+[rounds 25–27](inkling-optimization-2026-09-12-r25.md) and
+[2026-09-22](inkling-optimization-2026-09-22.md) measure
 8192- and 2048-token prefill and 64-token decode with MTP off. Long-context
 serving and independent full-model source parity remain unqualified. These
 checks apply to MQ85GB, not MQ89 or Q8_0 main.
@@ -110,9 +111,10 @@ Native CUDA sessions support lazy allocation, exact-prefix reuse, decode,
 invalidate and rewind followed by replay. The MQ85GB session gate matched
 cold/reused logits and measured exactly 100,306,688 graph bytes at context 32,
 matching its memory quote; host session parity also passed. The default
-prefill cap is 1024 (`DS4_INKLING_PREFILL_CHUNK`, range 1–8192, capped by context).
-Shorter prompts use their actual rows. Larger caps increase graph scratch;
-8192 is an experimental setting, not a measured default improvement.
+prefill cap is 2048 (`DS4_INKLING_PREFILL_CHUNK`, range 1–8192, capped by context).
+`1024` restores the previous cap. Shorter prompts use their actual rows.
+Larger caps increase graph scratch; 4096 and 8192 were slower than 2048
+on the cold 8K shape.
 Serial text snapshots preserve target KV/convolution state and, when loaded,
 the MTP predictor frontier. Media snapshots, batching and distributed
 execution remain unsupported. The [September 17 snapshot gate](benchmarks/serving-v013-2026-09-17/inkling.json)
