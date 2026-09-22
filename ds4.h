@@ -1411,6 +1411,22 @@ int ds4_session_dots3_trial(ds4_session *s, int first, int max_tokens,
                              int *tokens, int *target, int cap,
                              char *err, size_t errlen);
 int ds4_session_dots3_commit(ds4_session *s, int keep, char *err, size_t errlen);
+/* MiMo embedded MTP uses the same four-row trial. keep is the accepted
+ * prefix length. An external DFlash file is not this predictor. */
+int ds4_session_mimo2_trial(ds4_session *s, int first, int max_tokens,
+                            int *tokens, int *target, int cap,
+                            char *err, size_t errlen);
+int ds4_session_mimo2_commit(ds4_session *s, int keep, char *err, size_t errlen);
+int ds4_session_mimo2_sync_media(ds4_session *s, const int *tokens, int n_tokens,
+                                 const unsigned *starts, const unsigned *counts,
+                                 const float *const *rows, unsigned nspans,
+                                 uint64_t tag, char *err, size_t errlen);
+int ds4_session_mimo2_encode_vision(ds4_session *s, const float *patches,
+                                    unsigned n_patches, unsigned grid_h, unsigned grid_w,
+                                    float *out, char *err, size_t errlen);
+int ds4_session_mimo2_encode_audio(ds4_session *s, const float *mel, unsigned frames,
+                                   float *out, unsigned cap, unsigned *rows,
+                                   char *err, size_t errlen);
 /* Allocation intent captured at session creation, including a deferred graph. */
 bool ds4_session_dots3_mtp(ds4_session *s);
 int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,

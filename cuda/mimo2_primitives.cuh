@@ -1,0 +1,134 @@
+#pragma once
+#include <stdint.h>
+#include <cuda_fp16.h>
+
+/* Fused projection rows are Q(64*192), K(kv*192), V(kv*128).
+ * Only the first 64 Q/K dimensions rotate; MiMo has no Q/K norm.
+ * V scaling belongs after the output projection, not in this unpacker. */
+__global__ static void mimo2_split_rope(
+        float *q, float *k, float *v, const float *qkv,
+        const float2 *table, unsigned kv_heads, unsigned rows) {
+    enum { Q_HEADS = 64, KEY = 192, VALUE = 128, ROTARY = 64 };
+    const unsigned stride = Q_HEADS * KEY + kv_heads * (KEY + VALUE);
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (uint64_t)rows * stride) { return; }
+    const unsigned row = i / stride, col = i % stride;
+    const unsigned q_end = Q_HEADS * KEY, k_end = q_end + kv_heads * KEY;
+    if (col >= k_end) {
+        v[(uint64_t)row * kv_heads * VALUE + col - k_end] = qkv[i];
+        return;
+    }
+    const unsigned dim = col % KEY;
+    float value = qkv[i];
+    if (dim < ROTARY) {
+        const unsigned pair = dim % (ROTARY / 2);
+        const uint64_t first = i - dim + pair;
+        const float2 cs = table[(uint64_t)row * (ROTARY / 2) + pair];
+        const float a = qkv[first], b = qkv[first + ROTARY / 2];
+        value = dim < ROTARY / 2 ? a * cs.x - b * cs.y : b * cs.x + a * cs.y;
+    }
+    if (col < q_end) {
+        q[(uint64_t)row * q_end + col] = value;
+    } else {
+        k[(uint64_t)row * kv_heads * KEY + col - q_end] = value;
+    }
+}
+
+/* One group, 256 experts, eight selected. Bias changes selection only.
+ * Retain the pinned GGUF graph's 2^-14 denominator floor; route scale is 1. */
+__global__ static void mimo2_router(
+        int *ids, float *weights, const float *logits, const float *bias) {
+    enum { EXPERTS = 256, USED = 8 };
+    __shared__ float prob[EXPERTS], score[EXPERTS];
+    const unsigned tid = threadIdx.x, row = blockIdx.x;
+    for (unsigned e = tid; e < EXPERTS; e += blockDim.x) {
+        prob[e] = 1.0f / (1.0f + expf(-logits[(uint64_t)row * EXPERTS + e]));
+        score[e] = prob[e] + (bias ? bias[e] : 0.0f);
+    }
+    __syncthreads();
+    if (tid) { return; }
+    ids += (uint64_t)row * USED;
+    weights += (uint64_t)row * USED;
+    for (unsigned e = 0; e < EXPERTS; e++) {
+        if (!isfinite(score[e])) {
+            for (unsigned k = 0; k < USED; k++) { ids[k] = k; weights[k] = NAN; }
+            return;
+        }
+    }
+    float sum = 0;
+    for (unsigned k = 0; k < USED; k++) {
+        unsigned best = 0;
+        for (unsigned e = 1; e < EXPERTS; e++) {
+            if (score[e] > score[best]) { best = e; }
+        }
+        ids[k] = best;
+        weights[k] = prob[best];
+        sum += prob[best];
+        score[best] = -INFINITY;
+    }
+    const float denominator = fmaxf(sum, 0x1p-14f);
+    for (unsigned k = 0; k < USED; k++) { weights[k] /= denominator; }
+}
+
+/* Cache row: [all K heads (192 each) | all V heads (128 each)].
+ * The caller retains window+batch-1 rows before attention, so a batched store
+ * cannot overwrite keys needed by the earliest query in that batch. Positions
+ * are consecutive live device values, so captured replay cannot bake pos0. */
+__global__ static void mimo2_kv_store(
+        __half *cache, const float *k, const float *v,
+        unsigned kv_heads, unsigned rows, const unsigned *positions, unsigned capacity) {
+    const unsigned kw = kv_heads * 192, vw = kv_heads * 128, stride = kw + vw;
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (uint64_t)rows * stride) { return; }
+    const unsigned row = i / stride, col = i % stride;
+    const uint64_t slot = (uint64_t)positions[row] % capacity;
+    const float value = col < kw ? k[(uint64_t)row * kw + col]
+                                : v[(uint64_t)row * vw + col - kw];
+    cache[slot * stride + col] = __float2half_rn(value);
+}
+
+/* Correctness path for asymmetric GQA. One warp owns a query head and walks
+ * its causal keys with online softmax. The learned sink has a zero value.
+ * Positions remain device reads under capture. A tiled prefill path can be
+ * checked against this kernel before replacing it for wide workloads. */
+__global__ static void mimo2_attention(
+        float *out, const float *q, const __half *cache, const float *sinks,
+        const unsigned *positions, unsigned kv_heads, unsigned capacity,
+        unsigned window) {
+    enum { HEADS = 64, KEY = 192, VALUE = 128, WARP = 32 };
+    const unsigned lane = threadIdx.x % WARP;
+    const unsigned head = blockIdx.x * (blockDim.x / WARP) + threadIdx.x / WARP;
+    const unsigned row = blockIdx.y;
+    if (head >= HEADS) { return; }
+    const unsigned pos = positions[row];
+    const unsigned first = window && pos + 1 > window ? pos + 1 - window : 0;
+    const unsigned kv_head = head / (HEADS / kv_heads), stride = kv_heads * (KEY + VALUE);
+    float query[KEY / WARP], acc[VALUE / WARP] = {};
+    for (unsigned d = 0; d < KEY / WARP; d++) {
+        query[d] = q[((uint64_t)row * HEADS + head) * KEY + lane + d * WARP];
+    }
+    float maximum = sinks ? sinks[head] : -INFINITY;
+    float denominator = sinks ? 1.0f : 0.0f;
+    for (unsigned key = first; key <= pos; key++) {
+        const __half *slot = cache + (uint64_t)(key % capacity) * stride;
+        float dot = 0;
+        for (unsigned d = 0; d < KEY / WARP; d++) {
+            dot += query[d] * __half2float(slot[kv_head * KEY + lane + d * WARP]);
+        }
+        for (unsigned step = WARP / 2; step; step /= 2) {
+            dot += __shfl_xor_sync(0xffffffff, dot, step);
+        }
+        const float score = dot * 0.07216878364870322f; // 1/sqrt(192)
+        const float next = fmaxf(maximum, score);
+        const float old_weight = expf(maximum - next), weight = expf(score - next);
+        denominator = denominator * old_weight + weight;
+        for (unsigned d = 0; d < VALUE / WARP; d++) {
+            const float value = __half2float(slot[kv_heads * KEY + kv_head * VALUE + lane + d * WARP]);
+            acc[d] = acc[d] * old_weight + weight * value;
+        }
+        maximum = next;
+    }
+    for (unsigned d = 0; d < VALUE / WARP; d++) {
+        out[((uint64_t)row * HEADS + head) * VALUE + lane + d * WARP] = acc[d] / denominator;
+    }
+}

@@ -361,6 +361,7 @@ typedef enum {
     DS4_MODEL_FAMILY_INKLING     = 7,
     DS4_MODEL_FAMILY_STEP37      = 8,
     DS4_MODEL_FAMILY_LING3VL     = 9,
+    DS4_MODEL_FAMILY_MIMO2       = 10,
 } ds4_model_family;
 
 typedef enum {
@@ -376,6 +377,7 @@ typedef enum {
     DS4_VARIANT_INKLING_SMALL   = 9,
     DS4_VARIANT_STEP37_FLASH    = 10,
     DS4_VARIANT_LING30_FLASH_VL = 11,
+    DS4_VARIANT_MIMO26_FLASH    = 12,
 } ds4_variant;
 
 typedef struct {
@@ -475,6 +477,23 @@ static const ds4_shape DS4_SHAPE_INKLING_SMALL = {
     .rms_eps = DS4_DEFAULT_RMS_EPS,
     .expert_weight_scale = 8.0f,
     .rope_orig_ctx = UINT64_C(1048576),
+};
+
+enum { MIMO2_LAYERS = 48, MIMO2_DRAFT_LAYERS = 3 };
+
+static const ds4_shape DS4_SHAPE_MIMO26_FLASH = {
+    .name = "MiMo-V2.6-Flash-RL",
+    .family = DS4_MODEL_FAMILY_MIMO2, .variant = DS4_VARIANT_MIMO26_FLASH,
+    .n_layer = MIMO2_LAYERS, .n_nextn_predict = MIMO2_DRAFT_LAYERS,
+    .n_embd = 4096, .n_vocab = 152576,
+    .n_head = 64, .n_swa_head = 64, .n_head_kv = 4,
+    .n_head_dim = 192, .n_value_dim = 128, .n_rot = 64,
+    .n_expert = 256, .n_expert_used = 8,
+    .n_ff_exp = 2048, .n_ff_dense = 16384, .n_leading_dense = 1,
+    .n_swa = 128, .n_full_attn_count = 9,
+    .use_rope = true, .rms_eps = 1e-6f, .expert_weight_scale = 1.0f,
+    .rope_freq_base = 10000000.0f, .rope_freq_base_swa = 10000.0f,
+    .rope_scale_factor = 1.0f, .rope_orig_ctx = UINT64_C(1048576),
 };
 
 enum { STEP37_LAYERS = 45, STEP37_DRAFT_LAYERS = 3, STEP37_FULL_PERIOD = 4 };
@@ -2373,6 +2392,9 @@ static void model_apply_host_shape(void) {
         break;
     case DS4_VARIANT_STEP37_FLASH:
         g_ds4_shape = DS4_SHAPE_STEP37_FLASH;
+        break;
+    case DS4_VARIANT_MIMO26_FLASH:
+        g_ds4_shape = DS4_SHAPE_MIMO26_FLASH;
         break;
     case DS4_VARIANT_LING30_FLASH_VL:
         g_ds4_shape = DS4_SHAPE_LING30_FLASH_VL;
@@ -4670,6 +4692,8 @@ typedef struct {
     ds4_tensor *mhc_attn_bias_post;
     ds4_tensor *mhc_attn_bias_res;
     ds4_tensor *attn_norm;
+    ds4_tensor *attn_qkv; /* MiMo fused asymmetric Q/K/V projection. */
+    ds4_tensor *layer_output_norm; /* MiMo prediction-block output norm. */
     /* Plain projections used by Solar Open2's GQA and recurrent KDA layers. */
     ds4_tensor *attn_q;
     ds4_tensor *attn_k;
@@ -8438,6 +8462,9 @@ static void step37_bind_draft(ds4_weights *w, const ds4_model *m) {
     }
 }
 
+#include "ds4_mimo2_plan.h"
+#include "ds4_mimo2_bind.inc"
+
 static void weights_bind(
         ds4_weights     *w,
         const ds4_model *m,
@@ -8455,6 +8482,11 @@ static void weights_bind(
     (void)require_output;
     (void)optional_output;
     memset(w, 0, sizeof(*w));
+
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
+        mimo2_bind(w, m);
+        return;
+    }
 
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37) {
         step37_bind_common(w, m);
@@ -35464,6 +35496,7 @@ struct ds4_vocab {
 #ifndef DS4_NO_GPU
 #include "ds4_ling3vl_vision.inc"
 #include "ds4_step37_vision.inc"
+#include "ds4_mimo2_media.inc"
 #endif
 
 struct ds4_engine {
@@ -35475,6 +35508,7 @@ struct ds4_engine {
     ds4_glm53_vision_weights vision_weights;
     ds4_step37_vision_weights step37_vision_weights;
     ds4_ling3vl_vision_weights ling3vl_vision_weights;
+    ds4_mimo2_media mimo2_media;
 #endif
     ds4_vocab vocab;
     ds4_weights weights;
@@ -43159,6 +43193,10 @@ static int generate_metal_graph_raw_swa(
 ds4_context_memory ds4_context_memory_estimate(ds4_backend backend, int ctx_size) {
     (void)backend;
     ds4_context_memory m = {0};
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
+        const unsigned ctx = ctx_size > 0 ? (unsigned)ctx_size : 0;
+        return mimo2_memory(ctx, mimo2_prefill_cap(ctx));
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37 ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL) { return m; }
     uint32_t ctx = ctx_size > 0 ? (uint32_t)ctx_size : 1u;
@@ -44182,6 +44220,7 @@ static bool exaone_graph_decode(ds4_exaone_gpu_graph *g,
 
 #include "ds4_ling3vl_graph.inc"
 #include "ds4_step37_graph.inc"
+#include "ds4_mimo2_graph.inc"
 
 /* Shared partial-prefix checkpoint bookkeeping.  A slot is an immutable
  * snapshot of one bank's non-rewindable state at a committed position;
@@ -46146,6 +46185,8 @@ struct ds4_session {
     int step37_trial[S37_VERIFY];
     unsigned step37_trial_n;
     bool step37_graph_ready;
+    ds4_mimo2_graph mimo2_graph;
+    bool mimo2_graph_ready;
     ds4_inkling_graph inkling_graph;
     ds4_inkling_spec inkling_spec;
     int inkling_trial[IK_VERIFY_ROWS];
@@ -49568,6 +49609,13 @@ int ds4_session_output_head_bench(ds4_session *s, int iters, FILE *fp, char *err
         ds4_output_bench_set_err(err, errlen, "output-head bench is currently CUDA-only");
         return 1;
     }
+    /* MiMo owns a separate workspace; the generic bench reads DeepSeek buffers. */
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
+        ds4_output_bench_set_err(
+            err, errlen,
+            "output-head bench does not yet support the MiMo graph");
+        return 1;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2) {
         ds4_output_bench_set_err(
             err, errlen,
@@ -50882,6 +50930,8 @@ static uint64_t step37_payload_body_bytes(uint32_t n, bool mtp) {
     return bytes + (uint64_t)tail * S37_HIDDEN * sizeof(float);
 }
 
+#include "ds4_mimo2_payload.inc"
+
 static uint64_t step37_payload_bytes_for_graph(const ds4_step37_graph *g,
                                                const ds4_step37_spec *spec, uint32_t n) {
     if (!g || !g->cap || g->failed || !n || n >= g->context || g->position != n ||
@@ -51618,6 +51668,10 @@ static DS4_MAYBE_UNUSED bool ds4_session_is_motif3(const ds4_session *s) {
     return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MOTIF3;
 }
 
+static bool ds4_session_is_mimo2(const ds4_session *s) {
+    return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2;
+}
+
 static bool ds4_session_is_step37(const ds4_session *s) {
     return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37;
 }
@@ -51707,7 +51761,8 @@ uint64_t ds4_session_layer_payload_bytes(ds4_session *s,
         return 0;
     if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
         ds4_session_is_glm53(s) || ds4_session_is_inkling(s) ||
-        ds4_session_is_step37(s) || ds4_session_is_ling3vl(s)) {
+        ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) ||
+        ds4_session_is_mimo2(s)) {
         return 0;
     }
     if (ds4_session_is_cpu(s)) return 0;
@@ -52177,7 +52232,8 @@ int ds4_session_save_layer_payload(ds4_session *s, FILE *fp,
     }
     if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
         ds4_session_is_glm53(s) || ds4_session_is_inkling(s) ||
-        ds4_session_is_step37(s) || ds4_session_is_ling3vl(s)) {
+        ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) ||
+        ds4_session_is_mimo2(s)) {
         payload_set_err(err, errlen,
                         "this model family does not support distributed layer payloads");
         return 1;
@@ -52381,7 +52437,8 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
     }
     if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
         ds4_session_is_glm53(s) || ds4_session_is_inkling(s) ||
-        ds4_session_is_step37(s) || ds4_session_is_ling3vl(s)) {
+        ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) ||
+        ds4_session_is_mimo2(s)) {
         payload_set_err(err, errlen,
                         "this model family does not support distributed layer payloads");
         return 1;
@@ -52673,6 +52730,11 @@ bool ds4_engine_has_mtp(ds4_engine *e) {
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP)
         return e->backend == DS4_BACKEND_CUDA && e->mtp_draft_tokens > 1;
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
+        const char *disable = getenv("DS4_MTP_SPEC_DISABLE");
+        return e->backend == DS4_BACKEND_CUDA && e->mtp_draft_tokens > 1 &&
+            !(disable && disable[0] == '1' && disable[1] == '\0');
+    }
     return e->mtp_ready;
 }
 
@@ -53934,6 +53996,12 @@ static int ds4_session_eval_speculative_batch_first3(
 #endif
 
 uint64_t ds4_session_payload_bytes(ds4_session *s) {
+#ifndef DS4_NO_GPU
+    if (ds4_session_is_mimo2(s)) {
+        return s->checkpoint_valid && s->mimo2_graph_ready
+            ? mimo2_payload_bytes(&s->mimo2_graph, (unsigned)s->checkpoint.len) : 0;
+    }
+#endif
     if (!s || !s->checkpoint_valid) return 0;
     if (s->distributed) return 0;
 #ifndef DS4_NO_GPU
@@ -54131,6 +54199,10 @@ int ds4_session_stage_payload(ds4_session *s, ds4_session_payload_file *out,
 
 int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen) {
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_mimo2(s)) {
+        if (!ds4_session_payload_bytes(s)) { payload_set_err(err, errlen, "MiMo has no snapshot-ready checkpoint"); return 1; }
+        return mimo2_payload_save(&s->mimo2_graph, s->checkpoint.v, (unsigned)s->checkpoint.len, s->logits, fp, err, errlen);
+    }
     if (ds4_session_is_inkling(s)) { return inkling_save_payload(s, fp, err, errlen); }
     if (ds4_session_is_step37(s)) {
         if (!fp || !ds4_session_payload_bytes(s)) {
@@ -54618,6 +54690,10 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
     s->generation++;   /* Inc 5a: content replaced from disk (even on failure
                         * the old checkpoint is no longer trustworthy) */
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_mimo2(s)) {
+        s->checkpoint_valid = false; s->checkpoint.len = 0; s->mtp_draft_valid = false;
+        s->mimo2_graph.failed = true; s->mimo2_graph.position = 0;
+    }
     if (ds4_session_is_inkling(s)) {
         s->checkpoint_valid = false;
         s->checkpoint.len = 0;
@@ -54714,12 +54790,14 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
     }
     if (ds4_session_is_qwen4exp(s) || ds4_session_is_motif3(s) ||
         ds4_session_is_exaone(s) || ds4_session_is_dots3(s) ||
-        ds4_session_is_step37(s) || ds4_session_is_ling3vl(s)) {
+        ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s)) {
         if (ds4_session_ensure_graph(s, err, errlen) != 0) return 1;
         float *new_logits = xmalloc(
             (size_t)DS4_N_VOCAB * sizeof(*new_logits));
         int *tokens = NULL;
-        const int rc = ds4_session_is_qwen4exp(s)
+        const int rc = ds4_session_is_mimo2(s)
+            ? mimo2_payload_restore(&s->mimo2_graph, fp, &remaining, h, &tokens, new_logits, err, errlen)
+            : ds4_session_is_qwen4exp(s)
             ? qwen4exp_payload_restore_graph(
                   &s->qwen_graph, s->engine->qwen_ple_store,
                   fp, &remaining, h,
@@ -68232,6 +68310,10 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     model_open(&e->model, opt->model_path, graph_backend, !opt->inspect_only);
     if (g_host_shape) model_apply_host_shape();
     else config_validate_model(&e->model);
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2 &&
+        e->mtp_draft_tokens > MIMO2_DRAFT_LAYERS) {
+        e->mtp_draft_tokens = MIMO2_DRAFT_LAYERS;
+    }
     if (!opt->inspect_only && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37 &&
         (e->backend != DS4_BACKEND_CUDA || load_slice ||
          opt->distributed.role != DS4_DISTRIBUTED_NONE ||
@@ -68297,17 +68379,20 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     if (opt->vision_path && opt->vision_path[0]) {
         if ((DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM53 &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_STEP37 &&
-             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_LING3VL) ||
+             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_LING3VL &&
+             DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MIMO2) ||
             e->backend != DS4_BACKEND_CUDA ||
             opt->distributed.role != DS4_DISTRIBUTED_NONE || load_slice) {
             fprintf(stderr,
-                    "ds4: --vision requires one full GLM-5.3, Step or Ling CUDA model\n");
+                    "ds4: --vision requires one full GLM-5.3, Step, Ling or MiMo CUDA model\n");
             ds4_engine_close(e);
             *out = NULL;
             return 1;
         }
         model_open(&e->vision_model, opt->vision_path, true, false);
-        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL) {
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
+            mimo2_media_bind(&e->mimo2_media, &e->vision_model);
+        } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL) {
             ling3vl_vision_bind(&e->ling3vl_vision_weights, &e->vision_model);
             e->vision_image_token = (int)LING3VL_IMAGE_TOKEN;
             e->vision_start_token = (int)LING3VL_VISION_START_TOKEN;
@@ -69104,7 +69189,8 @@ uint64_t ds4_engine_hidden_f32_values(ds4_engine *e) {
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37 ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
         return (uint64_t)DS4_N_EMBD;
     }
     return (uint64_t)DS4_N_HC * DS4_N_EMBD;
@@ -69117,7 +69203,8 @@ int ds4_engine_n_hc(ds4_engine *e) {
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37 ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
         return 1;
     }
     return (int)DS4_N_HC;
@@ -69127,6 +69214,7 @@ bool ds4_engine_supports_batching(ds4_engine *e) {
     if (!e || !ds4_backend_uses_graph(e->backend) || !e->metal_ready) {
         return false;
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) { return false; }
     /* Unimplemented bank families must never enter the DeepSeek slab body. */
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
         return false;
@@ -69176,6 +69264,7 @@ void ds4_engine_close(ds4_engine *e) {
     if (e->mtp_ready) model_close(&e->mtp_model);
     if (e->dspark_ready) model_close(&e->dspark_model);
 #ifndef DS4_NO_GPU
+    mimo2_media_free(&e->mimo2_media);
     if (e->vision_model.map) model_close(&e->vision_model);
 #endif
     model_close(&e->model);
@@ -69455,6 +69544,31 @@ static uint64_t session_tensors_census_live(void) {
     return ds4_mem_cell_live(&cell);
 }
 
+static bool mimo2_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
+                               ds4_session_graph_fit_quote *q) {
+    const uint64_t need = mimo2_memory(ctx, cap).total_bytes;
+    if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
+    if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
+    const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
+    uint64_t available = 0, total = 0;
+    if ((fit && !strcmp(fit, "0")) || ds4_gpu_mem_info(&available, &total) != 0) {
+        if (q) { q->fits = 1; q->fail_open = 1; }
+        return true;
+    }
+    const uint64_t substrate = ds4_gpu_substrate_outstanding();
+    available = available > substrate ? available - substrate : 0;
+    const uint64_t margin = ds4_session_graph_headroom_bytes();
+    const uint64_t ask = need > UINT64_MAX - margin ? UINT64_MAX : need + margin;
+    const bool fits = available >= ask;
+    if (q) {
+        q->fits = fits;
+        q->avail_bytes = available;
+        q->headroom_bytes = margin;
+        q->deficit_bytes = fits ? 0 : ask - available;
+    }
+    return fits;
+}
+
 static bool step37_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
                                ds4_session_graph_fit_quote *q) {
     const uint64_t need = step37_session_bytes(e, ctx, cap);
@@ -69556,6 +69670,28 @@ static bool inkling_session_fit(const ds4_engine *e, uint32_t ctx, uint32_t cap,
 
 static int ds4_session_alloc_graph(ds4_session *s) {
     ds4_engine *e = s->engine;
+    if (ds4_session_is_mimo2(s)) {
+        const unsigned ctx = (unsigned)s->ctx_size;
+        const uint64_t estimate = mimo2_memory(ctx, s->prefill_cap).total_bytes;
+        ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, estimate, 0);
+        const uint64_t before = session_tensors_census_live();
+        ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
+        const bool ok = mimo2_session_fit(e, ctx, s->prefill_cap, NULL) &&
+            mimo2_graph_alloc(&s->mimo2_graph, ctx, s->prefill_cap);
+        ds4_gpu_mem_scope_end();
+        if (!ok) {
+            mimo2_graph_free(&s->mimo2_graph);
+            s->mimo2_graph_ready = false;
+            s->graph_alloc_bytes = 0;
+            ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
+            return 1;
+        }
+        s->mimo2_graph_ready = true;
+        const uint64_t after = session_tensors_census_live();
+        s->graph_alloc_bytes = after > before ? after - before : estimate;
+        ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, s->graph_alloc_bytes, s->graph_alloc_bytes);
+        return 0;
+    }
     if (ds4_session_is_step37(s)) {
         const unsigned ctx = (unsigned)s->ctx_size;
         const uint64_t estimate = step37_session_bytes(e, ctx, s->prefill_cap);
@@ -69911,6 +70047,9 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
     memset(q, 0, sizeof(*q));
     if (!e || ctx_size <= 0) return 0;
 #ifndef DS4_NO_GPU
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
+        return mimo2_session_fit(e, (unsigned)ctx_size, mimo2_prefill_cap((unsigned)ctx_size), q);
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37) {
         return step37_session_fit(e, (unsigned)ctx_size, step37_prefill_cap((unsigned)ctx_size), q);
     }
@@ -69981,6 +70120,28 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
 
 int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
     if (!out || !e || ctx_size <= 0) return 1;
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
+#ifdef DS4_NO_GPU
+        return 1;
+#else
+        if ((unsigned)ctx_size > M2_CONTEXT || e->backend != DS4_BACKEND_CUDA ||
+            !e->metal_ready || e->distributed.role != DS4_DISTRIBUTED_NONE ||
+            e->dspark_ready || e->mtp_ready) { return 1; }
+        ds4_session *s = xcalloc(1, sizeof(*s));
+        s->engine = e;
+        s->ctx_size = ctx_size;
+        s->generation = 1;
+        s->prefill_cap = mimo2_prefill_cap((unsigned)ctx_size);
+        s->logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(*s->logits));
+        if (ds4_session_lazy_graph_enabled()) {
+            s->graph_pending = true;
+        } else if (ds4_session_alloc_graph(s) != 0) {
+            free(s->logits); free(s); return 1;
+        }
+        *out = s;
+        return 0;
+#endif
+    }
 #ifndef DS4_NO_GPU
     /* A lazy session must reject an unsupported YaRN context before it can
      * be admitted; waiting for the first graph allocation is too late. */
@@ -70282,7 +70443,11 @@ void ds4_session_free(ds4_session *s) {
     }
 #ifndef DS4_NO_GPU
     else {
-        if (ds4_session_is_ling3vl(s)) {
+        if (ds4_session_is_mimo2(s)) {
+            mimo2_graph_free(&s->mimo2_graph);
+            s->mimo2_graph_ready = false;
+            ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, 0, 0);
+        } else if (ds4_session_is_ling3vl(s)) {
             ling3vl_graph_free(&s->ling3vl_graph);
             ling3vl_vision_free(&s->ling3vl_vision);
             ds4_gpu_tensor_free(s->ling3vl_media.features);
@@ -70376,7 +70541,7 @@ int ds4_session_set_power(ds4_session *s, int power_percent) {
         !ds4_session_is_exaone(s) && !ds4_session_is_dots3(s) &&
         !ds4_session_is_qwen4exp(s) && !ds4_session_is_glm53(s) &&
         !ds4_session_is_inkling(s) && !ds4_session_is_step37(s) &&
-        !ds4_session_is_ling3vl(s)) {
+        !ds4_session_is_ling3vl(s) && !ds4_session_is_mimo2(s)) {
         s->graph.power_percent = (uint32_t)power_percent;
     }
 #endif
@@ -70409,7 +70574,7 @@ int ds4_session_layer_slice_reset(ds4_session *s, char *err, size_t errlen) {
         ds4_session_is_motif3(s) || ds4_session_is_dots3(s) ||
         ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s) ||
         ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
-        ds4_session_is_ling3vl(s)) {
+        ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s)) {
         if (errlen) snprintf(err, errlen,
                              "layer-slice sessions do not support this model family");
         return 1;
@@ -70446,7 +70611,7 @@ int ds4_session_eval_output_head_from_hc(ds4_session *s,
     }
     if (ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s) ||
         ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
-        ds4_session_is_ling3vl(s)) {
+        ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s)) {
         if (errlen) snprintf(err, errlen,
                              "this model family does not expose the DeepSeek HC output-head ABI");
         return 1;
@@ -70550,7 +70715,7 @@ int ds4_session_eval_layer_slice(ds4_session *s,
     }
     if (ds4_session_is_qwen4exp(s) || ds4_session_is_glm53(s) ||
         ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
-        ds4_session_is_ling3vl(s)) {
+        ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s)) {
         if (errlen) snprintf(err, errlen,
                              "this model family does not support layer-slice execution");
         return 1;
@@ -71059,6 +71224,9 @@ static int ling3vl_session_eval(ds4_session *s, int token, char *err,
     return 0;
 }
 
+#include "ds4_mimo2_session.inc"
+#include "ds4_mimo2_mtp.inc"
+
 static int step37_session_fail(ds4_session *s, char *err, size_t errlen) {
     s->step37_graph.failed = true;
     s->step37_spec.draft.graph.failed = true;
@@ -71474,6 +71642,7 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
         return 1;
     }
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_mimo2(s)) { return mimo2_session_sync(s, prompt, err, errlen); }
     if (ds4_session_is_ling3vl(s)) {
         return ling3vl_session_sync(s, prompt, NULL, err, errlen);
     }
@@ -72422,6 +72591,7 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
         return 1;
     }
 #ifndef DS4_NO_GPU
+    if (ds4_session_is_mimo2(s)) { return mimo2_session_eval(s, token, err, errlen); }
     if (ds4_session_is_ling3vl(s)) {
         return ling3vl_session_eval(s, token, err, errlen);
     }
@@ -73096,7 +73266,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
 #endif
     }
     if (ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
-        ds4_session_is_ling3vl(s)) {
+        ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s)) {
         if (ds4_session_eval(s, first_token, err, errlen) != 0) {
             return -1;
         }
@@ -74350,7 +74520,10 @@ void ds4_session_invalidate(ds4_session *s) {
     s->checkpoint.len = 0;
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_dots3(s)) {
+    if (ds4_session_is_mimo2(s) && s->mimo2_graph_ready) {
+        (void)mimo2_reset(&s->mimo2_graph);
+        mimo2_draft_reset(&s->mimo2_graph);
+    } else if (ds4_session_is_dots3(s)) {
         s->dots3_graph.cache_len = 0;
         dots3_spec_reset(s->dots3_spec);
     } else if (ds4_session_is_ling3vl(s) && s->ling3vl_graph_ready) {
@@ -74398,7 +74571,13 @@ void ds4_session_rewind(ds4_session *s, int pos) {
     s->checkpoint.len = pos;
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_dots3(s) && (pos != old_pos ||
+    if (ds4_session_is_mimo2(s) && pos != old_pos) {
+        s->checkpoint_valid = false;
+        if (s->mimo2_graph_ready) {
+            (void)mimo2_reset(&s->mimo2_graph);
+            mimo2_draft_reset(&s->mimo2_graph);
+        }
+    } else if (ds4_session_is_dots3(s) && (pos != old_pos ||
         (s->dots3_spec && s->dots3_spec->trial_n))) {
         s->checkpoint_valid = false;
         s->dots3_graph.cache_len = 0;
