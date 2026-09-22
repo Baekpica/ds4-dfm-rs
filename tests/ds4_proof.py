@@ -1372,15 +1372,16 @@ SCENARIOS: dict[str, Scenario] = {
             "cuda-inkling-chunk-1024",
         ),
         overlay_stacks=((),),
-        prompts=("builtin:1",),
+        prompts=("@tests/long_context_essay_prompt.txt",),
         budget="smoke",
         contracts=("selected_token_ids_md5",),
         expected_gen_tokens_min=8,
         description=(
             "MQ85GB adopted defaults versus the router-tile rollback and the "
-            "1024-token prefill chunk. Smoke budget continues 64 greedy tokens. "
-            "Those tokens are the decode that reads the committed KV, so a "
-            "mismatch is a continuation/cache-path failure. MTP stays off."
+            "1024-token prefill chunk. The essay prompt is about 10k tokens, "
+            "so the 2048 cap runs full-width chunks and the 1024 cap crosses "
+            "a chunk boundary. Smoke budget then continues 64 greedy tokens. "
+            "Those tokens are the decode that reads the committed KV."
         ),
     ),
 }
@@ -1609,6 +1610,12 @@ def run_profile(
         dump_logprobs_path=logprobs_path,
     )
     env = os.environ.copy()
+    # Drop inherited Inkling rollback switches, then apply this cell's env.
+    # Otherwise a shell export of either control disables the adopted path
+    # in cuda-default and the chunk cell, and the parity check passes without
+    # running it.
+    for key in ("DS4_INKLING_NO_LOGIT_TILE", "DS4_INKLING_PREFILL_CHUNK"):
+        env.pop(key, None)
     env.update(profile.env)
     if weight_ipc_manifest and profile.backend == "cuda":
         env.setdefault("DS4_CUDA_WEIGHT_IPC_MANIFEST", weight_ipc_manifest)
