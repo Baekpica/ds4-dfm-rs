@@ -74,13 +74,13 @@ pub use mem_gov::{
 };
 pub use mimo2::{
     admit_context, audio_feat_len, audio_interval, audio_pad_count, audio_plan, check_joint,
-    check_spans, committed_frontier, context_bytes, expand_pieces, format_timestamp,
-    image_pad_count, image_plan, joint_plan, kv_rows, load_video, media_tag, nfc, pack_still,
-    reuse_media, smart_resize, video_plan, visual_tokens, wav_mel, MediaPiece, MediaPlan,
-    MediaSpan, Mimo2Admission, Mimo2Error, Mimo2Layer, Mimo2Plan, PackedVisual, PadKind, VideoPair,
-    AUDIO_END, AUDIO_PAD, AUDIO_START, IMAGE_PAD, INDEX_LIMIT, LANGUAGE_TENSORS, MIXED_SHARDS,
-    MTP_BLOCKS, QUALIFIED_CONTEXT, TRUNK_LAYERS, VIDEO_END, VIDEO_PAD, VIDEO_START, VISION_END,
-    VISION_START,
+    check_span_budget, check_spans, committed_frontier, context_bytes, expand_pieces,
+    format_timestamp, image_pad_count, image_plan, joint_plan, kv_rows, load_video, media_tag, nfc,
+    pack_still, reuse_media, smart_resize, video_plan, visual_tokens, wav_mel, MediaPiece,
+    MediaPlan, MediaSpan, Mimo2Admission, Mimo2Error, Mimo2Layer, Mimo2Plan, PackedVisual, PadKind,
+    VideoPair, AUDIO_END, AUDIO_PAD, AUDIO_START, IMAGE_PAD, INDEX_LIMIT, LANGUAGE_TENSORS,
+    MIXED_SHARDS, MTP_BLOCKS, QUALIFIED_CONTEXT, TRUNK_LAYERS, VIDEO_END, VIDEO_PAD, VIDEO_START,
+    VISION_END, VISION_START,
 };
 pub use payload::{
     dump_cmd as payload_dump_cmd, dump_script as payload_dump_script, encode_fields, parse_prefix,
@@ -1870,6 +1870,11 @@ impl Session<'_> {
     ) -> Result<()> {
         self.check_sync(tokens)?;
         let ids = tokens.as_slice();
+        let runs = crate::mimo2::media_span_count(ids);
+        crate::mimo2::check_span_budget(runs).map_err(|error| Error {
+            code: 1,
+            message: error.to_string(),
+        })?;
         let mut spans = Vec::new();
         let mut rows = Vec::<Vec<f32>>::new();
         let mut image_at = 0usize;

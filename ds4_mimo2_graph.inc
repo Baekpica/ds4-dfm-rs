@@ -1,6 +1,17 @@
 /* MiMo owns asymmetric KV and layer scheduling. Reuse the existing mmap
  * matmul/MMQ paths, without borrowing another family's attention semantics. */
-enum { M2_SPAN_MAX = 8, M2_TRIAL = 4 };
+/* Span ceiling matches the 64 MiB raw decode cap. The smallest legal
+ * frame is 32x256. Each pair can carry a video span and an audio span,
+ * and a request may hold four clips. 8 spans was about 8 seconds. */
+enum {
+    M2_TRIAL = 4,
+    M2_VIDEO_RAW_CAP = 64 * 1024 * 1024,
+    M2_MIN_FRAME_BYTES = 32 * 256 * 3,
+    M2_MEDIA_INPUTS = 4,
+    M2_SPAN_FRAMES = M2_VIDEO_RAW_CAP / M2_MIN_FRAME_BYTES,
+    M2_SPAN_PAIRS = (M2_SPAN_FRAMES + 1) / 2,
+    M2_SPAN_MAX = M2_SPAN_PAIRS * 2 * M2_MEDIA_INPUTS
+};
 
 typedef struct {
     unsigned start, count;
@@ -23,8 +34,9 @@ typedef struct {
     unsigned trial_n, verify_rows;
     uint64_t bytes, media_tag, checkpoint_tag;
     bool failed, hidden_valid;
-    mimo2_media_span spans[M2_SPAN_MAX];
-    unsigned span_n;
+    /* Grown up to M2_SPAN_MAX on sync. Not part of the KV snapshot. */
+    mimo2_media_span *spans;
+    unsigned span_cap, span_n;
 } ds4_mimo2_graph;
 
 static void mimo2_graph_free(ds4_mimo2_graph *g) {
@@ -36,10 +48,12 @@ static void mimo2_graph_free(ds4_mimo2_graph *g) {
     for (unsigned il = 0; il < MIMO2_LAYERS + MIMO2_DRAFT_LAYERS; il++) { ds4_gpu_tensor_free(g->kv[il]); }
     free(g->host_positions);
     free(g->verify_logits);
+    free(g->spans);
     memset(g, 0, sizeof(*g));
 }
 
 static bool mimo2_graph_alloc(ds4_mimo2_graph *g, unsigned ctx, unsigned cap) {
+    free(g->spans);
     memset(g, 0, sizeof(*g));
     const ds4_context_memory estimate = mimo2_memory(ctx, cap);
     if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MIMO2 || !estimate.total_bytes) { return false; }

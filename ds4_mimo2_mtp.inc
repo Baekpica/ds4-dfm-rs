@@ -133,8 +133,12 @@ int ds4_session_mimo2_sync_media(ds4_session *s, const int *tokens, int n_tokens
                                  char *err, size_t errlen) {
     enum { IMAGE_PAD = 151655, VIDEO_PAD = 151656, AUDIO_PAD = 151669 };
     if (!ds4_session_is_mimo2(s) || !tokens || n_tokens <= 0 ||
-        (nspans && (!starts || !counts || !rows)) || nspans > M2_SPAN_MAX) {
+        (nspans && (!starts || !counts || !rows))) {
         payload_set_err(err, errlen, "MiMo media sync needs tokens and spans");
+        return 1;
+    }
+    if (nspans > M2_SPAN_MAX) {
+        payload_set_err(err, errlen, "MiMo media exceeds the span budget");
         return 1;
     }
     if (ds4_session_ensure_graph(s, err, errlen)) { return 1; }
@@ -142,6 +146,15 @@ int ds4_session_mimo2_sync_media(ds4_session *s, const int *tokens, int n_tokens
     if (!s->mimo2_graph_ready) {
         payload_set_err(err, errlen, "MiMo graph is not initialized");
         return 1;
+    }
+    if (g->span_cap < nspans) {
+        mimo2_media_span *next = realloc(g->spans, (size_t)nspans * sizeof(*next));
+        if (!next) {
+            payload_set_err(err, errlen, "MiMo media span allocation failed");
+            return 1;
+        }
+        g->spans = next;
+        g->span_cap = nspans;
     }
     g->span_n = nspans;
     for (unsigned sidx = 0; sidx < nspans; sidx++) {

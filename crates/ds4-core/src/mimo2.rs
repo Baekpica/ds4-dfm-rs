@@ -895,7 +895,42 @@ fn normalize_rgb(rgb: &[u8]) -> Vec<f32> {
 
 /// Raw RGB ceiling for one clip. A 640×480 hour at 2 fps is several
 /// gigabytes; the pipe stops before that buffer exists.
-const VIDEO_RAW_CAP: usize = 64 * 1024 * 1024;
+pub const VIDEO_RAW_CAP: usize = 64 * 1024 * 1024;
+/// Smallest `smart_resize` frame: 32×256 lands on the factor grid at
+/// `IMAGE_MIN_PIXELS`. Fewer bytes per frame would mean more spans.
+const MIN_FRAME_BYTES: usize = 32 * 256 * 3;
+/// Serial requests allow four clips. A joint clip spends two spans per
+/// pair (the frame pair and its audio interval).
+pub const MEDIA_INPUTS: usize = 4;
+pub const SPAN_MAX: usize = {
+    let frames = VIDEO_RAW_CAP / MIN_FRAME_BYTES;
+    let pairs = if frames == 0 { 0 } else { (frames + 1) / 2 };
+    pairs * 2 * MEDIA_INPUTS
+};
+
+pub fn media_span_count(tokens: &[i32]) -> usize {
+    let mut count = 0usize;
+    let mut index = 0usize;
+    while index < tokens.len() {
+        let token = tokens[index];
+        if token != IMAGE_PAD && token != VIDEO_PAD && token != AUDIO_PAD {
+            index += 1;
+            continue;
+        }
+        count += 1;
+        while index < tokens.len() && tokens[index] == token {
+            index += 1;
+        }
+    }
+    count
+}
+
+pub fn check_span_budget(spans: usize) -> Result<(), Mimo2Error> {
+    if spans > SPAN_MAX {
+        return Err(mismatch("span budget"));
+    }
+    Ok(())
+}
 
 fn video_frame_cap(width: u32, height: u32) -> Result<usize, Mimo2Error> {
     let frame = (width as usize)
@@ -1439,6 +1474,33 @@ mod tests {
             assert!(layer.is_prediction());
             assert!(!layer.is_routed());
         }
+    }
+
+    #[test]
+    fn span_budget_matches_the_decode_cap() {
+        let frames = VIDEO_RAW_CAP / (32 * 256 * 3);
+        let pairs = frames.div_ceil(2);
+        let per_clip = pairs * 2;
+        assert_eq!(SPAN_MAX, per_clip * MEDIA_INPUTS);
+        assert!(per_clip > 8);
+        let units: Vec<_> = (0..pairs)
+            .map(|index| VideoPair {
+                timestamp_s: index as f32,
+                timestamp_ids: vec![11],
+                height: 32,
+                width: 256,
+                audio_tokens: 1,
+            })
+            .collect();
+        let joint = joint_plan(&units).unwrap();
+        assert_eq!(joint.spans.len(), per_clip);
+        assert_eq!(media_span_count(&joint.tokens), per_clip);
+        check_span_budget(per_clip).unwrap();
+        check_span_budget(SPAN_MAX).unwrap();
+        assert!(check_span_budget(SPAN_MAX + 1)
+            .unwrap_err()
+            .to_string()
+            .contains("span budget"));
     }
 
     #[test]

@@ -2052,7 +2052,9 @@ fn prepare_mimo(
         }
     }
 
-    let (expanded, _spans) = ds4_core::expand_pieces(&tokens, &pieces)
+    let (expanded, spans) = ds4_core::expand_pieces(&tokens, &pieces)
+        .map_err(|error| GenerateError::Engine(error.to_string()))?;
+    ds4_core::check_span_budget(spans.len())
         .map_err(|error| GenerateError::Engine(error.to_string()))?;
     Ok(MediaPrompt {
         tokens: expanded,
