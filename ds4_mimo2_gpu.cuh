@@ -65,6 +65,8 @@ static float *m2_split_buf = nullptr;
 /* Which attention kernel the last call launched. The decode-round test
  * reads this so a matching walk result cannot hide a missed dispatch. */
 static int m2_attn_path = 0;
+/* 5: tensor-core full-attention prefill. 0 is the walk or the shared tile. */
+enum { M2_PATH_HMMA = 5 };
 
 // ds4_gpu_cleanup calls this. A second init must allocate again, not leak.
 static void m2_split_release(void) {
@@ -112,12 +114,16 @@ extern "C" int ds4_gpu_mimo2_attention(
      * m2_use_tile is the measured crossover. The L2 load keeps the KV head
      * resident across query rows. DS4_MIMO2_FATTN_L2=0 keeps the scalar tile.
      * DS4_MIMO2_FATTN=0 keeps the walk. One full-attention row is split
-     * across key slices; DS4_MIMO2_ATTN_SPLIT=0 keeps that walk. SWA stays. */
+     * across key slices; DS4_MIMO2_ATTN_SPLIT=0 keeps that walk. SWA stays.
+     * Windowless prefill of 32 or more rows uses tensor cores. The walk
+     * reloads one KV head per query head; HMMA scores a 64-row tile once.
+     * Summation order changes. DS4_MIMO2_NO_PREFILL_HMMA=1 restores the walk. */
     const char *fattn = getenv("DS4_MIMO2_FATTN");
     const char *l2 = getenv("DS4_MIMO2_FATTN_L2");
-    const char *hmma_env = getenv("DS4_MIMO2_PREFILL_HMMA");
-    const int hmma = m2_hmma_available && window == 0 && kv_heads == 4 && rows >= 32 &&
-        hmma_env && hmma_env[0] == '1' && hmma_env[1] == '\0';
+    const char *no_hmma = getenv("DS4_MIMO2_NO_PREFILL_HMMA");
+    const int hmma_off = no_hmma && no_hmma[0] == '1' && no_hmma[1] == '\0';
+    const int hmma = m2_hmma_available && window == 0 && kv_heads == 4 && rows >= 32 && !hmma_off;
+    m2_attn_path = 0;
     const char *async_env = getenv("DS4_MIMO2_PREFILL_ASYNC");
     const int async_copy = async_env && async_env[0] == '1' && async_env[1] == '\0';
     const char *swa_env = getenv("DS4_MIMO2_SWA_HMMA");
@@ -155,12 +161,14 @@ extern "C" int ds4_gpu_mimo2_attention(
             (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
             sinks, (const unsigned *)positions->ptr, rows, kv_heads, capacity);
     } else if (hmma && async_copy) {
+        m2_attn_path = M2_PATH_HMMA;
         mimo2_hmma::prefill<mimo2_hmma::Async><<<
             dim3((rows + mimo2_hmma::TQ - 1) / mimo2_hmma::TQ, HEADS),
             32 * mimo2_hmma::WARPS, 0, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
             sinks, (const unsigned *)positions->ptr, rows, kv_heads, capacity);
     } else if (hmma) {
+        m2_attn_path = M2_PATH_HMMA;
         mimo2_hmma::prefill<<<dim3((rows + mimo2_hmma::TQ - 1) / mimo2_hmma::TQ, HEADS),
             32 * mimo2_hmma::WARPS, 0, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
