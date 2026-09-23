@@ -54,6 +54,8 @@ static int mimo2_draft_step(ds4_mimo2_graph *g, const ds4_model *m, const ds4_we
         (unsigned)token >= DS4_N_VOCAB) {
         return -1;
     }
+    /* Absolute target positions need draft KV for every row 0..pos.
+     * That prefix is not filled yet, so attention must keep this dense cursor. */
     const unsigned pos = g->draft_pos[depth];
     const unsigned il = MIMO2_LAYERS + depth;
     const ds4_layer_weights *l = &w->layer[il];
@@ -78,8 +80,9 @@ static int mimo2_draft_step(ds4_mimo2_graph *g, const ds4_model *m, const ds4_we
         ds4_gpu_step37_rope(g->rope_swa, g->freq_swa, g->positions, M2_ROT, 1) &&
         mimo2_layer(g, m, w, il, 1) &&
         mimo2_draft_head(g, m, w, il) &&
-        ds4_gpu_tensor_read(g->logits, 0, logits, (uint64_t)DS4_N_VOCAB * sizeof(float)) &&
-        ds4_gpu_tensor_copy(g->hidden, 0, g->ws.b_cur, 0, (uint64_t)M2_EMBED * sizeof(float));
+        ds4_gpu_tensor_read(g->logits, 0, logits, (uint64_t)DS4_N_VOCAB * sizeof(float));
+    /* MiMo is not in the upstream hidden-chain list. Every draft head
+     * keeps the same target hidden. Commit replaces it from the verify row. */
     ds4_gpu_tensor_free(left);
     ds4_gpu_tensor_free(right);
     if (!ok) { return -1; }

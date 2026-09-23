@@ -9,6 +9,25 @@ One GB10; user-managed 300–2200 MHz clock range preserved.
 through 65,536 tokens, one warm session per fresh process. MTP is off.
 The receipt identifies the source and executable.
 
+The completed **prefill-only** sweep measures the frozen P1–P5 candidate,
+with global tensor-core attention and asynchronous KV staging:
+
+![Incremental prefill through 64K](prefill-p5/mimo2-prefill-2k-64k.png)
+
+| Metric | Historical PR #56 baseline | P1–P5 candidate |
+| --- | ---: | ---: |
+| 2K prefill, tok/s | 816.08 | 938.20 |
+| 64K prefill, tok/s | 61.45 | 634.66 |
+| 64K/2K throughput ratio | 7.53% | 67.65% |
+
+Medians/min–max use three fresh processes per curve, with the exact original
+incremental protocol. MTP/DFlash, decode split and the P6 SWA candidate are off.
+This historical comparison is not a same-hour paired A/B. The
+[receipt](prefill-p5/receipt.json) identifies the frozen executable and source
+hashes; the current branch HEAD alone does not identify that build. The
+candidate's architecture checks and default-path promotion remain pending.
+No Decode optimization or merged-release claim is made.
+
 Earlier rounds use different workloads; compare off/on within each row:
 
 | Round | Workload | Prefill tok/s, median of three | Decode tok/s |
@@ -62,5 +81,27 @@ capture and is excluded from throughput comparisons.
 
 `../plot-mimo2.py` validates all 32 incremental frontiers, 128 generated
 tokens per frontier and three CSVs per series. It writes median/min–max
-curves and a JSON summary with CSV hashes and 64K/2K retention. The final
-comparison graph awaits the completed optimization campaign.
+curves and a JSON summary with CSV hashes and 64K/2K retention. The prefill-only
+comparison is shown above. It is not replaced by the later decode stack.
+
+## Decode rounds, 23 September
+
+Three new decode changes, each one fresh-process pair at 8,192 tokens
+with 128 greedy tokens. MTP and DFlash are off. The base stack is
+global HMMA, async KV staging, P6 SWA HMMA, and the 1-row full-attention
+split. Busy SM clocks stayed inside 2190–2197 MHz. KV byte counts and
+the 8K argmax matched on every pair.
+
+| Round | Switch | 8K decode tok/s | Label |
+| --- | --- | ---: | --- |
+| D1 | `DS4_MIMO2_SWA_DECODE` | 21.32 → 21.83 | adopted |
+| D2 | `DS4_MIMO2_SPLIT_VEC` | 21.83 → 22.04 | unadopted |
+| D3 | `DS4_MIMO2_SWA_VEC` | 21.79 → 23.16 | adopted |
+
+`DS4_MIMO2_SPLIT16` slowed 8K decode by more than 2% and is not in this
+table. Unadopted switches stay off.
+
+One cold 65,536-token bench of the adopted stack, same prompt and 128
+greedy tokens, measured 884.21 prefill tok/s and 17.10 decode tok/s.
+Observed SM clocks were 2184–2197 MHz. This is one process, not the
+three-run incremental curve above.

@@ -29,6 +29,10 @@ default = []
 native = []
 perf-nvtx = ["dep:nvtx"]
 
+[[example]]
+name = "mimo2_quality"
+required-features = ["native"]
+
 [dependencies]
 ds4-core = { path = "../ds4-core" }
 ds4-dist = { path = "../ds4-dist" }
