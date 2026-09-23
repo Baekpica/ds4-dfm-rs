@@ -32,6 +32,9 @@ pub fn tunable(key: &str) -> bool {
             | "DS4_INKLING_NO_SHARED_PIPE"
             | "DS4_INKLING_NO_IQ2_SLAB"
             | "DS4_INKLING_ATTN_HMMA"
+            | "DS4_MIMO2_NO_PREFILL_HMMA"
+            | "DS4_MIMO2_NO_PREFILL_ASYNC"
+            | "DS4_MIMO2_NO_SWA_HMMA"
             | "DS4_INKLING_PREFILL_CHUNK"
             | "DS4_CUDA_SOLAR_GQA_CHUNK"
             | "DS4_FATTN_HMMA_LDSM"
@@ -92,6 +95,9 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         | "DS4_INKLING_NO_SHARED_PIPE"
         | "DS4_INKLING_NO_IQ2_SLAB"
         | "DS4_INKLING_ATTN_HMMA" => family == "inkling" && value == "1",
+        "DS4_MIMO2_NO_PREFILL_HMMA" | "DS4_MIMO2_NO_PREFILL_ASYNC" | "DS4_MIMO2_NO_SWA_HMMA" => {
+            family == "mimo2" && value == "1"
+        }
         "DS4_INKLING_PREFILL_CHUNK" => family == "inkling" && (1..=8192).contains(&n),
         "DS4_CUDA_SOLAR_GQA_CHUNK" => {
             family.starts_with("solar") && [64, 128, 256, 512, 1024, 2048].contains(&n)
@@ -208,6 +214,23 @@ mod tests {
         }
         assert!(validate("DS4_INKLING_PREFILL_CHUNK", "512", "qwen").is_err());
         assert!(!tunable("DS4_INKLING_UNKNOWN"));
+    }
+
+    #[test]
+    fn mimo2_prefill_hmma_kill() {
+        assert!(tunable("DS4_MIMO2_NO_PREFILL_HMMA"));
+        assert!(validate("DS4_MIMO2_NO_PREFILL_HMMA", "1", "mimo2").is_ok());
+        assert!(validate("DS4_MIMO2_NO_PREFILL_HMMA", "1", "MiMo2").is_ok());
+        for value in ["0", "2", "01", "true", ""] {
+            assert!(validate("DS4_MIMO2_NO_PREFILL_HMMA", value, "mimo2").is_err());
+        }
+        assert!(validate("DS4_MIMO2_NO_PREFILL_HMMA", "1", "inkling").is_err());
+        assert!(tunable("DS4_MIMO2_NO_PREFILL_ASYNC"));
+        assert!(validate("DS4_MIMO2_NO_PREFILL_ASYNC", "1", "mimo2").is_ok());
+        assert!(validate("DS4_MIMO2_NO_PREFILL_ASYNC", "0", "mimo2").is_err());
+        assert!(tunable("DS4_MIMO2_NO_SWA_HMMA"));
+        assert!(validate("DS4_MIMO2_NO_SWA_HMMA", "1", "mimo2").is_ok());
+        assert!(validate("DS4_MIMO2_NO_SWA_HMMA", "0", "mimo2").is_err());
     }
 
     #[test]

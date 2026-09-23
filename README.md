@@ -629,6 +629,18 @@ trust domain when clients are not mutually trusted.
 
 ## Performance and release evidence
 
+> **MiMo-V2.6-Flash-RL `MQ-IQ2-XXS-XS-Q8-MM-BF16` · one DGX Spark, busy SM 2177–2197 MHz:**
+> three same-binary 8,192-token prefill rounds, 128 greedy tokens, three fresh
+> processes per side after warmup, MTP and DFlash off.
+> Round 1 `DS4_MIMO2_NO_PREFILL_HMMA`: **630.51 → 871.19** tok/s (time upper −27.5%).
+> Round 2 `DS4_MIMO2_NO_PREFILL_ASYNC`: **870.38 → 1071.07** (time upper −18.6%), exact logits and tokens.
+> Round 3 `DS4_MIMO2_NO_SWA_HMMA`: **1073.29 → 1158.35** (time upper −7.0%).
+> Decode time stayed inside ±1.6% on every round. Rounds 1 and 3 use
+> `--logit-rel-rms 0.10` (0.073 and 0.077) and keep the frontier argmax.
+> 512k serial text stays qualified; 1M is not qualified; max_seqs 2 is omitted;
+> 512k with the projector and DFlash was not measured.
+> [Protocol and rejects](docs/benchmarks/mimo2-2026-09-23/README.md).
+
 > **Solar Open2 250B MXQ-v1 · one DGX Spark, 300–2200 MHz cap (measured 2190):**
 > two retained rounds, interleaved medians of three, byte-identical 196,608
 > logits and 64 IDs. Round 1 default-on FATTN_WS: 8K **1,050.86 → 1,075.76**

@@ -105,3 +105,28 @@ One cold 65,536-token bench of the adopted stack, same prompt and 128
 greedy tokens, measured 884.21 prefill tok/s and 17.10 decode tok/s.
 Observed SM clocks were 2184–2197 MHz. This is one process, not the
 three-run incremental curve above.
+
+## Prefill rounds, 23 September
+
+Three later prefill changes on the default path, each a same-binary
+`ds4-perf compare` at one 8,192-token frontier and 128 greedy tokens.
+Prompt `speed-bench/promessi_sposi.txt`, artifact
+`MQ-IQ2-XXS-XS-Q8-MM-BF16`, MTP and DFlash off. Three fresh processes
+per side after a warmup process. Busy SM clocks stayed inside
+2177–2197 MHz. The earlier P1–P5 curve is a different stack and is not
+this comparison.
+
+| Round | Kill switch | 8K prefill tok/s | Prefill time upper | Decode time envelope |
+| --- | --- | ---: | ---: | --- |
+| 1 | `DS4_MIMO2_NO_PREFILL_HMMA` | 630.51 → 871.19 | −27.5% | −1.03% to +0.66% |
+| 2 | `DS4_MIMO2_NO_PREFILL_ASYNC` | 870.38 → 1071.07 | −18.6% | −1.59% to +0.14% |
+| 3 | `DS4_MIMO2_NO_SWA_HMMA` | 1073.29 → 1158.35 | −7.0% | −0.84% to +0.42% |
+
+Unset, windowless prefill of 32 or more rows uses tensor cores, and
+that path stages KV with `cp.async`. Window-128 prefill of 32 or more
+rows uses tensor cores too. One-row decode stays on the previous
+kernels. Round 1 and round 3 change summation order. Compare used
+`--logit-rel-rms 0.10`: relative RMS was 0.073 and 0.077, and every
+frontier argmax matched. Round 2 matched logits and greedy tokens.
+Sharing the IQ2 gate/up Q8 stage was slower (869 → 835 tok/s) and is
+not in the default path.
