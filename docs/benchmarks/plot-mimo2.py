@@ -52,19 +52,24 @@ def summarize(runs):
     return result
 
 
-def plot(series, out, note):
+def plot(series, out, note, metrics=METRICS):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     plt.rcParams.update({"font.size": 11, "axes.spines.top": False,
                          "axes.spines.right": False, "savefig.facecolor": "white"})
-    fig, axes = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
+    single_panel = len(metrics) == 1
+    fig, axes = plt.subplots(len(metrics), 1,
+                             figsize=(11, 6.5 if single_panel else 8),
+                             sharex=True, squeeze=False)
+    axes = axes[:, 0]
     fig.suptitle("MiMo-V2.6-Flash-RL · MQ-IQ2-XXS-XS-Q8", fontsize=17,
                  fontweight="bold", y=0.98)
-    fig.text(0.5, 0.935, "One DGX Spark / GB10 · 2K–64K", ha="center", color="#4b5563")
+    fig.text(0.5, 0.91 if single_panel else 0.935,
+             "One DGX Spark / GB10 · 2K–64K", ha="center", color="#4b5563")
     x = [frontier // 1024 for frontier in FRONTIERS]
-    for ax, (metric, heading) in zip(axes, METRICS):
+    for ax, (metric, heading) in zip(axes, metrics):
         for index, entry in enumerate(series):
             values = entry["metrics"][metric]
             color = COLORS[index % len(COLORS)]
@@ -77,14 +82,17 @@ def plot(series, out, note):
         ax.grid(alpha=0.2)
         ax.legend(loc="best", framealpha=0.92)
         ax.margins(y=0.16)
+        ax.set_ylim(bottom=0)
     axes[-1].set_xlabel("Context tokens (K = 1,024)")
     axes[-1].set_xticks([2, 8, 16, 24, 32, 40, 48, 56, 64])
     axes[-1].set_xlim(2, 64)
-    fig.text(0.5, 0.06,
+    fig.text(0.5, 0.075 if single_panel else 0.06,
              "Curves: per-frontier medians; bands: observed min–max across three fresh processes.\n"
              "2,048-token incremental prefill + 128 greedy tokens per frontier; one warm session per process.\n"
              + note, ha="center", va="center", fontsize=9, color="#4b5563", linespacing=1.6)
-    fig.subplots_adjust(top=0.88, bottom=0.17, left=0.1, right=0.97, hspace=0.3)
+    fig.subplots_adjust(top=0.82 if single_panel else 0.88,
+                        bottom=0.25 if single_panel else 0.17,
+                        left=0.1, right=0.97, hspace=0.3)
     fig.savefig(out, dpi=180)
     plt.close(fig)
 
@@ -95,6 +103,7 @@ def main():
                         default=Path(__file__).with_name("mimo2-2026-09-23"))
     parser.add_argument("--series", action="append", required=True, metavar="PREFIX=LABEL")
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--metric", choices=("both", "prefill", "decode"), default="both")
     parser.add_argument("--note", required=True, help="Verified artifact/MTP/clock conditions")
     args = parser.parse_args()
     series = []
@@ -118,9 +127,10 @@ def main():
                 "retention_change_percentage_points": 100 * (
                     final["retention_64k_over_2k"] - baseline["retention_64k_over_2k"]),
             }
-    plot(series, args.out, args.note)
+    metrics = METRICS if args.metric == "both" else (METRICS[0 if args.metric == "prefill" else 1],)
+    plot(series, args.out, args.note, metrics)
     args.out.with_suffix(".json").write_text(json.dumps({
-        "frontiers": FRONTIERS, "note": args.note, "series": series,
+        "frontiers": FRONTIERS, "note": args.note, "plotted_metric": args.metric, "series": series,
         "final_vs_first": comparison,
     }, indent=2) + "\n")
 
