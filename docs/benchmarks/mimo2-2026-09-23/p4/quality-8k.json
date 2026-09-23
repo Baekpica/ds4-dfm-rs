@@ -1,0 +1,132 @@
+[
+  {
+    "case": "korean_arithmetic",
+    "prompt_tokens": 8280,
+    "stopped": [
+      true,
+      true
+    ],
+    "answers": [
+      "{\"remaining\": 74}",
+      "{\"remaining\": 74}"
+    ],
+    "exact_answer": true,
+    "fixture_verdict": [
+      true,
+      true
+    ],
+    "vocab": 152576,
+    "max_abs": 2.0568332076072693,
+    "rel_l2": 0.1386348491127039,
+    "kl_off_on": 0.006166832385578894,
+    "argmax": [
+      4913,
+      4913
+    ],
+    "top20_overlap": 19
+  },
+  {
+    "case": "extract_record",
+    "prompt_tokens": 8264,
+    "stopped": [
+      true,
+      true
+    ],
+    "answers": [
+      "```json\n{\"ticket\": \"SPARK-7319\", \"state\": \"ready\"}\n```",
+      "```json\n{\"ticket\": \"SPARK-7319\", \"state\": \"ready\"}\n```"
+    ],
+    "exact_answer": true,
+    "fixture_verdict": [
+      true,
+      true
+    ],
+    "vocab": 152576,
+    "max_abs": 2.1354098320007324,
+    "rel_l2": 0.1160758606423886,
+    "kl_off_on": 0.009158643386535662,
+    "argmax": [
+      73594,
+      73594
+    ],
+    "top20_overlap": 17
+  },
+  {
+    "case": "python_fix",
+    "prompt_tokens": 8269,
+    "stopped": [
+      true,
+      true
+    ],
+    "answers": [
+      "def negative_squares(xs):\n    return sum(x * x for x in xs if x < 0)",
+      "def negative_squares(xs):\n    return sum(x * x for x in xs if x < 0)"
+    ],
+    "exact_answer": true,
+    "fixture_verdict": [
+      true,
+      true
+    ],
+    "vocab": 152576,
+    "max_abs": 1.0482239723205566,
+    "rel_l2": 0.07248261730001213,
+    "kl_off_on": 0.0006544114504329783,
+    "argmax": [
+      750,
+      750
+    ],
+    "top20_overlap": 17
+  },
+  {
+    "case": "korean_summary",
+    "prompt_tokens": 8299,
+    "stopped": [
+      true,
+      true
+    ],
+    "answers": [
+      "서버 A는 서버 B보다 60개 더 많은 요청을 처리했으나 2GB의 추가 메모리를 사용했으며, 두 서버 모두 오류 없이 작동했다.",
+      "서버 A는 서버 B보다 60개 더 많은 요청을 처리했으나 2GB의 추가 메모리를 사용했으며, 두 서버 모두 오류 없이 작동했습니다."
+    ],
+    "exact_answer": false,
+    "fixture_verdict": [
+      null,
+      null
+    ],
+    "vocab": 152576,
+    "max_abs": 1.5912866592407227,
+    "rel_l2": 0.11471381962951481,
+    "kl_off_on": 0.004057052806458181,
+    "argmax": [
+      26698,
+      26698
+    ],
+    "top20_overlap": 16
+  },
+  {
+    "case": "logic_order",
+    "prompt_tokens": 8246,
+    "stopped": [
+      true,
+      true
+    ],
+    "answers": [
+      "Dana",
+      "Dana"
+    ],
+    "exact_answer": true,
+    "fixture_verdict": [
+      true,
+      true
+    ],
+    "vocab": 152576,
+    "max_abs": 1.8228929042816162,
+    "rel_l2": 0.08509156300796133,
+    "kl_off_on": 0.00038339149905284415,
+    "argmax": [
+      35,
+      35
+    ],
+    "top20_overlap": 18
+  }
+]

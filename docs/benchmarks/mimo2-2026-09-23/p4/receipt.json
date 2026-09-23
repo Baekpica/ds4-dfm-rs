@@ -1,0 +1,21 @@
+{
+  "state": "speed/output and strengthened graph/history gates passed; architecture guard and default-path promotion pending",
+  "csv_sha256": {
+    "off-1.csv": "c6acb62a03b456326781eef6c6e40af419575a6c6019a05f95fe3c65e72dc99b",
+    "off-2.csv": "aa558137540e44f59c717106797a451f76b83791a03bf5d4263b4973858e1f01",
+    "off-3.csv": "4622c9a5100785e7fe7f713fb2e7c571062c370561f5392a52a2f2b604232ac5",
+    "on-1.csv": "6c473e008b3ff5a1e91a8275d58ea1045a73ab7808da2c812ad483ea7bba292a",
+    "on-2.csv": "44382b107d712e28945001e3dad38fe49ae54005c12f9847edc71460c7b9ca34",
+    "on-3.csv": "3af292d90733573352161d73f86a2722542bbdab107740f119a31d963975e732"
+  },
+  "observed_busy_sm_mhz": {
+    "min": 2177,
+    "max": 2190,
+    "median": 2190
+  },
+  "fallback": "DS4_MIMO2_PREFILL_HMMA=0",
+  "comparison": "HMMA=0 vs1; DS4_MIMO2_ATTN_SPLIT=0 on both; no MTP/DFlash",
+  "numerical_contract": "Summation order changes. Assess independent oracle and structural KV/mask/position invariants plus logits and meaningful answers; exact greedy continuation is not required.",
+  "scope_limit": "Five8K and two65K answerable fixtures do not establish general quality. 112/128 tokens differ in32K open-ended continuation; do not claim equivalence.",
+  "attention_check": "../attention-check.json"
+}

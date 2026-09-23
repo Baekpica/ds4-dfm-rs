@@ -1,0 +1,11 @@
+{
+  "scope": "MiMo primitive oracle and graph checks; no new serving/context qualification",
+  "full_history_capacity_at_32k": 32841,
+  "full_max_abs_vs_fp64": 8.64401665e-05,
+  "walk_max_abs_vs_fp64": 9.75911523e-05,
+  "swa_replay_max_abs_vs_fp64": 1.12152548e-06,
+  "global_updated_kv_capture_cases": 8,
+  "swa_updated_kv_capture_cases": 12,
+  "scalar_async_exact_cases": 8,
+  "log_sha256": "8da01adee4798f00fafc8b9b186ae13e5700a66dcf97380f73dffc1ed003312d"
+}

@@ -1,0 +1,9 @@
+{
+  "scope": "five tasks, 8246-8299 prompt tokens, plain greedy, 128 output cap",
+  "correctness": "Both arms answer arithmetic=74, record=SPARK-7319/ready, Python sum(x*x for x in xs if x<0), ordering=Dana correctly. Korean summaries retain 60 requests/s, 2GB extra memory, and no errors.",
+  "exact_answers": 4,
+  "meaning_preserved": 5,
+  "difference": "Korean summary final politeness ending only.",
+  "limitations": "Both record answers use JSON code fences despite request for JSON only; pre-existing in both arms. This fixture does not establish general long-context quality.",
+  "decision": "Proceed to long-context and repeated E2E gates; not yet adopted."
+}

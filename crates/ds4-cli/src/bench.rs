@@ -217,8 +217,11 @@ fn uses_prefix_replay(args: &BenchArgs, family: ModelFamily) -> bool {
 }
 
 fn use_mtp_spec(family: ModelFamily, mtp: Option<&str>, draft: i32) -> bool {
+    // Qwen4Exp and MiMo carry embedded MTP heads, so bench can speculate
+    // without an external draft file. Other families still need that file.
+    // Depth 1 stays one plain step. DS4_MTP_SPEC_DISABLE forces plain decode.
     draft > 1
-        && (mtp.is_some() || family == ModelFamily::Qwen4Exp)
+        && (mtp.is_some() || matches!(family, ModelFamily::Qwen4Exp | ModelFamily::Mimo2))
         && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
 }
 
@@ -1108,6 +1111,27 @@ mod tests {
         assert!(use_mtp_spec(ModelFamily::Qwen4Exp, None, 2));
         assert!(!use_mtp_spec(ModelFamily::DeepSeek4, Some("draft.gguf"), 1));
         assert!(use_mtp_spec(ModelFamily::DeepSeek4, Some("draft.gguf"), 2));
+    }
+
+    #[test]
+    fn mimo_embedded_mtp_enters_speculative_decode() {
+        let previous = std::env::var_os("DS4_MTP_SPEC_DISABLE");
+        std::env::remove_var("DS4_MTP_SPEC_DISABLE");
+
+        assert!(use_mtp_spec(ModelFamily::Mimo2, None, 2));
+        assert!(!use_mtp_spec(ModelFamily::Mimo2, None, 1));
+        assert!(use_mtp_spec(ModelFamily::Mimo2, Some("dflash.gguf"), 2));
+        assert!(use_mtp_spec(ModelFamily::Qwen4Exp, None, 2));
+
+        std::env::set_var("DS4_MTP_SPEC_DISABLE", "1");
+        assert!(!use_mtp_spec(ModelFamily::Mimo2, None, 2));
+        assert!(!use_mtp_spec(ModelFamily::Mimo2, Some("dflash.gguf"), 2));
+        assert!(!use_mtp_spec(ModelFamily::Qwen4Exp, None, 2));
+
+        match previous {
+            Some(value) => std::env::set_var("DS4_MTP_SPEC_DISABLE", value),
+            None => std::env::remove_var("DS4_MTP_SPEC_DISABLE"),
+        }
     }
 
     #[test]

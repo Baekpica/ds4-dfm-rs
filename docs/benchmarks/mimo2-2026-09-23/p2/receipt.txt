@@ -1,0 +1,11 @@
+rev d896382814d7c3bb0d7b0290420643e41f3637dd
+bin e187d19cd80fc165ac788551b1ee76b56ffa6c1e38167add9c1b02b0e0813e42
+kill_switch DS4_MIMO2_FATTN=0
+protocol incremental 2048..16384 step 2048 gen 8 plain
+2026-09-23T06:14:50+09:00
+PAIR gate-off-1 exit 0
+PAIR gate-on-1 exit 0
+PAIR gate-off-2 exit 0
+PAIR gate-on-2 exit 0
+PAIR gate-off-3 exit 0
+PAIR gate-on-3 exit 0

@@ -32,6 +32,8 @@ release candidate or describe live processes.
 
 ## Recorded evidence
 
+- [MiMo, September 23](benchmarks/mimo2-2026-09-23/README.md): GB10 prefill
+  curve, 8K decode A/B, and one cold 64K bench.
 - [Migration evidence](rust-migration/README.md): frozen C oracle, host parity,
   C-shared gaps and the completed repository split.
 - Qwen: [long-context prefill, September 4](qwen38-long-context-prefill-2026-09-04.md),

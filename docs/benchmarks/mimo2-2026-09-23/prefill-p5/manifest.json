@@ -1,0 +1,44 @@
+{
+  "purpose": "User-requested prefill-only intermediate graph before decode optimization",
+  "candidate": "P4 global HMMA + P5 async KV copy; P6 SWA and inherited decode split disabled",
+  "binary_sha256": "a74b9213f18c38f8452d741b05a71114126c11b34ebd5bbc264e75eb317d1d41",
+  "frozen_source": "scratch/mimo-perf-20260923/p5/source",
+  "source_receipt": "docs/benchmarks/mimo2-2026-09-23/p5/source-sha256.json",
+  "worktree_head_at_launch": "49fe9a0891e4c31368206babe99ecd7f490b1f4d",
+  "head_is_candidate_source_identity": false,
+  "model": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+  "prompt_sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f",
+  "protocol": "2048-token incremental frontiers through65536,128greedy/frontier,3fresh processes,one warm session per process",
+  "controls": {
+    "DS4_MIMO2_ATTN_SPLIT": "0",
+    "DS4_MIMO2_PREFILL_HMMA": "1",
+    "DS4_MIMO2_PREFILL_ASYNC": "1",
+    "DS4_MIMO2_SWA_HMMA": "0"
+  },
+  "mtp": "off",
+  "dflash": "off",
+  "clock_policy_mhz": [
+    300,
+    2200
+  ],
+  "baseline": "Historical original PR56 three-process sweep, not a same-hour paired A/B",
+  "started": 1790126852.2140486,
+  "runs": [
+    {
+      "repeat": 1,
+      "csv": "prefill-p5-1.csv",
+      "sha256": "6463bd6b5de95563db473c351a37090f8c9ba5b1d5ef5ed48628fc22daca84bb"
+    },
+    {
+      "repeat": 2,
+      "csv": "prefill-p5-2.csv",
+      "sha256": "988180db240d96cee7acb71825e9e87a1373f99b333dae2289056cc41ffdeac5"
+    },
+    {
+      "repeat": 3,
+      "csv": "prefill-p5-3.csv",
+      "sha256": "b634180c1d6e20df37957ce352e0dbbf3f1885ee9c80db8a761ad4bf168b461d"
+    }
+  ],
+  "finished": 1790131501.8804226
+}

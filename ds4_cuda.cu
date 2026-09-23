@@ -3999,9 +3999,13 @@ extern "C" int ds4_cuda_spark_build_mismatch(void) {
     return 1;
 }
 
+static bool m2_hmma_available = false;
+static void m2_hmma_init(void);
+
 extern "C" int ds4_gpu_init(void) {
     int dev = 0;
     if (!cuda_ok(cudaSetDevice(dev), "set device")) return 0;
+    m2_hmma_init();
     cudaDeviceProp prop;
     if (cudaGetDeviceProperties(&prop, dev) == cudaSuccess) {
         fprintf(stderr, "ds4: CUDA backend initialized on %s (sm_%d%d)\n",
@@ -4173,8 +4177,11 @@ extern "C" int ds4_gpu_init(void) {
     return 1;
 }
 
+static void m2_split_release(void);
+
 extern "C" void ds4_gpu_cleanup(void) {
     (void)cudaDeviceSynchronize();
+    m2_split_release();
     ds4_cuda_invalidate_captured_graphs("GPU cleanup");
     ds4_gpu_decode_scalars_cleanup();
     ds4_gpu_decode_layer_scalars_cleanup();

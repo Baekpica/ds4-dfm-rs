@@ -716,7 +716,7 @@ ds4_agent_cpu.o: ds4_agent.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_
 ds4_metal.o: ds4_metal.m ds4_gpu.h $(METAL_SRCS)
 	$(CC) $(OBJCFLAGS) -c -o $@ ds4_metal.m
 
-ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_media.cuh ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
+ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
 	$(NVCC) $(NVCCFLAGS) -c -o $@ ds4_cuda.cu
 
 # Vendored mmq pieces. ds4_mmq.cu transitively pulls in mmq.cuh which has

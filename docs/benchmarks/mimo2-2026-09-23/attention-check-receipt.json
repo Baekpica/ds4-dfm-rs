@@ -1,0 +1,16 @@
+{
+  "time": 1790121073.120855,
+  "sha256": {
+    "tests/mimo2_attention.cu": "1b94e670b1e5ea74d0c9d760911463efabf36443a1eb426108f35a660f89d09b",
+    "cuda/mimo2_prefill.cuh": "c206a8ea7b4de878fad79f5cdd32e3bd4d7545f428918af6a88d77d4007e5d84",
+    "scratch/mimo-perf-20260923/p6/review-test": "b599b55abbbade600fd36add30e47e9734f62e0b09afd88879380e6d004296cb",
+    "scratch/mimo-perf-20260923/p6/async-swa-bench.cu": "f369cc9101a94bf45eff34b25423ac1d86fd7eb84a38e5c4111c59343e8a62c1",
+    "scratch/mimo-perf-20260923/p6/async-swa-bench": "d02cabb647cbd5bedab75c2113711868fe62746d04d506ec37ae50d920d779c9"
+  },
+  "scope": "Full 32K KV history and changed positions plus newly populated KV rows; SWA ring, ragged rows, sinks",
+  "execution": {
+    "exit_code": 0,
+    "evidence": "run-p6-next.sh uses set -e and advanced to async-swa benchmark and model A/B",
+    "log_sha256": "8da01adee4798f00fafc8b9b186ae13e5700a66dcf97380f73dffc1ed003312d"
+  }
+}

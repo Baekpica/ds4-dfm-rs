@@ -1,0 +1,7 @@
+[
+  {"id":"korean_arithmetic","prompt":"참고 자료의 내용과 관계없이 다음 계산을 수행하세요. 한 상자에 17개씩 6상자, 그중 28개를 사용했습니다. 남은 개수를 {\"remaining\": 정수} JSON 하나로만 답하세요.","expected":{"remaining":74}},
+  {"id":"extract_record","prompt":"다음 기록만 사용하세요. ticket: SPARK-7319; retries: 4; state: ready. ticket과 state를 키로 갖는 JSON 객체 하나만 출력하세요.","expected":{"ticket":"SPARK-7319","state":"ready"}},
+  {"id":"python_fix","prompt":"Fix this Python function so it returns the sum of the squares of all negative numbers in xs. Return only the corrected function.\ndef negative_squares(xs):\n    return sum(x * 2 for x in xs if x > 0)","expected_behavior":"sum(x*x for x in xs if x < 0)"},
+  {"id":"korean_summary","prompt":"다음 내용만 한국어 한 문장으로 요약하세요: 서버 A는 초당 240개 요청을 처리했다. 서버 B는 초당 180개 요청을 처리했다. 두 서버 모두 오류는 없었다. 서버 A가 60개 더 처리했지만 메모리를 2GB 더 사용했다.","required_facts":["A faster by 60 requests/s","A uses 2GB more memory","no errors"]},
+  {"id":"logic_order","prompt":"Alice arrived before Bob. Carol arrived after Bob. Dana arrived before Alice. Who arrived first? Reply with only the name.","expected":"Dana"}
+]

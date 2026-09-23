@@ -1,6 +1,11 @@
 /* Included by the CUDA backend. MiMo's model geometry is explicit here. */
 #include "cuda/mimo2_primitives.cuh"
 #include "cuda/mimo2_media.cuh"
+#include "cuda/mimo2_prefill.cuh"
+
+static void m2_hmma_init(void) {
+    m2_hmma_available = mimo2_hmma::supported();
+}
 
 extern "C" int ds4_gpu_mimo2_qkv(
         ds4_gpu_tensor *q, ds4_gpu_tensor *k, ds4_gpu_tensor *v,
@@ -56,11 +61,37 @@ extern "C" int ds4_gpu_mimo2_kv_store(
     return cuda_ok(cudaGetLastError(), "MiMo KV store");
 }
 
+static float *m2_split_buf = nullptr;
+/* Which attention kernel the last call launched. The decode-round test
+ * reads this so a matching walk result cannot hide a missed dispatch. */
+static int m2_attn_path = 0;
+
+// ds4_gpu_cleanup calls this. A second init must allocate again, not leak.
+static void m2_split_release(void) {
+    if (!m2_split_buf) { return; }
+    (void)cudaFree(m2_split_buf);
+    m2_split_buf = nullptr;
+}
+
+static int m2_split_ready(void) {
+    if (m2_split_buf) { return 1; }
+    if (ds4_capture_active()) { return 0; }
+    const size_t n = (size_t)M2_DECODE_SPLITS * 64;
+    const size_t bytes = n * (2 + 128) * sizeof(float);
+    if (cudaMalloc(&m2_split_buf, bytes) != cudaSuccess) {
+        m2_split_buf = nullptr;
+        // The failure is handled by the walking fallback. Leave no sticky error.
+        (void)cudaGetLastError();
+        return 0;
+    }
+    return 1;
+}
+
 extern "C" int ds4_gpu_mimo2_attention(
         ds4_gpu_tensor *out, const ds4_gpu_tensor *q, const ds4_gpu_tensor *cache,
         const ds4_gpu_tensor *positions, const void *map, uint64_t size,
         uint64_t sink_offset, uint32_t kv_heads, uint32_t capacity,
-        uint32_t rows, uint32_t window) {
+        uint32_t rows, uint32_t window, uint32_t pos0) {
     enum { HEADS = 64, KEY = 192, VALUE = 128, CONTEXT = 1048576, MAX_ROWS = 65535 };
     const uint64_t cache_bytes = (uint64_t)capacity * kv_heads * (KEY + VALUE) * sizeof(__half);
     if (!out || !q || !cache || !positions || !rows || rows > MAX_ROWS ||
@@ -77,10 +108,93 @@ extern "C" int ds4_gpu_mimo2_attention(
         if (!sinks) { return 0; }
     }
     /* Session admission owns position bounds, contiguous rows and ring retention.
-     * No scalar position is baked into capture; all queries read live state. */
-    mimo2_attention<<<dim3(HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
-        (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
-        sinks, (const unsigned *)positions->ptr, kv_heads, capacity, window);
+     * No scalar position is baked into capture; all queries read live state.
+     * m2_use_tile is the measured crossover. The L2 load keeps the KV head
+     * resident across query rows. DS4_MIMO2_FATTN_L2=0 keeps the scalar tile.
+     * DS4_MIMO2_FATTN=0 keeps the walk. One full-attention row is split
+     * across key slices; DS4_MIMO2_ATTN_SPLIT=0 keeps that walk. SWA stays. */
+    const char *fattn = getenv("DS4_MIMO2_FATTN");
+    const char *l2 = getenv("DS4_MIMO2_FATTN_L2");
+    const char *hmma_env = getenv("DS4_MIMO2_PREFILL_HMMA");
+    const int hmma = m2_hmma_available && window == 0 && kv_heads == 4 && rows >= 32 &&
+        hmma_env && hmma_env[0] == '1' && hmma_env[1] == '\0';
+    const char *async_env = getenv("DS4_MIMO2_PREFILL_ASYNC");
+    const int async_copy = async_env && async_env[0] == '1' && async_env[1] == '\0';
+    const char *swa_env = getenv("DS4_MIMO2_SWA_HMMA");
+    const int swa_hmma = m2_hmma_available && window == 128 && kv_heads == 8 && rows >= 32 &&
+        swa_env && swa_env[0] == '1' && swa_env[1] == '\0';
+    const char *split_env = getenv("DS4_MIMO2_ATTN_SPLIT");
+    const char *swa_decode_env = getenv("DS4_MIMO2_SWA_DECODE");
+    const char *swa_vec_env = getenv("DS4_MIMO2_SWA_VEC");
+    const char *split_vec_env = getenv("DS4_MIMO2_SPLIT_VEC");
+    const char *split16_env = getenv("DS4_MIMO2_SPLIT16");
+    const int swa_decode = rows == 1 && window == 128 && kv_heads == 8 &&
+        swa_decode_env && swa_decode_env[0] == '1' && swa_decode_env[1] == '\0';
+    const int split_vec = split_vec_env && split_vec_env[0] == '1' && split_vec_env[1] == '\0';
+    const int nsplit = (split16_env && split16_env[0] == '1' && split16_env[1] == '\0')
+        ? 16 : M2_DECODE_SPLITS;
+    const int fattn_off = fattn && fattn[0] == '0' && fattn[1] == '\0';
+    const int split_off = split_env && split_env[0] == '0' && split_env[1] == '\0';
+    const int tile = !fattn_off && m2_use_tile(window, kv_heads, rows, pos0);
+    const int hinted = tile && !(l2 && l2[0] == '0' && l2[1] == '\0');
+    // Either kill switch skips the scratch alloc and keeps the walk.
+    // Rows 2..8 are the speculative verify width. The split kernel is one
+    // query, so each row reuses the same scratch on this stream.
+    const int split = rows >= 1 && rows <= 8 && window == 0 && kv_heads == 4 &&
+        !fattn_off && !split_off && m2_split_ready();
+    if (swa_decode) {
+        const int swa_vec = swa_vec_env && swa_vec_env[0] == '1' && swa_vec_env[1] == '\0';
+        m2_attn_path = swa_vec ? 2 : 1;
+        mimo2_swa_decode<<<dim3(1, kv_heads), 256, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
+            sinks, (const unsigned *)positions->ptr, kv_heads, capacity, window, swa_vec);
+    } else if (swa_hmma) {
+        mimo2_hmma::prefill<mimo2_hmma::Async, 128><<<
+            dim3((rows + mimo2_hmma::TQ - 1) / mimo2_hmma::TQ, HEADS),
+            32 * mimo2_hmma::WARPS, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
+            sinks, (const unsigned *)positions->ptr, rows, kv_heads, capacity);
+    } else if (hmma && async_copy) {
+        mimo2_hmma::prefill<mimo2_hmma::Async><<<
+            dim3((rows + mimo2_hmma::TQ - 1) / mimo2_hmma::TQ, HEADS),
+            32 * mimo2_hmma::WARPS, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
+            sinks, (const unsigned *)positions->ptr, rows, kv_heads, capacity);
+    } else if (hmma) {
+        mimo2_hmma::prefill<<<dim3((rows + mimo2_hmma::TQ - 1) / mimo2_hmma::TQ, HEADS),
+            32 * mimo2_hmma::WARPS, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
+            sinks, (const unsigned *)positions->ptr, rows, kv_heads, capacity);
+    } else if (split) {
+        const size_t n = (size_t)M2_DECODE_SPLITS * 64;
+        float *pmax = m2_split_buf;
+        float *pden = pmax + n;
+        float *pacc = pden + n;
+        const float *qbase = (const float *)q->ptr;
+        float *obase = (float *)out->ptr;
+        const unsigned *pbase = (const unsigned *)positions->ptr;
+        m2_attn_path = split_vec ? 4 : 3;
+        for (uint32_t r = 0; r < rows; r++) {
+            mimo2_attn_split<<<dim3(nsplit, kv_heads), 512, 0, ds4_current_stream()>>>(
+                pmax, pden, pacc, qbase + (uint64_t)r * HEADS * KEY,
+                (const __half *)cache->ptr, sinks, pbase + r, kv_heads, capacity,
+                nsplit, split_vec);
+            mimo2_attn_merge<<<64, 32, 0, ds4_current_stream()>>>(
+                obase + (uint64_t)r * HEADS * VALUE, pmax, pden, pacc, nsplit);
+        }
+    } else if (hinted) {
+        mimo2_attn_l2<<<dim3(rows, kv_heads), 512, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
+            sinks, (const unsigned *)positions->ptr, kv_heads, capacity);
+    } else if (tile) {
+        mimo2_attn_tile<<<dim3(rows, kv_heads), 512, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
+            sinks, (const unsigned *)positions->ptr, kv_heads, capacity);
+    } else {
+        mimo2_attention<<<dim3(HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
+            sinks, (const unsigned *)positions->ptr, kv_heads, capacity, window);
+    }
     return cuda_ok(cudaGetLastError(), "MiMo asymmetric attention");
 }
 

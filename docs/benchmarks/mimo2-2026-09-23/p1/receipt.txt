@@ -1,0 +1,11 @@
+rev 09ce6e6027d052482a7a4b9460d7fc0435b88aff
+bin 01165aa7fb22ec3d8d4f99ae867c5b74aa9c59bb2086a4431db0b8cd5a5ef024
+kill_switch DS4_MIMO2_FATTN=0
+protocol incremental 2048..65536 step 2048 gen 16 plain
+2026-09-23T03:15:25+09:00
+PAIR off-1 exit 0
+PAIR on-1 exit 0
+PAIR off-2 exit 0
+PAIR on-2 exit 0
+PAIR off-3 exit 0
+PAIR on-3 exit 0

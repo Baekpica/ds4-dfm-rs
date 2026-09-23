@@ -1,0 +1,80 @@
+{
+  "capture": "One ds4.prefill NVTX range; cold64K, global HMMA+async, decode split disabled. Instrumented gen8 run, excluded from throughput A/B.",
+  "nvtx_range_ns": 78432965760,
+  "kernel_total_ns": 78172612534,
+  "top_kernels": [
+    {
+      "name": "void mimo2_hmma::prefill<(mimo2_hmma::Copy)1>(float *, const float *, const __half *, const float *, const unsigned int *, unsigned int, unsigned int, unsigned int)",
+      "time_percent": 27.4,
+      "time_ns": 21415897088,
+      "instances": 144
+    },
+    {
+      "name": "<unnamed>::gateup_iq2_d2r_pair_kernel(const void *, const void *, const block_q8_1_mmq *, const int *, const int *, const int *, const int *, float *, float *, int, int, int, int)",
+      "time_percent": 22.6,
+      "time_ns": 17685136224,
+      "instances": 752
+    },
+    {
+      "name": "void <unnamed>::ds4_moe_worklist_mmq_kernel<(ggml_type)17, (bool)0>(const char *, const int *, const int *, const int *, float *, const uint3 *, const unsigned int *, int, int, int, int, int, int, int)",
+      "time_percent": 14.6,
+      "time_ns": 11437889792,
+      "instances": 752
+    },
+    {
+      "name": "mimo2_attention(float *, const float *, const __half *, const float *, const unsigned int *, unsigned int, unsigned int, unsigned int)",
+      "time_percent": 7.9,
+      "time_ns": 6202221024,
+      "instances": 624
+    },
+    {
+      "name": "<unnamed>::dq8::dense_q8_d2r_kernel(const char *, const char *, const block_q8_1_mmq *, float *, int, int, int, int)",
+      "time_percent": 6.8,
+      "time_ns": 5301186016,
+      "instances": 800
+    },
+    {
+      "name": "void mul_mat_q<(ggml_type)8, (int)128, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3, const char *, long)",
+      "time_percent": 4.9,
+      "time_ns": 3791489664,
+      "instances": 784
+    },
+    {
+      "name": "void quantize_mmq_q8_1<(mmq_q8_1_ds_layout)0>(const float *, const int *, void *, long, long, long, long, long, int, int)",
+      "time_percent": 3.6,
+      "time_ns": 2795232192,
+      "instances": 3088
+    },
+    {
+      "name": "step37_swiglu(float *, const float *, const float *, const float *, unsigned int, unsigned long, float)",
+      "time_percent": 3.3,
+      "time_ns": 2577247488,
+      "instances": 768
+    },
+    {
+      "name": "step37_expert_sum(float *, const float *, const float *, unsigned int, unsigned long)",
+      "time_percent": 2.3,
+      "time_ns": 1797959488,
+      "instances": 752
+    },
+    {
+      "name": "mimo2_split_rope(float *, float *, float *, const float *, const float2 *, unsigned int, unsigned int)",
+      "time_percent": 1.8,
+      "time_ns": 1443849664,
+      "instances": 768
+    },
+    {
+      "name": "exaone_add_kernel(float *, const float *, unsigned long)",
+      "time_percent": 1.6,
+      "time_ns": 1286160640,
+      "instances": 1536
+    },
+    {
+      "name": "exaone_rms_norm_kernel(float *, const float *, const float *, unsigned int, unsigned int, float)",
+      "time_percent": 1.1,
+      "time_ns": 857470038,
+      "instances": 1552
+    }
+  ],
+  "kernel_instances": 22240
+}
