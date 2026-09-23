@@ -450,16 +450,13 @@ pub fn parse_failure_should_retry(
         && finish != "length"
 }
 
-pub fn terminal_finish(thinking_inside: bool, finish: &str) -> &'static str {
-    if thinking_inside && finish != "error" && finish != "length" {
-        "length"
-    } else {
-        match finish {
-            "tool_calls" => "tool_calls",
-            "length" => "length",
-            "error" => "error",
-            _ => "stop",
-        }
+/// Termination cause only. An open think block does not rewrite it.
+pub fn terminal_finish(finish: &str) -> &'static str {
+    match finish {
+        "tool_calls" => "tool_calls",
+        "length" => "length",
+        "error" => "error",
+        _ => "stop",
     }
 }
 

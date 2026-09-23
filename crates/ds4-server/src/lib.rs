@@ -139,8 +139,8 @@ pub use stream::{
     project_openai_completion, project_responses_thinking, responses_final_response,
     responses_sse_created, responses_sse_finish_live, responses_sse_stream_update,
     responses_stream_init, sse_chunk, sse_done, sse_headers, think_end, think_start, unix_now,
-    utf8_stream_safe_len, utf8_trim_tail, ChatFormat, ReqTimings, StreamReq, Writer, CREATED_TEST,
-    TAPE_PLAIN, TAPE_THINKING, TAPE_UTF8, TEST_MSG_ID, TEST_RESP_ID, TEST_RS_ID,
+    utf8_stream_safe_len, utf8_trim_tail, ChatFormat, ReqTimings, StreamReq, ThinkBlock, Writer,
+    CREATED_TEST, TAPE_PLAIN, TAPE_THINKING, TAPE_UTF8, TEST_MSG_ID, TEST_RESP_ID, TEST_RS_ID,
 };
 pub use tool_stream::{dump_script as tool_stream_dump_script, DsmlToolState, DsmlToolStream};
 pub use tools::{

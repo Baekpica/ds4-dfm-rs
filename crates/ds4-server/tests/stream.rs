@@ -4,7 +4,7 @@ use ds4_server::{
     anthropic_final_response, final_response, project_anthropic_thinking,
     project_openai_chat_thinking, project_openai_chat_utf8, project_openai_completion,
     project_responses_thinking, responses_final_response, utf8_stream_safe_len, ReqKind, StreamReq,
-    CREATED_TEST, TEST_MSG_ID, TEST_RESP_ID, TEST_RS_ID,
+    ThinkBlock, CREATED_TEST, TEST_MSG_ID, TEST_RESP_ID, TEST_RS_ID,
 };
 
 use std::path::PathBuf;
@@ -322,6 +322,7 @@ fn buffered_finals_match_c() {
         b"Hello world.",
         None,
         "stop",
+        ThinkBlock::Closed,
         4,
         4,
         0,

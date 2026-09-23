@@ -3,7 +3,9 @@ use crate::generate::{chat_format_for_syntax, responses_ids, stream_req_from_par
 use crate::parse::ParsedRequest;
 use crate::render::syntax_for_model_id;
 use crate::route::{decode_budget, think_mode_enabled, Api, ReqKind};
-use crate::stream::{anthropic_final_response, final_response, responses_final_response};
+use crate::stream::{
+    anthropic_final_response, final_response, responses_final_response, ThinkBlock,
+};
 use crate::tools::parse_generated_for_response;
 
 pub struct StaticSettle<'a> {
@@ -105,6 +107,7 @@ fn write_static_chat(
                 &parsed_gen.content,
                 Some(&parsed_gen.reasoning),
                 finish,
+                ThinkBlock::Closed,
                 spec.prompt_n,
                 emitted,
                 0,
