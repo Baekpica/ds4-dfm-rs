@@ -10761,7 +10761,7 @@ static bool responses_final_response(int fd, bool enable_cors,
                                      const char *text, const char *reasoning,
                                      const tool_calls *calls, const char *finish,
                                      int prompt_tokens, int completion_tokens,
-                                     int reasoning_tokens) {
+                                     int reasoning_tokens, bool thinking_inside) {
     (void)id;
     char *text_t = utf8_trim_tail_dup(text);
     char *reasoning_t = utf8_trim_tail_dup(reasoning);
@@ -10778,6 +10778,8 @@ static bool responses_final_response(int fd, bool enable_cors,
     long now = (long)time(NULL);
     const char *status = responses_status_for_finish(finish);
     const char *item_status = responses_item_status_for_finish(finish);
+    /* Open think stays incomplete even when the cause is stop. */
+    const char *reasoning_status = thinking_inside ? "incomplete" : item_status;
     buf b = {0};
     buf_printf(&b,
         "{\"id\":\"%s\",\"object\":\"response\",\"created_at\":%ld,\"status\":\"%s\","
@@ -10793,15 +10795,10 @@ static bool responses_final_response(int fd, bool enable_cors,
     buf_puts(&b, ",\"output\":[");
     bool wrote = false;
     if (reasoning && reasoning[0] && r->reasoning_summary_emit) {
-        /* Non-streaming path runs after the worker has post-processed the
-         * generation, so any reasoning here came from a parsed assistant turn
-         * where </think> was observed (otherwise the reasoning text would be
-         * empty). Tag it with the response-level item_status which still flips
-         * to incomplete/failed when finish is length/error. */
         buf_printf(&b,
             "{\"id\":\"%s\",\"type\":\"reasoning\",\"status\":\"%s\","
             "\"summary\":[{\"type\":\"summary_text\",\"text\":",
-            reasoning_id, item_status);
+            reasoning_id, reasoning_status);
         json_escape(&b, reasoning);
         buf_puts(&b, "}]}");
         wrote = true;
@@ -13375,6 +13372,7 @@ typedef struct {
     int prompt_tokens;
     int completion_tokens;
     int reasoning_tokens;       /* consumed by the Responses surface only */
+    bool thinking_inside;       /* open think block; not a finish cause */
 } ds4_wire_result;
 
 /* Legacy completion streaming keeps no machine state today (plain sse_chunk
@@ -13681,7 +13679,8 @@ static bool wire_finish_buffered(int fd, bool enable_cors, const request *r,
                                       res->content, res->reasoning, res->calls,
                                       finish, res->prompt_tokens,
                                       res->completion_tokens,
-                                      res->reasoning_tokens);
+                                      res->reasoning_tokens,
+                                      res->thinking_inside);
         break;
     default:
         ok = final_response(fd, enable_cors, r, ws->id,
@@ -17384,6 +17383,7 @@ decode_again:
         res.raw_len = acc.text.len;
         res.content = parsed_content ? parsed_content : (acc.text.ptr ? acc.text.ptr : "");
         res.reasoning = parsed_reasoning;
+        res.thinking_inside = acc.thinking.inside;
         res.recovered = recovered_tool_parse_failure;
         res.recovered_content = recovered_tool_parse_failure ? parsed_content : NULL;
         res.calls = &parsed_calls;
@@ -20780,6 +20780,7 @@ static bool write_cont_completion(server *s, job *j, int engine_finish) {
             res.stop_cause = DS4_STOP_SEQUENCE;
         res.content = content ? content : (st->acc.text.ptr ? st->acc.text.ptr : "");
         res.reasoning = reasoning;
+        res.thinking_inside = st->acc.thinking.inside;
         res.calls = &calls;
         res.prompt_tokens = prompt_tokens;
         res.completion_tokens = st->acc.completion;
@@ -25853,7 +25854,7 @@ static void test_responses_usage_reports_cache_details(void) {
     }
 
     TEST_ASSERT(responses_final_response(sv[0], false, &r, "resp_usage", "OK", NULL, NULL,
-                                         "stop", 10, 2, 5));
+                                         "stop", 10, 2, 5, false));
     shutdown(sv[0], SHUT_WR);
     char *out = read_socket_text(sv[1]);
 
@@ -28613,6 +28614,49 @@ static void test_unclosed_thinking_is_incomplete_reasoning(void) {
     TEST_ASSERT(!strcmp(sem_accum_terminal_finish(&acc, "stop"), "stop"));
     TEST_ASSERT(!strcmp(sem_accum_terminal_finish(&acc, "error"), "error"));
     TEST_ASSERT(!strcmp(sem_accum_terminal_finish(&acc, "length"), "length"));
+}
+
+static void test_open_think_responses_item_incomplete(void) {
+    request r;
+    int sv[2];
+    char *out;
+
+    request_init(&r, REQ_CHAT, 128);
+    r.api = API_RESPONSES;
+    r.reasoning_summary_emit = true;
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    if (sv[0] < 0 || sv[1] < 0) {
+        request_free(&r);
+        return;
+    }
+    TEST_ASSERT(responses_final_response(sv[0], false, &r, "resp_open",
+                                         "", "still reasoning", NULL, "stop",
+                                         4, 2, 2, true));
+    shutdown(sv[0], SHUT_WR);
+    out = read_socket_text(sv[1]);
+    TEST_ASSERT(strstr(out, "\"status\":\"completed\"") != NULL);
+    TEST_ASSERT(strstr(out, "\"type\":\"reasoning\",\"status\":\"incomplete\"") != NULL);
+    TEST_ASSERT(strstr(out, "incomplete_details") == NULL);
+    free(out);
+    close(sv[0]);
+    close(sv[1]);
+
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    if (sv[0] < 0 || sv[1] < 0) {
+        request_free(&r);
+        return;
+    }
+    TEST_ASSERT(responses_final_response(sv[0], false, &r, "resp_closed",
+                                         "Answer", "done thinking", NULL, "stop",
+                                         4, 2, 2, false));
+    shutdown(sv[0], SHUT_WR);
+    out = read_socket_text(sv[1]);
+    TEST_ASSERT(strstr(out, "\"type\":\"reasoning\",\"status\":\"completed\"") != NULL);
+    TEST_ASSERT(strstr(out, "incomplete_details") == NULL);
+    free(out);
+    request_free(&r);
+    close(sv[0]);
+    close(sv[1]);
 }
 
 static void test_no_tools_unclosed_thinking_uses_reasoning_channel(void) {
@@ -32884,7 +32928,7 @@ static void test_tape_buffered_final_responses(void) {
     request_init(&r, REQ_CHAT, 128);
     r.api = API_RESPONSES;
     TEST_ASSERT(responses_final_response(sv[0], false, &r, "resp_buf", "Hello world.",
-                                         NULL, &empty, "stop", 4, 4, 0));
+                                         NULL, &empty, "stop", 4, 4, 0, false));
     shutdown(sv[0], SHUT_WR);
     out = read_socket_text(sv[1]);
     TEST_ASSERT(strstr(out, "\"object\":\"response\"") != NULL);
@@ -33090,7 +33134,7 @@ static void test_wire_finish_buffered_matches_direct_emitters(void) {
             } else if (r.api == API_RESPONSES) {
                 TEST_ASSERT(responses_final_response(sv[0], false, &r, surfaces[si].id,
                                                      "Hello world.", NULL, &empty,
-                                                     finishes[fi], 4, 4, 0));
+                                                     finishes[fi], 4, 4, 0, false));
             } else {
                 TEST_ASSERT(final_response(sv[0], false, &r, surfaces[si].id,
                                            "Hello world.", NULL, &empty,
@@ -36874,6 +36918,7 @@ static void ds4_server_unit_tests_run(void) {
     test_thinking_dsml_is_not_executable_before_think_close();
     test_thinking_dsml_after_think_close_is_executable();
     test_unclosed_thinking_is_incomplete_reasoning();
+    test_open_think_responses_item_incomplete();
     test_no_tools_unclosed_thinking_uses_reasoning_channel();
     test_length_limited_thinking_uses_nonterminal_visible_prefix();
     test_tool_checkpoint_suffix_is_future_prompt_canonical();
