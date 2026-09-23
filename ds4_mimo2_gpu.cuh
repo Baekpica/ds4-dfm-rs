@@ -117,15 +117,18 @@ extern "C" int ds4_gpu_mimo2_attention(
      * across key slices; DS4_MIMO2_ATTN_SPLIT=0 keeps that walk. SWA stays.
      * Windowless prefill of 32 or more rows uses tensor cores. The walk
      * reloads one KV head per query head; HMMA scores a 64-row tile once.
-     * Summation order changes. DS4_MIMO2_NO_PREFILL_HMMA=1 restores the walk. */
+     * Summation order changes. DS4_MIMO2_NO_PREFILL_HMMA=1 restores the walk.
+     * The tensor-core path stages KV with cp.async. That copy is byte-identical
+     * to the scalar loads. DS4_MIMO2_NO_PREFILL_ASYNC=1 keeps the scalar loads. */
     const char *fattn = getenv("DS4_MIMO2_FATTN");
     const char *l2 = getenv("DS4_MIMO2_FATTN_L2");
     const char *no_hmma = getenv("DS4_MIMO2_NO_PREFILL_HMMA");
     const int hmma_off = no_hmma && no_hmma[0] == '1' && no_hmma[1] == '\0';
     const int hmma = m2_hmma_available && window == 0 && kv_heads == 4 && rows >= 32 && !hmma_off;
     m2_attn_path = 0;
-    const char *async_env = getenv("DS4_MIMO2_PREFILL_ASYNC");
-    const int async_copy = async_env && async_env[0] == '1' && async_env[1] == '\0';
+    const char *no_async = getenv("DS4_MIMO2_NO_PREFILL_ASYNC");
+    const int async_off = no_async && no_async[0] == '1' && no_async[1] == '\0';
+    const int async_copy = !async_off;
     const char *swa_env = getenv("DS4_MIMO2_SWA_HMMA");
     const int swa_hmma = m2_hmma_available && window == 128 && kv_heads == 8 && rows >= 32 &&
         swa_env && swa_env[0] == '1' && swa_env[1] == '\0';
