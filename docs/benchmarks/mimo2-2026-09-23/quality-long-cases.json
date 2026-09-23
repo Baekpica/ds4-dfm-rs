@@ -1,0 +1,31 @@
+[
+  {
+    "id": "long_record_retrieval",
+    "records": [
+      {
+        "at_token": 128,
+        "text": "[OPERATIONS RECORD] batch ALPHA has verification code KESTREL-4721 and 19 completed jobs."
+      },
+      {
+        "at_token": 32768,
+        "text": "[OPERATIONS RECORD] batch BETA has verification code JUNIPER-8053 and 27 completed jobs."
+      },
+      {
+        "at_token": 61000,
+        "text": "[OPERATIONS RECORD] batch GAMMA has verification code COBALT-1938 and 8 completed jobs."
+      }
+    ],
+    "prompt": "Find the three OPERATIONS RECORD entries in the reference material. Return one JSON object with keys ALPHA, BETA, GAMMA containing their exact verification codes, and total_jobs containing the sum of their completed jobs. Ignore the surrounding novel.",
+    "expected": {
+      "ALPHA": "KESTREL-4721",
+      "BETA": "JUNIPER-8053",
+      "GAMMA": "COBALT-1938",
+      "total_jobs": 54
+    }
+  },
+  {
+    "id": "long_python_fix",
+    "prompt": "Fix this Python function so it returns the sum of the squares of all negative numbers in xs. Return only the corrected function.\ndef negative_squares(xs):\n    return sum(x * 2 for x in xs if x > 0)",
+    "expected_behavior": "sum(x*x for x in xs if x < 0)"
+  }
+]

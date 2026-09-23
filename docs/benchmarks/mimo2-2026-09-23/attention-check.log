@@ -1,0 +1,131 @@
+tile_gate=2048@10240,4096@8192
+kv=4 start=5 sink=0 max_abs_error=2.36707005e-07
+changed_position_capture=eager_exact
+kv=4 start=5 sink=1 max_abs_error=2.28328634e-07
+changed_position_capture=eager_exact
+kv=4 start=129 sink=0 max_abs_error=1.58160467e-06
+changed_position_capture=eager_exact
+kv=4 start=129 sink=1 max_abs_error=1.59689379e-06
+changed_position_capture=eager_exact
+kv=4 start=4095 sink=0 max_abs_error=1.5151849e-05
+changed_position_capture=eager_exact
+kv=4 start=4095 sink=1 max_abs_error=1.51202597e-05
+changed_position_capture=eager_exact
+kv=8 start=5 sink=0 max_abs_error=2.54512182e-07
+changed_position_capture=eager_exact
+kv=8 start=5 sink=1 max_abs_error=2.17372382e-07
+changed_position_capture=eager_exact
+kv=8 start=129 sink=0 max_abs_error=1.64837007e-06
+changed_position_capture=eager_exact
+kv=8 start=129 sink=1 max_abs_error=1.62870733e-06
+changed_position_capture=eager_exact
+kv=8 start=4095 sink=0 max_abs_error=2.04505849e-06
+changed_position_capture=eager_exact
+kv=8 start=4095 sink=1 max_abs_error=2.12917822e-06
+changed_position_capture=eager_exact
+kv=8 start=262144 sink=0 max_abs_error=1.91079653e-06
+changed_position_capture=eager_exact
+kv=8 start=262144 sink=1 max_abs_error=1.81907592e-06
+changed_position_capture=eager_exact
+hmma start=0 sink=0 walk_error=1.43051147e-06
+hmma_async_copy=scalar_exact
+tile start=0 sink=0 cap=73 walk_error=0 oracle_error=8.02402683e-07
+hmma_fp64_error=1.01585441e-06 walk_fp64_error=8.02402683e-07
+tile_changed_position_capture=eager_exact
+full_updated_kv_replay_fp64_error=7.95426581e-07 walk_error=8.21107695e-07
+hmma_changed_position_capture=eager_exact
+hmma start=0 sink=1 walk_error=1.49011612e-06
+hmma_async_copy=scalar_exact
+tile start=0 sink=1 cap=73 walk_error=0 oracle_error=8.10052605e-07
+hmma_fp64_error=8.07223597e-07 walk_fp64_error=8.10052605e-07
+tile_changed_position_capture=eager_exact
+full_updated_kv_replay_fp64_error=8.44206261e-07 walk_error=8.28199402e-07
+hmma_changed_position_capture=eager_exact
+hmma start=1000 sink=0 walk_error=6.31809235e-06
+hmma_async_copy=scalar_exact
+tile start=1000 sink=0 cap=1073 walk_error=0 oracle_error=4.24281954e-06
+hmma_fp64_error=2.22955175e-06 walk_fp64_error=4.24281954e-06
+tile_changed_position_capture=eager_exact
+full_updated_kv_replay_fp64_error=2.29879653e-06 walk_error=4.15476605e-06
+hmma_changed_position_capture=eager_exact
+hmma start=1000 sink=1 walk_error=6.2584877e-06
+hmma_async_copy=scalar_exact
+tile start=1000 sink=1 cap=1073 walk_error=0 oracle_error=4.02624155e-06
+hmma_fp64_error=2.80026437e-06 walk_fp64_error=4.02624155e-06
+tile_changed_position_capture=eager_exact
+full_updated_kv_replay_fp64_error=2.78336954e-06 walk_error=4.17601677e-06
+hmma_changed_position_capture=eager_exact
+hmma start=4096 sink=0 walk_error=2.15172768e-05
+hmma_async_copy=scalar_exact
+tile start=4096 sink=0 cap=4169 walk_error=0 oracle_error=1.37638112e-05
+hmma_fp64_error=8.94518812e-06 walk_fp64_error=1.37638112e-05
+tile_changed_position_capture=eager_exact
+full_updated_kv_replay_fp64_error=8.86639741e-06 walk_error=1.3649716e-05
+hmma_changed_position_capture=eager_exact
+hmma start=4096 sink=1 walk_error=2.13980675e-05
+hmma_async_copy=scalar_exact
+tile start=4096 sink=1 cap=4169 walk_error=0 oracle_error=1.34601156e-05
+hmma_fp64_error=8.37898125e-06 walk_fp64_error=1.34601156e-05
+tile_changed_position_capture=eager_exact
+full_updated_kv_replay_fp64_error=8.37905415e-06 walk_error=1.34873739e-05
+hmma_changed_position_capture=eager_exact
+hmma start=32768 sink=0 walk_error=0.000159621239
+hmma_async_copy=scalar_exact
+tile start=32768 sink=0 cap=32841 walk_error=0 oracle_error=9.75911523e-05
+hmma_fp64_error=8.49827563e-05 walk_fp64_error=9.75911523e-05
+tile_changed_position_capture=eager_exact
+full_updated_kv_replay_fp64_error=8.49115009e-05 walk_error=9.74755282e-05
+hmma_changed_position_capture=eager_exact
+hmma start=32768 sink=1 walk_error=0.000159740448
+hmma_async_copy=scalar_exact
+tile start=32768 sink=1 cap=32841 walk_error=0 oracle_error=9.7570794e-05
+hmma_fp64_error=8.63566837e-05 walk_fp64_error=9.7570794e-05
+tile_changed_position_capture=eager_exact
+full_updated_kv_replay_fp64_error=8.64401665e-05 walk_error=9.74546267e-05
+hmma_changed_position_capture=eager_exact
+split start=0 sink=0 err=0
+split start=0 sink=1 err=0
+split start=17 sink=0 err=2.38418579e-07
+split start=17 sink=1 err=1.78813934e-07
+split start=128 sink=0 err=1.37090683e-06
+split start=128 sink=1 err=1.1920929e-06
+split start=1000 sink=0 err=3.75509262e-06
+split start=1000 sink=1 err=3.75509262e-06
+split start=4095 sink=0 err=1.50799751e-05
+split start=4095 sink=1 err=1.51395798e-05
+kv=8 start=0 sink=0 max_abs_error=1.09912586e-06
+swa_updated_kv_replay_fp64_error=1.10999486e-06
+changed_position_capture=eager_exact
+kv=8 start=0 sink=1 max_abs_error=1.1265506e-06
+swa_updated_kv_replay_fp64_error=1.08055327e-06
+changed_position_capture=eager_exact
+kv=8 start=5 sink=0 max_abs_error=1.09990861e-06
+swa_updated_kv_replay_fp64_error=1.12152548e-06
+changed_position_capture=eager_exact
+kv=8 start=5 sink=1 max_abs_error=1.05261289e-06
+swa_updated_kv_replay_fp64_error=9.87326856e-07
+changed_position_capture=eager_exact
+kv=8 start=127 sink=0 max_abs_error=1.06174047e-06
+swa_updated_kv_replay_fp64_error=1.05358285e-06
+changed_position_capture=eager_exact
+kv=8 start=127 sink=1 max_abs_error=1.00741203e-06
+swa_updated_kv_replay_fp64_error=1.03637978e-06
+changed_position_capture=eager_exact
+kv=8 start=129 sink=0 max_abs_error=1.06955086e-06
+swa_updated_kv_replay_fp64_error=1.07586553e-06
+changed_position_capture=eager_exact
+kv=8 start=129 sink=1 max_abs_error=1.05622289e-06
+swa_updated_kv_replay_fp64_error=1.06318687e-06
+changed_position_capture=eager_exact
+kv=8 start=4095 sink=0 max_abs_error=9.9973384e-07
+swa_updated_kv_replay_fp64_error=1.10105964e-06
+changed_position_capture=eager_exact
+kv=8 start=4095 sink=1 max_abs_error=1.04127165e-06
+swa_updated_kv_replay_fp64_error=1.09257082e-06
+changed_position_capture=eager_exact
+kv=8 start=262144 sink=0 max_abs_error=1.03680956e-06
+swa_updated_kv_replay_fp64_error=1.02074705e-06
+changed_position_capture=eager_exact
+kv=8 start=262144 sink=1 max_abs_error=1.02928309e-06
+swa_updated_kv_replay_fp64_error=1.00681791e-06
+changed_position_capture=eager_exact

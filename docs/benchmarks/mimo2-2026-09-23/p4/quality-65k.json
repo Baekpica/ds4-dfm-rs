@@ -1,0 +1,54 @@
+[
+  {
+    "case": "long_record_retrieval",
+    "prompt_tokens": 65156,
+    "stopped": [
+      true,
+      true
+    ],
+    "answers": [
+      "```json\n{\n  \"ALPHA\": \"KESTREL-4721\",\n  \"BETA\": \"JUNIPER-8053\",\n  \"GAMMA\": \"COBALT-1938\",\n  \"total_jobs\": 54\n}\n```",
+      "```json\n{\n  \"ALPHA\": \"KESTREL-4721\",\n  \"BETA\": \"JUNIPER-8053\",\n  \"GAMMA\": \"COBALT-1938\",\n  \"total_jobs\": 54\n}\n```"
+    ],
+    "exact_answer": true,
+    "fixture_verdict": [
+      true,
+      true
+    ],
+    "vocab": 152576,
+    "max_abs": 2.3975000381469727,
+    "rel_l2": 0.13559514638901618,
+    "kl_off_on": 0.04450828189074095,
+    "argmax": [
+      73594,
+      73594
+    ],
+    "top20_overlap": 19
+  },
+  {
+    "case": "long_python_fix",
+    "prompt_tokens": 65077,
+    "stopped": [
+      true,
+      true
+    ],
+    "answers": [
+      "def negative_squares(xs):\n    return sum(x * x for x in xs if x < 0)",
+      "def negative_squares(xs):\n    return sum(x * x for x in xs if x < 0)"
+    ],
+    "exact_answer": true,
+    "fixture_verdict": [
+      true,
+      true
+    ],
+    "vocab": 152576,
+    "max_abs": 1.3217744827270508,
+    "rel_l2": 0.0808541093304712,
+    "kl_off_on": 0.0029113692353727716,
+    "argmax": [
+      750,
+      750
+    ],
+    "top20_overlap": 20
+  }
+]

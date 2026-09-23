@@ -1,0 +1,11 @@
+rev 56f0cc932fd639b23c1f0254af3107162e09f63d
+bin de618ac6ecb213bdb9af3ebcfd931ec6f9a436d72af00098b21ab57621d93629
+kill_switch DS4_MIMO2_FATTN_L2=0 (scalar tile); DS4_MIMO2_FATTN=0 (walk)
+protocol cold 32768 gen 8 plain
+2026-09-23T06:39:14+09:00
+PAIR off-1 exit 0
+PAIR on-1 exit 0
+PAIR off-2 exit 0
+PAIR on-2 exit 0
+PAIR off-3 exit 0
+PAIR on-3 exit 0

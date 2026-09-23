@@ -1,0 +1,37 @@
+{
+  "state": "speed/output and strengthened graph/history gates passed; architecture guard and default-path promotion pending",
+  "csv_sha256": {
+    "32k/off-1.csv": "c61ef953692fd80a4b9756bd32b3451a64511269e4bf8012e41636dc2f0a8173",
+    "32k/off-2.csv": "838bb4ec6856c3ba3676868faf1b9166c7a8163bcf69840a89aa0973adcdef83",
+    "32k/off-3.csv": "e6fca8f620882b2fc0798caa63e23cedc71eba48c97d7584dab454610667d496",
+    "32k/on-1.csv": "1748a8f6175db74bbf8ad4cf7b9f3160963b69cc871b0360374e696941119abb",
+    "32k/on-2.csv": "22287d9ee5f313f283a867d9494c943e88691053e9e84b9ed679125e375cc537",
+    "32k/on-3.csv": "4ec85b8f5effaf629e51f3628b880e06545581e449edba1e265dd2a9451c459d",
+    "64k/off-1.csv": "6fd5937ad9bb7aaa487960e228ac9fdd553b0139d8cfdc99aecb5c0fa541e695",
+    "64k/off-2.csv": "09e8ee28d99aaac6b382e466d395aceacf18ab652c48b0cd699fcfdbd266c258",
+    "64k/off-3.csv": "6d157e792e16480b9de11f11d9d6a6ed63d8ec4de88f9be9f7964a4d26c51934",
+    "64k/on-1.csv": "70645468cdcd1762134a138b17dcfde47aef9351af3a57e0a6143c4a9c014f1b",
+    "64k/on-2.csv": "588f542f2d98ddc5796f594f3ebe803d19646efcb409ac7b7f9473530fea173c",
+    "64k/on-3.csv": "3fa32d122c2d31a7d8964918105c12384603d523636153203f744a14133e662d"
+  },
+  "observed_busy_sm_mhz": {
+    "32k": {
+      "min": 2184,
+      "max": 2190,
+      "median": 2190.0
+    },
+    "64k": {
+      "min": 2184,
+      "max": 2190,
+      "median": 2190
+    }
+  },
+  "comparison": "DS4_MIMO2_PREFILL_ASYNC=0 vs1; HMMA=1 and ATTN_SPLIT=0 on both; no MTP/DFlash",
+  "numerical_contract": "Copy-only change preserves arithmetic and stored KV bits. All six32K/64K pairs have exact full-vocabulary logits and128 tokens.",
+  "cold_prefill_64k_over_32k": {
+    "off": 0.506620714674406,
+    "on": 0.8684519663592986
+  },
+  "scope": "Cold-frontier comparisons. Not the original incremental2K\u201364K graph or its64K/2K retention.",
+  "attention_check": "../attention-check.json"
+}

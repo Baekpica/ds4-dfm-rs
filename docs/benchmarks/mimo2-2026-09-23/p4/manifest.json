@@ -1,0 +1,13 @@
+{
+  "head": "c3890b4384dd3d6bff1aa46cb8b060b3d6175723",
+  "binary_sha256": "673170872c391b193923c3d5b97db13ca3d7317e1a142132ef8b2a6ba280d2d9",
+  "prompt_sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f",
+  "model": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+  "ctx": 32768,
+  "gen": 128,
+  "repeats": 3,
+  "protocol": "cold frontier, fresh process, no MTP/DFlash, decode split disabled",
+  "clock_policy": "preserve 300-2200 MHz",
+  "started": 1790117548.9159675,
+  "source_state": "Frozen executable from a dirty working tree based on head; head alone does not identify the tested source. See source-sha256.json and receipt.json for the candidate."
+}

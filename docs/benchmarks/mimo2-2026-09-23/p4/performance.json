@@ -1,0 +1,56 @@
+{
+  "prefill_tps": {
+    "off": 275.27,
+    "on": 442.05,
+    "gain_pct": 60.58778653685475
+  },
+  "gen_tps": {
+    "off": 3.15,
+    "on": 3.15,
+    "gain_pct": 0.0
+  },
+  "proof": [
+    {
+      "vocab": 152576,
+      "max_abs": 2.8156711000000003,
+      "rel_l2": 0.14388096960772787,
+      "argmax": [
+        704,
+        704
+      ],
+      "token_mismatches": 112,
+      "token_lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "vocab": 152576,
+      "max_abs": 2.8156711000000003,
+      "rel_l2": 0.14388096960772787,
+      "argmax": [
+        704,
+        704
+      ],
+      "token_mismatches": 112,
+      "token_lengths": [
+        128,
+        128
+      ]
+    },
+    {
+      "vocab": 152576,
+      "max_abs": 2.8156711000000003,
+      "rel_l2": 0.14388096960772787,
+      "argmax": [
+        704,
+        704
+      ],
+      "token_mismatches": 112,
+      "token_lengths": [
+        128,
+        128
+      ]
+    }
+  ]
+}
