@@ -43,7 +43,7 @@ use crate::stream::{
     openai_stream_start, responses_final_response, responses_sse_created,
     responses_sse_finish_live, responses_sse_stream_update, responses_stream_init, sse_chunk,
     sse_done, sse_headers, AnthropicStream, OpenaiStream, ReqTimings, ResponsesStream, StreamReq,
-    Writer,
+    ThinkBlock, Writer,
 };
 #[cfg(any(feature = "native", test))]
 use crate::stream::{think_end, ChatFormat};
@@ -358,7 +358,7 @@ impl ContStepper {
             self.finish = "stop";
         }
         let syntax = syntax_for_model_id(self.model_id);
-        self.finish = terminal_finish(self.acc.thinking_inside(), self.finish);
+        self.finish = terminal_finish(self.finish);
         if let TruncationOutcome::Repair(text) = truncation_outcome(
             syntax,
             self.req.chat_format,
@@ -505,11 +505,17 @@ impl ContStepper {
                 ),
                 Api::Responses => {
                     let (response_id, reasoning_id, message_id) = responses_ids(&self.job_id);
+                    let think = if self.acc.thinking_inside() {
+                        ThinkBlock::Open
+                    } else {
+                        ThinkBlock::Closed
+                    };
                     responses_final_response(
                         &self.req,
                         &parsed_gen.content,
                         Some(&parsed_gen.reasoning),
                         self.finish,
+                        think,
                         self.prompt_n,
                         completion,
                         self.acc.reasoning_tokens,

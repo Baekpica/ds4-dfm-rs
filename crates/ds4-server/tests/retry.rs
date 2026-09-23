@@ -45,6 +45,18 @@ fn assert_script(name: &str) {
 }
 
 #[test]
+fn terminal_finish_keeps_cause() {
+    assert_eq!(ds4_server::retry::terminal_finish("stop"), "stop");
+    assert_eq!(
+        ds4_server::retry::terminal_finish("tool_calls"),
+        "tool_calls"
+    );
+    assert_eq!(ds4_server::retry::terminal_finish("length"), "length");
+    assert_eq!(ds4_server::retry::terminal_finish("error"), "error");
+    assert_eq!(ds4_server::retry::terminal_finish("other"), "stop");
+}
+
+#[test]
 fn suffix_and_system_match_c() {
     for name in [
         "dsml-think",

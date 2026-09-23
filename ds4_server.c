@@ -15292,13 +15292,11 @@ static int sem_accum_sampling_override(sem_accum *a, const request *r) {
     return DS4_SAMPLE_OVERRIDE_NONE;
 }
 
+/* Termination cause only. An open think block is not `length`. */
 static const char *sem_accum_terminal_finish(const sem_accum *a,
                                              const char *finish) {
+    (void)a;
     if (!finish) return "stop";
-    if (a && a->thinking.inside && strcmp(finish, "error") != 0 &&
-        strcmp(finish, "length") != 0) {
-        return "length";
-    }
     return finish;
 }
 
@@ -28612,7 +28610,7 @@ static void test_unclosed_thinking_is_incomplete_reasoning(void) {
 
     sem_accum acc = {0};
     acc.thinking.inside = true;
-    TEST_ASSERT(!strcmp(sem_accum_terminal_finish(&acc, "stop"), "length"));
+    TEST_ASSERT(!strcmp(sem_accum_terminal_finish(&acc, "stop"), "stop"));
     TEST_ASSERT(!strcmp(sem_accum_terminal_finish(&acc, "error"), "error"));
     TEST_ASSERT(!strcmp(sem_accum_terminal_finish(&acc, "length"), "length"));
 }

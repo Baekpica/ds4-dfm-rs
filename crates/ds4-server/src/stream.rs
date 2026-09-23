@@ -2172,11 +2172,18 @@ pub fn anthropic_final_response(
     http_response_bytes(200, Some("application/json"), None, cors, &body)
 }
 
+/// Think-block completeness. Separate from the finish cause.
+pub enum ThinkBlock {
+    Open,
+    Closed,
+}
+
 pub fn responses_final_response(
     r: &StreamReq,
     text: &[u8],
     reasoning: Option<&[u8]>,
     finish: &str,
+    think: ThinkBlock,
     prompt: i32,
     completion: i32,
     reasoning_tokens: i32,
@@ -2191,6 +2198,11 @@ pub fn responses_final_response(
     let reasoning = reasoning.map(utf8_trim_tail).unwrap_or(b"");
     let status = responses_status_for_finish(finish);
     let item_status = responses_item_status_for_finish(finish);
+    // An open block stays incomplete even when the cause is stop.
+    let reasoning_status = match think {
+        ThinkBlock::Open => "incomplete",
+        ThinkBlock::Closed => item_status,
+    };
     let mut b = format!(
         "{{\"id\":\"{response_id}\",\"object\":\"response\",\"created_at\":{created},\"status\":\"{status}\",\"model\":"
     )
@@ -2208,7 +2220,7 @@ pub fn responses_final_response(
     if !reasoning.is_empty() && r.reasoning_summary_emit {
         b.extend_from_slice(
             format!(
-                "{{\"id\":\"{reasoning_id}\",\"type\":\"reasoning\",\"status\":\"{item_status}\",\"summary\":[{{\"type\":\"summary_text\",\"text\":"
+                "{{\"id\":\"{reasoning_id}\",\"type\":\"reasoning\",\"status\":\"{reasoning_status}\",\"summary\":[{{\"type\":\"summary_text\",\"text\":"
             )
             .as_bytes(),
         );

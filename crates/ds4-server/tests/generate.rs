@@ -1265,6 +1265,117 @@ fn cont_stepper_streams_and_stops_on_budget() {
     assert_eq!(outcome.finish, "length");
 }
 
+fn think_req(surface: WireSurface, stream: bool) -> ParsedRequest {
+    let body = match surface {
+        WireSurface::Responses => r#"{"input":"hi","max_output_tokens":32}"#,
+        _ => r#"{"messages":[{"role":"user","content":"hi"}],"max_tokens":32}"#,
+    };
+    let mut parsed = parse_request(surface, &env(), body).unwrap();
+    parsed.stream = stream;
+    parsed.think_mode = ThinkMode::Low;
+    parsed.reasoning_summary_emit = true;
+    parsed.temperature = 0.0;
+    parsed.max_tokens = 32;
+    parsed.max_tokens_set = true;
+    parsed
+}
+
+fn step_think(
+    parsed: &ParsedRequest,
+    piece: &[u8],
+    stop: bool,
+    engine_eos: bool,
+) -> (String, String) {
+    let (mut st, head) = ContStepper::new(
+        parsed,
+        0,
+        "job-think",
+        CREATED_TEST,
+        false,
+        32,
+        b"<think>".to_vec(),
+        1,
+        8192,
+    );
+    let step = st.feed(piece);
+    if stop {
+        st.mark_stop();
+    }
+    let (tail, outcome) = st.finalize(engine_eos, 0, 1, ReqTimings::default(), false);
+    let mut bytes = head;
+    bytes.extend(step.bytes);
+    bytes.extend(tail);
+    (String::from_utf8(bytes).unwrap(), outcome.finish)
+}
+
+#[test]
+fn open_think_eos_reports_stop() {
+    let parsed = think_req(WireSurface::OpenaiChat, true);
+    let (s, finish) = step_think(&parsed, b"like `", true, true);
+    assert_eq!(finish, "stop");
+    assert!(s.contains("\"reasoning_content\":\"like `\""), "{s}");
+    assert!(s.contains("\"finish_reason\":\"stop\""), "{s}");
+    assert!(!s.contains("\"finish_reason\":\"length\""), "{s}");
+}
+
+#[test]
+fn open_think_budget_stays_length() {
+    let mut parsed = think_req(WireSurface::OpenaiChat, true);
+    parsed.max_tokens = 1;
+    let (s, finish) = step_think(&parsed, b"like `", false, false);
+    assert_eq!(finish, "length");
+    assert!(s.contains("\"finish_reason\":\"length\""), "{s}");
+}
+
+#[test]
+fn closed_think_eos_reports_stop() {
+    let parsed = think_req(WireSurface::OpenaiChat, true);
+    let (s, finish) = step_think(&parsed, b"plan</think>Answer", true, true);
+    assert_eq!(finish, "stop");
+    assert!(s.contains("\"finish_reason\":\"stop\""), "{s}");
+    assert!(s.contains("\"reasoning_content\":\"plan\""), "{s}");
+    assert!(s.contains("\"content\":\"Answer\""), "{s}");
+}
+
+#[test]
+fn open_think_eos_responses_keeps_completed() {
+    let parsed = think_req(WireSurface::Responses, true);
+    let (s, finish) = step_think(&parsed, b"like `", true, true);
+    assert_eq!(finish, "stop");
+    assert!(s.contains("\"type\":\"response.completed\""), "{s}");
+    assert!(
+        s.contains("\"type\":\"reasoning\",\"status\":\"incomplete\""),
+        "{s}"
+    );
+    assert!(!s.contains("incomplete_details"), "{s}");
+    assert!(!s.contains("max_output_tokens"), "{s}");
+}
+
+#[test]
+fn open_think_eos_responses_buffered_item_stays_incomplete() {
+    let parsed = think_req(WireSurface::Responses, false);
+    let (s, finish) = step_think(&parsed, b"like `", true, true);
+    assert_eq!(finish, "stop");
+    assert!(s.contains("\"status\":\"completed\""), "{s}");
+    assert!(
+        s.contains("\"type\":\"reasoning\",\"status\":\"incomplete\""),
+        "{s}"
+    );
+    assert!(!s.contains("incomplete_details"), "{s}");
+}
+
+#[test]
+fn closed_think_eos_responses_item_completed() {
+    let parsed = think_req(WireSurface::Responses, true);
+    let (s, finish) = step_think(&parsed, b"plan</think>Answer", true, true);
+    assert_eq!(finish, "stop");
+    assert!(s.contains("\"type\":\"response.completed\""), "{s}");
+    assert!(
+        s.contains("\"type\":\"reasoning\",\"status\":\"completed\""),
+        "{s}"
+    );
+}
+
 #[test]
 fn cont_stepper_streams_anthropic_events() {
     let parsed = parse_request(

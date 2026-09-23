@@ -43,7 +43,8 @@ use crate::stream::{
     openai_stream_start, responses_final_response, responses_sse_created,
     responses_sse_finish_live, responses_sse_stream_update, responses_stream_init, sse_chunk,
     sse_done, sse_headers, stream_error, stream_heartbeat_if_due, think_end, think_start,
-    AnthropicStream, ChatFormat, OpenaiStream, ReqTimings, ResponsesStream, StreamReq, Writer,
+    AnthropicStream, ChatFormat, OpenaiStream, ReqTimings, ResponsesStream, StreamReq, ThinkBlock,
+    Writer,
 };
 #[cfg(feature = "native")]
 use crate::tool_memory::ToolMemory;
@@ -2289,7 +2290,7 @@ pub(crate) fn generate_terminal_prepared(
             return Err(GenerateError::Streamed(message));
         }
 
-        finish = terminal_finish(acc.thinking_inside(), finish);
+        finish = terminal_finish(finish);
         match truncation_outcome(
             syntax,
             req.chat_format,
@@ -2498,11 +2499,17 @@ pub(crate) fn generate_terminal_prepared(
             ),
             Api::Responses => {
                 let (rid, rsid, mid) = responses_ids(job_id);
+                let think = if acc.thinking_inside() {
+                    ThinkBlock::Open
+                } else {
+                    ThinkBlock::Closed
+                };
                 responses_final_response(
                     &req,
                     &parsed_gen.content,
                     Some(&parsed_gen.reasoning),
                     finish,
+                    think,
                     prompt_n,
                     completion,
                     acc.reasoning_tokens,
