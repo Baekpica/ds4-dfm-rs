@@ -191,6 +191,9 @@ That path changes summation order, so compare it with `--logit-rel-rms`.
 SWA and one-row decode stay on their existing kernels.
 `DS4_MIMO2_NO_PREFILL_ASYNC=1` restores scalar KV loads inside that
 tensor-core prefill. Unset, the loads are asynchronous and byte-identical.
+`DS4_MIMO2_NO_SWA_HMMA=1` restores the walking sliding-window prefill.
+Unset, window-128 prefill of 32 or more rows uses the tensor-core tile.
+Compare that path with `--logit-rel-rms`. One-row decode stays on the walk.
 `DS4_INKLING_NO_SHARED_PIPE=1` restores the staged-slab resident Q8 tiles;
 the optimized path streams float-scale SoA rows through a cp.async column
 ring (two rows per warp for up, four rows per four-warp CTA for down).
