@@ -221,8 +221,7 @@ fn use_mtp_spec(family: ModelFamily, mtp: Option<&str>, draft: i32) -> bool {
     // without an external draft file. Other families still need that file.
     // Depth 1 stays one plain step. DS4_MTP_SPEC_DISABLE forces plain decode.
     draft > 1
-        && (mtp.is_some()
-            || matches!(family, ModelFamily::Qwen4Exp | ModelFamily::Mimo2))
+        && (mtp.is_some() || matches!(family, ModelFamily::Qwen4Exp | ModelFamily::Mimo2))
         && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
 }
 
