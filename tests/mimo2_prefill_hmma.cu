@@ -62,12 +62,13 @@ static double sampled_fp64(const std::vector<float> &got, const std::vector<floa
 
 static int launch(float *dout, float *dq, __half *dc, unsigned *dp, float *dsinks,
                   unsigned rows, unsigned capacity, unsigned pos0, int use_sink, int kill,
-                  int kill_async, std::vector<float> &host) {
+                  int kill_async, int fattn_off, std::vector<float> &host) {
     if (kill) { setenv("DS4_MIMO2_NO_PREFILL_HMMA", "1", 1); }
     else { unsetenv("DS4_MIMO2_NO_PREFILL_HMMA"); }
     if (kill_async) { setenv("DS4_MIMO2_NO_PREFILL_ASYNC", "1", 1); }
     else { unsetenv("DS4_MIMO2_NO_PREFILL_ASYNC"); }
-    unsetenv("DS4_MIMO2_FATTN");
+    if (fattn_off) { setenv("DS4_MIMO2_FATTN", "0", 1); }
+    else { unsetenv("DS4_MIMO2_FATTN"); }
     unsetenv("DS4_MIMO2_FATTN_L2");
     m2_attn_path = -1;
     ds4_gpu_tensor out{dout, host.size() * sizeof(float), 0, 0};
@@ -112,16 +113,22 @@ static int one_case(unsigned start, int use_sink) {
     cudaMemcpy(dp, positions.data(), positions.size() * sizeof(unsigned), cudaMemcpyHostToDevice);
     cudaMemcpy(ds, sinks.data(), sinks.size() * sizeof(float), cudaMemcpyHostToDevice);
 
-    if (!launch(dout, dq, dc, dp, ds, ROWS, capacity, start, use_sink, 1, 0, walked) || m2_attn_path != 0) {
+    if (!launch(dout, dq, dc, dp, ds, ROWS, capacity, start, use_sink, 1, 0, 0, walked) || m2_attn_path != 0) {
         fprintf(stderr, "kill switch missed the walk start=%u sink=%d path=%d\n", start, use_sink, m2_attn_path);
         return 2;
     }
-    if (!launch(dout, dq, dc, dp, ds, ROWS, capacity, start, use_sink, 0, 0, scored) || m2_attn_path != M2_PATH_HMMA) {
+    if (!launch(dout, dq, dc, dp, ds, ROWS, capacity, start, use_sink, 0, 0, 0, scored) || m2_attn_path != M2_PATH_HMMA) {
         fprintf(stderr, "default missed prefill HMMA start=%u sink=%d path=%d\n", start, use_sink, m2_attn_path);
         return 3;
     }
+    std::vector<float> legacy(walked.size());
+    if (!launch(dout, dq, dc, dp, ds, ROWS, capacity, start, use_sink, 0, 0, 1, legacy) ||
+        m2_attn_path != 0 || legacy != walked) {
+        fprintf(stderr, "FATTN=0 missed the walk start=%u sink=%d path=%d\n", start, use_sink, m2_attn_path);
+        return 6;
+    }
     std::vector<float> scalar(scored.size());
-    if (!launch(dout, dq, dc, dp, ds, ROWS, capacity, start, use_sink, 0, 1, scalar) || scalar != scored) {
+    if (!launch(dout, dq, dc, dp, ds, ROWS, capacity, start, use_sink, 0, 1, 0, scalar) || scalar != scored) {
         fprintf(stderr, "async KV copy diverged from scalar loads start=%u sink=%d\n", start, use_sink);
         return 5;
     }

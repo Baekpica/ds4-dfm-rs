@@ -122,9 +122,13 @@ extern "C" int ds4_gpu_mimo2_attention(
      * to the scalar loads. DS4_MIMO2_NO_PREFILL_ASYNC=1 keeps the scalar loads. */
     const char *fattn = getenv("DS4_MIMO2_FATTN");
     const char *l2 = getenv("DS4_MIMO2_FATTN_L2");
+    const int fattn_off = fattn && fattn[0] == '0' && fattn[1] == '\0';
     const char *no_hmma = getenv("DS4_MIMO2_NO_PREFILL_HMMA");
     const int hmma_off = no_hmma && no_hmma[0] == '1' && no_hmma[1] == '\0';
-    const int hmma = m2_hmma_available && window == 0 && kv_heads == 4 && rows >= 32 && !hmma_off;
+    /* FATTN=0 is the older full-attention kill switch. It still skips HMMA
+     * and the shared tile, so diagnostic runs keep the walk. */
+    const int hmma = m2_hmma_available && window == 0 && kv_heads == 4 && rows >= 32 &&
+        !hmma_off && !fattn_off;
     m2_attn_path = 0;
     const char *no_async = getenv("DS4_MIMO2_NO_PREFILL_ASYNC");
     const int async_off = no_async && no_async[0] == '1' && no_async[1] == '\0';
@@ -145,7 +149,6 @@ extern "C" int ds4_gpu_mimo2_attention(
     const int split_vec = split_vec_env && split_vec_env[0] == '1' && split_vec_env[1] == '\0';
     const int nsplit = (split16_env && split16_env[0] == '1' && split16_env[1] == '\0')
         ? 16 : M2_DECODE_SPLITS;
-    const int fattn_off = fattn && fattn[0] == '0' && fattn[1] == '\0';
     const int split_off = split_env && split_env[0] == '0' && split_env[1] == '\0';
     const int tile = !fattn_off && m2_use_tile(window, kv_heads, rows, pos0);
     const int hinted = tile && !(l2 && l2[0] == '0' && l2[1] == '\0');
