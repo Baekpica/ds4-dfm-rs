@@ -11,7 +11,7 @@ C `v0.6.5-dfm` 계보와 Rust 호스트가 **동일하게** 보이는 엔진 측
 (`C-control: reproduced`). C-control이 pending인 항목은 annotation
 근거로 쓸 수 없다.
 
-규율: 갭 수리는 엔진(C/CUDA) 작업이며 `AGENT.md`를 따른다.
+규율: 갭 수리는 엔진(C/CUDA) 작업이며 `AGENTS.md`를 따른다.
 **엔진 수리 커밋과 호스트 마이그레이션 커밋을 혼합하지 않는다.**
 이 기록은 genesis와 함께 `ds4-dfm-rs`로 이관되었다. 과거 증거를 보존하고,
 추가 수리는 검증된 커밋과 재현 결과로 연결한다.

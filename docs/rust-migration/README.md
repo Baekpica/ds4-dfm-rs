@@ -5,7 +5,7 @@ The C-to-Rust host migration and repository split are complete. The independent
 `ds4-dfm-rs-genesis` resolves to `fe7733fb4f7e18204b6ea0a00fe3b136d2029b17`.
 
 Current development follows the [architecture](ARCHITECTURE.md),
-[FFI contract](FFI_CONTRACT.md), [repository instructions](../../AGENT.md)
+[FFI contract](FFI_CONTRACT.md), [repository instructions](../../AGENTS.md)
 and [v0.1.0 release ledger](../releases/v0.1.0.md). The directory name is
 retained for existing links; those two boundary documents remain current.
 

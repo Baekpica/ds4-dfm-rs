@@ -305,7 +305,7 @@ def doc_prompt(path: str, chunk: str, task: str) -> list[dict]:
 def make_source_records(root: Path, records: list[Record]) -> None:
     files = [
         "ds4.c", "ds4_server.c", "ds4_cli.c", "ds4_metal.m", "ds4.h", "ds4_gpu.h",
-        "README.md", "AGENT.md", "gguf-tools/README.md",
+        "README.md", "AGENTS.md", "gguf-tools/README.md",
         "gguf-tools/imatrix/README.md", "gguf-tools/imatrix/dataset/README.md",
         "gguf-tools/quality-testing/README.md",
     ]
@@ -1034,7 +1034,7 @@ def make_long_context_records(root: Path, records: list[Record]) -> None:
 
     sources = [
         ("README.md", read_text(root / "README.md")),
-        ("AGENT.md", read_text(root / "AGENT.md")),
+        ("AGENTS.md", read_text(root / "AGENTS.md")),
         ("METAL.md", read_text(root / "METAL.md")),
         ("gguf-tools/imatrix/README.md", read_text(root / "gguf-tools/imatrix/README.md")),
         ("gguf-tools/imatrix/dataset/README.md", read_text(root / "gguf-tools/imatrix/dataset/README.md")),
@@ -1094,7 +1094,7 @@ def make_long_context_records(root: Path, records: list[Record]) -> None:
         block("README.md", 0),
         block("ds4_server.c", 0),
         block("ds4_server.c", 3),
-        block("AGENT.md", 0),
+        block("AGENTS.md", 0),
     ])
     add_long("codebase:eval-imatrix", (
         "Use the following excerpts to explain how the evaluation harness and the "
@@ -1239,7 +1239,7 @@ def make_long_context_records(root: Path, records: list[Record]) -> None:
         block("README.md", 3),
         block("gguf-tools/imatrix/README.md", 0),
         block("gguf-tools/quality-testing/README.md", 0),
-        block("AGENT.md", 1),
+        block("AGENTS.md", 1),
     ])
 
     # Needle-in-haystack: keep one small slice. The useful signal is the long

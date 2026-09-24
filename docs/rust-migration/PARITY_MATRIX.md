@@ -82,7 +82,7 @@ runs the ordinary functional, parity, proof, and performance cells.
 “Rust works” is not `cargo build`. A host change is accepted only
 when all five axes that it can affect are green. CUDA optimization
 commits already require a correctness proof **and** a speed proof
-(`AGENT.md`). The same bar applies to migration commits.
+(`AGENTS.md`). The same bar applies to migration commits.
 
 ## Five axes
 

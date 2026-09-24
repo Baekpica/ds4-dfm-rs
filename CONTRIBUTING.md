@@ -1,6 +1,6 @@
 # Contributing
 
-Read [AGENT.md](AGENT.md) and the [architecture](docs/rust-migration/ARCHITECTURE.md).
+Read [AGENTS.md](AGENTS.md) and the [architecture](docs/rust-migration/ARCHITECTURE.md).
 Rust owns the production host; CUDA/MMQ/VMM remains native. Keep each change
 scoped and report the exact commands, commit/build, hardware, model artifact,
 workload and failures. The [v0.1.0 ledger](docs/releases/v0.1.0.md) defines the

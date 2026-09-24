@@ -23,7 +23,7 @@ Campaigns this distills (all in `docs/` and `scratch/`):
 The one-line version: **almost every large win came from removing work the
 graph did not need (idle time, fallbacks, repeated transformations, redundant
 round trips), and the kernel-tuning rounds came last and paid least.**  This
-is the order the engine's `AGENT.md` prescribes and the campaigns confirmed
+is the order the engine's `AGENTS.md` prescribes and the campaigns confirmed
 it round after round.
 
 ---
@@ -124,7 +124,7 @@ What counts as the metric matters as much as the protocol:
 
 ## 2. Prefill: where the time went and how it was removed
 
-Ordered as `AGENT.md` orders it: unexpected fallback paths, repeated
+Ordered as `AGENTS.md` orders it: unexpected fallback paths, repeated
 transformations, redundant memory traffic, routing and indexing overhead,
 launch fragmentation, fast-path utilization, and only then kernel tuning.
 
@@ -361,7 +361,7 @@ and every recurrent state bit-exact against the serial oracle.  Every decode
 round since has had to keep it, and it has caught a real regression (the
 per-token split in R14 that R15 undid was found by measurement, but the
 state parity of R14 itself came from this test).  For MTP on compressed-KV
-families the contract is token-level at width > 1 (`AGENT.md`, "MTP /
+families the contract is token-level at width > 1 (`AGENTS.md`, "MTP /
 compressed-KV decode rules"): the committed cache values are inherently
 fp-noisy across widths, the committed token stream and frontier counts are
 not.
@@ -399,7 +399,7 @@ the per-launch overhead trips it after 12 cycles.
   that shows the two-row result bit-identical to two one-row calls.
 - Host gaps: ~2 ms per pass is launch issue and synchronization; captured
   graphs help only if every captured kernel reads live substrate state
-  (`AGENT.md`, "CUDA captured-decode rules") — by-value arguments replay
+  (`AGENTS.md`, "CUDA captured-decode rules") — by-value arguments replay
   stale.
 - The LM head (248K rows) is 2.7 ms per call at bandwidth; the only lever
   there is the artifact (aligned Q8) and not calling it twice.
