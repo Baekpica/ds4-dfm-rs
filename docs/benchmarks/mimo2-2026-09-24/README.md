@@ -54,3 +54,32 @@ nvcc -O3 --use_fast_math -std=c++17 -arch=sm_121a tests/mimo2_decode_rounds.cu -
 /tmp/mimo2-decode-rounds
 cargo test -p ds4-perf
 ```
+
+## Round 2: parallel decode routing
+
+The old router computes sigmoid in parallel, then scans all 256 experts
+eight times on one thread. That serial selection accounts for 5.9% of
+decode kernel time after round 1. A warp now reduces the comparisons for
+widths 1–8. Ties choose the lowest expert ID; sigmoid, selected-weight
+summation and the denominator floor preserve the previous arithmetic.
+Wider prefill keeps the previous dispatcher. `DS4_MIMO2_ROUTER_WARP=0`
+restores serial selection.
+
+The same 8K/128 protocol, with round 1 enabled on both sides:
+
+| Metric | Serial selection | Warp selection | Change |
+| --- | ---: | ---: | ---: |
+| Median prefill, tok/s | 1154.40 | 1156.81 | +0.21% |
+| Median decode, tok/s | 23.00 | 24.42 | +6.17% |
+| Router kernels, profiled seconds | 0.314609 | 0.021011 | −93.32% |
+
+All three 128-token streams match. The focused test checks random scores,
+ties, denominator-floor inputs and nonfinite rejection at widths
+1/2/8/32/129. IDs and finite weights match exactly; nonfinite inputs keep
+the previous rejection values. Typical decode-width kernel time falls
+from 52 to 4.3 µs in that test. Full-model timing includes dispatch overhead.
+
+```sh
+nvcc -O3 --use_fast_math -std=c++17 -arch=sm_121a tests/mimo2_router_warp.cu -o /tmp/mimo2-router
+/tmp/mimo2-router
+```

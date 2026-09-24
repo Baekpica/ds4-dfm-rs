@@ -39,6 +39,12 @@ extern "C" int ds4_gpu_mimo2_router(
         logits->bytes < (uint64_t)rows * EXPERTS * sizeof(float)) { return 0; }
     const float *bias = (const float *)cuda_model_range_ptr(map, offset, bias_bytes, "MiMo bias");
     if (!bias) { return 0; }
+    const char *warp = getenv("DS4_MIMO2_ROUTER_WARP");
+    if (rows <= 8 && !(warp && warp[0] == '0' && warp[1] == '\0')) {
+        mimo2_router_warp<<<rows, 32, 0, ds4_current_stream()>>>(
+            (int *)ids->ptr, (float *)weights->ptr, (const float *)logits->ptr, bias);
+        return cuda_ok(cudaGetLastError(), "mimo2 router warp");
+    }
     mimo2_router<<<rows, 128, 0, ds4_current_stream()>>>(
         (int *)ids->ptr, (float *)weights->ptr, (const float *)logits->ptr, bias);
     return cuda_ok(cudaGetLastError(), "MiMo router");

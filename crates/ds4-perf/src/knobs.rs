@@ -37,6 +37,7 @@ pub fn tunable(key: &str) -> bool {
             | "DS4_MIMO2_NO_SWA_HMMA"
             | "DS4_MIMO2_SWA_DECODE"
             | "DS4_MIMO2_SWA_VEC"
+            | "DS4_MIMO2_ROUTER_WARP"
             | "DS4_INKLING_PREFILL_CHUNK"
             | "DS4_CUDA_SOLAR_GQA_CHUNK"
             | "DS4_FATTN_HMMA_LDSM"
@@ -100,7 +101,7 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         "DS4_MIMO2_NO_PREFILL_HMMA" | "DS4_MIMO2_NO_PREFILL_ASYNC" | "DS4_MIMO2_NO_SWA_HMMA" => {
             family == "mimo2" && value == "1"
         }
-        "DS4_MIMO2_SWA_DECODE" | "DS4_MIMO2_SWA_VEC" => {
+        "DS4_MIMO2_SWA_DECODE" | "DS4_MIMO2_SWA_VEC" | "DS4_MIMO2_ROUTER_WARP" => {
             family == "mimo2" && matches!(value, "0" | "1")
         }
         "DS4_INKLING_PREFILL_CHUNK" => family == "inkling" && (1..=8192).contains(&n),
@@ -239,8 +240,12 @@ mod tests {
     }
 
     #[test]
-    fn mimo2_swa_controls() {
-        for key in ["DS4_MIMO2_SWA_DECODE", "DS4_MIMO2_SWA_VEC"] {
+    fn mimo2_decode_controls() {
+        for key in [
+            "DS4_MIMO2_SWA_DECODE",
+            "DS4_MIMO2_SWA_VEC",
+            "DS4_MIMO2_ROUTER_WARP",
+        ] {
             assert!(tunable(key));
             for value in ["0", "1"] {
                 assert!(validate(key, value, "mimo2").is_ok());

@@ -1,0 +1,32 @@
+{
+  "date": "2026-09-24",
+  "stage": "candidate qualification; final clean integration recorded separately",
+  "source_base": "f09c1862e7f512eef859af06d65da4773dc89d08",
+  "dirty": true,
+  "binary": "bench-router",
+  "binary_sha256": "af4b905fd5bc02f8019f1a5ed303d8a13014a7d0ab45d425c5e372da2d3fb3f5",
+  "generated_tokens": 128,
+  "token_mismatch_count": 0,
+  "clock_policy_mhz": [
+    300,
+    2200
+  ],
+  "shared_owner": true,
+  "workers": "one sequential worker; fresh warmup before every sample",
+  "frontier_logits_max_abs": 0.0,
+  "controls": {
+    "baseline": {
+      "DS4_MIMO2_ROUTER_WARP": "0"
+    },
+    "candidate": {
+      "DS4_MIMO2_ROUTER_WARP": "1"
+    },
+    "both": "SWA vector tile enabled by frozen binary default"
+  },
+  "kernel_tests": "20 cases: IDs and finite weights exact; nonfinite rejection preserved",
+  "host_checks": "fmt, clippy, 8 parity targets, serialized workspace tests and all-target check passed on clean SWA+router source",
+  "busy_observed_clock_range_mhz": [
+    2190,
+    2190
+  ]
+}
