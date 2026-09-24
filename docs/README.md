@@ -9,7 +9,7 @@ release candidate or describe live processes.
 | Document | Purpose |
 |---|---|
 | [Repository README](../README.md) | Build, run, validated model scope and limitations |
-| [Repository instructions](../AGENT.md) | Shared agent/development rules; AGENTS.md and CLAUDE.md point here |
+| [Repository instructions](../AGENTS.md) | Shared agent and development rules |
 | [Contributing](../CONTRIBUTING.md) | Host CI, native gates and performance validation |
 | [Architecture](rust-migration/ARCHITECTURE.md) | Rust host and native compute ownership |
 | [FFI contract](rust-migration/FFI_CONTRACT.md) | Opaque native inference boundary |

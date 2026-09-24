@@ -21799,7 +21799,7 @@ extern "C" int ds4_gpu_dsv4_topk_mask_tensor(
  * routed-MoE block through the vendored llama.cpp mul_mat_q kernels in
  * cuda/mmq/.  Validated 2.80x sustained prefill speedup on PRO 6000
  * Blackwell against V4 Flash IQ2XXS GGUF, gen neutral; see
- * cuda/mmq/VENDOR.md for the bench table and AGENT.md for env-var
+ * cuda/mmq/VENDOR.md for the bench table and AGENTS.md for env-var
  * semantics.
  *
  * DS4_CUDA_USE_MMQ env var kill switch: set to "0" (or "off" / "false" /
