@@ -30,7 +30,7 @@ The request's effective and qualified plan remains authoritative.
 | Inkling Small | serial / none | exact / qualified | unverified | unverified | Sidecar / serial / qualified |
 | Step-3.7-Flash | opt_in / qualified | partial / qualified | qualified | qualified | Sidecar / serial + bank / qualified |
 | Ling-3.0-flash-VL | persistent / qualified | partial / qualified | qualified | qualified | None / none / none |
-| MiMo-V2.6-Flash-RL | serial / unverified | exact / unverified | unverified | unverified | Embedded / serial / qualified |
+| MiMo-V2.6-Flash-RL | opt_in / unverified | partial / unverified | unverified | unverified | Embedded / serial / qualified |
 
 ## Bounds and allocator controls
 
@@ -67,7 +67,7 @@ candidate. These are scheduler controls, not measurements or speed claims.
 - **K2-Horizon 375B A23B:** 32K one-bank serving is qualified; disk KV and external owner import are not.
 - **Inkling Small:** serial text snapshots present; media snapshots unsupported.
 - **Step-3.7-Flash:** text banks are opt-in; Chat restart hits need history-stable identity; images serial.
-- **MiMo-V2.6-Flash-RL:** 512k serial text is the qualified context. Embedded MTP is qualified when no DFlash file is loaded. DFlash, the projector, image, audio, and video are qualified together at context 262144 and prefill chunk 4096. 512k with the projector and DFlash was not measured. max_seqs 2 is omitted because the graph is serial. 1M is not qualified.
+- **MiMo-V2.6-Flash-RL:** 512K serial text and 256K serial media/DFlash are prior gates. With MTP off, 256K two-bank text plus serial media passed bounded checks at chunk 2048 with Q8 repack off, including live partial reuse and restart disk continuation. 1M one-bank text passed a bounded 1,040,506-token prompt; two banks did not fit. 512K two-bank media exceeds Spark memory.
 
 Regenerate without loading a model:
 

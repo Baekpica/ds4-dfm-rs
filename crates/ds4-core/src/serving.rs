@@ -631,14 +631,13 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         };
     }
     match family {
-        // Embedded MTP when no file is passed. A DFlash path is the external
-        // draft, not those three blocks. The graph stays serial.
+        // Target banks run without MTP; media and speculation use serial.
         ModelFamily::Mimo2 => ServingCaps {
             family,
             variant,
-            banks: BankLane::Serial,
+            banks: BankLane::OptIn,
             bank_support: Support::Present,
-            reuse: ReuseKind::Exact,
+            reuse: ReuseKind::Partial,
             reuse_support: Support::Present,
             disk: Support::Present,
             snapshot: Support::Present,
@@ -1844,12 +1843,6 @@ fn resolve_seqs(
             ));
         }
     }
-    if caps.family == ModelFamily::Mimo2 {
-        issues.push(warn(
-            "seqs_omitted",
-            "max_seqs 2 is omitted; the MiMo graph is serial",
-        ));
-    }
     let opt_in = n > 1 && caps.banks == BankLane::OptIn;
     (n, opt_in)
 }
@@ -2104,7 +2097,7 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
             "common UX baseline; configured values and verified combinations differ"
         }
         Variant::Mimo26Flash => {
-            "512k serial text is the qualified context. Embedded MTP is qualified when no DFlash file is loaded. DFlash, the projector, image, audio, and video are qualified together at context 262144 and prefill chunk 4096. 512k with the projector and DFlash was not measured. max_seqs 2 is omitted because the graph is serial. 1M is not qualified"
+            "512K serial text and 256K serial media/DFlash are prior gates. With MTP off, 256K two-bank text plus serial media passed bounded checks at chunk 2048 with Q8 repack off, including live partial reuse and restart disk continuation. 1M one-bank text passed a bounded 1,040,506-token prompt; two banks did not fit. 512K two-bank media exceeds Spark memory"
         }
         _ => "",
     }
@@ -3020,6 +3013,34 @@ mod tests {
             .env_overrides()
             .iter()
             .any(|(key, value)| key == "DS4_QWEN_BATCH" && value == "1"));
+    }
+
+    #[test]
+    fn mimo_media_banks_partial_disk_plan() {
+        let req = ServingRequest {
+            ctx: 524288,
+            max_seqs: MaxSeqs::Fixed(2),
+            prefix_reuse: PrefixReuse::Partial,
+            kv_disk_dir: Some("/tmp/mimo-kv".into()),
+            mtp_mode: MtpMode::Off,
+            ..ServingRequest::default()
+        };
+        let facts = EngineFacts {
+            vision_loaded: true,
+            banks_fitted: Some(2),
+            cont_lane: Some(true),
+            partial_reuse: Some(true),
+            disk_ready: Some(true),
+            ..EngineFacts::default()
+        };
+        let caps = serving_caps(ModelFamily::Mimo2, Variant::Mimo26Flash);
+        let plan = resolve_plan(&req, Some(caps), &facts);
+
+        assert!(!plan.has_errors(), "{:?}", plan.issues);
+        assert_eq!(plan.effective.max_seqs, 2);
+        assert_eq!(plan.effective.prefix_reuse, ReuseKind::Partial);
+        assert!(plan.effective.disk);
+        assert!(plan.wants_bank_lane());
     }
 
     #[test]

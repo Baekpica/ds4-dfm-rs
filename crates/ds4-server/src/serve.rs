@@ -33,9 +33,11 @@ use crate::metrics::{
 };
 use crate::models::{model_id_known, model_one_json, models_list_json};
 use crate::parse::{parse_request, EosPolicy, ParseEnv};
+use crate::render::{syntax_for_model_id, ModelSyntax};
 use crate::route::{
-    decode_budget, route_decide, Api, RouteEnv, ThinkMode, WireSurface, LANE_CONTINUOUS,
-    LANE_STATIC, NEED_BANK_FRONTIER,
+    decode_budget, route_decide, Api, RouteDecision, RouteEnv, ThinkMode, WireSurface,
+    LANE_CONTINUOUS, LANE_SERIAL, LANE_STATIC, NEED_BANK_FRONTIER, NEED_IMAGE,
+    REASON_CONT_UNAVAILABLE,
 };
 use crate::serve_cont::{cont_prompt_tokens, ContExec, ContPreparedPrompt};
 use crate::serve_cont_roll::RejectReason;
@@ -1281,6 +1283,22 @@ fn prepare_client(
     None
 }
 
+fn route_for_model(
+    model_id: i32,
+    needs: u32,
+    surface: WireSurface,
+    env: &RouteEnv,
+) -> RouteDecision {
+    // MiMo feature spans live in the serial session, including under a banked boot.
+    if needs & NEED_IMAGE != 0 && syntax_for_model_id(model_id) == ModelSyntax::Mimo2 {
+        return RouteDecision {
+            lane: LANE_SERIAL,
+            reason: REASON_CONT_UNAVAILABLE,
+        };
+    }
+    route_decide(needs, surface, env)
+}
+
 fn run_prepared<W: TerminalSink>(
     cfg: &ServerConfig,
     inner: &Mutex<ServerInner>,
@@ -1290,10 +1308,17 @@ fn run_prepared<W: TerminalSink>(
     out: &mut W,
     arrived_at: Option<Instant>,
 ) -> Settlement {
-    let cont_gate = match (cont.as_deref(), engine.is_some()) {
-        (Some(exec), true) => prepare_cont_prompt(job, exec)
-            .map(|prepared| (prepared.tokens.len() as i32, exec.seq_cap())),
-        _ => None,
+    let model_id = engine.as_ref().map_or(0, |engine| engine.model_id());
+    let mimo_image =
+        !job.parsed.images.is_empty() && syntax_for_model_id(model_id) == ModelSyntax::Mimo2;
+    let cont_gate = if mimo_image {
+        None
+    } else {
+        match (cont.as_deref(), engine.is_some()) {
+            (Some(exec), true) => prepare_cont_prompt(job, exec)
+                .map(|prepared| (prepared.tokens.len() as i32, exec.seq_cap())),
+            _ => None,
+        }
     };
     let (cont_tools_anthropic, cont_tools_responses) = process_cont_tools();
     let route_env = RouteEnv {
@@ -1306,7 +1331,7 @@ fn run_prepared<W: TerminalSink>(
         seq_cap: cont_gate.map_or(cfg.ctx, |(_, cap)| cap),
         prompt_len: cont_gate.map_or(0, |(len, _)| len),
     };
-    let dec = route_decide(job.parsed.needs, job.surface, &route_env);
+    let dec = route_for_model(model_id, job.parsed.needs, job.surface, &route_env);
     let id = next_job_id(&mut lock_inner(inner).admit, job.parsed.kind);
     let arrived_at = arrived_at.unwrap_or_else(Instant::now);
     let (actual_lane, settlement) = match engine {
@@ -2420,6 +2445,27 @@ mod owner_tests {
     static TEST_STOP: AtomicBool = AtomicBool::new(false);
     static TEST_STOP_POLLS: AtomicUsize = AtomicUsize::new(0);
     static DECODE_STOP: AtomicBool = AtomicBool::new(false);
+
+    #[test]
+    fn mimo_image_keeps_serial_lane() {
+        let env = RouteEnv {
+            coalesce: false,
+            have_cont: false,
+            cont_anthropic: false,
+            cont_responses: false,
+            cont_tools_anthropic: false,
+            cont_tools_responses: false,
+            seq_cap: 262144,
+            prompt_len: 0,
+        };
+        let dec = route_for_model(
+            ModelSyntax::Mimo2 as i32,
+            crate::route::NEED_IMAGE,
+            WireSurface::OpenaiChat,
+            &env,
+        );
+        assert_eq!(dec.lane, crate::route::LANE_SERIAL);
+    }
 
     fn test_stop_requested() -> bool {
         TEST_STOP_POLLS.fetch_add(1, Ordering::Relaxed);

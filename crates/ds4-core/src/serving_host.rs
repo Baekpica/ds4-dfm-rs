@@ -17,6 +17,7 @@ use crate::Backend;
 
 const GIB: u64 = 1 << 30;
 const MIB: u64 = 1 << 20;
+const MIMO_CHECKPOINT_SLOTS: u64 = 8;
 // The tensors a sliced model map retains, mirroring native
 // `model_map_span_vec_include_layer` / `_include_output`. Every other group
 // the artifact carries — vision, MTP, drafter — stays off a sliced map.
@@ -289,7 +290,22 @@ pub fn fill_quote_facts(
         (ModelFamily::Mimo2, Some(_)) => {
             let cap = native.min(ctx_tokens).max(1);
             let bytes = crate::mimo2::context_bytes(ctx_tokens, cap).unwrap_or(0);
-            (bytes, 0, 0, 0)
+            if quote_batch_alloc(req, caps, facts) {
+                let kv = crate::mimo2::kv_bytes(ctx_tokens, cap).unwrap_or(0);
+                let draft = u64::from((crate::mimo2::SWA_WINDOW + cap - 1).min(ctx_tokens))
+                    * u64::from(crate::mimo2::MTP_BLOCKS)
+                    * 8
+                    * (192 + 128)
+                    * 2;
+                let pool = if partial {
+                    mimo_checkpoint_pool_bytes()
+                } else {
+                    0
+                };
+                (kv, bytes.saturating_sub(kv).saturating_add(draft), 0, pool)
+            } else {
+                (bytes, 0, 0, 0)
+            }
         }
         (ModelFamily::DeepSeek4, Some(s)) if req.backend == Backend::Cpu => {
             let (cache, scratch) = deepseek_cpu_bytes(s, ctx);
@@ -381,6 +397,19 @@ pub fn fill_quote_facts(
                     }
                 })
                 .unwrap_or(GIB)
+        } else {
+            0
+        }
+    } else if caps.family == ModelFamily::Mimo2 {
+        if host.vision || facts.vision_loaded {
+            let media_work = GIB;
+            let serial = if quote_bank_lane(req, caps, facts) {
+                let cap = native.min(ctx_tokens).max(1);
+                crate::mimo2::context_bytes(ctx_tokens, cap).unwrap_or(0)
+            } else {
+                0
+            };
+            media_work + serial
         } else {
             0
         }
@@ -1194,6 +1223,17 @@ fn dots3_checkpoint_bytes(shape: Shape, ctx: u64) -> u64 {
         * CHECKPOINT_SLOTS
 }
 
+fn mimo_checkpoint_pool_bytes() -> u64 {
+    let slot = (0..crate::mimo2::TRUNK_LAYERS)
+        .filter_map(crate::mimo2::Mimo2Layer::new)
+        .filter(|layer| layer.sliding_window().is_some())
+        .map(|layer| {
+            u64::from(crate::mimo2::SWA_WINDOW) * u64::from(layer.kv_heads()) * (192 + 128) * 2
+        })
+        .sum::<u64>();
+    slot * MIMO_CHECKPOINT_SLOTS
+}
+
 fn quote_partial(req: &ServingRequest, caps: ServingCaps, facts: &EngineFacts) -> bool {
     if caps.reuse != ReuseKind::Partial
         || (req.prefix_reuse == PrefixReuse::Auto && caps.reuse_support != Support::Qualified)
@@ -1231,6 +1271,15 @@ fn quote_batch_alloc(req: &ServingRequest, caps: ServingCaps, facts: &EngineFact
         MaxSeqs::Fixed(n) => n,
     };
     let width = facts.banks_fitted.unwrap_or(want).min(want);
+
+    if caps.family == ModelFamily::Mimo2 {
+        // Serial speculation skips native bank fitting, including at width one.
+        let serial = width < 2 || req.lane == LaneMode::Serial || facts.cont_lane == Some(false);
+        let mtp = req.mtp_mode == MtpMode::On
+            || (req.mtp_mode == MtpMode::Auto && caps.mtp_support == Support::Qualified);
+        let draft = req.mtp_draft.unwrap_or(caps.spec_draft_min);
+        return !(serial && mtp && draft >= caps.spec_draft_min);
+    }
 
     caps.banks != BankLane::OptIn || width >= 2
 }
@@ -3804,6 +3853,107 @@ exit 1
         let caps = serving_caps(family, variant);
         fill_quote_facts(&mut facts, req, caps, Some(shape), host);
         facts
+    }
+
+    #[test]
+    fn mimo_two_banks_reserve_serial_media() {
+        let _env = lock_test_env();
+        let _partial = EnvGuard::unset("DS4_SERVER_FORK_PARTIAL");
+        let _chunk = EnvGuard::unset("DS4_MIMO2_PREFILL_CHUNK");
+        let req = ServingRequest {
+            ctx: 262_144,
+            max_seqs: MaxSeqs::Fixed(2),
+            prefix_reuse: PrefixReuse::Partial,
+            mtp_mode: MtpMode::Off,
+            ..ServingRequest::default()
+        };
+        let facts = fill_family(
+            ModelFamily::Mimo2,
+            Variant::Mimo26Flash,
+            crate::shape::SHAPE_MIMO26_FLASH,
+            &req,
+            QuoteHost {
+                vision: true,
+                ..qwen_host(None)
+            },
+        );
+        let cap = crate::mimo2::PREFILL_CAP;
+        let graph = crate::mimo2::context_bytes(req.ctx as u32, cap).unwrap();
+        let kv = crate::mimo2::kv_bytes(req.ctx as u32, cap).unwrap();
+        assert_eq!(facts.per_bank_bytes, Some(kv));
+        assert!(facts.scratch_bytes.unwrap() >= graph - kv);
+        assert_eq!(facts.media_reserve_bytes, Some(graph + GIB));
+        assert!(facts.checkpoint_pool_bytes.unwrap() > 0);
+    }
+
+    #[test]
+    fn mimo_serial_mtp_quote() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset(MIMO_PREFILL_CHUNK_ENV);
+        let caps = serving_caps(ModelFamily::Mimo2, Variant::Mimo26Flash);
+        let ctx = 262_144;
+        let cap = crate::mimo2::PREFILL_CAP;
+        let graph = crate::mimo2::context_bytes(ctx, cap).unwrap();
+
+        for (max_seqs, mtp_mode, mtp_path) in [
+            (MaxSeqs::Auto, MtpMode::Auto, None),
+            (MaxSeqs::Fixed(1), MtpMode::Auto, Some("dflash.gguf")),
+            (MaxSeqs::Fixed(1), MtpMode::On, None),
+        ] {
+            let req = ServingRequest {
+                ctx: ctx as i32,
+                max_seqs,
+                mtp_mode,
+                mtp_path: mtp_path.map(str::to_owned),
+                ..ServingRequest::default()
+            };
+            let host = QuoteHost {
+                weights_bytes: 0,
+                mtp_bytes: 0,
+                available_bytes: graph + GIB + req.mem_floor_gb * GIB + MIB,
+                native_chunk: Some(cap),
+                vision: true,
+            };
+            let facts = fill_family(
+                ModelFamily::Mimo2,
+                Variant::Mimo26Flash,
+                crate::shape::SHAPE_MIMO26_FLASH,
+                &req,
+                host,
+            );
+            assert_eq!(facts.per_bank_bytes, Some(graph));
+            assert_eq!(facts.scratch_bytes, Some(0));
+            assert_eq!(facts.media_reserve_bytes, Some(GIB));
+
+            let plan = resolve_plan(&req, Some(caps), &facts);
+            assert!(plan.may_listen(), "{:?}", plan.issues);
+            assert!(plan.uses_serial_mtp());
+        }
+    }
+
+    #[test]
+    fn mimo_one_bank_quote_includes_draft() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset("DS4_MIMO2_PREFILL_CHUNK");
+        let req = ServingRequest {
+            ctx: 1_048_576,
+            max_seqs: MaxSeqs::Fixed(1),
+            mtp_mode: MtpMode::Off,
+            ..ServingRequest::default()
+        };
+        let facts = fill_family(
+            ModelFamily::Mimo2,
+            Variant::Mimo26Flash,
+            crate::shape::SHAPE_MIMO26_FLASH,
+            &req,
+            qwen_host(None),
+        );
+        let cap = crate::mimo2::PREFILL_CAP;
+        let kv = crate::mimo2::kv_bytes(req.ctx as u32, cap).unwrap();
+        let graph = crate::mimo2::context_bytes(req.ctx as u32, cap).unwrap();
+        assert_eq!(facts.per_bank_bytes, Some(kv));
+        assert!(facts.scratch_bytes.unwrap() > graph - kv);
+        assert_eq!(facts.checkpoint_pool_bytes, Some(0));
     }
 
     #[test]

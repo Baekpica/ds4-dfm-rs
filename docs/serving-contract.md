@@ -80,6 +80,8 @@ persist conversations below the bank persist threshold (default 8,192
 tokens on the continuous lane, `DS4_SERVER_PERSIST_MIN_TOKENS`). That is a
 different number from the disk store's record minimum
 (`--kv-cache-min-tokens`, default 512); the plan reports both.
+MiMo's [256K mixed gate](mimo2-serving-2026-09-25.md) uses disk KV for text
+bank continuation; media runs on the serial lane.
 
 HTTP disk records require a matching `local-file-stat-v1` identity: all
 GGUF/sidecar file metadata, template contents, runtime files and effective
