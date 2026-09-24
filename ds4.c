@@ -38456,6 +38456,11 @@ static bool vocab_token_is_generation_stop(const ds4_vocab *vocab, int token) {
         vocab->eot_id >= 0 && token == vocab->eot_id) return true;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP &&
         vocab->eot_id >= 0 && token == vocab->eot_id) return true;
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
+        /* Match the host: text EOT and audio EOD both end generation. */
+        return (vocab->eot_id >= 0 && token == vocab->eot_id) ||
+               (vocab->end_of_turn_id >= 0 && token == vocab->end_of_turn_id);
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MOTIF3) {
         /* The official final generation_config pins eos_token_id to
          * [0, 3, 6]: end-of-text, user, and end-of-turn.  In particular,

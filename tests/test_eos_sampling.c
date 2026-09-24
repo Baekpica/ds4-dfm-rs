@@ -55,6 +55,18 @@ int main(void) {
     CHECK(sample_top_p_min_p_override_excluding(logits, 4, 0.0f, 0,
           1.0f, 0.0f, &rng, DS4_SAMPLE_OVERRIDE_NONE, -1, &vocab) == 1);
 
+    g_ds4_shape = DS4_SHAPE_MIMO26_FLASH;
+    const ds4_vocab mimo = {.eos_id = 1, .eot_id = 2, .end_of_turn_id = 3};
+    CHECK(vocab_token_is_generation_stop(&mimo, mimo.eot_id));
+    CHECK(vocab_token_is_generation_stop(&mimo, mimo.end_of_turn_id));
+    CHECK(sample_eot_exclusion(&mimo, mimo.eos_id) == mimo.eot_id);
+    CHECK(sample_top_p_min_p_override_excluding(logits, 4, 0.0f, 0,
+          1.0f, 0.0f, &rng, DS4_SAMPLE_OVERRIDE_NONE, 1, &mimo) == 0);
+    CHECK(sample_top_p_min_p_override_excluding(logits, 4, 0.0f, 0,
+          1.0f, 0.0f, &rng, DS4_SAMPLE_OVERRIDE_TOKEN(2), 1, &mimo) == -1);
+    CHECK(sample_top_p_min_p_override_excluding(logits, 4, 0.0f, 0,
+          1.0f, 0.0f, &rng, DS4_SAMPLE_OVERRIDE_TOKEN(3), 1, &mimo) == 3);
+
     const float only_eos[] = {-INFINITY, 9.0f, -INFINITY};
     CHECK(sample_top_p_min_p_excluding(only_eos, 3, 0.0f, 0, 1.0f, 0.0f,
                                        &rng, 1, -1) == -1);
