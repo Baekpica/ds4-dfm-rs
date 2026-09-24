@@ -3,8 +3,9 @@
 Fresh processes on DGX Spark / GB10. The four-shard
 `MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8` artifact and prompt hashes are in
 [`swa/workload.json`](swa/workload.json). One VMM weight owner stays resident;
-workers run sequentially with a warmup before each measured process. The
-user clock range stays 300–2200 MHz; busy samples report 2190 MHz.
+paired checks use sequential workers with a fresh warmup before each
+measured process. The curve protocol is recorded separately below. The
+user clock range stays 300–2200 MHz; receipts record observed clocks.
 
 ## Final 2K–64K curve
 
