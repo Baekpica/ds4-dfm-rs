@@ -57,7 +57,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | [Inkling Small](inkling-small.md) | `general.architecture=inkling` | MQ85GB source-interleaved GQA, four-tap convolution, embedded media encoders, optional eight-layer MTP-BF16 |
 | [Step 3.7 Flash](step37-initial.md) ([serving](step37-serving-2026-09-13.md)) | `general.architecture=step35` | MQ83 full/sliding GQA, post-SiLU expert clamps, optional Q8 MTP and F16 vision |
 | [Ling-3.0-flash-VL](ling3-flash-vl.md) | `general.architecture=bailingmoe3` | 35 recurrent KDA blocks and 7 latent MLA blocks, 512 grouped-sigmoid experts, separate Qwen3-VL mmproj |
-| [MiMo-V2.6-Flash-RL](mimo2-serving-2026-09-25.md) | `general.architecture=mimo2` | 48 trunk layers: 9 full-attention, 39 SWA-128, 256 experts top-8, and three embedded MTP blocks. With MTP off, a 256K two-bank text plan passed partial reuse, disk continuation and serial image/video/audio input gates on GB10. The prior 512K serial-text and 256K serial-media/DFlash gates are separate. 1M one-bank text passed 540K tokens; near-1M proof is open. |
+| [MiMo-V2.6-Flash-RL](mimo2-serving-2026-09-25.md) | `general.architecture=mimo2` | 48 trunk layers: 9 full-attention, 39 SWA-128, 256 experts top-8, and three embedded MTP blocks. With MTP off, a 256K two-bank text plan passed partial reuse, disk continuation and serial image/video/audio input gates on GB10. The prior 512K serial-text and 256K serial-media/DFlash gates are separate. 1M one-bank text answered a 1,040,506-token prompt; two banks did not fit. |
 
 The scheduler implementation may differ because the model states differ, but
 the operator and client contract is the same. Changing `-m` to a GGUF from a
