@@ -1,0 +1,35 @@
+ds4-bench NVTX: available
+ds4: mapped 4 GGUF shards (82.68 GiB) into one 82.68 GiB address range, 508 tensors
+ds4: MTP support model loaded: /home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-DFlash-Q8_0.gguf (draft=8)
+ds4: CUDA backend initialized on NVIDIA GB10 (sm_121)
+ds4: weight residency: base=eager mtp=eager drafter=eager (legacy-alias)
+ds4: model catalog base: 508 tensors, 141 routed-expert, 94 artifact-replaced, 118 artifact-additive, 47 optional
+ds4: model catalog mtp: 63 tensors, 0 routed-expert, 0 artifact-replaced, 36 artifact-additive, 0 optional
+ds4: CUDA integrated + VMM import: skipping full host registration (82.68 GiB mmap left unpinned; weights served from device VMM)
+ds4: CUDA integrated + VMM import: skipping full host registration (1.46 GiB mmap left unpinned; weights served from device VMM)
+ds4: CUDA imported shared VMM weight cache for base: 34.21 GiB across 55 ranges (content identity verified) plus 56012.31 MiB across 212 derived artifacts
+ds4: CUDA imported shared VMM weight cache for mtp: 1.45 GiB across 2 ranges (content identity verified)
+ds4: aligned artifacts imported from weight server (212 artifacts, 54.70 GiB)
+ds4: model units base: 149 units, covered 82.68 GiB, planned 82.68 GiB, promote 7.03 GiB, cold 75.64 GiB (verify=0)
+ds4: model units mtp: 2 units, covered 1.45 GiB, planned 1.45 GiB, promote 1.45 GiB, cold 0.00 GiB (verify=0)
+ds4: materialize base: funded 0/8 promote units (0 unfunded), populated 0 (0.00 GiB), ready 8, import 0, mapped-policy 0, lazy-policy 0, failed 0
+ds4: materialize mtp: funded 0/2 promote units (0 unfunded), populated 0 (0.00 GiB), ready 2, import 0, mapped-policy 0, lazy-policy 0, failed 0
+ds4: model source base [primary]: map 82.68 GiB, device 88.94 GiB, host-pinned 0.00 GiB (/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf)
+ds4: model source mtp [auxiliary]: map 1.46 GiB, device 1.46 GiB, host-pinned 0.00 GiB (/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-DFlash-Q8_0.gguf)
+ds4: model-source ledger reconciled: 7 weight classes x 2 domains == census cells (2 sources)
+ds4: range plan base: model 55/55 planned, derived 212/212, q8 0/0, multi 0, refused 0
+ds4: range plan mtp: model 2/2 planned, derived 0/0, q8 0/0, multi 0, refused 0
+ds4: cuda backend initialized for graph diagnostics
+ds4: session graph allocated lazily (ctx=528 prefill_cap=528)
+ds4: CUDA Q8_0 dispatch: mmq (sm_121, 546 GB/s memory bandwidth) [default]
+ds4: routed gate/up using aligned IQ2 pair (prefill)
+ds4: compact routed MMQ worklist active (type=17 rows=2048 experts=256)
+ds4: dense decode using aligned Q8_0 artifacts (M1-Inc3)
+ds4: boot prewarm done (512 tokens, 2 chunks) in 1.8s
+ds4: session graph allocated lazily (ctx=2113 prefill_cap=2113)
+ds4: dense q8 batched using D2R aligned path (first label='q8_0' M=13568 N=2048 K=4096)
+ds4: counting-sort mm_ids map engaged (n_tokens=2048 used=8 experts=256)
+ds4: packed FP8 compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP8_KV=0 restores F32-primary)
+ds4: fp8 predecode scratch prewarmed (32 MiB)
+ds4: invalidated 574 captured graph(s): GPU cleanup
+ds4: packed FP4 indexer compressed-KV primary ACTIVE (default since v0.2.4; DS4_CUDA_FP4_INDEX=0 restores F32-primary)

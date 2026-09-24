@@ -1,0 +1,242 @@
+{
+  "source_commit": "acc16308630d23dbfdb5abbd143e280c6f919a19",
+  "binary_sha256": "ece7feabf85be6cf2ccfdb4913ec785bd968888e92bd2df43ff2692dfec0c84d",
+  "clock_policy_mhz": [
+    300,
+    2200
+  ],
+  "shared_owner": true,
+  "protocol": "Fresh processes, ABBAAB order at 8K, fresh warmup before each sample. One additional 32K pair. DFlash 2K verifies the retained CPU/GPU fallback with the final build.",
+  "controls": {
+    "baseline": {
+      "DS4_MIMO2_SWA_DECODE": "0",
+      "DS4_MIMO2_SWA_VEC": "0",
+      "DS4_MIMO2_ROUTER_WARP": "0",
+      "DS4_MIMO2_SWIGLU_Q8": "0"
+    },
+    "candidate": "all switches unset; actual release defaults",
+    "dflash": "both sides SWA/router defaults; CPU=1 versus unset"
+  },
+  "samples": {
+    "sample-1-0": {
+      "ctx_tokens": "8192",
+      "prefill_tokens": "8192",
+      "prefill_tps": "1157.66",
+      "gen_tokens": "128",
+      "gen_tps": "21.26",
+      "gen_tps_ss": "21.60",
+      "first_token_sec": "0.1429",
+      "kvcache_bytes": "214945844"
+    },
+    "sample-2-1": {
+      "ctx_tokens": "8192",
+      "prefill_tokens": "8192",
+      "prefill_tps": "1191.45",
+      "gen_tokens": "128",
+      "gen_tps": "24.37",
+      "gen_tps_ss": "24.82",
+      "first_token_sec": "0.1362",
+      "kvcache_bytes": "214945844"
+    },
+    "sample-3-1": {
+      "ctx_tokens": "8192",
+      "prefill_tokens": "8192",
+      "prefill_tps": "1191.18",
+      "gen_tokens": "128",
+      "gen_tps": "24.35",
+      "gen_tps_ss": "24.81",
+      "first_token_sec": "0.1366",
+      "kvcache_bytes": "214945844"
+    },
+    "sample-4-0": {
+      "ctx_tokens": "8192",
+      "prefill_tokens": "8192",
+      "prefill_tps": "1157.53",
+      "gen_tokens": "128",
+      "gen_tps": "21.26",
+      "gen_tps_ss": "21.60",
+      "first_token_sec": "0.1418",
+      "kvcache_bytes": "214945844"
+    },
+    "sample-5-0": {
+      "ctx_tokens": "8192",
+      "prefill_tokens": "8192",
+      "prefill_tps": "1155.36",
+      "gen_tokens": "128",
+      "gen_tps": "21.27",
+      "gen_tps_ss": "21.62",
+      "first_token_sec": "0.1432",
+      "kvcache_bytes": "214945844"
+    },
+    "sample-6-1": {
+      "ctx_tokens": "8192",
+      "prefill_tokens": "8192",
+      "prefill_tps": "1191.89",
+      "gen_tokens": "128",
+      "gen_tps": "24.39",
+      "gen_tps_ss": "24.82",
+      "first_token_sec": "0.1315",
+      "kvcache_bytes": "214945844"
+    }
+  },
+  "plain_8k": {
+    "0": {
+      "prefill_tps": 1157.53,
+      "gen_tps": 21.26,
+      "first_token_sec": 0.1429
+    },
+    "1": {
+      "prefill_tps": 1191.45,
+      "gen_tps": 24.37,
+      "first_token_sec": 0.1362
+    },
+    "proof": {
+      "logits_max_abs": 0.0,
+      "argmax_equal": true,
+      "token_count": [
+        128,
+        128
+      ],
+      "token_mismatches": 94,
+      "first_token_difference": 31
+    },
+    "within_arm_proof": {
+      "sample-1-0": {
+        "logits_max_abs": 0.0,
+        "argmax_equal": true,
+        "token_count": [
+          128,
+          128
+        ],
+        "token_mismatches": 0,
+        "first_token_difference": null
+      },
+      "sample-2-1": {
+        "logits_max_abs": 0.0,
+        "argmax_equal": true,
+        "token_count": [
+          128,
+          128
+        ],
+        "token_mismatches": 0,
+        "first_token_difference": null
+      },
+      "sample-3-1": {
+        "logits_max_abs": 0.0,
+        "argmax_equal": true,
+        "token_count": [
+          128,
+          128
+        ],
+        "token_mismatches": 0,
+        "first_token_difference": null
+      },
+      "sample-4-0": {
+        "logits_max_abs": 0.0,
+        "argmax_equal": true,
+        "token_count": [
+          128,
+          128
+        ],
+        "token_mismatches": 0,
+        "first_token_difference": null
+      },
+      "sample-5-0": {
+        "logits_max_abs": 0.0,
+        "argmax_equal": true,
+        "token_count": [
+          128,
+          128
+        ],
+        "token_mismatches": 0,
+        "first_token_difference": null
+      },
+      "sample-6-1": {
+        "logits_max_abs": 0.0,
+        "argmax_equal": true,
+        "token_count": [
+          128,
+          128
+        ],
+        "token_mismatches": 0,
+        "first_token_difference": null
+      }
+    }
+  },
+  "plain_32k": {
+    "0": {
+      "ctx_tokens": "32768",
+      "prefill_tokens": "32768",
+      "prefill_tps": "1032.29",
+      "gen_tokens": "128",
+      "gen_tps": "18.67",
+      "gen_tps_ss": "18.93",
+      "first_token_sec": "0.1457",
+      "kvcache_bytes": "781275188"
+    },
+    "1": {
+      "ctx_tokens": "32768",
+      "prefill_tokens": "32768",
+      "prefill_tps": "1059.15",
+      "gen_tokens": "128",
+      "gen_tps": "21.02",
+      "gen_tps_ss": "21.36",
+      "first_token_sec": "0.1420",
+      "kvcache_bytes": "781275188"
+    },
+    "proof": {
+      "logits_max_abs": 0.0,
+      "argmax_equal": true,
+      "token_count": [
+        128,
+        128
+      ],
+      "token_mismatches": 111,
+      "first_token_difference": 17
+    }
+  },
+  "dflash_2k": {
+    "source_commit": "acc16308630d23dbfdb5abbd143e280c6f919a19",
+    "binary_sha256": "ece7feabf85be6cf2ccfdb4913ec785bd968888e92bd2df43ff2692dfec0c84d",
+    "scope": "final build regression gate",
+    "cpu": {
+      "ctx_tokens": "2048",
+      "prefill_tokens": "2048",
+      "prefill_tps": "1091.60",
+      "gen_tokens": "64",
+      "gen_tps": "2.22",
+      "gen_tps_ss": "2.24",
+      "first_token_sec": "0.7744",
+      "kvcache_bytes": "73363508"
+    },
+    "gpu": {
+      "ctx_tokens": "2048",
+      "prefill_tokens": "2048",
+      "prefill_tps": "1095.68",
+      "gen_tokens": "64",
+      "gen_tps": "5.31",
+      "gen_tps_ss": "5.40",
+      "first_token_sec": "0.3798",
+      "kvcache_bytes": "73363508"
+    },
+    "proof": {
+      "logits_max_abs": 0.0,
+      "argmax_equal": true,
+      "token_count": [
+        64,
+        64
+      ],
+      "token_mismatches": 0,
+      "first_token_difference": null
+    }
+  },
+  "final-plain_busy_clock_mhz": [
+    2184,
+    2190
+  ],
+  "final-dflash-current_busy_clock_mhz": [
+    2190,
+    2190
+  ],
+  "gates_passed": true
+}

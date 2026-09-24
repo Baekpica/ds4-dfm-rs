@@ -199,6 +199,9 @@ the window across eight query heads with vector KV loads;
 `DS4_MIMO2_SWA_VEC=0` selects scalar copies within that shared tile.
 `DS4_MIMO2_ROUTER_WARP=0` restores serial expert selection for widths 1–8.
 The default warp selection preserves IDs and weights exactly.
+`DS4_MIMO2_SWIGLU_Q8=0` restores materialized SwiGLU before MiMo's
+IQ2_XS down projection. The default shares the sorted D4 Q8 representation
+for the fixed artifact shape at widths 32–8192; narrow decode is unchanged.
 `DS4_MIMO2_DFLASH_CPU=1` restores host RMSNorm, RoPE and attention in the
 external DFlash drafter. Unset, those operations stay on the GPU. This
 changes draft arithmetic; compare verified output and long-window cases.

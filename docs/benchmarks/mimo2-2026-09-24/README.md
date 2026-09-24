@@ -6,6 +6,33 @@ Fresh processes on DGX Spark / GB10. The four-shard
 workers run sequentially with a warmup before each measured process. The
 user clock range stays 300–2200 MHz; busy samples report 2190 MHz.
 
+## Final 2K–64K curve
+
+![Incremental prefill and plain decode](curve/mimo2-prefill-2k-64k-20260924.png)
+
+The retained defaults (`acc16308`, same final binary as the A/B below)
+were measured in three fresh processes: 2048-token incremental prefill,
+128 greedy tokens at every frontier through 65536, one warm session per
+process, MTP and DFlash off. All 96 frontier rows completed. Busy SM clocks
+were 2184–2190 MHz within the unchanged 300–2200 MHz policy.
+
+| Metric | Historical f09c1862 | Retained defaults | Historical change |
+| --- | ---: | ---: | ---: |
+| 64K incremental prefill, tok/s | 663.67 | 675.84 | +1.83% |
+| 64K plain decode, tok/s | 16.22 | 17.98 | +10.85% |
+| Median run-mean prefill, tok/s | 854.95 | 874.46 | +2.28% |
+| Median run-mean decode, tok/s | 18.96 | 21.47 | +13.25% |
+
+These historical comparisons are not same-hour A/B. The fresh paired
+8K/32K results appear below. Curves show per-frontier medians; bands use
+recorded min/max only. The historical f09c1862 JSON has no band data.
+[Measurements and hashes](curve/mimo2-prefill-2k-64k-20260924.json) ·
+[Receipt](curve/receipt.json) · [Plot script](plot-final.py).
+
+Rebuild the graph with `python3 plot-final.py` from this directory
+(requires matplotlib). The three final CSVs and historical median JSON
+are in `curve/`; the earlier PR #56 CSVs stay in the September 23 report.
+
 ## Round 1: share the SWA decode window
 
 The previous walk loaded each KV head once per query head. The shared tile
@@ -153,12 +180,45 @@ SWA/router defaults on both sides. All six frontier logit vectors and
 128-token streams match exactly. The primitive compares the production
 SwiGLU plus canonical Q8 quantizer against the fused emitter at assignment
 widths 1/8/256/1032/32768, including zero groups and reordered assignments;
-all Q8 bytes match. See the [receipt](swiglu/receipt.json).
+all Q8 bytes match. See the [receipt](swiglu/receipt.json). A separate
+profile reduces the prefill range from 7.104722 to 6.887643 seconds.
+The sum of SwiGLU and MMQ activation-quantization kernels falls from
+0.675470 to 0.475583 seconds (−29.59%, including the unaffected quantizers).
+Profiles are not included in the three unprofiled samples.
 
 ```sh
 nvcc -O3 --use_fast_math -std=c++17 -arch=sm_121a -Icuda/mmq tests/mimo2_swiglu_q8.cu cuda/mmq/quantize.o -lcudart -lcuda -o /tmp/mimo2-swiglu
 /tmp/mimo2-swiglu
 ```
+
+## Final retained build
+
+Native source `acc16308`; benchmark SHA256
+`ece7feabf85be6cf2ccfdb4913ec785bd968888e92bd2df43ff2692dfec0c84d`.
+The same frozen executable runs every final control and default sample.
+Controls disable the SWA tile/vector load, warp router and SwiGLU fusion;
+all pre-existing prefill optimizations stay enabled on both sides.
+
+| Workload | Metric | Controls | Defaults | Change |
+| --- | --- | ---: | ---: | ---: |
+| 8K/128, three samples | Prefill, tok/s | 1157.53 | 1191.45 | +2.93% |
+| 8K/128, three samples | Plain decode, tok/s | 21.26 | 24.37 | +14.63% |
+| 32K/128, one pair | Prefill, tok/s | 1032.29 | 1059.15 | +2.60% |
+| 32K/128, one pair | Plain decode, tok/s | 18.67 | 21.02 | +12.59% |
+
+The 8K order is ABBAAB with fresh warmup before each process. The 32K pair
+is one additional check, not a three-run estimate. Prefill logits match
+exactly at both lengths; repeated runs within each 8K arm also match all
+tokens. Cross-arm generation reflects the SWA rounding change: 94/128
+positions differ from index 31 at 8K; 111/128 from index 17 at 32K.
+The [32K continuations](integration/32k-continuations.txt) are readable
+Italian with different story details; the candidate also repeats a dialogue
+phrase. This is not a quality-equivalence claim. The earlier focused
+math/code/Korean checks bound the observed SWA change.
+
+The retained DFlash CPU/GPU regression pair at 2K/64 gives 2.22 → 5.31
+tok/s, identical frontier logits and all 64 tokens. No further DFlash
+optimization was attempted. [Integration receipt](integration/receipt.json).
 
 ## Rejected candidates
 
@@ -175,6 +235,16 @@ arithmetic but slowed seven production or ragged shapes by roughly 1–4%.
 The original warp-per-row path already sustains roughly 260–280 GB/s.
 This practical round 1 candidate was rejected before model integration;
 [primitive timings](dense-group-probe.txt) do not claim an end-to-end gain.
+
+Practical round 3 fused QKV split/RoPE with F16 KV storage. It removed
+intermediate K/V writes and a launch, with exact Q/cache bytes at heads
+4/8 and widths 1/8/129/4096, including changed-position graph replay.
+Three fresh 8K/128 pairs measured prefill 1191.21 → 1195.51 tok/s
+(+0.36%) and decode 24.36 → 24.41 (+0.21%). All logits and tokens match.
+Neither latency envelope crosses ds4-perf's 1% improvement threshold;
+the [candidate was rejected](qkv/receipt.json). Its production path and
+switch are absent from this branch. The retained practical change is
+SwiGLU → Q8; the three-candidate pass is complete.
 
 ## Reproduction
 
@@ -208,13 +278,15 @@ CUDA GB10 only. The model remains eager. No new captured-decode, bank,
 media, disk-KV or long-context serving qualification is claimed here.
 The 262144-position DFlash primitive test is a position/window check, not
 a full-model 262K throughput run. SWA and router do not change prefill
-selection; DFlash attention runs only when the external drafter is loaded.
+selection; the SwiGLU fusion affects the fixed IQ2_XS prefill shape. DFlash
+attention runs only when the external drafter is loaded.
 
-The clean SWA/router source passed formatting, Clippy, all eight host
-parity targets, serialized workspace tests and the all-target workspace
-check. After adding DFlash, the CUDA production CLI/NVTX benchmark build,
-formatting and `cargo test -p ds4-perf` passed again. Standalone CUDA
-parity tests cover all three paths. Metal was not tested.
+Formatting, Clippy, all eight host parity targets, serialized workspace
+tests and the all-target workspace check passed during the campaign.
+The full model-free suite ran again during the practical candidate pass.
+After rejecting QKV fusion, the retained CUDA production CLI/NVTX benchmark
+was rebuilt and ds4-perf tests passed again. Standalone CUDA parity tests
+cover all four retained paths. Metal was not tested.
 
 A base-only-owner DFlash attempt lacked imported MTP ranges. A separate
 local-MTP pilot had no funded MTP residency and failed with a CUDA memory
