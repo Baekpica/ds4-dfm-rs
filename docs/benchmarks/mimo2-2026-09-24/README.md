@@ -22,7 +22,7 @@ were 2184–2190 MHz within the unchanged 300–2200 MHz policy.
 | 64K incremental prefill, tok/s | 663.67 | 675.84 | +1.83% |
 | 64K plain decode, tok/s | 16.22 | 17.98 | +10.85% |
 | Median run-mean prefill, tok/s | 854.95 | 874.46 | +2.28% |
-| Median run-mean decode, tok/s | 18.96 | 21.47 | +13.25% |
+| Median run-mean decode, tok/s | 18.96 | 21.47 | +13.23% |
 
 These historical comparisons are not same-hour A/B. The fresh paired
 8K/32K results appear below. Curves show per-frontier medians; bands use
