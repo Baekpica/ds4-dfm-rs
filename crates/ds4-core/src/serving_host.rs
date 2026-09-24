@@ -1272,8 +1272,16 @@ fn quote_batch_alloc(req: &ServingRequest, caps: ServingCaps, facts: &EngineFact
     };
     let width = facts.banks_fitted.unwrap_or(want).min(want);
 
-    // MiMo allocates its bank graph even at width one.
-    caps.family == ModelFamily::Mimo2 || caps.banks != BankLane::OptIn || width >= 2
+    if caps.family == ModelFamily::Mimo2 {
+        // Serial speculation skips native bank fitting, including at width one.
+        let serial = width < 2 || req.lane == LaneMode::Serial || facts.cont_lane == Some(false);
+        let mtp = req.mtp_mode == MtpMode::On
+            || (req.mtp_mode == MtpMode::Auto && caps.mtp_support == Support::Qualified);
+        let draft = req.mtp_draft.unwrap_or(caps.spec_draft_min);
+        return !(serial && mtp && draft >= caps.spec_draft_min);
+    }
+
+    caps.banks != BankLane::OptIn || width >= 2
 }
 
 // C kv_cache_init + cpu_decode_scratch_init + the session logits row.
@@ -3876,6 +3884,51 @@ exit 1
         assert!(facts.scratch_bytes.unwrap() >= graph - kv);
         assert_eq!(facts.media_reserve_bytes, Some(graph + GIB));
         assert!(facts.checkpoint_pool_bytes.unwrap() > 0);
+    }
+
+    #[test]
+    fn mimo_serial_mtp_quote() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset(MIMO_PREFILL_CHUNK_ENV);
+        let caps = serving_caps(ModelFamily::Mimo2, Variant::Mimo26Flash);
+        let ctx = 262_144;
+        let cap = crate::mimo2::PREFILL_CAP;
+        let graph = crate::mimo2::context_bytes(ctx, cap).unwrap();
+
+        for (max_seqs, mtp_mode, mtp_path) in [
+            (MaxSeqs::Auto, MtpMode::Auto, None),
+            (MaxSeqs::Fixed(1), MtpMode::Auto, Some("dflash.gguf")),
+            (MaxSeqs::Fixed(1), MtpMode::On, None),
+        ] {
+            let req = ServingRequest {
+                ctx: ctx as i32,
+                max_seqs,
+                mtp_mode,
+                mtp_path: mtp_path.map(str::to_owned),
+                ..ServingRequest::default()
+            };
+            let host = QuoteHost {
+                weights_bytes: 0,
+                mtp_bytes: 0,
+                available_bytes: graph + GIB + req.mem_floor_gb * GIB + MIB,
+                native_chunk: Some(cap),
+                vision: true,
+            };
+            let facts = fill_family(
+                ModelFamily::Mimo2,
+                Variant::Mimo26Flash,
+                crate::shape::SHAPE_MIMO26_FLASH,
+                &req,
+                host,
+            );
+            assert_eq!(facts.per_bank_bytes, Some(graph));
+            assert_eq!(facts.scratch_bytes, Some(0));
+            assert_eq!(facts.media_reserve_bytes, Some(GIB));
+
+            let plan = resolve_plan(&req, Some(caps), &facts);
+            assert!(plan.may_listen(), "{:?}", plan.issues);
+            assert!(plan.uses_serial_mtp());
+        }
     }
 
     #[test]
