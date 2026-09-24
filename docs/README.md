@@ -32,6 +32,8 @@ release candidate or describe live processes.
 
 ## Recorded evidence
 
+- [MiMo, September 24](benchmarks/mimo2-2026-09-24/README.md): fresh GB10
+  SWA, router, DFlash and SwiGLU comparisons, rejected candidates, and a 64K curve.
 - [MiMo, September 23](benchmarks/mimo2-2026-09-23/README.md): GB10 prefill
   curve, 8K decode A/B, three later 8K prefill rounds, and one cold 64K bench.
 - [Migration evidence](rust-migration/README.md): frozen C oracle, host parity,

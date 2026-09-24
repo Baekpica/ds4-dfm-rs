@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "kind": "compare",
+  "producer_version": "0.1.3",
+  "created_unix": 1790253908,
+  "complete": true,
+  "inputs": [
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-2nd/scratch/mimo-resume-20260924/r1-0/scout.json",
+      "sha256": "e9b1d55982a99a988537b2759f2f933394a329c4c1c74eabe8a0354a6e0c8108"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-2nd/scratch/mimo-resume-20260924/r1-1/scout.json",
+      "sha256": "97b520fb902b70cff3788ee45351ca1469ae3055a55bbc6c7d80d3976d88d8c5"
+    }
+  ],
+  "warnings": [],
+  "data": {
+    "verdict": "pass",
+    "metrics": [
+      {
+        "metric": "decode",
+        "ctx": 8192,
+        "unit": "seconds/token",
+        "baseline": [
+          0.046970408642555195,
+          0.046860356138706656,
+          0.04681647940074907
+        ],
+        "candidate": [
+          0.0479156684235745,
+          0.04725897920604915,
+          0.04708097928436912
+        ],
+        "baseline_median": 0.046860356138706656,
+        "candidate_median": 0.04725897920604915,
+        "median_percent": 0.8506616257088817,
+        "lower_percent": 0.23540489642184248,
+        "upper_percent": 2.3478677527551284
+      },
+      {
+        "metric": "first_token",
+        "ctx": 8192,
+        "unit": "seconds",
+        "baseline": [
+          0.1347,
+          0.1311,
+          0.1341
+        ],
+        "candidate": [
+          0.1332,
+          0.1321,
+          0.1337
+        ],
+        "baseline_median": 0.1341,
+        "candidate_median": 0.1332,
+        "median_percent": -0.6711409395973034,
+        "lower_percent": -1.9302152932442418,
+        "upper_percent": 1.9832189168573766
+      },
+      {
+        "metric": "prefill",
+        "ctx": 8192,
+        "unit": "seconds/token",
+        "baseline": [
+          0.0008654711625008654,
+          0.0008643640009680877,
+          0.0008649546331294923
+        ],
+        "candidate": [
+          0.0008635354869908379,
+          0.0008608296676336653,
+          0.000859926562271582
+        ],
+        "baseline_median": 0.0008649546331294923,
+        "candidate_median": 0.0008608296676336653,
+        "median_percent": -0.4768996358690547,
+        "lower_percent": -0.6406452888923275,
+        "upper_percent": -0.09585243905597673
+      }
+    ],
+    "correctness": {
+      "max_abs": 0.0,
+      "max_scaled": 0.0,
+      "bad": 0,
+      "checked": 915456,
+      "rel_rms": 0.0,
+      "rel_rms_scaled": 0.0
+    },
+    "token_mismatches": 0,
+    "argmax_mismatches": 0,
+    "max_slowdown_percent": 3.0,
+    "logit_atol": 0.0001,
+    "logit_rtol": 0.0001,
+    "logit_rel_rms": 0.0,
+    "changes": {
+      "DS4_MIMO2_GATEUP_Q8": "Some(\"0\") -> Some(\"1\")"
+    },
+    "reasons": [],
+    "method": "sample-extrema-envelope-v1"
+  }
+}

@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "kind": "compare",
+  "producer_version": "0.1.3",
+  "created_unix": 1790252924,
+  "complete": true,
+  "inputs": [
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-2nd/scratch/mimo-resume-20260924/swa-live-0/scout.json",
+      "sha256": "5929c8a8f7add437a0fa45a8e3f3f644343a7e3ec60ccb2783353429251dde5c"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-2nd/scratch/mimo-resume-20260924/swa-live-1/scout.json",
+      "sha256": "33ccab84051da5f36dadd516728100c04c70b58aaf483a8b1a8296fdd2a01196"
+    }
+  ],
+  "warnings": [],
+  "data": {
+    "verdict": "improved",
+    "metrics": [
+      {
+        "metric": "decode",
+        "ctx": 8192,
+        "unit": "seconds/token",
+        "baseline": [
+          0.046948356807511735,
+          0.046948356807511735,
+          0.04692632566870014
+        ],
+        "candidate": [
+          0.04319654427645789,
+          0.043327556325823226,
+          0.04351610095735422
+        ],
+        "baseline_median": 0.046948356807511735,
+        "candidate_median": 0.043327556325823226,
+        "median_percent": -7.712305025996525,
+        "lower_percent": -7.991360691144688,
+        "upper_percent": -7.26718885987816
+      },
+      {
+        "metric": "first_token",
+        "ctx": 8192,
+        "unit": "seconds",
+        "baseline": [
+          0.134,
+          0.1353,
+          0.1324
+        ],
+        "candidate": [
+          0.1302,
+          0.1301,
+          0.1308
+        ],
+        "baseline_median": 0.134,
+        "candidate_median": 0.1302,
+        "median_percent": -2.8358208955223896,
+        "lower_percent": -3.843311160384344,
+        "upper_percent": -1.2084592145015005
+      },
+      {
+        "metric": "prefill",
+        "ctx": 8192,
+        "unit": "seconds/token",
+        "baseline": [
+          0.0008656060107681388,
+          0.0008642594161063385,
+          0.0008648050297060528
+        ],
+        "candidate": [
+          0.0008656509695290858,
+          0.0008661383222900698,
+          0.0008672349946665048
+        ],
+        "baseline_median": 0.0008648050297060528,
+        "candidate_median": 0.0008661383222900698,
+        "median_percent": 0.154172621367632,
+        "lower_percent": 0.005193905817169053,
+        "upper_percent": 0.34429229288259755
+      }
+    ],
+    "correctness": {
+      "max_abs": 0.0,
+      "max_scaled": 0.0,
+      "bad": 0,
+      "checked": 915456,
+      "rel_rms": 0.0,
+      "rel_rms_scaled": 0.0
+    },
+    "token_mismatches": 3,
+    "argmax_mismatches": 0,
+    "max_slowdown_percent": 3.0,
+    "logit_atol": 0.0001,
+    "logit_rtol": 0.0001,
+    "logit_rel_rms": 0.00001,
+    "changes": {
+      "DS4_MIMO2_SWA_DECODE": "None -> Some(\"1\")",
+      "DS4_MIMO2_SWA_VEC": "None -> Some(\"1\")"
+    },
+    "reasons": [],
+    "method": "sample-extrema-envelope-v1"
+  }
+}

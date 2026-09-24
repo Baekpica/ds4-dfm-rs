@@ -384,6 +384,10 @@ int ds4_mmq_iq2_xxs_moe(
     int             n_expert_used,
     cudaStream_t    stream);
 
+// MiMo's unweighted SwiGLU + IQ2_XS down; rows are token/slot assignments.
+int ds4_mmq_mimo2_down(const void *weights, const float *gate, const float *up,
+        const int32_t *ids, float *out, int rows, cudaStream_t stream);
+
 int ds4_mmq_iq2_xs_moe(
     const void    * W,
     const float   * X_f32,

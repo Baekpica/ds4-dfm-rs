@@ -67,6 +67,16 @@ static int run_case(unsigned window, unsigned kv_heads, unsigned cap, unsigned p
 }
 
 int main() {
+    unsetenv("DS4_MIMO2_SWA_VEC");
+    if (!run_case(128, 8, 259, 262144, nullptr, nullptr, nullptr, 2)) {
+        fprintf(stderr, "default SWA path missed the vector tile\n");
+        return 5;
+    }
+    if (!run_case(128, 8, 259, 262144, "0", nullptr, nullptr, 0)) {
+        fprintf(stderr, "SWA kill switch missed the walk\n");
+        return 6;
+    }
+    setenv("DS4_MIMO2_SWA_VEC", "0", 1);
     if (!run_case(128, 8, 256, 200, "1", nullptr, nullptr, 1)) {
         fprintf(stderr, "swa decode missed mimo2_swa_decode\n");
         return 1;

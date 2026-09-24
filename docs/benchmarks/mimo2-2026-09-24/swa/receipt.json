@@ -1,0 +1,49 @@
+{
+  "date": "2026-09-24",
+  "stage": "fresh candidate qualification; clean release integration pending",
+  "source_base": "f09c1862e7f512eef859af06d65da4773dc89d08",
+  "dirty": true,
+  "binary_sha256": "1a807571b1f6f3ab959578c9472d68172ec8ee27b32be8bc49e697074aa841e2",
+  "controls": {
+    "baseline": "SWA switches unset (old off defaults)",
+    "candidate": {
+      "DS4_MIMO2_SWA_DECODE": "1",
+      "DS4_MIMO2_SWA_VEC": "1"
+    }
+  },
+  "clock_policy_mhz": [
+    300,
+    2200
+  ],
+  "busy_observed_clock_range_mhz": [
+    2190,
+    2190
+  ],
+  "owner_manifest": "/tmp/mimo-resume-20260924.ipc",
+  "independent_workers": 1,
+  "frontier_logits_max_abs": 0,
+  "generated_tokens": 128,
+  "token_mismatch_count": 94,
+  "first_token_difference": 31,
+  "quality_review": "Both Italian continuations are coherent; not token-identical. FP64 attention oracle bounds FP32 rounding, ring boundaries and live-position graph replay. No statistical quality evaluation is claimed.",
+  "answers": {
+    "math": {
+      "prompt": "Compute 137 * 24. Output only the decimal integer.\n",
+      "baseline": "3288",
+      "candidate": "3288",
+      "identical": true
+    },
+    "code": {
+      "prompt": "Write a Python function unique_sorted(xs) that returns the distinct integers in xs in ascending order. Return only the function, without markdown fences.\n",
+      "baseline": "def unique_sorted(xs):\n    return sorted(set(xs))",
+      "candidate": "def unique_sorted(xs):\n    return sorted(set(xs))",
+      "identical": true
+    },
+    "korean": {
+      "prompt": "다음 문장을 한 문장으로 요약하세요. 사실을 추가하지 마세요.\n도서관은 월요일에 문을 닫습니다. 화요일부터 금요일까지는 오전 9시부터 오후 6시까지 운영합니다. 토요일과 일요일에는 오전 10시부터 오후 4시까지 운영합니다.\n",
+      "baseline": "도서관은 월요일에 문을 닫고, 화요일부터 금요일까지는 오전 9시부터 오후 6시까지, 토요일과 일요일에는 오전 10시부터 오후 4시까지 운영합니다.",
+      "candidate": "도서관은 월요일에 문을 닫고, 화요일부터 금요일까지는 오전 9시부터 오후 6시까지, 토요일과 일요일에는 오전 10시부터 오후 4시까지 운영합니다.",
+      "identical": true
+    }
+  }
+}

@@ -138,6 +138,25 @@ The bandwidth figure is informational; we don't tier on it.
   prefill. Unset uses the GQA2 HMMA tiles already used on full-attention
   layers. EXAONE/K2 SWA stays on the warp path.
 
+- `DS4_MIMO2_SWA_DECODE=0` restores MiMo's one-row, window-128 attention
+  walk. The default shares KV across eight query heads. `DS4_MIMO2_SWA_VEC=0`
+  selects scalar copies inside the shared tile. Both accept `0` and `1` in
+  ds4-perf. See the [numerical contract](../docs/benchmarks/mimo2-2026-09-24/README.md).
+
+- `DS4_MIMO2_ROUTER_WARP=0` restores serial MiMo expert selection at
+  widths 1–8. Unset uses warp reductions with the same lower-ID tie break
+  and weight arithmetic. Wider prefill is unchanged.
+
+- `DS4_MIMO2_SWIGLU_Q8=0` restores MiMo's materialized SwiGLU before
+  IQ2_XS expert down. Unset emits the same unweighted D4 Q8 bytes directly
+  for widths 32–8192 and the fixed 4096×2048, 256-expert/eight-route shape.
+  Narrow decode and the existing down-sanitation diagnostic keep the old path.
+
+- `DS4_MIMO2_DFLASH_CPU=1` restores host RMSNorm, RoPE and attention for
+  MiMo's external five-layer DFlash drafter. Unset uses device kernels
+  and shared K/V tiles. This control does not enable speculative decode;
+  load the DFlash artifact with the existing `--mtp` and draft controls.
+
 - `DS4_EXAONE_PREFILL_GQA=0` restores the warp prefill walk for
   EXAONE-family widths 2–63. Unset runs those rows through the decode
   GQA-pair kernel (`grid.z = n_tokens`). n=1 decode and n≥64 HMMA are

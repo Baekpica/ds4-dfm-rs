@@ -1,0 +1,8 @@
+rows=1 heads=4 exact=1 capture_exact=1 old_ms=0.009503 fused_ms=0.005127
+rows=8 heads=4 exact=1 capture_exact=1 old_ms=0.009945 fused_ms=0.004688
+rows=129 heads=4 exact=1 capture_exact=1 old_ms=0.018037 fused_ms=0.017441
+rows=4096 heads=4 exact=1 capture_exact=1 old_ms=1.930970 fused_ms=1.804716
+rows=1 heads=8 exact=1 capture_exact=1 old_ms=0.006373 fused_ms=0.003198
+rows=8 heads=8 exact=1 capture_exact=1 old_ms=0.006223 fused_ms=0.003328
+rows=129 heads=8 exact=1 capture_exact=1 old_ms=0.024205 fused_ms=0.019221
+rows=4096 heads=8 exact=1 capture_exact=1 old_ms=2.223274 fused_ms=1.900012

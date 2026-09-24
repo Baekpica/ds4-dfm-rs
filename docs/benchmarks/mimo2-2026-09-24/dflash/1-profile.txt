@@ -1,0 +1,109 @@
+DS4 PERFORMANCE SCOUT
+
+WORKLOAD
+  command  '/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-2nd/scratch/mimo-resume-20260924/bench-swa-dflash' '--cuda' '-m' '/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf' '--mtp' '/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-DFlash-Q8_0.gguf' '--prompt-file' 'speed-bench/promessi_sposi.txt' '--ctx-start' '256' '--ctx-max' '256' '--gen-tokens' '64' '--mtp-draft' '8'
+  git      f09c1862e7f512eef859af06d65da4773dc89d08 (dirty=true)
+  gpu      NVIDIA GB10
+
+APPLICATION THROUGHPUT (fresh, unprofiled process)
+  ctx 256: prefill 256 tokens, 518.86 tok/s; decode 64 tokens, 6.97 tok/s
+    first_token_sec 0.3046; kvcache_bytes 32068660
+
+EXECUTION-PATH STRUCTURE (separate profiled process)
+  Profiled throughput is informational and is never compared with baseline TPS.
+  Projection is a first-to-last GPU span, including gaps; it is not GPU busy time.
+  Coverage unions traced GPU intervals clipped to CPU NVTX phases.
+  Kernel percentages use summed kernel time within each phase; overlaps can double-count.
+
+NVTX GPU PROJECTION: ds4.prefill
+  range time      0.493225 s
+  projected span  0.479772 s
+  GPU busy union  0.465260 s
+  GPU coverage    94.3 %
+  largest GPU-free span inside phase  0.013467 s
+  GPU memop union 0.001920 s (0.4 % of busy)
+
+DS4.PREFILL TOP KERNELS
+  48.3 %  0.223904 s  launches=47  gateup_iq2_d2r_pair_kernel
+  30.1 %  0.139541 s  launches=47  ds4_moe_worklist_mmq_kernel
+  11.7 %  0.054382 s  launches=99  mul_mat_q
+  1.9 %  0.008659 s  launches=48  step37_swiglu
+  1.4 %  0.006499 s  launches=47  step37_expert_sum
+  1.2 %  0.005453 s  launches=193  quantize_mmq_q8_1
+  0.9 %  0.004037 s  launches=48  prefill
+  0.8 %  0.003739 s  launches=48  mimo2_split_rope
+  0.6 %  0.002620 s  launches=1  q8_0_aligned_dense_vec_kernel
+  0.5 %  0.002508 s  launches=47  mimo2_router
+
+DIAGNOSIS  DOMINANT KERNEL
+EVIDENCE
+  GPU coverage 94.3 %; largest gap 0.013467 s
+  memop share 0.4 %; short-kernel launches 240, 0.2 % of kernel time (mean <= 10 us)
+NEXT
+  inspect this kernel's dispatch/fallback path; then use targeted NCU if the path is expected
+
+NEXT NCU TARGET
+  kernel: gateup_iq2_d2r_pair_kernel
+  reason: 48.3 % of ds4.prefill summed kernel time
+  suggested: 'ncu' '--kernel-name-base' 'function' '--kernel-name' 'regex:^gateup_iq2_d2r_pair_kernel$' '--launch-count' '1' '--nvtx' '--nvtx-include' 'ds4.prefill/' '--replay-mode' 'application' '--app-replay-match' 'all' '--app-replay-mode' 'strict' '/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-2nd/scratch/mimo-resume-20260924/bench-swa-dflash' '--cuda' '-m' '/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf' '--mtp' '/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-DFlash-Q8_0.gguf' '--prompt-file' 'speed-bench/promessi_sposi.txt' '--ctx-start' '256' '--ctx-max' '256' '--gen-tokens' '64' '--mtp-draft' '8'
+  Profiles one matching launch in this NVTX phase. Review memory headroom and graph replay before running.
+  With a resident weight owner, prefer the matching model-free probe (see the optimization playbook).
+
+NVTX GPU PROJECTION: ds4.decode
+  range time      9.397574 s
+  projected span  9.394460 s
+  GPU busy union  8.480193 s
+  GPU coverage    90.2 %
+  largest GPU-free span inside phase  0.107391 s
+  GPU memop union 0.138065 s (1.6 % of busy)
+
+DS4.DECODE TOP KERNELS
+  51.1 %  4.264766 s  launches=7401  mul_mat_q
+  23.4 %  1.955666 s  launches=847  q8_0_aligned_dense_vec_kernel
+  12.7 %  1.063318 s  launches=4851  q8_0_aligned_dense_vec_nc_kernel
+  4.1 %  0.342717 s  launches=1715  mul_mat_vec_q
+  2.6 %  0.217623 s  launches=1911  mimo2_attention
+  1.5 %  0.123534 s  launches=2350  mimo2_router
+  0.9 %  0.074160 s  launches=735  m2df_rope_k
+  0.6 %  0.046150 s  launches=2303  nvjet_sm121_sss_tf32_mma_64x16x64_4_32x8x64_tmaAB_alignCD4_splitK_TNNN
+  0.4 %  0.036582 s  launches=3366  mimo2_attn_split
+  0.4 %  0.031805 s  launches=3366  mimo2_attn_merge
+
+DIAGNOSIS  DOMINANT KERNEL
+EVIDENCE
+  GPU coverage 90.2 %; largest gap 0.107391 s
+  memop share 1.6 %; short-kernel launches 49460, 1.8 % of kernel time (mean <= 10 us)
+NEXT
+  inspect this kernel's dispatch/fallback path; then use targeted NCU if the path is expected
+
+NEXT NCU TARGET
+  kernel: mul_mat_q
+  reason: 51.1 % of ds4.decode summed kernel time
+  suggested: 'ncu' '--kernel-name-base' 'function' '--kernel-name' 'regex:^mul_mat_q$' '--launch-count' '1' '--nvtx' '--nvtx-include' 'ds4.decode/' '--replay-mode' 'application' '--app-replay-match' 'all' '--app-replay-mode' 'strict' '/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-2nd/scratch/mimo-resume-20260924/bench-swa-dflash' '--cuda' '-m' '/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf' '--mtp' '/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-DFlash-Q8_0.gguf' '--prompt-file' 'speed-bench/promessi_sposi.txt' '--ctx-start' '256' '--ctx-max' '256' '--gen-tokens' '64' '--mtp-draft' '8'
+  Profiles one matching launch in this NVTX phase. Review memory headroom and graph replay before running.
+  With a resident weight owner, prefer the matching model-free probe (see the optimization playbook).
+
+GLOBAL CUDA KERNELS (all phases and setup; excluded from phase diagnosis)
+  45.7 %  4.428035 s  launches=7698  mul_mat_q
+  20.2 %  1.963492 s  launches=850  q8_0_aligned_dense_vec_kernel
+  11.0 %  1.063318 s  launches=4851  q8_0_aligned_dense_vec_nc_kernel
+  6.7 %  0.648465 s  launches=141  gateup_iq2_d2r_pair_kernel
+  4.1 %  0.402284 s  launches=141  ds4_moe_worklist_mmq_kernel
+  3.5 %  0.342717 s  launches=1715  mul_mat_vec_q
+  2.2 %  0.217623 s  launches=1911  mimo2_attention
+  1.4 %  0.131043 s  launches=2491  mimo2_router
+  0.8 %  0.074160 s  launches=735  m2df_rope_k
+  0.5 %  0.046150 s  launches=2303  nvjet_sm121_sss_tf32_mma_64x16x64_4_32x8x64_tmaAB_alignCD4_splitK_TNNN
+
+HEURISTICS v1
+  host: coverage < 75%, gap >= 100 us; memop: >= 20% busy;
+  fragmentation: >= 100 short launches, >= 35% kernel time, mean <= 10 us;
+  dominant: >= 15% summed phase kernel time. Missing structural evidence => UNKNOWN.
+
+LIMITS
+  Nsight Systems does not establish memory-bound versus compute-bound behavior.
+  A profiler result is not a correctness proof or a claimed performance improvement.
+  Return every code change to same-workload, same-hour A/B and existing correctness gates.
+  Cache warmth, clocks, binary/model/prompt identity and unrecorded environment still require review.
+  WARNING: process hygiene before: resident GPU processes exist (see processes-before.txt); check owner/worker contention before comparisons
+  WARNING: process hygiene after: resident GPU processes exist (see processes-after.txt); check owner/worker contention before comparisons

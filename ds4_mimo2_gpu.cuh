@@ -2,6 +2,7 @@
 #include "cuda/mimo2_primitives.cuh"
 #include "cuda/mimo2_media.cuh"
 #include "cuda/mimo2_prefill.cuh"
+#include "cuda/mimo2_dflash_attn.cuh"
 
 static void m2_hmma_init(void) {
     m2_hmma_available = mimo2_hmma::supported();
@@ -39,6 +40,12 @@ extern "C" int ds4_gpu_mimo2_router(
         logits->bytes < (uint64_t)rows * EXPERTS * sizeof(float)) { return 0; }
     const float *bias = (const float *)cuda_model_range_ptr(map, offset, bias_bytes, "MiMo bias");
     if (!bias) { return 0; }
+    const char *warp = getenv("DS4_MIMO2_ROUTER_WARP");
+    if (rows <= 8 && !(warp && warp[0] == '0' && warp[1] == '\0')) {
+        mimo2_router_warp<<<rows, 32, 0, ds4_current_stream()>>>(
+            (int *)ids->ptr, (float *)weights->ptr, (const float *)logits->ptr, bias);
+        return cuda_ok(cudaGetLastError(), "mimo2 router warp");
+    }
     mimo2_router<<<rows, 128, 0, ds4_current_stream()>>>(
         (int *)ids->ptr, (float *)weights->ptr, (const float *)logits->ptr, bias);
     return cuda_ok(cudaGetLastError(), "MiMo router");
@@ -70,6 +77,7 @@ enum { M2_PATH_HMMA = 5, M2_PATH_SWA_HMMA = 6 };
 
 // ds4_gpu_cleanup calls this. A second init must allocate again, not leak.
 static void m2_split_release(void) {
+    m2df_release();
     if (!m2_split_buf) { return; }
     (void)cudaFree(m2_split_buf);
     m2_split_buf = nullptr;
@@ -87,6 +95,27 @@ static int m2_split_ready(void) {
         return 0;
     }
     return 1;
+}
+
+extern "C" int ds4_gpu_mimo2_dflash_attn(
+        ds4_gpu_tensor *attn, ds4_gpu_tensor *q,
+        ds4_gpu_tensor *k_ctx, ds4_gpu_tensor *k_noise,
+        ds4_gpu_tensor *v_ctx, ds4_gpu_tensor *v_noise,
+        const float *q_weight, const float *k_weight, const float *sinks,
+        uint32_t q0, uint32_t n, uint32_t ctx) {
+    const uint64_t q_bytes = (uint64_t)n * DF_Q * sizeof(float);
+    const uint64_t ctx_bytes = (uint64_t)ctx * DF_KV * sizeof(float);
+    const uint64_t noise_bytes = (uint64_t)n * DF_KV * sizeof(float);
+    if (!attn || !q || !k_ctx || !k_noise || !v_ctx || !v_noise ||
+        !q_weight || !k_weight || !sinks || n < 1 || n > 8 ||
+        ctx < 1 || ctx > DF_WIN || q0 < ctx ||
+        attn->bytes < q_bytes || q->bytes < q_bytes ||
+        k_ctx->bytes < ctx_bytes || v_ctx->bytes < ctx_bytes ||
+        k_noise->bytes < noise_bytes || v_noise->bytes < noise_bytes) { return 0; }
+    return m2df_attn_launch(
+        (float *)attn->ptr, (float *)q->ptr, (float *)k_ctx->ptr, (float *)k_noise->ptr,
+        (float *)v_ctx->ptr, (float *)v_noise->ptr, q_weight, k_weight, sinks,
+        q0, n, ctx, ds4_current_stream());
 }
 
 extern "C" int ds4_gpu_mimo2_attention(
@@ -144,8 +173,10 @@ extern "C" int ds4_gpu_mimo2_attention(
     const char *swa_vec_env = getenv("DS4_MIMO2_SWA_VEC");
     const char *split_vec_env = getenv("DS4_MIMO2_SPLIT_VEC");
     const char *split16_env = getenv("DS4_MIMO2_SPLIT16");
+    // Share the window across eight query heads. FP32 reduction order may
+    // change; =0 retains the walk for numerical comparisons.
     const int swa_decode = rows == 1 && window == 128 && kv_heads == 8 &&
-        swa_decode_env && swa_decode_env[0] == '1' && swa_decode_env[1] == '\0';
+        !(swa_decode_env && swa_decode_env[0] == '0' && swa_decode_env[1] == '\0');
     const int split_vec = split_vec_env && split_vec_env[0] == '1' && split_vec_env[1] == '\0';
     const int nsplit = (split16_env && split16_env[0] == '1' && split16_env[1] == '\0')
         ? 16 : M2_DECODE_SPLITS;
@@ -158,7 +189,7 @@ extern "C" int ds4_gpu_mimo2_attention(
     const int split = rows >= 1 && rows <= 8 && window == 0 && kv_heads == 4 &&
         !fattn_off && !split_off && m2_split_ready();
     if (swa_decode) {
-        const int swa_vec = swa_vec_env && swa_vec_env[0] == '1' && swa_vec_env[1] == '\0';
+        const int swa_vec = !(swa_vec_env && swa_vec_env[0] == '0' && swa_vec_env[1] == '\0');
         m2_attn_path = swa_vec ? 2 : 1;
         mimo2_swa_decode<<<dim3(1, kv_heads), 256, 0, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,

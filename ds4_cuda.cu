@@ -33019,7 +33019,8 @@ static int routed_matmul_tensor_impl(
         uint32_t                n_tokens,
         uint32_t                n_expert_used,
         uint32_t                max_rows_per_expert,
-        enum ds4_routed_out     out_policy) {
+        enum ds4_routed_out     out_policy,
+        const ds4_gpu_tensor *up = nullptr) {
     if (!out || !x || !ids || !model_map || in_dim == 0u ||
         out_dim == 0u || n_expert == 0u ||
         n_tokens == 0u || n_expert_used == 0u ||
@@ -33037,6 +33038,7 @@ static int routed_matmul_tensor_impl(
         assignments > UINT64_MAX / out_dim ||
         assignments * out_dim > UINT64_MAX / sizeof(float) ||
         x->bytes < x_count * sizeof(float) ||
+        (up && up->bytes < x_count * sizeof(float)) ||
         ids->bytes < assignments * sizeof(int32_t) ||
         out->bytes < assignments * out_dim * sizeof(float) ||
         max_rows_per_expert > assignments ||
@@ -33263,6 +33265,11 @@ static int routed_matmul_tensor_impl(
                 : ds4_mmq_iq2_xxs_moe(weights, xp, idp, op, M, K, NT, NE, NU, stream);
         break;
     case 17u:
+        if (up) {
+            rc = ds4_mmq_mimo2_down(weights, xp, (const float *)up->ptr,
+                                    idp, op, NT, stream);
+            break;
+        }
         rc = use_vec
             ? vec_rows(ds4_mmq_iq2_xs_moe_vec)
             : out_policy == DS4_ROUTED_OUT_GUARDED
@@ -33362,6 +33369,24 @@ extern "C" int ds4_gpu_routed_matmul_guarded_tensor(
         out, x, ids, model_map, model_size, weight_offset, weight_bytes,
         weight_type, in_dim, out_dim, n_expert, n_tokens, n_expert_used,
         max_rows_per_expert, policy);
+}
+
+/* Optional MiMo prefill path. -1 refuses before any GPU work; 0 is a
+ * hard execution failure, so the caller must not replay after an error. */
+extern "C" int ds4_gpu_mimo2_down(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *up, const ds4_gpu_tensor *ids,
+        const void *map, uint64_t size, uint64_t offset, uint64_t bytes,
+        uint32_t tokens) {
+    enum { WIDTH = 2048, OUTPUT = 4096, EXPERTS = 256, USED = 8, IQ2_XS = 17 };
+    const char *env = getenv("DS4_MIMO2_SWIGLU_Q8");
+    const char *sanitize = getenv("DS4_EXAONE_DOWN_SANITIZE");
+    if (tokens < 32 || tokens > 8192 || (env && strcmp(env, "0") == 0) ||
+        (sanitize && sanitize[0] == '1')) { return -1; }
+    if (!up) { return 0; }
+    return routed_matmul_tensor_impl(out, gate, ids, map, size, offset, bytes,
+            IQ2_XS, WIDTH, OUTPUT, EXPERTS, tokens * USED, 1, tokens,
+            DS4_ROUTED_OUT_GUARDED, up);
 }
 
 extern "C" int ds4_gpu_routed_gate_up_tensor(

@@ -188,12 +188,25 @@ it as `Incorrect` because the model turns that into different greedy tokens.
 `DS4_MIMO2_NO_PREFILL_HMMA=1` restores MiMo's walking full-attention prefill.
 Unset, windowless prefill of 32 or more rows uses the tensor-core tile.
 That path changes summation order, so compare it with `--logit-rel-rms`.
-SWA and one-row decode stay on their existing kernels.
+This switch does not change SWA or one-row decode.
 `DS4_MIMO2_NO_PREFILL_ASYNC=1` restores scalar KV loads inside that
 tensor-core prefill. Unset, the loads are asynchronous and byte-identical.
 `DS4_MIMO2_NO_SWA_HMMA=1` restores the walking sliding-window prefill.
 Unset, window-128 prefill of 32 or more rows uses the tensor-core tile.
-Compare that path with `--logit-rel-rms`. One-row decode stays on the walk.
+Compare that path with `--logit-rel-rms`.
+`DS4_MIMO2_SWA_DECODE=0` restores the one-row SWA walk. The default shares
+the window across eight query heads with vector KV loads;
+`DS4_MIMO2_SWA_VEC=0` selects scalar copies within that shared tile.
+`DS4_MIMO2_ROUTER_WARP=0` restores serial expert selection for widths 1–8.
+The default warp selection preserves IDs and weights exactly.
+`DS4_MIMO2_SWIGLU_Q8=0` restores materialized SwiGLU before MiMo's
+IQ2_XS down projection. The default shares the sorted D4 Q8 representation
+for the fixed artifact shape at widths 32–8192; narrow decode is unchanged.
+`DS4_MIMO2_DFLASH_CPU=1` restores host RMSNorm, RoPE and attention in the
+external DFlash drafter. Unset, those operations stay on the GPU. This
+changes draft arithmetic; compare verified output and long-window cases.
+The shared tile changes FP32 rounding. See the
+[fresh performance and numerical evidence](benchmarks/mimo2-2026-09-24/README.md).
 `DS4_INKLING_NO_SHARED_PIPE=1` restores the staged-slab resident Q8 tiles;
 the optimized path streams float-scale SoA rows through a cp.async column
 ring (two rows per warp for up, four rows per four-warp CTA for down).

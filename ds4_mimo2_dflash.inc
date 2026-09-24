@@ -62,86 +62,9 @@ static bool mimo2_dflash_bind(ds4_mimo2_dflash *d, const ds4_model *m) {
 
 #else
 
-enum { DF_H = 4096, DF_Q = 8192, DF_KV = 1024, DF_FF = 16384, DF_HD = 128,
-       DF_QH = 64, DF_KH = 8, DF_WIN = 1024, DF_BLOCK = 8, DF_MASK = 151675 };
-
-static void df_rms(float *row, const float *weight, unsigned width) {
-    double sum = 0.0;
-    for (unsigned i = 0; i < width; i++) { sum += (double)row[i] * row[i]; }
-    const float scale = 1.0f / sqrtf((float)(sum / width) + 1e-6f);
-    for (unsigned i = 0; i < width; i++) { row[i] *= scale * weight[i]; }
-}
-
-/* Qwen3 neoX partial RoPE. The first 64 dims rotate as two halves that
- * share one frequency; the remaining 64 stay put. Adjacent-pair rotation
- * makes every mask row predict the same token. */
-static void df_rope(float *row, unsigned heads, unsigned pos) {
-    float c[32], s[32];
-    for (unsigned i = 0; i < 32; i++) {
-        const float freq = (float)pos / powf(10000.0f, (2.0f * (float)i) / 64.0f);
-        c[i] = cosf(freq);
-        s[i] = sinf(freq);
-    }
-    for (unsigned h = 0; h < heads; h++) {
-        float *x = row + (size_t)h * DF_HD;
-        float rot[64];
-        for (unsigned i = 0; i < 32; i++) {
-            const float a = x[i], b = x[32 + i];
-            rot[i] = a * c[i] - b * s[i];
-            rot[32 + i] = b * c[i] + a * s[i];
-        }
-        memcpy(x, rot, sizeof(rot));
-    }
-}
-
-static void df_attn(float *out, const float *q, const float *k, const float *v,
-                     const float *sinks, const unsigned *k_pos, unsigned q0,
-                     unsigned q_len, unsigned kv_len) {
-    const float value_scale = 0.612f;
-    for (unsigned qi = 0; qi < q_len; qi++) {
-        const unsigned q_pos = q0 + qi;
-        for (unsigned head = 0; head < DF_QH; head++) {
-            const float *qq = q + ((size_t)qi * DF_QH + head) * DF_HD;
-            const unsigned kv_head = head / (DF_QH / DF_KH);
-            float max_score = sinks ? sinks[head] : -INFINITY;
-            for (unsigned ki = 0; ki < kv_len; ki++) {
-                const unsigned kp = k_pos[ki];
-                if (q_pos > kp && q_pos - kp >= DF_WIN) { continue; }
-                if (kp > q_pos && kp - q_pos >= DF_WIN) { continue; }
-                const float *kk = k + ((size_t)ki * DF_KH + kv_head) * DF_HD;
-                float dot = 0.0f;
-                for (unsigned d = 0; d < DF_HD; d++) { dot += qq[d] * kk[d]; }
-                dot /= sqrtf((float)DF_HD);
-                if (dot > max_score) { max_score = dot; }
-            }
-            float denom = sinks ? expf(sinks[head] - max_score) : 0.0f;
-            for (unsigned ki = 0; ki < kv_len; ki++) {
-                const unsigned kp = k_pos[ki];
-                if (q_pos > kp && q_pos - kp >= DF_WIN) { continue; }
-                if (kp > q_pos && kp - q_pos >= DF_WIN) { continue; }
-                const float *kk = k + ((size_t)ki * DF_KH + kv_head) * DF_HD;
-                float dot = 0.0f;
-                for (unsigned d = 0; d < DF_HD; d++) { dot += qq[d] * kk[d]; }
-                dot /= sqrtf((float)DF_HD);
-                denom += expf(dot - max_score);
-            }
-            float *dst = out + ((size_t)qi * DF_QH + head) * DF_HD;
-            for (unsigned d = 0; d < DF_HD; d++) { dst[d] = 0.0f; }
-            for (unsigned ki = 0; ki < kv_len; ki++) {
-                const unsigned kp = k_pos[ki];
-                if (q_pos > kp && q_pos - kp >= DF_WIN) { continue; }
-                if (kp > q_pos && kp - q_pos >= DF_WIN) { continue; }
-                const float *kk = k + ((size_t)ki * DF_KH + kv_head) * DF_HD;
-                const float *vv = v + ((size_t)ki * DF_KH + kv_head) * DF_HD;
-                float dot = 0.0f;
-                for (unsigned d = 0; d < DF_HD; d++) { dot += qq[d] * kk[d]; }
-                dot /= sqrtf((float)DF_HD);
-                const float w = expf(dot - max_score) / denom;
-                for (unsigned d = 0; d < DF_HD; d++) { dst[d] += w * vv[d] * value_scale; }
-            }
-        }
-    }
-}
+#define MIMO2_DFLASH_HOST_FNS
+#include "cuda/mimo2_dflash_host.h"
+enum { DF_FF = 16384, DF_BLOCK = 8, DF_MASK = 151675 };
 
 static int df_argmax(const float *logits) {
     unsigned best = 0;
@@ -236,6 +159,8 @@ static bool mimo2_dflash_fill(ds4_session *s, int first, unsigned n) {
     float *ho = malloc((size_t)n * DF_Q * sizeof(float));
     unsigned *k_pos = malloc(((size_t)ctx + n) * sizeof(unsigned));
     int ids[DF_BLOCK];
+    const char *cpu_env = getenv("DS4_MIMO2_DFLASH_CPU");
+    const int cpu_attn = cpu_env && cpu_env[0] == '1' && cpu_env[1] == '\0';
     bool ok = cat && proj && noise && normed && q && k_ctx && v_ctx && k_noise && v_noise &&
         attn && gate && up && mid && ffn && host_cat && hq && hk && hv && ho && k_pos;
     if (ok) {
@@ -265,29 +190,41 @@ static bool mimo2_dflash_fill(ds4_session *s, int first, unsigned n) {
             plain_graph_matmul_tensor(k_noise, d->model, d->k[il], DF_H, DF_KV, normed, n) &&
             plain_graph_matmul_tensor(v_noise, d->model, d->v[il], DF_H, DF_KV, normed, n) &&
             plain_graph_matmul_tensor(k_ctx, d->model, d->k[il], DF_H, DF_KV, proj, ctx) &&
-            plain_graph_matmul_tensor(v_ctx, d->model, d->v[il], DF_H, DF_KV, proj, ctx) &&
-            ds4_gpu_synchronize() &&
-            ds4_gpu_tensor_read(q, 0, hq, (uint64_t)n * DF_Q * sizeof(float)) &&
-            ds4_gpu_tensor_read(k_ctx, 0, hk, (uint64_t)ctx * DF_KV * sizeof(float)) &&
-            ds4_gpu_tensor_read(k_noise, 0, hk + (size_t)ctx * DF_KV, (uint64_t)n * DF_KV * sizeof(float)) &&
-            ds4_gpu_tensor_read(v_ctx, 0, hv, (uint64_t)ctx * DF_KV * sizeof(float)) &&
-            ds4_gpu_tensor_read(v_noise, 0, hv + (size_t)ctx * DF_KV, (uint64_t)n * DF_KV * sizeof(float));
+            plain_graph_matmul_tensor(v_ctx, d->model, d->v[il], DF_H, DF_KV, proj, ctx);
         if (!ok) { break; }
-        float q_weight[DF_HD], k_weight[DF_HD], sinks[DF_QH];
-        memcpy(q_weight, (const char *)d->model->map + d->q_norm[il]->abs_offset, sizeof(q_weight));
-        memcpy(k_weight, (const char *)d->model->map + d->k_norm[il]->abs_offset, sizeof(k_weight));
-        memcpy(sinks, (const char *)d->model->map + d->sinks[il]->abs_offset, sizeof(sinks));
-        for (unsigned row = 0; row < n * DF_QH; row++) { df_rms(hq + row * DF_HD, q_weight, DF_HD); }
-        for (unsigned row = 0; row < (ctx + n) * DF_KH; row++) { df_rms(hk + row * DF_HD, k_weight, DF_HD); }
-        for (unsigned i = 0; i < n; i++) { df_rope(hq + (size_t)i * DF_Q, DF_QH, start + i); }
-        for (unsigned i = 0; i < ctx; i++) { df_rope(hk + (size_t)i * DF_KV, DF_KH, ctx_pos[i]); }
-        for (unsigned i = 0; i < n; i++) {
-            df_rope(hk + ((size_t)ctx + i) * DF_KV, DF_KH, start + i);
+        /* Host loops are the previous path. They stay in this C file so the
+         * switch keeps the gcc build. The device path skips the copies. */
+        if (cpu_attn) {
+            ok = ds4_gpu_synchronize() &&
+                ds4_gpu_tensor_read(q, 0, hq, (uint64_t)n * DF_Q * sizeof(float)) &&
+                ds4_gpu_tensor_read(k_ctx, 0, hk, (uint64_t)ctx * DF_KV * sizeof(float)) &&
+                ds4_gpu_tensor_read(k_noise, 0, hk + (size_t)ctx * DF_KV, (uint64_t)n * DF_KV * sizeof(float)) &&
+                ds4_gpu_tensor_read(v_ctx, 0, hv, (uint64_t)ctx * DF_KV * sizeof(float)) &&
+                ds4_gpu_tensor_read(v_noise, 0, hv + (size_t)ctx * DF_KV, (uint64_t)n * DF_KV * sizeof(float));
+            if (!ok) { break; }
+            float q_weight[DF_HD], k_weight[DF_HD], sinks[DF_QH];
+            memcpy(q_weight, (const char *)d->model->map + d->q_norm[il]->abs_offset, sizeof(q_weight));
+            memcpy(k_weight, (const char *)d->model->map + d->k_norm[il]->abs_offset, sizeof(k_weight));
+            memcpy(sinks, (const char *)d->model->map + d->sinks[il]->abs_offset, sizeof(sinks));
+            for (unsigned row = 0; row < n * DF_QH; row++) { df_rms(hq + row * DF_HD, q_weight, DF_HD); }
+            for (unsigned row = 0; row < (ctx + n) * DF_KH; row++) { df_rms(hk + row * DF_HD, k_weight, DF_HD); }
+            for (unsigned i = 0; i < n; i++) { df_rope(hq + (size_t)i * DF_Q, DF_QH, start + i); }
+            for (unsigned i = 0; i < ctx; i++) { df_rope(hk + (size_t)i * DF_KV, DF_KH, ctx_pos[i]); }
+            for (unsigned i = 0; i < n; i++) {
+                df_rope(hk + ((size_t)ctx + i) * DF_KV, DF_KH, start + i);
+            }
+            for (unsigned i = 0; i < ctx; i++) { k_pos[i] = ctx_pos[i]; }
+            for (unsigned i = 0; i < n; i++) { k_pos[ctx + i] = start + i; }
+            df_attn(ho, hq, hk, hv, sinks, k_pos, start, n, ctx + n);
+            ok = ds4_gpu_tensor_write(attn, 0, ho, (uint64_t)n * DF_Q * sizeof(float));
+        } else {
+            ok = ds4_gpu_mimo2_dflash_attn(attn, q, k_ctx, k_noise, v_ctx, v_noise,
+                    (const float *)((const char *)d->model->map + d->q_norm[il]->abs_offset),
+                    (const float *)((const char *)d->model->map + d->k_norm[il]->abs_offset),
+                    (const float *)((const char *)d->model->map + d->sinks[il]->abs_offset),
+                    start, n, ctx) == 2;
         }
-        for (unsigned i = 0; i < ctx; i++) { k_pos[i] = ctx_pos[i]; }
-        for (unsigned i = 0; i < n; i++) { k_pos[ctx + i] = start + i; }
-        df_attn(ho, hq, hk, hv, sinks, k_pos, start, n, ctx + n);
-        ok = ds4_gpu_tensor_write(attn, 0, ho, (uint64_t)n * DF_Q * sizeof(float)) &&
+        ok = ok &&
             plain_graph_matmul_tensor(ffn, d->model, d->o[il], DF_Q, DF_H, attn, n) &&
             ds4_gpu_dots3_scale_tensor(ffn, 1.0f, (uint64_t)n * DF_H) &&
             ds4_gpu_exaone_add_tensor(noise, ffn, (uint64_t)n * DF_H) &&

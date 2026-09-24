@@ -248,6 +248,11 @@ const PERF_ENV: &[&str] = &[
     "DS4_MIMO2_NO_PREFILL_HMMA",
     "DS4_MIMO2_NO_PREFILL_ASYNC",
     "DS4_MIMO2_NO_SWA_HMMA",
+    "DS4_MIMO2_SWA_DECODE",
+    "DS4_MIMO2_SWA_VEC",
+    "DS4_MIMO2_ROUTER_WARP",
+    "DS4_MIMO2_DFLASH_CPU",
+    "DS4_MIMO2_SWIGLU_Q8",
     "DS4_INKLING_PREFILL_CHUNK",
     "DS4_DOTS3_ATTN_NO_HMMA",
     "DS4_DOTS3_ATTN_NO_SPLIT",
@@ -665,6 +670,7 @@ mod tests {
                 ("DS4_EXAONE_PREFILL_GQA", "0"),
                 ("DS4_FATTN_HMMA_LDSM", "0"),
                 ("DS4_SOLAR_FATTN_GQA2", "1"),
+                ("DS4_MIMO2_SWA_DECODE", "0"),
                 ("DS4_API_KEY", "secret"),
                 ("DS4_UNKNOWN", "secret"),
                 ("HF_TOKEN", "secret"),
@@ -682,6 +688,12 @@ mod tests {
         assert!(out.contains("DS4_EXAONE_PREFILL_GQA='0'"));
         assert!(out.contains("DS4_FATTN_HMMA_LDSM='0'"));
         assert!(out.contains("DS4_SOLAR_FATTN_GQA2='1'"));
+        assert!(out.contains("DS4_MIMO2_SWA_DECODE='0'"));
+        assert!(controls(&[
+            "DS4_MIMO2_SWA_DECODE=0".into(),
+            "DS4_MIMO2_SWA_VEC=0".into()
+        ])
+        .is_ok());
         assert!(!out.contains("secret"));
         assert_eq!(quote("a'$(x)`id`"), "'a'\\''$(x)`id`'");
     }

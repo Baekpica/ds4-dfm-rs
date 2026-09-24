@@ -1,0 +1,138 @@
+{
+  "source_base": "43d062b8af1a25bd7b32141b97e736b68c9fdf2c",
+  "dirty": true,
+  "binary": "bench-swiglu",
+  "binary_sha256": "2db59255869158eccca02641e4efefb7dfe3e032cd2189b46f538dc758548b95",
+  "protocol": "8K/128, no MTP; ABBAAB, 3 fresh samples per arm, fresh warmup before each; shared VMM owner",
+  "control": "DS4_MIMO2_SWIGLU_Q8",
+  "clock_policy_mhz": [
+    300,
+    2200
+  ],
+  "busy_clock_mhz": [
+    2190,
+    2190
+  ],
+  "medians": {
+    "0": {
+      "prefill_tps": 1156.08,
+      "gen_tps": 24.37,
+      "first_token_sec": 0.1376
+    },
+    "1": {
+      "prefill_tps": 1189.67,
+      "gen_tps": 24.37,
+      "first_token_sec": 0.1374
+    }
+  },
+  "gains_pct": {
+    "prefill_tps": 2.905508269323942,
+    "gen_tps": 0.0
+  },
+  "samples": {
+    "sample-1-0": {
+      "ctx_tokens": "8192",
+      "prefill_tokens": "8192",
+      "prefill_tps": "1156.08",
+      "gen_tokens": "128",
+      "gen_tps": "24.37",
+      "gen_tps_ss": "24.83",
+      "first_token_sec": "0.1376",
+      "kvcache_bytes": "214945844"
+    },
+    "sample-2-1": {
+      "ctx_tokens": "8192",
+      "prefill_tokens": "8192",
+      "prefill_tps": "1189.48",
+      "gen_tokens": "128",
+      "gen_tps": "24.37",
+      "gen_tps_ss": "24.84",
+      "first_token_sec": "0.1387",
+      "kvcache_bytes": "214945844"
+    },
+    "sample-3-1": {
+      "ctx_tokens": "8192",
+      "prefill_tokens": "8192",
+      "prefill_tps": "1189.67",
+      "gen_tokens": "128",
+      "gen_tps": "24.30",
+      "gen_tps_ss": "24.75",
+      "first_token_sec": "0.1374",
+      "kvcache_bytes": "214945844"
+    },
+    "sample-4-0": {
+      "ctx_tokens": "8192",
+      "prefill_tokens": "8192",
+      "prefill_tps": "1154.69",
+      "gen_tokens": "128",
+      "gen_tps": "24.34",
+      "gen_tps_ss": "24.81",
+      "first_token_sec": "0.1387",
+      "kvcache_bytes": "214945844"
+    },
+    "sample-5-0": {
+      "ctx_tokens": "8192",
+      "prefill_tokens": "8192",
+      "prefill_tps": "1157.06",
+      "gen_tokens": "128",
+      "gen_tps": "24.39",
+      "gen_tps_ss": "24.84",
+      "first_token_sec": "0.1361",
+      "kvcache_bytes": "214945844"
+    },
+    "sample-6-1": {
+      "ctx_tokens": "8192",
+      "prefill_tokens": "8192",
+      "prefill_tps": "1190.00",
+      "gen_tokens": "128",
+      "gen_tps": "24.40",
+      "gen_tps_ss": "24.83",
+      "first_token_sec": "0.1307",
+      "kvcache_bytes": "214945844"
+    }
+  },
+  "proof": {
+    "sample-1-0": {
+      "frontier_logits_max_abs": 0.0,
+      "argmax_equal": true,
+      "token_mismatches": 0
+    },
+    "sample-2-1": {
+      "frontier_logits_max_abs": 0.0,
+      "argmax_equal": true,
+      "token_mismatches": 0
+    },
+    "sample-3-1": {
+      "frontier_logits_max_abs": 0.0,
+      "argmax_equal": true,
+      "token_mismatches": 0
+    },
+    "sample-4-0": {
+      "frontier_logits_max_abs": 0.0,
+      "argmax_equal": true,
+      "token_mismatches": 0
+    },
+    "sample-5-0": {
+      "frontier_logits_max_abs": 0.0,
+      "argmax_equal": true,
+      "token_mismatches": 0
+    },
+    "sample-6-1": {
+      "frontier_logits_max_abs": 0.0,
+      "argmax_equal": true,
+      "token_mismatches": 0
+    }
+  },
+  "separate_profiles": {
+    "binary_sha256": "2db59255869158eccca02641e4efefb7dfe3e032cd2189b46f538dc758548b95",
+    "note": "Separate single scout per arm. Scout git state was collected while the next QKV candidate was being edited; the executed frozen binary is the accepted SwiGLU build identified above. Profile throughput is not included in the three-sample A/B.",
+    "prefill_range_seconds": [
+      7.104722,
+      6.887643
+    ],
+    "all_swiglu_and_mmq_activation_quant_seconds": [
+      0.675470272,
+      0.475582912
+    ]
+  }
+}

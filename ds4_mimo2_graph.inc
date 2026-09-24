@@ -180,6 +180,25 @@ static bool mimo2_apply_spans(ds4_mimo2_graph *g, unsigned n, unsigned pos) {
     return true;
 }
 
+/* Keep route weights after down projection. Prefill may emit the same Q8
+ * bytes without materializing b_routed_mid; narrow decode uses its old path. */
+static bool mimo2_expert_down(ds4_exaone_batch_ws *b, const ds4_model *m,
+                               const ds4_layer_weights *l, unsigned n) {
+    if (l->ffn_down_exps->type == DS4_TENSOR_IQ2_XS) {
+        const int rc = ds4_gpu_mimo2_down(b->b_routed_down, b->b_routed_gate,
+                b->b_routed_up, b->b_router_selected, m->map, m->size,
+                l->ffn_down_exps->abs_offset, l->ffn_down_exps->bytes, n);
+        if (rc >= 0) { return rc != 0; }
+    }
+    return ds4_gpu_step37_swiglu(b->b_routed_mid, b->b_routed_gate,
+            b->b_routed_up, NULL, M2_FF, n * M2_USED, 0) &&
+        ds4_gpu_routed_matmul_guarded_tensor(b->b_routed_down, b->b_routed_mid,
+            b->b_router_selected, m->map, m->size,
+            l->ffn_down_exps->abs_offset, l->ffn_down_exps->bytes,
+            l->ffn_down_exps->type, M2_FF, M2_EMBED, M2_EXPERTS,
+            n * M2_USED, 1, n);
+}
+
 static bool mimo2_layer(ds4_mimo2_graph *g, const ds4_model *m,
                          const ds4_weights *w, unsigned il, unsigned n) {
     ds4_exaone_batch_ws *b = &g->ws;
@@ -213,10 +232,7 @@ static bool mimo2_layer(ds4_mimo2_graph *g, const ds4_model *m,
                 m->map, m->size, l->ffn_gate_exps->abs_offset, l->ffn_gate_exps->bytes,
                 l->ffn_up_exps->abs_offset, l->ffn_up_exps->bytes, l->ffn_gate_exps->type,
                 M2_EMBED, M2_FF, M2_EXPERTS, n, M2_USED) ||
-            !ds4_gpu_step37_swiglu(b->b_routed_mid, b->b_routed_gate, b->b_routed_up, NULL, M2_FF, n * M2_USED, 0) ||
-            !ds4_gpu_routed_matmul_guarded_tensor(b->b_routed_down, b->b_routed_mid, b->b_router_selected,
-                m->map, m->size, l->ffn_down_exps->abs_offset, l->ffn_down_exps->bytes,
-                l->ffn_down_exps->type, M2_FF, M2_EMBED, M2_EXPERTS, n * M2_USED, 1, n) ||
+            !mimo2_expert_down(b, m, l, n) ||
             !ds4_gpu_step37_sum(b->b_ffn_out, b->b_routed_down, b->b_router_weights, M2_EMBED, n)) { return false; }
     }
     return ds4_gpu_exaone_add_tensor(b->b_cur, b->b_ffn_out, (uint64_t)n * M2_EMBED);

@@ -73,8 +73,9 @@ def plot(series, out, note, metrics=METRICS):
         for index, entry in enumerate(series):
             values = entry["metrics"][metric]
             color = COLORS[index % len(COLORS)]
-            ax.fill_between(x, values["min"], values["max"], color=color, alpha=0.16,
-                            linewidth=0)
+            if "min" in values and "max" in values:
+                ax.fill_between(x, values["min"], values["max"], color=color, alpha=0.16,
+                                linewidth=0)
             ax.plot(x, values["median"], color=color, linewidth=2,
                     label=f'{entry["label"]} · 64K: {values["median"][-1]:,.2f} tok/s')
         ax.set_title(heading, loc="left", fontsize=13)
@@ -87,7 +88,7 @@ def plot(series, out, note, metrics=METRICS):
     axes[-1].set_xticks([2, 8, 16, 24, 32, 40, 48, 56, 64])
     axes[-1].set_xlim(2, 64)
     fig.text(0.5, 0.075 if single_panel else 0.06,
-             "Curves: per-frontier medians; bands: observed min–max across three fresh processes.\n"
+             "Curves: per-frontier medians; bands, where recorded: observed min–max of three processes.\n"
              "2,048-token incremental prefill + 128 greedy tokens per frontier; one warm session per process.\n"
              + note, ha="center", va="center", fontsize=9, color="#4b5563", linespacing=1.6)
     fig.subplots_adjust(top=0.82 if single_panel else 0.88,

@@ -70,6 +70,59 @@ __global__ static void mimo2_router(
     for (unsigned k = 0; k < USED; k++) { weights[k] /= denominator; }
 }
 
+/* Decode's serial top-8 walk scans 256 scores eight times on one lane.
+ * A warp reduces comparisons instead. Ties still choose the lower expert;
+ * sigmoid and selected-weight summation retain the serial arithmetic. */
+__global__ static void mimo2_router_warp(
+        int *ids, float *weights, const float *logits, const float *bias) {
+    enum { EXPERTS = 256, USED = 8, WARP = 32, LOCAL = EXPERTS / WARP };
+    const unsigned lane = threadIdx.x, row = blockIdx.x;
+    float prob[LOCAL], score[LOCAL];
+    int invalid = 0;
+#pragma unroll
+    for (unsigned i = 0; i < LOCAL; i++) {
+        const unsigned e = lane + i * WARP;
+        prob[i] = 1.0f / (1.0f + expf(-logits[(uint64_t)row * EXPERTS + e]));
+        score[i] = prob[i] + (bias ? bias[e] : 0.0f);
+        invalid |= !isfinite(score[i]);
+    }
+    ids += (uint64_t)row * USED;
+    weights += (uint64_t)row * USED;
+    if (__any_sync(0xffffffffu, invalid)) {
+        if (lane < USED) { ids[lane] = lane; weights[lane] = NAN; }
+        return;
+    }
+    float sum = 0, selected[USED];
+    for (unsigned k = 0; k < USED; k++) {
+        float best_score = -INFINITY;
+        unsigned best = EXPERTS;
+#pragma unroll
+        for (unsigned i = 0; i < LOCAL; i++) {
+            if (score[i] > best_score) {
+                best_score = score[i];
+                best = lane + i * WARP;
+            }
+        }
+        for (unsigned step = WARP / 2; step; step /= 2) {
+            const float other_score = __shfl_xor_sync(0xffffffffu, best_score, step);
+            const unsigned other = __shfl_xor_sync(0xffffffffu, best, step);
+            if (other_score > best_score || (other_score == best_score && other < best)) {
+                best_score = other_score;
+                best = other;
+            }
+        }
+        const float value = prob[best / WARP];
+        selected[k] = __shfl_sync(0xffffffffu, value, best % WARP);
+        sum += selected[k];
+        if (lane == best % WARP) { score[best / WARP] = -INFINITY; }
+        if (lane == 0) { ids[k] = best; }
+    }
+    if (lane == 0) {
+        const float denominator = fmaxf(sum, 0x1p-14f);
+        for (unsigned k = 0; k < USED; k++) { weights[k] = selected[k] / denominator; }
+    }
+}
+
 /* Cache row: [all K heads (192 each) | all V heads (128 each)].
  * The caller retains window+batch-1 rows before attention, so a batched store
  * cannot overwrite keys needed by the earliest query in that batch. Positions

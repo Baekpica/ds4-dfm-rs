@@ -26,6 +26,7 @@
 #include "mmid.cuh"
 #include "ds4_mmq_d2r.cuh"
 #include "ds4_mmq_pipe.cuh"
+#include "ds4_mimo2_swiglu.cuh"
 
 #include <climits>
 #include <cstdio>
@@ -2042,7 +2043,9 @@ int ds4_mmq_moe_impl(
          * (1024) was tuned on the DeepSeek prefill mix; a family whose
          * decode shape measures faster on the D2R schedule passes its own
          * floor here instead of moving the shared default. */
-        int64_t         d2r_ncols_floor = 0) {
+        int64_t         d2r_ncols_floor = 0,
+        /* MiMo down consumes unweighted SwiGLU directly as D4 Q8. */
+        const float   * up_f32 = nullptr) {
 
     if (!W || !X_f32 || !ids || !out_f32) {
         fprintf(stderr, "%s: null pointer\n", tag);
@@ -2168,11 +2171,17 @@ int ds4_mmq_moe_impl(
     const int64_t s12_src = (int64_t)K * ne11;                          // stride between channels = K*1
     const int64_t s13_src = (int64_t)K * ne11 * ne12;                   // stride between samples
 
-    quantize_mmq_q8_1_cuda(
-        X_f32, ids_src1.get(), (void *)src1_q8_1.get(),
-        type, /*ne00=*/K, s11_src, s12_src, s13_src,
-        /*ne0=*/ne10_padded, /*ne1=*/ne_get_rows, /*ne2=*/1, /*ne3=*/1,
-        stream);
+    if (up_f32) {
+        mimo2_swiglu_q8<<<dim3((unsigned)ne_get_rows, (K + 511) / 512), 128, 0, stream>>>(
+            X_f32, up_f32, ids_src1.get(), (block_q8_1_mmq *)src1_q8_1.get(),
+            K, (int)ne_get_rows);
+    } else {
+        quantize_mmq_q8_1_cuda(
+            X_f32, ids_src1.get(), (void *)src1_q8_1.get(),
+            type, /*ne00=*/K, s11_src, s12_src, s13_src,
+            /*ne0=*/ne10_padded, /*ne1=*/ne_get_rows, /*ne2=*/1, /*ne3=*/1,
+            stream);
+    }
 
     err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -5968,6 +5977,18 @@ extern "C" int ds4_mmq_q8_0_moe_vec(
     return ds4_mmq_moe_vec_impl<GGML_TYPE_Q8_0>(
         "ds4_mmq_q8_0_moe_vec", W, X, ids, out, M, K,
         n_tokens, n_experts, n_expert_used, stream);
+}
+
+/* Fixed MiMo artifact contract: 256 experts, eight assignments per token,
+ * IQ2_XS down 4096x2048. Route multiplication stays after this projection. */
+extern "C" int ds4_mmq_mimo2_down(
+        const void *weights, const float *gate, const float *up,
+        const int32_t *ids, float *out, int rows, cudaStream_t stream) {
+    enum { WIDTH = 2048, OUTPUT = 4096, EXPERTS = 256, USED = 8 };
+    if (!up || rows < 32 * USED || rows > 8192 * USED || rows % USED) { return -1; }
+    return ds4_mmq_moe_impl<GGML_TYPE_IQ2_XS>(
+        "MiMo fused SwiGLU down", weights, gate, ids, out, OUTPUT, WIDTH,
+        rows, EXPERTS, 1, stream, nullptr, 0, false, rows / USED, 0, up);
 }
 
 extern "C" int ds4_mmq_iq2_xs_moe(

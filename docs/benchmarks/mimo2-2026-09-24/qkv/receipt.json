@@ -1,0 +1,137 @@
+{
+  "source_base": "acc16308630d23dbfdb5abbd143e280c6f919a19",
+  "dirty": true,
+  "binary": "bench-qkv",
+  "binary_sha256": "4c50591a290e9cc3c84a28f40f9068c9643ff3858ae64f20ec5d666add36b727",
+  "protocol": "8K/128, no MTP; ABBAAB, 3 fresh samples per arm, fresh warmup before each; shared VMM owner",
+  "control": "DS4_MIMO2_QKV_CACHE",
+  "clock_policy_mhz": [
+    300,
+    2200
+  ],
+  "busy_clock_mhz": [
+    2190,
+    2197
+  ],
+  "medians": {
+    "0": {
+      "prefill_tps": 1191.21,
+      "gen_tps": 24.36,
+      "first_token_sec": 0.1329
+    },
+    "1": {
+      "prefill_tps": 1195.51,
+      "gen_tps": 24.41,
+      "first_token_sec": 0.1355
+    }
+  },
+  "gains_pct": {
+    "prefill_tps": 0.36097749347301367,
+    "gen_tps": 0.20525451559934016
+  },
+  "samples": {
+    "sample-1-0": {
+      "ctx_tokens": "8192",
+      "prefill_tokens": "8192",
+      "prefill_tps": "1192.05",
+      "gen_tokens": "128",
+      "gen_tps": "24.35",
+      "gen_tps_ss": "24.81",
+      "first_token_sec": "0.1381",
+      "kvcache_bytes": "214945844"
+    },
+    "sample-2-1": {
+      "ctx_tokens": "8192",
+      "prefill_tokens": "8192",
+      "prefill_tps": "1195.51",
+      "gen_tokens": "128",
+      "gen_tps": "24.40",
+      "gen_tps_ss": "24.85",
+      "first_token_sec": "0.1355",
+      "kvcache_bytes": "214945844"
+    },
+    "sample-3-1": {
+      "ctx_tokens": "8192",
+      "prefill_tokens": "8192",
+      "prefill_tps": "1195.09",
+      "gen_tokens": "128",
+      "gen_tps": "24.41",
+      "gen_tps_ss": "24.87",
+      "first_token_sec": "0.1368",
+      "kvcache_bytes": "214945844"
+    },
+    "sample-4-0": {
+      "ctx_tokens": "8192",
+      "prefill_tokens": "8192",
+      "prefill_tps": "1191.21",
+      "gen_tokens": "128",
+      "gen_tps": "24.38",
+      "gen_tps_ss": "24.82",
+      "first_token_sec": "0.1317",
+      "kvcache_bytes": "214945844"
+    },
+    "sample-5-0": {
+      "ctx_tokens": "8192",
+      "prefill_tokens": "8192",
+      "prefill_tps": "1190.69",
+      "gen_tokens": "128",
+      "gen_tps": "24.36",
+      "gen_tps_ss": "24.80",
+      "first_token_sec": "0.1329",
+      "kvcache_bytes": "214945844"
+    },
+    "sample-6-1": {
+      "ctx_tokens": "8192",
+      "prefill_tokens": "8192",
+      "prefill_tps": "1196.13",
+      "gen_tokens": "128",
+      "gen_tps": "24.42",
+      "gen_tps_ss": "24.85",
+      "first_token_sec": "0.1312",
+      "kvcache_bytes": "214945844"
+    }
+  },
+  "proof": {
+    "sample-1-0": {
+      "frontier_logits_max_abs": 0.0,
+      "argmax_equal": true,
+      "token_mismatches": 0
+    },
+    "sample-2-1": {
+      "frontier_logits_max_abs": 0.0,
+      "argmax_equal": true,
+      "token_mismatches": 0
+    },
+    "sample-3-1": {
+      "frontier_logits_max_abs": 0.0,
+      "argmax_equal": true,
+      "token_mismatches": 0
+    },
+    "sample-4-0": {
+      "frontier_logits_max_abs": 0.0,
+      "argmax_equal": true,
+      "token_mismatches": 0
+    },
+    "sample-5-0": {
+      "frontier_logits_max_abs": 0.0,
+      "argmax_equal": true,
+      "token_mismatches": 0
+    },
+    "sample-6-1": {
+      "frontier_logits_max_abs": 0.0,
+      "argmax_equal": true,
+      "token_mismatches": 0
+    }
+  },
+  "decision": "Rejected: correct, but neither phase meets ds4-perf Improved (>1% worst-case latency improvement).",
+  "latency_envelope_pct": {
+    "prefill_tps": [
+      -0.4548000635382521,
+      -0.25437414755372645
+    ],
+    "gen_tps": [
+      -0.2866502866502807,
+      -0.08196721311475308
+    ]
+  }
+}
