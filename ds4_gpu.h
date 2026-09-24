@@ -4823,6 +4823,12 @@ int ds4_gpu_step37_vgelu(ds4_gpu_tensor *x,
 int ds4_gpu_step37_vresidual(ds4_gpu_tensor *residual, const ds4_gpu_tensor *x,
         const void *map, uint64_t size, uint64_t bias, uint64_t scale, uint32_t rows);
 
+/* Fused unweighted SwiGLU + IQ2_XS expert down. Returns -1 for an
+ * unsupported shape or the diagnostic fallback, 0 on failure, 1 on success. */
+int ds4_gpu_mimo2_down(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *up, const ds4_gpu_tensor *ids,
+        const void *map, uint64_t size, uint64_t offset, uint64_t bytes,
+        uint32_t tokens);
 int ds4_gpu_mimo2_qkv(ds4_gpu_tensor *q, ds4_gpu_tensor *k, ds4_gpu_tensor *v,
         const ds4_gpu_tensor *qkv, const ds4_gpu_tensor *table,
         uint32_t kv_heads, uint32_t rows);

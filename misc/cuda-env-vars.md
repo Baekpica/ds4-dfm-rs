@@ -147,6 +147,11 @@ The bandwidth figure is informational; we don't tier on it.
   widths 1–8. Unset uses warp reductions with the same lower-ID tie break
   and weight arithmetic. Wider prefill is unchanged.
 
+- `DS4_MIMO2_SWIGLU_Q8=0` restores MiMo's materialized SwiGLU before
+  IQ2_XS expert down. Unset emits the same unweighted D4 Q8 bytes directly
+  for widths 32–8192 and the fixed 4096×2048, 256-expert/eight-route shape.
+  Narrow decode and the existing down-sanitation diagnostic keep the old path.
+
 - `DS4_MIMO2_DFLASH_CPU=1` restores host RMSNorm, RoPE and attention for
   MiMo's external five-layer DFlash drafter. Unset uses device kernels
   and shared K/V tiles. This control does not enable speculative decode;

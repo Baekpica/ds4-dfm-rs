@@ -1,0 +1,5 @@
+rows=1 exact=1 classic_ms=0.006872 fused_ms=0.003277
+rows=8 exact=1 classic_ms=0.006586 fused_ms=0.003229
+rows=256 exact=1 classic_ms=0.008086 fused_ms=0.004069
+rows=1032 exact=1 classic_ms=0.086699 fused_ms=0.015710
+rows=32768 exact=1 classic_ms=4.610593 fused_ms=2.521491

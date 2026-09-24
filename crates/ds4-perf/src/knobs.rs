@@ -39,6 +39,7 @@ pub fn tunable(key: &str) -> bool {
             | "DS4_MIMO2_SWA_VEC"
             | "DS4_MIMO2_ROUTER_WARP"
             | "DS4_MIMO2_DFLASH_CPU"
+            | "DS4_MIMO2_SWIGLU_Q8"
             | "DS4_INKLING_PREFILL_CHUNK"
             | "DS4_CUDA_SOLAR_GQA_CHUNK"
             | "DS4_FATTN_HMMA_LDSM"
@@ -106,6 +107,7 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
             family == "mimo2" && matches!(value, "0" | "1")
         }
         "DS4_MIMO2_DFLASH_CPU" => family == "mimo2" && value == "1",
+        "DS4_MIMO2_SWIGLU_Q8" => family == "mimo2" && matches!(value, "0" | "1"),
         "DS4_INKLING_PREFILL_CHUNK" => family == "inkling" && (1..=8192).contains(&n),
         "DS4_CUDA_SOLAR_GQA_CHUNK" => {
             family.starts_with("solar") && [64, 128, 256, 512, 1024, 2048].contains(&n)
@@ -257,6 +259,16 @@ mod tests {
             }
             assert!(validate(key, "1", "qwen").is_err());
         }
+    }
+
+    #[test]
+    fn mimo2_swiglu_control() {
+        let key = "DS4_MIMO2_SWIGLU_Q8";
+        assert!(tunable(key));
+        assert!(validate(key, "0", "mimo2").is_ok());
+        assert!(validate(key, "1", "mimo2").is_ok());
+        assert!(validate(key, "2", "mimo2").is_err());
+        assert!(validate(key, "1", "qwen").is_err());
     }
 
     #[test]

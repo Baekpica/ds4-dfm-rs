@@ -127,7 +127,40 @@ nvcc -O3 --use_fast_math -std=c++17 -arch=sm_121a tests/mimo2_dflash_attn.cu -o 
 /tmp/mimo2-dflash
 ```
 
-## Rejected candidate
+## Practical round 2: emit SwiGLU directly into Q8
+
+After the three rounds above, a separate three-candidate pass targets
+ordinary inference. Practical round 1, dense Q8 CTA grouping, is rejected
+below. In round 2, the profile attributes 4.5% of prefill kernel time to
+SwiGLU and 5.2% to activation quantization. The routed down projection
+previously wrote an F32 intermediate, then gathered and quantized it.
+The fused emitter computes unweighted SwiGLU directly in the IQ2_XS
+consumer's sorted D4 Q8 layout. Route weights still apply after down.
+
+The capability is explicit: IQ2_XS down, 4096×2048, 256 experts, eight
+assignments per token, widths 32–8192. Narrow decode keeps its old path.
+`DS4_MIMO2_SWIGLU_Q8=0` restores materialization. The existing sanitation
+diagnostic also retains the old path; no new finite-value repair is added.
+
+| Metric | Materialized | Fused | Change |
+| --- | ---: | ---: | ---: |
+| Median 8K prefill, tok/s | 1156.08 | 1189.67 | +2.91% |
+| Median plain decode, tok/s | 24.37 | 24.37 | 0.00% |
+| 32768-assignment primitive, ms | 4.610593 | 2.521491 | −45.31% |
+
+Three fresh processes per arm, ABBAAB order, fresh warmup before each,
+SWA/router defaults on both sides. All six frontier logit vectors and
+128-token streams match exactly. The primitive compares the production
+SwiGLU plus canonical Q8 quantizer against the fused emitter at assignment
+widths 1/8/256/1032/32768, including zero groups and reordered assignments;
+all Q8 bytes match. See the [receipt](swiglu/receipt.json).
+
+```sh
+nvcc -O3 --use_fast_math -std=c++17 -arch=sm_121a -Icuda/mmq tests/mimo2_swiglu_q8.cu cuda/mmq/quantize.o -lcudart -lcuda -o /tmp/mimo2-swiglu
+/tmp/mimo2-swiglu
+```
+
+## Rejected candidates
 
 A compact IQ2 gate/up activation layout removed eightfold repeated input
 quantization and passed byte-exact gate/up tests. Three fresh 8K/128 samples
@@ -135,6 +168,13 @@ changed median prefill by +0.48% and decode by −0.84%. The ds4-perf verdict
 was [`Pass`, not `Improved`](rejected-compact-q8.json); the gain did not
 justify adoption. The compact
 layout is absent from this branch.
+
+The additional plain-decode profile attributes 57.9% of kernel time to
+aligned dense Q8 GEMV. Grouping 2/4/8/16 output rows per CTA preserved
+arithmetic but slowed seven production or ragged shapes by roughly 1–4%.
+The original warp-per-row path already sustains roughly 260–280 GB/s.
+This practical round 1 candidate was rejected before model integration;
+[primitive timings](dense-group-probe.txt) do not claim an end-to-end gain.
 
 ## Reproduction
 
