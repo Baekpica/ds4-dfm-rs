@@ -45750,6 +45750,7 @@ static bool step37_batch_runtime_decode(ds4_step37_batch_runtime *rt, ds4_engine
 }
 
 #include "ds4_ling3vl_batch.inc"
+#include "ds4_mimo2_batch.inc"
 
 /* ponytail: full DSA is exact while every visible token fits the model's
  * top-k.  Add the compact indexer/cache path before raising this ceiling. */
@@ -56581,6 +56582,7 @@ struct ds4_batch_ctx {
     ds4_qwen_batch_runtime *qwen; /* non-NULL selects the Qwen bank dispatch */
     ds4_step37_batch_runtime *step37; /* non-NULL selects the Step bank dispatch */
     ds4_ling3vl_batch_runtime *ling3vl; /* non-NULL selects the Ling bank dispatch */
+    ds4_mimo2_batch_runtime *mimo2; /* shared scratch, independent MiMo KV */
     ds4_dots3_batch_runtime *dots3; /* independent latent/DSA text banks */
     bool            supports_partial_reuse; /* explicit runtime capability */
     ds4_gpu_graph   g;
@@ -57345,6 +57347,60 @@ static int ling3vl_cont_bank_restore_payload(
     return 0;
 }
 
+static uint64_t mimo2_bank_payload_bytes(ds4_batch_ctx *ctx, uint32_t bank) {
+    if (!ctx || !ctx->mimo2 || bank >= ctx->max_seq ||
+        !ctx->bank_hist_valid[bank] || !ctx->bank_hist_len[bank] ||
+        !ctx->mimo2->bank_logits_valid[bank]) { return 0; }
+    return mimo2_payload_bytes(&ctx->mimo2->graph[bank],
+                               ctx->bank_hist_len[bank]);
+}
+
+static int mimo2_bank_save_payload(ds4_batch_ctx *ctx, uint32_t bank,
+                                   FILE *fp, char *err, size_t errlen) {
+    if (!mimo2_bank_payload_bytes(ctx, bank)) {
+        payload_set_err(err, errlen, "MiMo bank has no snapshot-ready frontier");
+        return 1;
+    }
+    return mimo2_payload_save(
+        &ctx->mimo2->graph[bank],
+        ctx->bank_hist + (size_t)bank * ctx->seq_cap,
+        ctx->bank_hist_len[bank],
+        ctx->mimo2->bank_logits + (size_t)bank * DS4_N_VOCAB,
+        fp, err, errlen);
+}
+
+static int mimo2_bank_load_payload(ds4_batch_ctx *ctx, uint32_t bank,
+                                   FILE *fp, uint64_t bytes,
+                                   char *err, size_t errlen) {
+    ds4_mimo2_batch_runtime *rt = ctx->mimo2;
+    ctx->bank_gen[bank]++;
+    ctx->bank_hist_valid[bank] = 0;
+    ctx->bank_hist_len[bank] = 0;
+    mimo2_bank_reset(rt, bank);
+    uint32_t h[DS4_SESSION_PAYLOAD_U32_FIELDS];
+    for (unsigned i = 0; i < DS4_SESSION_PAYLOAD_U32_FIELDS; i++) {
+        if (payload_read_u32(fp, &h[i], &bytes, err, errlen)) { return 1; }
+    }
+    if (!h[7] || h[7] > ctx->seq_cap) {
+        payload_set_err(err, errlen, "MiMo bank payload exceeds token bound");
+        return 1;
+    }
+    int *tokens = NULL;
+    float *logits = rt->bank_logits + (size_t)bank * DS4_N_VOCAB;
+    if (mimo2_payload_restore(&rt->graph[bank], fp, &bytes, h,
+                              &tokens, logits, err, errlen)) {
+        free(tokens);
+        return 1;
+    }
+    memcpy(ctx->bank_hist + (size_t)bank * ctx->seq_cap,
+           tokens, (size_t)h[7] * sizeof(int));
+    free(tokens);
+    ctx->bank_hist_len[bank] = h[7];
+    ctx->bank_hist_valid[bank] = 1;
+    rt->bank_logits_valid[bank] = 1;
+    return 0;
+}
+
 static uint64_t motif3_cont_bank_payload_bytes(ds4_batch_ctx *ctx,
                                                uint32_t bank) {
     if (!ctx || !ctx->motif3 || bank >= ctx->max_seq ||
@@ -57435,6 +57491,7 @@ uint64_t ds4_cont_bank_payload_bytes(ds4_batch_ctx *ctx, uint32_t bank) {
     if (ctx->exaone) return exaone_cont_bank_payload_bytes(ctx, bank);
     if (ctx->step37) return step37_cont_bank_payload_bytes(ctx, bank);
     if (ctx->ling3vl) return ling3vl_cont_bank_payload_bytes(ctx, bank);
+    if (ctx->mimo2) return mimo2_bank_payload_bytes(ctx, bank);
     if (ctx->solar) return solar_cont_bank_payload_bytes(ctx, bank);
     ds4_gpu_graph *g = &ctx->g;
     ds4_gpu_graph *wg = ds4_cont_bank_walk_graph(ctx);
@@ -57493,6 +57550,8 @@ int ds4_cont_bank_save_payload(ds4_batch_ctx *ctx, uint32_t bank,
         return step37_cont_bank_save_payload(ctx, bank, fp, err, errlen);
     if (ctx->ling3vl)
         return ling3vl_cont_bank_save_payload(ctx, bank, fp, err, errlen);
+    if (ctx->mimo2)
+        return mimo2_bank_save_payload(ctx, bank, fp, err, errlen);
     if (ctx->solar) {
         return solar_cont_bank_save_payload(
             ctx, bank, fp, err, errlen);
@@ -57589,6 +57648,9 @@ int ds4_cont_bank_restore_payload(ds4_batch_ctx *ctx, uint32_t bank,
             ctx, bank, fp, payload_bytes, err, errlen);
     if (ctx->ling3vl)
         return ling3vl_cont_bank_restore_payload(
+            ctx, bank, fp, payload_bytes, err, errlen);
+    if (ctx->mimo2)
+        return mimo2_bank_load_payload(
             ctx, bank, fp, payload_bytes, err, errlen);
     if (ctx->solar) {
         return solar_cont_bank_restore_payload(
@@ -58543,6 +58605,10 @@ uint64_t ds4_engine_session_graph_bytes_estimate(ds4_engine *e, int ctx) {
             ? ling3vl_session_bytes(e, (uint32_t)ctx,
                                     ling3vl_prefill_cap((uint32_t)ctx)) : 0;
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
+        return e->backend == DS4_BACKEND_CUDA
+            ? mimo2_memory((uint32_t)ctx, mimo2_prefill_cap((uint32_t)ctx)).total_bytes : 0;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
         const uint32_t cap = inkling_prefill_cap((uint32_t)ctx);
         return (e->mtp_ready ? inkling_mtp_memory((uint32_t)ctx, cap)
@@ -59096,6 +59162,7 @@ uint64_t ds4_batch_ctx_trim_free(ds4_batch_ctx *ctx, uint64_t want_bytes) {
     if (ctx->exaone) { return exaone_ckpt_trim(ctx->exaone, want_bytes); }
     if (ctx->step37) { return step37_ckpt_trim(ctx->step37, want_bytes); }
     if (ctx->ling3vl) { return ling3vl_ckpt_trim(ctx->ling3vl, want_bytes); }
+    if (ctx->mimo2) { return mimo2_ckpt_trim(ctx->mimo2, want_bytes); }
     /* EXAONE and Motif banks use fixed CUDA allocations.  They are fit before
      * allocation and cannot be partially unmapped; never fall through to the
      * unrelated DeepSeek slab trimmer. */
@@ -59351,7 +59418,8 @@ int ds4_batch_ctx_reclaim_prepare(ds4_batch_ctx *ctx, const uint32_t *ordered_id
     memset(plan, 0, sizeof(*plan));
     plan->want_bytes = want_bytes;
     if (!ctx || !ds4_batch_trim_enabled()) return DS4_RECLAIM_UNSUPPORTED;
-    if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->step37 || ctx->ling3vl)
+    if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->step37 || ctx->ling3vl ||
+        ctx->mimo2)
         return DS4_RECLAIM_UNSUPPORTED;
     if (ctx->solar) return DS4_RECLAIM_UNSUPPORTED;
     if (ctx->in_pass) return DS4_RECLAIM_BUSY;
@@ -59955,6 +60023,80 @@ static int ling3vl_batch_ctx_create_impl(
 #undef LBC_ERR
 }
 
+static int mimo2_batch_ctx_create_impl(
+        ds4_engine *e, int ctx_size, int max_seq, mimo2_fit_mode mode,
+        ds4_batch_ctx **out, char *err, size_t errlen) {
+#define MBC_ERR(...) do { if (err && errlen) snprintf(err, errlen, __VA_ARGS__); } while (0)
+    const uint32_t cap = mimo2_prefill_cap((uint32_t)ctx_size);
+    const ds4_context_memory plan = mimo2_memory((uint32_t)ctx_size, cap);
+    if (e->mimo2_dflash || !plan.total_bytes) {
+        MBC_ERR("batch_ctx_create: MiMo bank plan needs a valid context and DFlash off");
+        return 1;
+    }
+    uint32_t chosen = (uint32_t)max_seq;
+    if (chosen > M2_BANK_MAX && mode == M2_STRICT_BANKS) {
+        MBC_ERR("batch_ctx_create: MiMo supports at most %d banks", M2_BANK_MAX);
+        return 1;
+    }
+    if (chosen > M2_BANK_MAX) { chosen = M2_BANK_MAX; }
+    uint64_t free_b = 0, total_b = 0;
+    if (ds4_gpu_mem_info(&free_b, &total_b) == 0) {
+        const uint64_t outstanding = ds4_gpu_substrate_outstanding();
+        free_b = free_b > outstanding ? free_b - outstanding : 0;
+        const uint64_t headroom = ds4_batch_fit_headroom_bytes(ctx_size);
+        /* Images/audio route serial until bank media spans are implemented. */
+        const uint64_t serial = e->vision_ready
+            ? plan.total_bytes + M2_MEDIA_WORK_BYTES : 0;
+        while (chosen > 0) {
+            const uint64_t banks = plan.total_bytes +
+                                   (uint64_t)(chosen - 1u) * plan.raw_bytes;
+            if (banks + serial + headroom <= free_b) { break; }
+            chosen--;
+        }
+        if (!chosen || (mode == M2_STRICT_BANKS && chosen < (uint32_t)max_seq)) {
+            MBC_ERR("batch_ctx_create: MiMo banks and serial media reserve exceed free memory"
+                    " (ctx=%d max_seq=%d free=%.2f GiB)", ctx_size, max_seq,
+                    (double)free_b / 1073741824.0);
+            return 1;
+        }
+    }
+    ds4_batch_ctx *ctx = xcalloc(1, sizeof(*ctx));
+    ctx->e = e;
+    ctx->ctx_size = (uint32_t)ctx_size;
+    ctx->prefill_cap = cap;
+    ctx->raw_cap = (uint32_t)ctx_size;
+    ctx->seq_cap = (uint32_t)ctx_size;
+    ctx->max_seq = chosen;
+    for (;;) {
+        ctx->mimo2 = mimo2_batch_create(ctx->ctx_size, ctx->max_seq, cap);
+        if (ctx->mimo2) { break; }
+        if (mode == M2_STRICT_BANKS || ctx->max_seq <= 1u) {
+            MBC_ERR("batch_ctx_create: MiMo bank allocation failed (ctx=%d max_seq=%u)",
+                    ctx_size, ctx->max_seq);
+            free(ctx);
+            return 1;
+        }
+        ctx->max_seq--;
+    }
+    if ((uint64_t)ctx->max_seq * ctx->seq_cap > SIZE_MAX / sizeof(*ctx->bank_hist)) {
+        MBC_ERR("batch_ctx_create: MiMo bank history size overflow");
+        mimo2_batch_free(ctx->mimo2);
+        free(ctx);
+        return 1;
+    }
+    ctx->bank_hist = xmalloc((size_t)ctx->max_seq * ctx->seq_cap * sizeof(int));
+    ctx->bank_hist_len = xcalloc(ctx->max_seq, sizeof(*ctx->bank_hist_len));
+    ctx->bank_hist_valid = xcalloc(ctx->max_seq, sizeof(*ctx->bank_hist_valid));
+    ctx->bank_gen = xmalloc(ctx->max_seq * sizeof(*ctx->bank_gen));
+    for (uint32_t b = 0; b < ctx->max_seq; b++) { ctx->bank_gen[b] = 1u; }
+    ctx->bank_last_use = xcalloc(ctx->max_seq, sizeof(*ctx->bank_last_use));
+    ctx->supports_partial_reuse = ctx->mimo2->checkpoint_slab != NULL;
+    ds4_metric_set(&ds4_metrics_get()->banks_total, ctx->max_seq);
+    *out = ctx;
+    return 0;
+#undef MBC_ERR
+}
+
 static int step37_batch_ctx_create_impl(
         ds4_engine *e, int ctx_size, int max_seq, bool fit,
         ds4_batch_ctx **out, char *err, size_t errlen) {
@@ -60089,6 +60231,11 @@ static int ds4_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq, i
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL) {
         return ling3vl_batch_ctx_create_impl(
             e, ctx_size, max_seq, fit, out, err, errlen);
+    }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
+        return mimo2_batch_ctx_create_impl(
+            e, ctx_size, max_seq, fit ? M2_FIT_BANKS : M2_STRICT_BANKS,
+            out, err, errlen);
     }
 
     const uint32_t prefill_cap = (uint32_t)max_total_tokens;
@@ -60747,9 +60894,10 @@ void ds4_batch_ctx_destroy(ds4_batch_ctx *ctx) {
         free(ctx);
         return;
     }
-    if (ctx->step37 || ctx->ling3vl) {
+    if (ctx->step37 || ctx->ling3vl || ctx->mimo2) {
         step37_batch_runtime_free(ctx->step37);
         ling3vl_batch_runtime_free(ctx->ling3vl);
+        mimo2_batch_free(ctx->mimo2);
         free(ctx->bank_hist);
         free(ctx->bank_hist_len);
         free(ctx->bank_hist_valid);
@@ -60798,6 +60946,7 @@ static void bank_hist_invalidate_all(ds4_batch_ctx *ctx) {
     for (uint32_t b = 0; b < ctx->max_seq; b++) {
         ctx->bank_gen[b]++;   /* Inc 5a */
         if (ctx->dots3) { dots3_ckpt_drop(ctx->dots3, b); }
+        if (ctx->mimo2) { mimo2_ckpt_drop(ctx->mimo2, b); }
         if (ctx->exaone) { exaone_ckpt_drop(ctx->exaone, b); }
         if (ctx->qwen) qwen_batch_runtime_drop_checkpoints(ctx->qwen, b);
         if (ctx->solar) solar_batch_runtime_drop_checkpoints(ctx->solar, b);
@@ -61304,7 +61453,7 @@ static int ds4_engine_batched_generate_ctx_impl(ds4_batch_ctx *ctx, const ds4_to
         if (prompts[i].len <= 0) { BCG_ERR("batched_generate_ctx: prompt %d is empty", i); return 1; }
         const uint32_t L = (uint32_t)prompts[i].len;
         if ((ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 ||
-             ctx->ling3vl) && L > ctx->seq_cap) {
+             ctx->ling3vl || ctx->mimo2) && L > ctx->seq_cap) {
             BCG_ERR("batched_generate_ctx: family prompt %d length %u "
                     "exceeds context %u", i, L, ctx->seq_cap);
             return 1;
@@ -61316,7 +61465,8 @@ static int ds4_engine_batched_generate_ctx_impl(ds4_batch_ctx *ctx, const ds4_to
         }
         n_packed += L;
     }
-    if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 || ctx->ling3vl) {
+    if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 ||
+        ctx->ling3vl || ctx->mimo2) {
         return family_engine_batched_generate_ctx(
             ctx, prompts, n, max_new_tokens, eos_ids, out, err, errlen);
     }
@@ -62733,6 +62883,7 @@ static uint32_t family_banked_prefill_cap(const ds4_batch_ctx *ctx) {
     if (ctx->qwen) return ctx->qwen->prefill_cap;
     if (ctx->step37) return ctx->step37->prefill_cap;
     if (ctx->ling3vl) return ctx->ling3vl->prefill_cap;
+    if (ctx->mimo2) return ctx->mimo2->prefill_cap;
     return ctx->motif3 ? ctx->motif3->prefill_cap
                        : ctx->exaone->shared_ws.prefill_cap;
 }
@@ -62755,6 +62906,7 @@ static bool family_banked_logits_valid(
     if (ctx->qwen) return ctx->qwen->bank_logits_valid[bank] != 0u;
     if (ctx->step37) return ctx->step37->bank_logits_valid[bank] != 0u;
     if (ctx->ling3vl) return ctx->ling3vl->bank_logits_valid[bank] != 0u;
+    if (ctx->mimo2) return ctx->mimo2->bank_logits_valid[bank] != 0u;
     return ctx->motif3 ? ctx->motif3->bank_logits_valid[bank] != 0u
                        : ctx->exaone->bank_logits_valid[bank] != 0u;
 }
@@ -62767,6 +62919,8 @@ static float *family_banked_logits(ds4_batch_ctx *ctx, uint32_t bank) {
         return ctx->step37->bank_logits + (size_t)bank * DS4_N_VOCAB;
     if (ctx->ling3vl)
         return ctx->ling3vl->bank_logits + (size_t)bank * DS4_N_VOCAB;
+    if (ctx->mimo2)
+        return ctx->mimo2->bank_logits + (size_t)bank * DS4_N_VOCAB;
     return (ctx->motif3 ? ctx->motif3->bank_logits
                         : ctx->exaone->bank_logits) +
            (size_t)bank * DS4_N_VOCAB;
@@ -62774,6 +62928,7 @@ static float *family_banked_logits(ds4_batch_ctx *ctx, uint32_t bank) {
 
 static void family_banked_reset(ds4_batch_ctx *ctx, uint32_t bank) {
     if (ctx->dots3) { dots3_bank_reset(ctx->dots3, bank); return; }
+    if (ctx->mimo2) { mimo2_bank_reset(ctx->mimo2, bank); return; }
     if (ctx->qwen) {
         qwen_batch_runtime_drop_checkpoints(ctx->qwen, bank);
         (void)qwen_batch_runtime_reset_bank(
@@ -62795,6 +62950,7 @@ static bool family_banked_copy(
         ds4_batch_ctx *ctx, uint32_t src, uint32_t dst,
         uint32_t tokens) {
     if (ctx->dots3) { return dots3_bank_copy(ctx->dots3, src, dst, tokens); }
+    if (ctx->mimo2) { return mimo2_bank_copy(ctx->mimo2, src, dst, tokens); }
     if (ctx->qwen) {
         const bool ok =
             qwen_batch_runtime_copy_bank(ctx->qwen, src, dst, tokens);
@@ -62825,6 +62981,10 @@ static bool family_banked_prefill(
         const int *next_tokens, uint32_t next_rows) {
     if (ctx->dots3) {
         return dots3_bank_forward(ctx->dots3, ctx->e, bank, tokens, rows, pos, final);
+    }
+    if (ctx->mimo2) {
+        return mimo2_bank_prefill(ctx->mimo2, ctx->e, bank, tokens, rows, pos,
+                                  final ? M2_FINAL_ROWS : M2_MORE_ROWS);
     }
     if (ctx->qwen) {
         return qwen_batch_runtime_prefill(
@@ -62868,6 +63028,9 @@ static bool family_banked_decode(
         }
         return true;
     }
+    if (ctx->mimo2) {
+        return mimo2_bank_decode(ctx->mimo2, ctx->e, banks, tokens, positions, rows);
+    }
     if (ctx->qwen)
         return qwen_batch_runtime_decode(
             ctx->qwen, ctx->e, banks, tokens, positions, rows);
@@ -62898,6 +63061,10 @@ static bool family_banked_checkpoint_due(
         const uint32_t stride = ctx->dots3->checkpoint_stride;
         return stride && after > before && before / stride != after / stride;
     }
+    if (ctx->mimo2) {
+        const uint32_t stride = ctx->mimo2->checkpoint_stride;
+        return stride && after > before && before / stride != after / stride;
+    }
     if (ctx->exaone) {
         const uint32_t stride = ctx->exaone->checkpoint_stride;
         return stride && after > before && before / stride != after / stride;
@@ -62921,6 +63088,10 @@ static void family_banked_capture_checkpoint(
         bool logits_valid) {
     if (ctx->dots3) {
         (void)dots3_ckpt_capture(ctx->dots3, bank, pos, logits_valid, ctx->serial_reserve);
+    } else if (ctx->mimo2) {
+        (void)mimo2_ckpt_capture(ctx->mimo2, bank, pos,
+                                 logits_valid ? M2_HAS_LOGITS : M2_NO_LOGITS,
+                                 ctx->serial_reserve);
     } else if (ctx->exaone) {
         (void)exaone_ckpt_capture(ctx->exaone, bank, pos, logits_valid, ctx->serial_reserve);
     } else if (ctx->step37) {
@@ -63040,7 +63211,7 @@ static int family_banked_engine_continuous_generate(
     uint32_t prefill_cursor = 0u;
     bool ok = ctx->dots3 != NULL || ctx->exaone != NULL || ctx->motif3 != NULL ||
               ctx->qwen != NULL || ctx->step37 != NULL ||
-              ctx->ling3vl != NULL;
+              ctx->ling3vl != NULL || ctx->mimo2 != NULL;
     bool rehydrate_blocked = false;
     ctx->last_done_set = 0u;
     ds4_metric_set(&ds4_metrics_get()->banks_live, 0u);
@@ -63220,6 +63391,35 @@ static int family_banked_engine_continuous_generate(
                         ctx->bank_gen[b]++;
                         ctx->bank_hist_len[b] = pos;
                         ctx->bank_hist_valid[b] = 1u;
+                        cached = pos;
+                        forked = partial = true;
+                    }
+                } else if (source_prefix &&
+                           requested_cached < source_frontier && ctx->mimo2) {
+                    const int checkpoint = mimo2_ckpt_find(
+                        ctx->mimo2, (uint32_t)src, requested_cached, (uint32_t)req.n);
+                    uint32_t pos = 0;
+                    if (checkpoint < 0) {
+                        ctx->fork_rejects++;
+                    } else if (!mimo2_ckpt_restore(ctx->mimo2, (uint32_t)src, b,
+                                                   (uint32_t)checkpoint,
+                                                   requested_cached, &pos)) {
+                        ctx->bank_gen[b]++;
+                        ctx->bank_hist_valid[b] = 0;
+                        mimo2_ckpt_drop(ctx->mimo2, b);
+                        FCG_ERR("continuous_generate: MiMo checkpoint restore failed src=%d dst=%u",
+                                src, b);
+                        ok = false;
+                        break;
+                    } else {
+                        if ((uint32_t)src != b) {
+                            memcpy(ctx->bank_hist + (size_t)b * ctx->seq_cap,
+                                   ctx->bank_hist + (size_t)src * ctx->seq_cap,
+                                   (size_t)pos * sizeof(int));
+                        }
+                        ctx->bank_gen[b]++;
+                        ctx->bank_hist_len[b] = pos;
+                        ctx->bank_hist_valid[b] = 1;
                         cached = pos;
                         forked = partial = true;
                     }
@@ -63415,7 +63615,8 @@ static int family_banked_engine_continuous_generate(
             cb->sample_exclude = req.sample_exclude;
             cb->step_accept = req.step_accept;
             cb->alive = req.alive;
-            cb->checkpoint_at = (ctx->step37 || ctx->motif3) && req.checkpoint_at > 0 &&
+            cb->checkpoint_at = (ctx->step37 || ctx->motif3 || ctx->mimo2) &&
+                req.checkpoint_at > 0 &&
                 (uint32_t)req.checkpoint_at > cached && req.checkpoint_at < req.n
                 ? (uint32_t)req.checkpoint_at : 0u;
             cb->on_checkpoint = req.on_checkpoint;
@@ -63810,7 +64011,7 @@ static int family_engine_batched_generate_ctx(
         .n = n,
     };
     const int rc = (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 ||
-                    ctx->ling3vl)
+                    ctx->ling3vl || ctx->mimo2)
         ? family_banked_engine_continuous_generate(
               ctx, family_static_admit, NULL, family_static_done,
               &batch, err, errlen)
@@ -63871,7 +64072,8 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
         CG_ERR("continuous_generate: this model does not yet implement the multi-sequence graph");
         return 1;
     }
-    if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 || ctx->ling3vl) {
+    if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 ||
+        ctx->ling3vl || ctx->mimo2) {
         return family_banked_engine_continuous_generate(
             ctx, admit, on_token, on_done, ud, err, errlen);
     }
@@ -69407,7 +69609,9 @@ bool ds4_engine_supports_batching(ds4_engine *e) {
     if (!e || !ds4_backend_uses_graph(e->backend) || !e->metal_ready) {
         return false;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) { return false; }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
+        return e->backend == DS4_BACKEND_CUDA && !e->mimo2_dflash;
+    }
     /* Unimplemented bank families must never enter the DeepSeek slab body. */
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
         return false;

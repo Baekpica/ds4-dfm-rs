@@ -33,7 +33,7 @@ typedef struct {
     int trial[M2_TRIAL];
     unsigned trial_n, verify_rows;
     uint64_t bytes, media_tag, checkpoint_tag;
-    bool failed, hidden_valid;
+    bool failed, hidden_valid, owns_scratch;
     /* Grown up to M2_SPAN_MAX on sync. Not part of the KV snapshot. */
     mimo2_media_span *spans;
     unsigned span_cap, span_n;
@@ -48,18 +48,26 @@ typedef struct {
 } ds4_mimo2_graph;
 
 static void mimo2_graph_free(ds4_mimo2_graph *g) {
-    exaone_batch_ws_free(&g->ws);
-    ds4_gpu_tensor *all[] = {g->qkv, g->positions, g->tokens, g->freq_full,
-                            g->freq_swa, g->rope_full, g->rope_swa, g->logits,
-                            g->hidden, g->joined, g->journal};
-    for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) { ds4_gpu_tensor_free(all[i]); }
+    if (g->owns_scratch) {
+        exaone_batch_ws_free(&g->ws);
+        ds4_gpu_tensor *all[] = {g->qkv, g->positions, g->tokens, g->freq_full,
+                                g->freq_swa, g->rope_full, g->rope_swa, g->logits,
+                                g->hidden, g->joined, g->journal};
+        for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
+            ds4_gpu_tensor_free(all[i]);
+        }
+    }
     for (unsigned il = 0; il < MIMO2_LAYERS + MIMO2_DRAFT_LAYERS; il++) { ds4_gpu_tensor_free(g->kv[il]); }
-    free(g->host_positions);
-    free(g->verify_logits);
+    if (g->owns_scratch) {
+        free(g->host_positions);
+        free(g->verify_logits);
+    }
     free(g->spans);
-    free(g->dflash_pos);
-    free(g->dflash_saved);
-    ds4_gpu_tensor_free(g->dflash_tap);
+    if (g->owns_scratch) {
+        free(g->dflash_pos);
+        free(g->dflash_saved);
+        ds4_gpu_tensor_free(g->dflash_tap);
+    }
     memset(g, 0, sizeof(*g));
 }
 
@@ -69,6 +77,7 @@ static bool mimo2_graph_alloc(ds4_mimo2_graph *g, unsigned ctx, unsigned cap, bo
     free(g->dflash_saved);
     ds4_gpu_tensor_free(g->dflash_tap);
     memset(g, 0, sizeof(*g));
+    g->owns_scratch = true;
     g->dflash_on = dflash;
     const ds4_context_memory estimate = mimo2_memory(ctx, cap);
     if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MIMO2 || !estimate.total_bytes) { return false; }
@@ -153,6 +162,34 @@ static bool mimo2_graph_alloc(ds4_mimo2_graph *g, unsigned ctx, unsigned cap, bo
             return false;
         }
         for (unsigned i = 0; i < 1024; i++) { g->dflash_pos[i] = UINT_MAX; }
+    }
+    return true;
+}
+
+/* Bank forwards are serialized. Share scratch, logits and RoPE; only KV and
+ * position are per bank. This keeps two long contexts inside Spark memory. */
+static bool mimo2_graph_clone_bank(ds4_mimo2_graph *g,
+                                   const ds4_mimo2_graph *shared) {
+    if (!g || !shared || !shared->owns_scratch || shared->dflash_on) { return false; }
+    *g = *shared;
+    g->owns_scratch = false;
+    g->position = 0;
+    g->failed = false;
+    g->hidden_valid = false;
+    g->spans = NULL;
+    g->span_cap = 0;
+    g->span_n = 0;
+    g->dflash_tap = NULL;
+    g->dflash_pos = NULL;
+    g->dflash_saved = NULL;
+    g->dflash_on = false;
+    memset(g->kv, 0, sizeof(g->kv));
+    for (unsigned il = 0; il < MIMO2_LAYERS; il++) {
+        const unsigned heads = mimo2_is_full(il) ? 4 : 8;
+        const uint64_t bytes = (uint64_t)g->kv_cap[il] * heads *
+                               (192 + 128) * sizeof(uint16_t);
+        g->kv[il] = ds4_gpu_tensor_alloc(bytes);
+        if (!g->kv[il]) { mimo2_graph_free(g); return false; }
     }
     return true;
 }

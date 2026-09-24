@@ -704,8 +704,8 @@ pub fn kv_rows(layer: u32, ctx: u32, cap: u32) -> Option<u32> {
     Some((SWA_WINDOW + cap - 1).min(ctx))
 }
 
-/// Scratch plus trunk KV bytes from `ds4_mimo2_plan.h`. Draft KV is extra.
-pub fn context_bytes(ctx: u32, cap: u32) -> Option<u64> {
+/// Per-bank trunk KV from `ds4_mimo2_plan.h`; scratch is shared.
+pub(crate) fn kv_bytes(ctx: u32, cap: u32) -> Option<u64> {
     if ctx == 0 || ctx > INDEX_LIMIT || cap == 0 || cap > ctx || cap > PREFILL_MAX {
         return None;
     }
@@ -715,6 +715,12 @@ pub fn context_bytes(ctx: u32, cap: u32) -> Option<u64> {
         let heads = u64::from(Mimo2Layer::new(layer)?.kv_heads());
         raw = raw.saturating_add(u64::from(rows) * heads * (192 + 128) * 2);
     }
+    Some(raw)
+}
+
+/// Scratch plus trunk KV bytes from `ds4_mimo2_plan.h`. Draft KV is extra.
+pub fn context_bytes(ctx: u32, cap: u32) -> Option<u64> {
+    let raw = kv_bytes(ctx, cap)?;
     // 4*embed + Q + K + V + heads + 3*dense + experts + 2*used
     // + 3*used*ff + used*embed + qkv + 2 scalars + full/swa rope pairs.
     const ROWS: u64 = 4 * 4096
@@ -1846,10 +1852,7 @@ mod tests {
         assert_eq!(bundle.effective.native_chunk, Some(PREFILL_CAP));
         assert!(bundle.effective.ctx >= 262_144);
         assert!(bundle.effective.mtp_weights);
-        assert!(bundle
-            .issues
-            .iter()
-            .any(|issue| issue.code == "seqs_omitted"));
+        assert_eq!(caps.banks, crate::serving::BankLane::OptIn);
         assert_eq!(caps.qualified_banks, Some(1));
     }
 
