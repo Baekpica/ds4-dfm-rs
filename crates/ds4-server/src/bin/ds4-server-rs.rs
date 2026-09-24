@@ -5,12 +5,13 @@
 use ds4_core::{
     attach_host_quote, caps_from_ident, identify_gguf, probe_dspark_sidecar, probe_model_artifact,
     probe_mtp_sidecar, probe_vision_sidecar, resolve_plan, Backend, DistributedConfig,
-    DistributedRole, Distribution, EngineFacts, Identified, MaxSeqs, Model, ModelOpenOption,
-    MtpMode, PrefixReuse, ServingCaps, ServingRequest, WeightSlice,
+    DistributedRole, Distribution, EngineFacts, GgufFile, Identified, MaxSeqs, Model,
+    ModelOpenOption, MtpMode, PrefixReuse, ServingCaps, ServingRequest, Vocab, WeightSlice,
 };
 use ds4_server::cache_identity::CacheIdentity;
 use ds4_server::expected_plan::ExpectedPlan;
 use ds4_server::kv_cli::DiskKvArgs;
+use ds4_server::parse::EosPolicy;
 use ds4_server::{
     accept_loop, accept_loop_with_engine, accept_loop_with_engine_cont, dist_weight_slice,
     listen_if_allowed, model_id_from_gguf_path, run_assembled_worker, server_launch, ContLane,
@@ -180,6 +181,12 @@ fn main() {
                         .unwrap_or_else(|e| cli_error(&e));
             }
             "--cors" => cfg.cors = true,
+            "--ignore-eos-in-reasoning" => {
+                if cfg.eos_policy == EosPolicy::Default {
+                    cfg.eos_policy = EosPolicy::Reasoning;
+                }
+            }
+            "--ignore-eos" => cfg.eos_policy = EosPolicy::Global,
             "--mem-floor-gb" => {
                 let raw = args.next().unwrap_or_else(|| usage());
                 cfg.apply_mem_floor_gb(&raw);
@@ -195,6 +202,9 @@ fn main() {
     kv.validate().unwrap_or_else(|error| cli_error(&error));
     if mtp_path.is_some() && model_path.is_none() {
         cli_error("--mtp requires --model");
+    }
+    if cfg.eos_policy != EosPolicy::Default && model_path.is_none() {
+        cli_error("EOS policy requires --model");
     }
     dist.finish(&mut cfg.listen_host, &mut cfg.listen_port)
         .unwrap_or_else(|error| cli_error(&format!("ds4-server-rs: {error}")));
@@ -297,6 +307,20 @@ fn main() {
                     false
                 }
             });
+            if cfg.eos_policy != EosPolicy::Default && facts.artifact_ok == Some(true) {
+                let gguf = GgufFile::open(Path::new(path))
+                    .unwrap_or_else(|error| cli_error(&format!("EOS policy GGUF: {error}")));
+                let family = ident
+                    .as_ref()
+                    .unwrap_or_else(|| cli_error("EOS policy requires an identified model"))
+                    .shape
+                    .family;
+                let vocab = Vocab::load(&gguf, family)
+                    .unwrap_or_else(|error| cli_error(&format!("EOS policy vocab: {error}")));
+                if vocab.eos_id < 0 {
+                    cli_error("EOS policy requires a model EOS token");
+                }
+            }
         }
     }
     apply_host_quote(
@@ -379,6 +403,9 @@ fn main() {
             };
             match opened {
                 Ok(m) => {
+                    if cfg.eos_policy != EosPolicy::Default && m.vocab().eos_id < 0 {
+                        cli_error("EOS policy requires a model EOS token");
+                    }
                     cfg.have_engine = true;
                     Some(m)
                 }
@@ -702,6 +729,7 @@ fn cli_error(message: &str) -> ! {
 fn usage() -> ! {
     eprintln!(
         "usage: ds4-server-rs [--version] [--host HOST] [--port PORT] [--listen HOST PORT] [--model-id ID] [-m GGUF] [--vision GGUF] [--mtp GGUF] [--mtp-mode off|auto|on] [--backend cuda|cpu|metal|--cuda] [--tokens N|-n N] [-c N] [--max-seqs N|auto] [--prefix-reuse off|exact|partial|auto] [--prefill-chunk N] [--prefill-chunk-live N] [--native-chunk N] [--print-plan] [--check-config] [-t N] [--mtp-draft N] [--mtp-margin N] [--mem-floor-gb N] [--cors]\n\
+         [--ignore-eos-in-reasoning] [--ignore-eos]\n\
 Disk KV: [--kv-disk-dir DIR] [--kv-disk-space-mb N] [--kv-disk-space 32G] [--kv-cache-min-tokens N]\n\
          [--kv-cache-cold-max-tokens N] [--kv-cache-continued-interval-tokens N]\n\
          [--kv-cache-boundary-trim-tokens N]\n\

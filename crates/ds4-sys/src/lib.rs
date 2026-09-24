@@ -746,6 +746,16 @@ extern "C" {
         rng: *mut u64,
     ) -> c_int;
 
+    pub fn ds4_bridge_session_sample_excluding(
+        s: *mut ds4_bridge_session,
+        temperature: c_float,
+        top_k: c_int,
+        top_p: c_float,
+        min_p: c_float,
+        rng: *mut u64,
+        excluded_id: c_int,
+    ) -> c_int;
+
     pub fn ds4_bridge_session_save_payload(
         s: *mut ds4_bridge_session,
         path: *const c_char,
@@ -1026,6 +1036,7 @@ pub struct ds4_bridge_cont_request {
     pub min_p: c_float,
     pub seed: u64,
     pub sample_override: Option<unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int>,
+    pub sample_exclude: Option<unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int>,
     pub step_accept: Option<unsafe extern "C" fn(*const i32, *const i32, c_int, c_int) -> c_int>,
     pub alive: Option<unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int>,
     pub on_admitted:

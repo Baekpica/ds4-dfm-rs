@@ -32,7 +32,7 @@ use crate::metrics::{
     gov_modes_from_env, render_metrics, render_stats_json_plan, RouteMetrics, RuntimeMetrics,
 };
 use crate::models::{model_id_known, model_one_json, models_list_json};
-use crate::parse::{parse_request, ParseEnv};
+use crate::parse::{parse_request, EosPolicy, ParseEnv};
 use crate::route::{
     decode_budget, route_decide, Api, RouteEnv, ThinkMode, WireSurface, LANE_CONTINUOUS,
     LANE_STATIC, NEED_BANK_FRONTIER,
@@ -66,6 +66,7 @@ pub struct ServerConfig {
     pub model_name: String,
     pub ctx: i32,
     pub default_tokens: i32,
+    pub eos_policy: EosPolicy,
     pub cors: bool,
     pub codex_models_json: Option<String>,
     pub max_queue: i32,
@@ -165,6 +166,7 @@ impl Default for ServerConfig {
             model_name: "ds4".into(),
             ctx: 8192,
             default_tokens: 393216,
+            eos_policy: EosPolicy::Default,
             cors: false,
             codex_models_json: None,
             max_queue: env_i32_bound("DS4_SERVER_MAX_QUEUE", 256),
@@ -1251,7 +1253,9 @@ fn prepare_client(
                     );
                     return None;
                 }
-                Ok(parsed) => {
+                Ok(mut parsed) => {
+                    parsed.eos_policy = cfg.eos_policy;
+                    parsed.finish_needs();
                     let body_bytes = req.body.len() as u64;
                     return Some(PreparedJob {
                         parsed,

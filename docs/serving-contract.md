@@ -18,6 +18,8 @@ the same object plus `last_request`.
 | `--prefix-reuse off\|exact\|partial\|auto` | Conversation reuse policy | `DS4_SERVER_FORK`, `DS4_SERVER_FORK_PARTIAL` |
 | `--mtp-mode off\|auto\|on` | Speculation policy | `DS4_MTP_SPEC_DISABLE` for off-with-weights |
 | `--mtp PATH`, `--mtp-draft N` | Sidecar and draft length | |
+| `--ignore-eos-in-reasoning` | Suppress EOS/EOT while the reasoning block is open | |
+| `--ignore-eos` | Suppress EOS/EOT for the whole generation | |
 | `--kv-disk-dir`, `--kv-disk-space-mb` | Persistent checkpoint store | `--kv-disk-space 32G` |
 | `--prefill-chunk`, `--prefill-chunk-live` | Scheduler yield sizes, capped at 8,192 | `DS4_CONT_PREFILL_CHUNK`, `DS4_CONT_PREFILL_CHUNK_LIVE`, `DS4_CONT_PREFILL_NOFENCE=1` lifts the cap |
 | `--mem-floor-gb` | Single host floor | `DS4_MEM_FLOOR_GB` (published for native) |
@@ -30,6 +32,16 @@ this process cannot run it: checkpoint replay lives in the bank driver and
 needs the opened runtime's checkpoint store, so serial-only serving or a
 runtime without that store rejects `partial` and downgrades `auto` to
 `exact` with a warning rather than reporting reuse it will not perform.
+
+EOS follows the model by default. These server-wide flags are explicit
+workarounds for models that emit a terminator too early. Both mask the
+model's EOS and any EOT registered as a generation stop before sampling;
+other generation stops, request stop strings, and output/context limits
+still apply. The reasoning flag stops masking
+after `</think>`; `--ignore-eos` takes precedence if both are set. Global
+suppression can make generation run until another stop or a length limit.
+The policy is enforced in serial and continuous decoding, including MTP
+target sampling. `--check-config` validates that an opted-in model has EOS.
 
 `--max-seqs` is not context length. Keeping N banks is not the same as
 batching N requests in one kernel. Step banks each own KV and prefill

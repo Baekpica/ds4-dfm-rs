@@ -26,7 +26,7 @@ use ds4_kv::{
 };
 
 use crate::dsml::{SampleOverride, SamplePolicy};
-use crate::parse::{ChatMsg, ChatPart, ParsedRequest, ToolCall, ToolChoice};
+use crate::parse::{ChatMsg, ChatPart, EosPolicy, ParsedRequest, ToolCall, ToolChoice};
 use crate::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 use crate::render::{
     render_chat_choice, syntax_for_model_id, tool_start_marker, ModelSyntax, RenderError, DSML_EOS,
@@ -158,6 +158,12 @@ pub trait DecodeIo {
     }
     fn token_text(&self, token: i32) -> Result<Vec<u8>, GenerateError>;
     fn token_is_stop(&self, token: i32) -> bool;
+    fn eos_id(&self) -> i32 {
+        -1
+    }
+    fn eot_id(&self) -> i32 {
+        -1
+    }
     fn vision_probe(&self, _data: &[u8]) -> Result<VisionProbe, GenerateError> {
         Err(GenerateError::Unsupported("vision encoder is not loaded"))
     }
@@ -265,6 +271,20 @@ pub trait DecodeIo {
         min_p: f32,
         rng: &mut u64,
     ) -> i32;
+    fn sample_excluding(
+        &mut self,
+        temperature: f32,
+        top_k: i32,
+        top_p: f32,
+        min_p: f32,
+        rng: &mut u64,
+        excluded_id: i32,
+    ) -> i32 {
+        if excluded_id >= 0 {
+            return -1;
+        }
+        self.sample(temperature, top_k, top_p, min_p, rng)
+    }
     fn native_graph_fit(&self, _ctx: i32) -> Option<NativeGraphFit> {
         None
     }
@@ -1583,11 +1603,34 @@ fn decode_pass(
         if matches!(ov, SampleOverride::Greedy) {
             temperature = 0.0;
         }
+        let eos = engine.eos_id();
+        if parsed.eos_policy != EosPolicy::Default && eos < 0 {
+            return Err(GenerateError::Engine(
+                "EOS policy has no model EOS token".into(),
+            ));
+        }
+        let excluded = parsed.eos_policy.excluded(eos, acc.thinking_inside());
+        let excluded_eot = excluded.and_then(|_| {
+            let eot = engine.eot_id();
+            (eot >= 0 && engine.token_is_stop(eot)).then_some(eot)
+        });
         let token = if let SampleOverride::Token(t) = ov {
+            if excluded == Some(t) || excluded_eot == Some(t) {
+                return Err(GenerateError::Engine(
+                    "forced token conflicts with EOS policy".into(),
+                ));
+            }
             t
+        } else if let Some(excluded_id) = excluded {
+            engine.sample_excluding(temperature, top_k, top_p, min_p, rng, excluded_id)
         } else {
             engine.sample(temperature, top_k, top_p, min_p, rng)
         };
+        if token < 0 && excluded.is_some() {
+            return Err(GenerateError::Engine(
+                "EOS policy left no sample token".into(),
+            ));
+        }
         if token < 0 || engine.token_is_stop(token) {
             *finish = "stop";
             break;
@@ -1596,6 +1639,7 @@ fn decode_pass(
         // Forced control prefixes can change policy between tokens. Only
         // an unconstrained greedy segment may be committed ahead of output.
         let accepted = if temperature <= 0.0
+            && parsed.eos_policy == EosPolicy::Default
             && matches!(ov, SampleOverride::None)
             && parsed.required_tool_prefix.is_empty()
             && parsed.required_think_end_prefix.is_empty()
@@ -3206,6 +3250,14 @@ impl DecodeIo for NativeDecode<'_> {
         self.model.token_is_stop(token)
     }
 
+    fn eos_id(&self) -> i32 {
+        self.model.vocab().eos_id
+    }
+
+    fn eot_id(&self) -> i32 {
+        self.model.vocab().eot_id
+    }
+
     fn vision_probe(&self, data: &[u8]) -> Result<VisionProbe, GenerateError> {
         self.model
             .vision_probe(data)
@@ -3522,6 +3574,21 @@ impl DecodeIo for NativeDecode<'_> {
     ) -> i32 {
         match self.session() {
             Ok(s) => s.sample(temperature, top_k, top_p, min_p, rng),
+            Err(_) => -1,
+        }
+    }
+
+    fn sample_excluding(
+        &mut self,
+        temperature: f32,
+        top_k: i32,
+        top_p: f32,
+        min_p: f32,
+        rng: &mut u64,
+        excluded_id: i32,
+    ) -> i32 {
+        match self.session() {
+            Ok(s) => s.sample_excluding(temperature, top_k, top_p, min_p, rng, excluded_id),
             Err(_) => -1,
         }
     }

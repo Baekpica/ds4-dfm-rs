@@ -24,7 +24,7 @@ use crate::generate::{
     prepare_required_prefixes, render_prompt, responses_ids, stream_req_from_parsed, GenerateError,
     GenerateOutcome,
 };
-use crate::parse::{ParsedRequest, ToolCall, ToolChoice};
+use crate::parse::{EosPolicy, ParsedRequest, ToolCall, ToolChoice};
 use crate::parse::{DEFAULT_MIN_P, DEFAULT_TEMPERATURE, DEFAULT_TOP_P};
 #[cfg(feature = "native")]
 use crate::render::render_live_tool_tail;
@@ -79,6 +79,7 @@ pub struct ContStepper {
     pub prompt_n: i32,
     pub max_tokens: i32,
     acc: SemAccum,
+    eos_policy: EosPolicy,
     w: Writer,
     oa: Option<OpenaiStream>,
     anth: Option<AnthropicStream>,
@@ -181,6 +182,7 @@ impl ContStepper {
                 prompt_n,
                 max_tokens,
                 acc,
+                eos_policy: parsed.eos_policy,
                 w,
                 oa,
                 anth,
@@ -248,6 +250,12 @@ impl ContStepper {
             required_think_end_prefix: &self.required_think_end_prefix,
         };
         self.acc.sampling_override(&policy)
+    }
+
+    pub fn sample_exclude(&self, eos: i32) -> i32 {
+        self.eos_policy
+            .excluded(eos, self.acc.thinking_inside())
+            .unwrap_or(-1)
     }
 
     /// Effective sampling block for the engine's per-seq sampler. Thinking
@@ -1955,6 +1963,10 @@ mod native {
             }
         }
 
+        fn sample_exclude(&self, vocab: &Vocab) -> i32 {
+            self.stepper.sample_exclude(vocab.eos_id)
+        }
+
         fn admitted(&mut self, n_cached: i32, n_computed: i32, bank: i32) -> bool {
             self.n_cached = n_cached;
             self.n_computed = n_computed;
@@ -2040,6 +2052,12 @@ mod native {
                 return CONT_SAMPLE_NONE;
             };
             slot.sample_override()
+        }
+
+        fn sample_exclude(&mut self, user: usize) -> i32 {
+            self.slots
+                .get(&user)
+                .map_or(-1, |slot| slot.sample_exclude(self.vocab))
         }
 
         fn alive(&mut self, user: usize) -> bool {
@@ -2254,6 +2272,12 @@ mod native {
             self.slots
                 .get_mut(&user)
                 .map_or(CONT_SAMPLE_NONE, |slot| slot.job.sample_override())
+        }
+
+        fn sample_exclude(&mut self, user: usize) -> i32 {
+            self.slots
+                .get(&user)
+                .map_or(-1, |slot| slot.job.sample_exclude(self.host.vocab))
         }
 
         fn alive(&mut self, user: usize) -> bool {
@@ -3430,6 +3454,7 @@ mod native {
                 }
             };
             admit.eos = self.eos;
+            admit.exclude_eos = parsed.eos_policy != EosPolicy::Default;
             admit.temperature = temperature;
             admit.top_k = top_k;
             admit.top_p = top_p;
@@ -3949,6 +3974,33 @@ mod bank_tests {
 
     fn shutdown_requested() -> bool {
         true
+    }
+
+    #[test]
+    fn continuous_eos_policy_follows_reasoning_state() {
+        let mut parsed = parse_chat_request(
+            &ParseEnv::default(),
+            r#"{"messages":[{"role":"user","content":"Explain"}],"stream":true}"#,
+        )
+        .unwrap();
+        parsed.eos_policy = EosPolicy::Reasoning;
+        let (mut stepper, _) = ContStepper::new(
+            &parsed,
+            ModelSyntax::Qwen4Exp as i32,
+            "eos-policy",
+            7,
+            false,
+            16,
+            b"<think>".to_vec(),
+            1,
+            32,
+        );
+
+        assert_eq!(stepper.sample_exclude(99), 99);
+        stepper.feed(b"reasoning</thi");
+        assert_eq!(stepper.sample_exclude(99), 99);
+        stepper.feed(b"nk>answer");
+        assert_eq!(stepper.sample_exclude(99), -1);
     }
 
     struct RequiredPrefixExec;

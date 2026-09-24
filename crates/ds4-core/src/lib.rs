@@ -148,17 +148,17 @@ use ds4_sys::{
     ds4_bridge_session_load_layer_payload, ds4_bridge_session_load_payload,
     ds4_bridge_session_load_payload_range, ds4_bridge_session_load_snapshot,
     ds4_bridge_session_output_head_bench, ds4_bridge_session_power, ds4_bridge_session_prefill_cap,
-    ds4_bridge_session_rewind, ds4_bridge_session_sample, ds4_bridge_session_save_layer_payload,
-    ds4_bridge_session_save_payload, ds4_bridge_session_save_snapshot,
-    ds4_bridge_session_set_power, ds4_bridge_session_sync, ds4_bridge_session_sync_vision,
-    ds4_bridge_session_top_logprobs, ds4_bridge_shard, ds4_bridge_snapshot,
-    ds4_bridge_snapshot_create, ds4_bridge_snapshot_free, ds4_bridge_snapshot_len,
-    ds4_bridge_step37_pixels, ds4_bridge_sync_inkling, ds4_bridge_sync_step37,
-    ds4_bridge_token_score, ds4_bridge_vision_info, ds4_bridge_vision_input, ds4_host_bind_look,
-    ds4_host_bind_map, ds4_host_shape, ds4_host_str, ds4_host_tensor, ds4_host_tensor_dir,
-    ds4_host_vocab, DS4_BRIDGE_BACKEND_CPU, DS4_BRIDGE_BACKEND_CUDA, DS4_BRIDGE_BACKEND_METAL,
-    DS4_BRIDGE_DISTRIBUTED_COORDINATOR, DS4_BRIDGE_DISTRIBUTED_NONE, DS4_BRIDGE_DISTRIBUTED_WORKER,
-    DS4_BRIDGE_MAX_DIMS,
+    ds4_bridge_session_rewind, ds4_bridge_session_sample, ds4_bridge_session_sample_excluding,
+    ds4_bridge_session_save_layer_payload, ds4_bridge_session_save_payload,
+    ds4_bridge_session_save_snapshot, ds4_bridge_session_set_power, ds4_bridge_session_sync,
+    ds4_bridge_session_sync_vision, ds4_bridge_session_top_logprobs, ds4_bridge_shard,
+    ds4_bridge_snapshot, ds4_bridge_snapshot_create, ds4_bridge_snapshot_free,
+    ds4_bridge_snapshot_len, ds4_bridge_step37_pixels, ds4_bridge_sync_inkling,
+    ds4_bridge_sync_step37, ds4_bridge_token_score, ds4_bridge_vision_info,
+    ds4_bridge_vision_input, ds4_host_bind_look, ds4_host_bind_map, ds4_host_shape, ds4_host_str,
+    ds4_host_tensor, ds4_host_tensor_dir, ds4_host_vocab, DS4_BRIDGE_BACKEND_CPU,
+    DS4_BRIDGE_BACKEND_CUDA, DS4_BRIDGE_BACKEND_METAL, DS4_BRIDGE_DISTRIBUTED_COORDINATOR,
+    DS4_BRIDGE_DISTRIBUTED_NONE, DS4_BRIDGE_DISTRIBUTED_WORKER, DS4_BRIDGE_MAX_DIMS,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2568,6 +2568,28 @@ impl Session<'_> {
     ) -> i32 {
         unsafe {
             ds4_bridge_session_sample(self.raw.as_ptr(), temperature, top_k, top_p, min_p, rng)
+        }
+    }
+
+    pub fn sample_excluding(
+        &mut self,
+        temperature: f32,
+        top_k: i32,
+        top_p: f32,
+        min_p: f32,
+        rng: &mut u64,
+        excluded_id: i32,
+    ) -> i32 {
+        unsafe {
+            ds4_bridge_session_sample_excluding(
+                self.raw.as_ptr(),
+                temperature,
+                top_k,
+                top_p,
+                min_p,
+                rng,
+                excluded_id,
+            )
         }
     }
 
