@@ -4829,6 +4829,14 @@ int ds4_gpu_mimo2_qkv(ds4_gpu_tensor *q, ds4_gpu_tensor *k, ds4_gpu_tensor *v,
 int ds4_gpu_mimo2_kv_store(ds4_gpu_tensor *cache,
         const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
         const ds4_gpu_tensor *positions, uint32_t kv_heads, uint32_t rows, uint32_t capacity);
+/* 1 runs the host DFlash loops, 2 the device kernels, 0 a failed launch.
+ * DS4_MIMO2_DFLASH_CPU=1 selects the host loops. */
+int ds4_gpu_mimo2_dflash_attn(
+        ds4_gpu_tensor *attn, ds4_gpu_tensor *q,
+        ds4_gpu_tensor *k_ctx, ds4_gpu_tensor *k_noise,
+        ds4_gpu_tensor *v_ctx, ds4_gpu_tensor *v_noise,
+        const float *q_weight, const float *k_weight, const float *sinks,
+        uint32_t q0, uint32_t n, uint32_t ctx);
 int ds4_gpu_mimo2_attention(ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
         const ds4_gpu_tensor *cache, const ds4_gpu_tensor *positions,
         const void *map, uint64_t size, uint64_t sink_offset,

@@ -1,0 +1,11 @@
+dflash_gpu n=1 ctx=1 q0=1 rc=2 err=4.0512532e-08
+dflash_cpu n=1 ctx=1 rc=1 exact=1
+dflash_gpu n=2 ctx=4 q0=4 rc=2 err=8.28877091e-08
+dflash_cpu n=2 ctx=4 rc=1 exact=1
+dflash_gpu n=4 ctx=17 q0=17 rc=2 err=8.19563866e-08
+dflash_cpu n=4 ctx=17 rc=1 exact=1
+dflash_gpu n=2 ctx=1024 q0=2000 rc=2 err=3.0035153e-07
+dflash_cpu n=2 ctx=1024 rc=1 exact=1
+dflash_gpu n=8 ctx=1024 q0=262144 rc=2 err=2.52686441e-05
+dflash_cpu n=8 ctx=1024 rc=1 exact=1
+dflash_attn=host_match

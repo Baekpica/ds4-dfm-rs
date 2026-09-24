@@ -2,6 +2,7 @@
 #include "cuda/mimo2_primitives.cuh"
 #include "cuda/mimo2_media.cuh"
 #include "cuda/mimo2_prefill.cuh"
+#include "cuda/mimo2_dflash_attn.cuh"
 
 static void m2_hmma_init(void) {
     m2_hmma_available = mimo2_hmma::supported();
@@ -76,6 +77,7 @@ enum { M2_PATH_HMMA = 5, M2_PATH_SWA_HMMA = 6 };
 
 // ds4_gpu_cleanup calls this. A second init must allocate again, not leak.
 static void m2_split_release(void) {
+    m2df_release();
     if (!m2_split_buf) { return; }
     (void)cudaFree(m2_split_buf);
     m2_split_buf = nullptr;
@@ -93,6 +95,27 @@ static int m2_split_ready(void) {
         return 0;
     }
     return 1;
+}
+
+extern "C" int ds4_gpu_mimo2_dflash_attn(
+        ds4_gpu_tensor *attn, ds4_gpu_tensor *q,
+        ds4_gpu_tensor *k_ctx, ds4_gpu_tensor *k_noise,
+        ds4_gpu_tensor *v_ctx, ds4_gpu_tensor *v_noise,
+        const float *q_weight, const float *k_weight, const float *sinks,
+        uint32_t q0, uint32_t n, uint32_t ctx) {
+    const uint64_t q_bytes = (uint64_t)n * DF_Q * sizeof(float);
+    const uint64_t ctx_bytes = (uint64_t)ctx * DF_KV * sizeof(float);
+    const uint64_t noise_bytes = (uint64_t)n * DF_KV * sizeof(float);
+    if (!attn || !q || !k_ctx || !k_noise || !v_ctx || !v_noise ||
+        !q_weight || !k_weight || !sinks || n < 1 || n > 8 ||
+        ctx < 1 || ctx > DF_WIN || q0 < ctx ||
+        attn->bytes < q_bytes || q->bytes < q_bytes ||
+        k_ctx->bytes < ctx_bytes || v_ctx->bytes < ctx_bytes ||
+        k_noise->bytes < noise_bytes || v_noise->bytes < noise_bytes) { return 0; }
+    return m2df_attn_launch(
+        (float *)attn->ptr, (float *)q->ptr, (float *)k_ctx->ptr, (float *)k_noise->ptr,
+        (float *)v_ctx->ptr, (float *)v_noise->ptr, q_weight, k_weight, sinks,
+        q0, n, ctx, ds4_current_stream());
 }
 
 extern "C" int ds4_gpu_mimo2_attention(

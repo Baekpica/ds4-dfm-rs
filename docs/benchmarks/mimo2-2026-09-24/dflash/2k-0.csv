@@ -1,0 +1,3 @@
+host-memory-guard: available=25.52 GiB, scope max/high=13.50/12.50, reserve=12.00, trip=12.00
+ctx_tokens,prefill_tokens,prefill_tps,gen_tokens,gen_tps,gen_tps_ss,first_token_sec,kvcache_bytes
+2048,2048,1064.60,64,5.15,5.23,0.3842,73363508
