@@ -289,6 +289,10 @@ int ds4_bridge_session_distributed_route_ready(ds4_bridge_session *s,
 int ds4_bridge_session_sample(ds4_bridge_session *s,
                               float temperature, int top_k, float top_p, float min_p,
                               uint64_t *rng);
+int ds4_bridge_session_sample_excluding(ds4_bridge_session *s,
+                                        float temperature, int top_k,
+                                        float top_p, float min_p,
+                                        uint64_t *rng, int excluded_id);
 int ds4_bridge_session_save_payload(ds4_bridge_session *s, const char *path,
                                     char *err, size_t errlen);
 int ds4_bridge_session_load_payload(ds4_bridge_session *s, const char *path,
@@ -513,6 +517,7 @@ typedef struct {
      * returns 0 to abandon a pending admission; on_admitted returns 0
      * to cancel before prefill (n_cached + n_computed == n). */
     int (*sample_override)(void *ud, void *user);
+    int (*sample_exclude)(void *ud, void *user);
     /* Call-scoped Step trial buffers; return an accepted prefix in [1,n].
      * Rust owns this pure policy. NULL disables bank speculation. */
     int (*step_accept)(const int32_t *tokens, const int32_t *target, int n, int eos);

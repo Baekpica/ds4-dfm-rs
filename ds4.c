@@ -38524,6 +38524,24 @@ static int sample_argmax(const float *logits, uint32_t n_vocab) {
     return best;
 }
 
+static int sample_argmax_excluding(const float *logits, uint32_t n_vocab,
+                                   int excluded_id, int excluded_eot) {
+    if (excluded_id < 0 && excluded_eot < 0) {
+        return sample_argmax(logits, n_vocab);
+    }
+    int best = -1;
+    float best_v = -INFINITY;
+    for (uint32_t i = 0; i < n_vocab; i++) {
+        if ((int)i == excluded_id || (int)i == excluded_eot ||
+            !isfinite(logits[i])) { continue; }
+        if (best < 0 || logits[i] > best_v) {
+            best = (int)i;
+            best_v = logits[i];
+        }
+    }
+    return best;
+}
+
 static DS4_MAYBE_UNUSED void logits_top2(const float *logits, uint32_t n_vocab,
                         int *top0, float *logit0,
                         int *top1, float *logit1) {
@@ -38577,25 +38595,31 @@ static int sample_full_vocab(
         float        temperature,
         float        top_p,
         float        min_p,
-        uint64_t    *rng) {
+        uint64_t    *rng,
+        int          excluded_id,
+        int          excluded_eot) {
     float max_logit = DS4_NEG_INF;
-    int best = 0;
+    int best = excluded_id < 0 ? 0 : -1;
     uint32_t finite = 0;
     for (uint32_t i = 0; i < n_vocab; i++) {
+        if ((int)i == excluded_id || (int)i == excluded_eot) { continue; }
         const float v = logits[i];
         if (!isfinite(v)) continue;
         finite++;
-        if (v > max_logit) {
+        if (best < 0 || v > max_logit) {
             max_logit = v;
             best = (int)i;
         }
     }
-    if (finite == 0) return sample_argmax(logits, n_vocab);
+    if (finite == 0) {
+        return sample_argmax_excluding(logits, n_vocab, excluded_id, excluded_eot);
+    }
 
     if (top_p >= 1.0f) {
         float sum = 0.0f;
         const float min_rel = min_p > 0.0f ? min_p : 0.0f;
         for (uint32_t i = 0; i < n_vocab; i++) {
+            if ((int)i == excluded_id || (int)i == excluded_eot) { continue; }
             const float v = logits[i];
             if (!isfinite(v)) continue;
             const float p = expf((v - max_logit) / temperature);
@@ -38605,6 +38629,7 @@ static int sample_full_vocab(
         if (sum <= 0.0f || !isfinite(sum)) return best;
         float r = sample_rng_f32(rng) * sum;
         for (uint32_t i = 0; i < n_vocab; i++) {
+            if ((int)i == excluded_id || (int)i == excluded_eot) { continue; }
             const float v = logits[i];
             if (!isfinite(v)) continue;
             const float p = expf((v - max_logit) / temperature);
@@ -38619,6 +38644,7 @@ static int sample_full_vocab(
     uint32_t n = 0;
     float sum = 0.0f;
     for (uint32_t i = 0; i < n_vocab; i++) {
+        if ((int)i == excluded_id || (int)i == excluded_eot) { continue; }
         const float v = logits[i];
         if (!isfinite(v)) continue;
         const float p = expf((v - max_logit) / temperature);
@@ -38660,18 +38686,25 @@ static int sample_full_vocab(
     return id;
 }
 
-static int sample_top_p_min_p(
+static int sample_top_p_min_p_excluding(
         const float *logits,
         uint32_t     n_vocab,
         float        temperature,
         int          top_k,
         float        top_p,
         float        min_p,
-        uint64_t    *rng) {
-    if (temperature <= 0.0f) return sample_argmax(logits, n_vocab);
+        uint64_t    *rng,
+        int          excluded_id,
+        int          excluded_eot) {
+    if (temperature <= 0.0f) {
+        return sample_argmax_excluding(logits, n_vocab, excluded_id, excluded_eot);
+    }
     if (top_p <= 0.0f || top_p > 1.0f) top_p = 1.0f;
     if (min_p < 0.0f) min_p = 0.0f;
-    if (top_k <= 0) return sample_full_vocab(logits, n_vocab, temperature, top_p, min_p, rng);
+    if (top_k <= 0) {
+        return sample_full_vocab(logits, n_vocab, temperature, top_p, min_p,
+                                 rng, excluded_id, excluded_eot);
+    }
     if (top_k > 1024) top_k = 1024;
     if ((uint32_t)top_k > n_vocab) top_k = (int)n_vocab;
 
@@ -38679,6 +38712,7 @@ static int sample_top_p_min_p(
     float vals[1024];
     int n = 0;
     for (uint32_t i = 0; i < n_vocab; i++) {
+        if ((int)i == excluded_id || (int)i == excluded_eot) { continue; }
         float v = logits[i];
         if (!isfinite(v)) continue;
         if (n == top_k && v <= vals[n - 1]) continue;
@@ -38691,7 +38725,9 @@ static int sample_top_p_min_p(
         vals[j] = v;
         ids[j] = (int)i;
     }
-    if (n == 0) return sample_argmax(logits, n_vocab);
+    if (n == 0) {
+        return sample_argmax_excluding(logits, n_vocab, excluded_id, excluded_eot);
+    }
 
     float probs[1024];
     const float max_logit = vals[0];
@@ -38722,10 +38758,42 @@ static int sample_top_p_min_p(
     return ids[filtered - 1];
 }
 
+static int sample_top_p_min_p(
+        const float *logits, uint32_t n_vocab, float temperature,
+        int top_k, float top_p, float min_p, uint64_t *rng) {
+    return sample_top_p_min_p_excluding(logits, n_vocab, temperature,
+                                        top_k, top_p, min_p, rng, -1, -1);
+}
+
+static int sample_eot_exclusion(const ds4_vocab *vocab, int excluded_id) {
+    if (excluded_id < 0 || !vocab || vocab->eot_id < 0 ||
+        vocab->eot_id == excluded_id) {
+        return -1;
+    }
+    return vocab_token_is_generation_stop(vocab, vocab->eot_id)
+        ? vocab->eot_id : -1;
+}
+
 /* Apply the wire/parser-owned per-token override without exposing logits or
  * protocol state outside the engine.  Exact tokens, like greedy argmax, do not
  * advance the request RNG; this keeps plain and speculative streams aligned. */
 static int sample_top_p_min_p_override(
+        const float *logits, uint32_t n_vocab, float temperature,
+        int top_k, float top_p, float min_p, uint64_t *rng, int override) {
+    if (DS4_SAMPLE_OVERRIDE_IS_TOKEN(override)) {
+        const int token = DS4_SAMPLE_OVERRIDE_TOKEN_ID(override);
+        if (token >= 0 && (uint32_t)token < n_vocab) { return token; }
+        fprintf(stderr,
+                "ds4: invalid exact sample override token=%d vocab=%u; using argmax\n",
+                token, n_vocab);
+        return sample_argmax(logits, n_vocab);
+    }
+    if (override == DS4_SAMPLE_OVERRIDE_GREEDY) { temperature = 0.0f; }
+    return sample_top_p_min_p(logits, n_vocab, temperature,
+                              top_k, top_p, min_p, rng);
+}
+
+static int sample_top_p_min_p_override_excluding(
         const float *logits,
         uint32_t     n_vocab,
         float        temperature,
@@ -38733,18 +38801,27 @@ static int sample_top_p_min_p_override(
         float        top_p,
         float        min_p,
         uint64_t    *rng,
-        int          override) {
+        int          override,
+        int          excluded_id,
+        const ds4_vocab *vocab) {
+    if (excluded_id < 0) {
+        return sample_top_p_min_p_override(logits, n_vocab, temperature,
+                                            top_k, top_p, min_p, rng, override);
+    }
+    const int excluded_eot = sample_eot_exclusion(vocab, excluded_id);
     if (DS4_SAMPLE_OVERRIDE_IS_TOKEN(override)) {
         const int token = DS4_SAMPLE_OVERRIDE_TOKEN_ID(override);
-        if (token >= 0 && (uint32_t)token < n_vocab) return token;
+        if (token == excluded_id || token == excluded_eot) { return -1; }
+        if (token >= 0 && (uint32_t)token < n_vocab) { return token; }
         fprintf(stderr,
                 "ds4: invalid exact sample override token=%d vocab=%u; using argmax\n",
                 token, n_vocab);
-        return sample_argmax(logits, n_vocab);
+        return sample_argmax_excluding(logits, n_vocab, excluded_id, excluded_eot);
     }
-    if (override == DS4_SAMPLE_OVERRIDE_GREEDY) temperature = 0.0f;
-    return sample_top_p_min_p(logits, n_vocab, temperature,
-                              top_k, top_p, min_p, rng);
+    if (override == DS4_SAMPLE_OVERRIDE_GREEDY) { temperature = 0.0f; }
+    return sample_top_p_min_p_excluding(logits, n_vocab, temperature,
+                                        top_k, top_p, min_p, rng,
+                                        excluded_id, excluded_eot);
 }
 
 static void print_top_logits(
@@ -44762,7 +44839,7 @@ static bool qwen_batch_runtime_decode(
 static bool qwen_batch_runtime_decode_next(
         ds4_qwen_batch_runtime *rt, ds4_engine *e, uint32_t bank,
         int token, uint32_t pos, float temperature, int top_k,
-        float top_p, float min_p, uint64_t *rng, int override,
+        float top_p, float min_p, uint64_t *rng, int override, int excluded_id,
         int *next_token, uint32_t *committed, bool *drafted, bool *hit) {
     if (!rt || !e || !rng || !next_token || !committed || !drafted || !hit ||
         bank >= rt->max_seq) return false;
@@ -44781,10 +44858,10 @@ static bool qwen_batch_runtime_decode_next(
         const double elapsed_ms = (now_sec() - t0) * 1000.0;
         if (rt->mtp_baseline_ms[bank] == 0.0 && elapsed_ms > 0.0)
             rt->mtp_baseline_ms[bank] = elapsed_ms;
-        *next_token = sample_top_p_min_p_override(
+        *next_token = sample_top_p_min_p_override_excluding(
             logits, DS4_N_VOCAB, temperature, top_k, top_p, min_p,
-            rng, override);
-        return true;
+            rng, override, excluded_id, &e->vocab);
+        return *next_token >= 0;
     }
 
     const uint64_t before = qwen_batch_census_live();
@@ -44796,7 +44873,7 @@ static bool qwen_batch_runtime_decode_next(
         qwen4exp_graph_mtp_disable(g, "bank draft step failed");
         return qwen_batch_runtime_decode_next(
             rt, e, bank, token, pos, temperature, top_k, top_p, min_p,
-            rng, override, next_token, committed, drafted, hit);
+            rng, override, excluded_id, next_token, committed, drafted, hit);
     }
     *drafted = true;
     /* One two-row pass verifies the draft next to the committed token; the
@@ -44815,9 +44892,11 @@ static bool qwen_batch_runtime_decode_next(
             e->qwen_ple_store, e->qwen_ple_cuda,
             &token, 1u, pos, 1u, true, rt->mtp_logits, NULL, 0u)) return false;
 
-    *next_token = sample_top_p_min_p_override(
+    *next_token = sample_top_p_min_p_override_excluding(
         rt->mtp_logits, DS4_N_VOCAB,
-        temperature, top_k, top_p, min_p, rng, override);
+        temperature, top_k, top_p, min_p, rng, override,
+        excluded_id, &e->vocab);
+    if (*next_token < 0) { return false; }
     if (*next_token == draft) {
         const uint64_t row_bytes =
             (uint64_t)DS4_N_EMBD * DS4_N_HC * sizeof(float);
@@ -62051,6 +62130,7 @@ typedef struct {
     float min_p;
     uint64_t rng;
     int (*sample_override)(void *ud, void *user);
+    int (*sample_exclude)(void *ud, void *user);
     int (*step_accept)(const int *, const int *, int, int);
     int (*alive)(void *ud, void *user);
     uint32_t checkpoint_at;
@@ -62363,6 +62443,7 @@ static int solar_engine_continuous_generate(
             sb->min_p = req.min_p;
             sb->rng = req.seed;
             sb->sample_override = req.sample_override;
+            sb->sample_exclude = req.sample_exclude;
             sb->alive = req.alive;
             memset(&sb->stats, 0, sizeof(sb->stats));
             sb->stats.admit_sec = now_sec();
@@ -62484,10 +62565,18 @@ static int solar_engine_continuous_generate(
                     const int sample_override = sb->sample_override ?
                         sb->sample_override(ud, sb->user) :
                         DS4_SAMPLE_OVERRIDE_NONE;
-                    const int token = sample_top_p_min_p_override(
+                    const int excluded_id = sb->sample_exclude
+                        ? sb->sample_exclude(ud, sb->user) : -1;
+                    const int token = sample_top_p_min_p_override_excluding(
                         rt->bank_logits + (size_t)pb * DS4_N_VOCAB,
                         DS4_N_VOCAB, sb->temperature, sb->top_k,
-                        sb->top_p, sb->min_p, &sb->rng, sample_override);
+                        sb->top_p, sb->min_p, &sb->rng, sample_override,
+                        excluded_id, &ctx->e->vocab);
+                    if (token < 0) {
+                        SCG_ERR("continuous_generate: Solar EOS exclusion left no token");
+                        ok = false;
+                        break;
+                    }
                     free(sb->prefill);
                     sb->prefill = NULL;
                     sb->generated = xmalloc(
@@ -62577,10 +62666,18 @@ static int solar_engine_continuous_generate(
             const int sample_override = sb->sample_override ?
                 sb->sample_override(ud, sb->user) :
                 DS4_SAMPLE_OVERRIDE_NONE;
-            const int token = sample_top_p_min_p_override(
+            const int excluded_id = sb->sample_exclude
+                ? sb->sample_exclude(ud, sb->user) : -1;
+            const int token = sample_top_p_min_p_override_excluding(
                 rt->bank_logits + (size_t)b * DS4_N_VOCAB,
                 DS4_N_VOCAB, sb->temperature, sb->top_k,
-                sb->top_p, sb->min_p, &sb->rng, sample_override);
+                sb->top_p, sb->min_p, &sb->rng, sample_override,
+                excluded_id, &ctx->e->vocab);
+            if (token < 0) {
+                SCG_ERR("continuous_generate: Solar EOS exclusion left no token");
+                ok = false;
+                break;
+            }
             sb->generated[sb->generated_len++] = token;
             sb->current = token;
             ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1u);
@@ -62844,7 +62941,8 @@ static int step37_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
                             void *ud, char *err, size_t errlen) {
     ds4_step37_batch_runtime *rt = ctx->step37;
     ds4_family_cont_bank *cb = &banks[bank];
-    if (!rt || !rt->spec || !cb->step_accept || cb->temperature > 0.0f ||
+    if (!rt || !rt->spec || !cb->step_accept || cb->sample_exclude ||
+        cb->temperature > 0.0f ||
         getenv("DS4_MTP_SPEC_DISABLE")) { return 0; }
     const uint32_t pos = ctx->bank_hist_len[bank];
     ds4_session s = {.engine = ctx->e, .step37_graph_ready = true,
@@ -63309,6 +63407,7 @@ static int family_banked_engine_continuous_generate(
             cb->min_p = req.min_p;
             cb->rng = req.seed;
             cb->sample_override = req.sample_override;
+            cb->sample_exclude = req.sample_exclude;
             cb->step_accept = req.step_accept;
             cb->alive = req.alive;
             cb->checkpoint_at = (ctx->step37 || ctx->motif3) && req.checkpoint_at > 0 &&
@@ -63422,10 +63521,18 @@ static int family_banked_engine_continuous_generate(
                     const int override = cb->sample_override
                         ? cb->sample_override(ud, cb->user)
                         : DS4_SAMPLE_OVERRIDE_NONE;
-                    const int token = sample_top_p_min_p_override(
+                    const int excluded_id = cb->sample_exclude
+                        ? cb->sample_exclude(ud, cb->user) : -1;
+                    const int token = sample_top_p_min_p_override_excluding(
                         family_banked_logits(ctx, pb),
                         DS4_N_VOCAB, cb->temperature, cb->top_k,
-                        cb->top_p, cb->min_p, &cb->rng, override);
+                        cb->top_p, cb->min_p, &cb->rng, override,
+                        excluded_id, &ctx->e->vocab);
+                    if (token < 0) {
+                        FCG_ERR("continuous_generate: family EOS exclusion left no token");
+                        ok = false;
+                        break;
+                    }
                     free(cb->prefill);
                     cb->prefill = NULL;
                     cb->generated = xmalloc(
@@ -63497,10 +63604,12 @@ static int family_banked_engine_continuous_generate(
                 const int override = cb->sample_override
                     ? cb->sample_override(ud, cb->user)
                     : DS4_SAMPLE_OVERRIDE_NONE;
+                const int excluded_id = cb->sample_exclude
+                    ? cb->sample_exclude(ud, cb->user) : -1;
                 if (!qwen_batch_runtime_decode_next(
                         ctx->qwen, ctx->e, b, decode_tokens[row],
                         decode_positions[row], cb->temperature, cb->top_k,
-                        cb->top_p, cb->min_p, &cb->rng, override,
+                        cb->top_p, cb->min_p, &cb->rng, override, excluded_id,
                         &decode_next[row], &decode_committed[row],
                         &decode_drafted[row], &decode_hit[row])) {
                     ctx->bank_gen[b]++;
@@ -63556,11 +63665,19 @@ static int family_banked_engine_continuous_generate(
             const int override = !qwen_mtp && cb->sample_override
                 ? cb->sample_override(ud, cb->user)
                 : DS4_SAMPLE_OVERRIDE_NONE;
+            const int excluded_id = cb->sample_exclude
+                ? cb->sample_exclude(ud, cb->user) : -1;
             int token = qwen_mtp ? decode_next[row]
-                : sample_top_p_min_p_override(
+                : sample_top_p_min_p_override_excluding(
                     family_banked_logits(ctx, b),
                     DS4_N_VOCAB, cb->temperature, cb->top_k,
-                    cb->top_p, cb->min_p, &cb->rng, override);
+                    cb->top_p, cb->min_p, &cb->rng, override,
+                    excluded_id, &ctx->e->vocab);
+            if (token < 0) {
+                FCG_ERR("continuous_generate: family EOS exclusion left no token");
+                ok = false;
+                break;
+            }
             cb->generated[cb->generated_len++] = token;
             cb->current = token;
             ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1u);
@@ -63577,10 +63694,18 @@ static int family_banked_engine_continuous_generate(
                 const int next_override = cb->sample_override
                     ? cb->sample_override(ud, cb->user)
                     : DS4_SAMPLE_OVERRIDE_NONE;
-                token = sample_top_p_min_p_override(
+                const int next_excluded_id = cb->sample_exclude
+                    ? cb->sample_exclude(ud, cb->user) : -1;
+                token = sample_top_p_min_p_override_excluding(
                     family_banked_logits(ctx, b),
                     DS4_N_VOCAB, cb->temperature, cb->top_k,
-                    cb->top_p, cb->min_p, &cb->rng, next_override);
+                    cb->top_p, cb->min_p, &cb->rng, next_override,
+                    next_excluded_id, &ctx->e->vocab);
+                if (token < 0) {
+                    FCG_ERR("continuous_generate: family EOS exclusion left no token");
+                    ok = false;
+                    break;
+                }
                 cb->generated[cb->generated_len++] = token;
                 cb->current = token;
                 ds4_metric_add(&ds4_metrics_get()->tokens_decoded, 1u);
@@ -63784,6 +63909,7 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
      * is greedy argmax (no RNG draw).  NULL entries sample with the params
      * above unconditionally. */
     int     (**bsoc)(void *, void *) = xcalloc(MS, sizeof(*bsoc));
+    int     (**bsec)(void *, void *) = xcalloc(MS, sizeof(*bsec));
     /* v0.5.2: per-bank admission-prefill liveness probe (ds4_cont_request.alive). */
     int     (**balive)(void *, void *) = xcalloc(MS, sizeof(*balive));
     /* v0.5.6 Inc 4a: on_admitted returned cancel -- consumed by the pending-
@@ -63826,7 +63952,8 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
     uint32_t rowbank[DS4_MULTISEQ_MAX_SEQ];
     int      sampled[DS4_MULTISEQ_MAX_SEQ];   /* S1.0b: token the base model sampled per row */
     bool ok = live && usr && posv && cur && beos && bmax && glen && gbuf &&
-              btemp && btopk && btopp && bminp && brng && logits && seedlog &&
+              btemp && btopk && btopp && bminp && brng && bsoc && bsec &&
+              logits && seedlog &&
               pftok && pflen && pfoff && pfbase && pft0 && sst && btgt;
     /* MT-1b: decode-credit tranche size.  Admission credits min(prompt +
      * min(budget, tranche), seq_cap); the decode loop extends live rows'
@@ -64453,6 +64580,7 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
             bminp[b] = req.min_p;
             brng[b]  = req.seed;
             bsoc[b]  = req.sample_override;
+            bsec[b]  = req.sample_exclude;
             balive[b] = req.alive;
             beos[b] = req.eos >= 0 ? req.eos : dflt_eos;
             bmax[b] = mn;
@@ -64687,9 +64815,16 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
                     pfq_n--;
                     const int sample_override = bsoc[b] ?
                         bsoc[b](ud, usr[b]) : DS4_SAMPLE_OVERRIDE_NONE;
-                    const int nt = sample_top_p_min_p_override(
+                    const int excluded_id = bsec[b] ? bsec[b](ud, usr[b]) : -1;
+                    const int nt = sample_top_p_min_p_override_excluding(
                         seedlog, DS4_N_VOCAB, btemp[b], btopk[b],
-                        btopp[b], bminp[b], &brng[b], sample_override);
+                        btopp[b], bminp[b], &brng[b], sample_override,
+                        excluded_id, &ctx->e->vocab);
+                    if (nt < 0) {
+                        CG_ERR("continuous_generate: EOS exclusion left no token");
+                        ok = false;
+                        break;
+                    }
                     gbuf[b] = xmalloc((size_t)bmax[b] * sizeof(int));
                     if (!gbuf[b]) { ok = false; break; }
                     gbuf[b][0] = nt;
@@ -65017,10 +65152,16 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
                  * accepted stream matches mode-0 tie-break-for-tie-break (greedy at temp 0). */
                 int sample_override = bsoc[b] ?
                     bsoc[b](ud, usr[b]) : DS4_SAMPLE_OVERRIDE_NONE;
-                int u = sample_top_p_min_p_override(
+                int excluded_id = bsec[b] ? bsec[b](ud, usr[b]) : -1;
+                int u = sample_top_p_min_p_override_excluding(
                     vlogits + (uint64_t)f * DS4_N_VOCAB, DS4_N_VOCAB,
                     btemp[b], btopk[b], btopp[b], bminp[b], &brng[b],
-                    sample_override);
+                    sample_override, excluded_id, &ctx->e->vocab);
+                if (u < 0) {
+                    CG_ERR("continuous_generate: EOS exclusion left no token");
+                    ok = false;
+                    break;
+                }
                 uint32_t M = 1u;
                 bool evicted = false;
                 /* v0.5.6 Inc 6: a row retiring mid-accept-step must NOT fire
@@ -65062,10 +65203,17 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
                      * u (on_token above ran synchronously), so its verdict is position-exact. */
                     sample_override = bsoc[b] ?
                         bsoc[b](ud, usr[b]) : DS4_SAMPLE_OVERRIDE_NONE;
-                    u = sample_top_p_min_p_override(
+                    excluded_id = bsec[b] ? bsec[b](ud, usr[b]) : -1;
+                    u = sample_top_p_min_p_override_excluding(
                         vlogits + (uint64_t)(f + j + 1u) * DS4_N_VOCAB,
                         DS4_N_VOCAB, btemp[b], btopk[b], btopp[b], bminp[b],
-                        &brng[b], sample_override);
+                        &brng[b], sample_override, excluded_id,
+                        &ctx->e->vocab);
+                    if (u < 0) {
+                        CG_ERR("continuous_generate: EOS exclusion left no token");
+                        ok = false;
+                        break;
+                    }
                     M++;
                     seedtok[b] = vqtok[f + j + 1u];
                     gbuf[b][glen[b]++] = u; cur[b] = u; posv[b]++; mtp_acc_emit++;
@@ -65123,6 +65271,7 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
                     ds4_batch_gov_refresh_rowend(ctx, credit, b);   /* D2-1 */
                 }
             }
+            if (!ok) { break; }
             if (dspark_prof && dspark_now) dspark_t_accept_s += now_sec() - accept_t0;
             /* v0.2.x observability: one registry update per accept step. */
             {
@@ -65633,10 +65782,16 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
             const uint32_t b = rowbank[r];
             const int sample_override = bsoc[b] ?
                 bsoc[b](ud, usr[b]) : DS4_SAMPLE_OVERRIDE_NONE;
-            const int nt = sample_top_p_min_p_override(
+            const int excluded_id = bsec[b] ? bsec[b](ud, usr[b]) : -1;
+            const int nt = sample_top_p_min_p_override_excluding(
                 logits + (uint64_t)r * DS4_N_VOCAB, DS4_N_VOCAB,
                 btemp[b], btopk[b], btopp[b], bminp[b], &brng[b],
-                sample_override);
+                sample_override, excluded_id, &ctx->e->vocab);
+            if (nt < 0) {
+                CG_ERR("continuous_generate: EOS exclusion left no token");
+                ok = false;
+                break;
+            }
             sampled[r] = nt;            /* S1.0b: probe compares draft0 against this */
             bank_hist_append(ctx, b, qtokens[r]);   /* A2a: the forwarded token is now committed */
             gbuf[b][glen[b]] = nt;
@@ -65683,6 +65838,8 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
         }
         if (g_cont_prof) t_sample_s += now_sec() - smp_t0;
         }
+
+        if (!ok) { break; }
 
         /* ---- S1.1: per-bank MTP draft probe (lockstep, depth 1, NON-invasive).
          * For each row r decoded this step, seed the per-bank drafter from the row's
@@ -65830,7 +65987,7 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
     if (gbuf) for (uint32_t b = 0; b < MS; b++) free(gbuf[b]);
     if (pftok) for (uint32_t b = 0; b < MS; b++) free(pftok[b]);
     free(live); free(usr); free(posv); free(cur); free(beos); free(bmax); free(glen); free(gbuf);
-    free(btemp); free(btopk); free(btopp); free(bminp); free(brng); free(bsoc);
+    free(btemp); free(btopk); free(btopp); free(bminp); free(brng); free(bsoc); free(bsec);
     free(balive);
     free(bcancel);
     free(pftok); free(pflen); free(pfoff); free(pfbase); free(credit); free(btgt); free(pft0); free(sst);
@@ -72532,6 +72689,17 @@ int ds4_sample_logits(const float *logits, int n_vocab, float temperature,
 int ds4_session_sample(ds4_session *s, float temperature, int top_k, float top_p, float min_p, uint64_t *rng) {
     if (session_logits_unready(s)) { return -1; }
     return sample_top_p_min_p(s->logits, DS4_N_VOCAB, temperature, top_k, top_p, min_p, rng);
+}
+
+int ds4_session_sample_excluding(ds4_session *s, float temperature,
+                                 int top_k, float top_p, float min_p,
+                                 uint64_t *rng, int excluded_id) {
+    if (session_logits_unready(s)) { return -1; }
+    return sample_top_p_min_p_excluding(s->logits, DS4_N_VOCAB,
+                                        temperature, top_k, top_p, min_p,
+                                        rng, excluded_id,
+                                        sample_eot_exclusion(&s->engine->vocab,
+                                                             excluded_id));
 }
 
 int ds4_session_top_logprobs(ds4_session *s, ds4_token_score *out, int k) {

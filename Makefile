@@ -1164,6 +1164,12 @@ test-exaone-kernels: tests/test_exaone_kernels
 tests/test_dots3_mtp_guards: tests/test_dots3_mtp_guards.c ds4.c ds4_dots3_mtp.inc ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -Wl,--gc-sections -o $@ $< -lm
 
+tests/test_eos_sampling: tests/test_eos_sampling.c ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -Wl,--gc-sections -o $@ $< -lm
+
+test-eos-sampling: tests/test_eos_sampling
+	./tests/test_eos_sampling
+
 tests/test_dots3_mtp.o: tests/test_dots3_mtp.c ds4.c ds4_dots3_mtp.inc ds4.h ds4_gpu.h
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -I. -c -o $@ $<
 
@@ -1605,7 +1611,7 @@ clean:
 	rm -f tests/test_step37_mtp tests/test_step37_mtp.o
 	rm -f tests/test_step37_spec tests/test_step37_spec.o
 	rm -f tests/test_step37_cont tests/test_step37_cont.o
-	rm -f tests/test_dots3_mtp tests/test_dots3_mtp.o tests/test_dots3_mtp_guards
+	rm -f tests/test_dots3_mtp tests/test_dots3_mtp.o tests/test_dots3_mtp_guards tests/test_eos_sampling
 	rm -f tests/test_dots3_checkpoint tests/test_dots3_checkpoint.o tests/test_dots3_batch tests/test_dots3_batch.o
 	rm -f tests/test_exaone_partial tests/test_exaone_partial.o
 	rm -f tests/test_exaone_checkpoint tests/test_exaone_checkpoint.o

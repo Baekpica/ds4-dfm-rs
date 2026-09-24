@@ -88,6 +88,18 @@ static int no_admit(void *ud, ds4_bridge_cont_request *req) {
     return 0;
 }
 
+static int test_sample_exclude(void *ud, void *user) {
+    (void)ud;
+    return user == (void *)1 ? 71 : -1;
+}
+
+static int mixed_eos_admit(void *ud, ds4_bridge_cont_request *req) {
+    int *count = ud;
+    req->user = (void *)(uintptr_t)++*count;
+    if (*count == 1) { req->sample_exclude = test_sample_exclude; }
+    return 1;
+}
+
 static ds4_bridge_cont_stats done_stats;
 
 static void record_done(void *ud, void *user, const int32_t *tokens, int32_t n,
@@ -273,6 +285,10 @@ int main(void) {
     }
     if (ds4_bridge_session_sample(NULL, 1.0f, 0, 1.0f, 0.05f, &rng) != -1)
         fail("sample");
+    if (ds4_bridge_session_sample_excluding(NULL, 1.0f, 0, 1.0f,
+                                            0.05f, &rng, 1) != -1) {
+        fail("sample_excluding");
+    }
     if (ds4_bridge_session_ctx(NULL) != -1) fail("ctx");
     if (ds4_bridge_session_argmax(NULL) != -1) fail("argmax");
     if (ds4_bridge_step37_trial(NULL, 1, 4, NULL, NULL, 4, err, sizeof(err)) != -1) {
@@ -580,6 +596,17 @@ int main(void) {
                 fail("cont stats values");
             }
             bridge_cont_run = 0;
+
+            {
+                int admitted = 0;
+                bridge_cont_run = 2;
+                if (ds4_bridge_continuous_generate(
+                        &fake, mixed_eos_admit, NULL, NULL, &admitted,
+                        err, sizeof(err)) != 0 || admitted != 2) {
+                    fail("mixed EOS callback admission");
+                }
+                bridge_cont_run = 0;
+            }
 
             {
                 const int32_t first[] = {10, 11};

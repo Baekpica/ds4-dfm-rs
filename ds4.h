@@ -718,6 +718,8 @@ typedef struct {
      * reported via on_token, preserving seeded plain/speculative alignment.
      * `ud`/`user` are the same handles on_token receives. */
     int      (*sample_override)(void *ud, void *user);
+    /* Optional EOS id to mask; also masks a registered EOT. -1 is ordinary. */
+    int      (*sample_exclude)(void *ud, void *user);
     /* Pure host acceptance policy for Step's bounded trial (1..4 rows).
      * Returns the accepted prefix length; NULL keeps ordinary decode. */
     int      (*step_accept)(const int *tokens, const int *target, int n, int eos);
@@ -1384,6 +1386,9 @@ int ds4_session_argmax_excluding(ds4_session *s, int excluded_id);
 int ds4_sample_logits(const float *logits, int n_vocab, float temperature,
                       int top_k, float top_p, float min_p, uint64_t *rng);
 int ds4_session_sample(ds4_session *s, float temperature, int top_k, float top_p, float min_p, uint64_t *rng);
+int ds4_session_sample_excluding(ds4_session *s, float temperature,
+                                 int top_k, float top_p, float min_p,
+                                 uint64_t *rng, int excluded_id);
 int ds4_session_top_logprobs(ds4_session *s, ds4_token_score *out, int k);
 int ds4_session_token_logprob(ds4_session *s, int token, ds4_token_score *out);
 int ds4_session_copy_logits(ds4_session *s, float *out, int cap);

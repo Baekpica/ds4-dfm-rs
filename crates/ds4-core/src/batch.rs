@@ -114,6 +114,8 @@ pub struct ContAdmit {
     pub top_p: f32,
     pub min_p: f32,
     pub seed: u64,
+    /// Register the per-token EOS exclusion callback for this request.
+    pub exclude_eos: bool,
     /// Bank id + 1 placement directive; 0 = engine's choice.
     pub place_bank: i32,
     /// Committed prefix length for a warm admit; 0 = cold.
@@ -137,6 +139,7 @@ impl ContAdmit {
             top_p: 0.0,
             min_p: 0.0,
             seed: 0,
+            exclude_eos: false,
             place_bank: 0,
             n_cached: 0,
             fork_bank: 0,
@@ -166,6 +169,9 @@ pub trait ContDriver {
     fn on_done(&mut self, user: usize, tokens: &[i32], finish: i32, stats: ContDone);
     fn sample_override(&mut self, _user: usize) -> i32 {
         CONT_SAMPLE_NONE
+    }
+    fn sample_exclude(&mut self, _user: usize) -> i32 {
+        -1
     }
     fn alive(&mut self, _user: usize) -> bool {
         true
@@ -224,6 +230,7 @@ unsafe extern "C" fn tramp_admit(ud: *mut c_void, req: *mut ds4_bridge_cont_requ
     r.min_p = a.min_p;
     r.seed = a.seed;
     r.sample_override = Some(tramp_sample_override);
+    r.sample_exclude = a.exclude_eos.then_some(tramp_sample_exclude);
     r.step_accept = Some(crate::step37_mtp::accept_banked);
     r.alive = Some(tramp_alive);
     r.on_admitted = Some(tramp_on_admitted);
@@ -299,6 +306,11 @@ unsafe extern "C" fn tramp_sample_override(ud: *mut c_void, user: *mut c_void) -
     let t = &mut *(ud as *mut TrampCtx);
     catch_unwind(AssertUnwindSafe(|| t.driver.sample_override(user as usize)))
         .unwrap_or(CONT_SAMPLE_NONE)
+}
+
+unsafe extern "C" fn tramp_sample_exclude(ud: *mut c_void, user: *mut c_void) -> c_int {
+    let t = &mut *(ud as *mut TrampCtx);
+    catch_unwind(AssertUnwindSafe(|| t.driver.sample_exclude(user as usize))).unwrap_or(-1)
 }
 
 unsafe extern "C" fn tramp_alive(ud: *mut c_void, user: *mut c_void) -> c_int {

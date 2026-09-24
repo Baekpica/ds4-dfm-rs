@@ -315,6 +315,13 @@ int ds4_session_sample(ds4_session *s, float temperature, int top_k, float top_p
     (void)s; (void)temperature; (void)top_k; (void)top_p; (void)min_p; (void)rng;
     STUB("ds4_session_sample");
 }
+int ds4_session_sample_excluding(ds4_session *s, float temperature,
+                                 int top_k, float top_p, float min_p,
+                                 uint64_t *rng, int excluded_id) {
+    (void)s; (void)temperature; (void)top_k; (void)top_p;
+    (void)min_p; (void)rng; (void)excluded_id;
+    STUB("ds4_session_sample_excluding");
+}
 int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen) {
     (void)s; (void)fp; (void)err; (void)errlen; STUB("ds4_session_save_payload");
 }
@@ -482,8 +489,18 @@ int ds4_engine_continuous_generate(ds4_batch_ctx *ctx,
                                    void (*on_done)(void *ud, void *user,
                                                    const int *tokens, int n, int finish),
                                    void *ud, char *err, size_t errlen) {
-    (void)ctx; (void)admit; (void)on_token;
+    (void)ctx; (void)on_token;
     (void)err; (void)errlen;
+    if (bridge_cont_run == 2) {
+        ds4_cont_request first = {0};
+        ds4_cont_request second = {0};
+        if (!admit(ud, &first) || !admit(ud, &second) ||
+            !first.sample_exclude || second.sample_exclude ||
+            first.sample_exclude(ud, first.user) != 71) {
+            return 1;
+        }
+        return 0;
+    }
     if (bridge_cont_run) {
         static const int tokens[] = {1, 2, 3, 4, 5};
         on_done(ud, (void *)42, tokens, 5, 1);

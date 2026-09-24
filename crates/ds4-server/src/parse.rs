@@ -18,6 +18,26 @@ pub const DEFAULT_TEMPERATURE: f32 = 1.0;
 pub const DEFAULT_TOP_P: f32 = 1.0;
 pub const DEFAULT_MIN_P: f32 = 0.05;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EosPolicy {
+    #[default]
+    Default,
+    Reasoning,
+    Global,
+}
+
+impl EosPolicy {
+    pub(crate) fn excluded(self, eos: i32, in_reasoning: bool) -> Option<i32> {
+        (eos >= 0
+            && match self {
+                Self::Default => false,
+                Self::Reasoning => in_reasoning,
+                Self::Global => true,
+            })
+        .then_some(eos)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolChoice {
     Auto = 0,
@@ -134,6 +154,7 @@ pub struct ParsedRequest {
     pub stream_include_usage: bool,
     pub return_token_ids: bool,
     pub think_mode: ThinkMode,
+    pub eos_policy: EosPolicy,
     pub has_tools: bool,
     pub has_tool_results: bool,
     pub tool_choice: ToolChoice,
@@ -175,6 +196,7 @@ impl ParsedRequest {
             stream_include_usage: false,
             return_token_ids: false,
             think_mode: ThinkMode::Low,
+            eos_policy: EosPolicy::Default,
             has_tools: false,
             has_tool_results: false,
             tool_choice: ToolChoice::Auto,
@@ -219,6 +241,9 @@ impl ParsedRequest {
         });
         if !self.audios.is_empty() || !self.videos.is_empty() {
             self.needs |= crate::route::NEED_AUDIO;
+        }
+        if self.eos_policy != EosPolicy::Default {
+            self.needs |= crate::route::NEED_EOS_POLICY;
         }
     }
 }
@@ -3161,5 +3186,46 @@ pub fn parse_request(
         WireSurface::OpenaiCompletion => parse_completion_request(env, body),
         WireSurface::Anthropic => parse_anthropic_request(env, body),
         WireSurface::Responses => parse_responses_request(env, body),
+    }
+}
+
+#[cfg(test)]
+mod eos_policy_tests {
+    use super::EosPolicy;
+    use crate::stream::ChatFormat;
+    use crate::tools::SemAccum;
+
+    #[test]
+    fn reasoning_policy_tracks_think_close_across_pieces() {
+        const EOS: i32 = 248_046;
+        let mut acc = SemAccum::init(true, false, true, ChatFormat::Qwen4Exp, b"<think>");
+
+        assert_eq!(
+            EosPolicy::Default.excluded(EOS, acc.thinking_inside()),
+            None
+        );
+        assert_eq!(
+            EosPolicy::Reasoning.excluded(EOS, acc.thinking_inside()),
+            Some(EOS)
+        );
+        assert_eq!(
+            EosPolicy::Global.excluded(EOS, acc.thinking_inside()),
+            Some(EOS)
+        );
+
+        acc.feed(b"</thi", &[]);
+        assert_eq!(
+            EosPolicy::Reasoning.excluded(EOS, acc.thinking_inside()),
+            Some(EOS)
+        );
+        acc.feed(b"nk>", &[]);
+        assert_eq!(
+            EosPolicy::Reasoning.excluded(EOS, acc.thinking_inside()),
+            None
+        );
+        assert_eq!(
+            EosPolicy::Global.excluded(EOS, acc.thinking_inside()),
+            Some(EOS)
+        );
     }
 }

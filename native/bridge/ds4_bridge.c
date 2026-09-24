@@ -882,6 +882,16 @@ int ds4_bridge_session_sample(ds4_bridge_session *s,
     return ds4_session_sample(s->session, temperature, top_k, top_p, min_p, rng);
 }
 
+int ds4_bridge_session_sample_excluding(ds4_bridge_session *s,
+                                        float temperature, int top_k,
+                                        float top_p, float min_p,
+                                        uint64_t *rng, int excluded_id)
+{
+    if (!s || !s->session) { return -1; }
+    return ds4_session_sample_excluding(s->session, temperature, top_k,
+                                        top_p, min_p, rng, excluded_id);
+}
+
 int ds4_bridge_session_save_payload(ds4_bridge_session *s, const char *path,
                                     char *err, size_t errlen)
 {
@@ -1842,6 +1852,7 @@ typedef struct {
     void (*on_done)(void *ud, void *user, const int32_t *tokens, int32_t n,
                     int32_t finish, const ds4_bridge_cont_stats *stats);
     int (*sample_override)(void *ud, void *user);
+    int (*sample_exclude)(void *ud, void *user);
     int (*alive)(void *ud, void *user);
     int (*on_admitted)(void *ud, void *user, int n_cached, int n_computed,
                        int bank);
@@ -1854,6 +1865,12 @@ static int cont_tramp_sample_override(void *ud, void *user)
 {
     cont_tramp *t = ud;
     return t->sample_override ? t->sample_override(t->ud, user) : 0;
+}
+
+static int cont_tramp_sample_exclude(void *ud, void *user)
+{
+    cont_tramp *t = ud;
+    return t->sample_exclude ? t->sample_exclude(t->ud, user) : -1;
 }
 
 static int cont_tramp_alive(void *ud, void *user)
@@ -1908,10 +1925,14 @@ static int cont_tramp_admit(void *ud, ds4_cont_request *req)
     /* The engine calls these with ITS ud (this frame), so the request
      * carries the shared trampolines; the per-call fns land in t->*. */
     t->sample_override = br.sample_override;
+    /* Older active rows still use this trampoline when a later admission
+     * has no exclusion callback.  All Rust rows share the same dispatcher. */
+    if (br.sample_exclude) { t->sample_exclude = br.sample_exclude; }
     t->alive = br.alive;
     t->on_admitted = br.on_admitted;
     t->on_checkpoint = br.on_checkpoint;
     if (br.sample_override) req->sample_override = cont_tramp_sample_override;
+    if (br.sample_exclude) req->sample_exclude = cont_tramp_sample_exclude;
     if (br.alive) req->alive = cont_tramp_alive;
     if (br.on_admitted) req->on_admitted = cont_tramp_on_admitted;
     req->place_bank = br.place_bank;

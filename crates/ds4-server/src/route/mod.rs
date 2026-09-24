@@ -21,6 +21,7 @@ pub const NEED_IMAGE: u32 = 1 << 12;
 // Audio and MiMo video stay on the serial session. This bit is outside
 // ROUTE_CONT_MASK, so those requests cannot land on the continuous lane.
 pub const NEED_AUDIO: u32 = 1 << 13;
+pub const NEED_EOS_POLICY: u32 = 1 << 14;
 
 pub const ROUTE_CONT_MASK: u32 = NEED_STREAMING
     | NEED_PER_ROW_SAMPLING
@@ -28,7 +29,8 @@ pub const ROUTE_CONT_MASK: u32 = NEED_STREAMING
     | NEED_STOP_SCAN
     | NEED_TOOL_SCAN
     | NEED_TOKEN_IDS
-    | NEED_IMAGE;
+    | NEED_IMAGE
+    | NEED_EOS_POLICY;
 pub const ROUTE_STATIC_MASK: u32 = 0;
 
 pub const LANE_SERIAL: u8 = 0;
@@ -309,6 +311,36 @@ pub fn think_mode_from_enabled(enabled: bool, effort: ThinkMode) -> ThinkMode {
         ThinkMode::None
     } else {
         effort
+    }
+}
+
+#[cfg(test)]
+mod eos_policy_tests {
+    use super::*;
+
+    #[test]
+    fn eos_policy_never_uses_static_lane() {
+        let mut env = RouteEnv {
+            coalesce: true,
+            have_cont: true,
+            cont_anthropic: false,
+            cont_responses: false,
+            cont_tools_anthropic: false,
+            cont_tools_responses: false,
+            seq_cap: 1024,
+            prompt_len: 10,
+        };
+        let needs = NEED_EOS_POLICY;
+
+        assert_eq!(
+            route_decide(needs, WireSurface::OpenaiChat, &env).lane,
+            LANE_CONTINUOUS
+        );
+        env.have_cont = false;
+        assert_eq!(
+            route_decide(needs, WireSurface::OpenaiChat, &env).lane,
+            LANE_SERIAL
+        );
     }
 }
 
