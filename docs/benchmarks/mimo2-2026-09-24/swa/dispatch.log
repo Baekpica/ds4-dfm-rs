@@ -1,0 +1,4 @@
+swa_decode kernel=mimo2_swa_decode vec=0
+swa_vec kernel=mimo2_swa_decode vec=1
+split_vec kernel=mimo2_attn_split vec=1
+split16 kernel=mimo2_attn_split nsplit=16

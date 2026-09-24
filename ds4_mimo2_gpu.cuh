@@ -144,8 +144,10 @@ extern "C" int ds4_gpu_mimo2_attention(
     const char *swa_vec_env = getenv("DS4_MIMO2_SWA_VEC");
     const char *split_vec_env = getenv("DS4_MIMO2_SPLIT_VEC");
     const char *split16_env = getenv("DS4_MIMO2_SPLIT16");
+    // Share the window across eight query heads. FP32 reduction order may
+    // change; =0 retains the walk for numerical comparisons.
     const int swa_decode = rows == 1 && window == 128 && kv_heads == 8 &&
-        swa_decode_env && swa_decode_env[0] == '1' && swa_decode_env[1] == '\0';
+        !(swa_decode_env && swa_decode_env[0] == '0' && swa_decode_env[1] == '\0');
     const int split_vec = split_vec_env && split_vec_env[0] == '1' && split_vec_env[1] == '\0';
     const int nsplit = (split16_env && split16_env[0] == '1' && split16_env[1] == '\0')
         ? 16 : M2_DECODE_SPLITS;
@@ -158,7 +160,7 @@ extern "C" int ds4_gpu_mimo2_attention(
     const int split = rows >= 1 && rows <= 8 && window == 0 && kv_heads == 4 &&
         !fattn_off && !split_off && m2_split_ready();
     if (swa_decode) {
-        const int swa_vec = swa_vec_env && swa_vec_env[0] == '1' && swa_vec_env[1] == '\0';
+        const int swa_vec = !(swa_vec_env && swa_vec_env[0] == '0' && swa_vec_env[1] == '\0');
         m2_attn_path = swa_vec ? 2 : 1;
         mimo2_swa_decode<<<dim3(1, kv_heads), 256, 0, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)q->ptr, (const __half *)cache->ptr,
