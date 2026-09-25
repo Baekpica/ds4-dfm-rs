@@ -1052,10 +1052,12 @@ fn history_retire_prompt(prompt: &[u8], syntax: ModelSyntax) -> &[u8] {
     // Their separate history checkpoints were captured before that suffix;
     // shortening a retired key would describe different native KV.
     //
-    // Ling writes the same bytes but replays them: Bailing V3 re-emits the
-    // pair before every history assistant turn, so a stripped key is never
-    // the next render's prefix and every exact and disk hit would miss.
-    if matches!(syntax, ModelSyntax::Motif3 | ModelSyntax::Ling3Vl) {
+    // Ling and MiMo replay the pair before history assistant content. A
+    // stripped key cannot prefix the next rendered turn or restore disk KV.
+    if matches!(
+        syntax,
+        ModelSyntax::Motif3 | ModelSyntax::Ling3Vl | ModelSyntax::Mimo2
+    ) {
         return prompt;
     }
     prompt.strip_suffix(b"<think></think>").unwrap_or(prompt)
@@ -4300,6 +4302,18 @@ mod bank_tests {
         .unwrap();
         assert!(next.starts_with(&key));
         assert!(!key.ends_with(b"<|im_end|>\n"));
+    }
+
+    #[test]
+    fn mimo_disk_key_keeps_think() {
+        let prompt = b"<|im_start|>assistant\n<think></think>";
+        let key = bank_retire_key(prompt, &[], &[0, 1], false, ModelSyntax::Mimo2, |token| {
+            [b"4".as_slice(), b"<|im_end|>".as_slice()][token as usize].to_vec()
+        })
+        .unwrap();
+
+        // MiMo re-emits the empty pair before replayed assistant content.
+        assert_eq!(key.0, b"<|im_start|>assistant\n<think></think>4");
     }
 
     #[test]

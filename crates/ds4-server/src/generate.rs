@@ -1190,6 +1190,7 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
 }
 
 pub fn stream_req_from_parsed(parsed: &ParsedRequest, model_id: i32) -> StreamReq {
+    let syntax = syntax_for_model_id(model_id);
     StreamReq {
         kind: parsed.kind,
         api: parsed.api,
@@ -1199,7 +1200,8 @@ pub fn stream_req_from_parsed(parsed: &ParsedRequest, model_id: i32) -> StreamRe
         stream: parsed.stream,
         stream_include_usage: parsed.stream_include_usage,
         reasoning_summary_emit: parsed.reasoning_summary_emit,
-        chat_format: chat_format_for_syntax(syntax_for_model_id(model_id)),
+        chat_format: chat_format_for_syntax(syntax),
+        syntax,
         cache_read_tokens: 0,
         cache_write_tokens: 0,
         timings: ReqTimings::default(),
@@ -1356,11 +1358,15 @@ pub(crate) fn prepare_required_prefixes(
     syntax: ModelSyntax,
     tokenize: impl Fn(&[u8]) -> Result<Vec<i32>, GenerateError>,
 ) -> Result<(), GenerateError> {
-    if parsed.tool_choice != ToolChoice::Required && !parsed.has_tool_results {
+    let mimo_auto = syntax == ModelSyntax::Mimo2
+        && parsed.has_tools
+        && parsed.tool_choice == ToolChoice::Auto
+        && !think_mode_enabled(parsed.think_mode);
+    if parsed.tool_choice != ToolChoice::Required && !parsed.has_tool_results && !mimo_auto {
         return Ok(());
     }
     let format = chat_format_for_syntax(syntax);
-    if parsed.required_think_end_prefix.is_empty() {
+    if !mimo_auto && parsed.required_think_end_prefix.is_empty() {
         let toks = tokenize(think_end(format).as_bytes())?;
         if toks.is_empty() {
             return Err(GenerateError::Engine(
@@ -1369,8 +1375,18 @@ pub(crate) fn prepare_required_prefixes(
         }
         parsed.required_think_end_prefix = toks;
     }
-    if parsed.tool_choice == ToolChoice::Required && parsed.required_tool_prefix.is_empty() {
-        let toks = tokenize(tool_start_marker(syntax).as_bytes())?;
+    if (parsed.tool_choice == ToolChoice::Required || mimo_auto)
+        && parsed.required_tool_prefix.is_empty()
+    {
+        // MiMo can continue a bare tool marker as prose without thinking.
+        let prefix = if mimo_auto {
+            b"<function=".as_slice()
+        } else if syntax == ModelSyntax::Mimo2 && !think_mode_enabled(parsed.think_mode) {
+            b"<tool_call><function=".as_slice()
+        } else {
+            tool_start_marker(syntax).as_bytes()
+        };
+        let toks = tokenize(prefix)?;
         if toks.is_empty() {
             return Err(GenerateError::Engine(
                 "failed to tokenize required tool control prefix".into(),
@@ -1406,6 +1422,42 @@ mod required_prefix_tests {
         })
         .unwrap();
         assert_eq!(parsed.required_tool_prefix, [11]);
+    }
+
+    #[test]
+    fn mimo_no_think_required_starts_function() {
+        let mut parsed = parse_chat_request(
+            &ParseEnv::default(),
+            r#"{"messages":[{"role":"user","content":"weather"}],"reasoning_effort":"none","tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}],"tool_choice":"required"}"#,
+        )
+        .unwrap();
+        prepare_required_prefixes(&mut parsed, ModelSyntax::Mimo2, |literal| {
+            Ok(if literal == b"<tool_call><function=" {
+                vec![17]
+            } else {
+                vec![99]
+            })
+        })
+        .unwrap();
+        assert_eq!(parsed.required_tool_prefix, [17]);
+    }
+
+    #[test]
+    fn mimo_no_think_auto_prepares_function() {
+        let mut parsed = parse_chat_request(
+            &ParseEnv::default(),
+            r#"{"messages":[{"role":"user","content":"weather"}],"reasoning_effort":"none","tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]}"#,
+        )
+        .unwrap();
+        prepare_required_prefixes(&mut parsed, ModelSyntax::Mimo2, |literal| {
+            Ok(if literal == b"<function=" {
+                vec![17]
+            } else {
+                vec![99]
+            })
+        })
+        .unwrap();
+        assert_eq!(parsed.required_tool_prefix, [17]);
     }
 }
 
