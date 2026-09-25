@@ -204,6 +204,46 @@ fn parse_qwen_native_tool_call() {
 }
 
 #[test]
+fn parse_mimo_tool_without_think() {
+    let generated = b"<tool_call><function=get_weather><parameter=city>Seoul</parameter></function></tool_call>";
+    let orders = [ToolSchemaOrder {
+        name: "get_weather".into(),
+        prop: vec!["city".into()],
+        prop_type: vec!["string".into()],
+        ..Default::default()
+    }];
+    let p = parse_generated_message(
+        ModelSyntax::Mimo2,
+        generated,
+        true,
+        ChatFormat::Qwen4Exp,
+        &orders,
+    );
+    assert!(p.ok);
+    assert!(p.content.is_empty());
+    assert!(p.reasoning.is_empty());
+    assert_eq!(p.calls.len(), 1);
+    assert_eq!(p.calls[0].name, "get_weather");
+    assert_eq!(p.calls[0].arguments, r#"{"city": "Seoul"}"#);
+}
+
+#[test]
+fn parse_mimo_unclosed_think_stays_reasoning() {
+    let generated = b"<think>Need weather. <tool_call><function=get_weather><parameter=city>Seoul</parameter></function></tool_call>";
+    let p = parse_generated_message(
+        ModelSyntax::Mimo2,
+        generated,
+        true,
+        ChatFormat::Qwen4Exp,
+        &[],
+    );
+    assert!(p.ok);
+    assert!(p.calls.is_empty());
+    assert!(p.content.is_empty());
+    assert_eq!(p.reasoning, &generated[b"<think>".len()..]);
+}
+
+#[test]
 fn parse_glm53_native_tool_call() {
     let generated = b"<think>need bash</think>OK\n\n\
         <tool_call>bash\

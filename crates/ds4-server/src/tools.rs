@@ -1011,13 +1011,16 @@ fn parse_qwen_generated(
     if require_thinking_closed {
         match find_last_substr(text, b"</think>") {
             None => {
-                let body = text.strip_prefix(b"<think>").unwrap_or(text);
-                return Some(ParsedGenerated {
-                    content: Vec::new(),
-                    reasoning: body.to_vec(),
-                    ok: true,
-                    ..Default::default()
-                });
+                // The template may start a tool call without opening thought.
+                if !text.starts_with(QWEN_TOOL_CALL_START.as_bytes()) {
+                    let body = text.strip_prefix(b"<think>").unwrap_or(text);
+                    return Some(ParsedGenerated {
+                        content: Vec::new(),
+                        reasoning: body.to_vec(),
+                        ok: true,
+                        ..Default::default()
+                    });
+                }
             }
             Some(i) => tool_search = i + "</think>".len(),
         }

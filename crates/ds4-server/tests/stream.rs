@@ -1,10 +1,11 @@
 //! C↔Rust four-surface stream projectors (tape oracle, no model).
 
 use ds4_server::{
-    anthropic_final_response, final_response, project_anthropic_thinking,
-    project_openai_chat_thinking, project_openai_chat_utf8, project_openai_completion,
-    project_responses_thinking, responses_final_response, utf8_stream_safe_len, ReqKind, StreamReq,
-    ThinkBlock, CREATED_TEST, TEST_MSG_ID, TEST_RESP_ID, TEST_RS_ID,
+    anthropic_final_response, final_response, openai_sse_finish_live, openai_sse_stream_update,
+    openai_stream_start, project_anthropic_thinking, project_openai_chat_thinking,
+    project_openai_chat_utf8, project_openai_completion, project_responses_thinking,
+    responses_final_response, utf8_stream_safe_len, ChatFormat, ReqKind, StreamReq, ThinkBlock,
+    ThinkMode, ToolCall, Writer, CREATED_TEST, TEST_MSG_ID, TEST_RESP_ID, TEST_RS_ID,
 };
 
 use std::path::PathBuf;
@@ -190,6 +191,48 @@ fn openai_chat_thinking_tape_matches_c() {
     assert!(reason < content);
     assert!(out.contains("\"finish_reason\":\"stop\""));
     assert!(!out.contains("</think>"));
+}
+
+#[test]
+fn openai_tool_before_think_streams_as_call() {
+    let raw = b"<tool_call><function=get_weather><parameter=city>Seoul</parameter></function></tool_call>";
+    let r = StreamReq {
+        think_mode: ThinkMode::High,
+        has_tools: true,
+        chat_format: ChatFormat::Qwen4Exp,
+        ..Default::default()
+    };
+    let mut w = Writer::new(CREATED_TEST);
+    let mut st = openai_stream_start(&r);
+    for n in 1..=raw.len() {
+        assert!(openai_sse_stream_update(
+            &mut w,
+            &r,
+            "chatcmpl_mimo",
+            &mut st,
+            &raw[..n],
+            false,
+        ));
+    }
+    let calls = [ToolCall {
+        name: "get_weather".into(),
+        arguments: r#"{"city":"Seoul"}"#.into(),
+        ..Default::default()
+    }];
+    assert!(openai_sse_finish_live(
+        &mut w,
+        &r,
+        "chatcmpl_mimo",
+        &mut st,
+        raw,
+        "tool_calls",
+        100,
+        18,
+        &calls,
+    ));
+    let out = String::from_utf8(w.out).unwrap();
+    assert!(out.contains("\"tool_calls\""), "{out}");
+    assert!(!out.contains("reasoning_content"), "{out}");
 }
 
 #[test]

@@ -7,6 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::error::{cors_headers, http_response_bytes, wire_stream_error_bytes};
 use crate::json::{json_args_parse, json_escape_bytes};
 use crate::parse::{ToolCall, ToolSchemaOrder};
+use crate::render::QWEN_TOOL_CALL_START;
 use crate::route::{think_mode_enabled, Api, ReqKind, ThinkMode};
 use crate::tool_stream::{DsmlToolStream, ToolSink};
 use crate::tools::find_tool_start;
@@ -34,6 +35,27 @@ pub enum ChatFormat {
     Qwen4Exp,
     K2Horizon,
     Inkling,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ToolHead {
+    Wait,
+    Present,
+    Absent,
+}
+
+fn qwen_tool_head(r: &StreamReq, raw: &[u8], flush: Flush) -> ToolHead {
+    if !r.has_tools || r.chat_format != ChatFormat::Qwen4Exp {
+        return ToolHead::Absent;
+    }
+    let marker = QWEN_TOOL_CALL_START.as_bytes();
+    if raw.starts_with(marker) {
+        return ToolHead::Present;
+    }
+    if flush == Flush::More && marker.starts_with(raw) {
+        return ToolHead::Wait;
+    }
+    ToolHead::Absent
 }
 
 pub fn think_start(fmt: ChatFormat) -> &'static str {
@@ -747,6 +769,13 @@ pub fn openai_sse_stream_update(
         }
         return true;
     }
+    if st.mode == OpenaiMode::Thinking && !st.checked_think_prefix {
+        match qwen_tool_head(r, raw, if final_ { Flush::Final } else { Flush::More }) {
+            ToolHead::Wait => return true,
+            ToolHead::Present => st.mode = OpenaiMode::Text,
+            ToolHead::Absent => {}
+        }
+    }
     if st.mode == OpenaiMode::Thinking {
         if !st.checked_think_prefix {
             let open = think_start(r.chat_format).as_bytes();
@@ -1038,6 +1067,13 @@ pub fn anthropic_sse_stream_update(
             return false;
         }
         return true;
+    }
+    if st.mode == AnthMode::Thinking && !st.checked_think_prefix {
+        match qwen_tool_head(r, raw, if final_ { Flush::Final } else { Flush::More }) {
+            ToolHead::Wait => return true,
+            ToolHead::Present => st.mode = AnthMode::Text,
+            ToolHead::Absent => {}
+        }
     }
     if st.mode == AnthMode::Thinking {
         if !st.checked_think_prefix {
@@ -1872,6 +1908,13 @@ pub fn responses_sse_stream_update(
             }
         }
         return true;
+    }
+    if st.mode == RespMode::Thinking && !st.checked_think_prefix {
+        match qwen_tool_head(r, raw, if final_ { Flush::Final } else { Flush::More }) {
+            ToolHead::Wait => return true,
+            ToolHead::Present => st.mode = RespMode::Text,
+            ToolHead::Absent => {}
+        }
     }
     let emit_reasoning = r.reasoning_summary_emit;
     if st.mode == RespMode::Thinking {
