@@ -4,8 +4,8 @@ use ds4_server::{
     anthropic_final_response, final_response, openai_sse_finish_live, openai_sse_stream_update,
     openai_stream_start, project_anthropic_thinking, project_openai_chat_thinking,
     project_openai_chat_utf8, project_openai_completion, project_responses_thinking,
-    responses_final_response, utf8_stream_safe_len, ChatFormat, ReqKind, StreamReq, ThinkBlock,
-    ThinkMode, ToolCall, Writer, CREATED_TEST, TEST_MSG_ID, TEST_RESP_ID, TEST_RS_ID,
+    responses_final_response, utf8_stream_safe_len, ChatFormat, ModelSyntax, ReqKind, StreamReq,
+    ThinkBlock, ThinkMode, ToolCall, Writer, CREATED_TEST, TEST_MSG_ID, TEST_RESP_ID, TEST_RS_ID,
 };
 
 use std::path::PathBuf;
@@ -200,6 +200,7 @@ fn openai_tool_before_think_streams_as_call() {
         think_mode: ThinkMode::High,
         has_tools: true,
         chat_format: ChatFormat::Qwen4Exp,
+        syntax: ModelSyntax::Mimo2,
         ..Default::default()
     };
     let mut w = Writer::new(CREATED_TEST);
@@ -233,6 +234,47 @@ fn openai_tool_before_think_streams_as_call() {
     let out = String::from_utf8(w.out).unwrap();
     assert!(out.contains("\"tool_calls\""), "{out}");
     assert!(!out.contains("reasoning_content"), "{out}");
+}
+
+#[test]
+fn qwen_and_step_tool_inside_open_think_stays_reasoning() {
+    let raw = b"<tool_call><function=get_weather><parameter=city>Seoul</parameter></function></tool_call>";
+    for syntax in [ModelSyntax::Qwen4Exp, ModelSyntax::Step37] {
+        let r = StreamReq {
+            model: format!("{syntax:?}"),
+            think_mode: ThinkMode::High,
+            has_tools: true,
+            chat_format: ChatFormat::Qwen4Exp,
+            syntax,
+            ..Default::default()
+        };
+        let mut w = Writer::new(CREATED_TEST);
+        let mut st = openai_stream_start(&r);
+        for n in 1..=raw.len() {
+            assert!(openai_sse_stream_update(
+                &mut w,
+                &r,
+                "chatcmpl_qwen",
+                &mut st,
+                &raw[..n],
+                false,
+            ));
+        }
+        assert!(openai_sse_finish_live(
+            &mut w,
+            &r,
+            "chatcmpl_qwen",
+            &mut st,
+            raw,
+            "stop",
+            100,
+            18,
+            &[],
+        ));
+        let out = String::from_utf8(w.out).unwrap();
+        assert!(out.contains("reasoning_content"), "{out}");
+        assert!(!out.contains("tool_calls"), "{out}");
+    }
 }
 
 #[test]

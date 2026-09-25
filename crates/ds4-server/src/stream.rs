@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::error::{cors_headers, http_response_bytes, wire_stream_error_bytes};
 use crate::json::{json_args_parse, json_escape_bytes};
 use crate::parse::{ToolCall, ToolSchemaOrder};
-use crate::render::QWEN_TOOL_CALL_START;
+use crate::render::{ModelSyntax, QWEN_TOOL_CALL_START};
 use crate::route::{think_mode_enabled, Api, ReqKind, ThinkMode};
 use crate::tool_stream::{DsmlToolStream, ToolSink};
 use crate::tools::find_tool_start;
@@ -45,7 +45,7 @@ enum ToolHead {
 }
 
 fn qwen_tool_head(r: &StreamReq, raw: &[u8], flush: Flush) -> ToolHead {
-    if !r.has_tools || r.chat_format != ChatFormat::Qwen4Exp {
+    if !r.has_tools || r.syntax != ModelSyntax::Mimo2 {
         return ToolHead::Absent;
     }
     let marker = QWEN_TOOL_CALL_START.as_bytes();
@@ -391,6 +391,7 @@ pub struct StreamReq {
     pub stream_include_usage: bool,
     pub reasoning_summary_emit: bool,
     pub chat_format: ChatFormat,
+    pub syntax: ModelSyntax,
     pub cache_read_tokens: i32,
     pub cache_write_tokens: i32,
     pub timings: ReqTimings,
@@ -409,6 +410,7 @@ impl Default for StreamReq {
             stream_include_usage: false,
             reasoning_summary_emit: false,
             chat_format: ChatFormat::DeepSeek,
+            syntax: ModelSyntax::DeepSeek,
             cache_read_tokens: 0,
             cache_write_tokens: 0,
             timings: ReqTimings::default(),

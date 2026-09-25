@@ -1003,6 +1003,7 @@ fn parse_k2_generated(
 }
 
 fn parse_qwen_generated(
+    syntax: ModelSyntax,
     text: &[u8],
     require_thinking_closed: bool,
     orders: &[ToolSchemaOrder],
@@ -1012,7 +1013,9 @@ fn parse_qwen_generated(
         match find_last_substr(text, b"</think>") {
             None => {
                 // The template may start a tool call without opening thought.
-                if !text.starts_with(QWEN_TOOL_CALL_START.as_bytes()) {
+                if syntax != ModelSyntax::Mimo2
+                    || !text.starts_with(QWEN_TOOL_CALL_START.as_bytes())
+                {
                     let body = text.strip_prefix(b"<think>").unwrap_or(text);
                     return Some(ParsedGenerated {
                         content: Vec::new(),
@@ -1288,7 +1291,7 @@ pub fn parse_generated_message(
         ModelSyntax::SolarOpen2 => parse_solar_generated(text, require_thinking_closed, orders),
         // Step shares this output XML, but renders input through its own Jinja.
         ModelSyntax::Qwen4Exp | ModelSyntax::Step37 | ModelSyntax::Mimo2 => {
-            parse_qwen_generated(text, require_thinking_closed, orders)
+            parse_qwen_generated(syntax, text, require_thinking_closed, orders)
         }
         ModelSyntax::K2Horizon => parse_k2_generated(text, require_thinking_closed, orders),
         // Ling emits GLM's tool XML, not Qwen's JSON envelope.
@@ -1301,7 +1304,7 @@ pub fn parse_generated_message(
             if format == ChatFormat::SolarOpen2 {
                 parse_solar_generated(text, require_thinking_closed, orders)
             } else if format == ChatFormat::Qwen4Exp {
-                parse_qwen_generated(text, require_thinking_closed, orders)
+                parse_qwen_generated(syntax, text, require_thinking_closed, orders)
             } else if format == ChatFormat::K2Horizon {
                 parse_k2_generated(text, require_thinking_closed, orders)
             } else {

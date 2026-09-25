@@ -244,6 +244,18 @@ fn parse_mimo_unclosed_think_stays_reasoning() {
 }
 
 #[test]
+fn qwen_and_step_tool_inside_open_think_stays_reasoning() {
+    let generated = b"<tool_call><function=get_weather><parameter=city>Seoul</parameter></function></tool_call>";
+    for syntax in [ModelSyntax::Qwen4Exp, ModelSyntax::Step37] {
+        let p = parse_generated_message(syntax, generated, true, ChatFormat::Qwen4Exp, &[]);
+        assert!(p.ok);
+        assert!(p.calls.is_empty(), "{syntax:?}");
+        assert!(p.content.is_empty(), "{syntax:?}");
+        assert_eq!(p.reasoning, generated, "{syntax:?}");
+    }
+}
+
+#[test]
 fn parse_glm53_native_tool_call() {
     let generated = b"<think>need bash</think>OK\n\n\
         <tool_call>bash\
