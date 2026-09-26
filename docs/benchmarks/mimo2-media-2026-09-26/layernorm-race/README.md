@@ -1,8 +1,8 @@
 # MiMo LayerNorm shared-memory race
 
-**Confirmed correctness defect; corrected model baseline verified.** Audio
-optimization qualification remains pending fresh profiling and A/B.
-This report makes no performance or audio-candidate adoption claim.
+**Confirmed correctness defect; corrected model baseline verified.** Subsequent
+[audio profiling and A/B](../audio-score-cache/README.md) qualified the audio
+optimization on this repaired baseline. This report covers the repair only.
 
 ## Failure and cause
 
@@ -54,9 +54,9 @@ The original test source and its failing/passing receipts are preserved.
 
 Independent review found no blocker in the uniform barrier placement or
 the focused test. [Review and limits](review.json). The kernel proof does
-not establish that this defect caused every prior full-model difference;
-model repeatability and the audio candidate must be checked again on the
-corrected baseline.
+not establish that this defect caused every prior full-model difference.
+Model repeatability is checked below; the separate audio report records
+the candidate's qualification on the corrected baseline.
 
 Source: [helper](../../../../cuda/mimo2_media.cuh),
 [regression test and run commands](../../../../tests/mimo2_layernorm.cu).

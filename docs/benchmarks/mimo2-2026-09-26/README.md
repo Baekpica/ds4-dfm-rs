@@ -9,8 +9,9 @@ GPU clock range stays 300–2200 MHz; busy clocks are recorded per round.
 
 Three rounds are accepted below. Three additional rounds were completed
 and rejected; the retained text inference code remains round 3. The
-[media campaign](../mimo2-media-2026-09-26/README.md) continues with image
-input, followed by audio and video. Image round 1 is accepted.
+[media campaign](../mimo2-media-2026-09-26/README.md) completed with two
+image rounds, one audio round and one video round accepted, plus a separate
+LayerNorm correctness repair.
 
 ## Routed sum and residual fusion
 
