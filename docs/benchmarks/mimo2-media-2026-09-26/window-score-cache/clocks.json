@@ -1,0 +1,22 @@
+{
+  "source": "isolated-clocks.jsonl",
+  "user_clock_range_mhz": [
+    300,
+    2200
+  ],
+  "sample_count": 7,
+  "sm_range_mhz": [
+    305,
+    2190
+  ],
+  "busy_threshold_pct": 50,
+  "busy_sample_count": 3,
+  "busy_sm_range_mhz": [
+    2190,
+    2190
+  ],
+  "ncu_observed_sm_ghz": {
+    "baseline": 2.196616,
+    "candidate": 2.196717
+  }
+}

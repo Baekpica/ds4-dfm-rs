@@ -1,0 +1,19 @@
+{
+  "status": "accepted",
+  "baseline_commit": "22cc4e64",
+  "retained_baseline": "R1 full-attention score cache plus three accepted text rounds.",
+  "candidate": "Bounded vision window score cache. Source/build receipt and binary hashes are in candidate-source.json; baseline reuse and body hash are in baseline-source.json.",
+  "completed": [
+    "Fresh whole image profile",
+    "Full baseline and candidate NCU captures",
+    "Three fresh isolated timing pairs",
+    "Pilot full-output SHA256 equality",
+    "Focused actual-wrapper window parity and retained R1 full-attention regression tests",
+    "Nine fresh full-model image proofs: all 152576 finite logits, 64 generated tokens and input bytes match exactly across original/OFF/ON for screen/photo/document.",
+    "Three rotated original/OFF/ON HTTP pairs: one warm and one measured request per fresh worker; all nine guards and fault checks pass."
+  ],
+  "pending": [],
+  "decision": "Adopt R2 window score cache. Median wall improves 31.01% and TTFT 47.47% versus the retained R1 original; repeated gains also hold versus same-build OFF. Shared memory and register costs are justified by the measured gain, with no persistent allocation or repeatable decode regression.",
+  "http_caveat": "17 of 18 HTTP token/content signatures match. One measured OFF response varies in wording at zero-based token index 12. All original and ON responses match; see http-proofs.json for the reviewed control variation.",
+  "HTTP_review": "The raw runner result retains its requires_review flag because its exactness check is false. Manual review is complete and recorded in http-proofs.json."
+}

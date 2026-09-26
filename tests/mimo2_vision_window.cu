@@ -1,4 +1,4 @@
-// Actual wrapper/kernel parity with bounded full-attention and fallback cases.
+// Actual window-64 wrapper parity, sink semantics, and unsupported layouts.
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <algorithm>
@@ -29,8 +29,9 @@ struct ds4_gpu_tensor { void *ptr; uint64_t bytes; int owner; int memc; };
 namespace {
 constexpr size_t GUARD = 64;
 constexpr uint32_t SENTINEL = 0x7fc0abcd;
-constexpr const char *SWITCH = "DS4_MIMO2_VISION_ATTN";
-enum class Input { Random, Flat, Sharp, Cancellation, Mixed, InvalidMax, InvalidSum };
+constexpr const char *SWITCH = "DS4_MIMO2_VISION_WINDOW";
+enum class Input { Random, Flat, Sharp, Cancellation, Mixed, InvalidMax, InvalidSum, Rows, Dims };
+enum class Sink { Normal, Large, Small, Nonfinite };
 enum class Path { Scalar, Candidate };
 enum class Storage { Shared, Separate };
 
@@ -38,7 +39,7 @@ struct Shape {
     int n;
     int qh = 32, kv = 8, hd = 64, stride = 3072;
     int qo = 0, ko = 2048, vo = 2560;
-    int window = -1, causal = 0, group = 0, sink = 0;
+    int window = 64, causal = 0, group = 0, sink = 1;
 };
 
 void check(cudaError_t rc) {
@@ -98,6 +99,19 @@ std::vector<float> input(Shape s, Input mode) {
     for (size_t i = 0; i < value.size(); ++i) {
         value[i] = ((int)(mix((uint32_t)i ^ 0x6287c159u) & 0xffffu) - 32768) / 32768.f;
     }
+    // Permute complete rows or the dimensions within every Q/K/V head. This
+    // exercises layout indices independently of the sequential input seed.
+    if (mode == Input::Rows || mode == Input::Dims) {
+        const auto original = value;
+        for (int row = 0; row < s.n; ++row) {
+            for (int column = 0; column < s.stride; ++column) {
+                const int src_row = mode == Input::Rows ? s.n - row - 1 : row;
+                const int src_col = mode == Input::Dims ?
+                    column / s.hd * s.hd + (17 * (column % s.hd) + 5) % s.hd : column;
+                value[(size_t)row * s.stride + column] = original[(size_t)src_row * s.stride + src_col];
+            }
+        }
+    }
     for (int row = 0; row < s.n; ++row) {
         float *base = value.data() + (size_t)row * s.stride;
         for (int d = 0; d < s.qh * s.hd; ++d) {
@@ -140,7 +154,7 @@ void launch(Shape s, Buffer &out, Buffer &q, Buffer &k, Buffer &v,
     launch_label = nullptr;
     require(call(s, &o, &qt, &kt, &vt, sink) == 1, "wrapper failed");
     check(cudaDeviceSynchronize());
-    const char *label = want == Path::Candidate ? "MiMo vision attention" : "MiMo media attention";
+    const char *label = want == Path::Candidate ? "MiMo vision window" : "MiMo media attention";
     require(stream_calls == 1 && launch_label && !std::strcmp(launch_label, label), "unexpected wrapper path");
 }
 
@@ -161,15 +175,18 @@ void exact(const std::vector<float> &a, const std::vector<float> &b) {
     std::exit(3);
 }
 
-// A double oracle covers the small finite cases independently of either kernel.
-void oracle(Shape s, const std::vector<float> &x, const std::vector<float> &got) {
+// A double oracle checks the finite window/sink formula independently.
+void oracle(Shape s, const std::vector<float> &x, const std::vector<float> &sinks,
+            const std::vector<float> &got) {
     double max_error = 0.;
     std::vector<double> weight(s.n);
     for (int row = 0; row < s.n; ++row) {
+        const int first = std::max(0, row - s.window);
+        const int end = std::min(s.n, row + s.window + 1);
         for (int head = 0; head < s.qh; ++head) {
-            double largest = -INFINITY, sum = 0.;
+            double largest = sinks[head], sum = 0.;
             const int kv = head / (s.qh / s.kv);
-            for (int key = 0; key < s.n; ++key) {
+            for (int key = first; key < end; ++key) {
                 double dot = 0.;
                 for (int d = 0; d < s.hd; ++d) {
                     dot += (double)x[(size_t)row * s.stride + s.qo + head * s.hd + d] *
@@ -178,10 +195,14 @@ void oracle(Shape s, const std::vector<float> &x, const std::vector<float> &got)
                 weight[key] = dot / std::sqrt((double)s.hd);
                 largest = std::max(largest, weight[key]);
             }
-            for (double &w : weight) { w = std::exp(w - largest); sum += w; }
+            for (int key = first; key < end; ++key) {
+                weight[key] = std::exp(weight[key] - largest);
+                sum += weight[key];
+            }
+            sum += std::exp((double)sinks[head] - largest);
             for (int d = 0; d < s.hd; ++d) {
                 double value = 0.;
-                for (int key = 0; key < s.n; ++key) {
+                for (int key = first; key < end; ++key) {
                     value += weight[key] / sum * x[(size_t)key * s.stride + s.vo + kv * s.hd + d];
                 }
                 const double delta = std::fabs(value - got[((size_t)row * s.qh + head) * s.hd + d]);
@@ -193,13 +214,20 @@ void oracle(Shape s, const std::vector<float> &x, const std::vector<float> &got)
     require(max_error <= 2e-5, "small-case double oracle failed");
 }
 
-void run(Shape s, Input mode, Storage storage, Path path, const char *name) {
+void run(Shape s, Input mode, Storage storage, Path path, Sink sink_mode, const char *name) {
     const auto source = input(s, mode);
     const size_t outputs = (size_t)s.n * s.qh * s.hd;
     Buffer q(source.size()), sink(s.qh), original(outputs), candidate(outputs);
     q.put(source);
     std::vector<float> sinks(s.qh);
-    for (int h = 0; h < s.qh; ++h) { sinks[h] = (h % 7 - 3) / 4.f; }
+    for (int h = 0; h < s.qh; ++h) {
+        sinks[h] = (h % 7 - 3) / 4.f;
+        if (sink_mode == Sink::Large) { sinks[h] = 1000.f + h; }
+        if (sink_mode == Sink::Small) { sinks[h] = -1000.f - h; }
+        if (sink_mode == Sink::Nonfinite) {
+            sinks[h] = h % 3 == 0 ? INFINITY : h % 3 == 1 ? -INFINITY : NAN;
+        }
+    }
     sink.put(sinks);
     Buffer *k = &q, *v = &q;
     if (storage == Storage::Separate) {
@@ -207,25 +235,38 @@ void run(Shape s, Input mode, Storage storage, Path path, const char *name) {
         k->put(source); v->put(source);
     }
     launch(s, original, q, *k, *v, sink, "0", Path::Scalar);
-    launch(s, candidate, q, *k, *v, sink, s.n == 33 ? nullptr : "1", path);
-    const auto a = original.get(), b = candidate.get();
-    exact(a, b);
-    for (float value : b) {
-        if (mode == Input::InvalidMax) { require(std::isnan(value), "invalid max must produce NaN"); }
-        else { require(std::isfinite(value), "finite case produced nonfinite output"); }
-        if (mode == Input::InvalidSum) { require(value == 0.f, "invalid sum must produce zero"); }
+    const auto expected = original.get();
+    for (const char *env : {static_cast<const char *>(nullptr), "1"}) {
+        launch(s, candidate, q, *k, *v, sink, env, path);
+        const auto actual = candidate.get();
+        exact(expected, actual);
+        for (size_t i = 0; i < actual.size(); ++i) {
+            const float value = actual[i];
+            const int head = (i / s.hd) % s.qh;
+            if (mode == Input::InvalidMax || (sink_mode == Sink::Nonfinite && head % 3 == 0)) {
+                require(std::isnan(value), "nonfinite max must produce NaN");
+                continue;
+            }
+            require(std::isfinite(value), "finite case produced nonfinite output");
+            if (mode == Input::InvalidSum || (sink_mode == Sink::Nonfinite && head % 3 == 2)) {
+                require(value == 0.f, "invalid sum must produce zero");
+            }
+            if (sink_mode == Sink::Large) { require(value == 0.f, "dominant sink must suppress finite values"); }
+        }
+        candidate.guards();
     }
     exact(source, q.get());
     exact(sinks, sink.get());
-    for (Buffer *buffer : {&q, k, v, &sink, &original, &candidate}) { buffer->guards(); }
+    for (Buffer *buffer : {&q, k, v, &sink, &original}) { buffer->guards(); }
     if (storage == Storage::Separate) {
         exact(source, k->get()); exact(source, v->get());
         delete k; delete v;
     }
-    if (path == Path::Candidate && s.n <= 33 && mode != Input::InvalidMax && mode != Input::InvalidSum) {
-        oracle(s, source, b);
+    if (path == Path::Candidate && s.n <= 65 && mode != Input::InvalidMax &&
+        mode != Input::InvalidSum && sink_mode != Sink::Nonfinite) {
+        oracle(s, source, sinks, expected);
     }
-    std::printf("case=%s rows=%d path=%s byte_exact=true guards=true PASS\n",
+    std::printf("case=%s rows=%d path=%s off_default_on_exact=true guards=true PASS\n",
                 name, s.n, path == Path::Candidate ? "candidate" : "fallback");
     std::fflush(stdout);
 }
@@ -252,31 +293,38 @@ void refusals() {
 
 int main() {
     refusals();
-    for (int n : {1, 31, 32, 33, 127, 128, 129, 1024, 3072, 6144, 8192}) {
-        run(Shape{n}, Input::Random, Storage::Shared, Path::Candidate, "random");
+    for (int n : {1, 31, 32, 33, 63, 64, 65, 127, 128, 129, 130, 3072, 6144, 8192}) {
+        run(Shape{n}, Input::Random, Storage::Shared, Path::Candidate, Sink::Normal, "window-tail");
     }
     for (Input mode : {Input::Flat, Input::Sharp, Input::Cancellation, Input::Mixed,
-                       Input::InvalidMax, Input::InvalidSum}) {
-        run(Shape{33}, mode, Storage::Shared, Path::Candidate, "numeric-boundary");
+                       Input::InvalidMax, Input::InvalidSum, Input::Rows, Input::Dims}) {
+        run(Shape{33}, mode, Storage::Shared, Path::Candidate, Sink::Normal, "numeric-layout");
     }
-    // Window 32 remains outside the dedicated window-64 path.
-    Shape s{129}; s.window = 32; s.sink = 1;
-    run(s, Input::Random, Storage::Shared, Path::Scalar, "window-sink");
-    s = Shape{33}; s.sink = 1;
-    run(s, Input::Random, Storage::Shared, Path::Scalar, "full-sink");
+    for (Sink sink : {Sink::Large, Sink::Small, Sink::Nonfinite}) {
+        run(Shape{65}, Input::Random, Storage::Shared, Path::Candidate, sink, "sink-boundary");
+    }
+    for (Input mode : {Input::Rows, Input::Dims}) {
+        run(Shape{130}, mode, Storage::Shared, Path::Candidate, Sink::Normal, "window-permutation");
+    }
+    Shape s{33}; s.window = 32;
+    run(s, Input::Random, Storage::Shared, Path::Scalar, Sink::Normal, "window32");
+    s = Shape{33}; s.window = -1;
+    run(s, Input::Random, Storage::Shared, Path::Scalar, Sink::Normal, "full-with-sink");
+    s = Shape{33}; s.sink = 0;
+    run(s, Input::Random, Storage::Shared, Path::Scalar, Sink::Normal, "window-no-sink");
     s = Shape{33}; s.causal = 1;
-    run(s, Input::Random, Storage::Shared, Path::Scalar, "causal");
+    run(s, Input::Random, Storage::Shared, Path::Scalar, Sink::Normal, "causal");
     s = Shape{33}; s.group = 4;
-    run(s, Input::Random, Storage::Shared, Path::Scalar, "group");
+    run(s, Input::Random, Storage::Shared, Path::Scalar, Sink::Normal, "group");
     s = Shape{33}; s.qh = 16;
-    run(s, Input::Random, Storage::Shared, Path::Scalar, "heads");
+    run(s, Input::Random, Storage::Shared, Path::Scalar, Sink::Normal, "heads");
     s = Shape{33}; s.hd = 32;
-    run(s, Input::Random, Storage::Shared, Path::Scalar, "head-dimension");
+    run(s, Input::Random, Storage::Shared, Path::Scalar, Sink::Normal, "head-dimension");
     s = Shape{33}; s.stride += 16;
-    run(s, Input::Random, Storage::Shared, Path::Scalar, "stride");
+    run(s, Input::Random, Storage::Shared, Path::Scalar, Sink::Normal, "stride");
     s = Shape{33}; s.qo = 8;
-    run(s, Input::Random, Storage::Shared, Path::Scalar, "offset");
-    run(Shape{33}, Input::Random, Storage::Separate, Path::Scalar, "separate-qkv");
+    run(s, Input::Random, Storage::Shared, Path::Scalar, Sink::Normal, "offset");
+    run(Shape{33}, Input::Random, Storage::Separate, Path::Scalar, Sink::Normal, "separate-qkv");
     unsetenv(SWITCH);
     return 0;
 }

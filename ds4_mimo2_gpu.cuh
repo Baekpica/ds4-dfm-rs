@@ -356,6 +356,18 @@ extern "C" int ds4_gpu_mimo2_attn(
             (float *)out->ptr, (const float *)q->ptr, (int)n);
         return cuda_ok(cudaGetLastError(), "MiMo vision attention");
     }
+    const char *vision_window = getenv("DS4_MIMO2_VISION_WINDOW");
+    if (!(vision_window && strcmp(vision_window, "0") == 0) && n <= M2V_ATTN_MAX &&
+        q_heads == M2V_ATTN_HEADS && kv_heads == M2V_ATTN_KV && hd == M2V_ATTN_HD &&
+        q_stride == M2V_ATTN_QKV && k_stride == M2V_ATTN_QKV && v_stride == M2V_ATTN_QKV &&
+        q_off == 0 && k_off == M2V_ATTN_Q && v_off == M2V_ATTN_Q + M2V_ATTN_KVW &&
+        window == M2V_WINDOW && have_sink && !causal && !group &&
+        q->ptr && out->ptr && q->ptr == k->ptr && q->ptr == v->ptr && out->ptr != q->ptr) {
+        const size_t shared = (M2V_WINDOW_KEYS + M2V_ATTN_HD + M2V_ATTN_SCALARS) * sizeof(float);
+        mimo2_vision_window<<<(unsigned)count, M2V_ATTN_THREADS, shared, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, sinks, (int)n);
+        return cuda_ok(cudaGetLastError(), "MiMo vision window");
+    }
     mimo2_attn<<<(unsigned)((count + 255) / 256), 256, 0, ds4_current_stream()>>>(
         (float *)out->ptr, (const float *)q->ptr, (const float *)k->ptr, (const float *)v->ptr, sinks,
         (int)n, (int)q_heads, (int)kv_heads, (int)hd,

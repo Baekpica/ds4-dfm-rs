@@ -30,7 +30,29 @@ tensor allocation. The optional normalized-weight refinement showed no pilot
 gain and was not retained. The main score-cache optimization is accepted.
 [Full evidence, numerical scope and fallback](attn-score-cache/README.md).
 
-Further image rounds start from this baseline with a fresh whole profile.
-Audio/video rounds follow; this image result does not qualify their latency
-or output quality. Dated evidence is limited to the recorded artifacts,
-serving settings and fixtures.
+## Image round 2: accepted
+
+A fresh whole profile identified window attention: 24 calls took 2.307 s,
+30.59% of request wall time. Bounding valid keys and caching their scores
+reduces isolated latency 96.444→8.360 ms. Three rotated original/OFF/ON HTTP
+pairs on the retained R1 baseline give:
+
+| Metric | R1 original median | ON median | Change |
+|---|---:|---:|---:|
+| TTFT | 4450.7 ms | 2338.1 ms | −47.47% |
+| Request wall | 6805.385 ms | 4695.218 ms | −31.01% |
+| Reported prefill | 180.1 tok/s | 345.9 tok/s | +92.06% |
+| Decode | 26.8 tok/s | 26.9 tok/s | no consistent regression |
+
+Kernel and screen/photo/document model proofs are exact. Seventeen of 18
+HTTP token/content signatures match: one measured OFF response varies in
+wording, while all original and ON responses match. This reviewed control
+variation is documented explicitly. All guards/fault checks pass. The
+candidate uses 780 B shared memory per CTA and four additional registers,
+with no persistent allocation or spills.
+[Full evidence and HTTP caveat](window-score-cache/README.md).
+
+Further rounds start from this retained baseline with a fresh whole profile.
+Audio/video still need their own measured rounds; these image results do
+not qualify their latency or output quality. Dated evidence is limited to
+the recorded artifacts, serving settings and fixtures.

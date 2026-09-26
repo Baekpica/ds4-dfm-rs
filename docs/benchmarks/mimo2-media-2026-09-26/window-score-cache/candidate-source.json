@@ -1,0 +1,32 @@
+{
+  "build_exit_status": 0,
+  "source_base_commit": "22cc4e64",
+  "sha256": {
+    "cuda/mimo2_media.cuh": "efa1904f68b76a8fdb2a8e11644595468bd30c33e6041f5f480dbd7b4dcddd15",
+    "ds4_mimo2_gpu.cuh": "afb53b8162e337bf50f1e10b8cc5483c0eea4b80617c87f157983430a5f09768",
+    "scratch/mimo-media-20260926/ncu-window-r2/probe-candidate.cu": "ab6f8083fe47f9aa1cdef1f624d6fe510db2d3cfd32233adc5339f5f2300c8b7",
+    "scratch/mimo-media-20260926/ncu-window-r2/probe-candidate": "fe9900bd16c6443111818a00e2fdaea271fc3f2cb02b52252878650a330195a3"
+  },
+  "flags": [
+    "-O3",
+    "-g",
+    "-lineinfo",
+    "--use_fast_math",
+    "-std=c++17",
+    "-gencode",
+    "arch=compute_121a,code=sm_121a",
+    "-DDS4_CUDA_HAVE_MXF4=1",
+    "-Xcompiler",
+    "-march=native",
+    "-Xcompiler",
+    "-pthread",
+    "-Xptxas=-v"
+  ],
+  "ptxas": "'_Z19mimo2_vision_windowPfPKfS1_i' for 'sm_121a'\nptxas info    : Function properties for _Z19mimo2_vision_windowPfPKfS1_i\n    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\nptxas info    : Used 44 registers, used 1 barriers\nptxas info    : Compile time = 39.374 ms",
+  "unchanged_bodies": [
+    "mimo2_vision_attn",
+    "mimo2_attn"
+  ],
+  "scope": "Only new bounded vision-window kernel and its dispatch were added. Current full-attention and scalar kernel bodies are byte-identical to commit 22cc4e64.",
+  "gpu_runs_by_preparing_agent": []
+}

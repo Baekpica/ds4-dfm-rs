@@ -1,0 +1,296 @@
+{
+  "scope": "Fresh whole Rust server screen request with adopted R1 full-vision optimization. Measured before commit 22cc4e64 with identical adopted sources. Configuration: --cont-width 0, context 8192, native chunk 4096, MTP off, prefix reuse off, cold first image.",
+  "profile": "whole.nsys-rep",
+  "sqlite": "whole.sqlite",
+  "profile_sha256": "998601eca0c46cf1a24b51972baba8dbbe44ed969da65ac40189ab528811b2cc",
+  "fixture_sha256": {
+    "screen.png": "c11a3a38ba18c8769a0b0785470c089d2fa7287955e033de8cb99b7ae80f67b4"
+  },
+  "http_wall_ms": 7542.464247962926,
+  "server_timings": {
+    "ttft_ms": 5146.6,
+    "prefill_tokens": 794,
+    "prefill_cached_tokens": 0,
+    "prefill_tok_s": 158.5,
+    "decode_tok_s": 26.9,
+    "tok_per_step": 1.0
+  },
+  "capture_kernel_count": 67193,
+  "capture_kernel_sum_ns": 6699442204,
+  "stage_method": "No NVTX ranges. Native source order and the unique 12 MiB projector and first 610304-byte logits D2H copies identify stage boundaries. These are trace intervals, not separately instrumented CPU encoder or server prefill timings.",
+  "stages": [
+    {
+      "name": "vision_patch_to_projector_readback",
+      "start_ns": 207309744,
+      "end_ns": 4061624912,
+      "span_ns": 3854315168,
+      "kernel_sum_ns": 3452824412,
+      "kernel_count": 601,
+      "top_kernels": [
+        {
+          "name": "mimo2_attn",
+          "calls": 24,
+          "duration_ns": 2307322624
+        },
+        {
+          "name": "mimo2_vision_attn",
+          "calls": 4,
+          "duration_ns": 927159872
+        },
+        {
+          "name": "mimo2_patch",
+          "calls": 1,
+          "duration_ns": 63384128
+        },
+        {
+          "name": "Kernel2",
+          "calls": 85,
+          "duration_ns": 44453056
+        },
+        {
+          "name": "mimo2_rope",
+          "calls": 56,
+          "duration_ns": 26630496
+        },
+        {
+          "name": "nvjet_sm121_tss_mma_112x256x64_2_112x32x64_tmaAB_alignCD4_bz_TNNN",
+          "calls": 57,
+          "duration_ns": 20865920
+        },
+        {
+          "name": "f32_to_bf16_kernel",
+          "calls": 142,
+          "duration_ns": 19536540
+        },
+        {
+          "name": "mimo2_swiglu",
+          "calls": 28,
+          "duration_ns": 18976768
+        }
+      ]
+    },
+    {
+      "name": "language_prefill_first_kernel_to_first_logit_readback",
+      "start_ns": 4252970384,
+      "end_ns": 5164930544,
+      "span_ns": 911960160,
+      "kernel_sum_ns": 907126720,
+      "kernel_count": 1248,
+      "top_kernels": [
+        {
+          "name": "gateup_iq2_d2r_pair_kernel",
+          "calls": 47,
+          "duration_ns": 393994752
+        },
+        {
+          "name": "ds4_moe_worklist_mmq_kernel",
+          "calls": 47,
+          "duration_ns": 258281024
+        },
+        {
+          "name": "dense_q8_d2r_kernel",
+          "calls": 50,
+          "duration_ns": 74251360
+        },
+        {
+          "name": "mul_mat_q",
+          "calls": 49,
+          "duration_ns": 42453600
+        },
+        {
+          "name": "mimo2_sum_residual",
+          "calls": 47,
+          "duration_ns": 24657376
+        },
+        {
+          "name": "prefill",
+          "calls": 48,
+          "duration_ns": 24630080
+        },
+        {
+          "name": "mimo2_swiglu_q8",
+          "calls": 47,
+          "duration_ns": 24619392
+        },
+        {
+          "name": "mimo2_split_rope",
+          "calls": 48,
+          "duration_ns": 17757952
+        }
+      ]
+    },
+    {
+      "name": "language_decode_first_kernel_to_last_kernel",
+      "start_ns": 5165285264,
+      "end_ns": 7641850224,
+      "span_ns": 2476564960,
+      "kernel_sum_ns": 2339491072,
+      "kernel_count": 65344,
+      "top_kernels": [
+        {
+          "name": "q8_0_aligned_dense_vec_kernel",
+          "calls": 6400,
+          "duration_ns": 1431282496
+        },
+        {
+          "name": "iq2_xxs_aligned_moe_pair_vec_kernel",
+          "calls": 3008,
+          "duration_ns": 420091744
+        },
+        {
+          "name": "mul_mat_vec_q_moe",
+          "calls": 3008,
+          "duration_ns": 266632512
+        },
+        {
+          "name": "mimo2_swa_decode",
+          "calls": 2496,
+          "duration_ns": 59917472
+        },
+        {
+          "name": "matmul_f32_kernel",
+          "calls": 3008,
+          "duration_ns": 58511680
+        },
+        {
+          "name": "exaone_rms_norm_kernel",
+          "calls": 6208,
+          "duration_ns": 23693632
+        },
+        {
+          "name": "mimo2_attn_split",
+          "calls": 576,
+          "duration_ns": 16952352
+        },
+        {
+          "name": "quantize_q8_1",
+          "calls": 12416,
+          "duration_ns": 14841152
+        }
+      ]
+    }
+  ],
+  "vision_to_language_first_kernel_gap_ns": 191345472,
+  "selected_target": {
+    "name": "mimo2_attn",
+    "regime": "Window 64 with 32 sinks; causal and group masks disabled.",
+    "calls": 24,
+    "sum_ns": 2307322624,
+    "median_call_ms": 96.15271999999999,
+    "pct_HTTP_wall": 30.591097924304556,
+    "pct_vision_stage_span": 59.863361542311736,
+    "pct_kernel_sum": 34.4405183855811,
+    "geometry": {
+      "mangled": "_Z10mimo2_attnPfPKfS1_S1_S1_iiiiiiiiiiiii",
+      "gridX": 384,
+      "gridY": 1,
+      "gridZ": 1,
+      "blockX": 256,
+      "blockY": 1,
+      "blockZ": 1,
+      "registersPerThread": 40,
+      "staticSharedMemory": 0,
+      "dynamicSharedMemory": 0,
+      "localMemoryPerThread": 0
+    },
+    "shape": {
+      "n": 3072,
+      "q_heads": 32,
+      "kv_heads": 8,
+      "hd": 64,
+      "strides": [
+        3072,
+        3072,
+        3072
+      ],
+      "offsets": [
+        0,
+        2048,
+        2560
+      ],
+      "q_k_v_same_buffer": true
+    }
+  },
+  "retained_full_attention": {
+    "calls": 4,
+    "sum_ns": 927159872,
+    "kernel": "mimo2_vision_attn"
+  },
+  "top_kernels": [
+    {
+      "name": "mimo2_attn",
+      "calls": 24,
+      "duration_ns": 2307322624
+    },
+    {
+      "name": "q8_0_aligned_dense_vec_kernel",
+      "calls": 6401,
+      "duration_ns": 1433868960
+    },
+    {
+      "name": "mimo2_vision_attn",
+      "calls": 4,
+      "duration_ns": 927159872
+    },
+    {
+      "name": "iq2_xxs_aligned_moe_pair_vec_kernel",
+      "calls": 3008,
+      "duration_ns": 420091744
+    },
+    {
+      "name": "gateup_iq2_d2r_pair_kernel",
+      "calls": 47,
+      "duration_ns": 393994752
+    },
+    {
+      "name": "mul_mat_vec_q_moe",
+      "calls": 3008,
+      "duration_ns": 266632512
+    },
+    {
+      "name": "ds4_moe_worklist_mmq_kernel",
+      "calls": 47,
+      "duration_ns": 258281024
+    },
+    {
+      "name": "dense_q8_d2r_kernel",
+      "calls": 50,
+      "duration_ns": 74251360
+    },
+    {
+      "name": "mimo2_patch",
+      "calls": 1,
+      "duration_ns": 63384128
+    },
+    {
+      "name": "mimo2_swa_decode",
+      "calls": 2496,
+      "duration_ns": 59917472
+    },
+    {
+      "name": "matmul_f32_kernel",
+      "calls": 3008,
+      "duration_ns": 58511680
+    },
+    {
+      "name": "Kernel2",
+      "calls": 85,
+      "duration_ns": 44453056
+    },
+    {
+      "name": "mul_mat_q",
+      "calls": 49,
+      "duration_ns": 42453600
+    },
+    {
+      "name": "exaone_rms_norm_kernel",
+      "calls": 6305,
+      "duration_ns": 30554048
+    },
+    {
+      "name": "mimo2_rope",
+      "calls": 56,
+      "duration_ns": 26630496
+    }
+  ]
+}

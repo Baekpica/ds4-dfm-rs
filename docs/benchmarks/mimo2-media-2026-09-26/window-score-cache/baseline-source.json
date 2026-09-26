@@ -1,0 +1,59 @@
+{
+  "reason": "The fresh R2 trace identifies the unchanged windowed scalar kernel. Reuse the frozen R1 baseline binary instead of recompiling an identical target.",
+  "frozen_binary": "scratch/mimo-media-20260926/ncu-attn-r1/probe-baseline",
+  "frozen_binary_sha256": "5dcb4b8f187377e932d049400c9b4ba63e48069254af9c84e01add5bbb590c42",
+  "original_receipt": "scratch/mimo-media-20260926/ncu-attn-r1/source-receipt.json",
+  "current_scalar_function_hash_variants": {
+    "": "89f4b8afdeda31ccce43ab079644a9d47973abe040b179dff44f5bcc816a90af",
+    "\n": "0a701d4957997ff8927706b72a8c0e818256e9ac5fcf79a64f610dd4544af93b",
+    "\n\n": "a34559df965de4a55ab9ef65cf155f7fe417ef9b709f849ccdf2601a784c330e"
+  },
+  "original_body_sha256": "0a701d4957997ff8927706b72a8c0e818256e9ac5fcf79a64f610dd4544af93b",
+  "body_identity_confirmed": true,
+  "launch_arguments": [
+    "64",
+    "1",
+    "2"
+  ],
+  "launch_contract": {
+    "n": 3072,
+    "q_heads": 32,
+    "kv_heads": 8,
+    "hd": 64,
+    "qkv_same_buffer": true,
+    "strides": [
+      3072,
+      3072,
+      3072
+    ],
+    "offsets": [
+      0,
+      2048,
+      2560
+    ],
+    "causal": 0,
+    "group": 0,
+    "grid": [
+      384,
+      1,
+      1
+    ],
+    "block": [
+      256,
+      1,
+      1
+    ],
+    "variants": [
+      {
+        "window": 64,
+        "sinks": true
+      },
+      {
+        "window": -1,
+        "sinks": false
+      }
+    ]
+  },
+  "scope": "Window 64 with 32 sinks and no causal or group mask. The production wrapper selects the original scalar kernel for this regime. The new trace reports 40 registers, no shared or local allocation, grid 384 and block 256.",
+  "differences": "Synthetic finite inputs, sink values and warmed repeated-buffer cache differ from actual projection output. Shape, mask, arithmetic and kernel body match. This agent performed no GPU runs."
+}

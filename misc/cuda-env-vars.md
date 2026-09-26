@@ -175,6 +175,11 @@ The bandwidth figure is informational; we don't tier on it.
   1–8192 rows, without window, sink, causal or group masks. Other layouts
   retain the original path. See the
   [image A/B evidence](../docs/benchmarks/mimo2-media-2026-09-26/attn-score-cache/README.md).
+- `DS4_MIMO2_VISION_WINDOW=0` restores scalar windowed vision attention.
+  The default caches at most 129 scores for window 64 with sinks, using the
+  same interleaved Q32/KV8/HD64 layout and 1–8192-row limit as full attention.
+  Other windows, masks and layouts retain their existing paths. See the
+  [window attention evidence](../docs/benchmarks/mimo2-media-2026-09-26/window-score-cache/README.md).
 - `DS4_MIMO2_DFLASH_CPU=1` restores host RMSNorm, RoPE and attention for
   MiMo's external five-layer DFlash drafter. Unset uses device kernels
   and shared K/V tiles. This control does not enable speculative decode;

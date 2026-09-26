@@ -1,0 +1,286 @@
+{
+  "rounds": 3,
+  "cases": {
+    "screen": {
+      "all_warm_and_sample_http_proofs_exact": false,
+      "reference": {
+        "token_ids": [
+          785,
+          2168,
+          18689,
+          264,
+          3383,
+          26967,
+          369,
+          330,
+          41455,
+          7369,
+          60449,
+          3263,
+          576,
+          9434,
+          2213,
+          5646,
+          1447,
+          9,
+          256,
+          3070,
+          4047,
+          66963,
+          330,
+          41455,
+          7369,
+          60449,
+          760,
+          5430,
+          26967,
+          698,
+          9,
+          256,
+          3070,
+          2522,
+          4504,
+          388,
+          66963,
+          14513,
+          27197,
+          14697,
+          18860,
+          3383,
+          14579,
+          510,
+          262,
+          353,
+          256,
+          3070,
+          25776,
+          3260,
+          66963,
+          220,
+          16,
+          17,
+          320,
+          47699,
+          3745,
+          340,
+          262,
+          353,
+          256,
+          3070,
+          18990,
+          66963
+        ],
+        "content": "The image displays a task dashboard for \"PROJECT ATLAS\". The visible content includes:\n\n*   **Header:** \"PROJECT ATLAS | Task dashboard\"\n*   **Status Counters:** Three colored boxes indicating task counts:\n    *   **Queued:** 12 (Yellow box)\n    *   **Running:**",
+        "finish_reason": "length",
+        "prompt_tokens": 794,
+        "completion_tokens": 64
+      },
+      "metrics": {
+        "wall_ms": {
+          "samples": {
+            "original": [
+              6805.384929990396,
+              6802.6549509959295,
+              6818.158224050421
+            ],
+            "off": [
+              6806.613703025505,
+              6811.638286977541,
+              6806.415814964566
+            ],
+            "on": [
+              4695.2178530045785,
+              4692.263998964336,
+              4699.131166969892
+            ]
+          },
+          "medians": {
+            "original": 6805.384929990396,
+            "off": 6806.613703025505,
+            "on": 4695.2178530045785
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                -0.018055893204427242,
+                -0.1320563228081495,
+                0.17222259589744215
+              ],
+              "median_gain_percent": -0.018055893204427242
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                31.019769038492985,
+                31.114016903466744,
+                30.960269035600273
+              ],
+              "median_gain_percent": 31.019769038492985
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                31.007314041658407,
+                31.02304860725923,
+                31.07917105246778
+              ],
+              "median_gain_percent": 31.007314041658407
+            }
+          }
+        },
+        "ttft_ms": {
+          "samples": {
+            "original": [
+              4450.7,
+              4445.6,
+              4457.6
+            ],
+            "off": [
+              4449.1,
+              4446.1,
+              4451.9
+            ],
+            "on": [
+              2339.7,
+              2337.9,
+              2338.1
+            ]
+          },
+          "medians": {
+            "original": 4450.7,
+            "off": 4449.1,
+            "on": 2338.1
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                0.035949401217771904,
+                -0.01124707576030115,
+                0.1278715003589559
+              ],
+              "median_gain_percent": 0.035949401217771904
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                47.41183610168349,
+                47.41683722813252,
+                47.48085087266111
+              ],
+              "median_gain_percent": 47.44779843114338
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                47.430741231716354,
+                47.41092315997841,
+                47.548007896626
+              ],
+              "median_gain_percent": 47.46669063293415
+            }
+          }
+        },
+        "prefill_tok_s": {
+          "samples": {
+            "original": [
+              180.1,
+              180.3,
+              179.8
+            ],
+            "off": [
+              180.2,
+              180.3,
+              180.1
+            ],
+            "on": [
+              345.6,
+              345.9,
+              345.9
+            ]
+          },
+          "medians": {
+            "original": 180.1,
+            "off": 180.2,
+            "on": 345.9
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                0.05552470849528035,
+                0.0,
+                0.16685205784203738
+              ],
+              "median_gain_percent": 0.05552470849528035
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                91.78690344062154,
+                91.84692179700498,
+                92.05996668517489
+              ],
+              "median_gain_percent": 91.95338512763595
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                91.89339255968909,
+                91.84692179700498,
+                92.38042269187984
+              ],
+              "median_gain_percent": 92.05996668517489
+            }
+          }
+        },
+        "decode_tok_s": {
+          "samples": {
+            "original": [
+              26.9,
+              26.8,
+              26.8
+            ],
+            "off": [
+              26.8,
+              26.7,
+              26.9
+            ],
+            "on": [
+              26.9,
+              26.9,
+              26.8
+            ]
+          },
+          "medians": {
+            "original": 26.8,
+            "off": 26.8,
+            "on": 26.9
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                -0.3717472118959009,
+                -0.3731343283582156,
+                0.3731343283581934
+              ],
+              "median_gain_percent": 0.0
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                0.3731343283581934,
+                0.7490636704119868,
+                -0.3717472118959009
+              ],
+              "median_gain_percent": 0.3731343283581934
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                0.0,
+                0.3731343283581934,
+                0.0
+              ],
+              "median_gain_percent": 0.3731343283581934
+            }
+          }
+        }
+      }
+    }
+  },
+  "http_proof_scope": "Full returned token IDs, visible content, finish reason and usage; HTTP supplies no logits.",
+  "all_http_proofs_exact": false,
+  "correctness_status": "requires_review",
+  "correctness_note": "Exactness is informational. Valid baseline outputs can vary in formatting; inspect full responses and kernel/feature parity before deciding correctness or adoption."
+}
