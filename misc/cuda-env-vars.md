@@ -157,6 +157,12 @@ The bandwidth figure is informational; we don't tier on it.
   FP32 multiply/add rounding and the final residual addition. Narrow decode
   retains the separate path; the existing dense-FFN scratch stays allocated.
 
+- `DS4_MIMO2_ATTN_RESIDUAL=0` restores separate attention-projection scaling
+  and residual addition. Unset fuses these passes for widths 32–8192,
+  preserving separate FP32 rounding of the `0.707f` multiplication and add.
+  The projection is not modified by fusion; narrow decode retains its old
+  path. See the [paired A/B evidence](../docs/benchmarks/mimo2-2026-09-26/README.md#attention-scale-and-residual-fusion).
+
 - `DS4_MIMO2_DFLASH_CPU=1` restores host RMSNorm, RoPE and attention for
   MiMo's external five-layer DFlash drafter. Unset uses device kernels
   and shared K/V tiles. This control does not enable speculative decode;

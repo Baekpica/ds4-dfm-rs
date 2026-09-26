@@ -4,7 +4,7 @@ GB10, CUDA 13.3, sm_121a; MiMo V2.6 Flash RL MQ-IQ2-XXS-XS-Q8.
 Fixture: `speed-bench/promessi_sposi.txt`, 8192 prompt tokens, 128 greedy
 output tokens, 4096-token prefill chunks, MTP/DFlash off. Each sample uses
 its own process after a separate warmup process, sharing one VMM owner.
-GPU clock range stays 300–2200 MHz; observed busy clocks are 2190 MHz.
+GPU clock range stays 300–2200 MHz; busy clocks are recorded per round.
 [Workload and artifact hashes](sum-residual/workload.json).
 
 ## Routed sum and residual fusion
@@ -88,3 +88,66 @@ Raw reports, binary snapshots, full logits, guards, scripts and rejected
 patches remain under `scratch/mimo-prefill-20260926/`; this directory keeps
 compact measurements and proof receipts. Dated evidence qualifies this
 artifact/workload, not all serving modes.
+
+## Attention scale and residual fusion
+
+**Accepted: round 2 of 3.** The retained round-1 binary is the original
+control. Three fresh samples per arm use rotated order and a separate
+warmup process before each sample, with the same resident weight owner.
+
+| Build / path | Prefill tok/s | Decode tok/s |
+|---|---:|---:|
+| Round-1 original median | 1199.67 | 24.46 |
+| New build, fusion OFF median | 1199.12 | 24.47 |
+| New build, default ON median | 1206.87 | 24.48 |
+| ON vs original | +0.60% | +0.08% |
+
+Prefill gains against the original are +0.50%, +0.61%, +0.71%; against
+the same-build OFF control they are +0.71%, +0.65%, +0.64%. All nine
+samples have identical full 152,576 logits and 128 tokens, and clean
+guard exits. Decode ranges overlap with no measured regression. Retain
+the consistent gain below 1% because memory traffic decreases without
+additional VRAM or arithmetic. See [samples](attn-residual/ab.json),
+[proof hashes and exits](attn-residual/proofs.json),
+[build receipt](attn-residual/receipt.json), and
+[workload hashes](attn-residual/workload.json).
+
+The fresh [whole-workload trace](attn-residual/nsys-before.json) on round 1
+measured 6.82443 s prefill. The 96 adjacent scale/add pairs consumed
+125.386 ms (1.837%). Full isolated NCU preserved their production geometry:
+4096 rows × 4096 channels, grid 65536, block 256. The separate kernels took
+500.29 µs and 778.02 µs, with long-scoreboard waits of 205.2 and 312.2 cycles.
+
+| Isolated path | Median ms | Change |
+|---|---:|---:|
+| Separate scale + in-place add | 1.302458 | — |
+| Scalar fusion | 0.763819 | −41.36% |
+
+These are unprofiled timings: three fresh processes per arm in alternating
+order, 32 warmups and 100 measured iterations. Both inputs are restored
+before each iteration outside CUDA-event timing. Synthetic values and
+restore-driven cache state differ from the full graph; end-to-end A/B
+decides adoption. [Isolated results](attn-residual/isolated.json),
+[baseline source receipt](attn-residual/source-receipt.json).
+
+All three kernels use 16 registers and have no spills. NCU executed
+instructions decrease from 19,922,944 across the two original kernels to
+11,010,048. Fusion removes the projection's 64 MiB scaled write and 64 MiB
+reread per call; allocations and arithmetic are unchanged.
+[Baseline NCU](attn-residual/ncu-baseline.txt),
+[fused NCU](attn-residual/ncu-fused.txt).
+
+The numerical contract is a separately rounded FP32 multiplication by
+`0.707f`, followed by a separately rounded residual addition; no FMA.
+The projection has no later consumer before overwrite. CUDA rows 32–8192
+use the fused path by default; `DS4_MIMO2_ATTN_RESIDUAL=0` restores scale
+then add. Narrow decode keeps its old calls. The
+[focused test](../../../tests/mimo2_attn_residual.cu) covers 1, 31, 32, 33
+and 4096 rows, signed zero/subnormal inputs, default/explicit/fallback
+dispatch, invalid buffers and alignment, and refusal without mutation.
+[Test output](attn-residual/parity.txt).
+
+Busy model-run clocks were 2184–2190 MHz (median 2190), preserving the
+user's configured range. [Clock summary](attn-residual/clocks.json) includes
+the sampling limits of the shorter isolated runs. Raw reports and all
+warmup/sample proofs remain in `scratch/mimo-prefill-20260926/`.

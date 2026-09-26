@@ -1,0 +1,203 @@
+{
+  "comparison": "All parsed full logits arrays and token arrays equal sample 0 original",
+  "samples": [
+    {
+      "sample": 0,
+      "arm": "original",
+      "logits": {
+        "path": "scratch/mimo-prefill-20260926/scale-0-original-sample-proof/frontier_008192.logits.json",
+        "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+        "count": 152576
+      },
+      "tokens": {
+        "path": "scratch/mimo-prefill-20260926/scale-0-original-sample-proof/tokens-8192.json",
+        "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+        "count": 128
+      },
+      "equal_reference": true,
+      "guard_exit": {
+        "time": 1790395478.656082,
+        "event": "exit",
+        "unit": "ds4-hostguard-1912908-1790395460244639238.scope",
+        "status": 0,
+        "payload_status": 0
+      }
+    },
+    {
+      "sample": 0,
+      "arm": "off",
+      "logits": {
+        "path": "scratch/mimo-prefill-20260926/scale-0-off-sample-proof/frontier_008192.logits.json",
+        "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+        "count": 152576
+      },
+      "tokens": {
+        "path": "scratch/mimo-prefill-20260926/scale-0-off-sample-proof/tokens-8192.json",
+        "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+        "count": 128
+      },
+      "equal_reference": true,
+      "guard_exit": {
+        "time": 1790395515.0286837,
+        "event": "exit",
+        "unit": "ds4-hostguard-1913014-1790395496805454418.scope",
+        "status": 0,
+        "payload_status": 0
+      }
+    },
+    {
+      "sample": 0,
+      "arm": "on",
+      "logits": {
+        "path": "scratch/mimo-prefill-20260926/scale-0-on-sample-proof/frontier_008192.logits.json",
+        "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+        "count": 152576
+      },
+      "tokens": {
+        "path": "scratch/mimo-prefill-20260926/scale-0-on-sample-proof/tokens-8192.json",
+        "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+        "count": 128
+      },
+      "equal_reference": true,
+      "guard_exit": {
+        "time": 1790395550.5563402,
+        "event": "exit",
+        "unit": "ds4-hostguard-1913038-1790395532879316530.scope",
+        "status": 0,
+        "payload_status": 0
+      }
+    },
+    {
+      "sample": 1,
+      "arm": "original",
+      "logits": {
+        "path": "scratch/mimo-prefill-20260926/scale-1-original-sample-proof/frontier_008192.logits.json",
+        "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+        "count": 152576
+      },
+      "tokens": {
+        "path": "scratch/mimo-prefill-20260926/scale-1-original-sample-proof/tokens-8192.json",
+        "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+        "count": 128
+      },
+      "equal_reference": true,
+      "guard_exit": {
+        "time": 1790395623.5582247,
+        "event": "exit",
+        "unit": "ds4-hostguard-1913108-1790395605643616726.scope",
+        "status": 0,
+        "payload_status": 0
+      }
+    },
+    {
+      "sample": 1,
+      "arm": "off",
+      "logits": {
+        "path": "scratch/mimo-prefill-20260926/scale-1-off-sample-proof/frontier_008192.logits.json",
+        "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+        "count": 152576
+      },
+      "tokens": {
+        "path": "scratch/mimo-prefill-20260926/scale-1-off-sample-proof/tokens-8192.json",
+        "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+        "count": 128
+      },
+      "equal_reference": true,
+      "guard_exit": {
+        "time": 1790395659.2168572,
+        "event": "exit",
+        "unit": "ds4-hostguard-1913126-1790395641455260905.scope",
+        "status": 0,
+        "payload_status": 0
+      }
+    },
+    {
+      "sample": 1,
+      "arm": "on",
+      "logits": {
+        "path": "scratch/mimo-prefill-20260926/scale-1-on-sample-proof/frontier_008192.logits.json",
+        "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+        "count": 152576
+      },
+      "tokens": {
+        "path": "scratch/mimo-prefill-20260926/scale-1-on-sample-proof/tokens-8192.json",
+        "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+        "count": 128
+      },
+      "equal_reference": true,
+      "guard_exit": {
+        "time": 1790395586.0819294,
+        "event": "exit",
+        "unit": "ds4-hostguard-1913057-1790395568416473237.scope",
+        "status": 0,
+        "payload_status": 0
+      }
+    },
+    {
+      "sample": 2,
+      "arm": "original",
+      "logits": {
+        "path": "scratch/mimo-prefill-20260926/scale-2-original-sample-proof/frontier_008192.logits.json",
+        "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+        "count": 152576
+      },
+      "tokens": {
+        "path": "scratch/mimo-prefill-20260926/scale-2-original-sample-proof/tokens-8192.json",
+        "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+        "count": 128
+      },
+      "equal_reference": true,
+      "guard_exit": {
+        "time": 1790395768.140544,
+        "event": "exit",
+        "unit": "ds4-hostguard-1913187-1790395750021753038.scope",
+        "status": 0,
+        "payload_status": 0
+      }
+    },
+    {
+      "sample": 2,
+      "arm": "off",
+      "logits": {
+        "path": "scratch/mimo-prefill-20260926/scale-2-off-sample-proof/frontier_008192.logits.json",
+        "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+        "count": 152576
+      },
+      "tokens": {
+        "path": "scratch/mimo-prefill-20260926/scale-2-off-sample-proof/tokens-8192.json",
+        "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+        "count": 128
+      },
+      "equal_reference": true,
+      "guard_exit": {
+        "time": 1790395695.4994974,
+        "event": "exit",
+        "unit": "ds4-hostguard-1913143-1790395677154632872.scope",
+        "status": 0,
+        "payload_status": 0
+      }
+    },
+    {
+      "sample": 2,
+      "arm": "on",
+      "logits": {
+        "path": "scratch/mimo-prefill-20260926/scale-2-on-sample-proof/frontier_008192.logits.json",
+        "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+        "count": 152576
+      },
+      "tokens": {
+        "path": "scratch/mimo-prefill-20260926/scale-2-on-sample-proof/tokens-8192.json",
+        "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+        "count": 128
+      },
+      "equal_reference": true,
+      "guard_exit": {
+        "time": 1790395731.7570262,
+        "event": "exit",
+        "unit": "ds4-hostguard-1913170-1790395713896745081.scope",
+        "status": 0,
+        "payload_status": 0
+      }
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+host-memory-guard: available=117.00 GiB, scope max/high=8.00/6.00, reserve=12.00, trip=12.00
+rows=1: attention residual byte-exact PASS
+rows=31: attention residual byte-exact PASS
+rows=32: attention residual byte-exact PASS
+rows=33: attention residual byte-exact PASS
+rows=4096: attention residual byte-exact PASS

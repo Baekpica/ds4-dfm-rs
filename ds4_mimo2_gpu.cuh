@@ -8,6 +8,23 @@ static void m2_hmma_init(void) {
     m2_hmma_available = mimo2_hmma::supported();
 }
 
+extern "C" int ds4_gpu_mimo2_attn_add(
+        ds4_gpu_tensor *cur, const ds4_gpu_tensor *attn, uint32_t rows) {
+    enum { WIDTH = 4096, MIN_ROWS = 32, MAX_ROWS = 8192, THREADS = 256 };
+    if (rows < MIN_ROWS || rows > MAX_ROWS) { return -1; }
+    const char *env = getenv("DS4_MIMO2_ATTN_RESIDUAL");
+    if (env && strcmp(env, "1") != 0) { return -1; }
+    const uint64_t count = (uint64_t)rows * WIDTH, bytes = count * sizeof(float);
+    if (!cur || !attn || !cur->ptr || !attn->ptr ||
+        cur->bytes < bytes || attn->bytes < bytes) { return 0; }
+    if ((uintptr_t)cur->ptr % alignof(float) ||
+        (uintptr_t)attn->ptr % alignof(float)) { return -1; }
+
+    mimo2_attn_residual<<<(count + THREADS - 1) / THREADS, THREADS, 0, ds4_current_stream()>>>(
+        (float *)cur->ptr, (const float *)attn->ptr, count);
+    return cuda_ok(cudaGetLastError(), "MiMo attention residual");
+}
+
 extern "C" int ds4_gpu_mimo2_sum_add(
         ds4_gpu_tensor *cur, const ds4_gpu_tensor *down,
         const ds4_gpu_tensor *weights, uint32_t rows) {

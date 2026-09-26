@@ -1,0 +1,62 @@
+{
+  "git_commit": "284ff879433cd04832d316f353aa6aeed2c2ebb8",
+  "source": "ds4_cuda.cu",
+  "source_sha256": "2bf8f94ccc3712f4a24c7fa6575f7bdb543f60ec21127daf83e89b73e3060e6d",
+  "kernels": [
+    {
+      "name": "dots3_scale_kernel",
+      "line": 42293,
+      "sha256": "25579832adc8fc7e772dbcf82d77b65fe97e8fe717560b077f9c58ebce67a7f9"
+    },
+    {
+      "name": "exaone_add_kernel",
+      "line": 47737,
+      "sha256": "1b0ecc09846d6b5324cce50eb8b11a56f369f5861b13179724f531d221fc6858"
+    }
+  ],
+  "probe_sha256": "1ece72792ea10324f7fdae3a1b3f4ad54e7f0f9fcc892d46f31b72ffc73de8d5",
+  "compile_argv": [
+    "/usr/local/cuda/bin/nvcc",
+    "-O3",
+    "-g",
+    "-lineinfo",
+    "--use_fast_math",
+    "-std=c++17",
+    "-gencode",
+    "arch=compute_121a,code=sm_121a",
+    "-DDS4_CUDA_HAVE_MXF4=1",
+    "-Xcompiler",
+    "-march=native",
+    "-Xcompiler",
+    "-pthread",
+    "-o",
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-scale/probe",
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-scale/probe.cu"
+  ],
+  "flags_evidence": "Makefile:59 and scratch/mimo-prefill-20260926/ncu-sum/final-build.log:1",
+  "launch": {
+    "rows": 4096,
+    "width": 4096,
+    "grid": [
+      65536,
+      1,
+      1
+    ],
+    "block": [
+      256,
+      1,
+      1
+    ],
+    "scale": 0.707,
+    "dtype": "fp32",
+    "default_warmup_pairs": 16,
+    "default_timed_pairs": 1
+  },
+  "differences": [
+    "Synthetic finite input values; no model initialization.",
+    "D2D restores before every pair keep inputs fixed and are outside CUDA event timing.",
+    "The restores determine cache state; inspect cache counters rather than assuming model cache equivalence.",
+    "Standalone translation unit; verify registers and launch geometry against production trace."
+  ],
+  "numeric_contract": "attn1[i]=RN32(attn0[i]*float32(0.707)); cur1[i]=RN32(cur0[i]+attn1[i]); preserve separate rounding, no FMA; preserve production fast-math/FTZ behavior."
+}

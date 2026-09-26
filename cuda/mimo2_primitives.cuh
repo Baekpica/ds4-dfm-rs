@@ -2,6 +2,15 @@
 #include <stdint.h>
 #include <cuda_fp16.h>
 
+/* The projection is dead after this add; avoid its scaled write/read pass.
+ * Keep the two FP32 roundings from the separate scale and residual kernels. */
+__global__ static void mimo2_attn_residual(float *cur, const float *attn, uint64_t count) {
+    constexpr float SCALE = 0.707f;
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) { return; }
+    cur[i] = __fadd_rn(cur[i], __fmul_rn(attn[i], SCALE));
+}
+
 /* Eliminate the routed-sum roundtrip. Preserve slot order and the separate
  * rounding of each multiply, each sum, and the final residual addition. */
 __global__ static void mimo2_sum_residual(

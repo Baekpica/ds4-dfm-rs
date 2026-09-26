@@ -236,6 +236,17 @@ static bool mimo2_expert_down(ds4_exaone_batch_ws *b, const ds4_model *m,
             n * M2_USED, 1, n);
 }
 
+static bool mimo2_attn_add(ds4_exaone_batch_ws *b, unsigned n) {
+    enum { MIN_FUSED_ROWS = 32 };
+    if (n >= MIN_FUSED_ROWS) {
+        const int rc = ds4_gpu_mimo2_attn_add(b->b_cur, b->b_attn_out, n);
+        if (rc >= 0) { return rc != 0; }
+    }
+    const uint64_t count = (uint64_t)n * M2_EMBED;
+    return ds4_gpu_dots3_scale_tensor(b->b_attn_out, 0.707f, count) &&
+        ds4_gpu_exaone_add_tensor(b->b_cur, b->b_attn_out, count);
+}
+
 static bool mimo2_layer(ds4_mimo2_graph *g, const ds4_model *m,
                          const ds4_weights *w, unsigned il, unsigned n) {
     ds4_exaone_batch_ws *b = &g->ws;
@@ -252,8 +263,7 @@ static bool mimo2_layer(ds4_mimo2_graph *g, const ds4_model *m,
             l->attn_sinks ? m->map : NULL, m->size, l->attn_sinks ? l->attn_sinks->abs_offset : 0,
             heads, g->kv_cap[il], n, full ? 0 : M2_WINDOW, g->position) ||
         !plain_graph_matmul_tensor(b->b_attn_out, m, l->attn_output, M2_HEADS, M2_EMBED, b->b_heads, n) ||
-        !ds4_gpu_dots3_scale_tensor(b->b_attn_out, 0.707f, (uint64_t)n * M2_EMBED) ||
-        !ds4_gpu_exaone_add_tensor(b->b_cur, b->b_attn_out, (uint64_t)n * M2_EMBED) ||
+        !mimo2_attn_add(b, n) ||
         !ds4_gpu_exaone_rms_norm_tensor(b->b_norm, b->b_cur, m->map, m->size,
             l->ffn_norm->abs_offset, M2_EMBED, n, DS4_RMS_EPS)) { return false; }
     if (!l->ffn_gate_exps) {

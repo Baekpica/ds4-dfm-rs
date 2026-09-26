@@ -1,0 +1,100 @@
+{
+  "samples": {
+    "original": [
+      {
+        "prefill_tps": 1200.53,
+        "gen_tps": 24.46
+      },
+      {
+        "prefill_tps": 1199.61,
+        "gen_tps": 24.45
+      },
+      {
+        "prefill_tps": 1199.67,
+        "gen_tps": 24.48
+      }
+    ],
+    "off": [
+      {
+        "prefill_tps": 1198.09,
+        "gen_tps": 24.45
+      },
+      {
+        "prefill_tps": 1199.12,
+        "gen_tps": 24.48
+      },
+      {
+        "prefill_tps": 1200.47,
+        "gen_tps": 24.47
+      }
+    ],
+    "on": [
+      {
+        "prefill_tps": 1206.56,
+        "gen_tps": 24.46
+      },
+      {
+        "prefill_tps": 1206.87,
+        "gen_tps": 24.52
+      },
+      {
+        "prefill_tps": 1208.2,
+        "gen_tps": 24.48
+      }
+    ]
+  },
+  "medians": {
+    "original": {
+      "prefill_tps": 1199.67,
+      "gen_tps": 24.46
+    },
+    "off": {
+      "prefill_tps": 1199.12,
+      "gen_tps": 24.47
+    },
+    "on": {
+      "prefill_tps": 1206.87,
+      "gen_tps": 24.48
+    }
+  },
+  "gain_vs_original_pct": {
+    "off": {
+      "prefill_tps": -0.04584594096711525,
+      "gen_tps": 0.040883074407194187
+    },
+    "on": {
+      "prefill_tps": 0.6001650453874685,
+      "gen_tps": 0.08176614881438837
+    }
+  },
+  "all_full_logits_and_tokens_exact": true,
+  "paired_prefill_gain_pct": {
+    "original": [
+      0.5022781604791193,
+      0.6051966889238924,
+      0.7110288662715458
+    ],
+    "off": [
+      0.706958575733041,
+      0.6463072920141366,
+      0.6439144668338281
+    ]
+  },
+  "run_order": [
+    [
+      "original",
+      "off",
+      "on"
+    ],
+    [
+      "on",
+      "original",
+      "off"
+    ],
+    [
+      "off",
+      "on",
+      "original"
+    ]
+  ]
+}

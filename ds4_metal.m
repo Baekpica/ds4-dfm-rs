@@ -17779,7 +17779,12 @@ int ds4_gpu_matmul_q8_0_hc_expand_n2_split_residual_tensor(
     return ok;
 }
 
-/* The optional CUDA fusion declines before the existing graph fallback. */
+/* The optional CUDA fusions decline before the existing graph fallback. */
+int ds4_gpu_mimo2_attn_add(ds4_gpu_tensor *cur, const ds4_gpu_tensor *attn, uint32_t rows) {
+    (void)cur; (void)attn; (void)rows;
+    return -1;
+}
+
 int ds4_gpu_mimo2_sum_add(ds4_gpu_tensor *cur, const ds4_gpu_tensor *down,
         const ds4_gpu_tensor *weights, uint32_t rows) {
     (void)cur; (void)down; (void)weights; (void)rows;

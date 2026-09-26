@@ -1,0 +1,217 @@
+{
+  "phase_seconds": 6.824432672,
+  "kernels": [
+    [
+      "gateup_iq2_d2r_pair_kernel",
+      {
+        "ns": 2217599712,
+        "count": 94
+      }
+    ],
+    [
+      "ds4_moe_worklist_mmq_kernel",
+      {
+        "ns": 1437706240,
+        "count": 94
+      }
+    ],
+    [
+      "dense_q8_d2r_kernel",
+      {
+        "ns": 663119264,
+        "count": 100
+      }
+    ],
+    [
+      "prefill",
+      {
+        "ns": 544889824,
+        "count": 96
+      }
+    ],
+    [
+      "mul_mat_q",
+      {
+        "ns": 480729536,
+        "count": 98
+      }
+    ],
+    [
+      "mimo2_sum_residual",
+      {
+        "ns": 255151488,
+        "count": 94
+      }
+    ],
+    [
+      "mimo2_swiglu_q8",
+      {
+        "ns": 250912256,
+        "count": 94
+      }
+    ],
+    [
+      "quantize_mmq_q8_1",
+      {
+        "ns": 210029568,
+        "count": 292
+      }
+    ],
+    [
+      "mimo2_split_rope",
+      {
+        "ns": 185110752,
+        "count": 96
+      }
+    ],
+    [
+      "exaone_rms_norm_kernel",
+      {
+        "ns": 103262322,
+        "count": 194
+      }
+    ],
+    [
+      "exaone_add_kernel",
+      {
+        "ns": 80146752,
+        "count": 98
+      }
+    ],
+    [
+      "dots3_scale_kernel",
+      {
+        "ns": 46787712,
+        "count": 96
+      }
+    ],
+    [
+      "nvjet_sm121_sss_tf32_mma_128x176x32_2_32x88x32_tmaAB_alignCD4_bz_TNNN",
+      {
+        "ns": 42622720,
+        "count": 94
+      }
+    ],
+    [
+      "mimo2_router",
+      {
+        "ns": 32415456,
+        "count": 94
+      }
+    ],
+    [
+      "ds4_mmq_sanitize_f32_kernel",
+      {
+        "ns": 25325216,
+        "count": 98
+      }
+    ],
+    [
+      "mimo2_kv_store",
+      {
+        "ns": 23760352,
+        "count": 96
+      }
+    ],
+    [
+      "ds4_mmid_scatter_kernel",
+      {
+        "ns": 7624896,
+        "count": 188
+      }
+    ],
+    [
+      "ds4_mmid_scan_kernel",
+      {
+        "ns": 7167328,
+        "count": 188
+      }
+    ],
+    [
+      "step37_swiglu",
+      {
+        "ns": 6555968,
+        "count": 2
+      }
+    ],
+    [
+      "q8_0_aligned_dense_vec_kernel",
+      {
+        "ns": 5090304,
+        "count": 2
+      }
+    ],
+    [
+      "embed_tokens_q8_0_kernel",
+      {
+        "ns": 688192,
+        "count": 2
+      }
+    ],
+    [
+      "ds4_mmid_count_kernel",
+      {
+        "ns": 423136,
+        "count": 188
+      }
+    ],
+    [
+      "d2r_build_worklist_kernel",
+      {
+        "ns": 231936,
+        "count": 94
+      }
+    ],
+    [
+      "ds4_moe_build_tile_worklist",
+      {
+        "ns": 225184,
+        "count": 94
+      }
+    ],
+    [
+      "step37_rope_table",
+      {
+        "ns": 92320,
+        "count": 4
+      }
+    ],
+    [
+      "quantize_q8_1",
+      {
+        "ns": 2688,
+        "count": 2
+      }
+    ]
+  ],
+  "scale_add": {
+    "count": 96,
+    "ns": 125386112,
+    "geometry": {
+      "dots3_scale_kernel": [
+        [
+          65536,
+          256,
+          1,
+          16
+        ]
+      ],
+      "exaone_add_kernel": [
+        [
+          65536,
+          256,
+          1,
+          16
+        ]
+      ],
+      "mimo2_sum_residual": [
+        [
+          65536,
+          256,
+          1,
+          28
+        ]
+      ]
+    }
+  }
+}
