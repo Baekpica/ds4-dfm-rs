@@ -1,0 +1,258 @@
+{
+  "round": 4,
+  "accepted": false,
+  "protocol": {
+    "processes_per_arm": 3,
+    "orders": [
+      [
+        "original",
+        "off",
+        "on"
+      ],
+      [
+        "on",
+        "original",
+        "off"
+      ],
+      [
+        "off",
+        "on",
+        "original"
+      ]
+    ],
+    "warmup_iterations_per_process": 16,
+    "measured_iterations_per_process": 100,
+    "timing": "CUDA events around actual ds4_mmq_mimo2_down entry; includes activation quantization, routing-map/worklist work and matmul",
+    "shape": {
+      "output": 4096,
+      "width": 2048,
+      "experts": 256,
+      "tokens": 4096,
+      "experts_per_token": 8,
+      "assignments": 32768
+    },
+    "fixture": "mt19937 seed 0x5a0a; random IQ2_XS bytes with bounded half scales, uniform gate/up floats, eight distinct random experts per token",
+    "arms": {
+      "original": "retained R3 probe-original, DS4_MIMO2_DOWN_ASYNC=0",
+      "off": "probe-candidate, DS4_MIMO2_DOWN_ASYNC=0",
+      "on": "probe-candidate, switch unset (candidate default ON)"
+    },
+    "limitations": "Synthetic weights/activations and randomized balanced routing; isolated cache residency differs from model. Timing uses original scratch probe.cu, not the cleaned test.cu."
+  },
+  "samples": [
+    {
+      "round": 0,
+      "arm": "original",
+      "milliseconds": 17.506239,
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "guard_events": [
+        "start",
+        "sample",
+        "sample",
+        "sample",
+        "sample",
+        "sample",
+        "exit"
+      ],
+      "log": "scratch/mimo-prefill-20260926/ncu-down-r4/0-original.log",
+      "guard_log": "scratch/mimo-prefill-20260926/ncu-down-r4/0-original.memory.jsonl"
+    },
+    {
+      "round": 0,
+      "arm": "off",
+      "milliseconds": 17.522352,
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "guard_events": [
+        "start",
+        "sample",
+        "sample",
+        "sample",
+        "sample",
+        "sample",
+        "exit"
+      ],
+      "log": "scratch/mimo-prefill-20260926/ncu-down-r4/0-off.log",
+      "guard_log": "scratch/mimo-prefill-20260926/ncu-down-r4/0-off.memory.jsonl"
+    },
+    {
+      "round": 0,
+      "arm": "on",
+      "milliseconds": 17.737633,
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "guard_events": [
+        "start",
+        "sample",
+        "sample",
+        "sample",
+        "sample",
+        "sample",
+        "exit"
+      ],
+      "log": "scratch/mimo-prefill-20260926/ncu-down-r4/0-on.log",
+      "guard_log": "scratch/mimo-prefill-20260926/ncu-down-r4/0-on.memory.jsonl"
+    },
+    {
+      "round": 1,
+      "arm": "on",
+      "milliseconds": 17.804127,
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "guard_events": [
+        "start",
+        "sample",
+        "sample",
+        "sample",
+        "sample",
+        "exit"
+      ],
+      "log": "scratch/mimo-prefill-20260926/ncu-down-r4/1-on.log",
+      "guard_log": "scratch/mimo-prefill-20260926/ncu-down-r4/1-on.memory.jsonl"
+    },
+    {
+      "round": 1,
+      "arm": "original",
+      "milliseconds": 17.617218,
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "guard_events": [
+        "start",
+        "sample",
+        "sample",
+        "sample",
+        "sample",
+        "exit"
+      ],
+      "log": "scratch/mimo-prefill-20260926/ncu-down-r4/1-original.log",
+      "guard_log": "scratch/mimo-prefill-20260926/ncu-down-r4/1-original.memory.jsonl"
+    },
+    {
+      "round": 1,
+      "arm": "off",
+      "milliseconds": 17.601515,
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "guard_events": [
+        "start",
+        "sample",
+        "sample",
+        "sample",
+        "sample",
+        "exit"
+      ],
+      "log": "scratch/mimo-prefill-20260926/ncu-down-r4/1-off.log",
+      "guard_log": "scratch/mimo-prefill-20260926/ncu-down-r4/1-off.memory.jsonl"
+    },
+    {
+      "round": 2,
+      "arm": "off",
+      "milliseconds": 17.562212,
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "guard_events": [
+        "start",
+        "sample",
+        "sample",
+        "sample",
+        "sample",
+        "exit"
+      ],
+      "log": "scratch/mimo-prefill-20260926/ncu-down-r4/2-off.log",
+      "guard_log": "scratch/mimo-prefill-20260926/ncu-down-r4/2-off.memory.jsonl"
+    },
+    {
+      "round": 2,
+      "arm": "on",
+      "milliseconds": 17.738012,
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "guard_events": [
+        "start",
+        "sample",
+        "sample",
+        "sample",
+        "sample",
+        "exit"
+      ],
+      "log": "scratch/mimo-prefill-20260926/ncu-down-r4/2-on.log",
+      "guard_log": "scratch/mimo-prefill-20260926/ncu-down-r4/2-on.memory.jsonl"
+    },
+    {
+      "round": 2,
+      "arm": "original",
+      "milliseconds": 17.615929,
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "guard_events": [
+        "start",
+        "sample",
+        "sample",
+        "sample",
+        "sample",
+        "exit"
+      ],
+      "log": "scratch/mimo-prefill-20260926/ncu-down-r4/2-original.log",
+      "guard_log": "scratch/mimo-prefill-20260926/ncu-down-r4/2-original.memory.jsonl"
+    }
+  ],
+  "median_ms": {
+    "original": 17.615929,
+    "off": 17.562212,
+    "on": 17.738012
+  },
+  "pairs": [
+    {
+      "round": 0,
+      "on_vs_original_throughput_gain_pct": -1.3045370822589386,
+      "on_vs_off_throughput_gain_pct": -1.2136963257724287,
+      "on_vs_original_latency_change_pct": 1.3217801950493158,
+      "on_vs_off_latency_change_pct": 1.228607894647915
+    },
+    {
+      "round": 1,
+      "on_vs_original_throughput_gain_pct": -1.049807159879279,
+      "on_vs_off_throughput_gain_pct": -1.1380058117985925,
+      "on_vs_original_latency_change_pct": 1.060945036838401,
+      "on_vs_off_latency_change_pct": 1.15110545881989
+    },
+    {
+      "round": 2,
+      "on_vs_original_throughput_gain_pct": -0.6882563840863387,
+      "on_vs_off_throughput_gain_pct": -0.9910918991372974,
+      "on_vs_original_latency_change_pct": 0.6930261810206062,
+      "on_vs_off_latency_change_pct": 1.0010128564670762
+    }
+  ],
+  "median_on_vs_original_throughput_gain_pct": -0.6882563840863387,
+  "median_on_vs_off_throughput_gain_pct": -0.9910918991372974,
+  "median_on_vs_original_latency_change_pct": 0.6930261810206062,
+  "median_on_vs_off_latency_change_pct": 1.0010128564670762,
+  "correctness": {
+    "dumped_round": 0,
+    "floats_per_arm": 134217728,
+    "bytes_per_arm": 536870912,
+    "all_three_sha256_equal": true,
+    "cmp_exit": 0,
+    "cmp_source": "run-isolated.sh checks both comparisons; parent reported script exit 0",
+    "outputs": {
+      "original": {
+        "path": "scratch/mimo-prefill-20260926/ncu-down-r4/original.bin",
+        "bytes": 536870912,
+        "sha256": "3ae7e7c58287765038bd7786f4ead137c7fd93f37f837508ceafd56caae0ee8e"
+      },
+      "off": {
+        "path": "scratch/mimo-prefill-20260926/ncu-down-r4/off.bin",
+        "bytes": 536870912,
+        "sha256": "3ae7e7c58287765038bd7786f4ead137c7fd93f37f837508ceafd56caae0ee8e"
+      },
+      "on": {
+        "path": "scratch/mimo-prefill-20260926/ncu-down-r4/on.bin",
+        "bytes": 536870912,
+        "sha256": "3ae7e7c58287765038bd7786f4ead137c7fd93f37f837508ceafd56caae0ee8e"
+      }
+    }
+  },
+  "decision": "Reject: ON slower than original and same-build OFF in all three rotated pairs. No model A/B performed; no end-to-end gain or decode qualification claimed."
+}

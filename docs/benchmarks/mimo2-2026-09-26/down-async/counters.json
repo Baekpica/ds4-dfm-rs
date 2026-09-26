@@ -1,0 +1,209 @@
+{
+  "kernel": {
+    "baseline": "void <unnamed>::ds4_moe_worklist_mmq_kernel<17, 0>(const char *, const int *, const int *, const int *, float *, const uint3 *, const unsigned int *, int, int, int, int, int, int, int)",
+    "candidate": "void <unnamed>::ds4_moe_worklist_mmq_kernel<17, 0, 1>(const char *, const int *, const int *, const int *, float *, const uint3 *, const unsigned int *, int, int, int, int, int, int, int)"
+  },
+  "geometry": {
+    "grid": [
+      48,
+      1,
+      1
+    ],
+    "block": [
+      32,
+      8,
+      1
+    ]
+  },
+  "counters": {
+    "gpu__time_duration.sum": {
+      "baseline": 14.440608,
+      "candidate": 14.910848,
+      "unit": "ms",
+      "change_pct": 3.2563725848662406
+    },
+    "launch__registers_per_thread": {
+      "baseline": 255.0,
+      "candidate": 255.0,
+      "unit": "register/thread",
+      "change_pct": 0.0
+    },
+    "launch__shared_mem_per_block_dynamic": {
+      "baseline": 80.128,
+      "candidate": 80.128,
+      "unit": "Kbyte/block",
+      "change_pct": 0.0
+    },
+    "launch__shared_mem_per_block_static": {
+      "baseline": 16.0,
+      "candidate": 16.0,
+      "unit": "byte/block",
+      "change_pct": 0.0
+    },
+    "derived__local_spilling_requests": {
+      "baseline": 4224.0,
+      "candidate": 72448.0,
+      "unit": "",
+      "change_pct": 1615.1515151515152
+    },
+    "smsp__inst_executed.sum": {
+      "baseline": 2242017152.0,
+      "candidate": 2267476992.0,
+      "unit": "inst",
+      "change_pct": 1.135577396332077
+    },
+    "smsp__sass_inst_executed_op_global_ld.sum": {
+      "baseline": 49861264.0,
+      "candidate": 30986896.0,
+      "unit": "inst",
+      "change_pct": -37.85376961161675
+    },
+    "smsp__sass_inst_executed_op_shared_ld.sum": {
+      "baseline": 107126656.0,
+      "candidate": 107126656.0,
+      "unit": "inst",
+      "change_pct": 0.0
+    },
+    "smsp__sass_inst_executed_op_shared_st.sum": {
+      "baseline": 28053168.0,
+      "candidate": 9178800.0,
+      "unit": "inst",
+      "change_pct": -67.2807007037494
+    },
+    "smsp__sass_inst_executed_op_local_ld.sum": {
+      "baseline": 0.0,
+      "candidate": 65536.0,
+      "unit": "inst",
+      "change_pct": null
+    },
+    "smsp__sass_inst_executed_op_local_st.sum": {
+      "baseline": 4224.0,
+      "candidate": 6912.0,
+      "unit": "inst",
+      "change_pct": 63.63636363636365
+    },
+    "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum": {
+      "baseline": 214040448.0,
+      "candidate": 214040448.0,
+      "unit": "",
+      "change_pct": 0.0
+    },
+    "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum": {
+      "baseline": 79891926.0,
+      "candidate": 61005842.0,
+      "unit": "",
+      "change_pct": -23.639540245906698
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+      "baseline": 598322714.0,
+      "candidate": 600110618.0,
+      "unit": "sector",
+      "change_pct": 0.29881934249951225
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+      "baseline": 16777216.0,
+      "candidate": 16777216.0,
+      "unit": "sector",
+      "change_pct": 0.0
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum": {
+      "baseline": 0.0,
+      "candidate": 262144.0,
+      "unit": "sector",
+      "change_pct": null
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum": {
+      "baseline": 30720.0,
+      "candidate": 47616.0,
+      "unit": "sector",
+      "change_pct": 55.00000000000001
+    },
+    "lts__t_sectors.sum": {
+      "baseline": 166162644.0,
+      "candidate": 188161377.0,
+      "unit": "sector",
+      "change_pct": 13.239277174718044
+    },
+    "l1tex__t_sector_hit_rate.pct": {
+      "baseline": 75.210021,
+      "candidate": 75.546164,
+      "unit": "%",
+      "change_pct": 0.44693911201010295
+    },
+    "lts__t_sector_hit_rate.pct": {
+      "baseline": 83.918181,
+      "candidate": 84.577878,
+      "unit": "%",
+      "change_pct": 0.7861192796826622
+    },
+    "sm__ops_path_tensor_op_imma_src_int8_sparsity_off.sum": {
+      "baseline": 577807319040.0,
+      "candidate": 577807319040.0,
+      "unit": "",
+      "change_pct": 0.0
+    },
+    "smsp__warps_eligible.avg.per_cycle_active": {
+      "baseline": 0.505668,
+      "candidate": 0.479424,
+      "unit": "warp",
+      "change_pct": -5.189966539310376
+    },
+    "smsp__issue_active.avg.pct_of_peak_sustained_active": {
+      "baseline": 37.165118,
+      "candidate": 36.380541,
+      "unit": "%",
+      "change_pct": -2.111057470609934
+    },
+    "sm__warps_active.avg.pct_of_peak_sustained_active": {
+      "baseline": 16.629559,
+      "candidate": 16.595471,
+      "unit": "%",
+      "change_pct": -0.2049843895439496
+    },
+    "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": {
+      "baseline": 1.176837,
+      "candidate": 1.334648,
+      "unit": "inst",
+      "change_pct": 13.409758530705629
+    },
+    "smsp__average_warps_issue_stalled_short_scoreboard_per_issue_active.ratio": {
+      "baseline": 0.162316,
+      "candidate": 0.134085,
+      "unit": "inst",
+      "change_pct": -17.39261687079523
+    },
+    "smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio": {
+      "baseline": 0.268733,
+      "candidate": 0.302451,
+      "unit": "inst",
+      "change_pct": 12.54702623049646
+    },
+    "smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio": {
+      "baseline": 0.125172,
+      "candidate": 0.206719,
+      "unit": "inst",
+      "change_pct": 65.14795641197712
+    }
+  },
+  "derived_no_eligible_pct": {
+    "baseline": 62.834882,
+    "candidate": 63.619459
+  },
+  "profile_guard_exits": {
+    "baseline": {
+      "time": 1790397696.2067363,
+      "event": "exit",
+      "unit": "ds4-hostguard-1921520-1790397667370325729.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "candidate": {
+      "time": 1790399058.4460104,
+      "event": "exit",
+      "unit": "ds4-hostguard-1925551-1790399027601980910.scope",
+      "status": 0,
+      "payload_status": 0
+    }
+  },
+  "interpretation": "Same tensor arithmetic and launch resource ceiling, but more local traffic, total L2 traffic, executed instructions and scheduler stalls. Async copies reduced explicit global-load/shared-store instructions without improving latency. Counters support rejection; they do not uniquely establish a causal compiler scheduling mechanism."
+}

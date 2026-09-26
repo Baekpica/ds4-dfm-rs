@@ -239,3 +239,14 @@ Busy model clocks were 2184–2190 MHz (median 2190); all 24 busy isolated
 clock samples were 2190 MHz. The user's 300–2200 MHz range is preserved.
 [Clock summary](gateup-schedule/clocks.json). Raw traces, dumps, guards and
 scripts remain under `scratch/mimo-prefill-20260926/`.
+
+## Additional round 4: Down activation async copy
+
+**Rejected.** A fresh whole trace attributed 21.45% of prefill to IQ2_XS
+Down. Full isolated NCU motivated activation-only async copies while
+preserving the weight loader, MMA order and allocation size. Three rotated
+original/OFF/ON pairs were byte-exact, but ON lost every pair: median
+latency increased 0.69% against original and 1.00% against same-build OFF.
+Spills and L2 traffic increased. The candidate was reverted before model
+qualification; no end-to-end gain is claimed.
+[Decision, measurements and archived patch](down-async/README.md).
