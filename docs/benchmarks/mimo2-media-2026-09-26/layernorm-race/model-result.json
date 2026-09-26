@@ -1,0 +1,159 @@
+{
+  "status": "corrected model outputs validated after CPU-only postprocessing fix",
+  "scope": "Correctness and repeatability only; no timing/adoption claim",
+  "audio": {
+    "eval-audio-3": {
+      "repeats": 2,
+      "comparisons": {
+        "logits_exact": true,
+        "max_abs": 0.0,
+        "rms": 0.0,
+        "argmax_exact": true,
+        "tokens_exact": true,
+        "stop_id_exact": true,
+        "finish_reason_exact": true,
+        "answer_exact": true,
+        "input_bytes_exact": true,
+        "media_geometry_exact": true
+      },
+      "finite_logits_per_run": 152576,
+      "logits_bytes_per_run": 610304,
+      "logits_sha256": "60d1face1d689eafebcb07b67e98eeb85b672918b1c6029da407d7574bc6640f",
+      "generated_tokens": 30,
+      "stop_id": 151645,
+      "answer": "assumed all at once an appearance of noise and disorder never believe however disinterested the love of a kept woman may be that it will cost one nothing",
+      "transcript": {
+        "reference_transcript": "ASSUMED ALL AT ONCE AN APPEARANCE OF NOISE AND DISORDER NEVER BELIEVE HOWEVER DISINTERESTED THE LOVE OF A KEPT WOMAN MAY BE THAT IT WILL COST ONE NOTHING",
+        "normalization": "lowercase; remove Unicode punctuation and all whitespace",
+        "scope": "normalized character equality only; word boundaries are removed, not a WER/quality score",
+        "status": "complete",
+        "normalized_equal": true,
+        "normalized_answer": "assumedallatonceanappearanceofnoiseanddisorderneverbelievehoweverdisinterestedtheloveofakeptwomanmaybethatitwillcostonenothing",
+        "normalized_reference": "assumedallatonceanappearanceofnoiseanddisorderneverbelievehoweverdisinterestedtheloveofakeptwomanmaybethatitwillcostonenothing"
+      },
+      "input_hashes": {
+        "request.json": "6a630d196c6ceb0da86e1da81b4f408efb6dd37052461b9c7b87463cdb63fd84",
+        "rendered-prompt.txt": "e4ab61195ab3741fd32bc05fdb000bdcd0ab8a8ae5dca24f30aac4fe1ef5274b",
+        "prompt-tokens.json": "3914d2872535abf31c84101890e14443986311b6bcf12b8873c9d11e89f7da89"
+      },
+      "media_geometry": {
+        "parts": [
+          {
+            "kind": "audio",
+            "bytes": 356044,
+            "feature_tokens": 70
+          }
+        ],
+        "spans": [
+          {
+            "start": 10,
+            "count": 70,
+            "kind": "Audio"
+          }
+        ]
+      },
+      "guard_exits": [
+        0,
+        0
+      ]
+    },
+    "eval-audio-0": {
+      "repeats": 2,
+      "comparisons": {
+        "logits_exact": true,
+        "max_abs": 0.0,
+        "rms": 0.0,
+        "argmax_exact": true,
+        "tokens_exact": true,
+        "stop_id_exact": true,
+        "finish_reason_exact": true,
+        "answer_exact": true,
+        "input_bytes_exact": true,
+        "media_geometry_exact": true
+      },
+      "finite_logits_per_run": 152576,
+      "logits_bytes_per_run": 610304,
+      "logits_sha256": "4ea31c895850bf7e912c07148e05066c872791cb1797f137eb749499a5b11df8",
+      "generated_tokens": 42,
+      "stop_id": 151645,
+      "answer": "Chapter sixteen. I might have told you of the beginning of this liaison in a few lines, but I wanted you to see every step by which we came. I too agreed to whatever Marguerite wished.",
+      "transcript": {
+        "reference_transcript": "CHAPTER SIXTEEN I MIGHT HAVE TOLD YOU OF THE BEGINNING OF THIS LIAISON IN A FEW LINES BUT I WANTED YOU TO SEE EVERY STEP BY WHICH WE CAME I TO AGREE TO WHATEVER MARGUERITE WISHED",
+        "normalization": "lowercase; remove Unicode punctuation and all whitespace",
+        "scope": "normalized character equality only; word boundaries are removed, not a WER/quality score",
+        "status": "complete",
+        "normalized_equal": false,
+        "normalized_answer": "chaptersixteenimighthavetoldyouofthebeginningofthisliaisoninafewlinesbutiwantedyoutoseeeverystepbywhichwecameitooagreedtowhatevermargueritewished",
+        "normalized_reference": "chaptersixteenimighthavetoldyouofthebeginningofthisliaisoninafewlinesbutiwantedyoutoseeeverystepbywhichwecameitoagreetowhatevermargueritewished"
+      },
+      "input_hashes": {
+        "request.json": "acd6483fbfbae9225ca77e7173d5ce50b085ff51f32fbf0b9bcca5033b1302e4",
+        "rendered-prompt.txt": "e4ab61195ab3741fd32bc05fdb000bdcd0ab8a8ae5dca24f30aac4fe1ef5274b",
+        "prompt-tokens.json": "2ddcf1b21273a7b6edfbd58738dfaa947de11e339e4addb261c57296f48538f3"
+      },
+      "media_geometry": {
+        "parts": [
+          {
+            "kind": "audio",
+            "bytes": 465004,
+            "feature_tokens": 91
+          }
+        ],
+        "spans": [
+          {
+            "start": 10,
+            "count": 91,
+            "kind": "Audio"
+          }
+        ]
+      },
+      "guard_exits": [
+        0,
+        0
+      ]
+    }
+  },
+  "screen": {
+    "finite_logits": 152576,
+    "logits_bytes": 610304,
+    "logits_sha256": "c13b181981ad63af77de9c96e032d79e5d701661a9cea2091d2b3044df62193f",
+    "argmax": 785,
+    "generated_tokens": 64,
+    "stop_id": null,
+    "finish_reason_inferred": "length",
+    "prompt_tokens": 794,
+    "image_pad_counts": [
+      768
+    ],
+    "answer": "The image displays a task dashboard for \"PROJECT ATLAS\". The visible content includes:\n\n*   **Header:** \"PROJECT ATLAS | Task dashboard\"\n*   **Status Counters:** Three colored boxes indicating task counts:\n    *   **Queued:** 12 (Yellow box)\n    *   **Running:**",
+    "input_hashes": {
+      "request.json": "8a861c34fd7ef7d58fd94486ec0f37a118cb2819da4d804adb4072eab83c16d7",
+      "rendered-prompt.txt": "12396de75918198f4c6c225762d9a2abc618a4233b6d2bf8f6b01707a4b068ff",
+      "prompt-tokens.json": "63a218ae49cf7f089b949dc226dcc168895b4fb71bfc05e71b693656a121fb18"
+    },
+    "request_exact": true,
+    "guard_exit": 0,
+    "quality_scope": "One vision path smoke. Identifies Project Atlas and Queued 12 correctly; 64-token truncation stops before Running 7 and Failed 3, so complete count-answer quality and image repeatability are not established.",
+    "fixture_reference": "tests/fixtures/qwen-images/README.md"
+  },
+  "postprocessing": {
+    "original_failure_preserved": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/layernorm-race/model-proof/failure.json",
+      "bytes": 108,
+      "sha256": "7dfd14dd4c28d51eeb4ff2c901085e48e7f71ec82249e14b592ab07758a25dc3"
+    },
+    "cause": "Frozen image harness has stop_id and no finish_reason; original helper indexed missing finish_reason after successful payload exit.",
+    "repair": "Infer stop when stop_id exists, otherwise length; validate token cap. CPU regression failed before and passed after.",
+    "gpu_rerun": false,
+    "before_check": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/layernorm-race/image-schema-before.json",
+      "bytes": 247,
+      "sha256": "eccd989a9fa030308646757859cce8084a37e69796b790c35cda3512a4e8ed35"
+    },
+    "after_check": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/layernorm-race/image-schema-after.json",
+      "bytes": 235,
+      "sha256": "9046863ddc22edb764611560dd9999039e754d210af54fa8e7aa374e2dd3b084"
+    }
+  }
+}

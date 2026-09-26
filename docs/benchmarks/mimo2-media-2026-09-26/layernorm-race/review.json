@@ -1,0 +1,8 @@
+{
+  "status": "No blocker found in the reduction fix or focused regression",
+  "independent_reviewer": "activation_analysis",
+  "fix": "Snapshot shared[0] into a thread-local register, then block barrier, then return. All callers are uniform and the reduction tree/FP32 order is unchanged.",
+  "coverage": "Audio557x1024 with bias and vision31x1280 without bias use the actual production kernel and 256-thread block. Numeric oracle mirrors the FP32 block tree; repeat and guard checks are independent of that oracle.",
+  "resource_cost": "One synchronization barrier per helper call; LayerNorm calls it twice. No tensor allocation, VRAM growth or arithmetic reordering. End-to-end performance is not established by the correctness test.",
+  "limitations": "Racecheck and numeric tests establish the kernel defect and repair, not that every previous full-model difference had this single cause. Audio optimization qualification remains pending a corrected baseline and fresh A/B."
+}

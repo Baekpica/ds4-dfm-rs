@@ -12,7 +12,10 @@ __device__ static float m2_block_sum(float value, float *shared) {
         if (tid < span) { shared[tid] += shared[tid + span]; }
         __syncthreads();
     }
-    return shared[0];
+    const float sum = shared[0];
+    // Every warp must consume the result before a later reduction reuses shared.
+    __syncthreads();
+    return sum;
 }
 
 __global__ static void mimo2_patch(

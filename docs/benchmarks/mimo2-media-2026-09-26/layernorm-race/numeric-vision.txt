@@ -1,0 +1,3 @@
+host-memory-guard: available=25.80 GiB, scope max/high=13.70/12.70, reserve=12.00, trip=12.00
+case=audio rows=557 dim=1024 repeats=3 max_abs=4.76837158e-07 repeat_exact=true guards=true input_exact=true PASS
+case=vision rows=31 dim=1280 repeats=3 max_abs=4.76837158e-07 repeat_exact=true guards=true input_exact=true PASS

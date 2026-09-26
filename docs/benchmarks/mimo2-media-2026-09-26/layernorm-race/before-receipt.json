@@ -1,0 +1,9 @@
+{
+  "test": "Unmodified production LayerNorm at rows557/dim1024/block256, 3 repetitions",
+  "failure": "racecheck reports shared[0] read at m2_block_sum line15 versus next reduction write line9; numeric max_abs0.267560244, repeated output not exact",
+  "source_sha256": {
+    "cuda/mimo2_media.cuh": "adaa250c33e1d2bf0c5b953ef894c7cc8aa57414b15e1f53f8b21c7c851bc7a3",
+    "tests/mimo2_layernorm.cu": "c8323b897219fde5d50aff15f75773c4fd975f4efe75757d999bea08a443f219"
+  },
+  "binary_sha256": "9d1a109a8b64946e904889c307d637ee122d9edf6a68f95e05f6476b2fc49a97"
+}

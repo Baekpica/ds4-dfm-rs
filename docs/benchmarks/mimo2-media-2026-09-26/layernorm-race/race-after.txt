@@ -1,0 +1,4 @@
+host-memory-guard: available=26.54 GiB, scope max/high=14.50/13.50, reserve=12.00, trip=12.00
+========= COMPUTE-SANITIZER
+rows=557 dim=1024 repeats=3 max_abs=4.76837158e-07 repeat_exact=true guards=true input_exact=true PASS
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
