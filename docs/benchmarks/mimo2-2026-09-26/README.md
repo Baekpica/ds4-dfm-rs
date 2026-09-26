@@ -250,3 +250,13 @@ latency increased 0.69% against original and 1.00% against same-build OFF.
 Spills and L2 traffic increased. The candidate was reverted before model
 qualification; no end-to-end gain is claimed.
 [Decision, measurements and archived patch](down-async/README.md).
+
+## Additional round 5: RoPE row mapping
+
+**Rejected.** After a fresh whole trace, full NCU of both KV-head shapes
+showed memory-dependency stalls. A 2D row grid removed about 44% of executed
+instructions while preserving arithmetic and memory requests. Full outputs
+remained exact, but all six isolated pairs regressed: median latency rose
+1.63% and 2.24% for KV heads 4 and 8. Restore the original mapping; fewer
+instructions alone did not improve this workload.
+[Decision, measurements and archived patch](rope-rows/README.md).

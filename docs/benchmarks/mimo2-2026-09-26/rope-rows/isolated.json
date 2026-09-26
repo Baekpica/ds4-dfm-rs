@@ -1,0 +1,1115 @@
+{
+  "accepted": false,
+  "rows": 4096,
+  "position_base": 4096,
+  "repetitions": 100,
+  "warmups": 16,
+  "samples_per_arm": 3,
+  "rotated_orders": [
+    [
+      "original",
+      "off",
+      "on"
+    ],
+    [
+      "on",
+      "original",
+      "off"
+    ],
+    [
+      "off",
+      "on",
+      "original"
+    ]
+  ],
+  "summary": {
+    "4": {
+      "samples_ms": {
+        "original": [
+          1.817917,
+          1.807725,
+          1.810486
+        ],
+        "off": [
+          1.810679,
+          1.804948,
+          1.806689
+        ],
+        "on": [
+          1.873421,
+          1.839965,
+          1.833821
+        ]
+      },
+      "medians_ms": {
+        "original": 1.810486,
+        "off": 1.806689,
+        "on": 1.839965
+      },
+      "on_latency_change_percent": {
+        "original": 1.6282368380644785,
+        "off": 1.841822250536751
+      },
+      "paired_on_latency_change_percent": {
+        "original": [
+          3.0531646934375933,
+          1.7834571076906114,
+          1.2888804442563906
+        ],
+        "off": [
+          3.465108945318307,
+          1.9400558908068355,
+          1.5017526536110992
+        ]
+      }
+    },
+    "8": {
+      "samples_ms": {
+        "original": [
+          1.971623,
+          1.980881,
+          1.986047
+        ],
+        "off": [
+          1.976453,
+          1.986745,
+          1.985957
+        ],
+        "on": [
+          2.018554,
+          2.042656,
+          2.025319
+        ]
+      },
+      "medians_ms": {
+        "original": 1.980881,
+        "off": 1.985957,
+        "on": 2.025319
+      },
+      "on_latency_change_percent": {
+        "original": 2.2433452590034486,
+        "off": 1.982016730473024
+      },
+      "paired_on_latency_change_percent": {
+        "original": [
+          2.380323215949498,
+          3.1185618924105096,
+          1.9773952982985898
+        ],
+        "off": [
+          2.130129074660503,
+          2.8142011179089543,
+          1.982016730473024
+        ]
+      }
+    }
+  },
+  "runs": [
+    {
+      "heads": 4,
+      "sample": 0,
+      "arm": "original",
+      "kernel_ms": 1.817917,
+      "outputs": [
+        {
+          "tensor": "q",
+          "floats": 50331648,
+          "fnv1a64": "5e7eb4f5537a6842"
+        },
+        {
+          "tensor": "k",
+          "floats": 3145728,
+          "fnv1a64": "80c62b8c544e8d2f"
+        },
+        {
+          "tensor": "v",
+          "floats": 2097152,
+          "fnv1a64": "fdec05a8d341803c"
+        }
+      ],
+      "guard": {
+        "start": {
+          "time": 1790399575.7049198,
+          "event": "start",
+          "unit": "ds4-hostguard-1929792-1790399575697072673.scope",
+          "available_gib": 116.62969589233398,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-rope/probe-original",
+            "4",
+            "100",
+            "16",
+            "4096"
+          ]
+        },
+        "exit": {
+          "time": 1790399577.0369449,
+          "event": "exit",
+          "unit": "ds4-hostguard-1929792-1790399575697072673.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "heads": 4,
+      "sample": 1,
+      "arm": "original",
+      "kernel_ms": 1.807725,
+      "outputs": [
+        {
+          "tensor": "q",
+          "floats": 50331648,
+          "fnv1a64": "5e7eb4f5537a6842"
+        },
+        {
+          "tensor": "k",
+          "floats": 3145728,
+          "fnv1a64": "80c62b8c544e8d2f"
+        },
+        {
+          "tensor": "v",
+          "floats": 2097152,
+          "fnv1a64": "fdec05a8d341803c"
+        }
+      ],
+      "guard": {
+        "start": {
+          "time": 1790399586.1616445,
+          "event": "start",
+          "unit": "ds4-hostguard-1929901-1790399586152248813.scope",
+          "available_gib": 115.66735076904297,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-rope/probe-original",
+            "4",
+            "100",
+            "16",
+            "4096"
+          ]
+        },
+        "exit": {
+          "time": 1790399587.4911551,
+          "event": "exit",
+          "unit": "ds4-hostguard-1929901-1790399586152248813.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "heads": 4,
+      "sample": 2,
+      "arm": "original",
+      "kernel_ms": 1.810486,
+      "outputs": [
+        {
+          "tensor": "q",
+          "floats": 50331648,
+          "fnv1a64": "5e7eb4f5537a6842"
+        },
+        {
+          "tensor": "k",
+          "floats": 3145728,
+          "fnv1a64": "80c62b8c544e8d2f"
+        },
+        {
+          "tensor": "v",
+          "floats": 2097152,
+          "fnv1a64": "fdec05a8d341803c"
+        }
+      ],
+      "guard": {
+        "start": {
+          "time": 1790399596.178683,
+          "event": "start",
+          "unit": "ds4-hostguard-1929982-1790399596169264453.scope",
+          "available_gib": 116.06452178955078,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-rope/probe-original",
+            "4",
+            "100",
+            "16",
+            "4096"
+          ]
+        },
+        "exit": {
+          "time": 1790399597.4073548,
+          "event": "exit",
+          "unit": "ds4-hostguard-1929982-1790399596169264453.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "heads": 4,
+      "sample": 0,
+      "arm": "off",
+      "kernel_ms": 1.810679,
+      "outputs": [
+        {
+          "tensor": "q",
+          "floats": 50331648,
+          "fnv1a64": "5e7eb4f5537a6842"
+        },
+        {
+          "tensor": "k",
+          "floats": 3145728,
+          "fnv1a64": "80c62b8c544e8d2f"
+        },
+        {
+          "tensor": "v",
+          "floats": 2097152,
+          "fnv1a64": "fdec05a8d341803c"
+        }
+      ],
+      "guard": {
+        "start": {
+          "time": 1790399577.1429849,
+          "event": "start",
+          "unit": "ds4-hostguard-1929806-1790399577135415068.scope",
+          "available_gib": 116.39298248291016,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-rope/probe-candidate",
+            "4",
+            "100",
+            "16",
+            "4096"
+          ]
+        },
+        "exit": {
+          "time": 1790399578.4647682,
+          "event": "exit",
+          "unit": "ds4-hostguard-1929806-1790399577135415068.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "heads": 4,
+      "sample": 1,
+      "arm": "off",
+      "kernel_ms": 1.804948,
+      "outputs": [
+        {
+          "tensor": "q",
+          "floats": 50331648,
+          "fnv1a64": "5e7eb4f5537a6842"
+        },
+        {
+          "tensor": "k",
+          "floats": 3145728,
+          "fnv1a64": "80c62b8c544e8d2f"
+        },
+        {
+          "tensor": "v",
+          "floats": 2097152,
+          "fnv1a64": "fdec05a8d341803c"
+        }
+      ],
+      "guard": {
+        "start": {
+          "time": 1790399587.5824761,
+          "event": "start",
+          "unit": "ds4-hostguard-1929914-1790399587574890553.scope",
+          "available_gib": 115.79419708251953,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-rope/probe-candidate",
+            "4",
+            "100",
+            "16",
+            "4096"
+          ]
+        },
+        "exit": {
+          "time": 1790399588.8042977,
+          "event": "exit",
+          "unit": "ds4-hostguard-1929914-1790399587574890553.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "heads": 4,
+      "sample": 2,
+      "arm": "off",
+      "kernel_ms": 1.806689,
+      "outputs": [
+        {
+          "tensor": "q",
+          "floats": 50331648,
+          "fnv1a64": "5e7eb4f5537a6842"
+        },
+        {
+          "tensor": "k",
+          "floats": 3145728,
+          "fnv1a64": "80c62b8c544e8d2f"
+        },
+        {
+          "tensor": "v",
+          "floats": 2097152,
+          "fnv1a64": "fdec05a8d341803c"
+        }
+      ],
+      "guard": {
+        "start": {
+          "time": 1790399593.358112,
+          "event": "start",
+          "unit": "ds4-hostguard-1929960-1790399593350070414.scope",
+          "available_gib": 115.6059684753418,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-rope/probe-candidate",
+            "4",
+            "100",
+            "16",
+            "4096"
+          ]
+        },
+        "exit": {
+          "time": 1790399594.681586,
+          "event": "exit",
+          "unit": "ds4-hostguard-1929960-1790399593350070414.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "heads": 4,
+      "sample": 0,
+      "arm": "on",
+      "kernel_ms": 1.873421,
+      "outputs": [
+        {
+          "tensor": "q",
+          "floats": 50331648,
+          "fnv1a64": "5e7eb4f5537a6842"
+        },
+        {
+          "tensor": "k",
+          "floats": 3145728,
+          "fnv1a64": "80c62b8c544e8d2f"
+        },
+        {
+          "tensor": "v",
+          "floats": 2097152,
+          "fnv1a64": "fdec05a8d341803c"
+        }
+      ],
+      "guard": {
+        "start": {
+          "time": 1790399578.5673952,
+          "event": "start",
+          "unit": "ds4-hostguard-1929830-1790399578559764468.scope",
+          "available_gib": 116.15105819702148,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-rope/probe-candidate",
+            "4",
+            "100",
+            "16",
+            "4096"
+          ]
+        },
+        "exit": {
+          "time": 1790399579.993189,
+          "event": "exit",
+          "unit": "ds4-hostguard-1929830-1790399578559764468.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "heads": 4,
+      "sample": 1,
+      "arm": "on",
+      "kernel_ms": 1.839965,
+      "outputs": [
+        {
+          "tensor": "q",
+          "floats": 50331648,
+          "fnv1a64": "5e7eb4f5537a6842"
+        },
+        {
+          "tensor": "k",
+          "floats": 3145728,
+          "fnv1a64": "80c62b8c544e8d2f"
+        },
+        {
+          "tensor": "v",
+          "floats": 2097152,
+          "fnv1a64": "fdec05a8d341803c"
+        }
+      ],
+      "guard": {
+        "start": {
+          "time": 1790399584.7338731,
+          "event": "start",
+          "unit": "ds4-hostguard-1929890-1790399584726841906.scope",
+          "available_gib": 115.83140563964844,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-rope/probe-candidate",
+            "4",
+            "100",
+            "16",
+            "4096"
+          ]
+        },
+        "exit": {
+          "time": 1790399586.0657837,
+          "event": "exit",
+          "unit": "ds4-hostguard-1929890-1790399584726841906.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "heads": 4,
+      "sample": 2,
+      "arm": "on",
+      "kernel_ms": 1.833821,
+      "outputs": [
+        {
+          "tensor": "q",
+          "floats": 50331648,
+          "fnv1a64": "5e7eb4f5537a6842"
+        },
+        {
+          "tensor": "k",
+          "floats": 3145728,
+          "fnv1a64": "80c62b8c544e8d2f"
+        },
+        {
+          "tensor": "v",
+          "floats": 2097152,
+          "fnv1a64": "fdec05a8d341803c"
+        }
+      ],
+      "guard": {
+        "start": {
+          "time": 1790399594.7501311,
+          "event": "start",
+          "unit": "ds4-hostguard-1929971-1790399594741652699.scope",
+          "available_gib": 115.72109603881836,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-rope/probe-candidate",
+            "4",
+            "100",
+            "16",
+            "4096"
+          ]
+        },
+        "exit": {
+          "time": 1790399596.0729823,
+          "event": "exit",
+          "unit": "ds4-hostguard-1929971-1790399594741652699.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "heads": 8,
+      "sample": 0,
+      "arm": "original",
+      "kernel_ms": 1.971623,
+      "outputs": [
+        {
+          "tensor": "q",
+          "floats": 50331648,
+          "fnv1a64": "29b5938979c645a2"
+        },
+        {
+          "tensor": "k",
+          "floats": 6291456,
+          "fnv1a64": "a26d894d1298081a"
+        },
+        {
+          "tensor": "v",
+          "floats": 4194304,
+          "fnv1a64": "b42ab39649db4bdb"
+        }
+      ],
+      "guard": {
+        "start": {
+          "time": 1790399580.0922832,
+          "event": "start",
+          "unit": "ds4-hostguard-1929856-1790399580082554344.scope",
+          "available_gib": 116.18797302246094,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-rope/probe-original",
+            "8",
+            "100",
+            "16",
+            "4096"
+          ]
+        },
+        "exit": {
+          "time": 1790399581.5150974,
+          "event": "exit",
+          "unit": "ds4-hostguard-1929856-1790399580082554344.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "heads": 8,
+      "sample": 1,
+      "arm": "original",
+      "kernel_ms": 1.980881,
+      "outputs": [
+        {
+          "tensor": "q",
+          "floats": 50331648,
+          "fnv1a64": "29b5938979c645a2"
+        },
+        {
+          "tensor": "k",
+          "floats": 6291456,
+          "fnv1a64": "a26d894d1298081a"
+        },
+        {
+          "tensor": "v",
+          "floats": 4194304,
+          "fnv1a64": "b42ab39649db4bdb"
+        }
+      ],
+      "guard": {
+        "start": {
+          "time": 1790399590.4239852,
+          "event": "start",
+          "unit": "ds4-hostguard-1929936-1790399590415018530.scope",
+          "available_gib": 115.59273147583008,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-rope/probe-original",
+            "8",
+            "100",
+            "16",
+            "4096"
+          ]
+        },
+        "exit": {
+          "time": 1790399591.8533623,
+          "event": "exit",
+          "unit": "ds4-hostguard-1929936-1790399590415018530.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "heads": 8,
+      "sample": 2,
+      "arm": "original",
+      "kernel_ms": 1.986047,
+      "outputs": [
+        {
+          "tensor": "q",
+          "floats": 50331648,
+          "fnv1a64": "29b5938979c645a2"
+        },
+        {
+          "tensor": "k",
+          "floats": 6291456,
+          "fnv1a64": "a26d894d1298081a"
+        },
+        {
+          "tensor": "v",
+          "floats": 4194304,
+          "fnv1a64": "b42ab39649db4bdb"
+        }
+      ],
+      "guard": {
+        "start": {
+          "time": 1790399600.5834148,
+          "event": "start",
+          "unit": "ds4-hostguard-1930016-1790399600576041776.scope",
+          "available_gib": 115.9691276550293,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-rope/probe-original",
+            "8",
+            "100",
+            "16",
+            "4096"
+          ]
+        },
+        "exit": {
+          "time": 1790399601.9093342,
+          "event": "exit",
+          "unit": "ds4-hostguard-1930016-1790399600576041776.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "heads": 8,
+      "sample": 0,
+      "arm": "off",
+      "kernel_ms": 1.976453,
+      "outputs": [
+        {
+          "tensor": "q",
+          "floats": 50331648,
+          "fnv1a64": "29b5938979c645a2"
+        },
+        {
+          "tensor": "k",
+          "floats": 6291456,
+          "fnv1a64": "a26d894d1298081a"
+        },
+        {
+          "tensor": "v",
+          "floats": 4194304,
+          "fnv1a64": "b42ab39649db4bdb"
+        }
+      ],
+      "guard": {
+        "start": {
+          "time": 1790399581.5803561,
+          "event": "start",
+          "unit": "ds4-hostguard-1929868-1790399581573526058.scope",
+          "available_gib": 116.14402389526367,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-rope/probe-candidate",
+            "8",
+            "100",
+            "16",
+            "4096"
+          ]
+        },
+        "exit": {
+          "time": 1790399583.117157,
+          "event": "exit",
+          "unit": "ds4-hostguard-1929868-1790399581573526058.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "heads": 8,
+      "sample": 1,
+      "arm": "off",
+      "kernel_ms": 1.986745,
+      "outputs": [
+        {
+          "tensor": "q",
+          "floats": 50331648,
+          "fnv1a64": "29b5938979c645a2"
+        },
+        {
+          "tensor": "k",
+          "floats": 6291456,
+          "fnv1a64": "a26d894d1298081a"
+        },
+        {
+          "tensor": "v",
+          "floats": 4194304,
+          "fnv1a64": "b42ab39649db4bdb"
+        }
+      ],
+      "guard": {
+        "start": {
+          "time": 1790399591.9206362,
+          "event": "start",
+          "unit": "ds4-hostguard-1929947-1790399591911465987.scope",
+          "available_gib": 115.72503662109375,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-rope/probe-candidate",
+            "8",
+            "100",
+            "16",
+            "4096"
+          ]
+        },
+        "exit": {
+          "time": 1790399593.2505045,
+          "event": "exit",
+          "unit": "ds4-hostguard-1929947-1790399591911465987.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "heads": 8,
+      "sample": 2,
+      "arm": "off",
+      "kernel_ms": 1.985957,
+      "outputs": [
+        {
+          "tensor": "q",
+          "floats": 50331648,
+          "fnv1a64": "29b5938979c645a2"
+        },
+        {
+          "tensor": "k",
+          "floats": 6291456,
+          "fnv1a64": "a26d894d1298081a"
+        },
+        {
+          "tensor": "v",
+          "floats": 4194304,
+          "fnv1a64": "b42ab39649db4bdb"
+        }
+      ],
+      "guard": {
+        "start": {
+          "time": 1790399597.5138302,
+          "event": "start",
+          "unit": "ds4-hostguard-1929994-1790399597504950276.scope",
+          "available_gib": 115.99824142456055,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-rope/probe-candidate",
+            "8",
+            "100",
+            "16",
+            "4096"
+          ]
+        },
+        "exit": {
+          "time": 1790399598.9451015,
+          "event": "exit",
+          "unit": "ds4-hostguard-1929994-1790399597504950276.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "heads": 8,
+      "sample": 0,
+      "arm": "on",
+      "kernel_ms": 2.018554,
+      "outputs": [
+        {
+          "tensor": "q",
+          "floats": 50331648,
+          "fnv1a64": "29b5938979c645a2"
+        },
+        {
+          "tensor": "k",
+          "floats": 6291456,
+          "fnv1a64": "a26d894d1298081a"
+        },
+        {
+          "tensor": "v",
+          "floats": 4194304,
+          "fnv1a64": "b42ab39649db4bdb"
+        }
+      ],
+      "guard": {
+        "start": {
+          "time": 1790399583.2101798,
+          "event": "start",
+          "unit": "ds4-hostguard-1929879-1790399583201224504.scope",
+          "available_gib": 116.13226699829102,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-rope/probe-candidate",
+            "8",
+            "100",
+            "16",
+            "4096"
+          ]
+        },
+        "exit": {
+          "time": 1790399584.6451797,
+          "event": "exit",
+          "unit": "ds4-hostguard-1929879-1790399583201224504.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "heads": 8,
+      "sample": 1,
+      "arm": "on",
+      "kernel_ms": 2.042656,
+      "outputs": [
+        {
+          "tensor": "q",
+          "floats": 50331648,
+          "fnv1a64": "29b5938979c645a2"
+        },
+        {
+          "tensor": "k",
+          "floats": 6291456,
+          "fnv1a64": "a26d894d1298081a"
+        },
+        {
+          "tensor": "v",
+          "floats": 4194304,
+          "fnv1a64": "b42ab39649db4bdb"
+        }
+      ],
+      "guard": {
+        "start": {
+          "time": 1790399588.8956437,
+          "event": "start",
+          "unit": "ds4-hostguard-1929925-1790399588888385398.scope",
+          "available_gib": 115.66833877563477,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-rope/probe-candidate",
+            "8",
+            "100",
+            "16",
+            "4096"
+          ]
+        },
+        "exit": {
+          "time": 1790399590.3214252,
+          "event": "exit",
+          "unit": "ds4-hostguard-1929925-1790399588888385398.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "heads": 8,
+      "sample": 2,
+      "arm": "on",
+      "kernel_ms": 2.025319,
+      "outputs": [
+        {
+          "tensor": "q",
+          "floats": 50331648,
+          "fnv1a64": "29b5938979c645a2"
+        },
+        {
+          "tensor": "k",
+          "floats": 6291456,
+          "fnv1a64": "a26d894d1298081a"
+        },
+        {
+          "tensor": "v",
+          "floats": 4194304,
+          "fnv1a64": "b42ab39649db4bdb"
+        }
+      ],
+      "guard": {
+        "start": {
+          "time": 1790399599.0492733,
+          "event": "start",
+          "unit": "ds4-hostguard-1930005-1790399599041648019.scope",
+          "available_gib": 116.0013198852539,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-rope/probe-candidate",
+            "8",
+            "100",
+            "16",
+            "4096"
+          ]
+        },
+        "exit": {
+          "time": 1790399600.4779274,
+          "event": "exit",
+          "unit": "ds4-hostguard-1930005-1790399599041648019.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    }
+  ],
+  "output_sha256": {
+    "4-original": {
+      "q": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/4-original.q.f32",
+        "bytes": 201326592,
+        "sha256": "767f2a619c9183bb6be42f06d12f1d824566ff9f376d9d0478378699fc4b9798"
+      },
+      "k": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/4-original.k.f32",
+        "bytes": 12582912,
+        "sha256": "00a679ad57b872ebe52c2095c998e42cdf3d445859af425932ff89e9d7db795a"
+      },
+      "v": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/4-original.v.f32",
+        "bytes": 8388608,
+        "sha256": "2f0641333a09d39b8e144e88660412f1769072235cd6ecf4d6e32f281755d182"
+      }
+    },
+    "4-off": {
+      "q": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/4-off.q.f32",
+        "bytes": 201326592,
+        "sha256": "767f2a619c9183bb6be42f06d12f1d824566ff9f376d9d0478378699fc4b9798"
+      },
+      "k": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/4-off.k.f32",
+        "bytes": 12582912,
+        "sha256": "00a679ad57b872ebe52c2095c998e42cdf3d445859af425932ff89e9d7db795a"
+      },
+      "v": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/4-off.v.f32",
+        "bytes": 8388608,
+        "sha256": "2f0641333a09d39b8e144e88660412f1769072235cd6ecf4d6e32f281755d182"
+      }
+    },
+    "4-on": {
+      "q": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/4-on.q.f32",
+        "bytes": 201326592,
+        "sha256": "767f2a619c9183bb6be42f06d12f1d824566ff9f376d9d0478378699fc4b9798"
+      },
+      "k": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/4-on.k.f32",
+        "bytes": 12582912,
+        "sha256": "00a679ad57b872ebe52c2095c998e42cdf3d445859af425932ff89e9d7db795a"
+      },
+      "v": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/4-on.v.f32",
+        "bytes": 8388608,
+        "sha256": "2f0641333a09d39b8e144e88660412f1769072235cd6ecf4d6e32f281755d182"
+      }
+    },
+    "8-original": {
+      "q": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/8-original.q.f32",
+        "bytes": 201326592,
+        "sha256": "e8bb7ba366d5e45c150ab51a1f49ae89e49dbe3f1088705bb8ce17d0d9314054"
+      },
+      "k": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/8-original.k.f32",
+        "bytes": 25165824,
+        "sha256": "bef42f1eb7603ee972c0d142dcb8f1411fe8c459356801de021206f029291152"
+      },
+      "v": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/8-original.v.f32",
+        "bytes": 16777216,
+        "sha256": "3a3d5bc9cd7dc538d7b2c78a472d99afaf203c80332daa3a8c3c21f4c2846071"
+      }
+    },
+    "8-off": {
+      "q": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/8-off.q.f32",
+        "bytes": 201326592,
+        "sha256": "e8bb7ba366d5e45c150ab51a1f49ae89e49dbe3f1088705bb8ce17d0d9314054"
+      },
+      "k": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/8-off.k.f32",
+        "bytes": 25165824,
+        "sha256": "bef42f1eb7603ee972c0d142dcb8f1411fe8c459356801de021206f029291152"
+      },
+      "v": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/8-off.v.f32",
+        "bytes": 16777216,
+        "sha256": "3a3d5bc9cd7dc538d7b2c78a472d99afaf203c80332daa3a8c3c21f4c2846071"
+      }
+    },
+    "8-on": {
+      "q": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/8-on.q.f32",
+        "bytes": 201326592,
+        "sha256": "e8bb7ba366d5e45c150ab51a1f49ae89e49dbe3f1088705bb8ce17d0d9314054"
+      },
+      "k": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/8-on.k.f32",
+        "bytes": 25165824,
+        "sha256": "bef42f1eb7603ee972c0d142dcb8f1411fe8c459356801de021206f029291152"
+      },
+      "v": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/8-on.v.f32",
+        "bytes": 16777216,
+        "sha256": "3a3d5bc9cd7dc538d7b2c78a472d99afaf203c80332daa3a8c3c21f4c2846071"
+      }
+    }
+  },
+  "proof": "All sample0 complete Q/K/V dumps compare byte-exact across original/OFF/ON; matching complete-file SHA256 verified during packaging. All18 guards/payloads exit0.",
+  "limitation": "Synthetic finite QKV; no upstream projection or downstream KV store; repeated inputs and profiler cache replay differ from model residency."
+}

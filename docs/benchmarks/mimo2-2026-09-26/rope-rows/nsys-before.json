@@ -1,0 +1,3015 @@
+{
+  "source": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/after-down4-scout/trace.sqlite",
+  "range_selection": "longest",
+  "kernel_name_column": "shortName",
+  "available_range_counts": {
+    "ds4.prefill": 1,
+    "ds4.decode": 1
+  },
+  "notes": [
+    "Durations are measured inside selected NVTX intervals; crossing kernels are clipped and listed.",
+    "Kernel time sums may exceed wall time if streams or devices overlap.",
+    "GPU busy/idle are interval unions across captured devices; idle includes host and other work.",
+    "Short names merge template instantiations; use --names demangled when those distinctions matter."
+  ],
+  "phases": {
+    "ds4.prefill": {
+      "phase_seconds": 6.705591616,
+      "range_count": 1,
+      "ranges": [
+        {
+          "start": 5283046848,
+          "end": 11988638464,
+          "globalTid": 313790295794687,
+          "name": "ds4.prefill"
+        }
+      ],
+      "kernels": [
+        [
+          "gateup_iq2_d2r_pair_kernel",
+          {
+            "ns": 2152450528,
+            "count": 94
+          }
+        ],
+        [
+          "ds4_moe_worklist_mmq_kernel",
+          {
+            "ns": 1439868256,
+            "count": 94
+          }
+        ],
+        [
+          "dense_q8_d2r_kernel",
+          {
+            "ns": 662236416,
+            "count": 100
+          }
+        ],
+        [
+          "prefill",
+          {
+            "ns": 545154624,
+            "count": 96
+          }
+        ],
+        [
+          "mul_mat_q",
+          {
+            "ns": 483409728,
+            "count": 98
+          }
+        ],
+        [
+          "mimo2_sum_residual",
+          {
+            "ns": 254762176,
+            "count": 94
+          }
+        ],
+        [
+          "mimo2_swiglu_q8",
+          {
+            "ns": 249793248,
+            "count": 94
+          }
+        ],
+        [
+          "quantize_mmq_q8_1",
+          {
+            "ns": 212165952,
+            "count": 292
+          }
+        ],
+        [
+          "mimo2_split_rope",
+          {
+            "ns": 184078880,
+            "count": 96
+          }
+        ],
+        [
+          "exaone_rms_norm_kernel",
+          {
+            "ns": 105365472,
+            "count": 194
+          }
+        ],
+        [
+          "mimo2_attn_residual",
+          {
+            "ns": 74405728,
+            "count": 96
+          }
+        ],
+        [
+          "nvjet_sm121_sss_tf32_mma_128x176x32_2_32x88x32_tmaAB_alignCD4_bz_TNNN",
+          {
+            "ns": 40257984,
+            "count": 94
+          }
+        ],
+        [
+          "mimo2_router",
+          {
+            "ns": 32357536,
+            "count": 94
+          }
+        ],
+        [
+          "ds4_mmq_sanitize_f32_kernel",
+          {
+            "ns": 25300576,
+            "count": 98
+          }
+        ],
+        [
+          "mimo2_kv_store",
+          {
+            "ns": 23506112,
+            "count": 96
+          }
+        ],
+        [
+          "ds4_mmid_scatter_kernel",
+          {
+            "ns": 7624480,
+            "count": 188
+          }
+        ],
+        [
+          "ds4_mmid_scan_kernel",
+          {
+            "ns": 7154272,
+            "count": 188
+          }
+        ],
+        [
+          "step37_swiglu",
+          {
+            "ns": 6418592,
+            "count": 2
+          }
+        ],
+        [
+          "q8_0_aligned_dense_vec_kernel",
+          {
+            "ns": 5151456,
+            "count": 2
+          }
+        ],
+        [
+          "exaone_add_kernel",
+          {
+            "ns": 1554720,
+            "count": 2
+          }
+        ],
+        [
+          "embed_tokens_q8_0_kernel",
+          {
+            "ns": 695360,
+            "count": 2
+          }
+        ],
+        [
+          "ds4_mmid_count_kernel",
+          {
+            "ns": 421856,
+            "count": 188
+          }
+        ],
+        [
+          "ds4_moe_build_tile_worklist",
+          {
+            "ns": 224384,
+            "count": 94
+          }
+        ],
+        [
+          "d2r_build_worklist_kernel",
+          {
+            "ns": 221184,
+            "count": 94
+          }
+        ],
+        [
+          "step37_rope_table",
+          {
+            "ns": 93184,
+            "count": 4
+          }
+        ],
+        [
+          "quantize_q8_1",
+          {
+            "ns": 2432,
+            "count": 2
+          }
+        ]
+      ],
+      "geometry": {
+        "gateup_iq2_d2r_pair_kernel": [
+          [
+            16,
+            768,
+            2,
+            32,
+            8,
+            1,
+            128,
+            37744,
+            0
+          ]
+        ],
+        "ds4_moe_worklist_mmq_kernel": [
+          [
+            48,
+            1,
+            1,
+            32,
+            8,
+            1,
+            255,
+            16,
+            80128
+          ]
+        ],
+        "dense_q8_d2r_kernel": [
+          [
+            3392,
+            1,
+            1,
+            32,
+            16,
+            1,
+            128,
+            0,
+            69120
+          ],
+          [
+            3712,
+            1,
+            1,
+            32,
+            16,
+            1,
+            128,
+            0,
+            69120
+          ],
+          [
+            4096,
+            1,
+            1,
+            32,
+            16,
+            1,
+            128,
+            0,
+            69120
+          ]
+        ],
+        "prefill": [
+          [
+            64,
+            64,
+            1,
+            128,
+            1,
+            1,
+            234,
+            21504,
+            0
+          ],
+          [
+            64,
+            64,
+            1,
+            128,
+            1,
+            1,
+            238,
+            21504,
+            0
+          ]
+        ],
+        "mul_mat_q": [
+          [
+            1024,
+            1,
+            1,
+            32,
+            8,
+            1,
+            255,
+            0,
+            57856
+          ]
+        ],
+        "mimo2_sum_residual": [
+          [
+            65536,
+            1,
+            1,
+            256,
+            1,
+            1,
+            28,
+            0,
+            0
+          ]
+        ],
+        "mimo2_swiglu_q8": [
+          [
+            32768,
+            4,
+            1,
+            128,
+            1,
+            1,
+            23,
+            0,
+            0
+          ]
+        ],
+        "quantize_mmq_q8_1": [
+          [
+            4096,
+            8,
+            1,
+            128,
+            1,
+            1,
+            20,
+            0,
+            0
+          ],
+          [
+            4096,
+            16,
+            1,
+            128,
+            1,
+            1,
+            20,
+            0,
+            0
+          ],
+          [
+            4096,
+            32,
+            1,
+            128,
+            1,
+            1,
+            20,
+            0,
+            0
+          ],
+          [
+            32768,
+            8,
+            1,
+            128,
+            1,
+            1,
+            20,
+            0,
+            0
+          ]
+        ],
+        "mimo2_split_rope": [
+          [
+            217088,
+            1,
+            1,
+            256,
+            1,
+            1,
+            22,
+            0,
+            0
+          ],
+          [
+            237568,
+            1,
+            1,
+            256,
+            1,
+            1,
+            22,
+            0,
+            0
+          ]
+        ],
+        "exaone_rms_norm_kernel": [
+          [
+            1,
+            1,
+            1,
+            1024,
+            1,
+            1,
+            18,
+            128,
+            0
+          ],
+          [
+            4096,
+            1,
+            1,
+            1024,
+            1,
+            1,
+            18,
+            128,
+            0
+          ]
+        ],
+        "mimo2_attn_residual": [
+          [
+            65536,
+            1,
+            1,
+            256,
+            1,
+            1,
+            16,
+            0,
+            0
+          ]
+        ],
+        "nvjet_sm121_sss_tf32_mma_128x176x32_2_32x88x32_tmaAB_alignCD4_bz_TNNN": [
+          [
+            16,
+            3,
+            1,
+            64,
+            4,
+            1,
+            255,
+            0,
+            78848
+          ]
+        ],
+        "mimo2_router": [
+          [
+            4096,
+            1,
+            1,
+            128,
+            1,
+            1,
+            39,
+            2048,
+            0
+          ]
+        ],
+        "ds4_mmq_sanitize_f32_kernel": [
+          [
+            65536,
+            1,
+            1,
+            256,
+            1,
+            1,
+            16,
+            0,
+            0
+          ]
+        ],
+        "mimo2_kv_store": [
+          [
+            20480,
+            1,
+            1,
+            256,
+            1,
+            1,
+            18,
+            0,
+            0
+          ],
+          [
+            40960,
+            1,
+            1,
+            256,
+            1,
+            1,
+            18,
+            0,
+            0
+          ]
+        ],
+        "ds4_mmid_scatter_kernel": [
+          [
+            32,
+            1,
+            1,
+            256,
+            1,
+            1,
+            25,
+            0,
+            4096
+          ],
+          [
+            256,
+            1,
+            1,
+            256,
+            1,
+            1,
+            25,
+            0,
+            512
+          ]
+        ],
+        "ds4_mmid_scan_kernel": [
+          [
+            1,
+            1,
+            1,
+            1024,
+            1,
+            1,
+            32,
+            16,
+            1024
+          ]
+        ],
+        "step37_swiglu": [
+          [
+            262144,
+            1,
+            1,
+            256,
+            1,
+            1,
+            20,
+            0,
+            0
+          ]
+        ],
+        "q8_0_aligned_dense_vec_kernel": [
+          [
+            152576,
+            1,
+            1,
+            32,
+            1,
+            1,
+            40,
+            0,
+            0
+          ]
+        ],
+        "exaone_add_kernel": [
+          [
+            65536,
+            1,
+            1,
+            256,
+            1,
+            1,
+            16,
+            0,
+            0
+          ]
+        ],
+        "embed_tokens_q8_0_kernel": [
+          [
+            65536,
+            1,
+            1,
+            256,
+            1,
+            1,
+            16,
+            0,
+            0
+          ]
+        ],
+        "ds4_mmid_count_kernel": [
+          [
+            32,
+            1,
+            1,
+            256,
+            1,
+            1,
+            17,
+            0,
+            1028
+          ],
+          [
+            256,
+            1,
+            1,
+            256,
+            1,
+            1,
+            17,
+            0,
+            1028
+          ]
+        ],
+        "ds4_moe_build_tile_worklist": [
+          [
+            256,
+            1,
+            1,
+            128,
+            1,
+            1,
+            22,
+            16,
+            0
+          ]
+        ],
+        "d2r_build_worklist_kernel": [
+          [
+            1,
+            1,
+            1,
+            256,
+            1,
+            1,
+            32,
+            1040,
+            0
+          ]
+        ],
+        "step37_rope_table": [
+          [
+            1024,
+            1,
+            1,
+            128,
+            1,
+            1,
+            26,
+            0,
+            0
+          ]
+        ],
+        "quantize_q8_1": [
+          [
+            16,
+            1,
+            1,
+            256,
+            1,
+            1,
+            24,
+            0,
+            0
+          ]
+        ]
+      },
+      "geometry_stats": [
+        {
+          "name": "gateup_iq2_d2r_pair_kernel",
+          "geometry": {
+            "gridX": 16,
+            "gridY": 768,
+            "gridZ": 2,
+            "blockX": 32,
+            "blockY": 8,
+            "blockZ": 1,
+            "registersPerThread": 128,
+            "staticSharedMemory": 37744,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 2152450528,
+          "count": 94,
+          "mean_us": 22898.409872340424,
+          "wall_percent": 32.09933815331232
+        },
+        {
+          "name": "ds4_moe_worklist_mmq_kernel",
+          "geometry": {
+            "gridX": 48,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 32,
+            "blockY": 8,
+            "blockZ": 1,
+            "registersPerThread": 255,
+            "staticSharedMemory": 16,
+            "dynamicSharedMemory": 80128
+          },
+          "ns": 1439868256,
+          "count": 94,
+          "mean_us": 15317.747404255319,
+          "wall_percent": 21.472650564707457
+        },
+        {
+          "name": "dense_q8_d2r_kernel",
+          "geometry": {
+            "gridX": 3712,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 32,
+            "blockY": 16,
+            "blockZ": 1,
+            "registersPerThread": 128,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 69120
+          },
+          "ns": 522468864,
+          "count": 78,
+          "mean_us": 6698.318769230769,
+          "wall_percent": 7.791540164082668
+        },
+        {
+          "name": "mul_mat_q",
+          "geometry": {
+            "gridX": 1024,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 32,
+            "blockY": 8,
+            "blockZ": 1,
+            "registersPerThread": 255,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 57856
+          },
+          "ns": 483409728,
+          "count": 98,
+          "mean_us": 4932.752326530612,
+          "wall_percent": 7.2090541101034455
+        },
+        {
+          "name": "prefill",
+          "geometry": {
+            "gridX": 64,
+            "gridY": 64,
+            "gridZ": 1,
+            "blockX": 128,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 234,
+            "staticSharedMemory": 21504,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 347102336,
+          "count": 18,
+          "mean_us": 19283.463111111112,
+          "wall_percent": 5.176311888302147
+        },
+        {
+          "name": "mimo2_sum_residual",
+          "geometry": {
+            "gridX": 65536,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 28,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 254762176,
+          "count": 94,
+          "mean_us": 2710.235914893617,
+          "wall_percent": 3.799249799109746
+        },
+        {
+          "name": "mimo2_swiglu_q8",
+          "geometry": {
+            "gridX": 32768,
+            "gridY": 4,
+            "gridZ": 1,
+            "blockX": 128,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 23,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 249793248,
+          "count": 94,
+          "mean_us": 2657.3749787234046,
+          "wall_percent": 3.7251485372890323
+        },
+        {
+          "name": "prefill",
+          "geometry": {
+            "gridX": 64,
+            "gridY": 64,
+            "gridZ": 1,
+            "blockX": 128,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 238,
+            "staticSharedMemory": 21504,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 198052288,
+          "count": 78,
+          "mean_us": 2539.1318974358974,
+          "wall_percent": 2.953539364482527
+        },
+        {
+          "name": "mimo2_split_rope",
+          "geometry": {
+            "gridX": 237568,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 22,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 152073312,
+          "count": 78,
+          "mean_us": 1949.6578461538463,
+          "wall_percent": 2.2678582399372886
+        },
+        {
+          "name": "dense_q8_d2r_kernel",
+          "geometry": {
+            "gridX": 3392,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 32,
+            "blockY": 16,
+            "blockZ": 1,
+            "registersPerThread": 128,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 69120
+          },
+          "ns": 110162784,
+          "count": 18,
+          "mean_us": 6120.154666666667,
+          "wall_percent": 1.6428495844743076
+        },
+        {
+          "name": "exaone_rms_norm_kernel",
+          "geometry": {
+            "gridX": 4096,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 1024,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 18,
+            "staticSharedMemory": 128,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 105354464,
+          "count": 192,
+          "mean_us": 548.7211666666666,
+          "wall_percent": 1.5711434580748556
+        },
+        {
+          "name": "quantize_mmq_q8_1",
+          "geometry": {
+            "gridX": 32768,
+            "gridY": 8,
+            "gridZ": 1,
+            "blockX": 128,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 20,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 99042208,
+          "count": 94,
+          "mean_us": 1053.6405106382977,
+          "wall_percent": 1.4770092435047568
+        },
+        {
+          "name": "mimo2_attn_residual",
+          "geometry": {
+            "gridX": 65536,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 16,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 74405728,
+          "count": 96,
+          "mean_us": 775.0596666666667,
+          "wall_percent": 1.109607209339484
+        },
+        {
+          "name": "quantize_mmq_q8_1",
+          "geometry": {
+            "gridX": 4096,
+            "gridY": 16,
+            "gridZ": 1,
+            "blockX": 128,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 20,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 72768000,
+          "count": 96,
+          "mean_us": 758.0,
+          "wall_percent": 1.0851838908049602
+        },
+        {
+          "name": "nvjet_sm121_sss_tf32_mma_128x176x32_2_32x88x32_tmaAB_alignCD4_bz_TNNN",
+          "geometry": {
+            "gridX": 16,
+            "gridY": 3,
+            "gridZ": 1,
+            "blockX": 64,
+            "blockY": 4,
+            "blockZ": 1,
+            "registersPerThread": 255,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 78848
+          },
+          "ns": 40257984,
+          "count": 94,
+          "mean_us": 428.27642553191487,
+          "wall_percent": 0.6003643869981837
+        },
+        {
+          "name": "quantize_mmq_q8_1",
+          "geometry": {
+            "gridX": 4096,
+            "gridY": 8,
+            "gridZ": 1,
+            "blockX": 128,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 20,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 37393696,
+          "count": 100,
+          "mean_us": 373.93696,
+          "wall_percent": 0.5576494684044893
+        },
+        {
+          "name": "mimo2_router",
+          "geometry": {
+            "gridX": 4096,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 128,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 39,
+            "staticSharedMemory": 2048,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 32357536,
+          "count": 94,
+          "mean_us": 344.2291063829787,
+          "wall_percent": 0.4825455806582779
+        },
+        {
+          "name": "mimo2_split_rope",
+          "geometry": {
+            "gridX": 217088,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 22,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 32005568,
+          "count": 18,
+          "mean_us": 1778.087111111111,
+          "wall_percent": 0.4772967074766756
+        },
+        {
+          "name": "dense_q8_d2r_kernel",
+          "geometry": {
+            "gridX": 4096,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 32,
+            "blockY": 16,
+            "blockZ": 1,
+            "registersPerThread": 128,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 69120
+          },
+          "ns": 29604768,
+          "count": 4,
+          "mean_us": 7401.192,
+          "wall_percent": 0.4414937517125409
+        },
+        {
+          "name": "ds4_mmq_sanitize_f32_kernel",
+          "geometry": {
+            "gridX": 65536,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 16,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 25300576,
+          "count": 98,
+          "mean_us": 258.16914285714284,
+          "wall_percent": 0.37730564950646706
+        },
+        {
+          "name": "mimo2_kv_store",
+          "geometry": {
+            "gridX": 40960,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 18,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 20932928,
+          "count": 78,
+          "mean_us": 268.3708717948718,
+          "wall_percent": 0.3121712325882269
+        },
+        {
+          "name": "ds4_mmid_scan_kernel",
+          "geometry": {
+            "gridX": 1,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 1024,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 32,
+            "staticSharedMemory": 16,
+            "dynamicSharedMemory": 1024
+          },
+          "ns": 7154272,
+          "count": 188,
+          "mean_us": 38.054638297872344,
+          "wall_percent": 0.10669113792926813
+        },
+        {
+          "name": "step37_swiglu",
+          "geometry": {
+            "gridX": 262144,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 20,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 6418592,
+          "count": 2,
+          "mean_us": 3209.296,
+          "wall_percent": 0.0957199956031441
+        },
+        {
+          "name": "ds4_mmid_scatter_kernel",
+          "geometry": {
+            "gridX": 32,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 25,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 4096
+          },
+          "ns": 5947744,
+          "count": 94,
+          "mean_us": 63.27387234042553,
+          "wall_percent": 0.08869827362895581
+        },
+        {
+          "name": "q8_0_aligned_dense_vec_kernel",
+          "geometry": {
+            "gridX": 152576,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 32,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 40,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 5151456,
+          "count": 2,
+          "mean_us": 2575.728,
+          "wall_percent": 0.07682328860749994
+        },
+        {
+          "name": "quantize_mmq_q8_1",
+          "geometry": {
+            "gridX": 4096,
+            "gridY": 32,
+            "gridZ": 1,
+            "blockX": 128,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 20,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 2962048,
+          "count": 2,
+          "mean_us": 1481.024,
+          "wall_percent": 0.04417280636256391
+        },
+        {
+          "name": "mimo2_kv_store",
+          "geometry": {
+            "gridX": 20480,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 18,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 2573184,
+          "count": 18,
+          "mean_us": 142.95466666666667,
+          "wall_percent": 0.038373705816802314
+        },
+        {
+          "name": "ds4_mmid_scatter_kernel",
+          "geometry": {
+            "gridX": 256,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 25,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 512
+          },
+          "ns": 1676736,
+          "count": 94,
+          "mean_us": 17.837617021276596,
+          "wall_percent": 0.02500504200105466
+        },
+        {
+          "name": "exaone_add_kernel",
+          "geometry": {
+            "gridX": 65536,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 16,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 1554720,
+          "count": 2,
+          "mean_us": 777.36,
+          "wall_percent": 0.023185426268583546
+        },
+        {
+          "name": "embed_tokens_q8_0_kernel",
+          "geometry": {
+            "gridX": 65536,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 16,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 695360,
+          "count": 2,
+          "mean_us": 347.68,
+          "wall_percent": 0.01036985309902893
+        },
+        {
+          "name": "ds4_moe_build_tile_worklist",
+          "geometry": {
+            "gridX": 256,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 128,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 22,
+            "staticSharedMemory": 16,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 224384,
+          "count": 94,
+          "mean_us": 2.3870638297872344,
+          "wall_percent": 0.0033462222701514427
+        },
+        {
+          "name": "d2r_build_worklist_kernel",
+          "geometry": {
+            "gridX": 1,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 32,
+            "staticSharedMemory": 1040,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 221184,
+          "count": 94,
+          "mean_us": 2.353021276595745,
+          "wall_percent": 0.003298500902921673
+        },
+        {
+          "name": "ds4_mmid_count_kernel",
+          "geometry": {
+            "gridX": 256,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 17,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 1028
+          },
+          "ns": 214528,
+          "count": 94,
+          "mean_us": 2.2822127659574467,
+          "wall_percent": 0.0031992404590837527
+        },
+        {
+          "name": "ds4_mmid_count_kernel",
+          "geometry": {
+            "gridX": 32,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 17,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 1028
+          },
+          "ns": 207328,
+          "count": 94,
+          "mean_us": 2.2056170212765958,
+          "wall_percent": 0.003091867382816771
+        },
+        {
+          "name": "step37_rope_table",
+          "geometry": {
+            "gridX": 1024,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 128,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 26,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 93184,
+          "count": 4,
+          "mean_us": 23.296,
+          "wall_percent": 0.00138964621373089
+        },
+        {
+          "name": "exaone_rms_norm_kernel",
+          "geometry": {
+            "gridX": 1,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 1024,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 18,
+            "staticSharedMemory": 128,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 11008,
+          "count": 2,
+          "mean_us": 5.504,
+          "wall_percent": 0.00016416150327040733
+        },
+        {
+          "name": "quantize_q8_1",
+          "geometry": {
+            "gridX": 16,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 24,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 2432,
+          "count": 2,
+          "mean_us": 1.216,
+          "wall_percent": 3.6268239094624876e-05
+        }
+      ],
+      "kernel_seconds_sum": 6.514675136,
+      "gpu_busy_seconds": 6.514645376,
+      "gpu_idle_within_phase_seconds": 0.19094624,
+      "boundary_clipped_kernels": [],
+      "device_ids": [
+        0
+      ],
+      "stream_ids": [
+        7
+      ],
+      "global_process_ids": [
+        313790293868544
+      ]
+    },
+    "ds4.decode": {
+      "phase_seconds": 5.263573488,
+      "range_count": 1,
+      "ranges": [
+        {
+          "start": 12119357344,
+          "end": 17382930832,
+          "globalTid": 313790295794687,
+          "name": "ds4.decode"
+        }
+      ],
+      "kernels": [
+        [
+          "q8_0_aligned_dense_vec_kernel",
+          {
+            "ns": 2859841760,
+            "count": 12800
+          }
+        ],
+        [
+          "iq2_xxs_aligned_moe_pair_vec_kernel",
+          {
+            "ns": 842339680,
+            "count": 6016
+          }
+        ],
+        [
+          "mul_mat_vec_q_moe",
+          {
+            "ns": 532308192,
+            "count": 6016
+          }
+        ],
+        [
+          "mimo2_attn_split",
+          {
+            "ns": 294605152,
+            "count": 1152
+          }
+        ],
+        [
+          "mimo2_swa_decode",
+          {
+            "ns": 119698336,
+            "count": 4992
+          }
+        ],
+        [
+          "matmul_f32_kernel",
+          {
+            "ns": 117458112,
+            "count": 6016
+          }
+        ],
+        [
+          "exaone_rms_norm_kernel",
+          {
+            "ns": 46865280,
+            "count": 12416
+          }
+        ],
+        [
+          "quantize_q8_1",
+          {
+            "ns": 29667296,
+            "count": 24832
+          }
+        ],
+        [
+          "mimo2_router_warp",
+          {
+            "ns": 20900160,
+            "count": 6016
+          }
+        ],
+        [
+          "exaone_add_kernel",
+          {
+            "ns": 16814592,
+            "count": 12288
+          }
+        ],
+        [
+          "mimo2_attn_merge",
+          {
+            "ns": 11044000,
+            "count": 1152
+          }
+        ],
+        [
+          "mimo2_split_rope",
+          {
+            "ns": 9523456,
+            "count": 6144
+          }
+        ],
+        [
+          "step37_expert_sum",
+          {
+            "ns": 8913088,
+            "count": 6016
+          }
+        ],
+        [
+          "mimo2_kv_store",
+          {
+            "ns": 7956544,
+            "count": 6144
+          }
+        ],
+        [
+          "step37_swiglu",
+          {
+            "ns": 6793856,
+            "count": 6144
+          }
+        ],
+        [
+          "ds4_mmq_sanitize_f32_kernel",
+          {
+            "ns": 6302912,
+            "count": 6016
+          }
+        ],
+        [
+          "dots3_scale_kernel",
+          {
+            "ns": 5570976,
+            "count": 6144
+          }
+        ],
+        [
+          "step37_rope_table",
+          {
+            "ns": 514528,
+            "count": 256
+          }
+        ],
+        [
+          "embed_tokens_q8_0_kernel",
+          {
+            "ns": 235328,
+            "count": 128
+          }
+        ]
+      ],
+      "geometry": {
+        "q8_0_aligned_dense_vec_kernel": [
+          [
+            4096,
+            1,
+            1,
+            32,
+            1,
+            1,
+            40,
+            0,
+            0
+          ],
+          [
+            13568,
+            1,
+            1,
+            32,
+            1,
+            1,
+            40,
+            0,
+            0
+          ],
+          [
+            14848,
+            1,
+            1,
+            32,
+            1,
+            1,
+            40,
+            0,
+            0
+          ],
+          [
+            16384,
+            1,
+            1,
+            32,
+            1,
+            1,
+            40,
+            0,
+            0
+          ],
+          [
+            152576,
+            1,
+            1,
+            32,
+            1,
+            1,
+            40,
+            0,
+            0
+          ]
+        ],
+        "iq2_xxs_aligned_moe_pair_vec_kernel": [
+          [
+            2048,
+            8,
+            2,
+            32,
+            1,
+            1,
+            40,
+            0,
+            0
+          ]
+        ],
+        "mul_mat_vec_q_moe": [
+          [
+            2048,
+            1,
+            1,
+            32,
+            8,
+            1,
+            64,
+            0,
+            0
+          ]
+        ],
+        "mimo2_attn_split": [
+          [
+            32,
+            4,
+            1,
+            512,
+            1,
+            1,
+            38,
+            20480,
+            0
+          ]
+        ],
+        "mimo2_swa_decode": [
+          [
+            1,
+            8,
+            1,
+            256,
+            1,
+            1,
+            36,
+            20480,
+            0
+          ]
+        ],
+        "matmul_f32_kernel": [
+          [
+            256,
+            1,
+            1,
+            256,
+            1,
+            1,
+            22,
+            1024,
+            0
+          ]
+        ],
+        "exaone_rms_norm_kernel": [
+          [
+            1,
+            1,
+            1,
+            1024,
+            1,
+            1,
+            18,
+            128,
+            0
+          ]
+        ],
+        "quantize_q8_1": [
+          [
+            8,
+            1,
+            8,
+            256,
+            1,
+            1,
+            24,
+            0,
+            0
+          ],
+          [
+            16,
+            1,
+            1,
+            256,
+            1,
+            1,
+            24,
+            0,
+            0
+          ],
+          [
+            32,
+            1,
+            1,
+            256,
+            1,
+            1,
+            24,
+            0,
+            0
+          ],
+          [
+            64,
+            1,
+            1,
+            256,
+            1,
+            1,
+            24,
+            0,
+            0
+          ]
+        ],
+        "mimo2_router_warp": [
+          [
+            1,
+            1,
+            1,
+            32,
+            1,
+            1,
+            48,
+            0,
+            0
+          ]
+        ],
+        "exaone_add_kernel": [
+          [
+            16,
+            1,
+            1,
+            256,
+            1,
+            1,
+            16,
+            0,
+            0
+          ]
+        ],
+        "mimo2_attn_merge": [
+          [
+            64,
+            1,
+            1,
+            32,
+            1,
+            1,
+            36,
+            0,
+            0
+          ]
+        ],
+        "mimo2_split_rope": [
+          [
+            53,
+            1,
+            1,
+            256,
+            1,
+            1,
+            22,
+            0,
+            0
+          ],
+          [
+            58,
+            1,
+            1,
+            256,
+            1,
+            1,
+            22,
+            0,
+            0
+          ]
+        ],
+        "step37_expert_sum": [
+          [
+            16,
+            1,
+            1,
+            256,
+            1,
+            1,
+            32,
+            0,
+            0
+          ]
+        ],
+        "mimo2_kv_store": [
+          [
+            5,
+            1,
+            1,
+            256,
+            1,
+            1,
+            18,
+            0,
+            0
+          ],
+          [
+            10,
+            1,
+            1,
+            256,
+            1,
+            1,
+            18,
+            0,
+            0
+          ]
+        ],
+        "step37_swiglu": [
+          [
+            64,
+            1,
+            1,
+            256,
+            1,
+            1,
+            20,
+            0,
+            0
+          ]
+        ],
+        "ds4_mmq_sanitize_f32_kernel": [
+          [
+            128,
+            1,
+            1,
+            256,
+            1,
+            1,
+            16,
+            0,
+            0
+          ]
+        ],
+        "dots3_scale_kernel": [
+          [
+            16,
+            1,
+            1,
+            256,
+            1,
+            1,
+            16,
+            0,
+            0
+          ]
+        ],
+        "step37_rope_table": [
+          [
+            1,
+            1,
+            1,
+            128,
+            1,
+            1,
+            26,
+            0,
+            0
+          ]
+        ],
+        "embed_tokens_q8_0_kernel": [
+          [
+            16,
+            1,
+            1,
+            256,
+            1,
+            1,
+            16,
+            0,
+            0
+          ]
+        ]
+      },
+      "geometry_stats": [
+        {
+          "name": "q8_0_aligned_dense_vec_kernel",
+          "geometry": {
+            "gridX": 14848,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 32,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 40,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 1259992192,
+          "count": 4992,
+          "mean_us": 252.40228205128207,
+          "wall_percent": 23.93796144145333
+        },
+        {
+          "name": "q8_0_aligned_dense_vec_kernel",
+          "geometry": {
+            "gridX": 4096,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 32,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 40,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 932419296,
+          "count": 6272,
+          "mean_us": 148.66379081632653,
+          "wall_percent": 17.71456783354024
+        },
+        {
+          "name": "iq2_xxs_aligned_moe_pair_vec_kernel",
+          "geometry": {
+            "gridX": 2048,
+            "gridY": 8,
+            "gridZ": 2,
+            "blockX": 32,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 40,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 842339680,
+          "count": 6016,
+          "mean_us": 140.01656914893616,
+          "wall_percent": 16.003190264568033
+        },
+        {
+          "name": "mul_mat_vec_q_moe",
+          "geometry": {
+            "gridX": 2048,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 32,
+            "blockY": 8,
+            "blockZ": 1,
+            "registersPerThread": 64,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 532308192,
+          "count": 6016,
+          "mean_us": 88.48207978723404,
+          "wall_percent": 10.11305709350438
+        },
+        {
+          "name": "q8_0_aligned_dense_vec_kernel",
+          "geometry": {
+            "gridX": 152576,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 32,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 40,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 329692576,
+          "count": 128,
+          "mean_us": 2575.72325,
+          "wall_percent": 6.263664348025913
+        },
+        {
+          "name": "mimo2_attn_split",
+          "geometry": {
+            "gridX": 32,
+            "gridY": 4,
+            "gridZ": 1,
+            "blockX": 512,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 38,
+            "staticSharedMemory": 20480,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 294605152,
+          "count": 1152,
+          "mean_us": 255.73363888888886,
+          "wall_percent": 5.597055929239835
+        },
+        {
+          "name": "q8_0_aligned_dense_vec_kernel",
+          "geometry": {
+            "gridX": 13568,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 32,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 40,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 266562784,
+          "count": 1152,
+          "mean_us": 231.39130555555556,
+          "wall_percent": 5.0642930056493975
+        },
+        {
+          "name": "mimo2_swa_decode",
+          "geometry": {
+            "gridX": 1,
+            "gridY": 8,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 36,
+            "staticSharedMemory": 20480,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 119698336,
+          "count": 4992,
+          "mean_us": 23.97803205128205,
+          "wall_percent": 2.2740888157615857
+        },
+        {
+          "name": "matmul_f32_kernel",
+          "geometry": {
+            "gridX": 256,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 22,
+            "staticSharedMemory": 1024,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 117458112,
+          "count": 6016,
+          "mean_us": 19.524287234042554,
+          "wall_percent": 2.231527920485642
+        },
+        {
+          "name": "q8_0_aligned_dense_vec_kernel",
+          "geometry": {
+            "gridX": 16384,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 32,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 40,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 71174912,
+          "count": 256,
+          "mean_us": 278.027,
+          "wall_percent": 1.3522165533029222
+        },
+        {
+          "name": "exaone_rms_norm_kernel",
+          "geometry": {
+            "gridX": 1,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 1024,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 18,
+            "staticSharedMemory": 128,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 46865280,
+          "count": 12416,
+          "mean_us": 3.774587628865979,
+          "wall_percent": 0.8903700139618911
+        },
+        {
+          "name": "mimo2_router_warp",
+          "geometry": {
+            "gridX": 1,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 32,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 48,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 20900160,
+          "count": 6016,
+          "mean_us": 3.474095744680851,
+          "wall_percent": 0.39707168613962746
+        },
+        {
+          "name": "exaone_add_kernel",
+          "geometry": {
+            "gridX": 16,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 16,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 16814592,
+          "count": 12288,
+          "mean_us": 1.368375,
+          "wall_percent": 0.3194520231993387
+        },
+        {
+          "name": "quantize_q8_1",
+          "geometry": {
+            "gridX": 16,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 24,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 13887808,
+          "count": 12544,
+          "mean_us": 1.1071275510204082,
+          "wall_percent": 0.26384751788232275
+        },
+        {
+          "name": "mimo2_attn_merge",
+          "geometry": {
+            "gridX": 64,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 32,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 36,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 11044000,
+          "count": 1152,
+          "mean_us": 9.586805555555555,
+          "wall_percent": 0.20981943208693357
+        },
+        {
+          "name": "step37_expert_sum",
+          "geometry": {
+            "gridX": 16,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 32,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 8913088,
+          "count": 6016,
+          "mean_us": 1.481563829787234,
+          "wall_percent": 0.16933530082405493
+        },
+        {
+          "name": "quantize_q8_1",
+          "geometry": {
+            "gridX": 8,
+            "gridY": 1,
+            "gridZ": 8,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 24,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 8287200,
+          "count": 6016,
+          "mean_us": 1.377526595744681,
+          "wall_percent": 0.15744436776447263
+        },
+        {
+          "name": "mimo2_split_rope",
+          "geometry": {
+            "gridX": 58,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 22,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 7761376,
+          "count": 4992,
+          "mean_us": 1.5547628205128206,
+          "wall_percent": 0.14745450059155704
+        },
+        {
+          "name": "quantize_q8_1",
+          "geometry": {
+            "gridX": 32,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 24,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 7317696,
+          "count": 6144,
+          "mean_us": 1.19103125,
+          "wall_percent": 0.1390252461884123
+        },
+        {
+          "name": "step37_swiglu",
+          "geometry": {
+            "gridX": 64,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 20,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 6793856,
+          "count": 6144,
+          "mean_us": 1.1057708333333331,
+          "wall_percent": 0.12907307203915305
+        },
+        {
+          "name": "mimo2_kv_store",
+          "geometry": {
+            "gridX": 10,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 18,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 6462560,
+          "count": 4992,
+          "mean_us": 1.2945833333333332,
+          "wall_percent": 0.12277894504054086
+        },
+        {
+          "name": "ds4_mmq_sanitize_f32_kernel",
+          "geometry": {
+            "gridX": 128,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 16,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 6302912,
+          "count": 6016,
+          "mean_us": 1.0476914893617022,
+          "wall_percent": 0.11974587254019546
+        },
+        {
+          "name": "dots3_scale_kernel",
+          "geometry": {
+            "gridX": 16,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 16,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 5570976,
+          "count": 6144,
+          "mean_us": 0.906734375,
+          "wall_percent": 0.10584018657098304
+        },
+        {
+          "name": "mimo2_split_rope",
+          "geometry": {
+            "gridX": 53,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 22,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 1762080,
+          "count": 1152,
+          "mean_us": 1.5295833333333333,
+          "wall_percent": 0.033476876574768555
+        },
+        {
+          "name": "mimo2_kv_store",
+          "geometry": {
+            "gridX": 5,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 18,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 1493984,
+          "count": 1152,
+          "mean_us": 1.296861111111111,
+          "wall_percent": 0.028383454765208743
+        },
+        {
+          "name": "step37_rope_table",
+          "geometry": {
+            "gridX": 1,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 128,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 26,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 514528,
+          "count": 256,
+          "mean_us": 2.009875,
+          "wall_percent": 0.009775260118872307
+        },
+        {
+          "name": "embed_tokens_q8_0_kernel",
+          "geometry": {
+            "gridX": 16,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 16,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 235328,
+          "count": 128,
+          "mean_us": 1.8385,
+          "wall_percent": 0.0044708789672359564
+        },
+        {
+          "name": "quantize_q8_1",
+          "geometry": {
+            "gridX": 64,
+            "gridY": 1,
+            "gridZ": 1,
+            "blockX": 256,
+            "blockY": 1,
+            "blockZ": 1,
+            "registersPerThread": 24,
+            "staticSharedMemory": 0,
+            "dynamicSharedMemory": 0
+          },
+          "ns": 174592,
+          "count": 128,
+          "mean_us": 1.364,
+          "wall_percent": 0.003316986081756782
+        }
+      ],
+      "kernel_seconds_sum": 4.937353248,
+      "gpu_busy_seconds": 4.937353248,
+      "gpu_idle_within_phase_seconds": 0.32622024,
+      "boundary_clipped_kernels": [],
+      "device_ids": [
+        0
+      ],
+      "stream_ids": [
+        7
+      ],
+      "global_process_ids": [
+        313790293868544
+      ]
+    }
+  },
+  "phase_seconds": 6.705591616,
+  "kernels": [
+    [
+      "gateup_iq2_d2r_pair_kernel",
+      {
+        "ns": 2152450528,
+        "count": 94
+      }
+    ],
+    [
+      "ds4_moe_worklist_mmq_kernel",
+      {
+        "ns": 1439868256,
+        "count": 94
+      }
+    ],
+    [
+      "dense_q8_d2r_kernel",
+      {
+        "ns": 662236416,
+        "count": 100
+      }
+    ],
+    [
+      "prefill",
+      {
+        "ns": 545154624,
+        "count": 96
+      }
+    ],
+    [
+      "mul_mat_q",
+      {
+        "ns": 483409728,
+        "count": 98
+      }
+    ],
+    [
+      "mimo2_sum_residual",
+      {
+        "ns": 254762176,
+        "count": 94
+      }
+    ],
+    [
+      "mimo2_swiglu_q8",
+      {
+        "ns": 249793248,
+        "count": 94
+      }
+    ],
+    [
+      "quantize_mmq_q8_1",
+      {
+        "ns": 212165952,
+        "count": 292
+      }
+    ],
+    [
+      "mimo2_split_rope",
+      {
+        "ns": 184078880,
+        "count": 96
+      }
+    ],
+    [
+      "exaone_rms_norm_kernel",
+      {
+        "ns": 105365472,
+        "count": 194
+      }
+    ],
+    [
+      "mimo2_attn_residual",
+      {
+        "ns": 74405728,
+        "count": 96
+      }
+    ],
+    [
+      "nvjet_sm121_sss_tf32_mma_128x176x32_2_32x88x32_tmaAB_alignCD4_bz_TNNN",
+      {
+        "ns": 40257984,
+        "count": 94
+      }
+    ],
+    [
+      "mimo2_router",
+      {
+        "ns": 32357536,
+        "count": 94
+      }
+    ],
+    [
+      "ds4_mmq_sanitize_f32_kernel",
+      {
+        "ns": 25300576,
+        "count": 98
+      }
+    ],
+    [
+      "mimo2_kv_store",
+      {
+        "ns": 23506112,
+        "count": 96
+      }
+    ],
+    [
+      "ds4_mmid_scatter_kernel",
+      {
+        "ns": 7624480,
+        "count": 188
+      }
+    ],
+    [
+      "ds4_mmid_scan_kernel",
+      {
+        "ns": 7154272,
+        "count": 188
+      }
+    ],
+    [
+      "step37_swiglu",
+      {
+        "ns": 6418592,
+        "count": 2
+      }
+    ],
+    [
+      "q8_0_aligned_dense_vec_kernel",
+      {
+        "ns": 5151456,
+        "count": 2
+      }
+    ],
+    [
+      "exaone_add_kernel",
+      {
+        "ns": 1554720,
+        "count": 2
+      }
+    ],
+    [
+      "embed_tokens_q8_0_kernel",
+      {
+        "ns": 695360,
+        "count": 2
+      }
+    ],
+    [
+      "ds4_mmid_count_kernel",
+      {
+        "ns": 421856,
+        "count": 188
+      }
+    ],
+    [
+      "ds4_moe_build_tile_worklist",
+      {
+        "ns": 224384,
+        "count": 94
+      }
+    ],
+    [
+      "d2r_build_worklist_kernel",
+      {
+        "ns": 221184,
+        "count": 94
+      }
+    ],
+    [
+      "step37_rope_table",
+      {
+        "ns": 93184,
+        "count": 4
+      }
+    ],
+    [
+      "quantize_q8_1",
+      {
+        "ns": 2432,
+        "count": 2
+      }
+    ]
+  ],
+  "geometry": {
+    "gateup_iq2_d2r_pair_kernel": [
+      [
+        16,
+        768,
+        2,
+        32,
+        8,
+        1,
+        128,
+        37744,
+        0
+      ]
+    ],
+    "ds4_moe_worklist_mmq_kernel": [
+      [
+        48,
+        1,
+        1,
+        32,
+        8,
+        1,
+        255,
+        16,
+        80128
+      ]
+    ],
+    "dense_q8_d2r_kernel": [
+      [
+        3392,
+        1,
+        1,
+        32,
+        16,
+        1,
+        128,
+        0,
+        69120
+      ],
+      [
+        3712,
+        1,
+        1,
+        32,
+        16,
+        1,
+        128,
+        0,
+        69120
+      ],
+      [
+        4096,
+        1,
+        1,
+        32,
+        16,
+        1,
+        128,
+        0,
+        69120
+      ]
+    ],
+    "prefill": [
+      [
+        64,
+        64,
+        1,
+        128,
+        1,
+        1,
+        234,
+        21504,
+        0
+      ],
+      [
+        64,
+        64,
+        1,
+        128,
+        1,
+        1,
+        238,
+        21504,
+        0
+      ]
+    ],
+    "mul_mat_q": [
+      [
+        1024,
+        1,
+        1,
+        32,
+        8,
+        1,
+        255,
+        0,
+        57856
+      ]
+    ],
+    "mimo2_sum_residual": [
+      [
+        65536,
+        1,
+        1,
+        256,
+        1,
+        1,
+        28,
+        0,
+        0
+      ]
+    ],
+    "mimo2_swiglu_q8": [
+      [
+        32768,
+        4,
+        1,
+        128,
+        1,
+        1,
+        23,
+        0,
+        0
+      ]
+    ],
+    "quantize_mmq_q8_1": [
+      [
+        4096,
+        8,
+        1,
+        128,
+        1,
+        1,
+        20,
+        0,
+        0
+      ],
+      [
+        4096,
+        16,
+        1,
+        128,
+        1,
+        1,
+        20,
+        0,
+        0
+      ],
+      [
+        4096,
+        32,
+        1,
+        128,
+        1,
+        1,
+        20,
+        0,
+        0
+      ],
+      [
+        32768,
+        8,
+        1,
+        128,
+        1,
+        1,
+        20,
+        0,
+        0
+      ]
+    ],
+    "mimo2_split_rope": [
+      [
+        217088,
+        1,
+        1,
+        256,
+        1,
+        1,
+        22,
+        0,
+        0
+      ],
+      [
+        237568,
+        1,
+        1,
+        256,
+        1,
+        1,
+        22,
+        0,
+        0
+      ]
+    ],
+    "exaone_rms_norm_kernel": [
+      [
+        1,
+        1,
+        1,
+        1024,
+        1,
+        1,
+        18,
+        128,
+        0
+      ],
+      [
+        4096,
+        1,
+        1,
+        1024,
+        1,
+        1,
+        18,
+        128,
+        0
+      ]
+    ],
+    "mimo2_attn_residual": [
+      [
+        65536,
+        1,
+        1,
+        256,
+        1,
+        1,
+        16,
+        0,
+        0
+      ]
+    ],
+    "nvjet_sm121_sss_tf32_mma_128x176x32_2_32x88x32_tmaAB_alignCD4_bz_TNNN": [
+      [
+        16,
+        3,
+        1,
+        64,
+        4,
+        1,
+        255,
+        0,
+        78848
+      ]
+    ],
+    "mimo2_router": [
+      [
+        4096,
+        1,
+        1,
+        128,
+        1,
+        1,
+        39,
+        2048,
+        0
+      ]
+    ],
+    "ds4_mmq_sanitize_f32_kernel": [
+      [
+        65536,
+        1,
+        1,
+        256,
+        1,
+        1,
+        16,
+        0,
+        0
+      ]
+    ],
+    "mimo2_kv_store": [
+      [
+        20480,
+        1,
+        1,
+        256,
+        1,
+        1,
+        18,
+        0,
+        0
+      ],
+      [
+        40960,
+        1,
+        1,
+        256,
+        1,
+        1,
+        18,
+        0,
+        0
+      ]
+    ],
+    "ds4_mmid_scatter_kernel": [
+      [
+        32,
+        1,
+        1,
+        256,
+        1,
+        1,
+        25,
+        0,
+        4096
+      ],
+      [
+        256,
+        1,
+        1,
+        256,
+        1,
+        1,
+        25,
+        0,
+        512
+      ]
+    ],
+    "ds4_mmid_scan_kernel": [
+      [
+        1,
+        1,
+        1,
+        1024,
+        1,
+        1,
+        32,
+        16,
+        1024
+      ]
+    ],
+    "step37_swiglu": [
+      [
+        262144,
+        1,
+        1,
+        256,
+        1,
+        1,
+        20,
+        0,
+        0
+      ]
+    ],
+    "q8_0_aligned_dense_vec_kernel": [
+      [
+        152576,
+        1,
+        1,
+        32,
+        1,
+        1,
+        40,
+        0,
+        0
+      ]
+    ],
+    "exaone_add_kernel": [
+      [
+        65536,
+        1,
+        1,
+        256,
+        1,
+        1,
+        16,
+        0,
+        0
+      ]
+    ],
+    "embed_tokens_q8_0_kernel": [
+      [
+        65536,
+        1,
+        1,
+        256,
+        1,
+        1,
+        16,
+        0,
+        0
+      ]
+    ],
+    "ds4_mmid_count_kernel": [
+      [
+        32,
+        1,
+        1,
+        256,
+        1,
+        1,
+        17,
+        0,
+        1028
+      ],
+      [
+        256,
+        1,
+        1,
+        256,
+        1,
+        1,
+        17,
+        0,
+        1028
+      ]
+    ],
+    "ds4_moe_build_tile_worklist": [
+      [
+        256,
+        1,
+        1,
+        128,
+        1,
+        1,
+        22,
+        16,
+        0
+      ]
+    ],
+    "d2r_build_worklist_kernel": [
+      [
+        1,
+        1,
+        1,
+        256,
+        1,
+        1,
+        32,
+        1040,
+        0
+      ]
+    ],
+    "step37_rope_table": [
+      [
+        1024,
+        1,
+        1,
+        128,
+        1,
+        1,
+        26,
+        0,
+        0
+      ]
+    ],
+    "quantize_q8_1": [
+      [
+        16,
+        1,
+        1,
+        256,
+        1,
+        1,
+        24,
+        0,
+        0
+      ]
+    ]
+  }
+}

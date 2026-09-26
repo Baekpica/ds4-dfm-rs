@@ -1,0 +1,22 @@
+{
+  "requested_range_mhz": [
+    300,
+    2200
+  ],
+  "samples": 27,
+  "sm_mhz_range": [
+    305.0,
+    2197.0
+  ],
+  "busy_samples": 18,
+  "busy_sm_mhz_range": [
+    2190.0,
+    2190.0
+  ],
+  "limitations": "One-second samples do not resolve individual kernel timings. NCU clock-control none preserves user cap.",
+  "raw_csv": {
+    "path": "scratch/mimo-prefill-20260926/ncu-rope/clocks.csv",
+    "bytes": 1487,
+    "sha256": "767ecfb267aacdd81243f1b039e7cbe07f7c4b4d80a6113678d5e55e76a346e8"
+  }
+}

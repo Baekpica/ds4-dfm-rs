@@ -1,0 +1,27 @@
+host-memory-guard: available=116.84 GiB, scope max/high=8.00/6.00, reserve=12.00, trip=12.00
+kv_heads=4 pos=0 max_abs_error=0
+kv_heads=4 pos=1 max_abs_error=1.1920929e-07
+kv_heads=4 pos=127 max_abs_error=1.1920929e-07
+kv_heads=4 pos=128 max_abs_error=1.1920929e-07
+kv_heads=4 pos=4095 max_abs_error=1.1920929e-07
+kv_heads=4 pos=65535 max_abs_error=1.1920929e-07
+kv_heads=4 pos=262144 max_abs_error=1.1920929e-07
+kv_heads=4 pos=1048575 max_abs_error=1.1920929e-07
+kv_heads=8 pos=0 max_abs_error=0
+kv_heads=8 pos=1 max_abs_error=1.1920929e-07
+kv_heads=8 pos=127 max_abs_error=1.1920929e-07
+kv_heads=8 pos=128 max_abs_error=1.1920929e-07
+kv_heads=8 pos=4095 max_abs_error=1.1920929e-07
+kv_heads=8 pos=65535 max_abs_error=1.1920929e-07
+kv_heads=8 pos=262144 max_abs_error=1.1920929e-07
+kv_heads=8 pos=1048575 max_abs_error=1.1920929e-07
+rows=1 kv_heads=4 mapping_byte_exact=1
+rows=1 kv_heads=8 mapping_byte_exact=1
+rows=31 kv_heads=4 mapping_byte_exact=1
+rows=31 kv_heads=8 mapping_byte_exact=1
+rows=32 kv_heads=4 mapping_byte_exact=1
+rows=32 kv_heads=8 mapping_byte_exact=1
+rows=33 kv_heads=4 mapping_byte_exact=1
+rows=33 kv_heads=8 mapping_byte_exact=1
+rows=4096 kv_heads=4 mapping_byte_exact=1
+rows=4096 kv_heads=8 mapping_byte_exact=1

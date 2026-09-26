@@ -1,0 +1,201 @@
+{
+  "by_heads": {
+    "4": {
+      "gpu__time_duration.sum": {
+        "unit": "ms",
+        "baseline": 1.781664,
+        "candidate": 1.84064,
+        "change_percent": 3.3101639815363626
+      },
+      "launch__registers_per_thread": {
+        "unit": "register/thread",
+        "baseline": 22.0,
+        "candidate": 22.0,
+        "change_percent": 0.0
+      },
+      "launch__shared_mem_per_block_dynamic": {
+        "unit": "byte/block",
+        "baseline": 0.0,
+        "candidate": 0.0,
+        "change_percent": null
+      },
+      "launch__shared_mem_per_block_static": {
+        "unit": "byte/block",
+        "baseline": 0.0,
+        "candidate": 0.0,
+        "change_percent": null
+      },
+      "derived__local_spilling_requests": {
+        "unit": "",
+        "baseline": 0.0,
+        "candidate": 0.0,
+        "change_percent": null
+      },
+      "derived__shared_spilling_requests": {
+        "unit": "",
+        "baseline": 0.0,
+        "candidate": 0.0,
+        "change_percent": null
+      },
+      "smsp__inst_executed.sum": {
+        "unit": "inst",
+        "baseline": 133398528.0,
+        "candidate": 74907648.0,
+        "change_percent": -43.846720707442884
+      },
+      "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+        "unit": "sector",
+        "baseline": 15859712.0,
+        "candidate": 15859712.0,
+        "change_percent": 0.0
+      },
+      "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+        "unit": "sector",
+        "baseline": 6946816.0,
+        "candidate": 6946816.0,
+        "change_percent": 0.0
+      },
+      "lts__t_sectors.sum": {
+        "unit": "sector",
+        "baseline": 15006704.0,
+        "candidate": 14939900.0,
+        "change_percent": -0.4451610426913222
+      },
+      "l1tex__t_sector_hit_rate.pct": {
+        "unit": "%",
+        "baseline": 34.214174,
+        "candidate": 34.49481,
+        "change_percent": 0.8202331583395894
+      },
+      "lts__t_sector_hit_rate.pct": {
+        "unit": "%",
+        "baseline": 7.21928,
+        "candidate": 6.801759,
+        "change_percent": -5.7834160747332275
+      },
+      "smsp__warps_active.avg.per_cycle_active": {
+        "unit": "warp",
+        "baseline": 9.53309,
+        "candidate": 8.732165,
+        "change_percent": -8.401525633346585
+      },
+      "smsp__warps_eligible.avg.per_cycle_active": {
+        "unit": "warp",
+        "baseline": 0.271086,
+        "candidate": 0.152283,
+        "change_percent": -43.824837874327706
+      },
+      "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": {
+        "unit": "inst",
+        "baseline": 46.682494,
+        "candidate": 80.281395,
+        "change_percent": 71.9732347633355
+      },
+      "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": {
+        "unit": "%",
+        "baseline": 15.19501,
+        "candidate": 14.455038,
+        "change_percent": -4.869835557857483
+      }
+    },
+    "8": {
+      "gpu__time_duration.sum": {
+        "unit": "ms",
+        "baseline": 1.953376,
+        "candidate": 1.964384,
+        "change_percent": 0.563537178710094
+      },
+      "launch__registers_per_thread": {
+        "unit": "register/thread",
+        "baseline": 22.0,
+        "candidate": 22.0,
+        "change_percent": 0.0
+      },
+      "launch__shared_mem_per_block_dynamic": {
+        "unit": "byte/block",
+        "baseline": 0.0,
+        "candidate": 0.0,
+        "change_percent": null
+      },
+      "launch__shared_mem_per_block_static": {
+        "unit": "byte/block",
+        "baseline": 0.0,
+        "candidate": 0.0,
+        "change_percent": null
+      },
+      "derived__local_spilling_requests": {
+        "unit": "",
+        "baseline": 0.0,
+        "candidate": 0.0,
+        "change_percent": null
+      },
+      "derived__shared_spilling_requests": {
+        "unit": "",
+        "baseline": 0.0,
+        "candidate": 0.0,
+        "change_percent": null
+      },
+      "smsp__inst_executed.sum": {
+        "unit": "inst",
+        "baseline": 146210816.0,
+        "candidate": 82182144.0,
+        "change_percent": -43.79202151501569
+      },
+      "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+        "unit": "sector",
+        "baseline": 17039360.0,
+        "candidate": 17039360.0,
+        "change_percent": 0.0
+      },
+      "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+        "unit": "sector",
+        "baseline": 7602176.0,
+        "candidate": 7602176.0,
+        "change_percent": 0.0
+      },
+      "lts__t_sectors.sum": {
+        "unit": "sector",
+        "baseline": 16345316.0,
+        "candidate": 16337884.0,
+        "change_percent": -0.04546868350541189
+      },
+      "l1tex__t_sector_hit_rate.pct": {
+        "unit": "%",
+        "baseline": 33.662083,
+        "candidate": 33.806973,
+        "change_percent": 0.4304249383497716
+      },
+      "lts__t_sector_hit_rate.pct": {
+        "unit": "%",
+        "baseline": 6.832392,
+        "candidate": 6.572234,
+        "change_percent": -3.8077147798311284
+      },
+      "smsp__warps_active.avg.per_cycle_active": {
+        "unit": "warp",
+        "baseline": 9.483726,
+        "candidate": 9.017326,
+        "change_percent": -4.91789830284004
+      },
+      "smsp__warps_eligible.avg.per_cycle_active": {
+        "unit": "warp",
+        "baseline": 0.267409,
+        "candidate": 0.146738,
+        "change_percent": -45.12600548223882
+      },
+      "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": {
+        "unit": "inst",
+        "baseline": 46.396746,
+        "candidate": 81.901744,
+        "change_percent": 76.52475886994314
+      },
+      "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": {
+        "unit": "%",
+        "baseline": 15.156088,
+        "candidate": 14.741236,
+        "change_percent": -2.7371970920200495
+      }
+    }
+  },
+  "interpretation": "Instruction count falls about44%, with unchanged global request sectors, registers and spills. Eligible/active warps fall and latency worsens; this does not establish a unique compiler scheduling cause."
+}
