@@ -37,9 +37,17 @@ tokenizer/media processing and output protocol work outside input grammar.
 
 When optimizing inference performance, prioritize end-to-end execution-path efficiency over isolated kernel micro-optimizations.
 
-Use `ds4-perf` to identify prefill and decode bottlenecks before choosing an optimization round. Start from measured wall time. Decompose the execution into kernels, dispatch paths, memory transformations, routing/indexing operations, synchronization, and fallback implementations.
+Follow this evidence-driven sequence for every optimization round, regardless of tool:
 
-The primary optimization objective is **fast-path coverage**: maximize the fraction of the inference graph executed by the runtime's best hardware-appropriate primitives.
+1. Measure the complete representative workload with `ds4-perf`, Nsight Systems, or another suitable tool. Establish wall time and separate prefill/decode costs. (Codex learning)
+2. Identify a specific bottleneck and quantify its contribution to end-to-end latency. The target may be a kernel, a group of operations, dispatch, data movement, synchronization, or host work. (Codex learning)
+3. Profile that target separately in detail: use NCU for GPU kernels or the appropriate profiler for other regions. Prefer a faithful isolated reproducer; use a bounded in-model capture when isolation would change the relevant behavior. Preserve relevant shapes, layouts, routing, cache state, and execution regime, and disclose differences. Narrow the execution scope, not diagnostic context: collect the metrics needed to explain the bottleneck, including broad counter coverage when useful, without repeatedly initializing the whole model when a smaller reproducer suffices. (Codex learning)
+4. Derive the optimization hypothesis from those measurements, then implement a scoped change with an explicit numerical contract. Explore alternative explanations across execution structure, thread/tile mapping, memory access and reuse, fusion, numerical representation, and compiler output. Let evidence select the technique; neither this list nor the profiling procedure prescribes an implementation. (Codex learning)
+5. Compare optimization off/on under matched conditions using fresh processes and correctness checks. Measure both the target and end-to-end prefill/decode performance; adopt only a reproducible useful gain without unacceptable correctness or performance regressions. After either adoption or rejection, restart whole-workload measurement on the retained baseline, identify its current bottleneck, and narrow detailed profiling again before choosing the next change. (Codex learning)
+
+Do not impose a fixed percentage floor on adoption. A gain below 1% is worth retaining when repeated comparable A/B runs consistently improve performance beyond observed noise, preserve correctness, and show no meaningful regression elsewhere. Prefer such gains when they require no additional VRAM, arithmetic work, or other material resource cost. Check the relevant costs rather than assuming that unchanged tensor shapes imply unchanged work. If costs increase, report the tradeoff and judge it against the measured benefit; neither a small percentage nor one counter alone decides adoption. An automatic tool threshold is a screening heuristic, not the final engineering decision. (Codex learning)
+
+**Fast-path coverage** is a common opportunity: maximize the fraction of the inference graph executed by the runtime's best hardware-appropriate primitives where measurements support it. The objective is verified end-to-end improvement; no implementation direction is mandatory.
 
 Before optimizing an already-fast kernel, search for:
 
@@ -69,13 +77,13 @@ For every optimization:
 7. Report both kernel-level improvement and end-to-end prefill/decode impact.
 8. Verify that improving prefill does not regress decode, and vice versa.
 
-When reviewing the profiler, optimize in roughly this order:
+Use this order as an investigation heuristic, not a fixed optimization sequence; measured contribution and detailed profiling determine priority:
 
 unexpected fallback paths → repeated transformations → redundant memory traffic → routing/indexing overhead → launch fragmentation → fast-path utilization → individual optimized-kernel tuning.
 
 The guiding principle is:
 
-**Optimize execution-path topology before optimizing individual kernels.**
+**Measure the whole workload, explain the specific bottleneck, and validate the change end to end.** Consider execution-path topology as well as individual kernels.
 
 # Agent Notes
 
