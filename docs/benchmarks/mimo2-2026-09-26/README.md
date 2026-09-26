@@ -8,8 +8,9 @@ GPU clock range stays 300–2200 MHz; busy clocks are recorded per round.
 [Workload and artifact hashes](sum-residual/workload.json).
 
 Three rounds are accepted below. Three additional rounds were completed
-and rejected; the retained inference code remains round 3. The next
-campaign targets image input, followed by audio and video.
+and rejected; the retained text inference code remains round 3. The
+[media campaign](../mimo2-media-2026-09-26/README.md) continues with image
+input, followed by audio and video. Image round 1 is accepted.
 
 ## Routed sum and residual fusion
 

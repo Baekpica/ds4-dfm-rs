@@ -1,0 +1,454 @@
+{
+  "scope": "Completed nine fresh Rust full-model image proof processes. These are correctness evidence, not HTTP A/B timings.",
+  "summary": {
+    "cases": 3,
+    "arms": [
+      "original",
+      "off",
+      "on"
+    ],
+    "runs": 9,
+    "logits_per_run": 152576,
+    "logits_bytes_per_run": 610304,
+    "tokens_per_run": 64,
+    "full_logits_exact": true,
+    "tokens_exact": true,
+    "request_rendered_prompt_and_token_bytes_exact": true
+  },
+  "result_source": "scratch/mimo-media-20260926/ncu-attn-r1/model-proof/result.json",
+  "result_source_sha256": "50f289909dc091410f3eca8219af87a01c6c787f63204c50b2c3b98c7351602a",
+  "completed_source": "scratch/mimo-media-20260926/ncu-attn-r1/model-proof/completed.json",
+  "completed_source_sha256": "26d60c504683ec775979cb19881bfb171f2b47390c70241ec588e78f211c5bb5",
+  "runs": [
+    {
+      "case": "screen",
+      "arm": "original",
+      "prompt_tokens": 794,
+      "image_pad_counts": [
+        768
+      ],
+      "context": 8192,
+      "mtp_draft_tokens": 1,
+      "logits_finite": true,
+      "logits_floats": 152576,
+      "logits_sha256": "c13b181981ad63af77de9c96e032d79e5d701661a9cea2091d2b3044df62193f",
+      "token_count": 64,
+      "token_ids_canonical_json_sha256": "85b1e31c8377dd7e2d78579558a295df8002adbea47025a30d5ec220e31e5fd0",
+      "input_sha256": {
+        "request.json": "8a861c34fd7ef7d58fd94486ec0f37a118cb2819da4d804adb4072eab83c16d7",
+        "rendered-prompt.txt": "12396de75918198f4c6c225762d9a2abc618a4233b6d2bf8f6b01707a4b068ff",
+        "prompt-tokens.json": "63a218ae49cf7f089b949dc226dcc168895b4fb71bfc05e71b693656a121fb18"
+      },
+      "guard_exit": 0
+    },
+    {
+      "case": "screen",
+      "arm": "off",
+      "prompt_tokens": 794,
+      "image_pad_counts": [
+        768
+      ],
+      "context": 8192,
+      "mtp_draft_tokens": 1,
+      "logits_finite": true,
+      "logits_floats": 152576,
+      "logits_sha256": "c13b181981ad63af77de9c96e032d79e5d701661a9cea2091d2b3044df62193f",
+      "token_count": 64,
+      "token_ids_canonical_json_sha256": "85b1e31c8377dd7e2d78579558a295df8002adbea47025a30d5ec220e31e5fd0",
+      "input_sha256": {
+        "request.json": "8a861c34fd7ef7d58fd94486ec0f37a118cb2819da4d804adb4072eab83c16d7",
+        "rendered-prompt.txt": "12396de75918198f4c6c225762d9a2abc618a4233b6d2bf8f6b01707a4b068ff",
+        "prompt-tokens.json": "63a218ae49cf7f089b949dc226dcc168895b4fb71bfc05e71b693656a121fb18"
+      },
+      "guard_exit": 0
+    },
+    {
+      "case": "screen",
+      "arm": "on",
+      "prompt_tokens": 794,
+      "image_pad_counts": [
+        768
+      ],
+      "context": 8192,
+      "mtp_draft_tokens": 1,
+      "logits_finite": true,
+      "logits_floats": 152576,
+      "logits_sha256": "c13b181981ad63af77de9c96e032d79e5d701661a9cea2091d2b3044df62193f",
+      "token_count": 64,
+      "token_ids_canonical_json_sha256": "85b1e31c8377dd7e2d78579558a295df8002adbea47025a30d5ec220e31e5fd0",
+      "input_sha256": {
+        "request.json": "8a861c34fd7ef7d58fd94486ec0f37a118cb2819da4d804adb4072eab83c16d7",
+        "rendered-prompt.txt": "12396de75918198f4c6c225762d9a2abc618a4233b6d2bf8f6b01707a4b068ff",
+        "prompt-tokens.json": "63a218ae49cf7f089b949dc226dcc168895b4fb71bfc05e71b693656a121fb18"
+      },
+      "guard_exit": 0
+    },
+    {
+      "case": "photo",
+      "arm": "original",
+      "prompt_tokens": 282,
+      "image_pad_counts": [
+        256
+      ],
+      "context": 8192,
+      "mtp_draft_tokens": 1,
+      "logits_finite": true,
+      "logits_floats": 152576,
+      "logits_sha256": "38063ff5897d97237120b2853a47ba7bfabed8204b07f7d64383186a85dab7ed",
+      "token_count": 64,
+      "token_ids_canonical_json_sha256": "97461c0f5150d9c72d4b939cd3e018b0f72fa227eb417a729e8c89630b98a159",
+      "input_sha256": {
+        "request.json": "ae8b14dbad41655f56bfbcd4f726e7f71cfecd3293007ff47b36293072f43700",
+        "rendered-prompt.txt": "12396de75918198f4c6c225762d9a2abc618a4233b6d2bf8f6b01707a4b068ff",
+        "prompt-tokens.json": "f7ff9da6c2f220d7078d1d3c73649086715b55345870a5cbde81729d471d8c91"
+      },
+      "guard_exit": 0
+    },
+    {
+      "case": "photo",
+      "arm": "off",
+      "prompt_tokens": 282,
+      "image_pad_counts": [
+        256
+      ],
+      "context": 8192,
+      "mtp_draft_tokens": 1,
+      "logits_finite": true,
+      "logits_floats": 152576,
+      "logits_sha256": "38063ff5897d97237120b2853a47ba7bfabed8204b07f7d64383186a85dab7ed",
+      "token_count": 64,
+      "token_ids_canonical_json_sha256": "97461c0f5150d9c72d4b939cd3e018b0f72fa227eb417a729e8c89630b98a159",
+      "input_sha256": {
+        "request.json": "ae8b14dbad41655f56bfbcd4f726e7f71cfecd3293007ff47b36293072f43700",
+        "rendered-prompt.txt": "12396de75918198f4c6c225762d9a2abc618a4233b6d2bf8f6b01707a4b068ff",
+        "prompt-tokens.json": "f7ff9da6c2f220d7078d1d3c73649086715b55345870a5cbde81729d471d8c91"
+      },
+      "guard_exit": 0
+    },
+    {
+      "case": "photo",
+      "arm": "on",
+      "prompt_tokens": 282,
+      "image_pad_counts": [
+        256
+      ],
+      "context": 8192,
+      "mtp_draft_tokens": 1,
+      "logits_finite": true,
+      "logits_floats": 152576,
+      "logits_sha256": "38063ff5897d97237120b2853a47ba7bfabed8204b07f7d64383186a85dab7ed",
+      "token_count": 64,
+      "token_ids_canonical_json_sha256": "97461c0f5150d9c72d4b939cd3e018b0f72fa227eb417a729e8c89630b98a159",
+      "input_sha256": {
+        "request.json": "ae8b14dbad41655f56bfbcd4f726e7f71cfecd3293007ff47b36293072f43700",
+        "rendered-prompt.txt": "12396de75918198f4c6c225762d9a2abc618a4233b6d2bf8f6b01707a4b068ff",
+        "prompt-tokens.json": "f7ff9da6c2f220d7078d1d3c73649086715b55345870a5cbde81729d471d8c91"
+      },
+      "guard_exit": 0
+    },
+    {
+      "case": "document",
+      "arm": "original",
+      "prompt_tokens": 1562,
+      "image_pad_counts": [
+        1536
+      ],
+      "context": 8192,
+      "mtp_draft_tokens": 1,
+      "logits_finite": true,
+      "logits_floats": 152576,
+      "logits_sha256": "f1fb69feff69b627416ec7a17a1dffeca365a11ccf2a9ea7cc6c98959f4ab9e0",
+      "token_count": 64,
+      "token_ids_canonical_json_sha256": "4f4ba7fc042627cfb5bcc81ee7d6aa5bdcf943067b83e6356a9c1f5a37aea7de",
+      "input_sha256": {
+        "request.json": "3d01e1f819e52592ae11abd2602c6c4be89000312b45bdbaae149daa6d641176",
+        "rendered-prompt.txt": "12396de75918198f4c6c225762d9a2abc618a4233b6d2bf8f6b01707a4b068ff",
+        "prompt-tokens.json": "2fdda5850d70e316664eb42c98939387bc305dace7a67f25a0572adcdb8544f8"
+      },
+      "guard_exit": 0
+    },
+    {
+      "case": "document",
+      "arm": "off",
+      "prompt_tokens": 1562,
+      "image_pad_counts": [
+        1536
+      ],
+      "context": 8192,
+      "mtp_draft_tokens": 1,
+      "logits_finite": true,
+      "logits_floats": 152576,
+      "logits_sha256": "f1fb69feff69b627416ec7a17a1dffeca365a11ccf2a9ea7cc6c98959f4ab9e0",
+      "token_count": 64,
+      "token_ids_canonical_json_sha256": "4f4ba7fc042627cfb5bcc81ee7d6aa5bdcf943067b83e6356a9c1f5a37aea7de",
+      "input_sha256": {
+        "request.json": "3d01e1f819e52592ae11abd2602c6c4be89000312b45bdbaae149daa6d641176",
+        "rendered-prompt.txt": "12396de75918198f4c6c225762d9a2abc618a4233b6d2bf8f6b01707a4b068ff",
+        "prompt-tokens.json": "2fdda5850d70e316664eb42c98939387bc305dace7a67f25a0572adcdb8544f8"
+      },
+      "guard_exit": 0
+    },
+    {
+      "case": "document",
+      "arm": "on",
+      "prompt_tokens": 1562,
+      "image_pad_counts": [
+        1536
+      ],
+      "context": 8192,
+      "mtp_draft_tokens": 1,
+      "logits_finite": true,
+      "logits_floats": 152576,
+      "logits_sha256": "f1fb69feff69b627416ec7a17a1dffeca365a11ccf2a9ea7cc6c98959f4ab9e0",
+      "token_count": 64,
+      "token_ids_canonical_json_sha256": "4f4ba7fc042627cfb5bcc81ee7d6aa5bdcf943067b83e6356a9c1f5a37aea7de",
+      "input_sha256": {
+        "request.json": "3d01e1f819e52592ae11abd2602c6c4be89000312b45bdbaae149daa6d641176",
+        "rendered-prompt.txt": "12396de75918198f4c6c225762d9a2abc618a4233b6d2bf8f6b01707a4b068ff",
+        "prompt-tokens.json": "2fdda5850d70e316664eb42c98939387bc305dace7a67f25a0572adcdb8544f8"
+      },
+      "guard_exit": 0
+    }
+  ],
+  "build_receipts": {
+    "original": {
+      "source_path": "scratch/mimo-media-20260926/media-proof/receipt-original.json",
+      "source_sha256": "978a78c2c54e71d9a84402089fa782899d680d01f46971a53ee3131bf5fa0b0e",
+      "receipt": {
+        "created_utc": "2026-09-26T06:16:30.071396+00:00",
+        "git_head": "c4393f6e431acbe7c1d0aa2b770815cb373be683",
+        "scope": "scratch full-model media proof preparation; no GPU run",
+        "compile": "cargo check passed; build.sh baseline release link exit 0",
+        "files": {
+          "src/main.rs": {
+            "bytes": 6095,
+            "sha256": "410fde78644cc494eb5cd5738afa30b0325ad2254ad6c24d3cf60ce9ce57f94e"
+          },
+          "Cargo.toml": {
+            "bytes": 319,
+            "sha256": "b667a6e27c60048d99cf132d602da71a9f94640caf2682c658ef5aafb562dd3e"
+          },
+          "Cargo.lock": {
+            "bytes": 21015,
+            "sha256": "c7724c8cbcd9a3f19d7547ca5fb857835164da0a527aa7a8121ebef2a2cf5846"
+          },
+          "build.sh": {
+            "bytes": 1293,
+            "sha256": "91026d2d32ad5749f2e5b900c425c5e84729cfea7a061859439309d66851fbef"
+          },
+          "make-requests.py": {
+            "bytes": 635,
+            "sha256": "ef36273b3e7c084619fcca0f5fa6c67229501eb33dd58815667fc6bdff2b96a5"
+          },
+          "proof-original": {
+            "bytes": 57630488,
+            "sha256": "f64e924aa79c441e856c8516d32b7611c6b71570049555243d6eb60541fa5cf2"
+          },
+          "request-screen.json": {
+            "bytes": 73193,
+            "sha256": "8a861c34fd7ef7d58fd94486ec0f37a118cb2819da4d804adb4072eab83c16d7"
+          },
+          "request-photo.json": {
+            "bytes": 61470,
+            "sha256": "ae8b14dbad41655f56bfbcd4f726e7f71cfecd3293007ff47b36293072f43700"
+          },
+          "request-document.json": {
+            "bytes": 99809,
+            "sha256": "3d01e1f819e52592ae11abd2602c6c4be89000312b45bdbaae149daa6d641176"
+          }
+        },
+        "native_objects_after_link": {
+          "native/bridge/ds4_bridge.o": {
+            "bytes": 425808,
+            "sha256": "1042333b4b19d2364b05cbbf1e86a87f42006930a792dc25ab67a15febde3e36"
+          },
+          "ds4.o": {
+            "bytes": 13807664,
+            "sha256": "905d639bece77c4ed97ae5e57f9078978f276275be01469ac98e103f8d203d68"
+          },
+          "ds4_ple.o": {
+            "bytes": 282000,
+            "sha256": "a48d261ddeec23add01002aaaf2a589edd54f2e09382fa48e99bfe68952dfe04"
+          },
+          "ds4_distributed.o": {
+            "bytes": 997560,
+            "sha256": "4d9bdc1dfc1ee4c2bcc2d9f6ca857b0f511b0adc9af84d8d3d21e7ec635c0f76"
+          },
+          "ds4_cuda.o": {
+            "bytes": 17239144,
+            "sha256": "48c644d049063e192f0eb92d96c6cd8709d07cf4379d768ad0e3b49e6902df44"
+          },
+          "cuda/mmq/ds4_ggml_stubs.o": {
+            "bytes": 849456,
+            "sha256": "e4e58ca91a01d162a3ddaef1a0804dd40315a34bd7ac6bba322ee2f38c5b90c8"
+          },
+          "cuda/mmq/ds4_mmq.o": {
+            "bytes": 53188752,
+            "sha256": "7d28dc73fa7610a7dcae4dcde9e46bee3a0ab36b9d62d65be028218e037a7dc7"
+          },
+          "cuda/mmq/ds4_mmq_d2r.o": {
+            "bytes": 3013264,
+            "sha256": "d082e87f57b46b300febeebe6f347f96724bb197edc7721b53ba81a565ae8e27"
+          },
+          "cuda/mmq/quantize.o": {
+            "bytes": 719352,
+            "sha256": "8305df41665a5bbe4f6f766d5ae17acfb6a585e53dafde131244fabb49d0d77d"
+          },
+          "cuda/mmq/mmid.o": {
+            "bytes": 1112952,
+            "sha256": "05f29ff8ab69ff70347cd32f89e97c456fdb7a40a5ed3f90b31ae189a02edaac"
+          },
+          "cuda/mmq/mmvq.o": {
+            "bytes": 14287144,
+            "sha256": "95573fe1cff57b5fa50fc4cffcddbaa5ef2c9568b0d8653b563c2353f81934ae"
+          },
+          "cuda/mmq/ds4_repack.o": {
+            "bytes": 1845056,
+            "sha256": "8ca0f75ebb3ead5cb5b96f8397a9b43791a7378b6cd563913e70466717d5f13f"
+          },
+          "cuda/mmq/ds4_fattn.o": {
+            "bytes": 4856376,
+            "sha256": "6e2cf3bf8d5db540f3123d08d49057610d7bb61af82a91bb85146302d16e39e4"
+          },
+          "cuda/qwen38_ple.o": {
+            "bytes": 156624,
+            "sha256": "c078bac53d5af2b9158c43de04ed4a3383f6cb41e53eb9b8722634310d266f75"
+          }
+        },
+        "source_caveat": "Production media source modified concurrently by root; these are native object hashes immediately after linking, not a claim current media source matches baseline objects."
+      }
+    },
+    "candidate": {
+      "source_path": "scratch/mimo-media-20260926/media-proof/receipt-candidate.json",
+      "source_sha256": "79830917885637ca562a398b602a9acfa7e6472d7311467366403b4b63face77",
+      "receipt": {
+        "created_utc": "2026-09-26T06:23:29.273882+00:00",
+        "git_head": "c4393f6e431acbe7c1d0aa2b770815cb373be683",
+        "scope": "candidate media full-logits proof link only; no GPU run",
+        "build_command": "bash scratch/mimo-media-20260926/media-proof/build.sh scratch/mimo-media-20260926/media-proof/proof-candidate",
+        "build_exit": 0,
+        "files": {
+          "src/main.rs": {
+            "bytes": 6095,
+            "sha256": "410fde78644cc494eb5cd5738afa30b0325ad2254ad6c24d3cf60ce9ce57f94e"
+          },
+          "Cargo.toml": {
+            "bytes": 319,
+            "sha256": "b667a6e27c60048d99cf132d602da71a9f94640caf2682c658ef5aafb562dd3e"
+          },
+          "Cargo.lock": {
+            "bytes": 21015,
+            "sha256": "c7724c8cbcd9a3f19d7547ca5fb857835164da0a527aa7a8121ebef2a2cf5846"
+          },
+          "build.sh": {
+            "bytes": 1293,
+            "sha256": "91026d2d32ad5749f2e5b900c425c5e84729cfea7a061859439309d66851fbef"
+          },
+          "make-requests.py": {
+            "bytes": 635,
+            "sha256": "ef36273b3e7c084619fcca0f5fa6c67229501eb33dd58815667fc6bdff2b96a5"
+          },
+          "request-screen.json": {
+            "bytes": 73193,
+            "sha256": "8a861c34fd7ef7d58fd94486ec0f37a118cb2819da4d804adb4072eab83c16d7"
+          },
+          "request-photo.json": {
+            "bytes": 61470,
+            "sha256": "ae8b14dbad41655f56bfbcd4f726e7f71cfecd3293007ff47b36293072f43700"
+          },
+          "request-document.json": {
+            "bytes": 99809,
+            "sha256": "3d01e1f819e52592ae11abd2602c6c4be89000312b45bdbaae149daa6d641176"
+          },
+          "proof-candidate": {
+            "bytes": 57630816,
+            "sha256": "f1816612a9bff094b62b69dfe6a5a82760ce65bf7e6a9a2318dd72e088f99044"
+          },
+          "build-candidate.log": {
+            "bytes": 8525,
+            "sha256": "67f878d21bcfe80beb8d639843653cb0e009603fb4c912d5be03ec488a672673"
+          }
+        },
+        "harness_and_requests_unchanged": true,
+        "original_binary_unchanged": true,
+        "native_objects_after_link": {
+          "native/bridge/ds4_bridge.o": {
+            "bytes": 425808,
+            "sha256": "1042333b4b19d2364b05cbbf1e86a87f42006930a792dc25ab67a15febde3e36"
+          },
+          "ds4.o": {
+            "bytes": 13807664,
+            "sha256": "905d639bece77c4ed97ae5e57f9078978f276275be01469ac98e103f8d203d68"
+          },
+          "ds4_ple.o": {
+            "bytes": 282000,
+            "sha256": "a48d261ddeec23add01002aaaf2a589edd54f2e09382fa48e99bfe68952dfe04"
+          },
+          "ds4_distributed.o": {
+            "bytes": 997560,
+            "sha256": "4d9bdc1dfc1ee4c2bcc2d9f6ca857b0f511b0adc9af84d8d3d21e7ec635c0f76"
+          },
+          "ds4_cuda.o": {
+            "bytes": 17232224,
+            "sha256": "095b07edf7f1940e694f53d5e4609d80c2dc170b32fffe3ed600caf64a10f73e"
+          },
+          "cuda/mmq/ds4_ggml_stubs.o": {
+            "bytes": 849456,
+            "sha256": "e4e58ca91a01d162a3ddaef1a0804dd40315a34bd7ac6bba322ee2f38c5b90c8"
+          },
+          "cuda/mmq/ds4_mmq.o": {
+            "bytes": 53188752,
+            "sha256": "7d28dc73fa7610a7dcae4dcde9e46bee3a0ab36b9d62d65be028218e037a7dc7"
+          },
+          "cuda/mmq/ds4_mmq_d2r.o": {
+            "bytes": 3013264,
+            "sha256": "d082e87f57b46b300febeebe6f347f96724bb197edc7721b53ba81a565ae8e27"
+          },
+          "cuda/mmq/quantize.o": {
+            "bytes": 719352,
+            "sha256": "8305df41665a5bbe4f6f766d5ae17acfb6a585e53dafde131244fabb49d0d77d"
+          },
+          "cuda/mmq/mmid.o": {
+            "bytes": 1112952,
+            "sha256": "05f29ff8ab69ff70347cd32f89e97c456fdb7a40a5ed3f90b31ae189a02edaac"
+          },
+          "cuda/mmq/mmvq.o": {
+            "bytes": 14287144,
+            "sha256": "95573fe1cff57b5fa50fc4cffcddbaa5ef2c9568b0d8653b563c2353f81934ae"
+          },
+          "cuda/mmq/ds4_repack.o": {
+            "bytes": 1845056,
+            "sha256": "8ca0f75ebb3ead5cb5b96f8397a9b43791a7378b6cd563913e70466717d5f13f"
+          },
+          "cuda/mmq/ds4_fattn.o": {
+            "bytes": 4856376,
+            "sha256": "6e2cf3bf8d5db540f3123d08d49057610d7bb61af82a91bb85146302d16e39e4"
+          },
+          "cuda/qwen38_ple.o": {
+            "bytes": 156624,
+            "sha256": "c078bac53d5af2b9158c43de04ed4a3383f6cb41e53eb9b8722634310d266f75"
+          }
+        },
+        "changed_native_objects_vs_original": [
+          "ds4_cuda.o"
+        ],
+        "production_candidate_sources": {
+          "cuda/mimo2_media.cuh": {
+            "bytes": 12539,
+            "sha256": "8ec31456a5851a516a40428751679c5bbe98c8a53021c905241cd37fa1468154"
+          },
+          "ds4_mimo2_gpu.cuh": {
+            "bytes": 27424,
+            "sha256": "89a15885c598d295d287b2fc69463236d375acaafcf8e5572434a0acae9b887c"
+          }
+        },
+        "production_build_log": {
+          "bytes": 17702,
+          "sha256": "7e2ddc71814f2b1f58478fbcf0cc07397cf2a3c21ed51d5204a5571352c8d2a9"
+        },
+        "production_diff_stat": "cuda/mimo2_media.cuh | 72 ++++++++++++++++++++++++++++++++++++++++++++++++++++\n ds4_mimo2_gpu.cuh    | 13 ++++++++++\n 2 files changed, 85 insertions(+)",
+        "source_caveat": "Native production build was performed by root; source/object hashes recorded after successful proof link."
+      }
+    }
+  }
+}

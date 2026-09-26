@@ -1,0 +1,477 @@
+{
+  "status": "complete",
+  "requests": 18,
+  "measured_requests": 9,
+  "warm_requests": 9,
+  "all_token_ids_content_finish_and_counts_exact": true,
+  "all_cached_tokens_zero": true,
+  "all_guard_exits_zero": true,
+  "all_census_governor_faults_zero": true,
+  "raw_result_sha256": "e2040187a83449e2c95ea9369419c80bd1e2259a4a759f48b5f75160231c3bdb",
+  "raw_completed_sha256": "70d09a4e16bd3508cef78b8d6f313d6e306e1901f42f99f584606b432ca00bfd",
+  "request_sha256": {
+    "screen": "9286b0ed108e9d2dbbf0e22b29cfbfbf954eec8201fdbf1a5758a8980383f451"
+  },
+  "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+  "runs": [
+    {
+      "round": 0,
+      "arm": "original",
+      "raw_directory": "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-0-original",
+      "guard_exit": 0,
+      "shutdown": "task worker SIGTERM; clean guard exit; no cleanup escalation",
+      "gpu_process_observation": "Only recorded owner/task worker at all saved boundary checks",
+      "models_sha256": "967a8de7d15a7956854e33a92eaa59f19e5f7b7636bf57799040cfe2d50c905a",
+      "phases": {
+        "warm": {
+          "wall_ms": 15667.999713972677,
+          "timings": {
+            "ttft_ms": 13309.7,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 60.2,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "response_sha256": "08b5f12cf52202eee6ec7454e2a9ddf27e7bcfe453c69754d008e25d01daf921",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "token_count": 64,
+          "prompt_tokens": 794,
+          "cached_tokens": 0,
+          "finish_reason": "length",
+          "census_faults": 0,
+          "governor_faults": 0,
+          "stats_sha256": "9a5fcfdecb4df5254662688c24c354cd97d6d86e27c65d230972d8e51d93e159"
+        },
+        "sample": {
+          "wall_ms": 15196.713283949066,
+          "timings": {
+            "ttft_ms": 12841.4,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 62.0,
+            "decode_tok_s": 26.9,
+            "tok_per_step": 1.0
+          },
+          "response_sha256": "5e1b4b9e5c049814c6fcd8eb924bff74c666e5093ac7e76c0483d929eecc16cf",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "token_count": 64,
+          "prompt_tokens": 794,
+          "cached_tokens": 0,
+          "finish_reason": "length",
+          "census_faults": 0,
+          "governor_faults": 0,
+          "stats_sha256": "64ee9cc8cc25d83ed4d4ec58ddb2b306e354656ab37633e7814163baa9ac85f3"
+        }
+      }
+    },
+    {
+      "round": 0,
+      "arm": "off",
+      "raw_directory": "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-0-off",
+      "guard_exit": 0,
+      "shutdown": "task worker SIGTERM; clean guard exit; no cleanup escalation",
+      "gpu_process_observation": "Only recorded owner/task worker at all saved boundary checks",
+      "models_sha256": "967a8de7d15a7956854e33a92eaa59f19e5f7b7636bf57799040cfe2d50c905a",
+      "phases": {
+        "warm": {
+          "wall_ms": 15658.30820001429,
+          "timings": {
+            "ttft_ms": 13300.3,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 60.2,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "response_sha256": "49f23ec41d51ec1987436190bcc9392f41205488cdb2800212476bcee663e519",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "token_count": 64,
+          "prompt_tokens": 794,
+          "cached_tokens": 0,
+          "finish_reason": "length",
+          "census_faults": 0,
+          "governor_faults": 0,
+          "stats_sha256": "2d31bf6c4dc05e3ec00674492b97779dfd08dc4ec4860e3cd584a2eadfe03c96"
+        },
+        "sample": {
+          "wall_ms": 15168.62992796814,
+          "timings": {
+            "ttft_ms": 12813.2,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 62.2,
+            "decode_tok_s": 26.9,
+            "tok_per_step": 1.0
+          },
+          "response_sha256": "1270580c8c4d57d4c615283eb696f1bcac3389de7af1c47fd1f7164a22602014",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "token_count": 64,
+          "prompt_tokens": 794,
+          "cached_tokens": 0,
+          "finish_reason": "length",
+          "census_faults": 0,
+          "governor_faults": 0,
+          "stats_sha256": "8fe9b8860765e1b710cb487a6a4e0334f6ff0d12f37ddf7e9b9d0deb680ede7c"
+        }
+      }
+    },
+    {
+      "round": 0,
+      "arm": "on",
+      "raw_directory": "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-0-on",
+      "guard_exit": 0,
+      "shutdown": "task worker SIGTERM; clean guard exit; no cleanup escalation",
+      "gpu_process_observation": "Only recorded owner/task worker at all saved boundary checks",
+      "models_sha256": "967a8de7d15a7956854e33a92eaa59f19e5f7b7636bf57799040cfe2d50c905a",
+      "phases": {
+        "warm": {
+          "wall_ms": 7261.235683050472,
+          "timings": {
+            "ttft_ms": 4908.6,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 165.5,
+            "decode_tok_s": 26.9,
+            "tok_per_step": 1.0
+          },
+          "response_sha256": "d6fb4c2ecb2a55097bdd687883642070c151ce27c6e2485566574a2df5a96397",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "token_count": 64,
+          "prompt_tokens": 794,
+          "cached_tokens": 0,
+          "finish_reason": "length",
+          "census_faults": 0,
+          "governor_faults": 0,
+          "stats_sha256": "d36663d292660c03701e371de600a305a76242822471ba031a068892323f6327"
+        },
+        "sample": {
+          "wall_ms": 6792.5370540469885,
+          "timings": {
+            "ttft_ms": 4439.1,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 180.6,
+            "decode_tok_s": 26.9,
+            "tok_per_step": 1.0
+          },
+          "response_sha256": "33b4027b50cbbeee211aa7d3b5b8d7cebf3e1bfbc24929a46b66c5d042721a7a",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "token_count": 64,
+          "prompt_tokens": 794,
+          "cached_tokens": 0,
+          "finish_reason": "length",
+          "census_faults": 0,
+          "governor_faults": 0,
+          "stats_sha256": "4e564d2d592f3c36f71262959fb08922410b85139c675fe80df3601cfafa727a"
+        }
+      }
+    },
+    {
+      "round": 1,
+      "arm": "on",
+      "raw_directory": "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-1-on",
+      "guard_exit": 0,
+      "shutdown": "task worker SIGTERM; clean guard exit; no cleanup escalation",
+      "gpu_process_observation": "Only recorded owner/task worker at all saved boundary checks",
+      "models_sha256": "967a8de7d15a7956854e33a92eaa59f19e5f7b7636bf57799040cfe2d50c905a",
+      "phases": {
+        "warm": {
+          "wall_ms": 7287.833220965695,
+          "timings": {
+            "ttft_ms": 4926.2,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 164.9,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "response_sha256": "09f8f5333242eaa6124e6cfdfa83646aa6e8ba95af22fe1a4af14268cfc989d5",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "token_count": 64,
+          "prompt_tokens": 794,
+          "cached_tokens": 0,
+          "finish_reason": "length",
+          "census_faults": 0,
+          "governor_faults": 0,
+          "stats_sha256": "6a10458378520e3cebb83fdae20b3477f02e1bbc8e00261589af3d43ee86e7a7"
+        },
+        "sample": {
+          "wall_ms": 6795.268007030245,
+          "timings": {
+            "ttft_ms": 4440.6,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 180.5,
+            "decode_tok_s": 26.9,
+            "tok_per_step": 1.0
+          },
+          "response_sha256": "455c388a09789f4beec93b9ad3b7253164a2c732dc1c47aeb3438482fffc38f3",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "token_count": 64,
+          "prompt_tokens": 794,
+          "cached_tokens": 0,
+          "finish_reason": "length",
+          "census_faults": 0,
+          "governor_faults": 0,
+          "stats_sha256": "6ece4fd041be9508118808cb429f390cdbaec8c24b77d17da49d89829f53ec71"
+        }
+      }
+    },
+    {
+      "round": 1,
+      "arm": "original",
+      "raw_directory": "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-1-original",
+      "guard_exit": 0,
+      "shutdown": "task worker SIGTERM; clean guard exit; no cleanup escalation",
+      "gpu_process_observation": "Only recorded owner/task worker at all saved boundary checks",
+      "models_sha256": "967a8de7d15a7956854e33a92eaa59f19e5f7b7636bf57799040cfe2d50c905a",
+      "phases": {
+        "warm": {
+          "wall_ms": 15647.019408992492,
+          "timings": {
+            "ttft_ms": 13282.6,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 60.3,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "response_sha256": "c18e90d7c456cfdcffb084a792e947e2ade041642de96e9c771c9f9b2be9711e",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "token_count": 64,
+          "prompt_tokens": 794,
+          "cached_tokens": 0,
+          "finish_reason": "length",
+          "census_faults": 0,
+          "governor_faults": 0,
+          "stats_sha256": "86c158343130d71447ea6b478e8cdbad4e675854e69c90002568126caf162b75"
+        },
+        "sample": {
+          "wall_ms": 15175.238597963471,
+          "timings": {
+            "ttft_ms": 12814.6,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 62.2,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "response_sha256": "265e66ac5fc5cfdc271d19c8c3523906bbac26beb250015ee802555dcadef876",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "token_count": 64,
+          "prompt_tokens": 794,
+          "cached_tokens": 0,
+          "finish_reason": "length",
+          "census_faults": 0,
+          "governor_faults": 0,
+          "stats_sha256": "32c7a1ff5bf11ad91d9acf1770e6c75458cc4f52cce3e4b2b8b9022eb0c40cb5"
+        }
+      }
+    },
+    {
+      "round": 1,
+      "arm": "off",
+      "raw_directory": "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-1-off",
+      "guard_exit": 0,
+      "shutdown": "task worker SIGTERM; clean guard exit; no cleanup escalation",
+      "gpu_process_observation": "Only recorded owner/task worker at all saved boundary checks",
+      "models_sha256": "967a8de7d15a7956854e33a92eaa59f19e5f7b7636bf57799040cfe2d50c905a",
+      "phases": {
+        "warm": {
+          "wall_ms": 15671.024692011997,
+          "timings": {
+            "ttft_ms": 13319.3,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 60.1,
+            "decode_tok_s": 26.9,
+            "tok_per_step": 1.0
+          },
+          "response_sha256": "217028933c9bf0e57337d907f1d1a11fd8947a4cd08f266a8861313c86f31899",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "token_count": 64,
+          "prompt_tokens": 794,
+          "cached_tokens": 0,
+          "finish_reason": "length",
+          "census_faults": 0,
+          "governor_faults": 0,
+          "stats_sha256": "b29b628a01ca821540224166a996618c7be47941f7865629ece6622a69ea8b66"
+        },
+        "sample": {
+          "wall_ms": 15188.311269972473,
+          "timings": {
+            "ttft_ms": 12836.7,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 62.1,
+            "decode_tok_s": 26.9,
+            "tok_per_step": 1.0
+          },
+          "response_sha256": "6e3e9e369a71a52a95821e670ceb0ec265309f385ff0f920abcf1389f5c20a5b",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "token_count": 64,
+          "prompt_tokens": 794,
+          "cached_tokens": 0,
+          "finish_reason": "length",
+          "census_faults": 0,
+          "governor_faults": 0,
+          "stats_sha256": "e21be513460db3f313e53b430a89fe739c84ddcad0cbbea23b4ad85370f807a0"
+        }
+      }
+    },
+    {
+      "round": 2,
+      "arm": "off",
+      "raw_directory": "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-2-off",
+      "guard_exit": 0,
+      "shutdown": "task worker SIGTERM; clean guard exit; no cleanup escalation",
+      "gpu_process_observation": "Only recorded owner/task worker at all saved boundary checks",
+      "models_sha256": "967a8de7d15a7956854e33a92eaa59f19e5f7b7636bf57799040cfe2d50c905a",
+      "phases": {
+        "warm": {
+          "wall_ms": 15644.25155898789,
+          "timings": {
+            "ttft_ms": 13292.3,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 60.2,
+            "decode_tok_s": 26.9,
+            "tok_per_step": 1.0
+          },
+          "response_sha256": "8a2efdf15b6bebe9f58662c2102b2af7dfae346a821db5bf101246b6528354b2",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "token_count": 64,
+          "prompt_tokens": 794,
+          "cached_tokens": 0,
+          "finish_reason": "length",
+          "census_faults": 0,
+          "governor_faults": 0,
+          "stats_sha256": "16458ac9ae4f1103cc8b1f16e307db83db9096203e8be39713b083fcef0e0b35"
+        },
+        "sample": {
+          "wall_ms": 15158.50775904255,
+          "timings": {
+            "ttft_ms": 12806.8,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 62.2,
+            "decode_tok_s": 26.9,
+            "tok_per_step": 1.0
+          },
+          "response_sha256": "b04a19cd5f43b726a3c164e54d871ec4a6d7ec1988e2a01354962a0c3919eaac",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "token_count": 64,
+          "prompt_tokens": 794,
+          "cached_tokens": 0,
+          "finish_reason": "length",
+          "census_faults": 0,
+          "governor_faults": 0,
+          "stats_sha256": "2086e7a5fea9d6e6ca70ad79fb39207d1917cb8b539208d3acaf08bcfcfb83f0"
+        }
+      }
+    },
+    {
+      "round": 2,
+      "arm": "on",
+      "raw_directory": "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-2-on",
+      "guard_exit": 0,
+      "shutdown": "task worker SIGTERM; clean guard exit; no cleanup escalation",
+      "gpu_process_observation": "Only recorded owner/task worker at all saved boundary checks",
+      "models_sha256": "967a8de7d15a7956854e33a92eaa59f19e5f7b7636bf57799040cfe2d50c905a",
+      "phases": {
+        "warm": {
+          "wall_ms": 7271.348160982598,
+          "timings": {
+            "ttft_ms": 4918.4,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 165.1,
+            "decode_tok_s": 26.9,
+            "tok_per_step": 1.0
+          },
+          "response_sha256": "ac643dc06ec28c899d3bab27034b8247ed74e638368708afb365849811eb7d74",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "token_count": 64,
+          "prompt_tokens": 794,
+          "cached_tokens": 0,
+          "finish_reason": "length",
+          "census_faults": 0,
+          "governor_faults": 0,
+          "stats_sha256": "c8767eaaba0c7db35401c48c61e9f76a6b6b1dbc23b716c2c11dfbd3d4be5a9b"
+        },
+        "sample": {
+          "wall_ms": 6794.645496993326,
+          "timings": {
+            "ttft_ms": 4438.2,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 180.6,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "response_sha256": "41556c1d522abe35829bde6e47cfe8be9c2ef9374dc5b11b82ab783f43c6a1b7",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "token_count": 64,
+          "prompt_tokens": 794,
+          "cached_tokens": 0,
+          "finish_reason": "length",
+          "census_faults": 0,
+          "governor_faults": 0,
+          "stats_sha256": "a6354715fae352173a18e8ab8804188413fd324a416e06692b9ff0175340fc5a"
+        }
+      }
+    },
+    {
+      "round": 2,
+      "arm": "original",
+      "raw_directory": "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-2-original",
+      "guard_exit": 0,
+      "shutdown": "task worker SIGTERM; clean guard exit; no cleanup escalation",
+      "gpu_process_observation": "Only recorded owner/task worker at all saved boundary checks",
+      "models_sha256": "967a8de7d15a7956854e33a92eaa59f19e5f7b7636bf57799040cfe2d50c905a",
+      "phases": {
+        "warm": {
+          "wall_ms": 15637.14881701162,
+          "timings": {
+            "ttft_ms": 13283.5,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 60.3,
+            "decode_tok_s": 26.9,
+            "tok_per_step": 1.0
+          },
+          "response_sha256": "059a31aa5ede5a65ded8fbe595b4602d0d8edf63dca18237b2c1e70e0e98d8a8",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "token_count": 64,
+          "prompt_tokens": 794,
+          "cached_tokens": 0,
+          "finish_reason": "length",
+          "census_faults": 0,
+          "governor_faults": 0,
+          "stats_sha256": "46370d21f6c0cf10fea111fec422cb3c0d25a8ce02ac2e3a888e753e7a050e57"
+        },
+        "sample": {
+          "wall_ms": 15171.553282008972,
+          "timings": {
+            "ttft_ms": 12817.3,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 62.2,
+            "decode_tok_s": 26.9,
+            "tok_per_step": 1.0
+          },
+          "response_sha256": "676abd055e59ba1574e96a69ed895736addc541caf6e917fc94a292a5861fab0",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "token_count": 64,
+          "prompt_tokens": 794,
+          "cached_tokens": 0,
+          "finish_reason": "length",
+          "census_faults": 0,
+          "governor_faults": 0,
+          "stats_sha256": "0a6cf7ef83f6f4dd9ac41c49ab9a399a555f469668821b85d4ff95b8385393c0"
+        }
+      }
+    }
+  ]
+}

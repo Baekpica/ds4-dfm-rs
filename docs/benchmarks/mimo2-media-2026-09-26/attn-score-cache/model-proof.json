@@ -1,0 +1,89 @@
+{
+  "screen": {
+    "logits_exact": true,
+    "tokens_exact": true,
+    "arms": {
+      "original": {
+        "max_abs": 0.0,
+        "rms": 0.0,
+        "argmax": 785,
+        "logits_sha256": "c13b181981ad63af77de9c96e032d79e5d701661a9cea2091d2b3044df62193f"
+      },
+      "off": {
+        "max_abs": 0.0,
+        "rms": 0.0,
+        "argmax": 785,
+        "logits_sha256": "c13b181981ad63af77de9c96e032d79e5d701661a9cea2091d2b3044df62193f"
+      },
+      "on": {
+        "max_abs": 0.0,
+        "rms": 0.0,
+        "argmax": 785,
+        "logits_sha256": "c13b181981ad63af77de9c96e032d79e5d701661a9cea2091d2b3044df62193f"
+      }
+    },
+    "input_bytes_equal": {
+      "request.json": true,
+      "rendered-prompt.txt": true,
+      "prompt-tokens.json": true
+    }
+  },
+  "photo": {
+    "logits_exact": true,
+    "tokens_exact": true,
+    "arms": {
+      "original": {
+        "max_abs": 0.0,
+        "rms": 0.0,
+        "argmax": 785,
+        "logits_sha256": "38063ff5897d97237120b2853a47ba7bfabed8204b07f7d64383186a85dab7ed"
+      },
+      "off": {
+        "max_abs": 0.0,
+        "rms": 0.0,
+        "argmax": 785,
+        "logits_sha256": "38063ff5897d97237120b2853a47ba7bfabed8204b07f7d64383186a85dab7ed"
+      },
+      "on": {
+        "max_abs": 0.0,
+        "rms": 0.0,
+        "argmax": 785,
+        "logits_sha256": "38063ff5897d97237120b2853a47ba7bfabed8204b07f7d64383186a85dab7ed"
+      }
+    },
+    "input_bytes_equal": {
+      "request.json": true,
+      "rendered-prompt.txt": true,
+      "prompt-tokens.json": true
+    }
+  },
+  "document": {
+    "logits_exact": true,
+    "tokens_exact": true,
+    "arms": {
+      "original": {
+        "max_abs": 0.0,
+        "rms": 0.0,
+        "argmax": 785,
+        "logits_sha256": "f1fb69feff69b627416ec7a17a1dffeca365a11ccf2a9ea7cc6c98959f4ab9e0"
+      },
+      "off": {
+        "max_abs": 0.0,
+        "rms": 0.0,
+        "argmax": 785,
+        "logits_sha256": "f1fb69feff69b627416ec7a17a1dffeca365a11ccf2a9ea7cc6c98959f4ab9e0"
+      },
+      "on": {
+        "max_abs": 0.0,
+        "rms": 0.0,
+        "argmax": 785,
+        "logits_sha256": "f1fb69feff69b627416ec7a17a1dffeca365a11ccf2a9ea7cc6c98959f4ab9e0"
+      }
+    },
+    "input_bytes_equal": {
+      "request.json": true,
+      "rendered-prompt.txt": true,
+      "prompt-tokens.json": true
+    }
+  }
+}

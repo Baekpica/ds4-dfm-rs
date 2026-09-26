@@ -1,0 +1,749 @@
+{
+  "scope": "Completed Nsight Systems Rust server screen.png request; serial --cont-width 0, ctx8192, native chunk4096, MTP off, prefix reuse off. Cold first image and lazy serial graph allocation included.",
+  "profile": "whole.nsys-rep",
+  "sqlite": "whole.sqlite",
+  "fixture_sha256": {
+    "screen.png": "c11a3a38ba18c8769a0b0785470c089d2fa7287955e033de8cb99b7ae80f67b4"
+  },
+  "http_wall_ms": 15912.363381008618,
+  "server_timings": {
+    "ttft_ms": 13522.0,
+    "prefill_tokens": 794,
+    "prefill_cached_tokens": 0,
+    "prefill_tok_s": 59.3,
+    "decode_tok_s": 26.9,
+    "tok_per_step": 1.0
+  },
+  "capture_kernel_count": 67193,
+  "capture_kernel_sum_ns": 15095652798,
+  "capture_kernel_envelope_ns": 15811038112,
+  "stage_method": "No NVTX table/ranges. Boundaries inferred from ordered native source and unique projector (12MiB) / logits (610304B) D2H copies. Spans are trace-stage intervals, not separately instrumented CPU encoder or server prefill timings.",
+  "stages": [
+    {
+      "name": "vision_patch_to_projector_readback",
+      "start_ns": 211104128,
+      "end_ns": 12465192480,
+      "span_ns": 12254088352,
+      "kernel_sum_ns": 11854735454,
+      "kernel_count": 601,
+      "top_kernels": [
+        {
+          "name": "mimo2_attn",
+          "calls": 28,
+          "duration_ns": 11637736096
+        },
+        {
+          "name": "mimo2_patch",
+          "calls": 1,
+          "duration_ns": 63354912
+        },
+        {
+          "name": "Kernel2",
+          "calls": 85,
+          "duration_ns": 43685984
+        },
+        {
+          "name": "mimo2_rope",
+          "calls": 56,
+          "duration_ns": 26175424
+        },
+        {
+          "name": "nvjet_sm121_tss_mma_112x256x64_2_112x32x64_tmaAB_alignCD4_bz_TNNN",
+          "calls": 57,
+          "duration_ns": 20676032
+        },
+        {
+          "name": "f32_to_bf16_kernel",
+          "calls": 142,
+          "duration_ns": 19520734
+        },
+        {
+          "name": "mimo2_swiglu",
+          "calls": 28,
+          "duration_ns": 19104032
+        },
+        {
+          "name": "mimo2_bias",
+          "calls": 84,
+          "duration_ns": 11760352
+        },
+        {
+          "name": "exaone_add_kernel",
+          "calls": 56,
+          "duration_ns": 7443968
+        },
+        {
+          "name": "rms_norm_weight_kernel",
+          "calls": 56,
+          "duration_ns": 4523296
+        },
+        {
+          "name": "mimo2_gather",
+          "calls": 6,
+          "duration_ns": 570368
+        },
+        {
+          "name": "mimo2_layernorm",
+          "calls": 1,
+          "duration_ns": 98112
+        },
+        {
+          "name": "mimo2_gelu",
+          "calls": 1,
+          "duration_ns": 86144
+        }
+      ]
+    },
+    {
+      "name": "language_prefill_first_kernel_to_first_logit_readback",
+      "start_ns": 12652502208,
+      "end_ns": 13560683712,
+      "span_ns": 908181504,
+      "kernel_sum_ns": 903539744,
+      "kernel_count": 1248,
+      "top_kernels": [
+        {
+          "name": "gateup_iq2_d2r_pair_kernel",
+          "calls": 47,
+          "duration_ns": 393533056
+        },
+        {
+          "name": "ds4_moe_worklist_mmq_kernel",
+          "calls": 47,
+          "duration_ns": 256396416
+        },
+        {
+          "name": "dense_q8_d2r_kernel",
+          "calls": 50,
+          "duration_ns": 74286080
+        },
+        {
+          "name": "mul_mat_q",
+          "calls": 49,
+          "duration_ns": 42356480
+        },
+        {
+          "name": "mimo2_sum_residual",
+          "calls": 47,
+          "duration_ns": 24672192
+        },
+        {
+          "name": "mimo2_swiglu_q8",
+          "calls": 47,
+          "duration_ns": 24212992
+        },
+        {
+          "name": "prefill",
+          "calls": 48,
+          "duration_ns": 23778400
+        },
+        {
+          "name": "mimo2_split_rope",
+          "calls": 48,
+          "duration_ns": 17567648
+        },
+        {
+          "name": "quantize_mmq_q8_1",
+          "calls": 146,
+          "duration_ns": 16109440
+        },
+        {
+          "name": "exaone_rms_norm_kernel",
+          "calls": 97,
+          "duration_ns": 6937632
+        },
+        {
+          "name": "mimo2_router",
+          "calls": 47,
+          "duration_ns": 4980512
+        },
+        {
+          "name": "mimo2_attn_residual",
+          "calls": 48,
+          "duration_ns": 4839968
+        },
+        {
+          "name": "ds4_mmid_scatter_kernel",
+          "calls": 94,
+          "duration_ns": 2993600
+        },
+        {
+          "name": "nvjet_sm121_sss_tf32_mma_64x72x32_5_16x72x32_tmaAB_alignCD4_bz_TNNN",
+          "calls": 47,
+          "duration_ns": 2945600
+        },
+        {
+          "name": "q8_0_aligned_dense_vec_kernel",
+          "calls": 1,
+          "duration_ns": 2527968
+        }
+      ]
+    },
+    {
+      "name": "language_decode_first_kernel_to_last_kernel",
+      "start_ns": 13561041824,
+      "end_ns": 16022142240,
+      "span_ns": 2461100416,
+      "kernel_sum_ns": 2337377600,
+      "kernel_count": 65344,
+      "top_kernels": [
+        {
+          "name": "q8_0_aligned_dense_vec_kernel",
+          "calls": 6400,
+          "duration_ns": 1430272256
+        },
+        {
+          "name": "iq2_xxs_aligned_moe_pair_vec_kernel",
+          "calls": 3008,
+          "duration_ns": 419524160
+        },
+        {
+          "name": "mul_mat_vec_q_moe",
+          "calls": 3008,
+          "duration_ns": 266084800
+        },
+        {
+          "name": "mimo2_swa_decode",
+          "calls": 2496,
+          "duration_ns": 59893184
+        },
+        {
+          "name": "matmul_f32_kernel",
+          "calls": 3008,
+          "duration_ns": 58855584
+        },
+        {
+          "name": "exaone_rms_norm_kernel",
+          "calls": 6208,
+          "duration_ns": 23591392
+        },
+        {
+          "name": "mimo2_attn_split",
+          "calls": 576,
+          "duration_ns": 16964320
+        },
+        {
+          "name": "quantize_q8_1",
+          "calls": 12416,
+          "duration_ns": 14845984
+        },
+        {
+          "name": "mimo2_router_warp",
+          "calls": 3008,
+          "duration_ns": 10331712
+        },
+        {
+          "name": "exaone_add_kernel",
+          "calls": 6144,
+          "duration_ns": 8601632
+        },
+        {
+          "name": "mimo2_attn_merge",
+          "calls": 576,
+          "duration_ns": 5496448
+        },
+        {
+          "name": "mimo2_split_rope",
+          "calls": 3072,
+          "duration_ns": 4805696
+        },
+        {
+          "name": "step37_expert_sum",
+          "calls": 3008,
+          "duration_ns": 4416928
+        },
+        {
+          "name": "mimo2_kv_store",
+          "calls": 3072,
+          "duration_ns": 4045632
+        },
+        {
+          "name": "step37_swiglu",
+          "calls": 3072,
+          "duration_ns": 3398240
+        }
+      ]
+    }
+  ],
+  "vision_to_language_first_kernel_gap_ns": 187309728,
+  "attention": {
+    "calls": 28,
+    "sum_ns": 11637736096,
+    "pct_kernel_sum": 77.09329468376397,
+    "pct_http_wall": 73.13643999539138,
+    "pct_vision_stage_span": 94.97023166232186,
+    "full": {
+      "layers": [
+        0,
+        9,
+        18,
+        27
+      ],
+      "duration_ns": [
+        2331798656,
+        2330611232,
+        2329513280,
+        2338681664
+      ]
+    },
+    "windowed": {
+      "calls": 24,
+      "sum_ns": 2307131264
+    },
+    "geometry": {
+      "mangled": "_Z10mimo2_attnPfPKfS1_S1_S1_iiiiiiiiiiiii",
+      "gridX": 384,
+      "gridY": 1,
+      "gridZ": 1,
+      "blockX": 256,
+      "blockY": 1,
+      "blockZ": 1,
+      "registersPerThread": 40,
+      "staticSharedMemory": 0,
+      "dynamicSharedMemory": 0,
+      "localMemoryPerThread": 0
+    }
+  },
+  "isolated_reproducer_contract": {
+    "native_wrapper": "ds4_gpu_mimo2_attn",
+    "source": "cuda/mimo2_media.cuh::mimo2_attn",
+    "n": 3072,
+    "q_heads": 32,
+    "kv_heads": 8,
+    "hd": 64,
+    "q_stride": 3072,
+    "k_stride": 3072,
+    "v_stride": 3072,
+    "q_off": 0,
+    "k_off": 2048,
+    "v_off": 2560,
+    "q_k_v_alias": "same interleaved QKV FP32 allocation",
+    "out_layout": "n,Qheads,hd FP32 disjoint from QKV",
+    "primary_scope": {
+      "window": -1,
+      "have_sink": 0,
+      "causal": 0,
+      "group": 0
+    },
+    "secondary_scope": {
+      "window": 64,
+      "have_sink": 1,
+      "causal": 0,
+      "group": 0
+    },
+    "metadata_source": "mmproj-MiMo-V2.6-Flash-RL-BF16.gguf first2460 metadata bytes directly parsed",
+    "wa_pattern_mode": [
+      -1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      1,
+      1,
+      -1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      1,
+      1,
+      -1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      1,
+      1,
+      -1
+    ],
+    "inputs_note": "Nsight does not record tensor contents. Synthetic isolated inputs must disclose this, or capture actual QKV for strongest numerical/behavioral fidelity."
+  },
+  "top_kernels": [
+    {
+      "name": "mimo2_attn",
+      "calls": 28,
+      "duration_ns": 11637736096
+    },
+    {
+      "name": "q8_0_aligned_dense_vec_kernel",
+      "calls": 6401,
+      "duration_ns": 1432800224
+    },
+    {
+      "name": "iq2_xxs_aligned_moe_pair_vec_kernel",
+      "calls": 3008,
+      "duration_ns": 419524160
+    },
+    {
+      "name": "gateup_iq2_d2r_pair_kernel",
+      "calls": 47,
+      "duration_ns": 393533056
+    },
+    {
+      "name": "mul_mat_vec_q_moe",
+      "calls": 3008,
+      "duration_ns": 266084800
+    },
+    {
+      "name": "ds4_moe_worklist_mmq_kernel",
+      "calls": 47,
+      "duration_ns": 256396416
+    },
+    {
+      "name": "dense_q8_d2r_kernel",
+      "calls": 50,
+      "duration_ns": 74286080
+    },
+    {
+      "name": "mimo2_patch",
+      "calls": 1,
+      "duration_ns": 63354912
+    },
+    {
+      "name": "mimo2_swa_decode",
+      "calls": 2496,
+      "duration_ns": 59893184
+    },
+    {
+      "name": "matmul_f32_kernel",
+      "calls": 3008,
+      "duration_ns": 58855584
+    },
+    {
+      "name": "Kernel2",
+      "calls": 85,
+      "duration_ns": 43685984
+    },
+    {
+      "name": "mul_mat_q",
+      "calls": 49,
+      "duration_ns": 42356480
+    },
+    {
+      "name": "exaone_rms_norm_kernel",
+      "calls": 6305,
+      "duration_ns": 30529024
+    },
+    {
+      "name": "mimo2_rope",
+      "calls": 56,
+      "duration_ns": 26175424
+    },
+    {
+      "name": "mimo2_sum_residual",
+      "calls": 47,
+      "duration_ns": 24672192
+    },
+    {
+      "name": "mimo2_swiglu_q8",
+      "calls": 47,
+      "duration_ns": 24212992
+    },
+    {
+      "name": "prefill",
+      "calls": 48,
+      "duration_ns": 23778400
+    },
+    {
+      "name": "mimo2_split_rope",
+      "calls": 3120,
+      "duration_ns": 22373344
+    },
+    {
+      "name": "nvjet_sm121_tss_mma_112x256x64_2_112x32x64_tmaAB_alignCD4_bz_TNNN",
+      "calls": 57,
+      "duration_ns": 20676032
+    },
+    {
+      "name": "f32_to_bf16_kernel",
+      "calls": 142,
+      "duration_ns": 19520734
+    },
+    {
+      "name": "mimo2_swiglu",
+      "calls": 28,
+      "duration_ns": 19104032
+    },
+    {
+      "name": "mimo2_attn_split",
+      "calls": 576,
+      "duration_ns": 16964320
+    },
+    {
+      "name": "exaone_add_kernel",
+      "calls": 6201,
+      "duration_ns": 16122112
+    },
+    {
+      "name": "quantize_mmq_q8_1",
+      "calls": 146,
+      "duration_ns": 16109440
+    },
+    {
+      "name": "quantize_q8_1",
+      "calls": 12417,
+      "duration_ns": 14847328
+    }
+  ],
+  "profile_sha256": "4af2f2b183d6647e04ac421cddf5675a44542bad9d03c697006157eeee74df09",
+  "attention_calls": [
+    {
+      "vision_layer": 0,
+      "vision_mode": -1,
+      "start": 657490208,
+      "end": 2989288864,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 1,
+      "vision_mode": 0,
+      "start": 3002994848,
+      "end": 3099118528,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 2,
+      "vision_mode": 0,
+      "start": 3104571840,
+      "end": 3200665760,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 3,
+      "vision_mode": 0,
+      "start": 3206101440,
+      "end": 3302165920,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 4,
+      "vision_mode": 0,
+      "start": 3307662176,
+      "end": 3403967616,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 5,
+      "vision_mode": 1,
+      "start": 3409749504,
+      "end": 3505700736,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 6,
+      "vision_mode": 1,
+      "start": 3511197120,
+      "end": 3607210144,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 7,
+      "vision_mode": 1,
+      "start": 3612715680,
+      "end": 3708800192,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 8,
+      "vision_mode": 1,
+      "start": 3714285856,
+      "end": 3810337440,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 9,
+      "vision_mode": -1,
+      "start": 3816017120,
+      "end": 6146628352,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 10,
+      "vision_mode": 0,
+      "start": 6152221216,
+      "end": 6248686496,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 11,
+      "vision_mode": 0,
+      "start": 6254283296,
+      "end": 6350210784,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 12,
+      "vision_mode": 0,
+      "start": 6355794240,
+      "end": 6452108832,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 13,
+      "vision_mode": 0,
+      "start": 6457683008,
+      "end": 6553908480,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 14,
+      "vision_mode": 1,
+      "start": 6559699392,
+      "end": 6656092416,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 15,
+      "vision_mode": 1,
+      "start": 6661667936,
+      "end": 6757614304,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 16,
+      "vision_mode": 1,
+      "start": 6763187648,
+      "end": 6859761056,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 17,
+      "vision_mode": 1,
+      "start": 6865337120,
+      "end": 6961479520,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 18,
+      "vision_mode": -1,
+      "start": 6967242912,
+      "end": 9296756192,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 19,
+      "vision_mode": 0,
+      "start": 9302333152,
+      "end": 9398565024,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 20,
+      "vision_mode": 0,
+      "start": 9404161152,
+      "end": 9500300640,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 21,
+      "vision_mode": 0,
+      "start": 9505870272,
+      "end": 9601711232,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 22,
+      "vision_mode": 0,
+      "start": 9607311808,
+      "end": 9703119488,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 23,
+      "vision_mode": 1,
+      "start": 9708882368,
+      "end": 9805026208,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 24,
+      "vision_mode": 1,
+      "start": 9810591616,
+      "end": 9906627104,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 25,
+      "vision_mode": 1,
+      "start": 9912212480,
+      "end": 10008355008,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 26,
+      "vision_mode": 1,
+      "start": 10013958720,
+      "end": 10110072224,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    },
+    {
+      "vision_layer": 27,
+      "vision_mode": -1,
+      "start": 10115865024,
+      "end": 12454546688,
+      "gridX": 384,
+      "blockX": 256,
+      "registersPerThread": 40
+    }
+  ]
+}

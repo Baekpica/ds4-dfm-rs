@@ -1,0 +1,242 @@
+{
+  "status": "adopted",
+  "accepted": true,
+  "decision": "Adopt image round 1: all three HTTP pairs improve TTFT and wall latency against original and same-build OFF, decode medians unchanged; full Rust logits/tokens/inputs and all HTTP proofs exact; guards clean.",
+  "retained_text_round_commits": [
+    "284ff879",
+    "e06d1f30",
+    "a3fd2a5c"
+  ],
+  "control_head": "c4393f6e431acbe7c1d0aa2b770815cb373be683",
+  "candidate": "v1 unscaled score cache; optional normalized-weight scratch variant is not retained",
+  "kill_switch": "DS4_MIMO2_VISION_ATTN=0",
+  "default_candidate_state": "Enabled under the measured full-vision geometry predicate; DS4_MIMO2_VISION_ATTN=0 retains the original fallback.",
+  "scope": {
+    "rows": [
+      1,
+      8192
+    ],
+    "q_heads": 32,
+    "kv_heads": 8,
+    "head_dim": 64,
+    "strides": [
+      3072,
+      3072,
+      3072
+    ],
+    "offsets": [
+      0,
+      2048,
+      2560
+    ],
+    "qkv": "same interleaved allocation; output disjoint",
+    "window": "negative/full only",
+    "sinks": false,
+    "causal": false,
+    "group": 0
+  },
+  "native_build_command": "/usr/local/cuda/bin/nvcc -O3 -g -lineinfo --use_fast_math -std=c++17 -gencode arch=compute_121a,code=sm_121a -DDS4_CUDA_HAVE_MXF4=1 -Xcompiler -march=native -Xcompiler -pthread  -c -o ds4_cuda.o ds4_cuda.cu",
+  "test_compile_argv": [
+    "/usr/local/cuda/bin/nvcc",
+    "-O3",
+    "-g",
+    "-lineinfo",
+    "--use_fast_math",
+    "-std=c++17",
+    "-gencode",
+    "arch=compute_121a,code=sm_121a",
+    "-DDS4_CUDA_HAVE_MXF4=1",
+    "-Xcompiler",
+    "-march=native",
+    "-Xcompiler",
+    "-pthread",
+    "-Xptxas=-v",
+    "tests/mimo2_vision_attn.cu",
+    "-o",
+    "scratch/mimo-media-20260926/ncu-attn-r1/test-vision-attn"
+  ],
+  "isolated_paired_means": [
+    {
+      "pair": 0,
+      "original": 2325.206055,
+      "candidate": 230.684494,
+      "latency_reduction_pct": 90.07896553924981
+    },
+    {
+      "pair": 1,
+      "candidate": 230.050023,
+      "original": 2329.727865,
+      "latency_reduction_pct": 90.12545514623872
+    },
+    {
+      "pair": 2,
+      "original": 2324.984456,
+      "candidate": 229.987488,
+      "latency_reduction_pct": 90.10799889838059
+    }
+  ],
+  "isolated_speedup": 10.107393273331688,
+  "test": {
+    "source": "tests/mimo2_vision_attn.cu",
+    "source_sha256": "d4a558511c689ea7cc473251f741dc17e9ae2f6085ada99b16088bd8aa8a6b88",
+    "binary_sha256": "f88dc4d179e7873e4742427725ba4ec3fd4729c6babdd5278b4be5082b985dc6",
+    "guard_exit": 0,
+    "log": "test.txt",
+    "full_finite_rows": [
+      1,
+      31,
+      32,
+      33,
+      127,
+      128,
+      129,
+      1024,
+      3072,
+      6144,
+      8192
+    ],
+    "byte_exact": true,
+    "hard_inputs": [
+      "uniform scores",
+      "sharp finite logits",
+      "cancellation",
+      "mixed magnitudes",
+      "nonfinite max produces NaN",
+      "invalid sum produces zero"
+    ],
+    "fallbacks": [
+      "window+sinks",
+      "full+sinks",
+      "causal",
+      "group",
+      "head counts",
+      "head dimension",
+      "stride",
+      "offset",
+      "separate Q/K/V allocations"
+    ],
+    "guards_and_inputs_unchanged": true
+  },
+  "sources": {
+    "cuda/mimo2_media.cuh": {
+      "sha256": "8ec31456a5851a516a40428751679c5bbe98c8a53021c905241cd37fa1468154",
+      "bytes": 12539
+    },
+    "ds4_mimo2_gpu.cuh": {
+      "sha256": "89a15885c598d295d287b2fc69463236d375acaafcf8e5572434a0acae9b887c",
+      "bytes": 27424
+    },
+    "scratch/mimo-media-20260926/ncu-attn-r1/probe-candidate.cu": {
+      "sha256": "670fe0cdfc4377a800181bf92af66236869c81f6b4f31b66e36cb53b65724550",
+      "bytes": 7109
+    }
+  },
+  "copied_evidence": {
+    "nsys-before.json": {
+      "raw_path": "scratch/mimo-media-20260926/image-r1-serial3/whole-summary.json",
+      "raw_sha256": "0c6f914c5a04d531c640f7b031896eac2f548b2413749cb9d2e94ae99510b158",
+      "normalized_sha256": "0c6f914c5a04d531c640f7b031896eac2f548b2413749cb9d2e94ae99510b158"
+    },
+    "baseline-source.json": {
+      "raw_path": "scratch/mimo-media-20260926/ncu-attn-r1/source-receipt.json",
+      "raw_sha256": "dfbe3b1090c7abb7101a4e41463a985ea11340852a969403e26e4afc2d7eb321",
+      "normalized_sha256": "dfbe3b1090c7abb7101a4e41463a985ea11340852a969403e26e4afc2d7eb321"
+    },
+    "baseline-analysis.json": {
+      "raw_path": "scratch/mimo-media-20260926/ncu-attn-r1/baseline-analysis.json",
+      "raw_sha256": "a8416f174c04988dd0f9c9a09317a6e5f81bf854824801a8cd4c1c154383211c",
+      "normalized_sha256": "a8416f174c04988dd0f9c9a09317a6e5f81bf854824801a8cd4c1c154383211c"
+    },
+    "ncu-comparison.json": {
+      "raw_path": "scratch/mimo-media-20260926/ncu-attn-r1/ncu-comparison.json",
+      "raw_sha256": "e43ecaa8ad635b43ff78506d5f667959e308847534a08472d26a167d940384c9",
+      "normalized_sha256": "e43ecaa8ad635b43ff78506d5f667959e308847534a08472d26a167d940384c9"
+    },
+    "ncu-baseline.txt": {
+      "raw_path": "scratch/mimo-media-20260926/ncu-attn-r1/baseline-full.txt",
+      "raw_sha256": "bbe44f202aeac4188a94c12c8037b1ceae486db881dcbf66eb27d3d9300de879",
+      "normalized_sha256": "b5a77b6c8bb03bae2d48287c64c5f4472b76702e122bae5da6f004c7f90b4263"
+    },
+    "ncu-candidate.txt": {
+      "raw_path": "scratch/mimo-media-20260926/ncu-attn-r1/candidate-full.txt",
+      "raw_sha256": "d280159ef9c03778becf90d2ce2f298996558f506d85375da8abad61fcb728f8",
+      "normalized_sha256": "6f0dd98c942d52b419d5e75968b82801290e0d58bcfdc4c2790714325ed67d94"
+    },
+    "isolated.json": {
+      "raw_path": "scratch/mimo-media-20260926/ncu-attn-r1/isolated-result.json",
+      "raw_sha256": "8a4774dd928b2828827565a809e5caaa852ce9f4eb712265767d7e4cb658c53f",
+      "normalized_sha256": "8a4774dd928b2828827565a809e5caaa852ce9f4eb712265767d7e4cb658c53f"
+    },
+    "test.txt": {
+      "raw_path": "scratch/mimo-media-20260926/ncu-attn-r1/test.log",
+      "raw_sha256": "75fe231f97bfda8e673d2893d4b50994b2dc27c428d05b648fd2cb76959291cc",
+      "normalized_sha256": "75fe231f97bfda8e673d2893d4b50994b2dc27c428d05b648fd2cb76959291cc"
+    },
+    "normalized-decision.json": {
+      "raw_path": "scratch/mimo-media-20260926/ncu-attn-r1/normalized-decision.json",
+      "raw_sha256": "3ad4c5e8bbe61adddef1638c83f578ad0d3cc26e770c73864d5d019a980b20b9",
+      "normalized_sha256": "3ad4c5e8bbe61adddef1638c83f578ad0d3cc26e770c73864d5d019a980b20b9"
+    }
+  },
+  "raw_evidence": {
+    "whole_directory": "scratch/mimo-media-20260926/image-r1-serial3/",
+    "ncu_directory": "scratch/mimo-media-20260926/ncu-attn-r1/",
+    "full_ncu_counters": [
+      "baseline-full.csv",
+      "candidate-full.csv"
+    ],
+    "sass_source_counters": [
+      "baseline-source.csv",
+      "candidate-source.csv"
+    ],
+    "pilot_full_outputs": [
+      "pilot-original.f32",
+      "pilot-candidate.f32"
+    ],
+    "rust_full_logits_harness": "scratch/mimo-media-20260926/media-proof/",
+    "http_runner": "scratch/mimo-media-20260926/run-media-ab.py"
+  },
+  "remaining_gates": [],
+  "frozen_binary_hash_receipts": {
+    "baseline": [
+      "783bd16745bc66f89088e611699e609f75210985104c953487f40e26dc3877f0  ds4-server",
+      "03b9694cbce7de1255252bff926178974acd05be5ee7aafb5e62ede8b789bff3  cuda/mimo2_media.cuh",
+      "db2b655c37a56f740d6ac1593fc20b685e20d084f11e1cc446c83e3123769f1e  ds4_mimo2_gpu.cuh",
+      "c11a3a38ba18c8769a0b0785470c089d2fa7287955e033de8cb99b7ae80f67b4  tests/fixtures/qwen-images/screen.png"
+    ],
+    "candidate": [
+      "ec027d1f8e4ee837a2d21c98bb030c6a066ce9d74026cf110b48b1552b7baef3  ds4-server",
+      "91de2f9fc28bf397949fb868a782c2a19b1fd2c85dd54b8ccc18b04daa06c957  ds4-bench-perf",
+      "095b07edf7f1940e694f53d5e4609d80c2dc170b32fffe3ed600caf64a10f73e  ds4_cuda.o",
+      "8ec31456a5851a516a40428751679c5bbe98c8a53021c905241cd37fa1468154  cuda/mimo2_media.cuh",
+      "89a15885c598d295d287b2fc69463236d375acaafcf8e5572434a0acae9b887c  ds4_mimo2_gpu.cuh"
+    ]
+  },
+  "model_proof": {
+    "status": "complete",
+    "result": "model-proof.json",
+    "receipts": "model-proof-receipts.json",
+    "cases": 3,
+    "arms": [
+      "original",
+      "off",
+      "on"
+    ],
+    "runs": 9,
+    "logits_per_run": 152576,
+    "logits_bytes_per_run": 610304,
+    "tokens_per_run": 64,
+    "full_logits_exact": true,
+    "tokens_exact": true,
+    "request_rendered_prompt_and_token_bytes_exact": true
+  },
+  "http_ab": {
+    "status": "complete",
+    "report": "http-ab.json",
+    "proofs": "http-proofs.json",
+    "clocks": "http-clocks.json",
+    "launch_receipt": "http-launch-receipt.json"
+  },
+  "next_round": "Run a fresh whole-workload profile on the retained R1 baseline before selecting and profiling the next bottleneck.",
+  "historical_snapshot_note": "Copied NCU/source and normalized-pilot receipts record their collection-time state. Their pending wording predates this final adopted verdict."
+}

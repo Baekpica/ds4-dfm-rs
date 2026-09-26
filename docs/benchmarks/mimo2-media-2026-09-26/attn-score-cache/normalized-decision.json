@@ -1,0 +1,8 @@
+{
+  "status": "not_retained",
+  "scope": "optional refinement within image round 1, not the main 10x candidate",
+  "evidence": "one bounded fresh-process pair, 4warmups/5repetitions; full25MiBoutputbyte-exact",
+  "cached_normalization_ms": 229.657523,
+  "retained_candidate_ms": 229.594153,
+  "reason": "No measured speed benefit in the pilot; added normalization phase/barrier is not justified by this workload. Keep main candidate pending full-model A/B."
+}

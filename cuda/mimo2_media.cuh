@@ -111,6 +111,78 @@ __global__ static void mimo2_attn(
     }
 }
 
+enum {
+    M2V_ATTN_HEADS = 32, M2V_ATTN_KV = 8, M2V_ATTN_HD = 64,
+    M2V_ATTN_Q = M2V_ATTN_HEADS * M2V_ATTN_HD,
+    M2V_ATTN_KVW = M2V_ATTN_KV * M2V_ATTN_HD,
+    M2V_ATTN_QKV = M2V_ATTN_Q + 2 * M2V_ATTN_KVW,
+    M2V_ATTN_MAX = 8192, M2V_ATTN_THREADS = 128, M2V_ATTN_SCALARS = 2
+};
+
+/* Full vision attention: cache each dot once and keep one output value per
+ * thread. This removes repeated Q/K reads and output global read/modify/write
+ * without changing the scalar dot, denominator, or output accumulation order. */
+__global__ static void mimo2_vision_attn(float *out, const float *qkv, int n) {
+    const int query = blockIdx.x;
+    if (query >= n * M2V_ATTN_HEADS) { return; }
+    const int tid = threadIdx.x;
+    const int row = query / M2V_ATTN_HEADS, head = query % M2V_ATTN_HEADS;
+    const int kv = head / (M2V_ATTN_HEADS / M2V_ATTN_KV);
+    extern __shared__ float shared[];
+    float *scores = shared;
+    float *qq = scores + n;
+    float *stats = qq + M2V_ATTN_HD;
+    if (tid < M2V_ATTN_HD) {
+        qq[tid] = qkv[(int64_t)row * M2V_ATTN_QKV + head * M2V_ATTN_HD + tid];
+    }
+    __syncthreads();
+
+    const float scale = rsqrtf((float)M2V_ATTN_HD);
+    for (int key = tid; key < n; key += blockDim.x) {
+        const float *kk = qkv + (int64_t)key * M2V_ATTN_QKV + M2V_ATTN_Q + kv * M2V_ATTN_HD;
+        float dot = 0.f;
+        for (int d = 0; d < M2V_ATTN_HD; d++) { dot += qq[d] * kk[d]; }
+        // Keep the unscaled dot so expf retains the original multiply/subtract.
+        scores[key] = dot;
+    }
+    __syncthreads();
+    if (tid == 0) {
+        float maxv = -INFINITY;
+        for (int key = 0; key < n; key++) { maxv = fmaxf(maxv, scores[key] * scale); }
+        stats[0] = maxv;
+    }
+    __syncthreads();
+    const float maxv = stats[0];
+    if (!isfinite(maxv)) {
+        if (tid < M2V_ATTN_HD) { out[(int64_t)query * M2V_ATTN_HD + tid] = NAN; }
+        return;
+    }
+
+    for (int key = tid; key < n; key += blockDim.x) {
+        scores[key] = expf(scores[key] * scale - maxv);
+    }
+    __syncthreads();
+    if (tid == 0) {
+        float sum = 0.f;
+        for (int key = 0; key < n; key++) { sum += scores[key]; }
+        stats[1] = sum;
+    }
+    __syncthreads();
+    if (tid >= M2V_ATTN_HD) { return; }
+
+    float acc = 0.f;
+    const float sum = stats[1];
+    if (sum > 0.f) {
+        for (int key = 0; key < n; key++) {
+            const float w = scores[key] / sum;
+            const float value = qkv[(int64_t)key * M2V_ATTN_QKV +
+                                    M2V_ATTN_Q + M2V_ATTN_KVW + kv * M2V_ATTN_HD + tid];
+            acc += w * value;
+        }
+    }
+    out[(int64_t)query * M2V_ATTN_HD + tid] = acc;
+}
+
 __global__ static void mimo2_bias(float *x, const float *bias, int n, int dim) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n * dim) { x[i] += bias[i % dim]; }

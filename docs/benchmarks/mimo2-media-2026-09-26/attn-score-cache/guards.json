@@ -1,0 +1,1074 @@
+{
+  "scratch/mimo-media-20260926/image-r1-serial3/server.memory.jsonl": {
+    "sha256": "9c9afb2a9557ca2518249226e371b0a53b00a3477b3bad93b891fce79efde7d2",
+    "start": {
+      "time": 1790402407.3494608,
+      "event": "start",
+      "unit": "ds4-hostguard-1942658-1790402407313568668.scope",
+      "available_gib": 26.760696411132812,
+      "psi_full_avg10": 0.0,
+      "max_gib": 14.7,
+      "high_gib": 13.7,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "nsys",
+        "launch",
+        "--session-new=mimo-image-r1-serial3",
+        "--trace=cuda,nvtx,osrt",
+        "--cuda-graph-trace=node",
+        "--wait=all",
+        "./ds4-server",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "--vision",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "--model-id",
+        "MiMo-V2.6-Flash-RL",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18086",
+        "-c",
+        "8192",
+        "--cont-width",
+        "0",
+        "--prefix-reuse",
+        "off",
+        "--mtp-mode",
+        "off"
+      ]
+    },
+    "exit": {
+      "time": 1790402541.8221645,
+      "event": "exit",
+      "unit": "ds4-hostguard-1942658-1790402407313568668.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 17.228614807128906,
+    "max_psi_full_avg10": 0.0
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/baseline-full.memory.jsonl": {
+    "sha256": "ad0ad76c2c8730b010bdf9f569730807dfcea46a4ff20b4137a669ce7c98d124",
+    "start": {
+      "time": 1790402769.0856965,
+      "event": "start",
+      "unit": "ds4-hostguard-1944577-1790402769069677252.scope",
+      "available_gib": 117.10976791381836,
+      "psi_full_avg10": 0.0,
+      "max_gib": 16.0,
+      "high_gib": 14.0,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "ncu",
+        "--set",
+        "full",
+        "--replay-mode",
+        "kernel",
+        "--clock-control",
+        "none",
+        "--kernel-name-base",
+        "function",
+        "--kernel-name",
+        "regex:^mimo2_attn$",
+        "--launch-skip",
+        "2",
+        "--launch-count",
+        "1",
+        "--export",
+        "scratch/mimo-media-20260926/ncu-attn-r1/baseline-full",
+        "scratch/mimo-media-20260926/ncu-attn-r1/probe-baseline",
+        "-1",
+        "1",
+        "2"
+      ]
+    },
+    "exit": {
+      "time": 1790402973.6783867,
+      "event": "exit",
+      "unit": "ds4-hostguard-1944577-1790402769069677252.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 115.37994384765625,
+    "max_psi_full_avg10": 0.0
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/candidate-full.memory.jsonl": {
+    "sha256": "13cb0929f112fbafc05ef43a3bea70d924b788ac928306a492ad4e947530e82d",
+    "start": {
+      "time": 1790403598.1678967,
+      "event": "start",
+      "unit": "ds4-hostguard-1949490-1790403598157249517.scope",
+      "available_gib": 116.91584014892578,
+      "psi_full_avg10": 0.0,
+      "max_gib": 16.0,
+      "high_gib": 14.0,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "ncu",
+        "--set",
+        "full",
+        "--replay-mode",
+        "kernel",
+        "--clock-control",
+        "none",
+        "--kernel-name-base",
+        "function",
+        "--kernel-name",
+        "regex:^mimo2_vision_attn$",
+        "--launch-skip",
+        "2",
+        "--launch-count",
+        "1",
+        "--export",
+        "scratch/mimo-media-20260926/ncu-attn-r1/candidate-full",
+        "scratch/mimo-media-20260926/ncu-attn-r1/probe-candidate-pilot",
+        "-1",
+        "1",
+        "2"
+      ]
+    },
+    "exit": {
+      "time": 1790403639.1614926,
+      "event": "exit",
+      "unit": "ds4-hostguard-1949490-1790403598157249517.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 114.08281326293945,
+    "max_psi_full_avg10": 0.0
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/test.memory.jsonl": {
+    "sha256": "cb35967e4e8b379ee165fb7a133663af835b8bd8de4b22934871ba158a835eb9",
+    "start": {
+      "time": 1790403762.5883832,
+      "event": "start",
+      "unit": "ds4-hostguard-1950412-1790403762579349786.scope",
+      "available_gib": 117.03377532958984,
+      "psi_full_avg10": 0.0,
+      "max_gib": 16.0,
+      "high_gib": 14.0,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "scratch/mimo-media-20260926/ncu-attn-r1/test-vision-attn"
+      ]
+    },
+    "exit": {
+      "time": 1790403798.0654273,
+      "event": "exit",
+      "unit": "ds4-hostguard-1950412-1790403762579349786.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 116.0888786315918,
+    "max_psi_full_avg10": 0.0
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/isolated-0-candidate.memory.jsonl": {
+    "sha256": "1a481c340403d75e4d4929ebc96540cf0d75bb87defae634d3b43b1b6e31f77b",
+    "start": {
+      "time": 1790403838.77184,
+      "event": "start",
+      "unit": "ds4-hostguard-1950802-1790403838764294511.scope",
+      "available_gib": 116.98767852783203,
+      "psi_full_avg10": 0.0,
+      "max_gib": 16.0,
+      "high_gib": 14.0,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/probe-candidate-pilot",
+        "-1",
+        "3",
+        "2"
+      ]
+    },
+    "exit": {
+      "time": 1790403840.3961656,
+      "event": "exit",
+      "unit": "ds4-hostguard-1950802-1790403838764294511.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 116.60360717773438,
+    "max_psi_full_avg10": 0.0
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/isolated-0-original.memory.jsonl": {
+    "sha256": "8711a1c6024c8b2bd8fd1fab0130a7d51d0ac624db03d92dd1e6545b2d17e77d",
+    "start": {
+      "time": 1790403826.6852674,
+      "event": "start",
+      "unit": "ds4-hostguard-1950765-1790403826678484914.scope",
+      "available_gib": 117.0088005065918,
+      "psi_full_avg10": 0.0,
+      "max_gib": 16.0,
+      "high_gib": 14.0,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/probe-baseline",
+        "-1",
+        "3",
+        "2"
+      ]
+    },
+    "exit": {
+      "time": 1790403838.7057056,
+      "event": "exit",
+      "unit": "ds4-hostguard-1950765-1790403826678484914.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 116.64455795288086,
+    "max_psi_full_avg10": 0.0
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/isolated-1-candidate.memory.jsonl": {
+    "sha256": "41569473f4faa8d570d946b672c2f444500bc1e1f9acb4a91ceab6ceb3347987",
+    "start": {
+      "time": 1790403840.4984248,
+      "event": "start",
+      "unit": "ds4-hostguard-1950838-1790403840488815090.scope",
+      "available_gib": 116.99344253540039,
+      "psi_full_avg10": 0.0,
+      "max_gib": 16.0,
+      "high_gib": 14.0,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/probe-candidate-pilot",
+        "-1",
+        "3",
+        "2"
+      ]
+    },
+    "exit": {
+      "time": 1790403842.1278598,
+      "event": "exit",
+      "unit": "ds4-hostguard-1950838-1790403840488815090.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 116.62295150756836,
+    "max_psi_full_avg10": 0.0
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/isolated-1-original.memory.jsonl": {
+    "sha256": "293b2f3fd296c24e80fd91b556cb69c9db6729e716808ce4ff84f4b2d4b986ac",
+    "start": {
+      "time": 1790403842.2189636,
+      "event": "start",
+      "unit": "ds4-hostguard-1950852-1790403842211485026.scope",
+      "available_gib": 116.99836730957031,
+      "psi_full_avg10": 0.0,
+      "max_gib": 16.0,
+      "high_gib": 14.0,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/probe-baseline",
+        "-1",
+        "3",
+        "2"
+      ]
+    },
+    "exit": {
+      "time": 1790403854.2376816,
+      "event": "exit",
+      "unit": "ds4-hostguard-1950852-1790403842211485026.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 116.58068084716797,
+    "max_psi_full_avg10": 0.0
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/isolated-2-candidate.memory.jsonl": {
+    "sha256": "383fbc830eee11907a4e51fd7865977ee0dc739319ea838361d8cc6d73715eb2",
+    "start": {
+      "time": 1790403866.4044907,
+      "event": "start",
+      "unit": "ds4-hostguard-1950929-1790403866397367092.scope",
+      "available_gib": 117.00908660888672,
+      "psi_full_avg10": 0.0,
+      "max_gib": 16.0,
+      "high_gib": 14.0,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/probe-candidate-pilot",
+        "-1",
+        "3",
+        "2"
+      ]
+    },
+    "exit": {
+      "time": 1790403867.924892,
+      "event": "exit",
+      "unit": "ds4-hostguard-1950929-1790403866397367092.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 116.6321907043457,
+    "max_psi_full_avg10": 0.0
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/isolated-2-original.memory.jsonl": {
+    "sha256": "f6edc6cae8052142f2e8fc31cefd1fb95349d44476c1ae4b38aac6faf3624b7b",
+    "start": {
+      "time": 1790403854.2990448,
+      "event": "start",
+      "unit": "ds4-hostguard-1950894-1790403854292051497.scope",
+      "available_gib": 116.95090103149414,
+      "psi_full_avg10": 0.0,
+      "max_gib": 16.0,
+      "high_gib": 14.0,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/probe-baseline",
+        "-1",
+        "3",
+        "2"
+      ]
+    },
+    "exit": {
+      "time": 1790403866.3165057,
+      "event": "exit",
+      "unit": "ds4-hostguard-1950894-1790403854292051497.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 116.56182861328125,
+    "max_psi_full_avg10": 0.0
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/model-proof/screen-original.memory.jsonl": {
+    "sha256": "dee7006557761b7c50544e49027bd9370c105aa7c9643809d232864bb081feda",
+    "start": {
+      "time": 1790404167.9290895,
+      "event": "start",
+      "unit": "ds4-hostguard-1951832-1790404167919564625.scope",
+      "available_gib": 26.63632583618164,
+      "psi_full_avg10": 0.09,
+      "max_gib": 14.6,
+      "high_gib": 13.6,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/proof-original",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/request-screen.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/model-proof/screen-original"
+      ]
+    },
+    "exit": {
+      "time": 1790404191.668453,
+      "event": "exit",
+      "unit": "ds4-hostguard-1951832-1790404167919564625.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 18.55181121826172,
+    "max_psi_full_avg10": 0.24
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/model-proof/screen-off.memory.jsonl": {
+    "sha256": "4f8f361e7114782d0f7111daa7bd17bf8545d0f964cd3bc03367e43677d0b7f4",
+    "start": {
+      "time": 1790404191.7482455,
+      "event": "start",
+      "unit": "ds4-hostguard-1951864-1790404191738257965.scope",
+      "available_gib": 26.686931610107422,
+      "psi_full_avg10": 0.03,
+      "max_gib": 14.6,
+      "high_gib": 13.6,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/proof-candidate",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/request-screen.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/model-proof/screen-off"
+      ]
+    },
+    "exit": {
+      "time": 1790404212.6590548,
+      "event": "exit",
+      "unit": "ds4-hostguard-1951864-1790404191738257965.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 18.531734466552734,
+    "max_psi_full_avg10": 0.03
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/model-proof/screen-on.memory.jsonl": {
+    "sha256": "90d2608360fab891134b50e8304426f2ee0de7c9ddc86f1c28e00568e16c924f",
+    "start": {
+      "time": 1790404212.7450328,
+      "event": "start",
+      "unit": "ds4-hostguard-1951990-1790404212733864773.scope",
+      "available_gib": 26.649288177490234,
+      "psi_full_avg10": 0.0,
+      "max_gib": 14.6,
+      "high_gib": 13.6,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/proof-candidate",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/request-screen.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/model-proof/screen-on"
+      ]
+    },
+    "exit": {
+      "time": 1790404225.2197664,
+      "event": "exit",
+      "unit": "ds4-hostguard-1951990-1790404212733864773.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 18.538982391357422,
+    "max_psi_full_avg10": 0.0
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/model-proof/photo-original.memory.jsonl": {
+    "sha256": "caa26438b93c098e22537c59eec68c5de7efa67117f6179ab98aefc0bc9c1daf",
+    "start": {
+      "time": 1790404225.305215,
+      "event": "start",
+      "unit": "ds4-hostguard-1951998-1790404225296026971.scope",
+      "available_gib": 26.674091339111328,
+      "psi_full_avg10": 0.0,
+      "max_gib": 14.6,
+      "high_gib": 13.6,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/proof-original",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/request-photo.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/model-proof/photo-original"
+      ]
+    },
+    "exit": {
+      "time": 1790404235.9273136,
+      "event": "exit",
+      "unit": "ds4-hostguard-1951998-1790404225296026971.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 18.460132598876953,
+    "max_psi_full_avg10": 0.0
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/model-proof/photo-off.memory.jsonl": {
+    "sha256": "71881718b537af47946f2345e9fa551ad38834615a15757687c52f9ff719de97",
+    "start": {
+      "time": 1790404236.0140762,
+      "event": "start",
+      "unit": "ds4-hostguard-1952045-1790404236004434740.scope",
+      "available_gib": 26.398372650146484,
+      "psi_full_avg10": 0.0,
+      "max_gib": 14.3,
+      "high_gib": 13.3,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/proof-candidate",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/request-photo.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/model-proof/photo-off"
+      ]
+    },
+    "exit": {
+      "time": 1790404246.8411229,
+      "event": "exit",
+      "unit": "ds4-hostguard-1952045-1790404236004434740.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 18.385326385498047,
+    "max_psi_full_avg10": 0.0
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/model-proof/photo-on.memory.jsonl": {
+    "sha256": "e47bdec8ab11d282a1850cc19b29fdd418972b44f0cf32744aa31b636ad157b8",
+    "start": {
+      "time": 1790404246.9216895,
+      "event": "start",
+      "unit": "ds4-hostguard-1952053-1790404246912503281.scope",
+      "available_gib": 26.34326171875,
+      "psi_full_avg10": 0.0,
+      "max_gib": 14.3,
+      "high_gib": 13.3,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/proof-candidate",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/request-photo.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/model-proof/photo-on"
+      ]
+    },
+    "exit": {
+      "time": 1790404256.432958,
+      "event": "exit",
+      "unit": "ds4-hostguard-1952053-1790404246912503281.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 18.503387451171875,
+    "max_psi_full_avg10": 0.0
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/model-proof/document-original.memory.jsonl": {
+    "sha256": "b76d593b53ec6ef3d5f77a2c6a690d6e74ce28c5439bf22d02fb9ae50906a50f",
+    "start": {
+      "time": 1790404256.513139,
+      "event": "start",
+      "unit": "ds4-hostguard-1952061-1790404256504204230.scope",
+      "available_gib": 26.463626861572266,
+      "psi_full_avg10": 0.0,
+      "max_gib": 14.4,
+      "high_gib": 13.4,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/proof-original",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/request-document.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/model-proof/document-original"
+      ]
+    },
+    "exit": {
+      "time": 1790404309.051258,
+      "event": "exit",
+      "unit": "ds4-hostguard-1952061-1790404256504204230.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 18.205413818359375,
+    "max_psi_full_avg10": 0.0
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/model-proof/document-off.memory.jsonl": {
+    "sha256": "44489dc520314bf79ea2723c6a119c42510ef7d4db36dff7f11c8c5b8c6ddde4",
+    "start": {
+      "time": 1790404309.159994,
+      "event": "start",
+      "unit": "ds4-hostguard-1952160-1790404309149015277.scope",
+      "available_gib": 26.67102813720703,
+      "psi_full_avg10": 0.0,
+      "max_gib": 14.6,
+      "high_gib": 13.6,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/proof-candidate",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/request-document.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/model-proof/document-off"
+      ]
+    },
+    "exit": {
+      "time": 1790404361.6342733,
+      "event": "exit",
+      "unit": "ds4-hostguard-1952160-1790404309149015277.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 18.1904296875,
+    "max_psi_full_avg10": 0.0
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/model-proof/document-on.memory.jsonl": {
+    "sha256": "ba90a4e068b1026bd78b0ba8ba15050bbd0a55e88ea74de72ebb408abe2d769f",
+    "start": {
+      "time": 1790404361.7133663,
+      "event": "start",
+      "unit": "ds4-hostguard-1952231-1790404361705581329.scope",
+      "available_gib": 26.651412963867188,
+      "psi_full_avg10": 0.0,
+      "max_gib": 14.6,
+      "high_gib": 13.6,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/proof-candidate",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/request-document.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/model-proof/document-on"
+      ]
+    },
+    "exit": {
+      "time": 1790404381.4757617,
+      "event": "exit",
+      "unit": "ds4-hostguard-1952231-1790404361705581329.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 18.206588745117188,
+    "max_psi_full_avg10": 0.0
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-0-original/server.memory.jsonl": {
+    "sha256": "1085f70a78d338e1466e0cba4ff355bbc1032d993055b9ec43bf330f6a528feb",
+    "start": {
+      "time": 1790404437.2033398,
+      "event": "start",
+      "unit": "ds4-hostguard-1952430-1790404437194591042.scope",
+      "available_gib": 26.646129608154297,
+      "psi_full_avg10": 0.0,
+      "max_gib": 14.6,
+      "high_gib": 13.6,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/usr/bin/python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/run-media-ab.py",
+        "__worker__",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-0-original/server.pid.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/baseline/ds4-server",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "--vision",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "--model-id",
+        "MiMo-V2.6-Flash-RL",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18086",
+        "-c",
+        "8192",
+        "--cont-width",
+        "0",
+        "--prefix-reuse",
+        "off",
+        "--mtp-mode",
+        "off"
+      ]
+    },
+    "exit": {
+      "time": 1790404474.1179183,
+      "event": "exit",
+      "unit": "ds4-hostguard-1952430-1790404437194591042.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 18.220218658447266,
+    "max_psi_full_avg10": 0.0,
+    "stop_record_sha256": "688d18a32654e1870a87b748bd71d84c9b4a2060369dfad70eda0f37b1d1e58d",
+    "requested_shutdown_signal": "SIGTERM"
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-0-off/server.memory.jsonl": {
+    "sha256": "98a1178de2e0d2295b740d912d439cea0bdb5faffe65a466cd6b8f1f87d41346",
+    "start": {
+      "time": 1790404474.3247736,
+      "event": "start",
+      "unit": "ds4-hostguard-1952731-1790404474315613186.scope",
+      "available_gib": 26.48117446899414,
+      "psi_full_avg10": 0.0,
+      "max_gib": 14.4,
+      "high_gib": 13.4,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/usr/bin/python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/run-media-ab.py",
+        "__worker__",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-0-off/server.pid.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/server-candidate",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "--vision",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "--model-id",
+        "MiMo-V2.6-Flash-RL",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18086",
+        "-c",
+        "8192",
+        "--cont-width",
+        "0",
+        "--prefix-reuse",
+        "off",
+        "--mtp-mode",
+        "off"
+      ]
+    },
+    "exit": {
+      "time": 1790404510.7108305,
+      "event": "exit",
+      "unit": "ds4-hostguard-1952731-1790404474315613186.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 18.382713317871094,
+    "max_psi_full_avg10": 0.0,
+    "stop_record_sha256": "3e83b5a26d892c004e2564e841169d233eb6f4c21179be094ed1b02f712fd981",
+    "requested_shutdown_signal": "SIGTERM"
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-0-on/server.memory.jsonl": {
+    "sha256": "169369620be77660e4fa2bee0f9b37dc24433da8410adf5da271d5a57676df4c",
+    "start": {
+      "time": 1790404510.9484365,
+      "event": "start",
+      "unit": "ds4-hostguard-1952978-1790404510938163473.scope",
+      "available_gib": 26.66571807861328,
+      "psi_full_avg10": 0.0,
+      "max_gib": 14.6,
+      "high_gib": 13.6,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/usr/bin/python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/run-media-ab.py",
+        "__worker__",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-0-on/server.pid.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/server-candidate",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "--vision",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "--model-id",
+        "MiMo-V2.6-Flash-RL",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18086",
+        "-c",
+        "8192",
+        "--cont-width",
+        "0",
+        "--prefix-reuse",
+        "off",
+        "--mtp-mode",
+        "off"
+      ]
+    },
+    "exit": {
+      "time": 1790404530.5387962,
+      "event": "exit",
+      "unit": "ds4-hostguard-1952978-1790404510938163473.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 18.452003479003906,
+    "max_psi_full_avg10": 0.0,
+    "stop_record_sha256": "fe72afbd7509139d2b94b49635470e1cd24b437d9d5a215f58e02408ce71a503",
+    "requested_shutdown_signal": "SIGTERM"
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-1-on/server.memory.jsonl": {
+    "sha256": "6e37ebbd42d499a5d5929506d2b28912cc2ee8a16a347987fbee544a561a1714",
+    "start": {
+      "time": 1790404530.7729738,
+      "event": "start",
+      "unit": "ds4-hostguard-1953053-1790404530762889192.scope",
+      "available_gib": 26.641258239746094,
+      "psi_full_avg10": 0.0,
+      "max_gib": 14.6,
+      "high_gib": 13.6,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/usr/bin/python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/run-media-ab.py",
+        "__worker__",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-1-on/server.pid.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/server-candidate",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "--vision",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "--model-id",
+        "MiMo-V2.6-Flash-RL",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18086",
+        "-c",
+        "8192",
+        "--cont-width",
+        "0",
+        "--prefix-reuse",
+        "off",
+        "--mtp-mode",
+        "off"
+      ]
+    },
+    "exit": {
+      "time": 1790404550.3557324,
+      "event": "exit",
+      "unit": "ds4-hostguard-1953053-1790404530762889192.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 18.421939849853516,
+    "max_psi_full_avg10": 0.0,
+    "stop_record_sha256": "897045ecc4752cd548cc7c6b12cee64b1b7ea7c4f1b6cc1ccda3b4efc2009993",
+    "requested_shutdown_signal": "SIGTERM"
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-1-original/server.memory.jsonl": {
+    "sha256": "f307eca0cd00e08c9760e233077779f311b5ceece3bd203d01adad6fca661631",
+    "start": {
+      "time": 1790404551.1453712,
+      "event": "start",
+      "unit": "ds4-hostguard-1953185-1790404551136309704.scope",
+      "available_gib": 26.578689575195312,
+      "psi_full_avg10": 0.0,
+      "max_gib": 14.5,
+      "high_gib": 13.5,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/usr/bin/python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/run-media-ab.py",
+        "__worker__",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-1-original/server.pid.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/baseline/ds4-server",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "--vision",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "--model-id",
+        "MiMo-V2.6-Flash-RL",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18086",
+        "-c",
+        "8192",
+        "--cont-width",
+        "0",
+        "--prefix-reuse",
+        "off",
+        "--mtp-mode",
+        "off"
+      ]
+    },
+    "exit": {
+      "time": 1790404587.4563665,
+      "event": "exit",
+      "unit": "ds4-hostguard-1953185-1790404551136309704.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 18.4224853515625,
+    "max_psi_full_avg10": 0.0,
+    "stop_record_sha256": "85ef39ccc03a454b952a1470a2fed0529a0c40b958d85115b7540fcb594eb8b4",
+    "requested_shutdown_signal": "SIGTERM"
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-1-off/server.memory.jsonl": {
+    "sha256": "ca93eebdd94bcecd6f503ade98f3f11ee7350b8aa8b70583a2ea14c48107de8d",
+    "start": {
+      "time": 1790404587.6543288,
+      "event": "start",
+      "unit": "ds4-hostguard-1953443-1790404587645839404.scope",
+      "available_gib": 26.63565444946289,
+      "psi_full_avg10": 0.0,
+      "max_gib": 14.6,
+      "high_gib": 13.6,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/usr/bin/python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/run-media-ab.py",
+        "__worker__",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-1-off/server.pid.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/server-candidate",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "--vision",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "--model-id",
+        "MiMo-V2.6-Flash-RL",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18086",
+        "-c",
+        "8192",
+        "--cont-width",
+        "0",
+        "--prefix-reuse",
+        "off",
+        "--mtp-mode",
+        "off"
+      ]
+    },
+    "exit": {
+      "time": 1790404624.1112545,
+      "event": "exit",
+      "unit": "ds4-hostguard-1953443-1790404587645839404.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 18.410606384277344,
+    "max_psi_full_avg10": 0.0,
+    "stop_record_sha256": "41b628d0ba35ab8eda85eaa5d0499074bb0196fbcd92ce0310aea9f15394527c",
+    "requested_shutdown_signal": "SIGTERM"
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-2-off/server.memory.jsonl": {
+    "sha256": "4ce4b282b7f9582f0352e8b3e04de4d3db8ce1420e2d9ef0e0f0890a216660fb",
+    "start": {
+      "time": 1790404624.370237,
+      "event": "start",
+      "unit": "ds4-hostguard-1953630-1790404624361755859.scope",
+      "available_gib": 26.634132385253906,
+      "psi_full_avg10": 0.0,
+      "max_gib": 14.6,
+      "high_gib": 13.6,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/usr/bin/python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/run-media-ab.py",
+        "__worker__",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-2-off/server.pid.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/server-candidate",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "--vision",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "--model-id",
+        "MiMo-V2.6-Flash-RL",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18086",
+        "-c",
+        "8192",
+        "--cont-width",
+        "0",
+        "--prefix-reuse",
+        "off",
+        "--mtp-mode",
+        "off"
+      ]
+    },
+    "exit": {
+      "time": 1790404661.2510583,
+      "event": "exit",
+      "unit": "ds4-hostguard-1953630-1790404624361755859.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 18.293716430664062,
+    "max_psi_full_avg10": 0.0,
+    "stop_record_sha256": "02992898ce13529cde889eb7d72e1c2ca4fb80cf0ff9d92d4f2d34325a1b26d4",
+    "requested_shutdown_signal": "SIGTERM"
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-2-on/server.memory.jsonl": {
+    "sha256": "12e88489f60a42ae42c1dfd3b9481389b20bbc75ea6e6e69bdf1e94d6d5f34e8",
+    "start": {
+      "time": 1790404662.0010383,
+      "event": "start",
+      "unit": "ds4-hostguard-1953745-1790404661990640951.scope",
+      "available_gib": 26.604026794433594,
+      "psi_full_avg10": 0.0,
+      "max_gib": 14.6,
+      "high_gib": 13.6,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/usr/bin/python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/run-media-ab.py",
+        "__worker__",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-2-on/server.pid.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/server-candidate",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "--vision",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "--model-id",
+        "MiMo-V2.6-Flash-RL",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18086",
+        "-c",
+        "8192",
+        "--cont-width",
+        "0",
+        "--prefix-reuse",
+        "off",
+        "--mtp-mode",
+        "off"
+      ]
+    },
+    "exit": {
+      "time": 1790404682.2039382,
+      "event": "exit",
+      "unit": "ds4-hostguard-1953745-1790404661990640951.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 18.44318389892578,
+    "max_psi_full_avg10": 0.0,
+    "stop_record_sha256": "757756101a99494554618489682994d2f1a51da56100aa02d50f78655aaf3a58",
+    "requested_shutdown_signal": "SIGTERM"
+  },
+  "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-2-original/server.memory.jsonl": {
+    "sha256": "76e97865cc556cbb2a4b1212903aaa2b02ad0acb05121450620e1b63de63d342",
+    "start": {
+      "time": 1790404682.3788629,
+      "event": "start",
+      "unit": "ds4-hostguard-1953821-1790404682370756093.scope",
+      "available_gib": 26.676559448242188,
+      "psi_full_avg10": 0.0,
+      "max_gib": 14.6,
+      "high_gib": 13.6,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "/usr/bin/python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/run-media-ab.py",
+        "__worker__",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-2-original/server.pid.json",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/baseline/ds4-server",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+        "--vision",
+        "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+        "--model-id",
+        "MiMo-V2.6-Flash-RL",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18086",
+        "-c",
+        "8192",
+        "--cont-width",
+        "0",
+        "--prefix-reuse",
+        "off",
+        "--mtp-mode",
+        "off"
+      ]
+    },
+    "exit": {
+      "time": 1790404718.7121155,
+      "event": "exit",
+      "unit": "ds4-hostguard-1953821-1790404682370756093.scope",
+      "status": 0,
+      "payload_status": 0
+    },
+    "min_available_gib": 18.47824478149414,
+    "max_psi_full_avg10": 0.0,
+    "stop_record_sha256": "e5eec2410562e9fe7a1452e029d189aaaeb305ccddf7bc3ff78e0206132dd743",
+    "requested_shutdown_signal": "SIGTERM"
+  }
+}

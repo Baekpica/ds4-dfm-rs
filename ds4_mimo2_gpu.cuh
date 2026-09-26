@@ -343,6 +343,19 @@ extern "C" int ds4_gpu_mimo2_attn(
         sinks = m2_f32(map, size, sink_off, q_heads, "MiMo vision sinks");
         if (!sinks) { return 0; }
     }
+    const char *vision = getenv("DS4_MIMO2_VISION_ATTN");
+    if (!(vision && strcmp(vision, "0") == 0) && n <= M2V_ATTN_MAX &&
+        q_heads == M2V_ATTN_HEADS && kv_heads == M2V_ATTN_KV && hd == M2V_ATTN_HD &&
+        q_stride == M2V_ATTN_QKV && k_stride == M2V_ATTN_QKV && v_stride == M2V_ATTN_QKV &&
+        q_off == 0 && k_off == M2V_ATTN_Q && v_off == M2V_ATTN_Q + M2V_ATTN_KVW &&
+        window < 0 && !have_sink && !causal && !group &&
+        q->ptr && out->ptr && q->ptr == k->ptr && q->ptr == v->ptr && out->ptr != q->ptr) {
+        // Bound per-CTA score storage; other media layouts retain the scalar path.
+        const size_t shared = (n + M2V_ATTN_HD + M2V_ATTN_SCALARS) * sizeof(float);
+        mimo2_vision_attn<<<(unsigned)count, M2V_ATTN_THREADS, shared, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (int)n);
+        return cuda_ok(cudaGetLastError(), "MiMo vision attention");
+    }
     mimo2_attn<<<(unsigned)((count + 255) / 256), 256, 0, ds4_current_stream()>>>(
         (float *)out->ptr, (const float *)q->ptr, (const float *)k->ptr, (const float *)v->ptr, sinks,
         (int)n, (int)q_heads, (int)kv_heads, (int)hd,

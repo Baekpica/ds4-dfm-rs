@@ -1,0 +1,525 @@
+{
+  "scope": "Isolated full-vision attention n3072,Q32/KV8/HD64,interleavedQKV3072; same deterministic fixture, original scalar versus cooperative128threadCTA/query scorecache.",
+  "evidence": {
+    "baseline_raw": "baseline-full.csv",
+    "candidate_raw": "candidate-full.csv",
+    "baseline_source": "baseline-source.csv",
+    "candidate_source": "candidate-source.csv",
+    "baseline_details": "baseline-full.txt",
+    "candidate_details": "candidate-full.txt"
+  },
+  "warning_policy": {
+    "warnings": {
+      "baseline": [
+        "Warning: Data collection happened without fixed GPU frequencies. Profiling results may be inconsistent.",
+        "WRN   A buffer overflow occurred, resulting in potentially inaccurate sampling data. It is recommended to increase"
+      ],
+      "candidate": [
+        "Warning: Data collection happened without fixed GPU frequencies. Profiling results may be inconsistent."
+      ]
+    },
+    "baseline_PC_sampling_usable": false,
+    "candidate_PC_sampling_overflow_reported": false,
+    "interpretation": "Baseline reports512MiB warp-sampling buffer overflow; sampled-PC stall comparisons are excluded. Replay instruction/request/sector counters remain usable. Both reports warn clocks were not profiler-locked; measured SMfrequency2.196725/2.196037GHz is matched. L1TagRequests count cache tags, not32Bsectors; use full raw physical sector counters and L2TheoreticalSectors for source access footprints."
+  },
+  "duration": {
+    "baseline_ms": 2324.215,
+    "candidate_ms": 230.399776,
+    "speedup": 10.087748522811063,
+    "latency_reduction_pct": 90.08698524017787
+  },
+  "metrics": {
+    "gpu__time_duration.sum": {
+      "baseline": {
+        "raw_value": "2.324215",
+        "raw_unit": "s",
+        "value": 2324215000.0,
+        "unit": "ns"
+      },
+      "candidate": {
+        "raw_value": "230.399776",
+        "raw_unit": "ms",
+        "value": 230399776.0,
+        "unit": "ns"
+      },
+      "change_pct": -90.08698524017787
+    },
+    "sm__cycles_elapsed.avg.per_second": {
+      "baseline": {
+        "raw_value": "2.196725",
+        "raw_unit": "Ghz",
+        "value": 2196725000.0,
+        "unit": "Hz"
+      },
+      "candidate": {
+        "raw_value": "2.196037",
+        "raw_unit": "Ghz",
+        "value": 2196037000.0,
+        "unit": "Hz"
+      },
+      "change_pct": -0.03131935039660805
+    },
+    "smsp__inst_executed.sum": {
+      "baseline": {
+        "raw_value": "10523326464.000000",
+        "raw_unit": "inst",
+        "value": 10523326464.0,
+        "unit": "inst"
+      },
+      "candidate": {
+        "raw_value": "5741740032.000000",
+        "raw_unit": "inst",
+        "value": 5741740032.0,
+        "unit": "inst"
+      },
+      "change_pct": -45.43797484909046
+    },
+    "launch__registers_per_thread": {
+      "baseline": {
+        "raw_value": "40",
+        "raw_unit": "register/thread",
+        "value": 40.0,
+        "unit": "register/thread"
+      },
+      "candidate": {
+        "raw_value": "40",
+        "raw_unit": "register/thread",
+        "value": 40.0,
+        "unit": "register/thread"
+      },
+      "change_pct": 0.0
+    },
+    "launch__shared_mem_per_block_dynamic": {
+      "baseline": {
+        "raw_value": "0",
+        "raw_unit": "byte/block",
+        "value": 0.0,
+        "unit": "byte/block"
+      },
+      "candidate": {
+        "raw_value": "12.552000",
+        "raw_unit": "Kbyte/block",
+        "value": 12552.0,
+        "unit": "byte/block"
+      },
+      "change_pct": null
+    },
+    "launch__block_size": {
+      "baseline": {
+        "raw_value": "256",
+        "raw_unit": "",
+        "value": 256.0,
+        "unit": ""
+      },
+      "candidate": {
+        "raw_value": "128",
+        "raw_unit": "",
+        "value": 128.0,
+        "unit": ""
+      },
+      "change_pct": -50.0
+    },
+    "launch__grid_size": {
+      "baseline": {
+        "raw_value": "384",
+        "raw_unit": "",
+        "value": 384.0,
+        "unit": ""
+      },
+      "candidate": {
+        "raw_value": "98304",
+        "raw_unit": "",
+        "value": 98304.0,
+        "unit": ""
+      },
+      "change_pct": 25500.0
+    },
+    "derived__local_spilling_requests": {
+      "baseline": {
+        "raw_value": "0",
+        "raw_unit": "",
+        "value": 0.0,
+        "unit": ""
+      },
+      "candidate": {
+        "raw_value": "0",
+        "raw_unit": "",
+        "value": 0.0,
+        "unit": ""
+      },
+      "change_pct": null
+    },
+    "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": {
+      "baseline": {
+        "raw_value": "4831838208",
+        "raw_unit": "",
+        "value": 4831838208.0,
+        "unit": ""
+      },
+      "candidate": {
+        "raw_value": "1208156160",
+        "raw_unit": "",
+        "value": 1208156160.0,
+        "unit": ""
+      },
+      "change_pct": -74.99593098958333
+    },
+    "l1tex__t_requests_pipe_lsu_mem_global_op_st.sum": {
+      "baseline": {
+        "raw_value": "604176384",
+        "raw_unit": "",
+        "value": 604176384.0,
+        "unit": ""
+      },
+      "candidate": {
+        "raw_value": "196608",
+        "raw_unit": "",
+        "value": 196608.0,
+        "unit": ""
+      },
+      "change_pct": -99.96745850959974
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+      "baseline": {
+        "raw_value": "96636764160.000000",
+        "raw_unit": "sector",
+        "value": 96636764160.0,
+        "unit": "sector"
+      },
+      "candidate": {
+        "raw_value": "21744058368.000000",
+        "raw_unit": "sector",
+        "value": 21744058368.0,
+        "unit": "sector"
+      },
+      "change_pct": -77.49918619791667
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+      "baseline": {
+        "raw_value": "19333644288.000000",
+        "raw_unit": "sector",
+        "value": 19333644288.0,
+        "unit": "sector"
+      },
+      "candidate": {
+        "raw_value": "786432.000000",
+        "raw_unit": "sector",
+        "value": 786432.0,
+        "unit": "sector"
+      },
+      "change_pct": -99.99593231369997
+    },
+    "lts__t_sectors_srcunit_tex_op_read.sum": {
+      "baseline": {
+        "raw_value": "34369698599.000000",
+        "raw_unit": "sector",
+        "value": 34369698599.0,
+        "unit": "sector"
+      },
+      "candidate": {
+        "raw_value": "7497753801.000000",
+        "raw_unit": "sector",
+        "value": 7497753801.0,
+        "unit": "sector"
+      },
+      "change_pct": -78.18498821162734
+    },
+    "lts__t_sectors_srcunit_tex_op_write.sum": {
+      "baseline": {
+        "raw_value": "19333644288.000000",
+        "raw_unit": "sector",
+        "value": 19333644288.0,
+        "unit": "sector"
+      },
+      "candidate": {
+        "raw_value": "786432.000000",
+        "raw_unit": "sector",
+        "value": 786432.0,
+        "unit": "sector"
+      },
+      "change_pct": -99.99593231369997
+    },
+    "lts__t_sector_hit_rate.pct": {
+      "baseline": {
+        "raw_value": "98.840116",
+        "raw_unit": "%",
+        "value": 98.840116,
+        "unit": "%"
+      },
+      "candidate": {
+        "raw_value": "99.973980",
+        "raw_unit": "%",
+        "value": 99.97398,
+        "unit": "%"
+      },
+      "change_pct": 1.14716983942027
+    },
+    "lts__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "baseline": {
+        "raw_value": "89.498506",
+        "raw_unit": "%",
+        "value": 89.498506,
+        "unit": "%"
+      },
+      "candidate": {
+        "raw_value": "78.060584",
+        "raw_unit": "%",
+        "value": 78.060584,
+        "unit": "%"
+      },
+      "change_pct": -12.780014450744016
+    },
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "baseline": {
+        "raw_value": "4.436267",
+        "raw_unit": "%",
+        "value": 4.436267,
+        "unit": "%"
+      },
+      "candidate": {
+        "raw_value": "17.659299",
+        "raw_unit": "%",
+        "value": 17.659299,
+        "unit": "%"
+      },
+      "change_pct": 298.0666402630861
+    },
+    "sm__warps_active.avg.pct_of_peak_sustained_active": {
+      "baseline": {
+        "raw_value": "75.137590",
+        "raw_unit": "%",
+        "value": 75.13759,
+        "unit": "%"
+      },
+      "candidate": {
+        "raw_value": "48.474914",
+        "raw_unit": "%",
+        "value": 48.474914,
+        "unit": "%"
+      },
+      "change_pct": -35.48513600183344
+    },
+    "smsp__warps_eligible.avg.per_cycle_active": {
+      "baseline": {
+        "raw_value": "0.044320",
+        "raw_unit": "warp",
+        "value": 0.04432,
+        "unit": "warp"
+      },
+      "candidate": {
+        "raw_value": "0.103662",
+        "raw_unit": "warp",
+        "value": 0.103662,
+        "unit": "warp"
+      },
+      "change_pct": 133.89440433213
+    },
+    "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum": {
+      "baseline": {
+        "raw_value": "0",
+        "raw_unit": "",
+        "value": 0.0,
+        "unit": ""
+      },
+      "candidate": {
+        "raw_value": "1066997549",
+        "raw_unit": "",
+        "value": 1066997549.0,
+        "unit": ""
+      },
+      "change_pct": null
+    },
+    "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum": {
+      "baseline": {
+        "raw_value": "0",
+        "raw_unit": "",
+        "value": 0.0,
+        "unit": ""
+      },
+      "candidate": {
+        "raw_value": "22572114",
+        "raw_unit": "",
+        "value": 22572114.0,
+        "unit": ""
+      },
+      "change_pct": null
+    },
+    "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum": {
+      "baseline": {
+        "raw_value": "0",
+        "raw_unit": "",
+        "value": 0.0,
+        "unit": ""
+      },
+      "candidate": {
+        "raw_value": "5750",
+        "raw_unit": "",
+        "value": 5750.0,
+        "unit": ""
+      },
+      "change_pct": null
+    },
+    "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum": {
+      "baseline": {
+        "raw_value": "0",
+        "raw_unit": "",
+        "value": 0.0,
+        "unit": ""
+      },
+      "candidate": {
+        "raw_value": "3295735",
+        "raw_unit": "",
+        "value": 3295735.0,
+        "unit": ""
+      },
+      "change_pct": null
+    }
+  },
+  "exact_SASS_instruction_counts": {
+    "baseline": {
+      "MUFU.RCP": {
+        "warp_instructions": 9446400,
+        "predicated_on_thread_instructions": 302284800,
+        "source_sites": 4,
+        "L1_tag_requests_global": 0,
+        "L2_theoretical_sectors_global": 0
+      },
+      "MUFU.RSQ": {
+        "warp_instructions": 3072,
+        "predicated_on_thread_instructions": 98304,
+        "source_sites": 1,
+        "L1_tag_requests_global": 0,
+        "L2_theoretical_sectors_global": 0
+      },
+      "LDG.E": {
+        "warp_instructions": 4831838208,
+        "predicated_on_thread_instructions": 154618822656,
+        "source_sites": 128,
+        "L1_tag_requests_global": 96636764160,
+        "L2_theoretical_sectors_global": 96636764160
+      },
+      "FFMA.FTZ": {
+        "warp_instructions": 2434793472,
+        "predicated_on_thread_instructions": 77913391104,
+        "source_sites": 66,
+        "L1_tag_requests_global": 0,
+        "L2_theoretical_sectors_global": 0
+      },
+      "FMUL.FTZ": {
+        "warp_instructions": 37748736,
+        "predicated_on_thread_instructions": 1207959552,
+        "source_sites": 4,
+        "L1_tag_requests_global": 0,
+        "L2_theoretical_sectors_global": 0
+      },
+      "MUFU.EX2": {
+        "warp_instructions": 18874368,
+        "predicated_on_thread_instructions": 603979776,
+        "source_sites": 2,
+        "L1_tag_requests_global": 0,
+        "L2_theoretical_sectors_global": 0
+      },
+      "FADD.FTZ": {
+        "warp_instructions": 9437184,
+        "predicated_on_thread_instructions": 301989888,
+        "source_sites": 1,
+        "L1_tag_requests_global": 0,
+        "L2_theoretical_sectors_global": 0
+      },
+      "STG.E": {
+        "warp_instructions": 604176384,
+        "predicated_on_thread_instructions": 19333644288,
+        "source_sites": 32,
+        "L1_tag_requests_global": 19333644288,
+        "L2_theoretical_sectors_global": 19333644288
+      }
+    },
+    "candidate": {
+      "LDG.E": {
+        "warp_instructions": 1208352768,
+        "predicated_on_thread_instructions": 38660997120,
+        "source_sites": 73,
+        "L1_tag_requests_global": 19931529216,
+        "L2_theoretical_sectors_global": 21744058368
+      },
+      "STS": {
+        "warp_instructions": 19464192,
+        "predicated_on_thread_instructions": 610467840,
+        "source_sites": 5,
+        "L1_tag_requests_global": 0,
+        "L2_theoretical_sectors_global": 0
+      },
+      "LDS": {
+        "warp_instructions": 614006784,
+        "predicated_on_thread_instructions": 19648217088,
+        "source_sites": 67,
+        "L1_tag_requests_global": 0,
+        "L2_theoretical_sectors_global": 0
+      },
+      "FFMA.FTZ": {
+        "warp_instructions": 1217396736,
+        "predicated_on_thread_instructions": 38956695552,
+        "source_sites": 73,
+        "L1_tag_requests_global": 0,
+        "L2_theoretical_sectors_global": 0
+      },
+      "LDS.128": {
+        "warp_instructions": 301989888,
+        "predicated_on_thread_instructions": 4982833152,
+        "source_sites": 10,
+        "L1_tag_requests_global": 0,
+        "L2_theoretical_sectors_global": 0
+      },
+      "FMUL.FTZ": {
+        "warp_instructions": 915406848,
+        "predicated_on_thread_instructions": 19931332608,
+        "source_sites": 25,
+        "L1_tag_requests_global": 0,
+        "L2_theoretical_sectors_global": 0
+      },
+      "MUFU.EX2": {
+        "warp_instructions": 9437184,
+        "predicated_on_thread_instructions": 301989888,
+        "source_sites": 1,
+        "L1_tag_requests_global": 0,
+        "L2_theoretical_sectors_global": 0
+      },
+      "FADD.FTZ": {
+        "warp_instructions": 301989888,
+        "predicated_on_thread_instructions": 301989888,
+        "source_sites": 16,
+        "L1_tag_requests_global": 0,
+        "L2_theoretical_sectors_global": 0
+      },
+      "MUFU.RCP": {
+        "warp_instructions": 75497472,
+        "predicated_on_thread_instructions": 2415919104,
+        "source_sites": 1,
+        "L1_tag_requests_global": 0,
+        "L2_theoretical_sectors_global": 0
+      },
+      "STG.E": {
+        "warp_instructions": 196608,
+        "predicated_on_thread_instructions": 6291456,
+        "source_sites": 1,
+        "L1_tag_requests_global": 196608,
+        "L2_theoretical_sectors_global": 786432
+      }
+    }
+  },
+  "resource_interpretation": [
+    "Global load requests fall74.996%; sharedQ and cachedscores eliminate repeated operand reads. Globaloutputstores become one final coalesced store per output element instead of initialization plusone update perkey.",
+    "Globalstore sectors19,333,644,288\u2192786,432; finalstoretraffic equals25,165,824B output. ReadL2sectors34,369,698,599\u21927,497,753,801.",
+    "40registers and0localspill both. Candidate uses12,552Bdynamicshared perCTA and no persistentVRAM. This is a sharedmemory tradeoff, not zeroresourcechange.",
+    "Numerical reduction order is preserved, but arithmetic instruction counts are not identical: FFMA andEX2 threadinstructions halve, whileper-outputdimension weight normalization raisesFMUL andRCP counts. Overallwarp instructions fall45.44%.",
+    "The newscore stage maps adjacentthreads to differentkeys, losing oldGQA Kbroadcast coalescing: inferred K L1accessfootprint rises14,495,514,624\u219219,327,352,832sectors despite onlyonedotpass. Removalof Q/outputtraffic dominates overall decrease.",
+    "No finaladoptionclaim: isolated pilot bytecomparison passed; actualRustHTTPpairedimage andtextcoregates remainrequired."
+  ],
+  "pilot_context": {
+    "original_mean_ms": 2327.5,
+    "candidate_mean_ms": 231.02,
+    "output_bytes": 25165824,
+    "byte_comparison": "exact, reported by root from full output cmp; timing rounded from parent update"
+  },
+  "source_counter_note": "SASS InstructionsExecuted may count a predicated instruction atwarp level evenwhenpartofwarp inactive; raw memoryrequest counters are authoritative for aggregate traffic."
+}

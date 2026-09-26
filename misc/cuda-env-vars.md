@@ -170,6 +170,11 @@ The bandwidth figure is informational; we don't tier on it.
   narrow decode retain the original schedule. Cached on first use; compare
   fresh processes. See the [paired A/B and resource costs](../docs/benchmarks/mimo2-2026-09-26/README.md#gateup-bounded-scheduling).
 
+- `DS4_MIMO2_VISION_ATTN=0` restores scalar full vision attention. The
+  default caches scores in shared memory for interleaved Q32/KV8/HD64,
+  1–8192 rows, without window, sink, causal or group masks. Other layouts
+  retain the original path. See the
+  [image A/B evidence](../docs/benchmarks/mimo2-media-2026-09-26/attn-score-cache/README.md).
 - `DS4_MIMO2_DFLASH_CPU=1` restores host RMSNorm, RoPE and attention for
   MiMo's external five-layer DFlash drafter. Unset uses device kernels
   and shared K/V tiles. This control does not enable speculative decode;
