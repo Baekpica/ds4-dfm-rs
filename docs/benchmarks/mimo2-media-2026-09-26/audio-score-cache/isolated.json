@@ -1,0 +1,446 @@
+{
+  "runs": [
+    {
+      "kind": "mimo2_audio_attn_baseline",
+      "n": 557,
+      "q_heads": 16,
+      "kv_heads": 16,
+      "hd": 64,
+      "strides": [
+        1024,
+        1024,
+        1024
+      ],
+      "offsets": [
+        0,
+        0,
+        0
+      ],
+      "qkv_same_buffer": false,
+      "window": -1,
+      "sinks": false,
+      "causal": 1,
+      "group": 0,
+      "grid": [
+        35,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "warmups": 10,
+      "repetitions": 20,
+      "mean_ms": 34.175408,
+      "durations_ms": [
+        34.215038,
+        33.893631,
+        34.226082,
+        34.162048,
+        34.152702,
+        34.211426,
+        34.211266,
+        34.233791,
+        34.153854,
+        34.110847,
+        34.368832,
+        34.150433,
+        34.290977,
+        33.943008,
+        34.292576,
+        34.407711,
+        34.05645,
+        34.131264,
+        34.139328,
+        34.156895
+      ],
+      "output": {
+        "floats": 570368,
+        "bytes": 2281472,
+        "finite": true,
+        "fnv1a64": "584e8db8b89d8e09",
+        "max_abs": 0.999908447,
+        "dumped": false
+      },
+      "pair": 0,
+      "arm": "original"
+    },
+    {
+      "kind": "mimo2_audio_attn_candidate",
+      "n": 557,
+      "q_heads": 16,
+      "kv_heads": 16,
+      "hd": 64,
+      "strides": [
+        1024,
+        1024,
+        1024
+      ],
+      "offsets": [
+        0,
+        0,
+        0
+      ],
+      "qkv_same_buffer": false,
+      "window": -1,
+      "sinks": false,
+      "causal": 1,
+      "group": 0,
+      "grid": [
+        8912,
+        1,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "warmups": 10,
+      "repetitions": 20,
+      "mean_ms": 1.905907,
+      "durations_ms": [
+        1.897088,
+        1.889216,
+        1.892416,
+        1.990848,
+        1.89104,
+        1.88528,
+        1.890816,
+        1.892768,
+        1.890688,
+        1.888,
+        1.899264,
+        1.886688,
+        1.888384,
+        1.887552,
+        2.032256,
+        1.945344,
+        1.895072,
+        1.892768,
+        1.888832,
+        1.893824
+      ],
+      "output": {
+        "floats": 570368,
+        "bytes": 2281472,
+        "finite": true,
+        "fnv1a64": "584e8db8b89d8e09",
+        "max_abs": 0.999908447,
+        "dumped": false
+      },
+      "pair": 0,
+      "arm": "candidate"
+    },
+    {
+      "kind": "mimo2_audio_attn_candidate",
+      "n": 557,
+      "q_heads": 16,
+      "kv_heads": 16,
+      "hd": 64,
+      "strides": [
+        1024,
+        1024,
+        1024
+      ],
+      "offsets": [
+        0,
+        0,
+        0
+      ],
+      "qkv_same_buffer": false,
+      "window": -1,
+      "sinks": false,
+      "causal": 1,
+      "group": 0,
+      "grid": [
+        8912,
+        1,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "warmups": 10,
+      "repetitions": 20,
+      "mean_ms": 1.908411,
+      "durations_ms": [
+        1.90144,
+        1.897472,
+        1.892896,
+        1.898944,
+        1.890784,
+        1.89456,
+        1.896032,
+        1.986048,
+        1.993216,
+        1.890784,
+        1.890912,
+        1.890816,
+        1.895968,
+        1.89088,
+        1.893952,
+        1.892864,
+        1.890752,
+        1.99328,
+        1.892032,
+        1.894592
+      ],
+      "output": {
+        "floats": 570368,
+        "bytes": 2281472,
+        "finite": true,
+        "fnv1a64": "584e8db8b89d8e09",
+        "max_abs": 0.999908447,
+        "dumped": false
+      },
+      "pair": 1,
+      "arm": "candidate"
+    },
+    {
+      "kind": "mimo2_audio_attn_baseline",
+      "n": 557,
+      "q_heads": 16,
+      "kv_heads": 16,
+      "hd": 64,
+      "strides": [
+        1024,
+        1024,
+        1024
+      ],
+      "offsets": [
+        0,
+        0,
+        0
+      ],
+      "qkv_same_buffer": false,
+      "window": -1,
+      "sinks": false,
+      "causal": 1,
+      "group": 0,
+      "grid": [
+        35,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "warmups": 10,
+      "repetitions": 20,
+      "mean_ms": 34.168283,
+      "durations_ms": [
+        34.200928,
+        34.208801,
+        34.229473,
+        34.285599,
+        34.359455,
+        33.986942,
+        34.323807,
+        33.959423,
+        33.911777,
+        34.263199,
+        34.087967,
+        34.115746,
+        34.215168,
+        34.021538,
+        34.214081,
+        34.248096,
+        34.264191,
+        34.024769,
+        34.210079,
+        34.234623
+      ],
+      "output": {
+        "floats": 570368,
+        "bytes": 2281472,
+        "finite": true,
+        "fnv1a64": "584e8db8b89d8e09",
+        "max_abs": 0.999908447,
+        "dumped": false
+      },
+      "pair": 1,
+      "arm": "original"
+    },
+    {
+      "kind": "mimo2_audio_attn_baseline",
+      "n": 557,
+      "q_heads": 16,
+      "kv_heads": 16,
+      "hd": 64,
+      "strides": [
+        1024,
+        1024,
+        1024
+      ],
+      "offsets": [
+        0,
+        0,
+        0
+      ],
+      "qkv_same_buffer": false,
+      "window": -1,
+      "sinks": false,
+      "causal": 1,
+      "group": 0,
+      "grid": [
+        35,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "warmups": 10,
+      "repetitions": 20,
+      "mean_ms": 34.193997,
+      "durations_ms": [
+        34.099201,
+        34.068382,
+        34.065601,
+        34.397408,
+        34.315392,
+        33.993538,
+        34.082207,
+        34.012737,
+        34.196415,
+        34.268223,
+        34.136127,
+        34.450623,
+        34.192513,
+        34.093121,
+        34.301086,
+        34.102242,
+        34.493473,
+        34.28067,
+        34.286846,
+        34.044128
+      ],
+      "output": {
+        "floats": 570368,
+        "bytes": 2281472,
+        "finite": true,
+        "fnv1a64": "584e8db8b89d8e09",
+        "max_abs": 0.999908447,
+        "dumped": false
+      },
+      "pair": 2,
+      "arm": "original"
+    },
+    {
+      "kind": "mimo2_audio_attn_candidate",
+      "n": 557,
+      "q_heads": 16,
+      "kv_heads": 16,
+      "hd": 64,
+      "strides": [
+        1024,
+        1024,
+        1024
+      ],
+      "offsets": [
+        0,
+        0,
+        0
+      ],
+      "qkv_same_buffer": false,
+      "window": -1,
+      "sinks": false,
+      "causal": 1,
+      "group": 0,
+      "grid": [
+        8912,
+        1,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "warmups": 10,
+      "repetitions": 20,
+      "mean_ms": 1.907222,
+      "durations_ms": [
+        1.89712,
+        1.895456,
+        1.89008,
+        1.917984,
+        2.048512,
+        1.896544,
+        1.896768,
+        1.8928,
+        1.893632,
+        1.8928,
+        1.893632,
+        1.888608,
+        1.895808,
+        1.893536,
+        1.989824,
+        1.894784,
+        1.890816,
+        1.888576,
+        1.88848,
+        1.898688
+      ],
+      "output": {
+        "floats": 570368,
+        "bytes": 2281472,
+        "finite": true,
+        "fnv1a64": "584e8db8b89d8e09",
+        "max_abs": 0.999908447,
+        "dumped": false
+      },
+      "pair": 2,
+      "arm": "candidate"
+    }
+  ],
+  "median_ms": {
+    "original": 34.175408,
+    "candidate": 1.907222
+  },
+  "reduction_percent": 94.41931461359584,
+  "outputs_hash_equal": true,
+  "pairs": [
+    {
+      "pair": 0,
+      "original_ms": 34.175408,
+      "candidate_ms": 1.905907,
+      "reduction_percent": 94.42316240964847
+    },
+    {
+      "pair": 1,
+      "original_ms": 34.168283,
+      "candidate_ms": 1.908411,
+      "reduction_percent": 94.4146710561956
+    },
+    {
+      "pair": 2,
+      "original_ms": 34.193997,
+      "candidate_ms": 1.907222,
+      "reduction_percent": 94.42234846075468
+    }
+  ],
+  "pilot_full_buffer_comparison": {
+    "byte_exact": true,
+    "arms": {
+      "original": {
+        "bytes": 2281472,
+        "sha256": "0c6ea13b7466110e6d21b2da9dc0b5786bcf3546cf73bfd2480d6d5c6643e37e"
+      },
+      "candidate": {
+        "bytes": 2281472,
+        "sha256": "0c6ea13b7466110e6d21b2da9dc0b5786bcf3546cf73bfd2480d6d5c6643e37e"
+      }
+    },
+    "scope": "Independent pilot full output bytes; repeated A/B output uses diagnostic FNV, not retained full dumps."
+  }
+}

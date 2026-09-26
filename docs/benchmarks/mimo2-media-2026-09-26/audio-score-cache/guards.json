@@ -1,0 +1,137 @@
+{
+  "scope": "Completed isolated, pilot, full NCU and focused-test processes only; model/HTTP validation is pending.",
+  "runs": [
+    {
+      "log": "baseline-full.memory.jsonl",
+      "exit": {
+        "time": 1790406496.5384765,
+        "event": "exit",
+        "unit": "ds4-hostguard-1964216-1790406488539594163.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 115.78323364257812,
+      "intervention_events": []
+    },
+    {
+      "log": "candidate-full.memory.jsonl",
+      "exit": {
+        "time": 1790406895.8072703,
+        "event": "exit",
+        "unit": "ds4-hostguard-1966548-1790406890324298381.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 115.92119598388672,
+      "intervention_events": []
+    },
+    {
+      "log": "isolated-0-candidate.memory.jsonl",
+      "exit": {
+        "time": 1790406909.9745662,
+        "event": "exit",
+        "unit": "ds4-hostguard-1966793-1790406909644939366.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 116.89758682250977,
+      "intervention_events": []
+    },
+    {
+      "log": "isolated-0-original.memory.jsonl",
+      "exit": {
+        "time": 1790406909.5925086,
+        "event": "exit",
+        "unit": "ds4-hostguard-1966777-1790406908246957922.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 116.6044807434082,
+      "intervention_events": []
+    },
+    {
+      "log": "isolated-1-candidate.memory.jsonl",
+      "exit": {
+        "time": 1790406910.38969,
+        "event": "exit",
+        "unit": "ds4-hostguard-1966803-1790406910063786971.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 116.95634841918945,
+      "intervention_events": []
+    },
+    {
+      "log": "isolated-1-original.memory.jsonl",
+      "exit": {
+        "time": 1790406911.8213267,
+        "event": "exit",
+        "unit": "ds4-hostguard-1966816-1790406910481288600.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 116.68637466430664,
+      "intervention_events": []
+    },
+    {
+      "log": "isolated-2-candidate.memory.jsonl",
+      "exit": {
+        "time": 1790406913.6556873,
+        "event": "exit",
+        "unit": "ds4-hostguard-1966840-1790406913334443765.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 117.0220947265625,
+      "intervention_events": []
+    },
+    {
+      "log": "isolated-2-original.memory.jsonl",
+      "exit": {
+        "time": 1790406913.242747,
+        "event": "exit",
+        "unit": "ds4-hostguard-1966828-1790406911915233220.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 116.73244857788086,
+      "intervention_events": []
+    },
+    {
+      "log": "pilot-candidate.memory.jsonl",
+      "exit": {
+        "time": 1790406879.6536942,
+        "event": "exit",
+        "unit": "ds4-hostguard-1966422-1790406879332361688.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 116.87593460083008,
+      "intervention_events": []
+    },
+    {
+      "log": "pilot-original.memory.jsonl",
+      "exit": {
+        "time": 1790406879.252353,
+        "event": "exit",
+        "unit": "ds4-hostguard-1966412-1790406878724617953.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 116.83716201782227,
+      "intervention_events": []
+    },
+    {
+      "log": "test.memory.jsonl",
+      "exit": {
+        "time": 1790406976.5132067,
+        "event": "exit",
+        "unit": "ds4-hostguard-1967321-1790406969532595386.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 115.66485214233398,
+      "intervention_events": []
+    }
+  ]
+}

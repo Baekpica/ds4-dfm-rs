@@ -1,0 +1,95 @@
+{
+  "status": "PASS",
+  "scope": "Kernel/wrapper correctness only; no speed claim",
+  "compile_argv": [
+    "/usr/local/cuda/bin/nvcc",
+    "-O3",
+    "-g",
+    "-lineinfo",
+    "--use_fast_math",
+    "-std=c++17",
+    "-gencode",
+    "arch=compute_121a,code=sm_121a",
+    "-DDS4_CUDA_HAVE_MXF4=1",
+    "-Xcompiler",
+    "-march=native",
+    "-Xcompiler",
+    "-pthread",
+    "-Xptxas=-v",
+    "tests/mimo2_audio_attn.cu",
+    "-o",
+    "scratch/mimo-media-20260926/ncu-audio-r1/test-audio-attn"
+  ],
+  "compile_exit": 0,
+  "test_exit": 0,
+  "pass_lines": 29,
+  "max_double_oracle_abs_error": 1.77040405e-07,
+  "rows": [
+    1,
+    31,
+    32,
+    33,
+    127,
+    128,
+    129,
+    557,
+    727,
+    1024,
+    8192
+  ],
+  "off_default_on_full_output_byte_exact": true,
+  "input_sink_immutability_and_guards": true,
+  "unsupported_regimes": [
+    "noncausal",
+    "window128",
+    "group4",
+    "sink",
+    "heads",
+    "HD32",
+    "stride",
+    "offset",
+    "aliased-qkv"
+  ],
+  "numerical_cases": [
+    "random independent Q/K/V",
+    "flat Q",
+    "sharp scores",
+    "cancellation",
+    "mixed magnitude",
+    "invalid max",
+    "NaN denominator",
+    "row permutation",
+    "dimension permutation"
+  ],
+  "guard_events": [
+    {
+      "time": 1790406969.5431888,
+      "event": "start",
+      "unit": "ds4-hostguard-1967321-1790406969532595386.scope",
+      "available_gib": 116.23767471313477,
+      "psi_full_avg10": 0.0,
+      "max_gib": 16.0,
+      "high_gib": 14.0,
+      "reserve_gib": 12.0,
+      "trip_gib": 12.0,
+      "command": [
+        "scratch/mimo-media-20260926/ncu-audio-r1/test-audio-attn"
+      ]
+    },
+    {
+      "time": 1790406976.5132067,
+      "event": "exit",
+      "unit": "ds4-hostguard-1967321-1790406969532595386.scope",
+      "status": 0,
+      "payload_status": 0
+    }
+  ],
+  "sha256": {
+    "tests/mimo2_audio_attn.cu": "ef0ce66e665b86a67468934a89276ed4b78a01b3856f70d586c6b512a108e2ea",
+    "scratch/mimo-media-20260926/ncu-audio-r1/test-audio-attn": "3c1f375126cd7a0fa5e54642f1e48686652ead1bcc513b3df0c5926845d185cf",
+    "scratch/mimo-media-20260926/ncu-audio-r1/test.log": "a7037b47037db85cf993364298273106da7a37fbdd093eeeca65d1e802ccfc57",
+    "scratch/mimo-media-20260926/ncu-audio-r1/test.memory.jsonl": "57e566309c810e589957c9925f8bef1618d0fb692aa901e4e6b4dbfca0785525",
+    "cuda/mimo2_media.cuh": "adaa250c33e1d2bf0c5b953ef894c7cc8aa57414b15e1f53f8b21c7c851bc7a3",
+    "ds4_mimo2_gpu.cuh": "9144921357fe7f9208e32b6eefbf45be38ee51977b4ae79bf7e9847f5377add8"
+  }
+}

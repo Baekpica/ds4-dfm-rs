@@ -180,6 +180,10 @@ The bandwidth figure is informational; we don't tier on it.
   same interleaved Q32/KV8/HD64 layout and 1–8192-row limit as full attention.
   Other windows, masks and layouts retain their existing paths. See the
   [window attention evidence](../docs/benchmarks/mimo2-media-2026-09-26/window-score-cache/README.md).
+- `DS4_MIMO2_AUDIO_ATTN=0` restores scalar full causal codec attention.
+  The default caches causal-prefix scores for separate Q/K/V buffers with
+  16 heads, head dimension 64, stride 1024 and 1–8192 rows. Windowed/local
+  audio and other layouts retain their existing paths.
 - `DS4_MIMO2_DFLASH_CPU=1` restores host RMSNorm, RoPE and attention for
   MiMo's external five-layer DFlash drafter. Unset uses device kernels
   and shared K/V tiles. This control does not enable speculative decode;

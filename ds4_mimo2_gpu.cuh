@@ -368,6 +368,21 @@ extern "C" int ds4_gpu_mimo2_attn(
             (float *)out->ptr, (const float *)q->ptr, sinks, (int)n);
         return cuda_ok(cudaGetLastError(), "MiMo vision window");
     }
+    const char *audio = getenv("DS4_MIMO2_AUDIO_ATTN");
+    if (!(audio && strcmp(audio, "0") == 0) && n <= M2A_ATTN_MAX &&
+        q_heads == M2A_ATTN_HEADS && kv_heads == M2A_ATTN_HEADS && hd == M2A_ATTN_HD &&
+        q_stride == M2A_ATTN_WIDTH && k_stride == M2A_ATTN_WIDTH && v_stride == M2A_ATTN_WIDTH &&
+        !q_off && !k_off && !v_off && window < 0 && !have_sink && causal == 1 && !group &&
+        q->ptr && k->ptr && v->ptr && out->ptr &&
+        q->ptr != k->ptr && q->ptr != v->ptr && k->ptr != v->ptr &&
+        out->ptr != q->ptr && out->ptr != k->ptr && out->ptr != v->ptr) {
+        // Bound score storage; local attention and other audio layouts retain their path.
+        const size_t shared = (n + M2A_ATTN_HD + M2A_ATTN_SCALARS) * sizeof(float);
+        mimo2_audio_attn<<<(unsigned)count, M2A_ATTN_THREADS, shared, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const float *)k->ptr,
+            (const float *)v->ptr, (int)n);
+        return cuda_ok(cudaGetLastError(), "MiMo audio attention");
+    }
     mimo2_attn<<<(unsigned)((count + 255) / 256), 256, 0, ds4_current_stream()>>>(
         (float *)out->ptr, (const float *)q->ptr, (const float *)k->ptr, (const float *)v->ptr, sinks,
         (int)n, (int)q_heads, (int)kv_heads, (int)hd,

@@ -52,7 +52,33 @@ candidate uses 780 B shared memory per CTA and four additional registers,
 with no persistent allocation or spills.
 [Full evidence and HTTP caveat](window-score-cache/README.md).
 
-Further rounds start from this retained baseline with a fresh whole profile.
-Audio/video still need their own measured rounds; these image results do
-not qualify their latency or output quality. Dated evidence is limited to
-the recorded artifacts, serving settings and fixtures.
+## Correctness repair before audio
+
+Audio validation exposed an existing shared-memory reuse race in LayerNorm.
+Commit `8fcc1574` adds a consume-before-reuse barrier without changing the
+reduction order. Racecheck changes from failure to zero hazards; audio and
+vision numerical tests pass. Two fresh repetitions of each audio fixture
+now match every logit and token. Earlier image results remain dated evidence;
+subsequent rounds use the corrected baseline. [Proof and limits](layernorm-race/README.md).
+
+## Audio round 1: accepted
+
+Full causal codec attention caches scores and accumulates output in registers.
+The isolated median improves 34.175→1.907 ms. Corrected original/OFF/ON
+model proofs match all 152,576 logits and generated tokens on both fixtures.
+Three fresh HTTP pairs per fixture give:
+
+| Speech length | Original TTFT | ON TTFT | Change | Request wall change |
+|---|---:|---:|---:|---:|
+| 11.125 s | 1245.9 ms | 854.3 ms | −31.43% | −16.96% |
+| 14.530 s | 1543.7 ms | 987.6 ms | −36.02% | −18.13% |
+
+All 36 warm/measured HTTP responses match their fixture's reference run.
+Decode medians remain 27.1/27.0 tok/s. This establishes parity with the
+corrected baseline; the second fixture's existing transcription mismatch
+is documented. Shared memory costs 2492 B/CTA at 557 rows; no persistent
+tensor allocation is added. [Full evidence](audio-score-cache/README.md).
+
+Video starts from this retained baseline with a fresh whole profile.
+These results do not qualify video latency or output quality. Dated evidence
+is limited to the recorded artifacts, serving settings and fixtures.

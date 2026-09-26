@@ -1,0 +1,96 @@
+{
+  "arms": {
+    "original": {
+      "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/layernorm-race/baseline/ds4-server",
+      "env": {
+        "DS4_MIMO2_AUDIO_ATTN": null
+      },
+      "stamp": [
+        66306,
+        158340127,
+        59677600,
+        1790408163260006789
+      ]
+    },
+    "off": {
+      "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-audio-r1/lnfix-candidate/ds4-server",
+      "env": {
+        "DS4_MIMO2_AUDIO_ATTN": "0"
+      },
+      "stamp": [
+        66306,
+        158340372,
+        59743784,
+        1790408498582319684
+      ]
+    },
+    "on": {
+      "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-audio-r1/lnfix-candidate/ds4-server",
+      "env": {
+        "DS4_MIMO2_AUDIO_ATTN": null
+      },
+      "stamp": [
+        66306,
+        158340372,
+        59743784,
+        1790408498582319684
+      ]
+    }
+  },
+  "round_orders": [
+    [
+      "original",
+      "off",
+      "on"
+    ],
+    [
+      "on",
+      "original",
+      "off"
+    ],
+    [
+      "off",
+      "on",
+      "original"
+    ]
+  ],
+  "cases": [
+    "eval-audio-3",
+    "eval-audio-0"
+  ],
+  "owner_manifest": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/owner3.ipc",
+  "owner_manifest_sha256": "d831d88c3f66180484339505900bf900c3775ec7db6557d1b1214153d7292d21",
+  "binary_sha256": {
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/layernorm-race/baseline/ds4-server": "4b66707ccb2c90219d4df9fc119d471794bf48e4c8efda7f3e264be5c86ab7a8",
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-audio-r1/lnfix-candidate/ds4-server": "242de9bc641afaa39c6a86cf8df19dc1e989ba2840f72be1bba164994aaa0ef5"
+  },
+  "request_index": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/av-requests/index.json",
+  "request_index_sha256": "bb174a4b4ccac3765b47be0f122349a1aceecfc2549e116e32761eb0e5f4cced",
+  "model": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+  "projector": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+  "shape": {
+    "ctx": 8192,
+    "cont_width": 0,
+    "prefix_reuse": "off",
+    "mtp_mode": "off",
+    "max_tokens_by_case": {
+      "eval-audio-3": 128,
+      "eval-audio-0": 128
+    }
+  },
+  "clock_policy": "Observe only; preserve user-managed 300-2200 MHz range.",
+  "request_sha256": {
+    "eval-audio-3": "6a630d196c6ceb0da86e1da81b4f408efb6dd37052461b9c7b87463cdb63fd84",
+    "eval-audio-0": "acd6483fbfbae9225ca77e7173d5ce50b085ff51f32fbf0b9bcca5033b1302e4"
+  },
+  "dry_run": false,
+  "raw_receipt_sha256": "de24564ed14f6626b838a44b8eb942dda3f7a4eaadc76174b61e699a530cccdd",
+  "raw_completed_sha256": "79da86e080f1fdbcfead90bdd7639414aab3973aaa24563844fb0ea6ef54b3dd",
+  "script_sha256": "2bd0a70746c02537438cc32be6b546f66f797298cecfe247b11af7ef53948f1f",
+  "raw_directory": "scratch/mimo-media-20260926/ncu-audio-r1/http-ab-lnfix",
+  "requested_guard_caps_gib": {
+    "max": 24,
+    "high": 21,
+    "reserve": 12
+  }
+}

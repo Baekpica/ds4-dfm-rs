@@ -1,0 +1,57 @@
+{
+  "status": "complete",
+  "wall_ms": 3030.740298971068,
+  "timings": {
+    "ttft_ms": 1954.8,
+    "prefill_tokens": 87,
+    "prefill_cached_tokens": 0,
+    "prefill_tok_s": 48.4,
+    "decode_tok_s": 27.1,
+    "tok_per_step": 1.0
+  },
+  "proof": {
+    "token_ids": [
+      395,
+      38155,
+      678,
+      518,
+      3055,
+      458,
+      11094,
+      315,
+      11980,
+      323,
+      19267,
+      2581,
+      4411,
+      4764,
+      827,
+      83698,
+      279,
+      2948,
+      315,
+      264,
+      8604,
+      5220,
+      1231,
+      387,
+      429,
+      432,
+      686,
+      2783,
+      825,
+      4302
+    ],
+    "content": "assumed all at once an appearance of noise and disorder never believe however disinterested the love of a kept woman may be that it will cost one nothing",
+    "finish_reason": "stop",
+    "prompt_tokens": 87,
+    "completion_tokens": 30
+  },
+  "request_sha256": "6a630d196c6ceb0da86e1da81b4f408efb6dd37052461b9c7b87463cdb63fd84",
+  "export": {
+    "completed_at": 1790408307.1928222,
+    "kernel_calls": 32674,
+    "report_bytes": 2734630,
+    "sqlite_bytes": 7565312
+  }
+}

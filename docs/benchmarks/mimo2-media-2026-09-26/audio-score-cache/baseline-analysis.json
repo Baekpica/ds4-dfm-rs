@@ -1,0 +1,112 @@
+{
+  "scope": "Full causal audio codec attention: 12 calls total 410.348736 ms in the fresh whole HTTP request; isolated n=557, Q=KV16, HD64, separate Q/K/V buffers, strides 1024, offsets 0, no sinks, causal=1, group=0, window=-1.",
+  "grid": [
+    35,
+    1,
+    1
+  ],
+  "block": [
+    256,
+    1,
+    1
+  ],
+  "registers_per_thread": 40,
+  "shared_bytes": 0,
+  "spill_requests": 0,
+  "source_sampling_overflow_warning": false,
+  "metrics": {
+    "gpu__time_duration.sum": {
+      "value": 34.070592,
+      "unit": "ms"
+    },
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "value": 2.505861,
+      "unit": "%"
+    },
+    "l1tex__throughput.avg.pct_of_peak_sustained_active": {
+      "value": 80.795181,
+      "unit": "%"
+    },
+    "lts__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "value": 37.448238,
+      "unit": "%"
+    },
+    "lts__t_sector_hit_rate.pct": {
+      "value": 99.837619,
+      "unit": "%"
+    },
+    "smsp__inst_executed.sum": {
+      "value": 90969956.0,
+      "unit": "inst"
+    },
+    "smsp__issue_active.avg.pct_of_peak_sustained_active": {
+      "value": 1.643547,
+      "unit": "%"
+    },
+    "smsp__warps_eligible.avg.per_cycle_active": {
+      "value": 0.018069,
+      "unit": "warp"
+    },
+    "smsp__warps_active.avg.per_cycle_active": {
+      "value": 1.976112,
+      "unit": "warp"
+    },
+    "sm__warps_active.avg.pct_of_peak_sustained_active": {
+      "value": 16.367209,
+      "unit": "%"
+    },
+    "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": {
+      "value": 39996928.0,
+      "unit": ""
+    },
+    "l1tex__t_requests_pipe_lsu_mem_global_op_st.sum": {
+      "value": 5017472.0,
+      "unit": ""
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+      "value": 956506112.0,
+      "unit": "sector"
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+      "value": 159703040.0,
+      "unit": "sector"
+    }
+  },
+  "top_sampled_pcs": [
+    {
+      "pc": "0xf0f88af237e0",
+      "instruction": "FFMA.FTZ R27, R28, R27, R37",
+      "samples": 55722
+    },
+    {
+      "pc": "0xf0f88af23610",
+      "instruction": "FFMA.FTZ R27, R28, R27, R31",
+      "samples": 54520
+    },
+    {
+      "pc": "0xf0f88af238e0",
+      "instruction": "FFMA.FTZ R27, R28, R27, R37",
+      "samples": 50300
+    },
+    {
+      "pc": "0xf0f88af23920",
+      "instruction": "FFMA.FTZ R31, R28, R31, R37",
+      "samples": 50114
+    },
+    {
+      "pc": "0xf0f88af23960",
+      "instruction": "FFMA.FTZ R33, R28, R33, R37",
+      "samples": 50112
+    },
+    {
+      "pc": "0xf0f88af238a0",
+      "instruction": "FFMA.FTZ R35, R28, R35, R37",
+      "samples": 49773
+    }
+  ],
+  "interpretation": "The 35-CTA grid cannot cover 48 SMs. Output accumulation repeatedly loads V and global output before FFMA and stores output after each valid key. Highest sampled PCs are these FFMA dependencies. High L2 hit rate does not remove L1 request and scoreboard latency. These are cache-sector counts, not off-chip DRAM byte measurements.",
+  "hypothesis": "Use one 128-thread CTA per query/head, cache Q and each unscaled causal-prefix dot once, retain scalar max/denominator and output key order, and accumulate each output dimension in a register. This increases launch parallelism and removes repeated dot work and output global read/modify/write.",
+  "planned_resource_tradeoff": "At n=557, dynamic shared memory is 2492 bytes per CTA; at n=8192, 33032 bytes. No persistent allocation. Register and total instruction changes must be measured.",
+  "numerical_contract": "Preserve ascending dimension, maximum, denominator and output key order, unscaled dot before expf multiply/subtract, and scalar nonfinite/zero-sum behavior. Require full output parity and real model proof before adoption.",
+  "limitations": "Synthetic Q/K/V reproduce layout and launch shape but differ from projected audio features and model cache state. NCU warns clocks are not locked; preserve user clock range and record observed clocks."
+}

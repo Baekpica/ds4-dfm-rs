@@ -1,0 +1,46 @@
+{
+  "status": "Frozen build provenance verified; corrected model proof passed; HTTP A/B pending",
+  "corrected_baseline_commit": "8fcc15745856f59d127da69e4aefef8ae804dd5e",
+  "original_receipt_git_head_caveat": "Original was linked before the LayerNorm commit. Its frozen media header and wrapper hashes exactly match commit8fcc1574; use these source/object hashes rather than its earlier git_head field.",
+  "baseline_source_matches_corrected_commit": {
+    "cuda/mimo2_media.cuh": "9302966b8bb720eb73d7d44c4eaa99d2b811cfad62d8d10c2465d3b8dbfdda1a",
+    "ds4_mimo2_gpu.cuh": "afb53b8162e337bf50f1e10b8cc5483c0eea4b80617c87f157983430a5f09768"
+  },
+  "proof_binaries": {
+    "original": {
+      "bytes": 57532936,
+      "sha256": "04a1428895c96241df466e9ca9d78fbbabd0641568123a293b10b0c7a53f417e"
+    },
+    "candidate": {
+      "bytes": 57533096,
+      "sha256": "72e8d3573e22de4d179deb04a7e5d3d922f4efff684cd7f76460a46b4a428ee8"
+    }
+  },
+  "candidate_frozen_artifacts": {
+    "scratch/mimo-media-20260926/ncu-audio-r1/lnfix-candidate/ds4-bench-perf": "defcc8cb6cf2f1cc830c203dd78155950e3a446b6689c6820c9ea355c1cc4399",
+    "scratch/mimo-media-20260926/ncu-audio-r1/lnfix-candidate/ds4-server": "242de9bc641afaa39c6a86cf8df19dc1e989ba2840f72be1bba164994aaa0ef5",
+    "scratch/mimo-media-20260926/ncu-audio-r1/lnfix-candidate/ds4_cuda.o": "0ea2903083acab305769d5c4718dd4e9c367714284b4028e0b1d5027a30b648e"
+  },
+  "native_object_differences": {
+    "ds4_cuda.o": {
+      "original": "b61a52b78a485d2c0975104adef97a81d191739aa5330cdca90a110450bc1348",
+      "candidate": "0ea2903083acab305769d5c4718dd4e9c367714284b4028e0b1d5027a30b648e"
+    }
+  },
+  "all_other_native_objects_unchanged": true,
+  "freeze_inputs_and_objects_stable": true,
+  "native_compile_command": "/usr/local/cuda/bin/nvcc -O3 -g -lineinfo --use_fast_math -std=c++17 -gencode arch=compute_121a,code=sm_121a -DDS4_CUDA_HAVE_MXF4=1 -Xcompiler -march=native -Xcompiler -pthread  -c -o ds4_cuda.o ds4_cuda.cu",
+  "native_build_flags": "Standard O3, lineinfo, use_fast_math, sm_121a and original host flags; no split compilation.",
+  "unchanged_production_function_bodies_sha256": {
+    "mimo2_attn": "89f4b8afdeda31ccce43ab079644a9d47973abe040b179dff44f5bcc816a90af",
+    "mimo2_vision_attn": "5a6c8db242412e65f2205464fe7308c719d6ce82c86659532a9df00b940c2706",
+    "mimo2_vision_window": "0972df52fade8b1d9dbeb88eda769eb32b4a3843acd6f066776eb705d566453f",
+    "mimo2_layernorm": "9f0fca94cddaa9d4123eefdec4cebdccb326457076f77358c32e0379b0a2d865"
+  },
+  "audio_candidate_body_matches_isolated_profile": true,
+  "audio_candidate_body_sha256": "b2d006e6adc355612601a5b001284b54a13217cc4e7d60cf6d31dc8497ffac4e",
+  "receipts": [
+    "build-corrected-original.json",
+    "build-corrected-candidate.json"
+  ]
+}

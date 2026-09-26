@@ -1,0 +1,62 @@
+{
+  "validated_utc": "2026-09-26T07:06:56.191616+00:00",
+  "status": "capture_export_validated_after_harness_fix",
+  "scope": "Posthoc capture/export validation only; original failure and all raw artifacts preserved. No GPU rerun.",
+  "root_cause": "Inactive Nsight status help text contained collecting data and tripped a substring test. Exact active-state equality is now used.",
+  "checks": {
+    "stop_command_exit_zero": true,
+    "after_stop_command_exit_zero": true,
+    "inactive_state_exact": true,
+    "report_present_nonempty": true,
+    "sqlite_contains_gpu_kernels": true,
+    "guard_clean_exit_zero": true,
+    "export_finished_before_worker_term": true,
+    "failure_is_known_status_false_positive": true
+  },
+  "nsys_after_stop_raw": "application launched. use the 'start' command to start collecting data\n",
+  "kernel_calls": 32674,
+  "kernel_sum_ns": 2235730463,
+  "kernel_interval_ns": [
+    192250928,
+    3182159664
+  ],
+  "report_bytes": 2734682,
+  "sqlite_bytes": 7573504,
+  "artifacts": {
+    "failure.json": {
+      "bytes": 184,
+      "sha256": "7cc9932a305b834462fda6d2ccb53453bac4f4fd4a110cf67406b284c28c9b20"
+    },
+    "nsys-stop.json": {
+      "bytes": 170,
+      "sha256": "7d261a9a2d761862c8db5241c945e92a378de656b804ace9830c247570c53670"
+    },
+    "nsys-after-stop.json": {
+      "bytes": 174,
+      "sha256": "b9b029125f06917de8deb22f811e421c244e6c01e4a2efbf7d547bf2e307197f"
+    },
+    "nsys-after-stop.log": {
+      "bytes": 71,
+      "sha256": "a4b597a176667b293afb89b8a2a1a64e972bc85ade1bc90f2e7f86016d638747"
+    },
+    "stop.json": {
+      "bytes": 1905,
+      "sha256": "df62bc0143ab5f606165726873e3fce36f9149fedee04462a5ca28f57ad90b40"
+    },
+    "request-result.json": {
+      "bytes": 949,
+      "sha256": "e7985ff010dea7403b633597f6357da212d5fd724aac2754cb707343635ad52d"
+    },
+    "after-stats.json": {
+      "bytes": 8125,
+      "sha256": "357171ca30a0865cc8d64cf261e001ec0a980f8e2a8539e5b9f684ee099751d4"
+    },
+    "gpu-after.json": {
+      "bytes": 108,
+      "sha256": "db84e1c310b0deb0f1c1f38c4fd2aff89e5ba089c2a1abc74e444f016db3fce9"
+    }
+  },
+  "fixed_helper_sha256": "b60fe12fe7557679d9d1f1922beca936c633cd963342fa35a42e8ff4eb872f2f",
+  "cpu_regression_before": "../proof-tools/helper-before.json",
+  "cpu_regression_after": "../proof-tools/helper-after.json"
+}

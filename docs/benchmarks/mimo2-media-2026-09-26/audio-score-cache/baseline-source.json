@@ -1,0 +1,35 @@
+{
+  "compile_argv": [
+    "/usr/local/cuda/bin/nvcc",
+    "-O3",
+    "-g",
+    "-lineinfo",
+    "--use_fast_math",
+    "-std=c++17",
+    "-gencode",
+    "arch=compute_121a,code=sm_121a",
+    "-DDS4_CUDA_HAVE_MXF4=1",
+    "-Xcompiler",
+    "-march=native",
+    "-Xcompiler",
+    "-pthread",
+    "-Xptxas=-v",
+    "scratch/mimo-media-20260926/ncu-audio-r1/probe-baseline.cu",
+    "-o",
+    "scratch/mimo-media-20260926/ncu-audio-r1/probe-baseline"
+  ],
+  "compile_exit": 0,
+  "compile_log": "scratch/mimo-media-20260926/ncu-audio-r1/baseline-build.log",
+  "source_sha256": {
+    "scratch/mimo-media-20260926/ncu-audio-r1/probe-baseline.cu": "07e055dba3e3ff26219a7f1f2fe4a7b4e09fde570ecc792d4338274bcb7b6d9b",
+    "cuda/mimo2_media.cuh": "efa1904f68b76a8fdb2a8e11644595468bd30c33e6041f5f480dbd7b4dcddd15"
+  },
+  "root_ncu_args": [
+    "-1",
+    "1",
+    "2",
+    "557"
+  ],
+  "default_warmups": 16,
+  "test_gpu_execution_by_subagent": false
+}

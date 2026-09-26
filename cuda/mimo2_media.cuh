@@ -255,6 +255,75 @@ __global__ static void mimo2_vision_window(
     out[(int64_t)query * M2V_ATTN_HD + tid] = acc;
 }
 
+enum {
+    M2A_ATTN_HEADS = 16, M2A_ATTN_HD = 64,
+    M2A_ATTN_WIDTH = M2A_ATTN_HEADS * M2A_ATTN_HD,
+    M2A_ATTN_MAX = 8192, M2A_ATTN_THREADS = 128, M2A_ATTN_SCALARS = 2
+};
+
+/* Full causal codec attention has separate Q/K/V projections. One CTA per
+ * query exposes enough parallelism and removes output global read/modify/write.
+ * Cache raw dots while preserving scalar dimension and causal-prefix order. */
+__global__ static void mimo2_audio_attn(
+        float *out, const float *q, const float *k, const float *v, int n) {
+    const int query = blockIdx.x;
+    if (query >= n * M2A_ATTN_HEADS) { return; }
+    const int tid = threadIdx.x;
+    const int row = query / M2A_ATTN_HEADS, head = query % M2A_ATTN_HEADS;
+    const int keys = row + 1;
+    extern __shared__ float shared[];
+    float *scores = shared;
+    float *qq = scores + n;
+    float *stats = qq + M2A_ATTN_HD;
+    if (tid < M2A_ATTN_HD) {
+        qq[tid] = q[(int64_t)row * M2A_ATTN_WIDTH + head * M2A_ATTN_HD + tid];
+    }
+    __syncthreads();
+
+    const float scale = rsqrtf((float)M2A_ATTN_HD);
+    for (int key = tid; key < keys; key += blockDim.x) {
+        const float *kk = k + (int64_t)key * M2A_ATTN_WIDTH + head * M2A_ATTN_HD;
+        float dot = 0.f;
+        for (int d = 0; d < M2A_ATTN_HD; d++) { dot += qq[d] * kk[d]; }
+        scores[key] = dot;
+    }
+    __syncthreads();
+    if (tid == 0) {
+        float maxv = -INFINITY;
+        for (int key = 0; key < keys; key++) { maxv = fmaxf(maxv, scores[key] * scale); }
+        stats[0] = maxv;
+    }
+    __syncthreads();
+    const float maxv = stats[0];
+    if (!isfinite(maxv)) {
+        if (tid < M2A_ATTN_HD) { out[(int64_t)query * M2A_ATTN_HD + tid] = NAN; }
+        return;
+    }
+
+    for (int key = tid; key < keys; key += blockDim.x) {
+        scores[key] = expf(scores[key] * scale - maxv);
+    }
+    __syncthreads();
+    if (tid == 0) {
+        float sum = 0.f;
+        for (int key = 0; key < keys; key++) { sum += scores[key]; }
+        stats[1] = sum;
+    }
+    __syncthreads();
+    if (tid >= M2A_ATTN_HD) { return; }
+
+    float acc = 0.f;
+    const float sum = stats[1];
+    if (sum > 0.f) {
+        for (int key = 0; key < keys; key++) {
+            const float w = scores[key] / sum;
+            const float value = v[(int64_t)key * M2A_ATTN_WIDTH + head * M2A_ATTN_HD + tid];
+            acc += w * value;
+        }
+    }
+    out[(int64_t)query * M2A_ATTN_HD + tid] = acc;
+}
+
 __global__ static void mimo2_bias(float *x, const float *bias, int n, int dim) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n * dim) { x[i] += bias[i % dim]; }

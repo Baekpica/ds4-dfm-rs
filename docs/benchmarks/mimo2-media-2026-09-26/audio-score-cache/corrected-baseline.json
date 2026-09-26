@@ -1,0 +1,53 @@
+{
+  "status": "corrected-baseline whole profile complete",
+  "export": {
+    "completed_at": 1790408307.1928222,
+    "kernel_calls": 32674,
+    "report_bytes": 2734630,
+    "sqlite_bytes": 7565312
+  },
+  "guard_exit": {
+    "time": 1790408307.7731044,
+    "event": "exit",
+    "unit": "ds4-hostguard-1973979-1790408293225147761.scope",
+    "status": 0,
+    "payload_status": 0
+  },
+  "busy_sm_range_mhz": [
+    2190,
+    2190
+  ],
+  "native_attention_body_identical": true,
+  "scalar_body_sha256": "89f4b8afdeda31ccce43ab079644a9d47973abe040b179dff44f5bcc816a90af",
+  "source_comparison": {
+    "pre_fix": "scratch/mimo-media-20260926/proof-av-r2-original/inputs/cuda/mimo2_media.cuh",
+    "corrected": "scratch/mimo-media-20260926/proof-av-lnfix-original/inputs/cuda/mimo2_media.cuh",
+    "pre_fix_header_sha256": "efa1904f68b76a8fdb2a8e11644595468bd30c33e6041f5f480dbd7b4dcddd15",
+    "corrected_header_sha256": "9302966b8bb720eb73d7d44c4eaa99d2b811cfad62d8d10c2465d3b8dbfdda1a"
+  },
+  "original_ncu_probe_source_unchanged": {
+    "path": "scratch/mimo-media-20260926/ncu-audio-r1/probe-baseline.cu",
+    "sha256": "07e055dba3e3ff26219a7f1f2fe4a7b4e09fde570ecc792d4338274bcb7b6d9b"
+  },
+  "codec_attention_geometry": {
+    "grid": [
+      35,
+      1,
+      1
+    ],
+    "block": [
+      256,
+      1,
+      1
+    ],
+    "registers_per_thread": 40,
+    "dynamic_shared_bytes": 0
+  },
+  "metadata_provenance": {
+    "copied_from": "scratch/mimo-media-20260926/audio-r1-whole/audio-metadata.json",
+    "sha256": "a2e62bd2dad3f468b2205c1bc267f94250d4f64d67dd034804ef9c0884542466",
+    "reason": "Same GGUF artifact/projector paths in both workload receipts; structural metadata remains fixed."
+  },
+  "detailed_profile_reuse": "The isolated original NCU attention target contains no LayerNorm call; its scalar body and probe source are unchanged. Existing full NCU diagnosis remains relevant. New model proofs and end-to-end A/B must use corrected baseline.",
+  "limitations": "Shape/source identity does not establish model-output parity or adoption. Old model differences remain historical."
+}

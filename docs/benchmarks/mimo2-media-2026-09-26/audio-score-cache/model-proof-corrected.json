@@ -1,0 +1,146 @@
+{
+  "status": "complete",
+  "timing_scope": "proof only; no A/B speed claim",
+  "note": "Exactness is reported, not an adoption threshold; inspect drift and baseline variance.",
+  "cases": {
+    "eval-audio-3": {
+      "comparisons": {
+        "off_vs_original": {
+          "logits_exact": true,
+          "max_abs": 0.0,
+          "rms": 0.0,
+          "argmax_exact": true,
+          "tokens_exact": true,
+          "stop_id_exact": true,
+          "finish_reason_exact": true,
+          "answer_exact": true,
+          "input_bytes_exact": true,
+          "media_geometry_exact": true
+        },
+        "on_vs_original": {
+          "logits_exact": true,
+          "max_abs": 0.0,
+          "rms": 0.0,
+          "argmax_exact": true,
+          "tokens_exact": true,
+          "stop_id_exact": true,
+          "finish_reason_exact": true,
+          "answer_exact": true,
+          "input_bytes_exact": true,
+          "media_geometry_exact": true
+        },
+        "on_vs_off": {
+          "logits_exact": true,
+          "max_abs": 0.0,
+          "rms": 0.0,
+          "argmax_exact": true,
+          "tokens_exact": true,
+          "stop_id_exact": true,
+          "finish_reason_exact": true,
+          "answer_exact": true,
+          "input_bytes_exact": true,
+          "media_geometry_exact": true
+        }
+      },
+      "transcripts": {
+        "original": {
+          "reference_transcript": "ASSUMED ALL AT ONCE AN APPEARANCE OF NOISE AND DISORDER NEVER BELIEVE HOWEVER DISINTERESTED THE LOVE OF A KEPT WOMAN MAY BE THAT IT WILL COST ONE NOTHING",
+          "normalization": "lowercase; remove Unicode punctuation and all whitespace",
+          "scope": "normalized character equality only; word boundaries are removed, not a WER/quality score",
+          "status": "complete",
+          "normalized_equal": true,
+          "normalized_answer": "assumedallatonceanappearanceofnoiseanddisorderneverbelievehoweverdisinterestedtheloveofakeptwomanmaybethatitwillcostonenothing",
+          "normalized_reference": "assumedallatonceanappearanceofnoiseanddisorderneverbelievehoweverdisinterestedtheloveofakeptwomanmaybethatitwillcostonenothing"
+        },
+        "off": {
+          "reference_transcript": "ASSUMED ALL AT ONCE AN APPEARANCE OF NOISE AND DISORDER NEVER BELIEVE HOWEVER DISINTERESTED THE LOVE OF A KEPT WOMAN MAY BE THAT IT WILL COST ONE NOTHING",
+          "normalization": "lowercase; remove Unicode punctuation and all whitespace",
+          "scope": "normalized character equality only; word boundaries are removed, not a WER/quality score",
+          "status": "complete",
+          "normalized_equal": true,
+          "normalized_answer": "assumedallatonceanappearanceofnoiseanddisorderneverbelievehoweverdisinterestedtheloveofakeptwomanmaybethatitwillcostonenothing",
+          "normalized_reference": "assumedallatonceanappearanceofnoiseanddisorderneverbelievehoweverdisinterestedtheloveofakeptwomanmaybethatitwillcostonenothing"
+        },
+        "on": {
+          "reference_transcript": "ASSUMED ALL AT ONCE AN APPEARANCE OF NOISE AND DISORDER NEVER BELIEVE HOWEVER DISINTERESTED THE LOVE OF A KEPT WOMAN MAY BE THAT IT WILL COST ONE NOTHING",
+          "normalization": "lowercase; remove Unicode punctuation and all whitespace",
+          "scope": "normalized character equality only; word boundaries are removed, not a WER/quality score",
+          "status": "complete",
+          "normalized_equal": true,
+          "normalized_answer": "assumedallatonceanappearanceofnoiseanddisorderneverbelievehoweverdisinterestedtheloveofakeptwomanmaybethatitwillcostonenothing",
+          "normalized_reference": "assumedallatonceanappearanceofnoiseanddisorderneverbelievehoweverdisinterestedtheloveofakeptwomanmaybethatitwillcostonenothing"
+        }
+      }
+    },
+    "eval-audio-0": {
+      "comparisons": {
+        "off_vs_original": {
+          "logits_exact": true,
+          "max_abs": 0.0,
+          "rms": 0.0,
+          "argmax_exact": true,
+          "tokens_exact": true,
+          "stop_id_exact": true,
+          "finish_reason_exact": true,
+          "answer_exact": true,
+          "input_bytes_exact": true,
+          "media_geometry_exact": true
+        },
+        "on_vs_original": {
+          "logits_exact": true,
+          "max_abs": 0.0,
+          "rms": 0.0,
+          "argmax_exact": true,
+          "tokens_exact": true,
+          "stop_id_exact": true,
+          "finish_reason_exact": true,
+          "answer_exact": true,
+          "input_bytes_exact": true,
+          "media_geometry_exact": true
+        },
+        "on_vs_off": {
+          "logits_exact": true,
+          "max_abs": 0.0,
+          "rms": 0.0,
+          "argmax_exact": true,
+          "tokens_exact": true,
+          "stop_id_exact": true,
+          "finish_reason_exact": true,
+          "answer_exact": true,
+          "input_bytes_exact": true,
+          "media_geometry_exact": true
+        }
+      },
+      "transcripts": {
+        "original": {
+          "reference_transcript": "CHAPTER SIXTEEN I MIGHT HAVE TOLD YOU OF THE BEGINNING OF THIS LIAISON IN A FEW LINES BUT I WANTED YOU TO SEE EVERY STEP BY WHICH WE CAME I TO AGREE TO WHATEVER MARGUERITE WISHED",
+          "normalization": "lowercase; remove Unicode punctuation and all whitespace",
+          "scope": "normalized character equality only; word boundaries are removed, not a WER/quality score",
+          "status": "complete",
+          "normalized_equal": false,
+          "normalized_answer": "chaptersixteenimighthavetoldyouofthebeginningofthisliaisoninafewlinesbutiwantedyoutoseeeverystepbywhichwecameitooagreedtowhatevermargueritewished",
+          "normalized_reference": "chaptersixteenimighthavetoldyouofthebeginningofthisliaisoninafewlinesbutiwantedyoutoseeeverystepbywhichwecameitoagreetowhatevermargueritewished"
+        },
+        "off": {
+          "reference_transcript": "CHAPTER SIXTEEN I MIGHT HAVE TOLD YOU OF THE BEGINNING OF THIS LIAISON IN A FEW LINES BUT I WANTED YOU TO SEE EVERY STEP BY WHICH WE CAME I TO AGREE TO WHATEVER MARGUERITE WISHED",
+          "normalization": "lowercase; remove Unicode punctuation and all whitespace",
+          "scope": "normalized character equality only; word boundaries are removed, not a WER/quality score",
+          "status": "complete",
+          "normalized_equal": false,
+          "normalized_answer": "chaptersixteenimighthavetoldyouofthebeginningofthisliaisoninafewlinesbutiwantedyoutoseeeverystepbywhichwecameitooagreedtowhatevermargueritewished",
+          "normalized_reference": "chaptersixteenimighthavetoldyouofthebeginningofthisliaisoninafewlinesbutiwantedyoutoseeeverystepbywhichwecameitoagreetowhatevermargueritewished"
+        },
+        "on": {
+          "reference_transcript": "CHAPTER SIXTEEN I MIGHT HAVE TOLD YOU OF THE BEGINNING OF THIS LIAISON IN A FEW LINES BUT I WANTED YOU TO SEE EVERY STEP BY WHICH WE CAME I TO AGREE TO WHATEVER MARGUERITE WISHED",
+          "normalization": "lowercase; remove Unicode punctuation and all whitespace",
+          "scope": "normalized character equality only; word boundaries are removed, not a WER/quality score",
+          "status": "complete",
+          "normalized_equal": false,
+          "normalized_answer": "chaptersixteenimighthavetoldyouofthebeginningofthisliaisoninafewlinesbutiwantedyoutoseeeverystepbywhichwecameitooagreedtowhatevermargueritewished",
+          "normalized_reference": "chaptersixteenimighthavetoldyouofthebeginningofthisliaisoninafewlinesbutiwantedyoutoseeeverystepbywhichwecameitoagreetowhatevermargueritewished"
+        }
+      }
+    }
+  },
+  "all_exact": true
+}

@@ -1,0 +1,131 @@
+{
+  "provenance": {
+    "selected_manifest_path": "/home/sunghoon/workspace/ds4-exaone/mimo-v2-6-flash-rl-spark-handoff/handoff/calibration/heldout-media.json",
+    "selected_manifest_sha256": "b44d6349e051be425c2d910a6b97a57424fd0315660c1b3af38e071b1ec1c878",
+    "sources_path": "/home/sunghoon/workspace/ds4-exaone/mimo-v2-6-flash-rl-spark-handoff/handoff/calibration-provenance/sources.json",
+    "sources_sha256": "d3b9c5ddb7246e5139ef7402da8e4efb3e7a621e8687a254b2d37884e1d8f453"
+  },
+  "fixture": {
+    "id": "eval-audio-3",
+    "modality": "audio",
+    "source_path": "/home/sunghoon/workspace/ds4-exaone/mimo-v2-6-flash-rl-spark-handoff/handoff/calibration/media/holdout/audio-3.flac",
+    "source_bytes": 193687,
+    "source_sha256": "9a99c5d38fbf35836b9f37ec3c3c232854d02e24570e6f307f5796555ad2c454",
+    "source_manifest_sha256_match": true,
+    "source_metadata": {
+      "programs": [],
+      "streams": [
+        {
+          "codec_name": "flac",
+          "codec_type": "audio",
+          "sample_rate": "16000",
+          "channels": 1,
+          "avg_frame_rate": "0/0",
+          "bits_per_raw_sample": "16"
+        }
+      ],
+      "format": {
+        "duration": "11.125000"
+      }
+    },
+    "source_record": {
+      "id": "eval-audio-3",
+      "category": "audio",
+      "path": "/root/mimo-work/handoff/calibration/media/holdout/audio-3.flac",
+      "prompt": "Transcribe the speech accurately.",
+      "answer": "",
+      "reference_answers": [
+        "ASSUMED ALL AT ONCE AN APPEARANCE OF NOISE AND DISORDER NEVER BELIEVE HOWEVER DISINTERESTED THE LOVE OF A KEPT WOMAN MAY BE THAT IT WILL COST ONE NOTHING"
+      ],
+      "source": {
+        "repo": "openslr/librispeech_asr",
+        "revision": "71cacbfb7e2354c4226d01e70d77d5fca3d04ba1",
+        "row": 3,
+        "id": "374-180298-0003",
+        "sha256": "9a99c5d38fbf35836b9f37ec3c3c232854d02e24570e6f307f5796555ad2c454"
+      }
+    },
+    "dataset": {
+      "repo": "openslr/librispeech_asr",
+      "type": "dataset",
+      "revision": "71cacbfb7e2354c4226d01e70d77d5fca3d04ba1",
+      "file": "all/train.clean.100/0000.parquet",
+      "bytes": 469629285,
+      "sha256": "3098c6e44d1d49f8c62bd123775f1c492bda2cabd80f3ee70fe7800572371401"
+    },
+    "prompt": "Transcribe the speech accurately.",
+    "quality_status": "Current native inference baseline has not been run; fixture provenance is not model qualification.",
+    "input_path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/fixtures/audio-3.wav",
+    "input_bytes": 356044,
+    "input_sha256": "d700170cc0356563d5eeaa246a90a26d5475362d816c11808f57ea68ce4caaf1",
+    "input_metadata": {
+      "programs": [],
+      "streams": [
+        {
+          "codec_name": "pcm_s16le",
+          "codec_type": "audio",
+          "sample_rate": "16000",
+          "channels": 1,
+          "avg_frame_rate": "0/0"
+        }
+      ],
+      "format": {
+        "duration": "11.125000"
+      }
+    },
+    "reference_transcript": "ASSUMED ALL AT ONCE AN APPEARANCE OF NOISE AND DISORDER NEVER BELIEVE HOWEVER DISINTERESTED THE LOVE OF A KEPT WOMAN MAY BE THAT IT WILL COST ONE NOTHING",
+    "conversion": {
+      "argv": [
+        "/usr/bin/ffmpeg",
+        "-v",
+        "error",
+        "-nostdin",
+        "-i",
+        "/home/sunghoon/workspace/ds4-exaone/mimo-v2-6-flash-rl-spark-handoff/handoff/calibration/media/holdout/audio-3.flac",
+        "-map",
+        "0:a:0",
+        "-map_metadata",
+        "-1",
+        "-c:a",
+        "pcm_s16le",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        "-flags:a",
+        "+bitexact",
+        "-fflags",
+        "+bitexact",
+        "-n",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/fixtures/audio-3.wav"
+      ],
+      "command": "/usr/bin/ffmpeg -v error -nostdin -i /home/sunghoon/workspace/ds4-exaone/mimo-v2-6-flash-rl-spark-handoff/handoff/calibration/media/holdout/audio-3.flac -map 0:a:0 -map_metadata -1 -c:a pcm_s16le -ar 16000 -ac 1 -flags:a +bitexact -fflags +bitexact -n /home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/fixtures/audio-3.wav",
+      "source_pcm_argv": [
+        "/usr/bin/ffmpeg",
+        "-v",
+        "error",
+        "-nostdin",
+        "-i",
+        "/home/sunghoon/workspace/ds4-exaone/mimo-v2-6-flash-rl-spark-handoff/handoff/calibration/media/holdout/audio-3.flac",
+        "-map",
+        "0:a:0",
+        "-c:a",
+        "pcm_s16le",
+        "-f",
+        "s16le",
+        "pipe:1"
+      ],
+      "pcm_frames": 178000,
+      "pcm_sha256": "0e3fca7fff0f616df9e1b4ec3751c1bcc60303a157534c960bd9d15c012c02f7",
+      "decoded_pcm_byte_exact": true,
+      "resampling_performed": false,
+      "note": "Only lossless FLAC decoding and WAV PCM16 wrapping. Preserve 16 kHz mono so native 24 kHz resampling stays in the workload."
+    },
+    "license": {
+      "declared": "CC-BY-4.0",
+      "evidence_path": "/home/sunghoon/workspace/ds4-exaone/mimo-v2-6-flash-rl-spark-handoff/handoff/calibration-provenance/inkling-LICENSES.md",
+      "evidence_sha256": "6018108d507c7d61c1023beaeb02a6603a8e92fc1622f270e3ffac75808790d4",
+      "attribution": "LibriSpeech, Vassil Panayotov, Guoguo Chen, Daniel Povey and Sanjeev Khudanpur (2015)"
+    }
+  }
+}

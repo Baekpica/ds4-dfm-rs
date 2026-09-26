@@ -1,0 +1,198 @@
+{
+  "arms": {
+    "original": {
+      "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-lnfix-original/proof",
+      "knob": null
+    },
+    "off": {
+      "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-audio-r1-lnfix-candidate/proof",
+      "knob": "0"
+    },
+    "on": {
+      "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-audio-r1-lnfix-candidate/proof",
+      "knob": "1"
+    }
+  },
+  "knob": "DS4_MIMO2_AUDIO_ATTN",
+  "cases": [
+    "eval-audio-3",
+    "eval-audio-0"
+  ],
+  "order": [
+    "original",
+    "off",
+    "on"
+  ],
+  "binary_hashes": {
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-lnfix-original/proof": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-lnfix-original/proof",
+      "bytes": 57532936,
+      "sha256": "04a1428895c96241df466e9ca9d78fbbabd0641568123a293b10b0c7a53f417e"
+    },
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-audio-r1-lnfix-candidate/proof": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-audio-r1-lnfix-candidate/proof",
+      "bytes": 57533096,
+      "sha256": "72e8d3573e22de4d179deb04a7e5d3d922f4efff684cd7f76460a46b4a428ee8"
+    }
+  },
+  "binary_stamps": {
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-lnfix-original/proof": [
+      66306,
+      158340173,
+      57532936,
+      1790408165705002677
+    ],
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-audio-r1-lnfix-candidate/proof": [
+      66306,
+      158340417,
+      57533096,
+      1790408501011313978
+    ]
+  },
+  "owner_manifest": {
+    "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/owner3.ipc",
+    "bytes": 28311,
+    "sha256": "d831d88c3f66180484339505900bf900c3775ec7db6557d1b1214153d7292d21"
+  },
+  "request_index": {
+    "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/av-requests/index.json",
+    "bytes": 13486,
+    "sha256": "bb174a4b4ccac3765b47be0f122349a1aceecfc2549e116e32761eb0e5f4cced"
+  },
+  "script": {
+    "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/run-av-proof.py",
+    "bytes": 16080,
+    "sha256": "657b7eb4ddd3b605a0771fec9444789c6f03b11598cfae666a1259a396131222"
+  },
+  "helpers": {
+    "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/run-av-ab.py",
+    "bytes": 21492,
+    "sha256": "2bd0a70746c02537438cc32be6b546f66f797298cecfe247b11af7ef53948f1f"
+  },
+  "guard": {
+    "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/tools/host_memory_guard.py",
+    "bytes": 11053,
+    "sha256": "e9bb7be22aaadc2a042c6b562c2250922c77acabf253fdc7582a3bbacdeb65f1"
+  },
+  "fixtures": {
+    "eval-audio-3": {
+      "id": "eval-audio-3",
+      "modality": "audio",
+      "request_path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/av-requests/eval-audio-3.json",
+      "request_bytes": 475036,
+      "request_sha256": "6a630d196c6ceb0da86e1da81b4f408efb6dd37052461b9c7b87463cdb63fd84",
+      "input_path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/fixtures/audio-3.wav",
+      "input_bytes": 356044,
+      "input_sha256": "d700170cc0356563d5eeaa246a90a26d5475362d816c11808f57ea68ce4caaf1",
+      "prompt": "Transcribe the speech accurately.",
+      "max_tokens": 128,
+      "reference_transcript": "ASSUMED ALL AT ONCE AN APPEARANCE OF NOISE AND DISORDER NEVER BELIEVE HOWEVER DISINTERESTED THE LOVE OF A KEPT WOMAN MAY BE THAT IT WILL COST ONE NOTHING",
+      "video_annotation": null,
+      "source_record": {
+        "id": "eval-audio-3",
+        "category": "audio",
+        "path": "/root/mimo-work/handoff/calibration/media/holdout/audio-3.flac",
+        "prompt": "Transcribe the speech accurately.",
+        "answer": "",
+        "reference_answers": [
+          "ASSUMED ALL AT ONCE AN APPEARANCE OF NOISE AND DISORDER NEVER BELIEVE HOWEVER DISINTERESTED THE LOVE OF A KEPT WOMAN MAY BE THAT IT WILL COST ONE NOTHING"
+        ],
+        "source": {
+          "repo": "openslr/librispeech_asr",
+          "revision": "71cacbfb7e2354c4226d01e70d77d5fca3d04ba1",
+          "row": 3,
+          "id": "374-180298-0003",
+          "sha256": "9a99c5d38fbf35836b9f37ec3c3c232854d02e24570e6f307f5796555ad2c454"
+        }
+      },
+      "dataset": {
+        "repo": "openslr/librispeech_asr",
+        "type": "dataset",
+        "revision": "71cacbfb7e2354c4226d01e70d77d5fca3d04ba1",
+        "file": "all/train.clean.100/0000.parquet",
+        "bytes": 469629285,
+        "sha256": "3098c6e44d1d49f8c62bd123775f1c492bda2cabd80f3ee70fe7800572371401"
+      },
+      "input_metadata": {
+        "programs": [],
+        "streams": [
+          {
+            "codec_name": "pcm_s16le",
+            "codec_type": "audio",
+            "sample_rate": "16000",
+            "channels": 1,
+            "avg_frame_rate": "0/0"
+          }
+        ],
+        "format": {
+          "duration": "11.125000"
+        }
+      },
+      "temporal_check": null
+    },
+    "eval-audio-0": {
+      "id": "eval-audio-0",
+      "modality": "audio",
+      "request_path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/av-requests/eval-audio-0.json",
+      "request_bytes": 620316,
+      "request_sha256": "acd6483fbfbae9225ca77e7173d5ce50b085ff51f32fbf0b9bcca5033b1302e4",
+      "input_path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/fixtures/audio-0.wav",
+      "input_bytes": 465004,
+      "input_sha256": "d9378ee67487807492fe471b1c82384ac275198b6022da5ba01995af77dce90a",
+      "prompt": "Transcribe the speech accurately.",
+      "max_tokens": 128,
+      "reference_transcript": "CHAPTER SIXTEEN I MIGHT HAVE TOLD YOU OF THE BEGINNING OF THIS LIAISON IN A FEW LINES BUT I WANTED YOU TO SEE EVERY STEP BY WHICH WE CAME I TO AGREE TO WHATEVER MARGUERITE WISHED",
+      "video_annotation": null,
+      "source_record": {
+        "id": "eval-audio-0",
+        "category": "audio",
+        "path": "/root/mimo-work/handoff/calibration/media/holdout/audio-0.flac",
+        "prompt": "Transcribe the speech accurately.",
+        "answer": "",
+        "reference_answers": [
+          "CHAPTER SIXTEEN I MIGHT HAVE TOLD YOU OF THE BEGINNING OF THIS LIAISON IN A FEW LINES BUT I WANTED YOU TO SEE EVERY STEP BY WHICH WE CAME I TO AGREE TO WHATEVER MARGUERITE WISHED"
+        ],
+        "source": {
+          "repo": "openslr/librispeech_asr",
+          "revision": "71cacbfb7e2354c4226d01e70d77d5fca3d04ba1",
+          "row": 0,
+          "id": "374-180298-0000",
+          "sha256": "86baa11fd8abd6f5dd08207833f00602f4fd5e01ee80757ee12745bf14cf6c5c"
+        }
+      },
+      "dataset": {
+        "repo": "openslr/librispeech_asr",
+        "type": "dataset",
+        "revision": "71cacbfb7e2354c4226d01e70d77d5fca3d04ba1",
+        "file": "all/train.clean.100/0000.parquet",
+        "bytes": 469629285,
+        "sha256": "3098c6e44d1d49f8c62bd123775f1c492bda2cabd80f3ee70fe7800572371401"
+      },
+      "input_metadata": {
+        "programs": [],
+        "streams": [
+          {
+            "codec_name": "pcm_s16le",
+            "codec_type": "audio",
+            "sample_rate": "16000",
+            "channels": 1,
+            "avg_frame_rate": "0/0"
+          }
+        ],
+        "format": {
+          "duration": "14.530000"
+        }
+      },
+      "temporal_check": null
+    }
+  },
+  "model": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+  "projector": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+  "shape": {
+    "context": 8192,
+    "mtp_draft_tokens": 1,
+    "max_tokens": 128
+  },
+  "timing_scope": "proof only; no A/B speed claim",
+  "dry_run": false
+}

@@ -1,0 +1,127 @@
+{
+  "policy": "Observe only; preserve user-managed 300–2200 MHz range. Low-utilization idle samples may show clocks below the configured range.",
+  "scope": "Unprofiled isolated process pairs; NCU measured frequency is in ncu-comparison.json.",
+  "samples": [
+    {
+      "time": 1790406908.1797712,
+      "sm_mhz": 208,
+      "gpu_util_pct": 0
+    },
+    {
+      "time": 1790406909.2102547,
+      "sm_mhz": 2190,
+      "gpu_util_pct": 96
+    },
+    {
+      "time": 1790406910.2388544,
+      "sm_mhz": 2190,
+      "gpu_util_pct": 9
+    },
+    {
+      "time": 1790406911.2718444,
+      "sm_mhz": 2190,
+      "gpu_util_pct": 96
+    },
+    {
+      "time": 1790406912.304642,
+      "sm_mhz": 2197,
+      "gpu_util_pct": 0
+    },
+    {
+      "time": 1790406913.3326473,
+      "sm_mhz": 2190,
+      "gpu_util_pct": 96
+    }
+  ],
+  "busy_threshold_pct": 50,
+  "busy_sm_range_mhz": [
+    2190,
+    2190
+  ],
+  "all_sm_range_mhz": [
+    208,
+    2197
+  ],
+  "cpu_khz_ranges": {
+    "policy11": [
+      2808000,
+      2808000
+    ],
+    "policy8": [
+      3900000,
+      3900000
+    ],
+    "policy6": [
+      3900000,
+      3900000
+    ],
+    "policy18": [
+      3900000,
+      3900000
+    ],
+    "policy4": [
+      2808000,
+      2808000
+    ],
+    "policy16": [
+      3900000,
+      3900000
+    ],
+    "policy2": [
+      2808000,
+      2808000
+    ],
+    "policy14": [
+      2808000,
+      2808000
+    ],
+    "policy0": [
+      2808000,
+      2808000
+    ],
+    "policy12": [
+      2808000,
+      2808000
+    ],
+    "policy9": [
+      3900000,
+      3900000
+    ],
+    "policy10": [
+      2808000,
+      2808000
+    ],
+    "policy7": [
+      3900000,
+      3900000
+    ],
+    "policy19": [
+      3900000,
+      3900000
+    ],
+    "policy5": [
+      3900000,
+      3900000
+    ],
+    "policy17": [
+      3900000,
+      3900000
+    ],
+    "policy3": [
+      2808000,
+      2808000
+    ],
+    "policy15": [
+      3900000,
+      3900000
+    ],
+    "policy1": [
+      2808000,
+      2808000
+    ],
+    "policy13": [
+      2808000,
+      2808000
+    ]
+  }
+}
