@@ -1,0 +1,812 @@
+{
+  "status": "Native/proof builds completed and frozen; hashes independently verified. Model/HTTP results are separate.",
+  "baseline_commit": "3dfd0077cc52c5d539289c19e2986c9a6c9b86cf",
+  "baseline_note": "Original AV proof was linked before audio adoption, so its receipt says 8fcc1574; its frozen source and ds4_cuda.o are the subsequently adopted 3dfd0077 baseline. The fresh original image proof has the same baseline sources/objects.",
+  "native_compile_command": "/usr/local/cuda/bin/nvcc -O3 -g -lineinfo --use_fast_math -std=c++17 -gencode arch=compute_121a,code=sm_121a -DDS4_CUDA_HAVE_MXF4=1 -Xcompiler -march=native -Xcompiler -pthread  -c -o ds4_cuda.o ds4_cuda.cu",
+  "native_flags_note": "Original O3/g/lineinfo/use_fast_math/C++17/sm121a flags; no split-compile variation. Native build exit 0 reported by owning root session 10218; freeze/proof links all exit 0.",
+  "native_build_log": {
+    "path": "scratch/mimo-media-20260926/ncu-video-r1/build-candidate.log",
+    "bytes": 17704,
+    "sha256": "11f35f1ef66f431b6cf62b06b9dd3a2395ff7405ac0e399c5618ccf96ca7663b"
+  },
+  "native_candidate_artifacts": [
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/native-candidate/ds4_cuda.o",
+      "bytes": 17294696,
+      "sha256": "6b81188b85baeb5b51df57824f19b4dbc95e2d04717919764b355938880e7797"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/native-candidate/ds4-server",
+      "bytes": 59744240,
+      "sha256": "c201531ec15347a46c7dae0b8bbbcc6a0e196538297ac99d60fe0d66ed3a5ada"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/native-candidate/ds4-bench-perf",
+      "bytes": 56140800,
+      "sha256": "ce5b6d6d98d4c75ef860cee9b9d4d8aee4d9c296aba40522eaef45412768b872"
+    }
+  ],
+  "pairs": [
+    {
+      "original": "proof-av-audio-r1-lnfix-candidate",
+      "candidate": "proof-av-video-r1-candidate",
+      "changed_source_inputs": [
+        "cuda/mimo2_media.cuh",
+        "ds4_mimo2_gpu.cuh"
+      ],
+      "changed_native_objects": [
+        "ds4_cuda.o"
+      ],
+      "all_other_native_objects_equal": true,
+      "all_other_frozen_source_inputs_equal": true
+    },
+    {
+      "original": "proof-image-video-r1-original",
+      "candidate": "proof-image-video-r1-candidate",
+      "changed_source_inputs": [
+        "cuda/mimo2_media.cuh",
+        "ds4_mimo2_gpu.cuh"
+      ],
+      "changed_native_objects": [
+        "ds4_cuda.o"
+      ],
+      "all_other_native_objects_equal": true,
+      "all_other_frozen_source_inputs_equal": true
+    }
+  ],
+  "proof_builds": [
+    {
+      "role": "proof-av-audio-r1-lnfix-candidate",
+      "git_head_at_link": "8fcc15745856f59d127da69e4aefef8ae804dd5e",
+      "build_exit": 0,
+      "inputs_unchanged_during_link": true,
+      "objects_unchanged_during_link": true,
+      "binary": {
+        "path": "scratch/mimo-media-20260926/proof-av-audio-r1-lnfix-candidate/proof",
+        "bytes": 57533096,
+        "sha256": "72e8d3573e22de4d179deb04a7e5d3d922f4efff684cd7f76460a46b4a428ee8"
+      },
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/proof-av-audio-r1-lnfix-candidate/receipt.json",
+        "bytes": 13231,
+        "sha256": "cb3915640cfa3b6aab6cf01854087ede725debafb2aee6e1f1cf264ad3eb3641"
+      },
+      "command": [
+        "cargo",
+        "rustc",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/av-proof/Cargo.toml",
+        "--target-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/target",
+        "--release",
+        "--jobs",
+        "2",
+        "--",
+        "-C",
+        "metadata=c105dd71efc042f5d6ac26cf",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/native/bridge/ds4_bridge.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4_ple.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4_distributed.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4_cuda.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_ggml_stubs.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_mmq.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_mmq_d2r.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/quantize.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/mmid.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/mmvq.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_repack.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_fattn.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/qwen38_ple.o",
+        "-C",
+        "link-arg=-L/usr/local/cuda/targets/sbsa-linux/lib",
+        "-C",
+        "link-arg=-L/usr/local/cuda/lib64",
+        "-C",
+        "link-arg=-L/usr/lib/gcc/aarch64-linux-gnu/13",
+        "-C",
+        "link-arg=-lcudart",
+        "-C",
+        "link-arg=-lcublas",
+        "-C",
+        "link-arg=-lcuda",
+        "-C",
+        "link-arg=-lstdc++",
+        "-C",
+        "link-arg=-latomic",
+        "-C",
+        "link-arg=-lgcc",
+        "-C",
+        "link-arg=-ldl",
+        "-C",
+        "link-arg=-lm",
+        "-C",
+        "link-arg=-lpthread",
+        "-C",
+        "link-arg=-lc"
+      ],
+      "tracked_source_inputs": {
+        "scratch/mimo-media-20260926/av-proof/Cargo.toml": {
+          "bytes": 316,
+          "sha256": "18bde325a691358870c7feb56d1def528bf2d820241a4d975ab9b734fe439333"
+        },
+        "scratch/mimo-media-20260926/av-proof/Cargo.lock": {
+          "bytes": 21012,
+          "sha256": "ac4a3b919cf5e764031af2517ba88a307ff3565b7576ecc9db33bf117411009c"
+        },
+        "scratch/mimo-media-20260926/av-proof/src/main.rs": {
+          "bytes": 9442,
+          "sha256": "f634978f6bbea08948b715b6ba91b9ff3e12ef2c65c2ab5e619e0f9cb7e8576d"
+        },
+        "cuda/mimo2_media.cuh": {
+          "bytes": 17673,
+          "sha256": "539b6593b4a2852f35707819f63e70cfc3237ff05eac0e79b6e3dd67f453fbce"
+        },
+        "ds4_mimo2_gpu.cuh": {
+          "bytes": 29389,
+          "sha256": "9144921357fe7f9208e32b6eefbf45be38ee51977b4ae79bf7e9847f5377add8"
+        },
+        "ds4_mimo2_media.inc": {
+          "bytes": 33632,
+          "sha256": "37e3751d57debe14b90ab79415afc97586b0fd5cdb44f616713b6269084ae9ee"
+        },
+        "crates/ds4-core/src/lib.rs": {
+          "bytes": 120572,
+          "sha256": "a9530758e0d57c78e7df1f7f0e26b33cf355901f6c21c4a151ab0aba5cd6db83"
+        },
+        "crates/ds4-core/src/mimo2.rs": {
+          "bytes": 79392,
+          "sha256": "b8b58cbe85d992868188fd56662c537f8e31bc0e9cb4d111817aec6d3b9e4726"
+        },
+        "crates/ds4-core/src/chat_template.rs": {
+          "bytes": 8348,
+          "sha256": "25287006a30743f42e78bae6492a84518aecb69534f70287adf6f51882008a0e"
+        },
+        "crates/ds4-server/src/parse.rs": {
+          "bytes": 99334,
+          "sha256": "ac617837803b3987e5cf39bf62ff987c0d1f781fa84e2af25671cc997257f591"
+        },
+        "crates/ds4-server/src/chat_input.rs": {
+          "bytes": 12331,
+          "sha256": "4677363fb37f556857a9c829bda1181665012e0f3e0c473d0d7875c7ba4b3eeb"
+        },
+        "crates/ds4-server/src/generate.rs": {
+          "bytes": 200974,
+          "sha256": "a192420f5b8bfbdbc39f6b128ae4a3ac267236ae30366448a782cce4c8fd723d"
+        },
+        "scratch/mimo-media-20260926/av-requests/eval-audio-0.json": {
+          "bytes": 620316,
+          "sha256": "acd6483fbfbae9225ca77e7173d5ce50b085ff51f32fbf0b9bcca5033b1302e4"
+        },
+        "scratch/mimo-media-20260926/av-requests/eval-audio-3.json": {
+          "bytes": 475036,
+          "sha256": "6a630d196c6ceb0da86e1da81b4f408efb6dd37052461b9c7b87463cdb63fd84"
+        },
+        "scratch/mimo-media-20260926/av-requests/eval-finevideo-29-3.json": {
+          "bytes": 242301,
+          "sha256": "2a6ab6413a1e87409131b90b0fd079bb88363b285ee2a2739dfe284cc7979bce"
+        },
+        "scratch/mimo-media-20260926/av-requests/eval-finevideo-31-0.json": {
+          "bytes": 2617557,
+          "sha256": "e6020308aa058364ff9aa08efdd62347c2028ffadc27f99ce7a76ec56edfddb7"
+        },
+        "scratch/mimo-media-20260926/proof-tools/freeze-build.py": {
+          "bytes": 6689,
+          "sha256": "bf2c92c67f0b462640ba19fa900cda5e6d1997d3cd315b1a0a5ca11c18e2537c"
+        },
+        "scratch/mimo-media-20260926/av-requests/index.json": {
+          "bytes": 13486,
+          "sha256": "bb174a4b4ccac3765b47be0f122349a1aceecfc2549e116e32761eb0e5f4cced"
+        },
+        "scratch/mimo-media-20260926/fixtures/manifest.json": {
+          "bytes": 21766,
+          "sha256": "39d83cedb94fa515e01426e6f7af676248fc51eb0aa6444c255a689742fe01bd"
+        }
+      }
+    },
+    {
+      "role": "proof-av-video-r1-candidate",
+      "git_head_at_link": "3dfd0077cc52c5d539289c19e2986c9a6c9b86cf",
+      "build_exit": 0,
+      "inputs_unchanged_during_link": true,
+      "objects_unchanged_during_link": true,
+      "binary": {
+        "path": "scratch/mimo-media-20260926/proof-av-video-r1-candidate/proof",
+        "bytes": 57533752,
+        "sha256": "88d8858dd169cec7f30aec953bb26c1d2f6a40fd3e67cf37448f5ccbe647be1c"
+      },
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/proof-av-video-r1-candidate/receipt.json",
+        "bytes": 13231,
+        "sha256": "83ea4cf3cf55ba24cfb93ca479028545e1b0a187c54906cf62d502c5d38e7bf7"
+      },
+      "command": [
+        "cargo",
+        "rustc",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/av-proof/Cargo.toml",
+        "--target-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/target",
+        "--release",
+        "--jobs",
+        "2",
+        "--",
+        "-C",
+        "metadata=98177d6adcc31f653d1cb7de",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/native/bridge/ds4_bridge.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4_ple.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4_distributed.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4_cuda.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_ggml_stubs.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_mmq.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_mmq_d2r.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/quantize.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/mmid.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/mmvq.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_repack.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_fattn.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/qwen38_ple.o",
+        "-C",
+        "link-arg=-L/usr/local/cuda/targets/sbsa-linux/lib",
+        "-C",
+        "link-arg=-L/usr/local/cuda/lib64",
+        "-C",
+        "link-arg=-L/usr/lib/gcc/aarch64-linux-gnu/13",
+        "-C",
+        "link-arg=-lcudart",
+        "-C",
+        "link-arg=-lcublas",
+        "-C",
+        "link-arg=-lcuda",
+        "-C",
+        "link-arg=-lstdc++",
+        "-C",
+        "link-arg=-latomic",
+        "-C",
+        "link-arg=-lgcc",
+        "-C",
+        "link-arg=-ldl",
+        "-C",
+        "link-arg=-lm",
+        "-C",
+        "link-arg=-lpthread",
+        "-C",
+        "link-arg=-lc"
+      ],
+      "tracked_source_inputs": {
+        "scratch/mimo-media-20260926/av-proof/Cargo.toml": {
+          "bytes": 316,
+          "sha256": "18bde325a691358870c7feb56d1def528bf2d820241a4d975ab9b734fe439333"
+        },
+        "scratch/mimo-media-20260926/av-proof/Cargo.lock": {
+          "bytes": 21012,
+          "sha256": "ac4a3b919cf5e764031af2517ba88a307ff3565b7576ecc9db33bf117411009c"
+        },
+        "scratch/mimo-media-20260926/av-proof/src/main.rs": {
+          "bytes": 9442,
+          "sha256": "f634978f6bbea08948b715b6ba91b9ff3e12ef2c65c2ab5e619e0f9cb7e8576d"
+        },
+        "cuda/mimo2_media.cuh": {
+          "bytes": 20789,
+          "sha256": "bf3367659c9188cbb998fe03918636c4ed95f9ce50b92dcd50a87035fb767e11"
+        },
+        "ds4_mimo2_gpu.cuh": {
+          "bytes": 29909,
+          "sha256": "574e5c11134d0e395c184c34494a0de1ebcbfc87e570d71eff404cec4a4a96a3"
+        },
+        "ds4_mimo2_media.inc": {
+          "bytes": 33632,
+          "sha256": "37e3751d57debe14b90ab79415afc97586b0fd5cdb44f616713b6269084ae9ee"
+        },
+        "crates/ds4-core/src/lib.rs": {
+          "bytes": 120572,
+          "sha256": "a9530758e0d57c78e7df1f7f0e26b33cf355901f6c21c4a151ab0aba5cd6db83"
+        },
+        "crates/ds4-core/src/mimo2.rs": {
+          "bytes": 79392,
+          "sha256": "b8b58cbe85d992868188fd56662c537f8e31bc0e9cb4d111817aec6d3b9e4726"
+        },
+        "crates/ds4-core/src/chat_template.rs": {
+          "bytes": 8348,
+          "sha256": "25287006a30743f42e78bae6492a84518aecb69534f70287adf6f51882008a0e"
+        },
+        "crates/ds4-server/src/parse.rs": {
+          "bytes": 99334,
+          "sha256": "ac617837803b3987e5cf39bf62ff987c0d1f781fa84e2af25671cc997257f591"
+        },
+        "crates/ds4-server/src/chat_input.rs": {
+          "bytes": 12331,
+          "sha256": "4677363fb37f556857a9c829bda1181665012e0f3e0c473d0d7875c7ba4b3eeb"
+        },
+        "crates/ds4-server/src/generate.rs": {
+          "bytes": 200974,
+          "sha256": "a192420f5b8bfbdbc39f6b128ae4a3ac267236ae30366448a782cce4c8fd723d"
+        },
+        "scratch/mimo-media-20260926/av-requests/eval-audio-0.json": {
+          "bytes": 620316,
+          "sha256": "acd6483fbfbae9225ca77e7173d5ce50b085ff51f32fbf0b9bcca5033b1302e4"
+        },
+        "scratch/mimo-media-20260926/av-requests/eval-audio-3.json": {
+          "bytes": 475036,
+          "sha256": "6a630d196c6ceb0da86e1da81b4f408efb6dd37052461b9c7b87463cdb63fd84"
+        },
+        "scratch/mimo-media-20260926/av-requests/eval-finevideo-29-3.json": {
+          "bytes": 242301,
+          "sha256": "2a6ab6413a1e87409131b90b0fd079bb88363b285ee2a2739dfe284cc7979bce"
+        },
+        "scratch/mimo-media-20260926/av-requests/eval-finevideo-31-0.json": {
+          "bytes": 2617557,
+          "sha256": "e6020308aa058364ff9aa08efdd62347c2028ffadc27f99ce7a76ec56edfddb7"
+        },
+        "scratch/mimo-media-20260926/proof-tools/freeze-build.py": {
+          "bytes": 6689,
+          "sha256": "bf2c92c67f0b462640ba19fa900cda5e6d1997d3cd315b1a0a5ca11c18e2537c"
+        },
+        "scratch/mimo-media-20260926/av-requests/index.json": {
+          "bytes": 13486,
+          "sha256": "bb174a4b4ccac3765b47be0f122349a1aceecfc2549e116e32761eb0e5f4cced"
+        },
+        "scratch/mimo-media-20260926/fixtures/manifest.json": {
+          "bytes": 21766,
+          "sha256": "39d83cedb94fa515e01426e6f7af676248fc51eb0aa6444c255a689742fe01bd"
+        }
+      }
+    },
+    {
+      "role": "proof-image-video-r1-original",
+      "git_head_at_link": "3dfd0077cc52c5d539289c19e2986c9a6c9b86cf",
+      "build_exit": 0,
+      "inputs_unchanged_during_link": true,
+      "objects_unchanged_during_link": true,
+      "binary": {
+        "path": "scratch/mimo-media-20260926/proof-image-video-r1-original/proof",
+        "bytes": 57630936,
+        "sha256": "4946d5fbd7b176644fe6a02c6425f5e6d0b67a5d84f416f2dcc9898ea6d6675b"
+      },
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/proof-image-video-r1-original/receipt.json",
+        "bytes": 12185,
+        "sha256": "c5bd7c73c818a7bc7bcd0176ae737c31e399acf5934d95c92251563c10d92e42"
+      },
+      "command": [
+        "cargo",
+        "rustc",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/Cargo.toml",
+        "--target-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/target",
+        "--release",
+        "--jobs",
+        "2",
+        "--",
+        "-C",
+        "metadata=0eed5d849b0b8fb65a4b3014",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/native/bridge/ds4_bridge.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4_ple.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4_distributed.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4_cuda.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_ggml_stubs.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_mmq.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_mmq_d2r.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/quantize.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/mmid.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/mmvq.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_repack.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_fattn.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/qwen38_ple.o",
+        "-C",
+        "link-arg=-L/usr/local/cuda/targets/sbsa-linux/lib",
+        "-C",
+        "link-arg=-L/usr/local/cuda/lib64",
+        "-C",
+        "link-arg=-L/usr/lib/gcc/aarch64-linux-gnu/13",
+        "-C",
+        "link-arg=-lcudart",
+        "-C",
+        "link-arg=-lcublas",
+        "-C",
+        "link-arg=-lcuda",
+        "-C",
+        "link-arg=-lstdc++",
+        "-C",
+        "link-arg=-latomic",
+        "-C",
+        "link-arg=-lgcc",
+        "-C",
+        "link-arg=-ldl",
+        "-C",
+        "link-arg=-lm",
+        "-C",
+        "link-arg=-lpthread",
+        "-C",
+        "link-arg=-lc"
+      ],
+      "tracked_source_inputs": {
+        "scratch/mimo-media-20260926/media-proof/Cargo.toml": {
+          "bytes": 319,
+          "sha256": "b667a6e27c60048d99cf132d602da71a9f94640caf2682c658ef5aafb562dd3e"
+        },
+        "scratch/mimo-media-20260926/media-proof/Cargo.lock": {
+          "bytes": 21015,
+          "sha256": "c7724c8cbcd9a3f19d7547ca5fb857835164da0a527aa7a8121ebef2a2cf5846"
+        },
+        "scratch/mimo-media-20260926/media-proof/src/main.rs": {
+          "bytes": 6095,
+          "sha256": "410fde78644cc494eb5cd5738afa30b0325ad2254ad6c24d3cf60ce9ce57f94e"
+        },
+        "cuda/mimo2_media.cuh": {
+          "bytes": 17673,
+          "sha256": "539b6593b4a2852f35707819f63e70cfc3237ff05eac0e79b6e3dd67f453fbce"
+        },
+        "ds4_mimo2_gpu.cuh": {
+          "bytes": 29389,
+          "sha256": "9144921357fe7f9208e32b6eefbf45be38ee51977b4ae79bf7e9847f5377add8"
+        },
+        "ds4_mimo2_media.inc": {
+          "bytes": 33632,
+          "sha256": "37e3751d57debe14b90ab79415afc97586b0fd5cdb44f616713b6269084ae9ee"
+        },
+        "crates/ds4-core/src/lib.rs": {
+          "bytes": 120572,
+          "sha256": "a9530758e0d57c78e7df1f7f0e26b33cf355901f6c21c4a151ab0aba5cd6db83"
+        },
+        "crates/ds4-core/src/mimo2.rs": {
+          "bytes": 79392,
+          "sha256": "b8b58cbe85d992868188fd56662c537f8e31bc0e9cb4d111817aec6d3b9e4726"
+        },
+        "crates/ds4-core/src/chat_template.rs": {
+          "bytes": 8348,
+          "sha256": "25287006a30743f42e78bae6492a84518aecb69534f70287adf6f51882008a0e"
+        },
+        "crates/ds4-server/src/parse.rs": {
+          "bytes": 99334,
+          "sha256": "ac617837803b3987e5cf39bf62ff987c0d1f781fa84e2af25671cc997257f591"
+        },
+        "crates/ds4-server/src/chat_input.rs": {
+          "bytes": 12331,
+          "sha256": "4677363fb37f556857a9c829bda1181665012e0f3e0c473d0d7875c7ba4b3eeb"
+        },
+        "crates/ds4-server/src/generate.rs": {
+          "bytes": 200974,
+          "sha256": "a192420f5b8bfbdbc39f6b128ae4a3ac267236ae30366448a782cce4c8fd723d"
+        },
+        "scratch/mimo-media-20260926/media-proof/request-document.json": {
+          "bytes": 99809,
+          "sha256": "3d01e1f819e52592ae11abd2602c6c4be89000312b45bdbaae149daa6d641176"
+        },
+        "scratch/mimo-media-20260926/media-proof/request-photo.json": {
+          "bytes": 61470,
+          "sha256": "ae8b14dbad41655f56bfbcd4f726e7f71cfecd3293007ff47b36293072f43700"
+        },
+        "scratch/mimo-media-20260926/media-proof/request-screen.json": {
+          "bytes": 73193,
+          "sha256": "8a861c34fd7ef7d58fd94486ec0f37a118cb2819da4d804adb4072eab83c16d7"
+        },
+        "scratch/mimo-media-20260926/proof-tools/freeze-build.py": {
+          "bytes": 6689,
+          "sha256": "bf2c92c67f0b462640ba19fa900cda5e6d1997d3cd315b1a0a5ca11c18e2537c"
+        }
+      }
+    },
+    {
+      "role": "proof-image-video-r1-candidate",
+      "git_head_at_link": "3dfd0077cc52c5d539289c19e2986c9a6c9b86cf",
+      "build_exit": 0,
+      "inputs_unchanged_during_link": true,
+      "objects_unchanged_during_link": true,
+      "binary": {
+        "path": "scratch/mimo-media-20260926/proof-image-video-r1-candidate/proof",
+        "bytes": 57631888,
+        "sha256": "c5bd2e3ab92d8d5380e3ed6cb1badaead304589527727eacb41dc7297c951cc5"
+      },
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/proof-image-video-r1-candidate/receipt.json",
+        "bytes": 12185,
+        "sha256": "afb19546850d56b32eaff0f38c8755513be31a0f01e71e75cd851e07608fdee5"
+      },
+      "command": [
+        "cargo",
+        "rustc",
+        "--offline",
+        "--locked",
+        "--manifest-path",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/Cargo.toml",
+        "--target-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/target",
+        "--release",
+        "--jobs",
+        "2",
+        "--",
+        "-C",
+        "metadata=da3b489714ca4c4715e4ea46",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/native/bridge/ds4_bridge.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4_ple.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4_distributed.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4_cuda.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_ggml_stubs.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_mmq.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_mmq_d2r.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/quantize.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/mmid.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/mmvq.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_repack.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_fattn.o",
+        "-C",
+        "link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/qwen38_ple.o",
+        "-C",
+        "link-arg=-L/usr/local/cuda/targets/sbsa-linux/lib",
+        "-C",
+        "link-arg=-L/usr/local/cuda/lib64",
+        "-C",
+        "link-arg=-L/usr/lib/gcc/aarch64-linux-gnu/13",
+        "-C",
+        "link-arg=-lcudart",
+        "-C",
+        "link-arg=-lcublas",
+        "-C",
+        "link-arg=-lcuda",
+        "-C",
+        "link-arg=-lstdc++",
+        "-C",
+        "link-arg=-latomic",
+        "-C",
+        "link-arg=-lgcc",
+        "-C",
+        "link-arg=-ldl",
+        "-C",
+        "link-arg=-lm",
+        "-C",
+        "link-arg=-lpthread",
+        "-C",
+        "link-arg=-lc"
+      ],
+      "tracked_source_inputs": {
+        "scratch/mimo-media-20260926/media-proof/Cargo.toml": {
+          "bytes": 319,
+          "sha256": "b667a6e27c60048d99cf132d602da71a9f94640caf2682c658ef5aafb562dd3e"
+        },
+        "scratch/mimo-media-20260926/media-proof/Cargo.lock": {
+          "bytes": 21015,
+          "sha256": "c7724c8cbcd9a3f19d7547ca5fb857835164da0a527aa7a8121ebef2a2cf5846"
+        },
+        "scratch/mimo-media-20260926/media-proof/src/main.rs": {
+          "bytes": 6095,
+          "sha256": "410fde78644cc494eb5cd5738afa30b0325ad2254ad6c24d3cf60ce9ce57f94e"
+        },
+        "cuda/mimo2_media.cuh": {
+          "bytes": 20789,
+          "sha256": "bf3367659c9188cbb998fe03918636c4ed95f9ce50b92dcd50a87035fb767e11"
+        },
+        "ds4_mimo2_gpu.cuh": {
+          "bytes": 29909,
+          "sha256": "574e5c11134d0e395c184c34494a0de1ebcbfc87e570d71eff404cec4a4a96a3"
+        },
+        "ds4_mimo2_media.inc": {
+          "bytes": 33632,
+          "sha256": "37e3751d57debe14b90ab79415afc97586b0fd5cdb44f616713b6269084ae9ee"
+        },
+        "crates/ds4-core/src/lib.rs": {
+          "bytes": 120572,
+          "sha256": "a9530758e0d57c78e7df1f7f0e26b33cf355901f6c21c4a151ab0aba5cd6db83"
+        },
+        "crates/ds4-core/src/mimo2.rs": {
+          "bytes": 79392,
+          "sha256": "b8b58cbe85d992868188fd56662c537f8e31bc0e9cb4d111817aec6d3b9e4726"
+        },
+        "crates/ds4-core/src/chat_template.rs": {
+          "bytes": 8348,
+          "sha256": "25287006a30743f42e78bae6492a84518aecb69534f70287adf6f51882008a0e"
+        },
+        "crates/ds4-server/src/parse.rs": {
+          "bytes": 99334,
+          "sha256": "ac617837803b3987e5cf39bf62ff987c0d1f781fa84e2af25671cc997257f591"
+        },
+        "crates/ds4-server/src/chat_input.rs": {
+          "bytes": 12331,
+          "sha256": "4677363fb37f556857a9c829bda1181665012e0f3e0c473d0d7875c7ba4b3eeb"
+        },
+        "crates/ds4-server/src/generate.rs": {
+          "bytes": 200974,
+          "sha256": "a192420f5b8bfbdbc39f6b128ae4a3ac267236ae30366448a782cce4c8fd723d"
+        },
+        "scratch/mimo-media-20260926/media-proof/request-document.json": {
+          "bytes": 99809,
+          "sha256": "3d01e1f819e52592ae11abd2602c6c4be89000312b45bdbaae149daa6d641176"
+        },
+        "scratch/mimo-media-20260926/media-proof/request-photo.json": {
+          "bytes": 61470,
+          "sha256": "ae8b14dbad41655f56bfbcd4f726e7f71cfecd3293007ff47b36293072f43700"
+        },
+        "scratch/mimo-media-20260926/media-proof/request-screen.json": {
+          "bytes": 73193,
+          "sha256": "8a861c34fd7ef7d58fd94486ec0f37a118cb2819da4d804adb4072eab83c16d7"
+        },
+        "scratch/mimo-media-20260926/proof-tools/freeze-build.py": {
+          "bytes": 6689,
+          "sha256": "bf2c92c67f0b462640ba19fa900cda5e6d1997d3cd315b1a0a5ca11c18e2537c"
+        }
+      }
+    }
+  ],
+  "native_objects_original": {
+    "native/bridge/ds4_bridge.o": {
+      "bytes": 425808,
+      "sha256": "1042333b4b19d2364b05cbbf1e86a87f42006930a792dc25ab67a15febde3e36"
+    },
+    "ds4.o": {
+      "bytes": 13807664,
+      "sha256": "905d639bece77c4ed97ae5e57f9078978f276275be01469ac98e103f8d203d68"
+    },
+    "ds4_ple.o": {
+      "bytes": 282000,
+      "sha256": "a48d261ddeec23add01002aaaf2a589edd54f2e09382fa48e99bfe68952dfe04"
+    },
+    "ds4_distributed.o": {
+      "bytes": 997560,
+      "sha256": "4d9bdc1dfc1ee4c2bcc2d9f6ca857b0f511b0adc9af84d8d3d21e7ec635c0f76"
+    },
+    "ds4_cuda.o": {
+      "bytes": 17303632,
+      "sha256": "0ea2903083acab305769d5c4718dd4e9c367714284b4028e0b1d5027a30b648e"
+    },
+    "cuda/mmq/ds4_ggml_stubs.o": {
+      "bytes": 849456,
+      "sha256": "e4e58ca91a01d162a3ddaef1a0804dd40315a34bd7ac6bba322ee2f38c5b90c8"
+    },
+    "cuda/mmq/ds4_mmq.o": {
+      "bytes": 53188752,
+      "sha256": "7d28dc73fa7610a7dcae4dcde9e46bee3a0ab36b9d62d65be028218e037a7dc7"
+    },
+    "cuda/mmq/ds4_mmq_d2r.o": {
+      "bytes": 3013264,
+      "sha256": "d082e87f57b46b300febeebe6f347f96724bb197edc7721b53ba81a565ae8e27"
+    },
+    "cuda/mmq/quantize.o": {
+      "bytes": 719352,
+      "sha256": "8305df41665a5bbe4f6f766d5ae17acfb6a585e53dafde131244fabb49d0d77d"
+    },
+    "cuda/mmq/mmid.o": {
+      "bytes": 1112952,
+      "sha256": "05f29ff8ab69ff70347cd32f89e97c456fdb7a40a5ed3f90b31ae189a02edaac"
+    },
+    "cuda/mmq/mmvq.o": {
+      "bytes": 14287144,
+      "sha256": "95573fe1cff57b5fa50fc4cffcddbaa5ef2c9568b0d8653b563c2353f81934ae"
+    },
+    "cuda/mmq/ds4_repack.o": {
+      "bytes": 1845056,
+      "sha256": "8ca0f75ebb3ead5cb5b96f8397a9b43791a7378b6cd563913e70466717d5f13f"
+    },
+    "cuda/mmq/ds4_fattn.o": {
+      "bytes": 4856376,
+      "sha256": "6e2cf3bf8d5db540f3123d08d49057610d7bb61af82a91bb85146302d16e39e4"
+    },
+    "cuda/qwen38_ple.o": {
+      "bytes": 156624,
+      "sha256": "c078bac53d5af2b9158c43de04ed4a3383f6cb41e53eb9b8722634310d266f75"
+    }
+  },
+  "native_objects_candidate": {
+    "native/bridge/ds4_bridge.o": {
+      "bytes": 425808,
+      "sha256": "1042333b4b19d2364b05cbbf1e86a87f42006930a792dc25ab67a15febde3e36"
+    },
+    "ds4.o": {
+      "bytes": 13807664,
+      "sha256": "905d639bece77c4ed97ae5e57f9078978f276275be01469ac98e103f8d203d68"
+    },
+    "ds4_ple.o": {
+      "bytes": 282000,
+      "sha256": "a48d261ddeec23add01002aaaf2a589edd54f2e09382fa48e99bfe68952dfe04"
+    },
+    "ds4_distributed.o": {
+      "bytes": 997560,
+      "sha256": "4d9bdc1dfc1ee4c2bcc2d9f6ca857b0f511b0adc9af84d8d3d21e7ec635c0f76"
+    },
+    "ds4_cuda.o": {
+      "bytes": 17294696,
+      "sha256": "6b81188b85baeb5b51df57824f19b4dbc95e2d04717919764b355938880e7797"
+    },
+    "cuda/mmq/ds4_ggml_stubs.o": {
+      "bytes": 849456,
+      "sha256": "e4e58ca91a01d162a3ddaef1a0804dd40315a34bd7ac6bba322ee2f38c5b90c8"
+    },
+    "cuda/mmq/ds4_mmq.o": {
+      "bytes": 53188752,
+      "sha256": "7d28dc73fa7610a7dcae4dcde9e46bee3a0ab36b9d62d65be028218e037a7dc7"
+    },
+    "cuda/mmq/ds4_mmq_d2r.o": {
+      "bytes": 3013264,
+      "sha256": "d082e87f57b46b300febeebe6f347f96724bb197edc7721b53ba81a565ae8e27"
+    },
+    "cuda/mmq/quantize.o": {
+      "bytes": 719352,
+      "sha256": "8305df41665a5bbe4f6f766d5ae17acfb6a585e53dafde131244fabb49d0d77d"
+    },
+    "cuda/mmq/mmid.o": {
+      "bytes": 1112952,
+      "sha256": "05f29ff8ab69ff70347cd32f89e97c456fdb7a40a5ed3f90b31ae189a02edaac"
+    },
+    "cuda/mmq/mmvq.o": {
+      "bytes": 14287144,
+      "sha256": "95573fe1cff57b5fa50fc4cffcddbaa5ef2c9568b0d8653b563c2353f81934ae"
+    },
+    "cuda/mmq/ds4_repack.o": {
+      "bytes": 1845056,
+      "sha256": "8ca0f75ebb3ead5cb5b96f8397a9b43791a7378b6cd563913e70466717d5f13f"
+    },
+    "cuda/mmq/ds4_fattn.o": {
+      "bytes": 4856376,
+      "sha256": "6e2cf3bf8d5db540f3123d08d49057610d7bb61af82a91bb85146302d16e39e4"
+    },
+    "cuda/qwen38_ple.o": {
+      "bytes": 156624,
+      "sha256": "c078bac53d5af2b9158c43de04ed4a3383f6cb41e53eb9b8722634310d266f75"
+    }
+  },
+  "review_closure": "Final candidate source hashes match the independently reviewed production diff and all wrapper-test source receipts. Only cuda/mimo2_media.cuh and ds4_mimo2_gpu.cuh differ from the retained production source inputs; only ds4_cuda.o differs among native link objects."
+}

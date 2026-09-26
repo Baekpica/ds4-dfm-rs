@@ -186,6 +186,89 @@ __global__ static void mimo2_vision_attn(float *out, const float *qkv, int n) {
     out[(int64_t)query * M2V_ATTN_HD + tid] = acc;
 }
 
+enum {
+    M2V_K_TILE = 32, M2V_K_STRIDE = M2V_K_TILE + 1,
+    M2V_K_MIN = 512, M2V_K_MAX = 3072
+};
+
+/* Stage K by contiguous dimensions, then read by key. The padded transpose
+ * removes strided global sectors without changing dot or softmax order.
+ * Larger rows retain the original path: tile storage reduces residency. */
+
+__global__ static void mimo2_vision_attn_coalesced(float *out, const float *qkv, int n) {
+    const int query = blockIdx.x;
+    if (query >= n * M2V_ATTN_HEADS) { return; }
+    const int tid = threadIdx.x;
+    const int row = query / M2V_ATTN_HEADS, head = query % M2V_ATTN_HEADS;
+    const int kv = head / (M2V_ATTN_HEADS / M2V_ATTN_KV);
+    extern __shared__ float shared[];
+    float *scores = shared;
+    float *qq = scores + n;
+    float *stats = qq + M2V_ATTN_HD;
+    if (tid < M2V_ATTN_HD) {
+        qq[tid] = qkv[(int64_t)row * M2V_ATTN_QKV + head * M2V_ATTN_HD + tid];
+    }
+    __syncthreads();
+
+    const float scale = rsqrtf((float)M2V_ATTN_HD);
+    // Coalesce K loads across dimensions, then give each key lane an unaltered
+    // ascending dot. Padding prevents bank conflicts when key lanes read one d.
+    float *tile = stats + M2V_ATTN_SCALARS;
+    for (int first = 0; first < n; first += M2V_K_TILE) {
+        const int keys = min(M2V_K_TILE, n - first);
+        for (int item = tid; item < keys * M2V_ATTN_HD; item += blockDim.x) {
+            const int key = item / M2V_ATTN_HD, d = item % M2V_ATTN_HD;
+            tile[d * M2V_K_STRIDE + key] = qkv[(int64_t)(first + key) * M2V_ATTN_QKV +
+                                              M2V_ATTN_Q + kv * M2V_ATTN_HD + d];
+        }
+        __syncthreads();
+        if (tid < keys) {
+            float dot = 0.f;
+            for (int d = 0; d < M2V_ATTN_HD; d++) {
+                dot += qq[d] * tile[d * M2V_K_STRIDE + tid];
+            }
+            scores[first + tid] = dot;
+        }
+        // Every lane must finish the current tile before the next copy reuses it.
+        __syncthreads();
+    }
+    if (tid == 0) {
+        float maxv = -INFINITY;
+        for (int key = 0; key < n; key++) { maxv = fmaxf(maxv, scores[key] * scale); }
+        stats[0] = maxv;
+    }
+    __syncthreads();
+    const float maxv = stats[0];
+    if (!isfinite(maxv)) {
+        if (tid < M2V_ATTN_HD) { out[(int64_t)query * M2V_ATTN_HD + tid] = NAN; }
+        return;
+    }
+
+    for (int key = tid; key < n; key += blockDim.x) {
+        scores[key] = expf(scores[key] * scale - maxv);
+    }
+    __syncthreads();
+    if (tid == 0) {
+        float sum = 0.f;
+        for (int key = 0; key < n; key++) { sum += scores[key]; }
+        stats[1] = sum;
+    }
+    __syncthreads();
+    if (tid >= M2V_ATTN_HD) { return; }
+
+    float acc = 0.f;
+    const float sum = stats[1];
+    if (sum > 0.f) {
+        for (int key = 0; key < n; key++) {
+            const float w = scores[key] / sum;
+            const float value = qkv[(int64_t)key * M2V_ATTN_QKV +
+                                    M2V_ATTN_Q + M2V_ATTN_KVW + kv * M2V_ATTN_HD + tid];
+            acc += w * value;
+        }
+    }
+    out[(int64_t)query * M2V_ATTN_HD + tid] = acc;
+}
+
 enum { M2V_WINDOW = 64, M2V_WINDOW_KEYS = 2 * M2V_WINDOW + 1 };
 
 /* The vision window is contiguous in the layer's current row/column order.

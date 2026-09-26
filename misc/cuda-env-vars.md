@@ -175,6 +175,12 @@ The bandwidth figure is informational; we don't tier on it.
   1–8192 rows, without window, sink, causal or group masks. Other layouts
   retain the original path. See the
   [image A/B evidence](../docs/benchmarks/mimo2-media-2026-09-26/attn-score-cache/README.md).
+- `DS4_MIMO2_VISION_COALESCED=0` restores the retained full-vision score-cache
+  kernel for 512–3072 rows. The default stages K in a shared transpose tile
+  within the same full-attention layout/mask predicate; rows outside that
+  range retain the previous kernel. `DS4_MIMO2_VISION_ATTN=0` still disables
+  both paths. This adds 8448 bytes of shared memory per CTA; see the
+  [video qualification status and costs](../docs/benchmarks/mimo2-media-2026-09-26/video-attention/README.md).
 - `DS4_MIMO2_VISION_WINDOW=0` restores scalar windowed vision attention.
   The default caches at most 129 scores for window 64 with sinks, using the
   same interleaved Q32/KV8/HD64 layout and 1–8192-row limit as full attention.

@@ -1,0 +1,57 @@
+{
+  "status": "Independent CPU review complete; no correctness blocker. Final frozen source hashes match the review. All three wrapper suites pass; model/HTTP qualification remains separate.",
+  "base_commit": "3dfd0077",
+  "files": {
+    "cuda/mimo2_media.cuh": "bf3367659c9188cbb998fe03918636c4ed95f9ce50b92dcd50a87035fb767e11",
+    "ds4_mimo2_gpu.cuh": "574e5c11134d0e395c184c34494a0de1ebcbfc87e570d71eff404cec4a4a96a3",
+    "tests/mimo2_vision_coalesced.cu": "f3ae5c788130d82029a558d907aec10cfc6a5f6bb381da36ecf96aa097b2b966"
+  },
+  "retained_function_bodies_unchanged": {
+    "mimo2_attn": true,
+    "mimo2_vision_attn": true,
+    "mimo2_vision_window": true,
+    "mimo2_audio_attn": true,
+    "mimo2_layernorm": true
+  },
+  "findings": {
+    "bounds": "Tile contains 64*33=2112 floats; maximum touched index is 63*33+31=2110. Tail keys use min(32,n-first), including 16 keys at n880. Query count is bounded by the existing <=8192 predicate and new <=3072 range.",
+    "synchronization": "All 128 threads traverse the same tile iterations and both barriers. The consume-before-reuse barrier also publishes the final scores before max. Nonfinite max returns uniformly; output threads exit only after the final barrier.",
+    "numerical": "Each key keeps ascending 64-term dot accumulation; max, denominator, expf argument and ascending output accumulation order match the retained kernel. Shared staging adds no floating-point transformation. Compiled parity remains required.",
+    "dispatch": "Existing full interleaved Q32/KV8/HD64, stride3072 offsets0/2048/2560, no masks/sinks, same-buffer QKV and disjoint-start output checks remain outer guards. Coalesced dispatch adds rows512..3072. New kill0 returns to retained full kernel; outer VISION_ATTN=0 remains scalar.",
+    "stream_errors": "Launch uses ds4_current_stream and existing cudaGetLastError/cuda_ok contract. No host allocation, persistent device allocation, or new capture-time substrate argument is introduced.",
+    "alias": "Established alias contract remains unchanged: output and input start pointers differ. Arbitrary partially overlapping tensor views are not newly supported.",
+    "resource": "Shared bytes=(n+64+2+64*33)*4:12232 at880,21000 at3072, an8448-byte increase per CTA. Total instruction and integer/control work increase despite matching FP math counts.",
+    "scope_risk": "The same layout is used by images and video; 3072-row image correctness/performance must remain in end-to-end qualification. Larger rows retain the prior kernel."
+  },
+  "test_review": "Actual wrapper test checks default/ON/OFF, runtime path labels, non-dyadic inputs, 511/512/513 and3071/3072/3073 boundaries, tile-tail879/880/881, invalid max/sum, layouts/masks, guards and input preservation. Its GPU result is tracked separately, not asserted here.",
+  "wrapper_verification": [
+    {
+      "name": "coalesced",
+      "pass_checks": 24,
+      "all_hashes_verified": true,
+      "compile_exit": 0,
+      "test_exit": 0,
+      "guard_exit": 0,
+      "payload_exit": 0
+    },
+    {
+      "name": "retained",
+      "pass_checks": 27,
+      "all_hashes_verified": true,
+      "compile_exit": 0,
+      "test_exit": 0,
+      "guard_exit": 0,
+      "payload_exit": 0
+    },
+    {
+      "name": "window",
+      "pass_checks": 38,
+      "all_hashes_verified": true,
+      "compile_exit": 0,
+      "test_exit": 0,
+      "guard_exit": 0,
+      "payload_exit": 0
+    }
+  ],
+  "final_build_verification": "See build-provenance.json: original and candidate host inputs match, exactly one native object differs, reviewed source matches frozen candidate."
+}

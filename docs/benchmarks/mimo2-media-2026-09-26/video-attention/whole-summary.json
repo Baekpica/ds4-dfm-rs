@@ -1,0 +1,969 @@
+{
+  "status": "complete; target qualification pending",
+  "baseline_commit": "3dfd0077cc52c5d539289c19e2986c9a6c9b86cf",
+  "baseline_note": "Captured with the frozen audio candidate later adopted as 3dfd0077. Server bytes are pinned by whole-launch.json.",
+  "request": {
+    "fixture": "eval-finevideo-29-3",
+    "wall_ms": 8229.924471990671,
+    "timings": {
+      "ttft_ms": 3456.9,
+      "prefill_tokens": 929,
+      "prefill_cached_tokens": 0,
+      "prefill_tok_s": 384.4,
+      "decode_tok_s": 26.6,
+      "tok_per_step": 1.0
+    },
+    "completion_tokens": 128,
+    "finish_reason": "length"
+  },
+  "stage_boundary_note": "No request/stage NVTX boundary. Pair GPU intervals are inferred from patch launches and distinctive upload/readback sizes. GPU gaps are idle intervals, not measured CPU compute time. CUDA/OSRT API overlap can include waits and other threads; totals must not be added to GPU duration or each other. HTTP wall/TTFT ratios contextualize contribution, not an exact stage partition. FFmpeg/preprocessing before first GPU work is not separately timed.",
+  "expected_geometry": {
+    "pairs": 4,
+    "patches_per_pair": 880,
+    "features_per_pair": 220,
+    "patch_upload_bytes": 5406720,
+    "feature_readback_bytes": 3604480
+  },
+  "dispatch_checks": {
+    "patch_calls": {
+      "observed": 4,
+      "expected": 4,
+      "matches": true
+    },
+    "unambiguous_pair_intervals": {
+      "observed": 4,
+      "expected": 4,
+      "matches": true
+    },
+    "all_attention_calls": {
+      "observed": 112,
+      "expected": 112,
+      "matches": true
+    },
+    "retained_full_calls": {
+      "observed": 16,
+      "expected": 16,
+      "matches": true
+    },
+    "retained_window_calls": {
+      "observed": 96,
+      "expected": 96,
+      "matches": true
+    }
+  },
+  "attention_dispatch": {
+    "full": {
+      "calls": 16,
+      "total_ms": 322.292384,
+      "percent_http_wall": 3.9161037880344396,
+      "mean_us": 20143.274,
+      "geometry": [
+        {
+          "grid": [
+            28160,
+            1,
+            1
+          ],
+          "block": [
+            128,
+            1,
+            1
+          ],
+          "registers_per_thread": 40,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 3784,
+          "calls": 16
+        }
+      ]
+    },
+    "window": {
+      "calls": 96,
+      "total_ms": 224.19088,
+      "percent_http_wall": 2.7240940152367186,
+      "mean_us": 2335.3216666666667,
+      "geometry": [
+        {
+          "grid": [
+            28160,
+            1,
+            1
+          ],
+          "block": [
+            128,
+            1,
+            1
+          ],
+          "registers_per_thread": 44,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 780,
+          "calls": 96
+        }
+      ]
+    },
+    "scalar_unclassified": {
+      "calls": 0,
+      "total_ms": 0.0,
+      "percent_http_wall": 0.0,
+      "mean_us": 0,
+      "geometry": []
+    }
+  },
+  "video_gpu_extent": {
+    "start_ns": 1066427168,
+    "end_ns": 2247968512,
+    "span_ms": 1181.541344,
+    "gpu_busy_union_ms": 779.565917,
+    "gpu_idle_within_span_ms": 401.975427,
+    "kernel": {
+      "calls": 2404,
+      "total_ms": 773.499997,
+      "percent_http_wall": 9.398628136047819,
+      "mean_us": 321.75540640599
+    },
+    "copy": {
+      "calls": 280,
+      "total_ms": 6.21184,
+      "percent_http_wall": 0.07547869997034695,
+      "mean_us": 22.185142857142857
+    }
+  },
+  "pair_gpu_intervals": [
+    {
+      "start_ns": 1066427168,
+      "end_ns": 1655274752,
+      "span_ms": 588.847584,
+      "gpu_busy_union_ms": 194.149472,
+      "gpu_idle_within_span_ms": 394.698112,
+      "kernel": {
+        "calls": 601,
+        "total_ms": 193.137792,
+        "percent_http_wall": 2.3467747809510993,
+        "mean_us": 321.36071880199665
+      },
+      "copy": {
+        "calls": 70,
+        "total_ms": 1.031168,
+        "percent_http_wall": 0.012529495301073876,
+        "mean_us": 14.73097142857143
+      }
+    },
+    {
+      "start_ns": 1656323424,
+      "end_ns": 1852230496,
+      "span_ms": 195.907072,
+      "gpu_busy_union_ms": 194.882623,
+      "gpu_idle_within_span_ms": 1.024449,
+      "kernel": {
+        "calls": 601,
+        "total_ms": 193.495967,
+        "percent_http_wall": 2.351126886504668,
+        "mean_us": 321.95668386023294
+      },
+      "copy": {
+        "calls": 70,
+        "total_ms": 1.429376,
+        "percent_http_wall": 0.01736803302223088,
+        "mean_us": 20.419657142857144
+      }
+    },
+    {
+      "start_ns": 1853821408,
+      "end_ns": 2049934080,
+      "span_ms": 196.112672,
+      "gpu_busy_union_ms": 195.102526,
+      "gpu_idle_within_span_ms": 1.010146,
+      "kernel": {
+        "calls": 601,
+        "total_ms": 193.399326,
+        "percent_http_wall": 2.349952622994366,
+        "mean_us": 321.79588352745424
+      },
+      "copy": {
+        "calls": 70,
+        "total_ms": 1.746208,
+        "percent_http_wall": 0.02121778888667764,
+        "mean_us": 24.94582857142857
+      }
+    },
+    {
+      "start_ns": 2051503456,
+      "end_ns": 2247968512,
+      "span_ms": 196.465056,
+      "gpu_busy_union_ms": 195.431296,
+      "gpu_idle_within_span_ms": 1.03376,
+      "kernel": {
+        "calls": 601,
+        "total_ms": 193.466912,
+        "percent_http_wall": 2.3507738455976845,
+        "mean_us": 321.90833943427623
+      },
+      "copy": {
+        "calls": 70,
+        "total_ms": 2.005088,
+        "percent_http_wall": 0.024363382760364573,
+        "mean_us": 28.644114285714284
+      }
+    }
+  ],
+  "video_kernel_ranking": [
+    {
+      "name": "mimo2_vision_attn(float *, const float *, int)",
+      "calls": 16,
+      "total_ms": 322.292384,
+      "percent_http_wall": 3.9161037880344396,
+      "mean_us": 20143.274,
+      "geometry": [
+        {
+          "grid": [
+            28160,
+            1,
+            1
+          ],
+          "block": [
+            128,
+            1,
+            1
+          ],
+          "registers_per_thread": 40,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 3784,
+          "calls": 16
+        }
+      ],
+      "percent_video_kernel_time": 41.66675956690405,
+      "percent_ttft": 9.323161908067922
+    },
+    {
+      "name": "mimo2_vision_window(float *, const float *, const float *, int)",
+      "calls": 96,
+      "total_ms": 224.19088,
+      "percent_http_wall": 2.7240940152367186,
+      "mean_us": 2335.3216666666667,
+      "geometry": [
+        {
+          "grid": [
+            28160,
+            1,
+            1
+          ],
+          "block": [
+            128,
+            1,
+            1
+          ],
+          "registers_per_thread": 44,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 780,
+          "calls": 96
+        }
+      ],
+      "percent_video_kernel_time": 28.983953570719923,
+      "percent_ttft": 6.4853157453209525
+    },
+    {
+      "name": "mimo2_patch(float *, const float *, const float *, const float *, int, int, int, int, int)",
+      "calls": 4,
+      "total_ms": 72.78256,
+      "percent_http_wall": 0.8843648595768366,
+      "mean_us": 18195.64,
+      "geometry": [
+        {
+          "grid": [
+            4400,
+            1,
+            1
+          ],
+          "block": [
+            256,
+            1,
+            1
+          ],
+          "registers_per_thread": 40,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 0,
+          "calls": 4
+        }
+      ],
+      "percent_video_kernel_time": 9.409510055886917,
+      "percent_ttft": 2.105428563163528
+    },
+    {
+      "name": "nvjet_sm121_tss_mma_128x176x64_2_32x88x64_tmaAB_alignCD4_bz_TNNN",
+      "calls": 224,
+      "total_ms": 36.709312,
+      "percent_http_wall": 0.44604676658862064,
+      "mean_us": 163.88085714285714,
+      "geometry": [
+        {
+          "grid": [
+            40,
+            5,
+            1
+          ],
+          "block": [
+            64,
+            4,
+            1
+          ],
+          "registers_per_thread": 255,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 78848,
+          "calls": 224
+        }
+      ],
+      "percent_video_kernel_time": 4.745870994489479,
+      "percent_ttft": 1.0619142005843385
+    },
+    {
+      "name": "mimo2_rope(float *, const float *, const float *, int, int, int, int, int)",
+      "calls": 224,
+      "total_ms": 28.024896,
+      "percent_http_wall": 0.3405243401124589,
+      "mean_us": 125.11114285714285,
+      "geometry": [
+        {
+          "grid": [
+            110,
+            1,
+            1
+          ],
+          "block": [
+            256,
+            1,
+            1
+          ],
+          "registers_per_thread": 35,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 0,
+          "calls": 112
+        },
+        {
+          "grid": [
+            28,
+            1,
+            1
+          ],
+          "block": [
+            256,
+            1,
+            1
+          ],
+          "registers_per_thread": 35,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 0,
+          "calls": 112
+        }
+      ],
+      "percent_video_kernel_time": 3.6231281329920932,
+      "percent_ttft": 0.8106944372125314
+    },
+    {
+      "name": "nvjet_sm121_tss_mma_112x256x64_2_112x32x64_tmaAB_alignCD4_bz_TNNN",
+      "calls": 228,
+      "total_ms": 24.674432,
+      "percent_http_wall": 0.2998135898327594,
+      "mean_us": 108.22119298245613,
+      "geometry": [
+        {
+          "grid": [
+            96,
+            1,
+            1
+          ],
+          "block": [
+            256,
+            1,
+            1
+          ],
+          "registers_per_thread": 255,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 95232,
+          "calls": 224
+        },
+        {
+          "grid": [
+            368,
+            1,
+            1
+          ],
+          "block": [
+            256,
+            1,
+            1
+          ],
+          "registers_per_thread": 255,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 95232,
+          "calls": 4
+        }
+      ],
+      "percent_video_kernel_time": 3.1899718287910996,
+      "percent_ttft": 0.7137733807746826
+    },
+    {
+      "name": "mimo2_swiglu(float *, const float *, const float *, const float *, const float *, int, int)",
+      "calls": 112,
+      "total_ms": 19.00208,
+      "percent_http_wall": 0.23089008975320205,
+      "mean_us": 169.6614285714286,
+      "geometry": [
+        {
+          "grid": [
+            15840,
+            1,
+            1
+          ],
+          "block": [
+            256,
+            1,
+            1
+          ],
+          "registers_per_thread": 16,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 0,
+          "calls": 112
+        }
+      ],
+      "percent_video_kernel_time": 2.4566360793405404,
+      "percent_ttft": 0.549685556423385
+    },
+    {
+      "name": "void cutlass::Kernel2<cutlass_80_tensorop_s16816gemm_bf16_128x256_32x3_tn_align8>(T1::Params)",
+      "calls": 112,
+      "total_ms": 13.702528,
+      "percent_http_wall": 0.16649640038173527,
+      "mean_us": 122.344,
+      "geometry": [
+        {
+          "grid": [
+            32,
+            3,
+            1
+          ],
+          "block": [
+            256,
+            1,
+            1
+          ],
+          "registers_per_thread": 222,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 73728,
+          "calls": 112
+        }
+      ],
+      "percent_video_kernel_time": 1.7714968394498907,
+      "percent_ttft": 0.39638196071624865
+    },
+    {
+      "name": "f32_to_bf16_kernel(__nv_bfloat16 *, const float *, unsigned long)",
+      "calls": 568,
+      "total_ms": 13.375709,
+      "percent_http_wall": 0.16252529467946206,
+      "mean_us": 23.548783450704224,
+      "geometry": [
+        {
+          "grid": [
+            4400,
+            1,
+            1
+          ],
+          "block": [
+            256,
+            1,
+            1
+          ],
+          "registers_per_thread": 16,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 0,
+          "calls": 344
+        },
+        {
+          "grid": [
+            7040,
+            1,
+            1
+          ],
+          "block": [
+            256,
+            1,
+            1
+          ],
+          "registers_per_thread": 16,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 0,
+          "calls": 112
+        },
+        {
+          "grid": [
+            15840,
+            1,
+            1
+          ],
+          "block": [
+            256,
+            1,
+            1
+          ],
+          "registers_per_thread": 16,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 0,
+          "calls": 112
+        }
+      ],
+      "percent_video_kernel_time": 1.7292448677281638,
+      "percent_ttft": 0.3869278544360555
+    },
+    {
+      "name": "exaone_add_kernel(float *, const float *, unsigned long)",
+      "calls": 224,
+      "total_ms": 7.139872,
+      "percent_http_wall": 0.08675501244634137,
+      "mean_us": 31.874428571428574,
+      "geometry": [
+        {
+          "grid": [
+            4400,
+            1,
+            1
+          ],
+          "block": [
+            256,
+            1,
+            1
+          ],
+          "registers_per_thread": 16,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 0,
+          "calls": 224
+        }
+      ],
+      "percent_video_kernel_time": 0.9230603784992646,
+      "percent_ttft": 0.206539732129943
+    },
+    {
+      "name": "mimo2_bias(float *, const float *, int, int)",
+      "calls": 336,
+      "total_ms": 6.291808,
+      "percent_http_wall": 0.07645037352910389,
+      "mean_us": 18.725619047619045,
+      "geometry": [
+        {
+          "grid": [
+            10560,
+            1,
+            1
+          ],
+          "block": [
+            256,
+            1,
+            1
+          ],
+          "registers_per_thread": 16,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 0,
+          "calls": 112
+        },
+        {
+          "grid": [
+            4400,
+            1,
+            1
+          ],
+          "block": [
+            256,
+            1,
+            1
+          ],
+          "registers_per_thread": 16,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 0,
+          "calls": 224
+        }
+      ],
+      "percent_video_kernel_time": 0.8134205590695044,
+      "percent_ttft": 0.18200723191298562
+    },
+    {
+      "name": "rms_norm_weight_kernel(float *, const float *, const float *, unsigned int, unsigned int, float)",
+      "calls": 224,
+      "total_ms": 3.819136,
+      "percent_http_wall": 0.04640548054842865,
+      "mean_us": 17.049714285714288,
+      "geometry": [
+        {
+          "grid": [
+            880,
+            1,
+            1
+          ],
+          "block": [
+            256,
+            1,
+            1
+          ],
+          "registers_per_thread": 18,
+          "static_shared_bytes": 1024,
+          "dynamic_shared_bytes": 0,
+          "calls": 224
+        }
+      ],
+      "percent_video_kernel_time": 0.49374738394472156,
+      "percent_ttft": 0.11047863692904046
+    },
+    {
+      "name": "nvjet_sm121_tss_mma_256x80x64_2_64x40x64_tmaAB_alignCD4_bz_TNNN",
+      "calls": 4,
+      "total_ms": 1.061696,
+      "percent_http_wall": 0.012900434306697772,
+      "mean_us": 265.424,
+      "geometry": [
+        {
+          "grid": [
+            24,
+            2,
+            1
+          ],
+          "block": [
+            64,
+            4,
+            1
+          ],
+          "registers_per_thread": 255,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 87040,
+          "calls": 4
+        }
+      ],
+      "percent_video_kernel_time": 0.13725869477928387,
+      "percent_ttft": 0.030712372356735802
+    },
+    {
+      "name": "mimo2_gather(float *, const float *, const int *, int, int)",
+      "calls": 24,
+      "total_ms": 0.305952,
+      "percent_http_wall": 0.0037175553802621434,
+      "mean_us": 12.748,
+      "geometry": [
+        {
+          "grid": [
+            4400,
+            1,
+            1
+          ],
+          "block": [
+            256,
+            1,
+            1
+          ],
+          "registers_per_thread": 16,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 0,
+          "calls": 24
+        }
+      ],
+      "percent_video_kernel_time": 0.03955423415470291,
+      "percent_ttft": 0.008850472967109259
+    },
+    {
+      "name": "mimo2_layernorm(float *, const float *, const float *, const float *, int, float)",
+      "calls": 4,
+      "total_ms": 0.082848,
+      "percent_http_wall": 0.0010066678045705147,
+      "mean_us": 20.712,
+      "geometry": [
+        {
+          "grid": [
+            880,
+            1,
+            1
+          ],
+          "block": [
+            256,
+            1,
+            1
+          ],
+          "registers_per_thread": 23,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 1024,
+          "calls": 4
+        }
+      ],
+      "percent_video_kernel_time": 0.010710795128807222,
+      "percent_ttft": 0.002396598108131563
+    },
+    {
+      "name": "mimo2_gelu(float *, int)",
+      "calls": 4,
+      "total_ms": 0.043904,
+      "percent_http_wall": 0.0005334678361802804,
+      "mean_us": 10.976,
+      "geometry": [
+        {
+          "grid": [
+            4400,
+            1,
+            1
+          ],
+          "block": [
+            256,
+            1,
+            1
+          ],
+          "registers_per_thread": 16,
+          "static_shared_bytes": 0,
+          "dynamic_shared_bytes": 0,
+          "calls": 4
+        }
+      ],
+      "percent_video_kernel_time": 0.005676018121561802,
+      "percent_ttft": 0.001270039630883161
+    }
+  ],
+  "video_copy_ranking": [
+    {
+      "kind": "Device-to-Host",
+      "bytes_each": 3604480,
+      "calls": 4,
+      "total_ms": 3.00976,
+      "percent_http_wall": 0.03657093099995355,
+      "mean_us": 752.44,
+      "correlated_cuda_api": [
+        {
+          "name": "cudaMemcpy_v3020",
+          "calls": 4,
+          "total_ms": 72.476896,
+          "percent_http_wall": 0.8806508036211558,
+          "mean_us": 18119.224
+        }
+      ]
+    },
+    {
+      "kind": "Host-to-Device",
+      "bytes_each": 225280,
+      "calls": 224,
+      "total_ms": 1.680672,
+      "percent_http_wall": 0.02042147538194206,
+      "mean_us": 7.503,
+      "correlated_cuda_api": [
+        {
+          "name": "cudaMemcpy_v3020",
+          "calls": 224,
+          "total_ms": 564.007568,
+          "percent_http_wall": 6.853131762259984,
+          "mean_us": 2517.8909285714285
+        }
+      ]
+    },
+    {
+      "kind": "Host-to-Device",
+      "bytes_each": 5406720,
+      "calls": 4,
+      "total_ms": 1.2752,
+      "percent_http_wall": 0.015494674396344148,
+      "mean_us": 318.8,
+      "correlated_cuda_api": [
+        {
+          "name": "cudaMemcpy_v3020",
+          "calls": 4,
+          "total_ms": 1.553536,
+          "percent_http_wall": 0.018876673841749455,
+          "mean_us": 388.384
+        }
+      ]
+    },
+    {
+      "kind": "Device-to-Device",
+      "bytes_each": 4505600,
+      "calls": 24,
+      "total_ms": 0.23392,
+      "percent_http_wall": 0.0028423104099692784,
+      "mean_us": 9.746666666666666,
+      "correlated_cuda_api": [
+        {
+          "name": "cudaMemcpy_v3020",
+          "calls": 24,
+          "total_ms": 0.182592,
+          "percent_http_wall": 0.0022186351845806707,
+          "mean_us": 7.608
+        }
+      ]
+    },
+    {
+      "kind": "Host-to-Device",
+      "bytes_each": 880,
+      "calls": 24,
+      "total_ms": 0.012288,
+      "percent_http_wall": 0.00014930878213792104,
+      "mean_us": 0.512,
+      "correlated_cuda_api": [
+        {
+          "name": "cudaMemcpy_v3020",
+          "calls": 24,
+          "total_ms": 84.926016,
+          "percent_http_wall": 1.0319173193998696,
+          "mean_us": 3538.584
+        }
+      ]
+    }
+  ],
+  "largest_video_gpu_gap": {
+    "start_ns": 1085891456,
+    "end_ns": 1467701312,
+    "gap_ms": 381.809856,
+    "overlapping_cuda_api": [
+      {
+        "name": "cuLibraryLoadData",
+        "calls": 6,
+        "total_ms": 338.181808,
+        "percent_http_wall": 4.10917268014976,
+        "mean_us": 56363.634666666665
+      },
+      {
+        "name": "cuKernelGetFunction",
+        "calls": 1,
+        "total_ms": 6.920992,
+        "percent_http_wall": 0.08409544976450964,
+        "mean_us": 6920.992
+      },
+      {
+        "name": "cuLibraryGetKernel",
+        "calls": 7,
+        "total_ms": 0.02176,
+        "percent_http_wall": 0.0002644009683692352,
+        "mean_us": 3.1085714285714285
+      },
+      {
+        "name": "cuLaunchKernel",
+        "calls": 1,
+        "total_ms": 0.020496,
+        "percent_http_wall": 0.0002490423827066105,
+        "mean_us": 20.496
+      },
+      {
+        "name": "cuStreamGetGreenCtx",
+        "calls": 2,
+        "total_ms": 0.002656,
+        "percent_http_wall": 3.227247113918606e-05,
+        "mean_us": 1.328
+      }
+    ],
+    "overlapping_osrt_api": [
+      {
+        "name": "poll",
+        "calls": 10,
+        "total_ms": 763.380224,
+        "percent_http_wall": 9.275665002735463,
+        "mean_us": 76338.0224
+      },
+      {
+        "name": "futex",
+        "calls": 1,
+        "total_ms": 381.809856,
+        "percent_http_wall": 4.6392874843436696,
+        "mean_us": 381809.856
+      },
+      {
+        "name": "clock_nanosleep",
+        "calls": 38,
+        "total_ms": 380.75376,
+        "percent_http_wall": 4.626455094403831,
+        "mean_us": 10019.835789473684
+      },
+      {
+        "name": "fread",
+        "calls": 24,
+        "total_ms": 13.082096,
+        "percent_http_wall": 0.15895766777110745,
+        "mean_us": 545.0873333333334
+      },
+      {
+        "name": "accept4",
+        "calls": 37,
+        "total_ms": 0.67784,
+        "percent_http_wall": 0.008236284577178418,
+        "mean_us": 18.32
+      }
+    ]
+  },
+  "whole_kernel_ranking": [
+    {
+      "name": "q8_0_aligned_dense_vec_kernel(float *, const int4 *, const __half *, const block_q8_1 *, int, int)",
+      "calls": 12801,
+      "total_ms": 2885.548992,
+      "percent_http_wall": 35.061670393459124,
+      "mean_us": 225.41590438247013
+    },
+    {
+      "name": "<unnamed>::iq2_xxs_aligned_moe_pair_vec_kernel(float *, float *, const uint2 *, const __half *, const uint2 *, const __half *, const block_q8_1 *, const int *, int, int, int, int)",
+      "calls": 6016,
+      "total_ms": 846.516992,
+      "percent_http_wall": 10.285841563686219,
+      "mean_us": 140.7109361702128
+    },
+    {
+      "name": "void mul_mat_vec_q_moe<(ggml_type)17, (int)2>(const void *, const void *, const int *, float *, unsigned int, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int)",
+      "calls": 6016,
+      "total_ms": 537.004864,
+      "percent_http_wall": 6.525027852049147,
+      "mean_us": 89.26277659574468
+    },
+    {
+      "name": "void <unnamed>::gateup_iq2_d2r_pair_kernel<(<unnamed>::Iq2Schedule)1>(const void *, const void *, const block_q8_1_mmq *, const int *, const int *, const int *, const int *, float *, float *, int, int, int, int)",
+      "calls": 47,
+      "total_ms": 417.670528,
+      "percent_http_wall": 5.075022613165889,
+      "mean_us": 8886.606978723405
+    },
+    {
+      "name": "mimo2_vision_attn(float *, const float *, int)",
+      "calls": 16,
+      "total_ms": 322.292384,
+      "percent_http_wall": 3.9161037880344396,
+      "mean_us": 20143.274
+    },
+    {
+      "name": "void <unnamed>::ds4_moe_worklist_mmq_kernel<(ggml_type)17, (bool)0>(const char *, const int *, const int *, const int *, float *, const uint3 *, const unsigned int *, int, int, int, int, int, int, int)",
+      "calls": 47,
+      "total_ms": 279.214944,
+      "percent_http_wall": 3.3926793004026554,
+      "mean_us": 5940.743489361703
+    },
+    {
+      "name": "mimo2_vision_window(float *, const float *, const float *, int)",
+      "calls": 96,
+      "total_ms": 224.19088,
+      "percent_http_wall": 2.7240940152367186,
+      "mean_us": 2335.3216666666667
+    },
+    {
+      "name": "mimo2_swa_decode(float *, const float *, const __half *, const float *, const unsigned int *, unsigned int, unsigned int, unsigned int, int)",
+      "calls": 4992,
+      "total_ms": 119.763104,
+      "percent_http_wall": 1.455215104434992,
+      "mean_us": 23.99100641025641
+    },
+    {
+      "name": "matmul_f32_kernel(float *, const float *, const float *, unsigned long, unsigned long, unsigned long)",
+      "calls": 6016,
+      "total_ms": 118.08144,
+      "percent_http_wall": 1.434781575479492,
+      "mean_us": 19.62789893617021
+    },
+    {
+      "name": "void mul_mat_q<(ggml_type)8, (int)128, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3, const char *, long)",
+      "calls": 49,
+      "total_ms": 86.512544,
+      "percent_http_wall": 1.0511948717686612,
+      "mean_us": 1765.5621224489796
+    }
+  ],
+  "analysis": {
+    "first_detailed_target": "mimo2_vision_attn at n=880, Q32/KV8/HD64, interleaved stride3072 offsets0/2048/2560, full noncausal, no sinks",
+    "reason": "Largest video kernel group: 322.292384 ms, 41.67% of video kernel time and 9.32% of request TTFT. No scalar attention fallback.",
+    "secondary_target": "Window attention: 224.190880 ms; choose another round only from a new whole trace after the current decision.",
+    "cold_start": "The first pair includes a 381.809856 ms GPU idle gap, overlapping 338.181808 ms of cuLibraryLoadData. This identifies cold library initialization, not a steady-state kernel cost or measured CPU compute partition. Later pair spans are 195.907072, 196.112672 and 196.465056 ms.",
+    "copies": "Video copies take 6.211840 ms on the GPU. The 722.087536 ms total cudaMemcpy API duration overlaps queued GPU work and cannot be treated as independent transfer overhead.",
+    "host_limit": "FFmpeg and packing before the first GPU operation are not separately timed. Poll/futex/sleep totals overlap other threads and must not be summed as CPU compute.",
+    "quality_limit": "One descriptive response is recorded, ending at the 128-token cap. This profile alone is not a quality qualification or a fresh A/B result."
+  }
+}

@@ -251,6 +251,8 @@ void refusals() {
 }
 
 int main() {
+    // Keep the retained R1 path directly testable after adding K tiling.
+    setenv("DS4_MIMO2_VISION_COALESCED", "0", 1);
     refusals();
     for (int n : {1, 31, 32, 33, 127, 128, 129, 1024, 3072, 6144, 8192}) {
         run(Shape{n}, Input::Random, Storage::Shared, Path::Candidate, "random");
@@ -278,5 +280,6 @@ int main() {
     run(s, Input::Random, Storage::Shared, Path::Scalar, "offset");
     run(Shape{33}, Input::Random, Storage::Separate, Path::Scalar, "separate-qkv");
     unsetenv(SWITCH);
+    unsetenv("DS4_MIMO2_VISION_COALESCED");
     return 0;
 }

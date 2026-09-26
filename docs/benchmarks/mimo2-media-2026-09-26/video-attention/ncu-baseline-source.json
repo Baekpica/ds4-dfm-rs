@@ -1,0 +1,131 @@
+{
+  "status": "Exact selected rows from the CUDA/source export",
+  "frozen_source_sha256": "539b6593b4a2852f35707819f63e70cfc3237ff05eac0e79b6e3dd67f453fbce",
+  "kernel_body_sha256": "5a6c8db242412e65f2205464fe7308c719d6ce82c86659532a9df00b940c2706",
+  "qk_sample_fraction": 0.45952677459526775,
+  "qk_sector_ratio": 8.0,
+  "pc_note": "Absolute PCs belong to this capture; source line numbers refer to the frozen header. The CUDA and SASS Source columns are kept separately.",
+  "rows": [
+    {
+      "file": "mimo2_media.frozen.cuh",
+      "line": 147,
+      "source": "for (int d = 0; d < M2V_ATTN_HD; d++) { dot += qq[d] * kk[d]; }",
+      "pc": "-",
+      "sass": "-",
+      "metrics": {
+        "Warp Stall Sampling (All Samples)": 940950,
+        "Warp Stall Sampling (Not-issued Samples)": 886072,
+        "Instructions Executed": 152176640,
+        "L2 Theoretical Sectors Global": 1585971200,
+        "L2 Theoretical Sectors Global Ideal": 198246400,
+        "L2 Theoretical Sectors Global Excessive": 1387724800,
+        "stall_barrier": 0,
+        "stall_mio": 628068,
+        "stall_lg": 247875,
+        "stall_long_sb": 8803,
+        "stall_short_sb": 27941
+      }
+    },
+    {
+      "file": "mimo2_media.frozen.cuh",
+      "line": 147,
+      "source": null,
+      "pc": "0xf664c971c250",
+      "sass": "      LDG.E R31, desc[UR4][R10.64+0x2000]",
+      "metrics": {
+        "Warp Stall Sampling (All Samples)": 49203,
+        "Warp Stall Sampling (Not-issued Samples)": 46278,
+        "Instructions Executed": 788480,
+        "L2 Theoretical Sectors Global": 24780800,
+        "L2 Theoretical Sectors Global Ideal": 3097600,
+        "L2 Theoretical Sectors Global Excessive": 21683200,
+        "stall_barrier": 0,
+        "stall_mio": 33305,
+        "stall_lg": 14687,
+        "stall_long_sb": 0,
+        "stall_short_sb": 0
+      }
+    },
+    {
+      "file": "mimo2_media.frozen.cuh",
+      "line": 147,
+      "source": null,
+      "pc": "0xf664c971c270",
+      "sass": "      LDG.E R33, desc[UR4][R10.64+0x2008]",
+      "metrics": {
+        "Warp Stall Sampling (All Samples)": 51532,
+        "Warp Stall Sampling (Not-issued Samples)": 48548,
+        "Instructions Executed": 788480,
+        "L2 Theoretical Sectors Global": 24780800,
+        "L2 Theoretical Sectors Global Ideal": 3097600,
+        "L2 Theoretical Sectors Global Excessive": 21683200,
+        "stall_barrier": 0,
+        "stall_mio": 34779,
+        "stall_lg": 15546,
+        "stall_long_sb": 0,
+        "stall_short_sb": 0
+      }
+    },
+    {
+      "file": "mimo2_media.frozen.cuh",
+      "line": 152,
+      "source": null,
+      "pc": "0xf664c971cec0",
+      "sass": "      BSSY.RECONVERGENT B0, 0xf664c971d5b0",
+      "metrics": {
+        "Warp Stall Sampling (All Samples)": 538945,
+        "Warp Stall Sampling (Not-issued Samples)": 506368,
+        "Instructions Executed": 112640,
+        "L2 Theoretical Sectors Global": 0,
+        "L2 Theoretical Sectors Global Ideal": 0,
+        "L2 Theoretical Sectors Global Excessive": 0,
+        "stall_barrier": 538937,
+        "stall_mio": 0,
+        "stall_lg": 0,
+        "stall_long_sb": 0,
+        "stall_short_sb": 0
+      }
+    },
+    {
+      "file": "mimo2_media.frozen.cuh",
+      "line": 158,
+      "source": null,
+      "pc": "0xf664c971d5c0",
+      "sass": "      LDS R8, [R4+0x100]",
+      "metrics": {
+        "Warp Stall Sampling (All Samples)": 102376,
+        "Warp Stall Sampling (Not-issued Samples)": 96512,
+        "Instructions Executed": 112640,
+        "L2 Theoretical Sectors Global": 0,
+        "L2 Theoretical Sectors Global Ideal": 0,
+        "L2 Theoretical Sectors Global Excessive": 0,
+        "stall_barrier": 102100,
+        "stall_mio": 259,
+        "stall_lg": 0,
+        "stall_long_sb": 0,
+        "stall_short_sb": 0
+      }
+    },
+    {
+      "file": "mimo2_media.frozen.cuh",
+      "line": 174,
+      "source": null,
+      "pc": "0xf664c971dc20",
+      "sass": "@P0   EXIT",
+      "metrics": {
+        "Warp Stall Sampling (All Samples)": 89100,
+        "Warp Stall Sampling (Not-issued Samples)": 84020,
+        "Instructions Executed": 112640,
+        "L2 Theoretical Sectors Global": 0,
+        "L2 Theoretical Sectors Global Ideal": 0,
+        "L2 Theoretical Sectors Global Excessive": 0,
+        "stall_barrier": 89093,
+        "stall_mio": 0,
+        "stall_lg": 0,
+        "stall_long_sb": 0,
+        "stall_short_sb": 0
+      }
+    }
+  ],
+  "deferred_barrier_note": "PC 0xf664c971cec0 is the reconvergence setup for tid==0 after the QK BAR.SYNC.DEFER_BLOCKING. Its 538937 barrier samples do not establish 538937 samples of scalar-max execution."
+}

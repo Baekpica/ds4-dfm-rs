@@ -1,0 +1,536 @@
+{
+  "dispatch": {
+    "min_rows": 512,
+    "max_rows": 3072,
+    "tile_keys": 32,
+    "tile_stride": 33,
+    "threads": 128,
+    "kill_switch": "DS4_MIMO2_VISION_COALESCED=0",
+    "outer_kill": "DS4_MIMO2_VISION_ATTN=0",
+    "capability": "Existing full interleaved Q32/KV8/HD64 vision predicate unchanged"
+  },
+  "metrics": {
+    "gpu__time_duration.sum": {
+      "baseline": "19.892768",
+      "candidate": "10.360352",
+      "unit": "ms"
+    },
+    "sm__warps_active.avg.pct_of_peak_sustained_active": {
+      "baseline": "90.519235",
+      "candidate": "52.942687",
+      "unit": "%"
+    },
+    "smsp__warps_eligible.avg.per_cycle_active": {
+      "baseline": "0.165782",
+      "candidate": "0.423678",
+      "unit": "warp"
+    },
+    "smsp__inst_executed.sum": {
+      "baseline": "480803840.000000",
+      "candidate": "1438131200.000000",
+      "unit": "inst"
+    },
+    "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": {
+      "baseline": "100080640",
+      "candidate": "99179520",
+      "unit": ""
+    },
+    "l1tex__t_requests_pipe_lsu_mem_global_op_st.sum": {
+      "baseline": "56320",
+      "candidate": "56320",
+      "unit": ""
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+      "baseline": "1784442880.000000",
+      "candidate": "396718080.000000",
+      "unit": "sector"
+    },
+    "l1tex__t_sector_pipe_lsu_mem_global_op_ld_hit_rate.pct": {
+      "baseline": "62.988503",
+      "candidate": "4.094214",
+      "unit": "%"
+    },
+    "lts__t_sector_hit_rate.pct": {
+      "baseline": "99.857232",
+      "candidate": "99.757872",
+      "unit": "%"
+    },
+    "lts__t_sector_op_read_hit_rate.pct": {
+      "baseline": "99.906904",
+      "candidate": "98.794030",
+      "unit": "%"
+    },
+    "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.ratio": {
+      "baseline": "7.114253",
+      "candidate": "32.000000",
+      "unit": "byte/sector"
+    },
+    "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": {
+      "baseline": "9.452768",
+      "candidate": "12.051351",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_short_scoreboard_per_issue_active.ratio": {
+      "baseline": "8.005929",
+      "candidate": "0.301676",
+      "unit": "inst"
+    },
+    "smsp__pcsamp_buffer_overflow": {
+      "baseline": "0",
+      "candidate": "0",
+      "unit": ""
+    },
+    "smsp__pcsamp_dropped_bytes": {
+      "baseline": "0",
+      "candidate": "0",
+      "unit": "byte"
+    },
+    "smsp__pcsamp_sample_count": {
+      "baseline": "2047650",
+      "candidate": "1064358",
+      "unit": ""
+    },
+    "smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio": {
+      "baseline": "70.289448",
+      "candidate": "2.443743",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_branch_resolving_per_issue_active.ratio": {
+      "baseline": "0.080029",
+      "candidate": "0.175833",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_dispatch_stall_per_issue_active.ratio": {
+      "baseline": "0.038187",
+      "candidate": "0.094883",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_drain_per_issue_active.ratio": {
+      "baseline": "0.061995",
+      "candidate": "0.001163",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_lg_throttle_per_issue_active.ratio": {
+      "baseline": "29.239771",
+      "candidate": "0.002173",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+      "baseline": "0.000973",
+      "candidate": "0.084773",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_membar_per_issue_active.ratio": {
+      "baseline": "0",
+      "candidate": "0",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio": {
+      "baseline": "69.288907",
+      "candidate": "0.104926",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_misc_per_issue_active.ratio": {
+      "baseline": "0.001165",
+      "candidate": "0.000013",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_no_instruction_per_issue_active.ratio": {
+      "baseline": "0.083729",
+      "candidate": "0.123603",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio": {
+      "baseline": "1.877682",
+      "candidate": "0.282643",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_selected_per_issue_active.ratio": {
+      "baseline": "1.000000",
+      "candidate": "1.000000",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_sleeping_per_issue_active.ratio": {
+      "baseline": "0",
+      "candidate": "0",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_tex_throttle_per_issue_active.ratio": {
+      "baseline": "0",
+      "candidate": "0",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_wait_per_issue_active.ratio": {
+      "baseline": "1.715609",
+      "candidate": "2.590836",
+      "unit": "inst"
+    },
+    "l1tex__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "baseline": "82.597307",
+      "candidate": "50.794788",
+      "unit": "%"
+    },
+    "lts__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "baseline": "81.314693",
+      "candidate": "57.761611",
+      "unit": "%"
+    },
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "baseline": "16.999998",
+      "candidate": "50.794788",
+      "unit": "%"
+    },
+    "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum": {
+      "baseline": "88593216",
+      "candidate": "139061701",
+      "unit": ""
+    },
+    "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum": {
+      "baseline": "1956523",
+      "candidate": "58409385",
+      "unit": ""
+    },
+    "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum": {
+      "baseline": "1803",
+      "candidate": "7699",
+      "unit": ""
+    },
+    "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum": {
+      "baseline": "266164",
+      "candidate": "7092942",
+      "unit": ""
+    }
+  },
+  "no_eligible_percent": {
+    "baseline": 94.25783,
+    "candidate": 66.98
+  },
+  "resource_cost": {
+    "registers": [
+      40,
+      34
+    ],
+    "dynamic_shared_bytes_n880": [
+      3784,
+      12232
+    ],
+    "additional_shared_bytes_per_cta": 8448,
+    "spills": [
+      0,
+      0
+    ],
+    "new_device_allocation_bytes": 0,
+    "note": "Extra shared SM storage, synchronization and address/staging instructions; no additional attention dot, denominator, or output arithmetic. Executed warp instructions are ~2.99x, not unchanged work."
+  },
+  "source_hotspots": [
+    {
+      "Address": "0xf9be9a91c3a0",
+      "Source": "      STS [R7+0x108], R12",
+      "Warp Stall Sampling (All Samples)": "605103",
+      "Instructions Executed": "49561600",
+      "L2 Theoretical Sectors Global": "0",
+      "L2 Theoretical Sectors Global Ideal": "0",
+      "L1 Wavefronts Shared": "49561600",
+      "L1 Wavefronts Shared Excessive": "0",
+      "stall_barrier": "0",
+      "stall_mio": "2029",
+      "stall_lg": "0",
+      "stall_long_sb": "593073",
+      "stall_short_sb": "0"
+    },
+    {
+      "Address": "0xf9be9a91d0d0",
+      "Source": "@!P0  BRA 0xf9be9a91c210",
+      "Warp Stall Sampling (All Samples)": "66613",
+      "Instructions Executed": "3153920",
+      "L2 Theoretical Sectors Global": "0",
+      "L2 Theoretical Sectors Global Ideal": "0",
+      "L1 Wavefronts Shared": "0",
+      "L1 Wavefronts Shared Excessive": "0",
+      "stall_barrier": "66275",
+      "stall_mio": "0",
+      "stall_lg": "0",
+      "stall_long_sb": "0",
+      "stall_short_sb": "0"
+    },
+    {
+      "Address": "0xf9be9a91e300",
+      "Source": "      FFMA.FTZ R26, R27, R26, R12",
+      "Warp Stall Sampling (All Samples)": "58341",
+      "Instructions Executed": "6195200",
+      "L2 Theoretical Sectors Global": "0",
+      "L2 Theoretical Sectors Global Ideal": "0",
+      "L1 Wavefronts Shared": "0",
+      "L1 Wavefronts Shared Excessive": "0",
+      "stall_barrier": "0",
+      "stall_mio": "0",
+      "stall_lg": "0",
+      "stall_long_sb": "58036",
+      "stall_short_sb": "0"
+    },
+    {
+      "Address": "0xf9be9a91d8b0",
+      "Source": "      LDS R0, [R23+0x100]",
+      "Warp Stall Sampling (All Samples)": "27249",
+      "Instructions Executed": "112640",
+      "L2 Theoretical Sectors Global": "0",
+      "L2 Theoretical Sectors Global Ideal": "0",
+      "L1 Wavefronts Shared": "112640",
+      "L1 Wavefronts Shared Excessive": "0",
+      "stall_barrier": "27225",
+      "stall_mio": "0",
+      "stall_lg": "0",
+      "stall_long_sb": "0",
+      "stall_short_sb": "0"
+    },
+    {
+      "Address": "0xf9be9a91e020",
+      "Source": "@P0   EXIT",
+      "Warp Stall Sampling (All Samples)": "20998",
+      "Instructions Executed": "112640",
+      "L2 Theoretical Sectors Global": "0",
+      "L2 Theoretical Sectors Global Ideal": "0",
+      "L1 Wavefronts Shared": "0",
+      "L1 Wavefronts Shared Excessive": "0",
+      "stall_barrier": "20969",
+      "stall_mio": "0",
+      "stall_lg": "0",
+      "stall_long_sb": "0",
+      "stall_short_sb": "0"
+    },
+    {
+      "Address": "0xf9be9a91c400",
+      "Source": "      BSSY.RECONVERGENT B0, 0xf9be9a91d0a0",
+      "Warp Stall Sampling (All Samples)": "20312",
+      "Instructions Executed": "3153920",
+      "L2 Theoretical Sectors Global": "0",
+      "L2 Theoretical Sectors Global Ideal": "0",
+      "L1 Wavefronts Shared": "0",
+      "L1 Wavefronts Shared Excessive": "0",
+      "stall_barrier": "19604",
+      "stall_mio": "0",
+      "stall_lg": "0",
+      "stall_long_sb": "0",
+      "stall_short_sb": "0"
+    },
+    {
+      "Address": "0xf9be9a91c3b0",
+      "Source": "@!P0  BRA 0xf9be9a91c2a0",
+      "Warp Stall Sampling (All Samples)": "18854",
+      "Instructions Executed": "49561600",
+      "L2 Theoretical Sectors Global": "0",
+      "L2 Theoretical Sectors Global Ideal": "0",
+      "L1 Wavefronts Shared": "0",
+      "L1 Wavefronts Shared Excessive": "0",
+      "stall_barrier": "0",
+      "stall_mio": "0",
+      "stall_lg": "0",
+      "stall_long_sb": "0",
+      "stall_short_sb": "0"
+    },
+    {
+      "Address": "0xf9be9a91c340",
+      "Source": "      LEA.HI.X R13, R10, UR11, R11, 0x2, P0",
+      "Warp Stall Sampling (All Samples)": "14875",
+      "Instructions Executed": "49561600",
+      "L2 Theoretical Sectors Global": "0",
+      "L2 Theoretical Sectors Global Ideal": "0",
+      "L1 Wavefronts Shared": "0",
+      "L1 Wavefronts Shared Excessive": "0",
+      "stall_barrier": "0",
+      "stall_mio": "0",
+      "stall_lg": "0",
+      "stall_long_sb": "0",
+      "stall_short_sb": "0"
+    }
+  ],
+  "candidate_global_load_sites": [
+    {
+      "Address": "0xf9be9a91c350",
+      "Source": "      LDG.E R12, desc[UR8][R12.64+0x2000]",
+      "L2 Theoretical Sectors Global": "198246400",
+      "L2 Theoretical Sectors Global Ideal": "198246400"
+    },
+    {
+      "Address": "0xf9be9a91e1b0",
+      "Source": "      LDG.E R26, desc[UR8][R14.64+-0xc000]",
+      "L2 Theoretical Sectors Global": "24780800",
+      "L2 Theoretical Sectors Global Ideal": "24780800"
+    },
+    {
+      "Address": "0xf9be9a91e1c0",
+      "Source": "      LDG.E R29, desc[UR8][R14.64+-0x9000]",
+      "L2 Theoretical Sectors Global": "24780800",
+      "L2 Theoretical Sectors Global Ideal": "24780800"
+    },
+    {
+      "Address": "0xf9be9a91e1d0",
+      "Source": "      LDG.E R30, desc[UR8][R14.64+-0x6000]",
+      "L2 Theoretical Sectors Global": "24780800",
+      "L2 Theoretical Sectors Global Ideal": "24780800"
+    },
+    {
+      "Address": "0xf9be9a91e1e0",
+      "Source": "      LDG.E R31, desc[UR8][R14.64+-0x3000]",
+      "L2 Theoretical Sectors Global": "24780800",
+      "L2 Theoretical Sectors Global Ideal": "24780800"
+    },
+    {
+      "Address": "0xf9be9a91e1f0",
+      "Source": "      LDG.E R25, desc[UR8][R14.64]",
+      "L2 Theoretical Sectors Global": "24780800",
+      "L2 Theoretical Sectors Global Ideal": "24780800"
+    },
+    {
+      "Address": "0xf9be9a91e200",
+      "Source": "      LDG.E R24, desc[UR8][R14.64+0x3000]",
+      "L2 Theoretical Sectors Global": "24780800",
+      "L2 Theoretical Sectors Global Ideal": "24780800"
+    },
+    {
+      "Address": "0xf9be9a91e210",
+      "Source": "      LDG.E R19, desc[UR8][R14.64+0x6000]",
+      "L2 Theoretical Sectors Global": "24780800",
+      "L2 Theoretical Sectors Global Ideal": "24780800"
+    },
+    {
+      "Address": "0xf9be9a91e220",
+      "Source": "      LDG.E R17, desc[UR8][R14.64+0x9000]",
+      "L2 Theoretical Sectors Global": "24780800",
+      "L2 Theoretical Sectors Global Ideal": "24780800"
+    }
+  ],
+  "source_proof": {
+    "production_candidate_matches_profiled_function": true,
+    "production_original_body_unchanged": true,
+    "candidate_function_sha256": "381d2b3b1ab24e7b935f9140d0cb1ee462bbb317b7743638c7a025e784a0f236",
+    "production_header_sha256": "bf3367659c9188cbb998fe03918636c4ed95f9ce50b92dcd50a87035fb767e11",
+    "production_wrapper_sha256": "574e5c11134d0e395c184c34494a0de1ebcbfc87e570d71eff404cec4a4a96a3"
+  },
+  "artifacts": {
+    "candidate.cuh": {
+      "bytes": 2894,
+      "sha256": "0298fc02ca480144c62a16bf463d16cae6fa5e5334d1572ec31d9e84517b4218"
+    },
+    "probe-candidate.cu": {
+      "bytes": 7225,
+      "sha256": "864d669ce9b84c491f9ba2d8fa76a1c64c99f5fcd46730dbd6e83523a0362a7a"
+    },
+    "probe-candidate": {
+      "bytes": 1629408,
+      "sha256": "4289b7057f55cf038d0d0001360aea5b2a36d519a134fcc09a202d1d50b02599"
+    },
+    "candidate-build.log": {
+      "bytes": 5134,
+      "sha256": "5a68f00665972104d25871a61e51be9e72004514ceed6240edfbf4b9afa45454"
+    },
+    "candidate-receipt.json": {
+      "bytes": 1533,
+      "sha256": "ca52083b6d70ea918f877797d30014f5c475f7794b8452672f1d6200cb945777"
+    },
+    "candidate-full.ncu-rep": {
+      "bytes": 48683680,
+      "sha256": "41f582f58f93d9d7e2c602439e2a0b141d396888afee8ae6c3459b0e489a25f6"
+    },
+    "candidate-full.txt": {
+      "bytes": 269589,
+      "sha256": "6ff58736e4c357b93770e149b5ac8c117f47504164d9766a5282f3b6e8db9b82"
+    },
+    "candidate-full.csv": {
+      "bytes": 160564,
+      "sha256": "25225d7c1a6a195a1be7b1646f73509532c97129af4a6eeac2140717b3e4fabe"
+    },
+    "candidate-source.csv": {
+      "bytes": 223011,
+      "sha256": "675a06b0ccd778e359c7bcae2756c47338e4d5826be18b0b6889ef7a39f7e460"
+    },
+    "candidate-cuda-source.csv": {
+      "bytes": 262787,
+      "sha256": "61acea0253c686966e4bd6d24a87677a2de1169e936a3e675154293f5258b820"
+    },
+    "pilot-receipt.json": {
+      "bytes": 7582,
+      "sha256": "507b4ca1c03635e4de9925766555c0cdec45d002ce8b1e1e9164994a55650cfe"
+    },
+    "lower-pilot-receipt.json": {
+      "bytes": 7582,
+      "sha256": "bb3f50006d2c025724414d6cc62f8e18faf3976c1095aee19e60db1baf0a1d5d"
+    },
+    "candidate-profile-receipt.json": {
+      "bytes": 13701,
+      "sha256": "b68c2e8631af05b9d3ce5d466222fa329217cf7308c9a0db958ec52264889f00"
+    },
+    "run-pilot.py": {
+      "bytes": 3177,
+      "sha256": "20368d16171c19f7e433273a9e994e194685b5a6a3b39d40192ee1c2d615e4ae"
+    },
+    "run-lower-pilot.py": {
+      "bytes": 3195,
+      "sha256": "31308189e10e67e80139dd083e1ed9288558831238ee8616c72fb9783139a42f"
+    },
+    "run-candidate-profile.py": {
+      "bytes": 4596,
+      "sha256": "631a187557e52c0abe0e628f6ccacd6216a0ab0fabc8f01ae43f8420f207d488"
+    },
+    "test-coalesced.cu": {
+      "bytes": 7183,
+      "sha256": "d7619ecafcb10a62a8f291fb0fe0aecf91d66786eea523a05fcf0fd74323e2f7"
+    },
+    "test-coalesced": {
+      "bytes": 1794000,
+      "sha256": "93709ef73cc2ec9db8698dd9d0efe75e27afade5441a176e9c094d7aed5bb01d"
+    },
+    "test-coalesced-build.json": {
+      "bytes": 1006,
+      "sha256": "992604e5d86586499946088f6ffdef218ac581cefef1a8da4c954c569d49cc76"
+    },
+    "candidate-focused.log": {
+      "bytes": 2646,
+      "sha256": "74b435ac26b00f9d79b81a49a5d07c2382a4e3d3a63ce4d8a7c5aafc60e9da2b"
+    }
+  },
+  "status": "Candidate pilot and full NCU complete; full-model and HTTP qualification pending.",
+  "ncu_passes": {
+    "baseline": 40,
+    "candidate": 40
+  },
+  "arithmetic_and_control": {
+    "method": "Sum Predicated-On Thread Instructions Executed by SASS opcode in each source export. Counts retain predicates; they differ from warp-level total instructions.",
+    "counts": {
+      "baseline": {
+        "FFMA": 3196723200,
+        "FMUL": 1635532800,
+        "FADD": 24780800,
+        "MUFU": 223027200,
+        "IMAD": 86958080,
+        "IADD": 859161600,
+        "SHF": 12615680,
+        "LOP3": 9123840,
+        "BAR": 18022400
+      },
+      "candidate": {
+        "FFMA": 3196723200,
+        "FMUL": 1635532800,
+        "FADD": 24780800,
+        "MUFU": 223027200,
+        "IMAD": 3313868800,
+        "IADD": 7097671680,
+        "SHF": 4768727040,
+        "LOP3": 1595095040,
+        "BAR": 216268800
+      }
+    },
+    "fp_note": "FFMA, FMUL, FADD and MUFU counts match exactly. Integer addressing, shared staging and tile synchronization increase work; unchanged floating-point math is not unchanged total work."
+  },
+  "interpretation": [
+    "Global load sectors fall 77.77%, from 1784442880 to 396718080; useful bytes per sector rise from 7.114253 to 32. The K load source site reaches its ideal theoretical sector count.",
+    "Total executed warp instructions rise 199.11%, from 480803840 to 1438131200. Shared staging adds 8448 bytes per CTA and lowers achieved occupancy from 90.519235% to 52.942687%.",
+    "The leading candidate STS PC waits for its preceding K global load: 593073 long-scoreboard samples out of 605103 samples at that PC. Its shared wavefront count equals ideal; this does not identify a dominant shared bank-conflict stall. Aggregate conflict counters are nonzero and preserved.",
+    "Rows 6144 and 8192 regress strongly in the direct-kernel pilot, so production retains the previous kernel above 3072. Residency and longer staging work are plausible contributors, without a separate causal profile at those sizes."
+  ],
+  "limits": [
+    "One fresh process per arm and shape, two warmups and three timed events: a viability/regime pilot, not repeated full-model A/B.",
+    "Both full profiles use kernel replay, cache-control all, clock-control none, two skipped launches and one capture. Replay cache resets differ from ordinary pilot warmups; profiler event wall time is excluded.",
+    "Synthetic inputs and standalone compilation differ from actual video data and the native single translation unit. Body equivalence does not prove identical compiler output."
+  ]
+}

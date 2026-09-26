@@ -352,6 +352,13 @@ extern "C" int ds4_gpu_mimo2_attn(
         q->ptr && out->ptr && q->ptr == k->ptr && q->ptr == v->ptr && out->ptr != q->ptr) {
         // Bound per-CTA score storage; other media layouts retain the scalar path.
         const size_t shared = (n + M2V_ATTN_HD + M2V_ATTN_SCALARS) * sizeof(float);
+        const char *coalesced = getenv("DS4_MIMO2_VISION_COALESCED");
+        if (!(coalesced && strcmp(coalesced, "0") == 0) && n >= M2V_K_MIN && n <= M2V_K_MAX) {
+            const size_t tiled = shared + M2V_ATTN_HD * M2V_K_STRIDE * sizeof(float);
+            mimo2_vision_attn_coalesced<<<(unsigned)count, M2V_ATTN_THREADS, tiled, ds4_current_stream()>>>(
+                (float *)out->ptr, (const float *)q->ptr, (int)n);
+            return cuda_ok(cudaGetLastError(), "MiMo vision coalesced attention");
+        }
         mimo2_vision_attn<<<(unsigned)count, M2V_ATTN_THREADS, shared, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)q->ptr, (int)n);
         return cuda_ok(cudaGetLastError(), "MiMo vision attention");

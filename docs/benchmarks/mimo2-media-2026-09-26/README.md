@@ -79,6 +79,29 @@ corrected baseline; the second fixture's existing transcription mismatch
 is documented. Shared memory costs 2492 B/CTA at 557 rows; no persistent
 tensor allocation is added. [Full evidence](audio-score-cache/README.md).
 
-Video starts from this retained baseline with a fresh whole profile.
-These results do not qualify video latency or output quality. Dated evidence
-is limited to the recorded artifacts, serving settings and fixtures.
+## Video round 1: accepted
+
+Fresh profiling identifies full vision attention as the largest video input
+kernel. Coalesced K reads through a padded shared tile reduce its isolated
+880-row latency 20.079→10.212 ms. Three fresh HTTP pairs per video give:
+
+| Video length | Original TTFT | ON TTFT | Change | Request wall change |
+|---|---:|---:|---:|---:|
+| 4 s | 2142.4 ms | 2002.5 ms | −6.53% | −2.05% |
+| 13 s | 5592.1 ms | 5127.2 ms | −8.31% | −4.50% |
+
+Decode medians remain 26.7/26.3 tok/s. Screen-image regression A/B also
+improves TTFT 2338.7→2218.0 ms. All 15 video/image model proofs and 54
+HTTP responses match their controls. Video outputs reach the fixed 128-token
+cap; this verifies the same bounded continuation, not complete caption quality.
+
+Dispatch is limited to 512–3072 rows. Larger-shape pilots regress and retain
+the previous full-attention kernel. The candidate adds 8448 B shared memory
+per CTA and about 199% more executed warp instructions; floating-point
+operation counts are unchanged. No persistent allocation is added. The
+measured gains justify this scoped tradeoff. [Full evidence](video-attention/README.md).
+
+The requested media campaign completes with two image rounds, one audio
+round and one video round. Dated evidence is limited to the recorded GB10
+artifacts, serving settings and fixtures; it does not qualify other serving
+shapes or complete audio/video quality scores.

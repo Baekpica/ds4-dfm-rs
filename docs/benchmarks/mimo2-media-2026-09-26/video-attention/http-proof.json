@@ -1,0 +1,1331 @@
+{
+  "status": "complete",
+  "fresh_workers": 27,
+  "responses": 54,
+  "all_exact": true,
+  "runs": [
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 0,
+      "arm": "original",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "97af3d019aa757d3d1ceba4619b6eb5b96793bbebc2642a0f3108b6fda729719",
+          "completion_tokens": 128,
+          "prompt_tokens": 929,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-original/warm-response.json",
+            "bytes": 2508,
+            "sha256": "4d655915d447b884ba25c54f4bb468179f07ca3c4bc1828325a69c36bb404f40"
+          },
+          "timings": {
+            "ttft_ms": 2736.5,
+            "prefill_tokens": 929,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 412.7,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 7506.3645470072515
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "97af3d019aa757d3d1ceba4619b6eb5b96793bbebc2642a0f3108b6fda729719",
+          "completion_tokens": 128,
+          "prompt_tokens": 929,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-original/sample-response.json",
+            "bytes": 2508,
+            "sha256": "b3e43fa95bfb95a57a0dfea9dcbd6530e4349ce7020444921b15b29092893726"
+          },
+          "timings": {
+            "ttft_ms": 2176.9,
+            "prefill_tokens": 929,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 508.0,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 6942.78069405118
+        }
+      ]
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 0,
+      "arm": "off",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "97af3d019aa757d3d1ceba4619b6eb5b96793bbebc2642a0f3108b6fda729719",
+          "completion_tokens": 128,
+          "prompt_tokens": 929,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-off/warm-response.json",
+            "bytes": 2508,
+            "sha256": "782189ae5d014063c9776cd0260c86c406594de6e73e70b29c0c474741cb51a7"
+          },
+          "timings": {
+            "ttft_ms": 2649.1,
+            "prefill_tokens": 929,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 419.2,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 7414.622392039746
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "97af3d019aa757d3d1ceba4619b6eb5b96793bbebc2642a0f3108b6fda729719",
+          "completion_tokens": 128,
+          "prompt_tokens": 929,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-off/sample-response.json",
+            "bytes": 2508,
+            "sha256": "f348ef34c43050fe09b75b75b5760af4856a26a71dda6bb196c05293510e9342"
+          },
+          "timings": {
+            "ttft_ms": 2193.8,
+            "prefill_tokens": 929,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 511.0,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 6950.642456009518
+        }
+      ]
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 0,
+      "arm": "on",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "97af3d019aa757d3d1ceba4619b6eb5b96793bbebc2642a0f3108b6fda729719",
+          "completion_tokens": 128,
+          "prompt_tokens": 929,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-on/warm-response.json",
+            "bytes": 2508,
+            "sha256": "722b518df1938db9c0f27c61d894095becad08ac20100c5f9db5e4b4c13f4260"
+          },
+          "timings": {
+            "ttft_ms": 2517.3,
+            "prefill_tokens": 929,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 448.9,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 7281.175641983282
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "97af3d019aa757d3d1ceba4619b6eb5b96793bbebc2642a0f3108b6fda729719",
+          "completion_tokens": 128,
+          "prompt_tokens": 929,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-on/sample-response.json",
+            "bytes": 2508,
+            "sha256": "a3dbf02942dbd4425bd2a6a0edadc1167086fdce89add4bca36dd31f492b695b"
+          },
+          "timings": {
+            "ttft_ms": 2002.5,
+            "prefill_tokens": 929,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 559.1,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 6765.10049495846
+        }
+      ]
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 1,
+      "arm": "on",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "97af3d019aa757d3d1ceba4619b6eb5b96793bbebc2642a0f3108b6fda729719",
+          "completion_tokens": 128,
+          "prompt_tokens": 929,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-on/warm-response.json",
+            "bytes": 2508,
+            "sha256": "6b276d1e145efdb99c6fdd5671d61b98e5f9888a9b4e869bbdd87fe43d635fa3"
+          },
+          "timings": {
+            "ttft_ms": 2544.7,
+            "prefill_tokens": 929,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 446.0,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 7301.556617952883
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "97af3d019aa757d3d1ceba4619b6eb5b96793bbebc2642a0f3108b6fda729719",
+          "completion_tokens": 128,
+          "prompt_tokens": 929,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-on/sample-response.json",
+            "bytes": 2508,
+            "sha256": "4031f3b84a8de3e574994bb98c38884c0013bd61c5ebf73c580ba69f84a70e41"
+          },
+          "timings": {
+            "ttft_ms": 2007.4,
+            "prefill_tokens": 929,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 559.8,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 6768.292437016498
+        }
+      ]
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 1,
+      "arm": "original",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "97af3d019aa757d3d1ceba4619b6eb5b96793bbebc2642a0f3108b6fda729719",
+          "completion_tokens": 128,
+          "prompt_tokens": 929,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-original/warm-response.json",
+            "bytes": 2508,
+            "sha256": "28d998d142dcafc4bd1bf551184115845bb5cc0bcd07d8452c267737939d80f6"
+          },
+          "timings": {
+            "ttft_ms": 2628.3,
+            "prefill_tokens": 929,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 417.1,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 7392.4529470386915
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "97af3d019aa757d3d1ceba4619b6eb5b96793bbebc2642a0f3108b6fda729719",
+          "completion_tokens": 128,
+          "prompt_tokens": 929,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-original/sample-response.json",
+            "bytes": 2508,
+            "sha256": "eb13f22d50ec2641ee19b2c1e1bc6d31a13e74668768ca3b41cdfad7ad5ebe53"
+          },
+          "timings": {
+            "ttft_ms": 2129.2,
+            "prefill_tokens": 929,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 509.7,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 6900.092216033954
+        }
+      ]
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 1,
+      "arm": "off",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "97af3d019aa757d3d1ceba4619b6eb5b96793bbebc2642a0f3108b6fda729719",
+          "completion_tokens": 128,
+          "prompt_tokens": 929,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-off/warm-response.json",
+            "bytes": 2508,
+            "sha256": "28f512c4d0df5f8e7cd91c91d371223ff3647b68fe727b64368e6564f19f7cc9"
+          },
+          "timings": {
+            "ttft_ms": 2662.0,
+            "prefill_tokens": 929,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 419.3,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 7423.751708993223
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "97af3d019aa757d3d1ceba4619b6eb5b96793bbebc2642a0f3108b6fda729719",
+          "completion_tokens": 128,
+          "prompt_tokens": 929,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-off/sample-response.json",
+            "bytes": 2508,
+            "sha256": "18c46dc1b8fa512ea19c973e69a0c9f8732846066765e7e0fb504c1ace4df3f9"
+          },
+          "timings": {
+            "ttft_ms": 2093.4,
+            "prefill_tokens": 929,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 511.3,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 6855.3159280563705
+        }
+      ]
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 2,
+      "arm": "off",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "97af3d019aa757d3d1ceba4619b6eb5b96793bbebc2642a0f3108b6fda729719",
+          "completion_tokens": 128,
+          "prompt_tokens": 929,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-off/warm-response.json",
+            "bytes": 2508,
+            "sha256": "64295c9de63b07e1be8b8344751bae3d79560c8456e8ecfc90ccda87267832de"
+          },
+          "timings": {
+            "ttft_ms": 2661.8,
+            "prefill_tokens": 929,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 419.3,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 7421.5127429924905
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "97af3d019aa757d3d1ceba4619b6eb5b96793bbebc2642a0f3108b6fda729719",
+          "completion_tokens": 128,
+          "prompt_tokens": 929,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-off/sample-response.json",
+            "bytes": 2508,
+            "sha256": "33d49756af570eaaa4bd2b7c839fe369e0ccb2ca568418e7f1351ddfc5695d9e"
+          },
+          "timings": {
+            "ttft_ms": 2144.5,
+            "prefill_tokens": 929,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 510.8,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 6903.5708460141905
+        }
+      ]
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 2,
+      "arm": "on",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "97af3d019aa757d3d1ceba4619b6eb5b96793bbebc2642a0f3108b6fda729719",
+          "completion_tokens": 128,
+          "prompt_tokens": 929,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-on/warm-response.json",
+            "bytes": 2508,
+            "sha256": "1f00144686143b05438f62a2e30b87b126836782f9aa849efefd4b3379c9edbf"
+          },
+          "timings": {
+            "ttft_ms": 2462.6,
+            "prefill_tokens": 929,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 450.0,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 7225.59452499263
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "97af3d019aa757d3d1ceba4619b6eb5b96793bbebc2642a0f3108b6fda729719",
+          "completion_tokens": 128,
+          "prompt_tokens": 929,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-on/sample-response.json",
+            "bytes": 2508,
+            "sha256": "a846c042842babcdfd00b5203ac573b26bdfd024262e05c735a843d664f0baa8"
+          },
+          "timings": {
+            "ttft_ms": 1961.0,
+            "prefill_tokens": 929,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 561.1,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 6722.835211956408
+        }
+      ]
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 2,
+      "arm": "original",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "97af3d019aa757d3d1ceba4619b6eb5b96793bbebc2642a0f3108b6fda729719",
+          "completion_tokens": 128,
+          "prompt_tokens": 929,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-original/warm-response.json",
+            "bytes": 2508,
+            "sha256": "8a115f9b60e8f7d7dc8625e856ab68d401cfb85b574b0ef3ea0bf7345c115312"
+          },
+          "timings": {
+            "ttft_ms": 2611.9,
+            "prefill_tokens": 929,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 418.1,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 7379.396376025397
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "97af3d019aa757d3d1ceba4619b6eb5b96793bbebc2642a0f3108b6fda729719",
+          "completion_tokens": 128,
+          "prompt_tokens": 929,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-original/sample-response.json",
+            "bytes": 2508,
+            "sha256": "2adffa3ec6c9748d7accc8ee7e46adfe77026915859d902383a7c4cdfed8c687"
+          },
+          "timings": {
+            "ttft_ms": 2142.4,
+            "prefill_tokens": 929,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 510.2,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 6906.738527992275
+        }
+      ]
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 0,
+      "arm": "original",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "4b8f297f30925a98994af3392547b16bb8daef5276c5d7950d7026e20105e077",
+          "completion_tokens": 128,
+          "prompt_tokens": 2972,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-original/warm-response.json",
+            "bytes": 2422,
+            "sha256": "bfe3bcf6b5f15d67efdda938b5bf447b1635bfecf8d74834d0c48ba37bbf69a0"
+          },
+          "timings": {
+            "ttft_ms": 6088.9,
+            "prefill_tokens": 2972,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 555.5,
+            "decode_tok_s": 26.3,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 10925.560361996759
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "4b8f297f30925a98994af3392547b16bb8daef5276c5d7950d7026e20105e077",
+          "completion_tokens": 128,
+          "prompt_tokens": 2972,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-original/sample-response.json",
+            "bytes": 2422,
+            "sha256": "060f744e4dedccb3884ace37f47256d3b42bffa989af4e0465600b2a5f41ccf3"
+          },
+          "timings": {
+            "ttft_ms": 5592.1,
+            "prefill_tokens": 2972,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 601.0,
+            "decode_tok_s": 26.3,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 10450.919178023469
+        }
+      ]
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 0,
+      "arm": "off",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "4b8f297f30925a98994af3392547b16bb8daef5276c5d7950d7026e20105e077",
+          "completion_tokens": 128,
+          "prompt_tokens": 2972,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-off/warm-response.json",
+            "bytes": 2422,
+            "sha256": "e5d88fa5f3ca7f3d44572bebea9ad3d96ea3ceaf90b22db02f49a390981f4371"
+          },
+          "timings": {
+            "ttft_ms": 6107.4,
+            "prefill_tokens": 2972,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 553.7,
+            "decode_tok_s": 26.3,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 10950.956624990795
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "4b8f297f30925a98994af3392547b16bb8daef5276c5d7950d7026e20105e077",
+          "completion_tokens": 128,
+          "prompt_tokens": 2972,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-off/sample-response.json",
+            "bytes": 2422,
+            "sha256": "44aaaae9c64320544f5b734172d60a47e08f828162ad52d469bbfbe209f8dfce"
+          },
+          "timings": {
+            "ttft_ms": 5643.3,
+            "prefill_tokens": 2972,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 599.9,
+            "decode_tok_s": 26.3,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 10503.776584984735
+        }
+      ]
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 0,
+      "arm": "on",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "4b8f297f30925a98994af3392547b16bb8daef5276c5d7950d7026e20105e077",
+          "completion_tokens": 128,
+          "prompt_tokens": 2972,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-on/warm-response.json",
+            "bytes": 2422,
+            "sha256": "ea188f28dbaf9b3c54db54d053a366c2b0bafa795d14617490b7f99357393a09"
+          },
+          "timings": {
+            "ttft_ms": 5549.0,
+            "prefill_tokens": 2972,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 611.8,
+            "decode_tok_s": 26.3,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 10386.940215015784
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "4b8f297f30925a98994af3392547b16bb8daef5276c5d7950d7026e20105e077",
+          "completion_tokens": 128,
+          "prompt_tokens": 2972,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-on/sample-response.json",
+            "bytes": 2422,
+            "sha256": "95f5929fed319a0548d640d8ba38b2c81c574620bdd19ec10683e3155b7201a1"
+          },
+          "timings": {
+            "ttft_ms": 5127.2,
+            "prefill_tokens": 2972,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 668.4,
+            "decode_tok_s": 26.3,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 9980.550696956925
+        }
+      ]
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 1,
+      "arm": "on",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "4b8f297f30925a98994af3392547b16bb8daef5276c5d7950d7026e20105e077",
+          "completion_tokens": 128,
+          "prompt_tokens": 2972,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-on/warm-response.json",
+            "bytes": 2422,
+            "sha256": "d6bceb9204c6649d31235a72f31466e1181501b12f802463ab30818d97422060"
+          },
+          "timings": {
+            "ttft_ms": 5540.4,
+            "prefill_tokens": 2972,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 613.6,
+            "decode_tok_s": 26.3,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 10375.210107013118
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "4b8f297f30925a98994af3392547b16bb8daef5276c5d7950d7026e20105e077",
+          "completion_tokens": 128,
+          "prompt_tokens": 2972,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-on/sample-response.json",
+            "bytes": 2422,
+            "sha256": "c907a07905be3a9c867552b85bb8b0ab09671098961f312224accfa97fa89d72"
+          },
+          "timings": {
+            "ttft_ms": 5190.9,
+            "prefill_tokens": 2972,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 669.1,
+            "decode_tok_s": 26.3,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 10043.564830033574
+        }
+      ]
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 1,
+      "arm": "original",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "4b8f297f30925a98994af3392547b16bb8daef5276c5d7950d7026e20105e077",
+          "completion_tokens": 128,
+          "prompt_tokens": 2972,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-original/warm-response.json",
+            "bytes": 2422,
+            "sha256": "e435e7e7a23335d1a6ef876ef2e48863f57e66b9a23474dcadfabd31da92df77"
+          },
+          "timings": {
+            "ttft_ms": 6051.2,
+            "prefill_tokens": 2972,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 554.7,
+            "decode_tok_s": 26.3,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 10893.664109986275
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "4b8f297f30925a98994af3392547b16bb8daef5276c5d7950d7026e20105e077",
+          "completion_tokens": 128,
+          "prompt_tokens": 2972,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-original/sample-response.json",
+            "bytes": 2422,
+            "sha256": "475c1f63f430d3d3978a5cbd8ff5dacc6f07d79261b61b08ca53090eee685aa4"
+          },
+          "timings": {
+            "ttft_ms": 5582.8,
+            "prefill_tokens": 2972,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 599.3,
+            "decode_tok_s": 26.3,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 10445.776324020699
+        }
+      ]
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 1,
+      "arm": "off",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "4b8f297f30925a98994af3392547b16bb8daef5276c5d7950d7026e20105e077",
+          "completion_tokens": 128,
+          "prompt_tokens": 2972,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-off/warm-response.json",
+            "bytes": 2422,
+            "sha256": "5572fb9edd5bc7252dfaa0062e58084c46f7afd1f85472b3c4c010dd5fea3376"
+          },
+          "timings": {
+            "ttft_ms": 6019.4,
+            "prefill_tokens": 2972,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 555.5,
+            "decode_tok_s": 26.3,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 10859.051436011214
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "4b8f297f30925a98994af3392547b16bb8daef5276c5d7950d7026e20105e077",
+          "completion_tokens": 128,
+          "prompt_tokens": 2972,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-off/sample-response.json",
+            "bytes": 2422,
+            "sha256": "4b632b40e0121168605901b47cc22fe5a8c9dee3abaff5958988349cc5a4f9e3"
+          },
+          "timings": {
+            "ttft_ms": 5602.4,
+            "prefill_tokens": 2972,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 600.7,
+            "decode_tok_s": 26.3,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 10457.667080045212
+        }
+      ]
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 2,
+      "arm": "off",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "4b8f297f30925a98994af3392547b16bb8daef5276c5d7950d7026e20105e077",
+          "completion_tokens": 128,
+          "prompt_tokens": 2972,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-off/warm-response.json",
+            "bytes": 2422,
+            "sha256": "55a0fca5d58e9808b3f92fb2617b4448925b8a48a306ea8388b28ef134fd4a2a"
+          },
+          "timings": {
+            "ttft_ms": 6063.0,
+            "prefill_tokens": 2972,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 553.9,
+            "decode_tok_s": 26.3,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 10902.803209028207
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "4b8f297f30925a98994af3392547b16bb8daef5276c5d7950d7026e20105e077",
+          "completion_tokens": 128,
+          "prompt_tokens": 2972,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-off/sample-response.json",
+            "bytes": 2422,
+            "sha256": "6e71b37abaed72bfe04867f00cfed29d8b4ba1052a03fb8fb8fc29bbfc615bec"
+          },
+          "timings": {
+            "ttft_ms": 5571.1,
+            "prefill_tokens": 2972,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 600.5,
+            "decode_tok_s": 26.3,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 10425.138490041718
+        }
+      ]
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 2,
+      "arm": "on",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "4b8f297f30925a98994af3392547b16bb8daef5276c5d7950d7026e20105e077",
+          "completion_tokens": 128,
+          "prompt_tokens": 2972,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-on/warm-response.json",
+            "bytes": 2422,
+            "sha256": "a3c2c7ea60a5bf7796be6e486c414938f744cc3fe1f497cb7910ca2b3010c858"
+          },
+          "timings": {
+            "ttft_ms": 5605.4,
+            "prefill_tokens": 2972,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 614.2,
+            "decode_tok_s": 26.3,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 10452.514510019682
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "4b8f297f30925a98994af3392547b16bb8daef5276c5d7950d7026e20105e077",
+          "completion_tokens": 128,
+          "prompt_tokens": 2972,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-on/sample-response.json",
+            "bytes": 2422,
+            "sha256": "edd574a2075100031e49c6fb960c660e139a5d6994119b6ef1881ef5ae55063d"
+          },
+          "timings": {
+            "ttft_ms": 5098.9,
+            "prefill_tokens": 2972,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 670.1,
+            "decode_tok_s": 26.3,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 9958.201668050606
+        }
+      ]
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 2,
+      "arm": "original",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "4b8f297f30925a98994af3392547b16bb8daef5276c5d7950d7026e20105e077",
+          "completion_tokens": 128,
+          "prompt_tokens": 2972,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-original/warm-response.json",
+            "bytes": 2422,
+            "sha256": "6cf5e009fcf8cd1abe147e4eefa7609d5ffe71603889f2f5331c6eb8081bfb41"
+          },
+          "timings": {
+            "ttft_ms": 6076.0,
+            "prefill_tokens": 2972,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 556.2,
+            "decode_tok_s": 26.4,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 10907.490417012013
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "4b8f297f30925a98994af3392547b16bb8daef5276c5d7950d7026e20105e077",
+          "completion_tokens": 128,
+          "prompt_tokens": 2972,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-original/sample-response.json",
+            "bytes": 2422,
+            "sha256": "e580896c0a5624bd064cc9c60fd9bb0e5d5fb46f863ca30b46098d9d2748f94b"
+          },
+          "timings": {
+            "ttft_ms": 5669.1,
+            "prefill_tokens": 2972,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 601.5,
+            "decode_tok_s": 26.4,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 10517.76501396671
+        }
+      ]
+    },
+    {
+      "case": "screen",
+      "round": 0,
+      "arm": "original",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "completion_tokens": 64,
+          "prompt_tokens": 794,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-original/warm-response.json",
+            "bytes": 1568,
+            "sha256": "0d9dd570e28ad10355edafc2e11a400ff581160be98a68c583e51de5b959d9fe"
+          },
+          "timings": {
+            "ttft_ms": 2809.4,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 294.1,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 5170.791857002769
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "completion_tokens": 64,
+          "prompt_tokens": 794,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-original/sample-response.json",
+            "bytes": 1568,
+            "sha256": "b26972cd71c2093e7343f4c159e11935441bbab6623de9176f0ffa110c5880a7"
+          },
+          "timings": {
+            "ttft_ms": 2337.8,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 345.9,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 4705.4645830066875
+        }
+      ]
+    },
+    {
+      "case": "screen",
+      "round": 0,
+      "arm": "off",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "completion_tokens": 64,
+          "prompt_tokens": 794,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-off/warm-response.json",
+            "bytes": 1568,
+            "sha256": "8d226f0beb846dec8cf0648da1544ff6d88d52f7e7d1571e37f303161e8dfeb1"
+          },
+          "timings": {
+            "ttft_ms": 2811.6,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 293.9,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 5174.665403959807
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "completion_tokens": 64,
+          "prompt_tokens": 794,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-off/sample-response.json",
+            "bytes": 1568,
+            "sha256": "ff0906d11688087f2ae371b1835158dd919c525ae44f5539ca5286611168ed61"
+          },
+          "timings": {
+            "ttft_ms": 2340.3,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 345.6,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 4704.277857032139
+        }
+      ]
+    },
+    {
+      "case": "screen",
+      "round": 0,
+      "arm": "on",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "completion_tokens": 64,
+          "prompt_tokens": 794,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-on/warm-response.json",
+            "bytes": 1568,
+            "sha256": "4b8c9cd5e63ad816d59c9a2addbbcf7c4c8414ee669738c1447ae9acaa67f979"
+          },
+          "timings": {
+            "ttft_ms": 2691.1,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 307.5,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 5057.308866002131
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "completion_tokens": 64,
+          "prompt_tokens": 794,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-on/sample-response.json",
+            "bytes": 1568,
+            "sha256": "a27e733ec2760bd8fa490510d4bbaa147af30b8d153a8d41f14b43e84253e67f"
+          },
+          "timings": {
+            "ttft_ms": 2216.3,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 365.2,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 4579.323762038257
+        }
+      ]
+    },
+    {
+      "case": "screen",
+      "round": 1,
+      "arm": "on",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "completion_tokens": 64,
+          "prompt_tokens": 794,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-on/warm-response.json",
+            "bytes": 1568,
+            "sha256": "e0effb37ee036b45e32e59d6a2cf24d21fe1ebb5b9de76908a095058c5c452fd"
+          },
+          "timings": {
+            "ttft_ms": 2687.7,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 307.9,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 5051.58881295938
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "completion_tokens": 64,
+          "prompt_tokens": 794,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-on/sample-response.json",
+            "bytes": 1568,
+            "sha256": "4a949ede597c9033c4ad3840fc8bf85e44fb7ad9301d6bfc4786c42508693c54"
+          },
+          "timings": {
+            "ttft_ms": 2218.0,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 364.9,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 4581.749409029726
+        }
+      ]
+    },
+    {
+      "case": "screen",
+      "round": 1,
+      "arm": "original",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "completion_tokens": 64,
+          "prompt_tokens": 794,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-original/warm-response.json",
+            "bytes": 1568,
+            "sha256": "dc5ef066b75c49ce1ad608b41df6ec23ebda3dd8e9bd8f202c7978aa921571fd"
+          },
+          "timings": {
+            "ttft_ms": 2809.0,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 294.1,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 5175.631724006962
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "completion_tokens": 64,
+          "prompt_tokens": 794,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-original/sample-response.json",
+            "bytes": 1568,
+            "sha256": "f66e55e124e501d9eea7504b811ef090705948f1be4d5af94e360b50e623e9d9"
+          },
+          "timings": {
+            "ttft_ms": 2338.7,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 345.8,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 4707.371995958965
+        }
+      ]
+    },
+    {
+      "case": "screen",
+      "round": 1,
+      "arm": "off",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "completion_tokens": 64,
+          "prompt_tokens": 794,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-off/warm-response.json",
+            "bytes": 1568,
+            "sha256": "ba1797480541e093b0ab2277d38e6f8d8fc0dc338149d2829c8061f775582eb9"
+          },
+          "timings": {
+            "ttft_ms": 2804.2,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 294.6,
+            "decode_tok_s": 26.7,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 5172.4362570093945
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "completion_tokens": 64,
+          "prompt_tokens": 794,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-off/sample-response.json",
+            "bytes": 1568,
+            "sha256": "fa8e05fd4d47c6628b4f16113fe89407005dfa5c5641f04bc0b6268d5c65c94b"
+          },
+          "timings": {
+            "ttft_ms": 2336.3,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 346.1,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 4699.990171007812
+        }
+      ]
+    },
+    {
+      "case": "screen",
+      "round": 2,
+      "arm": "off",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "completion_tokens": 64,
+          "prompt_tokens": 794,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-off/warm-response.json",
+            "bytes": 1568,
+            "sha256": "dac9186fb6e7c3ba067e9017b14888de81e6aa06b36e4de780c99bf4022b8b1e"
+          },
+          "timings": {
+            "ttft_ms": 2806.4,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 294.4,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 5170.018411008641
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "completion_tokens": 64,
+          "prompt_tokens": 794,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-off/sample-response.json",
+            "bytes": 1568,
+            "sha256": "bf5bbe960b72c47b2d862c03f33d1fd2e4c7f74ead07259cb723d9dbbadc1189"
+          },
+          "timings": {
+            "ttft_ms": 2338.2,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 345.8,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 4700.384616968222
+        }
+      ]
+    },
+    {
+      "case": "screen",
+      "round": 2,
+      "arm": "on",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "completion_tokens": 64,
+          "prompt_tokens": 794,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-on/warm-response.json",
+            "bytes": 1568,
+            "sha256": "0126b5a1293285ff5248483d73300fa2fb6450b682d4e850b544910f8b2901d5"
+          },
+          "timings": {
+            "ttft_ms": 2688.3,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 307.8,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 5052.4643149692565
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "completion_tokens": 64,
+          "prompt_tokens": 794,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-on/sample-response.json",
+            "bytes": 1568,
+            "sha256": "afae6cd8208bccf6925dcee3e79a1a99709e688ed0b2ce9962c8873318ecb316"
+          },
+          "timings": {
+            "ttft_ms": 2222.2,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 364.4,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 4586.841347976588
+        }
+      ]
+    },
+    {
+      "case": "screen",
+      "round": 2,
+      "arm": "original",
+      "responses": [
+        {
+          "phase": "warm",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "completion_tokens": 64,
+          "prompt_tokens": 794,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-original/warm-response.json",
+            "bytes": 1568,
+            "sha256": "115d01e49a6b7df3f265e5d78e2c15028fba1fe8a4dc6c2bd3019647f2fd5118"
+          },
+          "timings": {
+            "ttft_ms": 2816.5,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 293.4,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 5177.698893996421
+        },
+        {
+          "phase": "sample",
+          "proof_sha256": "d2717237feb93304e289eb5f86bae3f2aeab2aeabf8982f45f972717290c6353",
+          "completion_tokens": 64,
+          "prompt_tokens": 794,
+          "finish_reason": "length",
+          "response_receipt": {
+            "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-original/sample-response.json",
+            "bytes": 1568,
+            "sha256": "b2dde2e854719e3b0056b8541cd2702f19775e01d59a067d742760cbee5c0e63"
+          },
+          "timings": {
+            "ttft_ms": 2347.0,
+            "prefill_tokens": 794,
+            "prefill_cached_tokens": 0,
+            "prefill_tok_s": 344.5,
+            "decode_tok_s": 26.8,
+            "tok_per_step": 1.0
+          },
+          "wall_ms": 4711.037715023849
+        }
+      ]
+    }
+  ]
+}

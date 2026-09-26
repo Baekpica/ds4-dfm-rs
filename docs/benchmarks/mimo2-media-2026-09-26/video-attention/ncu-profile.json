@@ -1,0 +1,279 @@
+{
+  "scope": "Unmodified retained kernel; baseline profiling only",
+  "runs": [
+    {
+      "label": "baseline-smoke",
+      "argv": [
+        "/usr/bin/python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/tools/host_memory_guard.py",
+        "--max-gib",
+        "16",
+        "--high-gib",
+        "14",
+        "--reserve-gib",
+        "12",
+        "--timeout",
+        "600",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/baseline-smoke.memory.jsonl",
+        "--",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/probe-baseline",
+        "-1",
+        "1",
+        "2",
+        "880"
+      ],
+      "extra_env": {
+        "PROBE_DUMP": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/baseline-smoke.f32"
+      },
+      "started": 1790409321.4884038,
+      "finished": 1790409322.0055368,
+      "guard_exit": 0,
+      "events": [
+        {
+          "time": 1790409321.5403326,
+          "event": "start",
+          "unit": "ds4-hostguard-1980767-1790409321530152245.scope",
+          "available_gib": 116.93584442138672,
+          "psi_full_avg10": 0.0,
+          "max_gib": 16.0,
+          "high_gib": 14.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/probe-baseline",
+            "-1",
+            "1",
+            "2",
+            "880"
+          ]
+        },
+        {
+          "time": 1790409321.9627495,
+          "event": "exit",
+          "unit": "ds4-hostguard-1980767-1790409321530152245.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      ],
+      "clock_errors": []
+    },
+    {
+      "label": "baseline-full",
+      "argv": [
+        "/usr/bin/python3",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/tools/host_memory_guard.py",
+        "--max-gib",
+        "16",
+        "--high-gib",
+        "14",
+        "--reserve-gib",
+        "12",
+        "--timeout",
+        "600",
+        "--log",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/baseline-full.memory.jsonl",
+        "--",
+        "ncu",
+        "--set",
+        "full",
+        "--clock-control",
+        "none",
+        "--replay-mode",
+        "kernel",
+        "--cache-control",
+        "all",
+        "--import-source",
+        "yes",
+        "--source-folders",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1",
+        "--kernel-name-base",
+        "function",
+        "--kernel-name",
+        "mimo2_vision_attn",
+        "--launch-skip",
+        "2",
+        "--launch-count",
+        "1",
+        "--export",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/baseline-full",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/probe-baseline",
+        "-1",
+        "1",
+        "2",
+        "880"
+      ],
+      "extra_env": {},
+      "started": 1790409322.055188,
+      "finished": 1790409331.2163913,
+      "guard_exit": 0,
+      "events": [
+        {
+          "time": 1790409322.1055925,
+          "event": "start",
+          "unit": "ds4-hostguard-1980784-1790409322097070602.scope",
+          "available_gib": 116.91421127319336,
+          "psi_full_avg10": 0.0,
+          "max_gib": 16.0,
+          "high_gib": 14.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "ncu",
+            "--set",
+            "full",
+            "--clock-control",
+            "none",
+            "--replay-mode",
+            "kernel",
+            "--cache-control",
+            "all",
+            "--import-source",
+            "yes",
+            "--source-folders",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1",
+            "--kernel-name-base",
+            "function",
+            "--kernel-name",
+            "mimo2_vision_attn",
+            "--launch-skip",
+            "2",
+            "--launch-count",
+            "1",
+            "--export",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/baseline-full",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/probe-baseline",
+            "-1",
+            "1",
+            "2",
+            "880"
+          ]
+        },
+        {
+          "time": 1790409331.190725,
+          "event": "exit",
+          "unit": "ds4-hostguard-1980784-1790409322097070602.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      ],
+      "clock_errors": []
+    }
+  ],
+  "exports": [
+    {
+      "file": "baseline-full.txt",
+      "argv": [
+        "ncu",
+        "--import",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/baseline-full.ncu-rep",
+        "--page",
+        "details",
+        "--print-details",
+        "all"
+      ],
+      "returncode": 0
+    },
+    {
+      "file": "baseline-full.csv",
+      "argv": [
+        "ncu",
+        "--import",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/baseline-full.ncu-rep",
+        "--page",
+        "raw",
+        "--csv"
+      ],
+      "returncode": 0
+    },
+    {
+      "file": "baseline-source.csv",
+      "argv": [
+        "ncu",
+        "--import",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/baseline-full.ncu-rep",
+        "--page",
+        "source",
+        "--print-source",
+        "sass",
+        "--csv"
+      ],
+      "returncode": 0
+    }
+  ],
+  "files": {
+    "baseline-full.ncu-rep": {
+      "bytes": 81594850,
+      "sha256": "c466ad99535d3b3e4e723acf171e18e6836c1cb216a9a17f5da5f8f3af859b23"
+    },
+    "mimo2_media.frozen.cuh": {
+      "bytes": 17673,
+      "sha256": "539b6593b4a2852f35707819f63e70cfc3237ff05eac0e79b6e3dd67f453fbce"
+    },
+    "baseline-full.clocks.jsonl": {
+      "bytes": 5470,
+      "sha256": "ae1b1bf13fa4d8ae6c130018341ead36198efff961ef066b1a69eaa44d11243a"
+    },
+    "baseline-smoke.clocks.jsonl": {
+      "bytes": 604,
+      "sha256": "f33ccd894b6d1b9789421298598c5c3166caa6b8d52fe2bc3b9834bcdb087d7a"
+    },
+    "baseline-full.memory.jsonl": {
+      "bytes": 2361,
+      "sha256": "0a12670c7b83472b2a412bb842b74de8f14d9713173b1ad51a9e82823d527763"
+    },
+    "probe-baseline.cu": {
+      "bytes": 7194,
+      "sha256": "d70336d792a459d8b161a5be351dd91222f5ff976f98bf4c5f66e41ad38dad55"
+    },
+    "baseline-full.csv": {
+      "bytes": 160399,
+      "sha256": "5d17ddbc6952c3f8d0a0ef125f7a532980d91ed9719b55a971933e357e8cf247"
+    },
+    "baseline-smoke.f32": {
+      "bytes": 7208960,
+      "sha256": "78c5bf2100976013cfa2cf2b31297cfc1737aa0471981e62096be09cd3410e5b"
+    },
+    "baseline-full.log": {
+      "bytes": 1074,
+      "sha256": "3f3cfb1aed520524a611807f98fc02421dff6682630f96fe97ac6edf24f0ee5f"
+    },
+    "baseline-full.txt": {
+      "bytes": 270187,
+      "sha256": "a88a36a0b29e2259f40fcbd7b2d6f1dc7588e62210a440cdb1c8f9b4b5476516"
+    },
+    "baseline-receipt.json": {
+      "bytes": 2744,
+      "sha256": "d94a269ac16a0537c4fa2f785c328fb7a921a730b4b8d70bc5312dc4b0047408"
+    },
+    "ds4_mimo2_gpu.frozen.cuh": {
+      "bytes": 29389,
+      "sha256": "9144921357fe7f9208e32b6eefbf45be38ee51977b4ae79bf7e9847f5377add8"
+    },
+    "baseline-smoke.memory.jsonl": {
+      "bytes": 534,
+      "sha256": "2ab416118c6750f7acb337e6af384658511e123a3bea9243280a3dbee5644a48"
+    },
+    "baseline-smoke.log": {
+      "bytes": 538,
+      "sha256": "d000ef707a2dd25183e6a68eca09813792204ee3bb8524ead6f64abd5defca5a"
+    },
+    "baseline-source.csv": {
+      "bytes": 201011,
+      "sha256": "d31b498a5ede28a6c1889d1a799dfc69eb32d5c2fc3f48de102744f7ef951f99"
+    },
+    "baseline-build.log": {
+      "bytes": 4802,
+      "sha256": "9e460c53c4c7daab04d267e0b55ef7963d1ba59a55662b72277c6e8f4319f22f"
+    },
+    "run-baseline.py": {
+      "bytes": 4123,
+      "sha256": "578a655c766952577a0e74b5ec1031d09f0afeb4d3080593007d74e7b029b9b5"
+    },
+    "probe-baseline": {
+      "bytes": 1562080,
+      "sha256": "beac3ba144f2fce58f212e24a3bc6f6c5a697ead87d8a3cab9820d22c769f9df"
+    }
+  },
+  "status": "complete; baseline only"
+}

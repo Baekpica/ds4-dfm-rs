@@ -1,0 +1,356 @@
+{
+  "status": "Viability/regime pilot only; production qualification pending.",
+  "warmups": 2,
+  "iterations_per_process": 3,
+  "fresh_processes_per_arm_per_shape": 1,
+  "cases": [
+    {
+      "n": 512,
+      "arms": {
+        "baseline": {
+          "mean_ms": 7.057301,
+          "durations_ms": [
+            7.043488,
+            7.04,
+            7.088416
+          ],
+          "output": {
+            "floats": 1048576,
+            "bytes": 4194304,
+            "finite": true,
+            "fnv1a64": "a3b0b582875476cb",
+            "max_abs": 0.111606285,
+            "dumped": true
+          },
+          "dump_sha256": "88dd47dbc87b7b1539c96c0f2255b63e932b8a5956974025f2bdb5e61ab7fd4e"
+        },
+        "candidate": {
+          "mean_ms": 3.129856,
+          "durations_ms": [
+            3.129504,
+            3.130112,
+            3.129952
+          ],
+          "output": {
+            "floats": 1048576,
+            "bytes": 4194304,
+            "finite": true,
+            "fnv1a64": "a3b0b582875476cb",
+            "max_abs": 0.111606285,
+            "dumped": true
+          },
+          "dump_sha256": "88dd47dbc87b7b1539c96c0f2255b63e932b8a5956974025f2bdb5e61ab7fd4e"
+        }
+      },
+      "exact": true,
+      "latency_reduction_percent": 55.65080758210539,
+      "dispatch_enabled": true
+    },
+    {
+      "n": 880,
+      "arms": {
+        "baseline": {
+          "mean_ms": 20.079103,
+          "durations_ms": [
+            20.071903,
+            20.094656,
+            20.070751
+          ],
+          "output": {
+            "floats": 1802240,
+            "bytes": 7208960,
+            "finite": true,
+            "fnv1a64": "04d0a5389ccf0efd",
+            "max_abs": 0.0784784034,
+            "dumped": true
+          },
+          "dump_sha256": "78c5bf2100976013cfa2cf2b31297cfc1737aa0471981e62096be09cd3410e5b"
+        },
+        "candidate": {
+          "mean_ms": 10.212384,
+          "durations_ms": [
+            10.209408,
+            10.215168,
+            10.212576
+          ],
+          "output": {
+            "floats": 1802240,
+            "bytes": 7208960,
+            "finite": true,
+            "fnv1a64": "04d0a5389ccf0efd",
+            "max_abs": 0.0784784034,
+            "dumped": true
+          },
+          "dump_sha256": "78c5bf2100976013cfa2cf2b31297cfc1737aa0471981e62096be09cd3410e5b"
+        }
+      },
+      "exact": true,
+      "latency_reduction_percent": 49.13924192729128,
+      "dispatch_enabled": true
+    },
+    {
+      "n": 1024,
+      "arms": {
+        "baseline": {
+          "mean_ms": 27.101824,
+          "durations_ms": [
+            27.147648,
+            27.13776,
+            27.020063
+          ],
+          "output": {
+            "floats": 2097152,
+            "bytes": 8388608,
+            "finite": true,
+            "fnv1a64": "9afdeb795d10e420",
+            "max_abs": 0.0743996054,
+            "dumped": true
+          },
+          "dump_sha256": "5e13c10c4b939a66a544c4f7736db3ab4f891efa343e18cd93435bbd2d589da3"
+        },
+        "candidate": {
+          "mean_ms": 13.759466,
+          "durations_ms": [
+            13.760256,
+            13.763264,
+            13.75488
+          ],
+          "output": {
+            "floats": 2097152,
+            "bytes": 8388608,
+            "finite": true,
+            "fnv1a64": "9afdeb795d10e420",
+            "max_abs": 0.0743996054,
+            "dumped": true
+          },
+          "dump_sha256": "5e13c10c4b939a66a544c4f7736db3ab4f891efa343e18cd93435bbd2d589da3"
+        }
+      },
+      "exact": true,
+      "latency_reduction_percent": 49.23047983781461,
+      "dispatch_enabled": true
+    },
+    {
+      "n": 3072,
+      "arms": {
+        "baseline": {
+          "mean_ms": 230.008886,
+          "durations_ms": [
+            230.053925,
+            229.995773,
+            229.976959
+          ],
+          "output": {
+            "floats": 6291456,
+            "bytes": 25165824,
+            "finite": true,
+            "fnv1a64": "cb855d72ec98d333",
+            "max_abs": 0.0542936102,
+            "dumped": true
+          },
+          "dump_sha256": "baa6f92cc5b6db37cb04a9ce9cd27879816095964159a8ed737e37b6880fa022"
+        },
+        "candidate": {
+          "mean_ms": 201.946289,
+          "durations_ms": [
+            201.933319,
+            202.011398,
+            201.89415
+          ],
+          "output": {
+            "floats": 6291456,
+            "bytes": 25165824,
+            "finite": true,
+            "fnv1a64": "cb855d72ec98d333",
+            "max_abs": 0.0542936102,
+            "dumped": true
+          },
+          "dump_sha256": "baa6f92cc5b6db37cb04a9ce9cd27879816095964159a8ed737e37b6880fa022"
+        }
+      },
+      "exact": true,
+      "latency_reduction_percent": 12.200657760674504,
+      "dispatch_enabled": true
+    },
+    {
+      "n": 6144,
+      "arms": {
+        "baseline": {
+          "mean_ms": 1226.533407,
+          "durations_ms": [
+            1226.178589,
+            1226.838989,
+            1226.582642
+          ],
+          "output": {
+            "floats": 12582912,
+            "bytes": 50331648,
+            "finite": true,
+            "fnv1a64": "fe16909cd1b0a293",
+            "max_abs": 0.0329961926,
+            "dumped": true
+          },
+          "dump_sha256": "5e9044112bac586064511ea337589f522f5b7431195eafa0a037d4167401e878"
+        },
+        "candidate": {
+          "mean_ms": 2884.019694,
+          "durations_ms": [
+            2884.133301,
+            2884.023438,
+            2883.902344
+          ],
+          "output": {
+            "floats": 12582912,
+            "bytes": 50331648,
+            "finite": true,
+            "fnv1a64": "fe16909cd1b0a293",
+            "max_abs": 0.0329961926,
+            "dumped": true
+          },
+          "dump_sha256": "5e9044112bac586064511ea337589f522f5b7431195eafa0a037d4167401e878"
+        }
+      },
+      "exact": true,
+      "latency_reduction_percent": -135.13584526442503,
+      "dispatch_enabled": false
+    },
+    {
+      "n": 8192,
+      "arms": {
+        "baseline": {
+          "mean_ms": 2633.811117,
+          "durations_ms": [
+            2633.787354,
+            2633.066406,
+            2634.57959
+          ],
+          "output": {
+            "floats": 16777216,
+            "bytes": 67108864,
+            "finite": true,
+            "fnv1a64": "f2256837e6f57aea",
+            "max_abs": 0.0279866327,
+            "dumped": true
+          },
+          "dump_sha256": "2bcb6b80703fdcfea87cdb0589061e368d2dd7007fc83c549d8b98231423ec02"
+        },
+        "candidate": {
+          "mean_ms": 6314.377767,
+          "durations_ms": [
+            6314.119629,
+            6314.742188,
+            6314.271484
+          ],
+          "output": {
+            "floats": 16777216,
+            "bytes": 67108864,
+            "finite": true,
+            "fnv1a64": "f2256837e6f57aea",
+            "max_abs": 0.0279866327,
+            "dumped": true
+          },
+          "dump_sha256": "2bcb6b80703fdcfea87cdb0589061e368d2dd7007fc83c549d8b98231423ec02"
+        }
+      },
+      "exact": true,
+      "latency_reduction_percent": -139.74299926990548,
+      "dispatch_enabled": false
+    }
+  ],
+  "large_shape_decision": "Direct coalesced kernel is rejected at rows 6144 and 8192 for performance. Production dispatch is limited to 512–3072 inclusive; direct large-shape parity does not enable that path.",
+  "focused_scratch_test": {
+    "cases": 20,
+    "all_exact": true,
+    "repeat_exact": true,
+    "input_unchanged": true,
+    "guards_unchanged": true,
+    "log_sha256": "74b435ac26b00f9d79b81a49a5d07c2382a4e3d3a63ce4d8a7c5aafc60e9da2b"
+  },
+  "focused_test_note": "This completed scratch direct-kernel test precedes the production wrapper regression test. Do not treat it as completed wrapper-dispatch proof.",
+  "guards": [
+    {
+      "label": "pilot-880-baseline",
+      "guard_exit": 0,
+      "clock_errors": [],
+      "payload_exit": 0
+    },
+    {
+      "label": "pilot-880-candidate",
+      "guard_exit": 0,
+      "clock_errors": [],
+      "payload_exit": 0
+    },
+    {
+      "label": "pilot-3072-baseline",
+      "guard_exit": 0,
+      "clock_errors": [],
+      "payload_exit": 0
+    },
+    {
+      "label": "pilot-3072-candidate",
+      "guard_exit": 0,
+      "clock_errors": [],
+      "payload_exit": 0
+    },
+    {
+      "label": "pilot-512-baseline",
+      "guard_exit": 0,
+      "clock_errors": [],
+      "payload_exit": 0
+    },
+    {
+      "label": "pilot-512-candidate",
+      "guard_exit": 0,
+      "clock_errors": [],
+      "payload_exit": 0
+    },
+    {
+      "label": "pilot-1024-baseline",
+      "guard_exit": 0,
+      "clock_errors": [],
+      "payload_exit": 0
+    },
+    {
+      "label": "pilot-1024-candidate",
+      "guard_exit": 0,
+      "clock_errors": [],
+      "payload_exit": 0
+    },
+    {
+      "label": "candidate-focused",
+      "guard_exit": 0,
+      "clock_errors": [],
+      "payload_exit": 0
+    },
+    {
+      "label": "pilot-6144-baseline",
+      "guard_exit": 0,
+      "clock_errors": [],
+      "payload_exit": 0
+    },
+    {
+      "label": "pilot-6144-candidate",
+      "guard_exit": 0,
+      "clock_errors": [],
+      "payload_exit": 0
+    },
+    {
+      "label": "pilot-8192-baseline",
+      "guard_exit": 0,
+      "clock_errors": [],
+      "payload_exit": 0
+    },
+    {
+      "label": "pilot-8192-candidate",
+      "guard_exit": 0,
+      "clock_errors": [],
+      "payload_exit": 0
+    },
+    {
+      "label": "candidate-full",
+      "guard_exit": 0,
+      "clock_errors": [],
+      "payload_exit": 0
+    }
+  ]
+}

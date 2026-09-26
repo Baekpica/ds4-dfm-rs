@@ -1,0 +1,911 @@
+{
+  "rounds": 3,
+  "cases": {
+    "eval-finevideo-29-3": {
+      "all_warm_and_sample_http_proofs_exact": true,
+      "reference": {
+        "token_ids": [
+          785,
+          2766,
+          12033,
+          448,
+          264,
+          3265,
+          5239,
+          6552,
+          315,
+          264,
+          1697,
+          594,
+          6078,
+          11,
+          11689,
+          21080,
+          389,
+          279,
+          19225,
+          438,
+          807,
+          36635,
+          264,
+          15430,
+          11,
+          2518,
+          4516,
+          476,
+          30309,
+          13,
+          576,
+          4004,
+          374,
+          72400,
+          11,
+          13330,
+          6529,
+          311,
+          279,
+          35201,
+          1917,
+          13,
+          2411,
+          220,
+          15,
+          15,
+          25,
+          15,
+          16,
+          11,
+          1467,
+          96872,
+          4994,
+          389,
+          279,
+          4171,
+          25,
+          330,
+          15220,
+          8768,
+          1,
+          304,
+          3460,
+          4158,
+          11931,
+          11,
+          8110,
+          553,
+          330,
+          43,
+          449,
+          15964,
+          11,
+          2918,
+          457,
+          20049,
+          850,
+          1,
+          304,
+          9155,
+          1467,
+          3685,
+          432,
+          13,
+          576,
+          6078,
+          3060,
+          862,
+          26447,
+          19029,
+          11,
+          22660,
+          30159,
+          476,
+          42368,
+          279,
+          30309,
+          13,
+          576,
+          6552,
+          8458,
+          24020,
+          11,
+          80903,
+          279,
+          16052,
+          2567,
+          369,
+          279,
+          3383,
+          13,
+          576,
+          2766,
+          10335,
+          448,
+          279,
+          6078,
+          2058,
+          304,
+          5244,
+          11,
+          9963,
+          279,
+          30309,
+          323,
+          4516,
+          11,
+          22561
+        ],
+        "content": "The video begins with a close-up shot of a person's hands, specifically focusing on the fingers as they manipulate a thin, red thread or needle. The background is blurred, drawing attention to the delicate action. At 00:01, text overlays appear on the screen: \"Conservation\" in large white letters, followed by \"Liz Rose, Textile Conservator\" in smaller text below it. The hands continue their subtle movements, seemingly threading or adjusting the needle. The shot remains steady, emphasizing the precision required for the task. The video ends with the hands still in focus, holding the needle and thread, suggesting",
+        "finish_reason": "length",
+        "prompt_tokens": 929,
+        "completion_tokens": 128
+      },
+      "metrics": {
+        "wall_ms": {
+          "samples": {
+            "original": [
+              6942.78069405118,
+              6900.092216033954,
+              6906.738527992275
+            ],
+            "off": [
+              6950.642456009518,
+              6855.3159280563705,
+              6903.5708460141905
+            ],
+            "on": [
+              6765.10049495846,
+              6768.292437016498,
+              6722.835211956408
+            ]
+          },
+          "medians": {
+            "original": 6906.738527992275,
+            "off": 6903.5708460141905,
+            "on": 6765.10049495846
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                -0.11323650140748764,
+                0.6489230371955812,
+                0.045863644109966906
+              ],
+              "median_gain_percent": 0.045863644109966906
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                2.6694217437503,
+                1.2694307885026235,
+                2.6180021627811856
+              ],
+              "median_gain_percent": 2.005778663598079
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                2.5592080021332397,
+                1.9101161968703706,
+                2.662665095696415
+              ],
+              "median_gain_percent": 2.0507223845201428
+            }
+          }
+        },
+        "ttft_ms": {
+          "samples": {
+            "original": [
+              2176.9,
+              2129.2,
+              2142.4
+            ],
+            "off": [
+              2193.8,
+              2093.4,
+              2144.5
+            ],
+            "on": [
+              2002.5,
+              2007.4,
+              1961.0
+            ]
+          },
+          "medians": {
+            "original": 2142.4,
+            "off": 2144.5,
+            "on": 2002.5
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                -0.7763333180210497,
+                1.6813826789404351,
+                -0.09802091112769418
+              ],
+              "median_gain_percent": -0.09802091112769418
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                8.720029173124267,
+                4.108149421992935,
+                8.556773140592211
+              ],
+              "median_gain_percent": 6.621590114245746
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                8.011392346915347,
+                5.720458388126981,
+                8.467139656460043
+              ],
+              "median_gain_percent": 6.530059746079164
+            }
+          }
+        },
+        "prefill_tok_s": {
+          "samples": {
+            "original": [
+              508.0,
+              509.7,
+              510.2
+            ],
+            "off": [
+              511.0,
+              511.3,
+              510.8
+            ],
+            "on": [
+              559.1,
+              559.8,
+              561.1
+            ]
+          },
+          "medians": {
+            "original": 509.7,
+            "off": 511.0,
+            "on": 559.8
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                0.5905511811023612,
+                0.31391014322150745,
+                0.11760094080752737
+              ],
+              "median_gain_percent": 0.25505199136748313
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                9.412915851272018,
+                9.485624877762543,
+                9.847298355520762
+              ],
+              "median_gain_percent": 9.549902152641865
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                10.05905511811025,
+                9.829311359623304,
+                9.976479811838512
+              ],
+              "median_gain_percent": 9.829311359623304
+            }
+          }
+        },
+        "decode_tok_s": {
+          "samples": {
+            "original": [
+              26.7,
+              26.7,
+              26.7
+            ],
+            "off": [
+              26.8,
+              26.7,
+              26.7
+            ],
+            "on": [
+              26.7,
+              26.7,
+              26.7
+            ]
+          },
+          "medians": {
+            "original": 26.7,
+            "off": 26.7,
+            "on": 26.7
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                0.3745318352059934,
+                0.0,
+                0.0
+              ],
+              "median_gain_percent": 0.0
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                -0.3731343283582156,
+                0.0,
+                0.0
+              ],
+              "median_gain_percent": 0.0
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "median_gain_percent": 0.0
+            }
+          }
+        }
+      }
+    },
+    "eval-finevideo-31-0": {
+      "all_warm_and_sample_http_proofs_exact": true,
+      "reference": {
+        "token_ids": [
+          785,
+          2766,
+          18404,
+          264,
+          19259,
+          40784,
+          1651,
+          315,
+          264,
+          48786,
+          3082,
+          11,
+          4363,
+          264,
+          6290,
+          476,
+          3283,
+          11,
+          9027,
+          5089,
+          5557,
+          13,
+          5692,
+          374,
+          279,
+          8500,
+          315,
+          9434,
+          4357,
+          1447,
+          16,
+          13,
+          220,
+          3070,
+          15,
+          15,
+          25,
+          15,
+          15,
+          481,
+          220,
+          15,
+          15,
+          25,
+          15,
+          17,
+          95518,
+          576,
+          2766,
+          12033,
+          448,
+          264,
+          1550,
+          34381,
+          6552,
+          3330,
+          1495,
+          518,
+          264,
+          48786,
+          18414,
+          13,
+          576,
+          3015,
+          374,
+          96792,
+          323,
+          14521,
+          3460,
+          14158,
+          315,
+          1128,
+          7952,
+          311,
+          387,
+          264,
+          20057,
+          476,
+          8353,
+          3082,
+          13,
+          73148,
+          525,
+          25244,
+          84077,
+          11,
+          323,
+          33998,
+          374,
+          36967,
+          3941,
+          279,
+          3015,
+          594,
+          7329,
+          13,
+          362,
+          3669,
+          46987,
+          518,
+          279,
+          5622,
+          15804,
+          330,
+          41,
+          2537,
+          1093,
+          16140,
+          36499,
+          10150,
+          9256,
+          9560,
+          50,
+          1,
+          323,
+          330,
+          42,
+          65935,
+          2413,
+          64,
+          11436,
+          17,
+          13,
+          220,
+          3070,
+          15,
+          15,
+          25
+        ],
+        "content": "The video presents a continuous aerial view of a flooded area, likely a town or city, showing significant damage. Here is the sequence of visible events:\n\n1.  **00:00 - 00:02**: The video begins with a high-angle shot looking down at a flooded landscape. The water is murky and covers large sections of what appears to be a residential or commercial area. Buildings are partially submerged, and debris is scattered across the water's surface. A news ticker at the bottom reads \"JAPAN SUBSIDENCE SPREADS\" and \"Kesennuma\".\n\n2.  **00:",
+        "finish_reason": "length",
+        "prompt_tokens": 2972,
+        "completion_tokens": 128
+      },
+      "metrics": {
+        "wall_ms": {
+          "samples": {
+            "original": [
+              10450.919178023469,
+              10445.776324020699,
+              10517.76501396671
+            ],
+            "off": [
+              10503.776584984735,
+              10457.667080045212,
+              10425.138490041718
+            ],
+            "on": [
+              9980.550696956925,
+              10043.564830033574,
+              9958.201668050606
+            ]
+          },
+          "medians": {
+            "original": 10450.919178023469,
+            "off": 10457.667080045212,
+            "on": 9980.550696956925
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                -0.5057680196438152,
+                -0.113833148017628,
+                0.8806673642355656
+              ],
+              "median_gain_percent": -0.06456754575170365
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                4.981312043287045,
+                3.95979568714524,
+                4.478950782640812
+              ],
+              "median_gain_percent": 4.562359649014802
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                4.500737906916841,
+                3.8504700992133545,
+                5.320173489073488
+              ],
+              "median_gain_percent": 4.500737906916841
+            }
+          }
+        },
+        "ttft_ms": {
+          "samples": {
+            "original": [
+              5592.1,
+              5582.8,
+              5669.1
+            ],
+            "off": [
+              5643.3,
+              5602.4,
+              5571.1
+            ],
+            "on": [
+              5127.2,
+              5190.9,
+              5098.9
+            ]
+          },
+          "medians": {
+            "original": 5592.1,
+            "off": 5602.4,
+            "on": 5127.2
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                -0.9155773323080707,
+                -0.35107831195815287,
+                1.7286694537051783
+              ],
+              "median_gain_percent": -0.18418840864791175
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                9.145358212393461,
+                7.345066400114241,
+                8.475884475238294
+              ],
+              "median_gain_percent": 8.4820791089533
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                8.313513706836439,
+                7.0197750232858125,
+                10.058033903088681
+              ],
+              "median_gain_percent": 8.313513706836439
+            }
+          }
+        },
+        "prefill_tok_s": {
+          "samples": {
+            "original": [
+              601.0,
+              599.3,
+              601.5
+            ],
+            "off": [
+              599.9,
+              600.7,
+              600.5
+            ],
+            "on": [
+              668.4,
+              669.1,
+              670.1
+            ]
+          },
+          "medians": {
+            "original": 601.0,
+            "off": 600.5,
+            "on": 669.1
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                -0.18302828618969036,
+                0.2336058735191271,
+                -0.16625103906899863
+              ],
+              "median_gain_percent": -0.08319467554076532
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                11.41856976162694,
+                11.386715498584987,
+                11.590341382181514
+              ],
+              "median_gain_percent": 11.423813488759361
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                11.214642262895168,
+                11.646921408309696,
+                11.404821280133003
+              ],
+              "median_gain_percent": 11.331114808652254
+            }
+          }
+        },
+        "decode_tok_s": {
+          "samples": {
+            "original": [
+              26.3,
+              26.3,
+              26.4
+            ],
+            "off": [
+              26.3,
+              26.3,
+              26.3
+            ],
+            "on": [
+              26.3,
+              26.3,
+              26.3
+            ]
+          },
+          "medians": {
+            "original": 26.3,
+            "off": 26.3,
+            "on": 26.3
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                0.0,
+                0.0,
+                -0.37878787878786735
+              ],
+              "median_gain_percent": 0.0
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "median_gain_percent": 0.0
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                0.0,
+                0.0,
+                -0.37878787878786735
+              ],
+              "median_gain_percent": 0.0
+            }
+          }
+        }
+      }
+    }
+  },
+  "http_proof_scope": "Full returned token IDs, visible content, finish reason and usage; HTTP supplies no logits.",
+  "all_http_proofs_exact": true,
+  "correctness_status": "exact",
+  "correctness_note": "Exactness is informational. Valid baseline outputs can vary in formatting; inspect full responses and kernel/feature parity before deciding correctness or adoption.",
+  "truncated_completions": [
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 0,
+      "arm": "original",
+      "phase": "warm"
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 0,
+      "arm": "original",
+      "phase": "sample"
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 0,
+      "arm": "off",
+      "phase": "warm"
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 0,
+      "arm": "off",
+      "phase": "sample"
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 0,
+      "arm": "on",
+      "phase": "warm"
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 0,
+      "arm": "on",
+      "phase": "sample"
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 1,
+      "arm": "on",
+      "phase": "warm"
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 1,
+      "arm": "on",
+      "phase": "sample"
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 1,
+      "arm": "original",
+      "phase": "warm"
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 1,
+      "arm": "original",
+      "phase": "sample"
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 1,
+      "arm": "off",
+      "phase": "warm"
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 1,
+      "arm": "off",
+      "phase": "sample"
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 2,
+      "arm": "off",
+      "phase": "warm"
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 2,
+      "arm": "off",
+      "phase": "sample"
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 2,
+      "arm": "on",
+      "phase": "warm"
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 2,
+      "arm": "on",
+      "phase": "sample"
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 2,
+      "arm": "original",
+      "phase": "warm"
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 2,
+      "arm": "original",
+      "phase": "sample"
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 0,
+      "arm": "original",
+      "phase": "warm"
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 0,
+      "arm": "original",
+      "phase": "sample"
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 0,
+      "arm": "off",
+      "phase": "warm"
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 0,
+      "arm": "off",
+      "phase": "sample"
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 0,
+      "arm": "on",
+      "phase": "warm"
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 0,
+      "arm": "on",
+      "phase": "sample"
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 1,
+      "arm": "on",
+      "phase": "warm"
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 1,
+      "arm": "on",
+      "phase": "sample"
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 1,
+      "arm": "original",
+      "phase": "warm"
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 1,
+      "arm": "original",
+      "phase": "sample"
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 1,
+      "arm": "off",
+      "phase": "warm"
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 1,
+      "arm": "off",
+      "phase": "sample"
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 2,
+      "arm": "off",
+      "phase": "warm"
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 2,
+      "arm": "off",
+      "phase": "sample"
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 2,
+      "arm": "on",
+      "phase": "warm"
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 2,
+      "arm": "on",
+      "phase": "sample"
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 2,
+      "arm": "original",
+      "phase": "warm"
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 2,
+      "arm": "original",
+      "phase": "sample"
+    }
+  ],
+  "quality_status": "requires_review",
+  "quality_note": "HTTP parity does not qualify transcription or temporal understanding. Review audio against the pinned transcript and video against its annotations; a token-limit completion is truncated and cannot establish complete-answer quality."
+}

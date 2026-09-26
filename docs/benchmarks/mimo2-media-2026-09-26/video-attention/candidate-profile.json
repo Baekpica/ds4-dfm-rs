@@ -1,0 +1,160 @@
+{
+  "status": "Full candidate NCU complete",
+  "run": {
+    "label": "candidate-full",
+    "argv": [
+      "/usr/bin/python3",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/tools/host_memory_guard.py",
+      "--max-gib",
+      "16",
+      "--high-gib",
+      "14",
+      "--reserve-gib",
+      "12",
+      "--timeout",
+      "600",
+      "--log",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/candidate-full.memory.jsonl",
+      "--",
+      "ncu",
+      "--set",
+      "full",
+      "--clock-control",
+      "none",
+      "--replay-mode",
+      "kernel",
+      "--cache-control",
+      "all",
+      "--import-source",
+      "yes",
+      "--source-folders",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1",
+      "--kernel-name-base",
+      "function",
+      "--kernel-name",
+      "mimo2_vision_attn_coalesced",
+      "--launch-skip",
+      "2",
+      "--launch-count",
+      "1",
+      "--export",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/candidate-full",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/probe-candidate",
+      "-1",
+      "1",
+      "2",
+      "880"
+    ],
+    "extra_env": {},
+    "started": 1790410145.3118649,
+    "finished": 1790410154.425867,
+    "guard_exit": 0,
+    "events": [
+      {
+        "time": 1790410145.386496,
+        "event": "start",
+        "unit": "ds4-hostguard-1984403-1790410145379108438.scope",
+        "available_gib": 116.64997100830078,
+        "psi_full_avg10": 0.0,
+        "max_gib": 16.0,
+        "high_gib": 14.0,
+        "reserve_gib": 12.0,
+        "trip_gib": 12.0,
+        "command": [
+          "ncu",
+          "--set",
+          "full",
+          "--clock-control",
+          "none",
+          "--replay-mode",
+          "kernel",
+          "--cache-control",
+          "all",
+          "--import-source",
+          "yes",
+          "--source-folders",
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1",
+          "--kernel-name-base",
+          "function",
+          "--kernel-name",
+          "mimo2_vision_attn_coalesced",
+          "--launch-skip",
+          "2",
+          "--launch-count",
+          "1",
+          "--export",
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/candidate-full",
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/probe-candidate",
+          "-1",
+          "1",
+          "2",
+          "880"
+        ]
+      },
+      {
+        "time": 1790410154.3715818,
+        "event": "exit",
+        "unit": "ds4-hostguard-1984403-1790410145379108438.scope",
+        "status": 0,
+        "payload_status": 0
+      }
+    ],
+    "clock_errors": []
+  },
+  "exports": [
+    {
+      "file": "candidate-full.txt",
+      "argv": [
+        "ncu",
+        "--import",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/candidate-full.ncu-rep",
+        "--page",
+        "details",
+        "--print-details",
+        "all"
+      ],
+      "returncode": 0
+    },
+    {
+      "file": "candidate-full.csv",
+      "argv": [
+        "ncu",
+        "--import",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/candidate-full.ncu-rep",
+        "--page",
+        "raw",
+        "--csv"
+      ],
+      "returncode": 0
+    },
+    {
+      "file": "candidate-source.csv",
+      "argv": [
+        "ncu",
+        "--import",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/candidate-full.ncu-rep",
+        "--page",
+        "source",
+        "--print-source",
+        "sass",
+        "--csv"
+      ],
+      "returncode": 0
+    },
+    {
+      "file": "candidate-cuda-source.csv",
+      "argv": [
+        "ncu",
+        "--import",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/candidate-full.ncu-rep",
+        "--page",
+        "source",
+        "--print-source",
+        "cuda,sass",
+        "--csv"
+      ],
+      "returncode": 0
+    }
+  ],
+  "raw_receipt_sha256": "b68c2e8631af05b9d3ce5d466222fa329217cf7308c9a0db958ec52264889f00"
+}

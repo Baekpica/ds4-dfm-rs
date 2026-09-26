@@ -1,0 +1,168 @@
+{
+  "status": "adopted: coalesced K for512..3072 rows; large-shape candidate rejected",
+  "baseline_commit": "3dfd0077cc52c5d539289c19e2986c9a6c9b86cf",
+  "source_note": "Image full/window attention retained; corrected LayerNorm and accepted audio optimization present. Frozen server matches the bytes measured before its adoption commit.",
+  "server_sha256": "242de9bc641afaa39c6a86cf8df19dc1e989ba2840f72be1bba164994aaa0ef5",
+  "fixture_sha256": "46db77275c9ea748a522bdc620a66c48abe39a5cc0db919d68ce249a4d241324",
+  "request_sha256": "2a6ab6413a1e87409131b90b0fd079bb88363b285ee2a2739dfe284cc7979bce",
+  "completed": [
+    "Representative Rust-host video HTTP profile",
+    "Successful profiler export before guarded worker termination",
+    "Pinned 4-pair geometry and retained attention dispatch",
+    "Kernel/host-wait ranking with overlap caveats",
+    "Full NCU at n=880: 40 replay passes, 2221 metrics, source-PC attribution without sampling overflow",
+    "Shared K transpose candidate scoped to rows 512\u20133072 with retained fallback and kill switch",
+    "Six shape pilots with full output hashes and explicit large-shape rejection",
+    "Full candidate NCU with instruction/shared-memory cost analysis",
+    "Independent production source review; no correctness blocker found",
+    "Production wrapper gate 24 checks, retained full-attention suite 27 checks, window suite 38 checks; hashes and three guard/payload exits 0 independently verified",
+    "Final standard-flags native build and four frozen proof links; only ds4_cuda.o differs between paired native object sets",
+    "15 fresh full-model original/OFF/ON proofs; all152576 finite logits, tokens, inputs and media geometry exact",
+    "27 fresh HTTP workers with54 exact warm/sample responses; all paired ON TTFT/wall gains positive against original and OFF",
+    "15 model and27 HTTP guard/payload exits0; no intervention; observed HTTP GPU clocks2184..2197MHz",
+    "Adopt scoped512..3072 path; retain old kernel outside range and through family kill switch"
+  ],
+  "pending": [],
+  "artifacts": [
+    {
+      "path": "scratch/mimo-media-20260926/video-r1-whole/whole.nsys-rep",
+      "bytes": 10067569,
+      "sha256": "6f7a960a5593d17b27a81e87ed174b92c83bbfd99fe4e1183a948cf18cbcfeeb"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/video-r1-whole/whole.sqlite",
+      "bytes": 27455488,
+      "sha256": "ab2e9af7b54173cca33f41b914d1d95bf18a5dea129dc5476263fab1f9e1a55d"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/video-r1-whole/video-summary.json",
+      "bytes": 139218,
+      "sha256": "dcf58bf6e453080932e1cdc9feb4f08b231e459ab854cac525dddc5b1d6d3f03"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/analyze-video.py",
+      "bytes": 13194,
+      "sha256": "f9a231eb4f45df2af61bfcd33fc5eaf068efe02c467aa37fc804964c5e0d906a"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/video-r1-whole/result.json",
+      "bytes": 2714,
+      "sha256": "73f2c43510a1d5be091e5c83dda1ede89205dd6436e55a5d9743e8519dbf9d7c"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/video-r1-whole/export-complete.json",
+      "bytes": 123,
+      "sha256": "b00daaf2de0f7646c69fd36bd5157cc86d767ce3369369769e9f0e105f07f7d2"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/video-r1-whole/stop.json",
+      "bytes": 1914,
+      "sha256": "e1cee9b3d2376ce41fd9eb31170e3faff04ab9dc4a2c0ed9d6b7df92dc03d7a9"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/video-r1-whole/clocks.jsonl",
+      "bytes": 14590,
+      "sha256": "ed6ae80dafa03affcbe4329702ee3ab34a0341f6ede63f18c69df24f9d40f48d"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/video-r1-whole/server.memory.jsonl",
+      "bytes": 5402,
+      "sha256": "28ae77c49a6790fcfbea9a7d67eff91d944b94bcf3ca13f8480eafebca8c6946"
+    },
+    {
+      "path": "cuda/mimo2_media.cuh",
+      "bytes": 17673,
+      "sha256": "539b6593b4a2852f35707819f63e70cfc3237ff05eac0e79b6e3dd67f453fbce"
+    },
+    {
+      "path": "ds4_mimo2_gpu.cuh",
+      "bytes": 29389,
+      "sha256": "9144921357fe7f9208e32b6eefbf45be38ee51977b4ae79bf7e9847f5377add8"
+    }
+  ],
+  "ncu_evidence": [
+    "ncu-baseline.json",
+    "ncu-baseline-source.json",
+    "ncu-build.json",
+    "ncu-profile.json"
+  ],
+  "candidate_evidence": [
+    "ncu-comparison.json",
+    "isolated-pilot.json",
+    "candidate-build.json",
+    "candidate-profile.json",
+    "review.json",
+    "wrapper-tests.json",
+    "wrapper-tests.txt",
+    "build-provenance.json"
+  ],
+  "decision": {
+    "adopt_rows": [
+      512,
+      3072
+    ],
+    "large_rows_rejected": [
+      6144,
+      8192
+    ],
+    "reason": "Repeated useful HTTP gains across both videos and screen with exact full-model/HTTP outputs; accepted measured staging/shared-storage cost",
+    "shared_increase_bytes_per_cta": 8448,
+    "additional_persistent_device_allocations_bytes": 0,
+    "quality_scope": "128-token video and64-token image continuations; no complete-caption quality claim"
+  },
+  "model_evidence": [
+    "model-proof.json",
+    "model-receipt.json"
+  ],
+  "http_evidence": [
+    "http-ab.json",
+    "image-http-ab.json",
+    "http-proof.json",
+    "http-launch.json",
+    "http-guards.json",
+    "http-clocks.json"
+  ],
+  "qualification_artifacts": [
+    {
+      "file": "model-proof.json",
+      "bytes": 45198,
+      "sha256": "d31de00fb23717394e7ba3cbd60a1f6214286f8f2ff92e8d5f6bd8614cf11cf4"
+    },
+    {
+      "file": "model-receipt.json",
+      "bytes": 37122,
+      "sha256": "5d80ba0bfa558be8b67e9737cfe425dbd6cb2001a93dea073304543f1109a906"
+    },
+    {
+      "file": "http-ab.json",
+      "bytes": 21022,
+      "sha256": "4223a0fe4dbe95257ab6279bc1223a861ec153ffc3430011f78f06a8084748af"
+    },
+    {
+      "file": "image-http-ab.json",
+      "bytes": 7278,
+      "sha256": "3415c0228ad8236dce765fdedb3f4c304830ab35335581491a40e166ca908942"
+    },
+    {
+      "file": "http-proof.json",
+      "bytes": 46880,
+      "sha256": "04c62384d1e23cd63afe9222d59a3b0e142f485602d0e3d8284583a82a2d7520"
+    },
+    {
+      "file": "http-launch.json",
+      "bytes": 38925,
+      "sha256": "dc03901c505befac571225114a8084f354e3431f74a1ada774cb601c6cdfeffc"
+    },
+    {
+      "file": "http-guards.json",
+      "bytes": 13469,
+      "sha256": "104d6e60e6ad933b33c49e07434f9fc8c0c5c5531cc86cd23bb36628aee83227"
+    },
+    {
+      "file": "http-clocks.json",
+      "bytes": 17403,
+      "sha256": "82de76368b00b0edce5a41b5b52e0c677a5b1b6a5f685fd24b059adb34876eff"
+    }
+  ],
+  "baseline_artifacts_note": "The original artifacts list and source hashes are the frozen3dfd baseline collection; candidate/final hashes are in build-provenance.json and qualification receipts."
+}
