@@ -1,0 +1,134 @@
+{
+  "baseline_threads": 128,
+  "candidate_threads": 512,
+  "metrics": {
+    "gpu__time_duration.sum": {
+      "unit": "ms",
+      "baseline": 2.712448,
+      "candidate": 2.67376,
+      "change_percent": -1.4263130574300398
+    },
+    "launch__registers_per_thread": {
+      "unit": "register/thread",
+      "baseline": 23.0,
+      "candidate": 23.0,
+      "change_percent": 0.0
+    },
+    "launch__grid_size": {
+      "unit": "",
+      "baseline": 131072.0,
+      "candidate": 32768.0,
+      "change_percent": -75.0
+    },
+    "launch__block_size": {
+      "unit": "",
+      "baseline": 128.0,
+      "candidate": 512.0,
+      "change_percent": 300.0
+    },
+    "launch__shared_mem_config_size": {
+      "unit": "Kbyte",
+      "baseline": 32.768,
+      "candidate": 8.192,
+      "change_percent": -75.0
+    },
+    "launch__shared_mem_per_block_driver": {
+      "unit": "Kbyte/block",
+      "baseline": 1.024,
+      "candidate": 1.024,
+      "change_percent": 0.0
+    },
+    "launch__shared_mem_per_block_dynamic": {
+      "unit": "byte/block",
+      "baseline": 0.0,
+      "candidate": 0.0,
+      "change_percent": null
+    },
+    "launch__shared_mem_per_block_static": {
+      "unit": "byte/block",
+      "baseline": 0.0,
+      "candidate": 0.0,
+      "change_percent": null
+    },
+    "derived__local_spilling_requests": {
+      "unit": "",
+      "baseline": 0.0,
+      "candidate": 0.0,
+      "change_percent": null
+    },
+    "derived__shared_spilling_requests": {
+      "unit": "",
+      "baseline": 0.0,
+      "candidate": 0.0,
+      "change_percent": null
+    },
+    "smsp__inst_executed.sum": {
+      "unit": "inst",
+      "baseline": 55050240.0,
+      "candidate": 55050240.0,
+      "change_percent": 0.0
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+      "unit": "sector",
+      "baseline": 17301504.0,
+      "candidate": 17301504.0,
+      "change_percent": 0.0
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+      "unit": "sector",
+      "baseline": 2883584.0,
+      "candidate": 2883584.0,
+      "change_percent": 0.0
+    },
+    "lts__t_sectors.sum": {
+      "unit": "sector",
+      "baseline": 19778910.0,
+      "candidate": 19693558.0,
+      "change_percent": -0.4315303522792746
+    },
+    "l1tex__t_sector_hit_rate.pct": {
+      "unit": "%",
+      "baseline": 4.509911,
+      "candidate": 4.827829,
+      "change_percent": 7.049318711610941
+    },
+    "lts__t_sector_hit_rate.pct": {
+      "unit": "%",
+      "baseline": 7.614494,
+      "candidate": 7.278507,
+      "change_percent": -4.412466540783921
+    },
+    "smsp__warps_active.avg.per_cycle_active": {
+      "unit": "warp",
+      "baseline": 11.18336,
+      "candidate": 9.98331,
+      "change_percent": -10.7306748597917
+    },
+    "smsp__warps_eligible.avg.per_cycle_active": {
+      "unit": "warp",
+      "baseline": 0.051103,
+      "candidate": 0.064055,
+      "change_percent": 25.344891689333295
+    },
+    "sm__warps_active.avg.pct_of_peak_sustained_active": {
+      "unit": "%",
+      "baseline": 93.244432,
+      "candidate": 81.786164,
+      "change_percent": -12.288420610466055
+    },
+    "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": {
+      "unit": "inst",
+      "baseline": 225.971155,
+      "candidate": 197.517907,
+      "change_percent": -12.59153983613528
+    },
+    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": {
+      "unit": "%",
+      "baseline": 11.532559,
+      "candidate": 11.648978,
+      "change_percent": 1.0094810700729928
+    }
+  },
+  "cost": "Same mathematical operations, kernel source body, per-thread registers, shared allocation, valid tensor bytes, executed instruction count and global request sectors; fewer CTAs. Resource placement/cache carveout and scheduling differ.",
+  "interpretation": "Eligible warps rise and long-scoreboard ratio falls while achieved occupancy falls. These are consistent with a modest latency improvement; do not claim higher occupancy or a unique causal mechanism."
+}

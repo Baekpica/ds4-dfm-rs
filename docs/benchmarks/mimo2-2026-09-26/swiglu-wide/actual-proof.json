@@ -1,0 +1,1214 @@
+{
+  "accepted": false,
+  "decision": "No consistent end-to-end gain; not a fixed percentage threshold",
+  "workload": {
+    "path": "scratch/mimo-prefill-20260926/workload-swiglu6.json",
+    "bytes": 1853,
+    "sha256": "6667795f2a4e1017a81bc29ccf258fb9f2d7a16076835f46eaed12578697c63a"
+  },
+  "paired_on_change_percent": {
+    "original": {
+      "prefill_tps": [
+        0.07380497445526046,
+        -0.13451333240377394,
+        0.07633587786259888
+      ],
+      "gen_tps": [
+        -0.08193363375665896,
+        0.0,
+        -0.24529844644318732
+      ]
+    },
+    "off": {
+      "prefill_tps": [
+        -0.0016388740935013857,
+        -0.021349449430541068,
+        0.07633587786259888
+      ],
+      "gen_tps": [
+        -0.12285012285012664,
+        -0.1225490196078427,
+        0.0
+      ]
+    }
+  },
+  "measured_sample_processes": 9,
+  "warmup_processes": 9,
+  "all18_guard_payload_exits_zero": true,
+  "all18_full_logits_and_tokens_exact": true,
+  "full_logits_json_file_hashes_all_equal": true,
+  "token_json_file_hashes_all_equal": true,
+  "runs": [
+    {
+      "sample": 0,
+      "arm": "original",
+      "phase": "warm",
+      "timing": {
+        "prefill_tps": 1221.88,
+        "gen_tps": 24.4
+      },
+      "counts": {
+        "prefill_tokens": 8192,
+        "gen_tokens": 128,
+        "logits": 152576,
+        "tokens": 128
+      },
+      "proof": {
+        "full_logits_exact": true,
+        "all_tokens_exact": true,
+        "logits_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-0-original-warm-proof/frontier_008192.logits.json",
+          "bytes": 1716410,
+          "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0"
+        },
+        "tokens_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-0-original-warm-proof/tokens-8192.json",
+          "bytes": 735,
+          "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733"
+        }
+      },
+      "guard": {
+        "start": {
+          "time": 1790400827.2882926,
+          "event": "start",
+          "unit": "ds4-hostguard-1934658-1790400827278491479.scope",
+          "available_gib": 25.78725814819336,
+          "psi_full_avg10": 0.0,
+          "max_gib": 13.7,
+          "high_gib": 12.7,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/bench-gateup3-candidate",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+            "--prompt-file",
+            "speed-bench/promessi_sposi.txt",
+            "--ctx-start",
+            "8192",
+            "--ctx-max",
+            "8192",
+            "--gen-tokens",
+            "128",
+            "--dump-frontier-logits-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/swiglu6-0-original-warm-proof"
+          ]
+        },
+        "exit": {
+          "time": 1790400844.225509,
+          "event": "exit",
+          "unit": "ds4-hostguard-1934658-1790400827278491479.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 0,
+      "arm": "original",
+      "phase": "sample",
+      "timing": {
+        "prefill_tps": 1219.43,
+        "gen_tps": 24.41
+      },
+      "counts": {
+        "prefill_tokens": 8192,
+        "gen_tokens": 128,
+        "logits": 152576,
+        "tokens": 128
+      },
+      "proof": {
+        "full_logits_exact": true,
+        "all_tokens_exact": true,
+        "logits_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-0-original-sample-proof/frontier_008192.logits.json",
+          "bytes": 1716410,
+          "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0"
+        },
+        "tokens_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-0-original-sample-proof/tokens-8192.json",
+          "bytes": 735,
+          "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733"
+        }
+      },
+      "guard": {
+        "start": {
+          "time": 1790400844.2905076,
+          "event": "start",
+          "unit": "ds4-hostguard-1934703-1790400844282366470.scope",
+          "available_gib": 26.456218719482422,
+          "psi_full_avg10": 0.0,
+          "max_gib": 14.4,
+          "high_gib": 13.4,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/bench-gateup3-candidate",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+            "--prompt-file",
+            "speed-bench/promessi_sposi.txt",
+            "--ctx-start",
+            "8192",
+            "--ctx-max",
+            "8192",
+            "--gen-tokens",
+            "128",
+            "--dump-frontier-logits-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/swiglu6-0-original-sample-proof"
+          ]
+        },
+        "exit": {
+          "time": 1790400862.0100935,
+          "event": "exit",
+          "unit": "ds4-hostguard-1934703-1790400844282366470.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 0,
+      "arm": "off",
+      "phase": "warm",
+      "timing": {
+        "prefill_tps": 1219.76,
+        "gen_tps": 24.4
+      },
+      "counts": {
+        "prefill_tokens": 8192,
+        "gen_tokens": 128,
+        "logits": 152576,
+        "tokens": 128
+      },
+      "proof": {
+        "full_logits_exact": true,
+        "all_tokens_exact": true,
+        "logits_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-0-off-warm-proof/frontier_008192.logits.json",
+          "bytes": 1716410,
+          "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0"
+        },
+        "tokens_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-0-off-warm-proof/tokens-8192.json",
+          "bytes": 735,
+          "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733"
+        }
+      },
+      "guard": {
+        "start": {
+          "time": 1790400862.0755064,
+          "event": "start",
+          "unit": "ds4-hostguard-1934712-1790400862066815697.scope",
+          "available_gib": 26.532482147216797,
+          "psi_full_avg10": 0.0,
+          "max_gib": 14.5,
+          "high_gib": 13.5,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/bench-swiglu6-candidate",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+            "--prompt-file",
+            "speed-bench/promessi_sposi.txt",
+            "--ctx-start",
+            "8192",
+            "--ctx-max",
+            "8192",
+            "--gen-tokens",
+            "128",
+            "--dump-frontier-logits-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/swiglu6-0-off-warm-proof"
+          ]
+        },
+        "exit": {
+          "time": 1790400879.9477715,
+          "event": "exit",
+          "unit": "ds4-hostguard-1934712-1790400862066815697.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 0,
+      "arm": "off",
+      "phase": "sample",
+      "timing": {
+        "prefill_tps": 1220.35,
+        "gen_tps": 24.42
+      },
+      "counts": {
+        "prefill_tokens": 8192,
+        "gen_tokens": 128,
+        "logits": 152576,
+        "tokens": 128
+      },
+      "proof": {
+        "full_logits_exact": true,
+        "all_tokens_exact": true,
+        "logits_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-0-off-sample-proof/frontier_008192.logits.json",
+          "bytes": 1716410,
+          "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0"
+        },
+        "tokens_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-0-off-sample-proof/tokens-8192.json",
+          "bytes": 735,
+          "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733"
+        }
+      },
+      "guard": {
+        "start": {
+          "time": 1790400880.0384865,
+          "event": "start",
+          "unit": "ds4-hostguard-1934759-1790400880030376433.scope",
+          "available_gib": 26.540733337402344,
+          "psi_full_avg10": 0.0,
+          "max_gib": 14.5,
+          "high_gib": 13.5,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/bench-swiglu6-candidate",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+            "--prompt-file",
+            "speed-bench/promessi_sposi.txt",
+            "--ctx-start",
+            "8192",
+            "--ctx-max",
+            "8192",
+            "--gen-tokens",
+            "128",
+            "--dump-frontier-logits-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/swiglu6-0-off-sample-proof"
+          ]
+        },
+        "exit": {
+          "time": 1790400897.808166,
+          "event": "exit",
+          "unit": "ds4-hostguard-1934759-1790400880030376433.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 0,
+      "arm": "on",
+      "phase": "warm",
+      "timing": {
+        "prefill_tps": 1218.57,
+        "gen_tps": 24.37
+      },
+      "counts": {
+        "prefill_tokens": 8192,
+        "gen_tokens": 128,
+        "logits": 152576,
+        "tokens": 128
+      },
+      "proof": {
+        "full_logits_exact": true,
+        "all_tokens_exact": true,
+        "logits_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-0-on-warm-proof/frontier_008192.logits.json",
+          "bytes": 1716410,
+          "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0"
+        },
+        "tokens_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-0-on-warm-proof/tokens-8192.json",
+          "bytes": 735,
+          "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733"
+        }
+      },
+      "guard": {
+        "start": {
+          "time": 1790400897.8737974,
+          "event": "start",
+          "unit": "ds4-hostguard-1934779-1790400897867156146.scope",
+          "available_gib": 26.56494140625,
+          "psi_full_avg10": 0.0,
+          "max_gib": 14.5,
+          "high_gib": 13.5,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/bench-swiglu6-candidate",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+            "--prompt-file",
+            "speed-bench/promessi_sposi.txt",
+            "--ctx-start",
+            "8192",
+            "--ctx-max",
+            "8192",
+            "--gen-tokens",
+            "128",
+            "--dump-frontier-logits-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/swiglu6-0-on-warm-proof"
+          ]
+        },
+        "exit": {
+          "time": 1790400916.0625181,
+          "event": "exit",
+          "unit": "ds4-hostguard-1934779-1790400897867156146.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 0,
+      "arm": "on",
+      "phase": "sample",
+      "timing": {
+        "prefill_tps": 1220.33,
+        "gen_tps": 24.39
+      },
+      "counts": {
+        "prefill_tokens": 8192,
+        "gen_tokens": 128,
+        "logits": 152576,
+        "tokens": 128
+      },
+      "proof": {
+        "full_logits_exact": true,
+        "all_tokens_exact": true,
+        "logits_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-0-on-sample-proof/frontier_008192.logits.json",
+          "bytes": 1716410,
+          "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0"
+        },
+        "tokens_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-0-on-sample-proof/tokens-8192.json",
+          "bytes": 735,
+          "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733"
+        }
+      },
+      "guard": {
+        "start": {
+          "time": 1790400916.1514711,
+          "event": "start",
+          "unit": "ds4-hostguard-1934790-1790400916143358011.scope",
+          "available_gib": 26.56957244873047,
+          "psi_full_avg10": 0.0,
+          "max_gib": 14.5,
+          "high_gib": 13.5,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/bench-swiglu6-candidate",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+            "--prompt-file",
+            "speed-bench/promessi_sposi.txt",
+            "--ctx-start",
+            "8192",
+            "--ctx-max",
+            "8192",
+            "--gen-tokens",
+            "128",
+            "--dump-frontier-logits-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/swiglu6-0-on-sample-proof"
+          ]
+        },
+        "exit": {
+          "time": 1790400933.9390762,
+          "event": "exit",
+          "unit": "ds4-hostguard-1934790-1790400916143358011.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 1,
+      "arm": "original",
+      "phase": "warm",
+      "timing": {
+        "prefill_tps": 1218.46,
+        "gen_tps": 24.45
+      },
+      "counts": {
+        "prefill_tokens": 8192,
+        "gen_tokens": 128,
+        "logits": 152576,
+        "tokens": 128
+      },
+      "proof": {
+        "full_logits_exact": true,
+        "all_tokens_exact": true,
+        "logits_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-1-original-warm-proof/frontier_008192.logits.json",
+          "bytes": 1716410,
+          "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0"
+        },
+        "tokens_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-1-original-warm-proof/tokens-8192.json",
+          "bytes": 735,
+          "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733"
+        }
+      },
+      "guard": {
+        "start": {
+          "time": 1790400970.398283,
+          "event": "start",
+          "unit": "ds4-hostguard-1934850-1790400970390748558.scope",
+          "available_gib": 26.56192398071289,
+          "psi_full_avg10": 0.0,
+          "max_gib": 14.5,
+          "high_gib": 13.5,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/bench-gateup3-candidate",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+            "--prompt-file",
+            "speed-bench/promessi_sposi.txt",
+            "--ctx-start",
+            "8192",
+            "--ctx-max",
+            "8192",
+            "--gen-tokens",
+            "128",
+            "--dump-frontier-logits-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/swiglu6-1-original-warm-proof"
+          ]
+        },
+        "exit": {
+          "time": 1790400988.078909,
+          "event": "exit",
+          "unit": "ds4-hostguard-1934850-1790400970390748558.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 1,
+      "arm": "original",
+      "phase": "sample",
+      "timing": {
+        "prefill_tps": 1219.21,
+        "gen_tps": 24.45
+      },
+      "counts": {
+        "prefill_tokens": 8192,
+        "gen_tokens": 128,
+        "logits": 152576,
+        "tokens": 128
+      },
+      "proof": {
+        "full_logits_exact": true,
+        "all_tokens_exact": true,
+        "logits_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-1-original-sample-proof/frontier_008192.logits.json",
+          "bytes": 1716410,
+          "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0"
+        },
+        "tokens_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-1-original-sample-proof/tokens-8192.json",
+          "bytes": 735,
+          "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733"
+        }
+      },
+      "guard": {
+        "start": {
+          "time": 1790400988.146115,
+          "event": "start",
+          "unit": "ds4-hostguard-1934879-1790400988135368620.scope",
+          "available_gib": 26.55646514892578,
+          "psi_full_avg10": 0.0,
+          "max_gib": 14.5,
+          "high_gib": 13.5,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/bench-gateup3-candidate",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+            "--prompt-file",
+            "speed-bench/promessi_sposi.txt",
+            "--ctx-start",
+            "8192",
+            "--ctx-max",
+            "8192",
+            "--gen-tokens",
+            "128",
+            "--dump-frontier-logits-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/swiglu6-1-original-sample-proof"
+          ]
+        },
+        "exit": {
+          "time": 1790401005.6432147,
+          "event": "exit",
+          "unit": "ds4-hostguard-1934879-1790400988135368620.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 1,
+      "arm": "off",
+      "phase": "warm",
+      "timing": {
+        "prefill_tps": 1216.93,
+        "gen_tps": 24.39
+      },
+      "counts": {
+        "prefill_tokens": 8192,
+        "gen_tokens": 128,
+        "logits": 152576,
+        "tokens": 128
+      },
+      "proof": {
+        "full_logits_exact": true,
+        "all_tokens_exact": true,
+        "logits_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-1-off-warm-proof/frontier_008192.logits.json",
+          "bytes": 1716410,
+          "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0"
+        },
+        "tokens_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-1-off-warm-proof/tokens-8192.json",
+          "bytes": 735,
+          "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733"
+        }
+      },
+      "guard": {
+        "start": {
+          "time": 1790401005.7077887,
+          "event": "start",
+          "unit": "ds4-hostguard-1934913-1790401005700380297.scope",
+          "available_gib": 26.542144775390625,
+          "psi_full_avg10": 0.0,
+          "max_gib": 14.5,
+          "high_gib": 13.5,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/bench-swiglu6-candidate",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+            "--prompt-file",
+            "speed-bench/promessi_sposi.txt",
+            "--ctx-start",
+            "8192",
+            "--ctx-max",
+            "8192",
+            "--gen-tokens",
+            "128",
+            "--dump-frontier-logits-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/swiglu6-1-off-warm-proof"
+          ]
+        },
+        "exit": {
+          "time": 1790401023.5273714,
+          "event": "exit",
+          "unit": "ds4-hostguard-1934913-1790401005700380297.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 1,
+      "arm": "off",
+      "phase": "sample",
+      "timing": {
+        "prefill_tps": 1217.83,
+        "gen_tps": 24.48
+      },
+      "counts": {
+        "prefill_tokens": 8192,
+        "gen_tokens": 128,
+        "logits": 152576,
+        "tokens": 128
+      },
+      "proof": {
+        "full_logits_exact": true,
+        "all_tokens_exact": true,
+        "logits_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-1-off-sample-proof/frontier_008192.logits.json",
+          "bytes": 1716410,
+          "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0"
+        },
+        "tokens_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-1-off-sample-proof/tokens-8192.json",
+          "bytes": 735,
+          "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733"
+        }
+      },
+      "guard": {
+        "start": {
+          "time": 1790401023.5947068,
+          "event": "start",
+          "unit": "ds4-hostguard-1934934-1790401023586112131.scope",
+          "available_gib": 26.553878784179688,
+          "psi_full_avg10": 0.0,
+          "max_gib": 14.5,
+          "high_gib": 13.5,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/bench-swiglu6-candidate",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+            "--prompt-file",
+            "speed-bench/promessi_sposi.txt",
+            "--ctx-start",
+            "8192",
+            "--ctx-max",
+            "8192",
+            "--gen-tokens",
+            "128",
+            "--dump-frontier-logits-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/swiglu6-1-off-sample-proof"
+          ]
+        },
+        "exit": {
+          "time": 1790401041.7748024,
+          "event": "exit",
+          "unit": "ds4-hostguard-1934934-1790401023586112131.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 1,
+      "arm": "on",
+      "phase": "warm",
+      "timing": {
+        "prefill_tps": 1220.29,
+        "gen_tps": 24.4
+      },
+      "counts": {
+        "prefill_tokens": 8192,
+        "gen_tokens": 128,
+        "logits": 152576,
+        "tokens": 128
+      },
+      "proof": {
+        "full_logits_exact": true,
+        "all_tokens_exact": true,
+        "logits_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-1-on-warm-proof/frontier_008192.logits.json",
+          "bytes": 1716410,
+          "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0"
+        },
+        "tokens_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-1-on-warm-proof/tokens-8192.json",
+          "bytes": 735,
+          "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733"
+        }
+      },
+      "guard": {
+        "start": {
+          "time": 1790400934.0021098,
+          "event": "start",
+          "unit": "ds4-hostguard-1934822-1790400933994861382.scope",
+          "available_gib": 26.562976837158203,
+          "psi_full_avg10": 0.0,
+          "max_gib": 14.5,
+          "high_gib": 13.5,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/bench-swiglu6-candidate",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+            "--prompt-file",
+            "speed-bench/promessi_sposi.txt",
+            "--ctx-start",
+            "8192",
+            "--ctx-max",
+            "8192",
+            "--gen-tokens",
+            "128",
+            "--dump-frontier-logits-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/swiglu6-1-on-warm-proof"
+          ]
+        },
+        "exit": {
+          "time": 1790400951.8860772,
+          "event": "exit",
+          "unit": "ds4-hostguard-1934822-1790400933994861382.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 1,
+      "arm": "on",
+      "phase": "sample",
+      "timing": {
+        "prefill_tps": 1217.57,
+        "gen_tps": 24.45
+      },
+      "counts": {
+        "prefill_tokens": 8192,
+        "gen_tokens": 128,
+        "logits": 152576,
+        "tokens": 128
+      },
+      "proof": {
+        "full_logits_exact": true,
+        "all_tokens_exact": true,
+        "logits_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-1-on-sample-proof/frontier_008192.logits.json",
+          "bytes": 1716410,
+          "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0"
+        },
+        "tokens_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-1-on-sample-proof/tokens-8192.json",
+          "bytes": 735,
+          "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733"
+        }
+      },
+      "guard": {
+        "start": {
+          "time": 1790400951.9528794,
+          "event": "start",
+          "unit": "ds4-hostguard-1934830-1790400951943430553.scope",
+          "available_gib": 26.54532241821289,
+          "psi_full_avg10": 0.0,
+          "max_gib": 14.5,
+          "high_gib": 13.5,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/bench-swiglu6-candidate",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+            "--prompt-file",
+            "speed-bench/promessi_sposi.txt",
+            "--ctx-start",
+            "8192",
+            "--ctx-max",
+            "8192",
+            "--gen-tokens",
+            "128",
+            "--dump-frontier-logits-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/swiglu6-1-on-sample-proof"
+          ]
+        },
+        "exit": {
+          "time": 1790400970.3336272,
+          "event": "exit",
+          "unit": "ds4-hostguard-1934830-1790400951943430553.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 2,
+      "arm": "original",
+      "phase": "warm",
+      "timing": {
+        "prefill_tps": 1219.6,
+        "gen_tps": 24.4
+      },
+      "counts": {
+        "prefill_tokens": 8192,
+        "gen_tokens": 128,
+        "logits": 152576,
+        "tokens": 128
+      },
+      "proof": {
+        "full_logits_exact": true,
+        "all_tokens_exact": true,
+        "logits_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-2-original-warm-proof/frontier_008192.logits.json",
+          "bytes": 1716410,
+          "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0"
+        },
+        "tokens_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-2-original-warm-proof/tokens-8192.json",
+          "bytes": 735,
+          "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733"
+        }
+      },
+      "guard": {
+        "start": {
+          "time": 1790401113.405625,
+          "event": "start",
+          "unit": "ds4-hostguard-1935122-1790401113398079868.scope",
+          "available_gib": 26.56452178955078,
+          "psi_full_avg10": 0.0,
+          "max_gib": 14.5,
+          "high_gib": 13.5,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/bench-gateup3-candidate",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+            "--prompt-file",
+            "speed-bench/promessi_sposi.txt",
+            "--ctx-start",
+            "8192",
+            "--ctx-max",
+            "8192",
+            "--gen-tokens",
+            "128",
+            "--dump-frontier-logits-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/swiglu6-2-original-warm-proof"
+          ]
+        },
+        "exit": {
+          "time": 1790401131.1019433,
+          "event": "exit",
+          "unit": "ds4-hostguard-1935122-1790401113398079868.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 2,
+      "arm": "original",
+      "phase": "sample",
+      "timing": {
+        "prefill_tps": 1218.3,
+        "gen_tps": 24.46
+      },
+      "counts": {
+        "prefill_tokens": 8192,
+        "gen_tokens": 128,
+        "logits": 152576,
+        "tokens": 128
+      },
+      "proof": {
+        "full_logits_exact": true,
+        "all_tokens_exact": true,
+        "logits_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-2-original-sample-proof/frontier_008192.logits.json",
+          "bytes": 1716410,
+          "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0"
+        },
+        "tokens_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-2-original-sample-proof/tokens-8192.json",
+          "bytes": 735,
+          "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733"
+        }
+      },
+      "guard": {
+        "start": {
+          "time": 1790401131.168474,
+          "event": "start",
+          "unit": "ds4-hostguard-1935153-1790401131160867524.scope",
+          "available_gib": 26.570438385009766,
+          "psi_full_avg10": 0.0,
+          "max_gib": 14.5,
+          "high_gib": 13.5,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/bench-gateup3-candidate",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+            "--prompt-file",
+            "speed-bench/promessi_sposi.txt",
+            "--ctx-start",
+            "8192",
+            "--ctx-max",
+            "8192",
+            "--gen-tokens",
+            "128",
+            "--dump-frontier-logits-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/swiglu6-2-original-sample-proof"
+          ]
+        },
+        "exit": {
+          "time": 1790401148.962573,
+          "event": "exit",
+          "unit": "ds4-hostguard-1935153-1790401131160867524.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 2,
+      "arm": "off",
+      "phase": "warm",
+      "timing": {
+        "prefill_tps": 1219.01,
+        "gen_tps": 24.46
+      },
+      "counts": {
+        "prefill_tokens": 8192,
+        "gen_tokens": 128,
+        "logits": 152576,
+        "tokens": 128
+      },
+      "proof": {
+        "full_logits_exact": true,
+        "all_tokens_exact": true,
+        "logits_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-2-off-warm-proof/frontier_008192.logits.json",
+          "bytes": 1716410,
+          "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0"
+        },
+        "tokens_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-2-off-warm-proof/tokens-8192.json",
+          "bytes": 735,
+          "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733"
+        }
+      },
+      "guard": {
+        "start": {
+          "time": 1790401041.8742316,
+          "event": "start",
+          "unit": "ds4-hostguard-1934942-1790401041864345296.scope",
+          "available_gib": 26.582538604736328,
+          "psi_full_avg10": 0.0,
+          "max_gib": 14.5,
+          "high_gib": 13.5,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/bench-swiglu6-candidate",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+            "--prompt-file",
+            "speed-bench/promessi_sposi.txt",
+            "--ctx-start",
+            "8192",
+            "--ctx-max",
+            "8192",
+            "--gen-tokens",
+            "128",
+            "--dump-frontier-logits-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/swiglu6-2-off-warm-proof"
+          ]
+        },
+        "exit": {
+          "time": 1790401059.6859524,
+          "event": "exit",
+          "unit": "ds4-hostguard-1934942-1790401041864345296.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 2,
+      "arm": "off",
+      "phase": "sample",
+      "timing": {
+        "prefill_tps": 1218.3,
+        "gen_tps": 24.4
+      },
+      "counts": {
+        "prefill_tokens": 8192,
+        "gen_tokens": 128,
+        "logits": 152576,
+        "tokens": 128
+      },
+      "proof": {
+        "full_logits_exact": true,
+        "all_tokens_exact": true,
+        "logits_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-2-off-sample-proof/frontier_008192.logits.json",
+          "bytes": 1716410,
+          "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0"
+        },
+        "tokens_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-2-off-sample-proof/tokens-8192.json",
+          "bytes": 735,
+          "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733"
+        }
+      },
+      "guard": {
+        "start": {
+          "time": 1790401059.7922728,
+          "event": "start",
+          "unit": "ds4-hostguard-1935063-1790401059784794533.scope",
+          "available_gib": 26.52138900756836,
+          "psi_full_avg10": 0.0,
+          "max_gib": 14.5,
+          "high_gib": 13.5,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/bench-swiglu6-candidate",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+            "--prompt-file",
+            "speed-bench/promessi_sposi.txt",
+            "--ctx-start",
+            "8192",
+            "--ctx-max",
+            "8192",
+            "--gen-tokens",
+            "128",
+            "--dump-frontier-logits-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/swiglu6-2-off-sample-proof"
+          ]
+        },
+        "exit": {
+          "time": 1790401077.490116,
+          "event": "exit",
+          "unit": "ds4-hostguard-1935063-1790401059784794533.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 2,
+      "arm": "on",
+      "phase": "warm",
+      "timing": {
+        "prefill_tps": 1219.26,
+        "gen_tps": 24.49
+      },
+      "counts": {
+        "prefill_tokens": 8192,
+        "gen_tokens": 128,
+        "logits": 152576,
+        "tokens": 128
+      },
+      "proof": {
+        "full_logits_exact": true,
+        "all_tokens_exact": true,
+        "logits_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-2-on-warm-proof/frontier_008192.logits.json",
+          "bytes": 1716410,
+          "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0"
+        },
+        "tokens_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-2-on-warm-proof/tokens-8192.json",
+          "bytes": 735,
+          "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733"
+        }
+      },
+      "guard": {
+        "start": {
+          "time": 1790401077.554103,
+          "event": "start",
+          "unit": "ds4-hostguard-1935071-1790401077545908577.scope",
+          "available_gib": 26.55107879638672,
+          "psi_full_avg10": 0.0,
+          "max_gib": 14.5,
+          "high_gib": 13.5,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/bench-swiglu6-candidate",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+            "--prompt-file",
+            "speed-bench/promessi_sposi.txt",
+            "--ctx-start",
+            "8192",
+            "--ctx-max",
+            "8192",
+            "--gen-tokens",
+            "128",
+            "--dump-frontier-logits-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/swiglu6-2-on-warm-proof"
+          ]
+        },
+        "exit": {
+          "time": 1790401095.4589977,
+          "event": "exit",
+          "unit": "ds4-hostguard-1935071-1790401077545908577.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 2,
+      "arm": "on",
+      "phase": "sample",
+      "timing": {
+        "prefill_tps": 1219.23,
+        "gen_tps": 24.4
+      },
+      "counts": {
+        "prefill_tokens": 8192,
+        "gen_tokens": 128,
+        "logits": 152576,
+        "tokens": 128
+      },
+      "proof": {
+        "full_logits_exact": true,
+        "all_tokens_exact": true,
+        "logits_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-2-on-sample-proof/frontier_008192.logits.json",
+          "bytes": 1716410,
+          "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0"
+        },
+        "tokens_file": {
+          "path": "scratch/mimo-prefill-20260926/swiglu6-2-on-sample-proof/tokens-8192.json",
+          "bytes": 735,
+          "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733"
+        }
+      },
+      "guard": {
+        "start": {
+          "time": 1790401095.5514288,
+          "event": "start",
+          "unit": "ds4-hostguard-1935091-1790401095543501453.scope",
+          "available_gib": 26.55133056640625,
+          "psi_full_avg10": 0.0,
+          "max_gib": 14.5,
+          "high_gib": 13.5,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/bench-swiglu6-candidate",
+            "--cuda",
+            "-m",
+            "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+            "--prompt-file",
+            "speed-bench/promessi_sposi.txt",
+            "--ctx-start",
+            "8192",
+            "--ctx-max",
+            "8192",
+            "--gen-tokens",
+            "128",
+            "--dump-frontier-logits-dir",
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/swiglu6-2-on-sample-proof"
+          ]
+        },
+        "exit": {
+          "time": 1790401113.3419158,
+          "event": "exit",
+          "unit": "ds4-hostguard-1935091-1790401095543501453.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    }
+  ],
+  "method": "Fresh warmup process before every fresh measured process, same resident owner10; rotated original/OFF/default-ON. Warm timing is excluded from decision."
+}

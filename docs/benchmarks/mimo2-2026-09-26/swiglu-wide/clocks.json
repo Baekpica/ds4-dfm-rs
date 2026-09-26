@@ -1,0 +1,22 @@
+{
+  "requested_range_mhz": [
+    300,
+    2200
+  ],
+  "samples": 16,
+  "busy_samples": 9,
+  "all_sm_mhz_range": [
+    208.0,
+    2190.0
+  ],
+  "busy_sm_mhz_range": [
+    2190.0,
+    2190.0
+  ],
+  "note": "One idle sample reported208MHz; busy samples2190MHz. One-second samples do not resolve iterations. Clock-control none preserves user settings.",
+  "raw": {
+    "path": "scratch/mimo-prefill-20260926/ncu-swiglu/clocks.csv",
+    "bytes": 921,
+    "sha256": "4e43fc6b468887046acf23fc98335b0e1fbfa3c9d206329278ef4551d443f3aa"
+  }
+}

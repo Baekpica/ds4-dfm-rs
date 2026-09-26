@@ -1,0 +1,459 @@
+{
+  "round": 6,
+  "status": "REJECTED",
+  "accepted": false,
+  "production_source_and_model_ab": "Experimental launch patch rejected; retained R3 source and binary restored by campaign owner. Actual9measured+9warm processes complete.",
+  "micro_source": {
+    "baseline_preparation_receipt": {
+      "status": "baseline harness compiled; no GPU execution or profile yet",
+      "gate": "Wait for the new whole-workload measurement after round-5 decision before detailed NCU or candidate work.",
+      "git_commit": "7d40daf4b42f5d8ae9c405a5396d80dcd745b80a",
+      "sources": {
+        "cuda/mmq/ds4_mimo2_swiglu.cuh": "5b0e2c8083a9aa0535f16c6df47db43b0d8caa68476256a268e287357e3119c7",
+        "cuda/mmq/mmq.cuh": "1275a6072a793f5abcc8c23db583d438defb5fd8759c71469c84a9b39bb76606",
+        "cuda/mmq/ds4_mmq.cu": "9107e107b80457c30687a180cbb70b23a28d5fd33661d8429269f03f2c53b23d",
+        "cuda/mmq/mmid.cu": "c41cce53e69b76180225d97a413803f1c86b4340df19f75acb31e6fb4a9172e1",
+        "scratch/mimo-prefill-20260926/ncu-swiglu/probe.cu": "f9b3d022f4d99a6ecefb5716f12578aa1814885ccddffc4b420d86d139133f88"
+      },
+      "compile_argv": [
+        "/usr/local/cuda/bin/nvcc",
+        "-O3",
+        "-g",
+        "-lineinfo",
+        "--use_fast_math",
+        "-std=c++17",
+        "-gencode",
+        "arch=compute_121a,code=sm_121a",
+        "-DDS4_CUDA_HAVE_MXF4=1",
+        "-Xcompiler",
+        "-march=native",
+        "-Xcompiler",
+        "-pthread",
+        "-Icuda/mmq",
+        "-o",
+        "scratch/mimo-prefill-20260926/ncu-swiglu/probe-baseline",
+        "scratch/mimo-prefill-20260926/ncu-swiglu/probe.cu",
+        "-lcuda"
+      ],
+      "flags_evidence": "Makefile:59,69,728; original production optimization/architecture flags, no split compilation",
+      "build_exit_status": 0,
+      "binary": {
+        "path": "scratch/mimo-prefill-20260926/ncu-swiglu/probe-baseline",
+        "sha256": "dfa9d3c0bfa2f9dd58373a98b7f65fcf53f8d3b7a2c0e3215f75acf393dfb965"
+      },
+      "kernel": "mimo2_swiglu_q8",
+      "launch": {
+        "tokens": 4096,
+        "used": 8,
+        "experts": 256,
+        "rows": 32768,
+        "width": 2048,
+        "grid": [
+          32768,
+          4,
+          1
+        ],
+        "block": [
+          128,
+          1,
+          1
+        ],
+        "warmups": 16,
+        "default_repetitions": 100
+      },
+      "inputs": {
+        "gate_seed": "0x5a0a1234",
+        "up_seed": "0x7b3d5678",
+        "gate_range": "[-4,4)",
+        "up_range": "[-2,2)",
+        "routing": "Eight distinct experts per token; deterministic hash base and odd stride 31, stable sort by expert into source assignment IDs."
+      },
+      "output": {
+        "layout": "block_q8_1_mmq D4: out[k_segment * rows + sorted_assignment]",
+        "blocks": 524288,
+        "scale_count": 2097152,
+        "q8_value_count": 67108864,
+        "bytes": 75497472,
+        "dump": "PROBE_DUMP pathname; writes every valid D4 block, including scales and quantized bytes",
+        "checks": "Every scale finite and positive; every Q8 byte in [-127,127]. No parity claim until actual GPU execution and byte comparison."
+      },
+      "numeric_contract": "Verbatim production SwiGLU: (gate / (1 + expf(-gate))) * up, 32-value amax, inverse=127/amax, roundf(value*inverse), D4 scale=1/inverse; preserve original fast-math/FTZ behavior.",
+      "differences": [
+        "Synthetic finite tensors and deterministic routing; no model initialization or GPU routing-map construction.",
+        "Read-only inputs and overwritten outputs give identical repeated state; repeated-call cache state differs from the full graph.",
+        "Standalone translation unit; compare launch geometry and compiled resources with the whole-model target before interpreting NCU.",
+        "Allocation includes the complete valid D4 payload, without the consumer-only tail overread padding. This producer does not access that padding."
+      ]
+    },
+    "preparation_status_note": "Historical receipt predates successful baseline/candidate NCU and isolated runs recorded here.",
+    "frozen_baseline_source": {
+      "path": "scratch/mimo-prefill-20260926/ncu-swiglu/probe-baseline.cu",
+      "bytes": 6454,
+      "sha256": "f9b3d022f4d99a6ecefb5716f12578aa1814885ccddffc4b420d86d139133f88"
+    },
+    "candidate_probe_source": {
+      "path": "scratch/mimo-prefill-20260926/ncu-swiglu/probe.cu",
+      "bytes": 6720,
+      "sha256": "36806bb697bcf290b5416e24dd7b8bc0eeaba3b19b29332e14491a3030f67020"
+    },
+    "kernel_body_changed": false,
+    "input_routing_and_numerical_contract": {
+      "gate_seed": "0x5a0a1234",
+      "up_seed": "0x7b3d5678",
+      "gate_range": "[-4,4)",
+      "up_range": "[-2,2)",
+      "routing": "Eight distinct experts per token; deterministic hash base and odd stride 31, stable sort by expert into source assignment IDs."
+    }
+  },
+  "binaries": {
+    "original": {
+      "path": "scratch/mimo-prefill-20260926/ncu-swiglu/probe-baseline",
+      "bytes": 1430792,
+      "sha256": "dfa9d3c0bfa2f9dd58373a98b7f65fcf53f8d3b7a2c0e3215f75acf393dfb965"
+    },
+    "candidate": {
+      "path": "scratch/mimo-prefill-20260926/ncu-swiglu/probe-blocks",
+      "bytes": 1431424,
+      "sha256": "18ff49c14281290da85914436181ae117ecf34c4a0e52cce8ebabf63947402b9"
+    },
+    "model_original": {
+      "path": "scratch/mimo-prefill-20260926/bench-gateup3-candidate",
+      "bytes": 56139936,
+      "sha256": "290a9f5e25e8b83dd96779ba4b85cd48ab5b13381a634586e77171f59490ca0d"
+    },
+    "model_candidate": {
+      "path": "scratch/mimo-prefill-20260926/bench-swiglu6-candidate",
+      "bytes": 56139640,
+      "sha256": "ded2f98c15cd2fd7a9d5ac0f800818060068d9a72c90701280caaaffaa4f917c"
+    },
+    "boundary_original": {
+      "path": "scratch/mimo-prefill-20260926/ncu-swiglu/test-original",
+      "bytes": 52933864,
+      "sha256": "8682c3653be1a705ae751ccc322b906abcbb89a9851f56d3a7e78ab80ef8f86b"
+    },
+    "boundary_candidate": {
+      "path": "scratch/mimo-prefill-20260926/ncu-swiglu/test-candidate",
+      "bytes": 53003072,
+      "sha256": "35a886c87c8fb0aef91f0997bae5708cf673cb563b9124c3efb0e59be44cc784"
+    }
+  },
+  "build": {
+    "baseline_argv": [
+      "/usr/local/cuda/bin/nvcc",
+      "-O3",
+      "-g",
+      "-lineinfo",
+      "--use_fast_math",
+      "-std=c++17",
+      "-gencode",
+      "arch=compute_121a,code=sm_121a",
+      "-DDS4_CUDA_HAVE_MXF4=1",
+      "-Xcompiler",
+      "-march=native",
+      "-Xcompiler",
+      "-pthread",
+      "-Icuda/mmq",
+      "-o",
+      "scratch/mimo-prefill-20260926/ncu-swiglu/probe-baseline",
+      "scratch/mimo-prefill-20260926/ncu-swiglu/probe.cu",
+      "-lcuda"
+    ],
+    "candidate_argv": [
+      "/usr/local/cuda/bin/nvcc",
+      "-O3",
+      "-g",
+      "-lineinfo",
+      "--use_fast_math",
+      "-std=c++17",
+      "-gencode",
+      "arch=compute_121a,code=sm_121a",
+      "-DDS4_CUDA_HAVE_MXF4=1",
+      "-Xcompiler",
+      "-march=native",
+      "-Xcompiler",
+      "-pthread",
+      "-Icuda/mmq",
+      "-o",
+      "scratch/mimo-prefill-20260926/ncu-swiglu/probe-blocks",
+      "scratch/mimo-prefill-20260926/ncu-swiglu/probe.cu",
+      "-lcuda"
+    ],
+    "candidate_argv_note": "Exact executed command confirmed by compiling agent; exit0. Shell log redirection excluded from argv.",
+    "logs": {
+      "build.log": {
+        "path": "scratch/mimo-prefill-20260926/ncu-swiglu/build.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "blocks-build.log": {
+        "path": "scratch/mimo-prefill-20260926/ncu-swiglu/blocks-build.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "model_mmq_command": "/usr/local/cuda/bin/nvcc -O3 -g -lineinfo --use_fast_math -std=c++17 -gencode arch=compute_121a,code=sm_121a -DDS4_CUDA_HAVE_MXF4=1 -Xcompiler -march=native -Xcompiler -pthread  -Icuda/mmq -c -o cuda/mmq/ds4_mmq.o cuda/mmq/ds4_mmq.cu",
+    "model_build_exit_status": 0,
+    "model_build_log": {
+      "path": "scratch/mimo-prefill-20260926/ncu-swiglu/model-build.log",
+      "bytes": 11626,
+      "sha256": "56ae406843fbd831c5296897f3daa83ef0cf53603656d973890fde68d2de599e"
+    },
+    "model_build_split_compile": false,
+    "boundary_test_exact_link_commands": null,
+    "boundary_test_link_note": "Archived test.cu includes build recipe; binary and output hashes pin observed correctness runs. Exact executed link commands were not recorded by reporting agent."
+  },
+  "run_script": {
+    "path": "scratch/mimo-prefill-20260926/ncu-swiglu/run-isolated.sh",
+    "bytes": 1167,
+    "sha256": "b916d0ebe97bfc33ab76aece8f7fdfe200ff399a6a745709e96e8b2700006e4d"
+  },
+  "ncu": {
+    "set": "full",
+    "replay_mode": "kernel",
+    "clock_control": "none",
+    "target": "mimo2_swiglu_q8",
+    "launch_skip": 16,
+    "launch_count": 1,
+    "baseline": {
+      "report": {
+        "path": "scratch/mimo-prefill-20260926/ncu-swiglu/baseline.ncu-rep",
+        "bytes": 13861105,
+        "sha256": "3aae8cafc3b556b96e010b2a0d16c26c4678a7ecc2d78a4877dfb63b3c92a68b"
+      },
+      "guard": {
+        "start": {
+          "time": 1790399823.1428142,
+          "event": "start",
+          "unit": "ds4-hostguard-1930808-1790399823132322820.scope",
+          "available_gib": 116.9671630859375,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "ncu",
+            "--set",
+            "full",
+            "--replay-mode",
+            "kernel",
+            "--clock-control",
+            "none",
+            "--kernel-name-base",
+            "function",
+            "--kernel-name",
+            "regex:mimo2_swiglu_q8",
+            "--launch-skip",
+            "16",
+            "--launch-count",
+            "1",
+            "--export",
+            "scratch/mimo-prefill-20260926/ncu-swiglu/baseline",
+            "scratch/mimo-prefill-20260926/ncu-swiglu/probe-baseline",
+            "1"
+          ]
+        },
+        "exit": {
+          "time": 1790399828.9242787,
+          "event": "exit",
+          "unit": "ds4-hostguard-1930808-1790399823132322820.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    "candidate512": {
+      "report": {
+        "path": "scratch/mimo-prefill-20260926/ncu-swiglu/candidate.ncu-rep",
+        "bytes": 14273052,
+        "sha256": "a7e6d297cb9e839ede82442b1404b5838717fa23686e8330e5149e701bd037d7"
+      },
+      "guard": {
+        "start": {
+          "time": 1790400088.8417513,
+          "event": "start",
+          "unit": "ds4-hostguard-1932179-1790400088833971895.scope",
+          "available_gib": 116.96710586547852,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "ncu",
+            "--set",
+            "full",
+            "--replay-mode",
+            "kernel",
+            "--clock-control",
+            "none",
+            "--kernel-name-base",
+            "function",
+            "--kernel-name",
+            "regex:mimo2_swiglu_q8",
+            "--launch-skip",
+            "16",
+            "--launch-count",
+            "1",
+            "--export",
+            "scratch/mimo-prefill-20260926/ncu-swiglu/candidate",
+            "scratch/mimo-prefill-20260926/ncu-swiglu/probe-blocks",
+            "1",
+            "512"
+          ]
+        },
+        "exit": {
+          "time": 1790400094.202513,
+          "event": "exit",
+          "unit": "ds4-hostguard-1932179-1790400088833971895.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    }
+  },
+  "nsys": {
+    "summary": {
+      "path": "scratch/mimo-prefill-20260926/after-rope5-scout/summary.json",
+      "bytes": 61310,
+      "sha256": "643abeff613f3987dd96fb92b57a932374806cd536d0fd201d8e178c43eb0aea"
+    },
+    "guard": {
+      "start": {
+        "time": 1790399742.092695,
+        "event": "start",
+        "unit": "ds4-hostguard-1930547-1790399742083402017.scope",
+        "available_gib": 26.322200775146484,
+        "psi_full_avg10": 0.01,
+        "max_gib": 14.3,
+        "high_gib": 13.3,
+        "reserve_gib": 12.0,
+        "trip_gib": 12.0,
+        "command": [
+          "nsys",
+          "profile",
+          "--trace=cuda,nvtx",
+          "--sample=none",
+          "--cpuctxsw=none",
+          "--cuda-graph-trace=node",
+          "--output",
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/after-rope5-scout/trace",
+          "./ds4-bench-perf",
+          "--cuda",
+          "-m",
+          "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+          "--prompt-file",
+          "speed-bench/promessi_sposi.txt",
+          "--ctx-start",
+          "8192",
+          "--ctx-max",
+          "8192",
+          "--gen-tokens",
+          "128"
+        ]
+      },
+      "exit": {
+        "time": 1790399766.1289322,
+        "event": "exit",
+        "unit": "ds4-hostguard-1930547-1790399742083402017.scope",
+        "status": 0,
+        "payload_status": 0
+      }
+    }
+  },
+  "model_ab": {
+    "samples": {
+      "original": [
+        {
+          "prefill_tps": 1219.43,
+          "gen_tps": 24.41
+        },
+        {
+          "prefill_tps": 1219.21,
+          "gen_tps": 24.45
+        },
+        {
+          "prefill_tps": 1218.3,
+          "gen_tps": 24.46
+        }
+      ],
+      "off": [
+        {
+          "prefill_tps": 1220.35,
+          "gen_tps": 24.42
+        },
+        {
+          "prefill_tps": 1217.83,
+          "gen_tps": 24.48
+        },
+        {
+          "prefill_tps": 1218.3,
+          "gen_tps": 24.4
+        }
+      ],
+      "on": [
+        {
+          "prefill_tps": 1220.33,
+          "gen_tps": 24.39
+        },
+        {
+          "prefill_tps": 1217.57,
+          "gen_tps": 24.45
+        },
+        {
+          "prefill_tps": 1219.23,
+          "gen_tps": 24.4
+        }
+      ]
+    },
+    "medians": {
+      "original": {
+        "prefill_tps": 1219.21,
+        "gen_tps": 24.45
+      },
+      "off": {
+        "prefill_tps": 1218.3,
+        "gen_tps": 24.42
+      },
+      "on": {
+        "prefill_tps": 1219.23,
+        "gen_tps": 24.4
+      }
+    },
+    "gain_vs_original_pct": {
+      "off": {
+        "prefill_tps": -0.074638495419177,
+        "gen_tps": -0.12269938650305567
+      },
+      "on": {
+        "prefill_tps": 0.0016404064927311168,
+        "gen_tps": -0.2044989775051187
+      }
+    },
+    "all_full_logits_and_tokens_exact": true
+  },
+  "base_commit": "933e562079c3782a1f195132e1302330d187c540",
+  "decision": "Isolated producer gain did not become a consistent actual prefill gain; no fixed percentage cutoff. Decode sample ranges overlap; no attributed decode penalty.",
+  "candidate_patch": {
+    "path": "scratch/mimo-prefill-20260926/ncu-swiglu/rejected-wide.patch",
+    "bytes": 9579,
+    "sha256": "7370ff73cdd12260916eedb85f636eee99493a78acbc5dec8c78c0b85538b43a"
+  },
+  "boundary_test_source": {
+    "path": "scratch/mimo-prefill-20260926/ncu-swiglu/test.cu",
+    "bytes": 7705,
+    "sha256": "25442a5f04de3dcf293d50b8398f62ac749f7200f21cc045d0c84a4483592798"
+  },
+  "boundary_proofs": "boundary-proof.json",
+  "actual_proofs": "actual-proof.json",
+  "actual_run_script": {
+    "path": "scratch/mimo-prefill-20260926/run-swiglu6-ab.sh",
+    "bytes": 1495,
+    "sha256": "0d47684e48650a0b22979a57bd62a9edaaaea337316a2a51919ddd74b080bcdd"
+  },
+  "workload": {
+    "path": "scratch/mimo-prefill-20260926/workload-swiglu6.json",
+    "bytes": 1853,
+    "sha256": "6667795f2a4e1017a81bc29ccf258fb9f2d7a16076835f46eaed12578697c63a"
+  }
+}

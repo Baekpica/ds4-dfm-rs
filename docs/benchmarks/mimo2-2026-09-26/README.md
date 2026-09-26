@@ -7,8 +7,9 @@ its own process after a separate warmup process, sharing one VMM owner.
 GPU clock range stays 300–2200 MHz; busy clocks are recorded per round.
 [Workload and artifact hashes](sum-residual/workload.json).
 
-Three rounds are accepted below. The user extended the campaign by another
-two or three rounds, starting with a new whole-workload profile.
+Three rounds are accepted below. Three additional rounds were completed
+and rejected; the retained inference code remains round 3. The next
+campaign targets image input, followed by audio and video.
 
 ## Routed sum and residual fusion
 
@@ -260,3 +261,18 @@ remained exact, but all six isolated pairs regressed: median latency rose
 1.63% and 2.24% for KV heads 4 and 8. Restore the original mapping; fewer
 instructions alone did not improve this workload.
 [Decision, measurements and archived patch](rope-rows/README.md).
+
+## Additional round 6: SwiGLU/Q8 wider blocks
+
+**Rejected after model A/B.** Fresh nsys attributed 3.792% of prefill to
+SwiGLU/Q8. Full NCU and a bounded block-size comparison selected 512 threads
+for model testing: isolated latency improved 0.70–1.53% without additional
+VRAM or arithmetic. Actual prefill medians were 1219.21 / 1218.30 / 1219.23
+tok/s for original / OFF / ON. ON lost two of three pairs against OFF; its
++0.00164% median against original does not establish a consistent gain.
+
+All nine measured and nine warmup processes produced identical complete
+logits and tokens with clean guards. Decode medians were 24.45 / 24.42 /
+24.40 tok/s; ranges overlap and no causal decode regression is claimed.
+The candidate was reverted.
+[Full decision and evidence](swiglu-wide/README.md).

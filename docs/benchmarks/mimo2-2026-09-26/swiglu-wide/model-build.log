@@ -1,0 +1,276 @@
+/usr/local/cuda/bin/nvcc -O3 -g -lineinfo --use_fast_math -std=c++17 -gencode arch=compute_121a,code=sm_121a -DDS4_CUDA_HAVE_MXF4=1 -Xcompiler -march=native -Xcompiler -pthread  -Icuda/mmq -c -o cuda/mmq/ds4_mmq.o cuda/mmq/ds4_mmq.cu
+cuda/mmq/ds4_mmq.cu(5199): warning #177-D: member "<unnamed>::ds4_mmq_vdr_mmvq_value<GGML_TYPE_Q3_K>::value" was declared but never referenced
+  template <> struct ds4_mmq_vdr_mmvq_value<GGML_TYPE_Q3_K> { static constexpr int value = 1; };
+                                                                                   ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+cargo rustc -p ds4-cli --bin ds4-bench-rs --release --features native,perf-nvtx -- \
+	-C metadata=3867726192 \
+	-C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/native/bridge/ds4_bridge.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4_ple.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4_distributed.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/ds4_cuda.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_ggml_stubs.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_mmq.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_mmq_d2r.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/quantize.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/mmid.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/mmvq.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_repack.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/mmq/ds4_fattn.o -C link-arg=/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/cuda/qwen38_ple.o \
+	-C link-arg=-L/usr/local/cuda/targets/sbsa-linux/lib -C link-arg=-L/usr/local/cuda/lib64 -C link-arg=-L/usr/lib/gcc/aarch64-linux-gnu/13/ -C link-arg=-lcudart -C link-arg=-lcublas -C link-arg=-lcuda -C link-arg=-lstdc++ -C link-arg=-latomic -C link-arg=-lgcc -C link-arg=-ldl -C link-arg=-lm -C link-arg=-lpthread -C link-arg=-lc
+warning: failed to connect to jobserver from environment variable `MAKEFLAGS=" -j2 --jobserver-auth=3,4"`: cannot open file descriptor 3 from the jobserver environment variable value: Bad file descriptor (os error 9)
+warning: constant `SESSION_U32_FIELDS` is never used
+  --> crates/ds4-dist/src/snapshot_merge.rs:13:11
+   |
+13 | pub const SESSION_U32_FIELDS: usize = 13;
+   |           ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ds4-dist` (lib) generated 1 warning
+warning: field `window` is never read
+  --> crates/ds4-core/src/step37/media.rs:32:5
+   |
+28 | struct ImagePlan {
+   |        --------- field in this struct
+...
+32 |     window: u32,
+   |     ^^^^^^
+   |
+   = note: `ImagePlan` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ds4-core` (lib) generated 1 warning
+warning: unused import: `ds4_kv::PrefixAnswer`
+  --> crates/ds4-server/src/generate.rs:19:5
+   |
+19 | use ds4_kv::PrefixAnswer;
+   |     ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `render_model` is never used
+  --> crates/ds4-server/src/chat_input.rs:12:15
+   |
+12 | pub(crate) fn render_model(
+   |               ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `History` is never constructed
+   --> crates/ds4-server/src/chat_input.rs:236:19
+    |
+236 | pub(crate) struct History {
+    |                   ^^^^^^^
+
+warning: associated items `capture`, `matches`, and `restore` are never used
+   --> crates/ds4-server/src/chat_input.rs:242:19
+    |
+241 | impl History {
+    | ------------ associated items in this implementation
+242 |     pub(crate) fn capture(
+    |                   ^^^^^^^
+...
+259 |     pub(crate) fn matches(&self, parsed: &ParsedRequest) -> bool {
+    |                   ^^^^^^^
+...
+268 |     pub(crate) fn restore(&self, parsed: &mut ParsedRequest) -> Result<...
+    |                   ^^^^^^^
+
+warning: constant `CONT_ADMIT_REFUSED` is never used
+  --> crates/ds4-server/src/serve_cont_roll.rs:11:18
+   |
+11 | pub(crate) const CONT_ADMIT_REFUSED: &str = "continuous admission reject...
+   |                  ^^^^^^^^^^^^^^^^^^
+
+warning: enum `GovStatus` is never used
+  --> crates/ds4-server/src/serve_cont_roll.rs:15:17
+   |
+15 | pub(crate) enum GovStatus {
+   |                 ^^^^^^^^^
+
+warning: variants `ClassBudget`, `ObsRetry`, `Unsupported`, `Fault`, `DeepPolicy`, and `LaneDisabled` are never constructed
+  --> crates/ds4-server/src/serve_cont_roll.rs:28:5
+   |
+27 | pub(crate) enum RejectReason {
+   |                 ------------ variants in this enum
+28 |     ClassBudget = 0,
+   |     ^^^^^^^^^^^
+29 |     LiveHeadroom = 1,
+30 |     ObsRetry = 2,
+   |     ^^^^^^^^
+31 |     Unsupported = 3,
+   |     ^^^^^^^^^^^
+32 |     Fault = 4,
+   |     ^^^^^
+33 |     DeepPolicy = 5,
+   |     ^^^^^^^^^^
+34 |     LaneDisabled = 6,
+   |     ^^^^^^^^^^^^
+   |
+   = note: `RejectReason` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `name` is never used
+  --> crates/ds4-server/src/serve_cont_roll.rs:38:25
+   |
+37 | impl RejectReason {
+   | ----------------- method in this implementation
+38 |     pub(crate) const fn name(self) -> &'static str {
+   |                         ^^^^
+
+warning: function `reject_reason_from_gov` is never used
+  --> crates/ds4-server/src/serve_cont_roll.rs:45:21
+   |
+45 | pub(crate) const fn reject_reason_from_gov(status: GovStatus) -> Option<...
+   |                     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: trait `ContMemGov` is never used
+  --> crates/ds4-server/src/serve_cont_roll.rs:59:18
+   |
+59 | pub(crate) trait ContMemGov {
+   |                  ^^^^^^^^^^
+
+warning: struct `AdmitAlways` is never constructed
+  --> crates/ds4-server/src/serve_cont_roll.rs:64:19
+   |
+64 | pub(crate) struct AdmitAlways;
+   |                   ^^^^^^^^^^^
+
+warning: function `charge_roll_admit` is never used
+   --> crates/ds4-server/src/serve_cont_roll.rs:103:15
+    |
+103 | pub(crate) fn charge_roll_admit(
+    |               ^^^^^^^^^^^^^^^^^
+
+warning: struct `RollReserve` is never constructed
+   --> crates/ds4-server/src/serve_cont_roll.rs:118:19
+    |
+118 | pub(crate) struct RollReserve {
+    |                   ^^^^^^^^^^^
+
+warning: associated items `new`, `note_place`, `contains`, and `protect` are never used
+   --> crates/ds4-server/src/serve_cont_roll.rs:123:19
+    |
+122 | impl RollReserve {
+    | ---------------- associated items in this implementation
+123 |     pub(crate) fn new() -> Self {
+    |                   ^^^
+...
+128 |     pub(crate) fn note_place(&mut self, place_bank: i32) {
+    |                   ^^^^^^^^^^
+...
+140 |     pub(crate) fn contains(&self, bank: i32) -> bool {
+    |                   ^^^^^^^^
+...
+146 |     pub(crate) fn protect(&self, hold: &[bool]) -> Vec<bool> {
+    |                   ^^^^^^^
+
+warning: struct `ContRoll` is never constructed
+   --> crates/ds4-server/src/serve_cont_roll.rs:161:19
+    |
+161 | pub(crate) struct ContRoll {
+    |                   ^^^^^^^^
+
+warning: associated items `new`, `enqueue`, `admit`, `live_count`, `complete`, and `completed` are never used
+   --> crates/ds4-server/src/serve_cont_roll.rs:168:19
+    |
+167 | impl ContRoll {
+    | ------------- associated items in this implementation
+168 |     pub(crate) fn new() -> Self {
+    |                   ^^^
+...
+172 |     pub(crate) fn enqueue(&mut self, user: usize) {
+    |                   ^^^^^^^
+...
+178 |     pub(crate) fn admit(&mut self) -> Option<usize> {
+    |                   ^^^^^
+...
+184 |     pub(crate) fn live_count(&self) -> usize {
+    |                   ^^^^^^^^^^
+...
+188 |     pub(crate) fn complete(&mut self, user: usize) {
+    |                   ^^^^^^^^
+...
+194 |     pub(crate) fn completed(&self) -> &[usize] {
+    |                   ^^^^^^^^^
+
+warning: methods `reclaimed` and `admitted` are never used
+   --> crates/ds4-server/src/serve_serial_reclaim.rs:195:25
+    |
+194 | impl SerialReclaimOutcome {
+    | ------------------------- methods in this implementation
+195 |     pub(crate) const fn reclaimed(self) -> u64 {
+    |                         ^^^^^^^^^
+...
+201 |     pub(crate) const fn admitted(self) -> bool {
+    |                         ^^^^^^^^
+
+warning: struct `ReclaimBank` is never constructed
+   --> crates/ds4-server/src/serve_serial_reclaim.rs:216:19
+    |
+216 | pub(crate) struct ReclaimBank {
+    |                   ^^^^^^^^^^^
+
+warning: function `serial_reclaim_rank` is never used
+   --> crates/ds4-server/src/serve_serial_reclaim.rs:262:15
+    |
+262 | pub(crate) fn serial_reclaim_rank(banks: &[ReclaimBank], warm_pin_min: ...
+    |               ^^^^^^^^^^^^^^^^^^^
+
+warning: `ds4-server` (lib) generated 19 warnings (run `cargo fix --lib -p ds4-server` to apply 1 suggestion)
+warning: unused import: `catalog::ListedSession`
+  --> crates/ds4-cli/src/agent/kv/mod.rs:12:16
+   |
+12 | pub(crate) use catalog::ListedSession;
+   |                ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `identity_sha`
+  --> crates/ds4-cli/src/agent/kv/mod.rs:14:27
+   |
+14 | pub(crate) use identity::{identity_sha, SessionIdentity};
+   |                           ^^^^^^^^^^^^
+
+warning: unused import: `SaveSpec`
+  --> crates/ds4-cli/src/agent/kv/mod.rs:15:24
+   |
+15 | pub(crate) use store::{SaveSpec, SessionStore};
+   |                        ^^^^^^^^
+
+warning: function `edit_result` is never used
+  --> crates/ds4-cli/src/agent/edit.rs:18:15
+   |
+18 | pub(crate) fn edit_result(path: Option<&str>, old: Option<&str>, new: Op...
+   |               ^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `escape` is never used
+  --> crates/ds4-cli/src/agent/trace.rs:76:15
+   |
+76 | pub(super) fn escape(bytes: &[u8]) -> Vec<u8> {
+   |               ^^^^^^
+
+warning: variants `Idle`, `Compacting`, `Draining`, `Saving`, `Error`, and `Stopped` are never constructed
+  --> crates/ds4-cli/src/agent/tui/mod.rs:40:5
+   |
+39 | pub(super) enum WorkerPhase {
+   |                 ----------- variants in this enum
+40 |     Idle,
+   |     ^^^^
+...
+43 |     Compacting,
+   |     ^^^^^^^^^^
+44 |     Draining,
+   |     ^^^^^^^^
+45 |     Saving,
+   |     ^^^^^^
+46 |     Error,
+   |     ^^^^^
+47 |     Stopped,
+   |     ^^^^^^^
+   |
+   = note: `WorkerPhase` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: function `write_result` is never used
+ --> crates/ds4-cli/src/agent/write.rs:9:15
+  |
+9 | pub(crate) fn write_result(path: Option<&str>, content: Option<&str>) -> ...
+  |               ^^^^^^^^^^^^
+
+warning: `ds4-cli` (lib) generated 7 warnings (run `cargo fix --lib -p ds4-cli` to apply 3 suggestions)
+   Compiling ds4-cli v0.1.3 (/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/crates/ds4-cli)
+    Finished `release` profile [optimized] target(s) in 1.53s
+cp -f "target/release/ds4-bench-rs" ds4-bench-perf
