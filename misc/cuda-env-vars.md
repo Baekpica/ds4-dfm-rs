@@ -152,6 +152,11 @@ The bandwidth figure is informational; we don't tier on it.
   for widths 32–8192 and the fixed 4096×2048, 256-expert/eight-route shape.
   Narrow decode and the existing down-sanitation diagnostic keep the old path.
 
+- `DS4_MIMO2_SUM_RESIDUAL=0` restores separate expert sum and residual
+  addition. Unset fuses these passes for widths 32–8192, preserving ordered
+  FP32 multiply/add rounding and the final residual addition. Narrow decode
+  retains the separate path; the existing dense-FFN scratch stays allocated.
+
 - `DS4_MIMO2_DFLASH_CPU=1` restores host RMSNorm, RoPE and attention for
   MiMo's external five-layer DFlash drafter. Unset uses device kernels
   and shared K/V tiles. This control does not enable speculative decode;

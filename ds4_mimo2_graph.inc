@@ -269,8 +269,10 @@ static bool mimo2_layer(ds4_mimo2_graph *g, const ds4_model *m,
                 m->map, m->size, l->ffn_gate_exps->abs_offset, l->ffn_gate_exps->bytes,
                 l->ffn_up_exps->abs_offset, l->ffn_up_exps->bytes, l->ffn_gate_exps->type,
                 M2_EMBED, M2_FF, M2_EXPERTS, n, M2_USED) ||
-            !mimo2_expert_down(b, m, l, n) ||
-            !ds4_gpu_step37_sum(b->b_ffn_out, b->b_routed_down, b->b_router_weights, M2_EMBED, n)) { return false; }
+            !mimo2_expert_down(b, m, l, n)) { return false; }
+        const int rc = ds4_gpu_mimo2_sum_add(b->b_cur, b->b_routed_down, b->b_router_weights, n);
+        if (rc >= 0) { return rc != 0; }
+        if (!ds4_gpu_step37_sum(b->b_ffn_out, b->b_routed_down, b->b_router_weights, M2_EMBED, n)) { return false; }
     }
     return ds4_gpu_exaone_add_tensor(b->b_cur, b->b_ffn_out, (uint64_t)n * M2_EMBED);
 }

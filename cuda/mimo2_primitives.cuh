@@ -2,6 +2,22 @@
 #include <stdint.h>
 #include <cuda_fp16.h>
 
+/* Eliminate the routed-sum roundtrip. Preserve slot order and the separate
+ * rounding of each multiply, each sum, and the final residual addition. */
+__global__ static void mimo2_sum_residual(
+        float *cur, const float *down, const float *weights, uint64_t count) {
+    enum { WIDTH = 4096, USED = 8 };
+    const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) { return; }
+    const uint64_t row = i / WIDTH, col = i % WIDTH;
+    float sum = 0;
+    for (unsigned e = 0; e < USED; e++) {
+        const float value = down[(row * USED + e) * WIDTH + col];
+        sum = __fadd_rn(sum, __fmul_rn(value, weights[row * USED + e]));
+    }
+    cur[i] = __fadd_rn(cur[i], sum);
+}
+
 /* Fused projection rows are Q(64*192), K(kv*192), V(kv*128).
  * Only the first 64 Q/K dimensions rotate; MiMo has no Q/K norm.
  * V scaling belongs after the output projection, not in this unpacker. */

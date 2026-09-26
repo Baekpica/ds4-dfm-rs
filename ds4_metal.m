@@ -17779,6 +17779,13 @@ int ds4_gpu_matmul_q8_0_hc_expand_n2_split_residual_tensor(
     return ok;
 }
 
+/* The optional CUDA fusion declines before the existing graph fallback. */
+int ds4_gpu_mimo2_sum_add(ds4_gpu_tensor *cur, const ds4_gpu_tensor *down,
+        const ds4_gpu_tensor *weights, uint32_t rows) {
+    (void)cur; (void)down; (void)weights; (void)rows;
+    return -1;
+}
+
 /* Step is CUDA-qualified. Keep Metal linkage explicit without a fallback. */
 int ds4_gpu_step37_norm(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
         const void *map, uint64_t size, uint64_t offset,

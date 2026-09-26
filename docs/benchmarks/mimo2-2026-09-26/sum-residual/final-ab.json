@@ -1,0 +1,116 @@
+{
+  "samples": {
+    "original": [
+      {
+        "prefill_tps": 1192.96,
+        "gen_tps": 24.38
+      },
+      {
+        "prefill_tps": 1191.22,
+        "gen_tps": 24.45
+      },
+      {
+        "prefill_tps": 1193.35,
+        "gen_tps": 24.44
+      }
+    ],
+    "on": [
+      {
+        "prefill_tps": 1198.75,
+        "gen_tps": 24.3
+      },
+      {
+        "prefill_tps": 1199.99,
+        "gen_tps": 24.38
+      },
+      {
+        "prefill_tps": 1199.38,
+        "gen_tps": 24.47
+      }
+    ]
+  },
+  "proofs": [
+    {
+      "arm": "original",
+      "sample": 0,
+      "logits_count": 152576,
+      "token_count": 128,
+      "logits_sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+      "tokens_sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+      "exact": true,
+      "guard_status": 0
+    },
+    {
+      "arm": "original",
+      "sample": 1,
+      "logits_count": 152576,
+      "token_count": 128,
+      "logits_sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+      "tokens_sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+      "exact": true,
+      "guard_status": 0
+    },
+    {
+      "arm": "original",
+      "sample": 2,
+      "logits_count": 152576,
+      "token_count": 128,
+      "logits_sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+      "tokens_sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+      "exact": true,
+      "guard_status": 0
+    },
+    {
+      "arm": "on",
+      "sample": 0,
+      "logits_count": 152576,
+      "token_count": 128,
+      "logits_sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+      "tokens_sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+      "exact": true,
+      "guard_status": 0
+    },
+    {
+      "arm": "on",
+      "sample": 1,
+      "logits_count": 152576,
+      "token_count": 128,
+      "logits_sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+      "tokens_sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+      "exact": true,
+      "guard_status": 0
+    },
+    {
+      "arm": "on",
+      "sample": 2,
+      "logits_count": 152576,
+      "token_count": 128,
+      "logits_sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+      "tokens_sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+      "exact": true,
+      "guard_status": 0
+    }
+  ],
+  "medians": {
+    "original": {
+      "prefill_tps": 1192.96,
+      "gen_tps": 24.44
+    },
+    "on": {
+      "prefill_tps": 1199.38,
+      "gen_tps": 24.38
+    }
+  },
+  "gain_pct": {
+    "prefill_tps": 0.538157188841204,
+    "gen_tps": -0.24549918166940632
+  },
+  "paired_prefill_gain_pct": [
+    0.48534737124463767,
+    0.7362200097379201,
+    0.5053002053044153
+  ],
+  "decision": "adopt: prefill improves in every pair; exact full logits/tokens; no extra VRAM or arithmetic; decode slowdown does not repeat in uncontended final check",
+  "decode_observation": "Final medians24.44->24.38(-0.2455%); ranges overlap. Initial pairs were taken during CPU SASS analysis. Uncontended check24.44->24.47. Keep all samples; no claim of a decode speedup.",
+  "scope": "MiMo mixed-quant plain 8K/128 prefill on GB10; default32..8192 rows, narrow decode unchanged"
+}

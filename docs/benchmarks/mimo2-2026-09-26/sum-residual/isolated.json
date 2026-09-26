@@ -1,0 +1,29 @@
+{
+  "separate": {
+    "ms": [
+      3.18059,
+      3.173201,
+      3.175731
+    ],
+    "median_ms": 3.175731
+  },
+  "scalar_fused": {
+    "ms": [
+      2.69938,
+      2.694752,
+      2.69498
+    ],
+    "median_ms": 2.69498
+  },
+  "vector_fused": {
+    "ms": [
+      2.925618,
+      2.916888,
+      2.924834
+    ],
+    "median_ms": 2.924834
+  },
+  "scalar_latency_reduction_pct": 15.138278399524385,
+  "correctness": "all 16777216 float outputs byte-exact after 116 accumulated passes",
+  "selection": "scalar, pending actual-model A/B"
+}

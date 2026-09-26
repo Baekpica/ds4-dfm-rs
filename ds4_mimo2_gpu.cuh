@@ -8,6 +8,27 @@ static void m2_hmma_init(void) {
     m2_hmma_available = mimo2_hmma::supported();
 }
 
+extern "C" int ds4_gpu_mimo2_sum_add(
+        ds4_gpu_tensor *cur, const ds4_gpu_tensor *down,
+        const ds4_gpu_tensor *weights, uint32_t rows) {
+    enum { WIDTH = 4096, USED = 8, MIN_ROWS = 32, MAX_ROWS = 8192, THREADS = 256 };
+    if (rows < MIN_ROWS || rows > MAX_ROWS) { return -1; }
+    const char *env = getenv("DS4_MIMO2_SUM_RESIDUAL");
+    if (env && strcmp(env, "1") != 0) { return -1; }
+    const uint64_t bytes = (uint64_t)rows * WIDTH * sizeof(float);
+    if (!cur || !down || !weights || !cur->ptr || !down->ptr || !weights->ptr ||
+        cur->bytes < bytes || down->bytes < bytes * USED ||
+        weights->bytes < (uint64_t)rows * USED * sizeof(float)) { return 0; }
+    if ((uintptr_t)cur->ptr % alignof(float) ||
+        (uintptr_t)down->ptr % alignof(float) ||
+        (uintptr_t)weights->ptr % alignof(float)) { return -1; }
+
+    const uint64_t count = bytes / sizeof(float);
+    mimo2_sum_residual<<<(count + THREADS - 1) / THREADS, THREADS, 0, ds4_current_stream()>>>(
+        (float *)cur->ptr, (const float *)down->ptr, (const float *)weights->ptr, count);
+    return cuda_ok(cudaGetLastError(), "MiMo sum residual");
+}
+
 extern "C" int ds4_gpu_mimo2_qkv(
         ds4_gpu_tensor *q, ds4_gpu_tensor *k, ds4_gpu_tensor *v,
         const ds4_gpu_tensor *qkv, const ds4_gpu_tensor *table,
