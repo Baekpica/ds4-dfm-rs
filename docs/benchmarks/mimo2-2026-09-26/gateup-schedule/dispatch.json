@@ -1,0 +1,12 @@
+{
+  "topology": "M2048/K4096/E256,512tokens,6experts",
+  "switch": "unset(default on)",
+  "expected": "Original (Iq2Schedule=0)",
+  "kernel_launches": [
+    {
+      "name": "void <unnamed>::gateup_iq2_d2r_pair_kernel<(<unnamed>::Iq2Schedule)0>(const void *, const void *, const block_q8_1_mmq *, const int *, const int *, const int *, const int *, float *, float *, int, int, int, int)",
+      "count": 17
+    }
+  ],
+  "passed": true
+}

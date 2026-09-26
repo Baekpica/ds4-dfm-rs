@@ -1,0 +1,29 @@
+{
+  "status": "compiled; no GPU run by implementation agent",
+  "base_commit": "33a1a2b42e738b844f388fa4e12277a1756dcd4c",
+  "compile_command": "/usr/local/cuda/bin/nvcc -O3 -g -lineinfo --use_fast_math -std=c++17 -arch=sm_121a -Xptxas=-v scratch/mimo-media-20260926/ncu-audio-r1/probe-candidate.cu -o scratch/mimo-media-20260926/ncu-audio-r1/probe-candidate",
+  "unchanged_bodies_sha256": {
+    "mimo2_attn": "89f4b8afdeda31ccce43ab079644a9d47973abe040b179dff44f5bcc816a90af",
+    "mimo2_vision_attn": "5a6c8db242412e65f2205464fe7308c719d6ce82c86659532a9df00b940c2706",
+    "mimo2_vision_window": "0972df52fade8b1d9dbeb88eda769eb32b4a3843acd6f066776eb705d566453f"
+  },
+  "files_sha256": {
+    "cuda/mimo2_media.cuh": "adaa250c33e1d2bf0c5b953ef894c7cc8aa57414b15e1f53f8b21c7c851bc7a3",
+    "ds4_mimo2_gpu.cuh": "9144921357fe7f9208e32b6eefbf45be38ee51977b4ae79bf7e9847f5377add8",
+    "scratch/mimo-media-20260926/ncu-audio-r1/probe-candidate.cu": "34549cb31361cd6ea0074ecc8544433d8e60c80089ae77fe048476d828001f2f",
+    "scratch/mimo-media-20260926/ncu-audio-r1/probe-candidate": "66fe4d262735cce96ae48482ff6fa78368a9e6bf5eba5c3612dee4def3fb8178"
+  },
+  "grid": [
+    8912,
+    1,
+    1
+  ],
+  "block": [
+    128,
+    1,
+    1
+  ],
+  "dynamic_shared_bytes": 2492,
+  "resource_limit": "n <= 8192 uses at most 33032 dynamic shared bytes; no persistent allocation.",
+  "fixture": "Frozen scalar baseline source fixture and host RNG/layout retained; candidate launch alone changes."
+}

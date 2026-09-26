@@ -1,0 +1,29 @@
+{
+  "requested_range_mhz": [
+    300,
+    2200
+  ],
+  "sampling_seconds": 1,
+  "busy_threshold_gpu_util_pct": 80,
+  "all_samples": 46,
+  "busy_samples": 18,
+  "busy_sm_mhz": {
+    "min": 2184,
+    "median": 2184.0,
+    "max": 2190
+  },
+  "busy_temperature_c": {
+    "min": 45,
+    "max": 54
+  },
+  "busy_power_w": {
+    "min": 25.15,
+    "max": 52.41
+  },
+  "limits": "One-second asynchronous sampling includes setup/dump gaps and does not resolve individual timed iterations. NCU preserves configured clock range, without fixed-frequency lock.",
+  "source": {
+    "path": "scratch/mimo-prefill-20260926/ncu-down-r4/clocks.csv",
+    "bytes": 2480,
+    "sha256": "ec521d8f80f74247eaf44b4e52a84dc9cff1a884d523e75552c38da9723dd5ae"
+  }
+}

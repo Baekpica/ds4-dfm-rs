@@ -1,0 +1,117 @@
+{
+  "raw_path": "scratch/mimo-media-20260926/ncu-attn-r1/isolated-clocks.jsonl",
+  "raw_sha256": "6ee8e5f12d358e4860004a229c397cfe1fc5b28335cdf1fb1b00081697493ca4",
+  "samples": 41,
+  "busy_definition": "GPU utilization >=50%; coarse one-second samples, not per-kernel clock locking",
+  "busy_samples": 36,
+  "preserved_user_range_mhz": [
+    300,
+    2200
+  ],
+  "all": {
+    "sm_mhz": {
+      "min": 305.0,
+      "max": 2197.0,
+      "median": 2190.0
+    },
+    "util_percent": {
+      "min": 0.0,
+      "max": 96.0,
+      "median": 96.0
+    },
+    "power_w": {
+      "min": 4.6,
+      "max": 41.44,
+      "median": 30.72
+    },
+    "temp_c": {
+      "min": 42.0,
+      "max": 54.0,
+      "median": 50.0
+    }
+  },
+  "busy": {
+    "sm_mhz": {
+      "min": 2190.0,
+      "max": 2190.0,
+      "median": 2190.0
+    },
+    "util_percent": {
+      "min": 96.0,
+      "max": 96.0,
+      "median": 96.0
+    },
+    "power_w": {
+      "min": 11.2,
+      "max": 41.44,
+      "median": 30.810000000000002
+    },
+    "temp_c": {
+      "min": 46.0,
+      "max": 54.0,
+      "median": 50.0
+    }
+  },
+  "cpu_observed_khz_by_policy": {
+    "policy11": [
+      2808000
+    ],
+    "policy8": [
+      3900000
+    ],
+    "policy6": [
+      3900000
+    ],
+    "policy18": [
+      3900000
+    ],
+    "policy4": [
+      2808000
+    ],
+    "policy16": [
+      3900000
+    ],
+    "policy2": [
+      2808000
+    ],
+    "policy14": [
+      2808000
+    ],
+    "policy0": [
+      2808000
+    ],
+    "policy12": [
+      2808000
+    ],
+    "policy9": [
+      3900000
+    ],
+    "policy10": [
+      2808000
+    ],
+    "policy7": [
+      3900000
+    ],
+    "policy19": [
+      3900000
+    ],
+    "policy5": [
+      3900000
+    ],
+    "policy17": [
+      3900000
+    ],
+    "policy3": [
+      2808000
+    ],
+    "policy15": [
+      3900000
+    ],
+    "policy1": [
+      2808000
+    ],
+    "policy13": [
+      2808000
+    ]
+  }
+}

@@ -1,0 +1,111 @@
+{
+  "head": "c4393f6e431acbe7c1d0aa2b770815cb373be683",
+  "retained_optimizations": [
+    "284ff879",
+    "e06d1f30",
+    "a3fd2a5c"
+  ],
+  "base_model_evidence": "scratch/mimo-prefill-20260926/workload.json",
+  "files": {
+    "mmproj-MiMo-V2.6-Flash-RL-BF16.gguf": {
+      "path": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+      "bytes": 2748509792,
+      "sha256": "7fd51cbab2e7a7c73b1d4dd2d7457dcf8175cb84db75ca8e96ff1750760b3709"
+    },
+    "screen.png": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/tests/fixtures/qwen-images/screen.png",
+      "bytes": 54637,
+      "sha256": "c11a3a38ba18c8769a0b0785470c089d2fa7287955e033de8cb99b7ae80f67b4"
+    },
+    "photo.jpg": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/tests/fixtures/qwen-images/photo.jpg",
+      "bytes": 45846,
+      "sha256": "a48278513a38768ff92247972e60bc873eb361a8527cb8686a3e19c3ae1bdf9d"
+    },
+    "document.png": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/tests/fixtures/qwen-images/document.png",
+      "bytes": 74599,
+      "sha256": "3119517bbf598dbd3059aa26c4904b71508ab5e899565009ff08fbf080a326d4"
+    },
+    "ds4-server": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/baseline/ds4-server",
+      "bytes": 59743608,
+      "sha256": "783bd16745bc66f89088e611699e609f75210985104c953487f40e26dc3877f0"
+    }
+  },
+  "protocol": {
+    "context": 8192,
+    "native_prefill_chunk": 4096,
+    "continuous_width": 0,
+    "prefix_reuse": "off",
+    "mtp": "off",
+    "max_tokens": 64,
+    "temperature": 0,
+    "prompt": "Briefly describe the visible content and any task counts. /no_think",
+    "image_resolution": "original fixture, native media preprocessing unchanged",
+    "timed_state": "fresh worker, one matching warm request before each measured request",
+    "gpu_clock_range_mhz": [
+      300,
+      2200
+    ]
+  },
+  "status": "image_r1_adopted; text_rounds_1_2_3_remain_retained",
+  "base_model_files": {
+    "model": {
+      "path": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+      "sha256": "388d09c34fc87f3ef990a19c670efbf3a542b28a0a8c619140a3a299321dae9d"
+    },
+    "model_2": {
+      "path": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00002-of-00004.gguf",
+      "sha256": "83bd3c37bff0541c5b9b76462a50ba112c506f80f8ab48a6d28e55830035ee3f"
+    },
+    "model_3": {
+      "path": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00003-of-00004.gguf",
+      "sha256": "aafd233222b53d1e17bc4a1419d5dc6c58e8a1db352b0078e72425d9c296baef"
+    },
+    "model_4": {
+      "path": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00004-of-00004.gguf",
+      "sha256": "940833b0947024b26fe64149c54c78c489065fdcb84ec596ecd262425c0ff7f6"
+    }
+  },
+  "hash_provenance": "Model/projector hashes copied from existing workload receipts; large artifacts were not rehashed during this documentation pass.",
+  "whole_profile_state": "image-r1-serial3 is a cold first image request including lazy serial graph allocation; the planned HTTP A/B warms each fresh worker once.",
+  "observed_whole_server": {
+    "requested": {
+      "prefix_reuse": "off",
+      "mtp_mode": "off",
+      "max_seqs": "off",
+      "lane": "auto",
+      "ctx": 8192,
+      "mem_floor_gb": 4,
+      "disk": false,
+      "mtp_path": false,
+      "backend": "cuda"
+    },
+    "effective": {
+      "prefix_reuse": "off",
+      "mtp_mode": "off",
+      "mtp_weights": false,
+      "mtp_draft": null,
+      "max_seqs": 1,
+      "ctx": 8192,
+      "mem_floor_gb": 4,
+      "disk": false,
+      "banks_opt_in": false,
+      "sched_chunk": 4096,
+      "sched_chunk_live": 512,
+      "native_chunk": 4096,
+      "bank_persist_min_tokens": 8192,
+      "disk_min_tokens": 512,
+      "disk_is_offload": false
+    },
+    "last_request": {
+      "effective_lane": "serial",
+      "reuse_kind": "cold",
+      "speculation_active": false,
+      "fallback_reason": null
+    },
+    "census_faults": 0,
+    "governor_faults": 0
+  }
+}

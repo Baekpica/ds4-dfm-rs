@@ -4829,6 +4829,13 @@ int ds4_gpu_mimo2_down(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
         const ds4_gpu_tensor *up, const ds4_gpu_tensor *ids,
         const void *map, uint64_t size, uint64_t offset, uint64_t bytes,
         uint32_t tokens);
+/* Optional routed sum + in-place residual. -1 declines before GPU work,
+ * 0 reports failure, and 1 means the residual has already been added. */
+int ds4_gpu_mimo2_sum_add(ds4_gpu_tensor *cur, const ds4_gpu_tensor *down,
+        const ds4_gpu_tensor *weights, uint32_t rows);
+/* Optional scale + residual; cur and attn must not overlap. The projection
+ * is not modified. Returns -1 before work, 0 on failure, 1 after the add. */
+int ds4_gpu_mimo2_attn_add(ds4_gpu_tensor *cur, const ds4_gpu_tensor *attn, uint32_t rows);
 int ds4_gpu_mimo2_qkv(ds4_gpu_tensor *q, ds4_gpu_tensor *k, ds4_gpu_tensor *v,
         const ds4_gpu_tensor *qkv, const ds4_gpu_tensor *table,
         uint32_t kv_heads, uint32_t rows);

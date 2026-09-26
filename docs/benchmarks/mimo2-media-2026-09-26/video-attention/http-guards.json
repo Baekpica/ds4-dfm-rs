@@ -1,0 +1,464 @@
+{
+  "status": "all27guard/payload exits0; no intervention",
+  "runs": [
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 0,
+      "arm": "original",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.5,
+        "high_gib": 13.5,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-original/stop.json",
+        "bytes": 1773,
+        "sha256": "f160c577276bcf11dc13279aa4e901c95924026107a60d9cda2a7301beca8c55"
+      }
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 0,
+      "arm": "off",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.4,
+        "high_gib": 13.4,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-off/stop.json",
+        "bytes": 1771,
+        "sha256": "030817cc1157762388282cb91e48d0b63cfd4461f9e1d66141395b4ec889579f"
+      }
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 0,
+      "arm": "on",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.3,
+        "high_gib": 13.3,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-on/stop.json",
+        "bytes": 1769,
+        "sha256": "92b39eac05e5e293cc08c6deb96843c7624ed412f1f8dc2339e2ee9cf16afde9"
+      }
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 1,
+      "arm": "on",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.4,
+        "high_gib": 13.4,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-on/stop.json",
+        "bytes": 1770,
+        "sha256": "e27e8f6bf5c25b0e7ccf1edfca18fa6a7da35555d83478137a6c78780c32fefb"
+      }
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 1,
+      "arm": "original",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.3,
+        "high_gib": 13.3,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-original/stop.json",
+        "bytes": 1775,
+        "sha256": "50fdc0159148b679439227495d5b3ff51bc65fc27858c7f17be70d995e156e22"
+      }
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 1,
+      "arm": "off",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.4,
+        "high_gib": 13.4,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-off/stop.json",
+        "bytes": 1768,
+        "sha256": "de66014779b6e115f841fe5788dee7abe1864e0e6e1ee4dd5b6aa4680b8514fa"
+      }
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 2,
+      "arm": "off",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.4,
+        "high_gib": 13.4,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-off/stop.json",
+        "bytes": 1771,
+        "sha256": "547fd3d587c3d3b0011030870e6822e923eb2e8113d2ef53a31d06e617c5eaeb"
+      }
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 2,
+      "arm": "on",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.4,
+        "high_gib": 13.4,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-on/stop.json",
+        "bytes": 1770,
+        "sha256": "871cf8290c81fc580960ac86feea86056ac8761deaba115aa446f546eff5ef2f"
+      }
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 2,
+      "arm": "original",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.3,
+        "high_gib": 13.3,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-original/stop.json",
+        "bytes": 1774,
+        "sha256": "e5023f1a5fca9d694ed3bf98d79aa68337ce868c23a2f888e82e71053eaf4736"
+      }
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 0,
+      "arm": "original",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.4,
+        "high_gib": 13.4,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-original/stop.json",
+        "bytes": 1774,
+        "sha256": "637c87c65ce22772a9f4b833600a0f66996cf7dd5a1c475f47fba0ef8a3bd832"
+      }
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 0,
+      "arm": "off",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.4,
+        "high_gib": 13.4,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-off/stop.json",
+        "bytes": 1770,
+        "sha256": "e1a1af177d4c8749f32d0fdc6e38cc96430f4c6b03f3c821313310a8a73f9205"
+      }
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 0,
+      "arm": "on",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.4,
+        "high_gib": 13.4,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-on/stop.json",
+        "bytes": 1768,
+        "sha256": "bfddb9f7a5ddf44c3c33d4d75244b2bb359772e21ee4593f96388dc40a8ebbc1"
+      }
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 1,
+      "arm": "on",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.4,
+        "high_gib": 13.4,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-on/stop.json",
+        "bytes": 1769,
+        "sha256": "e68977d07931a5843cebfcbb77fe0d0d2d9f11393c7f01e7f03e9c84e125f603"
+      }
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 1,
+      "arm": "original",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.4,
+        "high_gib": 13.4,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-original/stop.json",
+        "bytes": 1774,
+        "sha256": "57c30c4a2e0bbb934fd54988be9de330aed821b3291ee19ead06cdf37771c2a8"
+      }
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 1,
+      "arm": "off",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.4,
+        "high_gib": 13.4,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-off/stop.json",
+        "bytes": 1770,
+        "sha256": "24351f225edcfad77c4a5eef47e071153f738fa0c885ce9b53fefb74ddb73db7"
+      }
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 2,
+      "arm": "off",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.4,
+        "high_gib": 13.4,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-off/stop.json",
+        "bytes": 1770,
+        "sha256": "00dd46e9b14d4d2c1c0d3bf93c9dfb6263f4d55235f469c35733a00cdf44d08d"
+      }
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 2,
+      "arm": "on",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.4,
+        "high_gib": 13.4,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-on/stop.json",
+        "bytes": 1769,
+        "sha256": "b0df45de70efbda2be5ef02a6c862e7e77c2feddb38711cbefb826a0d77b9c7b"
+      }
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 2,
+      "arm": "original",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.4,
+        "high_gib": 13.4,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-original/stop.json",
+        "bytes": 1770,
+        "sha256": "44752286161ba55eb328f29db00d117107962136dc6c49e09b390ad47e0d09ac"
+      }
+    },
+    {
+      "case": "screen",
+      "round": 0,
+      "arm": "original",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.5,
+        "high_gib": 13.5,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-original/stop.json",
+        "bytes": 1769,
+        "sha256": "9c5b41f656500d2d44eb79e9eb0358a60bed97877be715f86492ee02ba8c2534"
+      }
+    },
+    {
+      "case": "screen",
+      "round": 0,
+      "arm": "off",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.4,
+        "high_gib": 13.4,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-off/stop.json",
+        "bytes": 1765,
+        "sha256": "1686997461d8acb262f91d70c535c0d32827e18e6c7c6c2beaa1369f0bf34a00"
+      }
+    },
+    {
+      "case": "screen",
+      "round": 0,
+      "arm": "on",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.3,
+        "high_gib": 13.3,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-on/stop.json",
+        "bytes": 1765,
+        "sha256": "bfada422b981d5aebf0b8c02982e450a11bd9491bc1d6dd13a6d65a513c64b5d"
+      }
+    },
+    {
+      "case": "screen",
+      "round": 1,
+      "arm": "on",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.0,
+        "high_gib": 13.0,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-on/stop.json",
+        "bytes": 1764,
+        "sha256": "7fbe817d9fb6e3babbe94922956ec270a7632162c45277151a22ead15df55006"
+      }
+    },
+    {
+      "case": "screen",
+      "round": 1,
+      "arm": "original",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.2,
+        "high_gib": 13.2,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-original/stop.json",
+        "bytes": 1770,
+        "sha256": "b7d80433c8ff323140c861e496974498d9ff960f9e447632aaf27a8bbe456811"
+      }
+    },
+    {
+      "case": "screen",
+      "round": 1,
+      "arm": "off",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.3,
+        "high_gib": 13.3,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-off/stop.json",
+        "bytes": 1763,
+        "sha256": "97323646d7cbad2eddf8a25319005bd273bb7fdee407b9decef4fe89a6d8d901"
+      }
+    },
+    {
+      "case": "screen",
+      "round": 2,
+      "arm": "off",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.3,
+        "high_gib": 13.3,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-off/stop.json",
+        "bytes": 1766,
+        "sha256": "2b1a9d91bf72bf93650bc91fee93a10bdabd9bf4aed96b65cb3520f1f390c2d3"
+      }
+    },
+    {
+      "case": "screen",
+      "round": 2,
+      "arm": "on",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.3,
+        "high_gib": 13.3,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-on/stop.json",
+        "bytes": 1765,
+        "sha256": "a89cf5009111beb001d6060f95ab56041f7378d528c516f855181901b2a17415"
+      }
+    },
+    {
+      "case": "screen",
+      "round": 2,
+      "arm": "original",
+      "guard_exit": 0,
+      "payload_exit": 0,
+      "effective_limits_gib": {
+        "max_gib": 14.4,
+        "high_gib": 13.4,
+        "reserve_gib": 12.0
+      },
+      "stop_receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-original/stop.json",
+        "bytes": 1770,
+        "sha256": "76b73e1a99fb27527ce4d836849f162751d249ae6e253fe1d291469f10976a19"
+      }
+    }
+  ]
+}

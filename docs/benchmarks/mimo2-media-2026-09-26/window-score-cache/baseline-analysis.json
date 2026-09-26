@@ -1,0 +1,117 @@
+{
+  "scope": "Window attention on screen fixture: 3072 rows, Q32/KV8, HD64, interleaved QKV with sinks, window 64, no causal/group masks.",
+  "metrics": {
+    "gpu__time_duration.sum": {
+      "value": "97.157632",
+      "unit": "ms"
+    },
+    "smsp__inst_executed.sum": {
+      "value": "935582464.000000",
+      "unit": "inst"
+    },
+    "launch__registers_per_thread": {
+      "value": "40",
+      "unit": "register/thread"
+    },
+    "derived__local_spilling_requests": {
+      "value": "0",
+      "unit": ""
+    },
+    "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": {
+      "value": "200775680",
+      "unit": ""
+    },
+    "l1tex__t_requests_pipe_lsu_mem_global_op_st.sum": {
+      "value": "25292800",
+      "unit": ""
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+      "value": "4015415296.000000",
+      "unit": "sector"
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+      "value": "809369600.000000",
+      "unit": "sector"
+    },
+    "lts__t_sectors_srcunit_tex_op_read.sum": {
+      "value": "1410420174.000000",
+      "unit": "sector"
+    },
+    "lts__t_sectors_srcunit_tex_op_write.sum": {
+      "value": "809369600.000000",
+      "unit": "sector"
+    },
+    "lts__t_sector_hit_rate.pct": {
+      "value": "98.099012",
+      "unit": "%"
+    },
+    "lts__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "value": "88.779563",
+      "unit": "%"
+    },
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "value": "4.413709",
+      "unit": "%"
+    }
+  },
+  "sampling_caveat": "This window capture has no sampling overflow warning. Both campaigns preserve the user clock range rather than locking frequencies through NCU. Exact instruction and memory counters support the hypothesis.",
+  "source_arithmetic_counts": {
+    "MUFU.RCP": {
+      "warp_instructions": 401344,
+      "thread_instructions": 12843008
+    },
+    "MUFU.RSQ": {
+      "warp_instructions": 3072,
+      "thread_instructions": 98304
+    },
+    "LDG.E": {
+      "warp_instructions": 200775680,
+      "thread_instructions": 6424821760
+    },
+    "FFMA.FTZ": {
+      "warp_instructions": 101169024,
+      "thread_instructions": 3237408768
+    },
+    "FMUL.FTZ": {
+      "warp_instructions": 1571584,
+      "thread_instructions": 50290688
+    },
+    "MUFU.EX2": {
+      "warp_instructions": 787328,
+      "thread_instructions": 25194496
+    },
+    "FADD.FTZ": {
+      "warp_instructions": 398272,
+      "thread_instructions": 12744704
+    },
+    "STG.E": {
+      "warp_instructions": 25292800,
+      "thread_instructions": 809369600
+    }
+  },
+  "count_reconciliation": {
+    "valid_row_key_pairs": 392128,
+    "load_warp_requests": {
+      "formula": "valid_pairs*Qheads*HD/32*8 + 2*n, for three Q/K dot passes, V and output reads, plus sink reads",
+      "calculated": 200775680,
+      "measured": 200775680
+    },
+    "store_warp_requests": {
+      "formula": "valid_pairs*Qheads*HD/32 + n*Qheads*HD/32, each key update plus zero initialization",
+      "calculated": 25292800,
+      "measured": 25292800
+    },
+    "output_read_write_sector_bytes": 51598327808,
+    "final_output_bytes": 25165824
+  },
+  "hypothesis": "Clamp the contiguous valid key interval instead of scanning all rows three times. Share Q, cache each unscaled dot once, and accumulate output dimensions in registers with coalesced V loads and one final store. Serial dot, maximum, denominator and output accumulation orders are preserved; the sink is included last in maximum and denominator, as in the scalar kernel.",
+  "resource_tradeoff": "Candidate adds 780 bytes of dynamic shared memory per CTA and no persistent VRAM. Cached-score division is still repeated across output dimensions, as in adopted R1; candidate instruction counters must quantify that cost against eliminated dot and memory work.",
+  "candidate": {
+    "kernel": "mimo2_vision_window",
+    "grid": "n*32",
+    "block": 128,
+    "dynamic_shared_bytes": 780,
+    "kill_switch": "DS4_MIMO2_VISION_WINDOW=0",
+    "scope": "n<=8192, Q32/KV8/HD64, shared QKV pointer, strides3072, offsets0/2048/2560, window64 with sinks, no causal/group masks. R1 full attention and scalar fallback remain unchanged."
+  }
+}

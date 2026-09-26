@@ -1,0 +1,5 @@
+host-memory-guard: available=25.38 GiB, scope max/high=13.30/12.30, reserve=12.00, trip=12.00
+ds4: compact routed MMQ worklist active (type=17 rows=256 experts=256)
+unsupported_shape_refusal=PASS
+mode=0 tokens=32 assignments=256 warmups=16 reps=1 entry_ms=4.274720
+full_output_finite=PASS count=1048576 bytes=4194304

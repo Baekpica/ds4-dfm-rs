@@ -1,0 +1,4 @@
+{
+  "status": "failed",
+  "error": "RuntimeError('{\"error\": \"RuntimeError(\\'nsys still collecting after stop/export\\')\", \"cleanup_errors\": [], \"export_complete\": false}')"
+}

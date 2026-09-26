@@ -1,0 +1,16 @@
+{
+  "pid": 1987143,
+  "cmd": "./ds4_weight_server --base /home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf --backend vmm --scope base --reserve-gb 12 --manifest /home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/owner4.ipc ",
+  "signal": "SIGTERM",
+  "exited": true,
+  "time": 1790411453.1502824,
+  "gpu_after": "pid, process_name, used_gpu_memory [MiB]\n",
+  "host_memory": "               total        used        free      shared  buff/cache   available\nMem:           121Gi       4.7Gi       110Gi       576Ki       7.4Gi       116Gi\nSwap:           15Gi       774Mi        15Gi\n",
+  "guard_exit": {
+    "time": 1790411453.2620773,
+    "event": "exit",
+    "unit": "ds4-hostguard-1987131-1790410456088925437.scope",
+    "status": 0,
+    "payload_status": 0
+  }
+}

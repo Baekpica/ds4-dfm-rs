@@ -542,6 +542,14 @@ decode, and satisfy the slowdown limit for every metric. Failed, tied, noisy,
 incorrect, and regressing trials remain recorded. A retained candidate becomes
 the next control. No source code or production launcher is changed.
 
+The automatic 1% floor is a conservative screening rule, not a project-wide
+adoption requirement. Manual review may retain a smaller gain when repeated
+comparable A/B runs consistently beat observed noise, preserve correctness,
+and do not meaningfully regress other workloads. Prefer improvements with no
+additional VRAM, arithmetic work, or other material resource cost. Report and
+weigh any added cost against the measured benefit. Record this engineering
+decision separately from the tool's automatic verdict.
+
 Per-process deadlines, process-group termination, interrupt handling, and polled
 output budgets bound execution. Auto also accounts for cumulative campaign
 output. Raw profiler writes can overshoot the byte limit between polls; these

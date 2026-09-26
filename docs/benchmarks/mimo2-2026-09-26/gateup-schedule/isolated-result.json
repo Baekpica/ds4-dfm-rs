@@ -1,0 +1,743 @@
+{
+  "status": "isolated evidence complete; full-model correctness/performance decides adoption",
+  "samples": {
+    "original": [
+      {
+        "sample": 0,
+        "entry_ms": 24.326605,
+        "log": "0-original.log",
+        "log_sha256": "531674cc83c1dcda1a5c4fa41556b32043f1ed85293b86d82048bdea53ae4bb6",
+        "guard": {
+          "path": "0-original.memory.jsonl",
+          "sha256": "668ff635500d64928071339946e3e29a2637a6ac77253e4c335425627f504035",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      {
+        "sample": 1,
+        "entry_ms": 24.335621,
+        "log": "1-original.log",
+        "log_sha256": "1798c48595e423e6fd8dfc4ebe0010d122f030d55ab46cb7237dc9c715165de4",
+        "guard": {
+          "path": "1-original.memory.jsonl",
+          "sha256": "d08dfe770bf612a1fb6fe4aa1af3f1c1c7d2d74bc334b1cb874f9a38564bca61",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      {
+        "sample": 2,
+        "entry_ms": 24.361994,
+        "log": "2-original.log",
+        "log_sha256": "83dd950fa840f3dee573b069fb060245acbf17fb207a9e91973a0a7adf6787a8",
+        "guard": {
+          "path": "2-original.memory.jsonl",
+          "sha256": "59d28faa65daa461ac759c58b1878b814cffacb2a3d36f6500294eba9c316114",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    ],
+    "off": [
+      {
+        "sample": 0,
+        "entry_ms": 24.345364,
+        "log": "0-off.log",
+        "log_sha256": "b26ffe105be8b4ce1d298d92c5145fa2c80a4a649fe3935a30b403ef1237e08c",
+        "guard": {
+          "path": "0-off.memory.jsonl",
+          "sha256": "8cb84d8a41e3f867a16baa431e44ece8503f9577268f5ab81d5e11c20bdd8e0b",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      {
+        "sample": 1,
+        "entry_ms": 24.332348,
+        "log": "1-off.log",
+        "log_sha256": "cd90aff757256919359d6f0a25601d5bde8697e4e43ea033c0b56435c18cdc9f",
+        "guard": {
+          "path": "1-off.memory.jsonl",
+          "sha256": "61a653ac7b68b2c1814e09ad2c85f15f0c0cb8853331767e55ab23c001012dbc",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      {
+        "sample": 2,
+        "entry_ms": 24.337925,
+        "log": "2-off.log",
+        "log_sha256": "78871f4cabb8a0c4d6044e2f99cfa0e223060264f3520c760898ac0f63ee7820",
+        "guard": {
+          "path": "2-off.memory.jsonl",
+          "sha256": "30543a07587ec2ca853ccca82f4aa2ba4ae0730908e522540ee84d3499fa60d6",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    ],
+    "on": [
+      {
+        "sample": 0,
+        "entry_ms": 23.889132,
+        "log": "0-on.log",
+        "log_sha256": "3a6994e213d799b571b5bdf606cb20d194c06751c1b2eb0f1a39e5ffd3ee1391",
+        "guard": {
+          "path": "0-on.memory.jsonl",
+          "sha256": "baec047ff857bf8557fee159845565ca25ec109dc999905c8d900eefd45117c2",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      {
+        "sample": 1,
+        "entry_ms": 23.887592,
+        "log": "1-on.log",
+        "log_sha256": "ae8e12d149c3b9430f789681e231db8d38ee1fe6a7932571ab5e2ba396bf8c3c",
+        "guard": {
+          "path": "1-on.memory.jsonl",
+          "sha256": "723677afb89c2c603f5347d0fc3c81033ff4436ad322e75f8116b142a33e6d25",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      {
+        "sample": 2,
+        "entry_ms": 23.881914,
+        "log": "2-on.log",
+        "log_sha256": "9e536a5f7c4f1e3519809cd453f6da3ffd72653711d49b9b83aec6f380a88172",
+        "guard": {
+          "path": "2-on.memory.jsonl",
+          "sha256": "ce22956b1fd7907c4c0208ae9148ad5a8ba52a43c9e1838f02af86e99b5d38d9",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    ]
+  },
+  "median_entry_ms": {
+    "original": 24.335621,
+    "off": 24.337925,
+    "on": 23.887592
+  },
+  "on_vs_control": {
+    "original": {
+      "median_latency_reduction_pct": 1.8410419853267745,
+      "paired_latency_reduction_pct": [
+        1.7983314975517528,
+        1.8410419853267745,
+        1.970610451673216
+      ]
+    },
+    "off": {
+      "median_latency_reduction_pct": 1.850334406076104,
+      "paired_latency_reduction_pct": [
+        1.873999501506729,
+        1.827838398497339,
+        1.8736642503418
+      ]
+    }
+  },
+  "output_parity": {
+    "dump_sample": 0,
+    "legs": [
+      {
+        "leg": 0,
+        "float_count_per_arm": 67108864,
+        "bytes_compared_per_arm": 268435456,
+        "all_bytes_equal": true,
+        "files": {
+          "original": {
+            "path": "original-0.bin",
+            "sha256": "e0421e6172986cc408823d53e66d9e22cacf74ec393da5ab3cb92273fecc6d16"
+          },
+          "off": {
+            "path": "off-0.bin",
+            "sha256": "e0421e6172986cc408823d53e66d9e22cacf74ec393da5ab3cb92273fecc6d16"
+          },
+          "on": {
+            "path": "on-0.bin",
+            "sha256": "e0421e6172986cc408823d53e66d9e22cacf74ec393da5ab3cb92273fecc6d16"
+          }
+        }
+      },
+      {
+        "leg": 1,
+        "float_count_per_arm": 67108864,
+        "bytes_compared_per_arm": 268435456,
+        "all_bytes_equal": true,
+        "files": {
+          "original": {
+            "path": "original-1.bin",
+            "sha256": "b8f831ff12b45c1d16381a7676b559014cf83b64a4ef1db05f63dca182f74358"
+          },
+          "off": {
+            "path": "off-1.bin",
+            "sha256": "b8f831ff12b45c1d16381a7676b559014cf83b64a4ef1db05f63dca182f74358"
+          },
+          "on": {
+            "path": "on-1.bin",
+            "sha256": "b8f831ff12b45c1d16381a7676b559014cf83b64a4ef1db05f63dca182f74358"
+          }
+        }
+      }
+    ],
+    "scope": "Final full gate/up outputs from sample 0 of each arm; later timing repeats do not dump outputs."
+  },
+  "ncu": {
+    "profiles": {
+      "original": {
+        "source": "baseline-raw.csv",
+        "sha256": "eadab91d2f8b1578dcc5be942f778fc34466d8b8f9a0791ebae2957517a350ab",
+        "guard": {
+          "path": "baseline.memory.jsonl",
+          "sha256": "1c47be85093a5fd08a9ff464dadadd0f9b3b805520a052e0ff72af286428ca8a",
+          "status": 0,
+          "payload_status": 0
+        },
+        "kernel": "<unnamed>::gateup_iq2_d2r_pair_kernel(const void *, const void *, const block_q8_1_mmq *, const int *, const int *, const int *, const int *, float *, float *, int, int, int, int)",
+        "device": "0",
+        "cc": "12.1",
+        "warmup_iterations": 1,
+        "geometry": {
+          "launch__block_dim_x": {
+            "value": 32,
+            "unit": "block",
+            "normalized_value": 32,
+            "normalized_unit": "block"
+          },
+          "launch__block_dim_y": {
+            "value": 8,
+            "unit": "block",
+            "normalized_value": 8,
+            "normalized_unit": "block"
+          },
+          "launch__block_dim_z": {
+            "value": 1,
+            "unit": "block",
+            "normalized_value": 1,
+            "normalized_unit": "block"
+          },
+          "launch__grid_dim_x": {
+            "value": 16,
+            "unit": "",
+            "normalized_value": 16,
+            "normalized_unit": ""
+          },
+          "launch__grid_dim_y": {
+            "value": 768,
+            "unit": "",
+            "normalized_value": 768,
+            "normalized_unit": ""
+          },
+          "launch__grid_dim_z": {
+            "value": 2,
+            "unit": "",
+            "normalized_value": 2,
+            "normalized_unit": ""
+          },
+          "launch__block_size": {
+            "value": 256,
+            "unit": "",
+            "normalized_value": 256,
+            "normalized_unit": ""
+          },
+          "launch__registers_per_thread": {
+            "value": 128,
+            "unit": "register/thread",
+            "normalized_value": 128,
+            "normalized_unit": "register/thread"
+          },
+          "launch__registers_per_thread_allocated": {
+            "value": 128,
+            "unit": "register/thread",
+            "normalized_value": 128,
+            "normalized_unit": "register/thread"
+          },
+          "launch__shared_mem_per_block_static": {
+            "value": 37.744,
+            "unit": "Kbyte/block",
+            "normalized_value": 37744,
+            "normalized_unit": "byte/block"
+          },
+          "launch__shared_mem_per_block_dynamic": {
+            "value": 0,
+            "unit": "byte/block",
+            "normalized_value": 0,
+            "normalized_unit": "byte/block"
+          },
+          "launch__shared_mem_per_block_driver": {
+            "value": 1.024,
+            "unit": "Kbyte/block",
+            "normalized_value": 1024,
+            "normalized_unit": "byte/block"
+          },
+          "launch__shared_mem_per_block_allocated": {
+            "value": 38.784,
+            "unit": "Kbyte/block",
+            "normalized_value": 38784,
+            "normalized_unit": "byte/block"
+          },
+          "launch__occupancy_limit_registers": {
+            "value": 2,
+            "unit": "block",
+            "normalized_value": 2,
+            "normalized_unit": "block"
+          },
+          "launch__occupancy_limit_shared_mem": {
+            "value": 2,
+            "unit": "block",
+            "normalized_value": 2,
+            "normalized_unit": "block"
+          },
+          "smsp__warps_active.avg.per_cycle_active": {
+            "value": 3.987611,
+            "unit": "warp",
+            "normalized_value": 3.987611,
+            "normalized_unit": "warp"
+          },
+          "smsp__warps_eligible.avg.per_cycle_active": {
+            "value": 1.319143,
+            "unit": "warp",
+            "normalized_value": 1.319143,
+            "normalized_unit": "warp"
+          },
+          "sm__warps_active.avg.pct_of_peak_sustained_active": {
+            "value": 33.27076,
+            "unit": "%",
+            "normalized_value": 33.27076,
+            "normalized_unit": "%"
+          }
+        }
+      },
+      "bounded": {
+        "source": "candidate-raw.csv",
+        "sha256": "dd4bbf49e2e9ac34772bcaea418d18a9eeffc5afc4a515686b80d0c13797b36e",
+        "guard": {
+          "path": "candidate.memory.jsonl",
+          "sha256": "443720135872ae7621d93c4a8cabbf81e5fcc345ee439e53cb6bc91f3a11c28e",
+          "status": 0,
+          "payload_status": 0
+        },
+        "kernel": "void <unnamed>::gateup_iq2_d2r_pair_kernel<1>(const void *, const void *, const block_q8_1_mmq *, const int *, const int *, const int *, const int *, float *, float *, int, int, int, int)",
+        "device": "0",
+        "cc": "12.1",
+        "warmup_iterations": 16,
+        "geometry": {
+          "launch__block_dim_x": {
+            "value": 32,
+            "unit": "block",
+            "normalized_value": 32,
+            "normalized_unit": "block"
+          },
+          "launch__block_dim_y": {
+            "value": 8,
+            "unit": "block",
+            "normalized_value": 8,
+            "normalized_unit": "block"
+          },
+          "launch__block_dim_z": {
+            "value": 1,
+            "unit": "block",
+            "normalized_value": 1,
+            "normalized_unit": "block"
+          },
+          "launch__grid_dim_x": {
+            "value": 16,
+            "unit": "",
+            "normalized_value": 16,
+            "normalized_unit": ""
+          },
+          "launch__grid_dim_y": {
+            "value": 768,
+            "unit": "",
+            "normalized_value": 768,
+            "normalized_unit": ""
+          },
+          "launch__grid_dim_z": {
+            "value": 2,
+            "unit": "",
+            "normalized_value": 2,
+            "normalized_unit": ""
+          },
+          "launch__block_size": {
+            "value": 256,
+            "unit": "",
+            "normalized_value": 256,
+            "normalized_unit": ""
+          },
+          "launch__registers_per_thread": {
+            "value": 128,
+            "unit": "register/thread",
+            "normalized_value": 128,
+            "normalized_unit": "register/thread"
+          },
+          "launch__registers_per_thread_allocated": {
+            "value": 128,
+            "unit": "register/thread",
+            "normalized_value": 128,
+            "normalized_unit": "register/thread"
+          },
+          "launch__shared_mem_per_block_static": {
+            "value": 37.744,
+            "unit": "Kbyte/block",
+            "normalized_value": 37744,
+            "normalized_unit": "byte/block"
+          },
+          "launch__shared_mem_per_block_dynamic": {
+            "value": 0,
+            "unit": "byte/block",
+            "normalized_value": 0,
+            "normalized_unit": "byte/block"
+          },
+          "launch__shared_mem_per_block_driver": {
+            "value": 1.024,
+            "unit": "Kbyte/block",
+            "normalized_value": 1024,
+            "normalized_unit": "byte/block"
+          },
+          "launch__shared_mem_per_block_allocated": {
+            "value": 38.784,
+            "unit": "Kbyte/block",
+            "normalized_value": 38784,
+            "normalized_unit": "byte/block"
+          },
+          "launch__occupancy_limit_registers": {
+            "value": 2,
+            "unit": "block",
+            "normalized_value": 2,
+            "normalized_unit": "block"
+          },
+          "launch__occupancy_limit_shared_mem": {
+            "value": 2,
+            "unit": "block",
+            "normalized_value": 2,
+            "normalized_unit": "block"
+          },
+          "smsp__warps_active.avg.per_cycle_active": {
+            "value": 3.987165,
+            "unit": "warp",
+            "normalized_value": 3.987165,
+            "normalized_unit": "warp"
+          },
+          "smsp__warps_eligible.avg.per_cycle_active": {
+            "value": 1.395073,
+            "unit": "warp",
+            "normalized_value": 1.395073,
+            "normalized_unit": "warp"
+          },
+          "sm__warps_active.avg.pct_of_peak_sustained_active": {
+            "value": 33.25794,
+            "unit": "%",
+            "normalized_value": 33.25794,
+            "normalized_unit": "%"
+          }
+        }
+      }
+    },
+    "metrics": [
+      {
+        "key": "smsp__inst_executed.sum",
+        "unit": "inst",
+        "original": 6157137344,
+        "bounded": 6298047936,
+        "change_percent": 2.2885731489701846,
+        "original_raw": {
+          "value": 6157137344,
+          "unit": "inst",
+          "normalized_value": 6157137344,
+          "normalized_unit": "inst"
+        },
+        "bounded_raw": {
+          "value": 6298047936,
+          "unit": "inst",
+          "normalized_value": 6298047936,
+          "normalized_unit": "inst"
+        }
+      },
+      {
+        "key": "smsp__sass_inst_executed_op_shared_ld.sum",
+        "unit": "inst",
+        "original": 290430464,
+        "bounded": 347643392,
+        "change_percent": 19.6993549547199,
+        "original_raw": {
+          "value": 290430464,
+          "unit": "inst",
+          "normalized_value": 290430464,
+          "normalized_unit": "inst"
+        },
+        "bounded_raw": {
+          "value": 347643392,
+          "unit": "inst",
+          "normalized_value": 347643392,
+          "normalized_unit": "inst"
+        }
+      },
+      {
+        "key": "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum",
+        "unit": "",
+        "original": 1007758097,
+        "bounded": 1014195900,
+        "change_percent": 0.6388242395833611,
+        "original_raw": {
+          "value": 1007758097,
+          "unit": "",
+          "normalized_value": 1007758097,
+          "normalized_unit": ""
+        },
+        "bounded_raw": {
+          "value": 1014195900,
+          "unit": "",
+          "normalized_value": 1014195900,
+          "normalized_unit": ""
+        }
+      },
+      {
+        "key": "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum",
+        "unit": "",
+        "original": 240673271,
+        "bounded": 240758768,
+        "change_percent": 0.035524094405979964,
+        "original_raw": {
+          "value": 240673271,
+          "unit": "",
+          "normalized_value": 240673271,
+          "normalized_unit": ""
+        },
+        "bounded_raw": {
+          "value": 240758768,
+          "unit": "",
+          "normalized_value": 240758768,
+          "normalized_unit": ""
+        }
+      },
+      {
+        "key": "sass__inst_executed_register_spilling",
+        "unit": "inst",
+        "original": 28705792,
+        "bounded": 13508608,
+        "change_percent": -52.94117647058823,
+        "original_raw": {
+          "value": 28705792,
+          "unit": "inst",
+          "normalized_value": 28705792,
+          "normalized_unit": "inst"
+        },
+        "bounded_raw": {
+          "value": 13508608,
+          "unit": "inst",
+          "normalized_value": 13508608,
+          "normalized_unit": "inst"
+        }
+      },
+      {
+        "key": "l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum",
+        "unit": "sector",
+        "original": 216137728,
+        "bounded": 101711872,
+        "change_percent": -52.94117647058823,
+        "original_raw": {
+          "value": 216137728,
+          "unit": "sector",
+          "normalized_value": 216137728,
+          "normalized_unit": "sector"
+        },
+        "bounded_raw": {
+          "value": 101711872,
+          "unit": "sector",
+          "normalized_value": 101711872,
+          "normalized_unit": "sector"
+        }
+      },
+      {
+        "key": "l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum",
+        "unit": "sector",
+        "original": 13508608,
+        "bounded": 6356992,
+        "change_percent": -52.94117647058823,
+        "original_raw": {
+          "value": 13508608,
+          "unit": "sector",
+          "normalized_value": 13508608,
+          "normalized_unit": "sector"
+        },
+        "bounded_raw": {
+          "value": 6356992,
+          "unit": "sector",
+          "normalized_value": 6356992,
+          "normalized_unit": "sector"
+        }
+      },
+      {
+        "key": "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum",
+        "unit": "sector",
+        "original": 428983776,
+        "bounded": 428983776,
+        "change_percent": 0.0,
+        "original_raw": {
+          "value": 428983776,
+          "unit": "sector",
+          "normalized_value": 428983776,
+          "normalized_unit": "sector"
+        },
+        "bounded_raw": {
+          "value": 428983776,
+          "unit": "sector",
+          "normalized_value": 428983776,
+          "normalized_unit": "sector"
+        }
+      },
+      {
+        "key": "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum",
+        "unit": "sector",
+        "original": 16777216,
+        "bounded": 16777216,
+        "change_percent": 0.0,
+        "original_raw": {
+          "value": 16777216,
+          "unit": "sector",
+          "normalized_value": 16777216,
+          "normalized_unit": "sector"
+        },
+        "bounded_raw": {
+          "value": 16777216,
+          "unit": "sector",
+          "normalized_value": 16777216,
+          "normalized_unit": "sector"
+        }
+      },
+      {
+        "key": "lts__t_sectors.sum",
+        "unit": "sector",
+        "original": 670788565,
+        "bounded": 544898758,
+        "change_percent": -18.767434862280336,
+        "original_raw": {
+          "value": 670788565,
+          "unit": "sector",
+          "normalized_value": 670788565,
+          "normalized_unit": "sector"
+        },
+        "bounded_raw": {
+          "value": 544898758,
+          "unit": "sector",
+          "normalized_value": 544898758,
+          "normalized_unit": "sector"
+        }
+      },
+      {
+        "key": "lts__t_sectors_srcunit_tex_op_read_lookup_miss.sum",
+        "unit": "sector",
+        "original": 44048911,
+        "bounded": 44048951,
+        "change_percent": 9.080814733422127e-05,
+        "original_raw": {
+          "value": 44048911,
+          "unit": "sector",
+          "normalized_value": 44048911,
+          "normalized_unit": "sector"
+        },
+        "bounded_raw": {
+          "value": 44048951,
+          "unit": "sector",
+          "normalized_value": 44048951,
+          "normalized_unit": "sector"
+        }
+      },
+      {
+        "key": "lts__t_sectors_srcunit_tex_aperture_sysmem_lookup_miss.sum",
+        "unit": "sector",
+        "original": 50324190,
+        "bounded": 49710472,
+        "change_percent": -1.2195288190430884,
+        "original_raw": {
+          "value": 50324190,
+          "unit": "sector",
+          "normalized_value": 50324190,
+          "normalized_unit": "sector"
+        },
+        "bounded_raw": {
+          "value": 49710472,
+          "unit": "sector",
+          "normalized_value": 49710472,
+          "normalized_unit": "sector"
+        }
+      },
+      {
+        "key": "sm__ops_path_tensor_op_imma_src_int8_sparsity_off.sum",
+        "unit": "",
+        "original": 1127965786112,
+        "bounded": 1127965786112,
+        "change_percent": 0.0,
+        "original_raw": {
+          "value": 1127965786112,
+          "unit": "",
+          "normalized_value": 1127965786112,
+          "normalized_unit": ""
+        },
+        "bounded_raw": {
+          "value": 1127965786112,
+          "unit": "",
+          "normalized_value": 1127965786112,
+          "normalized_unit": ""
+        }
+      },
+      {
+        "key": "gpu__time_duration.sum",
+        "unit": "second",
+        "original": 0.023191584,
+        "bounded": 0.022715136,
+        "change_percent": -2.0544004238779032,
+        "original_raw": {
+          "value": 23.191584,
+          "unit": "ms",
+          "normalized_value": 0.023191584,
+          "normalized_unit": "second"
+        },
+        "bounded_raw": {
+          "value": 22.715136,
+          "unit": "ms",
+          "normalized_value": 0.022715136,
+          "normalized_unit": "second"
+        }
+      }
+    ],
+    "scope": "Full isolated kernel replay with cache flushing. Original used an older one-warmup fixture; candidate uses sixteen warmups. Both preserve synthetic values/routing and geometry. Counters explain mechanisms, not production speed."
+  },
+  "protocol": {
+    "tokens": 4096,
+    "used": 8,
+    "experts": 256,
+    "M": 2048,
+    "K": 4096,
+    "warmups": 16,
+    "measured_iterations": 100,
+    "fresh_processes_per_arm": 3,
+    "order": [
+      [
+        "original",
+        "off",
+        "on"
+      ],
+      [
+        "on",
+        "original",
+        "off"
+      ],
+      [
+        "off",
+        "on",
+        "original"
+      ]
+    ]
+  },
+  "interpretation_limits": [
+    "Compare ON with the same-build OFF control and the retained original binary; compilation can change unrelated scheduling.",
+    "Tensor INT8 operation counts and total instruction counts are separate metrics. Unchanged tensor work does not prove unchanged scalar arithmetic, conversions, or compiler rematerialization.",
+    "Shared-load instructions do not directly measure physical shared-memory traffic; report wavefronts and bank conflicts alongside them.",
+    "L2/global/local sector counters do not establish a separate measured DRAM-byte total or VRAM allocation change.",
+    "Preserved source accumulation order plus byte-exact isolated outputs does not replace full-model A/B and decode gates."
+  ]
+}

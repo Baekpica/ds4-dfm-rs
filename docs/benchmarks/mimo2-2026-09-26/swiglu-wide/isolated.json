@@ -1,0 +1,557 @@
+{
+  "status": "REJECTED_AFTER_END_TO_END",
+  "accepted": false,
+  "rows": 32768,
+  "input_tokens": 4096,
+  "width": 2048,
+  "warmups": 16,
+  "repetitions": 100,
+  "rotated_orders": [
+    [
+      "original",
+      "128",
+      "256",
+      "512"
+    ],
+    [
+      "512",
+      "256",
+      "original",
+      "128"
+    ],
+    [
+      "128",
+      "512",
+      "256",
+      "original"
+    ]
+  ],
+  "samples_ms": {
+    "original": [
+      2.690174,
+      2.715579,
+      2.722384
+    ],
+    "128": [
+      2.692871,
+      2.688034,
+      2.725925
+    ],
+    "256": [
+      2.691133,
+      2.696691,
+      2.678778
+    ],
+    "512": [
+      2.67407,
+      2.678764,
+      2.673309
+    ]
+  },
+  "medians_ms": {
+    "original": 2.715579,
+    "128": 2.692871,
+    "256": 2.691133,
+    "512": 2.67407
+  },
+  "wide_latency_change_percent": {
+    "original": -1.5285506332167076,
+    "128": -0.6981767786128579,
+    "256": -0.6340452144134145
+  },
+  "paired_wide_latency_change_percent": {
+    "original": [
+      -0.5986229886988714,
+      -1.3556961517230737,
+      -1.8026479732469736
+    ],
+    "128": [
+      -0.6981767786128579,
+      -0.34486170933849536,
+      -1.93020717738015
+    ],
+    "256": [
+      -0.6340452144134145,
+      -0.6647776849479481,
+      -0.20416025516111214
+    ]
+  },
+  "runs": [
+    {
+      "arm": "original",
+      "sample": 0,
+      "kernel_ms": 2.690174,
+      "grid": [
+        32768,
+        4,
+        1
+      ],
+      "block": 128,
+      "guard": {
+        "start": {
+          "time": 1790400020.4277158,
+          "event": "start",
+          "unit": "ds4-hostguard-1931855-1790400020419839002.scope",
+          "available_gib": 116.93916320800781,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-swiglu/probe-baseline",
+            "100"
+          ]
+        },
+        "exit": {
+          "time": 1790400021.711123,
+          "event": "exit",
+          "unit": "ds4-hostguard-1931855-1790400020419839002.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "full_output_finite_d4": true
+    },
+    {
+      "arm": "original",
+      "sample": 1,
+      "kernel_ms": 2.715579,
+      "grid": [
+        32768,
+        4,
+        1
+      ],
+      "block": 128,
+      "guard": {
+        "start": {
+          "time": 1790400028.2523851,
+          "event": "start",
+          "unit": "ds4-hostguard-1932009-1790400028245218768.scope",
+          "available_gib": 115.98495101928711,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-swiglu/probe-baseline",
+            "100"
+          ]
+        },
+        "exit": {
+          "time": 1790400029.4758825,
+          "event": "exit",
+          "unit": "ds4-hostguard-1932009-1790400028245218768.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "full_output_finite_d4": true
+    },
+    {
+      "arm": "original",
+      "sample": 2,
+      "kernel_ms": 2.722384,
+      "grid": [
+        32768,
+        4,
+        1
+      ],
+      "block": 128,
+      "guard": {
+        "start": {
+          "time": 1790400034.7252555,
+          "event": "start",
+          "unit": "ds4-hostguard-1932088-1790400034718797141.scope",
+          "available_gib": 115.78923416137695,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-swiglu/probe-baseline",
+            "100"
+          ]
+        },
+        "exit": {
+          "time": 1790400035.95316,
+          "event": "exit",
+          "unit": "ds4-hostguard-1932088-1790400034718797141.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "full_output_finite_d4": true
+    },
+    {
+      "arm": "128",
+      "sample": 0,
+      "kernel_ms": 2.692871,
+      "grid": [
+        32768,
+        4,
+        1
+      ],
+      "block": 128,
+      "guard": {
+        "start": {
+          "time": 1790400021.7781503,
+          "event": "start",
+          "unit": "ds4-hostguard-1931869-1790400021769616744.scope",
+          "available_gib": 116.69023132324219,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-swiglu/probe-blocks",
+            "100",
+            "128"
+          ]
+        },
+        "exit": {
+          "time": 1790400023.0111046,
+          "event": "exit",
+          "unit": "ds4-hostguard-1931869-1790400021769616744.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "full_output_finite_d4": true
+    },
+    {
+      "arm": "128",
+      "sample": 1,
+      "kernel_ms": 2.688034,
+      "grid": [
+        32768,
+        4,
+        1
+      ],
+      "block": 128,
+      "guard": {
+        "start": {
+          "time": 1790400029.5784638,
+          "event": "start",
+          "unit": "ds4-hostguard-1932021-1790400029570755017.scope",
+          "available_gib": 116.28092956542969,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-swiglu/probe-blocks",
+            "100",
+            "128"
+          ]
+        },
+        "exit": {
+          "time": 1790400030.8015964,
+          "event": "exit",
+          "unit": "ds4-hostguard-1932021-1790400029570755017.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "full_output_finite_d4": true
+    },
+    {
+      "arm": "128",
+      "sample": 2,
+      "kernel_ms": 2.725925,
+      "grid": [
+        32768,
+        4,
+        1
+      ],
+      "block": 128,
+      "guard": {
+        "start": {
+          "time": 1790400030.867178,
+          "event": "start",
+          "unit": "ds4-hostguard-1932033-1790400030858235137.scope",
+          "available_gib": 116.19831466674805,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-swiglu/probe-blocks",
+            "100",
+            "128"
+          ]
+        },
+        "exit": {
+          "time": 1790400032.0900617,
+          "event": "exit",
+          "unit": "ds4-hostguard-1932033-1790400030858235137.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "full_output_finite_d4": true
+    },
+    {
+      "arm": "256",
+      "sample": 0,
+      "kernel_ms": 2.691133,
+      "grid": [
+        32768,
+        2,
+        1
+      ],
+      "block": 256,
+      "guard": {
+        "start": {
+          "time": 1790400023.076637,
+          "event": "start",
+          "unit": "ds4-hostguard-1931880-1790400023068946159.scope",
+          "available_gib": 116.64274597167969,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-swiglu/probe-blocks",
+            "100",
+            "256"
+          ]
+        },
+        "exit": {
+          "time": 1790400024.3079655,
+          "event": "exit",
+          "unit": "ds4-hostguard-1931880-1790400023068946159.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "full_output_finite_d4": true
+    },
+    {
+      "arm": "256",
+      "sample": 1,
+      "kernel_ms": 2.696691,
+      "grid": [
+        32768,
+        2,
+        1
+      ],
+      "block": 256,
+      "guard": {
+        "start": {
+          "time": 1790400027.0408087,
+          "event": "start",
+          "unit": "ds4-hostguard-1931998-1790400027031655995.scope",
+          "available_gib": 115.94498062133789,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-swiglu/probe-blocks",
+            "100",
+            "256"
+          ]
+        },
+        "exit": {
+          "time": 1790400028.1617682,
+          "event": "exit",
+          "unit": "ds4-hostguard-1931998-1790400027031655995.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "full_output_finite_d4": true
+    },
+    {
+      "arm": "256",
+      "sample": 2,
+      "kernel_ms": 2.678778,
+      "grid": [
+        32768,
+        2,
+        1
+      ],
+      "block": 256,
+      "guard": {
+        "start": {
+          "time": 1790400033.4364316,
+          "event": "start",
+          "unit": "ds4-hostguard-1932075-1790400033429587306.scope",
+          "available_gib": 116.15668487548828,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-swiglu/probe-blocks",
+            "100",
+            "256"
+          ]
+        },
+        "exit": {
+          "time": 1790400034.658101,
+          "event": "exit",
+          "unit": "ds4-hostguard-1932075-1790400033429587306.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "full_output_finite_d4": true
+    },
+    {
+      "arm": "512",
+      "sample": 0,
+      "kernel_ms": 2.67407,
+      "grid": [
+        32768,
+        1,
+        1
+      ],
+      "block": 512,
+      "guard": {
+        "start": {
+          "time": 1790400024.3766513,
+          "event": "start",
+          "unit": "ds4-hostguard-1931891-1790400024365159233.scope",
+          "available_gib": 116.32897567749023,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-swiglu/probe-blocks",
+            "100",
+            "512"
+          ]
+        },
+        "exit": {
+          "time": 1790400025.6161122,
+          "event": "exit",
+          "unit": "ds4-hostguard-1931891-1790400024365159233.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "full_output_finite_d4": true
+    },
+    {
+      "arm": "512",
+      "sample": 1,
+      "kernel_ms": 2.678764,
+      "grid": [
+        32768,
+        1,
+        1
+      ],
+      "block": 512,
+      "guard": {
+        "start": {
+          "time": 1790400025.716195,
+          "event": "start",
+          "unit": "ds4-hostguard-1931902-1790400025705029349.scope",
+          "available_gib": 116.25436401367188,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-swiglu/probe-blocks",
+            "100",
+            "512"
+          ]
+        },
+        "exit": {
+          "time": 1790400026.945247,
+          "event": "exit",
+          "unit": "ds4-hostguard-1931902-1790400025705029349.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "full_output_finite_d4": true
+    },
+    {
+      "arm": "512",
+      "sample": 2,
+      "kernel_ms": 2.673309,
+      "grid": [
+        32768,
+        1,
+        1
+      ],
+      "block": 512,
+      "guard": {
+        "start": {
+          "time": 1790400032.1537044,
+          "event": "start",
+          "unit": "ds4-hostguard-1932044-1790400032145532272.scope",
+          "available_gib": 116.20393753051758,
+          "psi_full_avg10": 0.0,
+          "max_gib": 8.0,
+          "high_gib": 6.0,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/ncu-swiglu/probe-blocks",
+            "100",
+            "512"
+          ]
+        },
+        "exit": {
+          "time": 1790400033.3728092,
+          "event": "exit",
+          "unit": "ds4-hostguard-1932044-1790400032145532272.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      },
+      "full_output_finite_d4": true
+    }
+  ],
+  "outputs": {
+    "blocks": 524288,
+    "fp32_scales": 2097152,
+    "int8_values": 67108864,
+    "bytes": 75497472,
+    "hashes": {
+      "original": {
+        "path": "scratch/mimo-prefill-20260926/ncu-swiglu/original.bin",
+        "bytes": 75497472,
+        "sha256": "e7067ab11715f9ce4f4f438db2ca4824876f529390872b92020da706b7eef8cd"
+      },
+      "128": {
+        "path": "scratch/mimo-prefill-20260926/ncu-swiglu/128.bin",
+        "bytes": 75497472,
+        "sha256": "e7067ab11715f9ce4f4f438db2ca4824876f529390872b92020da706b7eef8cd"
+      },
+      "256": {
+        "path": "scratch/mimo-prefill-20260926/ncu-swiglu/256.bin",
+        "bytes": 75497472,
+        "sha256": "e7067ab11715f9ce4f4f438db2ca4824876f529390872b92020da706b7eef8cd"
+      },
+      "512": {
+        "path": "scratch/mimo-prefill-20260926/ncu-swiglu/512.bin",
+        "bytes": 75497472,
+        "sha256": "e7067ab11715f9ce4f4f438db2ca4824876f529390872b92020da706b7eef8cd"
+      }
+    },
+    "full_byte_comparisons": "All three candidate dumps matched frozen-original dump; full SHA256 equality verified while packaging."
+  },
+  "limitations": [
+    "Synthetic finite gate/up and deterministic expert-major routing (buckets102..161), no model initialization or live map construction.",
+    "Isolated repeated-input/cache regime and translation unit differ from full model.",
+    "No standalone consumer tail padding is allocated; producer only writes complete valid D4 payload."
+  ],
+  "decision": "Micro512 improved but model A/B did not consistently improve; see actual-result.json."
+}

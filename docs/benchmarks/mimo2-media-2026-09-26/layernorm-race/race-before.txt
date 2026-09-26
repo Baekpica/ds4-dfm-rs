@@ -1,0 +1,14 @@
+host-memory-guard: available=26.49 GiB, scope max/high=14.40/13.40, reserve=12.00, trip=12.00
+========= COMPUTE-SANITIZER
+========= Error: Race reported between Read access at m2_block_sum(float, float *)+0x3a0 in mimo2_media.cuh:15
+=========     and Write access at m2_block_sum(float, float *)+0x4b0 in mimo2_media.cuh:9 [3648 hazards]
+=========
+========= Error: Race reported between Read access at m2_block_sum(float, float *)+0x3a0 in mimo2_media.cuh:15
+=========     and Write access at m2_block_sum(float, float *)+0x4b0 in mimo2_media.cuh:9 [3620 hazards]
+=========
+========= Error: Race reported between Read access at m2_block_sum(float, float *)+0x3a0 in mimo2_media.cuh:15
+=========     and Write access at m2_block_sum(float, float *)+0x4b0 in mimo2_media.cuh:9 [3628 hazards]
+=========
+rows=557 dim=1024 repeats=3 max_abs=0.267560244 repeat_exact=false guards=true input_exact=true FAIL
+========= Target application returned an error
+========= RACECHECK SUMMARY: 3 hazards displayed (3 errors, 0 warnings)

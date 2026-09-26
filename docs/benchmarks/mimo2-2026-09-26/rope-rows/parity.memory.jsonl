@@ -1,0 +1,3 @@
+{"time": 1790399534.805579, "event": "start", "unit": "ds4-hostguard-1929156-1790399534793589172.scope", "available_gib": 116.84110641479492, "psi_full_avg10": 0.0, "max_gib": 8.0, "high_gib": 6.0, "reserve_gib": 12.0, "trip_gib": 12.0, "command": ["scratch/mimo-prefill-20260926/ncu-rope/parity"]}
+{"time": 1790399535.8553617, "event": "sample", "unit": "ds4-hostguard-1929156-1790399534793589172.scope", "available_gib": 115.94079971313477, "psi_full_avg10": 0.0}
+{"time": 1790399536.5712123, "event": "exit", "unit": "ds4-hostguard-1929156-1790399534793589172.scope", "status": 0, "payload_status": 0}

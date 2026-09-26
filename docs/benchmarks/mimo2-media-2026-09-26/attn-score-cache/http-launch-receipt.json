@@ -1,0 +1,83 @@
+{
+  "arms": {
+    "original": {
+      "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/baseline/ds4-server",
+      "env": {
+        "DS4_MIMO2_VISION_ATTN": null
+      },
+      "stamp": [
+        66306,
+        158337913,
+        59743608,
+        1790402581322252606
+      ]
+    },
+    "off": {
+      "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/server-candidate",
+      "env": {
+        "DS4_MIMO2_VISION_ATTN": "0"
+      },
+      "stamp": [
+        66306,
+        158338575,
+        59678040,
+        1790403762304552186
+      ]
+    },
+    "on": {
+      "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/server-candidate",
+      "env": {
+        "DS4_MIMO2_VISION_ATTN": null
+      },
+      "stamp": [
+        66306,
+        158338575,
+        59678040,
+        1790403762304552186
+      ]
+    }
+  },
+  "round_orders": [
+    [
+      "original",
+      "off",
+      "on"
+    ],
+    [
+      "on",
+      "original",
+      "off"
+    ],
+    [
+      "off",
+      "on",
+      "original"
+    ]
+  ],
+  "cases": [
+    "screen"
+  ],
+  "owner_manifest": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/owner1.ipc",
+  "owner_manifest_sha256": "719c2096c70150e64a009a045852ae57d9b80c735ba94adf8f40306811cfa8ab",
+  "binary_sha256": {
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-attn-r1/server-candidate": "ec027d1f8e4ee837a2d21c98bb030c6a066ce9d74026cf110b48b1552b7baef3",
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/baseline/ds4-server": "783bd16745bc66f89088e611699e609f75210985104c953487f40e26dc3877f0"
+  },
+  "fixture_sha256": {
+    "screen.png": "c11a3a38ba18c8769a0b0785470c089d2fa7287955e033de8cb99b7ae80f67b4"
+  },
+  "model": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+  "projector": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+  "shape": {
+    "ctx": 8192,
+    "cont_width": 0,
+    "prefix_reuse": "off",
+    "mtp_mode": "off",
+    "max_tokens": 64
+  },
+  "clock_policy": "Observe only; preserve user-managed 300-2200 MHz range.",
+  "request_sha256": {
+    "screen": "9286b0ed108e9d2dbbf0e22b29cfbfbf954eec8201fdbf1a5758a8980383f451"
+  },
+  "dry_run": false
+}

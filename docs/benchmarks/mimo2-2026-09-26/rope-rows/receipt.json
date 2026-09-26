@@ -1,0 +1,420 @@
+{
+  "round": 5,
+  "accepted": false,
+  "decision": "Repeated isolated latency regression, no model A/B",
+  "base_commit": "7d40daf4b42f5d8ae9c405a5396d80dcd745b80a",
+  "retained_source": "R3 kernel baseline; R4 and R5 candidate code rejected",
+  "candidate_source_sha256": {
+    "cuda/mimo2_primitives.cuh": "316afeae390aab3cbfc57241bbb1d1b84019d15c74f07474111ec2ec3ee1604b",
+    "ds4_mimo2_gpu.cuh": "714a25a2b12b85e3bf2f371b255bd89f501f9966127102178ce6e24585ffc104",
+    "tests/mimo2_qkv.cu": "defdcdeb3e1b0f74213c96d9a3fd4e42d842c7dcefec99120293999c144da939"
+  },
+  "original_source": {
+    "status": "prepared_unbuilt_unrun",
+    "git_commit_at_preparation": "a3fd2a5c118344c533d16c117e46bf6bc2007243",
+    "sources": {
+      "cuda/mimo2_primitives.cuh": "59ce59890032b12045c2563a083d24c71763138026cdd0e7f72ed5f6fe1893ea",
+      "cuda/step37_primitives.cuh": "06e0357a9acc5909216a50ae50158059f7858f6ce0f190df7ef64619af54a8f7",
+      "ds4_mimo2_graph.inc": "0748f2e8912c8a7132e9d7cd42964e03241a014c07b157a3c9ff6dbb2b28ccfd",
+      "ds4_mimo2_gpu.cuh": "db2b655c37a56f740d6ac1593fc20b685e20d084f11e1cc446c83e3123769f1e"
+    },
+    "kernels": [
+      {
+        "name": "mimo2_split_rope",
+        "line": 33,
+        "sha256": "d531cbce1117f231f7eb7ecc1d50de0ce009aedf45621bd3feacca7898f1b1fb"
+      },
+      {
+        "name": "step37_rope_table",
+        "line": 82,
+        "sha256": "b3e8661f7a62c317b72a32508ad205b1b706d892961a3798409a9fb28d9e99c6"
+      }
+    ],
+    "probe_sha256": "0a1011087a5fb95f0d997217fbc9ab6606f08b989d0488a4892b819a1606e428",
+    "shapes": [
+      {
+        "rows": 4096,
+        "kv_heads": 4,
+        "stride": 13568,
+        "grid_x": 217088,
+        "block_x": 256
+      },
+      {
+        "rows": 4096,
+        "kv_heads": 8,
+        "stride": 14848,
+        "grid_x": 237568,
+        "block_x": 256
+      }
+    ],
+    "default_position_base": 4096,
+    "input": "deterministic finite synthetic FP32 QKV; graph-equivalent frequencies and production GPU RoPE table",
+    "numerical_changes": "none; direct production header inclusion",
+    "runs": []
+  },
+  "candidate_patch": {
+    "path": "scratch/mimo-prefill-20260926/ncu-rope/rejected-rows.patch",
+    "bytes": 8882,
+    "sha256": "148d8d7f6c7f9bcf04cc3ed5148d738fb7e160e99bc780f40e6b43f34f6110de"
+  },
+  "binary": {
+    "probe-original": {
+      "path": "scratch/mimo-prefill-20260926/ncu-rope/probe-original",
+      "bytes": 1794344,
+      "sha256": "17749475c2ef33363bc143f246892f3fa331251d522cf733cd914ba809be7514"
+    },
+    "probe-candidate": {
+      "path": "scratch/mimo-prefill-20260926/ncu-rope/probe-candidate",
+      "bytes": 1803480,
+      "sha256": "8ff63a3e2b7f4cc63251f2e1d48f4419fa29d2a55362bbc9fcb45624057fc53f"
+    },
+    "parity": {
+      "path": "scratch/mimo-prefill-20260926/ncu-rope/parity",
+      "bytes": 1759296,
+      "sha256": "a88061268a393e09de05731af392e0ee992f53cd1a6c4443c6e3d8b5524b699b"
+    }
+  },
+  "fixture": {
+    "probe-original.cu": {
+      "path": "scratch/mimo-prefill-20260926/ncu-rope/probe-original.cu",
+      "bytes": 6986,
+      "sha256": "0a1011087a5fb95f0d997217fbc9ab6606f08b989d0488a4892b819a1606e428"
+    },
+    "probe.cu": {
+      "path": "scratch/mimo-prefill-20260926/ncu-rope/probe.cu",
+      "bytes": 7365,
+      "sha256": "ad5f771e00a0c04dda094084a0ba806a6f0a92844cba2d5bf109053e8c9a7876"
+    },
+    "run-isolated.sh": {
+      "path": "scratch/mimo-prefill-20260926/ncu-rope/run-isolated.sh",
+      "bytes": 1414,
+      "sha256": "753cbcd569afa62d685628b6e81a6932f5bf8df64e5451032eb55e8f9527ab8b"
+    }
+  },
+  "build": {
+    "candidate_probe_command": "/usr/local/cuda/bin/nvcc -O3 -g -lineinfo --use_fast_math -std=c++17 -gencode arch=compute_121a,code=sm_121a -DDS4_CUDA_HAVE_MXF4=1 -Xcompiler -march=native -Xcompiler -pthread scratch/mimo-prefill-20260926/ncu-rope/probe.cu -o scratch/mimo-prefill-20260926/ncu-rope/probe-candidate",
+    "parity_command": "/usr/local/cuda/bin/nvcc -O3 -g -lineinfo --use_fast_math -std=c++17 -gencode arch=compute_121a,code=sm_121a -DDS4_CUDA_HAVE_MXF4=1 -Xcompiler -march=native -Xcompiler -pthread tests/mimo2_qkv.cu -o scratch/mimo-prefill-20260926/ncu-rope/parity",
+    "original_probe_note": "Original exact executed build command was not retained by this reporting agent. Recommended command is the prepared harness command; archived source and executed binary are hashed.",
+    "standard_flags": true,
+    "split_compile": false,
+    "logs": {
+      "model-build.log": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/model-build.log",
+        "bytes": 11424,
+        "sha256": "4b031b756b7089690ecdcb7bd0cf42c286828b069c21b7be24050b7ff2f28c17"
+      },
+      "candidate-build.log": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/candidate-build.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "parity-build.log": {
+        "path": "scratch/mimo-prefill-20260926/ncu-rope/parity-build.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "original_probe_recommended_command": "/usr/local/cuda/bin/nvcc -O3 -g -lineinfo --use_fast_math -std=c++17 -gencode arch=compute_121a,code=sm_121a -DDS4_CUDA_HAVE_MXF4=1 -Xcompiler -march=native -Xcompiler -pthread scratch/mimo-prefill-20260926/ncu-rope/probe.cu -o scratch/mimo-prefill-20260926/ncu-rope/probe",
+    "original_probe_command": null
+  },
+  "dispatch": "Default ON only32..8192 rows, supported heads4/8. DS4_MIMO2_ROPE_ROWS=0 disables. Diagnostic candidate reverted.",
+  "parity": {
+    "guard": {
+      "start": {
+        "time": 1790399534.805579,
+        "event": "start",
+        "unit": "ds4-hostguard-1929156-1790399534793589172.scope",
+        "available_gib": 116.84110641479492,
+        "psi_full_avg10": 0.0,
+        "max_gib": 8.0,
+        "high_gib": 6.0,
+        "reserve_gib": 12.0,
+        "trip_gib": 12.0,
+        "command": [
+          "scratch/mimo-prefill-20260926/ncu-rope/parity"
+        ]
+      },
+      "exit": {
+        "time": 1790399536.5712123,
+        "event": "exit",
+        "unit": "ds4-hostguard-1929156-1790399534793589172.scope",
+        "status": 0,
+        "payload_status": 0
+      }
+    },
+    "log": {
+      "path": "scratch/mimo-prefill-20260926/ncu-rope/parity.log",
+      "bytes": 1235,
+      "sha256": "5be008e646be1bcc816251fe23aefac337cad5140c1fa800df89730612c6e60a"
+    },
+    "coverage": "Bothheads, rows1/31/32/33/4096, eight longpositions through1048575, selector31/32/8192/8193, paddedX/Y bounds, complete output bytes.",
+    "wrapper_dispatch_gpu_qualification": false,
+    "note": "Host selector and direct kernels tested; candidate rejected before model dispatch qualification."
+  },
+  "ncu": {
+    "set": "full",
+    "replay_mode": "kernel",
+    "clock_control": "none",
+    "launch_skip": 16,
+    "launch_count": 1,
+    "baseline_filter": "regex:^mimo2_split_rope$",
+    "candidate_filter": "regex:mimo2_split_rope",
+    "reports": {
+      "baseline-heads4": {
+        "report": {
+          "path": "scratch/mimo-prefill-20260926/ncu-rope/baseline-heads4.ncu-rep",
+          "bytes": 10450860,
+          "sha256": "b7b69b8e1748c16cbaaa5d4a8bb68cf2445dc6b7d974b995239db2eec7722080"
+        },
+        "guard": {
+          "start": {
+            "time": 1790399195.0483117,
+            "event": "start",
+            "unit": "ds4-hostguard-1926431-1790399195037146623.scope",
+            "available_gib": 116.99008560180664,
+            "psi_full_avg10": 0.01,
+            "max_gib": 8.0,
+            "high_gib": 6.0,
+            "reserve_gib": 12.0,
+            "trip_gib": 12.0,
+            "command": [
+              "ncu",
+              "--set",
+              "full",
+              "--replay-mode",
+              "kernel",
+              "--clock-control",
+              "none",
+              "--kernel-name-base",
+              "function",
+              "--kernel-name",
+              "regex:^mimo2_split_rope$",
+              "--launch-skip",
+              "16",
+              "--launch-count",
+              "1",
+              "--export",
+              "scratch/mimo-prefill-20260926/ncu-rope/baseline-heads4",
+              "scratch/mimo-prefill-20260926/ncu-rope/probe",
+              "4",
+              "1",
+              "16",
+              "4096"
+            ]
+          },
+          "exit": {
+            "time": 1790399200.6198657,
+            "event": "exit",
+            "unit": "ds4-hostguard-1926431-1790399195037146623.scope",
+            "status": 0,
+            "payload_status": 0
+          }
+        }
+      },
+      "candidate-heads4": {
+        "report": {
+          "path": "scratch/mimo-prefill-20260926/ncu-rope/candidate-heads4.ncu-rep",
+          "bytes": 10118702,
+          "sha256": "4e2b984f62982135532a1b56978ea7e7eb2da90b52e2d3c1562e7a0495abde93"
+        },
+        "guard": {
+          "start": {
+            "time": 1790399536.6318939,
+            "event": "start",
+            "unit": "ds4-hostguard-1929169-1790399536625437878.scope",
+            "available_gib": 116.11629104614258,
+            "psi_full_avg10": 0.0,
+            "max_gib": 8.0,
+            "high_gib": 6.0,
+            "reserve_gib": 12.0,
+            "trip_gib": 12.0,
+            "command": [
+              "ncu",
+              "--set",
+              "full",
+              "--replay-mode",
+              "kernel",
+              "--clock-control",
+              "none",
+              "--kernel-name-base",
+              "function",
+              "--kernel-name",
+              "regex:mimo2_split_rope",
+              "--launch-skip",
+              "16",
+              "--launch-count",
+              "1",
+              "--export",
+              "scratch/mimo-prefill-20260926/ncu-rope/candidate-heads4",
+              "scratch/mimo-prefill-20260926/ncu-rope/probe-candidate",
+              "4",
+              "1",
+              "16",
+              "4096"
+            ]
+          },
+          "exit": {
+            "time": 1790399542.3942165,
+            "event": "exit",
+            "unit": "ds4-hostguard-1929169-1790399536625437878.scope",
+            "status": 0,
+            "payload_status": 0
+          }
+        }
+      },
+      "baseline-heads8": {
+        "report": {
+          "path": "scratch/mimo-prefill-20260926/ncu-rope/baseline-heads8.ncu-rep",
+          "bytes": 10584749,
+          "sha256": "9ed78c532ddea6a74ba1169689165b246f3a3915ca91270e659e97c313568259"
+        },
+        "guard": {
+          "start": {
+            "time": 1790399202.4555175,
+            "event": "start",
+            "unit": "ds4-hostguard-1926590-1790399202448615037.scope",
+            "available_gib": 116.37642288208008,
+            "psi_full_avg10": 0.0,
+            "max_gib": 8.0,
+            "high_gib": 6.0,
+            "reserve_gib": 12.0,
+            "trip_gib": 12.0,
+            "command": [
+              "ncu",
+              "--set",
+              "full",
+              "--replay-mode",
+              "kernel",
+              "--clock-control",
+              "none",
+              "--kernel-name-base",
+              "function",
+              "--kernel-name",
+              "regex:^mimo2_split_rope$",
+              "--launch-skip",
+              "16",
+              "--launch-count",
+              "1",
+              "--export",
+              "scratch/mimo-prefill-20260926/ncu-rope/baseline-heads8",
+              "scratch/mimo-prefill-20260926/ncu-rope/probe",
+              "8",
+              "1",
+              "16",
+              "4096"
+            ]
+          },
+          "exit": {
+            "time": 1790399208.1117556,
+            "event": "exit",
+            "unit": "ds4-hostguard-1926590-1790399202448615037.scope",
+            "status": 0,
+            "payload_status": 0
+          }
+        }
+      },
+      "candidate-heads8": {
+        "report": {
+          "path": "scratch/mimo-prefill-20260926/ncu-rope/candidate-heads8.ncu-rep",
+          "bytes": 10879557,
+          "sha256": "4f6b85842147808f8c7dfc955e1da30c947442272a972959de706003b12dba93"
+        },
+        "guard": {
+          "start": {
+            "time": 1790399544.1727896,
+            "event": "start",
+            "unit": "ds4-hostguard-1929372-1790399544161293146.scope",
+            "available_gib": 115.62483596801758,
+            "psi_full_avg10": 0.0,
+            "max_gib": 8.0,
+            "high_gib": 6.0,
+            "reserve_gib": 12.0,
+            "trip_gib": 12.0,
+            "command": [
+              "ncu",
+              "--set",
+              "full",
+              "--replay-mode",
+              "kernel",
+              "--clock-control",
+              "none",
+              "--kernel-name-base",
+              "function",
+              "--kernel-name",
+              "regex:mimo2_split_rope",
+              "--launch-skip",
+              "16",
+              "--launch-count",
+              "1",
+              "--export",
+              "scratch/mimo-prefill-20260926/ncu-rope/candidate-heads8",
+              "scratch/mimo-prefill-20260926/ncu-rope/probe-candidate",
+              "8",
+              "1",
+              "16",
+              "4096"
+            ]
+          },
+          "exit": {
+            "time": 1790399549.9480343,
+            "event": "exit",
+            "unit": "ds4-hostguard-1929372-1790399544161293146.scope",
+            "status": 0,
+            "payload_status": 0
+          }
+        }
+      }
+    }
+  },
+  "nsys": {
+    "summary": {
+      "path": "scratch/mimo-prefill-20260926/after-down4-scout/summary.json",
+      "bytes": 61278,
+      "sha256": "f7774401826f0f713a3f01a2843e84ba4ec63fcf5d002aa72e67df4b2db1e3c7"
+    },
+    "guard": {
+      "start": {
+        "time": 1790399139.5863168,
+        "event": "start",
+        "unit": "ds4-hostguard-1926116-1790399139578668857.scope",
+        "available_gib": 26.225635528564453,
+        "psi_full_avg10": 3.49,
+        "max_gib": 14.2,
+        "high_gib": 13.2,
+        "reserve_gib": 12.0,
+        "trip_gib": 12.0,
+        "command": [
+          "nsys",
+          "profile",
+          "--trace=cuda,nvtx",
+          "--sample=none",
+          "--cpuctxsw=none",
+          "--cuda-graph-trace=node",
+          "--output",
+          "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/after-down4-scout/trace",
+          "./ds4-bench-perf",
+          "--cuda",
+          "-m",
+          "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+          "--prompt-file",
+          "speed-bench/promessi_sposi.txt",
+          "--ctx-start",
+          "8192",
+          "--ctx-max",
+          "8192",
+          "--gen-tokens",
+          "128"
+        ]
+      },
+      "exit": {
+        "time": 1790399163.521815,
+        "event": "exit",
+        "unit": "ds4-hostguard-1926116-1790399139578668857.scope",
+        "status": 0,
+        "payload_status": 0
+      }
+    }
+  },
+  "model_ab": null,
+  "original_source_note": "Preparation-time receipt predates the successful baseline NCU runs recorded below; its status/runs fields are historical."
+}

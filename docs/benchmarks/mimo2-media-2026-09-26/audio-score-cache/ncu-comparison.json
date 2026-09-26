@@ -1,0 +1,143 @@
+{
+  "scope": "Full NCU on one isolated n=557 full-causal audio attention launch per arm; 40 passes each. Synthetic Q/K/V preserve production layout and separate-buffer topology.",
+  "metrics": {
+    "gpu__time_duration.sum": {
+      "original": 34.070592,
+      "candidate": 1.895104,
+      "unit": "ms",
+      "change_percent": -94.43771332179963
+    },
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "original": 2.505861,
+      "candidate": 18.488461,
+      "unit": "%",
+      "change_percent": 637.8087212339392
+    },
+    "l1tex__throughput.avg.pct_of_peak_sustained_active": {
+      "original": 80.795181,
+      "candidate": 88.057062,
+      "unit": "%",
+      "change_percent": 8.988012540005318
+    },
+    "lts__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "original": 37.448238,
+      "candidate": 88.012302,
+      "unit": "%",
+      "change_percent": 135.02388016226558
+    },
+    "lts__t_sector_hit_rate.pct": {
+      "original": 99.837619,
+      "candidate": 99.720004,
+      "unit": "%",
+      "change_percent": -0.11780629503994611
+    },
+    "smsp__inst_executed.sum": {
+      "original": 90969956.0,
+      "candidate": 52554896.0,
+      "unit": "inst",
+      "change_percent": -42.2282934818612
+    },
+    "smsp__issue_active.avg.pct_of_peak_sustained_active": {
+      "original": 1.643547,
+      "candidate": 6.666721,
+      "unit": "%",
+      "change_percent": 305.6300793345125
+    },
+    "sm__warps_active.avg.pct_of_peak_sustained_active": {
+      "original": 16.367209,
+      "candidate": 88.305894,
+      "unit": "%",
+      "change_percent": 439.5293357590778
+    },
+    "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": {
+      "original": 39996928.0,
+      "candidate": 10243840.0,
+      "unit": "",
+      "change_percent": -74.38843303165683
+    },
+    "l1tex__t_requests_pipe_lsu_mem_global_op_st.sum": {
+      "original": 5017472.0,
+      "candidate": 17824.0,
+      "unit": "",
+      "change_percent": -99.6447613459527
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+      "original": 956506112.0,
+      "candidate": 179095552.0,
+      "unit": "sector",
+      "change_percent": -81.27606820770634
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+      "original": 159703040.0,
+      "candidate": 71296.0,
+      "unit": "sector",
+      "change_percent": -99.95535714285714
+    },
+    "lts__t_sectors_srcunit_tex_op_read.sum": {
+      "original": 128778311.0,
+      "candidate": 67572335.0,
+      "unit": "sector",
+      "change_percent": -47.52817110639074
+    },
+    "lts__t_sectors_srcunit_tex_op_write.sum": {
+      "original": 159701744.0,
+      "candidate": 71296.0,
+      "unit": "sector",
+      "change_percent": -99.95535678057466
+    },
+    "launch__registers_per_thread": {
+      "original": 40.0,
+      "candidate": 40.0,
+      "unit": "register/thread",
+      "change_percent": 0.0
+    },
+    "launch__shared_mem_per_block_dynamic": {
+      "original": 0.0,
+      "candidate": 2492.0,
+      "unit": "byte/block",
+      "change_percent": null
+    },
+    "derived__local_spilling_requests": {
+      "original": 0.0,
+      "candidate": 0.0,
+      "unit": "",
+      "change_percent": null
+    },
+    "sm__cycles_elapsed.avg.per_second": {
+      "original": 2.196894,
+      "candidate": 2.195248,
+      "unit": "Ghz",
+      "change_percent": -0.07492396082833253
+    }
+  },
+  "sass_predicated_on_thread_instructions": {
+    "FFMA.FTZ": {
+      "original": 641503584,
+      "candidate": 320751792,
+      "change_percent": -50.0
+    },
+    "FMUL.FTZ": {
+      "original": 9945792,
+      "candidate": 164105568,
+      "change_percent": 1550.0
+    },
+    "MUFU.RCP": {
+      "original": 2513184,
+      "candidate": 21508096,
+      "change_percent": 755.8106370245872
+    },
+    "MUFU.EX2": {
+      "original": 4972896,
+      "candidate": 2486448,
+      "change_percent": -50.0
+    },
+    "FADD.FTZ": {
+      "original": 2486448,
+      "candidate": 2486448,
+      "change_percent": 0.0
+    }
+  },
+  "diagnosis": "Baseline 35 CTAs cannot cover 48 SMs and output RMW drives dependency stalls. One CTA/query raises occupancy 16.37% to 88.31%, retains 40 registers without spills, and reduces global stores 5,017,472 to 17,824.",
+  "tradeoff": "Dynamic shared memory increases from zero to 2492 bytes per CTA. Repeated per-output-dimension normalization raises FMUL and reciprocal instructions, while FFMA and EX2 counts halve and total warp instructions fall. L2 utilization rises because useful work is delivered much faster.",
+  "interpretation_limits": "L1/L2 sectors are cache traffic, not off-chip DRAM bytes. NCU profiler event times in probe stdout include replay and must not be used as ordinary kernel timing. Neither capture reports sampling overflow; both warn that NCU did not lock clocks."
+}

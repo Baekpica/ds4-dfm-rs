@@ -1,0 +1,261 @@
+{
+  "status": "complete corrected-baseline trace analysis; export completed before worker termination",
+  "request": {
+    "wall_ms": 3030.740298971068,
+    "timings": {
+      "ttft_ms": 1954.8,
+      "prefill_tokens": 87,
+      "prefill_cached_tokens": 0,
+      "prefill_tok_s": 48.4,
+      "decode_tok_s": 27.1,
+      "tok_per_step": 1.0
+    },
+    "prompt_tokens": 87,
+    "completion_tokens": 30,
+    "finish_reason": "stop",
+    "fixture": "eval-audio-3",
+    "duration_s": 11.125,
+    "request_sha256": "6a630d196c6ceb0da86e1da81b4f408efb6dd37052461b9c7b87463cdb63fd84"
+  },
+  "stage_boundary_note": "No NVTX stages. Source order, distinctive upload/readback sizes, and kernel names infer GPU intervals; these are not instrumented host stage timings. Reported HTTP TTFT/decode boundaries differ from the forward/graph-capture intervals.",
+  "inferred_gpu_intervals": {
+    "audio_encoder_upload_through_feature_readback": {
+      "start_ns": 180755568,
+      "end_ns": 1220232368,
+      "span_ms": 1039.4768,
+      "kernel_ms": 606.910655,
+      "copy_ms": 1.755648,
+      "gpu_busy_union_ms": 608.581439,
+      "gpu_idle_within_span_ms": 430.895361,
+      "largest_internal_gpu_gaps_ms": [
+        379.793792,
+        4.447072,
+        4.439168,
+        3.450272,
+        2.303936
+      ]
+    },
+    "post_audio_language_setup_gap": {
+      "span_ms": 190.151904,
+      "cudaMalloc": {
+        "calls": 80,
+        "total_ms": 187.997296,
+        "percent_http_wall": 6.203015681146445,
+        "percent_reported_ttft": 9.617213832617148
+      }
+    },
+    "language_prefill_through_first_logits_kernel": {
+      "start_ns": 1410384272,
+      "end_ns": 1956044272,
+      "span_ms": 545.66,
+      "kernel_ms": 540.173632,
+      "copy_ms": 0.030272,
+      "gpu_busy_union_ms": 540.15872,
+      "gpu_idle_within_span_ms": 5.50128,
+      "largest_internal_gpu_gaps_ms": [
+        2.094976,
+        1.55088,
+        0.117344,
+        0.115168,
+        0.074048
+      ]
+    },
+    "decode_including_first_graph_capture": {
+      "start_ns": 1956420144,
+      "end_ns": 3175410256,
+      "span_ms": 1218.990112,
+      "kernel_ms": 1088.146912,
+      "copy_ms": 0.448512,
+      "gpu_busy_union_ms": 1088.595424,
+      "gpu_idle_within_span_ms": 130.394688,
+      "largest_internal_gpu_gaps_ms": [
+        109.898816,
+        0.373536,
+        0.345344,
+        0.310176,
+        0.303744
+      ]
+    }
+  },
+  "audio_kernels": {
+    "codec_full_causal": {
+      "calls": 12,
+      "total_ms": 409.846496,
+      "percent_http_wall": 13.522983019664942,
+      "percent_reported_ttft": 20.96616001636996
+    },
+    "codec_window128_causal": {
+      "calls": 12,
+      "total_ms": 115.369824,
+      "percent_http_wall": 3.8066548967975873,
+      "percent_reported_ttft": 5.901873542050338
+    },
+    "local_group4": {
+      "calls": 6,
+      "total_ms": 2.38944,
+      "percent_http_wall": 0.07884014347290698,
+      "percent_reported_ttft": 0.12223449969306323
+    },
+    "all_attention": {
+      "calls": 30,
+      "total_ms": 527.60576,
+      "percent_http_wall": 17.408478059935437,
+      "percent_reported_ttft": 26.990268058113365
+    },
+    "convolutions": {
+      "calls": 3,
+      "total_ms": 47.364992,
+      "percent_http_wall": 1.5628192232795515,
+      "percent_reported_ttft": 2.4230096173521587
+    },
+    "rvq": {
+      "calls": 20,
+      "total_ms": 14.641984,
+      "percent_http_wall": 0.48311575904312665,
+      "percent_reported_ttft": 0.7490272150603643
+    }
+  },
+  "cold_host_costs": {
+    "cuLibraryLoadData_during_audio": {
+      "calls": 11,
+      "total_ms": 340.913712,
+      "percent_http_wall": 11.248529348282982,
+      "percent_reported_ttft": 17.439825659914057
+    },
+    "largest_audio_gpu_gap_ms": 379.793792,
+    "note": "First request includes lazy module loading and allocations; matched warm-request A/B must measure retained benefit separately. cudaMemcpy API wait time overlaps prior GPU work and is not transfer cost."
+  },
+  "rvq_roundtrip": {
+    "interval": {
+      "start_ns": 1157010416,
+      "end_ns": 1201891984,
+      "span_ms": 44.881568,
+      "kernel_ms": 14.641984,
+      "copy_ms": 1.355104,
+      "gpu_busy_union_ms": 15.997088,
+      "gpu_idle_within_span_ms": 28.88448,
+      "largest_internal_gpu_gaps_ms": [
+        0.015744,
+        0.014688,
+        0.014464,
+        0.011392,
+        0.010336
+      ]
+    },
+    "htod4byte": {
+      "calls": 5600,
+      "total_ms": 1.340032,
+      "percent_http_wall": 0.04421467588149796,
+      "percent_reported_ttft": 0.06855084919173317
+    },
+    "htod4byte_cudaMemcpy_api": {
+      "calls": 5600,
+      "total_ms": 28.360592,
+      "percent_http_wall": 0.9357645064352225,
+      "percent_reported_ttft": 1.4508180888070392
+    },
+    "note": "20 channels \u00d7 280 padded rows. Kernel IDs are read back then scattered as 5600 synchronous 4-byte writes. GPU-copy and CUDA-API durations overlap; do not sum them."
+  },
+  "selected_target": {
+    "kernel": "mimo2_attn",
+    "regime": "codec full causal",
+    "n": 557,
+    "q_heads": 16,
+    "kv_heads": 16,
+    "hd": 64,
+    "qkv_same_buffer": false,
+    "strides": [
+      1024,
+      1024,
+      1024
+    ],
+    "offsets": [
+      0,
+      0,
+      0
+    ],
+    "window": -1,
+    "causal": 1,
+    "group": 0,
+    "sinks": false,
+    "grid": [
+      35,
+      1,
+      1
+    ],
+    "block": [
+      256,
+      1,
+      1
+    ],
+    "registers_per_thread": 40,
+    "dynamic_shared_bytes": 0,
+    "source": "ds4_mimo2_media.inc:mimo2_audio_rows/m2_mha; cuda/mimo2_media.cuh:mimo2_attn",
+    "derivation": "178000 PCM samples at 16 kHz -> 267000 at 24 kHz -> 1113 mel frames -> 557 codec rows -> 279 RVQ rows -> 280 padded rows -> 70 language features. 48 RoPE uploads of 142592 bytes independently confirm 557 x 64 floats."
+  },
+  "copy_summary_during_audio": [
+    {
+      "copy_kind": 1,
+      "bytes_each": 4,
+      "calls": 5600,
+      "total_ms": 1.340032,
+      "percent_http_wall": 0.04421467588149796,
+      "percent_reported_ttft": 0.06855084919173317
+    },
+    {
+      "copy_kind": 1,
+      "bytes_each": 71680,
+      "calls": 12,
+      "total_ms": 0.04672,
+      "percent_http_wall": 0.0015415375581953152,
+      "percent_reported_ttft": 0.0023900143237159813
+    },
+    {
+      "copy_kind": 1,
+      "bytes_each": 142592,
+      "calls": 48,
+      "total_ms": 0.289696,
+      "percent_http_wall": 0.009558588708453554,
+      "percent_reported_ttft": 0.014819725803151218
+    },
+    {
+      "copy_kind": 1,
+      "bytes_each": 569856,
+      "calls": 1,
+      "total_ms": 0.019328,
+      "percent_http_wall": 0.0006377319761301167,
+      "percent_reported_ttft": 0.0009887456517290772
+    },
+    {
+      "copy_kind": 2,
+      "bytes_each": 1116,
+      "calls": 20,
+      "total_ms": 0.015072,
+      "percent_http_wall": 0.0004973042396643791,
+      "percent_reported_ttft": 0.000771025168815224
+    },
+    {
+      "copy_kind": 2,
+      "bytes_each": 1146880,
+      "calls": 1,
+      "total_ms": 0.02704,
+      "percent_http_wall": 0.0008921912579966037,
+      "percent_reported_ttft": 0.0013832617147534277
+    },
+    {
+      "copy_kind": 8,
+      "bytes_each": 2281472,
+      "calls": 2,
+      "total_ms": 0.01776,
+      "percent_http_wall": 0.0005859954416427397,
+      "percent_reported_ttft": 0.0009085328422344998
+    }
+  ],
+  "baseline": {
+    "state": "R2 plus independently verified LayerNorm race repair; audio candidate absent",
+    "server_sha256": "4b66707ccb2c90219d4df9fc119d471794bf48e4c8efda7f3e264be5c86ab7a8",
+    "frozen_native_source": "scratch/mimo-media-20260926/proof-av-lnfix-original/inputs/cuda/mimo2_media.cuh",
+    "frozen_native_source_sha256": "9302966b8bb720eb73d7d44c4eaa99d2b811cfad62d8d10c2465d3b8dbfdda1a"
+  },
+  "nvtx_event_count": 0
+}

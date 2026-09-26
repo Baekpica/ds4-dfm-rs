@@ -1,0 +1,28 @@
+host-memory-guard: available=117.03 GiB, scope max/high=16.00/14.00, reserve=12.00, trip=12.00
+invalid-wrapper-inputs no_launch=true PASS
+oracle_max_abs=0 case=random rows=1 path=candidate byte_exact=true guards=true PASS
+oracle_max_abs=1.24010636e-07 case=random rows=31 path=candidate byte_exact=true guards=true PASS
+oracle_max_abs=1.31939917e-07 case=random rows=32 path=candidate byte_exact=true guards=true PASS
+oracle_max_abs=1.4205249e-07 case=random rows=33 path=candidate byte_exact=true guards=true PASS
+case=random rows=127 path=candidate byte_exact=true guards=true PASS
+case=random rows=128 path=candidate byte_exact=true guards=true PASS
+case=random rows=129 path=candidate byte_exact=true guards=true PASS
+case=random rows=1024 path=candidate byte_exact=true guards=true PASS
+case=random rows=3072 path=candidate byte_exact=true guards=true PASS
+case=random rows=6144 path=candidate byte_exact=true guards=true PASS
+case=random rows=8192 path=candidate byte_exact=true guards=true PASS
+oracle_max_abs=7.22480543e-08 case=numeric-boundary rows=33 path=candidate byte_exact=true guards=true PASS
+oracle_max_abs=0 case=numeric-boundary rows=33 path=candidate byte_exact=true guards=true PASS
+oracle_max_abs=1.0809764e-07 case=numeric-boundary rows=33 path=candidate byte_exact=true guards=true PASS
+oracle_max_abs=1.76152576e-07 case=numeric-boundary rows=33 path=candidate byte_exact=true guards=true PASS
+case=numeric-boundary rows=33 path=candidate byte_exact=true guards=true PASS
+case=numeric-boundary rows=33 path=candidate byte_exact=true guards=true PASS
+case=window-sink rows=129 path=fallback byte_exact=true guards=true PASS
+case=full-sink rows=33 path=fallback byte_exact=true guards=true PASS
+case=causal rows=33 path=fallback byte_exact=true guards=true PASS
+case=group rows=33 path=fallback byte_exact=true guards=true PASS
+case=heads rows=33 path=fallback byte_exact=true guards=true PASS
+case=head-dimension rows=33 path=fallback byte_exact=true guards=true PASS
+case=stride rows=33 path=fallback byte_exact=true guards=true PASS
+case=offset rows=33 path=fallback byte_exact=true guards=true PASS
+case=separate-qkv rows=33 path=fallback byte_exact=true guards=true PASS

@@ -1,0 +1,52 @@
+{
+  "base_commit": "284ff879433cd04832d316f353aa6aeed2c2ebb8",
+  "switch": "DS4_MIMO2_ATTN_RESIDUAL",
+  "default": "on",
+  "accepted": true,
+  "workload": "workload.json",
+  "binary": {
+    "original": {
+      "path": "scratch/mimo-prefill-20260926/bench-sum-final",
+      "sha256": "611aba3554c74ff5c451b778721d2f8274df21fa9cf837b36fcf95d7e3d4a7c6"
+    },
+    "candidate": {
+      "path": "scratch/mimo-prefill-20260926/bench-scale-candidate",
+      "sha256": "9c9395a18c0731e9c772e2949ac7af04fd9427ab66d33545fc6979780b72c8a5"
+    }
+  },
+  "source": {
+    "cuda/mimo2_primitives.cuh": "59ce59890032b12045c2563a083d24c71763138026cdd0e7f72ed5f6fe1893ea",
+    "ds4_mimo2_gpu.cuh": "db2b655c37a56f740d6ac1593fc20b685e20d084f11e1cc446c83e3123769f1e",
+    "ds4_mimo2_graph.inc": "0748f2e8912c8a7132e9d7cd42964e03241a014c07b157a3c9ff6dbb2b28ccfd",
+    "ds4_gpu.h": "dd2b4927258e47fa5637426d71e36a414902222c88f2bd5fc5db654091f6b8a7",
+    "ds4_metal.m": "977ea09ee524a328844ab057811e06cdae86349ba748c69390e489dc2137b0be",
+    "tests/mimo2_attn_residual.cu": "4a5a58eee41e85b300161db4ddb4b3eac277ac7feb09ccb65797ff803901db55"
+  },
+  "build": "make -j2 ds4-bench-perf -o cuda/mmq/ds4_mmq.o; original compiler flags",
+  "tests": "byte-exact actual wrapper1/31/32/33/4096 including signedzero/subnormal and refusal checks",
+  "decision": "Three fresh matched pairs improve prefill, full logits/tokens exact, no added VRAM or arithmetic, no decode regression.",
+  "raw_receipt": {
+    "path": "scratch/mimo-prefill-20260926/scale-experiment.json",
+    "sha256": "db8a8cc354d4fb6097da81d10d852cf0222325c021293bfcc7bdfca87718581a"
+  },
+  "status": "accepted round 2 of 3",
+  "resource_cost": {
+    "extra_vram_bytes": 0,
+    "extra_arithmetic": false,
+    "removed_projection_roundtrip_bytes_per_call": 134217728,
+    "ncu_registers_per_thread_before": [
+      16,
+      16
+    ],
+    "ncu_registers_per_thread_after": 16,
+    "ncu_spills_before": [
+      0,
+      0
+    ],
+    "ncu_spills_after": 0,
+    "ncu_executed_instructions_before": 19922944,
+    "ncu_executed_instructions_after": 11010048
+  },
+  "result": "ab.json",
+  "proof_receipt": "proofs.json"
+}

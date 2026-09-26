@@ -1,0 +1,138 @@
+{
+  "binaries": {
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-lnfix-original/proof": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-lnfix-original/proof",
+      "bytes": 57532936,
+      "sha256": "04a1428895c96241df466e9ca9d78fbbabd0641568123a293b10b0c7a53f417e"
+    },
+    "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-image-lnfix-original/proof": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-image-lnfix-original/proof",
+      "bytes": 57631232,
+      "sha256": "941e4e5e5c9d51a9d97ac8257720a1ad1301647b05835d6087cb12dca053eb12"
+    }
+  },
+  "owner_manifest": {
+    "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/owner3.ipc",
+    "bytes": 28311,
+    "sha256": "d831d88c3f66180484339505900bf900c3775ec7db6557d1b1214153d7292d21"
+  },
+  "run_script_before_fix": {
+    "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/layernorm-race/run-model-proof.py",
+    "bytes": 8991,
+    "sha256": "5e196da4f91b0b979035187cea85a57cdb8e02e5473c5ee847cc543f00f91dc6"
+  },
+  "run_script_after_fix": {
+    "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/layernorm-race/run-model-proof.py",
+    "bytes": 9173,
+    "sha256": "bc5028ebfebefa57f6ce73b42e446ab707bd594a19d7b0c1b2c05895f9597737"
+  },
+  "helper": {
+    "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/run-av-proof.py",
+    "bytes": 16080,
+    "sha256": "657b7eb4ddd3b605a0771fec9444789c6f03b11598cfae666a1259a396131222"
+  },
+  "screen_request": {
+    "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/request-screen.json",
+    "bytes": 73193,
+    "sha256": "8a861c34fd7ef7d58fd94486ec0f37a118cb2819da4d804adb4072eab83c16d7"
+  },
+  "requests": {
+    "eval-audio-3": {
+      "request_sha256": "6a630d196c6ceb0da86e1da81b4f408efb6dd37052461b9c7b87463cdb63fd84",
+      "input_sha256": "d700170cc0356563d5eeaa246a90a26d5475362d816c11808f57ea68ce4caaf1"
+    },
+    "eval-audio-0": {
+      "request_sha256": "acd6483fbfbae9225ca77e7173d5ce50b085ff51f32fbf0b9bcca5033b1302e4",
+      "input_sha256": "d9378ee67487807492fe471b1c82384ac275198b6022da5ba01995af77dce90a"
+    }
+  },
+  "guards": {
+    "eval-audio-3-repeat-0": {
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.5,
+      "effective_high_gib": 13.5,
+      "reserve_gib": 12.0,
+      "receipt": {
+        "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/layernorm-race/model-proof/eval-audio-3-repeat-0/guard-exit.json",
+        "bytes": 2668,
+        "sha256": "fedc0308df0a57d85146f3569f75d8f04875a451f5e70b3245469d1918818b0e"
+      },
+      "clock_receipt": {
+        "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/layernorm-race/model-proof/eval-audio-3-repeat-0/clocks.jsonl",
+        "bytes": 4860,
+        "sha256": "87ef8c79ef3337cf770906e6a3a1aab97005f549febe9b4bef1a7bd75fe36eb9"
+      }
+    },
+    "eval-audio-0-repeat-0": {
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.5,
+      "effective_high_gib": 13.5,
+      "reserve_gib": 12.0,
+      "receipt": {
+        "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/layernorm-race/model-proof/eval-audio-0-repeat-0/guard-exit.json",
+        "bytes": 2668,
+        "sha256": "9c8cf1be7aaedcf842e846c6aed4fa4db9dec7f3fcc446a52523cf35e28c6a99"
+      },
+      "clock_receipt": {
+        "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/layernorm-race/model-proof/eval-audio-0-repeat-0/clocks.jsonl",
+        "bytes": 5470,
+        "sha256": "edd7f3d35e635fbbefe7ae7a6043de2a3c117b9e7fce503f7ee6f37d656b271e"
+      }
+    },
+    "eval-audio-3-repeat-1": {
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.4,
+      "effective_high_gib": 13.4,
+      "reserve_gib": 12.0,
+      "receipt": {
+        "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/layernorm-race/model-proof/eval-audio-3-repeat-1/guard-exit.json",
+        "bytes": 2664,
+        "sha256": "6ecb8cca6ca88f1d837e8e05f4c08f8fd6d2669e498ac3f68455483f379d1ccd"
+      },
+      "clock_receipt": {
+        "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/layernorm-race/model-proof/eval-audio-3-repeat-1/clocks.jsonl",
+        "bytes": 4860,
+        "sha256": "d801ba6542f89d7df6a43d8f9b6e82723e214d2b8cbd6ad41d3d6069dbadd494"
+      }
+    },
+    "eval-audio-0-repeat-1": {
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.5,
+      "effective_high_gib": 13.5,
+      "reserve_gib": 12.0,
+      "receipt": {
+        "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/layernorm-race/model-proof/eval-audio-0-repeat-1/guard-exit.json",
+        "bytes": 2667,
+        "sha256": "daa4cd3bddc689cccab91b0b2a3836134a099190348c8468794c147e1f1454a3"
+      },
+      "clock_receipt": {
+        "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/layernorm-race/model-proof/eval-audio-0-repeat-1/clocks.jsonl",
+        "bytes": 5471,
+        "sha256": "0ca7b54c7b235dbb21fd688049dee4f72880afc50bbe764a4f7b6a2f45494689"
+      }
+    },
+    "screen": {
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.5,
+      "effective_high_gib": 13.5,
+      "reserve_gib": 12.0,
+      "receipt": {
+        "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/layernorm-race/model-proof/screen/guard-exit.json",
+        "bytes": 1341,
+        "sha256": "606cc9920985c7f11d259e995e4969e80bbe7e8f5611335f18316bca5edd3e1e"
+      },
+      "clock_receipt": {
+        "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/layernorm-race/model-proof/screen/clocks.jsonl",
+        "bytes": 6690,
+        "sha256": "5efab0d0d1cea1d1efded88d7327f157d7913a1a992abf3bb35e01f1aa864d2e"
+      }
+    }
+  },
+  "clock_policy": "Observed only; user-managed 300-2200 MHz unchanged",
+  "raw_directory": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/layernorm-race/model-proof"
+}

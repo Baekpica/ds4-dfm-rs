@@ -1,0 +1,112 @@
+{
+  "configured_user_range_mhz": [
+    300,
+    2200
+  ],
+  "runs": {
+    "model_ab": {
+      "source": "scratch/mimo-prefill-20260926/scale-clocks.csv",
+      "sha256": "d8d9717a7617ba123c4e23164125faff9646a6d1d7d5db338a8c55428ded8d93",
+      "samples": 326,
+      "all_samples": {
+        "sm_mhz": {
+          "min": 2184.0,
+          "median": 2190.0,
+          "max": 2197.0
+        },
+        "gpu_util_percent": {
+          "min": 0.0,
+          "median": 93.0,
+          "max": 96.0
+        },
+        "power_w": {
+          "min": 8.33,
+          "median": 31.285,
+          "max": 67.47
+        },
+        "temperature_c": {
+          "min": 40.0,
+          "median": 60.0,
+          "max": 72.0
+        }
+      },
+      "busy_filter": "gpu utilization >= 50%",
+      "busy_samples": 227,
+      "busy": {
+        "sm_mhz": {
+          "min": 2184.0,
+          "median": 2190.0,
+          "max": 2190.0
+        },
+        "gpu_util_percent": {
+          "min": 56.0,
+          "median": 96.0,
+          "max": 96.0
+        },
+        "power_w": {
+          "min": 16.58,
+          "median": 48.63,
+          "max": 67.47
+        },
+        "temperature_c": {
+          "min": 50.0,
+          "median": 62.0,
+          "max": 72.0
+        }
+      },
+      "note": "Includes warmups and timed samples; busy clocks 2184-2190 MHz."
+    },
+    "isolated_ab": {
+      "source": "scratch/mimo-prefill-20260926/ncu-scale/clocks.csv",
+      "sha256": "6ae7c3891105dc68969ec80bac1387d1170f89cd818396a6194ae9d31670fe76",
+      "samples": 6,
+      "all_samples": {
+        "sm_mhz": {
+          "min": 208.0,
+          "median": 2190.0,
+          "max": 2190.0
+        },
+        "gpu_util_percent": {
+          "min": 0.0,
+          "median": 10.0,
+          "max": 93.0
+        },
+        "power_w": {
+          "min": 4.49,
+          "median": 10.719999999999999,
+          "max": 12.83
+        },
+        "temperature_c": {
+          "min": 38.0,
+          "median": 39.5,
+          "max": 41.0
+        }
+      },
+      "busy_filter": "gpu utilization >= 50%",
+      "busy_samples": 1,
+      "busy": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "median": 2190.0,
+          "max": 2190.0
+        },
+        "gpu_util_percent": {
+          "min": 93.0,
+          "median": 93.0,
+          "max": 93.0
+        },
+        "power_w": {
+          "min": 12.83,
+          "median": 12.83,
+          "max": 12.83
+        },
+        "temperature_c": {
+          "min": 41.0,
+          "median": 41.0,
+          "max": 41.0
+        }
+      },
+      "note": "One-second sampling; isolated runs yield only one busy sample."
+    }
+  }
+}

@@ -1,0 +1,101 @@
+{
+  "samples": {
+    "original": [
+      {
+        "prefill_tps": 1209.86,
+        "gen_tps": 24.43
+      },
+      {
+        "prefill_tps": 1206.39,
+        "gen_tps": 24.43
+      },
+      {
+        "prefill_tps": 1205.82,
+        "gen_tps": 24.44
+      }
+    ],
+    "off": [
+      {
+        "prefill_tps": 1207.51,
+        "gen_tps": 24.42
+      },
+      {
+        "prefill_tps": 1206.47,
+        "gen_tps": 24.46
+      },
+      {
+        "prefill_tps": 1206.57,
+        "gen_tps": 24.44
+      }
+    ],
+    "on": [
+      {
+        "prefill_tps": 1217.77,
+        "gen_tps": 24.44
+      },
+      {
+        "prefill_tps": 1216.71,
+        "gen_tps": 24.44
+      },
+      {
+        "prefill_tps": 1217.76,
+        "gen_tps": 24.43
+      }
+    ]
+  },
+  "medians": {
+    "original": {
+      "prefill_tps": 1206.39,
+      "gen_tps": 24.43
+    },
+    "off": {
+      "prefill_tps": 1206.57,
+      "gen_tps": 24.44
+    },
+    "on": {
+      "prefill_tps": 1217.76,
+      "gen_tps": 24.44
+    }
+  },
+  "gain_vs_original_pct": {
+    "off": {
+      "prefill_tps": 0.014920548081454044,
+      "gen_tps": 0.040933278755628244
+    },
+    "on": {
+      "prefill_tps": 0.9424812871459354,
+      "gen_tps": 0.040933278755628244
+    }
+  },
+  "all_full_logits_and_tokens_exact": true,
+  "run_order": [
+    [
+      "original",
+      "off",
+      "on"
+    ],
+    [
+      "on",
+      "original",
+      "off"
+    ],
+    [
+      "off",
+      "on",
+      "original"
+    ]
+  ],
+  "paired_prefill_gain_pct": {
+    "original": [
+      0.653794653926898,
+      0.8554447566707202,
+      0.9901975419216891
+    ],
+    "off": [
+      0.8496824042865114,
+      0.8487571178728004,
+      0.9274223625649558
+    ]
+  },
+  "protocol": "Three fresh sample processes per arm, each after a separate warmup process; shared VMM owner. ON is unset, OFF is 0."
+}

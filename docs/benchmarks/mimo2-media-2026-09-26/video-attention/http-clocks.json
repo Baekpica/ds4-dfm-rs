@@ -1,0 +1,776 @@
+{
+  "clock_policy_mhz": [
+    300,
+    2200
+  ],
+  "memory_clock": "N/A in telemetry",
+  "runs": [
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 0,
+      "arm": "original",
+      "samples": 20,
+      "sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "busy_samples": 16,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        8.94,
+        58.77
+      ],
+      "temperature_min_max_c": [
+        47,
+        61
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-original/clocks.jsonl",
+        "bytes": 12167,
+        "sha256": "8a4c91ecbf8a92a35a4d03525182426044c124a44e15cdfe1dfe0c32068f2c47"
+      }
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 0,
+      "arm": "off",
+      "samples": 20,
+      "sm_min_max_mhz": [
+        2190,
+        2197
+      ],
+      "busy_samples": 16,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.17,
+        56.69
+      ],
+      "temperature_min_max_c": [
+        49,
+        62
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-off/clocks.jsonl",
+        "bytes": 12164,
+        "sha256": "a14426f77ab8cf152811cb66ca31677c5b0a8f444a363107dd1093cd45e7ec6f"
+      }
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 0,
+      "arm": "on",
+      "samples": 19,
+      "sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "busy_samples": 16,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.32,
+        59.5
+      ],
+      "temperature_min_max_c": [
+        50,
+        62
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-on/clocks.jsonl",
+        "bytes": 11556,
+        "sha256": "d0c66b1df62802a9743ef5dfd68ed270ce7a387e58f6fcbf2faaedada95f11c8"
+      }
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 1,
+      "arm": "on",
+      "samples": 19,
+      "sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "busy_samples": 15,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.42,
+        56.55
+      ],
+      "temperature_min_max_c": [
+        51,
+        64
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-on/clocks.jsonl",
+        "bytes": 11559,
+        "sha256": "89da40732baa14d7d1c8918bed853e937ce7af1b21234817227ad9a044974a73"
+      }
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 1,
+      "arm": "original",
+      "samples": 20,
+      "sm_min_max_mhz": [
+        2190,
+        2197
+      ],
+      "busy_samples": 18,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.51,
+        50.09
+      ],
+      "temperature_min_max_c": [
+        52,
+        65
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-original/clocks.jsonl",
+        "bytes": 12168,
+        "sha256": "d8fd1802f25deafe43f876dd3d2f5f230cef12e82f41e7164afaff81aee03b6c"
+      }
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 1,
+      "arm": "off",
+      "samples": 20,
+      "sm_min_max_mhz": [
+        2190,
+        2197
+      ],
+      "busy_samples": 17,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2197
+      ],
+      "power_min_max_w": [
+        9.55,
+        49.85
+      ],
+      "temperature_min_max_c": [
+        52,
+        66
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-off/clocks.jsonl",
+        "bytes": 12168,
+        "sha256": "cfb3e98baaa94863e3465815369a86731e4f991225aec13d6bfc627c5ef849ea"
+      }
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 2,
+      "arm": "off",
+      "samples": 20,
+      "sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "busy_samples": 17,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.6,
+        50.2
+      ],
+      "temperature_min_max_c": [
+        53,
+        66
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-off/clocks.jsonl",
+        "bytes": 12164,
+        "sha256": "a148e895f3b0faefc587db479b475a140320c9c639d14990728780b0a0f171c3"
+      }
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 2,
+      "arm": "on",
+      "samples": 19,
+      "sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "busy_samples": 16,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.7,
+        55.35
+      ],
+      "temperature_min_max_c": [
+        53,
+        64
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-on/clocks.jsonl",
+        "bytes": 11557,
+        "sha256": "41ed03c6ac9546e0635a634263b275139ac4bab08dca3da10a088d1f706b24de"
+      }
+    },
+    {
+      "case": "eval-finevideo-29-3",
+      "round": 2,
+      "arm": "original",
+      "samples": 20,
+      "sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "busy_samples": 15,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.75,
+        55.17
+      ],
+      "temperature_min_max_c": [
+        53,
+        67
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-original/clocks.jsonl",
+        "bytes": 12163,
+        "sha256": "44d0d7360d45060d3b77419fa0f251cce83a2fdb0d538ee7b62c70485ec50aa4"
+      }
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 0,
+      "arm": "original",
+      "samples": 27,
+      "sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "busy_samples": 21,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.81,
+        66.57
+      ],
+      "temperature_min_max_c": [
+        54,
+        70
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-original/clocks.jsonl",
+        "bytes": 16427,
+        "sha256": "b234bb6969902aa5f7e9aa2c1acacbae3050f74710cf689c4279dfc133589f0f"
+      }
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 0,
+      "arm": "off",
+      "samples": 27,
+      "sm_min_max_mhz": [
+        2184,
+        2190
+      ],
+      "busy_samples": 21,
+      "busy_sm_min_max_mhz": [
+        2184,
+        2190
+      ],
+      "power_min_max_w": [
+        9.91,
+        66.61
+      ],
+      "temperature_min_max_c": [
+        55,
+        69
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-off/clocks.jsonl",
+        "bytes": 16429,
+        "sha256": "eb28c523a9627a63ba4cad1cbaaf0ace46a928507e3ce84fd21610ff7515723d"
+      }
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 0,
+      "arm": "on",
+      "samples": 26,
+      "sm_min_max_mhz": [
+        2190,
+        2197
+      ],
+      "busy_samples": 19,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.97,
+        66.52
+      ],
+      "temperature_min_max_c": [
+        55,
+        70
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-on/clocks.jsonl",
+        "bytes": 15815,
+        "sha256": "558a2677cb19d29103de5cacc715bb25ec6a0666d0dd8d15ff291e65623d56ea"
+      }
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 1,
+      "arm": "on",
+      "samples": 26,
+      "sm_min_max_mhz": [
+        2184,
+        2197
+      ],
+      "busy_samples": 22,
+      "busy_sm_min_max_mhz": [
+        2184,
+        2190
+      ],
+      "power_min_max_w": [
+        9.94,
+        66.35
+      ],
+      "temperature_min_max_c": [
+        55,
+        68
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-on/clocks.jsonl",
+        "bytes": 15821,
+        "sha256": "f51ccf25309cc03e21c6ff88f72d4290181c77f610a9f4ec3b67767ca0a97ad3"
+      }
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 1,
+      "arm": "original",
+      "samples": 26,
+      "sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "busy_samples": 23,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.89,
+        66.36
+      ],
+      "temperature_min_max_c": [
+        54,
+        69
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-original/clocks.jsonl",
+        "bytes": 15824,
+        "sha256": "2af8bb3c975f3b9612ba8bdc4ada503e5b7c5f1a77077fbfa4279b64db48d205"
+      }
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 1,
+      "arm": "off",
+      "samples": 27,
+      "sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "busy_samples": 24,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.82,
+        66.46
+      ],
+      "temperature_min_max_c": [
+        54,
+        70
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-off/clocks.jsonl",
+        "bytes": 16422,
+        "sha256": "5eee319588e3136de12bc03cd8000f186831746b8de598fd00696406cd21f12a"
+      }
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 2,
+      "arm": "off",
+      "samples": 27,
+      "sm_min_max_mhz": [
+        2190,
+        2197
+      ],
+      "busy_samples": 21,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.8,
+        66.09
+      ],
+      "temperature_min_max_c": [
+        54,
+        70
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-off/clocks.jsonl",
+        "bytes": 16421,
+        "sha256": "14256375337baa085bc2c4f7b3fb3215e239cece9994459c514591afef8eb409"
+      }
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 2,
+      "arm": "on",
+      "samples": 26,
+      "sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "busy_samples": 19,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.77,
+        66.18
+      ],
+      "temperature_min_max_c": [
+        53,
+        70
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-on/clocks.jsonl",
+        "bytes": 15817,
+        "sha256": "56cd4bc6dd783fc78a3efc3c98106f285c7f12eaf505a70b8a72cb72361e9c38"
+      }
+    },
+    {
+      "case": "eval-finevideo-31-0",
+      "round": 2,
+      "arm": "original",
+      "samples": 27,
+      "sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "busy_samples": 23,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.78,
+        66.3
+      ],
+      "temperature_min_max_c": [
+        53,
+        68
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-original/clocks.jsonl",
+        "bytes": 16424,
+        "sha256": "c27abbae9af72e3197009ae79970b948988f91f7f4ae57841087c95157908a45"
+      }
+    },
+    {
+      "case": "screen",
+      "round": 0,
+      "arm": "original",
+      "samples": 15,
+      "sm_min_max_mhz": [
+        2190,
+        2197
+      ],
+      "busy_samples": 13,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.02,
+        54.73
+      ],
+      "temperature_min_max_c": [
+        48,
+        61
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-original/clocks.jsonl",
+        "bytes": 9121,
+        "sha256": "583ca1f3215281e4204f69de0bc44121716f21e68cd3ef35eb054244ffb36a9d"
+      }
+    },
+    {
+      "case": "screen",
+      "round": 0,
+      "arm": "off",
+      "samples": 15,
+      "sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "busy_samples": 11,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.25,
+        56.56
+      ],
+      "temperature_min_max_c": [
+        49,
+        63
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-off/clocks.jsonl",
+        "bytes": 9123,
+        "sha256": "e0c47bb41df15a0917924bd12a5837180416f7de2bfb0e4626fc8c88f538c650"
+      }
+    },
+    {
+      "case": "screen",
+      "round": 0,
+      "arm": "on",
+      "samples": 16,
+      "sm_min_max_mhz": [
+        2190,
+        2197
+      ],
+      "busy_samples": 12,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.34,
+        56.72
+      ],
+      "temperature_min_max_c": [
+        50,
+        62
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-on/clocks.jsonl",
+        "bytes": 9728,
+        "sha256": "433585179c5eb04d0121b72ec1ce2ea6331b69f3082070d6e7f8c92dbc74d358"
+      }
+    },
+    {
+      "case": "screen",
+      "round": 1,
+      "arm": "on",
+      "samples": 16,
+      "sm_min_max_mhz": [
+        2190,
+        2197
+      ],
+      "busy_samples": 12,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.35,
+        49.92
+      ],
+      "temperature_min_max_c": [
+        50,
+        63
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-on/clocks.jsonl",
+        "bytes": 9732,
+        "sha256": "c38bfc8a2e1613b543639b2d462e1843e3ac9f90dcfa9d76d0dfc5d15cb5df07"
+      }
+    },
+    {
+      "case": "screen",
+      "round": 1,
+      "arm": "original",
+      "samples": 16,
+      "sm_min_max_mhz": [
+        2190,
+        2197
+      ],
+      "busy_samples": 12,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.36,
+        56.49
+      ],
+      "temperature_min_max_c": [
+        50,
+        63
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-original/clocks.jsonl",
+        "bytes": 9730,
+        "sha256": "7d4b5817a5decb654a268f727c99f6df8022bae67ee3b68e92ba5e57388a42e1"
+      }
+    },
+    {
+      "case": "screen",
+      "round": 1,
+      "arm": "off",
+      "samples": 16,
+      "sm_min_max_mhz": [
+        2190,
+        2197
+      ],
+      "busy_samples": 11,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.4,
+        48.92
+      ],
+      "temperature_min_max_c": [
+        51,
+        65
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-off/clocks.jsonl",
+        "bytes": 9730,
+        "sha256": "806e0f100ac50295eac677037ab9ab6e2505bd80ee73340c1d38654f33c23a5f"
+      }
+    },
+    {
+      "case": "screen",
+      "round": 2,
+      "arm": "off",
+      "samples": 15,
+      "sm_min_max_mhz": [
+        2190,
+        2197
+      ],
+      "busy_samples": 12,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.45,
+        56.94
+      ],
+      "temperature_min_max_c": [
+        51,
+        64
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-off/clocks.jsonl",
+        "bytes": 9120,
+        "sha256": "04833e4c59e345f983dc293ffe88d6aacfecc888cf46a3ac88965b3de95c0c47"
+      }
+    },
+    {
+      "case": "screen",
+      "round": 2,
+      "arm": "on",
+      "samples": 15,
+      "sm_min_max_mhz": [
+        2190,
+        2197
+      ],
+      "busy_samples": 12,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.48,
+        59.19
+      ],
+      "temperature_min_max_c": [
+        51,
+        65
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-on/clocks.jsonl",
+        "bytes": 9125,
+        "sha256": "c2506761f7c1b80911c505f05f900f617aed1fa780191d6891d7d70a717d74b0"
+      }
+    },
+    {
+      "case": "screen",
+      "round": 2,
+      "arm": "original",
+      "samples": 16,
+      "sm_min_max_mhz": [
+        2190,
+        2197
+      ],
+      "busy_samples": 13,
+      "busy_sm_min_max_mhz": [
+        2190,
+        2190
+      ],
+      "power_min_max_w": [
+        9.45,
+        57.45
+      ],
+      "temperature_min_max_c": [
+        51,
+        64
+      ],
+      "receipt": {
+        "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-original/clocks.jsonl",
+        "bytes": 9731,
+        "sha256": "6a0b1e49a0d0ad0f0630c5dfbc66f62626595dccf6c12508a3630ff31bcf9668"
+      }
+    }
+  ],
+  "samples": 556,
+  "sm_min_max_mhz": [
+    2184,
+    2197
+  ],
+  "busy_samples": 447,
+  "busy_sm_min_max_mhz": [
+    2184,
+    2197
+  ],
+  "note": "Clock/power samples span launch/warm/sample/cleanup and are not phase-specific energy measurements."
+}

@@ -1,0 +1,71 @@
+{
+  "samples": {
+    "original": [
+      {
+        "prefill_tps": 1219.43,
+        "gen_tps": 24.41
+      },
+      {
+        "prefill_tps": 1219.21,
+        "gen_tps": 24.45
+      },
+      {
+        "prefill_tps": 1218.3,
+        "gen_tps": 24.46
+      }
+    ],
+    "off": [
+      {
+        "prefill_tps": 1220.35,
+        "gen_tps": 24.42
+      },
+      {
+        "prefill_tps": 1217.83,
+        "gen_tps": 24.48
+      },
+      {
+        "prefill_tps": 1218.3,
+        "gen_tps": 24.4
+      }
+    ],
+    "on": [
+      {
+        "prefill_tps": 1220.33,
+        "gen_tps": 24.39
+      },
+      {
+        "prefill_tps": 1217.57,
+        "gen_tps": 24.45
+      },
+      {
+        "prefill_tps": 1219.23,
+        "gen_tps": 24.4
+      }
+    ]
+  },
+  "medians": {
+    "original": {
+      "prefill_tps": 1219.21,
+      "gen_tps": 24.45
+    },
+    "off": {
+      "prefill_tps": 1218.3,
+      "gen_tps": 24.42
+    },
+    "on": {
+      "prefill_tps": 1219.23,
+      "gen_tps": 24.4
+    }
+  },
+  "gain_vs_original_pct": {
+    "off": {
+      "prefill_tps": -0.074638495419177,
+      "gen_tps": -0.12269938650305567
+    },
+    "on": {
+      "prefill_tps": 0.0016404064927311168,
+      "gen_tps": -0.2044989775051187
+    }
+  },
+  "all_full_logits_and_tokens_exact": true
+}

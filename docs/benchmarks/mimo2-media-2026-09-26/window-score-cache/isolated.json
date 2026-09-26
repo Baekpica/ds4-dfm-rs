@@ -1,0 +1,480 @@
+{
+  "runs": [
+    {
+      "kind": "mimo2_attn_baseline",
+      "n": 3072,
+      "q_heads": 32,
+      "kv_heads": 8,
+      "hd": 64,
+      "strides": [
+        3072,
+        3072,
+        3072
+      ],
+      "offsets": [
+        0,
+        2048,
+        2560
+      ],
+      "qkv_same_buffer": true,
+      "window": 64,
+      "sinks": true,
+      "causal": 0,
+      "group": 0,
+      "grid": [
+        384,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "warmups": 3,
+      "repetitions": 10,
+      "mean_ms": 96.75038,
+      "durations_ms": [
+        96.733665,
+        96.772476,
+        97.107773,
+        96.569153,
+        96.760033,
+        96.716766,
+        96.560478,
+        96.869377,
+        96.628769,
+        96.785309
+      ],
+      "output": {
+        "floats": 6291456,
+        "bytes": 25165824,
+        "finite": true,
+        "fnv1a64": "4e57ac00d600a155",
+        "max_abs": 0.304654866,
+        "dumped": false
+      },
+      "pair": 0,
+      "arm": "original"
+    },
+    {
+      "kind": "mimo2_vision_window_candidate",
+      "n": 3072,
+      "q_heads": 32,
+      "kv_heads": 8,
+      "hd": 64,
+      "strides": [
+        3072,
+        3072,
+        3072
+      ],
+      "offsets": [
+        0,
+        2048,
+        2560
+      ],
+      "qkv_same_buffer": true,
+      "window": 64,
+      "sinks": true,
+      "causal": 0,
+      "group": 0,
+      "grid": [
+        98304,
+        1,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "warmups": 3,
+      "repetitions": 10,
+      "mean_ms": 8.363286,
+      "durations_ms": [
+        8.368704,
+        8.3608,
+        8.357024,
+        8.359712,
+        8.359648,
+        8.363008,
+        8.358624,
+        8.366784,
+        8.377472,
+        8.361088
+      ],
+      "output": {
+        "floats": 6291456,
+        "bytes": 25165824,
+        "finite": true,
+        "fnv1a64": "4e57ac00d600a155",
+        "max_abs": 0.304654866,
+        "dumped": false
+      },
+      "pair": 0,
+      "arm": "candidate"
+    },
+    {
+      "kind": "mimo2_vision_window_candidate",
+      "n": 3072,
+      "q_heads": 32,
+      "kv_heads": 8,
+      "hd": 64,
+      "strides": [
+        3072,
+        3072,
+        3072
+      ],
+      "offsets": [
+        0,
+        2048,
+        2560
+      ],
+      "qkv_same_buffer": true,
+      "window": 64,
+      "sinks": true,
+      "causal": 0,
+      "group": 0,
+      "grid": [
+        98304,
+        1,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "warmups": 3,
+      "repetitions": 10,
+      "mean_ms": 8.360083,
+      "durations_ms": [
+        8.369216,
+        8.358816,
+        8.356032,
+        8.358208,
+        8.357984,
+        8.364032,
+        8.358336,
+        8.362144,
+        8.358112,
+        8.357952
+      ],
+      "output": {
+        "floats": 6291456,
+        "bytes": 25165824,
+        "finite": true,
+        "fnv1a64": "4e57ac00d600a155",
+        "max_abs": 0.304654866,
+        "dumped": false
+      },
+      "pair": 1,
+      "arm": "candidate"
+    },
+    {
+      "kind": "mimo2_attn_baseline",
+      "n": 3072,
+      "q_heads": 32,
+      "kv_heads": 8,
+      "hd": 64,
+      "strides": [
+        3072,
+        3072,
+        3072
+      ],
+      "offsets": [
+        0,
+        2048,
+        2560
+      ],
+      "qkv_same_buffer": true,
+      "window": 64,
+      "sinks": true,
+      "causal": 0,
+      "group": 0,
+      "grid": [
+        384,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "warmups": 3,
+      "repetitions": 10,
+      "mean_ms": 96.181799,
+      "durations_ms": [
+        96.15152,
+        96.084831,
+        96.014595,
+        96.179329,
+        96.117821,
+        96.138206,
+        96.323776,
+        96.23645,
+        96.058884,
+        96.512573
+      ],
+      "output": {
+        "floats": 6291456,
+        "bytes": 25165824,
+        "finite": true,
+        "fnv1a64": "4e57ac00d600a155",
+        "max_abs": 0.304654866,
+        "dumped": false
+      },
+      "pair": 1,
+      "arm": "original"
+    },
+    {
+      "kind": "mimo2_attn_baseline",
+      "n": 3072,
+      "q_heads": 32,
+      "kv_heads": 8,
+      "hd": 64,
+      "strides": [
+        3072,
+        3072,
+        3072
+      ],
+      "offsets": [
+        0,
+        2048,
+        2560
+      ],
+      "qkv_same_buffer": true,
+      "window": 64,
+      "sinks": true,
+      "causal": 0,
+      "group": 0,
+      "grid": [
+        384,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "warmups": 3,
+      "repetitions": 10,
+      "mean_ms": 96.443631,
+      "durations_ms": [
+        96.399231,
+        96.70269,
+        96.308228,
+        96.442657,
+        96.863197,
+        96.16806,
+        96.248543,
+        96.474205,
+        96.301949,
+        96.52755
+      ],
+      "output": {
+        "floats": 6291456,
+        "bytes": 25165824,
+        "finite": true,
+        "fnv1a64": "4e57ac00d600a155",
+        "max_abs": 0.304654866,
+        "dumped": false
+      },
+      "pair": 2,
+      "arm": "original"
+    },
+    {
+      "kind": "mimo2_vision_window_candidate",
+      "n": 3072,
+      "q_heads": 32,
+      "kv_heads": 8,
+      "hd": 64,
+      "strides": [
+        3072,
+        3072,
+        3072
+      ],
+      "offsets": [
+        0,
+        2048,
+        2560
+      ],
+      "qkv_same_buffer": true,
+      "window": 64,
+      "sinks": true,
+      "causal": 0,
+      "group": 0,
+      "grid": [
+        98304,
+        1,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "warmups": 3,
+      "repetitions": 10,
+      "mean_ms": 8.359808,
+      "durations_ms": [
+        8.359264,
+        8.361984,
+        8.358976,
+        8.36272,
+        8.358208,
+        8.363136,
+        8.358176,
+        8.355904,
+        8.361984,
+        8.357728
+      ],
+      "output": {
+        "floats": 6291456,
+        "bytes": 25165824,
+        "finite": true,
+        "fnv1a64": "4e57ac00d600a155",
+        "max_abs": 0.304654866,
+        "dumped": false
+      },
+      "pair": 2,
+      "arm": "candidate"
+    }
+  ],
+  "median_ms": {
+    "original": 96.443631,
+    "candidate": 8.360083
+  },
+  "reduction_percent": 91.33163806327448,
+  "outputs_hash_equal": true,
+  "status": "This evidence is complete. See receipt.json for current full-model and HTTP gate status.",
+  "pairs": [
+    {
+      "pair": 0,
+      "original_mean_ms": 96.75038,
+      "candidate_mean_ms": 8.363286,
+      "reduction_pct": 91.35581069552389
+    },
+    {
+      "pair": 1,
+      "original_mean_ms": 96.181799,
+      "candidate_mean_ms": 8.360083,
+      "reduction_pct": 91.30804051606479
+    },
+    {
+      "pair": 2,
+      "original_mean_ms": 96.443631,
+      "candidate_mean_ms": 8.359808,
+      "reduction_pct": 91.33192320392831
+    }
+  ],
+  "pilot": {
+    "original": {
+      "measurement": {
+        "kind": "mimo2_attn_baseline",
+        "n": 3072,
+        "q_heads": 32,
+        "kv_heads": 8,
+        "hd": 64,
+        "strides": [
+          3072,
+          3072,
+          3072
+        ],
+        "offsets": [
+          0,
+          2048,
+          2560
+        ],
+        "qkv_same_buffer": true,
+        "window": 64,
+        "sinks": true,
+        "causal": 0,
+        "group": 0,
+        "grid": [
+          384,
+          1,
+          1
+        ],
+        "block": [
+          256,
+          1,
+          1
+        ],
+        "warmups": 2,
+        "repetitions": 3,
+        "mean_ms": 96.333611,
+        "durations_ms": [
+          96.283104,
+          96.388832,
+          96.328896
+        ],
+        "output": {
+          "floats": 6291456,
+          "bytes": 25165824,
+          "finite": true,
+          "fnv1a64": "4e57ac00d600a155",
+          "max_abs": 0.304654866,
+          "dumped": true
+        }
+      },
+      "output_sha256": "72584b105556ce680ad83a3906e5dda4b55f18ab8cb1c345364093bd4d9a5126",
+      "output_bytes": 25165824
+    },
+    "candidate": {
+      "measurement": {
+        "kind": "mimo2_vision_window_candidate",
+        "n": 3072,
+        "q_heads": 32,
+        "kv_heads": 8,
+        "hd": 64,
+        "strides": [
+          3072,
+          3072,
+          3072
+        ],
+        "offsets": [
+          0,
+          2048,
+          2560
+        ],
+        "qkv_same_buffer": true,
+        "window": 64,
+        "sinks": true,
+        "causal": 0,
+        "group": 0,
+        "grid": [
+          98304,
+          1,
+          1
+        ],
+        "block": [
+          128,
+          1,
+          1
+        ],
+        "warmups": 2,
+        "repetitions": 3,
+        "mean_ms": 8.360256,
+        "durations_ms": [
+          8.358208,
+          8.357344,
+          8.365216
+        ],
+        "output": {
+          "floats": 6291456,
+          "bytes": 25165824,
+          "finite": true,
+          "fnv1a64": "4e57ac00d600a155",
+          "max_abs": 0.304654866,
+          "dumped": true
+        }
+      },
+      "output_sha256": "72584b105556ce680ad83a3906e5dda4b55f18ab8cb1c345364093bd4d9a5126",
+      "output_bytes": 25165824
+    },
+    "full_output_sha256_equal": true
+  }
+}

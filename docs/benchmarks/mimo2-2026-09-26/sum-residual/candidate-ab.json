@@ -1,0 +1,71 @@
+{
+  "samples": {
+    "original": [
+      {
+        "prefill_tps": 1191.47,
+        "gen_tps": 24.45
+      },
+      {
+        "prefill_tps": 1191.32,
+        "gen_tps": 24.43
+      },
+      {
+        "prefill_tps": 1188.86,
+        "gen_tps": 24.46
+      }
+    ],
+    "off": [
+      {
+        "prefill_tps": 1186.67,
+        "gen_tps": 24.38
+      },
+      {
+        "prefill_tps": 1185.91,
+        "gen_tps": 24.4
+      },
+      {
+        "prefill_tps": 1184.69,
+        "gen_tps": 24.42
+      }
+    ],
+    "on": [
+      {
+        "prefill_tps": 1194.17,
+        "gen_tps": 24.45
+      },
+      {
+        "prefill_tps": 1194.15,
+        "gen_tps": 24.4
+      },
+      {
+        "prefill_tps": 1192.24,
+        "gen_tps": 24.41
+      }
+    ]
+  },
+  "medians": {
+    "original": {
+      "prefill_tps": 1191.32,
+      "gen_tps": 24.45
+    },
+    "off": {
+      "prefill_tps": 1185.91,
+      "gen_tps": 24.4
+    },
+    "on": {
+      "prefill_tps": 1194.15,
+      "gen_tps": 24.41
+    }
+  },
+  "gain_vs_original_pct": {
+    "off": {
+      "prefill_tps": -0.4541181210757639,
+      "gen_tps": -0.2044989775051187
+    },
+    "on": {
+      "prefill_tps": 0.23755162340934888,
+      "gen_tps": -0.16359918200408163
+    }
+  },
+  "all_full_logits_and_tokens_exact": true
+}

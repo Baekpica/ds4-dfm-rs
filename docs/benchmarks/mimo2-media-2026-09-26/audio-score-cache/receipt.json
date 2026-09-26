@@ -1,0 +1,56 @@
+{
+  "status": "adopted: corrected full-model parity and consistent fresh paired HTTP gains",
+  "production_scope": "Only full causal codec attention, Q=KV16, HD64, separate buffers, stride1024 offsets0, no sinks/group, rows1\u20138192. Images and local/windowed audio retain their existing kernels.",
+  "knob": "DS4_MIMO2_AUDIO_ATTN=0",
+  "completed": [
+    "Fresh whole HTTP profile, with independent validation of an idle-status helper false positive",
+    "Full NCU baseline and candidate, 40 passes each",
+    "Three fresh isolated process pairs, 10 warmups and 20 iterations",
+    "Independent full pilot output comparison: 570368 FP32 values exact",
+    "Focused actual-wrapper OFF/default/ON parity, including rows 8192 and fallback regimes",
+    "Fresh corrected-baseline whole profile reconfirms full causal audio attention at 409.846496 ms, 13.523% of HTTP wall",
+    "Six corrected-baseline Rust audio proofs: all 152576 logits, complete tokens/answers/stop/inputs/geometry exact; max_abs and RMS zero",
+    "18 fresh matched original/OFF/ON HTTP workers across two fixtures and three rotated rounds; all36 warm/sample proofs exact, no truncation, all guard/payload exits0"
+  ],
+  "pending": [],
+  "raw_evidence": "scratch/mimo-media-20260926/ncu-audio-r1/ and audio-r1-whole/",
+  "source_edits_frozen": true,
+  "historical_baseline_commit": "33a1a2b4",
+  "qualification_baseline": "Image R2 plus verified LayerNorm shared-memory race fix; audio candidate absent",
+  "corrected_server_sha256": "4b66707ccb2c90219d4df9fc119d471794bf48e4c8efda7f3e264be5c86ab7a8",
+  "historical_evidence": "Original whole and synthetic isolated measurements remain preserved. Attention body and standalone probe source are unchanged by the LayerNorm repair; old full-model drift does not qualify the candidate.",
+  "qualification_baseline_commit": "8fcc1574",
+  "decision": {
+    "wall_median_gain_vs_original_percent": [
+      16.956329207835452,
+      18.131028349602317
+    ],
+    "ttft_median_gain_vs_original_percent": [
+      31.431093988281578,
+      36.02383882878798
+    ],
+    "all_paired_wall_ttft_gains_positive_vs_original_and_off": true,
+    "decode_median_original_off_on": {
+      "audio-3": [
+        27.1,
+        27.1,
+        27.1
+      ],
+      "audio-0": [
+        27.0,
+        27.0,
+        27.0
+      ]
+    },
+    "resource_cost": "Dynamic shared memory2492B at557rows; at8192rows33032B. No persistent tensor allocation. Arithmetic/traffic tradeoffs are in ncu-comparison.json.",
+    "quality_limit": "Audio0 reference mismatch is preserved from corrected baseline; no claim of perfect transcription or general audio quality.",
+    "evidence": [
+      "model-proof-corrected.json",
+      "http-ab-corrected.json",
+      "http-proof-corrected.json",
+      "http-launch-corrected.json",
+      "http-guards-corrected.json",
+      "http-clocks-corrected.json"
+    ]
+  }
+}

@@ -3107,7 +3107,7 @@ int ds4_mmq_moe_pair_impl(
                 const int d2r_rc = ds4_mmq_iq2_xxs_moe_d2r_pair_launch(
                         xa_soa, xb_soa, soa_blocks, src1_q8_1, ids_dst,
                         expert_bounds, out_a, out_b, M, K, ne_get_rows, n_experts,
-                        d2r_work.get(), d2r_work_bytes, stream);
+                        n_expert_used, d2r_work.get(), d2r_work_bytes, stream);
                 if (d2r_rc == 0) {
                     gate_up_done = true;
                 }

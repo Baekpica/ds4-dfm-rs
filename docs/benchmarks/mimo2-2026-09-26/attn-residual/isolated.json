@@ -1,0 +1,42 @@
+{
+  "separate": {
+    "ms": [
+      1.305346,
+      1.302458,
+      1.297766
+    ],
+    "median_ms": 1.302458
+  },
+  "fused": {
+    "ms": [
+      0.766428,
+      0.763819,
+      0.761592
+    ],
+    "median_ms": 0.763819
+  },
+  "latency_reduction_pct": 41.355575381317465,
+  "correctness": "16777216 cur floats byte-exact; inputs restored before each timed iteration",
+  "raw_status": "candidate pending actual model A/B",
+  "status": "isolated measurement; final adoption is recorded in receipt.json",
+  "protocol": {
+    "warmup_iterations": 32,
+    "measured_iterations": 100,
+    "fresh_processes_per_arm": 3,
+    "orders": [
+      [
+        "separate",
+        "fused"
+      ],
+      [
+        "fused",
+        "separate"
+      ],
+      [
+        "separate",
+        "fused"
+      ]
+    ],
+    "restore": "D2D input restore before each pair, outside CUDA event timing"
+  }
+}

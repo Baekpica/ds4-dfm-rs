@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 namespace {
 
@@ -35,6 +36,8 @@ static bool d2r_stats_enabled() {
     }
     return cached != 0;
 }
+
+enum class Iq2Schedule { Original, Bounded };
 
 constexpr int kMTile      = 128;
 constexpr int kNTile      = 64;
@@ -1151,7 +1154,7 @@ __device__ __forceinline__ void fold_iq2_fragment_guarded(
     if (row1_ok && col1_ok) acc[nf][3] = fmaf((float)C.x[3], s11, acc[nf][3]);
 }
 
-template <bool FullTile, typename TileA, typename TileB, typename TileC,
+template <Iq2Schedule Schedule, bool FullTile, typename TileA, typename TileB, typename TileC,
           int T0, int T1, int NFrag>
 __device__ __forceinline__ void mma_fold_iq2_k32_pair_t(
         float (&acc)[NFrag][TileC::ne],
@@ -1225,10 +1228,16 @@ __device__ __forceinline__ void mma_fold_iq2_k32_pair_t(
                                       q8_d4_k64_slot<T1>(dB.c0), q8_d4_k64_slot<T1>(dB.c1),
                                       raw_row0_ok, raw_row1_ok, col0_ok, col1_ok);
         }
+        if constexpr (Schedule == Iq2Schedule::Bounded) {
+            // Bound live MMA temporaries without changing accumulation order.
+            // Extra shared loads replace spills, reducing total L2 traffic.
+            __syncwarp();
+        }
+
     }
 }
 
-template <bool FullTile, typename TileA, typename TileB, typename TileC,
+template <Iq2Schedule Schedule, bool FullTile, typename TileA, typename TileB, typename TileC,
           int NFrag>
 __device__ __forceinline__ void mma_fold_iq2_k128(
         float (&acc)[NFrag][TileC::ne],
@@ -1254,23 +1263,23 @@ __device__ __forceinline__ void mma_fold_iq2_k128(
     const int half_pair_base = (k128_iter & 1) ? 4 : 0;
 
     if (half_pair_base == 0) {
-        mma_fold_iq2_k32_pair_t<FullTile, TileA, TileB, TileC, 0, 1>(
+        mma_fold_iq2_k32_pair_t<Schedule, FullTile, TileA, TileB, TileC, 0, 1>(
             acc, s_raw, s_grid, s_q8, raw_stage, q8_stage,
             row0_ok, row1_ok, warp, group, tig, s_inv);
-        mma_fold_iq2_k32_pair_t<FullTile, TileA, TileB, TileC, 2, 3>(
+        mma_fold_iq2_k32_pair_t<Schedule, FullTile, TileA, TileB, TileC, 2, 3>(
             acc, s_raw, s_grid, s_q8, raw_stage, q8_stage,
             row0_ok, row1_ok, warp, group, tig, s_inv);
     } else {
-        mma_fold_iq2_k32_pair_t<FullTile, TileA, TileB, TileC, 4, 5>(
+        mma_fold_iq2_k32_pair_t<Schedule, FullTile, TileA, TileB, TileC, 4, 5>(
             acc, s_raw, s_grid, s_q8, raw_stage, q8_stage,
             row0_ok, row1_ok, warp, group, tig, s_inv);
-        mma_fold_iq2_k32_pair_t<FullTile, TileA, TileB, TileC, 6, 7>(
+        mma_fold_iq2_k32_pair_t<Schedule, FullTile, TileA, TileB, TileC, 6, 7>(
             acc, s_raw, s_grid, s_q8, raw_stage, q8_stage,
             row0_ok, row1_ok, warp, group, tig, s_inv);
     }
 }
 
-template <bool FullTile, typename TileA, typename TileB, typename TileC>
+template <Iq2Schedule Schedule, bool FullTile, typename TileA, typename TileB, typename TileC>
 __device__ __forceinline__ void iq2_d2r_mainloop(
         float (&acc)[kNFrag][TileC::ne],
         block_q8_1_mmq (&s_q8)[kStages][kNFrag][8],
@@ -1324,10 +1333,10 @@ __device__ __forceinline__ void iq2_d2r_mainloop(
         }
 
         if constexpr (FullTile) {
-            mma_fold_iq2_k128<true, TileA, TileB, TileC>(
+            mma_fold_iq2_k128<Schedule, true, TileA, TileB, TileC>(
                 acc, s_raw, s_grid, s_q8, k128_iter, s_inv);
         } else {
-            mma_fold_iq2_k128<false, TileA, TileB, TileC>(
+            mma_fold_iq2_k128<Schedule, false, TileA, TileB, TileC>(
                 acc, s_raw, s_grid, s_q8, k128_iter, s_inv);
         }
 
@@ -1397,9 +1406,9 @@ __device__ __forceinline__ void iq2_gateup_fused_mainloop(
         }
 
         const int even_k128 = 2 * k256_iter;
-        mma_fold_iq2_k128<FullTile, TileA, TileB, TileC>(
+        mma_fold_iq2_k128<Iq2Schedule::Original, FullTile, TileA, TileB, TileC>(
             gate_acc, s.raw[0], s.grid, s.q8, even_k128, s.inv[0]);
-        mma_fold_iq2_k128<FullTile, TileA, TileB, TileC>(
+        mma_fold_iq2_k128<Iq2Schedule::Original, FullTile, TileA, TileB, TileC>(
             up_acc, s.raw[1], s.grid, s.q8, even_k128, s.inv[1]);
 
         __syncthreads();
@@ -1410,9 +1419,9 @@ __device__ __forceinline__ void iq2_gateup_fused_mainloop(
         }
 
         const int odd_k128 = even_k128 + 1;
-        mma_fold_iq2_k128<FullTile, TileA, TileB, TileC>(
+        mma_fold_iq2_k128<Iq2Schedule::Original, FullTile, TileA, TileB, TileC>(
             gate_acc, s.raw[0], s.grid, s.q8, odd_k128, s.inv[0]);
-        mma_fold_iq2_k128<FullTile, TileA, TileB, TileC>(
+        mma_fold_iq2_k128<Iq2Schedule::Original, FullTile, TileA, TileB, TileC>(
             up_acc, s.raw[1], s.grid, s.q8, odd_k128, s.inv[1]);
 
         __syncthreads();
@@ -2385,6 +2394,7 @@ void down_q2k_d2r_kernel(const void * __restrict__ W_soa,
 #endif
 }
 
+template <Iq2Schedule Schedule>
 __global__ __launch_bounds__(kThreads, 2)
 void gateup_iq2_d2r_pair_kernel(const void * __restrict__ gate_soa,
                                 const void * __restrict__ up_soa,
@@ -2471,10 +2481,10 @@ void gateup_iq2_d2r_pair_kernel(const void * __restrict__ gate_soa,
     float acc[kNFrag][tile_C::ne] = {};
 
     if (full_warp_tile) {
-        iq2_d2r_mainloop<true, tile_A, tile_B, tile_C>(
+        iq2_d2r_mainloop<Schedule, true, tile_A, tile_B, tile_C>(
             acc, s_q8, s_raw, s_grid, s_inv);
     } else {
-        iq2_d2r_mainloop<false, tile_A, tile_B, tile_C>(
+        iq2_d2r_mainloop<Schedule, false, tile_A, tile_B, tile_C>(
             acc, s_q8, s_raw, s_grid, s_inv);
     }
 
@@ -2876,6 +2886,7 @@ int ds4_mmq_iq2_xxs_moe_d2r_pair_launch(const void *gate_soa,
                                          int K,
                                          int64_t ne_get_rows,
                                          int n_experts,
+                                         int n_expert_used,
                                          void *worklist_scratch,
                                          size_t worklist_scratch_bytes,
                                          cudaStream_t stream) {
@@ -2920,9 +2931,29 @@ int ds4_mmq_iq2_xxs_moe_d2r_pair_launch(const void *gate_soa,
     /* Same expert-major schedule as the down launch (see comment there). */
     const dim3 grid((unsigned)((M + kMTile - 1) / kMTile), (unsigned)capacity64, 2);
     const dim3 block(32, kWarps, 1);
-    gateup_iq2_d2r_pair_kernel<<<grid, block, 0, stream>>>(
-        gate_soa, up_soa, (const block_q8_1_mmq *)q8, ids_dst, expert_bounds, work, n_items,
-        out_gate, out_up, M, K, (int)ne_get_rows, n_experts);
+    static const bool bounded = [] {
+        const char *env = getenv("DS4_MIMO2_GATEUP_BOUNDED");
+        return !env || strcmp(env, "0") != 0;
+    }();
+    enum {
+        kMimoRows = 2048, kMimoColumns = 4096, kMimoExperts = 256, kMimoUsed = 8,
+        kMinAssignments = 2048, kMaxAssignments = 65536
+    };
+    // Other families share M/K/E; require MiMo's eight-expert topology too.
+    // Qualify this compiler-scheduling change only on the measured architecture.
+    const bool mimo_prefill = cc == GGML_CUDA_CC_DGX_SPARK &&
+        M == kMimoRows && K == kMimoColumns &&
+        n_experts == kMimoExperts && n_expert_used == kMimoUsed &&
+        ne_get_rows >= kMinAssignments && ne_get_rows <= kMaxAssignments;
+    if (bounded && mimo_prefill) {
+        gateup_iq2_d2r_pair_kernel<Iq2Schedule::Bounded><<<grid, block, 0, stream>>>(
+            gate_soa, up_soa, (const block_q8_1_mmq *)q8, ids_dst, expert_bounds, work, n_items,
+            out_gate, out_up, M, K, (int)ne_get_rows, n_experts);
+    } else {
+        gateup_iq2_d2r_pair_kernel<Iq2Schedule::Original><<<grid, block, 0, stream>>>(
+            gate_soa, up_soa, (const block_q8_1_mmq *)q8, ids_dst, expert_bounds, work, n_items,
+            out_gate, out_up, M, K, (int)ne_get_rows, n_experts);
+    }
     err = cudaGetLastError();
     if (err != cudaSuccess) {
         fprintf(stderr, "%s: main kernel launch failed: %s\n", tag, cudaGetErrorString(err));

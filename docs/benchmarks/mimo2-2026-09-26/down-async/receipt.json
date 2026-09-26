@@ -1,0 +1,89 @@
+{
+  "base_commit": "a3fd2a5c118344c533d16c117e46bf6bc2007243",
+  "round": 4,
+  "accepted": false,
+  "retained_source": "R3 base restored; candidate patch is archival only",
+  "scope": "Only explicit MiMo IQ2_XS Down entry, DGX Spark, M4096/K2048/E256, 256..65536 assignments divisible by eight, pipeline enabled; wide width128 specialization",
+  "switch": "DS4_MIMO2_DOWN_ASYNC=0 disables; unset enabled experimental candidate",
+  "source": {
+    "base_files": {
+      "cuda/mmq/ds4_mmq.cu": "9107e107b80457c30687a180cbb70b23a28d5fd33661d8429269f03f2c53b23d",
+      "cuda/mmq/ds4_mmq_pipe.cuh": "a2f2ad685865b8c0e54b0c07b38df6da50eba2b1a821ee1df46ac299ae20c7f8"
+    },
+    "candidate_patch": {
+      "path": "scratch/mimo-prefill-20260926/ncu-down-r4/rejected-async.patch",
+      "bytes": 11231,
+      "sha256": "ecdfa943a7f45bd882378c54c150f41280ea76f967386ea07b15e0bf10bb5ed2"
+    },
+    "timed_fixture": {
+      "path": "scratch/mimo-prefill-20260926/ncu-down-r4/probe.cu",
+      "bytes": 7213,
+      "sha256": "765583eaea730ded542af87bf158cdae8e941b22dabd0739c23ada1de2a413c1"
+    },
+    "cleaned_test_not_used_for_timing": {
+      "path": "scratch/mimo-prefill-20260926/ncu-down-r4/test.cu",
+      "bytes": 6169,
+      "sha256": "89ece27cd93688deee125807018faa3ca195c3c526138756212a4cbfbcb88477"
+    }
+  },
+  "binary": {
+    "original": {
+      "path": "scratch/mimo-prefill-20260926/ncu-down-r4/probe-original",
+      "bytes": 52947736,
+      "sha256": "49442e2630d274b4eddce942664b08e73014d5d5f19cb373a93722467982ba9a"
+    },
+    "candidate": {
+      "path": "scratch/mimo-prefill-20260926/ncu-down-r4/probe-candidate",
+      "bytes": 53363960,
+      "sha256": "05a0fffb4cef91c14666bac274c4dc60c1fc620fa59bef19da02b56fff17caf1"
+    }
+  },
+  "saved_original_mmq_object": {
+    "path": "scratch/mimo-prefill-20260926/ncu-down-r4/mmq-original.o",
+    "bytes": 53188752,
+    "sha256": "7d28dc73fa7610a7dcae4dcde9e46bee3a0ab36b9d62d65be028218e037a7dc7"
+  },
+  "build": {
+    "mmq_command": "/usr/local/cuda/bin/nvcc -O3 -g -lineinfo --use_fast_math -std=c++17 -gencode arch=compute_121a,code=sm_121a -DDS4_CUDA_HAVE_MXF4=1 -Xcompiler -march=native -Xcompiler -pthread  -Icuda/mmq -c -o cuda/mmq/ds4_mmq.o cuda/mmq/ds4_mmq.cu",
+    "candidate_probe_command": "/usr/local/cuda/bin/nvcc -O3 -g -lineinfo --use_fast_math -std=c++17 -arch=sm_121a -Icuda/mmq scratch/mimo-prefill-20260926/ncu-down-r4/probe.cu cuda/mmq/ds4_ggml_stubs.o cuda/mmq/ds4_mmq.o cuda/mmq/ds4_mmq_d2r.o cuda/mmq/quantize.o cuda/mmq/mmid.o cuda/mmq/mmvq.o -lcudart -lcublas -lcuda -o scratch/mimo-prefill-20260926/ncu-down-r4/probe-candidate",
+    "candidate_probe_command_source": "Parent agent retained exact executed command",
+    "original_probe_command": null,
+    "original_probe_command_note": "Historical original link command receipt was not retained; do not infer exact flags. Both timed binaries use the same archived probe.cu fixture.",
+    "split_compile": false,
+    "successful_log": {
+      "path": "scratch/mimo-prefill-20260926/ncu-down-r4/aligned-build.log",
+      "bytes": 11626,
+      "sha256": "1d15bb351a37128b407832054783c0917373c482a887a6a3442099ebc0b502c0"
+    },
+    "aborted_attempt": {
+      "log": {
+        "path": "scratch/mimo-prefill-20260926/ncu-down-r4/model-build.log",
+        "bytes": 711,
+        "sha256": "ecbcbe37b6072faffd5c9fb7b60ad5dee36247dc8d87c0e135ad7ba12ae3bc1e"
+      },
+      "note": "Aborted before candidate GPU execution; explicit 16-byte shared alignment corrected, then successful standard-flags rebuild."
+    }
+  },
+  "run_script": {
+    "path": "scratch/mimo-prefill-20260926/ncu-down-r4/run-isolated.sh",
+    "bytes": 1219,
+    "sha256": "d4ae76f2b97cea07d0981c0a1d9d4eb85616072d6f6deaa5fab5c5ea26823bd2"
+  },
+  "ncu_reports": {
+    "baseline": {
+      "path": "scratch/mimo-prefill-20260926/ncu-down-r4/baseline.ncu-rep",
+      "bytes": 208997825
+    },
+    "candidate": {
+      "path": "scratch/mimo-prefill-20260926/ncu-down-r4/candidate.ncu-rep",
+      "bytes": 211881459
+    }
+  },
+  "evidence": {
+    "isolated": "isolated.json",
+    "counters": "counters.json",
+    "nsys": "nsys-before.json",
+    "clocks": "clocks.json"
+  },
+  "model_ab": "Not run: candidate rejected for repeated isolated regression; no end-to-end speed or decode claim."
+}

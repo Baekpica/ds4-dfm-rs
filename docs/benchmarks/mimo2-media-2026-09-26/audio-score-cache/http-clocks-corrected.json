@@ -1,0 +1,103 @@
+{
+  "samples": 204,
+  "sm_mhz": {
+    "min": 2190.0,
+    "max": 2197.0
+  },
+  "memory_clock_mhz": {
+    "observed": [],
+    "unavailable_samples": 204
+  },
+  "power_w": {
+    "min": 8.56,
+    "max": 49.69
+  },
+  "temperature_c": {
+    "min": 43.0,
+    "max": 62.0
+  },
+  "cpu_khz_by_policy": {
+    "policy11": {
+      "min": 2808000,
+      "max": 2808000
+    },
+    "policy8": {
+      "min": 3900000,
+      "max": 3900000
+    },
+    "policy6": {
+      "min": 3900000,
+      "max": 3900000
+    },
+    "policy18": {
+      "min": 3900000,
+      "max": 3900000
+    },
+    "policy4": {
+      "min": 2808000,
+      "max": 2808000
+    },
+    "policy16": {
+      "min": 3900000,
+      "max": 3900000
+    },
+    "policy2": {
+      "min": 2808000,
+      "max": 2808000
+    },
+    "policy14": {
+      "min": 2808000,
+      "max": 2808000
+    },
+    "policy0": {
+      "min": 2808000,
+      "max": 2808000
+    },
+    "policy12": {
+      "min": 2808000,
+      "max": 2808000
+    },
+    "policy9": {
+      "min": 3900000,
+      "max": 3900000
+    },
+    "policy10": {
+      "min": 2808000,
+      "max": 2808000
+    },
+    "policy7": {
+      "min": 3900000,
+      "max": 3900000
+    },
+    "policy19": {
+      "min": 3900000,
+      "max": 3900000
+    },
+    "policy5": {
+      "min": 3900000,
+      "max": 3900000
+    },
+    "policy17": {
+      "min": 3900000,
+      "max": 3900000
+    },
+    "policy3": {
+      "min": 2808000,
+      "max": 2808000
+    },
+    "policy15": {
+      "min": 3900000,
+      "max": 3900000
+    },
+    "policy1": {
+      "min": 2808000,
+      "max": 2808000
+    },
+    "policy13": {
+      "min": 2808000,
+      "max": 2808000
+    }
+  },
+  "errors": [],
+  "policy": "Observed only; user-managed 300-2200 MHz unchanged; memory clock reported [N/A] on GB10."
+}

@@ -1,0 +1,365 @@
+{
+  "scope": "All completed isolated, profiler, focused test, full-model proof and HTTP A/B workers.",
+  "runs": [
+    {
+      "log": "baseline-full.memory.jsonl",
+      "exit": {
+        "time": 1790405071.5323265,
+        "event": "exit",
+        "unit": "ds4-hostguard-1955128-1790405054816632686.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 115.01163101196289,
+      "intervention_events": []
+    },
+    {
+      "log": "candidate-full.memory.jsonl",
+      "exit": {
+        "time": 1790405473.8480124,
+        "event": "exit",
+        "unit": "ds4-hostguard-1957779-1790405467116551619.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 115.47310638427734,
+      "intervention_events": []
+    },
+    {
+      "log": "isolated-0-candidate.memory.jsonl",
+      "exit": {
+        "time": 1790405513.1475544,
+        "event": "exit",
+        "unit": "ds4-hostguard-1958363-1790405512622860747.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 116.54714584350586,
+      "intervention_events": []
+    },
+    {
+      "log": "isolated-0-original.memory.jsonl",
+      "exit": {
+        "time": 1790405512.528477,
+        "event": "exit",
+        "unit": "ds4-hostguard-1958334-1790405510789038039.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 115.89508438110352,
+      "intervention_events": []
+    },
+    {
+      "log": "isolated-1-candidate.memory.jsonl",
+      "exit": {
+        "time": 1790405513.7234616,
+        "event": "exit",
+        "unit": "ds4-hostguard-1958387-1790405513202065847.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 116.53582763671875,
+      "intervention_events": []
+    },
+    {
+      "log": "isolated-1-original.memory.jsonl",
+      "exit": {
+        "time": 1790405515.4080932,
+        "event": "exit",
+        "unit": "ds4-hostguard-1958397-1790405513776404804.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 116.35652923583984,
+      "intervention_events": []
+    },
+    {
+      "log": "isolated-2-candidate.memory.jsonl",
+      "exit": {
+        "time": 1790405517.7939923,
+        "event": "exit",
+        "unit": "ds4-hostguard-1958425-1790405517274166440.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 116.65877532958984,
+      "intervention_events": []
+    },
+    {
+      "log": "isolated-2-original.memory.jsonl",
+      "exit": {
+        "time": 1790405517.1929288,
+        "event": "exit",
+        "unit": "ds4-hostguard-1958411-1790405515461390700.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 116.25664520263672,
+      "intervention_events": []
+    },
+    {
+      "log": "pilot-candidate.memory.jsonl",
+      "exit": {
+        "time": 1790405443.3747408,
+        "event": "exit",
+        "unit": "ds4-hostguard-1957669-1790405442951680241.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 117.03600692749023,
+      "intervention_events": []
+    },
+    {
+      "log": "pilot-original.memory.jsonl",
+      "exit": {
+        "time": 1790405442.8590503,
+        "event": "exit",
+        "unit": "ds4-hostguard-1957659-1790405441933288864.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 117.03820037841797,
+      "intervention_events": []
+    },
+    {
+      "log": "test-full.memory.jsonl",
+      "exit": {
+        "time": 1790405738.5698316,
+        "event": "exit",
+        "unit": "ds4-hostguard-1959969-1790405703263703770.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 115.96725082397461,
+      "intervention_events": []
+    },
+    {
+      "log": "test-window.memory.jsonl",
+      "exit": {
+        "time": 1790405691.678534,
+        "event": "exit",
+        "unit": "ds4-hostguard-1959767-1790405689116326058.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 116.1902961730957,
+      "intervention_events": []
+    },
+    {
+      "log": "model-proof/screen-original.memory.jsonl",
+      "exit": {
+        "time": 1790405821.2465649,
+        "event": "exit",
+        "unit": "ds4-hostguard-1960683-1790405808778530309.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 18.377056121826172,
+      "intervention_events": []
+    },
+    {
+      "log": "model-proof/screen-off.memory.jsonl",
+      "exit": {
+        "time": 1790405834.2370412,
+        "event": "exit",
+        "unit": "ds4-hostguard-1960704-1790405821359465652.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 18.296329498291016,
+      "intervention_events": []
+    },
+    {
+      "log": "model-proof/screen-on.memory.jsonl",
+      "exit": {
+        "time": 1790405845.067704,
+        "event": "exit",
+        "unit": "ds4-hostguard-1960740-1790405834326955482.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 18.43018341064453,
+      "intervention_events": []
+    },
+    {
+      "log": "model-proof/photo-original.memory.jsonl",
+      "exit": {
+        "time": 1790405854.692643,
+        "event": "exit",
+        "unit": "ds4-hostguard-1960776-1790405845156740528.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 18.682716369628906,
+      "intervention_events": []
+    },
+    {
+      "log": "model-proof/photo-off.memory.jsonl",
+      "exit": {
+        "time": 1790405864.3416526,
+        "event": "exit",
+        "unit": "ds4-hostguard-1960808-1790405854818503006.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 18.692359924316406,
+      "intervention_events": []
+    },
+    {
+      "log": "model-proof/photo-on.memory.jsonl",
+      "exit": {
+        "time": 1790405873.2499795,
+        "event": "exit",
+        "unit": "ds4-hostguard-1960845-1790405864424152736.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 18.691627502441406,
+      "intervention_events": []
+    },
+    {
+      "log": "model-proof/document-original.memory.jsonl",
+      "exit": {
+        "time": 1790405892.9668236,
+        "event": "exit",
+        "unit": "ds4-hostguard-1960854-1790405873363898060.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 18.172603607177734,
+      "intervention_events": []
+    },
+    {
+      "log": "model-proof/document-off.memory.jsonl",
+      "exit": {
+        "time": 1790405912.6700904,
+        "event": "exit",
+        "unit": "ds4-hostguard-1960981-1790405893047096219.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 18.157066345214844,
+      "intervention_events": []
+    },
+    {
+      "log": "model-proof/document-on.memory.jsonl",
+      "exit": {
+        "time": 1790405928.1745226,
+        "event": "exit",
+        "unit": "ds4-hostguard-1961017-1790405912758528318.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 18.136459350585938,
+      "intervention_events": []
+    },
+    {
+      "log": "http-ab/screen-0-original/server.memory.jsonl",
+      "exit": {
+        "time": 1790405966.2604308,
+        "event": "exit",
+        "unit": "ds4-hostguard-1961085-1790405946727388821.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 18.410804748535156,
+      "intervention_events": []
+    },
+    {
+      "log": "http-ab/screen-0-off/server.memory.jsonl",
+      "exit": {
+        "time": 1790405986.7570267,
+        "event": "exit",
+        "unit": "ds4-hostguard-1961223-1790405967047982741.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 18.406055450439453,
+      "intervention_events": []
+    },
+    {
+      "log": "http-ab/screen-0-on/server.memory.jsonl",
+      "exit": {
+        "time": 1790406002.9578676,
+        "event": "exit",
+        "unit": "ds4-hostguard-1961393-1790405987498445314.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 18.304607391357422,
+      "intervention_events": []
+    },
+    {
+      "log": "http-ab/screen-1-on/server.memory.jsonl",
+      "exit": {
+        "time": 1790406018.7804246,
+        "event": "exit",
+        "unit": "ds4-hostguard-1961491-1790406003176417460.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 18.348773956298828,
+      "intervention_events": []
+    },
+    {
+      "log": "http-ab/screen-1-original/server.memory.jsonl",
+      "exit": {
+        "time": 1790406039.1415107,
+        "event": "exit",
+        "unit": "ds4-hostguard-1961608-1790406019553191551.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 18.423507690429688,
+      "intervention_events": []
+    },
+    {
+      "log": "http-ab/screen-1-off/server.memory.jsonl",
+      "exit": {
+        "time": 1790406059.5135977,
+        "event": "exit",
+        "unit": "ds4-hostguard-1961747-1790406039927094874.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 18.386089324951172,
+      "intervention_events": []
+    },
+    {
+      "log": "http-ab/screen-2-off/server.memory.jsonl",
+      "exit": {
+        "time": 1790406079.404551,
+        "event": "exit",
+        "unit": "ds4-hostguard-1962010-1790406059698203150.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 18.186504364013672,
+      "intervention_events": []
+    },
+    {
+      "log": "http-ab/screen-2-on/server.memory.jsonl",
+      "exit": {
+        "time": 1790406096.0091596,
+        "event": "exit",
+        "unit": "ds4-hostguard-1962125-1790406080170786047.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 18.209728240966797,
+      "intervention_events": []
+    },
+    {
+      "log": "http-ab/screen-2-original/server.memory.jsonl",
+      "exit": {
+        "time": 1790406116.6522453,
+        "event": "exit",
+        "unit": "ds4-hostguard-1962256-1790406096814822015.scope",
+        "status": 0,
+        "payload_status": 0
+      },
+      "minimum_available_gib": 18.29468536376953,
+      "intervention_events": []
+    }
+  ]
+}

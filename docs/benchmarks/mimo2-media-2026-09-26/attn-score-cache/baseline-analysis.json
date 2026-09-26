@@ -1,0 +1,76 @@
+{
+  "scope": "Full vision attention n3072 Q32/KV8 HD64, grid384/block256, baseline original scalar kernel",
+  "counter_caveat": "Warp sampling buffer overflow at512MiB: sampledPC/stall values unreliable and excluded. Exact replay instruction/request/sector counters andstaticSASS remainusable. Source L1TagRequests countcachetags, not32Bsectors; they coincide here because activebaseline accesses eachhitdistinct32Bsectors/cachelines. Use rawsectorcounters forphysicaltraffic, sourceL2TheoreticalSectors foraccessfootprints.",
+  "raw_metric_values": {
+    "gpu__time_duration.sum": "2.324215",
+    "smsp__inst_executed.sum": "10523326464.000000",
+    "launch__registers_per_thread": "40",
+    "derived__local_spilling_requests": "0",
+    "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": "4831838208",
+    "l1tex__t_requests_pipe_lsu_mem_global_op_st.sum": "604176384",
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": "96636764160.000000",
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": "19333644288.000000",
+    "lts__t_sectors_srcunit_tex_op_read.sum": "34369698599.000000",
+    "lts__t_sectors_srcunit_tex_op_write.sum": "19333644288.000000",
+    "lts__t_sector_hit_rate.pct": "98.840116",
+    "lts__throughput.avg.pct_of_peak_sustained_elapsed": "89.498506",
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": "4.436267"
+  },
+  "source_global_instruction_groups": {
+    "LDG_32_sectors_per_warp_inst": {
+      "sass_sites": 64,
+      "warp_instructions": 2415919104,
+      "L1_Tag_Requests_Global": 77309411328,
+      "representative_address": "0xf872c051d720",
+      "representative_sass": "LDG.E R31, desc[UR10][R26.64+0x4]"
+    },
+    "LDG_8_sectors_per_warp_inst": {
+      "sass_sites": 64,
+      "warp_instructions": 2415919104,
+      "L1_Tag_Requests_Global": 19327352832,
+      "representative_address": "0xf872c051d770",
+      "representative_sass": "LDG.E R24, desc[UR10][R22.64]"
+    },
+    "LDG_0_sectors_per_warp_inst": {
+      "sass_sites": 1,
+      "warp_instructions": 3072,
+      "L1_Tag_Requests_Global": 0,
+      "representative_address": "0xf872c051f2f0",
+      "representative_sass": "@P0   LDG.E R19, desc[UR10][R14.64]"
+    },
+    "STG_32_sectors_per_warp_inst": {
+      "sass_sites": 32,
+      "warp_instructions": 604176384,
+      "L1_Tag_Requests_Global": 19333644288,
+      "representative_address": "0xf872c05221c0",
+      "representative_sass": "STG.E desc[UR10][R6.64], RZ"
+    }
+  },
+  "exact_count_reconciliation": {
+    "global_load_warp_instructions": {
+      "measured": 4831838208,
+      "formula": "(n*Qheads/32)*n*HD*(3*(Qload+Kload)+Vload+output_load)",
+      "calculated": 4831838208
+    },
+    "global_store_warp_instructions": {
+      "measured": 604176384,
+      "formula": "(n*Qheads/32)*HD*(n+1), output update for each key plus initialization",
+      "calculated": 604176384
+    },
+    "output_update_read_L1_sectors": 19327352832,
+    "output_write_L1_sectors": 19333644288,
+    "output_update_read_plus_write_sector_bytes": 1237151907840,
+    "final_output_bytes": 25165824
+  },
+  "hypothesis": "Shared Q and one cached unscaled dot per key remove redundant Q/K dot work. Per-dimension register accumulation preserves ascending key order while replacing every-key global output read/modify/write with one coalesced final store. Serial max and denominator retain original reduction order.",
+  "candidate": {
+    "kernel": "mimo2_vision_attn",
+    "grid": 98304,
+    "block": 128,
+    "dynamic_shared_bytes": 12552,
+    "persistent_vram_bytes": 0,
+    "scope": "full vision only, interleaved QKV alias, Q32/KV8/HD64,strides3072,offsets0/2048/2560,n<=8192,no sinks/causal/group",
+    "kill_switch": "DS4_MIMO2_VISION_ATTN=0",
+    "numerical_target": "Byte equality to original scalar on supported shapes; unscaled dot cache preserves original multiply/subtract expression in expf."
+  }
+}

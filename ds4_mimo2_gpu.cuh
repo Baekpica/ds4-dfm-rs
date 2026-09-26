@@ -8,6 +8,44 @@ static void m2_hmma_init(void) {
     m2_hmma_available = mimo2_hmma::supported();
 }
 
+extern "C" int ds4_gpu_mimo2_attn_add(
+        ds4_gpu_tensor *cur, const ds4_gpu_tensor *attn, uint32_t rows) {
+    enum { WIDTH = 4096, MIN_ROWS = 32, MAX_ROWS = 8192, THREADS = 256 };
+    if (rows < MIN_ROWS || rows > MAX_ROWS) { return -1; }
+    const char *env = getenv("DS4_MIMO2_ATTN_RESIDUAL");
+    if (env && strcmp(env, "1") != 0) { return -1; }
+    const uint64_t count = (uint64_t)rows * WIDTH, bytes = count * sizeof(float);
+    if (!cur || !attn || !cur->ptr || !attn->ptr ||
+        cur->bytes < bytes || attn->bytes < bytes) { return 0; }
+    if ((uintptr_t)cur->ptr % alignof(float) ||
+        (uintptr_t)attn->ptr % alignof(float)) { return -1; }
+
+    mimo2_attn_residual<<<(count + THREADS - 1) / THREADS, THREADS, 0, ds4_current_stream()>>>(
+        (float *)cur->ptr, (const float *)attn->ptr, count);
+    return cuda_ok(cudaGetLastError(), "MiMo attention residual");
+}
+
+extern "C" int ds4_gpu_mimo2_sum_add(
+        ds4_gpu_tensor *cur, const ds4_gpu_tensor *down,
+        const ds4_gpu_tensor *weights, uint32_t rows) {
+    enum { WIDTH = 4096, USED = 8, MIN_ROWS = 32, MAX_ROWS = 8192, THREADS = 256 };
+    if (rows < MIN_ROWS || rows > MAX_ROWS) { return -1; }
+    const char *env = getenv("DS4_MIMO2_SUM_RESIDUAL");
+    if (env && strcmp(env, "1") != 0) { return -1; }
+    const uint64_t bytes = (uint64_t)rows * WIDTH * sizeof(float);
+    if (!cur || !down || !weights || !cur->ptr || !down->ptr || !weights->ptr ||
+        cur->bytes < bytes || down->bytes < bytes * USED ||
+        weights->bytes < (uint64_t)rows * USED * sizeof(float)) { return 0; }
+    if ((uintptr_t)cur->ptr % alignof(float) ||
+        (uintptr_t)down->ptr % alignof(float) ||
+        (uintptr_t)weights->ptr % alignof(float)) { return -1; }
+
+    const uint64_t count = bytes / sizeof(float);
+    mimo2_sum_residual<<<(count + THREADS - 1) / THREADS, THREADS, 0, ds4_current_stream()>>>(
+        (float *)cur->ptr, (const float *)down->ptr, (const float *)weights->ptr, count);
+    return cuda_ok(cudaGetLastError(), "MiMo sum residual");
+}
+
 extern "C" int ds4_gpu_mimo2_qkv(
         ds4_gpu_tensor *q, ds4_gpu_tensor *k, ds4_gpu_tensor *v,
         const ds4_gpu_tensor *qkv, const ds4_gpu_tensor *table,
@@ -304,6 +342,53 @@ extern "C" int ds4_gpu_mimo2_attn(
     if (have_sink) {
         sinks = m2_f32(map, size, sink_off, q_heads, "MiMo vision sinks");
         if (!sinks) { return 0; }
+    }
+    const char *vision = getenv("DS4_MIMO2_VISION_ATTN");
+    if (!(vision && strcmp(vision, "0") == 0) && n <= M2V_ATTN_MAX &&
+        q_heads == M2V_ATTN_HEADS && kv_heads == M2V_ATTN_KV && hd == M2V_ATTN_HD &&
+        q_stride == M2V_ATTN_QKV && k_stride == M2V_ATTN_QKV && v_stride == M2V_ATTN_QKV &&
+        q_off == 0 && k_off == M2V_ATTN_Q && v_off == M2V_ATTN_Q + M2V_ATTN_KVW &&
+        window < 0 && !have_sink && !causal && !group &&
+        q->ptr && out->ptr && q->ptr == k->ptr && q->ptr == v->ptr && out->ptr != q->ptr) {
+        // Bound per-CTA score storage; other media layouts retain the scalar path.
+        const size_t shared = (n + M2V_ATTN_HD + M2V_ATTN_SCALARS) * sizeof(float);
+        const char *coalesced = getenv("DS4_MIMO2_VISION_COALESCED");
+        if (!(coalesced && strcmp(coalesced, "0") == 0) && n >= M2V_K_MIN && n <= M2V_K_MAX) {
+            const size_t tiled = shared + M2V_ATTN_HD * M2V_K_STRIDE * sizeof(float);
+            mimo2_vision_attn_coalesced<<<(unsigned)count, M2V_ATTN_THREADS, tiled, ds4_current_stream()>>>(
+                (float *)out->ptr, (const float *)q->ptr, (int)n);
+            return cuda_ok(cudaGetLastError(), "MiMo vision coalesced attention");
+        }
+        mimo2_vision_attn<<<(unsigned)count, M2V_ATTN_THREADS, shared, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (int)n);
+        return cuda_ok(cudaGetLastError(), "MiMo vision attention");
+    }
+    const char *vision_window = getenv("DS4_MIMO2_VISION_WINDOW");
+    if (!(vision_window && strcmp(vision_window, "0") == 0) && n <= M2V_ATTN_MAX &&
+        q_heads == M2V_ATTN_HEADS && kv_heads == M2V_ATTN_KV && hd == M2V_ATTN_HD &&
+        q_stride == M2V_ATTN_QKV && k_stride == M2V_ATTN_QKV && v_stride == M2V_ATTN_QKV &&
+        q_off == 0 && k_off == M2V_ATTN_Q && v_off == M2V_ATTN_Q + M2V_ATTN_KVW &&
+        window == M2V_WINDOW && have_sink && !causal && !group &&
+        q->ptr && out->ptr && q->ptr == k->ptr && q->ptr == v->ptr && out->ptr != q->ptr) {
+        const size_t shared = (M2V_WINDOW_KEYS + M2V_ATTN_HD + M2V_ATTN_SCALARS) * sizeof(float);
+        mimo2_vision_window<<<(unsigned)count, M2V_ATTN_THREADS, shared, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, sinks, (int)n);
+        return cuda_ok(cudaGetLastError(), "MiMo vision window");
+    }
+    const char *audio = getenv("DS4_MIMO2_AUDIO_ATTN");
+    if (!(audio && strcmp(audio, "0") == 0) && n <= M2A_ATTN_MAX &&
+        q_heads == M2A_ATTN_HEADS && kv_heads == M2A_ATTN_HEADS && hd == M2A_ATTN_HD &&
+        q_stride == M2A_ATTN_WIDTH && k_stride == M2A_ATTN_WIDTH && v_stride == M2A_ATTN_WIDTH &&
+        !q_off && !k_off && !v_off && window < 0 && !have_sink && causal == 1 && !group &&
+        q->ptr && k->ptr && v->ptr && out->ptr &&
+        q->ptr != k->ptr && q->ptr != v->ptr && k->ptr != v->ptr &&
+        out->ptr != q->ptr && out->ptr != k->ptr && out->ptr != v->ptr) {
+        // Bound score storage; local attention and other audio layouts retain their path.
+        const size_t shared = (n + M2A_ATTN_HD + M2A_ATTN_SCALARS) * sizeof(float);
+        mimo2_audio_attn<<<(unsigned)count, M2A_ATTN_THREADS, shared, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const float *)k->ptr,
+            (const float *)v->ptr, (int)n);
+        return cuda_ok(cudaGetLastError(), "MiMo audio attention");
     }
     mimo2_attn<<<(unsigned)((count + 255) / 256), 256, 0, ds4_current_stream()>>>(
         (float *)out->ptr, (const float *)q->ptr, (const float *)k->ptr, (const float *)v->ptr, sinks,

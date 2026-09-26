@@ -1,0 +1,102 @@
+{
+  "scope": "Observed variability of unchanged R2 proof binary, before the reduction fix. Two fresh repeats per case plus prior original. Not candidate qualification or a statistical noise bound.",
+  "binary_sha256": "3c1f8c48437ce12b5307e4a4a1e6b317853beee7d07a3d8c24fe6f04b68913d1",
+  "guard_exits": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "cases": {
+    "eval-audio-3": {
+      "observed_max_abs": 1.0755681991577148,
+      "observed_max_rms": 0.20830468359144516,
+      "all_inputs_exact": true,
+      "all_tokens_exact": true,
+      "baseline_pairs": {
+        "repeat-0_vs_prior-original": {
+          "logits_exact": true,
+          "max_abs": 0.0,
+          "rms": 0.0,
+          "argmax_exact": true,
+          "tokens_exact": true,
+          "stop_id_exact": true,
+          "finish_reason_exact": true,
+          "answer_exact": true,
+          "input_bytes_exact": true,
+          "media_geometry_exact": true
+        },
+        "repeat-1_vs_prior-original": {
+          "logits_exact": false,
+          "max_abs": 1.0755681991577148,
+          "rms": 0.20830468359144516,
+          "argmax_exact": true,
+          "tokens_exact": true,
+          "stop_id_exact": true,
+          "finish_reason_exact": true,
+          "answer_exact": true,
+          "input_bytes_exact": true,
+          "media_geometry_exact": true
+        },
+        "repeat-1_vs_repeat-0": {
+          "logits_exact": false,
+          "max_abs": 1.0755681991577148,
+          "rms": 0.20830468359144516,
+          "argmax_exact": true,
+          "tokens_exact": true,
+          "stop_id_exact": true,
+          "finish_reason_exact": true,
+          "answer_exact": true,
+          "input_bytes_exact": true,
+          "media_geometry_exact": true
+        }
+      }
+    },
+    "eval-audio-0": {
+      "observed_max_abs": 1.4183717370033264,
+      "observed_max_rms": 0.28129307222417027,
+      "all_inputs_exact": true,
+      "all_tokens_exact": false,
+      "baseline_pairs": {
+        "repeat-0_vs_prior-original": {
+          "logits_exact": false,
+          "max_abs": 1.4183717370033264,
+          "rms": 0.28129307222417027,
+          "argmax_exact": true,
+          "tokens_exact": false,
+          "stop_id_exact": true,
+          "finish_reason_exact": true,
+          "answer_exact": false,
+          "input_bytes_exact": true,
+          "media_geometry_exact": true
+        },
+        "repeat-1_vs_prior-original": {
+          "logits_exact": false,
+          "max_abs": 1.4183717370033264,
+          "rms": 0.28129307222417027,
+          "argmax_exact": true,
+          "tokens_exact": false,
+          "stop_id_exact": true,
+          "finish_reason_exact": true,
+          "answer_exact": false,
+          "input_bytes_exact": true,
+          "media_geometry_exact": true
+        },
+        "repeat-1_vs_repeat-0": {
+          "logits_exact": true,
+          "max_abs": 0.0,
+          "rms": 0.0,
+          "argmax_exact": true,
+          "tokens_exact": true,
+          "stop_id_exact": true,
+          "finish_reason_exact": true,
+          "answer_exact": true,
+          "input_bytes_exact": true,
+          "media_geometry_exact": true
+        }
+      }
+    }
+  },
+  "audio0_observation": "Both original repeats exactly match prior candidate ON in all 152576 logits and generated tokens. This demonstrates baseline variability; fixed-baseline proof still must establish whether the shared-memory fix removes it.",
+  "raw_evidence": "scratch/mimo-media-20260926/ncu-audio-r1/baseline-variance"
+}

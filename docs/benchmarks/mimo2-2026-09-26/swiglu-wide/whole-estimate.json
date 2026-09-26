@@ -1,0 +1,22 @@
+{
+  "status": "ESTIMATE_NOT_MEASURED_END_TO_END",
+  "prefill_seconds": 6.715279648,
+  "target_ns": 254651712,
+  "target_calls": 94,
+  "target_wall_fraction": 0.03792123714100908,
+  "assumptions": "The isolated relative gain transfers exactly to all target calls; all other costs, synchronization and overlap stay unchanged.",
+  "by_comparator": {
+    "original": {
+      "target_latency_reduction_percent": 1.5285506332167076,
+      "estimated_prefill_latency_reduction_percent": 0.05796453104425037,
+      "estimated_prefill_throughput_gain_percent": 0.05799814939957404,
+      "estimated_seconds_saved": 0.003892480356273187
+    },
+    "128": {
+      "target_latency_reduction_percent": 0.6981767786128579,
+      "estimated_prefill_latency_reduction_percent": 0.026475727188123983,
+      "estimated_prefill_throughput_gain_percent": 0.026482738685773555,
+      "estimated_seconds_saved": 0.0017779191195240924
+    }
+  }
+}

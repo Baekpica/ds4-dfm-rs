@@ -1,0 +1,540 @@
+{
+  "scope": "Worker-lifetime telemetry includes startup, warm/sample requests and shutdown; not isolated request-phase clock samples.",
+  "user_range_mhz": [
+    300,
+    2200
+  ],
+  "busy_definition": "GPU utilization >=50% in one-second samples",
+  "cpu_observed_khz_by_policy": {
+    "policy11": [
+      2808000
+    ],
+    "policy8": [
+      3900000
+    ],
+    "policy6": [
+      3900000
+    ],
+    "policy18": [
+      3900000
+    ],
+    "policy4": [
+      2808000
+    ],
+    "policy16": [
+      3900000
+    ],
+    "policy2": [
+      2808000
+    ],
+    "policy14": [
+      2808000
+    ],
+    "policy0": [
+      2808000
+    ],
+    "policy12": [
+      2808000
+    ],
+    "policy9": [
+      3900000
+    ],
+    "policy10": [
+      2808000
+    ],
+    "policy7": [
+      3900000
+    ],
+    "policy19": [
+      3900000
+    ],
+    "policy5": [
+      3900000
+    ],
+    "policy17": [
+      3900000
+    ],
+    "policy3": [
+      2808000
+    ],
+    "policy15": [
+      3900000
+    ],
+    "policy1": [
+      2808000
+    ],
+    "policy13": [
+      2808000
+    ]
+  },
+  "runs": [
+    {
+      "round": 0,
+      "arm": "original",
+      "raw_path": "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-0-original/clocks.jsonl",
+      "sha256": "744ff472366000c77a1ee6f375e80ce52929ddef8f3ab9c52da3cb1e6f40328e",
+      "samples": 36,
+      "busy_samples": 30,
+      "all": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "max": 2197.0,
+          "median": 2190.0
+        },
+        "util_percent": {
+          "min": 0.0,
+          "max": 96.0,
+          "median": 96.0
+        },
+        "power_w": {
+          "min": 8.76,
+          "max": 48.27,
+          "median": 31.79
+        },
+        "temp_c": {
+          "min": 45.0,
+          "max": 61.0,
+          "median": 53.0
+        }
+      },
+      "busy": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "max": 2190.0,
+          "median": 2190.0
+        },
+        "util_percent": {
+          "min": 56.0,
+          "max": 96.0,
+          "median": 96.0
+        },
+        "power_w": {
+          "min": 18.77,
+          "max": 48.27,
+          "median": 32.105000000000004
+        },
+        "temp_c": {
+          "min": 51.0,
+          "max": 61.0,
+          "median": 53.5
+        }
+      }
+    },
+    {
+      "round": 0,
+      "arm": "off",
+      "raw_path": "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-0-off/clocks.jsonl",
+      "sha256": "811424957d11e3ece48f9400c190a179f4a314b425291772143c29a80771c5c8",
+      "samples": 36,
+      "busy_samples": 31,
+      "all": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "max": 2197.0,
+          "median": 2190.0
+        },
+        "util_percent": {
+          "min": 0.0,
+          "max": 96.0,
+          "median": 96.0
+        },
+        "power_w": {
+          "min": 9.18,
+          "max": 55.52,
+          "median": 32.269999999999996
+        },
+        "temp_c": {
+          "min": 49.0,
+          "max": 63.0,
+          "median": 55.5
+        }
+      },
+      "busy": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "max": 2190.0,
+          "median": 2190.0
+        },
+        "util_percent": {
+          "min": 87.0,
+          "max": 96.0,
+          "median": 96.0
+        },
+        "power_w": {
+          "min": 28.44,
+          "max": 55.52,
+          "median": 32.44
+        },
+        "temp_c": {
+          "min": 54.0,
+          "max": 63.0,
+          "median": 56.0
+        }
+      }
+    },
+    {
+      "round": 0,
+      "arm": "on",
+      "raw_path": "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-0-on/clocks.jsonl",
+      "sha256": "2ca2f9e44e8b611c6da1999ecce81af760da781e14fe56f99f0a72358c774b19",
+      "samples": 20,
+      "busy_samples": 15,
+      "all": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "max": 2190.0,
+          "median": 2190.0
+        },
+        "util_percent": {
+          "min": 0.0,
+          "max": 96.0,
+          "median": 95.5
+        },
+        "power_w": {
+          "min": 9.32,
+          "max": 50.98,
+          "median": 33.05
+        },
+        "temp_c": {
+          "min": 51.0,
+          "max": 65.0,
+          "median": 57.0
+        }
+      },
+      "busy": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "max": 2190.0,
+          "median": 2190.0
+        },
+        "util_percent": {
+          "min": 94.0,
+          "max": 96.0,
+          "median": 96.0
+        },
+        "power_w": {
+          "min": 30.25,
+          "max": 50.98,
+          "median": 35.91
+        },
+        "temp_c": {
+          "min": 56.0,
+          "max": 65.0,
+          "median": 58.0
+        }
+      }
+    },
+    {
+      "round": 1,
+      "arm": "on",
+      "raw_path": "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-1-on/clocks.jsonl",
+      "sha256": "a40190dba4987ad357ee2ace15b04a69d3f694ac6500f1169467315ff3d26471",
+      "samples": 20,
+      "busy_samples": 14,
+      "all": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "max": 2190.0,
+          "median": 2190.0
+        },
+        "util_percent": {
+          "min": 0.0,
+          "max": 96.0,
+          "median": 96.0
+        },
+        "power_w": {
+          "min": 9.45,
+          "max": 51.99,
+          "median": 30.875
+        },
+        "temp_c": {
+          "min": 52.0,
+          "max": 65.0,
+          "median": 58.0
+        }
+      },
+      "busy": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "max": 2190.0,
+          "median": 2190.0
+        },
+        "util_percent": {
+          "min": 92.0,
+          "max": 96.0,
+          "median": 96.0
+        },
+        "power_w": {
+          "min": 27.53,
+          "max": 51.99,
+          "median": 36.05
+        },
+        "temp_c": {
+          "min": 57.0,
+          "max": 65.0,
+          "median": 58.0
+        }
+      }
+    },
+    {
+      "round": 1,
+      "arm": "original",
+      "raw_path": "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-1-original/clocks.jsonl",
+      "sha256": "2a0c7f8f1c54e6a8f920c9211fb8252a48006da767cd9eb0f26d56e65388dd5b",
+      "samples": 36,
+      "busy_samples": 31,
+      "all": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "max": 2197.0,
+          "median": 2190.0
+        },
+        "util_percent": {
+          "min": 0.0,
+          "max": 96.0,
+          "median": 96.0
+        },
+        "power_w": {
+          "min": 9.49,
+          "max": 56.21,
+          "median": 31.83
+        },
+        "temp_c": {
+          "min": 52.0,
+          "max": 66.0,
+          "median": 57.0
+        }
+      },
+      "busy": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "max": 2190.0,
+          "median": 2190.0
+        },
+        "util_percent": {
+          "min": 87.0,
+          "max": 96.0,
+          "median": 96.0
+        },
+        "power_w": {
+          "min": 28.21,
+          "max": 56.21,
+          "median": 32.74
+        },
+        "temp_c": {
+          "min": 55.0,
+          "max": 66.0,
+          "median": 58.0
+        }
+      }
+    },
+    {
+      "round": 1,
+      "arm": "off",
+      "raw_path": "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-1-off/clocks.jsonl",
+      "sha256": "ecc381da8e74e187eb9e007776d91c4cc541e9e7ac2a256abb6956e197f01f92",
+      "samples": 36,
+      "busy_samples": 31,
+      "all": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "max": 2190.0,
+          "median": 2190.0
+        },
+        "util_percent": {
+          "min": 0.0,
+          "max": 96.0,
+          "median": 96.0
+        },
+        "power_w": {
+          "min": 9.56,
+          "max": 54.96,
+          "median": 32.519999999999996
+        },
+        "temp_c": {
+          "min": 52.0,
+          "max": 65.0,
+          "median": 58.0
+        }
+      },
+      "busy": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "max": 2190.0,
+          "median": 2190.0
+        },
+        "util_percent": {
+          "min": 69.0,
+          "max": 96.0,
+          "median": 96.0
+        },
+        "power_w": {
+          "min": 30.06,
+          "max": 54.96,
+          "median": 32.67
+        },
+        "temp_c": {
+          "min": 55.0,
+          "max": 65.0,
+          "median": 58.0
+        }
+      }
+    },
+    {
+      "round": 2,
+      "arm": "off",
+      "raw_path": "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-2-off/clocks.jsonl",
+      "sha256": "1ef7d41b36e617bbcf7b4f7dd9c57f8483f5b401e9bd09c19ccfddcc35523e5a",
+      "samples": 36,
+      "busy_samples": 29,
+      "all": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "max": 2190.0,
+          "median": 2190.0
+        },
+        "util_percent": {
+          "min": 0.0,
+          "max": 96.0,
+          "median": 96.0
+        },
+        "power_w": {
+          "min": 9.6,
+          "max": 51.74,
+          "median": 32.575
+        },
+        "temp_c": {
+          "min": 52.0,
+          "max": 66.0,
+          "median": 58.0
+        }
+      },
+      "busy": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "max": 2190.0,
+          "median": 2190.0
+        },
+        "util_percent": {
+          "min": 94.0,
+          "max": 96.0,
+          "median": 96.0
+        },
+        "power_w": {
+          "min": 30.49,
+          "max": 51.74,
+          "median": 32.91
+        },
+        "temp_c": {
+          "min": 57.0,
+          "max": 66.0,
+          "median": 59.0
+        }
+      }
+    },
+    {
+      "round": 2,
+      "arm": "on",
+      "raw_path": "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-2-on/clocks.jsonl",
+      "sha256": "75c2b248c93ea195cf712e54edf16f53f0e939f4d93d885f8319c4b02524c47a",
+      "samples": 20,
+      "busy_samples": 13,
+      "all": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "max": 2190.0,
+          "median": 2190.0
+        },
+        "util_percent": {
+          "min": 0.0,
+          "max": 96.0,
+          "median": 95.5
+        },
+        "power_w": {
+          "min": 9.65,
+          "max": 51.5,
+          "median": 34.379999999999995
+        },
+        "temp_c": {
+          "min": 53.0,
+          "max": 67.0,
+          "median": 59.0
+        }
+      },
+      "busy": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "max": 2190.0,
+          "median": 2190.0
+        },
+        "util_percent": {
+          "min": 95.0,
+          "max": 96.0,
+          "median": 96.0
+        },
+        "power_w": {
+          "min": 30.51,
+          "max": 51.5,
+          "median": 36.27
+        },
+        "temp_c": {
+          "min": 58.0,
+          "max": 67.0,
+          "median": 59.0
+        }
+      }
+    },
+    {
+      "round": 2,
+      "arm": "original",
+      "raw_path": "scratch/mimo-media-20260926/ncu-attn-r1/http-ab/screen-2-original/clocks.jsonl",
+      "sha256": "342ff66be1ea81ecb4ff5d392e3de9073fb8ac8fedd263023c65c156ad87bf12",
+      "samples": 36,
+      "busy_samples": 30,
+      "all": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "max": 2190.0,
+          "median": 2190.0
+        },
+        "util_percent": {
+          "min": 0.0,
+          "max": 96.0,
+          "median": 96.0
+        },
+        "power_w": {
+          "min": 9.73,
+          "max": 57.4,
+          "median": 32.489999999999995
+        },
+        "temp_c": {
+          "min": 53.0,
+          "max": 64.0,
+          "median": 59.0
+        }
+      },
+      "busy": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "max": 2190.0,
+          "median": 2190.0
+        },
+        "util_percent": {
+          "min": 72.0,
+          "max": 96.0,
+          "median": 96.0
+        },
+        "power_w": {
+          "min": 30.22,
+          "max": 57.4,
+          "median": 32.9
+        },
+        "temp_c": {
+          "min": 57.0,
+          "max": 64.0,
+          "median": 59.0
+        }
+      }
+    }
+  ]
+}

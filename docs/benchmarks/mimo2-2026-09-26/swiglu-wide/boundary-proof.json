@@ -1,0 +1,235 @@
+{
+  "all_outputs_exact": true,
+  "all6_guard_payload_exits_zero": true,
+  "purpose": "Correctness only: exercises production MiMo Down entry, sorted D4 producer and consumer at32/8192 tokens. Timings are not adoption evidence; original proofs overlapped CPU compilation.",
+  "runs": [
+    {
+      "tokens": 32,
+      "assignments": 256,
+      "arm": "original",
+      "finite": true,
+      "shape_refusal": true,
+      "float_count": 1048576,
+      "output": {
+        "path": "scratch/mimo-prefill-20260926/ncu-swiglu/entry-32-original.bin",
+        "bytes": 4194304,
+        "sha256": "daffccbc1c3e1a4c477c7c92ca80604b7324d071f3bc4b533894e1ed585792bd"
+      },
+      "guard": {
+        "start": {
+          "time": 1790400414.671596,
+          "event": "start",
+          "unit": "ds4-hostguard-1933831-1790400414664538393.scope",
+          "available_gib": 25.37657928466797,
+          "psi_full_avg10": 0.0,
+          "max_gib": 13.3,
+          "high_gib": 12.3,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "scratch/mimo-prefill-20260926/ncu-swiglu/test-original",
+            "1",
+            "32"
+          ]
+        },
+        "exit": {
+          "time": 1790400416.4964824,
+          "event": "exit",
+          "unit": "ds4-hostguard-1933831-1790400414664538393.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "tokens": 32,
+      "assignments": 256,
+      "arm": "off",
+      "finite": true,
+      "shape_refusal": true,
+      "float_count": 1048576,
+      "output": {
+        "path": "scratch/mimo-prefill-20260926/ncu-swiglu/entry-32-off.bin",
+        "bytes": 4194304,
+        "sha256": "daffccbc1c3e1a4c477c7c92ca80604b7324d071f3bc4b533894e1ed585792bd"
+      },
+      "guard": {
+        "start": {
+          "time": 1790400811.217363,
+          "event": "start",
+          "unit": "ds4-hostguard-1934594-1790400811208677817.scope",
+          "available_gib": 25.951648712158203,
+          "psi_full_avg10": 0.0,
+          "max_gib": 13.9,
+          "high_gib": 12.9,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "scratch/mimo-prefill-20260926/ncu-swiglu/test-candidate",
+            "1",
+            "32"
+          ]
+        },
+        "exit": {
+          "time": 1790400813.0419965,
+          "event": "exit",
+          "unit": "ds4-hostguard-1934594-1790400811208677817.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "tokens": 32,
+      "assignments": 256,
+      "arm": "on",
+      "finite": true,
+      "shape_refusal": true,
+      "float_count": 1048576,
+      "output": {
+        "path": "scratch/mimo-prefill-20260926/ncu-swiglu/entry-32-on.bin",
+        "bytes": 4194304,
+        "sha256": "daffccbc1c3e1a4c477c7c92ca80604b7324d071f3bc4b533894e1ed585792bd"
+      },
+      "guard": {
+        "start": {
+          "time": 1790400813.112933,
+          "event": "start",
+          "unit": "ds4-hostguard-1934603-1790400813105423318.scope",
+          "available_gib": 25.38934326171875,
+          "psi_full_avg10": 0.0,
+          "max_gib": 13.3,
+          "high_gib": 12.3,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "scratch/mimo-prefill-20260926/ncu-swiglu/test-candidate",
+            "1",
+            "32"
+          ]
+        },
+        "exit": {
+          "time": 1790400814.9378874,
+          "event": "exit",
+          "unit": "ds4-hostguard-1934603-1790400813105423318.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "tokens": 8192,
+      "assignments": 65536,
+      "arm": "original",
+      "finite": true,
+      "shape_refusal": true,
+      "float_count": 268435456,
+      "output": {
+        "path": "scratch/mimo-prefill-20260926/ncu-swiglu/entry-8192-original.bin",
+        "bytes": 1073741824,
+        "sha256": "3d8b700f9471f2f8158ed4a765a356cfa5cfc7b0a96ae60a314a2cf64920fcb6"
+      },
+      "guard": {
+        "start": {
+          "time": 1790400416.561169,
+          "event": "start",
+          "unit": "ds4-hostguard-1933847-1790400416552088554.scope",
+          "available_gib": 24.897197723388672,
+          "psi_full_avg10": 0.0,
+          "max_gib": 12.8,
+          "high_gib": 11.8,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "scratch/mimo-prefill-20260926/ncu-swiglu/test-original",
+            "1",
+            "8192"
+          ]
+        },
+        "exit": {
+          "time": 1790400421.8156552,
+          "event": "exit",
+          "unit": "ds4-hostguard-1933847-1790400416552088554.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "tokens": 8192,
+      "assignments": 65536,
+      "arm": "off",
+      "finite": true,
+      "shape_refusal": true,
+      "float_count": 268435456,
+      "output": {
+        "path": "scratch/mimo-prefill-20260926/ncu-swiglu/entry-8192-off.bin",
+        "bytes": 1073741824,
+        "sha256": "3d8b700f9471f2f8158ed4a765a356cfa5cfc7b0a96ae60a314a2cf64920fcb6"
+      },
+      "guard": {
+        "start": {
+          "time": 1790400815.0082695,
+          "event": "start",
+          "unit": "ds4-hostguard-1934612-1790400814999935715.scope",
+          "available_gib": 25.511287689208984,
+          "psi_full_avg10": 0.0,
+          "max_gib": 13.5,
+          "high_gib": 12.5,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "scratch/mimo-prefill-20260926/ncu-swiglu/test-candidate",
+            "1",
+            "8192"
+          ]
+        },
+        "exit": {
+          "time": 1790400820.268758,
+          "event": "exit",
+          "unit": "ds4-hostguard-1934612-1790400814999935715.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "tokens": 8192,
+      "assignments": 65536,
+      "arm": "on",
+      "finite": true,
+      "shape_refusal": true,
+      "float_count": 268435456,
+      "output": {
+        "path": "scratch/mimo-prefill-20260926/ncu-swiglu/entry-8192-on.bin",
+        "bytes": 1073741824,
+        "sha256": "3d8b700f9471f2f8158ed4a765a356cfa5cfc7b0a96ae60a314a2cf64920fcb6"
+      },
+      "guard": {
+        "start": {
+          "time": 1790400821.0894167,
+          "event": "start",
+          "unit": "ds4-hostguard-1934645-1790400821081706822.scope",
+          "available_gib": 26.457462310791016,
+          "psi_full_avg10": 0.0,
+          "max_gib": 14.4,
+          "high_gib": 13.4,
+          "reserve_gib": 12.0,
+          "trip_gib": 12.0,
+          "command": [
+            "scratch/mimo-prefill-20260926/ncu-swiglu/test-candidate",
+            "1",
+            "8192"
+          ]
+        },
+        "exit": {
+          "time": 1790400826.466155,
+          "event": "exit",
+          "unit": "ds4-hostguard-1934645-1790400821081706822.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    }
+  ]
+}

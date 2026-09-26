@@ -1,0 +1,108 @@
+{
+  "status": "baseline_compiled_no_gpu_run_by_preparing_agent",
+  "git_commit": "c4393f6e431acbe7c1d0aa2b770815cb373be683",
+  "sources": {
+    "cuda/mimo2_media.cuh": "03b9694cbce7de1255252bff926178974acd05be5ee7aafb5e62ede8b789bff3",
+    "ds4_mimo2_gpu.cuh": "db2b655c37a56f740d6ac1593fc20b685e20d084f11e1cc446c83e3123769f1e",
+    "scratch/mimo-media-20260926/ncu-attn-r1/probe.cu": "84ccb4332a9fc7217d37936d939228761ac6a9c94121ac0b1c9321d5af1fc406"
+  },
+  "kernel": {
+    "name": "mimo2_attn",
+    "source_line": 67,
+    "source_body_sha256": "0a701d4957997ff8927706b72a8c0e818256e9ac5fcf79a64f610dd4544af93b",
+    "copied_or_specialized": false
+  },
+  "compile_argv": [
+    "/usr/local/cuda/bin/nvcc",
+    "-O3",
+    "-g",
+    "-lineinfo",
+    "--use_fast_math",
+    "-std=c++17",
+    "-gencode",
+    "arch=compute_121a,code=sm_121a",
+    "-DDS4_CUDA_HAVE_MXF4=1",
+    "-Xcompiler",
+    "-march=native",
+    "-Xcompiler",
+    "-pthread",
+    "-Xptxas=-v",
+    "scratch/mimo-media-20260926/ncu-attn-r1/probe.cu",
+    "-o",
+    "scratch/mimo-media-20260926/ncu-attn-r1/probe-baseline"
+  ],
+  "build_exit_status": 0,
+  "binary": {
+    "path": "scratch/mimo-media-20260926/ncu-attn-r1/probe-baseline",
+    "sha256": "5dcb4b8f187377e932d049400c9b4ba63e48069254af9c84e01add5bbb590c42"
+  },
+  "ptxas": {
+    "registers": 40,
+    "stack_bytes": 0,
+    "spill_store_bytes": 0,
+    "spill_load_bytes": 0,
+    "shared_bytes": 0,
+    "barriers": 0,
+    "production_trace_resources_match": true,
+    "sass_identity_checked": false,
+    "log_sha256": "f6a1f9c285080308d00082b5351476c5f36d9e0e6c41b058dc9d61168adf0583"
+  },
+  "shape": {
+    "n": 3072,
+    "q_heads": 32,
+    "kv_heads": 8,
+    "hd": 64,
+    "qkv_same_buffer": true,
+    "strides": [
+      3072,
+      3072,
+      3072
+    ],
+    "offsets": [
+      0,
+      2048,
+      2560
+    ],
+    "causal": 0,
+    "group": 0,
+    "grid": [
+      384,
+      1,
+      1
+    ],
+    "block": [
+      256,
+      1,
+      1
+    ],
+    "variants": [
+      {
+        "window": 64,
+        "sinks": true
+      },
+      {
+        "window": -1,
+        "sinks": false
+      }
+    ]
+  },
+  "input": {
+    "seed": "0x6287c159",
+    "qkv": "Deterministic dyadic finite FP32 values in[-1,1)",
+    "sink": "32 deterministic finite values ((head*17)%31-15)/16"
+  },
+  "output": {
+    "floats": 6291456,
+    "bytes": 25165824,
+    "full_finite_check": true,
+    "dump_env": "PROBE_DUMP",
+    "printed_hash": "FNV1a64; use full dump SHA256/cmp for parity"
+  },
+  "launch": "Runtime integer shape fields, noinline host wrapper, cudaLaunchKernel uses actual unmodified non-template kernel; 256threads/nonblocking CUDA stream",
+  "limits": [
+    "Synthetic inputs and repeated-buffer cache state differ from vision QKV/RoPE output.",
+    "Standalone TU may compile differently despite matching resources; byte-exact SASS identity not checked.",
+    "No model-wide correctness or speed qualification from this baseline."
+  ],
+  "gpu_runs_by_preparing_agent": []
+}

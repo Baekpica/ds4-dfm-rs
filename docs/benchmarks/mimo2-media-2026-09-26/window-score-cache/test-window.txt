@@ -1,0 +1,39 @@
+host-memory-guard: available=116.89 GiB, scope max/high=16.00/14.00, reserve=12.00, trip=12.00
+invalid-wrapper-inputs no_launch=true PASS
+oracle_max_abs=9.10794106e-08 case=window-tail rows=1 path=candidate off_default_on_exact=true guards=true PASS
+oracle_max_abs=1.31762843e-07 case=window-tail rows=31 path=candidate off_default_on_exact=true guards=true PASS
+oracle_max_abs=1.31566177e-07 case=window-tail rows=32 path=candidate off_default_on_exact=true guards=true PASS
+oracle_max_abs=1.21298797e-07 case=window-tail rows=33 path=candidate off_default_on_exact=true guards=true PASS
+oracle_max_abs=1.54473037e-07 case=window-tail rows=63 path=candidate off_default_on_exact=true guards=true PASS
+oracle_max_abs=1.3763184e-07 case=window-tail rows=64 path=candidate off_default_on_exact=true guards=true PASS
+oracle_max_abs=1.32562172e-07 case=window-tail rows=65 path=candidate off_default_on_exact=true guards=true PASS
+case=window-tail rows=127 path=candidate off_default_on_exact=true guards=true PASS
+case=window-tail rows=128 path=candidate off_default_on_exact=true guards=true PASS
+case=window-tail rows=129 path=candidate off_default_on_exact=true guards=true PASS
+case=window-tail rows=130 path=candidate off_default_on_exact=true guards=true PASS
+case=window-tail rows=3072 path=candidate off_default_on_exact=true guards=true PASS
+case=window-tail rows=6144 path=candidate off_default_on_exact=true guards=true PASS
+case=window-tail rows=8192 path=candidate off_default_on_exact=true guards=true PASS
+oracle_max_abs=1.20464857e-07 case=numeric-layout rows=33 path=candidate off_default_on_exact=true guards=true PASS
+oracle_max_abs=0 case=numeric-layout rows=33 path=candidate off_default_on_exact=true guards=true PASS
+oracle_max_abs=1.09664635e-07 case=numeric-layout rows=33 path=candidate off_default_on_exact=true guards=true PASS
+oracle_max_abs=1.54822783e-07 case=numeric-layout rows=33 path=candidate off_default_on_exact=true guards=true PASS
+case=numeric-layout rows=33 path=candidate off_default_on_exact=true guards=true PASS
+case=numeric-layout rows=33 path=candidate off_default_on_exact=true guards=true PASS
+oracle_max_abs=1.09037016e-07 case=numeric-layout rows=33 path=candidate off_default_on_exact=true guards=true PASS
+oracle_max_abs=1.39868632e-07 case=numeric-layout rows=33 path=candidate off_default_on_exact=true guards=true PASS
+oracle_max_abs=0 case=sink-boundary rows=65 path=candidate off_default_on_exact=true guards=true PASS
+oracle_max_abs=1.50525105e-07 case=sink-boundary rows=65 path=candidate off_default_on_exact=true guards=true PASS
+case=sink-boundary rows=65 path=candidate off_default_on_exact=true guards=true PASS
+case=window-permutation rows=130 path=candidate off_default_on_exact=true guards=true PASS
+case=window-permutation rows=130 path=candidate off_default_on_exact=true guards=true PASS
+case=window32 rows=33 path=fallback off_default_on_exact=true guards=true PASS
+case=full-with-sink rows=33 path=fallback off_default_on_exact=true guards=true PASS
+case=window-no-sink rows=33 path=fallback off_default_on_exact=true guards=true PASS
+case=causal rows=33 path=fallback off_default_on_exact=true guards=true PASS
+case=group rows=33 path=fallback off_default_on_exact=true guards=true PASS
+case=heads rows=33 path=fallback off_default_on_exact=true guards=true PASS
+case=head-dimension rows=33 path=fallback off_default_on_exact=true guards=true PASS
+case=stride rows=33 path=fallback off_default_on_exact=true guards=true PASS
+case=offset rows=33 path=fallback off_default_on_exact=true guards=true PASS
+case=separate-qkv rows=33 path=fallback off_default_on_exact=true guards=true PASS

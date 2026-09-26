@@ -1,0 +1,250 @@
+{
+  "shape": {
+    "n": 880,
+    "q_heads": 32,
+    "kv_heads": 8,
+    "hd": 64,
+    "qkv_same_buffer": true,
+    "strides": [
+      3072,
+      3072,
+      3072
+    ],
+    "offsets": [
+      0,
+      2048,
+      2560
+    ],
+    "window": -1,
+    "sinks": false,
+    "causal": 0,
+    "group": 0,
+    "grid": [
+      28160,
+      1,
+      1
+    ],
+    "block": [
+      128,
+      1,
+      1
+    ],
+    "dynamic_shared_bytes": 3784
+  },
+  "ncu_passes": 40,
+  "metrics_collected": 2221,
+  "ordinary_smoke_ms": 20.374144,
+  "ncu_duration_ms": 19.892768,
+  "whole_trace_per_call_ms": 20.143274,
+  "scope_contribution": {
+    "whole_kernel_ms": 322.292384,
+    "whole_kernel_calls": 16,
+    "ttft_share_percent": 9.32,
+    "wall_share_percent": 3.9161037880344396
+  },
+  "resource_match": {
+    "registers_per_thread": 40,
+    "spill_loads": 0,
+    "spill_stores": 0,
+    "dynamic_shared_bytes": 3784
+  },
+  "throughput_percent": {
+    "L1_data": 82.597307,
+    "L2": 81.311385,
+    "SM_compute": 16.999998
+  },
+  "no_eligible_percent": 94.25783,
+  "issue_gap_cycles": 190.006293,
+  "metrics": {
+    "gpu__time_duration.sum": {
+      "value": "19.892768",
+      "unit": "ms"
+    },
+    "sm__warps_active.avg.pct_of_peak_sustained_active": {
+      "value": "90.519235",
+      "unit": "%"
+    },
+    "smsp__warps_eligible.avg.per_cycle_active": {
+      "value": "0.165782",
+      "unit": "warp"
+    },
+    "smsp__inst_executed.sum": {
+      "value": "480803840.000000",
+      "unit": "inst"
+    },
+    "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": {
+      "value": "100080640",
+      "unit": ""
+    },
+    "l1tex__t_requests_pipe_lsu_mem_global_op_st.sum": {
+      "value": "56320",
+      "unit": ""
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+      "value": "1784442880.000000",
+      "unit": "sector"
+    },
+    "l1tex__t_sector_pipe_lsu_mem_global_op_ld_hit_rate.pct": {
+      "value": "62.988503",
+      "unit": "%"
+    },
+    "lts__t_sector_hit_rate.pct": {
+      "value": "99.857232",
+      "unit": "%"
+    },
+    "lts__t_sector_op_read_hit_rate.pct": {
+      "value": "99.906904",
+      "unit": "%"
+    },
+    "smsp__sass_average_data_bytes_per_sector_mem_global_op_ld.ratio": {
+      "value": "7.114253",
+      "unit": "byte/sector"
+    },
+    "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": {
+      "value": "9.452768",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_short_scoreboard_per_issue_active.ratio": {
+      "value": "8.005929",
+      "unit": "inst"
+    },
+    "smsp__pcsamp_buffer_overflow": {
+      "value": "0",
+      "unit": ""
+    },
+    "smsp__pcsamp_dropped_bytes": {
+      "value": "0",
+      "unit": "byte"
+    },
+    "smsp__pcsamp_sample_count": {
+      "value": "2047650",
+      "unit": ""
+    },
+    "smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio": {
+      "value": "70.289448",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_branch_resolving_per_issue_active.ratio": {
+      "value": "0.080029",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_dispatch_stall_per_issue_active.ratio": {
+      "value": "0.038187",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_drain_per_issue_active.ratio": {
+      "value": "0.061995",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_lg_throttle_per_issue_active.ratio": {
+      "value": "29.239771",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+      "value": "0.000973",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_membar_per_issue_active.ratio": {
+      "value": "0",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio": {
+      "value": "69.288907",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_misc_per_issue_active.ratio": {
+      "value": "0.001165",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_no_instruction_per_issue_active.ratio": {
+      "value": "0.083729",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio": {
+      "value": "1.877682",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_selected_per_issue_active.ratio": {
+      "value": "1.000000",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_sleeping_per_issue_active.ratio": {
+      "value": "0",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_tex_throttle_per_issue_active.ratio": {
+      "value": "0",
+      "unit": "inst"
+    },
+    "smsp__average_warps_issue_stalled_wait_per_issue_active.ratio": {
+      "value": "1.715609",
+      "unit": "inst"
+    }
+  },
+  "status": "Baseline NCU complete; shared K transpose hypothesis selected, candidate not qualified.",
+  "collection": {
+    "kernel": "mimo2_vision_attn",
+    "metric_set": "full",
+    "replay_mode": "kernel",
+    "cache_control": "all",
+    "clock_control": "none",
+    "launch_skip": 2,
+    "launch_count": 1,
+    "owner": "Resident weight owner stopped for the isolated NCU run.",
+    "warmup_note": "The ordinary smoke executes two warmups. NCU also skips two launches, but cache-control all flushes profiler-controlled caches before replay passes; its counters are not a warmed-cache measurement.",
+    "timing_note": "19.892768 ms is gpu__time_duration.sum. The 7144.446777 ms event measurement inside NCU includes replay overhead and is not kernel time. One ordinary 20.374144 ms smoke is not an A/B result."
+  },
+  "sampling": {
+    "samples": 2047650,
+    "buffer_overflow": 0,
+    "dropped_bytes": 0,
+    "interpretation": "PC samples support source attribution, not an exact wall-time partition. The source-mapped sector counts below are theoretical access counts, not measured DRAM traffic."
+  },
+  "diagnosis": [
+    "QK dot source line 147 accounts for 940950 / 2047650 samples (45.952677%). At a fixed dimension, neighboring lanes load K from rows separated by 3072 floats.",
+    "The QK line has 1585971200 theoretical global sectors versus 198246400 ideal, an 8x amplification. Representative scalar K load PCs each have 24780800 versus 3097600 ideal sectors.",
+    "90.52% occupancy and 48.89 waves/SM show ample CTA parallelism. L1 data traffic and L2 throughput near 82%, low eligible warps, and QK MIO/LG samples point to load issue/traffic inefficiency.",
+    "The largest barrier sample PC follows the QK barrier. It cannot all be assigned to the later scalar max. Shared max and output-thread exit PCs separately expose waits after max and denominator computation."
+  ],
+  "hypothesis": {
+    "selected": "Coalesce K loads into a shared-memory tile, then read the transposed layout while preserving each dot's ascending dimension arithmetic order.",
+    "reason": "Addresses measured K sector amplification and memory instruction pressure without parallelizing the ordered dot or denominator.",
+    "unproven_costs": [
+      "Additional shared memory and barriers",
+      "Potential occupancy/register changes",
+      "Shared bank conflicts and address arithmetic",
+      "Compiled numerical equivalence and image-path performance"
+    ]
+  },
+  "limits": [
+    "Synthetic finite projected QKV; shape, stride and kernel body match the trace, but data and whole-model cache interleaving differ.",
+    "No candidate speed or correctness conclusion is available from this baseline.",
+    "L2 hit rate is 99.857232%; sector amplification does not imply the same amplification in off-chip DRAM bytes."
+  ],
+  "artifacts": {
+    "baseline-full.ncu-rep": {
+      "bytes": 81594850,
+      "sha256": "c466ad99535d3b3e4e723acf171e18e6836c1cb216a9a17f5da5f8f3af859b23"
+    },
+    "baseline-full.csv": {
+      "bytes": 160399,
+      "sha256": "5d17ddbc6952c3f8d0a0ef125f7a532980d91ed9719b55a971933e357e8cf247"
+    },
+    "baseline-full.txt": {
+      "bytes": 270187,
+      "sha256": "a88a36a0b29e2259f40fcbd7b2d6f1dc7588e62210a440cdb1c8f9b4b5476516"
+    },
+    "baseline-source.csv": {
+      "bytes": 201011,
+      "sha256": "d31b498a5ede28a6c1889d1a799dfc69eb32d5c2fc3f48de102744f7ef951f99"
+    },
+    "baseline-cuda-source.csv": {
+      "bytes": 235726,
+      "sha256": "b3d13d3b323eb952f705c1ffeaaba6c344ff13985e34ddf812bdfc962e53eeca"
+    },
+    "baseline-smoke.f32": {
+      "bytes": 7208960,
+      "sha256": "78c5bf2100976013cfa2cf2b31297cfc1737aa0471981e62096be09cd3410e5b"
+    }
+  }
+}

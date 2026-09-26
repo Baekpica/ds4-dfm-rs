@@ -1,0 +1,213 @@
+{
+  "scope": "Window attention on the screen fixture: 3072 rows, Q32/KV8, HD64, shared interleaved QKV, strides 3072, offsets 0/2048/2560, window 64 with sinks, and no causal/group masks.",
+  "metrics": {
+    "gpu__time_duration.sum": {
+      "baseline": 97.157632,
+      "candidate": 8.354272,
+      "unit": "ms",
+      "change_pct": -91.40132192600166
+    },
+    "sm__cycles_elapsed.avg.per_second": {
+      "baseline": 2.196616,
+      "candidate": 2.196717,
+      "unit": "Ghz",
+      "change_pct": 0.004597981622644909
+    },
+    "smsp__inst_executed.sum": {
+      "baseline": 935582464.0,
+      "candidate": 394968064.0,
+      "unit": "inst",
+      "change_pct": -57.78372519816703
+    },
+    "launch__registers_per_thread": {
+      "baseline": 40.0,
+      "candidate": 44.0,
+      "unit": "register/thread",
+      "change_pct": 10.000000000000009
+    },
+    "launch__shared_mem_per_block_dynamic": {
+      "baseline": 0.0,
+      "candidate": 780.0,
+      "unit": "byte/block",
+      "change_pct": null
+    },
+    "launch__block_size": {
+      "baseline": 256.0,
+      "candidate": 128.0,
+      "unit": "",
+      "change_pct": -50.0
+    },
+    "launch__grid_size": {
+      "baseline": 384.0,
+      "candidate": 98304.0,
+      "unit": "",
+      "change_pct": 25500.0
+    },
+    "derived__local_spilling_requests": {
+      "baseline": 0.0,
+      "candidate": 0.0,
+      "unit": "",
+      "change_pct": null
+    },
+    "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": {
+      "baseline": 200775680.0,
+      "candidate": 56553472.0,
+      "unit": "",
+      "change_pct": -71.8325087978783
+    },
+    "l1tex__t_requests_pipe_lsu_mem_global_op_st.sum": {
+      "baseline": 25292800.0,
+      "candidate": 196608.0,
+      "unit": "",
+      "change_pct": -99.22267206477733
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": {
+      "baseline": 4015415296.0,
+      "candidate": 904445952.0,
+      "unit": "sector",
+      "change_pct": -77.47565605727075
+    },
+    "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum": {
+      "baseline": 809369600.0,
+      "candidate": 786432.0,
+      "unit": "sector",
+      "change_pct": -99.90283400809716
+    },
+    "lts__t_sectors_srcunit_tex_op_read.sum": {
+      "baseline": 1410420174.0,
+      "candidate": 223126345.0,
+      "unit": "sector",
+      "change_pct": -84.18015077257395
+    },
+    "lts__t_sectors_srcunit_tex_op_write.sum": {
+      "baseline": 809369600.0,
+      "candidate": 786432.0,
+      "unit": "sector",
+      "change_pct": -99.90283400809716
+    },
+    "lts__t_sector_hit_rate.pct": {
+      "baseline": 98.099012,
+      "candidate": 99.00515,
+      "unit": "%",
+      "change_pct": 0.9236973762793754
+    },
+    "lts__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "baseline": 88.779563,
+      "candidate": 56.595484,
+      "unit": "%",
+      "change_pct": -36.251675399663775
+    },
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "baseline": 4.413709,
+      "candidate": 18.407702,
+      "unit": "%",
+      "change_pct": 317.0574453367904
+    },
+    "sm__warps_active.avg.pct_of_peak_sustained_active": {
+      "baseline": 75.818736,
+      "candidate": 78.349276,
+      "unit": "%",
+      "change_pct": 3.337618290022659
+    }
+  },
+  "source_instruction_counts": {
+    "baseline": {
+      "MUFU.RCP": {
+        "warp_instructions": 401344,
+        "predicated_on_thread_instructions": 12843008
+      },
+      "MUFU.RSQ": {
+        "warp_instructions": 3072,
+        "predicated_on_thread_instructions": 98304
+      },
+      "LDG.E": {
+        "warp_instructions": 200775680,
+        "predicated_on_thread_instructions": 6424821760
+      },
+      "FFMA.FTZ": {
+        "warp_instructions": 101169024,
+        "predicated_on_thread_instructions": 3237408768
+      },
+      "FMUL.FTZ": {
+        "warp_instructions": 1571584,
+        "predicated_on_thread_instructions": 50290688
+      },
+      "MUFU.EX2": {
+        "warp_instructions": 787328,
+        "predicated_on_thread_instructions": 25194496
+      },
+      "FADD.FTZ": {
+        "warp_instructions": 398272,
+        "predicated_on_thread_instructions": 12744704
+      },
+      "STG.E": {
+        "warp_instructions": 25292800,
+        "predicated_on_thread_instructions": 809369600
+      }
+    },
+    "candidate": {
+      "LDG.E": {
+        "warp_instructions": 56750080,
+        "predicated_on_thread_instructions": 1612644352
+      },
+      "STS": {
+        "warp_instructions": 1560576,
+        "predicated_on_thread_instructions": 31584256
+      },
+      "LDS.128": {
+        "warp_instructions": 20209664,
+        "predicated_on_thread_instructions": 406026240
+      },
+      "FFMA.FTZ": {
+        "warp_instructions": 56645632,
+        "predicated_on_thread_instructions": 1618704384
+      },
+      "LDS": {
+        "warp_instructions": 1953792,
+        "predicated_on_thread_instructions": 50331648
+      },
+      "FMUL.FTZ": {
+        "warp_instructions": 38227968,
+        "predicated_on_thread_instructions": 828272640
+      },
+      "MUFU.RCP": {
+        "warp_instructions": 3701760,
+        "predicated_on_thread_instructions": 118392832
+      },
+      "MUFU.EX2": {
+        "warp_instructions": 583680,
+        "predicated_on_thread_instructions": 12646400
+      },
+      "FADD.FTZ": {
+        "warp_instructions": 12744704,
+        "predicated_on_thread_instructions": 12744704
+      },
+      "LDS.64": {
+        "warp_instructions": 12288,
+        "predicated_on_thread_instructions": 393216
+      },
+      "STG.E": {
+        "warp_instructions": 196608,
+        "predicated_on_thread_instructions": 6291456
+      }
+    }
+  },
+  "duration": {
+    "baseline_ms": 97.157632,
+    "candidate_ms": 8.354272,
+    "speedup": 11.62969460414983,
+    "reduction_pct": 91.40132192600166
+  },
+  "warnings": {
+    "baseline": [
+      "Warning: Data collection happened without fixed GPU frequencies. Profiling results may be inconsistent."
+    ],
+    "candidate": [
+      "Warning: Data collection happened without fixed GPU frequencies. Profiling results may be inconsistent."
+    ]
+  },
+  "sampling": "Neither window capture reports sampling overflow. Replay instruction/request/sector counters support the comparison. These counters describe cache traffic, not off-chip DRAM bytes. Source L1 tag requests are distinct from 32-byte sectors.",
+  "resources": "Registers increase 40\u219244 and dynamic shared memory 0\u2192780 bytes per CTA; both have zero local spills. No persistent tensor storage is added.",
+  "arithmetic": "FFMA thread instructions halve and EX2 nearly halves. Cached-weight division is repeated across output dimensions, increasing FMUL 50,290,688\u2192828,272,640 and reciprocal 12,843,008\u2192118,392,832 thread instructions. Total executed warp instructions fall 57.78%; arithmetic is not uniformly reduced.",
+  "status": "This evidence is complete. See receipt.json for current full-model and HTTP gate status."
+}

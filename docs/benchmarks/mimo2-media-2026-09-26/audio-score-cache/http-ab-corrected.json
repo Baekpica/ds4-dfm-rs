@@ -1,0 +1,510 @@
+{
+  "rounds": 3,
+  "cases": {
+    "eval-audio-3": {
+      "all_warm_and_sample_http_proofs_exact": true,
+      "reference": {
+        "token_ids": [
+          395,
+          38155,
+          678,
+          518,
+          3055,
+          458,
+          11094,
+          315,
+          11980,
+          323,
+          19267,
+          2581,
+          4411,
+          4764,
+          827,
+          83698,
+          279,
+          2948,
+          315,
+          264,
+          8604,
+          5220,
+          1231,
+          387,
+          429,
+          432,
+          686,
+          2783,
+          825,
+          4302
+        ],
+        "content": "assumed all at once an appearance of noise and disorder never believe however disinterested the love of a kept woman may be that it will cost one nothing",
+        "finish_reason": "stop",
+        "prompt_tokens": 87,
+        "completion_tokens": 30
+      },
+      "metrics": {
+        "wall_ms": {
+          "samples": {
+            "original": [
+              2332.3002599645406,
+              2323.2872799853794,
+              2327.506036963314
+            ],
+            "off": [
+              2324.81890701456,
+              2323.63965397235,
+              2328.693440009374
+            ],
+            "on": [
+              1932.84645100357,
+              1938.7943830224685,
+              1932.4612769996747
+            ]
+          },
+          "medians": {
+            "original": 2327.506036963314,
+            "off": 2324.81890701456,
+            "on": 1932.84645100357
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                0.32077143232382976,
+                -0.015167043266939295,
+                -0.05101611025719599
+              ],
+              "median_gain_percent": 0.11545104098891201
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                16.860343609057505,
+                16.5621752190351,
+                17.0152136044195
+              ],
+              "median_gain_percent": 16.860343609057505
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                17.127031875691834,
+                16.549520168049582,
+                16.97287799429522
+              ],
+              "median_gain_percent": 16.956329207835452
+            }
+          }
+        },
+        "ttft_ms": {
+          "samples": {
+            "original": [
+              1245.9,
+              1243.9,
+              1247.4
+            ],
+            "off": [
+              1246.6,
+              1243.4,
+              1246.6
+            ],
+            "on": [
+              854.3,
+              858.7,
+              853.8
+            ]
+          },
+          "medians": {
+            "original": 1245.9,
+            "off": 1246.6,
+            "on": 854.3
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                -0.05618428445299806,
+                0.04019615724736303,
+                0.06413339746674795
+              ],
+              "median_gain_percent": -0.05618428445299806
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                31.469597304668696,
+                30.9393598198488,
+                31.50970640141184
+              ],
+              "median_gain_percent": 31.469597304668696
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                31.431093988281578,
+                30.96711954337166,
+                31.55363155363157
+              ],
+              "median_gain_percent": 31.431093988281578
+            }
+          }
+        },
+        "prefill_tok_s": {
+          "samples": {
+            "original": [
+              72.5,
+              72.5,
+              72.6
+            ],
+            "off": [
+              72.6,
+              72.5,
+              72.6
+            ],
+            "on": [
+              107.4,
+              107.3,
+              107.4
+            ]
+          },
+          "medians": {
+            "original": 72.5,
+            "off": 72.6,
+            "on": 107.4
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                0.13793103448274113,
+                0.0,
+                0.0
+              ],
+              "median_gain_percent": 0.13793103448274113
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                47.93388429752068,
+                48.0,
+                47.93388429752068
+              ],
+              "median_gain_percent": 47.93388429752068
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                48.13793103448276,
+                48.0,
+                47.93388429752068
+              ],
+              "median_gain_percent": 48.13793103448276
+            }
+          }
+        },
+        "decode_tok_s": {
+          "samples": {
+            "original": [
+              26.9,
+              27.1,
+              27.1
+            ],
+            "off": [
+              27.1,
+              27.1,
+              27.0
+            ],
+            "on": [
+              27.1,
+              27.1,
+              27.1
+            ]
+          },
+          "medians": {
+            "original": 27.1,
+            "off": 27.1,
+            "on": 27.1
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                0.743494423791824,
+                0.0,
+                -0.3690036900369065
+              ],
+              "median_gain_percent": 0.0
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                0.0,
+                0.0,
+                0.37037037037037646
+              ],
+              "median_gain_percent": 0.0
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                0.743494423791824,
+                0.0,
+                0.0
+              ],
+              "median_gain_percent": 0.0
+            }
+          }
+        }
+      }
+    },
+    "eval-audio-0": {
+      "all_warm_and_sample_http_proofs_exact": true,
+      "reference": {
+        "token_ids": [
+          25020,
+          58039,
+          13,
+          358,
+          2578,
+          614,
+          3229,
+          498,
+          315,
+          279,
+          7167,
+          315,
+          419,
+          82099,
+          304,
+          264,
+          2421,
+          5128,
+          11,
+          714,
+          358,
+          4829,
+          498,
+          311,
+          1490,
+          1449,
+          3019,
+          553,
+          892,
+          582,
+          3697,
+          13,
+          358,
+          2238,
+          7230,
+          311,
+          8820,
+          23201,
+          8801,
+          632,
+          36187,
+          13
+        ],
+        "content": "Chapter sixteen. I might have told you of the beginning of this liaison in a few lines, but I wanted you to see every step by which we came. I too agreed to whatever Marguerite wished.",
+        "finish_reason": "stop",
+        "prompt_tokens": 108,
+        "completion_tokens": 42
+      },
+      "metrics": {
+        "wall_ms": {
+          "samples": {
+            "original": [
+              3072.358447010629,
+              3074.818874010816,
+              3069.78393800091
+            ],
+            "off": [
+              3070.0940510141663,
+              3071.4168989798054,
+              3073.2871189829893
+            ],
+            "on": [
+              2515.30826598173,
+              2515.9127199440263,
+              2513.673475012183
+            ]
+          },
+          "medians": {
+            "original": 3072.358447010629,
+            "off": 3071.4168989798054,
+            "on": 2515.30826598173
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                0.073702207457782,
+                0.11063985133450416,
+                -0.11411816117459228
+              ],
+              "median_gain_percent": 0.03064577415241576
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                18.0706446061211,
+                18.08625130702035,
+                18.20896070901418
+              ],
+              "median_gain_percent": 18.105931278257636
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                18.131028349602317,
+                18.17688055679678,
+                18.115622278969724
+              ],
+              "median_gain_percent": 18.131028349602317
+            }
+          }
+        },
+        "ttft_ms": {
+          "samples": {
+            "original": [
+              1543.7,
+              1549.5,
+              1543.1
+            ],
+            "off": [
+              1542.1,
+              1542.7,
+              1545.9
+            ],
+            "on": [
+              987.6,
+              989.4,
+              986.9
+            ]
+          },
+          "medians": {
+            "original": 1543.7,
+            "off": 1542.7,
+            "on": 987.6
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                0.10364708168686398,
+                0.4388512423362356,
+                -0.18145291944786646
+              ],
+              "median_gain_percent": 0.06477942605428444
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                35.95746060566759,
+                35.86569002398393,
+                36.16016559932726
+              ],
+              "median_gain_percent": 35.98236857457704
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                36.02383882878798,
+                36.147144240077445,
+                36.04432635603655
+              ],
+              "median_gain_percent": 36.02383882878798
+            }
+          }
+        },
+        "prefill_tok_s": {
+          "samples": {
+            "original": [
+              72.1,
+              72.1,
+              72.1
+            ],
+            "off": [
+              72.2,
+              72.2,
+              72.2
+            ],
+            "on": [
+              114.7,
+              114.9,
+              114.8
+            ]
+          },
+          "medians": {
+            "original": 72.1,
+            "off": 72.2,
+            "on": 114.8
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                0.1386962552011317,
+                0.1386962552011317,
+                0.1386962552011317
+              ],
+              "median_gain_percent": 0.1386962552011317
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                58.86426592797784,
+                59.14127423822715,
+                59.00277008310248
+              ],
+              "median_gain_percent": 59.00277008310248
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                59.0846047156727,
+                59.36199722607491,
+                59.22330097087381
+              ],
+              "median_gain_percent": 59.22330097087381
+            }
+          }
+        },
+        "decode_tok_s": {
+          "samples": {
+            "original": [
+              27.0,
+              27.1,
+              27.0
+            ],
+            "off": [
+              27.0,
+              27.0,
+              27.0
+            ],
+            "on": [
+              27.0,
+              27.0,
+              27.0
+            ]
+          },
+          "medians": {
+            "original": 27.0,
+            "off": 27.0,
+            "on": 27.0
+          },
+          "comparisons": {
+            "off_vs_original": {
+              "paired_gain_percent": [
+                0.0,
+                -0.3690036900369065,
+                0.0
+              ],
+              "median_gain_percent": 0.0
+            },
+            "on_vs_off": {
+              "paired_gain_percent": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "median_gain_percent": 0.0
+            },
+            "on_vs_original": {
+              "paired_gain_percent": [
+                0.0,
+                -0.3690036900369065,
+                0.0
+              ],
+              "median_gain_percent": 0.0
+            }
+          }
+        }
+      }
+    }
+  },
+  "http_proof_scope": "Full returned token IDs, visible content, finish reason and usage; HTTP supplies no logits.",
+  "all_http_proofs_exact": true,
+  "correctness_status": "exact",
+  "correctness_note": "Exactness is informational. Valid baseline outputs can vary in formatting; inspect full responses and kernel/feature parity before deciding correctness or adoption.",
+  "truncated_completions": [],
+  "quality_status": "requires_review",
+  "quality_note": "HTTP parity does not qualify transcription or temporal understanding. Review audio against the pinned transcript and video against its annotations; a token-limit completion is truncated and cannot establish complete-answer quality."
+}

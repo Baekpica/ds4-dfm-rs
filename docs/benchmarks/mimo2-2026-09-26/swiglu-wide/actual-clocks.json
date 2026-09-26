@@ -1,0 +1,26 @@
+{
+  "requested_range_mhz": [
+    300,
+    2200
+  ],
+  "samples": 322,
+  "busy_samples": 242,
+  "all_sm_mhz_range": [
+    2184.0,
+    2197.0
+  ],
+  "busy_sm_mhz_range": [
+    2184.0,
+    2190.0
+  ],
+  "temperature_c_range": [
+    41.0,
+    71.0
+  ],
+  "raw": {
+    "path": "scratch/mimo-prefill-20260926/swiglu6-clocks.csv",
+    "bytes": 17015,
+    "sha256": "f1b88104234229e109ccab18d246075eae02deaa114df3a72dccc59086597229"
+  },
+  "limitation": "One-second samples do not resolve each kernel or proof operation."
+}

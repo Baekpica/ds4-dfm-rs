@@ -1361,7 +1361,7 @@ static void test_iq2_d2r_pair_profile() {
     if (ds4_mmq_iq2_xxs_moe_d2r_pair_launch(
             gate, up, soa_blocks, q8, ids, bounds,
             out_gate, out_up, M, K, n_assign, n_experts,
-            work, work_bytes, 0) != 0) {
+            n_expert_used, work, work_bytes, 0) != 0) {
         fprintf(stderr, "IQ2 D2R pair profile launch failed\n");
         std::exit(1);
     }

@@ -1,0 +1,46 @@
+{
+  "status": "scratch pilot only; no production integration",
+  "tile_keys": 32,
+  "threads": 128,
+  "dynamic_shared_at880": 12232,
+  "residency_hypothesis": "~7CTAs/SM under100KiB with1KiB reservation versus~4forTILE64; only32lanes compute per tile, barrier/load tradeoff must be measured",
+  "compile_argv": [
+    "/usr/local/cuda/bin/nvcc",
+    "-O3",
+    "-g",
+    "-lineinfo",
+    "--use_fast_math",
+    "-std=c++17",
+    "-gencode",
+    "arch=compute_121a,code=sm_121a",
+    "-DDS4_CUDA_HAVE_MXF4=1",
+    "-Xcompiler",
+    "-march=native",
+    "-Xcompiler",
+    "-pthread",
+    "-Xptxas=-v",
+    "scratch/mimo-media-20260926/ncu-video-r1/probe-candidate.cu",
+    "-o",
+    "scratch/mimo-media-20260926/ncu-video-r1/probe-candidate"
+  ],
+  "compile_exit": 0,
+  "files": {
+    "scratch/mimo-media-20260926/ncu-video-r1/candidate.cuh": {
+      "sha256": "0298fc02ca480144c62a16bf463d16cae6fa5e5334d1572ec31d9e84517b4218",
+      "bytes": 2894
+    },
+    "scratch/mimo-media-20260926/ncu-video-r1/probe-candidate.cu": {
+      "sha256": "864d669ce9b84c491f9ba2d8fa76a1c64c99f5fcd46730dbd6e83523a0362a7a",
+      "bytes": 7225
+    },
+    "scratch/mimo-media-20260926/ncu-video-r1/candidate-build.log": {
+      "sha256": "5a68f00665972104d25871a61e51be9e72004514ceed6240edfbf4b9afa45454",
+      "bytes": 5134
+    },
+    "scratch/mimo-media-20260926/ncu-video-r1/probe-candidate": {
+      "sha256": "4289b7057f55cf038d0d0001360aea5b2a36d519a134fcc09a202d1d50b02599",
+      "bytes": 1629408
+    }
+  },
+  "baseline_header_frozen": true
+}

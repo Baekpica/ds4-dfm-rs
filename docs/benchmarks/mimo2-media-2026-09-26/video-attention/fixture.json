@@ -1,0 +1,95 @@
+{
+  "id": "eval-finevideo-29-3",
+  "modality": "video",
+  "request_path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/av-requests/eval-finevideo-29-3.json",
+  "request_bytes": 242301,
+  "request_sha256": "2a6ab6413a1e87409131b90b0fd079bb88363b285ee2a2739dfe284cc7979bce",
+  "input_path": "/home/sunghoon/workspace/ds4-exaone/mimo-v2-6-flash-rl-spark-handoff/handoff/calibration/media/finevideo/fv-029-03.mp4",
+  "input_bytes": 181479,
+  "input_sha256": "46db77275c9ea748a522bdc620a66c48abe39a5cc0db919d68ce249a4d241324",
+  "prompt": "Describe the sequence of visible events in this video.",
+  "max_tokens": 128,
+  "reference_transcript": null,
+  "video_annotation": "Liz Rose's hands are shown in close-up, delicately manipulating an unseen object.",
+  "source_record": {
+    "id": "eval-finevideo-29-3",
+    "category": "video",
+    "path": "/root/mimo-work/handoff/calibration/media/finevideo/fv-029-03.mp4",
+    "prompt": "Describe the sequence of visible events in this video.",
+    "answer": "",
+    "source": {
+      "repo": "HuggingFaceFV/finevideo",
+      "file": "train-00000-of-01357.parquet",
+      "row": 29,
+      "original_video_filename": "7yY1OWjT4zA.mp4",
+      "start_seconds": 0.0,
+      "end_seconds": 4.0,
+      "activity_annotation": "Liz Rose's hands are shown in close-up, delicately manipulating an unseen object.",
+      "original_video_sha256": "bcd9a41920f424b08a6a26f3a2b8d195ef5a1dc5856dd04c2f80a63485df4661"
+    },
+    "duration": 4.0,
+    "sha256": "46db77275c9ea748a522bdc620a66c48abe39a5cc0db919d68ce249a4d241324"
+  },
+  "dataset": {
+    "repo": "HuggingFaceFV/finevideo",
+    "type": "dataset",
+    "revision": "84c74091e1c6ee7a5dffabfafb5c9033e4718883",
+    "file": "data/train-00000-of-01357.parquet",
+    "bytes": 493919884,
+    "sha256": "607bc6f45f6c4dcf27950abaf81eea58d7d50e2defd077efd0740647cf88baed"
+  },
+  "input_metadata": {
+    "programs": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "codec_type": "video",
+        "width": 640,
+        "height": 360,
+        "avg_frame_rate": "30/1",
+        "bits_per_raw_sample": "8",
+        "nb_frames": "120"
+      }
+    ],
+    "format": {
+      "duration": "4.000000"
+    }
+  },
+  "temporal_check": {
+    "argv": [
+      "/usr/bin/ffmpeg",
+      "-v",
+      "error",
+      "-threads",
+      "1",
+      "-i",
+      "/home/sunghoon/workspace/ds4-exaone/mimo-v2-6-flash-rl-spark-handoff/handoff/calibration/media/finevideo/fv-029-03.mp4",
+      "-vf",
+      "fps=2,scale=640:352:flags=bilinear",
+      "-an",
+      "-pix_fmt",
+      "rgb24",
+      "-f",
+      "framemd5",
+      "pipe:1"
+    ],
+    "sampled_fps": 2,
+    "resized_width": 640,
+    "resized_height": 352,
+    "sampled_frames": 8,
+    "distinct_frame_hashes": 8,
+    "visual_pairs": 4,
+    "raw_rgb_bytes": 5406720,
+    "frame_md5": [
+      "f5d47bc29d26ddfc363a1599e0ff693c",
+      "6aa596a9ec3a3c30a22f54444cc87797",
+      "6c27ccb77fa662956c784415dad7a27c",
+      "90ed04393dabb0d85d4356f54eccb05e",
+      "bd728834a63983857e8f2ed238546e9d",
+      "23c0ffab632499733f34f640e8f017c7",
+      "56abf2982b72972937cd19572dd26868",
+      "9688214d1f0defa983d885b7c5e16238"
+    ],
+    "note": "Frame differences confirm non-static content. The activity annotation is inherited metadata, not an independently verified model answer."
+  }
+}

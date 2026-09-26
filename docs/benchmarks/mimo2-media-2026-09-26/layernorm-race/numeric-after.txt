@@ -1,0 +1,2 @@
+host-memory-guard: available=26.56 GiB, scope max/high=14.50/13.50, reserve=12.00, trip=12.00
+rows=557 dim=1024 repeats=3 max_abs=4.76837158e-07 repeat_exact=true guards=true input_exact=true PASS

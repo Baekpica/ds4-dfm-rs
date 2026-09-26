@@ -1,0 +1,60 @@
+{
+  "base_commit": "f716f031816c948b1533f1ccb962163ab0c2a763",
+  "switch": "DS4_MIMO2_SUM_RESIDUAL",
+  "rows": [
+    32,
+    8192
+  ],
+  "default": "on; DS4_MIMO2_SUM_RESIDUAL=0 disables",
+  "binary": {
+    "original": {
+      "path": "scratch/mimo-prefill-20260926/bench-down-off",
+      "sha256": "dde56c755aabdd82f0d6cc8196eb7446e8a9412754664bb6e1f77786b5bec6e8"
+    },
+    "candidate": {
+      "path": "scratch/mimo-prefill-20260926/bench-sum-candidate",
+      "sha256": "a8a5e5ada2f1782d062193c093d32169fe57cae308524272640423548525d68f"
+    }
+  },
+  "source": {
+    "cuda/mimo2_primitives.cuh": "76cfb0b58646cf546ae02d5893dc3c501f318446960548f9cc4bd26cc9e0a8f9",
+    "ds4_mimo2_gpu.cuh": "815321fb56381014f83a31f615e0e0c8f846567e86b6e0a214a15ca6fadae62d",
+    "ds4_mimo2_graph.inc": "11d4e5b50b11e84580331cd57b309aa69e630c73aab142143caa51dac7bb75b3",
+    "ds4_gpu.h": "eadd45e819e99516ab624bed92c19d470eab82ea22c37f8b4d6e7fe80e50d165",
+    "ds4_metal.m": "1d8b75569f9af2d8f736005d8d6cd7e2754b7902dfde0a197c8fe125c70e2b63",
+    "tests/mimo2_sum_residual.cu": "c77a91c39df5bccaeb93d2ab6366244599221c92e934e378a45a7f36e5bfc726",
+    "tests/mimo2_sum_dispatch.cu": "328e1cae483f5b3800b8087a347f3a46069307f59521cae8d1ec588e2ec55a04"
+  },
+  "tests": {
+    "kernel_parity": "PASS rows1/31/32/33/4096 byte exact",
+    "wrapper": "PASS refusals/errors and rows32/33 byte exact"
+  },
+  "model_workload": "workload.json",
+  "owner": "owner5.ipc",
+  "accepted": true,
+  "status": "accepted round1 of3",
+  "resource_cost": {
+    "extra_vram_bytes": 0,
+    "extra_arithmetic": false,
+    "removed_intermediate_bytes_per_launch": 134217728,
+    "ncu_executed_instructions_before": 60817408,
+    "ncu_executed_instructions_after": 30932992,
+    "ncu_spills_before": 0,
+    "ncu_spills_after": 0
+  },
+  "final_binary": {
+    "path": "scratch/mimo-prefill-20260926/bench-sum-final",
+    "sha256": "611aba3554c74ff5c451b778721d2f8274df21fa9cf837b36fcf95d7e3d4a7c6"
+  },
+  "final_source": {
+    "cuda/mimo2_primitives.cuh": "76cfb0b58646cf546ae02d5893dc3c501f318446960548f9cc4bd26cc9e0a8f9",
+    "ds4_mimo2_gpu.cuh": "afddb8decd299631776c60d465e53e20d7a575f8b2017c3e7f559d30a95d3a37",
+    "ds4_mimo2_graph.inc": "11d4e5b50b11e84580331cd57b309aa69e630c73aab142143caa51dac7bb75b3",
+    "ds4_gpu.h": "eadd45e819e99516ab624bed92c19d470eab82ea22c37f8b4d6e7fe80e50d165",
+    "ds4_metal.m": "1d8b75569f9af2d8f736005d8d6cd7e2754b7902dfde0a197c8fe125c70e2b63",
+    "tests/mimo2_sum_residual.cu": "c77a91c39df5bccaeb93d2ab6366244599221c92e934e378a45a7f36e5bfc726",
+    "tests/mimo2_sum_dispatch.cu": "8f357acdfb7165d7e0935d3882886a58a46d429358fd4c19b35eb144e798fba0"
+  },
+  "final_build": "make ds4-bench-perf -o cuda/mmq/ds4_mmq.o (original compiler flags; unchanged original MMQ object)",
+  "final_result": "final-ab.json"
+}

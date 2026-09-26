@@ -12,7 +12,10 @@ __device__ static float m2_block_sum(float value, float *shared) {
         if (tid < span) { shared[tid] += shared[tid + span]; }
         __syncthreads();
     }
-    return shared[0];
+    const float sum = shared[0];
+    // Every warp must consume the result before a later reduction reuses shared.
+    __syncthreads();
+    return sum;
 }
 
 __global__ static void mimo2_patch(
@@ -109,6 +112,299 @@ __global__ static void mimo2_attn(
         const float w = expf(dot * scale - maxv) / sum;
         for (int d = 0; d < hd; d++) { dst[d] += w * vv[d]; }
     }
+}
+
+enum {
+    M2V_ATTN_HEADS = 32, M2V_ATTN_KV = 8, M2V_ATTN_HD = 64,
+    M2V_ATTN_Q = M2V_ATTN_HEADS * M2V_ATTN_HD,
+    M2V_ATTN_KVW = M2V_ATTN_KV * M2V_ATTN_HD,
+    M2V_ATTN_QKV = M2V_ATTN_Q + 2 * M2V_ATTN_KVW,
+    M2V_ATTN_MAX = 8192, M2V_ATTN_THREADS = 128, M2V_ATTN_SCALARS = 2
+};
+
+/* Full vision attention: cache each dot once and keep one output value per
+ * thread. This removes repeated Q/K reads and output global read/modify/write
+ * without changing the scalar dot, denominator, or output accumulation order. */
+__global__ static void mimo2_vision_attn(float *out, const float *qkv, int n) {
+    const int query = blockIdx.x;
+    if (query >= n * M2V_ATTN_HEADS) { return; }
+    const int tid = threadIdx.x;
+    const int row = query / M2V_ATTN_HEADS, head = query % M2V_ATTN_HEADS;
+    const int kv = head / (M2V_ATTN_HEADS / M2V_ATTN_KV);
+    extern __shared__ float shared[];
+    float *scores = shared;
+    float *qq = scores + n;
+    float *stats = qq + M2V_ATTN_HD;
+    if (tid < M2V_ATTN_HD) {
+        qq[tid] = qkv[(int64_t)row * M2V_ATTN_QKV + head * M2V_ATTN_HD + tid];
+    }
+    __syncthreads();
+
+    const float scale = rsqrtf((float)M2V_ATTN_HD);
+    for (int key = tid; key < n; key += blockDim.x) {
+        const float *kk = qkv + (int64_t)key * M2V_ATTN_QKV + M2V_ATTN_Q + kv * M2V_ATTN_HD;
+        float dot = 0.f;
+        for (int d = 0; d < M2V_ATTN_HD; d++) { dot += qq[d] * kk[d]; }
+        // Keep the unscaled dot so expf retains the original multiply/subtract.
+        scores[key] = dot;
+    }
+    __syncthreads();
+    if (tid == 0) {
+        float maxv = -INFINITY;
+        for (int key = 0; key < n; key++) { maxv = fmaxf(maxv, scores[key] * scale); }
+        stats[0] = maxv;
+    }
+    __syncthreads();
+    const float maxv = stats[0];
+    if (!isfinite(maxv)) {
+        if (tid < M2V_ATTN_HD) { out[(int64_t)query * M2V_ATTN_HD + tid] = NAN; }
+        return;
+    }
+
+    for (int key = tid; key < n; key += blockDim.x) {
+        scores[key] = expf(scores[key] * scale - maxv);
+    }
+    __syncthreads();
+    if (tid == 0) {
+        float sum = 0.f;
+        for (int key = 0; key < n; key++) { sum += scores[key]; }
+        stats[1] = sum;
+    }
+    __syncthreads();
+    if (tid >= M2V_ATTN_HD) { return; }
+
+    float acc = 0.f;
+    const float sum = stats[1];
+    if (sum > 0.f) {
+        for (int key = 0; key < n; key++) {
+            const float w = scores[key] / sum;
+            const float value = qkv[(int64_t)key * M2V_ATTN_QKV +
+                                    M2V_ATTN_Q + M2V_ATTN_KVW + kv * M2V_ATTN_HD + tid];
+            acc += w * value;
+        }
+    }
+    out[(int64_t)query * M2V_ATTN_HD + tid] = acc;
+}
+
+enum {
+    M2V_K_TILE = 32, M2V_K_STRIDE = M2V_K_TILE + 1,
+    M2V_K_MIN = 512, M2V_K_MAX = 3072
+};
+
+/* Stage K by contiguous dimensions, then read by key. The padded transpose
+ * removes strided global sectors without changing dot or softmax order.
+ * Larger rows retain the original path: tile storage reduces residency. */
+
+__global__ static void mimo2_vision_attn_coalesced(float *out, const float *qkv, int n) {
+    const int query = blockIdx.x;
+    if (query >= n * M2V_ATTN_HEADS) { return; }
+    const int tid = threadIdx.x;
+    const int row = query / M2V_ATTN_HEADS, head = query % M2V_ATTN_HEADS;
+    const int kv = head / (M2V_ATTN_HEADS / M2V_ATTN_KV);
+    extern __shared__ float shared[];
+    float *scores = shared;
+    float *qq = scores + n;
+    float *stats = qq + M2V_ATTN_HD;
+    if (tid < M2V_ATTN_HD) {
+        qq[tid] = qkv[(int64_t)row * M2V_ATTN_QKV + head * M2V_ATTN_HD + tid];
+    }
+    __syncthreads();
+
+    const float scale = rsqrtf((float)M2V_ATTN_HD);
+    // Coalesce K loads across dimensions, then give each key lane an unaltered
+    // ascending dot. Padding prevents bank conflicts when key lanes read one d.
+    float *tile = stats + M2V_ATTN_SCALARS;
+    for (int first = 0; first < n; first += M2V_K_TILE) {
+        const int keys = min(M2V_K_TILE, n - first);
+        for (int item = tid; item < keys * M2V_ATTN_HD; item += blockDim.x) {
+            const int key = item / M2V_ATTN_HD, d = item % M2V_ATTN_HD;
+            tile[d * M2V_K_STRIDE + key] = qkv[(int64_t)(first + key) * M2V_ATTN_QKV +
+                                              M2V_ATTN_Q + kv * M2V_ATTN_HD + d];
+        }
+        __syncthreads();
+        if (tid < keys) {
+            float dot = 0.f;
+            for (int d = 0; d < M2V_ATTN_HD; d++) {
+                dot += qq[d] * tile[d * M2V_K_STRIDE + tid];
+            }
+            scores[first + tid] = dot;
+        }
+        // Every lane must finish the current tile before the next copy reuses it.
+        __syncthreads();
+    }
+    if (tid == 0) {
+        float maxv = -INFINITY;
+        for (int key = 0; key < n; key++) { maxv = fmaxf(maxv, scores[key] * scale); }
+        stats[0] = maxv;
+    }
+    __syncthreads();
+    const float maxv = stats[0];
+    if (!isfinite(maxv)) {
+        if (tid < M2V_ATTN_HD) { out[(int64_t)query * M2V_ATTN_HD + tid] = NAN; }
+        return;
+    }
+
+    for (int key = tid; key < n; key += blockDim.x) {
+        scores[key] = expf(scores[key] * scale - maxv);
+    }
+    __syncthreads();
+    if (tid == 0) {
+        float sum = 0.f;
+        for (int key = 0; key < n; key++) { sum += scores[key]; }
+        stats[1] = sum;
+    }
+    __syncthreads();
+    if (tid >= M2V_ATTN_HD) { return; }
+
+    float acc = 0.f;
+    const float sum = stats[1];
+    if (sum > 0.f) {
+        for (int key = 0; key < n; key++) {
+            const float w = scores[key] / sum;
+            const float value = qkv[(int64_t)key * M2V_ATTN_QKV +
+                                    M2V_ATTN_Q + M2V_ATTN_KVW + kv * M2V_ATTN_HD + tid];
+            acc += w * value;
+        }
+    }
+    out[(int64_t)query * M2V_ATTN_HD + tid] = acc;
+}
+
+enum { M2V_WINDOW = 64, M2V_WINDOW_KEYS = 2 * M2V_WINDOW + 1 };
+
+/* The vision window is contiguous in the layer's current row/column order.
+ * Cache only its valid keys, preserving scalar key order and sink-last math;
+ * output dimensions cooperate on V loads and each write their accumulator once. */
+__global__ static void mimo2_vision_window(
+        float *out, const float *qkv, const float *sinks, int n) {
+    const int query = blockIdx.x;
+    if (query >= n * M2V_ATTN_HEADS) { return; }
+    const int tid = threadIdx.x;
+    const int row = query / M2V_ATTN_HEADS, head = query % M2V_ATTN_HEADS;
+    const int kv = head / (M2V_ATTN_HEADS / M2V_ATTN_KV);
+    const int first = max(0, row - M2V_WINDOW);
+    const int keys = min(n, row + M2V_WINDOW + 1) - first;
+    extern __shared__ float shared[];
+    float *scores = shared;
+    float *qq = scores + M2V_WINDOW_KEYS;
+    float *stats = qq + M2V_ATTN_HD;
+    if (tid < M2V_ATTN_HD) {
+        qq[tid] = qkv[(int64_t)row * M2V_ATTN_QKV + head * M2V_ATTN_HD + tid];
+    }
+    __syncthreads();
+
+    const float scale = rsqrtf((float)M2V_ATTN_HD);
+    for (int i = tid; i < keys; i += blockDim.x) {
+        const float *kk = qkv + (int64_t)(first + i) * M2V_ATTN_QKV +
+                          M2V_ATTN_Q + kv * M2V_ATTN_HD;
+        float dot = 0.f;
+        for (int d = 0; d < M2V_ATTN_HD; d++) { dot += qq[d] * kk[d]; }
+        scores[i] = dot;
+    }
+    __syncthreads();
+    if (tid == 0) {
+        float maxv = -INFINITY;
+        for (int i = 0; i < keys; i++) { maxv = fmaxf(maxv, scores[i] * scale); }
+        stats[0] = fmaxf(maxv, sinks[head]);
+    }
+    __syncthreads();
+    const float maxv = stats[0];
+    if (!isfinite(maxv)) {
+        if (tid < M2V_ATTN_HD) { out[(int64_t)query * M2V_ATTN_HD + tid] = NAN; }
+        return;
+    }
+
+    for (int i = tid; i < keys; i += blockDim.x) {
+        scores[i] = expf(scores[i] * scale - maxv);
+    }
+    __syncthreads();
+    if (tid == 0) {
+        float sum = 0.f;
+        for (int i = 0; i < keys; i++) { sum += scores[i]; }
+        stats[1] = sum + expf(sinks[head] - maxv);
+    }
+    __syncthreads();
+    if (tid >= M2V_ATTN_HD) { return; }
+
+    float acc = 0.f;
+    const float sum = stats[1];
+    if (sum > 0.f) {
+        for (int i = 0; i < keys; i++) {
+            const float w = scores[i] / sum;
+            const float value = qkv[(int64_t)(first + i) * M2V_ATTN_QKV +
+                                    M2V_ATTN_Q + M2V_ATTN_KVW + kv * M2V_ATTN_HD + tid];
+            acc += w * value;
+        }
+    }
+    out[(int64_t)query * M2V_ATTN_HD + tid] = acc;
+}
+
+enum {
+    M2A_ATTN_HEADS = 16, M2A_ATTN_HD = 64,
+    M2A_ATTN_WIDTH = M2A_ATTN_HEADS * M2A_ATTN_HD,
+    M2A_ATTN_MAX = 8192, M2A_ATTN_THREADS = 128, M2A_ATTN_SCALARS = 2
+};
+
+/* Full causal codec attention has separate Q/K/V projections. One CTA per
+ * query exposes enough parallelism and removes output global read/modify/write.
+ * Cache raw dots while preserving scalar dimension and causal-prefix order. */
+__global__ static void mimo2_audio_attn(
+        float *out, const float *q, const float *k, const float *v, int n) {
+    const int query = blockIdx.x;
+    if (query >= n * M2A_ATTN_HEADS) { return; }
+    const int tid = threadIdx.x;
+    const int row = query / M2A_ATTN_HEADS, head = query % M2A_ATTN_HEADS;
+    const int keys = row + 1;
+    extern __shared__ float shared[];
+    float *scores = shared;
+    float *qq = scores + n;
+    float *stats = qq + M2A_ATTN_HD;
+    if (tid < M2A_ATTN_HD) {
+        qq[tid] = q[(int64_t)row * M2A_ATTN_WIDTH + head * M2A_ATTN_HD + tid];
+    }
+    __syncthreads();
+
+    const float scale = rsqrtf((float)M2A_ATTN_HD);
+    for (int key = tid; key < keys; key += blockDim.x) {
+        const float *kk = k + (int64_t)key * M2A_ATTN_WIDTH + head * M2A_ATTN_HD;
+        float dot = 0.f;
+        for (int d = 0; d < M2A_ATTN_HD; d++) { dot += qq[d] * kk[d]; }
+        scores[key] = dot;
+    }
+    __syncthreads();
+    if (tid == 0) {
+        float maxv = -INFINITY;
+        for (int key = 0; key < keys; key++) { maxv = fmaxf(maxv, scores[key] * scale); }
+        stats[0] = maxv;
+    }
+    __syncthreads();
+    const float maxv = stats[0];
+    if (!isfinite(maxv)) {
+        if (tid < M2A_ATTN_HD) { out[(int64_t)query * M2A_ATTN_HD + tid] = NAN; }
+        return;
+    }
+
+    for (int key = tid; key < keys; key += blockDim.x) {
+        scores[key] = expf(scores[key] * scale - maxv);
+    }
+    __syncthreads();
+    if (tid == 0) {
+        float sum = 0.f;
+        for (int key = 0; key < keys; key++) { sum += scores[key]; }
+        stats[1] = sum;
+    }
+    __syncthreads();
+    if (tid >= M2A_ATTN_HD) { return; }
+
+    float acc = 0.f;
+    const float sum = stats[1];
+    if (sum > 0.f) {
+        for (int key = 0; key < keys; key++) {
+            const float w = scores[key] / sum;
+            const float value = v[(int64_t)key * M2A_ATTN_WIDTH + head * M2A_ATTN_HD + tid];
+            acc += w * value;
+        }
+    }
+    out[(int64_t)query * M2A_ATTN_HD + tid] = acc;
 }
 
 __global__ static void mimo2_bias(float *x, const float *bias, int n, int dim) {

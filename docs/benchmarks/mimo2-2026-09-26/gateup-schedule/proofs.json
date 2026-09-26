@@ -1,0 +1,249 @@
+{
+  "reference": "0-original",
+  "all_full_logits_and_tokens_exact": true,
+  "samples": [
+    {
+      "sample": 0,
+      "arm": "original",
+      "logits": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-0-original-sample-proof/frontier_008192.logits.json",
+        "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+        "count": 152576,
+        "exact_vs_first": true
+      },
+      "tokens": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-0-original-sample-proof/tokens-8192.json",
+        "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+        "count": 128,
+        "exact_vs_first": true
+      },
+      "guard": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-0-original-sample.memory.jsonl",
+        "sha256": "3b5bd691bb474e06b3faa533b9e7bafe870ea3dd47539ee25c3505ea47839640",
+        "exit": {
+          "time": 1790397118.0162146,
+          "event": "exit",
+          "unit": "ds4-hostguard-1919568-1790397100236047148.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 0,
+      "arm": "off",
+      "logits": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-0-off-sample-proof/frontier_008192.logits.json",
+        "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+        "count": 152576,
+        "exact_vs_first": true
+      },
+      "tokens": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-0-off-sample-proof/tokens-8192.json",
+        "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+        "count": 128,
+        "exact_vs_first": true
+      },
+      "guard": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-0-off-sample.memory.jsonl",
+        "sha256": "9134e6bd817aae04562ad3c1602093351843ba0b44d9e7a5e2855af7baf605fa",
+        "exit": {
+          "time": 1790397153.730675,
+          "event": "exit",
+          "unit": "ds4-hostguard-1919592-1790397135948567793.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 0,
+      "arm": "on",
+      "logits": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-0-on-sample-proof/frontier_008192.logits.json",
+        "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+        "count": 152576,
+        "exact_vs_first": true
+      },
+      "tokens": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-0-on-sample-proof/tokens-8192.json",
+        "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+        "count": 128,
+        "exact_vs_first": true
+      },
+      "guard": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-0-on-sample.memory.jsonl",
+        "sha256": "f2432e78d38e7fc65eca98fed754ecd9332f40d988c588bb42121ad1b8e98a1e",
+        "exit": {
+          "time": 1790397189.2194521,
+          "event": "exit",
+          "unit": "ds4-hostguard-1919647-1790397171431763911.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 1,
+      "arm": "original",
+      "logits": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-1-original-sample-proof/frontier_008192.logits.json",
+        "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+        "count": 152576,
+        "exact_vs_first": true
+      },
+      "tokens": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-1-original-sample-proof/tokens-8192.json",
+        "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+        "count": 128,
+        "exact_vs_first": true
+      },
+      "guard": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-1-original-sample.memory.jsonl",
+        "sha256": "71abe26e9e53277917a42b93d94a43b805125a2252425118fe1a4808f235ec08",
+        "exit": {
+          "time": 1790397260.886228,
+          "event": "exit",
+          "unit": "ds4-hostguard-1919729-1790397243132764364.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 1,
+      "arm": "off",
+      "logits": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-1-off-sample-proof/frontier_008192.logits.json",
+        "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+        "count": 152576,
+        "exact_vs_first": true
+      },
+      "tokens": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-1-off-sample-proof/tokens-8192.json",
+        "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+        "count": 128,
+        "exact_vs_first": true
+      },
+      "guard": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-1-off-sample.memory.jsonl",
+        "sha256": "cb401e0dbc1412f1d8a92a717287501f109b4ff73e416105cb91707b9b775342",
+        "exit": {
+          "time": 1790397296.7044618,
+          "event": "exit",
+          "unit": "ds4-hostguard-1919786-1790397278827919715.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 1,
+      "arm": "on",
+      "logits": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-1-on-sample-proof/frontier_008192.logits.json",
+        "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+        "count": 152576,
+        "exact_vs_first": true
+      },
+      "tokens": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-1-on-sample-proof/tokens-8192.json",
+        "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+        "count": 128,
+        "exact_vs_first": true
+      },
+      "guard": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-1-on-sample.memory.jsonl",
+        "sha256": "51cf15a941c23143e907f0018891fd74f8289a40bae2169ef377be1a39a1e2d2",
+        "exit": {
+          "time": 1790397225.0752532,
+          "event": "exit",
+          "unit": "ds4-hostguard-1919669-1790397206987806851.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 2,
+      "arm": "original",
+      "logits": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-2-original-sample-proof/frontier_008192.logits.json",
+        "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+        "count": 152576,
+        "exact_vs_first": true
+      },
+      "tokens": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-2-original-sample-proof/tokens-8192.json",
+        "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+        "count": 128,
+        "exact_vs_first": true
+      },
+      "guard": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-2-original-sample.memory.jsonl",
+        "sha256": "d5fc3890fbd3b8c142f374af90b69958d7324635b4aaa56cc2438f41c7013c74",
+        "exit": {
+          "time": 1790397404.6754975,
+          "event": "exit",
+          "unit": "ds4-hostguard-1919971-1790397386557915560.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 2,
+      "arm": "off",
+      "logits": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-2-off-sample-proof/frontier_008192.logits.json",
+        "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+        "count": 152576,
+        "exact_vs_first": true
+      },
+      "tokens": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-2-off-sample-proof/tokens-8192.json",
+        "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+        "count": 128,
+        "exact_vs_first": true
+      },
+      "guard": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-2-off-sample.memory.jsonl",
+        "sha256": "161efca97912e9b874683979de3915a1383cdb2dd5fec03eda35df237b6d574a",
+        "exit": {
+          "time": 1790397332.6731615,
+          "event": "exit",
+          "unit": "ds4-hostguard-1919810-1790397314869324366.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    },
+    {
+      "sample": 2,
+      "arm": "on",
+      "logits": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-2-on-sample-proof/frontier_008192.logits.json",
+        "sha256": "209c5214426b845bf10a3a60aec55e042d7e19bb73fffc82b086e8517dfa5fd0",
+        "count": 152576,
+        "exact_vs_first": true
+      },
+      "tokens": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-2-on-sample-proof/tokens-8192.json",
+        "sha256": "bde7847cec175cde7c4bf3d56820487af96a439f97f53641b8d12d784beeb733",
+        "count": 128,
+        "exact_vs_first": true
+      },
+      "guard": {
+        "path": "scratch/mimo-prefill-20260926/gateup3-2-on-sample.memory.jsonl",
+        "sha256": "28f5e93a7f3c4de14eddd41f6332321d9a9b9416027be64a97f563d64e7c3903",
+        "exit": {
+          "time": 1790397368.646052,
+          "event": "exit",
+          "unit": "ds4-hostguard-1919950-1790397350735932688.scope",
+          "status": 0,
+          "payload_status": 0
+        }
+      }
+    }
+  ]
+}

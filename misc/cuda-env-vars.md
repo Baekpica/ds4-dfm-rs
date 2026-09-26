@@ -152,6 +152,44 @@ The bandwidth figure is informational; we don't tier on it.
   for widths 32–8192 and the fixed 4096×2048, 256-expert/eight-route shape.
   Narrow decode and the existing down-sanitation diagnostic keep the old path.
 
+- `DS4_MIMO2_SUM_RESIDUAL=0` restores separate expert sum and residual
+  addition. Unset fuses these passes for widths 32–8192, preserving ordered
+  FP32 multiply/add rounding and the final residual addition. Narrow decode
+  retains the separate path; the existing dense-FFN scratch stays allocated.
+
+- `DS4_MIMO2_ATTN_RESIDUAL=0` restores separate attention-projection scaling
+  and residual addition. Unset fuses these passes for widths 32–8192,
+  preserving separate FP32 rounding of the `0.707f` multiplication and add.
+  The projection is not modified by fusion; narrow decode retains its old
+  path. See the [paired A/B evidence](../docs/benchmarks/mimo2-2026-09-26/README.md#attention-scale-and-residual-fusion).
+
+- `DS4_MIMO2_GATEUP_BOUNDED=0` restores the original IQ2 Gate/Up schedule.
+  Unset bounds compiler scheduling between adjacent-k32-pair fragments on
+  DGX Spark only, for M=2048, K=4096, 256 experts, top-k 8 and 2048–65536
+  routed assignments (256–8192 tokens). Other shapes, architectures and
+  narrow decode retain the original schedule. Cached on first use; compare
+  fresh processes. See the [paired A/B and resource costs](../docs/benchmarks/mimo2-2026-09-26/README.md#gateup-bounded-scheduling).
+
+- `DS4_MIMO2_VISION_ATTN=0` restores scalar full vision attention. The
+  default caches scores in shared memory for interleaved Q32/KV8/HD64,
+  1–8192 rows, without window, sink, causal or group masks. Other layouts
+  retain the original path. See the
+  [image A/B evidence](../docs/benchmarks/mimo2-media-2026-09-26/attn-score-cache/README.md).
+- `DS4_MIMO2_VISION_COALESCED=0` restores the retained full-vision score-cache
+  kernel for 512–3072 rows. The default stages K in a shared transpose tile
+  within the same full-attention layout/mask predicate; rows outside that
+  range retain the previous kernel. `DS4_MIMO2_VISION_ATTN=0` still disables
+  both paths. This adds 8448 bytes of shared memory per CTA; see the
+  [video qualification status and costs](../docs/benchmarks/mimo2-media-2026-09-26/video-attention/README.md).
+- `DS4_MIMO2_VISION_WINDOW=0` restores scalar windowed vision attention.
+  The default caches at most 129 scores for window 64 with sinks, using the
+  same interleaved Q32/KV8/HD64 layout and 1–8192-row limit as full attention.
+  Other windows, masks and layouts retain their existing paths. See the
+  [window attention evidence](../docs/benchmarks/mimo2-media-2026-09-26/window-score-cache/README.md).
+- `DS4_MIMO2_AUDIO_ATTN=0` restores scalar full causal codec attention.
+  The default caches causal-prefix scores for separate Q/K/V buffers with
+  16 heads, head dimension 64, stride 1024 and 1–8192 rows. Windowed/local
+  audio and other layouts retain their existing paths.
 - `DS4_MIMO2_DFLASH_CPU=1` restores host RMSNorm, RoPE and attention for
   MiMo's external five-layer DFlash drafter. Unset uses device kernels
   and shared K/V tiles. This control does not enable speculative decode;

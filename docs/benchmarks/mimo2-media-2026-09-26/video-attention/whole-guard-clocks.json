@@ -1,0 +1,35 @@
+{
+  "guard_returncode": 0,
+  "guard_exit": {
+    "time": 1790409039.3327584,
+    "event": "exit",
+    "unit": "ds4-hostguard-1978583-1790409014983322291.scope",
+    "status": 0,
+    "payload_status": 0
+  },
+  "effective_guard_gib": {
+    "max_gib": 14.5,
+    "high_gib": 13.5,
+    "reserve_gib": 12.0,
+    "trip_gib": 12.0
+  },
+  "requested_guard_gib": {
+    "max_gib": 24,
+    "high_gib": 21,
+    "reserve_gib": 12
+  },
+  "stop_after_export": true,
+  "export_completed_at": 1790409038.7186806,
+  "stop_requested_at": 1790409038.7189794,
+  "samples": 24,
+  "sm_mhz_observed": [
+    2190,
+    2197
+  ],
+  "busy_definition": "utilization >= 90%",
+  "busy_samples": 4,
+  "busy_sm_mhz": [
+    2190
+  ],
+  "clock_policy": "Observed only; user-managed 300–2200 MHz unchanged."
+}

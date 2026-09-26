@@ -1,0 +1,55 @@
+{
+  "base_commit": "e06d1f305e8f64d206dc32e6b14969d7af749e65",
+  "accepted": true,
+  "default": "on",
+  "switch": "DS4_MIMO2_GATEUP_BOUNDED",
+  "build": "make -j2 ds4-bench-perf; original compiler flags, full MMQ rebuild",
+  "source": {
+    "cuda/mmq/ds4_mmq.cu": "9107e107b80457c30687a180cbb70b23a28d5fd33661d8429269f03f2c53b23d",
+    "cuda/mmq/ds4_mmq_d2r.cu": "e7e22fd24a928f56d37077eb98fc7bade7249777bbe7eb0e088ca65fdfd1ed8e",
+    "cuda/mmq/ds4_mmq_d2r.cuh": "983d0a7e87a45f542e5057821c4efbf574b186bc79bc44cb87f168faed6c6268",
+    "tests/test_motif3_cuda.cu": "eebecf5eb5887a995cca052549206c5ee988ab57b4a8041e57762e5e772b508e",
+    "tests/mimo2_gateup_schedule.cu": "d6862128733796630ce67a7513925f6e29ebafee43e4c4f06d90edc0f8b472f5"
+  },
+  "binary": {
+    "original": {
+      "path": "scratch/mimo-prefill-20260926/bench-scale-candidate",
+      "sha256": "9c9395a18c0731e9c772e2949ac7af04fd9427ab66d33545fc6979780b72c8a5"
+    },
+    "candidate": {
+      "path": "scratch/mimo-prefill-20260926/bench-gateup3-candidate",
+      "sha256": "290a9f5e25e8b83dd96779ba4b85cd48ab5b13381a634586e77171f59490ca0d"
+    }
+  },
+  "scope": "DGX Spark, IQ2_XXS pair M2048/K4096/E256/topk8, 2048..65536 routed assignments",
+  "decision": "Three fresh pairs improve prefill (+0.9425% median versus retained R2), exact full logits/tokens in all9samples, no decode regression. Extra instructions weighed against lower spill and total L2 traffic; no extra tensor/workspace allocations.",
+  "workload": "workload.json",
+  "round": 3,
+  "raw_receipt": {
+    "path": "scratch/mimo-prefill-20260926/gateup3-experiment.json",
+    "sha256": "77eb1194f1bf52f196653cff0a728017e63db2a0b3e88f73bbebf3d6fa79a888"
+  },
+  "evidence": {
+    "ab": "ab.json",
+    "proofs": "proofs.json",
+    "isolated": "isolated-result.json",
+    "nsys": "nsys-before.json",
+    "dispatch": "dispatch.json",
+    "clocks": "clocks.json"
+  },
+  "resource_tradeoff": {
+    "total_instructions_pct": 2.2885731489701846,
+    "shared_load_instructions_pct": 19.6993549547199,
+    "shared_load_wavefronts_pct": 0.6388242395833611,
+    "register_spill_instructions_pct": -52.94117647058823,
+    "local_load_and_store_sectors_pct": -52.94117647058823,
+    "total_l2_sectors_pct": -18.767434862280336,
+    "tensor_int8_operations_pct": 0,
+    "global_load_and_store_sectors_pct": 0,
+    "registers_per_thread": 128,
+    "static_shared_bytes": 37744,
+    "dynamic_shared_bytes": 0,
+    "tensor_or_workspace_allocations_added": 0,
+    "limits": "Counts do not establish unchanged scalar arithmetic or a measured DRAM-byte total."
+  }
+}

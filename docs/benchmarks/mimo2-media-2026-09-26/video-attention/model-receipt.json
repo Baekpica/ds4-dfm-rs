@@ -1,0 +1,748 @@
+{
+  "scope": "Model correctness only; no speed claim",
+  "video": {
+    "arms": {
+      "original": {
+        "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-audio-r1-lnfix-candidate/proof",
+        "knob": null
+      },
+      "off": {
+        "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-video-r1-candidate/proof",
+        "knob": "0"
+      },
+      "on": {
+        "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-video-r1-candidate/proof",
+        "knob": "1"
+      }
+    },
+    "knob": "DS4_MIMO2_VISION_COALESCED",
+    "cases": [
+      "eval-finevideo-29-3",
+      "eval-finevideo-31-0"
+    ],
+    "order": [
+      "original",
+      "off",
+      "on"
+    ],
+    "binary_hashes": {
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-video-r1-candidate/proof": {
+        "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-video-r1-candidate/proof",
+        "bytes": 57533752,
+        "sha256": "88d8858dd169cec7f30aec953bb26c1d2f6a40fd3e67cf37448f5ccbe647be1c"
+      },
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-audio-r1-lnfix-candidate/proof": {
+        "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-audio-r1-lnfix-candidate/proof",
+        "bytes": 57533096,
+        "sha256": "72e8d3573e22de4d179deb04a7e5d3d922f4efff684cd7f76460a46b4a428ee8"
+      }
+    },
+    "binary_stamps": {
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-video-r1-candidate/proof": [
+        66306,
+        158341211,
+        57533752,
+        1790410380734009074
+      ],
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-av-audio-r1-lnfix-candidate/proof": [
+        66306,
+        158340417,
+        57533096,
+        1790408501011313978
+      ]
+    },
+    "owner_manifest": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/owner4.ipc",
+      "bytes": 28311,
+      "sha256": "767a47117fae9a228c7ab46ab6f6f9e0e19d3142fb79d6266262fc4e6fa8c897"
+    },
+    "request_index": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/av-requests/index.json",
+      "bytes": 13486,
+      "sha256": "bb174a4b4ccac3765b47be0f122349a1aceecfc2549e116e32761eb0e5f4cced"
+    },
+    "script": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/run-av-proof.py",
+      "bytes": 16080,
+      "sha256": "657b7eb4ddd3b605a0771fec9444789c6f03b11598cfae666a1259a396131222"
+    },
+    "helpers": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/run-av-ab.py",
+      "bytes": 21492,
+      "sha256": "2bd0a70746c02537438cc32be6b546f66f797298cecfe247b11af7ef53948f1f"
+    },
+    "guard": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/tools/host_memory_guard.py",
+      "bytes": 11053,
+      "sha256": "e9bb7be22aaadc2a042c6b562c2250922c77acabf253fdc7582a3bbacdeb65f1"
+    },
+    "fixtures": {
+      "eval-finevideo-29-3": {
+        "id": "eval-finevideo-29-3",
+        "modality": "video",
+        "request_path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/av-requests/eval-finevideo-29-3.json",
+        "request_bytes": 242301,
+        "request_sha256": "2a6ab6413a1e87409131b90b0fd079bb88363b285ee2a2739dfe284cc7979bce",
+        "input_path": "/home/sunghoon/workspace/ds4-exaone/mimo-v2-6-flash-rl-spark-handoff/handoff/calibration/media/finevideo/fv-029-03.mp4",
+        "input_bytes": 181479,
+        "input_sha256": "46db77275c9ea748a522bdc620a66c48abe39a5cc0db919d68ce249a4d241324",
+        "prompt": "Describe the sequence of visible events in this video.",
+        "max_tokens": 128,
+        "reference_transcript": null,
+        "video_annotation": "Liz Rose's hands are shown in close-up, delicately manipulating an unseen object.",
+        "source_record": {
+          "id": "eval-finevideo-29-3",
+          "category": "video",
+          "path": "/root/mimo-work/handoff/calibration/media/finevideo/fv-029-03.mp4",
+          "prompt": "Describe the sequence of visible events in this video.",
+          "answer": "",
+          "source": {
+            "repo": "HuggingFaceFV/finevideo",
+            "file": "train-00000-of-01357.parquet",
+            "row": 29,
+            "original_video_filename": "7yY1OWjT4zA.mp4",
+            "start_seconds": 0.0,
+            "end_seconds": 4.0,
+            "activity_annotation": "Liz Rose's hands are shown in close-up, delicately manipulating an unseen object.",
+            "original_video_sha256": "bcd9a41920f424b08a6a26f3a2b8d195ef5a1dc5856dd04c2f80a63485df4661"
+          },
+          "duration": 4.0,
+          "sha256": "46db77275c9ea748a522bdc620a66c48abe39a5cc0db919d68ce249a4d241324"
+        },
+        "dataset": {
+          "repo": "HuggingFaceFV/finevideo",
+          "type": "dataset",
+          "revision": "84c74091e1c6ee7a5dffabfafb5c9033e4718883",
+          "file": "data/train-00000-of-01357.parquet",
+          "bytes": 493919884,
+          "sha256": "607bc6f45f6c4dcf27950abaf81eea58d7d50e2defd077efd0740647cf88baed"
+        },
+        "input_metadata": {
+          "programs": [],
+          "streams": [
+            {
+              "codec_name": "h264",
+              "codec_type": "video",
+              "width": 640,
+              "height": 360,
+              "avg_frame_rate": "30/1",
+              "bits_per_raw_sample": "8",
+              "nb_frames": "120"
+            }
+          ],
+          "format": {
+            "duration": "4.000000"
+          }
+        },
+        "temporal_check": {
+          "argv": [
+            "/usr/bin/ffmpeg",
+            "-v",
+            "error",
+            "-threads",
+            "1",
+            "-i",
+            "/home/sunghoon/workspace/ds4-exaone/mimo-v2-6-flash-rl-spark-handoff/handoff/calibration/media/finevideo/fv-029-03.mp4",
+            "-vf",
+            "fps=2,scale=640:352:flags=bilinear",
+            "-an",
+            "-pix_fmt",
+            "rgb24",
+            "-f",
+            "framemd5",
+            "pipe:1"
+          ],
+          "sampled_fps": 2,
+          "resized_width": 640,
+          "resized_height": 352,
+          "sampled_frames": 8,
+          "distinct_frame_hashes": 8,
+          "visual_pairs": 4,
+          "raw_rgb_bytes": 5406720,
+          "frame_md5": [
+            "f5d47bc29d26ddfc363a1599e0ff693c",
+            "6aa596a9ec3a3c30a22f54444cc87797",
+            "6c27ccb77fa662956c784415dad7a27c",
+            "90ed04393dabb0d85d4356f54eccb05e",
+            "bd728834a63983857e8f2ed238546e9d",
+            "23c0ffab632499733f34f640e8f017c7",
+            "56abf2982b72972937cd19572dd26868",
+            "9688214d1f0defa983d885b7c5e16238"
+          ],
+          "note": "Frame differences confirm non-static content. The activity annotation is inherited metadata, not an independently verified model answer."
+        }
+      },
+      "eval-finevideo-31-0": {
+        "id": "eval-finevideo-31-0",
+        "modality": "video",
+        "request_path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/av-requests/eval-finevideo-31-0.json",
+        "request_bytes": 2617557,
+        "request_sha256": "e6020308aa058364ff9aa08efdd62347c2028ffadc27f99ce7a76ec56edfddb7",
+        "input_path": "/home/sunghoon/workspace/ds4-exaone/mimo-v2-6-flash-rl-spark-handoff/handoff/calibration/media/finevideo/fv-031-00.mp4",
+        "input_bytes": 1962919,
+        "input_sha256": "9061c7e96cd3e4f6f66fcbddb02f951c3b946ca0444995bcb5aa5435bfc98ae3",
+        "prompt": "Describe the sequence of visible events in this video.",
+        "max_tokens": 128,
+        "reference_transcript": null,
+        "video_annotation": "News report details the land subsidence after the March 11th earthquake.",
+        "source_record": {
+          "id": "eval-finevideo-31-0",
+          "category": "video",
+          "path": "/root/mimo-work/handoff/calibration/media/finevideo/fv-031-00.mp4",
+          "prompt": "Describe the sequence of visible events in this video.",
+          "answer": "",
+          "source": {
+            "repo": "HuggingFaceFV/finevideo",
+            "file": "train-00000-of-01357.parquet",
+            "row": 31,
+            "original_video_filename": "FqaJYWyQQcE.mp4",
+            "start_seconds": 13.0,
+            "end_seconds": 26.0,
+            "activity_annotation": "News report details the land subsidence after the March 11th earthquake.",
+            "original_video_sha256": "5f8448e05e5fbc4809d8d79d99f26e254817abce6db4f9cc36a8ff13eb4e77ec"
+          },
+          "duration": 13.0,
+          "sha256": "9061c7e96cd3e4f6f66fcbddb02f951c3b946ca0444995bcb5aa5435bfc98ae3"
+        },
+        "dataset": {
+          "repo": "HuggingFaceFV/finevideo",
+          "type": "dataset",
+          "revision": "84c74091e1c6ee7a5dffabfafb5c9033e4718883",
+          "file": "data/train-00000-of-01357.parquet",
+          "bytes": 493919884,
+          "sha256": "607bc6f45f6c4dcf27950abaf81eea58d7d50e2defd077efd0740647cf88baed"
+        },
+        "input_metadata": {
+          "programs": [],
+          "streams": [
+            {
+              "codec_name": "h264",
+              "codec_type": "video",
+              "width": 640,
+              "height": 362,
+              "avg_frame_rate": "30/1",
+              "bits_per_raw_sample": "8",
+              "nb_frames": "390"
+            }
+          ],
+          "format": {
+            "duration": "13.000000"
+          }
+        },
+        "temporal_check": {
+          "argv": [
+            "/usr/bin/ffmpeg",
+            "-v",
+            "error",
+            "-threads",
+            "1",
+            "-i",
+            "/home/sunghoon/workspace/ds4-exaone/mimo-v2-6-flash-rl-spark-handoff/handoff/calibration/media/finevideo/fv-031-00.mp4",
+            "-vf",
+            "fps=2,scale=640:352:flags=bilinear",
+            "-an",
+            "-pix_fmt",
+            "rgb24",
+            "-f",
+            "framemd5",
+            "pipe:1"
+          ],
+          "sampled_fps": 2,
+          "resized_width": 640,
+          "resized_height": 352,
+          "sampled_frames": 26,
+          "distinct_frame_hashes": 26,
+          "visual_pairs": 13,
+          "raw_rgb_bytes": 17571840,
+          "frame_md5": [
+            "6e0ff0e4e7aa610e1173100b2a6638fe",
+            "bed5a1e5e3e680690eca9ef0b9252870",
+            "22380b01b38138e34562b1aaf80d8839",
+            "94722cb3f7e78e192304ae8e31059448",
+            "7e1882380a23154a9765f4cb3ecc191d",
+            "f6b2b2e2e490fa76b1902b1ef5ec7fad",
+            "12ad5100efca91eb8cf81c316081afc6",
+            "e39b8df78c9ec38097f440d2339462f5",
+            "1fde2d1a2f167463281f303311c6f183",
+            "7ca94cf215e9e8b72df081e95e57b63f",
+            "6924b0c37397e186a2f7ef75c9596bf2",
+            "62ab4e5c53ae08b61c78091ac7a1264f",
+            "8176f66687ca213fb93f62151c0f8e13",
+            "9cc3a41e9f42026296560f03c6bd90f7",
+            "74fd6846080417eab57625cebee90d85",
+            "1007f79e4bdf5733b807cb1a347f59fe",
+            "93309456533a72f3b76e64520b93cbc9",
+            "945fa2d3ba11324033c3ee25daf55004",
+            "8d0b0394caf3e6bc6e3401e2c2608dc1",
+            "a364e2776d7310f66da72b95d5aee627",
+            "ad2d2d545a2b3a0ae2d51ad3b1fb0de2",
+            "7b787990716c9b1cb5ee7daa13c52189",
+            "a33760843c0a8dfbdbffa56b279cbbb9",
+            "c695887088a0aae1f5fbaf27709c6d07",
+            "897e5e9fe214ef5d967e05c71189dd56",
+            "3b3b80ab51ce2a496a8dd5e68de90547"
+          ],
+          "note": "Frame differences confirm non-static content. The activity annotation is inherited metadata, not an independently verified model answer."
+        }
+      }
+    },
+    "model": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+    "projector": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+    "shape": {
+      "context": 8192,
+      "mtp_draft_tokens": 1,
+      "max_tokens": 128
+    },
+    "timing_scope": "proof only; no A/B speed claim",
+    "dry_run": false
+  },
+  "images": {
+    "cases": [
+      "screen",
+      "photo",
+      "document"
+    ],
+    "knob": "DS4_MIMO2_VISION_COALESCED",
+    "binaries": {
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-image-video-r1-original/proof": {
+        "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-image-video-r1-original/proof",
+        "bytes": 57630936,
+        "sha256": "4946d5fbd7b176644fe6a02c6425f5e6d0b67a5d84f416f2dcc9898ea6d6675b"
+      },
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-image-video-r1-candidate/proof": {
+        "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-image-video-r1-candidate/proof",
+        "bytes": 57631888,
+        "sha256": "c5bd2e3ab92d8d5380e3ed6cb1badaead304589527727eacb41dc7297c951cc5"
+      }
+    },
+    "binary_stamps": {
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-image-video-r1-original/proof": [
+        66306,
+        158341140,
+        57630936,
+        1790410198019032808
+      ],
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/proof-image-video-r1-candidate/proof": [
+        66306,
+        158341249,
+        57631888,
+        1790410383301983327
+      ]
+    },
+    "owner_manifest": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/owner4.ipc",
+      "bytes": 28311,
+      "sha256": "767a47117fae9a228c7ab46ab6f6f9e0e19d3142fb79d6266262fc4e6fa8c897"
+    },
+    "requests": {
+      "screen": {
+        "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/request-screen.json",
+        "bytes": 73193,
+        "sha256": "8a861c34fd7ef7d58fd94486ec0f37a118cb2819da4d804adb4072eab83c16d7"
+      },
+      "photo": {
+        "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/request-photo.json",
+        "bytes": 61470,
+        "sha256": "ae8b14dbad41655f56bfbcd4f726e7f71cfecd3293007ff47b36293072f43700"
+      },
+      "document": {
+        "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/media-proof/request-document.json",
+        "bytes": 99809,
+        "sha256": "3d01e1f819e52592ae11abd2602c6c4be89000312b45bdbaae149daa6d641176"
+      }
+    },
+    "script": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/run-image-proof-video-r1.py",
+      "bytes": 10152,
+      "sha256": "006aaabd0f403a63beb26aa7508e24fbfae1e6f89ede75360e9fbf5abc05641f"
+    },
+    "helper": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/run-av-proof.py",
+      "bytes": 16080,
+      "sha256": "657b7eb4ddd3b605a0771fec9444789c6f03b11598cfae666a1259a396131222"
+    },
+    "worker_helper": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/run-av-ab.py",
+      "bytes": 21492,
+      "sha256": "2bd0a70746c02537438cc32be6b546f66f797298cecfe247b11af7ef53948f1f"
+    },
+    "scope": "Nine fresh full-logit image proofs; no timing claim"
+  },
+  "artifacts": [
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-29-3-original/guard-exit.json",
+      "bytes": 2707,
+      "sha256": "d277976ee86643dab21de94366ec3acdbc67acf6c1a0716c157ac9a328d522e0"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-29-3-original/launch.json",
+      "bytes": 1346,
+      "sha256": "1ff8736275bc405d85a78b9806ef9884868fdeadebb5c8c26f3dd0142c6c5d7e"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-29-3-original/clocks.jsonl",
+      "bytes": 7299,
+      "sha256": "7d9cbecc0125e2158af47d036e9c091ee2e718108ebeeec40972d45ef491c60a"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-29-3-original/proof/result.json",
+      "bytes": 2774,
+      "sha256": "97a26c083e210245fb6f29bea957a9c9b98754cad4f722ee02273d955dc6c191"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-29-3-original/proof/logits.f32le",
+      "bytes": 610304,
+      "sha256": "991cebc62903ac1c02ce87d398e2a1de2501bd2e11ed006f0b68f65fa05b2f3e"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-29-3-off/guard-exit.json",
+      "bytes": 2677,
+      "sha256": "8fee9511f584302cecd5bbf11df6672bbf3d53380affbba3cd848b995f9719cb"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-29-3-off/launch.json",
+      "bytes": 1369,
+      "sha256": "717c327121e9f2edb248013a2d22e42b9c395cfa4608a914f65a336af50fed73"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-29-3-off/clocks.jsonl",
+      "bytes": 7904,
+      "sha256": "bef7e332143c1777af1b5b372cd75e14605caca9916a37276629778a7ef860ea"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-29-3-off/proof/result.json",
+      "bytes": 2769,
+      "sha256": "7323546047ba8db1f06d0a78d41a92cdf9736010ec56c5e1f333673421aa49c8"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-29-3-off/proof/logits.f32le",
+      "bytes": 610304,
+      "sha256": "991cebc62903ac1c02ce87d398e2a1de2501bd2e11ed006f0b68f65fa05b2f3e"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-29-3-on/guard-exit.json",
+      "bytes": 2673,
+      "sha256": "7e33a54b38c374ed85c66921796b12b95900aa81af7db32e230934135e3c4dd2"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-29-3-on/launch.json",
+      "bytes": 1367,
+      "sha256": "2b8d1180673cc76ade9268eb814b1cafd3eff2d5d71fe96776c471cd9004354d"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-29-3-on/clocks.jsonl",
+      "bytes": 7907,
+      "sha256": "2ce4db2d79359adb28ea80cc3e4c1f9c57ad030f027e08b12f90746598f3cfab"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-29-3-on/proof/result.json",
+      "bytes": 2761,
+      "sha256": "8b217d213167109b7fd337965a90a9a3a684ea3bab15e4724995106ccebd6ca4"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-29-3-on/proof/logits.f32le",
+      "bytes": 610304,
+      "sha256": "991cebc62903ac1c02ce87d398e2a1de2501bd2e11ed006f0b68f65fa05b2f3e"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-31-0-original/guard-exit.json",
+      "bytes": 2706,
+      "sha256": "bce3e59edc153d5fd9d0c80872ec59b44d67954cd3075ce49cf15b476c861cf2"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-31-0-original/launch.json",
+      "bytes": 1346,
+      "sha256": "f886bf595144f3ac4c528af742c0ad824abdce63d1d138faa953519067c35029"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-31-0-original/clocks.jsonl",
+      "bytes": 9733,
+      "sha256": "c458311457cf0ced71ac3bc74c4e6d9cf7416a9d17c35f087023020855477136"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-31-0-original/proof/result.json",
+      "bytes": 2673,
+      "sha256": "915d3dd4e862ca5f248de667a0aa977e97421777be5a14c10921a9c042ed4280"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-31-0-original/proof/logits.f32le",
+      "bytes": 610304,
+      "sha256": "1c884d151fc51c2e03cd0ab18c48051858e17339dc0294855dbb4c1e657c90fc"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-31-0-off/guard-exit.json",
+      "bytes": 2676,
+      "sha256": "1688e89572cd2e8aca73864ca819885c623ff8812002a8cd3bfadd33fdf948f5"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-31-0-off/launch.json",
+      "bytes": 1369,
+      "sha256": "7b9a0d925e71bff59606966396b5116e67c1ea6d58ab79334a2c4026ed4332e5"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-31-0-off/clocks.jsonl",
+      "bytes": 9729,
+      "sha256": "879337137d96f6fdee773014a7c9e8b4cbfbded83a1e4500b806c6a1a1f17480"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-31-0-off/proof/result.json",
+      "bytes": 2680,
+      "sha256": "85edbbcd9b3dec283447b2a03c7ddb2f9f135715af4e56bbeb29cb2dda0eb12f"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-31-0-off/proof/logits.f32le",
+      "bytes": 610304,
+      "sha256": "1c884d151fc51c2e03cd0ab18c48051858e17339dc0294855dbb4c1e657c90fc"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-31-0-on/guard-exit.json",
+      "bytes": 2671,
+      "sha256": "3027e529c6b77e3b92a2b81f5e104342c1b7862c0fae2004abf607a47619f90a"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-31-0-on/launch.json",
+      "bytes": 1367,
+      "sha256": "9093e83ca87d4e044f534899e79bb6fd611e0c8f7820595b3d34bd43e75c0dcb"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-31-0-on/clocks.jsonl",
+      "bytes": 9728,
+      "sha256": "80956b699f2a1080c6bedb196fe74ca2a332a94f6495bfdc3703b896453a9f54"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-31-0-on/proof/result.json",
+      "bytes": 2672,
+      "sha256": "1586b31acab5a539a048ea941a4c01c3594d48ddddd6f6d1354bcceeb98206d2"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/model-proof/eval-finevideo-31-0-on/proof/logits.f32le",
+      "bytes": 610304,
+      "sha256": "1c884d151fc51c2e03cd0ab18c48051858e17339dc0294855dbb4c1e657c90fc"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/screen-original/guard-exit.json",
+      "bytes": 1348,
+      "sha256": "f778ecbad5348f2d03f732cdde0a589d5278558b65a68a6f1b81c1a9b03d6348"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/screen-original/launch.json",
+      "bytes": 1303,
+      "sha256": "ed4d482ac4a4ec1409cc9a5127d3dfad608f87475580fbb9a3089f838fd51b28"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/screen-original/clocks.jsonl",
+      "bytes": 6687,
+      "sha256": "90980298f6cf841a6b0811e835fc7d8dabbc607276d9acf3c68a9615e3148492"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/screen-original/proof/result.json",
+      "bytes": 1805,
+      "sha256": "bce09d271a9d84ddaa8a7f4c7170b7704a1eabd7b339e37eeb8ddb5c1a38e391"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/screen-original/proof/logits.f32le",
+      "bytes": 610304,
+      "sha256": "c13b181981ad63af77de9c96e032d79e5d701661a9cea2091d2b3044df62193f"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/screen-off/guard-exit.json",
+      "bytes": 1344,
+      "sha256": "91de68a623dc998b4f7f217d77078bd2657eb89a47cc602b4165a713bd101739"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/screen-off/launch.json",
+      "bytes": 1333,
+      "sha256": "08e7e351c1f26a0d7446766543f13a28e5d102ceb8d3f6e08769e86fc98d4845"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/screen-off/clocks.jsonl",
+      "bytes": 6690,
+      "sha256": "867221627822c4ca6bbd3147d741d438fac25ba101287330d41167f6f99b0ed1"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/screen-off/proof/result.json",
+      "bytes": 1798,
+      "sha256": "2707807e0ea6b65298cb9757e02edaffb91d43f9471dc31414682702f4fd8844"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/screen-off/proof/logits.f32le",
+      "bytes": 610304,
+      "sha256": "c13b181981ad63af77de9c96e032d79e5d701661a9cea2091d2b3044df62193f"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/screen-on/guard-exit.json",
+      "bytes": 1344,
+      "sha256": "360d30ea5e29127c9c5d1699227552020bd65b0cdc8690183a4e06933ab3bc2a"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/screen-on/launch.json",
+      "bytes": 1331,
+      "sha256": "d9fb6147cfc65231705ee9ea5f78d0773a70463249c849ec86fc4bf0535f9acd"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/screen-on/clocks.jsonl",
+      "bytes": 6688,
+      "sha256": "9d7781b8d1d3d8a40bb6b2e9a56b03e0b739f8ab2ab8fc3cc9dae21cedc928e8"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/screen-on/proof/result.json",
+      "bytes": 1790,
+      "sha256": "e044d3f13fefe90aabe61907a504cc41edfc916a633d67c78dbee53da6b9dcd8"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/screen-on/proof/logits.f32le",
+      "bytes": 610304,
+      "sha256": "c13b181981ad63af77de9c96e032d79e5d701661a9cea2091d2b3044df62193f"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/photo-original/guard-exit.json",
+      "bytes": 1346,
+      "sha256": "ea6b9c53c9c3e84f0ef47586ca70e2aecd2241ee7ba869d562d5ddf870d700bf"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/photo-original/launch.json",
+      "bytes": 1300,
+      "sha256": "e478f62b25444b075ddf25f6a14cd6628a4e10655deb867443a427422503f575"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/photo-original/clocks.jsonl",
+      "bytes": 5469,
+      "sha256": "65a4d694ebffcb9a3b476e7cd8f9ded40594ed5b1281b7e875f4f0f3dfb4150a"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/photo-original/proof/result.json",
+      "bytes": 1837,
+      "sha256": "a3a7613200ea748960671fb23f39a1b8ccaa9e4ccbf762b957ec6fbf54ab8e83"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/photo-original/proof/logits.f32le",
+      "bytes": 610304,
+      "sha256": "38063ff5897d97237120b2853a47ba7bfabed8204b07f7d64383186a85dab7ed"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/photo-off/guard-exit.json",
+      "bytes": 1342,
+      "sha256": "9597d7b331f1b3aff47e1bf33ade5554e1d41a5d6ecb02d90aa290deaedaa74b"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/photo-off/launch.json",
+      "bytes": 1330,
+      "sha256": "15299cb7928c81142afa086f85433091486894ab1432a773cf2725691882878b"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/photo-off/clocks.jsonl",
+      "bytes": 5470,
+      "sha256": "ebab66329ce8e2e4aae2b78d2a72e7d89365eda7600ae329a8a680850a99e557"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/photo-off/proof/result.json",
+      "bytes": 1838,
+      "sha256": "f20ecbf905acd888793b4b5e060c86ee3317d6ca9185a3d1fa1c46d1d70aee79"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/photo-off/proof/logits.f32le",
+      "bytes": 610304,
+      "sha256": "38063ff5897d97237120b2853a47ba7bfabed8204b07f7d64383186a85dab7ed"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/photo-on/guard-exit.json",
+      "bytes": 1342,
+      "sha256": "7f2ac1ab413a9d7234b2ac701124e5ae63a7cd723cf539a60d319f84b8499c78"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/photo-on/launch.json",
+      "bytes": 1328,
+      "sha256": "4ca9f23eead5981306cdb0d581337abbba4a4be0c86b012662b5b9eb469d88f0"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/photo-on/clocks.jsonl",
+      "bytes": 5471,
+      "sha256": "be6bed97a9df03b8c0ccbd665f00d8e3885954b9c6ab8a168e2312d3964ef55c"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/photo-on/proof/result.json",
+      "bytes": 1836,
+      "sha256": "06e1138ad1c2ca074d0d321521417150e8c1c98de303fa601a834f84a34d452d"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/photo-on/proof/logits.f32le",
+      "bytes": 610304,
+      "sha256": "38063ff5897d97237120b2853a47ba7bfabed8204b07f7d64383186a85dab7ed"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/document-original/guard-exit.json",
+      "bytes": 1352,
+      "sha256": "a6b1be5b121fdd46287bc291230e2f91ca667d4d9a8dbba784441c77c13e6ada"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/document-original/launch.json",
+      "bytes": 1309,
+      "sha256": "54fe5bd360609f4666f4b2ee8034480ea0e5d9368c26595796f5bcf591f90986"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/document-original/clocks.jsonl",
+      "bytes": 9734,
+      "sha256": "f86f5e01eed25507a327dd9545729b685ecb4c6be9fdaccfb4849b5f2245a158"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/document-original/proof/result.json",
+      "bytes": 1670,
+      "sha256": "5e98165de2d3239abdd0b16e0fd091baaad95af31c965b3b8b90e859d12b05e1"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/document-original/proof/logits.f32le",
+      "bytes": 610304,
+      "sha256": "f1fb69feff69b627416ec7a17a1dffeca365a11ccf2a9ea7cc6c98959f4ab9e0"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/document-off/guard-exit.json",
+      "bytes": 1348,
+      "sha256": "151d8b93070ea69129d1eb3cd584c054276fb50e3aea73721fca27a0ce20feab"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/document-off/launch.json",
+      "bytes": 1339,
+      "sha256": "c479523e6e2aa5019200c62fef6c25913cdf77e772bfac267fc44e7a1d625fdd"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/document-off/clocks.jsonl",
+      "bytes": 9730,
+      "sha256": "f6fa5b3067ecafbc2cec23b65408125ae9088c316d1b5200db57f37659015c2b"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/document-off/proof/result.json",
+      "bytes": 1677,
+      "sha256": "0e1f549b1813769f88324a0628c9fa346ba79c28779b452308620a57bb80f59e"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/document-off/proof/logits.f32le",
+      "bytes": 610304,
+      "sha256": "f1fb69feff69b627416ec7a17a1dffeca365a11ccf2a9ea7cc6c98959f4ab9e0"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/document-on/guard-exit.json",
+      "bytes": 1347,
+      "sha256": "3dea01aac6961a8d4e696e30b41f14ce83d4f54b3275e1862be81bcc8da57408"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/document-on/launch.json",
+      "bytes": 1337,
+      "sha256": "d2209150b2dd01afc3e5e4f891858b55fb4b50dbd3ed9377b48040df4e315af4"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/document-on/clocks.jsonl",
+      "bytes": 9119,
+      "sha256": "0885474ac320dcc3069dc1672d0d05b2bef9e0ccf78829d0a19728064897598c"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/document-on/proof/result.json",
+      "bytes": 1670,
+      "sha256": "07c7be59aa7dbee9b7235fbb651764dc8b28392c223b6f7c0a365eaf4feb53ef"
+    },
+    {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/image-proof/document-on/proof/logits.f32le",
+      "bytes": 610304,
+      "sha256": "f1fb69feff69b627416ec7a17a1dffeca365a11ccf2a9ea7cc6c98959f4ab9e0"
+    }
+  ]
+}

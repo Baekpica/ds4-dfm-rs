@@ -1,0 +1,929 @@
+{
+  "video": {
+    "arms": {
+      "original": {
+        "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-audio-r1/lnfix-candidate/ds4-server",
+        "env": {
+          "DS4_MIMO2_VISION_COALESCED": null
+        },
+        "stamp": [
+          66306,
+          158340372,
+          59743784,
+          1790408498582319684
+        ]
+      },
+      "off": {
+        "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/native-candidate/ds4-server",
+        "env": {
+          "DS4_MIMO2_VISION_COALESCED": "0"
+        },
+        "stamp": [
+          66306,
+          158341164,
+          59744240,
+          1790410378112035431
+        ]
+      },
+      "on": {
+        "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/native-candidate/ds4-server",
+        "env": {
+          "DS4_MIMO2_VISION_COALESCED": null
+        },
+        "stamp": [
+          66306,
+          158341164,
+          59744240,
+          1790410378112035431
+        ]
+      }
+    },
+    "round_orders": [
+      [
+        "original",
+        "off",
+        "on"
+      ],
+      [
+        "on",
+        "original",
+        "off"
+      ],
+      [
+        "off",
+        "on",
+        "original"
+      ]
+    ],
+    "cases": [
+      "eval-finevideo-29-3",
+      "eval-finevideo-31-0"
+    ],
+    "owner_manifest": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/owner4.ipc",
+    "owner_manifest_sha256": "767a47117fae9a228c7ab46ab6f6f9e0e19d3142fb79d6266262fc4e6fa8c897",
+    "binary_sha256": {
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/native-candidate/ds4-server": "c201531ec15347a46c7dae0b8bbbcc6a0e196538297ac99d60fe0d66ed3a5ada",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-audio-r1/lnfix-candidate/ds4-server": "242de9bc641afaa39c6a86cf8df19dc1e989ba2840f72be1bba164994aaa0ef5"
+    },
+    "request_index": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/av-requests/index.json",
+    "request_index_sha256": "bb174a4b4ccac3765b47be0f122349a1aceecfc2549e116e32761eb0e5f4cced",
+    "fixtures": {
+      "eval-finevideo-29-3": {
+        "id": "eval-finevideo-29-3",
+        "modality": "video",
+        "request_path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/av-requests/eval-finevideo-29-3.json",
+        "request_bytes": 242301,
+        "request_sha256": "2a6ab6413a1e87409131b90b0fd079bb88363b285ee2a2739dfe284cc7979bce",
+        "input_path": "/home/sunghoon/workspace/ds4-exaone/mimo-v2-6-flash-rl-spark-handoff/handoff/calibration/media/finevideo/fv-029-03.mp4",
+        "input_bytes": 181479,
+        "input_sha256": "46db77275c9ea748a522bdc620a66c48abe39a5cc0db919d68ce249a4d241324",
+        "prompt": "Describe the sequence of visible events in this video.",
+        "max_tokens": 128,
+        "reference_transcript": null,
+        "video_annotation": "Liz Rose's hands are shown in close-up, delicately manipulating an unseen object.",
+        "source_record": {
+          "id": "eval-finevideo-29-3",
+          "category": "video",
+          "path": "/root/mimo-work/handoff/calibration/media/finevideo/fv-029-03.mp4",
+          "prompt": "Describe the sequence of visible events in this video.",
+          "answer": "",
+          "source": {
+            "repo": "HuggingFaceFV/finevideo",
+            "file": "train-00000-of-01357.parquet",
+            "row": 29,
+            "original_video_filename": "7yY1OWjT4zA.mp4",
+            "start_seconds": 0.0,
+            "end_seconds": 4.0,
+            "activity_annotation": "Liz Rose's hands are shown in close-up, delicately manipulating an unseen object.",
+            "original_video_sha256": "bcd9a41920f424b08a6a26f3a2b8d195ef5a1dc5856dd04c2f80a63485df4661"
+          },
+          "duration": 4.0,
+          "sha256": "46db77275c9ea748a522bdc620a66c48abe39a5cc0db919d68ce249a4d241324"
+        },
+        "dataset": {
+          "repo": "HuggingFaceFV/finevideo",
+          "type": "dataset",
+          "revision": "84c74091e1c6ee7a5dffabfafb5c9033e4718883",
+          "file": "data/train-00000-of-01357.parquet",
+          "bytes": 493919884,
+          "sha256": "607bc6f45f6c4dcf27950abaf81eea58d7d50e2defd077efd0740647cf88baed"
+        },
+        "input_metadata": {
+          "programs": [],
+          "streams": [
+            {
+              "codec_name": "h264",
+              "codec_type": "video",
+              "width": 640,
+              "height": 360,
+              "avg_frame_rate": "30/1",
+              "bits_per_raw_sample": "8",
+              "nb_frames": "120"
+            }
+          ],
+          "format": {
+            "duration": "4.000000"
+          }
+        },
+        "temporal_check": {
+          "argv": [
+            "/usr/bin/ffmpeg",
+            "-v",
+            "error",
+            "-threads",
+            "1",
+            "-i",
+            "/home/sunghoon/workspace/ds4-exaone/mimo-v2-6-flash-rl-spark-handoff/handoff/calibration/media/finevideo/fv-029-03.mp4",
+            "-vf",
+            "fps=2,scale=640:352:flags=bilinear",
+            "-an",
+            "-pix_fmt",
+            "rgb24",
+            "-f",
+            "framemd5",
+            "pipe:1"
+          ],
+          "sampled_fps": 2,
+          "resized_width": 640,
+          "resized_height": 352,
+          "sampled_frames": 8,
+          "distinct_frame_hashes": 8,
+          "visual_pairs": 4,
+          "raw_rgb_bytes": 5406720,
+          "frame_md5": [
+            "f5d47bc29d26ddfc363a1599e0ff693c",
+            "6aa596a9ec3a3c30a22f54444cc87797",
+            "6c27ccb77fa662956c784415dad7a27c",
+            "90ed04393dabb0d85d4356f54eccb05e",
+            "bd728834a63983857e8f2ed238546e9d",
+            "23c0ffab632499733f34f640e8f017c7",
+            "56abf2982b72972937cd19572dd26868",
+            "9688214d1f0defa983d885b7c5e16238"
+          ],
+          "note": "Frame differences confirm non-static content. The activity annotation is inherited metadata, not an independently verified model answer."
+        }
+      },
+      "eval-finevideo-31-0": {
+        "id": "eval-finevideo-31-0",
+        "modality": "video",
+        "request_path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/av-requests/eval-finevideo-31-0.json",
+        "request_bytes": 2617557,
+        "request_sha256": "e6020308aa058364ff9aa08efdd62347c2028ffadc27f99ce7a76ec56edfddb7",
+        "input_path": "/home/sunghoon/workspace/ds4-exaone/mimo-v2-6-flash-rl-spark-handoff/handoff/calibration/media/finevideo/fv-031-00.mp4",
+        "input_bytes": 1962919,
+        "input_sha256": "9061c7e96cd3e4f6f66fcbddb02f951c3b946ca0444995bcb5aa5435bfc98ae3",
+        "prompt": "Describe the sequence of visible events in this video.",
+        "max_tokens": 128,
+        "reference_transcript": null,
+        "video_annotation": "News report details the land subsidence after the March 11th earthquake.",
+        "source_record": {
+          "id": "eval-finevideo-31-0",
+          "category": "video",
+          "path": "/root/mimo-work/handoff/calibration/media/finevideo/fv-031-00.mp4",
+          "prompt": "Describe the sequence of visible events in this video.",
+          "answer": "",
+          "source": {
+            "repo": "HuggingFaceFV/finevideo",
+            "file": "train-00000-of-01357.parquet",
+            "row": 31,
+            "original_video_filename": "FqaJYWyQQcE.mp4",
+            "start_seconds": 13.0,
+            "end_seconds": 26.0,
+            "activity_annotation": "News report details the land subsidence after the March 11th earthquake.",
+            "original_video_sha256": "5f8448e05e5fbc4809d8d79d99f26e254817abce6db4f9cc36a8ff13eb4e77ec"
+          },
+          "duration": 13.0,
+          "sha256": "9061c7e96cd3e4f6f66fcbddb02f951c3b946ca0444995bcb5aa5435bfc98ae3"
+        },
+        "dataset": {
+          "repo": "HuggingFaceFV/finevideo",
+          "type": "dataset",
+          "revision": "84c74091e1c6ee7a5dffabfafb5c9033e4718883",
+          "file": "data/train-00000-of-01357.parquet",
+          "bytes": 493919884,
+          "sha256": "607bc6f45f6c4dcf27950abaf81eea58d7d50e2defd077efd0740647cf88baed"
+        },
+        "input_metadata": {
+          "programs": [],
+          "streams": [
+            {
+              "codec_name": "h264",
+              "codec_type": "video",
+              "width": 640,
+              "height": 362,
+              "avg_frame_rate": "30/1",
+              "bits_per_raw_sample": "8",
+              "nb_frames": "390"
+            }
+          ],
+          "format": {
+            "duration": "13.000000"
+          }
+        },
+        "temporal_check": {
+          "argv": [
+            "/usr/bin/ffmpeg",
+            "-v",
+            "error",
+            "-threads",
+            "1",
+            "-i",
+            "/home/sunghoon/workspace/ds4-exaone/mimo-v2-6-flash-rl-spark-handoff/handoff/calibration/media/finevideo/fv-031-00.mp4",
+            "-vf",
+            "fps=2,scale=640:352:flags=bilinear",
+            "-an",
+            "-pix_fmt",
+            "rgb24",
+            "-f",
+            "framemd5",
+            "pipe:1"
+          ],
+          "sampled_fps": 2,
+          "resized_width": 640,
+          "resized_height": 352,
+          "sampled_frames": 26,
+          "distinct_frame_hashes": 26,
+          "visual_pairs": 13,
+          "raw_rgb_bytes": 17571840,
+          "frame_md5": [
+            "6e0ff0e4e7aa610e1173100b2a6638fe",
+            "bed5a1e5e3e680690eca9ef0b9252870",
+            "22380b01b38138e34562b1aaf80d8839",
+            "94722cb3f7e78e192304ae8e31059448",
+            "7e1882380a23154a9765f4cb3ecc191d",
+            "f6b2b2e2e490fa76b1902b1ef5ec7fad",
+            "12ad5100efca91eb8cf81c316081afc6",
+            "e39b8df78c9ec38097f440d2339462f5",
+            "1fde2d1a2f167463281f303311c6f183",
+            "7ca94cf215e9e8b72df081e95e57b63f",
+            "6924b0c37397e186a2f7ef75c9596bf2",
+            "62ab4e5c53ae08b61c78091ac7a1264f",
+            "8176f66687ca213fb93f62151c0f8e13",
+            "9cc3a41e9f42026296560f03c6bd90f7",
+            "74fd6846080417eab57625cebee90d85",
+            "1007f79e4bdf5733b807cb1a347f59fe",
+            "93309456533a72f3b76e64520b93cbc9",
+            "945fa2d3ba11324033c3ee25daf55004",
+            "8d0b0394caf3e6bc6e3401e2c2608dc1",
+            "a364e2776d7310f66da72b95d5aee627",
+            "ad2d2d545a2b3a0ae2d51ad3b1fb0de2",
+            "7b787990716c9b1cb5ee7daa13c52189",
+            "a33760843c0a8dfbdbffa56b279cbbb9",
+            "c695887088a0aae1f5fbaf27709c6d07",
+            "897e5e9fe214ef5d967e05c71189dd56",
+            "3b3b80ab51ce2a496a8dd5e68de90547"
+          ],
+          "note": "Frame differences confirm non-static content. The activity annotation is inherited metadata, not an independently verified model answer."
+        }
+      }
+    },
+    "model": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+    "projector": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+    "shape": {
+      "ctx": 8192,
+      "cont_width": 0,
+      "prefix_reuse": "off",
+      "mtp_mode": "off",
+      "max_tokens_by_case": {
+        "eval-finevideo-29-3": 128,
+        "eval-finevideo-31-0": 128
+      }
+    },
+    "clock_policy": "Observe only; preserve user-managed 300-2200 MHz range.",
+    "request_sha256": {
+      "eval-finevideo-29-3": "2a6ab6413a1e87409131b90b0fd079bb88363b285ee2a2739dfe284cc7979bce",
+      "eval-finevideo-31-0": "e6020308aa058364ff9aa08efdd62347c2028ffadc27f99ce7a76ec56edfddb7"
+    },
+    "dry_run": false
+  },
+  "screen": {
+    "arms": {
+      "original": {
+        "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-audio-r1/lnfix-candidate/ds4-server",
+        "env": {
+          "DS4_MIMO2_VISION_COALESCED": null
+        },
+        "stamp": [
+          66306,
+          158340372,
+          59743784,
+          1790408498582319684
+        ]
+      },
+      "off": {
+        "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/native-candidate/ds4-server",
+        "env": {
+          "DS4_MIMO2_VISION_COALESCED": "0"
+        },
+        "stamp": [
+          66306,
+          158341164,
+          59744240,
+          1790410378112035431
+        ]
+      },
+      "on": {
+        "binary": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/native-candidate/ds4-server",
+        "env": {
+          "DS4_MIMO2_VISION_COALESCED": null
+        },
+        "stamp": [
+          66306,
+          158341164,
+          59744240,
+          1790410378112035431
+        ]
+      }
+    },
+    "round_orders": [
+      [
+        "original",
+        "off",
+        "on"
+      ],
+      [
+        "on",
+        "original",
+        "off"
+      ],
+      [
+        "off",
+        "on",
+        "original"
+      ]
+    ],
+    "cases": [
+      "screen"
+    ],
+    "owner_manifest": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/owner4.ipc",
+    "owner_manifest_sha256": "767a47117fae9a228c7ab46ab6f6f9e0e19d3142fb79d6266262fc4e6fa8c897",
+    "binary_sha256": {
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-audio-r1/lnfix-candidate/ds4-server": "242de9bc641afaa39c6a86cf8df19dc1e989ba2840f72be1bba164994aaa0ef5",
+      "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-media-20260926/ncu-video-r1/native-candidate/ds4-server": "c201531ec15347a46c7dae0b8bbbcc6a0e196538297ac99d60fe0d66ed3a5ada"
+    },
+    "fixture_sha256": {
+      "screen.png": "c11a3a38ba18c8769a0b0785470c089d2fa7287955e033de8cb99b7ae80f67b4"
+    },
+    "model": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+    "projector": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/mmproj-MiMo-V2.6-Flash-RL-BF16.gguf",
+    "shape": {
+      "ctx": 8192,
+      "cont_width": 0,
+      "prefix_reuse": "off",
+      "mtp_mode": "off",
+      "max_tokens": 64
+    },
+    "clock_policy": "Observe only; preserve user-managed 300-2200 MHz range.",
+    "request_sha256": {
+      "screen": "9286b0ed108e9d2dbbf0e22b29cfbfbf954eec8201fdbf1a5758a8980383f451"
+    },
+    "dry_run": false
+  },
+  "artifacts": [
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-original/launch.json",
+      "bytes": 1609,
+      "sha256": "976de194b199ab95d8568808600d7b847272dc80b2fd2719e9dffb7193f94c89"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-original/server.memory.jsonl",
+      "bytes": 4639,
+      "sha256": "c234592f4c78668f9a0218944160173eba489bd694eb6c795b3a07d04988cbcc"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-original/stop.json",
+      "bytes": 1773,
+      "sha256": "f160c577276bcf11dc13279aa4e901c95924026107a60d9cda2a7301beca8c55"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-original/gpu-after.json",
+      "bytes": 118,
+      "sha256": "7a63a7698f56705d27056f40c1afeb339d1af71dae4161904942aa3d9c68026b"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-off/launch.json",
+      "bytes": 1639,
+      "sha256": "841d09713c97aa2f52f6f97cdddc9702039322b3a6fd41c55ef21661363b587b"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-off/server.memory.jsonl",
+      "bytes": 4474,
+      "sha256": "3a80c0884c196d33fbe0fd87cc5c9851f1e79775fc534723739c1a09b7ffb83c"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-off/stop.json",
+      "bytes": 1771,
+      "sha256": "030817cc1157762388282cb91e48d0b63cfd4461f9e1d66141395b4ec889579f"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-off/gpu-after.json",
+      "bytes": 118,
+      "sha256": "de01c4fb10479b0711ac51189a638840b7031b8965feec7b61acfbf8228e806c"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-on/launch.json",
+      "bytes": 1598,
+      "sha256": "3293f741bf839aece9a3c8d35a6c4c58ad4fdc2cba299e780e765f9298a93d28"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-on/server.memory.jsonl",
+      "bytes": 4471,
+      "sha256": "c805f576a5d3be4093a6f825603c562169a076124efd0e8fb96df82b20e6d9d8"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-on/stop.json",
+      "bytes": 1769,
+      "sha256": "92b39eac05e5e293cc08c6deb96843c7624ed412f1f8dc2339e2ee9cf16afde9"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-0-on/gpu-after.json",
+      "bytes": 108,
+      "sha256": "869e478e93face2801ebc067af57978a669f369a66373219105c6c963b4fb9a9"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-on/launch.json",
+      "bytes": 1598,
+      "sha256": "f6eeed1c0b0371cb1916fd0f6fc0d468465147117bf4e2635a5e7d4a80bf3b3c"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-on/server.memory.jsonl",
+      "bytes": 4470,
+      "sha256": "100e4e429fc87b8d69b17d06fa8dac4ee4954f6d6a52b72da197b255cd06c83c"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-on/stop.json",
+      "bytes": 1770,
+      "sha256": "e27e8f6bf5c25b0e7ccf1edfca18fa6a7da35555d83478137a6c78780c32fefb"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-on/gpu-after.json",
+      "bytes": 118,
+      "sha256": "00b35998c1a9e50fe2b8d7af5515d56a9aa35c1c48d8115ba5c95771231d5465"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-original/launch.json",
+      "bytes": 1609,
+      "sha256": "35ba560fa4d0052bcac80ae14ada3864b1fb211c201302c2e4a2cbe4a7edf3a1"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-original/server.memory.jsonl",
+      "bytes": 4465,
+      "sha256": "f969cb0754a2961323769569bece2c2a43d561a3f27c52ca2d11888bbaeeb106"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-original/stop.json",
+      "bytes": 1775,
+      "sha256": "50fdc0159148b679439227495d5b3ff51bc65fc27858c7f17be70d995e156e22"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-original/gpu-after.json",
+      "bytes": 118,
+      "sha256": "de01c4fb10479b0711ac51189a638840b7031b8965feec7b61acfbf8228e806c"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-off/launch.json",
+      "bytes": 1639,
+      "sha256": "637618a7a9ca4c7b0d16c06ea9b135f44226fe27dd56c647feaadc5041e6ce75"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-off/server.memory.jsonl",
+      "bytes": 4471,
+      "sha256": "422238fae7f6886cd85ae5061167d29ea1447de88076392cb573816118d255c4"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-off/stop.json",
+      "bytes": 1768,
+      "sha256": "de66014779b6e115f841fe5788dee7abe1864e0e6e1ee4dd5b6aa4680b8514fa"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-1-off/gpu-after.json",
+      "bytes": 118,
+      "sha256": "3a362731fe0410684a4bf2969f63e351caed8bb9a25cef6c6ac1f25491c5b283"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-off/launch.json",
+      "bytes": 1639,
+      "sha256": "4392a963e55781c4a1dd68f08ae89080e39dd37c4b7f3e2acead586e4290cd3c"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-off/server.memory.jsonl",
+      "bytes": 4469,
+      "sha256": "634794999cd205016b4fa18af559571ef4d2ae45ffbcb3708cdaa6934a2e0ead"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-off/stop.json",
+      "bytes": 1771,
+      "sha256": "547fd3d587c3d3b0011030870e6822e923eb2e8113d2ef53a31d06e617c5eaeb"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-off/gpu-after.json",
+      "bytes": 118,
+      "sha256": "05e34296ad664a4dbdeed655e2f3acfa1cbba2f325bb640fb445f4a00a59b58c"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-on/launch.json",
+      "bytes": 1598,
+      "sha256": "c0810298a8888177fca6f68d26c0c8b0852f5f9a9484997d71ff5d7d7607896b"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-on/server.memory.jsonl",
+      "bytes": 4468,
+      "sha256": "53a37f0b911fec89d6a6f45f39def0f6dd045456843a3afa0fd3cc8ba5429119"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-on/stop.json",
+      "bytes": 1770,
+      "sha256": "871cf8290c81fc580960ac86feea86056ac8761deaba115aa446f546eff5ef2f"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-on/gpu-after.json",
+      "bytes": 108,
+      "sha256": "869e478e93face2801ebc067af57978a669f369a66373219105c6c963b4fb9a9"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-original/launch.json",
+      "bytes": 1609,
+      "sha256": "0e974303359ec5a219422342ac0c8add93171079cdb49959e826c96c6b23a8ee"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-original/server.memory.jsonl",
+      "bytes": 4475,
+      "sha256": "af00ec2866bead404af00623883fb885dafa562c96b62b8c38989747aaeb0b8f"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-original/stop.json",
+      "bytes": 1774,
+      "sha256": "e5023f1a5fca9d694ed3bf98d79aa68337ce868c23a2f888e82e71053eaf4736"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-29-3-2-original/gpu-after.json",
+      "bytes": 108,
+      "sha256": "869e478e93face2801ebc067af57978a669f369a66373219105c6c963b4fb9a9"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-original/launch.json",
+      "bytes": 1609,
+      "sha256": "adaf6c37f01e9674723c24c5674119b9e625c8137ba75b57a14a9ee05376f842"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-original/server.memory.jsonl",
+      "bytes": 5642,
+      "sha256": "c5511a45eb08a144fbeb895b0f348f2e4ab40b4992f1384a30e688e6464a50cb"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-original/stop.json",
+      "bytes": 1774,
+      "sha256": "637c87c65ce22772a9f4b833600a0f66996cf7dd5a1c475f47fba0ef8a3bd832"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-original/gpu-after.json",
+      "bytes": 108,
+      "sha256": "869e478e93face2801ebc067af57978a669f369a66373219105c6c963b4fb9a9"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-off/launch.json",
+      "bytes": 1639,
+      "sha256": "363f84f6c74892bca7a5d1047ba6de2d60f05918a577f730ec45dd5facefc557"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-off/server.memory.jsonl",
+      "bytes": 5638,
+      "sha256": "cd009f3aa66142b66be7453b2a6300916d9002abd598a5fb0ba48eaec08c8272"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-off/stop.json",
+      "bytes": 1770,
+      "sha256": "e1a1af177d4c8749f32d0fdc6e38cc96430f4c6b03f3c821313310a8a73f9205"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-off/gpu-after.json",
+      "bytes": 118,
+      "sha256": "c540d14a495eb9d3f6dd7ac0e3cd4c273b64b1f556db8a12916474188b71beff"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-on/launch.json",
+      "bytes": 1598,
+      "sha256": "77109a65003a16f6f79b079efd4bc98f714bc3e8baeb906878c36280023b0d3f"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-on/server.memory.jsonl",
+      "bytes": 5469,
+      "sha256": "2c514e43fcce8fdfd03adaebec2ea9ec55f8f9a2ead7ce722de1dc3098bcdf1c"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-on/stop.json",
+      "bytes": 1768,
+      "sha256": "bfddb9f7a5ddf44c3c33d4d75244b2bb359772e21ee4593f96388dc40a8ebbc1"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-0-on/gpu-after.json",
+      "bytes": 118,
+      "sha256": "f1ba8eb8d2df0934c646da0e091ad9aa183cb5cda69bb9048380a179871d5722"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-on/launch.json",
+      "bytes": 1598,
+      "sha256": "ede82a6aaf6b3611def2fca9d069382166f8e241064fe8074a82083e30384575"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-on/server.memory.jsonl",
+      "bytes": 5470,
+      "sha256": "50dd5d04e28eff54f2f21ea24b6a7fdd5a75ceafc4c1a329b1e7d4ce983df786"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-on/stop.json",
+      "bytes": 1769,
+      "sha256": "e68977d07931a5843cebfcbb77fe0d0d2d9f11393c7f01e7f03e9c84e125f603"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-on/gpu-after.json",
+      "bytes": 118,
+      "sha256": "00b35998c1a9e50fe2b8d7af5515d56a9aa35c1c48d8115ba5c95771231d5465"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-original/launch.json",
+      "bytes": 1609,
+      "sha256": "c66ae5cac59d1c5d36190ca08321ba1db07466612bae6d5182080370e0d492ad"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-original/server.memory.jsonl",
+      "bytes": 5640,
+      "sha256": "54479df38dcd37347a8579b3efc3ca990afb8565da98f60ecb91f906df2494b3"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-original/stop.json",
+      "bytes": 1774,
+      "sha256": "57c30c4a2e0bbb934fd54988be9de330aed821b3291ee19ead06cdf37771c2a8"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-original/gpu-after.json",
+      "bytes": 118,
+      "sha256": "efbfd28988cf9c1f9d945b428bcc6624481a609a76a7af259ba99970776f663e"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-off/launch.json",
+      "bytes": 1639,
+      "sha256": "c300c64a0107deaa1867b14a097fc121e98b6c001a3bcb7e40475286d9ca496f"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-off/server.memory.jsonl",
+      "bytes": 5633,
+      "sha256": "07ca26b1a9ef4600950ebfbe384ea60fe852378d1f9b4bc6a912d4dcb3b23672"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-off/stop.json",
+      "bytes": 1770,
+      "sha256": "24351f225edcfad77c4a5eef47e071153f738fa0c885ce9b53fefb74ddb73db7"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-1-off/gpu-after.json",
+      "bytes": 118,
+      "sha256": "b887109f02898e6b20712b39a0ed07e2059de6746bfebb8167950c3de52eff53"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-off/launch.json",
+      "bytes": 1639,
+      "sha256": "6fe4d05a95820003355714ddf2dfb24c70294d31ac5c1671fb80faf52b605f33"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-off/server.memory.jsonl",
+      "bytes": 5643,
+      "sha256": "786b6f4d2d5524880cebd5905b852f4c12816341e2ac2d3bcfb0af4db33f1ec9"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-off/stop.json",
+      "bytes": 1770,
+      "sha256": "00dd46e9b14d4d2c1c0d3bf93c9dfb6263f4d55235f469c35733a00cdf44d08d"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-off/gpu-after.json",
+      "bytes": 118,
+      "sha256": "300aba8bec6bb8d56a25a9b7d316674a13170d3b04691f62025a8f30b649d388"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-on/launch.json",
+      "bytes": 1598,
+      "sha256": "274076dccbc40b15843abc8218e1dbcfdb69b927207da1821ea5530b6781b826"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-on/server.memory.jsonl",
+      "bytes": 5632,
+      "sha256": "8bcec186b498c4cf68001398e74bc491442c73794190dd472875c8d2cc23ad4a"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-on/stop.json",
+      "bytes": 1769,
+      "sha256": "b0df45de70efbda2be5ef02a6c862e7e77c2feddb38711cbefb826a0d77b9c7b"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-on/gpu-after.json",
+      "bytes": 118,
+      "sha256": "f4052b682244af956a095efc069b47c50c57f604fdfbe71d2d6f43ddb9c60d7a"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-original/launch.json",
+      "bytes": 1609,
+      "sha256": "128fd8453d6fc8f09047da7aff783e3d54494bfd1a364c9252640a7aeeb0932b"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-original/server.memory.jsonl",
+      "bytes": 5638,
+      "sha256": "1794d6710eb5304fb572bbe77924e352fc669bba6502986e054a80ede400dcd1"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-original/stop.json",
+      "bytes": 1770,
+      "sha256": "44752286161ba55eb328f29db00d117107962136dc6c49e09b390ad47e0d09ac"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/http-ab/eval-finevideo-31-0-2-original/gpu-after.json",
+      "bytes": 118,
+      "sha256": "e5754b0c8b7a8d3001d75e6d419af6a98aac2b8090c0da5905d210de9197e6b0"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-original/launch.json",
+      "bytes": 1598,
+      "sha256": "ee20fafafe3b865f8f8ce94def3a6c08776e8e9f4d308a82af9838f845c1eea5"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-original/server.memory.jsonl",
+      "bytes": 3796,
+      "sha256": "6844afac67d53c4853c0f1ebf01122d34179887f5bcb2754db42551b5cbc04cc"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-original/stop.json",
+      "bytes": 1769,
+      "sha256": "9c5b41f656500d2d44eb79e9eb0358a60bed97877be715f86492ee02ba8c2534"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-original/gpu-after.json",
+      "bytes": 108,
+      "sha256": "869e478e93face2801ebc067af57978a669f369a66373219105c6c963b4fb9a9"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-off/launch.json",
+      "bytes": 1628,
+      "sha256": "03b96c21543d387d265cf8ebdfbd58d2bc50f4a9b449e2711e53415bb6d93ffc"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-off/server.memory.jsonl",
+      "bytes": 3802,
+      "sha256": "ea342df352ef5823815a08fe831b24a0fbfbd864f273df04e46add9b87cd8172"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-off/stop.json",
+      "bytes": 1765,
+      "sha256": "1686997461d8acb262f91d70c535c0d32827e18e6c7c6c2beaa1369f0bf34a00"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-off/gpu-after.json",
+      "bytes": 108,
+      "sha256": "869e478e93face2801ebc067af57978a669f369a66373219105c6c963b4fb9a9"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-on/launch.json",
+      "bytes": 1587,
+      "sha256": "8dd8d45d67866706f4e66f7a23b2066d2e13a70223c71554f5439b981443ab48"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-on/server.memory.jsonl",
+      "bytes": 3796,
+      "sha256": "4d3828db40300b9e8ad6d61ae2abbfff587a831e3739b0c9b6eb825aba4bc754"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-on/stop.json",
+      "bytes": 1765,
+      "sha256": "bfada422b981d5aebf0b8c02982e450a11bd9491bc1d6dd13a6d65a513c64b5d"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-0-on/gpu-after.json",
+      "bytes": 118,
+      "sha256": "00b35998c1a9e50fe2b8d7af5515d56a9aa35c1c48d8115ba5c95771231d5465"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-on/launch.json",
+      "bytes": 1587,
+      "sha256": "643a9e2b9309a2499652822c3c838070ef9c7e58a277da34cd83486fce986ca0"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-on/server.memory.jsonl",
+      "bytes": 3794,
+      "sha256": "14d66a3da27a086b9e6271238a23bb9ee1f569448b3ec1f8fa6e3731307dc3bc"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-on/stop.json",
+      "bytes": 1764,
+      "sha256": "7fbe817d9fb6e3babbe94922956ec270a7632162c45277151a22ead15df55006"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-on/gpu-after.json",
+      "bytes": 118,
+      "sha256": "de867dbddb15e474a4f3a2c208696ec4c2e065ecf38bcf92cb3f52af173cdcc6"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-original/launch.json",
+      "bytes": 1598,
+      "sha256": "8df90816ae8ed0a1663a6ecb1b5105109c722d75735c42415e066dc02a87c0ad"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-original/server.memory.jsonl",
+      "bytes": 3806,
+      "sha256": "2d5edbd21f001a0b16ebae54d017743335173622ac7c2b2d60845e41c22129cd"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-original/stop.json",
+      "bytes": 1770,
+      "sha256": "b7d80433c8ff323140c861e496974498d9ff960f9e447632aaf27a8bbe456811"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-original/gpu-after.json",
+      "bytes": 108,
+      "sha256": "869e478e93face2801ebc067af57978a669f369a66373219105c6c963b4fb9a9"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-off/launch.json",
+      "bytes": 1628,
+      "sha256": "71e557ff67608f314ab5e7100906c0be17169cbc75f92f35afe0163e1d776e93"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-off/server.memory.jsonl",
+      "bytes": 3795,
+      "sha256": "98add6fea8af05099b8b39f0f2329e73110dd5aa2e99b8fa9ce1fafd39769994"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-off/stop.json",
+      "bytes": 1763,
+      "sha256": "97323646d7cbad2eddf8a25319005bd273bb7fdee407b9decef4fe89a6d8d901"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-1-off/gpu-after.json",
+      "bytes": 108,
+      "sha256": "869e478e93face2801ebc067af57978a669f369a66373219105c6c963b4fb9a9"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-off/launch.json",
+      "bytes": 1628,
+      "sha256": "f7e02f1e8f675c50ac971971926738e3cb7e2dad49764528e576ba5eb8bbc60b"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-off/server.memory.jsonl",
+      "bytes": 3794,
+      "sha256": "8fe2c3b949a010463af3d515c03e44565e19f1b70327389fb675e102c72bcb75"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-off/stop.json",
+      "bytes": 1766,
+      "sha256": "2b1a9d91bf72bf93650bc91fee93a10bdabd9bf4aed96b65cb3520f1f390c2d3"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-off/gpu-after.json",
+      "bytes": 108,
+      "sha256": "869e478e93face2801ebc067af57978a669f369a66373219105c6c963b4fb9a9"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-on/launch.json",
+      "bytes": 1587,
+      "sha256": "4e42a9ef8bd3efc689df0b4d745b766daf9b16afb40097f7402f9a21ed10966f"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-on/server.memory.jsonl",
+      "bytes": 3636,
+      "sha256": "fd25b0925d9f975a281703b42e074a59c0b952e1c45cf335a84f7d275beed962"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-on/stop.json",
+      "bytes": 1765,
+      "sha256": "a89cf5009111beb001d6060f95ab56041f7378d528c516f855181901b2a17415"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-on/gpu-after.json",
+      "bytes": 118,
+      "sha256": "5930a723ba2d8f24a7dbd1ba071260592fa172dcddb4e56932f25791135454f8"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-original/launch.json",
+      "bytes": 1598,
+      "sha256": "e3d00b1d3dfe1a639277b92ab57a18dd25b79b5b3b6a11f9396b0d9bcd78f3ae"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-original/server.memory.jsonl",
+      "bytes": 3800,
+      "sha256": "7e719b40b57719ae3f47c4e36108f6ca5aa770ff5c79da4c679d927191f7749a"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-original/stop.json",
+      "bytes": 1770,
+      "sha256": "76b73e1a99fb27527ce4d836849f162751d249ae6e253fe1d291469f10976a19"
+    },
+    {
+      "path": "scratch/mimo-media-20260926/ncu-video-r1/image-http-ab/screen-2-original/gpu-after.json",
+      "bytes": 108,
+      "sha256": "93b5e45a9a0369b14269e75002ed9095a2768d7caf930126e5c01e2659a26cc7"
+    }
+  ],
+  "guard_requested_gib": {
+    "max": 24,
+    "high": 21,
+    "reserve": 12
+  }
+}

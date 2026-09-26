@@ -1,0 +1,33 @@
+{
+  "status": "No blocker found; corrected model proof passed; HTTP A/B pending",
+  "baseline_commit": "8fcc1574",
+  "scope": "84 added production lines, a new audio full-causal kernel and family-specific dispatch only. Existing scalar, both vision kernels and corrected LayerNorm bodies match the baseline.",
+  "checks": {
+    "bounds": "n is validated nonzero and capped at 8192; query count<= 131072, causal key range 0..row, shared score storage n + 66 floats <= 33032 bytes.",
+    "barriers": "Early query return is CTA-uniform. Nonfinite max is shared/CTA-uniform. Higher output threads return only after the last barrier. Scores and stats are never reused until consumers synchronize.",
+    "numerical": "Scalar dimension/key/max/denominator order and unscaled dot before expf are preserved. Register output accumulation and constant rsqrt(64) still rely on actual compiled parity tests.",
+    "dispatch": "Q=KV16, HD64, strides1024, offsets0,separate pointers, full causal1, no sinks/group. Other layouts/windowed audio retain scalar fallback; knob 0 disables only this path.",
+    "stream_and_errors": "Launch uses ds4_current_stream and cudaGetLastError via cuda_ok. No persistent allocation, public ABI change or new decode state.",
+    "alias_assumption": "Production m2_mha allocates Q/K/V/output in distinct slots. Pointer checks exclude identical starts; arbitrary overlapping subviews are not newly supported."
+  },
+  "tests": "Actual wrapper OFF/default/ON, tails through8192, independent Q/K/V, mixed magnitudes, nonfinite behavior, guards/input immutability, invalid-input refusal and fallback regime assertions. Small double oracle is independent of scalar parity.",
+  "resource_tradeoff": {
+    "registers_per_thread": [
+      40,
+      40
+    ],
+    "spill_requests": [
+      0,
+      0
+    ],
+    "dynamic_shared_bytes_at557": [
+      0,
+      2492
+    ],
+    "maximum_dynamic_shared_bytes": 33032,
+    "persistent_allocation_bytes": 0,
+    "warp_instruction_change_percent": -42.2282934818612,
+    "arithmetic_note": "FFMA and EX2 halve. FMUL/RCP rise because each output dimension normalizes weights; added shared storage and that arithmetic must be judged against the observed kernel/end-to-end gain."
+  },
+  "limits": "No new GPU run in this review. Historical isolated target body is unchanged. All six corrected-baseline model proofs now match exactly; HTTP qualification remains pending."
+}

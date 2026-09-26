@@ -1,0 +1,94 @@
+{
+  "git_head": "3dfd0077cc52c5d539289c19e2986c9a6c9b86cf",
+  "compile_argv": [
+    "/usr/local/cuda/bin/nvcc",
+    "-O3",
+    "-g",
+    "-lineinfo",
+    "--use_fast_math",
+    "-std=c++17",
+    "-gencode",
+    "arch=compute_121a,code=sm_121a",
+    "-DDS4_CUDA_HAVE_MXF4=1",
+    "-Xcompiler",
+    "-march=native",
+    "-Xcompiler",
+    "-pthread",
+    "-Xptxas=-v",
+    "scratch/mimo-media-20260926/ncu-video-r1/probe-baseline.cu",
+    "-o",
+    "scratch/mimo-media-20260926/ncu-video-r1/probe-baseline"
+  ],
+  "original_probe": "scratch/mimo-media-20260926/ncu-attn-r1/probe-candidate.cu",
+  "original_probe_sha256": "670fe0cdfc4377a800181bf92af66236869c81f6b4f31b66e36cb53b65724550",
+  "header_source": "cuda/mimo2_media.cuh",
+  "kernel_body_sha256": "5a6c8db242412e65f2205464fe7308c719d6ce82c86659532a9df00b940c2706",
+  "kernel_unchanged": true,
+  "shape": {
+    "n": 880,
+    "q_heads": 32,
+    "kv_heads": 8,
+    "hd": 64,
+    "qkv_same_buffer": true,
+    "strides": [
+      3072,
+      3072,
+      3072
+    ],
+    "offsets": [
+      0,
+      2048,
+      2560
+    ],
+    "window": -1,
+    "sinks": false,
+    "causal": 0,
+    "group": 0,
+    "grid": [
+      28160,
+      1,
+      1
+    ],
+    "block": [
+      128,
+      1,
+      1
+    ],
+    "dynamic_shared_bytes": 3784
+  },
+  "input": "Same deterministic finite seed/normalization as prior vision probe; synthetic projected QKV, not actual video data.",
+  "limitations": [
+    "Standalone TU/resource usage must match observed production geometry.",
+    "Runtime rows/noinline cudaLaunchKernel; current production non-template function unmodified.",
+    "Warmed synthetic cache state differs from in-model interleaving; full NCU replay cache policy recorded separately."
+  ],
+  "probe_args": [
+    "-1",
+    "1",
+    "2",
+    "880"
+  ],
+  "compile_exit": 0,
+  "files": {
+    "scratch/mimo-media-20260926/ncu-video-r1/probe-baseline.cu": {
+      "bytes": 7194,
+      "sha256": "d70336d792a459d8b161a5be351dd91222f5ff976f98bf4c5f66e41ad38dad55"
+    },
+    "scratch/mimo-media-20260926/ncu-video-r1/mimo2_media.frozen.cuh": {
+      "bytes": 17673,
+      "sha256": "539b6593b4a2852f35707819f63e70cfc3237ff05eac0e79b6e3dd67f453fbce"
+    },
+    "scratch/mimo-media-20260926/ncu-video-r1/ds4_mimo2_gpu.frozen.cuh": {
+      "bytes": 29389,
+      "sha256": "9144921357fe7f9208e32b6eefbf45be38ee51977b4ae79bf7e9847f5377add8"
+    },
+    "scratch/mimo-media-20260926/ncu-video-r1/baseline-build.log": {
+      "bytes": 4802,
+      "sha256": "9e460c53c4c7daab04d267e0b55ef7963d1ba59a55662b72277c6e8f4319f22f"
+    },
+    "scratch/mimo-media-20260926/ncu-video-r1/probe-baseline": {
+      "bytes": 1562080,
+      "sha256": "beac3ba144f2fce58f212e24a3bc6f6c5a697ead87d8a3cab9820d22c769f9df"
+    }
+  }
+}

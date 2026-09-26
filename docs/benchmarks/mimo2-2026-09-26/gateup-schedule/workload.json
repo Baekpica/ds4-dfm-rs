@@ -1,0 +1,36 @@
+{
+  "protocol": "ds4-bench-v1",
+  "name": "mimo2-prefill-20260926-8k-g128",
+  "family": "mimo2",
+  "files": {
+    "model": {
+      "path": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00001-of-00004.gguf",
+      "sha256": "388d09c34fc87f3ef990a19c670efbf3a542b28a0a8c619140a3a299321dae9d"
+    },
+    "model_2": {
+      "path": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00002-of-00004.gguf",
+      "sha256": "83bd3c37bff0541c5b9b76462a50ba112c506f80f8ab48a6d28e55830035ee3f"
+    },
+    "model_3": {
+      "path": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00003-of-00004.gguf",
+      "sha256": "aafd233222b53d1e17bc4a1419d5dc6c58e8a1db352b0078e72425d9c296baef"
+    },
+    "model_4": {
+      "path": "/home/sunghoon/workspace/ds4-exaone/models/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF/MQ-IQ2-XXS-XS-Q8-MM-BF16/MiMo-V2.6-Flash-RL-MQ-IQ2-XXS-XS-Q8-00004-of-00004.gguf",
+      "sha256": "940833b0947024b26fe64149c54c78c489065fdcb84ec596ecd262425c0ff7f6"
+    },
+    "prompt": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/speed-bench/promessi_sposi.txt",
+      "sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f"
+    },
+    "owner_manifest": {
+      "path": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-perf-mimo-26/scratch/mimo-prefill-20260926/owner7.ipc",
+      "sha256": "dfe4ebda915c6088e0c77817622b603086362bfa513f925340d43c28b2375500"
+    }
+  },
+  "shape": {
+    "ctx_tokens": 8192,
+    "gen_tokens": 128
+  },
+  "cache_state": "Warmup before every fresh process; same resident VMM owner; 300-2200 MHz"
+}

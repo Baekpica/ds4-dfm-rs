@@ -1,0 +1,166 @@
+{
+  "runs": [
+    {
+      "run": "eval-audio-0-0-off",
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.4,
+      "effective_high_gib": 13.4,
+      "reserve_gib": 12.0,
+      "raw_stop_sha256": "1d12fb11ba09715bc94034254f7209d9310bbcdb031433092fcc7a4eec537363"
+    },
+    {
+      "run": "eval-audio-0-0-on",
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.4,
+      "effective_high_gib": 13.4,
+      "reserve_gib": 12.0,
+      "raw_stop_sha256": "0a16b9755781c93a8bfcc816bca5c5cc4343878e998866d7129572b23cddca8b"
+    },
+    {
+      "run": "eval-audio-0-0-original",
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.4,
+      "effective_high_gib": 13.4,
+      "reserve_gib": 12.0,
+      "raw_stop_sha256": "2d0057ea360038d0ea1dac69bf75dfeb7f17fcdd45aeb322df7caee507ea68de"
+    },
+    {
+      "run": "eval-audio-0-1-off",
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.4,
+      "effective_high_gib": 13.4,
+      "reserve_gib": 12.0,
+      "raw_stop_sha256": "12df05be20779f54a91cc789aaf709fd2fb8c8304a8829c5d588d10300031b16"
+    },
+    {
+      "run": "eval-audio-0-1-on",
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.4,
+      "effective_high_gib": 13.4,
+      "reserve_gib": 12.0,
+      "raw_stop_sha256": "1f6f2916b807ce85a9e80bb4e234efebadf00e912c7914f684db00a27fb1d742"
+    },
+    {
+      "run": "eval-audio-0-1-original",
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.4,
+      "effective_high_gib": 13.4,
+      "reserve_gib": 12.0,
+      "raw_stop_sha256": "6312eb91c9a6d66aba3778f42268cfeedc89714845834fcbadad80d77aaa8d3d"
+    },
+    {
+      "run": "eval-audio-0-2-off",
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.5,
+      "effective_high_gib": 13.5,
+      "reserve_gib": 12.0,
+      "raw_stop_sha256": "3d5ba80209e8dd1dde483c3f5c8018a8139dc077b8c04991fb74035dad049ba5"
+    },
+    {
+      "run": "eval-audio-0-2-on",
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.5,
+      "effective_high_gib": 13.5,
+      "reserve_gib": 12.0,
+      "raw_stop_sha256": "14ea5282c13d39d82c025292e2bbaef813fbf19791d23cc8afc08283cf071034"
+    },
+    {
+      "run": "eval-audio-0-2-original",
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.5,
+      "effective_high_gib": 13.5,
+      "reserve_gib": 12.0,
+      "raw_stop_sha256": "c29b30f5cb682c9817b503f160f9fd531f745da0f124822c7687514f755af32e"
+    },
+    {
+      "run": "eval-audio-3-0-off",
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.4,
+      "effective_high_gib": 13.4,
+      "reserve_gib": 12.0,
+      "raw_stop_sha256": "da81abfde09f8df2b600ea926d1a4c35c4ac8f76d42f603b7cdc7d00a51a2fb7"
+    },
+    {
+      "run": "eval-audio-3-0-on",
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.5,
+      "effective_high_gib": 13.5,
+      "reserve_gib": 12.0,
+      "raw_stop_sha256": "3f1aa10cf6f037e66c08e8db8a244f01f6b49733ead48e2dbcc7e00eb041d22c"
+    },
+    {
+      "run": "eval-audio-3-0-original",
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.4,
+      "effective_high_gib": 13.4,
+      "reserve_gib": 12.0,
+      "raw_stop_sha256": "41728f987b86a1d97b717a881e659bb4dce563b881875c1e382fa485964ed415"
+    },
+    {
+      "run": "eval-audio-3-1-off",
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.4,
+      "effective_high_gib": 13.4,
+      "reserve_gib": 12.0,
+      "raw_stop_sha256": "68c7efa36511918c453d19e24bc57cf1a3f64f2b7b1e1185d723266a2d4cdafd"
+    },
+    {
+      "run": "eval-audio-3-1-on",
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.4,
+      "effective_high_gib": 13.4,
+      "reserve_gib": 12.0,
+      "raw_stop_sha256": "f423f447397f305206fbde493435b41b674799c329e52f85ce2e8bebfafe991a"
+    },
+    {
+      "run": "eval-audio-3-1-original",
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.5,
+      "effective_high_gib": 13.5,
+      "reserve_gib": 12.0,
+      "raw_stop_sha256": "8883d795bb5ccd4fa298e40db3c9b4a77e6af8aadc38f62b2cbff30e95b08699"
+    },
+    {
+      "run": "eval-audio-3-2-off",
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.4,
+      "effective_high_gib": 13.4,
+      "reserve_gib": 12.0,
+      "raw_stop_sha256": "c4f6e3810a1a03d5f0ef3497a47503a86d613c26aa563e858bce21f3fd23e5fc"
+    },
+    {
+      "run": "eval-audio-3-2-on",
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.4,
+      "effective_high_gib": 13.4,
+      "reserve_gib": 12.0,
+      "raw_stop_sha256": "228bd7522132757df4eac4e8a16fca59025328a78a7da5d8deef6a3e39c48c2b"
+    },
+    {
+      "run": "eval-audio-3-2-original",
+      "returncode": 0,
+      "payload_status": 0,
+      "effective_max_gib": 14.5,
+      "effective_high_gib": 13.5,
+      "reserve_gib": 12.0,
+      "raw_stop_sha256": "a23c249c72a95039354491bc640a730c3d8ce698fd6adf51a8eb25763637c26c"
+    }
+  ]
+}
