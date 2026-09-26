@@ -7,6 +7,9 @@ its own process after a separate warmup process, sharing one VMM owner.
 GPU clock range stays 300–2200 MHz; busy clocks are recorded per round.
 [Workload and artifact hashes](sum-residual/workload.json).
 
+Three rounds are accepted below. The user extended the campaign by another
+two or three rounds, starting with a new whole-workload profile.
+
 ## Routed sum and residual fusion
 
 **Accepted: round 1 of 3.** The final build improves prefill in all three
@@ -151,3 +154,88 @@ Busy model-run clocks were 2184–2190 MHz (median 2190), preserving the
 user's configured range. [Clock summary](attn-residual/clocks.json) includes
 the sampling limits of the shorter isolated runs. Raw reports and all
 warmup/sample proofs remain in `scratch/mimo-prefill-20260926/`.
+
+## Gate/Up bounded scheduling
+
+**Accepted: round 3 of the initial 3.** The retained round-2 binary is the
+original control. The new binary uses the original compiler flags and a
+full MMQ rebuild. Three fresh samples per arm use rotated order, each
+after a separate warmup process with the same weight owner.
+
+| Build / path | Prefill tok/s | Decode tok/s |
+|---|---:|---:|
+| Round-2 original median | 1206.39 | 24.43 |
+| New build, scheduling OFF median | 1206.57 | 24.44 |
+| New build, default ON median | 1217.76 | 24.44 |
+| ON vs original | +0.94% | +0.04% |
+
+Prefill pair gains are +0.65%, +0.86%, +0.99% against the original and
++0.85%, +0.85%, +0.93% against same-build OFF. All nine samples have
+identical full 152,576 logits and 128 tokens, with clean guard exits.
+Decode ranges overlap; no decode speedup is claimed. See
+[samples](gateup-schedule/ab.json), [proofs](gateup-schedule/proofs.json),
+[build receipt](gateup-schedule/receipt.json), and
+[workload](gateup-schedule/workload.json).
+
+The fresh [round-2 whole trace](gateup-schedule/nsys-before.json) measured
+6.79655 s prefill. IQ2 Gate/Up consumed 2.21873 s in 94 calls (32.64%).
+Full isolated NCU preserves M=2048, K=4096, 256 experts, top-k 8 and
+4096 input tokens: grid (16, 768, 2), block (32, 8, 1).
+
+A full-warp boundary after each adjacent-k32-pair N fragment limits
+compiler scheduling and temporary lifetimes. Each accumulator retains its
+original multiplication and accumulation order. The measured tradeoff is:
+
+| Full NCU counter | Change |
+|---|---:|
+| Executed instructions | +2.29% |
+| Shared-load instructions | +19.70% |
+| Shared-load wavefronts | +0.639% |
+| Register-spill instructions; local load/store sectors | −52.94% |
+| Total L2 sectors | −18.767% |
+| Tensor INT8 operations; global load/store sectors | Unchanged |
+
+Both paths allocate 128 registers per thread and 37,744 bytes static
+shared memory per block, with no dynamic shared memory or additional
+tensor/workspace buffers. Shared-load bank conflicts change +0.036%.
+These counters do not establish unchanged scalar arithmetic or a measured
+DRAM-byte total. [Baseline NCU](gateup-schedule/ncu-baseline.txt),
+[bounded NCU](gateup-schedule/ncu-bounded.txt).
+
+The earlier rejection over-weighted the instruction increases. The
+[historical reassessment](gateup-schedule/historical-reassessment.json)
+accounts for the lower spill and total L2 traffic. That reassessment only
+justified retrying; the fresh profiling, exact proofs and three-arm A/B
+above establish adoption on round 2. The extra instructions remain a
+reported cost, outweighed here by consistent gains and lower traffic.
+
+| Unprofiled isolated entry | Median ms | Change vs original |
+|---|---:|---:|
+| Original | 24.335621 | — |
+| New build, OFF | 24.337925 | +0.009% |
+| New build, default ON | 23.887592 | −1.84% |
+
+Each arm uses three fresh processes, 16 warmups and 100 timed iterations.
+Full gate and up outputs (67,108,864 FP32 values each) are byte-exact
+across sample-0 dumps; later timing repeats do not dump outputs. Synthetic
+weights/routing preserve geometry, not model values or full-graph cache
+state. NCU uses kernel replay with cache flushing; the older baseline
+fixture has one warmup and the candidate has 16. Its 23.192→22.715 ms
+profiled time is diagnostic; adoption uses unprofiled A/B.
+[Isolated results and counter units](gateup-schedule/isolated-result.json).
+
+Default dispatch requires DGX Spark, an IQ2_XXS pair with M=2048, K=4096,
+256 experts, top-k 8, and 2048–65536 routed assignments (256–8192 tokens).
+`DS4_MIMO2_GATEUP_BOUNDED=0` restores the original schedule. Other shapes,
+architectures and narrow decode retain that schedule. The switch is cached
+on first use; change it between processes. The
+[production-entry harness](../../../tests/mimo2_gateup_schedule.cu) checks
+the 255/256-token boundary and same-shape top-k 6 fallback.
+[Boundary parity](gateup-schedule/boundaries.txt) and a separate
+[kernel-dispatch trace](gateup-schedule/dispatch.json) confirm top-k 6
+executes the original specialization with the switch unset.
+
+Busy model clocks were 2184–2190 MHz (median 2190); all 24 busy isolated
+clock samples were 2190 MHz. The user's 300–2200 MHz range is preserved.
+[Clock summary](gateup-schedule/clocks.json). Raw traces, dumps, guards and
+scripts remain under `scratch/mimo-prefill-20260926/`.

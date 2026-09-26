@@ -163,6 +163,13 @@ The bandwidth figure is informational; we don't tier on it.
   The projection is not modified by fusion; narrow decode retains its old
   path. See the [paired A/B evidence](../docs/benchmarks/mimo2-2026-09-26/README.md#attention-scale-and-residual-fusion).
 
+- `DS4_MIMO2_GATEUP_BOUNDED=0` restores the original IQ2 Gate/Up schedule.
+  Unset bounds compiler scheduling between adjacent-k32-pair fragments on
+  DGX Spark only, for M=2048, K=4096, 256 experts, top-k 8 and 2048–65536
+  routed assignments (256–8192 tokens). Other shapes, architectures and
+  narrow decode retain the original schedule. Cached on first use; compare
+  fresh processes. See the [paired A/B and resource costs](../docs/benchmarks/mimo2-2026-09-26/README.md#gateup-bounded-scheduling).
+
 - `DS4_MIMO2_DFLASH_CPU=1` restores host RMSNorm, RoPE and attention for
   MiMo's external five-layer DFlash drafter. Unset uses device kernels
   and shared K/V tiles. This control does not enable speculative decode;

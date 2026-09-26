@@ -59,6 +59,7 @@ int ds4_mmq_iq2_xxs_moe_d2r_pair_launch(
     int             K,
     int64_t         ne_get_rows,
     int             n_experts,
+    int             n_expert_used,
     void          * worklist_scratch,
     size_t          worklist_scratch_bytes,
     cudaStream_t    stream);

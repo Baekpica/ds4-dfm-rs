@@ -1,0 +1,112 @@
+{
+  "configured_user_range_mhz": [
+    300,
+    2200
+  ],
+  "runs": {
+    "model_ab": {
+      "source": "scratch/mimo-prefill-20260926/gateup3-clocks.csv",
+      "sha256": "1c2a345749adf43dbde3d30c3b94d9a26f98e160fd037cafd5c6e4875896300f",
+      "samples": 322,
+      "all_samples": {
+        "sm_mhz": {
+          "min": 2184.0,
+          "median": 2190.0,
+          "max": 2197.0
+        },
+        "gpu_util_percent": {
+          "min": 0.0,
+          "median": 93.0,
+          "max": 96.0
+        },
+        "power_w": {
+          "min": 8.45,
+          "median": 31.29,
+          "max": 67.85
+        },
+        "temperature_c": {
+          "min": 41.0,
+          "median": 61.0,
+          "max": 71.0
+        }
+      },
+      "busy_filter": "gpu utilization >= 50%",
+      "busy_samples": 223,
+      "busy": {
+        "sm_mhz": {
+          "min": 2184.0,
+          "median": 2190.0,
+          "max": 2190.0
+        },
+        "gpu_util_percent": {
+          "min": 51.0,
+          "median": 96.0,
+          "max": 96.0
+        },
+        "power_w": {
+          "min": 14.94,
+          "median": 43.15,
+          "max": 67.85
+        },
+        "temperature_c": {
+          "min": 50.0,
+          "median": 62.0,
+          "max": 71.0
+        }
+      },
+      "note": "One-second sampling covers warmups and samples, not individual kernels. Idle downclock samples are included separately."
+    },
+    "isolated": {
+      "source": "scratch/mimo-prefill-20260926/ncu-gateup-r3/clocks.csv",
+      "sha256": "0c6d71cc6fa13f4cbeda0a4dfcee765fb7803d1104e4e33d2ed10ee77e8ebbef",
+      "samples": 47,
+      "all_samples": {
+        "sm_mhz": {
+          "min": 208.0,
+          "median": 2190.0,
+          "max": 2197.0
+        },
+        "gpu_util_percent": {
+          "min": 0.0,
+          "median": 62.0,
+          "max": 96.0
+        },
+        "power_w": {
+          "min": 4.48,
+          "median": 56.23,
+          "max": 86.27
+        },
+        "temperature_c": {
+          "min": 38.0,
+          "median": 55.0,
+          "max": 67.0
+        }
+      },
+      "busy_filter": "gpu utilization >= 50%",
+      "busy_samples": 24,
+      "busy": {
+        "sm_mhz": {
+          "min": 2190.0,
+          "median": 2190.0,
+          "max": 2190.0
+        },
+        "gpu_util_percent": {
+          "min": 62.0,
+          "median": 96.0,
+          "max": 96.0
+        },
+        "power_w": {
+          "min": 18.31,
+          "median": 82.53999999999999,
+          "max": 86.27
+        },
+        "temperature_c": {
+          "min": 55.0,
+          "median": 62.0,
+          "max": 67.0
+        }
+      },
+      "note": "One-second sampling covers warmups and samples, not individual kernels. Idle downclock samples are included separately."
+    }
+  }
+}

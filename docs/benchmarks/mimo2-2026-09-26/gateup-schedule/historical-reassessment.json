@@ -1,0 +1,170 @@
+{
+  "purpose": "Reassess the historical bounded Gate/Up schedule under the current adoption policy; this is not fresh R3 qualification.",
+  "sources": {
+    "original_counters": "ncu-isolated/raw.csv",
+    "bounded_counters": "ncu-isolated/sync-raw.csv",
+    "profile_reports": [
+      "ncu-isolated/details.txt",
+      "ncu-isolated/sync-details.txt"
+    ],
+    "source_patch": "rejected-bounded.patch",
+    "historical_ab": "bounded-result.json"
+  },
+  "mechanism": "A full-warp boundary after each adjacent-k32-pair N fragment limits compiler scheduling and temporary lifetimes. Per-accumulator multiplication and accumulation order is unchanged.",
+  "metrics": [
+    {
+      "key": "smsp__inst_executed.sum",
+      "unit": "inst",
+      "original": 6157137344,
+      "bounded": 6298047936,
+      "change_percent": 2.2885731489701744
+    },
+    {
+      "key": "smsp__sass_inst_executed_op_shared_ld.sum",
+      "unit": "inst",
+      "original": 290430464,
+      "bounded": 347643392,
+      "change_percent": 19.699354954719904
+    },
+    {
+      "key": "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum",
+      "unit": "",
+      "original": 1007732552,
+      "bounded": 1014189048,
+      "change_percent": 0.6406953895838896
+    },
+    {
+      "key": "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum",
+      "unit": "",
+      "original": 240674656,
+      "bounded": 240722400,
+      "change_percent": 0.019837568605485245
+    },
+    {
+      "key": "sass__inst_executed_register_spilling",
+      "unit": "inst",
+      "original": 28705792,
+      "bounded": 13508608,
+      "change_percent": -52.94117647058824
+    },
+    {
+      "key": "l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum",
+      "unit": "sector",
+      "original": 216137728,
+      "bounded": 101711872,
+      "change_percent": -52.94117647058824
+    },
+    {
+      "key": "l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum",
+      "unit": "sector",
+      "original": 13508608,
+      "bounded": 6356992,
+      "change_percent": -52.94117647058824
+    },
+    {
+      "key": "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum",
+      "unit": "sector",
+      "original": 428983776,
+      "bounded": 428983776,
+      "change_percent": 0.0
+    },
+    {
+      "key": "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum",
+      "unit": "sector",
+      "original": 16777216,
+      "bounded": 16777216,
+      "change_percent": 0.0
+    },
+    {
+      "key": "lts__t_sectors.sum",
+      "unit": "sector",
+      "original": 670802938,
+      "bounded": 544972094,
+      "change_percent": -18.7582428268971
+    },
+    {
+      "key": "lts__t_sectors_srcunit_tex_op_read_lookup_miss.sum",
+      "unit": "sector",
+      "original": 44048975,
+      "bounded": 44048851,
+      "change_percent": -0.00028150484773226125
+    },
+    {
+      "key": "lts__t_sectors_srcunit_tex_aperture_sysmem_lookup_miss.sum",
+      "unit": "sector",
+      "original": 50300028,
+      "bounded": 49709980,
+      "change_percent": -1.17305700108159
+    },
+    {
+      "key": "sm__ops_path_tensor_op_imma_src_int8_sparsity_off.sum",
+      "unit": "",
+      "original": 1127965786112,
+      "bounded": 1127965786112,
+      "change_percent": 0.0
+    }
+  ],
+  "unchanged_resources": {
+    "registers_per_thread": 128,
+    "static_shared_bytes": 37744,
+    "dynamic_shared_bytes": 0,
+    "active_warps_per_scheduler": 3.99,
+    "tensor_allocations_added": 0
+  },
+  "historical_ab": {
+    "samples": {
+      "0": [
+        {
+          "prefill_tps": 1192.77,
+          "gen_tps": 24.35
+        },
+        {
+          "prefill_tps": 1191.68,
+          "gen_tps": 24.42
+        },
+        {
+          "prefill_tps": 1191.59,
+          "gen_tps": 24.38
+        }
+      ],
+      "1": [
+        {
+          "prefill_tps": 1204.11,
+          "gen_tps": 24.39
+        },
+        {
+          "prefill_tps": 1201.59,
+          "gen_tps": 24.39
+        },
+        {
+          "prefill_tps": 1202.1,
+          "gen_tps": 24.44
+        }
+      ]
+    },
+    "medians": {
+      "0": {
+        "prefill_tps": 1191.68,
+        "gen_tps": 24.38
+      },
+      "1": {
+        "prefill_tps": 1202.1,
+        "gen_tps": 24.39
+      }
+    },
+    "prefill_gain_pct": 0.8743958109559413,
+    "decode_gain_pct": 0.04101722723544032,
+    "all_logits_exact": true,
+    "all_tokens_exact": true
+  },
+  "interpretation": [
+    "The prior rejection based on +2.29% total instructions and +19.70% shared-load instructions was too narrow: these are real costs, but not a complete physical resource assessment.",
+    "Local load and store sectors fall by 52.94%; total L2 sectors fall by 18.76%. Global load and store sectors are exactly unchanged.",
+    "Shared-load instruction count rises 19.70%, while physical shared-load wavefronts rise only 0.64% and shared-load bank conflicts are effectively unchanged (+0.02%). Instruction count does not directly equal shared-memory traffic cost.",
+    "Tensor integer arithmetic count is exactly unchanged; source preserves model arithmetic. The saved raw counters do not establish that every scalar arithmetic instruction count is unchanged, and the compiler may rematerialize data or conversions.",
+    "L2 read-miss sectors are effectively unchanged and system-memory-aperture miss sectors fall about 1.17%. There is no evidence of extra off-chip traffic; these are sector counters, not a separate measured DRAM-byte counter.",
+    "Unchanged register/shared allocation and occupancy, lower cache traffic, exact outputs, all three historical prefill pairs improving, and unchanged decode justify requalification. They do not by themselves prove acceptance on the retained R2 baseline."
+  ],
+  "decision": "Supersede the historical resource-count rejection rationale. Requalify on the retained R2 baseline after fresh whole-workload and isolated target profiling, using original compiler flags, fresh correctness and paired end-to-end A/B. Do not count this reassessment as an accepted round.",
+  "lower_cost_alternatives": "Every-two-fragment synchronization was already slower than every-fragment (24.312 vs 23.969 ms entry); removing the boundary or changing unrolling has no positive existing evidence. Prefer requalifying the measured schedule before new schedule variants."
+}
