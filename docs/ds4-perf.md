@@ -202,6 +202,10 @@ The default warp selection preserves IDs and weights exactly.
 `DS4_MIMO2_SWIGLU_Q8=0` restores materialized SwiGLU before MiMo's
 IQ2_XS down projection. The default shares the sorted D4 Q8 representation
 for the fixed artifact shape at widths 32–8192; narrow decode is unchanged.
+`DS4_MIMO2_SUM_RESIDUAL=0` restores separate expert sum and residual add;
+`DS4_MIMO2_ATTN_RESIDUAL=0` restores separate attention scale and add.
+`DS4_MIMO2_GATEUP_BOUNDED=0` restores the original IQ2 Gate/Up schedule.
+All three support matched `--env` comparisons with values `0` or `1`.
 `DS4_MIMO2_DFLASH_CPU=1` restores host RMSNorm, RoPE and attention in the
 external DFlash drafter. Unset, those operations stay on the GPU. This
 changes draft arithmetic; compare verified output and long-window cases.

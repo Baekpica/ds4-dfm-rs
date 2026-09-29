@@ -253,6 +253,9 @@ const PERF_ENV: &[&str] = &[
     "DS4_MIMO2_ROUTER_WARP",
     "DS4_MIMO2_DFLASH_CPU",
     "DS4_MIMO2_SWIGLU_Q8",
+    "DS4_MIMO2_SUM_RESIDUAL",
+    "DS4_MIMO2_ATTN_RESIDUAL",
+    "DS4_MIMO2_GATEUP_BOUNDED",
     "DS4_INKLING_PREFILL_CHUNK",
     "DS4_DOTS3_ATTN_NO_HMMA",
     "DS4_DOTS3_ATTN_NO_SPLIT",
@@ -655,6 +658,21 @@ pub fn unreviewed_env() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mimo2_fusion_env() {
+        for key in [
+            "DS4_MIMO2_SUM_RESIDUAL",
+            "DS4_MIMO2_ATTN_RESIDUAL",
+            "DS4_MIMO2_GATEUP_BOUNDED",
+        ] {
+            for value in ["0", "1"] {
+                let env = controls(&[format!("{key}={value}")]).unwrap();
+                assert_eq!(env.get(std::ffi::OsStr::new(key)), Some(&value.into()));
+                assert!(environment(env).contains(&format!("{key}='{value}'")));
+            }
+        }
+    }
 
     #[test]
     fn env_is_allowlisted() {
