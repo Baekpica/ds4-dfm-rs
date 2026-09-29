@@ -362,6 +362,7 @@ typedef enum {
     DS4_MODEL_FAMILY_STEP37      = 8,
     DS4_MODEL_FAMILY_LING3VL     = 9,
     DS4_MODEL_FAMILY_MIMO2       = 10,
+    DS4_MODEL_FAMILY_QWEN35      = 11,
 } ds4_model_family;
 
 typedef enum {
@@ -378,6 +379,7 @@ typedef enum {
     DS4_VARIANT_STEP37_FLASH    = 10,
     DS4_VARIANT_LING30_FLASH_VL = 11,
     DS4_VARIANT_MIMO26_FLASH    = 12,
+    DS4_VARIANT_QWEN35_27B      = 13,
 } ds4_variant;
 
 typedef struct {
@@ -425,6 +427,11 @@ typedef struct {
     uint32_t n_full_attn_count;
     uint32_t n_kda_head_dim;
     uint32_t n_ssm_conv;
+    /* Prism Bonsai (qwen35): the gated delta-net query/key and value head
+     * counts.  Its head width and convolution are n_kda_head_dim/n_ssm_conv,
+     * its interleaving is n_swa_period.  No other family sets these. */
+    uint32_t n_lin_k_head;
+    uint32_t n_lin_v_head;
     bool use_rope;
     bool use_qk_norm;         /* per-head RMSNorm on Q and K before RoPE */
     float rms_eps;
@@ -942,6 +949,38 @@ static const ds4_shape DS4_SHAPE_QWEN38_FLASH_NEXT = {
     .rope_orig_ctx = UINT64_C(262144),
 };
 
+/* Prism Bonsai 2 27B (qwen35).  Dense trunk: 48 gated delta-net layers and 16
+ * gated-attention layers at interval 4, dense SwiGLU FFN, no experts, no MTP
+ * block and no hyper-connections.  Matmul weights ship Hadamard-folded as
+ * PQ2_0 (ternary). */
+static const ds4_shape DS4_SHAPE_QWEN35 = {
+    .name = "Prism Bonsai 2 27B",
+    .family = DS4_MODEL_FAMILY_QWEN35,
+    .variant = DS4_VARIANT_QWEN35_27B,
+    .n_layer = 64,
+    .n_embd = 5120,
+    .n_vocab = 248320,
+    .n_head = 24,
+    .n_head_kv = 4,
+    .n_head_dim = 256,
+    .n_value_dim = 256,
+    .n_rot = 64,
+    .n_ff_dense = 17408,
+    .n_swa_period = 4,
+    .n_full_attn_count = 16,
+    .n_kda_head_dim = 128,
+    .n_ssm_conv = 4,
+    .n_lin_k_head = 16,
+    .n_lin_v_head = 48,
+    .use_rope = true,
+    .use_qk_norm = true,
+    .rms_eps = 1.0e-6f,
+    .expert_weight_scale = 1.0f,
+    .rope_freq_base = 10000000.0f,
+    .rope_scale_factor = 1.0f,
+    .rope_orig_ctx = UINT64_C(262144),
+};
+
 static ds4_shape g_ds4_shape = {
     .name = "DeepSeek V4 Flash",
     .family = DS4_MODEL_FAMILY_DEEPSEEK4,
@@ -1019,6 +1058,8 @@ static uint32_t g_ds4_compress_ratios[DS4_MAX_LAYER] = {0};
 #define DS4_N_VALUE_MLA               (g_ds4_shape.n_value_mla)
 #define DS4_N_KDA_HEAD_DIM            (g_ds4_shape.n_kda_head_dim)
 #define DS4_N_SSM_CONV                (g_ds4_shape.n_ssm_conv)
+#define DS4_N_LIN_K_HEAD              (g_ds4_shape.n_lin_k_head)
+#define DS4_N_LIN_V_HEAD              (g_ds4_shape.n_lin_v_head)
 #define DS4_USE_ROPE                  (g_ds4_shape.use_rope)
 #define DS4_USE_QK_NORM               (g_ds4_shape.use_qk_norm)
 #define DS4_RMS_EPS                   (g_ds4_shape.rms_eps)
@@ -2398,6 +2439,9 @@ static void model_apply_host_shape(void) {
         break;
     case DS4_VARIANT_LING30_FLASH_VL:
         g_ds4_shape = DS4_SHAPE_LING30_FLASH_VL;
+        break;
+    case DS4_VARIANT_QWEN35_27B:
+        g_ds4_shape = DS4_SHAPE_QWEN35;
         break;
     default:
         ds4_die("unsupported");
