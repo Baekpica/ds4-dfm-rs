@@ -939,6 +939,14 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q1_0> {
     static constexpr int qi = QI1_0;
 };
 
+// Prism PQ2_0: 128 values per block, 8 packed 32-bit words of 2-bit levels.
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_PQ2_0> {
+    static constexpr int qk = QK2_0;
+    static constexpr int qr = QR_PQ2_0;
+    static constexpr int qi = QI_PQ2_0;
+};
+
 template<>
 struct ggml_cuda_type_traits<GGML_TYPE_Q4_0> {
     static constexpr int qk = QK4_0;

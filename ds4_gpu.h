@@ -901,6 +901,42 @@ int ds4_gpu_matmul_q4_K_tensor(
         const ds4_gpu_tensor *x,
         uint64_t              n_tok);
 
+/* Prism PQ2_0 (ternary Bonsai): 128 values per block, one fp16 scale plus
+ * 32 code bytes, levels -d/0/+d/+2d.  Every Bonsai matmul weight ships in
+ * this type; in_dim must be a multiple of 256. */
+int ds4_gpu_matmul_pq2_0_tensor(
+        ds4_gpu_tensor       *out,
+        const void           *model_map,
+        uint64_t              model_size,
+        uint64_t              weight_offset,
+        uint64_t              in_dim,
+        uint64_t              out_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t              n_tok);
+
+/* Folded-weight activation transform (Prism Bonsai).  A folded export stores
+ * the matmul weights in the rotated basis, so the runtime rotates the
+ * activation instead: a' = H_bs(s * a) on every folded matmul input, and
+ * x = s * H_bs(z) when a token-embedding row is read back.  `gdn` applies the
+ * tiled-to-grouped head reorder first (the ssm_out projection). */
+int ds4_gpu_qwen35_fold_forward_tensor(
+        ds4_gpu_tensor       *x,
+        uint32_t              n,
+        uint32_t              n_tok,
+        uint32_t              block_size,
+        const ds4_gpu_tensor *signs,
+        uint32_t              gdn,
+        uint32_t              hd,
+        uint32_t              nk,
+        uint32_t              rep);
+
+int ds4_gpu_qwen35_fold_inverse_tensor(
+        ds4_gpu_tensor       *x,
+        uint32_t              n,
+        uint32_t              n_tok,
+        uint32_t              block_size,
+        const ds4_gpu_tensor *signs);
+
 int ds4_gpu_matmul_q8_0_top2_tensor(
         ds4_gpu_tensor       *top2,
         const void             *model_map,

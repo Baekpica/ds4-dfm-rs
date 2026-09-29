@@ -62,6 +62,11 @@ static mmq_q8_1_ds_layout mmq_get_q8_1_ds_layout(const ggml_type type_x) {
     switch (type_x) {
         case GGML_TYPE_Q1_0:
             return MMQ_Q8_1_DS_LAYOUT_D4;
+        case GGML_TYPE_PQ2_0:
+            // The x tile is expanded to int8 levels with a float scale per
+            // 32 values, i.e. exactly Q8_0's layout, so the y side wants the
+            // matching 4-floats-per-row D4 layout.
+            return MMQ_Q8_1_DS_LAYOUT_D4;
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q4_1:
             return MMQ_Q8_1_DS_LAYOUT_DS4;
@@ -212,6 +217,7 @@ static constexpr __device__ int get_mmq_y_device() {
 static constexpr __host__ __device__ tile_x_sizes mmq_get_dp4a_tile_x_sizes(ggml_type type, int mmq_y) {
     switch (type) {
         case GGML_TYPE_Q1_0:    return MMQ_DP4A_TXS_Q8_0;
+        case GGML_TYPE_PQ2_0:   return MMQ_DP4A_TXS_Q8_0;
         case GGML_TYPE_Q4_0:    return MMQ_DP4A_TXS_Q4_0;
         case GGML_TYPE_Q4_1:    return MMQ_DP4A_TXS_Q4_1;
         case GGML_TYPE_Q5_0:    return MMQ_DP4A_TXS_Q8_0;
@@ -258,6 +264,7 @@ static_assert(MMQ_MMA_TILE_X_K_NVFP4 % 8 == 4, "Wrong padding.");
 static constexpr __host__ __device__ int mmq_get_mma_tile_x_k(ggml_type type) {
     switch (type) {
         case GGML_TYPE_Q1_0:    return MMQ_MMA_TILE_X_K_Q8_0;
+        case GGML_TYPE_PQ2_0:   return MMQ_MMA_TILE_X_K_Q8_0;
         case GGML_TYPE_Q4_0:    return MMQ_MMA_TILE_X_K_Q8_0;
         case GGML_TYPE_Q4_1:    return MMQ_MMA_TILE_X_K_Q8_1;
         case GGML_TYPE_Q5_0:    return MMQ_MMA_TILE_X_K_Q8_0;
@@ -413,6 +420,84 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
         x_df[i*MMQ_MMA_TILE_X_K_Q8_0 + ksx] = bxi->d;
 #else
         x_df[i*(2*MMQ_TILE_NE_K/QI8_0) + i/(QI8_0/2) + ksx] = bxi->d;
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+    }
+}
+
+// PQ2_0 lands in the same shared-memory tile Q8_0 uses: one int8 per weight
+// value with a float scale per 32 values.  The two differ only in how the
+// int8 values are produced.  A PQ2_0 block is 128 values, so an MMQ_ITER_K
+// iteration (256 values) spans two blocks, and the 32 packed 32-bit words of
+// those two blocks (16 values each) expand to the 64 tile ints of a row.
+template <int mmq_y, bool need_check> static __device__ __forceinline__ void load_tiles_pq2_0(
+    const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
+    constexpr int nwarps = mmq_get_nwarps_device();
+    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+    int   * x_qs = (int   *)  x_tile;
+    float * x_df = (float *) (x_tile + 2*MMQ_TILE_NE_K);
+#else
+    constexpr tile_x_sizes txs = mmq_get_dp4a_tile_x_sizes(GGML_TYPE_PQ2_0, mmq_y);
+    int   * x_qs = (int   *)  x_tile;
+    float * x_df = (float *) (x_qs + txs.qs);
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+
+    // Each thread expands one packed word (4 code bytes -> 16 int8 levels).
+    constexpr int words_per_block = QK2_0 / 16;                        // 8
+    constexpr int threads_per_row = (MMQ_ITER_K / QK2_0)*words_per_block; // 16
+    constexpr int nrows = warp_size / threads_per_row;
+    constexpr int blocks_per_tile_x_row = 2*MMQ_TILE_NE_K / QI8_0;     // 8 sub-blocks of 32
+
+    const int txi  = threadIdx.x % threads_per_row;
+    const int kbx  = txi / words_per_block;
+    const int kqsx = txi % words_per_block;
+    // Tile int position: block kbx covers tile ints [kbx*32, kbx*32+32) and
+    // word kqsx of it covers 16 values = 4 tile ints starting at kqsx*4.
+    const int dst  = kbx*(4*words_per_block) + kqsx*4;
+
+#pragma unroll
+    for (int i0 = 0; i0 < mmq_y; i0 += nrows*nwarps) {
+        int i = i0 + threadIdx.y*nrows + threadIdx.x/threads_per_row;
+
+        if (need_check) {
+            i = min(i, i_max);
+        }
+
+        const block_pq2_0 * bxi = (const block_pq2_0 *) x + kbx0 + i*stride + kbx;
+        const uint8_t * qs = bxi->qs + 4*kqsx;
+
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+        int * row = x_qs + i*MMQ_MMA_TILE_X_K_Q8_0 + dst;
+#else
+        int * row = x_qs + i*(2*MMQ_TILE_NE_K + 1) + dst;
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            row[j] = ds4_pq2_0_expand_byte(qs[j]);
+        }
+    }
+
+    // One scale entry per 32-value sub-block; the four sub-blocks of a PQ2_0
+    // block share its fp16 scale.
+    const int kbxd = threadIdx.x % blocks_per_tile_x_row;
+    constexpr int rows_per_warp = warp_size / blocks_per_tile_x_row;
+
+#pragma unroll
+    for (int i0 = 0; i0 < mmq_y; i0 += nwarps*rows_per_warp) {
+        int i = i0 + threadIdx.y*rows_per_warp + threadIdx.x/blocks_per_tile_x_row;
+
+        if (need_check) {
+            i = min(i, i_max);
+        }
+
+        const block_pq2_0 * bxi = (const block_pq2_0 *) x + kbx0 + i*stride + kbxd/(QK2_0/QK8_1);
+
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+        x_df[i*MMQ_MMA_TILE_X_K_Q8_0 + kbxd] = __half2float(bxi->d);
+#else
+        x_df[i*(2*MMQ_TILE_NE_K/QI8_0) + i/(QI8_0/2) + kbxd] = __half2float(bxi->d);
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
     }
 }
@@ -3582,6 +3667,16 @@ template <int mmq_x, int mmq_y, bool need_check>
 struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_Q8_0> {
     static constexpr int              vdr          = VDR_Q8_0_Q8_1_MMQ;
     static constexpr load_tiles_mmq_t load_tiles   = load_tiles_q8_0<mmq_y, need_check>;
+    static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_0_q8_1_mma<mmq_x, mmq_y, MMQ_Q8_1_DS_LAYOUT_D4>;
+    static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q8_0_q8_1_dp4a<mmq_x, mmq_y>;
+};
+
+// PQ2_0's tile is Q8_0-shaped (int8 levels, float scale per 32 values), so it
+// reuses Q8_0's dots verbatim once load_tiles_pq2_0 has expanded the codes.
+template <int mmq_x, int mmq_y, bool need_check>
+struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_PQ2_0> {
+    static constexpr int              vdr          = VDR_PQ2_0_Q8_1_MMQ;
+    static constexpr load_tiles_mmq_t load_tiles   = load_tiles_pq2_0<mmq_y, need_check>;
     static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_0_q8_1_mma<mmq_x, mmq_y, MMQ_Q8_1_DS_LAYOUT_D4>;
     static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q8_0_q8_1_dp4a<mmq_x, mmq_y>;
 };
