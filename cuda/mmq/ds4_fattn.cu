@@ -335,15 +335,20 @@ __device__ __forceinline__ void solar_fattn_consume_16(
 /* Four 8x8 b16 matrices from shared memory into mma.sync B-fragment
  * order.  Lanes 8m..8m+7 supply the row addresses of matrix m; every row
  * address must be 16-byte aligned, which the padded FA_ROW rows are
- * (272 bytes) whenever the column offset is a multiple of 8 halves. */
+ * (272 bytes) whenever the column offset is a multiple of 8 halves.
+ *
+ * The ldmatrix operand is the pointer itself in a 64-bit register, as in
+ * llama.cpp's mma.cuh: passing ptxas a 32-bit __cvta_generic_to_shared offset
+ * in an "r" operand makes it subtract the shared-window base again
+ * (IADD3 Rx, Ry, -c[0x0][0x18], RZ before LDSM), and the load then faults with
+ * an illegal shared access - measured on CUDA 13.3 / sm_89. */
 __device__ __forceinline__ void solar_fattn_ldsm_x4(
         uint32_t &r0, uint32_t &r1, uint32_t &r2, uint32_t &r3,
         const __half *row_ptr) {
 #ifdef TURING_MMA_AVAILABLE
-    const uint32_t addr = (uint32_t)__cvta_generic_to_shared(row_ptr);
     asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0, %1, %2, %3}, [%4];"
                  : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
-                 : "r"(addr));
+                 : "l"(row_ptr));
 #else
     GGML_UNUSED_VARS(r0, r1, r2, r3, row_ptr);
     NO_DEVICE_CODE;
@@ -354,10 +359,9 @@ __device__ __forceinline__ void solar_fattn_ldsm_x4_trans(
         uint32_t &r0, uint32_t &r1, uint32_t &r2, uint32_t &r3,
         const __half *row_ptr) {
 #ifdef TURING_MMA_AVAILABLE
-    const uint32_t addr = (uint32_t)__cvta_generic_to_shared(row_ptr);
     asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.b16 {%0, %1, %2, %3}, [%4];"
                  : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3)
-                 : "r"(addr));
+                 : "l"(row_ptr));
 #else
     GGML_UNUSED_VARS(r0, r1, r2, r3, row_ptr);
     NO_DEVICE_CODE;
@@ -2097,10 +2101,9 @@ enum {
 __device__ __forceinline__ void dots3_ldsm_x2(
         uint32_t &r0, uint32_t &r1, const __half *row_ptr) {
 #ifdef TURING_MMA_AVAILABLE
-    const uint32_t addr = (uint32_t)__cvta_generic_to_shared(row_ptr);
     asm volatile("ldmatrix.sync.aligned.m8n8.x2.b16 {%0, %1}, [%2];"
                  : "=r"(r0), "=r"(r1)
-                 : "r"(addr));
+                 : "l"(row_ptr));
 #else
     GGML_UNUSED_VARS(r0, r1, row_ptr);
     NO_DEVICE_CODE;

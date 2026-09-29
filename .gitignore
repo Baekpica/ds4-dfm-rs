@@ -140,3 +140,5 @@ __pycache__/
 /tests/libds4ple_test.so
 /tests/test_ling3vl_mla_expand
 /tests/test_exaone_batch
+
+/tests/cuda_tokentile_ldmatrix
