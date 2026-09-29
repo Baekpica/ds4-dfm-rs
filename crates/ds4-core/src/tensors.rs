@@ -88,16 +88,26 @@ const GGUF_TYPES: [Option<(&'static str, u32, u32)>; 31] = [
     Some(("bf16", 1, 2)),
 ];
 
+/// Prism PQ2_0 (ternary): 128 values in 34 bytes, the packed type the Bonsai
+/// artifact ships. Its id is above the dense standard table, so it is looked up
+/// separately rather than widening the array.
+const PQ2_0_TYPE: u32 = 142;
+const PQ2_0_TYPE_INFO: (&str, u32, u32) = ("pq2_0", 128, 34);
+
+fn gguf_type(typ: u32) -> Option<(&'static str, u32, u32)> {
+    if typ == PQ2_0_TYPE {
+        return Some(PQ2_0_TYPE_INFO);
+    }
+    GGUF_TYPES.get(typ as usize).copied().flatten()
+}
+
 pub fn tensor_type_name(typ: u32) -> &'static str {
-    GGUF_TYPES
-        .get(typ as usize)
-        .and_then(|t| t.map(|(n, _, _)| n))
-        .unwrap_or("unknown")
+    gguf_type(typ).map(|(name, _, _)| name).unwrap_or("unknown")
 }
 
 /// C `tensor_nbytes`. Unsupported types return None (C leaves bytes=0).
 pub fn tensor_nbytes(typ: u32, elements: u64) -> Option<u64> {
-    let (_, block_elems, block_bytes) = *GGUF_TYPES.get(typ as usize)?.as_ref()?;
+    let (_, block_elems, block_bytes) = gguf_type(typ)?;
     if block_elems == 0 {
         return None;
     }

@@ -29,6 +29,7 @@ pub enum ModelFamily {
     Step37 = 8,
     Ling3Vl = 9,
     Mimo2 = 10,
+    Qwen35 = 11,
 }
 
 impl ModelFamily {
@@ -45,6 +46,7 @@ impl ModelFamily {
             "step35" => Some(Self::Step37),
             "bailingmoe3" => Some(Self::Ling3Vl),
             "mimo2" => Some(Self::Mimo2),
+            "qwen35" => Some(Self::Qwen35),
             _ => None,
         }
     }
@@ -62,6 +64,7 @@ impl ModelFamily {
             Self::Step37 => "step35",
             Self::Ling3Vl => "bailingmoe3",
             Self::Mimo2 => "mimo2",
+            Self::Qwen35 => "qwen35",
         }
     }
 }
@@ -82,6 +85,7 @@ pub enum Variant {
     Step37Flash = 10,
     Ling30FlashVl = 11,
     Mimo26Flash = 12,
+    Qwen35_27B = 13,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -328,6 +332,7 @@ pub fn route_architecture(arch: Option<&[u8]>) -> ArchRoute {
         Some(b"step35") => ArchRoute::Fixed(Variant::Step37Flash),
         Some(b"bailingmoe3") => ArchRoute::Fixed(Variant::Ling30FlashVl),
         Some(b"mimo2") => ArchRoute::Fixed(Variant::Mimo26Flash),
+        Some(b"qwen35") => ArchRoute::Fixed(Variant::Qwen35_27B),
         Some(_) => ArchRoute::Unsupported,
     }
 }
@@ -347,6 +352,7 @@ pub fn shape_for_variant(v: Variant) -> Shape {
         Variant::Step37Flash => SHAPE_STEP37_FLASH,
         Variant::Ling30FlashVl => SHAPE_LING30_FLASH_VL,
         Variant::Mimo26Flash => SHAPE_MIMO26_FLASH,
+        Variant::Qwen35_27B => SHAPE_QWEN35,
     }
 }
 
@@ -887,6 +893,70 @@ pub const SHAPE_QWEN38_FLASH_NEXT: Shape = Shape {
     rope_scale_factor: 1.0,
     rope_yarn_beta_fast: 0.0,
     rope_yarn_beta_slow: 0.0,
+    compress_rope_freq_base: 0.0,
+    rope_orig_ctx: 262144,
+};
+
+/// Prism Bonsai 2 27B (qwen35). A dense trunk: 3 of every 4 layers are gated
+/// delta-net, the 4th is gated attention (`n_swa_period` is the interval), the
+/// FFN is dense SwiGLU, and there are no experts, no MTP block and no
+/// hyper-connections. Matmul weights ship Hadamard-folded as PQ2_0 (ternary).
+/// Same rope base and trained context as Qwen3.8-Flash-Next, which is why the
+/// rope fields below match SHAPE_QWEN38_FLASH_NEXT.
+pub const SHAPE_QWEN35: Shape = Shape {
+    name: "Prism Bonsai 2 27B",
+    family: ModelFamily::Qwen35,
+    variant: Variant::Qwen35_27B,
+    n_layer: 64,
+    n_embd: 5120,
+    n_vocab: 248320,
+    n_head: 24,
+    n_head_kv: 4,
+    n_noise_head: 0,
+    n_head_dim: 256,
+    n_value_dim: 256,
+    n_rot: 64,
+    n_out_group: 0,
+    n_lora_q: 0,
+    n_lora_o: 0,
+    n_expert: 0,
+    n_expert_used: 0,
+    n_expert_shared: 0,
+    n_ff_exp: 0,
+    n_ff_dense: 17408,
+    n_ff_shexp: 0,
+    n_hash_layer: 0,
+    n_swa: 0,
+    n_swa_period: 4,
+    n_indexer_head: 0,
+    n_indexer_head_dim: 0,
+    n_indexer_top_k: 0,
+    n_hc: 0,
+    n_hc_sinkhorn_iter: 0,
+    n_nextn_predict: 0,
+    n_leading_dense: 0,
+    n_kv_lora: 0,
+    n_key_mla: 0,
+    n_value_mla: 0,
+    n_swa_head: 0,
+    n_swa_kv_lora: 0,
+    n_swa_key_mla: 0,
+    n_full_attn_count: 16,
+    n_kda_head_dim: 128,
+    n_ssm_conv: 4,
+    use_rope: true,
+    use_qk_norm: true,
+    rms_eps: 1.0e-6,
+    kda_l2_eps: 0.0,
+    kda_gate_clamp_min: 0.0,
+    hc_eps: 0.0,
+    expert_weight_scale: 1.0,
+    swiglu_clamp_exp: 0.0,
+    rope_freq_base: 10_000_000.0,
+    rope_freq_base_swa: 0.0,
+    rope_scale_factor: 1.0,
+    rope_yarn_beta_fast: 32.0,
+    rope_yarn_beta_slow: 1.0,
     compress_rope_freq_base: 0.0,
     rope_orig_ctx: 262144,
 };

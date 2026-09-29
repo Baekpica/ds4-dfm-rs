@@ -18,7 +18,7 @@ use crate::identify::{identify_file, IdentifyError};
 use crate::shape::{
     route_architecture, ArchRoute, ModelFamily, Shape, Variant, SHAPE_DOTS3_NOTE_PREV, SHAPE_FLASH,
     SHAPE_GLM53_FLASH, SHAPE_K2_HORIZON_375B, SHAPE_KEXAONE_236B, SHAPE_MOTIF3, SHAPE_PRO,
-    SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B,
+    SHAPE_QWEN35, SHAPE_QWEN38_FLASH_NEXT, SHAPE_SOLAR_OPEN2_250B,
 };
 use crate::tensors::TensorInventory;
 
@@ -1725,6 +1725,160 @@ fn validate_qwen4exp(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
 }
 
 /// Qwen tensor-side storage and Q5/Q6 SSD precision contract.
+/// Bonsai declares its whole geometry under `qwen35.*`. The gated delta-net
+/// projection widths are not part of the host shape, so they are pinned against
+/// the family constants; the trunk is trained at 262144 positions with no rope
+/// scaling, so the rotary sections must still cover the rotated half.
+fn validate_qwen35(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
+    let u32s = [
+        ("block_count", "qwen35.block_count", shape.n_layer),
+        ("embedding_length", "qwen35.embedding_length", shape.n_embd),
+        (
+            "feed_forward_length",
+            "qwen35.feed_forward_length",
+            shape.n_ff_dense,
+        ),
+        (
+            "attention.head_count",
+            "qwen35.attention.head_count",
+            shape.n_head,
+        ),
+        (
+            "attention.head_count_kv",
+            "qwen35.attention.head_count_kv",
+            shape.n_head_kv,
+        ),
+        (
+            "attention.key_length",
+            "qwen35.attention.key_length",
+            shape.n_head_dim,
+        ),
+        (
+            "attention.value_length",
+            "qwen35.attention.value_length",
+            shape.n_value_dim,
+        ),
+        (
+            "rope.dimension_count",
+            "qwen35.rope.dimension_count",
+            shape.n_rot,
+        ),
+        (
+            "ssm.conv_kernel",
+            "qwen35.ssm.conv_kernel",
+            crate::qwen35::LIN_CONV,
+        ),
+        (
+            "ssm.state_size",
+            "qwen35.ssm.state_size",
+            crate::qwen35::LIN_HEAD_DIM,
+        ),
+        (
+            "ssm.group_count",
+            "qwen35.ssm.group_count",
+            crate::qwen35::LIN_K_HEAD,
+        ),
+        (
+            "ssm.time_step_rank",
+            "qwen35.ssm.time_step_rank",
+            crate::qwen35::LIN_V_HEAD,
+        ),
+        (
+            "ssm.inner_size",
+            "qwen35.ssm.inner_size",
+            crate::qwen35::LIN_V_DIM as u32,
+        ),
+        (
+            "full_attention_interval",
+            "qwen35.full_attention_interval",
+            crate::qwen35::FULL_ATTN_INTERVAL,
+        ),
+    ];
+    for (name, key, want) in u32s {
+        expect_u32(name, req_u32(g, key)?, want)?;
+    }
+    expect_u64(
+        "context_length",
+        req_u64c(g, "qwen35.context_length")?,
+        shape.rope_orig_ctx,
+    )?;
+    expect_f32(
+        "rope.freq_base",
+        req_f32(g, "qwen35.rope.freq_base")?,
+        shape.rope_freq_base,
+    )?;
+    expect_f32(
+        "attention.layer_norm_rms_epsilon",
+        req_f32(g, "qwen35.attention.layer_norm_rms_epsilon")?,
+        shape.rms_eps,
+    )?;
+
+    // The multimodal axes share one position in this family (no vision tower),
+    // so the split only has to cover the rotated dimensions rather than match a
+    // specific layout.
+    let sections = array_nonnegative_u32s(g, "qwen35.rope.dimension_sections", 4)?;
+    let covered: u32 = sections.iter().sum();
+    if covered != shape.n_rot / 2 {
+        return Err(ValidateError::TokenKey(
+            "mismatch-u32",
+            "qwen35.rope.dimension_sections".into(),
+        ));
+    }
+
+    validate_hadamard(g)
+}
+
+/// Prism's Hadamard fold is described by `prism.hadamard.*`. An export without
+/// a version is unfolded and needs no rotation, which this family accepts
+/// because the fold is applied by the loader, not here.
+fn validate_hadamard(g: &GgufFile) -> Result<(), ValidateError> {
+    let Some(version) = g.get_u32("prism.hadamard.version") else {
+        return Ok(());
+    };
+    expect_u32("hadamard.version", version, 1)?;
+    let block_size = req_u32(g, "prism.hadamard.block_size")?;
+    if block_size == 0 || !block_size.is_power_of_two() {
+        return Err(ValidateError::TokenKey(
+            "mismatch-u32",
+            "prism.hadamard.block_size".into(),
+        ));
+    }
+    expect_string(
+        g,
+        "prism.hadamard.transform",
+        b"normalized-sylvester-walsh-hadamard",
+    )?;
+    expect_string(g, "prism.hadamard.axis", b"input-last-dimension")?;
+    let sign_mode = g
+        .get_string("prism.hadamard.sign_mode")
+        .ok_or_else(|| ValidateError::TokenKey("missing-key", "prism.hadamard.sign_mode".into()))?;
+    if sign_mode != b"explicit" && sign_mode != b"identity" {
+        return Err(ValidateError::TokenKey(
+            "mismatch-string",
+            "prism.hadamard.sign_mode".into(),
+        ));
+    }
+
+    let names = g.get_array("prism.hadamard.weight_names").ok_or_else(|| {
+        ValidateError::TokenKey("missing-array", "prism.hadamard.weight_names".into())
+    })?;
+    if names.typ != GGUF_VALUE_STRING || names.len == 0 {
+        return Err(ValidateError::TokenKey(
+            "array-shape",
+            "prism.hadamard.weight_names".into(),
+        ));
+    }
+    for name in g.array_strings(&names)? {
+        if !crate::qwen35::is_foldable_weight_name(name) {
+            return Err(ValidateError::TokenKey(
+                "hadamard-name",
+                String::from_utf8_lossy(name).into_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_qwen_inventory(
     g: &GgufFile,
     inventory: &TensorInventory,
@@ -1769,6 +1923,7 @@ pub fn validate_file(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
         ModelFamily::Mimo2 => crate::Mimo2Plan::validate(g),
         ModelFamily::Glm53 => validate_glm53(g, shape),
         ModelFamily::Qwen4Exp => validate_qwen4exp(g, shape),
+        ModelFamily::Qwen35 => validate_qwen35(g, shape),
         ModelFamily::DeepSeek4 => validate_deepseek(g, shape),
         ModelFamily::Motif3 => validate_motif3(g, shape),
         ModelFamily::Dots3Note => validate_dots3(g, shape),
@@ -1821,6 +1976,7 @@ pub fn dump_validate(path: &std::path::Path) -> String {
                         Variant::Kexaone236B => SHAPE_KEXAONE_236B,
                         Variant::Dots3NotePrev => SHAPE_DOTS3_NOTE_PREV,
                         Variant::Qwen38FlashNext => SHAPE_QWEN38_FLASH_NEXT,
+                        Variant::Qwen35_27B => SHAPE_QWEN35,
                         Variant::Glm53Flash => SHAPE_GLM53_FLASH,
                         Variant::K2Horizon375B => SHAPE_K2_HORIZON_375B,
                         Variant::InklingSmall => crate::shape::SHAPE_INKLING_SMALL,

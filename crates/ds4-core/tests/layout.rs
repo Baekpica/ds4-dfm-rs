@@ -4,8 +4,8 @@ use ds4_core::{
     bind_dspark_names, bind_mtp_names, bind_names, dump_expected_layouts, dump_expected_support,
     dump_layout_check_tapes, expected_dspark_layouts, expected_layouts, expected_mtp_layouts,
     identify_gguf, shape_for_variant, validate_dspark_layouts, validate_layouts,
-    validate_mtp_layouts, validate_support_layouts, BindNeed, BindPlan, BindSlot, LayoutSpec,
-    SupportCatalog, TensorInfo, TensorInventory, TypeClass, Variant, DSPARK_MARKOV_RANK,
+    validate_mtp_layouts, validate_support_layouts, validate_gguf, BindNeed, BindPlan, BindSlot,
+    LayoutSpec, SupportCatalog, TensorInfo, TensorInventory, TypeClass, Variant, DSPARK_MARKOV_RANK,
     SHAPE_FLASH,
 };
 use std::collections::HashSet;
@@ -216,6 +216,24 @@ fn k2_horizon_layout_accepts_mq87_iq_types() {
         }
         validate_layouts(&plan).expect("MQ87 routed IQ type accepted");
     }
+}
+
+#[test]
+fn validate_qwen35_artifact_when_configured() {
+    let Ok(path) = std::env::var("DS4_QWEN35_MODEL") else {
+        return;
+    };
+    let path = std::path::Path::new(&path);
+    let shape = identify_gguf(path).expect("identify Bonsai artifact").shape;
+    assert_eq!(shape.variant, Variant::Qwen35_27B);
+    validate_gguf(path).expect("Bonsai metadata");
+    let inventory = TensorInventory::open(path).expect("inventory Bonsai artifact");
+    // The artifact must carry exactly the tensors the layout describes: no
+    // folded or packed tensor may be left out of the map.
+    assert_eq!(expected_layouts(&shape).len(), inventory.tensors.len());
+    let plan = BindPlan::resolve(shape, &inventory);
+    plan.check().expect("complete Bonsai bind plan");
+    validate_layouts(&plan).expect("valid Bonsai tensor layouts");
 }
 
 #[test]

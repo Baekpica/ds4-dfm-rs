@@ -456,6 +456,19 @@ fn write_family(family: ModelFamily) -> PathBuf {
             b.push_str("</tool_response>", 3);
             b.write(&path, "qwen4exp");
         }
+        ModelFamily::Qwen35 => {
+            let mut b = Builder::with_bytes().with_he();
+            b.push_str("<|endoftext|>", 3);
+            b.push_str("<|im_start|>", 3);
+            b.push_str("<|im_end|>", 3);
+            b.push_str("<think>", 3);
+            b.push_str("</think>", 3);
+            b.push_str("<tool_call>", 3);
+            b.push_str("</tool_call>", 3);
+            b.push_str("<tool_response>", 3);
+            b.push_str("</tool_response>", 3);
+            b.write(&path, "qwen35");
+        }
     }
     path
 }
@@ -592,6 +605,11 @@ fn family_cases(family: ModelFamily) {
             renders.push("<|im_start|>user\nhi<|im_end|>\n".into());
             renders.push("<think>x</think>".into());
         }
+        ModelFamily::Qwen35 => {
+            encodes.push("hello <think>x</think>");
+            renders.push("<|im_start|>user\nhi<|im_end|>\n".into());
+            renders.push("<think>x</think>".into());
+        }
     }
     for t in encodes {
         assert_cmd(family, &path, &vocab, "encode", &hex_text(t));
@@ -620,7 +638,9 @@ fn family_cases(family: ModelFamily) {
 
     let mut stops = vec![vocab.eos_id, vocab.engine_eos(), 7, -1];
     match family {
-        ModelFamily::SolarOpen2 | ModelFamily::Qwen4Exp => stops.push(vocab.eot_id),
+        ModelFamily::SolarOpen2 | ModelFamily::Qwen4Exp | ModelFamily::Qwen35 => {
+            stops.push(vocab.eot_id)
+        }
         ModelFamily::Motif3 => {
             stops.push(vocab.user_id);
             stops.push(vocab.end_of_turn_id);
@@ -691,7 +711,8 @@ fn family_cases(family: ModelFamily) {
         ModelFamily::Glm53
         | ModelFamily::Motif3
         | ModelFamily::Dots3Note
-        | ModelFamily::Qwen4Exp => {}
+        | ModelFamily::Qwen4Exp
+        | ModelFamily::Qwen35 => {}
     }
     assert_eq!(tokens.as_slice(), &[7]);
 }

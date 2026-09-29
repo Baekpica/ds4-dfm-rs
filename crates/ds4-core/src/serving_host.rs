@@ -45,6 +45,11 @@ const INKLING_PREFILL_CHUNK_ENV: &str = "DS4_INKLING_PREFILL_CHUNK";
 const LING_PREFILL_CHUNK_ENV: &str = "DS4_LING3VL_PREFILL_CHUNK";
 const QWEN_NATIVE_DEFAULT: u32 = 256;
 const QWEN_NATIVE_MAX: u32 = 16384;
+// Bonsai's native chunk knob: DS4_QWEN35_PREFILL_CHUNK, 512 by default and
+// capped at 1024 by the native prefill arena.
+const QWEN35_PREFILL_CHUNK_ENV: &str = "DS4_QWEN35_PREFILL_CHUNK";
+const QWEN35_NATIVE_DEFAULT: u32 = 512;
+const QWEN35_NATIVE_MAX: u32 = 1024;
 const QWEN_IMAGE_MAX_PIXELS: u64 = 16_777_216;
 const QWEN_IMAGE_MAX_COUNT: u64 = 4;
 const QWEN_IMAGE_FACTOR: u64 = 32;
@@ -745,6 +750,7 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
     match caps.family {
         ModelFamily::Mimo2 => MIMO_NATIVE_MAX,
         ModelFamily::Qwen4Exp => QWEN_NATIVE_MAX,
+        ModelFamily::Qwen35 => QWEN35_NATIVE_MAX,
         ModelFamily::Step37 => STEP_NATIVE_MAX,
         ModelFamily::Ling3Vl => LING_NATIVE_MAX,
         ModelFamily::Inkling => INKLING_NATIVE_MAX,
@@ -770,6 +776,12 @@ fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
             QWEN_NATIVE_DEFAULT,
             1,
             QWEN_NATIVE_MAX,
+        ),
+        ModelFamily::Qwen35 => env_u32(
+            QWEN35_PREFILL_CHUNK_ENV,
+            QWEN35_NATIVE_DEFAULT,
+            1,
+            QWEN35_NATIVE_MAX,
         ),
         ModelFamily::Step37 => env_u32(
             STEP_PREFILL_CHUNK_ENV,

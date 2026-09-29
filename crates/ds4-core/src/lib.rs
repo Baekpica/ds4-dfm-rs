@@ -26,6 +26,7 @@ mod mem_gov;
 mod mimo2;
 mod payload;
 mod progress;
+mod qwen35;
 mod serving;
 mod serving_cuda;
 mod serving_host;
