@@ -6676,6 +6676,384 @@ static void config_validate_fixed_shape(uint32_t n_layer) {
     config_expect_u32("block_count",                  n_layer,                 DS4_N_LAYER);
 }
 
+/* =========================================================================
+ * Prism folded-weight activation transform (qwen35 / Bonsai)
+ * =========================================================================
+ *
+ * A folded Prism export stores every matmul weight already rotated into the
+ * block-Hadamard basis the quantization likes, and expects the runtime to
+ * rotate the activation instead:
+ *
+ *   a' = H_block(s * P a)     for each folded weight
+ *   x  = s * H_block(z)       after a row lookup from token_embd.weight
+ *
+ * where s is the sign vector of the weight's input width, H_block is the
+ * normalized Sylvester Walsh-Hadamard transform over blocks of block_size,
+ * and P is the gated-delta-net head permutation (gdn_v_grouped).  H is
+ * symmetric and orthogonal with H*H = I, which is why the inverse only swaps
+ * the two steps.  The CUDA twin of this block is cuda/qwen35_primitives.cuh. */
+#define DS4_MAX_HADAMARD_SETS 8
+#define DS4_MAX_KDA_HEAD_DIM 128
+
+typedef struct {
+    uint32_t width;
+    float   *values;    /* width entries, each +1 or -1 */
+} ds4_hadamard_signs;
+
+typedef struct {
+    bool     enabled;
+    bool     gdn_v_grouped;
+    bool     inverse_token_embd;
+    uint32_t block_size;
+    uint32_t n_sets;
+    ds4_hadamard_signs set[DS4_MAX_HADAMARD_SETS];
+} ds4_hadamard_state;
+
+static ds4_hadamard_state g_hadamard;
+
+static bool model_get_string_array_item(const ds4_model *m, const char *key, uint64_t index, ds4_str *out) {
+    ds4_array_ref arr;
+    if (!model_get_array(m, key, &arr) || arr.type != GGUF_VALUE_STRING) return false;
+    if (index >= arr.len) return false;
+    ds4_cursor c = cursor_at(m, arr.data_pos);
+    for (uint64_t i = 0; i <= index; i++) {
+        if (!cursor_string(&c, out)) return false;
+    }
+    return true;
+}
+
+/* Sign vector of a folded weight's input width, or NULL when the model is not
+ * folded or is folded with identity signs. */
+static const float *ds4_hadamard_signs_for(uint32_t width) {
+    if (!g_hadamard.enabled || g_hadamard.n_sets == 0) return NULL;
+    for (uint32_t i = 0; i < g_hadamard.n_sets; i++) {
+        if (g_hadamard.set[i].width == width) return g_hadamard.set[i].values;
+    }
+    return NULL;
+}
+
+/* A folded weight is one whose product consumes an activation that has to be
+ * rotated first.  The transform is applied unconditionally for this family, so
+ * a file that folds only some of its matmuls would silently run wrong math:
+ * the declared name list must therefore match the model's matmul set exactly. */
+static bool qwen35_is_foldable_weight_name(ds4_str name) {
+    static const char *kinds[] = {
+        "attn_q", "attn_k", "attn_v", "attn_qkv", "attn_gate", "attn_output",
+        "ffn_gate", "ffn_up", "ffn_down", "ssm_out",
+    };
+    char buf[128];
+    if (name.len == 0 || name.len >= sizeof(buf)) return false;
+    memcpy(buf, name.ptr, name.len);
+    buf[name.len] = '\0';
+    if (ds4_streq(name, "output.weight")) return true;
+    if (strncmp(buf, "blk.", 4) != 0) return false;
+    char *dot = strchr(buf + 4, '.');
+    if (!dot || dot == buf + 4) return false;
+    for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
+        char suffix[64];
+        snprintf(suffix, sizeof(suffix), "%s.weight", kinds[i]);
+        if (strcmp(dot + 1, suffix) == 0) return true;
+    }
+    return false;
+}
+
+/* Normalized Sylvester Walsh-Hadamard transform over each block of
+ * block_size consecutive elements: the butterfly below is the same one the
+ * fork's CPU backend runs, and the 1/sqrt(block_size) factor is the
+ * "normalized" part. */
+static void ds4_hadamard_rotate(float *x, uint32_t n) {
+    const uint32_t bs = g_hadamard.block_size;
+    if (bs == 0u) return;
+    const float scale = 1.0f / sqrtf((float)bs);
+    for (uint32_t base = 0; base + bs <= n; base += bs) {
+        float *blk = x + base;
+        for (uint32_t len = 1; len < bs; len <<= 1) {
+            for (uint32_t i = 0; i < bs; i += 2u * len) {
+                for (uint32_t j = 0; j < len; j++) {
+                    const float u = blk[i + j];
+                    const float v = blk[i + len + j];
+                    blk[i + j] = u + v;
+                    blk[i + len + j] = u - v;
+                }
+            }
+        }
+        for (uint32_t i = 0; i < bs; i++) blk[i] *= scale;
+    }
+}
+
+static void ds4_hadamard_forward(float *x, uint32_t n, const float *signs) {
+    if (signs) {
+        for (uint32_t i = 0; i < n; i++) x[i] *= signs[i];
+    }
+    ds4_hadamard_rotate(x, n);
+}
+
+static void ds4_hadamard_inverse(float *x, uint32_t n, const float *signs) {
+    ds4_hadamard_rotate(x, n);
+    if (signs) {
+        for (uint32_t i = 0; i < n; i++) x[i] *= signs[i];
+    }
+}
+
+/* gdn_v_grouped: the converter folded ssm_out over the grouped head order
+ * instead of the tiled one, so the activation is reordered from
+ * [head_dim][n_k][rep] to [head_dim][rep][n_k] first. */
+static void ds4_hadamard_gdn_permute(float *x, uint32_t hd, uint32_t nk, uint32_t rep, float *scratch) {
+    const uint32_t n = hd * nk * rep;
+    for (uint32_t h = 0; h < hd; h++) {
+        for (uint32_t k = 0; k < nk; k++) {
+            for (uint32_t r = 0; r < rep; r++) {
+                scratch[h + hd * (r + rep * k)] = x[h + hd * (k + nk * r)];
+            }
+        }
+    }
+    memcpy(x, scratch, (size_t)n * sizeof(float));
+}
+
+/* Rotate a matmul input in place, applying the gdn permutation when the weight
+ * is a gated-delta-net output projection. */
+static void ds4_hadamard_matmul_input(float *x, uint32_t n, bool ssm_out, float *scratch) {
+    if (!g_hadamard.enabled || n == 0) return;
+    if (ssm_out && g_hadamard.gdn_v_grouped) {
+        ds4_hadamard_gdn_permute(x, DS4_N_KDA_HEAD_DIM, DS4_N_LIN_K_HEAD,
+                                 DS4_N_LIN_V_HEAD / DS4_N_LIN_K_HEAD, scratch);
+    }
+    ds4_hadamard_forward(x, n, ds4_hadamard_signs_for(n));
+}
+
+/* Prism PQ2_0: 128 weights per block, one fp16 scale, 32 code bytes; element
+ * j lives in byte j/4 at bits (j%4)*2 and dequantizes to (code - 1)*d.  This
+ * is the reference every CUDA PQ2_0 kernel is measured against. */
+static void pq2_0_row_f32(const uint8_t *p, uint64_t n, float *out) {
+    const uint64_t blocks = n / 128u;
+    for (uint64_t b = 0; b < blocks; b++, p += 34u) {
+        uint16_t dh;
+        memcpy(&dh, p, sizeof(dh));
+        const float d = f16_to_f32(dh);
+        for (uint32_t j = 0; j < 128u; j++) {
+            const uint8_t code = (uint8_t)((p[2u + (j >> 2)] >> (2u * (j & 3u))) & 3u);
+            out[b * 128u + j] = (float)((int)code - 1) * d;
+        }
+    }
+}
+
+/* prism.hadamard.sign_values is a flat array of +1/-1 partitioned by
+ * sign_widths; the fork stores it as uint32 (so -1 arrives as 0xffffffff) or
+ * as int32 depending on the writer. */
+static void config_read_hadamard_signs(const ds4_model *m) {
+    ds4_array_ref widths = {0}, values = {0};
+    if (!model_get_array(m, "prism.hadamard.sign_widths", &widths) ||
+        !model_get_array(m, "prism.hadamard.sign_values", &values)) {
+        ds4_die("prism.hadamard is in explicit sign mode but its sign arrays are missing");
+    }
+    if (widths.type != GGUF_VALUE_INT32 && widths.type != GGUF_VALUE_UINT32) {
+        ds4_die("prism.hadamard.sign_widths must be an integer array");
+    }
+    if (values.type != GGUF_VALUE_INT32 && values.type != GGUF_VALUE_UINT32) {
+        ds4_die("prism.hadamard.sign_values must be an integer array");
+    }
+    if (widths.len > DS4_MAX_HADAMARD_SETS) ds4_die("prism.hadamard has too many sign vectors");
+
+    ds4_cursor wc = cursor_at(m, widths.data_pos);
+    uint64_t value_off = 0;
+    for (uint64_t i = 0; i < widths.len; i++) {
+        int32_t w = 0;
+        if (!cursor_read(&wc, &w, sizeof(w))) ds4_die("prism.hadamard.sign_widths is truncated");
+        if (w <= 0 || (uint32_t)w % g_hadamard.block_size != 0) {
+            ds4_die("prism.hadamard sign width is not a multiple of the block size");
+        }
+        if (value_off + (uint64_t)w > values.len) {
+            ds4_die("prism.hadamard.sign_values is shorter than the sign widths require");
+        }
+        float *signed_values = xmalloc((size_t)w * sizeof(float));
+        ds4_cursor vc = cursor_at(m, values.data_pos + value_off * sizeof(int32_t));
+        for (int32_t j = 0; j < w; j++) {
+            int32_t v = 0;
+            if (!cursor_read(&vc, &v, sizeof(v))) ds4_die("prism.hadamard.sign_values is truncated");
+            if (v != 1 && v != -1) ds4_die("prism.hadamard sign values must be +1 or -1");
+            signed_values[j] = (float)v;
+        }
+        g_hadamard.set[g_hadamard.n_sets].width = (uint32_t)w;
+        g_hadamard.set[g_hadamard.n_sets].values = signed_values;
+        g_hadamard.n_sets++;
+        value_off += (uint64_t)w;
+    }
+    if (value_off != values.len) ds4_die("prism.hadamard.sign_values length does not match sign_widths");
+}
+
+static void config_validate_hadamard(const ds4_model *m) {
+    memset(&g_hadamard, 0, sizeof(g_hadamard));
+
+    uint32_t version = 0;
+    if (!model_get_u32(m, "prism.hadamard.version", &version)) return;   /* an unfolded export */
+
+    if (version != 1) ds4_die("unsupported prism.hadamard.version");
+    uint32_t block_size = required_u32(m, "prism.hadamard.block_size");
+    ds4_str transform = {0}, axis = {0}, sign_mode = {0};
+    if (!model_get_string(m, "prism.hadamard.transform", &transform) ||
+        !model_get_string(m, "prism.hadamard.axis", &axis) ||
+        !model_get_string(m, "prism.hadamard.sign_mode", &sign_mode)) {
+        ds4_die("prism.hadamard metadata is incomplete");
+    }
+    if (!ds4_streq(transform, "normalized-sylvester-walsh-hadamard")) {
+        ds4_die("unsupported prism.hadamard.transform");
+    }
+    if (!ds4_streq(axis, "input-last-dimension")) ds4_die("unsupported prism.hadamard.axis");
+    if (block_size == 0 || (block_size & (block_size - 1)) != 0) {
+        ds4_die("prism.hadamard.block_size must be a power of two");
+    }
+    g_hadamard.enabled = true;
+    g_hadamard.block_size = block_size;
+    if (!model_get_bool(m, "prism.hadamard.gdn_v_grouped", &g_hadamard.gdn_v_grouped)) {
+        g_hadamard.gdn_v_grouped = false;
+    }
+
+    if (ds4_streq(sign_mode, "explicit")) {
+        config_read_hadamard_signs(m);
+    } else if (!ds4_streq(sign_mode, "identity")) {
+        ds4_die("unsupported prism.hadamard.sign_mode");
+    }
+
+    ds4_array_ref names = {0};
+    if (!model_get_array(m, "prism.hadamard.weight_names", &names) ||
+        names.type != GGUF_VALUE_STRING || names.len == 0) {
+        ds4_die("prism.hadamard.weight_names is missing or empty");
+    }
+
+    /* Every declared folded weight must exist and be a matmul; every matmul
+     * tensor (there is no expert, PLE or MTP tensor in this family) must be
+     * declared.  Indexing by a hash-free scan is fine: it runs once per load. */
+    bool *declared = xcalloc((size_t)m->n_tensors, sizeof(bool));
+    for (uint64_t i = 0; i < names.len; i++) {
+        ds4_str name = {0};
+        if (!model_get_string_array_item(m, "prism.hadamard.weight_names", i, &name)) {
+            ds4_die("prism.hadamard.weight_names is truncated");
+        }
+        if (!qwen35_is_foldable_weight_name(name)) {
+            fprintf(stderr, "ds4: prism.hadamard folds %.*s, which is not a matmul this family rotates\n",
+                    (int)name.len, name.ptr);
+            exit(1);
+        }
+        ds4_tensor *found = NULL;
+        for (uint64_t j = 0; j < m->n_tensors; j++) {
+            if (ds4_str_eq(m->tensors[j].name, name)) {
+                found = &m->tensors[j];
+                break;
+            }
+        }
+        if (!found) {
+            fprintf(stderr, "ds4: prism.hadamard names a missing tensor: %.*s\n",
+                    (int)name.len, name.ptr);
+            exit(1);
+        }
+        declared[found - m->tensors] = true;
+    }
+    for (uint64_t i = 0; i < m->n_tensors; i++) {
+        const ds4_tensor *t = &m->tensors[i];
+        if (!qwen35_is_foldable_weight_name(t->name) || declared[i]) continue;
+        if (ds4_streq(t->name, "token_embd.weight")) continue;
+        fprintf(stderr, "ds4: prism.hadamard leaves the matmul %.*s unfolded\n",
+                (int)t->name.len, t->name.ptr);
+        exit(1);
+    }
+    free(declared);
+
+    ds4_array_ref inverse = {0};
+    if (model_get_array(m, "prism.hadamard.inverse_weight_names", &inverse)) {
+        if (inverse.type != GGUF_VALUE_STRING || inverse.len != 1) {
+            ds4_die("prism.hadamard.inverse_weight_names must name exactly the token embedding");
+        }
+        ds4_str name = {0};
+        if (!model_get_string_array_item(m, "prism.hadamard.inverse_weight_names", 0, &name) ||
+            !ds4_streq(name, "token_embd.weight")) {
+            ds4_die("prism.hadamard.inverse_weight_names must name exactly the token embedding");
+        }
+        g_hadamard.inverse_token_embd = true;
+    }
+
+    /* A folded weight whose width has no sign vector would be rotated without
+     * the signs the fold was built with, which changes the model function. */
+    for (uint64_t i = 0; i < m->n_tensors; i++) {
+        const ds4_tensor *t = &m->tensors[i];
+        if (!qwen35_is_foldable_weight_name(t->name)) continue;
+        if (t->ndim < 1 || t->dim[0] % block_size != 0) {
+            ds4_die("prism.hadamard block size does not divide a folded weight's input width");
+        }
+        if (g_hadamard.n_sets > 0 && ds4_hadamard_signs_for((uint32_t)t->dim[0]) == NULL) {
+            ds4_die("prism.hadamard has no sign vector for a folded weight's input width");
+        }
+    }
+    if (g_hadamard.inverse_token_embd && g_hadamard.n_sets > 0 &&
+        ds4_hadamard_signs_for(DS4_N_EMBD) == NULL) {
+        ds4_die("prism.hadamard has no sign vector for the embedding width");
+    }
+
+    fprintf(stderr,
+            "ds4: prism.hadamard folding: block %u, %u sign vector(s), gdn_v_grouped %u\n",
+            block_size, g_hadamard.n_sets, g_hadamard.gdn_v_grouped ? 1u : 0u);
+}
+
+/* Bonsai declares its whole geometry under qwen35.*; the gated delta-net
+ * projection widths live in the shape (n_lin_*), the trunk is trained at
+ * 262144 positions with no rope scaling. */
+static void config_validate_qwen35_model(const ds4_model *m) {
+    g_ds4_shape = DS4_SHAPE_QWEN35;
+
+    config_expect_u32("block_count", required_u32(m, "qwen35.block_count"), DS4_N_LAYER);
+    config_expect_u32("embedding_length", required_u32(m, "qwen35.embedding_length"), DS4_N_EMBD);
+    config_expect_u32("feed_forward_length", required_u32(m, "qwen35.feed_forward_length"),
+                      DS4_N_FF_DENSE);
+    config_expect_u32("attention.head_count", required_u32(m, "qwen35.attention.head_count"),
+                      DS4_N_HEAD);
+    config_expect_u32("attention.head_count_kv", required_u32(m, "qwen35.attention.head_count_kv"),
+                      DS4_N_HEAD_KV);
+    config_expect_u32("attention.key_length", required_u32(m, "qwen35.attention.key_length"),
+                      DS4_N_HEAD_DIM);
+    config_expect_u32("attention.value_length", required_u32(m, "qwen35.attention.value_length"),
+                      DS4_N_VALUE_DIM);
+    config_expect_u32("rope.dimension_count", required_u32(m, "qwen35.rope.dimension_count"),
+                      DS4_N_ROT);
+    config_expect_f32("rope.freq_base", required_f32(m, "qwen35.rope.freq_base"),
+                      DS4_ROPE_FREQ_BASE);
+    config_expect_f32("attention.layer_norm_rms_epsilon",
+                      required_f32(m, "qwen35.attention.layer_norm_rms_epsilon"), DS4_RMS_EPS);
+    config_expect_u32("ssm.conv_kernel", required_u32(m, "qwen35.ssm.conv_kernel"), DS4_N_SSM_CONV);
+    config_expect_u32("ssm.state_size", required_u32(m, "qwen35.ssm.state_size"),
+                      DS4_N_KDA_HEAD_DIM);
+    config_expect_u32("ssm.group_count", required_u32(m, "qwen35.ssm.group_count"),
+                      DS4_N_LIN_K_HEAD);
+    config_expect_u32("ssm.time_step_rank", required_u32(m, "qwen35.ssm.time_step_rank"),
+                      DS4_N_LIN_V_HEAD);
+    config_expect_u32("ssm.inner_size", required_u32(m, "qwen35.ssm.inner_size"),
+                      DS4_N_LIN_V_HEAD * DS4_N_KDA_HEAD_DIM);
+    config_expect_u32("full_attention_interval",
+                      required_u32(m, "qwen35.full_attention_interval"),
+                      DS4_N_SWA_PERIOD);
+    config_expect_u64("context_length", required_u64_compat(m, "qwen35.context_length"),
+                      DS4_ROPE_ORIG_CTX);
+
+    /* The multimodal axes share one position in this family (no vision tower),
+     * so the split only has to cover the rotated dimensions. */
+    ds4_array_ref sections = {0};
+    if (!model_get_array(m, "qwen35.rope.dimension_sections", &sections) ||
+        sections.len != 4 || (sections.type != GGUF_VALUE_INT32 && sections.type != GGUF_VALUE_UINT32)) {
+        ds4_die("qwen35.rope.dimension_sections is missing or not a 4-entry integer array");
+    }
+    ds4_cursor sc = cursor_at(m, sections.data_pos);
+    uint64_t section_sum = 0;
+    for (uint64_t i = 0; i < sections.len; i++) {
+        int32_t v = 0;
+        if (!cursor_read(&sc, &v, sizeof(v))) ds4_die("qwen35.rope.dimension_sections is truncated");
+        if (v < 0) ds4_die("qwen35.rope.dimension_sections has a negative entry");
+        section_sum += (uint64_t)v;
+    }
+    if (section_sum != DS4_N_ROT / 2u) {
+        ds4_die("qwen35.rope.dimension_sections does not cover the rotated dimensions");
+    }
+
+    config_validate_hadamard(m);
+}
+
 /* Validate metadata values that affect semantics: attention shape, HC count,
  * expert routing, RoPE scaling, compression ratios, and SwiGLU clamp. */
 static void config_validate_deepseek4_model(const ds4_model *m) {
@@ -7689,6 +8067,10 @@ static void config_validate_model(const ds4_model *m) {
     }
     if (ds4_streq(arch, "glm5-next")) {
         config_validate_glm53_model(m);
+        return;
+    }
+    if (ds4_streq(arch, "qwen35")) {
+        config_validate_qwen35_model(m);
         return;
     }
     fprintf(stderr, "ds4: unsupported GGUF architecture: %.*s\n",
