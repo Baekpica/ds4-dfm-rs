@@ -32,9 +32,23 @@ if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
 fi
 
 BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo main)
-BASE=${QA_BASE:-origin/${BRANCH}}
+# The base is whatever is already published for this branch: the first remote
+# that carries it.  This workspace pushes to the "fork" remote, because our
+# account has read-only access to the upstream origin; a gate that insisted on
+# origin/<branch> there would find no surfaces and pass everything.
+BASE=${QA_BASE:-}
+if [[ -z "$BASE" ]]; then
+  BASE="origin/${BRANCH}"
+  for cand in "origin/${BRANCH}" "fork/${BRANCH}"; do
+    if git rev-parse --verify --quiet "refs/remotes/${cand}" >/dev/null 2>&1; then
+      BASE="$cand"
+      break
+    fi
+  done
+fi
 MODEL=${QA_MODEL:-"the per-project QA model"}
 REPORT=${QA_REPORT:-qa-evidence/qa-report.md}
+echo "QA gate: branch ${BRANCH}, base ${BASE}"
 
 BASE_SHA=$(git rev-parse "${BASE}" 2>/dev/null || echo "")
 HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
@@ -73,11 +87,13 @@ failures=0
 check() { if eval "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; failures=$((failures+1)); fi; }
 
 check "QA report exists (${REPORT})" "[[ -f '$REPORT' ]]"
-if (( base_sec > 0 )); then
+if [[ -z "$BASE_SHA" ]]; then
+  echo "SKIP  freshness (${BASE} does not exist yet: the branch is not published)"
+elif [[ "$BASE_SHA" == "$HEAD_SHA" ]]; then
+  echo "SKIP  freshness (HEAD is level with ${BASE}; nothing published is behind it)"
+else
   check "QA report is fresh (>= last pushed commit at ${BASE})" \
     "[[ -f '$REPORT' ]] && [[ '$(stat -c %Y "$REPORT" 2>/dev/null || echo 0)' -ge '$base_sec' ]]"
-else
-  echo "SKIP  freshness (the branch has no pushed base yet; ${BASE} is unborn)"
 fi
 
 # The operative verdict is the report's LAST non-empty line, and nothing else:
