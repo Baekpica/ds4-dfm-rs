@@ -25,6 +25,8 @@ pub const LAYOUT_STEP37: u32 = 0x3350_5453; /* "STP3" */
 pub const LAYOUT_LING3VL: u32 = 0x3347_4e4c; /* "LNG3" */
 const LAYOUT_INKLING: u32 = 0x334c_4b49; /* "IKL3" */
 const LAYOUT_MIMO2: u32 = 0x324f_4d49; /* "IMO2" */
+const LAYOUT_NAIVE: u32 = 0x3530_4e4e;
+const LAYOUT_NAIVE_DRAFT: u32 = 0x4430_4e4e;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PayloadLayout {
@@ -38,6 +40,7 @@ pub enum PayloadLayout {
     Ling3Vl,
     Inkling,
     Mimo2,
+    Naive,
 }
 
 impl PayloadLayout {
@@ -52,6 +55,7 @@ impl PayloadLayout {
             LAYOUT_LING3VL => Self::Ling3Vl,
             LAYOUT_INKLING => Self::Inkling,
             LAYOUT_MIMO2 => Self::Mimo2,
+            LAYOUT_NAIVE | LAYOUT_NAIVE_DRAFT => Self::Naive,
             _ => Self::DeepSeek,
         }
     }
@@ -68,12 +72,15 @@ impl PayloadLayout {
             Self::Ling3Vl => ModelFamily::Ling3Vl,
             Self::Inkling => ModelFamily::Inkling,
             Self::Mimo2 => ModelFamily::Mimo2,
+            Self::Naive => ModelFamily::NaiveN05,
         }
     }
 
     fn exceeds_context(self, tokens: usize, ctx: i32) -> bool {
-        // Native Qwen payloads can persist an exactly full context.
-        ctx <= 0 || tokens > ctx as usize || (tokens == ctx as usize && self != Self::Qwen4Exp)
+        // These native payloads can persist an exactly full context.
+        ctx <= 0
+            || tokens > ctx as usize
+            || (tokens == ctx as usize && !matches!(self, Self::Qwen4Exp | Self::Naive))
     }
 
     pub fn oracle_name(self) -> &'static str {
@@ -252,7 +259,8 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
         | PayloadLayout::Step37
         | PayloadLayout::Ling3Vl
         | PayloadLayout::Inkling
-        | PayloadLayout::Mimo2 => {
+        | PayloadLayout::Mimo2
+        | PayloadLayout::Naive => {
             if p.fields[12] != p.fields[7] {
                 return Err(err("session payload token count does not match live rows"));
             }
@@ -615,6 +623,35 @@ mod tests {
     use std::io::{Cursor, Seek};
 
     use super::*;
+
+    #[test]
+    fn naive_prefix_keeps_family() {
+        for magic in [0x3530_4e4e, 0x4430_4e4e] {
+            let mut prefix = fixture_deepseek();
+            prefix.fields[5] = magic;
+            prefix.fields[12] = prefix.fields[7];
+            let bytes = prefix.encode();
+            let parsed = read_prefix_range(
+                &mut Cursor::new(&bytes),
+                0,
+                bytes.len() as u64,
+                ModelFamily::NaiveN05,
+                64,
+            )
+            .unwrap();
+            assert_eq!(parsed.layout().family(), ModelFamily::NaiveN05);
+            let mut host = SessionLedger::new(
+                ModelFamily::NaiveN05,
+                crate::session::SessionBackend::Cuda,
+                64,
+                7,
+            );
+            host.apply_payload(&parsed).unwrap();
+            assert_eq!(host.tokens(), &[10, 20, 30]);
+            prefix.fields[12] += 1;
+            assert!(parse_prefix(&prefix.encode()).is_err());
+        }
+    }
 
     #[test]
     fn qwen_full_context_payload() {

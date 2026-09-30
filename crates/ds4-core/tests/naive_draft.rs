@@ -87,6 +87,17 @@ fn pinned_dspark_is_accepted() {
 }
 
 #[test]
+fn draft_inspect_uses_own_graph() {
+    use ds4_core::{dump_bind_names_variant, dump_expected_layouts_variant};
+    let names = dump_bind_names_variant("dspark-naive-n05-flash").unwrap();
+    let layout = dump_expected_layouts_variant("dspark-naive-n05-flash").unwrap();
+    assert!(names.contains("n_layer=5"));
+    assert!(names.contains("fc.weight"));
+    assert!(!names.contains("dspark.main_proj.weight"));
+    assert!(layout.contains("markov_rank=256 n_layer=5"));
+}
+
+#[test]
 fn changed_draft_contract_fails() {
     let base = fixture();
     for (i, (key, value)) in [

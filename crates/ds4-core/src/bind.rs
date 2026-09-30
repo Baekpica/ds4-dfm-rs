@@ -876,12 +876,20 @@ pub fn dump_bind_mtp_shape(shape: &Shape) -> String {
 }
 
 pub fn dump_bind_dspark_shape(shape: &Shape) -> String {
+    let (layers, names) = if shape.family == ModelFamily::NaiveN05 {
+        (
+            crate::naive::DRAFT_LAYERS,
+            inkling_names(crate::naive::draft_layouts()),
+        )
+    } else {
+        (DSPARK_N_LAYER, bind_dspark_names())
+    };
     dump_name_table(
         format!(
             "BIND kind=dspark name={} family={} variant={} n_layer={}\n",
-            shape.name, shape.family as u32, shape.variant as u32, DSPARK_N_LAYER
+            shape.name, shape.family as u32, shape.variant as u32, layers
         ),
-        &bind_dspark_names(),
+        &names,
     )
 }
 
@@ -1262,6 +1270,7 @@ pub fn variant_from_bind_name(s: &str) -> Option<Variant> {
         "inkling" => Some(Variant::InklingSmall),
         "step35" => Some(Variant::Step37Flash),
         "bailingmoe3" => Some(Variant::Ling30FlashVl),
+        "naive-n05-flash" => Some(Variant::NaiveN05Flash),
         _ => None,
     }
 }
@@ -1283,7 +1292,7 @@ pub fn dump_bind_names_variant(name: &str) -> Option<String> {
     })
 }
 
-/// Main and sibling catalogs; DSpark remains DeepSeek-only.
+/// Main and sibling catalogs, including Naive's independent DSpark stack.
 pub fn catalog_from_bind_name(s: &str) -> Option<(Option<SupportCatalog>, Variant)> {
     if let Some(rest) = s.strip_prefix("mtp-") {
         return variant_from_bind_name(rest)
@@ -1297,7 +1306,7 @@ pub fn catalog_from_bind_name(s: &str) -> Option<(Option<SupportCatalog>, Varian
     }
     if let Some(rest) = s.strip_prefix("dspark-") {
         return variant_from_bind_name(rest)
-            .filter(|v| matches!(v, Variant::Flash | Variant::Pro))
+            .filter(|v| matches!(v, Variant::Flash | Variant::Pro | Variant::NaiveN05Flash))
             .map(|v| (Some(SupportCatalog::Dspark), v));
     }
     variant_from_bind_name(s).map(|v| (None, v))

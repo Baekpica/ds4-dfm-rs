@@ -111,6 +111,9 @@ __pycache__/
 /tests/naive_graph
 /tests/naive_dense
 /tests/naive_gate
+/tests/naive_serve_gate
+/tests/naive_trial
+/tests/naive_trial_live
 /tests/naive_draft_bind
 /tests/naive_draft_ops
 /tests/naive_draft_graph

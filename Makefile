@@ -1,6 +1,6 @@
 CC ?= cc
 UNAME_S := $(shell uname -s)
-NAIVE_NATIVE_INCS := ds4_naive_plan.h ds4_naive_bind.inc ds4_naive_draft.inc ds4_naive_graph.inc ds4_naive_session.inc ds4_naive_payload.inc ds4_naive_batch.inc ds4_naive_bank_payload.inc
+NAIVE_NATIVE_INCS := ds4_naive_plan.h ds4_naive_bind.inc ds4_naive_draft.inc ds4_naive_graph.inc ds4_naive_session.inc ds4_naive_mtp.inc ds4_naive_payload.inc ds4_naive_batch.inc ds4_naive_bank_payload.inc
 
 ifeq ($(UNAME_S),Darwin)
 NATIVE_CPU_FLAG ?= -mcpu=native
@@ -388,6 +388,13 @@ tests/naive_gate: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
 		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
 		$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/naive_gate" $@
+
+tests/naive_serve_gate: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example naive_serve_gate --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/naive_serve_gate" $@
 
 # Phase 4: C KVC oracle linked against ds4_kvstore.o (no CUDA engine).
 tests/parity/kv_c_oracle: tests/parity/kv_c_oracle.c tests/parity/kv_c_stubs.c ds4_kvstore.o
@@ -864,6 +871,22 @@ tests/naive_banks.o: tests/naive_banks.c tests/naive_state_fixture.h ds4.c $(NAI
 
 tests/naive_banks: tests/naive_banks.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+tests/naive_trial.o: tests/naive_trial.c tests/naive_state_fixture.h ds4.c $(NAIVE_NATIVE_INCS)
+	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/naive_trial: tests/naive_trial.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+tests/naive_trial_live.o: tests/naive_trial_live.c ds4.c $(NAIVE_NATIVE_INCS)
+	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/naive_trial_live: tests/naive_trial_live.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-naive-trial
+test-naive-trial: tests/naive_trial
+	./tests/naive_trial
 
 .PHONY: test-naive-banks
 test-naive-banks: tests/naive_banks

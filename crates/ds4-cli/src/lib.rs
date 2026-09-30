@@ -322,9 +322,17 @@ fn use_mtp_spec(temp: f32, mtp: Option<&str>, draft: i32) -> bool {
     temp <= 0.0 && mtp.is_some() && draft > 1 && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
 }
 
+fn use_naive_spec(temp: f32, dspark: Option<&str>, draft: i32) -> bool {
+    temp <= 0.0
+        && dspark.is_some()
+        && draft >= 1
+        && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
+}
+
 fn mtp_open_options(args: &ShadowArgs) -> Vec<ModelOpenOption> {
     let mut options = Vec::new();
-    if args.mtp.is_some() {
+    if args.mtp.is_some() || args.dspark.is_some() || std::env::var_os("DS4_DSPARK_MODEL").is_some()
+    {
         options.push(ModelOpenOption::MtpDraftTokens(args.mtp_draft));
         options.push(ModelOpenOption::MtpMargin(args.mtp_margin));
     }
@@ -449,7 +457,9 @@ fn run_chat_turn(
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     let mut printer = TokenPrinter::new(model.family(), chat.thinking_enabled());
-    let use_mtp = use_mtp_spec(args.temp, args.mtp.as_deref(), args.mtp_draft);
+    let use_mtp = use_mtp_spec(args.temp, args.mtp.as_deref(), args.mtp_draft)
+        || (model.family() == ds4_core::ModelFamily::NaiveN05
+            && use_naive_spec(args.temp, model.dspark().map(|d| d.path()), args.mtp_draft));
     let eos = model.token_eos();
     let mut generated = 0i32;
     let mut raw = Vec::new();
@@ -572,7 +582,9 @@ fn run_one_shot(model: &ds4_core::Model, args: &ShadowArgs, text: &str) -> Resul
     let mut out = stdout.lock();
     let mut printer = TokenPrinter::new(model.family(), !args.nothink);
     let mut decode_error = None;
-    let use_mtp = use_mtp_spec(args.temp, args.mtp.as_deref(), args.mtp_draft);
+    let use_mtp = use_mtp_spec(args.temp, args.mtp.as_deref(), args.mtp_draft)
+        || (model.family() == ds4_core::ModelFamily::NaiveN05
+            && use_naive_spec(args.temp, model.dspark().map(|d| d.path()), args.mtp_draft));
     let eos = model.token_eos();
     let mut generated = 0;
 
@@ -1009,7 +1021,7 @@ C-compatible flags (same names as `ds4 --help`):
   --dump-tokens --dump-logits FILE --dump-logprobs FILE --logprobs-top-k N
   -h, --help              Show this help
 
---mtp attaches DeepSeek, Inkling or Step predictors; --dspark requires DeepSeek.
+--mtp attaches DeepSeek, Inkling or Step predictors; --dspark takes DeepSeek or Naive.
 --dump-logprobs mirrors the C CLI proof loop (chat-template encode via
 the engine, argmax decode, host stop set); ctx grows to fit prompt+n
 unless -c is explicit.
@@ -1773,6 +1785,30 @@ mod tests {
         assert!(!use_mtp_spec(0.0, Some("mtp.gguf"), 1));
         assert!(!use_mtp_spec(0.5, Some("mtp.gguf"), 2));
         assert!(use_mtp_spec(0.0, Some("mtp.gguf"), 2));
+    }
+
+    #[test]
+    fn dspark_uses_spec_controls() {
+        let parsed = parse_args(args(&[
+            "--dspark",
+            "draft.gguf",
+            "--mtp-draft",
+            "6",
+            "--mtp-margin",
+            "0",
+        ]))
+        .unwrap();
+        let controls = mtp_open_options(&parsed);
+        assert!(controls
+            .iter()
+            .any(|o| matches!(o, ModelOpenOption::MtpDraftTokens(6))));
+        assert!(controls
+            .iter()
+            .any(|o| matches!(o, ModelOpenOption::MtpMargin(m) if *m == 0.0)));
+        assert!(use_naive_spec(0.0, parsed.dspark.as_deref(), 1));
+        assert!(use_naive_spec(0.0, parsed.dspark.as_deref(), 6));
+        assert!(!use_naive_spec(0.5, parsed.dspark.as_deref(), 6));
+        assert!(!use_naive_spec(0.0, None, 6));
     }
 
     #[test]

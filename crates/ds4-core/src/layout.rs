@@ -2940,16 +2940,17 @@ pub fn dump_expected_mtp_shape(shape: &Shape) -> String {
 }
 
 pub fn dump_expected_dspark_shape(shape: &Shape) -> String {
+    let (rank, layers) = if shape.family == ModelFamily::NaiveN05 {
+        (crate::naive::draft_rank(), crate::naive::DRAFT_LAYERS)
+    } else {
+        (DSPARK_MARKOV_RANK, DSPARK_N_LAYER)
+    };
     dump_layout_table(
         format!(
             "LAYOUT kind=dspark name={} family={} variant={} markov_rank={} n_layer={}\n",
-            shape.name,
-            shape.family as u32,
-            shape.variant as u32,
-            DSPARK_MARKOV_RANK,
-            DSPARK_N_LAYER
+            shape.name, shape.family as u32, shape.variant as u32, rank, layers
         ),
-        &expected_dspark_layouts(shape, DSPARK_MARKOV_RANK),
+        &expected_dspark_layouts(shape, rank),
     )
 }
 

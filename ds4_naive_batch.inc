@@ -29,6 +29,35 @@ static uint64_t naive_swa_slot_bytes(void) {
     return bytes;
 }
 
+static uint64_t naive_df_slot_bytes(void) {
+    return (uint64_t)N05_DF_WINDOW * N05_DF_LAYERS * 2 * N05_DF_KV * N05_DF_DIM * sizeof(uint16_t);
+}
+
+/* Pack the logical draft window beside SWA. Extra trial slots never become
+ * checkpoint state; restore resets the pending trial and both frontiers. */
+static bool naive_df_ckpt(ds4_naive_df_runtime *d, ds4_gpu_tensor *slab,
+                           uint64_t base, uint32_t pos, naive_rows_mode mode) {
+    if (!d->ws) { return true; }
+    const uint32_t first = pos > N05_DF_WINDOW ? pos - N05_DF_WINDOW : 0;
+    const uint64_t row = 2 * N05_DF_KV * N05_DF_DIM * sizeof(uint16_t);
+    if (mode == N05_ROWS_SAVE && (d->trial_n || d->position != pos || d->first > first)) { return false; }
+    for (unsigned il = 0; il < N05_DF_LAYERS; il++) {
+        for (uint32_t p = first; p < pos;) {
+            const uint32_t slot = p % N05_DF_CAP;
+            uint32_t rows = N05_DF_CAP - slot;
+            if (rows > pos - p) { rows = pos - p; }
+            const uint64_t packed = base + ((uint64_t)il * N05_DF_WINDOW + p - first) * row;
+            const bool ok = mode == N05_ROWS_SAVE
+                ? ds4_gpu_tensor_copy(slab, packed, d->kv[il], (uint64_t)slot * row, rows * row)
+                : ds4_gpu_tensor_copy(d->kv[il], (uint64_t)slot * row, slab, packed, rows * row);
+            if (!ok) { return false; }
+            p += rows;
+        }
+    }
+    if (mode == N05_ROWS_RESTORE) { d->position = pos; d->first = first; d->trial_n = 0; }
+    return true;
+}
+
 static void naive_ckpt_drop(ds4_naive_batch_runtime *rt, uint32_t bank) {
     for (unsigned i = 0; i < N05_BANK_CHECKPOINTS; i++) {
         if (partial_checkpoint_ref(&rt->checkpoint[i], bank)) {
@@ -87,7 +116,8 @@ static bool naive_ckpt_rows(ds4_naive_graph *g, unsigned il,
 static bool naive_ckpt_capture(ds4_naive_batch_runtime *rt, uint32_t bank,
                                uint32_t pos, naive_logits_mode logits, uint64_t reserve) {
     if (!rt || !rt->checkpoint_slab || bank >= rt->max_seq || !pos ||
-        rt->graph[bank].failed || rt->graph[bank].position != pos) { return false; }
+        rt->graph[bank].failed || rt->graph[bank].position != pos ||
+        rt->graph[bank].draft.trial_n) { return false; }
     uint32_t slot = 0;
     for (uint32_t i = 0; i < N05_BANK_CHECKPOINTS; i++) {
         ds4_partial_checkpoint *cp = &rt->checkpoint[i];
@@ -119,6 +149,7 @@ static bool naive_ckpt_capture(ds4_naive_batch_runtime *rt, uint32_t bank,
                              offset, pos, N05_ROWS_SAVE)) { return false; }
         offset += N05_WINDOW * naive_swa_row_bytes();
     }
+    if (!naive_df_ckpt(&rt->graph[bank].draft, rt->checkpoint_slab, offset, pos, N05_ROWS_SAVE)) { return false; }
     if (!ds4_gpu_synchronize()) { return false; }
     cp->pos = pos;
     cp->last_use = ++rt->checkpoint_clock;
@@ -165,6 +196,7 @@ static bool naive_ckpt_restore(ds4_naive_batch_runtime *rt, uint32_t src,
                              offset, pos, N05_ROWS_RESTORE)) { return false; }
         offset += N05_WINDOW * naive_swa_row_bytes();
     }
+    if (!naive_df_ckpt(&dg->draft, rt->checkpoint_slab, offset, pos, N05_ROWS_RESTORE)) { return false; }
     if (!ds4_gpu_synchronize()) { return false; }
     dg->position = pos;
     dg->failed = false;
@@ -211,15 +243,16 @@ static void naive_batch_free(ds4_naive_batch_runtime *rt) {
 }
 
 static ds4_naive_batch_runtime *naive_batch_create(
-        uint32_t ctx, uint32_t max_seq, uint32_t cap) {
+        uint32_t ctx, uint32_t max_seq, uint32_t cap, const ds4_naive_draft *draft) {
     if (!ctx || max_seq < 1 || max_seq > N05_BANK_MAX ||
-        !cap || cap > ctx) { return NULL; }
+        !cap || cap > ctx || (draft && cap < N05_DF_BLOCK)) { return NULL; }
     ds4_naive_batch_runtime *rt = xcalloc(1, sizeof(*rt));
     rt->ctx_size = ctx;
     rt->max_seq = max_seq;
     rt->prefill_cap = cap;
     rt->graph = xcalloc(max_seq, sizeof(*rt->graph));
-    if (!naive_graph_alloc(&rt->graph[0], ctx, cap)) {
+    if (!naive_graph_alloc(&rt->graph[0], ctx, cap) ||
+        (draft && !naive_draft_alloc(&rt->graph[0].draft, draft))) {
         naive_batch_free(rt);
         return NULL;
     }
@@ -233,7 +266,7 @@ static ds4_naive_batch_runtime *naive_batch_create(
     rt->bank_logits_valid = xcalloc(max_seq, sizeof(uint8_t));
     if (getenv("DS4_SERVER_FORK_PARTIAL") &&
         strcmp(getenv("DS4_SERVER_FORK_PARTIAL"), "0") == 0) { return rt; }
-    rt->checkpoint_slot_bytes = naive_swa_slot_bytes();
+    rt->checkpoint_slot_bytes = naive_swa_slot_bytes() + (draft ? naive_df_slot_bytes() : 0);
     uint64_t bytes = rt->checkpoint_slot_bytes * N05_BANK_CHECKPOINTS;
     const uint64_t page = ds4_gpu_vmm_demand_page();
     if (page) { bytes = (bytes + page - 1u) / page * page; }
@@ -266,6 +299,7 @@ static void naive_bank_reset(ds4_naive_batch_runtime *rt, uint32_t bank) {
     if (g->failed && !ds4_gpu_synchronize()) { return; }
     g->position = 0;
     g->failed = false;
+    g->draft.position = 0; g->draft.first = 0; g->draft.trial_n = 0;
     rt->bank_logits_valid[bank] = 0;
 }
 
@@ -273,7 +307,7 @@ static bool naive_bank_copy(ds4_naive_batch_runtime *rt, uint32_t src,
                             uint32_t dst, uint32_t tokens) {
     if (!rt || src >= rt->max_seq || dst >= rt->max_seq || src == dst) { return false; }
     ds4_naive_graph *sg = &rt->graph[src], *dg = &rt->graph[dst];
-    if (sg->failed || sg->position != tokens || tokens > dg->context) { return false; }
+    if (sg->failed || sg->position != tokens || tokens > dg->context || sg->draft.trial_n) { return false; }
     dg->failed = true;
     for (unsigned il = 0; il < N05_LAYERS; il++) {
         const uint64_t row = (naive_is_dsa(il) ? 4ull : 8ull) *
@@ -292,6 +326,13 @@ static bool naive_bank_copy(ds4_naive_batch_runtime *rt, uint32_t src,
                                      (uint64_t)rows * row)) { return false; }
             p += rows;
         }
+    }
+    if (sg->draft.ws) {
+        for (unsigned il = 0; il < N05_DF_LAYERS; il++) {
+            if (!ds4_gpu_tensor_copy(dg->draft.kv[il], 0, sg->draft.kv[il], 0,
+                ds4_gpu_tensor_bytes(sg->draft.kv[il]))) { return false; }
+        }
+        dg->draft.position = sg->draft.position; dg->draft.first = sg->draft.first; dg->draft.trial_n = 0;
     }
     if (!ds4_gpu_synchronize()) { return false; }
     dg->position = tokens;

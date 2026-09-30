@@ -5,7 +5,9 @@ NFC/Qwen2 tokenizer and official Jinja input template are implemented.
 CUDA execution, serving, cache reuse and DSpark are not qualified yet.
 The Rust host can open one full CUDA model; forced CPU, Metal, distributed,
 steering, vision and embedded-MTP settings fail before native allocation.
-DSpark target verification remains guarded while its runtime is connected.
+DSpark serial and banked target verification, accepted-prefix commit and
+cache persistence are implemented. Automatic speculation remains off until
+qualification; explicit speculation still needs performance work.
 
 All four downloaded shards and their provenance/manifest pass SHA-256 checks.
 
@@ -90,6 +92,30 @@ Bank memcheck passes with zero errors using `--show-backtrace device`.
 The default host backtrace collector crashes in `libgcc _Unwind_Backtrace`
 at CUDA context initialization on this test; device trace and memory checks
 remain enabled in the passing run.
+
+The integrated DSpark runs the fixed seven-row noise block, then verifies
+the requested target prefix and commits only accepted rows. Target/SWA,
+indexer and five draft-cache frontiers move together; rejected rows never
+become payload state. Loaded draft context remains maintained with trials
+off. Draft-aware checkpoints add 10,485,760 bytes per slot to the target's
+25,559,040 bytes (288,358,400 bytes for all eight slots, before alignment).
+
+An actual-weight 43-token code fixture exposed width-dependent arithmetic:
+width 1 and width 7 had identical first-MoE inputs, but different Gate/Up
+and Down paths. The small initial difference grew through BF16 boundaries
+and routing, flipping the next-token argmax. Verification now uses the
+one-token linear and expert reductions at widths 1–7. The regression fails
+before this change and passes afterward: all 48 first-row hidden states,
+full-vocabulary logits and the argmax match exactly. Changing rejected
+proposal values also leaves these outputs and committed target/draft rows
+byte-identical on this fixture.
+
+Fresh serial generation with the real target and draft preserves the ordinary
+decode text/token stream on arithmetic, a 256-token code case and a Korean
+capital answer (excluding the terminal stop token). Full-logit memory and
+disk snapshot round trips also pass. The code case reaches its output limit;
+this is bounded equivalence evidence, not a complete coding-quality gate.
+DSpark remains slower on these fixtures; no acceleration is qualified.
 
 The host quote and native geometry tests include full DSA K/V and indexer
 history. With prefill chunk 2048 and one bank, the planned 1M allocation is:

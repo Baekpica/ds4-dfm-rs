@@ -135,10 +135,10 @@ static ds4_gpu_tensor *naive_view(ds4_gpu_tensor *t, unsigned row, unsigned widt
 static bool naive_sparse(ds4_naive_graph *g, const ds4_model *m,
                           const ds4_layer_weights *l, unsigned il, unsigned n) {
     ds4_exaone_batch_ws *b = &g->ws;
-    if (!plain_graph_matmul_tensor(g->index_q, m, l->indexer_attn_q_b, N05_EMBED,
+    if (!naive_linear(g->index_q, m, l->indexer_attn_q_b, N05_EMBED,
             N05_INDEX_HEADS * N05_INDEX_DIM, b->b_norm, n) ||
-        !plain_graph_matmul_tensor(g->index_k, m, l->indexer_attn_k, N05_EMBED, N05_INDEX_DIM, b->b_norm, n) ||
-        !plain_graph_matmul_tensor(g->index_weights, m, l->indexer_proj, N05_EMBED, N05_INDEX_HEADS, b->b_norm, n) ||
+        !naive_linear(g->index_k, m, l->indexer_attn_k, N05_EMBED, N05_INDEX_DIM, b->b_norm, n) ||
+        !naive_linear(g->index_weights, m, l->indexer_proj, N05_EMBED, N05_INDEX_HEADS, b->b_norm, n) ||
         !ds4_gpu_naive_key_norm(g->index_k, m->map, m->size,
             l->indexer_k_norm->abs_offset, l->indexer_k_norm_b->abs_offset, n) ||
         !ds4_gpu_naive_rope(g->index_q, g->rope_full, N05_INDEX_HEADS, N05_INDEX_DIM, n) ||
@@ -173,13 +173,56 @@ static bool naive_dense(ds4_gpu_tensor *out, const ds4_model *m,
                          const ds4_tensor *w, unsigned in, unsigned width,
                          const ds4_gpu_tensor *x, ds4_gpu_tensor *ids, unsigned n) {
     if (!w || w->type != DS4_TENSOR_Q6_K) {
-        return plain_graph_matmul_tensor(out, m, w, in, width, x, n);
+        return naive_linear(out, m, w, in, width, x, n);
+    }
+    if (n > 1 && n <= N05_DF_BLOCK) {
+        for (unsigned row = 0; row < n; row++) {
+            ds4_gpu_tensor *src = ds4_gpu_tensor_view(x, (uint64_t)row * in * sizeof(float), in * sizeof(float));
+            ds4_gpu_tensor *dst = naive_view(out, row, width, 1);
+            const bool ok = src && dst && naive_dense(dst, m, w, in, width, src, ids, 1);
+            ds4_gpu_tensor_free(src); ds4_gpu_tensor_free(dst);
+            if (!ok) { return false; }
+        }
+        return true;
     }
     /* Q and attention output use Q6_K. An identity route keeps their native
      * MMQ arithmetic without a full-weight expansion or host fallback. */
     return ds4_gpu_tensor_fill_f32(ids, 0, n) &&
         ds4_gpu_routed_matmul_guarded_tensor(out, x, ids, m->map, m->size,
             w->abs_offset, w->bytes, w->type, in, width, 1, n, 1, n);
+}
+
+static bool naive_moe(ds4_exaone_batch_ws *b, const ds4_model *m,
+                       const ds4_layer_weights *l, unsigned n) {
+    const bool sliced = n > 1 && n <= N05_DF_BLOCK;
+    const unsigned count = sliced ? 1 : n;
+    for (unsigned row = 0; row < n; row += count) {
+        ds4_gpu_tensor *v[] = {b->b_norm, b->b_router_selected, b->b_routed_gate,
+            b->b_routed_up, b->b_routed_mid, b->b_routed_down};
+        const unsigned widths[] = {N05_EMBED, N05_USED, N05_USED * N05_FF,
+            N05_USED * N05_FF, N05_USED * N05_FF, N05_USED * N05_EMBED};
+        bool ok = true;
+        if (sliced) {
+            for (unsigned i = 0; i < sizeof(v) / sizeof(v[0]); i++) {
+                v[i] = naive_view(v[i], row, widths[i], count);
+                ok = ok && v[i];
+            }
+        }
+        // Gate/up and down retain the one-token expert reduction as well.
+        ok = ok && ds4_gpu_routed_gate_up_tensor(v[2], v[3], v[0], v[1],
+            m->map, m->size, l->ffn_gate_exps->abs_offset, l->ffn_gate_exps->bytes,
+            l->ffn_up_exps->abs_offset, l->ffn_up_exps->bytes, l->ffn_gate_exps->type,
+            N05_EMBED, N05_FF, N05_EXPERTS, count, N05_USED) &&
+            ds4_gpu_naive_swiglu(v[4], v[2], v[3], (uint64_t)count * N05_USED * N05_FF) &&
+            ds4_gpu_routed_matmul_guarded_tensor(v[5], v[4], v[1], m->map, m->size,
+                l->ffn_down_exps->abs_offset, l->ffn_down_exps->bytes, l->ffn_down_exps->type,
+                N05_FF, N05_EMBED, N05_EXPERTS, count * N05_USED, 1, count);
+        if (sliced) {
+            for (unsigned i = 0; i < sizeof(v) / sizeof(v[0]); i++) { ds4_gpu_tensor_free(v[i]); }
+        }
+        if (!ok) { return false; }
+    }
+    return true;
 }
 
 static bool naive_layer(ds4_naive_graph *g, const ds4_model *m,
@@ -190,8 +233,8 @@ static bool naive_layer(ds4_naive_graph *g, const ds4_model *m,
     const ds4_gpu_tensor *rope = naive_is_dsa(il) ? g->rope_full : g->rope_swa;
     if (!ds4_gpu_naive_rms(b->b_norm, b->b_cur, m->map, m->size, l->attn_norm->abs_offset, n) ||
         !naive_dense(b->b_q, m, l->attn_q, N05_EMBED, N05_HEADS * N05_KEY, b->b_norm, b->b_router_selected, n) ||
-        !plain_graph_matmul_tensor(b->b_k, m, l->attn_k, N05_EMBED, heads * N05_KEY, b->b_norm, n) ||
-        !plain_graph_matmul_tensor(b->b_v, m, l->attn_v, N05_EMBED, heads * N05_VALUE, b->b_norm, n) ||
+        !naive_linear(b->b_k, m, l->attn_k, N05_EMBED, heads * N05_KEY, b->b_norm, n) ||
+        !naive_linear(b->b_v, m, l->attn_v, N05_EMBED, heads * N05_VALUE, b->b_norm, n) ||
         !ds4_gpu_naive_rope(b->b_q, rope, N05_HEADS, N05_KEY, n) ||
         !ds4_gpu_naive_rope(b->b_k, rope, heads, N05_KEY, n) ||
         !ds4_gpu_naive_kv_store(g->kv[il], b->b_k, b->b_v, g->positions, heads, n, g->kv_cap[il])) { return false; }
@@ -203,22 +246,15 @@ static bool naive_layer(ds4_naive_graph *g, const ds4_model *m,
         !ds4_gpu_naive_add(b->b_cur, b->b_attn_out, (uint64_t)n * N05_EMBED) ||
         !ds4_gpu_naive_rms(b->b_norm, b->b_cur, m->map, m->size, l->ffn_norm->abs_offset, n)) { return false; }
     if (il == 0) {
-        if (!plain_graph_matmul_tensor(b->b_dense_gate, m, l->ffn_gate, N05_EMBED, N05_DENSE, b->b_norm, n) ||
-            !plain_graph_matmul_tensor(b->b_dense_up, m, l->ffn_up, N05_EMBED, N05_DENSE, b->b_norm, n) ||
+        if (!naive_linear(b->b_dense_gate, m, l->ffn_gate, N05_EMBED, N05_DENSE, b->b_norm, n) ||
+            !naive_linear(b->b_dense_up, m, l->ffn_up, N05_EMBED, N05_DENSE, b->b_norm, n) ||
             !ds4_gpu_naive_swiglu(b->b_dense_mid, b->b_dense_gate, b->b_dense_up, (uint64_t)n * N05_DENSE) ||
-            !plain_graph_matmul_tensor(b->b_ffn_out, m, l->ffn_down, N05_DENSE, N05_EMBED, b->b_dense_mid, n)) { return false; }
+            !naive_linear(b->b_ffn_out, m, l->ffn_down, N05_DENSE, N05_EMBED, b->b_dense_mid, n)) { return false; }
     } else {
-        if (!plain_graph_matmul_tensor(b->b_router_logits, m, l->ffn_gate_inp, N05_EMBED, N05_EXPERTS, b->b_norm, n) ||
+        if (!naive_linear(b->b_router_logits, m, l->ffn_gate_inp, N05_EMBED, N05_EXPERTS, b->b_norm, n) ||
             !ds4_gpu_naive_router(b->b_router_selected, b->b_router_weights, b->b_router_logits,
                 m->map, m->size, l->ffn_exp_probs_b->abs_offset, n) ||
-            !ds4_gpu_routed_gate_up_tensor(b->b_routed_gate, b->b_routed_up, b->b_norm, b->b_router_selected,
-                m->map, m->size, l->ffn_gate_exps->abs_offset, l->ffn_gate_exps->bytes,
-                l->ffn_up_exps->abs_offset, l->ffn_up_exps->bytes, l->ffn_gate_exps->type,
-                N05_EMBED, N05_FF, N05_EXPERTS, n, N05_USED) ||
-            !ds4_gpu_naive_swiglu(b->b_routed_mid, b->b_routed_gate, b->b_routed_up, (uint64_t)n * N05_USED * N05_FF) ||
-            !ds4_gpu_routed_matmul_guarded_tensor(b->b_routed_down, b->b_routed_mid, b->b_router_selected,
-                m->map, m->size, l->ffn_down_exps->abs_offset, l->ffn_down_exps->bytes,
-                l->ffn_down_exps->type, N05_FF, N05_EMBED, N05_EXPERTS, n * N05_USED, 1, n) ||
+            !naive_moe(b, m, l, n) ||
             !ds4_gpu_naive_sum(b->b_ffn_out, b->b_routed_down, b->b_router_weights, n)) { return false; }
     }
     return ds4_gpu_naive_add(b->b_cur, b->b_ffn_out, (uint64_t)n * N05_EMBED);
@@ -235,7 +271,7 @@ static bool naive_head(ds4_naive_graph *g, const ds4_model *m, const ds4_weights
 
 static bool naive_forward(ds4_naive_graph *g, const ds4_model *m, const ds4_weights *w,
                            const int *tokens, unsigned n, unsigned pos) {
-    if (!g || !tokens || g->failed || !n || n > g->cap || pos != g->position ||
+    if (!g || !tokens || g->failed || g->draft.trial_n || !n || n > g->cap || pos != g->position ||
         pos > g->context || n > g->context - pos) { return false; }
     for (unsigned i = 0; i < n; i++) {
         if (tokens[i] < 0 || (unsigned)tokens[i] >= N05_VOCAB) { return false; }

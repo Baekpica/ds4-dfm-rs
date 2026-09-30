@@ -190,6 +190,7 @@ struct LiveAdmit {
 
 struct TrampCtx<'a> {
     driver: &'a mut dyn ContDriver,
+    family: crate::ModelFamily,
     /// Prompt/image buffers the engine may still read; freed on that user's done.
     live: HashMap<usize, LiveAdmit>,
 }
@@ -231,7 +232,11 @@ unsafe extern "C" fn tramp_admit(ud: *mut c_void, req: *mut ds4_bridge_cont_requ
     r.seed = a.seed;
     r.sample_override = Some(tramp_sample_override);
     r.sample_exclude = a.exclude_eos.then_some(tramp_sample_exclude);
-    r.step_accept = Some(crate::step37_mtp::accept_banked);
+    r.step_accept = Some(if t.family == crate::ModelFamily::NaiveN05 {
+        crate::naive_mtp::accept_banked
+    } else {
+        crate::step37_mtp::accept_banked
+    });
     r.alive = Some(tramp_alive);
     r.on_admitted = Some(tramp_on_admitted);
     r.place_bank = a.place_bank;
@@ -337,6 +342,7 @@ unsafe extern "C" fn tramp_on_admitted(
 
 pub struct BatchCtx<'m> {
     raw: NonNull<ds4_bridge_batch_ctx>,
+    family: crate::ModelFamily,
     _model: PhantomData<&'m Model>,
     _not_send: PhantomData<*const ()>,
 }
@@ -403,6 +409,7 @@ impl Model {
         })?;
         Ok(BatchCtx {
             raw,
+            family: self.family(),
             _model: PhantomData,
             _not_send: PhantomData,
         })
@@ -659,6 +666,7 @@ impl BatchCtx<'_> {
     pub fn continuous_generate(&self, driver: &mut dyn ContDriver) -> Result<()> {
         let mut t = TrampCtx {
             driver,
+            family: self.family,
             live: HashMap::new(),
         };
         let mut err = [0u8; 512];
@@ -916,6 +924,7 @@ mod tests {
     fn fake_batch() -> ManuallyDrop<BatchCtx<'static>> {
         ManuallyDrop::new(BatchCtx {
             raw: NonNull::dangling(),
+            family: crate::ModelFamily::Step37,
             _model: PhantomData,
             _not_send: PhantomData,
         })

@@ -123,6 +123,8 @@ pub enum MtpKind {
     None,
     Embedded,
     Sidecar,
+    /// Separate DSpark model; the target has no embedded predictor.
+    External,
     BoundOnly,
     DeepSeek,
 }
@@ -640,9 +642,9 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             reuse_support: Support::Present,
             disk: Support::Present,
             snapshot: Support::Present,
-            mtp: MtpKind::None,
-            mtp_support: Support::None,
-            spec_lane: SpecLane::None,
+            mtp: MtpKind::External,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Both,
             spec_draft_min: 1,
             host: HostNeed::Cuda,
             ctx_max: Some(crate::naive::CONTEXT_MAX),
@@ -956,6 +958,15 @@ pub fn resolve_plan(
     let draft = req.mtp_draft.unwrap_or(caps.spec_draft_min);
     let (mtp_mode, mtp_draft) = match mtp_mode {
         MtpMode::Off => (MtpMode::Off, None),
+        _ if caps.family == ModelFamily::NaiveN05
+            && draft > crate::naive::DRAFT_PROPOSALS as i32 =>
+        {
+            issues.push(error(
+                "mtp_draft",
+                "Naive DSpark accepts at most six draft tokens",
+            ));
+            (MtpMode::Off, None)
+        }
         _ if caps.family == ModelFamily::Dots3Note && draft > DOTS3_MAX_DRAFT => {
             issues.push(error(
                 "mtp_draft",
@@ -1880,7 +1891,7 @@ fn resolve_mtp(
     let mimo_dflash = caps.family == ModelFamily::Mimo2 && has_path;
     let can = match caps.mtp {
         MtpKind::None | MtpKind::BoundOnly => false,
-        MtpKind::Embedded | MtpKind::Sidecar | MtpKind::DeepSeek => true,
+        MtpKind::Embedded | MtpKind::Sidecar | MtpKind::External | MtpKind::DeepSeek => true,
     };
     if req.backend != Backend::Cuda && facts.mtp_path_ok != Some(false) {
         if req.mtp_mode == MtpMode::On {
@@ -1916,6 +1927,14 @@ fn resolve_mtp(
                 "{} MTP sidecar is missing, is not a GGUF, or does not attach",
                 caps.variant_name()
             ),
+        ));
+        return (MtpMode::Off, false);
+    }
+    if caps.mtp == MtpKind::External && req.mtp_mode == MtpMode::On && facts.dspark_ok != Some(true)
+    {
+        issues.push(error(
+            "mtp_sidecar",
+            "Naive speculation requires its DS4_DSPARK_MODEL",
         ));
         return (MtpMode::Off, false);
     }
@@ -1979,6 +1998,7 @@ fn resolve_mtp(
                     || (req.mtp_mode == MtpMode::Auto && caps.mtp_support == Support::Qualified))
         }
         MtpKind::Sidecar | MtpKind::DeepSeek => has_path || facts.mtp_loaded,
+        MtpKind::External => facts.dspark_ok == Some(true),
         MtpKind::BoundOnly | MtpKind::None => false,
     };
     let mode = match req.mtp_mode {

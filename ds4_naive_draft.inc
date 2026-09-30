@@ -1,5 +1,23 @@
 /* DSpark context is projected once from new target taps. Only this bounded
  * KV survives between rounds; tap/forward scratch is shared by all banks. */
+static bool naive_linear(ds4_gpu_tensor *out, const ds4_model *m,
+                           const ds4_tensor *w, unsigned in, unsigned width,
+                           const ds4_gpu_tensor *x, unsigned n) {
+    if (n <= 1 || n > N05_DF_BLOCK) {
+        return plain_graph_matmul_tensor(out, m, w, in, width, x, n);
+    }
+    /* Verification must use the same reduction/activation quantization as
+     * decode. Width-dependent MMVQ rounding can otherwise flip routed IDs. */
+    for (unsigned row = 0; row < n; row++) {
+        ds4_gpu_tensor *src = ds4_gpu_tensor_view(x, (uint64_t)row * in * sizeof(float), in * sizeof(float));
+        ds4_gpu_tensor *dst = ds4_gpu_tensor_view(out, (uint64_t)row * width * sizeof(float), width * sizeof(float));
+        const bool ok = src && dst && plain_graph_matmul_tensor(dst, m, w, in, width, src, 1);
+        ds4_gpu_tensor_free(src); ds4_gpu_tensor_free(dst);
+        if (!ok) { return false; }
+    }
+    return true;
+}
+
 typedef struct {
     ds4_gpu_tensor *tap, *feature, *ctx_k, *ctx_v, *positions, *rope, *freq;
     ds4_gpu_tensor *cur, *norm, *q, *k, *v, *heads, *attn, *gate, *up, *mid, *ffn, *hidden;
@@ -26,7 +44,8 @@ static uint64_t naive_draft_ws_bytes(void) {
         (N05_DF_SLOT + N05_EMBED + 2 * N05_DF_KV * N05_DF_DIM + 1 + N05_DF_DIM);
     const uint64_t block = (uint64_t)N05_DF_BLOCK *
         (10 * N05_EMBED + 2 * N05_DF_KV * N05_DF_DIM + 2 * N05_VOCAB + 1);
-    return (ctx + block + N05_DF_DIM / 2 + N05_DF_RANK + N05_VOCAB + 2) * sizeof(float);
+    return (ctx + block + N05_DF_DIM / 2 + N05_DF_RANK + N05_VOCAB + 2) * sizeof(float)
+        + N05_DF_BLOCK * (sizeof(ds4_gpu_top2_result) - sizeof(float));
 }
 
 static void naive_draft_free(ds4_naive_df_runtime *d) {
@@ -88,7 +107,7 @@ static bool naive_draft_alloc(ds4_naive_df_runtime *d, const ds4_naive_draft *w)
     N05_DF_ALLOC(markov, N05_DF_RANK);
     N05_DF_ALLOC(bias, N05_VOCAB);
     N05_DF_ALLOC(token, 1);
-    N05_DF_ALLOC(pick, N05_DF_BLOCK);
+    N05_DF_ALLOC(pick, N05_DF_BLOCK * sizeof(ds4_gpu_top2_result) / sizeof(float));
     N05_DF_ALLOC(confidence, 1);
 #undef N05_DF_ALLOC
     float freq[N05_DF_DIM / 2];
@@ -123,12 +142,12 @@ static bool naive_draft_prepare(ds4_naive_df_runtime *d, unsigned pos, unsigned 
     const ds4_model *m = w->model;
     const unsigned rows = n < N05_DF_WINDOW ? n : N05_DF_WINDOW, start = pos + n - rows;
     if (!naive_df_positions(s, start, rows) ||
-        !plain_graph_matmul_tensor(s->feature, m, w->fc, N05_DF_SLOT, N05_EMBED, s->tap, rows) ||
+        !naive_linear(s->feature, m, w->fc, N05_DF_SLOT, N05_EMBED, s->tap, rows) ||
         !ds4_gpu_naive_round(s->feature, (uint64_t)rows * N05_EMBED) ||
         !ds4_gpu_naive_rms(s->feature, s->feature, m->map, m->size, w->hidden_norm->abs_offset, rows)) { return false; }
     for (unsigned il = 0; il < N05_DF_LAYERS; il++) {
-        if (!plain_graph_matmul_tensor(s->ctx_k, m, w->k[il], N05_EMBED, N05_DF_KV * N05_DF_DIM, s->feature, rows) ||
-            !plain_graph_matmul_tensor(s->ctx_v, m, w->v[il], N05_EMBED, N05_DF_KV * N05_DF_DIM, s->feature, rows) ||
+        if (!naive_linear(s->ctx_k, m, w->k[il], N05_EMBED, N05_DF_KV * N05_DF_DIM, s->feature, rows) ||
+            !naive_linear(s->ctx_v, m, w->v[il], N05_EMBED, N05_DF_KV * N05_DF_DIM, s->feature, rows) ||
             !ds4_gpu_naive_df_norm(s->ctx_k, m->map, m->size, w->k_norm[il]->abs_offset, N05_DF_KV, rows) ||
             !ds4_gpu_naive_df_rope(s->ctx_k, s->rope, N05_DF_KV, rows) ||
             !ds4_gpu_naive_df_store(d->kv[il], s->ctx_k, s->ctx_v, s->positions, rows)) { return false; }

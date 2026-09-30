@@ -35556,6 +35556,7 @@ struct ds4_engine {
     ds4_weights step37_mtp;
     ds4_inkling_draft inkling_mtp;
     ds4_dspark_weights dspark_weights;
+    ds4_naive_draft naive_draft;
     ds4_ple_store *qwen_ple_store;
     ds4_qwen38_ple_cuda *qwen_ple_cuda;
     ds4_backend backend;
@@ -37457,7 +37458,8 @@ static void vocab_load(ds4_vocab *vocab, const ds4_model *model) {
         vocab->dsml_id = -1;
         return;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
         if (!model_get_token_id(model, "tokenizer.ggml.bos_token_id", &vocab->bos_id))
             vocab->bos_id = vocab_lookup(vocab, "<|endoftext|>");
         if (!model_get_token_id(model, "tokenizer.ggml.eos_token_id", &vocab->eos_id))
@@ -58653,6 +58655,13 @@ int ds4_gov_governed_check_margin(const char *site, const ds4_gov_claim *cl,
     return gov_governed_dispatch(site, cl, legacy_status, &margin_bytes, NULL);
 }
 
+static uint64_t naive_session_bytes(const ds4_engine *e, unsigned ctx, unsigned cap) {
+    const uint64_t base = naive_context_memory(ctx, cap).total_bytes;
+    if (!base || !e->dspark_ready) { return base; }
+    if (cap < N05_DF_BLOCK) { return 0; }
+    return base + naive_draft_ws_bytes() + naive_draft_kv_bytes();
+}
+
 static uint64_t step37_session_bytes(const ds4_engine *e, unsigned ctx, unsigned cap) {
     const uint64_t base = (e->mtp_ready ? step37_mtp_memory(ctx, cap)
                                       : step37_memory(ctx, cap)).total_bytes;
@@ -58671,7 +58680,7 @@ uint64_t ds4_engine_session_graph_bytes_estimate(ds4_engine *e, int ctx) {
     if (!e || ctx <= 0) return 0;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
         return e->backend == DS4_BACKEND_CUDA
-            ? naive_context_memory((unsigned)ctx, naive_prefill_cap((unsigned)ctx)).total_bytes : 0;
+            ? naive_session_bytes(e, (unsigned)ctx, naive_prefill_cap((unsigned)ctx)) : 0;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37) {
         return e->backend == DS4_BACKEND_CUDA
@@ -60107,8 +60116,8 @@ static int naive_batch_ctx_create_impl(
 #define NBC_ERR(...) do { if (err && errlen) snprintf(err, errlen, __VA_ARGS__); } while (0)
     const uint32_t cap = naive_prefill_cap((uint32_t)ctx_size);
     const ds4_context_memory plan = naive_context_memory((uint32_t)ctx_size, cap);
-    if (e->mtp_ready || e->dspark_ready || !plan.total_bytes) {
-        NBC_ERR("batch_ctx_create: Naive bank plan needs a valid context without a support model");
+    if (e->mtp_ready || !plan.total_bytes || (e->dspark_ready && cap < N05_DF_BLOCK)) {
+        NBC_ERR("batch_ctx_create: Naive needs a valid context and DSpark prefill width >=7");
         return 1;
     }
     uint32_t chosen = (uint32_t)max_seq;
@@ -60124,7 +60133,8 @@ static int naive_batch_ctx_create_impl(
         const uint64_t headroom = ds4_batch_fit_headroom_bytes(ctx_size);
         while (chosen > 0) {
             const uint64_t banks = plan.total_bytes +
-                                   (uint64_t)(chosen - 1u) * plan.raw_bytes;
+                (uint64_t)(chosen - 1u) * plan.raw_bytes +
+                (e->dspark_ready ? naive_draft_ws_bytes() + (uint64_t)chosen * naive_draft_kv_bytes() : 0);
             if (banks + headroom <= free_b) { break; }
             chosen--;
         }
@@ -60143,7 +60153,8 @@ static int naive_batch_ctx_create_impl(
     ctx->seq_cap = (uint32_t)ctx_size;
     ctx->max_seq = chosen;
     for (;;) {
-        ctx->naive = naive_batch_create(ctx->ctx_size, ctx->max_seq, cap);
+        ctx->naive = naive_batch_create(ctx->ctx_size, ctx->max_seq, cap,
+            e->dspark_ready ? &e->naive_draft : NULL);
         if (ctx->naive) { break; }
         if (mode == N05_STRICT_BANKS || ctx->max_seq <= 1u) {
             NBC_ERR("batch_ctx_create: Naive bank allocation failed (ctx=%d max_seq=%u)",
@@ -63284,38 +63295,46 @@ static void family_banked_capture_checkpoint(
     }
 }
 
-/* Borrow one bank as a serial Step session for the existing device trial and
+/* Borrow one bank as a serial session for the family device trial and
  * commit. Rust selects the accepted prefix; callbacks may shorten it further
  * on cancellation or a newly required protocol token. Commit only what was
  * emitted, then leave the next target token pending as in ordinary decode. */
-static int step37_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
+static int family_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
                             uint32_t bank, int (*on_token)(void *, void *, int),
                             void (*on_done)(void *, void *, const int *, int, int),
                             void *ud, char *err, size_t errlen) {
     ds4_step37_batch_runtime *rt = ctx->step37;
+    ds4_naive_batch_runtime *nr = ctx->naive;
     ds4_family_cont_bank *cb = &banks[bank];
-    if (!rt || !rt->spec || !cb->step_accept || cb->sample_exclude ||
+    if ((!nr && (!rt || !rt->spec)) || (nr && !nr->graph[bank].draft.ws) ||
+        !cb->step_accept || cb->sample_exclude ||
         cb->temperature > 0.0f ||
         getenv("DS4_MTP_SPEC_DISABLE")) { return 0; }
     const uint32_t pos = ctx->bank_hist_len[bank];
-    ds4_session s = {.engine = ctx->e, .step37_graph_ready = true,
-        .checkpoint_valid = true, .step37_graph = rt->graph[bank],
-        .step37_spec = rt->spec[bank],
-        .logits = rt->bank_logits + (size_t)bank * DS4_N_VOCAB,
+    ds4_session s = {.engine = ctx->e, .checkpoint_valid = true,
+        .logits = (nr ? nr->bank_logits : rt->bank_logits) + (size_t)bank * DS4_N_VOCAB,
         .checkpoint = {.v = ctx->bank_hist + (size_t)bank * ctx->seq_cap,
                        .len = (int)pos, .cap = (int)ctx->seq_cap}};
+    if (nr) {
+        s.naive_graph_ready = true; s.naive_graph = nr->graph[bank];
+    } else {
+        s.step37_graph_ready = true; s.step37_graph = rt->graph[bank]; s.step37_spec = rt->spec[bank];
+    }
     const int first_override = cb->sample_override
         ? cb->sample_override(ud, cb->user) : DS4_SAMPLE_OVERRIDE_NONE;
     uint32_t budget = cb->max_new - cb->generated_len + 1;
-    if (budget > S37_VERIFY) { budget = S37_VERIFY; }
+    const unsigned capacity = nr ? N05_DF_BLOCK : S37_VERIFY;
+    if (budget > capacity) { budget = capacity; }
     if (DS4_SAMPLE_OVERRIDE_IS_TOKEN(first_override)) { budget = 1; }
-    int tokens[S37_VERIFY], target[S37_VERIFY];
-    int n = ds4_session_step37_trial(&s, cb->current, (int)budget,
-                                    tokens, target, S37_VERIFY, err, errlen);
-    if (n <= 0) { goto fail; }
+    int tokens[N05_DF_BLOCK], target[N05_DF_BLOCK];
+    int n = nr
+        ? ds4_session_naive_trial(&s, cb->current, (int)budget, tokens, target, (int)capacity, err, errlen)
+        : ds4_session_step37_trial(&s, cb->current, (int)budget, tokens, target, (int)capacity, err, errlen);
+    if (!n) { return 0; }
+    if (n < 0) { goto fail; }
     const int keep = cb->step_accept(tokens, target, n, cb->eos);
     if (keep < 1 || keep > n) {
-        payload_set_err(err, errlen, "Step bank host returned an invalid accepted prefix");
+        payload_set_err(err, errlen, "bank host returned an invalid accepted prefix");
         goto fail;
     }
     int emitted = 1;
@@ -63338,10 +63357,14 @@ static int step37_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
             break;
         }
     }
-    if (ds4_session_step37_commit(&s, emitted, err, errlen)) { goto fail; }
-    rt->graph[bank] = s.step37_graph;
-    rt->spec[bank] = s.step37_spec;
-    rt->bank_logits_valid[bank] = 1;
+    const int rc = nr ? ds4_session_naive_commit(&s, emitted, err, errlen)
+                      : ds4_session_step37_commit(&s, emitted, err, errlen);
+    if (rc) { goto fail; }
+    if (nr) {
+        nr->graph[bank] = s.naive_graph; nr->bank_logits_valid[bank] = 1;
+    } else {
+        rt->graph[bank] = s.step37_graph; rt->spec[bank] = s.step37_spec; rt->bank_logits_valid[bank] = 1;
+    }
     ctx->bank_hist_len[bank] = (uint32_t)s.checkpoint.len;
     cb->stats.decode_steps++;
     cb->stats.spec_drafts += (uint64_t)n - 1;
@@ -63367,9 +63390,11 @@ static int step37_cont_spec(ds4_batch_ctx *ctx, ds4_family_cont_bank *banks,
     if (finished) { family_cont_publish_generated(ctx, banks, bank, finish, on_done, ud); }
     return 1;
 fail:
-    rt->graph[bank] = s.step37_graph;
-    rt->spec[bank] = s.step37_spec;
-    rt->bank_logits_valid[bank] = 0;
+    if (nr) {
+        nr->graph[bank] = s.naive_graph; nr->bank_logits_valid[bank] = 0;
+    } else {
+        rt->graph[bank] = s.step37_graph; rt->spec[bank] = s.step37_spec; rt->bank_logits_valid[bank] = 0;
+    }
     ctx->bank_hist_valid[bank] = 0;
     ctx->bank_gen[bank]++;
     return -1;
@@ -63990,8 +64015,8 @@ static int family_banked_engine_continuous_generate(
                 ok = false;
                 break;
             }
-            if (ctx->step37) {
-                const int spec = step37_cont_spec(ctx, bank, b, on_token, on_done, ud, err, errlen);
+            if (ctx->step37 || ctx->naive) {
+                const int spec = family_cont_spec(ctx, bank, b, on_token, on_done, ud, err, errlen);
                 if (spec < 0) { ok = false; break; }
                 if (spec > 0) { continue; }
             }
@@ -69046,7 +69071,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         if ((opt->mtp_path && opt->mtp_path[0] && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_INKLING &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_STEP37 &&
              DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_MIMO2) ||
-            (dspark_path && dspark_path[0])) {
+            (dspark_path && dspark_path[0] && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_NAIVE)) {
             fprintf(stderr,
                     "ds4: this model family does not accept the requested "
                     "MTP/DSpark support model\n");
@@ -69121,11 +69146,26 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             if (g_host_dspark_bind_map && opt->dspark_path && opt->dspark_path[0])
                 ds4_host_bind_map_install(g_host_dspark_bind_map);
             model_open(&e->dspark_model, dspark_path, graph_backend, true);
-            dspark_weights_bind(&e->dspark_weights, &e->dspark_model);
+            if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
+                ds4_str arch = {0};
+                if (e->mtp_draft_tokens > N05_DF_BLOCK - 1 ||
+                    !model_get_string(&e->dspark_model, "general.architecture", &arch) ||
+                    !ds4_streq(arch, "naive_n05_flash_dspark") ||
+                    !naive_draft_bind(&e->naive_draft, &e->dspark_model)) {
+                    fprintf(stderr, "ds4: Naive needs its five-layer DSpark and 1..6 proposals\n");
+                    ds4_host_bind_map_clear();
+                    model_close(&e->dspark_model);
+                    ds4_engine_close(e); *out = NULL;
+                    return 1;
+                }
+            } else {
+                dspark_weights_bind(&e->dspark_weights, &e->dspark_model);
+            }
             ds4_host_bind_map_clear();
             e->dspark_ready = true;
             fprintf(stderr, "ds4: DSpark drafter loaded: %s (%u layers)\n",
-                    dspark_path, (unsigned)DS4_DSPARK_N_LAYER);
+                    dspark_path, (unsigned)(DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE
+                        ? N05_DF_LAYERS : DS4_DSPARK_N_LAYER));
         }
     }
 
@@ -69827,7 +69867,7 @@ bool ds4_engine_supports_batching(ds4_engine *e) {
         return false;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
-        return e->backend == DS4_BACKEND_CUDA && !e->dspark_ready && !e->mtp_ready;
+        return e->backend == DS4_BACKEND_CUDA && !e->mtp_ready;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
         return e->backend == DS4_BACKEND_CUDA && !e->mimo2_dflash;
@@ -70163,7 +70203,7 @@ static uint64_t session_tensors_census_live(void) {
 
 static bool naive_session_fit(const ds4_engine *e, unsigned ctx, unsigned cap,
                                ds4_session_graph_fit_quote *q) {
-    const uint64_t need = naive_context_memory(ctx, cap).total_bytes;
+    const uint64_t need = naive_session_bytes(e, ctx, cap);
     if (q) { memset(q, 0, sizeof(*q)); q->need_bytes = need; }
     if (e->backend != DS4_BACKEND_CUDA || !need) { return false; }
     const char *fit = getenv("DS4_SESSION_GRAPH_FIT");
@@ -70312,12 +70352,13 @@ static int ds4_session_alloc_graph(ds4_session *s) {
     ds4_engine *e = s->engine;
     if (ds4_session_is_naive(s)) {
         const unsigned ctx = (unsigned)s->ctx_size;
-        const uint64_t estimate = naive_context_memory(ctx, s->prefill_cap).total_bytes;
+        const uint64_t estimate = naive_session_bytes(e, ctx, s->prefill_cap);
         ds4_gov_publish_use(DS4_GOVC_SERIAL_SESSION, estimate, 0);
         const uint64_t before = session_tensors_census_live();
         ds4_gpu_mem_scope_begin(DS4_MEMC_SESSION_TENSORS);
         const bool ok = naive_session_fit(e, ctx, s->prefill_cap, NULL) &&
-            naive_graph_alloc(&s->naive_graph, ctx, s->prefill_cap);
+            naive_graph_alloc(&s->naive_graph, ctx, s->prefill_cap) &&
+            (!e->dspark_ready || naive_draft_alloc(&s->naive_graph.draft, &e->naive_draft));
         ds4_gpu_mem_scope_end();
         if (!ok) {
             naive_graph_free(&s->naive_graph); s->naive_graph_ready = false;
@@ -71909,6 +71950,7 @@ static int ling3vl_session_eval(ds4_session *s, int token, char *err,
 
 #include "ds4_mimo2_session.inc"
 #include "ds4_naive_session.inc"
+#include "ds4_naive_mtp.inc"
 #define MIMO2_DFLASH_TRIAL
 #include "ds4_mimo2_dflash.inc"
 #undef MIMO2_DFLASH_TRIAL
@@ -72116,6 +72158,7 @@ static void inkling_trial_failed(ds4_session *s) {
 /* Rust owns acceptance. Native retains only the trial's device frontier and
  * raw hidden rows; commit shortens KV without re-running accepted tokens. */
 #ifdef DS4_NO_GPU
+#include "ds4_naive_mtp.inc"
 int ds4_session_dots3_trial(ds4_session *s, int first, int max_tokens,
                              int *tokens, int *target, int cap, char *err, size_t errlen) {
     (void)s; (void)first; (void)max_tokens; (void)tokens; (void)target; (void)cap;

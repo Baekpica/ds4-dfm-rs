@@ -179,6 +179,7 @@ pub fn fill_quote_facts(
                 && (req.mtp_path.is_some() || facts.mtp_loaded)
                 && draft >= caps.spec_draft_min
         }
+        MtpKind::External => req.mtp_mode != MtpMode::Off && facts.dspark_ok == Some(true),
         MtpKind::BoundOnly | MtpKind::None => false,
     };
     // Native skips the slab when DS4_SERVER_FORK_PARTIAL=0.
@@ -290,7 +291,30 @@ pub fn fill_quote_facts(
         (ModelFamily::NaiveN05, Some(_)) => {
             let cap = native.min(ctx_tokens).max(1);
             let memory = crate::naive::memory_plan(ctx_tokens, cap);
-            memory.map_or((0, 0, 0, 0), |m| (m.cache_bytes(), m.scratch_bytes(), 0, 0))
+            memory.map_or((0, 0, 0, 0), |m| {
+                let (draft_scratch, draft_cache) = if facts.dspark_ok == Some(true) {
+                    crate::naive::draft_bytes()
+                } else {
+                    (0, 0)
+                };
+                let pool = if partial && quote_batch_alloc(req, caps, facts) {
+                    (crate::naive::swa_ckpt_bytes()
+                        + if facts.dspark_ok == Some(true) {
+                            crate::naive::draft_ckpt_bytes()
+                        } else {
+                            0
+                        })
+                        * crate::naive::CHECKPOINTS
+                } else {
+                    0
+                };
+                (
+                    m.cache_bytes() + draft_cache,
+                    m.scratch_bytes() + draft_scratch,
+                    0,
+                    pool,
+                )
+            })
         }
         (ModelFamily::Mimo2, Some(_)) => {
             let cap = native.min(ctx_tokens).max(1);
@@ -3928,6 +3952,43 @@ exit 1
                 assert_eq!(facts.scratch_bytes, Some(1_837_994_240));
             }
         }
+    }
+
+    #[test]
+    fn naive_draft_quote_prices_state() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset("DS4_NAIVE_PREFILL_CHUNK");
+        let req = ServingRequest {
+            ctx: 262_144,
+            max_seqs: MaxSeqs::Fixed(2),
+            prefix_reuse: PrefixReuse::Partial,
+            mtp_mode: MtpMode::Off,
+            ..ServingRequest::default()
+        };
+        let caps = serving_caps(ModelFamily::NaiveN05, Variant::NaiveN05Flash);
+        let mut facts = EngineFacts {
+            dspark_ok: Some(true),
+            ..EngineFacts::default()
+        };
+        fill_quote_facts(
+            &mut facts,
+            &req,
+            caps,
+            Some(crate::shape::SHAPE_NAIVE_N05_FLASH),
+            qwen_host(None),
+        );
+        let target = crate::naive::memory_plan(req.ctx as u32, crate::naive::PREFILL_CAP).unwrap();
+        let (scratch, cache) = crate::naive::draft_bytes();
+        // Loaded sidecars retain target-derived context even with trials off.
+        assert_eq!(facts.per_bank_bytes, Some(target.cache_bytes() + cache));
+        assert_eq!(facts.scratch_bytes, Some(target.scratch_bytes() + scratch));
+        assert_eq!(
+            facts.checkpoint_pool_bytes,
+            Some(
+                (crate::naive::swa_ckpt_bytes() + crate::naive::draft_ckpt_bytes())
+                    * crate::naive::CHECKPOINTS
+            )
+        );
     }
 
     #[test]

@@ -35,6 +35,8 @@ const IQ2_XXS: u32 = 16;
 const IQ2_XS: u32 = 17;
 const BF16: u32 = 30;
 pub(crate) const DRAFT_LAYERS: u32 = 5;
+pub(crate) const DRAFT_PROPOSALS: u32 = 6;
+const DRAFT_BLOCK: u64 = DRAFT_PROPOSALS as u64 + 1;
 const DRAFT_TENSORS: usize = 63;
 const DRAFT_TAPS: [u32; 8] = [1, 7, 14, 20, 26, 32, 39, 45];
 const DRAFT_HEADS: u64 = 32;
@@ -44,6 +46,32 @@ const DRAFT_RANK: u64 = 256;
 const DRAFT_WINDOW: u32 = 1024;
 pub(crate) const PREFILL_CAP: u32 = 2048;
 pub(crate) const PREFILL_MAX: u32 = 8192;
+pub(crate) const CHECKPOINTS: u64 = 8;
+
+pub(crate) fn draft_rank() -> u32 {
+    DRAFT_RANK as u32
+}
+
+/// Shared tap/verify scratch and projected KV per bank. Keep the quote equal
+/// to the native allocator, including the seven 16-byte top-two results.
+pub(crate) fn draft_bytes() -> (u64, u64) {
+    let window = u64::from(DRAFT_WINDOW);
+    let ctx = window * (8 * EMBED + EMBED + 2 * DRAFT_KV_HEADS * DRAFT_DIM + 1 + DRAFT_DIM);
+    let block = DRAFT_BLOCK * (10 * EMBED + 2 * DRAFT_KV_HEADS * DRAFT_DIM + 2 * VOCAB + 1);
+    let scratch =
+        (ctx + block + DRAFT_DIM / 2 + DRAFT_RANK + VOCAB + 2) * 4 + DRAFT_BLOCK * (16 - 4);
+    let cache =
+        u64::from(DRAFT_LAYERS) * (window + DRAFT_BLOCK - 1) * 2 * DRAFT_KV_HEADS * DRAFT_DIM * 2;
+    (scratch, cache)
+}
+
+pub(crate) fn draft_ckpt_bytes() -> u64 {
+    u64::from(DRAFT_LAYERS) * u64::from(DRAFT_WINDOW) * 2 * DRAFT_KV_HEADS * DRAFT_DIM * 2
+}
+
+pub(crate) fn swa_ckpt_bytes() -> u64 {
+    (u64::from(LAYERS) - DSA_LAYERS.len() as u64) * u64::from(SWA_WINDOW) * 8 * (KEY + VALUE) * 2
+}
 
 pub(crate) struct MemoryPlan {
     dsa: u64,
