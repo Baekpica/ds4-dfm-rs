@@ -68953,6 +68953,7 @@ static int qwen35_hadamard_selftest(void) {
     return failures == 0 ? 0 : 1;
 }
 
+#ifndef DS4_NO_GPU
 /* Tokens per graph call.  The diagnostic drives one token at a time, which is
  * what the reference does; a batched prefill pass needs the logits buffer
  * sized for the batch, so it stays small for now. */
@@ -69352,6 +69353,27 @@ static bool qwen35_graph_forward(ds4_qwen35_gpu_graph *g, ds4_engine *e,
     if (ok) g->pos += T;
     return ok;
 }
+
+#else
+/* CPU-only build: the device graph is unreachable (the engine refuses --cuda
+ * for this family without a graph backend), so only its shape has to exist. */
+typedef struct ds4_qwen35_gpu_graph { int unused; } ds4_qwen35_gpu_graph;
+
+static bool qwen35_graph_open(ds4_qwen35_gpu_graph *g, ds4_engine *e, uint32_t ctx_cap) {
+    (void)g; (void)e; (void)ctx_cap;
+    return false;
+}
+
+static bool qwen35_graph_forward(ds4_qwen35_gpu_graph *g, ds4_engine *e,
+                                 const int *tokens, uint32_t T, float *logits_out) {
+    (void)g; (void)e; (void)tokens; (void)T; (void)logits_out;
+    return false;
+}
+
+static void qwen35_graph_free(ds4_qwen35_gpu_graph *g) {
+    if (g) memset(g, 0, sizeof(*g));
+}
+#endif /* DS4_NO_GPU */
 
 /* --first-token-test for Bonsai (qwen35): DS4_QWEN35_TOKENS overrides the
  * prompt with comma-separated token ids, DS4_QWEN35_STEPS sets how many tokens

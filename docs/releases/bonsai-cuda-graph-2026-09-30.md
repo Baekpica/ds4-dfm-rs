@@ -19,7 +19,9 @@ target; the arch must be explicit):
 `cudaHostRegister` of the whole 6.71 GiB mmap fails here with "invalid
 argument" (the box has RLIMIT_MEMLOCK = 8 MiB), so the backend falls back to
 lazy per-range materialisation and runs out of device budget part-way through
-the trunk ("Bonsai matmul failed for blk.32.ffn_gate.weight").  The sibling
+the trunk (observed as "Bonsai matmul failed for blk.32.ffn_gate.weight" in one
+run and blk.35.attn_q.weight in another: the tensor that fails depends on the
+allocation order, the symptom does not).  The sibling
 tree runs the same artifact on the same card by copying the image; this tree
 has the equivalent switch:
 
@@ -87,16 +89,25 @@ cache is fp16 and the PQ2_0 MMVQ decode quantises activations to the Q8_1
 form (measured per matmul by `test-qwen35-cuda` at rel_l2 0.0036-0.0044).
 The gap is what remains of the CPU reference's double accumulation.
 
-## 4. A near-tie continuation can flip
+## 4. A near-tie continuation can flip, but not reliably in either direction
 
-On the CLI's chat-templated prompt (25 tokens) the two backends agree for 24
-tokens and then pick different continuations of "The user is asking ...":
-`a simple factual question` (CPU) against `about the capital of Germany`
-(CUDA).  Both are fluent; the flip is the logged 0.26% drift at a near-tie,
-and the sibling's CUDA logits are identical to this tree's, so it is a
-property of the artifact's decode numerics here rather than of the port.
-Gate this unit on the token stream of an explicit prompt (section 2), not on
-an arbitrarily long chat continuation.
+On the CLI's chat-templated prompt (25 tokens) the two backends agree for the
+first 24 tokens.  They then differ in the author's runs (`a simple factual
+question` on the CPU against `about the capital of Germany` on the CUDA graph,
+deterministic over four CUDA runs) and agree in the independent QA's run
+(32/32 identical, both `a simple factual question`).  The deciding gap is about
+0.1 on a 22-magnitude top logit, so a small change in either side's arithmetic
+moves it:
+
+  - the CPU reference itself is stable here (three runs give the same top-5),
+    but the QA's environment gave the CPU a top-5 about 0.18 lower
+    (760: 21.9951 against 22.1780), and its CUDA matched its own CPU;
+  - this tree's CUDA logits are bit-identical to the sibling's (section 3), so
+    the difference is not in the port.
+
+Conclusion: gate this unit on the token stream of an explicit prompt (section
+2), which is reproducible, and treat a long chat continuation as a
+near-tie coin flip at the artifact's decode precision rather than as evidence.
 
 ## 5. The defect this unit found and fixed: per-layer arrays overflowed
 
@@ -122,12 +133,19 @@ Bisect (all evidence from this tree):
 
 Cause: the graph's per-layer arrays were sized `DS4_MAX_LAYER`, which this
 tree defines as 61 (the DeepSeek bound), while Bonsai has 64 blocks.  The
-sibling tree's constant is 64, so its identical code is sound.  The graph now
+sibling tree's constant is 79, which is why its identical code is sound.  The graph now
 uses `DS4_QWEN35_MAX_LAYER` (64) and refuses to open when the model has more
 blocks than the arrays hold.
 
 The temporary dump/trace instrumentation used for the bisect is not part of
 the commit.
+
+The same unit also had to keep the graph out of the CPU-only build: the block is
+wrapped in `#ifndef DS4_NO_GPU` with stub drivers for the CPU case, because
+`cc -DDS4_NO_GPU` (the CPU host build, and the tests that include ds4.c) failed
+with 70 errors the moment the graph referenced `ds4_gpu_tensor`.  The
+independent QA found that one; it is the reason this unit carries a third
+commit.
 
 ## 6. Rates
 
