@@ -94,5 +94,10 @@ CPU reference each took about 2 minutes for the same 41 forwards.
   refuse by name) and no disk KV.
 - The attention row kernel stays the row-exact one for every chunk size; the
   token-tile kernel is never selected from the graph.
+  [Corrected 2026-09-30: this is wrong. A chunk of 32 rows or more satisfies the
+  token-tile gate and the graph does take that kernel (measured: 16 launches of
+  qwen35_attn::attention_group in a 463-token chunk, and forcing the row-exact
+  path instead costs 9.3 s of prefill). The row-exact path now carries the
+  split-K key walk as well; see docs/releases/bonsai-splitk-2026-09-30.md.]
 - The CPU reference trunk is a correctness oracle at about 3 s per forward, not
   a serving path.

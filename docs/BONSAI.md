@@ -61,8 +61,12 @@ and the context bound; the table below says what each backend does differently.
 Refused by name rather than pretended: batching (the session decodes one row per
 eval), MTP and DSpark drafting, SSD/disk KV, tensor parallelism, distributed
 ranks, and KV snapshots (`ds4_session_payload_bytes` returns 0 and both payload
-paths refuse). The attention row kernel is the row-exact one for every chunk
-size: this tree does not select the token-tile kernel from the graph.
+paths refuse). Attention is chosen per batch, not per model: a chunk of 32 rows
+or more takes the token-tile MMA kernel, and decode (or anything below that)
+takes the row-exact kernel, which cuts a row's key range into up to 64 split
+ranges and reduces them in attn_merge. Without that split this family's decode
+collapsed as the context grew — 4.32 tokens/s at a 15k context, against 35.65
+in /data/ds4 — and the split is what closed that gap.
 
 `run-bonsai.sh session` drives both backends through the session and diffs each
 against the CPU reference. The CLI's plain generation path (`-p`, no

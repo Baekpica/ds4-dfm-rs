@@ -90,6 +90,19 @@ static int step_decode(ds4_session *s, int *out, int steps, char *err, size_t er
     return 0;
 }
 
+/* Decode `steps` greedy tokens from a fresh session on `prompt`, leaving the
+ * ids in `out`.  Two runs of the same prompt under different attention orders
+ * are compared with it. */
+static bool run_ids(ds4_engine *e, const ds4_tokens *prompt, int steps, int *out) {
+    ds4_session *s = NULL;
+    char err[200] = "";
+    if (ds4_session_create(&s, e, prompt->len + steps + 2) != 0) return false;
+    const bool ok = ds4_session_sync(s, prompt, err, sizeof(err)) == 0 &&
+                    step_decode(s, out, steps, err, sizeof(err)) == 0;
+    ds4_session_free(s);
+    return ok;
+}
+
 /* 1. Plain decode from a fresh session. */
 static bool scenario_plain(ds4_engine *e, const ds4_tokens *prompt, int steps,
                            const int *want) {
@@ -377,6 +390,27 @@ int main(void) {
                 scenario_prefix_reuse(e, &long_prompt, steps, want_long);
                 scenario_rewind_replay(e, &long_prompt, steps, want_long);
                 scenario_invalidate(e, &long_prompt, steps, want_long);
+                /* The row-exact attention kernel cuts a row's key range into
+                 * splits = min(64, ceil(keys/32)) ranges and reduces them in
+                 * attn_merge.  That changes the decode attention's reduction
+                 * order, so the pin is the token stream, not bit equality: the
+                 * same prompt with the split-K path forced off must produce the
+                 * same ids.  The long prompt is what makes this a real check -
+                 * at 82 keys the split is already 3.  A late flip here would be
+                 * a correctness failure, not a trade. */
+                if (!on_cpu) {
+                    int ids_on[MAX_STEPS], ids_off[MAX_STEPS];
+                    bool ran = run_ids(e, &long_prompt, steps, ids_on);
+                    setenv("DS4_QWEN35_ATTN_SPLITK", "0", 1);
+                    ran = run_ids(e, &long_prompt, steps, ids_off) && ran;
+                    unsetenv("DS4_QWEN35_ATTN_SPLITK");
+                    const bool same = ran && ids_equal(ids_on, ids_off, steps);
+                    report("long prompt: the split-K order does not move the ids", same);
+                    if (!same) {
+                        print_ids("split-K on ", ids_on, steps);
+                        print_ids("split-K off", ids_off, steps);
+                    }
+                }
             }
         }
         ds4_tokens_free(&long_prompt);
