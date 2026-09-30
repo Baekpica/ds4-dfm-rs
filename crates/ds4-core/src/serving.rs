@@ -2027,7 +2027,7 @@ enum BankDriver {
 
 /// Absent when the operator forced serial through either legacy switch, the
 /// backend has no lane, the native fit refused it, the family serves
-/// serially, or an opt-in family stayed at width one.
+/// serially, or an opt-in family stayed at width one without a bank.
 ///
 /// This mirrors the native admission gate: Inkling and GLM refuse banks
 /// outright; Qwen, Step and dots3 require their batch environment switch to
@@ -2039,12 +2039,14 @@ fn bank_driver(
     width: u32,
     facts: &EngineFacts,
 ) -> BankDriver {
+    // Naive needs a bank even at explicit width one to restore partial KV.
+    let single_naive = caps.family == ModelFamily::NaiveN05 && req.max_seqs == MaxSeqs::Fixed(1);
     let absent = req.max_seqs == MaxSeqs::Off
         || req.lane == LaneMode::Serial
         || req.backend != Backend::Cuda
         || facts.cont_lane == Some(false)
         || caps.banks == BankLane::Serial
-        || (caps.banks == BankLane::OptIn && width < 2);
+        || (caps.banks == BankLane::OptIn && width < 2 && !single_naive);
     if absent {
         BankDriver::Absent
     } else {
@@ -2804,6 +2806,37 @@ mod tests {
         let arg = p.batch_max_total_tokens(p.effective.ctx, width);
         assert_eq!(arg, 256);
         assert_ne!(arg, p.effective.ctx.saturating_mul(width));
+    }
+
+    #[test]
+    fn naive_single_bank_reuses() {
+        let req = ServingRequest {
+            ctx: 8192,
+            max_seqs: MaxSeqs::Fixed(1),
+            prefix_reuse: PrefixReuse::Partial,
+            mtp_mode: MtpMode::Off,
+            ..ServingRequest::default()
+        };
+        let caps = caps(ModelFamily::NaiveN05, Variant::NaiveN05Flash);
+        for facts in [
+            EngineFacts::default(),
+            EngineFacts {
+                banks_fitted: Some(1),
+                cont_lane: Some(true),
+                partial_reuse: Some(true),
+                ..EngineFacts::default()
+            },
+        ] {
+            let p = resolve_plan(&req, Some(caps), &facts);
+            assert!(!p.has_errors(), "{:?}", p.issues);
+            assert_eq!(p.effective.max_seqs, 1);
+            assert_eq!(p.effective.prefix_reuse, ReuseKind::Partial);
+            assert!(p.wants_bank_lane());
+        }
+        let mut serial = req;
+        serial.lane = LaneMode::Serial;
+        let p = resolve_plan(&serial, Some(caps), &EngineFacts::default());
+        assert!(p.issues.iter().any(|i| i.code == "partial_lane"));
     }
 
     #[test]
