@@ -990,6 +990,7 @@ pub fn resolve_plan(
         }
     };
     let disk = resolve_disk(req, caps, facts, &mut issues);
+    let (qualified_ctx, qualified_prompt) = measured_limits(caps, req, facts, max_seqs, driver);
 
     // The native open and session creation refuse these hosts outright, so
     // the check cannot approve the one it was pointed at.
@@ -1035,7 +1036,7 @@ pub fn resolve_plan(
                 caps.ctx_max.unwrap_or_default()
             ),
         ));
-    } else if let Some(qctx) = measured_ctx(caps, req, facts) {
+    } else if let Some(qctx) = qualified_ctx {
         if req.ctx as u32 > qctx {
             issues.push(warn(
                 "ctx_unqualified",
@@ -1043,7 +1044,7 @@ pub fn resolve_plan(
             ));
         }
     }
-    if caps.qualified_prompt.is_some() {
+    if qualified_prompt.is_some() {
         issues.push(warn(
             "prompt_bound",
             "configured ctx is not a full-length request proof",
@@ -1146,9 +1147,9 @@ pub fn resolve_plan(
         } else {
             Support::Qualified
         },
-        ctx: measured_ctx(caps, req, facts),
+        ctx: qualified_ctx,
         banks_n: caps.qualified_banks,
-        prompt: caps.qualified_prompt,
+        prompt: qualified_prompt,
         note: qualified_note(caps),
     };
 
@@ -2111,18 +2112,47 @@ pub fn open_draft_tokens(
     requested.filter(|n| *n > 0).or(planned.filter(|n| *n > 0))
 }
 
-fn measured_ctx(caps: ServingCaps, req: &ServingRequest, facts: &EngineFacts) -> Option<u32> {
+fn measured_limits(
+    caps: ServingCaps,
+    req: &ServingRequest,
+    facts: &EngineFacts,
+    width: u32,
+    driver: BankDriver,
+) -> (Option<u32>, Option<u32>) {
+    // Near-capacity Naive gates used main-only banks and chunk 2048.
+    // Loading DSpark, even with trials off, needs its own memory proof.
+    if caps.family == ModelFamily::NaiveN05
+        && driver == BankDriver::Present
+        && req.mtp_path.is_none()
+        && !facts.mtp_loaded
+        && req.mtp_mode != MtpMode::On
+        && facts.native_chunk.or(req.native_chunk) == Some(crate::naive::PREFILL_CAP)
+        && req.sched_chunk == Some(crate::naive::PREFILL_CAP)
+        && req.sched_chunk_live == Some(crate::naive::PREFILL_CAP)
+    {
+        let bounds = match width {
+            1 => Some((524288, 523441)),
+            2 => Some((262144, 262011)),
+            _ => None,
+        };
+        if let Some((ctx, prompt)) = bounds {
+            return (Some(ctx), Some(prompt));
+        }
+    }
     if caps.family == ModelFamily::Mimo2
         && req.mtp_path.is_some()
         && (facts.vision_loaded || facts.vision_path_ok == Some(true))
     {
-        return Some(crate::mimo2::QUALIFIED_CONTEXT);
+        return (Some(crate::mimo2::QUALIFIED_CONTEXT), caps.qualified_prompt);
     }
-    caps.qualified_ctx
+    (caps.qualified_ctx, caps.qualified_prompt)
 }
 
 fn qualified_note(caps: ServingCaps) -> &'static str {
     match caps.variant {
+        Variant::NaiveN05Flash => {
+            "main-only chunk-2048 buffered retrieval and disk continuation: 256K/two banks, 512K/one bank; draft-loaded and other shapes retain the bounded 8K gate; DSpark acceleration unqualified"
+        }
         Variant::Step37Flash => {
             "text banks are opt-in; Chat restart hits need history-stable identity; images serial"
         }
@@ -2866,6 +2896,56 @@ mod tests {
         assert!(p.issues.iter().any(|i| i.code == "ctx_unqualified"));
         assert!(p.issues.iter().any(|i| i.code == "banks_unqualified"));
         assert!(p.issues.iter().any(|i| i.code == "prompt_bound"));
+    }
+
+    #[test]
+    fn naive_long_scope_by_width() {
+        for (width, ctx, prompt) in [(1, 524288, 523441), (2, 262144, 262011)] {
+            let req = ServingRequest {
+                ctx,
+                max_seqs: MaxSeqs::Fixed(width),
+                native_chunk: Some(2048),
+                sched_chunk: Some(2048),
+                sched_chunk_live: Some(2048),
+                mtp_mode: MtpMode::Off,
+                ..ServingRequest::default()
+            };
+            let caps = caps(ModelFamily::NaiveN05, Variant::NaiveN05Flash);
+            let p = resolve_plan(&req, Some(caps), &EngineFacts::default());
+            assert!(!p.has_errors(), "{:?}", p.issues);
+            assert_eq!(p.qualified.ctx, Some(ctx as u32));
+            assert_eq!(p.qualified.prompt, Some(prompt));
+            assert!(!p.issues.iter().any(|i| i.code == "ctx_unqualified"));
+
+            for changed in [
+                ServingRequest {
+                    lane: LaneMode::Serial,
+                    ..req.clone()
+                },
+                ServingRequest {
+                    native_chunk: Some(1024),
+                    ..req.clone()
+                },
+                ServingRequest {
+                    sched_chunk_live: Some(1024),
+                    ..req.clone()
+                },
+                ServingRequest {
+                    mtp_path: Some("draft.gguf".into()),
+                    ..req.clone()
+                },
+            ] {
+                let p = resolve_plan(&changed, Some(caps), &EngineFacts::default());
+                assert_eq!(p.qualified.ctx, Some(8192));
+                assert_eq!(p.qualified.prompt, Some(702));
+            }
+            let facts = EngineFacts {
+                mtp_loaded: true,
+                ..EngineFacts::default()
+            };
+            let p = resolve_plan(&req, Some(caps), &facts);
+            assert_eq!(p.qualified.ctx, Some(8192));
+        }
     }
 
     #[test]

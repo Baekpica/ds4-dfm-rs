@@ -7,8 +7,9 @@ including partial reuse, disk restart, tools and stream cancellation.
 See the [serving and arithmetic report](benchmarks/naive-2026-09-30/serving.md)
 for its 702-token prompt bound and reference differences.
 The [near-capacity report](benchmarks/naive-2026-09-30/long-context.md)
-records a 256K two-bank seed and buffered disk continuations, including
-the preserved streaming-budget failure. Larger-context gates remain active.
+records 256K two-bank and 512K one-bank seeds and buffered disk
+continuations, including the preserved 256K streaming-budget failure.
+The 1M gate remains active.
 The Rust host can open one full CUDA model; forced CPU, Metal, distributed,
 steering, vision and embedded-MTP settings fail before native allocation.
 DSpark serial and banked target verification, accepted-prefix commit and
@@ -222,8 +223,11 @@ campaign covers partial reuse, bank changes and disk restart. DSpark passes
 token/state and actual-speculation checks; useful acceleration still needs
 fresh-process speed evidence.
 
-Qualify 262144, 524288 and 1048576 contexts separately: admission, full prompt
-processing, distant-content retrieval, continuation, peak memory and actual
-decode. Requested capacity or a listening server alone is insufficient.
-Record bank count and draft mode for each result. Only completed DGX gates
-may become serving-capability or Hugging Face performance claims.
+The completed long gates use main-only banks and native/scheduler chunks
+2048. The plan reports 262144 context and 262011 input tokens for two
+banks, or 524288 context and 523441 input tokens for one bank. Draft-loaded
+and other shapes retain the short 8192-context, 702-token bound.
+These are recorded buffered retrieval and continuation limits, not broad
+quality guarantees. Qualify 1048576 separately with a full prompt, distant
+retrieval, continuation, memory and actual decode; readiness alone is
+insufficient. Only completed DGX gates may become public serving claims.

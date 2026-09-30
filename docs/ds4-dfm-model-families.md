@@ -8,8 +8,8 @@ the inherited C release history and the [release ledger](releases/v0.1.0.md)
 for qualification and workload limits.
 
 The runtime also carries explicit non-DFM family ports, including dots3-note,
-Qwen3.8, GLM 5.3 Flash, K2-Horizon, Inkling Small, Step 3.7 Flash and
-Ling-3.0-flash-VL. Inclusion does not classify
+Qwen3.8, GLM 5.3 Flash, K2-Horizon, Inkling Small, Step 3.7 Flash,
+Ling-3.0-flash-VL and Naive-N0.5-Flash. Inclusion does not classify
 those source models as Korean DFM. The [repository README](../README.md#supported-model-families)
 defines the exact artifact support scope.
 
@@ -37,7 +37,8 @@ The implementation stays close to upstream's style:
 - no plugin registry, graph framework, or broad abstraction layer is added;
 - external MTP sidecars require the exact DeepSeek, Inkling or Step family contract;
   Ling-3.0-flash-VL has no predictor block at all;
-  DSpark remains DeepSeek-only. dots3-note executes its embedded MTP block
+  DSpark uses explicit DeepSeek or Naive artifact contracts. dots3-note
+  executes its embedded MTP block
   only on the explicitly enabled serial path described below.
 
 This keeps the changes reviewable for a possible future upstream contribution.
@@ -58,6 +59,7 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | [Step 3.7 Flash](step37-initial.md) ([serving](step37-serving-2026-09-13.md)) | `general.architecture=step35` | MQ83 full/sliding GQA, post-SiLU expert clamps, optional Q8 MTP and F16 vision |
 | [Ling-3.0-flash-VL](ling3-flash-vl.md) | `general.architecture=bailingmoe3` | 35 recurrent KDA blocks and 7 latent MLA blocks, 512 grouped-sigmoid experts, separate Qwen3-VL mmproj |
 | [MiMo-V2.6-Flash-RL](mimo2-serving-2026-09-25.md) | `general.architecture=mimo2` | 48 trunk layers: 9 full-attention, 39 SWA-128, 256 experts top-8, and three embedded MTP blocks. With MTP off, a 256K two-bank text plan passed partial reuse, disk continuation and serial image/video/audio input gates on GB10. The prior 512K serial-text and 256K serial-media/DFlash gates are separate. 1M one-bank text answered a 1,040,506-token prompt; two banks did not fit. |
+| [Naive-N0.5-Flash](naive-n05-flash.md) | `general.architecture=naive_n05_flash` | MQ87; 39 SWA-128 and nine DSA layers with full BF16 GQA and E4M3 indexer history. Continuous banks, partial checkpoints, disk KV and external DSpark. Main-only buffered retrieval and disk continuation pass at 256K/two banks and 512K/one bank. DSpark acceleration remains unqualified. |
 
 The scheduler implementation may differ because the model states differ, but
 the operator and client contract is the same. Changing `-m` to a GGUF from a
