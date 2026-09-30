@@ -208,9 +208,10 @@ python3 tools/host_memory_guard.py --max-gib 18 --high-gib 17 \
   --kv-cache-min-tokens 1024
 ```
 
-This matches the recorded 256K main-only worker shape. Explicit DSpark adds
-`--mtp "$NAIVE_DRAFT" --mtp-mode on --mtp-draft 2 --mtp-margin 0` and needs
-its larger quote; only the short functional gates are qualified.
+This matches the recorded 256K main-only worker shape. Explicit DSpark sets
+`DS4_DSPARK_MODEL="$NAIVE_DRAFT"` on the worker command and adds
+`--mtp-mode on --mtp-draft 2 --mtp-margin 0`. Its larger quote and short
+functional gates apply; Naive has no embedded `--mtp` sibling.
 Read `/v1/models`, `/v1/stats` and a real completion after launch.
 
 `tests/naive_long_fixture.py` builds hashed near-capacity requests with the
