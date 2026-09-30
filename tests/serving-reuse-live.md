@@ -23,7 +23,7 @@ format following. The prompts still request just the number, so an accepted
 equation can violate that formatting instruction. Earlier number-only runs
 remain failures under their original contract: `2 + 2 = 4.` must not retroactively
 turn such a formatting failure into a pass. Start a new evidence directory;
-v3 refuses to resume an older frozen fixture. Never add answer forms after
+v4 refuses to resume an older frozen fixture. Never add answer forms after
 seeing output within a campaign.
 
 | Profile | Artifact scope | Warm reuse | MTP |
@@ -59,6 +59,8 @@ the runner's explicit `--lane continuous` checks the actual route. There is
 no server `--lane continuous` option. Do not set `DS4_SERVER_CONTINUOUS=0`.
 For an additional MTP-on run, pass `--mtp-mode on --mtp-draft 2` to the server
 and runner, and `--expect-speculation on` to the runner. Solar/Motif reject on.
+For Naive's short arithmetic gate, also declare `--mtp-margin 0` on the
+server. Its default margin 3 can exclude every proposal on a short reply.
 
 For Motif, also set `DS4_MOTIF3_BATCH_TRACE=1` and redirect the server's stderr
 to a regular file. The runner reads only the new bytes from that PID's stderr
@@ -116,6 +118,12 @@ the copy and frontier; tensor/source-content preservation is a separate native
 gate. Other families require at least one `fork` request trace. A later branch can
 reuse its still-resident parent with `exact`; the scheduler need not copy a
 bank again for that request.
+
+Naive with MTP on may commit a verified stop row. Canonical history can then
+restore a proper checkpoint prefix for continuation or restart, reported as
+`partial`. v4 accepts that mechanism while still requiring positive cached
+tokens, actual speculation, an actual warm bank fork and byte-exact cold
+responses. Earlier v3 trace failures remain failures; start a new campaign.
 
 Every cold request uses the identical saved body, requires zero cached tokens
 and `cold` trace, and compares the full assistant message, finish reason and

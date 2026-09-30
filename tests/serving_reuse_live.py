@@ -28,6 +28,7 @@ PROFILES = {
     "deepseek": {"names": ["deepseek4-flash", "deepseek4-pro"], "reuse": "exact"},
 }
 FIXTURE = Path(__file__).parent / "fixtures" / "serving-reuse.json"
+FIXTURE_SCHEMA = "serving-reuse-live-v4"
 NATIVE_REUSE = re.compile(
     r"ds4: Motif-3 bank reuse source=(\d+) target=(\d+) cached=(\d+) partial=([01]) "
     r"source_before=(\d+) source_after=(\d+) target_after=(\d+)")
@@ -182,6 +183,10 @@ def inspect_case(config, phase, name, case, response, stats, reference=None):
         elif config["family"] == "motif" and phase == "warm":
             # The official history removes generation-only empty thinking.
             kinds = {"exact", "fork", "partial"}
+        elif config["family"] == "naive" and config["mtp_mode"] == "on":
+            # A verified stop may be committed too. Canonical history can
+            # restore a proper checkpoint prefix instead of that frontier.
+            kinds = {"exact", "fork", "partial"}
         else:
             kinds = {"exact", "fork"}
     if trace.get("reuse_kind") not in kinds:
@@ -290,7 +295,7 @@ def main():
                 "messages": [{"role": "user", "content": padding + templates["seed"]["user"]}]}
         cases = {"seed": {"body": body, "answer": templates["seed"]["answer"],
                           "accepted_forms": templates["seed"]["accepted_forms"]}}
-        fixture = {"schema": "serving-reuse-live-v3", "answer_contract": templates["answer_contract"],
+        fixture = {"schema": FIXTURE_SCHEMA, "answer_contract": templates["answer_contract"],
                    "config": config, "templates": templates,
                    "source_fixture_sha256": digest(FIXTURE), "cases": cases}
         (args.output / "artifacts.json").write_bytes(args.artifact_manifest.read_bytes())
@@ -300,9 +305,9 @@ def main():
             "expect_speculation", "lane")), "later phases use the frozen seed configuration")
         verify_fixture(args.output, args.phase)
         fixture = read_json(fixture_path)
-        require(fixture.get("schema") == "serving-reuse-live-v3"
+        require(fixture.get("schema") == FIXTURE_SCHEMA
                 and fixture.get("answer_contract") == "literal-arithmetic-v2",
-                "answer-form contract changed; start a new evidence directory")
+                "fixture contract changed; start a new evidence directory")
         config, templates, cases = fixture["config"], fixture["templates"], fixture["cases"]
         seed = read_json(args.output / "seed.process.json")
         require((fingerprint(process) == fingerprint(seed)) == (args.phase == "warm"),

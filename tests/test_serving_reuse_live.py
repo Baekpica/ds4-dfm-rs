@@ -94,7 +94,7 @@ class ReuseRunnerTests(unittest.TestCase):
                     "--output", str(output), "--artifact-manifest", str(manifest)]
             with patch("sys.argv", argv), patch.object(gate, "process_identity", return_value={}), \
                     patch.object(gate, "request") as request:
-                with self.assertRaisesRegex(RuntimeError, "answer-form contract changed"):
+                with self.assertRaisesRegex(RuntimeError, "fixture contract changed"):
                     gate.main()
                 request.assert_not_called()
 
@@ -129,6 +129,37 @@ class ReuseRunnerTests(unittest.TestCase):
                     errors = gate.inspect_case(self.config(family), "warm", name, self.case(name),
                                                self.response(answer), self.stats("partial"))
                     self.assertEqual(not errors, okay, errors)
+
+    def test_naive_spec_stop_allows_partial(self):
+        for phase, name, answer in [("warm", "fork", "8"), ("restored", "restart", "9")]:
+            for family, mode, okay in [("naive", "on", True), ("naive", "off", False),
+                                       ("qwen", "on", False)]:
+                with self.subTest(phase=phase, family=family, mode=mode):
+                    config = self.config(family)
+                    config.update(mtp_mode=mode, expect_speculation=mode == "on")
+                    stats = self.stats("partial")
+                    stats["last_request"]["speculation_active"] = mode == "on"
+                    errors = gate.inspect_case(config, phase, name, self.case(name),
+                                               self.response(answer), stats)
+                    self.assertEqual(not errors, okay, errors)
+        self.assertFalse(gate.has_warm_fork("naive", ["partial"], []))
+
+    def test_old_trace_contract_is_refused(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            fixture = output / "fixture.json"
+            gate.write_json(fixture, {"schema": "serving-reuse-live-v3",
+                                      "answer_contract": "literal-arithmetic-v2"})
+            gate.write_json(output / "seed.result.json", {"fixture_sha256": gate.digest(fixture)})
+            manifest = output / "artifacts.json"
+            manifest.write_text('{"synthetic": true}')
+            argv = ["runner", "warm", "--url", "http://127.0.0.1:1", "--pid", "200",
+                    "--output", str(output), "--artifact-manifest", str(manifest)]
+            with patch("sys.argv", argv), patch.object(gate, "process_identity", return_value={}), \
+                    patch.object(gate, "request") as request:
+                with self.assertRaisesRegex(RuntimeError, "contract changed"):
+                    gate.main()
+                request.assert_not_called()
 
     def test_partial_fork_requires_preserved_native_frontiers(self):
         line = ("ds4: Motif-3 bank reuse source=0 target=1 cached=300 partial=1 "
