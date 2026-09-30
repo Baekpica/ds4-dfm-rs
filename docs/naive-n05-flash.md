@@ -6,6 +6,9 @@ HTTP serving passes short-request gates at 8K context and two banks,
 including partial reuse, disk restart, tools and stream cancellation.
 See the [serving and arithmetic report](benchmarks/naive-2026-09-30/serving.md)
 for its 702-token prompt bound and reference differences.
+The [near-capacity report](benchmarks/naive-2026-09-30/long-context.md)
+records a 256K two-bank seed and buffered disk continuations, including
+the preserved streaming-budget failure. Larger-context gates remain active.
 The Rust host can open one full CUDA model; forced CPU, Metal, distributed,
 steering, vision and embedded-MTP settings fail before native allocation.
 DSpark serial and banked target verification, accepted-prefix commit and

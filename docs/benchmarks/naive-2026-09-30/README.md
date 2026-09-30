@@ -7,6 +7,8 @@ The [upstream GB10 recipe review](upstream-review.md) covers potential Naive,
 Qwen and shared-path improvements; unmeasured ideas do not count here.
 The [HTTP and arithmetic report](serving.md) records bounded cache, tool,
 concurrency and DSpark gates separately from these speed measurements.
+The [near-capacity report](long-context.md) records completed long requests
+and their output/cache limits separately.
 
 ## Protocol
 
