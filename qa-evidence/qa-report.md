@@ -858,4 +858,113 @@ NOTES
   rejected unless the reused process is itself a ds4-server (the
   /proc/<pid>/cmdline text test is the guard's only check).
 
+========================================================================
+UNIT 2026-09-30 — Bonsai bf16 gated delta-net matvec tile (prefill)
+========================================================================
+
+Diff: cuda/qwen35_attn_gdn.cuh (matvec_bf16_tiled + the dispatch in
+ds4_gpu_qwen35_matvec_bf16_tensor), tests/test_qwen35_cuda.cu (test 6
+test_bf16_matvec_tile), docs/releases/bonsai-perf-2026-09-30.md.
+Uncommitted working tree; tests/qa-gate.sh diffs commits only, so none of
+these paths is in its surface list. The one gate surface this unit moves,
+ds4_gpu_qwen35_matvec_bf16_tensor, stays covered by the earlier sections.
+Read-only pass: no tracked file other than this report was touched.
+Binaries current with the edit: cuda/qwen35_attn_gdn.cuh 17:04:03,
+ds4-server/ds4-c 17:04:54, and both embed DS4_QWEN35_BF16_MATVEC_TILED plus
+the two kernels (nm _Z11matvec_bf16... and _Z17matvec_bf16_tiled...);
+tests/test_qwen35_cuda is newer than the test edit.
+
+1. PARITY — `make test-qwen35-cuda CUDA_ARCH=sm_89` (exit 0). Full group 6,
+   every width bit-identical, rel L2 ~2-4e-07 (the float-rounding band):
+
+    bf16 tile T=1:   bit-identical to the untiled kernel, max abs 1.45e-05, rel L2 3.52e-07
+    bf16 tile T=8:   bit-identical to the untiled kernel, max abs 1.72e-05, rel L2 2.42e-07
+    bf16 tile T=9:   bit-identical to the untiled kernel, max abs 1.91e-05, rel L2 2.42e-07
+    bf16 tile T=11:  bit-identical to the untiled kernel, max abs 1.81e-05, rel L2 2.32e-07
+    bf16 tile T=486: bit-identical to the untiled kernel, max abs 2.67e-05, rel L2 2.36e-07
+    bf16 matvec tile parity: PASS
+    PQ2_0 CUDA parity: PASS
+
+   The T=9/11/486 lines are byte-identical to the three the release doc
+   quotes. The rest of the suite (PQ2_0 row lookup, shape guards, host embed,
+   fold, gdn gates, attention split and token-tile, MMQ/MMVQ) all PASS;
+   PQ2_0 CUDA parity: PASS.
+
+2. A/B on the served path — /tmp/ab-tiled.sh, three interleaved pairs, one
+   fresh ds4-server per sample, model prism-bonsai-2-27b, a 2140-token prompt
+   with 64 decode tokens, base = DS4_QWEN35_BF16_MATVEC_TILED=0:
+
+    arm base (TILED=0)                     arm tiled (default)
+    ttft 3408.8/3295.8/3275.6 ms           2242.2/2130.7/2141.7 ms
+    prefill 640.1/662.7/666.2 tok/s        983.7/1033.3/1030.0 tok/s
+    decode 17.30/17.60/17.90 tok/s         17.10/17.80/18.00 tok/s
+    mean 3326.7 ms / 656.3 tok/s           2171.5 ms / 1015.7 tok/s
+
+   -34.7% ttft / +54.8% prefill, against the report's means 3291.9 / 663.2
+   and 2154.0 / 1023.3 (-34.6% / +54.3%): reproduced within ~1%. Decode means
+   17.60 vs 17.63 tok/s — unchanged, as the T<=8 dispatch intends. The
+   64-token completions are identical between the arms (same reasoning_content,
+   finish_reason length). Clocks 2775-2790 MHz of a 3105 MHz maximum,
+   119-123 W, 51-55 C.
+
+   Kernel level, nsys, the doc's own method (ds4-c --cuda --first-token-test
+   with DS4_QWEN35_SESSION=1, one 483-token chunk, one step):
+
+    base  matvec_bf16        96 calls x 3,013,202 ns = 289.27 ms (41.2% of GPU)
+    tiled matvec_bf16_tiled  96 calls x   168,583 ns =  16.18 ms ( 3.8%)
+
+   Total GPU kernel time 702.9 -> 427.1 ms; the matvec delta 273.1 ms is 99%
+   of the 275.8 ms drop. Both arms print the same step token (id 760). The
+   doc's 259.0 -> 13.7 ms at 463 tokens is the same kernel and ratio (17.9x
+   here vs 18.9x there); the absolute figures differ because my prompt is 483
+   tokens and the clocks are not the doc's.
+
+3. DISPATCH BOUNDARY AND TAIL — cuda/qwen35_attn_gdn.cuh:703-706:
+   `if (T > MATVEC_BF16_TT && !(tiled && tiled[0] == '0'))` with
+   MATVEC_BF16_TT = 8 (line 465): T <= 8 takes the untiled matvec_bf16, T > 8
+   the tiled kernel, and a first char '0' in DS4_QWEN35_BF16_MATVEC_TILED
+   forces the untiled path. The claim holds.
+   Tail safety from the kernel (467-491): gridDim.y = ceil(T/8),
+   t0 = blockIdx.y * 8, nt = min(8, T - t0); every x read (t0+j) and out
+   write (t0+j) is guarded by j < nt, and t0 < T for every launched block
+   (by <= ceil(T/8)-1), so t0 + nt <= T for any T — no read or write outside
+   [0, T). M = 48 is a multiple of 4 here and `if (row >= M) return` covers
+   the rest. Observed tails: T=11 (nt=3) and T=486 (nt=6) are bit-identical
+   in the suite; the served 2140-token run's last chunk is 92 (nt=4, since
+   ds4.c:74458 chunks by prefill_cap 512) and the nsys chunk T=483 has nt=3
+   (483 = 60*8+3), both with correct output. T=15 was not added: the width
+   list is hardcoded in the test (1069) and this pass is read-only.
+   compute-sanitizer --tool memcheck --kernel-name regex=matvec_bf16 reported
+   no invalid __global__ access in the matvec kernels, but its run is polluted
+   by cudaErrorInvalidValue on cudaMemcpy (the test's mmap/register path) that
+   fails four earlier groups, so the tool is inconclusive as a gate — not a
+   device OOB finding. The OOB conclusion rests on the code argument above.
+
+4. KILL SWITCH — the A/B base arm (TILED=0) is the SLOW arm (3326.7 ms ttft,
+   nsys shows only matvec_bf16); the default arm is the fast one (2171.5 ms,
+   only matvec_bf16_tiled). The switch changes the executed kernel.
+
+5. `bash tests/run.sh` -> "tests/run.sh: all checks passed", exit 0
+   (make pq2-0-test PASS; make test-catalog-parity, ds4-core lib 295 passed /
+   0 failed / 4 ignored plus every integration suite PASS; tests/qa-gate.sh
+   overall PASS). No flake this run.
+
+HOST STATE — after the pass pgrep -a ds4-server / ds4-c / ds4 / nsys are all
+empty; the A/B's own `serve stop` and the self-terminating session runs left
+nothing behind. GPU idle: 242 MiB of 12282 MiB (Xorg + cinnamon), 39 C,
+12.43 W, clocks 465 / 3105 MHz.
+
+NOT RUN / UNVERIFIED
+- The doc's "Unchanged gates" line (./run-bonsai.sh ids, session,
+  make test-qwen35-session and -multichunk) was not re-run here; this pass
+  verified the CUDA unit gate and the served path only.
+- The doc's parenthetical "486 the chunk this host really prefills" is not a
+  width I could tie to the server: the chunk knob default is 512
+  (DS4_QWEN35_CHUNK_DEFAULT, ds4.c:69059) and my session run used 483. A
+  comment imprecision, not a functional issue.
+- The doc's "58 blocks for a 463-token chunk" is gridDim.y; the grid is
+  12 x 58 = 696 blocks of 128 threads. Prose, not a defect.
+- ncu remains unusable on this host per the doc (ERR_NVGPUCTRPERM); not
+  re-checked.
+
 verdict: overall PASS
