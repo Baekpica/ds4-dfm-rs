@@ -47,6 +47,7 @@
 /tests/parity/vocab_c_oracle
 /tests/parity/agent_c_oracle
 /scratch/
+/naive-n05-flash-spark-handoff/
 /ds4_native
 /ds4_server_test
 /ds4_test

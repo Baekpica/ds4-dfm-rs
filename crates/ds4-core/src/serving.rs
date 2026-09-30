@@ -631,6 +631,26 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         };
     }
     match family {
+        ModelFamily::NaiveN05 => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Serial,
+            bank_support: Support::None,
+            reuse: ReuseKind::None,
+            reuse_support: Support::None,
+            disk: Support::None,
+            snapshot: Support::None,
+            mtp: MtpKind::None,
+            mtp_support: Support::None,
+            spec_lane: SpecLane::None,
+            spec_draft_min: 1,
+            host: HostNeed::Cuda,
+            ctx_max: Some(crate::naive::CONTEXT_MAX),
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
+            media_serial: false,
+        },
         // Target banks run without MTP; media and speculation use serial.
         ModelFamily::Mimo2 => ServingCaps {
             family,
@@ -1165,6 +1185,7 @@ impl ServingCaps {
             Variant::Step37Flash => "step35",
             Variant::Ling30FlashVl => "bailingmoe3",
             Variant::Mimo26Flash => "mimo2",
+            Variant::NaiveN05Flash => "naive_n05_flash",
         }
     }
 }
@@ -1314,6 +1335,7 @@ impl ResolvedPlan {
             }
             Some(ModelFamily::Dots3Note) => Some("DS4_DOTS3_PREFILL_CHUNK"),
             Some(ModelFamily::Mimo2) => Some("DS4_MIMO2_PREFILL_CHUNK"),
+            Some(ModelFamily::NaiveN05) => Some("DS4_NAIVE_PREFILL_CHUNK"),
             _ => None,
         }
     }

@@ -217,6 +217,9 @@ different GPU or quant without rerunning the same gate.
 Every family below has an explicit architecture selector, validator, binder,
 tokenizer/chat contract, state lifecycle, and native execution path.
 
+[Naive-N0.5-Flash integration](docs/naive-n05-flash.md) is in progress.
+Its catalog and input checks are available; CUDA serving is not yet qualified.
+
 | Family | GGUF architecture | Documented scope |
 |---|---|---|
 | DeepSeek V4 Flash / PRO | `deepseek4` | Flash is the main live oracle; DeepSeek MTP and DSpark sidecars. |

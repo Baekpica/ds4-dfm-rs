@@ -24,6 +24,7 @@ mod mapped;
 mod mem;
 mod mem_gov;
 mod mimo2;
+mod naive;
 mod payload;
 mod progress;
 mod serving;
@@ -1051,6 +1052,12 @@ pub fn probe_model_artifact(path: &str) -> Result<()> {
         code: 1,
         message: format!("validate failed: {}", e.token()),
     })?;
+    if identified.shape.family == ModelFamily::NaiveN05 {
+        naive::validate_inventory(&inventory).map_err(|e| Error {
+            code: 1,
+            message: e.to_string(),
+        })?;
+    }
     if identified.shape.family == ModelFamily::Mimo2 {
         Mimo2Plan::validate_inventory(&inventory).map_err(|e| Error {
             code: 1,
@@ -1213,6 +1220,12 @@ impl Model {
             code: 1,
             message: format!("identify failed: {}", e.token()),
         })?;
+        if identified.shape.family == ModelFamily::NaiveN05 {
+            return Err(Error {
+                code: 1,
+                message: "Naive CUDA execution is pending; artifact inspection is available".into(),
+            });
+        }
         let dflash = identified.shape.family == ModelFamily::Mimo2 && mtp_path.is_some();
         if identified.shape.family == ModelFamily::Mimo2
             && (backend != Backend::Cuda || distributed.is_some() || dspark_path.is_some())

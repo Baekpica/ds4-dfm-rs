@@ -850,6 +850,7 @@ pub fn bind_names(shape: &Shape) -> Vec<BindName> {
         ModelFamily::Step37 => return inkling_names(crate::Step37Plan::layouts()),
         ModelFamily::Ling3Vl => return inkling_names(crate::Ling3VlPlan::layouts()),
         ModelFamily::Mimo2 => return inkling_names(crate::Mimo2Plan::layouts()),
+        ModelFamily::NaiveN05 => return inkling_names(crate::naive::layouts()),
     }
     out
 }

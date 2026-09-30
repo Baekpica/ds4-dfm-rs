@@ -1,0 +1,11 @@
+{
+  "repo_id": "NaiveAI/Naive-N0.5-Flash",
+  "revision": "0235b3b5ff27422b1f57cdc2acddfaf643e08356",
+  "files": {
+    "chat_template.jinja": "cfe477d7032a1e6f90c06cd8e3b4a25d02cd2e4a911252daa45a024b56084a19",
+    "tokenizer.json": "2efef62c60dedec64b55ab8b6e6838ca5cee391c00c62f2c554ba5de3d33e030",
+    "tokenizer_config.json": "a6970b2958597d6463ea3c6737b77797de1261e43dadddb5a6b737c377bec8dd",
+    "generation_config.json": "32fe0aac6da16419c6cfa28688978ad5ce54b7fd576ddd406ab7df60587a08cd",
+    "LICENSE": "7d33c324345878eb63f723e1693ccb1b50a6c89785174f7512ce6f306309c15e"
+  }
+}

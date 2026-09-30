@@ -744,6 +744,7 @@ fn parse_nvidia_mib(raw: &str) -> Option<u64> {
 fn family_native_limit(caps: ServingCaps) -> u32 {
     match caps.family {
         ModelFamily::Mimo2 => MIMO_NATIVE_MAX,
+        ModelFamily::NaiveN05 => crate::naive::PREFILL_MAX,
         ModelFamily::Qwen4Exp => QWEN_NATIVE_MAX,
         ModelFamily::Step37 => STEP_NATIVE_MAX,
         ModelFamily::Ling3Vl => LING_NATIVE_MAX,
@@ -759,6 +760,12 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
 fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
     let ctx = ctx.max(1);
     let cap = match caps.family {
+        ModelFamily::NaiveN05 => env_u32(
+            "DS4_NAIVE_PREFILL_CHUNK",
+            crate::naive::PREFILL_CAP,
+            1,
+            crate::naive::PREFILL_MAX,
+        ),
         ModelFamily::Mimo2 => env_u32(
             MIMO_PREFILL_CHUNK_ENV,
             MIMO_NATIVE_DEFAULT,
