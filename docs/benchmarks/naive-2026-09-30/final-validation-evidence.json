@@ -1,0 +1,432 @@
+{
+  "utc": "2026-09-30T23:16:13.864258+00:00",
+  "source_commit": "777c7bdd",
+  "binary_sha256": "5ccd49aaf9cba3d8592fbc1918334b183327ce7742899c99170300edc24bf7fd",
+  "host_checks": [
+    {
+      "name": "final-fmt",
+      "exit_code": 0,
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ]
+    },
+    {
+      "name": "final-clippy",
+      "exit_code": 0,
+      "argv": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked"
+      ]
+    },
+    {
+      "name": "final-workspace",
+      "exit_code": 0,
+      "argv": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--locked",
+        "--",
+        "--test-threads=1"
+      ]
+    },
+    {
+      "name": "final-check",
+      "exit_code": 0,
+      "argv": [
+        "cargo",
+        "check",
+        "--workspace",
+        "--all-targets",
+        "--locked"
+      ]
+    },
+    {
+      "name": "final-native-host",
+      "exit_code": 0,
+      "argv": [
+        "cargo",
+        "check",
+        "-p",
+        "ds4-server",
+        "--lib",
+        "--bin",
+        "ds4-server-rs",
+        "--features",
+        "native",
+        "--locked"
+      ]
+    }
+  ],
+  "workspace_tests": {
+    "passed": 1420,
+    "failed": 0,
+    "ignored": 11,
+    "suites": 79
+  },
+  "refreshed_c_oracles": {
+    "command": "make -j1 test-catalog-parity test-server-parity",
+    "exit_code": 0
+  },
+  "python_tests": {
+    "long_replay": 1,
+    "reuse_replay": 22,
+    "failed": 0
+  },
+  "fixture": {
+    "context": 262144,
+    "input_tokens": 2048,
+    "expected_answer": "ORCHID-74-COPPER-29",
+    "needle_fraction": 0.17,
+    "needle_token_offset": 375,
+    "request_sha256": "b7395d8276a931267dae400d9f108786cd38845cb3cb04a47a88334302c4f81e",
+    "prompt_ids_sha256": "c7a88b24d7baf981c4727e7745c4e87614f6d34e236264cb2171e29777d6c411",
+    "template_sha256": "cfe477d7032a1e6f90c06cd8e3b4a25d02cd2e4a911252daa45a024b56084a19",
+    "tokenizer_sha256": "2efef62c60dedec64b55ab8b6e6838ca5cee391c00c62f2c554ba5de3d33e030",
+    "request_bytes": 12260,
+    "prompt_margin": 260096,
+    "max_output": 256,
+    "output_mode": "buffered"
+  },
+  "cases": [
+    {
+      "context": 262144,
+      "banks": 2,
+      "phase": "seed",
+      "text": "\n\nORCHID-74-COPPER-29",
+      "reasoning": "",
+      "message": {
+        "role": "assistant",
+        "content": "\n\nORCHID-74-COPPER-29"
+      },
+      "usage": {
+        "prompt_tokens": 2048,
+        "completion_tokens": 13,
+        "total_tokens": 2061,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 2048
+        }
+      },
+      "finish_reason": "stop",
+      "events": 1,
+      "first_content_seconds": 4.019693651993293,
+      "total_seconds": 4.019699715994648,
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null,
+        "reuse_miss": "no checkpoint at or below LCP"
+      },
+      "passed": true,
+      "errors": [],
+      "fixture": {
+        "context": 262144,
+        "input_tokens": 2048,
+        "expected_answer": "ORCHID-74-COPPER-29",
+        "needle_fraction": 0.17,
+        "needle_token_offset": 375,
+        "request_sha256": "b7395d8276a931267dae400d9f108786cd38845cb3cb04a47a88334302c4f81e",
+        "prompt_ids_sha256": "c7a88b24d7baf981c4727e7745c4e87614f6d34e236264cb2171e29777d6c411",
+        "template_sha256": "cfe477d7032a1e6f90c06cd8e3b4a25d02cd2e4a911252daa45a024b56084a19",
+        "tokenizer_sha256": "2efef62c60dedec64b55ab8b6e6838ca5cee391c00c62f2c554ba5de3d33e030",
+        "request_bytes": 12260,
+        "prompt_margin": 260096,
+        "max_output": 256,
+        "output_mode": "buffered"
+      }
+    },
+    {
+      "context": 262144,
+      "banks": 2,
+      "phase": "follow",
+      "text": "\n\nORCHID-74-COPPER-29",
+      "reasoning": "",
+      "message": {
+        "role": "assistant",
+        "content": "\n\nORCHID-74-COPPER-29"
+      },
+      "usage": {
+        "prompt_tokens": 2084,
+        "completion_tokens": 13,
+        "total_tokens": 2097,
+        "prompt_tokens_details": {
+          "cached_tokens": 2061,
+          "cache_write_tokens": 23
+        }
+      },
+      "finish_reason": "stop",
+      "events": 1,
+      "first_content_seconds": 1.1741704379965086,
+      "total_seconds": 1.1741770139924483,
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "fork",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "passed": true,
+      "errors": [],
+      "fixture": {
+        "context": 262144,
+        "input_tokens": 2048,
+        "expected_answer": "ORCHID-74-COPPER-29",
+        "needle_fraction": 0.17,
+        "needle_token_offset": 375,
+        "request_sha256": "b7395d8276a931267dae400d9f108786cd38845cb3cb04a47a88334302c4f81e",
+        "prompt_ids_sha256": "c7a88b24d7baf981c4727e7745c4e87614f6d34e236264cb2171e29777d6c411",
+        "template_sha256": "cfe477d7032a1e6f90c06cd8e3b4a25d02cd2e4a911252daa45a024b56084a19",
+        "tokenizer_sha256": "2efef62c60dedec64b55ab8b6e6838ca5cee391c00c62f2c554ba5de3d33e030",
+        "request_bytes": 12260,
+        "prompt_margin": 260096,
+        "max_output": 256,
+        "output_mode": "buffered"
+      }
+    },
+    {
+      "context": 262144,
+      "banks": 2,
+      "phase": "restored",
+      "text": "\n\nORCHID-74-COPPER-29",
+      "reasoning": "",
+      "message": {
+        "role": "assistant",
+        "content": "\n\nORCHID-74-COPPER-29"
+      },
+      "usage": {
+        "prompt_tokens": 2120,
+        "completion_tokens": 13,
+        "total_tokens": 2133,
+        "prompt_tokens_details": {
+          "cached_tokens": 2097,
+          "cache_write_tokens": 23
+        }
+      },
+      "finish_reason": "stop",
+      "events": 1,
+      "first_content_seconds": 1.2282449320045998,
+      "total_seconds": 1.228251171996817,
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "fork",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "passed": true,
+      "errors": [],
+      "fixture": {
+        "context": 262144,
+        "input_tokens": 2048,
+        "expected_answer": "ORCHID-74-COPPER-29",
+        "needle_fraction": 0.17,
+        "needle_token_offset": 375,
+        "request_sha256": "b7395d8276a931267dae400d9f108786cd38845cb3cb04a47a88334302c4f81e",
+        "prompt_ids_sha256": "c7a88b24d7baf981c4727e7745c4e87614f6d34e236264cb2171e29777d6c411",
+        "template_sha256": "cfe477d7032a1e6f90c06cd8e3b4a25d02cd2e4a911252daa45a024b56084a19",
+        "tokenizer_sha256": "2efef62c60dedec64b55ab8b6e6838ca5cee391c00c62f2c554ba5de3d33e030",
+        "request_bytes": 12260,
+        "prompt_margin": 260096,
+        "max_output": 256,
+        "output_mode": "buffered"
+      }
+    }
+  ],
+  "overlap": {
+    "passed": true,
+    "requests": [
+      {
+        "i": 0,
+        "start": 1790810093.4311435,
+        "end": 1790810094.9211204,
+        "text": "\n\n4",
+        "usage": {
+          "prompt_tokens": 58,
+          "completion_tokens": 2,
+          "total_tokens": 60,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 58
+          }
+        },
+        "finish": "stop",
+        "passed": true
+      },
+      {
+        "i": 1,
+        "start": 1790810093.4300985,
+        "end": 1790810094.8758442,
+        "text": "\n\n8",
+        "usage": {
+          "prompt_tokens": 58,
+          "completion_tokens": 2,
+          "total_tokens": 60,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 58
+          }
+        },
+        "finish": "stop",
+        "passed": true
+      }
+    ],
+    "trace": {
+      "effective_lane": "continuous",
+      "reuse_kind": "cold",
+      "speculation_active": false,
+      "fallback_reason": null,
+      "reuse_miss": "below minimum token threshold"
+    },
+    "governor_faults": 0,
+    "census_faults": 0
+  },
+  "initial_worker_memory": {
+    "samples": 48,
+    "min_available_gib": 19.177810668945312,
+    "max_psi_full_avg10": 0.0,
+    "exits": [
+      {
+        "time": 1790810025.6827242,
+        "event": "exit",
+        "unit": "ds4-hostguard-355325-1790809976970773578.scope",
+        "status": 0,
+        "payload_status": 0
+      }
+    ],
+    "snapshot_only": true
+  },
+  "current_worker_memory_snapshot": {
+    "samples": 135,
+    "min_available_gib": 19.165283203125,
+    "max_psi_full_avg10": 0.0,
+    "exits": [],
+    "snapshot_only": true
+  },
+  "live_serving": {
+    "family": "naive_n05_flash",
+    "controls": {
+      "native_prefill_env": "DS4_NAIVE_PREFILL_CHUNK",
+      "scheduler_chunks": [
+        256,
+        512,
+        1024,
+        2048
+      ],
+      "prefix_reuse": "partial",
+      "banks": "opt_in",
+      "mtp": "unverified",
+      "disk": "qualified"
+    },
+    "requested": {
+      "prefix_reuse": "partial",
+      "mtp_mode": "off",
+      "max_seqs": "2",
+      "lane": "auto",
+      "ctx": 262144,
+      "mem_floor_gb": 4,
+      "disk": true,
+      "mtp_path": false,
+      "backend": "cuda"
+    },
+    "effective": {
+      "prefix_reuse": "partial",
+      "mtp_mode": "off",
+      "mtp_weights": false,
+      "mtp_draft": null,
+      "max_seqs": 2,
+      "ctx": 262144,
+      "mem_floor_gb": 4,
+      "disk": true,
+      "banks_opt_in": true,
+      "sched_chunk": 2048,
+      "sched_chunk_live": 2048,
+      "native_chunk": 2048,
+      "bank_persist_min_tokens": 1024,
+      "disk_min_tokens": 1024,
+      "disk_is_offload": false
+    },
+    "quote": {
+      "shared_weights": 0,
+      "per_bank": 6785528832,
+      "mtp_state": 0,
+      "scratch": 1536004352,
+      "checkpoint_pool": 204472320,
+      "ple": 0,
+      "media_reserve": 0,
+      "floor": 4294967296,
+      "available": 37028296960,
+      "banks": 2,
+      "total": 19606501632
+    },
+    "qualified": {
+      "prefix_reuse": "qualified",
+      "disk": "qualified",
+      "mtp": "none",
+      "banks": "qualified",
+      "ctx": 262144,
+      "banks_n": 2,
+      "prompt": 262011,
+      "note": "main-only chunk-2048 buffered retrieval and disk continuation: 256K/two banks, 512K/one bank; draft-loaded and other shapes retain the bounded 8K gate; DSpark acceleration unqualified"
+    },
+    "issues": [
+      {
+        "level": "warn",
+        "code": "prompt_bound",
+        "message": "configured ctx is not a full-length request proof"
+      }
+    ]
+  },
+  "live_faults": {
+    "governor": 0,
+    "census": 0
+  },
+  "models": {
+    "object": "list",
+    "data": [
+      {
+        "id": "naive-n05-flash",
+        "object": "model",
+        "created": 1767225600,
+        "owned_by": "ds4.c",
+        "name": "naive-n05-flash",
+        "context_length": 262144,
+        "top_provider": {
+          "context_length": 262144,
+          "max_completion_tokens": 262144,
+          "is_moderated": false
+        },
+        "supported_parameters": [
+          "tools",
+          "tool_choice",
+          "max_tokens",
+          "temperature",
+          "top_p",
+          "top_k",
+          "min_p",
+          "stop",
+          "seed",
+          "stream",
+          "reasoning_effort"
+        ]
+      }
+    ]
+  },
+  "endpoint": "http://127.0.0.1:8002",
+  "worker_pid": 355566,
+  "guard_pid": 355549,
+  "owner_pid": 163686,
+  "limits": [
+    "Final rebuild rechecks only a 2048-token seed, short continuations and concurrent arithmetic; full 256K/512K fixtures belong to the earlier recorded binary.",
+    "The relink changes disk identity because the existing cache guard includes executable metadata; old-binary long cache was missed and that extra cold probe was cancelled.",
+    "No completed 1M gate; user stopped it.",
+    "No DSpark acceleration; automatic speculation remains off.",
+    "Current worker memory is a sampled live snapshot, not a completed soak."
+  ]
+}

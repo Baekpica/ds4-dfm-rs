@@ -55,6 +55,11 @@ contracts.
 
 ## Current checks
 
+The [final October 1 checks](benchmarks/naive-2026-09-30/final-validation.md)
+pass 1420 workspace tests, C oracles and final-binary short reuse/restart
+and concurrent serving. The configured 256K/two-bank endpoint remains
+live with partial reuse, disk KV and MTP off.
+
 The September 30 host checks cover identification, metadata rejection,
 all 613 tensor names/types/dimensions, eight official-template vectors and
 their original-tokenizer IDs. The tokenizer check used a 13,014,912-byte

@@ -9,6 +9,8 @@ The [HTTP and arithmetic report](serving.md) records bounded cache, tool,
 concurrency and DSpark gates separately from these speed measurements.
 The [near-capacity report](long-context.md) records completed long requests
 and their output/cache limits separately.
+The [final host and serving checks](final-validation.md) record the relink,
+short disk restart, concurrency and restored 256K/two-bank endpoint.
 
 ## Protocol
 
