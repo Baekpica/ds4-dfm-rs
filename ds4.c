@@ -314,7 +314,13 @@ static bool ds4_backend_uses_graph(ds4_backend backend) {
  */
 
 enum {
-    DS4_MAX_LAYER            = 61,
+    /* Bound for every host array that holds per-layer state (ds4_weights.layer[],
+     * the KV caches, the graph's per-layer slots).  It is the widest catalogued
+     * family, not the DeepSeek bound it used to be: Bonsai (qwen35) has 64
+     * blocks, and with 61 the bind loop wrote past layer[60] into the trailing
+     * members (the CUDA graph keeps its own DS4_QWEN35_MAX_LAYER bound for the
+     * same reason).  ds4_engine_open refuses any model above it by name. */
+    DS4_MAX_LAYER            = 64,
     /* Phase 2 Step 4d: maximum concurrent sequences the per-seq compressor
      * emit bookkeeping (ms_* arrays) is sized for.  The multi-seq batched
      * decode emit indexes per-(seq,layer) state banks + row counters; this
@@ -70562,6 +70568,18 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     model_open(&e->model, opt->model_path, graph_backend, !opt->inspect_only);
     if (g_host_shape) model_apply_host_shape();
     else config_validate_model(&e->model);
+    /* The per-layer host arrays are sized DS4_MAX_LAYER while the bind and free
+     * loops run to DS4_N_LAYER, so a family with more blocks than the bound
+     * would write past them.  Refuse it by name instead (the CUDA graph keeps
+     * its own bound and its own refusal on top of this one). */
+    if (DS4_N_LAYER > DS4_MAX_LAYER) {
+        fprintf(stderr, "ds4: %s has %u layers but this build holds %u; "
+                        "raise DS4_MAX_LAYER and audit the per-layer arrays\n",
+                DS4_MODEL_SHAPE_NAME, DS4_N_LAYER, (uint32_t)DS4_MAX_LAYER);
+        ds4_engine_close(e);
+        *out = NULL;
+        return 1;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2 &&
         !(opt->mtp_path && opt->mtp_path[0]) &&
         e->mtp_draft_tokens > MIMO2_DRAFT_LAYERS) {

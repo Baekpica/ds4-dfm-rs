@@ -13,7 +13,10 @@
  * default. */
 
 #define DS4_HOST_MAX_DIMS 8
-#define DS4_HOST_MAX_LAYER 61
+/* Same bound as ds4.c's DS4_MAX_LAYER: the host only ever names a catalogued
+ * shape, and Bonsai (qwen35) is 64 blocks wide.  Unused today; kept honest so
+ * the next reader does not reach for the old DeepSeek bound. */
+#define DS4_HOST_MAX_LAYER 64
 
 static inline void ds4_host_set_err(char *err, size_t errlen, const char *msg)
 {
