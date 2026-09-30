@@ -1446,6 +1446,19 @@ pq2-0-test: tests/test_pq2_0.c
 	$(CC) -O2 -Wall -Wextra -std=c99 -o tests/test_pq2_0 tests/test_pq2_0.c -lm
 	./tests/test_pq2_0
 
+# Bonsai (qwen35) reference checks.  They need the Prism Bonsai GGUF and the
+# CPU host binary (make cpu); no llama.cpp is involved.  DS4_BONSAI_MODEL and
+# DS4_BONSAI_STEPS override the artifact path and the greedy step count.
+DS4_BONSAI_MODEL ?= /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf
+DS4_BONSAI_STEPS ?= 12
+
+.PHONY: bonsai-fold-selftest bonsai-ref-check
+bonsai-fold-selftest:
+	DS4_QWEN35_FOLD_SELFTEST=1 ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cpu --first-token-test -p "x" | grep "fold selftest"
+
+bonsai-ref-check:
+	DS4_QWEN35_STEPS=$(DS4_BONSAI_STEPS) ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cpu --first-token-test -p "The capital of France is" | grep -E "^token|next-token"
+
 # Metadata and full tensor-layout smoke. The structural GGUF is sparse, so
 # this validates all descriptors without materializing an 88 GiB copy.
 tests/test_motif3_loader: tests/test_motif3_loader.c ds4.c ds4.h
