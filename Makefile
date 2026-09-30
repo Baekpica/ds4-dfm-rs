@@ -382,6 +382,13 @@ ds4-bench ds4-bench-perf: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OB
 		$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/ds4-bench-rs" $@
 
+tests/naive_gate: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example naive_gate --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/naive_gate" $@
+
 # Phase 4: C KVC oracle linked against ds4_kvstore.o (no CUDA engine).
 tests/parity/kv_c_oracle: tests/parity/kv_c_oracle.c tests/parity/kv_c_stubs.c ds4_kvstore.o
 	$(CC) $(CFLAGS) -I. -o $@ tests/parity/kv_c_oracle.c tests/parity/kv_c_stubs.c ds4_kvstore.o -lm
@@ -835,6 +842,16 @@ tests/naive_state: tests/naive_state.c ds4.c $(NAIVE_NATIVE_INCS)
 .PHONY: test-naive-state
 test-naive-state: tests/naive_state
 	./tests/naive_state
+
+tests/naive_dense.o: tests/naive_dense.c ds4.c $(NAIVE_NATIVE_INCS)
+	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/naive_dense: tests/naive_dense.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-naive-dense
+test-naive-dense: tests/naive_dense
+	./tests/naive_dense
 
 tests/naive_graph.o: tests/naive_graph.c tests/naive_state_fixture.h ds4.c $(NAIVE_NATIVE_INCS)
 	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. -c -o $@ $<

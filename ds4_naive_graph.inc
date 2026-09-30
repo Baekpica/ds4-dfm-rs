@@ -169,6 +169,19 @@ static bool naive_sparse(ds4_naive_graph *g, const ds4_model *m,
     return true;
 }
 
+static bool naive_dense(ds4_gpu_tensor *out, const ds4_model *m,
+                         const ds4_tensor *w, unsigned in, unsigned width,
+                         const ds4_gpu_tensor *x, ds4_gpu_tensor *ids, unsigned n) {
+    if (!w || w->type != DS4_TENSOR_Q6_K) {
+        return plain_graph_matmul_tensor(out, m, w, in, width, x, n);
+    }
+    /* Q and attention output use Q6_K. An identity route keeps their native
+     * MMQ arithmetic without a full-weight expansion or host fallback. */
+    return ds4_gpu_tensor_fill_f32(ids, 0, n) &&
+        ds4_gpu_routed_matmul_guarded_tensor(out, x, ids, m->map, m->size,
+            w->abs_offset, w->bytes, w->type, in, width, 1, n, 1, n);
+}
+
 static bool naive_layer(ds4_naive_graph *g, const ds4_model *m,
                          const ds4_weights *w, unsigned il, unsigned n) {
     ds4_exaone_batch_ws *b = &g->ws;
@@ -176,7 +189,7 @@ static bool naive_layer(ds4_naive_graph *g, const ds4_model *m,
     const unsigned heads = naive_kv_heads(il);
     const ds4_gpu_tensor *rope = naive_is_dsa(il) ? g->rope_full : g->rope_swa;
     if (!ds4_gpu_naive_rms(b->b_norm, b->b_cur, m->map, m->size, l->attn_norm->abs_offset, n) ||
-        !plain_graph_matmul_tensor(b->b_q, m, l->attn_q, N05_EMBED, N05_HEADS * N05_KEY, b->b_norm, n) ||
+        !naive_dense(b->b_q, m, l->attn_q, N05_EMBED, N05_HEADS * N05_KEY, b->b_norm, b->b_router_selected, n) ||
         !plain_graph_matmul_tensor(b->b_k, m, l->attn_k, N05_EMBED, heads * N05_KEY, b->b_norm, n) ||
         !plain_graph_matmul_tensor(b->b_v, m, l->attn_v, N05_EMBED, heads * N05_VALUE, b->b_norm, n) ||
         !ds4_gpu_naive_rope(b->b_q, rope, N05_HEADS, N05_KEY, n) ||
@@ -186,7 +199,7 @@ static bool naive_layer(ds4_naive_graph *g, const ds4_model *m,
         if (!naive_sparse(g, m, l, il, n)) { return false; }
     } else if (!ds4_gpu_naive_attention(b->b_heads, b->b_q, g->kv[il], g->positions, NULL,
         m->map, m->size, l->attn_sinks->abs_offset, heads, g->kv_cap[il], n, N05_WINDOW)) { return false; }
-    if (!plain_graph_matmul_tensor(b->b_attn_out, m, l->attn_output, N05_HEADS * N05_VALUE, N05_EMBED, b->b_heads, n) ||
+    if (!naive_dense(b->b_attn_out, m, l->attn_output, N05_HEADS * N05_VALUE, N05_EMBED, b->b_heads, b->b_router_selected, n) ||
         !ds4_gpu_naive_add(b->b_cur, b->b_attn_out, (uint64_t)n * N05_EMBED) ||
         !ds4_gpu_naive_rms(b->b_norm, b->b_cur, m->map, m->size, l->ffn_norm->abs_offset, n)) { return false; }
     if (il == 0) {
