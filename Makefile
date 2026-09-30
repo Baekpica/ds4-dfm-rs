@@ -832,13 +832,13 @@ tests/test_qwen35_session: tests/test_qwen35_session.o ds4_cuda_test_hooks.o $(f
 
 .PHONY: test-qwen35-session test-qwen35-session-multichunk
 test-qwen35-session: tests/test_qwen35_session
-	DS4_CUDA_COPY_MODEL=1 DS4_TEST_MODEL="$(DS4_BONSAI_MODEL)" DS4_TEST_BACKEND=cuda DS4_TEST_STEPS=$(DS4_BONSAI_STEPS) ./tests/test_qwen35_session
+	DS4_CUDA_COPY_MODEL=1 DS4_TEST_MODEL="$(DS4_BONSAI_MODEL)" DS4_TEST_BACKEND=cuda DS4_TEST_STEPS="$${DS4_TEST_STEPS:-$(DS4_BONSAI_STEPS)}" ./tests/test_qwen35_session
 	DS4_TEST_MODEL="$(DS4_BONSAI_MODEL)" DS4_TEST_BACKEND=cpu ./tests/test_qwen35_session
 
 # The same scenarios with a two-token chunk, so the prefill crosses many chunk
 # boundaries instead of handing the trunk one wide chunk.
 test-qwen35-session-multichunk: tests/test_qwen35_session
-	DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_PREFILL_CHUNK=2 DS4_TEST_MODEL="$(DS4_BONSAI_MODEL)" DS4_TEST_BACKEND=cuda DS4_TEST_STEPS=$(DS4_BONSAI_STEPS) ./tests/test_qwen35_session
+	DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_PREFILL_CHUNK=2 DS4_TEST_MODEL="$(DS4_BONSAI_MODEL)" DS4_TEST_BACKEND=cuda DS4_TEST_STEPS="$${DS4_TEST_STEPS:-$(DS4_BONSAI_STEPS)}" ./tests/test_qwen35_session
 
 tests/test_mmid_fast.o: tests/test_mmid_fast.cu cuda/mmq/mmid.cuh
 	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<
@@ -1501,7 +1501,7 @@ bonsai-fold-selftest:
 	DS4_QWEN35_FOLD_SELFTEST=1 ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cpu --first-token-test -p "x" | grep "fold selftest"
 
 bonsai-ref-check:
-	DS4_QWEN35_STEPS=$(DS4_BONSAI_STEPS) ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cpu --first-token-test -p "The capital of France is" | grep -E "^token|next-token"
+	DS4_QWEN35_STEPS="$${DS4_QWEN35_STEPS:-$(DS4_BONSAI_STEPS)}" ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cpu --first-token-test -p "The capital of France is" | grep -E "^token|next-token"
 
 # The same greedy check on the CUDA graph.  On this box the whole-map host
 # registration fails (RLIMIT_MEMLOCK is 8 MiB), so the artifact is copied to the
@@ -1511,7 +1511,7 @@ DS4_BONSAI_PARITY_STEPS ?= 8
 
 .PHONY: bonsai-cuda-check bonsai-cuda-parity
 bonsai-cuda-check:
-	DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_STEPS=$(DS4_BONSAI_STEPS) ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cuda --first-token-test -p "The capital of France is" | grep -E "^token|next-token"
+	DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_STEPS="$${DS4_QWEN35_STEPS:-$(DS4_BONSAI_STEPS)}" ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cuda --first-token-test -p "The capital of France is" | grep -E "^token|next-token"
 
 # CPU reference and CUDA graph on the same prompt ids: the two streams must
 # print the same ids.  Slow, the CPU reference is about 3 s per token.
