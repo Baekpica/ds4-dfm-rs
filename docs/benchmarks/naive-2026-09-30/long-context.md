@@ -88,4 +88,29 @@ successful restart begins after verified cleanup.
 Host tests overlap early seed prefill. Its elapsed time is functional
 evidence, not a matched throughput result. This qualifies one buffered
 retrieval fixture, continuation and disk restoration with MTP off.
-1M remains pending.
+
+## 1M, stopped incomplete
+
+The first one-bank boot is stopped by the memory guard before readiness:
+exit 75 at 9.714 GiB available memory and PSI 64.56. Its cause was not
+established. A fresh boot with the same 29/28-GiB cgroup limits and
+6-GiB reserve/trip limits reaches readiness. Sampled cgroup high, max and
+OOM counters remain zero; cgroup accounting does not capture all CUDA UMA
+allocation, so the whole-host guard remains necessary.
+
+The buffered request submits 1047552 input tokens. The user stops the gate
+after 210.9 monitored minutes of prefill, before any answer. Shutdown
+returns empty content, zero output tokens and `finish_reason=error`.
+Reported prompt/cache-write usage does not prove completed native prefill.
+No retrieval, follow or disk-restored request passes at 1M.
+[Receipts](long-1m-evidence.json).
+
+The live quote is 25839203328 bytes per bank, 1837994240 scratch,
+204472320 checkpoint pool and a 4-GiB floor: 32176637184 bytes total.
+The second worker's complete lifetime records minimum available memory
+7.233 GiB and maximum PSI 1.99; bounded host checks overlap early prefill.
+The last live sample records zero governor/census faults and 2190 MHz.
+The worker and guard exit cleanly after the requested stop. Port 8002 is
+empty, only the shared owner remains on the GPU, and available memory
+recovers to 35.493 GiB. This is incomplete functional evidence; the
+qualified limits remain 512K/one bank and 256K/two banks with MTP off.

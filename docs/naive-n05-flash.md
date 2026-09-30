@@ -9,7 +9,8 @@ for its 702-token prompt bound and reference differences.
 The [near-capacity report](benchmarks/naive-2026-09-30/long-context.md)
 records 256K two-bank and 512K one-bank seeds and buffered disk
 continuations, including the preserved 256K streaming-budget failure.
-The 1M gate remains active.
+The user stopped the 1M prefill after 210.9 minutes; no completed 1M
+retrieval or continuation is qualified.
 The Rust host can open one full CUDA model; forced CPU, Metal, distributed,
 steering, vision and embedded-MTP settings fail before native allocation.
 DSpark serial and banked target verification, accepted-prefix commit and

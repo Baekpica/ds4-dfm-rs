@@ -1,0 +1,279 @@
+{
+  "status": "user_stopped_incomplete",
+  "qualified": false,
+  "context": 1048576,
+  "banks": 1,
+  "chunk": 2048,
+  "mtp_mode": "off",
+  "disk_capacity_gib": 64,
+  "persistence_min_tokens": 1024,
+  "artifact_revision": "65b235a48e87acaf7b806b96870378c9c68a654c",
+  "source_revision": "0235b3b5ff27422b1f57cdc2acddfaf643e08356",
+  "binary_sha256": "8225186b745a3ea999c09efe085736b91566ceec8d7b6dd303a237af3aa164ae",
+  "hardware": "DGX Spark GB10",
+  "driver": "615.71.09",
+  "cuda": "13.3",
+  "clock_range_mhz": [
+    300,
+    2200
+  ],
+  "fixture": {
+    "context": 1048576,
+    "input_tokens": 1047552,
+    "expected_answer": "ORCHID-74-COPPER-29",
+    "needle_fraction": 0.17,
+    "needle_token_offset": 178107,
+    "request_sha256": "47b8115d96f2ca1de3c494ac0960a0538b3293f0b444051c8a313baad578e25a",
+    "prompt_ids_sha256": "8bf947c78d7360a1e85aec215232079844cb7d305f3157de7c44e12d7616292c",
+    "template_sha256": "cfe477d7032a1e6f90c06cd8e3b4a25d02cd2e4a911252daa45a024b56084a19",
+    "tokenizer_sha256": "2efef62c60dedec64b55ab8b6e6838ca5cee391c00c62f2c554ba5de3d33e030",
+    "request_bytes": 6372442,
+    "prompt_margin": 1024,
+    "max_output": 512,
+    "output_mode": "buffered"
+  },
+  "initial_failed_boot": {
+    "start": {
+      "time": 1790796271.6962988,
+      "event": "start",
+      "unit": "ds4-hostguard-318310-1790796271689174063.scope",
+      "available_gib": 35.234046936035156,
+      "psi_full_avg10": 0.66,
+      "max_gib": 29.0,
+      "high_gib": 28.0,
+      "reserve_gib": 6.0,
+      "trip_gib": 6.0,
+      "command": [
+        "python3",
+        "-c",
+        "import os,pathlib,sys; pathlib.Path(sys.argv[1]).write_text(str(os.getpid())+\"\\n\"); os.execv(sys.argv[2],sys.argv[2:])",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-naive-flash/scratch/naive/long-1m-buffered.pid",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-naive-flash/ds4-server",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/Naive-N0.5-Flash-Mixed-Quant-GGUF/Naive-N0.5-Flash-MQ87-00001-of-00004.gguf",
+        "--model-id",
+        "naive-n05-flash",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8002",
+        "-c",
+        "1048576",
+        "--max-seqs",
+        "1",
+        "--native-chunk",
+        "2048",
+        "--prefill-chunk",
+        "2048",
+        "--prefill-chunk-live",
+        "2048",
+        "--prefix-reuse",
+        "partial",
+        "--mtp-mode",
+        "off",
+        "--print-plan",
+        "--kv-disk-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-naive-flash/scratch/naive/disk-long-1m-buffered",
+        "--kv-disk-space",
+        "64G",
+        "--kv-cache-min-tokens",
+        "1024"
+      ]
+    },
+    "samples": 18,
+    "min_available_gib": 11.80264663696289,
+    "max_psi_full_avg10": 60.7,
+    "stop_events": [
+      {
+        "time": 1790796290.8424978,
+        "event": "terminate",
+        "unit": "ds4-hostguard-318310-1790796271689174063.scope",
+        "reason": "sustained host memory stalls near reserve",
+        "available_gib": 9.71432876586914,
+        "psi_full_avg10": 64.56
+      },
+      {
+        "time": 1790796291.9278677,
+        "event": "exit",
+        "unit": "ds4-hostguard-318310-1790796271689174063.scope",
+        "status": 75,
+        "payload_status": -15
+      }
+    ]
+  },
+  "diagnostic_worker": {
+    "start": {
+      "time": 1790796606.883664,
+      "event": "start",
+      "unit": "ds4-hostguard-319068-1790796606874376501.scope",
+      "available_gib": 35.85855484008789,
+      "psi_full_avg10": 0.0,
+      "max_gib": 29.0,
+      "high_gib": 28.0,
+      "reserve_gib": 6.0,
+      "trip_gib": 6.0,
+      "command": [
+        "python3",
+        "-c",
+        "import os,pathlib,sys; pathlib.Path(sys.argv[1]).write_text(str(os.getpid())+\"\\n\"); os.execv(sys.argv[2],sys.argv[2:])",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-naive-flash/scratch/naive/long-1m-diagnostic.pid",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-naive-flash/ds4-server",
+        "--cuda",
+        "-m",
+        "/home/sunghoon/workspace/ds4-exaone/models/Naive-N0.5-Flash-Mixed-Quant-GGUF/Naive-N0.5-Flash-MQ87-00001-of-00004.gguf",
+        "--model-id",
+        "naive-n05-flash",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8002",
+        "-c",
+        "1048576",
+        "--max-seqs",
+        "1",
+        "--native-chunk",
+        "2048",
+        "--prefill-chunk",
+        "2048",
+        "--prefill-chunk-live",
+        "2048",
+        "--prefix-reuse",
+        "partial",
+        "--mtp-mode",
+        "off",
+        "--print-plan",
+        "--kv-disk-dir",
+        "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-naive-flash/scratch/naive/disk-long-1m-diagnostic",
+        "--kv-disk-space",
+        "64G",
+        "--kv-cache-min-tokens",
+        "1024"
+      ]
+    },
+    "samples": 12610,
+    "min_available_gib": 7.233333587646484,
+    "max_psi_full_avg10": 1.99,
+    "stop_events": [
+      {
+        "time": 1790809336.0020554,
+        "event": "exit",
+        "unit": "ds4-hostguard-319068-1790796606874376501.scope",
+        "status": 0,
+        "payload_status": 0
+      }
+    ]
+  },
+  "last_live_monitor": {
+    "utc": "2026-09-30T23:01:38.899411+00:00",
+    "elapsed_minutes": 210.9,
+    "worker_alive": true,
+    "seed_result_exists": false,
+    "min_available_gib": 7.233,
+    "latest_guard": {
+      "time": 1790809298.3754342,
+      "event": "sample",
+      "unit": "ds4-hostguard-319068-1790796606874376501.scope",
+      "available_gib": 7.7230377197265625,
+      "psi_full_avg10": 0.0
+    },
+    "max_psi": 1.99,
+    "stop_events": [],
+    "governor_faults": 0,
+    "census_faults": 0,
+    "queue_depth": 5,
+    "inflight_body_bytes": 6516726,
+    "gpu": "2190, 75, 71.71"
+  },
+  "quote": {
+    "shared_weights": 0,
+    "per_bank": 25839203328,
+    "mtp_state": 0,
+    "scratch": 1837994240,
+    "checkpoint_pool": 204472320,
+    "ple": 0,
+    "media_reserve": 0,
+    "floor": 4294967296,
+    "available": 37430965504,
+    "banks": 1,
+    "total": 32176637184
+  },
+  "boot_memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+  "boot_cgroup_current_bytes": 4302860288,
+  "raw_response_after_shutdown": {
+    "id": "chatcmpl-1",
+    "object": "chat.completion",
+    "created": 1790796651,
+    "model": "naive-n05-flash",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": ""
+        },
+        "finish_reason": "error"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 1047552,
+      "completion_tokens": 0,
+      "total_tokens": 1047552,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 1047552
+      }
+    }
+  },
+  "cleanup": {
+    "utc": "2026-09-30T23:03:31.501588+00:00",
+    "worker_alive": false,
+    "guard_alive": false,
+    "client_alive": false,
+    "owner_alive": true,
+    "listener": "State Recv-Q Send-Q Local Address:Port Peer Address:PortProcess",
+    "meminfo": {
+      "MemTotal": 130596163584,
+      "MemAvailable": 38110347264
+    },
+    "psi": "some avg10=0.00 avg60=0.00 avg300=0.00 total=54707112\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=54600584",
+    "nvtop": [
+      {
+        "device_name": "NVIDIA GB10",
+        "gpu_clock": "2190MHz",
+        "mem_clock": null,
+        "temp": "55C",
+        "fan_speed": null,
+        "power_draw": "10W",
+        "gpu_util": "0%",
+        "encode": "0%",
+        "decode": "0%",
+        "mem_util": null,
+        "mem_total": "130596163584",
+        "mem_used": "87964434432",
+        "mem_free": "42631729152",
+        "processes": [
+          {
+            "pid": "163686",
+            "cmdline": "./ds4_weight_server --base /home/sunghoon/workspace/ds4-exaone/models/Naive-N0.5-Flash-Mixed-Quant-GGUF/Naive-N0.5-Flash-MQ87-00001-of-00004.gguf --drafter /home/sunghoon/workspace/ds4-exaone/models/Naive-N0.5-Flash-Mixed-Quant-GGUF/draft/Naive-N0.5-Flash-DSpark-Draft-Q8_0.gguf --backend vmm --scope base --reserve-gb 28 --no-repack-q8-aligned --manifest scratch/naive/weights.ipc",
+            "kind": "compute",
+            "user": "sunghoon",
+            "gpu_usage": null,
+            "gpu_mem_bytes_alloc": "87964434432",
+            "gpu_mem_usage": "67%",
+            "encode": null,
+            "decode": null
+          }
+        ]
+      }
+    ]
+  },
+  "limits": [
+    "User stopped the active prefill after 210.9 monitored minutes; no completed retrieval, follow or disk-restored gate.",
+    "Shutdown returned finish_reason=error with empty content and zero output tokens; prompt/cache-write usage is not a proof of completed native prefill.",
+    "First boot guard exit 75 occurred before readiness; root cause was not established.",
+    "Same limits on the second boot reached readiness without sampled cgroup high/max/OOM events.",
+    "Cgroup accounting undercounts CUDA UMA allocation; retain whole-host memory guard.",
+    "Bounded Rust checks overlapped early prefill; this is not a paired performance measurement."
+  ]
+}
