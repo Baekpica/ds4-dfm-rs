@@ -937,6 +937,19 @@ int ds4_gpu_qwen35_fold_inverse_tensor(
         uint32_t              block_size,
         const ds4_gpu_tensor *signs);
 
+/* bf16 weight against a float activation, f32 accumulation: the decode form
+ * the two gated-delta-net scalars need (the tree's bf16 matmul rounds the
+ * activation to bf16, which this family's checkpoint does not store). */
+int ds4_gpu_qwen35_matvec_bf16_tensor(
+        ds4_gpu_tensor       *out,
+        const ds4_gpu_tensor *x,
+        const void           *model_map,
+        uint64_t              model_size,
+        uint64_t              weight_offset,
+        uint32_t              in_dim,
+        uint32_t              out_dim,
+        uint32_t              n_tokens);
+
 /* Gated output norm of the linear (gdn) layer, silu-gated as this family
  * applies it; z holds n_tok rows of H*D and the gamma is lin_norm (D floats). */
 int ds4_gpu_qwen35_gdn_out_tensor(

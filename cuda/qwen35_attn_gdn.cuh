@@ -431,6 +431,26 @@ __global__ void gdn_out(float *o, const float *z, const float *w, unsigned H, un
 
 } // namespace qwen35_attn
 
+/* bf16 weights against a float activation: one warp per output row, f32
+ * accumulation.  The tree's ds4_gpu_matmul_bf16_tensor rounds the activation
+ * to bf16 first, which is the contract of the Motif checkpoints that store
+ * bf16 activations; the Bonsai artifact keeps only the two gated-delta-net
+ * scalars in bf16, and their output gates the recurrence, so this family needs
+ * the float-activation form the sibling tree's matvec_dispatch uses. */
+__global__ void matvec_bf16(float *out, const __nv_bfloat16 *w, const float *x,
+                            unsigned K, unsigned M, unsigned T) {
+    const unsigned row = blockIdx.x * 4 + threadIdx.x / 32, lane = threadIdx.x & 31;
+    if (row >= M) return;
+    const __nv_bfloat16 *wr = w + (uint64_t)row * K;
+    for (unsigned t = 0; t < T; t++) {
+        const float *xt = x + (uint64_t)t * K;
+        float acc = 0;
+        for (unsigned i = lane; i < K; i += 32) acc += __bfloat162float(wr[i]) * xt[i];
+        acc = qwen35_attn::sum(acc);
+        if (!lane) out[(uint64_t)t * M + row] = acc;
+    }
+}
+
 /* ---------------------------------------------------------------------------
  * Host entries.  tensor/weight/launched mirror the sibling's file-scope
  * helpers; the resolver and the stream come from ds4_cuda.cu. */
@@ -624,4 +644,19 @@ extern "C" int ds4_gpu_qwen35_attn_prep_tensor(
         /*giq=*/NULL, H, Hkv, D, /*Hi=*/0, /*Di=*/0, pos0, eps,
         rope(nrot, base));
     return qwen35_attn_launched("Bonsai attn prep");
+}
+
+extern "C" int ds4_gpu_qwen35_matvec_bf16_tensor(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *map, uint64_t size, uint64_t off,
+        uint32_t K, uint32_t M, uint32_t T) {
+    if (!K || !M || !T || !qwen35_attn_tensor(out, (uint64_t)M * T * 4) ||
+        !qwen35_attn_tensor(x, (uint64_t)K * T * 4)) {
+        return 0;
+    }
+    const char *w = qwen35_attn_weight(map, size, off, (uint64_t)K * M * 2);
+    if (!w) return 0;
+    matvec_bf16<<<dim3((M + 3) / 4), 128, 0, cuda_decode_stream()>>>(
+        (float *)out->ptr, (const __nv_bfloat16 *)w, (const float *)x->ptr, K, M, T);
+    return qwen35_attn_launched("Bonsai bf16 matvec");
 }

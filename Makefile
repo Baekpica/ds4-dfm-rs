@@ -1483,6 +1483,24 @@ bonsai-fold-selftest:
 bonsai-ref-check:
 	DS4_QWEN35_STEPS=$(DS4_BONSAI_STEPS) ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cpu --first-token-test -p "The capital of France is" | grep -E "^token|next-token"
 
+# The same greedy check on the CUDA graph.  On this box the whole-map host
+# registration fails (RLIMIT_MEMLOCK is 8 MiB), so the artifact is copied to the
+# device instead: DS4_CUDA_COPY_MODEL=1.  Needs the CUDA build of ds4-c.
+DS4_BONSAI_PARITY_TOKENS ?= 760,6511,314,9338,369
+DS4_BONSAI_PARITY_STEPS ?= 8
+
+.PHONY: bonsai-cuda-check bonsai-cuda-parity
+bonsai-cuda-check:
+	DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_STEPS=$(DS4_BONSAI_STEPS) ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cuda --first-token-test -p "The capital of France is" | grep -E "^token|next-token"
+
+# CPU reference and CUDA graph on the same prompt ids: the two streams must
+# print the same ids.  Slow, the CPU reference is about 3 s per token.
+bonsai-cuda-parity:
+	@mkdir -p misc/scratch
+	DS4_QWEN35_TOKENS=$(DS4_BONSAI_PARITY_TOKENS) DS4_QWEN35_STEPS=$(DS4_BONSAI_PARITY_STEPS) ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cpu --first-token-test -p x 2>/dev/null | grep -E "^token " > misc/scratch/bonsai-cpu.tokens
+	DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_TOKENS=$(DS4_BONSAI_PARITY_TOKENS) DS4_QWEN35_STEPS=$(DS4_BONSAI_PARITY_STEPS) ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cuda --first-token-test -p x 2>/dev/null | grep -E "^token " > misc/scratch/bonsai-cuda.tokens
+	@diff misc/scratch/bonsai-cpu.tokens misc/scratch/bonsai-cuda.tokens && echo "bonsai cuda parity: PASS"
+
 # Metadata and full tensor-layout smoke. The structural GGUF is sparse, so
 # this validates all descriptors without materializing an 88 GiB copy.
 tests/test_motif3_loader: tests/test_motif3_loader.c ds4.c ds4.h
