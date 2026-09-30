@@ -97,7 +97,7 @@ endif
         test-qwen4exp-verify \
         test-qwen-vision-attention test-qwen-vision-model test-qwen-vision-norm \
         test-mmid-fast \
-        test-mmq-parity test-model-family-kernels test-inkling-kernels test-inkling-moe \
+        test-mmq-parity test-qwen35-cuda test-model-family-kernels test-inkling-kernels test-inkling-moe \
         test-inkling-attn-prep test-inkling-attention test-inkling-norm test-inkling-linear test-inkling-batch test-inkling-q8-batch test-inkling-media \
         test-solar-loader test-solar-kda test-solar-kda-prefill \
         test-solar-kda-chunk \
@@ -806,6 +806,19 @@ tests/test_mmq_parity: cuda/mmq/test/test_mmq_parity.o $(DS4_CUDA_CORE_OBJS)
 
 test-mmq-parity: tests/test_mmq_parity
 	./tests/test_mmq_parity
+
+# Prism Bonsai (qwen35) PQ2_0 and fold parity on CUDA.  The oracle is ds4.c's
+# own reference code, reached through the DS4_TEST_HOOKS entry points, so the
+# test links ds4.c built with that switch instead of the normal object.
+ds4_cuda_test_hooks.o: ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_TEST_HOOKS -I$(CUDA_HOME)/include -c -o $@ ds4.c
+
+tests/test_qwen35_cuda: tests/test_qwen35_cuda.cu ds4_cuda_test_hooks.o $(filter-out ds4.o,$(DS4_CUDA_CORE_OBJS))
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -DDS4_TEST_HOOKS -I. $(MMQ_INCLUDES) -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-qwen35-cuda
+test-qwen35-cuda: tests/test_qwen35_cuda
+	./tests/test_qwen35_cuda
 
 tests/test_mmid_fast.o: tests/test_mmid_fast.cu cuda/mmq/mmid.cuh
 	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<

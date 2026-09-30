@@ -76481,3 +76481,72 @@ bool ds4_session_dots3_mtp(ds4_session *s) {
 int ds4_session_prefill_cap(ds4_session *s) {
     return s ? (int)s->prefill_cap : 0;
 }
+
+#ifdef DS4_TEST_HOOKS
+/* Prism PQ2_0 reference entry points for the CUDA parity test
+ * (tests/test_qwen35_cuda.cu).  Both run exactly the reference code the CPU
+ * path runs -- pq2_0_row_f32 and the double-precision row dot -- so the test
+ * measures CUDA against this file, not against a transcription of it. */
+int ds4_test_pq2_0_ref_row(const void *blocks, uint64_t row, uint64_t in_dim,
+                           float *out) {
+    if (!blocks || !out || in_dim == 0 || in_dim % 128u != 0u) return 1;
+    pq2_0_row_f32((const uint8_t *)blocks + row * (in_dim / 128u) * 34u,
+                  in_dim, out);
+    return 0;
+}
+
+int ds4_test_pq2_0_ref_matvec(const void *blocks, uint64_t out_dim,
+                              uint64_t in_dim, const float *x, float *out) {
+    if (!blocks || !x || !out || out_dim == 0 ||
+        in_dim == 0 || in_dim % 128u != 0u) {
+        return 1;
+    }
+    float *row = xmalloc((size_t)in_dim * sizeof(float));
+    for (uint64_t r = 0; r < out_dim; r++) {
+        pq2_0_row_f32((const uint8_t *)blocks + r * (in_dim / 128u) * 34u,
+                      in_dim, row);
+        out[r] = ref_row_dot(row, x, in_dim);
+    }
+    free(row);
+    return 0;
+}
+
+/* Reference entry point for the folded activation transform, so the CUDA
+ * parity test drives ds4_hadamard_* itself.  op selects the operation the
+ * caller wants measured: 0 rotate, 1 forward, 2 inverse, 3 gdn reorder then
+ * forward (the ssm_out input).  block_size temporarily sets the transform's
+ * block, which the loader would otherwise take from the GGUF. */
+int ds4_test_hadamard_fold(int op, uint32_t block_size, float *x, uint32_t n,
+                           const float *signs, uint32_t hd, uint32_t nk,
+                           uint32_t rep, float *scratch) {
+    if (!x || n == 0 || block_size == 0) return 1;
+    const uint32_t saved = g_hadamard.block_size;
+    g_hadamard.block_size = block_size;
+    int rc = 0;
+    switch (op) {
+    case 0:
+        ds4_hadamard_rotate(x, n);
+        break;
+    case 1:
+        ds4_hadamard_forward(x, n, signs);
+        break;
+    case 2:
+        ds4_hadamard_inverse(x, n, signs);
+        break;
+    case 3:
+        if (hd == 0 || nk == 0 || rep == 0 ||
+            (uint64_t)hd * nk * rep != n || !scratch) {
+            rc = 1;
+            break;
+        }
+        ds4_hadamard_gdn_permute(x, hd, nk, rep, scratch);
+        ds4_hadamard_forward(x, n, signs);
+        break;
+    default:
+        rc = 1;
+        break;
+    }
+    g_hadamard.block_size = saved;
+    return rc;
+}
+#endif /* DS4_TEST_HOOKS */
