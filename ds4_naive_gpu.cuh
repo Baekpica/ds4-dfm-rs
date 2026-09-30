@@ -7,6 +7,11 @@ static bool naive_buf(const ds4_gpu_tensor *t, uint64_t bytes) {
     return t && t->ptr && t->bytes >= bytes;
 }
 
+static NaiveIndexLayout naive_index_layout() {
+    const char *pack = getenv("DS4_NAIVE_INDEX_PACK");
+    return pack && !strcmp(pack, "0") ? NaiveIndexLayout::Planar : NaiveIndexLayout::Warp;
+}
+
 static const float *naive_control(const void *map, uint64_t size, uint64_t offset, uint32_t count) {
     const uint64_t bytes = (uint64_t)count * sizeof(float);
     if (!map || offset > size || bytes > size - offset) { return nullptr; }
@@ -72,7 +77,13 @@ extern "C" int ds4_gpu_naive_index_store(ds4_gpu_tensor *codes, ds4_gpu_tensor *
         !naive_buf(query, (uint64_t)rows * N05_INDEX_HEADS * N05_INDEX_DIM * sizeof(float)) ||
         !naive_buf(key, (uint64_t)rows * N05_INDEX_DIM * sizeof(float)) ||
         !naive_buf(positions, (uint64_t)rows * sizeof(unsigned))) { return 0; }
-    naive_fp8_query<<<rows * N05_INDEX_HEADS, N05_INDEX_DIM, 0, ds4_current_stream()>>>((float *)query->ptr, rows * N05_INDEX_HEADS);
+    if (naive_index_layout() == NaiveIndexLayout::Warp) {
+        naive_fp8_query<NaiveIndexLayout::Warp><<<rows * N05_INDEX_HEADS, N05_INDEX_DIM, 0, ds4_current_stream()>>>(
+            (float *)query->ptr, rows * N05_INDEX_HEADS);
+    } else {
+        naive_fp8_query<<<rows * N05_INDEX_HEADS, N05_INDEX_DIM, 0, ds4_current_stream()>>>(
+            (float *)query->ptr, rows * N05_INDEX_HEADS);
+    }
     if (!cuda_ok(cudaGetLastError(), "Naive query E4M3")) { return 0; }
     naive_fp8_pack<<<rows, N05_INDEX_DIM, 0, ds4_current_stream()>>>(
         (uint8_t *)codes->ptr, (float *)scales->ptr, (const float *)key->ptr, (const unsigned *)positions->ptr, rows);
@@ -96,9 +107,15 @@ extern "C" int ds4_gpu_naive_select(ds4_gpu_tensor *ids, ds4_gpu_tensor *scores,
             !naive_buf(codes, (uint64_t)history * N05_INDEX_DIM) ||
             !naive_buf(scales, (uint64_t)history * sizeof(float)) ||
             !naive_buf(weights, (uint64_t)rows * N05_INDEX_HEADS * sizeof(float))) { return 0; }
-        naive_index_scores<<<dim3((history + 3) / 4, rows), 128, 0, ds4_current_stream()>>>(
-            (float *)scores->ptr, (const float *)query->ptr, (const uint8_t *)codes->ptr,
-            (const float *)scales->ptr, (const float *)weights->ptr, (const unsigned *)positions->ptr, history);
+        if (naive_index_layout() == NaiveIndexLayout::Warp) {
+            naive_index_scores<NaiveIndexLayout::Warp><<<dim3((history + 3) / 4, rows), 128, 0, ds4_current_stream()>>>(
+                (float *)scores->ptr, (const float *)query->ptr, (const uint8_t *)codes->ptr,
+                (const float *)scales->ptr, (const float *)weights->ptr, (const unsigned *)positions->ptr, history);
+        } else {
+            naive_index_scores<<<dim3((history + 3) / 4, rows), 128, 0, ds4_current_stream()>>>(
+                (float *)scores->ptr, (const float *)query->ptr, (const uint8_t *)codes->ptr,
+                (const float *)scales->ptr, (const float *)weights->ptr, (const unsigned *)positions->ptr, history);
+        }
         if (!cuda_ok(cudaGetLastError(), "Naive signed index scores")) { return 0; }
     }
     return cuda_ok(naive_topk_launch((unsigned *)ids->ptr, scores ? (const float *)scores->ptr : nullptr,

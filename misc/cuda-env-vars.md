@@ -32,6 +32,13 @@ Down. Its default emits identical D4 Q8 bytes directly for IQ2_XS Down,
 product keep Naive's BF16 boundaries. Decode/verification and the Down
 worklist tile stay unchanged; the fallback workspace remains allocated.
 
+`DS4_NAIVE_INDEX_PACK=0` restores planar F32 index queries. Its default
+packs four original dimensions per lane during the existing E4M3 round-trip,
+then loads them as one vector. Reconstructed keys, four FMA steps, XOR dot
+tree, signed head sum and stable top-k stay byte-exact. KV layout and total
+allocation stay unchanged; query-producer stores become less coalesced.
+This is a Naive-specific indexer layout, not a generic FP8 GEMM switch.
+
 ## Qwen embedded MTP
 
 The Q8 draft head scores low BPE IDs, non-normal token types and observed

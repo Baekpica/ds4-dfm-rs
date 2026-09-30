@@ -1,6 +1,6 @@
 # Naive GB10 optimization rounds
 
-Retained rounds from the September 30 request: prefill **3/3**, decode **3/3**.
+Retained rounds from the September 30 request: prefill **4/3**, decode **3/3**.
 Rejected probes do not count. Integration and long-context serving remain
 separate gates; see [the family contract](../../naive-n05-flash.md).
 The [upstream GB10 recipe review](upstream-review.md) covers potential Naive,
@@ -238,3 +238,10 @@ consistent with the unprofiled noise envelope. Raw evidence:
 `round-p3-state.log`, `round-p3-producer-{parity,memcheck,warm}.log`,
 `round-p3-producer-{base,fused}.ncu-rep`, and `round-p3-telemetry.jsonl`.
 Retained baseline: `8a6e682e`.
+
+## P4: pack indexer queries
+
+The [F32 query packing report](index-pack.md) records fresh 8K and 32K
+comparisons, byte-exact state proofs, producer costs and the unchanged
+32K automatic `Inconclusive` verdict. Its repeatable prefill gain is
+retained; decode stays within the measured noise envelope.

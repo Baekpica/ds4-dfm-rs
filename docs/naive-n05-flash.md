@@ -14,9 +14,11 @@ qualification; explicit speculation still needs performance work.
 
 All four downloaded shards and their provenance/manifest pass SHA-256 checks.
 
-Three retained prefill and three decode rounds pass fresh, byte-exact 8K
-gates. The latest pair improves prefill 491.48→498.13 tok/s; ordinary
-decode stays within noise at 17.43 tok/s. See the [GB10 rounds](benchmarks/naive-2026-09-30/README.md)
+Four retained prefill and three decode rounds have fresh byte-exact proofs.
+The latest 8K pair improves prefill 498.07→506.16 tok/s; ordinary
+decode stays within noise at 17.44 tok/s. A 32K pair improves prefill
+407.86→431.27 tok/s; its automatic first-decode timing screen remains
+inconclusive. See the [GB10 rounds](benchmarks/naive-2026-09-30/README.md)
 for the exact workload, controls and limits; this does not qualify DSpark
 acceleration or long-context serving.
 

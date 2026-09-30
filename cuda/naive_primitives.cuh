@@ -8,8 +8,11 @@
 static constexpr float N05_EPS = 1e-5f;
 static constexpr float N05_V_SCALE = .707f;
 static constexpr float N05_QK_SCALE = 0.07216878364870322f; // 1/sqrt(192)
+static constexpr unsigned N05_INDEX_WARP = 32;
+static constexpr unsigned N05_INDEX_PARTS = N05_INDEX_DIM / N05_INDEX_WARP;
 
 enum class NaiveCache { Ring, Full };
+enum class NaiveIndexLayout { Planar, Warp };
 
 template<NaiveCache CACHE> __device__ static unsigned naive_cache_slot(unsigned key, unsigned capacity) {
     // DSA's bounded frontier keeps every causal ID inside its full history.
@@ -249,6 +252,7 @@ __global__ static void naive_fp8_pack(
 }
 
 /* Query round-trip stays F32 for score GEMMs; history keeps codes/scales. */
+template<NaiveIndexLayout LAYOUT = NaiveIndexLayout::Planar>
 __global__ static void naive_fp8_query(float *x, unsigned rows) {
     const unsigned row = blockIdx.x, dim = threadIdx.x;
     if (row >= rows || dim >= N05_INDEX_DIM) { return; }
@@ -264,12 +268,17 @@ __global__ static void naive_fp8_query(float *x, unsigned rows) {
     const float scale = __fdiv_rn(fmaxf(magnitude[0], 1e-4f), 448.0f);
     const uint8_t code = __nv_cvt_float_to_fp8(
         fminf(448.0f, fmaxf(-448.0f, __fdiv_rn(value, scale))), __NV_SATFINITE, __NV_E4M3);
-    x[at] = __fmul_rn(naive_e4m3(code), scale);
+    // Four values per lane permit one vector read with the same FMA order.
+    const unsigned out = LAYOUT == NaiveIndexLayout::Warp
+        ? (dim % N05_INDEX_WARP) * N05_INDEX_PARTS + dim / N05_INDEX_WARP : dim;
+    x[(uint64_t)row * N05_INDEX_DIM + out] = __fmul_rn(naive_e4m3(code), scale);
 }
 
 /* Signed head projections weight ReLU(dot), not a head softmax. The scalar
  * baseline bounds scratch to queries*history and reconstructs each key once
- * per head dot. Detailed profiling may choose another execution path. */
+ * across all head dots. Warp packing changes loads, not reconstructed
+ * values, the four-FMA/XOR tree, or the serial signed head sum. */
+template<NaiveIndexLayout LAYOUT = NaiveIndexLayout::Planar>
 __global__ static void naive_index_scores(
         float *scores, const float *q, const uint8_t *codes, const float *scales,
         const float *weights, const unsigned *positions, unsigned history) {
@@ -289,8 +298,17 @@ __global__ static void naive_index_scores(
     float score = 0;
     for (unsigned h = 0; h < N05_INDEX_HEADS; h++) {
         float dot = 0;
-        for (unsigned d = 0; d < N05_INDEX_DIM / WARP; d++) {
-            dot = __fmaf_rn(q[((uint64_t)row * N05_INDEX_HEADS + h) * N05_INDEX_DIM + lane + d * WARP], k[d], dot);
+        const float *head = q + ((uint64_t)row * N05_INDEX_HEADS + h) * N05_INDEX_DIM;
+        if constexpr (LAYOUT == NaiveIndexLayout::Warp) {
+            const float4 query = ((const float4 *)head)[lane];
+            dot = __fmaf_rn(query.x, k[0], dot);
+            dot = __fmaf_rn(query.y, k[1], dot);
+            dot = __fmaf_rn(query.z, k[2], dot);
+            dot = __fmaf_rn(query.w, k[3], dot);
+        } else {
+            for (unsigned d = 0; d < N05_INDEX_DIM / WARP; d++) {
+                dot = __fmaf_rn(head[lane + d * WARP], k[d], dot);
+            }
         }
         for (unsigned step = WARP / 2; step; step /= 2) { dot += __shfl_xor_sync(0xffffffff, dot, step); }
         score = __fadd_rn(score, __fmul_rn(fmaxf(0, dot), weights[(uint64_t)row * N05_INDEX_HEADS + h]));

@@ -19,6 +19,12 @@ static void diff(const char *name, const float *a, const float *b, size_t n) {
 enum { MOE_NORM, MOE_GATE, MOE_UP, MOE_DOWN, MOE_STAGES };
 enum { MOE_TRACE_WIDTH = N05_USED * N05_EMBED };
 
+static void index_path(unsigned session) {
+    if (!getenv("DS4_NAIVE_TEST_INDEX_PACK")) { return; }
+    // Compare the scalar query layout against packing in the same owner.
+    assert(!setenv("DS4_NAIVE_INDEX_PACK", session ? "1" : "0", 1));
+}
+
 static void trace_rows(ds4_session *s, const int *tokens, unsigned n, float *trace, float *moe) {
     ds4_naive_graph *g = &s->naive_graph;
     ds4_engine *e = s->engine;
@@ -112,6 +118,7 @@ int main(int argc, char **argv) {
     float *moe[3];
     char err[256];
     for (unsigned i = 0; i < 3; i++) {
+        index_path(i);
         assert(!ds4_session_create(&s[i], e, input.len + 16));
         assert(!ds4_session_sync(s[i], &input, err, sizeof(err)));
         hidden[i] = xmalloc(N05_LAYERS * N05_EMBED * sizeof(float));
@@ -124,7 +131,9 @@ int main(int argc, char **argv) {
         anchor, 0, N05_DF_BLOCK, trial));
     memcpy(altered, trial, sizeof(trial));
     for (unsigned i = 1; i < N05_DF_BLOCK; i++) { altered[i] = (trial[i] + 7919 * i) % N05_VOCAB; }
+    index_path(0);
     trace_rows(s[0], trial, 1, hidden[0], moe[0]);
+    index_path(1);
     trace_rows(s[1], trial, N05_DF_BLOCK, hidden[1], moe[1]);
     trace_rows(s[2], altered, N05_DF_BLOCK, hidden[2], moe[2]);
     const char *names[] = {"first MoE input", "first MoE gate", "first MoE up", "first MoE down"};

@@ -95,6 +95,18 @@ static void fp8(cudaStream_t stream) {
     CUDA(cudaMemcpy(query.data(), dx, query.size() * sizeof(float), cudaMemcpyDeviceToHost));
     for (unsigned i = 0; i < query.size(); i++) { CHECK(query[i] == decode(got[i]) * scales[i / N05_INDEX_DIM]); }
 
+    CUDA(cudaMemcpy(dx, x.data(), x.size() * sizeof(float), cudaMemcpyHostToDevice));
+    naive_fp8_query<NaiveIndexLayout::Warp><<<6, N05_INDEX_DIM, 0, stream>>>(dx, 6);
+    CUDA(cudaStreamSynchronize(stream));
+    std::vector<float> packed(query.size());
+    CUDA(cudaMemcpy(packed.data(), dx, packed.size() * sizeof(float), cudaMemcpyDeviceToHost));
+    for (unsigned r = 0; r < 6; r++) {
+        for (unsigned d = 0; d < N05_INDEX_DIM; d++) {
+            const unsigned at = (d % N05_INDEX_WARP) * N05_INDEX_PARTS + d / N05_INDEX_WARP;
+            CHECK(packed[r * N05_INDEX_DIM + at] == query[r * N05_INDEX_DIM + d]);
+        }
+    }
+
     // Replay changes positions without changing the queued kernel arguments.
     CUDA(cudaMemcpy(dx, x.data(), x.size() * sizeof(float), cudaMemcpyHostToDevice));
     cudaGraph_t graph;
@@ -133,6 +145,19 @@ static void scores(cudaStream_t stream) {
     CUDA(cudaStreamSynchronize(stream));
     std::vector<float> got(ROWS * HISTORY);
     CUDA(cudaMemcpy(got.data(), out, got.size() * sizeof(float), cudaMemcpyDeviceToHost));
+    std::vector<float> packed(q.size());
+    for (unsigned h = 0; h < ROWS * N05_INDEX_HEADS; h++) {
+        for (unsigned d = 0; d < N05_INDEX_DIM; d++) {
+            const unsigned at = (d % N05_INDEX_WARP) * N05_INDEX_PARTS + d / N05_INDEX_WARP;
+            packed[h * N05_INDEX_DIM + at] = q[h * N05_INDEX_DIM + d];
+        }
+    }
+    CUDA(cudaMemcpy(dq, packed.data(), packed.size() * sizeof(float), cudaMemcpyHostToDevice));
+    naive_index_scores<NaiveIndexLayout::Warp><<<dim3((HISTORY + 3) / 4, ROWS), 128, 0, stream>>>(out, dq, dc, ds, dw, dp, HISTORY);
+    CUDA(cudaStreamSynchronize(stream));
+    std::vector<float> packed_scores(got.size());
+    CUDA(cudaMemcpy(packed_scores.data(), out, got.size() * sizeof(float), cudaMemcpyDeviceToHost));
+    CHECK(!memcmp(got.data(), packed_scores.data(), got.size() * sizeof(float)));
     for (unsigned r = 0; r < ROWS; r++) {
         for (unsigned k = 0; k < HISTORY; k++) {
             if (k > positions[r]) { CHECK(got[r * HISTORY + k] == -INFINITY); continue; }
