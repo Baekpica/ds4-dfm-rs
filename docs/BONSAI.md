@@ -34,7 +34,10 @@ The CUDA build is the one this recipe uses; `run-bonsai.sh` never rebuilds
 anything, it only reports what is present.
 
 The diagnostic generator `--first-token-test` is the reproducible oracle path:
-greedy, with `-p "<prompt>"`.
+greedy, with `-p "<prompt>"`. The Rust host is the default binary
+(`make ds4` produces `./ds4`; the C hosts keep the `-c` suffix and this recipe's
+runbooks use them), and `make test-qwen35-rust-host` pins the two hosts to the
+same ids.
 `DS4_QWEN35_STEPS=<n>` sets the greedy step count (default 16) and
 `DS4_QWEN35_TOKENS=<comma ids>` replaces the prompt with raw token ids, which
 is how the reproducible parity gate is run. `DS4_QWEN35_LOGITS=<file>` dumps
@@ -234,6 +237,7 @@ Runbooks in this tree (all read `DS4_BONSAI_MODEL`):
 | `make test-qwen35-cuda` | the CUDA kernels against the in-process CPU reference, no model file needed |
 | `make test-qwen35-session` | the session path on both backends (plain, prefix reuse, rewind, invalidate, context bound), diffed against the in-process CPU reference |
 | `make test-qwen35-session-multichunk` | the same scenarios with `DS4_QWEN35_PREFILL_CHUNK=2`, so the prefill crosses many chunk boundaries |
+| `make test-qwen35-rust-host` | the Rust host (`./ds4`, the default binary) against the C host's pinned ids on both backends; this is what catches a host-shaped load that misses the family's GGUF-borne rope and fold configuration |
 | `make test-qwen35-rows` | every tensor of the artifact through this tree's row reader |
 | `make pq2-0-test` | the PQ2_0 block format against the Prism reference dequantizer |
 | `make bonsai-fold-selftest` | the fold round-trips and the gated-delta-net permutation |

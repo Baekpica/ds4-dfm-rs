@@ -7227,6 +7227,25 @@ static void config_validate_qwen35_model(const ds4_model *m) {
     config_validate_hadamard(m);
 }
 
+/* The host pins the shape and the tensor directory, so config_validate_model
+ * is skipped.  Two pieces of this family's runtime configuration live in the
+ * GGUF metadata rather than in the shape, and both are load-time state that
+ * nothing else sets:
+ *   - the rotary inverse frequencies (ds4_rope_configure has no other caller);
+ *   - the prism.hadamard fold, whose application is a no-op while
+ *     g_hadamard.enabled is false, so every folded weight would be read
+ *     unrotated.
+ * Missing keys fall back to the pinned values rather than dying, because the
+ * host path also serves shapes whose GGUF carries no model metadata. */
+static void config_apply_qwen35_runtime(const ds4_model *m) {
+    uint64_t ctx = DS4_ROPE_ORIG_CTX;
+    if (!model_get_u64_compat(m, "qwen35.context_length", &ctx) || ctx == 0) {
+        ctx = DS4_ROPE_ORIG_CTX;
+    }
+    ds4_rope_configure(DS4_N_ROT, (double)DS4_ROPE_FREQ_BASE, (uint32_t)ctx, 0.0);
+    config_validate_hadamard(m);
+}
+
 /* Validate metadata values that affect semantics: attention shape, HC count,
  * expert routing, RoPE scaling, compression ratios, and SwiGLU clamp. */
 static void config_validate_deepseek4_model(const ds4_model *m) {
@@ -70740,8 +70759,17 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
 
     const bool graph_backend = ds4_backend_uses_graph(opt->backend);
     model_open(&e->model, opt->model_path, graph_backend, !opt->inspect_only);
-    if (g_host_shape) model_apply_host_shape();
-    else config_validate_model(&e->model);
+    if (g_host_shape) {
+        model_apply_host_shape();
+        /* The host is authoritative for the shape, but the rotary table and the
+         * fold metadata come from the GGUF: without them the family generates
+         * nonsense on both backends while looking healthy. */
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN35) {
+            config_apply_qwen35_runtime(&e->model);
+        }
+    } else {
+        config_validate_model(&e->model);
+    }
     /* The per-layer host arrays are sized DS4_MAX_LAYER while the bind and free
      * loops run to DS4_N_LAYER, so a family with more blocks than the bound
      * would write past them.  Refuse it by name instead (the CUDA graph keeps

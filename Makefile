@@ -820,6 +820,24 @@ tests/test_qwen35_cuda: tests/test_qwen35_cuda.cu ds4_cuda_test_hooks.o $(filter
 test-qwen35-cuda: tests/test_qwen35_cuda
 	./tests/test_qwen35_cuda
 
+# The Rust host (./ds4) is the default binary, and the one the server shares.
+# It pins the shape and the tensor directory instead of parsing the GGUF, so its
+# load-time configuration is not the C validator's: this gate pins the two
+# pieces that do not come from the shape (the rotary table and the
+# prism.hadamard fold) against the ids make bonsai-cuda-parity pins on the C
+# host.  Both backends, because the fold feeds the reference too.
+.PHONY: test-qwen35-rust-host
+test-qwen35-rust-host: ds4 ds4-c
+	@expect='11751 13 198 760 6511 314 9564 369'; \
+	for backend in cuda cpu; do \
+	  extra=""; [ $$backend = cuda ] && extra="DS4_CUDA_COPY_MODEL=1"; \
+	  got=$$(env $$extra ./ds4 -m "$(DS4_BONSAI_MODEL)" --backend $$backend \
+	         --token-ids 760,6511,314,9338,369 --predict 8 --temp 0 2>/dev/null | tail -1); \
+	  case "$$got" in "$$expect"*) echo "qwen35 rust host parity ($$backend): PASS";; \
+	    *) echo "qwen35 rust host parity ($$backend): FAIL"; \
+	       echo "  expected: $$expect"; echo "  got:      $$got"; exit 1;; esac; \
+	done
+
 # The Bonsai session path, diffed against the in-process CPU reference on both
 # backends.  The CUDA run needs the card (and DS4_CUDA_COPY_MODEL, see
 # docs/BONSAI.md); the CPU run needs no card but pays the reference's ~3 s per
