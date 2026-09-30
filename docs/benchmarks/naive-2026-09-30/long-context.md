@@ -56,4 +56,36 @@ stream request, failed receipt, extended cold/warm outputs and both disk
 continuations remain in the evidence. This qualifies the recorded buffered
 continuation scope, not arbitrary disabled-thinking streams or budgets.
 
-512K and 1M results will be recorded only after their actual gates finish.
+## 512K, one bank
+
+The buffered cold seed processes 523264 input tokens and retrieves the
+phrase at token offset 88983. It stops normally after 4056.039 seconds.
+The follow and fresh disk restart also return the complete phrase and
+stop normally. [Receipts](long-512k-evidence.json).
+
+| Request | Input | Cached | Output | Finish |
+| --- | ---: | ---: | ---: | --- |
+| Cold seed | 523264 | 0 | 13 | stop |
+| Warm follow | 523300 | 523277 | 119 | stop |
+| Disk restart, extended conversation | 523441 | 523277 | 13 | stop |
+
+The follow preserves separate reasoning. The restart restores the seed
+ancestor and computes a 164-token suffix; it does not restore the latest
+generated reasoning history. Both reuse traces report `exact` for that
+ancestor. Content differs only in leading whitespace; this is not a
+long-context full-logit or cold/warm generation parity proof. No request
+reports a governor fault, fallback or speculation.
+
+The quote records 13136753664 bytes per bank, 1636667648 shared scratch,
+204472320 checkpoint pool and a 4-GiB floor: 19272860928 bytes total.
+Disk capacity is 32 GiB with a 1024-token persistence threshold. Complete
+worker lifetimes record minimum available memory of 17.656 GiB and
+19.200 GiB, and maximum PSI of 4.16 and 4.48 respectively. Both workers
+exit cleanly. An early restart attempted during the first worker's disk
+flush is refused by the single-worker lock before model allocation; the
+successful restart begins after verified cleanup.
+
+Host tests overlap early seed prefill. Its elapsed time is functional
+evidence, not a matched throughput result. This qualifies one buffered
+retrieval fixture, continuation and disk restoration with MTP off.
+1M remains pending.

@@ -1,0 +1,260 @@
+{
+  "context": 524288,
+  "banks": 1,
+  "chunk": 2048,
+  "mtp_mode": "off",
+  "output_mode": "buffered",
+  "max_output": 512,
+  "prompt_margin": 1024,
+  "artifact_revision": "65b235a48e87acaf7b806b96870378c9c68a654c",
+  "source_revision": "0235b3b5ff27422b1f57cdc2acddfaf643e08356",
+  "binary_sha256": "8225186b745a3ea999c09efe085736b91566ceec8d7b6dd303a237af3aa164ae",
+  "native_source_commit": "fc626ab6",
+  "gate_source_commit": "aa0e2036",
+  "hardware": "DGX Spark GB10",
+  "driver": "615.71.09",
+  "cuda": "13.3",
+  "clock_range_mhz": [
+    300,
+    2200
+  ],
+  "observed_active_clocks_mhz": [
+    2190
+  ],
+  "fixture": {
+    "context": 524288,
+    "input_tokens": 523264,
+    "expected_answer": "ORCHID-74-COPPER-29",
+    "needle_fraction": 0.17,
+    "needle_token_offset": 88983,
+    "request_sha256": "4485030ef097687d6e35e6746555b361cfdffc398b2a918807077df301ca8ccc",
+    "prompt_ids_sha256": "3d6f9c6f206656ba05db230c170c7991ff7d8f43ee6a2e97f62e97303ff48d81",
+    "template_sha256": "cfe477d7032a1e6f90c06cd8e3b4a25d02cd2e4a911252daa45a024b56084a19",
+    "tokenizer_sha256": "2efef62c60dedec64b55ab8b6e6838ca5cee391c00c62f2c554ba5de3d33e030",
+    "request_bytes": 3183007,
+    "prompt_margin": 1024,
+    "max_output": 512,
+    "output_mode": "buffered"
+  },
+  "plan": {
+    "family": "naive_n05_flash",
+    "controls": {
+      "native_prefill_env": "DS4_NAIVE_PREFILL_CHUNK",
+      "scheduler_chunks": [
+        256,
+        512,
+        1024,
+        2048
+      ],
+      "prefix_reuse": "partial",
+      "banks": "opt_in",
+      "mtp": "unverified",
+      "disk": "qualified"
+    },
+    "requested": {
+      "prefix_reuse": "partial",
+      "mtp_mode": "off",
+      "max_seqs": "1",
+      "lane": "auto",
+      "ctx": 524288,
+      "mem_floor_gb": 4,
+      "disk": true,
+      "mtp_path": false,
+      "backend": "cuda"
+    },
+    "effective": {
+      "prefix_reuse": "partial",
+      "mtp_mode": "off",
+      "mtp_weights": false,
+      "mtp_draft": null,
+      "max_seqs": 1,
+      "ctx": 524288,
+      "mem_floor_gb": 4,
+      "disk": true,
+      "banks_opt_in": false,
+      "sched_chunk": 2048,
+      "sched_chunk_live": 2048,
+      "native_chunk": 2048,
+      "bank_persist_min_tokens": 1024,
+      "disk_min_tokens": 1024,
+      "disk_is_offload": false
+    },
+    "quote": {
+      "shared_weights": 0,
+      "per_bank": 13136753664,
+      "mtp_state": 0,
+      "scratch": 1636667648,
+      "checkpoint_pool": 204472320,
+      "ple": 0,
+      "media_reserve": 0,
+      "floor": 4294967296,
+      "available": 37114266880,
+      "banks": 1,
+      "total": 19272860928
+    },
+    "qualified": {
+      "prefix_reuse": "qualified",
+      "disk": "qualified",
+      "mtp": "none",
+      "banks": "qualified",
+      "ctx": 8192,
+      "banks_n": 2,
+      "prompt": 702,
+      "note": ""
+    },
+    "issues": [
+      {
+        "level": "warn",
+        "code": "ctx_unqualified",
+        "message": "configured ctx 524288 exceeds qualified ctx 8192"
+      },
+      {
+        "level": "warn",
+        "code": "prompt_bound",
+        "message": "configured ctx is not a full-length request proof"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "phase": "seed",
+      "text": "\n\nORCHID-74-COPPER-29",
+      "reasoning": "",
+      "message": {
+        "role": "assistant",
+        "content": "\n\nORCHID-74-COPPER-29"
+      },
+      "usage": {
+        "prompt_tokens": 523264,
+        "completion_tokens": 13,
+        "total_tokens": 523277,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 523264
+        }
+      },
+      "finish_reason": "stop",
+      "first_content_seconds": 4056.0390880760096,
+      "total_seconds": 4056.0390940600046,
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "cold",
+        "speculation_active": false,
+        "fallback_reason": null,
+        "reuse_miss": "no checkpoint at or below LCP"
+      },
+      "passed": true,
+      "errors": []
+    },
+    {
+      "phase": "follow",
+      "text": "\n\nORCHID-74-COPPER-29",
+      "reasoning": "\nThe user is asking me to repeat the access phrase for depot Aster. The archive clearly states: \"The access phrase for depot Aster is ORCHID-74-COPPER-29.\"\n\nThis is a simple request to repeat information that was provided in the archive. There's nothing harmful about this - it's just repeating a phrase from the provided text. The user wants no explanation, just the phrase.\n\nI should respond with just the phrase: ORCHID-74-COPPER-29\n",
+      "message": {
+        "role": "assistant",
+        "content": "\n\nORCHID-74-COPPER-29",
+        "reasoning_content": "\nThe user is asking me to repeat the access phrase for depot Aster. The archive clearly states: \"The access phrase for depot Aster is ORCHID-74-COPPER-29.\"\n\nThis is a simple request to repeat information that was provided in the archive. There's nothing harmful about this - it's just repeating a phrase from the provided text. The user wants no explanation, just the phrase.\n\nI should respond with just the phrase: ORCHID-74-COPPER-29\n"
+      },
+      "usage": {
+        "prompt_tokens": 523300,
+        "completion_tokens": 119,
+        "total_tokens": 523419,
+        "prompt_tokens_details": {
+          "cached_tokens": 523277,
+          "cache_write_tokens": 23
+        }
+      },
+      "finish_reason": "stop",
+      "first_content_seconds": 10.802790134999668,
+      "total_seconds": 10.802797351003392,
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "exact",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "passed": true,
+      "errors": []
+    },
+    {
+      "phase": "restored",
+      "text": "\nORCHID-74-COPPER-29",
+      "reasoning": "",
+      "message": {
+        "role": "assistant",
+        "content": "\nORCHID-74-COPPER-29"
+      },
+      "usage": {
+        "prompt_tokens": 523441,
+        "completion_tokens": 13,
+        "total_tokens": 523454,
+        "prompt_tokens_details": {
+          "cached_tokens": 523277,
+          "cache_write_tokens": 164
+        }
+      },
+      "finish_reason": "stop",
+      "first_content_seconds": 11.12254064399167,
+      "total_seconds": 11.122546371989301,
+      "trace": {
+        "effective_lane": "continuous",
+        "reuse_kind": "exact",
+        "speculation_active": false,
+        "fallback_reason": null
+      },
+      "passed": true,
+      "errors": []
+    }
+  ],
+  "disk_capacity_gib": 32,
+  "persistence_min_tokens": 1024,
+  "initial_worker_memory": {
+    "samples": 4156,
+    "min_available_gib": 17.65589141845703,
+    "max_psi_full_avg10": 4.16,
+    "exit_events": [
+      {
+        "time": 1790795979.2478197,
+        "event": "exit",
+        "unit": "ds4-hostguard-311786-1790791783076669438.scope",
+        "status": 0,
+        "payload_status": 0
+      }
+    ]
+  },
+  "restored_worker_memory": {
+    "samples": 224,
+    "min_available_gib": 19.19957733154297,
+    "max_psi_full_avg10": 4.48,
+    "exit_events": [
+      {
+        "time": 1790796254.0012536,
+        "event": "exit",
+        "unit": "ds4-hostguard-317983-1790796026488248827.scope",
+        "status": 0,
+        "payload_status": 0
+      }
+    ]
+  },
+  "refused_restart": {
+    "log": "scratch/naive/long-512k-buffered-restored.log",
+    "reason": "restart attempted before prior worker exit; single-worker lock refused before model allocation",
+    "guard_exit_events": [
+      {
+        "time": 1790795975.6986232,
+        "event": "exit",
+        "unit": "ds4-hostguard-317854-1790795975274785293.scope",
+        "status": 2,
+        "payload_status": 2
+      }
+    ]
+  },
+  "limits": [
+    "one buffered distant-fact fixture; not broad long-context quality",
+    "follow preserves separate reasoning; final restart returns only content",
+    "disk restart restores retained seed ancestor, not latest generated reasoning history",
+    "raw text and completion counts are not a long full-logit/cold parity proof",
+    "affected host tests overlapped early prefill; cold elapsed time is functional evidence, not a paired performance result",
+    "1M remains pending"
+  ]
+}
