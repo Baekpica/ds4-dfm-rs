@@ -3,6 +3,8 @@
 Retained rounds from the September 30 request: prefill **3/3**, decode **3/3**.
 Rejected probes do not count. Integration and long-context serving remain
 separate gates; see [the family contract](../../naive-n05-flash.md).
+The [upstream GB10 recipe review](upstream-review.md) covers potential Naive,
+Qwen and shared-path improvements; unmeasured ideas do not count here.
 
 ## Protocol
 
