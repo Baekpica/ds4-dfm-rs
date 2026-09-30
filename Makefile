@@ -107,7 +107,7 @@ endif
         test-solar-gates test-solar-kv test-solar-tokenizer \
         test-solar-forward test-solar-session \
         test-exaone-ref test-exaone-kernels test-exaone-batch \
-        pq2-0-test \
+        pq2-0-test test-qwen35-rows \
         rust-bridge ds4-rs ds4-bench-rs ds4-agent-rs ds4-server-rs test-kv-parity test-web-parity test-dist-parity test-route-parity test-server-parity test-catalog-parity test-tokenizer-parity test-agent-parity test-session-parity
 
 ifeq ($(UNAME_S),Darwin)
@@ -1451,6 +1451,17 @@ pq2-0-test: tests/test_pq2_0.c
 # DS4_BONSAI_STEPS override the artifact path and the greedy step count.
 DS4_BONSAI_MODEL ?= /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf
 DS4_BONSAI_STEPS ?= 12
+
+# Every tensor of the artifact read through this tree's own row reader, against
+# the checksums the exporter's ggml dequantizer produced (tests/pq2_0).
+tests/test_qwen35_rows: tests/test_qwen35_rows.c ds4.c ds4.h tests/pq2_0/reference_checksums.txt
+	$(CC) $(CFLAGS) -O2 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
+	-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+test-qwen35-rows: tests/test_qwen35_rows
+	@test -n "$(DS4_BONSAI_MODEL)" || \
+	{ echo "set DS4_BONSAI_MODEL to the Prism Bonsai GGUF" >&2; exit 2; }
+	./tests/test_qwen35_rows "$(DS4_BONSAI_MODEL)"
 
 .PHONY: bonsai-fold-selftest bonsai-ref-check
 bonsai-fold-selftest:
