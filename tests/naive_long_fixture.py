@@ -36,8 +36,13 @@ def main():
     parser.add_argument("--template", type=Path, default=Path(__file__).resolve().parent /
                         "fixtures/chat-template/models/naive/chat_template.jinja")
     parser.add_argument("--model", default="naive-n05-flash")
+    parser.add_argument("--prompt-margin", type=int, default=PROMPT_MARGIN)
+    parser.add_argument("--max-output", type=int, default=MAX_OUTPUT)
+    parser.add_argument("--output-mode", choices=("stream", "buffered"), default="stream")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
+    if not 0 < args.max_output <= args.prompt_margin < args.context:
+        parser.error("output budget must fit the positive prompt margin")
     tokenizer = Tokenizer.from_file(str(args.tokenizer))
     template = Environment().from_string(args.template.read_text())
 
@@ -51,7 +56,7 @@ def main():
         return messages, text
 
     assert len(encode(" x")) == 1
-    target = args.context - PROMPT_MARGIN
+    target = args.context - args.prompt_margin
     unit = len(encode(ARCHIVE_LINE * 2)) - len(encode(ARCHIVE_LINE))
     count = (target - len(encode(render(START + NEEDLE + QUESTION)[1]))) // unit - 2
     cut = count * NEEDLE_PERCENT // 100
@@ -69,8 +74,10 @@ def main():
 
     args.out.mkdir(parents=True, exist_ok=False)
     body = {"model": args.model, "messages": messages, "temperature": 0, "seed": 1,
-            "max_tokens": MAX_OUTPUT, "reasoning_effort": "none", "stream": True,
-            "stream_options": {"include_usage": True}}
+            "max_tokens": args.max_output, "reasoning_effort": "none",
+            "stream": args.output_mode == "stream"}
+    if body["stream"]:
+        body["stream_options"] = {"include_usage": True}
     (args.out / "request.json").write_text(json.dumps(body, ensure_ascii=False) + "\n")
     (args.out / "prompt.txt").write_text(text)
     (args.out / "prompt.i32").write_bytes(struct.pack(f"<{len(ids)}i", *ids))
@@ -80,7 +87,9 @@ def main():
                "request_sha256": digest(args.out / "request.json"),
                "prompt_ids_sha256": digest(args.out / "prompt.i32"),
                "template_sha256": digest(args.template), "tokenizer_sha256": digest(args.tokenizer),
-               "request_bytes": (args.out / "request.json").stat().st_size}
+               "request_bytes": (args.out / "request.json").stat().st_size,
+               "prompt_margin": args.prompt_margin, "max_output": args.max_output,
+               "output_mode": args.output_mode}
     (args.out / "fixture.json").write_text(json.dumps(receipt, indent=2) + "\n")
     print(json.dumps(receipt, indent=2))
 

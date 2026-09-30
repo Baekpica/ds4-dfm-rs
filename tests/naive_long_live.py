@@ -5,6 +5,7 @@ Run seed, follow, and optionally restored after restarting the same disk store.
 Readiness is checked separately from actual generation and prefix reuse.
 """
 import argparse
+from contextlib import nullcontext
 import hashlib
 import json
 from pathlib import Path
@@ -55,22 +56,37 @@ def main():
         assert prior["passed"], "the previous request must pass before continuation"
         if args.phase == "restored":
             body = json.loads((args.out / "follow.request.json").read_text())
-        body["messages"] += [{"role": "assistant", "content": prior["text"]},
+        # Let the official template replay structured reasoning, not SSE text.
+        message = prior.get("message", {"role": "assistant", "content": prior["text"]})
+        body["messages"] += [message,
                              {"role": "user", "content": FOLLOW}]
     save(args.phase + ".request.json", body)
 
     started = time.monotonic()
     first = None
     text = ""
+    reasoning = ""
+    message = None
     usage = None
     finish = None
     events = 0
     request = urllib.request.Request(args.url + "/v1/chat/completions", json.dumps(body).encode(),
                                      {"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response, \
-                (args.out / (args.phase + ".sse.jsonl")).open("w") as log:
-            for raw in response:
+        log_file = (args.out / (args.phase + ".sse.jsonl")).open("w") \
+            if body.get("stream") else nullcontext()
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response, log_file as log:
+            if not body.get("stream"):
+                data = json.load(response)
+                save(args.phase + ".raw.json", data)
+                message = data["choices"][0]["message"]
+                text = message.get("content") or ""
+                reasoning = message.get("reasoning_content") or ""
+                usage = data.get("usage")
+                finish = data["choices"][0].get("finish_reason")
+                first = time.monotonic() - started
+                events = 1
+            for raw in response if body.get("stream") else ():
                 line = raw.decode().strip()
                 if not line.startswith("data:"):
                     continue
@@ -87,6 +103,7 @@ def main():
                         if first is None:
                             first = time.monotonic() - started
                         text += delta
+                    reasoning += choice.get("delta", {}).get("reasoning_content") or ""
                     if choice.get("finish_reason") is not None:
                         finish = choice["finish_reason"]
                 if data.get("usage") is not None:
@@ -122,7 +139,9 @@ def main():
         if not 0 < cached < usage["prompt_tokens"]:
             errors.append("continuation did not reuse a proper KV prefix")
     result = {"context": receipt["context"], "banks": args.banks, "phase": args.phase,
-              "text": text, "usage": usage, "finish_reason": finish, "events": events,
+              "text": text, "reasoning": reasoning, "message": message or
+              {"role": "assistant", "content": text, "reasoning_content": reasoning},
+              "usage": usage, "finish_reason": finish, "events": events,
               "first_content_seconds": first, "total_seconds": elapsed, "trace": trace,
               "passed": not errors, "errors": errors, "fixture": receipt}
     save(args.phase + ".response.json", result)
