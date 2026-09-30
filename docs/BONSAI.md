@@ -164,7 +164,7 @@ continuation:
 --- token-for-token diff ---
 IDENTICAL: all 16 generated token ids agree, so the CUDA graph
            reproduces the CPU reference on this prompt
-           (per-backend token lines kept at /tmp/bonsai-{cpu,cuda}.tokens)
+           (per-backend token lines kept at misc/scratch/bonsai-{cpu,cuda}.tokens)
 ```
 
 The `-p` prompt is chat-templated by the CLI (25 tokens here), which is why

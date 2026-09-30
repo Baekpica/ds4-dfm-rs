@@ -51,7 +51,7 @@
 # Env overrides: DS4_BONSAI_MODEL (model path), DS4_BONSAI_BIN (binary),
 # DS4_BONSAI_BACKEND (cuda|cpu), DS4_BONSAI_STEPS (greedy steps),
 # DS4_BONSAI_WAIT (seconds to wait for a free device slot, default 300),
-# DS4_BONSAI_LOG (capture path, default /tmp/bonsai-run.log).
+# DS4_BONSAI_LOG (capture path, default misc/scratch/bonsai-run.log).
 
 set -u
 
@@ -64,7 +64,9 @@ DEFAULT_PROMPT="The capital of France is"
 # The explicit parity prompt, the same ids "make bonsai-cuda-parity" uses.
 PARITY_TOKENS="760,6511,314,9338,369"
 PARITY_STEPS=8
-LOG="${DS4_BONSAI_LOG:-/tmp/bonsai-run.log}"
+SCRATCH="$ROOT/misc/scratch"
+mkdir -p "$SCRATCH"
+LOG="${DS4_BONSAI_LOG:-$SCRATCH/bonsai-run.log}"
 WAIT="${DS4_BONSAI_WAIT:-300}"
 # The engine takes a single global flock (/tmp/ds4.lock), so a second model
 # process refuses to start.  This script waits for the slot instead.
@@ -191,22 +193,22 @@ compare_mode() {
   run_model cuda "$STEPS" "$PROMPT" "$LOG" || return 1
   echo "backend:      cuda"
   report_run "$LOG" "$STEPS"
-  grep -E '^token ' "$LOG" > /tmp/bonsai-cuda.tokens
+  grep -E '^token ' "$LOG" > $SCRATCH/bonsai-cuda.tokens
   echo
   echo "--- CPU reference (the oracle) ---"
   run_model cpu "$STEPS" "$PROMPT" "$LOG" || return 1
   echo "backend:      cpu"
   report_run "$LOG" "$STEPS"
-  grep -E '^token ' "$LOG" > /tmp/bonsai-cpu.tokens
+  grep -E '^token ' "$LOG" > $SCRATCH/bonsai-cpu.tokens
   echo
   echo "--- token-for-token diff ---"
-  if diff -q /tmp/bonsai-cpu.tokens /tmp/bonsai-cuda.tokens >/dev/null; then
+  if diff -q $SCRATCH/bonsai-cpu.tokens $SCRATCH/bonsai-cuda.tokens >/dev/null; then
     echo "IDENTICAL: all $STEPS generated token ids agree, so the CUDA graph"
     echo "           reproduces the CPU reference on this prompt"
-    echo "           (per-backend token lines kept at /tmp/bonsai-{cpu,cuda}.tokens)"
+    echo "           (per-backend token lines kept at misc/scratch/bonsai-{cpu,cuda}.tokens)"
   else
     echo "DIFFERENT - first differences (cpu vs cuda):"
-    diff /tmp/bonsai-cpu.tokens /tmp/bonsai-cuda.tokens | head -20
+    diff $SCRATCH/bonsai-cpu.tokens $SCRATCH/bonsai-cuda.tokens | head -20
     return 1
   fi
 }
@@ -223,21 +225,21 @@ ids_mode() {
   run_model cuda "$PARITY_STEPS" x "$LOG" "$PARITY_TOKENS" || return 1
   echo "backend:      cuda"
   report_run "$LOG" "$PARITY_STEPS"
-  grep -E '^token ' "$LOG" > /tmp/bonsai-cuda.tokens
+  grep -E '^token ' "$LOG" > $SCRATCH/bonsai-cuda.tokens
   echo
   echo "--- CPU reference (the oracle) ---"
   run_model cpu "$PARITY_STEPS" x "$LOG" "$PARITY_TOKENS" || return 1
   echo "backend:      cpu"
   report_run "$LOG" "$PARITY_STEPS"
-  grep -E '^token ' "$LOG" > /tmp/bonsai-cpu.tokens
+  grep -E '^token ' "$LOG" > $SCRATCH/bonsai-cpu.tokens
   echo
   echo "--- token-for-token diff ---"
-  if diff -q /tmp/bonsai-cpu.tokens /tmp/bonsai-cuda.tokens >/dev/null; then
+  if diff -q $SCRATCH/bonsai-cpu.tokens $SCRATCH/bonsai-cuda.tokens >/dev/null; then
     echo "IDENTICAL: both backends print the same $PARITY_STEPS ids for the same"
     echo "           explicit prompt; this is the reproducible parity gate"
   else
     echo "DIFFERENT - first differences (cpu vs cuda):"
-    diff /tmp/bonsai-cpu.tokens /tmp/bonsai-cuda.tokens | head -20
+    diff $SCRATCH/bonsai-cpu.tokens $SCRATCH/bonsai-cuda.tokens | head -20
     return 1
   fi
 }
