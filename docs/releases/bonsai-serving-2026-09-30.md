@@ -52,6 +52,12 @@ Sibling reference: `/data/ds4` branch `bonsai`, tip `bbaf298`.
   the model's own template, prints the answer and stops the server. The
   subcommand is no longer refused; `ds4-server-c` (the C oracle) still cannot
   serve this family, so the mode uses `./ds4-server`.
+- `run-bonsai.sh serve start|stop|status|logs` — the same server kept up for a
+  client instead of stopped after one request: it runs under its own session,
+  records the pid and the capture in `misc/scratch`, refuses a second start and
+  a start while another ds4 model holds the single slot, and `stop` only ever
+  kills the pid that file records. Measured: start 2.3 s, status reports pid,
+  base_url, the served id and its context and the device use, stop 1 s.
 
 ## Evidence
 
@@ -100,9 +106,27 @@ The plan's own numbers, from `--check-config` (bank = 2.39 GiB at ctx 32768
 against 6.71 GiB of weights; `available` is free device memory at plan time):
 
     ctx=32768 floor=1G: ACCEPTED  total 10.11 GiB avail 11.32 GiB
-    ctx=49152 floor=1G: ACCEPTED  total 11.11 GiB avail 11.32 GiB
-    ctx=65536 floor=1G: REFUSED   total 12.11 GiB avail 11.32 GiB  quote_overflow
+    ctx=40960 floor=1G: ACCEPTED  total 10.61 GiB avail 11.29 GiB
+    ctx=45056 floor=1G: ACCEPTED  total 10.86 GiB avail 11.29 GiB
+    ctx=49152 floor=1G: ACCEPTED  total 11.11 GiB avail 11.28 GiB  (pre-open)
+    ctx=65536 floor=1G: REFUSED   total 12.11 GiB avail 11.28 GiB  quote_overflow
     ctx=32768 floor=4G: REFUSED   total 13.11 GiB avail 11.32 GiB  quote_overflow
+
+The 49152 row is the reason the launcher defaults to 45056: the pre-open plan
+accepts it, and a real start then refuses it after open, where the same quote is
+re-resolved with the model already resident (`ds4-server-rs: opened serial plan
+rejected`), because the margin there is 0.2 GiB. 45056 opens for real and leaves
+~0.43 GiB. Measured device use at 45056 is not flat: 7.30 GiB (7474 MiB) on the
+freshly started server and 10.57 GiB (10815-10818 MiB) once requests have run
+and the 3.14 GiB bank is resident; the plan's 10.86 GiB total matches the
+steady state, so that is the figure to hold headroom against.
+
+For a client such as open-grok the port is 8899: `base_url
+http://127.0.0.1:8899/v1`, the advertised id `Ternary-Bonsai-2-27B-PQ2_0`, and
+the alias `prism-bonsai-2-27b` answers a chat request (verified: finish stop,
+content "Paris.", usage 45/36/81). Point the client's `context_window` at the
+context the server was started with, not higher: the family's caps carry no
+qualified limit, and the session refuses anything past its own bound.
 
 `--kv-disk-dir` never reaches the engine for this family: the plan reports
 `error: qwen35 session snapshots are unsupported (disk_unsupported)` and the

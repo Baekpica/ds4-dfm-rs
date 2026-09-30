@@ -87,7 +87,7 @@ default an unmapped id would fall back to.
 $ ./run-bonsai.sh server
 model:   /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf
 prompt:  The capital of France is
-ctx:     32768, memory floor 1G, port 8899
+ctx:     45056, memory floor 1G, port 8899
 backend: cuda
 binary:  /data/ds4-dfm-rs/ds4-server
 
@@ -105,7 +105,52 @@ usage:    {'prompt_tokens': 45, 'completion_tokens': 36, 'total_tokens': 81, ...
 The advertised id is the GGUF stem, as it is for every family in this tree; the
 sibling C server's names (`prism-bonsai-2-27b`, `-chat`, `-no-think`,
 `-nothink`, `-reasoner`, `prism/bonsai-2-27b`) are accepted aliases on
-`/v1/models/<id>`.
+`/v1/models/<id>`, and the server does not validate the model field of a chat
+request, so a client configured with the alias is served.
+
+`server` is a smoke test: it starts the server, sends one request and stops it.
+To keep one up for a client (open-grok, a script, curl), use `serve`:
+
+```
+$ ./run-bonsai.sh serve start        # -> serve with no argument does the same
+model:   /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf
+backend: cuda, ctx 45056, memory floor 1G, port 8899
+server:  up (pid 1355296)
+         listening on 127.0.0.1:8899 model_id=Ternary-Bonsai-2-27B-PQ2_0 engine=open ...
+base_url: http://127.0.0.1:8899/v1
+id:      Ternary-Bonsai-2-27B-PQ2_0 (aliases: prism-bonsai-2-27b*)
+log:     /data/ds4-dfm-rs/misc/scratch/bonsai-serve.log
+note:    one ds4 model at a time; this server holds the slot until stopped
+
+$ ./run-bonsai.sh serve status
+server:  running (pid 1355296)
+base_url: http://127.0.0.1:8899/v1
+serving: Ternary-Bonsai-2-27B-PQ2_0 ctx 45056
+vram:    7474 MiB, 12282 MiB
+
+$ ./run-bonsai.sh serve stop
+server:  stopped (pid 1355296)
+```
+
+`serve logs [n]` tails the capture. The pid file and the log live in
+`misc/scratch`, and `stop` only ever kills the pid that file records, so a
+foreign `ds4-server` is never touched. A second `serve start` reports the
+running server instead of starting another one, and if any other ds4 model
+holds the single slot the start refuses and names the process.
+
+An open-grok client block for it (port 8899, the id it advertises, and a
+context the card can host):
+
+```toml
+[model.bonsai-local]
+model = "prism-bonsai-2-27b"
+base_url = "http://127.0.0.1:8899/v1"
+api_backend = "chat_completions"
+api_key = "dummy"
+context_window = 45056
+max_completion_tokens = 4096
+supports_images = false
+```
 
 ### The memory quote
 
@@ -116,16 +161,27 @@ CUDA graph adds its chunk-sized transient buffers. The generic estimate charges
 all 64 blocks as attention rows (four times the real KV) and refuses every
 usable context on a 12 GiB card even with the memory floor at zero.
 
-| ctx | bank (CUDA) | total with 6.71 GiB weights | floor 4 GiB (default) | floor 1 GiB |
+Measured with `--mem-floor-gb 1` on this host (`--check-config` reports the
+plan before the model opens, so the last row also reports a real start):
+
+| ctx | bank (CUDA) | plan total | free device memory at plan time | verdict |
 | --- | --- | --- | --- | --- |
-| 32768 | 2.39 GiB | 9.11 GiB | refused (13.11 > 11.32) | accepted |
-| 49152 | 3.39 GiB | 10.11 GiB | refused | accepted (tight) |
-| 65536 | 4.39 GiB | 11.11 GiB | refused | refused |
+| 32768 | 2.39 GiB | 10.11 GiB | 11.32 GiB | opens |
+| 40960 | 2.89 GiB | 10.61 GiB | 11.29 GiB | opens |
+| 45056 | 3.14 GiB | 10.86 GiB | 11.29 GiB | opens; 7.30 GiB fresh, 10.57 GiB after requests |
+| 49152 | 3.39 GiB | 11.11 GiB | 11.28 GiB | refused on a real start (opens on paper only) |
+| 65536 | 4.39 GiB | 12.11 GiB | 11.28 GiB | refused |
 
 `available` is the free device memory the quote reads at plan time, so the
-verdict moves with whatever else is on the card. The CPU reference allocates a
-float key/value row for every block, so its own limit is roughly half these
-contexts on a 32 GiB host; `DS4_BONSAI_CTX` and `DS4_BONSAI_MEM_FLOOR` (with
+verdict moves with whatever else is on the card; 45056 is the largest context
+with a workable margin here and is what `DS4_BONSAI_CTX` defaults to. Device
+use is not flat: a freshly started server holds 7.30 GiB (weights plus
+transients), and the first requests bring the ctx-45056 bank (3.14 GiB) in, for
+10.57 GiB steady state, which is the number to plan against and the one the
+plan's 10.86 GiB total already quotes. The 4 GiB
+default memory floor refuses all of these. The CPU reference allocates a float
+key/value row for every block, so its own limit is roughly half these contexts
+on a 32 GiB host; `DS4_BONSAI_CTX` and `DS4_BONSAI_MEM_FLOOR` (with
 `--kv-disk-dir` refused by name) set the trade.
 
 ## Environment requirement: copy the model to the device
@@ -156,14 +212,15 @@ make ds4-c CUDA_ARCH=sm_89
 ./run-bonsai.sh ids                 # the explicit five-id parity gate
 ./run-bonsai.sh session ["prompt"]  # both backends through the session, diffed
 ./run-bonsai.sh server ["prompt"]   # one chat request through the Rust server
+./run-bonsai.sh serve [start|stop|status|logs]  # keep a server up for a client
 ./run-bonsai.sh bench [tokens]      # decode rate with /usr/bin/time
 ./run-bonsai.sh help
 ```
 
 Env overrides: `DS4_BONSAI_MODEL`, `DS4_BONSAI_BIN`, `DS4_BONSAI_BACKEND`
 (`cuda`|`cpu`), `DS4_BONSAI_STEPS`, `DS4_BONSAI_WAIT`, `DS4_BONSAI_LOG`, and
-for `server` `DS4_BONSAI_SERVER_BIN`, `DS4_BONSAI_CTX` (default 32768),
-`DS4_BONSAI_MEM_FLOOR` (default 1, GiB), `DS4_BONSAI_SERVER_PORT` and
+for `server` / `serve` `DS4_BONSAI_SERVER_BIN`, `DS4_BONSAI_CTX` (default
+45056), `DS4_BONSAI_MEM_FLOOR` (default 1, GiB), `DS4_BONSAI_SERVER_PORT` and
 `DS4_BONSAI_SERVER_TOKENS` (default 64: the reasoning block alone runs about 33
 tokens before any content).
 
@@ -191,9 +248,9 @@ entry:   --first-token-test (greedy diagnostic), the session path, and
          DS4_QWEN35_PREFILL_CHUNK=<n> (rows per CUDA prefill forward)
 server:  /data/ds4-dfm-rs/ds4-server
          present; serves this family (id from the GGUF stem, aliases
-         prism-bonsai-2-27b*) with DS4_BONSAI_CTX=32768 and
+         prism-bonsai-2-27b*) with DS4_BONSAI_CTX=45056 and
          DS4_BONSAI_MEM_FLOOR=1G on port 8899
-supported: generate, cuda, cpu, compare, ids, session, server, bench, status, help
+supported: generate, cuda, cpu, compare, ids, session, server, serve, bench, status, help
 refused:   batching, MTP/DSpark, SSD/disk KV, session snapshots, distributed
            ranks (each refused by name; --kv-disk-dir stops the server for
            this family rather than staying silently unused)

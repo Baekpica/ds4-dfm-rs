@@ -12,6 +12,7 @@
 #         ./run-bonsai.sh status             what is built, which artifact, what can run
 #         ./run-bonsai.sh session [prompt]   the session path on both backends, diffed
 #         ./run-bonsai.sh server [prompt]    one chat request through the Rust server
+#         ./run-bonsai.sh serve [start|stop|status|logs]  keep a server up for a client
 #         ./run-bonsai.sh help
 #
 # This model is the "qwen35" family: a dense 64-layer trunk (48 gated
@@ -52,10 +53,20 @@
 #   default host; the C oracle ds4-server-c cannot serve this family): it
 #   starts the server, waits for the listener, sends one chat request through
 #   the model's own ChatML template, prints the answer and stops the server.
-#   DS4_BONSAI_CTX (default 32768) and DS4_BONSAI_MEM_FLOOR (default 1, GiB)
+#   DS4_BONSAI_CTX (default 45056) and DS4_BONSAI_MEM_FLOOR (default 1, GiB)
 #   must fit the card: the quote counts the real 6.71 GiB of weights, the
 #   16-attention-layer KV and this host's free VRAM, so the default 4 GiB floor
-#   refuses at every usable context on the 12 GiB RTX 4070 SUPER.
+#   refuses at every usable context on the 12 GiB RTX 4070 SUPER, and 49152
+#   leaves too little margin (measured: it opens pre-open and is refused on a
+#   real start).
+#
+#   ./run-bonsai.sh serve starts the same server in its own session and leaves
+#   it running for an OpenAI-compatible client (open-grok, a script, curl), then
+#   `serve stop` ends it, `serve status` reports pid, port and what /v1/models
+#   answers, `serve logs [n]` tails the capture.  The pid file and log live in
+#   misc/scratch; stop only ever kills the pid that file records.  This family
+#   holds the single ds4 model slot while it serves, so no other ds4 model can
+#   run until it is stopped.
 #
 # THE SESSION PATH
 #   ./run-bonsai.sh session drives the real ds4_session API (create, sync, eval)
@@ -69,9 +80,9 @@
 # Env overrides: DS4_BONSAI_MODEL (model path), DS4_BONSAI_BIN (binary),
 # DS4_BONSAI_SERVER_BIN (Rust server), DS4_BONSAI_BACKEND (cuda|cpu),
 # DS4_BONSAI_STEPS (greedy steps), DS4_BONSAI_CTX / DS4_BONSAI_MEM_FLOOR /
-# DS4_BONSAI_SERVER_PORT (server mode), DS4_BONSAI_WAIT (seconds to wait for a
-# free device slot, default 300), DS4_BONSAI_LOG (capture path,
-# default misc/scratch/bonsai-run.log).
+# DS4_BONSAI_SERVER_PORT / DS4_BONSAI_SERVER_TOKENS (server and serve modes),
+# DS4_BONSAI_WAIT (seconds to wait for a free device slot, default 300),
+# DS4_BONSAI_LOG (capture path, default misc/scratch/bonsai-run.log).
 
 set -u
 
@@ -79,9 +90,10 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 BIN="${DS4_BONSAI_BIN:-$ROOT/ds4-c}"
 SERVER_BIN="${DS4_BONSAI_SERVER_BIN:-$ROOT/ds4-server}"
 SERVER_PORT="${DS4_BONSAI_SERVER_PORT:-8899}"
-# The serving context and the memory floor that fits it on this host; see the
-# sizing note in the header and docs/BONSAI.md.
-SERVER_CTX="${DS4_BONSAI_CTX:-32768}"
+# The serving context and the memory floor that fits it on this host, measured
+# against this card's free device memory; see the sizing note in the header and
+# docs/BONSAI.md.
+SERVER_CTX="${DS4_BONSAI_CTX:-45056}"
 MEM_FLOOR="${DS4_BONSAI_MEM_FLOOR:-1}"
 # A served answer needs ~35 tokens: the reasoning block alone runs about 33
 # before any content appears.
@@ -96,6 +108,9 @@ PARITY_STEPS=8
 SCRATCH="$ROOT/misc/scratch"
 mkdir -p "$SCRATCH"
 LOG="${DS4_BONSAI_LOG:-$SCRATCH/bonsai-run.log}"
+# The long-running server's pid file and log (`serve`).
+SERVE_PID="$SCRATCH/bonsai-serve.pid"
+SERVE_LOG="$SCRATCH/bonsai-serve.log"
 WAIT="${DS4_BONSAI_WAIT:-300}"
 # The engine takes a single global flock (/tmp/ds4.lock), so a second model
 # process refuses to start.  This script waits for the slot instead.
@@ -337,7 +352,7 @@ status_mode() {
   else
     echo "server:  $SERVER_BIN MISSING (build it: make ds4-server CUDA_ARCH=sm_89)"
   fi
-  echo "supported: generate, cuda, cpu, compare, ids, session, server, bench, status, help"
+  echo "supported: generate, cuda, cpu, compare, ids, session, server, serve, bench, status, help"
   echo "refused:   batching, MTP/DSpark, SSD/disk KV, session snapshots, distributed"
   echo "           ranks (each refused by name; --kv-disk-dir stops the server for"
   echo "           this family rather than staying silently unused)"
@@ -391,6 +406,120 @@ session_mode() {
     diff $SCRATCH/bonsai-ref.tokens $SCRATCH/bonsai-cuda-session.tokens | head -20
     return 1
   fi
+}
+
+# --- long-running server for a client ---------------------------------------
+# `serve` keeps one ds4-server up (open-grok, a script, curl) instead of the
+# smoke test `server` runs, which stops the server after one request.  The pid
+# file is the only handle stop uses, so a foreign ds4-server is never killed.
+
+serve_pid() {
+  [ -f "$SERVE_PID" ] || return 1
+  local pid
+  pid=$(cat "$SERVE_PID" 2>/dev/null) || return 1
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  # The recorded pid must still be a ds4-server, not a reused number.
+  tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "ds4-server" || return 1
+  printf '%s' "$pid"
+}
+
+serve_start() {
+  local pid waited=0 model
+  if pid=$(serve_pid); then
+    echo "server:  already running (pid $pid); ./run-bonsai.sh serve stop first"
+    return 0
+  fi
+  [ -x "$SERVER_BIN" ] || die "server binary not found at $SERVER_BIN (build it: make ds4-server CUDA_ARCH=sm_89)"
+  [ -f "$MODEL" ] || die "model not found: $MODEL"
+  if slot_busy; then
+    echo "another ds4 process holds the single model slot; stop it first:" >&2
+    pgrep -a -x ds4-server >&2
+    pgrep -a -x ds4 >&2
+    pgrep -a -x ds4-c >&2
+    return 1
+  fi
+  echo "model:   $MODEL"
+  echo "backend: $BACKEND, ctx $SERVER_CTX, memory floor ${MEM_FLOOR}G, port $SERVER_PORT"
+  rm -f "$SERVE_LOG"
+  local -a envs=()
+  [ "$BACKEND" = "cuda" ] && envs+=( "DS4_CUDA_COPY_MODEL=1" )
+  setsid env "${envs[@]}" "$SERVER_BIN" -m "$MODEL" --backend "$BACKEND" \
+      -c "$SERVER_CTX" --mem-floor-gb "$MEM_FLOOR" --host 127.0.0.1 \
+      --port "$SERVER_PORT" > "$SERVE_LOG" 2>&1 < /dev/null &
+  pid=$!
+  echo "$pid" > "$SERVE_PID"
+  while [ "$waited" -lt 300 ]; do
+    grep -q "listening on" "$SERVE_LOG" 2>/dev/null && break
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "server exited before listening; last lines:"
+      tail -6 "$SERVE_LOG"
+      rm -f "$SERVE_PID"
+      return 1
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+  if ! grep -q "listening on" "$SERVE_LOG"; then
+    echo "server did not start listening within ${waited}s; last lines:"
+    tail -6 "$SERVE_LOG"
+    kill "$pid" 2>/dev/null
+    rm -f "$SERVE_PID"
+    return 1
+  fi
+  echo "server:  up (pid $pid)"
+  grep -o 'listening on.*' "$SERVE_LOG" | tail -1 | sed 's/^/         /'
+  model=$(curl -s -m 10 "http://127.0.0.1:$SERVER_PORT/v1/models" |
+          python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])' 2>/dev/null)
+  echo "base_url: http://127.0.0.1:$SERVER_PORT/v1"
+  echo "id:      ${model:-unknown} (aliases: prism-bonsai-2-27b*)"
+  echo "log:     $SERVE_LOG"
+  echo "note:    one ds4 model at a time; this server holds the slot until stopped"
+}
+
+serve_stop() {
+  local pid waited=0
+  if ! pid=$(serve_pid); then
+    echo "server:  not running"
+    rm -f "$SERVE_PID"
+    return 0
+  fi
+  kill "$pid" 2>/dev/null
+  while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 30 ]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  rm -f "$SERVE_PID"
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "server:  pid $pid did not exit within 30s" >&2
+    return 1
+  fi
+  echo "server:  stopped (pid $pid)"
+}
+
+serve_status() {
+  local pid models
+  if pid=$(serve_pid); then
+    echo "server:  running (pid $pid)"
+    grep -o 'listening on.*' "$SERVE_LOG" 2>/dev/null | tail -1 | sed 's/^/         /'
+    echo "base_url: http://127.0.0.1:$SERVER_PORT/v1"
+    models=$(curl -s -m 5 "http://127.0.0.1:$SERVER_PORT/v1/models" |
+             python3 -c 'import json,sys; m=json.load(sys.stdin)["data"][0]; print(m["id"], "ctx", m["context_length"])' 2>/dev/null)
+    if [ -n "$models" ]; then
+      echo "serving: $models"
+    else
+      echo "serving: no answer on /v1/models"
+    fi
+    command -v nvidia-smi >/dev/null &&
+      echo "vram:    $(nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader)"
+  else
+    echo "server:  not running"
+  fi
+}
+
+serve_logs() {
+  [ -f "$SERVE_LOG" ] || die "no serve log yet at $SERVE_LOG"
+  tail -n "$1" "$SERVE_LOG"
 }
 
 # One real request through the OpenAI-compatible Rust server: start it, wait
@@ -471,7 +600,7 @@ print("usage:   ", d.get("usage"))
 }
 
 usage() {
-  sed -n '5,14p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '5,15p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # --- argument parsing -------------------------------------------------------
@@ -486,6 +615,15 @@ case "${1:-}" in
   status)         status_mode ;;
   session)        shift; [ $# -gt 0 ] && PROMPT="$*"; session_mode ;;
   server)         shift; [ $# -gt 0 ] && PROMPT="$*"; server_mode ;;
+  serve)
+    shift
+    case "${1:-start}" in
+      start|"") serve_start ;;
+      stop)     serve_stop ;;
+      status)   serve_status ;;
+      logs)     shift; serve_logs "${1:-20}" ;;
+      *)        die "serve wants start, stop, status or logs (got: $1)" ;;
+    esac ;;
   help|-h|--help) usage ;;
   "")             run_mode ;;
   -*)             die "unknown option: $1 (see ./run-bonsai.sh help)" ;;
