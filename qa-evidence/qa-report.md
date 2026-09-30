@@ -967,4 +967,82 @@ NOT RUN / UNVERIFIED
 - ncu remains unusable on this host per the doc (ERR_NVGPUCTRPERM); not
   re-checked.
 
+==========================================================================
+RULE 19 RE-VERIFICATION — fb8ee47 "perf(cuda): split the Bonsai decode
+attention over its key range" (branch feature/qwen35-port, HEAD fb8ee47)
+==========================================================================
+
+Claim (docs/releases/bonsai-splitk-2026-09-30.md): the qwen35 graph now hands
+the decode attention a split-K partial buffer; at a 15k context decode goes
+4.14 -> 33.81 tokens/s, level with /data/ds4 (33.83), prefill unchanged and
+the token ids unchanged.
+
+1. KILL-SWITCH A/B — one interleaved pair, a fresh server process per arm.
+   Server: /data/ds4-dfm-rs/ds4-server -m
+   /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf --cuda -c 45056
+   --mem-floor-gb 1 --host 127.0.0.1 --port 8899, with DS4_CUDA_COPY_MODEL=1.
+   Body /tmp/cmp-body-15k.json (85090 bytes, ~15k-token prompt, 64 decode
+   tokens, streamed); timing by /tmp/cmp-measure.py, which counts SSE
+   content/reasoning deltas (ttft = first such token, decode rate = (n-1)/
+   window).
+
+     arm                          decode tok/s   ttft      first_byte  window
+     DS4_QWEN35_ATTN_SPLITK=0     4.11           20.70 s   5.03 s      15.34 s
+     default (split-K on)         34.11          19.53 s   5.03 s      1.85 s
+
+   Reproduces the report within noise: base 4.11 vs 4.14, split-K 34.11 vs
+   33.81, ttft 20.70/19.53 vs 20.10/19.54 — an 8.3x gap between the arms. The
+   SLOW arm is the DS4_QWEN35_ATTN_SPLITK=0 arm, so the knob changes the
+   executed kernel, not merely a code path.
+
+2. Both arms run the row-exact path; only the split selection changed. Decode
+   is T=1 (ds4.c:69664, 69773 call qwen35_graph_forward(...,1u,...)), so
+   tokentile = T >= 32 && ... is false in both arms (ds4.c:69306,
+   cuda/qwen35_attn_gdn.cuh:579-585) and the dispatcher takes attention<DIM>
+   (row-exact) in both. The only difference is partial = NULL (splits = 1)
+   versus g->attn_partial (splits = min(64, (keys+31)/32) then attn_merge)
+   (cuda/qwen35_attn_gdn.cuh:609-628). At T >= 32 prefill both arms hand no
+   partial buffer and take the token-tile kernel, so prefill is unchanged and
+   the ~19.5 s ttft is prefill in both arms.
+
+3. qwen35_graph_free: g->attn_partial is in the scratch[] list (ds4.c:69374,
+   the GPU definition at :69370), so the 24.2 MiB buffer is freed on graph
+   close; :69586 is the DS4_NO_GPU stub. The leak the audit found is closed.
+
+4. Gates. make test-qwen35-cuda CUDA_ARCH=sm_89: exit 0, 60 PASS, 0 FAIL; the
+   attention group (split vs single and token-tile vs split at ctx 2048 and
+   32768, T = 1 / 16 / 32 / 33 / 64) all PASS.
+   DS4_CUDA_COPY_MODEL=1 DS4_TEST_MODEL=... DS4_TEST_BACKEND=cuda
+   ./tests/test_qwen35_session: exit 0, 21 PASS, 0 FAIL (368.8 s), including
+   "PASS  long prompt: the split-K order does not move the ids".
+   Multichunk (same plus DS4_QWEN35_PREFILL_CHUNK=2): exit 0, 21 PASS, 0 FAIL
+   (375.1 s). ./run-bonsai.sh ids: IDENTICAL on both backends, exit 0.
+
+5. bash tests/run.sh: exit 1 — the only red is tests/qa-gate.sh "report covers
+   surface: DS4_QWEN35_ATTN_SPLITK", the new env knob absent from this report
+   until this section. make pq2-0-test and make test-catalog-parity (ds4-core
+   299 passed / 0 failed / 4 ignored, every integration suite PASS) are green.
+   Re-run after this section: tests/run.sh: all checks passed, exit 0.
+
+HOST STATE — the operator's server is back on 8899 (pid 2522625); /v1/models
+answers and a chat completion returned (ttft 292.8 ms, decode 39.6 tok/s, 8
+tokens). No stray ds4 processes. GPU 10779 MiB of 12282 MiB used (this
+server's compute 10446 MiB — the bank materialises on the first request, per
+the release doc's limit note), 37 C, clocks 2505 MHz.
+
+NOT VERIFIED / LIMITS
+- One interleaved pair (base then fix), one sample per arm; not the report's
+  three rounds.
+- The /data/ds4 sibling arm and the 30k rows were not re-measured: the "level
+  with /data/ds4" clause rests on the release report's numbers.
+- The row batch (16) and split ceiling (64) are the reference's; no sweep.
+- Clock readings are idle samples before each request (base 2805 MHz, fix
+  2505 MHz), not a per-clock comparison.
+- The first session-test run was killed at a 600 s wrapper cap while inside
+  the long-prompt CPU-reference; the re-run finished in 368.8 s, so that was
+  the wrapper budget, not a test hang.
+- GPU memory at rest exceeds the pre-pass idle sample (7525 MiB) because the
+  restored server has served one verification request; the state left is a
+  live, answering server as required.
+
 verdict: overall PASS
