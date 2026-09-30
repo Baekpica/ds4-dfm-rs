@@ -462,3 +462,300 @@ DS4_QWEN35_PREFILL_CHUNK, test-qwen35-session, test-qwen35-session-multichunk
 earlier section.
 
 verdict: overall PASS
+
+================================================================================
+QA pass 3 — Rust-host load path: 78c086f "fix(core): apply the fold and the
+rope on the host path"
+
+Unit: 78c086f on feature/qwen35-port (recorded as feature/qwen35-port-cpu in
+the handoff), HEAD at pass time 78c086f. Working tree carried only this report
+and gitignored misc/scratch; no tracked source was modified. Tester:
+independent rule 19 QA session, 2026-09-30. Host RTX 4070 SUPER (sm_89, CUDA
+13.3). Artifact /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf. Every CUDA run
+sets DS4_CUDA_COPY_MODEL=1. Runs were serialised on the single model slot;
+pgrep -a -x ds4 / ds4-c was checked before each heavy run and nothing not
+started here was killed.
+
+BUILD
+
+    rm -f ds4-c && make ds4-c CUDA_ARCH=sm_89   -> exit 0
+    ldd ds4-c | grep libcudart
+      libcudart.so.13 => /usr/local/cuda-13.3/lib64/libcudart.so.13 (CUDA-linked)
+    make ds4 CUDA_ARCH=sm_89                    -> "ds4 is up to date"
+      (ds4 14:28:40 and the rebuilt ds4-c both newer than ds4.c 14:27:49 and
+      Makefile 14:28:14, so the Rust host already carried the fix)
+
+FIRST ATTEMPT AND THE MODEL SLOT
+
+The first make test-qwen35-rust-host run reported both legs FAIL with an empty
+"got" because a foreign ./ds4 -m <model> --backend cuda -p "The capital of
+France is" -n 12 --temp 0 (PID 1123973, not started here) held the model slot.
+I waited 30 s for it to exit and re-ran; nothing was killed.
+
+THE NEW SURFACE: test-qwen35-rust-host (make target, both backends)
+
+    DS4_BONSAI_MODEL=/data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf \
+      make test-qwen35-rust-host
+      qwen35 rust host parity (cuda): PASS
+      qwen35 rust host parity (cpu): PASS
+      exit 0
+
+The target runs ./ds4 (the Rust host, the default binary) with
+--token-ids 760,6511,314,9338,369 --predict 8 --temp 0 on --backend cuda (with
+DS4_CUDA_COPY_MODEL=1) and --backend cpu and pins the output to the eight ids
+the C host prints. PASS on both backends is the surface verified live.
+
+HALF 1 — THE RUST HOST NOW AGREES WITH THE C HOST
+
+Rust host (cuda):
+
+    DS4_CUDA_COPY_MODEL=1 ./ds4 -m <model> --backend cuda \
+      --token-ids 760,6511,314,9338,369 --predict 8 --temp 0
+    stdout: 11751 13 198 760 6511 314 9564 369 19241        exit 0
+
+C host (cuda, the oracle):
+
+    DS4_QWEN35_TOKENS=760,6511,314,9338,369 DS4_QWEN35_STEPS=8 \
+      DS4_CUDA_COPY_MODEL=1 ./ds4-c -m <model> --cuda --first-token-test -p x
+    prompt: 760 6511 314 9338 369
+    token 5: 11751  Paris
+    token 6: 13 .
+    token 7: 198
+    token 8: 760 The
+    token 9: 6511  capital
+    token 10: 314  of
+    token 11: 9564  Germany
+    token 12: 369  is                                       exit 0
+
+The Rust host's leading ids 11751 13 198 760 6511 314 9564 369 are byte-for-
+byte the C host's tokens 5..12. They agree.
+
+HALF 2 — THE FIX'S PREMISE, THE HOST PATH, BOTH DIRECTIONS
+
+Positive (post-fix, this binary). The Rust host's stderr carries the fold line
+on the ids run:
+
+    DS4_CUDA_COPY_MODEL=1 ./ds4 -m <model> --backend cuda \
+      --token-ids 760,6511,314,9338,369 --predict 8 --temp 0 2>err
+    err: ds4: prism.hadamard folding: block 1024, 3 sign vector(s), gdn_v_grouped 1
+         ds4: Bonsai prefill chunk: 512 tokens (ctx 32768)
+
+and the chat prompt answers coherent English:
+
+    DS4_CUDA_COPY_MODEL=1 ./ds4 -m <model> --backend cuda \
+      -p "The capital of France is" -n 12 --temp 0
+    stdout: The user is asking a simple factual question: "The capital   exit 0
+    (the same run's stderr carries the hadamard folding line)
+
+Negative (live, cheap). I built the parent commit 8d172e7 in a scratch
+worktree (misc/scratch/qa/prefix-wt, gitignored: git worktree add --detach,
+then make ds4 CUDA_ARCH=sm_89, exit 0) and ran the same two commands on it:
+
+    DS4_CUDA_COPY_MODEL=1 prefix-wt/ds4 -m <model> --backend cuda \
+      -p "The capital of France is" -n 12 --temp 0
+    stdout: etalorry途bewendanấnavourума!/学前estinahaf          exit 0
+    stderr hadamard-folding lines: 0 (absent)
+
+    DS4_CUDA_COPY_MODEL=1 prefix-wt/ds4 -m <model> --backend cuda \
+      --token-ids 760,6511,314,9338,369 --predict 8 --temp 0
+    stdout: 55783 211805 72082 96641 80597 97146 101425 132488 174713
+
+Both reproduce the commit body's recorded pre-fix output exactly (the nonsense
+string and the "55783 211805 72082 ..." stream), and the pre-fix binary never
+prints the fold line. So the divergence was the load path rather than the
+tokenizer, the kernels or the session path, and the fix closes it. The
+worktree was removed with git worktree remove --force after the run; the main
+tree's source was not touched.
+
+REGRESSION GATES
+
+    cargo test -p ds4-core        -> exit 0; 5 passed (lib) + 4 passed
+      (validate.rs), 0 failed
+    make bonsai-cuda-parity       -> "bonsai cuda parity: PASS", exit 0
+    ./run-bonsai.sh ids           -> "IDENTICAL: both backends print the same
+      8 ids", exit 0 (cuda 1.65 s, cpu 44.01 s)
+    make test-qwen35-session CUDA_ARCH=sm_89 -> 30 PASS, 0 FAIL; both legs
+      print "qwen35 session path: PASS" (CUDA then CPU)
+    bash tests/run.sh             -> green on the re-run below; its only earlier
+      red was this gate's own "report covers surface: test-qwen35-rust-host"
+      check, which this pass fixes by naming the surface here
+
+SURFACE THIS PASS ADDS
+
+test-qwen35-rust-host (named and exercised live on both backends above). Every
+other surface in the gate's list stays covered by the earlier sections.
+
+verdict: overall PASS
+
+QA report: feature/qwen35-port — Bonsai (qwen35) served on ds4-server
+
+Unit under test: a7fbee4 "feat(server): serve Bonsai (qwen35) on ds4-server".
+Branch feature/qwen35-port. HEAD at pass time:
+a7fbee442e089f6b835ab523cfbdc91daa5391a9 (tree clean apart from this report
+and pre-existing untracked test binaries; no tracked source was modified by
+this pass).
+Tester: independent QA session (rule 19), model deepseek-v4.1-CC-flash.
+Date 2026-09-30. Host: RTX 4070 SUPER (sm_89, CUDA 13.3.73), 28 cores,
+Debian 6.12.107, RLIMIT_MEMLOCK 8192 KiB.
+Artifact: /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf (6.71 GiB).
+Every CUDA run set DS4_CUDA_COPY_MODEL=1 (run-bonsai.sh sets it; the
+hand-started servers were started with it explicitly), and every model run
+was serialized on the single-instance flock /tmp/ds4.lock (pgrep -x
+ds4-server/ds4/ds4-c checked before each heavy step; the slot was free each
+time). Captures: misc/scratch/qa39/ (gitignored). The unit's own servers were
+stopped with pgrep -x ds4-server | xargs -r kill; no foreign process was
+touched.
+
+CLAIM 1 — the CUDA server answers "Paris." (verified)
+
+    ./run-bonsai.sh server
+    server:  up; listening on 127.0.0.1:8899
+             model_id=Ternary-Bonsai-2-27B-PQ2_0 engine=open
+    wall:    1.30s for the request
+    finish:  stop
+    answer:  Paris.
+    reasoning: The user is asking a simple factual question: "The capital of
+    France is". I just need to complete the sentence. The capital of France
+    is Paris.
+    usage:   prompt_tokens 45, completion_tokens 36, total_tokens 81
+Exit 0. Answer "Paris.", non-empty reasoning block, finish_reason "stop" —
+all three as claimed. Log: misc/scratch/qa39/claim1-cuda-server.log.
+
+CLAIM 2 — the CPU reference prints the same answer (verified)
+
+    DS4_BONSAI_BACKEND=cpu DS4_BONSAI_CTX=8192 DS4_BONSAI_PORT=8898 \
+      ./run-bonsai.sh server
+    wall:    282.04s for the request
+    finish:  stop
+    answer:  Paris.
+    reasoning: the same sentence as the CUDA leg
+    usage:   prompt_tokens 45, completion_tokens 36, total_tokens 81
+Exit 0, ~283 s as stated. One discrepancy in the given command, not in the
+unit: run-bonsai.sh:81 reads DS4_BONSAI_SERVER_PORT (docs/BONSAI.md:166
+documents the same name), so the given DS4_BONSAI_PORT=8898 was ignored and
+the server listened on the default 8899. The claim it tests (same answer on
+the CPU reference) holds. Log: misc/scratch/qa39/claim2-cpu-server.log.
+
+CLAIM 3 — model ids (verified)
+
+    GET /v1/models -> 200, data ids ['Ternary-Bonsai-2-27B-PQ2_0']
+    GET /v1/models/prism-bonsai-2-27b -> 200,
+      {"id":"prism-bonsai-2-27b","object":"model",
+       "name":"Ternary-Bonsai-2-27B-PQ2_0","context_length":32768,...}
+    GET /v1/models/prism/bonsai-2-27b -> 200, id "prism/bonsai-2-27b"
+    GET /v1/models/no-such-alias -> 404 {"error":{"message":"unknown endpoint"}}
+The advertised id is the GGUF stem; the sibling names resolve as model
+lookups (alias list crates/ds4-server/src/models.rs:32-37).
+
+CLAIM 4 — the memory quote is honest (verified, exact arithmetic)
+
+    ./ds4-server -m <artifact> --backend cuda -c 32768 --mem-floor-gb 1 \
+      --check-config
+    exit 0; quote: per_bank 2570354688, shared_weights 7206168928,
+    floor 1073741824, available 12158238720, banks 1, total 10850265440;
+    only warn partial_unqualified.
+    same with --mem-floor-gb 4 -> exit 2, error quote_overflow
+      ("memory quote cannot host the mix at one bank"), per_bank unchanged.
+    same with -c 65536 --mem-floor-gb 1 -> exit 2, error quote_overflow,
+      per_bank 4718362624.
+
+Own derivation from ds4.c (qwen35_graph_open, ds4.c:69341-69430; shape at
+ds4.c:962; layer predicate ds4_qwen35_layer_is_linear, (il+1)%4, = 16
+gated-attention + 48 delta-net layers), ctx 32768:
+    16 x 32768 x 2 x 4 x 256 x 2 = 2147483648   (fp16 k+v caches)
+    48 x 6144 x 128 x 4          =  150994944   (delta-net state)
+    48 x 3 x 10240 x 4           =    5898240   (conv window)
+    chunk transient (cap 512)    =  264984576   (17 f32 scratch rows
+        512x129120x4, tokens 512x4, h_row 5120x4, pos3 32768x16)
+    f32 logits row 248320 x 4    =     993280
+    sum                          = 2570354688   (2.3938 GiB) — exactly the
+    reported per_bank; ctx 65536 gives 4718362624, also exact. The fence in
+    crates/ds4-core/src/serving_host.rs:2066 (qwen35_bank_bytes, transient at
+    :2115) mirrors the native allocations line for line. Live honesty check:
+    with that accepted plan serving, nvidia-smi memory.used peaked at
+    9988 MiB (samples 9936, 9988) against a quoted total of 10850265440
+    bytes = 10.10 GiB on a 12282 MiB card — the plan fits and runs, and the
+    quote is not optimistic.
+
+CLAIM 5 — --kv-disk-dir is refused by name (verified)
+
+    ./ds4-server -m <artifact> --backend cuda -c 32768 --mem-floor-gb 1 \
+      --kv-disk-dir misc/scratch/qa39/kvdisk --check-config
+    exit 2; issues include {"level":"error","code":"disk_unsupported",
+    "message":"qwen35 session snapshots are unsupported"}; stderr prints
+    "error: qwen35 session snapshots are unsupported (disk_unsupported)";
+    effective.disk=false, so the directory is dropped rather than silently
+    used (resolve_disk, crates/ds4-core/src/serving.rs:2049-2056).
+
+CLAIM 6 — the two crash fixes (verified live; historical segfault not rebuilt)
+
+Static: diffing the QWEN35 lines of 78c086f:ds4.c with HEAD ds4.c adds
+exactly two arms: ds4.c:71751 (ds4_engine_supports_batching -> false) and
+ds4.c:72589-72595 (ds4_engine_session_graph_fit_quote -> budget-less
+fail_open inside the family bound). At 78c086f the batching function falls
+through to the DeepSeek slab body and the quote into the generic estimate;
+render.rs maps engine id 13 to ModelSyntax::DeepSeek at 78c086f and to
+ModelSyntax::Qwen35 at HEAD (crates/ds4-server/src/render.rs:106-107).
+
+Live: a hand-started server (DS4_CUDA_COPY_MODEL=1, ctx 32768, floor 1,
+setsid) served four requests in a row, pid alive after each:
+    req1 non-stream "The capital of France is" -> 200, stop, "Paris." (1.24s)
+    req2 non-stream "Reply with the single word: hello", model id
+         prism-bonsai-2-27b -> 200, stop, "hello"
+    req3 stream:true -> 200, 37 SSE chunks, [DONE] seen, finish stop,
+         reassembled content "Paris.", reasoning 144 chars
+    req4 non-stream "Say OK", max_tokens 16 -> 200, finish "length", empty
+         content (the cap was consumed inside the reasoning block)
+The log had no segfault/panic/abort marker; the process died only to the
+tester's kill. Not re-run: the 78c086f segfault itself — no prebuilt old
+server exists (the old worktree has ds4-c only) and a release rebuild of that
+commit was outside this pass. The accepted evidence (code delta + current
+survival across four requests) is what this check rests on.
+
+CLAIM 7 — regression gates (verified)
+
+    ./run-bonsai.sh ids -> "IDENTICAL: both backends print the same 8 ids",
+      exit 0 (CUDA 1.65 s, CPU 41.03 s)
+    make bonsai-cuda-parity CUDA_ARCH=sm_89 -> "bonsai cuda parity: PASS",
+      exit 0
+    make test-qwen35-rust-host CUDA_ARCH=sm_89 -> "qwen35 rust host parity
+      (cuda): PASS", "(cpu): PASS", exit 0
+    cargo test -p ds4-core -> exit 0; lib 295 passed/0 failed/4 ignored,
+      bind 13, catalog 5, chat_* (7+1+9+25+1+7), inkling_catalog 7 (+1 ign),
+      layout 13, ling3vl 3, mimo2 1, native_api 2, payload 5, serving_docs 1,
+      session 4, shape 1, tensors 7, tokenizer 5, validate 4 — all ok
+    bash tests/run.sh -> "tests/run.sh: all checks passed", exit 0
+      (pq2-0-test, test-catalog-parity and tests/qa-gate.sh all PASS)
+
+cargo test -p ds4-server --lib (the named pre-existing failure): at HEAD
+314 passed, 1 failed (cache_identity::tests::bounded_sidecar_and_ple),
+1 ignored, exit 101. Reproduced at 78c086f in a scratch worktree
+(misc/scratch/qa-wt detached at 78c086f, CARGO_TARGET_DIR
+misc/scratch/qa39/target-78): first full run 312 passed, 3 failed — the two
+extra ones (tool_memory::tests::ktm_codec_matches_c_oracle and
+ktm_decode_matches_c_string_nul_truncation) were fresh-worktree artifacts:
+the compiled tests/parity/kv_c_oracle was absent (Command::new hit ENOENT,
+tool_memory.rs:584-588); after make tests/parity/kv_c_oracle in the worktree
+the suite ran once at 315 passed/0 failed. The cache_identity failure is
+timing-dependent, not deterministic: isolated at HEAD it failed 3/3; isolated
+at 78c086f it failed 2/3 with one pass; the complete worktree suite passed
+315/0 once. The test (crates/ds4-server/src/cache_identity.rs:400-417)
+rewrites a 4-byte file and asserts the stat snapshot changed; this host's
+tmpfs /tmp gives both writes the same coarse timestamp tick (observed
+mtime/ctime identical, [1790776944, 180865037]), so the assert_ne fails
+whenever the writes share a tick. cache_identity.rs is not in the unit's diff
+(a7fbee4 touches ds4.c, run-bonsai.sh, crates/ds4-core/src/serving_host.rs,
+crates/ds4-server/src/{bin/ds4-server-rs.rs,generate.rs,models.rs,render.rs,
+tools.rs,worker_run.rs} and docs), so it is pre-existing and unrelated. The
+worktree and the copied target dir were removed afterwards; the main tree's
+sources were not touched.
+
+NOTES
+- The given claim-2 command's DS4_BONSAI_PORT is not a variable the script
+  reads; DS4_BONSAI_SERVER_PORT (run-bonsai.sh:81, docs/BONSAI.md:166) is.
+  Script and docs agree with each other; only the test instruction's name
+  differs.
+- This pass adds no new public surface; every surface listed by
+  tests/qa-gate.sh stays covered by the earlier sections of this report.
+
+verdict: overall PASS
