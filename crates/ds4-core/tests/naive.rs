@@ -9,7 +9,7 @@ use std::path::PathBuf;
 const ARCH: &[u8] = b"naive_n05_flash";
 
 #[test]
-fn naive_has_a_distinct_dsa_shape() {
+fn naive_dsa_shape() {
     let ArchRoute::Fixed(variant) = route_architecture(Some(ARCH)) else {
         panic!("Naive architecture is missing from the catalog");
     };
@@ -157,7 +157,7 @@ fn public_metadata_is_accepted() {
 }
 
 #[test]
-fn changed_attention_contract_is_rejected() {
+fn rejects_attention_changes() {
     let base = fixture()["metadata"].clone();
     for (index, (key, value)) in [
         ("naive_n05_flash.attention.dsa_enabled", json!(false)),
@@ -193,7 +193,7 @@ fn changed_attention_contract_is_rejected() {
 }
 
 #[test]
-fn layouts_match_the_public_directory() {
+fn layouts_match_directory() {
     let ArchRoute::Fixed(variant) = route_architecture(Some(ARCH)) else {
         panic!("missing family");
     };
@@ -224,7 +224,7 @@ fn layouts_match_the_public_directory() {
 }
 
 #[test]
-fn official_template_matches_source() {
+fn official_template_matches() {
     let source =
         include_str!("../../../tests/fixtures/chat-template/models/naive/chat_template.jinja");
     let template = ds4_core::chat_template::Template::compile(
@@ -245,7 +245,7 @@ fn official_template_matches_source() {
 }
 
 #[test]
-fn public_tokenizer_matches_source() {
+fn tokenizer_matches_source() {
     // This gate reads metadata only. A header-only capture can run it before
     // the 87 GB download completes; it does not qualify model execution.
     let Ok(path) = std::env::var("NAIVE_TOKENIZER_GGUF") else {

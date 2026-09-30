@@ -121,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn both_official_stops_end_prefix() {
+    fn both_stops_end_prefix() {
         for stop in [END_TEXT, END_TURN, 99] {
             assert_eq!(
                 accepted_prefix(&[10, stop, 12], &[stop, 12, 13], 99),

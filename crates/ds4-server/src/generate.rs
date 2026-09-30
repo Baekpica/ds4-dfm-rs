@@ -3053,7 +3053,7 @@ fn dots3_embedded_mtp_needs_session_state() {
 }
 
 #[test]
-fn naive_spec_needs_valid_sidecar() {
+fn naive_spec_needs_sidecar() {
     use ds4_core::ModelFamily::NaiveN05;
     assert!(serial_mtp_ready(NaiveN05, true, false, 6));
     assert!(!serial_mtp_ready(NaiveN05, false, true, 6));

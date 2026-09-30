@@ -153,7 +153,7 @@ fn downloaded_draft_probe() {
 }
 
 #[test]
-fn native_draft_matches_directory() {
+fn draft_bind_matches_directory() {
     use std::process::{Command, Stdio};
 
     let Ok(path) = std::env::var("NAIVE_DRAFT_BIND") else {

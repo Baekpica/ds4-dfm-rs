@@ -130,7 +130,7 @@ class ReuseRunnerTests(unittest.TestCase):
                                                self.response(answer), self.stats("partial"))
                     self.assertEqual(not errors, okay, errors)
 
-    def test_naive_spec_stop_allows_partial(self):
+    def test_naive_stop_partial(self):
         for phase, name, answer in [("warm", "fork", "8"), ("restored", "restart", "9")]:
             for family, mode, okay in [("naive", "on", True), ("naive", "off", False),
                                        ("qwen", "on", False)]:
@@ -144,7 +144,7 @@ class ReuseRunnerTests(unittest.TestCase):
                     self.assertEqual(not errors, okay, errors)
         self.assertFalse(gate.has_warm_fork("naive", ["partial"], []))
 
-    def test_old_trace_contract_is_refused(self):
+    def test_old_trace_refused(self):
         with TemporaryDirectory() as directory:
             output = Path(directory)
             fixture = output / "fixture.json"

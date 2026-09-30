@@ -3926,7 +3926,7 @@ exit 1
     }
 
     #[test]
-    fn naive_quote_keeps_full_history() {
+    fn naive_quote_full_history() {
         let _env = lock_test_env();
         let _chunk = EnvGuard::unset("DS4_NAIVE_PREFILL_CHUNK");
         for ctx in [262_144, 524_288, 1_048_576] {
@@ -3997,7 +3997,7 @@ exit 1
     }
 
     #[test]
-    fn naive_draft_quote_prices_state() {
+    fn naive_quote_prices_draft() {
         let _env = lock_test_env();
         let _chunk = EnvGuard::unset("DS4_NAIVE_PREFILL_CHUNK");
         let req = ServingRequest {

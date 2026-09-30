@@ -912,7 +912,7 @@ tests/naive_draft_bind: tests/naive_draft_bind.c ds4.c ds4_naive_bind.inc ds4_na
 .PHONY: test-naive-draft-bind
 test-naive-draft-bind: tests/naive_draft_bind
 	NAIVE_DRAFT_BIND=$(DS4_RS_ROOT)/tests/naive_draft_bind \
-		cargo test -p ds4-core --test naive_draft --locked native_draft_matches_directory
+		cargo test -p ds4-core --test naive_draft --locked draft_bind_matches_directory
 
 tests/naive_draft_ops: tests/naive_draft_ops.cu cuda/naive_primitives.cuh cuda/naive_draft.cuh ds4_naive_plan.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<

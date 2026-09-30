@@ -162,6 +162,57 @@ NAIVE_TOKENIZER_GGUF=/absolute/path/to/first-shard.gguf \
   cargo test -p ds4-core --test naive --locked
 ```
 
+## Serving
+
+Build with `make cuda CUDA_ARCH=sm_121` and
+`make CUDA_ARCH=sm_121 ds4_weight_server`. Preserve the user's 300–2200 MHz
+clock range. Start one owner in a separate terminal and wait for its
+`ready manifest=` and broker socket before starting the worker.
+Use all four shards in the same model directory.
+
+```sh
+NAIVE_MODEL=/absolute/path/Naive-N0.5-Flash-MQ87-00001-of-00004.gguf
+NAIVE_DRAFT=/absolute/path/draft/Naive-N0.5-Flash-DSpark-Draft-Q8_0.gguf
+NAIVE_RUN="$PWD/scratch/naive-serving"
+mkdir -p "$NAIVE_RUN"
+python3 tools/host_memory_guard.py --max-gib 90 --high-gib 88 \
+  --reserve-gib 12 --trip-gib 4 --timeout 0 \
+  --log "$NAIVE_RUN/owner.memory.jsonl" -- \
+  ./ds4_weight_server --base "$NAIVE_MODEL" --drafter "$NAIVE_DRAFT" \
+  --backend vmm --scope base --reserve-gb 28 --no-repack-q8-aligned \
+  --manifest "$NAIVE_RUN/weights.ipc"
+```
+
+The byte-neutral aligned IQ2 replacements remain enabled; additive aligned
+Q8 copies are disabled. Set the same path variables in the worker terminal:
+
+```sh
+DS4_CUDA_WEIGHT_IPC_MANIFEST="$NAIVE_RUN/weights.ipc" \
+DS4_CUDA_WEIGHT_IPC_SCOPE=base DS4_SERVER_CONTINUOUS=1 DS4_SERVER_FORK=1 \
+DS4_SERVER_PIN_MIN_TOKENS=0 DS4_SERVER_PERSIST_MIN_TOKENS=1024 \
+python3 tools/host_memory_guard.py --max-gib 18 --high-gib 17 \
+  --reserve-gib 12 --trip-gib 12 --timeout 0 \
+  --log "$NAIVE_RUN/worker.memory.jsonl" -- \
+  ./ds4-server --cuda -m "$NAIVE_MODEL" --model-id naive-n05-flash \
+  --host 127.0.0.1 --port 8002 -c 262144 --max-seqs 2 \
+  --native-chunk 2048 --prefill-chunk 2048 --prefill-chunk-live 2048 \
+  --prefix-reuse partial --mtp-mode off --print-plan \
+  --kv-disk-dir "$NAIVE_RUN/disk-kv" --kv-disk-space 32G \
+  --kv-cache-min-tokens 1024
+```
+
+This matches the recorded 256K main-only worker shape. Explicit DSpark adds
+`--mtp "$NAIVE_DRAFT" --mtp-mode on --mtp-draft 2 --mtp-margin 0` and needs
+its larger quote; only the short functional gates are qualified.
+Read `/v1/models`, `/v1/stats` and a real completion after launch.
+
+`tests/naive_long_fixture.py` builds hashed near-capacity requests with the
+official source tokenizer and Jinja template. `--output-mode buffered`
+keeps reasoning separate; `--prompt-margin` and `--max-output` record the
+chosen budget. `tests/naive_long_live.py` checks seed, follow and a fresh
+disk-restored continuation. Its defaults retain the original 64-token
+stream fixture and its known 256K follow failure.
+
 ## Remaining gates
 
 Full original-source model parity and broader generation quality remain
