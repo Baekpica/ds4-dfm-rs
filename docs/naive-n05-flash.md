@@ -50,6 +50,13 @@ not full-model inference or long-context serving. GPU clocks were set to
 The native split-projection binder also matches all 613 source-directory
 entries. CUDA memcheck reports zero errors for the primitive fixtures.
 
+The eager main graph and serial session/snapshot paths are implemented behind
+the model-open guard. A weight-free GPU test matches allocator bytes to the
+quote and restores 2051 rows of DSA K/V, index codes/scales and wrapped SWA
+from prefill chunk 32 to chunk 7 byte-for-byte. Truncated snapshots invalidate
+the frontier. State tests reject logits after invalidation or a mismatched
+frontier. These checks do not establish full-model correctness.
+
 The host quote and native geometry tests include full DSA K/V and indexer
 history. With prefill chunk 2048 and one bank, the planned 1M allocation is:
 
@@ -70,6 +77,8 @@ cargo test -p ds4-core --test naive --locked
 make test-naive-memory
 make test-naive-bind
 make CUDA_ARCH=sm_121 test-naive-primitives
+make test-naive-state
+make CUDA_ARCH=sm_121 test-naive-graph
 # Optional real vocabulary gate; reads only the GGUF header.
 NAIVE_TOKENIZER_GGUF=/absolute/path/to/first-shard.gguf \
   cargo test -p ds4-core --test naive --locked
