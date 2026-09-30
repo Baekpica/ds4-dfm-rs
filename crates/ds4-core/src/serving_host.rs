@@ -1317,7 +1317,10 @@ fn quote_batch_alloc(req: &ServingRequest, caps: ServingCaps, facts: &EngineFact
         return !(serial && mtp && draft >= caps.spec_draft_min);
     }
 
-    caps.banks != BankLane::OptIn || width >= 2
+    // Explicit Naive width one still allocates a partial-restore bank.
+    caps.banks != BankLane::OptIn
+        || width >= 2
+        || (caps.family == ModelFamily::NaiveN05 && req.max_seqs == MaxSeqs::Fixed(1) && width == 1)
 }
 
 // C kv_cache_init + cpu_decode_scratch_init + the session logits row.
@@ -3951,6 +3954,45 @@ exit 1
             if ctx == 1_048_576 {
                 assert_eq!(facts.scratch_bytes, Some(1_837_994_240));
             }
+        }
+    }
+
+    #[test]
+    fn naive_single_bank_pool() {
+        let _env = lock_test_env();
+        let _partial = EnvGuard::unset("DS4_SERVER_FORK_PARTIAL");
+        let req = ServingRequest {
+            ctx: 1_048_576,
+            max_seqs: MaxSeqs::Fixed(1),
+            prefix_reuse: PrefixReuse::Partial,
+            mtp_mode: MtpMode::Off,
+            ..ServingRequest::default()
+        };
+        let caps = serving_caps(ModelFamily::NaiveN05, Variant::NaiveN05Flash);
+        for loaded in [false, true] {
+            let mut facts = EngineFacts {
+                dspark_ok: Some(loaded),
+                banks_fitted: Some(1),
+                cont_lane: Some(true),
+                ..EngineFacts::default()
+            };
+            fill_quote_facts(
+                &mut facts,
+                &req,
+                caps,
+                Some(crate::shape::SHAPE_NAIVE_N05_FLASH),
+                qwen_host(None),
+            );
+            let slot = crate::naive::swa_ckpt_bytes()
+                + if loaded {
+                    crate::naive::draft_ckpt_bytes()
+                } else {
+                    0
+                };
+            assert_eq!(
+                facts.checkpoint_pool_bytes,
+                Some(slot * crate::naive::CHECKPOINTS)
+            );
         }
     }
 
