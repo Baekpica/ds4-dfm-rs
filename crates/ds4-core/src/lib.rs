@@ -287,6 +287,35 @@ fn ling_open_check(
     })
 }
 
+fn naive_open_check(
+    backend: Backend,
+    tuning: &OpenTuning,
+    mtp: Option<&str>,
+    dspark: Option<&str>,
+    distributed: Option<&DistributedConfig>,
+) -> Result<()> {
+    let message = if backend != Backend::Cuda || distributed.is_some() {
+        "Naive requires one full CUDA model"
+    } else if tuning.steering_file.is_some()
+        || tuning.steering_attn != 0.0
+        || tuning.steering_ffn != 0.0
+    {
+        "Naive does not support directional steering"
+    } else if tuning.vision_path.is_some() {
+        "Naive is text-only"
+    } else if mtp.is_some() {
+        "Naive has no embedded MTP; use its DSpark sidecar"
+    } else if dspark.is_some() {
+        "Naive DSpark target verification is pending"
+    } else {
+        return Ok(());
+    };
+    Err(Error {
+        code: 1,
+        message: message.into(),
+    })
+}
+
 fn open_tuning(options: &[ModelOpenOption]) -> Result<OpenTuning> {
     let mut tuning = OpenTuning::default();
 
@@ -1221,10 +1250,7 @@ impl Model {
             message: format!("identify failed: {}", e.token()),
         })?;
         if identified.shape.family == ModelFamily::NaiveN05 {
-            return Err(Error {
-                code: 1,
-                message: "Naive CUDA execution is pending; artifact inspection is available".into(),
-            });
+            naive_open_check(backend, &tuning, mtp_path, dspark_path, distributed)?;
         }
         let dflash = identified.shape.family == ModelFamily::Mimo2 && mtp_path.is_some();
         if identified.shape.family == ModelFamily::Mimo2
@@ -1281,6 +1307,12 @@ impl Model {
             code: 1,
             message: format!("validate failed: {}", e.token()),
         })?;
+        if identified.shape.family == ModelFamily::NaiveN05 {
+            naive::validate_inventory(&inventory).map_err(|e| Error {
+                code: 1,
+                message: e.to_string(),
+            })?;
+        }
         if identified.shape.family == ModelFamily::Step37 {
             Step37Plan::validate_inventory(&inventory).map_err(|e| Error {
                 code: 1,
@@ -3007,6 +3039,24 @@ mod tests {
         let err = cstring_path("a\0b").unwrap_err();
         assert_eq!(err.code, 1);
         assert!(err.message.contains("NUL"));
+    }
+
+    #[test]
+    fn naive_open_contract() {
+        let tuning = OpenTuning::default();
+        assert!(naive_open_check(Backend::Cuda, &tuning, None, None, None).is_ok());
+        for backend in [Backend::Cpu, Backend::Metal] {
+            assert!(naive_open_check(backend, &tuning, None, None, None).is_err());
+        }
+        assert!(naive_open_check(Backend::Cuda, &tuning, Some("mtp"), None, None).is_err());
+        assert!(naive_open_check(Backend::Cuda, &tuning, None, Some("draft"), None).is_err());
+        for option in [
+            ModelOpenOption::Vision("vision".into()),
+            ModelOpenOption::SteeringFile("steering".into()),
+        ] {
+            let configured = open_tuning(&[option]).unwrap();
+            assert!(naive_open_check(Backend::Cuda, &configured, None, None, None).is_err());
+        }
     }
 
     #[test]

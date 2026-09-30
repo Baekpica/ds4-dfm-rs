@@ -3,7 +3,9 @@
 Integration is in progress. The Rust catalog, MQ87 metadata/layout validator,
 NFC/Qwen2 tokenizer and official Jinja input template are implemented.
 CUDA execution, serving, cache reuse and DSpark are not qualified yet.
-Model opening currently returns an explicit error before native allocation.
+The Rust host can open one full CUDA model; forced CPU, Metal, distributed,
+steering, vision and embedded-MTP settings fail before native allocation.
+DSpark target verification remains guarded while its runtime is connected.
 
 All four downloaded shards and their provenance/manifest pass SHA-256 checks.
 
@@ -70,8 +72,8 @@ acceptance or acceleration. Independent local attention checks have maximum
 absolute difference 0.00006103515625 at the 1024 and 1M position fixtures.
 Device-backtrace CUDA memcheck reports zero errors for the real draft fixture.
 
-The eager main graph and serial session/snapshot paths are implemented behind
-the model-open guard. A weight-free GPU test matches allocator bytes to the
+The eager main graph and serial session/snapshot paths are implemented.
+A weight-free GPU test matches allocator bytes to the
 quote and restores 2051 rows of DSA K/V, index codes/scales and wrapped SWA
 from prefill chunk 32 to chunk 7 byte-for-byte. Truncated snapshots invalidate
 the frontier. State tests reject logits after invalidation or a mismatched
