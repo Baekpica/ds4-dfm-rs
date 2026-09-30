@@ -99,9 +99,18 @@ deterministic over four CUDA runs) and agree in the independent QA's run
 0.1 on a 22-magnitude top logit, so a small change in either side's arithmetic
 moves it:
 
-  - the CPU reference itself is stable here (three runs give the same top-5),
-    but the QA's environment gave the CPU a top-5 about 0.18 lower
-    (760: 21.9951 against 22.1780), and its CUDA matched its own CPU;
+  - each backend is individually deterministic: the CUDA graph across two
+    16-step repeats and a 32-step run, the CPU reference across three runs;
+  - the flip is prompt-specific, not environment-specific: the
+    France-templated prompt agrees 32/32 for both backends in both the
+    author's and the QA's runs, while the Germany-templated one diverges in
+    both (the QA pass reproduced the author's values digit for digit once it
+    compared the same prompt);
+  - the diagnostic prints only the last prompt position's top-5, so the
+    deciding gap at the position where the streams part is not observable; at
+    the prompt position the two differ by 0.019 on the top logit (CPU
+    22.1780, CUDA 22.1969), inside the 0.08093 maximum measured over the
+    five-id parity dump;
   - this tree's CUDA logits are bit-identical to the sibling's (section 3), so
     the difference is not in the port.
 

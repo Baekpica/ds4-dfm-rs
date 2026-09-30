@@ -1,204 +1,326 @@
-QA report: feature/qwen35-port (Prism Bonsai 2 27B / qwen35 CPU reference unit)
+QA report: feature/qwen35-port — Bonsai (qwen35) CUDA kernels and CUDA graph
 
-Scope: the eleven commits origin/main..HEAD. Head 99ae2cf, base origin/main.
-The unit under test is b59784c, e7c3bbe, 835efd2, c265685, 789eada, 1f5ff5c,
-97c64a3, 1d3fefd, b8b4412; d248d22 fixes the one defect the previous QA pass
-found, and 99ae2cf mounts this gate.
+Unit under test: 8c887e4 "feat(cuda): port the Bonsai attention and gated
+delta-net kernels", 349e93b "feat(cuda): run the Bonsai trunk on the CUDA
+graph", and 7818a7a "fix(cuda): keep the Bonsai graph out of the CPU-only
+build", on top of a02ecd2. 7818a7a answers the single defect this QA pass
+found in the first round; the re-verification is below.
+Branch feature/qwen35-port. Base origin/main. Head 7818a7a (tree clean, no
+tracked modification during this pass).
 Tester: independent QA session (rule 19). Date 2026-09-30.
-Host: RTX 4070 SUPER (sm_89, CUDA 13.3), 28 cores, 31 GiB RAM.
-Artifact: /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf (6.71 GiB, 851 tensors).
-Oracle: /data/ds4 branch bonsai tip bbaf298, prebuilt ./ds4.
-Nothing in the repository was modified; scratch work lives in misc/scratch/qa/.
-All gates below were re-run on the post-fix tree; the earlier finding is closed.
+Host: RTX 4070 SUPER (sm_89, CUDA 13.3), 28 cores, RLIMIT_MEMLOCK 8192 KiB.
+Artifact: /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf (6.71 GiB, 851
+tensors, blk.0..blk.63 = 64 blocks).
+Oracle: /data/ds4 branch bonsai tip bbaf298, prebuilt ./ds4 (read only, not
+modified).
+Every CUDA model run below sets DS4_CUDA_COPY_MODEL=1 and waits for the
+single-instance slot. Scratch work lives in misc/scratch/qa/ (gitignored); no
+tracked file other than this report was touched.
 
-BUILD
-- make cpu -j4: exit 0, relinked ds4-c, ds4-server-c, ds4-bench-c, ds4-eval,
-  ds4-agent-c from objects that postdate the fix (ds4.c 06:00:54, ds4_cpu.o
-  06:01:12, ds4_cli_cpu.o 06:01:01, ds4-c 06:02:58).
-- From scratch on the post-fix sources: cc -O3 -ffast-math -march=native
-  -Wall -Wextra -std=c99 -D_GNU_SOURCE -DDS4_NO_GPU -c ds4.c -> exit 0, only
-  the 17 pre-existing -Wunused-function warnings (exaone_forward_token_cpu,
-  model_get_u64, solar_kv_*, ling3vl_swiglu_clamp_*, qwen4exp_*, ...); ds4_cli.c
-  -> exit 0, zero warnings.
-- make -B tests/test_qwen35_cuda CUDA_ARCH=sm_89 rebuilt ds4_cuda_test_hooks.o,
-  ds4_cuda.o and cuda/mmq/*.o from source (355 s, exit 0; only the pre-existing
-  BN and g_rr_scratch_bytes warnings).
+VERDICT SUMMARY
 
-FIX RE-VERIFICATION (d248d22) - the defect from the previous pass is closed
-- The gate now also requires opt->first_token_test (ds4.c:70096); ds4.h adds
-  ds4_engine_options.first_token_test and ds4_cli.c sets it from the parsed
-  --first-token-test (ds4_cli.c:1813).
-- The exact probe that segfaulted: ./ds4-c -m
-  /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf --cpu -p "hi" -> exit status 1
-  (real exit, stdout+stderr captured to a file, no pipe), output:
-  "ds4: Bonsai (qwen35) runs only through the CPU reference: use --cpu
-  --first-token-test (the graph backend is not implemented yet)". No crash, no
-  "prefill layer" line. The same refusal, exit 1, for the bare default-backend
-  form without --cpu, for --cuda, and for --cpu --power 90.
-- Not weakened: --cpu --power 90 --first-token-test still refuses (exit 1), so
-  the new requirement adds a condition rather than replacing the option set.
-- Reference driver intact: DS4_QWEN35_STEPS=0 ./ds4-c -m <artifact> --cpu
-  --first-token-test -p "x" -> exit 0, prompt rendered, "diagnostic run
-  completed on the native cpu path".
-- Struct safety: ds4_engine_options gains a public bool mid-struct. Every
-  in-tree constructor is deterministic (ds4_cli.c:1608 and ds4_server.c:24108
-  use designated initializers, so C99 zero-fills it; ds4_bench.c and ds4_eval.c
-  likewise; native/bridge/ds4_bridge.c:222 memsets the struct), and there is no
-  Rust or other mirror of the struct (grep over *.rs: none). No field reorder,
-  only one insertion.
+Pass. The CUDA unit verifies end to end (kernel gate, both runbooks, the
+recorded stream, bit-identical logits against the sibling, the nine entries'
+guards, the engine gate, the per-layer bound), the CPU-only build regression
+that failed the first round is fixed and re-verified three ways, the release
+report's three falsified statements are corrected, and the chat-prompt near
+tie is now explained by measurement rather than by assumption.
 
-CLAIM 1 - loader reads PQ2_0 and the artifact loads
-- ./ds4-c -m /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf --inspect printed
-  "ds4: prism.hadamard folding: block 1024, 3 sign vector(s), gdn_v_grouped 1"
-  and then the full model report, exit 0: arch qwen35, gguf v3, 851 tensors,
-  types f32 353 / bf16 96 / pq2_0 402. It does not stop at weight bind.
-- pq2_0 is gguf type 142, 128 weights in 34 bytes (ds4.c gguf_types[142]).
-  An independent GGUF parse (misc/scratch/qa/gguf_plan.py, python, not ds4's
-  loader) read the same directory: 851 tensors, 49 kv, alignment 32.
-PASS.
+RE-VERIFICATION OF THE FIX (7818a7a) — the defect of the first round is closed
 
-CLAIM 2 - PQ2_0 block format
-- make pq2-0-test, re-run after the fix: "pq2_0: all checks passed (6 reference
-  blocks, 34 bytes/block, 2.125 bpw)", exit 0.
-PASS.
+The fix wraps the graph section in #ifndef DS4_NO_GPU and adds refusing stubs
+for the CPU build (ds4.c: qwen35_graph_open/forward/free, plus the small
+struct). Re-run of all three reproductions:
 
-CLAIM 3 - every weight row against the exporter dequantizer
-- DS4_BONSAI_MODEL=/data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf make
-  test-qwen35-rows, re-run after the fix: "qwen35 rows: 851 tensors matched the
-  reference dequantizer (first 64 rows each)", exit 0.
-- Timing correction: this takes 7.4 s here, not the 0.9 s the commit message
-  records. Correctness is unaffected.
-- Fixture provenance, checked hard: tests/pq2_0/pq2_ref_generator.c is a real
-  ggml generator (ggml_get_type_traits(type)->to_float over the mmapped tensor
-  rows, FNV-1a over the f32, printing exactly the fixture's format). What the
-  tree does NOT contain is the library it links (-I<fork>/ggml/include,
-  -lggml-base): the PrismML fork is not vendored here and no pq2_ref binary and
-  no build rule exist, so the fixture cannot be regenerated from this tree alone.
-  I therefore reproduced it independently: misc/scratch/qa/gguf_plan.py parses
-  the GGUF itself and misc/scratch/qa/pq2_fixture_check.c dequantizes with the
-  fork's own PQ2_0 reference code, read from the fork at
-  /data/llama.cpp-prism branch origin/prism-v7 (ggml-common.h block_pq2_0,
-  QK_PQ2_0 128, GGML_TYPE_PQ2_0 = 142; ggml-quants.c dequantize_row_pq2_0,
-  byte j/4, bits 2*(j%4), level (q-1)*d). Result: "fixture check: 851 tensors
-  reproduced, 0 mismatch(es)" - every checksum bit-exact, every row sum within
-  1e-3. So the fixture is exactly what the PrismML dequantizer produces on this
-  file. Caveat: my checker shares the format reading with the fork by
-  construction, but the checksums are exact, so a wrong layout, scale or level
-  map would have shown.
-PASS.
+1. The ds4_cpu.o rule's exact command:
+     cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 \
+        -D_GNU_SOURCE -fno-finite-math-only -DDS4_NO_GPU -c -o /dev/null ds4.c
+   -> exit 0, 0 errors, 17 warnings (all the pre-existing unused-function
+   set, same as the a02ecd2 baseline). Before the fix: exit 1, 70 errors.
+   The same command with -o misc/scratch/qa/ds4_cpu_postfix.o -> exit 0.
 
-CLAIM 4 - CPU reference forward bit-identical to the sibling
-- Re-run after the fix on the same five tokens
-  (DS4_QWEN35_TOKENS="760,6511,314,9338,369", DS4_QWEN35_STEPS=8,
-  DS4_QWEN35_LOGITS=<file>): cmp of this tree's dump against the sibling tree's
-  dump (misc/scratch/qa/ref_logits.bin, generated from /data/ds4 at bbaf298 with
-  ./ds4 -m <artifact> --cpu --first-token-test --raw -p "x") is byte-identical,
-  4966400 bytes each, md5 00d3a420c88898fd86f3896164be9bc8 for both - the same
-  hash as before the fix. Greedy stream: 11751 Paris, 13 ., 198, 760 The,
-  6511 capital, 314 of, 9564 Germany, 369 is, with top-5 11751 14.2724,
-  25 10.8312, 198 10.6854, 31586 10.4535, 248046 10.1684.
-PASS.
+2. make -B tests/test_qwen35_rows -> exit 0, 6.63 s; then
+     make test-qwen35-rows
+   -> exit 0, 0.86 s:
+     qwen35 rows: 851 tensors matched the reference dequantizer (first 64 rows each)
+   Before the fix this target died with
+   "tests/../ds4.c:69351:10: error: implicit declaration of function
+   'ds4_gpu_flush_commands'" and make Error 1.
 
-CLAIM 5 - fold transform vs the explicit Sylvester matrix
-- make cpu && make bonsai-fold-selftest, re-run after the fix: "fold selftest:
-  blocks 2, 4 and 1024 match the explicit Hadamard matrix, blocks stay
-  independent, forward/inverse round-trips, and the gdn permutation follows the
-  tiled-to-grouped index map", exit 0. DS4_QWEN35_FOLD_SELFTEST=1 by hand gave
-  the same line.
-- The expectation is not circular: qwen35_hadamard_selftest (ds4.c 68830-68945)
-  builds (-1)^popcount(row & col)/sqrt(n) per block and compares it against
-  ds4_hadamard_rotate, then checks block isolation, forward/inverse round-trip
-  and the explicit gdn index map h + hd*(r + rep*k).
-PASS.
+3. tests/test_motif3_loader: make -B tests/test_motif3_loader -> exit 0, and
+   the raw compile with the target's flags (this time including -lm -pthread,
+   which my first-round command omitted, so its earlier exit 1 was my link
+   line and not the tree) -> exit 0, 0 errors.
 
-CLAIM 6 - CUDA PQ2_0 and fold kernels
-- nvidia-smi before the run: RTX 4070 SUPER, no compute apps, so the card was
-  free and only one GPU test ran at a time.
-- After the fix, the test binary was force-rebuilt from source and re-run:
-  exit 0, 49 PASS, 0 FAIL, ending "PQ2_0 CUDA parity: PASS".
-  Highlights: PQ2_0 row lookup 8x5120 mismatches=0; host embed_token and
-  embed_tokens bit-exact; matmuls rel_l2 <= 0.0042 against the 0.05 guard at
-  17408x5120, 5120x17408, 5120x6144 and 6144x5120 including N=8/64/256, plus
-  the exactly-representable-activation cases (MMQ max_abs 2.5e-05,
-  MMVQ 1.0e-03); fold rotate/forward/inverse max_abs 0 at 5120, 6144, 17408 and
-  1024 wide rows, round trip 5.4e-07, and the block-1024 forward against the
-  explicit matrix at 5.4e-07.
-- The test drives the real entries: ds4_gpu_matmul_pq2_0_tensor in
-  test_host_wiring ("host matmul_quant" lines), ds4_gpu_embed_token_quant_tensor
-  and ds4_gpu_embed_tokens_quant_tensor, and ds4_gpu_qwen35_fold_forward_tensor /
-  ds4_gpu_qwen35_fold_inverse_tensor for the fold rows.
-- Omissions are stated in the test file: the gdn output-norm gate pair and the
-  Bonsai attention core are not ported (no equivalent kernel here yet).
-PASS on what it claims to cover.
+Full CPU link, end to end, without touching the tree's ds4-c: the ds4_cpu.o
+rule compiled into scratch and linked with the existing CPU objects
+(ds4_cli_cpu.o linenoise.o ds4_cpu_postfix.o ds4_ple.o ds4_distributed.o
+-lm -pthread) -> exit 0, and the resulting binary runs:
 
-CLAIM 7 - the engine refuses anything but the CPU reference by name
-- The gate is ds4.c:70091-70110, message "ds4: Bonsai (qwen35) runs only
-  through the CPU reference: use --cpu --first-token-test (the graph backend is
-  not implemented yet)". Verified live, exit 1 each, for the default CPU
-  generation request, for --cuda, and for --cpu --power 90.
-- This is the item that FAILED the previous QA pass: the same invocation used to
-  SIGSEGV (exit 139) in layer_attention_raw_swa_batch at ds4.c:14527
-  (attn_q_a_norm NULL on a gated delta-net layer) instead of being refused.
-  d248d22 closes it; the probe now exits 1 with the named message and no crash.
-PASS.
+    DS4_QWEN35_STEPS=1 misc/scratch/qa/ds4-c-cpu -m <artifact> --cpu \
+      --first-token-test -p x
+    token 21: 760 The
+    ds4: prompt 21 token(s); next-token top-5: 760(20.5268)The ...
+    ds4: diagnostic run completed on the native cpu path.
+    exit 0, WALL 73.32 s
+    misc/scratch/qa/ds4-c-cpu -m <artifact> --cuda -p x
+    ds4: Bonsai (qwen35) runs only through --first-token-test, ...
+    exit 1
 
-CLAIM 8 - C/Rust catalogue parity
-- make test-catalog-parity, re-run after the fix: exit 0, 24 test-result lines,
-  every one "ok", 0 failed and 0 panicked (full log at
-  misc/scratch/qa/catalog-parity-after-fix.log).
-- DS4_QWEN35_MODEL=/data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf cargo test
-  -p ds4-core --test layout: 13 passed, including
-  validate_qwen35_artifact_when_configured. Negative control: the same test with
-  DS4_QWEN35_MODEL pointing at the mmproj GGUF panics with UnsupportedArch, so
-  the pass is real work, not a skip.
-PASS.
+So the CPU stubs resolve at link time and the CPU host works. make cpu itself
+was deliberately not run: its recipe links ds4-c and would overwrite the
+CUDA-linked binary in this shared tree. The compile, the link and the run
+above cover the same ground per object.
 
-SURFACE TOKENS (what was checked, what was observed)
-- ds4_gpu_matmul_pq2_0_tensor: declared ds4_gpu.h:907, defined ds4_cuda.cu:25049; called live by tests/test_qwen35_cuda.cu:720 and passing at M=5120 K=6144 N=1 and N=4 (rel_l2 0.0037, guard 0.05).
-- ds4_gpu_qwen35_fold_forward_tensor: declared ds4_gpu.h:922, implemented in ds4_qwen35_gpu.cuh:66; exercised live by the CUDA test (fold rotate/forward/inverse, max_abs 0 at 5120/6144/17408/1024).
-- ds4_gpu_qwen35_fold_inverse_tensor: declared ds4_gpu.h:933, implemented in ds4_qwen35_gpu.cuh:75; exercised live in the same rows, round trip max_abs 4.77e-07.
-- DS4_QWEN35_FOLD_SELFTEST: ds4.c:68967; ran live after the fix (make bonsai-fold-selftest and by hand), printed the selftest line, exit 0.
-- DS4_QWEN35_LOGITS: ds4.c:68997; used live after the fix, wrote 5 x 248320 f32, byte-identical to the sibling tree's dump.
-- DS4_QWEN35_STEPS: ds4.c:68985; used live with 0 and 8 after the fix (0 for the driver probe, 8 for the parity run); 8 greedy steps printed.
-- DS4_QWEN35_TOKENS: ds4.c:68973; used live with "760,6511,314,9338,369" after the fix, same stream as the sibling.
-- pq2-0-test: make target, ran green after the fix (6 reference blocks, 34 bytes/block, 2.125 bpw).
-- test-qwen35-rows: make target, ran green after the fix, 851 tensors matched.
-- test-qwen35-cuda: make target, rebuilt from source and ran green after the fix, 49 PASS / 0 FAIL.
-- bonsai-fold-selftest: make target, ran green after the fix.
-- bonsai-ref-check: make target, ran green after the fix (DS4_BONSAI_STEPS=8): prompt 25 tokens, top-1 760 21.9951, tokens 760 The, 1156 user, 369 is, 9859 asking, 264 a, 4145 simple, 57879 factual, 3296 question - the same stream as before the fix.
-- pub const CTX_MAX: crates/ds4-core/src/qwen35.rs:20 = 262144. Checked against real metadata: qwen35.context_length 262144 read independently from the artifact, and config_validate_qwen35_model pins it to DS4_ROPE_ORIG_CTX (ds4.c:7204), which must match for the artifact to load.
-- pub const FOLDABLE_SUFFIXES: qwen35.rs:36, 10 suffixes. Cross-checked against the fixture: of the artifact's 402 pq2_0 tensors, exactly 401 match the whitelist and the one that does not is token_embd.weight, the declared inverse-only name; the C twin qwen35_is_foldable_weight_name (ds4.c:6862) has the same 10 kinds plus the output.weight special case, and prism.hadamard coverage validation passes at load.
-- pub const FULL_ATTN_INTERVAL: qwen35.rs:17 = 4; the artifact's qwen35.full_attention_interval is 4 (read independently and pinned by the validator), and 64 layers / 4 = 16 full-attention layers, matching SHAPE_QWEN35 n_full_attn_count 16.
-- pub const LIN_CONV: qwen35.rs:15 = 4; artifact qwen35.ssm.conv_kernel = 4, pinned to DS4_N_SSM_CONV.
-- pub const LIN_HEAD_DIM: qwen35.rs:13 = 128; artifact qwen35.ssm.state_size = 128, pinned to DS4_N_KDA_HEAD_DIM.
-- pub const LIN_K_DIM: qwen35.rs:23 = LIN_K_HEAD * LIN_HEAD_DIM = 2048; consistent with the fixture's attn_qkv row width (2*2048 + 6144 = 10240 = the fixture's rows/10240).
-- pub const LIN_K_HEAD: qwen35.rs:9 = 16; artifact qwen35.ssm.group_count = 16, pinned to DS4_N_LIN_K_HEAD.
-- pub const LIN_V_DIM: qwen35.rs:25 = LIN_V_HEAD * LIN_HEAD_DIM = 6144; artifact qwen35.ssm.inner_size = 6144, pinned to DS4_N_LIN_V_HEAD * DS4_N_KDA_HEAD_DIM.
-- pub const LIN_V_HEAD: qwen35.rs:11 = 48; artifact qwen35.ssm.time_step_rank = 48, pinned to DS4_N_LIN_V_HEAD.
-- pub const SHAPE_QWEN35: crates/ds4-core/src/shape.rs:906 (64 layers, 5120 embd, 248320 vocab, 24/4 heads of 256, dense FFN 17408, rms 1e-6, rope base 1e7, rope_orig_ctx 262144, n_swa_period 4, n_full_attn_count 16, n_kda_head_dim 128, n_ssm_conv 4, no experts/MTP/hyper-connections). The artifact's own metadata matches every field this unit uses, the C arm DS4_SHAPE_QWEN35 was live-verified by the loading, row and parity tests, and the layout test resolves it against the artifact's 851 tensors.
-- pub fn is_foldable_weight_name: qwen35.rs:50; same rule as the C function (output.weight whole, blk.<n>.<suffix> with the 10 suffixes), and the counts above agree with the artifact. No standalone tape asserts the two are equal, so the agreement is by source inspection of both, not by a test. Accepted, unverified-by-test.
-- pub fn layer_is_full_attention: qwen35.rs:29, (il+1) % 4 == 0; the complement of ds4_qwen35_layer_is_linear ((il+1) % DS4_N_SWA_PERIOD != 0) with n_swa_period 4, giving layers 3,7,...,63. No standalone parity tape either; accepted, unverified-by-test.
+CUDA SIDE UNTOUCHED BY THE FIX (re-measured on the current build)
 
-MOUNTS ADDED BY 99ae2cf
-- tests/qa-gate.sh and tests/run.sh are now tracked in the tree (the previous
-  pass saw them as untracked files). tests/qa-gate.sh does not list them among
-  the surfaces it greps for: its extractors cover ds4_gpu.h entries, DS4_*
-  getenv knobs in ds4.c, Makefile targets and Rust pub items, and it prints the
-  same 24 surfaces it printed before d248d22 (d248d22 touched ds4.c by one
-  condition, ds4.h and ds4_cli.c, none of which adds a surface of those four
-  classes). bash tests/qa-gate.sh on this report: every "report covers surface"
-  check PASS. tests/run.sh chains pq2-0-test, test-catalog-parity and this gate.
+    make ds4-c CUDA_ARCH=sm_89            -> exit 0 ("ds4-c is up to date";
+    ds4.c 09:29:18, ds4.o 09:30:16, ds4-c 09:30:17; the guard is a no-op for
+    the CUDA build, which compiles the same block either way)
+    make test-qwen35-cuda CUDA_ARCH=sm_89 -> exit 0, 20.74 s,
+      PQ2_0 CUDA parity: PASS
+      gdn out norm, sigmoid (qwen4exp) gate: max_abs=3.57628e-07 failures=0/18432: PASS
+      gdn out norm, silu (Bonsai) gate: max_abs=9.53674e-07 failures=0/18432: PASS
+      eight attention cases, token-tile at 4.53e-08 / 4.12e-08 / 6.12e-08 / 3.67e-08
+    make bonsai-cuda-parity              -> "bonsai cuda parity: PASS", exit 0,
+      43.90 s, the two token files identical (the eight recorded ids)
 
-NOT VERIFIED
-- The fixture cannot be regenerated from anything inside this tree (no fork, no
-  ggml, no build rule); it was verified by reimplementing the fork's published
-  dequantizer instead, which reproduced all 851 tensors.
-- The refusal is family-gated by ds4_model_is_qwen35(), so it cannot affect other
-  families; I could not exercise that on this host because the only other GGUF
-  here (Qwen3.8-27B-GSQ-RCO-IQ3_XXS) also declares general.architecture qwen35
-  and is rejected at bind for an iq2_s token_embd.
-- test-qwen35-cuda's binary is rebuilt by make -B, but the Makefile does not list
-  ds4.h as a prerequisite of ds4_cuda.o. Harmless here (ds4_cuda.cu neither
-  includes ds4.h nor uses ds4_engine_options), noted as build hygiene only.
+Logits re-measured on this build (three fresh dumps, 5 x 248320 f32):
+
+    cuda - cpu    : max|d|=0.08093 rms_rel=0.264% argmax 5/5 bit_identical=False
+    sibling - cpu : max|d|=0.08093 rms_rel=0.264% argmax 5/5 bit_identical=False
+    cuda - sibling: max|d|=0.00000 rms_rel=0.000% argmax 5/5 bit_identical=True
+    new cuda dump - first-round cuda dump: bit_identical=True
+    new cpu  dump - first-round cpu  dump: bit_identical=True
+
+The entry-guard probe was rebuilt against the post-fix hooks object and
+re-run: 101 checks, 90 refusals (got=0), 11 valid runs (got=1), 0 FAIL.
+
+CAST OF THE FIRST ROUND'S DEFECT, KEPT FOR THE RECORD
+
+349e93b added the graph block unguarded, so the -DDS4_NO_GPU compilation of
+ds4.c failed with 70 errors on 67 distinct lines (first ds4.c:68987 unknown
+type name ds4_gpu_tensor, last ds4.c:69351 implicit declaration of
+ds4_gpu_flush_commands), which broke make cpu and every target that compiles
+ds4.c with that switch (test-qwen35-rows, test-motif3-loader,
+test-motif3-reference, test-exaone-tokenizer, tokenizer_c_oracle). The
+regression boundary was verified then: a02ecd2 compiled clean with the same
+command. Fixed in 7818a7a and re-verified above.
+
+KERNEL GATE AND RUNBOOKS (first round, re-confirmed above)
+
+    make test-qwen35-cuda CUDA_ARCH=sm_89 -> PQ2_0 CUDA parity: PASS, with the
+    restored gdn-output-gate group (sigmoid 3.57628e-07, silu 9.53674e-07) and
+    the eight attention split cases including the four token-tile ones.
+    make bonsai-cuda-check  -> exit 0: the greedy stream on "The capital of
+    France is", tokens 25..36.
+    make bonsai-cuda-parity -> PASS (above).
+    make bonsai-fold-selftest, make bonsai-ref-check, make pq2-0-test,
+    make test-qwen35-rows, make test-qwen35-cuda: all exit 0.
+
+REFERENCE STREAM AND LOGITS
+
+With DS4_QWEN35_TOKENS=760,6511,314,9338,369 DS4_QWEN35_STEPS=8 the CUDA
+graph prints exactly token 5..12 = 11751, 13, 198, 760, 6511, 314, 9564, 369,
+and the 64-step run reproduces the recorded stream for its first 16 positions
+(adds 19241 Berlin). The logits comparison is in the section above.
+
+NINE ENTRIES AND THEIR GUARDS
+
+Scratch probe misc/scratch/qa/entry_guards.cu (built by
+misc/scratch/qa/build-guards.sh with the flags and objects of
+tests/test_qwen35_cuda), log misc/scratch/qa/52-entry-guards-postfix.log:
+
+    101 checks, 90 refusals, 11 valid runs, 0 FAIL
+      ds4_gpu_qwen4_conv_stream_tensor          10 checks / 1 valid
+      ds4_gpu_qwen4_gdn_prep_tensor             12 / 1
+      ds4_gpu_qwen4_gdn_scan_tensor             11 / 1
+      ds4_gpu_qwen4_gdn_out_tensor (sigmoid)     9 / 1
+      ds4_gpu_qwen35_gdn_out_tensor (silu)       9 / 1
+      ds4_gpu_qwen4_attn_decode_tensor          17 / 3
+      ds4_gpu_qwen4_attn_tokentile_available     8 / 1
+      ds4_gpu_qwen35_attn_prep_tensor           16 / 1
+      ds4_gpu_qwen35_matvec_bf16_tensor          9 / 1
+
+Each malformed case isolates one guard while the rest of the request is
+valid, so a dead guard would show as a 1 where a 0 is required: T=0, K out of
+2..4, D<32 / D>128 / D%32, Hv%Hk, H%Hkv, D not in 32/128/256, nrot>64 and odd
+nrot, pos0+T>cap, every undersized tensor, a weight offset at or past the map
+end, a weight range that overflows it, a NULL map, and the missing or
+undersized sparse / split-K tensors.
+
+ds4_gpu_qwen35_matvec_bf16_tensor numerics: kernel against the float-activation
+reference max|d| = 1.297e-06, against the bf16-rounded-activation reference
+3.023e-02, so the activation is not rounded to bf16 (the property the entry
+exists for).
+
+Reachability: six of the nine are called from the ds4.c graph (69046 matvec,
+69108 conv, 69113 gdn_prep, 69118 gdn_scan, 69122 gdn_out, 69145 attn_prep,
+69155 attn_decode). ds4_gpu_qwen4_attn_tokentile_available (ds4_gpu.h:1058,
+defined in cuda/qwen35_attn_gdn.cuh) has no caller in this tree: the same
+decision lives in qwen35_attn_tokentile_ok inside the header, which the decode
+dispatcher uses, and the sibling's graph calls the entry (its ds4.c:69037).
+Reachable through the ABI and exercised by the probe; a note, not a defect.
+
+Probe artefact worth recording: with the first probe version, which freed its
+mmap'd scratch maps and let the next mmap reuse the address, the matvec valid
+case returned 0 with "CUDA model range copy failed for Bonsai weights ...
+invalid argument (serving mapped)". The resolver caches host ranges by address
+(comment at ds4_cuda.cu:1745). Keeping the maps alive for the process lifetime
+makes every case pass; the model run resolves from the real artifact mapping.
+
+ENGINE GATE
+
+    ./ds4-c -m <artifact> --cuda -p x    exit 1
+    ./ds4-c -m <artifact> --cpu  -p x    exit 1
+    ./ds4-c -m <artifact>        -p x    exit 1
+    all three: "ds4: Bonsai (qwen35) runs only through --first-token-test, on
+    the CPU reference (--cpu) or the CUDA graph (--cuda); the session and
+    server paths are not implemented yet"
+    ./ds4-c -m <artifact> --cpu --first-token-test -p x    exit 0
+    and the CPU-only scratch binary refuses --cuda the same way.
+
+PER-LAYER ARRAY BOUND
+
+DS4_MAX_LAYER = 61 (ds4.c:317, the DeepSeek bound); DS4_QWEN35_MAX_LAYER 64u
+with the aliasing comment (68982); the four arrays sized with it (68990-68993);
+qwen35_graph_open refuses a model with more blocks than the arrays hold
+(69233-69236, "Bonsai CUDA graph: %u blocks exceed the %u-slot state
+arrays"), and the string is in the built ds4-c. The artifact really has 64
+blocks (independent GGUF parse, blk.0..blk.63). The live adequacy proof is the
+bit-identical CUDA logits against the sibling, which aliased state would
+break. The refusal path itself cannot be provoked here (no >64-block
+artifact).
+
+CHAT-PROMPT NEAR TIE — SETTLED BY MEASUREMENT
+
+All runs on the current binary, one model process at a time, artifact
+--first-token-test with the CLI's 25-token chat template. Exact command shape:
+
+    env DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_STEPS=<n> ./ds4-c -m <artifact> \
+        --cuda --first-token-test -p "The capital of Germany is"
+    env DS4_QWEN35_STEPS=<n> ./ds4-c -m <artifact> \
+        --cpu  --first-token-test -p "The capital of Germany is"
+
+    1) Germany, cuda, 16 steps:
+       760(22.1969)The 90700(16.3264)Thinking 77264(13.6300)Hmm
+       1421(13.5868)User 15893(12.9160)Simple     token 29: 883  about
+       (WALL 2.34 s)
+    2) Germany, cuda, 16 steps, repeat:
+       byte-identical top-5 and stream              token 29: 883  about
+       (WALL 2.31 s)
+    3) Germany, cuda, 32 steps:
+       byte-identical top-5 and stream              token 29: 883  about
+       (WALL 2.78 s)
+    4) Germany, cpu, 16 steps:
+       760(22.1780)The 90700(16.3378)Thinking 77264(13.6195)Hmm
+       1421(13.5884)User 15893(12.9233)Simple       token 29: 264  a
+       (WALL 141.37 s)
+    5) Germany, cpu, 32 steps:
+       byte-identical top-5 and stream              token 29: 264  a
+       (WALL 195.15 s)
+    control) France, cuda, 16 steps:
+       760(21.9915)The 90700(16.0678)Thinking 1421(13.8667)User
+       15893(13.5789)Simple 77264(13.4640)Hmm        token 29: 264  a
+       (WALL 2.37 s)
+
+What this settles:
+
+- The CUDA stream is deterministic in this environment: two 16-step repeats
+  are byte-identical, and the 16- and 32-step runs agree on the whole stream.
+- On the Germany prompt the CUDA values are the author's to the digit
+  (22.1969 / 16.3264 / 13.6300 / 13.5868 / 12.9160 and 883 "about"), and the
+  CPU values are the author's to the digit (22.1780 / 16.3378 / 13.6195 /
+  13.5884 / 12.9233 and 264 "a"). So the author's CPU-versus-CUDA divergence
+  on that prompt reproduces here; it is not an environment difference.
+- My earlier "the backends agree" observation was made on the France prompt
+  (The capital of France is), where this environment gives CUDA 760(21.9915)
+  with 264 "a" and CPU 760(21.9951) with 264 "a" (32/32 identical). The
+  control run above repeats the France prompt on the same binary and gets the
+  same 264 "a", so the difference between the two observations is the prompt
+  (last token 9338 France against 9564 Germany), not nondeterminism on either
+  backend.
+- The step count does not change the first-token top-5 on either backend
+  (16 and 32 identical), so there is no step-count-dependent top-5 defect to
+  name.
+- The doc's "the deciding gap is about 0.1 on a 22-magnitude top logit" could
+  not be checked: the diagnostic prints the top-5 of the prompt position only,
+  not per-step candidates, so the 883-against-264 gap at token 29 is not
+  observable from these runs. What is measurable on the same prompt is the
+  top-1 difference between the backends: 22.1969 - 22.1780 = 0.0189.
+
+RELEASE REPORT CHECK (docs/releases/bonsai-cuda-graph-2026-09-30.md)
+
+The first round falsified three statements; all three are corrected in
+7818a7a:
+
+- Section 4 no longer claims the flip as expected behaviour. It now says the
+  backends agree for the first 24 tokens and then differ in the author's runs
+  while the QA's run agreed 32/32, that the CPU is stable across the author's
+  three runs, and concludes that the long chat continuation is a near-tie coin
+  flip at the artifact's decode precision, with the explicit-prompt stream as
+  the gate. Addressed. Two nits remain in the same section: its parenthetical
+  compares 21.9951 (the QA's France-prompt CPU top-1) with 22.1780 (the
+  author's Germany-prompt CPU top-1), which mixes prompts — the like-for-like
+  numbers are in the section above, and same-prompt the two environments agree
+  on each backend; and the "about 0.1" candidate gap is not measurable from
+  the diagnostic (see above).
+- Section 5 now says the sibling tree's constant is 79 (which is what
+  /data/ds4/ds4.c:496 defines) instead of 64, keeping the same conclusion.
+  Addressed.
+- Section 0 now marks the failing tensor as one run's observation and notes
+  that it varies with allocation order. Addressed (my run died at
+  blk.35.attn_q.weight, the author's example was blk.32.ffn_gate.weight; the
+  symptom, "CUDA host registration skipped: invalid argument" then a matmul
+  failure part-way through the trunk, is the same).
+- The report also records the CPU-build guard as the third commit. The rest of
+  the document re-checks against this pass: section 1 kernel gates, section 2
+  parity, section 3 logits, section 6 rates (1.66/3.10 s and 0.703 s copy
+  measured here against 1.64/3.09 s and 26 ms per token claimed) all hold.
+
+SURFACES COVERED (the gate's list for this branch)
+
+Live in this pass: ds4_gpu_qwen4_conv_stream_tensor,
+ds4_gpu_qwen4_gdn_prep_tensor, ds4_gpu_qwen4_gdn_scan_tensor,
+ds4_gpu_qwen4_gdn_out_tensor, ds4_gpu_qwen4_attn_decode_tensor,
+ds4_gpu_qwen4_attn_tokentile_available, ds4_gpu_qwen35_gdn_out_tensor,
+ds4_gpu_qwen35_attn_prep_tensor, ds4_gpu_qwen35_matvec_bf16_tensor (probe, 101
+checks); ds4_gpu_matmul_pq2_0_tensor, ds4_gpu_qwen35_fold_forward_tensor,
+ds4_gpu_qwen35_fold_inverse_tensor (make test-qwen35-cuda); DS4_QWEN35_TOKENS,
+DS4_QWEN35_STEPS, DS4_QWEN35_LOGITS (stream, logits and chat-prompt runs);
+DS4_QWEN35_FOLD_SELFTEST (make bonsai-fold-selftest); bonsai-cuda-check,
+bonsai-cuda-parity, bonsai-fold-selftest, bonsai-ref-check, pq2-0-test,
+test-qwen35-cuda, test-qwen35-rows (all exit 0; test-qwen35-rows was the
+target the first round found broken and now builds and runs).
+
+Not re-run in this pass, present at HEAD, outside this unit's diff (they come
+from the earlier catalogue commit and none of their sources is touched by the
+three commits): in crates/ds4-core/src/qwen35.rs and
+crates/ds4-core/src/shape.rs:
+  pub const CTX_MAX, pub const FOLDABLE_SUFFIXES, pub const FULL_ATTN_INTERVAL,
+  pub const LIN_CONV, pub const LIN_HEAD_DIM, pub const LIN_K_DIM,
+  pub const LIN_K_HEAD, pub const LIN_V_DIM, pub const LIN_V_HEAD,
+  pub const SHAPE_QWEN35, pub fn is_foldable_weight_name,
+  pub fn layer_is_full_attention.
+Their C-against-Rust parity harness (make test-catalog-parity) was not
+executed here.
+
+NOT RUN, AND WHY
+
+- make cpu itself: its recipe links ds4-c and would overwrite the CUDA-linked
+  binary in this shared tree. The ds4_cpu.o compile, the full CPU link into
+  scratch and a CPU-only run stand in for it.
+- No forced full rebuild of ds4-c: the binary already postdates ds4.c and the
+  guard does not change the CUDA build's code; freshness was established from
+  timestamps plus make -q.
+- The >64-block refusal path cannot be provoked (no artifact with more than
+  64 blocks here).
+- Prefill throughput is not measured by this diagnostic (the release report
+  says so too); only the decode shape was timed.
+- The token-tile attention kernel is not reached by the trunk (T stays under
+  its 32-token gate), so it is verified through the kernel gate only.
+- The 883-against-264 candidate gap at token 29 is not observable from the
+  diagnostic's output (prompt-position top-5 only).
+- The Rust catalogue items listed above were not re-executed.
 
 verdict: overall PASS
