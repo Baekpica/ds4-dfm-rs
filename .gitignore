@@ -110,6 +110,7 @@ __pycache__/
 /tests/naive_bind
 /tests/naive_graph
 tests/naive_state
+tests/naive_banks
 /tests/test_step37_loader
 /tests/test_step37_forward
 /tests/test_inkling_kernels

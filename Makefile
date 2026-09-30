@@ -1,6 +1,6 @@
 CC ?= cc
 UNAME_S := $(shell uname -s)
-NAIVE_NATIVE_INCS := ds4_naive_plan.h ds4_naive_bind.inc ds4_naive_graph.inc ds4_naive_session.inc ds4_naive_payload.inc
+NAIVE_NATIVE_INCS := ds4_naive_plan.h ds4_naive_bind.inc ds4_naive_graph.inc ds4_naive_session.inc ds4_naive_payload.inc ds4_naive_batch.inc ds4_naive_bank_payload.inc
 
 ifeq ($(UNAME_S),Darwin)
 NATIVE_CPU_FLAG ?= -mcpu=native
@@ -841,6 +841,16 @@ tests/naive_graph.o: tests/naive_graph.c tests/naive_state_fixture.h ds4.c $(NAI
 
 tests/naive_graph: tests/naive_graph.o $(DS4_CUDA_SUPPORT_OBJS)
 	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+tests/naive_banks.o: tests/naive_banks.c tests/naive_state_fixture.h ds4.c $(NAIVE_NATIVE_INCS)
+	$(CC) $(CFLAGS) -O0 -Wno-unused-function -ffunction-sections -fdata-sections -I. -c -o $@ $<
+
+tests/naive_banks: tests/naive_banks.o $(DS4_CUDA_SUPPORT_OBJS)
+	$(NVCC) $(NVCCFLAGS) -Xlinker --gc-sections -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-naive-banks
+test-naive-banks: tests/naive_banks
+	./tests/naive_banks
 
 .PHONY: test-naive-graph
 test-naive-graph: tests/naive_graph

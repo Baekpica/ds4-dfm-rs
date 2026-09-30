@@ -45788,6 +45788,7 @@ static bool step37_batch_runtime_decode(ds4_step37_batch_runtime *rt, ds4_engine
 
 #include "ds4_ling3vl_batch.inc"
 #include "ds4_mimo2_batch.inc"
+#include "ds4_naive_batch.inc"
 
 /* ponytail: full DSA is exact while every visible token fits the model's
  * top-k.  Add the compact indexer/cache path before raising this ceiling. */
@@ -56645,6 +56646,7 @@ struct ds4_batch_ctx {
     ds4_step37_batch_runtime *step37; /* non-NULL selects the Step bank dispatch */
     ds4_ling3vl_batch_runtime *ling3vl; /* non-NULL selects the Ling bank dispatch */
     ds4_mimo2_batch_runtime *mimo2; /* shared scratch, independent MiMo KV */
+    ds4_naive_batch_runtime *naive; /* full DSA KV plus indexer history per bank */
     ds4_dots3_batch_runtime *dots3; /* independent latent/DSA text banks */
     bool            supports_partial_reuse; /* explicit runtime capability */
     ds4_gpu_graph   g;
@@ -57409,6 +57411,8 @@ static int ling3vl_cont_bank_restore_payload(
     return 0;
 }
 
+#include "ds4_naive_bank_payload.inc"
+
 static uint64_t mimo2_bank_payload_bytes(ds4_batch_ctx *ctx, uint32_t bank) {
     if (!ctx || !ctx->mimo2 || bank >= ctx->max_seq ||
         !ctx->bank_hist_valid[bank] || !ctx->bank_hist_len[bank] ||
@@ -57553,6 +57557,7 @@ uint64_t ds4_cont_bank_payload_bytes(ds4_batch_ctx *ctx, uint32_t bank) {
     if (ctx->exaone) return exaone_cont_bank_payload_bytes(ctx, bank);
     if (ctx->step37) return step37_cont_bank_payload_bytes(ctx, bank);
     if (ctx->ling3vl) return ling3vl_cont_bank_payload_bytes(ctx, bank);
+    if (ctx->naive) return naive_bank_payload_bytes(ctx, bank);
     if (ctx->mimo2) return mimo2_bank_payload_bytes(ctx, bank);
     if (ctx->solar) return solar_cont_bank_payload_bytes(ctx, bank);
     ds4_gpu_graph *g = &ctx->g;
@@ -57612,6 +57617,8 @@ int ds4_cont_bank_save_payload(ds4_batch_ctx *ctx, uint32_t bank,
         return step37_cont_bank_save_payload(ctx, bank, fp, err, errlen);
     if (ctx->ling3vl)
         return ling3vl_cont_bank_save_payload(ctx, bank, fp, err, errlen);
+    if (ctx->naive)
+        return naive_bank_save_payload(ctx, bank, fp, err, errlen);
     if (ctx->mimo2)
         return mimo2_bank_save_payload(ctx, bank, fp, err, errlen);
     if (ctx->solar) {
@@ -57710,6 +57717,9 @@ int ds4_cont_bank_restore_payload(ds4_batch_ctx *ctx, uint32_t bank,
             ctx, bank, fp, payload_bytes, err, errlen);
     if (ctx->ling3vl)
         return ling3vl_cont_bank_restore_payload(
+            ctx, bank, fp, payload_bytes, err, errlen);
+    if (ctx->naive)
+        return naive_bank_load_payload(
             ctx, bank, fp, payload_bytes, err, errlen);
     if (ctx->mimo2)
         return mimo2_bank_load_payload(
@@ -59228,6 +59238,7 @@ uint64_t ds4_batch_ctx_trim_free(ds4_batch_ctx *ctx, uint64_t want_bytes) {
     if (ctx->exaone) { return exaone_ckpt_trim(ctx->exaone, want_bytes); }
     if (ctx->step37) { return step37_ckpt_trim(ctx->step37, want_bytes); }
     if (ctx->ling3vl) { return ling3vl_ckpt_trim(ctx->ling3vl, want_bytes); }
+    if (ctx->naive) { return naive_ckpt_trim(ctx->naive, want_bytes); }
     if (ctx->mimo2) { return mimo2_ckpt_trim(ctx->mimo2, want_bytes); }
     /* EXAONE and Motif banks use fixed CUDA allocations.  They are fit before
      * allocation and cannot be partially unmapped; never fall through to the
@@ -59485,7 +59496,7 @@ int ds4_batch_ctx_reclaim_prepare(ds4_batch_ctx *ctx, const uint32_t *ordered_id
     plan->want_bytes = want_bytes;
     if (!ctx || !ds4_batch_trim_enabled()) return DS4_RECLAIM_UNSUPPORTED;
     if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->step37 || ctx->ling3vl ||
-        ctx->mimo2)
+        ctx->mimo2 || ctx->naive)
         return DS4_RECLAIM_UNSUPPORTED;
     if (ctx->solar) return DS4_RECLAIM_UNSUPPORTED;
     if (ctx->in_pass) return DS4_RECLAIM_BUSY;
@@ -60089,6 +60100,77 @@ static int ling3vl_batch_ctx_create_impl(
 #undef LBC_ERR
 }
 
+static int naive_batch_ctx_create_impl(
+        ds4_engine *e, int ctx_size, int max_seq, naive_fit_mode mode,
+        ds4_batch_ctx **out, char *err, size_t errlen) {
+#define NBC_ERR(...) do { if (err && errlen) snprintf(err, errlen, __VA_ARGS__); } while (0)
+    const uint32_t cap = naive_prefill_cap((uint32_t)ctx_size);
+    const ds4_context_memory plan = naive_context_memory((uint32_t)ctx_size, cap);
+    if (e->mtp_ready || e->dspark_ready || !plan.total_bytes) {
+        NBC_ERR("batch_ctx_create: Naive bank plan needs a valid context without a support model");
+        return 1;
+    }
+    uint32_t chosen = (uint32_t)max_seq;
+    if (chosen > N05_BANK_MAX && mode == N05_STRICT_BANKS) {
+        NBC_ERR("batch_ctx_create: Naive supports at most %d banks", N05_BANK_MAX);
+        return 1;
+    }
+    if (chosen > N05_BANK_MAX) { chosen = N05_BANK_MAX; }
+    uint64_t free_b = 0, total_b = 0;
+    if (ds4_gpu_mem_info(&free_b, &total_b) == 0) {
+        const uint64_t outstanding = ds4_gpu_substrate_outstanding();
+        free_b = free_b > outstanding ? free_b - outstanding : 0;
+        const uint64_t headroom = ds4_batch_fit_headroom_bytes(ctx_size);
+        while (chosen > 0) {
+            const uint64_t banks = plan.total_bytes +
+                                   (uint64_t)(chosen - 1u) * plan.raw_bytes;
+            if (banks + headroom <= free_b) { break; }
+            chosen--;
+        }
+        if (!chosen || (mode == N05_STRICT_BANKS && chosen < (uint32_t)max_seq)) {
+            NBC_ERR("batch_ctx_create: Naive banks and headroom exceed free memory"
+                    " (ctx=%d max_seq=%d free=%.2f GiB)", ctx_size, max_seq,
+                    (double)free_b / 1073741824.0);
+            return 1;
+        }
+    }
+    ds4_batch_ctx *ctx = xcalloc(1, sizeof(*ctx));
+    ctx->e = e;
+    ctx->ctx_size = (uint32_t)ctx_size;
+    ctx->prefill_cap = cap;
+    ctx->raw_cap = (uint32_t)ctx_size;
+    ctx->seq_cap = (uint32_t)ctx_size;
+    ctx->max_seq = chosen;
+    for (;;) {
+        ctx->naive = naive_batch_create(ctx->ctx_size, ctx->max_seq, cap);
+        if (ctx->naive) { break; }
+        if (mode == N05_STRICT_BANKS || ctx->max_seq <= 1u) {
+            NBC_ERR("batch_ctx_create: Naive bank allocation failed (ctx=%d max_seq=%u)",
+                    ctx_size, ctx->max_seq);
+            free(ctx);
+            return 1;
+        }
+        ctx->max_seq--;
+    }
+    if ((uint64_t)ctx->max_seq * ctx->seq_cap > SIZE_MAX / sizeof(*ctx->bank_hist)) {
+        NBC_ERR("batch_ctx_create: Naive bank history size overflow");
+        naive_batch_free(ctx->naive);
+        free(ctx);
+        return 1;
+    }
+    ctx->bank_hist = xmalloc((size_t)ctx->max_seq * ctx->seq_cap * sizeof(int));
+    ctx->bank_hist_len = xcalloc(ctx->max_seq, sizeof(*ctx->bank_hist_len));
+    ctx->bank_hist_valid = xcalloc(ctx->max_seq, sizeof(*ctx->bank_hist_valid));
+    ctx->bank_gen = xmalloc(ctx->max_seq * sizeof(*ctx->bank_gen));
+    for (uint32_t b = 0; b < ctx->max_seq; b++) { ctx->bank_gen[b] = 1u; }
+    ctx->bank_last_use = xcalloc(ctx->max_seq, sizeof(*ctx->bank_last_use));
+    ctx->supports_partial_reuse = ctx->naive->checkpoint_slab != NULL;
+    ds4_metric_set(&ds4_metrics_get()->banks_total, ctx->max_seq);
+    *out = ctx;
+    return 0;
+#undef NBC_ERR
+}
+
 static int mimo2_batch_ctx_create_impl(
         ds4_engine *e, int ctx_size, int max_seq, mimo2_fit_mode mode,
         ds4_batch_ctx **out, char *err, size_t errlen) {
@@ -60297,6 +60379,11 @@ static int ds4_batch_ctx_create_impl(ds4_engine *e, int ctx_size, int max_seq, i
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL) {
         return ling3vl_batch_ctx_create_impl(
             e, ctx_size, max_seq, fit, out, err, errlen);
+    }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
+        return naive_batch_ctx_create_impl(
+            e, ctx_size, max_seq, fit ? N05_FIT_BANKS : N05_STRICT_BANKS,
+            out, err, errlen);
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
         return mimo2_batch_ctx_create_impl(
@@ -60960,10 +61047,11 @@ void ds4_batch_ctx_destroy(ds4_batch_ctx *ctx) {
         free(ctx);
         return;
     }
-    if (ctx->step37 || ctx->ling3vl || ctx->mimo2) {
+    if (ctx->step37 || ctx->ling3vl || ctx->mimo2 || ctx->naive) {
         step37_batch_runtime_free(ctx->step37);
         ling3vl_batch_runtime_free(ctx->ling3vl);
         mimo2_batch_free(ctx->mimo2);
+        naive_batch_free(ctx->naive);
         free(ctx->bank_hist);
         free(ctx->bank_hist_len);
         free(ctx->bank_hist_valid);
@@ -61012,6 +61100,7 @@ static void bank_hist_invalidate_all(ds4_batch_ctx *ctx) {
     for (uint32_t b = 0; b < ctx->max_seq; b++) {
         ctx->bank_gen[b]++;   /* Inc 5a */
         if (ctx->dots3) { dots3_ckpt_drop(ctx->dots3, b); }
+        if (ctx->naive) { naive_ckpt_drop(ctx->naive, b); }
         if (ctx->mimo2) { mimo2_ckpt_drop(ctx->mimo2, b); }
         if (ctx->exaone) { exaone_ckpt_drop(ctx->exaone, b); }
         if (ctx->qwen) qwen_batch_runtime_drop_checkpoints(ctx->qwen, b);
@@ -61519,7 +61608,7 @@ static int ds4_engine_batched_generate_ctx_impl(ds4_batch_ctx *ctx, const ds4_to
         if (prompts[i].len <= 0) { BCG_ERR("batched_generate_ctx: prompt %d is empty", i); return 1; }
         const uint32_t L = (uint32_t)prompts[i].len;
         if ((ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 ||
-             ctx->ling3vl || ctx->mimo2) && L > ctx->seq_cap) {
+             ctx->ling3vl || ctx->mimo2 || ctx->naive) && L > ctx->seq_cap) {
             BCG_ERR("batched_generate_ctx: family prompt %d length %u "
                     "exceeds context %u", i, L, ctx->seq_cap);
             return 1;
@@ -61532,7 +61621,7 @@ static int ds4_engine_batched_generate_ctx_impl(ds4_batch_ctx *ctx, const ds4_to
         n_packed += L;
     }
     if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 ||
-        ctx->ling3vl || ctx->mimo2) {
+        ctx->ling3vl || ctx->mimo2 || ctx->naive) {
         return family_engine_batched_generate_ctx(
             ctx, prompts, n, max_new_tokens, eos_ids, out, err, errlen);
     }
@@ -62949,6 +63038,7 @@ static uint32_t family_banked_prefill_cap(const ds4_batch_ctx *ctx) {
     if (ctx->qwen) return ctx->qwen->prefill_cap;
     if (ctx->step37) return ctx->step37->prefill_cap;
     if (ctx->ling3vl) return ctx->ling3vl->prefill_cap;
+    if (ctx->naive) return ctx->naive->prefill_cap;
     if (ctx->mimo2) return ctx->mimo2->prefill_cap;
     return ctx->motif3 ? ctx->motif3->prefill_cap
                        : ctx->exaone->shared_ws.prefill_cap;
@@ -62972,6 +63062,7 @@ static bool family_banked_logits_valid(
     if (ctx->qwen) return ctx->qwen->bank_logits_valid[bank] != 0u;
     if (ctx->step37) return ctx->step37->bank_logits_valid[bank] != 0u;
     if (ctx->ling3vl) return ctx->ling3vl->bank_logits_valid[bank] != 0u;
+    if (ctx->naive) return ctx->naive->bank_logits_valid[bank] != 0u;
     if (ctx->mimo2) return ctx->mimo2->bank_logits_valid[bank] != 0u;
     return ctx->motif3 ? ctx->motif3->bank_logits_valid[bank] != 0u
                        : ctx->exaone->bank_logits_valid[bank] != 0u;
@@ -62985,6 +63076,8 @@ static float *family_banked_logits(ds4_batch_ctx *ctx, uint32_t bank) {
         return ctx->step37->bank_logits + (size_t)bank * DS4_N_VOCAB;
     if (ctx->ling3vl)
         return ctx->ling3vl->bank_logits + (size_t)bank * DS4_N_VOCAB;
+    if (ctx->naive)
+        return ctx->naive->bank_logits + (size_t)bank * DS4_N_VOCAB;
     if (ctx->mimo2)
         return ctx->mimo2->bank_logits + (size_t)bank * DS4_N_VOCAB;
     return (ctx->motif3 ? ctx->motif3->bank_logits
@@ -62994,6 +63087,7 @@ static float *family_banked_logits(ds4_batch_ctx *ctx, uint32_t bank) {
 
 static void family_banked_reset(ds4_batch_ctx *ctx, uint32_t bank) {
     if (ctx->dots3) { dots3_bank_reset(ctx->dots3, bank); return; }
+    if (ctx->naive) { naive_bank_reset(ctx->naive, bank); return; }
     if (ctx->mimo2) { mimo2_bank_reset(ctx->mimo2, bank); return; }
     if (ctx->qwen) {
         qwen_batch_runtime_drop_checkpoints(ctx->qwen, bank);
@@ -63016,6 +63110,7 @@ static bool family_banked_copy(
         ds4_batch_ctx *ctx, uint32_t src, uint32_t dst,
         uint32_t tokens) {
     if (ctx->dots3) { return dots3_bank_copy(ctx->dots3, src, dst, tokens); }
+    if (ctx->naive) { return naive_bank_copy(ctx->naive, src, dst, tokens); }
     if (ctx->mimo2) { return mimo2_bank_copy(ctx->mimo2, src, dst, tokens); }
     if (ctx->qwen) {
         const bool ok =
@@ -63047,6 +63142,10 @@ static bool family_banked_prefill(
         const int *next_tokens, uint32_t next_rows) {
     if (ctx->dots3) {
         return dots3_bank_forward(ctx->dots3, ctx->e, bank, tokens, rows, pos, final);
+    }
+    if (ctx->naive) {
+        return naive_bank_prefill(ctx->naive, ctx->e, bank, tokens, rows, pos,
+                                  final ? N05_FINAL_ROWS : N05_MORE_ROWS);
     }
     if (ctx->mimo2) {
         return mimo2_bank_prefill(ctx->mimo2, ctx->e, bank, tokens, rows, pos,
@@ -63094,6 +63193,9 @@ static bool family_banked_decode(
         }
         return true;
     }
+    if (ctx->naive) {
+        return naive_bank_decode(ctx->naive, ctx->e, banks, tokens, positions, rows);
+    }
     if (ctx->mimo2) {
         return mimo2_bank_decode(ctx->mimo2, ctx->e, banks, tokens, positions, rows);
     }
@@ -63127,6 +63229,10 @@ static bool family_banked_checkpoint_due(
         const uint32_t stride = ctx->dots3->checkpoint_stride;
         return stride && after > before && before / stride != after / stride;
     }
+    if (ctx->naive) {
+        const uint32_t stride = ctx->naive->checkpoint_stride;
+        return stride && after > before && before / stride != after / stride;
+    }
     if (ctx->mimo2) {
         const uint32_t stride = ctx->mimo2->checkpoint_stride;
         return stride && after > before && before / stride != after / stride;
@@ -63154,6 +63260,10 @@ static void family_banked_capture_checkpoint(
         bool logits_valid) {
     if (ctx->dots3) {
         (void)dots3_ckpt_capture(ctx->dots3, bank, pos, logits_valid, ctx->serial_reserve);
+    } else if (ctx->naive) {
+        (void)naive_ckpt_capture(ctx->naive, bank, pos,
+                                 logits_valid ? N05_HAS_LOGITS : N05_NO_LOGITS,
+                                 ctx->serial_reserve);
     } else if (ctx->mimo2) {
         (void)mimo2_ckpt_capture(ctx->mimo2, bank, pos,
                                  logits_valid ? M2_HAS_LOGITS : M2_NO_LOGITS,
@@ -63277,7 +63387,7 @@ static int family_banked_engine_continuous_generate(
     uint32_t prefill_cursor = 0u;
     bool ok = ctx->dots3 != NULL || ctx->exaone != NULL || ctx->motif3 != NULL ||
               ctx->qwen != NULL || ctx->step37 != NULL ||
-              ctx->ling3vl != NULL || ctx->mimo2 != NULL;
+              ctx->ling3vl != NULL || ctx->mimo2 != NULL || ctx->naive != NULL;
     bool rehydrate_blocked = false;
     ctx->last_done_set = 0u;
     ds4_metric_set(&ds4_metrics_get()->banks_live, 0u);
@@ -63457,6 +63567,35 @@ static int family_banked_engine_continuous_generate(
                         ctx->bank_gen[b]++;
                         ctx->bank_hist_len[b] = pos;
                         ctx->bank_hist_valid[b] = 1u;
+                        cached = pos;
+                        forked = partial = true;
+                    }
+                } else if (source_prefix &&
+                           requested_cached < source_frontier && ctx->naive) {
+                    const int checkpoint = naive_ckpt_find(
+                        ctx->naive, (uint32_t)src, requested_cached, (uint32_t)req.n);
+                    uint32_t pos = 0;
+                    if (checkpoint < 0) {
+                        ctx->fork_rejects++;
+                    } else if (!naive_ckpt_restore(ctx->naive, (uint32_t)src, b,
+                                                   (uint32_t)checkpoint,
+                                                   requested_cached, &pos)) {
+                        ctx->bank_gen[b]++;
+                        ctx->bank_hist_valid[b] = 0;
+                        naive_ckpt_drop(ctx->naive, b);
+                        FCG_ERR("continuous_generate: Naive checkpoint restore failed src=%d dst=%u",
+                                src, b);
+                        ok = false;
+                        break;
+                    } else {
+                        if ((uint32_t)src != b) {
+                            memcpy(ctx->bank_hist + (size_t)b * ctx->seq_cap,
+                                   ctx->bank_hist + (size_t)src * ctx->seq_cap,
+                                   (size_t)pos * sizeof(int));
+                        }
+                        ctx->bank_gen[b]++;
+                        ctx->bank_hist_len[b] = pos;
+                        ctx->bank_hist_valid[b] = 1;
                         cached = pos;
                         forked = partial = true;
                     }
@@ -63681,7 +63820,7 @@ static int family_banked_engine_continuous_generate(
             cb->sample_exclude = req.sample_exclude;
             cb->step_accept = req.step_accept;
             cb->alive = req.alive;
-            cb->checkpoint_at = (ctx->step37 || ctx->motif3 || ctx->mimo2) &&
+            cb->checkpoint_at = (ctx->step37 || ctx->motif3 || ctx->mimo2 || ctx->naive) &&
                 req.checkpoint_at > 0 &&
                 (uint32_t)req.checkpoint_at > cached && req.checkpoint_at < req.n
                 ? (uint32_t)req.checkpoint_at : 0u;
@@ -64077,7 +64216,7 @@ static int family_engine_batched_generate_ctx(
         .n = n,
     };
     const int rc = (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 ||
-                    ctx->ling3vl || ctx->mimo2)
+                    ctx->ling3vl || ctx->mimo2 || ctx->naive)
         ? family_banked_engine_continuous_generate(
               ctx, family_static_admit, NULL, family_static_done,
               &batch, err, errlen)
@@ -64139,7 +64278,7 @@ static int ds4_engine_continuous_generate_impl(ds4_batch_ctx *ctx,
         return 1;
     }
     if (ctx->dots3 || ctx->exaone || ctx->motif3 || ctx->qwen || ctx->step37 ||
-        ctx->ling3vl || ctx->mimo2) {
+        ctx->ling3vl || ctx->mimo2 || ctx->naive) {
         return family_banked_engine_continuous_generate(
             ctx, admit, on_token, on_done, ud, err, errlen);
     }
@@ -69686,7 +69825,9 @@ bool ds4_engine_supports_batching(ds4_engine *e) {
     if (!e || !ds4_backend_uses_graph(e->backend) || !e->metal_ready) {
         return false;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) { return false; }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
+        return e->backend == DS4_BACKEND_CUDA && !e->dspark_ready && !e->mtp_ready;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
         return e->backend == DS4_BACKEND_CUDA && !e->mimo2_dflash;
     }

@@ -57,6 +57,18 @@ from prefill chunk 32 to chunk 7 byte-for-byte. Truncated snapshots invalidate
 the frontier. State tests reject logits after invalidation or a mismatched
 frontier. These checks do not establish full-model correctness.
 
+Persistent banks share forward scratch and keep independent DSA/SWA/indexer
+histories. The weight-free common bank API passes a three-bank allocation,
+full-prefix copy, partial fork, self-restore and snapshot round trip. Eight
+lazy SWA checkpoint slots need up to 204,472,320 bytes plus page alignment;
+each checkpoint preserves 25,559,040 bytes of displaced SWA rows. Full DSA
+KV and indexer histories are copied from the source bank at the chosen cut.
+Live serving, partial reuse and disk restart remain to be qualified.
+Bank memcheck passes with zero errors using `--show-backtrace device`.
+The default host backtrace collector crashes in `libgcc _Unwind_Backtrace`
+at CUDA context initialization on this test; device trace and memory checks
+remain enabled in the passing run.
+
 The host quote and native geometry tests include full DSA K/V and indexer
 history. With prefill chunk 2048 and one bank, the planned 1M allocation is:
 
@@ -79,6 +91,7 @@ make test-naive-bind
 make CUDA_ARCH=sm_121 test-naive-primitives
 make test-naive-state
 make CUDA_ARCH=sm_121 test-naive-graph
+make CUDA_ARCH=sm_121 test-naive-banks
 # Optional real vocabulary gate; reads only the GGUF header.
 NAIVE_TOKENIZER_GGUF=/absolute/path/to/first-shard.gguf \
   cargo test -p ds4-core --test naive --locked
