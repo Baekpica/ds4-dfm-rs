@@ -39,6 +39,17 @@ their original-tokenizer IDs. The tokenizer check used a 13,014,912-byte
 header capture while the main weights were downloading. This is directory
 and input-protocol evidence, not full-file integrity or inference evidence.
 
+CUDA primitive checks on GB10 also pass: E4M3 finite codes/scales and midpoint
+ties, device-position replay, affine indexer LayerNorm, RMSNorm epsilon,
+partial NeoX RoPE, signed index scores, causal stable top-k through a 1M
+history, and unbiased sigmoid routing. BF16 attention agrees with an
+independent source-equation reference: SWA maximum absolute difference 0;
+DSA difference 0.0009765625 for the 2049-key fixture. This tests primitives,
+not full-model inference or long-context serving. GPU clocks were set to
+300–2200 MHz before these checks.
+The native split-projection binder also matches all 613 source-directory
+entries. CUDA memcheck reports zero errors for the primitive fixtures.
+
 The host quote and native geometry tests include full DSA K/V and indexer
 history. With prefill chunk 2048 and one bank, the planned 1M allocation is:
 
@@ -57,6 +68,8 @@ checkpoints and does not replace an active bank's GPU history.
 ```sh
 cargo test -p ds4-core --test naive --locked
 make test-naive-memory
+make test-naive-bind
+make CUDA_ARCH=sm_121 test-naive-primitives
 # Optional real vocabulary gate; reads only the GGUF header.
 NAIVE_TOKENIZER_GGUF=/absolute/path/to/first-shard.gguf \
   cargo test -p ds4-core --test naive --locked

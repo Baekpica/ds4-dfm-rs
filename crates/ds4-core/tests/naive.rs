@@ -56,6 +56,37 @@ fn fixture() -> Value {
     serde_json::from_str(include_str!("fixtures/naive-main.json")).unwrap()
 }
 
+#[test]
+fn native_bind_matches_directory() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let Ok(path) = std::env::var("NAIVE_NATIVE_BIND") else {
+        return;
+    };
+    let mut child = Command::new(path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    for tensor in fixture()["tensors"].as_array().unwrap() {
+        writeln!(input, "{}", tensor["name"].as_str().unwrap()).unwrap();
+    }
+    drop(input);
+    let result = child.wait_with_output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap().trim(),
+        "613 native bindings; split GQA, SWA sinks, DSA indexer"
+    );
+}
+
 fn put_str(buf: &mut Vec<u8>, value: &str) {
     buf.extend_from_slice(&(value.len() as u64).to_le_bytes());
     buf.extend_from_slice(value.as_bytes());

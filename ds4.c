@@ -41,6 +41,7 @@
 #include "native/bridge/ds4_host_load.h"
 #include "ds4_ple.h"
 #include "cuda/qwen38_ple.h"
+#include "ds4_naive_plan.h"
 
 #define STBI_NO_STDIO
 #define STBI_ONLY_JPEG
@@ -362,6 +363,7 @@ typedef enum {
     DS4_MODEL_FAMILY_STEP37      = 8,
     DS4_MODEL_FAMILY_LING3VL     = 9,
     DS4_MODEL_FAMILY_MIMO2       = 10,
+    DS4_MODEL_FAMILY_NAIVE       = 11,
 } ds4_model_family;
 
 typedef enum {
@@ -378,6 +380,7 @@ typedef enum {
     DS4_VARIANT_STEP37_FLASH    = 10,
     DS4_VARIANT_LING30_FLASH_VL = 11,
     DS4_VARIANT_MIMO26_FLASH    = 12,
+    DS4_VARIANT_NAIVE_N05_FLASH = 13,
 } ds4_variant;
 
 typedef struct {
@@ -494,6 +497,21 @@ static const ds4_shape DS4_SHAPE_MIMO26_FLASH = {
     .use_rope = true, .rms_eps = 1e-6f, .expert_weight_scale = 1.0f,
     .rope_freq_base = 10000000.0f, .rope_freq_base_swa = 10000.0f,
     .rope_scale_factor = 1.0f, .rope_orig_ctx = UINT64_C(1048576),
+};
+
+static const ds4_shape DS4_SHAPE_NAIVE_N05_FLASH = {
+    .name = "Naive-N0.5-Flash",
+    .family = DS4_MODEL_FAMILY_NAIVE, .variant = DS4_VARIANT_NAIVE_N05_FLASH,
+    .n_layer = N05_LAYERS, .n_embd = N05_EMBED, .n_vocab = N05_VOCAB,
+    .n_head = N05_HEADS, .n_swa_head = N05_HEADS, .n_head_kv = 4,
+    .n_head_dim = N05_KEY, .n_value_dim = N05_VALUE, .n_rot = N05_ROT,
+    .n_expert = N05_EXPERTS, .n_expert_used = N05_USED,
+    .n_ff_exp = N05_FF, .n_ff_dense = N05_DENSE, .n_leading_dense = 1,
+    .n_swa = N05_WINDOW, .n_indexer_head = N05_INDEX_HEADS,
+    .n_indexer_head_dim = N05_INDEX_DIM, .n_indexer_top_k = N05_TOP_K,
+    .use_rope = true, .rms_eps = 1e-5f, .expert_weight_scale = 1.0f,
+    .rope_freq_base = 10000000.0f, .rope_freq_base_swa = 10000.0f,
+    .rope_scale_factor = 1.0f, .rope_orig_ctx = N05_CONTEXT,
 };
 
 enum { STEP37_LAYERS = 45, STEP37_DRAFT_LAYERS = 3, STEP37_FULL_PERIOD = 4 };
@@ -2395,6 +2413,9 @@ static void model_apply_host_shape(void) {
         break;
     case DS4_VARIANT_MIMO26_FLASH:
         g_ds4_shape = DS4_SHAPE_MIMO26_FLASH;
+        break;
+    case DS4_VARIANT_NAIVE_N05_FLASH:
+        g_ds4_shape = DS4_SHAPE_NAIVE_N05_FLASH;
         break;
     case DS4_VARIANT_LING30_FLASH_VL:
         g_ds4_shape = DS4_SHAPE_LING30_FLASH_VL;
@@ -8464,6 +8485,7 @@ static void step37_bind_draft(ds4_weights *w, const ds4_model *m) {
 
 #include "ds4_mimo2_plan.h"
 #include "ds4_mimo2_bind.inc"
+#include "ds4_naive_bind.inc"
 
 static void weights_bind(
         ds4_weights     *w,
@@ -8482,6 +8504,11 @@ static void weights_bind(
     (void)require_output;
     (void)optional_output;
     memset(w, 0, sizeof(*w));
+
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE) {
+        naive_bind(w, m);
+        return;
+    }
 
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
         mimo2_bind(w, m);

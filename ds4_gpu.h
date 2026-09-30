@@ -4823,6 +4823,39 @@ int ds4_gpu_step37_vgelu(ds4_gpu_tensor *x,
 int ds4_gpu_step37_vresidual(ds4_gpu_tensor *residual, const ds4_gpu_tensor *x,
         const void *map, uint64_t size, uint64_t bias, uint64_t scale, uint32_t rows);
 
+/* Naive's pinned BF16 GQA and native E4M3 indexer. Buffers and positions
+ * remain device-owned; the host does not inspect tensor internals. */
+int ds4_gpu_naive_round(ds4_gpu_tensor *x, uint64_t count);
+int ds4_gpu_naive_rope(ds4_gpu_tensor *x, const ds4_gpu_tensor *table,
+        uint32_t heads, uint32_t width, uint32_t rows);
+int ds4_gpu_naive_rms(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *map, uint64_t size, uint64_t offset, uint32_t rows);
+int ds4_gpu_naive_key_norm(ds4_gpu_tensor *x, const void *map, uint64_t size,
+        uint64_t weight, uint64_t bias, uint32_t rows);
+int ds4_gpu_naive_kv_store(ds4_gpu_tensor *cache,
+        const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        const ds4_gpu_tensor *positions, uint32_t heads, uint32_t rows, uint32_t capacity);
+int ds4_gpu_naive_index_store(ds4_gpu_tensor *codes, ds4_gpu_tensor *scales,
+        ds4_gpu_tensor *query, const ds4_gpu_tensor *key,
+        const ds4_gpu_tensor *positions, uint32_t rows, uint32_t capacity);
+int ds4_gpu_naive_select(ds4_gpu_tensor *ids, ds4_gpu_tensor *scores,
+        ds4_gpu_tensor *a, ds4_gpu_tensor *b, const ds4_gpu_tensor *query,
+        const ds4_gpu_tensor *codes, const ds4_gpu_tensor *scales,
+        const ds4_gpu_tensor *weights, const ds4_gpu_tensor *positions,
+        uint32_t history, uint32_t rows);
+int ds4_gpu_naive_attention(ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *cache, const ds4_gpu_tensor *positions,
+        const ds4_gpu_tensor *ids, const void *map, uint64_t size, uint64_t sink,
+        uint32_t heads, uint32_t capacity, uint32_t rows, uint32_t window);
+int ds4_gpu_naive_router(ds4_gpu_tensor *ids, ds4_gpu_tensor *weights,
+        const ds4_gpu_tensor *logits, const void *map, uint64_t size,
+        uint64_t offset, uint32_t rows);
+int ds4_gpu_naive_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *up, uint64_t count);
+int ds4_gpu_naive_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down,
+        const ds4_gpu_tensor *weights, uint32_t rows);
+int ds4_gpu_naive_add(ds4_gpu_tensor *cur, const ds4_gpu_tensor *other, uint64_t count);
+
 /* Fused unweighted SwiGLU + IQ2_XS expert down. Returns -1 for an
  * unsupported shape or the diagnostic fallback, 0 on failure, 1 on success. */
 int ds4_gpu_mimo2_down(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,

@@ -106,6 +106,8 @@ __pycache__/
 /tests/test_exaone_tokenizer
 /tests/test_step37_primitives
 /tests/naive_memory
+/tests/naive_primitives
+/tests/naive_bind
 /tests/test_step37_loader
 /tests/test_step37_forward
 /tests/test_inkling_kernels
