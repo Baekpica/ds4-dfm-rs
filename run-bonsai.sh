@@ -1,0 +1,352 @@
+#!/bin/bash
+# Run Prism Bonsai 2 27B (Ternary-Bonsai-2-27B-PQ2_0) with the ds4 engine in
+# this tree (ds4-dfm-rs, the qwen35 family).
+#
+# Usage:  ./run-bonsai.sh                    generate from the default prompt (CUDA)
+#         ./run-bonsai.sh "a prompt"         generate from your prompt (CUDA)
+#         ./run-bonsai.sh cuda ["prompt"]    the CUDA graph explicitly
+#         ./run-bonsai.sh cpu ["prompt"]     the built-in CPU reference (the oracle)
+#         ./run-bonsai.sh compare ["prompt"] both backends, diffed token for token
+#         ./run-bonsai.sh ids                the explicit five-id parity gate (make bonsai-cuda-parity)
+#         ./run-bonsai.sh bench [tokens]     decode rate with /usr/bin/time (default 16)
+#         ./run-bonsai.sh status             what is built, which artifact, what can run
+#         ./run-bonsai.sh session [prompt]   refused: not implemented in this tree
+#         ./run-bonsai.sh server [prompt]    refused: not implemented in this tree
+#         ./run-bonsai.sh help
+#
+# This model is the "qwen35" family: a dense 64-layer trunk (48 gated
+# delta-net layers and 16 gated-attention layers), every matmul weight PQ2_0
+# (ternary, 2.125 bits per weight) and stored Hadamard-folded, so the engine
+# rotates the activation instead of the weight.
+#
+# WHAT THIS TREE SUPPORTS
+#   One binary, ./ds4-c, serves both backends.  Built with
+#   "make ds4-c CUDA_ARCH=sm_89" it runs the CUDA graph (--cuda) and the CPU
+#   reference (--cpu); built with "make cpu" it is a CPU-only binary that
+#   cannot do --cuda.  This script never rebuilds anything.
+#   The only entry is the diagnostic generator --first-token-test: greedy, one
+#   token per graph call, with -p "<prompt>".  DS4_QWEN35_STEPS=<n> sets the
+#   greedy step count (default 16) and DS4_QWEN35_TOKENS=<comma ids> replaces
+#   the prompt with raw token ids, which is how the parity gate is run.
+#   "compare" and "ids" diff the token ids the CUDA graph and the CPU
+#   reference print for the same input; "ids" is exactly what
+#   "make bonsai-cuda-parity" runs.
+#
+#   Every CUDA run on this box needs DS4_CUDA_COPY_MODEL=1.  The 6.71 GiB map
+#   cannot be pinned here (RLIMIT_MEMLOCK is 8192 KiB, hard limit included), so
+#   without it the backend falls back to lazy per-range materialisation and
+#   dies part-way through the trunk with "Bonsai matmul failed for
+#   blk.<n>.<tensor>".  The variable makes the backend copy the model to the
+#   device (about 0.7 s, logged as "CUDA copying 6.71 GiB model to device
+#   memory").  This script sets it for every --cuda run.
+#
+# WHAT THIS TREE DOES NOT DO YET (refused by name, never silently skipped)
+#   - session: there is no DS4_QWEN35_SESSION path here and no CLI generation
+#     for this family; the engine refuses every non-reference run by name.
+#   - server: ds4-server refuses this family, and serve-bonsai.sh is not
+#     ported; there is no serving path at all.
+#   Also absent: batching, chunked prefill, SSD/disk KV, MTP, prefix reuse and
+#   session snapshots.  The diagnostic is the whole surface.
+#
+# Env overrides: DS4_BONSAI_MODEL (model path), DS4_BONSAI_BIN (binary),
+# DS4_BONSAI_BACKEND (cuda|cpu), DS4_BONSAI_STEPS (greedy steps),
+# DS4_BONSAI_WAIT (seconds to wait for a free device slot, default 300),
+# DS4_BONSAI_LOG (capture path, default /tmp/bonsai-run.log).
+
+set -u
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+BIN="${DS4_BONSAI_BIN:-$ROOT/ds4-c}"
+MODEL="${DS4_BONSAI_MODEL:-/data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf}"
+BACKEND="${DS4_BONSAI_BACKEND:-cuda}"
+STEPS="${DS4_BONSAI_STEPS:-16}"
+DEFAULT_PROMPT="The capital of France is"
+# The explicit parity prompt, the same ids "make bonsai-cuda-parity" uses.
+PARITY_TOKENS="760,6511,314,9338,369"
+PARITY_STEPS=8
+LOG="${DS4_BONSAI_LOG:-/tmp/bonsai-run.log}"
+WAIT="${DS4_BONSAI_WAIT:-300}"
+# The engine takes a single global flock (/tmp/ds4.lock), so a second model
+# process refuses to start.  This script waits for the slot instead.
+LOCK=/tmp/ds4.lock
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+# True when this ds4-c was linked against the CUDA runtime.  "make cpu" builds
+# a CPU-only binary with no libcudart, which cannot do --cuda.
+cuda_capable() {
+  ldd "$BIN" 2>/dev/null | grep -q 'libcudart'
+}
+
+check_env() {
+  [ -x "$BIN" ] || die "ds4-c not found or not executable at $BIN (build it: make ds4-c CUDA_ARCH=sm_89)"
+  [ -f "$MODEL" ] || die "model not found: $MODEL"
+  if [ "$BACKEND" = "cuda" ]; then
+    cuda_capable || die "this ds4-c is the CPU-only build (make cpu); it cannot do --cuda. Rebuild with 'make ds4-c CUDA_ARCH=sm_89', or run with DS4_BONSAI_BACKEND=cpu / --cpu."
+    command -v nvidia-smi >/dev/null || die "nvidia-smi not found; the CUDA graph needs it (use --cpu)"
+  fi
+}
+
+# True while another ds4 family process holds the device slot.
+slot_busy() {
+  pgrep -x ds4-c >/dev/null 2>&1 && return 0
+  pgrep -x ds4 >/dev/null 2>&1 && return 0
+  fuser "$LOCK" >/dev/null 2>&1 && return 0
+  return 1
+}
+
+# Wait for the single-process slot.  Only one ds4/ds4-c may run at a time.
+wait_slot() {
+  local waited=0
+  while slot_busy; do
+    if [ "$waited" -ge "$WAIT" ]; then
+      echo "note: another ds4 process held the slot for ${WAIT}s; trying anyway" >&2
+      return 0
+    fi
+    if [ "$waited" -eq 0 ]; then
+      echo "waiting for a free device slot (another ds4 process is running)..." >&2
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+}
+
+# Generated text from a log: a token line carries the id and the raw text.
+# A token whose text is a newline leaves an empty remainder on its own line, so
+# an empty remainder is printed as a newline rather than dropped.
+continuation() {
+  awk '/^token /{sub(/^token [0-9]+: [0-9]+ /,""); if (length($0)==0) printf "\n"; else printf "%s", $0}' "$1"
+}
+
+# One decoding run: run_model <backend> <steps> <prompt> <log> [token override]
+# Sets DS4_CUDA_COPY_MODEL for CUDA, waits for the slot, retries if the engine
+# refuses to start, and writes the wall time and peak RSS to <log>.time.
+run_model() {
+  local backend="$1" steps="$2" prompt="$3" log="$4" tokens="${5:-}"
+  local tfile="$log.time" rc=0 deadline=$((SECONDS + WAIT))
+  local -a envs
+
+  while :; do
+    wait_slot
+    envs=( "DS4_QWEN35_STEPS=$steps" )
+    [ "$backend" = "cuda" ] && envs+=( "DS4_CUDA_COPY_MODEL=1" )
+    [ -n "$tokens" ] && envs+=( "DS4_QWEN35_TOKENS=$tokens" )
+    /usr/bin/time -f '__wall %e\n__rss %M' env "${envs[@]}" \
+        "$BIN" -m "$MODEL" --"$backend" --first-token-test -p "$prompt" \
+        > "$log" 2> "$tfile"
+    rc=$?
+    grep -q 'refusing to start' "$tfile" 2>/dev/null || break
+    [ "$SECONDS" -lt "$deadline" ] || break
+    sleep 5
+  done
+
+  if [ "$rc" -ne 0 ]; then
+    echo "run failed (exit $rc); last lines of $tfile:"
+    tail -5 "$tfile"
+    return 1
+  fi
+  return 0
+}
+
+# Wall seconds and peak RSS from the /usr/bin/time capture.
+wall_of() { awk '/^__wall /{print $2}' "$1" | tail -1; }
+rss_of()  { awk '/^__rss /{print $2}' "$1" | tail -1; }
+
+report_run() {
+  local log="$1" steps="$2" wall rss
+  wall="$(wall_of "$log.time")"
+  rss="$(rss_of "$log.time")"
+  echo "wall:         ${wall}s for the prompt plus $steps greedy tokens (includes the model load)"
+  printf 'decode rate:  %s tokens/s (steps / wall; steady state is higher)\n' \
+    "$(awk -v w="$wall" -v n="$steps" 'BEGIN{if (w>0) printf "%.2f", n/w; else print "n/a"}')"
+  [ -n "$rss" ] && printf 'peak rss:     %s MiB\n' "$(awk -v k="$rss" 'BEGIN{printf "%.0f", k/1024}')"
+  echo "continuation:"
+  printf '  %s\n' "$(continuation "$log")"
+}
+
+run_mode() {
+  check_env
+  echo "model:   $MODEL"
+  echo "prompt:  $PROMPT"
+  echo "steps:   $STEPS"
+  echo "backend: $BACKEND"
+  echo "note:    one token per forward; there is no batched prefill yet"
+  echo
+  run_model "$BACKEND" "$STEPS" "$PROMPT" "$LOG" || return 1
+  echo "backend:      $BACKEND"
+  report_run "$LOG" "$STEPS"
+  echo "log:          $LOG"
+}
+
+# Both backends on the same prompt, diffed token id for token id.  This is the
+# correctness claim this tree can make: the CUDA graph reproduces the CPU
+# reference, which is the oracle the kernels were measured against.
+compare_mode() {
+  check_env
+  echo "model:   $MODEL"
+  echo "prompt:  $PROMPT"
+  echo "steps:   $STEPS, generated by both backends"
+  echo
+  echo "--- CUDA graph ---"
+  run_model cuda "$STEPS" "$PROMPT" "$LOG" || return 1
+  echo "backend:      cuda"
+  report_run "$LOG" "$STEPS"
+  grep -E '^token ' "$LOG" > /tmp/bonsai-cuda.tokens
+  echo
+  echo "--- CPU reference (the oracle) ---"
+  run_model cpu "$STEPS" "$PROMPT" "$LOG" || return 1
+  echo "backend:      cpu"
+  report_run "$LOG" "$STEPS"
+  grep -E '^token ' "$LOG" > /tmp/bonsai-cpu.tokens
+  echo
+  echo "--- token-for-token diff ---"
+  if diff -q /tmp/bonsai-cpu.tokens /tmp/bonsai-cuda.tokens >/dev/null; then
+    echo "IDENTICAL: all $STEPS generated token ids agree, so the CUDA graph"
+    echo "           reproduces the CPU reference on this prompt"
+    echo "           (per-backend token lines kept at /tmp/bonsai-{cpu,cuda}.tokens)"
+  else
+    echo "DIFFERENT - first differences (cpu vs cuda):"
+    diff /tmp/bonsai-cpu.tokens /tmp/bonsai-cuda.tokens | head -20
+    return 1
+  fi
+}
+
+# The explicit five-id parity gate, byte for byte what "make bonsai-cuda-parity"
+# runs: the same ids through both backends at the same step count.
+ids_mode() {
+  check_env
+  echo "model:   $MODEL"
+  echo "tokens:  $PARITY_TOKENS (explicit ids; the prompt is ignored)"
+  echo "steps:   $PARITY_STEPS"
+  echo
+  echo "--- CUDA graph ---"
+  run_model cuda "$PARITY_STEPS" x "$LOG" "$PARITY_TOKENS" || return 1
+  echo "backend:      cuda"
+  report_run "$LOG" "$PARITY_STEPS"
+  grep -E '^token ' "$LOG" > /tmp/bonsai-cuda.tokens
+  echo
+  echo "--- CPU reference (the oracle) ---"
+  run_model cpu "$PARITY_STEPS" x "$LOG" "$PARITY_TOKENS" || return 1
+  echo "backend:      cpu"
+  report_run "$LOG" "$PARITY_STEPS"
+  grep -E '^token ' "$LOG" > /tmp/bonsai-cpu.tokens
+  echo
+  echo "--- token-for-token diff ---"
+  if diff -q /tmp/bonsai-cpu.tokens /tmp/bonsai-cuda.tokens >/dev/null; then
+    echo "IDENTICAL: both backends print the same $PARITY_STEPS ids for the same"
+    echo "           explicit prompt; this is the reproducible parity gate"
+  else
+    echo "DIFFERENT - first differences (cpu vs cuda):"
+    diff /tmp/bonsai-cpu.tokens /tmp/bonsai-cuda.tokens | head -20
+    return 1
+  fi
+}
+
+bench_mode() {
+  check_env
+  local n="$1"
+  echo "model:   $MODEL"
+  echo "tokens:  $n greedy, one forward each, after the prompt"
+  echo "timed:   /usr/bin/time"
+  echo
+  run_model "$BACKEND" "$n" "$DEFAULT_PROMPT" "$LOG" || return 1
+  echo "backend:      $BACKEND"
+  report_run "$LOG" "$n"
+  echo "log:          $LOG"
+}
+
+status_mode() {
+  echo "binary:  $BIN"
+  if [ -x "$BIN" ]; then
+    echo "         present, built $(stat -c '%y' "$BIN" | cut -d. -f1)"
+    if cuda_capable; then
+      echo "         CUDA-linked: runs --cuda and --cpu (both backends)"
+    else
+      echo "         CPU-only build (make cpu): --cpu only, --cuda is refused"
+    fi
+  else
+    echo "         MISSING or not executable (build it: make ds4-c CUDA_ARCH=sm_89)"
+  fi
+  echo "model:   $MODEL"
+  if [ -f "$MODEL" ]; then
+    echo "         present, $(stat -c '%s' "$MODEL" | awk '{printf "%.2f GiB", $1/1073741824}')"
+  else
+    echo "         MISSING"
+  fi
+  if command -v nvidia-smi >/dev/null; then
+    echo "gpu:     $(nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader)"
+    local busy
+    busy=$(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader | head -3)
+    if [ -n "$busy" ]; then
+      echo "         in use by another process:"
+      echo "$busy" | sed 's/^/           /'
+    else
+      echo "         no compute process"
+    fi
+  else
+    echo "gpu:     nvidia-smi not found (the CUDA graph needs it)"
+  fi
+  if slot_busy; then
+    echo "slot:    busy (another ds4/ds4-c holds $LOCK); runs will wait"
+  else
+    echo "slot:    free"
+  fi
+  echo "entry:   --first-token-test (greedy diagnostic, one token per forward)"
+  echo "         DS4_QWEN35_STEPS=<n> and DS4_QWEN35_TOKENS=<comma ids>"
+  echo "supported: generate, cuda, cpu, compare, ids, bench, status, help"
+  echo "refused:   session, server (not implemented in this tree)"
+  echo "runbooks:  make bonsai-cuda-check, make bonsai-cuda-parity,"
+  echo "           make test-qwen35-cuda, make test-qwen35-rows, make pq2-0-test,"
+  echo "           make bonsai-fold-selftest, make bonsai-ref-check"
+}
+
+# The sibling tree drives the session path here; this tree has no such path.
+refuse_session() {
+  cat >&2 <<'EOF'
+ERROR: "session" is not implemented in this tree.
+
+ds4-dfm-rs has no DS4_QWEN35_SESSION variable and no generated-CLI path for
+this family; the engine refuses every non-reference run for Bonsai by name
+(ds4.c, commit d248d22).  The session path (create/sync/eval, prefix reuse,
+rewind replay, invalidate rebuild) belongs to the next unit and is not wired
+here.  Use "generate", "compare" or "ids", which drive the same trunk through
+the --first-token-test diagnostic.
+EOF
+  exit 2
+}
+
+# The sibling tree starts ds4-server here; this tree has no serving path.
+refuse_server() {
+  cat >&2 <<'EOF'
+ERROR: "server" is not implemented in this tree.
+
+ds4-server refuses the qwen35 family, so there is no HTTP serving path for
+Prism Bonsai 2 27B here, and serve-bonsai.sh is deliberately not ported.
+Batching, chunked prefill, SSD/disk KV, MTP, prefix reuse and session
+snapshots are all part of that later unit.  Use "generate", "compare" or
+"ids", which drive the same trunk through the --first-token-test diagnostic.
+EOF
+  exit 2
+}
+
+usage() {
+  sed -n '5,14p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# --- argument parsing -------------------------------------------------------
+PROMPT="$DEFAULT_PROMPT"
+case "${1:-}" in
+  generate)       shift; [ $# -gt 0 ] && PROMPT="$*"; run_mode ;;
+  cuda)           shift; BACKEND=cuda; [ $# -gt 0 ] && PROMPT="$*"; run_mode ;;
+  cpu)            shift; BACKEND=cpu; [ $# -gt 0 ] && PROMPT="$*"; run_mode ;;
+  compare)        shift; [ $# -gt 0 ] && PROMPT="$*"; compare_mode ;;
+  ids)            ids_mode ;;
+  bench)          shift; bench_mode "${1:-16}" ;;
+  status)         status_mode ;;
+  session)        refuse_session ;;
+  server)         refuse_server ;;
+  help|-h|--help) usage ;;
+  "")             run_mode ;;
+  -*)             die "unknown option: $1 (see ./run-bonsai.sh help)" ;;
+  *)              PROMPT="$*"; run_mode ;;
+esac
