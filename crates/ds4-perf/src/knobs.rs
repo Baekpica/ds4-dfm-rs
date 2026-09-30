@@ -45,6 +45,7 @@ pub fn tunable(key: &str) -> bool {
             | "DS4_MIMO2_GATEUP_BOUNDED"
             | "DS4_MIMO2_INPUT_Q8_COMPACT"
             | "DS4_MIMO2_DOWN_PIPE64"
+            | "DS4_NAIVE_DECODE_SCORES"
             | "DS4_INKLING_PREFILL_CHUNK"
             | "DS4_CUDA_SOLAR_GQA_CHUNK"
             | "DS4_FATTN_HMMA_LDSM"
@@ -118,6 +119,7 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         | "DS4_MIMO2_GATEUP_BOUNDED"
         | "DS4_MIMO2_INPUT_Q8_COMPACT"
         | "DS4_MIMO2_DOWN_PIPE64" => family == "mimo2" && matches!(value, "0" | "1"),
+        "DS4_NAIVE_DECODE_SCORES" => family == "naive_n05_flash" && matches!(value, "0" | "1"),
         "DS4_INKLING_PREFILL_CHUNK" => family == "inkling" && (1..=8192).contains(&n),
         "DS4_CUDA_SOLAR_GQA_CHUNK" => {
             family.starts_with("solar") && [64, 128, 256, 512, 1024, 2048].contains(&n)
@@ -165,6 +167,19 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn naive_attention_controls() {
+        let key = "DS4_NAIVE_DECODE_SCORES";
+        assert!(tunable(key));
+        for value in ["0", "1"] {
+            assert!(validate(key, value, "naive_n05_flash").is_ok());
+        }
+        for value in ["2", "01", "true", ""] {
+            assert!(validate(key, value, "naive_n05_flash").is_err());
+        }
+        assert!(validate(key, "1", "mimo2").is_err());
+    }
 
     #[test]
     fn solar_attention_controls() {

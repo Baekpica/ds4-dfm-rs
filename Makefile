@@ -941,6 +941,9 @@ tests/naive_primitives: tests/naive_primitives.cu cuda/naive_primitives.cuh ds4_
 test-naive-primitives: tests/naive_primitives
 	./tests/naive_primitives
 
+tests/naive_attention_profile: tests/naive_attention_profile.cu cuda/naive_primitives.cuh ds4_naive_plan.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
 tests/test_step37_primitives: tests/test_step37_primitives.cu cuda/step37_primitives.cuh tests/fixtures/step37/primitives.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 

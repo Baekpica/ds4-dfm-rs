@@ -104,15 +104,20 @@ __global__ static void naive_kv_store(
 }
 
 /* BF16 dot/logit and probability boundaries match the pinned reference.
+ * One-row decode may retain the rounded scores on chip instead of repeating
+ * QK; both paths retain the serial denominator and V accumulation order.
  * The two passes avoid a scores[heads,history] allocation. Sparse IDs are
  * ascending; SWA walks exactly the causal window and adds its zero-V sink. */
+template<unsigned WARPS = 4, unsigned SCORE_CAP = 0>
 __global__ static void naive_attention(
         float *out, const float *q, const __nv_bfloat16 *cache, const float *sinks,
         const unsigned *positions, const unsigned *selected,
         unsigned kv_heads, unsigned capacity, unsigned window) {
-    enum { WARP = 32, WARPS = 4 };
+    enum { WARP = 32 };
     const unsigned lane = threadIdx.x % WARP;
-    const unsigned head = blockIdx.x * WARPS + threadIdx.x / WARP, row = blockIdx.y;
+    const unsigned warp = threadIdx.x / WARP;
+    const unsigned head = blockIdx.x * WARPS + warp, row = blockIdx.y;
+    __shared__ __nv_bfloat16 scores[WARPS][SCORE_CAP ? SCORE_CAP : 1];
     const unsigned pos = positions[row];
     const unsigned first = window && pos + 1 > window ? pos + 1 - window : 0;
     const unsigned count = window ? pos - first + 1 : min(pos + 1, (unsigned)N05_TOP_K);
@@ -132,20 +137,29 @@ __global__ static void naive_attention(
         }
         for (unsigned step = WARP / 2; step; step /= 2) { dot += __shfl_xor_sync(0xffffffff, dot, step); }
         const float score = naive_bf16(naive_bf16(dot) * N05_QK_SCALE);
+        if constexpr (SCORE_CAP) {
+            if (!lane) { scores[warp][i] = __float2bfloat16_rn(score); }
+        }
         const float next = fmaxf(maximum, score);
         denominator = denominator * expf(maximum - next) + expf(score - next);
         maximum = next;
     }
+    if constexpr (SCORE_CAP) { __syncwarp(); }
     for (unsigned i = 0; i < count; i++) {
         const unsigned key = window ? first + i : selected[(uint64_t)row * N05_TOP_K + i];
         if (key > pos) { continue; }
         const __nv_bfloat16 *slot = cache + (uint64_t)(key % capacity) * stride;
-        float dot = 0;
-        for (unsigned d = 0; d < N05_KEY / WARP; d++) {
-            dot = __fmaf_rn(query[d], __bfloat162float(slot[kv_head * N05_KEY + lane + d * WARP]), dot);
+        float score;
+        if constexpr (SCORE_CAP) {
+            score = __bfloat162float(scores[warp][i]);
+        } else {
+            float dot = 0;
+            for (unsigned d = 0; d < N05_KEY / WARP; d++) {
+                dot = __fmaf_rn(query[d], __bfloat162float(slot[kv_head * N05_KEY + lane + d * WARP]), dot);
+            }
+            for (unsigned step = WARP / 2; step; step /= 2) { dot += __shfl_xor_sync(0xffffffff, dot, step); }
+            score = naive_bf16(naive_bf16(dot) * N05_QK_SCALE);
         }
-        for (unsigned step = WARP / 2; step; step /= 2) { dot += __shfl_xor_sync(0xffffffff, dot, step); }
-        const float score = naive_bf16(naive_bf16(dot) * N05_QK_SCALE);
         const float probability = naive_bf16(__fdiv_rn(expf(score - maximum), denominator));
         for (unsigned d = 0; d < N05_VALUE / WARP; d++) {
             const float value = naive_bf16(__bfloat162float(slot[kv_heads * N05_KEY + kv_head * N05_VALUE + lane + d * WARP]) * N05_V_SCALE);

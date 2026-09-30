@@ -148,6 +148,7 @@ int main(int argc, char **argv) {
     assert(!memcmp(s[1]->logits, s[2]->logits, N05_VOCAB * sizeof(float)));
     printf("argmax width1=%d width7=%d altered=%d\n",
         ds4_session_argmax(s[0]), ds4_session_argmax(s[1]), ds4_session_argmax(s[2]));
+    cache_diff(&s[0]->naive_graph, &s[1]->naive_graph, input.len);
     cache_diff(&s[1]->naive_graph, &s[2]->naive_graph, input.len);
     assert(ds4_session_argmax(s[1]) == ds4_session_argmax(s[2]));
     const int width1 = ds4_session_argmax(s[0]), width7 = ds4_session_argmax(s[1]);

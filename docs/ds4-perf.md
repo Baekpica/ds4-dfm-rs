@@ -145,6 +145,9 @@ controls prevent automatic acceptance. GPU process snapshots must match the
 intended owners before and after each run; transient contention between these
 snapshots is not detected. Historical comparisons read preserved
 proofs and hashes; they do not reload the model.
+`DS4_NAIVE_DECODE_SCORES=0` restores the original one-row Naive attention;
+`1` or unset reuses BF16 scores with identical reduction order. It supports
+matched `--env` comparisons and leaves wider prefill unchanged.
 Inkling's `DS4_INKLING_NO_LINEAR=1` is a reviewed diagnostic control for
 comparing its ordinary BF16 projection with the prior implementation.
 Unset the variable for the optimized path; comparisons reject other values.

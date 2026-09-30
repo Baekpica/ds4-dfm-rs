@@ -316,6 +316,18 @@ static void attention(cudaStream_t stream, unsigned kv_heads, unsigned window) {
     CUDA(cudaStreamSynchronize(stream));
     std::vector<float> got(rows * N05_HEADS * N05_VALUE);
     CUDA(cudaMemcpy(got.data(), out, got.size() * sizeof(float), cudaMemcpyDeviceToHost));
+    // Reusing BF16 scores changes neither the serial softmax nor the V sum.
+    if (window) {
+        naive_attention<4, N05_WINDOW><<<dim3(N05_HEADS / 4, rows), 128, 0, stream>>>(out, dq,
+            (const __nv_bfloat16 *)cache, sink, dp, nullptr, kv_heads, capacity, window);
+    } else {
+        naive_attention<4, N05_TOP_K><<<dim3(N05_HEADS / 4, rows), 128, 0, stream>>>(out, dq,
+            (const __nv_bfloat16 *)cache, nullptr, dp, di, kv_heads, capacity, window);
+    }
+    CUDA(cudaStreamSynchronize(stream));
+    std::vector<float> cached(got.size());
+    CUDA(cudaMemcpy(cached.data(), out, cached.size() * sizeof(float), cudaMemcpyDeviceToHost));
+    CHECK(!memcmp(got.data(), cached.data(), got.size() * sizeof(float)));
     double max_error = 0;
     for (unsigned r = 0; r < rows; r++) {
         for (unsigned h = 0; h < N05_HEADS; h++) {

@@ -8,6 +8,13 @@ in-process (default) or import it from the `ds4_weight_server` sidecar.
 
 Every CUDA-specific env var is below, with the intent behind each default.
 
+## Naive sparse attention
+
+`DS4_NAIVE_DECODE_SCORES=0` restores the one-row two-pass QK walk.
+The default caches rounded BF16 scores on chip before the V pass, preserving
+the dot, softmax and value accumulation order. Wide prefill remains on the
+original walk because the DSA score tile reduces its occupancy.
+
 ## Qwen embedded MTP
 
 The Q8 draft head scores low BPE IDs, non-normal token types and observed

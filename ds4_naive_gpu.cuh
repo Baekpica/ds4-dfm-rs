@@ -118,9 +118,22 @@ extern "C" int ds4_gpu_naive_attention(ds4_gpu_tensor *out, const ds4_gpu_tensor
         (!window && !naive_buf(ids, (uint64_t)rows * N05_TOP_K * sizeof(unsigned)))) { return 0; }
     const float *sinks = window ? naive_control(map, size, sink, N05_HEADS) : nullptr;
     if (window && !sinks) { return 0; }
-    naive_attention<<<dim3(N05_HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
-        (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr, sinks,
-        (const unsigned *)positions->ptr, ids ? (const unsigned *)ids->ptr : nullptr, heads, capacity, window);
+    const char *scores = getenv("DS4_NAIVE_DECODE_SCORES");
+    // DSA score storage helps narrow decode but reduces wide-prefill occupancy.
+    const bool cached = rows == 1 && (!scores || strcmp(scores, "0"));
+    if (cached && window) {
+        naive_attention<4, N05_WINDOW><<<dim3(N05_HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr, sinks,
+            (const unsigned *)positions->ptr, nullptr, heads, capacity, window);
+    } else if (cached) {
+        naive_attention<4, N05_TOP_K><<<dim3(N05_HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr, nullptr,
+            (const unsigned *)positions->ptr, (const unsigned *)ids->ptr, heads, capacity, window);
+    } else {
+        naive_attention<<<dim3(N05_HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr, sinks,
+            (const unsigned *)positions->ptr, ids ? (const unsigned *)ids->ptr : nullptr, heads, capacity, window);
+    }
     return cuda_ok(cudaGetLastError(), "Naive GQA attention");
 }
 

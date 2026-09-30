@@ -258,6 +258,7 @@ const PERF_ENV: &[&str] = &[
     "DS4_MIMO2_GATEUP_BOUNDED",
     "DS4_MIMO2_INPUT_Q8_COMPACT",
     "DS4_MIMO2_DOWN_PIPE64",
+    "DS4_NAIVE_DECODE_SCORES",
     "DS4_INKLING_PREFILL_CHUNK",
     "DS4_DOTS3_ATTN_NO_HMMA",
     "DS4_DOTS3_ATTN_NO_SPLIT",
@@ -660,6 +661,18 @@ pub fn unreviewed_env() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn naive_attention_env() {
+        for value in ["0", "1"] {
+            let env = controls(&[format!("DS4_NAIVE_DECODE_SCORES={value}")]).unwrap();
+            assert_eq!(
+                env.get(std::ffi::OsStr::new("DS4_NAIVE_DECODE_SCORES")),
+                Some(&value.into())
+            );
+            assert!(environment(env).contains(&format!("DS4_NAIVE_DECODE_SCORES='{value}'")));
+        }
+    }
 
     #[test]
     fn mimo2_fusion_env() {
