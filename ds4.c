@@ -70093,7 +70093,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
          * that would need one is refused by name here rather than failing
          * inside a graph call that does not exist. */
         const bool supported =
-            e->backend == DS4_BACKEND_CPU &&
+            e->backend == DS4_BACKEND_CPU && opt->first_token_test &&
             opt->distributed.role == DS4_DISTRIBUTED_NONE && !opt->load_slice &&
             (!opt->dspark_path || !opt->dspark_path[0]) &&
             (!opt->mtp_path || !opt->mtp_path[0]) &&

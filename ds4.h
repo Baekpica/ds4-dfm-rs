@@ -237,6 +237,12 @@ typedef struct {
     uint32_t load_layer_start;
     uint32_t load_layer_end;
     bool load_output;
+    /* Set when the caller will run the --first-token-test diagnostic.  It is
+       the one execution path a family with a reference but no backend graph
+       may use, so the engine has to know before it opens: a plain generation
+       request for such a family would otherwise load and then run a graph
+       that does not exist. */
+    bool first_token_test;
     /* inc-14b follow-up: skip the boot prewarm inside ds4_engine_open; the
        caller runs it later via ds4_engine_boot_prewarm.  Servers that budget
        bank placement from free memory must defer so the placement fit reads
