@@ -637,20 +637,20 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             family,
             variant,
             banks: BankLane::OptIn,
-            bank_support: Support::Present,
+            bank_support: Support::Qualified,
             reuse: ReuseKind::Partial,
-            reuse_support: Support::Present,
-            disk: Support::Present,
-            snapshot: Support::Present,
+            reuse_support: Support::Qualified,
+            disk: Support::Qualified,
+            snapshot: Support::Qualified,
             mtp: MtpKind::External,
             mtp_support: Support::Present,
             spec_lane: SpecLane::Both,
             spec_draft_min: 1,
             host: HostNeed::Cuda,
             ctx_max: Some(crate::naive::CONTEXT_MAX),
-            qualified_ctx: None,
-            qualified_banks: None,
-            qualified_prompt: None,
+            qualified_ctx: Some(crate::naive::QUALIFIED_CTX),
+            qualified_banks: Some(crate::naive::QUALIFIED_BANKS),
+            qualified_prompt: Some(crate::naive::QUALIFIED_PROMPT),
             media_serial: false,
         },
         // Target banks run without MTP; media and speculation use serial.
@@ -2804,6 +2804,35 @@ mod tests {
         let arg = p.batch_max_total_tokens(p.effective.ctx, width);
         assert_eq!(arg, 256);
         assert_ne!(arg, p.effective.ctx.saturating_mul(width));
+    }
+
+    #[test]
+    fn naive_http_scope_is_bounded() {
+        let caps = caps(ModelFamily::NaiveN05, Variant::NaiveN05Flash);
+        assert_eq!(caps.bank_support, Support::Qualified);
+        assert_eq!(caps.reuse_support, Support::Qualified);
+        assert_eq!(caps.disk, Support::Qualified);
+        assert_eq!(caps.snapshot, Support::Qualified);
+        assert_eq!(caps.qualified_ctx, Some(8192));
+        assert_eq!(caps.qualified_banks, Some(2));
+        assert_eq!(caps.qualified_prompt, Some(702));
+
+        // Correct explicit speculation is not evidence of acceleration.
+        let req = ServingRequest {
+            ctx: 8193,
+            max_seqs: MaxSeqs::Fixed(3),
+            ..ServingRequest::default()
+        };
+        let facts = EngineFacts {
+            dspark_ok: Some(true),
+            ..EngineFacts::default()
+        };
+        let p = resolve_plan(&req, Some(caps), &facts);
+        assert_eq!(p.effective.mtp_mode, MtpMode::Off);
+        assert_eq!(p.qualified.mtp, Support::Present);
+        assert!(p.issues.iter().any(|i| i.code == "ctx_unqualified"));
+        assert!(p.issues.iter().any(|i| i.code == "banks_unqualified"));
+        assert!(p.issues.iter().any(|i| i.code == "prompt_bound"));
     }
 
     #[test]

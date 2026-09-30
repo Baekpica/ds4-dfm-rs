@@ -5,6 +5,8 @@ Rejected probes do not count. Integration and long-context serving remain
 separate gates; see [the family contract](../../naive-n05-flash.md).
 The [upstream GB10 recipe review](upstream-review.md) covers potential Naive,
 Qwen and shared-path improvements; unmeasured ideas do not count here.
+The [HTTP and arithmetic report](serving.md) records bounded cache, tool,
+concurrency and DSpark gates separately from these speed measurements.
 
 ## Protocol
 

@@ -1,8 +1,11 @@
 # Naive-N0.5-Flash
 
-Integration is in progress. The Rust catalog, MQ87 metadata/layout validator,
-NFC/Qwen2 tokenizer and official Jinja input template are implemented.
-CUDA execution, serving, cache reuse and DSpark are not qualified yet.
+The Rust catalog, MQ87 metadata/layout validator, NFC/Qwen2 tokenizer,
+official Jinja input template and eager CUDA execution are implemented.
+HTTP serving passes short-request gates at 8K context and two banks,
+including partial reuse, disk restart, tools and stream cancellation.
+See the [serving and arithmetic report](benchmarks/naive-2026-09-30/serving.md)
+for its 702-token prompt bound and reference differences.
 The Rust host can open one full CUDA model; forced CPU, Metal, distributed,
 steering, vision and embedded-MTP settings fail before native allocation.
 DSpark serial and banked target verification, accepted-prefix commit and
@@ -93,7 +96,7 @@ full-prefix copy, partial fork, self-restore and snapshot round trip. Eight
 lazy SWA checkpoint slots need up to 204,472,320 bytes plus page alignment;
 each checkpoint preserves 25,559,040 bytes of displaced SWA rows. Full DSA
 KV and indexer histories are copied from the source bank at the chosen cut.
-Live serving, partial reuse and disk restart remain to be qualified.
+Live partial reuse and disk restart pass the bounded HTTP campaign above.
 Bank memcheck passes with zero errors using `--show-backtrace device`.
 The default host backtrace collector crashes in `libgcc _Unwind_Backtrace`
 at CUDA context initialization on this test; device trace and memory checks
@@ -156,11 +159,12 @@ NAIVE_TOKENIZER_GGUF=/absolute/path/to/first-shard.gguf \
 
 ## Remaining gates
 
-CUDA forward must match the mixed-weight reference, including indexer
-rounding, stable ties and the 2048-to-2049 history transition. Session state
-must preserve GQA K/V, SWA rings and indexer history together through partial
-reuse, bank changes, snapshots and disk KV. DSpark needs matched off/on
-token/state checks, actual acceptance and fresh-process speed evidence.
+Full original-source model parity and broader generation quality remain
+unqualified. Primitive and actual-weight regressions cover indexer rounding,
+stable ties and target/indexer/draft cache transitions. The bounded HTTP
+campaign covers partial reuse, bank changes and disk restart. DSpark passes
+token/state and actual-speculation checks; useful acceleration still needs
+fresh-process speed evidence.
 
 Qualify 262144, 524288 and 1048576 contexts separately: admission, full prompt
 processing, distant-content retrieval, continuation, peak memory and actual
