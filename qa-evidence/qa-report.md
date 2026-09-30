@@ -758,4 +758,104 @@ NOTES
 - This pass adds no new public surface; every surface listed by
   tests/qa-gate.sh stays covered by the earlier sections of this report.
 
+========================================================================
+UNIT 2026-09-30 — run-bonsai.sh `serve` (keep a ds4-server up for a client)
+========================================================================
+
+Diff: run-bonsai.sh (serve_pid/serve_start/serve_stop/serve_status/serve_logs
+and dispatch), docs/BONSAI.md, docs/releases/bonsai-serving-2026-09-30.md.
+Uncommitted working tree; the rule 19 gate diffs commits only, so none of
+these paths is in its surface list. All checks below run LIVE against the
+ds4-server already serving /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf on
+127.0.0.1:8899.
+
+FUNCTION serve_status — `./run-bonsai.sh serve status` (exit 0):
+    server:  running (pid 1356568)
+             listening on 127.0.0.1:8899 model_id=Ternary-Bonsai-2-27B-PQ2_0 ...
+    base_url: http://127.0.0.1:8899/v1
+    serving: Ternary-Bonsai-2-27B-PQ2_0 ctx 45056
+    vram:    10815 MiB, 12282 MiB
+  ENDPOINT /v1/models returned id Ternary-Bonsai-2-27B-PQ2_0 and
+  context_length 45056, the same id and context status printed. The vram line
+  is the host's whole-card use: 10815 MiB once requests had run, 7449-7474 MiB
+  on a freshly started server before any request.
+
+FUNCTION serve_logs — `serve logs 5` tailed the last 5 capture lines (exit 0);
+  `serve logs` with no arg tails 20. The capture is
+  misc/scratch/bonsai-serve.log; serve_start clears it before each start.
+
+ENDPOINT /v1/chat/completions — advertised id and alias both answer (temp 0):
+  model=Ternary-Bonsai-2-27B-PQ2_0, max_tokens 16: finish_reason length,
+  content "", reasoning_content "The user is asking a simple factual
+  question: ...", usage 45/16/61.
+  model=prism-bonsai-2-27b, max_tokens 128: finish_reason stop, content
+  "\n\nParis.", reasoning_content "... The capital of France is Paris.\n",
+  usage 45/36/81.
+  The family emits the reasoning block before any content, so a short
+  max_tokens returns empty content with finish_reason length. Matches the
+  release doc's "finish stop, usage 45/36/81"; the exact content carries two
+  leading newlines (the doc writes it as "Paris.").
+
+ENDPOINT /v1/chat/completions stream:true — SSE: 27 `data:` lines, deltas
+  carrying reasoning_content, a final delta:{} with finish_reason length, then
+  `data: [DONE]`. exit 0.
+
+CLIENT METHOD open-grok chat completion — the operator's path:
+    mkdir -p /tmp/bonsai-og-qa && open-grok --cwd /tmp/bonsai-og-qa
+      -m bonsai-local --max-turns 1 -p "Reply with exactly this text and ..."
+  stdout "BONSAI-OK", exit 0. The [model.bonsai-local] block (config.toml:308-
+  318) uses model "prism-bonsai-2-27b", base_url .../v1, context_window 45056,
+  matching the served context. Read and verified.
+
+FUNCTION serve_pid / serve_stop — pid-file safety. Planted a foreign pid (a
+  `sleep 300`) in the pid file: `serve stop` printed "server:  not running",
+  exit 0, and the sleep was STILL ALIVE. serve_pid rejects the number because
+  /proc/<pid>/cmdline carries no "ds4-server"; kill "$pid" runs only on the
+  recorded pid.
+
+FUNCTION serve_start — refusals:
+  - second start with the server up: "server:  already running (pid 1356568);
+    ./run-bonsai.sh serve stop first", exit 0 (started nothing).
+  - slot held by another ds4 (pid file moved aside so the pid guard did not
+    short-circuit): "another ds4 process holds the single model slot; stop it
+    first:" plus the pgrep line naming pid 1356568, exit 1, no server started.
+  - bad subcommand: "ERROR: serve wants start, stop, status or logs (got:
+    bogus)", exit 1. `serve` with no arg == `serve start`; `help` lists the
+    serve line (usage() sed range moved 5,14p -> 5,15p).
+
+FUNCTION serve_stop / serve_start cycle (left running, as required):
+    serve stop  -> "server:  stopped (pid 1356568)"; real 1.008s; port 8899
+                   refused (curl exit 7); /tmp/ds4.lock released; no ds4-server.
+    serve start -> up, new pid 1383741; real 2.306s; id read back from
+                   /v1/models; listening line printed.
+  Timing matches the release doc's "start 2.3 s, stop 1 s". Final state:
+  `serve status` reports running pid 1383741, serving ctx 45056, vram 7471 MiB;
+  curl /v1/models -> Ternary-Bonsai-2-27B-PQ2_0 45056; ss shows
+  LISTEN 127.0.0.1:8899 users:(("ds4-server",pid=1383741)).
+
+bash tests/run.sh -> first run: "tests/run.sh: all checks passed", exit 0
+  (pq2-0-test, catalog parity, tests/qa-gate.sh all PASS). Second run: exit 1
+  — make test-catalog-parity failed on
+  serving_host::tests::cpu_quote_uses_ram_not_discrete_fb, assert_eq!(cpu,
+  metal) at serving_host.rs:3950 (left 19929518080, right 19929145344, diff
+  372736 bytes). Both calls read /proc/meminfo MemAvailable
+  (host_available_bytes -> meminfo_available, serving_host.rs:699,2281-2282),
+  so the assert compares two consecutive samples of a live kernel counter and
+  races under parallel suite load. Isolated: 5/5 pass; full ds4-core lib suite
+  6/6 pass (295 passed each). serving_host.rs is not in this unit's diff
+  (run-bonsai.sh + docs only): the flake is pre-existing and unrelated.
+
+NOTES
+- docs/BONSAI.md's status example shows "vram: 7474 MiB" (a pre-request
+  reading: reproduced 7449-7474 MiB right after start) and the sizing table
+  calls it "7.47 GiB device use measured". 7474 MiB is 7.30 GiB, so the GiB
+  figure is ~0.17 GiB high — a MiB/GiB slip in the prose, not a live failure.
+  After requests run, `serve status` vram reads ~10.8 GiB (the KV bank and
+  graph buffers allocate on first use); the 45056 context still opens and
+  serves. Not exercised: a client window above 45056 (the doc says the session
+  refuses past its bound).
+- stop only ever kills the pid the file records; a reused pid number is
+  rejected unless the reused process is itself a ds4-server (the
+  /proc/<pid>/cmdline text test is the guard's only check).
+
 verdict: overall PASS
