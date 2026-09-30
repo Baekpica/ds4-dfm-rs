@@ -323,4 +323,142 @@ NOT RUN, AND WHY
   diagnostic's output (prompt-position top-5 only).
 - The Rust catalogue items listed above were not re-executed.
 
+================================================================================
+QA pass 2 — Bonsai session unit: 4a2a412 "feat(core): run Bonsai sessions on
+both backends" (docs/releases/bonsai-session-2026-09-30.md)
+
+Unit: 4a2a412 on feature/qwen35-port-cpu, HEAD at pass time 4a2a412 (the
+working tree carried only this report and the gitignored misc/scratch/qa logs;
+no tracked source was modified). Tester: independent rule 19 QA session,
+2026-09-30. Host RTX 4070 SUPER (sm_89, CUDA 13.3).
+Artifact /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf. Every CUDA run sets
+DS4_CUDA_COPY_MODEL=1. Runs were serialised on /tmp/ds4.lock (pgrep -a -x
+ds4-c was empty before each heavy run; no process not started here was killed).
+
+Build — the release report's trap is real: the tree held a CPU-only ds4-c newer
+than ds4.o, so the documented CUDA rebuild is a no-op unless the binary is
+removed first.
+
+    rm -f ds4-c && make ds4-c CUDA_ARCH=sm_89        -> exit 0
+    ldd ds4-c | grep libcudart
+      libcudart.so.13 => /usr/local/cuda-13.3/lib64/libcudart.so.13
+
+The four surfaces the gate requires for this unit, each exercised:
+
+1. DS4_QWEN35_SESSION
+
+   Baseline (no session), CUDA:
+     DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_TOKENS=760,6511,314,9338,369 \
+     DS4_QWEN35_STEPS=8 ./ds4-c -m <model> --cuda --first-token-test -p x
+     prompt: 760 6511 314 9338 369
+     token 5: 11751 Paris / 6: 13 . / 7: 198 / 8: 760 The /
+     9: 6511 capital / 10: 314 of / 11: 9564 Germany / 12: 369 is   exit 0
+
+   With DS4_QWEN35_SESSION=1, same env and args:
+     ds4: Bonsai session path (ds4_session create, sync, eval)
+     ds4: Bonsai prefill chunk: 14 tokens (ctx 14)
+     the identical eight ids                                        exit 0
+
+   With DS4_QWEN35_SESSION=1 on the CPU backend, same env and args:
+     ds4: Bonsai session path (ds4_session create, sync, eval)
+     the identical eight ids                                        exit 0
+
+   PASS — the diagnostic drives a real ds4_session (create, sync, eval) on both
+   backends and prints the same stream. The CPU session is also exercised by
+   the make target below and by run-bonsai.sh session.
+
+2. DS4_QWEN35_PREFILL_CHUNK
+
+   Same session command with the variable set, ids diffed against the baseline:
+
+     DS4_QWEN35_PREFILL_CHUNK=2    -> "Bonsai prefill chunk: 2 tokens (ctx 14)"
+                                      ids identical to the baseline
+     DS4_QWEN35_PREFILL_CHUNK=0    -> "Bonsai prefill chunk: 14 tokens (ctx 14)"
+                                      ids identical (0 falls back to the default)
+     DS4_QWEN35_PREFILL_CHUNK=2048 -> "Bonsai prefill chunk: 14 tokens (ctx 14)"
+                                      ids identical (>1024 falls back)
+   Default (unset) on a 32768 context, plain generation -n 4:
+     "Bonsai prefill chunk: 512 tokens (ctx 32768)" — the documented 512 default.
+
+   PASS — the log line follows the variable and an out-of-range value falls back
+   to the default instead of being accepted silently. The multichunk make target
+   below crosses many chunk boundaries through the same path.
+
+3. test-qwen35-session  (make target, both backends)
+
+     make test-qwen35-session CUDA_ARCH=sm_89        -> exit 0
+       CUDA: 20 PASS, 0 FAIL, "qwen35 session path: PASS"
+         scenarios plain / prefix reuse / rewind replay / invalidate /
+         context bound on the 5-token prompt, and the same four (no context
+         bound) on the 68-token long prompt; every id compared against the
+         in-process CPU reference (the oracle hook ds4_test_qwen35_ref_greedy,
+         ds4.c:68867).
+       CPU (DS4_TEST_BACKEND=cpu, 4 steps, long pass skipped): 10 PASS, 0 FAIL,
+         "qwen35 session path: PASS"
+
+   PASS on both backends.
+
+4. test-qwen35-session-multichunk  (make target, DS4_QWEN35_PREFILL_CHUNK=2)
+
+     make test-qwen35-session-multichunk CUDA_ARCH=sm_89  -> exit 0
+       every scenario logs "Bonsai prefill chunk: 2 tokens", 20 PASS, 0 FAIL,
+       "qwen35 session path: PASS"; the prefill crosses many chunk boundaries
+       and the ids still match the reference.
+
+   PASS.
+
+    ./run-bonsai.sh session                            -> exit 0
+      "IDENTICAL: the CPU session reproduces the CPU reference" and
+      "IDENTICAL: all 16 generated token ids agree".
+
+Engine gate — accepts a session, keeps the refusals:
+
+    ./ds4-c -m <model> --cuda --first-token-test -p x --mtp /tmp/qa-mtp-sidecar.gguf
+      -> exit 1: "ds4: Bonsai (qwen35) runs on the CPU reference (--cpu) or on
+         the CUDA graph (--cuda); tensor parallelism, distributed ranks, SSD
+         streaming, MTP/DSpark and steering are not supported"
+    the same with --cpu                                -> exit 1, same message
+    DS4_QWEN35_SESSION=1 DS4_QWEN35_LOGITS=/tmp/qa-logits.bin ... -> exit 1:
+      "ds4: DS4_QWEN35_LOGITS needs the per-position logits and is not
+       available with DS4_QWEN35_SESSION"; /tmp/qa-logits.bin was NOT created
+    ./run-bonsai.sh server                             -> exit 2:
+      "ERROR: \"server\" is not implemented in this tree."
+    plain generation ./ds4-c -m <model> --cuda -p "The capital of France is" -n 4
+      -> exit 0, opened a session ("Bonsai prefill chunk: 512 tokens
+         (ctx 32768)") and printed "The user is asking", so the gate admits the
+         family outside --first-token-test too.
+
+Snapshot refusal — source-verified, not live: ds4_session_payload_bytes returns
+0 for the family (ds4.c:54790-54793); ds4_session_save_payload refuses "Bonsai
+session snapshots are not implemented yet" (ds4.c:55024-55028) and
+ds4_session_load_payload the same (ds4.c:55485-55493). No CLI flag exposes
+payload save/load in this tree, so this one claim rests on the source read, not
+on a command; the context bound is covered live by scenario 5 of the test.
+
+Regression gates (all exit 0):
+
+    make test-qwen35-cuda CUDA_ARCH=sm_89           "PQ2_0 CUDA parity: PASS"
+    make bonsai-fold-selftest                       fold selftest line printed
+    make bonsai-ref-check (DS4_BONSAI_STEPS=12)      12 token lines, exit 0
+    make bonsai-cuda-parity                         "bonsai cuda parity: PASS"
+    ./run-bonsai.sh ids                             IDENTICAL (the 8 ids)
+    DS4_BONSAI_MODEL=<model> make test-qwen35-rows  "851 tensors matched"
+    bash tests/run.sh                               green (see below)
+
+    Note: `DS4_QWEN35_STEPS=4 make bonsai-ref-check` does not pass 4 through —
+    the recipe assigns DS4_QWEN35_STEPS=$(DS4_BONSAI_STEPS)=12, so the
+    environment value is superseded and the target ran 12 steps. The target is
+    green either way; the anomaly is in the invocation, not the gate.
+
+Release report check: docs/releases/bonsai-session-2026-09-30.md matches this
+pass — the 20/10 PASS counts, the "Bonsai prefill chunk" log, the session diff
+IDENTICAL, the CPU-build trap, and the stated limits (decode is one row per
+eval; no snapshots or disk KV; the CPU reference is ~3 s per forward). No
+falsified statement was found.
+
+Surfaces this pass adds to the gate's coverage: DS4_QWEN35_SESSION,
+DS4_QWEN35_PREFILL_CHUNK, test-qwen35-session, test-qwen35-session-multichunk
+(all named and exercised above); the rest of the gate's list is covered by the
+earlier section.
+
 verdict: overall PASS
