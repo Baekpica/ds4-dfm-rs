@@ -256,6 +256,7 @@ const PERF_ENV: &[&str] = &[
     "DS4_MIMO2_SUM_RESIDUAL",
     "DS4_MIMO2_ATTN_RESIDUAL",
     "DS4_MIMO2_GATEUP_BOUNDED",
+    "DS4_MIMO2_INPUT_Q8_COMPACT",
     "DS4_INKLING_PREFILL_CHUNK",
     "DS4_DOTS3_ATTN_NO_HMMA",
     "DS4_DOTS3_ATTN_NO_SPLIT",
@@ -665,6 +666,7 @@ mod tests {
             "DS4_MIMO2_SUM_RESIDUAL",
             "DS4_MIMO2_ATTN_RESIDUAL",
             "DS4_MIMO2_GATEUP_BOUNDED",
+            "DS4_MIMO2_INPUT_Q8_COMPACT",
         ] {
             for value in ["0", "1"] {
                 let env = controls(&[format!("{key}={value}")]).unwrap();

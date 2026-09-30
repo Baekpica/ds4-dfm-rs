@@ -2862,6 +2862,30 @@ int ds4_mmq_moe_pair_impl(
         ? ncols_max_hint
         : fused_down ? (int64_t)n_tokens : ne_get_rows;
 
+    enum {
+        kMimoRows = 2048, kMimoColumns = 4096, kMimoExperts = 256, kMimoUsed = 8,
+        kMimoMinTokens = 256, kMimoMaxTokens = 8192
+    };
+    static const bool mimo_compact_enabled = [] {
+        const char *env = getenv("DS4_MIMO2_INPUT_Q8_COMPACT");
+        return !env || strcmp(env, "0") != 0;
+    }();
+    // The D2R consumer reads token Q8 directly. Generic MMQ still gets the
+    // sorted format; the fallback below reconstructs it if D2R refuses.
+    const bool mimo_input_compact = type == GGML_TYPE_IQ2_XXS &&
+        !direct_gateup_q8 && !fused_down && !q3_handoff &&
+        mimo_compact_enabled && moe_yind_enabled() &&
+        cc == GGML_CUDA_CC_DGX_SPARK && M == kMimoRows && K == kMimoColumns &&
+        n_experts == kMimoExperts && n_expert_used == kMimoUsed &&
+        n_tokens >= kMimoMinTokens && n_tokens <= kMimoMaxTokens &&
+        xa_soa && xb_soa && soa_blocks >= (int64_t)n_experts * M * (K / 256) &&
+        d2r_enabled() && d2r_iq2_enabled() &&
+        ne_get_rows >= (d2r_ncols_floor > 0 ? d2r_ncols_floor : d2r_min_cols()) &&
+        ds4_mmq_iq2_xxs_moe_d2r_available(cc);
+    const size_t input_q8_bytes = mimo_input_compact
+        ? (size_t)n_tokens * (size_t)ne10_padded * sizeof(block_q8_1) / QK8_1 + src1_slack
+        : nbytes_src1_q8_1;
+
     /* The materialized path stream-frees gate/up Q8_1 before allocating the
      * down Q8_1. The direct path needs both simultaneously, but writes down
      * Q8_1 into caller-owned gate scratch instead of growing the CUDA pool. */
@@ -2869,7 +2893,7 @@ int ds4_mmq_moe_pair_impl(
     ggml_cuda_pool_alloc<char> src1_q8_1_alloc;
     char *src1_q8_1 = direct_gateup_q8
         ? (char *)fused_down->input_q8_scratch
-        : src1_q8_1_alloc.alloc(ctx->pool(), nbytes_src1_q8_1);
+        : src1_q8_1_alloc.alloc(ctx->pool(), input_q8_bytes);
 
     // S1.1a fix (same as the dense/moe paths): zero the over-allocated mmq Y buffer
     // so the kernel's unconditional masked-out tail-tile read (mmq.cuh:3528) returns
@@ -2918,7 +2942,7 @@ int ds4_mmq_moe_pair_impl(
                     "(flat-pool p5c, first n_tokens=%d)\n", n_tokens);
         }
     }
-    const int64_t quant_rows = (moe_yind || pair_worklist_yind)
+    const int64_t quant_rows = (moe_yind || pair_worklist_yind || mimo_input_compact)
         ? (int64_t)n_tokens : ne_get_rows;
     ggml_cuda_pool_alloc<char> compact_q8_1_alloc;
     if (!input_q8_ext) {
@@ -2926,7 +2950,7 @@ int ds4_mmq_moe_pair_impl(
                 "ds4/prefill/moe/input_quant_q8_1",
                 ds4_mmq_nvtx_payload((uint32_t)quant_rows, (uint32_t)K),
                 nvtx_prefill);
-        ybuf_memset(src1_q8_1, nbytes_src1_q8_1, stream);
+        ybuf_memset(src1_q8_1, input_q8_bytes, stream);
         if (pair_worklist_yind) {
             const size_t compact_bytes =
                 (size_t)n_tokens * (size_t)ne10_padded * sizeof(block_q8_1) / QK8_1;
@@ -2949,7 +2973,7 @@ int ds4_mmq_moe_pair_impl(
                 (int)ne_get_rows, n_tokens, ksegs);
         } else {
             quantize_mmq_q8_1_cuda(
-                X_f32, moe_yind ? nullptr : ids_src1, (void *)src1_q8_1,
+                X_f32, (moe_yind || mimo_input_compact) ? nullptr : ids_src1, (void *)src1_q8_1,
                 type, /*ne00=*/K, s11_src, s12_src, s13_src,
                 /*ne0=*/ne10_padded, /*ne1=*/quant_rows, /*ne2=*/1, /*ne3=*/1,
                 stream);
@@ -3107,11 +3131,28 @@ int ds4_mmq_moe_pair_impl(
                 const int d2r_rc = ds4_mmq_iq2_xxs_moe_d2r_pair_launch(
                         xa_soa, xb_soa, soa_blocks, src1_q8_1, ids_dst,
                         expert_bounds, out_a, out_b, M, K, ne_get_rows, n_experts,
-                        n_expert_used, d2r_work.get(), d2r_work_bytes, stream);
+                        n_expert_used, d2r_work.get(), d2r_work_bytes, stream,
+                        mimo_input_compact ? ids_src1 : nullptr,
+                        mimo_input_compact ? n_tokens : 0);
                 if (d2r_rc == 0) {
                     gate_up_done = true;
                 }
             }
+        }
+    }
+
+    ggml_cuda_pool_alloc<char> fallback_q8_alloc;
+    if (mimo_input_compact && !gate_up_done) {
+        // A refused fast path must not feed token-compact rows into generic MMQ.
+        src1_q8_1 = fallback_q8_alloc.alloc(ctx->pool(), nbytes_src1_q8_1);
+        ybuf_memset(src1_q8_1, nbytes_src1_q8_1, stream);
+        quantize_mmq_q8_1_cuda(
+                X_f32, ids_src1, src1_q8_1, type, K, s11_src, s12_src, s13_src,
+                ne10_padded, ne_get_rows, 1, 1, stream);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            fprintf(stderr, "%s: fallback Q8 quantize failed: %s\n", tag, cudaGetErrorString(err));
+            return -3;
         }
     }
 

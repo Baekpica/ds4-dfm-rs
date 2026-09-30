@@ -170,6 +170,17 @@ The bandwidth figure is informational; we don't tier on it.
   narrow decode retain the original schedule. Cached on first use; compare
   fresh processes. See the [paired A/B and resource costs](../docs/benchmarks/mimo2-2026-09-26/README.md#gateup-bounded-scheduling).
 
+- `DS4_MIMO2_INPUT_Q8_COMPACT=0` restores slot-gathered input quantization.
+  Unset quantizes each token once for the aligned IQ2_XXS Gate/Up on DGX
+  Spark, M=2048, K=4096, 256 experts, top-k 8, widths 256–8192. D2R reads
+  those same Q8 bytes through the sorted token map; its accumulation order
+  is unchanged. At width 4096 the input payload is 18 MiB rather than
+  144 MiB, with no extra gather launch. Other shapes, narrow decode,
+  disabled D2R and `DS4_MMQ_NO_YIND` keep the sorted format. A refused
+  compact D2R launch rebuilds sorted Q8 before generic MMQ. Cached on first
+  use; compare fresh processes. See the
+  [MOPD A/B evidence](../docs/benchmarks/2026-09-30-mimo2-mopd-spark.md#prefill-1-direct-token-compact-q8).
+
 - `DS4_MIMO2_VISION_ATTN=0` restores scalar full vision attention. The
   default caches scores in shared memory for interleaved Q32/KV8/HD64,
   1–8192 rows, without window, sink, causal or group masks. Other layouts

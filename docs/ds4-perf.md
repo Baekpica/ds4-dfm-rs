@@ -205,7 +205,10 @@ for the fixed artifact shape at widths 32–8192; narrow decode is unchanged.
 `DS4_MIMO2_SUM_RESIDUAL=0` restores separate expert sum and residual add;
 `DS4_MIMO2_ATTN_RESIDUAL=0` restores separate attention scale and add.
 `DS4_MIMO2_GATEUP_BOUNDED=0` restores the original IQ2 Gate/Up schedule.
-All three support matched `--env` comparisons with values `0` or `1`.
+`DS4_MIMO2_INPUT_Q8_COMPACT=0` restores repeated Gate/Up input quantization;
+its default reads token-compact Q8 directly for the Spark IQ2_XXS shape at
+widths 256–8192, preserving Q8 bytes and accumulation order.
+All four support matched `--env` comparisons with values `0` or `1`.
 `DS4_MIMO2_DFLASH_CPU=1` restores host RMSNorm, RoPE and attention in the
 external DFlash drafter. Unset, those operations stay on the GPU. This
 changes draft arithmetic; compare verified output and long-window cases.
