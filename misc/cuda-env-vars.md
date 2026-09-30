@@ -181,6 +181,15 @@ The bandwidth figure is informational; we don't tier on it.
   use; compare fresh processes. See the
   [MOPD A/B evidence](../docs/benchmarks/2026-09-30-mimo2-mopd-spark.md#prefill-1-direct-token-compact-q8).
 
+- `DS4_MIMO2_DOWN_PIPE64=0` restores 128-column IQ2_XS Down worklists.
+  Unset uses native pipelined tiles of at most 64 columns for unweighted
+  fused MiMo SwiGLU Down on DGX Spark: M=4096, K=2048, 256 experts,
+  eight assignments per forward token, widths 256–8192. Q8, dot arithmetic
+  and output layout are unchanged. Generic IQ callers, narrow decode,
+  disabled worklists, `DS4_MMQ_PIPE=0` and `DS4_MMQ_WORKLIST_TAIL64=0`
+  retain the original path. Smaller tiles grow the worklist and weight
+  reads; compare complete workloads in fresh processes.
+
 - `DS4_MIMO2_VISION_ATTN=0` restores scalar full vision attention. The
   default caches scores in shared memory for interleaved Q32/KV8/HD64,
   1–8192 rows, without window, sink, causal or group masks. Other layouts

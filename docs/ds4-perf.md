@@ -208,7 +208,11 @@ for the fixed artifact shape at widths 32–8192; narrow decode is unchanged.
 `DS4_MIMO2_INPUT_Q8_COMPACT=0` restores repeated Gate/Up input quantization;
 its default reads token-compact Q8 directly for the Spark IQ2_XXS shape at
 widths 256–8192, preserving Q8 bytes and accumulation order.
-All four support matched `--env` comparisons with values `0` or `1`.
+`DS4_MIMO2_DOWN_PIPE64=0` restores 128-column IQ2_XS Down worklists;
+its default uses the native pipelined tiles throughout fused SwiGLU Down
+at Spark widths 256–8192. Smaller tiles preserve arithmetic but increase
+worklist size and weight reads; check complete prefill and decode costs.
+All five support matched `--env` comparisons with values `0` or `1`.
 `DS4_MIMO2_DFLASH_CPU=1` restores host RMSNorm, RoPE and attention in the
 external DFlash drafter. Unset, those operations stay on the GPU. This
 changes draft arithmetic; compare verified output and long-window cases.

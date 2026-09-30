@@ -940,6 +940,7 @@ static constexpr uint32_t DS4_MOE_WORKLIST_WIDTH_32  = 2u;
 static constexpr uint32_t DS4_MOE_WORKLIST_WIDTH_16  = 3u;
 static constexpr uint32_t DS4_MOE_WORKLIST_WIDTH_8   = 4u;
 
+template <int max_x = DS4_MOE_WORKLIST_MMQ_X>
 __global__ static void ds4_moe_build_tile_worklist(
         const int32_t * __restrict__ expert_bounds,
         uint3         * __restrict__ worklist,
@@ -955,8 +956,8 @@ __global__ static void ds4_moe_build_tile_worklist(
     const int rows = col_high - col_low;
     if (rows <= 0) return;
 
-    const int ntx = (rows + DS4_MOE_WORKLIST_MMQ_X - 1) /
-                    DS4_MOE_WORKLIST_MMQ_X;
+    static_assert(max_x == 64 || max_x == 128, "unsupported worklist width");
+    const int ntx = (rows + max_x - 1) / max_x;
     const uint32_t nwork = (uint32_t)ntx * (uint32_t)nty;
     __shared__ uint32_t base;
     if (threadIdx.x == 0) base = atomicAdd(work_count, nwork);
@@ -966,9 +967,10 @@ __global__ static void ds4_moe_build_tile_worklist(
          local += blockDim.x) {
         const uint32_t jt = local / (uint32_t)nty;
         const uint32_t it = local - jt * (uint32_t)nty;
-        const uint32_t col_offset = jt * DS4_MOE_WORKLIST_MMQ_X;
+        const uint32_t col_offset = jt * max_x;
         const int remaining = rows - (int)col_offset;
-        uint32_t width_code = DS4_MOE_WORKLIST_WIDTH_128;
+        uint32_t width_code = max_x == 64
+            ? DS4_MOE_WORKLIST_WIDTH_64 : DS4_MOE_WORKLIST_WIDTH_128;
         if (enable_narrow_tails && remaining > 0 &&
             remaining <= DS4_MOE_WORKLIST_TAIL_X) {
             width_code = remaining <= 8
@@ -1020,7 +1022,7 @@ static __device__ __forceinline__ void ds4_moe_worklist_tile(
         /*x_soa=*/nullptr, /*soa_blocks=*/0);
 }
 
-template <ggml_type type, bool need_check>
+template <ggml_type type, bool need_check, int max_x = DS4_MOE_WORKLIST_MMQ_X>
 __launch_bounds__(ggml_cuda_get_physical_warp_size()*mmq_get_nwarps_device(), 1)
 __global__ static void ds4_moe_worklist_mmq_kernel(
         const char     * __restrict__ x,
@@ -1037,7 +1039,7 @@ __global__ static void ds4_moe_worklist_mmq_kernel(
         int stride_col_dst,
         int blocks_per_ne00,
         int pipe) {
-    constexpr int mmq_x = DS4_MOE_WORKLIST_MMQ_X;
+    constexpr int mmq_x = max_x;
     constexpr int mmq_y = get_mmq_y_device();
     constexpr int nwarps = mmq_get_nwarps_device();
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
@@ -1466,7 +1468,7 @@ cudaError_t ds4_mmq_moe_worklist_prepare_attributes(
     return cudaSuccess;
 }
 
-template <ggml_type type>
+template <ggml_type type, int max_x = DS4_MOE_WORKLIST_MMQ_X>
 bool ds4_mmq_moe_worklist_preflight(
         int cc,
         int nsm,
@@ -1477,7 +1479,7 @@ bool ds4_mmq_moe_worklist_preflight(
         int64_t stride_row_x,
         int64_t stride_channel_x,
         ds4_mmq_moe_worklist_plan<type> *plan) {
-    constexpr int mmq_x = DS4_MOE_WORKLIST_MMQ_X;
+    constexpr int mmq_x = max_x;
     const int mmq_y = get_mmq_y_host(cc);
     if (get_mmq_x_max_host(cc) < mmq_x || mmq_y != 128 || nsm <= 0 ||
         M <= 0 || K <= 0 || K % ggml_blck_size(type) != 0 ||
@@ -1556,7 +1558,7 @@ extern "C" int ds4_mmq_q3_K_worklist_preflight_test(
         stride_row_x, stride_channel_x, nullptr) ? 1 : 0;
 }
 
-template <ggml_type type>
+template <ggml_type type, int max_x = DS4_MOE_WORKLIST_MMQ_X>
 int ds4_mmq_moe_worklist_launch(
         const char *tag,
         ggml_backend_cuda_context &ctx,
@@ -1573,14 +1575,14 @@ int ds4_mmq_moe_worklist_launch(
         int64_t stride_channel_x,
         cudaStream_t stream,
         bool attributes_prepared = false) {
-    constexpr int mmq_x = DS4_MOE_WORKLIST_MMQ_X;
+    constexpr int mmq_x = max_x;
     const int dev = ggml_cuda_get_device();
     const int cc = ggml_cuda_info().devices[dev].cc;
     const int nsm = ggml_cuda_info().devices[dev].nsm;
     const int warp_size = ggml_cuda_info().devices[dev].warp_size;
     const int nwarps = mmq_get_nwarps_host(cc, warp_size);
     ds4_mmq_moe_worklist_plan<type> plan = {};
-    if (!ds4_mmq_moe_worklist_preflight<type>(
+    if (!ds4_mmq_moe_worklist_preflight<type, max_x>(
             cc, nsm, M, K, ne_get_rows, n_experts,
             stride_row_x, stride_channel_x, &plan)) {
         return -1;
@@ -1593,7 +1595,7 @@ int ds4_mmq_moe_worklist_launch(
     cudaError_t err = cudaMemsetAsync(
         work_count.get(), 0, sizeof(uint32_t), stream);
     if (err != cudaSuccess) return -2;
-    ds4_moe_build_tile_worklist<<<n_experts, 128, 0, stream>>>(
+    ds4_moe_build_tile_worklist<max_x><<<n_experts, 128, 0, stream>>>(
         expert_bounds, worklist.get(), work_count.get(), n_experts, nty,
         moe_worklist_tail64_enabled() ? 1 : 0);
     err = cudaGetLastError();
@@ -1608,22 +1610,22 @@ int ds4_mmq_moe_worklist_launch(
             mmq_x, mmq_y, cc, warp_size, nwarps);
     if (!attributes_prepared) {
         CUDA_SET_SHARED_MEMORY_LIMIT(
-            (ds4_moe_worklist_mmq_kernel<type, false>), nbytes_shared);
+            (ds4_moe_worklist_mmq_kernel<type, false, max_x>), nbytes_shared);
         CUDA_SET_SHARED_MEMORY_LIMIT(
-            (ds4_moe_worklist_mmq_kernel<type, true>), nbytes_shared);
+            (ds4_moe_worklist_mmq_kernel<type, true, max_x>), nbytes_shared);
     }
     const dim3 block_dims((unsigned)warp_size, (unsigned)nwarps, 1u);
     const int blocks_per_ne00 = K / ggml_blck_size(type);
     const int pipe = moe_worklist_pipe_enabled() ? 1 : 0;
     if (M % mmq_y == 0) {
-        ds4_moe_worklist_mmq_kernel<type, false>
+        ds4_moe_worklist_mmq_kernel<type, false, max_x>
             <<<nsm, block_dims, nbytes_shared, stream>>>(
                 (const char *)W, Y_q8, ids_dst, expert_bounds, out,
                 worklist.get(), work_count.get(), M, (int)ne_get_rows,
                 (int)stride_row_x, (int)stride_channel_x, M,
                 blocks_per_ne00, pipe);
     } else {
-        ds4_moe_worklist_mmq_kernel<type, true>
+        ds4_moe_worklist_mmq_kernel<type, true, max_x>
             <<<nsm, block_dims, nbytes_shared, stream>>>(
                 (const char *)W, Y_q8, ids_dst, expert_bounds, out,
                 worklist.get(), work_count.get(), M, (int)ne_get_rows,
@@ -1698,7 +1700,7 @@ int ds4_mmq_moe_worklist_tail_launch(
     cudaError_t err = cudaMemsetAsync(
         work_count.get(), 0, sizeof(uint32_t), stream);
     if (err != cudaSuccess) return -2;
-    ds4_moe_build_tile_worklist<<<n_experts, 128, 0, stream>>>(
+    ds4_moe_build_tile_worklist<><<<n_experts, 128, 0, stream>>>(
         expert_bounds, worklist.get(), work_count.get(), n_experts, nty,
         moe_worklist_tail64_enabled() ? 1 : 0);
     err = cudaGetLastError();
@@ -2202,10 +2204,38 @@ int ds4_mmq_moe_impl(
                       type == GGML_TYPE_Q5_K || type == GGML_TYPE_IQ2_XXS ||
                       type == GGML_TYPE_IQ1_S || type == GGML_TYPE_IQ1_M ||
                       type == GGML_TYPE_IQ2_XS) {
-            worklist_rc = ds4_mmq_moe_worklist_launch<type>(
-                tag, *ctx, W, (const int *)src1_q8_1.get(),
-                ids_dst.get(), expert_bounds.get(), out_f32,
-                M, K, ne_get_rows, n_experts, s01, s02, stream);
+            if constexpr (type == GGML_TYPE_IQ2_XS) {
+                enum {
+                    kMimoDownRows = 4096, kMimoDownColumns = 2048,
+                    kMimoExperts = 256, kMimoUsed = 8,
+                    kMimoMinTokens = 256, kMimoMaxTokens = 8192
+                };
+                const char *env = getenv("DS4_MIMO2_DOWN_PIPE64");
+                // MiMo's unweighted SwiGLU Down uses the native pipelined
+                // 64-column tile throughout. Keep decode and generic IQ
+                // callers on 128; this trades more weight reads for overlap.
+                const bool pipe64 = up_f32 &&
+                    (!env || strcmp(env, "0") != 0) &&
+                    moe_worklist_pipe_enabled() && moe_worklist_tail64_enabled() &&
+                    cc == GGML_CUDA_CC_DGX_SPARK &&
+                    M == kMimoDownRows && K == kMimoDownColumns &&
+                    n_experts == kMimoExperts && n_expert_used == 1 &&
+                    n_tokens % kMimoUsed == 0 &&
+                    n_tokens >= kMimoMinTokens * kMimoUsed &&
+                    n_tokens <= kMimoMaxTokens * kMimoUsed;
+                if (pipe64) {
+                    worklist_rc = ds4_mmq_moe_worklist_launch<type, DS4_MMQ_PIPE_MAX_X>(
+                        tag, *ctx, W, (const int *)src1_q8_1.get(),
+                        ids_dst.get(), expert_bounds.get(), out_f32,
+                        M, K, ne_get_rows, n_experts, s01, s02, stream);
+                }
+            }
+            if (worklist_rc == -1) {
+                worklist_rc = ds4_mmq_moe_worklist_launch<type>(
+                    tag, *ctx, W, (const int *)src1_q8_1.get(),
+                    ids_dst.get(), expert_bounds.get(), out_f32,
+                    M, K, ne_get_rows, n_experts, s01, s02, stream);
+            }
         }
         if (worklist_rc == 0) {
             static bool logged_worklist = false;
