@@ -59,3 +59,61 @@ static ds4_context_memory naive_context_memory(unsigned ctx, unsigned cap) {
     m.total_bytes = m.raw_bytes + m.scratch_bytes;
     return m;
 }
+
+typedef struct {
+    const ds4_model *model;
+    const ds4_tensor *fc, *hidden_norm, *output_norm, *mask;
+    const ds4_tensor *markov1, *markov2, *conf, *bias;
+    const ds4_tensor *attn_norm[N05_DF_LAYERS], *q[N05_DF_LAYERS], *k[N05_DF_LAYERS];
+    const ds4_tensor *v[N05_DF_LAYERS], *o[N05_DF_LAYERS], *q_norm[N05_DF_LAYERS], *k_norm[N05_DF_LAYERS];
+    const ds4_tensor *ffn_norm[N05_DF_LAYERS], *gate[N05_DF_LAYERS], *up[N05_DF_LAYERS], *down[N05_DF_LAYERS];
+} ds4_naive_draft;
+
+static const ds4_tensor *naive_df_tensor(const ds4_model *m, const char *name,
+                                         unsigned type, unsigned ndim,
+                                         unsigned d0, unsigned d1) {
+    const ds4_tensor *t = model_find_tensor(m, name);
+    if (!t || t->type != type || t->ndim != ndim || t->dim[0] != d0 ||
+        (ndim == 2 && t->dim[1] != d1)) { return NULL; }
+    return t;
+}
+
+/* The host checks pairing metadata before this narrow tensor adaptation. */
+static bool naive_draft_bind(ds4_naive_draft *d, const ds4_model *m) {
+    if (!d || !m || m->n_tensors != 63) { return false; }
+    memset(d, 0, sizeof(*d));
+    d->model = m;
+#define N05_DF_BIND(field, name, type, ndim, d0, d1) do { \
+    d->field = naive_df_tensor(m, name, type, ndim, d0, d1); \
+    if (!d->field) { return false; } \
+} while (0)
+    N05_DF_BIND(fc, "fc.weight", DS4_TENSOR_Q8_0, 2, N05_DF_SLOT, N05_EMBED);
+    N05_DF_BIND(hidden_norm, "enc.output_norm.weight", DS4_TENSOR_F32, 1, N05_EMBED, 0);
+    N05_DF_BIND(output_norm, "output_norm.weight", DS4_TENSOR_F32, 1, N05_EMBED, 0);
+    N05_DF_BIND(mask, "mask_embedding.weight", DS4_TENSOR_F32, 1, N05_EMBED, 0);
+    N05_DF_BIND(markov1, "markov_w1.weight", DS4_TENSOR_Q8_0, 2, N05_DF_RANK, N05_VOCAB);
+    N05_DF_BIND(markov2, "markov_w2.weight", DS4_TENSOR_Q8_0, 2, N05_DF_RANK, N05_VOCAB);
+    N05_DF_BIND(conf, "confidence_head.weight", DS4_TENSOR_F32, 2, N05_EMBED + N05_DF_RANK, 1);
+    N05_DF_BIND(bias, "confidence_head.bias", DS4_TENSOR_F32, 1, 1, 0);
+    for (unsigned il = 0; il < N05_DF_LAYERS; il++) {
+        char name[64];
+#define N05_DF_LAYER(field, suffix, type, ndim, d0, d1) do { \
+    snprintf(name, sizeof(name), "blk.%u." suffix, il); \
+    N05_DF_BIND(field[il], name, type, ndim, d0, d1); \
+} while (0)
+        N05_DF_LAYER(attn_norm, "attn_norm.weight", DS4_TENSOR_F32, 1, N05_EMBED, 0);
+        N05_DF_LAYER(ffn_norm, "ffn_norm.weight", DS4_TENSOR_F32, 1, N05_EMBED, 0);
+        N05_DF_LAYER(q_norm, "attn_q_norm.weight", DS4_TENSOR_F32, 1, N05_DF_DIM, 0);
+        N05_DF_LAYER(k_norm, "attn_k_norm.weight", DS4_TENSOR_F32, 1, N05_DF_DIM, 0);
+        N05_DF_LAYER(q, "attn_q.weight", DS4_TENSOR_Q8_0, 2, N05_EMBED, N05_DF_HEADS * N05_DF_DIM);
+        N05_DF_LAYER(k, "attn_k.weight", DS4_TENSOR_Q8_0, 2, N05_EMBED, N05_DF_KV * N05_DF_DIM);
+        N05_DF_LAYER(v, "attn_v.weight", DS4_TENSOR_Q8_0, 2, N05_EMBED, N05_DF_KV * N05_DF_DIM);
+        N05_DF_LAYER(o, "attn_output.weight", DS4_TENSOR_Q8_0, 2, N05_EMBED, N05_EMBED);
+        N05_DF_LAYER(gate, "ffn_gate.weight", DS4_TENSOR_Q8_0, 2, N05_EMBED, N05_EMBED);
+        N05_DF_LAYER(up, "ffn_up.weight", DS4_TENSOR_Q8_0, 2, N05_EMBED, N05_EMBED);
+        N05_DF_LAYER(down, "ffn_down.weight", DS4_TENSOR_Q8_0, 2, N05_EMBED, N05_EMBED);
+#undef N05_DF_LAYER
+    }
+#undef N05_DF_BIND
+    return true;
+}

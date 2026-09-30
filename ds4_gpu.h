@@ -4855,6 +4855,22 @@ int ds4_gpu_naive_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
 int ds4_gpu_naive_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down,
         const ds4_gpu_tensor *weights, uint32_t rows);
 int ds4_gpu_naive_add(ds4_gpu_tensor *cur, const ds4_gpu_tensor *other, uint64_t count);
+int ds4_gpu_naive_df_tap(ds4_gpu_tensor *out, const ds4_gpu_tensor *hidden,
+        uint32_t first, uint32_t rows, uint32_t tap);
+int ds4_gpu_naive_df_mask(ds4_gpu_tensor *hidden, const void *map,
+        uint64_t size, uint64_t offset, uint32_t rows);
+int ds4_gpu_naive_df_norm(ds4_gpu_tensor *x, const void *map, uint64_t size,
+        uint64_t offset, uint32_t heads, uint32_t rows);
+int ds4_gpu_naive_df_rope(ds4_gpu_tensor *x, const ds4_gpu_tensor *table,
+        uint32_t heads, uint32_t rows);
+int ds4_gpu_naive_df_store(ds4_gpu_tensor *cache, const ds4_gpu_tensor *k,
+        const ds4_gpu_tensor *v, const ds4_gpu_tensor *positions, uint32_t rows);
+int ds4_gpu_naive_df_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *cache, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        uint32_t first, uint32_t start, uint32_t rows);
+int ds4_gpu_naive_df_conf(ds4_gpu_tensor *out, const ds4_gpu_tensor *hidden,
+        const ds4_gpu_tensor *markov, const void *map, uint64_t size, uint64_t weight, uint64_t bias);
+int ds4_gpu_naive_df_top2(ds4_gpu_tensor *out, const ds4_gpu_tensor *logits);
 
 /* Fused unweighted SwiGLU + IQ2_XS expert down. Returns -1 for an
  * unsupported shape or the diagnostic fallback, 0 on failure, 1 on success. */

@@ -55,3 +55,35 @@ int ds4_gpu_naive_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down,
 int ds4_gpu_naive_add(ds4_gpu_tensor *cur, const ds4_gpu_tensor *other, uint64_t count) {
     (void)cur; (void)other; (void)count; return 0;
 }
+int ds4_gpu_naive_df_tap(ds4_gpu_tensor *out, const ds4_gpu_tensor *hidden,
+        uint32_t first, uint32_t rows, uint32_t tap) {
+    (void)out; (void)hidden; (void)first; (void)rows; (void)tap; return 0;
+}
+int ds4_gpu_naive_df_mask(ds4_gpu_tensor *hidden, const void *map,
+        uint64_t size, uint64_t offset, uint32_t rows) {
+    (void)hidden; (void)map; (void)size; (void)offset; (void)rows; return 0;
+}
+int ds4_gpu_naive_df_norm(ds4_gpu_tensor *x, const void *map, uint64_t size,
+        uint64_t offset, uint32_t heads, uint32_t rows) {
+    (void)x; (void)map; (void)size; (void)offset; (void)heads; (void)rows; return 0;
+}
+int ds4_gpu_naive_df_rope(ds4_gpu_tensor *x, const ds4_gpu_tensor *table,
+        uint32_t heads, uint32_t rows) {
+    (void)x; (void)table; (void)heads; (void)rows; return 0;
+}
+int ds4_gpu_naive_df_store(ds4_gpu_tensor *cache, const ds4_gpu_tensor *k,
+        const ds4_gpu_tensor *v, const ds4_gpu_tensor *positions, uint32_t rows) {
+    (void)cache; (void)k; (void)v; (void)positions; (void)rows; return 0;
+}
+int ds4_gpu_naive_df_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *cache, const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        uint32_t first, uint32_t start, uint32_t rows) {
+    (void)out; (void)q; (void)cache; (void)k; (void)v; (void)first; (void)start; (void)rows; return 0;
+}
+int ds4_gpu_naive_df_conf(ds4_gpu_tensor *out, const ds4_gpu_tensor *hidden,
+        const ds4_gpu_tensor *markov, const void *map, uint64_t size, uint64_t weight, uint64_t bias) {
+    (void)out; (void)hidden; (void)markov; (void)map; (void)size; (void)weight; (void)bias; return 0;
+}
+int ds4_gpu_naive_df_top2(ds4_gpu_tensor *out, const ds4_gpu_tensor *logits) {
+    (void)out; (void)logits; return 0;
+}

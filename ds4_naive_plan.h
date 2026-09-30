@@ -12,8 +12,18 @@ enum {
     N05_FF = 2048, N05_EXPERTS = 256, N05_USED = 8,
     N05_INDEX_HEADS = 16, N05_INDEX_DIM = 128, N05_TOP_K = 2048,
     N05_QUERY_TILE = 32, N05_HISTORY_TILE = 4096,
-    N05_CONTEXT = 1048576, N05_PREFILL = 2048, N05_PREFILL_MAX = 8192
+    N05_CONTEXT = 1048576, N05_PREFILL = 2048, N05_PREFILL_MAX = 8192,
+    N05_DF_LAYERS = 5, N05_DF_BLOCK = 7, N05_DF_TAPS = 8,
+    N05_DF_WINDOW = 1024, N05_DF_CAP = N05_DF_WINDOW + N05_DF_BLOCK - 1,
+    N05_DF_HEADS = 32, N05_DF_KV = 4, N05_DF_DIM = 128, N05_DF_RANK = 256,
+    N05_DF_SLOT = N05_DF_TAPS * N05_EMBED
 };
+
+static inline int naive_tap(unsigned layer) {
+    const unsigned taps[N05_DF_TAPS] = {1, 7, 14, 20, 26, 32, 39, 45};
+    for (unsigned i = 0; i < N05_DF_TAPS; i++) { if (taps[i] == layer) { return (int)i; } }
+    return -1;
+}
 
 typedef struct {
     uint64_t dsa, swa, index, scratch;

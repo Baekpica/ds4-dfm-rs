@@ -10,11 +10,13 @@ typedef struct {
     unsigned kv_cap[N05_LAYERS], context, cap, position;
     unsigned *host_positions;
     uint64_t bytes;
+    ds4_naive_df_runtime draft;
     bool failed, owns_scratch;
 } ds4_naive_graph;
 
 static void naive_graph_free(ds4_naive_graph *g) {
     if (!g) { return; }
+    naive_draft_free(&g->draft);
     if (g->owns_scratch) {
         exaone_batch_ws_free(&g->ws);
         ds4_gpu_tensor *all[] = {g->positions, g->tokens, g->freq_full, g->freq_swa,
@@ -107,6 +109,7 @@ static bool naive_graph_clone_bank(ds4_naive_graph *g, const ds4_naive_graph *sh
     if (!g || !shared || !shared->owns_scratch || shared->failed) { return false; }
     *g = *shared;
     g->owns_scratch = false; g->position = 0; g->bytes = 0;
+    memset(&g->draft, 0, sizeof(g->draft));
     memset(g->kv, 0, sizeof(g->kv));
     memset(g->codes, 0, sizeof(g->codes));
     memset(g->scales, 0, sizeof(g->scales));
@@ -121,6 +124,7 @@ static bool naive_graph_clone_bank(ds4_naive_graph *g, const ds4_naive_graph *sh
         if (!g->codes[il] || !g->scales[il]) { naive_graph_free(g); return false; }
         g->bytes += (uint64_t)g->context * (N05_INDEX_DIM + sizeof(float));
     }
+    if (shared->draft.ws && !naive_draft_clone(&g->draft, &shared->draft)) { naive_graph_free(g); return false; }
     return true;
 }
 
@@ -233,8 +237,14 @@ static bool naive_forward(ds4_naive_graph *g, const ds4_model *m, const ds4_weig
         !ds4_gpu_embed_tokens_quant_tensor(g->ws.b_cur, g->tokens, m->map, m->size,
             w->token_embd->abs_offset, w->token_embd->type, N05_VOCAB, n, N05_EMBED) ||
         !ds4_gpu_naive_round(g->ws.b_cur, (uint64_t)n * N05_EMBED)) { return false; }
-    for (unsigned il = 0; il < N05_LAYERS; il++) { if (!naive_layer(g, m, w, il, n)) { return false; } }
-    if (!naive_head(g, m, w, n - 1)) { return false; }
+    for (unsigned il = 0; il < N05_LAYERS; il++) {
+        if (!naive_layer(g, m, w, il, n)) { return false; }
+        const int tap = naive_tap(il);
+        const unsigned keep = n < N05_DF_WINDOW ? n : N05_DF_WINDOW;
+        if (g->draft.ws && tap >= 0 && !ds4_gpu_naive_df_tap(g->draft.ws->tap, g->ws.b_cur,
+                n - keep, keep, (unsigned)tap)) { return false; }
+    }
+    if (!naive_head(g, m, w, n - 1) || !naive_draft_prepare(&g->draft, pos, n)) { return false; }
     g->position = pos + n; g->failed = false;
     return true;
 }

@@ -109,6 +109,9 @@ __pycache__/
 /tests/naive_primitives
 /tests/naive_bind
 /tests/naive_graph
+/tests/naive_draft_bind
+/tests/naive_draft_ops
+/tests/naive_draft_graph
 tests/naive_state
 tests/naive_banks
 /tests/test_step37_loader

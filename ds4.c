@@ -44348,6 +44348,7 @@ static bool exaone_graph_decode(ds4_exaone_gpu_graph *g,
 #include "ds4_ling3vl_graph.inc"
 #include "ds4_step37_graph.inc"
 #include "ds4_mimo2_graph.inc"
+#include "ds4_naive_draft.inc"
 #include "ds4_naive_graph.inc"
 #include "ds4_mimo2_dflash.inc"
 

@@ -2,6 +2,7 @@
 static bool naive_reset(ds4_naive_graph *g) {
     if (g->failed && !ds4_gpu_synchronize()) { return false; }
     g->position = 0; g->failed = false;
+    g->draft.position = 0; g->draft.first = 0; g->draft.trial_n = 0;
     return true;
 }
 
@@ -28,6 +29,7 @@ static int naive_session_sync(ds4_session *s, const ds4_tokens *prompt, char *er
     }
     if (ds4_session_ensure_graph(s, err, errlen)) { return 1; }
     ds4_naive_graph *g = &s->naive_graph;
+    if (g->draft.trial_n) { payload_set_err(err, errlen, "Naive trial needs commit or invalidation"); return 1; }
     if (!s->naive_graph_ready) { payload_set_err(err, errlen, "Naive graph is not initialized"); return 1; }
     unsigned start = 0;
     if (s->checkpoint_valid && !g->failed && g->position == (unsigned)s->checkpoint.len &&

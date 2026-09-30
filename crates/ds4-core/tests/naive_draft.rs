@@ -140,3 +140,43 @@ fn downloaded_draft_probe() {
     };
     probe_dspark_sidecar(shape_for_variant(Variant::NaiveN05Flash), None, &path).unwrap();
 }
+
+#[test]
+fn native_draft_matches_directory() {
+    use std::process::{Command, Stdio};
+
+    let Ok(path) = std::env::var("NAIVE_DRAFT_BIND") else {
+        return;
+    };
+    let mut child = Command::new(path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    for tensor in fixture()["tensors"].as_array().unwrap() {
+        let dims = tensor["dims"].as_array().unwrap();
+        writeln!(
+            input,
+            "{} {} {} {} {}",
+            tensor["name"].as_str().unwrap(),
+            tensor["type"],
+            dims.len(),
+            dims[0],
+            dims.get(1).unwrap_or(&json!(0))
+        )
+        .unwrap();
+    }
+    drop(input);
+    let result = child.wait_with_output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap().trim(),
+        "63 native draft bindings; source dimensions and formats"
+    );
+}

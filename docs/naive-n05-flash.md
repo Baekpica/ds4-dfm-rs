@@ -5,6 +5,8 @@ NFC/Qwen2 tokenizer and official Jinja input template are implemented.
 CUDA execution, serving, cache reuse and DSpark are not qualified yet.
 Model opening currently returns an explicit error before native allocation.
 
+All four downloaded shards and their provenance/manifest pass SHA-256 checks.
+
 ## Artifact contract
 
 - Main: [NaiveAI/Naive-N0.5-Flash](https://huggingface.co/NaiveAI/Naive-N0.5-Flash),
@@ -56,6 +58,18 @@ dimension. Its 63-tensor directory and SHA-256
 `193b96b39d132656635bc4f6a09ad91c64aed7a52c08f46dabe0e3847cef8a8b`
 were checked locally. This validates the sidecar contract, not draft execution.
 
+The independent five-layer CUDA draft now runs the real Q8 file against
+synthetic source-equation fixtures (four tap rows, seven noise rows at
+positions 17, 1048 and 1048569). Hidden cosine is 0.99882–0.99925 with
+relative L2 differences 0.0388–0.0486; Markov bias cosine is 0.9999967.
+MMQ activation quantization and F32 Q8 weight reconstruction differ from the
+reference's BF16 decoded weights. Learned-mask perturbations leave the
+output byte-identical. Raw confidence is evaluated without a sigmoid.
+These are isolated graph checks; they do not establish target-token parity,
+acceptance or acceleration. Independent local attention checks have maximum
+absolute difference 0.00006103515625 at the 1024 and 1M position fixtures.
+Device-backtrace CUDA memcheck reports zero errors for the real draft fixture.
+
 The eager main graph and serial session/snapshot paths are implemented behind
 the model-open guard. A weight-free GPU test matches allocator bytes to the
 quote and restores 2051 rows of DSA K/V, index codes/scales and wrapped SWA
@@ -95,6 +109,8 @@ cargo test -p ds4-core --test naive --locked
 cargo test -p ds4-core --test naive_draft --locked
 make test-naive-memory
 make test-naive-bind
+make test-naive-draft-bind
+make CUDA_ARCH=sm_121 test-naive-draft-ops
 make CUDA_ARCH=sm_121 test-naive-primitives
 make test-naive-state
 make CUDA_ARCH=sm_121 test-naive-graph
