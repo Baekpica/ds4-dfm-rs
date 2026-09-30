@@ -828,6 +828,13 @@ tests/test_step37_vision_ops: tests/test_step37_vision_ops.cu cuda/step37_vision
 test-step37-vision-ops: tests/test_step37_vision_ops
 	./tests/test_step37_vision_ops
 
+tests/naive_memory: tests/naive_memory.c ds4_naive_plan.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+.PHONY: test-naive-memory
+test-naive-memory: tests/naive_memory
+	./tests/naive_memory
+
 tests/test_step37_primitives: tests/test_step37_primitives.cu cuda/step37_primitives.cuh tests/fixtures/step37/primitives.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 

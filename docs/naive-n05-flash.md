@@ -39,8 +39,24 @@ their original-tokenizer IDs. The tokenizer check used a 13,014,912-byte
 header capture while the main weights were downloading. This is directory
 and input-protocol evidence, not full-file integrity or inference evidence.
 
+The host quote and native geometry tests include full DSA K/V and indexer
+history. With prefill chunk 2048 and one bank, the planned 1M allocation is:
+
+| Component | Bytes | GiB |
+| --- | ---: | ---: |
+| DSA BF16 K/V | 24,159,191,040 | 22.500 |
+| SWA BF16 rings | 434,304,000 | 0.404 |
+| Indexer E4M3 codes and F32 scales | 1,245,708,288 | 1.160 |
+| Activations, scores and top-k workspace | 1,837,994,240 | 1.712 |
+
+The four GGUF files add 80.988 GiB of mapped files; GPU weight residency,
+derived tensors, allocator overhead and host headroom need live measurement.
+These are planned sizes, not evidence that 1M serving fits. Disk KV stores
+checkpoints and does not replace an active bank's GPU history.
+
 ```sh
 cargo test -p ds4-core --test naive --locked
+make test-naive-memory
 # Optional real vocabulary gate; reads only the GGUF header.
 NAIVE_TOKENIZER_GGUF=/absolute/path/to/first-shard.gguf \
   cargo test -p ds4-core --test naive --locked

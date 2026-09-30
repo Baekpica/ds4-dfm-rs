@@ -25,6 +25,9 @@ const EXPERT_FF: u64 = 2048;
 const EXPERTS: u64 = 256;
 const INDEX_HEADS: u64 = 16;
 const INDEX_DIM: u64 = 128;
+const INDEX_TOP_K: u64 = 2048;
+const SCORE_QUERY_TILE: u64 = 32;
+const SCORE_HISTORY_TILE: u64 = 4096;
 const F32: u32 = 0;
 const Q8: u32 = 8;
 const Q6_K: u32 = 14;
@@ -33,6 +36,68 @@ const IQ2_XS: u32 = 17;
 const BF16: u32 = 30;
 pub(crate) const PREFILL_CAP: u32 = 2048;
 pub(crate) const PREFILL_MAX: u32 = 8192;
+
+pub(crate) struct MemoryPlan {
+    dsa: u64,
+    swa: u64,
+    index: u64,
+    scratch: u64,
+}
+
+impl MemoryPlan {
+    pub(crate) fn cache_bytes(&self) -> u64 {
+        self.dsa + self.swa + self.index
+    }
+
+    pub(crate) fn scratch_bytes(&self) -> u64 {
+        self.scratch
+    }
+}
+
+/// Keep this in step with ds4_naive_plan.h and the native graph allocator.
+pub(crate) fn memory_plan(ctx: u32, cap: u32) -> Option<MemoryPlan> {
+    if ctx == 0 || ctx > CONTEXT_MAX || cap == 0 || cap > ctx || cap > PREFILL_MAX {
+        return None;
+    }
+    let ctx = u64::from(ctx);
+    let cap = u64::from(cap);
+    let swa_rows = ctx.min(u64::from(SWA_WINDOW) - 1 + cap);
+    let dsa_layers = DSA_LAYERS.len() as u64;
+    let dsa = dsa_layers * ctx * 4 * (KEY + VALUE) * 2;
+    let swa = (u64::from(LAYERS) - dsa_layers) * swa_rows * 8 * (KEY + VALUE) * 2;
+    let index = dsa_layers * ctx * (INDEX_DIM + 4);
+
+    // Main activation/route buffers, split projections and indexer inputs.
+    let row = 4 * EMBED
+        + HEADS * KEY
+        + 8 * (KEY + VALUE)
+        + HEADS * VALUE
+        + 3 * DENSE_FF
+        + EXPERTS
+        + 2 * 8
+        + 3 * 8 * EXPERT_FF
+        + 8 * EMBED
+        + 2
+        + 2 * 64
+        + INDEX_HEADS * INDEX_DIM
+        + INDEX_DIM
+        + INDEX_HEADS
+        + INDEX_TOP_K;
+    let main = (cap * row + 64 + VOCAB) * 4;
+
+    // Only 32 queries use score scratch at once, independent of prefill cap.
+    // Leaf top-k lists shrink at every merge; two buffers cover all levels.
+    let queries = cap.min(SCORE_QUERY_TILE);
+    let tiles = ctx.div_ceil(SCORE_HISTORY_TILE);
+    let scores = queries * ctx * 4;
+    let candidates = 2 * queries * tiles * ctx.min(INDEX_TOP_K) * 8;
+    Some(MemoryPlan {
+        dsa,
+        swa,
+        index,
+        scratch: main + scores + candidates,
+    })
+}
 
 fn mismatch(key: impl Into<String>) -> ValidateError {
     ValidateError::TokenKey("naive", key.into())

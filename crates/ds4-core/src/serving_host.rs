@@ -287,6 +287,11 @@ pub fn fill_quote_facts(
             )
         }
         (ModelFamily::Glm53, Some(s)) => (glm_graph_bytes(s, ctx), 0, 0, 0),
+        (ModelFamily::NaiveN05, Some(_)) => {
+            let cap = native.min(ctx_tokens).max(1);
+            let memory = crate::naive::memory_plan(ctx_tokens, cap);
+            memory.map_or((0, 0, 0, 0), |m| (m.cache_bytes(), m.scratch_bytes(), 0, 0))
+        }
         (ModelFamily::Mimo2, Some(_)) => {
             let cap = native.min(ctx_tokens).max(1);
             let bytes = crate::mimo2::context_bytes(ctx_tokens, cap).unwrap_or(0);
@@ -3891,6 +3896,38 @@ exit 1
         assert!(facts.scratch_bytes.unwrap() >= graph - kv);
         assert_eq!(facts.media_reserve_bytes, Some(graph + GIB));
         assert!(facts.checkpoint_pool_bytes.unwrap() > 0);
+    }
+
+    #[test]
+    fn naive_quote_keeps_full_history() {
+        let _env = lock_test_env();
+        let _chunk = EnvGuard::unset("DS4_NAIVE_PREFILL_CHUNK");
+        for ctx in [262_144, 524_288, 1_048_576] {
+            let req = ServingRequest {
+                ctx,
+                max_seqs: MaxSeqs::Fixed(1),
+                prefix_reuse: PrefixReuse::Off,
+                mtp_mode: MtpMode::Off,
+                ..ServingRequest::default()
+            };
+            let facts = fill_family(
+                ModelFamily::NaiveN05,
+                Variant::NaiveN05Flash,
+                crate::shape::SHAPE_NAIVE_N05_FLASH,
+                &req,
+                qwen_host(None),
+            );
+            // Full DSA BF16 K/V plus the source E4M3 codes/F32 scales.
+            let dsa = 9 * ctx as u64 * 4 * (192 + 128) * 2;
+            let swa = 39 * (128 - 1 + 2048) * 8 * (192 + 128) * 2;
+            let index = 9 * ctx as u64 * (128 + 4);
+            assert_eq!(facts.per_bank_bytes, Some(dsa + swa + index));
+            assert!(facts.scratch_bytes.unwrap() > 0);
+            assert_eq!(facts.mtp_state_bytes, Some(0));
+            if ctx == 1_048_576 {
+                assert_eq!(facts.scratch_bytes, Some(1_837_994_240));
+            }
+        }
     }
 
     #[test]
