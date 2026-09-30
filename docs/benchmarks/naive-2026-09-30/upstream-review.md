@@ -40,3 +40,20 @@ The recipe's reduced draft head does not address this repeated target work.
 Qwen already has the compact proposal head; Naive needs acceptance and
 verification work profiled before extending it. Automatic speculation
 remains off. These results do not qualify draft acceleration.
+
+## Shared transformation follow-up
+
+The retained P4 32K capture also bounds the repeated-transformation
+opportunity. Its NVTX prefill GPU kernel sum is 75.918713 seconds;
+3872 `quantize_mmq_q8_1` calls consume 0.851701 seconds (1.122%).
+Decode's 1.753366-second sum includes 9280 `quantize_q8_1` calls taking
+0.010158 seconds (0.579%); its router takes 0.074756 seconds (4.264%).
+These percentages describe GPU kernel sums, not wall-time gains.
+
+Producer/consumer fusion or reuse of one quantized input across projections
+is a shared-path candidate. Preserve each consumer's layout and arithmetic,
+and key any reuse to actual input writes. The existing fused Gate/Up and
+Naive SwiGLU producer already remove some repeated work. These measurements
+do not establish a new fusion's gain or applicability to Qwen; another
+family needs its own profile and numerical contract. Raw capture:
+`scratch/naive/round-p4-32k-pair-candidate/nsys-nvtx-kernels.csv`.
