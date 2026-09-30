@@ -1177,7 +1177,9 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         ModelSyntax::SolarOpen2 => ChatFormat::SolarOpen2,
         ModelSyntax::Exaone => ChatFormat::Exaone,
         // Only the generated thinking/tool envelope is shared with Qwen.
-        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 | ModelSyntax::Mimo2 => ChatFormat::Qwen4Exp,
+        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 | ModelSyntax::Mimo2 | ModelSyntax::Qwen35 => {
+            ChatFormat::Qwen4Exp
+        }
         ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
         ModelSyntax::Inkling => ChatFormat::Inkling,
         // Ling shares GLM's thinking and tool-call XML.
@@ -1310,7 +1312,9 @@ pub(crate) fn thinking_visible_key(
     };
     if terminal {
         match syntax {
-            ModelSyntax::Qwen4Exp => visible.extend_from_slice(QWEN_IM_END.as_bytes()),
+            ModelSyntax::Qwen4Exp | ModelSyntax::Qwen35 => {
+                visible.extend_from_slice(QWEN_IM_END.as_bytes())
+            }
             ModelSyntax::K2Horizon => {
                 visible.extend_from_slice(crate::render::K2_IM_END.as_bytes())
             }
@@ -1322,7 +1326,10 @@ pub(crate) fn thinking_visible_key(
         }
         if matches!(
             syntax,
-            ModelSyntax::Qwen4Exp | ModelSyntax::Exaone | ModelSyntax::SolarOpen2
+            ModelSyntax::Qwen4Exp
+                | ModelSyntax::Qwen35
+                | ModelSyntax::Exaone
+                | ModelSyntax::SolarOpen2
         ) {
             visible.push(b'\n');
         }

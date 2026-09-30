@@ -68,6 +68,66 @@ size: this tree does not select the token-tile kernel from the graph.
 against the CPU reference. The CLI's plain generation path (`-p`, no
 `--first-token-test`) routes this family through the session as well.
 
+## The server path
+
+`ds4-server` (the Rust host; the C oracle `ds4-server-c` cannot serve this
+family) serves it over the OpenAI-compatible surface, on either backend. The
+family reports the ABI id 13, which the server maps to the Qwen ChatML syntax
+this artifact's own `tokenizer.chat_template` declares, so rendering, the
+thinking split and the tool XML are the Qwen ones rather than the DeepSeek
+default an unmapped id would fall back to.
+
+| | CUDA server | CPU server (reference) |
+| --- | --- | --- |
+| state | the CUDA graph session, same as `session` | the CPU reference session |
+| lanes | serial only (`--max-seqs`, batching, MTP refused by name) | serial only |
+| speed | ~1.4 s for a 36-token answer with 45 prompt tokens | ~3 s per forward |
+
+```
+$ ./run-bonsai.sh server
+model:   /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf
+prompt:  The capital of France is
+ctx:     32768, memory floor 1G, port 8899
+backend: cuda
+binary:  /data/ds4-dfm-rs/ds4-server
+
+server:  up (pid 1240413)
+         listening on 127.0.0.1:8899 model_id=Ternary-Bonsai-2-27B-PQ2_0 engine=open ...
+id:      Ternary-Bonsai-2-27B-PQ2_0
+
+wall:    1.40s for the request
+finish:  stop
+answer:   Paris.
+reasoning: The user is asking a simple factual question: "The capital of France is". I just need to complete the sentence. The capital of France is Paris.
+usage:    {'prompt_tokens': 45, 'completion_tokens': 36, 'total_tokens': 81, ...}
+```
+
+The advertised id is the GGUF stem, as it is for every family in this tree; the
+sibling C server's names (`prism-bonsai-2-27b`, `-chat`, `-no-think`,
+`-nothink`, `-reasoner`, `prism/bonsai-2-27b`) are accepted aliases on
+`/v1/models/<id>`.
+
+### The memory quote
+
+The plan prices the bank from the family's own geometry: the 16
+gated-attention layers carry the per-token key/value rows, the 48 gated
+delta-net layers carry a fixed recurrent matrix and convolution window, and the
+CUDA graph adds its chunk-sized transient buffers. The generic estimate charges
+all 64 blocks as attention rows (four times the real KV) and refuses every
+usable context on a 12 GiB card even with the memory floor at zero.
+
+| ctx | bank (CUDA) | total with 6.71 GiB weights | floor 4 GiB (default) | floor 1 GiB |
+| --- | --- | --- | --- | --- |
+| 32768 | 2.39 GiB | 9.11 GiB | refused (13.11 > 11.32) | accepted |
+| 49152 | 3.39 GiB | 10.11 GiB | refused | accepted (tight) |
+| 65536 | 4.39 GiB | 11.11 GiB | refused | refused |
+
+`available` is the free device memory the quote reads at plan time, so the
+verdict moves with whatever else is on the card. The CPU reference allocates a
+float key/value row for every block, so its own limit is roughly half these
+contexts on a 32 GiB host; `DS4_BONSAI_CTX` and `DS4_BONSAI_MEM_FLOOR` (with
+`--kv-disk-dir` refused by name) set the trade.
+
 ## Environment requirement: copy the model to the device
 
 Every CUDA run on this host needs:
@@ -95,12 +155,17 @@ make ds4-c CUDA_ARCH=sm_89
 ./run-bonsai.sh compare ["prompt"]  # both backends, diffed token for token
 ./run-bonsai.sh ids                 # the explicit five-id parity gate
 ./run-bonsai.sh session ["prompt"]  # both backends through the session, diffed
+./run-bonsai.sh server ["prompt"]   # one chat request through the Rust server
 ./run-bonsai.sh bench [tokens]      # decode rate with /usr/bin/time
 ./run-bonsai.sh help
 ```
 
 Env overrides: `DS4_BONSAI_MODEL`, `DS4_BONSAI_BIN`, `DS4_BONSAI_BACKEND`
-(`cuda`|`cpu`), `DS4_BONSAI_STEPS`, `DS4_BONSAI_WAIT`, `DS4_BONSAI_LOG`.
+(`cuda`|`cpu`), `DS4_BONSAI_STEPS`, `DS4_BONSAI_WAIT`, `DS4_BONSAI_LOG`, and
+for `server` `DS4_BONSAI_SERVER_BIN`, `DS4_BONSAI_CTX` (default 32768),
+`DS4_BONSAI_MEM_FLOOR` (default 1, GiB), `DS4_BONSAI_SERVER_PORT` and
+`DS4_BONSAI_SERVER_TOKENS` (default 64: the reasoning block alone runs about 33
+tokens before any content).
 
 The engine holds a single global lock (`/tmp/ds4.lock`), so only one
 `ds4`/`ds4-c` process runs at a time; a second refuses to start by design. The
@@ -119,12 +184,19 @@ model:   /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf
 gpu:     NVIDIA GeForce RTX 4070 SUPER, 180 MiB, 12282 MiB
          no compute process
 slot:    busy (another ds4/ds4-c holds /tmp/ds4.lock); runs will wait
-entry:   --first-token-test (greedy diagnostic), and the session path
+entry:   --first-token-test (greedy diagnostic), the session path, and
+         the Rust server (./run-bonsai.sh server)
          DS4_QWEN35_STEPS=<n>, DS4_QWEN35_TOKENS=<comma ids>,
          DS4_QWEN35_SESSION=1 (drive the same run through a session),
          DS4_QWEN35_PREFILL_CHUNK=<n> (rows per CUDA prefill forward)
-supported: generate, cuda, cpu, compare, ids, session, bench, status, help
-refused:   server (no serving path in this tree)
+server:  /data/ds4-dfm-rs/ds4-server
+         present; serves this family (id from the GGUF stem, aliases
+         prism-bonsai-2-27b*) with DS4_BONSAI_CTX=32768 and
+         DS4_BONSAI_MEM_FLOOR=1G on port 8899
+supported: generate, cuda, cpu, compare, ids, session, server, bench, status, help
+refused:   batching, MTP/DSpark, SSD/disk KV, session snapshots, distributed
+           ranks (each refused by name; --kv-disk-dir stops the server for
+           this family rather than staying silently unused)
 runbooks:  make bonsai-cuda-check, make bonsai-cuda-parity,
            make test-qwen35-cuda, make test-qwen35-session,
            make test-qwen35-session-multichunk, make test-qwen35-rows,
@@ -282,14 +354,13 @@ RTX 4070 SUPER, sm_89, nvcc 13.3):
 
 ## Limitations
 
-- **No serving surface.** The engine now accepts a session on either backend,
-  and the family's serving caps declare its minimal plan (serial lane, no
-  banks, batching, snapshots or MTP, partial prefix reuse, any host) with no
-  qualified limits, but serving has not been exercised for this family:
-  the model identity and aliases (`prism-bonsai-2-27b`, `-chat`/`-reasoner`),
-  the qualified context and the disk-KV notice belong to the serving unit, and
-  `run-bonsai.sh server` refuses by name until they land.  Do not read the caps
-  as a qualified service.
+- **Serving is exercised but not qualified.** The server answers on both
+  backends and refuses by name what it cannot do, but the family's serving caps
+  carry no qualified context, bank or prompt limits, and only the serial lane
+  is wired: batching, MTP/DSpark, SSD/disk KV, tensor parallelism and session
+  snapshots are refused (`--kv-disk-dir` stops the server rather than staying
+  silently unused) and the plan reports `reuse=exact` with a
+  `partial_unqualified` warning. Do not read the caps as a qualified service.
 - **No batching, SSD/disk KV, MTP or session snapshots.** Each is refused by
   name rather than pretended: the session decodes one row per eval, the payload
   paths refuse, and the engine gate rejects the MTP/DSpark sidecars, tensor
@@ -308,5 +379,6 @@ RTX 4070 SUPER, sm_89, nvcc 13.3):
 ## Report
 
 [Recorded evidence for the CUDA unit](releases/bonsai-cuda-graph-2026-09-30.md)
-and [the CPU reference unit](releases/bonsai-cpu-reference-2026-09-30.md), and
-[the session unit](releases/bonsai-session-2026-09-30.md).
+and [the CPU reference unit](releases/bonsai-cpu-reference-2026-09-30.md),
+[the session unit](releases/bonsai-session-2026-09-30.md) and
+[the serving unit](releases/bonsai-serving-2026-09-30.md).

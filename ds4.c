@@ -71745,6 +71745,10 @@ bool ds4_engine_supports_batching(ds4_engine *e) {
         return enabled && strcmp(enabled, "1") == 0;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) return false;
+    /* Bonsai's session IS the trunk state (the CUDA graph or the CPU reference)
+     * and there is no multi-sequence graph for it, so the DeepSeek slab body
+     * would read a layout this family does not have. */
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN35) return false;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
         const char *enabled = getenv("DS4_QWEN_BATCH");
         return enabled && enabled[0] == '1' && enabled[1] == '\0';
@@ -72581,6 +72585,15 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING) {
         return inkling_session_fit(e, (uint32_t)ctx_size,
                                    inkling_prefill_cap((uint32_t)ctx_size), q);
+    }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN35) {
+        /* Bonsai's session is the trunk graph itself and it opens with its own
+         * chunk-halving loop, so there is no per-bank estimate to give: answer
+         * budget-less (fail_open) inside the family's context bound and refuse
+         * past it, instead of entering the DeepSeek slab estimate. */
+        q->fits = (ctx_size <= 262144) ? 1 : 0;
+        q->fail_open = q->fits;
+        return q->fits;
     }
     if (e->backend == DS4_BACKEND_CPU) {
         q->fits = 1;

@@ -6,7 +6,8 @@ use ds4_core::{
     attach_host_quote, caps_from_ident, identify_gguf, probe_dspark_sidecar, probe_model_artifact,
     probe_mtp_sidecar, probe_vision_sidecar, resolve_plan, Backend, DistributedConfig,
     DistributedRole, Distribution, EngineFacts, GgufFile, Identified, MaxSeqs, Model,
-    ModelOpenOption, MtpMode, PrefixReuse, ServingCaps, ServingRequest, Vocab, WeightSlice,
+    ModelOpenOption, MtpMode, PrefixReuse, ServingCaps, ServingRequest, Support, Vocab,
+    WeightSlice,
 };
 use ds4_server::cache_identity::CacheIdentity;
 use ds4_server::expected_plan::ExpectedPlan;
@@ -362,11 +363,18 @@ fn main() {
     ) {
         model_options.push(ModelOpenOption::MtpDraftTokens(draft));
     }
-    let cont_width = if serve_req.max_seqs == MaxSeqs::Off || plan.uses_serial_mtp() {
-        0
-    } else {
-        plan.effective.max_seqs as i32
-    };
+    // A family whose caps refuse banks has no multi-sequence graph to open;
+    // asking native for one only reports the refusal. Bonsai (qwen35) is the
+    // resident case: its session is the trunk state itself.
+    let banks_available = plan
+        .caps
+        .is_some_and(|caps| caps.bank_support != Support::None);
+    let cont_width =
+        if serve_req.max_seqs == MaxSeqs::Off || plan.uses_serial_mtp() || !banks_available {
+            0
+        } else {
+            plan.effective.max_seqs as i32
+        };
 
     let native_dist = distributed_config(&dist.opt);
     // Snapshot every artifact before native open, then recheck before enabling

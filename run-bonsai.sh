@@ -11,7 +11,7 @@
 #         ./run-bonsai.sh bench [tokens]     decode rate with /usr/bin/time (default 16)
 #         ./run-bonsai.sh status             what is built, which artifact, what can run
 #         ./run-bonsai.sh session [prompt]   the session path on both backends, diffed
-#         ./run-bonsai.sh server [prompt]    refused: not implemented in this tree
+#         ./run-bonsai.sh server [prompt]    one chat request through the Rust server
 #         ./run-bonsai.sh help
 #
 # This model is the "qwen35" family: a dense 64-layer trunk (48 gated
@@ -41,12 +41,21 @@
 #   memory").  This script sets it for every --cuda run.
 #
 # WHAT THIS TREE DOES NOT DO YET (refused by name, never silently skipped)
-#   - server: no serving surface is qualified for this family yet (identity,
-#     aliases, qualified context, disk-KV notice).  This script refuses the
-#     subcommand by name until that unit lands; serve-bonsai.sh is not ported.
-#   Also absent: batching, SSD/disk KV, MTP and session snapshots; the session
-#   path refuses each of them by name.  No CUDA session on this box without
-#   DS4_CUDA_COPY_MODEL=1, which this script sets.
+#   - Batching, MTP and DSpark drafting, SSD/disk KV, tensor parallelism,
+#     distributed ranks and session snapshots: the session path and the server
+#     refuse each by name (ds4-server reports "qwen35 session snapshots are
+#     unsupported" and will not start with --kv-disk-dir).  No CUDA session on
+#     this box without DS4_CUDA_COPY_MODEL=1, which this script sets.
+#
+# THE SERVER PATH
+#   ./run-bonsai.sh server drives the Rust ds4-server (./ds4-server, the
+#   default host; the C oracle ds4-server-c cannot serve this family): it
+#   starts the server, waits for the listener, sends one chat request through
+#   the model's own ChatML template, prints the answer and stops the server.
+#   DS4_BONSAI_CTX (default 32768) and DS4_BONSAI_MEM_FLOOR (default 1, GiB)
+#   must fit the card: the quote counts the real 6.71 GiB of weights, the
+#   16-attention-layer KV and this host's free VRAM, so the default 4 GiB floor
+#   refuses at every usable context on the 12 GiB RTX 4070 SUPER.
 #
 # THE SESSION PATH
 #   ./run-bonsai.sh session drives the real ds4_session API (create, sync, eval)
@@ -58,14 +67,25 @@
 #   the device cannot hold is halved until the graph opens.
 #
 # Env overrides: DS4_BONSAI_MODEL (model path), DS4_BONSAI_BIN (binary),
-# DS4_BONSAI_BACKEND (cuda|cpu), DS4_BONSAI_STEPS (greedy steps),
-# DS4_BONSAI_WAIT (seconds to wait for a free device slot, default 300),
-# DS4_BONSAI_LOG (capture path, default misc/scratch/bonsai-run.log).
+# DS4_BONSAI_SERVER_BIN (Rust server), DS4_BONSAI_BACKEND (cuda|cpu),
+# DS4_BONSAI_STEPS (greedy steps), DS4_BONSAI_CTX / DS4_BONSAI_MEM_FLOOR /
+# DS4_BONSAI_SERVER_PORT (server mode), DS4_BONSAI_WAIT (seconds to wait for a
+# free device slot, default 300), DS4_BONSAI_LOG (capture path,
+# default misc/scratch/bonsai-run.log).
 
 set -u
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 BIN="${DS4_BONSAI_BIN:-$ROOT/ds4-c}"
+SERVER_BIN="${DS4_BONSAI_SERVER_BIN:-$ROOT/ds4-server}"
+SERVER_PORT="${DS4_BONSAI_SERVER_PORT:-8899}"
+# The serving context and the memory floor that fits it on this host; see the
+# sizing note in the header and docs/BONSAI.md.
+SERVER_CTX="${DS4_BONSAI_CTX:-32768}"
+MEM_FLOOR="${DS4_BONSAI_MEM_FLOOR:-1}"
+# A served answer needs ~35 tokens: the reasoning block alone runs about 33
+# before any content appears.
+SERVER_TOKENS="${DS4_BONSAI_SERVER_TOKENS:-64}"
 MODEL="${DS4_BONSAI_MODEL:-/data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf}"
 BACKEND="${DS4_BONSAI_BACKEND:-cuda}"
 STEPS="${DS4_BONSAI_STEPS:-16}"
@@ -102,6 +122,7 @@ check_env() {
 slot_busy() {
   pgrep -x ds4-c >/dev/null 2>&1 && return 0
   pgrep -x ds4 >/dev/null 2>&1 && return 0
+  pgrep -x ds4-server >/dev/null 2>&1 && return 0
   fuser "$LOCK" >/dev/null 2>&1 && return 0
   return 1
 }
@@ -303,12 +324,23 @@ status_mode() {
   else
     echo "slot:    free"
   fi
-  echo "entry:   --first-token-test (greedy diagnostic), and the session path"
+  echo "entry:   --first-token-test (greedy diagnostic), the session path, and"
+  echo "         the Rust server (./run-bonsai.sh server)"
   echo "         DS4_QWEN35_STEPS=<n>, DS4_QWEN35_TOKENS=<comma ids>,"
   echo "         DS4_QWEN35_SESSION=1 (drive the same run through a session),"
   echo "         DS4_QWEN35_PREFILL_CHUNK=<n> (rows per CUDA prefill forward)"
-  echo "supported: generate, cuda, cpu, compare, ids, session, bench, status, help"
-  echo "refused:   server (no serving path in this tree)"
+  if [ -x "$SERVER_BIN" ]; then
+    echo "server:  $SERVER_BIN"
+    echo "         present; serves this family (id from the GGUF stem, aliases"
+    echo "         prism-bonsai-2-27b*) with DS4_BONSAI_CTX=$SERVER_CTX and"
+    echo "         DS4_BONSAI_MEM_FLOOR=${MEM_FLOOR}G on port $SERVER_PORT"
+  else
+    echo "server:  $SERVER_BIN MISSING (build it: make ds4-server CUDA_ARCH=sm_89)"
+  fi
+  echo "supported: generate, cuda, cpu, compare, ids, session, server, bench, status, help"
+  echo "refused:   batching, MTP/DSpark, SSD/disk KV, session snapshots, distributed"
+  echo "           ranks (each refused by name; --kv-disk-dir stops the server for"
+  echo "           this family rather than staying silently unused)"
   echo "runbooks:  make bonsai-cuda-check, make bonsai-cuda-parity,"
   echo "           make test-qwen35-cuda, make test-qwen35-session,"
   echo "           make test-qwen35-session-multichunk, make test-qwen35-rows,"
@@ -361,18 +393,81 @@ session_mode() {
   fi
 }
 
-# The sibling tree starts ds4-server here; this tree has no serving path.
-refuse_server() {
-  cat >&2 <<'EOF'
-ERROR: "server" is not implemented in this tree.
-
-ds4-server refuses the qwen35 family, so there is no HTTP serving path for
-Prism Bonsai 2 27B here, and serve-bonsai.sh is deliberately not ported.
-Batching, chunked prefill, SSD/disk KV, MTP, prefix reuse and session
-snapshots are all part of that later unit.  Use "generate", "compare" or
-"ids", which drive the same trunk through the --first-token-test diagnostic.
-EOF
-  exit 2
+# One real request through the OpenAI-compatible Rust server: start it, wait
+# for the listener, ask through the model's own ChatML template, print the
+# answer and stop the server.  The advertised id is read back from
+# /v1/models rather than assumed, so a renamed artifact cannot drift here.
+server_mode() {
+  local slog="$LOG.server" pid waited=0 model body t0 t1 wall
+  [ -x "$SERVER_BIN" ] || die "server binary not found at $SERVER_BIN (build it: make ds4-server CUDA_ARCH=sm_89)"
+  [ -f "$MODEL" ] || die "model not found: $MODEL"
+  if [ "$BACKEND" = "cuda" ] && ! command -v nvidia-smi >/dev/null; then
+    die "nvidia-smi not found; the CUDA server needs it (set DS4_BONSAI_BACKEND=cpu)"
+  fi
+  echo "model:   $MODEL"
+  echo "prompt:  $PROMPT"
+  echo "ctx:     $SERVER_CTX, memory floor ${MEM_FLOOR}G, port $SERVER_PORT"
+  echo "backend: $BACKEND"
+  echo "binary:  $SERVER_BIN"
+  echo
+  wait_slot
+  rm -f "$slog"
+  local -a envs=()
+  [ "$BACKEND" = "cuda" ] && envs+=( "DS4_CUDA_COPY_MODEL=1" )
+  env "${envs[@]}" "$SERVER_BIN" -m "$MODEL" --backend "$BACKEND" -c "$SERVER_CTX" \
+      --mem-floor-gb "$MEM_FLOOR" --host 127.0.0.1 --port "$SERVER_PORT" \
+      > "$slog" 2>&1 &
+  pid=$!
+  while [ "$waited" -lt 300 ]; do
+    grep -q "listening on" "$slog" 2>/dev/null && break
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "server exited before listening; last lines:"
+      tail -6 "$slog"
+      wait "$pid" 2>/dev/null
+      return 1
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+  if ! grep -q "listening on" "$slog"; then
+    echo "server did not start listening within ${waited}s; last lines:"
+    tail -6 "$slog"
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    return 1
+  fi
+  echo "server:  up (pid $pid)"
+  grep -o 'listening on.*' "$slog" | tail -1 | sed 's/^/         /'
+  model=$(curl -s -m 10 "http://127.0.0.1:$SERVER_PORT/v1/models" |
+          python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])' 2>/dev/null)
+  [ -n "$model" ] || { echo "could not read the advertised id from /v1/models"; kill "$pid"; wait "$pid" 2>/dev/null; return 1; }
+  echo "id:      $model"
+  echo
+  t0=$(date +%s.%N)
+  body=$(curl -s -m 900 "http://127.0.0.1:$SERVER_PORT/v1/chat/completions" \
+      -H 'Content-Type: application/json' \
+      -d "{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"$PROMPT\"}],\"max_tokens\":$SERVER_TOKENS,\"temperature\":0}")
+  t1=$(date +%s.%N)
+  wall=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.2f", b-a}')
+  printf 'wall:    %ss for the request\n' "$wall"
+  printf '%s' "$body" | python3 -c '
+import json,sys
+raw = sys.stdin.read()
+try:
+    d = json.loads(raw)
+except Exception:
+    print("raw response:", raw[:400]); raise SystemExit(0)
+c = d["choices"][0]["message"]
+print("finish:  ", d["choices"][0].get("finish_reason"))
+print("answer:  ", (c.get("content") or "").strip())
+reasoning = (c.get("reasoning_content") or "").strip()
+if reasoning: print("reasoning:", reasoning[:240])
+print("usage:   ", d.get("usage"))
+'
+  kill "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
+  echo
+  echo "server:  stopped (log at $slog)"
 }
 
 usage() {
@@ -390,7 +485,7 @@ case "${1:-}" in
   bench)          shift; bench_mode "${1:-16}" ;;
   status)         status_mode ;;
   session)        shift; [ $# -gt 0 ] && PROMPT="$*"; session_mode ;;
-  server)         refuse_server ;;
+  server)         shift; [ $# -gt 0 ] && PROMPT="$*"; server_mode ;;
   help|-h|--help) usage ;;
   "")             run_mode ;;
   -*)             die "unknown option: $1 (see ./run-bonsai.sh help)" ;;

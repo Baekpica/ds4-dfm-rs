@@ -345,6 +345,12 @@ pub fn fill_quote_facts(
             // The slab price already includes every rollback checkpoint depth.
             (bank, scratch, mtp, 0)
         }
+        (ModelFamily::Qwen35, Some(s)) => (
+            qwen35_bank_bytes(s, ctx_tokens, native.min(ctx_tokens), req.backend),
+            0,
+            0,
+            0,
+        ),
         (ModelFamily::ExaoneMoe, Some(s)) => {
             let row = plain_graph_row_elems(s) * SIZEOF_F32;
             let logits = u64::from(s.n_vocab) * SIZEOF_F32;
@@ -2043,6 +2049,102 @@ fn bank_kv_bytes(shape: Shape, ctx: u64, native: u32) -> u64 {
         _ => u64::from(shape.n_layer).saturating_mul(ctx),
     };
     tokens.saturating_mul(row)
+}
+
+/// Bonsai (qwen35) per-bank footprint.
+///
+/// Only every `n_swa_period`-th layer is gated attention and keeps a key/value
+/// row per token; the rest are gated delta-net layers whose state is a fixed
+/// recurrent matrix plus a convolution window, so their cost does not grow with
+/// the context. The generic `bank_kv_bytes` charges all 64 blocks as attention
+/// rows and overstates the bank fourfold, which is what refused the plan at any
+/// usable context.
+///
+/// The numbers mirror the native allocations: `qwen35_graph_open` (CUDA, f16
+/// rows for the attention layers and the chunk-sized transient buffers) and
+/// `ds4_qwen35_ref_state_init` (CPU, one f32 row per token per block).
+fn qwen35_bank_bytes(shape: Shape, ctx: u32, cap: u32, backend: Backend) -> u64 {
+    if ctx == 0 {
+        return 0;
+    }
+    let ctx = u64::from(ctx);
+    let interval = shape.n_swa_period.max(1);
+    let full = (0..shape.n_layer)
+        .filter(|il| (il + 1) % interval == 0)
+        .count() as u64;
+    let linear = u64::from(shape.n_layer).saturating_sub(full);
+    let head_dim = u64::from(shape.n_kda_head_dim);
+    let v_heads = u64::from(crate::qwen35::LIN_V_HEAD);
+    let k_heads = u64::from(crate::qwen35::LIN_K_HEAD);
+    let v_dim = v_heads.saturating_mul(head_dim);
+    let conv_dim = k_heads
+        .saturating_mul(2)
+        .saturating_add(v_heads)
+        .saturating_mul(head_dim);
+    let kv_elems = u64::from(shape.n_head_kv).saturating_mul(u64::from(shape.n_head_dim));
+
+    let (cache_layers, element) = match backend {
+        Backend::Cuda => (full, SIZEOF_U16),
+        Backend::Metal | Backend::Cpu => (u64::from(shape.n_layer), SIZEOF_F32),
+    };
+    let mut bytes = cache_layers
+        .saturating_mul(ctx)
+        .saturating_mul(2 * kv_elems)
+        .saturating_mul(element);
+    bytes = bytes
+        .saturating_add(
+            linear
+                .saturating_mul(v_dim)
+                .saturating_mul(head_dim)
+                .saturating_mul(SIZEOF_F32),
+        )
+        .saturating_add(
+            linear
+                .saturating_mul(u64::from(shape.n_ssm_conv.saturating_sub(1)))
+                .saturating_mul(conv_dim)
+                .saturating_mul(SIZEOF_F32),
+        );
+    if backend == Backend::Cuda {
+        bytes = bytes.saturating_add(qwen35_transient_bytes(shape, ctx, cap));
+    }
+    bytes.saturating_add(u64::from(shape.n_vocab).saturating_mul(SIZEOF_F32))
+}
+
+/// The chunk-sized buffers `qwen35_graph_open` allocates once, in f32. `cap` is
+/// the rows one forward carries (`DS4_QWEN35_PREFILL_CHUNK`, 512 by default).
+fn qwen35_transient_bytes(shape: Shape, ctx: u64, cap: u32) -> u64 {
+    if cap == 0 {
+        return 0;
+    }
+    let rows = u64::from(cap);
+    let hidden = u64::from(shape.n_embd);
+    let head = u64::from(shape.n_head).saturating_mul(u64::from(shape.n_head_dim));
+    let kv = u64::from(shape.n_head_kv).saturating_mul(u64::from(shape.n_head_dim));
+    let v_heads = u64::from(crate::qwen35::LIN_V_HEAD);
+    let v_dim = v_heads.saturating_mul(u64::from(shape.n_kda_head_dim));
+    let conv_dim = (u64::from(crate::qwen35::LIN_K_HEAD)
+        .saturating_mul(2)
+        .saturating_add(v_heads))
+    .saturating_mul(u64::from(shape.n_kda_head_dim));
+    let widest = hidden.max(u64::from(shape.n_ff_dense)).max(v_dim).max(head);
+    let ffn = u64::from(shape.n_ff_dense);
+    // h, normed, blk, xt, qkv, z, ga, gb, lin_o, qg, q, gate, kp, vp, o, ffn_g, ffn_u
+    let width = hidden
+        .saturating_mul(2)
+        .saturating_add(widest.saturating_mul(2))
+        .saturating_add(conv_dim)
+        .saturating_add(v_dim.saturating_mul(2))
+        .saturating_add(v_heads.saturating_mul(2))
+        .saturating_add(head.saturating_mul(4))
+        .saturating_add(kv.saturating_mul(2))
+        .saturating_add(ffn.saturating_mul(2));
+    let mut bytes = rows.saturating_mul(width).saturating_mul(SIZEOF_F32);
+    // tokens (u32 rows), h_row (one hidden row), pos3 (ctx rows of four u32).
+    bytes = bytes
+        .saturating_add(rows.saturating_mul(SIZEOF_U32))
+        .saturating_add(hidden.saturating_mul(SIZEOF_F32))
+        .saturating_add(ctx.saturating_mul(4).saturating_mul(SIZEOF_U32));
+    bytes
 }
 
 fn step_kv_tokens(shape: Shape, ctx: u64, native: u32) -> u64 {
