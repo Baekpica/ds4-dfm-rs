@@ -31,7 +31,7 @@ The request's effective and qualified plan remains authoritative.
 | Step-3.7-Flash | opt_in / qualified | partial / qualified | qualified | qualified | Sidecar / serial + bank / qualified |
 | Ling-3.0-flash-VL | persistent / qualified | partial / qualified | qualified | qualified | None / none / none |
 | MiMo-V2.6-Flash-RL | opt_in / unverified | partial / unverified | unverified | unverified | Embedded / serial / qualified |
-| Naive-N0.5-Flash | serial / none | none / none | none | none | None / none / none |
+| Naive-N0.5-Flash | opt_in / unverified | partial / unverified | unverified | unverified | External / serial + bank / unverified |
 
 ## Bounds and allocator controls
 
