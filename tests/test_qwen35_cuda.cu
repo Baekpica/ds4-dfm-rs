@@ -739,16 +739,297 @@ bool test_host_wiring() {
     return ok;
 }
 
-/* Not ported to this tree: the source file's section 5 (test_gdn_out_gates)
- * and its "Bonsai attention core" (test_attention_split).  They call
- * ds4_gpu_qwen35_gdn_out_tensor, ds4_gpu_qwen4_gdn_out_tensor and
- * ds4_gpu_qwen4_attn_decode_tensor, which this tree does not declare:
- * ds4_qwen35_gpu.cuh ships only the fold entries ("the gdn-output and
- * attention-prep wrappers land with the forward graph"), and the qwen4exp
- * family's ds4_gpu_qwen4exp_gdn_gated_rms_norm_tensor /
- * ds4_gpu_qwen4exp_qsa_attention_tensor are different kernels with different
- * shapes (no silu/sigmoid gate selector, block-sparse QSA, no split-K partial
- * buffer).  Omitted rather than invented - see the port report. */
+/* 5. GDN output norm gates.  The kernel is shared with the qwen4 family, so
+ * both gates are checked against a double-precision reference: sigmoid (the
+ * qwen4exp call) and silu (this family).  A kernel that ignored the selector
+ * would fail one of the two. */
+bool test_gdn_out_gates() {
+    constexpr uint32_t T = 3, H = 48, D = 128;
+    constexpr float eps = 1e-6f;
+    const uint64_t n = (uint64_t)T * H * D;
+    const uint64_t arena_bytes = (uint64_t)1 << 20;
+
+    void *arena = mmap(nullptr, arena_bytes, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (arena == MAP_FAILED) return false;
+    std::vector<float> gamma(D);
+    for (uint32_t i = 0; i < D; i++) gamma[i] = 0.5f + 0.5f * std::fabs(frand());
+    std::memcpy(arena, gamma.data(), D * sizeof(float));
+
+    std::vector<float> z(n), base(n);
+    for (uint64_t i = 0; i < n; i++) {
+        z[i] = 4.0f * frand();
+        base[i] = frand();
+    }
+
+    ds4_gpu_tensor *gout = ds4_gpu_tensor_alloc(n * sizeof(float));
+    ds4_gpu_tensor *gz = ds4_gpu_tensor_alloc(n * sizeof(float));
+    bool ok = gout && gz &&
+        ds4_gpu_tensor_write(gz, 0, z.data(), n * sizeof(float));
+    if (!ok) {
+        std::fprintf(stderr, "gdn out: tensor setup failed\n");
+        ds4_gpu_tensor_free(gout);
+        ds4_gpu_tensor_free(gz);
+        munmap(arena, arena_bytes);
+        return false;
+    }
+
+    for (int silu = 0; silu <= 1; silu++) {
+        std::vector<float> want(n), got(n);
+        for (uint32_t t = 0; t < T; t++) {
+            for (uint32_t h = 0; h < H; h++) {
+                const uint64_t base_i = ((uint64_t)t * H + h) * D;
+                double ss = 0.0;
+                for (uint32_t i = 0; i < D; i++) {
+                    ss += (double)base[base_i + i] * (double)base[base_i + i];
+                }
+                const double r = 1.0 / std::sqrt(ss / D + eps);
+                for (uint32_t i = 0; i < D; i++) {
+                    const double zv = z[base_i + i];
+                    const double sig = 1.0 / (1.0 + std::exp(-zv));
+                    const double gate = silu ? zv * sig : sig;
+                    want[base_i + i] = (float)(base[base_i + i] * r * gamma[i] * gate);
+                }
+            }
+        }
+        const bool ran =
+            ds4_gpu_tensor_write(gout, 0, base.data(), n * sizeof(float)) &&
+            (silu ? ds4_gpu_qwen35_gdn_out_tensor(gout, gz, arena, arena_bytes, 0,
+                                                  T, H, D, eps) != 0
+                  : ds4_gpu_qwen4_gdn_out_tensor(gout, gz, arena, arena_bytes, 0,
+                                                 T, H, D, eps) != 0) &&
+            ds4_gpu_tensor_read(gout, 0, got.data(), n * sizeof(float));
+        if (!ran) {
+            std::fprintf(stderr, "gdn out: %s run failed\n", silu ? "silu" : "sigmoid");
+            ok = false;
+            continue;
+        }
+        char label[128];
+        std::snprintf(label, sizeof(label), "gdn out norm, %s gate",
+                      silu ? "silu (Bonsai)" : "sigmoid (qwen4exp)");
+        ok = close_enough(got, want, 1e-5f, 1e-4f, label) && ok;
+    }
+
+    ds4_gpu_tensor_free(gout);
+    ds4_gpu_tensor_free(gz);
+    munmap(arena, arena_bytes);
+    return ok;
+}
+
+/* Bonsai attention core: the row-exact kernel run with the split-K partial
+ * buffer the CUDA graph hands it (splits up to 64) against the same kernel run
+ * without one (a single split), both measured against the double-precision
+ * definition of the attention this family computes, at its own geometry
+ * (D = 256, H = 24, Hkv = 4, six query heads per kv head).
+ *
+ * The key ranges are long on purpose.  The dispatcher splits only past 32 keys
+ * per split (splits = min(64, (keys + 31) / 32)), so a short case would
+ * silently test the single-split path again; pos0 = 32768 reaches the split
+ * ceiling of 64 that the graph sizes its partial buffer for.  T = 1 is the
+ * per-token decode shape, T = 16 the row batch the chunked prefill hands the
+ * kernel.
+ *
+ * The two orders are compared to each other as well, and the split order is
+ * the accurate one at long range: one online-softmax chain over 32K keys
+ * drifts roughly 1e-6 absolute while the same sum in 64 pieces reduces to
+ * roughly 1e-8 from the double-precision value. */
+static bool test_attention_split() {
+    constexpr uint32_t H = 24, Hkv = 4, D = 256;
+    constexpr uint32_t splits_max = 64;                 /* dispatcher ceiling */
+    constexpr float scale = 1.0f / 16.0f;               /* 1/sqrt(D) */
+    constexpr float tol = 3e-5f;                        /* against the oracle */
+    /* tile == true marks the shapes where a NULL partial with T >= 32 selects
+     * the token-tile MMA kernel (warp score tile + one expf per (column, key)),
+     * which is the path the graph hands a prefilled chunk to; tile == false
+     * keeps the row-exact kernel, single-split or split-K. */
+    struct attn_case { uint32_t T, pos0; const char *label; bool tile; };
+    const attn_case cases[] = {
+        { 1,  2048, "attention split: decode, ctx 2048", false},
+        { 1, 32768, "attention split: decode, ctx 32768", false},
+        {16,  2048, "attention split: chunk rows, ctx 2048", false},
+        {16, 32768, "attention split: chunk rows, ctx 32768", false},
+        {32,  2048, "attention token-tile: chunk 32, ctx 2048", true},
+        {32, 32768, "attention token-tile: chunk 32, ctx 32768", true},
+        {33,  4096, "attention token-tile: odd chunk 33, ctx 4096", true},
+        {64, 32768, "attention token-tile: chunk 64, ctx 32768", true},
+    };
+
+    bool ok = true;
+    for (const attn_case &c : cases) {
+        const uint32_t T = c.T, pos0 = c.pos0;
+        const uint32_t keys = pos0 + T;
+        const uint64_t qn = (uint64_t)T * H * D, kvn = (uint64_t)keys * Hkv * D;
+
+        std::vector<float> q(qn), gate(qn);
+        std::vector<__half> kc(kvn), vc(kvn);
+        for (uint64_t i = 0; i < qn; i++) {
+            /* Row amplitudes span the softmax's two regimes: peaked, flat and
+             * ordinary, so the split reduction is compared on both tails. */
+            const float amp = ((i / D) % 3u == 0u) ? 4.0f
+                            : ((i / D) % 3u == 1u) ? 0.001f : 1.0f;
+            q[i] = amp * frand();
+            gate[i] = 4.0f * frand();
+        }
+        for (uint64_t i = 0; i < kvn; i++) {
+            kc[i] = __float2half_rn(frand());
+            vc[i] = __float2half_rn(frand());
+        }
+
+        ds4_gpu_tensor *gq = ds4_gpu_tensor_alloc(qn * 4);
+        ds4_gpu_tensor *ggate = ds4_gpu_tensor_alloc(qn * 4);
+        ds4_gpu_tensor *gk = ds4_gpu_tensor_alloc(kvn * 2);
+        ds4_gpu_tensor *gv = ds4_gpu_tensor_alloc(kvn * 2);
+        ds4_gpu_tensor *gref = ds4_gpu_tensor_alloc(qn * 4);
+        ds4_gpu_tensor *gsplit = ds4_gpu_tensor_alloc(qn * 4);
+        ds4_gpu_tensor *partial =
+            ds4_gpu_tensor_alloc((uint64_t)T * H * splits_max * (D + 2) * 4);
+        if (!gq || !ggate || !gk || !gv || !gref || !gsplit || !partial ||
+            !ds4_gpu_tensor_write(gq, 0, q.data(), qn * 4) ||
+            !ds4_gpu_tensor_write(ggate, 0, gate.data(), qn * 4) ||
+            !ds4_gpu_tensor_write(gk, 0, kc.data(), kvn * 2) ||
+            !ds4_gpu_tensor_write(gv, 0, vc.data(), kvn * 2)) {
+            std::fprintf(stderr, "%s: tensor setup failed\n", c.label);
+            ok = false;
+            continue;
+        }
+
+        /* gref is the NULL-partial call, i.e. the single-split row-exact kernel
+         * for T < 32 and the token-tile MMA kernel for T >= 32; gsplit is the
+         * split-K row-exact one.  Which of the two is binding depends on the
+         * shape: see the comparison below. */
+        const bool ran =
+            ds4_gpu_qwen4_attn_decode_tensor(gref, gq, ggate, gk, gv, NULL, NULL, NULL,
+                                             T, H, Hkv, D, pos0, false, 0u, scale) &&
+            ds4_gpu_qwen4_attn_decode_tensor(gsplit, gq, ggate, gk, gv, NULL, NULL, partial,
+                                             T, H, Hkv, D, pos0, false, 0u, scale);
+        if (!ran) {
+            std::fprintf(stderr, "%s: run failed\n", c.label);
+            ok = false;
+            goto cleanup;
+        }
+
+        {
+            std::vector<float> ref(qn), got(qn);
+            if (!ds4_gpu_tensor_read(gref, 0, ref.data(), qn * 4) ||
+                !ds4_gpu_tensor_read(gsplit, 0, got.data(), qn * 4)) {
+                std::fprintf(stderr, "%s: readback failed\n", c.label);
+                ok = false;
+                goto cleanup;
+            }
+            char label[128];
+            std::snprintf(label, sizeof(label), "%s (T=%u pos0=%u)", c.label, T, pos0);
+
+            /* The two orders differ by fp32 accumulation alone, and the gap
+             * grows with the key range: the single-split kernel runs one
+             * online-softmax chain over every key, the split kernel one chain
+             * per 512-key range plus a 64-way merge.  Measured, the split
+             * order is the closer of the two to the double-precision value
+             * (see the oracle below), so this bound only has to catch a
+             * mis-wired split - a wrong range or a dropped split moves the
+             * output by a fraction of the scale, not by a rounding step. */
+            double split_vs_single = 0.0, ref_scale = 0.0;
+            for (uint64_t i = 0; i < qn; i++) {
+                split_vs_single = std::fmax(split_vs_single,
+                                            std::fabs((double)got[i] - (double)ref[i]));
+                ref_scale = std::fmax(ref_scale, std::fabs((double)ref[i]));
+            }
+            /* Below the token-tile gate the two kernels differ by reduction
+             * order alone, and this bound is what catches a mis-wired split
+             * (a wrong range or a dropped split moves the output by a fraction
+             * of the scale, not by a rounding step).  Above the gate the NULL
+             * partial selects a different kernel entirely, so the same
+             * comparison is a cross-kernel check with the looser bound the
+             * MMA score tile needs. */
+            const double order_limit = (c.tile ? 1e-3 : 1e-4) * std::fmax(ref_scale, 1e-8);
+            std::fprintf(stderr, "%s: %s max|d|=%.2e (order limit %.2e): %s\n",
+                         label, c.tile ? "token-tile vs split" : "split vs single",
+                         split_vs_single, order_limit,
+                         split_vs_single <= order_limit ? "PASS" : "FAIL");
+            ok = split_vs_single <= order_limit && ok;
+
+            /* Independent check of the values themselves against the same
+             * definition the kernels implement, in double precision: four
+             * rows spanning the batch and six heads spanning the kv groups. */
+            std::vector<double> acc(D);
+            double worst_split = 0.0, worst_ref = 0.0, peak_scale = 0.0;
+            const uint32_t rows[4] = { 0, T / 3, 2 * T / 3, T - 1 };
+            const uint32_t heads[6] = { 0, 4, 9, 14, 19, H - 1 };
+            for (uint32_t ti = 0; ti < 4; ti++) {
+                const uint32_t t = rows[ti];
+                for (uint32_t hi = 0; hi < 6; hi++) {
+                    const uint32_t h = heads[hi];
+                    const uint32_t kh = h / (H / Hkv);
+                    const uint32_t n = pos0 + t + 1;
+                    double peak = -INFINITY, denom = 0.0;
+                    std::vector<double> scores(n);
+                    for (uint32_t j = 0; j < n; j++) {
+                        double dot = 0.0;
+                        for (uint32_t d = 0; d < D; d++) {
+                            dot += (double)q[((uint64_t)t * H + h) * D + d] *
+                                   (double)__half2float(kc[((uint64_t)j * Hkv + kh) * D + d]);
+                        }
+                        scores[j] = dot * (double)scale;
+                        peak = std::fmax(peak, scores[j]);
+                    }
+                    for (uint32_t d = 0; d < D; d++) acc[d] = 0.0;
+                    for (uint32_t j = 0; j < n; j++) {
+                        const double w = std::exp(scores[j] - peak);
+                        denom += w;
+                        for (uint32_t d = 0; d < D; d++) {
+                            acc[d] += w * (double)__half2float(vc[((uint64_t)j * Hkv + kh) * D + d]);
+                        }
+                    }
+                    for (uint32_t d = 0; d < D; d++) {
+                        const uint64_t i = ((uint64_t)t * H + h) * D + d;
+                        const double want = denom > 0.0
+                            ? acc[d] / denom / (1.0 + std::exp(-(double)gate[i])) : 0.0;
+                        peak_scale = std::fmax(peak_scale, std::fabs(want));
+                        worst_split = std::fmax(worst_split, std::fabs((double)got[i] - want));
+                        worst_ref = std::fmax(worst_ref, std::fabs((double)ref[i] - want));
+                    }
+                }
+            }
+            /* The path that ships for this shape is the binding check and the
+             * other one is its control:
+             *  - tile cases run on the token-tile MMA kernel (gref), bound to
+             *    the oracle at tol, with the split-K order as the control;
+             *  - every other case runs on the split-K kernel (gsplit), bound
+             *    to the oracle, with the single-split chain as the control.
+             * The control's own distance from the oracle grows with the key
+             * range because it runs one fp32 online-softmax chain over every
+             * key: measured 4.7e-6 of the scale at pos0 = 2048 and 9.7e-5 at
+             * pos0 = 32768, i.e. ~20x and ~200x worse than the order it is
+             * compared against, which is why the long cases get the looser
+             * bound. */
+            const double split_limit = tol * std::fmax(peak_scale, 1e-8);
+            const double ref_limit = (keys >= 8192u ? 3e-4 : tol) * std::fmax(peak_scale, 1e-8);
+            const double bind   = c.tile ? worst_ref   : worst_split;
+            const double ctrl   = c.tile ? worst_split : worst_ref;
+            const double bind_lim = c.tile ? tol * std::fmax(peak_scale, 1e-8) : split_limit;
+            const double ctrl_lim = c.tile ? split_limit : ref_limit;
+            const bool bind_ok = bind <= bind_lim;
+            const bool ctrl_ok = ctrl <= ctrl_lim;
+            std::fprintf(stderr,
+                         "%s: %s max|d|=%.2e (limit %.2e) %s; %s max|d|=%.2e (limit %.2e) %s\n",
+                         label, c.tile ? "token-tile" : "split", bind, bind_lim,
+                         bind_ok ? "PASS" : "FAIL", c.tile ? "split" : "single", ctrl,
+                         ctrl_lim, ctrl_ok ? "PASS" : "FAIL");
+            ok = bind_ok && ctrl_ok && ok;
+        }
+
+cleanup:
+        ds4_gpu_tensor_free(partial);
+        ds4_gpu_tensor_free(gsplit);
+        ds4_gpu_tensor_free(gref);
+        ds4_gpu_tensor_free(gv);
+        ds4_gpu_tensor_free(gk);
+        ds4_gpu_tensor_free(ggate);
+        ds4_gpu_tensor_free(gq);
+    }
+    return ok;
+}
+
+
 
 } // namespace
 
@@ -762,6 +1043,8 @@ int main() {
     const bool guards_ok = test_shape_guards();
     const bool host_ok = test_host_wiring();
     const bool fold_ok = test_fold_transform();
+    const bool gdn_ok = test_gdn_out_gates();
+    const bool attn_ok = test_attention_split();
 
     /* Random activations: the kernels quantize the activation to the Q8_1
      * form, so the outputs are compared by relative L2 error against the
@@ -785,8 +1068,8 @@ int main() {
     }
     exact_ok = run_shape(kShapes[0], 64, "exact64", true) && exact_ok;
 
-    const bool ok = rows_ok && guards_ok && host_ok && fold_ok &&
-                    shapes_ok && exact_ok;
+    const bool ok = rows_ok && guards_ok && host_ok && fold_ok && gdn_ok &&
+                    attn_ok && shapes_ok && exact_ok;
     std::fprintf(stderr, "PQ2_0 CUDA parity: %s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }

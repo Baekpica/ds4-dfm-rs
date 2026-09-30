@@ -48424,3 +48424,4 @@ static int ds4_gpu_glm53_matmul_bf16(
 #include "ds4_mimo2_gpu.cuh"
 #include "ds4_step37_vision_gpu.cuh"
 #include "ds4_qwen35_gpu.cuh"
+#include "cuda/qwen35_attn_gdn.cuh"
