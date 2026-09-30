@@ -26,6 +26,12 @@ Its default removes that identity operation: the bounded forward keeps
 every causal key below capacity. SWA retains wrapping. Buffers, arithmetic
 and committed cache rows remain unchanged.
 
+`DS4_NAIVE_SWIGLU_Q8=0` restores materialized BF16 SwiGLU before expert
+Down. Its default emits identical D4 Q8 bytes directly for IQ2_XS Down,
+2048→4096, 256 experts/eight routes and widths 32–8192. Input, SiLU and
+product keep Naive's BF16 boundaries. Decode/verification and the Down
+worklist tile stay unchanged; the fallback workspace remains allocated.
+
 ## Qwen embedded MTP
 
 The Q8 draft head scores low BPE IDs, non-normal token types and observed

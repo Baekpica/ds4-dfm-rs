@@ -944,6 +944,9 @@ test-naive-primitives: tests/naive_primitives
 tests/naive_attention_profile: tests/naive_attention_profile.cu cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh ds4_naive_plan.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 
+tests/naive_swiglu_profile: tests/naive_swiglu_profile.cu cuda/naive_primitives.cuh cuda/mmq/ds4_mimo2_swiglu.cuh ds4_naive_plan.h cuda/mmq/quantize.o cuda/mmq/ds4_ggml_stubs.o
+	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -o $@ $< cuda/mmq/quantize.o cuda/mmq/ds4_ggml_stubs.o $(CUDA_LDLIBS)
+
 tests/test_step37_primitives: tests/test_step37_primitives.cu cuda/step37_primitives.cuh tests/fixtures/step37/primitives.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 

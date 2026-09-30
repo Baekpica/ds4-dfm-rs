@@ -1,6 +1,6 @@
 # Naive GB10 optimization rounds
 
-Retained rounds from the September 30 request: prefill **2/3**, decode **3/3**.
+Retained rounds from the September 30 request: prefill **3/3**, decode **3/3**.
 Rejected probes do not count. Integration and long-context serving remain
 separate gates; see [the family contract](../../naive-n05-flash.md).
 
@@ -187,3 +187,50 @@ falls 2.070530→1.845149 s; SWA stays 0.259411→0.259325 s. Raw evidence:
 `round-p2d3-{state,memcheck}.log`, `round-{p2,d3}-direct-*.ncu-rep`,
 `round-{p2,d3}-cap8225-*.ncu-rep` and `round-p2d3-telemetry.jsonl`.
 Retained baseline: `dde65cdf`.
+
+## P3: emit BF16 SwiGLU directly into Down's Q8 layout
+
+After P2/D3, a fresh whole capture measures prefill GPU time at 16.589 s.
+The 188 MoE SwiGLU/Down-quantizer pairs take 0.454168 s, 2.74% of that
+phase. They write and reread a 128-MiB F32 intermediate per 2048-token
+layer. Full-counter NCU identifies memory dependencies: SwiGLU spends
+95.2% of warp stalls on long scoreboards.
+
+Reuse the sorted D4 producer with Naive's BF16 gate/up, SiLU and product
+boundaries. The existing MiMo F32 producer fails the new numeric test;
+the explicit BF16 specialization passes. Q8 scale reduction and rounding
+match the existing Down quantizer. Restrict fusion to IQ2_XS 2048→4096,
+256 experts, eight routes and widths 32–8192; retain the previous Down
+worklist geometry. Decode and bounded verification stay unchanged.
+`DS4_NAIVE_SWIGLU_Q8=0` restores the prior path. No allocation is added;
+the fallback buffer remains allocated, so this is not a VRAM saving.
+
+| Unprofiled tok/s | Baseline samples | Candidate samples | Mean change |
+| --- | --- | --- | ---: |
+| Prefill | 491.61, 491.41, 491.42 | 497.87, 498.47, 498.05 | +1.353% |
+| Decode | 17.46, 17.44, 17.44 | 17.46, 17.42, 17.40 | −0.115% |
+
+Both fresh 3×3 scouts are complete without warnings; `compare --regression`
+returns `Improved`. All 915456 logits, argmaxes, tokens and proof hashes
+match. Actual-weight 48-layer/target/indexer/draft state checks pass.
+Thirty-six producer cases cover small/boundary/wide widths, uniform,
+concentrated and invalid routing maps, Naive BF16 and legacy MiMo F32.
+The largest invalid-map fixture passes device-backtrace CUDA memcheck
+with zero errors. ds4-perf control tests, native build and CPU syntax pass.
+Observed clocks are 2184–2197 MHz; active samples are 2184 or 2190 MHz.
+
+The isolated producer preserves production geometry and quantizer but uses
+synthetic finite operands and expert-major row maps. Cold NCU time falls
+1.659008+0.791904→1.397152 ms; warm samples fall
+2.445254/2.399973/2.405987→1.373765/1.377582/1.367859 ms. Global L1 read
+sectors fall 12845056→8650752 and write sectors 5636096→1441792;
+executed warp instructions fall 72876032→35913728. Arithmetic boundaries
+stay unchanged, with no shared-memory allocation. Replay overhead is excluded.
+
+Whole Nsys prefill wall time falls 16.655107→16.436774 s; the 188 fused
+producers take 0.258454 s. Decode wall time stays 1.848160→1.847262 s,
+consistent with the unprofiled noise envelope. Raw evidence:
+`scratch/naive/round-p3-{current,base,candidate,compare}`,
+`round-p3-state.log`, `round-p3-producer-{parity,memcheck,warm}.log`,
+`round-p3-producer-{base,fused}.ncu-rep`, and `round-p3-telemetry.jsonl`.
+Retained baseline: `8a6e682e`.

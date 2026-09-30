@@ -1,7 +1,11 @@
 #pragma once
+#include <cuda_bf16.h>
+
+enum class SwiGLUOutput { F32, NaiveBF16 };
 
 /* MiMo applies route weights after down projection. Emit unweighted SwiGLU
  * directly in the IQ2_XS consumer's sorted D4 layout, without an F32 mid. */
+template<SwiGLUOutput OUTPUT = SwiGLUOutput::F32>
 static __global__ void mimo2_swiglu_q8(
         const float *gate, const float *up, const int32_t *ids,
         block_q8_1_mmq *out, int width, int rows) {
@@ -16,7 +20,16 @@ static __global__ void mimo2_swiglu_q8(
     float value[4];
 #pragma unroll
     for (int j = 0; j < 4; j++) {
-        value[j] = (gp[j] / (1.0f + expf(-gp[j]))) * uptr[j];
+        if constexpr (OUTPUT == SwiGLUOutput::NaiveBF16) {
+            // Match naive_swiglu's input, SiLU and product BF16 boundaries.
+            const float gate = __bfloat162float(__float2bfloat16_rn(gp[j]));
+            const float up = __bfloat162float(__float2bfloat16_rn(uptr[j]));
+            const float silu = __bfloat162float(__float2bfloat16_rn(
+                gate / (1.0f + expf(-gate))));
+            value[j] = __bfloat162float(__float2bfloat16_rn(silu * up));
+        } else {
+            value[j] = (gp[j] / (1.0f + expf(-gp[j]))) * uptr[j];
+        }
     }
     float amax = fabsf(value[0]);
 #pragma unroll

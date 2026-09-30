@@ -212,11 +212,18 @@ static bool naive_moe(ds4_exaone_batch_ws *b, const ds4_model *m,
         ok = ok && ds4_gpu_routed_gate_up_tensor(v[2], v[3], v[0], v[1],
             m->map, m->size, l->ffn_gate_exps->abs_offset, l->ffn_gate_exps->bytes,
             l->ffn_up_exps->abs_offset, l->ffn_up_exps->bytes, l->ffn_gate_exps->type,
-            N05_EMBED, N05_FF, N05_EXPERTS, count, N05_USED) &&
-            ds4_gpu_naive_swiglu(v[4], v[2], v[3], (uint64_t)count * N05_USED * N05_FF) &&
-            ds4_gpu_routed_matmul_guarded_tensor(v[5], v[4], v[1], m->map, m->size,
+            N05_EMBED, N05_FF, N05_EXPERTS, count, N05_USED);
+        const int fused = ok && l->ffn_down_exps->type == DS4_TENSOR_IQ2_XS
+            ? ds4_gpu_naive_down(v[5], v[2], v[3], v[1], m->map, m->size,
+                l->ffn_down_exps->abs_offset, l->ffn_down_exps->bytes, count) : -1;
+        if (ok && fused < 0) {
+            ok = ds4_gpu_naive_swiglu(v[4], v[2], v[3], (uint64_t)count * N05_USED * N05_FF) &&
+                ds4_gpu_routed_matmul_guarded_tensor(v[5], v[4], v[1], m->map, m->size,
                 l->ffn_down_exps->abs_offset, l->ffn_down_exps->bytes, l->ffn_down_exps->type,
                 N05_FF, N05_EMBED, N05_EXPERTS, count * N05_USED, 1, count);
+        } else if (ok) {
+            ok = fused > 0;
+        }
         if (sliced) {
             for (unsigned i = 0; i < sizeof(v) / sizeof(v[0]); i++) { ds4_gpu_tensor_free(v[i]); }
         }

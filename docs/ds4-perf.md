@@ -160,6 +160,13 @@ regardless of this control.
 `1` or unset directly indexes its full history. Bounded causal IDs select
 identical rows. SWA keeps ring addressing; allocation and arithmetic do not
 change. This diagnostic control supports matched comparisons of both phases.
+
+`DS4_NAIVE_SWIGLU_Q8=0` restores materialized BF16 SwiGLU before the
+IQ2_XS expert Down projection. Its default emits the same sorted D4 Q8
+bytes directly at widths 32–8192 for the fixed 2048→4096, 256-expert,
+eight-route shape. BF16 boundaries and the Down worklist tile are retained;
+decode and bounded verification stay on the original path. Workspace is
+retained for fallback, so avoided memory traffic is not a VRAM saving.
 Inkling's `DS4_INKLING_NO_LINEAR=1` is a reviewed diagnostic control for
 comparing its ordinary BF16 projection with the prior implementation.
 Unset the variable for the optimized path; comparisons reject other values.

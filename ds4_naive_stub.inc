@@ -48,6 +48,13 @@ int ds4_gpu_naive_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
         const ds4_gpu_tensor *up, uint64_t count) {
     (void)out; (void)gate; (void)up; (void)count; return 0;
 }
+int ds4_gpu_naive_down(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *up, const ds4_gpu_tensor *ids,
+        const void *map, uint64_t size, uint64_t offset, uint64_t bytes,
+        uint32_t tokens) {
+    (void)out; (void)gate; (void)up; (void)ids; (void)map;
+    (void)size; (void)offset; (void)bytes; (void)tokens; return -1;
+}
 int ds4_gpu_naive_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down,
         const ds4_gpu_tensor *weights, uint32_t rows) {
     (void)out; (void)down; (void)weights; (void)rows; return 0;

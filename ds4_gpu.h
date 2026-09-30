@@ -4852,6 +4852,12 @@ int ds4_gpu_naive_router(ds4_gpu_tensor *ids, ds4_gpu_tensor *weights,
         uint64_t offset, uint32_t rows);
 int ds4_gpu_naive_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
         const ds4_gpu_tensor *up, uint64_t count);
+/* BF16 SwiGLU directly into IQ2_XS Down. -1 declines before work,
+ * 0 reports execution failure, and 1 means Down is already computed. */
+int ds4_gpu_naive_down(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *up, const ds4_gpu_tensor *ids,
+        const void *map, uint64_t size, uint64_t offset, uint64_t bytes,
+        uint32_t tokens);
 int ds4_gpu_naive_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *down,
         const ds4_gpu_tensor *weights, uint32_t rows);
 int ds4_gpu_naive_add(ds4_gpu_tensor *cur, const ds4_gpu_tensor *other, uint64_t count);

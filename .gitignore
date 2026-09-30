@@ -108,6 +108,7 @@ __pycache__/
 /tests/naive_memory
 /tests/naive_primitives
 /tests/naive_attention_profile
+/tests/naive_swiglu_profile
 /tests/naive_bind
 /tests/naive_graph
 /tests/naive_dense
