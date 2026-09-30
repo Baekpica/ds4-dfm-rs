@@ -107,6 +107,7 @@ endif
         test-solar-gates test-solar-kv test-solar-tokenizer \
         test-solar-forward test-solar-session \
         test-exaone-ref test-exaone-kernels test-exaone-batch \
+        pq2-0-test \
         rust-bridge ds4-rs ds4-bench-rs ds4-agent-rs ds4-server-rs test-kv-parity test-web-parity test-dist-parity test-route-parity test-server-parity test-catalog-parity test-tokenizer-parity test-agent-parity test-session-parity
 
 ifeq ($(UNAME_S),Darwin)
@@ -1435,6 +1436,15 @@ test: ds4_test ds4-eval tests/test_split_gguf
 	./ds4-eval --self-test-extractors
 	./ds4_test
 	./tests/test_split_gguf
+
+# PQ2_0 block format (Prism/Bonsai ternary).  The block bytes and the expected
+# f32 checksums come from the reference dequantizer in the PrismML llama.cpp
+# fork, so a mismatch means this tree no longer reads the file the way the
+# exporter's runtime does.  tests/pq2_0/reference_checksums.txt is the same
+# oracle over all 851 tensors of the Ternary-Bonsai-2-27B-PQ2_0 artifact.
+pq2-0-test: tests/test_pq2_0.c
+	$(CC) -O2 -Wall -Wextra -std=c99 -o tests/test_pq2_0 tests/test_pq2_0.c -lm
+	./tests/test_pq2_0
 
 # Metadata and full tensor-layout smoke. The structural GGUF is sparse, so
 # this validates all descriptors without materializing an 88 GiB copy.

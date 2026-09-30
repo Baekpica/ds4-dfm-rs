@@ -2168,6 +2168,10 @@ static const gguf_type_info gguf_types[] = {
     [28] = {"f64",      1,   8},
     [29] = {"iq1_m",  256,  56},
     [30] = {"bf16",     1,   2},
+    /* Prism-private ternary type: 128 weights per 34-byte block, one fp16
+     * scale then 32 two-bit code bytes.  Only the qwen35 (Bonsai) family
+     * declares it; the CUDA side reads it through the vendored mmq kernels. */
+    [142] = {"pq2_0",  128,  34},
 };
 
 enum {
@@ -2190,6 +2194,7 @@ enum {
     DS4_TENSOR_IQ1_M    = 29,
     DS4_TENSOR_BF16     = 30,
     DS4_TENSOR_MXFP4    = 39,
+    DS4_TENSOR_PQ2_0    = 142,
 };
 
 typedef struct ds4_tensor ds4_tensor;
