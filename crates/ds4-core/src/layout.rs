@@ -2797,6 +2797,9 @@ pub fn expected_mtp_layouts(shape: &Shape) -> Vec<LayoutSpec> {
 }
 
 pub fn expected_dspark_layouts(shape: &Shape, markov_rank: u32) -> Vec<LayoutSpec> {
+    if shape.family == ModelFamily::NaiveN05 {
+        return crate::naive::draft_layouts();
+    }
     let mut out = Vec::new();
     let e = shape.n_embd as u64;
     let hc = shape.n_hc as u64;
@@ -3065,6 +3068,9 @@ pub fn validate_mtp_layouts(plan: &BindPlan) -> Result<(), LayoutError> {
 pub fn validate_dspark_layouts(plan: &BindPlan, markov_rank: u32) -> Result<(), LayoutError> {
     let by_name = plan_by_name(plan);
     expect_specs(&expected_dspark_layouts(&plan.shape, markov_rank), &by_name)?;
+    if plan.shape.family == ModelFamily::NaiveN05 {
+        return Ok(());
+    }
     for il in 0..DSPARK_N_LAYER {
         expect_gate_up(
             &by_name,

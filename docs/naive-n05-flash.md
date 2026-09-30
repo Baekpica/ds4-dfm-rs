@@ -50,6 +50,12 @@ not full-model inference or long-context serving. GPU clocks were set to
 The native split-projection binder also matches all 613 source-directory
 entries. CUDA memcheck reports zero errors for the primitive fixtures.
 
+The DSpark inspector accepts the downloaded Q8 artifact and rejects changed
+source/target revisions, tap ordering, mask/block semantics and every tensor
+dimension. Its 63-tensor directory and SHA-256
+`193b96b39d132656635bc4f6a09ad91c64aed7a52c08f46dabe0e3847cef8a8b`
+were checked locally. This validates the sidecar contract, not draft execution.
+
 The eager main graph and serial session/snapshot paths are implemented behind
 the model-open guard. A weight-free GPU test matches allocator bytes to the
 quote and restores 2051 rows of DSA K/V, index codes/scales and wrapped SWA
@@ -86,6 +92,7 @@ checkpoints and does not replace an active bank's GPU history.
 
 ```sh
 cargo test -p ds4-core --test naive --locked
+cargo test -p ds4-core --test naive_draft --locked
 make test-naive-memory
 make test-naive-bind
 make CUDA_ARCH=sm_121 test-naive-primitives

@@ -34,6 +34,14 @@ const Q6_K: u32 = 14;
 const IQ2_XXS: u32 = 16;
 const IQ2_XS: u32 = 17;
 const BF16: u32 = 30;
+pub(crate) const DRAFT_LAYERS: u32 = 5;
+const DRAFT_TENSORS: usize = 63;
+const DRAFT_TAPS: [u32; 8] = [1, 7, 14, 20, 26, 32, 39, 45];
+const DRAFT_HEADS: u64 = 32;
+const DRAFT_KV_HEADS: u64 = 4;
+const DRAFT_DIM: u64 = 128;
+const DRAFT_RANK: u64 = 256;
+const DRAFT_WINDOW: u32 = 1024;
 pub(crate) const PREFILL_CAP: u32 = 2048;
 pub(crate) const PREFILL_MAX: u32 = 8192;
 
@@ -299,6 +307,177 @@ pub(crate) fn validate_inventory(inv: &TensorInventory) -> Result<(), ValidateEr
         }
     }
     Ok(())
+}
+
+pub(crate) fn validate_draft(g: &GgufFile) -> Result<(), ValidateError> {
+    for (key, expected) in [
+        ("general.architecture", b"naive_n05_flash_dspark".as_slice()),
+        (
+            "naive_draft.source.repository",
+            b"NaiveAI/Naive-N0.5-Flash-FP8-Draft",
+        ),
+        (
+            "naive_draft.source.revision",
+            b"b2b8ee9f5d6b3fd1dfba113d3a363138e37c83b0",
+        ),
+        ("naive_draft.target.repository", b"NaiveAI/Naive-N0.5-Flash"),
+        ("naive_draft.target.revision", SOURCE_REV),
+        ("naive_draft.target.architecture", ARCH.as_bytes()),
+        (
+            "naive_draft.target.feature_kind",
+            b"post_layer_hidden_concat",
+        ),
+        ("naive_draft.rope.layout", b"split_half"),
+        ("naive_draft.markov_head_type", b"vanilla"),
+    ] {
+        if g.get_string(key) != Some(expected) {
+            return Err(mismatch(key));
+        }
+    }
+    for (suffix, expected) in [
+        ("block_count", DRAFT_LAYERS),
+        ("block_size", 7),
+        ("proposal_count", 6),
+        ("embedding_length", EMBED as u32),
+        ("feed_forward_length", EMBED as u32),
+        ("attention.head_count", DRAFT_HEADS as u32),
+        ("attention.head_count_kv", DRAFT_KV_HEADS as u32),
+        ("attention.head_dim", DRAFT_DIM as u32),
+        ("attention.sliding_window", DRAFT_WINDOW),
+        ("context_length", CONTEXT_MAX),
+        ("rope.dimension_count", DRAFT_DIM as u32),
+        ("vocab_size", VOCAB as u32),
+        ("mask_token_id", 151675),
+        ("markov_rank", DRAFT_RANK as u32),
+        ("target.hidden_state_offset", 1),
+    ] {
+        let key = format!("naive_draft.{suffix}");
+        if g.get_u32(&key) != Some(expected) {
+            return Err(mismatch(key));
+        }
+    }
+    for (suffix, expected) in [
+        ("target.shared_token_embedding", true),
+        ("target.shared_output", true),
+        ("use_target_kv", false),
+        ("attention.causal", false),
+        ("use_mask_embedding", true),
+        ("enable_confidence_head", true),
+        ("confidence_head_with_markov", true),
+    ] {
+        let key = format!("naive_draft.{suffix}");
+        if g.get_bool(&key) != Some(expected) {
+            return Err(mismatch(key));
+        }
+    }
+    for (suffix, expected) in [
+        ("rope.freq_base", 10000.0),
+        ("attention.layer_norm_rms_epsilon", 1e-5),
+    ] {
+        let key = format!("naive_draft.{suffix}");
+        if g.get_f32_compat(&key) != Some(expected) {
+            return Err(mismatch(key));
+        }
+    }
+    let key = "naive_draft.target.layer_ids";
+    let taps = g.get_array(key).ok_or_else(|| mismatch(key))?;
+    if g.array_le_u32s(&taps)? != DRAFT_TAPS {
+        return Err(mismatch(key));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_draft_inv(inv: &TensorInventory) -> Result<(), ValidateError> {
+    if inv.shards.len() != 1 || inv.tensors.len() != DRAFT_TENSORS {
+        return Err(mismatch("DSpark needs one shard and 63 tensors"));
+    }
+    let mut names = BTreeSet::new();
+    let mut spans = Vec::new();
+    for tensor in &inv.tensors {
+        if !names.insert(&tensor.name) {
+            return Err(mismatch(format!("duplicate {}", tensor.name)));
+        }
+        let end = tensor
+            .abs_offset
+            .checked_add(tensor.bytes)
+            .ok_or_else(|| mismatch("draft span overflow"))?;
+        spans.push((tensor.abs_offset, end, &tensor.name));
+    }
+    spans.sort_unstable();
+    for pair in spans.windows(2) {
+        if pair[0].1 > pair[1].0 {
+            return Err(mismatch(format!(
+                "draft overlap {} / {}",
+                pair[0].2, pair[1].2
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn draft_layouts() -> Vec<LayoutSpec> {
+    let mut specs = Vec::with_capacity(DRAFT_TENSORS);
+    let mut add = |name: String, typ, dims: &[u64]| {
+        let mut dim = [0; 8];
+        dim[..dims.len()].copy_from_slice(dims);
+        specs.push(LayoutSpec {
+            name,
+            class: TypeClass::Exact(typ),
+            ndim: dims.len() as u32,
+            dim,
+        });
+    };
+    add(
+        "fc.weight".into(),
+        Q8,
+        &[EMBED * DRAFT_TAPS.len() as u64, EMBED],
+    );
+    for name in [
+        "enc.output_norm.weight",
+        "output_norm.weight",
+        "mask_embedding.weight",
+    ] {
+        add(name.into(), F32, &[EMBED]);
+    }
+    for name in ["markov_w1.weight", "markov_w2.weight"] {
+        add(name.into(), Q8, &[DRAFT_RANK, VOCAB]);
+    }
+    add(
+        "confidence_head.weight".into(),
+        F32,
+        &[EMBED + DRAFT_RANK, 1],
+    );
+    add("confidence_head.bias".into(), F32, &[1]);
+    for il in 0..DRAFT_LAYERS {
+        let prefix = format!("blk.{il}");
+        for name in ["attn_norm.weight", "ffn_norm.weight"] {
+            add(format!("{prefix}.{name}"), F32, &[EMBED]);
+        }
+        for name in ["attn_q_norm.weight", "attn_k_norm.weight"] {
+            add(format!("{prefix}.{name}"), F32, &[DRAFT_DIM]);
+        }
+        add(
+            format!("{prefix}.attn_q.weight"),
+            Q8,
+            &[EMBED, DRAFT_HEADS * DRAFT_DIM],
+        );
+        for name in ["attn_k.weight", "attn_v.weight"] {
+            add(
+                format!("{prefix}.{name}"),
+                Q8,
+                &[EMBED, DRAFT_KV_HEADS * DRAFT_DIM],
+            );
+        }
+        for name in [
+            "attn_output.weight",
+            "ffn_gate.weight",
+            "ffn_up.weight",
+            "ffn_down.weight",
+        ] {
+            add(format!("{prefix}.{name}"), Q8, &[EMBED, EMBED]);
+        }
+    }
+    specs
 }
 
 pub(crate) fn layouts() -> Vec<LayoutSpec> {

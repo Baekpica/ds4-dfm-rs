@@ -945,6 +945,13 @@ impl BindPlan {
     }
 
     pub fn resolve_dspark(shape: Shape, inventory: &TensorInventory) -> Self {
+        if shape.family == ModelFamily::NaiveN05 {
+            return Self::resolve_names(
+                shape,
+                inkling_names(crate::naive::draft_layouts()),
+                inventory,
+            );
+        }
         Self::resolve_names(shape, bind_dspark_names(), inventory)
     }
 
