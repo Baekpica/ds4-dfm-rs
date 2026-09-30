@@ -156,6 +156,10 @@ Widths 2–7 and wider DSA remain on their previous paths.
 BF16 dot, serial denominator and ascending V FMA remain exact. It applies
 only to one-row DSA; `DS4_NAIVE_DECODE_SCORES=0` restores the original walk
 regardless of this control.
+`DS4_NAIVE_DSA_DIRECT=0` restores DSA's prior modulo address calculation;
+`1` or unset directly indexes its full history. Bounded causal IDs select
+identical rows. SWA keeps ring addressing; allocation and arithmetic do not
+change. This diagnostic control supports matched comparisons of both phases.
 Inkling's `DS4_INKLING_NO_LINEAR=1` is a reviewed diagnostic control for
 comparing its ordinary BF16 projection with the prior implementation.
 Unset the variable for the optimized path; comparisons reject other values.

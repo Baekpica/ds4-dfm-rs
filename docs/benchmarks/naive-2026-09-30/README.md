@@ -1,6 +1,6 @@
 # Naive GB10 optimization rounds
 
-Retained rounds from the September 30 request: prefill **1/3**, decode **2/3**.
+Retained rounds from the September 30 request: prefill **2/3**, decode **3/3**.
 Rejected probes do not count. Integration and long-context serving remain
 separate gates; see [the family contract](../../naive-n05-flash.md).
 
@@ -139,3 +139,51 @@ Whole Nsys attention falls 1.023830→0.695414 s and decode wall time falls
 `round-d2-state.log`, `round-d2-{primitive-parity,memcheck}.log`,
 `round-d2-dsa-{base,tile}.ncu-rep` and `round-d2-telemetry.jsonl`.
 Retained baseline: `782aa821`.
+
+## P2 / D3: index the full DSA history directly
+
+After D2, a fresh whole capture measures prefill attention at 8.743242 s,
+49.955% of GPU time, and decode DSA at 0.434528 s, 22.203%. Full-counter
+NCU source correlation finds 8913152 warp instructions at V address
+calculation and 2621696 at QK address calculation, out of 27543424.
+Both repeatedly compute `key % capacity` for a history that never wraps.
+
+The forward guard enforces `pos + n <= context`; causal IDs satisfy
+`key <= pos < capacity`. Direct indexing is therefore the same address.
+Use the explicit full-history policy for DSA, retaining modulo for SWA.
+Arithmetic, buffers, KV layout and allocations stay unchanged.
+`DS4_NAIVE_DSA_DIRECT=0` restores the previous DSA address calculation.
+This one change improves both phases, counted as P2 and D3 after separate
+target profiles and a matched whole-workload proof.
+
+| Unprofiled tok/s | Baseline samples | Candidate samples | Mean change |
+| --- | --- | --- | ---: |
+| Prefill | 466.73, 466.41, 467.04 | 491.26, 491.50, 491.35 | +5.280% |
+| Decode | 15.49, 15.53, 15.54 | 17.44, 17.45, 17.39 | +12.285% |
+
+Both scouts are complete without warnings; `compare --regression` returns
+`Improved`. All 915456 logit values, argmaxes, tokens and proof hashes match.
+Actual-weight 48-layer/target/indexer/draft state regression, independent
+equations, early/future/padded IDs and device memcheck pass. Observed clocks
+are 2190–2197 MHz; samples above 40 W are 2190 MHz.
+
+At isolated capacity 8192, cold prefill falls 4.24→3.21 ms with unchanged
+40 registers/shared memory; decode falls 1.62→0.82960 ms with unchanged
+38 registers/4.10 KiB shared memory. Warm prefill samples fall
+3.667739/3.678352/3.687741→3.225776/3.211278/3.212208 ms; decode falls
+0.906320/0.908197/0.906827→0.496331/0.495195/0.494669 ms. The benchmark
+reserves capacity 8225 for 8192 input plus generation; all selected IDs
+are inside both capacities. Follow-up bounded 8225 captures preserve that
+actual capacity as well as the existing synthetic-value/routing limits.
+At capacity 8225, cold prefill is 4.34→3.21 ms and decode is
+1.61→0.82390 ms. Global L1 read sectors stay identical; executed warp
+instructions fall 824535040→698650624 in prefill and
+27543424→15877504 in decode. Registers and shared memory stay unchanged.
+
+Whole Nsys prefill attention falls 8.737404→7.852506 s and wall time falls
+17.538436→16.650192 s. Decode DSA falls 0.435217→0.207441 s and wall time
+falls 2.070530→1.845149 s; SWA stays 0.259411→0.259325 s. Raw evidence:
+`scratch/naive/round-p2d3-{base,candidate,compare}`, `round-d3-current`,
+`round-p2d3-{state,memcheck}.log`, `round-{p2,d3}-direct-*.ncu-rep`,
+`round-{p2,d3}-cap8225-*.ncu-rep` and `round-p2d3-telemetry.jsonl`.
+Retained baseline: `dde65cdf`.

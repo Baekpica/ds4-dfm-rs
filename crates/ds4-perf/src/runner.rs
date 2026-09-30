@@ -261,6 +261,7 @@ const PERF_ENV: &[&str] = &[
     "DS4_NAIVE_DECODE_SCORES",
     "DS4_NAIVE_SWA_PREFILL_SCORES",
     "DS4_NAIVE_DSA_DECODE_TILE",
+    "DS4_NAIVE_DSA_DIRECT",
     "DS4_INKLING_PREFILL_CHUNK",
     "DS4_DOTS3_ATTN_NO_HMMA",
     "DS4_DOTS3_ATTN_NO_SPLIT",
@@ -670,6 +671,7 @@ mod tests {
             "DS4_NAIVE_DECODE_SCORES",
             "DS4_NAIVE_SWA_PREFILL_SCORES",
             "DS4_NAIVE_DSA_DECODE_TILE",
+            "DS4_NAIVE_DSA_DIRECT",
         ] {
             for value in ["0", "1"] {
                 let env = controls(&[format!("{key}={value}")]).unwrap();

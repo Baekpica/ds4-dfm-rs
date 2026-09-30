@@ -4,6 +4,7 @@
 /* One CTA/head shares rounded scores across four key walks. Softmax and V
  * still visit ascending IDs. The complete XOR reduction yields the same
  * finite sum in every lane, so storing lane zero preserves all lanes. */
+template<NaiveCache CACHE = NaiveCache::Ring>
 __global__ static void naive_sparse_tile(
         float *out, const float *q, const __nv_bfloat16 *cache,
         const unsigned *positions, const unsigned *selected, unsigned capacity) {
@@ -24,7 +25,7 @@ __global__ static void naive_sparse_tile(
     for (unsigned i = warp; i < count; i += WARPS) {
         const unsigned key = ids[i];
         if (key > pos) { continue; }
-        const __nv_bfloat16 *slot = cache + (uint64_t)(key % capacity) * stride;
+        const __nv_bfloat16 *slot = cache + (uint64_t)naive_cache_slot<CACHE>(key, capacity) * stride;
         float dot = 0;
         for (unsigned d = 0; d < N05_KEY / WARP; d++) {
             dot = __fmaf_rn(query[d], __bfloat162float(slot[kh * N05_KEY + lane + d * WARP]), dot);
@@ -62,7 +63,7 @@ __global__ static void naive_sparse_tile(
     for (unsigned i = 0; i < count; i++) {
         const unsigned key = ids[i];
         if (key > pos) { continue; }
-        const __nv_bfloat16 *slot = cache + (uint64_t)(key % capacity) * stride;
+        const __nv_bfloat16 *slot = cache + (uint64_t)naive_cache_slot<CACHE>(key, capacity) * stride;
         const float value = naive_bf16(__bfloat162float(slot[KV_HEADS * N05_KEY + kh * N05_VALUE + tid]) * N05_V_SCALE);
         acc = __fmaf_rn(__bfloat162float(scores[i]), value, acc);
     }

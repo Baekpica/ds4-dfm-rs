@@ -21,6 +21,10 @@ the default uses one CTA per DSA head, four parallel QK walks and a shared
 BF16 score/probability tile. Serial softmax and V reduction stay exact.
 It only applies at width one with decode scores enabled; disabling
 `DS4_NAIVE_DECODE_SCORES` still restores the original attention.
+`DS4_NAIVE_DSA_DIRECT=0` restores modulo addressing for full DSA histories.
+Its default removes that identity operation: the bounded forward keeps
+every causal key below capacity. SWA retains wrapping. Buffers, arithmetic
+and committed cache rows remain unchanged.
 
 ## Qwen embedded MTP
 

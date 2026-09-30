@@ -11,8 +11,8 @@ qualification; explicit speculation still needs performance work.
 
 All four downloaded shards and their provenance/manifest pass SHA-256 checks.
 
-Ordinary decode has a fresh, byte-exact 8K optimization gate: 13.38→15.53
-tok/s with unchanged prefill. See the [GB10 rounds](benchmarks/naive-2026-09-30/README.md)
+The latest fresh, byte-exact 8K gate improves prefill 466.73→491.37 tok/s
+and ordinary decode 15.52→17.43 tok/s. See the [GB10 rounds](benchmarks/naive-2026-09-30/README.md)
 for the exact workload, controls and limits; this does not qualify DSpark
 acceleration or long-context serving.
 

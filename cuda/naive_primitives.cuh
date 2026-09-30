@@ -9,6 +9,14 @@ static constexpr float N05_EPS = 1e-5f;
 static constexpr float N05_V_SCALE = .707f;
 static constexpr float N05_QK_SCALE = 0.07216878364870322f; // 1/sqrt(192)
 
+enum class NaiveCache { Ring, Full };
+
+template<NaiveCache CACHE> __device__ static unsigned naive_cache_slot(unsigned key, unsigned capacity) {
+    // DSA's bounded frontier keeps every causal ID inside its full history.
+    if constexpr (CACHE == NaiveCache::Full) { return key; }
+    return key % capacity;
+}
+
 __device__ static float naive_e4m3(uint8_t code) {
     const __half_raw h = __nv_cvt_fp8_to_halfraw(code, __NV_E4M3);
     return __half2float(__half(h));
@@ -108,7 +116,7 @@ __global__ static void naive_kv_store(
  * QK; both paths retain the serial denominator and V accumulation order.
  * The two passes avoid a scores[heads,history] allocation. Sparse IDs are
  * ascending; SWA walks exactly the causal window and adds its zero-V sink. */
-template<unsigned WARPS = 4, unsigned SCORE_CAP = 0>
+template<unsigned WARPS = 4, unsigned SCORE_CAP = 0, NaiveCache CACHE = NaiveCache::Ring>
 __global__ static void naive_attention(
         float *out, const float *q, const __nv_bfloat16 *cache, const float *sinks,
         const unsigned *positions, const unsigned *selected,
@@ -130,7 +138,7 @@ __global__ static void naive_attention(
     for (unsigned i = 0; i < count; i++) {
         const unsigned key = window ? first + i : selected[(uint64_t)row * N05_TOP_K + i];
         if (key > pos) { continue; }
-        const __nv_bfloat16 *slot = cache + (uint64_t)(key % capacity) * stride;
+        const __nv_bfloat16 *slot = cache + (uint64_t)naive_cache_slot<CACHE>(key, capacity) * stride;
         float dot = 0;
         for (unsigned d = 0; d < N05_KEY / WARP; d++) {
             dot = __fmaf_rn(query[d], __bfloat162float(slot[kv_head * N05_KEY + lane + d * WARP]), dot);
@@ -148,7 +156,7 @@ __global__ static void naive_attention(
     for (unsigned i = 0; i < count; i++) {
         const unsigned key = window ? first + i : selected[(uint64_t)row * N05_TOP_K + i];
         if (key > pos) { continue; }
-        const __nv_bfloat16 *slot = cache + (uint64_t)(key % capacity) * stride;
+        const __nv_bfloat16 *slot = cache + (uint64_t)naive_cache_slot<CACHE>(key, capacity) * stride;
         float score;
         if constexpr (SCORE_CAP) {
             score = __bfloat162float(scores[warp][i]);

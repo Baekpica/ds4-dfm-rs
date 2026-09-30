@@ -122,22 +122,38 @@ extern "C" int ds4_gpu_naive_attention(ds4_gpu_tensor *out, const ds4_gpu_tensor
     const char *scores = getenv("DS4_NAIVE_DECODE_SCORES");
     const char *swa = getenv("DS4_NAIVE_SWA_PREFILL_SCORES");
     const char *dsa = getenv("DS4_NAIVE_DSA_DECODE_TILE");
+    const char *address = getenv("DS4_NAIVE_DSA_DIRECT");
+    const bool full = !window && (!address || strcmp(address, "0"));
     // Only the 1-KiB SWA tile retains wide-prefill occupancy. DSA stays narrow.
     const bool cached = (rows == 1 && (!scores || strcmp(scores, "0"))) ||
         (window && rows > N05_DF_BLOCK && (!swa || strcmp(swa, "0")));
     if (cached && !window && rows == 1 && (!dsa || strcmp(dsa, "0"))) {
         // More CTAs fill decode's idle SMs; the wide tile loses L1 reuse.
-        naive_sparse_tile<<<dim3(N05_HEADS, rows), 128, 0, ds4_current_stream()>>>(
-            (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr,
-            (const unsigned *)positions->ptr, (const unsigned *)ids->ptr, capacity);
+        if (full) {
+            naive_sparse_tile<NaiveCache::Full><<<dim3(N05_HEADS, rows), 128, 0, ds4_current_stream()>>>(
+                (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr,
+                (const unsigned *)positions->ptr, (const unsigned *)ids->ptr, capacity);
+        } else {
+            naive_sparse_tile<<<dim3(N05_HEADS, rows), 128, 0, ds4_current_stream()>>>(
+                (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr,
+                (const unsigned *)positions->ptr, (const unsigned *)ids->ptr, capacity);
+        }
     } else if (cached && window) {
         naive_attention<4, N05_WINDOW><<<dim3(N05_HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr, sinks,
             (const unsigned *)positions->ptr, nullptr, heads, capacity, window);
+    } else if (cached && full) {
+        naive_attention<4, N05_TOP_K, NaiveCache::Full><<<dim3(N05_HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr, nullptr,
+            (const unsigned *)positions->ptr, (const unsigned *)ids->ptr, heads, capacity, 0);
     } else if (cached) {
         naive_attention<4, N05_TOP_K><<<dim3(N05_HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr, nullptr,
             (const unsigned *)positions->ptr, (const unsigned *)ids->ptr, heads, capacity, window);
+    } else if (full) {
+        naive_attention<4, 0, NaiveCache::Full><<<dim3(N05_HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr, nullptr,
+            (const unsigned *)positions->ptr, (const unsigned *)ids->ptr, heads, capacity, 0);
     } else {
         naive_attention<<<dim3(N05_HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr, sinks,
