@@ -820,6 +820,26 @@ tests/test_qwen35_cuda: tests/test_qwen35_cuda.cu ds4_cuda_test_hooks.o $(filter
 test-qwen35-cuda: tests/test_qwen35_cuda
 	./tests/test_qwen35_cuda
 
+# The Bonsai session path, diffed against the in-process CPU reference on both
+# backends.  The CUDA run needs the card (and DS4_CUDA_COPY_MODEL, see
+# docs/BONSAI.md); the CPU run needs no card but pays the reference's ~3 s per
+# forward, so it runs fewer steps and skips the long-prompt pass.
+tests/test_qwen35_session.o: tests/test_qwen35_session.c ds4.h
+	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_TEST_HOOKS -I. -I$(CUDA_HOME)/include -c -o $@ $<
+
+tests/test_qwen35_session: tests/test_qwen35_session.o ds4_cuda_test_hooks.o $(filter-out ds4.o,$(DS4_CUDA_CORE_OBJS))
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-qwen35-session test-qwen35-session-multichunk
+test-qwen35-session: tests/test_qwen35_session
+	DS4_CUDA_COPY_MODEL=1 DS4_TEST_MODEL="$(DS4_BONSAI_MODEL)" DS4_TEST_BACKEND=cuda DS4_TEST_STEPS=$(DS4_BONSAI_STEPS) ./tests/test_qwen35_session
+	DS4_TEST_MODEL="$(DS4_BONSAI_MODEL)" DS4_TEST_BACKEND=cpu ./tests/test_qwen35_session
+
+# The same scenarios with a two-token chunk, so the prefill crosses many chunk
+# boundaries instead of handing the trunk one wide chunk.
+test-qwen35-session-multichunk: tests/test_qwen35_session
+	DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_PREFILL_CHUNK=2 DS4_TEST_MODEL="$(DS4_BONSAI_MODEL)" DS4_TEST_BACKEND=cuda DS4_TEST_STEPS=$(DS4_BONSAI_STEPS) ./tests/test_qwen35_session
+
 tests/test_mmid_fast.o: tests/test_mmid_fast.cu cuda/mmq/mmid.cuh
 	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<
 

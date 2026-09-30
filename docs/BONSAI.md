@@ -33,15 +33,37 @@ was built:
 The CUDA build is the one this recipe uses; `run-bonsai.sh` never rebuilds
 anything, it only reports what is present.
 
-The only entry point for this family is the diagnostic generator
-`--first-token-test`: greedy, one token per graph call, with `-p "<prompt>"`.
+The diagnostic generator `--first-token-test` is the reproducible oracle path:
+greedy, with `-p "<prompt>"`.
 `DS4_QWEN35_STEPS=<n>` sets the greedy step count (default 16) and
 `DS4_QWEN35_TOKENS=<comma ids>` replaces the prompt with raw token ids, which
 is how the reproducible parity gate is run. `DS4_QWEN35_LOGITS=<file>` dumps
-the prompt pass's n x 248320 f32 logits.
+the prompt pass's n x 248320 f32 logits. `DS4_QWEN35_SESSION=1` drives that
+same prompt and greedy loop through a real `ds4_session` (create, sync, eval)
+instead of a state local to the diagnostic, on either backend.
 
-The CLI generates nothing else for this family: the engine refuses every
-non-reference run by name (commit `d248d22`).
+## The session path
+
+`ds4_session_*` is wired for this family on both backends. The session owns the
+whole trunk state: the CUDA graph on `--cuda`, the CPU reference on `--cpu`.
+Both support create, sync with prefix reuse, eval, rewind-by-replay, invalidate
+and the context bound; the table below says what each backend does differently.
+
+| | CUDA session | CPU session (reference) |
+| --- | --- | --- |
+| state | one device graph, fp16 k/v + recurrent state | float trunk state in host memory |
+| prefill | `DS4_QWEN35_PREFILL_CHUNK` rows per forward (512 default, 1024 max); a chunk the device cannot hold is halved until the graph opens | one token per forward, as the reference always runs |
+| speed | ~26 ms per token | ~3 s per forward |
+
+Refused by name rather than pretended: batching (the session decodes one row per
+eval), MTP and DSpark drafting, SSD/disk KV, tensor parallelism, distributed
+ranks, and KV snapshots (`ds4_session_payload_bytes` returns 0 and both payload
+paths refuse). The attention row kernel is the row-exact one for every chunk
+size: this tree does not select the token-tile kernel from the graph.
+
+`run-bonsai.sh session` drives both backends through the session and diffs each
+against the CPU reference. The CLI's plain generation path (`-p`, no
+`--first-token-test`) routes this family through the session as well.
 
 ## Environment requirement: copy the model to the device
 
@@ -69,6 +91,7 @@ make ds4-c CUDA_ARCH=sm_89
 ./run-bonsai.sh cpu ["prompt"]      # the CPU reference (the oracle)
 ./run-bonsai.sh compare ["prompt"]  # both backends, diffed token for token
 ./run-bonsai.sh ids                 # the explicit five-id parity gate
+./run-bonsai.sh session ["prompt"]  # both backends through the session, diffed
 ./run-bonsai.sh bench [tokens]      # decode rate with /usr/bin/time
 ./run-bonsai.sh help
 ```
@@ -93,13 +116,16 @@ model:   /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf
 gpu:     NVIDIA GeForce RTX 4070 SUPER, 180 MiB, 12282 MiB
          no compute process
 slot:    busy (another ds4/ds4-c holds /tmp/ds4.lock); runs will wait
-entry:   --first-token-test (greedy diagnostic, one token per forward)
-         DS4_QWEN35_STEPS=<n> and DS4_QWEN35_TOKENS=<comma ids>
-supported: generate, cuda, cpu, compare, ids, bench, status, help
-refused:   session, server (not implemented in this tree)
+entry:   --first-token-test (greedy diagnostic), and the session path
+         DS4_QWEN35_STEPS=<n>, DS4_QWEN35_TOKENS=<comma ids>,
+         DS4_QWEN35_SESSION=1 (drive the same run through a session),
+         DS4_QWEN35_PREFILL_CHUNK=<n> (rows per CUDA prefill forward)
+supported: generate, cuda, cpu, compare, ids, session, bench, status, help
+refused:   server (no serving path in this tree)
 runbooks:  make bonsai-cuda-check, make bonsai-cuda-parity,
-           make test-qwen35-cuda, make test-qwen35-rows, make pq2-0-test,
-           make bonsai-fold-selftest, make bonsai-ref-check
+           make test-qwen35-cuda, make test-qwen35-session,
+           make test-qwen35-session-multichunk, make test-qwen35-rows,
+           make pq2-0-test, make bonsai-fold-selftest, make bonsai-ref-check
 ```
 
 ### ids (the reproducible parity gate)
@@ -206,6 +232,8 @@ Runbooks in this tree (all read `DS4_BONSAI_MODEL`):
 | `make bonsai-cuda-check` | the greedy stream on the CUDA graph alone |
 | `make bonsai-cuda-parity` | CPU reference vs CUDA graph streams, diffed (what `ids` runs) |
 | `make test-qwen35-cuda` | the CUDA kernels against the in-process CPU reference, no model file needed |
+| `make test-qwen35-session` | the session path on both backends (plain, prefix reuse, rewind, invalidate, context bound), diffed against the in-process CPU reference |
+| `make test-qwen35-session-multichunk` | the same scenarios with `DS4_QWEN35_PREFILL_CHUNK=2`, so the prefill crosses many chunk boundaries |
 | `make test-qwen35-rows` | every tensor of the artifact through this tree's row reader |
 | `make pq2-0-test` | the PQ2_0 block format against the Prism reference dequantizer |
 | `make bonsai-fold-selftest` | the fold round-trips and the gated-delta-net permutation |
@@ -250,15 +278,21 @@ RTX 4070 SUPER, sm_89, nvcc 13.3):
 
 ## Limitations
 
-- **No session path.** This tree has no `DS4_QWEN35_SESSION` and no generated
-  CLI for this family. `run-bonsai.sh session` refuses by name.
-- **No serving.** `ds4-server` refuses the qwen35 family, so there is no HTTP
-  path; `serve-bonsai.sh` is deliberately not ported.
-  `run-bonsai.sh server` refuses by name.
-- Also absent: batching, chunked prefill, SSD/disk KV, MTP, prefix reuse and
-  session snapshots. The `--first-token-test` diagnostic is the whole surface.
-- **One token per forward.** There is no batched prefill; the prompt pass is
-  one forward per token.
+- **No serving surface.** The engine now accepts a session on either backend,
+  and the family's serving caps declare its minimal plan (serial lane, no
+  banks, batching, snapshots or MTP, partial prefix reuse, any host) with no
+  qualified limits, but serving has not been exercised for this family:
+  the model identity and aliases (`prism-bonsai-2-27b`, `-chat`/`-reasoner`),
+  the qualified context and the disk-KV notice belong to the serving unit, and
+  `run-bonsai.sh server` refuses by name until they land.  Do not read the caps
+  as a qualified service.
+- **No batching, SSD/disk KV, MTP or session snapshots.** Each is refused by
+  name rather than pretended: the session decodes one row per eval, the payload
+  paths refuse, and the engine gate rejects the MTP/DSpark sidecars, tensor
+  parallelism and distributed ranks.
+- **The CPU reference is the slow path.** About 3 s per forward against ~26 ms
+  per token on the card, which is why the CPU session runs the reference trunk
+  and `./run-bonsai.sh session` takes minutes.
 - **Greedy generation from a chat-templated prompt is a near-tie coin flip.**
   The CPU and CUDA logits differ by the 0.08093 above, and on the CLI's
   chat-templated prompt a continuation can flip between the backends (about
@@ -270,4 +304,5 @@ RTX 4070 SUPER, sm_89, nvcc 13.3):
 ## Report
 
 [Recorded evidence for the CUDA unit](releases/bonsai-cuda-graph-2026-09-30.md)
-and [the CPU reference unit](releases/bonsai-cpu-reference-2026-09-30.md).
+and [the CPU reference unit](releases/bonsai-cpu-reference-2026-09-30.md), and
+[the session unit](releases/bonsai-session-2026-09-30.md).

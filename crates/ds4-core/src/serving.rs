@@ -631,11 +631,12 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         };
     }
     match family {
-        // One session on one GPU: the native path refuses banks, speculation,
+        // One session on one host: the native path refuses banks, speculation,
         // snapshots and the disk store by name, so a request for them is
         // reported as unsupported instead of silently ignored. Prefix reuse is
         // the prefill checkpoint the native session keeps when the prompt
-        // starts with it.
+        // starts with it.  Either backend hosts the session -- the CUDA graph
+        // or the CPU reference trunk -- so the host is not restricted.
         ModelFamily::Qwen35 => ServingCaps {
             family,
             variant,
@@ -649,7 +650,7 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             mtp_support: Support::None,
             spec_lane: SpecLane::None,
             spec_draft_min: 1,
-            host: HostNeed::Cuda,
+            host: HostNeed::Any,
             ctx_max: Some(crate::qwen35::CTX_MAX),
             qualified_ctx: None,
             qualified_banks: None,

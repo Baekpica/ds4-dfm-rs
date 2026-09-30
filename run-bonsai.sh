@@ -10,7 +10,7 @@
 #         ./run-bonsai.sh ids                the explicit five-id parity gate (make bonsai-cuda-parity)
 #         ./run-bonsai.sh bench [tokens]     decode rate with /usr/bin/time (default 16)
 #         ./run-bonsai.sh status             what is built, which artifact, what can run
-#         ./run-bonsai.sh session [prompt]   refused: not implemented in this tree
+#         ./run-bonsai.sh session [prompt]   the session path on both backends, diffed
 #         ./run-bonsai.sh server [prompt]    refused: not implemented in this tree
 #         ./run-bonsai.sh help
 #
@@ -41,12 +41,21 @@
 #   memory").  This script sets it for every --cuda run.
 #
 # WHAT THIS TREE DOES NOT DO YET (refused by name, never silently skipped)
-#   - session: there is no DS4_QWEN35_SESSION path here and no CLI generation
-#     for this family; the engine refuses every non-reference run by name.
-#   - server: ds4-server refuses this family, and serve-bonsai.sh is not
-#     ported; there is no serving path at all.
-#   Also absent: batching, chunked prefill, SSD/disk KV, MTP, prefix reuse and
-#   session snapshots.  The diagnostic is the whole surface.
+#   - server: no serving surface is qualified for this family yet (identity,
+#     aliases, qualified context, disk-KV notice).  This script refuses the
+#     subcommand by name until that unit lands; serve-bonsai.sh is not ported.
+#   Also absent: batching, SSD/disk KV, MTP and session snapshots; the session
+#   path refuses each of them by name.  No CUDA session on this box without
+#   DS4_CUDA_COPY_MODEL=1, which this script sets.
+#
+# THE SESSION PATH
+#   ./run-bonsai.sh session drives the real ds4_session API (create, sync, eval)
+#   through the CUDA graph and, separately, through the CPU reference trunk:
+#   prefix reuse, rewind by replay, invalidate and the context bound are all
+#   wired for both backends, and the diagnostic (DS4_QWEN35_SESSION=1) prints
+#   the same token stream.  Prefill is chunked: DS4_QWEN35_PREFILL_CHUNK (512
+#   by default, 1024 max) bounds the rows one CUDA forward carries, and a chunk
+#   the device cannot hold is halved until the graph opens.
 #
 # Env overrides: DS4_BONSAI_MODEL (model path), DS4_BONSAI_BIN (binary),
 # DS4_BONSAI_BACKEND (cuda|cpu), DS4_BONSAI_STEPS (greedy steps),
@@ -120,11 +129,11 @@ continuation() {
   awk '/^token /{sub(/^token [0-9]+: [0-9]+ /,""); if (length($0)==0) printf "\n"; else printf "%s", $0}' "$1"
 }
 
-# One decoding run: run_model <backend> <steps> <prompt> <log> [token override]
+# One decoding run: run_model <backend> <steps> <prompt> <log> [token override] [session]
 # Sets DS4_CUDA_COPY_MODEL for CUDA, waits for the slot, retries if the engine
 # refuses to start, and writes the wall time and peak RSS to <log>.time.
 run_model() {
-  local backend="$1" steps="$2" prompt="$3" log="$4" tokens="${5:-}"
+  local backend="$1" steps="$2" prompt="$3" log="$4" tokens="${5:-}" session="${6:-}"
   local tfile="$log.time" rc=0 deadline=$((SECONDS + WAIT))
   local -a envs
 
@@ -133,6 +142,7 @@ run_model() {
     envs=( "DS4_QWEN35_STEPS=$steps" )
     [ "$backend" = "cuda" ] && envs+=( "DS4_CUDA_COPY_MODEL=1" )
     [ -n "$tokens" ] && envs+=( "DS4_QWEN35_TOKENS=$tokens" )
+    [ -n "$session" ] && envs+=( "DS4_QWEN35_SESSION=1" )
     /usr/bin/time -f '__wall %e\n__rss %M' env "${envs[@]}" \
         "$BIN" -m "$MODEL" --"$backend" --first-token-test -p "$prompt" \
         > "$log" 2> "$tfile"
@@ -293,28 +303,62 @@ status_mode() {
   else
     echo "slot:    free"
   fi
-  echo "entry:   --first-token-test (greedy diagnostic, one token per forward)"
-  echo "         DS4_QWEN35_STEPS=<n> and DS4_QWEN35_TOKENS=<comma ids>"
-  echo "supported: generate, cuda, cpu, compare, ids, bench, status, help"
-  echo "refused:   session, server (not implemented in this tree)"
+  echo "entry:   --first-token-test (greedy diagnostic), and the session path"
+  echo "         DS4_QWEN35_STEPS=<n>, DS4_QWEN35_TOKENS=<comma ids>,"
+  echo "         DS4_QWEN35_SESSION=1 (drive the same run through a session),"
+  echo "         DS4_QWEN35_PREFILL_CHUNK=<n> (rows per CUDA prefill forward)"
+  echo "supported: generate, cuda, cpu, compare, ids, session, bench, status, help"
+  echo "refused:   server (no serving path in this tree)"
   echo "runbooks:  make bonsai-cuda-check, make bonsai-cuda-parity,"
-  echo "           make test-qwen35-cuda, make test-qwen35-rows, make pq2-0-test,"
-  echo "           make bonsai-fold-selftest, make bonsai-ref-check"
+  echo "           make test-qwen35-cuda, make test-qwen35-session,"
+  echo "           make test-qwen35-session-multichunk, make test-qwen35-rows,"
+  echo "           make pq2-0-test, make bonsai-fold-selftest, make bonsai-ref-check"
 }
 
-# The sibling tree drives the session path here; this tree has no such path.
-refuse_session() {
-  cat >&2 <<'EOF'
-ERROR: "session" is not implemented in this tree.
-
-ds4-dfm-rs has no DS4_QWEN35_SESSION variable and no generated-CLI path for
-this family; the engine refuses every non-reference run for Bonsai by name
-(ds4.c, commit d248d22).  The session path (create/sync/eval, prefix reuse,
-rewind replay, invalidate rebuild) belongs to the next unit and is not wired
-here.  Use "generate", "compare" or "ids", which drive the same trunk through
-the --first-token-test diagnostic.
-EOF
-  exit 2
+# Both backends through the real session path (create, sync, eval), each diffed
+# against the CPU reference.  The reference is the oracle: the CPU session runs
+# the same trunk the reference does, and the CUDA session must print the same
+# ids.  Both CPU runs are about 3 s per forward, so this mode takes minutes.
+session_mode() {
+  check_env
+  echo "model:   $MODEL"
+  echo "prompt:  $PROMPT"
+  echo "steps:   $STEPS through the session path, against the CPU reference"
+  echo
+  echo "--- CPU reference (the oracle) ---"
+  run_model cpu "$STEPS" "$PROMPT" "$LOG" || return 1
+  echo "backend:      cpu"
+  report_run "$LOG" "$STEPS"
+  grep -E '^token ' "$LOG" > $SCRATCH/bonsai-ref.tokens
+  echo
+  echo "--- CPU session (create, sync, eval) ---"
+  run_model cpu "$STEPS" "$PROMPT" "$LOG" "" session || return 1
+  echo "backend:      cpu (session)"
+  report_run "$LOG" "$STEPS"
+  grep -E '^token ' "$LOG" > $SCRATCH/bonsai-cpu-session.tokens
+  if ! diff -q $SCRATCH/bonsai-ref.tokens $SCRATCH/bonsai-cpu-session.tokens >/dev/null; then
+    echo "DIFFERENT - the CPU session and the CPU reference disagree:"
+    diff $SCRATCH/bonsai-ref.tokens $SCRATCH/bonsai-cpu-session.tokens | head -20
+    return 1
+  fi
+  echo "IDENTICAL: the CPU session reproduces the CPU reference"
+  echo
+  echo "--- CUDA session (create, sync, eval) ---"
+  run_model cuda "$STEPS" "$PROMPT" "$LOG" "" session || return 1
+  echo "backend:      cuda (session)"
+  report_run "$LOG" "$STEPS"
+  grep -E '^token ' "$LOG" > $SCRATCH/bonsai-cuda-session.tokens
+  echo
+  echo "--- token-for-token diff ---"
+  if diff -q $SCRATCH/bonsai-ref.tokens $SCRATCH/bonsai-cuda-session.tokens >/dev/null; then
+    echo "IDENTICAL: all $STEPS generated token ids agree, so the CUDA session"
+    echo "           reproduces the CPU reference, which the CPU session does too"
+    echo "           (token lines kept at misc/scratch/bonsai-{ref,cpu-session,cuda-session}.tokens)"
+  else
+    echo "DIFFERENT - first differences (reference vs cuda session):"
+    diff $SCRATCH/bonsai-ref.tokens $SCRATCH/bonsai-cuda-session.tokens | head -20
+    return 1
+  fi
 }
 
 # The sibling tree starts ds4-server here; this tree has no serving path.
@@ -345,7 +389,7 @@ case "${1:-}" in
   ids)            ids_mode ;;
   bench)          shift; bench_mode "${1:-16}" ;;
   status)         status_mode ;;
-  session)        refuse_session ;;
+  session)        shift; [ $# -gt 0 ] && PROMPT="$*"; session_mode ;;
   server)         refuse_server ;;
   help|-h|--help) usage ;;
   "")             run_mode ;;

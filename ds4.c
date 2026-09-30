@@ -46930,7 +46930,17 @@ static bool glm53_graph_forward_token(ds4_glm53_gpu_graph *g,
 }
 #endif /* DS4_NO_GPU */
 
+/* Bonsai session hooks; the definitions sit next to the other per-family
+ * session helpers, below the family's own reference and graph implementations. */
+static bool ds4_session_is_qwen35(const ds4_session *s);
+static void qwen35_session_reset(ds4_session *s);
+
 typedef struct ds4_dots3_spec ds4_dots3_spec;
+
+/* Bonsai (qwen35) owns its graph and its CPU reference state as whole-struct
+ * allocations defined far below; the session only holds pointers to them. */
+struct ds4_qwen35_gpu_graph;
+struct ds4_qwen35_ref_state;
 
 struct ds4_session {
     ds4_engine *engine;
@@ -46971,6 +46981,12 @@ struct ds4_session {
     ds4_glm53_gpu_graph glm53_graph;
     bool glm53_graph_ready;
 #endif
+    /* Prism Bonsai keeps its whole trunk in one struct per backend, both
+     * defined further down next to their kernels' wrappers, so a session owns
+     * the device graph (CUDA) or the CPU reference state -- never both. */
+    struct ds4_qwen35_gpu_graph *qwen35_graph;
+    struct ds4_qwen35_ref_state *qwen35_ref;
+    uint32_t qwen35_ref_pos;   /* positions the CPU reference state consumed */
     ds4_kv_cache cpu_cache;
     ds4_cpu_decode_scratch cpu_scratch;
     token_vec checkpoint;
@@ -52531,7 +52547,7 @@ uint64_t ds4_session_layer_payload_bytes(ds4_session *s,
     if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
         ds4_session_is_glm53(s) || ds4_session_is_inkling(s) ||
         ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) ||
-        ds4_session_is_mimo2(s)) {
+        ds4_session_is_mimo2(s) || ds4_session_is_qwen35(s)) {
         return 0;
     }
     if (ds4_session_is_cpu(s)) return 0;
@@ -53002,7 +53018,7 @@ int ds4_session_save_layer_payload(ds4_session *s, FILE *fp,
     if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
         ds4_session_is_glm53(s) || ds4_session_is_inkling(s) ||
         ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) ||
-        ds4_session_is_mimo2(s)) {
+        ds4_session_is_mimo2(s) || ds4_session_is_qwen35(s)) {
         payload_set_err(err, errlen,
                         "this model family does not support distributed layer payloads");
         return 1;
@@ -53207,7 +53223,7 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
     if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
         ds4_session_is_glm53(s) || ds4_session_is_inkling(s) ||
         ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) ||
-        ds4_session_is_mimo2(s)) {
+        ds4_session_is_mimo2(s) || ds4_session_is_qwen35(s)) {
         payload_set_err(err, errlen,
                         "this model family does not support distributed layer payloads");
         return 1;
@@ -54773,6 +54789,9 @@ uint64_t ds4_session_payload_bytes(ds4_session *s) {
 #endif
     if (!s || !s->checkpoint_valid) return 0;
     if (s->distributed) return 0;
+    /* Bonsai's state is the gated delta-net recurrence, the conv history and
+     * the fp16 k/v rows, not the DeepSeek raw-swa layout a snapshot writes. */
+    if (ds4_session_is_qwen35(s)) return 0;
 #ifndef DS4_NO_GPU
     if (ds4_session_is_glm53(s)) {
         return 0;
@@ -54999,6 +55018,11 @@ int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen)
     }
     if (s->distributed) {
         return ds4_dist_session_save_payload(s->distributed, s, fp, err, errlen);
+    }
+    if (ds4_session_is_qwen35(s)) {
+        payload_set_err(err, errlen,
+                        "Bonsai session snapshots are not implemented yet");
+        return 1;
     }
 #ifndef DS4_NO_GPU
     if (ds4_session_is_glm53(s)) {
@@ -55458,6 +55482,15 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
     }
     s->generation++;   /* Inc 5a: content replaced from disk (even on failure
                         * the old checkpoint is no longer trustworthy) */
+    if (ds4_session_is_qwen35(s)) {
+        s->checkpoint_valid = false;
+        s->checkpoint.len = 0;
+        s->mtp_draft_valid = false;
+        qwen35_session_reset(s);
+        payload_set_err(err, errlen,
+                        "Bonsai session snapshots are not implemented yet");
+        return 1;
+    }
 #ifndef DS4_NO_GPU
     if (ds4_session_is_mimo2(s)) {
         s->checkpoint_valid = false; s->checkpoint.len = 0; s->mtp_draft_valid = false;
@@ -68133,6 +68166,7 @@ int ds4_engine_generate_argmax(
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_EXAONE_MOE ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37 ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN35 ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL) {
         return generate_public_session_argmax(
             e, prompt, n_predict, ctx_size, emit, done, emit_ud,
@@ -68550,7 +68584,7 @@ static float ds4_ref_softplus(float x) {
  * RMSNorm(post_attention_norm) -> dense SwiGLU FFN -> residual.
  * ========================================================================= */
 
-typedef struct {
+typedef struct ds4_qwen35_ref_state {
     uint32_t cap;
     float *lin_state;   /* [layer][v_heads][head_dim][head_dim] */
     float *lin_hist;    /* [layer][conv-1][conv_dim], oldest first, raw qkv */
@@ -68578,6 +68612,18 @@ static void ds4_qwen35_ref_state_free(ds4_qwen35_ref_state *st) {
     free(st->lin_hist);
     free(st->lin_state);
     memset(st, 0, sizeof(*st));
+}
+
+/* Drop the trunk state back to position 0.  The attention rows need no
+ * clearing: a reset restarts the sequence at position 0, and every row is
+ * written before the attention that reads it (the CUDA reset assumes the
+ * same).  Only the recurrent state and the conv history carry over. */
+static void ds4_qwen35_ref_state_reset(ds4_qwen35_ref_state *st) {
+    if (!st || !st->lin_state) return;
+    const uint64_t layers = DS4_N_LAYER, conv_dim = DS4_N_LIN_CONV_DIM;
+    const uint64_t state_n = (uint64_t)DS4_N_LIN_V_HEAD * DS4_N_KDA_HEAD_DIM * DS4_N_KDA_HEAD_DIM;
+    memset(st->lin_state, 0, layers * state_n * sizeof(float));
+    memset(st->lin_hist, 0, layers * (DS4_N_SSM_CONV - 1u) * conv_dim * sizeof(float));
 }
 
 /* Folded matvec: rotate a copy of the input, then multiply by the stored
@@ -68813,6 +68859,34 @@ static void ds4_qwen35_ref_forward_token(const ds4_model *m, const ds4_weights *
     free(h);
 }
 
+#ifdef DS4_TEST_HOOKS
+/* Test hook: the Bonsai CPU reference, driven greedily over the same prompt and
+ * step count a session run uses, so a test can diff the session path against
+ * its oracle in one process without any external implementation.  Returns the
+ * number of ids written to `out`, or -1 on bad arguments. */
+int ds4_test_qwen35_ref_greedy(ds4_engine *e, const int *tokens, int n_tokens,
+                               int steps, int *out, int out_cap) {
+    if (!e || !tokens || n_tokens <= 0 || steps < 0 || !out || out_cap < steps) return -1;
+    const ds4_model *m = &e->model;
+    const ds4_weights *w = &e->weights;
+    ds4_qwen35_ref_state st;
+    ds4_qwen35_ref_state_init(&st, (uint32_t)(n_tokens + steps + 1));
+    float *logits = xmalloc((uint64_t)DS4_N_VOCAB * sizeof(float));
+    for (int t = 0; t < n_tokens; t++) {
+        ds4_qwen35_ref_forward_token(m, w, &st, tokens[t], (uint32_t)t, logits);
+    }
+    for (int s = 0; s < steps; s++) {
+        out[s] = sample_argmax(logits, DS4_N_VOCAB);
+        if (s + 1 < steps) {
+            ds4_qwen35_ref_forward_token(m, w, &st, out[s], (uint32_t)(n_tokens + s), logits);
+        }
+    }
+    free(logits);
+    ds4_qwen35_ref_state_free(&st);
+    return steps;
+}
+#endif
+
 /* Comma-separated token ids, as the family drivers take them from the
  * environment. */
 static uint32_t ds4_parse_token_list(const char *p, int *seq, uint32_t max) {
@@ -68959,11 +69033,25 @@ static int qwen35_hadamard_selftest(void) {
     return failures == 0 ? 0 : 1;
 }
 
+/* Tokens per forward for Bonsai.  A session prefill hands the trunk a chunk of
+ * them, so the CUDA graph's transients are sized for the chunk (the output head
+ * stays one row: only the newest row's logits are ever read).  A chunk of one
+ * is the diagnostic's per-token path, and the CPU reference always runs one. */
+#define DS4_QWEN35_CHUNK_DEFAULT 512u
+#define DS4_QWEN35_CHUNK_MAX 1024u
+
+/* DS4_QWEN35_PREFILL_CHUNK overrides the default, clamped to what the graph
+ * can hold and to the context.  A chunk the device cannot allocate is halved
+ * by the caller until the graph opens, so 1 is always reachable. */
+static uint32_t qwen35_prefill_chunk_tokens(uint32_t ctx) {
+    const char *env = getenv("DS4_QWEN35_PREFILL_CHUNK");
+    const unsigned long want = env && env[0] ? strtoul(env, NULL, 10) : DS4_QWEN35_CHUNK_DEFAULT;
+    uint32_t chunk = (want == 0 || want > DS4_QWEN35_CHUNK_MAX)
+        ? DS4_QWEN35_CHUNK_DEFAULT : (uint32_t)want;
+    return chunk > ctx ? ctx : chunk;
+}
+
 #ifndef DS4_NO_GPU
-/* Tokens per graph call.  The diagnostic drives one token at a time, which is
- * what the reference does; a batched prefill pass needs the logits buffer
- * sized for the batch, so it stays small for now. */
-#define DS4_QWEN35_MAX_BATCH 8u
 
 /* ------------------------------------------------------------------------
  * Bonsai (qwen35) CUDA graph.
@@ -68989,11 +69077,16 @@ static int qwen35_hadamard_selftest(void) {
 #define DS4_QWEN35_MAX_LAYER 64u
 
 typedef struct ds4_qwen35_gpu_graph {
-    uint32_t ctx_cap;
+    uint32_t ctx_cap;      /* k/v rows: the whole context */
+    uint32_t cap_tokens;   /* transient rows: the prefill chunk */
     uint32_t pos;
     ds4_gpu_tensor *h, *normed, *blk, *xt, *qkv, *z, *ga, *gb, *lin_o;
     ds4_gpu_tensor *qg, *q, *gate, *kp, *vp, *o, *ffn_g, *ffn_u, *logits, *tokens;
     ds4_gpu_tensor *pos3;
+    /* One row of the newest hidden state, so the output head runs on a buffer
+     * whose address never moves however large the chunk is (a moving pointer
+     * would be baked into any captured layer graph). */
+    ds4_gpu_tensor *h_row;
     ds4_gpu_tensor *lin_state[DS4_QWEN35_MAX_LAYER];
     ds4_gpu_tensor *lin_hist[DS4_QWEN35_MAX_LAYER];
     ds4_gpu_tensor *k_cache[DS4_QWEN35_MAX_LAYER];
@@ -69157,8 +69250,10 @@ static bool qwen35_graph_attention(ds4_qwen35_gpu_graph *g, const ds4_model *m,
         return false;
     }
     /* The sigmoid gate rides inside the attention kernel (attn_prep kept the
-     * raw second half of the q projection).  T stays under the token-tile
-     * kernel's T >= 32 gate, so the row-exact path is the only one selected. */
+     * raw second half of the q projection).  The token-tile selection stays
+     * false: this family's chunk prefill is measured on the row-exact kernel,
+     * whose rows agree with the per-token path (tests/test_qwen35_session.c
+     * diffs a chunked prompt against the CPU reference). */
     if (!ds4_gpu_qwen4_attn_decode_tensor(g->o, g->q, g->gate, g->k_cache[il],
                                           g->v_cache[il], NULL, NULL, NULL, T, H, Hkv, D,
                                           pos0, false, 0u, 1.0f / sqrtf((float)D))) {
@@ -69205,7 +69300,7 @@ static void qwen35_graph_free(ds4_qwen35_gpu_graph *g) {
     ds4_gpu_tensor *scratch[] = {
         g->h, g->normed, g->blk, g->xt, g->qkv, g->z, g->ga, g->gb, g->lin_o,
         g->qg, g->q, g->gate, g->kp, g->vp, g->o, g->ffn_g, g->ffn_u, g->logits,
-        g->tokens, g->pos3,
+        g->tokens, g->pos3, g->h_row,
     };
     for (size_t i = 0; i < sizeof(scratch) / sizeof(scratch[0]); i++) {
         ds4_gpu_tensor_free(scratch[i]);
@@ -69224,9 +69319,10 @@ static void qwen35_graph_free(ds4_qwen35_gpu_graph *g) {
  * gated delta-net layer keeps its state and conv history, an attention layer
  * its fp16 k/v cache.  The x scratch is sized for the widest matmul input
  * (the dense FFN's 17408). */
-static bool qwen35_graph_open(ds4_qwen35_gpu_graph *g, ds4_engine *e, uint32_t ctx_cap) {
+static bool qwen35_graph_open(ds4_qwen35_gpu_graph *g, ds4_engine *e,
+                              uint32_t ctx_cap, uint32_t cap_tokens) {
     const ds4_weights *w = &e->weights;
-    const uint32_t E = DS4_N_EMBD, T = 1;
+    const uint32_t E = DS4_N_EMBD, T = cap_tokens ? cap_tokens : 1u;
     const uint32_t F = DS4_N_FF_DENSE, D = DS4_N_KDA_HEAD_DIM;
     const uint32_t Hv = DS4_N_LIN_V_HEAD;
     const uint64_t f32 = sizeof(float);
@@ -69237,6 +69333,7 @@ static bool qwen35_graph_open(ds4_qwen35_gpu_graph *g, ds4_engine *e, uint32_t c
 
     memset(g, 0, sizeof(*g));
     g->ctx_cap = ctx_cap;
+    g->cap_tokens = T;
     if (DS4_N_LAYER > DS4_QWEN35_MAX_LAYER) {
         fprintf(stderr, "ds4: Bonsai CUDA graph: %u blocks exceed the %u-slot state arrays\n",
                 DS4_N_LAYER, DS4_QWEN35_MAX_LAYER);
@@ -69260,13 +69357,15 @@ static bool qwen35_graph_open(ds4_qwen35_gpu_graph *g, ds4_engine *e, uint32_t c
     g->o      = ds4_gpu_tensor_alloc((uint64_t)T * DS4_N_HEAD * DS4_N_HEAD_DIM * f32);
     g->ffn_g  = ds4_gpu_tensor_alloc((uint64_t)T * F * f32);
     g->ffn_u  = ds4_gpu_tensor_alloc((uint64_t)T * F * f32);
-    g->logits = ds4_gpu_tensor_alloc((uint64_t)T * DS4_N_VOCAB * f32);
-    g->tokens = ds4_gpu_tensor_alloc((uint64_t)DS4_QWEN35_MAX_BATCH * sizeof(uint32_t));
+    g->logits = ds4_gpu_tensor_alloc((uint64_t)DS4_N_VOCAB * f32);
+    g->tokens = ds4_gpu_tensor_alloc((uint64_t)T * sizeof(uint32_t));
+    g->h_row  = ds4_gpu_tensor_alloc((uint64_t)E * f32);
     g->pos3   = ds4_gpu_tensor_alloc((uint64_t)ctx_cap * 4 * sizeof(uint32_t));
 
     bool ok = g->h && g->normed && g->blk && g->xt && g->qkv && g->z &&
               g->ga && g->gb && g->lin_o && g->qg && g->q && g->gate && g->kp && g->vp &&
-              g->o && g->ffn_g && g->ffn_u && g->logits && g->tokens && g->pos3;
+              g->o && g->ffn_g && g->ffn_u && g->logits && g->tokens && g->pos3 &&
+              g->h_row;
 
     /* Position table for the rope: this model carries one text position per
      * token, so all four sections share it. */
@@ -69306,13 +69405,15 @@ static bool qwen35_graph_open(ds4_qwen35_gpu_graph *g, ds4_engine *e, uint32_t c
 }
 
 /* T tokens at consecutive positions starting at g->pos.  The token ids are
- * uploaded so the embedding lookup reads the table on the device. */
+ * uploaded so the embedding lookup reads the table on the device.  Only the
+ * newest row's logits are returned, which is what a prefill chunk and a decode
+ * step both want. */
 static bool qwen35_graph_forward(ds4_qwen35_gpu_graph *g, ds4_engine *e,
                                  const int *tokens, uint32_t T, float *logits_out) {
     const ds4_model *m = &e->model;
     const ds4_weights *w = &e->weights;
-    uint32_t ids[DS4_QWEN35_MAX_BATCH];
-    if (!g || T == 0 || T > DS4_QWEN35_MAX_BATCH) return false;
+    uint32_t ids[DS4_QWEN35_CHUNK_MAX];
+    if (!g || T == 0 || T > g->cap_tokens) return false;
     if (g->pos + T > g->ctx_cap) {
         fprintf(stderr, "ds4: Bonsai CUDA graph: context of %u tokens is full\n", g->ctx_cap);
         return false;
@@ -69347,11 +69448,17 @@ static bool qwen35_graph_forward(ds4_qwen35_gpu_graph *g, ds4_engine *e,
         ok = qwen35_graph_layer(g, m, w, il, pos0, T);
     }
     if (ok && logits_out) {
-        ok = qwen35_graph_norm(g, g->normed, m, w->output_norm, g->h, T) &&
-             qwen35_graph_fold(g, g->normed, DS4_N_EMBD, T, false) &&
-             qwen35_graph_gemv(g->logits, m, w->output, g->normed, T);
+        /* The head consumes the newest row only: copy it into the fixed row
+         * buffer rather than viewing the arena, so the pointer the kernels see
+         * never depends on the chunk size. */
+        ok = ds4_gpu_tensor_copy(g->h_row, 0,
+                                 g->h, (uint64_t)(T - 1u) * DS4_N_EMBD * sizeof(float),
+                                 (uint64_t)DS4_N_EMBD * sizeof(float)) != 0 &&
+             qwen35_graph_norm(g, g->normed, m, w->output_norm, g->h_row, 1u) &&
+             qwen35_graph_fold(g, g->normed, DS4_N_EMBD, 1u, false) &&
+             qwen35_graph_gemv(g->logits, m, w->output, g->normed, 1u);
         if (ok) {
-            ok = ds4_gpu_tensor_read(g->logits, (uint64_t)(T - 1) * DS4_N_VOCAB * sizeof(float),
+            ok = ds4_gpu_tensor_read(g->logits, 0,
                                      logits_out, (uint64_t)DS4_N_VOCAB * sizeof(float)) != 0;
         }
     }
@@ -69360,13 +69467,30 @@ static bool qwen35_graph_forward(ds4_qwen35_gpu_graph *g, ds4_engine *e,
     return ok;
 }
 
+/* Zero the gated delta-net recurrent state and the conv history, and return to
+ * position 0.  The k/v caches need no clearing: a reset restarts the sequence
+ * at position 0, and every cached row is written before the attention that
+ * reads it. */
+static void qwen35_graph_reset(ds4_qwen35_gpu_graph *g) {
+    if (!g || !g->h) return;
+    (void)ds4_gpu_synchronize();
+    const uint64_t state_n = (uint64_t)DS4_N_LIN_V_HEAD * DS4_N_KDA_HEAD_DIM * DS4_N_KDA_HEAD_DIM;
+    const uint64_t hist_n = (uint64_t)(DS4_N_SSM_CONV - 1u) * DS4_N_LIN_CONV_DIM;
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (g->lin_state[il]) ds4_gpu_tensor_fill_f32(g->lin_state[il], 0.0f, state_n);
+        if (g->lin_hist[il]) ds4_gpu_tensor_fill_f32(g->lin_hist[il], 0.0f, hist_n);
+    }
+    g->pos = 0;
+}
+
 #else
 /* CPU-only build: the device graph is unreachable (the engine refuses --cuda
  * for this family without a graph backend), so only its shape has to exist. */
 typedef struct ds4_qwen35_gpu_graph { int unused; } ds4_qwen35_gpu_graph;
 
-static bool qwen35_graph_open(ds4_qwen35_gpu_graph *g, ds4_engine *e, uint32_t ctx_cap) {
-    (void)g; (void)e; (void)ctx_cap;
+static bool qwen35_graph_open(ds4_qwen35_gpu_graph *g, ds4_engine *e,
+                              uint32_t ctx_cap, uint32_t cap_tokens) {
+    (void)g; (void)e; (void)ctx_cap; (void)cap_tokens;
     return false;
 }
 
@@ -69374,6 +69498,10 @@ static bool qwen35_graph_forward(ds4_qwen35_gpu_graph *g, ds4_engine *e,
                                  const int *tokens, uint32_t T, float *logits_out) {
     (void)g; (void)e; (void)tokens; (void)T; (void)logits_out;
     return false;
+}
+
+static void qwen35_graph_reset(ds4_qwen35_gpu_graph *g) {
+    (void)g;
 }
 
 static void qwen35_graph_free(ds4_qwen35_gpu_graph *g) {
@@ -69388,7 +69516,8 @@ static void qwen35_graph_free(ds4_qwen35_gpu_graph *g) {
  * printed with its text, so a stream can be diffed against the reference
  * implementation over the same prompt.  On the CUDA backend the same test runs
  * the GPU graph, so its token ids and logits can be diffed against the CPU
- * reference run of the same prompt. */
+ * reference run of the same prompt.  DS4_QWEN35_SESSION=1 drives the same
+ * prompt and greedy loop through a ds4_session on either backend. */
 static int qwen35_first_token_test(ds4_engine *e, const ds4_tokens *prompt) {
     const ds4_model *model = &e->model;
     const ds4_weights *weights = &e->weights;
@@ -69420,13 +69549,34 @@ static int qwen35_first_token_test(ds4_engine *e, const ds4_tokens *prompt) {
 
     /* On CUDA the same test drives the device graph instead of the reference,
      * one token at a time and at the same positions, so the two runs produce
-     * comparable token ids and logits. */
+     * comparable token ids and logits.  DS4_QWEN35_SESSION=1 drives that same
+     * prompt and greedy loop through a real ds4_session (create, sync, eval) on
+     * either backend instead of a state local to this function, so the session
+     * path prints the identical token stream and can be diffed against the
+     * reference. */
     const bool on_gpu = e->backend == DS4_BACKEND_CUDA;
+    const bool session_requested = getenv("DS4_QWEN35_SESSION") != NULL;
+    ds4_session *sess = NULL;
     ds4_qwen35_gpu_graph graph;
     ds4_qwen35_ref_state st;
     memset(&graph, 0, sizeof(graph));
-    if (on_gpu) {
-        if (!qwen35_graph_open(&graph, e, n_seq + steps + 1u)) {
+    memset(&st, 0, sizeof(st));
+    if (session_requested) {
+        fprintf(stderr, "ds4: Bonsai session path (ds4_session create, sync, eval)\n");
+        ds4_tokens p = { seq, (int)n_seq, 4096 };
+        char serr[192] = "";
+        if (ds4_session_create(&sess, e, (int)(n_seq + steps + 1u)) != 0 ||
+            ds4_session_sync(sess, &p, serr, sizeof(serr)) != 0 ||
+            ds4_session_copy_logits(sess, logits, (int)V) != (int)V) {
+            fprintf(stderr, "ds4: Bonsai session prefill failed: %s\n",
+                    serr[0] ? serr : "session unavailable");
+            ds4_session_free(sess);
+            free(logits);
+            free(seq);
+            return 1;
+        }
+    } else if (on_gpu) {
+        if (!qwen35_graph_open(&graph, e, n_seq + steps + 1u, 1u)) {
             free(logits);
             free(seq);
             return 1;
@@ -69448,12 +69598,23 @@ static int qwen35_first_token_test(ds4_engine *e, const ds4_tokens *prompt) {
     }
 
     const char *dump = getenv("DS4_QWEN35_LOGITS");
+    if (dump && dump[0] && session_requested) {
+        /* The session keeps only the newest row's logits, so a per-position dump
+         * is a graph/reference feature.  Refuse rather than write a silently
+         * different file. */
+        fprintf(stderr, "ds4: DS4_QWEN35_LOGITS needs the per-position logits and is "
+                        "not available with DS4_QWEN35_SESSION\n");
+        ds4_session_free(sess);
+        free(logits);
+        free(seq);
+        return 1;
+    }
     if (dump && dump[0]) {
         float *all = xmalloc((uint64_t)n_seq * V * sizeof(float));
         if (on_gpu) {
             ds4_qwen35_gpu_graph dg;
             memset(&dg, 0, sizeof(dg));
-            if (!qwen35_graph_open(&dg, e, n_seq + 1u)) {
+            if (!qwen35_graph_open(&dg, e, n_seq + 1u, 1u)) {
                 fprintf(stderr, "ds4: cannot open a second Bonsai CUDA graph for the dump\n");
                 free(all);
                 free(logits);
@@ -69518,7 +69679,18 @@ static int qwen35_first_token_test(ds4_engine *e, const ds4_tokens *prompt) {
         fflush(stdout);
         free(txt);
         if (s + 1u < steps) {
-            if (on_gpu) {
+            if (session_requested) {
+                char serr[192] = "";
+                if (ds4_session_eval(sess, best, serr, sizeof(serr)) != 0 ||
+                    ds4_session_copy_logits(sess, logits, (int)V) != (int)V) {
+                    fprintf(stderr, "ds4: Bonsai session decode failed at step %u: %s\n",
+                            s, serr[0] ? serr : "logits unavailable");
+                    ds4_session_free(sess);
+                    free(logits);
+                    free(seq);
+                    return 1;
+                }
+            } else if (on_gpu) {
                 if (!qwen35_graph_forward(&graph, e, &best, 1u, logits)) {
                     fprintf(stderr, "ds4: Bonsai CUDA graph failed at decode step %u\n", s);
                     qwen35_graph_free(&graph);
@@ -69532,7 +69704,8 @@ static int qwen35_first_token_test(ds4_engine *e, const ds4_tokens *prompt) {
         }
     }
 
-    if (on_gpu) qwen35_graph_free(&graph);
+    if (session_requested) ds4_session_free(sess);
+    else if (on_gpu) qwen35_graph_free(&graph);
     else ds4_qwen35_ref_state_free(&st);
     free(logits);
     free(seq);
@@ -70396,8 +70569,9 @@ int ds4_engine_first_token_test(ds4_engine *e, const ds4_tokens *prompt) {
  * fit never sees the prewarm's footprint -- it is headroom growth by design).
  * Skipped for CPU backends, distributed coordinators (network), capture-dump
  * boots (would pollute DS4_METAL_GRAPH_DUMP_* selections), the Bonsai family
- * (its session path is not implemented; its CUDA graph serves the diagnostic
- * only), and under DS4_NO_BOOT_PREWARM=1 (the A/B kill switch).  Idempotent. */
+ * (it has no DeepSeek ring/token-tile dispatcher to warm; its session opens
+ * its own graph at create), and under DS4_NO_BOOT_PREWARM=1 (the A/B kill
+ * switch).  Idempotent. */
 void ds4_engine_boot_prewarm(ds4_engine *e) {
 #ifndef DS4_NO_GPU
     if (!e || e->boot_prewarm_done || !e->metal_ready) return;
@@ -70590,12 +70764,14 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         if (e->mtp_draft_tokens < 2 || e->mtp_draft_tokens > 8) { e->mtp_draft_tokens = 8; }
     }
     if (ds4_model_is_qwen35() && !opt->inspect_only) {
-        /* The Bonsai trunk runs either through its CPU reference or through
-         * the CUDA graph (qwen35_graph_forward), which covers the diagnostic
-         * path today.  Everything else is refused rather than run through
-         * machinery this family does not have. */
-        const bool cpu_reference = opt->first_token_test && e->backend == DS4_BACKEND_CPU;
-        const bool cuda_graph = opt->first_token_test && e->backend == DS4_BACKEND_CUDA;
+        /* The Bonsai trunk runs through its CPU reference (--cpu: the diagnostic
+         * oracle and the session's reference backend) or through the CUDA graph
+         * (--cuda: the diagnostic and the session).  Everything else is refused
+         * rather than run through machinery this family does not have: no
+         * tensor parallelism, no distributed ranks, no SSD streaming, no
+         * MTP/DSpark drafting, no steering. */
+        const bool cpu_reference = e->backend == DS4_BACKEND_CPU;
+        const bool cuda_graph = e->backend == DS4_BACKEND_CUDA;
         const bool supported =
             (cpu_reference || cuda_graph) &&
             opt->distributed.role == DS4_DISTRIBUTED_NONE && !opt->load_slice &&
@@ -70604,9 +70780,10 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             (!opt->directional_steering_file || !opt->directional_steering_file[0]) &&
             e->power_percent == 100;
         if (!supported) {
-            fprintf(stderr, "ds4: Bonsai (qwen35) runs only through --first-token-test, "
-                            "on the CPU reference (--cpu) or the CUDA graph (--cuda); "
-                            "the session and server paths are not implemented yet\n");
+            fprintf(stderr, "ds4: Bonsai (qwen35) runs on the CPU reference (--cpu) or "
+                            "on the CUDA graph (--cuda); tensor parallelism, distributed "
+                            "ranks, SSD streaming, MTP/DSpark and steering are not "
+                            "supported\n");
             ds4_engine_close(e);
             *out = NULL;
             return 1;
@@ -72651,6 +72828,56 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
         return 0;
 #endif
     }
+    if (ds4_model_is_qwen35()) {
+        /* Prism Bonsai: the session IS the trunk state -- the CUDA graph or the
+         * CPU reference -- so the shared session machinery (kv cache, MTP,
+         * snapshots, batching) never applies to it. */
+        if (e->distributed.role != DS4_DISTRIBUTED_NONE) {
+            fprintf(stderr, "ds4: Bonsai sessions do not support distributed ranks\n");
+            return 1;
+        }
+        ds4_session *s = xcalloc(1, sizeof(*s));
+        s->engine = e;
+        s->ctx_size = ctx_size;
+        s->generation = 1u;   /* Inc 5a: 0 is reserved for "no session" */
+        s->logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(s->logits[0]));
+        if (e->backend == DS4_BACKEND_CPU) {
+            s->qwen35_ref = xcalloc(1, sizeof(*s->qwen35_ref));
+            ds4_qwen35_ref_state_init(s->qwen35_ref, (uint32_t)ctx_size);
+            s->prefill_cap = (uint32_t)ctx_size;
+        } else {
+#ifndef DS4_NO_GPU
+            uint32_t chunk = qwen35_prefill_chunk_tokens((uint32_t)ctx_size);
+            s->qwen35_graph = xcalloc(1, sizeof(*s->qwen35_graph));
+            /* A chunk the device cannot hold is halved until the graph opens.
+             * A chunk of one always fits, so the loop converges. */
+            while (chunk > 0 &&
+                   !qwen35_graph_open(s->qwen35_graph, e, (uint32_t)ctx_size, chunk)) {
+                chunk /= 2u;
+            }
+            if (chunk == 0) {
+                fprintf(stderr, "ds4: Bonsai CUDA session could not open a graph at ctx %d\n",
+                        ctx_size);
+                free(s->qwen35_graph);
+                free(s->logits);
+                free(s);
+                return 1;
+            }
+            s->prefill_cap = chunk;
+            fprintf(stderr, "ds4: Bonsai prefill chunk: %u tokens (ctx %d)\n",
+                    chunk, ctx_size);
+#else
+            fprintf(stderr,
+                    "ds4: Bonsai CUDA sessions need a build with the graph backend "
+                    "(use --cpu for the reference)\n");
+            free(s->logits);
+            free(s);
+            return 1;
+#endif
+        }
+        *out = s;
+        return 0;
+    }
     if (e->backend == DS4_BACKEND_CPU) {
         if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2 ||
             DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_EXAONE_MOE) {
@@ -72753,6 +72980,17 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
 void ds4_session_free(ds4_session *s) {
     if (!s) return;
     ds4_dist_session_free(s->distributed);
+    /* Bonsai owns its trunk state on the heap, whichever backend built it. */
+    if (s->qwen35_graph) {
+        qwen35_graph_free(s->qwen35_graph);
+        free(s->qwen35_graph);
+        s->qwen35_graph = NULL;
+    }
+    if (s->qwen35_ref) {
+        ds4_qwen35_ref_state_free(s->qwen35_ref);
+        free(s->qwen35_ref);
+        s->qwen35_ref = NULL;
+    }
     if (ds4_session_is_cpu(s)) {
         kv_cache_free(&s->cpu_cache);
         cpu_decode_scratch_free(&s->cpu_scratch);
@@ -73955,6 +74193,68 @@ int ds4_session_inkling_commit(ds4_session *s, int keep, char *err, size_t errle
 #endif
 }
 
+/* -------------------------------------------------------------------------
+ * Bonsai (qwen35) sessions
+ *
+ * The trunk is one whole struct per backend: the CUDA graph, which advances its
+ * own position, or the CPU reference state, which is told a position on every
+ * forward.  Neither can roll back -- the gated delta-net state is recurrent --
+ * so a rewind, or a decode that failed after the state advanced, drops the
+ * state and lets the next decode replay the checkpoint.
+ * ------------------------------------------------------------------------- */
+
+static bool ds4_session_is_qwen35(const ds4_session *s) {
+    return s && s->engine && ds4_model_is_qwen35();
+}
+
+/* Positions the trunk state has consumed. */
+static uint32_t qwen35_session_pos(const ds4_session *s) {
+#ifndef DS4_NO_GPU
+    if (s->qwen35_graph) {
+        return s->qwen35_graph->pos;
+    }
+#endif
+    return s->qwen35_ref_pos;
+}
+
+static void qwen35_session_reset(ds4_session *s) {
+    if (s->qwen35_graph) {
+        qwen35_graph_reset(s->qwen35_graph);
+    }
+    if (s->qwen35_ref) {
+        ds4_qwen35_ref_state_reset(s->qwen35_ref);
+        s->qwen35_ref_pos = 0;
+    }
+}
+
+/* One forward of `n` tokens at the state's current position; the newest row's
+ * logits land in s->logits.  The CPU reference always runs one token at a
+ * time, which is what its driver does, so a chunk costs the same either way. */
+static bool qwen35_session_forward(ds4_session *s, const int *tokens, uint32_t n) {
+    if (s->qwen35_graph) {
+        return qwen35_graph_forward(s->qwen35_graph, s->engine, tokens, n, s->logits);
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        ds4_qwen35_ref_forward_token(&s->engine->model, &s->engine->weights, s->qwen35_ref,
+                                     tokens[i], s->qwen35_ref_pos, s->logits);
+        s->qwen35_ref_pos++;
+    }
+    return true;
+}
+
+/* The kept tokens, replayed when the trunk state is behind the checkpoint (a
+ * rewind, or a decode that failed after the state advanced). */
+static int qwen35_session_replay_if_stale(ds4_session *s, char *err, size_t errlen) {
+    if (qwen35_session_pos(s) == (uint32_t)s->checkpoint.len) return 0;
+    token_vec kept = {0};
+    for (int i = 0; i < s->checkpoint.len; i++) token_vec_push(&kept, s->checkpoint.v[i]);
+    s->checkpoint_valid = false;
+    const int rc = kept.len ? ds4_session_sync(s, &kept, err, errlen) : 0;
+    if (!kept.len) qwen35_session_reset(s);
+    token_vec_free(&kept);
+    return rc;
+}
+
 int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
     if (!s || !prompt || prompt->len <= 0 || prompt->len > s->ctx_size) {
         snprintf(err, errlen, "prompt exceeds context");
@@ -74080,6 +74380,64 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
         return 0;
     }
 #endif
+    if (ds4_session_is_qwen35(s)) {
+        if (!s->qwen35_graph && !s->qwen35_ref) {
+            snprintf(err, errlen, "Bonsai session is not initialized");
+            return 1;
+        }
+        for (int i = 0; i < prompt->len; i++) {
+            if (prompt->v[i] < 0 || prompt->v[i] >= (int)DS4_N_VOCAB) {
+                snprintf(err, errlen,
+                         "token id %d at position %d is outside the vocabulary",
+                         prompt->v[i], i);
+                return 1;
+            }
+        }
+        int start = 0;
+        /* A checkpoint the prompt extends continues where it stopped: the trunk
+         * state already ends at the checkpoint's last position. */
+        if (s->checkpoint_valid &&
+            qwen35_session_pos(s) == (uint32_t)s->checkpoint.len &&
+            prompt->len >= s->checkpoint.len &&
+            ds4_tokens_starts_with(prompt, &s->checkpoint)) {
+            start = s->checkpoint.len;
+            if (start == prompt->len) return 0;
+        } else {
+            qwen35_session_reset(s);
+            s->generation++;
+            s->checkpoint.len = 0;
+            s->checkpoint_valid = false;
+        }
+        while (start < prompt->len) {
+            uint32_t chunk = (uint32_t)(prompt->len - start);
+            const uint32_t room = (uint32_t)s->ctx_size - qwen35_session_pos(s);
+            if (chunk > room) chunk = room;
+            /* prefill_cap is the graph's chunk on CUDA and the context on the
+             * CPU reference, so it bounds both. */
+            if (chunk > s->prefill_cap) chunk = s->prefill_cap;
+            if (chunk == 0) {
+                snprintf(err, errlen, "context is full");
+                return 1;
+            }
+            /* The state is only trustworthy once the whole chunk has landed. */
+            s->checkpoint_valid = false;
+            if (!qwen35_session_forward(s, prompt->v + start, chunk)) {
+                snprintf(err, errlen, "Bonsai prefill failed at token %d", start);
+                s->checkpoint.len = 0;
+                return 1;
+            }
+            for (uint32_t j = 0; j < chunk; j++) {
+                token_vec_push(&s->checkpoint, prompt->v[start + (int)j]);
+            }
+            start += (int)chunk;
+            s->checkpoint_valid = true;
+            s->mtp_draft_valid = false;
+            if (s->progress) {
+                s->progress(s->progress_ud, "prefill_chunk", start, prompt->len);
+            }
+        }
+        return 0;
+    }
     if (s->distributed) {
         const ds4_tokens *checkpoint = s->checkpoint_valid ? &s->checkpoint : NULL;
         /* Inc 5a: the distributed path manages the checkpoint internally, so
@@ -74932,6 +75290,24 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
         return inkling_session_eval(s, token, err, errlen);
     }
 #endif
+    if (ds4_session_is_qwen35(s)) {
+        if (qwen35_session_replay_if_stale(s, err, errlen) != 0) return 1;
+        if (qwen35_session_pos(s) >= (uint32_t)s->ctx_size) {
+            if (errlen) snprintf(err, errlen, "context is full");
+            return 1;
+        }
+        if (!qwen35_session_forward(s, &token, 1u)) {
+            if (errlen) snprintf(err, errlen, "Bonsai decode failed");
+            s->checkpoint.len = 0;
+            s->checkpoint_valid = false;
+            return 1;
+        }
+        token_vec_push(&s->checkpoint, token);
+        s->checkpoint_valid = true;
+        s->mtp_draft_valid = false;
+        (void)probe_mtp;
+        return 0;
+    }
     if (s->distributed) {
         if (!s->checkpoint_valid) {
             if (errlen) snprintf(err, errlen, "distributed decode requires a valid checkpoint");
@@ -75596,7 +75972,8 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
 #endif
     }
     if (ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
-        ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s)) {
+        ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) ||
+        ds4_session_is_qwen35(s)) {
         if (ds4_session_eval(s, first_token, err, errlen) != 0) {
             return -1;
         }
@@ -76850,7 +77227,9 @@ void ds4_session_invalidate(ds4_session *s) {
     s->checkpoint.len = 0;
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_mimo2(s) && s->mimo2_graph_ready) {
+    if (s->qwen35_graph || s->qwen35_ref) {
+        qwen35_session_reset(s);
+    } else if (ds4_session_is_mimo2(s) && s->mimo2_graph_ready) {
         (void)mimo2_reset(&s->mimo2_graph);
         mimo2_draft_reset(&s->mimo2_graph);
     } else if (ds4_session_is_dots3(s)) {
@@ -76901,7 +77280,13 @@ void ds4_session_rewind(ds4_session *s, int pos) {
     s->checkpoint.len = pos;
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_mimo2(s) && pos != old_pos) {
+    if (ds4_session_is_qwen35(s) && pos != old_pos) {
+        /* The recurrent trunk cannot roll its state back, so drop it and keep
+         * the token checkpoint: the next decode replays the kept tokens
+         * (qwen35_session_replay_if_stale). */
+        s->checkpoint_valid = false;
+        qwen35_session_reset(s);
+    } else if (ds4_session_is_mimo2(s) && pos != old_pos) {
         s->checkpoint_valid = false;
         if (s->mimo2_graph_ready) {
             (void)mimo2_reset(&s->mimo2_graph);
