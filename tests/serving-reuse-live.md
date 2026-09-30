@@ -31,6 +31,7 @@ seeing output within a campaign.
 | `qwen` | Qwen3.8 Q5 main plus the selected BF16 or FP8 SSD-PLE sidecars | partial | explicitly off, or separately on with draft 2 |
 | `solar` | Solar Open2 MXQ-v1, all 11 shards | partial | off |
 | `motif` | Motif-3 MQ87-88-FIT canonical GGUF | partial | off |
+| `naive` | Naive-N0.5-Flash MQ87 main plus any loaded DSpark sidecar | partial | off, or separately on with draft 1–6 |
 | `deepseek` | exact Flash/PRO artifact; include any loaded MTP/DSpark sidecar | exact | explicitly off, or separately on with the declared draft |
 
 Provide the same verified artifact manifest to every phase. The runner records
@@ -102,7 +103,7 @@ python3 tests/serving_reuse_live.py cold \
 |---|---|---|
 | seed: 2 + 2 | `4`, `4.`, `2 + 2 = 4`, `2 + 2 = 4.` | cold, zero cached |
 | append: 4 + 1 after actual seed reply | `5`, `5.`, `4 + 1 = 5`, `4 + 1 = 5.` | exact/fork, positive proper prefix |
-| edit: replace second user turn with 4 + 2 | `6`, `6.`, `4 + 2 = 6`, `4 + 2 = 6.` | partial for Qwen/Solar/Motif; exact/fork for DeepSeek |
+| edit: replace second user turn with 4 + 2 | `6`, `6.`, `4 + 2 = 6`, `4 + 2 = 6.` | partial for Qwen/Solar/Motif/Naive; exact/fork for DeepSeek |
 | fork: extend the retained append branch with 5 + 3 | `8`, `8.`, `5 + 3 = 8`, `5 + 3 = 8.` | exact/fork, positive proper prefix |
 | restart: extend actual fork reply with 8 + 1 | `9`, `9.`, `8 + 1 = 9`, `8 + 1 = 9.` | exact/fork as first generation after restart |
 

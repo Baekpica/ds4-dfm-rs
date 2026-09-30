@@ -115,6 +115,7 @@ class ReuseRunnerTests(unittest.TestCase):
     def test_edit_requires_family_specific_mechanism(self):
         for family, kind, okay in [("qwen", "partial", True), ("solar", "fork", False),
                                   ("motif", "partial", True), ("deepseek", "fork", True),
+                                  ("naive", "partial", True), ("naive", "fork", False),
                                   ("deepseek", "partial", False)]:
             with self.subTest(family=family, kind=kind):
                 errors = gate.inspect_case(self.config(family), "warm", "edit", self.case("edit"),

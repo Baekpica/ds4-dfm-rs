@@ -24,6 +24,7 @@ PROFILES = {
     "qwen": {"names": ["qwen4exp"], "reuse": "partial"},
     "solar": {"names": ["solar-open2"], "reuse": "partial"},
     "motif": {"names": ["motif3"], "reuse": "partial"},
+    "naive": {"names": ["naive_n05_flash"], "reuse": "partial"},
     "deepseek": {"names": ["deepseek4-flash", "deepseek4-pro"], "reuse": "exact"},
 }
 FIXTURE = Path(__file__).parent / "fixtures" / "serving-reuse.json"
