@@ -745,6 +745,7 @@ fn tokenizer_families_match_c_oracle() {
         ModelFamily::ExaoneMoe,
         ModelFamily::Dots3Note,
         ModelFamily::Qwen4Exp,
+        ModelFamily::Qwen35,
     ] {
         family_cases(family);
     }

@@ -633,6 +633,7 @@ impl Vocab {
             ModelFamily::SolarOpen2
                 | ModelFamily::Dots3Note
                 | ModelFamily::Qwen4Exp
+                | ModelFamily::Qwen35
                 | ModelFamily::Inkling
         ) {
             tokens.push(self.bos_id);
@@ -670,6 +671,7 @@ impl Vocab {
                 | ModelFamily::SolarOpen2
                 | ModelFamily::Dots3Note
                 | ModelFamily::Qwen4Exp
+                | ModelFamily::Qwen35
         ) {
             return;
         }
@@ -839,7 +841,7 @@ impl Vocab {
                     self.solar_chat_close_role(tokens);
                 }
             }
-            ModelFamily::Qwen4Exp => {
+            ModelFamily::Qwen4Exp | ModelFamily::Qwen35 => {
                 if role == "system" || role == "developer" {
                     self.qwen_chat_open_role(tokens, b"system");
                     bpe_tokenize_text(self, content, &mut tokens.tokens);
@@ -962,7 +964,7 @@ impl Vocab {
                     tokens.push(self.think_end_id);
                 }
             }
-            ModelFamily::Qwen4Exp => {
+            ModelFamily::Qwen4Exp | ModelFamily::Qwen35 => {
                 self.qwen_chat_open_role(tokens, b"assistant");
                 tokens.push(self.think_start_id);
                 if thinking {
@@ -1076,7 +1078,7 @@ impl Vocab {
                     || (self.observation_id >= 0 && token == self.observation_id)
             }
             ModelFamily::Mimo2 => token == self.eot_id || token == self.end_of_turn_id,
-            ModelFamily::SolarOpen2 | ModelFamily::Qwen4Exp => {
+            ModelFamily::SolarOpen2 | ModelFamily::Qwen4Exp | ModelFamily::Qwen35 => {
                 self.eot_id >= 0 && token == self.eot_id
             }
             // `<|endoftext|>` is the second official end token, and `<role>`
@@ -2352,7 +2354,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
         ),
         (
             b"<|im_start|>",
-            if vocab.family == ModelFamily::Qwen4Exp {
+            if matches!(vocab.family, ModelFamily::Qwen4Exp | ModelFamily::Qwen35) {
                 vocab.im_start_id
             } else {
                 -1
@@ -2360,7 +2362,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
         ),
         (
             b"<|im_end|>",
-            if vocab.family == ModelFamily::Qwen4Exp {
+            if matches!(vocab.family, ModelFamily::Qwen4Exp | ModelFamily::Qwen35) {
                 vocab.im_end_id
             } else {
                 -1
@@ -2390,7 +2392,14 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
                 -1
             },
         ),
-        (b"<|endoftext|>", vocab.eos_id),
+        (
+            b"<|endoftext|>",
+            if matches!(vocab.family, ModelFamily::Qwen4Exp | ModelFamily::Qwen35) {
+                vocab.eot_id
+            } else {
+                vocab.eos_id
+            },
+        ),
         (b"<|beginoftext|>", vocab.bos_id),
         (b"<|startofturn|>", vocab.start_of_turn_id),
         (b"<|endofturn|>", vocab.end_of_turn_id),
