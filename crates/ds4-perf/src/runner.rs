@@ -260,6 +260,7 @@ const PERF_ENV: &[&str] = &[
     "DS4_MIMO2_DOWN_PIPE64",
     "DS4_NAIVE_DECODE_SCORES",
     "DS4_NAIVE_SWA_PREFILL_SCORES",
+    "DS4_NAIVE_DSA_DECODE_TILE",
     "DS4_INKLING_PREFILL_CHUNK",
     "DS4_DOTS3_ATTN_NO_HMMA",
     "DS4_DOTS3_ATTN_NO_SPLIT",
@@ -665,7 +666,11 @@ mod tests {
 
     #[test]
     fn naive_attention_env() {
-        for key in ["DS4_NAIVE_DECODE_SCORES", "DS4_NAIVE_SWA_PREFILL_SCORES"] {
+        for key in [
+            "DS4_NAIVE_DECODE_SCORES",
+            "DS4_NAIVE_SWA_PREFILL_SCORES",
+            "DS4_NAIVE_DSA_DECODE_TILE",
+        ] {
             for value in ["0", "1"] {
                 let env = controls(&[format!("{key}={value}")]).unwrap();
                 assert_eq!(env.get(std::ffi::OsStr::new(key)), Some(&value.into()));

@@ -9,6 +9,7 @@
 #include <vector>
 #include "../ds4_naive_plan.h"
 #include "../cuda/naive_primitives.cuh"
+#include "../cuda/naive_sparse_tile.cuh"
 
 #define CHECK(x) do { if (!(x)) { \
     fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); exit(1); \
@@ -282,10 +283,13 @@ static void ffn(cudaStream_t stream) {
 }
 
 enum class AttentionData { Simple, Varied };
+enum class AttentionSpan { Full, Early };
 
 static void attention(cudaStream_t stream, unsigned kv_heads, unsigned window,
-                      AttentionData pattern = AttentionData::Simple) {
-    const unsigned history = window ? 146 : 2049, rows = 3;
+                      AttentionData pattern = AttentionData::Simple,
+                      AttentionSpan span = AttentionSpan::Full) {
+    const unsigned sparse = span == AttentionSpan::Early ? N05_DF_BLOCK : 2049;
+    const unsigned history = window ? 146 : sparse, rows = 3;
     const unsigned capacity = window ? 130 : history;
     const unsigned kw = kv_heads * N05_KEY, vw = kv_heads * N05_VALUE, stride = kw + vw;
     std::vector<float> k((size_t)history * kw), v((size_t)history * vw), q(rows * N05_HEADS * N05_KEY), sinks(N05_HEADS);
@@ -303,6 +307,11 @@ static void attention(cudaStream_t stream, unsigned kv_heads, unsigned window,
             for (unsigned d = 0; d < 4; d++) { q[((r * N05_HEADS + h) * N05_KEY) + d] = (r + h % 3 + 1) * .125f; }
         }
         for (unsigned i = 0; i < std::min(pos[r] + 1, (unsigned)N05_TOP_K); i++) { ids[r * N05_TOP_K + i] = i + (r == 2 && !window ? 1 : 0); }
+    }
+    if (!window) {
+        // An ascending future ID must be ignored even within the live count.
+        ids[std::min(pos[0], (unsigned)N05_TOP_K - 1)] = pos[0] + 1;
+        if (span == AttentionSpan::Early) { ids[(rows - 1) * N05_TOP_K + pos[rows - 1]] = UINT32_MAX; }
     }
     // Excluded/future values must not contaminate the first queries.
     for (unsigned d = 0; d < vw; d++) { v[d] = 16; v[(size_t)(history - 1) * vw + d] = 32; }
@@ -344,6 +353,13 @@ static void attention(cudaStream_t stream, unsigned kv_heads, unsigned window,
     std::vector<float> cached(got.size());
     CUDA(cudaMemcpy(cached.data(), out, cached.size() * sizeof(float), cudaMemcpyDeviceToHost));
     CHECK(!memcmp(got.data(), cached.data(), got.size() * sizeof(float)));
+    if (!window) {
+        naive_sparse_tile<<<dim3(N05_HEADS, rows), 128, 0, stream>>>(out, dq,
+            (const __nv_bfloat16 *)cache, dp, di, capacity);
+        CUDA(cudaStreamSynchronize(stream));
+        CUDA(cudaMemcpy(cached.data(), out, cached.size() * sizeof(float), cudaMemcpyDeviceToHost));
+        CHECK(!memcmp(got.data(), cached.data(), got.size() * sizeof(float)));
+    }
     double max_error = 0;
     for (unsigned r = 0; r < rows; r++) {
         for (unsigned h = 0; h < N05_HEADS; h++) {
@@ -353,6 +369,7 @@ static void attention(cudaStream_t stream, unsigned kv_heads, unsigned window,
             double maximum = window ? sinks[h] : -INFINITY;
             for (unsigned i = 0; i < count; i++) {
                 const unsigned t = window ? first + i : ids[r * N05_TOP_K + i];
+                if (t > pos[r]) { logits[i] = -INFINITY; continue; }
                 double dot = 0;
                 for (unsigned d = 0; d < N05_KEY; d++) { dot += (double)q[(r * N05_HEADS + h) * N05_KEY + d] * bf16(k[((size_t)t * kv_heads + kh) * N05_KEY + d]); }
                 logits[i] = bf16(bf16((float)dot) * (float)(1 / sqrt(192.0)));
@@ -364,6 +381,7 @@ static void attention(cudaStream_t stream, unsigned kv_heads, unsigned window,
                 double sum = 0;
                 for (unsigned i = 0; i < count; i++) {
                     const unsigned t = window ? first + i : ids[r * N05_TOP_K + i];
+                    if (t > pos[r]) { continue; }
                     const float probability = bf16((float)(exp(logits[i] - maximum) / denominator));
                     sum += (double)probability * bf16(bf16(v[((size_t)t * kv_heads + kh) * N05_VALUE + d]) * .707f);
                 }
@@ -433,6 +451,7 @@ int main(void) {
     attention(stream, 4, 0);
     attention(stream, 8, N05_WINDOW, AttentionData::Varied);
     attention(stream, 4, 0, AttentionData::Varied);
+    attention(stream, 4, 0, AttentionData::Varied, AttentionSpan::Early);
     CUDA(cudaStreamDestroy(stream));
     return 0;
 }

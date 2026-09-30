@@ -1,6 +1,7 @@
 /* Bounded reproduction of the 8K attention walk: production geometry/layout,
  * synthetic BF16 operands and sorted scattered IDs, resident owner unused. */
 #include "../cuda/naive_primitives.cuh"
+#include "../cuda/naive_sparse_tile.cuh"
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -23,7 +24,9 @@ template<unsigned WARPS> static void launch(
         const unsigned *pos, const unsigned *ids, unsigned rows,
         unsigned heads, unsigned capacity, unsigned window, unsigned cached) {
     const dim3 grid(N05_HEADS / WARPS, rows);
-    if (cached && window) {
+    if (cached == 2) {
+        naive_sparse_tile<<<dim3(N05_HEADS, rows), 128>>>(out, q, kv, pos, ids, capacity);
+    } else if (cached && window) {
         naive_attention<WARPS, N05_WINDOW><<<grid, WARPS * 32>>>(out, q, kv, sinks,
             pos, nullptr, heads, capacity, window);
     } else if (cached) {
@@ -43,7 +46,8 @@ int main(int argc, char **argv) {
     const unsigned cached = argc >= 4 ? (unsigned)atoi(argv[3]) : 0;
     const unsigned window = argc >= 5 ? (unsigned)atoi(argv[4]) : 0;
     const unsigned limit = window ? N05_PREFILL : N05_QUERY_TILE;
-    if (!rows || rows > limit || (warps != 1 && warps != 4) || cached > 1 ||
+    if (!rows || rows > limit || (warps != 1 && warps != 4) || cached > 2 ||
+        (cached == 2 && (window || warps != 4)) ||
         (window && window != N05_WINDOW)) { return 2; }
     const unsigned heads = window ? 8 : 4;
     const unsigned stride = heads * (N05_KEY + N05_VALUE);

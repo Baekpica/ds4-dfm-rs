@@ -1,6 +1,6 @@
 # Naive GB10 optimization rounds
 
-Retained rounds from the September 30 request: prefill **1/3**, decode **1/3**.
+Retained rounds from the September 30 request: prefill **1/3**, decode **2/3**.
 Rejected probes do not count. Integration and long-context serving remain
 separate gates; see [the family contract](../../naive-n05-flash.md).
 
@@ -98,3 +98,44 @@ Whole Nsys prefill wall time is 17.558307 s after the change; decode stays
 2.401494 s. Raw evidence: `scratch/naive/round-p1-{current,base,candidate,compare}`,
 `round-p1-state.log`, `attention-varied-check.log`, and
 `attention-swa-prefill-{base,cache}.ncu-rep`. Retained baseline: `a12914b8`.
+
+## D2: fill idle SMs during DSA decode
+
+After P1, a fresh whole capture measures decode attention at 1.023999 s,
+44.735% of GPU kernel time. The one-row DSA grid still has only 16 CTAs
+on 48 SMs. Full-counter NCU measures 2.73 ms, 8.31% achieved occupancy,
+40 registers and 16.38 KiB shared memory per CTA.
+
+Use one CTA per head with four parallel key walks. Keep the complete XOR
+dot tree, BF16 boundaries, serial online denominator and ascending V FMA.
+The exact `exp(0)` term is elided. The shared score/probability tile is
+4.10 KiB; no persistent allocation changes. Wider DSA is excluded: its
+isolated probe is slower. `DS4_NAIVE_DSA_DECODE_TILE=0` restores D1;
+disabling `DS4_NAIVE_DECODE_SCORES` still restores the original path.
+
+| Unprofiled tok/s | Baseline samples | Candidate samples | Mean change |
+| --- | --- | --- | ---: |
+| Prefill | 466.73, 466.35, 466.94 | 466.22, 466.62, 466.50 | −0.049% |
+| Decode | 13.36, 13.40, 13.39 | 15.54, 15.51, 15.54 | +16.040% |
+
+Both scouts are complete without warnings; `compare --regression` returns
+`Improved`. All 915456 logit values, argmaxes, tokens and proof hashes match.
+Actual-weight width/target/indexer/draft state regression, independent
+equations, early/future/padded IDs and varied BF16 fixtures pass. CUDA
+memcheck reports zero errors. Observed clocks are 2184–2197 MHz; samples
+above 40 W record 2184 or 2190 MHz within the user clock range.
+
+Cold NCU falls 2.73→1.61 ms and warm isolated samples fall
+1.529350/1.530883/1.529587→0.906118/0.906963/0.906915 ms. Theoretical
+occupancy rises 41.67→100%; achieved occupancy rises 8.31→11.05%.
+More CTAs and Q/ID requests increase global L1 read sectors
+2885184→3430656 and executed warp instructions 22554624→27543424.
+The latency gain pays this work cost; allocation equality does not imply
+equal memory traffic or instructions.
+
+Whole Nsys attention falls 1.023830→0.695414 s and decode wall time falls
+2.401404→2.072915 s; prefill stays 17.554341→17.545052 s. Raw evidence:
+`scratch/naive/round-d2-{current,base,candidate,compare}`,
+`round-d2-state.log`, `round-d2-{primitive-parity,memcheck}.log`,
+`round-d2-dsa-{base,tile}.ncu-rep` and `round-d2-telemetry.jsonl`.
+Retained baseline: `782aa821`.

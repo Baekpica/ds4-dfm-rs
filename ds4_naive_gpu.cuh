@@ -1,5 +1,6 @@
 /* CUDA adapters for the pinned Naive graph. */
 #include "cuda/naive_primitives.cuh"
+#include "cuda/naive_sparse_tile.cuh"
 #include "cuda/naive_draft.cuh"
 
 static bool naive_buf(const ds4_gpu_tensor *t, uint64_t bytes) {
@@ -120,10 +121,16 @@ extern "C" int ds4_gpu_naive_attention(ds4_gpu_tensor *out, const ds4_gpu_tensor
     if (window && !sinks) { return 0; }
     const char *scores = getenv("DS4_NAIVE_DECODE_SCORES");
     const char *swa = getenv("DS4_NAIVE_SWA_PREFILL_SCORES");
+    const char *dsa = getenv("DS4_NAIVE_DSA_DECODE_TILE");
     // Only the 1-KiB SWA tile retains wide-prefill occupancy. DSA stays narrow.
     const bool cached = (rows == 1 && (!scores || strcmp(scores, "0"))) ||
         (window && rows > N05_DF_BLOCK && (!swa || strcmp(swa, "0")));
-    if (cached && window) {
+    if (cached && !window && rows == 1 && (!dsa || strcmp(dsa, "0"))) {
+        // More CTAs fill decode's idle SMs; the wide tile loses L1 reuse.
+        naive_sparse_tile<<<dim3(N05_HEADS, rows), 128, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr,
+            (const unsigned *)positions->ptr, (const unsigned *)ids->ptr, capacity);
+    } else if (cached && window) {
         naive_attention<4, N05_WINDOW><<<dim3(N05_HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr, sinks,
             (const unsigned *)positions->ptr, nullptr, heads, capacity, window);

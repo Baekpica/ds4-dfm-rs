@@ -731,7 +731,7 @@ ds4_agent_cpu.o: ds4_agent.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_
 ds4_metal.o: ds4_metal.m ds4_gpu.h ds4_naive_stub.inc $(METAL_SRCS)
 	$(CC) $(OBJCFLAGS) -c -o $@ ds4_metal.m
 
-ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_naive_gpu.cuh cuda/naive_primitives.cuh cuda/naive_draft.cuh ds4_naive_plan.h ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh cuda/mimo2_dflash_host.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
+ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_naive_gpu.cuh cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh cuda/naive_draft.cuh ds4_naive_plan.h ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh cuda/mimo2_dflash_host.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
 	$(NVCC) $(NVCCFLAGS) -c -o $@ ds4_cuda.cu
 
 # Vendored mmq pieces. ds4_mmq.cu transitively pulls in mmq.cuh which has
@@ -934,14 +934,14 @@ tests/naive_memory: tests/naive_memory.c ds4_naive_plan.h
 test-naive-memory: tests/naive_memory
 	./tests/naive_memory
 
-tests/naive_primitives: tests/naive_primitives.cu cuda/naive_primitives.cuh ds4_naive_plan.h
+tests/naive_primitives: tests/naive_primitives.cu cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh ds4_naive_plan.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 
 .PHONY: test-naive-primitives
 test-naive-primitives: tests/naive_primitives
 	./tests/naive_primitives
 
-tests/naive_attention_profile: tests/naive_attention_profile.cu cuda/naive_primitives.cuh ds4_naive_plan.h
+tests/naive_attention_profile: tests/naive_attention_profile.cu cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh ds4_naive_plan.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 
 tests/test_step37_primitives: tests/test_step37_primitives.cu cuda/step37_primitives.cuh tests/fixtures/step37/primitives.h

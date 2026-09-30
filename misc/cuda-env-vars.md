@@ -16,6 +16,11 @@ the dot, softmax and value accumulation order.
 `DS4_NAIVE_SWA_PREFILL_SCORES=0` restores the SWA walk above seven rows;
 its default reuses the same scores with a 1-KiB tile per CTA. Wider DSA
 prefill stays on the original walk because its larger tile loses occupancy.
+`DS4_NAIVE_DSA_DECODE_TILE=0` restores the prior four-head decode cache;
+the default uses one CTA per DSA head, four parallel QK walks and a shared
+BF16 score/probability tile. Serial softmax and V reduction stay exact.
+It only applies at width one with decode scores enabled; disabling
+`DS4_NAIVE_DECODE_SCORES` still restores the original attention.
 
 ## Qwen embedded MTP
 

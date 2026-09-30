@@ -151,6 +151,11 @@ matched `--env` comparisons and leaves wider prefill unchanged.
 `DS4_NAIVE_SWA_PREFILL_SCORES=0` restores the wide SWA two-pass QK walk;
 `1` or unset reuses its 128 BF16 scores without changing reduction order.
 Widths 2–7 and wider DSA remain on their previous paths.
+`DS4_NAIVE_DSA_DECODE_TILE=0` restores the prior four-head DSA score cache;
+`1` or unset uses one CTA per head with four parallel key walks. The finite
+BF16 dot, serial denominator and ascending V FMA remain exact. It applies
+only to one-row DSA; `DS4_NAIVE_DECODE_SCORES=0` restores the original walk
+regardless of this control.
 Inkling's `DS4_INKLING_NO_LINEAR=1` is a reviewed diagnostic control for
 comparing its ordinary BF16 projection with the prior implementation.
 Unset the variable for the optimized path; comparisons reject other values.
