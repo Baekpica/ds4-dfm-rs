@@ -18,11 +18,13 @@
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <cuda_bf16.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <sys/mman.h>
@@ -1031,6 +1033,124 @@ cleanup:
 
 
 
+/* 6. bf16 gated delta-net scalars.  ssm_alpha and ssm_beta are the only bf16
+ * weights in the artifact, 96 of them at the real (out_dim 48, in_dim 5120).
+ * A prefill chunk runs them through the token-tiled kernel, a decode step
+ * through the untiled one.  The tiled form only interleaves the loops, so the
+ * two must agree bit-for-bit at every width, and both must sit inside the
+ * float-rounding band of a double-precision dot.  T=8 is the tile boundary the
+ * dispatcher uses, T=9 the first tiled width, 486 the chunk this host really
+ * prefills. */
+bool test_bf16_matvec_tile() {
+    constexpr int out_dim = 48;   // ssm_alpha / ssm_beta rows
+    constexpr int in_dim = 5120;  // qwen35.embedding_length
+    constexpr uint64_t arena_bytes = (uint64_t)out_dim * in_dim * 2;
+
+    std::mt19937 rng(20260930u);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    std::vector<__nv_bfloat16> w((size_t)out_dim * in_dim);
+    for (__nv_bfloat16 &v : w) v = __float2bfloat16(dist(rng));
+
+    void *arena = mmap(nullptr, arena_bytes, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (arena == MAP_FAILED) {
+        std::fprintf(stderr, "bf16 tile: mmap failed\n");
+        return false;
+    }
+    std::memcpy(arena, w.data(), w.size() * sizeof(w[0]));
+
+    bool ok = true;
+    if (ds4_gpu_init() != 1 || ds4_gpu_set_model_map(arena, arena_bytes) != 1) {
+        std::fprintf(stderr, "bf16 tile: backend/model-map setup failed\n");
+        munmap(arena, arena_bytes);
+        return false;
+    }
+
+    for (const int T : {1, 8, 9, 11, 486}) {
+        const uint64_t x_count = (uint64_t)in_dim * T;
+        const uint64_t o_count = (uint64_t)out_dim * T;
+        std::vector<float> x(x_count), base(o_count), tiled(o_count), ref(o_count);
+        for (float &v : x) v = dist(rng);
+
+        ds4_gpu_tensor *gx = ds4_gpu_tensor_alloc(x_count * sizeof(float));
+        ds4_gpu_tensor *gout = ds4_gpu_tensor_alloc(o_count * sizeof(float));
+        const bool wrote = gx && gout &&
+            ds4_gpu_tensor_write(gx, 0, x.data(), x_count * sizeof(float));
+
+        bool this_ok = wrote;
+        if (wrote) {
+            setenv("DS4_QWEN35_BF16_MATVEC_TILED", "0", 1);
+            this_ok = ds4_gpu_qwen35_matvec_bf16_tensor(
+                          gout, gx, arena, arena_bytes, 0, in_dim, out_dim,
+                          (uint32_t)T) &&
+                      ds4_gpu_tensor_read(gout, 0, base.data(),
+                                          o_count * sizeof(float));
+            unsetenv("DS4_QWEN35_BF16_MATVEC_TILED");
+            this_ok = this_ok &&
+                      ds4_gpu_qwen35_matvec_bf16_tensor(
+                          gout, gx, arena, arena_bytes, 0, in_dim, out_dim,
+                          (uint32_t)T) &&
+                      ds4_gpu_tensor_read(gout, 0, tiled.data(),
+                                          o_count * sizeof(float));
+        }
+
+        /* Reference: exact bf16 weights against the float activation, in
+         * double, so only the kernel's f32 accumulation separates them. */
+        for (int t = 0; t < T; t++) {
+            for (int row = 0; row < out_dim; row++) {
+                double acc = 0.0;
+                for (int i = 0; i < in_dim; i++) {
+                    acc += (double)__bfloat162float(w[(size_t)row * in_dim + i]) *
+                           (double)x[(size_t)t * in_dim + i];
+                }
+                ref[(size_t)t * out_dim + row] = (float)acc;
+            }
+        }
+
+        if (this_ok && std::memcmp(base.data(), tiled.data(),
+                                   o_count * sizeof(float)) != 0) {
+            for (uint64_t i = 0; i < o_count; i++) {
+                if (base[i] != tiled[i]) {
+                    std::fprintf(stderr,
+                                 "bf16 tile T=%d: tiled %g != untiled %g at %llu\n",
+                                 T, tiled[i], base[i],
+                                 (unsigned long long)i);
+                    break;
+                }
+            }
+            this_ok = false;
+        }
+
+        double num = 0.0, den = 0.0, max_abs = 0.0;
+        if (this_ok) {
+            for (uint64_t i = 0; i < o_count; i++) {
+                const double d = (double)tiled[i] - (double)ref[i];
+                num += d * d;
+                den += (double)ref[i] * (double)ref[i];
+                max_abs = std::max(max_abs, std::fabs(d));
+            }
+            const double rel = den > 0.0 ? std::sqrt(num / den) : std::sqrt(num);
+            if (rel > 1e-5) {
+                std::fprintf(stderr, "bf16 tile T=%d: relative L2 %.3g over the "
+                                     "float-rounding band\n", T, rel);
+                this_ok = false;
+            } else {
+                std::fprintf(stderr, "bf16 tile T=%d: bit-identical to the "
+                                     "untiled kernel, max abs %.3g, rel L2 %.3g\n",
+                             T, max_abs, rel);
+            }
+        }
+
+        if (gx) ds4_gpu_tensor_free(gx);
+        if (gout) ds4_gpu_tensor_free(gout);
+        ok = this_ok && ok;
+    }
+
+    munmap(arena, arena_bytes);
+    std::fprintf(stderr, "bf16 matvec tile parity: %s\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+
 } // namespace
 
 int main() {
@@ -1045,6 +1165,7 @@ int main() {
     const bool fold_ok = test_fold_transform();
     const bool gdn_ok = test_gdn_out_gates();
     const bool attn_ok = test_attention_split();
+    const bool bf16_ok = test_bf16_matvec_tile();
 
     /* Random activations: the kernels quantize the activation to the Q8_1
      * form, so the outputs are compared by relative L2 error against the
@@ -1069,7 +1190,7 @@ int main() {
     exact_ok = run_shape(kShapes[0], 64, "exact64", true) && exact_ok;
 
     const bool ok = rows_ok && guards_ok && host_ok && fold_ok && gdn_ok &&
-                    attn_ok && shapes_ok && exact_ok;
+                    attn_ok && bf16_ok && shapes_ok && exact_ok;
     std::fprintf(stderr, "PQ2_0 CUDA parity: %s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }

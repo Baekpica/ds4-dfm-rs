@@ -451,6 +451,45 @@ __global__ void matvec_bf16(float *out, const __nv_bfloat16 *w, const float *x,
     }
 }
 
+/* Token tile of the kernel above, for the prefill rows of the two gated
+ * delta-net scalars.  They are (5120, 48) bf16 weights, so the one-warp-per-row
+ * form launches 12 blocks on a 56-SM card and walks the whole token range
+ * inside each warp, which re-reads the weight row per token: on a 463-token
+ * chunk that is 39.8 percent of prefill GPU time for 480 KB of weights.
+ *
+ * Here each block owns TT consecutive tokens of its 4 rows, and each lane
+ * accumulates all TT of them against one weight load, so the row is read once
+ * per tile and the token range is spread over gridDim.y blocks.  The per-token
+ * sum stays lane-strided over i and uses the same warp reduction, so every
+ * output is bit-identical to the untiled kernel. */
+constexpr unsigned MATVEC_BF16_TT = 8u;
+
+__global__ void matvec_bf16_tiled(float *out, const __nv_bfloat16 *w, const float *x,
+                                  unsigned K, unsigned M, unsigned T) {
+    const unsigned row = blockIdx.x * 4 + threadIdx.x / 32, lane = threadIdx.x & 31;
+    const unsigned t0 = blockIdx.y * MATVEC_BF16_TT;
+    const unsigned nt = min(MATVEC_BF16_TT, T - t0);
+    if (row >= M) return;
+    const __nv_bfloat16 *wr = w + (uint64_t)row * K;
+    float acc[MATVEC_BF16_TT];
+#pragma unroll
+    for (unsigned j = 0; j < MATVEC_BF16_TT; j++) acc[j] = 0.0f;
+    for (unsigned i = lane; i < K; i += 32) {
+        const float wv = __bfloat162float(wr[i]);
+#pragma unroll
+        for (unsigned j = 0; j < MATVEC_BF16_TT; j++) {
+            if (j < nt) acc[j] += wv * x[(uint64_t)(t0 + j) * K + i];
+        }
+    }
+#pragma unroll
+    for (unsigned j = 0; j < MATVEC_BF16_TT; j++) {
+        if (j >= nt) continue;
+        /* Every lane joins the reduction; only lane 0 stores. */
+        const float a = qwen35_attn::sum(acc[j]);
+        if (!lane) out[(uint64_t)(t0 + j) * M + row] = a;
+    }
+}
+
 /* ---------------------------------------------------------------------------
  * Host entries.  tensor/weight/launched mirror the sibling's file-scope
  * helpers; the resolver and the stream come from ds4_cuda.cu. */
@@ -656,6 +695,19 @@ extern "C" int ds4_gpu_qwen35_matvec_bf16_tensor(
     }
     const char *w = qwen35_attn_weight(map, size, off, (uint64_t)K * M * 2);
     if (!w) return 0;
+    /* A prefill chunk is a many-token matmul and takes the tiled kernel, which
+     * spreads the token range over gridDim.y; decode (T within one tile) keeps
+     * the untiled kernel, whose shape already matches a single row.  Only the
+     * chunked path has the re-read this tile removes, so nothing else moves.
+     * DS4_QWEN35_BF16_MATVEC_TILED=0 is the kill switch back to the old path. */
+    const char *tiled = getenv("DS4_QWEN35_BF16_MATVEC_TILED");
+    if (T > MATVEC_BF16_TT && !(tiled && tiled[0] == '0')) {
+        matvec_bf16_tiled<<<dim3((M + 3) / 4,
+                                 (T + MATVEC_BF16_TT - 1) / MATVEC_BF16_TT),
+                            128, 0, cuda_decode_stream()>>>(
+            (float *)out->ptr, (const __nv_bfloat16 *)w, (const float *)x->ptr, K, M, T);
+        return qwen35_attn_launched("Bonsai bf16 matvec tile");
+    }
     matvec_bf16<<<dim3((M + 3) / 4), 128, 0, cuda_decode_stream()>>>(
         (float *)out->ptr, (const __nv_bfloat16 *)w, (const float *)x->ptr, K, M, T);
     return qwen35_attn_launched("Bonsai bf16 matvec");
