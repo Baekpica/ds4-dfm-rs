@@ -3,9 +3,9 @@
 use ds4_core::{
     bind_dspark_names, bind_mtp_names, bind_names, dump_expected_layouts, dump_expected_support,
     dump_layout_check_tapes, expected_dspark_layouts, expected_layouts, expected_mtp_layouts,
-    identify_gguf, shape_for_variant, validate_dspark_layouts, validate_layouts,
-    validate_mtp_layouts, validate_support_layouts, validate_gguf, BindNeed, BindPlan, BindSlot,
-    LayoutSpec, SupportCatalog, TensorInfo, TensorInventory, TypeClass, Variant, DSPARK_MARKOV_RANK,
+    identify_gguf, shape_for_variant, validate_dspark_layouts, validate_gguf, validate_layouts,
+    validate_mtp_layouts, validate_support_layouts, BindNeed, BindPlan, BindSlot, LayoutSpec,
+    SupportCatalog, TensorInfo, TensorInventory, TypeClass, Variant, DSPARK_MARKOV_RANK,
     SHAPE_FLASH,
 };
 use std::collections::HashSet;
