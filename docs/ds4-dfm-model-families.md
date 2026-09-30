@@ -261,6 +261,8 @@ drafter beside the base model; the standard launch resolver attaches it
 automatically when its expected file name is present. Inkling accepts its exact
 MTP-BF16 sidecar; use the [full base+MTP owner launch](inkling-small.md#serving)
 for the tested configuration. Step accepts its documented Q8 MTP sidecar.
+Naive accepts its Q8 DSpark sidecar through `DS4_DSPARK_MODEL`; see
+[Naive serving](naive-n05-flash.md#serving).
 Other families do not accept external MTP or DSpark attachments; dots3-note
 uses only its [embedded serial predictor](#dots3-serving).
 
