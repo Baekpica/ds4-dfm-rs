@@ -1,0 +1,354 @@
+{
+  "scope": "single unprofiled warmup plus a separate fresh Nsys process per mode; diagnostic, not retained A/B speed proof",
+  "context": 8192,
+  "generation_tokens": 64,
+  "draft_depth": 6,
+  "margin": 0,
+  "binary_sha256": "2391edde70b1885c86e8fd349b4eeb7be4ffd7b729e5e8afa7545254a0d6182a",
+  "samples": {
+    "main": {
+      "warmup": {
+        "prefill_tps": 506.03,
+        "decode_tps": 17.6,
+        "first_decode_seconds": 0.0931,
+        "kv_bytes": 224677940,
+        "status": 0
+      },
+      "profile": {
+        "prefill_tps": 506.2,
+        "decode_tps": 17.57,
+        "first_decode_seconds": 0.1013,
+        "kv_bytes": 224677940,
+        "status": 0
+      }
+    },
+    "off": {
+      "warmup": {
+        "prefill_tps": 504.7,
+        "decode_tps": 17.41,
+        "first_decode_seconds": 0.0947,
+        "kv_bytes": 235163700,
+        "status": 0
+      },
+      "profile": {
+        "prefill_tps": 504.28,
+        "decode_tps": 17.26,
+        "first_decode_seconds": 0.1027,
+        "kv_bytes": 235163700,
+        "status": 0
+      }
+    },
+    "on": {
+      "warmup": {
+        "prefill_tps": 504.86,
+        "decode_tps": 4.38,
+        "first_decode_seconds": 0.3325,
+        "kv_bytes": 235163700,
+        "status": 0
+      },
+      "profile": {
+        "prefill_tps": 504.16,
+        "decode_tps": 4.34,
+        "first_decode_seconds": 0.3449,
+        "kv_bytes": 235163700,
+        "status": 0
+      }
+    }
+  },
+  "contribution": {
+    "main": {
+      "gpu_seconds": 3.456777344,
+      "top": [
+        {
+          "name": "void mul_mat_vec_q<(ggml_type)14, (int)1, (bool)0, (bool)0>(const void *, const void *, const int *, ggml_cuda_mm_fusion_args_device, float *, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, unsigned int)",
+          "seconds": 1.017025728,
+          "percent": 29.421210184835093,
+          "calls": 6144
+        },
+        {
+          "name": "void naive_attention<(unsigned int)4, (unsigned int)128, (NaiveCache)0>(float *, const float *, const __nv_bfloat16 *, const float *, const unsigned int *, const unsigned int *, unsigned int, unsigned int, unsigned int)",
+          "seconds": 0.519067008,
+          "percent": 15.01592252972137,
+          "calls": 2496
+        },
+        {
+          "name": "<unnamed>::iq2_xxs_aligned_moe_pair_vec_kernel(float *, float *, const uint2 *, const __half *, const uint2 *, const __half *, const block_q8_1 *, const int *, int, int, int, int)",
+          "seconds": 0.423233024,
+          "percent": 12.243572029150629,
+          "calls": 3008
+        },
+        {
+          "name": "void naive_sparse_tile<(NaiveCache)1>(float *, const float *, const __nv_bfloat16 *, const unsigned int *, const unsigned int *, unsigned int)",
+          "seconds": 0.415558496,
+          "percent": 12.021558076955506,
+          "calls": 576
+        },
+        {
+          "name": "void mul_mat_vec_q<(ggml_type)8, (int)1, (bool)0, (bool)0>(const void *, const void *, const int *, ggml_cuda_mm_fusion_args_device, float *, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, unsigned int)",
+          "seconds": 0.366629632,
+          "percent": 10.606110707025046,
+          "calls": 6400
+        },
+        {
+          "name": "void mul_mat_vec_q_moe<(ggml_type)17, (int)2>(const void *, const void *, const int *, float *, unsigned int, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int)",
+          "seconds": 0.267336352,
+          "percent": 7.733687345064942,
+          "calls": 3008
+        },
+        {
+          "name": "naive_router(int *, float *, const float *, const float *)",
+          "seconds": 0.149353152,
+          "percent": 4.320589298562586,
+          "calls": 3008
+        },
+        {
+          "name": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, float, float, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)6, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<float>, float>>(T13)",
+          "seconds": 0.06199504,
+          "percent": 1.7934345730310364,
+          "calls": 576
+        },
+        {
+          "name": "matmul_f32_kernel(float *, const float *, const float *, unsigned long, unsigned long, unsigned long)",
+          "seconds": 0.058562112,
+          "percent": 1.694124503033077,
+          "calls": 3008
+        },
+        {
+          "name": "naive_rms(float *, const float *, const float *, unsigned int)",
+          "seconds": 0.055869504,
+          "percent": 1.6162309122100056,
+          "calls": 6208
+        },
+        {
+          "name": "quantize_q8_1(const float *, void *, long, long, long, long, long, unsigned int, uint3)",
+          "seconds": 0.020123168,
+          "percent": 0.5821366549664588,
+          "calls": 18560
+        },
+        {
+          "name": "naive_topk_leaf(unsigned long *, const float *, const unsigned int *, unsigned int, unsigned int)",
+          "seconds": 0.016316064,
+          "percent": 0.4720021678086999,
+          "calls": 576
+        },
+        {
+          "name": "<unnamed>::ds4_mmq_sanitize_f32_kernel(float *, unsigned long)",
+          "seconds": 0.012873248,
+          "percent": 0.37240605103896446,
+          "calls": 15552
+        },
+        {
+          "name": "void naive_index_scores<(NaiveIndexLayout)1>(float *, const float *, const unsigned char *, const float *, const float *, const unsigned int *, unsigned int)",
+          "seconds": 0.012326112,
+          "percent": 0.35657812966735297,
+          "calls": 576
+        },
+        {
+          "name": "naive_topk_merge(unsigned long *, const unsigned long *, unsigned int)",
+          "seconds": 0.010690016,
+          "percent": 0.3092480346920487,
+          "calls": 1152
+        }
+      ]
+    },
+    "off": {
+      "gpu_seconds": 3.515032576,
+      "top": [
+        {
+          "name": "void mul_mat_vec_q<(ggml_type)14, (int)1, (bool)0, (bool)0>(const void *, const void *, const int *, ggml_cuda_mm_fusion_args_device, float *, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, unsigned int)",
+          "seconds": 1.016812512,
+          "percent": 28.927541637668167,
+          "calls": 6144
+        },
+        {
+          "name": "void naive_attention<(unsigned int)4, (unsigned int)128, (NaiveCache)0>(float *, const float *, const __nv_bfloat16 *, const float *, const unsigned int *, const unsigned int *, unsigned int, unsigned int, unsigned int)",
+          "seconds": 0.520206464,
+          "percent": 14.799477750273914,
+          "calls": 2496
+        },
+        {
+          "name": "<unnamed>::iq2_xxs_aligned_moe_pair_vec_kernel(float *, float *, const uint2 *, const __half *, const uint2 *, const __half *, const block_q8_1 *, const int *, int, int, int, int)",
+          "seconds": 0.425274656,
+          "percent": 12.09874010567349,
+          "calls": 3008
+        },
+        {
+          "name": "void naive_sparse_tile<(NaiveCache)1>(float *, const float *, const __nv_bfloat16 *, const unsigned int *, const unsigned int *, unsigned int)",
+          "seconds": 0.415841856,
+          "percent": 11.830384128991925,
+          "calls": 576
+        },
+        {
+          "name": "void mul_mat_vec_q<(ggml_type)8, (int)1, (bool)0, (bool)0>(const void *, const void *, const int *, ggml_cuda_mm_fusion_args_device, float *, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, unsigned int)",
+          "seconds": 0.41527984,
+          "percent": 11.814395201781482,
+          "calls": 7104
+        },
+        {
+          "name": "void mul_mat_vec_q_moe<(ggml_type)17, (int)2>(const void *, const void *, const int *, float *, unsigned int, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int)",
+          "seconds": 0.267992928,
+          "percent": 7.624194718131682,
+          "calls": 3008
+        },
+        {
+          "name": "naive_router(int *, float *, const float *, const float *)",
+          "seconds": 0.148885984,
+          "percent": 4.235692864315577,
+          "calls": 3008
+        },
+        {
+          "name": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, float, float, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)6, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<float>, float>>(T13)",
+          "seconds": 0.062747872,
+          "percent": 1.7851291742907591,
+          "calls": 576
+        },
+        {
+          "name": "matmul_f32_kernel(float *, const float *, const float *, unsigned long, unsigned long, unsigned long)",
+          "seconds": 0.058643424,
+          "percent": 1.6683607543328782,
+          "calls": 3008
+        },
+        {
+          "name": "naive_rms(float *, const float *, const float *, unsigned int)",
+          "seconds": 0.05726416,
+          "percent": 1.6291217438776875,
+          "calls": 6592
+        },
+        {
+          "name": "quantize_q8_1(const float *, void *, long, long, long, long, long, unsigned int, uint3)",
+          "seconds": 0.0215064,
+          "percent": 0.6118407023263958,
+          "calls": 19264
+        },
+        {
+          "name": "naive_topk_leaf(unsigned long *, const float *, const unsigned int *, unsigned int, unsigned int)",
+          "seconds": 0.016340576,
+          "percent": 0.4648769434334824,
+          "calls": 576
+        },
+        {
+          "name": "<unnamed>::ds4_mmq_sanitize_f32_kernel(float *, unsigned long)",
+          "seconds": 0.0133728,
+          "percent": 0.3804459762708043,
+          "calls": 16256
+        },
+        {
+          "name": "void naive_index_scores<(NaiveIndexLayout)1>(float *, const float *, const unsigned char *, const float *, const float *, const unsigned int *, unsigned int)",
+          "seconds": 0.012321504,
+          "percent": 0.35053740565959407,
+          "calls": 576
+        },
+        {
+          "name": "naive_topk_merge(unsigned long *, const unsigned long *, unsigned int)",
+          "seconds": 0.010715808,
+          "percent": 0.3048565772381621,
+          "calls": 1152
+        }
+      ]
+    },
+    "on": {
+      "gpu_seconds": 13.984482464,
+      "top": [
+        {
+          "name": "void mul_mat_vec_q<(ggml_type)14, (int)1, (bool)0, (bool)0>(const void *, const void *, const int *, ggml_cuda_mm_fusion_args_device, float *, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, unsigned int)",
+          "seconds": 5.1511784,
+          "percent": 36.83495912888149,
+          "calls": 33312
+        },
+        {
+          "name": "<unnamed>::iq2_xxs_aligned_moe_pair_vec_kernel(float *, float *, const uint2 *, const __half *, const uint2 *, const __half *, const block_q8_1 *, const int *, int, int, int, int)",
+          "seconds": 2.336231744,
+          "percent": 16.70588632803623,
+          "calls": 16309
+        },
+        {
+          "name": "void mul_mat_vec_q<(ggml_type)8, (int)1, (bool)0, (bool)0>(const void *, const void *, const int *, ggml_cuda_mm_fusion_args_device, float *, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, unsigned int)",
+          "seconds": 1.907704928,
+          "percent": 13.641584040817888,
+          "calls": 38566
+        },
+        {
+          "name": "void mul_mat_vec_q_moe<(ggml_type)17, (int)2>(const void *, const void *, const int *, float *, unsigned int, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int)",
+          "seconds": 1.462170208,
+          "percent": 10.455661922162928,
+          "calls": 16309
+        },
+        {
+          "name": "void naive_attention<(unsigned int)4, (unsigned int)0, (NaiveCache)1>(float *, const float *, const __nv_bfloat16 *, const float *, const unsigned int *, const unsigned int *, unsigned int, unsigned int, unsigned int)",
+          "seconds": 1.012822848,
+          "percent": 7.2424764420656365,
+          "calls": 441
+        },
+        {
+          "name": "void naive_attention<(unsigned int)4, (unsigned int)0, (NaiveCache)0>(float *, const float *, const __nv_bfloat16 *, const float *, const unsigned int *, const unsigned int *, unsigned int, unsigned int, unsigned int)",
+          "seconds": 0.448870816,
+          "percent": 3.2097778173451896,
+          "calls": 1911
+        },
+        {
+          "name": "std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, float, float, float, (bool)0, (bool)1, (bool)1, (bool)0, (int)6, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<float>, float>>(T13)",
+          "seconds": 0.341551232,
+          "percent": 2.4423587564234084,
+          "calls": 3123
+        },
+        {
+          "name": "naive_df_attn(float *, const float *, const __nv_bfloat16 *, const float *, const float *, unsigned int, unsigned int, unsigned int)",
+          "seconds": 0.336975232,
+          "percent": 2.409636773241121,
+          "calls": 245
+        },
+        {
+          "name": "quantize_q8_1(const float *, void *, long, long, long, long, long, unsigned int, uint3)",
+          "seconds": 0.1515208,
+          "percent": 1.0834923665574128,
+          "calls": 104790
+        },
+        {
+          "name": "matmul_f32_kernel(float *, const float *, const float *, unsigned long, unsigned long, unsigned long)",
+          "seconds": 0.145167008,
+          "percent": 1.0380577784962783,
+          "calls": 16309
+        },
+        {
+          "name": "naive_router(int *, float *, const float *, const float *)",
+          "seconds": 0.126978368,
+          "percent": 0.9079947600984027,
+          "calls": 2538
+        },
+        {
+          "name": "naive_df_top2(unsigned int *, const float *)",
+          "seconds": 0.080655264,
+          "percent": 0.5767482937436504,
+          "calls": 636
+        },
+        {
+          "name": "<unnamed>::ds4_mmq_sanitize_f32_kernel(float *, unsigned long)",
+          "seconds": 0.080500288,
+          "percent": 0.5756400939915398,
+          "calls": 88481
+        },
+        {
+          "name": "void naive_index_scores<(NaiveIndexLayout)1>(float *, const float *, const unsigned char *, const float *, const float *, const unsigned int *, unsigned int)",
+          "seconds": 0.060654528,
+          "percent": 0.4337273700055891,
+          "calls": 486
+        },
+        {
+          "name": "naive_rms(float *, const float *, const float *, unsigned int)",
+          "seconds": 0.056986496,
+          "percent": 0.4074980689968278,
+          "calls": 6640
+        }
+      ]
+    }
+  },
+  "acceptance": {
+    "trials": 49,
+    "verified_rows": 342,
+    "kept_rows": 59,
+    "proposals": 293,
+    "hits": 10
+  },
+  "token_gate": "On first 32 tokens match the retained ordinary 8K proof; remaining 32 are not paired in this diagnostic capture.",
+  "decision": "No acceleration qualified; keep automatic speculation off. Target verification and low acceptance dominate; upstream reduced draft head remains an unmeasured candidate."
+}

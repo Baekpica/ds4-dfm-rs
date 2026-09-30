@@ -25,3 +25,18 @@ intermediates, and keeping exact selection without repeated sorts. Adoption
 requires a fresh whole profile, bounded target profile, scoped capability
 predicate, correctness proof and matched end-to-end A/B. Existing equivalents
 and unmeasured ideas do not count as new optimization rounds.
+
+## Naive DSpark diagnostic capture
+
+On the retained P4 baseline, one fresh 8K/64-token unprofiled run per mode
+measures main-only 17.60, loaded draft off 17.41, and draft on 4.38 tok/s.
+Each has a separate fresh Nsys capture. This is a diagnostic scope, not
+matched repeated evidence or a new speed round. At depth six and margin
+zero, 49 trials verify 342 target rows and keep 59; only 10 of 293 proposals
+are accepted. Target Q6 linear operations consume 36.835% of on-mode
+Decode GPU time. [Receipts](dspark-profile-evidence.json).
+
+The recipe's reduced draft head does not address this repeated target work.
+Qwen already has the compact proposal head; Naive needs acceptance and
+verification work profiled before extending it. Automatic speculation
+remains off. These results do not qualify draft acceleration.
