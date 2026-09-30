@@ -1,6 +1,6 @@
 # Naive GB10 optimization rounds
 
-Retained rounds from the September 30 request: prefill **0/3**, decode **1/3**.
+Retained rounds from the September 30 request: prefill **1/3**, decode **1/3**.
 Rejected probes do not count. Integration and long-context serving remain
 separate gates; see [the family contract](../../naive-n05-flash.md).
 
@@ -66,3 +66,35 @@ Wide DSA score caching: three warm original samples 3.677/3.677/3.666 ms
 versus 4.864/4.896/4.877 ms. Reject despite exact outputs.
 One-warp CTAs: one initial 2.438→2.419 ms probe. Insufficient evidence;
 the production path retains four warps per CTA.
+
+## P1: reuse wide SWA scores
+
+After D1, a fresh whole-workload capture still spends 51.207% of prefill
+GPU time in attention. SWA takes 1.727902 s, 9.628% of that phase's GPU
+kernel sum. Its faithful isolated shape is 2048 queries, 64/8 GQA,
+192/128 key/value widths, window 128 and ring capacity 2175. Synthetic
+operands retain the geometry and layout, rather than actual routed values.
+Full-counter NCU shows 75.44% LSU utilization and 96.21% occupancy.
+
+The 1-KiB score tile retains theoretical occupancy, unlike wide DSA.
+Enable it above seven rows; keep bounded verification and DSA unchanged.
+`DS4_NAIVE_SWA_PREFILL_SCORES=0` restores the prior path. No allocation
+is added, and the second QK MACs and loads are removed.
+
+| Unprofiled tok/s | Baseline samples | Candidate samples | Mean change |
+| --- | --- | --- | ---: |
+| Prefill | 455.29, 455.53, 455.92 | 466.43, 466.53, 466.59 | +2.401% |
+| Decode | 13.37, 13.40, 13.39 | 13.38, 13.40, 13.40 | +0.050% |
+
+Both scouts are complete with no warnings; `compare --regression` returns
+`Improved`. All full-logit and 32-token hashes match the baseline. The
+actual-weight width/cache regression and independent SWA/DSA fixtures
+pass, including a varied-exponent BF16 fixture. These are exact comparisons
+to the retained implementation, not proof of full-model reference parity.
+Cold NCU falls 11.03→8.19 ms with 40 registers/thread and 100% theoretical
+occupancy; achieved occupancy is 96.21→98.54%. Three warm isolated
+samples fall 11.163/11.140/11.153→8.261/8.283/8.295 ms.
+Whole Nsys prefill wall time is 17.558307 s after the change; decode stays
+2.401494 s. Raw evidence: `scratch/naive/round-p1-{current,base,candidate,compare}`,
+`round-p1-state.log`, `attention-varied-check.log`, and
+`attention-swa-prefill-{base,cache}.ncu-rep`. Retained baseline: `a12914b8`.

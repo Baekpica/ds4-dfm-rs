@@ -12,8 +12,10 @@ Every CUDA-specific env var is below, with the intent behind each default.
 
 `DS4_NAIVE_DECODE_SCORES=0` restores the one-row two-pass QK walk.
 The default caches rounded BF16 scores on chip before the V pass, preserving
-the dot, softmax and value accumulation order. Wide prefill remains on the
-original walk because the DSA score tile reduces its occupancy.
+the dot, softmax and value accumulation order.
+`DS4_NAIVE_SWA_PREFILL_SCORES=0` restores the SWA walk above seven rows;
+its default reuses the same scores with a 1-KiB tile per CTA. Wider DSA
+prefill stays on the original walk because its larger tile loses occupancy.
 
 ## Qwen embedded MTP
 

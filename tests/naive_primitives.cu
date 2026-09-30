@@ -281,7 +281,10 @@ static void ffn(cudaStream_t stream) {
     printf("BF16 SwiGLU, weighted expert accumulation, residual OK\n");
 }
 
-static void attention(cudaStream_t stream, unsigned kv_heads, unsigned window) {
+enum class AttentionData { Simple, Varied };
+
+static void attention(cudaStream_t stream, unsigned kv_heads, unsigned window,
+                      AttentionData pattern = AttentionData::Simple) {
     const unsigned history = window ? 146 : 2049, rows = 3;
     const unsigned capacity = window ? 130 : history;
     const unsigned kw = kv_heads * N05_KEY, vw = kv_heads * N05_VALUE, stride = kw + vw;
@@ -303,6 +306,19 @@ static void attention(cudaStream_t stream, unsigned kv_heads, unsigned window) {
     }
     // Excluded/future values must not contaminate the first queries.
     for (unsigned d = 0; d < vw; d++) { v[d] = 16; v[(size_t)(history - 1) * vw + d] = 32; }
+    if (pattern == AttentionData::Varied) {
+        // BF16 products with different exponents exercise rounding boundaries.
+        uint32_t random = 0x9e3779b9u;
+        const auto next = [&] {
+            constexpr uint32_t multiplier = 1664525u, increment = 1013904223u;
+            random = random * multiplier + increment;
+            const float value = ((int)(random >> 8) - 8388608) * 0x1p-23f;
+            return bf16(std::ldexp(value, -(int)(random & 7)));
+        };
+        for (float &value : k) { value = next(); }
+        for (float &value : q) { value = next(); }
+        for (float &value : v) { value = next(); }
+    }
     float *dk = upload(k), *dv = upload(v), *dq = upload(q), *sink = upload(sinks), *out = device<float>(rows * N05_HEADS * N05_VALUE);
     unsigned *da = upload(all), *dp = upload(pos), *di = upload(ids);
     uint16_t *cache = device<uint16_t>((size_t)capacity * stride);
@@ -415,6 +431,8 @@ int main(void) {
     }
     attention(stream, 8, N05_WINDOW);
     attention(stream, 4, 0);
+    attention(stream, 8, N05_WINDOW, AttentionData::Varied);
+    attention(stream, 4, 0, AttentionData::Varied);
     CUDA(cudaStreamDestroy(stream));
     return 0;
 }

@@ -119,8 +119,10 @@ extern "C" int ds4_gpu_naive_attention(ds4_gpu_tensor *out, const ds4_gpu_tensor
     const float *sinks = window ? naive_control(map, size, sink, N05_HEADS) : nullptr;
     if (window && !sinks) { return 0; }
     const char *scores = getenv("DS4_NAIVE_DECODE_SCORES");
-    // DSA score storage helps narrow decode but reduces wide-prefill occupancy.
-    const bool cached = rows == 1 && (!scores || strcmp(scores, "0"));
+    const char *swa = getenv("DS4_NAIVE_SWA_PREFILL_SCORES");
+    // Only the 1-KiB SWA tile retains wide-prefill occupancy. DSA stays narrow.
+    const bool cached = (rows == 1 && (!scores || strcmp(scores, "0"))) ||
+        (window && rows > N05_DF_BLOCK && (!swa || strcmp(swa, "0")));
     if (cached && window) {
         naive_attention<4, N05_WINDOW><<<dim3(N05_HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr, sinks,

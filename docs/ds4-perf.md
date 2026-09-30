@@ -148,6 +148,9 @@ proofs and hashes; they do not reload the model.
 `DS4_NAIVE_DECODE_SCORES=0` restores the original one-row Naive attention;
 `1` or unset reuses BF16 scores with identical reduction order. It supports
 matched `--env` comparisons and leaves wider prefill unchanged.
+`DS4_NAIVE_SWA_PREFILL_SCORES=0` restores the wide SWA two-pass QK walk;
+`1` or unset reuses its 128 BF16 scores without changing reduction order.
+Widths 2–7 and wider DSA remain on their previous paths.
 Inkling's `DS4_INKLING_NO_LINEAR=1` is a reviewed diagnostic control for
 comparing its ordinary BF16 projection with the prior implementation.
 Unset the variable for the optimized path; comparisons reject other values.
