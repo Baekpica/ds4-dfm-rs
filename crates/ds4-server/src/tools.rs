@@ -1008,6 +1008,10 @@ fn parse_qwen_generated(
     require_thinking_closed: bool,
     orders: &[ToolSchemaOrder],
 ) -> Option<ParsedGenerated> {
+    // Naive's generation prompt leaves thought unopened. Plain text and
+    // immediate tools are valid; an emitted opening tag still needs closure.
+    let require_thinking_closed = require_thinking_closed
+        && (syntax != ModelSyntax::NaiveN05 || find_substr(text, b"<think>").is_some());
     let mut tool_search = 0usize;
     if require_thinking_closed {
         match find_last_substr(text, b"</think>") {
@@ -1077,19 +1081,23 @@ fn parse_qwen_generated(
                 return None;
             }
             p += arg_name_end + 1;
-            if text.get(p) == Some(&b'\r') {
-                p += 1;
-            }
-            if text.get(p) == Some(&b'\n') {
-                p += 1;
+            if syntax != ModelSyntax::NaiveN05 {
+                if text.get(p) == Some(&b'\r') {
+                    p += 1;
+                }
+                if text.get(p) == Some(&b'\n') {
+                    p += 1;
+                }
             }
             let arg_end = find_substr(&text[p..], b"</parameter>")?;
             let mut value_end = p + arg_end;
-            if value_end > p && text[value_end - 1] == b'\n' {
-                value_end -= 1;
-            }
-            if value_end > p && text[value_end - 1] == b'\r' {
-                value_end -= 1;
+            if syntax != ModelSyntax::NaiveN05 {
+                if value_end > p && text[value_end - 1] == b'\n' {
+                    value_end -= 1;
+                }
+                if value_end > p && text[value_end - 1] == b'\r' {
+                    value_end -= 1;
+                }
             }
             let arg_name_s = String::from_utf8_lossy(arg_name).into_owned();
             solar_tool_arg_json_add(
@@ -1290,7 +1298,10 @@ pub fn parse_generated_message(
         ModelSyntax::Dots3 => parse_dots3_generated(text, require_thinking_closed),
         ModelSyntax::SolarOpen2 => parse_solar_generated(text, require_thinking_closed, orders),
         // Step shares this output XML, but renders input through its own Jinja.
-        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 | ModelSyntax::Mimo2 => {
+        ModelSyntax::Qwen4Exp
+        | ModelSyntax::Step37
+        | ModelSyntax::Mimo2
+        | ModelSyntax::NaiveN05 => {
             parse_qwen_generated(syntax, text, require_thinking_closed, orders)
         }
         ModelSyntax::K2Horizon => parse_k2_generated(text, require_thinking_closed, orders),
@@ -1329,7 +1340,7 @@ pub fn parse_generated_for_model_id(
     let format = match syntax {
         ModelSyntax::SolarOpen2 => ChatFormat::SolarOpen2,
         ModelSyntax::Exaone => ChatFormat::Exaone,
-        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 => ChatFormat::Qwen4Exp,
+        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 | ModelSyntax::NaiveN05 => ChatFormat::Qwen4Exp,
         ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
         ModelSyntax::Inkling => ChatFormat::Inkling,
         _ => ChatFormat::DeepSeek,

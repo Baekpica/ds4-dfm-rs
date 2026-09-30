@@ -1177,7 +1177,10 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         ModelSyntax::SolarOpen2 => ChatFormat::SolarOpen2,
         ModelSyntax::Exaone => ChatFormat::Exaone,
         // Only the generated thinking/tool envelope is shared with Qwen.
-        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 | ModelSyntax::Mimo2 => ChatFormat::Qwen4Exp,
+        ModelSyntax::Qwen4Exp
+        | ModelSyntax::Step37
+        | ModelSyntax::Mimo2
+        | ModelSyntax::NaiveN05 => ChatFormat::Qwen4Exp,
         ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
         ModelSyntax::Inkling => ChatFormat::Inkling,
         // Ling shares GLM's thinking and tool-call XML.
