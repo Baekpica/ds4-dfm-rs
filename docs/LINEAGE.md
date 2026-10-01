@@ -100,6 +100,26 @@ Likewise, a generally useful fix developed here should stay small and close to
 the original native style so it can be proposed upstream without dragging in
 the Rust host or DFM-only policy.
 
+## Development context
+
+DwarfStar follows useful open weights that fit personal and workstation-class
+machines. Routed-expert quantization, compressed or recurrent state and fast
+local SSDs make large models and long contexts practical. Support remains
+opportunistic and specific to useful model/artifact/hardware combinations;
+a family may be retired when a better model replaces it.
+
+The Rust continuation keeps the same approach. DFM (독자 파운데이션 모델,
+독파모) and adjacent families have distinct tensor layouts, state machines,
+prompt protocols and kernels. Rust makes lifecycle and serving policy easier
+to own while the native engine stays close to the hardware. Family extensions
+start from a validated path and rerun its correctness and performance gates.
+
+Development uses strong coding-agent assistance. Humans lead ideas, scope,
+testing and debugging, and own the resulting measurements and behavior.
+The largely hand-built work in llama.cpp/GGML, the original DwarfStar and
+Entrpi's CUDA-serving line remains the foundation; assistance does not change
+that provenance.
+
 ## Third-party code
 
 The repository remains MIT licensed; see [`../LICENSE`](../LICENSE). Existing

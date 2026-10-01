@@ -49,6 +49,10 @@ On macOS, `make` selects the inherited Metal build. `make cpu` builds the C
 reference executables; it is not a production CPU performance target. Avoid
 large CPU inference on macOS because of the documented VM failures.
 
+`./ds4-server --version` reports the Rust package version;
+`make print-version` reports the Git-derived native build stamp. Rust and native
+objects must come from the same commit.
+
 Native checks include `make cuda-regression`, `make test-model-family-kernels`
 and `make test-mmq-parity`, according to the affected path. `make test` and
 `ds4_test` retain C/native regression coverage; `ds4_test --server` does not
@@ -96,3 +100,15 @@ reference evidence, not a gate for every family.
 For a generation or API failure, retain the request shape, runtime SHA/build,
 model identity, server stdout/stderr and relevant profiler artifacts. Use small
 reproducible inputs and exclude credentials from shared logs.
+
+## Documentation changes
+
+Use the [documentation index](docs/README.md) to choose the owning guide.
+Keep operational instructions separate from dated evidence; retain the exact
+artifact, workload and qualification boundaries when summarizing a result.
+
+For Markdown-only edits, check local links and heading anchors, review tables,
+images and code fences, and run `git diff --check`. Inference builds and live
+model gates are unnecessary for prose-only changes. The
+[serving capability table](docs/serving-capabilities.md) is generated; preserve
+its generator/check contract rather than editing its cells by hand.

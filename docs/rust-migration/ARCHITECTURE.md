@@ -6,6 +6,18 @@ with a stable host/runtime boundary and a native performance-observability
 workflow. Its production qualification is tracked separately from the
 [pre-split parity evidence](PARITY_MATRIX.md).
 
+## Design principles
+
+Keep model mechanics explicit: shapes, tensors, state, prompt protocols and
+stops are family contracts. Add only the abstractions shared by proven families,
+using direct dispatch and narrow interfaces. Hardware-specific hot paths stay
+native; the Rust host owns lifecycle and policy.
+
+A family addition validates the GGUF shape and tensor inventory, tokenizer and
+input/output protocol, native state lifecycle and serving eligibility. Promotion
+requires loader, forward, API, state/KV and measured performance gates. Preserve
+the C oracles and original goldens rather than refreshing away drift.
+
 ## Ownership and execution
 
 ```text
@@ -69,6 +81,18 @@ targets. Native helper and oracle retention is intentional; it is not a claim
 that inference has no C/CUDA dependency. Retire a C host oracle only after
 its Rust replacement has unit/live parity, performance and soak evidence;
 keep the baseline reachable in Git.
+
+### Native sources and tests
+
+| Path | Responsibility |
+|---|---|
+| `native/bridge` | Opaque Rust/native inference boundary |
+| `ds4.c` | Native model engine, GPU state and compatibility helpers |
+| `ds4_cuda.cu`, `cuda/mmq/` | CUDA backend and vendored MMQ primitives |
+| `ds4_metal.m`, `metal/` | Inherited Metal backend and kernels |
+| `tests/parity` | C behavior oracles for Rust host checks |
+| `docs/releases` | Release definitions and qualification gates |
+| `docs/rust-migration` | Current boundary contracts and frozen migration evidence |
 
 ## Host concurrency and state
 
