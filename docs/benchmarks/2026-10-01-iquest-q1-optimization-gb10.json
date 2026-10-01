@@ -1,0 +1,281 @@
+{
+  "schema": 1,
+  "date": "2026-10-01",
+  "status": "P1 adopted; six-round campaign ongoing",
+  "effective_rounds": {
+    "prefill": 1,
+    "decode": 0
+  },
+  "dedicated_round_goal": {
+    "prefill": 3,
+    "decode": 3
+  },
+  "source": {
+    "base_commit": "de3cdb5e955003e39d4b3bc5c3b90b0b8080a57b",
+    "measurement_state": "uncommitted P1 candidate on base; source and binary hashes pin measured implementation",
+    "binary_sha256": "1e2f79434e12ce0f6c92a6691f35090fc1ea5945fd642e8bb05d8e691bb38030",
+    "files_sha256": {
+      "cuda/iquest_primitives.cuh": "d80eb6a830c881928fd98cbfa8e93a67c28b8134e28051e9851583030534ea30",
+      "ds4_iquest_gpu.cuh": "20801ac17cf7231c1859f8e94d088862889a96f8606981ba9ee4896fdead1895",
+      "tests/iquest_attention_profile.cu": "403ae7da9d735cbaa5a3bb19cd3289799b51c47f3631664e2f6a8242c245a2af",
+      "tests/iquest_reduce_verify.cu": "ccf1d1e36eed86c80728548145e133b8b896ed39f1b3691d66e0a7b5cd784bd3"
+    }
+  },
+  "artifact": {
+    "repository": "Baekpica/IQuest-Q1-Mixed-Quant-GGUF",
+    "weight_revision": "6f08e63aa9dcd29cd29966180846266c0ca80639",
+    "source_revision": "5c21b0630586ef77d38cff1094b8cf37a417fcd8",
+    "shard_file_bytes": 87995249696,
+    "shards_sha256": {
+      "IQuest-Q1-MQ-IQ2_XXS-00001-of-00006.gguf": "59cfbc372f2e8988a960626508e62ec49a373efbba4848e122d6cc96288b332d",
+      "IQuest-Q1-MQ-IQ2_XXS-00002-of-00006.gguf": "68db6ed9aacb347f41f732c048220905c9336793bcc5a95a6ee59590f6d7ed36",
+      "IQuest-Q1-MQ-IQ2_XXS-00003-of-00006.gguf": "c2e686e4396d57e33bc9f1662e535b4e910033b95d6875b07c12ff81e34b1342",
+      "IQuest-Q1-MQ-IQ2_XXS-00004-of-00006.gguf": "1eaccda174c4505c70cf2cd4a7a4962ba60a7a29528d3fe777d25537c6934fc5",
+      "IQuest-Q1-MQ-IQ2_XXS-00005-of-00006.gguf": "4ffacc99ab740130b9ccafaf46151c38e48e6940bde105cc393ef041ccc54c23",
+      "IQuest-Q1-MQ-IQ2_XXS-00006-of-00006.gguf": "ae3eb2281a673a4f96bedd704266ea0213fe909af8d456767bc6fdefe23ce844"
+    },
+    "hash_verification": "Release-manifest-derived SHA256; all shard sizes/mtimes checked before/after. This campaign did not freshly stream-hash the 88GB artifact."
+  },
+  "machine": {
+    "gpu": "NVIDIA GB10",
+    "compute": "12.1",
+    "sms": 48,
+    "os_arch": "Linux aarch64",
+    "cuda_compiler": "13.3.73",
+    "driver": "615.71.09",
+    "ncu": "2026.2.1.0",
+    "nsys": "2026.1.3",
+    "measured_graphics_clock_mhz": {
+      "min": 2190,
+      "median": 2190,
+      "max": 2197
+    },
+    "clock_policy": "User clock settings preserved; profiler clock-control none"
+  },
+  "workload": {
+    "prompt_tokens": 2048,
+    "context_capacity": 8192,
+    "prefill_chunk": 128,
+    "generated_tokens": 32,
+    "mtp": "off (draft=1)",
+    "sampling": "greedy, EOS suppressed",
+    "prompt_mode": "raw byte tokenization, exact prefix; no replication",
+    "prompt_sha256": "5a321733c27a87b3bb3ce6a6081ebcc8a8653bdccb03944e709da27439df5891",
+    "residency": "one canonical VMM owner; sequential fresh workers"
+  },
+  "P1": {
+    "change": "Order-equivalent 128-thread attention reduction using shuffle; default enabled, DS4_IQUEST_ATTN_SHUFFLE=0 restores fallback",
+    "initial_attention_phase_kernel_share_percent": {
+      "prefill": 65.25347156827826,
+      "decode": 76.21312681259019
+    },
+    "numerical_contract": "Exact float bits and committed payload bytes for the recorded workloads",
+    "ab_order": "ABBAAB",
+    "warmup": "Separate identical fresh warmup process before every measured worker",
+    "samples": [
+      {
+        "variant": "A",
+        "prefill_tps": 62.03,
+        "decode_tps": 3.37
+      },
+      {
+        "variant": "B",
+        "prefill_tps": 97.22,
+        "decode_tps": 4.49
+      },
+      {
+        "variant": "B",
+        "prefill_tps": 97.22,
+        "decode_tps": 4.5
+      },
+      {
+        "variant": "A",
+        "prefill_tps": 61.95,
+        "decode_tps": 3.37
+      },
+      {
+        "variant": "A",
+        "prefill_tps": 61.99,
+        "decode_tps": 3.37
+      },
+      {
+        "variant": "B",
+        "prefill_tps": 97.29,
+        "decode_tps": 4.49
+      }
+    ],
+    "statistics": {
+      "A": {
+        "prefill_tps": {
+          "min": 61.95,
+          "median": 61.99,
+          "max": 62.03
+        },
+        "gen_tps": {
+          "min": 3.37,
+          "median": 3.37,
+          "max": 3.37
+        }
+      },
+      "B": {
+        "prefill_tps": {
+          "min": 97.22,
+          "median": 97.22,
+          "max": 97.29
+        },
+        "gen_tps": {
+          "min": 4.49,
+          "median": 4.49,
+          "max": 4.5
+        }
+      }
+    },
+    "median_gain_percent": {
+      "prefill_tps": 56.831747055976756,
+      "gen_tps": 33.23442136498515
+    },
+    "decode_round_credit": 0,
+    "decode_scope": "Incidental measured improvement; no dedicated decode round credited"
+  },
+  "correctness": {
+    "bench_workers": 12,
+    "finite_prefill_logits_per_worker": 160000,
+    "prefill_logits_f32_bits_exact": true,
+    "tokens_per_worker": 32,
+    "tokens_identical": true,
+    "ordinary_state": {
+      "prefill_payload_bytes": 392827956,
+      "final_payload_bytes": 398955700,
+      "each_stage_full_vocab_logit_bytes": 640000,
+      "all_bytes_exact": true,
+      "fixed_tokens_match_greedy": true,
+      "restore_checks_exact": 4,
+      "faults_unchanged": true,
+      "speculative_counters_zero": true,
+      "after_drop_substrate_bytes": 0,
+      "physical_ring_crossed": false
+    },
+    "attention_cases": {
+      "count": 32,
+      "all_byte_exact_finite_bf16": true,
+      "rows": [
+        1,
+        128
+      ],
+      "windows": [
+        0,
+        512,
+        4096
+      ],
+      "capacities": [
+        519,
+        4223,
+        8192
+      ],
+      "sink": "non-BF16 F32 synthetic sink",
+      "position_mode": "permuted",
+      "ring_cases_included": true,
+      "manifest_digest_encoding": "UTF-8 sorted basename + space + raw-file SHA256 + newline",
+      "manifest_sha256": "912808327ae8d41859a560b2ba5304dfaeda0245195145bca2e0da18a0fad128"
+    },
+    "reference13": "Independent CPU oracle PASS; baseline/candidate bytes exact",
+    "reduction": {
+      "readback_elements": 1048576,
+      "bit_mismatches": 0,
+      "nan_contract": "classification only",
+      "racecheck_hazards": 0
+    },
+    "verifier_model_free_tests": {
+      "passed": 6,
+      "failed": 0,
+      "change_after_live_gate": "cfg(test) function rename only"
+    }
+  },
+  "isolated_attention": {
+    "scope": "Synthetic resident operands, full attention, position2047, capacity8192; not whole-model speed",
+    "hot_resident_protocol": "Three fresh processes per implementation/phase in ABBAAB order; each uses 3 warmups and 7 timed launches",
+    "median_ms": {
+      "decode_rows1": {
+        "baseline": 1.45194054,
+        "reduced": 0.883670866
+      },
+      "prefill_rows128": {
+        "baseline": 29.0428486,
+        "reduced": 11.3224554
+      }
+    },
+    "input_limit": "Timing fixture uses BF16-in-F32 query/sink and Q8 KV; learned production sink is F32. Separate parity fixtures use F32 sink.",
+    "ncu_prefill": {
+      "baseline": {
+        "ms": 29.35,
+        "lsu_percent": 85.15,
+        "registers_per_thread": 26,
+        "achieved_occupancy_percent": 93.36
+      },
+      "P1": {
+        "ms": 12.86,
+        "lsu_percent": 61.23,
+        "registers_per_thread": 38,
+        "achieved_occupancy_percent": 96.71
+      },
+      "method": "Full counters, one selected launch, kernel replay, cache-control all, clock-control none",
+      "residency_difference": "Baseline NCU had no model owner; P1 profiling retained an idle canonical owner. Hot resident timing and cache-flushed NCU are separate regimes.",
+      "event_timing_under_ncu": "Includes replay overhead; not used as kernel latency"
+    }
+  },
+  "resource_and_sass": {
+    "global_tensor_allocation_change_bytes": 0,
+    "static_shared_bytes_per_block": 512,
+    "static_shared_change_bytes": 0,
+    "registers_per_thread": [
+      26,
+      38
+    ],
+    "local_spill_load_store_instructions": 0,
+    "cta_barriers_per_reduction": [
+      9,
+      3
+    ],
+    "arithmetic": "Leaf products, reduction tree, recurrence contractions and both BF16 rounding boundaries preserved",
+    "generated_schedule": "P1 also produces compiler-generated two-key unrolling/load scheduling. Gain is not attributed exclusively to fewer barriers.",
+    "fallback": "168 semantic SASS instructions match archived baseline, ignoring two register-reuse annotations"
+  },
+  "retained_whole_workload_profile": {
+    "scope": "NVTX-scoped kernel attribution after adoption; not speed A/B",
+    "prefill": {
+      "aggregate_kernel_ms": 20953.920387,
+      "attention_ms": 9485.993792,
+      "attention_share_percent": 45.27073510255959
+    },
+    "decode": {
+      "aggregate_kernel_ms": 6995.190592,
+      "attention_ms": 4770.929856,
+      "attention_share_percent": 68.20300023642301
+    }
+  },
+  "limits": [
+    "Only recorded 2K+32 ordinary workload qualifies whole-model optimization parity.",
+    "Synthetic wrap/MTP-window cases do not qualify full-model long context, recursive MTP or continuous serving.",
+    "Existing IQuest quality/serving limitations remain; no 512K qualification or new quality claim.",
+    "Campaign remains ongoing; fresh retained-baseline profiling precedes subsequent rounds."
+  ],
+  "raw_reports": {
+    "root": "scratch/iquest-perf",
+    "sha256": {
+      "p1-ab/summary.json": "f9708ea42ed188333009ab9289624b28c4e71d375e6f4648788d44771709e961",
+      "p1-ab/independent-audit.json": "5a73c6e2c8887a322c39504cb73b590c9eff05bbf7b96cf995370fd94c50dffb",
+      "p1-state-comparison.json": "a9a02c7d62bead74b8dc2d1f53a96891c8b921b7d8597d5832231189561e4a4e",
+      "p1-state-independent-audit.json": "beca0bdb7c2d54b4de8da38030c71be5fc91fdcc999e69ab01635cdf5083cf4e",
+      "p1-attn-reference13.json": "ac8aaf09237d754a51e6ec3a58cd7dfa792f8b10b36ce9642bcb91329c78b329",
+      "reduce-verify.json": "635cb18615d64a0f2dbc85e623311151f3d224b4a3cafb99751d498606264cdf",
+      "reduce-racecheck.log": "9d7ea6ed8ec34f2f29b3cbdd9d42eddb6bdb7e623ef4b2f10072bdb943444feb",
+      "p1-sass-proof.json": "097fe89f7d694b92c361be758475614d3e1b019d592aae1cd4f8791c10dda2c4",
+      "machine-full/machine.json": "4f7b7ea23c40f8c4b09fb6a8f951d3b7979a2e6786ce25b22e06c6700c3c3d9a",
+      "ncu-attn-prefill-baseline.details.txt": "65b455eb45cdc825248ca8163d530a8328a1c58ffd9c47381c99f72df71de679",
+      "ncu-attn-prefill-p1.details.txt": "31e562c0262cc45f14a0b545ad0ba2af3dadfeab38f35518602b25f124000e8d",
+      "p1-attn-timing.jsonl": "4f2e2729b802a594aabdb97a2195a9a5fb5356a01718cb32192ca9ca786dd549",
+      "p1-profile/attribution.json": "6153683574afc7833f6ac4cc70c96678a12b3ae92354f8f857ba2138c06ab0f8",
+      "state-verify-cpu-renamed.log": "c6baea8e02359de78b82b67b53a81608c136af0bbfe53f9d0a462fc56d1d1d09"
+    }
+  }
+}

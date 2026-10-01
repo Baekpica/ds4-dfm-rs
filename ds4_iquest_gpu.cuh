@@ -13,6 +13,15 @@ static bool iq_tensor(const ds4_gpu_tensor *t, uint64_t bytes) {
     return t && t->ptr && t->bytes >= bytes;
 }
 
+static bool iq_attn_shuffle() {
+    // Process-wide diagnostic fallback keeps graph selection stable.
+    static const bool enabled = [] {
+        const char *value = getenv("DS4_IQUEST_ATTN_SHUFFLE");
+        return !value || strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
 extern "C" int ds4_gpu_iquest_rms(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
         const void *map, uint64_t size, uint64_t offset, uint32_t width, uint32_t rows) {
     if (!rows || rows > IQ_PREFILL_MAX * IQ_HEADS || (width != IQ_HEAD && width != IQ_EMBED)) { return 0; }
@@ -76,9 +85,15 @@ extern "C" int ds4_gpu_iquest_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *qu
         offset > size || sink_bytes > size - offset) { return 0; }
     const float *sink = (const float *)cuda_model_range_ptr(map, offset, sink_bytes, "IQuest learned sink");
     if (!sink) { return 0; }
-    iquest_attn_kernel<<<dim3(rows, IQ_HEADS), IQ_HEAD, 0, ds4_current_stream()>>>(
-        (float *)out->ptr, (const float *)query->ptr, (const iquest_q8 *)cache->ptr,
-        sink, (const unsigned *)positions->ptr, capacity, window);
+    if (iq_attn_shuffle()) {
+        iquest_attn_shuffle_kernel<<<dim3(rows, IQ_HEADS), IQ_HEAD, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)query->ptr, (const iquest_q8 *)cache->ptr,
+            sink, (const unsigned *)positions->ptr, capacity, window);
+    } else {
+        iquest_attn_kernel<<<dim3(rows, IQ_HEADS), IQ_HEAD, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)query->ptr, (const iquest_q8 *)cache->ptr,
+            sink, (const unsigned *)positions->ptr, capacity, window);
+    }
     return cuda_ok(cudaGetLastError(), "IQuest learned-key Q8_0 attention");
 }
 

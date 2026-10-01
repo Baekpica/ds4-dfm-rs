@@ -171,6 +171,10 @@ tests/naive_banks
 /tests/cuda_tokentile_ldmatrix
 /tests/iquest_verify
 /tests/iquest_bank_verify
+/tests/iquest_perf_verify
+/tests/iquest_attention_profile
+/tests/iquest_reduce_verify
+/tests/iquest_router_profile
 /tests/test_iquest_prefix
 /tests/test_iquest_primitives
 /tests/test_iquest_dispatch

@@ -199,6 +199,10 @@ The bandwidth figure is informational; we don't tier on it.
   prefill. Unset uses the GQA2 HMMA tiles already used on full-attention
   layers. EXAONE/K2 SWA stays on the warp path.
 
+- `DS4_IQUEST_ATTN_SHUFFLE=0` restores the shared-memory attention
+  reduction. The default keeps the same FP32 addition tree while replacing
+  six block barriers with warp shuffles. Both BF16 output boundaries and
+  the learned-key sink remain unchanged. Read once per process.
 - `DS4_MIMO2_SWA_DECODE=0` restores MiMo's one-row, window-128 attention
   walk. The default shares KV across eight query heads. `DS4_MIMO2_SWA_VEC=0`
   selects scalar copies inside the shared tile. Both accept `0` and `1` in
