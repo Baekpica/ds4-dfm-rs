@@ -14924,49 +14924,55 @@ __device__ __forceinline__ uint32_t tt_ring_off_bytes(uint32_t row, uint32_t c) 
     return (row * kTTRingChunksPerRow + (c ^ (row & 7u))) * kTTRingChunkBytes;
 }
 
-__device__ __forceinline__ void tt_ldmatrix_x4_addr(uint32_t (&r)[4], unsigned a) {
+/* ldmatrix address form: the operand is the pointer itself, in a 64-bit
+ * register, exactly as llama.cpp's mma.cuh does it.  Handing ptxas a 32-bit
+ * __cvta_generic_to_shared offset in an "r" operand instead makes it emit an
+ * address off by the shared-window base on this toolchain, and every ldmatrix
+ * then faults with an illegal shared access - ptxas puts
+ * IADD3 R74, R15, -c[0x0][0x18], RZ right before LDSM.16.M88.2 R74, [R74]. */
+__device__ __forceinline__ void tt_ldmatrix_x4_addr(uint32_t (&r)[4], const void *p) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
     asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0, %1, %2, %3}, [%4];"
                  : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
-                 : "r"(a));
+                 : "l"(p));
 #else
-    (void)a;
+    (void)p;
     r[0] = r[1] = r[2] = r[3] = 0;
 #endif
 }
 
-__device__ __forceinline__ void tt_ldmatrix_x2_addr(uint32_t (&r)[2], unsigned a) {
+__device__ __forceinline__ void tt_ldmatrix_x2_addr(uint32_t (&r)[2], const void *p) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
     asm volatile("ldmatrix.sync.aligned.m8n8.x2.b16 {%0, %1}, [%2];"
                  : "=r"(r[0]), "=r"(r[1])
-                 : "r"(a));
+                 : "l"(p));
 #else
-    (void)a;
+    (void)p;
     r[0] = r[1] = 0;
 #endif
 }
 
-__device__ __forceinline__ void tt_ldmatrix_x2_trans_addr(uint32_t (&r)[2], unsigned a) {
+__device__ __forceinline__ void tt_ldmatrix_x2_trans_addr(uint32_t (&r)[2], const void *p) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
     asm volatile("ldmatrix.sync.aligned.m8n8.x2.trans.b16 {%0, %1}, [%2];"
                  : "=r"(r[0]), "=r"(r[1])
-                 : "r"(a));
+                 : "l"(p));
 #else
-    (void)a;
+    (void)p;
     r[0] = r[1] = 0;
 #endif
 }
 
 __device__ __forceinline__ void tt_ldmatrix_x4(uint32_t (&r)[4], const void *p) {
-    tt_ldmatrix_x4_addr(r, tt_smem_addr(p));
+    tt_ldmatrix_x4_addr(r, p);
 }
 
 __device__ __forceinline__ void tt_ldmatrix_x2(uint32_t (&r)[2], const void *p) {
-    tt_ldmatrix_x2_addr(r, tt_smem_addr(p));
+    tt_ldmatrix_x2_addr(r, p);
 }
 
 __device__ __forceinline__ void tt_ldmatrix_x2_trans(uint32_t (&r)[2], const void *p) {
-    tt_ldmatrix_x2_trans_addr(r, tt_smem_addr(p));
+    tt_ldmatrix_x2_trans_addr(r, p);
 }
 
 __device__ __forceinline__ void tt_mma_m16n8k16_f16_f32(
@@ -15556,7 +15562,7 @@ __device__ __forceinline__ void tt_hmma_score_stage(
     const uint32_t mtile = warp >> 2u;
     const uint32_t kq = warp & 3u;
     const uint32_t lane = tt_lane_id();
-    const unsigned kv_smem = tt_smem_addr(kv_cur);
+    const unsigned char *kv_smem = (const unsigned char *)kv_cur;
     const uint32_t score_row_lane = lane & 7u;
     const uint32_t score_chunk_lane = (lane >> 3u) & 1u;
     const uint32_t score_chunk_base = kq * (kTTScoreKSliceDim / 8u) + score_chunk_lane;
@@ -15700,21 +15706,21 @@ __device__ __forceinline__ void tt_pv_mma_stage(
     constexpr uint32_t kProbStride = tt_TokentileLayout<TT_STAGE_ROWS>::prob_stride;
     constexpr unsigned kPvAStepBytes = 16u * sizeof(half);
     constexpr unsigned kPvMtileBytes = 16u * kProbStride * sizeof(half);
-    const unsigned probs_lane_base =
-        tt_smem_addr(probs) +
-        (unsigned)(((lane & 15u) * (kProbStride / 2u) +
-                    (lane >> 4u) * 4u) * sizeof(uint32_t));
-    const unsigned kv_smem = tt_smem_addr(kv_cur);
+    const unsigned char *probs_lane_base =
+        (const unsigned char *)probs +
+        (((lane & 15u) * (kProbStride / 2u) +
+          (lane >> 4u) * 4u) * sizeof(uint32_t));
+    const unsigned char *kv_smem = (const unsigned char *)kv_cur;
     const uint32_t pv_row_lane = lane & 15u;
     const uint32_t pv_chunk_base = pv_warp * kPvNTiles;
 #pragma unroll
     for (uint32_t kt = 0; kt < TT_STAGE_ROWS / 16u; ++kt) {
-        const unsigned probs_kt_base = probs_lane_base + (unsigned)(kt * kPvAStepBytes);
+        const unsigned char *probs_kt_base = probs_lane_base + kt * kPvAStepBytes;
         const uint32_t pv_row = kt * 16u + pv_row_lane;
 #pragma unroll
         for (uint32_t mtile = 0; mtile < kMtiles; ++mtile) {
             uint32_t a[4];
-            tt_ldmatrix_x4_addr(a, probs_kt_base + (unsigned)(mtile * kPvMtileBytes));
+            tt_ldmatrix_x4_addr(a, probs_kt_base + mtile * kPvMtileBytes);
 #pragma unroll
             for (uint32_t ntile = 0; ntile < kPvNTiles; ++ntile) {
                 uint32_t b[2];

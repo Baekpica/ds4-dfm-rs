@@ -62,7 +62,10 @@ int ds4_mmq_iq2_xxs_moe_d2r_pair_launch(
     int             n_expert_used,
     void          * worklist_scratch,
     size_t          worklist_scratch_bytes,
-    cudaStream_t    stream);
+    cudaStream_t    stream,
+    // With ids_src, Q8 has n_tokens rows; sorted assignment columns index it.
+    const int32_t * ids_src = nullptr,
+    int             n_tokens = 0);
 
 // Complete target-prefill gate/up path: both IQ2_XXS projections share one
 // activation tile, then sanitize + clamp + SwiGLU + routing weight are folded

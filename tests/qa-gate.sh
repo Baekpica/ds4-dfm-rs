@@ -16,10 +16,11 @@
 # Env knobs:
 #   QA_BASE           ref the new surfaces are diffed against
 #                     (default origin/<current branch>, falling back to
-#                     origin/main on a branch that is not pushed yet)
+#                     fork/<current branch>, then origin/main)
 #   QA_MODEL          QA-tester model name, used in messages only; the project's
 #                     recorded choice is deepseek-v4.1-CC-flash
 #   QA_SURFACE_PATHS  newline list of surface paths (default: below)
+#   QA_SURFACES       newline list of file surfaces (default changed files)
 #   QA_REPORT         path to the report (default qa-evidence/qa-report.md)
 #
 # Exit 0 = green (no new surfaces, or report fresh+pass+covering). Exit 1 red.
@@ -31,7 +32,16 @@ if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
 fi
 
 BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "main")
-BASE=${QA_BASE:-origin/${BRANCH}}
+BASE=${QA_BASE:-}
+if [[ -z "$BASE" ]]; then
+  BASE=origin/main
+  for cand in "origin/${BRANCH}" "fork/${BRANCH}"; do
+    if git rev-parse --verify --quiet "${cand}^{commit}" >/dev/null 2>&1; then
+      BASE="$cand"
+      break
+    fi
+  done
+fi
 MODEL=${QA_MODEL:-deepseek-v4.1-CC-flash}
 REPORT=${QA_REPORT:-qa-evidence/qa-report.md}
 
@@ -60,7 +70,7 @@ abi=""; knobs=""; targets=""; rust=""
 for path in "${PATHS[@]}"; do
   # Only paths that exist at HEAD and were touched are surface sources.
   if ! git cat-file -e "${HEAD_SHA}:${path}" 2>/dev/null; then continue; fi
-  added=$(git diff "${BASE}" "${HEAD_SHA}" -- "$path" 2>/dev/null | grep -E '^\+[^+]')
+  added=$(git diff "${BASE_SHA}" -- "$path" 2>/dev/null | grep -E '^\+[^+]')
   [[ -z "$added" ]] && continue
   case "$path" in
     ds4_gpu.h)
@@ -78,10 +88,19 @@ for path in "${PATHS[@]}"; do
   esac
 done
 
-all_surfaces=$(printf '%s\n%s\n%s\n%s' "$abi" "$knobs" "$targets" "$rust" \
+# Keep the file coverage required by the CUDA gate alongside ABI coverage.
+DEFAULT_EXCLUDE='^(qa-evidence/|graphify-out/|\.callgraph-index\.bin|tests/cuda_long_context_smoke|.*-handoff\.md$|.*\.o$|.*\.bin$)'
+if [[ -n "${QA_SURFACES:-}" ]]; then
+  files=$QA_SURFACES
+else
+  files=$(git diff --name-only "$BASE_SHA" -- \
+          | grep -vE "${QA_SURFACE_EXCLUDE:-$DEFAULT_EXCLUDE}")
+fi
+
+all_surfaces=$(printf '%s\n%s\n%s\n%s\n%s' "$abi" "$knobs" "$targets" "$rust" "$files" \
                | sed '/^$/d' | sort -u)
 if [[ -z "$all_surfaces" ]]; then
-  echo "QA GATE: ALL PASS (no new C ABI entry, DS4_* knob, make target or Rust item relative to ${BASE})"
+  echo "QA GATE: ALL PASS (no changed file or new ABI, knob, make target or Rust item relative to ${BASE})"
   exit 0
 fi
 echo "New surfaces to be QA'd (${MODEL}):"

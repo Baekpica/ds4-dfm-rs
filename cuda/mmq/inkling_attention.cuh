@@ -67,18 +67,20 @@ __device__ __forceinline__ uint32_t ia_pack(float a, float b) {
     return *reinterpret_cast<const uint32_t *>(&h);
 }
 
+/* The operand is the pointer itself in a 64-bit register, as in llama.cpp's
+ * mma.cuh: a 32-bit __cvta_generic_to_shared offset in an "r" operand makes
+ * ptxas subtract the shared-window base again and the load faults with an
+ * illegal shared access (CUDA 13.3 / sm_89). */
 __device__ __forceinline__ void ia_ldsm_x4(
         uint32_t &r0, uint32_t &r1, uint32_t &r2, uint32_t &r3, const uint16_t *p) {
-    const uint32_t addr = (uint32_t)__cvta_generic_to_shared(p);
     asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0, %1, %2, %3}, [%4];"
-                 : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3) : "r"(addr));
+                 : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3) : "l"(p));
 }
 
 __device__ __forceinline__ void ia_ldsm_x4_trans(
         uint32_t &r0, uint32_t &r1, uint32_t &r2, uint32_t &r3, const uint16_t *p) {
-    const uint32_t addr = (uint32_t)__cvta_generic_to_shared(p);
     asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.b16 {%0, %1, %2, %3}, [%4];"
-                 : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3) : "r"(addr));
+                 : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3) : "l"(p));
 }
 
 /* bf16 rows [rows][IA_KV_ROW] of the current chunk in the cache layout. */

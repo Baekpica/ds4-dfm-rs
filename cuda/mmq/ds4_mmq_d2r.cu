@@ -38,6 +38,7 @@ static bool d2r_stats_enabled() {
 }
 
 enum class Iq2Schedule { Original, Bounded };
+enum class Iq2Input { Sorted, TokenCompact };
 
 constexpr int kMTile      = 128;
 constexpr int kNTile      = 64;
@@ -433,7 +434,7 @@ __device__ __forceinline__ void issue_fused_q8_prefetch_one(
         const char * __restrict__ q8_iter_base,
         uint32_t y_off, int col_count, int stage, int t) {
     constexpr int TileN = NFrag * 8;
-    static_assert(TileN == 8 || TileN == 16 || TileN == 32,
+    static_assert(TileN == 8 || TileN == 16 || TileN == 32 || TileN == 64,
                   "unsupported fused D2R tile width");
     static_assert(kThreads % TileN == 0,
                   "fused q8 y_off expects trip-invariant col_local");
@@ -1279,21 +1280,36 @@ __device__ __forceinline__ void mma_fold_iq2_k128(
     }
 }
 
-template <Iq2Schedule Schedule, bool FullTile, typename TileA, typename TileB, typename TileC>
+// A token offset stays constant through all K tiles; the staged Q8 bytes
+// and MMA order match sorted input, without materializing eight copies.
+template <Iq2Input Input, bool FullTile>
+__device__ __forceinline__ void issue_iq2_q8_prefetch(
+        block_q8_1_mmq (&s_q8)[kStages][kNFrag][8],
+        const volatile SmemInvariants &s_inv,
+        uint32_t y_off, int stage, int k128_iter) {
+    if constexpr (Input == Iq2Input::TokenCompact) {
+        issue_fused_q8_prefetch<FullTile, kNFrag>(
+                s_q8, s_inv, y_off, stage, k128_iter);
+    } else if constexpr (FullTile) {
+        issue_q8_prefetch_fast(s_q8, s_inv, stage, k128_iter);
+    } else {
+        issue_q8_prefetch<false>(s_q8, s_inv, stage, k128_iter, d2r_tid());
+    }
+}
+
+template <Iq2Schedule Schedule, bool FullTile, typename TileA, typename TileB, typename TileC,
+          Iq2Input Input = Iq2Input::Sorted>
 __device__ __forceinline__ void iq2_d2r_mainloop(
         float (&acc)[kNFrag][TileC::ne],
         block_q8_1_mmq (&s_q8)[kStages][kNFrag][8],
         IQ2RawWarpStage (&s_raw)[kWarps][kRawStages],
         const uint2 * __restrict__ s_grid,
-        const volatile SmemInvariants &s_inv) {
+        const volatile SmemInvariants &s_inv, uint32_t y_off = 0) {
 #pragma unroll
     for (int pf = 0; pf < kStages; ++pf) {
         if (pf < s_inv.k128_iters) {
-            if constexpr (FullTile) {
-                issue_q8_prefetch_fast(s_q8, s_inv, d2r_q8_stage(pf), pf);
-            } else {
-                issue_q8_prefetch<false>(s_q8, s_inv, d2r_q8_stage(pf), pf, d2r_tid());
-            }
+            issue_iq2_q8_prefetch<Input, FullTile>(
+                    s_q8, s_inv, y_off, d2r_q8_stage(pf), pf);
         }
     }
 
@@ -1343,11 +1359,8 @@ __device__ __forceinline__ void iq2_d2r_mainloop(
         __syncthreads();
         const int pf_iter = k128_iter + kStages;
         if (pf_iter < s_inv.k128_iters) {
-            if constexpr (FullTile) {
-                issue_q8_prefetch_fast(s_q8, s_inv, d2r_q8_stage(pf_iter), pf_iter);
-            } else {
-                issue_q8_prefetch<false>(s_q8, s_inv, d2r_q8_stage(pf_iter), pf_iter, d2r_tid());
-            }
+            issue_iq2_q8_prefetch<Input, FullTile>(
+                    s_q8, s_inv, y_off, d2r_q8_stage(pf_iter), pf_iter);
         }
         if ((k128_iter & 1) != 0) {
             const int raw_pf = (k128_iter >> 1) + kRawStages;
@@ -2394,7 +2407,7 @@ void down_q2k_d2r_kernel(const void * __restrict__ W_soa,
 #endif
 }
 
-template <Iq2Schedule Schedule>
+template <Iq2Schedule Schedule, Iq2Input Input = Iq2Input::Sorted>
 __global__ __launch_bounds__(kThreads, 2)
 void gateup_iq2_d2r_pair_kernel(const void * __restrict__ gate_soa,
                                 const void * __restrict__ up_soa,
@@ -2405,7 +2418,9 @@ void gateup_iq2_d2r_pair_kernel(const void * __restrict__ gate_soa,
                                 const int * __restrict__ n_items_ptr,
                                 float * __restrict__ out_gate,
                                 float * __restrict__ out_up,
-                                int M, int K, int n_assign, int E) {
+                                int M, int K, int n_assign, int E,
+                                const int32_t * __restrict__ ids_src,
+                                int n_tokens) {
 #if defined(TURING_MMA_AVAILABLE)
     const int n_items = *n_items_ptr;
     if ((int)blockIdx.y >= n_items) {
@@ -2456,11 +2471,13 @@ void gateup_iq2_d2r_pair_kernel(const void * __restrict__ gate_soa,
         s_inv.iq2_dq_base = reinterpret_cast<const half *>(W_soa);
         s_inv.iq2_qs_base =
             reinterpret_cast<const uint2 *>(reinterpret_cast<const char *>(W_soa) + dq_bytes);
-        s_inv.q8_tile_base = reinterpret_cast<const char *>(q8) + (uint64_t)col_lo * sizeof(block_q8_1_mmq);
+        const uint64_t q8_col = Input == Iq2Input::Sorted ? (uint64_t)col_lo : 0;
+        s_inv.q8_tile_base = reinterpret_cast<const char *>(q8) + q8_col * sizeof(block_q8_1_mmq);
         s_inv.out = out;
         s_inv.sc_off_bytes = 0;
         s_inv.qs_off_bytes = 0;
-        s_inv.q8_k128_stride_bytes = (uint32_t)((uint64_t)n_assign * sizeof(block_q8_1_mmq));
+        const int q8_rows = Input == Iq2Input::TokenCompact ? n_tokens : n_assign;
+        s_inv.q8_k128_stride_bytes = (uint32_t)((uint64_t)q8_rows * sizeof(block_q8_1_mmq));
         s_inv.nb = nb;
         s_inv.k128_iters = K >> 7;
         s_inv.M = M;
@@ -2478,14 +2495,21 @@ void gateup_iq2_d2r_pair_kernel(const void * __restrict__ gate_soa,
     }
     __syncthreads();
 
+    uint32_t y_off = 0;
+    if constexpr (Input == Iq2Input::TokenCompact) {
+        const int col = d2r_tid() & (kNTile - 1);
+        if (col < col_tile_hi - col_lo) {
+            y_off = (uint32_t)ids_src[col_lo + col] * sizeof(block_q8_1_mmq);
+        }
+    }
     float acc[kNFrag][tile_C::ne] = {};
 
     if (full_warp_tile) {
-        iq2_d2r_mainloop<Schedule, true, tile_A, tile_B, tile_C>(
-            acc, s_q8, s_raw, s_grid, s_inv);
+        iq2_d2r_mainloop<Schedule, true, tile_A, tile_B, tile_C, Input>(
+            acc, s_q8, s_raw, s_grid, s_inv, y_off);
     } else {
-        iq2_d2r_mainloop<Schedule, false, tile_A, tile_B, tile_C>(
-            acc, s_q8, s_raw, s_grid, s_inv);
+        iq2_d2r_mainloop<Schedule, false, tile_A, tile_B, tile_C, Input>(
+            acc, s_q8, s_raw, s_grid, s_inv, y_off);
     }
 
     const int out_col_lo = s_inv.col_lo;
@@ -2520,6 +2544,8 @@ void gateup_iq2_d2r_pair_kernel(const void * __restrict__ gate_soa,
     (void)K;
     (void)n_assign;
     (void)E;
+    (void)ids_src;
+    (void)n_tokens;
 #endif
 }
 
@@ -2889,7 +2915,9 @@ int ds4_mmq_iq2_xxs_moe_d2r_pair_launch(const void *gate_soa,
                                          int n_expert_used,
                                          void *worklist_scratch,
                                          size_t worklist_scratch_bytes,
-                                         cudaStream_t stream) {
+                                         cudaStream_t stream,
+                                         const int32_t *ids_src,
+                                         int n_tokens) {
     const char *tag = "ds4_mmq_iq2_xxs_moe_d2r_pair_launch";
     const int dev = ggml_cuda_get_device();
     const int cc = ggml_cuda_info().devices[dev].cc;
@@ -2945,14 +2973,27 @@ int ds4_mmq_iq2_xxs_moe_d2r_pair_launch(const void *gate_soa,
         M == kMimoRows && K == kMimoColumns &&
         n_experts == kMimoExperts && n_expert_used == kMimoUsed &&
         ne_get_rows >= kMinAssignments && ne_get_rows <= kMaxAssignments;
-    if (bounded && mimo_prefill) {
+    if ((!ids_src && n_tokens != 0) ||
+        (ids_src && (!mimo_prefill || n_tokens <= 0 ||
+                     (int64_t)n_tokens * n_expert_used != ne_get_rows))) {
+        return -1;
+    }
+    if (ids_src && bounded) {
+        gateup_iq2_d2r_pair_kernel<Iq2Schedule::Bounded, Iq2Input::TokenCompact><<<grid, block, 0, stream>>>(
+            gate_soa, up_soa, (const block_q8_1_mmq *)q8, ids_dst, expert_bounds, work, n_items,
+            out_gate, out_up, M, K, (int)ne_get_rows, n_experts, ids_src, n_tokens);
+    } else if (ids_src) {
+        gateup_iq2_d2r_pair_kernel<Iq2Schedule::Original, Iq2Input::TokenCompact><<<grid, block, 0, stream>>>(
+            gate_soa, up_soa, (const block_q8_1_mmq *)q8, ids_dst, expert_bounds, work, n_items,
+            out_gate, out_up, M, K, (int)ne_get_rows, n_experts, ids_src, n_tokens);
+    } else if (bounded && mimo_prefill) {
         gateup_iq2_d2r_pair_kernel<Iq2Schedule::Bounded><<<grid, block, 0, stream>>>(
             gate_soa, up_soa, (const block_q8_1_mmq *)q8, ids_dst, expert_bounds, work, n_items,
-            out_gate, out_up, M, K, (int)ne_get_rows, n_experts);
+            out_gate, out_up, M, K, (int)ne_get_rows, n_experts, nullptr, 0);
     } else {
         gateup_iq2_d2r_pair_kernel<Iq2Schedule::Original><<<grid, block, 0, stream>>>(
             gate_soa, up_soa, (const block_q8_1_mmq *)q8, ids_dst, expert_bounds, work, n_items,
-            out_gate, out_up, M, K, (int)ne_get_rows, n_experts);
+            out_gate, out_up, M, K, (int)ne_get_rows, n_experts, nullptr, 0);
     }
     err = cudaGetLastError();
     if (err != cudaSuccess) {
