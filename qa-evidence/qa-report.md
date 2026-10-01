@@ -1404,4 +1404,7 @@ Bonsai artifact and serving qualification remains bounded by the original
 RTX 4070 SUPER records above; it was not rerun on GB10 in this review.
 Combined CUDA validation is required separately before merge.
 
+README.md now lists the pinned Bonsai artifact contract and unsupported
+serving modes, with a link to docs/BONSAI.md. This changes no execution path.
+
 verdict: overall PASS
