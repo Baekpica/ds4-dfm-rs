@@ -21,6 +21,7 @@ step() {
 }
 
 step make pq2-0-test
+step make test-qwen35-ref
 if [[ "${DS4_FAST:-0}" != "1" ]]; then
   step make test-catalog-parity
 fi

@@ -68653,7 +68653,8 @@ static void ds4_qwen35_ref_matvec_folded(
     const uint64_t n = w->dim[0];
     float *xt = xmalloc((size_t)n * sizeof(float));
     memcpy(xt, x, (size_t)n * sizeof(float));
-    ds4_hadamard_matmul_input(xt, (uint32_t)n, ssm_out, st->scratch);
+    /* Dense projections have no recurrent state or permutation scratch. */
+    ds4_hadamard_matmul_input(xt, (uint32_t)n, ssm_out, ssm_out ? st->scratch : NULL);
     ds4_ref_matvec(m, w, xt, out);
     free(xt);
 }

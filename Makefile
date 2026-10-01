@@ -1497,6 +1497,18 @@ pq2-0-test: tests/test_pq2_0.c
 	$(CC) -O2 -Wall -Wextra -std=c99 -o tests/test_pq2_0 tests/test_pq2_0.c -lm
 	./tests/test_pq2_0
 
+# A tiny CPU projection needs no model; sanitizer instrumentation keeps null
+# state accesses visible even when the optimizer would discard the load.
+tests/test_qwen35_ref: tests/test_qwen35_ref.c ds4.c ds4.h
+	$(CC) $(CFLAGS) -O1 -DDS4_NO_GPU -Wno-unused-function \
+	-fsanitize=undefined -fno-sanitize-recover=undefined \
+	-ffunction-sections -fdata-sections -I. -o $@ $< \
+	-Wl,--gc-sections $(LDLIBS)
+
+.PHONY: test-qwen35-ref
+test-qwen35-ref: tests/test_qwen35_ref
+	./tests/test_qwen35_ref
+
 # Bonsai (qwen35) reference checks.  They need the Prism Bonsai GGUF and the
 # CPU host binary (make cpu); no llama.cpp is involved.  DS4_BONSAI_MODEL and
 # DS4_BONSAI_STEPS override the artifact path and the greedy step count.
@@ -1699,6 +1711,7 @@ tests/test_motif3_long: tests/test_motif3_long.o ds4_kvstore.o rax.o $(CORE_OBJS
 endif
 
 clean:
+	rm -f tests/test_qwen35_ref
 	rm -f tests/test_solar_fattn tests/test_solar_fattn.o
 	rm -f tests/test_step37_media tests/test_step37_media.o
 	rm -f tests/test_ling3vl_media tests/test_ling3vl_media.o

@@ -1046,3 +1046,15 @@ NOT VERIFIED / LIMITS
   live, answering server as required.
 
 verdict: overall PASS
+
+## Maintainer CPU regression review - 2026-10-01
+
+Scope: `ds4.c` stateless FFN projection; no arithmetic change.
+`tests/test_qwen35_ref.c` exercises unfolded and Hadamard-folded projections
+without recurrent state. `make test-qwen35-ref` failed before the fix with
+UBSan null member access and passes after it. Catalogue/tokenizer parity and
+`make pq2-0-test` pass. The new target runs in `tests/run.sh` and
+`.github/workflows/host-parity.yml`; `Makefile` cleanup and `.gitignore` cover
+the binary. These model-free checks do not extend artifact qualification.
+
+verdict: overall PASS
