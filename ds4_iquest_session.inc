@@ -8,6 +8,8 @@ static bool iquest_reset(ds4_iquest_graph *g) {
 
 static int iquest_session_fail(ds4_session *s, char *err, size_t errlen) {
     s->iquest_graph.failed = true;
+    /* Discard the failed journal so sync can reach the synchronized reset. */
+    s->iquest_graph.trial_n = 0;
     s->checkpoint_valid = false; s->checkpoint.len = 0;
     s->mtp_draft_valid = false; s->generation++;
     payload_set_err(err, errlen, "IQuest-Q1 forward or logits readback failed");
