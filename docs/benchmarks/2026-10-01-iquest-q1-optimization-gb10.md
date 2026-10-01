@@ -2,7 +2,7 @@
 
 P1/P2/P3 and D1/D2/D3 adopted: **3/3 prefill, 3/3 dedicated decode rounds**. P3 changes arithmetic; its bounded quality gates are described below.
 
-**Final 8K cold-KV medians: Prefill132.72 (132.51–132.80), Decode6.77 (6.77–6.78) tok/s.** Final HTTP qualification is pending.
+**Final 8K cold-KV medians: Prefill 132.72 (132.51–132.80), Decode 6.77 (6.77–6.78) tok/s.** Completed 2026-10-02; bounded HTTP gates and limitations are recorded below.
 
 The primary workload is now **8192 cold-KV prompt tokens**, capacity 16384, chunk 128, 32 EOS-suppressed greedy outputs, MTP off. Six fresh ABBAAB processes open empty sessions without separate warmup workers. The canonical weight owner persists; weights/OS caches are not claimed cold, and native startup prewarming remains unchanged. Clocks span 2184–2197 MHz, with every run's median 2190 MHz and unchanged clock policy.
 
@@ -33,7 +33,7 @@ Synthetic resident attention medians improve 1.452→0.884 ms (row 1) and 29.043
 
 The retained whole-workload profile totals 20.954 s prefill/6.995 s decode kernel time; attention remains 9.486 s (45.27%)/4.771 s (68.20%). Subsequent rounds start from this profile.
 
-[Compact evidence and hashes](2026-10-01-iquest-q1-optimization-gb10.json). Shard hashes are release-manifest-derived with sizes/mtimes checked, not a fresh 88 GB hash pass. Existing [family limits](../iquest-q1.md) remain: no new 512K, long-context, MTP or quality qualification. The initial 2K state proof does not cross the SWA ring; the separate 8K proof above covers committed state after wrapped prefill.
+[Compact evidence and hashes](2026-10-01-iquest-q1-optimization-gb10.json). Shard hashes are release-manifest-derived with sizes/mtimes checked, not a fresh 88 GB hash pass. Existing [family limits](../iquest-q1.md) remain: no new 512K or corpus-wide quality qualification. The initial 2K state proof does not cross the SWA ring; the separate 8K proof above covers committed state after wrapped prefill.
 
 P2 assigns four independent head warps per CTA at rows128/full or SWA4096. It preserves the product/tree/recurrence/BF16 contract; tails, decode and MTP retain P1. Three fresh samples per arm give prefill **97.05 (97.05–97.29)→128.38 (128.25–128.52) tok/s, +32.28%**; decode medians are both 4.49. All 12 workers retain exact logits/tokens; ordinary prefill/final payloads and four restore checks are exact. The 64 long attention cases plus Reference13 pass three-way full-output parity, including F32 sinks and permuted positions.
 
@@ -76,7 +76,7 @@ The retained P3 decode spends 84.51% of GPU time in attention. Fresh row1 NCU at
 
 Six fresh 8K cold-KV workers give Decode **2.20 (2.20–2.21)→4.51 (4.51–4.51) tok/s, +105%**. Prefill is **132.54 (132.49–132.57)→132.47 (132.46–132.63), −0.05%**, within the observed sample overlap. Clocks remain 2190–2197 MHz. All160K prefill logits and32 tokens match exactly across all six workers.
 
-Separate whole-model proof compares all prefill/final logits and **1,007,842,356/1,009,583,284 bytes of native state** exactly. All32 forced tokens match greedy, four self-restores pass, and faults/speculative counters are unchanged. All243 component comparisons pass, including partial tiles, F32 sinks, Q8 extremes, ring wrapping and diagnostic wider rows; racecheck reports zero hazards. These are ordinary-mode gates; final MTP/serving checks remain pending.
+Separate whole-model proof compares all prefill/final logits and **1,007,842,356/1,009,583,284 bytes of native state** exactly. All 32 forced tokens match greedy, four self-restores pass, and faults/speculative counters are unchanged. All 243 component comparisons pass, including partial tiles, F32 sinks, Q8 extremes, ring wrapping and diagnostic wider rows; racecheck reports zero hazards. These are ordinary-mode gates; final MTP/serving checks are recorded below.
 
 The final resident target median improves **3.5266→2.0236 ms**; cache-flushed NCU improves **6.7416→2.6470 ms**. Registers rise38→40 and static shared512→34816 B, without spills. Tracked tensor/allocator counters are equal; no global scratch is added. System-wide available memory varies with page cache and is not an allocation equality claim.
 
@@ -100,12 +100,17 @@ Retained D2 attention occupies 76.46% of decode GPU time. Detailed profiling att
 
 Six fresh 8K cold-KV workers give Decode **5.06 (5.06–5.07)→6.77 (6.77–6.78) tok/s, +33.79%**. Prefill is **132.65 (132.51–132.78)→132.72 (132.51–132.80), +0.05%**, within overlapping ranges. All six full prefill vectors and 32-token streams are exact. The separate complete native-state proof preserves both payloads, logits, greedy choices and four self-restores; D3-off matches committed D2. Default-unset execution matches explicit-on output.
 
-All 81 component cases pass exact output comparison, including partial tiles, ring wraps, F32 sinks and stressed Q8 values. Racecheck and synccheck report zero errors. Resident attention improves **2.024→1.707 ms**; cache-flushed NCU improves **2.659→1.757 ms**. Both kernels use40 registers,34816 B static shared plus1024 B driver shared, without spills or new global allocation.
+All 81 component cases pass exact output comparison, including partial tiles, ring wraps, F32 sinks and stressed Q8 values. Racecheck and synccheck report zero errors. Resident attention improves **2.024→1.707 ms**; cache-flushed NCU improves **2.659→1.757 ms**. Both kernels use 40 registers, 34816 B static shared plus 1024 B driver shared, without spills or new global allocation.
 
-The retained default profile measures **61.810 s prefill /4.739 s decode** host time. Prefill GPU time is49.75% MMQ,20.80% worklist and22.69% tiled attention. Decode attention remains68.20%. These profile latencies are separate from the fresh speed A/B.
+The retained default profile measures **61.810 s prefill /4.739 s decode** host time. Prefill GPU time is 49.75% MMQ, 20.80% worklist and 22.69% tiled attention. Decode attention remains 68.20%. These profile latencies are separate from the fresh speed A/B.
 
 ## Final integration and remaining limits
 
-Default-path native gates pass MTP physical wrap (517-token prompt, draft7,32 outputs), main SWA physical wrap (4220-token prompt, draft7,32 outputs), and six exact bank/fork/partial/rewind/disk checks after wrapped prefill. Workspace tests report1473 passed,0 failed,12 ignored; fmt, clippy and all-target checks exit0. HTTP checks are pending.
+Default-path native gates pass MTP physical wrap (517-token prompt, draft 7, 32 outputs), main SWA physical wrap (4220-token prompt, draft 7, 32 outputs), and six exact bank/fork/partial/rewind/disk checks after wrapped prefill. Workspace tests report 1473 passed, 0 failed, 12 ignored; fmt, clippy and all-target checks exit 0. HTTP thinking responses pass buffered/SSE Chat, Responses and Anthropic gates (six cases). Generated tool continuations pass Chat and Responses; sampling falls back to ordinary decode; two concurrent streaming requests pass with unchanged fault counters.
 
-Cross-family inspection identifies a remaining raw-IQ2_XXS gate/up pair opportunity: unlike bounded Q4/Q5 pairs, its expert worklist lacks compact bucket bounds. The final MMQ/worklist aggregate is70.55% of prefill GPU time, but that percentage cannot be attributed entirely to this candidate. Its isolated GPU fixture was not run; no additional gain is claimed. P3 arithmetic and bounded-quality limitations above remain in force.
+Cross-family inspection identifies a remaining raw-IQ2_XXS gate/up pair opportunity: unlike bounded Q4/Q5 pairs, its expert worklist lacks compact bucket bounds. The final MMQ/worklist aggregate is 70.55% of prefill GPU time, but that percentage cannot be attributed entirely to this candidate. Its isolated GPU fixture was not run; no additional gain is claimed. P3 arithmetic and bounded-quality limitations above remain in force.
+
+
+Both MTP-off and draft3 HTTP campaigns pass seed, append, partial edit, branch fork and disk restoration after server restart. All five arithmetic answers (4/5/6/8/9) and stop reasons agree with cold execution. **Strict full-message cold parity remains failed** in append/edit/fork for both modes: reasoning wording and completion counts differ. This retains the existing cross-width limitation; no corpus-wide or Agent-speed equivalence is claimed. Thinking is enabled for these answer/reuse gates; the separate generated-tool fixture uses its recorded reasoning-off protocol.
+
+Final runtime source: `f42a087b`; per-round source/binary inventories and final native/HTTP receipts are embedded in the JSON. The six remote weight LFS hashes still match the pinned manifest. Historical P1 top-level JSON fields retain their original 2K scope; `primary_workload` and `D3.cold8k` describe the final result.

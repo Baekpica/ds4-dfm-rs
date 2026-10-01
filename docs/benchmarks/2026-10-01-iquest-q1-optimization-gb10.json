@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "date": "2026-10-01",
-  "status": "Six optimization rounds adopted; final HTTP qualification pending",
+  "status": "Six rounds adopted; bounded final native and HTTP gates complete; strict warm/cold full-message parity remains failed",
   "effective_rounds": {
     "prefill": 3,
     "decode": 3
@@ -20,7 +20,8 @@
       "tests/iquest_attention_profile.cu": "403ae7da9d735cbaa5a3bb19cd3289799b51c47f3631664e2f6a8242c245a2af",
       "tests/iquest_reduce_verify.cu": "ccf1d1e36eed86c80728548145e133b8b896ed39f1b3691d66e0a7b5cd784bd3"
     },
-    "P1_commit": "907c76fc"
+    "P1_commit": "907c76fc",
+    "scope": "Historical P1 measurement only; final_source and per-round inventories pin later kernels"
   },
   "artifact": {
     "repository": "Baekpica/IQuest-Q1-Mixed-Quant-GGUF",
@@ -258,8 +259,9 @@
     "P1/P2 full-model parity applies only to their recorded 2K+32 and 8K+32 ordinary workloads. P3 changes arithmetic and is not cross-path logits/KV/token exact.",
     "Synthetic wrap/MTP-window cases do not qualify full-model long context, recursive MTP or continuous serving.",
     "Existing family limits remain; no 512K or corpus-wide quality qualification. P3 has four bounded answer pairs, including 8676-token retrieval.",
-    "Campaign remains ongoing; fresh retained-baseline profiling precedes subsequent rounds.",
-    "Primary 8192-token cold-KV P2 measurements include exact prefill/final logits and chronological committed native payloads; this does not qualify other contexts or serving modes."
+    "Primary 8192-token cold-KV P2 measurements include exact prefill/final logits and chronological committed native payloads; this does not qualify other contexts or serving modes.",
+    "Final native MTP physical-wrap and bank gates plus bounded HTTP gates are recorded separately; no general long-context or MTP speed qualification.",
+    "Final cache campaigns pass visible answers, reuse and disk restart, but strict whole-message cold parity fails three cases per MTP mode due to reasoning/completion-count differences."
   ],
   "raw_reports": {
     "root": "scratch/iquest-perf",
@@ -4192,5 +4194,1578 @@
       "seconds": 0.3061392307281494,
       "log_sha256": "7090956da68689cc7258374ae4070c7851c1ec1db82e17e22203ae4674e37699"
     }
-  ]
+  ],
+  "completed_date": "2026-10-02",
+  "final_source": {
+    "commit": "f42a087bbf003e0485b740707e1d44452ea736a5",
+    "inventory": {
+      "ds4-bench-perf": "f7d458040aac3304e1c36c0dd9a5bd76f2381933d275e2d4b2a3a736d5f78b84",
+      "ds4": "73460f597ea244807e91d082095cafe17a95355c17b5e49d8673246cf511d723",
+      "ds4-server": "03b3a017b2116a7bf7776c5daa8fe2137410c90a3d53c75cd21aa59979773295",
+      "tests/iquest_perf_verify": "01c5f53a04c0177da00e0bed17de270328a93da476ad2b9e1add4b9d08b8596b",
+      "tests/iquest_verify": "e9014f765f5963d255f0525322cd6b60dfdce1beb2d7861a760988e026e82ac3",
+      "tests/iquest_bank_verify": "aaf26831bd8d8ff3327293c5078e257626dcf88fc715e3da4be48bb005b05cd1",
+      "tests/iquest_attention_profile": "1b7a1ac7b1f0e3fc1d916b8116be8cd8d1a9aec9a2044d6a5bde224587b79bce",
+      "cuda/iquest_decode.cuh": "ff8af8973797dd38abb3b45155197618117c7e34d2d53832152612a54b50e697",
+      "ds4_iquest_gpu.cuh": "c8222144e5e57473b6b7def64553124fe638d8e53216032978f8d6ac31f29e14",
+      "tests/iquest_attention_profile.cu": "5f480d82fce2144c9c6758dba0905f2956754760fff3196e8c51847964c7a3c4"
+    }
+  },
+  "historical_top_level_scope": "workload, correctness, isolated_attention, resource_and_sass and retained_whole_workload_profile describe P1; later rounds are separate objects",
+  "final_http": {
+    "scope": "ctx8192,max_seqs2,chunk128,continuous; MTP draft3/margin0 for API gates; on and off for cache campaigns",
+    "api": {
+      "reasoning": {
+        "passed": true,
+        "global_fault_check": {
+          "passed": true
+        },
+        "cases": [
+          {
+            "name": "reasoning.chat.buffered",
+            "passed": true,
+            "text": "42",
+            "reasoning": "The user wants me to calculate 19 + 23 and provide only the integer answer without any explanation.\n\n19 + 23 = 42\n\nThe user explicitly asked for only the integer answer without explanation, so I should just output \"42\".",
+            "usage": {
+              "prompt_tokens": 22,
+              "completion_tokens": 51,
+              "total_tokens": 73,
+              "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 22
+              }
+            },
+            "timing": {
+              "start_wall": 1790878500.5374107,
+              "start_monotonic": 158309.702709768,
+              "status": 200,
+              "headers": {
+                "Content-Length": "702",
+                "Content-Type": "application/json",
+                "Connection": "close"
+              },
+              "headers_monotonic": 158313.423295375,
+              "streaming": false,
+              "end_monotonic": 158313.423768387,
+              "end_wall": 1790878504.258471,
+              "bytes": 702,
+              "sha256": "b0175233022a83a5e1fe6bf585906fd72cff94de4010cbcfe52f46162324eeda",
+              "elapsed_seconds": 3.721058619004907
+            },
+            "last_request": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": true,
+              "fallback_reason": null,
+              "reuse_miss": "no checkpoint at or below LCP"
+            }
+          },
+          {
+            "name": "reasoning.chat.sse",
+            "passed": true,
+            "text": "42",
+            "reasoning": "The user wants me to calculate 19 + 23 and provide only the integer answer without any explanation.\n\n19 + 23 = 42\n\nThe user explicitly asked for only the integer answer without explanation, so I should just output \"42\".",
+            "usage": {
+              "prompt_tokens": 22,
+              "completion_tokens": 51,
+              "total_tokens": 73,
+              "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 22
+              }
+            },
+            "timing": {
+              "start_wall": 1790878504.2999494,
+              "start_monotonic": 158313.46524833,
+              "status": 200,
+              "headers": {
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "close"
+              },
+              "headers_monotonic": 158313.474903493,
+              "first_text_monotonic": 158316.956674581,
+              "streaming": true,
+              "end_monotonic": 158317.173693895,
+              "end_wall": 1790878508.0083964,
+              "bytes": 9767,
+              "sha256": "f42ceef67148197f60e3c3dd523f18316866327ded4a66061ab6e2ba213606ae",
+              "elapsed_seconds": 3.7084455649892334
+            },
+            "last_request": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": true,
+              "fallback_reason": null,
+              "reuse_miss": "no checkpoint at or below LCP"
+            }
+          },
+          {
+            "name": "reasoning.responses.buffered",
+            "passed": true,
+            "text": "42",
+            "reasoning": "The user wants me to calculate 19 + 23 and provide only the integer answer without any explanation.\n\n19 + 23 = 42\n\nThe user explicitly asked for only the integer answer without explanation, so I should just output \"42\".",
+            "usage": {
+              "input_tokens": 22,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 22
+              },
+              "output_tokens": 51,
+              "output_tokens_details": {
+                "reasoning_tokens": 50
+              },
+              "total_tokens": 73
+            },
+            "timing": {
+              "start_wall": 1790878508.0471027,
+              "start_monotonic": 158317.212401925,
+              "status": 200,
+              "headers": {
+                "Content-Length": "956",
+                "Content-Type": "application/json",
+                "Connection": "close"
+              },
+              "headers_monotonic": 158320.913136108,
+              "streaming": false,
+              "end_monotonic": 158320.913598224,
+              "end_wall": 1790878511.7483006,
+              "bytes": 956,
+              "sha256": "39939411abf30ea0e1e6069326f0eda9d7f95d0eac868006336d98fc06e001cd",
+              "elapsed_seconds": 3.701196298992727
+            },
+            "last_request": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": true,
+              "fallback_reason": null,
+              "reuse_miss": "no checkpoint at or below LCP"
+            }
+          },
+          {
+            "name": "reasoning.responses.sse",
+            "passed": true,
+            "text": "42",
+            "reasoning": "The user wants me to calculate 19 + 23 and provide only the integer answer without any explanation.\n\n19 + 23 = 42\n\nThe user explicitly asked for only the integer answer without explanation, so I should just output \"42\".",
+            "usage": {
+              "input_tokens": 22,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 22
+              },
+              "output_tokens": 51,
+              "output_tokens_details": {
+                "reasoning_tokens": 50
+              },
+              "total_tokens": 73
+            },
+            "timing": {
+              "start_wall": 1790878511.78476,
+              "start_monotonic": 158320.950059323,
+              "status": 200,
+              "headers": {
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "close"
+              },
+              "headers_monotonic": 158320.976217398,
+              "first_text_monotonic": 158324.425226979,
+              "streaming": true,
+              "end_monotonic": 158324.640645934,
+              "end_wall": 1790878515.4753482,
+              "bytes": 12070,
+              "sha256": "682a38331fc9840a94441f64bca35c15206116ac7887338189ab1215ae434c58",
+              "elapsed_seconds": 3.690586611017352
+            },
+            "last_request": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": true,
+              "fallback_reason": null,
+              "reuse_miss": "no checkpoint at or below LCP"
+            }
+          },
+          {
+            "name": "reasoning.anthropic.buffered",
+            "passed": true,
+            "text": "42",
+            "reasoning": "The user wants me to calculate 19 + 23 and provide only the integer answer without any explanation.\n\n19 + 23 = 42\n\nThe user explicitly asked for only the integer answer without explanation, so I should just output \"42\".",
+            "usage": {
+              "input_tokens": 0,
+              "output_tokens": 51,
+              "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 22
+            },
+            "timing": {
+              "start_wall": 1790878515.513693,
+              "start_monotonic": 158324.678992486,
+              "status": 200,
+              "headers": {
+                "Content-Length": "678",
+                "Content-Type": "application/json",
+                "Connection": "close"
+              },
+              "headers_monotonic": 158328.379271217,
+              "streaming": false,
+              "end_monotonic": 158328.379755413,
+              "end_wall": 1790878519.2144575,
+              "bytes": 678,
+              "sha256": "07f7a7e5be608238b38c991e55fb700d35c4a882380d45c6cc24727d7a60992f",
+              "elapsed_seconds": 3.700762927008327
+            },
+            "last_request": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": true,
+              "fallback_reason": null,
+              "reuse_miss": "no checkpoint at or below LCP"
+            }
+          },
+          {
+            "name": "reasoning.anthropic.sse",
+            "passed": true,
+            "text": "42",
+            "reasoning": "The user wants me to calculate 19 + 23 and provide only the integer answer without any explanation.\n\n19 + 23 = 42\n\nThe user explicitly asked for only the integer answer without explanation, so I should just output \"42\".",
+            "usage": {
+              "input_tokens": 0,
+              "output_tokens": 51,
+              "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 22
+            },
+            "timing": {
+              "start_wall": 1790878519.256505,
+              "start_monotonic": 158328.421804294,
+              "status": 200,
+              "headers": {
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "close"
+              },
+              "headers_monotonic": 158328.447953678,
+              "first_text_monotonic": 158331.911788322,
+              "streaming": true,
+              "end_monotonic": 158332.129592776,
+              "end_wall": 1790878522.9642951,
+              "bytes": 7394,
+              "sha256": "e77e61b1ed1a93c635d138e90ec1be57be7d86f12219af34d95df22a846c3b9f",
+              "elapsed_seconds": 3.7077884820173495
+            },
+            "last_request": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": true,
+              "fallback_reason": null,
+              "reuse_miss": "no checkpoint at or below LCP"
+            }
+          }
+        ],
+        "report_sha256": "af9cdd91d4b9278b11fdcf2220801bca50d3ce69d6d36479c2a2b5b353a99b8c",
+        "script_sha256": "25fce13bc872ee3c55671853cae405fdd0cfc397e1bd9fba07013d53bdce969a"
+      },
+      "tools": {
+        "passed": true,
+        "global_fault_check": {
+          "passed": true
+        },
+        "cases": [
+          {
+            "name": "tools.chat",
+            "passed": true,
+            "text": "42",
+            "reasoning": "",
+            "usage": {
+              "prompt_tokens": 63,
+              "completion_tokens": 1,
+              "total_tokens": 64,
+              "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 63
+              }
+            },
+            "generated_call_id": "call_1a6c91f38b2110f03e5a8c3615aa3840",
+            "generated_arguments": {
+              "a": 19,
+              "b": 23
+            },
+            "tool_result": 42,
+            "call_timing": {
+              "start_wall": 1790878523.1975906,
+              "start_monotonic": 158332.362889857,
+              "status": 200,
+              "headers": {
+                "Content-Length": "604",
+                "Content-Type": "application/json",
+                "Connection": "close"
+              },
+              "headers_monotonic": 158334.90286965,
+              "streaming": false,
+              "end_monotonic": 158334.90336863,
+              "end_wall": 1790878525.738071,
+              "bytes": 604,
+              "sha256": "d9766a94a7447bf6490d17d646e38137593536d88dda8721e9af0c73d92b73e5",
+              "elapsed_seconds": 2.540478773007635
+            },
+            "follow_timing": {
+              "start_wall": 1790878525.7392364,
+              "start_monotonic": 158334.904535871,
+              "status": 200,
+              "headers": {
+                "Content-Length": "452",
+                "Content-Type": "application/json",
+                "Connection": "close"
+              },
+              "headers_monotonic": 158335.902406386,
+              "streaming": false,
+              "end_monotonic": 158335.902888118,
+              "end_wall": 1790878526.7375903,
+              "bytes": 452,
+              "sha256": "b0624d890b6ec927dff9cddc1872a49aaed0247168861a701a3e7be9d0f17eb0",
+              "elapsed_seconds": 0.9983522469992749
+            },
+            "history": "returned structured assistant/output items replayed unchanged"
+          },
+          {
+            "name": "tools.responses",
+            "passed": true,
+            "text": "42",
+            "reasoning": "",
+            "usage": {
+              "input_tokens": 63,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 63
+              },
+              "output_tokens": 1,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 64
+            },
+            "generated_call_id": "call_1a6c91f38b2110f03e5a8c3615aa3841",
+            "generated_arguments": {
+              "a": 19,
+              "b": 23
+            },
+            "tool_result": 42,
+            "call_timing": {
+              "start_wall": 1790878526.7810073,
+              "start_monotonic": 158335.946306509,
+              "status": 200,
+              "headers": {
+                "Content-Length": "639",
+                "Content-Type": "application/json",
+                "Connection": "close"
+              },
+              "headers_monotonic": 158338.340082958,
+              "streaming": false,
+              "end_monotonic": 158338.340535585,
+              "end_wall": 1790878529.1752377,
+              "bytes": 639,
+              "sha256": "4a5b032ad084110fb3baa123b6234082ec9eaedcd01775b56ecf775973aaace7",
+              "elapsed_seconds": 2.394229076016927
+            },
+            "follow_timing": {
+              "start_wall": 1790878529.1762996,
+              "start_monotonic": 158338.341598921,
+              "status": 200,
+              "headers": {
+                "Content-Length": "605",
+                "Content-Type": "application/json",
+                "Connection": "close"
+              },
+              "headers_monotonic": 158339.359291469,
+              "streaming": false,
+              "end_monotonic": 158339.359805185,
+              "end_wall": 1790878530.1945076,
+              "bytes": 605,
+              "sha256": "265f87e2e9fa35503dae9efbffe78688c9c67e389d89395ae8089442c78d54bf",
+              "elapsed_seconds": 1.018206264008768
+            },
+            "history": "returned structured assistant/output items replayed unchanged"
+          }
+        ],
+        "report_sha256": "d2f335792a6d4c7c723353b1bf40afa9bf2c3e8e7b684e5c8e65a93c49ea4fe8",
+        "script_sha256": "25fce13bc872ee3c55671853cae405fdd0cfc397e1bd9fba07013d53bdce969a"
+      },
+      "sampling": {
+        "passed": true,
+        "global_fault_check": {
+          "passed": true
+        },
+        "cases": [
+          {
+            "name": "sampling",
+            "passed": true,
+            "text": "42",
+            "reasoning": "The user wants the answer to 19 + 23. Simple arithmetic. 19 + 23 = 42. Reply with only the integer, no explanation.",
+            "usage": {
+              "prompt_tokens": 22,
+              "completion_tokens": 35,
+              "total_tokens": 57,
+              "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 22
+              }
+            },
+            "timing": {
+              "start_wall": 1790878530.4210143,
+              "start_monotonic": 158339.58631315,
+              "status": 200,
+              "headers": {
+                "Content-Length": "593",
+                "Content-Type": "application/json",
+                "Connection": "close"
+              },
+              "headers_monotonic": 158343.124865259,
+              "streaming": false,
+              "end_monotonic": 158343.125191581,
+              "end_wall": 1790878533.9598937,
+              "bytes": 593,
+              "sha256": "61a44dd0c0d303b412efea5f87558c0b361978be3eb085394b2dcefc3eb60c54",
+              "elapsed_seconds": 3.538878430990735
+            },
+            "last_request": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": false,
+              "fallback_reason": null,
+              "reuse_miss": "no checkpoint at or below LCP"
+            },
+            "mtp_fallback": "ordinary sampled decode; zero speculative counter delta"
+          }
+        ],
+        "report_sha256": "618052f9808396a4ee0ddc1f85f834fb7f3ddc6cb2cfda8d811c169683a9261e",
+        "script_sha256": "25fce13bc872ee3c55671853cae405fdd0cfc397e1bd9fba07013d53bdce969a"
+      },
+      "concurrency": {
+        "passed": true,
+        "global_fault_check": {
+          "passed": true
+        },
+        "cases": [
+          {
+            "name": "concurrency",
+            "passed": true,
+            "workers": {
+              "0": {
+                "text": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24",
+                "reasoning": "We need answer user's request. User says: Request label 0. Write integers from 1 through 24, increasing by one, separated by single spaces. Output only that sequence; do not output label. Need output sequence 1 to 24 separated by spaces, no label. Final only sequence. Ensure no extra.",
+                "usage": {
+                  "prompt_tokens": 39,
+                  "completion_tokens": 114,
+                  "total_tokens": 153,
+                  "prompt_tokens_details": {
+                    "cached_tokens": 0,
+                    "cache_write_tokens": 39
+                  }
+                },
+                "timing": {
+                  "start_wall": 1790878534.1851208,
+                  "start_monotonic": 158343.350420036,
+                  "status": 200,
+                  "headers": {
+                    "Content-Type": "text/event-stream",
+                    "Cache-Control": "no-cache",
+                    "Connection": "close"
+                  },
+                  "headers_monotonic": 158343.376255428,
+                  "first_text_monotonic": 158353.980576745,
+                  "streaming": true,
+                  "end_monotonic": 158359.268747171,
+                  "end_wall": 1790878550.1034498,
+                  "bytes": 20684,
+                  "sha256": "34fcb8fe2f86a85bc49fc049f2c7f1e7f887f1953b46351049c334c630d693aa",
+                  "elapsed_seconds": 15.918327135004802
+                }
+              },
+              "1": {
+                "text": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24",
+                "reasoning": "The user wants me to write the integers from 1 through 24, increasing by one, separated by single spaces. Output only that sequence, do not output the label.\n\nSo the output should be: 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24\n\nI need to make sure there are no extra labels or text. Just the sequence.",
+                "usage": {
+                  "prompt_tokens": 39,
+                  "completion_tokens": 155,
+                  "total_tokens": 194,
+                  "prompt_tokens_details": {
+                    "cached_tokens": 0,
+                    "cache_write_tokens": 39
+                  }
+                },
+                "timing": {
+                  "start_wall": 1790878534.1860359,
+                  "start_monotonic": 158343.351335291,
+                  "status": 200,
+                  "headers": {
+                    "Content-Type": "text/event-stream",
+                    "Cache-Control": "no-cache",
+                    "Connection": "close"
+                  },
+                  "headers_monotonic": 158343.395707668,
+                  "first_text_monotonic": 158357.715071039,
+                  "streaming": true,
+                  "end_monotonic": 158361.285440616,
+                  "end_wall": 1790878552.1201434,
+                  "bytes": 28284,
+                  "sha256": "94de4397e4daa64c7a21da9c484133142424ac152802a47fb0129e58664f0828",
+                  "elapsed_seconds": 17.93410532499547
+                }
+              }
+            },
+            "samples": [
+              {
+                "monotonic": 158343.369978549,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 2
+              },
+              {
+                "monotonic": 158343.641505331,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158343.913196834,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158344.184579118,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158344.456827677,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158344.729441887,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158345.001687454,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158345.272684674,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158345.544389721,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158345.81668978,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158346.087919304,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158346.360550306,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158346.633683248,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158346.905648133,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158347.177765579,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158347.449828572,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158347.722474674,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158347.99480239,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158348.266825238,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158348.539275878,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158348.810946305,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158349.083372241,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158349.356913895,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158349.629904071,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158349.903090041,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158350.175662614,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158350.447938702,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158350.72009522,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158350.992554988,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158351.264105485,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158351.537597817,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158351.810171167,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158352.082774132,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158352.354161038,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158352.626335373,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158352.899293057,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158353.171541088,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158353.443772731,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158353.715884309,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158353.988049312,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158354.260982094,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158354.532789251,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158354.804895993,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158355.077265377,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158355.348728,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158355.621232805,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158355.893121589,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158356.16550377,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158356.437507287,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158356.709758391,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158356.981619107,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158357.254527414,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158357.526671345,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158357.799467296,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158358.072445681,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158358.344032485,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158358.616991089,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158358.889805469,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158359.161997236,
+                "inflight": 2.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158359.434270264,
+                "inflight": 1.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158359.708467178,
+                "inflight": 1.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158359.981514563,
+                "inflight": 1.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158360.254164136,
+                "inflight": 1.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158360.526250407,
+                "inflight": 1.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158360.79064715,
+                "inflight": 1.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              },
+              {
+                "monotonic": 158361.056348943,
+                "inflight": 1.0,
+                "banks_live": 0.0,
+                "queue_depth": 0
+              }
+            ],
+            "max_inflight": 2.0,
+            "max_reported_banks_live": 0.0,
+            "scope": "two inflight requests with interleaved visible generation on continuous lane; native active-bank gauge is recorded separately"
+          }
+        ],
+        "report_sha256": "ce13f30c9b346f7cd293257f73f5eb7041cd07c00062ae0e622b515de899dd3d",
+        "script_sha256": "25fce13bc872ee3c55671853cae405fdd0cfc397e1bd9fba07013d53bdce969a"
+      }
+    },
+    "cache": {
+      "off": {
+        "phases": {
+          "seed": {
+            "passed": true,
+            "errors": [],
+            "report_sha256": "c593ca4b27fa1e79dd91936db48e8c006cbf8d42b8a0c3ad465aaf5e197eb3f4"
+          },
+          "warm": {
+            "passed": true,
+            "errors": [],
+            "report_sha256": "c2cdc0bae7d7c4716a709a0090d0a9fd6e960cdc553c3bcbda0fddefa334331c"
+          },
+          "restored": {
+            "passed": true,
+            "errors": [],
+            "report_sha256": "19e33f71be3c2495c89f2a6a74e2720518d36534f3469830b141dbe73862a6de"
+          },
+          "cold": {
+            "passed": false,
+            "errors": [
+              "append: cold comparison: message, finish_reason or completion count differs",
+              "edit: cold comparison: message, finish_reason or completion count differs",
+              "fork: cold comparison: message, finish_reason or completion count differs"
+            ],
+            "report_sha256": "1228eca5e297e9718051a6b63d99ad19bae26d1e3c2b788b1c310b6df1982ba8"
+          }
+        },
+        "all_visible_answers_and_stop": true,
+        "strict_cold_full_message_parity": false,
+        "cases": [
+          {
+            "phase": "cold",
+            "case": "append",
+            "expected_answer": 5,
+            "message": {
+              "role": "assistant",
+              "content": "5",
+              "reasoning_content": "The user is asking \"What is 4 + 1? Reply with just the number.\" The answer is 5."
+            },
+            "usage": {
+              "prompt_tokens": 582,
+              "completion_tokens": 27,
+              "total_tokens": 609,
+              "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 582
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": false,
+              "fallback_reason": null
+            },
+            "errors": [
+              "cold comparison: message, finish_reason or completion count differs"
+            ],
+            "passed": false
+          },
+          {
+            "phase": "cold",
+            "case": "edit",
+            "expected_answer": 6,
+            "message": {
+              "role": "assistant",
+              "content": "6",
+              "reasoning_content": "The user is asking what 4 + 2 is, and wants just the number. 4 + 2 = 6."
+            },
+            "usage": {
+              "prompt_tokens": 582,
+              "completion_tokens": 29,
+              "total_tokens": 611,
+              "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 582
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": false,
+              "fallback_reason": null
+            },
+            "errors": [
+              "cold comparison: message, finish_reason or completion count differs"
+            ],
+            "passed": false
+          },
+          {
+            "phase": "cold",
+            "case": "fork",
+            "expected_answer": 8,
+            "message": {
+              "role": "assistant",
+              "content": "8",
+              "reasoning_content": "The user is asking \"What is 5 + 3? Reply with just the number.\" The answer is 8. I should reply with just \"8\"."
+            },
+            "usage": {
+              "prompt_tokens": 634,
+              "completion_tokens": 35,
+              "total_tokens": 669,
+              "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 634
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": false,
+              "fallback_reason": null
+            },
+            "errors": [
+              "cold comparison: message, finish_reason or completion count differs"
+            ],
+            "passed": false
+          },
+          {
+            "phase": "cold",
+            "case": "restart",
+            "expected_answer": 9,
+            "message": {
+              "role": "assistant",
+              "content": "9",
+              "reasoning_content": "The user is asking a simple arithmetic question: 8 + 1. The answer is 9. They want me to reply with just the number."
+            },
+            "usage": {
+              "prompt_tokens": 686,
+              "completion_tokens": 33,
+              "total_tokens": 719,
+              "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 686
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": false,
+              "fallback_reason": null
+            },
+            "errors": [],
+            "passed": true
+          },
+          {
+            "phase": "cold",
+            "case": "seed",
+            "expected_answer": 4,
+            "message": {
+              "role": "assistant",
+              "content": "4",
+              "reasoning_content": "The user is asking a simple arithmetic question: 2 + 2. They want me to reply with just the number. The answer is 4."
+            },
+            "usage": {
+              "prompt_tokens": 530,
+              "completion_tokens": 33,
+              "total_tokens": 563,
+              "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 530
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": false,
+              "fallback_reason": null
+            },
+            "errors": [],
+            "passed": true
+          },
+          {
+            "phase": "restored",
+            "case": "restart",
+            "expected_answer": 9,
+            "message": {
+              "role": "assistant",
+              "content": "9",
+              "reasoning_content": "The user is asking a simple arithmetic question: 8 + 1. The answer is 9. They want me to reply with just the number."
+            },
+            "usage": {
+              "prompt_tokens": 686,
+              "completion_tokens": 33,
+              "total_tokens": 719,
+              "prompt_tokens_details": {
+                "cached_tokens": 667,
+                "cache_write_tokens": 19
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "fork",
+              "speculation_active": false,
+              "fallback_reason": null
+            },
+            "errors": [],
+            "passed": true
+          },
+          {
+            "phase": "seed",
+            "case": "seed",
+            "expected_answer": 4,
+            "message": {
+              "role": "assistant",
+              "content": "4",
+              "reasoning_content": "The user is asking a simple arithmetic question: 2 + 2. They want me to reply with just the number. The answer is 4."
+            },
+            "usage": {
+              "prompt_tokens": 530,
+              "completion_tokens": 33,
+              "total_tokens": 563,
+              "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 530
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": false,
+              "fallback_reason": null,
+              "reuse_miss": "no checkpoint at or below LCP"
+            },
+            "errors": [],
+            "passed": true
+          },
+          {
+            "phase": "warm",
+            "case": "append",
+            "expected_answer": 5,
+            "message": {
+              "role": "assistant",
+              "content": "5",
+              "reasoning_content": "The user is asking a simple arithmetic question: 4 + 1. The answer is 5. They want me to reply with just the number."
+            },
+            "usage": {
+              "prompt_tokens": 582,
+              "completion_tokens": 33,
+              "total_tokens": 615,
+              "prompt_tokens_details": {
+                "cached_tokens": 563,
+                "cache_write_tokens": 19
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "fork",
+              "speculation_active": false,
+              "fallback_reason": null
+            },
+            "errors": [],
+            "passed": true
+          },
+          {
+            "phase": "warm",
+            "case": "edit",
+            "expected_answer": 6,
+            "message": {
+              "role": "assistant",
+              "content": "6",
+              "reasoning_content": "The user is asking \"What is 4 + 2? Reply with just the number.\" The answer is 6."
+            },
+            "usage": {
+              "prompt_tokens": 582,
+              "completion_tokens": 27,
+              "total_tokens": 609,
+              "prompt_tokens_details": {
+                "cached_tokens": 530,
+                "cache_write_tokens": 52
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "partial",
+              "speculation_active": false,
+              "fallback_reason": null
+            },
+            "errors": [],
+            "passed": true
+          },
+          {
+            "phase": "warm",
+            "case": "fork",
+            "expected_answer": 8,
+            "message": {
+              "role": "assistant",
+              "content": "8",
+              "reasoning_content": "The user is asking a simple arithmetic question: 5 + 3. The answer is 8. They want me to reply with just the number."
+            },
+            "usage": {
+              "prompt_tokens": 634,
+              "completion_tokens": 33,
+              "total_tokens": 667,
+              "prompt_tokens_details": {
+                "cached_tokens": 615,
+                "cache_write_tokens": 19
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "exact",
+              "speculation_active": false,
+              "fallback_reason": null
+            },
+            "errors": [],
+            "passed": true
+          }
+        ]
+      },
+      "on": {
+        "phases": {
+          "seed": {
+            "passed": true,
+            "errors": [],
+            "report_sha256": "a0023fed593704ae44c0277ad27e0c9c7b93623a05205eb653a8c5bde861a7ae"
+          },
+          "warm": {
+            "passed": true,
+            "errors": [],
+            "report_sha256": "d691989617ffd93cf4661d4803ed9b979685258a4bbefb960a3dd9f3864a7f5c"
+          },
+          "restored": {
+            "passed": true,
+            "errors": [],
+            "report_sha256": "766278125627cd1cbd8aac96f50213043fd2a0b6ccac202cb63edee8fa561b13"
+          },
+          "cold": {
+            "passed": false,
+            "errors": [
+              "append: cold comparison: message, finish_reason or completion count differs",
+              "edit: cold comparison: message, finish_reason or completion count differs",
+              "fork: cold comparison: message, finish_reason or completion count differs"
+            ],
+            "report_sha256": "d39f720734d5485212acd418c67e5ad6e9f22f3213d139b22645c52827acfc4a"
+          }
+        },
+        "all_visible_answers_and_stop": true,
+        "strict_cold_full_message_parity": false,
+        "cases": [
+          {
+            "phase": "cold",
+            "case": "append",
+            "expected_answer": 5,
+            "message": {
+              "role": "assistant",
+              "content": "5",
+              "reasoning_content": "The user is asking \"What is 4 + 1? Reply with just the number.\" The answer is 5."
+            },
+            "usage": {
+              "prompt_tokens": 582,
+              "completion_tokens": 27,
+              "total_tokens": 609,
+              "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 582
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": true,
+              "fallback_reason": null
+            },
+            "errors": [
+              "cold comparison: message, finish_reason or completion count differs"
+            ],
+            "passed": false
+          },
+          {
+            "phase": "cold",
+            "case": "edit",
+            "expected_answer": 6,
+            "message": {
+              "role": "assistant",
+              "content": "6",
+              "reasoning_content": "The user is asking what 4 + 2 is, and wants just the number. 4 + 2 = 6."
+            },
+            "usage": {
+              "prompt_tokens": 582,
+              "completion_tokens": 29,
+              "total_tokens": 611,
+              "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 582
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": true,
+              "fallback_reason": null
+            },
+            "errors": [
+              "cold comparison: message, finish_reason or completion count differs"
+            ],
+            "passed": false
+          },
+          {
+            "phase": "cold",
+            "case": "fork",
+            "expected_answer": 8,
+            "message": {
+              "role": "assistant",
+              "content": "8",
+              "reasoning_content": "The user is asking \"What is 5 + 3? Reply with just the number.\" The answer is 8. I should reply with just \"8\"."
+            },
+            "usage": {
+              "prompt_tokens": 634,
+              "completion_tokens": 35,
+              "total_tokens": 669,
+              "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 634
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": true,
+              "fallback_reason": null
+            },
+            "errors": [
+              "cold comparison: message, finish_reason or completion count differs"
+            ],
+            "passed": false
+          },
+          {
+            "phase": "cold",
+            "case": "restart",
+            "expected_answer": 9,
+            "message": {
+              "role": "assistant",
+              "content": "9",
+              "reasoning_content": "The user is asking a simple arithmetic question: 8 + 1. The answer is 9. They want me to reply with just the number."
+            },
+            "usage": {
+              "prompt_tokens": 686,
+              "completion_tokens": 33,
+              "total_tokens": 719,
+              "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 686
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": true,
+              "fallback_reason": null
+            },
+            "errors": [],
+            "passed": true
+          },
+          {
+            "phase": "cold",
+            "case": "seed",
+            "expected_answer": 4,
+            "message": {
+              "role": "assistant",
+              "content": "4",
+              "reasoning_content": "The user is asking a simple arithmetic question: 2 + 2. They want me to reply with just the number. The answer is 4."
+            },
+            "usage": {
+              "prompt_tokens": 530,
+              "completion_tokens": 33,
+              "total_tokens": 563,
+              "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 530
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": true,
+              "fallback_reason": null
+            },
+            "errors": [],
+            "passed": true
+          },
+          {
+            "phase": "restored",
+            "case": "restart",
+            "expected_answer": 9,
+            "message": {
+              "role": "assistant",
+              "content": "9",
+              "reasoning_content": "The user is asking a simple arithmetic question: 8 + 1. The answer is 9. They want me to reply with just the number."
+            },
+            "usage": {
+              "prompt_tokens": 686,
+              "completion_tokens": 33,
+              "total_tokens": 719,
+              "prompt_tokens_details": {
+                "cached_tokens": 668,
+                "cache_write_tokens": 18
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "partial",
+              "speculation_active": true,
+              "fallback_reason": null
+            },
+            "errors": [],
+            "passed": true
+          },
+          {
+            "phase": "seed",
+            "case": "seed",
+            "expected_answer": 4,
+            "message": {
+              "role": "assistant",
+              "content": "4",
+              "reasoning_content": "The user is asking a simple arithmetic question: 2 + 2. They want me to reply with just the number. The answer is 4."
+            },
+            "usage": {
+              "prompt_tokens": 530,
+              "completion_tokens": 33,
+              "total_tokens": 563,
+              "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 530
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "cold",
+              "speculation_active": true,
+              "fallback_reason": null,
+              "reuse_miss": "no checkpoint at or below LCP"
+            },
+            "errors": [],
+            "passed": true
+          },
+          {
+            "phase": "warm",
+            "case": "append",
+            "expected_answer": 5,
+            "message": {
+              "role": "assistant",
+              "content": "5",
+              "reasoning_content": "The user is asking a simple arithmetic question: 4 + 1. The answer is 5. They want me to reply with just the number."
+            },
+            "usage": {
+              "prompt_tokens": 582,
+              "completion_tokens": 33,
+              "total_tokens": 615,
+              "prompt_tokens_details": {
+                "cached_tokens": 564,
+                "cache_write_tokens": 18
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "partial",
+              "speculation_active": true,
+              "fallback_reason": null
+            },
+            "errors": [],
+            "passed": true
+          },
+          {
+            "phase": "warm",
+            "case": "edit",
+            "expected_answer": 6,
+            "message": {
+              "role": "assistant",
+              "content": "6",
+              "reasoning_content": "The user is asking \"What is 4 + 2? Reply with just the number.\" The answer is 6."
+            },
+            "usage": {
+              "prompt_tokens": 582,
+              "completion_tokens": 27,
+              "total_tokens": 609,
+              "prompt_tokens_details": {
+                "cached_tokens": 530,
+                "cache_write_tokens": 52
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "partial",
+              "speculation_active": true,
+              "fallback_reason": null
+            },
+            "errors": [],
+            "passed": true
+          },
+          {
+            "phase": "warm",
+            "case": "fork",
+            "expected_answer": 8,
+            "message": {
+              "role": "assistant",
+              "content": "8",
+              "reasoning_content": "The user is asking a simple arithmetic question: 5 + 3. The answer is 8. They want me to reply with just the number."
+            },
+            "usage": {
+              "prompt_tokens": 634,
+              "completion_tokens": 33,
+              "total_tokens": 667,
+              "prompt_tokens_details": {
+                "cached_tokens": 616,
+                "cache_write_tokens": 18
+              }
+            },
+            "trace": {
+              "effective_lane": "continuous",
+              "reuse_kind": "partial",
+              "speculation_active": true,
+              "fallback_reason": null
+            },
+            "errors": [],
+            "passed": true
+          }
+        ]
+      }
+    }
+  },
+  "remote_weight_verification": {
+    "head": "d75d1093eb94b3dad1719aaf56c2308501a5ade4",
+    "weights_match_pinned_manifest": true,
+    "weights": {
+      "IQuest-Q1-MQ-IQ2_XXS-00001-of-00006.gguf": {
+        "size": 17106294176,
+        "sha256": "59cfbc372f2e8988a960626508e62ec49a373efbba4848e122d6cc96288b332d"
+      },
+      "IQuest-Q1-MQ-IQ2_XXS-00002-of-00006.gguf": {
+        "size": 16952852736,
+        "sha256": "68db6ed9aacb347f41f732c048220905c9336793bcc5a95a6ee59590f6d7ed36"
+      },
+      "IQuest-Q1-MQ-IQ2_XXS-00003-of-00006.gguf": {
+        "size": 16872983520,
+        "sha256": "c2e686e4396d57e33bc9f1662e535b4e910033b95d6875b07c12ff81e34b1342"
+      },
+      "IQuest-Q1-MQ-IQ2_XXS-00004-of-00006.gguf": {
+        "size": 16942136256,
+        "sha256": "1eaccda174c4505c70cf2cd4a7a4962ba60a7a29528d3fe777d25537c6934fc5"
+      },
+      "IQuest-Q1-MQ-IQ2_XXS-00005-of-00006.gguf": {
+        "size": 17060018304,
+        "sha256": "4ffacc99ab740130b9ccafaf46151c38e48e6940bde105cc393ef041ccc54c23"
+      },
+      "IQuest-Q1-MQ-IQ2_XXS-00006-of-00006.gguf": {
+        "size": 3060964704,
+        "sha256": "ae3eb2281a673a4f96bedd704266ea0213fe909af8d456767bc6fdefe23ce844"
+      }
+    }
+  }
 }
