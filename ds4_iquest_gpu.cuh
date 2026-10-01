@@ -50,6 +50,14 @@ static bool iq_attn_cached() {
     return enabled;
 }
 
+static bool iq_attn_async() {
+    static const bool enabled = [] {
+        const char *value = getenv("DS4_IQUEST_ATTN_ASYNC");
+        return (!value || strcmp(value, "0") != 0) && iq_decode::async_supported();
+    }();
+    return enabled;
+}
+
 static bool iq_router_warp() {
     static const bool enabled = [] {
         const char *value = getenv("DS4_IQUEST_ROUTER_WARP");
@@ -154,9 +162,16 @@ extern "C" int ds4_gpu_iquest_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *qu
     } else if (iq_attn_shuffle() && rows == 1 &&
                (window == 0 || window == IQ_WINDOW) && iq_attn_cached()) {
         // Stage compressed KV; keep the retained ascending-key arithmetic.
-        iq_decode::cached<128><<<dim3(rows, IQ_HEADS), iq_decode::THREADS, 0, ds4_current_stream()>>>(
-            (float *)out->ptr, (const float *)query->ptr, (const iquest_q8 *)cache->ptr,
-            sink, (const unsigned *)positions->ptr, capacity, window);
+        if (iq_attn_async()) {
+            iq_decode::cached<128, iq_decode::Transfer::Asynchronous>
+                <<<dim3(rows, IQ_HEADS), iq_decode::THREADS, 0, ds4_current_stream()>>>(
+                    (float *)out->ptr, (const float *)query->ptr, (const iquest_q8 *)cache->ptr,
+                    sink, (const unsigned *)positions->ptr, capacity, window);
+        } else {
+            iq_decode::cached<128><<<dim3(rows, IQ_HEADS), iq_decode::THREADS, 0, ds4_current_stream()>>>(
+                (float *)out->ptr, (const float *)query->ptr, (const iquest_q8 *)cache->ptr,
+                sink, (const unsigned *)positions->ptr, capacity, window);
+        }
     } else if (iq_attn_shuffle()) {
         iquest_attn_shuffle_kernel<<<dim3(rows, IQ_HEADS), IQ_HEAD, 0, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)query->ptr, (const iquest_q8 *)cache->ptr,

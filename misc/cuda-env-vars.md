@@ -220,6 +220,12 @@ The bandwidth figure is informational; we don't tier on it.
   recurrence, learned sink and BF16 boundaries. It uses 34816 B static
   shared memory and no global scratch. Recursive window512 and wider
   rows fall back; parent `DS4_IQUEST_ATTN_SHUFFLE=0` also disables it.
+- `DS4_IQUEST_ATTN_ASYNC=0` uses synchronous copies inside cached
+  single-row attention. On SM80+ compiled targets, the default issues
+  disjoint eight-byte asynchronous copies, waits for each producer, then
+  synchronizes the CTA before reading the compressed tile. Arithmetic,
+  tile size and allocation stay unchanged. The cached/shuffle parent
+  fallbacks also disable this path. Read once per process.
 - `DS4_IQUEST_ATTN_TILED=0` restores the four-head warp prefill path.
   The default uses TF32-pair tiles for 128-row full/SWA prefill on CUDA
   targets supporting TF32 MMA. Q8 KV stays canonical; bounded PV tiles

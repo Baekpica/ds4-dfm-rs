@@ -26,7 +26,7 @@
 } while (0)
 
 enum class Fixture { Long, Reference13, F32Sink, Q8Stress };
-enum class Implementation { Baseline, Reduced, Grouped, Tiled, Cache32, Cache64, Cache128 };
+enum class Implementation { Baseline, Reduced, Grouped, Tiled, Cache32, Cache64, Cache128, Async };
 enum class Positions { Contiguous, Permuted };
 constexpr unsigned kMaxCapacity = 8192;
 constexpr unsigned kWideCapacity = 16384;
@@ -58,7 +58,7 @@ struct Options {
 static void usage() {
     std::fprintf(stderr,
         "Usage: iquest_attention_profile [--case long|reference13|f32sink|q8stress]\n"
-        "  [--implementation baseline|reduced|grouped|tiled|cache32|cache64|cache128] [--compare|--compare-all]\n"
+        "  [--implementation baseline|reduced|grouped|tiled|cache32|cache64|cache128|async] [--compare|--compare-all]\n"
         "  [--dump-prefix PATH]\n"
         "  [--rows 1|128] [--positions contiguous|permuted]\n"
         "  [--position 0|1|31|32|63|64|127|128|511|512|518|519|2047|4095|4096|4222|4223|8191|8445|8446]\n"
@@ -121,6 +121,7 @@ static Options options(int argc, char **argv) {
             else if (!std::strcmp(value, "cache32")) { result.implementation = Implementation::Cache32; }
             else if (!std::strcmp(value, "cache64")) { result.implementation = Implementation::Cache64; }
             else if (!std::strcmp(value, "cache128")) { result.implementation = Implementation::Cache128; }
+            else if (!std::strcmp(value, "async")) { result.implementation = Implementation::Async; }
             else { fail("Unknown implementation"); }
         } else if (!std::strcmp(arg, "--positions")) {
             shape_given = true;
@@ -212,6 +213,7 @@ static float fixture_sink(unsigned i, Fixture fixture) {
 }
 
 static const char *impl_name(Implementation implementation) {
+    if (implementation == Implementation::Async) { return "async"; }
     if (implementation == Implementation::Cache32) { return "cache32"; }
     if (implementation == Implementation::Cache64) { return "cache64"; }
     if (implementation == Implementation::Cache128) { return "cache128"; }
@@ -253,6 +255,12 @@ static void launch_attention(Implementation implementation, float *out,
     } else if (implementation == Implementation::Cache128) {
         iq_decode::cached<128><<<dim3(opt.rows, IQ_HEADS), iq_decode::THREADS>>>(
             out, query, cache, sink, positions, opt.capacity, opt.window);
+    } else if (implementation == Implementation::Async) {
+        static const bool supported = iq_decode::async_supported();
+        if (!supported) { fail("Async copy requires an SM80+ compiled target"); }
+        iq_decode::cached<128, iq_decode::Transfer::Asynchronous>
+            <<<dim3(opt.rows, IQ_HEADS), iq_decode::THREADS>>>(
+                out, query, cache, sink, positions, opt.capacity, opt.window);
     } else {
         if (!lse) { fail("Tiled attention requires an LSE buffer"); }
         iq_prefill::prefill<<<dim3((opt.rows + iq_prefill::TQ - 1) / iq_prefill::TQ, IQ_HEADS),
@@ -673,7 +681,8 @@ int main(int argc, char **argv) {
 
     // Grouped P2 compares against retained P1. Existing baseline/reduced
     // pair semantics and all fixture inputs remain unchanged.
-    const Implementation opposite = opt.implementation == Implementation::Tiled
+    const Implementation opposite = opt.implementation == Implementation::Async
+        ? Implementation::Cache128 : opt.implementation == Implementation::Tiled
         ? Implementation::Grouped : opt.implementation != Implementation::Reduced
         ? Implementation::Reduced : Implementation::Baseline;
     Comparison other, additional;

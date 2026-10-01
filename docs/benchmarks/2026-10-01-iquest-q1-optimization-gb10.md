@@ -1,6 +1,8 @@
 # IQuest-Q1 GB10 optimization — 2026-10-01
 
-P1/P2/P3 and D1/D2 adopted; ongoing: **3/3 prefill, 2/3 dedicated decode rounds**. P3 changes arithmetic; its bounded quality gates are described below.
+P1/P2/P3 and D1/D2/D3 adopted: **3/3 prefill, 3/3 dedicated decode rounds**. P3 changes arithmetic; its bounded quality gates are described below.
+
+**Final 8K cold-KV medians: Prefill132.72 (132.51–132.80), Decode6.77 (6.77–6.78) tok/s.** Final HTTP qualification is pending.
 
 The primary workload is now **8192 cold-KV prompt tokens**, capacity 16384, chunk 128, 32 EOS-suppressed greedy outputs, MTP off. Six fresh ABBAAB processes open empty sessions without separate warmup workers. The canonical weight owner persists; weights/OS caches are not claimed cold, and native startup prewarming remains unchanged. Clocks span 2184–2197 MHz, with every run's median 2190 MHz and unchanged clock policy.
 
@@ -90,3 +92,20 @@ Six fresh 8K cold-KV workers give Decode **4.51 (4.51–4.52)→5.07 (5.06–5.0
 The separate ordinary-mode proof retains exact prefill/final logits, both complete native payloads, all 32 greedy choices and four self-restores. It also matches the committed D1 state. Tracked allocation counters, faults and speculative counters are unchanged. Twenty-two CPU-ID/CUDA-weight cases pass; 1,800 adversarial rows compare all 14,400 IDs and weight bits exactly against the retained CUDA kernel, including malformed inputs. Racecheck reports zero hazards. Model-free workspace tests pass: 1,473 passed, 0 failed, 12 ignored.
 
 Resident router median improves **282.096→6.506 μs**; cache-flushed NCU improves **292.320→9.600 μs**. The CTA changes from one thread to one warp, registers32→36, with no shared memory, spills or new allocation. The retained whole profile measures **61.785 s prefill /6.331 s decode** host time. Attention now occupies **4.736 s, 76.46%** of decode GPU time; detailed profiling of that retained path precedes the final round.
+
+
+## D3: asynchronous compressed-tile copies
+
+Retained D2 attention occupies 76.46% of decode GPU time. Detailed profiling attributes 98,584 of 98,665 long-scoreboard PC samples to the shared store consuming synchronous global loads. These are sample counts, not wall-time fractions. D3 copies the same aligned eight-byte words directly into shared memory, waits for every producer, then uses the existing CTA barriers and unchanged arithmetic. `DS4_IQUEST_ATTN_ASYNC=0` restores D2. The cached/shuffle parent fallbacks remain available.
+
+Six fresh 8K cold-KV workers give Decode **5.06 (5.06–5.07)→6.77 (6.77–6.78) tok/s, +33.79%**. Prefill is **132.65 (132.51–132.78)→132.72 (132.51–132.80), +0.05%**, within overlapping ranges. All six full prefill vectors and 32-token streams are exact. The separate complete native-state proof preserves both payloads, logits, greedy choices and four self-restores; D3-off matches committed D2. Default-unset execution matches explicit-on output.
+
+All 81 component cases pass exact output comparison, including partial tiles, ring wraps, F32 sinks and stressed Q8 values. Racecheck and synccheck report zero errors. Resident attention improves **2.024→1.707 ms**; cache-flushed NCU improves **2.659→1.757 ms**. Both kernels use40 registers,34816 B static shared plus1024 B driver shared, without spills or new global allocation.
+
+The retained default profile measures **61.810 s prefill /4.739 s decode** host time. Prefill GPU time is49.75% MMQ,20.80% worklist and22.69% tiled attention. Decode attention remains68.20%. These profile latencies are separate from the fresh speed A/B.
+
+## Final integration and remaining limits
+
+Default-path native gates pass MTP physical wrap (517-token prompt, draft7,32 outputs), main SWA physical wrap (4220-token prompt, draft7,32 outputs), and six exact bank/fork/partial/rewind/disk checks after wrapped prefill. Workspace tests report1473 passed,0 failed,12 ignored; fmt, clippy and all-target checks exit0. HTTP checks are pending.
+
+Cross-family inspection identifies a remaining raw-IQ2_XXS gate/up pair opportunity: unlike bounded Q4/Q5 pairs, its expert worklist lacks compact bucket bounds. The final MMQ/worklist aggregate is70.55% of prefill GPU time, but that percentage cannot be attributed entirely to this candidate. Its isolated GPU fixture was not run; no additional gain is claimed. P3 arithmetic and bounded-quality limitations above remain in force.

@@ -7,9 +7,21 @@ enum { HEAD_BLOCKS = IQ_HEAD / IQ_Q8_BLOCK, HEAD_BYTES = HEAD_BLOCKS * sizeof(iq
        KEY_WORDS = 2 * HEAD_WORDS, THREADS = 128 };
 static_assert(HEAD_BYTES % WORD_BYTES == 0, "Q8 head copy requires aligned whole words");
 
+enum class Transfer { Synchronous, Asynchronous };
+
+__device__ __forceinline__ static void copy_async(uint64_t *out, const uint64_t *in) {
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
+    const uint32_t shared = static_cast<uint32_t>(__cvta_generic_to_shared(out));
+    asm volatile("cp.async.ca.shared.global [%0], [%1], 8;"
+                 :: "r"(shared), "l"(in) : "memory");
+#else
+    *out = *in;
+#endif
+}
+
 // Cooperatively stage compressed heads, then walk keys in original order.
 // Only warp0 computes; every warp participates in the tile lifetime barriers.
-template<unsigned Tile>
+template<unsigned Tile, Transfer transfer = Transfer::Synchronous>
 __global__ static void cached(float *out, const float *query, const iquest_q8 *cache,
         const float *sink, const unsigned *positions, unsigned capacity, unsigned window) {
     const unsigned lane = threadIdx.x % IQ_WARP_WIDTH;
@@ -35,7 +47,18 @@ __global__ static void cached(float *out, const float *query, const iquest_q8 *c
             const unsigned word = i % KEY_WORDS;
             const iquest_q8 *row = cache + (uint64_t)(token % capacity) * IQ_Q8_ROW_BLOCKS;
             const iquest_q8 *source = row + kh * HEAD_BLOCKS + (word / HEAD_WORDS) * IQ_Q8_ROW_BLOCKS / 2;
-            words[i] = reinterpret_cast<const uint64_t *>(source)[word % HEAD_WORDS];
+            const uint64_t *input = reinterpret_cast<const uint64_t *>(source) + word % HEAD_WORDS;
+            if constexpr (transfer == Transfer::Asynchronous) {
+                copy_async(words + i, input);
+            } else {
+                words[i] = *input;
+            }
+        }
+        if constexpr (transfer == Transfer::Asynchronous) {
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
+            // Finish each producer's copies before the CTA shares the tile.
+            asm volatile("cp.async.wait_all;" ::: "memory");
+#endif
         }
         __syncthreads();
         if (threadIdx.x < IQ_WARP_WIDTH) {
@@ -70,5 +93,13 @@ __global__ static void cached(float *out, const float *query, const iquest_q8 *c
     for (unsigned part = 0; part < 4; part++) {
         out[base + part * IQ_WARP_WIDTH] = iq_attn_output(value[part], inverse, factor);
     }
+}
+static bool async_supported() {
+    cudaFuncAttributes attributes{};
+    if (cudaFuncGetAttributes(&attributes, cached<128, Transfer::Asynchronous>) != cudaSuccess) {
+        (void)cudaGetLastError();
+        return false;
+    }
+    return attributes.ptxVersion >= 80;
 }
 } // namespace iq_decode

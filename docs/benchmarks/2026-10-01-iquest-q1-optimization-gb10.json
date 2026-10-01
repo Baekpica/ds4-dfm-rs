@@ -1,10 +1,10 @@
 {
   "schema": 1,
   "date": "2026-10-01",
-  "status": "ongoing; P1/P2/P3,D1/D2 adopted; final dedicated decode round pending",
+  "status": "Six optimization rounds adopted; final HTTP qualification pending",
   "effective_rounds": {
     "prefill": 3,
-    "decode": 2
+    "decode": 3
   },
   "dedicated_round_goal": {
     "prefill": 3,
@@ -616,7 +616,7 @@
       }
     }
   },
-  "primary_evidence": "D2.cold8k",
+  "primary_evidence": "D3.cold8k",
   "workload_scope": "The existing workload field and P1 evidence retain the initial 2K protocol; primary_workload is the subsequent 8K cold-KV protocol.",
   "primary_workload": {
     "prompt_tokens": 8192,
@@ -3224,5 +3224,973 @@
     "command": "cargo test --workspace --locked -- --test-threads=1",
     "scope": "model-free workspace tests during D2 correctness-only state gates, before performance campaign",
     "log_sha256": "07c61b533b6514604bce0857e924d134656aa731c8466ba52b5f8fcdc8297842"
-  }
+  },
+  "D3": {
+    "status": "adopted",
+    "default_enabled": true,
+    "effective_round_credit": {
+      "prefill": 0,
+      "decode": 1
+    },
+    "fallback": "DS4_IQUEST_ATTN_ASYNC=0",
+    "scope": "rows1 full/SWA4096 attention on SM80+ compiled targets",
+    "bottleneck": "Retained D2 attention consumes76.4645% of decode GPU time;98584/98665 long-scoreboard PC samples occur at STS.64 consuming synchronous loads (sample attribution, not wall time).",
+    "change": "Disjoint aligned8B cp.async copies into the existing compressed tile; per-producer wait and original CTA barriers preserve lifetime and arithmetic.",
+    "cold8k": {
+      "passed": true,
+      "scope": "Independent CPU audit of six completed cold-KV fresh-process ABBAAB workers; weights/OS cache not cold; not adoption or final-state qualification",
+      "workload": {
+        "frontier": 8192,
+        "capacity": 16384,
+        "chunk": 128,
+        "generated": 32,
+        "mtp": "off"
+      },
+      "measured_per_arm": 3,
+      "warmup_workers": 0,
+      "cache_policy": {
+        "name": "cold_kv",
+        "fresh_process": true,
+        "fresh_session": true,
+        "prefill_start_position": 0,
+        "reused_kv_tokens": 0,
+        "restored_payload": false,
+        "separate_warmup_process": false,
+        "weight_owner": "persistent canonical VMM owner",
+        "weights_and_os_cache": "uncontrolled; not claimed cold",
+        "native_boot_prewarm": "unchanged, outside measured fresh-session prefill",
+        "verification": "bench creates a new Session; one frontier; full frontier prefill count in CSV and logits receipt"
+      },
+      "source_base": "f58658fada265346370ef1a48076833953361db5",
+      "source_has_uncommitted_candidate": true,
+      "control": "DS4_IQUEST_ATTN_ASYNC",
+      "shared_variant_controls": {
+        "DS4_IQUEST_ATTN_SHUFFLE": "1",
+        "DS4_IQUEST_ATTN_WARP": "1",
+        "DS4_IQUEST_ATTN_TILED": "1",
+        "DS4_IQUEST_ATTN_CACHED": "1",
+        "DS4_IQUEST_ROUTER_WARP": "1"
+      },
+      "candidate_binary_sha256": "f7d458040aac3304e1c36c0dd9a5bd76f2381933d275e2d4b2a3a736d5f78b84",
+      "model_hashes_fresh": false,
+      "owner_pids": [
+        716070
+      ],
+      "small_inputs_before_after_unchanged": true,
+      "rows": [
+        {
+          "variant": "A",
+          "kind": "measured",
+          "directory": "00-A-measured",
+          "prefill_tps": 132.65,
+          "decode_tps": 5.07,
+          "logits_f32_bits_exact": true,
+          "tokens_identical": true,
+          "clock_samples": 141,
+          "graphics_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "sm_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "raw_report_sha256": "01da901d3763d9ac762982e595d5ff1d516714b011938ea35e95259c6b1dd025",
+          "logits_json_sha256": "3b1c41fd08387e79d54fb265ce28f0aa91921c499b3984587b83570f656040e5",
+          "tokens_json_sha256": "b6e3ac0f38cc2f46b5f35cf7b43151fd29205a01ca6afe13c1be486020d05490"
+        },
+        {
+          "variant": "B",
+          "kind": "measured",
+          "directory": "01-B-measured",
+          "prefill_tps": 132.72,
+          "decode_tps": 6.77,
+          "logits_f32_bits_exact": true,
+          "tokens_identical": true,
+          "clock_samples": 137,
+          "graphics_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "sm_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "raw_report_sha256": "b6dcb31ac180451aeae0b3786f189f4b07aabc8ce169ee8aacbe1439a46f4d1a",
+          "logits_json_sha256": "3b1c41fd08387e79d54fb265ce28f0aa91921c499b3984587b83570f656040e5",
+          "tokens_json_sha256": "b6e3ac0f38cc2f46b5f35cf7b43151fd29205a01ca6afe13c1be486020d05490"
+        },
+        {
+          "variant": "B",
+          "kind": "measured",
+          "directory": "02-B-measured",
+          "prefill_tps": 132.51,
+          "decode_tps": 6.78,
+          "logits_f32_bits_exact": true,
+          "tokens_identical": true,
+          "clock_samples": 137,
+          "graphics_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "sm_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2197
+          },
+          "raw_report_sha256": "069f85f8d712a11e57b7059545fae294c171bdb432d831102c39b34a2eceafdf",
+          "logits_json_sha256": "3b1c41fd08387e79d54fb265ce28f0aa91921c499b3984587b83570f656040e5",
+          "tokens_json_sha256": "b6e3ac0f38cc2f46b5f35cf7b43151fd29205a01ca6afe13c1be486020d05490"
+        },
+        {
+          "variant": "A",
+          "kind": "measured",
+          "directory": "03-A-measured",
+          "prefill_tps": 132.51,
+          "decode_tps": 5.06,
+          "logits_f32_bits_exact": true,
+          "tokens_identical": true,
+          "clock_samples": 141,
+          "graphics_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2190
+          },
+          "sm_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2190
+          },
+          "raw_report_sha256": "ab193ce312de3d49fac4714416d1ceee3a464f52160783e56f501866ba83a374",
+          "logits_json_sha256": "3b1c41fd08387e79d54fb265ce28f0aa91921c499b3984587b83570f656040e5",
+          "tokens_json_sha256": "b6e3ac0f38cc2f46b5f35cf7b43151fd29205a01ca6afe13c1be486020d05490"
+        },
+        {
+          "variant": "A",
+          "kind": "measured",
+          "directory": "04-A-measured",
+          "prefill_tps": 132.78,
+          "decode_tps": 5.06,
+          "logits_f32_bits_exact": true,
+          "tokens_identical": true,
+          "clock_samples": 141,
+          "graphics_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2190
+          },
+          "sm_clock_mhz": {
+            "min": 2190,
+            "median": 2190,
+            "max": 2190
+          },
+          "raw_report_sha256": "47f31c8b00e36d7cf002012ab2fc68e059f3738016e1afeff65a835a1a132bf1",
+          "logits_json_sha256": "3b1c41fd08387e79d54fb265ce28f0aa91921c499b3984587b83570f656040e5",
+          "tokens_json_sha256": "b6e3ac0f38cc2f46b5f35cf7b43151fd29205a01ca6afe13c1be486020d05490"
+        },
+        {
+          "variant": "B",
+          "kind": "measured",
+          "directory": "05-B-measured",
+          "prefill_tps": 132.8,
+          "decode_tps": 6.77,
+          "logits_f32_bits_exact": true,
+          "tokens_identical": true,
+          "clock_samples": 138,
+          "graphics_clock_mhz": {
+            "min": 2190,
+            "median": 2190.0,
+            "max": 2190
+          },
+          "sm_clock_mhz": {
+            "min": 2190,
+            "median": 2190.0,
+            "max": 2190
+          },
+          "raw_report_sha256": "a452042a700ef17047e6f1977b3bcbd85c4b76313e23f2131a250b4fe33987dc",
+          "logits_json_sha256": "3b1c41fd08387e79d54fb265ce28f0aa91921c499b3984587b83570f656040e5",
+          "tokens_json_sha256": "b6e3ac0f38cc2f46b5f35cf7b43151fd29205a01ca6afe13c1be486020d05490"
+        }
+      ],
+      "statistics": {
+        "A": {
+          "prefill_tps": {
+            "min": 132.51,
+            "median": 132.65,
+            "max": 132.78
+          },
+          "gen_tps": {
+            "min": 5.06,
+            "median": 5.06,
+            "max": 5.07
+          }
+        },
+        "B": {
+          "prefill_tps": {
+            "min": 132.51,
+            "median": 132.72,
+            "max": 132.8
+          },
+          "gen_tps": {
+            "min": 6.77,
+            "median": 6.77,
+            "max": 6.78
+          }
+        }
+      },
+      "median_throughput_gain_percent": {
+        "prefill_tps": 0.05277044854881119,
+        "gen_tps": 33.79446640316206
+      },
+      "proof": {
+        "independent_comparisons": 5,
+        "full_vocab_values_each": 160000,
+        "all_finite": true,
+        "f32_bits_reconstructed_from_json_exact": true,
+        "json_numbers_source": "bench json_f32 uses finite f32.to_string() round-trip representation",
+        "tokens_each": 32,
+        "all_tokens_identical": true,
+        "reference_directory": "00-A-measured",
+        "final_decode_logits_checked": false,
+        "committed_native_payload_checked": false
+      },
+      "raw_receipts": {
+        "manifest.json": "d874e43fd9ea930a1c0bf2da9d83b48cd1f9617fa233333d743d8118388a15d6",
+        "summary.json": "e7600bcc4d4d0736209a6d1eb66d4a809c49f94fb698de2f30dcba37f04b58f4"
+      },
+      "remaining": "Ordinary prefill/final logits + KV gate, then root adoption decision"
+    },
+    "state": {
+      "passed": true,
+      "scope": "Independent ordinary MTP-off full native payload and raw logit audit; not performance",
+      "workload": {
+        "frontier": 8192,
+        "capacity": 16384,
+        "steps": 32,
+        "chunk": 128,
+        "prompt_mode": "raw",
+        "vocab": 160000,
+        "eos": 0
+      },
+      "arms": [
+        {
+          "directory": "scratch/iquest-perf/d3-8k-state-A",
+          "report_sha256": "fdb0678270982e091bc9cb3134a29d1319d2a4ddaddd51de397a837e14ba048a",
+          "states": {
+            "prefill": {
+              "position": 8192,
+              "payload_bytes": 1007842356,
+              "full_vocab_finite": true,
+              "payload_logits_equal_raw_file": true,
+              "tokens_match_timeline": true,
+              "header": [
+                878072644,
+                3,
+                16384,
+                128,
+                88,
+                827412809,
+                2176,
+                8192,
+                0,
+                34,
+                4096,
+                160000,
+                8192
+              ],
+              "payload_sha256": "651381024a7bb350316aeab3dadf99da10bfddcb2a75d727e8cb30d0c3cefee7",
+              "logits_sha256": "b72f39d238819baa030091221ed9c27f04ed226839b5ce0718756dfe9e3858cd"
+            },
+            "final": {
+              "position": 8224,
+              "payload_bytes": 1009583284,
+              "full_vocab_finite": true,
+              "payload_logits_equal_raw_file": true,
+              "tokens_match_timeline": true,
+              "header": [
+                878072644,
+                3,
+                16384,
+                128,
+                88,
+                827412809,
+                2176,
+                8224,
+                0,
+                34,
+                4096,
+                160000,
+                8224
+              ],
+              "payload_sha256": "60febaab90c180eea55e58ace3c7e0fe66934d826dc498535dc16554698f09ba",
+              "logits_sha256": "dc5df4d0dbb3572072bd17afb41a95723ea60ee1ccd77d67736dd4abc7ed1e7a"
+            }
+          }
+        },
+        {
+          "directory": "scratch/iquest-perf/d3-8k-state-B",
+          "report_sha256": "68c01aab07967638872379e0b157d55e95e5cb764bc24f2b0d8628a8495f0413",
+          "states": {
+            "prefill": {
+              "position": 8192,
+              "payload_bytes": 1007842356,
+              "full_vocab_finite": true,
+              "payload_logits_equal_raw_file": true,
+              "tokens_match_timeline": true,
+              "header": [
+                878072644,
+                3,
+                16384,
+                128,
+                88,
+                827412809,
+                2176,
+                8192,
+                0,
+                34,
+                4096,
+                160000,
+                8192
+              ],
+              "payload_sha256": "651381024a7bb350316aeab3dadf99da10bfddcb2a75d727e8cb30d0c3cefee7",
+              "logits_sha256": "b72f39d238819baa030091221ed9c27f04ed226839b5ce0718756dfe9e3858cd"
+            },
+            "final": {
+              "position": 8224,
+              "payload_bytes": 1009583284,
+              "full_vocab_finite": true,
+              "payload_logits_equal_raw_file": true,
+              "tokens_match_timeline": true,
+              "header": [
+                878072644,
+                3,
+                16384,
+                128,
+                88,
+                827412809,
+                2176,
+                8224,
+                0,
+                34,
+                4096,
+                160000,
+                8224
+              ],
+              "payload_sha256": "60febaab90c180eea55e58ace3c7e0fe66934d826dc498535dc16554698f09ba",
+              "logits_sha256": "dc5df4d0dbb3572072bd17afb41a95723ea60ee1ccd77d67736dd4abc7ed1e7a"
+            }
+          }
+        }
+      ],
+      "control": "DS4_IQUEST_ATTN_ASYNC",
+      "shared_environment": {
+        "DS4_IQUEST_ROUTER_WARP": "1",
+        "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-iquest-q1/scratch/iquest-perf/weights-02.ipc",
+        "DS4_WEIGHT_RESIDENCY": "mapped",
+        "DS4_IQUEST_ATTN_TILED": "1",
+        "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+        "LD_LIBRARY_PATH": "/usr/local/cuda-13.3/lib64:/usr/local/cuda-13.3/lib64:/usr/local/cuda-13.3/lib64:",
+        "DS4_IQUEST_PREFILL_CHUNK": "128",
+        "DS4_IQUEST_ATTN_WARP": "1",
+        "DS4_IQUEST_ATTN_CACHED": "1",
+        "DS4_IQUEST_ATTN_SHUFFLE": "1"
+      },
+      "comparison": {
+        "prefill": {
+          "payload_bytes_compared": 1007842356,
+          "logit_bytes_compared": 640000,
+          "all_bytes_equal": true
+        },
+        "final": {
+          "payload_bytes_compared": 1009583284,
+          "logit_bytes_compared": 640000,
+          "all_bytes_equal": true
+        }
+      },
+      "tokens_identical": true,
+      "restore_self_checks": 4,
+      "fault_counters_unchanged": true,
+      "speculative_counters_zero": true,
+      "evidence_limit": "Only chronological committed payload state is serialized; this does not inspect unused ring slots or qualify HTTP/continuous/MTP paths."
+    },
+    "component_cases": {
+      "passed": true,
+      "cases": 81,
+      "scope": "all-output byte-exact against retained and original; wider rows/window512 diagnostic only"
+    },
+    "retained_state": {
+      "passed": true,
+      "scope": "D3 off matches committed D2 on prefill/final full raw logits and native payload SHA256"
+    },
+    "source_and_binary": {
+      "ds4-bench-perf": "f7d458040aac3304e1c36c0dd9a5bd76f2381933d275e2d4b2a3a736d5f78b84",
+      "ds4": "73460f597ea244807e91d082095cafe17a95355c17b5e49d8673246cf511d723",
+      "ds4-server": "03b3a017b2116a7bf7776c5daa8fe2137410c90a3d53c75cd21aa59979773295",
+      "tests/iquest_perf_verify": "01c5f53a04c0177da00e0bed17de270328a93da476ad2b9e1add4b9d08b8596b",
+      "tests/iquest_verify": "e9014f765f5963d255f0525322cd6b60dfdce1beb2d7861a760988e026e82ac3",
+      "tests/iquest_bank_verify": "aaf26831bd8d8ff3327293c5078e257626dcf88fc715e3da4be48bb005b05cd1",
+      "tests/iquest_attention_profile": "1b7a1ac7b1f0e3fc1d916b8116be8cd8d1a9aec9a2044d6a5bde224587b79bce",
+      "cuda/iquest_decode.cuh": "ff8af8973797dd38abb3b45155197618117c7e34d2d53832152612a54b50e697",
+      "ds4_iquest_gpu.cuh": "c8222144e5e57473b6b7def64553124fe638d8e53216032978f8d6ac31f29e14",
+      "tests/iquest_attention_profile.cu": "5f480d82fce2144c9c6758dba0905f2956754760fff3196e8c51847964c7a3c4"
+    },
+    "retained_profile": {
+      "scope": "NVTX-scoped profiled attribution, not speed A/B",
+      "command": [
+        "nsys",
+        "stats",
+        "--report",
+        "nvtx_kern_sum:base,nvtx_gpu_proj_sum,nvtx_pushpop_trace,cuda_api_sum",
+        "--format",
+        "csv:noconv",
+        "--output",
+        "scratch/iquest-perf/d3-default-8k-profile/stats",
+        "scratch/iquest-perf/d3-default-8k-profile/00-B-profile/trace.nsys-rep"
+      ],
+      "phases": {
+        "prefill": {
+          "host_ns": 61810349376,
+          "aggregate_kernel_ns": 61357326236,
+          "launches": 385792,
+          "kernels": [
+            {
+              "name": "mul_mat_q",
+              "gpu_ns": 30526496672,
+              "launches": 21248,
+              "share_percent": 49.75199954865256,
+              "avg_ns": 1436676.2
+            },
+            {
+              "name": "prefill",
+              "gpu_ns": 13922183552,
+              "launches": 5632,
+              "share_percent": 22.690336111535903,
+              "avg_ns": 2471978.6
+            },
+            {
+              "name": "ds4_moe_worklist_mmq_kernel",
+              "gpu_ns": 12763063200,
+              "launches": 18176,
+              "share_percent": 20.801204979025904,
+              "avg_ns": 702193.2
+            },
+            {
+              "name": "iquest_router_kernel",
+              "gpu_ns": 1575119808,
+              "launches": 5568,
+              "share_percent": 2.567125891277568,
+              "avg_ns": 282887.9
+            },
+            {
+              "name": "motif3_round_bf16_kernel",
+              "gpu_ns": 365766140,
+              "launches": 90432,
+              "share_percent": 0.5961246397751196,
+              "avg_ns": 4044.7
+            },
+            {
+              "name": "iquest_rms_kernel",
+              "gpu_ns": 358982496,
+              "launches": 28288,
+              "share_percent": 0.5850686756121639,
+              "avg_ns": 12690.3
+            },
+            {
+              "name": "ds4_mmq_sanitize_f32_kernel",
+              "gpu_ns": 322724864,
+              "launches": 33536,
+              "share_percent": 0.5259760876129062,
+              "avg_ns": 9623.2
+            },
+            {
+              "name": "iquest_sum_kernel",
+              "gpu_ns": 238735776,
+              "launches": 5568,
+              "share_percent": 0.3890909051051955,
+              "avg_ns": 42876.4
+            },
+            {
+              "name": "quantize_mmq_q8_1",
+              "gpu_ns": 212116960,
+              "launches": 34432,
+              "share_percent": 0.34570763266986243,
+              "avg_ns": 6160.5
+            },
+            {
+              "name": "mm_ids_helper",
+              "gpu_ns": 185711744,
+              "launches": 34432,
+              "share_percent": 0.3026724849216749,
+              "avg_ns": 5393.6
+            },
+            {
+              "name": "mul_mat_q_stream_k_fixup",
+              "gpu_ns": 137233856,
+              "launches": 11264,
+              "share_percent": 0.2236633576113706,
+              "avg_ns": 12183.4
+            },
+            {
+              "name": "mul_mat_vec_q",
+              "gpu_ns": 135399808,
+              "launches": 64,
+              "share_percent": 0.22067423127143582,
+              "avg_ns": 2115622.0
+            },
+            {
+              "name": "iquest_rope_kernel",
+              "gpu_ns": 128811872,
+              "launches": 11264,
+              "share_percent": 0.2099372314636856,
+              "avg_ns": 11435.7
+            },
+            {
+              "name": "iquest_add_kernel",
+              "gpu_ns": 116325024,
+              "launches": 11264,
+              "share_percent": 0.1895862012509746,
+              "avg_ns": 10327.2
+            },
+            {
+              "name": "nvjet_sm121_sss_tf32_mma_64x32x64_4_32x16x64_tmaAB_alignCD4_splitK_TNNN",
+              "gpu_ns": 113152352,
+              "launches": 5568,
+              "share_percent": 0.18441538923123815,
+              "avg_ns": 20321.9
+            },
+            {
+              "name": "iquest_swiglu_kernel",
+              "gpu_ns": 83960928,
+              "launches": 5632,
+              "share_percent": 0.1368392874178697,
+              "avg_ns": 14907.8
+            },
+            {
+              "name": "iquest_kv_kernel",
+              "gpu_ns": 52611840,
+              "launches": 5632,
+              "share_percent": 0.0857466308059741,
+              "avg_ns": 9341.6
+            },
+            {
+              "name": "sink",
+              "gpu_ns": 38023008,
+              "launches": 5632,
+              "share_percent": 0.061969792904194174,
+              "avg_ns": 6751.2
+            },
+            {
+              "name": "ds4_moe_build_tile_worklist",
+              "gpu_ns": 33146848,
+              "launches": 18176,
+              "share_percent": 0.05402264087014901,
+              "avg_ns": 1823.7
+            },
+            {
+              "name": "dots3_scale_kernel",
+              "gpu_ns": 19194208,
+              "launches": 5568,
+              "share_percent": 0.031282666924195665,
+              "avg_ns": 3447.2
+            },
+            {
+              "name": "fill_f32_kernel",
+              "gpu_ns": 16108736,
+              "launches": 22720,
+              "share_percent": 0.026253973222432513,
+              "avg_ns": 709.0
+            },
+            {
+              "name": "splitKreduce_kernel",
+              "gpu_ns": 11930336,
+              "launches": 5568,
+              "share_percent": 0.019444028499729753,
+              "avg_ns": 2142.7
+            },
+            {
+              "name": "embed_tokens_generic_kernel",
+              "gpu_ns": 432960,
+              "launches": 64,
+              "share_percent": 0.0007056370063041807,
+              "avg_ns": 6765.0
+            },
+            {
+              "name": "quantize_q8_1",
+              "gpu_ns": 93248,
+              "launches": 64,
+              "share_percent": 0.00015197533158687232,
+              "avg_ns": 1457.0
+            }
+          ]
+        },
+        "decode": {
+          "host_ns": 4738840368,
+          "aggregate_kernel_ns": 4601888864,
+          "launches": 155104,
+          "kernels": [
+            {
+              "name": "cached",
+              "gpu_ns": 3138677120,
+              "launches": 2816,
+              "share_percent": 68.2041051567646,
+              "avg_ns": 1114587.0
+            },
+            {
+              "name": "mul_mat_q",
+              "gpu_ns": 564019808,
+              "launches": 4992,
+              "share_percent": 12.256267473390249,
+              "avg_ns": 112984.7
+            },
+            {
+              "name": "mul_mat_vec_q",
+              "gpu_ns": 513021248,
+              "launches": 11968,
+              "share_percent": 11.148058181354637,
+              "avg_ns": 42866.1
+            },
+            {
+              "name": "mul_mat_vec_q_moe",
+              "gpu_ns": 132762240,
+              "launches": 2784,
+              "share_percent": 2.884951026057634,
+              "avg_ns": 47687.6
+            },
+            {
+              "name": "iquest_rms_kernel",
+              "gpu_ns": 84007264,
+              "launches": 14144,
+              "share_percent": 1.8254952799312105,
+              "avg_ns": 5939.4
+            },
+            {
+              "name": "matmul_f32_kernel",
+              "gpu_ns": 42943840,
+              "launches": 2784,
+              "share_percent": 0.9331785549178356,
+              "avg_ns": 15425.2
+            },
+            {
+              "name": "motif3_round_bf16_kernel",
+              "gpu_ns": 34927040,
+              "launches": 45216,
+              "share_percent": 0.7589718272692297,
+              "avg_ns": 772.4
+            },
+            {
+              "name": "select",
+              "gpu_ns": 17791744,
+              "launches": 2784,
+              "share_percent": 0.38661828926775227,
+              "avg_ns": 6390.7
+            },
+            {
+              "name": "quantize_q8_1",
+              "gpu_ns": 15505952,
+              "launches": 14752,
+              "share_percent": 0.3369475547595493,
+              "avg_ns": 1051.1
+            },
+            {
+              "name": "iquest_rope_kernel",
+              "gpu_ns": 14459424,
+              "launches": 5632,
+              "share_percent": 0.3142062841437624,
+              "avg_ns": 2567.4
+            },
+            {
+              "name": "ds4_mmq_sanitize_f32_kernel",
+              "gpu_ns": 10959936,
+              "launches": 14016,
+              "share_percent": 0.23816168368902182,
+              "avg_ns": 782.0
+            },
+            {
+              "name": "fill_f32_kernel",
+              "gpu_ns": 6344448,
+              "launches": 11360,
+              "share_percent": 0.13786617164164527,
+              "avg_ns": 558.5
+            },
+            {
+              "name": "iquest_add_kernel",
+              "gpu_ns": 5151040,
+              "launches": 5632,
+              "share_percent": 0.11193316814527922,
+              "avg_ns": 914.6
+            },
+            {
+              "name": "quantize_mmq_q8_1",
+              "gpu_ns": 3919776,
+              "launches": 2496,
+              "share_percent": 0.08517754591302533,
+              "avg_ns": 1570.4
+            },
+            {
+              "name": "iquest_kv_kernel",
+              "gpu_ns": 3791296,
+              "launches": 2816,
+              "share_percent": 0.08238564885081935,
+              "avg_ns": 1346.3
+            },
+            {
+              "name": "iquest_sum_kernel",
+              "gpu_ns": 3787712,
+              "launches": 2784,
+              "share_percent": 0.08230776778706667,
+              "avg_ns": 1360.5
+            },
+            {
+              "name": "iquest_swiglu_kernel",
+              "gpu_ns": 3578528,
+              "launches": 2816,
+              "share_percent": 0.07776215605714376,
+              "avg_ns": 1270.8
+            },
+            {
+              "name": "mm_ids_helper",
+              "gpu_ns": 3130720,
+              "launches": 2496,
+              "share_percent": 0.0680311952879008,
+              "avg_ns": 1254.3
+            },
+            {
+              "name": "dots3_scale_kernel",
+              "gpu_ns": 3029536,
+              "launches": 2784,
+              "share_percent": 0.06583244597016848,
+              "avg_ns": 1088.2
+            },
+            {
+              "name": "embed_tokens_generic_kernel",
+              "gpu_ns": 80192,
+              "launches": 32,
+              "share_percent": 0.001742588801466545,
+              "avg_ns": 2506.0
+            }
+          ]
+        }
+      }
+    },
+    "default_parity": {
+      "passed": true,
+      "full_vocab_values": 160000,
+      "tokens": 32,
+      "logit_sha256": "b72f39d238819baa030091221ed9c27f04ed226839b5ce0718756dfe9e3858cd",
+      "scope": "all optimization controls unset matches explicit-on candidate full prefill F32 bits and32 greedy IDs"
+    },
+    "resources": {
+      "new_global_allocations": 0,
+      "registers_before": 40,
+      "registers_after": 40,
+      "static_shared_bytes": 34816,
+      "driver_shared_bytes": 1024,
+      "spills": 0
+    },
+    "isolated_attention": {
+      "hot_median_ms": {
+        "cache128": 2.02362967,
+        "async": 1.70697594
+      },
+      "ncu_cache_flushed_ms": {
+        "cache128": 2.659168,
+        "async": 1.757312
+      },
+      "scope": "synthetic resident full8K,row1; separate from end-to-end A/B"
+    },
+    "sanitizers": {
+      "racecheck_errors": 0,
+      "synccheck_errors": 0
+    },
+    "raw_sha256": {
+      "d3-8k-cold/independent-audit.json": "f954931204e256829028f1a7154b01d1996a7910022b8b9e0609627da1fbc03d",
+      "d3-state-audit.json": "38a07b1e67f652d86fef02ba533a78252c76c3ab8bfd04bde1bbcdf915dfaeeb",
+      "d3-attn-cases/summary.json": "db527e9f985786874beb298d23427079f53a8b365394ee8f67a389b5be3045a7",
+      "d3-retained-state-match.json": "6136dd6e73cb190641aa0fd89e0a04a70d228afcbcac35312d20549b9e122565",
+      "d3-production-inventory.json": "68ed552000a5bf8e231e3c61de8254adb5ef21ee0df4a4db383077eb2aa50550",
+      "d3-default-8k-profile/attribution.json": "ecebd397c973e953af0fdf1a73d5c826f18930a894a8a573f92fe14195c89318",
+      "d3-default-parity.json": "bff5281f267d7cdc5b15b2ff054d7445cbcde52e9a556248d91211ad82a799dd",
+      "d3-hot.json": "7fdee736320806c20329dd574d9fa53bea640a4ddcbe7de491b9f5463f8935a8",
+      "d3-racecheck-8191.log": "42067c07304b642768a4fa17fc1f6b8ec384cf95ddbc2d977773361918d9cac6",
+      "d3-racecheck-128.log": "72c4b0d03f6c9e1cc5291e9df07cf7ce0472b172542a78674edcf5f3cda31b0a",
+      "d3-synccheck-128.log": "4e6c055762fb19cb25c1add009e6d851259f792b1a9f0fb72eb230d31ff22ea8",
+      "ncu-d3-final-cache128.ncu-rep": "b8e880f7b00c2a70459489de4d6396aec21c1eb843a07c3d97bf965eb058594f",
+      "ncu-d3-final-async.ncu-rep": "85a3ee28a157412e527c887276b17a955f4eac83bfc452fab2c48ed8e16c3a36"
+    }
+  },
+  "final_native_gates": [
+    {
+      "name": "mtp-wrap",
+      "command": [
+        "python3",
+        "tools/host_memory_guard.py",
+        "--max-gib",
+        "24",
+        "--high-gib",
+        "21",
+        "--reserve-gib",
+        "12",
+        "--trip-gib",
+        "10",
+        "--timeout",
+        "1800",
+        "--log",
+        "scratch/iquest-perf/final-mtp-wrap.memory.jsonl",
+        "--",
+        "./tests/iquest_verify",
+        "/home/sunghoon/workspace/ds4-exaone/models/IQuest-Q1-Mixed-Quant-GGUF/IQuest-Q1-MQ-IQ2_XXS-00001-of-00006.gguf",
+        "scratch/iquest-perf/final-mtp-wrap",
+        "--ctx",
+        "8192",
+        "--draft",
+        "7",
+        "--steps",
+        "32",
+        "--prompt-file",
+        "scratch/iquest/mtp-wrap.txt"
+      ],
+      "environment": {
+        "DS4_WEIGHT_RESIDENCY": "mapped",
+        "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+        "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-iquest-q1/scratch/iquest-perf/weights-02.ipc",
+        "DS4_IQUEST_PREFILL_CHUNK": "128"
+      },
+      "exit_code": 0,
+      "passed": true,
+      "seconds": 20.485517501831055,
+      "binary_sha256": "e9014f765f5963d255f0525322cd6b60dfdce1beb2d7861a760988e026e82ac3",
+      "report_sha256": "f149f2d4a987f342e4eeb07c6dc310c5c0bde66ad270169664e5ce7c84dfcedc"
+    },
+    {
+      "name": "swa-wrap",
+      "command": [
+        "python3",
+        "tools/host_memory_guard.py",
+        "--max-gib",
+        "24",
+        "--high-gib",
+        "21",
+        "--reserve-gib",
+        "12",
+        "--trip-gib",
+        "10",
+        "--timeout",
+        "1800",
+        "--log",
+        "scratch/iquest-perf/final-swa-wrap.memory.jsonl",
+        "--",
+        "./tests/iquest_verify",
+        "/home/sunghoon/workspace/ds4-exaone/models/IQuest-Q1-Mixed-Quant-GGUF/IQuest-Q1-MQ-IQ2_XXS-00001-of-00006.gguf",
+        "scratch/iquest-perf/final-swa-wrap",
+        "--ctx",
+        "8192",
+        "--draft",
+        "7",
+        "--steps",
+        "32",
+        "--prompt-file",
+        "scratch/iquest/swa-wrap.txt"
+      ],
+      "environment": {
+        "DS4_WEIGHT_RESIDENCY": "mapped",
+        "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+        "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-iquest-q1/scratch/iquest-perf/weights-02.ipc",
+        "DS4_IQUEST_PREFILL_CHUNK": "128"
+      },
+      "exit_code": 0,
+      "passed": true,
+      "seconds": 83.97849106788635,
+      "binary_sha256": "e9014f765f5963d255f0525322cd6b60dfdce1beb2d7861a760988e026e82ac3",
+      "report_sha256": "8014d56937046fac1706763557e96b1e611ffc1aea2816e505450878f681582d"
+    },
+    {
+      "name": "banks",
+      "command": [
+        "python3",
+        "tools/host_memory_guard.py",
+        "--max-gib",
+        "24",
+        "--high-gib",
+        "21",
+        "--reserve-gib",
+        "12",
+        "--trip-gib",
+        "10",
+        "--timeout",
+        "1800",
+        "--log",
+        "scratch/iquest-perf/final-banks.memory.jsonl",
+        "--",
+        "./tests/iquest_bank_verify",
+        "/home/sunghoon/workspace/ds4-exaone/models/IQuest-Q1-Mixed-Quant-GGUF/IQuest-Q1-MQ-IQ2_XXS-00001-of-00006.gguf",
+        "scratch/iquest/long-append-token-ids.i32",
+        "scratch/iquest-perf/final-banks",
+        "--cut",
+        "4395",
+        "--serial-from",
+        "4371",
+        "--ctx",
+        "8192",
+        "--chunk",
+        "128"
+      ],
+      "environment": {
+        "DS4_WEIGHT_RESIDENCY": "mapped",
+        "DS4_CUDA_WEIGHT_IPC_SCOPE": "base",
+        "DS4_CUDA_WEIGHT_IPC_MANIFEST": "/home/sunghoon/orca/workspaces/ds4-dfm-rs/feat-add-iquest-q1/scratch/iquest-perf/weights-02.ipc",
+        "DS4_IQUEST_PREFILL_CHUNK": "128"
+      },
+      "exit_code": 0,
+      "passed": true,
+      "seconds": 94.78398394584656,
+      "binary_sha256": "aaf26831bd8d8ff3327293c5078e257626dcf88fc715e3da4be48bb005b05cd1",
+      "report_sha256": "05f6d1406919d350e78907245b34d170703f3fedc4cad5f108d2b42bd15fe8a4"
+    }
+  ],
+  "final_model_free_checks": [
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 1.832935094833374,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked"
+      ],
+      "exit_code": 0,
+      "seconds": 0.43066930770874023,
+      "log_sha256": "357d52cbfeb0589c64de9fc98d26fa2e7a1cfc63c175191c4857499f75c1bc58"
+    },
+    {
+      "name": "check",
+      "command": [
+        "cargo",
+        "check",
+        "--workspace",
+        "--all-targets",
+        "--locked"
+      ],
+      "exit_code": 0,
+      "seconds": 0.3061392307281494,
+      "log_sha256": "7090956da68689cc7258374ae4070c7851c1ec1db82e17e22203ae4674e37699"
+    }
+  ]
 }
