@@ -19,13 +19,14 @@ qualification; explicit speculation still needs performance work.
 
 All four downloaded shards and their provenance/manifest pass SHA-256 checks.
 
-Four retained prefill and three decode rounds have fresh byte-exact proofs.
-The latest 8K pair improves prefill 498.07→506.16 tok/s; ordinary
-decode stays within noise at 17.44 tok/s. A 32K pair improves prefill
-407.86→431.27 tok/s; its automatic first-decode timing screen remains
-inconclusive. See the [GB10 rounds](benchmarks/naive-2026-09-30/README.md)
-for the exact workload, controls and limits; this does not qualify DSpark
-acceleration or long-context serving.
+The [October 1 additional rounds](benchmarks/naive-2026-10-01/README.md)
+retain four prefill and three decode improvements beyond the historical P4/D3
+baseline. The latest matched 8K `index2-on` arm records 518.85 prefill /
+18.85 ordinary decode tok/s, with exact logits/tokens and actual-state proofs.
+The report owns source/binary pins, controls, sampled clocks and eager limits.
+The [September 30 campaign](benchmarks/naive-2026-09-30/README.md) remains the
+historical 8K/32K evidence. These results do not qualify DSpark acceleration or
+long-context serving.
 
 ## Artifact contract
 
@@ -57,8 +58,8 @@ contracts.
 
 The [final October 1 checks](benchmarks/naive-2026-09-30/final-validation.md)
 pass 1420 workspace tests, C oracles and final-binary short reuse/restart
-and concurrent serving. The configured 256K/two-bank endpoint remains
-live with partial reuse, disk KV and MTP off.
+and concurrent serving. The recorded 256K/two-bank serving shape uses
+partial reuse, disk KV and MTP off.
 
 The September 30 host checks cover identification, metadata rejection,
 all 613 tensor names/types/dimensions, eight official-template vectors and

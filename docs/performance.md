@@ -137,10 +137,14 @@ the short-decode decrease. This is a separate artifact and workload from RL.
 
 ## Naive
 
-Naive-N0.5-Flash MQ87's [September 30 index-packing report](benchmarks/naive-2026-09-30/index-pack.md)
-records 506.16 prefill / 17.44 ordinary decode for the latest 8K pair on GB10,
-with byte-exact proofs. Three fresh processes per side use separate warmups,
-chunk 2,048 and 32 greedy outputs. This does not qualify DSpark acceleration or
+Naive-N0.5-Flash MQ87's [October 1 paired index result](benchmarks/naive-2026-10-01/README.md#p8-paired-index-score-query-reuse)
+records 518.85 prefill / 18.85 ordinary decode for `index2-on` on GB10.
+Three fresh processes per side use separate warmups, chunk 2,048 and 32
+greedy outputs; all 915,456 checked logits and token/argmax decisions match
+exactly. Sampled clocks are 2190–2197 MHz. Native source is `ee28ed26`;
+the report pins each round's benchmark bytes and eager/actual-state proofs.
+The [September 30 index-packing pair](benchmarks/naive-2026-09-30/index-pack.md)
+remains historical. These results do not qualify DSpark acceleration or
 long-context serving; use the [family guide](naive-n05-flash.md) for those limits.
 
 ## Bonsai

@@ -1,13 +1,18 @@
-# Naive additional optimization rounds, 2026-10-01
+# Naive GB10 additional optimization rounds, 2026-10-01
 
 Base: `2aedeb43` (main after PR70). Earlier P4/D3 are excluded from these
-additional rounds. Retained so far: **prefill 4, decode 3**.
+additional rounds. Final retained: **prefill 4, decode 3**.
+
+Latest matched 8K arm: `index2-on`, **518.85 prefill / 18.85 ordinary decode
+tok/s**. Retained native source: `ee28ed26`; benchmark SHA-256:
+`db5cbe0433acd561f6fbaa818d1312e0fcc69058e49464fcec6021db9e47a8b2`.
+Documentation layout follows main `4ea49fbb` (PR71).
 
 ## Protocol
 
 GB10, driver 615.71.09, CUDA 13.3, `sm_121a`, clock range 300–2200 MHz;
 observed clocks 2184–2197 MHz. MQ87 source/artifact pins are unchanged from
-[the family contract](naive-n05-flash.md). One resident VMM owner shares the
+[the family contract](../../naive-n05-flash.md). One resident VMM owner shares the
 main weights; no serving worker or competing GPU workload runs during samples.
 
 Primary workload: `promessi_sposi.txt`, 8192 input tokens, prefill chunk 2048,
@@ -172,7 +177,7 @@ remain those above. Benchmark SHA-256:
 
 ## P7: ordered MoE sum and residual
 
-Adopted for prefill; additional counts: **prefill 4, decode 3**.
+Adopted for prefill; counts through P7: **prefill 3, decode 3**.
 This adds no decode round.
 
 Fresh retained-router diagnosis: 188 MoE sum/residual pairs take 302.373248 ms,
@@ -286,3 +291,60 @@ Local evidence: `scratch/naive/perf-2026-10-01/index2-{off,on}/scout.json`,
 `index2-build.guard.jsonl` and `index-u2-unroll-prototype/candidate-results/`.
 Benchmark SHA-256:
 `db5cbe0433acd561f6fbaa818d1312e0fcc69058e49464fcec6021db9e47a8b2`.
+
+## Source and benchmark pins
+
+The table pins each adopted round's native source and measured benchmark
+bytes. The last binary was built from `6e0ae4d9` plus `index2-source.patch`; all 12
+frozen source pins match `ee28ed26`. Documentation-only main sync adds no
+performance credit.
+
+| Additional round | Source commit | Benchmark SHA-256 | Prefill / decode credit |
+| --- | --- | --- | ---: |
+| D4: SWA unit exponent | [c7ea8da2](https://github.com/Baekpica/ds4-dfm-rs/commit/c7ea8da2d067533cb60e7361487aeeaf1e54c876) | `2778f4d11f8815f29f8963dcc6ac2adc0f55193cc9bf1512425d8c5799bc31ab` | 0 / 1 |
+| P5/D5: SWA ring addresses | [255633e1](https://github.com/Baekpica/ds4-dfm-rs/commit/255633e1b999219cfacd93cf95bef5c8e910533b) | `4a8b6a3458b67afb62dcd6f93b1f4b70e79821999d2a847e63082b774683192a` | 1 / 1 |
+| P6/D6: stable warp router | [6a427d5f](https://github.com/Baekpica/ds4-dfm-rs/commit/6a427d5f66fc85f502ee39a2dae67ef1e7657a8c) | `0025ef24e0fc7216b8b26ca15827f3efca0a0f82edcfc7110ad75ba2059a2fc1` | 1 / 1 |
+| P7: ordered MoE sum/residual | [6e0ae4d9](https://github.com/Baekpica/ds4-dfm-rs/commit/6e0ae4d903679aa91a780ede42ac6a636e93e8d4) | `69cf89f7b64fb1029e6acebf65ed6242942e4c16de0595b335f7a5ec9157a234` | 1 / 0 |
+| P8: paired index queries | [ee28ed26](https://github.com/Baekpica/ds4-dfm-rs/commit/ee28ed26dfcb52f5933fc7555679762afd27c9e2) | `db5cbe0433acd561f6fbaa818d1312e0fcc69058e49464fcec6021db9e47a8b2` | 1 / 0 |
+
+Additional credit: P4/D3. Historical P4/D3 before `2aedeb43` is excluded.
+Binary receipts come from `index2-evidence.json` and each retained arm's
+`*.binary.sha256`; its pending label predates the adopted P8 commit above.
+
+## Final validation
+
+The required fresh retained-path measurement completed with proof and no scout
+warnings: prefill 519.35 / decode 18.85 tok/s, wall 15.769120 / 1.702718 s;
+prefill index 564.985888 ms. This single diagnostic is not the headline pair.
+`retained-index2/{status,measurement}.json` and `retained-index2/scout/scout.json`
+record completion and unchanged source/binary pins.
+
+All 20 sequential host-check stages pass: fmt, clippy, eight Rust/C host
+parities, Naive memory/state/main/draft binding, serialized workspace tests,
+PLE formats, Bonsai/Qwen references, workspace targets, native server/CLI
+(including perf-nvtx), and the model-free live-runner tests.
+`final-host-u2/result.json` records completion and unchanged source during
+execution. Final local Markdown links, anchors, tables and fences pass.
+Independent native review has no blockers; the two documentation findings
+(P7 count and stale live-endpoint wording) are corrected.
+
+Qualification remains ordinary eager 8K inference. Captured long-context,
+DSpark acceleration, Qwen acceleration and new serving limits are not added.
+
+## Prospective Qwen and shared-path ideas
+
+The [September 30 source review](../naive-2026-09-30/upstream-review.md)
+records the upstream claims and ds4 equivalents. These ideas are unmeasured
+follow-ups, not adopted rounds or Qwen speed claims.
+
+| Pinned primary implementation | Candidate and required evidence |
+| --- | --- |
+| [Exact pivot and ordered top-k](https://github.com/jschmied/qwen38-flash-next-gb10/blob/e0ef69d4f5575dad00d34e05479eaf4c6547bace/patches/kernel-det/persistent_topk.cuh) | Avoid repeated candidate sorting/materialization at large histories; preserve masks, ties and selected IDs, then measure each family's real history lengths. |
+| [PLE deduplication/staging](https://github.com/blazux/qwen3.8-Flash-DGX/blob/bb661c4302c0a5e8b3fb72d3e5d6740462b19534/src/vllm_ple_mmap.py) | Deduplicate repeated row descriptors and expand on GPU if duplicate rates justify it. Existing ds4 page reuse/batched leases remain; measure map/lease work, faults and warm gathers. |
+| [Reduced proposal head](https://github.com/blazux/qwen3.8-Flash-DGX/blob/bb661c4302c0a5e8b3fb72d3e5d6740462b19534/src/patch_mtp_draft_vocab.py) | Qwen already has a compact proposal head. Other drafters need head profiling, proposal/confidence parity, multilingual acceptance and total decode gates. Naive DSpark acceleration remains unqualified. |
+| [GB10 fast-path gate](https://github.com/blazux/qwen3.8-Flash-DGX/blob/bb661c4302c0a5e8b3fb72d3e5d6740462b19534/Dockerfile) | Audit real device limits, launch attributes and fallback counts; enable only fitting shapes with scoped capability predicates and whole-model gains. |
+
+Shared quantized-input reuse or producer/consumer fusion also needs each
+consumer's layout/arithmetic and invalidation on actual input writes. Existing
+fused Gate/Up and Naive SwiGLU already remove some work. Qwen requires its own
+whole profile, detailed target evidence and matched fresh-process A/B.
