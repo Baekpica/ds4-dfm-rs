@@ -112,6 +112,7 @@ __pycache__/
 /tests/naive_router_profile
 /tests/naive_sum_profile
 /tests/naive_index_profile
+/tests/naive_index_u2_profile
 /tests/naive_swiglu_profile
 /tests/naive_bind
 /tests/naive_graph

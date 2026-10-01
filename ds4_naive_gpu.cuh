@@ -108,9 +108,18 @@ extern "C" int ds4_gpu_naive_select(ds4_gpu_tensor *ids, ds4_gpu_tensor *scores,
             !naive_buf(scales, (uint64_t)history * sizeof(float)) ||
             !naive_buf(weights, (uint64_t)rows * N05_INDEX_HEADS * sizeof(float))) { return 0; }
         if (naive_index_layout() == NaiveIndexLayout::Warp) {
-            naive_index_scores<NaiveIndexLayout::Warp><<<dim3((history + 3) / 4, rows), 128, 0, ds4_current_stream()>>>(
-                (float *)scores->ptr, (const float *)query->ptr, (const uint8_t *)codes->ptr,
-                (const float *)scales->ptr, (const float *)weights->ptr, (const unsigned *)positions->ptr, history);
+            enum { KEYS_PER_CTA = 8, THREADS = 128 };
+            const char *reuse = getenv("DS4_NAIVE_INDEX_U2");
+            // Full query tiles reuse loads without changing any per-key equation.
+            if (rows == N05_QUERY_TILE && (!reuse || strcmp(reuse, "0"))) {
+                naive_index_u2<<<dim3((history + KEYS_PER_CTA - 1) / KEYS_PER_CTA, rows), THREADS, 0, ds4_current_stream()>>>(
+                    (float *)scores->ptr, (const float *)query->ptr, (const uint8_t *)codes->ptr,
+                    (const float *)scales->ptr, (const float *)weights->ptr, (const unsigned *)positions->ptr, history);
+            } else {
+                naive_index_scores<NaiveIndexLayout::Warp><<<dim3((history + 3) / 4, rows), 128, 0, ds4_current_stream()>>>(
+                    (float *)scores->ptr, (const float *)query->ptr, (const uint8_t *)codes->ptr,
+                    (const float *)scales->ptr, (const float *)weights->ptr, (const unsigned *)positions->ptr, history);
+            }
         } else {
             naive_index_scores<<<dim3((history + 3) / 4, rows), 128, 0, ds4_current_stream()>>>(
                 (float *)scores->ptr, (const float *)query->ptr, (const uint8_t *)codes->ptr,

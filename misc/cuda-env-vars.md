@@ -39,6 +39,13 @@ tree, signed head sum and stable top-k stay byte-exact. KV layout and total
 allocation stay unchanged; query-producer stores become less coalesced.
 This is a Naive-specific indexer layout, not a generic FP8 GEMM switch.
 
+`DS4_NAIVE_INDEX_U2=0` restores one key per warp for packed Naive index
+scores. Its default reuses each query/head-weight load across two keys only
+for Warp layout, full 32-row query tiles and history above 2,048. Each key
+keeps its reconstruction, four-FMA/XOR and signed head-sum order; odd or
+noncausal second keys keep their original bounds and -Inf mask. Planar and
+narrow rows keep the original kernel. Allocation and stable top-k are unchanged.
+
 `DS4_NAIVE_SWA_DECODE_UNIT=0` restores the two-exponent softmax recurrence
 for cached SWA at width one. Its default skips the exact unit exponent while
 preserving serial order, FMA and BF16 boundaries. Nonfinite values use the

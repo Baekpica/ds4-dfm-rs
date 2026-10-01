@@ -468,6 +468,90 @@ __global__ static void naive_index_scores(
     if (!lane) { scores[(uint64_t)row * history + key] = score; }
 }
 
+static_assert(N05_INDEX_HEADS == 16 && N05_INDEX_DIM == 128 &&
+              N05_INDEX_WARP == 32 && N05_INDEX_PARTS == 4 && N05_QUERY_TILE == 32,
+              "pinned Naive paired index geometry");
+
+enum class NaiveKeys : unsigned { One = 1, Two = 2 };
+
+/* Compile-time key count removes conditional collectives from the head loop.
+ * Every key keeps its original four-FMA/XOR/serial-head equation. */
+template<NaiveKeys COUNT> __device__ static __forceinline__ void naive_index_pair(
+        float *scores, const float *q, const uint8_t *codes, const float *scales,
+        const float *weights, unsigned key, unsigned row, unsigned lane, unsigned history) {
+    constexpr unsigned KEYS = static_cast<unsigned>(COUNT);
+    float scale[KEYS], k[KEYS][N05_INDEX_PARTS];
+#pragma unroll
+    for (unsigned at = 0; at < KEYS; at++) {
+        scale[at] = scales[key + at];
+#pragma unroll
+        for (unsigned d = 0; d < N05_INDEX_PARTS; d++) {
+            k[at][d] = __fmul_rn(naive_e4m3(codes[(uint64_t)(key + at) * N05_INDEX_DIM + lane + d * N05_INDEX_WARP]), scale[at]);
+        }
+    }
+
+    float score[KEYS] = {};
+#pragma unroll
+    for (unsigned h = 0; h < N05_INDEX_HEADS; h++) {
+        const float *head = q + ((uint64_t)row * N05_INDEX_HEADS + h) * N05_INDEX_DIM;
+        const float4 query = ((const float4 *)head)[lane];
+        float dot[KEYS] = {};
+#pragma unroll
+        for (unsigned at = 0; at < KEYS; at++) {
+            dot[at] = __fmaf_rn(query.x, k[at][0], dot[at]);
+            dot[at] = __fmaf_rn(query.y, k[at][1], dot[at]);
+            dot[at] = __fmaf_rn(query.z, k[at][2], dot[at]);
+            dot[at] = __fmaf_rn(query.w, k[at][3], dot[at]);
+        }
+#pragma unroll
+        for (unsigned step = N05_INDEX_WARP / 2; step; step /= 2) {
+#pragma unroll
+            for (unsigned at = 0; at < KEYS; at++) {
+                dot[at] += __shfl_xor_sync(0xffffffff, dot[at], step);
+            }
+        }
+        const float weight = weights[(uint64_t)row * N05_INDEX_HEADS + h];
+#pragma unroll
+        for (unsigned at = 0; at < KEYS; at++) {
+            score[at] = __fadd_rn(score[at], __fmul_rn(fmaxf(0, dot[at]), weight));
+        }
+    }
+    if (!lane) {
+#pragma unroll
+        for (unsigned at = 0; at < KEYS; at++) {
+            scores[(uint64_t)row * history + key + at] = score[at];
+        }
+    }
+}
+
+__global__ static void naive_index_u2(
+        float *scores, const float *q, const uint8_t *codes, const float *scales,
+        const float *weights, const unsigned *positions, unsigned history) {
+    enum { WARP = 32, WARPS = 4, KEYS = 2 };
+    const unsigned lane = threadIdx.x % WARP;
+    const unsigned key = (blockIdx.x * WARPS + threadIdx.x / WARP) * KEYS;
+    const unsigned row = blockIdx.y;
+    if (key >= history) { return; }
+
+    const unsigned pos = positions[row];
+    const bool exists = key + 1 < history;
+    if (key > pos) {
+        if (!lane) {
+            scores[(uint64_t)row * history + key] = -INFINITY;
+            if (exists) { scores[(uint64_t)row * history + key + 1] = -INFINITY; }
+        }
+        return;
+    }
+    // These predicates are warp-uniform. End the partial path before entering
+    // the common two-key loop, matching the original early-return structure.
+    if (!exists || key + 1 > pos) {
+        naive_index_pair<NaiveKeys::One>(scores, q, codes, scales, weights, key, row, lane, history);
+        if (!lane && exists) { scores[(uint64_t)row * history + key + 1] = -INFINITY; }
+        return;
+    }
+    naive_index_pair<NaiveKeys::Two>(scores, q, codes, scales, weights, key, row, lane, history);
+}
+
 /* Positive/negative zero tie. Absolute position is the secondary key, so
  * every leaf and merge has exactly the global stable descending order. */
 __device__ static uint64_t naive_score_key(float score, unsigned position) {

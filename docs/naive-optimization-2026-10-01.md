@@ -1,7 +1,7 @@
 # Naive additional optimization rounds, 2026-10-01
 
 Base: `2aedeb43` (main after PR70). Earlier P4/D3 are excluded from these
-additional rounds. Retained so far: **prefill 3, decode 3**.
+additional rounds. Retained so far: **prefill 4, decode 3**.
 
 ## Protocol
 
@@ -172,7 +172,7 @@ remain those above. Benchmark SHA-256:
 
 ## P7: ordered MoE sum and residual
 
-Adopted for prefill; additional counts: **prefill 3, decode 3**.
+Adopted for prefill; additional counts: **prefill 4, decode 3**.
 This adds no decode round.
 
 Fresh retained-router diagnosis: 188 MoE sum/residual pairs take 302.373248 ms,
@@ -220,3 +220,69 @@ Evidence: `sum-{off,on}/scout.json`, `sum-compare/compare.json`,
 `sum-source.{json,patch}` (11 frozen source pins), and `sum-model.guard.jsonl`.
 Benchmark SHA-256:
 `69cf89f7b64fb1029e6acebf65ed6242942e4c16de0595b335f7a5ec9157a234`.
+
+## P8: paired index-score query reuse
+
+Fresh retained-P7 measurement puts index scores at 662.634 ms, 4.176% of
+prefill wall time (15.866838 s); decode uses 6.087 ms. Four warps per CTA
+reconstruct one key each and reload query/head weights for every key.
+Full-counter isolation at histories 2112/8192, rows 32, packed queries and
+live contiguous causal positions finds LSU/MIO pressure: 9,943,120 load
+requests at 8192, 97.87% L1 hits and no explicit shared/spill accesses.
+This supports reducing repeated instructions, rather than staging cached data.
+Synthetic operands and untimed score/ID readbacks differ from model producers.
+
+Two keys per warp share query/head-weight loads. One/Two template paths select
+partial or full pairs before the head loop; scales are loaded once per key.
+Each key retains its RN reconstruction, four RN FMAs, XOR 16/8/4/2/1,
+fmax, signed RN weight product and ascending 16-head RN accumulation.
+Dispatch requires Warp layout, 32 rows and history above 2048.
+`DS4_NAIVE_INDEX_U2=0` restores one key per warp. Planar, narrow/decode,
+all-IDs, top-k order, cache representation and allocation stay unchanged.
+
+| Measurement | Off | On |
+| --- | ---: | ---: |
+| Prefill samples, tok/s | 516.23 / 515.88 / 516.07 | 518.28 / 519.08 / 519.18 |
+| Decode samples, tok/s | 18.82 / 18.81 / 18.87 | 18.82 / 18.84 / 18.88 |
+| Mean prefill, tok/s | 516.0600 | 518.8467 (+0.5400%) |
+| Mean decode, tok/s | 18.8333 | 18.8467 (noise; no decode credit) |
+| Nsight prefill index total, ms / calls | 662.158048 / 1728 | 564.822848 / 1728 |
+| Nsight prefill wall, ms | 15879.330960 | 15760.095712 |
+| Nsight decode wall, ms | 1705.109312 | 1705.729152 |
+| Warm isolated H2112, us, 3-pair mean | 156.896 | 134.555 |
+| Warm isolated H8192, us, 3-pair mean | 604.030667 | 516.591333 |
+| NCU H8192, cache none / all, us | 628.800 / 619.136 | 540.672 / 540.032 |
+| Warp instructions | 94,991,120 | 85,959,472 |
+| Global load requests / sectors | 9,943,120 / 72,738,640 | 5,625,936 / 37,025,616 |
+
+Registers remain 44/thread, explicit shared memory zero and driver shared
+allocation 1 KiB/CTA; no stack or spills in ptxas, no new device allocation.
+Warp FFMA/FMUL/FADD/SHFL counts match the original. Predicated-thread FADD
+work rises 0.515%; other examined per-key arithmetic matches. An earlier
+conditional-second-key prototype improved kernel time 9–13%, but added 77.95%
+warp instructions through reconvergence and reread second scales four times.
+The retained alternative removes those costs and improves warm time 14.24–14.48%.
+Occupancy counters above device limits are artifacts, not physical occupancy.
+
+Correctness: 27 actual-header fixtures check all GPU score and stable-ID bytes
+before and after timing, with ties, signed zero, FP8/scale/query edge values,
+odd histories, causal boundaries and guarded narrow fallbacks. Finite CPU
+checks sample 2648 values per standard fixture; exceptional values use GPU
+bytes. Three memchecks, primitive tests and `cargo test -p ds4-perf` pass.
+Actual-weight states 43/2053/2181 pass; 2181 exercises four full scoring tiles
+and real SWA wrap. Valid-state proof scope follows the earlier rounds.
+
+Both scouts are complete with warnings empty. Compare reports **Pass**, zero
+error across 915,456 logits and zero token/argmax mismatches. Adopt the useful
+prefill gain: time envelope −0.6356% to −0.3955%, beyond observed variation;
+decode −0.3708% to +0.2657% is noise. No additional decode round is credited.
+Sampled clocks are 2190–2197 MHz, 47 samples per arm. Minimum sampled host
+availability is 30.6316 GiB; host-wide PSI full avg10 peaks at 0.83/0.14.
+Telemetry spans warmup, loading, profiling and idle at 10-second intervals.
+
+Local evidence: `scratch/naive/perf-2026-10-01/index2-{off,on}/scout.json`,
+`index2-compare/compare.json`, `index2-evidence.{json,md}`, `index2-state-*.log`,
+`index2-production-suite.json`, `index2-source.{json,patch}` (12 frozen pins),
+`index2-build.guard.jsonl` and `index-u2-unroll-prototype/candidate-results/`.
+Benchmark SHA-256:
+`db5cbe0433acd561f6fbaa818d1312e0fcc69058e49464fcec6021db9e47a8b2`.

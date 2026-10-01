@@ -51,6 +51,7 @@ pub fn tunable(key: &str) -> bool {
             | "DS4_NAIVE_DSA_DIRECT"
             | "DS4_NAIVE_SWIGLU_Q8"
             | "DS4_NAIVE_INDEX_PACK"
+            | "DS4_NAIVE_INDEX_U2"
             | "DS4_NAIVE_SWA_DECODE_UNIT"
             | "DS4_NAIVE_SWA_RING_WALK"
             | "DS4_NAIVE_ROUTER_WARP"
@@ -134,6 +135,7 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         | "DS4_NAIVE_DSA_DIRECT"
         | "DS4_NAIVE_SWIGLU_Q8"
         | "DS4_NAIVE_INDEX_PACK"
+        | "DS4_NAIVE_INDEX_U2"
         | "DS4_NAIVE_SWA_DECODE_UNIT"
         | "DS4_NAIVE_SWA_RING_WALK"
         | "DS4_NAIVE_ROUTER_WARP"
@@ -195,6 +197,7 @@ mod tests {
             "DS4_NAIVE_DSA_DIRECT",
             "DS4_NAIVE_SWIGLU_Q8",
             "DS4_NAIVE_INDEX_PACK",
+            "DS4_NAIVE_INDEX_U2",
             "DS4_NAIVE_SWA_DECODE_UNIT",
             "DS4_NAIVE_SWA_RING_WALK",
             "DS4_NAIVE_ROUTER_WARP",
