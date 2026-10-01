@@ -39,6 +39,11 @@ tree, signed head sum and stable top-k stay byte-exact. KV layout and total
 allocation stay unchanged; query-producer stores become less coalesced.
 This is a Naive-specific indexer layout, not a generic FP8 GEMM switch.
 
+`DS4_NAIVE_SWA_DECODE_UNIT=0` restores the two-exponent softmax recurrence
+for cached SWA at width one. Its default skips the exact unit exponent while
+preserving serial order, FMA and BF16 boundaries. Nonfinite values use the
+original recurrence. Prefill, wider verification and DSA stay unchanged.
+
 ## Qwen embedded MTP
 
 The Q8 draft head scores low BPE IDs, non-normal token types and observed

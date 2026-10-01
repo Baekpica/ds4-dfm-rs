@@ -140,6 +140,7 @@ extern "C" int ds4_gpu_naive_attention(ds4_gpu_tensor *out, const ds4_gpu_tensor
     const char *swa = getenv("DS4_NAIVE_SWA_PREFILL_SCORES");
     const char *dsa = getenv("DS4_NAIVE_DSA_DECODE_TILE");
     const char *address = getenv("DS4_NAIVE_DSA_DIRECT");
+    const char *unit = getenv("DS4_NAIVE_SWA_DECODE_UNIT");
     const bool full = !window && (!address || strcmp(address, "0"));
     // Only the 1-KiB SWA tile retains wide-prefill occupancy. DSA stays narrow.
     const bool cached = (rows == 1 && (!scores || strcmp(scores, "0"))) ||
@@ -155,6 +156,12 @@ extern "C" int ds4_gpu_naive_attention(ds4_gpu_tensor *out, const ds4_gpu_tensor
                 (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr,
                 (const unsigned *)positions->ptr, (const unsigned *)ids->ptr, capacity);
         }
+    } else if (cached && window && rows == 1 && (!unit || strcmp(unit, "0"))) {
+        // Eliding exp(0) helps narrow SWA; wide rows lose throughput.
+        naive_attention<4, N05_WINDOW, NaiveCache::Ring, NaiveSoftmax::Unit>
+            <<<dim3(N05_HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
+                (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr, sinks,
+                (const unsigned *)positions->ptr, nullptr, heads, capacity, window);
     } else if (cached && window) {
         naive_attention<4, N05_WINDOW><<<dim3(N05_HEADS / 4, rows), 128, 0, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)q->ptr, (const __nv_bfloat16 *)cache->ptr, sinks,

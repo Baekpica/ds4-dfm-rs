@@ -13,6 +13,23 @@ static constexpr unsigned N05_INDEX_PARTS = N05_INDEX_DIM / N05_INDEX_WARP;
 
 enum class NaiveCache { Ring, Full };
 enum class NaiveIndexLayout { Planar, Warp };
+enum class NaiveSoftmax { Walk, Unit };
+
+template<NaiveSoftmax MODE> __device__ static void naive_softmax_step(
+        float score, float &maximum, float &denominator) {
+    const float next = fmaxf(maximum, score);
+    if constexpr (MODE == NaiveSoftmax::Unit) {
+        // One exponent is exactly one. Keep FMA/add order and exceptional values.
+        if (isfinite(maximum) && isfinite(score)) {
+            denominator = score > maximum ? __fmaf_rn(denominator, expf(maximum - score), 1.0f)
+                                          : denominator + expf(score - maximum);
+            maximum = next;
+            return;
+        }
+    }
+    denominator = denominator * expf(maximum - next) + expf(score - next);
+    maximum = next;
+}
 
 template<NaiveCache CACHE> __device__ static unsigned naive_cache_slot(unsigned key, unsigned capacity) {
     // DSA's bounded frontier keeps every causal ID inside its full history.
@@ -119,7 +136,8 @@ __global__ static void naive_kv_store(
  * QK; both paths retain the serial denominator and V accumulation order.
  * The two passes avoid a scores[heads,history] allocation. Sparse IDs are
  * ascending; SWA walks exactly the causal window and adds its zero-V sink. */
-template<unsigned WARPS = 4, unsigned SCORE_CAP = 0, NaiveCache CACHE = NaiveCache::Ring>
+template<unsigned WARPS = 4, unsigned SCORE_CAP = 0, NaiveCache CACHE = NaiveCache::Ring,
+         NaiveSoftmax SOFTMAX = NaiveSoftmax::Walk>
 __global__ static void naive_attention(
         float *out, const float *q, const __nv_bfloat16 *cache, const float *sinks,
         const unsigned *positions, const unsigned *selected,
@@ -151,9 +169,7 @@ __global__ static void naive_attention(
         if constexpr (SCORE_CAP) {
             if (!lane) { scores[warp][i] = __float2bfloat16_rn(score); }
         }
-        const float next = fmaxf(maximum, score);
-        denominator = denominator * expf(maximum - next) + expf(score - next);
-        maximum = next;
+        naive_softmax_step<SOFTMAX>(score, maximum, denominator);
     }
     if constexpr (SCORE_CAP) { __syncwarp(); }
     for (unsigned i = 0; i < count; i++) {

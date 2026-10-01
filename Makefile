@@ -1008,6 +1008,9 @@ test-naive-primitives: tests/naive_primitives
 tests/naive_attention_profile: tests/naive_attention_profile.cu cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh ds4_naive_plan.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 
+tests/naive_softmax: tests/naive_softmax.cu cuda/naive_primitives.cuh ds4_naive_plan.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
 tests/naive_index_profile: tests/naive_index_profile.cu cuda/naive_primitives.cuh ds4_naive_plan.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 

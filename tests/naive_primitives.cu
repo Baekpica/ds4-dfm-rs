@@ -378,6 +378,18 @@ static void attention(cudaStream_t stream, unsigned kv_heads, unsigned window,
     std::vector<float> cached(got.size());
     CUDA(cudaMemcpy(cached.data(), out, cached.size() * sizeof(float), cudaMemcpyDeviceToHost));
     CHECK(!memcmp(got.data(), cached.data(), got.size() * sizeof(float)));
+    if (window) {
+        naive_attention<4, N05_WINDOW, NaiveCache::Ring, NaiveSoftmax::Unit>
+            <<<dim3(N05_HEADS / 4, rows), 128, 0, stream>>>(out, dq,
+                (const __nv_bfloat16 *)cache, sink, dp, nullptr, kv_heads, capacity, window);
+    } else {
+        naive_attention<4, 0, NaiveCache::Full, NaiveSoftmax::Unit>
+            <<<dim3(N05_HEADS / 4, rows), 128, 0, stream>>>(out, dq,
+                (const __nv_bfloat16 *)cache, nullptr, dp, di, kv_heads, capacity, 0);
+    }
+    CUDA(cudaStreamSynchronize(stream));
+    CUDA(cudaMemcpy(cached.data(), out, cached.size() * sizeof(float), cudaMemcpyDeviceToHost));
+    CHECK(!memcmp(got.data(), cached.data(), got.size() * sizeof(float)));
     if (!window) {
         naive_sparse_tile<<<dim3(N05_HEADS, rows), 128, 0, stream>>>(out, dq,
             (const __nv_bfloat16 *)cache, dp, di, capacity);

@@ -1,4 +1,4 @@
-/* Isolate width arithmetic from rejected-token values using one shared model. */
+/* Compare diagnostic paths, widths and rejected values using one shared model. */
 #include "../ds4.c"
 #include <assert.h>
 
@@ -14,15 +14,21 @@ static void diff(const char *name, const float *a, const float *b, size_t n) {
     }
     printf("%s changed=%zu max_abs=%.9g relative_l2=%.9g\n",
         name, changed, maximum, sqrt(delta / (norm ? norm : 1)));
+    assert(!memcmp(a, b, n * sizeof(float)));
 }
 
 enum { MOE_NORM, MOE_GATE, MOE_UP, MOE_DOWN, MOE_STAGES };
 enum { MOE_TRACE_WIDTH = N05_USED * N05_EMBED };
+enum live_case { OFF_ONE, ON_ONE, ON_WIDE, ON_ALTERED, LIVE_CASES };
 
-static void index_path(unsigned session) {
-    if (!getenv("DS4_NAIVE_TEST_INDEX_PACK")) { return; }
-    // Compare the scalar query layout against packing in the same owner.
-    assert(!setenv("DS4_NAIVE_INDEX_PACK", session ? "1" : "0", 1));
+static void control_path(enum live_case which) {
+    const char *knob = getenv("DS4_NAIVE_TEST_CONTROL");
+    if (!knob || !*knob) {
+        if (!getenv("DS4_NAIVE_TEST_INDEX_PACK")) { return; }
+        knob = "DS4_NAIVE_INDEX_PACK";
+    }
+    // Read the diagnostic switch per call so one owner can serve both paths.
+    assert(!setenv(knob, which == OFF_ONE ? "0" : "1", 1));
 }
 
 static void trace_rows(ds4_session *s, const int *tokens, unsigned n, float *trace, float *moe) {
@@ -65,7 +71,73 @@ static void trace_rows(ds4_session *s, const int *tokens, unsigned n, float *tra
     assert(g->position == pos + 1 && g->draft.position == pos + 1);
 }
 
+static void span_equal(const ds4_gpu_tensor *a, const ds4_gpu_tensor *b,
+                         uint64_t offset, uint64_t bytes) {
+    assert(bytes);
+    const size_t cap = bytes < DS4_SESSION_IO_CHUNK ? (size_t)bytes : DS4_SESSION_IO_CHUNK;
+    uint8_t *x = xmalloc(cap), *y = xmalloc(cap);
+    while (bytes) {
+        const size_t count = bytes < cap ? (size_t)bytes : cap;
+        assert(ds4_gpu_tensor_read(a, offset, x, count));
+        assert(ds4_gpu_tensor_read(b, offset, y, count));
+        assert(!memcmp(x, y, count));
+        offset += count; bytes -= count;
+    }
+    free(x); free(y);
+}
+
+static void ring_equal(const ds4_gpu_tensor *a, const ds4_gpu_tensor *b,
+                         unsigned capacity, unsigned first, unsigned end, uint64_t row) {
+    assert(capacity && row && first <= end && end - first <= capacity);
+    while (first < end) {
+        const unsigned slot = first % capacity;
+        unsigned count = capacity - slot;
+        if (count > end - first) { count = end - first; }
+        span_equal(a, b, (uint64_t)slot * row, (uint64_t)count * row);
+        first += count;
+    }
+}
+
+static void state_equal(ds4_session *a, ds4_session *b) {
+    ds4_naive_graph *ga = &a->naive_graph, *gb = &b->naive_graph;
+    const unsigned end = ga->position;
+    assert(!ga->failed && !gb->failed && ga->position == gb->position);
+    assert(a->checkpoint_valid && b->checkpoint_valid);
+    assert(a->checkpoint.len == (int)end && b->checkpoint.len == (int)end);
+    assert(!memcmp(a->checkpoint.v, b->checkpoint.v, (size_t)end * sizeof(int)));
+    diff("committed logits", a->logits, b->logits, N05_VOCAB);
+    span_equal(ga->logits, gb->logits, 0, N05_VOCAB * sizeof(float));
+
+    // DSA retains all history; only the causal SWA window remains live.
+    for (unsigned il = 0; il < N05_LAYERS; il++) {
+        const unsigned rows = naive_saved_rows(il, end);
+        const uint64_t row = naive_kv_heads(il) * N05_KV_WIDTH * sizeof(uint16_t);
+        assert(ga->kv_cap[il] == gb->kv_cap[il]);
+        ring_equal(ga->kv[il], gb->kv[il], ga->kv_cap[il], end - rows, end, row);
+        if (naive_is_dsa(il)) {
+            span_equal(ga->codes[il], gb->codes[il], 0, (uint64_t)end * N05_INDEX_DIM);
+            span_equal(ga->scales[il], gb->scales[il], 0, (uint64_t)end * sizeof(float));
+        }
+    }
+
+    // Compare every retained draft row, excluding unused scratch and trial lanes.
+    assert(ga->draft.ws && gb->draft.ws);
+    assert(!ga->draft.trial_n && !gb->draft.trial_n);
+    assert(ga->draft.position == end && gb->draft.position == end);
+    assert(ga->draft.first == gb->draft.first);
+    const uint64_t row = 2 * N05_DF_KV * N05_DF_DIM * sizeof(uint16_t);
+    for (unsigned il = 0; il < N05_DF_LAYERS; il++) {
+        ring_equal(ga->draft.kv[il], gb->draft.kv[il], N05_DF_CAP, ga->draft.first, end, row);
+    }
+    printf("committed state rows=%u draft_first=%u exact\n", end, ga->draft.first);
+}
+
 static void cache_diff(ds4_naive_graph *a, ds4_naive_graph *b, unsigned pos) {
+    // Wide verification can overwrite old draft slots and advance first.
+    // Its accepted row is valid; future rows and retired slots are not comparable.
+    assert(a->position == pos + 1 && b->position == pos + 1);
+    assert(a->draft.position == pos + 1 && b->draft.position == pos + 1);
+    assert(!a->draft.trial_n && !b->draft.trial_n);
     uint8_t x[8 * (N05_KEY + N05_VALUE) * sizeof(uint16_t)], y[sizeof(x)];
     for (unsigned il = 0; il < N05_LAYERS; il++) {
         const size_t bytes = naive_kv_heads(il) * (N05_KEY + N05_VALUE) * sizeof(uint16_t);
@@ -113,57 +185,58 @@ int main(int argc, char **argv) {
     int token;
     while (fread(&token, sizeof(token), 1, fp)) { ds4_tokens_push(&input, token); }
     assert(feof(fp) && input.len > 0); fclose(fp);
-    ds4_session *s[3];
-    float *hidden[3];
-    float *moe[3];
+    ds4_session *s[LIVE_CASES];
+    float *hidden[LIVE_CASES];
+    float *moe[LIVE_CASES];
     char err[256];
-    for (unsigned i = 0; i < 3; i++) {
-        index_path(i);
+    for (unsigned i = 0; i < LIVE_CASES; i++) {
+        control_path((enum live_case)i);
         assert(!ds4_session_create(&s[i], e, input.len + 16));
         assert(!ds4_session_sync(s[i], &input, err, sizeof(err)));
         hidden[i] = xmalloc(N05_LAYERS * N05_EMBED * sizeof(float));
         moe[i] = xmalloc(MOE_STAGES * MOE_TRACE_WIDTH * sizeof(float));
     }
+    // Qualify the complete prefix before verification can crop the draft ring.
+    for (unsigned i = ON_ONE; i < LIVE_CASES; i++) { state_equal(s[OFF_ONE], s[i]); }
     int trial[N05_DF_BLOCK], altered[N05_DF_BLOCK];
-    const int anchor = ds4_session_argmax(s[0]);
+    const int anchor = ds4_session_argmax(s[OFF_ONE]);
     assert(anchor >= 0);
-    assert(naive_draft_block(&s[1]->naive_graph.draft, &e->model, &e->weights,
+    control_path(ON_ONE);
+    assert(naive_draft_block(&s[ON_ONE]->naive_graph.draft, &e->model, &e->weights,
         anchor, 0, N05_DF_BLOCK, trial));
     memcpy(altered, trial, sizeof(trial));
     for (unsigned i = 1; i < N05_DF_BLOCK; i++) { altered[i] = (trial[i] + 7919 * i) % N05_VOCAB; }
-    index_path(0);
-    trace_rows(s[0], trial, 1, hidden[0], moe[0]);
-    index_path(1);
-    trace_rows(s[1], trial, N05_DF_BLOCK, hidden[1], moe[1]);
-    trace_rows(s[2], altered, N05_DF_BLOCK, hidden[2], moe[2]);
+    for (unsigned i = 0; i < LIVE_CASES; i++) {
+        control_path((enum live_case)i);
+        const unsigned rows = i <= ON_ONE ? 1 : N05_DF_BLOCK;
+        const int *tokens = i == ON_ALTERED ? altered : trial;
+        trace_rows(s[i], tokens, rows, hidden[i], moe[i]);
+    }
     const char *names[] = {"first MoE input", "first MoE gate", "first MoE up", "first MoE down"};
     const unsigned widths[] = {N05_EMBED, N05_USED * N05_FF,
         N05_USED * N05_FF, MOE_TRACE_WIDTH};
-    for (unsigned i = 0; i < MOE_STAGES; i++) {
-        diff(names[i], moe[0] + i * MOE_TRACE_WIDTH, moe[1] + i * MOE_TRACE_WIDTH, widths[i]);
-    }
-    for (unsigned il = 0; il < N05_LAYERS; il++) {
+    const char *pairs[] = {"control", "width", "rejected"};
+    for (unsigned pair = 0; pair < LIVE_CASES - 1; pair++) {
         char name[64];
-        snprintf(name, sizeof(name), "width layer=%u", il);
-        diff(name, hidden[0] + il * N05_EMBED, hidden[1] + il * N05_EMBED, N05_EMBED);
-        snprintf(name, sizeof(name), "rejected layer=%u", il);
-        diff(name, hidden[1] + il * N05_EMBED, hidden[2] + il * N05_EMBED, N05_EMBED);
-        assert(!memcmp(hidden[0] + il * N05_EMBED, hidden[1] + il * N05_EMBED, N05_EMBED * sizeof(float)));
-        assert(!memcmp(hidden[1] + il * N05_EMBED, hidden[2] + il * N05_EMBED, N05_EMBED * sizeof(float)));
+        for (unsigned i = 0; i < MOE_STAGES; i++) {
+            snprintf(name, sizeof(name), "%s %s", pairs[pair], names[i]);
+            diff(name, moe[pair] + i * MOE_TRACE_WIDTH, moe[pair + 1] + i * MOE_TRACE_WIDTH, widths[i]);
+        }
+        for (unsigned il = 0; il < N05_LAYERS; il++) {
+            snprintf(name, sizeof(name), "%s layer=%u", pairs[pair], il);
+            diff(name, hidden[pair] + il * N05_EMBED, hidden[pair + 1] + il * N05_EMBED, N05_EMBED);
+        }
+        snprintf(name, sizeof(name), "%s logits", pairs[pair]);
+        diff(name, s[pair]->logits, s[pair + 1]->logits, N05_VOCAB);
+        assert(ds4_session_argmax(s[pair]) == ds4_session_argmax(s[pair + 1]));
     }
-    diff("width logits", s[0]->logits, s[1]->logits, N05_VOCAB);
-    diff("rejected logits", s[1]->logits, s[2]->logits, N05_VOCAB);
-    assert(!memcmp(s[0]->logits, s[1]->logits, N05_VOCAB * sizeof(float)));
-    assert(!memcmp(s[1]->logits, s[2]->logits, N05_VOCAB * sizeof(float)));
-    printf("argmax width1=%d width7=%d altered=%d\n",
-        ds4_session_argmax(s[0]), ds4_session_argmax(s[1]), ds4_session_argmax(s[2]));
-    cache_diff(&s[0]->naive_graph, &s[1]->naive_graph, input.len);
-    cache_diff(&s[1]->naive_graph, &s[2]->naive_graph, input.len);
-    assert(ds4_session_argmax(s[1]) == ds4_session_argmax(s[2]));
-    const int width1 = ds4_session_argmax(s[0]), width7 = ds4_session_argmax(s[1]);
-    for (unsigned i = 0; i < 3; i++) { free(hidden[i]); free(moe[i]); ds4_session_free(s[i]); }
+    printf("argmax off1=%d on1=%d width7=%d altered=%d\n", ds4_session_argmax(s[OFF_ONE]),
+        ds4_session_argmax(s[ON_ONE]), ds4_session_argmax(s[ON_WIDE]), ds4_session_argmax(s[ON_ALTERED]));
+    state_equal(s[OFF_ONE], s[ON_ONE]);
+    cache_diff(&s[ON_ONE]->naive_graph, &s[ON_WIDE]->naive_graph, input.len);
+    cache_diff(&s[ON_WIDE]->naive_graph, &s[ON_ALTERED]->naive_graph, input.len);
+    for (unsigned i = 0; i < LIVE_CASES; i++) { free(hidden[i]); free(moe[i]); ds4_session_free(s[i]); }
     ds4_tokens_free(&input); ds4_engine_close(e);
     fflush(stdout);
-    assert(width1 == width7);
     return 0;
 }

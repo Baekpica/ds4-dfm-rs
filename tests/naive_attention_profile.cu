@@ -12,7 +12,7 @@
 #define CUDA(call) do { const cudaError_t rc = (call); if (rc != cudaSuccess) { \
     fprintf(stderr, "%s: %s\n", #call, cudaGetErrorString(rc)); exit(1); } } while (0)
 
-enum class AttentionPath : unsigned { Walk, Cache, Tile, DirectTile, DirectWalk };
+enum class AttentionPath : unsigned { Walk, Cache, Tile, DirectTile, DirectWalk, UnitWalk, UnitCache };
 
 template<class T> static T *upload(const std::vector<T> &values) {
     T *out;
@@ -26,7 +26,13 @@ template<unsigned WARPS> static void launch(
         const unsigned *pos, const unsigned *ids, unsigned rows,
         unsigned heads, unsigned capacity, unsigned window, AttentionPath path) {
     const dim3 grid(N05_HEADS / WARPS, rows);
-    if (path == AttentionPath::DirectWalk) {
+    if (path == AttentionPath::UnitCache && window) {
+        naive_attention<WARPS, N05_WINDOW, NaiveCache::Ring, NaiveSoftmax::Unit><<<grid, WARPS * 32>>>(
+            out, q, kv, sinks, pos, nullptr, heads, capacity, window);
+    } else if (path == AttentionPath::UnitWalk) {
+        naive_attention<WARPS, 0, NaiveCache::Full, NaiveSoftmax::Unit><<<grid, WARPS * 32>>>(
+            out, q, kv, nullptr, pos, ids, heads, capacity, 0);
+    } else if (path == AttentionPath::DirectWalk) {
         naive_attention<WARPS, 0, NaiveCache::Full><<<grid, WARPS * 32>>>(out, q, kv, nullptr,
             pos, ids, heads, capacity, 0);
     } else if (path == AttentionPath::DirectTile) {
@@ -53,14 +59,15 @@ int main(int argc, char **argv) {
     const auto path = argc >= 4 ? static_cast<AttentionPath>((unsigned)atoi(argv[3])) : AttentionPath::Walk;
     const unsigned window = argc >= 5 ? (unsigned)atoi(argv[4]) : 0;
     const unsigned limit = window ? N05_PREFILL : N05_QUERY_TILE;
-    if (!rows || rows > limit || (warps != 1 && warps != 4) || path > AttentionPath::DirectWalk ||
-        (path >= AttentionPath::Tile && (window || warps != 4)) ||
+    if (!rows || rows > limit || (warps != 1 && warps != 4) || path > AttentionPath::UnitCache ||
+        (path >= AttentionPath::Tile && path <= AttentionPath::DirectWalk && (window || warps != 4)) ||
+        (path == AttentionPath::UnitWalk && window) || (path == AttentionPath::UnitCache && !window) ||
         (window && window != N05_WINDOW)) { return 2; }
     const unsigned heads = window ? 8 : 4;
     const unsigned stride = heads * (N05_KEY + N05_VALUE);
     const unsigned full_capacity = argc >= 6 ? (unsigned)atoi(argv[5]) : HISTORY;
-    const unsigned capacity = window ? rows + N05_WINDOW - 1 : full_capacity;
-    if ((!window && (capacity < HISTORY || capacity > N05_CONTEXT)) || (window && argc >= 6)) { return 2; }
+    const unsigned capacity = window && argc < 6 ? rows + N05_WINDOW - 1 : full_capacity;
+    if (capacity > N05_CONTEXT || capacity < rows || (!window && capacity < HISTORY)) { return 2; }
     std::vector<__nv_bfloat16> cache((size_t)capacity * stride);
     std::vector<float> sink(N05_HEADS);
     std::vector<float> query((size_t)rows * N05_HEADS * N05_KEY);
