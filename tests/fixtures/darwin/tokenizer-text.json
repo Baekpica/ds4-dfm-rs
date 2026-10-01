@@ -1,0 +1,76 @@
+{
+  "source": "FINAL-Bench/Darwin-180B-RSI",
+  "revision": "bc3c7b0410b40c085b78084e13f01c12df31087b",
+  "tokenizer_sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+  "reference": "tokenizers.Tokenizer 0.23.2 raw tokenizer.json; add_special_tokens=False",
+  "cases": [
+    {
+      "text": "é",
+      "token_ids": [
+        933
+      ]
+    },
+    {
+      "text": "<think>é</think>",
+      "token_ids": [
+        248068,
+        933,
+        248069
+      ]
+    },
+    {
+      "text": "<|im_start|>user\nHi<|im_end|>",
+      "token_ids": [
+        248045,
+        846,
+        198,
+        12675,
+        248046
+      ]
+    },
+    {
+      "text": "<tool_call>get_weather</tool_call>",
+      "token_ids": [
+        248058,
+        447,
+        67017,
+        248059
+      ]
+    },
+    {
+      "text": "कि مُحَمَّد",
+      "token_ids": [
+        153895,
+        229208
+      ]
+    },
+    {
+      "text": "a‍b 1️⃣",
+      "token_ids": [
+        64,
+        373,
+        235,
+        65,
+        220,
+        16,
+        29545,
+        158,
+        225,
+        96
+      ]
+    },
+    {
+      "text": "I'M 1234  \t\n",
+      "token_ids": [
+        40,
+        26708,
+        220,
+        16,
+        17,
+        18,
+        19,
+        94861
+      ]
+    }
+  ]
+}

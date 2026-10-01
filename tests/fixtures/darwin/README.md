@@ -10,3 +10,7 @@ The corpus covers combining marks, Indic/Arabic text, joiners, emoji, number
 categories, control text and whitespace. It qualifies input processing only.
 GGUFs declaring `tokenizer.ggml.pre=qwen4exp` and
 `tokenizer.ggml.normalizer=nfc` select this Rust-host input contract.
+
+`tokenizer-text.json` adds raw-input NFC/control-token vectors from the same
+source tokenizer. `darwin_raw_input_matches` checks them against a selected
+GGUF with `DS4_DARWIN_MODEL` and `--ignored`.

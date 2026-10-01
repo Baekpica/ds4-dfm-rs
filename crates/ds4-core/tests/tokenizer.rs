@@ -780,6 +780,35 @@ fn qwen_declared_nfc_input() {
     assert_eq!(vocab.encode_text("e\u{301}"), vec![195, 169]);
     assert_eq!(vocab.encode_text("é"), vec![195, 169]);
     assert_ne!(baseline.encode_text("e\u{301}"), vec![195, 169]);
+
+    // Raw CLI/completion input preserves added tokens before source NFC.
+    assert_eq!(
+        vocab.encode_text("<think>e\u{301}</think>"),
+        vec![vocab.think_start_id, 195, 169, vocab.think_end_id]
+    );
+    assert_ne!(
+        baseline.encode_text("<think>é</think>"),
+        vec![baseline.think_start_id, 195, 169, baseline.think_end_id]
+    );
+}
+
+#[test]
+#[ignore = "requires DS4_DARWIN_MODEL"]
+fn darwin_raw_input_matches() {
+    let path = std::env::var("DS4_DARWIN_MODEL").expect("set DS4_DARWIN_MODEL");
+    let vocab = Vocab::load_path(Path::new(&path), ModelFamily::Qwen4Exp).unwrap();
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/darwin/tokenizer-text.json"
+    ))
+    .unwrap();
+    for case in fixture["cases"].as_array().unwrap() {
+        assert_eq!(
+            serde_json::json!(vocab.encode_text(case["text"].as_str().unwrap())),
+            case["token_ids"],
+            "{}",
+            case["text"]
+        );
+    }
 }
 
 #[test]

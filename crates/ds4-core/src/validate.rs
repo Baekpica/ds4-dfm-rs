@@ -2016,7 +2016,7 @@ mod tests {
     use super::qwen_source_revision_supported;
 
     #[test]
-    fn qwen_source_revision_allowlist_is_exact() {
+    fn qwen_source_pins_are_exact() {
         assert!(qwen_source_revision_supported(Some(
             b"f5d08274bafd880402bd16f5e3e6c514136ec06c"
         )));

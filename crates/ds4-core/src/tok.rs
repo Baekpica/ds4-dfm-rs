@@ -232,14 +232,17 @@ impl Vocab {
             {
                 if let Ok(ty) = g.array_le_u32s(&types) {
                     for (i, &typ) in ty.iter().enumerate() {
-                        let control_split = matches!(
-                            family,
-                            ModelFamily::Step37
-                                | ModelFamily::Ling3Vl
-                                | ModelFamily::Mimo2
-                                | ModelFamily::NaiveN05
-                                | ModelFamily::IQuestQ1
-                        );
+                        // Declared source input preserves added controls in
+                        // raw CLI/completion text as well as rendered chats.
+                        let control_split = qwen_input
+                            || matches!(
+                                family,
+                                ModelFamily::Step37
+                                    | ModelFamily::Ling3Vl
+                                    | ModelFamily::Mimo2
+                                    | ModelFamily::NaiveN05
+                                    | ModelFamily::IQuestQ1
+                            );
                         if typ != 4 && !(control_split && typ == 3) {
                             continue;
                         }
