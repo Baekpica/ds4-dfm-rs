@@ -402,6 +402,21 @@ tests/weight_mapping_policy: tests/test_weight_mapping_policy.cu $(CORE_OBJS)
 tests/test_iquest_primitives: tests/test_iquest_primitives.cu cuda/iquest_primitives.cuh ds4_iquest_ref.h
 	$(NVCC) $(NVCCFLAGS) --fmad=false -o $@ $<
 
+tests/iquest_attention_profile: tests/iquest_attention_profile.cu cuda/iquest_primitives.cuh cuda/iquest_prefill.cuh cuda/iquest_decode.cuh ds4_iquest_ref.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+tests/iquest_attn_precision: tests/iquest_attn_precision.cu cuda/iquest_prefill.cuh cuda/iquest_primitives.cuh ds4_iquest_ref.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+tests/iquest_reduce_verify: tests/iquest_reduce_verify.cu cuda/iquest_primitives.cuh ds4_iquest_ref.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+tests/iquest_router_profile: tests/iquest_router_profile.cu cuda/iquest_primitives.cuh cuda/iquest_router.cuh ds4_iquest_ref.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+tests/iquest_router_verify: tests/iquest_router_verify.cu cuda/iquest_router.cuh cuda/iquest_primitives.cuh ds4_iquest_ref.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
 tests/test_iquest_dispatch: tests/test_iquest_dispatch.c ds4.c $(IQUEST_NATIVE_INCS)
 	$(CC) $(CFLAGS) -O0 -ffunction-sections -fdata-sections -o $@ $< -Wl,--gc-sections $(LDLIBS)
 
@@ -425,6 +440,13 @@ tests/iquest_bank_verify: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OB
 		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
 		$(DS4_RS_LIBS)
 	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/iquest_bank_verify" $@
+
+tests/iquest_perf_verify: $(DS4_RS_SOURCES) native/bridge/ds4_bridge.o $(CORE_OBJS)
+	cargo rustc -p ds4-cli --example iquest_perf_verify --release --features native -- \
+		-C metadata=$(DS4_RS_LINK_FINGERPRINT) \
+		$(patsubst %,-C link-arg=$(DS4_RS_ROOT)/%,$(DS4_RS_LINK_OBJS)) \
+		$(DS4_RS_LIBS)
+	cp -f "$(DS4_RS_TARGET_DIR)/release/examples/iquest_perf_verify" $@
 
 tests/test_iquest_prefix: tests/test_iquest_prefix.c ds4.c $(IQUEST_NATIVE_INCS) $(DS4_CUDA_SUPPORT_OBJS)
 	$(CC) $(CFLAGS) -DDS4_USE_CUDA -ffunction-sections -fdata-sections -c -o tests/test_iquest_prefix.o tests/test_iquest_prefix.c
@@ -775,7 +797,7 @@ ds4_agent_cpu.o: ds4_agent.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_
 ds4_metal.o: ds4_metal.m ds4_gpu.h ds4_naive_stub.inc ds4_iquest_stub.inc $(METAL_SRCS)
 	$(CC) $(OBJCFLAGS) -c -o $@ ds4_metal.m
 
-ds4_cuda.o: ds4_cuda.cu ds4_iquest_gpu.cuh ds4_iquest_ref.h cuda/iquest_primitives.cuh ds4_gpu.h ds4_qwen35_gpu.cuh cuda/qwen35_primitives.cuh cuda/qwen35_attn_gdn.cuh ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh cuda/mimo2_dflash_host.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h ds4_naive_gpu.cuh cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh cuda/naive_draft.cuh ds4_naive_plan.h
+ds4_cuda.o: ds4_cuda.cu ds4_iquest_gpu.cuh ds4_iquest_ref.h cuda/iquest_primitives.cuh cuda/iquest_prefill.cuh cuda/iquest_decode.cuh cuda/iquest_router.cuh ds4_gpu.h ds4_qwen35_gpu.cuh cuda/qwen35_primitives.cuh cuda/qwen35_attn_gdn.cuh ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh cuda/mimo2_dflash_host.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h ds4_naive_gpu.cuh cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh cuda/naive_draft.cuh ds4_naive_plan.h
 	$(NVCC) $(NVCCFLAGS) -c -o $@ ds4_cuda.cu
 
 # Vendored mmq pieces. ds4_mmq.cu transitively pulls in mmq.cuh which has

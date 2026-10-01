@@ -49,6 +49,10 @@ required-features = ["native"]
 name = "iquest_bank_verify"
 required-features = ["native"]
 
+[[example]]
+name = "iquest_perf_verify"
+required-features = ["native"]
+
 [dependencies]
 ds4-core = { path = "../ds4-core" }
 ds4-dist = { path = "../ds4-dist" }

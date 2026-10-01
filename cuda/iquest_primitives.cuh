@@ -29,6 +29,33 @@ __device__ static float iq_reduce(float value, float *scratch) {
     return result;
 }
 
+__device__ __forceinline__ static float iq_reduce128(float value, float *scratch) {
+    constexpr unsigned warp = 32;
+    static_assert(IQ_HEAD == 4 * warp, "attention reduction requires 128 threads");
+    const unsigned lane = threadIdx.x;
+    scratch[lane] = value;
+    __syncthreads();
+    if (lane < warp) {
+        // Preserve the original +64 then +32 additions and their rounding.
+        // Materialized leaves prevent product/add contraction under fast math.
+        float sum = __fadd_rn(
+            __fadd_rn(scratch[lane], scratch[lane + 2 * warp]),
+            __fadd_rn(scratch[lane + warp], scratch[lane + 3 * warp]));
+        #pragma unroll
+        for (unsigned stride = warp / 2; stride; stride >>= 1) {
+            const float other = __shfl_down_sync(UINT32_MAX, sum, stride);
+            if (lane < stride) { sum = __fadd_rn(sum, other); }
+        }
+        if (!lane) { scratch[0] = sum; }
+    }
+    __syncthreads();
+    const float result = scratch[0];
+    // All four warps must consume the broadcast before the next reduction
+    // reuses scratch[0]; attention invokes this once per key and for the sink.
+    __syncthreads();
+    return result;
+}
+
 __global__ static void iquest_rms_kernel(float *out, const float *x,
                                         const float *weight, unsigned width) {
     __shared__ float scratch[256];
@@ -120,24 +147,32 @@ __device__ static float iq_q8_read(const iquest_q8 *row, unsigned d) {
     return __half2float(__ushort_as_half(block->d)) * block->qs[d % IQ_Q8_BLOCK];
 }
 
-__global__ static void iquest_attn_kernel(float *out, const float *query,
-                                         const iquest_q8 *cache, const float *sink,
-                                         const unsigned *positions, unsigned capacity,
-                                         unsigned window) {
-    __shared__ float scratch[128];
+enum class iquest_attn_reduce { Shared, Shuffle };
+
+template<iquest_attn_reduce Reduce>
+__device__ __forceinline__ static float iq_attn_reduce(float value, float *scratch) {
+    if constexpr (Reduce == iquest_attn_reduce::Shuffle) { return iq_reduce128(value, scratch); }
+    return iq_reduce(value, scratch);
+}
+
+template<iquest_attn_reduce Reduce>
+__device__ __forceinline__ static void iq_attn_body(float *out, const float *query,
+                                                  const iquest_q8 *cache, const float *sink,
+                                                  const unsigned *positions, unsigned capacity,
+                                                  unsigned window, float *scratch) {
     const unsigned row = blockIdx.x, head = blockIdx.y, lane = threadIdx.x;
     const unsigned kh = head / (IQ_HEADS / IQ_KV_HEADS);
     const unsigned position = positions[row];
     const unsigned start = window && position + 1 > window ? position + 1 - window : 0;
     const float q = query[((uint64_t)row * IQ_HEADS + head) * IQ_HEAD + lane];
     const float scale = rsqrtf((float)IQ_HEAD);
-    const float sink_score = iq_reduce(q * sink[kh * IQ_HEAD + lane], scratch) * scale;
+    const float sink_score = iq_attn_reduce<Reduce>(q * sink[kh * IQ_HEAD + lane], scratch) * scale;
     float maximum = -INFINITY, total = 0, value = 0;
     // Sink is post-RoPE q dot learned key, with a zero value. It is not a
     // scalar logit, a persistent KV token, or a query-independent rescaling.
     for (unsigned token = start; token <= position; token++) {
         const iquest_q8 *kv = cache + (uint64_t)(token % capacity) * IQ_Q8_ROW_BLOCKS;
-        const float score = iq_reduce(q * iq_q8_read(kv, kh * IQ_HEAD + lane), scratch) * scale;
+        const float score = iq_attn_reduce<Reduce>(q * iq_q8_read(kv, kh * IQ_HEAD + lane), scratch) * scale;
         const float next = fmaxf(maximum, score);
         const float prior = expf(maximum - next), weight = expf(score - next);
         value = prior * value + weight * iq_q8_read(kv + IQ_Q8_ROW_BLOCKS / 2, kh * IQ_HEAD + lane);
@@ -151,6 +186,101 @@ __global__ static void iquest_attn_kernel(float *out, const float *query,
     const float factor = 1.0f / (1.0f + expf(sink_score - lse));
     out[((uint64_t)row * IQ_HEADS + head) * IQ_HEAD + lane] =
         __bfloat162float(__float2bfloat16_rn(ordinary * factor));
+}
+
+__global__ static void iquest_attn_kernel(float *out, const float *query,
+                                         const iquest_q8 *cache, const float *sink,
+                                         const unsigned *positions, unsigned capacity,
+                                         unsigned window) {
+    __shared__ float scratch[IQ_HEAD];
+    iq_attn_body<iquest_attn_reduce::Shared>(out, query, cache, sink, positions, capacity, window, scratch);
+}
+
+__global__ static void iquest_attn_shuffle_kernel(float *out, const float *query,
+                                                 const iquest_q8 *cache, const float *sink,
+                                                 const unsigned *positions, unsigned capacity,
+                                                 unsigned window) {
+    __shared__ float scratch[IQ_HEAD];
+    iq_attn_body<iquest_attn_reduce::Shuffle>(out, query, cache, sink, positions, capacity, window, scratch);
+}
+
+enum { IQ_ATTN_HEADS_PER_BLOCK = 4, IQ_WARP_WIDTH = 32 };
+
+__device__ __forceinline__ static float iq_warp_sum(float p0, float p1, float p2, float p3) {
+    const unsigned lane = threadIdx.x % IQ_WARP_WIDTH;
+    // These are the original +64, +32 leaf stages, followed by +16..+1.
+    float sum = __fadd_rn(__fadd_rn(p0, p2), __fadd_rn(p1, p3));
+    #pragma unroll
+    for (unsigned stride = IQ_WARP_WIDTH / 2; stride; stride >>= 1) {
+        const float other = __shfl_down_sync(UINT32_MAX, sum, stride);
+        if (lane < stride) { sum = __fadd_rn(sum, other); }
+    }
+    return __shfl_sync(UINT32_MAX, sum, 0);
+}
+
+__device__ __forceinline__ static float iq_q8_product(float x, const iquest_q8 *row, unsigned d) {
+    const iquest_q8 *block = row + d / IQ_Q8_BLOCK;
+    const float scale = __half2float(__ushort_as_half(block->d));
+    const float decoded = __fmul_rn(scale, (float)block->qs[d % IQ_Q8_BLOCK]);
+    // Register-only leaves must keep both products rounded before reduction.
+    return __fmul_rn(x, decoded);
+}
+
+__device__ __forceinline__ static float iq_attn_output(float value, float inverse, float factor) {
+    const float ordinary = __bfloat162float(__float2bfloat16_rn(__fmul_rn(value, inverse)));
+    return __bfloat162float(__float2bfloat16_rn(__fmul_rn(ordinary, factor)));
+}
+
+__global__ static void iquest_attn_warp_kernel(float *out, const float *query,
+                                              const iquest_q8 *cache, const float *sink,
+                                              const unsigned *positions, unsigned capacity,
+                                              unsigned window) {
+    constexpr unsigned dimensions = IQ_HEAD / IQ_WARP_WIDTH;
+    static_assert(dimensions == 4 && IQ_HEADS % IQ_ATTN_HEADS_PER_BLOCK == 0,
+                  "grouped attention requires four dimensions per lane and complete head groups");
+    const unsigned lane = threadIdx.x % IQ_WARP_WIDTH;
+    const unsigned head = blockIdx.y * IQ_ATTN_HEADS_PER_BLOCK + threadIdx.x / IQ_WARP_WIDTH;
+    // Four-head CTAs can cross the six-query-head GQA groups; each warp owns
+    // its KV head and learned sink, with no inter-warp communication.
+    const unsigned kh = head / (IQ_HEADS / IQ_KV_HEADS);
+    const uint64_t base = ((uint64_t)blockIdx.x * IQ_HEADS + head) * IQ_HEAD + lane;
+    const unsigned d0 = kh * IQ_HEAD + lane, d1 = d0 + IQ_WARP_WIDTH;
+    const unsigned d2 = d1 + IQ_WARP_WIDTH, d3 = d2 + IQ_WARP_WIDTH;
+    const float q0 = query[base], q1 = query[base + IQ_WARP_WIDTH];
+    const float q2 = query[base + 2 * IQ_WARP_WIDTH], q3 = query[base + 3 * IQ_WARP_WIDTH];
+    const float sink_dot = iq_warp_sum(__fmul_rn(q0, sink[d0]), __fmul_rn(q1, sink[d1]),
+                                     __fmul_rn(q2, sink[d2]), __fmul_rn(q3, sink[d3]));
+    const unsigned position = positions[blockIdx.x];
+    const unsigned start = window && position + 1 > window ? position + 1 - window : 0;
+    const float scale = rsqrtf((float)IQ_HEAD);
+    float maximum = -INFINITY, total = 0;
+    float v0 = 0, v1 = 0, v2 = 0, v3 = 0;
+    for (unsigned token = start; token <= position; token++) {
+        const iquest_q8 *kv = cache + (uint64_t)(token % capacity) * IQ_Q8_ROW_BLOCKS;
+        const float dot = iq_warp_sum(iq_q8_product(q0, kv, d0), iq_q8_product(q1, kv, d1),
+                                     iq_q8_product(q2, kv, d2), iq_q8_product(q3, kv, d3));
+        const float score = __fmul_rn(dot, scale);
+        const float next = fmaxf(maximum, score);
+        const float prior = expf(__fadd_rn(maximum, -next));
+        const float weight = expf(__fadd_rn(score, -next));
+        const iquest_q8 *values = kv + IQ_Q8_ROW_BLOCKS / 2;
+        v0 = __fmaf_rn(prior, v0, iq_q8_product(weight, values, d0));
+        v1 = __fmaf_rn(prior, v1, iq_q8_product(weight, values, d1));
+        v2 = __fmaf_rn(prior, v2, iq_q8_product(weight, values, d2));
+        v3 = __fmaf_rn(prior, v3, iq_q8_product(weight, values, d3));
+        total = __fmaf_rn(prior, total, weight);
+        maximum = next;
+    }
+    // Retained fast-math SASS fuses log2(total)*ln(2)+maximum and the sink
+    // dot*scale-lse. Preserve those boundaries along with both BF16 stores.
+    constexpr float ln2 = 0x1.62e430p-1f;
+    const float lse = __fmaf_rn(__log2f(total), ln2, maximum);
+    const float factor = 1.0f / (1.0f + expf(__fmaf_rn(sink_dot, scale, -lse)));
+    const float inverse = 1.0f / total;
+    out[base] = iq_attn_output(v0, inverse, factor);
+    out[base + IQ_WARP_WIDTH] = iq_attn_output(v1, inverse, factor);
+    out[base + 2 * IQ_WARP_WIDTH] = iq_attn_output(v2, inverse, factor);
+    out[base + 3 * IQ_WARP_WIDTH] = iq_attn_output(v3, inverse, factor);
 }
 
 __global__ static void iquest_add_kernel(float *out, const float *residual,

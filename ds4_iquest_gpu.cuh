@@ -1,6 +1,9 @@
 /* Native tensor adapters. Model admission and ring lineage stay in the graph;
  * these kernels must receive contiguous, admitted live device positions. */
 #include "cuda/iquest_primitives.cuh"
+#include "cuda/iquest_prefill.cuh"
+#include "cuda/iquest_decode.cuh"
+#include "cuda/iquest_router.cuh"
 
 extern "C" int ds4_gpu_iquest_policy(void) {
     /* Only the active engine needs canonical MMQ weights. Cleanup releases
@@ -11,6 +14,56 @@ extern "C" int ds4_gpu_iquest_policy(void) {
 
 static bool iq_tensor(const ds4_gpu_tensor *t, uint64_t bytes) {
     return t && t->ptr && t->bytes >= bytes;
+}
+
+static bool iq_attn_shuffle() {
+    // Process-wide diagnostic fallback keeps graph selection stable.
+    static const bool enabled = [] {
+        const char *value = getenv("DS4_IQUEST_ATTN_SHUFFLE");
+        return !value || strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool iq_attn_warp() {
+    static const bool enabled = [] {
+        const char *value = getenv("DS4_IQUEST_ATTN_WARP");
+        return !value || strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool iq_attn_tiled() {
+    // A process-wide fallback retains the scalar prefill arithmetic.
+    static const bool enabled = [] {
+        const char *value = getenv("DS4_IQUEST_ATTN_TILED");
+        return (!value || strcmp(value, "0") != 0) && iq_prefill::supported();
+    }();
+    return enabled;
+}
+
+static bool iq_attn_cached() {
+    static const bool enabled = [] {
+        const char *value = getenv("DS4_IQUEST_ATTN_CACHED");
+        return !value || strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool iq_attn_async() {
+    static const bool enabled = [] {
+        const char *value = getenv("DS4_IQUEST_ATTN_ASYNC");
+        return (!value || strcmp(value, "0") != 0) && iq_decode::async_supported();
+    }();
+    return enabled;
+}
+
+static bool iq_router_warp() {
+    static const bool enabled = [] {
+        const char *value = getenv("DS4_IQUEST_ROUTER_WARP");
+        return !value || strcmp(value, "0") != 0;
+    }();
+    return enabled;
 }
 
 extern "C" int ds4_gpu_iquest_rms(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
@@ -43,8 +96,13 @@ extern "C" int ds4_gpu_iquest_router(ds4_gpu_tensor *ids, ds4_gpu_tensor *weight
     if (!rows || rows > 8192 || !iq_tensor(ids, (uint64_t)rows * IQ_USED * sizeof(unsigned)) ||
         !iq_tensor(weights, (uint64_t)rows * IQ_USED * sizeof(float)) ||
         !iq_tensor(logits, (uint64_t)rows * IQ_EXPERTS * sizeof(float))) { return 0; }
-    iquest_router_kernel<<<rows, 1, 0, ds4_current_stream()>>>(
-        (unsigned *)ids->ptr, (float *)weights->ptr, (const float *)logits->ptr);
+    if (rows == 1 && iq_router_warp()) {
+        iq_router::select<<<rows, iq_router::WARP, 0, ds4_current_stream()>>>(
+            (unsigned *)ids->ptr, (float *)weights->ptr, (const float *)logits->ptr);
+    } else {
+        iquest_router_kernel<<<rows, 1, 0, ds4_current_stream()>>>(
+            (unsigned *)ids->ptr, (float *)weights->ptr, (const float *)logits->ptr);
+    }
     return cuda_ok(cudaGetLastError(), "IQuest normalized softmax router");
 }
 
@@ -76,9 +134,53 @@ extern "C" int ds4_gpu_iquest_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *qu
         offset > size || sink_bytes > size - offset) { return 0; }
     const float *sink = (const float *)cuda_model_range_ptr(map, offset, sink_bytes, "IQuest learned sink");
     if (!sink) { return 0; }
-    iquest_attn_kernel<<<dim3(rows, IQ_HEADS), IQ_HEAD, 0, ds4_current_stream()>>>(
-        (float *)out->ptr, (const float *)query->ptr, (const iquest_q8 *)cache->ptr,
-        sink, (const unsigned *)positions->ptr, capacity, window);
+    // Specialize default-width prefill and single-row full/SWA attention.
+    // The recursive draft window and wider tails retain scalar arithmetic.
+    if (iq_attn_shuffle() && rows == IQ_PREFILL &&
+        (window == 0 || window == IQ_WINDOW) && iq_attn_warp()) {
+        if (iq_attn_tiled()) {
+            // Borrow LSE scratch across adjacent launches on the same stream.
+            // The sink consumes it before subsequent projections reuse it.
+            float *lse = (float *)cuda_tmp_alloc((uint64_t)rows * IQ_HEADS * sizeof(float),
+                                                "IQuest tiled LSE");
+            if (!lse) { return 0; }
+            iq_prefill::prefill<<<dim3((rows + iq_prefill::TQ - 1) / iq_prefill::TQ, IQ_HEADS),
+                iq_prefill::THREADS, 0, ds4_current_stream()>>>(
+                (float *)out->ptr, lse, (const float *)query->ptr,
+                (const iquest_q8 *)cache->ptr, (const unsigned *)positions->ptr,
+                rows, capacity, window);
+            if (!cuda_ok(cudaGetLastError(), "IQuest tiled ordinary attention")) { return 0; }
+            iq_prefill::sink<<<dim3(rows, IQ_HEADS / IQ_ATTN_HEADS_PER_BLOCK),
+                IQ_ATTN_HEADS_PER_BLOCK * IQ_WARP_WIDTH, 0, ds4_current_stream()>>>(
+                (float *)out->ptr, lse, (const float *)query->ptr, sink, rows);
+            return cuda_ok(cudaGetLastError(), "IQuest tiled learned sink");
+        }
+        iquest_attn_warp_kernel<<<dim3(rows, IQ_HEADS / IQ_ATTN_HEADS_PER_BLOCK),
+            IQ_ATTN_HEADS_PER_BLOCK * IQ_WARP_WIDTH, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)query->ptr, (const iquest_q8 *)cache->ptr,
+            sink, (const unsigned *)positions->ptr, capacity, window);
+    } else if (iq_attn_shuffle() && rows == 1 &&
+               (window == 0 || window == IQ_WINDOW) && iq_attn_cached()) {
+        // Stage compressed KV; keep the retained ascending-key arithmetic.
+        if (iq_attn_async()) {
+            iq_decode::cached<128, iq_decode::Transfer::Asynchronous>
+                <<<dim3(rows, IQ_HEADS), iq_decode::THREADS, 0, ds4_current_stream()>>>(
+                    (float *)out->ptr, (const float *)query->ptr, (const iquest_q8 *)cache->ptr,
+                    sink, (const unsigned *)positions->ptr, capacity, window);
+        } else {
+            iq_decode::cached<128><<<dim3(rows, IQ_HEADS), iq_decode::THREADS, 0, ds4_current_stream()>>>(
+                (float *)out->ptr, (const float *)query->ptr, (const iquest_q8 *)cache->ptr,
+                sink, (const unsigned *)positions->ptr, capacity, window);
+        }
+    } else if (iq_attn_shuffle()) {
+        iquest_attn_shuffle_kernel<<<dim3(rows, IQ_HEADS), IQ_HEAD, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)query->ptr, (const iquest_q8 *)cache->ptr,
+            sink, (const unsigned *)positions->ptr, capacity, window);
+    } else {
+        iquest_attn_kernel<<<dim3(rows, IQ_HEADS), IQ_HEAD, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)query->ptr, (const iquest_q8 *)cache->ptr,
+            sink, (const unsigned *)positions->ptr, capacity, window);
+    }
     return cuda_ok(cudaGetLastError(), "IQuest learned-key Q8_0 attention");
 }
 

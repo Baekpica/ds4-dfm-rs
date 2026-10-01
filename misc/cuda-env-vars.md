@@ -199,6 +199,41 @@ The bandwidth figure is informational; we don't tier on it.
   prefill. Unset uses the GQA2 HMMA tiles already used on full-attention
   layers. EXAONE/K2 SWA stays on the warp path.
 
+- `DS4_IQUEST_ATTN_SHUFFLE=0` restores the shared-memory attention
+  reduction. The default keeps the same FP32 addition tree while replacing
+  six block barriers with warp shuffles. Both BF16 output boundaries and
+  the learned-key sink remain unchanged. Read once per process.
+- `DS4_IQUEST_ATTN_WARP=0` keeps the retained 128-thread reduction for
+  128-row full/SWA prefill. With tiled attention disabled, four independent
+  head warps share each block. Wider tails and the draft window retain the old
+  launch; single-row calls use the cached dispatch below.
+  `DS4_IQUEST_ATTN_SHUFFLE=0` also disables this path. Read once
+  per process.
+- `DS4_IQUEST_ROUTER_WARP=0` restores serial expert selection for
+  single-row calls. The default distributes the 256-expert/top8 scan over
+  one warp, preserving lower-ID ties, first-unused NaN behavior and the
+  serial selected-softmax normalization. Wider calls retain the old path.
+  No extra allocation or persistent state. Read once per process.
+- `DS4_IQUEST_ATTN_CACHED=0` restores retained shuffle attention for
+  single-row full/SWA4096 calls. The default stages 128 compressed Q8 keys
+  per CTA, then keeps the original key order, reduction tree, online FMA
+  recurrence, learned sink and BF16 boundaries. It uses 34816 B static
+  shared memory and no global scratch. Recursive window512 and wider
+  rows fall back; parent `DS4_IQUEST_ATTN_SHUFFLE=0` also disables it.
+- `DS4_IQUEST_ATTN_ASYNC=0` uses synchronous copies inside cached
+  single-row attention. On SM80+ compiled targets, the default issues
+  disjoint eight-byte asynchronous copies, waits for each producer, then
+  synchronizes the CTA before reading the compressed tile. Arithmetic,
+  tile size and allocation stay unchanged. The cached/shuffle parent
+  fallbacks also disable this path. Read once per process.
+- `DS4_IQUEST_ATTN_TILED=0` restores the four-head warp prefill path.
+  The default uses TF32-pair tiles for 128-row full/SWA prefill on CUDA
+  targets supporting TF32 MMA. Q8 KV stays canonical; bounded PV tiles
+  merge in FP32 before ordinary BF16 output, then the F32 learned-key sink
+  and second BF16 store. This changes arithmetic order and is not bit-exact.
+  LSE needs 24 KiB of common temporary storage. Parent shuffle/warp switches
+  also disable it; tails, decode and the 512-token draft window fall back.
+  Read once per process. See the [measured numerical and speed scope](../docs/benchmarks/2026-10-01-iquest-q1-optimization-gb10.md).
 - `DS4_MIMO2_SWA_DECODE=0` restores MiMo's one-row, window-128 attention
   walk. The default shares KV across eight query heads. `DS4_MIMO2_SWA_VEC=0`
   selects scalar copies inside the shared tile. Both accept `0` and `1` in
