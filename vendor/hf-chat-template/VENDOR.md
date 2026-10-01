@@ -17,6 +17,14 @@ matches Python float spelling. Indentation allocation is capped at 4096.
 It also registers `fromjson` for serialized tool arguments in the unchanged
 Step 3.7 template; malformed JSON aborts rendering.
 The host enables serde_json `float_roundtrip` to preserve parsed float values.
+`arbitrary_precision` preserves tool argument integers. Explicit JSON-to-engine
+conversion avoids serde_json's private number wrapper becoming template text.
+Integers in signed 128-bit range use native engine values. Larger magnitudes
+preserve decimal display, `tojson`, integer/number tests and comparisons with
+other wide integers; arithmetic rejects them rather than wrapping or rounding.
+Mixed wide/native numeric ordering is unsupported: MiniJinja orders those
+representations before invoking object comparison hooks. This is exact
+protocol/history serialization, not general Python integer arithmetic.
 Independent Python fixtures live in `tests/fixtures/chat-template` at the
 workspace root; official Inkling vectors exercise these options together.
 

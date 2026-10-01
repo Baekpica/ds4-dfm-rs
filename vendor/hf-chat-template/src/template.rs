@@ -170,7 +170,9 @@ impl ChatTemplate {
     /// # Ok::<(), hf_chat_template::Error>(())
     /// ```
     pub fn render_context<T: Serialize + ?Sized>(&self, ctx: &T) -> Result<String, Error> {
-        self.render_prepared(Value::from_serialize(ctx))
+        let ctx = serde_json::to_value(ctx)
+            .map_err(|e| Error::Config(format!("failed to serialize render context: {e}")))?;
+        self.render_prepared(crate::json::from_json(&ctx).map_err(Error::from_render)?)
     }
 
     /// Render a context already converted to the engine's value type. Private: the engine type
@@ -198,7 +200,7 @@ impl ChatTemplate {
                 ctx.insert(k, v);
             }
         }
-        Ok(Value::from_serialize(Json::Object(ctx)))
+        crate::json::from_json(&Json::Object(ctx)).map_err(Error::from_render)
     }
 }
 
