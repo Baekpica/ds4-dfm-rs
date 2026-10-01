@@ -9,13 +9,18 @@ for qualification and workload limits.
 
 The runtime also carries explicit non-DFM family ports, including dots3-note,
 Qwen3.8, GLM 5.3 Flash, K2-Horizon, Inkling Small, Step 3.7 Flash,
-Ling-3.0-flash-VL and Naive-N0.5-Flash. Inclusion does not classify
+Ling-3.0-flash-VL, MiMo-V2.6-Flash and Naive-N0.5-Flash. Inclusion does not classify
 those source models as Korean DFM. The [repository README](../README.md#supported-model-families)
-defines the exact artifact support scope.
+links the supported artifacts; this guide records their state and release limits.
 
 The reference target is one NVIDIA DGX Spark with a GB10 GPU and 128 GB of
-unified memory. Other operating systems and accelerators are not release
-targets for the DFM additions yet.
+unified memory. Bonsai has separately recorded RTX 4070 SUPER gates; inherited
+Metal and other accelerator paths require their own checks.
+
+[Families](#integrated-families) · [Qwen](#qwen-release-scope) ·
+[GLM](#glm-53-flash-release-scope) · [K2](#k2-horizon-375b-release-scope) ·
+[Reuse](#partial-prefix-reuse) · [Limits](#current-limits) ·
+[Historical evidence](model-family-history.md)
 
 ## Design contract
 
@@ -53,13 +58,14 @@ This keeps the changes reviewable for a possible future upstream contribution.
 | Motif-3 | `general.architecture=motif3` | normalized latent KV, rotated `k_pe`, and SWA rings |
 | [dots3-note Preview](#dots3-serving) | `general.architecture=dots3note` (legacy `dots3-note`) | dual-geometry latent KV, DSA keys, and SWA rings |
 | Qwen3.8 Flash Next SSD-PLE | `general.architecture=qwen4exp` | Q5 main + four SSD-PLE sidecars, GDN/QSA state, embedded MTP, still images |
+| [Prism Bonsai 2 27B](BONSAI.md) | `general.architecture=qwen35` | pinned PQ2_0 with Prism Hadamard-fold metadata; CPU reference and serial CUDA text; banks, snapshots, disk KV, drafting and media unsupported |
 | GLM 5.3 Flash | `general.architecture=glm5-next` | exact Q2 main + vision sidecar |
 | K2-Horizon 375B A23B | `general.architecture=k2-horizon` | full-attention GQA KV, partial NeoX RoPE, shared-expert MoE |
 | [Inkling Small](inkling-small.md) | `general.architecture=inkling` | MQ85GB source-interleaved GQA, four-tap convolution, embedded media encoders, optional eight-layer MTP-BF16 |
 | [Step 3.7 Flash](step37-initial.md) ([serving](step37-serving-2026-09-13.md)) | `general.architecture=step35` | MQ83 full/sliding GQA, post-SiLU expert clamps, optional Q8 MTP and F16 vision |
 | [Ling-3.0-flash-VL](ling3-flash-vl.md) | `general.architecture=bailingmoe3` | 35 recurrent KDA blocks and 7 latent MLA blocks, 512 grouped-sigmoid experts, separate Qwen3-VL mmproj |
-| [MiMo-V2.6-Flash-RL](mimo2-serving-2026-09-25.md) | `general.architecture=mimo2` | 48 trunk layers: 9 full-attention, 39 SWA-128, 256 experts top-8, and three embedded MTP blocks. With MTP off, a 256K two-bank text plan passed partial reuse, disk continuation and serial image/video/audio input gates on GB10. The prior 512K serial-text and 256K serial-media/DFlash gates are separate. 1M one-bank text answered a 1,040,506-token prompt; two banks did not fit. |
-| [Naive-N0.5-Flash](naive-n05-flash.md) | `general.architecture=naive_n05_flash` | MQ87; 39 SWA-128 and nine DSA layers with full BF16 GQA and E4M3 indexer history. Continuous banks, partial checkpoints, disk KV and external DSpark. Main-only buffered retrieval and disk continuation pass at 256K/two banks and 512K/one bank. DSpark acceleration remains unqualified. |
+| [MiMo-V2.6-Flash RL / MOPD](#mimo-release-scope) | `general.architecture=mimo2` | 9 full-attention and 39 SWA-128 layers, 256 experts top-8, three embedded MTP blocks; artifact-specific gates |
+| [Naive-N0.5-Flash](#naive-release-scope) | `general.architecture=naive_n05_flash` | MQ87; 39 SWA-128 and nine DSA layers, BF16 GQA, E4M3 indexer history, continuous banks and disk KV |
 
 The scheduler implementation may differ because the model states differ, but
 the operator and client contract is the same. Changing `-m` to a GGUF from a
@@ -70,18 +76,291 @@ live in the [serving contract](serving-contract.md). The
 reuse, disk, MTP and bounds directly from `ds4_core::serving_caps`; the core
 tests reject documentation drift. Dated campaign reports retain their scope.
 
+## Qwen release scope
+
+The initial Rust RC qualification covered:
+
+- [`MQ-Q5-SSD-PLE-BF16`](https://huggingface.co/Baekpica/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF), three main GGUF shards;
+- four shared BF16 SSD-PLE sidecars referenced by that Q5 layout;
+- embedded MTP with `--mtp-draft 2`;
+- text and base64 PNG/JPEG input on the three message APIs;
+- 196,608 two-bank serving and 262,144 one-bank serving, in addition to the
+  earlier exact/configured 262,144-token gates.
+
+Q6, original safetensors, and a resident BF16 GGUF were not release gates and
+are not implied by this claim.
+
+For the optional FP8 PLE sidecar with the existing base and
+[Uncensored](https://huggingface.co/Baekpica/Qwen3.8-Flash-Next-Uncensored-Mixed-Quant-SSD-PLE-GGUF)
+main GGUFs, see [selection, validation and paired 64K sweeps](qwen38-ple-fp8.md).
+
+Rust normalizes ordered image parts, bounds and owns payload bytes, places
+image tokens, and owns decoded-pixel cache identity. Decoding reuses the pinned
+[`vendor/stb_image.h`](../vendor/stb_image.h) through a narrow native image ABI;
+vision and CUDA execution stay native. No general multimedia layer or Rust
+image dependency was added.
+
+Image limits match the frozen C behavior:
+
+- user messages only;
+- PNG or JPEG data URIs only;
+- at most four images;
+- at most 10 MiB decoded per image and 20 MiB per request;
+- remote URLs, files, SVG, GIF, WebP, malformed base64, and invalid image
+  content are rejected.
+
+See [`QWEN_V065_RESTAMP_2026-08-31.md`](rust-migration/QWEN_V065_RESTAMP_2026-08-31.md)
+and [`qwen38-image-input-spec.md`](qwen38-image-input-spec.md).
+Measured image latency and agent checks:
+[`qwen38-image-2026-09-07.md`](qwen38-image-2026-09-07.md).
+
+### Qwen owner and cache
+
+The following Qwen reference keeps a VMM weight owner resident across worker
+restarts. Use the first Q5 shard as `MODEL`; the PLE sidecars remain alongside
+the model or in the selected FP8 directory. See the [shared launch procedure](serving-contract.md#weight-owner-and-worker).
+
+```sh
+MODEL=/path/to/supported-model.gguf
+MANIFEST=/tmp/ds4-weights.manifest
+
+./ds4_weight_server \
+  --base "$MODEL" \
+  --manifest "$MANIFEST" \
+  --backend vmm \
+  --scope base \
+  --reserve-gb 32
+```
+
+Wait for both `broker listening` and `ready manifest=...`, then start the
+worker in another durable session:
+
+```sh
+DS4_CUDA_WEIGHT_IPC_MANIFEST="$MANIFEST" \
+DS4_CUDA_WEIGHT_IPC_SCOPE=base \
+./ds4-server --cuda -m "$MODEL" -c 196608 \
+  --host 127.0.0.1 --port 8000 --no-update-check
+```
+
+Qwen Q5 release runs additionally set a bounded SSD-PLE cache. Size it from
+the prefill chunk: a chunk's sixteen 320-byte PLE rows per token land on
+about 1.08 4 KiB pages each, so an 8,192-token chunk needs ~553 MiB of pages,
+and the engine prefetches the *next* chunk's pages while the current chunk's
+decoder layers run (`DS4_QWEN_PLE_NO_LOOKAHEAD=1` disables that). One prefill
+stream therefore wants at least one chunk in cache (1024 MiB with slack); two
+banks that alternate chunks want two (2048 MiB, the maximum). Sixteen page
+workers already saturate the sidecar reads at ~90K IOPS in bursts that overlap
+compute, so more workers do not help. A prompt's first chunk has nothing
+queued for it, so every prompt opens with a 2,048-row chunk whose remaining
+decoder layers hide the reads of the full-size chunk behind it; prompts
+shorter than two opening chunks stay one chunk, since a short trailing
+chunk costs more than the reads it hides
+(`DS4_QWEN_PREFILL_OPENING` sets the opening rows; `0` opens at the chunk
+cap). This reference shape asks the shared Rust scheduler for two persistent
+banks:
+
+```sh
+DS4_QWEN_BATCH=1 \
+DS4_QWEN_PLE_CACHE_MB=2048 \
+DS4_QWEN_PLE_WORKERS=16 \
+DS4_QWEN_PREFILL_CHUNK=8192 \
+DS4_SERVER_COALESCE_MAX=2 \
+DS4_CUDA_WEIGHT_IPC_MANIFEST="$MANIFEST" \
+DS4_CUDA_WEIGHT_IPC_SCOPE=base \
+./ds4-server --cuda -m "$MODEL" -c 196608 --mtp-draft 2 \
+  --cont-width 2 --host 127.0.0.1 --port 8000 --no-update-check
+```
+
+### Qwen YaRN long contexts
+
+Qwen contexts through 262,144 tokens retain the native factor-1 rotary path.
+Larger server contexts select a static YaRN factor from the requested context:
+factor 2 through 524,288, factor 3 through 786,432, and factor 4 through
+1,048,576. This follows the
+[`Qwen3.8-Flash-Next` 1M recipe](https://huggingface.co/Qwen/Qwen3.8-Flash-Next-FP8#processing-ultra-long-texts)
+and the
+[`transformers` YaRN equations](https://github.com/huggingface/transformers/blob/main/src/transformers/modeling_rope_utils.py);
+the underlying method is described in the
+[`YaRN` paper](https://arxiv.org/abs/2309.00071).
+
+The 1M configuration uses one bank and a smaller prefill chunk:
+
+```sh
+DS4_SESSION_GRAPH_FIT=0 \
+DS4_QWEN_BATCH=1 \
+DS4_QWEN_PLE_CACHE_MB=512 \
+DS4_QWEN_PLE_WORKERS=16 \
+DS4_QWEN_PREFILL_CHUNK=256 \
+DS4_SERVER_COALESCE_MAX=1 \
+DS4_SERVER_FORK=0 \
+DS4_SERVER_FORK_PARTIAL=0 \
+DS4_CUDA_WEIGHT_IPC_MANIFEST="$MANIFEST" \
+DS4_CUDA_WEIGHT_IPC_SCOPE=base \
+./ds4-server --cuda -m "$MODEL" -c 1000000 -n 256 --cont-width 1 \
+  --host 127.0.0.1 --port 8000 --no-update-check
+```
+
+`DS4_SESSION_GRAPH_FIT=0` is an explicit fit-check override, not a claim that
+the requested context fits the machine. On a 128 GB DGX Spark, the Q5+Sidecar
+run recorded the following staged boundary on 2026-09-01:
+
+| Configured context | YaRN factor | Largest prompt run | Result |
+|---:|---:|---:|---|
+| 196,608 | 1 | text and JPEG smoke | PASS, native-context regression |
+| 524,288 | 2 | 524,240 tokens | HTTP 200, 215.4 prefill tok/s, zero census faults |
+| 1,000,000 | 4 | 300,040 tokens | HTTP 200, 261.4 prefill tok/s, text/JPEG smoke, zero census faults |
+
+The 524K run peaked at about 30.6 GiB in the worker and finished 47 tokens
+below its context cap. A complete 1M-token prompt is **not** claimed: its
+53.56 GiB graph plan plus the roughly 80.65 GiB weight owner exceeds the
+machine's 121.63 GiB usable unified-memory budget. Use the native context for
+ordinary short requests because static YaRN can reduce short-context quality.
+
+Large GGUFs can exhaust unified or system memory. During validation, load one
+production model at a time, observe accelerator activity and per-process memory
+with tools available on your platform, and confirm serving processes have
+exited before reclaiming host resources.
+
+### Qwen derivatives
+
+The same `qwen4exp` runtime also accepts these explicit Q5 layouts:
+
+| Artifact | Evidence and limits |
+|---|---|
+| [Qwen3.8 Flash Next Uncensored](https://huggingface.co/Baekpica/Qwen3.8-Flash-Next-Uncensored-Mixed-Quant-SSD-PLE-GGUF) | Base/Uncensored PLE comparisons and scoped snapshot, fork and restart gates are recorded separately in the [FP8 PLE guide](qwen38-ple-fp8.md). |
+| [Swift1.5-Qwen3.8 Flash Next](https://huggingface.co/Baekpica/Swift1.5-Qwen3.8-Flash-Next-Mixed-Quant-GGUF) | Q5 backbone with the shared official FP8 PLE. Its published card records bounded 262,144-context, two-bank text/tool/image checks with MTP draft 2. Full-length 262K input and cross-process disk restore were not tested. Throughput remains unmeasured; the card graph is a Qwen Base reference. |
+
+These are artifact-specific records. Base Qwen qualification does not establish
+all quantizations, contexts or feature combinations for its derivatives.
+
+## GLM 5.3 Flash release scope
+
+RC.4 follows the explicit GLM 5.3 Flash graph and vision implementation in
+the official [`antirez/ds4`](https://github.com/antirez/ds4) upstream, pinned
+for this port at
+[`110afdd`](https://github.com/antirez/ds4/commit/110afdd8886586f18fc9b28bc5533152dd10e728).
+The Rust host keeps the KDA, DSA, hyper-connection mixing, MoE, and
+[`vision encoder`](https://github.com/antirez/ds4/blob/110afdd8886586f18fc9b28bc5533152dd10e728/ds4_glm53_vision_gpu.cuh)
+execution native.
+
+The verified artifact set is exactly:
+
+- `GLM-5.3-Flash-Q2.gguf` — 96,505,816,384 bytes;
+- `GLM-5.3-Flash-Vision-Encoder.gguf` — 1,127,280,960 bytes, SHA-256
+  `ae23e14c6979e889051b2e4a39351abcdafb161e18e606fae4d8c40095a4bf3a`.
+
+The following command reproduces the RC.4 live smoke shape:
+
+```sh
+MODEL_DIR=/path/to/GLM-5.3-Flash-Mixed-Quant-GGUF
+
+./ds4-server --cuda \
+  -m "$MODEL_DIR/GLM-5.3-Flash-Q2.gguf" \
+  --vision "$MODEL_DIR/GLM-5.3-Flash-Vision-Encoder.gguf" \
+  --model-id GLM-5.3-Flash-Q2 \
+  -c 256 -n 8 \
+  --host 127.0.0.1 --port 8000
+```
+
+The current GLM graph is serial and has an explicit 2,048-token context cap,
+enforced by host admission and native session creation, including lazy graphs.
+Snapshots, disk KV, continuous banks and MTP are unsupported.
+OpenAI Chat text and inline PNG image requests were served live on one DGX
+Spark; model-free parsing gates also cover the equivalent Responses and
+Anthropic inline-image forms. PNG and JPEG are accepted, with at most four
+images per request. Q4, FP8, full GLM 5.3, Metal, ROCm, distributed serving
+and SSD streaming were not RC.4 gates and are not implied by this support entry.
+Current boundary checks are listed in the [K2/GLM gates](releases/v0.1.3-k2-glm-gates.md).
+
+## K2-Horizon-375B release scope
+
+This branch follows the IFM
+[`K2-Horizon-375B-A23B`](https://huggingface.co/IFM/K2-Horizon-375B-A23B)
+graph: 61 full-attention GQA layers, partial NeoX RoPE on 64 of 128 dims,
+three leading dense MLPs, sigmoid top-8 routing with one shared expert, and
+no MTP. Execution stays native. The GGUF architecture is `k2-horizon`; it
+does not widen the K-EXAONE LLLG/QK-norm contract.
+
+The verified artifact set is exactly the public MQ87 split, 93,091,935,552
+bytes (86.698621 GiB) across four shards:
+
+- `K2-Horizon-375B-A23B-MQ87-00001-of-00004.gguf`
+- `K2-Horizon-375B-A23B-MQ87-00002-of-00004.gguf`
+- `K2-Horizon-375B-A23B-MQ87-00003-of-00004.gguf`
+- `K2-Horizon-375B-A23B-MQ87-00004-of-00004.gguf`
+
+Expected inventory: 842 tensors (`Q8_0=429`, `F32=239`, `IQ1_S=100`,
+`IQ2_XXS=50`, `IQ1_M=16`, `IQ2_XS=8`). Official FP8 checkpoints are not a
+runtime input.
+
+On GB10, whole-map `cudaHostRegister` of the 86.70 GiB mmap fails. The
+existing VMM materializer then promotes every unit (95/95, 0 cold) so CUDA
+graphs never capture the unregistered mmap. The v0.1.0 gate accepted a 32K
+first boot with `DS4_MEMGOV=enforce`. The 2026-09-17 native lifecycle gate
+passed at context 1,024. A separate 32K explicit-serial raw disk gate passed
+with three fresh processes: append and sibling requests restored 547 tokens,
+and all four results matched fresh cold controls. The 4 GiB / PSI30 guard
+remained active after startup pressure settled; minimum sampled availability
+was 4.83 GiB. Identical whole prompts and early edits still replay cold under
+K2's zero-rewind policy. This short gate does not qualify filled-32K prompts
+or disk reuse through Chat or the continuous lane. See the
+[commands and limits](releases/v0.1.3-k2-glm-gates.md) and
+[evidence, including earlier failures](benchmarks/serving-v013-2026-09-17/k2.json).
+
+The following command reproduces the historical continuous serving shape with
+in-process VMM. External weight-owner import remains unqualified. The capability
+marker for snapshots/disk KV remains conservatively `present`; the narrower
+serial raw disk gate above has its own qualification. Context and concurrency
+remain 32K and one bank; K2 has no MTP contract.
+
+```sh
+MODEL=/path/to/K2-Horizon-375B-A23B-Mixed-Quant-GGUF/K2-Horizon-375B-A23B-MQ87-00001-of-00004.gguf
+
+./ds4-server --cuda \
+  -m "$MODEL" \
+  --model-id K2-Horizon-375B-A23B-MQ87 \
+  -c 32768 --cont-width 1 \
+  --host 127.0.0.1 --port 8000
+```
+
+CLI 32K raw-token smoke returned token `33785` with default memgov. HTTP
+Chat, XML tool call/result continuation, streaming, and concurrent requests
+passed on the same one-bank 32K setup. Official IFM `high` thinking is the
+gated path. The 524,288-token metadata context, `low`/`medium` think
+variants, other quants, Metal, ROCm, and distributed serving were not
+gates and are not implied by this support entry.
+
+## MiMo release scope
+
+### MiMo RL
+
+The [RL serving report](mimo2-serving-2026-09-25.md) records a 256K two-bank
+text plan with MTP off: partial reuse, disk continuation and serial
+image/video/audio input passed on GB10. The prior 512K serial-text and 256K
+serial-media/DFlash gates are separate. A 1M one-bank text plan answered a
+1,040,506-token prompt; two banks did not fit.
+
+### MiMo MOPD
+
+[MiMo-V2.6-Flash-MOPD mixed quant](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-MOPD-Mixed-Quant-GGUF)
+uses the `mimo2` architecture and the RL artifact's mixed-quant tensor recipe,
+with its own weights, media projector and DFlash sidecar. The
+[September 30 report](benchmarks/2026-09-30-mimo2-mopd-spark.md) records its
+plain-text performance and exact-logit/token checks. MTP/DFlash are inactive
+in those comparisons; speculative acceleration remains separately unqualified.
+RL's long-context and media gates are not transferred to this artifact.
+
+## Naive release scope
+
+[Naive-N0.5-Flash MQ87](naive-n05-flash.md) supports continuous banks, partial
+checkpoints, disk KV and an external DSpark sidecar. Main-only buffered
+retrieval and disk continuation passed at 256K/two banks and 512K/one bank.
+DSpark acceleration remains unqualified; see the guide's commands and gates.
+
 ## Common serving surface
 
-Every family is served by `ds4-server` and exposes:
-
-| Protocol | Endpoint |
-|---|---|
-| OpenAI Chat Completions | `/v1/chat/completions` |
-| OpenAI Completions | `/v1/completions` |
-| OpenAI Responses | `/v1/responses` |
-| Anthropic Messages | `/v1/messages` |
-| Model discovery | `/v1/models` |
-| Runtime state | `/v1/stats` and `/metrics` |
+Every family uses the same `ds4-server` [HTTP surfaces](ds4-api-surface-matrix.md).
+Native state, lane eligibility and supported input modalities remain explicit.
 
 The model-family dispatch covers prompt rendering, generated-message parsing,
 tool-call syntax, streaming tails, thinking controls, and generation stop
@@ -221,40 +500,8 @@ plain decoding. The [bank](../tests/test_dots3_batch.c) and
 
 ## Weight owner and inference worker
 
-On a 128 GB unified-memory machine, keep one weight owner alive and restart
-only inference workers while developing or profiling. The owner maps split
-GGUFs as one logical model, uploads VMM ranges, builds byte-neutral aligned
-IQ2/Q2K expert artifacts, and brokers POSIX file descriptors to workers.
-
-Start with a dry run:
-
-```sh
-MODEL=/path/to/model.gguf
-RUN=/path/to/run-directory
-
-./ds4_weight_server \
-  --base "$MODEL" \
-  --manifest "$RUN/weights.manifest" \
-  --backend vmm \
-  --scope base \
-  --reserve-gb 24 \
-  --no-repack-q8-aligned \
-  --dry-run
-```
-
-If the memory preflight passes, run the same command without `--dry-run` in a
-durable tmux session. Do not start a worker until the owner reports both
-`broker listening` and `ready manifest=...`.
-
-A VMM-backed worker uses this launch shape; choose the artifact-specific
-owner and worker options from the README:
-
-```sh
-DS4_CUDA_WEIGHT_IPC_MANIFEST="$RUN/weights.manifest" \
-DS4_CUDA_WEIGHT_IPC_SCOPE=base \
-./ds4-server -m "$MODEL" --cuda -c 2048 \
-  --host 127.0.0.1 --port 8001 --no-update-check
-```
+Use the [shared owner/worker procedure](serving-contract.md#weight-owner-and-worker).
+Family-specific sidecars and launch limits remain below and in the linked recipes.
 
 For a split model, `MODEL` is its first shard. DeepSeek can place a DSpark
 drafter beside the base model; the standard launch resolver attaches it
@@ -268,321 +515,8 @@ uses only its [embedded serial predictor](#dots3-serving).
 
 ## DGX Spark memory hygiene
 
-Before changing large models:
-
-1. Check the compute-process view in `nvtop` and the process/RSS view in
-   `btop` or `htop`.
-2. Stop the inference worker and confirm its PID and listening port are gone.
-3. Stop the weight owner and confirm its PID is gone and `nvtop` lists no
-   remaining compute process.
-4. Run `/usr/local/bin/clear_cache` only after those processes have exited.
-5. Recheck `nvtop`, `btop` or `htop`, `free -h`, and swap before starting the
-   next owner.
-
-`clear_cache` does not reclaim allocations from a live CUDA process. Never run
-a second full-model owner beside the first one on the reference machine.
-
-## Historical integration evidence
-
-The following C release and optimization results preserve their original
-commits, artifacts and workloads. They are not fresh v0.1.0 Rust-host gates
-or instructions to reuse a recorded owner/process.
-
-## Integration evidence for `v0.6.3-dfm`
-
-This cut absorbs Entrpi `v0.6.3` (`d92d93a`) — typed refusal for
-schema-constrained output, chunked request bodies, think-dial
-observability (the cont completion line and the `think_modes`
-counter family), the full-1M decode dispatch (HG-before-cap,
-live-scalar fallback, exact-full bank restore), the whole-prompt
-depth fence, and best-fit trim victims — on the same GB10 host
-(driver 610.43.02, CUDA 13.3, `sm_121a` cubins only).
-
-One family-side reconciliation was required beyond conflict hunks:
-upstream's exact-full bank restore fix (Inc 4 audit Finding 2)
-covered only the DeepSeek payload lane, while the Solar, EXAONE,
-and Motif-3 cont bank restores carried the same `>= seq_cap`
-off-by-one. The family batch contexts share `bank_hist` (seq_cap
-slots) and the admission install bound, so the three family lanes
-now accept the exactly-full payload a full bank legitimately
-persists.
-
-Scope facts verified in review: the engine-side depth fence guards
-the DeepSeek/GLM metal session path — the four family sessions
-branch out of `ds4_session_sync` before it and chunk by the shared
-default prefill cap (≤ 4096 under default env) — while the
-server-side fence covers every family's serial lane; best-fit trim
-victims operate on the VMM slab lane only (family banks keep fixed
-CUDA allocations and remain non-reclaimable); the full-1M HG
-dispatch is DeepSeek MLA-only (head_dim-512 guard). The shared
-surfaces — typed refusal, chunked bodies, think counters, the cont
-completion line — reach every family through the common request
-machinery.
-
-Gates on this binary: extractor self-test, `ds4_test --server`
-(including the new v0.6.3 refusal/fence/think units), the
-split-GGUF test, `test-model-family-kernels`, `test-mmq-parity`,
-`cuda-regression` (including the new substrate overflow leg), Motif
-loader/tokenizer/reference/CUDA, EXAONE kernels/reference, Solar
-loader/tokenizer/KDA/KDA-prefill/KDA-chunk/gates/KV plus the full
-forward integration, and dots3 loader/tokenizer — all passed. Bare
-`ds4_test` model-dependent DeepSeek GPU tests were not rerun (no
-DeepSeek GGUF on this host, as in previous cuts).
-
-A live VMM owner + worker gate on the Motif MQ87-88 artifact
-(aligned-artifact owner, 644 exported ranges, worker at `-c 2048`,
-32 banks) answered all four API surfaces on the continuous route
-with 4 requests and 0 failures. The v0.6.3 typed `response_format`
-refusal answered HTTP 400 in the native envelope on the family
-lane, and the new `cont chat ... think=... finish=...` completion
-line and `ds4_requests_think_total` counters were observed live.
-
-The published Motif-3 and Solar tables below are unchanged: no
-remeasure was run for this cut and earlier tags are not moved.
-
-## Integration evidence for `v0.6.2-dfm`
-
-This cut absorbs Entrpi `v0.6.2` (`d183482`) — the v0.6.1/v0.6.2
-memory-truth arc: honest decode credit, transient serial-graph leases,
-the serial idle reaper, GRAPH_EXEC pool truth, ctx-aware defaults,
-live commit-rate feedback, `--no-serial`, manifest content identity,
-the governed cont bank plan, the packed work floor, derived fit
-headroom, eviction-aligned trim victims, and the continuous ledger
-reconciliation line — on the same GB10 host (driver 610.43.02,
-CUDA 13.3, `sm_121a` cubins only).
-
-Two family-side reconciliations were required beyond conflict hunks:
-
-- Upstream's rider #48 content fingerprint stats the model path; the
-  DFM split-GGUF models map shards into one logical range. The weight
-  server now fingerprints that logical mapping (identical layout to the
-  engine's `model_open_split`), so split models keep booting and the
-  Motif single-file import reports `content identity verified`.
-- Upstream's v0.6.2 Inc 3 recency array (`bank_last_use`) is stamped by
-  `bank_hist_reset`, which the family persistent-bank lanes share. The
-  Solar/EXAONE/Motif batch contexts now allocate it; without the fix the
-  first cold family admission crashed the worker (reproduced under gdb).
-
-Gates on this binary: server unit suite, extractor self-test,
-split-GGUF test, `test-model-family-kernels`, `test-mmq-parity`,
-Motif loader/tokenizer/reference/CUDA six groups, EXAONE
-kernels/reference, Solar loader/tokenizer/KDA/prefill/chunk/gates/KV
-plus the repaired full forward integration, dots3 loader/tokenizer,
-and `make cuda-regression` — all passed. A live VMM owner + worker gate
-on the Motif MQ87-88 artifact answered all four API surfaces
-(4 requests, 0 failures, continuous route, 32 banks at `-c 2048`).
-
-Same-host `ds4-bench` parity against the `v0.6.0-dfm` band (owner with
-aligned Q8 artifacts, context-32768 corpus, greedy): 8K prefill
-519.90 / 518.02 tok/s, 8K decode run 515.84 prefill + 12.62 decode
-tok/s, 32K decode run 445.03 prefill + 9.68 decode tok/s.
-
-A later Motif-only optimization series on the same `dfm` line
-(`d03bd89` HG16, `b0db5a1` SWA→HMMA, `91823ca` MoE D2R,
-`a8e9e61` HG16 cp.async, `a09ff4f` FATTN TK=32) remesured 8K/32K and
-then the strict 256K serial Chat gate on the same artifact and host.
-Measured tip (`2c81427`, kernels through `a09ff4f`): 8K prefill
-627.19 tok/s and decode 15.06 tok/s; 32K prefill 545.62 tok/s and
-decode 12.95 tok/s; 32K OpenAI sentinels exact (546.7 / 12.8); 256K
-OpenAI Chat 262,080-token prefill **238.59 tok/s** and 43 decode tokens
-at **5.97 tok/s**, sentinels exact, `finish_reason=stop`. The
-`v0.6.2-dfm` **tag is not moved**. The published table below still
-shows the `v0.5.6.3-dfm` 8K/32K/256K rows; the remesure is recorded
-after that table and is not a new tag.
-
-## Integration evidence for `v0.6.0-dfm`
-
-This cut absorbs Entrpi `v0.6.0` (`c8956e0`) on the same GB10 host
-(driver 610.43.02, CUDA 13.3, `sm_121a` cubins only). The gates below
-are fixture, unit, and structural GGUF checks on this binary. The Motif
-8K/32K/256K published numbers remain those of `v0.5.6.3-dfm`.
-
-| Family | Gate | Result |
-|---|---|---|
-| DeepSeek | `ds4-eval --self-test-extractors`, `ds4_test --server`, `tests/test_split_gguf` | passed. No DeepSeek GGUF on this host, so model-dependent GPU tests were not rerun. |
-| Solar Open2 | `test-solar-loader` / `test-solar-tokenizer` on MXQ-v1 11 shards; CUDA KDA, chunked prefill, gates, compressed KV | passed |
-| K-EXAONE | `test-exaone-kernels` vs CPU (no model path: routed-expert matmul skipped); tokenizer load of the 3-shard MXQ | passed |
-| Motif-3 | official-final CUDA fixtures (BF16, router, PolyNorm, mHC, expanded/latent GDLA); `test-motif3-loader` / `test-motif3-tokenizer` on `Motif-3-MQ87-88-FIT.gguf` | passed |
-| dots3-note | 10-shard loader/tokenizer; CPU/GPU forward; 1600-token chunk/ring and prefix reuse; DSA boundary; 256K resident allocation/cleanup; 4K Chat | passed on `dots3-note-prev-MQ87` |
-| Shared | `test-model-family-kernels` | passed |
-
-The merge keeps DFM family generate, split-GGUF remaps, and aligned
-mixed-quant remainder caching. Upstream's memory governor, own-reserve
-trim, and two-phase reclaim are in; `ds4_batch_ctx_reclaim_prepare`
-stays `UNSUPPORTED` for EXAONE/Motif/Solar because those banks use
-fixed CUDA allocations. The Motif CUDA fixture also required restoring
-the DFM rule that a current whole-model device copy wins over a stale
-range keyed by a recycled host address.
-
-The published Motif 8K `ds4-bench` point requires the VMM owner's
-aligned Q8 artifacts (the `q8 pair prefill using aligned Q8_0 artifacts`
-path). `--no-repack-q8-aligned` falls through to the raw Q8 pair kernel
-and is not that point. A `v0.6.0-dfm` remeasure on the aligned-Q8 owner
-stayed in the same band and is not a new published number.
-
-## Integration evidence for `v0.5.6.3-dfm`
-
-The following production GGUF integration gates were run on the same GB10
-host and release line with a 2,048-token development context. The Motif row
-also includes the later strict long-context gate documented below:
-
-| Family | Weight-owner evidence | Server evidence |
-|---|---|---|
-| DeepSeek V4 Flash | 80.76 GiB base plus 6.49 GiB DSpark; 72.56 GiB aligned artifacts | detected DSpark automatically; one Chat request completed with zero failures |
-| Solar Open2 250B | 11 shards, 88.97 GiB; 32.23 GiB aligned IQ2 artifacts | two persistent banks; two concurrent Chat requests completed on the continuous route |
-| K-EXAONE 236B A23B | 3 shards, 85.56 GiB; 30.16 GiB aligned IQ2 artifacts | two persistent banks; two concurrent Chat requests completed on the continuous route |
-| Motif-3 | 94,162,541,472-byte canonical GGUF; owner used for that run exported 7.00 GiB raw plus 80.68 GiB in 153 aligned expert artifacts | all four API surfaces, strict 262,080-token prompt plus decode, and three concurrent 196K-context banks passed |
-
-The Motif artifact is 94.16 GB, or 87.6957 GiB; 87.70 is its binary GiB size,
-not its decimal GB size. The owner used for that run exported 207 VMM ranges: 54 raw
-ranges plus 153 aligned Q2_K and IQ2_XXS expert artifacts. The worker imported
-those ranges without a duplicate model copy.
-
-## Motif-3 DGX Spark performance evidence
-
-The 32K/256K HTTP gates used
-[`593d251`](https://github.com/Baekpica/ds4/commit/593d2511a10694f5a33fbafbd997ca24e819a853).
-The 8K `ds4-bench` throughput below used
-[`cc2f277`](https://github.com/Baekpica/ds4/commit/cc2f27712482318aef4d83c30f59974739166990)
-(FATTN occupancy: drop the Q shared tile so three CTAs fit on GB10), built with CUDA 13.3
-as `sm_121a` on one DGX Spark GB10 running driver 610.43.02 and Linux
-6.17.0-1029-nvidia. The server used the production MQ87-88 artifact, the VMM
-owner above, a 4,096-token prefill chunk, greedy sampling, no thinking, no
-speculation, and one request at a time.
-
-| Gate | Interface | Prompt | Prefill | Decode | Correctness |
-|---|---|---:|---:|---:|---|
-| 8K | `ds4-bench` | 8,192 | 519.55 tok/s | 64 tokens at 12.28 tok/s | throughput fixture; prefill-only 519.55, decode-run 516.17 / 12.28 |
-| 32K | OpenAI Chat | 32,768 | 82.649 s; 396.47 tok/s | 43 in 4.799 s; 8.96 tok/s | beginning, middle, and end sentinels exact |
-| 256K | OpenAI Chat, `-c 262144` | 262,080 | 1,492.375 s; 175.61 tok/s | 43 in 17.072 s; 2.52 tok/s | all sentinels exact; `finish_reason=stop`; 262,123 total tokens |
-
-The two HTTP gates were non-streaming, so they do not provide an independent
-network-visible time-to-first-message measurement. The table reports the
-server's prompt-complete and decode timings and makes no separate TTFM claim.
-
-The 256K session reported 4,422,546,432 bytes (4.119 GiB) of latent KV and
-rotated-key payload. Including the default 4,096-token execution graph, its
-physical worker allocation was 9.703 GiB. Source-GGUF mapping RSS remained
-29,632 KiB after inference, and engine shutdown left 637,251,584 bytes of CUDA
-module/driver state, below the 896 MiB lifecycle gate. During the full request,
-the worker and owner both remained at `VmSwap: 0`; system memory retained about
-12 GiB available. Loaded clock samples remained between 2,398 and 2,411 MHz,
-so the earlier 611 MHz pin did not recur.
-
-### Motif-3 remesure on the `v0.6.2-dfm` line (2026-08-21)
-
-Same host, same MQ87-88 GGUF, same aligned-Q8 VMM owner (`--reserve-gb 24`),
-same 4,096-token prefill chunk, greedy, no thinking, no speculation. Engine
-tip `2c81427` (kernels through `a09ff4f`). The 256K cell used the official
-`context-262144-server.txt` Chat fixture and `DS4_SERVER_COALESCE_MAX=1`
-(serial lane, `-c 262144`).
-
-| Gate | Interface | Prompt | Prefill | Decode | Correctness |
-|---|---|---:|---:|---:|---|
-| 8K | `ds4-bench` | 8,192 | 627.19 tok/s | 64 tokens at 15.06 tok/s | throughput fixture |
-| 32K | OpenAI Chat | 32,768 | 546.7 tok/s | 12.8 tok/s | beginning, middle, and end sentinels exact |
-| 256K | OpenAI Chat, `-c 262144` | 262,080 | 1,098.433 s; 238.59 tok/s | 43 in 7.205 s; 5.97 tok/s | all sentinels exact; `finish_reason=stop`; 262,123 total tokens; `cached_tokens=0` |
-
-Versus the `v0.5.6.3-dfm` published 256K row this is +35.9% prefill and
-+137% decode. The 256K worker held 10,429 MiB with 4.119 GiB of latent KV;
-owner and worker `VmSwap` stayed 0; available memory stayed 11–12 GiB;
-SM clocks sampled 2,411–2,496 MHz. Concurrent 256K banks are still not
-claimed. Evidence:
-`scratch/motif3-opt-v062/logs/sent-256k-summary.txt`
-(response SHA-256
-`f4aafb4c969c46889daceb64feb01177c4682e75efff555a6539202f78cd42aa`).
-
-Nsight Systems on the final 32K prefill ranked aggregate CUDA kernel time as
-expanded FATTN 15.5%, paired Q8 projection 11.0%, latent attention 9.7%, BF16
-rounding 8.5%, W_UV value projection 7.5%, routed gate/up 7.2%, and QK absorb
-4.1%. Focused 4,096-row Nsight Compute runs measured:
-
-| Kernel | Before | Final | Reduction |
-|---|---:|---:|---:|
-| expanded FATTN | 55.79 ms | 28.83 ms | 48.3% |
-| Motif group-5 QK absorb | 38.91 ms | 10.97 ms | 71.8% |
-
-The final strict gate JSON and server log were retained with SHA-256
-`b8551d5c96a0bdc1b6244275b79a5ac9ac9f8932862a93f6256ff51df00d7a9f` and
-`90b064268bcc31498e653d27fcf5087064910bf9a6963f4fe239dc295b0fbeda`,
-respectively.
-
-### Motif-3 196K multi-bank serving evidence
-
-The persistent-bank extension at `03b7002` and `cf605e0` was built as
-`sm_121a` and run with `-c 196608`, three banks, an 8,192-token prefill chunk,
-and `--no-spec`. The explicit 6 GiB batch-fit headroom left the measured
-configuration at three banks instead of the conservative default reducing it
-to two.
-
-| Gate | Result |
-|---|---|
-| API surface | `/v1/chat/completions`, `/v1/completions`, `/v1/responses`, and `/v1/messages` each returned HTTP 200 with the native response shape |
-| 8K cold prefill | 8,214 prompt tokens at 266.3 tok/s; `LONG_OK` returned exactly |
-| Single decode | 192 output tokens; 490.4 ms TTFT, 12.9 tok/s decode, 15.350 s HTTP wall time |
-| Three simultaneous Chat requests | 192 output tokens each in 24.885--25.030 s; 23.01 aggregate output tok/s; server log `served=3 fallback=0` |
-
-After the gates, `/v1/stats` reported 11 completed requests, zero failures,
-zero serial requests, zero continuous-batch failures, three total and zero
-live banks, and zero speculative drafts. The VMM owner used 90,119 MiB, the
-worker used 22,283 MiB after the 8K requests, and the system retained about
-6.5 GiB available without an OOM event. Loaded SM clock remained 2,411 MHz;
-the 611 MHz pin did not recur.
-
-## Solar Open2 DGX Spark performance evidence
-
-The [14 September 2026 campaign](solar-open2-optimization-2026-09-14.md)
-is the current clock-capped record: disk-KV restart reuse, HTTP partial
-fork, and default-on warp-specialized K-FP8/V-FP4 prefill attention
-(`DS4_SOLAR_FATTN_WS=0` restores the pair kernel). SM clock 2190 MHz
-inside the 300–2200 MHz cap. Cold `ds4-bench` medians of three, Promessi
-Sposi, 4,096-token chunks, 64 greedy tokens, byte-identical 196,608
-logits and 64 IDs:
-
-Round 1 FATTN_WS (`DS4_SOLAR_FATTN_WS=0` restores pair):
-
-| Prompt tokens | Prefill off → on | Decode off → on |
-|---:|---:|---:|
-| 8,192 | 1,050.86 → 1,075.76 tok/s | 17.40 → 17.44 |
-| 65,536 | 731.24 → 927.50 tok/s | 13.06 → 13.02 |
-
-Round 2 skip Q3 handoff down sanitize (`DS4_CUDA_MOE_HANDOFF_SANITIZE=1`
-restores the pass), measured with WS on:
-
-| Prompt tokens | Prefill off → on | Decode off → on |
-|---:|---:|---:|
-| 8,192 | 1,073.59 → 1,095.61 tok/s | 17.43 → 17.43 |
-| 65,536 | 925.19 → 943.18 tok/s | 13.02 → 13.01 |
-
-The [September 12 Rust-host campaign](solar-open2-optimization-2026-09-12.md)
-records guarded 8K/64K controls and four unretained attention candidates
-at uncapped clocks. [Round 5](solar-open2-optimization-2026-09-12-r5.md)
-introduced the WS kernel as opt-in after 64K froze the host; the 14
-September A/B is the 64K full-model sample under the cap.
-
-The historical HTTP numbers below used
-[`b2e52b9`](https://github.com/Baekpica/ds4/commit/b2e52b9048ba339327539212de1c47d009dde126)
-on `origin/dfm`, built with CUDA 13.3 as `sm_121a` on one DGX Spark GB10
-(driver 610.43.02, Linux 6.17.0-1029-nvidia). The GGUF is MXQ-v1 11 shards
-(`Solar-Open2-250B-MXQ-v1`, 95,533,532,160 bytes). A long-lived VMM owner
-(`--backend vmm --scope base --reserve-gb 16`, 453 derived aligned artifacts)
-served a restartable worker at `--cuda -c 196608` with three persistent banks
-and a 4,096-token prefill chunk. Requests were OpenAI Chat with thinking
-disabled, exact-cold (`cached_tokens=0`), and 128 decode tokens. Each cell is
-the median of three. Loaded SM clocks stayed between 2,411 and 2,561 MHz.
-`banks_total=3` still admitted after the runs.
-
-| Depth | Prompt tokens | Prefill | Decode p50 | Decode API |
-|---|---:|---:|---:|---:|
-| 8K | 8,222 | 1,050.7 tok/s | 19.05 tok/s | 18.9 tok/s |
-| 64K | 66,761 | 804.5 tok/s | 13.07 tok/s | 14.1 tok/s |
-
-On the same host and artifact, before this default-path series, 8K decode was
-17.5 tok/s and 64K average prefill was 710 tok/s. The landed commits are
-`3651787`, `5d2a96c`, `fd3a426`, `7563969`, `262ff8b`, and `b2e52b9`.
-`test-solar-kv` reported 512-token GQA2 vs one-head `rel_rms=0` and split vs
-direct `rel_rms=8.45e-7`. Incremental `T(64K)−T(60K)` last-4K is not a
-published metric. 1,048,576-token serving is not claimed.
+Follow the [shared model replacement procedure](serving-contract.md#replacing-a-model)
+and [host memory guard](host-memory-guard.md). Preserve unrelated owners and workers.
 
 ## Current limits
 
@@ -597,7 +531,7 @@ published metric. 1,048,576-token serving is not claimed.
   value projection, fused attention-side launches). Short-context only.
 - dots3-note DSA above top-2048 has a deterministic 2,600-token smoke; exact
   CPU/GPU parity is gated in the dense-equivalent range at or below 2,048.
-- The historical Motif-3 evidence above records three persistent banks at
+- The [historical Motif-3 evidence](model-family-history.md#motif-3-196k-multi-bank-serving-evidence) records three persistent banks at
   `-c 196608` on the reference Spark. It is not a new candidate memory gate;
   concurrent 256K banks are not claimed.
 - The Motif-3 256K result validates one strict serial request on this exact
@@ -637,3 +571,18 @@ correctness baseline, profile an 8K or 16K prefill and a separate decode
 window with Nsight Systems, then use Nsight Compute only on kernels that rank
 as material bottlenecks. Keep one change per measurement and require both
 the focused fixture and a full-model A/B before changing the default path.
+
+## Historical integration evidence
+
+The inherited reports now live in [model-family history](model-family-history.md):
+C releases v0.6.3, v0.6.2, v0.6.0 and v0.5.6.3, plus the recorded Motif/Solar
+throughput and bank gates. Their measurements and workload limits are preserved.
+
+<a id="integration-evidence-for-v063-dfm"></a>
+<a id="integration-evidence-for-v062-dfm"></a>
+<a id="integration-evidence-for-v060-dfm"></a>
+<a id="integration-evidence-for-v0563-dfm"></a>
+<a id="motif-3-dgx-spark-performance-evidence"></a>
+<a id="motif-3-remesure-on-the-v062-dfm-line-2026-08-21"></a>
+<a id="motif-3-196k-multi-bank-serving-evidence"></a>
+<a id="solar-open2-dgx-spark-performance-evidence"></a>

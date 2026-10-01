@@ -1,7 +1,11 @@
 # Serving contract
 
-Common option names. Per-family implementation, memory, and verification.
-See the [v0.1.3 ledger](releases/v0.1.3.md).
+Use one set of options across families. Implementation, memory and verified
+limits remain specific to the [artifact](ds4-dfm-model-families.md).
+See the [v0.1.3 ledger](releases/v0.1.3.md) for recorded gates.
+
+[Flags](#flags) · [Inspect](#inspect) · [Request trace](#request-trace) ·
+[Owner/worker](#weight-owner-and-worker) · [Model replacement](#replacing-a-model)
 
 The host resolves one [`ServingRequest`](../crates/ds4-core/src/serving.rs)
 into a [`ResolvedPlan`](../crates/ds4-core/src/serving.rs): requested,
@@ -26,12 +30,16 @@ the same object plus `last_request`.
 | `--print-plan` | Print resolved JSON and continue | |
 | `--check-config` | Print resolved JSON and exit | |
 
+### Prefix reuse
+
 `auto` reuse is the best *qualified* path. Forced `partial` on a family
 that only has exact-frontier reuse is an error, and so is forcing it when
 this process cannot run it: checkpoint replay lives in the bank driver and
 needs the opened runtime's checkpoint store, so serial-only serving or a
 runtime without that store rejects `partial` and downgrades `auto` to
 `exact` with a warning rather than reporting reuse it will not perform.
+
+### Stop policy
 
 EOS follows the model by default. These server-wide flags are explicit
 workarounds for models that emit a terminator too early. Both mask the
@@ -43,11 +51,15 @@ suppression can make generation run until another stop or a length limit.
 The policy is enforced in serial and continuous decoding, including MTP
 target sampling. `--check-config` validates that an opted-in model has EOS.
 
+### Context and concurrency
+
 `--max-seqs` is not context length. Keeping N banks is not the same as
 batching N requests in one kernel. Step banks each own KV and prefill
 scratch; more banks are not a linear tok/s gain. `auto` may fit fewer
 banks than it asked for; an explicit `--max-seqs N` the native fit
 cannot honour is an error, not a narrower start.
+
+### Memory fit
 
 The quote's `floor` includes native fit headroom where required: normally
 the host floor plus a 2 GiB burst reserve. `DS4_BATCH_FIT_HEADROOM_MB`
@@ -66,6 +78,8 @@ A manifest with drafter ranges defers the pre-open quote: import can soft-fail.
 After open, a successful import excludes shared drafter weights; fallback
 retains the local weight cost. Runtime allocations remain charged in both cases.
 
+### Serving lanes
+
 `--cont-width 0` and `DS4_SERVER_COALESCE_MAX=0` keep the legacy serial
 meaning: no bank lane. `DS4_SERVER_CONTINUOUS=0` is narrower — it forces
 the static/serial route, so the banks stay for the static lane to coalesce
@@ -73,6 +87,8 @@ over while no request enters the bank driver. Qwen and DeepSeek speculate only i
 lane, so the combination rejects `--mtp-mode on` instead of reporting
 MTP enabled. Inkling and Step also speculate on the serial engine and
 are unaffected.
+
+### Disk checkpoints
 
 Disk KV is not active-bank offload. Resident bank state, partial
 checkpoint memory, and disk budget are separate. A directory does not
@@ -83,12 +99,19 @@ different number from the disk store's record minimum
 MiMo's [256K mixed gate](mimo2-serving-2026-09-25.md) uses disk KV for text
 bank continuation; media runs on the serial lane.
 
+Resident-bank protection and SSD checkpoint eligibility are independent:
+`DS4_SERVER_PIN_MIN_TOKENS` defaults to 65,536, while
+`DS4_SERVER_PERSIST_MIN_TOKENS` defaults to 8,192. Lowering the persistence
+threshold does not pin shallow sessions in memory.
+
 HTTP disk records require a matching `local-file-stat-v1` identity: all
 GGUF/sidecar file metadata, template contents, runtime files and effective
 inference settings. This is local file identity, not full weight-content
 attestation. Inputs must remain unchanged during model open. Legacy records
 without this identity miss safely; all identities share the directory budget.
 Native restore holds the validated file open through the payload read.
+
+### Draft execution
 
 MTP weights loaded is not "this request speculated". Sampled Step
 requests keep predictor state and use ordinary decode.
@@ -162,3 +185,59 @@ The [generated capability table](serving-capabilities.md) reads
 `ds4_core::serving_caps` and the same resolved controls consumed by
 `ds4-perf serving-controls`. Its model-free check runs with the core tests;
 the page includes the regeneration command. Dated reports stay historical.
+
+## Weight owner and worker
+
+On a 128 GB unified-memory machine, keep one weight owner alive and restart
+only inference workers while developing or profiling. The owner maps split
+GGUFs as one logical model, uploads VMM ranges, builds byte-neutral aligned
+IQ2/Q2K expert artifacts, and brokers POSIX file descriptors to workers.
+
+Keep the manifest path short: its Unix socket is `<manifest>.sock`.
+Start with a dry run:
+
+```sh
+MODEL=/path/to/model.gguf
+RUN=/path/to/run-directory
+
+./ds4_weight_server \
+  --base "$MODEL" \
+  --manifest "$RUN/weights.manifest" \
+  --backend vmm \
+  --scope base \
+  --reserve-gb 24 \
+  --no-repack-q8-aligned \
+  --dry-run
+```
+
+If the memory preflight passes, run the same command without `--dry-run` in a
+durable tmux session. Do not start a worker until the owner reports both
+`broker listening` and `ready manifest=...`.
+
+A VMM-backed worker uses this launch shape. Select its context, memory reserve,
+repack policy and sidecars from the [family recipe](ds4-dfm-model-families.md).
+
+```sh
+DS4_CUDA_WEIGHT_IPC_MANIFEST="$RUN/weights.manifest" \
+DS4_CUDA_WEIGHT_IPC_SCOPE=base \
+./ds4-server -m "$MODEL" --cuda -c 2048 \
+  --host 127.0.0.1 --port 8001 --no-update-check
+```
+
+For a split GGUF, `MODEL` is its first shard. Keep the owner resident across
+worker restarts; enable drafting only through the artifact's explicit contract.
+Use the [memory guard](host-memory-guard.md) for large-model validation.
+
+## Replacing a model
+
+Before replacing your large model on DGX Spark:
+
+1. Inspect compute processes in `nvtop` and process memory in `btop` or `htop`.
+2. Stop your inference worker; verify its PID and listening port are gone.
+3. Stop its weight owner; verify that owner's PID and GPU allocations are gone.
+4. Run `/usr/local/bin/clear_cache` after those processes have exited.
+5. Recheck process memory, `free -h` and swap before starting the next owner.
+
+Preserve unrelated servers and resident owners. Cache reclamation cannot free
+allocations held by a live CUDA process. Do not load independent huge model
+copies concurrently on the reference machine.
