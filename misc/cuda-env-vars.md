@@ -50,6 +50,12 @@ each pass, preserving early windows and physical KV addresses. It applies
 at width one or above seven with score caching enabled; DSA and uncached
 verification keep their previous addressing. Buffers and arithmetic are unchanged.
 
+`DS4_NAIVE_ROUTER_WARP=0` restores the serial Naive top-8 scan. Its default
+uses one warp per row for width one or greater than seven, retaining sigmoid,
+selection-rank probability summation, normalization and numeric-ID ordering.
+Any nonfinite input/score uses the original serial selection semantics.
+Widths two through seven keep the previous kernel. No workspace is added.
+
 ## Qwen embedded MTP
 
 The Q8 draft head scores low BPE IDs, non-normal token types and observed

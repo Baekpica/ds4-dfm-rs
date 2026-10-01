@@ -53,6 +53,7 @@ pub fn tunable(key: &str) -> bool {
             | "DS4_NAIVE_INDEX_PACK"
             | "DS4_NAIVE_SWA_DECODE_UNIT"
             | "DS4_NAIVE_SWA_RING_WALK"
+            | "DS4_NAIVE_ROUTER_WARP"
             | "DS4_INKLING_PREFILL_CHUNK"
             | "DS4_CUDA_SOLAR_GQA_CHUNK"
             | "DS4_FATTN_HMMA_LDSM"
@@ -133,7 +134,8 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
         | "DS4_NAIVE_SWIGLU_Q8"
         | "DS4_NAIVE_INDEX_PACK"
         | "DS4_NAIVE_SWA_DECODE_UNIT"
-        | "DS4_NAIVE_SWA_RING_WALK" => family == "naive_n05_flash" && matches!(value, "0" | "1"),
+        | "DS4_NAIVE_SWA_RING_WALK"
+        | "DS4_NAIVE_ROUTER_WARP" => family == "naive_n05_flash" && matches!(value, "0" | "1"),
         "DS4_INKLING_PREFILL_CHUNK" => family == "inkling" && (1..=8192).contains(&n),
         "DS4_CUDA_SOLAR_GQA_CHUNK" => {
             family.starts_with("solar") && [64, 128, 256, 512, 1024, 2048].contains(&n)
@@ -193,6 +195,7 @@ mod tests {
             "DS4_NAIVE_INDEX_PACK",
             "DS4_NAIVE_SWA_DECODE_UNIT",
             "DS4_NAIVE_SWA_RING_WALK",
+            "DS4_NAIVE_ROUTER_WARP",
         ] {
             assert!(tunable(key));
             for value in ["0", "1"] {

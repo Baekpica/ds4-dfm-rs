@@ -1014,6 +1014,9 @@ tests/naive_softmax: tests/naive_softmax.cu cuda/naive_primitives.cuh ds4_naive_
 tests/naive_index_profile: tests/naive_index_profile.cu cuda/naive_primitives.cuh ds4_naive_plan.h
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
 
+tests/naive_router_profile: tests/naive_router_profile.cu cuda/naive_primitives.cuh ds4_naive_plan.h
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
 tests/naive_swiglu_profile: tests/naive_swiglu_profile.cu cuda/naive_primitives.cuh cuda/mmq/ds4_mimo2_swiglu.cuh ds4_naive_plan.h cuda/mmq/quantize.o cuda/mmq/ds4_ggml_stubs.o
 	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -o $@ $< cuda/mmq/quantize.o cuda/mmq/ds4_ggml_stubs.o $(CUDA_LDLIBS)
 

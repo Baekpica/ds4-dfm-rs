@@ -246,6 +246,103 @@ __global__ static void naive_router(int *ids, float *weights, const float *logit
     }
 }
 
+/* Stable finite-row top-8; preserve serial normalization and exceptional scans. */
+enum { N05_ROUTER_WARP = 32, N05_ROUTER_PER_LANE = N05_EXPERTS / N05_ROUTER_WARP };
+static constexpr unsigned N05_ROUTER_MASK = 0xffffffffu;
+static_assert(N05_EXPERTS == 256 && N05_USED == 8, "pinned router shape");
+
+struct NaiveRouterKey { float score; unsigned id; };
+struct NaiveRouterPick { NaiveRouterKey key; float prob; };
+enum class NaiveRouterTrace { Off, On };
+
+__device__ static bool naive_router_better(NaiveRouterKey a, NaiveRouterKey b) {
+    // Float comparison preserves signed-zero ties; bit-key ordering would not.
+    return a.score > b.score || (a.score == b.score && a.id < b.id);
+}
+
+__device__ static NaiveRouterPick naive_router_warp_pick(NaiveRouterPick pick) {
+    #pragma unroll
+    for (unsigned step = N05_ROUTER_WARP / 2; step; step /= 2) {
+        const NaiveRouterPick other = {{__shfl_down_sync(N05_ROUTER_MASK, pick.key.score, step),
+            __shfl_down_sync(N05_ROUTER_MASK, pick.key.id, step)},
+            __shfl_down_sync(N05_ROUTER_MASK, pick.prob, step)};
+        if (naive_router_better(other.key, pick.key)) { pick = other; }
+    }
+    return pick;
+}
+
+__device__ static void naive_router_finish(int *ids, float *weights, float sum) {
+    for (unsigned k = 0; k < N05_USED; k++) { weights[k] /= sum + 1e-20f; }
+    for (unsigned k = 1; k < N05_USED; k++) {
+        const int id = ids[k]; const float weight = weights[k];
+        unsigned j = k;
+        while (j && ids[j - 1] > id) { ids[j] = ids[j - 1]; weights[j] = weights[j - 1]; j--; }
+        ids[j] = id; weights[j] = weight;
+    }
+}
+
+__device__ static void naive_router_serial(int *ids, float *weights, const float *prob, float *score) {
+    // Preserve NaN comparisons and repeated ID 0 when every score is -Inf.
+    float sum = 0;
+    for (unsigned k = 0; k < N05_USED; k++) {
+        unsigned best = 0;
+        for (unsigned j = 1; j < N05_EXPERTS; j++) { if (score[j] > score[best]) { best = j; } }
+        ids[k] = best; weights[k] = prob[best]; sum += prob[best]; score[best] = -INFINITY;
+    }
+    naive_router_finish(ids, weights, sum);
+}
+
+template<NaiveRouterTrace TRACE = NaiveRouterTrace::Off>
+__global__ static void naive_router_warp(int *ids, float *weights, const float *logits, const float *bias,
+                                 float *prob_trace = nullptr, float *score_trace = nullptr) {
+    // Shared arrays exist only for exceptional-row fallback; finite rows use registers.
+    __shared__ float fallback_prob[N05_EXPERTS], fallback_score[N05_EXPERTS];
+    const unsigned lane = threadIdx.x;
+    float prob[N05_ROUTER_PER_LANE], score[N05_ROUTER_PER_LANE];
+    bool bad = false;
+    #pragma unroll
+    for (unsigned j = 0; j < N05_ROUTER_PER_LANE; j++) {
+        const unsigned e = lane + j * N05_ROUTER_WARP;
+        const float input = logits[(uint64_t)blockIdx.x * N05_EXPERTS + e], correction = bias[e];
+        prob[j] = 1.0f / (1.0f + expf(-input));
+        score[j] = prob[j] + correction;
+        if constexpr (TRACE == NaiveRouterTrace::On) {
+            const uint64_t at = (uint64_t)blockIdx.x * N05_EXPERTS + e;
+            prob_trace[at] = prob[j]; score_trace[at] = score[j];
+        }
+        bad |= !isfinite(input) || !isfinite(correction) || !isfinite(prob[j]) || !isfinite(score[j]);
+    }
+    ids += (uint64_t)blockIdx.x * N05_USED; weights += (uint64_t)blockIdx.x * N05_USED;
+    if (__any_sync(N05_ROUTER_MASK, bad)) {
+        #pragma unroll
+        for (unsigned j = 0; j < N05_ROUTER_PER_LANE; j++) {
+            const unsigned e = lane + j * N05_ROUTER_WARP;
+            fallback_prob[e] = prob[j]; fallback_score[e] = score[j];
+        }
+        __syncwarp(N05_ROUTER_MASK);
+        if (!lane) { naive_router_serial(ids, weights, fallback_prob, fallback_score); }
+        return;
+    }
+
+    float sum = 0;
+    for (unsigned k = 0; k < N05_USED; k++) {
+        NaiveRouterPick pick = {{-INFINITY, N05_EXPERTS}, 0};
+        #pragma unroll
+        for (unsigned j = 0; j < N05_ROUTER_PER_LANE; j++) {
+            const NaiveRouterKey key = {score[j], lane + j * N05_ROUTER_WARP};
+            if (naive_router_better(key, pick.key)) { pick = {key, prob[j]}; }
+        }
+        pick = naive_router_warp_pick(pick);
+        const unsigned selected = __shfl_sync(N05_ROUTER_MASK, pick.key.id, 0);
+        if (!lane) { ids[k] = selected; weights[k] = pick.prob; sum += pick.prob; }
+        #pragma unroll
+        for (unsigned j = 0; j < N05_ROUTER_PER_LANE; j++) {
+            if (lane + j * N05_ROUTER_WARP == selected) { score[j] = -INFINITY; }
+        }
+    }
+    if (!lane) { naive_router_finish(ids, weights, sum); }
+}
+
 __global__ static void naive_swiglu(float *out, const float *gate, const float *up, uint64_t count) {
     const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= count) { return; }

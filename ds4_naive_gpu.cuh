@@ -208,8 +208,15 @@ extern "C" int ds4_gpu_naive_router(ds4_gpu_tensor *ids, ds4_gpu_tensor *weights
         !naive_buf(ids, (uint64_t)rows * N05_USED * sizeof(int)) ||
         !naive_buf(weights, (uint64_t)rows * N05_USED * sizeof(float)) ||
         !naive_buf(logits, (uint64_t)rows * N05_EXPERTS * sizeof(float))) { return 0; }
-    naive_router<<<rows, N05_EXPERTS, 0, ds4_current_stream()>>>(
-        (int *)ids->ptr, (float *)weights->ptr, (const float *)logits->ptr, bias);
+    const char *warp = getenv("DS4_NAIVE_ROUTER_WARP");
+    // Parallel selection helps decode and prefill; verification keeps its path.
+    if ((rows == 1 || rows > 7) && (!warp || strcmp(warp, "0"))) {
+        naive_router_warp<<<rows, N05_ROUTER_WARP, 0, ds4_current_stream()>>>(
+            (int *)ids->ptr, (float *)weights->ptr, (const float *)logits->ptr, bias);
+    } else {
+        naive_router<<<rows, N05_EXPERTS, 0, ds4_current_stream()>>>(
+            (int *)ids->ptr, (float *)weights->ptr, (const float *)logits->ptr, bias);
+    }
     return cuda_ok(cudaGetLastError(), "Naive unbiased router");
 }
 

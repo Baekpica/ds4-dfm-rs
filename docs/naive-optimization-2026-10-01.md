@@ -1,7 +1,7 @@
 # Naive additional optimization rounds, 2026-10-01
 
 Base: `2aedeb43` (main after PR70). Earlier P4/D3 are excluded from these
-additional rounds. Retained so far: **prefill 1, decode 2**.
+additional rounds. Retained so far: **prefill 2, decode 3**.
 
 ## Protocol
 
@@ -115,3 +115,57 @@ Evidence: `ring-{off,on}/scout.json`, `ring-compare/compare.json`,
 NCU reports, and `ring-model.guard.jsonl`. The preceding retained diagnosis
 uses official normalization with prior full-hash witnesses and current
 metadata checks; adoption scouts freshly hash all shards.
+
+## P6/D6: stable warp router
+
+Fresh retained-Ring measurement: prefill/decode wall 15.984742 / 1.782391 s;
+router totals 47.884 / 74.477 ms (0.300% / 4.178% of wall). A 256-thread
+CTA computes sigmoid probabilities, then one thread scans 256 scores eight
+times. NCU records only 1.74 active lanes per issued warp instruction and
+3,056 / 6,259,101 shared-load wavefronts at widths one / 2048.
+
+One warp now computes eight experts per lane and selects stable maxima with
+shuffles. The original sigmoid and bias expressions, lower-ID ties, serial
+selection-rank probability sum, normalization and numeric-ID sort remain
+exact. Nonfinite operands use the original serial semantics, including its
+duplicate selections. Dispatch covers width one or above seven;
+`DS4_NAIVE_ROUTER_WARP=0` restores the untouched original kernel.
+
+| Measurement | Off | On |
+| --- | ---: | ---: |
+| Prefill samples, tok/s | 512.58 / 512.40 / 512.64 | 514.31 / 513.88 / 514.52 |
+| Decode samples, tok/s | 18.20 / 18.11 / 18.04 | 18.77 / 18.84 / 18.94 |
+| Mean prefill, tok/s | 512.5400 | 514.2367 (+0.33%) |
+| Mean decode, tok/s | 18.1167 | 18.8500 (+4.05%) |
+| Nsight router prefill/decode total, ms | 47.863 / 74.545 | 3.309 / 6.556 |
+| Nsight prefill/decode wall, ms | 15970.108 / 1776.722 | 15929.722 / 1708.669 |
+| Warm isolated width 1 / 2048, us | 49.4944 / 225.9205 | 4.1797 / 16.5915 |
+| NCU cold width 1 / 2048, us | 51.776 / 257.568 | 6.656 / 20.480 |
+
+Three alternating fresh isolated pairs use resident synthetic F32 logits and
+bias; no captured model operands are claimed. Block reduction measured
+4.9813 / 52.0213 us and was slower than warp. Warp instructions fall
+9,996→1,450 / 20,526,816→3,024,608; active lanes rise to 28.56 / 28.06 and
+finite-row shared loads vanish. Registers/thread rise 30→40, allocated shared
+memory remains 3 KiB and spills remain zero. Global load requests increase
+one per CTA, 56→57 / 131,535→133,583. Finite checks and shuffles add work;
+sigmoid count and normalization arithmetic stay unchanged. No inference
+workspace or launch is added.
+
+Prototype: 120 parity runs and four memcheck/synccheck gates pass.
+Production: 40 old/new raw ID/weight-byte cases, finite operand-byte checks,
+memcheck and primitives pass; cases cover biased ties, signed zero, tiny
+probability sums and Inf/NaN. Actual-weight 43/2053/2181 proofs and Rust perf
+tests pass. Both full scouts complete without warnings. Exact comparison
+checks 915,456 logits with zero error and zero token/argmax mismatches.
+Time envelopes: prefill −0.412% to −0.241%, decode −4.752% to −3.037%.
+Active clocks are 2190–2197 MHz with equal sampled means; minimum available
+memory is 25.40 GiB and peak PSI full avg10 is 0.80, including hashing.
+
+Evidence: `router-{off,on}/scout.json`, `router-compare/compare.json`,
+`router-state-{43,2053,2181}.log`, `router-source.{json,patch}`,
+`router-production-parity.log`, `router-production-memcheck.log`,
+`router-prototype/{resource-compact.json,parity.log}`, six NCU reports,
+warm-pair logs and `router-model.guard.jsonl`. Eager/8K qualification limits
+remain those above. Benchmark SHA-256:
+`0025ef24e0fc7216b8b26ca15827f3efca0a0f82edcfc7110ad75ba2059a2fc1`.
