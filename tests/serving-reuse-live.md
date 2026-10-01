@@ -4,7 +4,8 @@
 server. The operator owns model startup, shutdown and cache directories.
 Use a dedicated endpoint: any extra generation invalidates the route trace.
 
-The fixture uses actual returned assistant content, including whitespace.
+The fixture uses the actual returned assistant message, including reasoning
+and whitespace.
 Arithmetic correctness and byte-exact warm/cold output comparison are separate
 checks. A wrong answer on both paths fails arithmetic even when parity passes.
 Timings are functional observations, not a performance qualification.
@@ -15,15 +16,23 @@ period, and the matching literal equation with or without a final period.
 Only outer whitespace is ignored for arithmetic acceptance. Operators, operands,
 internal spaces and all other characters must match a declared string; there is
 no numeric extraction or substring match. The accepted forms are copied into
-the frozen case and its summary receipt. Reasoning, tool calls and non-`stop`
-completion remain failures.
+the frozen case and its summary receipt. Tool calls and non-`stop` completion
+remain failures. Visible reasoning tags or prose outside these forms fail.
+
+Seed defaults to `--reasoning-effort none --max-tokens 32`. In a separate
+campaign, `--reasoning-effort high` requires nonempty `reasoning_content`
+and the same strict visible answer. `--max-tokens` accepts a positive output
+budget. Both options are seed-only and freeze into every request body and
+the fixture configuration; warm/restored/cold reject overrides. None mode
+requires absent or empty reasoning. High-mode history preserves the actual
+reasoning text, and cold parity compares it byte-for-byte along with content.
 
 This gate qualifies these arithmetic answers and cache parity, not number-only
 format following. The prompts still request just the number, so an accepted
 equation can violate that formatting instruction. Earlier number-only runs
 remain failures under their original contract: `2 + 2 = 4.` must not retroactively
 turn such a formatting failure into a pass. Start a new evidence directory;
-v4 refuses to resume an older frozen fixture. Never add answer forms after
+v6 refuses to resume an older frozen fixture. Never add answer forms after
 seeing output within a campaign.
 
 | Profile | Artifact scope | Warm reuse | MTP |
@@ -32,6 +41,7 @@ seeing output within a campaign.
 | `solar` | Solar Open2 MXQ-v1, all 11 shards | partial | off |
 | `motif` | Motif-3 MQ87-88-FIT canonical GGUF | partial | off |
 | `naive` | Naive-N0.5-Flash MQ87 main plus any loaded DSpark sidecar | partial | off, or separately on with draft 1–6 |
+| `iquest` | IQuest-Q1 canonical six-shard mixed artifact with embedded recursive MTP | partial | off, or separately on with draft 2–7 |
 | `deepseek` | exact Flash/PRO artifact; include any loaded MTP/DSpark sidecar | exact | explicitly off, or separately on with the declared draft |
 
 Provide the same verified artifact manifest to every phase. The runner records
@@ -61,11 +71,16 @@ For an additional MTP-on run, pass `--mtp-mode on --mtp-draft 2` to the server
 and runner, and `--expect-speculation on` to the runner. Solar/Motif reject on.
 For Naive's short arithmetic gate, also declare `--mtp-margin 0` on the
 server. Its default margin 3 can exclude every proposal on a short reply.
+For IQuest, use `--family iquest`, declare the same draft 2–7 on server and
+runner, and set server `--mtp-margin 0`. Its embedded MTP needs no sidecar.
+Keep the [canonical-only owner recipe](../docs/iquest-q1.md#serving).
+This profile describes runner support; IQuest live qualification is pending.
 
-For Motif, also set `DS4_MOTIF3_BATCH_TRACE=1` and redirect the server's stderr
-to a regular file. The runner reads only the new bytes from that PID's stderr
+For Motif, set `DS4_MOTIF3_BATCH_TRACE=1`; for IQuest, set
+`DS4_IQUEST_BATCH_TRACE=1`. Keep the flag on every phase's server, including
+cold, and redirect stderr to a regular file. The runner reads only the new bytes from that PID's stderr
 for each request; it records the file identity, byte range and raw trace hash.
-Its official template removes the generation-only empty thinking pair, so
+Motif's official template removes the generation-only empty thinking pair, so
 append/branch may restore a partial checkpoint at the canonical history
 frontier. This is reported as `partial`, including when native code copies
 that checkpoint to another bank.
@@ -84,6 +99,24 @@ python3 tests/serving_reuse_live.py seed \
 python3 tests/serving_reuse_live.py warm \
   --url "$URL" --pid "$PID" --output "$OUT" --artifact-manifest "$ARTIFACTS"
 ```
+
+For an IQuest thinking-mode campaign at the 8K/two-bank serving shape, use a
+fresh evidence directory and cache, then seed with:
+
+```sh
+python3 tests/serving_reuse_live.py seed \
+  --url "$URL" --pid "$PID" --output "$OUT" \
+  --artifact-manifest "$ARTIFACTS" --family iquest --model "$MODEL_ID" \
+  --context 8192 --banks 2 --native-chunk 128 --lane continuous \
+  --mtp-mode on --mtp-draft 3 --expect-speculation on --padding-lines 64 \
+  --reasoning-effort high --max-tokens 256
+```
+
+The server must use matching native and scheduler chunks and draft settings.
+The receipt's `prompt_tokens` establishes the actual workload. Shorter padding
+does not change the answer contract or qualify long-context behavior. The
+earlier v4/v5 none-mode formatting, output-parity and trace failures remain
+recorded failures; a fresh high-mode campaign does not replace them.
 
 The operator then gracefully stops the worker and restarts the same executable
 with the same artifact/settings/cache. Run `restored` as its first generation:
@@ -105,25 +138,28 @@ python3 tests/serving_reuse_live.py cold \
 |---|---|---|
 | seed: 2 + 2 | `4`, `4.`, `2 + 2 = 4`, `2 + 2 = 4.` | cold, zero cached |
 | append: 4 + 1 after actual seed reply | `5`, `5.`, `4 + 1 = 5`, `4 + 1 = 5.` | exact/fork, positive proper prefix |
-| edit: replace second user turn with 4 + 2 | `6`, `6.`, `4 + 2 = 6`, `4 + 2 = 6.` | partial for Qwen/Solar/Motif/Naive; exact/fork for DeepSeek |
+| edit: replace second user turn with 4 + 2 | `6`, `6.`, `4 + 2 = 6`, `4 + 2 = 6.` | partial for Qwen/Solar/Motif/Naive/IQuest; exact/fork for DeepSeek |
 | fork: extend the retained append branch with 5 + 3 | `8`, `8.`, `5 + 3 = 8`, `5 + 3 = 8.` | exact/fork, positive proper prefix |
 | restart: extend actual fork reply with 8 + 1 | `9`, `9.`, `8 + 1 = 9`, `8 + 1 = 9.` | exact/fork as first generation after restart |
 
-The warm phase must observe at least one actual bank fork. For Motif, append
-and retained-branch continuation additionally accept `partial`, and the native
-trace must confirm a successful copy to a different bank, with the reported
+The warm phase must observe at least one actual bank fork. For Motif and
+IQuest, the family-matched native trace must confirm a successful copy to a different bank, with the reported
 cached count, unchanged source frontier and matching target frontier. A
-`partial`/`fork` label alone cannot satisfy this Motif check. This demonstrates
+`partial`/`fork` label alone cannot satisfy this check; an in-place rewind
+cannot count as a fork. This demonstrates
 the copy and frontier; tensor/source-content preservation is a separate native
 gate. Other families require at least one `fork` request trace. A later branch can
 reuse its still-resident parent with `exact`; the scheduler need not copy a
 bank again for that request.
 
-Naive with MTP on may commit a verified stop row. Canonical history can then
-restore a proper checkpoint prefix for continuation or restart, reported as
-`partial`. v4 accepts that mechanism while still requiring positive cached
-tokens, actual speculation, an actual warm bank fork and byte-exact cold
-responses. Earlier v3 trace failures remain failures; start a new campaign.
+Motif append/branch and Naive/IQuest MTP-on continuation/restart also accept
+`partial`. MTP may commit a verified stop row that the retired text key omits.
+Canonical token validation rejects a full candidate with a duplicated stop;
+token-LCP reuse reports `partial` even when it copies the complete source
+frontier. Positive cached tokens, actual speculation, a warm bank fork and
+byte-exact cold responses remain required. v5 added IQuest's acceptance and
+native fork evidence; v6 adds frozen reasoning/output controls. Older receipts
+remain unchanged and cannot resume under v6.
 
 Every cold request uses the identical saved body, requires zero cached tokens
 and `cold` trace, and compares the full assistant message, finish reason and

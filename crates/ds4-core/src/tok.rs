@@ -235,6 +235,7 @@ impl Vocab {
                                 | ModelFamily::Ling3Vl
                                 | ModelFamily::Mimo2
                                 | ModelFamily::NaiveN05
+                                | ModelFamily::IQuestQ1
                         );
                         if typ != 4 && !(control_split && typ == 3) {
                             continue;
@@ -321,6 +322,23 @@ impl Vocab {
             ModelFamily::Ling3Vl => ling3vl::specials(self, g)?,
             ModelFamily::Mimo2 => mimo2::specials(self, g)?,
             ModelFamily::NaiveN05 => naive::specials(self, g)?,
+            ModelFamily::IQuestQ1 => {
+                if g.get_string("tokenizer.ggml.pre") != Some(b"iquest-q1") {
+                    return Err(TokError::InvalidTokenizer("IQuest-Q1 pretokenizer"));
+                }
+                self.bos_id = -1;
+                self.eos_id = self.lookup("<|iquest_end|>")?;
+                self.eot_id = self.eos_id;
+                self.im_start_id = self.lookup("<|im_start|>")?;
+                self.im_end_id = self.lookup("<|im_end|>")?;
+                self.think_start_id = self.lookup("<think>")?;
+                self.think_end_id = self.lookup("</think>")?;
+                self.tool_call_start_id = self.lookup("<iquest_tool_call>")?;
+                self.tool_call_end_id = self.lookup("</iquest_tool_call>")?;
+                if self.eos_id != 0 || self.tokens.len() != 160000 {
+                    return Err(TokError::InvalidTokenizer("IQuest-Q1 vocabulary"));
+                }
+            }
             ModelFamily::Glm53 => {
                 self.bos_id = g
                     .get_token_id("tokenizer.ggml.bos_token_id")
@@ -592,7 +610,11 @@ impl Vocab {
 
     pub fn encode_bytes(&self, text: &[u8]) -> Vec<i32> {
         let mut out = Vec::new();
-        bpe_tokenize_text(self, text, &mut out);
+        if self.family == ModelFamily::IQuestQ1 {
+            tokenize_rendered_chat(self, text, &mut out);
+        } else {
+            bpe_tokenize_text(self, text, &mut out);
+        }
         out
     }
 
@@ -611,6 +633,9 @@ impl Vocab {
     /// emitting an approximation.
     fn jinja_only(&self) -> Option<TokError> {
         match self.family {
+            ModelFamily::IQuestQ1 => Some(TokError::InvalidTokenizer(
+                "IQuest-Q1 chat requires official Jinja",
+            )),
             ModelFamily::Mimo2 => Some(TokError::InvalidTokenizer(
                 "MiMo chat requires official Jinja",
             )),
@@ -738,7 +763,8 @@ impl Vocab {
             ModelFamily::Step37
             | ModelFamily::Ling3Vl
             | ModelFamily::Mimo2
-            | ModelFamily::NaiveN05 => {
+            | ModelFamily::NaiveN05
+            | ModelFamily::IQuestQ1 => {
                 return Err(self.jinja_only().unwrap());
             }
             ModelFamily::Glm53 => {
@@ -936,7 +962,8 @@ impl Vocab {
             ModelFamily::Step37
             | ModelFamily::Ling3Vl
             | ModelFamily::Mimo2
-            | ModelFamily::NaiveN05 => {
+            | ModelFamily::NaiveN05
+            | ModelFamily::IQuestQ1 => {
                 return Err(self.jinja_only().unwrap());
             }
             ModelFamily::Glm53 => {
@@ -2182,6 +2209,17 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
     match vocab.family {
         ModelFamily::Inkling => inkling::encode(vocab, text, out),
         ModelFamily::Step37 => step37::encode(vocab, text, out),
+        ModelFamily::IQuestQ1 => {
+            use unicode_normalization::UnicodeNormalization;
+
+            // Normalize ordinary spans after recognizing source control tokens.
+            let Ok(text) = std::str::from_utf8(text) else {
+                step37::encode(vocab, text, out);
+                return;
+            };
+            let normalized: String = text.nfc().collect();
+            step37::encode(vocab, normalized.as_bytes(), out);
+        }
         ModelFamily::Ling3Vl => bpe_tokenize_text_solar(vocab, text, out),
         ModelFamily::Mimo2 | ModelFamily::NaiveN05 => mimo2::encode(vocab, text, out),
         ModelFamily::Glm53 => bpe_tokenize_text_glm4(vocab, text, out),
@@ -2204,6 +2242,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
             | ModelFamily::Ling3Vl
             | ModelFamily::Mimo2
             | ModelFamily::NaiveN05
+            | ModelFamily::IQuestQ1
     ) {
         return user_defined_at(vocab, p, 0);
     }

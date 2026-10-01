@@ -14,6 +14,7 @@ use crate::tools::find_tool_start;
 
 mod inkling;
 use inkling::{Channel, Channels, Flush};
+mod iquest;
 
 /// Frozen epoch used by the C stream oracle and tape tests.
 pub const CREATED_TEST: i64 = 1_767_225_600;
@@ -35,6 +36,7 @@ pub enum ChatFormat {
     Qwen4Exp,
     K2Horizon,
     Inkling,
+    IQuestQ1,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -724,6 +726,7 @@ pub enum OpenaiMode {
 #[derive(Debug)]
 pub struct OpenaiStream {
     inkling: Option<Channels>,
+    iquest: Option<iquest::Channels>,
     pub mode: OpenaiMode,
     pub emit_pos: usize,
     pub active: bool,
@@ -734,6 +737,8 @@ pub struct OpenaiStream {
 pub fn openai_stream_start(r: &StreamReq) -> OpenaiStream {
     OpenaiStream {
         inkling: (r.chat_format == ChatFormat::Inkling).then(Channels::default),
+        iquest: (r.chat_format == ChatFormat::IQuestQ1 && r.has_tools)
+            .then(iquest::Channels::default),
         mode: if think_mode_enabled(r.think_mode) {
             OpenaiMode::Thinking
         } else {
@@ -817,6 +822,29 @@ pub fn openai_sse_stream_update(
         } else {
             return true;
         }
+    }
+    if st.mode == OpenaiMode::Text && st.iquest.is_some() {
+        let channels = st.iquest.as_mut().unwrap();
+        channels.pos = channels.pos.max(st.emit_pos);
+        while let Some(fragment) = channels.advance(raw, final_, &r.tool_orders) {
+            match fragment {
+                iquest::Fragment::Text(span) => sse_chat_delta_n(w, r, id, "content", &raw[span]),
+                iquest::Fragment::Call(index, call) => {
+                    let call_id = st.tool.id_at(index);
+                    let mut sink = OpenaiToolSink { w, r, job: id };
+                    if !sink.start_invoke(index, &call_id, call.name.as_bytes())
+                        || !sink.args_fragment(index, call.arguments.as_bytes())
+                        || !sink.close_invoke(index)
+                    {
+                        return false;
+                    }
+                    st.tool.emitted_any = true;
+                    st.tool.index = channels.calls;
+                }
+            }
+        }
+        st.emit_pos = channels.pos;
+        return true;
     }
     if st.mode == OpenaiMode::Text {
         let tool = if r.has_tools {
@@ -916,6 +944,7 @@ enum AnthBlock {
 #[derive(Debug)]
 pub struct AnthropicStream {
     inkling: Option<Channels>,
+    iquest: Option<iquest::Channels>,
     mode: AnthMode,
     open_block: AnthBlock,
     next_index: i32,
@@ -1015,6 +1044,8 @@ pub fn anthropic_sse_start_live(
     sse_event(w, "message_start", &msg);
     AnthropicStream {
         inkling: (r.chat_format == ChatFormat::Inkling).then(Channels::default),
+        iquest: (r.chat_format == ChatFormat::IQuestQ1 && r.has_tools)
+            .then(iquest::Channels::default),
         mode: if think_mode_enabled(r.think_mode) {
             AnthMode::Thinking
         } else {
@@ -1125,6 +1156,47 @@ pub fn anthropic_sse_stream_update(
         } else {
             return true;
         }
+    }
+    if st.mode == AnthMode::Text && st.iquest.is_some() {
+        let mut channels = st.iquest.take().unwrap();
+        channels.pos = channels.pos.max(st.emit_pos);
+        while let Some(fragment) = channels.advance(raw, final_, &r.tool_orders) {
+            match fragment {
+                iquest::Fragment::Text(span) => {
+                    if !anthropic_sse_open_block(w, st, AnthBlock::Text) {
+                        return false;
+                    }
+                    anthropic_sse_delta_live(w, st, AnthBlock::Text, &raw[span]);
+                    st.sent_text = true;
+                }
+                iquest::Fragment::Call(index, call) => {
+                    if !anthropic_sse_close_block_live(w, id, st) {
+                        return false;
+                    }
+                    let call_id = st.tool.id_at(index);
+                    let mut sink = AnthropicToolSink {
+                        w,
+                        next_index: &mut st.next_index,
+                        open_block: &mut st.open_block,
+                        job: id,
+                    };
+                    if !sink.start_invoke(index, &call_id, call.name.as_bytes())
+                        || !sink.args_fragment(index, call.arguments.as_bytes())
+                        || !sink.close_invoke(index)
+                    {
+                        return false;
+                    }
+                    st.tool.emitted_any = true;
+                    st.tool.index = channels.calls;
+                }
+            }
+        }
+        st.emit_pos = channels.pos;
+        st.iquest = Some(channels);
+        if final_ && !anthropic_sse_close_block_live(w, id, st) {
+            return false;
+        }
+        return true;
     }
     if st.mode == AnthMode::Text {
         let tool = if r.has_tools {
@@ -1303,6 +1375,7 @@ enum RespMode {
 #[derive(Debug)]
 pub struct ResponsesStream {
     inkling: Option<Channels>,
+    iquest: Option<iquest::Channels>,
     mode: RespMode,
     emit_pos: usize,
     active: bool,
@@ -1340,6 +1413,8 @@ pub fn responses_stream_init(
 ) -> ResponsesStream {
     ResponsesStream {
         inkling: (r.chat_format == ChatFormat::Inkling).then(Channels::default),
+        iquest: (r.chat_format == ChatFormat::IQuestQ1 && r.has_tools)
+            .then(iquest::Channels::default),
         mode: if think_mode_enabled(r.think_mode) {
             RespMode::Thinking
         } else {
@@ -1628,7 +1703,9 @@ fn json_escape_fragment(s: &[u8]) -> Vec<u8> {
 
 fn responses_message_text_escape_fixed(st: &ResponsesStream, raw: &[u8]) -> Vec<u8> {
     let mut b = vec![b'"'];
-    if let Some(channels) = &st.inkling {
+    if let Some(channels) = &st.iquest {
+        b.extend(json_escape_fragment(&channels.text));
+    } else if let Some(channels) = &st.inkling {
         b.extend(json_escape_fragment(&channels.text(raw, Channel::Text)));
     } else if st.message_end > st.message_start {
         b.extend(json_escape_fragment(&raw[st.message_start..st.message_end]));
@@ -1976,6 +2053,30 @@ pub fn responses_sse_stream_update(
         } else {
             return true;
         }
+    }
+    if st.mode == RespMode::Text && st.iquest.is_some() {
+        let mut channels = st.iquest.take().unwrap();
+        channels.pos = channels.pos.max(st.emit_pos);
+        while let Some(fragment) = channels.advance(raw, final_, &r.tool_orders) {
+            let iquest::Fragment::Text(span) = fragment else {
+                continue;
+            };
+            if !st.message_item_opened {
+                st.message_index = st.next_output_index;
+                st.next_output_index += 1;
+                responses_sse_message_added(w, st);
+                st.message_item_opened = true;
+            }
+            if !st.message_text_part_open {
+                responses_sse_message_text_part_added(w, st);
+                st.message_text_part_open = true;
+            }
+            responses_sse_output_text_delta(w, st, &raw[span]);
+            st.message_emitted_any = true;
+        }
+        st.emit_pos = channels.pos;
+        st.iquest = Some(channels);
+        return true;
     }
     if st.mode == RespMode::Text {
         let limit = text_stream_safe_limit(

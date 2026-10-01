@@ -15,7 +15,8 @@ class ReuseRunnerTests(unittest.TestCase):
         return {"family": family, "model": "fixture", "context": 2048,
                 "banks": 2, "native_chunk": 64, "mtp_mode": "off",
                 "expect_speculation": False, "mtp_draft": None,
-                "lane": "continuous", "padding_lines": 64}
+                "lane": "continuous", "padding_lines": 64,
+                "reasoning_effort": "none", "max_tokens": 32}
 
     def case(self, name):
         template = gate.read_json(gate.FIXTURE)[name]
@@ -105,6 +106,89 @@ class ReuseRunnerTests(unittest.TestCase):
         self.assertEqual(follow["messages"][1]["content"], " \n4\n")
         self.assertEqual(len(body["messages"]), 1)
 
+    def test_high_reasoning_contract(self):
+        config = self.config()
+        config["reasoning_effort"] = "high"
+        response = self.response("4", 0)
+        for reasoning in [None, "", "  \n", [], 42]:
+            with self.subTest(reasoning=reasoning):
+                response["choices"][0]["message"]["reasoning_content"] = reasoning
+                errors = gate.inspect_case(config, "seed", "seed", self.case("seed"),
+                                           response, self.stats("cold"))
+                self.assertTrue(any("reasoning" in error for error in errors), errors)
+        response["choices"][0]["message"]["reasoning_content"] = "  Compute 2 + 2.\n"
+        self.assertEqual(gate.inspect_case(config, "seed", "seed", self.case("seed"),
+                                         response, self.stats("cold")), [])
+        for field, value in [("content", "4</think>"), ("content", "The answer is 4."),
+                             ("tool_calls", [{"id": "tool"}]), ("finish_reason", "length")]:
+            with self.subTest(field=field, value=value):
+                changed = json.loads(json.dumps(response))
+                target = changed["choices"][0] if field == "finish_reason" else changed["choices"][0]["message"]
+                target[field] = value
+                self.assertTrue(gate.inspect_case(config, "seed", "seed", self.case("seed"),
+                                                 changed, self.stats("cold")))
+
+    def test_high_cold_parity(self):
+        config = self.config()
+        config["reasoning_effort"] = "high"
+        warm = self.response("5")
+        warm["choices"][0]["message"]["reasoning_content"] = "4 + 1.\n"
+        cold = self.response("5", 0)
+        cold["choices"][0]["message"]["reasoning_content"] = "4 + 1."
+        errors = gate.inspect_case(config, "cold", "append", self.case("append"),
+                                   cold, self.stats("cold"), warm)
+        self.assertTrue(any("cold comparison" in error for error in errors), errors)
+        cold["choices"][0]["message"]["reasoning_content"] += "\n"
+        self.assertEqual(gate.inspect_case(config, "cold", "append", self.case("append"),
+                                         cold, self.stats("cold"), warm), [])
+
+    def test_history_keeps_reasoning(self):
+        body = {"messages": [{"role": "user", "content": "2+2"}]}
+        reply = self.response("4")
+        reply["choices"][0]["message"]["reasoning_content"] = "  Compute.\n"
+        follow = gate.follow_body(body, reply, "4+1")
+        self.assertEqual(follow["messages"][1], reply["choices"][0]["message"])
+        follow["messages"][1]["reasoning_content"] = "changed"
+        self.assertEqual(reply["choices"][0]["message"]["reasoning_content"], "  Compute.\n")
+
+    def test_v5_resume_refused(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            fixture = output / "fixture.json"
+            gate.write_json(fixture, {"schema": "serving-reuse-live-v5",
+                                      "answer_contract": "literal-arithmetic-v2"})
+            gate.write_json(output / "seed.result.json", {"fixture_sha256": gate.digest(fixture)})
+            manifest = output / "artifacts.json"
+            manifest.write_text('{"synthetic": true}')
+            argv = ["runner", "warm", "--url", "http://127.0.0.1:1", "--pid", "200",
+                    "--output", str(output), "--artifact-manifest", str(manifest)]
+            with patch("sys.argv", argv), patch.object(gate, "process_identity", return_value={}), \
+                    patch.object(gate, "request") as request:
+                with self.assertRaisesRegex(RuntimeError, "fixture contract changed"):
+                    gate.main()
+                request.assert_not_called()
+
+    def test_seed_only_controls(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            manifest = output / "artifacts.json"
+            manifest.write_text('{"synthetic": true}')
+            common = ["--url", "http://127.0.0.1:1", "--pid", "200",
+                      "--output", str(output), "--artifact-manifest", str(manifest)]
+            for flag, value in [("--reasoning-effort", "none"), ("--max-tokens", "32")]:
+                with self.subTest(flag=flag), patch("sys.argv", ["runner", "warm", *common, flag, value]), \
+                        patch.object(gate, "process_identity", return_value={}), patch.object(gate, "request") as request:
+                    with self.assertRaisesRegex(RuntimeError, "frozen seed configuration"):
+                        gate.main()
+                    request.assert_not_called()
+            for value in ["0", "-1"]:
+                argv = ["runner", "seed", *common, "--max-tokens", value]
+                with self.subTest(value=value), patch("sys.argv", argv), \
+                        patch.object(gate, "process_identity", return_value={}), patch.object(gate, "request") as request:
+                    with self.assertRaisesRegex(RuntimeError, "max-tokens must be positive"):
+                        gate.main()
+                    request.assert_not_called()
+
     def test_math_failure_is_not_cache_parity(self):
         response = self.response("4")
         errors = gate.inspect_case(self.config(), "warm", "append", self.case("append"),
@@ -116,6 +200,7 @@ class ReuseRunnerTests(unittest.TestCase):
         for family, kind, okay in [("qwen", "partial", True), ("solar", "fork", False),
                                   ("motif", "partial", True), ("deepseek", "fork", True),
                                   ("naive", "partial", True), ("naive", "fork", False),
+                                  ("iquest", "partial", True), ("iquest", "fork", False),
                                   ("deepseek", "partial", False)]:
             with self.subTest(family=family, kind=kind):
                 errors = gate.inspect_case(self.config(family), "warm", "edit", self.case("edit"),
@@ -143,6 +228,31 @@ class ReuseRunnerTests(unittest.TestCase):
                                                self.response(answer), stats)
                     self.assertEqual(not errors, okay, errors)
         self.assertFalse(gate.has_warm_fork("naive", ["partial"], []))
+
+    def test_iquest_stop_partial(self):
+        for phase, name, answer in [("warm", "append", "5"), ("warm", "fork", "8"),
+                                     ("restored", "restart", "9")]:
+            for mode, okay in [("on", True), ("off", False)]:
+                with self.subTest(phase=phase, name=name, mode=mode):
+                    config = self.config("iquest")
+                    config.update(mtp_mode=mode, expect_speculation=mode == "on")
+                    stats = self.stats("partial")
+                    stats["last_request"]["speculation_active"] = mode == "on"
+                    errors = gate.inspect_case(config, phase, name, self.case(name),
+                                               self.response(answer), stats)
+                    self.assertEqual(not errors, okay, errors)
+        self.assertFalse(gate.has_warm_fork("iquest", ["partial"], []))
+        self.assertFalse(gate.has_warm_fork("iquest", ["fork"], []))
+
+    def test_iquest_format_failure(self):
+        config = self.config("iquest")
+        config.update(mtp_mode="on", expect_speculation=True)
+        stats = self.stats("partial")
+        stats["last_request"]["speculation_active"] = True
+        text = "6\n\nI do not see a question in your message that requires reasoning."
+        errors = gate.inspect_case(config, "warm", "edit", self.case("edit"),
+                                   self.response(text), stats)
+        self.assertTrue(any("arithmetic answer form" in error for error in errors), errors)
 
     def test_old_trace_refused(self):
         with TemporaryDirectory() as directory:
@@ -176,6 +286,58 @@ class ReuseRunnerTests(unittest.TestCase):
                     line.replace("cached=300", "cached=299"), "noise " + line]:
             with self.subTest(line=bad):
                 self.assertEqual(gate.native_forks(bad, 300, 2), [])
+
+    def test_iquest_native_fork_proof(self):
+        line = ("ds4: IQuest-Q1 bank reuse source=0 target=1 cached=300 partial=1 "
+                "source_before=320 source_after=320 target_after=300")
+        for partial in ("0", "1"):
+            good = line.replace("partial=1", f"partial={partial}")
+            events = gate.native_forks(good, 300, 2, "iquest")
+            self.assertEqual(len(events), 1)
+            self.assertTrue(gate.has_warm_fork("iquest", ["partial"], events))
+            self.assertFalse(gate.has_warm_fork("motif", ["partial"], events))
+        for bad in [line.replace("target=1", "target=0"),
+                    line.replace("target=1", "target=2"),
+                    line.replace("source_after=320", "source_after=300"),
+                    line.replace("source_before=320 source_after=320", "source_before=299 source_after=299"),
+                    line.replace("target_after=300", "target_after=299"),
+                    line.replace("cached=300", "cached=299"),
+                    line.replace("IQuest-Q1", "Motif-3"), "noise " + line]:
+            with self.subTest(line=bad):
+                self.assertEqual(gate.native_forks(bad, 300, 2, "iquest"), [])
+
+    def test_iquest_v4_refused(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            fixture = output / "fixture.json"
+            gate.write_json(fixture, {"schema": "serving-reuse-live-v4",
+                                      "answer_contract": "literal-arithmetic-v2"})
+            gate.write_json(output / "seed.result.json", {"fixture_sha256": gate.digest(fixture)})
+            manifest = output / "artifacts.json"
+            manifest.write_text('{"synthetic": true}')
+            argv = ["runner", "warm", "--url", "http://127.0.0.1:1", "--pid", "200",
+                    "--output", str(output), "--artifact-manifest", str(manifest)]
+            with patch("sys.argv", argv), patch.object(gate, "process_identity", return_value={}), \
+                    patch.object(gate, "request") as request:
+                with self.assertRaisesRegex(RuntimeError, "contract changed"):
+                    gate.main()
+                request.assert_not_called()
+
+    def test_iquest_trace_env(self):
+        with TemporaryDirectory() as directory:
+            stderr = Path(directory) / "stderr.log"
+            environ = Path(directory) / "environ"
+            stderr.write_bytes(b"before request\n")
+            paths = {"/proc/200/fd/2": stderr, "/proc/200/environ": environ}
+            with patch.object(gate, "Path", side_effect=paths.__getitem__):
+                for value in (b"DS4_MOTIF3_BATCH_TRACE=1\0", b"DS4_IQUEST_BATCH_TRACE=0\0"):
+                    environ.write_bytes(value)
+                    with self.assertRaisesRegex(RuntimeError, "DS4_IQUEST_BATCH_TRACE=1"):
+                        gate.native_log_start(200, "iquest")
+                environ.write_bytes(b"DS4_IQUEST_BATCH_TRACE=1\0")
+                mark = gate.native_log_start(200, "iquest")
+                self.assertEqual(mark[0], stderr)
+                self.assertEqual(mark[2], stderr.stat().st_size)
 
     def test_native_log_rejects_stale_or_replaced_evidence(self):
         with TemporaryDirectory() as directory:
@@ -269,7 +431,10 @@ class ReuseRunnerTests(unittest.TestCase):
     def test_warm_requires_an_observed_bank_fork(self):
         self.run_four_phases(fork_on_append=False)
 
-    def run_four_phases(self, fork_on_append, equations=False):
+    def test_high_four_phases(self):
+        self.run_four_phases(fork_on_append=True, reasoning_effort="high", max_tokens=256)
+
+    def run_four_phases(self, fork_on_append, equations=False, reasoning_effort="none", max_tokens=32):
         with TemporaryDirectory() as directory:
             output = Path(directory) / "evidence"
             manifest = Path(directory) / "artifacts.json"
@@ -296,6 +461,8 @@ class ReuseRunnerTests(unittest.TestCase):
             def request(url, path, body=None):
                 if path == "/v1/stats":
                     return stats()
+                self.assertEqual(body["reasoning_effort"], reasoning_effort)
+                self.assertEqual(body["max_tokens"], max_tokens)
                 state["count"] += 1
                 question = body["messages"][-1]["content"]
                 expression, answer = next((expression, n) for expression, n in [("2 + 2", 4), ("4 + 1", 5),
@@ -306,7 +473,10 @@ class ReuseRunnerTests(unittest.TestCase):
                                  else "exact")
                 cached = 0 if state["kind"] == "cold" else 300
                 text = f"{expression} = {answer}." if equations else str(answer)
-                return self.response(f" \n{text}\n", cached)
+                response = self.response(f" \n{text}\n", cached)
+                if reasoning_effort == "high":
+                    response["choices"][0]["message"]["reasoning_content"] = f"  Compute {expression}.\n"
+                return response
 
             common = ["--url", "http://127.0.0.1:1", "--output", str(output),
                       "--artifact-manifest", str(manifest)]
@@ -320,6 +490,8 @@ class ReuseRunnerTests(unittest.TestCase):
                         argv += ["--family", "qwen", "--model", "fixture", "--context", "2048",
                                  "--banks", "2", "--native-chunk", "64", "--mtp-mode", "off",
                                  "--expect-speculation", "off", "--lane", "continuous"]
+                        if reasoning_effort == "high":
+                            argv += ["--reasoning-effort", reasoning_effort, "--max-tokens", str(max_tokens)]
                     with patch("sys.argv", argv):
                         status = gate.main()
                     if phase == "warm" and not fork_on_append:
@@ -330,8 +502,14 @@ class ReuseRunnerTests(unittest.TestCase):
                     self.assertEqual(status, 0, phase)
                     self.assertTrue(json.loads((output / f"{phase}.result.json").read_text())["passed"])
             fixture = json.loads((output / "fixture.json").read_text())
+            self.assertEqual(fixture["schema"], "serving-reuse-live-v6")
+            self.assertEqual(fixture["config"]["reasoning_effort"], reasoning_effort)
+            self.assertEqual(fixture["config"]["max_tokens"], max_tokens)
             seed_text = " \n2 + 2 = 4.\n" if equations else " \n4\n"
             self.assertEqual(fixture["cases"]["append"]["body"]["messages"][1]["content"], seed_text)
+            if reasoning_effort == "high":
+                self.assertEqual(fixture["cases"]["append"]["body"]["messages"][1]["reasoning_content"],
+                                 "  Compute 2 + 2.\n")
             self.assertEqual(fixture["answer_contract"], "literal-arithmetic-v2")
             for name, case in fixture["cases"].items():
                 self.assertEqual(case["accepted_forms"], self.case(name)["accepted_forms"])

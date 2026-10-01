@@ -25,6 +25,7 @@ pub const LAYOUT_STEP37: u32 = 0x3350_5453; /* "STP3" */
 pub const LAYOUT_LING3VL: u32 = 0x3347_4e4c; /* "LNG3" */
 const LAYOUT_INKLING: u32 = 0x334c_4b49; /* "IKL3" */
 const LAYOUT_MIMO2: u32 = 0x324f_4d49; /* "IMO2" */
+const LAYOUT_IQUEST: u32 = 0x3151_5149;
 const LAYOUT_NAIVE: u32 = 0x3530_4e4e;
 const LAYOUT_NAIVE_DRAFT: u32 = 0x4430_4e4e;
 
@@ -41,6 +42,7 @@ pub enum PayloadLayout {
     Inkling,
     Mimo2,
     Naive,
+    IQuestQ1,
 }
 
 impl PayloadLayout {
@@ -54,6 +56,7 @@ impl PayloadLayout {
             LAYOUT_STEP37 => Self::Step37,
             LAYOUT_LING3VL => Self::Ling3Vl,
             LAYOUT_INKLING => Self::Inkling,
+            LAYOUT_IQUEST => Self::IQuestQ1,
             LAYOUT_MIMO2 => Self::Mimo2,
             LAYOUT_NAIVE | LAYOUT_NAIVE_DRAFT => Self::Naive,
             _ => Self::DeepSeek,
@@ -72,6 +75,7 @@ impl PayloadLayout {
             Self::Ling3Vl => ModelFamily::Ling3Vl,
             Self::Inkling => ModelFamily::Inkling,
             Self::Mimo2 => ModelFamily::Mimo2,
+            Self::IQuestQ1 => ModelFamily::IQuestQ1,
             Self::Naive => ModelFamily::NaiveN05,
         }
     }
@@ -80,7 +84,8 @@ impl PayloadLayout {
         // These native payloads can persist an exactly full context.
         ctx <= 0
             || tokens > ctx as usize
-            || (tokens == ctx as usize && !matches!(self, Self::Qwen4Exp | Self::Naive))
+            || (tokens == ctx as usize
+                && !matches!(self, Self::Qwen4Exp | Self::Naive | Self::IQuestQ1))
     }
 
     pub fn oracle_name(self) -> &'static str {
@@ -260,7 +265,8 @@ fn validate_layout(p: &HostPrefix) -> Result<(), PayloadError> {
         | PayloadLayout::Ling3Vl
         | PayloadLayout::Inkling
         | PayloadLayout::Mimo2
-        | PayloadLayout::Naive => {
+        | PayloadLayout::Naive
+        | PayloadLayout::IQuestQ1 => {
             if p.fields[12] != p.fields[7] {
                 return Err(err("session payload token count does not match live rows"));
             }

@@ -283,6 +283,35 @@ static int cuda_mem_src_index(const void *p) {
     return i >= 0 ? i : DS4_MSRC_MAX;
 }
 
+/* HOST_MAPPED is terminal: a failed map must never acquire a second
+ * canonical payload through the cold device-copy tier. */
+static int cuda_model_source_host_mapped(const void *model_map) {
+    const int src = cuda_mem_src_index(model_map);
+    return src >= 0 && src < DS4_MSRC_MAX &&
+           g_model_srcs.v[src].residency == DS4_RESIDENCY_HOST_MAPPED;
+}
+
+/* CUDA requires ReadOnly for CPU read-only mappings when host page tables
+ * are unavailable. GB10 can lack the ReadOnly capability, so query the
+ * current device rather than unconditionally requesting it. */
+static unsigned cuda_model_host_register_flags(void) {
+    int device = 0, read_only = 0;
+    if (cudaGetDevice(&device) == cudaSuccess)
+        (void)cudaDeviceGetAttribute(&read_only,
+                                    cudaDevAttrHostRegisterReadOnlySupported,
+                                    device);
+    return cudaHostRegisterMapped | (read_only ? cudaHostRegisterReadOnly : 0u);
+}
+
+static int cuda_model_coherent_host_access(int device) {
+    int pageable = 0, host_tables = 0;
+    return cudaDeviceGetAttribute(&pageable, cudaDevAttrPageableMemoryAccess,
+                                  device) == cudaSuccess && pageable &&
+           cudaDeviceGetAttribute(&host_tables,
+                                  cudaDevAttrPageableMemoryAccessUsesHostPageTables,
+                                  device) == cudaSuccess && host_tables;
+}
+
 static int cuda_model_map_needs_device_copy(const void *model_map) {
     const int src = cuda_mem_src_index(model_map);
     return src >= 0 && src < DS4_MSRC_MAX &&
@@ -1477,6 +1506,23 @@ static uint64_t cuda_parse_mib_env(const char *name, int *present) {
     return (uint64_t)v * 1048576ull;
 }
 
+enum cuda_weight_policy {
+    CUDA_WEIGHT_GENERIC,
+    CUDA_WEIGHT_CANONICAL
+};
+static cuda_weight_policy g_weight_policy = CUDA_WEIGHT_GENERIC;
+
+static void cuda_weight_policy_reset(void) {
+    g_weight_policy = CUDA_WEIGHT_GENERIC;
+}
+
+/* Boot-time checks keep the existing environment-presence semantics. The
+ * family restriction is separate so opening IQuest cannot alter its caller. */
+static int cuda_weight_no_derived(void) {
+    return g_weight_policy == CUDA_WEIGHT_CANONICAL ||
+           getenv("DS4_CUDA_NO_DERIVED_WEIGHTS") != NULL;
+}
+
 /* --------------------------------------------------------------------
  * memgov D3-3b: the weight-resolve env vocabulary, read ONCE.
  *
@@ -1620,7 +1666,18 @@ static const cuda_weight_env_t &cuda_weight_env(void) {
      * g_vmm_supported lazy-cache idiom (resolve tiers run from server
      * threads; the guard's acquire/release does the fencing). */
     static const cuda_weight_env_t e = cuda_weight_env_read();
-    return e;
+    /* The common snapshot stays frozen across engine lifetimes. Select an
+     * immutable family overlay even when another model initialized it first. */
+    static const cuda_weight_env_t canonical = [] {
+        cuda_weight_env_t restricted = e;
+        restricted.no_derived = 1;
+        restricted.no_q8_f16_cache = 1;
+        restricted.no_q8_f32_cache = 1;
+        restricted.no_attn_out_f16_cache = 1;
+        restricted.no_attn_q_b_f16_cache = 1;
+        return restricted;
+    }();
+    return g_weight_policy == CUDA_WEIGHT_CANONICAL ? canonical : e;
 }
 
 static int cuda_model_has_full_range(const void *model_map, uint64_t model_size) {
@@ -1687,6 +1744,12 @@ static const char *cuda_model_range_populate_device_copy(const void *model_map,
                                                           uint64_t offset,
                                                           uint64_t bytes,
                                                           const char *what) {
+    if (cuda_model_source_host_mapped(model_map)) {
+        fprintf(stderr, "ds4: mapped weight residency cannot be honored for %s; "
+                        "refusing canonical device-copy fallback\n",
+                what ? what : "weights");
+        return cuda_model_direct_fallback_ptr(model_map, offset);
+    }
     /* memgov D2 hardening: the cold device-copy tier is a real promotion
      * (unregistered device bytes), so it takes the same governed decision
      * as the unit tiers.  Legacy verdict is ADMIT verbatim -- this tier
@@ -1873,7 +1936,7 @@ static const char *cuda_model_range_ptr(const void *model_map, uint64_t offset, 
         void *reg_dev = NULL;
         err = cudaHostRegister((void *)reg_addr,
                                (size_t)reg_bytes,
-                               cudaHostRegisterMapped);
+                               cuda_model_host_register_flags());
         if (err == cudaSuccess) {
             cuda_pinned_file_note_register((void *)reg_addr, reg_bytes);
             err = cudaHostGetDevicePointer(&reg_dev, (void *)reg_addr, 0);
@@ -3736,6 +3799,10 @@ static const char *cuda_model_range_ptr_from_fd(
 }
 
 static int cuda_model_copy_chunked(const void *model_map, uint64_t model_size, uint64_t map_offset, uint64_t map_size) {
+    if (cuda_model_source_host_mapped(model_map)) {
+        fprintf(stderr, "ds4: COPY_MODEL_CHUNKED conflicts with terminal mapped weight residency\n");
+        return 0;
+    }
     if (!model_map || model_size == 0 || map_offset > model_size || map_size > model_size - map_offset) return 0;
     if (getenv("DS4_CUDA_NO_MODEL_COPY") != NULL ||
         getenv("DS4_CUDA_DIRECT_MODEL") != NULL ||
@@ -4393,6 +4460,7 @@ extern "C" void ds4_gpu_cleanup(void) {
         g_model_prefetch_stream = NULL;
     }
     ds4_gpu_boot_trim();
+    cuda_weight_policy_reset();
 }
 
 __global__ static void fill_f32_kernel(float *x, uint64_t n, float v);
@@ -4970,7 +5038,10 @@ extern "C" int ds4_gpu_stream_synchronize(void) {
 
 extern "C" int ds4_gpu_set_model_map(const void *model_map, uint64_t model_size) {
     if (!model_map || model_size == 0) return 0;
-    if (g_model_host_base == model_map && g_model_registered_size == model_size) return 1;
+    if (g_model_host_base == model_map && g_model_registered_size == model_size &&
+        (!cuda_model_source_host_mapped(model_map) ||
+         cuda_model_current_direct_available(model_map) ||
+         g_model_hmm_direct || model_map == g_model_coherent_direct_map)) return 1;
     cuda_model_preserve_current_direct_mapping();
     g_model_host_base = model_map;
     g_model_device_base = (const char *)model_map;
@@ -4996,6 +5067,10 @@ extern "C" int ds4_gpu_set_model_map(const void *model_map, uint64_t model_size)
 
     const char *copy_env = getenv("DS4_CUDA_COPY_MODEL");
     if (copy_env && copy_env[0]) {
+        if (cuda_model_source_host_mapped(model_map)) {
+            fprintf(stderr, "ds4: COPY_MODEL conflicts with terminal mapped weight residency\n");
+            return 0;
+        }
         void *dev = NULL;
         const double t0 = clock() / (double)CLOCKS_PER_SEC;
         cudaError_t err = cudaMalloc(&dev, (size_t)model_size);
@@ -5044,7 +5119,7 @@ extern "C" int ds4_gpu_set_model_map(const void *model_map, uint64_t model_size)
         if (cudaGetDevice(&reg_dev) == cudaSuccess) {
             (void)cudaDeviceGetAttribute(&integrated, cudaDevAttrIntegrated, reg_dev);
         }
-        if (integrated) {
+        if (integrated && cuda_model_coherent_host_access(reg_dev)) {
             g_model_device_base = (const char *)model_map;
             if (self_load_artifacts) {
                 /* In-process aligned artifacts replaced the expert raws:
@@ -5079,12 +5154,9 @@ extern "C" int ds4_gpu_set_model_map(const void *model_map, uint64_t model_size)
         }
     }
 
-    /* GB10 / driver 580.142 reports cudaDevAttrHostRegisterReadOnlySupported = 0,
-     * so requesting cudaHostRegisterReadOnly here fails with cudaErrorNotSupported
-     * and the entire model-resident fast path falls back to per-deref H2D streaming.
-     * Plain `Mapped` works on Spark. */
+    const unsigned register_flags = cuda_model_host_register_flags();
     cudaError_t err = cudaHostRegister((void *)model_map, (size_t)model_size,
-                                       cudaHostRegisterMapped);
+                                       register_flags);
     if (err == cudaSuccess) {
         cuda_pinned_file_note_register(model_map, model_size);
         void *dev = NULL;
@@ -5096,10 +5168,23 @@ extern "C" int ds4_gpu_set_model_map(const void *model_map, uint64_t model_size)
                     (double)model_size / 1073741824.0);
         } else {
             fprintf(stderr, "ds4: CUDA host registration pointer lookup failed: %s\n", cudaGetErrorString(err));
+            (void)cudaHostUnregister((void *)model_map);
+            cuda_pinned_file_note_unregister(model_map);
             (void)cudaGetLastError();
+            if (cuda_model_source_host_mapped(model_map)) return 0;
         }
     } else {
-        fprintf(stderr, "ds4: CUDA host registration skipped: %s\n", cudaGetErrorString(err));
+        fprintf(stderr, "ds4: CUDA host registration skipped (flags=%u): %s\n",
+                register_flags, cudaGetErrorString(err));
+        if (cuda_model_source_host_mapped(model_map)) {
+            fprintf(stderr, "ds4: terminal mapped weight residency unavailable; "
+                            "refusing canonical device-copy fallback. "
+                            "Use supported coherent/read-only mapping hardware, "
+                            "or explicitly request DS4_WEIGHT_RESIDENCY=lazy|eager "
+                            "on hardware with separate device capacity\n");
+            (void)cudaGetLastError();
+            return 0;
+        }
         (void)cudaGetLastError();
         int integrated = 0;
         int reg_dev = 0;
@@ -5158,6 +5243,11 @@ extern "C" int ds4_gpu_set_model_map_range(const void *model_map, uint64_t model
     (void)max_tensor_bytes;
     if (!ds4_gpu_set_model_map(model_map, model_size)) return 0;
     if (getenv("DS4_CUDA_COPY_MODEL_CHUNKED") != NULL &&
+        cuda_model_source_host_mapped(model_map)) {
+        fprintf(stderr, "ds4: COPY_MODEL_CHUNKED conflicts with terminal mapped weight residency\n");
+        return 0;
+    }
+    if (getenv("DS4_CUDA_COPY_MODEL_CHUNKED") != NULL &&
         !cuda_model_copy_chunked(model_map, model_size, map_offset, map_size)) {
         (void)cuda_model_prefetch_range(model_map, model_size, map_offset, map_size);
     }
@@ -5176,7 +5266,7 @@ extern "C" int ds4_gpu_set_aux_model_map_range(
     if (cudaGetDevice(&device) == cudaSuccess &&
         cudaDeviceGetAttribute(&integrated, cudaDevAttrIntegrated, device) == cudaSuccess &&
         cudaDeviceGetAttribute(&pageable, cudaDevAttrPageableMemoryAccess, device) == cudaSuccess &&
-        integrated && pageable) {
+        integrated && pageable && cuda_model_coherent_host_access(device)) {
         cuda_model_range range = {};
         range.host_base = model_map;
         range.offset = map_offset;
@@ -5189,6 +5279,11 @@ extern "C" int ds4_gpu_set_aux_model_map_range(
         return 1;
     }
 
+    if (cuda_model_source_host_mapped(model_map)) {
+        fprintf(stderr, "ds4: terminal mapped auxiliary residency unavailable; "
+                        "refusing canonical device-copy fallback\n");
+        return 0;
+    }
     void *device_ptr = NULL;
     cudaError_t err = cudaMalloc(&device_ptr, (size_t)map_size);
     if (err != cudaSuccess) {
@@ -5245,6 +5340,10 @@ extern "C" int ds4_gpu_set_model_map_spans(
     if (!ds4_gpu_set_model_map(model_map, model_size)) return 0;
 
     if (getenv("DS4_CUDA_COPY_MODEL_CHUNKED") != NULL) {
+        if (cuda_model_source_host_mapped(model_map)) {
+            fprintf(stderr, "ds4: COPY_MODEL_CHUNKED conflicts with terminal mapped weight residency\n");
+            return 0;
+        }
         if (count > 1) {
             for (uint32_t i = 0; i < count; i++) {
                 (void)cuda_model_prefetch_range(model_map, model_size, offsets[i], sizes[i]);
@@ -5699,6 +5798,44 @@ static int manifest_content_identity_check(const char *manifest_path,
     return 2;
 }
 
+/* Reject forbidden derived records before publishing even canonical ranges.
+ * Scan the same open file so record ordering cannot leave partial imports. */
+static int manifest_weight_policy(FILE *fp, const char *model_id) {
+    if (!cuda_weight_no_derived()) { return 1; }
+    static const char derived_vmm[] = "derived-alloc";
+    static const char derived_ipc[] = "derived-range";
+    const size_t line_capacity = 4096;
+    char line[line_capacity];
+    while (fgets(line, sizeof(line), fp)) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') { p++; }
+        if (*p == '#' || *p == '\n' || *p == '\0') { continue; }
+        char rec[32] = {0};
+        char id[64] = {0};
+        if (sscanf(p, "%31s", rec) != 1) { continue; }
+        if (strcmp(rec, derived_vmm) == 0) {
+            unsigned long long alloc_id = 0;
+            if (sscanf(p, "%31s %llu %63s", rec, &alloc_id, id) != 3) { continue; }
+        } else if (strncmp(p, derived_ipc, sizeof(derived_ipc) - 1u) == 0) {
+            /* Match the retained IPC parser's legacy record-prefix rule. */
+            if (sscanf(p, "%31s %63s", rec, id) != 2) { continue; }
+        } else {
+            continue;
+        }
+        if (strcmp(id, model_id) != 0) { continue; }
+        fprintf(stderr,
+                "ds4: CUDA shared weight manifest has derived records for %s "
+                "but canonical-only weight policy is active\n", model_id);
+        return 0;
+    }
+    if (ferror(fp) || fseek(fp, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "ds4: CUDA shared weight manifest policy scan failed for %s\n",
+                model_id);
+        return 0;
+    }
+    return 1;
+}
+
 extern "C" int ds4_gpu_import_model_ipc_manifest(
         const void *model_map,
         uint64_t model_size,
@@ -5717,6 +5854,10 @@ extern "C" int ds4_gpu_import_model_ipc_manifest(
     if (!fp) {
         fprintf(stderr, "ds4: CUDA shared weight manifest open failed: %s: %s\n",
                 manifest_path, strerror(errno));
+        return 0;
+    }
+    if (!manifest_weight_policy(fp, model_id)) {
+        fclose(fp);
         return 0;
     }
 
@@ -6085,8 +6226,8 @@ static int cuda_derived_artifact_build_device(int *dev_out) {
     const char *manifest = getenv("DS4_CUDA_WEIGHT_IPC_MANIFEST");
     const char *scope = getenv("DS4_CUDA_WEIGHT_IPC_SCOPE");
     if (manifest && manifest[0] && (!scope || strcmp(scope, "mtp"))) { return 0; }
-    if (getenv("DS4_CUDA_NO_DERIVED_WEIGHTS") != NULL) {
-        g_derived_artifact_none_reason = "DS4_CUDA_NO_DERIVED_WEIGHTS is set";
+    if (cuda_weight_no_derived()) {
+        g_derived_artifact_none_reason = "canonical-only weight policy is active";
         return 0;
     }
     const char *knob = getenv("DS4_CUDA_BUILD_ARTIFACTS");
@@ -20731,6 +20872,49 @@ __global__ static void embed_tokens_q8_0_kernel(
     out[i] = scale * (float)((const int8_t *)(block + 2))[d & 31u];
 }
 
+static uint64_t embed_quant_row_bytes(uint32_t type, uint32_t n_embd) {
+    if (type == 0u) { return (uint64_t)n_embd * 4u; }
+    if (type == 1u || type == 30u) { return (uint64_t)n_embd * 2u; }
+    if (type == 8u && (n_embd & 31u) == 0u) { return ((uint64_t)n_embd / 32u) * 34u; }
+    if (type == 14u && (n_embd & 255u) == 0u) { return ((uint64_t)n_embd / 256u) * 210u; }
+    return 0;
+}
+
+__device__ static float embed_quant_value(const unsigned char *weights,
+                                          uint64_t index, uint32_t type) {
+    if (type == 0u) { return ((const float *)weights)[index]; }
+    if (type == 1u) { return __half2float(((const __half *)weights)[index]); }
+    if (type == 30u) { return __uint_as_float((uint32_t)((const uint16_t *)weights)[index] << 16); }
+    // Q6_K: ql[128], qh[64], signed scales[16], FP16 d.
+    const unsigned char *block = weights + (index / 256u) * 210u;
+    const unsigned j = index & 255u, half = j / 128u;
+    const unsigned quarter = (j & 127u) / 32u, lane = j & 31u;
+    const unsigned ql = block[half * 64u + (quarter & 1u) * 32u + lane];
+    const unsigned low = quarter < 2u ? ql & 15u : ql >> 4u;
+    const unsigned high = (block[128u + half * 32u + lane] >> (quarter * 2u)) & 3u;
+    const int quant = (int)(low | (high << 4u)) - 32;
+    const int scale = ((const int8_t *)(block + 192u))[half * 8u + quarter * 2u + lane / 16u];
+    const float d = __half2float(*(const __half *)(block + 208u));
+    return d * (float)scale * (float)quant;
+}
+
+__global__ static void embed_token_generic_kernel(float *out,
+        const unsigned char *weights, uint32_t type, uint32_t token, uint32_t n_embd) {
+    const uint32_t d = blockIdx.x * blockDim.x + threadIdx.x;
+    if (d < n_embd) { out[d] = embed_quant_value(weights, (uint64_t)token * n_embd + d, type); }
+}
+
+__global__ static void embed_tokens_generic_kernel(float *out, const int32_t *tokens,
+        const unsigned char *weights, uint32_t type, uint32_t n_vocab,
+        uint32_t n_tokens, uint32_t n_embd) {
+    const uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= (uint64_t)n_tokens * n_embd) { return; }
+    const uint32_t row = index / n_embd, d = index % n_embd;
+    const int32_t token = tokens[row];
+    if (token < 0 || (uint32_t)token >= n_vocab) { out[index] = 0.0f; return; }
+    out[index] = embed_quant_value(weights, (uint64_t)(uint32_t)token * n_embd + d, type);
+}
+
 extern "C" int ds4_gpu_embed_token_quant_tensor(
         ds4_gpu_tensor *out,
         const void       *model_map,
@@ -20764,25 +20948,31 @@ extern "C" int ds4_gpu_embed_token_quant_tensor(
         }
         return cuda_ok(cudaGetLastError(), "PQ2_0 token embedding launch");
     }
-    if (!out || !model_map || weight_type != 8u || n_vocab == 0u ||
-        token >= n_vocab || n_embd == 0u || (n_embd & 31u) != 0u ||
+    const uint64_t row_bytes = embed_quant_row_bytes(weight_type, n_embd);
+    if (!out || !model_map || row_bytes == 0u || n_vocab == 0u ||
+        token >= n_vocab || n_embd == 0u ||
         out->bytes < (uint64_t)n_embd * sizeof(float)) {
         return 0;
     }
-    const uint64_t row_bytes = ((uint64_t)n_embd / 32u) * 34u;
     if ((uint64_t)n_vocab > UINT64_MAX / row_bytes ||
         weight_offset > model_size ||
         (uint64_t)n_vocab * row_bytes > model_size - weight_offset) {
         return 0;
     }
-    const unsigned char *weights = (const unsigned char *)cuda_model_range_ptr(
+    const unsigned char *weights = (const unsigned char *)cuda_resolve_weight_ptr(
         model_map, weight_offset, (uint64_t)n_vocab * row_bytes,
-        "quant_token_embedding");
-    if (!weights) return 0;
-    embed_token_q8_0_kernel<<<(n_embd + 255u) / 256u, 256u, 0,
+        ds4_tensor_device_idx(out), "quant_token_embedding");
+    if (!weights) { return 0; }
+    if (weight_type == 8u) {
+        embed_token_q8_0_kernel<<<(n_embd + 255u) / 256u, 256u, 0,
                                ds4_current_stream()>>>(
         (float *)out->ptr, weights, token, n_embd);
-    return cuda_ok(cudaGetLastError(), "Q8_0 token embedding launch");
+    } else {
+        embed_token_generic_kernel<<<(n_embd + 255u) / 256u, 256u, 0,
+                                      ds4_current_stream()>>>(
+            (float *)out->ptr, weights, weight_type, token, n_embd);
+    }
+    return cuda_ok(cudaGetLastError(), "quant token embedding launch");
 }
 
 extern "C" int ds4_gpu_embed_tokens_quant_tensor(
@@ -20823,29 +21013,36 @@ extern "C" int ds4_gpu_embed_tokens_quant_tensor(
         }
         return cuda_ok(cudaGetLastError(), "PQ2_0 token embedding batch launch");
     }
-    if (!out || !tokens || !model_map || weight_type != 8u || n_vocab == 0u ||
-        n_tokens == 0u || n_embd == 0u || (n_embd & 31u) != 0u) {
+    const uint64_t row_bytes = embed_quant_row_bytes(weight_type, n_embd);
+    if (!out || !tokens || !model_map || row_bytes == 0u || n_vocab == 0u ||
+        n_tokens == 0u || n_embd == 0u) {
         return 0;
     }
     const uint64_t count = (uint64_t)n_tokens * n_embd;
     if (count > UINT64_MAX / sizeof(float) ||
         tokens->bytes < (uint64_t)n_tokens * sizeof(int32_t) ||
-        out->bytes < count * sizeof(float)) return 0;
-    const uint64_t row_bytes = ((uint64_t)n_embd / 32u) * 34u;
+        out->bytes < count * sizeof(float)) { return 0; }
     if ((uint64_t)n_vocab > UINT64_MAX / row_bytes ||
         weight_offset > model_size ||
         (uint64_t)n_vocab * row_bytes > model_size - weight_offset) {
         return 0;
     }
-    const unsigned char *weights = (const unsigned char *)cuda_model_range_ptr(
+    const unsigned char *weights = (const unsigned char *)cuda_resolve_weight_ptr(
         model_map, weight_offset, (uint64_t)n_vocab * row_bytes,
-        "quant_token_embedding_batch");
-    if (!weights) return 0;
-    embed_tokens_q8_0_kernel<<<(unsigned)((count + 255u) / 256u), 256u, 0,
+        ds4_tensor_device_idx(out), "quant_token_embedding_batch");
+    if (!weights) { return 0; }
+    if (weight_type == 8u) {
+        embed_tokens_q8_0_kernel<<<(unsigned)((count + 255u) / 256u), 256u, 0,
                                 ds4_current_stream()>>>(
         (float *)out->ptr, (const int32_t *)tokens->ptr, weights,
         n_vocab, n_tokens, n_embd);
-    return cuda_ok(cudaGetLastError(), "Q8_0 token embedding batch launch");
+    } else {
+        embed_tokens_generic_kernel<<<(unsigned)((count + 255u) / 256u), 256u, 0,
+                                       ds4_current_stream()>>>(
+            (float *)out->ptr, (const int32_t *)tokens->ptr, weights,
+            weight_type, n_vocab, n_tokens, n_embd);
+    }
+    return cuda_ok(cudaGetLastError(), "quant token embedding batch launch");
 }
 
 extern "C" int ds4_gpu_embed_token_hc_tensor(ds4_gpu_tensor *out_hc, const void *model_map, uint64_t model_size, uint64_t weight_offset, uint32_t n_vocab, uint32_t token, uint32_t n_embd, uint32_t n_hc) {
@@ -48448,6 +48645,7 @@ static int ds4_gpu_glm53_matmul_bf16(
 #include "ds4_ling3vl_gpu.cuh"
 #include "ds4_step37_gpu.cuh"
 #include "ds4_mimo2_gpu.cuh"
+#include "ds4_iquest_gpu.cuh"
 #include "ds4_naive_gpu.cuh"
 #include "ds4_step37_vision_gpu.cuh"
 #include "ds4_qwen35_gpu.cuh"

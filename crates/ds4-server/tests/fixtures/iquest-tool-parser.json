@@ -1,0 +1,422 @@
+{
+  "source_url": "https://github.com/IQuestLab/vllm-iquest-q1/blob/1f305c04f6d63b936e118e5aa4a9eb6b20e38a32/src/vllm_iquest_q1/tool_parser.py",
+  "source_sha256": "4b6de273cf973808a98879ff258a98a68c2cc1415e491ba653aaf03d5c3789d0",
+  "scope": "Extracted official buffered and streaming parser methods, complete Unicode input streamed one codepoint at a time; no model inference. Native stream finalization additionally preserves unfinished XML as raw text.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string"
+      },
+      "count": {
+        "type": "integer"
+      },
+      "active": {
+        "type": "boolean"
+      },
+      "data": {
+        "type": "object"
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "typed",
+      "text": "<iquest_tool_call>lookup<arg_key>text</arg_key><arg_value> 123 \n</arg_value><arg_key>count</arg_key><arg_value>2</arg_value><arg_key>active</arg_key><arg_value>true</arg_value><arg_key>data</arg_key><arg_value>{\"city\":\"서울\",\"items\":[1,null]}</arg_value></iquest_tool_call>",
+      "tools_enabled": true,
+      "content": "",
+      "calls": [
+        {
+          "name": "lookup",
+          "arguments": {
+            "text": " 123 \n",
+            "count": 2,
+            "active": true,
+            "data": {
+              "city": "서울",
+              "items": [
+                1,
+                null
+              ]
+            }
+          }
+        }
+      ],
+      "stream_content_before_final": "",
+      "stream_calls_before_final": [
+        {
+          "index": 0,
+          "name": "lookup",
+          "arguments": {
+            "text": " 123 \n",
+            "count": 2,
+            "active": true,
+            "data": {
+              "city": "서울",
+              "items": [
+                1,
+                null
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "literal-strings",
+      "text": "<iquest_tool_call>lookup<arg_key>text</arg_key><arg_value>true &amp; <tag> \"quoted\" café</arg_value></iquest_tool_call>",
+      "tools_enabled": true,
+      "content": "",
+      "calls": [
+        {
+          "name": "lookup",
+          "arguments": {
+            "text": "true &amp; <tag> \"quoted\" café"
+          }
+        }
+      ],
+      "stream_content_before_final": "",
+      "stream_calls_before_final": [
+        {
+          "index": 0,
+          "name": "lookup",
+          "arguments": {
+            "text": "true &amp; <tag> \"quoted\" café"
+          }
+        }
+      ]
+    },
+    {
+      "name": "string-json",
+      "text": "<iquest_tool_call>lookup<arg_key>text</arg_key><arg_value>{\"raw\":true}</arg_value></iquest_tool_call>",
+      "tools_enabled": true,
+      "content": "",
+      "calls": [
+        {
+          "name": "lookup",
+          "arguments": {
+            "text": "{\"raw\":true}"
+          }
+        }
+      ],
+      "stream_content_before_final": "",
+      "stream_calls_before_final": [
+        {
+          "index": 0,
+          "name": "lookup",
+          "arguments": {
+            "text": "{\"raw\":true}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "unknown-properties",
+      "text": "<iquest_tool_call>lookup<arg_key>value</arg_key><arg_value> null </arg_value><arg_key>list</arg_key><arg_value>[1,\"漢字\",false]</arg_value><arg_key>bad</arg_key><arg_value> 0123 </arg_value></iquest_tool_call>",
+      "tools_enabled": true,
+      "content": "",
+      "calls": [
+        {
+          "name": "lookup",
+          "arguments": {
+            "value": null,
+            "list": [
+              1,
+              "漢字",
+              false
+            ],
+            "bad": "0123"
+          }
+        }
+      ],
+      "stream_content_before_final": "",
+      "stream_calls_before_final": [
+        {
+          "index": 0,
+          "name": "lookup",
+          "arguments": {
+            "value": null,
+            "list": [
+              1,
+              "漢字",
+              false
+            ],
+            "bad": "0123"
+          }
+        }
+      ]
+    },
+    {
+      "name": "float",
+      "text": "<iquest_tool_call>lookup<arg_key>count</arg_key><arg_value>1e-05</arg_value><arg_key>active</arg_key><arg_value>false</arg_value></iquest_tool_call>",
+      "tools_enabled": true,
+      "content": "",
+      "calls": [
+        {
+          "name": "lookup",
+          "arguments": {
+            "count": 1e-05,
+            "active": false
+          }
+        }
+      ],
+      "stream_content_before_final": "",
+      "stream_calls_before_final": [
+        {
+          "index": 0,
+          "name": "lookup",
+          "arguments": {
+            "count": 1e-05,
+            "active": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "arbitrary-integer",
+      "text": "<iquest_tool_call>lookup<arg_key>count</arg_key><arg_value>18446744073709551617</arg_value><arg_key>data</arg_key><arg_value>{\"negative\":-18446744073709551617}</arg_value></iquest_tool_call>",
+      "tools_enabled": true,
+      "content": "",
+      "calls": [
+        {
+          "name": "lookup",
+          "arguments": {
+            "count": 18446744073709551617,
+            "data": {
+              "negative": -18446744073709551617
+            }
+          }
+        }
+      ],
+      "stream_content_before_final": "",
+      "stream_calls_before_final": [
+        {
+          "index": 0,
+          "name": "lookup",
+          "arguments": {
+            "count": 18446744073709551617,
+            "data": {
+              "negative": -18446744073709551617
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "no-arguments",
+      "text": "<iquest_tool_call>  ping\n</iquest_tool_call>",
+      "tools_enabled": true,
+      "content": "",
+      "calls": [
+        {
+          "name": "ping",
+          "arguments": {}
+        }
+      ],
+      "stream_content_before_final": "",
+      "stream_calls_before_final": [
+        {
+          "index": 0,
+          "name": "ping",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "name": "empty-string",
+      "text": "<iquest_tool_call>lookup<arg_key>text</arg_key><arg_value></arg_value></iquest_tool_call>",
+      "tools_enabled": true,
+      "content": "",
+      "calls": [
+        {
+          "name": "lookup",
+          "arguments": {
+            "text": ""
+          }
+        }
+      ],
+      "stream_content_before_final": "",
+      "stream_calls_before_final": [
+        {
+          "index": 0,
+          "name": "lookup",
+          "arguments": {
+            "text": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "duplicate-key",
+      "text": "<iquest_tool_call>lookup<arg_key>count</arg_key><arg_value>1</arg_value><arg_key>count</arg_key><arg_value>2</arg_value></iquest_tool_call>",
+      "tools_enabled": true,
+      "content": "",
+      "calls": [
+        {
+          "name": "lookup",
+          "arguments": {
+            "count": 2
+          }
+        }
+      ],
+      "stream_content_before_final": "",
+      "stream_calls_before_final": [
+        {
+          "index": 0,
+          "name": "lookup",
+          "arguments": {
+            "count": 2
+          }
+        }
+      ]
+    },
+    {
+      "name": "parallel-content",
+      "text": "前<iquest_tool_call>lookup<arg_key>text</arg_key><arg_value>123</arg_value></iquest_tool_call>中間<iquest_tool_call>ping</iquest_tool_call>後",
+      "tools_enabled": true,
+      "content": "前中間後",
+      "calls": [
+        {
+          "name": "lookup",
+          "arguments": {
+            "text": "123"
+          }
+        },
+        {
+          "name": "ping",
+          "arguments": {}
+        }
+      ],
+      "stream_content_before_final": "前中間後",
+      "stream_calls_before_final": [
+        {
+          "index": 0,
+          "name": "lookup",
+          "arguments": {
+            "text": "123"
+          }
+        },
+        {
+          "index": 1,
+          "name": "ping",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "name": "malformed",
+      "text": "<iquest_tool_call>lookup<arg_key>text</arg_key><arg_value>broken</iquest_tool_call>",
+      "tools_enabled": true,
+      "content": "<iquest_tool_call>lookup<arg_key>text</arg_key><arg_value>broken</iquest_tool_call>",
+      "calls": [],
+      "stream_content_before_final": "<iquest_tool_call>lookup<arg_key>text</arg_key><arg_value>broken</iquest_tool_call>",
+      "stream_calls_before_final": []
+    },
+    {
+      "name": "malformed-then-valid",
+      "text": "<iquest_tool_call>lookup<arg_key>text</arg_key><arg_value>broken</iquest_tool_call><iquest_tool_call>ping</iquest_tool_call>",
+      "tools_enabled": true,
+      "content": "<iquest_tool_call>lookup<arg_key>text</arg_key><arg_value>broken</iquest_tool_call>",
+      "calls": [
+        {
+          "name": "ping",
+          "arguments": {}
+        }
+      ],
+      "stream_content_before_final": "<iquest_tool_call>lookup<arg_key>text</arg_key><arg_value>broken</iquest_tool_call>",
+      "stream_calls_before_final": [
+        {
+          "index": 0,
+          "name": "ping",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "name": "empty-key",
+      "text": "<iquest_tool_call>lookup<arg_key> </arg_key><arg_value>1</arg_value></iquest_tool_call>",
+      "tools_enabled": true,
+      "content": "<iquest_tool_call>lookup<arg_key> </arg_key><arg_value>1</arg_value></iquest_tool_call>",
+      "calls": [],
+      "stream_content_before_final": "<iquest_tool_call>lookup<arg_key> </arg_key><arg_value>1</arg_value></iquest_tool_call>",
+      "stream_calls_before_final": []
+    },
+    {
+      "name": "truncated",
+      "text": "<iquest_tool_call>ping</iquest_tool_call>after<iquest_tool_call>lookup<arg_key>text",
+      "tools_enabled": true,
+      "content": "after<iquest_tool_call>lookup<arg_key>text",
+      "calls": [
+        {
+          "name": "ping",
+          "arguments": {}
+        }
+      ],
+      "stream_content_before_final": "after",
+      "stream_calls_before_final": [
+        {
+          "index": 0,
+          "name": "ping",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "name": "unicode-space",
+      "text": "<iquest_tool_call> lookup\n<arg_key> text </arg_key> <arg_value> raw </arg_value> </iquest_tool_call>",
+      "tools_enabled": true,
+      "content": "",
+      "calls": [
+        {
+          "name": "lookup",
+          "arguments": {
+            "text": " raw "
+          }
+        }
+      ],
+      "stream_content_before_final": "",
+      "stream_calls_before_final": [
+        {
+          "index": 0,
+          "name": "lookup",
+          "arguments": {
+            "text": " raw "
+          }
+        }
+      ]
+    },
+    {
+      "name": "python-control-space",
+      "text": "<iquest_tool_call>\u001clookup\u001d<arg_key>\u001etext\u001f</arg_key>\u001c<arg_value> raw </arg_value>\u001d</iquest_tool_call>",
+      "tools_enabled": true,
+      "content": "",
+      "calls": [
+        {
+          "name": "lookup",
+          "arguments": {
+            "text": " raw "
+          }
+        }
+      ],
+      "stream_content_before_final": "",
+      "stream_calls_before_final": [
+        {
+          "index": 0,
+          "name": "lookup",
+          "arguments": {
+            "text": " raw "
+          }
+        }
+      ]
+    },
+    {
+      "name": "disabled",
+      "text": "<iquest_tool_call>lookup<arg_key>text</arg_key><arg_value>123</arg_value></iquest_tool_call>",
+      "tools_enabled": false,
+      "content": "<iquest_tool_call>lookup<arg_key>text</arg_key><arg_value>123</arg_value></iquest_tool_call>",
+      "calls": [],
+      "stream_content_before_final": "<iquest_tool_call>lookup<arg_key>text</arg_key><arg_value>123</arg_value></iquest_tool_call>",
+      "stream_calls_before_final": []
+    }
+  ]
+}

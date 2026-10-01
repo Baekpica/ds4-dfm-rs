@@ -18,6 +18,7 @@ mod inkling;
 mod inkling_audio;
 mod inkling_media;
 mod inkling_mtp;
+mod iquest;
 mod layout;
 mod ling3vl;
 mod mapped;
@@ -58,6 +59,7 @@ pub use bind::{
 };
 pub use gguf::{GgufError, GgufFile};
 pub use identify::{dump_parse, identify_file, identify_gguf, Identified, IdentifyError};
+pub use iquest::{IQuestCache, IQuestPlan};
 pub use layout::{
     dump_expected_dspark_shape, dump_expected_layouts, dump_expected_layouts_shape,
     dump_expected_layouts_variant, dump_expected_mtp_shape, dump_expected_support,
@@ -2448,6 +2450,9 @@ impl Session<'_> {
         if self.host.family == ModelFamily::Mimo2 {
             return self.eval_mimo2_argmax(first, max_tokens, eos);
         }
+        if self.host.family == ModelFamily::IQuestQ1 {
+            return self.eval_iquest_argmax(first, max_tokens, eos);
+        }
         if self.host.family == ModelFamily::NaiveN05 {
             return self.eval_naive_argmax(first, max_tokens, eos);
         }
@@ -3201,6 +3206,30 @@ mod tests {
     ) -> i32 {
         STEP_GENERATION.with(|g| g.set(g.get() + 1));
         1
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_iquest_trial(
+        s: *mut ds4_bridge_session,
+        first: i32,
+        max: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_trial(s, first, max, tokens, target, cap, err, errlen)
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_iquest_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_commit(s, keep, err, errlen)
     }
 
     #[no_mangle]

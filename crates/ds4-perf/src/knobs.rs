@@ -4,6 +4,7 @@ pub fn tunable(key: &str) -> bool {
     matches!(
         key,
         "DS4_QWEN_PREFILL_CHUNK"
+            | "DS4_IQUEST_PREFILL_CHUNK"
             | "DS4_QWEN_PLE_WORKERS"
             | "DS4_DOTS3_PREFILL_CHUNK"
             | "DS4_INKLING_NO_LINEAR"
@@ -87,6 +88,7 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
     let family = family.to_ascii_lowercase();
     let valid = match key {
         "DS4_QWEN_PREFILL_CHUNK" => family.starts_with("qwen") && (1..=16384).contains(&n),
+        "DS4_IQUEST_PREFILL_CHUNK" => family == "iquest-q1" && (1..=8192).contains(&n),
         "DS4_QWEN_PLE_WORKERS" => family.starts_with("qwen") && (1..=64).contains(&n),
         "DS4_DOTS3_PREFILL_CHUNK" => family.starts_with("dots") && (1..=8192).contains(&n),
         // Native diagnostic switches test presence; "0" would still disable.
@@ -186,6 +188,14 @@ pub fn validate(key: &str, value: &str, family: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn iquest_chunk_is_scoped_and_bounded() {
+        assert!(super::tunable("DS4_IQUEST_PREFILL_CHUNK"));
+        assert!(super::validate("DS4_IQUEST_PREFILL_CHUNK", "8192", "IQuest-Q1").is_ok());
+        assert!(super::validate("DS4_IQUEST_PREFILL_CHUNK", "0", "iquest-q1").is_err());
+        assert!(super::validate("DS4_IQUEST_PREFILL_CHUNK", "8193", "iquest-q1").is_err());
+        assert!(super::validate("DS4_IQUEST_PREFILL_CHUNK", "128", "qwen4exp").is_err());
+    }
     use super::*;
 
     #[test]

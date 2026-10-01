@@ -5116,6 +5116,34 @@ int ds4_gpu_mimo2_code_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *ids,
         const void *map, uint64_t size, uint64_t offset,
         uint32_t n, uint32_t dim, uint32_t vocab, uint32_t channels);
 
+/* IQuest-Q1 primitives. These do not imply a qualified session graph.
+ * Q/K RMS is per head; call it before partial NeoX RoPE. KV is Q8_0.
+ * Caller admits monotonically contiguous live positions and ring retention. */
+int ds4_gpu_iquest_rms(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *map, uint64_t size, uint64_t offset, uint32_t width, uint32_t rows);
+int ds4_gpu_iquest_policy(void);
+int ds4_gpu_iquest_rope(ds4_gpu_tensor *x, const ds4_gpu_tensor *positions,
+        uint32_t heads, uint32_t rows, float theta);
+int ds4_gpu_iquest_router(ds4_gpu_tensor *ids, ds4_gpu_tensor *weights,
+        const ds4_gpu_tensor *logits, uint32_t rows);
+int ds4_gpu_iquest_kv(ds4_gpu_tensor *cache, const ds4_gpu_tensor *key,
+        const ds4_gpu_tensor *value, const ds4_gpu_tensor *positions,
+        uint32_t rows, uint32_t capacity);
+int ds4_gpu_iquest_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *query,
+        const ds4_gpu_tensor *cache, const ds4_gpu_tensor *positions,
+        const void *map, uint64_t size, uint64_t offset,
+        uint32_t rows, uint32_t capacity, uint32_t window);
+int ds4_gpu_iquest_add(ds4_gpu_tensor *out, const ds4_gpu_tensor *residual,
+        const ds4_gpu_tensor *branch, uint32_t rows, float scale);
+int ds4_gpu_iquest_sum(ds4_gpu_tensor *out, const ds4_gpu_tensor *experts,
+        const ds4_gpu_tensor *weights, uint32_t rows);
+int ds4_gpu_iquest_swiglu(ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *up, uint64_t count);
+int ds4_gpu_iquest_expert(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const ds4_gpu_tensor *ids, const void *map, uint64_t size, uint64_t offset,
+        uint32_t type, uint32_t in, uint32_t width, uint32_t rows,
+        uint32_t used, uint32_t input_used);
+
 int ds4_gpu_step37_norm(ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
         const void *map, uint64_t size, uint64_t offset,
         uint32_t width, uint32_t rows, float eps);

@@ -3068,6 +3068,7 @@ pub fn expected_layouts(shape: &Shape) -> Vec<LayoutSpec> {
         ModelFamily::Step37 => crate::Step37Plan::layouts(),
         ModelFamily::Ling3Vl => crate::Ling3VlPlan::layouts(),
         ModelFamily::Mimo2 => crate::Mimo2Plan::layouts(),
+        ModelFamily::IQuestQ1 => crate::iquest::layouts(),
         ModelFamily::NaiveN05 => crate::naive::layouts(),
         ModelFamily::Glm53 => expected_glm53(shape),
         ModelFamily::Qwen35 => expected_qwen35(shape),

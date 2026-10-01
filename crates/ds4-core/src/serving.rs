@@ -633,6 +633,26 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         };
     }
     match family {
+        ModelFamily::IQuestQ1 => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Persistent,
+            bank_support: Support::Present,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Present,
+            disk: Support::Present,
+            snapshot: Support::Present,
+            mtp: MtpKind::Embedded,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Both,
+            spec_draft_min: 2,
+            host: HostNeed::Cuda,
+            ctx_max: Some(crate::iquest::CONTEXT),
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
+            media_serial: false,
+        },
         // One session on one host: the native path refuses banks, speculation,
         // snapshots and the disk store by name, so a request for them is
         // reported as unsupported instead of silently ignored. Prefix reuse is
@@ -984,6 +1004,13 @@ pub fn resolve_plan(
     let draft = req.mtp_draft.unwrap_or(caps.spec_draft_min);
     let (mtp_mode, mtp_draft) = match mtp_mode {
         MtpMode::Off => (MtpMode::Off, None),
+        _ if caps.family == ModelFamily::IQuestQ1 && draft > crate::iquest::DRAFT_SLOTS as i32 => {
+            issues.push(error(
+                "mtp_draft",
+                "IQuest-Q1 accepts at most seven recursive draft tokens",
+            ));
+            (MtpMode::Off, None)
+        }
         _ if caps.family == ModelFamily::NaiveN05
             && draft > crate::naive::DRAFT_PROPOSALS as i32 =>
         {
@@ -1108,6 +1135,19 @@ pub fn resolve_plan(
         ));
     }
 
+    if caps.family == ModelFamily::IQuestQ1
+        && req
+            .native_chunk
+            .is_some_and(|chunk| !(1..=crate::iquest::PREFILL_MAX).contains(&chunk))
+    {
+        issues.push(error(
+            "native_chunk",
+            format!(
+                "IQuest-Q1 native prefill chunk must be 1..={}",
+                crate::iquest::PREFILL_MAX
+            ),
+        ));
+    }
     let native = facts.native_chunk.or(req.native_chunk);
     let requested_boot = req.sched_chunk.unwrap_or(DEFAULT_SCHED_CHUNK);
     if req.chunk_fence == ChunkFence::On && requested_boot > PREFILL_CHUNK_FENCE {
@@ -1225,6 +1265,7 @@ impl ServingCaps {
             Variant::Mimo26Flash => "mimo2",
             Variant::Qwen35_27B => "qwen35",
             Variant::NaiveN05Flash => "naive_n05_flash",
+            Variant::IQuestQ1 => "iquest_q1",
         }
     }
 }
@@ -1374,6 +1415,7 @@ impl ResolvedPlan {
             }
             Some(ModelFamily::Dots3Note) => Some("DS4_DOTS3_PREFILL_CHUNK"),
             Some(ModelFamily::Mimo2) => Some("DS4_MIMO2_PREFILL_CHUNK"),
+            Some(ModelFamily::IQuestQ1) => Some("DS4_IQUEST_PREFILL_CHUNK"),
             Some(ModelFamily::NaiveN05) => Some("DS4_NAIVE_PREFILL_CHUNK"),
             _ => None,
         }
@@ -2198,6 +2240,7 @@ fn qualified_note(caps: ServingCaps) -> &'static str {
         Variant::Qwen38FlashNext => {
             "common UX baseline; configured values and verified combinations differ"
         }
+        Variant::IQuestQ1 => "native Q8_0 hybrid cache and recursive MTP are present; 512K Spark memory, throughput and quality remain unqualified",
         Variant::Mimo26Flash => {
             "512K serial text and 256K serial media/DFlash are prior gates. With MTP off, 256K two-bank text plus serial media passed bounded checks at chunk 2048 with Q8 repack off, including live partial reuse and restart disk continuation. 1M one-bank text passed a bounded 1,040,506-token prompt; two banks did not fit. 512K two-bank media exceeds Spark memory"
         }

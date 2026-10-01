@@ -448,6 +448,24 @@ fn stop_list_find_matches_c_order() {
 }
 
 #[test]
+fn iquest_structured_tools_allow_dedicated_output_parser() {
+    let model_id = ds4_core::Variant::IQuestQ1 as i32;
+    let plain = user_req();
+    assert_eq!(generation_blocked(&plain, model_id), None);
+    let expected = None;
+    let mut tools = plain.clone();
+    tools.has_tools = true;
+    assert_eq!(generation_blocked(&tools, model_id), expected);
+    assert_eq!(generation_blocked(&tools, 0), None);
+    let mut results = plain.clone();
+    results.has_tool_results = true;
+    assert_eq!(generation_blocked(&results, model_id), expected);
+    let mut history = plain.clone();
+    history.messages[0].calls.push(ToolCall::default());
+    assert_eq!(generation_blocked(&history, model_id), expected);
+}
+
+#[test]
 fn family_generate_allows_tools() {
     let parsed = user_req();
     assert_eq!(generation_blocked(&parsed, 3), None);

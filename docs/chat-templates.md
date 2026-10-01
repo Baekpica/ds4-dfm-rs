@@ -80,6 +80,13 @@ effort aliases remain output-policy choices. GLM and K2 always open a thinking
 channel in their official templates; disabled thinking closes that channel
 with an output prefill. Their source templates remain unchanged.
 
+[IQuest-Q1](iquest-q1.md#input-and-output-protocol) keeps its official
+`developer` role distinct from `system`. Its Jinja renders JSON tool schemas
+and tool history; the output parser handles IQuest XML calls separately.
+JSON numbers retain their numeric type through rendering and continuation,
+including integer values beyond 64 bits. Its tokenizer applies NFC before
+the official ordered splits; EOS is `<|iquest_end|>` (ID 0).
+
 Qwen and Inkling templates render their media placeholders. GLM's official
 text template does not accept media arrays, so its image processor supplies
 placeholder text before rendering. Native processing expands placeholders
@@ -125,5 +132,16 @@ cover Python keyword behavior, Unicode, key order and float representation.
 The vendored dependency needs small generic JSON/float compatibility patches;
 see [upstream pin and patch rationale](../vendor/hf-chat-template/VENDOR.md).
 Templates are preserved byte-for-byte. Do not update goldens to hide drift.
+
+IQuest adds pinned official-template and thinking-control tests outside the
+nine-variant corpus. Its vocabulary test is explicitly ignored unless a local
+GGUF is supplied; it reads token metadata without loading model weights:
+
+```sh
+cargo test -p ds4-core --test iquest_tokenizer --locked
+cargo test -p ds4-server --test iquest_output --test chat_input --locked
+DS4_IQUEST_TOKENIZER_FIXTURE=/absolute/path/to/first-shard.gguf \
+  cargo test -p ds4-core --test iquest_tokenizer --locked -- --ignored
+```
 
 Live artifact results and limits belong to the [v0.1.2 ledger](releases/v0.1.2.md).

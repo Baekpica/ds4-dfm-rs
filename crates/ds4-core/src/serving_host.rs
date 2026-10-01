@@ -293,6 +293,17 @@ pub fn fill_quote_facts(
             )
         }
         (ModelFamily::Glm53, Some(s)) => (glm_graph_bytes(s, ctx), 0, 0, 0),
+        (ModelFamily::IQuestQ1, Some(_)) => {
+            let cap = native.min(ctx_tokens).max(1);
+            let bank = crate::iquest::bank_bytes(ctx_tokens, cap).unwrap_or(0);
+            let total = crate::iquest::session_bytes(ctx_tokens, cap).unwrap_or(0);
+            let pool = if partial && quote_batch_alloc(req, caps, facts) {
+                crate::iquest::checkpoint_bytes()
+            } else {
+                0
+            };
+            (bank, total.saturating_sub(bank), 0, pool)
+        }
         (ModelFamily::NaiveN05, Some(_)) => {
             let cap = native.min(ctx_tokens).max(1);
             let memory = crate::naive::memory_plan(ctx_tokens, cap);
@@ -783,6 +794,7 @@ fn parse_nvidia_mib(raw: &str) -> Option<u64> {
 
 fn family_native_limit(caps: ServingCaps) -> u32 {
     match caps.family {
+        ModelFamily::IQuestQ1 => crate::iquest::PREFILL_MAX,
         ModelFamily::Mimo2 => MIMO_NATIVE_MAX,
         ModelFamily::NaiveN05 => crate::naive::PREFILL_MAX,
         ModelFamily::Qwen4Exp => QWEN_NATIVE_MAX,
@@ -801,6 +813,12 @@ fn family_native_limit(caps: ServingCaps) -> u32 {
 fn family_native_chunk(caps: ServingCaps, ctx: u32) -> u32 {
     let ctx = ctx.max(1);
     let cap = match caps.family {
+        ModelFamily::IQuestQ1 => env_u32(
+            "DS4_IQUEST_PREFILL_CHUNK",
+            crate::iquest::PREFILL,
+            1,
+            crate::iquest::PREFILL_MAX,
+        ),
         ModelFamily::NaiveN05 => env_u32(
             "DS4_NAIVE_PREFILL_CHUNK",
             crate::naive::PREFILL_CAP,

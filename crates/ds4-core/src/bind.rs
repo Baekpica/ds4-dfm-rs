@@ -904,6 +904,7 @@ pub fn bind_names(shape: &Shape) -> Vec<BindName> {
         ModelFamily::Step37 => return inkling_names(crate::Step37Plan::layouts()),
         ModelFamily::Ling3Vl => return inkling_names(crate::Ling3VlPlan::layouts()),
         ModelFamily::Mimo2 => return inkling_names(crate::Mimo2Plan::layouts()),
+        ModelFamily::IQuestQ1 => return inkling_names(crate::iquest::layouts()),
         ModelFamily::NaiveN05 => return inkling_names(crate::naive::layouts()),
     }
     out
@@ -1326,6 +1327,7 @@ pub fn variant_from_bind_name(s: &str) -> Option<Variant> {
         "bailingmoe3" => Some(Variant::Ling30FlashVl),
         "qwen35" => Some(Variant::Qwen35_27B),
         "naive-n05-flash" => Some(Variant::NaiveN05Flash),
+        "iquest-q1" => Some(Variant::IQuestQ1),
         _ => None,
     }
 }
