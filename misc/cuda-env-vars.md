@@ -205,9 +205,16 @@ The bandwidth figure is informational; we don't tier on it.
   the learned-key sink remain unchanged. Read once per process.
 - `DS4_IQUEST_ATTN_WARP=0` keeps the retained 128-thread reduction for
   128-row full/SWA prefill. With tiled attention disabled, four independent
-  head warps share each block. Tails, decode and the draft window retain the old
-  launch. `DS4_IQUEST_ATTN_SHUFFLE=0` also disables this path. Read once
+  head warps share each block. Wider tails and the draft window retain the old
+  launch; single-row calls use the cached dispatch below.
+  `DS4_IQUEST_ATTN_SHUFFLE=0` also disables this path. Read once
   per process.
+- `DS4_IQUEST_ATTN_CACHED=0` restores retained shuffle attention for
+  single-row full/SWA4096 calls. The default stages 128 compressed Q8 keys
+  per CTA, then keeps the original key order, reduction tree, online FMA
+  recurrence, learned sink and BF16 boundaries. It uses 34816 B static
+  shared memory and no global scratch. Recursive window512 and wider
+  rows fall back; parent `DS4_IQUEST_ATTN_SHUFFLE=0` also disables it.
 - `DS4_IQUEST_ATTN_TILED=0` restores the four-head warp prefill path.
   The default uses TF32-pair tiles for 128-row full/SWA prefill on CUDA
   targets supporting TF32 MMA. Q8 KV stays canonical; bounded PV tiles

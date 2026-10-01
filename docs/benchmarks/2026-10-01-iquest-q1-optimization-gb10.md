@@ -1,6 +1,6 @@
 # IQuest-Q1 GB10 optimization — 2026-10-01
 
-P1/P2/P3 adopted; ongoing: **3/3 prefill, 0/3 dedicated decode rounds**. P3 changes arithmetic; its bounded quality gates are described below.
+P1/P2/P3 and D1 adopted; ongoing: **3/3 prefill, 1/3 dedicated decode rounds**. P3 changes arithmetic; its bounded quality gates are described below.
 
 The primary workload is now **8192 cold-KV prompt tokens**, capacity 16384, chunk 128, 32 EOS-suppressed greedy outputs, MTP off. Six fresh ABBAAB processes open empty sessions without separate warmup workers. The canonical weight owner persists; weights/OS caches are not claimed cold, and native startup prewarming remains unchanged. Clocks span 2184–2197 MHz, with every run's median 2190 MHz and unchanged clock policy.
 
@@ -66,3 +66,16 @@ repeated = original + "\n" + original
 ```
 
 Encode the raw repeated prompt and use its first8192 tokens. The JSON pins source, binary and receipt hashes, including the final default-path full-vector/token match to the explicit-on candidate.
+
+
+## D1: cached single-row attention
+
+The retained P3 decode spends 84.51% of GPU time in attention. Fresh row1 NCU attributes 71.9% of warp cycles per instruction to long-scoreboard waits. D1 cooperatively stages 128 compressed Q8 keys and values per CTA; one warp then executes the unchanged ascending-key reduction and recurrence. The full/SWA4096 single-row path is enabled by default; `DS4_IQUEST_ATTN_CACHED=0` restores the retained path. Recursive window512 and wider calls retain their previous dispatch.
+
+Six fresh 8K cold-KV workers give Decode **2.20 (2.20–2.21)→4.51 (4.51–4.51) tok/s, +105%**. Prefill is **132.54 (132.49–132.57)→132.47 (132.46–132.63), −0.05%**, within the observed sample overlap. Clocks remain 2190–2197 MHz. All160K prefill logits and32 tokens match exactly across all six workers.
+
+Separate whole-model proof compares all prefill/final logits and **1,007,842,356/1,009,583,284 bytes of native state** exactly. All32 forced tokens match greedy, four self-restores pass, and faults/speculative counters are unchanged. All243 component comparisons pass, including partial tiles, F32 sinks, Q8 extremes, ring wrapping and diagnostic wider rows; racecheck reports zero hazards. These are ordinary-mode gates; final MTP/serving checks remain pending.
+
+The final resident target median improves **3.5266→2.0236 ms**; cache-flushed NCU improves **6.7416→2.6470 ms**. Registers rise38→40 and static shared512→34816 B, without spills. Tracked tensor/allocator counters are equal; no global scratch is added. System-wide available memory varies with page cache and is not an allocation equality claim.
+
+The fresh retained profile measures **61.815 s prefill /7.104 s decode** host time. Decode attention is4.743 s/68.07% of aggregate GPU time, and the serial router is0.784 s/11.26%. This profile selects the next target; it is separate from the speed A/B.

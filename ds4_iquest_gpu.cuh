@@ -2,6 +2,7 @@
  * these kernels must receive contiguous, admitted live device positions. */
 #include "cuda/iquest_primitives.cuh"
 #include "cuda/iquest_prefill.cuh"
+#include "cuda/iquest_decode.cuh"
 
 extern "C" int ds4_gpu_iquest_policy(void) {
     /* Only the active engine needs canonical MMQ weights. Cleanup releases
@@ -36,6 +37,14 @@ static bool iq_attn_tiled() {
     static const bool enabled = [] {
         const char *value = getenv("DS4_IQUEST_ATTN_TILED");
         return (!value || strcmp(value, "0") != 0) && iq_prefill::supported();
+    }();
+    return enabled;
+}
+
+static bool iq_attn_cached() {
+    static const bool enabled = [] {
+        const char *value = getenv("DS4_IQUEST_ATTN_CACHED");
+        return !value || strcmp(value, "0") != 0;
     }();
     return enabled;
 }
@@ -103,8 +112,8 @@ extern "C" int ds4_gpu_iquest_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *qu
         offset > size || sink_bytes > size - offset) { return 0; }
     const float *sink = (const float *)cuda_model_range_ptr(map, offset, sink_bytes, "IQuest learned sink");
     if (!sink) { return 0; }
-    // The four-head launch is measured at the default prefill width. Tails,
-    // decode and the recursive draft window keep the retained reduction.
+    // Specialize default-width prefill and single-row full/SWA attention.
+    // The recursive draft window and wider tails retain scalar arithmetic.
     if (iq_attn_shuffle() && rows == IQ_PREFILL &&
         (window == 0 || window == IQ_WINDOW) && iq_attn_warp()) {
         if (iq_attn_tiled()) {
@@ -126,6 +135,12 @@ extern "C" int ds4_gpu_iquest_attn(ds4_gpu_tensor *out, const ds4_gpu_tensor *qu
         }
         iquest_attn_warp_kernel<<<dim3(rows, IQ_HEADS / IQ_ATTN_HEADS_PER_BLOCK),
             IQ_ATTN_HEADS_PER_BLOCK * IQ_WARP_WIDTH, 0, ds4_current_stream()>>>(
+            (float *)out->ptr, (const float *)query->ptr, (const iquest_q8 *)cache->ptr,
+            sink, (const unsigned *)positions->ptr, capacity, window);
+    } else if (iq_attn_shuffle() && rows == 1 &&
+               (window == 0 || window == IQ_WINDOW) && iq_attn_cached()) {
+        // Stage compressed KV; keep the retained ascending-key arithmetic.
+        iq_decode::cached<128><<<dim3(rows, IQ_HEADS), iq_decode::THREADS, 0, ds4_current_stream()>>>(
             (float *)out->ptr, (const float *)query->ptr, (const iquest_q8 *)cache->ptr,
             sink, (const unsigned *)positions->ptr, capacity, window);
     } else if (iq_attn_shuffle()) {

@@ -15,6 +15,7 @@
 #include <vector>
 #include "../cuda/iquest_primitives.cuh"
 #include "../cuda/iquest_prefill.cuh"
+#include "../cuda/iquest_decode.cuh"
 
 #define CUDA_OK(call) do { \
     const cudaError_t error = (call); \
@@ -25,7 +26,7 @@
 } while (0)
 
 enum class Fixture { Long, Reference13, F32Sink, Q8Stress };
-enum class Implementation { Baseline, Reduced, Grouped, Tiled };
+enum class Implementation { Baseline, Reduced, Grouped, Tiled, Cache32, Cache64, Cache128 };
 enum class Positions { Contiguous, Permuted };
 constexpr unsigned kMaxCapacity = 8192;
 constexpr unsigned kWideCapacity = 16384;
@@ -57,10 +58,10 @@ struct Options {
 static void usage() {
     std::fprintf(stderr,
         "Usage: iquest_attention_profile [--case long|reference13|f32sink|q8stress]\n"
-        "  [--implementation baseline|reduced|grouped|tiled] [--compare|--compare-all]\n"
+        "  [--implementation baseline|reduced|grouped|tiled|cache32|cache64|cache128] [--compare|--compare-all]\n"
         "  [--dump-prefix PATH]\n"
         "  [--rows 1|128] [--positions contiguous|permuted]\n"
-        "  [--position 127|511|512|518|519|2047|4095|4096|4222|4223|8191|8445|8446]\n"
+        "  [--position 0|1|31|32|63|64|127|128|511|512|518|519|2047|4095|4096|4222|4223|8191|8445|8446]\n"
         "  [--window full|swa|mtp] [--capacity 519|4223|8192|16384]\n"
         "  [--warmup 0..16] [--repeat 1..16] [--device N]\n"
         "reference13 fixes rows=1, position=12, full attention, capacity=16.\n"
@@ -117,7 +118,10 @@ static Options options(int argc, char **argv) {
             else if (!std::strcmp(value, "reduced")) { result.implementation = Implementation::Reduced; }
             else if (!std::strcmp(value, "grouped")) { result.implementation = Implementation::Grouped; }
             else if (!std::strcmp(value, "tiled")) { result.implementation = Implementation::Tiled; }
-            else { fail("Implementation must be baseline, reduced, grouped, or tiled"); }
+            else if (!std::strcmp(value, "cache32")) { result.implementation = Implementation::Cache32; }
+            else if (!std::strcmp(value, "cache64")) { result.implementation = Implementation::Cache64; }
+            else if (!std::strcmp(value, "cache128")) { result.implementation = Implementation::Cache128; }
+            else { fail("Unknown implementation"); }
         } else if (!std::strcmp(arg, "--positions")) {
             shape_given = true;
             if (!std::strcmp(value, "contiguous")) { result.positions = Positions::Contiguous; }
@@ -158,7 +162,7 @@ static Options options(int argc, char **argv) {
         return result;
     }
     if (result.rows != 1 && result.rows != IQ_PREFILL) { fail("Rows must be 1 or 128"); }
-    const unsigned positions[] = {127, 511, 512, 518, 519, 2047, 4095, 4096,
+    const unsigned positions[] = {0, 1, 31, 32, 63, 64, 127, 128, 511, 512, 518, 519, 2047, 4095, 4096,
                                   4222, 4223, 8191, 8445, 8446};
     if (std::find(std::begin(positions), std::end(positions), result.position) == std::end(positions)) {
         fail("Position must be a documented bounded window/ring case");
@@ -208,12 +212,16 @@ static float fixture_sink(unsigned i, Fixture fixture) {
 }
 
 static const char *impl_name(Implementation implementation) {
+    if (implementation == Implementation::Cache32) { return "cache32"; }
+    if (implementation == Implementation::Cache64) { return "cache64"; }
+    if (implementation == Implementation::Cache128) { return "cache128"; }
     if (implementation == Implementation::Baseline) { return "baseline"; }
     if (implementation == Implementation::Tiled) { return "tiled"; }
     return implementation == Implementation::Reduced ? "reduced" : "grouped";
 }
 
 static const char *kernel_name(Implementation implementation) {
+    if (implementation >= Implementation::Cache32) { return "iq_decode::cached"; }
     if (implementation == Implementation::Baseline) { return "iquest_attn_kernel"; }
     if (implementation == Implementation::Tiled) { return "iq_prefill::prefill+sink"; }
     return implementation == Implementation::Reduced
@@ -235,6 +243,15 @@ static void launch_attention(Implementation implementation, float *out,
             out, query, cache, sink, positions, opt.capacity, opt.window);
     } else if (implementation == Implementation::Grouped) {
         iquest_attn_warp_kernel<<<dim3(opt.rows, kGroupedBlocks), kGroupedThreads>>>(
+            out, query, cache, sink, positions, opt.capacity, opt.window);
+    } else if (implementation == Implementation::Cache32) {
+        iq_decode::cached<32><<<dim3(opt.rows, IQ_HEADS), iq_decode::THREADS>>>(
+            out, query, cache, sink, positions, opt.capacity, opt.window);
+    } else if (implementation == Implementation::Cache64) {
+        iq_decode::cached<64><<<dim3(opt.rows, IQ_HEADS), iq_decode::THREADS>>>(
+            out, query, cache, sink, positions, opt.capacity, opt.window);
+    } else if (implementation == Implementation::Cache128) {
+        iq_decode::cached<128><<<dim3(opt.rows, IQ_HEADS), iq_decode::THREADS>>>(
             out, query, cache, sink, positions, opt.capacity, opt.window);
     } else {
         if (!lse) { fail("Tiled attention requires an LSE buffer"); }
@@ -664,7 +681,7 @@ int main(int argc, char **argv) {
         other = compare_output(opposite, output, dq, dkv, ds, dp, opt);
     }
     if (opt.compare_all) {
-        const Implementation third = opt.implementation == Implementation::Grouped || opt.implementation == Implementation::Tiled
+        const Implementation third = opt.implementation >= Implementation::Grouped
             ? Implementation::Baseline : Implementation::Grouped;
         const auto &reference = opt.implementation == Implementation::Tiled ? other.output : output;
         additional = compare_output(third, reference, dq, dkv, ds, dp, opt);
