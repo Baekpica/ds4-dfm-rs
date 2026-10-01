@@ -20,7 +20,17 @@ const MAX_PROMPT_BYTES: u64 = 64 * 1024 * 1024;
 const THINK_NONE: i32 = 0;
 const PAYLOAD_CHUNK: usize = 3;
 const PAYLOAD_MTP: usize = 8;
-const HELP: &str = "usage: iquest_perf_verify MODEL OUT --prompt-file PATH [OPTIONS]\n\
+const OPT_CONTROLS: [&str; 6] = [
+    "DS4_IQUEST_ATTN_SHUFFLE",
+    "DS4_IQUEST_ATTN_WARP",
+    "DS4_IQUEST_ATTN_TILED",
+    "DS4_IQUEST_ATTN_CACHED",
+    "DS4_IQUEST_ROUTER_WARP",
+    "DS4_IQUEST_ATTN_ASYNC",
+];
+const HELP: &str =
+    "usage: iquest_perf_verify MODEL OUT --prompt-file PATH --control SWITCH [OPTIONS]\n\
+  --control SWITCH   Targeted IQuest optimization switch; explicit env 0 or 1\n\
   --frontier N        Exact prefill token count (default 2048)\n\
   --capacity N        Session capacity (default 8192)\n\
   --steps N           Ordinary committed decode rows (default 32)\n\
@@ -29,7 +39,8 @@ const HELP: &str = "usage: iquest_perf_verify MODEL OUT --prompt-file PATH [OPTI
   --tokens-file PATH  Fixed JSON token IDs; otherwise generate non-EOS greedy IDs\n\
   --help              Help without opening the model\n\n\
 CPU-only comparison: iquest_perf_verify --compare LEFT_DIR RIGHT_DIR\n\
-Both arms must use the same prompt mode, exact prefix, shape and decoded IDs.\n\
+Both arms must name the same switch, set it to opposite 0/1 values, and keep\n\
+all other recorded environment values, workload and decoded IDs identical.\n\
 Raw mode matches ds4-bench: tokenize then truncate; never replicate tokens.\n\
 Chat mode uses the official template with reasoning disabled, then truncates.\n\
 A short prompt is rejected. Set mapped/base IPC and chunk in the environment.\n\
@@ -63,6 +74,7 @@ struct Options {
     chunk: usize,
     mode: PromptMode,
     tokens: Option<PathBuf>,
+    control: String,
 }
 
 enum Command {
@@ -100,6 +112,7 @@ fn parse_args(args: &[String]) -> GateResult<Command> {
         chunk: 128,
         mode: PromptMode::Raw,
         tokens: None,
+        control: String::new(),
     };
     for pair in args[2..].chunks_exact(2) {
         match pair[0].as_str() {
@@ -109,6 +122,7 @@ fn parse_args(args: &[String]) -> GateResult<Command> {
             "--steps" => options.steps = pair[1].parse()?,
             "--chunk" => options.chunk = pair[1].parse()?,
             "--tokens-file" => options.tokens = Some(pair[1].clone().into()),
+            "--control" => options.control = pair[1].clone(),
             "--prompt-mode" => {
                 options.mode = match pair[1].as_str() {
                     "raw" => PromptMode::Raw,
@@ -118,6 +132,9 @@ fn parse_args(args: &[String]) -> GateResult<Command> {
             }
             flag => return Err(format!("unsupported argument {flag}").into()),
         }
+    }
+    if !OPT_CONTROLS.contains(&options.control.as_str()) {
+        return Err("--control must name an IQuest optimization switch".into());
     }
     if options.prompt.as_os_str().is_empty()
         || !(2..=MAX_CONTEXT).contains(&options.capacity)
@@ -406,6 +423,7 @@ fn decode(
 fn record(options: &Options) -> GateResult<Value> {
     let wall = Instant::now();
     let env = environment(options)?;
+    let optimization = optimization(&env, &options.control)?;
     let text = read_bounded(&options.prompt, MAX_PROMPT_BYTES)?;
     let fixed: Option<Vec<i32>> = options
         .tokens
@@ -476,11 +494,11 @@ fn record(options: &Options) -> GateResult<Value> {
         fault_clean && spec_before == spec_after && decoded["greedy_matches_forced"] == true;
     let ring = options.capacity.min(MAIN_WINDOW + options.chunk - 1);
     Ok(
-        json!({"schema":1,"passed":passed,"scope":"ordinary target-state diagnostic; not throughput or family-wide quality",
+        json!({"schema":2,"passed":passed,"scope":"ordinary target-state diagnostic; not throughput or family-wide quality",
         "model":options.model,"prompt_file":options.prompt,"prompt_mode":options.mode.name(),
         "source_prompt_tokens":source_tokens,"frontier":options.frontier,"capacity":options.capacity,
         "steps":options.steps,"chunk":options.chunk,"vocab":VOCAB,"eos":eos,
-        "mtp_enabled":false,"mtp_draft":1,"environment":env,
+        "mtp_enabled":false,"mtp_draft":1,"environment":env,"optimization":optimization,
         "decode_before_any_restore":true,"prefill":prefill,"final":final_state,"decode":decoded,
         "restores":[restore_final,restore_prefill],"faults_unchanged":fault_clean,
         "speculative_counters_unchanged":spec_before==spec_after,
@@ -496,6 +514,44 @@ fn record(options: &Options) -> GateResult<Value> {
             "peak_temporary_payload_files":1},
         "diagnostic_seconds":{"model":model_seconds,"prefill":prefill_seconds,"total":wall.elapsed().as_secs_f64()}}),
     )
+}
+
+fn optimization(env: &Value, control: &str) -> GateResult<Value> {
+    if !OPT_CONTROLS.contains(&control) {
+        return Err("unknown IQuest optimization switch".into());
+    }
+    let arm = match env[control].as_str() {
+        Some("0") => "off",
+        Some("1") => "on",
+        _ => return Err(format!("{control} must be explicitly 0 or 1").into()),
+    };
+    Ok(json!({"control":control,"arm":arm}))
+}
+
+fn compare_arms(a: &Value, b: &Value) -> GateResult<Value> {
+    let control = a["optimization"]["control"]
+        .as_str()
+        .ok_or("recording must name its optimization switch")?;
+    if b["optimization"]["control"].as_str() != Some(control) {
+        return Err("recorded optimization switches differ or are absent".into());
+    }
+    let left = optimization(&a["environment"], control)?;
+    let right = optimization(&b["environment"], control)?;
+    if left != a["optimization"] || right != b["optimization"] {
+        return Err("recorded optimization arm differs from its environment".into());
+    }
+    if left["arm"] == right["arm"] {
+        return Err("opposite optimization arms are required".into());
+    }
+    // Only the targeted switch may differ; duplicate controls cannot prove A/B.
+    let mut left_env = a["environment"].as_object().unwrap().clone();
+    let mut right_env = b["environment"].as_object().unwrap().clone();
+    left_env.remove(control);
+    right_env.remove(control);
+    if left_env != right_env {
+        return Err("non-target environment values differ".into());
+    }
+    Ok(json!({"control":control,"left_arm":left["arm"],"right_arm":right["arm"]}))
 }
 
 fn compare(left: &Path, right: &Path) -> GateResult<Value> {
@@ -528,6 +584,7 @@ fn compare(left: &Path, right: &Path) -> GateResult<Value> {
             return Err(format!("recording field {key} differs or is absent").into());
         }
     }
+    let optimization = compare_arms(&a, &b)?;
     for name in ["prompt.tokens.json", "tokens.json"] {
         compare_files(&left.join(name), &right.join(name))?;
     }
@@ -548,7 +605,8 @@ fn compare(left: &Path, right: &Path) -> GateResult<Value> {
         );
     }
     Ok(
-        json!({"schema":1,"passed":true,"left":left,"right":right,"stages":stages,
+        json!({"schema":2,"passed":true,"left":left,"right":right,"stages":stages,
+        "optimization":optimization,
         "tokens_identical":true,"scope":"recorded ordinary target-state parity; no throughput claim"}),
     )
 }
@@ -599,9 +657,15 @@ mod tests {
 
     #[test]
     fn parses_raw_and_chat() {
-        let Command::Record(options) =
-            parse_args(&args(&["model", "out", "--prompt-file", "prompt"])).unwrap()
-        else {
+        let Command::Record(options) = parse_args(&args(&[
+            "model",
+            "out",
+            "--prompt-file",
+            "prompt",
+            "--control",
+            OPT_CONTROLS[0],
+        ]))
+        .unwrap() else {
             panic!("expected record");
         };
         assert_eq!(options.mode, PromptMode::Raw);
@@ -627,6 +691,8 @@ mod tests {
             "128",
             "--tokens-file",
             "ids.json",
+            "--control",
+            OPT_CONTROLS[0],
         ]))
         .unwrap() else {
             panic!("expected record");
@@ -645,11 +711,19 @@ mod tests {
             ["--prompt-mode", "other"],
             ["--steps", "18446744073709551615"],
         ] {
-            let mut input = args(&["model", "out", "--prompt-file", "prompt"]);
+            let mut input = args(&[
+                "model",
+                "out",
+                "--prompt-file",
+                "prompt",
+                "--control",
+                OPT_CONTROLS[0],
+            ]);
             input.extend(args(&extra));
             assert!(parse_args(&input).is_err(), "{extra:?}");
         }
         assert!(parse_args(&args(&["model", "out", "--steps", "32"])).is_err());
+        assert!(parse_args(&args(&["model", "out", "--prompt-file", "prompt"])).is_err());
     }
 
     #[test]
@@ -693,5 +767,127 @@ mod tests {
         assert!(equal_logits(&a, &b).is_err());
         assert!(finite_logits(&vec![0.0; VOCAB]).is_err());
         assert!(finite_logits(&[1.0]).is_err());
+    }
+
+    struct CompareFixture {
+        root: PathBuf,
+        left: PathBuf,
+        right: PathBuf,
+        report: Value,
+    }
+
+    impl CompareFixture {
+        fn new() -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir()
+                .join(format!("ds4-iquest-compare-{}-{nonce}", std::process::id()));
+            let left = root.join("left");
+            let right = root.join("right");
+            let report = json!({
+                "schema":2,"passed":true,"mtp_enabled":false,"model":"fixture",
+                "prompt_mode":"raw","frontier":128,"capacity":256,"steps":1,
+                "chunk":128,"vocab":VOCAB,"eos":0,
+                "environment":{"DS4_IQUEST_ATTN_SHUFFLE":"1",
+                    "DS4_IQUEST_ATTN_ASYNC":"0"},
+                "optimization":{"control":"DS4_IQUEST_ATTN_ASYNC","arm":"off"}
+            });
+            for dir in [&left, &right] {
+                fs::create_dir_all(dir).unwrap();
+                write_json(&dir.join("report.json"), &report).unwrap();
+                write_json(&dir.join("prompt.tokens.json"), &json!(vec![1; 128])).unwrap();
+                write_json(&dir.join("tokens.json"), &json!([2])).unwrap();
+                for stage in ["prefill", "final"] {
+                    write_logits(&dir.join(format!("{stage}.f32")), &vec![1.0; VOCAB]).unwrap();
+                    fs::write(dir.join(format!("{stage}.kv")), b"native fixture").unwrap();
+                }
+            }
+            Self {
+                root,
+                left,
+                right,
+                report,
+            }
+        }
+
+        fn candidate(&self) -> Value {
+            let mut report = self.report.clone();
+            report["environment"]["DS4_IQUEST_ATTN_ASYNC"] = json!("1");
+            report["optimization"]["arm"] = json!("on");
+            report
+        }
+
+        fn write_right(&self, report: &Value) {
+            write_json(&self.right.join("report.json"), report).unwrap();
+        }
+    }
+
+    impl Drop for CompareFixture {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.root).unwrap();
+        }
+    }
+
+    #[test]
+    fn compare_requires_opposite_arms() {
+        let fixture = CompareFixture::new();
+        let error = compare(&fixture.left, &fixture.right).unwrap_err();
+        assert!(error.to_string().contains("opposite"), "{error}");
+
+        fixture.write_right(&fixture.candidate());
+        assert_eq!(
+            compare(&fixture.left, &fixture.right).unwrap()["passed"],
+            true
+        );
+        assert_eq!(
+            compare(&fixture.right, &fixture.left).unwrap()["passed"],
+            true
+        );
+    }
+
+    #[test]
+    fn optimization_needs_explicit_value() {
+        for control in OPT_CONTROLS {
+            for value in [json!("0"), json!("1")] {
+                let env = json!({control:value});
+                assert_eq!(optimization(&env, control).unwrap()["control"], control);
+            }
+            for value in [Value::Null, json!(0), json!(true), json!(""), json!("2")] {
+                assert!(optimization(&json!({control:value}), control).is_err());
+            }
+            assert!(optimization(&json!({}), control).is_err());
+        }
+        assert!(optimization(
+            &json!({"DS4_IQUEST_PREFILL_CHUNK":"1"}),
+            "DS4_IQUEST_PREFILL_CHUNK"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn compare_checks_switch_provenance() {
+        let fixture = CompareFixture::new();
+        for (field, value) in [
+            ("optimization", Value::Null),
+            ("optimization/control", json!("DS4_IQUEST_ATTN_WARP")),
+            ("optimization/arm", json!("off")),
+            ("environment/DS4_IQUEST_ATTN_ASYNC", Value::Null),
+            ("environment/DS4_IQUEST_ATTN_SHUFFLE", json!("0")),
+        ] {
+            let mut report = fixture.candidate();
+            *report.pointer_mut(&format!("/{field}")).unwrap() = value;
+            fixture.write_right(&report);
+            assert!(compare(&fixture.left, &fixture.right).is_err(), "{field}");
+        }
+        let mut control_on = fixture.candidate();
+        write_json(&fixture.left.join("report.json"), &control_on).unwrap();
+        fixture.write_right(&control_on);
+        assert!(compare(&fixture.left, &fixture.right).is_err());
+        control_on["optimization"] = json!({"control":"UNKNOWN","arm":"on"});
+        write_json(&fixture.left.join("report.json"), &control_on).unwrap();
+        fixture.write_right(&control_on);
+        assert!(compare(&fixture.left, &fixture.right).is_err());
     }
 }
