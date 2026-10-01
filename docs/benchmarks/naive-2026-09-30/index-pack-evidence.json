@@ -1,0 +1,553 @@
+{
+  "8192": {
+    "base": {
+      "scout_sha256": "c7b56774386375fc0741bcaf15887a965b0f2c7d7bcc2cd039955c28e1a31664",
+      "complete": true,
+      "warnings": [],
+      "executable_sha256": "369a2464f1a5c484d30c5c655699eee9b5465e0dc69227d88c4790d2aabc4931",
+      "samples": [
+        {
+          "rows": [
+            {
+              "ctx": 8192,
+              "prefill_tokens": 8192,
+              "prefill_tps": 497.83,
+              "gen_tokens": 32,
+              "gen_tps": 17.39,
+              "first_token_sec": 0.0943,
+              "kvcache_bytes": 224677940
+            }
+          ],
+          "proof_files": {
+            "frontier_008192.logits.json": {
+              "path": "bench-proof/frontier_008192.logits.json",
+              "sha256": "0a8719d5bfd4a4822f22fd71edc705e153e0775929ff5616b840cbc96615a3bd"
+            },
+            "tokens-8192.json": {
+              "path": "bench-proof/tokens-8192.json",
+              "sha256": "22f215774358dd6f6d329e92fcc7feafdc45ddaa0803979955fcfb479b8ef443"
+            }
+          }
+        },
+        {
+          "rows": [
+            {
+              "ctx": 8192,
+              "prefill_tokens": 8192,
+              "prefill_tps": 497.94,
+              "gen_tokens": 32,
+              "gen_tps": 17.44,
+              "first_token_sec": 0.0935,
+              "kvcache_bytes": 224677940
+            }
+          ],
+          "proof_files": {
+            "frontier_008192.logits.json": {
+              "path": "bench-01-proof/frontier_008192.logits.json",
+              "sha256": "0a8719d5bfd4a4822f22fd71edc705e153e0775929ff5616b840cbc96615a3bd"
+            },
+            "tokens-8192.json": {
+              "path": "bench-01-proof/tokens-8192.json",
+              "sha256": "22f215774358dd6f6d329e92fcc7feafdc45ddaa0803979955fcfb479b8ef443"
+            }
+          }
+        },
+        {
+          "rows": [
+            {
+              "ctx": 8192,
+              "prefill_tokens": 8192,
+              "prefill_tps": 498.43,
+              "gen_tokens": 32,
+              "gen_tps": 17.45,
+              "first_token_sec": 0.0925,
+              "kvcache_bytes": 224677940
+            }
+          ],
+          "proof_files": {
+            "frontier_008192.logits.json": {
+              "path": "bench-02-proof/frontier_008192.logits.json",
+              "sha256": "0a8719d5bfd4a4822f22fd71edc705e153e0775929ff5616b840cbc96615a3bd"
+            },
+            "tokens-8192.json": {
+              "path": "bench-02-proof/tokens-8192.json",
+              "sha256": "22f215774358dd6f6d329e92fcc7feafdc45ddaa0803979955fcfb479b8ef443"
+            }
+          }
+        }
+      ]
+    },
+    "candidate": {
+      "scout_sha256": "c6f29c16207175e6ba692dedde5e6e8a4dbffe22b0d79d37a62469839d4e456a",
+      "complete": true,
+      "warnings": [],
+      "executable_sha256": "369a2464f1a5c484d30c5c655699eee9b5465e0dc69227d88c4790d2aabc4931",
+      "samples": [
+        {
+          "rows": [
+            {
+              "ctx": 8192,
+              "prefill_tokens": 8192,
+              "prefill_tps": 506.32,
+              "gen_tokens": 32,
+              "gen_tps": 17.39,
+              "first_token_sec": 0.0944,
+              "kvcache_bytes": 224677940
+            }
+          ],
+          "proof_files": {
+            "frontier_008192.logits.json": {
+              "path": "bench-proof/frontier_008192.logits.json",
+              "sha256": "0a8719d5bfd4a4822f22fd71edc705e153e0775929ff5616b840cbc96615a3bd"
+            },
+            "tokens-8192.json": {
+              "path": "bench-proof/tokens-8192.json",
+              "sha256": "22f215774358dd6f6d329e92fcc7feafdc45ddaa0803979955fcfb479b8ef443"
+            }
+          }
+        },
+        {
+          "rows": [
+            {
+              "ctx": 8192,
+              "prefill_tokens": 8192,
+              "prefill_tps": 506.07,
+              "gen_tokens": 32,
+              "gen_tps": 17.48,
+              "first_token_sec": 0.0927,
+              "kvcache_bytes": 224677940
+            }
+          ],
+          "proof_files": {
+            "frontier_008192.logits.json": {
+              "path": "bench-01-proof/frontier_008192.logits.json",
+              "sha256": "0a8719d5bfd4a4822f22fd71edc705e153e0775929ff5616b840cbc96615a3bd"
+            },
+            "tokens-8192.json": {
+              "path": "bench-01-proof/tokens-8192.json",
+              "sha256": "22f215774358dd6f6d329e92fcc7feafdc45ddaa0803979955fcfb479b8ef443"
+            }
+          }
+        },
+        {
+          "rows": [
+            {
+              "ctx": 8192,
+              "prefill_tokens": 8192,
+              "prefill_tps": 506.09,
+              "gen_tokens": 32,
+              "gen_tps": 17.46,
+              "first_token_sec": 0.0949,
+              "kvcache_bytes": 224677940
+            }
+          ],
+          "proof_files": {
+            "frontier_008192.logits.json": {
+              "path": "bench-02-proof/frontier_008192.logits.json",
+              "sha256": "0a8719d5bfd4a4822f22fd71edc705e153e0775929ff5616b840cbc96615a3bd"
+            },
+            "tokens-8192.json": {
+              "path": "bench-02-proof/tokens-8192.json",
+              "sha256": "22f215774358dd6f6d329e92fcc7feafdc45ddaa0803979955fcfb479b8ef443"
+            }
+          }
+        }
+      ]
+    },
+    "comparison": {
+      "verdict": "improved",
+      "metrics": [
+        {
+          "metric": "decode",
+          "ctx": 8192,
+          "unit": "seconds/token",
+          "baseline": [
+            0.05750431282346176,
+            0.0573394495412844,
+            0.05730659025787966
+          ],
+          "candidate": [
+            0.05750431282346176,
+            0.05720823798627002,
+            0.0572737686139748
+          ],
+          "baseline_median": 0.0573394495412844,
+          "candidate_median": 0.0572737686139748,
+          "median_percent": -0.11454753722794919,
+          "lower_percent": -0.5148741418764313,
+          "upper_percent": 0.34502587694076325
+        },
+        {
+          "metric": "first_token",
+          "ctx": 8192,
+          "unit": "seconds",
+          "baseline": [
+            0.0943,
+            0.0935,
+            0.0925
+          ],
+          "candidate": [
+            0.0944,
+            0.0927,
+            0.0949
+          ],
+          "baseline_median": 0.0935,
+          "candidate_median": 0.0944,
+          "median_percent": 0.9625668449197766,
+          "lower_percent": -1.6967126193001003,
+          "upper_percent": 2.5945945945945903
+        },
+        {
+          "metric": "prefill",
+          "ctx": 8192,
+          "unit": "seconds/token",
+          "baseline": [
+            0.0020087178354056606,
+            0.0020082740892477004,
+            0.002006299781313324
+          ],
+          "candidate": [
+            0.0019750355506399117,
+            0.0019760112237437507,
+            0.0019759331344227312
+          ],
+          "baseline_median": 0.0020082740892477004,
+          "candidate_median": 0.0019759331344227312,
+          "median_percent": -1.6103855045545123,
+          "lower_percent": -1.6768051824932795,
+          "upper_percent": -1.509672574940235
+        }
+      ],
+      "correctness": {
+        "max_abs": 0.0,
+        "max_scaled": 0.0,
+        "bad": 0,
+        "checked": 915456,
+        "rel_rms": 0.0,
+        "rel_rms_scaled": 0.0
+      },
+      "token_mismatches": 0,
+      "argmax_mismatches": 0,
+      "max_slowdown_percent": 3.0,
+      "logit_atol": 0.0001,
+      "logit_rtol": 0.0001,
+      "logit_rel_rms": 0.0,
+      "changes": {
+        "DS4_NAIVE_INDEX_PACK": "Some(\"0\") -> Some(\"1\")"
+      },
+      "reasons": [],
+      "method": "sample-extrema-envelope-v1"
+    },
+    "mean_tps": {
+      "prefill_tps": {
+        "base": 498.06666666666666,
+        "candidate": 506.15999999999997,
+        "percent": 1.6249498059162093
+      },
+      "gen_tps": {
+        "base": 17.426666666666666,
+        "candidate": 17.443333333333335,
+        "percent": 0.09563886763581664
+      }
+    }
+  },
+  "32768": {
+    "base": {
+      "scout_sha256": "a02c239c32164ea0ced5a2cd53f17d26d1d9176a53784166a510e4c64039e239",
+      "complete": true,
+      "warnings": [],
+      "executable_sha256": "369a2464f1a5c484d30c5c655699eee9b5465e0dc69227d88c4790d2aabc4931",
+      "samples": [
+        {
+          "rows": [
+            {
+              "ctx": 32768,
+              "prefill_tokens": 32768,
+              "prefill_tps": 408.13,
+              "gen_tokens": 32,
+              "gen_tps": 17.16,
+              "first_token_sec": 0.0937,
+              "kvcache_bytes": 820203572
+            }
+          ],
+          "proof_files": {
+            "frontier_032768.logits.json": {
+              "path": "bench-proof/frontier_032768.logits.json",
+              "sha256": "9295f6ee8e585c141cf158d024ed6b6d637078cd8f918abecad5928c000bfe36"
+            },
+            "tokens-32768.json": {
+              "path": "bench-proof/tokens-32768.json",
+              "sha256": "7bd58b71a67b3b36ad3a9bebdf8e4ed5cdb4139d7bc34b04c8a01ea4a8bb9e3b"
+            }
+          }
+        },
+        {
+          "rows": [
+            {
+              "ctx": 32768,
+              "prefill_tokens": 32768,
+              "prefill_tps": 407.79,
+              "gen_tokens": 32,
+              "gen_tps": 17.17,
+              "first_token_sec": 0.093,
+              "kvcache_bytes": 820203572
+            }
+          ],
+          "proof_files": {
+            "frontier_032768.logits.json": {
+              "path": "bench-01-proof/frontier_032768.logits.json",
+              "sha256": "9295f6ee8e585c141cf158d024ed6b6d637078cd8f918abecad5928c000bfe36"
+            },
+            "tokens-32768.json": {
+              "path": "bench-01-proof/tokens-32768.json",
+              "sha256": "7bd58b71a67b3b36ad3a9bebdf8e4ed5cdb4139d7bc34b04c8a01ea4a8bb9e3b"
+            }
+          }
+        },
+        {
+          "rows": [
+            {
+              "ctx": 32768,
+              "prefill_tokens": 32768,
+              "prefill_tps": 407.67,
+              "gen_tokens": 32,
+              "gen_tps": 17.19,
+              "first_token_sec": 0.0919,
+              "kvcache_bytes": 820203572
+            }
+          ],
+          "proof_files": {
+            "frontier_032768.logits.json": {
+              "path": "bench-02-proof/frontier_032768.logits.json",
+              "sha256": "9295f6ee8e585c141cf158d024ed6b6d637078cd8f918abecad5928c000bfe36"
+            },
+            "tokens-32768.json": {
+              "path": "bench-02-proof/tokens-32768.json",
+              "sha256": "7bd58b71a67b3b36ad3a9bebdf8e4ed5cdb4139d7bc34b04c8a01ea4a8bb9e3b"
+            }
+          }
+        }
+      ]
+    },
+    "candidate": {
+      "scout_sha256": "1084f37b9b18d25ed1d3c47c718bc80696fc0e678d62958a370f0bd801547292",
+      "complete": true,
+      "warnings": [],
+      "executable_sha256": "369a2464f1a5c484d30c5c655699eee9b5465e0dc69227d88c4790d2aabc4931",
+      "samples": [
+        {
+          "rows": [
+            {
+              "ctx": 32768,
+              "prefill_tokens": 32768,
+              "prefill_tps": 431.46,
+              "gen_tokens": 32,
+              "gen_tps": 17.18,
+              "first_token_sec": 0.0948,
+              "kvcache_bytes": 820203572
+            }
+          ],
+          "proof_files": {
+            "frontier_032768.logits.json": {
+              "path": "bench-proof/frontier_032768.logits.json",
+              "sha256": "9295f6ee8e585c141cf158d024ed6b6d637078cd8f918abecad5928c000bfe36"
+            },
+            "tokens-32768.json": {
+              "path": "bench-proof/tokens-32768.json",
+              "sha256": "7bd58b71a67b3b36ad3a9bebdf8e4ed5cdb4139d7bc34b04c8a01ea4a8bb9e3b"
+            }
+          }
+        },
+        {
+          "rows": [
+            {
+              "ctx": 32768,
+              "prefill_tokens": 32768,
+              "prefill_tps": 431.17,
+              "gen_tokens": 32,
+              "gen_tps": 17.15,
+              "first_token_sec": 0.0938,
+              "kvcache_bytes": 820203572
+            }
+          ],
+          "proof_files": {
+            "frontier_032768.logits.json": {
+              "path": "bench-01-proof/frontier_032768.logits.json",
+              "sha256": "9295f6ee8e585c141cf158d024ed6b6d637078cd8f918abecad5928c000bfe36"
+            },
+            "tokens-32768.json": {
+              "path": "bench-01-proof/tokens-32768.json",
+              "sha256": "7bd58b71a67b3b36ad3a9bebdf8e4ed5cdb4139d7bc34b04c8a01ea4a8bb9e3b"
+            }
+          }
+        },
+        {
+          "rows": [
+            {
+              "ctx": 32768,
+              "prefill_tokens": 32768,
+              "prefill_tps": 431.19,
+              "gen_tokens": 32,
+              "gen_tps": 17.24,
+              "first_token_sec": 0.0931,
+              "kvcache_bytes": 820203572
+            }
+          ],
+          "proof_files": {
+            "frontier_032768.logits.json": {
+              "path": "bench-02-proof/frontier_032768.logits.json",
+              "sha256": "9295f6ee8e585c141cf158d024ed6b6d637078cd8f918abecad5928c000bfe36"
+            },
+            "tokens-32768.json": {
+              "path": "bench-02-proof/tokens-32768.json",
+              "sha256": "7bd58b71a67b3b36ad3a9bebdf8e4ed5cdb4139d7bc34b04c8a01ea4a8bb9e3b"
+            }
+          }
+        }
+      ]
+    },
+    "comparison": {
+      "verdict": "inconclusive",
+      "metrics": [
+        {
+          "metric": "decode",
+          "ctx": 32768,
+          "unit": "seconds/token",
+          "baseline": [
+            0.05827505827505827,
+            0.05824111822947,
+            0.05817335660267597
+          ],
+          "candidate": [
+            0.05820721769499418,
+            0.05830903790087464,
+            0.0580046403712297
+          ],
+          "baseline_median": 0.05824111822947,
+          "candidate_median": 0.05820721769499418,
+          "median_percent": -0.05820721769498327,
+          "lower_percent": -0.46403712296982924,
+          "upper_percent": 0.23323615160351086
+        },
+        {
+          "metric": "first_token",
+          "ctx": 32768,
+          "unit": "seconds",
+          "baseline": [
+            0.0937,
+            0.093,
+            0.0919
+          ],
+          "candidate": [
+            0.0948,
+            0.0938,
+            0.0931
+          ],
+          "baseline_median": 0.093,
+          "candidate_median": 0.0938,
+          "median_percent": 0.8602150537634357,
+          "lower_percent": -0.6403415154749181,
+          "upper_percent": 3.1556039173014083
+        },
+        {
+          "metric": "prefill",
+          "ctx": 32768,
+          "unit": "seconds/token",
+          "baseline": [
+            0.0024501996912748387,
+            0.0024522425758356017,
+            0.002452964407486447
+          ],
+          "candidate": [
+            0.0023177119547582625,
+            0.0023192708212537976,
+            0.002319163245900879
+          ],
+          "baseline_median": 0.0024522425758356017,
+          "candidate_median": 0.002319163245900879,
+          "median_percent": -5.4268419954080604,
+          "lower_percent": -5.513836740369904,
+          "upper_percent": -5.3435999721687555
+        }
+      ],
+      "correctness": {
+        "max_abs": 0.0,
+        "max_scaled": 0.0,
+        "bad": 0,
+        "checked": 915456,
+        "rel_rms": 0.0,
+        "rel_rms_scaled": 0.0
+      },
+      "token_mismatches": 0,
+      "argmax_mismatches": 0,
+      "max_slowdown_percent": 3.0,
+      "logit_atol": 0.0001,
+      "logit_rtol": 0.0001,
+      "logit_rel_rms": 0.0,
+      "changes": {
+        "DS4_NAIVE_INDEX_PACK": "Some(\"0\") -> Some(\"1\")"
+      },
+      "reasons": [],
+      "method": "sample-extrema-envelope-v1"
+    },
+    "mean_tps": {
+      "prefill_tps": {
+        "base": 407.86333333333334,
+        "candidate": 431.2733333333333,
+        "percent": 5.739667699147577
+      },
+      "gen_tps": {
+        "base": 17.173333333333336,
+        "candidate": 17.189999999999998,
+        "percent": 0.09704968944097558
+      }
+    }
+  },
+  "profile_32k": {
+    "base": {
+      "prefill": {
+        "wall_seconds": 80.34760392,
+        "gpu_seconds": 80.233003545,
+        "index_seconds": 15.474971488,
+        "index_percent": 19.287538549296123,
+        "query_seconds": 0.012661856
+      },
+      "decode": {
+        "wall_seconds": 1.87994536,
+        "gpu_seconds": 1.760857632,
+        "index_seconds": 0.030850112,
+        "index_percent": 1.751993542201372,
+        "query_seconds": 0.000422528
+      }
+    },
+    "candidate": {
+      "prefill": {
+        "wall_seconds": 76.01408784,
+        "gpu_seconds": 75.918712889,
+        "index_seconds": 11.14339728,
+        "index_percent": 14.67806401867304,
+        "query_seconds": 0.013098048
+      },
+      "decode": {
+        "wall_seconds": 1.873256896,
+        "gpu_seconds": 1.753366272,
+        "index_seconds": 0.022513856,
+        "index_percent": 1.284036105834252,
+        "query_seconds": 0.000409984
+      }
+    }
+  },
+  "adopted": true,
+  "decision": "Retain reproducible prefill improvement; decode envelopes overlap. Preserve 32K automatic Inconclusive verdict from first-token spread; do not relabel it as a pass.",
+  "protocol": {
+    "model_revision": "65b235a48e87acaf7b806b96870378c9c68a654c",
+    "chunk": 2048,
+    "generation_tokens": 32,
+    "warmup": "separate fresh process before each sample",
+    "control": "DS4_NAIVE_INDEX_PACK",
+    "clock_range_mhz": [
+      300,
+      2200
+    ]
+  }
+}

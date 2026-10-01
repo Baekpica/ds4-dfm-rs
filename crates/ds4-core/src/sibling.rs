@@ -329,9 +329,8 @@ pub(crate) fn attach_siblings(
         family,
         ModelFamily::DeepSeek4 | ModelFamily::Inkling | ModelFamily::Step37
     );
-    if (mtp_path.is_some() && !mtp_supported)
-        || (dspark_path.is_some() && family != ModelFamily::DeepSeek4)
-    {
+    let dspark_supported = matches!(family, ModelFamily::DeepSeek4 | ModelFamily::NaiveN05);
+    if (mtp_path.is_some() && !mtp_supported) || (dspark_path.is_some() && !dspark_supported) {
         return Err(Error {
             code: 1,
             message: DEEPSEEK_ONLY.into(),
@@ -361,6 +360,16 @@ fn kind_token(kind: SupportCatalog) -> &'static str {
 
 fn open_one(kind: SupportCatalog, path: &str, shape: Shape) -> Result<SiblingAttach> {
     let token = kind_token(kind);
+    if shape.family == ModelFamily::NaiveN05 {
+        let g = crate::GgufFile::open(std::path::Path::new(path)).map_err(|e| Error {
+            code: 1,
+            message: format!("{token} open failed: {e}"),
+        })?;
+        crate::naive::validate_draft(&g).map_err(|e| Error {
+            code: 1,
+            message: format!("{token} metadata failed: {e}"),
+        })?;
+    }
     if shape.family == ModelFamily::Step37 {
         crate::Step37SidecarPlan::inspect(std::path::Path::new(path), crate::Step37Sidecar::Mtp)
             .map_err(|e| Error {
@@ -382,6 +391,12 @@ fn open_one(kind: SupportCatalog, path: &str, shape: Shape) -> Result<SiblingAtt
         code: 1,
         message: format!("{token} tensor inventory failed: {}", e.token()),
     })?;
+    if shape.family == ModelFamily::NaiveN05 {
+        crate::naive::validate_draft_inv(&inv).map_err(|e| Error {
+            code: 1,
+            message: format!("{token} inventory failed: {e}"),
+        })?;
+    }
     let plan = match kind {
         SupportCatalog::Mtp => BindPlan::resolve_mtp(shape, &inv),
         SupportCatalog::Dspark => BindPlan::resolve_dspark(shape, &inv),

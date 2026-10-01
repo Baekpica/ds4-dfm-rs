@@ -123,6 +123,8 @@ pub enum MtpKind {
     None,
     Embedded,
     Sidecar,
+    /// Separate DSpark model; the target has no embedded predictor.
+    External,
     BoundOnly,
     DeepSeek,
 }
@@ -657,6 +659,26 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
             qualified_prompt: None,
             media_serial: false,
         },
+        ModelFamily::NaiveN05 => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::OptIn,
+            bank_support: Support::Qualified,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Qualified,
+            disk: Support::Qualified,
+            snapshot: Support::Qualified,
+            mtp: MtpKind::External,
+            mtp_support: Support::Present,
+            spec_lane: SpecLane::Both,
+            spec_draft_min: 1,
+            host: HostNeed::Cuda,
+            ctx_max: Some(crate::naive::CONTEXT_MAX),
+            qualified_ctx: Some(crate::naive::QUALIFIED_CTX),
+            qualified_banks: Some(crate::naive::QUALIFIED_BANKS),
+            qualified_prompt: Some(crate::naive::QUALIFIED_PROMPT),
+            media_serial: false,
+        },
         // Target banks run without MTP; media and speculation use serial.
         ModelFamily::Mimo2 => ServingCaps {
             family,
@@ -962,6 +984,15 @@ pub fn resolve_plan(
     let draft = req.mtp_draft.unwrap_or(caps.spec_draft_min);
     let (mtp_mode, mtp_draft) = match mtp_mode {
         MtpMode::Off => (MtpMode::Off, None),
+        _ if caps.family == ModelFamily::NaiveN05
+            && draft > crate::naive::DRAFT_PROPOSALS as i32 =>
+        {
+            issues.push(error(
+                "mtp_draft",
+                "Naive DSpark accepts at most six draft tokens",
+            ));
+            (MtpMode::Off, None)
+        }
         _ if caps.family == ModelFamily::Dots3Note && draft > DOTS3_MAX_DRAFT => {
             issues.push(error(
                 "mtp_draft",
@@ -985,6 +1016,7 @@ pub fn resolve_plan(
         }
     };
     let disk = resolve_disk(req, caps, facts, &mut issues);
+    let (qualified_ctx, qualified_prompt) = measured_limits(caps, req, facts, max_seqs, driver);
 
     // The native open and session creation refuse these hosts outright, so
     // the check cannot approve the one it was pointed at.
@@ -1030,7 +1062,7 @@ pub fn resolve_plan(
                 caps.ctx_max.unwrap_or_default()
             ),
         ));
-    } else if let Some(qctx) = measured_ctx(caps, req, facts) {
+    } else if let Some(qctx) = qualified_ctx {
         if req.ctx as u32 > qctx {
             issues.push(warn(
                 "ctx_unqualified",
@@ -1038,7 +1070,7 @@ pub fn resolve_plan(
             ));
         }
     }
-    if caps.qualified_prompt.is_some() {
+    if qualified_prompt.is_some() {
         issues.push(warn(
             "prompt_bound",
             "configured ctx is not a full-length request proof",
@@ -1141,9 +1173,9 @@ pub fn resolve_plan(
         } else {
             Support::Qualified
         },
-        ctx: measured_ctx(caps, req, facts),
+        ctx: qualified_ctx,
         banks_n: caps.qualified_banks,
-        prompt: caps.qualified_prompt,
+        prompt: qualified_prompt,
         note: qualified_note(caps),
     };
 
@@ -1192,6 +1224,7 @@ impl ServingCaps {
             Variant::Ling30FlashVl => "bailingmoe3",
             Variant::Mimo26Flash => "mimo2",
             Variant::Qwen35_27B => "qwen35",
+            Variant::NaiveN05Flash => "naive_n05_flash",
         }
     }
 }
@@ -1341,6 +1374,7 @@ impl ResolvedPlan {
             }
             Some(ModelFamily::Dots3Note) => Some("DS4_DOTS3_PREFILL_CHUNK"),
             Some(ModelFamily::Mimo2) => Some("DS4_MIMO2_PREFILL_CHUNK"),
+            Some(ModelFamily::NaiveN05) => Some("DS4_NAIVE_PREFILL_CHUNK"),
             _ => None,
         }
     }
@@ -1885,7 +1919,7 @@ fn resolve_mtp(
     let mimo_dflash = caps.family == ModelFamily::Mimo2 && has_path;
     let can = match caps.mtp {
         MtpKind::None | MtpKind::BoundOnly => false,
-        MtpKind::Embedded | MtpKind::Sidecar | MtpKind::DeepSeek => true,
+        MtpKind::Embedded | MtpKind::Sidecar | MtpKind::External | MtpKind::DeepSeek => true,
     };
     if req.backend != Backend::Cuda && facts.mtp_path_ok != Some(false) {
         if req.mtp_mode == MtpMode::On {
@@ -1921,6 +1955,14 @@ fn resolve_mtp(
                 "{} MTP sidecar is missing, is not a GGUF, or does not attach",
                 caps.variant_name()
             ),
+        ));
+        return (MtpMode::Off, false);
+    }
+    if caps.mtp == MtpKind::External && req.mtp_mode == MtpMode::On && facts.dspark_ok != Some(true)
+    {
+        issues.push(error(
+            "mtp_sidecar",
+            "Naive speculation requires its DS4_DSPARK_MODEL",
         ));
         return (MtpMode::Off, false);
     }
@@ -1984,6 +2026,7 @@ fn resolve_mtp(
                     || (req.mtp_mode == MtpMode::Auto && caps.mtp_support == Support::Qualified))
         }
         MtpKind::Sidecar | MtpKind::DeepSeek => has_path || facts.mtp_loaded,
+        MtpKind::External => facts.dspark_ok == Some(true),
         MtpKind::BoundOnly | MtpKind::None => false,
     };
     let mode = match req.mtp_mode {
@@ -2012,7 +2055,7 @@ enum BankDriver {
 
 /// Absent when the operator forced serial through either legacy switch, the
 /// backend has no lane, the native fit refused it, the family serves
-/// serially, or an opt-in family stayed at width one.
+/// serially, or an opt-in family stayed at width one without a bank.
 ///
 /// This mirrors the native admission gate: Inkling and GLM refuse banks
 /// outright; Qwen, Step and dots3 require their batch environment switch to
@@ -2024,12 +2067,14 @@ fn bank_driver(
     width: u32,
     facts: &EngineFacts,
 ) -> BankDriver {
+    // Naive needs a bank even at explicit width one to restore partial KV.
+    let single_naive = caps.family == ModelFamily::NaiveN05 && req.max_seqs == MaxSeqs::Fixed(1);
     let absent = req.max_seqs == MaxSeqs::Off
         || req.lane == LaneMode::Serial
         || req.backend != Backend::Cuda
         || facts.cont_lane == Some(false)
         || caps.banks == BankLane::Serial
-        || (caps.banks == BankLane::OptIn && width < 2);
+        || (caps.banks == BankLane::OptIn && width < 2 && !single_naive);
     if absent {
         BankDriver::Absent
     } else {
@@ -2094,18 +2139,48 @@ pub fn open_draft_tokens(
     requested.filter(|n| *n > 0).or(planned.filter(|n| *n > 0))
 }
 
-fn measured_ctx(caps: ServingCaps, req: &ServingRequest, facts: &EngineFacts) -> Option<u32> {
+fn measured_limits(
+    caps: ServingCaps,
+    req: &ServingRequest,
+    facts: &EngineFacts,
+    width: u32,
+    driver: BankDriver,
+) -> (Option<u32>, Option<u32>) {
+    // Near-capacity Naive gates used main-only banks and chunk 2048.
+    // Loading DSpark, even with trials off, needs its own memory proof.
+    if caps.family == ModelFamily::NaiveN05
+        && driver == BankDriver::Present
+        && req.mtp_path.is_none()
+        && !facts.mtp_loaded
+        && facts.dspark_ok != Some(true)
+        && req.mtp_mode != MtpMode::On
+        && facts.native_chunk.or(req.native_chunk) == Some(crate::naive::PREFILL_CAP)
+        && req.sched_chunk == Some(crate::naive::PREFILL_CAP)
+        && req.sched_chunk_live == Some(crate::naive::PREFILL_CAP)
+    {
+        let bounds = match width {
+            1 => Some((524288, 523441)),
+            2 => Some((262144, 262011)),
+            _ => None,
+        };
+        if let Some((ctx, prompt)) = bounds {
+            return (Some(ctx), Some(prompt));
+        }
+    }
     if caps.family == ModelFamily::Mimo2
         && req.mtp_path.is_some()
         && (facts.vision_loaded || facts.vision_path_ok == Some(true))
     {
-        return Some(crate::mimo2::QUALIFIED_CONTEXT);
+        return (Some(crate::mimo2::QUALIFIED_CONTEXT), caps.qualified_prompt);
     }
-    caps.qualified_ctx
+    (caps.qualified_ctx, caps.qualified_prompt)
 }
 
 fn qualified_note(caps: ServingCaps) -> &'static str {
     match caps.variant {
+        Variant::NaiveN05Flash => {
+            "main-only chunk-2048 buffered retrieval and disk continuation: 256K/two banks, 512K/one bank; draft-loaded and other shapes retain the bounded 8K gate; DSpark acceleration unqualified"
+        }
         Variant::Step37Flash => {
             "text banks are opt-in; Chat restart hits need history-stable identity; images serial"
         }
@@ -2789,6 +2864,159 @@ mod tests {
         let arg = p.batch_max_total_tokens(p.effective.ctx, width);
         assert_eq!(arg, 256);
         assert_ne!(arg, p.effective.ctx.saturating_mul(width));
+    }
+
+    #[test]
+    fn naive_single_bank_reuses() {
+        let req = ServingRequest {
+            ctx: 8192,
+            max_seqs: MaxSeqs::Fixed(1),
+            prefix_reuse: PrefixReuse::Partial,
+            mtp_mode: MtpMode::Off,
+            ..ServingRequest::default()
+        };
+        let caps = caps(ModelFamily::NaiveN05, Variant::NaiveN05Flash);
+        for facts in [
+            EngineFacts::default(),
+            EngineFacts {
+                banks_fitted: Some(1),
+                cont_lane: Some(true),
+                partial_reuse: Some(true),
+                ..EngineFacts::default()
+            },
+        ] {
+            let p = resolve_plan(&req, Some(caps), &facts);
+            assert!(!p.has_errors(), "{:?}", p.issues);
+            assert_eq!(p.effective.max_seqs, 1);
+            assert_eq!(p.effective.prefix_reuse, ReuseKind::Partial);
+            assert!(p.wants_bank_lane());
+        }
+        let mut serial = req;
+        serial.lane = LaneMode::Serial;
+        let p = resolve_plan(&serial, Some(caps), &EngineFacts::default());
+        assert!(p.issues.iter().any(|i| i.code == "partial_lane"));
+    }
+
+    #[test]
+    fn naive_http_scope_is_bounded() {
+        let caps = caps(ModelFamily::NaiveN05, Variant::NaiveN05Flash);
+        assert_eq!(caps.bank_support, Support::Qualified);
+        assert_eq!(caps.reuse_support, Support::Qualified);
+        assert_eq!(caps.disk, Support::Qualified);
+        assert_eq!(caps.snapshot, Support::Qualified);
+        assert_eq!(caps.qualified_ctx, Some(8192));
+        assert_eq!(caps.qualified_banks, Some(2));
+        assert_eq!(caps.qualified_prompt, Some(702));
+
+        // Correct explicit speculation is not evidence of acceleration.
+        let req = ServingRequest {
+            ctx: 8193,
+            max_seqs: MaxSeqs::Fixed(3),
+            ..ServingRequest::default()
+        };
+        let facts = EngineFacts {
+            dspark_ok: Some(true),
+            ..EngineFacts::default()
+        };
+        let p = resolve_plan(&req, Some(caps), &facts);
+        assert_eq!(p.effective.mtp_mode, MtpMode::Off);
+        assert_eq!(p.qualified.mtp, Support::Present);
+        assert!(p.issues.iter().any(|i| i.code == "ctx_unqualified"));
+        assert!(p.issues.iter().any(|i| i.code == "banks_unqualified"));
+        assert!(p.issues.iter().any(|i| i.code == "prompt_bound"));
+    }
+
+    #[test]
+    fn naive_long_scope_by_width() {
+        for (width, ctx, prompt) in [(1, 524288, 523441), (2, 262144, 262011)] {
+            let req = ServingRequest {
+                ctx,
+                max_seqs: MaxSeqs::Fixed(width),
+                native_chunk: Some(2048),
+                sched_chunk: Some(2048),
+                sched_chunk_live: Some(2048),
+                mtp_mode: MtpMode::Off,
+                ..ServingRequest::default()
+            };
+            let caps = caps(ModelFamily::NaiveN05, Variant::NaiveN05Flash);
+            let p = resolve_plan(&req, Some(caps), &EngineFacts::default());
+            assert!(!p.has_errors(), "{:?}", p.issues);
+            assert_eq!(p.qualified.ctx, Some(ctx as u32));
+            assert_eq!(p.qualified.prompt, Some(prompt));
+            assert!(!p.issues.iter().any(|i| i.code == "ctx_unqualified"));
+
+            for changed in [
+                ServingRequest {
+                    lane: LaneMode::Serial,
+                    ..req.clone()
+                },
+                ServingRequest {
+                    native_chunk: Some(1024),
+                    ..req.clone()
+                },
+                ServingRequest {
+                    sched_chunk_live: Some(1024),
+                    ..req.clone()
+                },
+                ServingRequest {
+                    mtp_path: Some("draft.gguf".into()),
+                    ..req.clone()
+                },
+            ] {
+                let p = resolve_plan(&changed, Some(caps), &EngineFacts::default());
+                assert_eq!(p.qualified.ctx, Some(8192));
+                assert_eq!(p.qualified.prompt, Some(702));
+            }
+            let facts = EngineFacts {
+                mtp_loaded: true,
+                ..EngineFacts::default()
+            };
+            let p = resolve_plan(&req, Some(caps), &facts);
+            assert_eq!(p.qualified.ctx, Some(8192));
+        }
+    }
+
+    #[test]
+    fn naive_draft_scope_is_bounded() {
+        let caps = caps(ModelFamily::NaiveN05, Variant::NaiveN05Flash);
+        for (width, ctx) in [(1, 524288), (2, 262144)] {
+            for mode in [MtpMode::Off, MtpMode::Auto, MtpMode::On] {
+                let req = ServingRequest {
+                    ctx,
+                    max_seqs: MaxSeqs::Fixed(width),
+                    native_chunk: Some(crate::naive::PREFILL_CAP),
+                    sched_chunk: Some(crate::naive::PREFILL_CAP),
+                    sched_chunk_live: Some(crate::naive::PREFILL_CAP),
+                    mtp_mode: mode,
+                    ..ServingRequest::default()
+                };
+                // DSpark attachment survives Off/Auto, before and after open.
+                let facts = EngineFacts {
+                    dspark_ok: Some(true),
+                    ..EngineFacts::default()
+                };
+                for facts in [
+                    facts.clone(),
+                    EngineFacts {
+                        banks_fitted: Some(width),
+                        cont_lane: Some(true),
+                        native_chunk: req.native_chunk,
+                        ..facts
+                    },
+                ] {
+                    let p = resolve_plan(&req, Some(caps), &facts);
+                    assert!(!p.has_errors(), "{:?}", p.issues);
+                    assert_eq!(p.qualified.ctx, Some(8192), "{width}/{mode:?}");
+                    assert_eq!(p.qualified.prompt, Some(702));
+                    assert!(p.issues.iter().any(|i| i.code == "ctx_unqualified"));
+                    assert_eq!(p.effective.ctx, ctx);
+                    assert!(p.effective.mtp_weights);
+                    if mode != MtpMode::On {
+                        assert_eq!(p.effective.mtp_mode, MtpMode::Off);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

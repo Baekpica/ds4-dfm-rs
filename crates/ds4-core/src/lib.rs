@@ -24,6 +24,8 @@ mod mapped;
 mod mem;
 mod mem_gov;
 mod mimo2;
+mod naive;
+mod naive_mtp;
 mod payload;
 mod progress;
 mod qwen35;
@@ -278,6 +280,35 @@ fn ling_open_check(
         "Ling does not support directional steering"
     } else if dspark.is_some() {
         "Ling does not support DSpark sidecars"
+    } else {
+        return Ok(());
+    };
+    Err(Error {
+        code: 1,
+        message: message.into(),
+    })
+}
+
+fn naive_open_check(
+    backend: Backend,
+    tuning: &OpenTuning,
+    mtp: Option<&str>,
+    dspark: Option<&str>,
+    distributed: Option<&DistributedConfig>,
+) -> Result<()> {
+    let message = if backend != Backend::Cuda || distributed.is_some() {
+        "Naive requires one full CUDA model"
+    } else if tuning.steering_file.is_some()
+        || tuning.steering_attn != 0.0
+        || tuning.steering_ffn != 0.0
+    {
+        "Naive does not support directional steering"
+    } else if tuning.vision_path.is_some() {
+        "Naive is text-only"
+    } else if mtp.is_some() {
+        "Naive has no embedded MTP; use its DSpark sidecar"
+    } else if dspark.is_some() && tuning.mtp_draft_tokens > naive::DRAFT_PROPOSALS as i32 {
+        "Naive DSpark accepts 1..6 draft tokens"
     } else {
         return Ok(());
     };
@@ -1052,6 +1083,12 @@ pub fn probe_model_artifact(path: &str) -> Result<()> {
         code: 1,
         message: format!("validate failed: {}", e.token()),
     })?;
+    if identified.shape.family == ModelFamily::NaiveN05 {
+        naive::validate_inventory(&inventory).map_err(|e| Error {
+            code: 1,
+            message: e.to_string(),
+        })?;
+    }
     if identified.shape.family == ModelFamily::Mimo2 {
         Mimo2Plan::validate_inventory(&inventory).map_err(|e| Error {
             code: 1,
@@ -1214,6 +1251,19 @@ impl Model {
             code: 1,
             message: format!("identify failed: {}", e.token()),
         })?;
+        // Resolve Naive's common sidecar environment here as well as native:
+        // the Rust catalog must validate and retain the actual loaded file.
+        let env_dspark = (identified.shape.family == ModelFamily::NaiveN05)
+            .then(|| {
+                std::env::var("DS4_DSPARK_MODEL")
+                    .ok()
+                    .filter(|p| !p.is_empty())
+            })
+            .flatten();
+        let dspark_path = dspark_path.or(env_dspark.as_deref());
+        if identified.shape.family == ModelFamily::NaiveN05 {
+            naive_open_check(backend, &tuning, mtp_path, dspark_path, distributed)?;
+        }
         let dflash = identified.shape.family == ModelFamily::Mimo2 && mtp_path.is_some();
         if identified.shape.family == ModelFamily::Mimo2
             && (backend != Backend::Cuda || distributed.is_some() || dspark_path.is_some())
@@ -1269,6 +1319,12 @@ impl Model {
             code: 1,
             message: format!("validate failed: {}", e.token()),
         })?;
+        if identified.shape.family == ModelFamily::NaiveN05 {
+            naive::validate_inventory(&inventory).map_err(|e| Error {
+                code: 1,
+                message: e.to_string(),
+            })?;
+        }
         if identified.shape.family == ModelFamily::Step37 {
             Step37Plan::validate_inventory(&inventory).map_err(|e| Error {
                 code: 1,
@@ -2392,6 +2448,9 @@ impl Session<'_> {
         if self.host.family == ModelFamily::Mimo2 {
             return self.eval_mimo2_argmax(first, max_tokens, eos);
         }
+        if self.host.family == ModelFamily::NaiveN05 {
+            return self.eval_naive_argmax(first, max_tokens, eos);
+        }
         let mut accepted = vec![0i32; 17];
         let mut err = [0u8; 512];
         let n = unsafe {
@@ -2998,6 +3057,26 @@ mod tests {
     }
 
     #[test]
+    fn naive_open_contract() {
+        let tuning = OpenTuning::default();
+        assert!(naive_open_check(Backend::Cuda, &tuning, None, None, None).is_ok());
+        for backend in [Backend::Cpu, Backend::Metal] {
+            assert!(naive_open_check(backend, &tuning, None, None, None).is_err());
+        }
+        assert!(naive_open_check(Backend::Cuda, &tuning, Some("mtp"), None, None).is_err());
+        assert!(naive_open_check(Backend::Cuda, &tuning, None, Some("draft"), None).is_ok());
+        let excessive = open_tuning(&[ModelOpenOption::MtpDraftTokens(7)]).unwrap();
+        assert!(naive_open_check(Backend::Cuda, &excessive, None, Some("draft"), None).is_err());
+        for option in [
+            ModelOpenOption::Vision("vision".into()),
+            ModelOpenOption::SteeringFile("steering".into()),
+        ] {
+            let configured = open_tuning(&[option]).unwrap();
+            assert!(naive_open_check(Backend::Cuda, &configured, None, None, None).is_err());
+        }
+    }
+
+    #[test]
     fn model_open_tuning_matches_c_defaults_and_bounds() {
         let defaults = open_tuning(&[]).unwrap();
         assert!(!defaults.quality);
@@ -3126,6 +3205,30 @@ mod tests {
 
     #[no_mangle]
     extern "C" fn ds4_bridge_mimo2_trial(
+        s: *mut ds4_bridge_session,
+        first: i32,
+        max: i32,
+        tokens: *mut i32,
+        target: *mut i32,
+        cap: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_trial(s, first, max, tokens, target, cap, err, errlen)
+    }
+
+    #[no_mangle]
+    extern "C" fn ds4_bridge_naive_commit(
+        s: *mut ds4_bridge_session,
+        keep: i32,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> i32 {
+        ds4_bridge_step37_commit(s, keep, err, errlen)
+    }
+
+    #[no_mangle]
+    unsafe extern "C" fn ds4_bridge_naive_trial(
         s: *mut ds4_bridge_session,
         first: i32,
         max: i32,

@@ -1416,6 +1416,11 @@ int ds4_session_step37_trial(ds4_session *s, int first, int max_tokens,
                               int *tokens, int *target, int cap,
                               char *err, size_t errlen);
 int ds4_session_step37_commit(ds4_session *s, int keep, char *err, size_t errlen);
+/* Naive DSpark has an anchor plus six proposals. Its target and projected
+ * draft KV share the accepted-prefix transition without a commit reforward. */
+int ds4_session_naive_trial(ds4_session *s, int first, int max_tokens,
+                             int *tokens, int *target, int cap, char *err, size_t errlen);
+int ds4_session_naive_commit(ds4_session *s, int keep, char *err, size_t errlen);
 /* dots3 uses the same four-row native trial/host acceptance contract.
  * A failed device operation invalidates the native generation. */
 int ds4_session_dots3_trial(ds4_session *s, int first, int max_tokens,

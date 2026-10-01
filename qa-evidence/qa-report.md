@@ -1407,4 +1407,24 @@ Combined CUDA validation is required separately before merge.
 README.md now lists the pinned Bonsai artifact contract and unsupported
 serving modes, with a link to docs/BONSAI.md. This changes no execution path.
 
+## Concurrent main update integration - 2026-10-01
+
+PR 70 advanced main to 2f02f631 during this review. Resolved the twelve
+conflicting files without dropping either family's branches. Keep Naive's
+published family id 11 and variant/syntax id 13. Bonsai now uses family id
+12 and variant/syntax id 14 consistently in native and Rust code.
+docs/BONSAI.md records the new current syntax id; earlier receipts above
+retain the ids of their recorded commits.
+
+Preserved Naive admission, template, snapshot and reset behavior alongside
+Bonsai fold loading, serial capabilities, ChatML and replay/reset behavior.
+Makefile keeps both families' CUDA header dependencies.
+
+Fresh integrated checks passed: test-catalog-parity, test-tokenizer-parity,
+pq2-0-test, test-qwen35-ref (UBSan), test-server-parity, Rust formatting,
+and diff checks. The direct server unit attempt initially lacked its C
+oracle executable; the documented test-server-parity target built it and
+passed the server suites. Final CI and combined CUDA checks remain merge
+gates, with no expansion of full-artifact qualification.
+
 verdict: overall PASS

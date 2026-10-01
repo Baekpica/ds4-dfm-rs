@@ -1,0 +1,232 @@
+{
+  "binary_sha256": "8225186b745a3ea999c09efe085736b91566ceec8d7b6dd303a237af3aa164ae",
+  "hardware": "DGX Spark GB10",
+  "cuda": "13.3",
+  "driver": "615.71.09",
+  "clock_range_mhz": [
+    300,
+    2200
+  ],
+  "observed_active_clock_mhz": [
+    2190
+  ],
+  "owner_physical_gib": 81.75,
+  "context": 262144,
+  "banks": 2,
+  "chunk": 2048,
+  "mtp": "off",
+  "disk_capacity_gib": 32,
+  "fixture": {
+    "context": 262144,
+    "input_tokens": 261888,
+    "expected_answer": "ORCHID-74-COPPER-29",
+    "needle_fraction": 0.17,
+    "needle_token_offset": 44547,
+    "request_sha256": "252ae8a77a105befea281f3e467ecea516fdfe820badf37ec7a07d4faa17c97c",
+    "prompt_ids_sha256": "4fbfdd04ba26385bfab3313aa5322ef6cc8933ce566cc6f8c3f7a5a476ca5bcc",
+    "template_sha256": "cfe477d7032a1e6f90c06cd8e3b4a25d02cd2e4a911252daa45a024b56084a19",
+    "tokenizer_sha256": "2efef62c60dedec64b55ab8b6e6838ca5cee391c00c62f2c554ba5de3d33e030",
+    "request_bytes": 1593027
+  },
+  "seed": {
+    "text": "\n\nORCHID-74-COPPER-29",
+    "usage": {
+      "prompt_tokens": 261888,
+      "completion_tokens": 13,
+      "total_tokens": 261901,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 261888
+      }
+    },
+    "finish_reason": "stop",
+    "total_seconds": 1271.8890859849926,
+    "trace": {
+      "effective_lane": "continuous",
+      "reuse_kind": "cold",
+      "speculation_active": false,
+      "fallback_reason": null,
+      "reuse_miss": "no checkpoint at or below LCP"
+    },
+    "passed": true,
+    "errors": []
+  },
+  "overlap": {
+    "start_unix": 1790788656.1692176,
+    "end_unix": 1790788675.2941854,
+    "seconds": 19.12496781349182,
+    "long_request_pending_before_and_after": true,
+    "passed": true,
+    "errors": [],
+    "trace": {
+      "effective_lane": "continuous",
+      "reuse_kind": "cold",
+      "speculation_active": false,
+      "fallback_reason": null,
+      "reuse_miss": "below minimum token threshold"
+    }
+  },
+  "quote": {
+    "shared_weights": 0,
+    "per_bank": 6785528832,
+    "mtp_state": 0,
+    "scratch": 1536004352,
+    "checkpoint_pool": 204472320,
+    "ple": 0,
+    "media_reserve": 0,
+    "floor": 4294967296,
+    "available": 36152215808,
+    "banks": 2,
+    "total": 19606501632
+  },
+  "buffered_fresh_process_follow": {
+    "message": {
+      "role": "assistant",
+      "content": "\n\nORCHID-74-COPPER-29",
+      "reasoning_content": "\nThe user wants me to repeat the access phrase for depot Aster. The archive note clearly states: \"The access phrase for depot Aster is ORCHID-74-COPPER-29.\"\n\nI should return only the value, no explanation.\n"
+    },
+    "usage": {
+      "prompt_tokens": 261924,
+      "completion_tokens": 65,
+      "total_tokens": 261989,
+      "prompt_tokens_details": {
+        "cached_tokens": 261901,
+        "cache_write_tokens": 23
+      }
+    },
+    "finish_reason": "stop",
+    "seconds": 9.658759444006137,
+    "trace": {
+      "effective_lane": "continuous",
+      "reuse_kind": "fork",
+      "speculation_active": false,
+      "fallback_reason": null
+    },
+    "request_sha256": "5ccef44ad34fdde7e71732b6e7b30c28b4e0bf90b6498b6ef9eb758b74050ee7",
+    "passed": true,
+    "errors": []
+  },
+  "buffered_second_restart": {
+    "message": {
+      "role": "assistant",
+      "content": "\n\nORCHID-74-COPPER-29",
+      "reasoning_content": "The user is asking me to repeat the access phrase for depot Aster. The archive note clearly states: \"The access phrase for depot Aster is ORCHID-74-COPPER-29.\"\n\nI should return only the value, no explanation.\n"
+    },
+    "usage": {
+      "prompt_tokens": 262011,
+      "completion_tokens": 65,
+      "total_tokens": 262076,
+      "prompt_tokens_details": {
+        "cached_tokens": 261901,
+        "cache_write_tokens": 110
+      }
+    },
+    "finish_reason": "stop",
+    "seconds": 10.805324882996501,
+    "trace": {
+      "effective_lane": "continuous",
+      "reuse_kind": "fork",
+      "speculation_active": false,
+      "fallback_reason": null
+    },
+    "request_sha256": "182d28b0fe27fe974a9fd24926fa5ab52f0428fc420321d42817bda661c4f050",
+    "passed": true,
+    "errors": []
+  },
+  "original_stream_follow_failure": {
+    "text": "\nThe user wants me to repeat the access phrase for depot Aster. The archive note clearly states: \"The access phrase for depot Aster is ORCHID-74-COPPER-29.\"\n\nI should return only the value, no explanation.\n</think>\n\nORCHID-74-COPPER-2",
+    "usage": {
+      "prompt_tokens": 261924,
+      "completion_tokens": 64,
+      "total_tokens": 261988,
+      "prompt_tokens_details": {
+        "cached_tokens": 261901,
+        "cache_write_tokens": 23
+      }
+    },
+    "finish_reason": "length",
+    "total_seconds": 5.450390675003291,
+    "trace": {
+      "effective_lane": "continuous",
+      "reuse_kind": "exact",
+      "speculation_active": false,
+      "fallback_reason": null
+    },
+    "passed": false,
+    "errors": [
+      "distant fact mismatch",
+      "not a normal stop"
+    ]
+  },
+  "extended_stream_warm": {
+    "text": "\nThe user wants me to repeat the access phrase for depot Aster. The archive note clearly states: \"The access phrase for depot Aster is ORCHID-74-COPPER-29.\"\n\nI should return only the value, no explanation.\n</think>\n\nORCHID-74-COPPER-29",
+    "usage": {
+      "prompt_tokens": 261924,
+      "completion_tokens": 65,
+      "total_tokens": 261989,
+      "prompt_tokens_details": {
+        "cached_tokens": 261888,
+        "cache_write_tokens": 36
+      }
+    },
+    "finish_reason": "stop",
+    "seconds": 5.699472525011515,
+    "trace": {
+      "effective_lane": "continuous",
+      "reuse_kind": "partial",
+      "speculation_active": false,
+      "fallback_reason": null
+    }
+  },
+  "extended_stream_cold": {
+    "text": "The user wants me to repeat the access phrase for depot Aster. The archive note clearly states: \"The access phrase for depot Aster is ORCHID-74-COPPER-29.\"\n\nI should return only the value, no explanation.\n</think>\n\nORCHID-74-COPPER-29",
+    "usage": {
+      "prompt_tokens": 261924,
+      "completion_tokens": 64,
+      "total_tokens": 261988,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 261924
+      }
+    },
+    "finish_reason": "stop",
+    "seconds": 1270.3757783549954,
+    "trace": {
+      "effective_lane": "continuous",
+      "reuse_kind": "cold",
+      "speculation_active": false,
+      "fallback_reason": null
+    }
+  },
+  "cold_warm_comparison": {
+    "raw_text_equal": false,
+    "text_after_outer_whitespace_equal": true,
+    "completion_token_delta": 1,
+    "normal_stops": true,
+    "cold_cached_tokens": 0
+  },
+  "cold_comparison_memory": {
+    "samples": 1609,
+    "min_available_gib": 15.26009750366211,
+    "max_psi_full_avg10": 9.58,
+    "scope": "complete cold worker lifetime; host checks overlapped; not isolated performance"
+  },
+  "cold_comparison_host_checks": "fmt, clippy, serialized workspace tests, all-targets and native host checks overlapped; wall time is not performance evidence",
+  "limits": [
+    "single retrieval fixture; not broad long-context quality",
+    "original 64-token stream gate failed; retained without relabeling",
+    "buffered continuation preserves separate reasoning; 192 then 128 output budgets",
+    "fresh disk requests restore the retained seed ancestor; latest generated reasoning is not byte-identical history",
+    "cold/warm raw stream differs by one leading newline; no long full-logit byte-parity claim",
+    "512K and 1M results excluded until completed"
+  ],
+  "initial_worker_memory": {
+    "samples": 1715,
+    "min_available_gib": 17.679176330566406,
+    "max_psi_full_avg10": 3.72,
+    "scope": "complete first worker lifetime, including generation and disk persistence"
+  },
+  "resident_owner_nvtop_alloc_bytes": 87964434432,
+  "gate_source_commit": "aa0e2036",
+  "native_source_commit": "fc626ab6"
+}

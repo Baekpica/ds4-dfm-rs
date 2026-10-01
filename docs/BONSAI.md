@@ -76,7 +76,7 @@ against the CPU reference. The CLI's plain generation path (`-p`, no
 
 `ds4-server` (the Rust host; the C oracle `ds4-server-c` cannot serve this
 family) serves it over the OpenAI-compatible surface, on either backend. The
-family reports the ABI id 13, which the server maps to the Qwen ChatML syntax
+family reports the ABI id 14, which the server maps to the Qwen ChatML syntax
 this artifact's own `tokenizer.chat_template` declares, so rendering, the
 thinking split and the tool XML are the Qwen ones rather than the DeepSeek
 default an unmapped id would fall back to.

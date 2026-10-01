@@ -1177,9 +1177,11 @@ pub fn chat_format_for_syntax(syntax: ModelSyntax) -> ChatFormat {
         ModelSyntax::SolarOpen2 => ChatFormat::SolarOpen2,
         ModelSyntax::Exaone => ChatFormat::Exaone,
         // Only the generated thinking/tool envelope is shared with Qwen.
-        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 | ModelSyntax::Mimo2 | ModelSyntax::Qwen35 => {
-            ChatFormat::Qwen4Exp
-        }
+        ModelSyntax::Qwen4Exp
+        | ModelSyntax::Step37
+        | ModelSyntax::Mimo2
+        | ModelSyntax::Qwen35
+        | ModelSyntax::NaiveN05 => ChatFormat::Qwen4Exp,
         ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
         ModelSyntax::Inkling => ChatFormat::Inkling,
         // Ling shares GLM's thinking and tool-call XML.
@@ -3035,7 +3037,9 @@ impl SerialKvIo for NativeSerialKvIo<'_, '_, '_, '_> {
 fn serial_mtp_ready(family: ds4_core::ModelFamily, sidecar: bool, dots3: bool, draft: i32) -> bool {
     match family {
         ds4_core::ModelFamily::Dots3Note => dots3,
-        ds4_core::ModelFamily::Inkling | ds4_core::ModelFamily::Step37 => sidecar,
+        ds4_core::ModelFamily::Inkling
+        | ds4_core::ModelFamily::Step37
+        | ds4_core::ModelFamily::NaiveN05 => sidecar,
         ds4_core::ModelFamily::Mimo2 => draft > 1,
         _ => false,
     }
@@ -3052,6 +3056,13 @@ fn dots3_embedded_mtp_needs_session_state() {
     assert!(!serial_mtp_ready(Qwen4Exp, true, false, 1));
     assert!(serial_mtp_ready(Mimo2, false, false, 3));
     assert!(!serial_mtp_ready(Mimo2, true, false, 1));
+}
+
+#[test]
+fn naive_spec_needs_sidecar() {
+    use ds4_core::ModelFamily::NaiveN05;
+    assert!(serial_mtp_ready(NaiveN05, true, false, 6));
+    assert!(!serial_mtp_ready(NaiveN05, false, true, 6));
 }
 
 #[cfg(feature = "native")]
@@ -3595,7 +3606,7 @@ impl DecodeIo for NativeDecode<'_> {
         let dots3 = family == ds4_core::ModelFamily::Dots3Note && self.session()?.has_dots3_mtp();
         if !serial_mtp_ready(
             family,
-            self.model.mtp().is_some(),
+            self.model.mtp().is_some() || self.model.dspark().is_some(),
             dots3,
             self.model.mtp_draft_tokens(),
         ) || std::env::var_os("DS4_MTP_SPEC_DISABLE").is_some()

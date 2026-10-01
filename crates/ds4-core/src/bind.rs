@@ -904,6 +904,7 @@ pub fn bind_names(shape: &Shape) -> Vec<BindName> {
         ModelFamily::Step37 => return inkling_names(crate::Step37Plan::layouts()),
         ModelFamily::Ling3Vl => return inkling_names(crate::Ling3VlPlan::layouts()),
         ModelFamily::Mimo2 => return inkling_names(crate::Mimo2Plan::layouts()),
+        ModelFamily::NaiveN05 => return inkling_names(crate::naive::layouts()),
     }
     out
 }
@@ -929,12 +930,20 @@ pub fn dump_bind_mtp_shape(shape: &Shape) -> String {
 }
 
 pub fn dump_bind_dspark_shape(shape: &Shape) -> String {
+    let (layers, names) = if shape.family == ModelFamily::NaiveN05 {
+        (
+            crate::naive::DRAFT_LAYERS,
+            inkling_names(crate::naive::draft_layouts()),
+        )
+    } else {
+        (DSPARK_N_LAYER, bind_dspark_names())
+    };
     dump_name_table(
         format!(
             "BIND kind=dspark name={} family={} variant={} n_layer={}\n",
-            shape.name, shape.family as u32, shape.variant as u32, DSPARK_N_LAYER
+            shape.name, shape.family as u32, shape.variant as u32, layers
         ),
-        &bind_dspark_names(),
+        &names,
     )
 }
 
@@ -998,6 +1007,13 @@ impl BindPlan {
     }
 
     pub fn resolve_dspark(shape: Shape, inventory: &TensorInventory) -> Self {
+        if shape.family == ModelFamily::NaiveN05 {
+            return Self::resolve_names(
+                shape,
+                inkling_names(crate::naive::draft_layouts()),
+                inventory,
+            );
+        }
         Self::resolve_names(shape, bind_dspark_names(), inventory)
     }
 
@@ -1309,6 +1325,7 @@ pub fn variant_from_bind_name(s: &str) -> Option<Variant> {
         "step35" => Some(Variant::Step37Flash),
         "bailingmoe3" => Some(Variant::Ling30FlashVl),
         "qwen35" => Some(Variant::Qwen35_27B),
+        "naive-n05-flash" => Some(Variant::NaiveN05Flash),
         _ => None,
     }
 }
@@ -1330,7 +1347,7 @@ pub fn dump_bind_names_variant(name: &str) -> Option<String> {
     })
 }
 
-/// Main and sibling catalogs; DSpark remains DeepSeek-only.
+/// Main and sibling catalogs, including Naive's independent DSpark stack.
 pub fn catalog_from_bind_name(s: &str) -> Option<(Option<SupportCatalog>, Variant)> {
     if let Some(rest) = s.strip_prefix("mtp-") {
         return variant_from_bind_name(rest)
@@ -1344,7 +1361,7 @@ pub fn catalog_from_bind_name(s: &str) -> Option<(Option<SupportCatalog>, Varian
     }
     if let Some(rest) = s.strip_prefix("dspark-") {
         return variant_from_bind_name(rest)
-            .filter(|v| matches!(v, Variant::Flash | Variant::Pro))
+            .filter(|v| matches!(v, Variant::Flash | Variant::Pro | Variant::NaiveN05Flash))
             .map(|v| (Some(SupportCatalog::Dspark), v));
     }
     variant_from_bind_name(s).map(|v| (None, v))

@@ -33109,6 +33109,8 @@ enum ds4_routed_out {
     DS4_ROUTED_OUT_GUARDED = 1,
 };
 
+enum class RoutedAct { Mimo, Naive };
+
 static int routed_matmul_tensor_impl(
         ds4_gpu_tensor       *out,
         const ds4_gpu_tensor *x,
@@ -33125,7 +33127,8 @@ static int routed_matmul_tensor_impl(
         uint32_t                n_expert_used,
         uint32_t                max_rows_per_expert,
         enum ds4_routed_out     out_policy,
-        const ds4_gpu_tensor *up = nullptr) {
+        const ds4_gpu_tensor *up = nullptr,
+        RoutedAct              activation = RoutedAct::Mimo) {
     if (!out || !x || !ids || !model_map || in_dim == 0u ||
         out_dim == 0u || n_expert == 0u ||
         n_tokens == 0u || n_expert_used == 0u ||
@@ -33371,8 +33374,9 @@ static int routed_matmul_tensor_impl(
         break;
     case 17u:
         if (up) {
-            rc = ds4_mmq_mimo2_down(weights, xp, (const float *)up->ptr,
-                                    idp, op, NT, stream);
+            rc = activation == RoutedAct::Naive
+                ? ds4_mmq_naive_down(weights, xp, (const float *)up->ptr, idp, op, NT, stream)
+                : ds4_mmq_mimo2_down(weights, xp, (const float *)up->ptr, idp, op, NT, stream);
             break;
         }
         rc = use_vec
@@ -33492,6 +33496,22 @@ extern "C" int ds4_gpu_mimo2_down(
     return routed_matmul_tensor_impl(out, gate, ids, map, size, offset, bytes,
             IQ2_XS, WIDTH, OUTPUT, EXPERTS, tokens * USED, 1, tokens,
             DS4_ROUTED_OUT_GUARDED, up);
+}
+
+extern "C" int ds4_gpu_naive_down(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *gate,
+        const ds4_gpu_tensor *up, const ds4_gpu_tensor *ids,
+        const void *map, uint64_t size, uint64_t offset, uint64_t bytes,
+        uint32_t tokens) {
+    enum { WIDTH = 2048, OUTPUT = 4096, EXPERTS = 256, USED = 8, IQ2_XS = 17 };
+    const char *env = getenv("DS4_NAIVE_SWIGLU_Q8");
+    const char *sanitize = getenv("DS4_EXAONE_DOWN_SANITIZE");
+    if (tokens < 32 || tokens > 8192 || (env && strcmp(env, "0") == 0) ||
+        (sanitize && sanitize[0] == '1')) { return -1; }
+    if (!up) { return 0; }
+    return routed_matmul_tensor_impl(out, gate, ids, map, size, offset, bytes,
+        IQ2_XS, WIDTH, OUTPUT, EXPERTS, tokens * USED, 1, tokens,
+        DS4_ROUTED_OUT_GUARDED, up, RoutedAct::Naive);
 }
 
 extern "C" int ds4_gpu_routed_gate_up_tensor(
@@ -48428,6 +48448,7 @@ static int ds4_gpu_glm53_matmul_bf16(
 #include "ds4_ling3vl_gpu.cuh"
 #include "ds4_step37_gpu.cuh"
 #include "ds4_mimo2_gpu.cuh"
+#include "ds4_naive_gpu.cuh"
 #include "ds4_step37_vision_gpu.cuh"
 #include "ds4_qwen35_gpu.cuh"
 #include "cuda/qwen35_attn_gdn.cuh"

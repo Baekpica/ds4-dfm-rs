@@ -89,7 +89,8 @@ pub enum ModelSyntax {
     Step37 = 10,
     Ling3Vl = 11,
     Mimo2 = 12,
-    Qwen35 = 13,
+    Qwen35 = 14,
+    NaiveN05 = 13,
 }
 
 /// C `server_model_syntax_for_engine`.
@@ -106,7 +107,8 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
         10 => ModelSyntax::Step37,
         11 => ModelSyntax::Ling3Vl,
         12 => ModelSyntax::Mimo2,
-        13 => ModelSyntax::Qwen35,
+        14 => ModelSyntax::Qwen35,
+        13 => ModelSyntax::NaiveN05,
         _ => ModelSyntax::DeepSeek,
     }
 }
@@ -116,9 +118,11 @@ pub fn tool_start_marker(syntax: ModelSyntax) -> &'static str {
         ModelSyntax::SolarOpen2 => SOLAR_TOOL_CALLS,
         ModelSyntax::Motif3 | ModelSyntax::Exaone => MOTIF_TOOL_CALLS,
         ModelSyntax::Dots3 => DOTS3_TOOL_CALLS,
-        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 | ModelSyntax::Mimo2 | ModelSyntax::Qwen35 => {
-            QWEN_TOOL_CALL_START
-        }
+        ModelSyntax::Qwen4Exp
+        | ModelSyntax::Step37
+        | ModelSyntax::Mimo2
+        | ModelSyntax::Qwen35
+        | ModelSyntax::NaiveN05 => QWEN_TOOL_CALL_START,
         ModelSyntax::Glm53 | ModelSyntax::Ling3Vl => GLM_TOOL_CALL_START,
         ModelSyntax::K2Horizon => K2_TOOL_CALLS_START,
         ModelSyntax::Inkling => inkling::INVOKE,
@@ -1864,6 +1868,9 @@ pub fn render_chat_choice(
         ModelSyntax::Mimo2 => Err(RenderError(
             "MiMo input requires its official Jinja template",
         )),
+        ModelSyntax::NaiveN05 => Err(RenderError(
+            "Naive input requires its official Jinja template",
+        )),
         ModelSyntax::Motif3 => render_motif3_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
         ModelSyntax::Exaone => render_exaone_chat(msgs, tool_schemas, think_mode),
         ModelSyntax::Dots3 => render_dots3_chat(msgs, tool_schemas, think_mode),
@@ -1936,6 +1943,11 @@ pub fn render_live_tool_tail(
         ModelSyntax::Mimo2 => {
             return Err(RenderError(
                 "MiMo tool results require retained history and Jinja",
+            ));
+        }
+        ModelSyntax::NaiveN05 => {
+            return Err(RenderError(
+                "Naive tool results require retained history and Jinja",
             ));
         }
         ModelSyntax::Inkling => return inkling::live_tail(tail, msgs),

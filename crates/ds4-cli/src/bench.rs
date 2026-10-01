@@ -219,8 +219,13 @@ fn uses_prefix_replay(args: &BenchArgs, family: ModelFamily) -> bool {
 fn use_mtp_spec(family: ModelFamily, mtp: Option<&str>, draft: i32) -> bool {
     // Qwen4Exp and MiMo carry embedded MTP heads, so bench can speculate
     // without an external draft file. Other families still need that file.
-    // Depth 1 stays one plain step. DS4_MTP_SPEC_DISABLE forces plain decode.
-    draft > 1
+    // Naive's fixed seven-row DSpark block can verify one proposal too.
+    let min_draft = if family == ModelFamily::NaiveN05 {
+        1
+    } else {
+        2
+    };
+    draft >= min_draft
         && (mtp.is_some() || matches!(family, ModelFamily::Qwen4Exp | ModelFamily::Mimo2))
         && std::env::var_os("DS4_MTP_SPEC_DISABLE").is_none()
 }
@@ -508,7 +513,8 @@ fn run_sweep<W: Write>(
     out.flush().map_err(|e| e.to_string())?;
 
     let eos = model.token_eos();
-    let use_mtp = use_mtp_spec(model.family(), args.mtp.as_deref(), args.mtp_draft);
+    let sidecar = model.mtp().or_else(|| model.dspark()).map(|s| s.path());
+    let use_mtp = use_mtp_spec(model.family(), sidecar, args.mtp_draft);
     let replay = uses_prefix_replay(args, model.family());
     let mut previous = 0;
     let mut frontier = args.ctx_start;
@@ -1111,6 +1117,7 @@ mod tests {
         assert!(use_mtp_spec(ModelFamily::Qwen4Exp, None, 2));
         assert!(!use_mtp_spec(ModelFamily::DeepSeek4, Some("draft.gguf"), 1));
         assert!(use_mtp_spec(ModelFamily::DeepSeek4, Some("draft.gguf"), 2));
+        assert!(use_mtp_spec(ModelFamily::NaiveN05, Some("draft.gguf"), 1));
     }
 
     #[test]

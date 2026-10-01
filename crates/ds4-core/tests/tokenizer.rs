@@ -350,7 +350,11 @@ impl Builder {
 fn write_family(family: ModelFamily) -> PathBuf {
     let path = tmp(&format!("{}.gguf", family.oracle_name()));
     match family {
-        ModelFamily::Inkling | ModelFamily::Step37 | ModelFamily::Ling3Vl | ModelFamily::Mimo2 => {
+        ModelFamily::Inkling
+        | ModelFamily::Step37
+        | ModelFamily::Ling3Vl
+        | ModelFamily::Mimo2
+        | ModelFamily::NaiveN05 => {
             panic!("this family uses a dedicated upstream tokenizer oracle")
         }
         ModelFamily::Glm53 => {
@@ -557,7 +561,11 @@ fn family_cases(family: ModelFamily) {
     ];
     let mut renders: Vec<String> = Vec::new();
     match family {
-        ModelFamily::Inkling | ModelFamily::Step37 | ModelFamily::Ling3Vl | ModelFamily::Mimo2 => {
+        ModelFamily::Inkling
+        | ModelFamily::Step37
+        | ModelFamily::Ling3Vl
+        | ModelFamily::Mimo2
+        | ModelFamily::NaiveN05 => {
             panic!("this family uses a dedicated upstream tokenizer oracle")
         }
         ModelFamily::Glm53 => {
@@ -666,7 +674,11 @@ fn family_cases(family: ModelFamily) {
 
     let mut tokens = TokenBuffer::from_tokens(vec![7]);
     match family {
-        ModelFamily::Inkling | ModelFamily::Step37 | ModelFamily::Ling3Vl | ModelFamily::Mimo2 => {
+        ModelFamily::Inkling
+        | ModelFamily::Step37
+        | ModelFamily::Ling3Vl
+        | ModelFamily::Mimo2
+        | ModelFamily::NaiveN05 => {
             panic!("this family uses a dedicated upstream tokenizer oracle")
         }
         ModelFamily::SolarOpen2 => {

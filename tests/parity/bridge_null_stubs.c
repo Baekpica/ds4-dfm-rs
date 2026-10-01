@@ -210,6 +210,17 @@ bool ds4_session_dots3_mtp(ds4_session *s) {
     (void)s;
     STUB("ds4_session_dots3_mtp");
 }
+int ds4_session_naive_trial(ds4_session *s, int first, int max_tokens,
+                             int *tokens, int *target, int cap, char *err, size_t errlen) {
+    (void)s; (void)first; (void)max_tokens; (void)tokens; (void)target; (void)cap;
+    (void)err; (void)errlen;
+    STUB("ds4_session_naive_trial");
+}
+int ds4_session_naive_commit(ds4_session *s, int keep, char *err, size_t errlen) {
+    (void)s; (void)keep; (void)err; (void)errlen;
+    STUB("ds4_session_naive_commit");
+}
+
 int ds4_session_mimo2_trial(ds4_session *s, int first, int max_tokens,
                            int *tokens, int *target, int cap,
                            char *err, size_t errlen) {

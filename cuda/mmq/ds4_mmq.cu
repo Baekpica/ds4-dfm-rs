@@ -2103,8 +2103,9 @@ int ds4_mmq_moe_impl(
          * decode shape measures faster on the D2R schedule passes its own
          * floor here instead of moving the shared default. */
         int64_t         d2r_ncols_floor = 0,
-        /* MiMo down consumes unweighted SwiGLU directly as D4 Q8. */
-        const float   * up_f32 = nullptr) {
+        /* Unweighted SwiGLU can emit the Down consumer's D4 Q8 directly. */
+        const float   * up_f32 = nullptr,
+        SwiGLUOutput    activation = SwiGLUOutput::F32) {
 
     if (!W || !X_f32 || !ids || !out_f32) {
         fprintf(stderr, "%s: null pointer\n", tag);
@@ -2231,9 +2232,16 @@ int ds4_mmq_moe_impl(
     const int64_t s13_src = (int64_t)K * ne11 * ne12;                   // stride between samples
 
     if (up_f32) {
-        mimo2_swiglu_q8<<<dim3((unsigned)ne_get_rows, (K + 511) / 512), 128, 0, stream>>>(
-            X_f32, up_f32, ids_src1.get(), (block_q8_1_mmq *)src1_q8_1.get(),
-            K, (int)ne_get_rows);
+        const dim3 grid((unsigned)ne_get_rows, (K + 511) / 512);
+        if (activation == SwiGLUOutput::NaiveBF16) {
+            mimo2_swiglu_q8<SwiGLUOutput::NaiveBF16><<<grid, 128, 0, stream>>>(
+                X_f32, up_f32, ids_src1.get(), (block_q8_1_mmq *)src1_q8_1.get(),
+                K, (int)ne_get_rows);
+        } else {
+            mimo2_swiglu_q8<<<grid, 128, 0, stream>>>(
+                X_f32, up_f32, ids_src1.get(), (block_q8_1_mmq *)src1_q8_1.get(),
+                K, (int)ne_get_rows);
+        }
     } else {
         quantize_mmq_q8_1_cuda(
             X_f32, ids_src1.get(), (void *)src1_q8_1.get(),
@@ -2271,7 +2279,7 @@ int ds4_mmq_moe_impl(
                 // MiMo's unweighted SwiGLU Down uses the native pipelined
                 // 64-column tile throughout. Keep decode and generic IQ
                 // callers on 128; this trades more weight reads for overlap.
-                const bool pipe64 = up_f32 &&
+                const bool pipe64 = up_f32 && activation == SwiGLUOutput::F32 &&
                     (!env || strcmp(env, "0") != 0) &&
                     moe_worklist_pipe_enabled() && moe_worklist_tail64_enabled() &&
                     cc == GGML_CUDA_CC_DGX_SPARK &&
@@ -6117,6 +6125,17 @@ extern "C" int ds4_mmq_mimo2_down(
     return ds4_mmq_moe_impl<GGML_TYPE_IQ2_XS>(
         "MiMo fused SwiGLU down", weights, gate, ids, out, OUTPUT, WIDTH,
         rows, EXPERTS, 1, stream, nullptr, 0, false, rows / USED, 0, up);
+}
+
+extern "C" int ds4_mmq_naive_down(
+        const void *weights, const float *gate, const float *up,
+        const int32_t *ids, float *out, int rows, cudaStream_t stream) {
+    enum { WIDTH = 2048, OUTPUT = 4096, EXPERTS = 256, USED = 8 };
+    if (!up || rows < 32 * USED || rows > 8192 * USED || rows % USED) { return -1; }
+    return ds4_mmq_moe_impl<GGML_TYPE_IQ2_XS>(
+        "Naive fused BF16 SwiGLU down", weights, gate, ids, out, OUTPUT, WIDTH,
+        rows, EXPERTS, 1, stream, nullptr, 0, false, rows / USED, 0, up,
+        SwiGLUOutput::NaiveBF16);
 }
 
 extern "C" int ds4_mmq_iq2_xs_moe(

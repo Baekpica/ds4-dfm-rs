@@ -232,6 +232,7 @@ tokenizer/chat contract, state lifecycle, and native execution path.
 | Step 3.7 Flash | `step35` | Nine-shard MQ83, optional three-block Q8 MTP and F16 vision; CUDA text/image serving, opt-in text banks with MTP, partial fork and disk KV. [Serving limits](docs/step37-serving-2026-09-13.md), [capped-clock A/B](docs/step37-optimization-2026-09-13-r3.md). |
 | Ling-3.0-flash-VL | `bailingmoe3` | Three-shard MQ-Q5 plus the BF16 mmproj; hybrid KDA/MLA over 512 grouped-sigmoid experts, still-image input, persistent banks, partial fork and disk KV. [Family contract](docs/ling3-flash-vl.md). |
 | MiMo-V2.6-Flash-RL | `mimo2` | Four-shard mixed GGUF. [256K two-bank text, partial reuse, disk KV and serial media](docs/mimo2-serving-2026-09-25.md) passed a bounded GB10 gate with MTP off. Prior 512K serial text and 256K serial media/DFlash gates are separate. 1M text with one bank answered a 1,040,506-token prompt; two banks did not fit. |
+| [Naive-N0.5-Flash](docs/naive-n05-flash.md) | `naive_n05_flash` | Four-shard MQ87; SWA/DSA, partial reuse, disk KV and external DSpark. Bounded 8K HTTP, 256K two-bank and 512K one-bank buffered retrieval/continuation gates pass with MTP off. Draft acceleration remains unqualified. |
 
 The current family contract and measured model-specific limits are documented
 in [`ds4-dfm-model-families.md`](docs/ds4-dfm-model-families.md). Arbitrary
