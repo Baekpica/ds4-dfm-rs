@@ -225,6 +225,7 @@ tokenizer/chat contract, state lifecycle, and native execution path.
 | Motif-3 | `motif3` | Latent KV, rotated `k_pe`, SWA rings, persistent banks. |
 | dots3-note Preview | `dots3note` (`dots3-note` accepted) | Dual-geometry latent state; serial default, opt-in text banks and separate serial MTP. New paths are present but unqualified; see [serving limits](docs/ds4-dfm-model-families.md#dots3-serving). |
 | Qwen3.8 Flash Next SSD-PLE | `qwen4exp` | Q5 main GGUF + BF16 or [official FP8 SSD-PLE](docs/qwen38-ple-fp8.md), embedded MTP, N-bank Rust scheduling, still-image input; one- and two-bank live gates. |
+| Prism Bonsai 2 27B | `qwen35` | Pinned PQ2_0 GGUF with Prism fold metadata; CPU reference and serial CUDA text. Banks, snapshots, disk KV, drafting and media are unsupported. [Recorded gates and limits](docs/BONSAI.md). |
 | GLM 5.3 Flash | `glm5-next` | Q2 single-file GGUF plus the explicit vision sidecar; CUDA serial serving on one DGX Spark. |
 | K2-Horizon 375B A23B | `k2-horizon` | Four-shard MQ87 GGUF; IFM BPE/XML tools; continuous 32K one-bank serving on one DGX Spark. |
 | Inkling Small | `inkling` | MQ85GB + optional eight-layer MTP-BF16; serial CUDA text/image/audio input and text output. [HTTP checks and limits](docs/inkling-small.md), [GB10 performance](docs/inkling-optimization-2026-09-11.md). |

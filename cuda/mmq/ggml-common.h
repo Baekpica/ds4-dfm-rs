@@ -96,6 +96,9 @@ typedef sycl::half2 ggml_half2;
 #define QI1_0 (QK1_0 / 32)
 #define QR1_0 1
 
+#define QI_PQ2_0 (QK2_0 / (4 * QR_PQ2_0))
+#define QR_PQ2_0 4
+
 
 #define QI4_0 (QK4_0 / (4 * QR4_0))
 #define QR4_0 2
@@ -180,6 +183,18 @@ typedef struct {
     uint8_t qs[QK1_0 / 8]; // bits / quants
 } block_q1_0;
 static_assert(sizeof(block_q1_0) == sizeof(ggml_half) + QK1_0 / 8, "wrong q1_0 block size/padding");
+
+// Prism "PQ2_0" (ternary Bonsai matmul weights): 128 values per block, one
+// fp16 scale followed by 32 code bytes.  Value j sits in byte j/4 at bits
+// (j % 4)*2, LSB first, and dequantizes to (code - 1)*d, so the alphabet is
+// -d, 0, +d, +2d.  The stored code is the raw 0..3 value; the -1 offset is
+// applied by the readers (ds4_pq2_0_expand_byte in vecdotq.cuh).
+#define QK2_0 128
+typedef struct {
+    ggml_half d;            // delta
+    uint8_t qs[QK2_0 / 4];  // 2-bit levels, 4 per byte
+} block_pq2_0;
+static_assert(sizeof(block_pq2_0) == sizeof(ggml_half) + QK2_0 / 4, "wrong pq2_0 block size/padding");
 
 #define QK4_0 32
 typedef struct {

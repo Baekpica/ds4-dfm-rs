@@ -633,6 +633,32 @@ pub fn serving_caps(family: ModelFamily, variant: Variant) -> ServingCaps {
         };
     }
     match family {
+        // One session on one host: the native path refuses banks, speculation,
+        // snapshots and the disk store by name, so a request for them is
+        // reported as unsupported instead of silently ignored. Prefix reuse is
+        // the prefill checkpoint the native session keeps when the prompt
+        // starts with it.  Either backend hosts the session -- the CUDA graph
+        // or the CPU reference trunk -- so the host is not restricted.
+        ModelFamily::Qwen35 => ServingCaps {
+            family,
+            variant,
+            banks: BankLane::Serial,
+            bank_support: Support::None,
+            reuse: ReuseKind::Partial,
+            reuse_support: Support::Present,
+            disk: Support::None,
+            snapshot: Support::None,
+            mtp: MtpKind::None,
+            mtp_support: Support::None,
+            spec_lane: SpecLane::None,
+            spec_draft_min: 1,
+            host: HostNeed::Any,
+            ctx_max: Some(crate::qwen35::CTX_MAX),
+            qualified_ctx: None,
+            qualified_banks: None,
+            qualified_prompt: None,
+            media_serial: false,
+        },
         ModelFamily::NaiveN05 => ServingCaps {
             family,
             variant,
@@ -1197,6 +1223,7 @@ impl ServingCaps {
             Variant::Step37Flash => "step35",
             Variant::Ling30FlashVl => "bailingmoe3",
             Variant::Mimo26Flash => "mimo2",
+            Variant::Qwen35_27B => "qwen35",
             Variant::NaiveN05Flash => "naive_n05_flash",
         }
     }

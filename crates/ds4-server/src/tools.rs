@@ -1301,6 +1301,7 @@ pub fn parse_generated_message(
         ModelSyntax::Qwen4Exp
         | ModelSyntax::Step37
         | ModelSyntax::Mimo2
+        | ModelSyntax::Qwen35
         | ModelSyntax::NaiveN05 => {
             parse_qwen_generated(syntax, text, require_thinking_closed, orders)
         }
@@ -1340,7 +1341,10 @@ pub fn parse_generated_for_model_id(
     let format = match syntax {
         ModelSyntax::SolarOpen2 => ChatFormat::SolarOpen2,
         ModelSyntax::Exaone => ChatFormat::Exaone,
-        ModelSyntax::Qwen4Exp | ModelSyntax::Step37 | ModelSyntax::NaiveN05 => ChatFormat::Qwen4Exp,
+        ModelSyntax::Qwen4Exp
+        | ModelSyntax::Step37
+        | ModelSyntax::Qwen35
+        | ModelSyntax::NaiveN05 => ChatFormat::Qwen4Exp,
         ModelSyntax::K2Horizon => ChatFormat::K2Horizon,
         ModelSyntax::Inkling => ChatFormat::Inkling,
         _ => ChatFormat::DeepSeek,

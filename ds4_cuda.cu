@@ -20740,6 +20740,30 @@ extern "C" int ds4_gpu_embed_token_quant_tensor(
         uint32_t          n_vocab,
         uint32_t          token,
         uint32_t          n_embd) {
+    if (weight_type == 142u) {   /* PQ2_0: Prism Bonsai ternary embedding */
+        if (!out || !model_map || n_vocab == 0u || token >= n_vocab ||
+            n_embd == 0u || (n_embd & 127u) != 0u ||
+            out->bytes < (uint64_t)n_embd * sizeof(float)) {
+            return 0;
+        }
+        const uint64_t row_bytes = ((uint64_t)n_embd / 128u) * 34u;
+        if ((uint64_t)n_vocab > UINT64_MAX / row_bytes ||
+            weight_offset > model_size ||
+            (uint64_t)n_vocab * row_bytes > model_size - weight_offset) {
+            return 0;
+        }
+        const unsigned char *weights = (const unsigned char *)cuda_resolve_weight_ptr(
+            model_map, weight_offset, (uint64_t)n_vocab * row_bytes,
+            ds4_tensor_device_idx(out), "pq2_0_token_embedding");
+        if (!weights) return 0;
+        const int rc = ds4_mmq_pq2_0_rows_f32(
+            (float *)out->ptr, weights, NULL, token, 1u, n_embd, ds4_current_stream());
+        if (rc != 0) {
+            fprintf(stderr, "ds4: PQ2_0 token embedding lookup failed (%d)\n", rc);
+            return 0;
+        }
+        return cuda_ok(cudaGetLastError(), "PQ2_0 token embedding launch");
+    }
     if (!out || !model_map || weight_type != 8u || n_vocab == 0u ||
         token >= n_vocab || n_embd == 0u || (n_embd & 31u) != 0u ||
         out->bytes < (uint64_t)n_embd * sizeof(float)) {
@@ -20771,6 +20795,34 @@ extern "C" int ds4_gpu_embed_tokens_quant_tensor(
         uint32_t                n_vocab,
         uint32_t                n_tokens,
         uint32_t                n_embd) {
+    if (weight_type == 142u) {   /* PQ2_0: Prism Bonsai ternary embedding */
+        if (!out || !tokens || !model_map || n_vocab == 0u || n_tokens == 0u ||
+            n_embd == 0u || (n_embd & 127u) != 0u) {
+            return 0;
+        }
+        const uint64_t count = (uint64_t)n_tokens * n_embd;
+        const uint64_t row_bytes = ((uint64_t)n_embd / 128u) * 34u;
+        if (count > UINT64_MAX / sizeof(float) ||
+            tokens->bytes < (uint64_t)n_tokens * sizeof(int32_t) ||
+            out->bytes < count * sizeof(float) ||
+            (uint64_t)n_vocab > UINT64_MAX / row_bytes ||
+            weight_offset > model_size ||
+            (uint64_t)n_vocab * row_bytes > model_size - weight_offset) {
+            return 0;
+        }
+        const unsigned char *weights = (const unsigned char *)cuda_resolve_weight_ptr(
+            model_map, weight_offset, (uint64_t)n_vocab * row_bytes,
+            ds4_tensor_device_idx(out), "pq2_0_token_embedding_batch");
+        if (!weights) return 0;
+        const int rc = ds4_mmq_pq2_0_rows_f32(
+            (float *)out->ptr, weights, (const int32_t *)tokens->ptr,
+            0u, n_tokens, n_embd, ds4_current_stream());
+        if (rc != 0) {
+            fprintf(stderr, "ds4: PQ2_0 token embedding batch failed (%d)\n", rc);
+            return 0;
+        }
+        return cuda_ok(cudaGetLastError(), "PQ2_0 token embedding batch launch");
+    }
     if (!out || !tokens || !model_map || weight_type != 8u || n_vocab == 0u ||
         n_tokens == 0u || n_embd == 0u || (n_embd & 31u) != 0u) {
         return 0;
@@ -24995,6 +25047,53 @@ extern "C" int ds4_gpu_matmul_q4_K_tensor(
         (int)out_dim, (int)n_tok, (int)in_dim, cuda_decode_stream());
     if (rc != 0) {
         fprintf(stderr, "ds4: CUDA dense Q4_K MMQ failed (%d)\n", rc);
+        return 0;
+    }
+    return 1;
+}
+
+extern "C" int ds4_gpu_matmul_pq2_0_tensor(
+        ds4_gpu_tensor       *out,
+        const void           *model_map,
+        uint64_t              model_size,
+        uint64_t              weight_offset,
+        uint64_t              in_dim,
+        uint64_t              out_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t              n_tok) {
+    if (!out || !x || !model_map || in_dim == 0u || out_dim == 0u ||
+        n_tok == 0u || in_dim % 256u != 0u || in_dim > INT_MAX ||
+        out_dim > INT_MAX || n_tok > INT_MAX || !ds4_cuda_use_mmq()) {
+        return 0;
+    }
+    const uint64_t row_bytes = (in_dim / 128u) * 34u;
+    if (out_dim > UINT64_MAX / row_bytes ||
+        in_dim > UINT64_MAX / n_tok || out_dim > UINT64_MAX / n_tok) {
+        return 0;
+    }
+    const uint64_t weight_bytes = out_dim * row_bytes;
+    if (weight_offset > model_size ||
+        weight_bytes > model_size - weight_offset ||
+        x->bytes < in_dim * n_tok * sizeof(float) ||
+        out->bytes < out_dim * n_tok * sizeof(float)) {
+        return 0;
+    }
+    const int tier = ds4_tensor_device_idx(out);
+    const void *weight = cuda_resolve_weight_ptr(
+        model_map, weight_offset, weight_bytes, tier, "PQ2_0 dense");
+    if (!weight) return 0;
+    /* A decode step projects a single row, and the tile GEMM pads it to a whole
+     * 8-column tile, so the MMVQ GEMV takes n_tok <= 8 -- the same split ds4's
+     * own Bonsai decode used (41 us per call there). */
+    const int rc = n_tok <= 8u
+        ? ds4_mmq_pq2_0_dense_vec(
+              weight, (const float *)x->ptr, (float *)out->ptr,
+              (int)out_dim, (int)n_tok, (int)in_dim, cuda_decode_stream())
+        : ds4_mmq_pq2_0_dense(
+              weight, (const float *)x->ptr, (float *)out->ptr,
+              (int)out_dim, (int)n_tok, (int)in_dim, cuda_decode_stream());
+    if (rc != 0) {
+        fprintf(stderr, "ds4: CUDA dense PQ2_0 MMQ failed (%d)\n", rc);
         return 0;
     }
     return 1;
@@ -48351,3 +48450,5 @@ static int ds4_gpu_glm53_matmul_bf16(
 #include "ds4_mimo2_gpu.cuh"
 #include "ds4_naive_gpu.cuh"
 #include "ds4_step37_vision_gpu.cuh"
+#include "ds4_qwen35_gpu.cuh"
+#include "cuda/qwen35_attn_gdn.cuh"

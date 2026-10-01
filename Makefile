@@ -99,7 +99,7 @@ endif
         test-qwen4exp-verify \
         test-qwen-vision-attention test-qwen-vision-model test-qwen-vision-norm \
         test-mmid-fast \
-        test-mmq-parity test-model-family-kernels test-inkling-kernels test-inkling-moe \
+        test-mmq-parity test-qwen35-cuda test-model-family-kernels test-inkling-kernels test-inkling-moe \
         test-inkling-attn-prep test-inkling-attention test-inkling-norm test-inkling-linear test-inkling-batch test-inkling-q8-batch test-inkling-media \
         test-solar-loader test-solar-kda test-solar-kda-prefill \
         test-solar-kda-chunk \
@@ -109,6 +109,7 @@ endif
         test-solar-gates test-solar-kv test-solar-tokenizer \
         test-solar-forward test-solar-session \
         test-exaone-ref test-exaone-kernels test-exaone-batch \
+        pq2-0-test test-qwen35-rows \
         rust-bridge ds4-rs ds4-bench-rs ds4-agent-rs ds4-server-rs test-kv-parity test-web-parity test-dist-parity test-route-parity test-server-parity test-catalog-parity test-tokenizer-parity test-agent-parity test-session-parity
 
 ifeq ($(UNAME_S),Darwin)
@@ -735,7 +736,7 @@ ds4_agent_cpu.o: ds4_agent.c ds4.h ds4_mem_census.h ds4_model_catalog.h ds4_mem_
 ds4_metal.o: ds4_metal.m ds4_gpu.h ds4_naive_stub.inc $(METAL_SRCS)
 	$(CC) $(OBJCFLAGS) -c -o $@ ds4_metal.m
 
-ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_naive_gpu.cuh cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh cuda/naive_draft.cuh ds4_naive_plan.h ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh cuda/mimo2_dflash_host.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h
+ds4_cuda.o: ds4_cuda.cu ds4_gpu.h ds4_qwen35_gpu.cuh cuda/qwen35_primitives.cuh cuda/qwen35_attn_gdn.cuh ds4_mimo2_gpu.cuh cuda/mimo2_primitives.cuh cuda/mimo2_prefill.cuh cuda/mimo2_media.cuh cuda/mimo2_dflash_attn.cuh cuda/mimo2_dflash_host.h ds4_glm53_vision_gpu.cuh ds4_inkling_gpu.cuh ds4_step37_gpu.cuh cuda/step37_primitives.cuh ds4_step37_vision_gpu.cuh cuda/step37_vision.cuh ds4_ling3vl_gpu.cuh cuda/ling3vl_primitives.cuh ds4_mem_census.h ds4_model_catalog.h ds4_mem_gov.h ds4_iq2_tables_cuda.inc cuda/mmq/ds4_repack.h cuda/mmq/ds4_mmq.h ds4_naive_gpu.cuh cuda/naive_primitives.cuh cuda/naive_sparse_tile.cuh cuda/naive_draft.cuh ds4_naive_plan.h
 	$(NVCC) $(NVCCFLAGS) -c -o $@ ds4_cuda.cu
 
 # Vendored mmq pieces. ds4_mmq.cu transitively pulls in mmq.cuh which has
@@ -832,6 +833,57 @@ tests/test_mmq_parity: cuda/mmq/test/test_mmq_parity.o $(DS4_CUDA_CORE_OBJS)
 
 test-mmq-parity: tests/test_mmq_parity
 	./tests/test_mmq_parity
+
+# Prism Bonsai (qwen35) PQ2_0 and fold parity on CUDA.  The oracle is ds4.c's
+# own reference code, reached through the DS4_TEST_HOOKS entry points, so the
+# test links ds4.c built with that switch instead of the normal object.
+ds4_cuda_test_hooks.o: ds4.c ds4.h ds4_gpu.h
+	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_TEST_HOOKS -I$(CUDA_HOME)/include -c -o $@ ds4.c
+
+tests/test_qwen35_cuda: tests/test_qwen35_cuda.cu ds4_cuda_test_hooks.o $(filter-out ds4.o,$(DS4_CUDA_CORE_OBJS))
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -DDS4_TEST_HOOKS -I. $(MMQ_INCLUDES) -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-qwen35-cuda
+test-qwen35-cuda: tests/test_qwen35_cuda
+	./tests/test_qwen35_cuda
+
+# The Rust host (./ds4) is the default binary, and the one the server shares.
+# It pins the shape and the tensor directory instead of parsing the GGUF, so its
+# load-time configuration is not the C validator's: this gate pins the two
+# pieces that do not come from the shape (the rotary table and the
+# prism.hadamard fold) against the ids make bonsai-cuda-parity pins on the C
+# host.  Both backends, because the fold feeds the reference too.
+.PHONY: test-qwen35-rust-host
+test-qwen35-rust-host: ds4 ds4-c
+	@expect='11751 13 198 760 6511 314 9564 369'; \
+	for backend in cuda cpu; do \
+	  extra=""; [ $$backend = cuda ] && extra="DS4_CUDA_COPY_MODEL=1"; \
+	  got=$$(env $$extra ./ds4 -m "$(DS4_BONSAI_MODEL)" --backend $$backend \
+	         --token-ids 760,6511,314,9338,369 --predict 8 --temp 0 2>/dev/null | tail -1); \
+	  case "$$got" in "$$expect"*) echo "qwen35 rust host parity ($$backend): PASS";; \
+	    *) echo "qwen35 rust host parity ($$backend): FAIL"; \
+	       echo "  expected: $$expect"; echo "  got:      $$got"; exit 1;; esac; \
+	done
+
+# The Bonsai session path, diffed against the in-process CPU reference on both
+# backends.  The CUDA run needs the card (and DS4_CUDA_COPY_MODEL, see
+# docs/BONSAI.md); the CPU run needs no card but pays the reference's ~3 s per
+# forward, so it runs fewer steps and skips the long-prompt pass.
+tests/test_qwen35_session.o: tests/test_qwen35_session.c ds4.h
+	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_TEST_HOOKS -I. -I$(CUDA_HOME)/include -c -o $@ $<
+
+tests/test_qwen35_session: tests/test_qwen35_session.o ds4_cuda_test_hooks.o $(filter-out ds4.o,$(DS4_CUDA_CORE_OBJS))
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-qwen35-session test-qwen35-session-multichunk
+test-qwen35-session: tests/test_qwen35_session
+	DS4_CUDA_COPY_MODEL=1 DS4_TEST_MODEL="$(DS4_BONSAI_MODEL)" DS4_TEST_BACKEND=cuda DS4_TEST_STEPS="$${DS4_TEST_STEPS:-$(DS4_BONSAI_STEPS)}" ./tests/test_qwen35_session
+	DS4_TEST_MODEL="$(DS4_BONSAI_MODEL)" DS4_TEST_BACKEND=cpu ./tests/test_qwen35_session
+
+# The same scenarios with a two-token chunk, so the prefill crosses many chunk
+# boundaries instead of handing the trunk one wide chunk.
+test-qwen35-session-multichunk: tests/test_qwen35_session
+	DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_PREFILL_CHUNK=2 DS4_TEST_MODEL="$(DS4_BONSAI_MODEL)" DS4_TEST_BACKEND=cuda DS4_TEST_STEPS="$${DS4_TEST_STEPS:-$(DS4_BONSAI_STEPS)}" ./tests/test_qwen35_session
 
 tests/test_mmid_fast.o: tests/test_mmid_fast.cu cuda/mmq/mmid.cuh
 	$(NVCC) $(NVCCFLAGS) $(MMQ_INCLUDES) -c -o $@ $<
@@ -1570,6 +1622,69 @@ test: ds4_test ds4-eval tests/test_split_gguf
 	./ds4_test
 	./tests/test_split_gguf
 
+# PQ2_0 block format (Prism/Bonsai ternary).  The block bytes and the expected
+# f32 checksums come from the reference dequantizer in the PrismML llama.cpp
+# fork, so a mismatch means this tree no longer reads the file the way the
+# exporter's runtime does.  tests/pq2_0/reference_checksums.txt is the same
+# oracle over all 851 tensors of the Ternary-Bonsai-2-27B-PQ2_0 artifact.
+pq2-0-test: tests/test_pq2_0.c
+	$(CC) -O2 -Wall -Wextra -std=c99 -o tests/test_pq2_0 tests/test_pq2_0.c -lm
+	./tests/test_pq2_0
+
+# A tiny CPU projection needs no model; sanitizer instrumentation keeps null
+# state accesses visible even when the optimizer would discard the load.
+tests/test_qwen35_ref: tests/test_qwen35_ref.c ds4.c ds4.h
+	$(CC) $(CFLAGS) -O1 -DDS4_NO_GPU -Wno-unused-function \
+	-fsanitize=undefined -fno-sanitize-recover=undefined \
+	-ffunction-sections -fdata-sections -I. -o $@ $< \
+	-Wl,--gc-sections $(LDLIBS)
+
+.PHONY: test-qwen35-ref
+test-qwen35-ref: tests/test_qwen35_ref
+	./tests/test_qwen35_ref
+
+# Bonsai (qwen35) reference checks.  They need the Prism Bonsai GGUF and the
+# CPU host binary (make cpu); no llama.cpp is involved.  DS4_BONSAI_MODEL and
+# DS4_BONSAI_STEPS override the artifact path and the greedy step count.
+DS4_BONSAI_MODEL ?= /data/models/Ternary-Bonsai-2-27B-PQ2_0.gguf
+DS4_BONSAI_STEPS ?= 12
+
+# Every tensor of the artifact read through this tree's own row reader, against
+# the checksums the exporter's ggml dequantizer produced (tests/pq2_0).
+tests/test_qwen35_rows: tests/test_qwen35_rows.c ds4.c ds4.h tests/pq2_0/reference_checksums.txt
+	$(CC) $(CFLAGS) -O2 -DDS4_NO_GPU -ffunction-sections -fdata-sections \
+	-Wno-unused-function -I. -o $@ $< -Wl,--gc-sections $(LDLIBS)
+
+test-qwen35-rows: tests/test_qwen35_rows
+	@test -n "$(DS4_BONSAI_MODEL)" || \
+	{ echo "set DS4_BONSAI_MODEL to the Prism Bonsai GGUF" >&2; exit 2; }
+	./tests/test_qwen35_rows "$(DS4_BONSAI_MODEL)"
+
+.PHONY: bonsai-fold-selftest bonsai-ref-check
+bonsai-fold-selftest:
+	DS4_QWEN35_FOLD_SELFTEST=1 ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cpu --first-token-test -p "x" | grep "fold selftest"
+
+bonsai-ref-check:
+	DS4_QWEN35_STEPS="$${DS4_QWEN35_STEPS:-$(DS4_BONSAI_STEPS)}" ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cpu --first-token-test -p "The capital of France is" | grep -E "^token|next-token"
+
+# The same greedy check on the CUDA graph.  On this box the whole-map host
+# registration fails (RLIMIT_MEMLOCK is 8 MiB), so the artifact is copied to the
+# device instead: DS4_CUDA_COPY_MODEL=1.  Needs the CUDA build of ds4-c.
+DS4_BONSAI_PARITY_TOKENS ?= 760,6511,314,9338,369
+DS4_BONSAI_PARITY_STEPS ?= 8
+
+.PHONY: bonsai-cuda-check bonsai-cuda-parity
+bonsai-cuda-check:
+	DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_STEPS="$${DS4_QWEN35_STEPS:-$(DS4_BONSAI_STEPS)}" ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cuda --first-token-test -p "The capital of France is" | grep -E "^token|next-token"
+
+# CPU reference and CUDA graph on the same prompt ids: the two streams must
+# print the same ids.  Slow, the CPU reference is about 3 s per token.
+bonsai-cuda-parity:
+	@mkdir -p misc/scratch
+	DS4_QWEN35_TOKENS=$(DS4_BONSAI_PARITY_TOKENS) DS4_QWEN35_STEPS=$(DS4_BONSAI_PARITY_STEPS) ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cpu --first-token-test -p x 2>/dev/null | grep -E "^token " > misc/scratch/bonsai-cpu.tokens
+	DS4_CUDA_COPY_MODEL=1 DS4_QWEN35_TOKENS=$(DS4_BONSAI_PARITY_TOKENS) DS4_QWEN35_STEPS=$(DS4_BONSAI_PARITY_STEPS) ./ds4-c -m "$(DS4_BONSAI_MODEL)" --cuda --first-token-test -p x 2>/dev/null | grep -E "^token " > misc/scratch/bonsai-cuda.tokens
+	@diff misc/scratch/bonsai-cpu.tokens misc/scratch/bonsai-cuda.tokens && echo "bonsai cuda parity: PASS"
+
 # Metadata and full tensor-layout smoke. The structural GGUF is sparse, so
 # this validates all descriptors without materializing an 88 GiB copy.
 tests/test_motif3_loader: tests/test_motif3_loader.c ds4.c ds4.h
@@ -1730,6 +1845,7 @@ tests/test_motif3_long: tests/test_motif3_long.o ds4_kvstore.o rax.o $(CORE_OBJS
 endif
 
 clean:
+	rm -f tests/test_qwen35_ref
 	rm -f tests/test_solar_fattn tests/test_solar_fattn.o
 	rm -f tests/test_step37_media tests/test_step37_media.o
 	rm -f tests/test_ling3vl_media tests/test_ling3vl_media.o

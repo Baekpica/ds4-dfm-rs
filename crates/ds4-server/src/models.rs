@@ -26,6 +26,15 @@ pub fn model_alias_known(id: &str) -> bool {
             | "dots3-note-prev"
             | "dots-studio/dots3-note-prev"
             | "dots3-note-prev-Mixed-Quant-GGUF"
+            // Prism Bonsai 2 27B (qwen35); the names the sibling C server
+            // answers to. The advertised id stays the GGUF stem, as it does
+            // for every family here.
+            | "prism-bonsai-2-27b"
+            | "prism-bonsai-2-27b-chat"
+            | "prism-bonsai-2-27b-no-think"
+            | "prism-bonsai-2-27b-nothink"
+            | "prism-bonsai-2-27b-reasoner"
+            | "prism/bonsai-2-27b"
     )
 }
 

@@ -534,6 +534,52 @@ fn bind_qwen4exp_layer(out: &mut Vec<BindName>, shape: &Shape, il: u32) {
     }
 }
 
+/// Bonsai binds the gated delta-net tensors as `lin_*` and the gated-attention
+/// tensors as `attn_*`, alternating: the last layer of every group of
+/// `FULL_ATTN_INTERVAL` carries attention, the others the delta-net.
+/// Two names break the `.weight` suffix convention: `ssm_dt.bias` and `ssm_a`.
+fn bind_qwen35_layer(out: &mut Vec<BindName>, il: u32) {
+    for name in [
+        "blk.%u.attn_norm.weight",
+        "blk.%u.post_attention_norm.weight",
+    ] {
+        reqf(out, name, il);
+    }
+    if crate::qwen35::layer_is_full_attention(il) {
+        for name in [
+            "blk.%u.attn_q.weight",
+            "blk.%u.attn_k.weight",
+            "blk.%u.attn_v.weight",
+            "blk.%u.attn_output.weight",
+            "blk.%u.attn_q_norm.weight",
+            "blk.%u.attn_k_norm.weight",
+        ] {
+            reqf(out, name, il);
+        }
+    } else {
+        for name in [
+            "blk.%u.attn_qkv.weight",
+            "blk.%u.attn_gate.weight",
+            "blk.%u.ssm_conv1d.weight",
+            "blk.%u.ssm_dt.bias",
+            "blk.%u.ssm_a",
+            "blk.%u.ssm_beta.weight",
+            "blk.%u.ssm_alpha.weight",
+            "blk.%u.ssm_norm.weight",
+            "blk.%u.ssm_out.weight",
+        ] {
+            reqf(out, name, il);
+        }
+    }
+    for name in [
+        "blk.%u.ffn_gate.weight",
+        "blk.%u.ffn_up.weight",
+        "blk.%u.ffn_down.weight",
+    ] {
+        reqf(out, name, il);
+    }
+}
+
 fn bind_qwen4exp_mtp(out: &mut Vec<BindName>) {
     for name in [
         "mtp.fc_embedding.weight",
@@ -809,6 +855,14 @@ pub fn bind_names(shape: &Shape) -> Vec<BindName> {
                 bind_motif3_layer(&mut out, shape, il);
             }
             bind_motif3_mtp(&mut out);
+        }
+        ModelFamily::Qwen35 => {
+            req(&mut out, "token_embd.weight");
+            req(&mut out, "output_norm.weight");
+            req(&mut out, "output.weight");
+            for il in 0..shape.n_layer {
+                bind_qwen35_layer(&mut out, il);
+            }
         }
         ModelFamily::Dots3Note => {
             req(&mut out, "token_embd.weight");
@@ -1270,6 +1324,7 @@ pub fn variant_from_bind_name(s: &str) -> Option<Variant> {
         "inkling" => Some(Variant::InklingSmall),
         "step35" => Some(Variant::Step37Flash),
         "bailingmoe3" => Some(Variant::Ling30FlashVl),
+        "qwen35" => Some(Variant::Qwen35_27B),
         "naive-n05-flash" => Some(Variant::NaiveN05Flash),
         _ => None,
     }

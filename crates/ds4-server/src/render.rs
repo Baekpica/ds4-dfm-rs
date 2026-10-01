@@ -89,6 +89,7 @@ pub enum ModelSyntax {
     Step37 = 10,
     Ling3Vl = 11,
     Mimo2 = 12,
+    Qwen35 = 14,
     NaiveN05 = 13,
 }
 
@@ -106,6 +107,7 @@ pub fn syntax_for_model_id(model_id: i32) -> ModelSyntax {
         10 => ModelSyntax::Step37,
         11 => ModelSyntax::Ling3Vl,
         12 => ModelSyntax::Mimo2,
+        14 => ModelSyntax::Qwen35,
         13 => ModelSyntax::NaiveN05,
         _ => ModelSyntax::DeepSeek,
     }
@@ -119,6 +121,7 @@ pub fn tool_start_marker(syntax: ModelSyntax) -> &'static str {
         ModelSyntax::Qwen4Exp
         | ModelSyntax::Step37
         | ModelSyntax::Mimo2
+        | ModelSyntax::Qwen35
         | ModelSyntax::NaiveN05 => QWEN_TOOL_CALL_START,
         ModelSyntax::Glm53 | ModelSyntax::Ling3Vl => GLM_TOOL_CALL_START,
         ModelSyntax::K2Horizon => K2_TOOL_CALLS_START,
@@ -1874,7 +1877,9 @@ pub fn render_chat_choice(
         ModelSyntax::SolarOpen2 => {
             render_solar_chat_ex(msgs, tool_schemas, tool_orders, think_mode)
         }
-        ModelSyntax::Qwen4Exp => render_qwen_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
+        ModelSyntax::Qwen4Exp | ModelSyntax::Qwen35 => {
+            render_qwen_chat_ex(msgs, tool_schemas, tool_orders, think_mode)
+        }
         ModelSyntax::Glm53 => render_glm_chat_ex(msgs, tool_schemas, tool_orders, think_mode),
         ModelSyntax::K2Horizon => render_k2_chat(msgs, tool_schemas, think_mode),
         ModelSyntax::Inkling => inkling::render(msgs, tool_schemas, think_mode),
@@ -2021,7 +2026,7 @@ pub fn render_live_tool_tail(
                 .unwrap_or_default();
             out.extend(body);
         }
-        ModelSyntax::Qwen4Exp => {
+        ModelSyntax::Qwen4Exp | ModelSyntax::Qwen35 => {
             put(&mut out, QWEN_IM_END);
             out.push(b'\n');
             out.extend(render_qwen_chat_ex(tail, "", &[], think_mode)?);

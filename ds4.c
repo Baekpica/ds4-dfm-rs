@@ -315,7 +315,13 @@ static bool ds4_backend_uses_graph(ds4_backend backend) {
  */
 
 enum {
-    DS4_MAX_LAYER            = 61,
+    /* Bound for every host array that holds per-layer state (ds4_weights.layer[],
+     * the KV caches, the graph's per-layer slots).  It is the widest catalogued
+     * family, not the DeepSeek bound it used to be: Bonsai (qwen35) has 64
+     * blocks, and with 61 the bind loop wrote past layer[60] into the trailing
+     * members (the CUDA graph keeps its own DS4_QWEN35_MAX_LAYER bound for the
+     * same reason).  ds4_engine_open refuses any model above it by name. */
+    DS4_MAX_LAYER            = 64,
     /* Phase 2 Step 4d: maximum concurrent sequences the per-seq compressor
      * emit bookkeeping (ms_* arrays) is sized for.  The multi-seq batched
      * decode emit indexes per-(seq,layer) state banks + row counters; this
@@ -363,6 +369,7 @@ typedef enum {
     DS4_MODEL_FAMILY_STEP37      = 8,
     DS4_MODEL_FAMILY_LING3VL     = 9,
     DS4_MODEL_FAMILY_MIMO2       = 10,
+    DS4_MODEL_FAMILY_QWEN35      = 12,
     DS4_MODEL_FAMILY_NAIVE       = 11,
 } ds4_model_family;
 
@@ -380,6 +387,7 @@ typedef enum {
     DS4_VARIANT_STEP37_FLASH    = 10,
     DS4_VARIANT_LING30_FLASH_VL = 11,
     DS4_VARIANT_MIMO26_FLASH    = 12,
+    DS4_VARIANT_QWEN35_27B      = 14,
     DS4_VARIANT_NAIVE_N05_FLASH = 13,
 } ds4_variant;
 
@@ -428,6 +436,11 @@ typedef struct {
     uint32_t n_full_attn_count;
     uint32_t n_kda_head_dim;
     uint32_t n_ssm_conv;
+    /* Prism Bonsai (qwen35): the gated delta-net query/key and value head
+     * counts.  Its head width and convolution are n_kda_head_dim/n_ssm_conv,
+     * its interleaving is n_swa_period.  No other family sets these. */
+    uint32_t n_lin_k_head;
+    uint32_t n_lin_v_head;
     bool use_rope;
     bool use_qk_norm;         /* per-head RMSNorm on Q and K before RoPE */
     float rms_eps;
@@ -960,6 +973,38 @@ static const ds4_shape DS4_SHAPE_QWEN38_FLASH_NEXT = {
     .rope_orig_ctx = UINT64_C(262144),
 };
 
+/* Prism Bonsai 2 27B (qwen35).  Dense trunk: 48 gated delta-net layers and 16
+ * gated-attention layers at interval 4, dense SwiGLU FFN, no experts, no MTP
+ * block and no hyper-connections.  Matmul weights ship Hadamard-folded as
+ * PQ2_0 (ternary). */
+static const ds4_shape DS4_SHAPE_QWEN35 = {
+    .name = "Prism Bonsai 2 27B",
+    .family = DS4_MODEL_FAMILY_QWEN35,
+    .variant = DS4_VARIANT_QWEN35_27B,
+    .n_layer = 64,
+    .n_embd = 5120,
+    .n_vocab = 248320,
+    .n_head = 24,
+    .n_head_kv = 4,
+    .n_head_dim = 256,
+    .n_value_dim = 256,
+    .n_rot = 64,
+    .n_ff_dense = 17408,
+    .n_swa_period = 4,
+    .n_full_attn_count = 16,
+    .n_kda_head_dim = 128,
+    .n_ssm_conv = 4,
+    .n_lin_k_head = 16,
+    .n_lin_v_head = 48,
+    .use_rope = true,
+    .use_qk_norm = true,
+    .rms_eps = 1.0e-6f,
+    .expert_weight_scale = 1.0f,
+    .rope_freq_base = 10000000.0f,
+    .rope_scale_factor = 1.0f,
+    .rope_orig_ctx = UINT64_C(262144),
+};
+
 static ds4_shape g_ds4_shape = {
     .name = "DeepSeek V4 Flash",
     .family = DS4_MODEL_FAMILY_DEEPSEEK4,
@@ -1037,6 +1082,12 @@ static uint32_t g_ds4_compress_ratios[DS4_MAX_LAYER] = {0};
 #define DS4_N_VALUE_MLA               (g_ds4_shape.n_value_mla)
 #define DS4_N_KDA_HEAD_DIM            (g_ds4_shape.n_kda_head_dim)
 #define DS4_N_SSM_CONV                (g_ds4_shape.n_ssm_conv)
+#define DS4_N_LIN_K_HEAD              (g_ds4_shape.n_lin_k_head)
+#define DS4_N_LIN_V_HEAD              (g_ds4_shape.n_lin_v_head)
+/* Width of the gated delta-net convolution: two query/key streams plus the
+ * value stream, all at the linear head width. */
+#define DS4_N_LIN_CONV_DIM            (2u * DS4_N_LIN_K_HEAD * DS4_N_KDA_HEAD_DIM + \
+                                       DS4_N_LIN_V_HEAD * DS4_N_KDA_HEAD_DIM)
 #define DS4_USE_ROPE                  (g_ds4_shape.use_rope)
 #define DS4_USE_QK_NORM               (g_ds4_shape.use_qk_norm)
 #define DS4_RMS_EPS                   (g_ds4_shape.rms_eps)
@@ -1424,6 +1475,17 @@ static bool ds4_qwen4exp_layer_is_full_attention(uint32_t il) {
     if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_QWEN4EXP) return false;
     if (il >= DS4_N_LAYER) ds4_die("Qwen4Exp layer index is outside the loaded model layout");
     return DS4_N_SWA_PERIOD != 0 && (il % DS4_N_SWA_PERIOD) == 3u;
+}
+
+static bool ds4_model_is_qwen35(void) {
+    return DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN35;
+}
+
+/* Prism Bonsai (qwen35) follows the same trunk pattern as qwen4exp, three
+ * gated delta-net layers then one gated-attention layer, but every layer is
+ * dense and the model carries no MTP block. */
+static bool ds4_qwen35_layer_is_linear(uint32_t il) {
+    return ds4_model_is_qwen35() && (il + 1u) % DS4_N_SWA_PERIOD != 0u;
 }
 
 #define QWEN4EXP_YARN_MAX_FACTOR 4u
@@ -2145,6 +2207,10 @@ static const gguf_type_info gguf_types[] = {
     [28] = {"f64",      1,   8},
     [29] = {"iq1_m",  256,  56},
     [30] = {"bf16",     1,   2},
+    /* Prism-private ternary type: 128 weights per 34-byte block, one fp16
+     * scale then 32 two-bit code bytes.  Only the qwen35 (Bonsai) family
+     * declares it; the CUDA side reads it through the vendored mmq kernels. */
+    [142] = {"pq2_0",  128,  34},
 };
 
 enum {
@@ -2167,6 +2233,7 @@ enum {
     DS4_TENSOR_IQ1_M    = 29,
     DS4_TENSOR_BF16     = 30,
     DS4_TENSOR_MXFP4    = 39,
+    DS4_TENSOR_PQ2_0    = 142,
 };
 
 typedef struct ds4_tensor ds4_tensor;
@@ -2419,6 +2486,9 @@ static void model_apply_host_shape(void) {
         break;
     case DS4_VARIANT_LING30_FLASH_VL:
         g_ds4_shape = DS4_SHAPE_LING30_FLASH_VL;
+        break;
+    case DS4_VARIANT_QWEN35_27B:
+        g_ds4_shape = DS4_SHAPE_QWEN35;
         break;
     default:
         ds4_die("unsupported");
@@ -4836,6 +4906,22 @@ typedef struct {
      * columns. ffn_down_exps names the main tensor for generic MMQ reuse. */
     ds4_tensor *ffn_down_exps_tail;
     ds4_tensor *ffn_shexp_gate_inp;
+    /* qwen35 (Prism Bonsai).  Its gated delta-net layer mixes q/k/v into one
+     * projection, gates the output with a second, and carries the depthwise
+     * conv plus the ssm scalars; its trunk applies a second RMS norm to the
+     * post-attention residual, where qwen4exp goes through its
+     * hyper-connection mixers.  Every lin_* matmul weight is stored
+     * Hadamard-folded, so the activation is rotated before the product. */
+    ds4_tensor *post_attn_norm;
+    ds4_tensor *lin_qkv;
+    ds4_tensor *lin_gate;
+    ds4_tensor *lin_conv;
+    ds4_tensor *lin_dt_bias;
+    ds4_tensor *lin_a;
+    ds4_tensor *lin_beta;
+    ds4_tensor *lin_alpha;
+    ds4_tensor *lin_norm;
+    ds4_tensor *lin_out;
 } ds4_layer_weights;
 
 /* Source-interleaved Inkling weights have distinct dense/routed/shared
@@ -6295,11 +6381,95 @@ static void weights_validate_qwen4exp_layout(
     weights_validate_qwen4exp_hc(&w->qwen_mtp.qwen_ffn_hc, true);
 }
 
+/* Bonsai geometry, in the terms the layout takes: the gated delta-net
+ * projections mix two query/key streams and one value stream at the same head
+ * width, and the attention projections split q into query and gate halves. */
+static void tensor_expect_pq2_0_layout(const ds4_tensor *t, uint64_t d0, uint64_t d1) {
+    if (!t) ds4_die("internal error: missing tensor while validating Bonsai layout");
+    if (t->type != DS4_TENSOR_PQ2_0) {
+        fprintf(stderr, "ds4: tensor %.*s has type %s, expected pq2_0\n",
+                (int)t->name.len, t->name.ptr, tensor_type_name(t->type));
+        exit(1);
+    }
+    tensor_expect_layout(t, DS4_TENSOR_PQ2_0, 2, d0, d1, 0);
+}
+
+static bool weights_qwen35_layer_has_required(const ds4_layer_weights *l, uint32_t il) {
+    if (!l->attn_norm || !l->post_attn_norm || !l->ffn_gate || !l->ffn_up || !l->ffn_down) {
+        return false;
+    }
+    if (ds4_qwen35_layer_is_linear(il)) {
+        return l->lin_qkv && l->lin_gate && l->lin_conv && l->lin_dt_bias && l->lin_a &&
+               l->lin_beta && l->lin_alpha && l->lin_norm && l->lin_out;
+    }
+    return l->attn_q && l->attn_k && l->attn_v && l->attn_output &&
+           l->attn_q_norm && l->attn_k_norm;
+}
+
+/* Bonsai layout: every matmul weight is PQ2_0, the norms and the ssm scalars
+ * are F32, and the two ssm gates are BF16, exactly as the Prism exporter
+ * writes them.  The folded weights all declare their input width in
+ * prism.hadamard, so a valid layout is also what makes the activation
+ * transform well defined. */
+static void weights_validate_qwen35_layout(const ds4_weights *w) {
+    const uint64_t em = DS4_N_EMBD;
+    const uint64_t ffn = DS4_N_FF_DENSE;
+    const uint64_t lin_k_dim = (uint64_t)DS4_N_LIN_K_HEAD * DS4_N_KDA_HEAD_DIM;
+    const uint64_t lin_v_dim = (uint64_t)DS4_N_LIN_V_HEAD * DS4_N_KDA_HEAD_DIM;
+    const uint64_t q_dim = (uint64_t)DS4_N_HEAD * DS4_N_HEAD_DIM;
+    const uint64_t kv_dim = (uint64_t)DS4_N_HEAD_KV * DS4_N_HEAD_DIM;
+
+    if (!w) ds4_die("internal error: missing weights while validating Bonsai layout");
+
+    if (!w->token_embd) ds4_die("required token embedding tensor is missing");
+    tensor_expect_pq2_0_layout(w->token_embd, em, DS4_N_VOCAB);
+    if (!weights_have_output_head(w)) ds4_die("required output head tensors are missing");
+    tensor_expect_layout(w->output_norm, DS4_TENSOR_F32, 1, em, 0, 0);
+    tensor_expect_pq2_0_layout(w->output, em, DS4_N_VOCAB);
+
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        const ds4_layer_weights *l = &w->layer[il];
+        if (!weights_qwen35_layer_has_required(l, il)) {
+            fprintf(stderr, "ds4: required Bonsai tensors for layer %u are missing\n", il);
+            exit(1);
+        }
+        tensor_expect_layout(l->attn_norm, DS4_TENSOR_F32, 1, em, 0, 0);
+        tensor_expect_layout(l->post_attn_norm, DS4_TENSOR_F32, 1, em, 0, 0);
+        tensor_expect_pq2_0_layout(l->ffn_gate, em, ffn);
+        tensor_expect_pq2_0_layout(l->ffn_up, em, ffn);
+        tensor_expect_pq2_0_layout(l->ffn_down, ffn, em);
+
+        if (ds4_qwen35_layer_is_linear(il)) {
+            tensor_expect_pq2_0_layout(l->lin_qkv, em, 2u * lin_k_dim + lin_v_dim);
+            tensor_expect_pq2_0_layout(l->lin_gate, em, lin_v_dim);
+            tensor_expect_layout(l->lin_conv, DS4_TENSOR_F32, 2, DS4_N_SSM_CONV,
+                                 2u * lin_k_dim + lin_v_dim, 0);
+            tensor_expect_layout(l->lin_dt_bias, DS4_TENSOR_F32, 1, DS4_N_LIN_V_HEAD, 0, 0);
+            tensor_expect_layout(l->lin_a, DS4_TENSOR_F32, 1, DS4_N_LIN_V_HEAD, 0, 0);
+            tensor_expect_layout(l->lin_beta, DS4_TENSOR_BF16, 2, em, DS4_N_LIN_V_HEAD, 0);
+            tensor_expect_layout(l->lin_alpha, DS4_TENSOR_BF16, 2, em, DS4_N_LIN_V_HEAD, 0);
+            tensor_expect_layout(l->lin_norm, DS4_TENSOR_F32, 1, DS4_N_KDA_HEAD_DIM, 0, 0);
+            tensor_expect_pq2_0_layout(l->lin_out, lin_v_dim, em);
+        } else {
+            tensor_expect_pq2_0_layout(l->attn_q, em, 2u * q_dim);
+            tensor_expect_pq2_0_layout(l->attn_k, em, kv_dim);
+            tensor_expect_pq2_0_layout(l->attn_v, em, kv_dim);
+            tensor_expect_pq2_0_layout(l->attn_output, q_dim, em);
+            tensor_expect_layout(l->attn_q_norm, DS4_TENSOR_F32, 1, DS4_N_HEAD_DIM, 0, 0);
+            tensor_expect_layout(l->attn_k_norm, DS4_TENSOR_F32, 1, DS4_N_HEAD_DIM, 0, 0);
+        }
+    }
+}
+
 /* Verify every tensor type and dimension used by the selected specialized
  * pipeline. After this succeeds, inference code can rely on fixed constants. */
 static void weights_validate_layout(
         const ds4_weights *w,
         const ds4_model   *m) {
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN35) {
+        weights_validate_qwen35_layout(w);
+        return;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
         weights_validate_qwen4exp_layout(w, m);
         return;
@@ -6651,6 +6821,450 @@ static void config_expect_bool(const char *name, bool got, bool expected) {
 
 static void config_validate_fixed_shape(uint32_t n_layer) {
     config_expect_u32("block_count",                  n_layer,                 DS4_N_LAYER);
+}
+
+/* =========================================================================
+ * Prism folded-weight activation transform (qwen35 / Bonsai)
+ * =========================================================================
+ *
+ * A folded Prism export stores every matmul weight already rotated into the
+ * block-Hadamard basis the quantization likes, and expects the runtime to
+ * rotate the activation instead:
+ *
+ *   a' = H_block(s * P a)     for each folded weight
+ *   x  = s * H_block(z)       after a row lookup from token_embd.weight
+ *
+ * where s is the sign vector of the weight's input width, H_block is the
+ * normalized Sylvester Walsh-Hadamard transform over blocks of block_size,
+ * and P is the gated-delta-net head permutation (gdn_v_grouped).  H is
+ * symmetric and orthogonal with H*H = I, which is why the inverse only swaps
+ * the two steps.  The CUDA twin of this block is cuda/qwen35_primitives.cuh. */
+#define DS4_MAX_HADAMARD_SETS 8
+#define DS4_MAX_KDA_HEAD_DIM 128
+
+typedef struct {
+    uint32_t width;
+    float   *values;    /* width entries, each +1 or -1 */
+} ds4_hadamard_signs;
+
+typedef struct {
+    bool     enabled;
+    bool     gdn_v_grouped;
+    bool     inverse_token_embd;
+    uint32_t block_size;
+    uint32_t n_sets;
+    ds4_hadamard_signs set[DS4_MAX_HADAMARD_SETS];
+} ds4_hadamard_state;
+
+static ds4_hadamard_state g_hadamard;
+
+static bool model_get_string_array_item(const ds4_model *m, const char *key, uint64_t index, ds4_str *out) {
+    ds4_array_ref arr;
+    if (!model_get_array(m, key, &arr) || arr.type != GGUF_VALUE_STRING) return false;
+    if (index >= arr.len) return false;
+    ds4_cursor c = cursor_at(m, arr.data_pos);
+    for (uint64_t i = 0; i <= index; i++) {
+        if (!cursor_string(&c, out)) return false;
+    }
+    return true;
+}
+
+/* Sign vector of a folded weight's input width, or NULL when the model is not
+ * folded or is folded with identity signs.  A folded width without a vector is
+ * a hole in the metadata, not a reason to rotate without the signs the fold
+ * was built with, so it stops the load here. */
+static const float *ds4_hadamard_signs_for(uint32_t width) {
+    if (!g_hadamard.enabled || g_hadamard.n_sets == 0) return NULL;
+    for (uint32_t i = 0; i < g_hadamard.n_sets; i++) {
+        if (g_hadamard.set[i].width == width) return g_hadamard.set[i].values;
+    }
+    ds4_die("prism.hadamard: no sign vector for a folded weight's input width");
+    return NULL;
+}
+
+/* A folded weight is one whose product consumes an activation that has to be
+ * rotated first.  The transform is applied unconditionally for this family, so
+ * a file that folds only some of its matmuls would silently run wrong math:
+ * the declared name list must therefore match the model's matmul set exactly. */
+static bool qwen35_is_foldable_weight_name(ds4_str name) {
+    static const char *kinds[] = {
+        "attn_q", "attn_k", "attn_v", "attn_qkv", "attn_gate", "attn_output",
+        "ffn_gate", "ffn_up", "ffn_down", "ssm_out",
+    };
+    char buf[128];
+    if (name.len == 0 || name.len >= sizeof(buf)) return false;
+    memcpy(buf, name.ptr, name.len);
+    buf[name.len] = '\0';
+    if (ds4_streq(name, "output.weight")) return true;
+    if (strncmp(buf, "blk.", 4) != 0) return false;
+    char *dot = strchr(buf + 4, '.');
+    if (!dot || dot == buf + 4) return false;
+    for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
+        char suffix[64];
+        snprintf(suffix, sizeof(suffix), "%s.weight", kinds[i]);
+        if (strcmp(dot + 1, suffix) == 0) return true;
+    }
+    return false;
+}
+
+/* Normalized Sylvester Walsh-Hadamard transform over each block of
+ * block_size consecutive elements: the butterfly below is the same one the
+ * fork's CPU backend runs, and the 1/sqrt(block_size) factor is the
+ * "normalized" part. */
+static void ds4_hadamard_rotate(float *x, uint32_t n) {
+    const uint32_t bs = g_hadamard.block_size;
+    if (bs == 0u) return;
+    const float scale = 1.0f / sqrtf((float)bs);
+    for (uint32_t base = 0; base + bs <= n; base += bs) {
+        float *blk = x + base;
+        for (uint32_t len = 1; len < bs; len <<= 1) {
+            for (uint32_t i = 0; i < bs; i += 2u * len) {
+                for (uint32_t j = 0; j < len; j++) {
+                    const float u = blk[i + j];
+                    const float v = blk[i + len + j];
+                    blk[i + j] = u + v;
+                    blk[i + len + j] = u - v;
+                }
+            }
+        }
+        for (uint32_t i = 0; i < bs; i++) blk[i] *= scale;
+    }
+}
+
+static void ds4_hadamard_forward(float *x, uint32_t n, const float *signs) {
+    if (signs) {
+        for (uint32_t i = 0; i < n; i++) x[i] *= signs[i];
+    }
+    ds4_hadamard_rotate(x, n);
+}
+
+static void ds4_hadamard_inverse(float *x, uint32_t n, const float *signs) {
+    ds4_hadamard_rotate(x, n);
+    if (signs) {
+        for (uint32_t i = 0; i < n; i++) x[i] *= signs[i];
+    }
+}
+
+/* gdn_v_grouped: the converter folded ssm_out over the grouped head order
+ * instead of the tiled one, so the activation is reordered from
+ * [head_dim][n_k][rep] to [head_dim][rep][n_k] first. */
+static void ds4_hadamard_gdn_permute(float *x, uint32_t hd, uint32_t nk, uint32_t rep, float *scratch) {
+    const uint32_t n = hd * nk * rep;
+    for (uint32_t h = 0; h < hd; h++) {
+        for (uint32_t k = 0; k < nk; k++) {
+            for (uint32_t r = 0; r < rep; r++) {
+                scratch[h + hd * (r + rep * k)] = x[h + hd * (k + nk * r)];
+            }
+        }
+    }
+    memcpy(x, scratch, (size_t)n * sizeof(float));
+}
+
+/* Rotate a matmul input in place, applying the gdn permutation when the weight
+ * is a gated-delta-net output projection. */
+static void ds4_hadamard_matmul_input(float *x, uint32_t n, bool ssm_out, float *scratch) {
+    if (!g_hadamard.enabled || n == 0) return;
+    if (ssm_out && g_hadamard.gdn_v_grouped) {
+        ds4_hadamard_gdn_permute(x, DS4_N_KDA_HEAD_DIM, DS4_N_LIN_K_HEAD,
+                                 DS4_N_LIN_V_HEAD / DS4_N_LIN_K_HEAD, scratch);
+    }
+    ds4_hadamard_forward(x, n, ds4_hadamard_signs_for(n));
+}
+
+/* Prism PQ2_0: 128 weights per block, one fp16 scale, 32 code bytes; element
+ * j lives in byte j/4 at bits (j%4)*2 and dequantizes to (code - 1)*d.  This
+ * is the reference every CUDA PQ2_0 kernel is measured against. */
+static void pq2_0_row_f32(const uint8_t *p, uint64_t n, float *out) {
+    const uint64_t blocks = n / 128u;
+    for (uint64_t b = 0; b < blocks; b++, p += 34u) {
+        uint16_t dh;
+        memcpy(&dh, p, sizeof(dh));
+        const float d = f16_to_f32(dh);
+        for (uint32_t j = 0; j < 128u; j++) {
+            const uint8_t code = (uint8_t)((p[2u + (j >> 2)] >> (2u * (j & 3u))) & 3u);
+            out[b * 128u + j] = (float)((int)code - 1) * d;
+        }
+    }
+}
+
+/* prism.hadamard.sign_values is a flat array of +1/-1 partitioned by
+ * sign_widths; the fork stores it as uint32 (so -1 arrives as 0xffffffff) or
+ * as int32 depending on the writer. */
+static void config_read_hadamard_signs(const ds4_model *m) {
+    ds4_array_ref widths = {0}, values = {0};
+    if (!model_get_array(m, "prism.hadamard.sign_widths", &widths) ||
+        !model_get_array(m, "prism.hadamard.sign_values", &values)) {
+        ds4_die("prism.hadamard is in explicit sign mode but its sign arrays are missing");
+    }
+    if (widths.type != GGUF_VALUE_INT32 && widths.type != GGUF_VALUE_UINT32) {
+        ds4_die("prism.hadamard.sign_widths must be an integer array");
+    }
+    if (values.type != GGUF_VALUE_INT32 && values.type != GGUF_VALUE_UINT32) {
+        ds4_die("prism.hadamard.sign_values must be an integer array");
+    }
+    if (widths.len > DS4_MAX_HADAMARD_SETS) ds4_die("prism.hadamard has too many sign vectors");
+
+    ds4_cursor wc = cursor_at(m, widths.data_pos);
+    uint64_t value_off = 0;
+    for (uint64_t i = 0; i < widths.len; i++) {
+        int32_t w = 0;
+        if (!cursor_read(&wc, &w, sizeof(w))) ds4_die("prism.hadamard.sign_widths is truncated");
+        if (w <= 0 || (uint32_t)w % g_hadamard.block_size != 0) {
+            ds4_die("prism.hadamard sign width is not a multiple of the block size");
+        }
+        if (value_off + (uint64_t)w > values.len) {
+            ds4_die("prism.hadamard.sign_values is shorter than the sign widths require");
+        }
+        float *signed_values = xmalloc((size_t)w * sizeof(float));
+        ds4_cursor vc = cursor_at(m, values.data_pos + value_off * sizeof(int32_t));
+        for (int32_t j = 0; j < w; j++) {
+            int32_t v = 0;
+            if (!cursor_read(&vc, &v, sizeof(v))) ds4_die("prism.hadamard.sign_values is truncated");
+            if (v != 1 && v != -1) ds4_die("prism.hadamard sign values must be +1 or -1");
+            signed_values[j] = (float)v;
+        }
+        g_hadamard.set[g_hadamard.n_sets].width = (uint32_t)w;
+        g_hadamard.set[g_hadamard.n_sets].values = signed_values;
+        g_hadamard.n_sets++;
+        value_off += (uint64_t)w;
+    }
+    if (value_off != values.len) ds4_die("prism.hadamard.sign_values length does not match sign_widths");
+}
+
+static void config_validate_hadamard(const ds4_model *m) {
+    memset(&g_hadamard, 0, sizeof(g_hadamard));
+
+    uint32_t version = 0;
+    if (!model_get_u32(m, "prism.hadamard.version", &version)) return;   /* an unfolded export */
+
+    if (version != 1) ds4_die("unsupported prism.hadamard.version");
+    uint32_t block_size = required_u32(m, "prism.hadamard.block_size");
+    ds4_str transform = {0}, axis = {0}, sign_mode = {0};
+    if (!model_get_string(m, "prism.hadamard.transform", &transform) ||
+        !model_get_string(m, "prism.hadamard.axis", &axis) ||
+        !model_get_string(m, "prism.hadamard.sign_mode", &sign_mode)) {
+        ds4_die("prism.hadamard metadata is incomplete");
+    }
+    if (!ds4_streq(transform, "normalized-sylvester-walsh-hadamard")) {
+        ds4_die("unsupported prism.hadamard.transform");
+    }
+    if (!ds4_streq(axis, "input-last-dimension")) ds4_die("unsupported prism.hadamard.axis");
+    if (block_size == 0 || (block_size & (block_size - 1)) != 0) {
+        ds4_die("prism.hadamard.block_size must be a power of two");
+    }
+    g_hadamard.enabled = true;
+    g_hadamard.block_size = block_size;
+    if (!model_get_bool(m, "prism.hadamard.gdn_v_grouped", &g_hadamard.gdn_v_grouped)) {
+        g_hadamard.gdn_v_grouped = false;
+    }
+
+    if (ds4_streq(sign_mode, "explicit")) {
+        config_read_hadamard_signs(m);
+    } else if (!ds4_streq(sign_mode, "identity")) {
+        ds4_die("unsupported prism.hadamard.sign_mode");
+    }
+
+    ds4_array_ref names = {0};
+    if (!model_get_array(m, "prism.hadamard.weight_names", &names) ||
+        names.type != GGUF_VALUE_STRING || names.len == 0) {
+        ds4_die("prism.hadamard.weight_names is missing or empty");
+    }
+
+    /* Every declared folded weight must exist and be a matmul; every matmul
+     * tensor (there is no expert, PLE or MTP tensor in this family) must be
+     * declared.  Indexing by a hash-free scan is fine: it runs once per load. */
+    bool *declared = xcalloc((size_t)m->n_tensors, sizeof(bool));
+    for (uint64_t i = 0; i < names.len; i++) {
+        ds4_str name = {0};
+        if (!model_get_string_array_item(m, "prism.hadamard.weight_names", i, &name)) {
+            ds4_die("prism.hadamard.weight_names is truncated");
+        }
+        if (!qwen35_is_foldable_weight_name(name)) {
+            fprintf(stderr, "ds4: prism.hadamard folds %.*s, which is not a matmul this family rotates\n",
+                    (int)name.len, name.ptr);
+            exit(1);
+        }
+        ds4_tensor *found = NULL;
+        for (uint64_t j = 0; j < m->n_tensors; j++) {
+            if (ds4_str_eq(m->tensors[j].name, name)) {
+                found = &m->tensors[j];
+                break;
+            }
+        }
+        if (!found) {
+            fprintf(stderr, "ds4: prism.hadamard names a missing tensor: %.*s\n",
+                    (int)name.len, name.ptr);
+            exit(1);
+        }
+        declared[found - m->tensors] = true;
+    }
+    for (uint64_t i = 0; i < m->n_tensors; i++) {
+        const ds4_tensor *t = &m->tensors[i];
+        if (!qwen35_is_foldable_weight_name(t->name) || declared[i]) continue;
+        if (ds4_streq(t->name, "token_embd.weight")) continue;
+        fprintf(stderr, "ds4: prism.hadamard leaves the matmul %.*s unfolded\n",
+                (int)t->name.len, t->name.ptr);
+        exit(1);
+    }
+    free(declared);
+
+    ds4_array_ref inverse = {0};
+    if (model_get_array(m, "prism.hadamard.inverse_weight_names", &inverse)) {
+        if (inverse.type != GGUF_VALUE_STRING || inverse.len != 1) {
+            ds4_die("prism.hadamard.inverse_weight_names must name exactly the token embedding");
+        }
+        ds4_str name = {0};
+        if (!model_get_string_array_item(m, "prism.hadamard.inverse_weight_names", 0, &name) ||
+            !ds4_streq(name, "token_embd.weight")) {
+            ds4_die("prism.hadamard.inverse_weight_names must name exactly the token embedding");
+        }
+        g_hadamard.inverse_token_embd = true;
+    }
+
+    /* A folded weight whose width has no sign vector would be rotated without
+     * the signs the fold was built with, which changes the model function. */
+    for (uint64_t i = 0; i < m->n_tensors; i++) {
+        const ds4_tensor *t = &m->tensors[i];
+        if (!qwen35_is_foldable_weight_name(t->name)) continue;
+        if (t->ndim < 1 || t->dim[0] % block_size != 0) {
+            ds4_die("prism.hadamard block size does not divide a folded weight's input width");
+        }
+        if (g_hadamard.n_sets > 0 && ds4_hadamard_signs_for((uint32_t)t->dim[0]) == NULL) {
+            ds4_die("prism.hadamard has no sign vector for a folded weight's input width");
+        }
+    }
+    if (g_hadamard.inverse_token_embd && g_hadamard.n_sets > 0 &&
+        ds4_hadamard_signs_for(DS4_N_EMBD) == NULL) {
+        ds4_die("prism.hadamard has no sign vector for the embedding width");
+    }
+
+    fprintf(stderr,
+            "ds4: prism.hadamard folding: block %u, %u sign vector(s), gdn_v_grouped %u\n",
+            block_size, g_hadamard.n_sets, g_hadamard.gdn_v_grouped ? 1u : 0u);
+}
+
+/* Largest n_rot/2 either qwen family uses (both rotate 64 of the head dims). */
+#define DS4_MAX_ROT_PAIRS 32
+
+static float g_ds4_rope_freq[DS4_MAX_ROT_PAIRS];
+static float g_ds4_rope_mscale = 1.0f;
+static uint32_t g_ds4_rope_native_ctx = 0;
+static bool g_ds4_rope_yarn = false;
+
+/* Rotary inverse frequencies of the n_rot/2 rotated pairs, shared by the qwen
+ * families.  The plain table is freq[i] = base^(-2i/n_rot); a factor > 1
+ * instead applies static YaRN over the native context (HF
+ * _compute_yarn_parameters with beta_fast 32 / beta_slow 1), which costs some
+ * quality on short text and so stays off unless a caller asks for it. */
+static void ds4_rope_configure(uint32_t n_rot, double base, uint32_t native_ctx, double factor) {
+    const uint32_t half = n_rot / 2u;
+    if (half == 0 || half > DS4_MAX_ROT_PAIRS) ds4_die("unsupported rope dimension count");
+    const bool yarn = factor > 1.0 && native_ctx > 0;
+    double low = 0.0, high = 0.0;
+    if (yarn) {
+        low = fmax(0.0, floor(n_rot * log(native_ctx / (32.0 * 2.0 * M_PI)) / (2.0 * log(base))));
+        high = fmin((double)n_rot - 1.0, ceil(n_rot * log(native_ctx / (2.0 * M_PI)) / (2.0 * log(base))));
+        if (high == low) high += 0.001;
+    }
+    for (uint32_t i = 0; i < DS4_MAX_ROT_PAIRS; i++) {
+        double f = i < half ? pow(base, -2.0 * (double)i / (double)n_rot) : 0.0;
+        if (yarn && i < half) {
+            const double extrap = 1.0 - fmin(1.0, fmax(0.0, ((double)i - low) / (high - low)));
+            f = (f / factor) * (1.0 - extrap) + f * extrap;
+        }
+        g_ds4_rope_freq[i] = (float)f;
+    }
+    g_ds4_rope_mscale = yarn ? (float)(0.1 * log(factor) + 1.0) : 1.0f;
+    g_ds4_rope_native_ctx = native_ctx;
+    g_ds4_rope_yarn = yarn;
+    if (yarn) {
+        fprintf(stderr, "ds4: YaRN factor %g over %u native tokens (pairs %g..%g blended, mscale %.4f)\n",
+                factor, native_ctx, low, high, g_ds4_rope_mscale);
+    }
+}
+
+/* Bonsai declares its whole geometry under qwen35.*; the gated delta-net
+ * projection widths live in the shape (n_lin_*), the trunk is trained at
+ * 262144 positions with no rope scaling. */
+static void config_validate_qwen35_model(const ds4_model *m) {
+    g_ds4_shape = DS4_SHAPE_QWEN35;
+
+    config_expect_u32("block_count", required_u32(m, "qwen35.block_count"), DS4_N_LAYER);
+    config_expect_u32("embedding_length", required_u32(m, "qwen35.embedding_length"), DS4_N_EMBD);
+    config_expect_u32("feed_forward_length", required_u32(m, "qwen35.feed_forward_length"),
+                      DS4_N_FF_DENSE);
+    config_expect_u32("attention.head_count", required_u32(m, "qwen35.attention.head_count"),
+                      DS4_N_HEAD);
+    config_expect_u32("attention.head_count_kv", required_u32(m, "qwen35.attention.head_count_kv"),
+                      DS4_N_HEAD_KV);
+    config_expect_u32("attention.key_length", required_u32(m, "qwen35.attention.key_length"),
+                      DS4_N_HEAD_DIM);
+    config_expect_u32("attention.value_length", required_u32(m, "qwen35.attention.value_length"),
+                      DS4_N_VALUE_DIM);
+    config_expect_u32("rope.dimension_count", required_u32(m, "qwen35.rope.dimension_count"),
+                      DS4_N_ROT);
+    config_expect_f32("rope.freq_base", required_f32(m, "qwen35.rope.freq_base"),
+                      DS4_ROPE_FREQ_BASE);
+    config_expect_f32("attention.layer_norm_rms_epsilon",
+                      required_f32(m, "qwen35.attention.layer_norm_rms_epsilon"), DS4_RMS_EPS);
+    config_expect_u32("ssm.conv_kernel", required_u32(m, "qwen35.ssm.conv_kernel"), DS4_N_SSM_CONV);
+    config_expect_u32("ssm.state_size", required_u32(m, "qwen35.ssm.state_size"),
+                      DS4_N_KDA_HEAD_DIM);
+    config_expect_u32("ssm.group_count", required_u32(m, "qwen35.ssm.group_count"),
+                      DS4_N_LIN_K_HEAD);
+    config_expect_u32("ssm.time_step_rank", required_u32(m, "qwen35.ssm.time_step_rank"),
+                      DS4_N_LIN_V_HEAD);
+    config_expect_u32("ssm.inner_size", required_u32(m, "qwen35.ssm.inner_size"),
+                      DS4_N_LIN_V_HEAD * DS4_N_KDA_HEAD_DIM);
+    config_expect_u32("full_attention_interval",
+                      required_u32(m, "qwen35.full_attention_interval"),
+                      DS4_N_SWA_PERIOD);
+
+    /* The trunk is trained at 262144 native positions and the file carries no
+     * rope scaling, so the rotary table is the plain one. */
+    const uint64_t ctx = required_u64_compat(m, "qwen35.context_length");
+    config_expect_u64("context_length", ctx, DS4_ROPE_ORIG_CTX);
+    ds4_rope_configure(DS4_N_ROT, (double)DS4_ROPE_FREQ_BASE, (uint32_t)ctx, 0.0);
+
+    /* The multimodal axes share one position in this family (no vision tower),
+     * so the split only has to cover the rotated dimensions. */
+    ds4_array_ref sections = {0};
+    if (!model_get_array(m, "qwen35.rope.dimension_sections", &sections) ||
+        sections.len != 4 || (sections.type != GGUF_VALUE_INT32 && sections.type != GGUF_VALUE_UINT32)) {
+        ds4_die("qwen35.rope.dimension_sections is missing or not a 4-entry integer array");
+    }
+    ds4_cursor sc = cursor_at(m, sections.data_pos);
+    uint64_t section_sum = 0;
+    for (uint64_t i = 0; i < sections.len; i++) {
+        int32_t v = 0;
+        if (!cursor_read(&sc, &v, sizeof(v))) ds4_die("qwen35.rope.dimension_sections is truncated");
+        if (v < 0) ds4_die("qwen35.rope.dimension_sections has a negative entry");
+        section_sum += (uint64_t)v;
+    }
+    if (section_sum != DS4_N_ROT / 2u) {
+        ds4_die("qwen35.rope.dimension_sections does not cover the rotated dimensions");
+    }
+
+    config_validate_hadamard(m);
+}
+
+/* The host pins the shape and the tensor directory, so config_validate_model
+ * is skipped.  Two pieces of this family's runtime configuration live in the
+ * GGUF metadata rather than in the shape, and both are load-time state that
+ * nothing else sets:
+ *   - the rotary inverse frequencies (ds4_rope_configure has no other caller);
+ *   - the prism.hadamard fold, whose application is a no-op while
+ *     g_hadamard.enabled is false, so every folded weight would be read
+ *     unrotated.
+ * Missing keys fall back to the pinned values rather than dying, because the
+ * host path also serves shapes whose GGUF carries no model metadata. */
+static void config_apply_qwen35_runtime(const ds4_model *m) {
+    uint64_t ctx = DS4_ROPE_ORIG_CTX;
+    if (!model_get_u64_compat(m, "qwen35.context_length", &ctx) || ctx == 0) {
+        ctx = DS4_ROPE_ORIG_CTX;
+    }
+    ds4_rope_configure(DS4_N_ROT, (double)DS4_ROPE_FREQ_BASE, (uint32_t)ctx, 0.0);
+    config_validate_hadamard(m);
 }
 
 /* Validate metadata values that affect semantics: attention shape, HC count,
@@ -7668,6 +8282,10 @@ static void config_validate_model(const ds4_model *m) {
         config_validate_glm53_model(m);
         return;
     }
+    if (ds4_streq(arch, "qwen35")) {
+        config_validate_qwen35_model(m);
+        return;
+    }
     fprintf(stderr, "ds4: unsupported GGUF architecture: %.*s\n",
             (int)arch.len, arch.ptr);
     exit(1);
@@ -8487,6 +9105,46 @@ static void step37_bind_draft(ds4_weights *w, const ds4_model *m) {
 #include "ds4_mimo2_bind.inc"
 #include "ds4_naive_bind.inc"
 
+/* Dense qwen35 trunk: a gated delta-net layer stores the mixed qkv, the output
+ * gate and the ssm state tensors; an attention layer stores q/k/v, the output
+ * projection and the per-head q/k norms; every layer carries a dense SwiGLU
+ * FFN.  Every matmul weight is folded, so it is PQ2_0. */
+static void weights_bind_qwen35_layer(ds4_layer_weights *l, const ds4_model *m, uint32_t il) {
+    l->attn_norm      = required_tensorf(m, "blk.%u.attn_norm.weight", il);
+    l->post_attn_norm = required_tensorf(m, "blk.%u.post_attention_norm.weight", il);
+    if (ds4_qwen35_layer_is_linear(il)) {
+        l->lin_qkv     = required_tensorf(m, "blk.%u.attn_qkv.weight", il);
+        l->lin_gate    = required_tensorf(m, "blk.%u.attn_gate.weight", il);
+        l->lin_conv    = required_tensorf(m, "blk.%u.ssm_conv1d.weight", il);
+        l->lin_dt_bias = required_tensorf(m, "blk.%u.ssm_dt.bias", il);
+        l->lin_a       = required_tensorf(m, "blk.%u.ssm_a", il);
+        l->lin_beta    = required_tensorf(m, "blk.%u.ssm_beta.weight", il);
+        l->lin_alpha   = required_tensorf(m, "blk.%u.ssm_alpha.weight", il);
+        l->lin_norm    = required_tensorf(m, "blk.%u.ssm_norm.weight", il);
+        l->lin_out     = required_tensorf(m, "blk.%u.ssm_out.weight", il);
+    } else {
+        l->attn_q      = required_tensorf(m, "blk.%u.attn_q.weight", il);
+        l->attn_k      = required_tensorf(m, "blk.%u.attn_k.weight", il);
+        l->attn_v      = required_tensorf(m, "blk.%u.attn_v.weight", il);
+        l->attn_output = required_tensorf(m, "blk.%u.attn_output.weight", il);
+        l->attn_q_norm = required_tensorf(m, "blk.%u.attn_q_norm.weight", il);
+        l->attn_k_norm = required_tensorf(m, "blk.%u.attn_k_norm.weight", il);
+    }
+    l->ffn_gate = required_tensorf(m, "blk.%u.ffn_gate.weight", il);
+    l->ffn_up   = required_tensorf(m, "blk.%u.ffn_up.weight", il);
+    l->ffn_down = required_tensorf(m, "blk.%u.ffn_down.weight", il);
+}
+
+static void weights_bind_qwen35(ds4_weights *w, const ds4_model *m) {
+    w->token_embd  = required_tensor(m, "token_embd.weight");
+    w->output_norm = required_tensor(m, "output_norm.weight");
+    w->output      = required_tensor(m, "output.weight");
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        weights_bind_qwen35_layer(&w->layer[il], m, il);
+    }
+    if (!g_host_bind_map) weights_validate_layout(w, m);
+}
+
 static void weights_bind(
         ds4_weights     *w,
         const ds4_model *m,
@@ -8535,6 +9193,11 @@ static void weights_bind(
 
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) {
         weights_bind_glm53(w, m);
+        return;
+    }
+
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN35) {
+        weights_bind_qwen35(w, m);
         return;
     }
 
@@ -37193,7 +37856,8 @@ static void bpe_tokenize_text(const ds4_vocab *vocab, const char *text, token_ve
         bpe_tokenize_text_dots3(vocab, text, out);
         return;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
+        ds4_model_is_qwen35()) {
         bpe_tokenize_text_dots3(vocab, text, out);
         return;
     }
@@ -37455,6 +38119,26 @@ static void vocab_load(ds4_vocab *vocab, const ds4_model *model) {
         vocab->latent_start_id = -1;
         vocab->latent_pad_id = -1;
         vocab->latent_end_id = -1;
+        vocab->dsml_id = -1;
+        return;
+    }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN35) {
+        /* Same ChatML vocabulary as qwen4exp, but the artifact's bos id *is*
+         * <|endoftext|>, so nothing is prepended and the document separator is
+         * also a generation stop.  The Rust host applies the same rule. */
+        vocab->bos_id = -1;
+        if (!model_get_token_id(model, "tokenizer.ggml.eos_token_id", &vocab->eos_id))
+            vocab->eos_id = vocab_lookup(vocab, "<|im_end|>");
+        vocab->eot_id = vocab_lookup(vocab, "<|endoftext|>");
+        vocab->im_start_id = vocab_lookup(vocab, "<|im_start|>");
+        vocab->im_end_id = vocab_lookup(vocab, "<|im_end|>");
+        vocab->think_start_id = vocab_lookup(vocab, "<think>");
+        vocab->think_end_id = vocab_lookup(vocab, "</think>");
+        vocab->tool_call_start_id = vocab_lookup_optional(vocab, "<tool_call>");
+        vocab->tool_call_end_id = vocab_lookup_optional(vocab, "</tool_call>");
+        vocab->tool_response_start_id = vocab_lookup_optional(vocab, "<tool_response>");
+        vocab->tool_response_end_id = vocab_lookup_optional(vocab, "</tool_response>");
+        vocab->system_id = vocab->user_id = vocab->assistant_id = -1;
         vocab->dsml_id = -1;
         return;
     }
@@ -37860,7 +38544,8 @@ static void encode_chat_prompt(
         encode_chat_prompt_exaone(vocab, system, prompt, think_mode, out);
         return;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
+        ds4_model_is_qwen35()) {
         encode_chat_prompt_qwen(vocab, system, prompt, think_mode, out);
         return;
     }
@@ -37986,11 +38671,14 @@ static bool special_token_at(const ds4_vocab *vocab, const char *p, int *token, 
         {"<|system|>",              vocab->dots3_endofsystem_id >= 0 ? vocab->system_id : -1},
         {"<|user|>",                vocab->dots3_endofuser_id >= 0 ? vocab->user_id : -1},
         {"<|assistant|>",           vocab->dots3_endofuser_id >= 0 ? vocab->assistant_id : -1},
-        {"<|endoftext|>",           DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP
+        {"<|endoftext|>",           DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
+                                    ds4_model_is_qwen35()
                                       ? vocab->eot_id : -1},
-        {"<|im_start|>",            DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP
+        {"<|im_start|>",            DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
+                                    ds4_model_is_qwen35()
                                       ? vocab->im_start_id : -1},
-        {"<|im_end|>",              DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP
+        {"<|im_end|>",              DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
+                                    ds4_model_is_qwen35()
                                       ? vocab->im_end_id : -1},
         {"<|vision_start|>",         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP
                                       ? DS4_QWEN_VISION_START_TOKEN_ID : -1},
@@ -38114,10 +38802,11 @@ void ds4_tokenize_rendered_chat(ds4_engine *e, const char *text, ds4_tokens *out
 }
 
 void ds4_chat_begin(ds4_engine *e, ds4_tokens *tokens) {
-    /* Solar and dots3-note templates emit no BOS. */
+    /* Solar, dots3-note and the Qwen families emit no BOS. */
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2 ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) return;
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
+        ds4_model_is_qwen35()) return;
     chat_push_bos_sequence(&e->vocab, tokens);
 }
 
@@ -38142,7 +38831,8 @@ void ds4_chat_append_effort_prefix(ds4_engine *e, ds4_tokens *tokens, ds4_think_
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MOTIF3 ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2 ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DOTS3_NOTE ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) return;
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
+        ds4_model_is_qwen35()) return;
     const char *effort = ds4_think_effort_prefix(mode);
     if (effort[0]) bpe_tokenize_text(&e->vocab, effort, tokens);
 }
@@ -38261,7 +38951,8 @@ void ds4_chat_append_message(ds4_engine *e, ds4_tokens *tokens, const char *role
         }
         return;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
+        ds4_model_is_qwen35()) {
         if (!strcmp(role, "system") || !strcmp(role, "developer")) {
             qwen_chat_open_role(vocab, "system", tokens);
             bpe_tokenize_text(vocab, content, tokens);
@@ -38343,7 +39034,8 @@ void ds4_chat_append_assistant_prefix(ds4_engine *e, ds4_tokens *tokens, ds4_thi
         }
         return;
     }
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
+        ds4_model_is_qwen35()) {
         qwen_chat_open_role(&e->vocab, "assistant", tokens);
         token_vec_push(tokens, e->vocab.think_start_id);
         if (ds4_think_mode_enabled(think_mode)) {
@@ -38488,7 +39180,8 @@ static bool vocab_token_is_generation_stop(const ds4_vocab *vocab, int token) {
     if (token == vocab->eos_id) return true;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2 &&
         vocab->eot_id >= 0 && token == vocab->eot_id) return true;
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP &&
+    if ((DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP ||
+         ds4_model_is_qwen35()) &&
         vocab->eot_id >= 0 && token == vocab->eot_id) return true;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2) {
         /* Match the host: text EOT and audio EOD both end generation. */
@@ -46297,7 +46990,17 @@ static bool glm53_graph_forward_token(ds4_glm53_gpu_graph *g,
 }
 #endif /* DS4_NO_GPU */
 
+/* Bonsai session hooks; the definitions sit next to the other per-family
+ * session helpers, below the family's own reference and graph implementations. */
+static bool ds4_session_is_qwen35(const ds4_session *s);
+static void qwen35_session_reset(ds4_session *s);
+
 typedef struct ds4_dots3_spec ds4_dots3_spec;
+
+/* Bonsai (qwen35) owns its graph and its CPU reference state as whole-struct
+ * allocations defined far below; the session only holds pointers to them. */
+struct ds4_qwen35_gpu_graph;
+struct ds4_qwen35_ref_state;
 
 struct ds4_session {
     ds4_engine *engine;
@@ -46340,6 +47043,12 @@ struct ds4_session {
     ds4_glm53_gpu_graph glm53_graph;
     bool glm53_graph_ready;
 #endif
+    /* Prism Bonsai keeps its whole trunk in one struct per backend, both
+     * defined further down next to their kernels' wrappers, so a session owns
+     * the device graph (CUDA) or the CPU reference state -- never both. */
+    struct ds4_qwen35_gpu_graph *qwen35_graph;
+    struct ds4_qwen35_ref_state *qwen35_ref;
+    uint32_t qwen35_ref_pos;   /* positions the CPU reference state consumed */
     ds4_kv_cache cpu_cache;
     ds4_cpu_decode_scratch cpu_scratch;
     token_vec checkpoint;
@@ -51909,7 +52618,7 @@ uint64_t ds4_session_layer_payload_bytes(ds4_session *s,
     if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
         ds4_session_is_glm53(s) || ds4_session_is_inkling(s) ||
         ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) ||
-        ds4_session_is_mimo2(s) || ds4_session_is_naive(s)) {
+        ds4_session_is_mimo2(s) || ds4_session_is_qwen35(s) || ds4_session_is_naive(s)) {
         return 0;
     }
     if (ds4_session_is_cpu(s)) return 0;
@@ -52380,7 +53089,7 @@ int ds4_session_save_layer_payload(ds4_session *s, FILE *fp,
     if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
         ds4_session_is_glm53(s) || ds4_session_is_inkling(s) ||
         ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) ||
-        ds4_session_is_mimo2(s) || ds4_session_is_naive(s)) {
+        ds4_session_is_mimo2(s) || ds4_session_is_qwen35(s) || ds4_session_is_naive(s)) {
         payload_set_err(err, errlen,
                         "this model family does not support distributed layer payloads");
         return 1;
@@ -52585,7 +53294,7 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
     if (ds4_session_is_solar(s) || ds4_session_is_qwen4exp(s) ||
         ds4_session_is_glm53(s) || ds4_session_is_inkling(s) ||
         ds4_session_is_step37(s) || ds4_session_is_ling3vl(s) ||
-        ds4_session_is_mimo2(s) || ds4_session_is_naive(s)) {
+        ds4_session_is_mimo2(s) || ds4_session_is_qwen35(s) || ds4_session_is_naive(s)) {
         payload_set_err(err, errlen,
                         "this model family does not support distributed layer payloads");
         return 1;
@@ -54155,6 +54864,9 @@ uint64_t ds4_session_payload_bytes(ds4_session *s) {
 #endif
     if (!s || !s->checkpoint_valid) return 0;
     if (s->distributed) return 0;
+    /* Bonsai's state is the gated delta-net recurrence, the conv history and
+     * the fp16 k/v rows, not the DeepSeek raw-swa layout a snapshot writes. */
+    if (ds4_session_is_qwen35(s)) return 0;
 #ifndef DS4_NO_GPU
     if (ds4_session_is_glm53(s)) {
         return 0;
@@ -54385,6 +55097,11 @@ int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen)
     }
     if (s->distributed) {
         return ds4_dist_session_save_payload(s->distributed, s, fp, err, errlen);
+    }
+    if (ds4_session_is_qwen35(s)) {
+        payload_set_err(err, errlen,
+                        "Bonsai session snapshots are not implemented yet");
+        return 1;
     }
 #ifndef DS4_NO_GPU
     if (ds4_session_is_glm53(s)) {
@@ -54844,6 +55561,15 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
     }
     s->generation++;   /* Inc 5a: content replaced from disk (even on failure
                         * the old checkpoint is no longer trustworthy) */
+    if (ds4_session_is_qwen35(s)) {
+        s->checkpoint_valid = false;
+        s->checkpoint.len = 0;
+        s->mtp_draft_valid = false;
+        qwen35_session_reset(s);
+        payload_set_err(err, errlen,
+                        "Bonsai session snapshots are not implemented yet");
+        return 1;
+    }
 #ifndef DS4_NO_GPU
     if (ds4_session_is_naive(s)) {
         s->checkpoint_valid = false; s->checkpoint.len = 0; s->mtp_draft_valid = false;
@@ -67690,6 +68416,7 @@ int ds4_engine_generate_argmax(
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_EXAONE_MOE ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_INKLING ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37 ||
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN35 ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_LING3VL) {
         return generate_public_session_argmax(
             e, prompt, n_predict, ctx_size, emit, done, emit_ud,
@@ -67889,6 +68616,1410 @@ int ds4_engine_head_test(ds4_engine *e, const ds4_tokens *prompt) {
     free(residual_hc);
     free(hc0);
     free(prompt_embd);
+    return 0;
+}
+
+/* =========================================================================
+ * Shared qwen-family CPU reference read layer
+ * =========================================================================
+ *
+ * One row dequantizer and one matvec serve every qwen-family reference, so a
+ * family that adds a quant type or a new geometry describes its layers rather
+ * than its arithmetic.  Rows are independent and each is accumulated in
+ * double precision, which is what lets ds4_parallel_for spread a 27B matvec
+ * over the core pool without changing a single value.
+ *
+ * Ported from the sibling tree /data/ds4, where this same code is the
+ * reference the CUDA graphs are measured against. */
+
+/* Dot of one dequantized weight row against the activation. */
+static float ref_row_dot(const float *row, const float *x, uint64_t n) {
+    double acc = 0.0;
+    for (uint64_t i = 0; i < n; i++) acc += (double)row[i] * x[i];
+    return (float)acc;
+}
+
+/* Dequantize one row of a weight tensor.  The cases are the types this tree
+ * can read; the qwen35 (Bonsai) artifact uses F32 norms, BF16 gates and PQ2_0
+ * matmuls, no more. */
+static void ds4_ref_row(const ds4_model *m, const ds4_tensor *t, uint64_t row, float *out) {
+    const uint64_t n = t->dim[0];
+    switch (t->type) {
+    case DS4_TENSOR_F32:
+        memcpy(out, (const float *)tensor_data(m, t) + row * n, n * sizeof(float));
+        break;
+    case DS4_TENSOR_F16: {
+        const uint16_t *p = (const uint16_t *)tensor_data(m, t) + row * n;
+        for (uint64_t i = 0; i < n; i++) out[i] = f16_to_f32(p[i]);
+        break;
+    }
+    case DS4_TENSOR_BF16: {
+        const uint16_t *p = (const uint16_t *)tensor_data(m, t) + row * n;
+        for (uint64_t i = 0; i < n; i++) {
+            const uint32_t u = (uint32_t)p[i] << 16;
+            memcpy(&out[i], &u, sizeof(float));
+        }
+        break;
+    }
+    case DS4_TENSOR_Q8_0: {
+        const uint64_t blocks = n / 32u;
+        const uint8_t *p = (const uint8_t *)tensor_data(m, t) + row * blocks * 34u;
+        for (uint64_t b = 0; b < blocks; b++, p += 34u) {
+            uint16_t dh;
+            memcpy(&dh, p, sizeof(dh));
+            const float d = f16_to_f32(dh);
+            const int8_t *qs = (const int8_t *)(p + 2);
+            for (uint32_t j = 0; j < 32u; j++) out[b * 32u + j] = d * (float)qs[j];
+        }
+        break;
+    }
+    case DS4_TENSOR_Q4_0: {
+        const uint64_t blocks = n / 32u;
+        const uint8_t *p = (const uint8_t *)tensor_data(m, t) + row * blocks * 18u;
+        for (uint64_t b = 0; b < blocks; b++, p += 18u) {
+            uint16_t dh;
+            memcpy(&dh, p, sizeof(dh));
+            const float d = f16_to_f32(dh);
+            for (uint32_t j = 0; j < 16u; j++) {
+                out[b * 32u + j] = d * ((float)(p[2 + j] & 0x0fu) - 8.0f);
+                out[b * 32u + 16u + j] = d * ((float)(p[2 + j] >> 4) - 8.0f);
+            }
+        }
+        break;
+    }
+    case DS4_TENSOR_Q4_K: {
+        const uint64_t blocks = n / 256u;
+        const uint8_t *p = (const uint8_t *)tensor_data(m, t) + row * blocks * 144u;
+        for (uint64_t b = 0; b < blocks; b++, p += 144u) {
+            uint16_t dh, mh;
+            memcpy(&dh, p, 2);
+            memcpy(&mh, p + 2, 2);
+            const float d = f16_to_f32(dh), dmin = f16_to_f32(mh);
+            const uint8_t *sc = p + 4;
+            for (uint32_t g = 0; g < 8u; g++) {
+                uint32_t s, mn;
+                if (g < 4u) { s = sc[g] & 63u; mn = sc[g + 4] & 63u; }
+                else { s = (sc[g + 4] & 0xFu) | ((sc[g - 4] & 0xC0u) >> 2); mn = (sc[g + 4] >> 4) | ((sc[g] & 0xC0u) >> 2); }
+                const float ds = d * (float)s, dm = dmin * (float)mn;
+                const uint8_t *qs = p + 16 + (g >> 1) * 32u;
+                const uint32_t shift = (g & 1u) * 4u;
+                for (uint32_t j = 0; j < 32u; j++) out[b * 256u + g * 32u + j] = ds * (float)((qs[j] >> shift) & 0xFu) - dm;
+            }
+        }
+        break;
+    }
+    case DS4_TENSOR_PQ2_0:
+        /* Bonsai ternary: one fp16 scale per 128 weights, 2-bit codes, element
+         * j in byte j/4 at bits (j%4)*2 (LSB first), level = code - 1. */
+        pq2_0_row_f32((const uint8_t *)tensor_data(m, t) + row * (n / 128u) * 34u, n, out);
+        break;
+    case DS4_TENSOR_Q2_K: {
+        const uint64_t blocks = n / 256u;
+        const block_q2_K *p = (const block_q2_K *)((const uint8_t *)tensor_data(m, t) + row * blocks * 84u);
+        for (uint64_t k = 0; k < blocks * 256u; k++) out[k] = q2_k_value_f32(p, (uint32_t)k);
+        break;
+    }
+    case DS4_TENSOR_IQ2_XXS: {
+        const uint64_t blocks = n / 256u;
+        const uint8_t *p = (const uint8_t *)tensor_data(m, t) + row * blocks * 66u;
+        for (uint64_t b = 0; b < blocks; b++, p += 66u) {
+            uint16_t dh;
+            memcpy(&dh, p, 2);
+            const float d = f16_to_f32(dh);
+            for (uint32_t ib32 = 0; ib32 < 8u; ib32++) {
+                uint16_t q2[4];
+                memcpy(q2, p + 2 + ib32 * 8u, 8);
+                const uint32_t aux_g = (uint32_t)q2[0] | ((uint32_t)q2[1] << 16);
+                const uint32_t aux_s = (uint32_t)q2[2] | ((uint32_t)q2[3] << 16);
+                const float dl = d * (0.5f + (float)(aux_s >> 28)) * 0.25f;
+                for (uint32_t j = 0; j < 4u; j++) {
+                    const uint8_t *grid = (const uint8_t *)(iq2xxs_grid + ((aux_g >> (8u * j)) & 0xFFu));
+                    const uint32_t signs = ksigns_iq2xs[(aux_s >> (7u * j)) & 127u];
+                    for (uint32_t i = 0; i < 8u; i++) {
+                        out[b * 256u + ib32 * 32u + j * 8u + i] = dl * (float)grid[i] * (((signs >> i) & 1u) ? -1.0f : 1.0f);
+                    }
+                }
+            }
+        }
+        break;
+    }
+    default:
+        ds4_die("qwen-family reference: unsupported tensor type");
+    }
+}
+
+typedef struct {
+    const ds4_model  *m;
+    const ds4_tensor *w;
+    uint64_t          row0;
+    uint64_t          n;
+    const float      *x;
+    float            *out;
+} ds4_ref_matvec_ctx;
+
+static void ds4_ref_matvec_worker(void *vctx, uint64_t r0, uint64_t r1) {
+    const ds4_ref_matvec_ctx *c = vctx;
+    float *row = xmalloc((size_t)c->n * sizeof(float));
+    for (uint64_t r = r0; r < r1; r++) {
+        ds4_ref_row(c->m, c->w, c->row0 + r, row);
+        c->out[r] = ref_row_dot(row, c->x, c->n);
+    }
+    free(row);
+}
+
+static void ds4_ref_matvec_rows(
+        const ds4_model *m, const ds4_tensor *w, uint64_t row0, uint64_t n_rows,
+        const float *x, float *out) {
+    ds4_ref_matvec_ctx ctx = {
+        .m = m,
+        .w = w,
+        .row0 = row0,
+        .n = w->dim[0],
+        .x = x,
+        .out = out,
+    };
+    ds4_parallel_for(n_rows, ds4_ref_matvec_worker, &ctx);
+}
+
+/* out[o] = sum_i W[o, i] * x[i] over a whole projection. */
+static void ds4_ref_matvec(const ds4_model *m, const ds4_tensor *w, const float *x, float *out) {
+    ds4_ref_matvec_rows(m, w, 0, w->ndim >= 2 ? w->dim[1] : 1u, x, out);
+}
+
+static const float *ds4_ref_f32(const ds4_model *m, const ds4_tensor *t) {
+    if (t->type != DS4_TENSOR_F32) ds4_die("qwen-family reference: expected an F32 tensor");
+    return (const float *)tensor_data(m, t);
+}
+
+static void ds4_ref_rms(float *out, const float *x, const float *g, uint32_t n, float eps) {
+    double ss = 0.0;
+    for (uint32_t i = 0; i < n; i++) ss += (double)x[i] * x[i];
+    const float scale = 1.0f / sqrtf((float)(ss / n) + eps);
+    for (uint32_t i = 0; i < n; i++) out[i] = x[i] * scale * (g ? g[i] : 1.0f);
+}
+
+static void ds4_ref_l2norm(float *x, uint32_t n) {
+    double ss = 0.0;
+    for (uint32_t i = 0; i < n; i++) ss += (double)x[i] * x[i];
+    const float scale = 1.0f / sqrtf((float)ss + 1e-6f);
+    for (uint32_t i = 0; i < n; i++) x[i] *= scale;
+}
+
+/* Partial MRoPE over the first n_rot dimensions, one position per axis; the
+ * tables come from ds4_rope_configure. */
+static void ds4_ref_rope(float *x, uint32_t n_rot, const uint32_t *p3) {
+    const uint32_t half = n_rot / 2u;
+    for (uint32_t i = 0; i < half; i++) {
+        const double theta = (double)p3[i % 3u] * (double)g_ds4_rope_freq[i];
+        const float c = (float)cos(theta) * g_ds4_rope_mscale, s = (float)sin(theta) * g_ds4_rope_mscale;
+        const float x0 = x[i], x1 = x[i + half];
+        x[i] = x0 * c - x1 * s;
+        x[i + half] = x0 * s + x1 * c;
+    }
+}
+
+static float ds4_ref_softplus(float x) {
+    return x > 20.0f ? x : log1pf(expf(x));
+}
+
+/* =========================================================================
+ * Bonsai (qwen35) CPU reference
+ * =========================================================================
+ *
+ * Mirrors the Prism fork's qwen35 graph: a dense trunk of gated delta-net
+ * layers and gated-attention layers in which every matmul weight is stored
+ * Hadamard-folded, so the activation is rotated before the product instead.
+ *
+ * Layer skeleton: h -> RMSNorm(attn_norm) -> attention -> residual ->
+ * RMSNorm(post_attention_norm) -> dense SwiGLU FFN -> residual.
+ * ========================================================================= */
+
+typedef struct ds4_qwen35_ref_state {
+    uint32_t cap;
+    float *lin_state;   /* [layer][v_heads][head_dim][head_dim] */
+    float *lin_hist;    /* [layer][conv-1][conv_dim], oldest first, raw qkv */
+    float *attn_k;      /* [layer][cap][kv_heads*head_dim], already rotated */
+    float *attn_v;      /* [layer][cap][kv_heads*head_dim] */
+    float *scratch;     /* [v_dim] for the gated delta-net head permutation */
+} ds4_qwen35_ref_state;
+
+static void ds4_qwen35_ref_state_init(ds4_qwen35_ref_state *st, uint32_t cap) {
+    const uint64_t L = DS4_N_LAYER, conv_dim = DS4_N_LIN_CONV_DIM;
+    memset(st, 0, sizeof(*st));
+    st->cap = cap;
+    st->lin_state = xcalloc(L * DS4_N_LIN_V_HEAD * DS4_N_KDA_HEAD_DIM * DS4_N_KDA_HEAD_DIM,
+                            sizeof(float));
+    st->lin_hist  = xcalloc(L * (DS4_N_SSM_CONV - 1u) * conv_dim, sizeof(float));
+    st->attn_k = xcalloc(L * cap * DS4_N_HEAD_KV * DS4_N_HEAD_DIM, sizeof(float));
+    st->attn_v = xcalloc(L * cap * DS4_N_HEAD_KV * DS4_N_HEAD_DIM, sizeof(float));
+    st->scratch = xmalloc((size_t)DS4_N_LIN_V_HEAD * DS4_N_KDA_HEAD_DIM * sizeof(float));
+}
+
+static void ds4_qwen35_ref_state_free(ds4_qwen35_ref_state *st) {
+    free(st->scratch);
+    free(st->attn_v);
+    free(st->attn_k);
+    free(st->lin_hist);
+    free(st->lin_state);
+    memset(st, 0, sizeof(*st));
+}
+
+/* Drop the trunk state back to position 0.  The attention rows need no
+ * clearing: a reset restarts the sequence at position 0, and every row is
+ * written before the attention that reads it (the CUDA reset assumes the
+ * same).  Only the recurrent state and the conv history carry over. */
+static void ds4_qwen35_ref_state_reset(ds4_qwen35_ref_state *st) {
+    if (!st || !st->lin_state) return;
+    const uint64_t layers = DS4_N_LAYER, conv_dim = DS4_N_LIN_CONV_DIM;
+    const uint64_t state_n = (uint64_t)DS4_N_LIN_V_HEAD * DS4_N_KDA_HEAD_DIM * DS4_N_KDA_HEAD_DIM;
+    memset(st->lin_state, 0, layers * state_n * sizeof(float));
+    memset(st->lin_hist, 0, layers * (DS4_N_SSM_CONV - 1u) * conv_dim * sizeof(float));
+}
+
+/* Folded matvec: rotate a copy of the input, then multiply by the stored
+ * weight.  `ssm_out` selects the gated delta-net head permutation. */
+static void ds4_qwen35_ref_matvec_folded(
+        const ds4_model *m, const ds4_tensor *w, const float *x, float *out,
+        bool ssm_out, ds4_qwen35_ref_state *st) {
+    const uint64_t n = w->dim[0];
+    float *xt = xmalloc((size_t)n * sizeof(float));
+    memcpy(xt, x, (size_t)n * sizeof(float));
+    /* Dense projections have no recurrent state or permutation scratch. */
+    ds4_hadamard_matmul_input(xt, (uint32_t)n, ssm_out, ssm_out ? st->scratch : NULL);
+    ds4_ref_matvec(m, w, xt, out);
+    free(xt);
+}
+
+/* Gated delta-net layer: mixed qkv plus output gate, depthwise conv,
+ * L2-normalized q/k, the delta-rule recurrence over the layer's state, the
+ * gated RMS norm and the folded output projection. */
+static void ds4_qwen35_ref_linear(const ds4_model *m, const ds4_layer_weights *l, uint32_t il,
+                                  ds4_qwen35_ref_state *st, const float *x, float *out) {
+    const uint32_t Hk = DS4_N_LIN_K_HEAD, Hv = DS4_N_LIN_V_HEAD, D = DS4_N_KDA_HEAD_DIM;
+    const uint32_t K = DS4_N_SSM_CONV;
+    const uint32_t k_dim = Hk * D, v_dim = Hv * D, conv_dim = 2u * k_dim + v_dim;
+
+    float *qkv = xmalloc(conv_dim * sizeof(float));
+    float *conv = xmalloc(conv_dim * sizeof(float));
+    float *z = xmalloc(v_dim * sizeof(float));
+    float *b = xmalloc(Hv * sizeof(float));
+    float *a = xmalloc(Hv * sizeof(float));
+    float *o = xmalloc(v_dim * sizeof(float));
+
+    /* The four projections share one activation, so the Hadamard transform is
+     * applied once for all of them. */
+    float *xt = xmalloc(DS4_N_EMBD * sizeof(float));
+    memcpy(xt, x, DS4_N_EMBD * sizeof(float));
+    ds4_hadamard_forward(xt, DS4_N_EMBD, ds4_hadamard_signs_for(DS4_N_EMBD));
+    ds4_ref_matvec(m, l->lin_qkv, xt, qkv);
+    ds4_ref_matvec(m, l->lin_gate, xt, z);
+    ds4_ref_matvec(m, l->lin_beta, xt, b);
+    ds4_ref_matvec(m, l->lin_alpha, xt, a);
+    free(xt);
+
+    /* depthwise conv over the qkv channels, kernel tap K-1 on the new token */
+    float *hist = st->lin_hist + (uint64_t)il * (K - 1u) * conv_dim;
+    const float *cw = ds4_ref_f32(m, l->lin_conv);
+    for (uint32_t c = 0; c < conv_dim; c++) {
+        double acc = (double)cw[(uint64_t)c * K + (K - 1u)] * qkv[c];
+        for (uint32_t k = 0; k + 1u < K; k++) {
+            acc += (double)cw[(uint64_t)c * K + k] * hist[(uint64_t)k * conv_dim + c];
+        }
+        conv[c] = silu((float)acc);
+    }
+    memmove(hist, hist + conv_dim, (uint64_t)(K - 2u) * conv_dim * sizeof(float));
+    memcpy(hist + (uint64_t)(K - 2u) * conv_dim, qkv, conv_dim * sizeof(float));
+
+    float *q = conv, *k = conv + k_dim, *v = conv + 2u * k_dim;
+    const float qscale = 1.0f / sqrtf((float)D);
+    for (uint32_t h = 0; h < Hk; h++) {
+        ds4_ref_l2norm(q + h * D, D);
+        ds4_ref_l2norm(k + h * D, D);
+        for (uint32_t i = 0; i < D; i++) q[h * D + i] *= qscale;
+    }
+
+    const float *A = ds4_ref_f32(m, l->lin_a);
+    const float *dt = ds4_ref_f32(m, l->lin_dt_bias);
+    const float *nw = ds4_ref_f32(m, l->lin_norm);
+    for (uint32_t j = 0; j < Hv; j++) {
+        const uint32_t kh = j % Hk;
+        const float g = expf(A[j] * ds4_ref_softplus(a[j] + dt[j]));
+        const float beta = sigmoid_stable(b[j]);
+        float *S = st->lin_state + ((uint64_t)il * Hv + j) * D * D;   /* [dk][dv] */
+        const float *qj = q + kh * D, *kj = k + kh * D, *vj = v + j * D;
+        float *oj = o + j * D;
+        for (uint32_t dv = 0; dv < D; dv++) {
+            double kv = 0.0;
+            for (uint32_t dk = 0; dk < D; dk++) {
+                S[dk * D + dv] *= g;
+                kv += (double)S[dk * D + dv] * kj[dk];
+            }
+            const float delta = (vj[dv] - (float)kv) * beta;
+            double acc = 0.0;
+            for (uint32_t dk = 0; dk < D; dk++) {
+                S[dk * D + dv] += kj[dk] * delta;
+                acc += (double)S[dk * D + dv] * qj[dk];
+            }
+            oj[dv] = (float)acc;
+        }
+        /* gated RMS norm: norm(o) * silu(z), unlike the qwen4exp family */
+        float tmp[DS4_MAX_KDA_HEAD_DIM];
+        if (D > DS4_MAX_KDA_HEAD_DIM) ds4_die("Bonsai reference: linear head dim exceeds 128");
+        ds4_ref_rms(tmp, oj, nw, D, DS4_RMS_EPS);
+        for (uint32_t dv = 0; dv < D; dv++) oj[dv] = tmp[dv] * silu(z[j * D + dv]);
+    }
+
+    ds4_qwen35_ref_matvec_folded(m, l->lin_out, o, out, true, st);
+
+    free(o); free(a); free(b); free(z); free(conv); free(qkv);
+}
+
+/* Full attention layer: q and its gate come from one projection, q and k carry
+ * per-head RMS norms, the first DS4_N_ROT dimensions are rotated, and a
+ * sigmoid gate multiplies the attention output before the folded projection. */
+static void ds4_qwen35_ref_attention(const ds4_model *m, const ds4_layer_weights *l, uint32_t il,
+                                     ds4_qwen35_ref_state *st, const float *x, uint32_t pos,
+                                     float *out) {
+    const uint32_t H = DS4_N_HEAD, Hkv = DS4_N_HEAD_KV, D = DS4_N_HEAD_DIM;
+    const uint32_t q_dim = H * D, kv_dim = Hkv * D;
+    const uint32_t pos3[3] = { pos, pos, pos };
+
+    float *qg = xmalloc(2u * q_dim * sizeof(float));
+    float *q = xmalloc(q_dim * sizeof(float));
+    float *gate = xmalloc(q_dim * sizeof(float));
+    float *o = xmalloc(q_dim * sizeof(float));
+    float *kc = st->attn_k + ((uint64_t)il * st->cap + pos) * kv_dim;
+    float *vc = st->attn_v + ((uint64_t)il * st->cap + pos) * kv_dim;
+
+    ds4_qwen35_ref_matvec_folded(m, l->attn_q, x, qg, false, st);
+    ds4_qwen35_ref_matvec_folded(m, l->attn_k, x, kc, false, st);
+    ds4_qwen35_ref_matvec_folded(m, l->attn_v, x, vc, false, st);
+
+    const float *gqn = ds4_ref_f32(m, l->attn_q_norm);
+    const float *gkn = ds4_ref_f32(m, l->attn_k_norm);
+    for (uint32_t h = 0; h < H; h++) {
+        ds4_ref_rms(q + h * D, qg + (uint64_t)h * 2u * D, gqn, D, DS4_RMS_EPS);
+        ds4_ref_rope(q + h * D, DS4_N_ROT, pos3);
+        memcpy(gate + h * D, qg + (uint64_t)h * 2u * D + D, D * sizeof(float));
+    }
+    for (uint32_t h = 0; h < Hkv; h++) {
+        float tmp[DS4_MAX_HEAD_DIM];
+        if (D > DS4_MAX_HEAD_DIM) ds4_die("Bonsai reference: head dim exceeds the compiled limit");
+        ds4_ref_rms(tmp, kc + h * D, gkn, D, DS4_RMS_EPS);
+        ds4_ref_rope(tmp, DS4_N_ROT, pos3);
+        memcpy(kc + h * D, tmp, D * sizeof(float));
+    }
+
+    const uint32_t n_vis = pos + 1u;
+    float *p = xmalloc(n_vis * sizeof(float));
+    const float scale = 1.0f / sqrtf((float)D);
+    for (uint32_t h = 0; h < H; h++) {
+        const uint32_t kvh = h / (H / Hkv);
+        float mx = -FLT_MAX;
+        for (uint32_t t = 0; t < n_vis; t++) {
+            const float *kt = st->attn_k + ((uint64_t)il * st->cap + t) * kv_dim + kvh * D;
+            double dot = 0.0;
+            for (uint32_t d = 0; d < D; d++) dot += (double)q[h * D + d] * kt[d];
+            p[t] = (float)dot * scale;
+            if (p[t] > mx) mx = p[t];
+        }
+        double sum = 0.0;
+        for (uint32_t t = 0; t < n_vis; t++) { p[t] = expf(p[t] - mx); sum += p[t]; }
+        for (uint32_t d = 0; d < D; d++) {
+            double acc = 0.0;
+            for (uint32_t t = 0; t < n_vis; t++) {
+                const float *vt = st->attn_v + ((uint64_t)il * st->cap + t) * kv_dim + kvh * D;
+                acc += (double)p[t] * vt[d];
+            }
+            o[h * D + d] = (float)(acc / sum) * sigmoid_stable(gate[h * D + d]);
+        }
+    }
+
+    ds4_qwen35_ref_matvec_folded(m, l->attn_output, o, out, false, st);
+
+    free(p); free(o); free(gate); free(q); free(qg);
+}
+
+/* Dense SwiGLU: down(silu(gate(x)) * up(x)); gate and up share one activation,
+ * so its Hadamard transform is computed once. */
+static void ds4_qwen35_ref_ffn(const ds4_model *m, const ds4_layer_weights *l, const float *x,
+                               float *out) {
+    const uint32_t E = DS4_N_EMBD, F = DS4_N_FF_DENSE;
+    float *xt = xmalloc(E * sizeof(float));
+    float *g = xmalloc(F * sizeof(float));
+    float *u = xmalloc(F * sizeof(float));
+    memcpy(xt, x, E * sizeof(float));
+    ds4_hadamard_forward(xt, E, ds4_hadamard_signs_for(E));
+    ds4_ref_matvec(m, l->ffn_gate, xt, g);
+    ds4_ref_matvec(m, l->ffn_up, xt, u);
+    free(xt);
+    for (uint32_t i = 0; i < F; i++) g[i] = silu(g[i]) * u[i];
+    ds4_qwen35_ref_matvec_folded(m, l->ffn_down, g, out, false, (ds4_qwen35_ref_state *)NULL);
+    free(u); free(g);
+}
+
+static void ds4_qwen35_ref_layer(const ds4_model *m, const ds4_weights *w, uint32_t il,
+                                 ds4_qwen35_ref_state *st, uint32_t pos, float *h) {
+    const ds4_layer_weights *l = &w->layer[il];
+    const uint32_t E = DS4_N_EMBD;
+    float *normed = xmalloc(E * sizeof(float));
+    float *blk = xmalloc(E * sizeof(float));
+    float *res = xmalloc(E * sizeof(float));
+
+    memcpy(res, h, E * sizeof(float));
+    ds4_ref_rms(normed, h, ds4_ref_f32(m, l->attn_norm), E, DS4_RMS_EPS);
+    if (ds4_qwen35_layer_is_linear(il)) {
+        ds4_qwen35_ref_linear(m, l, il, st, normed, blk);
+    } else {
+        ds4_qwen35_ref_attention(m, l, il, st, normed, pos, blk);
+    }
+    for (uint32_t i = 0; i < E; i++) h[i] = res[i] + blk[i];
+
+    memcpy(res, h, E * sizeof(float));
+    ds4_ref_rms(normed, h, ds4_ref_f32(m, l->post_attn_norm), E, DS4_RMS_EPS);
+    ds4_qwen35_ref_ffn(m, l, normed, blk);
+    for (uint32_t i = 0; i < E; i++) h[i] = res[i] + blk[i];
+
+    free(res); free(blk); free(normed);
+}
+
+/* Forward one token at `pos`.  The output head consumes the folded activation
+ * of the final norm, and the token embedding row is unfolded first, because
+ * prism.hadamard names token_embd.weight among the inverse-transformed
+ * weights. */
+static void ds4_qwen35_ref_forward_token(const ds4_model *m, const ds4_weights *w,
+                                         ds4_qwen35_ref_state *st, int token, uint32_t pos,
+                                         float *logits) {
+    const uint32_t E = DS4_N_EMBD;
+    float *h = xmalloc(E * sizeof(float));
+    float *xt = xmalloc(E * sizeof(float));
+
+    ds4_ref_row(m, w->token_embd, (uint64_t)token, h);
+    if (g_hadamard.inverse_token_embd) {
+        ds4_hadamard_inverse(h, E, ds4_hadamard_signs_for(E));
+    }
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        ds4_qwen35_ref_layer(m, w, il, st, pos, h);
+    }
+    if (logits) {
+        ds4_ref_rms(xt, h, ds4_ref_f32(m, w->output_norm), E, DS4_RMS_EPS);
+        ds4_hadamard_forward(xt, E, ds4_hadamard_signs_for(E));
+        ds4_ref_matvec(m, w->output, xt, logits);
+    }
+    free(xt);
+    free(h);
+}
+
+#ifdef DS4_TEST_HOOKS
+/* Test hook: the Bonsai CPU reference, driven greedily over the same prompt and
+ * step count a session run uses, so a test can diff the session path against
+ * its oracle in one process without any external implementation.  Returns the
+ * number of ids written to `out`, or -1 on bad arguments. */
+int ds4_test_qwen35_ref_greedy(ds4_engine *e, const int *tokens, int n_tokens,
+                               int steps, int *out, int out_cap) {
+    if (!e || !tokens || n_tokens <= 0 || steps < 0 || !out || out_cap < steps) return -1;
+    const ds4_model *m = &e->model;
+    const ds4_weights *w = &e->weights;
+    ds4_qwen35_ref_state st;
+    ds4_qwen35_ref_state_init(&st, (uint32_t)(n_tokens + steps + 1));
+    float *logits = xmalloc((uint64_t)DS4_N_VOCAB * sizeof(float));
+    for (int t = 0; t < n_tokens; t++) {
+        ds4_qwen35_ref_forward_token(m, w, &st, tokens[t], (uint32_t)t, logits);
+    }
+    for (int s = 0; s < steps; s++) {
+        out[s] = sample_argmax(logits, DS4_N_VOCAB);
+        if (s + 1 < steps) {
+            ds4_qwen35_ref_forward_token(m, w, &st, out[s], (uint32_t)(n_tokens + s), logits);
+        }
+    }
+    free(logits);
+    ds4_qwen35_ref_state_free(&st);
+    return steps;
+}
+#endif
+
+/* Comma-separated token ids, as the family drivers take them from the
+ * environment. */
+static uint32_t ds4_parse_token_list(const char *p, int *seq, uint32_t max) {
+    uint32_t n = 0;
+    while (*p && n < max) {
+        seq[n++] = atoi(p);
+        while (*p && *p != ',') p++;
+        if (*p == ',') p++;
+    }
+    return n;
+}
+
+static void ds4_dump_f32(const char *path, const float *v, uint64_t n) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    fwrite(v, sizeof(float), n, f);
+    fclose(f);
+}
+
+/* DS4_QWEN35_FOLD_SELFTEST=1 checks the folded-activation transform with an
+ * explicit matrix as the expectation: the block-diagonal Sylvester Hadamard
+ * with its 1/sqrt(n) normalization must equal (-1)^popcount(row AND col)/sqrt(n)
+ * on every block, must not mix blocks, and must undo itself once the signs are
+ * put back in the same order. */
+static int qwen35_hadamard_selftest(void) {
+    const uint32_t saved_block = g_hadamard.block_size;
+    const bool saved_enabled = g_hadamard.enabled;
+    int failures = 0;
+
+    const uint32_t sizes[] = { 2u, 4u, 1024u };
+    for (size_t si = 0; si < sizeof(sizes) / sizeof(sizes[0]); si++) {
+        const uint32_t n = sizes[si];
+        const uint32_t len = 2u * n;
+        g_hadamard.block_size = n;
+        g_hadamard.enabled = true;
+
+        float *x = xmalloc(len * sizeof(float));
+        float *y = xmalloc(len * sizeof(float));
+        float *z = xmalloc(len * sizeof(float));
+        for (uint32_t i = 0; i < len; i++) {
+            x[i] = sinf((float)i * 0.7f) + 0.3f * cosf((float)i * 1.3f);
+        }
+
+        /* explicit normalized Sylvester matrix, applied per block */
+        memcpy(z, x, len * sizeof(float));
+        for (uint32_t base = 0; base < len; base += n) {
+            float *blk = z + base;
+            for (uint32_t row = 0; row < n; row++) {
+                double acc = 0.0;
+                for (uint32_t col = 0; col < n; col++) {
+                    const uint32_t parity = __builtin_popcount(row & col) & 1u;
+                    acc += (parity ? -1.0 : 1.0) * (double)x[base + col];
+                }
+                blk[row] = (float)(acc / sqrt((double)n));
+            }
+        }
+        memcpy(y, x, len * sizeof(float));
+        ds4_hadamard_rotate(y, len);
+        for (uint32_t i = 0; i < len; i++) {
+            const float tol = 1e-4f * (1.0f + fabsf(z[i]));
+            if (fabsf(y[i] - z[i]) > tol) {
+                fprintf(stderr, "ds4: fold selftest: block %u element %u = %.7g, expected %.7g\n",
+                        n, i, (double)y[i], (double)z[i]);
+                failures++;
+                break;
+            }
+        }
+
+        /* block independence: rotating one block must leave the other alone */
+        memcpy(y, x, len * sizeof(float));
+        ds4_hadamard_rotate(y, n);
+        for (uint32_t i = n; i < len; i++) {
+            if (y[i] != x[i]) {
+                fprintf(stderr, "ds4: fold selftest: block %u leaked into element %u\n", n, i);
+                failures++;
+                break;
+            }
+        }
+
+        /* signs and rotation: inverse undoes forward exactly */
+        float *signs = xmalloc(len * sizeof(float));
+        for (uint32_t i = 0; i < len; i++) signs[i] = ((i * 7u) % 3u == 0u) ? -1.0f : 1.0f;
+        memcpy(y, x, len * sizeof(float));
+        ds4_hadamard_forward(y, len, signs);
+        ds4_hadamard_inverse(y, len, signs);
+        for (uint32_t i = 0; i < len; i++) {
+            if (fabsf(y[i] - x[i]) > 1e-4f * (1.0f + fabsf(x[i]))) {
+                fprintf(stderr, "ds4: fold selftest: block %u forward/inverse mismatch at %u\n",
+                        n, i);
+                failures++;
+                break;
+            }
+        }
+
+        free(signs);
+        free(z);
+        free(y);
+        free(x);
+    }
+
+    /* The gated delta-net permutation moves the tiled [hd][nk][rep] feature
+     * order into the grouped [hd][rep][nk] order.  It is a bijection on the row
+     * but, unlike a swap of equal-sized axes, not its own inverse: only the
+     * explicit index mapping defines it. */
+    {
+        const uint32_t hd = DS4_N_KDA_HEAD_DIM, nk = DS4_N_LIN_K_HEAD;
+        const uint32_t rep = DS4_N_LIN_V_HEAD / DS4_N_LIN_K_HEAD;
+        const uint32_t n = hd * nk * rep;
+        float *v = xmalloc(n * sizeof(float));
+        float *orig = xmalloc(n * sizeof(float));
+        float *scratch = xmalloc(n * sizeof(float));
+        for (uint32_t i = 0; i < n; i++) v[i] = (float)i * 0.5f;   /* all distinct */
+        memcpy(orig, v, n * sizeof(float));
+        ds4_hadamard_gdn_permute(v, hd, nk, rep, scratch);
+
+        /* the mapping: tiled [hd][nk][rep] -> grouped [hd][rep][nk] */
+        int mapped = 0;
+        for (uint32_t h = 0; h < hd && !mapped; h++) {
+            for (uint32_t k = 0; k < nk && !mapped; k++) {
+                for (uint32_t r = 0; r < rep; r++) {
+                    const uint32_t dst = h + hd * (r + rep * k);
+                    const uint32_t src = h + hd * (k + nk * r);
+                    if (v[dst] != orig[src]) {
+                        fprintf(stderr, "ds4: fold selftest: gdn permutation index mismatch\n");
+                        failures++;
+                        mapped = 1;
+                        break;
+                    }
+                }
+            }
+        }
+        free(scratch);
+        free(orig);
+        free(v);
+    }
+
+    g_hadamard.block_size = saved_block;
+    g_hadamard.enabled = saved_enabled;
+    if (failures == 0) {
+        printf("fold selftest: blocks 2, 4 and 1024 match the explicit Hadamard matrix, "
+               "blocks stay independent, forward/inverse round-trips, and the gdn "
+               "permutation follows the tiled-to-grouped index map\n");
+    }
+    return failures == 0 ? 0 : 1;
+}
+
+/* Tokens per forward for Bonsai.  A session prefill hands the trunk a chunk of
+ * them, so the CUDA graph's transients are sized for the chunk (the output head
+ * stays one row: only the newest row's logits are ever read).  A chunk of one
+ * is the diagnostic's per-token path, and the CPU reference always runs one. */
+#define DS4_QWEN35_CHUNK_DEFAULT 512u
+#define DS4_QWEN35_CHUNK_MAX 1024u
+
+/* DS4_QWEN35_PREFILL_CHUNK overrides the default, clamped to what the graph
+ * can hold and to the context.  A chunk the device cannot allocate is halved
+ * by the caller until the graph opens, so 1 is always reachable. */
+static uint32_t qwen35_prefill_chunk_tokens(uint32_t ctx) {
+    const char *env = getenv("DS4_QWEN35_PREFILL_CHUNK");
+    const unsigned long want = env && env[0] ? strtoul(env, NULL, 10) : DS4_QWEN35_CHUNK_DEFAULT;
+    uint32_t chunk = (want == 0 || want > DS4_QWEN35_CHUNK_MAX)
+        ? DS4_QWEN35_CHUNK_DEFAULT : (uint32_t)want;
+    return chunk > ctx ? ctx : chunk;
+}
+
+#ifndef DS4_NO_GPU
+
+/* ------------------------------------------------------------------------
+ * Bonsai (qwen35) CUDA graph.
+ *
+ * The trunk is dense - every layer is either a gated delta-net layer or a
+ * gated-attention layer, no MoE, no hyper-connections, no PLE, no indexer -
+ * and every matmul weight is PQ2_0 and stored Hadamard-folded, so each
+ * matmul input is rotated on the device first (ds4_hadamard_forward's GPU
+ * twin; the fold entries are verified against the reference transform).
+ *
+ * The kernels are the qwen4 family's (cuda/qwen35_attn_gdn.cuh), which share
+ * this model's gated delta-net geometry, except where the families differ:
+ * the linear layer's output gate is silu here and sigmoid there, and this
+ * model has no sparse indexer, so its attention prep has no indexer slot.
+ * Both are the same device kernels with those two differences as parameters.
+ * --------------------------------------------------------------------- */
+
+/* Per-layer array bound for the Bonsai graph.  DS4_MAX_LAYER (61) sizes the
+ * DeepSeek arrays and is too small for this family's 64 blocks: writing
+ * lin_state[61..63] through it spills into lin_hist[0..2], and every field past
+ * the bound then aliases another layer's tensor (a 15% hidden-state error and a
+ * different greedy stream). */
+#define DS4_QWEN35_MAX_LAYER 64u
+
+typedef struct ds4_qwen35_gpu_graph {
+    uint32_t ctx_cap;      /* k/v rows: the whole context */
+    uint32_t cap_tokens;   /* transient rows: the prefill chunk */
+    uint32_t pos;
+    ds4_gpu_tensor *h, *normed, *blk, *xt, *qkv, *z, *ga, *gb, *lin_o;
+    ds4_gpu_tensor *qg, *q, *gate, *kp, *vp, *o, *ffn_g, *ffn_u, *logits, *tokens;
+    ds4_gpu_tensor *pos3;
+    /* Split-K scratch for one row-exact attention batch.  Without it the
+     * dispatcher walks a row's whole key range serially (splits = 1), which is
+     * what made this family's decode collapse as the context grew.  It is sized
+     * for the row batch below at the dispatcher's split ceiling. */
+    ds4_gpu_tensor *attn_partial;
+    /* One row of the newest hidden state, so the output head runs on a buffer
+     * whose address never moves however large the chunk is (a moving pointer
+     * would be baked into any captured layer graph). */
+    ds4_gpu_tensor *h_row;
+    ds4_gpu_tensor *lin_state[DS4_QWEN35_MAX_LAYER];
+    ds4_gpu_tensor *lin_hist[DS4_QWEN35_MAX_LAYER];
+    ds4_gpu_tensor *k_cache[DS4_QWEN35_MAX_LAYER];
+    ds4_gpu_tensor *v_cache[DS4_QWEN35_MAX_LAYER];
+    ds4_gpu_tensor *signs[DS4_MAX_HADAMARD_SETS];
+    uint32_t         sign_width[DS4_MAX_HADAMARD_SETS];
+} ds4_qwen35_gpu_graph;
+
+/* The fold entries take the sign vector of the weight's input width; upload
+ * each one once, on first use. */
+static ds4_gpu_tensor *qwen35_graph_signs(ds4_qwen35_gpu_graph *g, uint32_t width) {
+    const float *values = ds4_hadamard_signs_for(width);
+    if (!values) return NULL;
+    for (uint32_t i = 0; i < DS4_MAX_HADAMARD_SETS; i++) {
+        if (g->signs[i] && g->sign_width[i] == width) return g->signs[i];
+        if (!g->signs[i]) {
+            ds4_gpu_tensor *t = ds4_gpu_tensor_alloc((uint64_t)width * sizeof(float));
+            if (!t || !ds4_gpu_tensor_write(t, 0, values, (uint64_t)width * sizeof(float))) {
+                ds4_gpu_tensor_free(t);
+                return NULL;
+            }
+            g->signs[i] = t;
+            g->sign_width[i] = width;
+            return t;
+        }
+    }
+    fprintf(stderr, "ds4: Bonsai fold: more than %u distinct sign widths\n", DS4_MAX_HADAMARD_SETS);
+    return NULL;
+}
+
+/* Rotate one activation row set in place for the matmul that follows. */
+static bool qwen35_graph_fold(ds4_qwen35_gpu_graph *g, ds4_gpu_tensor *x, uint32_t n,
+                              uint32_t T, bool ssm_out) {
+    if (!g_hadamard.enabled || n == 0) return true;
+    ds4_gpu_tensor *signs = qwen35_graph_signs(g, n);
+    if (!signs) return false;
+    return ds4_gpu_qwen35_fold_forward_tensor(
+               x, n, T, g_hadamard.block_size, signs, ssm_out ? 1u : 0u,
+               DS4_N_KDA_HEAD_DIM, DS4_N_LIN_K_HEAD,
+               DS4_N_LIN_V_HEAD / DS4_N_LIN_K_HEAD) != 0;
+}
+
+/* One matmul off an activation the caller has already folded.  The trunk's
+ * matmul weights are PQ2_0 except the two gated-delta-net scalars, which the
+ * artifact keeps in bf16; the remaining cases mirror the sibling's driver. */
+static bool qwen35_graph_gemv(ds4_gpu_tensor *out, const ds4_model *m, const ds4_tensor *w,
+                              const ds4_gpu_tensor *x, uint32_t T) {
+    const uint32_t in_dim = (uint32_t)w->dim[0];
+    const uint32_t out_dim = (uint32_t)w->dim[1];
+    int rc = 0;
+    switch (w->type) {
+    case DS4_TENSOR_PQ2_0:
+        rc = ds4_gpu_matmul_pq2_0_tensor(out, m->map, m->size, w->abs_offset, in_dim,
+                                         out_dim, x, T);
+        break;
+    case DS4_TENSOR_BF16:
+        rc = ds4_gpu_qwen35_matvec_bf16_tensor(out, x, m->map, m->size, w->abs_offset,
+                                               in_dim, out_dim, T);
+        break;
+    case DS4_TENSOR_F32:
+        rc = ds4_gpu_matmul_f32_tensor(out, m->map, m->size, w->abs_offset, in_dim, out_dim, x, T);
+        break;
+    case DS4_TENSOR_F16:
+        rc = ds4_gpu_matmul_f16_tensor(out, m->map, m->size, w->abs_offset, in_dim, out_dim, x, T);
+        break;
+    default:
+        fprintf(stderr, "ds4: Bonsai graph has no matmul for type %u\n", w->type);
+        return false;
+    }
+    if (!rc) {
+        fprintf(stderr, "ds4: Bonsai matmul failed for %.*s (type %u, %ux%u, %u tokens)\n",
+                (int)w->name.len, w->name.ptr, w->type, in_dim, out_dim, T);
+    }
+    return rc != 0;
+}
+
+/* Folded matmul: rotate a copy of the input, then multiply.  The copy is what
+ * keeps one folded activation reusable by every matmul of a layer. */
+static bool qwen35_graph_gemv_folded(ds4_qwen35_gpu_graph *g, ds4_gpu_tensor *out,
+                                     const ds4_model *m, const ds4_tensor *w,
+                                     const ds4_gpu_tensor *x, uint32_t T, bool ssm_out) {
+    const uint64_t bytes = (uint64_t)T * w->dim[0] * sizeof(float);
+    if (ds4_gpu_tensor_bytes(g->xt) < bytes) return false;
+    if (!ds4_gpu_tensor_copy(g->xt, 0, x, 0, bytes)) return false;
+    if (!qwen35_graph_fold(g, g->xt, (uint32_t)w->dim[0], T, ssm_out)) return false;
+    return qwen35_graph_gemv(out, m, w, g->xt, T);
+}
+
+/* RMS norm with the layer's gamma over T rows. */
+static bool qwen35_graph_norm(ds4_qwen35_gpu_graph *g, ds4_gpu_tensor *out,
+                              const ds4_model *m, const ds4_tensor *w,
+                              const ds4_gpu_tensor *x, uint32_t T) {
+    (void)g;
+    return ds4_gpu_rms_norm_weight_rows_tensor(out, x, m->map, m->size, w->abs_offset,
+                                               (uint32_t)w->dim[0], T, DS4_RMS_EPS) != 0;
+}
+
+/* Residual add: dst = dst + src over T*width values. */
+static bool qwen35_graph_add(ds4_gpu_tensor *dst, const ds4_gpu_tensor *src, uint32_t T,
+                             uint32_t width) {
+    return ds4_gpu_add_tensor(dst, dst, src, T * width) != 0;
+}
+
+/* Gated delta-net layer: four folded projections off one rotated activation,
+ * the depthwise conv, the decay/beta prep, the chunked scan, the silu-gated
+ * output norm, and the folded output projection over the grouped head order. */
+static bool qwen35_graph_linear(ds4_qwen35_gpu_graph *g, const ds4_model *m,
+                                const ds4_layer_weights *l, uint32_t il,
+                                const ds4_gpu_tensor *x, uint32_t T) {
+    const uint32_t Hv = DS4_N_LIN_V_HEAD, D = DS4_N_KDA_HEAD_DIM;
+
+    /* Four projections off one rotated activation. */
+    if (!qwen35_graph_gemv_folded(g, g->qkv, m, l->lin_qkv, x, T, false) ||
+        !qwen35_graph_gemv_folded(g, g->z, m, l->lin_gate, x, T, false) ||
+        !qwen35_graph_gemv_folded(g, g->ga, m, l->lin_alpha, x, T, false) ||
+        !qwen35_graph_gemv_folded(g, g->gb, m, l->lin_beta, x, T, false)) {
+        return false;
+    }
+    if (!ds4_gpu_qwen4_conv_stream_tensor(g->qkv, g->lin_hist[il], m->map, m->size,
+                                          l->lin_conv->abs_offset, T, DS4_N_LIN_CONV_DIM,
+                                          DS4_N_SSM_CONV, true)) {
+        return false;
+    }
+    if (!ds4_gpu_qwen4_gdn_prep_tensor(g->qkv, g->ga, g->gb, m->map, m->size,
+                                       l->lin_a->abs_offset, l->lin_dt_bias->abs_offset,
+                                       T, DS4_N_LIN_K_HEAD, Hv, D)) {
+        return false;
+    }
+    if (!ds4_gpu_qwen4_gdn_scan_tensor(g->lin_o, g->lin_state[il], g->qkv, g->ga, g->gb,
+                                       T, DS4_N_LIN_K_HEAD, Hv, D, NULL, 0u, NULL, 0u)) {
+        return false;
+    }
+    if (!ds4_gpu_qwen35_gdn_out_tensor(g->lin_o, g->z, m->map, m->size,
+                                       l->lin_norm->abs_offset, T, Hv, D, DS4_RMS_EPS)) {
+        return false;
+    }
+    /* The output projection is folded over the grouped head order, so its
+     * activation takes the tiled-to-grouped reorder before the rotation. */
+    return qwen35_graph_gemv_folded(g, g->blk, m, l->lin_out, g->lin_o, T, true);
+}
+
+/* Row batch the row-exact attention kernel takes, and the split ceiling its
+ * dispatcher applies when it is handed a partial buffer
+ * (ds4_gpu_qwen4_attn_decode_tensor: splits = min(64, (keys + 31) / 32)).  The
+ * graph sizes the partial buffer for these two bounds, so they must agree with
+ * the dispatcher. */
+#define DS4_QWEN35_ATTN_ROWS 16u
+#define DS4_QWEN35_ATTN_SPLITS 64u
+
+/* DS4_QWEN35_ATTN_SPLITK=0 forces the old single-split path: the A/B base arm
+ * and the escape hatch if the split order ever moves a token. */
+static bool qwen35_attn_splitk_off(void) {
+    const char *env = getenv("DS4_QWEN35_ATTN_SPLITK");
+    return env && env[0] == '0';
+}
+
+/* Full-attention layer: folded q/k/v, per-head norms with the partial rope
+ * and the raw gate, the fused GQA attention, and the folded output. */
+static bool qwen35_graph_attention(ds4_qwen35_gpu_graph *g, const ds4_model *m,
+                                   const ds4_layer_weights *l, uint32_t il,
+                                   const ds4_gpu_tensor *x, uint32_t pos0, uint32_t T) {
+    const uint32_t H = DS4_N_HEAD, Hkv = DS4_N_HEAD_KV, D = DS4_N_HEAD_DIM;
+
+    if (!qwen35_graph_gemv_folded(g, g->qg, m, l->attn_q, x, T, false)) {
+        return false;
+    }
+    if (!qwen35_graph_gemv_folded(g, g->kp, m, l->attn_k, x, T, false) ||
+        !qwen35_graph_gemv_folded(g, g->vp, m, l->attn_v, x, T, false)) {
+        return false;
+    }
+    if (!ds4_gpu_qwen35_attn_prep_tensor(
+            g->q, g->gate, g->k_cache[il], g->v_cache[il], g->qg, g->kp, g->vp,
+            g->pos3, m->map, m->size, l->attn_q_norm->abs_offset,
+            l->attn_k_norm->abs_offset, T, H, Hkv, D, DS4_N_ROT, pos0,
+            g->ctx_cap, DS4_ROPE_FREQ_BASE, DS4_RMS_EPS)) {
+        return false;
+    }
+    /* The sigmoid gate rides inside the attention kernel (attn_prep kept the
+     * raw second half of the q projection).  Two kernels serve this core and
+     * the choice is per batch, not per model:
+     *  - a prefill chunk (T >= 32) goes over in one call with no partial
+     *    buffer, which selects the token-tile MMA kernel; measured, forcing the
+     *    row-exact path instead costs 9.3 s on a 15k-token prompt;
+     *  - decode and short batches keep the row-exact kernel with the split-K
+     *    buffer, so a row's key range is cut into up to DS4_QWEN35_ATTN_SPLITS
+     *    ranges and reduced by attn_merge instead of walked serially.  Without
+     *    that, decode fell to 4.32 tokens/s at a 15k context against 35.65 in
+     *    the sibling tree.
+     * A row-exact batch never exceeds the row cap the partial buffer is sized
+     * for, so a chunk that cannot take the token-tile kernel is walked in row
+     * batches that each keep their split. */
+    const uint32_t q_dim = H * D;
+    const bool tokentile = T >= 32u && ds4_gpu_qwen4_attn_tokentile_available(
+        g->k_cache[il], g->v_cache[il], T, H, Hkv, D);
+    const uint32_t attn_batch = tokentile ? T : DS4_QWEN35_ATTN_ROWS;
+    for (uint32_t r0 = 0; r0 < T; r0 += attn_batch) {
+        const uint32_t rt = T - r0 < attn_batch ? T - r0 : attn_batch;
+        ds4_gpu_tensor *q = r0 ? ds4_gpu_tensor_view(g->q, (uint64_t)r0 * q_dim * sizeof(float),
+                                                     (uint64_t)rt * q_dim * sizeof(float)) : g->q;
+        ds4_gpu_tensor *gate = r0 ? ds4_gpu_tensor_view(g->gate, (uint64_t)r0 * q_dim * sizeof(float),
+                                                        (uint64_t)rt * q_dim * sizeof(float)) : g->gate;
+        ds4_gpu_tensor *o = r0 ? ds4_gpu_tensor_view(g->o, (uint64_t)r0 * q_dim * sizeof(float),
+                                                     (uint64_t)rt * q_dim * sizeof(float)) : g->o;
+        const bool ok = q && gate && o &&
+            ds4_gpu_qwen4_attn_decode_tensor(o, q, gate, g->k_cache[il], g->v_cache[il],
+                                             NULL, NULL,
+                                             (tokentile || qwen35_attn_splitk_off())
+                                                 ? NULL : g->attn_partial,
+                                             rt, H, Hkv, D, pos0 + r0, false, 0u,
+                                             1.0f / sqrtf((float)D));
+        if (r0) {
+            ds4_gpu_tensor_free(q);
+            ds4_gpu_tensor_free(gate);
+            ds4_gpu_tensor_free(o);
+        }
+        if (!ok) {
+            return false;
+        }
+    }
+    return qwen35_graph_gemv_folded(g, g->blk, m, l->attn_output, g->o, T, false);
+}
+
+/* Dense SwiGLU: down(silu(gate(x)) * up(x)); gate and up share one rotated
+ * activation, and only the down projection's input is folded. */
+static bool qwen35_graph_ffn(ds4_qwen35_gpu_graph *g, const ds4_model *m,
+                             const ds4_layer_weights *l, const ds4_gpu_tensor *x,
+                             uint32_t T) {
+    if (!qwen35_graph_gemv_folded(g, g->ffn_g, m, l->ffn_gate, x, T, false) ||
+        !qwen35_graph_gemv_folded(g, g->ffn_u, m, l->ffn_up, x, T, false)) {
+        return false;
+    }
+    if (!ds4_gpu_swiglu_tensor(g->ffn_g, g->ffn_g, g->ffn_u, T * DS4_N_FF_DENSE, 0.0f, 1.0f)) {
+        return false;
+    }
+    if (!qwen35_graph_fold(g, g->ffn_g, DS4_N_FF_DENSE, T, false)) return false;
+    return qwen35_graph_gemv(g->blk, m, l->ffn_down, g->ffn_g, T);
+}
+
+static bool qwen35_graph_layer(ds4_qwen35_gpu_graph *g, const ds4_model *m,
+                               const ds4_weights *w, uint32_t il, uint32_t pos0, uint32_t T) {
+    const ds4_layer_weights *l = &w->layer[il];
+    const uint32_t E = DS4_N_EMBD;
+
+    if (!qwen35_graph_norm(g, g->normed, m, l->attn_norm, g->h, T)) return false;
+    if (ds4_qwen35_layer_is_linear(il)) {
+        if (!qwen35_graph_linear(g, m, l, il, g->normed, T)) return false;
+    } else {
+        if (!qwen35_graph_attention(g, m, l, il, g->normed, pos0, T)) return false;
+    }
+    if (!qwen35_graph_add(g->h, g->blk, T, E)) return false;
+
+    if (!qwen35_graph_norm(g, g->normed, m, l->post_attn_norm, g->h, T)) return false;
+    if (!qwen35_graph_ffn(g, m, l, g->normed, T)) return false;
+    return qwen35_graph_add(g->h, g->blk, T, E);
+}
+
+static void qwen35_graph_free(ds4_qwen35_gpu_graph *g) {
+    ds4_gpu_tensor *scratch[] = {
+        g->h, g->normed, g->blk, g->xt, g->qkv, g->z, g->ga, g->gb, g->lin_o,
+        g->qg, g->q, g->gate, g->kp, g->vp, g->o, g->ffn_g, g->ffn_u, g->logits,
+        g->tokens, g->pos3, g->h_row, g->attn_partial,
+    };
+    for (size_t i = 0; i < sizeof(scratch) / sizeof(scratch[0]); i++) {
+        ds4_gpu_tensor_free(scratch[i]);
+    }
+    for (uint32_t i = 0; i < DS4_MAX_HADAMARD_SETS; i++) ds4_gpu_tensor_free(g->signs[i]);
+    for (uint32_t il = 0; il < DS4_QWEN35_MAX_LAYER; il++) {
+        ds4_gpu_tensor_free(g->lin_state[il]);
+        ds4_gpu_tensor_free(g->lin_hist[il]);
+        ds4_gpu_tensor_free(g->k_cache[il]);
+        ds4_gpu_tensor_free(g->v_cache[il]);
+    }
+    memset(g, 0, sizeof(*g));
+}
+
+/* One allocation per tensor the trunk reuses, plus the per-layer state: a
+ * gated delta-net layer keeps its state and conv history, an attention layer
+ * its fp16 k/v cache.  The x scratch is sized for the widest matmul input
+ * (the dense FFN's 17408). */
+static bool qwen35_graph_open(ds4_qwen35_gpu_graph *g, ds4_engine *e,
+                              uint32_t ctx_cap, uint32_t cap_tokens) {
+    const ds4_weights *w = &e->weights;
+    const uint32_t E = DS4_N_EMBD, T = cap_tokens ? cap_tokens : 1u;
+    const uint32_t F = DS4_N_FF_DENSE, D = DS4_N_KDA_HEAD_DIM;
+    const uint32_t Hv = DS4_N_LIN_V_HEAD;
+    const uint64_t f32 = sizeof(float);
+    uint32_t widest = E;
+    if (F > widest) widest = F;
+    if (DS4_N_LIN_V_HEAD * D > widest) widest = (uint32_t)(DS4_N_LIN_V_HEAD * D);
+    if (DS4_N_HEAD * DS4_N_HEAD_DIM > widest) widest = (uint32_t)(DS4_N_HEAD * DS4_N_HEAD_DIM);
+
+    memset(g, 0, sizeof(*g));
+    g->ctx_cap = ctx_cap;
+    g->cap_tokens = T;
+    if (DS4_N_LAYER > DS4_QWEN35_MAX_LAYER) {
+        fprintf(stderr, "ds4: Bonsai CUDA graph: %u blocks exceed the %u-slot state arrays\n",
+                DS4_N_LAYER, DS4_QWEN35_MAX_LAYER);
+        return false;
+    }
+
+    g->h      = ds4_gpu_tensor_alloc((uint64_t)T * E * f32);
+    g->normed = ds4_gpu_tensor_alloc((uint64_t)T * E * f32);
+    g->blk    = ds4_gpu_tensor_alloc((uint64_t)T * widest * f32);
+    g->xt     = ds4_gpu_tensor_alloc((uint64_t)T * widest * f32);
+    g->qkv    = ds4_gpu_tensor_alloc((uint64_t)T * DS4_N_LIN_CONV_DIM * f32);
+    g->z      = ds4_gpu_tensor_alloc((uint64_t)T * Hv * D * f32);
+    g->ga     = ds4_gpu_tensor_alloc((uint64_t)T * Hv * f32);
+    g->gb     = ds4_gpu_tensor_alloc((uint64_t)T * Hv * f32);
+    g->lin_o  = ds4_gpu_tensor_alloc((uint64_t)T * Hv * D * f32);
+    g->qg     = ds4_gpu_tensor_alloc((uint64_t)T * 2 * DS4_N_HEAD * DS4_N_HEAD_DIM * f32);
+    g->q      = ds4_gpu_tensor_alloc((uint64_t)T * DS4_N_HEAD * DS4_N_HEAD_DIM * f32);
+    g->gate   = ds4_gpu_tensor_alloc((uint64_t)T * DS4_N_HEAD * DS4_N_HEAD_DIM * f32);
+    g->kp     = ds4_gpu_tensor_alloc((uint64_t)T * DS4_N_HEAD_KV * DS4_N_HEAD_DIM * f32);
+    g->vp     = ds4_gpu_tensor_alloc((uint64_t)T * DS4_N_HEAD_KV * DS4_N_HEAD_DIM * f32);
+    g->o      = ds4_gpu_tensor_alloc((uint64_t)T * DS4_N_HEAD * DS4_N_HEAD_DIM * f32);
+    /* Worst case one attention call can hand the kernel: the row batch (see
+     * DS4_QWEN35_ATTN_ROWS), every head, the dispatcher's split ceiling and the
+     * two extra floats a partial record carries.  A token-tile batch is handed
+     * no partial buffer at all. */
+    const uint32_t attn_rows = T < DS4_QWEN35_ATTN_ROWS ? T : DS4_QWEN35_ATTN_ROWS;
+    g->attn_partial = ds4_gpu_tensor_alloc((uint64_t)attn_rows * DS4_N_HEAD *
+                                           DS4_QWEN35_ATTN_SPLITS *
+                                           (DS4_N_HEAD_DIM + 2u) * f32);
+    g->ffn_g  = ds4_gpu_tensor_alloc((uint64_t)T * F * f32);
+    g->ffn_u  = ds4_gpu_tensor_alloc((uint64_t)T * F * f32);
+    g->logits = ds4_gpu_tensor_alloc((uint64_t)DS4_N_VOCAB * f32);
+    g->tokens = ds4_gpu_tensor_alloc((uint64_t)T * sizeof(uint32_t));
+    g->h_row  = ds4_gpu_tensor_alloc((uint64_t)E * f32);
+    g->pos3   = ds4_gpu_tensor_alloc((uint64_t)ctx_cap * 4 * sizeof(uint32_t));
+
+    bool ok = g->h && g->normed && g->blk && g->xt && g->qkv && g->z &&
+              g->ga && g->gb && g->lin_o && g->qg && g->q && g->gate && g->kp && g->vp &&
+              g->o && g->attn_partial && g->ffn_g && g->ffn_u && g->logits && g->tokens &&
+              g->pos3 && g->h_row;
+
+    /* Position table for the rope: this model carries one text position per
+     * token, so all four sections share it. */
+    if (ok) {
+        uint32_t *pos = xmalloc((size_t)ctx_cap * 4 * sizeof(uint32_t));
+        for (uint32_t i = 0; i < ctx_cap; i++) {
+            for (uint32_t s = 0; s < 4; s++) pos[(size_t)i * 4 + s] = i;
+        }
+        ok = ds4_gpu_tensor_write(g->pos3, 0, pos, (uint64_t)ctx_cap * 4 * sizeof(uint32_t)) != 0;
+        free(pos);
+    }
+
+    for (uint32_t il = 0; ok && il < DS4_N_LAYER; il++) {
+        const ds4_layer_weights *l = &w->layer[il];
+        if (!l->attn_norm) continue;
+        if (ds4_qwen35_layer_is_linear(il)) {
+            g->lin_state[il] = ds4_gpu_tensor_alloc((uint64_t)Hv * D * D * f32);
+            g->lin_hist[il] = ds4_gpu_tensor_alloc(
+                (uint64_t)(DS4_N_SSM_CONV - 1u) * DS4_N_LIN_CONV_DIM * f32);
+            ok = g->lin_state[il] && g->lin_hist[il] &&
+                 ds4_gpu_tensor_fill_f32(g->lin_state[il], 0.0f, (uint64_t)Hv * D * D) != 0 &&
+                 ds4_gpu_tensor_fill_f32(g->lin_hist[il], 0.0f,
+                                         (uint64_t)(DS4_N_SSM_CONV - 1u) * DS4_N_LIN_CONV_DIM) != 0;
+        } else {
+            const uint64_t kv = (uint64_t)ctx_cap * DS4_N_HEAD_KV * DS4_N_HEAD_DIM * sizeof(uint16_t);
+            g->k_cache[il] = ds4_gpu_tensor_alloc(kv);
+            g->v_cache[il] = ds4_gpu_tensor_alloc(kv);
+            ok = g->k_cache[il] && g->v_cache[il];
+        }
+    }
+    if (!ok) {
+        fprintf(stderr, "ds4: Bonsai CUDA graph: allocation failed\n");
+        qwen35_graph_free(g);
+        return false;
+    }
+    return true;
+}
+
+/* T tokens at consecutive positions starting at g->pos.  The token ids are
+ * uploaded so the embedding lookup reads the table on the device.  Only the
+ * newest row's logits are returned, which is what a prefill chunk and a decode
+ * step both want. */
+static bool qwen35_graph_forward(ds4_qwen35_gpu_graph *g, ds4_engine *e,
+                                 const int *tokens, uint32_t T, float *logits_out) {
+    const ds4_model *m = &e->model;
+    const ds4_weights *w = &e->weights;
+    uint32_t ids[DS4_QWEN35_CHUNK_MAX];
+    if (!g || T == 0 || T > g->cap_tokens) return false;
+    if (g->pos + T > g->ctx_cap) {
+        fprintf(stderr, "ds4: Bonsai CUDA graph: context of %u tokens is full\n", g->ctx_cap);
+        return false;
+    }
+    for (uint32_t t = 0; t < T; t++) {
+        if (tokens[t] < 0 || tokens[t] >= (int)DS4_N_VOCAB) {
+            fprintf(stderr, "ds4: Bonsai token id %d is outside the vocabulary\n", tokens[t]);
+            return false;
+        }
+        ids[t] = (uint32_t)tokens[t];
+    }
+    const uint32_t pos0 = g->pos;
+
+    if (!ds4_gpu_tensor_write(g->tokens, 0, ids, (uint64_t)T * sizeof(uint32_t))) return false;
+    /* Token embeddings are read from the inverse-folded table. */
+    if (!ds4_gpu_embed_tokens_quant_tensor(g->h, g->tokens, m->map, m->size,
+                                           w->token_embd->abs_offset, w->token_embd->type,
+                                           (uint32_t)w->token_embd->dim[1], T,
+                                           (uint32_t)w->token_embd->dim[0])) {
+        return false;
+    }
+    if (g_hadamard.inverse_token_embd) {
+        ds4_gpu_tensor *signs = qwen35_graph_signs(g, DS4_N_EMBD);
+        if (!signs || !ds4_gpu_qwen35_fold_inverse_tensor(g->h, DS4_N_EMBD, T,
+                                                          g_hadamard.block_size, signs)) {
+            return false;
+        }
+    }
+
+    bool ok = ds4_gpu_begin_commands() != 0;
+    for (uint32_t il = 0; ok && il < DS4_N_LAYER; il++) {
+        ok = qwen35_graph_layer(g, m, w, il, pos0, T);
+    }
+    if (ok && logits_out) {
+        /* The head consumes the newest row only: copy it into the fixed row
+         * buffer rather than viewing the arena, so the pointer the kernels see
+         * never depends on the chunk size. */
+        ok = ds4_gpu_tensor_copy(g->h_row, 0,
+                                 g->h, (uint64_t)(T - 1u) * DS4_N_EMBD * sizeof(float),
+                                 (uint64_t)DS4_N_EMBD * sizeof(float)) != 0 &&
+             qwen35_graph_norm(g, g->normed, m, w->output_norm, g->h_row, 1u) &&
+             qwen35_graph_fold(g, g->normed, DS4_N_EMBD, 1u, false) &&
+             qwen35_graph_gemv(g->logits, m, w->output, g->normed, 1u);
+        if (ok) {
+            ok = ds4_gpu_tensor_read(g->logits, 0,
+                                     logits_out, (uint64_t)DS4_N_VOCAB * sizeof(float)) != 0;
+        }
+    }
+    if (!ds4_gpu_flush_commands()) ok = false;
+    if (ok) g->pos += T;
+    return ok;
+}
+
+/* Zero the gated delta-net recurrent state and the conv history, and return to
+ * position 0.  The k/v caches need no clearing: a reset restarts the sequence
+ * at position 0, and every cached row is written before the attention that
+ * reads it. */
+static void qwen35_graph_reset(ds4_qwen35_gpu_graph *g) {
+    if (!g || !g->h) return;
+    (void)ds4_gpu_synchronize();
+    const uint64_t state_n = (uint64_t)DS4_N_LIN_V_HEAD * DS4_N_KDA_HEAD_DIM * DS4_N_KDA_HEAD_DIM;
+    const uint64_t hist_n = (uint64_t)(DS4_N_SSM_CONV - 1u) * DS4_N_LIN_CONV_DIM;
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (g->lin_state[il]) ds4_gpu_tensor_fill_f32(g->lin_state[il], 0.0f, state_n);
+        if (g->lin_hist[il]) ds4_gpu_tensor_fill_f32(g->lin_hist[il], 0.0f, hist_n);
+    }
+    g->pos = 0;
+}
+
+#else
+/* CPU-only build: the device graph is unreachable (the engine refuses --cuda
+ * for this family without a graph backend), so only its shape has to exist. */
+typedef struct ds4_qwen35_gpu_graph { int unused; } ds4_qwen35_gpu_graph;
+
+static bool qwen35_graph_open(ds4_qwen35_gpu_graph *g, ds4_engine *e,
+                              uint32_t ctx_cap, uint32_t cap_tokens) {
+    (void)g; (void)e; (void)ctx_cap; (void)cap_tokens;
+    return false;
+}
+
+static bool qwen35_graph_forward(ds4_qwen35_gpu_graph *g, ds4_engine *e,
+                                 const int *tokens, uint32_t T, float *logits_out) {
+    (void)g; (void)e; (void)tokens; (void)T; (void)logits_out;
+    return false;
+}
+
+static void qwen35_graph_reset(ds4_qwen35_gpu_graph *g) {
+    (void)g;
+}
+
+static void qwen35_graph_free(ds4_qwen35_gpu_graph *g) {
+    if (g) memset(g, 0, sizeof(*g));
+}
+#endif /* DS4_NO_GPU */
+
+/* --first-token-test for Bonsai (qwen35): DS4_QWEN35_TOKENS overrides the
+ * prompt with comma-separated token ids, DS4_QWEN35_STEPS sets how many tokens
+ * the reference decodes greedily (default 16), and DS4_QWEN35_LOGITS=<file>
+ * dumps the [n][vocab] f32 logits of the prompt pass.  Every decoded id is
+ * printed with its text, so a stream can be diffed against the reference
+ * implementation over the same prompt.  On the CUDA backend the same test runs
+ * the GPU graph, so its token ids and logits can be diffed against the CPU
+ * reference run of the same prompt.  DS4_QWEN35_SESSION=1 drives the same
+ * prompt and greedy loop through a ds4_session on either backend. */
+static int qwen35_first_token_test(ds4_engine *e, const ds4_tokens *prompt) {
+    const ds4_model *model = &e->model;
+    const ds4_weights *weights = &e->weights;
+    const uint32_t V = DS4_N_VOCAB;
+
+    if (getenv("DS4_QWEN35_FOLD_SELFTEST")) {
+        return qwen35_hadamard_selftest();
+    }
+
+    int *seq = xmalloc(4096 * sizeof(int));
+    uint32_t n_seq = 0;
+    const char *seq_env = getenv("DS4_QWEN35_TOKENS");
+    if (seq_env && seq_env[0]) {
+        n_seq = ds4_parse_token_list(seq_env, seq, 4096);
+    } else {
+        for (int i = 0; i < prompt->len && n_seq < 4096; i++) seq[n_seq++] = prompt->v[i];
+    }
+    if (n_seq == 0) {
+        fprintf(stderr, "ds4: the Bonsai reference test needs a non-empty prompt\n");
+        free(seq);
+        return 1;
+    }
+
+    const char *steps_env = getenv("DS4_QWEN35_STEPS");
+    uint32_t steps = steps_env && steps_env[0] ? (uint32_t)atoi(steps_env) : 16u;
+    if (steps > 512u) steps = 512u;
+
+    float *logits = xmalloc((uint64_t)V * sizeof(float));
+
+    /* On CUDA the same test drives the device graph instead of the reference,
+     * one token at a time and at the same positions, so the two runs produce
+     * comparable token ids and logits.  DS4_QWEN35_SESSION=1 drives that same
+     * prompt and greedy loop through a real ds4_session (create, sync, eval) on
+     * either backend instead of a state local to this function, so the session
+     * path prints the identical token stream and can be diffed against the
+     * reference. */
+    const bool on_gpu = e->backend == DS4_BACKEND_CUDA;
+    const bool session_requested = getenv("DS4_QWEN35_SESSION") != NULL;
+    ds4_session *sess = NULL;
+    ds4_qwen35_gpu_graph graph;
+    ds4_qwen35_ref_state st;
+    memset(&graph, 0, sizeof(graph));
+    memset(&st, 0, sizeof(st));
+    if (session_requested) {
+        fprintf(stderr, "ds4: Bonsai session path (ds4_session create, sync, eval)\n");
+        ds4_tokens p = { seq, (int)n_seq, 4096 };
+        char serr[192] = "";
+        if (ds4_session_create(&sess, e, (int)(n_seq + steps + 1u)) != 0 ||
+            ds4_session_sync(sess, &p, serr, sizeof(serr)) != 0 ||
+            ds4_session_copy_logits(sess, logits, (int)V) != (int)V) {
+            fprintf(stderr, "ds4: Bonsai session prefill failed: %s\n",
+                    serr[0] ? serr : "session unavailable");
+            ds4_session_free(sess);
+            free(logits);
+            free(seq);
+            return 1;
+        }
+    } else if (on_gpu) {
+        if (!qwen35_graph_open(&graph, e, n_seq + steps + 1u, 1u)) {
+            free(logits);
+            free(seq);
+            return 1;
+        }
+        for (uint32_t t = 0; t < n_seq; t++) {
+            if (!qwen35_graph_forward(&graph, e, seq + t, 1u, logits)) {
+                fprintf(stderr, "ds4: Bonsai CUDA graph failed at prompt token %u\n", t);
+                qwen35_graph_free(&graph);
+                free(logits);
+                free(seq);
+                return 1;
+            }
+        }
+    } else {
+        ds4_qwen35_ref_state_init(&st, n_seq + steps + 1u);
+        for (uint32_t t = 0; t < n_seq; t++) {
+            ds4_qwen35_ref_forward_token(model, weights, &st, seq[t], t, logits);
+        }
+    }
+
+    const char *dump = getenv("DS4_QWEN35_LOGITS");
+    if (dump && dump[0] && session_requested) {
+        /* The session keeps only the newest row's logits, so a per-position dump
+         * is a graph/reference feature.  Refuse rather than write a silently
+         * different file. */
+        fprintf(stderr, "ds4: DS4_QWEN35_LOGITS needs the per-position logits and is "
+                        "not available with DS4_QWEN35_SESSION\n");
+        ds4_session_free(sess);
+        free(logits);
+        free(seq);
+        return 1;
+    }
+    if (dump && dump[0]) {
+        float *all = xmalloc((uint64_t)n_seq * V * sizeof(float));
+        if (on_gpu) {
+            ds4_qwen35_gpu_graph dg;
+            memset(&dg, 0, sizeof(dg));
+            if (!qwen35_graph_open(&dg, e, n_seq + 1u, 1u)) {
+                fprintf(stderr, "ds4: cannot open a second Bonsai CUDA graph for the dump\n");
+                free(all);
+                free(logits);
+                free(seq);
+                return 1;
+            }
+            for (uint32_t t = 0; t < n_seq; t++) {
+                if (!qwen35_graph_forward(&dg, e, seq + t, 1u, all + (uint64_t)t * V)) {
+                    fprintf(stderr, "ds4: Bonsai CUDA graph failed at dump token %u\n", t);
+                    qwen35_graph_free(&dg);
+                    free(all);
+                    free(logits);
+                    free(seq);
+                    return 1;
+                }
+            }
+            qwen35_graph_free(&dg);
+        } else {
+            ds4_qwen35_ref_state dst;
+            ds4_qwen35_ref_state_init(&dst, n_seq + 1u);
+            for (uint32_t t = 0; t < n_seq; t++) {
+                ds4_qwen35_ref_forward_token(model, weights, &dst, seq[t], t, all + (uint64_t)t * V);
+            }
+            ds4_qwen35_ref_state_free(&dst);
+        }
+        ds4_dump_f32(dump, all, (uint64_t)n_seq * V);
+        fprintf(stderr, "ds4: wrote %u x %u logits to %s\n", n_seq, V, dump);
+        free(all);
+    }
+
+    /* top alternatives of the last prompt position, as a sanity readout */
+    int top[5] = { -1, -1, -1, -1, -1 };
+    for (uint32_t k = 0; k < 5u; k++) {
+        for (uint32_t i = 0; i < V; i++) {
+            bool taken = false;
+            for (uint32_t j = 0; j < k; j++) if (top[j] == (int)i) taken = true;
+            if (taken) continue;
+            if (top[k] < 0 || logits[i] > logits[top[k]]) top[k] = (int)i;
+        }
+    }
+    fprintf(stderr, "ds4: prompt %u token(s); next-token top-5:", n_seq);
+    for (uint32_t k = 0; k < 5u; k++) {
+        size_t len = 0;
+        char *txt = ds4_token_text(e, top[k], &len);
+        fprintf(stderr, " %d(%.4f)%s", top[k], (double)logits[top[k]], txt);
+        free(txt);
+    }
+    fprintf(stderr, "\n");
+
+    printf("prompt:");
+    for (uint32_t t = 0; t < n_seq; t++) printf(" %d", seq[t]);
+    printf("\n");
+
+    for (uint32_t s = 0; s < steps; s++) {
+        int best = 0;
+        for (uint32_t i = 1; i < V; i++) {
+            if (logits[i] > logits[best]) best = (int)i;
+        }
+        size_t len = 0;
+        char *txt = ds4_token_text(e, best, &len);
+        printf("token %u: %d %s\n", n_seq + s, best, txt);
+        fflush(stdout);
+        free(txt);
+        if (s + 1u < steps) {
+            if (session_requested) {
+                char serr[192] = "";
+                if (ds4_session_eval(sess, best, serr, sizeof(serr)) != 0 ||
+                    ds4_session_copy_logits(sess, logits, (int)V) != (int)V) {
+                    fprintf(stderr, "ds4: Bonsai session decode failed at step %u: %s\n",
+                            s, serr[0] ? serr : "logits unavailable");
+                    ds4_session_free(sess);
+                    free(logits);
+                    free(seq);
+                    return 1;
+                }
+            } else if (on_gpu) {
+                if (!qwen35_graph_forward(&graph, e, &best, 1u, logits)) {
+                    fprintf(stderr, "ds4: Bonsai CUDA graph failed at decode step %u\n", s);
+                    qwen35_graph_free(&graph);
+                    free(logits);
+                    free(seq);
+                    return 1;
+                }
+            } else {
+                ds4_qwen35_ref_forward_token(model, weights, &st, best, n_seq + s, logits);
+            }
+        }
+    }
+
+    if (session_requested) ds4_session_free(sess);
+    else if (on_gpu) qwen35_graph_free(&graph);
+    else ds4_qwen35_ref_state_free(&st);
+    free(logits);
+    free(seq);
     return 0;
 }
 
@@ -68685,7 +70816,11 @@ int ds4_engine_dots3_forward_test(ds4_engine *e, const ds4_tokens *prompt) {
 }
 
 int ds4_engine_first_token_test(ds4_engine *e, const ds4_tokens *prompt) {
-    if (!e || DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_DEEPSEEK4) {
+    if (!e) return 1;
+    if (ds4_model_is_qwen35()) {
+        return qwen35_first_token_test(e, prompt);
+    }
+    if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_DEEPSEEK4) {
         fprintf(stderr,
                 "ds4: DeepSeek first-token diagnostic is unavailable for this model family\n");
         return 1;
@@ -68744,12 +70879,15 @@ int ds4_engine_first_token_test(ds4_engine *e, const ds4_tokens *prompt) {
  * defer_boot_prewarm (servers run it AFTER bank placement so the placement
  * fit never sees the prewarm's footprint -- it is headroom growth by design).
  * Skipped for CPU backends, distributed coordinators (network), capture-dump
- * boots (would pollute DS4_METAL_GRAPH_DUMP_* selections), and under
- * DS4_NO_BOOT_PREWARM=1 (the A/B kill switch).  Idempotent. */
+ * boots (would pollute DS4_METAL_GRAPH_DUMP_* selections), the Bonsai family
+ * (it has no DeepSeek ring/token-tile dispatcher to warm; its session opens
+ * its own graph at create), and under DS4_NO_BOOT_PREWARM=1 (the A/B kill
+ * switch).  Idempotent. */
 void ds4_engine_boot_prewarm(ds4_engine *e) {
 #ifndef DS4_NO_GPU
     if (!e || e->boot_prewarm_done || !e->metal_ready) return;
     if (e->distributed.role == DS4_DISTRIBUTED_COORDINATOR ||
+        ds4_model_is_qwen35() ||
         getenv("DS4_METAL_GRAPH_DUMP_PREFIX") != NULL ||
         getenv("DS4_NO_BOOT_PREWARM") != NULL)
         return;
@@ -68913,8 +71051,29 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
 
     const bool graph_backend = ds4_backend_uses_graph(opt->backend);
     model_open(&e->model, opt->model_path, graph_backend, !opt->inspect_only);
-    if (g_host_shape) model_apply_host_shape();
-    else config_validate_model(&e->model);
+    if (g_host_shape) {
+        model_apply_host_shape();
+        /* The host is authoritative for the shape, but the rotary table and the
+         * fold metadata come from the GGUF: without them the family generates
+         * nonsense on both backends while looking healthy. */
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN35) {
+            config_apply_qwen35_runtime(&e->model);
+        }
+    } else {
+        config_validate_model(&e->model);
+    }
+    /* The per-layer host arrays are sized DS4_MAX_LAYER while the bind and free
+     * loops run to DS4_N_LAYER, so a family with more blocks than the bound
+     * would write past them.  Refuse it by name instead (the CUDA graph keeps
+     * its own bound and its own refusal on top of this one). */
+    if (DS4_N_LAYER > DS4_MAX_LAYER) {
+        fprintf(stderr, "ds4: %s has %u layers but this build holds %u; "
+                        "raise DS4_MAX_LAYER and audit the per-layer arrays\n",
+                DS4_MODEL_SHAPE_NAME, DS4_N_LAYER, (uint32_t)DS4_MAX_LAYER);
+        ds4_engine_close(e);
+        *out = NULL;
+        return 1;
+    }
     if (!opt->inspect_only && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_NAIVE &&
         (e->backend != DS4_BACKEND_CUDA || load_slice ||
          opt->distributed.role != DS4_DISTRIBUTED_NONE ||
@@ -68932,6 +71091,32 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_MIMO2 &&
         opt->mtp_path && opt->mtp_path[0]) {
         if (e->mtp_draft_tokens < 2 || e->mtp_draft_tokens > 8) { e->mtp_draft_tokens = 8; }
+    }
+    if (ds4_model_is_qwen35() && !opt->inspect_only) {
+        /* The Bonsai trunk runs through its CPU reference (--cpu: the diagnostic
+         * oracle and the session's reference backend) or through the CUDA graph
+         * (--cuda: the diagnostic and the session).  Everything else is refused
+         * rather than run through machinery this family does not have: no
+         * tensor parallelism, no distributed ranks, no SSD streaming, no
+         * MTP/DSpark drafting, no steering. */
+        const bool cpu_reference = e->backend == DS4_BACKEND_CPU;
+        const bool cuda_graph = e->backend == DS4_BACKEND_CUDA;
+        const bool supported =
+            (cpu_reference || cuda_graph) &&
+            opt->distributed.role == DS4_DISTRIBUTED_NONE && !opt->load_slice &&
+            (!opt->dspark_path || !opt->dspark_path[0]) &&
+            (!opt->mtp_path || !opt->mtp_path[0]) &&
+            (!opt->directional_steering_file || !opt->directional_steering_file[0]) &&
+            e->power_percent == 100;
+        if (!supported) {
+            fprintf(stderr, "ds4: Bonsai (qwen35) runs on the CPU reference (--cpu) or "
+                            "on the CUDA graph (--cuda); tensor parallelism, distributed "
+                            "ranks, SSD streaming, MTP/DSpark and steering are not "
+                            "supported\n");
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
     }
     if (!opt->inspect_only && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_STEP37 &&
         (e->backend != DS4_BACKEND_CUDA || load_slice ||
@@ -69881,6 +72066,10 @@ bool ds4_engine_supports_batching(ds4_engine *e) {
         return enabled && strcmp(enabled, "1") == 0;
     }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM53) return false;
+    /* Bonsai's session IS the trunk state (the CUDA graph or the CPU reference)
+     * and there is no multi-sequence graph for it, so the DeepSeek slab body
+     * would read a layout this family does not have. */
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN35) return false;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN4EXP) {
         const char *enabled = getenv("DS4_QWEN_BATCH");
         return enabled && enabled[0] == '1' && enabled[1] == '\0';
@@ -70766,6 +72955,15 @@ int ds4_engine_session_graph_fit_quote(ds4_engine *e, int ctx_size,
         return inkling_session_fit(e, (uint32_t)ctx_size,
                                    inkling_prefill_cap((uint32_t)ctx_size), q);
     }
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN35) {
+        /* Bonsai's session is the trunk graph itself and it opens with its own
+         * chunk-halving loop, so there is no per-bank estimate to give: answer
+         * budget-less (fail_open) inside the family's context bound and refuse
+         * past it, instead of entering the DeepSeek slab estimate. */
+        q->fits = (ctx_size <= 262144) ? 1 : 0;
+        q->fail_open = q->fits;
+        return q->fits;
+    }
     if (e->backend == DS4_BACKEND_CPU) {
         q->fits = 1;
         q->fail_open = 1;
@@ -71056,6 +73254,56 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
         return 0;
 #endif
     }
+    if (ds4_model_is_qwen35()) {
+        /* Prism Bonsai: the session IS the trunk state -- the CUDA graph or the
+         * CPU reference -- so the shared session machinery (kv cache, MTP,
+         * snapshots, batching) never applies to it. */
+        if (e->distributed.role != DS4_DISTRIBUTED_NONE) {
+            fprintf(stderr, "ds4: Bonsai sessions do not support distributed ranks\n");
+            return 1;
+        }
+        ds4_session *s = xcalloc(1, sizeof(*s));
+        s->engine = e;
+        s->ctx_size = ctx_size;
+        s->generation = 1u;   /* Inc 5a: 0 is reserved for "no session" */
+        s->logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(s->logits[0]));
+        if (e->backend == DS4_BACKEND_CPU) {
+            s->qwen35_ref = xcalloc(1, sizeof(*s->qwen35_ref));
+            ds4_qwen35_ref_state_init(s->qwen35_ref, (uint32_t)ctx_size);
+            s->prefill_cap = (uint32_t)ctx_size;
+        } else {
+#ifndef DS4_NO_GPU
+            uint32_t chunk = qwen35_prefill_chunk_tokens((uint32_t)ctx_size);
+            s->qwen35_graph = xcalloc(1, sizeof(*s->qwen35_graph));
+            /* A chunk the device cannot hold is halved until the graph opens.
+             * A chunk of one always fits, so the loop converges. */
+            while (chunk > 0 &&
+                   !qwen35_graph_open(s->qwen35_graph, e, (uint32_t)ctx_size, chunk)) {
+                chunk /= 2u;
+            }
+            if (chunk == 0) {
+                fprintf(stderr, "ds4: Bonsai CUDA session could not open a graph at ctx %d\n",
+                        ctx_size);
+                free(s->qwen35_graph);
+                free(s->logits);
+                free(s);
+                return 1;
+            }
+            s->prefill_cap = chunk;
+            fprintf(stderr, "ds4: Bonsai prefill chunk: %u tokens (ctx %d)\n",
+                    chunk, ctx_size);
+#else
+            fprintf(stderr,
+                    "ds4: Bonsai CUDA sessions need a build with the graph backend "
+                    "(use --cpu for the reference)\n");
+            free(s->logits);
+            free(s);
+            return 1;
+#endif
+        }
+        *out = s;
+        return 0;
+    }
     if (e->backend == DS4_BACKEND_CPU) {
         if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_SOLAR_OPEN2 ||
             DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_EXAONE_MOE) {
@@ -71158,6 +73406,17 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
 void ds4_session_free(ds4_session *s) {
     if (!s) return;
     ds4_dist_session_free(s->distributed);
+    /* Bonsai owns its trunk state on the heap, whichever backend built it. */
+    if (s->qwen35_graph) {
+        qwen35_graph_free(s->qwen35_graph);
+        free(s->qwen35_graph);
+        s->qwen35_graph = NULL;
+    }
+    if (s->qwen35_ref) {
+        ds4_qwen35_ref_state_free(s->qwen35_ref);
+        free(s->qwen35_ref);
+        s->qwen35_ref = NULL;
+    }
     if (ds4_session_is_cpu(s)) {
         kv_cache_free(&s->cpu_cache);
         cpu_decode_scratch_free(&s->cpu_scratch);
@@ -72366,6 +74625,68 @@ int ds4_session_inkling_commit(ds4_session *s, int keep, char *err, size_t errle
 #endif
 }
 
+/* -------------------------------------------------------------------------
+ * Bonsai (qwen35) sessions
+ *
+ * The trunk is one whole struct per backend: the CUDA graph, which advances its
+ * own position, or the CPU reference state, which is told a position on every
+ * forward.  Neither can roll back -- the gated delta-net state is recurrent --
+ * so a rewind, or a decode that failed after the state advanced, drops the
+ * state and lets the next decode replay the checkpoint.
+ * ------------------------------------------------------------------------- */
+
+static bool ds4_session_is_qwen35(const ds4_session *s) {
+    return s && s->engine && ds4_model_is_qwen35();
+}
+
+/* Positions the trunk state has consumed. */
+static uint32_t qwen35_session_pos(const ds4_session *s) {
+#ifndef DS4_NO_GPU
+    if (s->qwen35_graph) {
+        return s->qwen35_graph->pos;
+    }
+#endif
+    return s->qwen35_ref_pos;
+}
+
+static void qwen35_session_reset(ds4_session *s) {
+    if (s->qwen35_graph) {
+        qwen35_graph_reset(s->qwen35_graph);
+    }
+    if (s->qwen35_ref) {
+        ds4_qwen35_ref_state_reset(s->qwen35_ref);
+        s->qwen35_ref_pos = 0;
+    }
+}
+
+/* One forward of `n` tokens at the state's current position; the newest row's
+ * logits land in s->logits.  The CPU reference always runs one token at a
+ * time, which is what its driver does, so a chunk costs the same either way. */
+static bool qwen35_session_forward(ds4_session *s, const int *tokens, uint32_t n) {
+    if (s->qwen35_graph) {
+        return qwen35_graph_forward(s->qwen35_graph, s->engine, tokens, n, s->logits);
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        ds4_qwen35_ref_forward_token(&s->engine->model, &s->engine->weights, s->qwen35_ref,
+                                     tokens[i], s->qwen35_ref_pos, s->logits);
+        s->qwen35_ref_pos++;
+    }
+    return true;
+}
+
+/* The kept tokens, replayed when the trunk state is behind the checkpoint (a
+ * rewind, or a decode that failed after the state advanced). */
+static int qwen35_session_replay_if_stale(ds4_session *s, char *err, size_t errlen) {
+    if (qwen35_session_pos(s) == (uint32_t)s->checkpoint.len) return 0;
+    token_vec kept = {0};
+    for (int i = 0; i < s->checkpoint.len; i++) token_vec_push(&kept, s->checkpoint.v[i]);
+    s->checkpoint_valid = false;
+    const int rc = kept.len ? ds4_session_sync(s, &kept, err, errlen) : 0;
+    if (!kept.len) qwen35_session_reset(s);
+    token_vec_free(&kept);
+    return rc;
+}
+
 int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
     if (!s || !prompt || prompt->len <= 0 || prompt->len > s->ctx_size) {
         snprintf(err, errlen, "prompt exceeds context");
@@ -72492,6 +74813,64 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
         return 0;
     }
 #endif
+    if (ds4_session_is_qwen35(s)) {
+        if (!s->qwen35_graph && !s->qwen35_ref) {
+            snprintf(err, errlen, "Bonsai session is not initialized");
+            return 1;
+        }
+        for (int i = 0; i < prompt->len; i++) {
+            if (prompt->v[i] < 0 || prompt->v[i] >= (int)DS4_N_VOCAB) {
+                snprintf(err, errlen,
+                         "token id %d at position %d is outside the vocabulary",
+                         prompt->v[i], i);
+                return 1;
+            }
+        }
+        int start = 0;
+        /* A checkpoint the prompt extends continues where it stopped: the trunk
+         * state already ends at the checkpoint's last position. */
+        if (s->checkpoint_valid &&
+            qwen35_session_pos(s) == (uint32_t)s->checkpoint.len &&
+            prompt->len >= s->checkpoint.len &&
+            ds4_tokens_starts_with(prompt, &s->checkpoint)) {
+            start = s->checkpoint.len;
+            if (start == prompt->len) return 0;
+        } else {
+            qwen35_session_reset(s);
+            s->generation++;
+            s->checkpoint.len = 0;
+            s->checkpoint_valid = false;
+        }
+        while (start < prompt->len) {
+            uint32_t chunk = (uint32_t)(prompt->len - start);
+            const uint32_t room = (uint32_t)s->ctx_size - qwen35_session_pos(s);
+            if (chunk > room) chunk = room;
+            /* prefill_cap is the graph's chunk on CUDA and the context on the
+             * CPU reference, so it bounds both. */
+            if (chunk > s->prefill_cap) chunk = s->prefill_cap;
+            if (chunk == 0) {
+                snprintf(err, errlen, "context is full");
+                return 1;
+            }
+            /* The state is only trustworthy once the whole chunk has landed. */
+            s->checkpoint_valid = false;
+            if (!qwen35_session_forward(s, prompt->v + start, chunk)) {
+                snprintf(err, errlen, "Bonsai prefill failed at token %d", start);
+                s->checkpoint.len = 0;
+                return 1;
+            }
+            for (uint32_t j = 0; j < chunk; j++) {
+                token_vec_push(&s->checkpoint, prompt->v[start + (int)j]);
+            }
+            start += (int)chunk;
+            s->checkpoint_valid = true;
+            s->mtp_draft_valid = false;
+            if (s->progress) {
+                s->progress(s->progress_ud, "prefill_chunk", start, prompt->len);
+            }
+        }
+        return 0;
+    }
     if (s->distributed) {
         const ds4_tokens *checkpoint = s->checkpoint_valid ? &s->checkpoint : NULL;
         /* Inc 5a: the distributed path manages the checkpoint internally, so
@@ -73349,6 +75728,24 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
         return inkling_session_eval(s, token, err, errlen);
     }
 #endif
+    if (ds4_session_is_qwen35(s)) {
+        if (qwen35_session_replay_if_stale(s, err, errlen) != 0) return 1;
+        if (qwen35_session_pos(s) >= (uint32_t)s->ctx_size) {
+            if (errlen) snprintf(err, errlen, "context is full");
+            return 1;
+        }
+        if (!qwen35_session_forward(s, &token, 1u)) {
+            if (errlen) snprintf(err, errlen, "Bonsai decode failed");
+            s->checkpoint.len = 0;
+            s->checkpoint_valid = false;
+            return 1;
+        }
+        token_vec_push(&s->checkpoint, token);
+        s->checkpoint_valid = true;
+        s->mtp_draft_valid = false;
+        (void)probe_mtp;
+        return 0;
+    }
     if (s->distributed) {
         if (!s->checkpoint_valid) {
             if (errlen) snprintf(err, errlen, "distributed decode requires a valid checkpoint");
@@ -74013,7 +76410,8 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
 #endif
     }
     if (ds4_session_is_inkling(s) || ds4_session_is_step37(s) ||
-        ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) || ds4_session_is_naive(s)) {
+        ds4_session_is_ling3vl(s) || ds4_session_is_mimo2(s) ||
+        ds4_session_is_qwen35(s) || ds4_session_is_naive(s)) {
         if (ds4_session_eval(s, first_token, err, errlen) != 0) {
             return -1;
         }
@@ -75267,7 +77665,9 @@ void ds4_session_invalidate(ds4_session *s) {
     s->checkpoint.len = 0;
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_naive(s) && s->naive_graph_ready) {
+    if (s->qwen35_graph || s->qwen35_ref) {
+        qwen35_session_reset(s);
+    } else if (ds4_session_is_naive(s) && s->naive_graph_ready) {
         (void)naive_reset(&s->naive_graph);
     } else if (ds4_session_is_mimo2(s) && s->mimo2_graph_ready) {
         (void)mimo2_reset(&s->mimo2_graph);
@@ -75320,7 +77720,13 @@ void ds4_session_rewind(ds4_session *s, int pos) {
     s->checkpoint.len = pos;
     s->mtp_draft_valid = false;
 #ifndef DS4_NO_GPU
-    if (ds4_session_is_naive(s) && pos != old_pos) {
+    if (ds4_session_is_qwen35(s) && pos != old_pos) {
+        /* The recurrent trunk cannot roll its state back, so drop it and keep
+         * the token checkpoint: the next decode replays the kept tokens
+         * (qwen35_session_replay_if_stale). */
+        s->checkpoint_valid = false;
+        qwen35_session_reset(s);
+    } else if (ds4_session_is_naive(s) && pos != old_pos) {
         s->checkpoint_valid = false;
         if (s->naive_graph_ready) { (void)naive_reset(&s->naive_graph); }
     } else if (ds4_session_is_mimo2(s) && pos != old_pos) {
@@ -75407,3 +77813,72 @@ bool ds4_session_dots3_mtp(ds4_session *s) {
 int ds4_session_prefill_cap(ds4_session *s) {
     return s ? (int)s->prefill_cap : 0;
 }
+
+#ifdef DS4_TEST_HOOKS
+/* Prism PQ2_0 reference entry points for the CUDA parity test
+ * (tests/test_qwen35_cuda.cu).  Both run exactly the reference code the CPU
+ * path runs -- pq2_0_row_f32 and the double-precision row dot -- so the test
+ * measures CUDA against this file, not against a transcription of it. */
+int ds4_test_pq2_0_ref_row(const void *blocks, uint64_t row, uint64_t in_dim,
+                           float *out) {
+    if (!blocks || !out || in_dim == 0 || in_dim % 128u != 0u) return 1;
+    pq2_0_row_f32((const uint8_t *)blocks + row * (in_dim / 128u) * 34u,
+                  in_dim, out);
+    return 0;
+}
+
+int ds4_test_pq2_0_ref_matvec(const void *blocks, uint64_t out_dim,
+                              uint64_t in_dim, const float *x, float *out) {
+    if (!blocks || !x || !out || out_dim == 0 ||
+        in_dim == 0 || in_dim % 128u != 0u) {
+        return 1;
+    }
+    float *row = xmalloc((size_t)in_dim * sizeof(float));
+    for (uint64_t r = 0; r < out_dim; r++) {
+        pq2_0_row_f32((const uint8_t *)blocks + r * (in_dim / 128u) * 34u,
+                      in_dim, row);
+        out[r] = ref_row_dot(row, x, in_dim);
+    }
+    free(row);
+    return 0;
+}
+
+/* Reference entry point for the folded activation transform, so the CUDA
+ * parity test drives ds4_hadamard_* itself.  op selects the operation the
+ * caller wants measured: 0 rotate, 1 forward, 2 inverse, 3 gdn reorder then
+ * forward (the ssm_out input).  block_size temporarily sets the transform's
+ * block, which the loader would otherwise take from the GGUF. */
+int ds4_test_hadamard_fold(int op, uint32_t block_size, float *x, uint32_t n,
+                           const float *signs, uint32_t hd, uint32_t nk,
+                           uint32_t rep, float *scratch) {
+    if (!x || n == 0 || block_size == 0) return 1;
+    const uint32_t saved = g_hadamard.block_size;
+    g_hadamard.block_size = block_size;
+    int rc = 0;
+    switch (op) {
+    case 0:
+        ds4_hadamard_rotate(x, n);
+        break;
+    case 1:
+        ds4_hadamard_forward(x, n, signs);
+        break;
+    case 2:
+        ds4_hadamard_inverse(x, n, signs);
+        break;
+    case 3:
+        if (hd == 0 || nk == 0 || rep == 0 ||
+            (uint64_t)hd * nk * rep != n || !scratch) {
+            rc = 1;
+            break;
+        }
+        ds4_hadamard_gdn_permute(x, hd, nk, rep, scratch);
+        ds4_hadamard_forward(x, n, signs);
+        break;
+    default:
+        rc = 1;
+        break;
+    }
+    g_hadamard.block_size = saved;
+    return rc;
+}
+#endif /* DS4_TEST_HOOKS */

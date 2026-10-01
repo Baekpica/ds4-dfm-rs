@@ -167,6 +167,10 @@ enum ggml_type {
     GGML_TYPE_MXFP4   = 39,
     GGML_TYPE_NVFP4   = 40,
     GGML_TYPE_Q1_0    = 41,
+    // Prism PQ2_0 (ternary Bonsai).  Id matches DS4_TENSOR_PQ2_0 in ds4.c:
+    // llama.cpp has no code for it, so it sits above GGML_TYPE_COUNT the same
+    // way MXFP4/NVFP4/Q1_0 do.
+    GGML_TYPE_PQ2_0   = 142,
     GGML_TYPE_COUNT   = 42,
 };
 
@@ -255,6 +259,7 @@ inline size_t ggml_type_size(enum ggml_type t) {
         case GGML_TYPE_MXFP4:   return 17;
         case GGML_TYPE_NVFP4:   return 18;
         case GGML_TYPE_Q1_0:    return 36;
+        case GGML_TYPE_PQ2_0:   return 34;
         default:                return 0;
     }
 }
@@ -278,6 +283,8 @@ inline int64_t ggml_blck_size(enum ggml_type t) {
         case GGML_TYPE_Q8_1:
         case GGML_TYPE_IQ4_NL:
             return 32;
+        case GGML_TYPE_PQ2_0:
+            return 128;
         case GGML_TYPE_Q2_K:
         case GGML_TYPE_Q3_K:
         case GGML_TYPE_Q4_K:

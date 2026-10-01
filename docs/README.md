@@ -21,6 +21,7 @@ release candidate or describe live processes.
 | [Chat templates](chat-templates.md) | Official input grammar, local assets and continuation |
 | [API surface matrix](ds4-api-surface-matrix.md) | Wire contracts, routing and unsupported behavior |
 | [Model families](ds4-dfm-model-families.md) | Family contracts and dated Spark evidence |
+| [Bonsai recipe](BONSAI.md) | Ternary Bonsai 2 27B (qwen35): build, run, evidence and limits |
 | [Naive-N0.5-Flash](naive-n05-flash.md) | MQ87 contract, serving gates, performance and limits |
 | [dots3 serving](ds4-dfm-model-families.md#dots3-serving) | Separate opt-in text banks and serial MTP; snapshot and qualification limits |
 | [Qwen FP8 PLE](qwen38-ple-fp8.md) | Sidecar selection, KV compatibility and paired card sweeps |

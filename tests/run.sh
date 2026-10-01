@@ -1,30 +1,45 @@
 #!/usr/bin/env bash
-# tests/run.sh - local unit entry for ds4-dfm-rs.
-#
-# The rule 19 QA gate runs FIRST, so a commit-for-delivery or a push without
-# fresh QA evidence fails here; the CUDA parity suites then still run and the
-# exit status accumulates, so one invocation reports everything that is wrong.
-#
-#   bash tests/run.sh              QA gate + the three kernel parity suites
-#   bash tests/run.sh --full       also the model-free suites (make test)
-#   QA_MODEL=<slug> bash tests/run.sh
-#
-# CUDA_ARCH selects the arch for the CUDA builds (default native).
+# Default checks are model-free; --cuda adds GPU parity, --full adds make test.
+# Bonsai artifact gates remain explicit: test-qwen35-rows, bonsai-fold-selftest,
+# and bonsai-ref-check need DS4_BONSAI_MODEL.
+# Set DS4_FAST=1 to skip the Rust/C catalogue parity build.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
+mode=${1:-}
+case "$mode" in
+  ""|--cuda|--full) ;;
+  *) echo "usage: tests/run.sh [--cuda|--full]" >&2; exit 2 ;;
+esac
+
 ARCH=${CUDA_ARCH:-native}
-status=0
+fail=0
+step() {
+  echo "== $*"
+  "$@" || { echo "-- FAILED: $*"; fail=1; }
+}
 
-bash tests/qa-gate.sh || status=1
-
-# Kernel parity suites for the paths this tree exercises without weights.
-make test-cuda-tokentile-ldmatrix CUDA_ARCH="$ARCH" || status=1
-make test-solar-fattn CUDA_ARCH="$ARCH" || status=1
-make test-inkling-attention CUDA_ARCH="$ARCH" || status=1
-
-if [[ "${1:-}" == "--full" ]]; then
-  make test || status=1
+step bash tests/qa-gate.sh
+step make pq2-0-test
+step make test-qwen35-ref
+if [[ "${DS4_FAST:-0}" != "1" ]]; then
+  step make test-catalog-parity
 fi
 
-exit "$status"
+if [[ "$mode" == "--full" ]]; then
+  step make test
+fi
+
+if [[ "$mode" == "--cuda" || "$mode" == "--full" ]]; then
+  step make test-cuda-tokentile-ldmatrix CUDA_ARCH="$ARCH"
+  step make test-solar-fattn CUDA_ARCH="$ARCH"
+  step make test-inkling-attention CUDA_ARCH="$ARCH"
+  step make test-qwen35-cuda CUDA_ARCH="$ARCH"
+fi
+
+if (( fail == 0 )); then
+  echo "tests/run.sh: all checks passed"
+else
+  echo "tests/run.sh: FAILURES above"
+fi
+exit "$fail"

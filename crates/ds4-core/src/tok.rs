@@ -431,6 +431,28 @@ impl Vocab {
                 self.assistant_id = -1;
                 self.dsml_id = -1;
             }
+            // ChatML without BOS: the artifact's bos id *is* endoftext, so
+            // nothing is prepended and a finished assistant turn ends the
+            // generation.
+            ModelFamily::Qwen35 => {
+                self.bos_id = -1;
+                self.eos_id = g
+                    .get_token_id("tokenizer.ggml.eos_token_id")
+                    .unwrap_or(self.lookup("<|im_end|>")?);
+                self.eot_id = self.lookup("<|endoftext|>")?;
+                self.im_start_id = self.lookup("<|im_start|>")?;
+                self.im_end_id = self.lookup("<|im_end|>")?;
+                self.think_start_id = self.lookup("<think>")?;
+                self.think_end_id = self.lookup("</think>")?;
+                self.tool_call_start_id = self.lookup("<tool_call>")?;
+                self.tool_call_end_id = self.lookup("</tool_call>")?;
+                self.tool_response_start_id = self.lookup("<tool_response>")?;
+                self.tool_response_end_id = self.lookup("</tool_response>")?;
+                self.system_id = -1;
+                self.user_id = -1;
+                self.assistant_id = -1;
+                self.dsml_id = -1;
+            }
             ModelFamily::SolarOpen2 => {
                 self.bos_id = g
                     .get_token_id("tokenizer.ggml.bos_token_id")
@@ -619,6 +641,7 @@ impl Vocab {
             ModelFamily::SolarOpen2
                 | ModelFamily::Dots3Note
                 | ModelFamily::Qwen4Exp
+                | ModelFamily::Qwen35
                 | ModelFamily::Inkling
         ) {
             tokens.push(self.bos_id);
@@ -656,6 +679,7 @@ impl Vocab {
                 | ModelFamily::SolarOpen2
                 | ModelFamily::Dots3Note
                 | ModelFamily::Qwen4Exp
+                | ModelFamily::Qwen35
         ) {
             return;
         }
@@ -828,7 +852,7 @@ impl Vocab {
                     self.solar_chat_close_role(tokens);
                 }
             }
-            ModelFamily::Qwen4Exp => {
+            ModelFamily::Qwen4Exp | ModelFamily::Qwen35 => {
                 if role == "system" || role == "developer" {
                     self.qwen_chat_open_role(tokens, b"system");
                     bpe_tokenize_text(self, content, &mut tokens.tokens);
@@ -954,7 +978,7 @@ impl Vocab {
                     tokens.push(self.think_end_id);
                 }
             }
-            ModelFamily::Qwen4Exp => {
+            ModelFamily::Qwen4Exp | ModelFamily::Qwen35 => {
                 self.qwen_chat_open_role(tokens, b"assistant");
                 tokens.push(self.think_start_id);
                 if thinking {
@@ -1068,9 +1092,10 @@ impl Vocab {
                     || (self.observation_id >= 0 && token == self.observation_id)
             }
             ModelFamily::Mimo2 => token == self.eot_id || token == self.end_of_turn_id,
-            ModelFamily::SolarOpen2 | ModelFamily::Qwen4Exp | ModelFamily::NaiveN05 => {
-                self.eot_id >= 0 && token == self.eot_id
-            }
+            ModelFamily::SolarOpen2
+            | ModelFamily::Qwen4Exp
+            | ModelFamily::Qwen35
+            | ModelFamily::NaiveN05 => self.eot_id >= 0 && token == self.eot_id,
             // `<|endoftext|>` is the second official end token, and `<role>`
             // opens the next turn: neither may leak into assistant content.
             ModelFamily::Ling3Vl => {
@@ -2163,7 +2188,8 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
         ModelFamily::Motif3 => bpe_tokenize_text_motif3(vocab, text, out),
         ModelFamily::SolarOpen2 => bpe_tokenize_text_solar(vocab, text, out),
         ModelFamily::Dots3Note => bpe_tokenize_text_dots3(vocab, text, out),
-        ModelFamily::Qwen4Exp => bpe_tokenize_text_dots3(vocab, text, out),
+        // The native side shares one pre-tokenizer between qwen4 and qwen35.
+        ModelFamily::Qwen4Exp | ModelFamily::Qwen35 => bpe_tokenize_text_dots3(vocab, text, out),
         ModelFamily::ExaoneMoe if vocab.is_k2_horizon => bpe_tokenize_text_k2(vocab, text, out),
         ModelFamily::ExaoneMoe => bpe_tokenize_text_exaone(vocab, text, out),
         ModelFamily::DeepSeek4 => bpe_tokenize_text_joyai(vocab, text, out),
@@ -2347,7 +2373,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
         ),
         (
             b"<|im_start|>",
-            if vocab.family == ModelFamily::Qwen4Exp {
+            if matches!(vocab.family, ModelFamily::Qwen4Exp | ModelFamily::Qwen35) {
                 vocab.im_start_id
             } else {
                 -1
@@ -2355,7 +2381,7 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
         ),
         (
             b"<|im_end|>",
-            if vocab.family == ModelFamily::Qwen4Exp {
+            if matches!(vocab.family, ModelFamily::Qwen4Exp | ModelFamily::Qwen35) {
                 vocab.im_end_id
             } else {
                 -1
@@ -2385,7 +2411,14 @@ fn special_token_at(vocab: &Vocab, p: &[u8]) -> Option<(i32, usize)> {
                 -1
             },
         ),
-        (b"<|endoftext|>", vocab.eos_id),
+        (
+            b"<|endoftext|>",
+            if matches!(vocab.family, ModelFamily::Qwen4Exp | ModelFamily::Qwen35) {
+                vocab.eot_id
+            } else {
+                vocab.eos_id
+            },
+        ),
         (b"<|beginoftext|>", vocab.bos_id),
         (b"<|startofturn|>", vocab.start_of_turn_id),
         (b"<|endofturn|>", vocab.end_of_turn_id),

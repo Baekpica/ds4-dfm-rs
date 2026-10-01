@@ -393,6 +393,7 @@ static bool ds4_should_use_mmq_impl(enum ggml_type type, int cc, int64_t ne11, i
     bool mmq_supported;
     switch (type) {
         case GGML_TYPE_Q1_0:
+        case GGML_TYPE_PQ2_0:
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q4_1:
         case GGML_TYPE_Q5_0:
@@ -652,6 +653,62 @@ extern "C" int ds4_mmq_q8_0_dense(
         const void * W, const float * X, float * out,
         int M, int N, int K, cudaStream_t stream) {
     return ds4_mmq_dense_impl<GGML_TYPE_Q8_0>("ds4_mmq_q8_0_dense", W, X, out, M, N, K, stream);
+}
+
+/* Prism Bonsai (qwen35/PQ2_0) dense matmul.  MMQ covers every batch size,
+ * including the N=1 decode step; the vec twin below is the MMVQ decode
+ * entry for callers that want the lighter kernel for a single column. */
+extern "C" int ds4_mmq_pq2_0_dense(
+        const void * W, const float * X, float * out,
+        int M, int N, int K, cudaStream_t stream) {
+    return ds4_mmq_dense_impl<GGML_TYPE_PQ2_0>("ds4_mmq_pq2_0_dense", W, X, out, M, N, K, stream);
+}
+
+/* Row lookup (token embeddings) for PQ2_0: dequantize the rows of a
+ * [n_rows, in_dim] matrix named by row0 (dense rows) or by a device token
+ * array.  Element-for-element the same arithmetic as ds4_ref_row's pq2_0
+ * branch: the fp16 block scale times (code - 1), with element j in code byte
+ * j/4 at bits (j % 4)*2. */
+__global__ static void ds4_mmq_pq2_0_rows_kernel(
+        float * __restrict__ out, const block_pq2_0 * __restrict__ w,
+        const int32_t * __restrict__ tokens, uint64_t row0, uint32_t n_rows,
+        uint32_t in_dim) {
+    const uint64_t total = (uint64_t) n_rows * in_dim;
+    const uint64_t gid = (uint64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= total) {
+        return;
+    }
+    const uint32_t r = (uint32_t) (gid / in_dim);
+    const uint32_t i = (uint32_t) (gid - (uint64_t) r * in_dim);
+    const int32_t src = tokens ? tokens[r] : (int32_t) (row0 + r);
+    if (src < 0) {
+        out[gid] = 0.0f;
+        return;
+    }
+    const block_pq2_0 * blk = w + (uint64_t) (uint32_t) src * (in_dim / QK2_0) + (i / QK2_0);
+    const uint32_t j = i % QK2_0;
+    const uint8_t code = (uint8_t) ((blk->qs[j >> 2] >> (2u * (j & 3u))) & 0x03u);
+    out[gid] = __half2float(blk->d) * (float) ((int) code - 1);
+}
+
+extern "C" int ds4_mmq_pq2_0_rows_f32(
+        float * out, const void * W, const int32_t * tokens,
+        uint64_t row0, uint32_t n_rows, uint32_t in_dim, cudaStream_t stream) {
+    if (!out || !W || n_rows == 0u || in_dim == 0u || in_dim % QK2_0 != 0u) {
+        fprintf(stderr, "ds4_mmq_pq2_0_rows_f32: bad arguments (n_rows=%u in_dim=%u)\n",
+                n_rows, in_dim);
+        return -1;
+    }
+    const uint64_t total = (uint64_t) n_rows * in_dim;
+    ds4_mmq_pq2_0_rows_kernel<<<(unsigned) ((total + 255u) / 256u), 256, 0, stream>>>(
+        out, (const block_pq2_0 *) W, tokens, row0, n_rows, in_dim);
+    const cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "ds4_mmq_pq2_0_rows_f32: launch failed: %s\n",
+                cudaGetErrorString(err));
+        return -2;
+    }
+    return 0;
 }
 
 /* p5a verify instrument: run the REFERENCE quantizer (exact dense_impl
@@ -7326,6 +7383,13 @@ extern "C" int ds4_mmq_q8_0_dense_vec(
         "ds4_mmq_q8_0_dense_vec", W, X, out, M, N, K, stream);
 }
 
+extern "C" int ds4_mmq_pq2_0_dense_vec(
+        const void * W, const float * X, float * out,
+        int M, int N, int K, cudaStream_t stream) {
+    return ds4_mmq_dense_vec_impl<GGML_TYPE_PQ2_0>(
+        "ds4_mmq_pq2_0_dense_vec", W, X, out, M, N, K, stream);
+}
+
 // Explicit instantiations. One per quant type the public API exposes.
 // Each instantiation drags in the load_tiles_<type> + vec_dot_<type>_*
 // device functions from mmq.cuh, so the .o objects below contain everything
@@ -7349,4 +7413,6 @@ template void mul_mat_q_case<GGML_TYPE_Q5_K>(
 template void mul_mat_q_case<GGML_TYPE_Q6_K>(
     ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream);
 template void mul_mat_q_case<GGML_TYPE_Q5_0>(
+    ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream);
+template void mul_mat_q_case<GGML_TYPE_PQ2_0>(
     ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream);

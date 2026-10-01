@@ -40,6 +40,8 @@ jobs:
         run: cargo test --workspace --locked -- --test-threads=1
       - name: PLE storage formats
         run: make test-ple-formats
+      - name: Bonsai CPU reference
+        run: make pq2-0-test test-qwen35-ref
       - name: All host targets
         run: cargo check --workspace --all-targets --locked
       # `native` is off by default, so the production host is otherwise

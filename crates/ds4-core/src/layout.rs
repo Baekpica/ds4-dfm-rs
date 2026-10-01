@@ -32,6 +32,7 @@ const T_IQ1_M: u32 = 29;
 const T_I32: u32 = 26;
 const T_I64: u32 = 27;
 const T_BF16: u32 = 30;
+const T_PQ2_0: u32 = 142;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TypeClass {
@@ -1888,6 +1889,193 @@ fn expected_qwen4exp(shape: &Shape) -> Vec<LayoutSpec> {
     out
 }
 
+/// Bonsai layout: every matmul weight is PQ2_0, the norms and the ssm scalars
+/// are F32 and the two ssm gates are BF16, exactly as the Prism exporter writes
+/// them. The gated delta-net projection widths come from the family constants
+/// (the validator pins `qwen35.ssm.*` against them), the attention widths from
+/// the shape. `token_embd` needs no transpose because the fold already rotated
+/// it into the same layout the matmuls expect.
+fn expected_qwen35(shape: &Shape) -> Vec<LayoutSpec> {
+    let mut out = Vec::new();
+    let e = shape.n_embd as u64;
+    let ffn = shape.n_ff_dense as u64;
+    let pq2 = TypeClass::Exact(T_PQ2_0);
+    let f32c = TypeClass::Exact(T_F32);
+    let bf16 = TypeClass::Exact(T_BF16);
+    let lin_qkv = 2 * crate::qwen35::LIN_K_DIM + crate::qwen35::LIN_V_DIM;
+    let lin_v = crate::qwen35::LIN_V_DIM;
+    let lin_v_head = u64::from(crate::qwen35::LIN_V_HEAD);
+    let lin_head_dim = u64::from(crate::qwen35::LIN_HEAD_DIM);
+    let lin_conv = u64::from(crate::qwen35::LIN_CONV);
+    let q_dim = shape.n_head as u64 * shape.n_head_dim as u64;
+    let kv_dim = shape.n_head_kv as u64 * shape.n_head_dim as u64;
+    let head_dim = shape.n_head_dim as u64;
+
+    spec(
+        &mut out,
+        "token_embd.weight",
+        pq2,
+        2,
+        [e, shape.n_vocab as u64, 0, 0],
+    );
+    spec(&mut out, "output_norm.weight", f32c, 1, [e, 0, 0, 0]);
+    spec(
+        &mut out,
+        "output.weight",
+        pq2,
+        2,
+        [e, shape.n_vocab as u64, 0, 0],
+    );
+
+    for il in 0..shape.n_layer {
+        let p = format!("blk.{il}");
+        spec(
+            &mut out,
+            &format!("{p}.attn_norm.weight"),
+            f32c,
+            1,
+            [e, 0, 0, 0],
+        );
+        spec(
+            &mut out,
+            &format!("{p}.post_attention_norm.weight"),
+            f32c,
+            1,
+            [e, 0, 0, 0],
+        );
+        if crate::qwen35::layer_is_full_attention(il) {
+            spec(
+                &mut out,
+                &format!("{p}.attn_q.weight"),
+                pq2,
+                2,
+                [e, 2 * q_dim, 0, 0],
+            );
+            spec(
+                &mut out,
+                &format!("{p}.attn_k.weight"),
+                pq2,
+                2,
+                [e, kv_dim, 0, 0],
+            );
+            spec(
+                &mut out,
+                &format!("{p}.attn_v.weight"),
+                pq2,
+                2,
+                [e, kv_dim, 0, 0],
+            );
+            spec(
+                &mut out,
+                &format!("{p}.attn_output.weight"),
+                pq2,
+                2,
+                [q_dim, e, 0, 0],
+            );
+            spec(
+                &mut out,
+                &format!("{p}.attn_q_norm.weight"),
+                f32c,
+                1,
+                [head_dim, 0, 0, 0],
+            );
+            spec(
+                &mut out,
+                &format!("{p}.attn_k_norm.weight"),
+                f32c,
+                1,
+                [head_dim, 0, 0, 0],
+            );
+        } else {
+            spec(
+                &mut out,
+                &format!("{p}.attn_qkv.weight"),
+                pq2,
+                2,
+                [e, lin_qkv, 0, 0],
+            );
+            spec(
+                &mut out,
+                &format!("{p}.attn_gate.weight"),
+                pq2,
+                2,
+                [e, lin_v, 0, 0],
+            );
+            spec(
+                &mut out,
+                &format!("{p}.ssm_conv1d.weight"),
+                f32c,
+                2,
+                [lin_conv, lin_qkv, 0, 0],
+            );
+            spec(
+                &mut out,
+                &format!("{p}.ssm_dt.bias"),
+                f32c,
+                1,
+                [lin_v_head, 0, 0, 0],
+            );
+            spec(
+                &mut out,
+                &format!("{p}.ssm_a"),
+                f32c,
+                1,
+                [lin_v_head, 0, 0, 0],
+            );
+            spec(
+                &mut out,
+                &format!("{p}.ssm_beta.weight"),
+                bf16,
+                2,
+                [e, lin_v_head, 0, 0],
+            );
+            spec(
+                &mut out,
+                &format!("{p}.ssm_alpha.weight"),
+                bf16,
+                2,
+                [e, lin_v_head, 0, 0],
+            );
+            spec(
+                &mut out,
+                &format!("{p}.ssm_norm.weight"),
+                f32c,
+                1,
+                [lin_head_dim, 0, 0, 0],
+            );
+            spec(
+                &mut out,
+                &format!("{p}.ssm_out.weight"),
+                pq2,
+                2,
+                [lin_v, e, 0, 0],
+            );
+        }
+        spec(
+            &mut out,
+            &format!("{p}.ffn_gate.weight"),
+            pq2,
+            2,
+            [e, ffn, 0, 0],
+        );
+        spec(
+            &mut out,
+            &format!("{p}.ffn_up.weight"),
+            pq2,
+            2,
+            [e, ffn, 0, 0],
+        );
+        spec(
+            &mut out,
+            &format!("{p}.ffn_down.weight"),
+            pq2,
+            2,
+            [ffn, e, 0, 0],
+        );
+    }
+    out
+}
+
 fn expected_glm53(shape: &Shape) -> Vec<LayoutSpec> {
     let mut out = Vec::new();
     let e = shape.n_embd as u64;
@@ -2882,6 +3070,7 @@ pub fn expected_layouts(shape: &Shape) -> Vec<LayoutSpec> {
         ModelFamily::Mimo2 => crate::Mimo2Plan::layouts(),
         ModelFamily::NaiveN05 => crate::naive::layouts(),
         ModelFamily::Glm53 => expected_glm53(shape),
+        ModelFamily::Qwen35 => expected_qwen35(shape),
         ModelFamily::Qwen4Exp => expected_qwen4exp(shape),
         ModelFamily::Motif3 => expected_motif3(shape),
         ModelFamily::Dots3Note => expected_dots3(shape),

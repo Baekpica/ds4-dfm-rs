@@ -187,6 +187,40 @@ int ds4_mmq_q8_0_dense(
     int           K,
     cudaStream_t  stream);
 
+// Prism PQ2_0 (ternary Bonsai dense matmul weights): 128 values per block,
+// one fp16 scale + 32 code bytes, levels -d/0/+d/+2d.  Same shape contract
+// as the entries above; K must be a multiple of 256.
+int ds4_mmq_pq2_0_dense(
+    const void  * W_pq2_0,
+    const float * X_f32,
+    float       * out_f32,
+    int           M,
+    int           N,
+    int           K,
+    cudaStream_t  stream);
+
+int ds4_mmq_pq2_0_dense_vec(
+    const void  * W_pq2_0,
+    const float * X_f32,
+    float       * out_f32,
+    int           M,
+    int           N,
+    int           K,
+    cudaStream_t  stream);
+
+// Row lookup (token embeddings): dequantize n_rows rows of a
+// [n_rows, in_dim] PQ2_0 matrix to f32.  Rows are named by row0 + r when
+// `tokens` is NULL, otherwise by the device-side token ids.  in_dim must be a
+// multiple of 128.
+int ds4_mmq_pq2_0_rows_f32(
+    float        * out_f32,
+    const void   * W_pq2_0,
+    const int32_t* tokens,
+    uint64_t       row0,
+    uint32_t       n_rows,
+    uint32_t       in_dim,
+    cudaStream_t   stream);
+
 // Two dense Q8_0 projections over the same activation. Quantizes X once;
 // each output otherwise follows ds4_mmq_q8_0_dense exactly.
 int ds4_mmq_q8_0_dense_pair(

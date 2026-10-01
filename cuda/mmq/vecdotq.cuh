@@ -109,6 +109,12 @@ static __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
 #define VDR_Q1_0_Q8_1_MMVQ 1  // Process one 32-element chunk at a time for parallelism
 #define VDR_Q1_0_Q8_1_MMQ  4  // Q1_0 has 128 bits (4 ints) per block
 
+// PQ2_0 levels are exact small integers, so the MMQ path expands one packed
+// word per thread and reuses the plain int8 x int8 dp4a/mma dots that Q8_0
+// uses; both ratios therefore match Q8_0's.
+#define VDR_PQ2_0_Q8_1_MMVQ 1  // One packed word (16 levels) per thread.
+#define VDR_PQ2_0_Q8_1_MMQ  8  // Tile layout is Q8_0's: 8 ints per dp4a step.
+
 #define VDR_Q4_0_Q8_1_MMVQ 2
 #define VDR_Q4_0_Q8_1_MMQ  4
 
@@ -715,6 +721,44 @@ static __device__ __forceinline__ float vec_dot_q1_0_q8_1(
     // Apply Q1_0's single scale and this chunk's Q8_1 scale
     const float d8 = __low2float(bq8_1_chunk->ds);
     return d1 * d8 * sumi;
+}
+
+// Prism PQ2_0: each code byte holds 4 consecutive levels in its low bits
+// first, and level = code - 1, so the ternary alphabet is -1, 0, +1, +2.
+// Expanding a byte to the four int8 values a dp4a/mma lane wants is therefore
+// a byte-wise permutation: 0xff, 0x00, 0x01, 0x02 for codes 0..3.
+static __device__ __forceinline__ int ds4_pq2_0_expand_byte(const uint8_t b) {
+    int v = 0;
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int level = (int) ((b >> (2*j)) & 0x03u) - 1;
+        v |= (level & 0xFF) << (8*j);
+    }
+    return v;
+}
+
+static __device__ __forceinline__ float vec_dot_pq2_0_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_pq2_0 * bq2 = (const block_pq2_0 *) vbq + kbx;
+
+    // A block is 128 values; one packed 32-bit word of it holds 16 of them,
+    // half a Q8_1 block.  The four Q8_1 blocks this x block aligns with are
+    // therefore indexed by iqs/2 with a 4-int offset inside them.
+    const block_q8_1 * y = bq8_1 + (iqs >> 1);
+    const int * q8 = (const int *) y->qs + ((iqs & 1) * 4);
+
+    const uint8_t * qs = bq2->qs + 4*iqs;
+
+    int sumi = 0;
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        sumi = ggml_cuda_dp4a(ds4_pq2_0_expand_byte(qs[j]), q8[j], sumi);
+    }
+
+    // All 16 levels of this word share the block scale, and all 16 y values
+    // come from one Q8_1 block, so one scale pair covers the partial sum.
+    return __half2float(bq2->d) * __low2float(y->ds) * (float) sumi;
 }
 
 static __device__ __forceinline__ float vec_dot_q4_0_q8_1(
