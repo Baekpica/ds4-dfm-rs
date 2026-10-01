@@ -6171,7 +6171,10 @@ static bool qwen4exp_source_revision_supported(ds4_str revision) {
     return ds4_streq(revision,
                      "f5d08274bafd880402bd16f5e3e6c514136ec06c") ||
            ds4_streq(revision,
-                     "8336e613ea508b13c2159bd0f68965d97a606b95");
+                     "8336e613ea508b13c2159bd0f68965d97a606b95") ||
+           /* Darwin retains the pinned Qwen graph and Community License. */
+           ds4_streq(revision,
+                     "bc3c7b0410b40c085b78084e13f01c12df31087b");
 }
 
 static bool tensor_type_is_qwen4exp_plain(uint32_t type) {

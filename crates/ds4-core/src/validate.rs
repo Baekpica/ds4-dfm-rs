@@ -24,9 +24,12 @@ use crate::tensors::TensorInventory;
 
 const MOTIF_SHA: &[u8] = b"30f14b635d3258a18c3ff7e69829f8fbfa775e87477ffabb59a79115bba820a5";
 const DOTS3_SHA: &[u8] = b"99b7de680dd456111c36efb8749f8ae7177328e97b65a3e39a6700cbc1173833";
-const QWEN_REVISIONS: [&[u8]; 2] = [
+const DARWIN_REVISION: &[u8] = b"bc3c7b0410b40c085b78084e13f01c12df31087b";
+const QWEN_REVISIONS: [&[u8]; 3] = [
     b"f5d08274bafd880402bd16f5e3e6c514136ec06c",
     b"8336e613ea508b13c2159bd0f68965d97a606b95",
+    // Darwin retains the pinned Qwen graph and Community License.
+    DARWIN_REVISION,
 ];
 const QWEN_CONFIG_SHA: &[u8] = b"889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b";
 const QWEN_LICENSE_SHA: &[u8] = b"a0dc422560841fd68e06d974907f8b4c709bca44a67daad2b528437bdf676c08";
@@ -1678,6 +1681,13 @@ fn validate_qwen4exp(g: &GgufFile, shape: &Shape) -> Result<(), ValidateError> {
         expect_string(g, key, want)?;
     }
 
+    // Darwin declares its source NFC/Unicode splitter independently of
+    // the shared inference graph and official Jinja input grammar.
+    if g.get_string("general.source.revision") == Some(DARWIN_REVISION) {
+        expect_string(g, "tokenizer.ggml.pre", b"qwen4exp")?;
+        expect_string(g, "tokenizer.ggml.normalizer", b"nfc")?;
+    }
+
     let types = g
         .get_array("qwen4exp.attention.layer_types")
         .ok_or(ValidateError::TokenKey(
@@ -2012,6 +2022,12 @@ mod tests {
         )));
         assert!(qwen_source_revision_supported(Some(
             b"8336e613ea508b13c2159bd0f68965d97a606b95"
+        )));
+        assert!(qwen_source_revision_supported(Some(
+            b"bc3c7b0410b40c085b78084e13f01c12df31087b"
+        )));
+        assert!(!qwen_source_revision_supported(Some(
+            b"bc3c7b0410b40c085b78084e13f01c12df31087a"
         )));
         assert!(!qwen_source_revision_supported(Some(b"unknown")));
         assert!(!qwen_source_revision_supported(None));

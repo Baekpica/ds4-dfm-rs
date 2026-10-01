@@ -751,6 +751,38 @@ fn host_vocab_apply_matches_c() {
 }
 
 #[test]
+fn qwen_declared_nfc_input() {
+    let family = ModelFamily::Qwen4Exp;
+    let source = write_family(family);
+    let baseline = load(family, &source);
+    let path = tmp("darwin-nfc.gguf");
+    let mut bytes = fs::read(source).unwrap();
+    const KV_COUNT_OFFSET: usize = 16;
+    const STRING_TYPE: u32 = 8;
+    let count = u64::from_le_bytes(
+        bytes[KV_COUNT_OFFSET..KV_COUNT_OFFSET + 8]
+            .try_into()
+            .unwrap(),
+    );
+    bytes[KV_COUNT_OFFSET..KV_COUNT_OFFSET + 8].copy_from_slice(&(count + 2).to_le_bytes());
+    for (key, value) in [
+        ("tokenizer.ggml.pre", "qwen4exp"),
+        ("tokenizer.ggml.normalizer", "nfc"),
+    ] {
+        put_bytes(&mut bytes, key.as_bytes());
+        put_u32(&mut bytes, STRING_TYPE);
+        put_bytes(&mut bytes, value.as_bytes());
+    }
+    fs::write(&path, bytes).unwrap();
+    let vocab = load(family, &path);
+
+    // Source NFC composes the accent before byte-level BPE.
+    assert_eq!(vocab.encode_text("e\u{301}"), vec![195, 169]);
+    assert_eq!(vocab.encode_text("é"), vec![195, 169]);
+    assert_ne!(baseline.encode_text("e\u{301}"), vec![195, 169]);
+}
+
+#[test]
 fn tokenizer_families_match_c_oracle() {
     for family in [
         ModelFamily::Glm53,

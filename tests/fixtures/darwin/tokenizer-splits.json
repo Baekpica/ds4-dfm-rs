@@ -1,0 +1,166 @@
+{
+  "source": "FINAL-Bench/Darwin-180B-RSI",
+  "revision": "bc3c7b0410b40c085b78084e13f01c12df31087b",
+  "tokenizer_sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+  "generator": "tokenizers==0.23.2, Tokenizer.from_file",
+  "normalizer": {
+    "type": "NFC"
+  },
+  "cases": [
+    {
+      "text": "café á é résumé",
+      "normalized": "café á é résumé",
+      "pieces": [
+        "café",
+        " á",
+        " é",
+        " résumé"
+      ]
+    },
+    {
+      "text": "नमस्ते हिन्दी क्षत्रिय संस्कृत।",
+      "normalized": "नमस्ते हिन्दी क्षत्रिय संस्कृत।",
+      "pieces": [
+        "नमस्ते",
+        " हिन्दी",
+        " क्षत्रिय",
+        " संस्कृत",
+        "।"
+      ]
+    },
+    {
+      "text": " العربية مُحَمَّد 한국어 中文 かな カナ",
+      "normalized": " العربية مُحَمَّد 한국어 中文 かな カナ",
+      "pieces": [
+        " العربية",
+        " مُحَمَّد",
+        " 한국어",
+        " 中文",
+        " かな",
+        " カナ"
+      ]
+    },
+    {
+      "text": " x‍y x‌y é̈",
+      "normalized": " x‍y x‌y é̈",
+      "pieces": [
+        " x",
+        "‍y",
+        " x",
+        "‌y",
+        " é̈"
+      ]
+    },
+    {
+      "text": " \t\r\n>>> print(123456789)\n",
+      "normalized": " \t\r\n>>> print(123456789)\n",
+      "pieces": [
+        " \t\r\n",
+        ">>>",
+        " print",
+        "(",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        ")\n"
+      ]
+    },
+    {
+      "text": "Hello world! 1234 can't I'VE",
+      "normalized": "Hello world! 1234 can't I'VE",
+      "pieces": [
+        "Hello",
+        " world",
+        "!",
+        " ",
+        "1",
+        "2",
+        "3",
+        "4",
+        " can",
+        "'t",
+        " I",
+        "'VE"
+      ]
+    },
+    {
+      "text": "🐳👩🏽‍💻🇰🇷 1️⃣ → café Café Straße ﬃ",
+      "normalized": "🐳👩🏽‍💻🇰🇷 1️⃣ → café Café Straße ﬃ",
+      "pieces": [
+        "🐳👩🏽‍💻🇰🇷",
+        " ",
+        "1",
+        "️⃣",
+        " →",
+        " café",
+        " Café",
+        " Straße",
+        " ﬃ"
+      ]
+    },
+    {
+      "text": "!á ?́abc  ́xy",
+      "normalized": "!á ?́abc  ́xy",
+      "pieces": [
+        "!á",
+        " ?",
+        "́abc",
+        " ",
+        " ́xy"
+      ]
+    },
+    {
+      "text": "؀abc a؀b Ⅳ¹²³  end  ",
+      "normalized": "؀abc a؀b Ⅳ¹²³  end  ",
+      "pieces": [
+        "؀abc",
+        " a",
+        "؀b",
+        " ",
+        "Ⅳ",
+        "¹",
+        "²",
+        "³",
+        " ",
+        " end",
+        "  "
+      ]
+    },
+    {
+      "text": "ְͅा⃝   z",
+      "normalized": "ְͅा⃝   z",
+      "pieces": [
+        "ְͅा⃝",
+        "  ",
+        " z"
+      ]
+    },
+    {
+      "text": "<think> trace </think> <|im_start|>user<|im_end|>",
+      "normalized": "<think> trace </think> <|im_start|>user<|im_end|>",
+      "pieces": [
+        "<think",
+        ">",
+        " trace",
+        " </",
+        "think",
+        ">",
+        " <|",
+        "im",
+        "_start",
+        "|>",
+        "user",
+        "<|",
+        "im",
+        "_end",
+        "|>"
+      ]
+    }
+  ]
+}

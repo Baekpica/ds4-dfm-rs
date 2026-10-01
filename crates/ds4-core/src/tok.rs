@@ -16,6 +16,7 @@ mod inkling;
 mod ling3vl;
 mod mimo2;
 mod naive;
+mod qwen4exp;
 mod step37;
 
 const REASONING_EFFORT_HIGH_PREFIX: &str = concat!(
@@ -79,6 +80,7 @@ impl From<GgufError> for TokError {
 pub struct Vocab {
     pub family: ModelFamily,
     is_k2_horizon: bool,
+    qwen_input: bool,
     tokens: Vec<Vec<u8>>,
     token_to_id: HashMap<Vec<u8>, i32>,
     merges: Vec<Vec<u8>>,
@@ -176,6 +178,7 @@ impl Vocab {
     }
 
     pub fn load(g: &GgufFile, family: ModelFamily) -> Result<Self, TokError> {
+        let qwen_input = family == ModelFamily::Qwen4Exp && qwen4exp::enabled(g)?;
         let is_k2_horizon = family == ModelFamily::ExaoneMoe
             && (g.get_string("general.architecture") == Some(b"k2-horizon")
                 || g.get_string("tokenizer.ggml.pre") == Some(b"k2-horizon"));
@@ -264,6 +267,7 @@ impl Vocab {
         let mut v = Self {
             family,
             is_k2_horizon,
+            qwen_input,
             tokens,
             token_to_id,
             merges,
@@ -2226,7 +2230,8 @@ fn bpe_tokenize_text(vocab: &Vocab, text: &[u8], out: &mut Vec<i32>) {
         ModelFamily::Motif3 => bpe_tokenize_text_motif3(vocab, text, out),
         ModelFamily::SolarOpen2 => bpe_tokenize_text_solar(vocab, text, out),
         ModelFamily::Dots3Note => bpe_tokenize_text_dots3(vocab, text, out),
-        // The native side shares one pre-tokenizer between qwen4 and qwen35.
+        ModelFamily::Qwen4Exp if vocab.qwen_input => qwen4exp::encode(vocab, text, out),
+        // Earlier artifacts retain their declared input contract.
         ModelFamily::Qwen4Exp | ModelFamily::Qwen35 => bpe_tokenize_text_dots3(vocab, text, out),
         ModelFamily::ExaoneMoe if vocab.is_k2_horizon => bpe_tokenize_text_k2(vocab, text, out),
         ModelFamily::ExaoneMoe => bpe_tokenize_text_exaone(vocab, text, out),
