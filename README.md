@@ -1,403 +1,67 @@
 # DwarfStar / ds4-dfm-rs
 
-**DwarfStar** (`ds4`) is a small native inference engine specialized for a
-deliberately limited set of large open-weight models. It is self-contained and
-deliberately narrow, not a general GGUF runner and not a wrapper around another
-runtime. Model loading, prompt rendering, tool calls, model state, KV reuse,
-the HTTP server, and the coding agent are built and tested together.
-
-`ds4-dfm-rs` is the independent Rust-host continuation of the DFM line from
-[`Baekpica/ds4`](https://github.com/Baekpica/ds4). Its NVIDIA reference machine
-is the 128 GB DGX Spark / GB10. It retains the native Metal and CUDA heritage,
-and the published RC live evidence is CUDA-based.
-
-As in the original [`antirez/ds4`](https://github.com/antirez/ds4), model
-support is intentionally opportunistic. The project follows useful open
-weights that fit real personal and workstation-class machines. A family is
-supported explicitly, against a known artifact and execution path; it may be
-retired when a better model makes it irrelevant.
-
-## So, what can I do with this software?
-
-- Run one of the eleven validated model families on a DGX Spark without pulling
-  in a general inference framework.
-- Serve OpenAI-compatible Chat, Completions, and Responses APIs, Anthropic
-  Messages, or use the built-in DeepSeek DSML coding agent.
-- Execute official [model Jinja templates](docs/chat-templates.md) for chat
-  input, including tool history and REPL turns.
-- Use long contexts, persistent KV state, distributed execution, and the
-  family-specific acceleration path that was actually validated for the model.
-- Serve Qwen3.8 Flash Next Q5 with SSD-PLE sidecars, embedded MTP, and still
-  image input.
-- Serve K2-Horizon-375B MQ87 with IFM chat/tool syntax on the continuous lane.
-- Serve Ling-3.0-flash-VL MQ-Q5 with image input, two persistent banks,
-  disk KV, partial prefix reuse and [YaRN 256K](docs/ling3-flash-vl.md#yarn-256k).
-- Profile prefill and decode with [ds4-perf](docs/ds4-perf.md),
-  calibrate the GPU, compare proved experiments, and retain raw profiler evidence.
-- Treat the existing family implementations as rails for a new model or a
-  specific machine, while keeping the resulting path small enough to inspect.
-
-## Motivations
-
-- Capable open-weight models now fit on high-end personal machines.
-- Routed-expert quantization, compressed or recurrent state, and fast local
-  SSDs make very large models and long contexts practical on those machines.
-- An inference system specialized for a few models can remain understandable,
-  measurable, and aggressively optimized.
-- DFM (독자 파운데이션 모델, 독파모) and adjacent families are increasing,
-  but their tensor layouts, state machines, prompt protocols, and kernels are
-  meaningfully different.
-- A Rust host can make those families safer to operate and easier to extend
-  without hiding the differences behind a large abstraction layer.
-
-## How to use this project
-
-The original DwarfStar is also a statement about how software can be shipped
-in the age of coding agents: a repository can be a working implementation for
-the most useful cases and a rail for adapting a new model or hardware setup,
-instead of pretending to cover every possible combination.
-
-That remains the intended use here. Start from a validated family, make the
-smallest explicit change for the new tensor, state, protocol, or kernel
-contract, and rerun the same correctness and performance gates. Coding agents
-can make a specialized port much cheaper; they do not replace real artifacts,
-hardware measurements, or human ownership of the result.
-
-## AI full disclosure
-
-This line is developed with strong coding-agent assistance, with humans leading
-the ideas, scope, testing, and debugging. We say this openly because it shaped
-both the Rust migration and the model-family work. It is equally important to
-say that DwarfStar would not exist without the largely hand-built work in
-[`llama.cpp`](https://github.com/ggml-org/llama.cpp) and GGML, or without the
-original DwarfStar and Entrpi CUDA-serving work preserved in this history.
-
-## Why this repository exists
-
-The split is not meant to turn ds4 into a generic framework. It makes a growing
-set of DFM and adjacent model families more efficient to extend while keeping
-the minimum abstraction that proven families actually share. Rust owns host
-lifecycle and serving policy; the native engine stays close to the hardware.
-
-This is therefore **not a rewrite of ds4 in Rust**. The project preserves the
-optimized C/CUDA/Metal backend, Git ancestry and authorship, and the full
-`antirez → Entrpi → Baekpica` lineage.
-
-## Status
-
-**v0.1.3:** common serving controls, requested / effective / qualified plans,
-conversation reuse and verified workload profiles. The
-[release ledger](docs/releases/v0.1.3.md) records completed P0–P4 gates and their
-family, artifact and workload limits. The [serving contract](docs/serving-contract.md)
-is the operator surface.
-
-**v0.1.2:** official model Jinja drives Chat, Messages, Responses and CLI
-input through one Rust adapter. The [release ledger](docs/releases/v0.1.2.md)
-records local artifact and protocol checks, including the
-[Inkling Small / MTP checkpoint](docs/inkling-small.md).
-DeepSeek V4 retains its encoder exception; see
-[template setup and boundaries](docs/chat-templates.md).
-
-The [v0.1.1 ledger](docs/releases/v0.1.1.md) records measured performance
-workflows and optional official Qwen FP8 PLE sidecars; the
-[FP8 guide](docs/qwen38-ple-fp8.md) covers selection and paired benchmarks.
-
-The first independent Rust-host baseline is **v0.1.0**.
-Rust owns the host runtime, policy, serving, KV/state, distributed execution,
-observability, and performance orchestration. CUDA/MMQ/VMM remains native.
-The [baseline ledger](docs/releases/v0.1.0.md) records production, profiler,
-numerical and memory qualification, with exact artifacts and workload limits.
-
-The baseline includes `ds4-perf`, Qwen Session KV restoration, and the
-post-RC.4 K2-Horizon MQ87 integration. Supported family/artifact contracts
-below remain specific to their validated DGX Spark CUDA paths.
-
-| Item | Baseline evidence |
-|---|---|
-| Release baseline | `v0.6.5-dfm` (`d02e2a4`) |
-| Frozen Qwen C behavior | post-tag cut `4d40d97` |
-| Split genesis | annotated tag `ds4-dfm-rs-genesis` (`fe7733f`) |
-| Release-tested hardware | NVIDIA DGX Spark / GB10, CUDA |
-| Host migration | Rust default binaries; C binaries retained as oracles |
-| Native backend | C/CUDA/MMQ/VMM/vision kernels retained |
-| License | MIT, inherited notices preserved |
-
-The pre-split campaign finished with 60 logical cells: 57 PASS and three
-PASS* cells reproduced on the matching C control, with no Rust-only failure.
-The detailed evidence is in
-[`SPLIT_READINESS.md`](docs/rust-migration/SPLIT_READINESS.md).
-
-Only explicit, validated GGUF layouts are accepted.
-
-## Design philosophy
-
-- Keep model mechanics visible. Shapes, tensor names, state layouts, prompt
-  protocols, and stop rules are family contracts, not plugin metadata.
-- Add only the abstraction shared by proven families. Prefer an enum, a table,
-  or a narrow function over a runtime plugin system.
-- Keep the hot path direct. Family dispatch must not force dynamic dispatch or
-  erase kernel-specific information.
-- Use Rust where ownership matters: HTTP, admission, scheduling, model/session
-  lifetime, KV policy, memory policy, and distributed orchestration.
-- Keep CUDA, MMQ, VMM, fused attention, MoE, SSD-PLE, and vision execution
-  native. A host-language change is not permission to rewrite kernels.
-- Promote behavior only after C/Rust parity, real-model checks, and measured
-  performance. Goldens are not refreshed to hide drift.
-
-The practical family-extension contract is intentionally small:
-
-1. identify and validate the GGUF shape;
-2. resolve the tensor inventory and bind plan;
-3. define tokenizer, prompt, tool, and stop behavior;
-4. connect the native state and kernel path through the opaque bridge;
-5. define session/KV ownership and serving-lane eligibility;
-6. land a focused regression, then loader, forward, API, live, and performance
-   evidence.
-
-## Architecture
-
-```text
-OpenAI / Anthropic clients, CLI, agent
-                    │
-                    ▼
-┌──────────────────────────────────────────────┐
-│ Rust host                                    │
-│ HTTP · rendering · admission · scheduler     │
-│ model/session lifecycle · KV · memory policy │
-│ distributed orchestration                    │
-└──────────────────────┬───────────────────────┘
-                       │ narrow opaque ABI
-                       ▼
-┌──────────────────────────────────────────────┐
-│ Native backend                               │
-│ GGUF mmap · VMM · CUDA Graph · MMQ           │
-│ fused attention · MoE · SSD-PLE · vision     │
-│ CUDA / Metal / CPU reference                 │
-└──────────────────────────────────────────────┘
-```
-
-The boundary is [`native/bridge/ds4_bridge.h`](native/bridge/ds4_bridge.h),
-not a generated binding of the engine internals. Safe Rust never receives
-CUDA streams, device pointers, graph handles, VMM allocation handles, or raw
-native structs.
-
-| Area | Owner |
-|---|---|
-| API parsing, rendering, streaming, routing | Rust (`ds4-server`) |
-| GGUF identification, validation, inventory, bind plan | Rust (`ds4-core`) |
-| Model/session handles and lifetime policy | safe Rust over opaque native handles |
-| KVC metadata, persistence policy, cross-host codecs | Rust (`ds4-kv`) |
-| Distributed protocol and orchestration | Rust (`ds4-dist`) |
-| Profiling orchestration, normalization, diagnosis | Rust (`ds4-perf`, separate process) |
-| Prefill/decode NVTX annotations | Rust (`ds4-cli`, optional official NVIDIA SDK) |
-| CUDA/VMM/MMQ/graphs/attention/MoE/vision | native C/CUDA |
-| Metal and CPU reference paths | inherited native backend |
-| C parity executables and `ds4-eval` | retained release oracles |
-
-The host uses blocking sockets, threads, channels, mutexes, and condition
-variables. There is no async framework added merely because the host is Rust.
-See [`ARCHITECTURE.md`](docs/rust-migration/ARCHITECTURE.md) and
-[`FFI_CONTRACT.md`](docs/rust-migration/FFI_CONTRACT.md) for the full boundary.
-
-## Supported hardware and backends
-
-| Backend | Documented scope |
-|---|---|
-| NVIDIA DGX Spark / GB10 | Release target. The split-era full matrix, long-context, Qwen image/MTP, ABBA, and soak gates ran here; RC.3's agent-serving matrix, RC.4's GLM Q2 text/vision gates, and the K2-Horizon-375B MQ87 32K CLI/HTTP gates also ran here. |
-| Other NVIDIA CUDA systems | Source path retained through `make cuda-generic` or an explicit `CUDA_ARCH`; not covered by the RC's full live matrix. |
-| macOS Metal | Inherited source/build path retained; not part of the DFM RC live gate. |
-| CPU | Reference and diagnostics only, not a production performance backend. |
-
-The recorded RC host used CUDA 13.3.73, driver 610.43.02, Linux
-6.17.0-1031-nvidia, and Rust 1.98.0. Do not generalize its measurements to a
-different GPU or quant without rerunning the same gate.
-
-## Supported model families
-
-Every family below has an explicit architecture selector, validator, binder,
-tokenizer/chat contract, state lifecycle, and native execution path.
-
-| Family | GGUF architecture | Documented scope |
-|---|---|---|
-| DeepSeek V4 Flash / PRO | `deepseek4` | Flash is the main live oracle; DeepSeek MTP and DSpark sidecars. |
-| Solar Open2 250B | `solar-open2` | Recurrent KDA state, compressed GQA KV, persistent banks. |
-| K-EXAONE 236B A23B | `exaone-moe` | LLLG full/sliding GQA KV, persistent banks and opt-in [partial checkpoints](docs/ds4-dfm-model-families.md#partial-prefix-reuse). |
-| Motif-3 | `motif3` | Latent KV, rotated `k_pe`, SWA rings, persistent banks. |
-| dots3-note Preview | `dots3note` (`dots3-note` accepted) | Dual-geometry latent state; serial default, opt-in text banks and separate serial MTP. New paths are present but unqualified; see [serving limits](docs/ds4-dfm-model-families.md#dots3-serving). |
-| Qwen3.8 Flash Next SSD-PLE | `qwen4exp` | Q5 main GGUF + BF16 or [official FP8 SSD-PLE](docs/qwen38-ple-fp8.md), embedded MTP, N-bank Rust scheduling, still-image input; one- and two-bank live gates. |
-| Prism Bonsai 2 27B | `qwen35` | Pinned PQ2_0 GGUF with Prism fold metadata; CPU reference and serial CUDA text. Banks, snapshots, disk KV, drafting and media are unsupported. [Recorded gates and limits](docs/BONSAI.md). |
-| GLM 5.3 Flash | `glm5-next` | Q2 single-file GGUF plus the explicit vision sidecar; CUDA serial serving on one DGX Spark. |
-| K2-Horizon 375B A23B | `k2-horizon` | Four-shard MQ87 GGUF; IFM BPE/XML tools; continuous 32K one-bank serving on one DGX Spark. |
-| Inkling Small | `inkling` | MQ85GB + optional eight-layer MTP-BF16; serial CUDA text/image/audio input and text output. [HTTP checks and limits](docs/inkling-small.md), [GB10 performance](docs/inkling-optimization-2026-09-11.md). |
-| Step 3.7 Flash | `step35` | Nine-shard MQ83, optional three-block Q8 MTP and F16 vision; CUDA text/image serving, opt-in text banks with MTP, partial fork and disk KV. [Serving limits](docs/step37-serving-2026-09-13.md), [capped-clock A/B](docs/step37-optimization-2026-09-13-r3.md). |
-| Ling-3.0-flash-VL | `bailingmoe3` | Three-shard MQ-Q5 plus the BF16 mmproj; hybrid KDA/MLA over 512 grouped-sigmoid experts, still-image input, persistent banks, partial fork and disk KV. [Family contract](docs/ling3-flash-vl.md). |
-| MiMo-V2.6-Flash-RL | `mimo2` | Four-shard mixed GGUF. [256K two-bank text, partial reuse, disk KV and serial media](docs/mimo2-serving-2026-09-25.md) passed a bounded GB10 gate with MTP off. Prior 512K serial text and 256K serial media/DFlash gates are separate. 1M text with one bank answered a 1,040,506-token prompt; two banks did not fit. |
-| [Naive-N0.5-Flash](docs/naive-n05-flash.md) | `naive_n05_flash` | Four-shard MQ87; SWA/DSA, partial reuse, disk KV and external DSpark. Bounded 8K HTTP, 256K two-bank and 512K one-bank buffered retrieval/continuation gates pass with MTP off. Draft acceleration remains unqualified. |
-
-The current family contract and measured model-specific limits are documented
-in [`ds4-dfm-model-families.md`](docs/ds4-dfm-model-families.md). Arbitrary
-GGUFs, alternate tensor layouts, and unlisted architectures are rejected.
-
-### Model Zoo
-
-See also the
-[`DS4-Mixed-Quant-for-Spark`](https://huggingface.co/collections/Baekpica/ds4-mixed-quant-for-spark)
-collection. Support remains limited to the validated layouts described above.
-
-| Model | GGUF artifact | Artifact by |
-|---|---|---|
-| DeepSeek V4 Flash / PRO | [`antirez/deepseek-v4-gguf`](https://huggingface.co/antirez/deepseek-v4-gguf/tree/main) | [`antirez`](https://huggingface.co/antirez) |
-| Solar Open2 250B | [`Baekpica/Solar-Open2-250B-Mixed-Quant-GGUF`](https://huggingface.co/Baekpica/Solar-Open2-250B-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
-| K-EXAONE 236B A23B | [`Baekpica/K-EXAONE-236B-A23B-Mixed-Quant-GGUF`](https://huggingface.co/Baekpica/K-EXAONE-236B-A23B-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
-| Motif-3 | [`Baekpica/Motif-3-Mixed-Quant-GGUF`](https://huggingface.co/Baekpica/Motif-3-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
-| dots3-note Preview | [`Baekpica/dots3-note-prev-Mixed-Quant-GGUF`](https://huggingface.co/Baekpica/dots3-note-prev-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
-| Qwen3.8 Flash Next SSD-PLE | [`Baekpica/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF`](https://huggingface.co/Baekpica/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
-| GLM 5.3 Flash | [`GLM-5.3-Flash-Q2.gguf`](https://huggingface.co/antirez/glm-5.3-flash-gguf/blob/main/GLM-5.3-Flash-Q2.gguf) + [`vision encoder`](https://huggingface.co/antirez/glm-5.3-flash-gguf/blob/main/GLM-5.3-Flash-Vision-Encoder.gguf) | [`antirez`](https://huggingface.co/antirez) |
-| K2-Horizon 375B A23B | [`Baekpica/K2-Horizon-375B-A23B-Mixed-Quant-GGUF`](https://huggingface.co/Baekpica/K2-Horizon-375B-A23B-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
-| Inkling Small | [`MQ85GB`](https://huggingface.co/Baekpica/Inkling-Small-Mixed-Quant-GGUF/tree/main/MQ85GB) + optional [`MTP-BF16`](https://huggingface.co/Baekpica/Inkling-Small-GGUF/tree/main/MTP-BF16) | [`Baekpica`](https://huggingface.co/Baekpica) |
-| Step 3.7 Flash | [`MQ83 + MTP + vision`](https://huggingface.co/Baekpica/Step-3.7-Flash-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
-| Ling-3.0-flash-VL | [`MQ-Q5-KDA-VIT-BF16`](https://huggingface.co/Baekpica/Ling-3.0-flash-VL-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
-| MiMo-V2.6-Flash-RL | [`MQ-IQ2-XXS-XS-Q8-MM-BF16`](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF) | [`Baekpica`](https://huggingface.co/Baekpica) |
-
-### Qwen release scope
-
-The initial Rust RC qualification covered:
-
-- [`MQ-Q5-SSD-PLE-BF16`](https://huggingface.co/Baekpica/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF), three main GGUF shards;
-- four shared BF16 SSD-PLE sidecars referenced by that Q5 layout;
-- embedded MTP with `--mtp-draft 2`;
-- text and base64 PNG/JPEG input on the three message APIs;
-- 196,608 two-bank serving and 262,144 one-bank serving, in addition to the
-  earlier exact/configured 262,144-token gates.
-
-Q6, original safetensors, and a resident BF16 GGUF were not release gates and
-are not implied by this claim.
-
-For the optional FP8 PLE sidecar with the existing base and
-[Uncensored](https://huggingface.co/Baekpica/Qwen3.8-Flash-Next-Uncensored-Mixed-Quant-SSD-PLE-GGUF)
-main GGUFs, see [selection, validation and paired 64K sweeps](docs/qwen38-ple-fp8.md).
-
-Rust normalizes ordered image parts, bounds and owns payload bytes, places
-image tokens, and owns decoded-pixel cache identity. Decoding reuses the pinned
-[`vendor/stb_image.h`](vendor/stb_image.h) through a narrow native image ABI;
-vision and CUDA execution stay native. No general multimedia layer or Rust
-image dependency was added.
-
-Image limits match the frozen C behavior:
-
-- user messages only;
-- PNG or JPEG data URIs only;
-- at most four images;
-- at most 10 MiB decoded per image and 20 MiB per request;
-- remote URLs, files, SVG, GIF, WebP, malformed base64, and invalid image
-  content are rejected.
-
-See [`QWEN_V065_RESTAMP_2026-08-31.md`](docs/rust-migration/QWEN_V065_RESTAMP_2026-08-31.md)
-and [`qwen38-image-input-spec.md`](docs/qwen38-image-input-spec.md).
-Measured image latency and agent checks:
-[`qwen38-image-2026-09-07.md`](docs/qwen38-image-2026-09-07.md).
-
-### GLM 5.3 Flash release scope
-
-RC.4 follows the explicit GLM 5.3 Flash graph and vision implementation in
-the official [`antirez/ds4`](https://github.com/antirez/ds4) upstream, pinned
-for this port at
-[`110afdd`](https://github.com/antirez/ds4/commit/110afdd8886586f18fc9b28bc5533152dd10e728).
-The Rust host keeps the KDA, DSA, hyper-connection mixing, MoE, and
-[`vision encoder`](https://github.com/antirez/ds4/blob/110afdd8886586f18fc9b28bc5533152dd10e728/ds4_glm53_vision_gpu.cuh)
-execution native.
-
-The verified artifact set is exactly:
-
-- `GLM-5.3-Flash-Q2.gguf` — 96,505,816,384 bytes;
-- `GLM-5.3-Flash-Vision-Encoder.gguf` — 1,127,280,960 bytes, SHA-256
-  `ae23e14c6979e889051b2e4a39351abcdafb161e18e606fae4d8c40095a4bf3a`.
-
-The following command reproduces the RC.4 live smoke shape:
-
-```sh
-MODEL_DIR=/path/to/GLM-5.3-Flash-Mixed-Quant-GGUF
-
-./ds4-server --cuda \
-  -m "$MODEL_DIR/GLM-5.3-Flash-Q2.gguf" \
-  --vision "$MODEL_DIR/GLM-5.3-Flash-Vision-Encoder.gguf" \
-  --model-id GLM-5.3-Flash-Q2 \
-  -c 256 -n 8 \
-  --host 127.0.0.1 --port 8000
-```
-
-The current GLM graph is serial and has an explicit 2,048-token context cap,
-enforced by host admission and native session creation, including lazy graphs.
-Snapshots, disk KV, continuous banks and MTP are unsupported.
-OpenAI Chat text and inline PNG image requests were served live on one DGX
-Spark; model-free parsing gates also cover the equivalent Responses and
-Anthropic inline-image forms. PNG and JPEG are accepted, with at most four
-images per request. Q4, FP8, full GLM 5.3, Metal, ROCm, distributed serving
-and SSD streaming were not RC.4 gates and are not implied by this support entry.
-Current boundary checks are listed in the [K2/GLM gates](docs/releases/v0.1.3-k2-glm-gates.md).
-
-### K2-Horizon-375B release scope
-
-This branch follows the IFM
-[`K2-Horizon-375B-A23B`](https://huggingface.co/IFM/K2-Horizon-375B-A23B)
-graph: 61 full-attention GQA layers, partial NeoX RoPE on 64 of 128 dims,
-three leading dense MLPs, sigmoid top-8 routing with one shared expert, and
-no MTP. Execution stays native. The GGUF architecture is `k2-horizon`; it
-does not widen the K-EXAONE LLLG/QK-norm contract.
-
-The verified artifact set is exactly the public MQ87 split, 93,091,935,552
-bytes (86.698621 GiB) across four shards:
-
-- `K2-Horizon-375B-A23B-MQ87-00001-of-00004.gguf`
-- `K2-Horizon-375B-A23B-MQ87-00002-of-00004.gguf`
-- `K2-Horizon-375B-A23B-MQ87-00003-of-00004.gguf`
-- `K2-Horizon-375B-A23B-MQ87-00004-of-00004.gguf`
-
-Expected inventory: 842 tensors (`Q8_0=429`, `F32=239`, `IQ1_S=100`,
-`IQ2_XXS=50`, `IQ1_M=16`, `IQ2_XS=8`). Official FP8 checkpoints are not a
-runtime input.
-
-On GB10, whole-map `cudaHostRegister` of the 86.70 GiB mmap fails. The
-existing VMM materializer then promotes every unit (95/95, 0 cold) so CUDA
-graphs never capture the unregistered mmap. The v0.1.0 gate accepted a 32K
-first boot with `DS4_MEMGOV=enforce`. The 2026-09-17 native lifecycle gate
-passed at context 1,024. A separate 32K explicit-serial raw disk gate passed
-with three fresh processes: append and sibling requests restored 547 tokens,
-and all four results matched fresh cold controls. The 4 GiB / PSI30 guard
-remained active after startup pressure settled; minimum sampled availability
-was 4.83 GiB. Identical whole prompts and early edits still replay cold under
-K2's zero-rewind policy. This short gate does not qualify filled-32K prompts
-or disk reuse through Chat or the continuous lane. See the
-[commands and limits](docs/releases/v0.1.3-k2-glm-gates.md) and
-[evidence, including earlier failures](docs/benchmarks/serving-v013-2026-09-17/k2.json).
-
-The following command reproduces the historical continuous serving shape with
-in-process VMM. External weight-owner import remains unqualified. The capability
-marker for snapshots/disk KV remains conservatively `present`; the narrower
-serial raw disk gate above has its own qualification. Context and concurrency
-remain 32K and one bank; K2 has no MTP contract.
-
-```sh
-MODEL=/path/to/K2-Horizon-375B-A23B-Mixed-Quant-GGUF/K2-Horizon-375B-A23B-MQ87-00001-of-00004.gguf
-
-./ds4-server --cuda \
-  -m "$MODEL" \
-  --model-id K2-Horizon-375B-A23B-MQ87 \
-  -c 32768 --cont-width 1 \
-  --host 127.0.0.1 --port 8000
-```
-
-CLI 32K raw-token smoke returned token `33785` with default memgov. HTTP
-Chat, XML tool call/result continuation, streaming, and concurrent requests
-passed on the same one-bank 32K setup. Official IFM `high` thinking is the
-gated path. The 524,288-token metadata context, `low`/`medium` think
-variants, other quants, Metal, ROCm, and distributed serving were not
-gates and are not implied by this support entry.
-
-## Build
-
-The repository pins Rust 1.98.0 with `rustfmt` and `clippy` in
-[`rust-toolchain.toml`](rust-toolchain.toml). CUDA builds also require a local
+**DwarfStar** (`ds4`) runs a deliberately limited set of large open-weight
+models on local machines. Model loading, chat templates, tool calls, KV reuse,
+the HTTP server and the coding agent are built and tested together.
+
+`ds4-dfm-rs` is the independent Rust-host continuation of
+[`Baekpica/ds4`](https://github.com/Baekpica/ds4). Rust owns the host and serving
+policy; the optimized C/CUDA/Metal backend remains native. The release reference
+is the 128 GB NVIDIA DGX Spark / GB10. Support is specific to the
+[listed model artifacts](#supported-model-families) and their recorded gates.
+
+[Quick start](#quick-start) · [Models](#supported-model-families) ·
+[API](#http-compatibility) · [Documentation](docs/README.md)
+
+## What you can do
+
+<a id="so-what-can-i-do-with-this-software"></a>
+
+- Serve OpenAI Chat, Completions and Responses, or Anthropic Messages.
+- Run the CLI and built-in DeepSeek DSML coding agent.
+- Use official [chat templates](docs/chat-templates.md), tool history and REPL turns.
+- Keep conversations through persistent banks, prefix reuse and disk checkpoints
+  where the model's state contract supports them.
+- Use family-specific MTP, drafters and media input within their verified limits.
+- Profile prefill and decode with [ds4-perf](docs/ds4-perf.md).
+
+## Performance and release evidence
+
+The native paths are tuned for prefill and decode on the reference hardware.
+These are recorded examples in **tokens/second**, with different workloads;
+the row links explain the artifact, hardware and measurement. Models without
+readily documented paired results are omitted.
+
+| Model / artifact | Prefill | Decode | Workload / evidence |
+|---|---:|---:|---|
+| Qwen3.8 Flash Next Q5, FP8 PLE | 1,323.1 | 28.93 | [2K–64K sweep, MTP 2](docs/performance.md#qwen) |
+| Qwen3.8 Uncensored Q5, FP8 PLE | 1,310.8 | 28.96 | [2K–64K sweep, MTP 2](docs/performance.md#qwen-uncensored) |
+| Solar Open2 250B MXQ-v1 | 1,095.61 | 17.43 | [8K + 64, plain](docs/performance.md#solar) |
+| Motif-3 MQ87-88 | 627.19 | 15.06 | [8K + 64, historical C](docs/performance.md#motif) |
+| dots3-note MQ87 | 604.3 | 16.78 | [8K + 64, plain](docs/performance.md#dots3) |
+| K2-Horizon MQ87 | 641.94–644.78 | 13.07–13.34 | [8K + 64, two samples](docs/performance.md#k2) |
+| Inkling Small MQ85GB | 452.58 | 13.07 | [8K + 64, plain](docs/performance.md#inkling) |
+| Step 3.7 Flash MQ83 | 1,194.64 | 22.77 | [2K + 64, MTP 3](docs/performance.md#step) |
+| Ling-3.0-flash-VL MQ-Q5 | 1,889 | 24.65 | [8K + 64, plain](docs/performance.md#ling) |
+| MiMo-V2.6-Flash-RL mixed quant | 1,217.76 | 24.44 | [8K + 128, plain](docs/performance.md#mimo) |
+| MiMo-V2.6-Flash-MOPD mixed quant | 1,206.29 | 24.18 | [8K + 128, plain](docs/performance.md#mimo-mopd) |
+| Naive-N0.5-Flash MQ87 | 506.16 | 17.44 | [8K + 32, plain](docs/performance.md#naive) |
+| Prism Bonsai 2 27B PQ2_0 | 1,023.3 | 17.50–18.00 | [2,140 + 64, RTX 4070 SUPER](docs/performance.md#bonsai) |
+
+![Qwen3.8 Flash Next Q5 paired BF16 and FP8 PLE throughput](docs/qwen38-ple-fp8-base.png)
+
+*Qwen on one DGX Spark. [Results, conditions and raw evidence](docs/performance.md#qwen).*
+
+The [performance guide](docs/performance.md) collects these references and the
+other published curves. The [release ledgers](docs/README.md#release-ledgers)
+record qualification separately from throughput.
+
+## Quick start
+
+### Build
+
+The repository pins Rust 1.98.0, `rustfmt` and `clippy` in
+[`rust-toolchain.toml`](rust-toolchain.toml). CUDA builds require the local
 CUDA toolkit and C/C++ build tools.
 
 ```sh
@@ -406,44 +70,33 @@ cd ds4-dfm-rs
 make cuda-spark
 ```
 
-Important build targets:
-
-| Command | Result |
+| Target | Backend |
 |---|---|
-| `make cuda-spark` | DGX Spark / GB10 CUDA build with the `sm_121a` code path |
-| `make cuda-generic` | CUDA build for the detected local GPU |
-| `make cuda CUDA_ARCH=sm_N` | CUDA build with an explicit architecture |
-| `make` on macOS | Metal build |
-| `make cpu` | CPU reference/diagnostic build |
+| `make cuda-spark` | DGX Spark / GB10, `sm_121a` |
+| `make cuda-generic` | Detected local NVIDIA GPU |
+| `make cuda CUDA_ARCH=sm_N` | Explicit CUDA architecture |
+| `make` on macOS | Inherited Metal backend |
+| `make cpu` | CPU reference and diagnostics |
 
-The production names remain `ds4`, `ds4-server`, `ds4-bench`, and
-`ds4-agent` for this parity RC. They are Rust-host binaries. Their
-`ds4-c`, `ds4-server-c`, `ds4-bench-c`, and `ds4-agent-c` counterparts are C
-oracles. `ds4-eval` is still the C extractor oracle. The old `*-rs` names are
-deprecated build aliases, not a second runtime.
+Production binaries are `ds4`, `ds4-server`, `ds4-bench` and `ds4-agent`, all
+Rust hosts. The `*-c` binaries and `ds4-eval` remain C behavior oracles.
+The old `*-rs` names are compatibility aliases.
 
-`./ds4-server --version` reports the independent repository version from the
-Rust package; `make print-version` reports the Git-derived native build stamp.
+### Run and verify
 
-## Quick start
-
-Models are not bundled. Pass the first shard of a supported split GGUF with
-`-m`.
+Models are downloaded separately. Use a [supported artifact](#model-zoo),
+provide its template and required sidecars, and pass the first shard with `-m`.
+This short text example uses a 2,048-token context; select longer contexts and
+additional features from the [family guide](docs/ds4-dfm-model-families.md).
 
 ```sh
 MODEL=/path/to/supported-model-00001-of-000NN.gguf
 
-./ds4-server \
-  --cuda \
-  -m "$MODEL" \
-  -c 131072 \
-  --host 127.0.0.1 \
-  --port 8000 \
-  --model-id local-model \
-  --no-update-check
+./ds4-server --cuda -m "$MODEL" -c 2048 -n 128 \
+  --host 127.0.0.1 --port 8000 --model-id local-model --no-update-check
 ```
 
-Then verify discovery, state, and a real generation:
+Check discovery, runtime state and a real generation:
 
 ```sh
 curl -s http://127.0.0.1:8000/v1/models
@@ -453,115 +106,70 @@ curl -s http://127.0.0.1:8000/v1/chat/completions \
   -d '{"model":"local-model","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
-`./ds4 --help`, `./ds4-server --help`, `./ds4-bench --help`, and
-`./ds4-agent --help` are the authoritative flag references.
+The four production binaries' `--help` output is the authoritative flag
+reference. Use `--check-config` to inspect requested, effective and qualified
+settings; see the [serving contract](docs/serving-contract.md#inspect).
 
-### Weight owner and worker
+<a id="weight-owner-and-worker"></a>
+<a id="qwen-yarn-long-contexts"></a>
 
-On unified-memory systems, a weight owner keeps one VMM allocation alive while
-inference workers restart. Keep the manifest path short because its Unix
-socket is `<manifest>.sock`.
+For shared weights and longer sessions, follow the
+[owner/worker launch](docs/serving-contract.md#weight-owner-and-worker),
+[Qwen cache and YaRN setup](docs/ds4-dfm-model-families.md#qwen-release-scope)
+and [memory guard](docs/host-memory-guard.md).
 
-```sh
-MODEL=/path/to/supported-model.gguf
-MANIFEST=/tmp/ds4-weights.manifest
+## Supported hardware and backends
 
-./ds4_weight_server \
-  --base "$MODEL" \
-  --manifest "$MANIFEST" \
-  --backend vmm \
-  --scope base \
-  --reserve-gb 32
-```
+| Backend | Scope |
+|---|---|
+| NVIDIA DGX Spark / GB10 | Release reference; see each artifact's recorded workload gates. |
+| Other NVIDIA CUDA GPUs | Build path retained; qualification requires device-specific checks. Bonsai has recorded RTX 4070 SUPER evidence. |
+| macOS Metal | Inherited build and source path; separate live checks required. |
+| CPU | Reference and debugging. |
 
-Wait for both `broker listening` and `ready manifest=...`, then start the
-worker in another durable session:
+Large models, active KV and workspaces must fit together. Disk KV persists
+checkpoints; it does not offload live banks. Inspect ownership and memory before
+loading a model, and preserve unrelated servers and resident owners.
 
-```sh
-DS4_CUDA_WEIGHT_IPC_MANIFEST="$MANIFEST" \
-DS4_CUDA_WEIGHT_IPC_SCOPE=base \
-./ds4-server --cuda -m "$MODEL" -c 196608 \
-  --host 127.0.0.1 --port 8000 --no-update-check
-```
+## Supported model families
 
-Qwen Q5 release runs additionally set a bounded SSD-PLE cache. Size it from
-the prefill chunk: a chunk's sixteen 320-byte PLE rows per token land on
-about 1.08 4 KiB pages each, so an 8,192-token chunk needs ~553 MiB of pages,
-and the engine prefetches the *next* chunk's pages while the current chunk's
-decoder layers run (`DS4_QWEN_PLE_NO_LOOKAHEAD=1` disables that). One prefill
-stream therefore wants at least one chunk in cache (1024 MiB with slack); two
-banks that alternate chunks want two (2048 MiB, the maximum). Sixteen page
-workers already saturate the sidecar reads at ~90K IOPS in bursts that overlap
-compute, so more workers do not help. A prompt's first chunk has nothing
-queued for it, so every prompt opens with a 2,048-row chunk whose remaining
-decoder layers hide the reads of the full-size chunk behind it; prompts
-shorter than two opening chunks stay one chunk, since a short trailing
-chunk costs more than the reads it hides
-(`DS4_QWEN_PREFILL_OPENING` sets the opening rows; `0` opens at the chunk
-cap). This reference shape asks the shared Rust scheduler for two persistent
-banks:
+<a id="model-zoo"></a>
 
-```sh
-DS4_QWEN_BATCH=1 \
-DS4_QWEN_PLE_CACHE_MB=2048 \
-DS4_QWEN_PLE_WORKERS=16 \
-DS4_QWEN_PREFILL_CHUNK=8192 \
-DS4_SERVER_COALESCE_MAX=2 \
-DS4_CUDA_WEIGHT_IPC_MANIFEST="$MANIFEST" \
-DS4_CUDA_WEIGHT_IPC_SCOPE=base \
-./ds4-server --cuda -m "$MODEL" -c 196608 --mtp-draft 2 \
-  --cont-width 2 --host 127.0.0.1 --port 8000 --no-update-check
-```
+Only explicit GGUF layouts and execution paths are accepted. The table combines
+the supported artifacts and Model Zoo; see also the
+[`DS4-Mixed-Quant-for-Spark`](https://huggingface.co/collections/Baekpica/ds4-mixed-quant-for-spark)
+collection. Feature and context limits remain specific to each artifact.
 
-### Qwen YaRN long contexts
+| Model | GGUF architecture | Artifact | Runtime guide / scope |
+|---|---|---|---|
+| DeepSeek V4 Flash / PRO | `deepseek4` | [antirez GGUF](https://huggingface.co/antirez/deepseek-v4-gguf/tree/main) | Flash live oracle, DeepSeek MTP and DSpark |
+| Solar Open2 250B | `solar-open2` | [Baekpica mixed quant](https://huggingface.co/Baekpica/Solar-Open2-250B-Mixed-Quant-GGUF) | KDA/GQA state and persistent banks |
+| K-EXAONE 236B A23B | `exaone-moe` | [Baekpica mixed quant](https://huggingface.co/Baekpica/K-EXAONE-236B-A23B-Mixed-Quant-GGUF) | LLLG KV; [partial reuse limits](docs/ds4-dfm-model-families.md#partial-prefix-reuse) |
+| Motif-3 | `motif3` | [Baekpica mixed quant](https://huggingface.co/Baekpica/Motif-3-Mixed-Quant-GGUF) | Latent KV, SWA rings and persistent banks |
+| dots3-note Preview | `dots3note` / `dots3-note` | [Baekpica mixed quant](https://huggingface.co/Baekpica/dots3-note-prev-Mixed-Quant-GGUF) | [Serial default; opt-in banks and MTP](docs/ds4-dfm-model-families.md#dots3-serving) |
+| Qwen3.8 Flash Next | `qwen4exp` | [Baekpica Q5 + SSD-PLE](https://huggingface.co/Baekpica/Qwen3.8-Flash-Next-Mixed-Quant-SSD-PLE-GGUF) | [BF16/FP8 PLE, embedded MTP, banks and images](docs/ds4-dfm-model-families.md#qwen-release-scope) |
+| Qwen3.8 Flash Next Uncensored | `qwen4exp` | [Baekpica Q5 + SSD-PLE](https://huggingface.co/Baekpica/Qwen3.8-Flash-Next-Uncensored-Mixed-Quant-SSD-PLE-GGUF) | [Separate Base/Uncensored gates](docs/qwen38-ple-fp8.md) |
+| Swift1.5-Qwen3.8 Flash Next | `qwen4exp` | [Baekpica Q5 + FP8 SSD-PLE](https://huggingface.co/Baekpica/Swift1.5-Qwen3.8-Flash-Next-Mixed-Quant-GGUF) | [Qwen runtime; bounded serving, throughput unmeasured](docs/ds4-dfm-model-families.md#qwen-derivatives) |
+| Prism Bonsai 2 27B | `qwen35` | [Pinned PQ2_0](docs/BONSAI.md) | Serial CUDA text and CPU reference; [limits](docs/BONSAI.md) |
+| GLM 5.3 Flash | `glm5-next` | [antirez Q2](https://huggingface.co/antirez/glm-5.3-flash-gguf/blob/main/GLM-5.3-Flash-Q2.gguf) + [vision](https://huggingface.co/antirez/glm-5.3-flash-gguf/blob/main/GLM-5.3-Flash-Vision-Encoder.gguf) | [Serial text/image; 2,048-token cap](docs/ds4-dfm-model-families.md#glm-53-flash-release-scope) |
+| K2-Horizon 375B A23B | `k2-horizon` | [Baekpica MQ87](https://huggingface.co/Baekpica/K2-Horizon-375B-A23B-Mixed-Quant-GGUF) | [32K one bank, IFM tools, no MTP](docs/ds4-dfm-model-families.md#k2-horizon-375b-release-scope) |
+| Inkling Small | `inkling` | [Baekpica MQ85GB](https://huggingface.co/Baekpica/Inkling-Small-Mixed-Quant-GGUF/tree/main/MQ85GB) + [MTP-BF16](https://huggingface.co/Baekpica/Inkling-Small-GGUF/tree/main/MTP-BF16) | [Serial text/image/audio input](docs/inkling-small.md) |
+| Step 3.7 Flash | `step35` | [Baekpica MQ83 + MTP + vision](https://huggingface.co/Baekpica/Step-3.7-Flash-Mixed-Quant-GGUF) | [Opt-in text banks/MTP, disk KV; images serial](docs/step37-serving-2026-09-13.md) |
+| Ling-3.0-flash-VL | `bailingmoe3` | [Baekpica MQ-Q5 + BF16 mmproj](https://huggingface.co/Baekpica/Ling-3.0-flash-VL-Mixed-Quant-GGUF) | [Images, persistent banks, disk KV and YaRN](docs/ling3-flash-vl.md) |
+| MiMo-V2.6-Flash-RL | `mimo2` | [Baekpica mixed quant](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-RL-Mixed-Quant-GGUF) | [256K two-bank text and serial media; longer-context limits](docs/mimo2-serving-2026-09-25.md) |
+| MiMo-V2.6-Flash-MOPD | `mimo2` | [Baekpica mixed quant](https://huggingface.co/Baekpica/MiMo-V2.6-Flash-MOPD-Mixed-Quant-GGUF) | [Own text/performance gates; drafting remains separate](docs/ds4-dfm-model-families.md#mimo-mopd) |
+| Naive-N0.5-Flash | `naive_n05_flash` | [Baekpica MQ87](https://huggingface.co/Baekpica/Naive-N0.5-Flash-Mixed-Quant-GGUF) | [Banks, partial reuse and disk KV; draft acceleration unqualified](docs/naive-n05-flash.md) |
 
-Qwen contexts through 262,144 tokens retain the native factor-1 rotary path.
-Larger server contexts select a static YaRN factor from the requested context:
-factor 2 through 524,288, factor 3 through 786,432, and factor 4 through
-1,048,576. This follows the
-[`Qwen3.8-Flash-Next` 1M recipe](https://huggingface.co/Qwen/Qwen3.8-Flash-Next-FP8#processing-ultra-long-texts)
-and the
-[`transformers` YaRN equations](https://github.com/huggingface/transformers/blob/main/src/transformers/modeling_rope_utils.py);
-the underlying method is described in the
-[`YaRN` paper](https://arxiv.org/abs/2309.00071).
+<a id="qwen-release-scope"></a>
+<a id="glm-53-flash-release-scope"></a>
+<a id="k2-horizon-375b-release-scope"></a>
 
-The 1M configuration uses one bank and a smaller prefill chunk:
-
-```sh
-DS4_SESSION_GRAPH_FIT=0 \
-DS4_QWEN_BATCH=1 \
-DS4_QWEN_PLE_CACHE_MB=512 \
-DS4_QWEN_PLE_WORKERS=16 \
-DS4_QWEN_PREFILL_CHUNK=256 \
-DS4_SERVER_COALESCE_MAX=1 \
-DS4_SERVER_FORK=0 \
-DS4_SERVER_FORK_PARTIAL=0 \
-DS4_CUDA_WEIGHT_IPC_MANIFEST="$MANIFEST" \
-DS4_CUDA_WEIGHT_IPC_SCOPE=base \
-./ds4-server --cuda -m "$MODEL" -c 1000000 -n 256 --cont-width 1 \
-  --host 127.0.0.1 --port 8000 --no-update-check
-```
-
-`DS4_SESSION_GRAPH_FIT=0` is an explicit fit-check override, not a claim that
-the requested context fits the machine. On a 128 GB DGX Spark, the Q5+Sidecar
-run recorded the following staged boundary on 2026-09-01:
-
-| Configured context | YaRN factor | Largest prompt run | Result |
-|---:|---:|---:|---|
-| 196,608 | 1 | text and JPEG smoke | PASS, native-context regression |
-| 524,288 | 2 | 524,240 tokens | HTTP 200, 215.4 prefill tok/s, zero census faults |
-| 1,000,000 | 4 | 300,040 tokens | HTTP 200, 261.4 prefill tok/s, text/JPEG smoke, zero census faults |
-
-The 524K run peaked at about 30.6 GiB in the worker and finished 47 tokens
-below its context cap. A complete 1M-token prompt is **not** claimed: its
-53.56 GiB graph plan plus the roughly 80.65 GiB weight owner exceeds the
-machine's 121.63 GiB usable unified-memory budget. Use the native context for
-ordinary short requests because static YaRN can reduce short-context quality.
-
-Large GGUFs can exhaust unified or system memory. During validation, load one
-production model at a time, observe accelerator activity and per-process memory
-with tools available on your platform, and confirm serving processes have
-exited before reclaiming host resources.
+Detailed [Qwen](docs/ds4-dfm-model-families.md#qwen-release-scope),
+[GLM](docs/ds4-dfm-model-families.md#glm-53-flash-release-scope) and
+[K2](docs/ds4-dfm-model-families.md#k2-horizon-375b-release-scope) artifact and
+release scopes live in the [model-family guide](docs/ds4-dfm-model-families.md).
+The [generated capabilities](docs/serving-capabilities.md) describe the runtime
+plan; dated family gates retain their narrower workload boundaries.
 
 ## HTTP compatibility
 
@@ -572,303 +180,90 @@ exited before reclaiming host resources.
 | OpenAI Responses | `POST /v1/responses` |
 | Anthropic Messages | `POST /v1/messages` |
 | Model discovery | `GET /v1/models` |
-| Runtime state | `GET /v1/stats` and `GET /metrics` |
+| Runtime state | `GET /v1/stats`, `GET /metrics` |
 
-Buffered and SSE streaming forms preserve their surface-native response
-objects, tool calls, reasoning fields, finish semantics, and error envelopes.
-The server has serial, continuous, and static lanes; set
-`DS4_SERVER_CONTINUOUS=0` to force the static/serial route used by the C
-compatibility gate.
+Buffered and SSE responses retain each surface's tool, reasoning, finish and
+error forms. Native state and serial/continuous/static routing stay
+family-specific. The [API matrix](docs/ds4-api-surface-matrix.md) documents
+supported fields, media shapes, routing and explicit refusals.
 
-The continuous lane is width-generic: the Rust host schedules up to the
-configured and native-fitted bank count, serializes work when only one bank is
-available, and refills free banks from the live queue without waiting for the
-longest row. Admission limits, disconnect cancellation, stream heartbeats and
-typed failures, shutdown propagation, and cumulative usage accounting live in
-the shared Rust serving path. Each model family still supplies its explicit
-state and KV contract; a configured width is not a claim that every model and
-context fits that width on a given machine.
+<a id="compatibility-boundary"></a>
 
-`DS4_SERVER_MAX_CLIENTS` (default 256) reserves client capacity before request
-bodies are read, so slow or oversized ingress cannot consume an unbounded
-number of reader threads.
+The server is one trust domain and has no authentication or tenant isolation.
+Use an authenticating proxy or a separate server per trust domain. See the
+[compatibility boundary](docs/ds4-api-surface-matrix.md#compatibility-boundary)
+for CLI, HTTP, cache and distributed contracts.
 
-Resident-bank protection and SSD checkpoint eligibility are independent:
-`DS4_SERVER_PIN_MIN_TOKENS` defaults to 65,536, while
-`DS4_SERVER_PERSIST_MIN_TOKENS` defaults to 8,192. Lowering the persistence
-threshold does not pin shallow sessions in memory.
-
-Qwen and GLM image content is accepted in the existing API-native shapes:
+## Architecture
 
 ```text
-Chat:      {"type":"image_url","image_url":{"url":"data:image/jpeg;base64,..."}}
-Responses: {"type":"input_image","image_url":"data:image/jpeg;base64,..."}
-Anthropic: {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"..."}}
+CLI / HTTP / agent → ds4-core → ds4-sys → native CUDA / MMQ / VMM
+                    Rust host policy      native compute and GPU state
 ```
 
-The exact route table, supported fields, and explicit refusals are in
-[`ds4-api-surface-matrix.md`](docs/ds4-api-surface-matrix.md).
-
-### Compatibility boundary
-
-The project attempts to preserve these public contracts through `v0.x`:
-
-- core `ds4-*` CLI flags and `DS4_*` environment variables;
-- HTTP request/response behavior and observable sampling semantics;
-- KVC files, EXT_TOOL_MAP, KTM trailers, recurrent payloads, and image replay
-  keys across C-save/Rust-load and Rust-save/C-load;
-- explicit distributed byte codecs.
-
-The following are internal and may change during `v0.x`: crate APIs, Rust
-types, file layout, scheduler internals, and the native bridge ABI. Native and
-Rust objects must be built from the same commit. Distributed transport has no
-wire version, encryption, or authentication; use matching binaries on a
-trusted network.
-
-The HTTP server is one trust domain and does not provide tenant isolation or
-authentication. Put it behind an authenticating proxy or run one server per
-trust domain when clients are not mutually trusted.
-
-## Performance and release evidence
-
-> **MiMo-V2.6-Flash-RL `MQ-IQ2-XXS-XS-Q8-MM-BF16` · one DGX Spark, busy SM 2177–2197 MHz:**
-> three same-binary 8,192-token prefill rounds, 128 greedy tokens, three fresh
-> processes per side after warmup, MTP and DFlash off.
-> Round 1 `DS4_MIMO2_NO_PREFILL_HMMA`: **630.51 → 871.19** tok/s (time upper −27.5%).
-> Round 2 `DS4_MIMO2_NO_PREFILL_ASYNC`: **870.38 → 1071.07** (time upper −18.6%), exact logits and tokens.
-> Round 3 `DS4_MIMO2_NO_SWA_HMMA`: **1073.29 → 1158.35** (time upper −7.0%).
-> Decode time stayed inside ±1.6% on every round. Rounds 1 and 3 use
-> `--logit-rel-rms 0.10` (0.073 and 0.077) and keep the frontier argmax.
-> 512k serial text stays qualified; 1M is not qualified; max_seqs 2 is omitted;
-> 512k with the projector and DFlash was not measured.
-> [Protocol and rejects](docs/benchmarks/mimo2-2026-09-23/README.md).
-
-> **Solar Open2 250B MXQ-v1 · one DGX Spark, 300–2200 MHz cap (measured 2190):**
-> two retained rounds, interleaved medians of three, byte-identical 196,608
-> logits and 64 IDs. Round 1 default-on FATTN_WS: 8K **1,050.86 → 1,075.76**
-> tok/s (+2.37%), 64K **731.24 → 927.50** (+26.8%). Round 2 skip Q3 handoff
-> down sanitize: 8K **1,073.59 → 1,095.61** (+2.05%), 64K **925.19 → 943.18**
-> (+1.94%). Decode unchanged. `DS4_SOLAR_FATTN_WS=0` and
-> `DS4_CUDA_MOE_HANDOFF_SANITIZE=1` restore the prior paths. Disk-KV restart
-> and HTTP partial fork reuse prefixes (`cached_tokens=538` / `4096`).
-> [Protocol, serving, rejects](docs/solar-open2-optimization-2026-09-14.md).
-
-![Solar Open2 clock-capped cold FATTN_WS comparison](docs/solar-open2-2026-09-14-throughput.png)
-
-*Independent cold `ds4-bench` requests, 64 output tokens, 4,096-token chunks.
-Not HTTP and not the uncapped September 7/12 campaigns. Keep the SM cap on
-GB10 when this kernel is default. `python3 tools/plot_solar_open2_20260914.py`.*
-
-![Qwen3.8 Flash Next Q5 paired BF16 and FP8 PLE throughput](docs/qwen38-ple-fp8-base.png)
-
-*Base Q5 on one DGX Spark / GB10, with only the PLE sidecar changed:
-**1,245.1 → 1,323.1 tok/s prefill (+6.3%)** and
-**28.59 → 28.93 tok/s decode (+1.2%)**. Median of three run means per format;
-curves show per-frontier medians and observed min/max bands. The original
-card protocol uses one warm session, 2,048-token incremental prefills through
-64K and 128 greedy tokens per frontier, aligned-Q8 owner, 2 GiB PLE cache and
-16 workers. MTP draft 2 was requested; one BF16 run autoquenched and remains
-in the data. [Base/Uncensored results, exact protocol and limits](docs/qwen38-ple-fp8.md).*
-
-The 2026-09-06 prefill rounds
-([`docs/qwen38-prefill-2026-09-06.md`](docs/qwen38-prefill-2026-09-06.md))
-moved the cold single-shot `ds4-bench` prefill from 1,214.8 to **1,362.1 tok/s**
-at 8,192 tokens and 1,382.7 to **1,439.7 tok/s** at 65,536 tokens
-(`main` `0510117` -> `974d706`: opening chunk, MoE glue, one-pass block
-output).  Three further rounds on `feature/qwen-prefill-opt-20260906-r4`
-(`d9989bb` / `c00eacd` / `abdf25c`: D2R for K=2560 qkv/z/q, one HC-mix Q8
-emit, o_proj K=6144 onto D2R) took the same-hour cold medians on the
-aligned-Q8 owner to **1,431.5 tok/s** at 8K and **1,554.8 tok/s** at 64K.
-
-The 2026-09-07 rounds
-([`docs/qwen38-prefill-2026-09-07.md`](docs/qwen38-prefill-2026-09-07.md):
-SwiGLU quantized straight into the fused expert-down, four barriers per
-fused-QSA tile with conflict-free partial stores, SSD-PLE gather leased in
-16,384-row tiles under one lock; `ef37468` -> `6e036c4`) take the same
-protocol from 1,429.9 to **1,504.6 tok/s** at 8K (+5.2 %), from 1,557.2 to
-**1,648.4 tok/s** at 64K (+5.9 %) and from 1,439.9 to **1,513.0 tok/s** at
-196,608 tokens (+5.1 %, one run each), base and final interleaved in the same
-hour; on the production two-bank server shape the 8,259-token repeated prompt
-went 1,481.7 -> **1,559.9 tok/s** (+5.3 %) and the 7,937-token cold-PLE
-markdown prompt 1,555.9 -> **1,652.6 tok/s** (+6.2 %), with the 175-token
-greedy continuation byte-identical before and after.  Every adopted round is
-bit-identical to the kernels it replaces on the fixtures, and the 8,192-token
-frontier logits of the final binary match the base binary's byte for byte.
-
-The original split gate claims parity class, not a universal speedup.
-
-| Gate | Recorded result on DGX Spark / GB10 |
-|---|---|
-| Full host/family matrix | 57 PASS + 3 C-reproduced PASS*, 0 FAIL, 0 BLOCKED |
-| Qwen exact 262K | 248,320 finite logits, same argmax, zero packed-f32 mismatches; Rust prefill 99.64% of C |
-| Qwen text ABBA | Rust/C mean: 99.97% prefill, 100.00% decode, +0.95% TTFT, +4.40% host HWM |
-| Qwen image ABBA | Rust/C mean: 100.20% prefill, +0.32% TTFT |
-| Qwen soak | 7,202.3 s, 3,610/3,610 requests, 158 width-2 barriers, 79 image requests, zero request/census/governor failures |
-| GLM 5.3 Q2 + vision smoke | Exact Q2 and vision sidecar: native 16-image-token prefill with finite logits; Rust text and PNG Chat requests returned HTTP 200 at context 256. |
-| K2-Horizon-375B MQ87 | Four-shard 86.70 GiB MQ87: CLI 32K raw-token `33785`; default memgov 95/95 VMM promote; HTTP Chat/tool/stream/concurrent on one 32K bank. |
-| dots3-note MQ87 (2026-09-06 rounds) | 8,192-token cold prefill 278.3 → 604.3 tok/s (+117 %), greedy decode 11.66 → 16.78 tok/s (+44 %) on one DGX Spark, serial lane, same-binary kill-switch A/B; frontier logits same argmax / top-10 10/10, 64 greedy IDs identical; resident CPU-reference gate passed (`docs/dots3-optimization-2026-09-06.md`). |
-| Step 3.7 Flash MQ83 (300–2200 MHz cap) | Fresh matched 3-pair A/B: 2048+64 Prefill **1194.64 tok/s** (+0.72%), MTP draft-3 Decode **22.77 tok/s** (+4.02%), exact logits/tokens. Separate 16384+64: Prefill **1290.01** (+7.22%), MTP Decode **16.34** (+14.59%, changed trajectory/acceptance). Default chunk 4096; smaller overrides for bank/image memory. Two Prefill and two Decode rounds, raw samples and limits: [capped campaign](docs/step37-optimization-2026-09-13-r3.md). Earlier uncapped results are historical. |
-| Ling-3.0-flash-VL MQ-Q5 (SM 2177–2197 MHz) | 8192+64 `ds4-bench`, #46 → #48: prefill **1,142 → 1,889 tok/s** (+65%), decode **19.54 → 24.65 tok/s** (+26%). 2K–64K card sweep through #50 (BF16 K/V, 64-key tiles): mean prefill **1,106 → 1,736 tok/s** (+57%), at 65,536 tokens **684 → 1,423 tok/s** (+108%); mean decode 24.05 → 24.53. Versus #49 the same sweep is +8.7% mean prefill and +16% at 64K. Cold 64K prefill 1,048 → **1,742 tok/s**. Same argmax at every frontier. Each round behind a kill switch. [Campaign, long-context rounds and sweep](docs/ling3-flash-vl.md#cuda-campaign-gb10). |
-
-![Ling-3.0-flash-VL MQ-Q5 2K–64K throughput, #48 vs #49 vs #50](docs/ling3-flash-vl-2k-64k-throughput.png)
-
-*One DGX Spark / GB10, one warm session per fresh process. Curves:
-per-frontier medians; bands: min–max over two #48 runs and three runs
-each of #49 and #50. No MTP: the family has none.
-[Raw CSVs and receipt](docs/benchmarks/ling3-flash-vl-2026-09-17/);
-`python3 docs/benchmarks/plot-ling3-flash-vl.py`.*
-
-The Qwen measurements used only the Q5+Sidecar artifact, fresh sequential C
-and Rust processes, and the conditions recorded in the evidence documents.
-The three PASS* cells are engine gaps E-2, E-3, and E-6 reproduced on C; they
-are not hidden Rust failures. See
-[`PARITY_MATRIX.md`](docs/rust-migration/PARITY_MATRIX.md),
-[`ENGINE_GAPS.md`](docs/rust-migration/ENGINE_GAPS.md), and
-[`SPLIT_READINESS.md`](docs/rust-migration/SPLIT_READINESS.md).
-
-RC.3 then revalidated the changed agent-serving paths on that same Qwen
-Q5+Sidecar artifact. At 262,144 context with one bank, a replayed 140-token
-turn reported 116 cached and 24 computed tokens, and six barrier-released
-requests completed successfully in FIFO order. At 196,608 context with two
-banks, rolling refill let a later short request finish in 4.90 seconds while
-the earlier long request finished in 14.53 seconds; the final live counters
-reported 19 completed, zero failed, zero canceled, and zero continuous or
-memory-census faults. OpenAI Responses and Anthropic streaming tool-output
-continuations both resumed their owning bank with cache hits. The two-bank
-run retained about 13.0 GiB available host memory.
-
-This was a targeted RC.3 regression matrix, not a second long soak. The
-7,202.3-second Qwen-only soak in the table predates these host changes and was
-not rerun for RC.3.
-
-The GLM row is an RC.4 correctness and serving smoke, not a throughput or
-long-context claim. The K2 row is a Spark correctness and 32K serving smoke
-on this branch, not a tagged RC or a 524K live claim.
-
-## Testing
-
-Host checks are model-free after their C parity oracles are built:
-
-```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked
-
-make -j1 test-kv-parity
-make -j1 test-web-parity
-make -j1 test-dist-parity
-make -j1 test-server-parity
-make -j1 test-catalog-parity
-make -j1 test-tokenizer-parity
-make -j1 test-session-parity
-make -j1 test-agent-parity
-
-cargo test --workspace --locked -- --test-threads=1
-cargo check --workspace --all-targets --locked
-```
-
-The order matters on a clean checkout: the parity targets create the C oracle
-executables consumed by the workspace tests. GitHub Actions runs this host-only
-set. It does not pretend that a hosted CPU runner proves CUDA behavior.
-
-Shared CUDA checks include:
-
-```sh
-make -j1 test-model-family-kernels
-make -j1 test-mmq-parity
-./ds4-eval --self-test-extractors
-```
-
-Family loaders, real-model forwards, long-context runs, OPP-C, ABBA, and soak
-gates need the matching models and release hardware. The
-[migration evidence](docs/rust-migration/README.md) preserves the original
-protocols; the [v0.1.0 ledger](docs/releases/v0.1.0.md) records baseline
-qualification and the [v0.1.1 ledger](docs/releases/v0.1.1.md) records the
-performance workflow and FP8 additions. The [v0.1.2 ledger](docs/releases/v0.1.2.md)
-records shared Jinja and Inkling scope. See [CONTRIBUTING.md](CONTRIBUTING.md)
-for the validation workflow.
-
-## Repository layout
-
-| Path | Purpose |
-|---|---|
-| `crates/ds4-core` | safe model/session host, GGUF catalog, tokenizer, bind and validation |
-| `crates/ds4-server` | HTTP surfaces, routing, scheduling, streaming, tools |
-| `crates/ds4-kv` | KVC format and persistence policy |
-| `crates/ds4-dist` | distributed codecs and runtime |
-| `crates/ds4-cli` | CLI, bench, and agent hosts |
-| `crates/ds4-web` | blocking agent web helpers |
-| `crates/ds4-perf` | standalone profiling orchestration and diagnosis |
-| `crates/ds4-sys` | narrow unsafe FFI and OS adapters |
-| `native/bridge` | opaque Rust/native boundary |
-| `ds4.c`, `ds4_cuda.cu`, `cuda/`, `metal/` | native engine and kernels |
-| `tests/parity` | C behavior oracles consumed by Rust tests |
-| `docs/README.md` | current guides, dated evidence and design index |
-| `docs/releases` | release definitions and qualification gates |
-| `docs/rust-migration` | current boundary contracts and frozen migration evidence |
-
-## Lineage
-
-The repository is independent on GitHub, but its code history is continuous:
-
-```text
-antirez/ds4
-    ↓
-Entrpi/ds4
-    ↓
-Baekpica/ds4 (DFM edition)
-    ↓
-Baekpica/ds4-dfm-rs
-```
-
-The split preserved Git ancestry, authors, the MIT license, vendor provenance,
-and the `v0.6.5-dfm` baseline tag. It did not filter, squash, or relabel the
-project as a clean-room implementation. The replaced target scaffold remains
-recoverable at `pre-genesis-scaffold-b01d1fa`.
-
-See [`docs/LINEAGE.md`](docs/LINEAGE.md) for the exact refs and ongoing
-upstream-port policy.
-
-## Contributing
-
-Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before sending a change.
-
-- Keep changes focused and leave a regression that fails without them.
-- A model-family addition must prove loader, tokenizer, tensor binding,
-  forward behavior, API rendering, state/KV lifecycle, and its real native
-  path.
-- CUDA changes need correctness and speed evidence on the affected path.
-- Do not introduce a generic plugin layer, a second CUDA stack, C++ host code,
-  or a large async runtime without a measured problem and a separate decision.
-- Record model revision, quant, commit, hardware, CUDA, context, width, KV mode,
-  and thermal conditions with performance results.
+Rust owns catalog validation, rendering, admission, scheduling, model/session
+lifetime and KV policy. GGUF loading remains mmap-backed; device handles stay
+behind the opaque [native bridge](native/bridge/ds4_bridge.h).
+See [architecture](docs/rust-migration/ARCHITECTURE.md) and
+[FFI rules](docs/rust-migration/FFI_CONTRACT.md).
 
 ## Documentation
 
-- [Documentation index](docs/README.md) — current guides, dated evidence and design records
-- [v0.1.0 release ledger](docs/releases/v0.1.0.md) — qualification, evidence and scope
-- [v0.1.1 release ledger](docs/releases/v0.1.1.md) — performance workflow and FP8 PLE
-- [v0.1.2 release ledger](docs/releases/v0.1.2.md) — official Jinja and Inkling checkpoint
-- [`CHANGELOG.md`](CHANGELOG.md) — inherited and fork-side release history
-- [`docs/LINEAGE.md`](docs/LINEAGE.md) — repository provenance and split refs
-- [`docs/rust-migration/SPLIT_READINESS.md`](docs/rust-migration/SPLIT_READINESS.md) — genesis decision and immutable evidence
-- [`docs/rust-migration/ARCHITECTURE.md`](docs/rust-migration/ARCHITECTURE.md) — host/native ownership
-- [`docs/rust-migration/FFI_CONTRACT.md`](docs/rust-migration/FFI_CONTRACT.md) — opaque ABI rules
-- [`docs/ds4-dfm-model-families.md`](docs/ds4-dfm-model-families.md) — model-family runtime details
-- [`docs/ds4-api-surface-matrix.md`](docs/ds4-api-surface-matrix.md) — API and serving-lane contract
-- [`cuda/mmq/VENDOR.md`](cuda/mmq/VENDOR.md) — llama.cpp/GGML kernel provenance
-- [`misc/proof-harness/README.md`](misc/proof-harness/README.md) — native proof harness
+| Guide | Use it for |
+|---|---|
+| [Documentation index](docs/README.md) | Find current guides, releases and dated reports |
+| [Serving contract](docs/serving-contract.md) | Options, resolved plans, owner/worker and reuse |
+| [Model families](docs/ds4-dfm-model-families.md) | Artifacts, media, context and state limits |
+| [Chat templates](docs/chat-templates.md) | Official assets and continuation |
+| [Performance](docs/performance.md) | Representative results and measurement conditions |
+| [Memory guard](docs/host-memory-guard.md) | Large-model admission and operational limits |
+| [Changelog](CHANGELOG.md) | Independent and inherited release history |
+
+<a id="status"></a>
+
+The current repository version is **v0.1.3**. Its
+[ledger](docs/releases/v0.1.3.md) records common serving controls and scoped
+P0–P4 gates. Earlier ledgers preserve the Rust baseline, performance workflow
+and shared Jinja qualification. Dated reports describe their recorded build,
+artifact and workload; they do not describe live processes.
+
+## Contributing
+
+<a id="testing"></a>
+<a id="repository-layout"></a>
+<a id="design-philosophy"></a>
+<a id="how-to-use-this-project"></a>
+
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
+The contribution guide owns the ordered host-parity checks and native gates;
+the [architecture guide](docs/rust-migration/ARCHITECTURE.md) maps the crates.
+Family additions need explicit artifact/state contracts. Inference changes
+need correctness and measured prefill/decode evidence on the affected path.
+
+## Lineage
+
+<a id="motivations"></a>
+<a id="why-this-repository-exists"></a>
+<a id="ai-full-disclosure"></a>
+
+```text
+antirez/ds4 → Entrpi/ds4 → Baekpica/ds4 (DFM) → Baekpica/ds4-dfm-rs
+```
+
+The project follows useful open weights that fit personal and workstation
+machines. It keeps model mechanics explicit and adds only the abstractions
+shared by proven families. DFM refers to 독자 파운데이션 모델 (독파모).
+The split preserves Git ancestry, authorship and the native backend;
+[LINEAGE.md](docs/LINEAGE.md) records the exact refs and port policy.
+
+Development uses coding-agent assistance, with humans owning scope, ideas,
+testing and debugging. See the [development context](docs/LINEAGE.md#development-context).
 
 ## License and acknowledgements
 
-`ds4-dfm-rs` remains MIT licensed; see [`LICENSE`](LICENSE). Existing
-copyright notices are preserved.
-
-The project stands on the original work in
-[`antirez/ds4`](https://github.com/antirez/ds4), the CUDA and batched-serving
-work in [`Entrpi/ds4`](https://github.com/Entrpi/ds4), and the DFM family and
-Rust-host work developed in [`Baekpica/ds4`](https://github.com/Baekpica/ds4).
-
-It also depends on the GGUF ecosystem, quantization formats, engineering
-knowledge, and selected MIT-licensed kernel code from
-[`llama.cpp`](https://github.com/ggml-org/llama.cpp) and GGML. Their notices
-and the exact vendored kernel pin remain in this tree.
+MIT; see [LICENSE](LICENSE). Existing notices are preserved. This project
+builds on [antirez/ds4](https://github.com/antirez/ds4),
+[Entrpi/ds4](https://github.com/Entrpi/ds4),
+[Baekpica/ds4](https://github.com/Baekpica/ds4), and the engineering and
+selected kernels of [llama.cpp](https://github.com/ggml-org/llama.cpp) / GGML.
+The [MMQ vendor record](cuda/mmq/VENDOR.md) retains the upstream pin and notices.

@@ -1,8 +1,8 @@
 # DS4 API surface matrix
 
-Status: independent Rust host, v0.1.0. This document describes current source
-behavior. Qualification and workload limits are recorded in the
-[release ledger](releases/v0.1.0.md).
+This guide describes the Rust host's HTTP behavior. Configuration and resolved
+plans belong to the [serving contract](serving-contract.md); qualification and
+workload limits belong to the [release ledgers](README.md#release-ledgers).
 The original route oracle came from the v0.5.6/v0.6.0 API-promotion arc.
 
 Wire contracts are shared across the [supported families](../README.md#supported-model-families).
@@ -22,6 +22,22 @@ surfaces: they share an endpoint family but stream different objects.
 | Anthropic Messages | `POST /v1/messages` | `type:"message"` | `message_start` .. `content_block_*` .. `message_delta`, `message_stop` |
 | OpenAI Responses | `POST /v1/responses` | `object:"response"` | `response.created` .. item/delta events with `sequence_number`, `response.completed` |
 
+## Compatibility boundary
+
+The project attempts to preserve these public contracts through `v0.x`:
+
+- core `ds4-*` CLI flags and `DS4_*` environment variables;
+- HTTP request/response behavior and observable sampling semantics;
+- KVC files, EXT_TOOL_MAP, KTM trailers, recurrent payloads, and image replay
+  keys across C-save/Rust-load and Rust-save/C-load;
+- explicit distributed byte codecs.
+
+The following are internal and may change during `v0.x`: crate APIs, Rust
+types, file layout, scheduler internals, and the native bridge ABI. Native and
+Rust objects must be built from the same commit. Distributed transport has no
+wire version, encryption, or authentication; use matching binaries on a
+trusted network.
+
 ## Serving lanes and current routing
 
 Three lanes serve generation requests:
@@ -33,29 +49,29 @@ Three lanes serve generation requests:
   per-row sampling, streaming, stops, and tools. The Rust scheduler operates
   over the configured/native-fitted N-bank width, including width one, and
   refills idle rows from the live queue during an epoch.
-- **static** (`generate_batch_jobs`): coalesced buffered greedy batches.
+- **static** (`generate_batch_jobs`): coalesced buffered greedy batches;
+  the computed routing-needs mask must be zero.
 
-Routing since Inc 2 is the single pure decision function `route_decide`
-over the request's computed needs word; as of Inc 6 the table is:
+The shared `route_decide` function selects a lane from each request's computed
+needs. The routing table is:
 
 | Surface | serial | continuous | static |
 |---|---|---|---|
 | OpenAI Chat | fallback | yes (prompt fits one bank) | buffered + greedy + non-thinking + no stops/tools |
 | OpenAI Completion | fallback | yes (no tools/echo) | same conditions as Chat |
-| Anthropic Messages | buffered tools, prefill-only zero, serial-owned live frontiers, fallback | yes — incl. STREAMING tools (Inc 6a) and bank-owned output-only continuations (Inc 6b) | needs-free buffered (Inc 3d) |
-| OpenAI Responses | buffered tools, live reasoning state, serial-owned live frontiers, fallback | same as Anthropic | needs-free buffered (Inc 3d) |
+| Anthropic Messages | buffered tools, prefill-only zero, serial-owned live frontiers, fallback | streaming tools and bank-owned output-only continuations | needs-free buffered |
+| OpenAI Responses | buffered tools, live reasoning state, serial-owned live frontiers, fallback | same as Anthropic | needs-free buffered |
 
-Buffered tool generation deliberately keeps the serial lane: its
-model-visible corrective retry has no row-local batched equivalent (plan §5
-Inc 6 allows keeping it serial; the scoping comment sits at
-`request_compute_needs`). Streaming tool turns publish BANK-owned
-continuation records at the cont finalize; their output-only follow-ups
-claim the bank back under generation/frontier equality
-(`cont_bank_continuation_admit`), and victim placement never destroys a
-bank inside its record's grace/pin window (Inc 6c). Compatibility kill switches: `DS4_SERVER_CONT_ANTHROPIC` / `DS4_SERVER_CONT_RESPONSES`
-(stateless promotion, Inc 3) and `DS4_SERVER_CONT_TOOLS_ANTHROPIC` /
-`DS4_SERVER_CONT_TOOLS_RESPONSES` (tool promotion, Inc 6 — effective only
-while the surface's stateless switch is on).
+Buffered tool generation stays serial because its model-visible corrective
+retry has no row-local batched equivalent. Streaming tool turns publish
+bank-owned continuation records. Output-only follow-ups reclaim the bank only
+when its generation and frontier still match; eviction respects the record's
+grace and pin windows.
+
+`DS4_SERVER_CONT_ANTHROPIC` and `DS4_SERVER_CONT_RESPONSES` control stateless
+continuous routing. `DS4_SERVER_CONT_TOOLS_ANTHROPIC` and
+`DS4_SERVER_CONT_TOOLS_RESPONSES` control tool routing, and take effect only
+while the corresponding stateless switch is on.
 
 Within OpenAI, still serial: non-streaming `return_token_ids` chat,
 completion-kind requests with `return_token_ids`, and completion-kind
@@ -66,13 +82,23 @@ have message shapes in Chat Completions, Responses and Anthropic Messages;
 legacy Completions has no image form. GLM live evidence covers text/image
 Chat with the exact Q2 main GGUF and vision sidecar. Responses and Anthropic
 image shapes have model-free parser coverage, not equivalent GLM live gates.
-See the [artifact and API scope](../README.md#glm-53-flash-release-scope).
+See the [artifact and API scope](ds4-dfm-model-families.md#glm-53-flash-release-scope).
 
 Inkling Small uses serial CUDA serving with text output. Chat, Responses and
 Messages accept PNG/JPEG images; only Chat accepts 16 kHz PCM/float WAV audio.
 Legacy Completions accepts text only. The optional eight-layer MTP sidecar
 preserves the wire contracts and uses speculative decoding for unforced greedy
 tokens. See [MQ85GB validation and limits](inkling-small.md).
+
+## Inline images
+
+Qwen and GLM image content is accepted in the existing API-native shapes:
+
+```text
+Chat:      {"type":"image_url","image_url":{"url":"data:image/jpeg;base64,..."}}
+Responses: {"type":"input_image","image_url":"data:image/jpeg;base64,..."}
+Anthropic: {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"..."}}
+```
 
 ## Output-budget (`max_tokens`) semantics today
 
@@ -96,21 +122,20 @@ The Anthropic parser requires `messages` but does not require
 `max_tokens` (upstream requires it); an omitted value gets the server
 default like every other surface.
 
-## Trust domain (Inc 5)
+## Trust domain
 
-The server is ONE trust domain. The continuation registry (one record per
-Anthropic/Responses tool-call turn, keyed `(protocol, call_id)`) and exact-DSML
-tool memory are global — there is no tenant or auth namespace, so the
-`trust_namespace` component of the plan's registry key is a constant.
-Knowledge of a tool-call ID is knowledge of the conversation: an output-only
-continuation for that ID resumes the owning engine state — a batch BANK as
-of Inc 6, not just the serial session — and a queued continuation's
-grace/pin windows can shed other clients' serial work or hold batch victim
-placement (bounded at the grace/pin deadline). IDs are
-minted unguessable but travel in responses. Deployments serving mutually
-untrusted tenants need an authenticating proxy or one server per tenant until
-an authenticated namespace lands (documented restriction; also in
-`crates/ds4-server/src/cont.rs` and the README compatibility boundary).
+<a id="trust-domain-inc-5"></a>
+
+The server is one trust domain. The continuation registry and exact-DSML tool
+memory are global, with no authentication or tenant namespace. Registry records
+are keyed by `(protocol, call_id)` for each Anthropic/Responses tool-call turn.
+
+A tool-call ID grants access to its conversation: an output-only continuation
+resumes the owning serial session or batch bank. Queued continuations can evict
+other clients' serial work or prevent bank eviction until the bounded grace/pin
+deadline. IDs are unguessable but appear in responses. Serve mutually untrusted
+clients through an authenticating proxy or separate servers; see the
+[compatibility boundary](#compatibility-boundary).
 
 ## Explicitly unsupported
 
